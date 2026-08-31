@@ -1,0 +1,659 @@
+"use client";
+
+import * as React from "react";
+import {
+  Activity,
+  ArrowUpDown,
+  Boxes,
+  Gauge,
+  Pencil,
+  Plus,
+  RefreshCw,
+  Server,
+  Trash2,
+} from "lucide-react";
+import { toast } from "sonner";
+import { Card, CardContent } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Switch } from "@/components/ui/switch";
+import { Skeleton } from "@/components/ui/skeleton";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+import { Callout, Hint } from "@/components/ui/hint";
+import { ProtocolSelect } from "@/components/protocol-select";
+import { formatDateTime } from "@/lib/format";
+import { InlineTraffic } from "@/components/inline-traffic";
+import { cn } from "@/lib/utils";
+import { useAdminData, type AdminNode } from "@/components/admin/admin-data";
+import { useT } from "@/lib/i18n/provider";
+import type { ProtocolKind } from "@/lib/types";
+
+const preferredProtocol = (list: ProtocolKind[]): ProtocolKind =>
+  list.includes("awg3") ? "awg3" : (list[0] ?? "awg3");
+
+const PROTOCOL_LABEL: Record<string, string> = {
+  awg2: "protocol.awg2",
+  awg3: "protocol.awg3",
+};
+
+const CAPABILITY_LABEL: Record<string, string> = {
+  peerLifecycle: "nodes.cap.peerLifecycle",
+  telemetry: "nodes.cap.telemetry",
+  backup: "nodes.cap.backup",
+};
+
+export default function AdminNodesPage() {
+  const { nodes, loading, reload, action, request } = useAdminData();
+  const { t } = useT();
+  const [showCreate, setShowCreate] = React.useState(false);
+  const [editNode, setEditNode] = React.useState<AdminNode | null>(null);
+
+  const toggleEnabled = async (node: AdminNode, enabled: boolean) => {
+    try {
+      await request(`/api/admin/nodes/${node.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ enabled }),
+      });
+      toast.success(enabled ? t("nodes.enabled") : t("nodes.disabled"));
+      await reload();
+    } catch (cause) {
+      toast.error(
+        cause instanceof Error ? cause.message : t("nodes.changeFailed"),
+      );
+    }
+  };
+
+  const removeNode = async (node: AdminNode) => {
+    if (!window.confirm(t("nodes.deleteConfirm", { name: node.name }))) return;
+    try {
+      await request(`/api/admin/nodes/${node.id}`, { method: "DELETE" });
+      toast.success(t("nodes.deleted"));
+      await reload();
+    } catch (cause) {
+      toast.error(
+        cause instanceof Error ? cause.message : t("nodes.deleteFailed"),
+      );
+    }
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="mr-auto">
+          <h2 className="flex items-center gap-2 text-lg font-semibold">
+            <Server className="h-5 w-5 text-primary" />
+            {t("nav.nodes")}
+            <Hint>{t("nodes.titleHint")}</Hint>
+          </h2>
+          <p className="text-sm text-muted-foreground">
+            {t("nodes.summary", {
+              total: nodes.length,
+              enabled: nodes.filter((node) => node.enabled).length,
+            })}
+          </p>
+        </div>
+        <Button onClick={() => setShowCreate(true)}>
+          <Plus className="h-4 w-4" /> {t("nodes.addNode")}
+        </Button>
+      </div>
+
+      {loading && nodes.length === 0 ? (
+        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+          {[0, 1].map((index) => (
+            <Skeleton key={index} className="h-56 rounded-xl" />
+          ))}
+        </div>
+      ) : nodes.length === 0 ? (
+        <Card className="border-dashed">
+          <CardContent className="flex flex-col items-center gap-2 py-12 text-center">
+            <div className="flex size-12 items-center justify-center rounded-2xl bg-muted text-muted-foreground">
+              <Server className="h-6 w-6" />
+            </div>
+            <h3 className="text-base font-semibold">{t("nodes.empty")}</h3>
+            <p className="max-w-sm text-sm text-muted-foreground">
+              {t("nodes.emptyHint")}
+            </p>
+            <Button className="mt-2" onClick={() => setShowCreate(true)}>
+              <Plus className="h-4 w-4" /> {t("nodes.addNode")}
+            </Button>
+          </CardContent>
+        </Card>
+      ) : (
+        <div className="grid items-start gap-3 sm:grid-cols-2 xl:grid-cols-3">
+          {nodes.map((node) => (
+            <NodeCard
+              key={node.id}
+              node={node}
+              onToggle={(enabled) => void toggleEnabled(node, enabled)}
+              onReconcile={() => void action("nodes", node.id, "reconcile")}
+              onEdit={() => setEditNode(node)}
+              onDelete={() => void removeNode(node)}
+            />
+          ))}
+        </div>
+      )}
+
+      <CreateNodeDialog
+        open={showCreate}
+        onClose={() => setShowCreate(false)}
+        request={request}
+        reload={reload}
+      />
+      <EditNodeDialog
+        node={editNode}
+        onClose={() => setEditNode(null)}
+        request={request}
+        reload={reload}
+      />
+    </div>
+  );
+}
+
+function NodeCard({
+  node,
+  onToggle,
+  onReconcile,
+  onEdit,
+  onDelete,
+}: {
+  node: AdminNode;
+  onToggle: (enabled: boolean) => void;
+  onReconcile: () => void;
+  onEdit: () => void;
+  onDelete: () => void;
+}) {
+  const { t, lang } = useT();
+  const peers = node.peerCount ?? 0;
+  const fill = Math.min(100, (peers / Math.max(1, node.maxPeers)) * 100);
+  const supported = node.supportedProtocols?.length
+    ? node.supportedProtocols
+    : [node.protocol as ProtocolKind];
+  const enabled = node.enabledProtocols?.length
+    ? node.enabledProtocols
+    : supported;
+  // The node-agent declares many internal capability flags; surface only the
+  // few operator-meaningful ones as chips instead of dumping all of them.
+  const capabilities = Object.entries(node.capabilities ?? {})
+    .filter(([key, value]) => Boolean(value) && key in CAPABILITY_LABEL)
+    .map(([key]) => CAPABILITY_LABEL[key] ?? key);
+
+  return (
+    <Card className={cn("overflow-hidden", !node.enabled && "opacity-80")}>
+      <CardContent className="flex flex-col gap-3 p-4">
+        <div className="flex items-start justify-between gap-2">
+          <div className="flex min-w-0 items-center gap-2.5">
+            <span
+              className={cn(
+                "flex size-9 shrink-0 items-center justify-center rounded-lg",
+                node.lastError
+                  ? "bg-destructive/12 text-destructive"
+                  : node.enabled
+                    ? "bg-success/15 text-success"
+                    : "bg-muted text-muted-foreground",
+              )}
+            >
+              <Server className="h-5 w-5" />
+            </span>
+            <div className="min-w-0">
+              <p className="truncate font-medium leading-tight">{node.name}</p>
+              {node.publicName ? (
+                <p className="truncate text-xs text-muted-foreground">
+                  {t("nodes.seenAs", { name: node.publicName })}
+                </p>
+              ) : null}
+              <p className="truncate text-xs text-muted-foreground">
+                {node.lastError ? (
+                  <span className="text-destructive">{t("nodes.commError")}</span>
+                ) : node.enabled ? (
+                  t("nodes.working")
+                ) : (
+                  t("nodes.stopped")
+                )}
+              </p>
+            </div>
+          </div>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <span>
+                <Switch
+                  checked={node.enabled}
+                  onCheckedChange={onToggle}
+                  aria-label={node.enabled ? t("nodes.toggleOff") : t("nodes.toggleOn")}
+                />
+              </span>
+            </TooltipTrigger>
+            <TooltipContent>
+              {node.enabled ? t("nodes.toggleOffTip") : t("nodes.toggleOnTip")}
+            </TooltipContent>
+          </Tooltip>
+        </div>
+
+        <code className="truncate rounded bg-muted px-2 py-1 text-xs">
+          {node.apiBaseUrl}
+        </code>
+
+        <div className="flex flex-wrap gap-1">
+          {supported.map((protocol) => {
+            const on = enabled.includes(protocol);
+            const protoKey = PROTOCOL_LABEL[protocol];
+            return (
+              <Badge
+                key={protocol}
+                variant={on ? "success" : "outline"}
+                className={on ? undefined : "opacity-60"}
+                title={on ? t("nodes.protoActive") : t("nodes.protoSupported")}
+              >
+                {protoKey ? t(protoKey) : protocol.toUpperCase()}
+              </Badge>
+            );
+          })}
+          {capabilities.map((capability) => (
+            <Badge key={capability} variant="secondary" className="gap-1">
+              {t(capability)}
+            </Badge>
+          ))}
+        </div>
+
+        <div className="space-y-1">
+          <div className="flex items-center justify-between text-xs">
+            <span className="flex items-center gap-1 text-muted-foreground">
+              <Gauge className="h-3.5 w-3.5" /> {t("nodes.capacity")}
+            </span>
+            <span className="tabular font-medium">
+              {peers} / {node.maxPeers}
+            </span>
+          </div>
+          <div className="h-1.5 overflow-hidden rounded-full bg-muted">
+            <div
+              className={cn(
+                "h-full rounded-full transition-all",
+                fill >= 90
+                  ? "bg-destructive"
+                  : fill >= 70
+                    ? "bg-warning"
+                    : "bg-success",
+              )}
+              style={{ width: `${fill}%` }}
+            />
+          </div>
+        </div>
+
+        <div className="space-y-1 text-xs text-muted-foreground">
+          <span className="flex items-center gap-1">
+            <ArrowUpDown className="h-3.5 w-3.5" />
+            {t("nodes.traffic")}
+          </span>
+          <InlineTraffic
+            today={node.traffic?.today}
+            week={node.traffic?.week}
+            month={node.traffic?.month}
+          />
+        </div>
+
+        <dl className="grid grid-cols-2 gap-x-3 gap-y-1 text-xs text-muted-foreground">
+          <div className="flex items-center gap-1">
+            <Activity className="h-3.5 w-3.5" />
+            <span>{t("nodes.healthCheck")}</span>
+          </div>
+          <div className="text-right text-foreground">
+            {formatDateTime(node.lastHealthAt, lang)}
+          </div>
+          <div className="flex items-center gap-1">
+            <Boxes className="h-3.5 w-3.5" />
+            <span>{t("nodes.sync")}</span>
+          </div>
+          <div className="text-right text-foreground">
+            {formatDateTime(node.lastSyncAt, lang)}
+          </div>
+        </dl>
+
+        {node.lastError ? (
+          <Callout tone="danger" className="text-xs">
+            {node.lastError}
+          </Callout>
+        ) : null}
+
+        <div className="flex items-center gap-1.5 border-t pt-3">
+          <Button variant="secondary" size="sm" onClick={onReconcile}>
+            <RefreshCw className="h-4 w-4" /> {t("nodes.reconcile")}
+          </Button>
+          <Button variant="secondary" size="sm" onClick={onEdit}>
+            <Pencil className="h-4 w-4" /> {t("nodes.edit")}
+          </Button>
+          <div className="ml-auto">
+            {peers === 0 ? (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="text-muted-foreground hover:text-destructive"
+                    aria-label={t("nodes.deleteAria")}
+                    onClick={onDelete}
+                  >
+                    <Trash2 className="h-4 w-4" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>
+                  {t("nodes.deleteTip")}
+                </TooltipContent>
+              </Tooltip>
+            ) : null}
+          </div>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+type NodeFormState = {
+  name: string;
+  publicName: string;
+  apiBaseUrl: string;
+  apiKey: string;
+  enabledProtocols: ProtocolKind[];
+  maxPeers: number;
+  enabled: boolean;
+};
+
+function CreateNodeDialog({
+  open,
+  onClose,
+  request,
+  reload,
+}: {
+  open: boolean;
+  onClose: () => void;
+  request: <T>(path: string, init?: RequestInit) => Promise<T>;
+  reload: () => Promise<void>;
+}) {
+  const { t } = useT();
+  const [form, setForm] = React.useState<NodeFormState>(blankNode());
+  const [busy, setBusy] = React.useState(false);
+
+  React.useEffect(() => {
+    if (open) setForm(blankNode());
+  }, [open]);
+
+  const submit = async (event: React.FormEvent) => {
+    event.preventDefault();
+    setBusy(true);
+    try {
+      await request("/api/admin/nodes", {
+        method: "POST",
+        body: JSON.stringify({
+          name: form.name,
+          publicName: form.publicName || undefined,
+          apiBaseUrl: form.apiBaseUrl,
+          apiKey: form.apiKey,
+          protocol: preferredProtocol(form.enabledProtocols),
+          enabledProtocols: form.enabledProtocols,
+          maxPeers: form.maxPeers,
+          enabled: true,
+          capabilities: { peerLifecycle: true, telemetry: true, backup: true },
+        }),
+      });
+      toast.success(t("nodes.added"));
+      onClose();
+      await reload();
+    } catch (cause) {
+      toast.error(
+        cause instanceof Error ? cause.message : t("nodes.addFailed"),
+      );
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={(next) => !next && onClose()}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>{t("nodes.createTitle")}</DialogTitle>
+          <DialogDescription>
+            {t("nodes.createDesc")}
+          </DialogDescription>
+        </DialogHeader>
+        <form onSubmit={(event) => void submit(event)} className="space-y-3">
+          <NodeFields form={form} setForm={setForm} requireKey />
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={onClose}>
+              {t("common.cancel")}
+            </Button>
+            <Button type="submit" disabled={busy}>
+              {busy ? t("common.adding") : t("common.add")}
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function EditNodeDialog({
+  node,
+  onClose,
+  request,
+  reload,
+}: {
+  node: AdminNode | null;
+  onClose: () => void;
+  request: <T>(path: string, init?: RequestInit) => Promise<T>;
+  reload: () => Promise<void>;
+}) {
+  const { t } = useT();
+  const [form, setForm] = React.useState<NodeFormState>(blankNode());
+  const [busy, setBusy] = React.useState(false);
+
+  React.useEffect(() => {
+    if (node)
+      setForm({
+        name: node.name,
+        publicName: node.publicName ?? "",
+        apiBaseUrl: node.apiBaseUrl,
+        apiKey: "",
+        enabledProtocols: node.enabledProtocols?.length
+          ? node.enabledProtocols
+          : (node.supportedProtocols ?? [node.protocol as ProtocolKind]),
+        maxPeers: node.maxPeers,
+        enabled: node.enabled,
+      });
+  }, [node]);
+
+  const submit = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!node) return;
+    setBusy(true);
+    try {
+      const payload: Record<string, unknown> = {
+        name: form.name,
+        publicName: form.publicName,
+        apiBaseUrl: form.apiBaseUrl,
+        protocol: preferredProtocol(form.enabledProtocols),
+        enabledProtocols: form.enabledProtocols,
+        maxPeers: form.maxPeers,
+        enabled: form.enabled,
+      };
+      if (form.apiKey.trim().length >= 32) payload.apiKey = form.apiKey.trim();
+      await request(`/api/admin/nodes/${node.id}`, {
+        method: "PATCH",
+        body: JSON.stringify(payload),
+      });
+      toast.success(t("nodes.updated"));
+      onClose();
+      await reload();
+    } catch (cause) {
+      toast.error(
+        cause instanceof Error ? cause.message : t("nodes.updateFailed"),
+      );
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Dialog open={Boolean(node)} onOpenChange={(next) => !next && onClose()}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>{t("nodes.editTitle")}</DialogTitle>
+          <DialogDescription>
+            {t("nodes.editDesc")}
+          </DialogDescription>
+        </DialogHeader>
+        <form onSubmit={(event) => void submit(event)} className="space-y-3">
+          <NodeFields
+            form={form}
+            setForm={setForm}
+            availableProtocols={node?.supportedProtocols}
+          />
+          <label className="flex items-center justify-between gap-3 rounded-lg border p-2.5 text-sm">
+            {t("nodes.enabledToggle")}
+            <Switch
+              checked={form.enabled}
+              onCheckedChange={(checked) =>
+                setForm({ ...form, enabled: checked })
+              }
+            />
+          </label>
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={onClose}>
+              {t("common.cancel")}
+            </Button>
+            <Button type="submit" disabled={busy}>
+              {busy ? t("common.saving") : t("common.save")}
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function blankNode(): NodeFormState {
+  return {
+    name: "",
+    publicName: "",
+    apiBaseUrl: "",
+    apiKey: "",
+    enabledProtocols: ["awg3"],
+    maxPeers: 500,
+    enabled: true,
+  };
+}
+
+function NodeFields({
+  form,
+  setForm,
+  requireKey,
+  availableProtocols,
+}: {
+  form: NodeFormState;
+  setForm: React.Dispatch<React.SetStateAction<NodeFormState>>;
+  requireKey?: boolean;
+  availableProtocols?: ProtocolKind[];
+}) {
+  const { t } = useT();
+  return (
+    <>
+      <Field label={t("nodes.internalName")} hint={t("nodes.internalNameHint")}>
+        <Input
+          required
+          maxLength={120}
+          value={form.name}
+          onChange={(event) => setForm({ ...form, name: event.target.value })}
+        />
+      </Field>
+      <Field label={t("nodes.publicName")} hint={t("nodes.publicNameHint")}>
+        <Input
+          maxLength={120}
+          placeholder={form.name || t("nodes.publicNamePlaceholder")}
+          value={form.publicName}
+          onChange={(event) =>
+            setForm({ ...form, publicName: event.target.value })
+          }
+        />
+      </Field>
+      <Field label={t("nodes.agentAddr")} hint={t("nodes.agentHint")}>
+        <Input
+          required
+          type="url"
+          placeholder="https://node.example.com:4001"
+          value={form.apiBaseUrl}
+          onChange={(event) =>
+            setForm({ ...form, apiBaseUrl: event.target.value })
+          }
+        />
+      </Field>
+      <Field
+        label={requireKey ? t("nodes.apiKeyRequired") : t("nodes.apiKeyNew")}
+        hint={requireKey ? undefined : t("nodes.apiKeyNewHint")}
+      >
+        <Input
+          required={requireKey}
+          type="password"
+          minLength={32}
+          maxLength={4096}
+          autoComplete="new-password"
+          value={form.apiKey}
+          onChange={(event) => setForm({ ...form, apiKey: event.target.value })}
+        />
+      </Field>
+      <div className="grid grid-cols-2 gap-3">
+        <Field
+          label={t("nodes.protocols")}
+          hint={t("nodes.protocolsHint")}
+        >
+          <ProtocolSelect
+            value={form.enabledProtocols}
+            available={availableProtocols}
+            onChange={(next) => setForm({ ...form, enabledProtocols: next })}
+          />
+        </Field>
+        <Field label={t("nodes.peerLimit")}>
+          <Input
+            required
+            type="number"
+            min={1}
+            max={500}
+            value={form.maxPeers}
+            onChange={(event) =>
+              setForm({ ...form, maxPeers: event.target.valueAsNumber || 1 })
+            }
+          />
+        </Field>
+      </div>
+    </>
+  );
+}
+
+function Field({
+  label,
+  hint,
+  children,
+}: {
+  label: string;
+  hint?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="space-y-1.5">
+      <Label>{label}</Label>
+      {children}
+      {hint ? <p className="text-xs text-muted-foreground">{hint}</p> : null}
+    </div>
+  );
+}

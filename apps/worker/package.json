@@ -1,0 +1,24 @@
+{
+  "name": "@amnezia/worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "dev": "tsx watch src/main.ts",
+    "lint": "eslint src",
+    "start": "node dist/main.js",
+    "pretest": "pnpm --filter @amnezia/contracts build && pnpm --filter @amnezia/db build",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@amnezia/contracts": "workspace:*",
+    "@amnezia/db": "workspace:*",
+    "drizzle-orm": "0.44.7",
+    "zod": "4.3.6"
+  },
+  "devDependencies": {
+    "tsx": "4.21.0"
+  }
+}

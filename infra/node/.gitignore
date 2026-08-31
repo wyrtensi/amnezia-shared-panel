@@ -1,0 +1,5 @@
+/.env
+/backups/
+/secrets/
+/state/
+/.deploy.lock/

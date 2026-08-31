@@ -1,0 +1,223 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+@custom-variant dark (&:is(.dark *));
+
+/*
+ * Warm cream / honey / sage system.
+ *
+ * Tuned for legibility over prettiness:
+ *  - Canvas (`--background`) is a deeper cream than the near-white `--card`, so
+ *    surfaces read as elevated instead of melting into the page (Material/HIG
+ *    surface-elevation principle).
+ *  - The 5 categorical `--chart-*` hues are spread ~60-135° apart
+ *    (amber → teal → violet → azure → rose) following Tableau-10 / Okabe-Ito
+ *    qualitative-palette guidance, so adjacent series never blur together the
+ *    way the old amber+terra pair did.
+ *  - Muted text and borders carry ~6:1 / visible contrast rather than the faint
+ *    tone-on-tone they had before.
+ */
+:root {
+  --radius: 0.875rem;
+
+  --background: #f4e9d7;
+  --foreground: #2b231c;
+
+  --card: #fffdf8;
+  --card-foreground: #2b231c;
+
+  --popover: #fffdf8;
+  --popover-foreground: #2b231c;
+
+  --primary: #cc7328;
+  --primary-foreground: #fffaf2;
+
+  --secondary: #eee0c8;
+  --secondary-foreground: #3a2f24;
+
+  --muted: #ece0ca;
+  --muted-foreground: #635648;
+
+  --accent: #e4eedd;
+  --accent-foreground: #3d5636;
+
+  --destructive: #cf5236;
+  --destructive-foreground: #fffaf2;
+
+  --success: #3f8f5f;
+  --success-foreground: #fffaf2;
+
+  --warning: #d9871f;
+  --warning-foreground: #40300f;
+
+  --border: #e3d1b1;
+  --input: #d6c2a0;
+  --ring: #cc7328;
+
+  --chart-1: #dd7d22;
+  --chart-2: #17917d;
+  --chart-3: #8a56c9;
+  --chart-4: #2f83c8;
+  --chart-5: #d64b82;
+
+  --sidebar: #fffdf8;
+  --sidebar-foreground: #2b231c;
+  --sidebar-primary: #cc7328;
+  --sidebar-primary-foreground: #fffaf2;
+  --sidebar-accent: #e4eedd;
+  --sidebar-accent-foreground: #3d5636;
+  --sidebar-border: #e3d1b1;
+  --sidebar-ring: #cc7328;
+
+  --header-gradient: linear-gradient(120deg, #cc7328 0%, #17917d 120%);
+}
+
+:root:not([data-theme="light"]) {
+  color-scheme: light;
+}
+
+.dark {
+  /* Layered surfaces: canvas (darkest) < card < muted/secondary, with a
+     clearly visible warm border so cards never float edgelessly on the bg. */
+  --background: #16100c;
+  --foreground: #f4ebde;
+
+  --card: #241d16;
+  --card-foreground: #f4ebde;
+
+  --popover: #2b231b;
+  --popover-foreground: #f4ebde;
+
+  --primary: #f2a856;
+  --primary-foreground: #1a130d;
+
+  --secondary: #33291f;
+  --secondary-foreground: #f4ebde;
+
+  --muted: #322a20;
+  --muted-foreground: #d0bfa6;
+
+  --accent: #3a4633;
+  --accent-foreground: #dceace;
+
+  --destructive: #ec8a70;
+  --destructive-foreground: #1a130d;
+
+  --success: #78c78d;
+  --success-foreground: #12100b;
+
+  --warning: #edab57;
+  --warning-foreground: #1f1608;
+
+  --border: #48392b;
+  --input: #52402f;
+  --ring: #f2a856;
+
+  --chart-1: #f0a24e;
+  --chart-2: #3fbfa6;
+  --chart-3: #ab8bef;
+  --chart-4: #5aa9e6;
+  --chart-5: #ee79a4;
+
+  --sidebar: #2a211b;
+  --sidebar-foreground: #f3e9db;
+  --sidebar-primary: #f0a24e;
+  --sidebar-primary-foreground: #1d1712;
+  --sidebar-accent: #35422f;
+  --sidebar-accent-foreground: #dbe8d0;
+  --sidebar-border: #3f3227;
+  --sidebar-ring: #f0a24e;
+
+  --header-gradient: linear-gradient(120deg, #f0a24e 0%, #3fbfa6 120%);
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-success: var(--success);
+  --color-success-foreground: var(--success-foreground);
+  --color-warning: var(--warning);
+  --color-warning-foreground: var(--warning-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+
+  --font-sans:
+    var(--font-onest), ui-sans-serif, system-ui, -apple-system, "Segoe UI",
+    Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-display:
+    var(--font-unbounded), var(--font-onest), ui-sans-serif, system-ui,
+    sans-serif;
+
+  --radius-sm: calc(var(--radius) - 6px);
+  --radius-md: calc(var(--radius) - 4px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+
+  /* Warm, brown-tinted shadows — cards rest, never float. */
+  --shadow-2xs: 0 1px 2px rgba(70, 48, 28, 0.08);
+  --shadow-xs: 0 1px 2px rgba(70, 48, 28, 0.1);
+  --shadow-sm:
+    0 1px 2px rgba(70, 48, 28, 0.1), 0 3px 7px -4px rgba(70, 48, 28, 0.18);
+  --shadow:
+    0 1px 2px rgba(70, 48, 28, 0.1), 0 3px 7px -4px rgba(70, 48, 28, 0.18);
+  --shadow-md:
+    0 2px 4px rgba(70, 48, 28, 0.11), 0 8px 18px -8px rgba(70, 48, 28, 0.22);
+  --shadow-lg:
+    0 2px 4px rgba(70, 48, 28, 0.12), 0 12px 26px -8px rgba(70, 48, 28, 0.26);
+}
+
+@layer base {
+  * {
+    border-color: var(--border);
+  }
+  body {
+    background-color: var(--background);
+    color: var(--foreground);
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+    font-feature-settings: "cv01", "ss01";
+  }
+  h1,
+  h2,
+  h3 {
+    font-family: var(--font-display);
+    letter-spacing: -0.01em;
+  }
+}
+
+/* Display face for headline numbers / brand. */
+.font-display {
+  font-family: var(--font-display);
+  letter-spacing: -0.02em;
+}
+.tabular {
+  font-variant-numeric: tabular-nums;
+}

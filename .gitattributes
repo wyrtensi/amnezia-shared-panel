@@ -1,0 +1,13 @@
+# Normalize line endings on commit; check out with native endings.
+* text=auto
+
+# Scripts and configs that must stay LF even on Windows checkouts.
+*.sh text eol=lf
+*.mjs text eol=lf
+*.yaml text eol=lf
+*.yml text eol=lf
+pnpm-lock.yaml text eol=lf
+
+# Treat lockfiles and generated artifacts as such in diffs.
+pnpm-lock.yaml linguist-generated=true
+services/node-agent/openapi/openapi.json linguist-generated=true

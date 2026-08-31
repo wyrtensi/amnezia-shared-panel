@@ -1,0 +1,1 @@
+ALTER TABLE "nodes" ADD COLUMN "public_name" varchar(120);

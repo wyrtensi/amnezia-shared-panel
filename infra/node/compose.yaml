@@ -1,0 +1,167 @@
+name: amnezia-node
+
+services:
+  awg2:
+    container_name: amnezia-awg2
+    image: amneziavpn/amneziawg-go:0.2.19@sha256:3c78eb57ef5cb44f63aed185e79c104593c854a5ebde3e1075470301bcc77c44
+    platform: linux/amd64
+    pull_policy: never
+    init: true
+    restart: unless-stopped
+    entrypoint:
+      - /bin/sh
+      - /usr/local/libexec/awg2-entrypoint.sh
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    sysctls:
+      net.ipv4.conf.all.src_valid_mark: "1"
+      net.ipv4.ip_forward: "1"
+    ports:
+      - "51889:51889/udp"
+    volumes:
+      - ./state/amnezia-awg2:/opt/amnezia/awg
+      - ./scripts/awg2-entrypoint.sh:/usr/local/libexec/awg2-entrypoint.sh:ro
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          test -s /opt/amnezia/awg/awg0.conf &&
+          test -s /opt/amnezia/awg/wireguard_server_public_key.key &&
+          test -r /opt/amnezia/awg/clientsTable &&
+          awg show awg0 >/dev/null 2>&1
+      interval: 10s
+      timeout: 3s
+      start_period: 15s
+      retries: 6
+    pids_limit: 128
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
+  awg3:
+    container_name: amnezia-awg3
+    image: amneziavpn/amneziawg-go:3.1.20260814@sha256:4450928744b051589bb3ba5cf6dd0cd8d7dc470b9432dc32d03d5ff5ede11b7a
+    platform: linux/amd64
+    pull_policy: never
+    init: true
+    restart: unless-stopped
+    entrypoint:
+      - /bin/sh
+      - /usr/local/libexec/awg3-entrypoint.sh
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    sysctls:
+      net.ipv4.conf.all.src_valid_mark: "1"
+      net.ipv4.ip_forward: "1"
+    ports:
+      - "51890:51890/udp"
+    volumes:
+      - ./state/amnezia-awg3:/opt/amnezia/awg
+      - ./scripts/awg3-entrypoint.sh:/usr/local/libexec/awg3-entrypoint.sh:ro
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          test -s /opt/amnezia/awg/awg0.conf &&
+          test -s /opt/amnezia/awg/wireguard_server_public_key.key &&
+          test -r /opt/amnezia/awg/clientsTable &&
+          awg show awg0 >/dev/null 2>&1
+      interval: 10s
+      timeout: 3s
+      start_period: 15s
+      retries: 6
+    pids_limit: 128
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
+  node-agent:
+    container_name: amnezia-node-agent
+    image: ${NODE_AGENT_IMAGE:?NODE_AGENT_IMAGE must be an immutable sha256 image ID or digest reference}
+    platform: linux/amd64
+    pull_policy: never
+    init: true
+    user: "10001:0"
+    restart: unless-stopped
+    depends_on:
+      awg2:
+        condition: service_healthy
+      awg3:
+        condition: service_healthy
+    entrypoint:
+      - /bin/sh
+      - -ec
+    command:
+      - |
+        api_key="$$(cat /run/secrets/node_agent_api_key)"
+        if [ "$${#api_key}" -lt 32 ]; then
+          echo "node-agent API key must contain at least 32 bytes" >&2
+          exit 1
+        fi
+        export FASTIFY_API_KEY="$$api_key"
+        unset api_key
+        exec node dist/main.js
+    environment:
+      FASTIFY_ROUTES: "0.0.0.0:4001"
+      ENV: production
+      DOCKER_API_VERSION: ${DOCKER_API_VERSION:-1.44}
+      CORS_ORIGINS: ""
+      PROTOCOLS_ENABLED: amneziawg2,amneziawg3
+      SERVER_ID: ${SERVER_ID:?SERVER_ID is required}
+      SERVER_NAME: ${SERVER_NAME:?SERVER_NAME is required}
+      SERVER_REGION: ${SERVER_REGION:?SERVER_REGION is required}
+      SERVER_WEIGHT: ${SERVER_WEIGHT:-100}
+      SERVER_MAX_PEERS: ${SERVER_MAX_PEERS:-500}
+      SERVER_PUBLIC_HOST: ${SERVER_PUBLIC_HOST:?SERVER_PUBLIC_HOST is required}
+    secrets:
+      - source: node_agent_api_key
+        target: node_agent_api_key
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    group_add:
+      - ${DOCKER_GID:?DOCKER_GID is required}
+    ports:
+      - "127.0.0.1:4001:4001/tcp"
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=16m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - fetch('http://127.0.0.1:4001/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))
+      interval: 10s
+      timeout: 3s
+      start_period: 15s
+      retries: 6
+    pids_limit: 128
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
+secrets:
+  node_agent_api_key:
+    file: ./secrets/node-agent-api-key

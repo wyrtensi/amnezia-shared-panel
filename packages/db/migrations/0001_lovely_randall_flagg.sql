@@ -1,0 +1,1 @@
+ALTER TYPE "public"."route_profile" ADD VALUE 'ru_blacklist';

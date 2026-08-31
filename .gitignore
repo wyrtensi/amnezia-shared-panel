@@ -1,0 +1,34 @@
+/secrets/
+/infra/node/.env
+/infra/node/backups/
+/infra/node/secrets/
+# Any secrets/ directory or .secrets file at any depth (the rules above are
+# root-anchored; this also covers e.g. services/node-agent/secrets/).
+secrets/
+.secrets
+/infra/node/state/
+/agent-changes/
+/plans/
+/.worktrees/
+
+node_modules/
+.next/
+dist/
+build/
+coverage/
+.turbo/
+.cache/
+
+.env
+.env.*
+!.env.example
+
+*.log
+*.tsbuildinfo
+.DS_Store
+Thumbs.db
+
+# Database backups (contain real data — never commit)
+/backups/
+backups/
+*.sql.gz

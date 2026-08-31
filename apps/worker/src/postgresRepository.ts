@@ -1,0 +1,950 @@
+import {
+  and,
+  asc,
+  count,
+  desc,
+  eq,
+  gte,
+  inArray,
+  isNull,
+  lt,
+  lte,
+  ne,
+  or,
+  sql,
+} from "drizzle-orm";
+import {
+  decryptSecret,
+  encryptSecret,
+  auditEvents,
+  jobOutbox,
+  nodes,
+  peerCurrent,
+  peerSamples,
+  portalPolicy,
+  routeRuleVersions,
+  trafficRollups,
+  users,
+  vpnKeys,
+  type Database,
+  type EncryptionKeyring,
+} from "@amnezia/db";
+import type {
+  AccessReconcileResult,
+  OutboxJob,
+  NodeReconcileContext,
+  NodeReconcileResult,
+  WorkerKeyContext,
+  WorkerRepository,
+} from "./repository.js";
+import type {
+  MaintenanceRepository,
+  RollupPeriod,
+  TrafficRollup,
+  TrafficSample,
+} from "./maintenance.js";
+import type {
+  RuleProfile,
+  RuleRepository,
+  StoredRuleInput,
+} from "./rules.js";
+import { protocolsFromAgent } from "./nodeAgent.js";
+import {
+  shouldStoreSample,
+  type NodeSnapshot,
+  type PeerObservation,
+  type TelemetryNode,
+  type TelemetryRepository,
+} from "./telemetry.js";
+
+export type PostgresWorkerRepositoryOptions = {
+  db: Database;
+  keyring: EncryptionKeyring;
+  activeKeyVersion: number;
+  jobLeaseMs?: number;
+};
+
+const cleanReason = (reason: string): string =>
+  reason.replace(/[\r\n\t]+/g, " ").slice(0, 2_000);
+
+export class PostgresWorkerRepository
+  implements
+    WorkerRepository,
+    TelemetryRepository,
+    MaintenanceRepository,
+    RuleRepository
+{
+  constructor(private readonly options: PostgresWorkerRepositoryOptions) {}
+
+  claimJob = async (): Promise<OutboxJob | null> =>
+    this.options.db.transaction(async (tx) => {
+      const now = new Date();
+      const leaseCutoff = new Date(
+        now.getTime() - (this.options.jobLeaseMs ?? 5 * 60_000),
+      );
+      const job = (
+        await tx
+          .select()
+          .from(jobOutbox)
+          .where(
+            or(
+              and(
+                eq(jobOutbox.status, "pending"),
+                lte(jobOutbox.availableAt, now),
+              ),
+              and(
+                eq(jobOutbox.status, "processing"),
+                or(
+                  isNull(jobOutbox.lockedAt),
+                  lte(jobOutbox.lockedAt, leaseCutoff),
+                ),
+              ),
+            ),
+          )
+          .orderBy(asc(jobOutbox.availableAt), asc(jobOutbox.createdAt))
+          .limit(1)
+          .for("update", { skipLocked: true })
+      )[0];
+      if (!job) return null;
+      const [claimed] = await tx
+        .update(jobOutbox)
+        .set({
+          status: "processing",
+          attempts: sql`${jobOutbox.attempts} + 1`,
+          lockedAt: now,
+          updatedAt: now,
+        })
+        .where(eq(jobOutbox.id, job.id))
+        .returning();
+      if (!claimed) return null;
+      return {
+        id: claimed.id,
+        type: claimed.type,
+        attempts: claimed.attempts,
+        payload: claimed.payload,
+      };
+    });
+
+  loadKeyContext = async (keyId: string): Promise<WorkerKeyContext | null> => {
+    const row = (
+      await this.options.db
+        .select({ key: vpnKeys, node: nodes })
+        .from(vpnKeys)
+        .innerJoin(nodes, eq(nodes.id, vpnKeys.nodeId))
+        .where(eq(vpnKeys.id, keyId))
+        .limit(1)
+    )[0];
+    if (!row) return null;
+    const apiKey = decryptSecret(
+      {
+        ciphertext: row.node.credentialsCiphertext,
+        nonce: row.node.credentialsNonce,
+        authTag: row.node.credentialsAuthTag,
+        keyVersion: row.node.credentialsKeyVersion,
+      },
+      this.options.keyring,
+    );
+    return {
+      keyId: row.key.id,
+      state: row.key.state,
+      nodeLabel: row.key.nodeLabel,
+      protocol: row.key.protocol,
+      publicKey: row.key.publicKey,
+      node: {
+        id: row.node.id,
+        baseUrl: row.node.apiBaseUrl,
+        apiKey,
+      },
+    };
+  };
+
+  loadNodeReconcileContext = async (
+    nodeId: string,
+  ): Promise<NodeReconcileContext | null> => {
+    const node = (
+      await this.options.db
+        .select()
+        .from(nodes)
+        .where(eq(nodes.id, nodeId))
+        .limit(1)
+    )[0];
+    if (!node) return null;
+    const keys = await this.options.db
+      .select({
+        keyId: vpnKeys.id,
+        nodeLabel: vpnKeys.nodeLabel,
+        publicKey: vpnKeys.publicKey,
+      })
+      .from(vpnKeys)
+      .where(
+        and(
+          eq(vpnKeys.nodeId, nodeId),
+          inArray(vpnKeys.state, [
+            "provisioning",
+            "active",
+            "disabled",
+            "revoking",
+          ]),
+        ),
+      );
+    return {
+      node: {
+        id: node.id,
+        baseUrl: node.apiBaseUrl,
+        apiKey: decryptSecret(
+          {
+            ciphertext: node.credentialsCiphertext,
+            nonce: node.credentialsNonce,
+            authTag: node.credentialsAuthTag,
+            keyVersion: node.credentialsKeyVersion,
+          },
+          this.options.keyring,
+        ),
+      },
+      keys,
+    };
+  };
+
+  completeNodeReconcile = async (
+    result: NodeReconcileResult,
+  ): Promise<void> => {
+    await this.options.db.transaction(async (tx) => {
+      const currentRows =
+        result.managedKeyIds.length > 0
+          ? await tx
+              .select()
+              .from(peerCurrent)
+              .where(inArray(peerCurrent.keyId, result.managedKeyIds))
+          : [];
+      const previousByKeyId = new Map(
+        currentRows.map((current) => [current.keyId, current] as const),
+      );
+      const observedByKeyId = new Map(
+        result.peers.map((peer) => [peer.keyId, peer] as const),
+      );
+      for (const keyId of result.managedKeyIds) {
+        const observed = observedByKeyId.get(keyId);
+        const previous = previousByKeyId.get(keyId);
+        await tx
+          .insert(peerCurrent)
+          .values({
+            keyId,
+            online: observed?.online ?? false,
+            endpoint: observed?.endpoint ?? null,
+            latestHandshakeAt:
+              observed?.latestHandshakeAt ?? previous?.latestHandshakeAt ?? null,
+            receivedBytes:
+              observed?.receivedBytes ?? previous?.receivedBytes ?? 0n,
+            sentBytes: observed?.sentBytes ?? previous?.sentBytes ?? 0n,
+            observedAt: result.observedAt,
+          })
+          .onConflictDoUpdate({
+            target: peerCurrent.keyId,
+            set: {
+              online: observed?.online ?? false,
+              endpoint: observed?.endpoint ?? null,
+              latestHandshakeAt:
+                observed?.latestHandshakeAt ??
+                previous?.latestHandshakeAt ??
+                null,
+              receivedBytes:
+                observed?.receivedBytes ?? previous?.receivedBytes ?? 0n,
+              sentBytes: observed?.sentBytes ?? previous?.sentBytes ?? 0n,
+              observedAt: result.observedAt,
+            },
+          });
+      }
+      const mismatch =
+        result.summary.missingManagedPeerCount > 0 ||
+        result.summary.orphanNodePeerCount > 0;
+      await tx
+        .update(nodes)
+        .set({
+          lastSyncAt: result.observedAt,
+          lastError: mismatch
+            ? `Reconcile mismatch: missing=${result.summary.missingManagedPeerCount} orphan=${result.summary.orphanNodePeerCount}`
+            : null,
+          updatedAt: result.observedAt,
+        })
+        .where(eq(nodes.id, result.nodeId));
+      await tx.insert(auditEvents).values({
+        actorType: "system",
+        action: "node.reconcile",
+        targetType: "node",
+        targetId: result.nodeId,
+        metadata: { jobId: result.jobId, ...result.summary },
+        createdAt: result.observedAt,
+      });
+      await tx
+        .update(jobOutbox)
+        .set({
+          status: "completed",
+          completedAt: result.observedAt,
+          lockedAt: null,
+          lastError: null,
+          updatedAt: result.observedAt,
+        })
+        .where(eq(jobOutbox.id, result.jobId));
+    });
+  };
+
+  reconcileAccess = async (
+    allowedEmails: string[],
+  ): Promise<AccessReconcileResult> => {
+    // Guard: an empty allowlist almost always means the directory lookup failed.
+    // Deactivating everyone in that case would be catastrophic, so do nothing.
+    if (allowedEmails.length === 0) {
+      return { deactivated: [], skippedAdmins: [] };
+    }
+    const allowed = new Set(allowedEmails.map((email) => email.toLowerCase()));
+    const revocableStates = [
+      "provisioning",
+      "active",
+      "disabled",
+      "failed",
+    ] as const;
+
+    return this.options.db.transaction(async (tx) => {
+      const active = await tx
+        .select({ id: users.id, email: users.email, role: users.role })
+        .from(users)
+        .where(eq(users.status, "active"));
+
+      const deactivated: string[] = [];
+      const skippedAdmins: string[] = [];
+
+      for (const user of active) {
+        if (allowed.has(user.email.toLowerCase())) continue;
+        // Admins are never auto-disabled — losing the last admin would lock the
+        // panel. They are surfaced for a human to offboard deliberately.
+        if (user.role === "admin") {
+          skippedAdmins.push(user.email);
+          continue;
+        }
+
+        await tx
+          .update(users)
+          .set({
+            status: "disabled",
+            disabledAt: new Date(),
+            deactivationReason: "access_removed",
+            updatedAt: new Date(),
+          })
+          .where(eq(users.id, user.id));
+
+        const keysToRevoke = await tx
+          .update(vpnKeys)
+          .set({ state: "revoking", updatedAt: new Date() })
+          .where(
+            and(
+              eq(vpnKeys.ownerId, user.id),
+              inArray(vpnKeys.state, [...revocableStates]),
+            ),
+          )
+          .returning({ id: vpnKeys.id });
+
+        for (const key of keysToRevoke) {
+          await tx
+            .insert(jobOutbox)
+            .values({
+              type: "vpn-key.revoke",
+              deduplicationKey: `vpn-key.revoke:${key.id}`,
+              payload: { keyId: key.id },
+            })
+            .onConflictDoNothing();
+        }
+
+        await tx.insert(auditEvents).values({
+          actorType: "system",
+          action: "user.access_revoked",
+          targetType: "user",
+          targetId: user.id,
+          metadata: {
+            email: user.email,
+            keysQueuedForRevoke: keysToRevoke.length,
+          },
+        });
+        deactivated.push(user.email);
+      }
+
+      return { deactivated, skippedAdmins };
+    });
+  };
+
+  getCloudflareConfig = async (): Promise<{
+    accountId: string;
+    appId: string;
+    policyId: string;
+    apiToken: string;
+  } | null> => {
+    const [row] = await this.options.db.select().from(portalPolicy).limit(1);
+    if (
+      !row?.cfAccessAccountId ||
+      !row.cfAccessAppId ||
+      !row.cfAccessPolicyId ||
+      !row.cfApiTokenCiphertext ||
+      !row.cfApiTokenNonce ||
+      !row.cfApiTokenAuthTag ||
+      row.cfApiTokenKeyVersion == null
+    ) {
+      return null;
+    }
+    const apiToken = decryptSecret(
+      {
+        ciphertext: row.cfApiTokenCiphertext,
+        nonce: row.cfApiTokenNonce,
+        authTag: row.cfApiTokenAuthTag,
+        keyVersion: row.cfApiTokenKeyVersion,
+      },
+      this.options.keyring,
+    );
+    return {
+      accountId: row.cfAccessAccountId,
+      appId: row.cfAccessAppId,
+      policyId: row.cfAccessPolicyId,
+      apiToken,
+    };
+  };
+
+  listActiveUserEmails = async (): Promise<string[]> => {
+    const rows = await this.options.db
+      .select({ email: users.email })
+      .from(users)
+      .where(eq(users.status, "active"));
+    return rows.map((row) => row.email);
+  };
+
+  purgeOffboardedUsers = async (): Promise<{ deleted: string[] }> => {
+    return this.options.db.transaction(async (tx) => {
+      const disabled = await tx
+        .select({ id: users.id, email: users.email })
+        .from(users)
+        .where(eq(users.status, "disabled"));
+      const deleted: string[] = [];
+      for (const user of disabled) {
+        // Keys that may still hold a peer on a node block deletion; wait until
+        // every key has finished revoking (only "revoked" rows may remain).
+        const [live] = await tx
+          .select({ value: count() })
+          .from(vpnKeys)
+          .where(
+            and(
+              eq(vpnKeys.ownerId, user.id),
+              inArray(vpnKeys.state, [
+                "provisioning",
+                "active",
+                "disabled",
+                "revoking",
+                "failed",
+              ]),
+            ),
+          );
+        if ((live?.value ?? 0) > 0) continue;
+        // Delete only the revoked key rows (telemetry cascades), then the user.
+        // Scoping to "revoked" means a key that raced into a live state since
+        // the check above blocks the user delete (FK restrict) and the whole
+        // transaction rolls back — the user is retried next cycle, never
+        // half-deleted with a stranded peer.
+        await tx
+          .delete(vpnKeys)
+          .where(and(eq(vpnKeys.ownerId, user.id), eq(vpnKeys.state, "revoked")));
+        await tx.delete(users).where(eq(users.id, user.id));
+        await tx.insert(auditEvents).values({
+          actorType: "system",
+          action: "user.deleted",
+          targetType: "user",
+          targetId: user.id,
+          metadata: { email: user.email },
+        });
+        deleted.push(user.email);
+      }
+      return { deleted };
+    });
+  };
+
+  completeProvision = async ({
+    jobId,
+    keyId,
+    publicKey,
+    vpnConfig,
+  }: {
+    jobId: string;
+    keyId: string;
+    publicKey: string;
+    vpnConfig: string;
+  }): Promise<void> => {
+    const encrypted = encryptSecret(
+      vpnConfig,
+      this.options.keyring,
+      this.options.activeKeyVersion,
+    );
+    await this.options.db.transaction(async (tx) => {
+      const [updated] = await tx
+        .update(vpnKeys)
+        .set({
+          publicKey,
+          state: "active",
+          configCiphertext: encrypted.ciphertext,
+          configNonce: encrypted.nonce,
+          configAuthTag: encrypted.authTag,
+          configKeyVersion: encrypted.keyVersion,
+          failureReason: null,
+          updatedAt: new Date(),
+        })
+        .where(and(eq(vpnKeys.id, keyId), eq(vpnKeys.state, "provisioning")))
+        .returning({ id: vpnKeys.id });
+      if (!updated) throw new Error("Provisioning key changed state before completion");
+      await tx
+        .update(jobOutbox)
+        .set({
+          status: "completed",
+          completedAt: new Date(),
+          lockedAt: null,
+          lastError: null,
+          updatedAt: new Date(),
+        })
+        .where(eq(jobOutbox.id, jobId));
+    });
+  };
+
+  completeLifecycle = async (
+    jobId: string,
+    keyId: string,
+    state: WorkerKeyContext["state"],
+  ): Promise<void> => {
+    await this.options.db.transaction(async (tx) => {
+      await tx
+        .update(vpnKeys)
+        .set({
+          state,
+          revokedAt: state === "revoked" ? new Date() : undefined,
+          updatedAt: new Date(),
+        })
+        .where(eq(vpnKeys.id, keyId));
+      await tx
+        .update(jobOutbox)
+        .set({
+          status: "completed",
+          completedAt: new Date(),
+          lockedAt: null,
+          lastError: null,
+          updatedAt: new Date(),
+        })
+        .where(eq(jobOutbox.id, jobId));
+    });
+  };
+
+  completeJob = async (jobId: string): Promise<void> => {
+    await this.options.db
+      .update(jobOutbox)
+      .set({
+        status: "completed",
+        completedAt: new Date(),
+        lockedAt: null,
+        lastError: null,
+        updatedAt: new Date(),
+      })
+      .where(eq(jobOutbox.id, jobId));
+  };
+
+  retryJob = async (jobId: string, reason: string): Promise<void> => {
+    const job = (
+      await this.options.db
+        .select({ attempts: jobOutbox.attempts })
+        .from(jobOutbox)
+        .where(eq(jobOutbox.id, jobId))
+        .limit(1)
+    )[0];
+    const delaySeconds = Math.min(300, 2 ** Math.min(job?.attempts ?? 1, 8));
+    await this.options.db
+      .update(jobOutbox)
+      .set({
+        status: "pending",
+        availableAt: new Date(Date.now() + delaySeconds * 1_000),
+        lockedAt: null,
+        lastError: cleanReason(reason),
+        updatedAt: new Date(),
+      })
+      .where(eq(jobOutbox.id, jobId));
+  };
+
+  failJob = async (jobId: string, reason: string): Promise<void> => {
+    await this.options.db.transaction(async (tx) => {
+      const job = (
+        await tx
+          .select({ payload: jobOutbox.payload })
+          .from(jobOutbox)
+          .where(eq(jobOutbox.id, jobId))
+          .limit(1)
+      )[0];
+      await tx
+        .update(jobOutbox)
+        .set({
+          status: "failed",
+          lockedAt: null,
+          lastError: cleanReason(reason),
+          updatedAt: new Date(),
+        })
+        .where(eq(jobOutbox.id, jobId));
+      const keyId = job?.payload.keyId;
+      if (typeof keyId === "string") {
+        await tx
+          .update(vpnKeys)
+          .set({
+            state: "failed",
+            failureReason: cleanReason(reason),
+            updatedAt: new Date(),
+          })
+          .where(
+            and(
+              eq(vpnKeys.id, keyId),
+              inArray(vpnKeys.state, ["provisioning", "revoking"]),
+            ),
+          );
+      }
+    });
+  };
+
+  listTelemetryNodes = async (): Promise<TelemetryNode[]> => {
+    const rows = await this.options.db
+      .select({ node: nodes, key: vpnKeys })
+      .from(nodes)
+      .leftJoin(
+        vpnKeys,
+        and(
+          eq(vpnKeys.nodeId, nodes.id),
+          inArray(vpnKeys.state, ["active", "disabled", "revoking"]),
+        ),
+      )
+      .where(eq(nodes.enabled, true))
+      .orderBy(nodes.name);
+    const result = new Map<string, TelemetryNode>();
+    for (const row of rows) {
+      let node = result.get(row.node.id);
+      if (!node) {
+        node = {
+          id: row.node.id,
+          baseUrl: row.node.apiBaseUrl,
+          apiKey: decryptSecret(
+            {
+              ciphertext: row.node.credentialsCiphertext,
+              nonce: row.node.credentialsNonce,
+              authTag: row.node.credentialsAuthTag,
+              keyVersion: row.node.credentialsKeyVersion,
+            },
+            this.options.keyring,
+          ),
+          keys: [],
+        };
+        result.set(row.node.id, node);
+      }
+      if (row.key) {
+        node.keys.push({
+          keyId: row.key.id,
+          publicKey: row.key.publicKey,
+          nodeLabel: row.key.nodeLabel,
+        });
+      }
+    }
+    return [...result.values()];
+  };
+
+  recordNodeSnapshot = async (snapshot: NodeSnapshot): Promise<void> => {
+    await this.options.db.transaction(async (tx) => {
+      const node = (
+        await tx.select().from(nodes).where(eq(nodes.id, snapshot.nodeId)).limit(1)
+      )[0];
+      if (!node) return;
+      const supportedProtocols = protocolsFromAgent(snapshot.server.protocols);
+      await tx
+        .update(nodes)
+        .set({
+          capabilities: {
+            ...node.capabilities,
+            reportedMaxPeers: snapshot.server.maxPeers,
+            reportedTotalPeers: snapshot.server.totalPeers,
+            healthz: true,
+            serverStatus: true,
+            serverLoad: true,
+            diskMetrics: snapshot.load.disk !== null,
+            networkMetrics: snapshot.load.network !== null,
+            dockerMetrics: snapshot.load.docker !== null,
+            freeMemoryAtLeast200MiB:
+              snapshot.load.memory.freeBytes >= 200 * 1024 * 1024,
+            // Protocol availability reported by the node agent, used by the
+            // control API to offer only the protocols a node actually runs.
+            awg2: supportedProtocols.includes("awg2"),
+            awg3: supportedProtocols.includes("awg3"),
+          },
+          lastHealthAt: snapshot.observedAt,
+          lastSyncAt: snapshot.observedAt,
+          lastError: null,
+          updatedAt: snapshot.observedAt,
+        })
+        .where(eq(nodes.id, snapshot.nodeId));
+
+      const observedKeyIds = new Set(snapshot.peers.map((peer) => peer.keyId));
+      const missingRows = await tx
+        .select({ current: peerCurrent })
+        .from(vpnKeys)
+        .innerJoin(peerCurrent, eq(peerCurrent.keyId, vpnKeys.id))
+        .where(
+          and(
+            eq(vpnKeys.nodeId, snapshot.nodeId),
+            inArray(vpnKeys.state, ["active", "disabled", "revoking"]),
+          ),
+        );
+      const observations = [...snapshot.peers];
+      for (const { current } of missingRows) {
+        if (observedKeyIds.has(current.keyId)) continue;
+        observations.push({
+          keyId: current.keyId,
+          online: false,
+          endpoint: null,
+          latestHandshakeAt: current.latestHandshakeAt,
+          receivedBytes: current.receivedBytes,
+          sentBytes: current.sentBytes,
+          observedAt: snapshot.observedAt,
+        });
+      }
+      for (const observation of observations) {
+        await this.storePeerObservation(tx, observation);
+      }
+    });
+  };
+
+  private readonly storePeerObservation = async (
+    tx: Parameters<Parameters<Database["transaction"]>[0]>[0],
+    observation: PeerObservation,
+  ): Promise<void> => {
+    const latestSample = (
+      await tx
+        .select()
+        .from(peerSamples)
+        .where(eq(peerSamples.keyId, observation.keyId))
+        .orderBy(desc(peerSamples.sampledAt))
+        .limit(1)
+    )[0];
+    await tx
+      .insert(peerCurrent)
+      .values({
+        keyId: observation.keyId,
+        online: observation.online,
+        endpoint: observation.endpoint,
+        latestHandshakeAt: observation.latestHandshakeAt,
+        receivedBytes: observation.receivedBytes,
+        sentBytes: observation.sentBytes,
+        observedAt: observation.observedAt,
+      })
+      .onConflictDoUpdate({
+        target: peerCurrent.keyId,
+        set: {
+          online: observation.online,
+          endpoint: observation.endpoint,
+          latestHandshakeAt: observation.latestHandshakeAt,
+          receivedBytes: observation.receivedBytes,
+          sentBytes: observation.sentBytes,
+          observedAt: observation.observedAt,
+        },
+      });
+    if (observation.latestHandshakeAt) {
+      await tx
+        .update(vpnKeys)
+        .set({
+          lastUsedAt: observation.latestHandshakeAt,
+          updatedAt: observation.observedAt,
+        })
+        .where(eq(vpnKeys.id, observation.keyId));
+    }
+    const previous = latestSample
+      ? {
+          keyId: latestSample.keyId,
+          online: latestSample.online,
+          endpoint: latestSample.endpoint,
+          latestHandshakeAt: latestSample.latestHandshakeAt,
+          receivedBytes: latestSample.receivedBytes,
+          sentBytes: latestSample.sentBytes,
+          observedAt: latestSample.sampledAt,
+        }
+      : null;
+    if (shouldStoreSample(observation, previous)) {
+      await tx.insert(peerSamples).values({
+        keyId: observation.keyId,
+        online: observation.online,
+        endpoint: observation.endpoint,
+        latestHandshakeAt: observation.latestHandshakeAt,
+        receivedBytes: observation.receivedBytes,
+        sentBytes: observation.sentBytes,
+        sampledAt: observation.observedAt,
+      });
+    }
+  };
+
+  recordNodeFailure = async (
+    nodeId: string,
+    observedAt: Date,
+    reason: string,
+  ): Promise<void> => {
+    await this.options.db
+      .update(nodes)
+      .set({ lastError: cleanReason(reason), updatedAt: observedAt })
+      .where(eq(nodes.id, nodeId));
+  };
+
+  loadSamplesSince = async (since: Date): Promise<TrafficSample[]> => {
+    const projection = {
+      keyId: peerSamples.keyId,
+      sampledAt: peerSamples.sampledAt,
+      receivedBytes: peerSamples.receivedBytes,
+      sentBytes: peerSamples.sentBytes,
+    };
+    const [baselines, samples] = await Promise.all([
+      this.options.db
+        .selectDistinctOn([peerSamples.keyId], projection)
+        .from(peerSamples)
+        .where(lt(peerSamples.sampledAt, since))
+        .orderBy(peerSamples.keyId, desc(peerSamples.sampledAt)),
+      this.options.db
+      .select({
+        keyId: peerSamples.keyId,
+        sampledAt: peerSamples.sampledAt,
+        receivedBytes: peerSamples.receivedBytes,
+        sentBytes: peerSamples.sentBytes,
+      })
+      .from(peerSamples)
+      .where(gte(peerSamples.sampledAt, since))
+        .orderBy(peerSamples.keyId, peerSamples.sampledAt),
+    ]);
+    return [...baselines, ...samples].sort(
+      (left, right) =>
+        left.keyId.localeCompare(right.keyId) ||
+        left.sampledAt.getTime() - right.sampledAt.getTime(),
+    );
+  };
+
+  replaceRollups = async (
+    period: RollupPeriod,
+    rollups: TrafficRollup[],
+  ): Promise<void> => {
+    if (rollups.length === 0) return;
+    const earliest = new Date(
+      Math.min(...rollups.map((rollup) => rollup.bucketStart.getTime())),
+    );
+    await this.options.db.transaction(async (tx) => {
+      await tx
+        .delete(trafficRollups)
+        .where(
+          and(
+            eq(trafficRollups.period, period),
+            gte(trafficRollups.bucketStart, earliest),
+          ),
+        );
+      await tx.insert(trafficRollups).values(rollups);
+    });
+  };
+
+  deleteSamplesBefore = async (cutoff: Date): Promise<void> => {
+    await this.options.db
+      .delete(peerSamples)
+      .where(lt(peerSamples.sampledAt, cutoff));
+  };
+
+  deleteRollupsBefore = async (
+    period: RollupPeriod,
+    cutoff: Date,
+  ): Promise<void> => {
+    await this.options.db
+      .delete(trafficRollups)
+      .where(
+        and(
+          eq(trafficRollups.period, period),
+          lt(trafficRollups.bucketStart, cutoff),
+        ),
+      );
+  };
+
+  getLastKnownGoodRule = async (
+    profile: RuleProfile,
+  ): Promise<{
+    version: string;
+    etag: string | null;
+  } | null> => {
+    const row = (
+      await this.options.db
+        .select({
+          version: routeRuleVersions.version,
+          etag: routeRuleVersions.sourceEtag,
+        })
+        .from(routeRuleVersions)
+        .where(
+          and(
+            eq(routeRuleVersions.profile, profile),
+            eq(routeRuleVersions.status, "active"),
+          ),
+        )
+        .orderBy(desc(routeRuleVersions.publishedAt))
+        .limit(1)
+    )[0];
+    return row ?? null;
+  };
+
+  storeQuarantinedRule = async (input: StoredRuleInput): Promise<void> => {
+    await this.options.db
+      .insert(routeRuleVersions)
+      .values({
+        profile: input.profile,
+        version: input.version,
+        sourceUrl: input.sourceUrl,
+        sourceEtag: input.etag,
+        sourceChecksum: input.checksum,
+        status: "quarantined",
+        cidrCount: input.payload.cidrs.length,
+        domainCount: input.payload.domains.length,
+        payload: input.payload,
+        validationReport: input.validationReport,
+        createdAt: input.fetchedAt,
+        updatedAt: input.fetchedAt,
+      })
+      .onConflictDoNothing();
+  };
+
+  activateRuleVersion = async (input: StoredRuleInput): Promise<void> => {
+    await this.options.db.transaction(async (tx) => {
+      await tx
+        .update(routeRuleVersions)
+        .set({ status: "superseded", updatedAt: input.fetchedAt })
+        .where(
+          and(
+            eq(routeRuleVersions.profile, input.profile),
+            eq(routeRuleVersions.status, "active"),
+            ne(routeRuleVersions.version, input.version),
+          ),
+        );
+      await tx
+        .insert(routeRuleVersions)
+        .values({
+          profile: input.profile,
+          version: input.version,
+          sourceUrl: input.sourceUrl,
+          sourceEtag: input.etag,
+          sourceChecksum: input.checksum,
+          status: "active",
+          cidrCount: input.payload.cidrs.length,
+          domainCount: input.payload.domains.length,
+          payload: input.payload,
+          validationReport: input.validationReport,
+          publishedAt: input.fetchedAt,
+          createdAt: input.fetchedAt,
+          updatedAt: input.fetchedAt,
+        })
+        .onConflictDoUpdate({
+          target: [routeRuleVersions.profile, routeRuleVersions.version],
+          set: {
+            status: "active",
+            publishedAt: input.fetchedAt,
+            updatedAt: input.fetchedAt,
+          },
+        });
+    });
+  };
+}

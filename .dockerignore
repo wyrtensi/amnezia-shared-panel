@@ -1,0 +1,10 @@
+.git
+.next
+dist
+node_modules
+coverage
+secrets
+agent-changes
+plans
+services/node-agent/node_modules
+services/node-agent/build

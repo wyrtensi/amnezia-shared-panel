@@ -1,0 +1,16 @@
+import eslint from "@eslint/js";
+import tseslint from "typescript-eslint";
+
+export default tseslint.config(
+  eslint.configs.recommended,
+  tseslint.configs.recommended,
+  {
+    ignores: ["node_modules", "build", "dist", "scripts", "amnezia-client"],
+  },
+  {
+    rules: {
+      "@typescript-eslint/no-namespace": "error",
+      "@typescript-eslint/no-explicit-any": "error",
+    },
+  },
+);

@@ -1,0 +1,87 @@
+{
+  "name": "amnezia-api",
+  "version": "1.1.0",
+  "description": "Self-hosted REST API for automating Amnezia VPN servers",
+  "private": true,
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kyoresuas/amnezia-api.git"
+  },
+  "bugs": {
+    "url": "https://github.com/kyoresuas/amnezia-api/issues"
+  },
+  "homepage": "https://github.com/kyoresuas/amnezia-api#readme",
+  "keywords": [
+    "amnezia",
+    "amneziawg",
+    "wireguard",
+    "xray",
+    "vpn",
+    "vpn-management",
+    "self-hosted",
+    "rest-api",
+    "fastify",
+    "typescript"
+  ],
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "scripts": {
+    "lint": "npx eslint . --max-warnings=0",
+    "dev": "npx cross-env ENV=development nodemon -q",
+    "build": "npx tsc --project tsconfig.build.json && npx tsconfig-replace-paths --project tsconfig.build.json --src ./src",
+    "test": "npm run test:typecheck && vitest run",
+    "test:typecheck": "tsc --project tsconfig.json",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "openapi:generate": "npm run build && node ./scripts/generate-openapi.js",
+    "openapi:check": "node ./scripts/generate-openapi.js --check",
+    "pre-start": "npx cross-env ENV=preproduction node build/main.js",
+    "start": "npx cross-env ENV=production node dist/main.js",
+    "deploy": "node ./scripts/deploy.js"
+  },
+  "dependencies": {
+    "@fastify/cookie": "^10.0.1",
+    "@fastify/cors": "^10.0.1",
+    "@fastify/formbody": "^8.0.1",
+    "@fastify/helmet": "^13.0.2",
+    "@fastify/rate-limit": "^10.3.0",
+    "@fastify/swagger": "^9.0.0",
+    "@fastify/swagger-ui": "^6.1.1",
+    "@fastify/type-provider-json-schema-to-ts": "^4.0.0",
+    "ajv-errors": "^3.0.0",
+    "awilix": "^13.0.3",
+    "awilix-manager": "^6.4.0",
+    "chalk": "5.6.2",
+    "cross-env": "^10.1.0",
+    "dotenv": "^17.4.1",
+    "fastify": "^5.11.2",
+    "fastify-metrics": "^13.2.0",
+    "i18next": "^26.0.3",
+    "i18next-http-middleware": "^3.9.8",
+    "ipaddr.js": "2.2.0",
+    "node-cron": "^4.2.1",
+    "qrcode": "^1.5.4",
+    "uuid": "^13.0.2",
+    "winston": "^3.19.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.18.0",
+    "@types/node": "^25.5.2",
+    "@types/node-cron": "^3.0.11",
+    "@types/qrcode": "^1.5.6",
+    "@vitest/coverage-v8": "^4.1.10",
+    "eslint": "^9.18.0",
+    "nodemon": "^3.1.14",
+    "ts-node": "10.9.2",
+    "tsconfig-paths": "^4.2.0",
+    "tsconfig-replace-paths": "0.0.14",
+    "typescript": "^6.0.2",
+    "typescript-eslint": "^8.58.0",
+    "vitest": "^4.1.10"
+  },
+  "overrides": {
+    "nanoid": "3.3.18"
+  }
+}

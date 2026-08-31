@@ -1,0 +1,1 @@
+ALTER TABLE "users" ADD COLUMN "deactivation_reason" varchar(64);

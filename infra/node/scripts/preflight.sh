@@ -1,0 +1,160 @@
+#!/bin/sh
+set -eu
+
+SCRIPT_DIR="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
+# shellcheck source=common.sh
+. "$SCRIPT_DIR/common.sh"
+
+[ "$(uname -s)" = "Linux" ] || fail "production deployment requires Linux"
+case "$(uname -m)" in
+  x86_64|amd64) ;;
+  *) fail "production deployment requires linux/amd64" ;;
+esac
+
+for command_name in docker tar sha256sum stat df awk sed grep ss; do
+  command -v "$command_name" >/dev/null 2>&1 || fail "missing command: $command_name"
+done
+tar --version | grep -q 'GNU tar' || fail "GNU tar is required"
+
+[ -f "$ENV_FILE" ] || fail "copy .env.example to .env and set production values"
+[ ! -L "$ENV_FILE" ] || fail ".env must not be a symlink"
+[ "$(stat -c '%a' "$ENV_FILE")" = "600" ] || fail ".env permissions must be 0600"
+
+ensure_layout
+
+[ -f "$SECRET_FILE" ] || fail "missing API key secret file"
+[ ! -L "$SECRET_FILE" ] || fail "API key secret file must not be a symlink"
+[ "$(stat -c '%a' "$SECRET_FILE")" = "640" ] || fail "API key secret permissions must be 0640"
+[ "$(stat -c '%u:%g' "$SECRET_FILE")" = "0:0" ] || fail "API key secret must be owned by root:root"
+secret_size="$(wc -c <"$SECRET_FILE" | tr -d ' ')"
+[ "$secret_size" -ge 32 ] || fail "API key secret must contain at least 32 bytes"
+[ "$secret_size" -le 4096 ] || fail "API key secret is unexpectedly large"
+api_key="$(cat "$SECRET_FILE")"
+[ "${#api_key}" -ge 32 ] || fail "API key must contain at least 32 non-newline bytes"
+case "$api_key" in
+  *'
+'*) fail "API key must be a single line" ;;
+esac
+LC_ALL=C grep -Eq '^[[:graph:]]{32,4096}$' "$SECRET_FILE" || \
+  fail "API key must contain only printable non-space ASCII characters"
+unset api_key
+
+[ -c /dev/net/tun ] || fail "/dev/net/tun is unavailable"
+[ -S /var/run/docker.sock ] || fail "Docker socket is unavailable"
+docker info >/dev/null 2>&1 || fail "Docker daemon is unavailable"
+docker compose version >/dev/null 2>&1 || fail "Docker Compose v2 is unavailable"
+
+docker_os="$(docker info --format '{{.OSType}}')"
+docker_arch="$(docker info --format '{{.Architecture}}')"
+[ "$docker_os" = "linux" ] || fail "Docker Engine must run Linux containers"
+[ "$docker_arch" = "x86_64" ] || [ "$docker_arch" = "amd64" ] || fail "Docker Engine must be amd64"
+
+docker_gid="$(env_value DOCKER_GID)"
+case "$docker_gid" in
+  ''|*[!0-9]*) fail "DOCKER_GID must be an integer" ;;
+esac
+socket_gid="$(stat -c '%g' /var/run/docker.sock)"
+[ "$docker_gid" = "$socket_gid" ] || fail "DOCKER_GID does not match /var/run/docker.sock"
+
+node_image="$(env_value NODE_AGENT_IMAGE)"
+case "$node_image" in
+  sha256:*) node_digest="${node_image#sha256:}" ;;
+  *@sha256:*) node_digest="${node_image##*@sha256:}" ;;
+  *) fail "NODE_AGENT_IMAGE must be an immutable sha256 image ID or repository digest" ;;
+esac
+printf '%s\n' "$node_digest" | grep -Eq '^[0-9a-f]{64}$' || \
+  fail "NODE_AGENT_IMAGE must end in a 64-character lowercase sha256 digest"
+docker image inspect "$node_image" >/dev/null 2>&1 || fail "NODE_AGENT_IMAGE is not present locally"
+verify_linux_amd64_image "$node_image"
+
+public_host="$(env_value SERVER_PUBLIC_HOST)"
+case "$public_host" in
+  ''|0.0.0.0|127.0.0.1|localhost|vpn.example.com|*://*|*/*|*:*|*' '*)
+    fail "SERVER_PUBLIC_HOST must be a real public address or DNS name"
+    ;;
+esac
+
+server_id="$(env_value SERVER_ID)"
+[ "$server_id" != "00000000-0000-4000-8000-000000000000" ] || fail "SERVER_ID placeholder must be replaced"
+printf '%s\n' "$server_id" | grep -Eq '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89aAbB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$' || \
+  fail "SERVER_ID must be a UUID"
+
+server_weight="$(env_value SERVER_WEIGHT)"
+case "$server_weight" in
+  ''|*[!0-9]*) fail "SERVER_WEIGHT must be an integer" ;;
+esac
+if [ "$server_weight" -lt 1 ] || [ "$server_weight" -gt 1000 ]; then
+  fail "SERVER_WEIGHT must be between 1 and 1000"
+fi
+
+server_max_peers="$(env_value SERVER_MAX_PEERS)"
+case "$server_max_peers" in
+  ''|*[!0-9]*) fail "SERVER_MAX_PEERS must be an integer" ;;
+esac
+[ "$server_max_peers" -le 500 ] || fail "SERVER_MAX_PEERS must not exceed the unvalidated 500-peer limit"
+[ "$server_max_peers" -ge 1 ] || fail "SERVER_MAX_PEERS must be positive"
+
+available_kb="$(df -Pk "$NODE_DIR" | awk 'NR==2 { print $4 }')"
+[ "$available_kb" -ge 3145728 ] || fail "at least 3 GiB of free disk is required"
+available_mem_kb="$(awk '/^MemAvailable:/ { print $2 }' /proc/meminfo)"
+[ -n "$available_mem_kb" ] || fail "cannot read available memory"
+[ "$available_mem_kb" -ge 358400 ] || fail "at least 350 MiB of available RAM is required"
+
+forbidden_found=0
+if grep -niE 'watchtower|(^|[^[:alnum:]_.-])latest([^[:alnum:]_.-]|$)' "$COMPOSE_FILE" >/dev/null; then
+  forbidden_found=1
+fi
+node_agent_dockerfile="$NODE_DIR/../../services/node-agent/Dockerfile"
+if [ -f "$node_agent_dockerfile" ] && \
+   grep -niE 'watchtower|(^|[^[:alnum:]_.-])latest([^[:alnum:]_.-]|$)' "$node_agent_dockerfile" >/dev/null; then
+  forbidden_found=1
+fi
+if [ "$forbidden_found" -eq 1 ]; then
+  fail "latest or Watchtower reference detected"
+fi
+
+compose config --quiet
+
+for container_name in amnezia-awg2 amnezia-awg3 amnezia-node-agent; do
+  existing_project="$(docker inspect --format '{{index .Config.Labels "com.docker.compose.project"}}' "$container_name" 2>/dev/null || true)"
+  if [ -n "$existing_project" ] && [ "$existing_project" != "amnezia-node" ]; then
+    fail "container name is owned by another deployment: $container_name"
+  fi
+done
+
+if ss -H -lun 'sport = :51889' | grep -q . && ! container_is_running amnezia-awg2; then
+  fail "UDP port 51889 is already in use"
+fi
+
+if ss -H -lun 'sport = :51890' | grep -q . && ! container_is_running amnezia-awg3; then
+  fail "UDP port 51890 is already in use"
+fi
+
+if ss -H -ltn 'sport = :4001' | grep -q . && ! container_is_running amnezia-node-agent; then
+  fail "TCP port 4001 is already in use"
+fi
+
+for state_dir in "$STATE_DIR" "$STATE_DIR_AWG3"; do
+  for sensitive_file in \
+    "$state_dir/awg0.conf" \
+    "$state_dir/wireguard_server_private_key.key" \
+    "$state_dir/wireguard_server_public_key.key" \
+    "$state_dir/wireguard_psk.key" \
+    "$state_dir/clientsTable"; do
+    if [ -e "$sensitive_file" ]; then
+      [ ! -L "$sensitive_file" ] || fail "state file must not be a symlink: $sensitive_file"
+      [ "$(stat -c '%a' "$sensitive_file")" = "600" ] || fail "state file permissions must be 0600: $sensitive_file"
+    fi
+  done
+
+  if [ -s "$state_dir/clientsTable" ]; then
+    docker run --rm --platform linux/amd64 \
+      --user 0:0 \
+      --volume "$state_dir:/state:ro" \
+      --entrypoint node \
+      "$node_image" \
+      -e "JSON.parse(require('fs').readFileSync('/state/clientsTable','utf8'))"
+  fi
+done
+
+info "Preflight passed: linux/amd64, 3 GiB disk gate, 350 MiB RAM gate, immutable images, strict permissions, and fixed ports verified."

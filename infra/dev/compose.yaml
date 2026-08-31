@@ -1,0 +1,95 @@
+name: amnezia-panel
+
+x-app: &app
+  build:
+    context: ../..
+    dockerfile: infra/dev/Dockerfile
+  image: amnezia-panel/app:dev
+  restart: unless-stopped
+  env_file:
+    - .env
+  networks:
+    - panel
+
+services:
+  postgres:
+    image: postgres:16-alpine@sha256:cf78e76683b9ca8c5733cbbdce6c9262b45b6767934dd0a95e671f9a0fc20685
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: amnezia_panel
+      POSTGRES_USER: amnezia_panel
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U amnezia_panel -d amnezia_panel"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks:
+      - panel
+
+  migrate:
+    <<: *app
+    restart: "no"
+    command: ["pnpm", "--filter", "@amnezia/db", "db:migrate"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  control-api:
+    <<: *app
+    command: ["node", "apps/control-api/dist/main.js"]
+    environment:
+      NODE_ENV: development
+      CONTROL_API_HOST: 0.0.0.0
+      CONTROL_API_PORT: 3001
+      # Trusts the x-dev-user-email header. Safe here: the port below is
+      # published only on host loopback (127.0.0.1). Never set in production.
+      ALLOW_DEV_IDENTITY: "true"
+      BOOTSTRAP_ADMIN_EMAILS: ${DEV_USER_EMAIL:-admin@example.com}
+    ports:
+      - "127.0.0.1:3001:3001"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3001/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+
+  worker:
+    <<: *app
+    command: ["node", "apps/worker/dist/main.js"]
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  web:
+    <<: *app
+    command: ["pnpm", "--filter", "@amnezia/web", "start"]
+    environment:
+      CONTROL_API_URL: http://control-api:3001
+      DEV_IDENTITY_ENABLED: "true"
+      DEV_USER_EMAIL: ${DEV_USER_EMAIL:-admin@example.com}
+      HOSTNAME: 0.0.0.0
+      PORT: 3000
+    ports:
+      - "127.0.0.1:3000:3000"
+    depends_on:
+      control-api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+
+volumes:
+  postgres-data:
+
+networks:
+  panel:
