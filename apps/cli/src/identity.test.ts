@@ -3,7 +3,10 @@ import { createHmac } from "node:crypto";
 import { signPanelIdentity, firstBootstrapAdmin, authHeaders } from "./identity.js";
 
 const decode = (part: string): Record<string, unknown> =>
-  JSON.parse(Buffer.from(part, "base64url").toString("utf8"));
+  JSON.parse(Buffer.from(part, "base64url").toString("utf8")) as Record<
+    string,
+    unknown
+  >;
 
 /** Decode the email claim from a minted x-panel-identity header. */
 const emailOf = (headers: Record<string, string>): unknown => {
