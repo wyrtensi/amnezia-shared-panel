@@ -125,7 +125,7 @@ Cloudflare Access service token (`CF_ACCESS_CLIENT_ID` + `CF_ACCESS_CLIENT_SECRE
 | Command | Purpose |
 | --- | --- |
 | `overview` / `users` / `keys` / `nodes` / `audit [--limit=N]` / `policy` | State snapshots |
-| `quota` | Pending key-limit requests, with their ids and `current → requested` |
+| `quota [--all]` | Key-limit requests (pending by default; `--all` = every state), with ids, `current → requested`, and date |
 
 **User management** (every command below takes a user **id or email**):
 

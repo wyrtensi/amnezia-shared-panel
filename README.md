@@ -14,6 +14,28 @@ policy, and telemetry across one or more nodes — behind a login you control.
 
 </div>
 
+## Overview
+
+Handing out VPN configs by hand doesn't scale: every new device is a manual step,
+revoking a departed teammate is fiddly, and nobody can see who's using what. Shared
+Panel replaces that with self-service. A team member signs in, creates a key for a
+specific device, and downloads a config or QR; an administrator sees every user,
+their keys, traffic, and who's online, and can raise or cut limits or offboard
+someone in a click.
+
+The constraint it's built around: **the panel has to open even where the usual
+front door is blocked.** Some people can't reach Cloudflare, and sometimes the VPN
+itself isn't up yet — which is exactly when you need to get into the panel to fetch
+a config. So sign-in works two independent ways at once — Cloudflare Access, and the
+panel's own Google login on a direct, Cloudflare-free domain (see below).
+
+Under the hood it's two halves that deploy independently. The **panel** — a Next.js
+web app, a Fastify API, a worker, and Postgres — manages users, policy, and
+telemetry and drives the nodes. A **node** is a VPN server running AmneziaWG 3.1
+(which masks packet headers and adds random trailers, so the traffic is harder to
+fingerprint and block) with a small agent the panel talks to. One panel, one or
+more nodes, each updated on its own.
+
 ## Protocol
 
 **This project targets AmneziaWG 3.1 as its primary protocol.** New nodes and new
@@ -78,10 +100,10 @@ worker after a one-time `sudo bash infra/prod/install-updater.sh`.
 
 ## Documentation
 
-- **[`docs/INSTALL.md`](docs/INSTALL.md) — start here.** Agent-driven install
-  runbook: the inputs to collect, then node + panel + public access (Cloudflare
-  Access with Google Workspace, and the optional direct Google login), the
-  temporary→least-privilege API-token hand-off, and the admin/user policy split.
+- **[`docs/INSTALL.md`](docs/INSTALL.md) — start here.** Install guide written for
+  a human or an AI agent: what to decide first, then node + panel + public access
+  (Cloudflare Access with Google Workspace, and the optional direct Google login),
+  the temporary→least-privilege API-token hand-off, and the admin/user policy split.
 - [`docs/CLI.md`](docs/CLI.md) — every command for the panel **and** a node
   (dev, build, database, deploy/update, backup, admin CLI; AmneziaWG/awg, Docker,
   node-agent, health).

@@ -318,16 +318,29 @@ async function cmdQuota(args: string[]): Promise<void> {
   const limitById = new Map(
     users.map((user) => [user.id, user.keyLimitOverride]),
   );
+  // Default to the actionable set (pending); `--all` shows every request.
+  const showAll = args.includes("--all");
+  const rows = requests
+    .filter((req) => showAll || req.status === "pending")
+    .sort((a, b) => {
+      if (a.status !== b.status) return a.status === "pending" ? -1 : 1;
+      return b.createdAt.localeCompare(a.createdAt);
+    });
+  if (rows.length === 0) {
+    console.log(showAll ? "(no quota requests)" : "(no pending requests)");
+    return;
+  }
   console.log(
     table(
-      requests.map((req) => ({
+      rows.map((req) => ({
         id: req.id,
         user: emailById.get(req.userId) ?? req.userId.slice(0, 8),
         change: `${limitById.get(req.userId) ?? "default"} → ${req.requestedLimit}`,
         status: req.status,
-        reason: (req.reason ?? "").replace(/\s+/g, " ").slice(0, 40),
+        created: (req.createdAt ?? "").replace("T", " ").slice(0, 16),
+        reason: (req.reason ?? "").replace(/\s+/g, " ").slice(0, 36) || "—",
       })),
-      ["id", "user", "change", "status", "reason"],
+      ["id", "user", "change", "status", "created", "reason"],
     ),
   );
 }
@@ -505,7 +518,7 @@ Read:
   keys                     List keys (with owner + traffic)
   nodes                    List nodes (with protocols + capacity)
   audit [--limit=N]        Recent audit events
-  quota [--json]           Pending key-limit (quota) requests, with ids
+  quota [--all] [--json]   Key-limit requests (pending by default; --all = every state)
   policy [--json]          Show all panel settings + Cloudflare config
 
 Users (accept a user id OR email):

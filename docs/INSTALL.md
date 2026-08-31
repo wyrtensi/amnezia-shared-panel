@@ -1,320 +1,292 @@
-# Install runbook — panel + Amnezia node (agent-driven)
+# Install guide — panel + Amnezia node
 
-This is the **single entry point** for standing up Amnezia Panel end-to-end: one
-control-plane **panel** and one or more VPN **nodes**, reached over the public
-internet behind **Cloudflare Access + Google Workspace** login.
+This is the single starting point for standing up Shared Panel end to end: one
+control-plane **panel** and one or more VPN **nodes**, reachable over the public
+internet behind a login you control.
 
-It is written for an **AI agent** performing the install. Work top to bottom:
-first **collect the inputs in §0 by asking the operator**, then run the phases.
-Each phase links to the detailed doc that carries the exact commands — this file
-is the map and the decision points, not a copy of everything.
+**It's written for two readers at once — a person doing the install by hand, and
+an AI agent doing it for you.** The steps are the same for both. Where a decision
+is involved, a person just decides; an agent should ask the operator rather than
+guess. Those spots are marked *"decide / ask."* Work top to bottom — this file is
+the map, and it links to the detailed docs that carry the exact commands.
 
-> Ground rules for the agent
-> - **Ask, don't assume.** Every value in §0 comes from the operator. Never
->   invent an IP, a domain, an email, or a token.
-> - **Secrets never go in chat or git.** API tokens, keyrings, and node API keys
->   are entered by the operator or written to `secrets/` (gitignored). See
->   [`HOSTING.md` §7](./HOSTING.md).
-> - **Never disrupt a live VPN.** On a server that already runs a node, do
->   read-only recon first and confirm before any mutating step
->   ([`NODE-CONNECT.md` §1.1](./NODE-CONNECT.md)).
+> **Two rules that always apply**
+> - **Nothing secret goes into chat or git.** API tokens, keyrings, and node API
+>   keys are entered by the operator or written to `secrets/` (git-ignored).
+> - **Never disrupt a VPN that's already running.** On a server that already
+>   hosts a node, look before you touch — do read-only recon and confirm before
+>   any change ([`NODE-CONNECT.md` §1.1](./NODE-CONNECT.md)).
 
 ---
 
-## 0. Inputs to collect (ask the operator first)
+## 0. What to decide first
 
-Ask these before touching anything. Record the answers; later phases reference
-them by name.
+Settle these before touching anything — later steps refer back to them. *(A person
+fills them in; an agent asks the operator and never invents an IP, domain, email,
+or token.)*
 
-| # | Question to ask | Used for |
+| # | What you need | Where it's used |
 | --- | --- | --- |
-| 1 | **Which server hosts the VPN node?** (public IP/hostname + SSH access) | Phase 1. Note RAM/disk — a 1 GB box is fine for a node alone; co-locating the panel needs ~1 GB free. |
-| 2 | **What public name should users see for this server?** e.g. `Германия`, `Server 1`. | Node `publicName`. It is shown in the client as `<public name> #<key number>`. Distinct from the internal admin name. |
-| 3 | **Which machine runs the panel?** Same server as the node (co-located) or a separate host? | Phase 2. Co-location is supported (`infra/prod`); mem-limits protect the node. |
-| 4 | **What domain will the panel live at?** A hostname under your **Google Workspace** domain, e.g. `vpn.yourcompany.com`. | Phase 3. Its DNS **zone must be on Cloudflare**. |
-| 5 | **Which emails are panel admins?** (Google Workspace accounts) | `BOOTSTRAP_ADMIN_EMAILS`. First login by these becomes an admin (§5). |
-| 6 | **Your Google Workspace domain + a Workspace super-admin** to consent to the login integration. | Phase 3 IdP. |
-| 7 | **A temporary Cloudflare API token** (broad, short-lived) — see Phase 4 for exactly what and where. | Phases 3–4. The agent replaces it with a least-privilege token and has the operator revoke it. |
+| 1 | **The server that will host the VPN node** — its public IP/hostname and SSH access. Note RAM/disk: 1 GB is fine for a node alone; add ~1 GB free if the panel shares the box. | Phase 1 |
+| 2 | **The public name users should see for that server** — e.g. `Germany`, `Server 1`. Shown in the client as `<name> #<key number>`; separate from the internal admin name. | Node setup / Phase 6 |
+| 3 | **Which machine runs the panel** — the same server as the node (co-located) or a separate host. Co-location is supported. | Phase 2 |
+| 4 | **The domain the panel will live at** — e.g. `vpn.yourcompany.com`. Its DNS zone must be on Cloudflare. | Phase 3 |
+| 5 | **Which emails are panel admins** — the first login by any of these becomes an admin. | Phase 2 / 5 |
+| 6 | **Your Google Workspace domain + a Workspace super-admin** to approve the login integration. | Phase 3 |
+| 7 | **A temporary Cloudflare API token** (broad, short-lived) — Phase 4 explains exactly what and where. It gets replaced by a least-privilege token and revoked. | Phases 3–4 |
 
-If the operator does not yet own the domain or a Workspace, stop and say so —
-those are prerequisites you cannot create for them.
+If you don't own the domain or a Google Workspace yet, stop here — those are
+prerequisites and can't be created for you.
 
----
-
-## 1. Phase 1 — Install the VPN node
-
-Goal: a running **node-agent** (`127.0.0.1:4001`, x-api-key auth) fronting an
-**AmneziaWG 3.1** container, on the server from input #1.
-
-Follow **[`AGENT-HOST-SETUP.md` Part A](./AGENT-HOST-SETUP.md)**. In short:
-
-1. Lay out `/opt/amnezia-panel-node`, generate the node API key secret (≥32
-   bytes), build/pull the node-agent image (`infra/node`).
-2. Fill `infra/node/.env`; set `PROTOCOLS_ENABLED=amneziawg3` (awg3 only — see the
-   AWG note below). Bring it up; the awg3 entrypoint randomises the obfuscation
-   headers and writes `awg0.conf`.
-3. Verify `GET /server` reports `amneziawg3` and the container is healthy.
-
-**Record the node's public name (input #2)** — you set it when you register the
-node in Phase 6, not on the box.
-
-**AWG 3.1 check (do this).** Confirm it is genuine 3.1, not 2.0-in-disguise: the
-awg3 container image must be `amneziavpn/amneziawg-go:3.1.x`, and `awg0.conf` must
-contain `HeaderProtectionKey` and `RandomTrailers = on` (a 2.0 config cannot).
-If those markers are missing, the node-agent silently emits
-`protocol_version: "2"` even though the label says awg3.
-
-**Port hygiene (do this).** The node's public UDP port (default `51890`) must not
-sit inside any pre-existing `iptables` port-forward range on the box. On a shared
-host, a stale DNAP forward can hijack the port and every handshake fails silently
-(0 completed handshakes). Verify with `tcpdump -ni any udp port <PORT>` — packets
-must reach the awg container, not some other destination.
+**The pieces, in one breath:** a *node* is a VPN server (an AmneziaWG 3.1 container
+plus a small agent the panel talks to); the *panel* is the web app + API +
+database that manages users and drives the nodes; *Cloudflare* puts a login in
+front of the panel on the public internet. You install them in that order.
 
 ---
 
-## 2. Phase 2 — Install the panel
+## 1. Install the VPN node
 
-Goal: the panel stack (postgres + control-api + worker + web) running from the
+**Goal:** a running node-agent (on `127.0.0.1:4001`, protected by an API key) in
+front of an **AmneziaWG 3.1** container, on the server from input #1.
+
+Follow **[`AGENT-HOST-SETUP.md` Part A](./AGENT-HOST-SETUP.md)** for the exact
+commands. The shape of it:
+
+1. Lay out `/opt/amnezia-panel-node`, generate the node API key (≥ 32 bytes), and
+   build or pull the node-agent image (`infra/node`).
+2. Fill in `infra/node/.env`; set `PROTOCOLS_ENABLED=amneziawg3` (3.1 only). Bring
+   it up — the awg3 entrypoint randomises the obfuscation headers and writes
+   `awg0.conf`.
+3. Check `GET /server` reports `amneziawg3` and the container is healthy.
+
+The public name from input #2 isn't set on the box — you'll enter it when you
+register the node in Phase 6.
+
+**Two things worth checking now**, because they fail silently:
+
+- **Is it really 3.1?** Confirm the image is `amneziavpn/amneziawg-go:3.1.x` and
+  that `awg0.conf` contains `HeaderProtectionKey` and `RandomTrailers = on` — a 2.0
+  config can't carry those. If they're missing, the node quietly reports itself as
+  protocol "2" even though the label says awg3.
+- **Is the UDP port clear?** The node's public UDP port (default `51890`) must not
+  sit inside a pre-existing `iptables` port-forward range. On a shared host a stale
+  forward can hijack the port and every handshake fails with zero errors. Verify
+  with `tcpdump -ni any udp port <PORT>` — packets should reach the awg container.
+
+---
+
+## 2. Install the panel
+
+**Goal:** the panel stack (postgres + control-api + worker + web) running from the
 published image, on the machine from input #3.
 
-Follow **[`HOSTING.md` §3–§4](./HOSTING.md)** and use **`infra/prod`** (not the
-dev stack). In short:
+Follow **[`HOSTING.md` §3–§4](./HOSTING.md)** and use **`infra/prod`** (not the dev
+stack):
 
-1. On the panel host, get the repo and `cp infra/prod/.env.example infra/prod/.env`.
-2. Fill `.env`: `POSTGRES_PASSWORD`, the `CONFIG_ENCRYPTION_KEYS_JSON` keyring
+1. Get the repo onto the panel host and `cp infra/prod/.env.example infra/prod/.env`.
+2. Fill in `.env`: `POSTGRES_PASSWORD`, the `CONFIG_ENCRYPTION_KEYS_JSON` keyring
    (`openssl rand -base64 32`), `BOOTSTRAP_ADMIN_EMAILS` (input #5), and the
-   `CF_ACCESS_*` values (filled in Phase 3). Set `PANEL_IMAGE` to the GHCR image.
-3. If co-locating with the node (input #3), the app services already carry a
-   `host.docker.internal` route; register the node with
-   `apiBaseUrl http://amnezia-node-agent:4001` if they share a docker network, or
-   `http://host.docker.internal:4001` for a host-published agent.
-4. Bring it up: `bash infra/prod/update.sh` (it also runs DB migrations).
+   `CF_ACCESS_*` values (you get those in Phase 3). Point `PANEL_IMAGE` at the GHCR
+   image.
+3. If the panel shares the box with the node (input #3), register the node with
+   `apiBaseUrl http://amnezia-node-agent:4001` if they're on the same Docker
+   network, or `http://host.docker.internal:4001` for a host-published agent.
+4. Bring it up: `bash infra/prod/update.sh` (it also runs the DB migrations).
 
-Publishing is loopback-only (`127.0.0.1:5430` web, `5431` control-api); the
-Cloudflare Tunnel (Phase 3) is what exposes the web port.
+The web and API are published on loopback only (`127.0.0.1:5430` / `5431`); what
+actually exposes the panel to the world is the Cloudflare Tunnel in Phase 3.
 
-**In-panel updates.** Install the host updater once so the Administration →
-Overview **“Update”** button works: `sudo bash infra/prod/install-updater.sh`
-([`UPDATE-MECHANISM.md`](./UPDATE-MECHANISM.md)). Future updates are one click and
-data-safe (backup → pull → migrate → restart; volumes untouched).
+**Turn on one-click updates** so the **Update** button in Administration → Overview
+works: run `sudo bash infra/prod/install-updater.sh` once
+([`UPDATE-MECHANISM.md`](./UPDATE-MECHANISM.md)). After that, every future update is
+one click and data-safe — backup, pull, migrate, restart, volumes untouched.
 
 ---
 
-## 3. Phase 3 — Public access: Cloudflare Tunnel + Google Workspace login
+## 3. Public access: Cloudflare + Google Workspace login
 
-Goal: `https://<panel domain>` (input #4) reaches the panel, gated by Cloudflare
-Access, with **Google Workspace** as the only login method.
+**Goal:** `https://<panel domain>` (input #4) reaches the panel, gated by Cloudflare
+Access, with Google Workspace as the login.
 
 ### 3.1 Tunnel + DNS
 
 Create a Cloudflare **Tunnel** to the panel host and route the public hostname to
-`http://localhost:5430`; Cloudflare auto-creates the proxied DNS record. Details:
-[`CLOUDFLARE-SETUP.md` §3](./CLOUDFLARE-SETUP.md). Install `cloudflared` on the
-panel host as a systemd service.
+`http://localhost:5430`; Cloudflare creates the proxied DNS record for you. Install
+`cloudflared` as a systemd service on the panel host. Details:
+[`CLOUDFLARE-SETUP.md` §3](./CLOUDFLARE-SETUP.md).
 
-### 3.2 Google Workspace as the identity provider (not a throwaway Cloud OAuth)
+### 3.2 Google Workspace as the login provider
 
-Use the **Google Workspace** login method in Cloudflare Zero Trust so users sign
-in with their **company Workspace accounts**, scoped to your Workspace domain
-(input #6) — not a generic Google OAuth tied to some unrelated domain.
+Use the **Google Workspace** login method in Cloudflare Zero Trust so people sign
+in with their company accounts, scoped to your Workspace domain (input #6) — not a
+generic Google OAuth tied to some unrelated domain.
 
 In **Zero Trust → Settings → Authentication → Login methods → Add → Google
-Workspace**:
+Workspace**, you'll need:
+- Your Workspace primary domain (input #6).
+- An **App ID + Client secret** from a Google Cloud OAuth 2.0 **Web application**
+  client in a project owned by your Workspace org. *(A Cloud project is still where
+  OAuth clients are minted — that's just how Google works. The point is the client
+  belongs to your Workspace and uses your domain.)* Set the authorized redirect URI
+  to `https://<TEAM>.cloudflareaccess.com/cdn-cgi/access/callback`.
+- Optionally, grant the connector the Admin SDK read scope so Workspace **groups**
+  can be used as policy selectors later.
 
-- **Google Workspace domain:** your Workspace primary domain (input #6).
-- **App ID / Client secret:** from a Google Cloud OAuth 2.0 **Web application**
-  client in a project owned by the Workspace org. (A Cloud project is still
-  required to mint the OAuth client — that is inherent to Google IdP; the point is
-  the client and login are bound to *your Workspace*, using your domain, not a
-  separate/personal domain.) Authorized redirect URI:
-  `https://<TEAM>.cloudflareaccess.com/cdn-cgi/access/callback`.
-- Optional (for group-based policies in §5): grant the connector the Admin SDK
-  read scope so Workspace **groups** are available as policy selectors.
-
-Verify the login method, then set **Accept all identity providers: OFF** on the
-app (§3.3) so only Google Workspace is offered.
+Then set **Accept all identity providers: OFF** on the app so only Google Workspace
+is offered.
 
 ### 3.3 Access application + policy
 
-Create the self-hosted Access application over `https://<panel domain>` with one
-public hostname and no path, Google Workspace as the sole IdP, instant-auth on,
-1-week session. The **allow policy** is covered in §5 (admin/user split).
-
-Full click-by-click: [`CLOUDFLARE-ACCESS.md` Part A](./CLOUDFLARE-ACCESS.md).
+Create a self-hosted Access application over `https://<panel domain>` — one public
+hostname, no path, Google Workspace as the only IdP, instant-auth on, one-week
+session. The allow policy (who may log in) is Phase 5. Click-by-click:
+[`CLOUDFLARE-ACCESS.md` Part A](./CLOUDFLARE-ACCESS.md).
 
 ### 3.4 Wire the panel to Access
 
-Read the app's **Audience (AUD)** tag and your team issuer, and set in
-`infra/prod/.env`: `CF_ACCESS_ISSUER=https://<TEAM>.cloudflareaccess.com` and
-`CF_ACCESS_AUDIENCE=<AUD>`; recreate control-api. Verify with the VPN **off** that
-`https://<panel domain>` redirects to the Google Workspace login and, after
-sign-in, into the panel ([`HOSTING.md` §5.5](./HOSTING.md)).
+Read the app's **Audience (AUD)** tag and your team issuer, put them in
+`infra/prod/.env` as `CF_ACCESS_ISSUER=https://<TEAM>.cloudflareaccess.com` and
+`CF_ACCESS_AUDIENCE=<AUD>`, and recreate control-api. With the VPN **off**, check
+that `https://<panel domain>` sends you to the Google Workspace login and, after
+signing in, into the panel.
 
-### 3.5 Direct login without Cloudflare (server-side Google)
+### 3.5 Optional — a direct login that doesn't need Cloudflare
 
-Cloudflare is not reachable for everyone (e.g. from some networks in Russia), so
-the panel can **also** serve itself on a **DNS-only** host — bypassing the CF
-proxy — with its **own** Google login, in addition to Cloudflare Access. Both
-paths coexist; each user takes whichever works, and the API accepts either the CF
-JWT or the panel's own signed session.
+Cloudflare isn't reachable for everyone (some networks in Russia, for example). So
+the panel can **also** serve itself on a second, DNS-only host — one that bypasses
+the Cloudflare proxy — with its **own** Google login. Both paths run side by side;
+each person uses whichever works. Skip this whole section if everyone can reach
+Cloudflare.
 
-> **Optional phase — ask the operator first.** This whole subsection is opt-in. If
-> everyone can reach Cloudflare, skip it. If you enable it, the **TLS/edge method
-> below is not one-size-fits-all** — how the direct host terminates TLS depends on
-> what already runs on the box. **Ask the operator which of A/B/C applies before
-> touching anything**, and do not assume the reference (A).
+**First, decide how that direct host gets its TLS certificate** — this depends on
+what already runs on the box, so there's no single answer. *(Decide / ask which of
+these applies before doing anything.)*
 
-**Step 0 — choose how the direct host gets TLS (ask the operator):**
+- **A — the port 443 is free (simplest).** Install Caddy from
+  [`infra/prod/Caddyfile.example`](../infra/prod/Caddyfile.example) (edit the host
+  and email). It gets an automatic Let's Encrypt certificate and reverse-proxies
+  `127.0.0.1:5430`. Use this when nothing else owns `:443`.
+- **B — port 443 is already taken** by another service (a website, a VPN edge, an
+  haproxy/nginx SNI router). Don't fight the existing terminator. Route the direct
+  hostname through it to a **local Caddy on a loopback port** (e.g. one SNI rule:
+  `req.ssl_sni -i direct.<panel domain>` → `127.0.0.1:<caddy port>`), and give Caddy
+  a **static** certificate obtained separately — e.g. `acme.sh` over HTTP-01 on port
+  80, or DNS-01 — instead of Caddy's automatic HTTPS (TLS-ALPN usually won't survive
+  SNI passthrough). Point Caddy's `tls <cert> <key>` at the files, with a renew +
+  reload hook. *(This is what the reference deployment does, because its `:443` is a
+  VPN edge.)*
+- **C — you terminate TLS yourself.** You already have a reverse proxy and cert for
+  the direct host; just reverse-proxy it to `127.0.0.1:5430`. The panel needs
+  nothing beyond a correct `PANEL_PUBLIC_URL`.
 
-- **A. Dedicated host / port 443 free → reference method.** Install Caddy from
-  [`infra/prod/Caddyfile.example`](../infra/prod/Caddyfile.example) (edit host +
-  email); it gets an automatic Let's Encrypt cert and reverse-proxies
-  `127.0.0.1:5430`. Simplest — use it when nothing else owns `:443`.
-- **B. Port 443 already used by another service** (an existing site, a VPN edge, an
-  `haproxy`/`nginx` SNI router). **Do not fight the existing terminator.** Route
-  the direct hostname through it to a **local Caddy on a loopback port** (e.g. add
-  one SNI rule: `req.ssl_sni -i direct.<panel domain>` → `127.0.0.1:<caddy port>`),
-  and give Caddy a **static** cert obtained out-of-band — e.g. `acme.sh` HTTP-01 on
-  port 80, or DNS-01 — rather than Caddy's ALPN/auto-HTTPS (TLS-ALPN usually will
-  **not** survive SNI passthrough). Point Caddy's `tls <cert> <key>` at the
-  installed files with an auto-renew reload hook. *(This is what the reference
-  deployment actually does, because its `:443` is a VPN edge.)*
-- **C. Operator terminates TLS themselves.** They already have a reverse proxy /
-  cert for the direct host and just reverse-proxy it to `127.0.0.1:5430`. The panel
-  needs nothing beyond a correct `PANEL_PUBLIC_URL`.
+Whichever you pick, the end state is the same: the browser reaches
+`https://direct.<panel domain>` with a valid certificate, and that edge forwards to
+the panel web on `127.0.0.1:5430`.
 
-Whichever you pick: the browser must reach `https://direct.<panel domain>` with a
-**valid** cert, and that edge must forward to the panel web on `127.0.0.1:5430`.
+**Then wire it up:**
 
-**Then:**
-
-1. **DNS-only host.** Add an A record, e.g. `direct.<panel domain>` → the panel
-   server's IP, **not** proxied by Cloudflare (grey cloud). Open the ports the
-   chosen method needs (A/B: 80 + 443).
-2. **TLS/edge.** Apply method A, B, or C from Step 0.
-3. **Google OAuth client — from your Business Workspace, not a throwaway Cloud
-   project.** In a Google Cloud project **owned by your Workspace organization**,
-   set the OAuth consent screen **User type = Internal** (so only your Workspace
-   accounts can use it — no external app verification), then create a **Web
-   application** OAuth client and add the redirect URI
-   `https://direct.<panel domain>/api/auth/google/callback`. Copy the client ID +
-   secret. *(A Cloud project is still where OAuth clients are minted — that is
-   inherent to Google. The point is it belongs to your Workspace and is Internal,
-   the same client family as the Cloudflare IdP in §3.2, not a personal project on
-   an unrelated domain.)*
+1. **DNS.** Add an A record like `direct.<panel domain>` → the panel server's IP,
+   **not** proxied by Cloudflare (grey cloud). Open the ports your method needs
+   (A/B need 80 + 443).
+2. **TLS/edge.** Apply method A, B, or C.
+3. **A Google OAuth client — from your Workspace, not a throwaway project.** In a
+   Google Cloud project **owned by your Workspace org**, set the OAuth consent
+   screen to **User type = Internal** (only your Workspace accounts can use it — no
+   external app verification), then create a **Web application** client and add the
+   redirect URI `https://direct.<panel domain>/api/auth/google/callback`. Copy the
+   client ID and secret.
 4. **Env** (`infra/prod/.env`, then recreate web + control-api):
-   `PANEL_IDENTITY_SECRET` (shared secret, `openssl rand -base64 32`),
-   `GOOGLE_OAUTH_CLIENT_ID` / `GOOGLE_OAUTH_CLIENT_SECRET`,
-   `PANEL_PUBLIC_URL=https://direct.<panel domain>` (must exactly match the host in
-   the redirect URI), and `AUTH_ALLOWED_DOMAINS=<your Workspace domain>`.
-5. **Allowlist (direct path).** The **panel** decides who may log in directly: an
-   allowed email domain (`AUTH_ALLOWED_DOMAINS`) or a bootstrap admin
-   self-provisions; **anyone else must be pre-created by an admin** in
-   Administration → Users. That is the "add a personal gmail" flow — done in the
-   panel, no Cloudflare dashboard. (The Cloudflare path is unchanged — CF gates it
-   at the edge.)
+   `PANEL_IDENTITY_SECRET` (`openssl rand -base64 32`), `GOOGLE_OAUTH_CLIENT_ID` /
+   `GOOGLE_OAUTH_CLIENT_SECRET`, `PANEL_PUBLIC_URL=https://direct.<panel domain>`
+   (must exactly match the redirect URI's host), and
+   `AUTH_ALLOWED_DOMAINS=<your Workspace domain>`.
+5. **Who may log in here.** On the direct path the **panel** decides: someone on an
+   allowed email domain (`AUTH_ALLOWED_DOMAINS`) or a bootstrap admin logs in on
+   their own; **anyone else must be added by an admin first** (Administration →
+   Users). That's the "add a personal gmail" case — done in the panel, no Cloudflare
+   dashboard. The Cloudflare path is unaffected.
 
-Verify from a network **without** Cloudflare and with the **VPN off**:
-`https://direct.<panel domain>` shows the panel's own **Sign in** button, and
-after sign-in lands in the panel.
+Check it from a network **without** Cloudflare, VPN **off**: `https://direct.<panel
+domain>` shows the panel's own **Sign in** button and, after signing in, lands in
+the panel.
 
 ---
 
-## 4. Phase 4 — Cloudflare API token: temporary broad → least-privilege → revoke
+## 4. The Cloudflare API token: broad → least-privilege → revoke
 
-The agent needs Cloudflare API access **twice**, with very different scopes.
-Handle it as a hand-off, never leaving a broad token in place.
+The panel needs Cloudflare API access twice, at very different scopes. Handle it as
+a hand-off — never leave a broad token lying around. *(An agent must not store the
+broad token anywhere; the runtime token lives only encrypted inside the panel.)*
 
-1. **Temporary broad token (operator creates, short-lived).** Ask the operator to
-   mint one at **Cloudflare dashboard → My Profile → API Tokens → Create Token**.
-   For a fully hands-off Phase 3, the practical scopes are: **Account · Cloudflare
-   Tunnel: Edit**, **Zone · DNS: Edit** (the panel's zone), **Account · Access:
-   Apps and Policies: Edit**, and **Account · Access: Organizations, Identity
-   Providers and Groups: Edit**. The operator pastes it to the agent for this
-   session only. *(Alternative: the operator does the dashboard clicks in Phase 3
-   and no broad token is ever issued — prefer this if they are available.)*
-
-2. **Do the setup** (tunnel, DNS record, Access app + policy, IdP) with that token
-   or the dashboard.
-
-3. **Mint the least-privilege runtime token.** The *running* panel only needs to
-   edit the one Access policy for the two-way user sync. Create a token scoped to:
-   **Account · Access: Apps and Policies: Edit** (Edit implies Read), **Account
-   Resources → Include → your specific account only**. Nothing else. This is a
-   **Bearer API token**, not an Access *service* token — do not confuse them
+1. **A temporary broad token** — the operator mints it at **Cloudflare dashboard →
+   My Profile → API Tokens → Create Token**. For a hands-off Phase 3 the practical
+   scopes are: *Account · Cloudflare Tunnel: Edit*, *Zone · DNS: Edit* (the panel's
+   zone), *Account · Access: Apps and Policies: Edit*, and *Account · Access:
+   Organizations, Identity Providers and Groups: Edit*. It's used for this session
+   only. *(Alternative: the operator does the Phase 3 dashboard clicks by hand and
+   no broad token is ever issued — prefer this if they're available.)*
+2. **Do the Phase 3 setup** with that token (or by hand).
+3. **Mint the small runtime token.** The running panel only needs to edit the one
+   Access policy, for the two-way user sync. Scope a token to *Account · Access:
+   Apps and Policies: Edit* on **your account only**, nothing else. This is a Bearer
+   API token, **not** an Access *service* token — don't mix them up
    ([`CLOUDFLARE-ACCESS.md` Part B](./CLOUDFLARE-ACCESS.md#the-api-token-this-needs)).
-
-4. **Store the runtime token in the panel (encrypted, write-only).** In
-   **Administration → Policy → Cloudflare Access**, enter the account/app/policy
-   IDs and paste the runtime token; the panel encrypts it at rest and never shows
-   it again. (CLI equivalent: `amnezia-panel cf-config --account= --app= --policy=`
-   then `amnezia-panel cf-token <token>`.) Then set `ACCESS_SYNC_ENABLED=true` in
-   `infra/prod/.env` and recreate the worker.
-
-5. **Revoke the temporary broad token** in the Cloudflare dashboard. Confirm to
-   the operator that only the least-privilege runtime token remains.
-
-The agent must **not** store the broad token anywhere; the runtime token lives
-only encrypted inside the panel DB.
+4. **Store the runtime token in the panel.** In **Administration → Policy →
+   Cloudflare Access**, enter the account/app/policy IDs and paste the token; the
+   panel encrypts it and never shows it again. *(CLI equivalent: `amnezia-panel
+   cf-config --account= --app= --policy=` then `amnezia-panel cf-token <token>`.)*
+   Then set `ACCESS_SYNC_ENABLED=true` in `infra/prod/.env` and recreate the worker.
+5. **Revoke the temporary broad token** in the dashboard, and confirm only the
+   least-privilege runtime token remains.
 
 ---
 
-## 5. Phase 5 — Admin / user policy split
+## 5. Admins vs. users
 
-Roles live in the **panel**, and Cloudflare Access is the login gate — keep the
-two layers straight:
+Two layers, kept separate on purpose:
 
-- **Who may log in at all** = the Cloudflare Access **allow policy** `include`
-  list. The recommended model is either an explicit **email allowlist** or, with
-  Workspace groups wired in (§3.2), a **Workspace group** (e.g. `vpn-users@`).
-- **Who is an admin** = the panel `role`. First sign-in by an email in
-  `BOOTSTRAP_ADMIN_EMAILS` (input #5) is provisioned as `admin`; everyone else is a
-  regular `user`. Admins can also be promoted/demoted later in Administration →
-  Users (the last admin can never be demoted).
-- **An admin is also a user.** Admins have their own VPN keys, quota, and the
-  employee dashboard, exactly like a user — this is expected and supported. Admins
-  are additionally **pinned** in the two-way sync: they are never auto-disabled and
-  never dropped from the Access allowlist, so an admin can’t lock themselves out.
+- **Who may log in at all** is the Cloudflare Access allow policy (or, on the direct
+  path, `AUTH_ALLOWED_DOMAINS` + pre-created users). The simplest model is one email
+  allowlist, or — with Workspace groups wired in (§3.2) — a group like `vpn-users@`.
+- **Who is an admin** is the panel role. The first sign-in by an email in
+  `BOOTSTRAP_ADMIN_EMAILS` (input #5) becomes `admin`; everyone else is a regular
+  `user`. You can promote/demote later in Administration → Users (the last admin can
+  never be demoted, so no one locks everyone out).
+- **An admin is also a user** — they have their own keys, quota, and the employee
+  dashboard, exactly like anyone else. Admins are additionally *pinned*: the two-way
+  sync never auto-disables them or drops them from the allowlist, so an admin can't
+  accidentally lock themselves out.
 
-Two ways to express the split in Cloudflare, both fine:
-
-1. **Single allow policy (simplest).** One email/group allowlist grants login;
-   admin-ness is purely the panel role. The two-way sync keeps the allowlist equal
-   to the panel's active users. This is the default the panel drives.
-2. **Two Include rules / groups (optional, for org clarity).** An `admins@` group
-   and a `users@` group both Included in the one allow policy. Membership still
-   only gates *login*; the panel role still decides admin capability. If you use
-   this, keep `BOOTSTRAP_ADMIN_EMAILS` in sync with the `admins@` group.
-
-Nothing in the panel breaks with an admin-who-is-a-user: key limits, quota
-requests (a user can raise their own via Administration; the request UI shows the
-requester's *current → requested* limit), and the sync all treat the account as a
-normal user plus the admin role.
+You can express the split with a single allow policy (admin-ness is purely the panel
+role — this is the default), or with two Include rules/groups (`admins@` and
+`users@`) if you prefer that for org clarity; membership still only gates *login*,
+the panel role still decides admin capability.
 
 ---
 
-## 6. Phase 6 — Wire together and verify
+## 6. Wire it together and verify
 
-1. **Register the node** in Administration → Nodes: internal name, **public name
-   (input #2)**, `apiBaseUrl` (Phase 2 step 3), and the node API key from Phase 1.
-   Confirm it shows healthy and reports `awg3`.
-   ([`NODE-CONNECT.md` §3](./NODE-CONNECT.md)).
-2. **Create a test key** for yourself, import the **config file** into the Amnezia
-   client (for split-tunnel profiles use the config file, not the QR — QR can't
-   hold thousands of routes), and confirm the handshake completes and traffic
-   flows.
-3. **Verify login** with the VPN off: `https://<panel domain>` → Google Workspace
-   → panel.
-4. **Verify the two-way sync**: add/remove a user in the panel and confirm the
-   Cloudflare policy `include` list updates; remove someone in Cloudflare and
-   confirm they are disabled in the panel on the next cycle.
+1. **Register the node** in Administration → Nodes: internal name, the public name
+   (input #2), `apiBaseUrl` (from Phase 2), and the node API key from Phase 1.
+   Confirm it shows healthy and reports `awg3` ([`NODE-CONNECT.md` §3](./NODE-CONNECT.md)).
+2. **Make a test key** for yourself, import the **config file** into the Amnezia
+   client (use the config file, not the QR, for split-tunnel profiles — a QR can't
+   hold thousands of routes), and confirm the handshake completes and traffic flows.
+3. **Check login** with the VPN off: `https://<panel domain>` → Google Workspace →
+   panel.
+4. **Check the two-way sync**: add or remove a user in the panel and confirm the
+   Cloudflare policy updates; remove someone in Cloudflare and confirm they're
+   disabled in the panel on the next cycle.
+
+---
 
 ## Related documents
 
-- [`CLI.md`](./CLI.md) — every command for the panel and a node (dev, build, DB, deploy, backup, admin CLI, AmneziaWG/Docker/node-agent).
+- [`CLI.md`](./CLI.md) — every command for the panel and a node.
 - [`AGENT-HOST-SETUP.md`](./AGENT-HOST-SETUP.md) — node + control-plane install detail.
 - [`CLOUDFLARE-ACCESS.md`](./CLOUDFLARE-ACCESS.md) — Access app, allowlist, two-way sync, token scopes.
-- [`CLOUDFLARE-SETUP.md`](./CLOUDFLARE-SETUP.md) — tunnel + Google login click-by-click.
+- [`CLOUDFLARE-SETUP.md`](./CLOUDFLARE-SETUP.md) — tunnel + Google login, click by click.
 - [`HOSTING.md`](./HOSTING.md) — architecture, identity model, credential types, secrets.
 - [`NODE-CONNECT.md`](./NODE-CONNECT.md) — registering and reaching a node.
-- [`UPDATE-MECHANISM.md`](./UPDATE-MECHANISM.md) — the in-panel update button + host worker.
+- [`UPDATE-MECHANISM.md`](./UPDATE-MECHANISM.md) — the in-panel Update button and its host worker.
