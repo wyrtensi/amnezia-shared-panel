@@ -1267,6 +1267,7 @@ export class PostgresControlRepository implements ControlRepository {
       byProtocol,
       byProfile,
       userCount,
+      usersByStatus,
       nodeRows,
       peerAgg,
     ] = await Promise.all([
@@ -1288,6 +1289,10 @@ export class PostgresControlRepository implements ControlRepository {
         .groupBy(vpnKeys.routeProfile),
       db.select({ value: count() }).from(users),
       db
+        .select({ key: users.status, value: count() })
+        .from(users)
+        .groupBy(users.status),
+      db
         .select({ enabled: nodes.enabled, lastError: nodes.lastError })
         .from(nodes),
       db
@@ -1302,9 +1307,11 @@ export class PostgresControlRepository implements ControlRepository {
     const tally = (rows: Array<{ key: string; value: number }>) =>
       Object.fromEntries(rows.map((row) => [row.key, row.value]));
     const stateCounts = tally(byState);
+    const statusCounts = tally(usersByStatus);
     const totalKeys = byState.reduce((acc, row) => acc + row.value, 0);
-    const traffic =
-      BigInt(peerAgg[0]?.received ?? 0) + BigInt(peerAgg[0]?.sent ?? 0);
+    const received = BigInt(peerAgg[0]?.received ?? 0);
+    const sent = BigInt(peerAgg[0]?.sent ?? 0);
+    const traffic = received + sent;
 
     return {
       // Preserved for the existing metric cards
@@ -1314,8 +1321,13 @@ export class PostgresControlRepository implements ControlRepository {
       // Richer aggregates
       totalKeys,
       totalUsers: userCount[0]?.value ?? 0,
+      usersByStatus: statusCounts,
+      activeUsers: statusCounts.active ?? 0,
+      disabledUsers: statusCounts.disabled ?? 0,
       onlineDevices: Number(peerAgg[0]?.online ?? 0),
       totalTrafficBytes: traffic.toString(),
+      totalReceivedBytes: received.toString(),
+      totalSentBytes: sent.toString(),
       keysByState: stateCounts,
       keysByProtocol: tally(byProtocol),
       keysByProfile: tally(byProfile),
@@ -1666,19 +1678,20 @@ export class PostgresControlRepository implements ControlRepository {
       return this.options.db.transaction(async (tx) => {
         // Never allow demoting the last remaining admin (avoids lockout).
         if (role === "user") {
-          const [admins] = await tx
-            .select({ value: count() })
+          // Lock the active-admin rows FOR UPDATE so two concurrent set-role
+          // calls serialize: the second sees the first's committed demotion
+          // instead of both reading "2 admins" and both demoting to zero.
+          const admins = await tx
+            .select({ id: users.id })
             .from(users)
-            .where(and(eq(users.role, "admin"), eq(users.status, "active")));
+            .where(and(eq(users.role, "admin"), eq(users.status, "active")))
+            .for("update");
           const [target] = await tx
             .select({ role: users.role })
             .from(users)
             .where(eq(users.id, targetId))
             .limit(1);
-          if (
-            target?.role === "admin" &&
-            (admins?.value ?? 0) <= 1
-          ) {
+          if (target?.role === "admin" && admins.length <= 1) {
             throw new ApiError(
               409,
               "Cannot demote the last administrator",

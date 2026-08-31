@@ -56,7 +56,7 @@ export function EmployeeDashboard() {
   const [justCreatedId, setJustCreatedId] = React.useState<string | null>(null);
   const scrolledForId = React.useRef<string | null>(null);
 
-  const load = React.useCallback(async () => {
+  const load = React.useCallback(async (silent = false) => {
     try {
       const [meResult, nodeResult, keyResult] = await Promise.all([
         apiRequest<Me>("/api/me"),
@@ -74,9 +74,15 @@ export function EmployeeDashboard() {
         setRouteProfiles([]);
       }
     } catch (cause) {
-      toast.error(
-        cause instanceof Error ? cause.message : tRef.current("common.loadFailed"),
-      );
+      // Background polls (silent) must not spam a toast every tick during a
+      // transient outage — e.g. while the panel restarts after an update.
+      if (!silent) {
+        toast.error(
+          cause instanceof Error
+            ? cause.message
+            : tRef.current("common.loadFailed"),
+        );
+      }
     } finally {
       setLoading(false);
     }
@@ -94,7 +100,7 @@ export function EmployeeDashboard() {
   );
   React.useEffect(() => {
     if (!anyProvisioning) return;
-    const timer = setInterval(() => void load(), 4000);
+    const timer = setInterval(() => void load(true), 4000);
     return () => clearInterval(timer);
   }, [anyProvisioning, load]);
 

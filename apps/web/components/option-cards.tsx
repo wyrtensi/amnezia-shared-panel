@@ -70,7 +70,7 @@ export function OptionCards<T extends string>({
             >
               <Check className="h-3.5 w-3.5" />
             </span>
-            <div className="flex items-center gap-2.5">
+            <div className="flex min-w-0 items-center gap-2.5">
               {option.icon ? (
                 <span
                   className={cn(
@@ -83,9 +83,9 @@ export function OptionCards<T extends string>({
                   {option.icon}
                 </span>
               ) : null}
-              <span className="flex flex-col">
-                <span className="flex items-center gap-1.5 pr-6 font-medium leading-tight">
-                  {option.label}
+              <span className="flex min-w-0 flex-col">
+                <span className="flex items-center gap-1.5 pr-7 font-medium leading-tight">
+                  <span className="truncate">{option.label}</span>
                   {option.badge}
                 </span>
                 {option.description ? (

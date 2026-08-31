@@ -113,16 +113,23 @@ export function CreateKeyWizard({
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState("");
 
-  // Reset the form each time the wizard opens.
+  // Reset the form only when the wizard OPENS (open false→true) — not on every
+  // `nodes`/`existingNames` change, or a background refresh (e.g. the
+  // provisioning poll) would wipe the user's input mid-fill every few seconds.
+  const wasOpen = React.useRef(false);
   React.useEffect(() => {
-    if (!open) return;
-    setDeviceType("laptop");
-    setLabelEdited(false);
-    setDeviceLabel(suggestKeyName("laptop", existingNames, t));
-    setNodeId(nodes[0]?.id ?? "");
-    setProtocol(preferredProtocol(nodeSelectableProtocols(nodes[0])));
-    setRouteProfile("full_tunnel");
-    setError("");
+    if (open && !wasOpen.current) {
+      wasOpen.current = true;
+      setDeviceType("laptop");
+      setLabelEdited(false);
+      setDeviceLabel(suggestKeyName("laptop", existingNames, t));
+      setNodeId(nodes[0]?.id ?? "");
+      setProtocol(preferredProtocol(nodeSelectableProtocols(nodes[0])));
+      setRouteProfile("full_tunnel");
+      setError("");
+    } else if (!open) {
+      wasOpen.current = false;
+    }
   }, [open, nodes, existingNames, t]);
 
   const selectedNode = nodes.find((node) => node.id === nodeId) ?? nodes[0];

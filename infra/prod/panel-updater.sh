@@ -14,7 +14,17 @@ REQUEST="${SPOOL_DIR}/request.json"
 RESULT="${SPOOL_DIR}/result.json"
 LOCK="${SPOOL_DIR}/.lock"
 
-[ -f "$REQUEST" ] || exit 0   # nothing to do
+[ -e "$REQUEST" ] || exit 0   # nothing to do
+
+# The spool is writable by the container (uid 1000), so treat its contents as
+# untrusted. Refuse a symlinked request file: this script runs as root, and a
+# symlink (e.g. request.json -> /etc/shadow) would otherwise be read as root.
+if [ -L "$REQUEST" ]; then
+  echo "panel-updater: request file is a symlink — refusing" >&2
+  rm -f "$REQUEST"
+  exit 1
+fi
+[ -f "$REQUEST" ] || exit 0
 
 # Never run two updates at once (path unit could re-fire during a long run).
 exec 9>"$LOCK"
@@ -37,7 +47,11 @@ write_result() {
   msg="${msg//\\/\\\\}"
   msg="${msg//\"/\\\"}"
   msg="${msg//$'\n'/ }"
-  tmp="${RESULT}.tmp"
+  # Write to a FRESH random file in the spool (mktemp: O_EXCL, unpredictable
+  # name — the container can't pre-plant a symlink at it), then rename onto
+  # $RESULT. A same-filesystem rename() replaces whatever is at $RESULT (even a
+  # planted symlink) instead of writing through it as root.
+  tmp="$(mktemp "${SPOOL_DIR}/result.XXXXXX")" || return 1
   printf '{"id":"%s","finishedAt":"%s","ok":%s,"message":"%s"}\n' \
     "$ID" "$ts" "$ok" "$msg" >"$tmp"
   mv -f "$tmp" "$RESULT"

@@ -5,7 +5,9 @@ import Link from "next/link";
 import {
   Activity,
   AlertTriangle,
+  ArrowDown,
   ArrowRight,
+  ArrowUp,
   ArrowUpDown,
   Check,
   KeyRound,
@@ -35,7 +37,7 @@ import {
 } from "@/lib/activity";
 import { cn } from "@/lib/utils";
 import { TrafficCard } from "@/components/traffic-card";
-import { InlineTraffic } from "@/components/inline-traffic";
+import { TrafficSplit } from "@/components/inline-traffic";
 import { useAdminData } from "@/components/admin/admin-data";
 import { PanelUpdateCard } from "@/components/admin/panel-update-card";
 import { useT } from "@/lib/i18n/provider";
@@ -101,7 +103,14 @@ export default function AdminOverviewPage() {
       .sort((a, b) => (a.lastSeen ?? 0) - (b.lastSeen ?? 0));
   }, [users, keys, now]);
 
-  const metrics = [
+  const metrics: Array<{
+    label: string;
+    value: React.ReactNode;
+    sub?: React.ReactNode;
+    icon: React.ComponentType<{ className?: string }>;
+    tone: string;
+    attention: boolean;
+  }> = [
     {
       label: t("ov.activeKeys"),
       value: overview?.activeKeys ?? keys.length,
@@ -121,6 +130,14 @@ export default function AdminOverviewPage() {
       value: overview
         ? formatBytes(overview.totalTrafficBytes ?? "0", lang)
         : "—",
+      sub: overview ? (
+        <span className="inline-flex items-center gap-1 tabular-nums">
+          <ArrowDown className="h-3 w-3 text-chart-2" />
+          {formatBytes(overview.totalReceivedBytes ?? "0", lang)}
+          <ArrowUp className="ml-0.5 h-3 w-3 text-chart-5" />
+          {formatBytes(overview.totalSentBytes ?? "0", lang)}
+        </span>
+      ) : null,
       icon: ArrowUpDown,
       tone: "chart-5",
       attention: false,
@@ -128,6 +145,12 @@ export default function AdminOverviewPage() {
     {
       label: t("ov.users"),
       value: overview?.totalUsers ?? users.length,
+      sub: overview
+        ? t("ov.usersSub", {
+            active: overview.activeUsers ?? 0,
+            disabled: overview.disabledUsers ?? 0,
+          })
+        : null,
       icon: Users,
       tone: "chart-3",
       attention: false,
@@ -164,6 +187,11 @@ export default function AdminOverviewPage() {
                 <p className="tabular truncate font-display text-2xl font-semibold">
                   {loading ? "—" : metric.value}
                 </p>
+                {!loading && metric.sub ? (
+                  <p className="mt-0.5 truncate text-xs text-muted-foreground">
+                    {metric.sub}
+                  </p>
+                ) : null}
               </div>
               <span
                 className={cn(
@@ -198,73 +226,86 @@ export default function AdminOverviewPage() {
         />
       </div>
 
-      <Card>
-        <CardContent className="p-0">
-          <div className="flex items-center justify-between gap-2 px-5 py-4">
-            <h2 className="flex items-center gap-2 font-semibold">
-              <Server className="h-4 w-4 text-chart-1" />
-              {t("ov.serversTitle")}
-              <span className="tabular text-sm font-normal text-muted-foreground">
-                {nodes.length}
-              </span>
-            </h2>
-            <Button asChild variant="ghost" size="sm">
-              <Link href="/admin/nodes" prefetch={false}>
-                {t("ov.showAll")} <ArrowRight className="h-4 w-4" />
-              </Link>
-            </Button>
+      <div className="space-y-3">
+        <div className="flex items-center justify-between gap-2">
+          <h2 className="flex items-center gap-2 font-semibold">
+            <Server className="h-4 w-4 text-chart-1" />
+            {t("ov.serversTitle")}
+            <span className="tabular text-sm font-normal text-muted-foreground">
+              {nodes.length}
+            </span>
+          </h2>
+          <Button asChild variant="ghost" size="sm">
+            <Link href="/admin/nodes" prefetch={false}>
+              {t("ov.showAll")} <ArrowRight className="h-4 w-4" />
+            </Link>
+          </Button>
+        </div>
+        {loading ? (
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+            <Skeleton className="h-32 rounded-xl" />
+            <Skeleton className="h-32 rounded-xl" />
           </div>
-          {loading ? (
-            <div className="space-y-2 p-5">
-              <Skeleton className="h-10 w-full" />
-            </div>
-          ) : nodes.length === 0 ? (
-            <p className="px-5 pb-5 text-sm text-muted-foreground">
-              {t("ov.noServers")}
-            </p>
-          ) : (
-            <ul className="divide-y">
-              {nodes.map((node) => (
-                <li
-                  key={node.id}
-                  className="flex items-center justify-between gap-3 px-5 py-2.5"
-                >
-                  <div className="flex min-w-0 items-center gap-2">
+        ) : nodes.length === 0 ? (
+          <p className="text-sm text-muted-foreground">{t("ov.noServers")}</p>
+        ) : (
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+            {nodes.map((node) => (
+              <Card key={node.id} className="transition-shadow hover:shadow-md">
+                <CardContent className="space-y-2.5 p-4">
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="flex min-w-0 items-center gap-2">
+                      <span
+                        className={cn(
+                          "h-2.5 w-2.5 shrink-0 rounded-full",
+                          node.lastError
+                            ? "bg-destructive"
+                            : node.enabled
+                              ? "bg-success"
+                              : "bg-muted-foreground",
+                        )}
+                      />
+                      <div className="min-w-0">
+                        <p className="truncate text-sm font-medium">
+                          {node.publicName || node.name}
+                        </p>
+                        {node.publicName ? (
+                          <p className="truncate text-xs text-muted-foreground">
+                            {node.name}
+                          </p>
+                        ) : null}
+                      </div>
+                    </div>
                     <span
-                      className={cn(
-                        "h-2 w-2 shrink-0 rounded-full",
-                        node.lastError
-                          ? "bg-destructive"
-                          : node.enabled
-                            ? "bg-success"
-                            : "bg-muted-foreground",
-                      )}
-                    />
-                    <span className="truncate text-sm font-medium">
-                      {node.publicName || node.name}
-                    </span>
-                    {node.publicName ? (
-                      <span className="truncate text-xs text-muted-foreground">
-                        {node.name}
-                      </span>
-                    ) : null}
-                  </div>
-                  <div className="flex shrink-0 flex-wrap items-center justify-end gap-x-3 gap-y-0.5 tabular-nums text-xs text-muted-foreground">
-                    <span title={t("nodes.capacity")}>
+                      className="shrink-0 rounded-full bg-muted px-2 py-0.5 text-xs tabular-nums text-muted-foreground"
+                      title={t("nodes.capacity")}
+                    >
                       {node.peerCount ?? 0}/{node.maxPeers}
                     </span>
-                    <InlineTraffic
-                      today={node.traffic?.today}
-                      week={node.traffic?.week}
-                      month={node.traffic?.month}
-                    />
                   </div>
-                </li>
-              ))}
-            </ul>
-          )}
-        </CardContent>
-      </Card>
+                  <dl className="space-y-1 border-t pt-2 text-xs">
+                    {[
+                      { label: t("traffic.rangeToday"), pair: node.traffic?.today },
+                      { label: t("traffic.range7"), pair: node.traffic?.week },
+                      { label: t("traffic.range30"), pair: node.traffic?.month },
+                    ].map(({ label, pair }) => (
+                      <div
+                        key={label}
+                        className="flex items-center justify-between gap-2"
+                      >
+                        <dt className="text-muted-foreground">{label}</dt>
+                        <dd className="text-foreground">
+                          <TrafficSplit pair={pair} />
+                        </dd>
+                      </div>
+                    ))}
+                  </dl>
+                </CardContent>
+              </Card>
+            ))}
+          </div>
+        )}
+      </div>
 
       <TrafficCard endpoint="/api/admin/traffic" title={t("ov.trafficByDay")} />
 

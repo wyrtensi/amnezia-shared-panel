@@ -109,7 +109,11 @@ export const createDefaultControlApiService = ({
       ? `${key.nodeDisplayName} #${key.keyNumber}`
       : key.nodeDisplayName;
     const vpnLink = setVpnDescription(routedLink, serverName);
+    // Only the OWNER downloading their own config marks the rules as applied.
+    // An admin peeking at someone's private config must not clear the owner's
+    // "rules outdated" indicator (they didn't reinstall anything).
     if (
+      !isAdminView &&
       key.activeRule &&
       key.appliedRuleVersionId !== key.activeRule.versionId
     ) {
@@ -142,17 +146,30 @@ export const createDefaultControlApiService = ({
         filename: `${safeFilename(key.deviceLabel)}.conf`,
       };
     }
-    return {
-      format,
-      contentType: "image/png",
-      body: await QRCode.toBuffer(vpnLink, {
+    // A split-tunnel config embeds thousands of CIDRs, which overflows the QR
+    // capacity — QRCode.toBuffer would otherwise throw a raw 500. Refuse with a
+    // clear error (the UI hides QR for these profiles and offers the config file).
+    let qr: Buffer;
+    try {
+      qr = await QRCode.toBuffer(vpnLink, {
         type: "png",
         // Higher error correction ("Q" = ~25%) survives low-quality cameras,
         // glare and partial occlusion far better than the default "M".
         errorCorrectionLevel: "Q",
         margin: 2,
         width: 1024,
-      }),
+      });
+    } catch {
+      throw new ApiError(
+        422,
+        "This config is too large for a QR code — use the config file instead",
+        "QR_TOO_LARGE",
+      );
+    }
+    return {
+      format,
+      contentType: "image/png",
+      body: qr,
       filename: `${safeFilename(key.deviceLabel)}.png`,
     };
   },

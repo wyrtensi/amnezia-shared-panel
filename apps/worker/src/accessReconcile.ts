@@ -240,10 +240,26 @@ export function createAccessSync(options: {
     // active panel users, but have since been removed from the Cloudflare policy.
     // Disable them (targeted — never touches a concurrently-added user). Pinned
     // bootstrap admins are exempt.
-    const cfRemoved = baseline.filter(
-      (email) =>
-        activeSet.has(email) && !cfEmails.has(email) && !pinnedSet.has(email),
-    );
+    //
+    // Safety guard (mirrors reconcileAccess's empty-allowlist guard): if the
+    // policy include has ZERO email rules, treat it as an anomaly, NOT as "every
+    // synced user was removed". This happens when access is granted by a
+    // surviving `email_domain`/group rule (kept in `preserved`) rather than
+    // explicit emails — disabling everyone there would be catastrophic.
+    const cfRemoved =
+      cfEmails.size === 0
+        ? []
+        : baseline.filter(
+            (email) =>
+              activeSet.has(email) &&
+              !cfEmails.has(email) &&
+              !pinnedSet.has(email),
+          );
+    if (cfEmails.size === 0 && preserved.length > 0) {
+      log(
+        "access-sync: policy grants access via non-email rules only (no email include) — skipping CF→panel disable.",
+      );
+    }
     if (cfRemoved.length > 0) {
       const result = await repository.deactivateByEmail(cfRemoved);
       if (result.deactivated.length > 0 || result.skippedAdmins.length > 0) {

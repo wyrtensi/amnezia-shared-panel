@@ -31,7 +31,8 @@ import {
 import { StatusBadge } from "@/components/status-badge";
 import { Callout } from "@/components/ui/hint";
 import { configUrl } from "@/lib/api";
-import { formatDate, formatTraffic } from "@/lib/format";
+import { formatDate } from "@/lib/format";
+import { TrafficSplit } from "@/components/inline-traffic";
 import { useT } from "@/lib/i18n/provider";
 import type { KeyView, Me, NodeView } from "@/lib/types";
 
@@ -173,9 +174,9 @@ export function KeyCard({
           </div>
           {me.policy.showTraffic ? (
             <div>
-              <dt className="inline">{t("keyCard.traffic")}</dt>
-              <dd className="inline text-foreground">
-                {formatTraffic(keyView.traffic, lang)}
+              <dt className="inline">{t("keyCard.traffic")}</dt>{" "}
+              <dd className="inline-flex text-foreground">
+                <TrafficSplit pair={keyView.traffic} />
               </dd>
             </div>
           ) : null}

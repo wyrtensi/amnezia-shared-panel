@@ -231,6 +231,8 @@ const ru = {
   "quota.reason": "Обоснование",
   "quota.reasonPlaceholder":
     "Опишите, зачем нужны дополнительные ключи (не менее 10 символов).",
+  "quota.reasonMin": "Минимум 10 символов, чтобы отправить (ещё {left}).",
+  "quota.reasonReady": "Можно отправлять.",
   "quota.sending": "Отправляем…",
   "quota.submit": "Отправить запрос",
 
@@ -265,6 +267,7 @@ const ru = {
   "ov.onlineNow": "Онлайн сейчас",
   "ov.totalTraffic": "Суммарный трафик",
   "ov.users": "Пользователи",
+  "ov.usersSub": "{active} активных · {disabled} отключено",
   "ov.nodesHealthy": "Ноды (в норме)",
   "ov.quotaRequests": "Запросы лимита",
   "ov.byProtocol": "По протоколу",
@@ -784,6 +787,8 @@ const en = {
   "quota.reason": "Reason",
   "quota.reasonPlaceholder":
     "Explain why you need additional keys (at least 10 characters).",
+  "quota.reasonMin": "At least 10 characters to send ({left} to go).",
+  "quota.reasonReady": "Ready to send.",
   "quota.sending": "Sending…",
   "quota.submit": "Send request",
 
@@ -818,6 +823,7 @@ const en = {
   "ov.onlineNow": "Online now",
   "ov.totalTraffic": "Total traffic",
   "ov.users": "Users",
+  "ov.usersSub": "{active} active · {disabled} disabled",
   "ov.nodesHealthy": "Nodes (healthy)",
   "ov.quotaRequests": "Limit requests",
   "ov.byProtocol": "By protocol",

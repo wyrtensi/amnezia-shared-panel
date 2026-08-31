@@ -42,6 +42,25 @@ export function formatTraffic(
 }
 
 /**
+ * Split a traffic pair into formatted received / sent strings (for the "↓ … ↑ …"
+ * display). Returns null when the pair is missing or malformed.
+ */
+export function formatTrafficParts(
+  traffic?: { receivedBytes: string; sentBytes: string } | null,
+  lang: Lang = "ru",
+): { received: string; sent: string } | null {
+  if (!traffic) return null;
+  try {
+    return {
+      received: formatBytes(traffic.receivedBytes, lang),
+      sent: formatBytes(traffic.sentBytes, lang),
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Format an ISO timestamp as a short localized date.
  */
 export function formatDate(iso?: string | null, lang: Lang = "ru"): string {

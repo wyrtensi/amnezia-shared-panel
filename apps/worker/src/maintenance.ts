@@ -97,13 +97,23 @@ export const createMaintenanceRunner = ({
   const current = now();
   const rawCutoff = new Date(current.getTime() - rawRetentionDays * DAY_MS);
   const samples = await repository.loadSamplesSince(rawCutoff);
+  // Only replace buckets that are FULLY inside the sample window. The bucket
+  // that CONTAINS rawCutoff (bucketStart < rawCutoff) is only partially covered
+  // — recomputing it would truncate the already-complete stored value to the
+  // slice after rawCutoff, and as rawCutoff sweeps forward hourly it would shrink
+  // that day/hour to ~its last slice. Dropping partial buckets freezes each one
+  // at the last complete recompute (when rawCutoff <= its start).
+  const fullBucketsOnly = (rollups: ReturnType<typeof aggregateTrafficSamples>) =>
+    rollups.filter(
+      (rollup) => rollup.bucketStart.getTime() >= rawCutoff.getTime(),
+    );
   await repository.replaceRollups(
     "hour",
-    aggregateTrafficSamples(samples, "hour"),
+    fullBucketsOnly(aggregateTrafficSamples(samples, "hour")),
   );
   await repository.replaceRollups(
     "day",
-    aggregateTrafficSamples(samples, "day"),
+    fullBucketsOnly(aggregateTrafficSamples(samples, "day")),
   );
   await repository.deleteSamplesBefore(rawCutoff);
   await repository.deleteRollupsBefore(

@@ -12,8 +12,13 @@ export type Overview = {
   enabledNodes: number;
   totalKeys?: number;
   totalUsers?: number;
+  activeUsers?: number;
+  disabledUsers?: number;
+  usersByStatus?: Record<string, number>;
   onlineDevices?: number;
   totalTrafficBytes?: string;
+  totalReceivedBytes?: string;
+  totalSentBytes?: string;
   keysByState?: Record<string, number>;
   keysByProtocol?: Record<string, number>;
   keysByProfile?: Record<string, number>;

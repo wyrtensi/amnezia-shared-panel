@@ -330,6 +330,28 @@ describe("createAccessSync", () => {
     });
   });
 
+  it("does not disable users when the policy grants access via a non-email rule only", async () => {
+    // The include has an email_domain rule but ZERO email rules → cfEmails is
+    // empty. Treating that as "everyone was removed" would disable every user.
+    const { repository, deactivateByEmail } = makeRepo({
+      active: ["a@x.io"],
+      baseline: ["a@x.io"],
+    });
+    const { createClient, updatePolicy } = clientWith([
+      { email_domain: { domain: "x.io" } },
+    ]);
+    await createAccessSync({ repository, createClient })();
+    expect(deactivateByEmail).not.toHaveBeenCalled();
+    // Panel users are still written back on top of the preserved domain rule.
+    expect(updatePolicy).toHaveBeenCalledWith({
+      id: "pol",
+      include: [
+        { email_domain: { domain: "x.io" } },
+        { email: { email: "a@x.io" } },
+      ],
+    });
+  });
+
   it("never wipes the allowlist when there are no active users", async () => {
     const { repository, setAccessSyncBaseline } = makeRepo({
       active: [],
