@@ -14,6 +14,7 @@ import {
   Users,
 } from "lucide-react";
 import { LanguageToggle } from "@/components/language-toggle";
+import { LogoutButton } from "@/components/logout-button";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -30,7 +31,13 @@ const NAV = [
   { href: "/admin/audit", label: "nav.audit", icon: FileText },
 ];
 
-export function AdminShell({ children }: { children: React.ReactNode }) {
+export function AdminShell({
+  children,
+  canLogout = false,
+}: {
+  children: React.ReactNode;
+  canLogout?: boolean;
+}) {
   const pathname = usePathname();
   const { t } = useT();
 
@@ -89,6 +96,7 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
             <div className="flex items-center gap-2">
               <LanguageToggle />
               <ThemeToggle />
+              {canLogout ? <LogoutButton /> : null}
             </div>
           </header>
 

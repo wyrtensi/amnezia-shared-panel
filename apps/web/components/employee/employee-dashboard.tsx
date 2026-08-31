@@ -5,6 +5,7 @@ import Link from "next/link";
 import { KeyRound, Plus, RefreshCw, ShieldCheck } from "lucide-react";
 import { toast } from "sonner";
 import { AppHeader } from "@/components/app-header";
+import { LogoutButton } from "@/components/logout-button";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -31,7 +32,11 @@ import type {
   RouteProfileAvailability,
 } from "@/lib/types";
 
-export function EmployeeDashboard() {
+export function EmployeeDashboard({
+  canLogout = false,
+}: {
+  canLogout?: boolean;
+}) {
   const { t } = useT();
   // `load` is memoized with empty deps; a ref keeps its error toast on the
   // current language without adding `t` to the dependency array.
@@ -249,6 +254,7 @@ export function EmployeeDashboard() {
             >
               <RefreshCw className="h-4 w-4" /> {t("emp.refresh")}
             </Button>
+            {canLogout ? <LogoutButton /> : null}
           </>
         }
       />
