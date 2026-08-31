@@ -1,0 +1,27 @@
+# infra/prod/Caddyfile.example — DIRECT (non-Cloudflare) access to the panel.
+#
+# Serves the panel on a DNS-only host — an A/AAAA record pointing STRAIGHT to this
+# server, NOT proxied by Cloudflare — with automatic Let's Encrypt TLS. Users who
+# cannot reach Cloudflare open this host and sign in via the panel's own Google
+# login (server-side). Cloudflare Access on the main host keeps working too.
+#
+# Setup:
+#   1. Add a DNS-only A record, e.g. direct.example.com -> this server's IP
+#      (grey cloud in Cloudflare, or any registrar). Port 80/443 must be open.
+#   2. Install Caddy, put this file at /etc/caddy/Caddyfile (edit the host below
+#      and the email), then: systemctl reload caddy
+#   3. In infra/prod/.env set PANEL_PUBLIC_URL=https://direct.example.com plus the
+#      GOOGLE_OAUTH_* and PANEL_IDENTITY_SECRET values, and recreate web +
+#      control-api. Add https://direct.example.com/api/auth/google/callback as an
+#      Authorized redirect URI on the Google OAuth client.
+
+{
+	# Let's Encrypt registration email (for expiry notices).
+	email admin@example.com
+}
+
+direct.example.com {
+	encode zstd gzip
+	# The panel's web port (loopback, same as the Cloudflare Tunnel targets).
+	reverse_proxy 127.0.0.1:5430
+}

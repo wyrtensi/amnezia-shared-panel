@@ -1,6 +1,10 @@
 import { createDatabase, type EncryptionKeyring } from "@amnezia/db";
-import { buildApp } from "./app.js";
+import { buildApp, type IdentityAdapter } from "./app.js";
 import { createCloudflareAccessAdapter } from "./cloudflareAccess.js";
+import {
+  chainIdentityAdapters,
+  createPanelSessionAdapter,
+} from "./panelSession.js";
 import { createDefaultControlApiService } from "./defaultService.js";
 import { PostgresControlRepository } from "./postgresRepository.js";
 
@@ -59,26 +63,47 @@ export const startServer = async () => {
       "CONFIG_ENCRYPTION_ACTIVE_VERSION is not present in the keyring",
     );
   }
-  const bootstrapAdminEmails = new Set(
-    (process.env.BOOTSTRAP_ADMIN_EMAILS ?? "")
-      .split(",")
-      .map((email) => email.trim().toLowerCase())
-      .filter(Boolean),
-  );
+  const csvSet = (raw: string | undefined) =>
+    new Set(
+      (raw ?? "")
+        .split(",")
+        .map((value) => value.trim().toLowerCase())
+        .filter(Boolean),
+    );
+  const bootstrapAdminEmails = csvSet(process.env.BOOTSTRAP_ADMIN_EMAILS);
+  const allowedEmailDomains = csvSet(process.env.AUTH_ALLOWED_DOMAINS);
   const repository = new PostgresControlRepository({
     db: database.db,
     keyring,
     activeKeyVersion,
     bootstrapAdminEmails,
+    allowedEmailDomains,
   });
   const service = createDefaultControlApiService({ repository, keyring });
+  // Identity methods, tried in order: Cloudflare Access JWT (edge login) then the
+  // web app's own signed session (direct/server-side Google login). At least one
+  // must be configured in production. Extensible — add more adapters here.
+  const adapters: IdentityAdapter[] = [];
+  if (process.env.CF_ACCESS_ISSUER && process.env.CF_ACCESS_AUDIENCE) {
+    adapters.push(
+      createCloudflareAccessAdapter({
+        issuer: process.env.CF_ACCESS_ISSUER,
+        audience: process.env.CF_ACCESS_AUDIENCE,
+      }),
+    );
+  }
+  if (process.env.PANEL_IDENTITY_SECRET) {
+    adapters.push(
+      createPanelSessionAdapter({ secret: process.env.PANEL_IDENTITY_SECRET }),
+    );
+  }
+  if (environment === "production" && adapters.length === 0) {
+    throw new Error(
+      "No identity method configured: set CF_ACCESS_ISSUER+CF_ACCESS_AUDIENCE and/or PANEL_IDENTITY_SECRET",
+    );
+  }
   const identityAdapter =
-    environment === "production"
-      ? createCloudflareAccessAdapter({
-          issuer: requiredEnv("CF_ACCESS_ISSUER"),
-          audience: requiredEnv("CF_ACCESS_AUDIENCE"),
-        })
-      : undefined;
+    adapters.length > 0 ? chainIdentityAdapters(adapters) : undefined;
   // The `x-dev-user-email` header trusts any caller, so the real server enables
   // it only when explicitly opted in (ALLOW_DEV_IDENTITY=true). This way an
   // accidental NODE_ENV=development on an exposed host cannot bypass auth; the

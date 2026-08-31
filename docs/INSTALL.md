@@ -150,6 +150,39 @@ Read the app's **Audience (AUD)** tag and your team issuer, and set in
 `https://<panel domain>` redirects to the Google Workspace login and, after
 sign-in, into the panel ([`HOSTING.md` §5.5](./HOSTING.md)).
 
+### 3.5 Direct login without Cloudflare (server-side Google)
+
+Cloudflare is not reachable for everyone (e.g. from some networks in Russia), so
+the panel can **also** serve itself on a **DNS-only** host — bypassing the CF
+proxy — with its **own** Google login, in addition to Cloudflare Access. Both
+paths coexist; each user takes whichever works, and the API accepts either the CF
+JWT or the panel's own signed session. Enable it:
+
+1. **DNS-only host.** Add an A record, e.g. `direct.<panel domain>` → the panel
+   server's IP, **not** proxied by Cloudflare (grey cloud). Open ports 80/443.
+2. **TLS.** Install Caddy on the panel host from
+   [`infra/prod/Caddyfile.example`](../infra/prod/Caddyfile.example) (edit the host
+   + email) — automatic Let's Encrypt, reverse-proxying `127.0.0.1:5430`.
+3. **Google OAuth client.** In the same Workspace Cloud project, create/reuse a
+   **Web application** OAuth client and add the redirect URI
+   `https://direct.<panel domain>/api/auth/google/callback`. Copy the client ID +
+   secret.
+4. **Env** (`infra/prod/.env`, then recreate web + control-api):
+   `PANEL_IDENTITY_SECRET` (shared secret, `openssl rand -base64 32`),
+   `GOOGLE_OAUTH_CLIENT_ID` / `GOOGLE_OAUTH_CLIENT_SECRET`,
+   `PANEL_PUBLIC_URL=https://direct.<panel domain>`, and
+   `AUTH_ALLOWED_DOMAINS=<your Workspace domain>`.
+5. **Allowlist (direct path).** The **panel** decides who may log in directly: an
+   allowed email domain (`AUTH_ALLOWED_DOMAINS`) or a bootstrap admin
+   self-provisions; **anyone else must be pre-created by an admin** in
+   Administration → Users. That is the "add a personal gmail" flow — done in the
+   panel, no Cloudflare dashboard. (The Cloudflare path is unchanged — CF gates it
+   at the edge.)
+
+Verify from a network **without** Cloudflare and with the **VPN off**:
+`https://direct.<panel domain>` shows the panel's own "Sign in with Google", and
+after sign-in lands in the panel.
+
 ---
 
 ## 4. Phase 4 — Cloudflare API token: temporary broad → least-privilege → revoke

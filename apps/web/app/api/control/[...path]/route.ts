@@ -1,4 +1,5 @@
 import type { NextRequest } from "next/server";
+import { SESSION_COOKIE } from "@/lib/session";
 
 const proxy = async (request: NextRequest, context: { params: Promise<{ path: string[] }> }) => {
   const { path } = await context.params;
@@ -11,6 +12,10 @@ const proxy = async (request: NextRequest, context: { params: Promise<{ path: st
   if (contentType) headers.set("content-type", contentType);
   const accessJwt = request.headers.get("cf-access-jwt-assertion");
   if (accessJwt) headers.set("cf-access-jwt-assertion", accessJwt);
+  // Direct (server-side Google) login: forward the signed session as the
+  // identity token the control-api verifies. The session token IS that token.
+  const session = request.cookies.get(SESSION_COOKIE)?.value;
+  if (session) headers.set("x-panel-identity", session);
   if (process.env.DEV_IDENTITY_ENABLED === "true" && process.env.DEV_USER_EMAIL) {
     headers.set("x-dev-user-email", process.env.DEV_USER_EMAIL);
   }

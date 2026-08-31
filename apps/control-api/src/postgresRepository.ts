@@ -194,6 +194,12 @@ export type PostgresRepositoryOptions = {
   keyring: EncryptionKeyring;
   activeKeyVersion?: number;
   bootstrapAdminEmails?: ReadonlySet<string>;
+  // Email domains allowed to self-provision via a NON-Cloudflare login (the
+  // server-side Google path). Cloudflare Access already gates its own path at
+  // the edge, so this only guards direct logins. Empty = no domain is auto-
+  // allowed; then only pre-created users (added by an admin) or bootstrap admins
+  // may log in directly.
+  allowedEmailDomains?: ReadonlySet<string>;
 };
 
 export class PostgresControlRepository implements ControlRepository {
@@ -250,6 +256,24 @@ export class PostgresControlRepository implements ControlRepository {
         await tx.select().from(users).where(eq(users.email, email)).limit(1)
       )[0];
       if (!user) {
+        // A brand-new account via a NON-Cloudflare login (the direct Google
+        // path) must pass the panel allowlist: an allowed email domain or a
+        // bootstrap admin. Cloudflare Access already allowlisted its own path at
+        // the edge, so it is trusted here. Anyone else must be pre-created by an
+        // admin (which sets `user` above and skips this gate).
+        if (claim.provider !== "cloudflare-access") {
+          const domain = email.split("@")[1] ?? "";
+          const allowed =
+            this.options.allowedEmailDomains?.has(domain) ||
+            this.options.bootstrapAdminEmails?.has(email);
+          if (!allowed) {
+            throw new ApiError(
+              403,
+              "This account is not allowed — ask an administrator to add you",
+              "NOT_ALLOWED",
+            );
+          }
+        }
         [user] = await tx
           .insert(users)
           .values({
