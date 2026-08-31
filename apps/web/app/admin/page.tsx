@@ -77,13 +77,18 @@ const STATE_LABEL: Record<string, string> = {
 };
 
 export default function AdminOverviewPage() {
-  const { overview, users, requests, nodes, keys, loading, action } =
+  const { overview, users, requests, nodes, keys, policy, loading, action } =
     useAdminData();
   const { t, lang } = useT();
 
   const pending = requests.filter((request) => request.status === "pending");
   const userEmail = (id: string) =>
     users.find((user) => user.id === id)?.email ?? id;
+  // The requester's current per-node key limit (override, else the global default),
+  // so the admin sees "have now → requested".
+  const currentLimit = (userId: string) =>
+    users.find((user) => user.id === userId)?.keyLimitOverride ??
+    policy.defaultKeyLimit;
 
   const [now] = React.useState(() => Date.now());
   const inactiveUsers = React.useMemo(() => {
@@ -384,7 +389,7 @@ export default function AdminOverviewPage() {
               <TableHeader>
                 <TableRow>
                   <TableHead>{t("ov.colEmployee")}</TableHead>
-                  <TableHead>{t("ov.colNewLimit")}</TableHead>
+                  <TableHead>{t("ov.colLimitChange")}</TableHead>
                   <TableHead>{t("ov.colReason")}</TableHead>
                   <TableHead>{t("ov.colDate")}</TableHead>
                   <TableHead className="text-right">{t("common.actions")}</TableHead>
@@ -396,11 +401,20 @@ export default function AdminOverviewPage() {
                     <TableCell className="font-medium">
                       {userEmail(request.userId)}
                     </TableCell>
-                    <TableCell className="font-semibold">
-                      {request.requestedLimit}
+                    <TableCell className="tabular-nums">
+                      <span className="text-muted-foreground">
+                        {currentLimit(request.userId)}
+                      </span>
+                      <span className="mx-1 text-muted-foreground">→</span>
+                      <span className="font-semibold">
+                        {request.requestedLimit}
+                      </span>
+                      <span className="ml-1 text-xs text-success">
+                        (+{request.requestedLimit - currentLimit(request.userId)})
+                      </span>
                     </TableCell>
                     <TableCell className="max-w-xs text-sm text-muted-foreground">
-                      {request.reason}
+                      {request.reason || "—"}
                     </TableCell>
                     <TableCell>{formatDate(request.createdAt, lang)}</TableCell>
                     <TableCell>

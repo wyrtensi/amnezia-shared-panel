@@ -1232,9 +1232,28 @@ export class PostgresControlRepository implements ControlRepository {
   ): Promise<{ id: string; status: string }> => {
     try {
       return await this.options.db.transaction(async (tx) => {
+        // A new request supersedes the user's still-pending one (if any) — the
+        // latest ask replaces the stale one instead of being rejected.
+        await tx
+          .update(quotaRequests)
+          .set({
+            status: "cancelled",
+            reviewNote: "superseded by a newer request",
+            updatedAt: new Date(),
+          })
+          .where(
+            and(
+              eq(quotaRequests.userId, actor.id),
+              eq(quotaRequests.status, "pending"),
+            ),
+          );
         const [created] = await tx
           .insert(quotaRequests)
-          .values({ userId: actor.id, ...request })
+          .values({
+            userId: actor.id,
+            requestedLimit: request.requestedLimit,
+            reason: request.reason ?? "",
+          })
           .returning({ id: quotaRequests.id, status: quotaRequests.status });
         if (!created) throw new Error("Quota request insert returned no row");
         await tx.insert(auditEvents).values({
@@ -1248,6 +1267,7 @@ export class PostgresControlRepository implements ControlRepository {
         return created;
       });
     } catch (error) {
+      // Safety net for a concurrent double-submit racing the supersede above.
       if (String(error).includes("quota_requests_one_pending_per_user")) {
         throw new ApiError(
           409,

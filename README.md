@@ -26,6 +26,10 @@ Sensitive local material belongs in the ignored `secrets/` directory.
 
 ## Documentation
 
+- **[`docs/INSTALL.md`](docs/INSTALL.md) — start here.** Agent-driven install
+  runbook: the inputs to collect, then node + panel + Cloudflare Access with Google
+  Workspace login, the temporary→least-privilege API-token hand-off, and the
+  admin/user policy split. Links to the detailed docs below.
 - [`docs/HOSTING.md`](docs/HOSTING.md) — top-level end-to-end guide: raise the VPN
   node, the control-plane panel, and public hosting via Cloudflare + Access.
 - [`docs/AGENT-HOST-SETUP.md`](docs/AGENT-HOST-SETUP.md) — end-to-end guide for an

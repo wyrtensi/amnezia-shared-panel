@@ -231,8 +231,7 @@ const ru = {
   "quota.reason": "Обоснование",
   "quota.reasonPlaceholder":
     "Опишите, зачем нужны дополнительные ключи (не менее 10 символов).",
-  "quota.reasonMin": "Минимум 10 символов, чтобы отправить (ещё {left}).",
-  "quota.reasonReady": "Можно отправлять.",
+  "quota.reasonOptional": "Необязательно, но желательно кратко пояснить.",
   "quota.sending": "Отправляем…",
   "quota.submit": "Отправить запрос",
 
@@ -283,6 +282,7 @@ const ru = {
   "ov.quotaReqTitle": "Запросы на увеличение лимита",
   "ov.colEmployee": "Сотрудник",
   "ov.colNewLimit": "Новый лимит",
+  "ov.colLimitChange": "Лимит: сейчас → запрос",
   "ov.colReason": "Обоснование",
   "ov.colDate": "Дата",
   "ov.approve": "Одобрить",
@@ -787,8 +787,7 @@ const en = {
   "quota.reason": "Reason",
   "quota.reasonPlaceholder":
     "Explain why you need additional keys (at least 10 characters).",
-  "quota.reasonMin": "At least 10 characters to send ({left} to go).",
-  "quota.reasonReady": "Ready to send.",
+  "quota.reasonOptional": "Optional, but a short note helps.",
   "quota.sending": "Sending…",
   "quota.submit": "Send request",
 
@@ -839,6 +838,7 @@ const en = {
   "ov.quotaReqTitle": "Quota increase requests",
   "ov.colEmployee": "Employee",
   "ov.colNewLimit": "New limit",
+  "ov.colLimitChange": "Limit: now → requested",
   "ov.colReason": "Reason",
   "ov.colDate": "Date",
   "ov.approve": "Approve",

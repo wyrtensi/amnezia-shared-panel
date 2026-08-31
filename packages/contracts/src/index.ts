@@ -61,7 +61,8 @@ export const createKeyRequestSchema = z.object({
 
 export const quotaRequestSchema = z.object({
   requestedLimit: z.int().min(1).max(1_000),
-  reason: z.string().trim().min(10).max(1_000),
+  // Optional — a reason is helpful but not required. Stored as "" when omitted.
+  reason: z.string().trim().max(1_000).optional(),
 });
 
 const nodeApiBaseUrlSchema = z.url().refine((value) => {

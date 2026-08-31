@@ -15,7 +15,6 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { apiRequest } from "@/lib/api";
-import { cn } from "@/lib/utils";
 import { useT } from "@/lib/i18n/provider";
 
 export function QuotaRequestDialog({
@@ -100,25 +99,13 @@ export function QuotaRequestDialog({
             <Label htmlFor="quota-reason">{t("quota.reason")}</Label>
             <Textarea
               id="quota-reason"
-              minLength={10}
               maxLength={1000}
-              required
               placeholder={t("quota.reasonPlaceholder")}
               value={reason}
               onChange={(event) => setReason(event.target.value)}
             />
-            {/* Explain why the submit button is disabled (was a silent grey). */}
-            <p
-              className={cn(
-                "text-xs",
-                reason.trim().length < 10
-                  ? "text-warning"
-                  : "text-muted-foreground",
-              )}
-            >
-              {reason.trim().length < 10
-                ? t("quota.reasonMin", { left: 10 - reason.trim().length })
-                : t("quota.reasonReady")}
+            <p className="text-xs text-muted-foreground">
+              {t("quota.reasonOptional")}
             </p>
           </div>
           <DialogFooter>
@@ -129,7 +116,7 @@ export function QuotaRequestDialog({
             >
               {t("common.cancel")}
             </Button>
-            <Button type="submit" disabled={busy || reason.trim().length < 10}>
+            <Button type="submit" disabled={busy}>
               {busy ? t("quota.sending") : t("quota.submit")}
             </Button>
           </DialogFooter>
