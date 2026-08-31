@@ -135,6 +135,8 @@ via `CONTROL_API_URL` plus one of, in priority order:
 | --- | --- |
 | `overview` / `users` / `keys` / `nodes` / `audit [--limit=N]` / `policy` | State snapshots |
 | `quota [--all]` | Key-limit requests (pending by default; `--all` = every state), with ids, `current → requested`, and date |
+| `version` | Panel version + commit of the running control-api |
+| `traffic [--days=N]` | Aggregate traffic series across all users (JSON) |
 
 **User management** (every command below takes a user **id or email**):
 
@@ -145,6 +147,9 @@ via `CONTROL_API_URL` plus one of, in priority order:
 | `user-limit <id\|email> <n\|default>` | Set the key-limit override (`default` clears it) |
 | `user-disable <id\|email>` | Offboard: disable the user and revoke their keys |
 | `user-enable <id\|email>` | Reinstate a disabled user |
+| `user-nodes <id\|email> <all\|none\|uuid,…>` | Per-user node availability — `all` = every node, overriding the global allowed-node list (this is how an admin sees every node while regular users are limited) |
+| `user-routes <id\|email> [--wl-domains=] [--wl-cidrs=] [--bl-domains=] [--bl-cidrs=]` | Replace a user's custom routes (whitelist/blacklist domains + CIDRs) |
+| `user-create-key <id\|email> --node=<uuid> [--device=] [--protocol=awg3] [--route=full_tunnel]` | Provision a key on behalf of a user |
 | `quota-approve <req-id> [note]` | Approve a quota request (applies the new limit) |
 | `quota-reject <req-id> [note]` | Reject a quota request |
 
@@ -160,6 +165,7 @@ via `CONTROL_API_URL` plus one of, in priority order:
 | `policy-set --<field>=<value> …` | Set portal-policy fields (e.g. `--defaultKeyLimit=10`) |
 | `cf-config --account= --app= --policy=` | Set Cloudflare Access IDs |
 | `cf-token <token>` | Store the Cloudflare API token (encrypted at rest) |
+| `panel-update [--status]` | Trigger the in-panel update (backup → pull → migrate → restart), or show its status |
 
 **Co-located production example** — run inside the control-api container, which already
 carries `PANEL_IDENTITY_SECRET` + `BOOTSTRAP_ADMIN_EMAILS`:

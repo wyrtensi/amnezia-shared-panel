@@ -14,6 +14,7 @@
  */
 
 import { authHeaders } from "./identity.js";
+import { flagOf, positionals, csvList, parseNodeSpec } from "./args.js";
 
 const API = (process.env.CONTROL_API_URL ?? "http://127.0.0.1:3001").replace(
   /\/$/,
@@ -496,11 +497,6 @@ async function cmdAction(
   console.log(`${resource} ${id}: ${action} done`);
 }
 
-const flagOf = (args: string[], name: string): string | undefined => {
-  const found = args.find((arg) => arg.startsWith(`--${name}=`));
-  return found ? found.split("=").slice(1).join("=") : undefined;
-};
-
 async function cmdNodeAdd(args: string[]): Promise<void> {
   const name = flagOf(args, "name");
   const apiBaseUrl = flagOf(args, "api-url");
@@ -579,6 +575,86 @@ async function cmdNodeRemove(args: string[]): Promise<void> {
   console.log(`node ${id} removed`);
 }
 
+async function cmdUserNodes(args: string[]): Promise<void> {
+  const pos = positionals(args);
+  const usage = "Usage: user-nodes <id|email> <all|none|uuid,uuid,…>";
+  const id = await resolveUserId(pos[0], usage);
+  if (pos[1] === undefined) throw new Error(usage);
+  // set-policy REPLACES the user's per-user policy override with this object.
+  const allowedNodeIds = parseNodeSpec(pos[1]);
+  await userAction(id, "set-policy", { allowedNodeIds });
+  const shown =
+    allowedNodeIds === null
+      ? "all"
+      : allowedNodeIds.length
+        ? allowedNodeIds.join(",")
+        : "none";
+  console.log(`user ${pos[0]}: node availability → ${shown}`);
+}
+
+async function cmdUserRoutes(args: string[]): Promise<void> {
+  const pos = positionals(args);
+  const usage =
+    "Usage: user-routes <id|email> [--wl-domains=a,b] [--wl-cidrs=…] [--bl-domains=…] [--bl-cidrs=…]  (replaces the user's custom routes)";
+  const id = await resolveUserId(pos[0], usage);
+  const body = {
+    ru_whitelist: {
+      cidrs: csvList(flagOf(args, "wl-cidrs") ?? ""),
+      domains: csvList(flagOf(args, "wl-domains") ?? ""),
+    },
+    ru_blacklist: {
+      cidrs: csvList(flagOf(args, "bl-cidrs") ?? ""),
+      domains: csvList(flagOf(args, "bl-domains") ?? ""),
+    },
+  };
+  await userAction(id, "set-custom-routes", body);
+  console.log(`user ${pos[0]}: custom routes updated`);
+}
+
+async function cmdUserCreateKey(args: string[]): Promise<void> {
+  const pos = positionals(args);
+  const usage =
+    "Usage: user-create-key <id|email> --node=<uuid> [--device=<label>] [--protocol=awg3|awg2] [--route=full_tunnel|ru_whitelist|ru_blacklist] [--device-type=<type>]";
+  const id = await resolveUserId(pos[0], usage);
+  const nodeId = flagOf(args, "node");
+  if (!nodeId) throw new Error(usage);
+  const body: Record<string, unknown> = { nodeId };
+  const protocol = flagOf(args, "protocol");
+  if (protocol) body.protocol = protocol;
+  const device = flagOf(args, "device");
+  if (device) body.deviceLabel = device;
+  const route = flagOf(args, "route");
+  if (route) body.routeProfile = route;
+  const deviceType = flagOf(args, "device-type");
+  if (deviceType) body.deviceType = deviceType;
+  const result = (await userAction(id, "create-key", body)) as { id?: string };
+  console.log(`key created for ${pos[0]}: ${result?.id ?? "(ok)"}`);
+}
+
+async function cmdVersion(args: string[]): Promise<void> {
+  const info = await api<{ version?: string; commit?: string }>(
+    "/api/admin/version",
+  );
+  if (wantsJson(args)) return json(info);
+  console.log(`version: ${info.version ?? "?"}   commit: ${info.commit ?? "?"}`);
+}
+
+async function cmdTraffic(args: string[]): Promise<void> {
+  const days = Number(flagOf(args, "days")) || 30;
+  const data = await api<unknown>(`/api/admin/traffic?days=${days}`);
+  json(data);
+}
+
+async function cmdPanelUpdate(args: string[]): Promise<void> {
+  if (args.includes("--status")) {
+    json(await api<unknown>("/api/admin/update"));
+    return;
+  }
+  const result = await api<unknown>("/api/admin/update", { method: "POST" });
+  console.log("panel update requested (host updater runs backup → pull → migrate → restart)");
+  json(result);
+}
+
 function usage(): void {
   console.log(`amnezia-panel — control-plane admin CLI
 
@@ -592,6 +668,8 @@ Read:
   audit [--limit=N]        Recent audit events
   quota [--all] [--json]   Key-limit requests (pending by default; --all = every state)
   policy [--json]          Show all panel settings + Cloudflare config
+  version [--json]         Panel version + commit
+  traffic [--days=N]       Aggregate traffic series (JSON)
 
 Users (accept a user id OR email):
   user-create <email> [name] [--admin]   Add a user
@@ -599,6 +677,9 @@ Users (accept a user id OR email):
   user-limit <id|email> <n|default>      Set key-limit override (default = clear)
   user-disable <id|email>                Offboard: disable + revoke their keys
   user-enable <id|email>                 Reinstate a disabled user
+  user-nodes <id|email> <all|none|uuid,…>  Per-user node availability (all=every node; overrides global)
+  user-routes <id|email> [--wl-domains=] [--wl-cidrs=] [--bl-domains=] [--bl-cidrs=]  Replace a user's custom routes
+  user-create-key <id|email> --node=<uuid> [--device=] [--protocol=awg3] [--route=full_tunnel]  Create a key for a user
   quota-approve <request-id> [note]      Approve a quota request (applies the limit)
   quota-reject <request-id> [note]       Reject a quota request
 
@@ -618,6 +699,7 @@ Write:
   cf-token <token>                        Store the Cloudflare API token (encrypted)
   cf-config --account= --app= --policy=   Set Cloudflare Access IDs
   policy-set --<field>=<value> …          Set any panel setting(s), see below
+  panel-update [--status]                 Trigger the in-panel update (or show its status)
 
 policy-set fields:
   Booleans (true/false): allowKeyCreation, allowNodeSelection,
@@ -655,6 +737,12 @@ async function main(): Promise<void> {
       return cmdNodes(args);
     case "audit":
       return cmdAudit(args);
+    case "version":
+      return cmdVersion(args);
+    case "traffic":
+      return cmdTraffic(args);
+    case "panel-update":
+      return cmdPanelUpdate(args);
     case "user-create":
       return cmdUserCreate(args);
     case "user-role":
@@ -665,6 +753,12 @@ async function main(): Promise<void> {
       return cmdUserDisable(args);
     case "user-enable":
       return cmdUserEnable(args);
+    case "user-nodes":
+      return cmdUserNodes(args);
+    case "user-routes":
+      return cmdUserRoutes(args);
+    case "user-create-key":
+      return cmdUserCreateKey(args);
     case "quota":
     case "quota-requests":
       return cmdQuota(args);
