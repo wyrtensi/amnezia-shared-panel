@@ -166,7 +166,7 @@ export function CustomRoutesCard({
         <Callout tone="info">{t("routes.hint")}</Callout>
 
         <div className="space-y-2">
-          <div className="flex items-center gap-1.5">
+          <div className="flex flex-wrap items-center gap-1.5">
             {PROFILES.map((item) => (
               <Button
                 key={item}

@@ -7,7 +7,7 @@
 export function Logo({ className }: { className?: string }) {
   return (
     <svg
-      viewBox="6 12 322 72"
+      viewBox="6 12 310 72"
       className={className}
       role="img"
       aria-label="amnezia Shared Panel"
@@ -39,7 +39,7 @@ export function Logo({ className }: { className?: string }) {
       <text
         x="92"
         y="66"
-        fontFamily="'Unbounded', 'Onest', 'Segoe UI', system-ui, sans-serif"
+        fontFamily="'Onest', 'Segoe UI', system-ui, sans-serif"
         fontSize="32"
         fontWeight="700"
         letterSpacing="-0.5"
