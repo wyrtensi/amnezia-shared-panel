@@ -61,10 +61,27 @@ describe("quotaRequestSchema", () => {
     });
   });
 
-  it("rejects a reason that cannot explain the request", () => {
+  it("treats the reason as optional (any short note, or none, is accepted)", () => {
+    expect(quotaRequestSchema.parse({ requestedLimit: 8 })).toEqual({
+      requestedLimit: 8,
+    });
     expect(
-      quotaRequestSchema.safeParse({ requestedLimit: 8, reason: "more" })
-        .success,
+      quotaRequestSchema.safeParse({ requestedLimit: 8, reason: "more" }).success,
+    ).toBe(true);
+  });
+
+  it("rejects an out-of-range limit or an over-long reason", () => {
+    expect(quotaRequestSchema.safeParse({ requestedLimit: 0 }).success).toBe(
+      false,
+    );
+    expect(
+      quotaRequestSchema.safeParse({ requestedLimit: 2000 }).success,
+    ).toBe(false);
+    expect(
+      quotaRequestSchema.safeParse({
+        requestedLimit: 8,
+        reason: "x".repeat(1001),
+      }).success,
     ).toBe(false);
   });
 });
