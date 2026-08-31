@@ -151,6 +151,12 @@ Read the app's **Audience (AUD)** tag and your team issuer, put them in
 that `https://<panel domain>` sends you to the Google Workspace login and, after
 signing in, into the panel.
 
+> **Team domain is one per Cloudflare account.** `<TEAM>.cloudflareaccess.com` is
+> shared by every Access app on the account, so the login page shows the
+> account/team name — the app is isolated by its **AUD**, not by the login host.
+> Reusing one Google Workspace IdP across apps is fine; never *edit* the shared IdP
+> (that affects every app that uses it). More: [`ROLLOUT.md` §3](./ROLLOUT.md).
+
 ### 3.5 Optional — a direct login that doesn't need Cloudflare
 
 Cloudflare isn't reachable for everyone (some networks in Russia, for example). So
@@ -270,6 +276,10 @@ the panel role still decides admin capability.
 1. **Register the node** in Administration → Nodes: internal name, the public name
    (input #2), `apiBaseUrl` (from Phase 2), and the node API key from Phase 1.
    Confirm it shows healthy and reports `awg3` ([`NODE-CONNECT.md` §3](./NODE-CONNECT.md)).
+   *(Registering several nodes? Repeat this, or use the co-located CLI `node-add`
+   — [`CLI.md`](./CLI.md).)* The global portal policy has an **allowed-node list**
+   that limits which nodes **regular users** may pick; **admins always see every
+   node**. Use it to keep a node admin-only or to stage it before general release.
 2. **Make a test key** for yourself, import the **config file** into the Amnezia
    client (use the config file, not the QR, for split-tunnel profiles — a QR can't
    hold thousands of routes), and confirm the handshake completes and traffic flows.
@@ -283,6 +293,7 @@ the panel role still decides admin capability.
 
 ## Related documents
 
+- [`ROLLOUT.md`](./ROLLOUT.md) — the whole rollout (Cloudflare + nodes + panel) on one page.
 - [`CLI.md`](./CLI.md) — every command for the panel and a node.
 - [`AGENT-HOST-SETUP.md`](./AGENT-HOST-SETUP.md) — node + control-plane install detail.
 - [`CLOUDFLARE-ACCESS.md`](./CLOUDFLARE-ACCESS.md) — Access app, allowlist, two-way sync, token scopes.

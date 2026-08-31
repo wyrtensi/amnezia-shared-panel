@@ -45,24 +45,90 @@ Disk cleanup is limited to rotated logs (`journalctl --vacuum-size`) and
 dangling/obsolete unused images. **Never** `docker system prune -a` or prune
 volumes on a shared host.
 
+### Installing alongside an existing, unrelated Amnezia install
+
+A node can be installed on a host that **already** runs a separate, unrelated
+Amnezia (or other VPN) install **without disrupting it**, because this stack uses
+its **own** container names (`amnezia-awg2` / `amnezia-awg3` /
+`amnezia-node-agent`), its **own** UDP ports, its **own** Docker network, and its
+**own** Compose project (`amnezia-node`). Preflight refuses to adopt a container
+owned by another Compose project.
+
+Always do **read-only recon first** and pick ports that do not clash with whatever
+is already there:
+
+```sh
+docker ps --format '{{.Names}}\t{{.Image}}\t{{.Ports}}'   # existing containers/ports
+ss -H -lun | awk '{print $5}'                             # UDP ports already bound
+```
+
+If the defaults (`51889`/`51890` UDP, `4001` TCP loopback) collide with an
+existing install, choose free ports before deploying — never re-port the other
+tenant's containers.
+
+### Shipping the node-agent image (build once, load on each host)
+
+The node-agent image is **built once** (centrally or on a build host) and
+**shipped** to each node; hosts only **load** the image, they never build it (the
+compose file sets `pull_policy: never` and pins `NODE_AGENT_IMAGE` to an immutable
+`sha256:` ID). Ship it with `docker save` piped into a remote `docker load`:
+
+```sh
+docker save "$NODE_AGENT_IMAGE" | ssh -i ~/.ssh/<NODE_KEY> root@<NODE_HOST> 'docker load'
+```
+
+Then set the same `NODE_AGENT_IMAGE=sha256:<id>` in that host's `infra/node/.env`.
+See [`AGENT-HOST-SETUP.md`](./AGENT-HOST-SETUP.md) for building the image.
+
 ---
 
 ## 2. Reaching the node from the panel
 
 The node-agent is bound to loopback on the server, so the control plane reaches
-it in one of two ways:
+it in one of these ways:
 
-**A. SSH tunnel (default, keeps the agent private).** The panel's worker runs in
-Docker, so the tunnel must bind `0.0.0.0` (not just `127.0.0.1`) for
-`host.docker.internal` to resolve it. Open it on the control-plane host and keep
-it running (a terminal, `autossh`, or a service):
+**Co-located (panel + node on one host) — attach to the node's Docker network.**
+When the panel and the node share a host, add a Compose override that attaches
+`control-api` + `worker` to the node's Docker network, then register the node with
+**`apiBaseUrl: http://amnezia-node-agent:4001`** — the worker reaches the agent
+container by name, no tunnel needed. (Alternatively use the panel's
+`host.docker.internal` route: `apiBaseUrl: http://host.docker.internal:4001`.) See
+[`ROLLOUT.md` §5](./ROLLOUT.md#5-co-location-networking).
+
+When the panel and the node are on **separate** hosts, the agent is loopback-only
+by default, so reach it over an approved private transport:
+
+**A. SSH tunnel (recommended — keeps the agent private and encrypts the hop).**
+The worker runs in Docker and reaches the host via `host.docker.internal`, which
+resolves to the Docker bridge gateway (typically `172.17.0.1`). Bind the tunnel on
+**that gateway IP** — a private address, so the forwarded port is *not* exposed on
+the public internet — using one local port per remote node (e.g. `4105`, `4106`, …).
+
+Use a **dedicated** key, never your personal SSH key: generate it on the panel host
+and add its public key to each node's `authorized_keys` (keep the private key in
+`secrets/` too, and never publish it).
 
 ```bash
-ssh -N -L 0.0.0.0:4001:127.0.0.1:4001 -i ~/.ssh/<NODE_KEY> root@<NODE_HOST>
+# on the panel host, once:
+ssh-keygen -t ed25519 -f /root/.ssh/panel_nodes_key -N '' -C panel-to-nodes
+#   then append /root/.ssh/panel_nodes_key.pub to each node's ~/.ssh/authorized_keys
+
+# one persistent tunnel per node, as a systemd service (ExecStart):
+autossh -M 0 -N -o ServerAliveInterval=30 -o ExitOnForwardFailure=yes \
+  -i /root/.ssh/panel_nodes_key \
+  -L 172.17.0.1:4105:127.0.0.1:4001 root@<NODE_HOST>
 ```
 
-- `0.0.0.0:4001` is reachable from the Docker network as `host.docker.internal:4001`.
-- If the tunnel drops, the panel shows the node unhealthy with `lastError: "fetch failed"`.
+Register that node with **`apiBaseUrl: http://host.docker.internal:4105`**, and
+verify the panel reaches it:
+
+```bash
+docker compose -f infra/prod/compose.yaml exec control-api \
+  wget -qO- http://host.docker.internal:4105/healthz     # -> {"ok":true}
+```
+
+- If a tunnel drops, `autossh` reconnects; meanwhile the panel shows that node
+  unhealthy with `lastError: "fetch failed"` until the next successful poll.
 
 **B. Directly exposed agent (simpler URL, needs TLS).** If you publish the
 node-agent on the server behind TLS + the `x-api-key` (e.g. via a reverse proxy),

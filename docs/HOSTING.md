@@ -111,10 +111,11 @@ Do these in order; each links to the doc that owns the detail.
 2. **Open the private transport** (SSH tunnel) and **register the node** in the
    panel — [`AGENT-HOST-SETUP.md` Part B](./AGENT-HOST-SETUP.md) /
    [`NODE-CONNECT.md` §2–3](./NODE-CONNECT.md).
-3. **Run the control plane** — [`AGENT-HOST-SETUP.md` Part C](./AGENT-HOST-SETUP.md).
-   For production, use the same `infra/dev` compose shape but with the
-   production identity wiring in §5.4 below (there is no separate `infra/prod`
-   stack in the repo).
+3. **Run the control plane.** In production use the **`infra/prod`** stack (loopback
+   ports `5430`/`5431`, pulls the published image) with the identity wiring in §5.4
+   below — see [`ROLLOUT.md`](./ROLLOUT.md) and
+   [`CLOUDFLARE-SETUP.md` §2](./CLOUDFLARE-SETUP.md). For a local/dev stack, see
+   [`AGENT-HOST-SETUP.md` Part C](./AGENT-HOST-SETUP.md).
 4. **Put the panel behind Cloudflare + Access** — §4 and §5 of this guide.
 5. **Verify the panel opens with the VPN OFF** — §5.5. This is a hard
    requirement, not a nicety.
@@ -143,9 +144,10 @@ one:
   only accepts 443 from Cloudflare's IP ranges (or use an origin cert /
   Authenticated Origin Pulls).
 - **Cloudflare Tunnel (`cloudflared`).** Run a tunnel from the control-plane host
-  to Cloudflare and route `panel.<your-domain>` to `http://localhost:3000`. The
-  origin then needs no inbound ports at all. (Not shipped in this repo — install
-  and configure `cloudflared` on the host if you take this route.)
+  to Cloudflare and route `panel.<your-domain>` to the panel web port
+  (`http://localhost:5430` for the `infra/prod` stack). The origin then needs no
+  inbound ports at all. This is the recommended path — see
+  [`ROLLOUT.md`](./ROLLOUT.md) and [`CLOUDFLARE-SETUP.md`](./CLOUDFLARE-SETUP.md).
 
 Either way the public hostname terminates at Cloudflare first, which is what lets
 Access sit in front of it and what keeps the panel reachable off-VPN.
@@ -195,26 +197,24 @@ first login by an address listed in `BOOTSTRAP_ADMIN_EMAILS` becomes an admin.
 
 ### 5.4 Wire the panel to Access (production env)
 
-Run `apps/control-api` with production identity. Relative to
-`apps/control-api/.env.example`:
+The **`infra/prod`** stack runs `control-api` with `NODE_ENV=production` already
+set in `compose.yaml`; you supply the identity values in `infra/prod/.env`:
 
 ```
-NODE_ENV=production
 CF_ACCESS_ISSUER=https://<your-team>.cloudflareaccess.com
 CF_ACCESS_AUDIENCE=<application AUD tag from §5.2>
 BOOTSTRAP_ADMIN_EMAILS=you@company.tld,ops@company.tld
-# DATABASE_URL / CONFIG_ENCRYPTION_* as in the dev stack
+# POSTGRES_PASSWORD / CONFIG_ENCRYPTION_* / PANEL_IMAGE also in infra/prod/.env
 ```
 
-And run `apps/web` **without** the dev identity shim — do **not** set
-`DEV_IDENTITY_ENABLED=true` / `DEV_USER_EMAIL` in production; that header path is
-a dev-only stand-in for Access and would bypass real identity. In production the
-web app only forwards the real `Cf-Access-Jwt-Assertion` header it receives from
-Access.
+The production `web` service carries **no** dev identity shim — it only forwards
+the real `Cf-Access-Jwt-Assertion` header it receives from Access. (The dev-only
+`x-dev-user-email` path is a stand-in for Access and must never be enabled in
+production.)
 
-> There is no `infra/prod` compose in the tree. Production reuses the `infra/dev`
-> stack shape with `NODE_ENV=production` and the Access env above; keep postgres,
-> control-api, and worker off the public network exactly as the dev stack does.
+> The `infra/prod` stack binds web/control-api to **loopback** (`5430`/`5431`) and
+> never publishes postgres — see [`CLOUDFLARE-SETUP.md` §2](./CLOUDFLARE-SETUP.md).
+> The dev-bind ports (`3000`/`3001`) in §1 apply to the local `infra/dev` stack.
 
 ### 5.5 Verify with the VPN OFF
 
@@ -243,7 +243,7 @@ interchangeable.
 | | **Access service token** | **Cloudflare API token** |
 | --- | --- | --- |
 | Purpose | Authenticate a **machine** *through* an Access-protected app (skip the interactive Google login). | **Manage** Cloudflare resources — create/update Access apps and policies — via the REST API. |
-| Presented as | Request headers to the protected origin: `CF-Access-Client-Id` (ends with **`.access`**) + `CF-Access-Client-Secret` (starts with **`cfast_`**). | `Authorization: Bearer <token>` to `https://api.cloudflare.com`. |
+| Presented as | Two custom request headers to the protected origin: `CF-Access-Client-Id` + `CF-Access-Client-Secret`. | `Authorization: Bearer <token>` to `https://api.cloudflare.com`. |
 | Scope | One Access application, via a **Service Auth** policy that Includes the token. | Account/zone permissions, e.g. **Access: Apps and Policies — Edit**. |
 | Manage the allowlist as code? | **No** — it only gets a client past a gate. | **Yes** — this is the one you need. |
 
@@ -338,8 +338,9 @@ deactivating everyone.
 
 ## Related documents
 
+- [`docs/ROLLOUT.md`](./ROLLOUT.md) — the end-to-end rollout (Cloudflare + nodes + panel).
 - [`docs/AGENT-HOST-SETUP.md`](./AGENT-HOST-SETUP.md) — full node + control-plane
   install runbook.
-- [`docs/NODE-CONNECT.md`](./NODE-CONNECT.md) — the live production node.
+- [`docs/NODE-CONNECT.md`](./NODE-CONNECT.md) — connecting a node.
 - [`docs/CLOUDFLARE-ACCESS.md`](./CLOUDFLARE-ACCESS.md) — access-removal
   reconcile.

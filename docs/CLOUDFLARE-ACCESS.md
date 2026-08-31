@@ -37,10 +37,16 @@ Fill these in with your real values; the repo hardcodes none of them.
 
 ## Part A — Create the Access application
 
-This mirrors a real reference app the operator already runs
-(`app.example.com`, another self-hosted app behind Access):
-one hostname, a single Allow policy whose rule is an **email allowlist**, and
-**Google** as the sole login method. Reproduce that shape for the panel.
+This mirrors the shape used for any other self-hosted app behind Access: one
+hostname, a single Allow policy whose rule is an **email allowlist**, and
+**Google Workspace** as the sole login method. Reproduce that shape for the panel.
+
+> **The Google Workspace IdP is shared across every app on the account.** If the
+> account already has a working Google login method, **reference** it — do not
+> create a duplicate and do not edit the shared IdP to suit this app (editing it
+> affects every application that uses it). Likewise the Zero Trust **team domain**
+> (`<TEAM>.cloudflareaccess.com`) is one per account and shared by all apps; each
+> app is isolated only by its own **AUD** and its own policy.
 
 Everything here is the Zero Trust dashboard
 (`https://one.dash.cloudflare.com` → your account → **Access**). The equivalent
@@ -215,11 +221,25 @@ ACCESS_SYNC_ENABLED=true
 ```
 
 Its credentials (account/app/policy ids + the Bearer API token) are **not** env
-vars: an admin stores them **encrypted** via **Administration → policy** (the
-`portal_policy` row). This supersedes running Direction 1 and Direction 2 as two
+vars: an admin stores them **encrypted** via **Administration → Policy →
+Cloudflare Access** (the `portal_policy` row), or headlessly with the co-located
+CLI:
+
+```sh
+amnezia-panel cf-config --account=<ACCOUNT_ID> --app=<APP_ID> --policy=<POLICY_ID>
+amnezia-panel cf-token <CF_API_TOKEN>     # stored encrypted, write-only
+```
+
+(see [`CLI.md`](./CLI.md) — the CLI mints an admin identity from
+`PANEL_IDENTITY_SECRET`, so an operator on the panel host configures this without a
+browser login). This supersedes running Direction 1 and Direction 2 as two
 separate env-driven tasks (which would fight — see the safety note at the end of
 Direction 2). The per-direction sections below remain the reference for the
 underlying Cloudflare API and the exact token scopes.
+
+Bootstrap admins (`BOOTSTRAP_ADMIN_EMAILS`) are **pinned**: the sync never drops
+them from the policy `include` list and never disables them, so the policy can
+never empty itself and lock everyone out of the edge.
 
 How it stays consistent — a **3-way merge** against a stored baseline (the email
 set last synced), so the two kinds of "active in the panel, absent from
@@ -336,9 +356,9 @@ Tokens → Create Token → Custom token**), scoped to the specific account:
 
 This is a **Bearer API token** presented as
 `Authorization: Bearer <token>` to `https://api.cloudflare.com`. It is **not** an
-Access **service token** — a service token (`CF-Access-Client-Id` ending
-`.access` + `CF-Access-Client-Secret` starting `cfast_`) only gets a machine
-*past* an Access gate and grants **no** management ability. See
+Access **service token** — a service token (two custom request headers,
+`CF-Access-Client-Id` + `CF-Access-Client-Secret`) only gets a machine *past* an
+Access gate and grants **no** management ability. See
 [`HOSTING.md` §6](./HOSTING.md) for the full side-by-side; do not mix them up.
 
 **How the panel stores it.** The token is a management credential, so the panel
