@@ -17,6 +17,19 @@ COPY apps apps
 COPY packages packages
 RUN pnpm install --frozen-lockfile
 RUN pnpm build
+# Slim the image: drop dev dependencies (typescript, eslint, vitest, tsx,
+# drizzle-kit, tailwind, @types, ...). Everything runs from compiled dist / the
+# built .next, so only prod deps are needed at runtime. Migrations run from the
+# compiled packages/db/dist/migrate.js (no tsx).
+# Reinstall with only prod dependencies: this drops dev deps (typescript, eslint,
+# vitest, tsx, drizzle-kit, tailwind, @types, ...) AND, unlike `pnpm prune`,
+# rebuilds the workspace symlink farm intact — so `node <pkg>/dist/main.js`
+# resolves its deps. Everything runs from compiled dist / the built .next.
+# CI=true lets pnpm remove the dev-dep modules non-interactively (no TTY in build).
+RUN CI=true pnpm install --prod --frozen-lockfile
+# Drop the Next.js build cache — `next start` serves the built output and never
+# reads .next/cache (only `next build`/`next dev` do). ~150 MB of pure waste.
+RUN rm -rf apps/web/.next/cache
 
 FROM node:24.11.1-alpine AS runtime
 

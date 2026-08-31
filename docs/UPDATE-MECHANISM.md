@@ -1,72 +1,91 @@
-# Update mechanism — design (deferred)
+# Update mechanism — as built
 
-Parked while authorization (Cloudflare Access) is built first. This captures the
-agreed design so we can pick it up later.
+The panel updates itself on demand from the Administration overview: a **Panel
+update** card shows the running version and an **Обновить панель** button. The
+button never touches Docker directly (control-api runs *inside* compose and
+cannot restart the stack from within); instead a host-side systemd worker runs
+`infra/prod/update.sh`.
 
-## Goal
+## Flow
 
-Update the panel (and, where possible, the Amnezia server containers) safely:
-- **Button** to update on demand (default), plus an **auto-update toggle**.
-- **Data must never reset** on update (DB, config keyring, AWG peer state).
-- **Backups** before every update (DB dump → local + Cloudflare R2).
-- Runs in **any Docker environment**, multi-arch (amd64 + arm64).
+```
+Admin clicks "Обновить панель"
+  → POST /api/admin/update  (control-api, admin only)
+      → writes {spool}/request.json           (atomic: temp + rename)
+  → host: panel-updater.path notices request.json
+      → starts panel-updater.service (oneshot)
+          → panel-updater.sh:
+              flock → read request id → rm request.json
+              → bash infra/prod/update.sh
+                  (backup DB → down → drop old image → pull → migrate → up)
+              → writes {spool}/result.json  {id, finishedAt, ok, message}
+  → panel: GET /api/admin/update reflects pending → lastResult
+```
 
-## Agreed architecture
+The button is a **live view of the spool**, so it is reload-safe and survives the
+brief restart while the panel updates itself: the card keeps polling, and once the
+web/api come back it reads `result.json` and reports success/failure.
 
-Single multi-arch image on **GHCR** + an **isolated updater** sidecar. The web
-process NEVER runs Docker commands (that would be an RCE surface) — it only
-writes a request file that the updater picks up.
+Data is never reset: Postgres data, the config-encryption keyring, and AWG peer
+state live in named volumes / on the node, untouched by `pull` + `up -d`.
+`update.sh` runs `scripts/backup-db.sh` first and aborts the update if the backup
+fails.
 
-1. **Release CI** (`.github/workflows/release.yml`): on a `v*` tag, build the app
-   image for amd64+arm64 and push `ghcr.io/wyrtensi/amnezia-shared-panel:<ver>` + `:latest`.
-   The image already runs web / control-api / worker via different `command`s
-   (as `infra/dev` does), so it's one image, not three.
+## Pieces
 
-2. **Prod compose** (`infra/prod/compose.yaml`): pulls the GHCR image (tag via
-   `PANEL_IMAGE_TAG`, default `latest`). Postgres data, the config-encryption
-   keyring, and AWG state live in **named volumes** so `pull` + `up -d` never
-   touches them. Includes the updater sidecar.
+| Piece | File | Role |
+| --- | --- | --- |
+| API | `apps/control-api/src/updateController.ts` | Write the request file, read status. `GET/POST /api/admin/update`. |
+| UI | `apps/web/components/admin/panel-update-card.tsx` | Version + button + live status on the admin overview. |
+| Spool mount | `infra/prod/compose.yaml` (control-api) | `UPDATE_SPOOL_DIR=/var/run/panel-update`, bind-mounted from `UPDATE_SPOOL_HOST_DIR`. |
+| Host worker | `infra/prod/panel-updater.sh` | Runs `update.sh`, writes the result. |
+| Trigger | `infra/prod/panel-updater.path` + `.service` | systemd path unit → oneshot service. |
+| Updater | `infra/prod/update.sh` | Backup → down → drop old image → pull → migrate → up (disk-safe for a tiny box). |
+| Installer | `infra/prod/install-updater.sh` | One-time host install of the units + spool. |
 
-3. **Updater sidecar** (`infra/prod/updater/`): a tiny container with
-   `/var/run/docker.sock`, the compose file, and a shared `panel-control` volume
-   mounted. Loop:
-   - watch `panel-control/update.request` (written by control-api on button press);
-   - on request → `backup-db.sh` (→ R2) → `docker compose pull` → run migrations
-     → `docker compose up -d` → write `panel-control/update.status`.
-   - honor an `auto` schedule when auto-update is enabled.
-   The request file carries only a trigger + optional target tag — never shell
-   input — so there is no command injection path.
+## Install (one-time, on the server)
 
-4. **Control-api + UI**:
-   - `GET /api/admin/version` (exists: APP_VERSION / GIT_SHA build args).
-   - `GET /api/admin/update` → current version + latest available (compare the
-     running image digest against `ghcr.io/.../latest` via the registry API) + last
-     updater status.
-   - `POST /api/admin/update` → write the request file (admin only).
-   - Auto-update toggle stored in `portal_policy` (new `auto_update` column).
-   - Admin "Обновление" card: version, "доступно обновление", "Обновить" button,
-     auto toggle.
+The feature is **inert until the host worker is installed** — the card shows
+"механизм обновления не установлен" and the button is disabled. To enable it, from
+the repo root on the server:
 
-5. **Node updates**: node cards show the node-agent version (from `GET /server`).
-   The node itself auto-updates its containers via **watchtower** already running
-   on it (per node constraints) — the panel surfaces the version but does not push
-   node updates directly (node-agent has no update endpoint, only `/server/reboot`).
+```bash
+sudo bash infra/prod/install-updater.sh
+```
 
-## Backups
+That creates the spool dir owned by the container uid (1000), installs the
+systemd `panel-updater.path` + `.service` pointed at this checkout, and enables
+the watcher. Then, if you changed the default spool path, set
+`UPDATE_SPOOL_HOST_DIR` in `infra/prod/.env` and recreate control-api:
 
-`scripts/backup-db.sh` already does an atomic gzipped `pg_dump`. Extend the updater
-to also push the dump to **Cloudflare R2** (S3-compatible; creds in
-`secrets/cloudflare.md`). AWG peer state is in host volumes and is captured by the
-node-agent `GET /server/backup`.
+```bash
+docker compose -f infra/prod/compose.yaml up -d control-api
+```
 
-## Cannot be verified in dev
+Diagnostics: `systemctl status panel-updater.path` and
+`journalctl -u panel-updater.service -n 50`.
 
-The real update cycle needs a **published GHCR image** and a **production deploy**;
-the dev stack builds images locally. Build it, verify structurally (compose config,
-script lint), then exercise the full cycle on the server.
+## Design choice: host systemd worker, not a docker.sock sidecar
 
-## Blocking decision (when resumed)
+An earlier draft proposed a sidecar container with `/var/run/docker.sock`. The
+implemented design uses a host systemd path unit instead — control-api gets **no**
+Docker access (smaller RCE surface), and the request file carries only a trigger
+id, never shell input. On the tiny co-located box this is the simpler, safer
+option.
 
-Confirmed approach = custom isolated updater sidecar (above). Off-the-shelf
-Watchtower alone is insufficient because it does not run DB migrations, which must
-run with each image update to keep data consistent.
+## Not built (possible extensions)
+
+- **Auto-update toggle** — the current button is on-demand only. An `auto_update`
+  column on `portal_policy` plus a scheduled `panel-updater.timer` would add it.
+- **"Update available" check** — the card shows the running version but does not
+  compare it against the latest GHCR digest. Add a registry query to
+  `updateController.status()` to surface availability.
+- **Backup → R2** — `scripts/backup-db.sh` writes a local gzipped dump; pushing it
+  to Cloudflare R2 (creds in `secrets/`) is not wired in.
+
+## Node updates
+
+Node cards surface the node-agent version (`GET /server`). The node auto-updates
+its own containers via the **watchtower** already running on it; the panel does
+not push node updates (node-agent exposes no update endpoint, only
+`/server/reboot`).

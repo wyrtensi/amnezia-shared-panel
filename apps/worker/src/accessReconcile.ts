@@ -166,3 +166,123 @@ export function createAccessWriteback(options: {
     log(`access-writeback: synced ${emails.length} email(s) to the Access policy.`);
   };
 }
+
+const normalizeEmail = (email: string): string => email.trim().toLowerCase();
+
+/**
+ * Two-way Cloudflare Access sync (the "2 side" policy editor).
+ *
+ * A single task reconciles the panel's active-user set against the Access
+ * policy's `include` email list in BOTH directions, using a stored baseline
+ * (the set last synced) to tell the two kinds of "active in panel, absent from
+ * Cloudflare" apart:
+ *
+ *   - added in the PANEL (not in the baseline) → push it to Cloudflare, never
+ *     disable — this protects a freshly-added user before the write-back runs;
+ *   - removed in CLOUDFLARE (in the baseline, now gone) → disable that panel
+ *     user and revoke their keys.
+ *
+ * The panel is the source of truth for ADDING users: an unknown email added
+ * directly in the Cloudflare policy is not turned into a panel account (there is
+ * nothing to create) — the write-back reasserts the panel's set, so add users in
+ * the panel. Removing a user in Cloudflare IS honoured (disable). Non-email
+ * rules (email_domain, groups, ...) are always preserved. Safe by construction:
+ * unconfigured or "no active users" are no-ops that never wipe the allowlist.
+ */
+export function createAccessSync(options: {
+  repository: {
+    getCloudflareConfig: () => Promise<CloudflareConfig | null>;
+    listActiveUserEmails: () => Promise<string[]>;
+    getAccessSyncBaseline: () => Promise<string[]>;
+    setAccessSyncBaseline: (emails: string[]) => Promise<void>;
+    deactivateByEmail: (
+      emails: string[],
+    ) => Promise<{ deactivated: string[]; skippedAdmins: string[] }>;
+  };
+  createClient?: (config: CloudflareConfig) => CloudflareAccessClient;
+  // Emails that must never be removed from Cloudflare or disabled (bootstrap
+  // admins) even if they are not active panel users — avoids self-lockout.
+  bootstrapAdminEmails?: string[];
+  log?: (message: string) => void;
+}): () => Promise<void> {
+  const {
+    repository,
+    createClient = createCloudflareAccessClient,
+    bootstrapAdminEmails = [],
+    log = () => undefined,
+  } = options;
+  const pinned = bootstrapAdminEmails.map(normalizeEmail).filter(Boolean);
+  const pinnedSet = new Set(pinned);
+
+  return async () => {
+    const config = await repository.getCloudflareConfig();
+    if (!config) {
+      log("access-sync: Cloudflare not configured — skipping.");
+      return;
+    }
+
+    const client = createClient(config);
+    const policy = await client.getPolicy();
+    const include = Array.isArray(policy.include) ? policy.include : [];
+    const preserved = include.filter((rule) => !rule.email?.email);
+    const cfEmails = new Set(
+      include
+        .map((rule) => rule.email?.email?.toLowerCase())
+        .filter((value): value is string => Boolean(value)),
+    );
+
+    const activeSet = new Set(
+      (await repository.listActiveUserEmails()).map(normalizeEmail).filter(Boolean),
+    );
+    const baseline = (await repository.getAccessSyncBaseline()).map(normalizeEmail);
+
+    // CF → panel: emails that were synced before (in the baseline) and are still
+    // active panel users, but have since been removed from the Cloudflare policy.
+    // Disable them (targeted — never touches a concurrently-added user). Pinned
+    // bootstrap admins are exempt.
+    const cfRemoved = baseline.filter(
+      (email) =>
+        activeSet.has(email) && !cfEmails.has(email) && !pinnedSet.has(email),
+    );
+    if (cfRemoved.length > 0) {
+      const result = await repository.deactivateByEmail(cfRemoved);
+      if (result.deactivated.length > 0 || result.skippedAdmins.length > 0) {
+        log(
+          `access-sync: disabled ${result.deactivated.length} account(s) removed from Cloudflare; ` +
+            `left ${result.skippedAdmins.length} admin(s) for manual review.`,
+        );
+      }
+    }
+
+    // panel → CF: the desired allowlist is the active users AFTER the disable
+    // step (re-read so freshly-disabled accounts drop out) plus pinned admins.
+    const desired = [
+      ...new Set([
+        ...(await repository.listActiveUserEmails())
+          .map(normalizeEmail)
+          .filter(Boolean),
+        ...pinned,
+      ]),
+    ];
+    if (desired.length === 0) {
+      log("access-sync: no active users — skipping write-back (safety guard).");
+      return; // Keep the old baseline; never treat "empty" as "remove everyone".
+    }
+
+    const desiredSet = new Set(desired);
+    const cfInSync =
+      cfEmails.size === desiredSet.size &&
+      [...desiredSet].every((email) => cfEmails.has(email));
+    if (!cfInSync) {
+      const nextInclude: CfAccessRule[] = [
+        ...preserved,
+        ...desired.map((email) => ({ email: { email } })),
+      ];
+      await client.updatePolicy({ ...policy, include: nextInclude });
+      log(`access-sync: pushed ${desired.length} email(s) to the Access policy.`);
+    }
+
+    // Record what Cloudflare now reflects so the next run can diff against it.
+    await repository.setAccessSyncBaseline(desired);
+  };
+}

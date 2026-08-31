@@ -357,6 +357,11 @@ export const portalPolicy = pgTable(
     cfApiTokenNonce: text("cf_api_token_nonce"),
     cfApiTokenAuthTag: text("cf_api_token_auth_tag"),
     cfApiTokenKeyVersion: integer("cf_api_token_key_version"),
+    // Baseline for the two-way Access sync: the email set last reconciled with
+    // the Cloudflare policy. The 3-way merge compares the current panel set and
+    // the current CF set against this to tell a panel-side add (protect it) from
+    // a CF-side removal (disable the panel user). Null until the first sync.
+    cfAccessSyncedEmails: jsonb("cf_access_synced_emails").$type<string[]>(),
     ...timestamps,
   },
   (table) => [

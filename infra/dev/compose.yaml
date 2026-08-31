@@ -32,7 +32,9 @@ services:
   migrate:
     <<: *app
     restart: "no"
-    command: ["pnpm", "--filter", "@amnezia/db", "db:migrate"]
+    # Run the compiled migrator (no tsx) so the runtime image can drop dev deps.
+    # cd into the package so drizzle's "./migrations" folder resolves.
+    command: ["sh", "-c", "cd packages/db && node dist/migrate.js"]
     depends_on:
       postgres:
         condition: service_healthy

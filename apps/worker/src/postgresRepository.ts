@@ -64,6 +64,9 @@ export type PostgresWorkerRepositoryOptions = {
   jobLeaseMs?: number;
 };
 
+// The transaction handle drizzle passes to `db.transaction(async (tx) => ...)`.
+type DbTransaction = Parameters<Parameters<Database["transaction"]>[0]>[0];
+
 const cleanReason = (reason: string): string =>
   reason.replace(/[\r\n\t]+/g, " ").slice(0, 2_000);
 
@@ -288,6 +291,62 @@ export class PostgresWorkerRepository
     });
   };
 
+  // Disable one user and queue their keys for revocation, inside a transaction.
+  // Shared by reconcileAccess (allowlist mode) and deactivateByEmail (targeted).
+  private disableAndRevoke = async (
+    tx: DbTransaction,
+    user: { id: string; email: string },
+  ): Promise<void> => {
+    const revocableStates = [
+      "provisioning",
+      "active",
+      "disabled",
+      "failed",
+    ] as const;
+    await tx
+      .update(users)
+      .set({
+        status: "disabled",
+        disabledAt: new Date(),
+        deactivationReason: "access_removed",
+        updatedAt: new Date(),
+      })
+      .where(eq(users.id, user.id));
+
+    const keysToRevoke = await tx
+      .update(vpnKeys)
+      .set({ state: "revoking", updatedAt: new Date() })
+      .where(
+        and(
+          eq(vpnKeys.ownerId, user.id),
+          inArray(vpnKeys.state, [...revocableStates]),
+        ),
+      )
+      .returning({ id: vpnKeys.id });
+
+    for (const key of keysToRevoke) {
+      await tx
+        .insert(jobOutbox)
+        .values({
+          type: "vpn-key.revoke",
+          deduplicationKey: `vpn-key.revoke:${key.id}`,
+          payload: { keyId: key.id },
+        })
+        .onConflictDoNothing();
+    }
+
+    await tx.insert(auditEvents).values({
+      actorType: "system",
+      action: "user.access_revoked",
+      targetType: "user",
+      targetId: user.id,
+      metadata: {
+        email: user.email,
+        keysQueuedForRevoke: keysToRevoke.length,
+      },
+    });
+  };
+
   reconcileAccess = async (
     allowedEmails: string[],
   ): Promise<AccessReconcileResult> => {
@@ -297,12 +356,6 @@ export class PostgresWorkerRepository
       return { deactivated: [], skippedAdmins: [] };
     }
     const allowed = new Set(allowedEmails.map((email) => email.toLowerCase()));
-    const revocableStates = [
-      "provisioning",
-      "active",
-      "disabled",
-      "failed",
-    ] as const;
 
     return this.options.db.transaction(async (tx) => {
       const active = await tx
@@ -321,54 +374,65 @@ export class PostgresWorkerRepository
           skippedAdmins.push(user.email);
           continue;
         }
-
-        await tx
-          .update(users)
-          .set({
-            status: "disabled",
-            disabledAt: new Date(),
-            deactivationReason: "access_removed",
-            updatedAt: new Date(),
-          })
-          .where(eq(users.id, user.id));
-
-        const keysToRevoke = await tx
-          .update(vpnKeys)
-          .set({ state: "revoking", updatedAt: new Date() })
-          .where(
-            and(
-              eq(vpnKeys.ownerId, user.id),
-              inArray(vpnKeys.state, [...revocableStates]),
-            ),
-          )
-          .returning({ id: vpnKeys.id });
-
-        for (const key of keysToRevoke) {
-          await tx
-            .insert(jobOutbox)
-            .values({
-              type: "vpn-key.revoke",
-              deduplicationKey: `vpn-key.revoke:${key.id}`,
-              payload: { keyId: key.id },
-            })
-            .onConflictDoNothing();
-        }
-
-        await tx.insert(auditEvents).values({
-          actorType: "system",
-          action: "user.access_revoked",
-          targetType: "user",
-          targetId: user.id,
-          metadata: {
-            email: user.email,
-            keysQueuedForRevoke: keysToRevoke.length,
-          },
-        });
+        await this.disableAndRevoke(tx, user);
         deactivated.push(user.email);
       }
 
       return { deactivated, skippedAdmins };
     });
+  };
+
+  // Disable EXACTLY the given emails (active non-admins), revoking their keys.
+  // Unlike reconcileAccess ("disable everyone not in the allowlist"), this
+  // targets an explicit set, so a user created concurrently is never touched —
+  // used by the two-way Access sync to honour a Cloudflare-side removal.
+  deactivateByEmail = async (
+    emails: string[],
+  ): Promise<AccessReconcileResult> => {
+    const targets = new Set(
+      emails.map((email) => email.trim().toLowerCase()).filter(Boolean),
+    );
+    if (targets.size === 0) return { deactivated: [], skippedAdmins: [] };
+
+    return this.options.db.transaction(async (tx) => {
+      const active = await tx
+        .select({ id: users.id, email: users.email, role: users.role })
+        .from(users)
+        .where(eq(users.status, "active"));
+
+      const deactivated: string[] = [];
+      const skippedAdmins: string[] = [];
+
+      for (const user of active) {
+        if (!targets.has(user.email.toLowerCase())) continue;
+        if (user.role === "admin") {
+          skippedAdmins.push(user.email);
+          continue;
+        }
+        await this.disableAndRevoke(tx, user);
+        deactivated.push(user.email);
+      }
+
+      return { deactivated, skippedAdmins };
+    });
+  };
+
+  // Two-way Access sync baseline: the email set last reconciled with Cloudflare.
+  getAccessSyncBaseline = async (): Promise<string[]> => {
+    const [row] = await this.options.db
+      .select({ emails: portalPolicy.cfAccessSyncedEmails })
+      .from(portalPolicy)
+      .limit(1);
+    return row?.emails ?? [];
+  };
+
+  setAccessSyncBaseline = async (emails: string[]): Promise<void> => {
+    // portal_policy is a singleton (id = true) that exists once Cloudflare has
+    // been configured — the only path that calls this.
+    await this.options.db
+      .update(portalPolicy)
+      .set({ cfAccessSyncedEmails: emails, updatedAt: new Date() })
+      .where(eq(portalPolicy.id, true));
   };
 
   getCloudflareConfig = async (): Promise<{

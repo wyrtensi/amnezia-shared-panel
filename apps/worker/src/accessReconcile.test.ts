@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   createAccessReconciler,
+  createAccessSync,
   createAccessWriteback,
   createAllowlistDirectory,
   createCloudflareDirectory,
@@ -202,5 +203,142 @@ describe("createAccessWriteback", () => {
     });
     await writeback();
     expect(updatePolicy).not.toHaveBeenCalled();
+  });
+});
+
+describe("createAccessSync", () => {
+  // A mock two-way-sync repository. `active` is mutable so deactivateByEmail can
+  // drop disabled users, letting the write-back step re-read the reduced set.
+  const makeRepo = (init: {
+    config?: typeof CF_CONFIG | null;
+    active: string[];
+    baseline: string[];
+  }) => {
+    const active = new Set(init.active.map((email) => email.toLowerCase()));
+    let baseline = [...init.baseline];
+    const setAccessSyncBaseline = vi.fn((emails: string[]) => {
+      baseline = [...emails];
+      return Promise.resolve();
+    });
+    const deactivateByEmail = vi.fn((emails: string[]) => {
+      const deactivated: string[] = [];
+      for (const email of emails.map((value) => value.toLowerCase())) {
+        if (active.has(email)) {
+          active.delete(email);
+          deactivated.push(email);
+        }
+      }
+      return Promise.resolve({ deactivated, skippedAdmins: [] });
+    });
+    const repository = {
+      getCloudflareConfig: () =>
+        Promise.resolve(init.config === undefined ? CF_CONFIG : init.config),
+      listActiveUserEmails: () => Promise.resolve([...active]),
+      getAccessSyncBaseline: () => Promise.resolve(baseline),
+      setAccessSyncBaseline,
+      deactivateByEmail,
+    };
+    return {
+      repository,
+      deactivateByEmail,
+      setAccessSyncBaseline,
+      getBaseline: () => baseline,
+    };
+  };
+
+  const clientWith = (include: CfAccessRule[], updatePolicy = vi.fn(() => Promise.resolve())) => ({
+    updatePolicy,
+    createClient: () => ({
+      getPolicy: () => Promise.resolve({ id: "pol", include }),
+      updatePolicy,
+    }),
+  });
+
+  it("skips when Cloudflare is not configured", async () => {
+    const { repository, deactivateByEmail } = makeRepo({
+      config: null,
+      active: ["a@x.io"],
+      baseline: [],
+    });
+    const { createClient, updatePolicy } = clientWith([]);
+    await createAccessSync({ repository, createClient })();
+    expect(updatePolicy).not.toHaveBeenCalled();
+    expect(deactivateByEmail).not.toHaveBeenCalled();
+  });
+
+  it("first run pushes active users to Cloudflare and records the baseline", async () => {
+    const { repository, deactivateByEmail, getBaseline } = makeRepo({
+      active: ["Keep@X.io"],
+      baseline: [],
+    });
+    const { createClient, updatePolicy } = clientWith([]);
+    await createAccessSync({ repository, createClient })();
+    expect(deactivateByEmail).not.toHaveBeenCalled();
+    expect(updatePolicy).toHaveBeenCalledWith({
+      id: "pol",
+      include: [{ email: { email: "keep@x.io" } }],
+    });
+    expect(getBaseline()).toEqual(["keep@x.io"]);
+  });
+
+  it("protects a panel-added user (not yet in Cloudflare) from being disabled", async () => {
+    const { repository, deactivateByEmail } = makeRepo({
+      active: ["keep@x.io", "new@x.io"],
+      baseline: ["keep@x.io"],
+    });
+    const { createClient, updatePolicy } = clientWith([{ email: { email: "keep@x.io" } }]);
+    await createAccessSync({ repository, createClient })();
+    // "new@x.io" is absent from CF but also absent from the baseline → a panel
+    // add, not a CF removal: it must be pushed, never disabled.
+    expect(deactivateByEmail).not.toHaveBeenCalled();
+    expect(updatePolicy).toHaveBeenCalledWith({
+      id: "pol",
+      include: [{ email: { email: "keep@x.io" } }, { email: { email: "new@x.io" } }],
+    });
+  });
+
+  it("disables a user removed from Cloudflare and drops them from the allowlist", async () => {
+    const { repository, deactivateByEmail, getBaseline } = makeRepo({
+      active: ["keep@x.io", "gone@x.io"],
+      baseline: ["keep@x.io", "gone@x.io"],
+    });
+    const { createClient, updatePolicy } = clientWith([{ email: { email: "keep@x.io" } }]);
+    await createAccessSync({ repository, createClient })();
+    // "gone@x.io" was synced before (baseline) and is now absent from CF → disable.
+    expect(deactivateByEmail).toHaveBeenCalledWith(["gone@x.io"]);
+    // CF already reflects [keep] after the disable, so no write-back needed.
+    expect(updatePolicy).not.toHaveBeenCalled();
+    expect(getBaseline()).toEqual(["keep@x.io"]);
+  });
+
+  it("never disables a pinned bootstrap admin removed from Cloudflare", async () => {
+    const { repository, deactivateByEmail } = makeRepo({
+      active: ["admin@x.io", "user@x.io"],
+      baseline: ["admin@x.io", "user@x.io"],
+    });
+    const { createClient, updatePolicy } = clientWith([{ email: { email: "user@x.io" } }]);
+    await createAccessSync({
+      repository,
+      bootstrapAdminEmails: ["Admin@X.io"],
+      createClient,
+    })();
+    expect(deactivateByEmail).not.toHaveBeenCalled();
+    // The admin is re-added to the Cloudflare policy instead of being removed.
+    expect(updatePolicy).toHaveBeenCalledWith({
+      id: "pol",
+      include: [{ email: { email: "admin@x.io" } }, { email: { email: "user@x.io" } }],
+    });
+  });
+
+  it("never wipes the allowlist when there are no active users", async () => {
+    const { repository, setAccessSyncBaseline } = makeRepo({
+      active: [],
+      baseline: ["a@x.io"],
+    });
+    const { createClient, updatePolicy } = clientWith([{ email: { email: "a@x.io" } }]);
+    await createAccessSync({ repository, createClient })();
+    expect(updatePolicy).not.toHaveBeenCalled();
+    // Baseline is left intact so the next run does not treat "empty" as removals.
+    expect(setAccessSyncBaseline).not.toHaveBeenCalled();
   });
 });

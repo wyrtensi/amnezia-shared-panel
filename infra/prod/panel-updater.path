@@ -1,0 +1,11 @@
+[Unit]
+Description=Watch for Amnezia Panel update requests
+
+[Path]
+# Level-triggered: fires panel-updater.service whenever the request file exists.
+# The worker deletes it when done, so the unit re-arms for the next request.
+PathExists=/var/lib/amnezia-panel/update/request.json
+Unit=panel-updater.service
+
+[Install]
+WantedBy=multi-user.target

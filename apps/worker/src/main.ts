@@ -14,6 +14,7 @@ import { runPeriodicTask } from "./scheduler.js";
 import { createTelemetryPoller } from "./telemetry.js";
 import {
   createAccessReconciler,
+  createAccessSync,
   createAccessWriteback,
   createAllowlistDirectory,
   createCloudflareDirectory,
@@ -162,25 +163,48 @@ const buildAccessReconciler = (): (() => Promise<void>) | null => {
   });
 };
 
-const accessReconcile = buildAccessReconciler();
 const accessReconcileIntervalMs = positiveIntegerEnv(
   "ACCESS_RECONCILE_INTERVAL_MS",
   60 * 60_000,
 );
+const bootstrapAdminEmails = (process.env.BOOTSTRAP_ADMIN_EMAILS ?? "")
+  .split(",")
+  .map((email) => email.trim())
+  .filter(Boolean);
 
-// Optional panel → Access allowlist write-back (off by default). Uses the
-// Cloudflare API token stored in portal_policy; no-op until it is set.
-const accessWriteback =
-  process.env.ACCESS_WRITEBACK_ENABLED === "true"
-    ? createAccessWriteback({
+// Cloudflare Access sync tasks.
+//   ACCESS_SYNC_ENABLED=true → two-way sync (panel <-> CF policy include list) in
+//     a single task. This is the recommended mode and supersedes the separate
+//     reconcile + write-back tasks (running those alongside it would fight).
+//   Otherwise the legacy pieces stay available independently:
+//     ACCESS_RECONCILE_ENABLED (+ ACCESS_DIRECTORY) → CF → panel disable, and
+//     ACCESS_WRITEBACK_ENABLED → panel → CF write-back.
+const buildAccessTasks = (): Array<() => Promise<void>> => {
+  if (process.env.ACCESS_SYNC_ENABLED === "true") {
+    return [
+      createAccessSync({
         repository,
-        bootstrapAdminEmails: (process.env.BOOTSTRAP_ADMIN_EMAILS ?? "")
-          .split(",")
-          .map((email) => email.trim())
-          .filter(Boolean),
+        bootstrapAdminEmails,
         log: (message) => console.log(message),
-      })
-    : null;
+      }),
+    ];
+  }
+  const tasks: Array<() => Promise<void>> = [];
+  const reconcile = buildAccessReconciler();
+  if (reconcile) tasks.push(reconcile);
+  if (process.env.ACCESS_WRITEBACK_ENABLED === "true") {
+    tasks.push(
+      createAccessWriteback({
+        repository,
+        bootstrapAdminEmails,
+        log: (message) => console.log(message),
+      }),
+    );
+  }
+  return tasks;
+};
+
+const accessTasks = buildAccessTasks();
 
 const abortController = new AbortController();
 process.once("SIGINT", () => abortController.abort());
@@ -209,26 +233,14 @@ try {
         onError: reportBackgroundError,
       }),
     ),
-    ...(accessReconcile
-      ? [
-          runPeriodicTask({
-            task: accessReconcile,
-            intervalMs: accessReconcileIntervalMs,
-            signal: abortController.signal,
-            onError: reportBackgroundError,
-          }),
-        ]
-      : []),
-    ...(accessWriteback
-      ? [
-          runPeriodicTask({
-            task: accessWriteback,
-            intervalMs: accessReconcileIntervalMs,
-            signal: abortController.signal,
-            onError: reportBackgroundError,
-          }),
-        ]
-      : []),
+    ...accessTasks.map((task) =>
+      runPeriodicTask({
+        task,
+        intervalMs: accessReconcileIntervalMs,
+        signal: abortController.signal,
+        onError: reportBackgroundError,
+      }),
+    ),
   ]);
 } finally {
   await database.client.end();

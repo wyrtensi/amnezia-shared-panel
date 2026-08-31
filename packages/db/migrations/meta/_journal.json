@@ -50,6 +50,13 @@
       "when": 1788120448951,
       "tag": "0006_brown_omega_sentinel",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1788145422290,
+      "tag": "0007_luxuriant_zaran",
+      "breakpoints": true
     }
   ]
 }

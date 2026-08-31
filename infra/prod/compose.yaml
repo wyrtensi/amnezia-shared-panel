@@ -50,7 +50,9 @@ services:
   migrate:
     <<: *app
     restart: "no"
-    command: ["pnpm", "--filter", "@amnezia/db", "db:migrate"]
+    # Run the compiled migrator (no tsx) so the runtime image can drop dev deps.
+    # cd into the package so drizzle's "./migrations" folder resolves.
+    command: ["sh", "-c", "cd packages/db && node dist/migrate.js"]
     depends_on:
       postgres:
         condition: service_healthy
@@ -68,10 +70,18 @@ services:
       CF_ACCESS_AUDIENCE: ${CF_ACCESS_AUDIENCE}
       # First login by these emails is provisioned as admin.
       BOOTSTRAP_ADMIN_EMAILS: ${BOOTSTRAP_ADMIN_EMAILS}
+      # In-panel "Update" button spool (host-worker half). The container drops a
+      # request file here; the host panel-updater.path unit runs update.sh. The
+      # feature is inert unless the matching host volume is mounted below.
+      UPDATE_SPOOL_DIR: /var/run/panel-update
     # Loopback + uncommon host port (control-api is internal; exposed only for
     # local debugging / the co-located CLI).
     ports:
       - "127.0.0.1:${CONTROL_API_PUBLISH_PORT:-5431}:3001"
+    # Shared spool with the host updater. UPDATE_SPOOL_HOST_DIR must be writable
+    # by the container's uid (see infra/prod/install-updater.sh).
+    volumes:
+      - ${UPDATE_SPOOL_HOST_DIR:-/var/lib/amnezia-panel/update}:/var/run/panel-update
     depends_on:
       migrate:
         condition: service_completed_successfully

@@ -203,6 +203,44 @@ session (Direction 1 closes that). And adding a user in the panel does not by
 itself let them past the edge — Access must also allow their email (Direction 2
 closes that).
 
+### Recommended: `ACCESS_SYNC_ENABLED` — both directions, one task
+
+The correct, forward-looking wiring is a **single** worker task that reconciles
+the panel's active users against the Access policy `include` list in **both**
+directions on each run — `createAccessSync` in
+`apps/worker/src/accessReconcile.ts`. Turn it on with one switch:
+
+```
+ACCESS_SYNC_ENABLED=true
+```
+
+Its credentials (account/app/policy ids + the Bearer API token) are **not** env
+vars: an admin stores them **encrypted** via **Administration → policy** (the
+`portal_policy` row). This supersedes running Direction 1 and Direction 2 as two
+separate env-driven tasks (which would fight — see the safety note at the end of
+Direction 2). The per-direction sections below remain the reference for the
+underlying Cloudflare API and the exact token scopes.
+
+How it stays consistent — a **3-way merge** against a stored baseline (the email
+set last synced), so the two kinds of "active in the panel, absent from
+Cloudflare" are told apart:
+
+- **Added in the panel** (active, not in the baseline) → pushed to the Access
+  policy; **never** disabled, even before the first push (a freshly-added user is
+  protected against a race with the write-back).
+- **Removed in Cloudflare** (in the baseline, now gone from the policy) → the
+  panel disables that account and revokes its keys.
+- **Added directly in Cloudflare** (an unknown email) → **not** turned into a
+  panel account; the panel stays the place where users are added, and the
+  write-back reasserts its set. Remove-in-Cloudflare is honoured; add-in-Cloudflare
+  is not (there is no account to create).
+
+Safety rails carry over: an unconfigured token or an empty active-user set is a
+no-op (never wipes the allowlist), bootstrap admins (`BOOTSTRAP_ADMIN_EMAILS`)
+are never disabled or dropped, and non-email rules (`email_domain`, groups) are
+always preserved. The write-back uses **`PUT`** on the app-scoped policy endpoint
+(see the verb note under Direction 2).
+
 ### Direction 1 — Access → panel (deactivate on removal)
 
 #### How it works
@@ -320,7 +358,7 @@ single-app allowlist):
 | --- | --- | --- |
 | `GET` | `/accounts/{account_id}/access/apps/{app_id}/policies` | List the app's policies. |
 | `GET` | `/accounts/{account_id}/access/apps/{app_id}/policies/{policy_id}` | Read one policy (get current `include`). |
-| `PATCH` | `/accounts/{account_id}/access/apps/{app_id}/policies/{policy_id}` | Write the modified policy back. |
+| `PUT` | `/accounts/{account_id}/access/apps/{app_id}/policies/{policy_id}` | Write the modified policy back (send the whole policy). |
 | `POST` | `/accounts/{account_id}/access/apps/{app_id}/policies` | Create a policy. |
 | `DELETE` | `/accounts/{account_id}/access/apps/{app_id}/policies/{policy_id}` | Delete a policy. |
 
@@ -334,11 +372,14 @@ allowlist reused across apps):
 | `PUT` | `/accounts/{account_id}/access/policies/{policy_id}` | Update a reusable policy. |
 | `POST` | `/accounts/{account_id}/access/policies` | Create a reusable policy. |
 
-> The verb differs: an **app-scoped** policy is updated with **`PATCH`**; a
-> **reusable** policy is updated with **`PUT`**. (An existing app-scoped policy
-> can be promoted with
-> `PUT /accounts/{account_id}/access/apps/{app_id}/policies/{policy_id}/make_reusable`,
-> after which it lives under `/access/policies/{policy_id}`.)
+> Use **`PUT`** on the app-scoped policy endpoint and send the **whole** policy
+> object. Empirically, `PATCH` on this endpoint is rejected with `405`
+> (`code 10405 "Method not allowed for this authentication scheme"`) under a
+> scoped API token — this is what the worker's write-back does (`updatePolicy`
+> in `apps/worker/src/cloudflareApi.ts`). A **reusable** policy is likewise
+> updated with `PUT` (`/access/policies/{policy_id}`); an app-scoped policy can be
+> promoted with
+> `PUT /accounts/{account_id}/access/apps/{app_id}/policies/{policy_id}/make_reusable`.
 > `{app_id}` = `<APP_ID>`, `{policy_id}` = `<POLICY_ID>`, `{account_id}` =
 > `<ACCOUNT_ID>` — all recorded in **A.7**.
 
@@ -369,8 +410,8 @@ jq '.result
        include: (.include + [{"email":{"email":"new.person@gmail.com"}}]),
        exclude, require}' policy.json > body.json
 
-# 3) Write it back (PATCH for an app-scoped policy; PUT for a reusable one).
-curl -s -X PATCH \
+# 3) Write it back (PUT with the whole policy; PATCH is rejected here with 405).
+curl -s -X PUT \
   -H "Authorization: Bearer $CF_API_TOKEN" \
   -H "content-type: application/json" \
   --data @body.json "$POLICY"

@@ -16,6 +16,10 @@ import {
   type ControlApiService,
   type IdentityClaim,
 } from "./service.js";
+import {
+  createUpdateController,
+  type UpdateController,
+} from "./updateController.js";
 
 type Environment = "development" | "test" | "production";
 
@@ -35,6 +39,11 @@ export type BuildAppOptions = {
    * exposed context cannot become an auth bypass.
    */
   allowDevIdentity?: boolean;
+  /**
+   * Backs the in-panel "Update" button. When omitted, one is built from
+   * `UPDATE_SPOOL_DIR` (the feature reports itself disabled if that is unset).
+   */
+  updateController?: UpdateController;
 };
 
 const idParamsSchema = z.object({ id: z.uuid() });
@@ -58,16 +67,30 @@ const getDevelopmentIdentity = (request: FastifyRequest): IdentityClaim | null =
   return { provider: "dev", subject: email, email };
 };
 
+const versionInfo = () => ({
+  // Injected at image build time (see scripts/deploy.sh); "dev" locally.
+  version: process.env.APP_VERSION ?? "dev",
+  commit: process.env.GIT_SHA ?? null,
+  builtAt: process.env.BUILD_TIME ?? null,
+});
+
 export const buildApp = async ({
   service,
   environment,
   identityAdapter,
   logger = false,
   allowDevIdentity,
+  updateController,
 }: BuildAppOptions) => {
   const app = Fastify({ logger, trustProxy: true });
   const actors = new WeakMap<FastifyRequest, Actor>();
   const devIdentityEnabled = allowDevIdentity ?? environment === "development";
+  const updates =
+    updateController ??
+    createUpdateController({
+      spoolDir: process.env.UPDATE_SPOOL_DIR,
+      version: versionInfo(),
+    });
 
   await app.register(helmet, { contentSecurityPolicy: false });
 
@@ -191,12 +214,16 @@ export const buildApp = async ({
 
   app.get("/api/admin/version", (request) => {
     adminFor(request);
-    return {
-      // Injected at image build time (see scripts/deploy.sh); "dev" locally.
-      version: process.env.APP_VERSION ?? "dev",
-      commit: process.env.GIT_SHA ?? null,
-      builtAt: process.env.BUILD_TIME ?? null,
-    };
+    return versionInfo();
+  });
+  app.get("/api/admin/update", async (request) => {
+    adminFor(request);
+    return updates.status();
+  });
+  app.post("/api/admin/update", async (request, reply) => {
+    const admin = adminFor(request);
+    const result = await updates.request(admin.email);
+    return reply.code(202).send(result);
   });
   app.get("/api/admin/overview", async (request) =>
     service.getAdminOverview(adminFor(request)),

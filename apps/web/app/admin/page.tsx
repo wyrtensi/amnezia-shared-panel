@@ -37,6 +37,7 @@ import { cn } from "@/lib/utils";
 import { TrafficCard } from "@/components/traffic-card";
 import { InlineTraffic } from "@/components/inline-traffic";
 import { useAdminData } from "@/components/admin/admin-data";
+import { PanelUpdateCard } from "@/components/admin/panel-update-card";
 import { useT } from "@/lib/i18n/provider";
 
 const METRIC_TONE: Record<string, string> = {
@@ -405,6 +406,8 @@ export default function AdminOverviewPage() {
           )}
         </CardContent>
       </Card>
+
+      <PanelUpdateCard />
     </div>
   );
 }

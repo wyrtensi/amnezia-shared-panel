@@ -1,0 +1,13 @@
+[Unit]
+Description=Amnezia Panel updater (runs infra/prod/update.sh on request)
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+# install-updater.sh rewrites these paths to your actual checkout / spool.
+Environment=PANEL_REPO_DIR=/opt/amnezia-panel
+Environment=UPDATE_SPOOL_HOST_DIR=/var/lib/amnezia-panel/update
+ExecStart=/opt/amnezia-panel/infra/prod/panel-updater.sh
+# update.sh backs up the DB, pulls the image and restarts — give it room.
+TimeoutStartSec=1800

@@ -1,0 +1,1 @@
+ALTER TABLE "portal_policy" ADD COLUMN "cf_access_synced_emails" jsonb;

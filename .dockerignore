@@ -1,10 +1,17 @@
+# Keep the build context clean: only source is copied in, everything is built
+# fresh inside the image. Patterns are "**/"-prefixed so NESTED build artifacts
+# (apps/web/.next, packages/*/dist, apps/*/node_modules) are excluded too — a
+# bare "dist" / ".next" / "node_modules" only matches the context root and lets
+# local dev artifacts (e.g. a stale .next/dev from `next dev`) leak into the image.
+**/.git
+**/.next
+**/dist
+**/node_modules
+**/coverage
+**/.turbo
+**/*.tsbuildinfo
 .git
-.next
-dist
-node_modules
-coverage
 secrets
 agent-changes
 plans
-services/node-agent/node_modules
 services/node-agent/build

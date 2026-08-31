@@ -50,6 +50,27 @@ const ru = {
   "admin.version": "Версия",
   "admin.title": "Управление VPN",
 
+  // Panel self-update (admin overview)
+  "update.title": "Обновление панели",
+  "update.current": "Текущая версия",
+  "update.built": "собрано",
+  "update.commit": "коммит",
+  "update.button": "Обновить панель",
+  "update.confirmTitle": "Обновить панель?",
+  "update.confirmBody":
+    "Панель скачает свежий образ, применит миграции БД и перезапустится. Возможен короткий перерыв в доступе (~1 минута). База данных резервируется автоматически перед обновлением.",
+  "update.confirm": "Обновить",
+  "update.running": "Идёт обновление…",
+  "update.runningHint":
+    "Панель может ненадолго стать недоступной и затем вернётся. Эту страницу можно просто обновить через минуту.",
+  "update.scheduled": "Обновление запущено",
+  "update.requestedBy": "запросил",
+  "update.lastOk": "Последнее обновление прошло успешно",
+  "update.lastFail": "Последнее обновление не удалось",
+  "update.disabled": "Механизм обновления не установлен на сервере",
+  "update.disabledHint":
+    "Установите хост-воркер один раз: sudo bash infra/prod/install-updater.sh",
+
   // Route profiles (shared)
   "route.full_tunnel": "Весь трафик",
   "route.ru_whitelist": "Только зарубежные",
@@ -576,6 +597,27 @@ const en = {
   "admin.myKeys": "My keys",
   "admin.version": "Version",
   "admin.title": "VPN management",
+
+  // Panel self-update (admin overview)
+  "update.title": "Panel update",
+  "update.current": "Current version",
+  "update.built": "built",
+  "update.commit": "commit",
+  "update.button": "Update panel",
+  "update.confirmTitle": "Update the panel?",
+  "update.confirmBody":
+    "The panel will pull a fresh image, run database migrations and restart. A short access interruption is possible (~1 minute). The database is backed up automatically before the update.",
+  "update.confirm": "Update",
+  "update.running": "Update in progress…",
+  "update.runningHint":
+    "The panel may become briefly unreachable and then come back. You can simply reload this page in a minute.",
+  "update.scheduled": "Update started",
+  "update.requestedBy": "requested by",
+  "update.lastOk": "The last update succeeded",
+  "update.lastFail": "The last update failed",
+  "update.disabled": "The update mechanism is not installed on the host",
+  "update.disabledHint":
+    "Install the host worker once: sudo bash infra/prod/install-updater.sh",
 
   // Route profiles (shared)
   "route.full_tunnel": "All traffic",
