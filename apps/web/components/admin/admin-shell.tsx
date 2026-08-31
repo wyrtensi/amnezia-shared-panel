@@ -47,7 +47,7 @@ export function AdminShell({
       <div className="flex min-h-screen bg-muted/30">
         <aside className="sticky top-0 hidden h-screen w-60 shrink-0 flex-col border-r bg-sidebar text-sidebar-foreground md:flex">
           <div className="px-4 py-4">
-            <Logo className="h-9 w-auto" />
+            <Logo className="h-11 w-auto" />
           </div>
           <nav className="flex-1 space-y-1 px-3 py-2">
             {NAV.map((item) => {

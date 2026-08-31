@@ -62,7 +62,10 @@ export default function AdminPolicyPage() {
         <CardContent className="space-y-6">
           <div className="grid gap-4 sm:grid-cols-2">
             <div className="space-y-1.5">
-              <Label htmlFor="default-limit">{t("policy.keyLimit")}</Label>
+              <Label htmlFor="default-limit" className="flex items-center gap-1.5">
+                {t("policy.keyLimit")}
+                <Hint>{t("policy.keyLimitHint")}</Hint>
+              </Label>
               <Input
                 id="default-limit"
                 type="number"
@@ -79,7 +82,10 @@ export default function AdminPolicyPage() {
               />
             </div>
             <div className="space-y-1.5">
-              <Label htmlFor="retention">{t("policy.retention")}</Label>
+              <Label htmlFor="retention" className="flex items-center gap-1.5">
+                {t("policy.retention")}
+                <Hint>{t("policy.retentionHint")}</Hint>
+              </Label>
               <Input
                 id="retention"
                 type="number"
@@ -132,6 +138,7 @@ export default function AdminPolicyPage() {
                 <PolicyToggle
                   key={key}
                   label={t(label)}
+                  hint={t(`${label}Hint`)}
                   checked={form[key] as boolean}
                   onChange={(checked) => setForm({ ...form, [key]: checked })}
                 />
@@ -146,6 +153,7 @@ export default function AdminPolicyPage() {
                 <PolicyToggle
                   key={key}
                   label={t(label)}
+                  hint={t(`${label}Hint`)}
                   checked={form[key] as boolean}
                   onChange={(checked) => setForm({ ...form, [key]: checked })}
                 />
@@ -162,7 +170,10 @@ export default function AdminPolicyPage() {
             </h3>
             <div className="grid gap-3 sm:grid-cols-3">
               <div className="space-y-1.5">
-                <Label htmlFor="cf-account">Account ID</Label>
+                <Label htmlFor="cf-account" className="flex items-center gap-1.5">
+                  Account ID
+                  <Hint>{t("policy.cfAccountIdHint")}</Hint>
+                </Label>
                 <Input
                   id="cf-account"
                   value={form.cfAccessAccountId ?? ""}
@@ -172,7 +183,10 @@ export default function AdminPolicyPage() {
                 />
               </div>
               <div className="space-y-1.5">
-                <Label htmlFor="cf-app">Application ID</Label>
+                <Label htmlFor="cf-app" className="flex items-center gap-1.5">
+                  Application ID
+                  <Hint>{t("policy.cfAppIdHint")}</Hint>
+                </Label>
                 <Input
                   id="cf-app"
                   value={form.cfAccessAppId ?? ""}
@@ -182,7 +196,10 @@ export default function AdminPolicyPage() {
                 />
               </div>
               <div className="space-y-1.5">
-                <Label htmlFor="cf-policy">Policy ID</Label>
+                <Label htmlFor="cf-policy" className="flex items-center gap-1.5">
+                  Policy ID
+                  <Hint>{t("policy.cfPolicyIdHint")}</Hint>
+                </Label>
                 <Input
                   id="cf-policy"
                   value={form.cfAccessPolicyId ?? ""}
@@ -193,8 +210,9 @@ export default function AdminPolicyPage() {
               </div>
             </div>
             <div className="space-y-1.5">
-              <Label htmlFor="cf-token">
+              <Label htmlFor="cf-token" className="flex items-center gap-1.5">
                 {t("policy.cfToken")}
+                <Hint>{t("policy.cfTokenHint")}</Hint>
               </Label>
               <Input
                 id="cf-token"
@@ -222,17 +240,24 @@ export default function AdminPolicyPage() {
 
 function PolicyToggle({
   label,
+  hint,
   checked,
   onChange,
 }: {
   label: string;
+  hint?: string;
   checked: boolean;
   onChange: (checked: boolean) => void;
 }) {
+  // A div (not a label) so tapping the (i) hint opens the tooltip instead of
+  // toggling the switch.
   return (
-    <label className="flex items-center justify-between gap-3 rounded-lg border p-2.5 text-sm">
-      {label}
+    <div className="flex items-center justify-between gap-3 rounded-lg border p-2.5 text-sm">
+      <span className="flex items-center gap-1.5">
+        {label}
+        {hint ? <Hint>{hint}</Hint> : null}
+      </span>
       <Switch checked={checked} onCheckedChange={onChange} />
-    </label>
+    </div>
   );
 }

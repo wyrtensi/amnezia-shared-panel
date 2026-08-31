@@ -7,7 +7,7 @@
 export function Logo({ className }: { className?: string }) {
   return (
     <svg
-      viewBox="0 0 400 96"
+      viewBox="6 12 322 72"
       className={className}
       role="img"
       aria-label="amnezia Shared Panel"

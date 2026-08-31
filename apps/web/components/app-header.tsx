@@ -15,7 +15,7 @@ export function AppHeader({
   return (
     <header className="sticky top-0 z-30 flex flex-wrap items-center justify-between gap-3 border-b bg-background/80 px-4 py-3 backdrop-blur sm:px-6">
       <div className="flex min-w-0 items-center gap-3">
-        <Logo className="hidden h-8 w-auto shrink-0 sm:block" />
+        <Logo className="h-9 w-auto shrink-0" />
         <div className="min-w-0">
           <h1 className="truncate text-lg font-semibold tracking-tight sm:text-xl">
             {title}

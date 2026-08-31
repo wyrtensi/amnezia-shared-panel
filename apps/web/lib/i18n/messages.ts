@@ -466,9 +466,43 @@ const ru = {
   "gpolicy.showPublicKey": "Показывать публичный ключ",
   "gpolicy.showLastUsed": "Показывать дату активности",
   "gpolicy.showTraffic": "Показывать объём трафика",
+  "gpolicy.allowKeyCreationHint":
+    "Пользователь может сам создавать новые ключи для своих устройств.",
+  "gpolicy.allowNodeSelectionHint":
+    "Пользователь может выбирать, на каком сервере (ноде) создать ключ.",
+  "gpolicy.allowRouteProfileSelectionHint":
+    "Пользователь может выбирать профиль маршрутизации: весь трафик, только зарубежные или только заблокированные сайты.",
+  "gpolicy.allowCustomRoutesHint":
+    "Пользователь может добавлять свои домены и IP в списки whitelist/blacklist своего профиля.",
+  "gpolicy.allowConfigRedownloadHint":
+    "Пользователь может повторно скачать конфиг уже созданного ключа.",
+  "gpolicy.allowQrDownloadHint":
+    "Пользователь может получить QR-код для быстрого подключения.",
+  "gpolicy.allowConfDownloadHint":
+    "Пользователь может скачать .conf-файл ключа.",
+  "gpolicy.allowSelfRevokeHint":
+    "Пользователь может сам отзывать (удалять) свои ключи.",
+  "gpolicy.showPublicKeyHint":
+    "Показывать публичный ключ устройства в карточке ключа.",
+  "gpolicy.showLastUsedHint":
+    "Показывать время последнего использования ключа.",
+  "gpolicy.showTrafficHint":
+    "Показывать объём трафика (получено/отдано) по ключу.",
   "policy.title": "Глобальная политика портала",
   "policy.keyLimit": "Лимит ключей на ноду",
+  "policy.keyLimitHint":
+    "Сколько ключей по умолчанию доступно пользователю на каждой ноде. Для отдельного человека лимит можно переопределить.",
   "policy.retention": "Срок хранения истории (дней)",
+  "policy.retentionHint":
+    "Сколько дней хранить посуточную статистику трафика; более старые записи удаляются.",
+  "policy.cfAccountIdHint":
+    "ID аккаунта Cloudflare (Zero Trust → Settings → General).",
+  "policy.cfAppIdHint":
+    "ID приложения Access, которое защищает вход в панель.",
+  "policy.cfPolicyIdHint":
+    "ID allow-политики, чей список email синхронизируется с активными пользователями панели.",
+  "policy.cfTokenHint":
+    "API-токен Cloudflare с правом Access: Apps and Policies — Edit. Хранится зашифрованным; показывается только заглушка, ввод заменяет токен.",
   "policy.defaultProtocols": "Протоколы по умолчанию",
   "policy.defaultProtocolsHint":
     "Какие протоколы предлагаются всем при создании ключа. Сейчас используется только AWG 3.1; AWG 2.0 можно включить обратно здесь, на конкретной ноде или для отдельного пользователя.",
@@ -1028,9 +1062,40 @@ const en = {
   "gpolicy.showPublicKey": "Show public key",
   "gpolicy.showLastUsed": "Show last activity date",
   "gpolicy.showTraffic": "Show traffic volume",
+  "gpolicy.allowKeyCreationHint":
+    "The user can create new keys for their own devices.",
+  "gpolicy.allowNodeSelectionHint":
+    "The user can choose which server (node) a key is created on.",
+  "gpolicy.allowRouteProfileSelectionHint":
+    "The user can choose a routing profile: all traffic, foreign-only, or blocked-sites-only.",
+  "gpolicy.allowCustomRoutesHint":
+    "The user can add their own domains and IPs to their profile's whitelist/blacklist.",
+  "gpolicy.allowConfigRedownloadHint":
+    "The user can re-download the config of an already-created key.",
+  "gpolicy.allowQrDownloadHint":
+    "The user can get a QR code for quick connection.",
+  "gpolicy.allowConfDownloadHint": "The user can download a key's .conf file.",
+  "gpolicy.allowSelfRevokeHint":
+    "The user can revoke (delete) their own keys.",
+  "gpolicy.showPublicKeyHint":
+    "Show the device's public key on the key card.",
+  "gpolicy.showLastUsedHint": "Show when the key was last used.",
+  "gpolicy.showTrafficHint":
+    "Show traffic volume (received/sent) per key.",
   "policy.title": "Global portal policy",
   "policy.keyLimit": "Key limit per node",
+  "policy.keyLimitHint":
+    "How many keys a user gets per node by default. Individual users can have this overridden.",
   "policy.retention": "History retention (days)",
+  "policy.retentionHint":
+    "How many days of daily traffic history to keep; older rows are pruned.",
+  "policy.cfAccountIdHint":
+    "Cloudflare account ID (Zero Trust → Settings → General).",
+  "policy.cfAppIdHint": "ID of the Access application that guards the panel login.",
+  "policy.cfPolicyIdHint":
+    "ID of the allow policy whose email list is synced with the panel's active users.",
+  "policy.cfTokenHint":
+    "Cloudflare API token with Access: Apps and Policies — Edit. Stored encrypted; only a placeholder is shown, and entering a value replaces it.",
   "policy.defaultProtocols": "Default protocols",
   "policy.defaultProtocolsHint":
     "Which protocols are offered to everyone when creating a key. Only AWG 3.1 is used now; AWG 2.0 can be re-enabled here, on a specific node, or for an individual user.",
