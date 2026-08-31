@@ -311,6 +311,7 @@ normal user plus the admin role.
 
 ## Related documents
 
+- [`CLI.md`](./CLI.md) — every command for the panel and a node (dev, build, DB, deploy, backup, admin CLI, AmneziaWG/Docker/node-agent).
 - [`AGENT-HOST-SETUP.md`](./AGENT-HOST-SETUP.md) — node + control-plane install detail.
 - [`CLOUDFLARE-ACCESS.md`](./CLOUDFLARE-ACCESS.md) — Access app, allowlist, two-way sync, token scopes.
 - [`CLOUDFLARE-SETUP.md`](./CLOUDFLARE-SETUP.md) — tunnel + Google login click-by-click.

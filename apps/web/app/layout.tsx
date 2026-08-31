@@ -19,11 +19,10 @@ const unbounded = Unbounded({
 });
 
 export const metadata: Metadata = {
-  title: "Amnezia Panel",
-  // Locale is client-side (localStorage); the provider syncs <html lang> after
-  // mount. Metadata is rendered server-side with no locale signal, so keep this
-  // neutral English default to match the English product title.
-  description: "Self-service portal and admin console for VPN keys",
+  // Deliberately generic public-facing metadata (browser tab + link previews):
+  // no product/VPN branding to reveal on a shared URL.
+  title: "Shared Panel",
+  description: "Shared panel controls",
 };
 
 export default function RootLayout({

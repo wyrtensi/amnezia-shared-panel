@@ -49,7 +49,7 @@ export function AdminShell({
             <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-sidebar-primary text-sidebar-primary-foreground">
               <ShieldCheck className="h-5 w-5" />
             </span>
-            <span className="font-semibold">Amnezia Panel</span>
+            <span className="font-semibold">Shared Panel</span>
           </div>
           <nav className="flex-1 space-y-1 px-3 py-2">
             {NAV.map((item) => {

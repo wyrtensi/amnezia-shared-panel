@@ -1,6 +1,9 @@
-# Amnezia Panel
+# Shared Panel
 
-Self-service AmneziaWG control plane for employee device keys, administrator management, telemetry, and multi-node operation.
+A self-hosted control plane for **AmneziaWG** VPN access: employees create and
+manage their own device keys, administrators manage users, nodes, policy, and
+telemetry — across one or more VPN nodes, reached over the public internet behind
+a login you control.
 
 ## Protocol
 
@@ -10,41 +13,83 @@ AmneziaWG 2.0 is retained only for backward compatibility with already-deployed
 nodes and existing peers during the transition; do not build new features against
 2.0. AWG 3.1 keys require the official AmneziaVPN client 5.0.1.5 or newer.
 
+## Two ways users sign in
+
+The panel is usable even where a working VPN or Cloudflare is unavailable — it
+accepts either identity, side by side:
+
+- **Cloudflare Access** — the edge injects a signed JWT the control-api verifies
+  (Google Workspace as the IdP, an email/group allowlist at the edge).
+- **Direct server-side Google** — for users who cannot reach Cloudflare, the panel
+  serves itself on a DNS-only host with its **own** Google login and a signed
+  session. See [`docs/INSTALL.md` §3.5](docs/INSTALL.md).
+
+Roles live in the panel (`admin` / `user`); an admin is also a user (own keys and
+quota) and is pinned so it can never lock itself out.
+
 ## Workspace
 
-- `apps/web` — employee and administrator web interface.
-- `apps/control-api` — authenticated central REST API.
+- `apps/web` — employee and administrator web interface (Next.js).
+- `apps/control-api` — authenticated central REST API (Fastify).
 - `apps/worker` — provisioning, telemetry, retention, and routing jobs.
 - `apps/cli` — admin CLI over the control-api ([`apps/cli/README.md`](apps/cli/README.md)).
 - `packages/contracts` — shared public types and validation schemas.
 - `packages/db` — PostgreSQL schema, migrations, and repositories.
-- `services/node-agent` — reviewed fork of `kyoresuas/amnezia-api` v1.0.0.
+- `services/node-agent` — reviewed fork of `kyoresuas/amnezia-api`; the HTTP agent
+  that fronts an AmneziaWG container on each node.
 - `infra/dev` — local Docker Compose environment.
+- `infra/prod` — production Compose stack (tiny-host, pulls the image from GHCR).
 - `infra/node` — VPN-node deployment assets.
 
-Sensitive local material belongs in the ignored `secrets/` directory.
+Sensitive local material belongs in the git-ignored `secrets/` directory.
+
+## Quick start (local dev)
+
+```bash
+pnpm install
+cd infra/dev && docker compose --env-file .env up --build
+```
+
+The app comes up at `http://127.0.0.1:3000`. The dev stack sets a dev identity
+(`DEV_USER_EMAIL`, default `admin@example.com`) so you sign in without Cloudflare
+or Google. To run the services in watch mode without containers: `pnpm dev`.
+
+Before pushing, run what CI runs: `pnpm lint && pnpm typecheck && pnpm build &&
+pnpm test`. Full command reference: **[`docs/CLI.md`](docs/CLI.md)**.
+
+## Deploy & update (production)
+
+The live host runs `infra/prod` and **pulls** the published image
+`ghcr.io/<owner>/amnezia-shared-panel:latest`. Cutting a release = tag the public
+repo `vX.Y.Z`; CI builds and pushes the image (the tag is stamped into
+`GET /api/admin/version`). On the host, `bash infra/prod/update.sh` performs a
+data-safe update (backup DB → pull → migrate → recreate; volumes untouched), and
+the **Administration → Overview → Update** button does the same via a host systemd
+worker after a one-time `sudo bash infra/prod/install-updater.sh`.
 
 ## Documentation
 
 - **[`docs/INSTALL.md`](docs/INSTALL.md) — start here.** Agent-driven install
-  runbook: the inputs to collect, then node + panel + Cloudflare Access with Google
-  Workspace login, the temporary→least-privilege API-token hand-off, and the
-  admin/user policy split. Links to the detailed docs below.
-- [`docs/HOSTING.md`](docs/HOSTING.md) — top-level end-to-end guide: raise the VPN
-  node, the control-plane panel, and public hosting via Cloudflare + Access.
-- [`docs/AGENT-HOST-SETUP.md`](docs/AGENT-HOST-SETUP.md) — end-to-end guide for an
-  agent or operator installing a fresh AWG host and wiring it to the panel.
-- [`docs/NODE-CONNECT.md`](docs/NODE-CONNECT.md) — connect a live VPN node to the
-  panel (SSH tunnel or direct TLS), registration, and safety constraints.
-- [`docs/CLOUDFLARE-ACCESS.md`](docs/CLOUDFLARE-ACCESS.md) — create the Access
-  application (Google IdP + email allowlist) and the two-way panel ↔ allowlist
-  sync (the required API token and endpoints).
-- [`docs/DEPLOY-UPDATE.md`](docs/DEPLOY-UPDATE.md) — update the control-plane stack
-  from git (rebuild image, run migrations, recreate containers) and roll back.
+  runbook: the inputs to collect, then node + panel + public access (Cloudflare
+  Access with Google Workspace, and the optional direct Google login), the
+  temporary→least-privilege API-token hand-off, and the admin/user policy split.
+- [`docs/CLI.md`](docs/CLI.md) — every command for the panel **and** a node
+  (dev, build, database, deploy/update, backup, admin CLI; AmneziaWG/awg, Docker,
+  node-agent, health).
+- [`docs/HOSTING.md`](docs/HOSTING.md) — architecture, identity model, credential
+  types, secrets, end-to-end hosting.
+- [`docs/AGENT-HOST-SETUP.md`](docs/AGENT-HOST-SETUP.md) — install a fresh AWG host
+  and wire it to the panel.
+- [`docs/NODE-CONNECT.md`](docs/NODE-CONNECT.md) — register and reach a live node
+  (SSH tunnel or direct TLS) and its safety constraints.
+- [`docs/CLOUDFLARE-SETUP.md`](docs/CLOUDFLARE-SETUP.md) / [`docs/CLOUDFLARE-ACCESS.md`](docs/CLOUDFLARE-ACCESS.md)
+  — the tunnel + Google login, and the Access app / allowlist / two-way sync.
+- [`docs/DEPLOY-UPDATE.md`](docs/DEPLOY-UPDATE.md) · [`docs/UPDATE-MECHANISM.md`](docs/UPDATE-MECHANISM.md)
+  — updating the stack from git, and the in-panel Update button internals.
 
 ## License
 
-This project is released under the MIT License — see [`LICENSE`](LICENSE).
+Released under the MIT License — see [`LICENSE`](LICENSE).
 
 `services/node-agent` is a fork of
 [`kyoresuas/amnezia-api`](https://github.com/kyoresuas/amnezia-api) (MIT), and the
