@@ -5,6 +5,19 @@
 # cannot reach Cloudflare open this host and sign in via the panel's own Google
 # login (server-side). Cloudflare Access on the main host keeps working too.
 #
+# This file is the "port 443 is free" method (INSTALL.md §3.5 method A). If :443 is
+# already owned by another service (a site, a VPN edge, an haproxy/nginx SNI
+# router), do NOT use auto-HTTPS here: route the host through that terminator to a
+# local Caddy on a loopback port and give Caddy a STATIC cert instead, e.g.:
+#     { https_port 7443 }
+#     direct.example.com {
+#         bind 127.0.0.1
+#         reverse_proxy 127.0.0.1:5430
+#         tls /etc/caddy/certs/direct.fullchain.pem /etc/caddy/certs/direct.key.pem
+#     }
+# (obtain the cert out-of-band, e.g. acme.sh HTTP-01, with a renew+reload hook).
+# See INSTALL.md §3.5 method B.
+#
 # Setup:
 #   1. Add a DNS-only A record, e.g. direct.example.com -> this server's IP
 #      (grey cloud in Cloudflare, or any registrar). Port 80/443 must be open.

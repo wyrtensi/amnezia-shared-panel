@@ -3,6 +3,7 @@ import { exchangeCodeForIdentity, googleConfig } from "@/lib/google-oauth";
 import {
   SESSION_COOKIE,
   STATE_COOKIE,
+  publicBaseUrl,
   sessionCookieOptions,
   signSession,
 } from "@/lib/session";
@@ -10,7 +11,8 @@ import {
 export async function GET(request: NextRequest) {
   const cfg = googleConfig();
   const url = request.nextUrl;
-  const loginUrl = new URL("/login", url.origin);
+  const base = publicBaseUrl(url.origin);
+  const loginUrl = new URL("/login", base);
   if (!cfg) {
     return NextResponse.json(
       { error: "GOOGLE_LOGIN_NOT_CONFIGURED" },
@@ -61,7 +63,7 @@ export async function GET(request: NextRequest) {
     return NextResponse.redirect(loginUrl);
   }
 
-  const res = NextResponse.redirect(new URL("/", url.origin));
+  const res = NextResponse.redirect(new URL("/", base));
   res.cookies.set(SESSION_COOKIE, token, sessionCookieOptions);
   res.cookies.delete(STATE_COOKIE);
   return res;

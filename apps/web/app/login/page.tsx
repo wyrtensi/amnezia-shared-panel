@@ -31,7 +31,9 @@ export default function LoginPage() {
         </div>
         <div className="space-y-1">
           <h1 className="text-xl font-semibold">{t("login.title")}</h1>
-          <p className="text-sm text-muted-foreground">{t("login.subtitle")}</p>
+          {t("login.subtitle") ? (
+            <p className="text-sm text-muted-foreground">{t("login.subtitle")}</p>
+          ) : null}
         </div>
         {message ? (
           <p className="rounded-lg bg-destructive/10 px-3 py-2 text-sm text-destructive">

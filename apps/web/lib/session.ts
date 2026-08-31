@@ -51,6 +51,15 @@ export const verifySession = async (
   }
 };
 
+/**
+ * Base URL for server-issued redirects (login, OAuth callback). Behind a reverse
+ * proxy the request's own origin resolves to the container's internal address
+ * (e.g. http://localhost:3000), so prefer the configured public URL and fall back
+ * to the request origin only when it is not set.
+ */
+export const publicBaseUrl = (fallbackOrigin: string): string =>
+  process.env.PANEL_PUBLIC_URL?.replace(/\/$/, "") || fallbackOrigin;
+
 export const sessionCookieOptions = {
   httpOnly: true,
   secure: true,

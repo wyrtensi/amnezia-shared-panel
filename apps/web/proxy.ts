@@ -1,5 +1,5 @@
 import { NextResponse, type NextRequest } from "next/server";
-import { SESSION_COOKIE, verifySession } from "@/lib/session";
+import { SESSION_COOKIE, publicBaseUrl, verifySession } from "@/lib/session";
 
 /**
  * Gate page navigations. Two ways in:
@@ -23,7 +23,9 @@ export async function proxy(request: NextRequest) {
   if (await verifySession(token)) {
     return NextResponse.next();
   }
-  return NextResponse.redirect(new URL("/login", request.nextUrl.origin));
+  return NextResponse.redirect(
+    new URL("/login", publicBaseUrl(request.nextUrl.origin)),
+  );
 }
 
 export const config = {

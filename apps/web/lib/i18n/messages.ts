@@ -51,9 +51,9 @@ const ru = {
   "admin.title": "Управление VPN",
 
   // Direct login page (server-side Google, when not behind Cloudflare)
-  "login.title": "Вход в панель VPN",
-  "login.subtitle": "Войдите через корпоративный Google-аккаунт.",
-  "login.google": "Войти через Google",
+  "login.title": "Вход в панель",
+  "login.subtitle": "",
+  "login.google": "Войти",
   "login.notAllowed":
     "Этот аккаунт не в списке доступа. Попросите администратора добавить вас.",
   "login.unavailable": "Сервис временно недоступен. Попробуйте ещё раз.",
@@ -616,9 +616,9 @@ const en = {
   "admin.title": "VPN management",
 
   // Direct login page (server-side Google, when not behind Cloudflare)
-  "login.title": "Sign in to the VPN panel",
-  "login.subtitle": "Sign in with your corporate Google account.",
-  "login.google": "Sign in with Google",
+  "login.title": "Sign in to the panel",
+  "login.subtitle": "",
+  "login.google": "Sign in",
   "login.notAllowed":
     "This account is not on the allowlist. Ask an administrator to add you.",
   "login.unavailable": "The service is temporarily unavailable. Try again.",

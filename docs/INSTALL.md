@@ -156,22 +156,57 @@ Cloudflare is not reachable for everyone (e.g. from some networks in Russia), so
 the panel can **also** serve itself on a **DNS-only** host — bypassing the CF
 proxy — with its **own** Google login, in addition to Cloudflare Access. Both
 paths coexist; each user takes whichever works, and the API accepts either the CF
-JWT or the panel's own signed session. Enable it:
+JWT or the panel's own signed session.
+
+> **Optional phase — ask the operator first.** This whole subsection is opt-in. If
+> everyone can reach Cloudflare, skip it. If you enable it, the **TLS/edge method
+> below is not one-size-fits-all** — how the direct host terminates TLS depends on
+> what already runs on the box. **Ask the operator which of A/B/C applies before
+> touching anything**, and do not assume the reference (A).
+
+**Step 0 — choose how the direct host gets TLS (ask the operator):**
+
+- **A. Dedicated host / port 443 free → reference method.** Install Caddy from
+  [`infra/prod/Caddyfile.example`](../infra/prod/Caddyfile.example) (edit host +
+  email); it gets an automatic Let's Encrypt cert and reverse-proxies
+  `127.0.0.1:5430`. Simplest — use it when nothing else owns `:443`.
+- **B. Port 443 already used by another service** (an existing site, a VPN edge, an
+  `haproxy`/`nginx` SNI router). **Do not fight the existing terminator.** Route
+  the direct hostname through it to a **local Caddy on a loopback port** (e.g. add
+  one SNI rule: `req.ssl_sni -i direct.<panel domain>` → `127.0.0.1:<caddy port>`),
+  and give Caddy a **static** cert obtained out-of-band — e.g. `acme.sh` HTTP-01 on
+  port 80, or DNS-01 — rather than Caddy's ALPN/auto-HTTPS (TLS-ALPN usually will
+  **not** survive SNI passthrough). Point Caddy's `tls <cert> <key>` at the
+  installed files with an auto-renew reload hook. *(This is what the reference
+  deployment actually does, because its `:443` is a VPN edge.)*
+- **C. Operator terminates TLS themselves.** They already have a reverse proxy /
+  cert for the direct host and just reverse-proxy it to `127.0.0.1:5430`. The panel
+  needs nothing beyond a correct `PANEL_PUBLIC_URL`.
+
+Whichever you pick: the browser must reach `https://direct.<panel domain>` with a
+**valid** cert, and that edge must forward to the panel web on `127.0.0.1:5430`.
+
+**Then:**
 
 1. **DNS-only host.** Add an A record, e.g. `direct.<panel domain>` → the panel
-   server's IP, **not** proxied by Cloudflare (grey cloud). Open ports 80/443.
-2. **TLS.** Install Caddy on the panel host from
-   [`infra/prod/Caddyfile.example`](../infra/prod/Caddyfile.example) (edit the host
-   + email) — automatic Let's Encrypt, reverse-proxying `127.0.0.1:5430`.
-3. **Google OAuth client.** In the same Workspace Cloud project, create/reuse a
-   **Web application** OAuth client and add the redirect URI
+   server's IP, **not** proxied by Cloudflare (grey cloud). Open the ports the
+   chosen method needs (A/B: 80 + 443).
+2. **TLS/edge.** Apply method A, B, or C from Step 0.
+3. **Google OAuth client — from your Business Workspace, not a throwaway Cloud
+   project.** In a Google Cloud project **owned by your Workspace organization**,
+   set the OAuth consent screen **User type = Internal** (so only your Workspace
+   accounts can use it — no external app verification), then create a **Web
+   application** OAuth client and add the redirect URI
    `https://direct.<panel domain>/api/auth/google/callback`. Copy the client ID +
-   secret.
+   secret. *(A Cloud project is still where OAuth clients are minted — that is
+   inherent to Google. The point is it belongs to your Workspace and is Internal,
+   the same client family as the Cloudflare IdP in §3.2, not a personal project on
+   an unrelated domain.)*
 4. **Env** (`infra/prod/.env`, then recreate web + control-api):
    `PANEL_IDENTITY_SECRET` (shared secret, `openssl rand -base64 32`),
    `GOOGLE_OAUTH_CLIENT_ID` / `GOOGLE_OAUTH_CLIENT_SECRET`,
-   `PANEL_PUBLIC_URL=https://direct.<panel domain>`, and
-   `AUTH_ALLOWED_DOMAINS=<your Workspace domain>`.
+   `PANEL_PUBLIC_URL=https://direct.<panel domain>` (must exactly match the host in
+   the redirect URI), and `AUTH_ALLOWED_DOMAINS=<your Workspace domain>`.
 5. **Allowlist (direct path).** The **panel** decides who may log in directly: an
    allowed email domain (`AUTH_ALLOWED_DOMAINS`) or a bootstrap admin
    self-provisions; **anyone else must be pre-created by an admin** in
@@ -180,7 +215,7 @@ JWT or the panel's own signed session. Enable it:
    at the edge.)
 
 Verify from a network **without** Cloudflare and with the **VPN off**:
-`https://direct.<panel domain>` shows the panel's own "Sign in with Google", and
+`https://direct.<panel domain>` shows the panel's own **Sign in** button, and
 after sign-in lands in the panel.
 
 ---
