@@ -14,6 +14,7 @@ import {
   Users,
 } from "lucide-react";
 import { LanguageToggle } from "@/components/language-toggle";
+import { Logo } from "@/components/logo";
 import { LogoutButton } from "@/components/logout-button";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { Button } from "@/components/ui/button";
@@ -45,11 +46,8 @@ export function AdminShell({
     <AdminDataProvider>
       <div className="flex min-h-screen bg-muted/30">
         <aside className="sticky top-0 hidden h-screen w-60 shrink-0 flex-col border-r bg-sidebar text-sidebar-foreground md:flex">
-          <div className="flex items-center gap-2 px-5 py-4">
-            <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-sidebar-primary text-sidebar-primary-foreground">
-              <ShieldCheck className="h-5 w-5" />
-            </span>
-            <span className="font-semibold">Shared Panel</span>
+          <div className="px-4 py-4">
+            <Logo className="h-9 w-auto" />
           </div>
           <nav className="flex-1 space-y-1 px-3 py-2">
             {NAV.map((item) => {
