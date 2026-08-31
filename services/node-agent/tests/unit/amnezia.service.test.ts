@@ -36,14 +36,14 @@ const protocolFixtures: ProtocolFixture[] = [
     name: "AmneziaWg2Service",
     protocolName: "AmneziaWG2",
     protocol: Protocol.AMNEZIAWG2,
-    container: "amnezia-awg",
+    container: "amnezia-awg2",
     createService: (connection) => new AmneziaWg2Service(connection),
   },
   {
     name: "AmneziaWg3Service",
     protocolName: "AmneziaWG3",
     protocol: Protocol.AMNEZIAWG3,
-    container: "amnezia-awg",
+    container: "amnezia-awg2",
     createService: (connection) => new AmneziaWg3Service(connection),
   },
 ];

@@ -102,9 +102,13 @@ export class AmneziaWg3Service extends AmneziaWgServiceBase {
     return "AmneziaWG3";
   }
 
-  // The official AmneziaVPN client expects the amnezia-awg container id
+  // Modern AmneziaVPN labels the `amnezia-awg` container "AmneziaWG Legacy" and
+  // only `amnezia-awg2` as plain "AmneziaWG". The 2.0/3.1 distinction is carried
+  // by `protocol_version` (here "3.1"), NOT the container id — so use the modern
+  // id to avoid the misleading "Legacy" tag. Unrelated to the server-side Docker
+  // container (`amnezia-awg3`, see AppContract.AmneziaWG3.DOCKER_CONTAINER).
   protected get clientContainerName(): string {
-    return "amnezia-awg";
+    return "amnezia-awg2";
   }
 
   protected get paths(): AmneziaWgPaths {
