@@ -13,23 +13,12 @@
  *   CONTROL_API_URL (default http://127.0.0.1:3001)
  */
 
+import { authHeaders } from "./identity.js";
+
 const API = (process.env.CONTROL_API_URL ?? "http://127.0.0.1:3001").replace(
   /\/$/,
   "",
 );
-
-function authHeaders(): Record<string, string> {
-  const id = process.env.CF_ACCESS_CLIENT_ID;
-  const secret = process.env.CF_ACCESS_CLIENT_SECRET;
-  if (id && secret) {
-    return { "CF-Access-Client-Id": id, "CF-Access-Client-Secret": secret };
-  }
-  const email = process.env.PANEL_ADMIN_EMAIL;
-  if (email) return { "x-dev-user-email": email };
-  throw new Error(
-    "No credentials. Set PANEL_ADMIN_EMAIL (dev) or CF_ACCESS_CLIENT_ID + CF_ACCESS_CLIENT_SECRET (prod).",
-  );
-}
 
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${API}${path}`, {
@@ -507,6 +496,89 @@ async function cmdAction(
   console.log(`${resource} ${id}: ${action} done`);
 }
 
+const flagOf = (args: string[], name: string): string | undefined => {
+  const found = args.find((arg) => arg.startsWith(`--${name}=`));
+  return found ? found.split("=").slice(1).join("=") : undefined;
+};
+
+async function cmdNodeAdd(args: string[]): Promise<void> {
+  const name = flagOf(args, "name");
+  const apiBaseUrl = flagOf(args, "api-url");
+  const apiKey = flagOf(args, "api-key");
+  if (!name || !apiBaseUrl || !apiKey) {
+    throw new Error(
+      "Usage: node-add --name= --api-url= --api-key= [--public-name=] " +
+        "[--protocol=awg3] [--max-peers=500] [--enabled-protocols=awg3,awg2] [--disabled]",
+    );
+  }
+  const body: Record<string, unknown> = { name, apiBaseUrl, apiKey };
+  const publicName = flagOf(args, "public-name");
+  if (publicName) body.publicName = publicName;
+  const protocol = flagOf(args, "protocol");
+  if (protocol) body.protocol = protocol;
+  const maxPeers = flagOf(args, "max-peers");
+  if (maxPeers) body.maxPeers = Number(maxPeers);
+  const enabledProtocols = flagOf(args, "enabled-protocols");
+  if (enabledProtocols) {
+    body.enabledProtocols = enabledProtocols
+      .split(",")
+      .map((value) => value.trim())
+      .filter(Boolean);
+  }
+  if (args.includes("--disabled")) body.enabled = false;
+  const node = await api<{ id: string; name: string }>("/api/admin/nodes", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+  console.log(`node added: ${node.name} (${node.id})`);
+}
+
+async function cmdNodeUpdate(args: string[]): Promise<void> {
+  const id = args.find((arg) => !arg.startsWith("--"));
+  if (!id) throw new Error("Usage: node-update <id> --<field>=<value> …");
+  const body: Record<string, unknown> = {};
+  const strFields: Array<[string, string]> = [
+    ["name", "name"],
+    ["public-name", "publicName"],
+    ["api-url", "apiBaseUrl"],
+    ["api-key", "apiKey"],
+    ["protocol", "protocol"],
+  ];
+  for (const [cli, field] of strFields) {
+    const value = flagOf(args, cli);
+    if (value !== undefined) body[field] = value;
+  }
+  const maxPeers = flagOf(args, "max-peers");
+  if (maxPeers !== undefined) body.maxPeers = Number(maxPeers);
+  const enabled = flagOf(args, "enabled");
+  if (enabled !== undefined) body.enabled = enabled === "true";
+  const enabledProtocols = flagOf(args, "enabled-protocols");
+  if (enabledProtocols !== undefined) {
+    body.enabledProtocols =
+      enabledProtocols === "null"
+        ? null
+        : enabledProtocols
+            .split(",")
+            .map((value) => value.trim())
+            .filter(Boolean);
+  }
+  if (Object.keys(body).length === 0) {
+    throw new Error("Usage: node-update <id> --<field>=<value> …");
+  }
+  await api(`/api/admin/nodes/${id}`, {
+    method: "PATCH",
+    body: JSON.stringify(body),
+  });
+  console.log(`node ${id} updated: ${Object.keys(body).join(", ")}`);
+}
+
+async function cmdNodeRemove(args: string[]): Promise<void> {
+  const id = args.find((arg) => !arg.startsWith("--"));
+  if (!id) throw new Error("Usage: node-remove <id>");
+  await api(`/api/admin/nodes/${id}`, { method: "DELETE" });
+  console.log(`node ${id} removed`);
+}
+
 function usage(): void {
   console.log(`amnezia-panel — control-plane admin CLI
 
@@ -530,8 +602,17 @@ Users (accept a user id OR email):
   quota-approve <request-id> [note]      Approve a quota request (applies the limit)
   quota-reject <request-id> [note]       Reject a quota request
 
-Write:
+Nodes:
+  node-add --name= --api-url= --api-key=  Register a node (see flags below)
+  node-update <id> --<field>=<value> …    Edit a node (name, api-url, api-key,
+                                          public-name, protocol, max-peers,
+                                          enabled=true|false, enabled-protocols)
+  node-remove <id>                        Delete a node
   node-reconcile <id>                     Trigger a node sync
+  node-add flags: [--public-name=] [--protocol=awg3] [--max-peers=500]
+                  [--enabled-protocols=awg3,awg2] [--disabled]
+
+Write:
   key-revoke <id>                         Revoke a key
   key-disable <id> / key-enable <id>      Disable / enable a key
   cf-token <token>                        Store the Cloudflare API token (encrypted)
@@ -550,11 +631,14 @@ policy-set fields:
   cfApiToken=<token>   (write-only, encrypted)
   e.g.  amnezia-panel policy-set --allowQrDownload=false --defaultKeyLimit=10
 
-Env:
+Env (auth, in priority order):
   CONTROL_API_URL          default http://127.0.0.1:3001
-  PANEL_ADMIN_EMAIL        dev auth (x-dev-user-email)
+  PANEL_IDENTITY_SECRET    co-located admin: mint an x-panel-identity token
+  CLI_ADMIN_EMAIL          identity to act as (default: first BOOTSTRAP_ADMIN_EMAILS)
+  BOOTSTRAP_ADMIN_EMAILS   fallback identity source for the above
   CF_ACCESS_CLIENT_ID
-  CF_ACCESS_CLIENT_SECRET  prod auth (Cloudflare Access service token)
+  CF_ACCESS_CLIENT_SECRET  auth through Cloudflare Access (service token)
+  PANEL_ADMIN_EMAIL        dev auth (x-dev-user-email; dev API only)
 `);
 }
 
@@ -588,6 +672,14 @@ async function main(): Promise<void> {
       return cmdQuotaReview("approve", args);
     case "quota-reject":
       return cmdQuotaReview("reject", args);
+    case "node-add":
+    case "node-register":
+      return cmdNodeAdd(args);
+    case "node-update":
+      return cmdNodeUpdate(args);
+    case "node-remove":
+    case "node-delete":
+      return cmdNodeRemove(args);
     case "node-reconcile":
       return cmdAction("nodes", "reconcile", args);
     case "key-revoke":

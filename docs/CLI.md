@@ -117,8 +117,17 @@ address in `BOOTSTRAP_ADMIN_EMAILS` becomes `admin`.
 `apps/cli` (binary `amnezia-panel`) is a thin admin client over the control-api.
 Build with `pnpm --filter @amnezia/cli build`, then run `node apps/cli/dist/main.js
 <cmd>` (or `pnpm --filter @amnezia/cli dev -- <cmd>`). It authenticates as an admin
-via `CONTROL_API_URL` plus either `PANEL_ADMIN_EMAIL` (dev `x-dev-user-email`) or a
-Cloudflare Access service token (`CF_ACCESS_CLIENT_ID` + `CF_ACCESS_CLIENT_SECRET`).
+via `CONTROL_API_URL` plus one of, in priority order:
+
+1. **`PANEL_IDENTITY_SECRET`** (+ `CLI_ADMIN_EMAIL`, or the first `BOOTSTRAP_ADMIN_EMAILS`)
+   — the CLI mints the same `x-panel-identity` token the web issues after login, so a
+   **co-located operator is admin in production** without a browser. The panel host
+   already holds this secret; run the CLI where it is set (e.g. inside the control-api
+   container). This is the recommended production path.
+2. A Cloudflare Access **service token** (`CF_ACCESS_CLIENT_ID` + `CF_ACCESS_CLIENT_SECRET`)
+   when the CLI reaches the API **through** Cloudflare (the service token must be allowed
+   by the app's policy and map to an admin).
+3. `PANEL_ADMIN_EMAIL` (dev `x-dev-user-email`) — honoured only when the API runs in dev.
 
 **Read** (add `--json` to any):
 
@@ -144,12 +153,29 @@ Cloudflare Access service token (`CF_ACCESS_CLIENT_ID` + `CF_ACCESS_CLIENT_SECRE
 | Command | Purpose |
 | --- | --- |
 | `key-revoke <id>` · `key-disable <id>` · `key-enable <id>` | Key lifecycle |
+| `node-add --name= --api-url= --api-key= [--public-name=] [--protocol=awg3] [--max-peers=N] [--enabled-protocols=awg3,awg2] [--disabled]` | Register a node |
+| `node-update <id> --<field>=<value> …` | Edit a node (name, api-url, api-key, public-name, protocol, max-peers, enabled, enabled-protocols) |
+| `node-remove <id>` | Delete a node |
 | `node-reconcile <id>` | Force a node re-sync |
 | `policy-set --<field>=<value> …` | Set portal-policy fields (e.g. `--defaultKeyLimit=10`) |
 | `cf-config --account= --app= --policy=` | Set Cloudflare Access IDs |
 | `cf-token <token>` | Store the Cloudflare API token (encrypted at rest) |
 
-Example: `CONTROL_API_URL=http://127.0.0.1:3001 PANEL_ADMIN_EMAIL=admin@example.com
+**Co-located production example** — run inside the control-api container, which already
+carries `PANEL_IDENTITY_SECRET` + `BOOTSTRAP_ADMIN_EMAILS`:
+
+```sh
+CID=$(docker compose -f infra/prod/compose.yaml ps -q control-api)
+docker exec "$CID" node apps/cli/dist/main.js overview
+# register the co-located node
+docker exec "$CID" node apps/cli/dist/main.js \
+  node-add --name=germany --api-url=http://amnezia-node-agent:4001 --api-key=<node-key>
+# wire two-way Cloudflare Access sync
+docker exec "$CID" node apps/cli/dist/main.js cf-config --account=<id> --app=<id> --policy=<id>
+docker exec "$CID" node apps/cli/dist/main.js cf-token <cf-api-token>
+```
+
+Dev example: `CONTROL_API_URL=http://127.0.0.1:3001 PANEL_ADMIN_EMAIL=admin@example.com
 node apps/cli/dist/main.js overview`. Typical flow to grant more keys:
 `… quota` (copy the request id) → `… quota-approve <req-id>`.
 

@@ -11,6 +11,7 @@
     "dev": "tsx src/main.ts",
     "lint": "eslint src",
     "start": "node dist/main.js",
+    "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json"
   },
   "devDependencies": {
