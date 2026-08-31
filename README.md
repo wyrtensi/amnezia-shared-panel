@@ -1,9 +1,18 @@
-# Shared Panel
+<div align="center">
 
-A self-hosted control plane for **AmneziaWG** VPN access: employees create and
-manage their own device keys, administrators manage users, nodes, policy, and
-telemetry — across one or more VPN nodes, reached over the public internet behind
-a login you control.
+<img src="docs/assets/logo.svg" alt="Shared Panel" width="360">
+
+**A self-hosted control plane for AmneziaWG VPN access.**
+Employees create and manage their own device keys; admins manage users, nodes,
+policy, and telemetry across one or more nodes — behind a login you control.
+
+[![CI](https://github.com/wyrtensi/amnezia-shared-panel/actions/workflows/ci.yml/badge.svg)](https://github.com/wyrtensi/amnezia-shared-panel/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/tag/wyrtensi/amnezia-shared-panel?sort=semver&label=release&color=cc7328)](https://github.com/wyrtensi/amnezia-shared-panel/releases)
+[![License: MIT](https://img.shields.io/badge/license-MIT-cc7328)](LICENSE)
+[![AmneziaWG 3.1](https://img.shields.io/badge/AmneziaWG-3.1-17917d)](#protocol)
+[![Next.js](https://img.shields.io/badge/Next.js-000?logo=nextdotjs&logoColor=white)](https://nextjs.org)
+
+</div>
 
 ## Protocol
 

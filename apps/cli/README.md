@@ -38,10 +38,16 @@ CF_ACCESS_CLIENT_ID=…​.access CF_ACCESS_CLIENT_SECRET=cfast_… \
 
 ## Commands
 
-Read: `overview`, `users`, `keys`, `nodes`, `audit [--limit=N]` — add `--json` for
-raw JSON.
+Read: `overview`, `users`, `keys`, `nodes`, `audit [--limit=N]`, `quota`,
+`policy` — add `--json` for raw JSON.
 
-Write: `user-create <email> [name] [--admin]`, `node-reconcile <id>`,
-`key-revoke <id>`, `key-disable <id>`, `key-enable <id>`.
+User management (id **or** email): `user-create <email> [name] [--admin]`,
+`user-role <id|email> <admin|user>`, `user-limit <id|email> <n|default>`,
+`user-disable <id|email>`, `user-enable <id|email>`,
+`quota-approve <req-id> [note]`, `quota-reject <req-id> [note]`.
 
-Run `amnezia-panel help` for the full list.
+Keys / nodes / config: `key-revoke <id>`, `key-disable <id>`, `key-enable <id>`,
+`node-reconcile <id>`, `policy-set --<field>=<value> …`,
+`cf-config --account= --app= --policy=`, `cf-token <token>`.
+
+Run `amnezia-panel help` for the full list and the `policy-set` field reference.

@@ -120,10 +120,29 @@ Build with `pnpm --filter @amnezia/cli build`, then run `node apps/cli/dist/main
 via `CONTROL_API_URL` plus either `PANEL_ADMIN_EMAIL` (dev `x-dev-user-email`) or a
 Cloudflare Access service token (`CF_ACCESS_CLIENT_ID` + `CF_ACCESS_CLIENT_SECRET`).
 
+**Read** (add `--json` to any):
+
 | Command | Purpose |
 | --- | --- |
-| `overview` / `users` / `keys` / `nodes` / `audit [--limit=N]` / `policy` | Read state (add `--json`) |
+| `overview` / `users` / `keys` / `nodes` / `audit [--limit=N]` / `policy` | State snapshots |
+| `quota` | Pending key-limit requests, with their ids and `current → requested` |
+
+**User management** (every command below takes a user **id or email**):
+
+| Command | Purpose |
+| --- | --- |
 | `user-create <email> [name] [--admin]` | Create a user or admin |
+| `user-role <id\|email> <admin\|user>` | Promote / demote (the last admin is protected) |
+| `user-limit <id\|email> <n\|default>` | Set the key-limit override (`default` clears it) |
+| `user-disable <id\|email>` | Offboard: disable the user and revoke their keys |
+| `user-enable <id\|email>` | Reinstate a disabled user |
+| `quota-approve <req-id> [note]` | Approve a quota request (applies the new limit) |
+| `quota-reject <req-id> [note]` | Reject a quota request |
+
+**Keys / nodes / config:**
+
+| Command | Purpose |
+| --- | --- |
 | `key-revoke <id>` · `key-disable <id>` · `key-enable <id>` | Key lifecycle |
 | `node-reconcile <id>` | Force a node re-sync |
 | `policy-set --<field>=<value> …` | Set portal-policy fields (e.g. `--defaultKeyLimit=10`) |
@@ -131,7 +150,8 @@ Cloudflare Access service token (`CF_ACCESS_CLIENT_ID` + `CF_ACCESS_CLIENT_SECRE
 | `cf-token <token>` | Store the Cloudflare API token (encrypted at rest) |
 
 Example: `CONTROL_API_URL=http://127.0.0.1:3001 PANEL_ADMIN_EMAIL=admin@example.com
-node apps/cli/dist/main.js overview`.
+node apps/cli/dist/main.js overview`. Typical flow to grant more keys:
+`… quota` (copy the request id) → `… quota-approve <req-id>`.
 
 ### Direct-login (server-side Google) operator notes
 

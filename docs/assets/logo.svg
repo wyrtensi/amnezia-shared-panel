@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 88" width="400" height="88" role="img" aria-label="Shared Panel">
+  <title>Shared Panel</title>
+  <!-- Shield mark — same geometry as the app favicon (apps/web/app/icon.svg), 2x -->
+  <g transform="translate(12,12) scale(2)">
+    <rect width="32" height="32" rx="7" fill="#cc7328"/>
+    <path d="M16 5l8 3v6.5c0 5-3.4 8.9-8 10.5-4.6-1.6-8-5.5-8-10.5V8l8-3z" fill="none" stroke="#fffaf2" stroke-width="2" stroke-linejoin="round"/>
+    <circle cx="16" cy="14.5" r="2.4" fill="#fffaf2"/>
+    <path d="M16 16.5v4.5" stroke="#fffaf2" stroke-width="2" stroke-linecap="round"/>
+  </g>
+  <!-- Wordmark — gray "Shared" reads on both light and dark backgrounds; amber "Panel" is the accent -->
+  <text x="92" y="50" font-family="'Segoe UI',system-ui,-apple-system,'Helvetica Neue',Arial,sans-serif" font-size="32" font-weight="700" letter-spacing="-0.5">
+    <tspan fill="#9a8f7d">Shared</tspan><tspan dx="10" fill="#cc7328">Panel</tspan>
+  </text>
+  <!-- Teal accent underline (theme chart-2) -->
+  <rect x="93" y="62" width="66" height="4" rx="2" fill="#17917d"/>
+</svg>

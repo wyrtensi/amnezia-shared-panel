@@ -111,9 +111,36 @@ type AuditEvent = {
   targetType: string;
   createdAt: string;
 };
+type QuotaRequest = {
+  id: string;
+  userId: string;
+  requestedLimit: number;
+  reason: string | null;
+  status: string;
+  createdAt: string;
+};
 
 const json = (value: unknown) => console.log(JSON.stringify(value, null, 2));
 const wantsJson = (args: string[]) => args.includes("--json");
+
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** Accept a user UUID or an email (resolved to its id via the admin list). */
+async function resolveUserId(ref: string | undefined, usage: string): Promise<string> {
+  if (!ref) throw new Error(usage);
+  if (UUID_RE.test(ref)) return ref;
+  const users = await api<AdminUser[]>("/api/admin/users");
+  const match = users.find((u) => u.email.toLowerCase() === ref.toLowerCase());
+  if (!match) throw new Error(`No user with email "${ref}"`);
+  return match.id;
+}
+
+const userAction = (id: string, action: string, body: unknown): Promise<unknown> =>
+  api(`/api/admin/users/${id}/${action}`, {
+    method: "POST",
+    body: JSON.stringify(body ?? {}),
+  });
 
 type Overview = {
   activeKeys?: number;
@@ -232,6 +259,94 @@ async function cmdUserCreate(args: string[]): Promise<void> {
     body: JSON.stringify({ email, displayName, role }),
   });
   console.log(`Created user ${email} (${role}) — id ${created.id}`);
+}
+
+async function cmdUserRole(args: string[]): Promise<void> {
+  const positional = args.filter((arg) => !arg.startsWith("--"));
+  const usage = "Usage: user-role <id|email> <admin|user>";
+  const id = await resolveUserId(positional[0], usage);
+  const role = positional[1];
+  if (role !== "admin" && role !== "user") throw new Error(usage);
+  await userAction(id, "set-role", { role });
+  console.log(`user ${positional[0]}: role → ${role}`);
+}
+
+async function cmdUserLimit(args: string[]): Promise<void> {
+  const positional = args.filter((arg) => !arg.startsWith("--"));
+  const usage = "Usage: user-limit <id|email> <n|default>";
+  const id = await resolveUserId(positional[0], usage);
+  const raw = positional[1];
+  if (raw === undefined) throw new Error(usage);
+  const keyLimitOverride = raw === "default" || raw === "null" ? null : Number(raw);
+  if (
+    keyLimitOverride !== null &&
+    (!Number.isInteger(keyLimitOverride) ||
+      keyLimitOverride < 0 ||
+      keyLimitOverride > 1000)
+  ) {
+    throw new Error("limit must be an integer 0..1000, or 'default'");
+  }
+  await userAction(id, "set-limit", { keyLimitOverride });
+  console.log(`user ${positional[0]}: key limit → ${keyLimitOverride ?? "default"}`);
+}
+
+async function cmdUserDisable(args: string[]): Promise<void> {
+  const id = await resolveUserId(
+    args.find((arg) => !arg.startsWith("--")),
+    "Usage: user-disable <id|email>",
+  );
+  await userAction(id, "offboard", {});
+  console.log("user disabled — their keys are queued for revoke");
+}
+
+async function cmdUserEnable(args: string[]): Promise<void> {
+  const id = await resolveUserId(
+    args.find((arg) => !arg.startsWith("--")),
+    "Usage: user-enable <id|email>",
+  );
+  await userAction(id, "reinstate", {});
+  console.log("user reinstated — status active");
+}
+
+async function cmdQuota(args: string[]): Promise<void> {
+  const [requests, users] = await Promise.all([
+    api<QuotaRequest[]>("/api/admin/quota-requests"),
+    api<AdminUser[]>("/api/admin/users"),
+  ]);
+  if (wantsJson(args)) return json(requests);
+  const emailById = new Map(users.map((user) => [user.id, user.email]));
+  const limitById = new Map(
+    users.map((user) => [user.id, user.keyLimitOverride]),
+  );
+  console.log(
+    table(
+      requests.map((req) => ({
+        id: req.id,
+        user: emailById.get(req.userId) ?? req.userId.slice(0, 8),
+        change: `${limitById.get(req.userId) ?? "default"} → ${req.requestedLimit}`,
+        status: req.status,
+        reason: (req.reason ?? "").replace(/\s+/g, " ").slice(0, 40),
+      })),
+      ["id", "user", "change", "status", "reason"],
+    ),
+  );
+}
+
+async function cmdQuotaReview(
+  action: "approve" | "reject",
+  args: string[],
+): Promise<void> {
+  const positional = args.filter((arg) => !arg.startsWith("--"));
+  const id = positional[0];
+  if (!id) throw new Error(`Usage: quota-${action} <request-id> [note]`);
+  const note = positional.slice(1).join(" ") || undefined;
+  await api(`/api/admin/quota-requests/${id}/${action}`, {
+    method: "POST",
+    body: JSON.stringify(note ? { note } : {}),
+  });
+  console.log(
+    `quota request ${id}: ${action === "approve" ? "approved" : "rejected"}`,
+  );
 }
 
 async function cmdCfToken(args: string[]): Promise<void> {
@@ -390,10 +505,19 @@ Read:
   keys                     List keys (with owner + traffic)
   nodes                    List nodes (with protocols + capacity)
   audit [--limit=N]        Recent audit events
+  quota [--json]           Pending key-limit (quota) requests, with ids
   policy [--json]          Show all panel settings + Cloudflare config
 
-Write:
+Users (accept a user id OR email):
   user-create <email> [name] [--admin]   Add a user
+  user-role <id|email> <admin|user>      Promote / demote (last admin is protected)
+  user-limit <id|email> <n|default>      Set key-limit override (default = clear)
+  user-disable <id|email>                Offboard: disable + revoke their keys
+  user-enable <id|email>                 Reinstate a disabled user
+  quota-approve <request-id> [note]      Approve a quota request (applies the limit)
+  quota-reject <request-id> [note]       Reject a quota request
+
+Write:
   node-reconcile <id>                     Trigger a node sync
   key-revoke <id>                         Revoke a key
   key-disable <id> / key-enable <id>      Disable / enable a key
@@ -436,6 +560,21 @@ async function main(): Promise<void> {
       return cmdAudit(args);
     case "user-create":
       return cmdUserCreate(args);
+    case "user-role":
+      return cmdUserRole(args);
+    case "user-limit":
+      return cmdUserLimit(args);
+    case "user-disable":
+      return cmdUserDisable(args);
+    case "user-enable":
+      return cmdUserEnable(args);
+    case "quota":
+    case "quota-requests":
+      return cmdQuota(args);
+    case "quota-approve":
+      return cmdQuotaReview("approve", args);
+    case "quota-reject":
+      return cmdQuotaReview("reject", args);
     case "node-reconcile":
       return cmdAction("nodes", "reconcile", args);
     case "key-revoke":
