@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { Check, Copy, Download } from "lucide-react";
+import { Check, Copy, Download, QrCode } from "lucide-react";
 import { toast } from "sonner";
 import {
   Dialog,
@@ -19,7 +19,11 @@ import { cn } from "@/lib/utils";
 import { useT } from "@/lib/i18n/provider";
 import type { Me } from "@/lib/types";
 
-export type ConfigTarget = { id: string; deviceLabel: string };
+export type ConfigTarget = {
+  id: string;
+  deviceLabel: string;
+  routeProfile: string;
+};
 
 const QR_SIZES = { s: 220, m: 320, l: 460 } as const;
 type QrSize = keyof typeof QR_SIZES;
@@ -131,6 +135,20 @@ export function ConfigDownloadDialog({
             </div>
 
             {me?.policy.allowQrDownload && target ? (
+              target.routeProfile !== "full_tunnel" ? (
+                // Split-tunnel profiles carry thousands of routes/domains, so a
+                // QR would be unscannably dense (and a plain .conf drops the
+                // domain rules). Point the user at the pasteable config instead.
+                <div className="rounded-xl border border-dashed bg-muted/40 p-4 text-center">
+                  <QrCode className="mx-auto mb-2 h-8 w-8 text-muted-foreground" />
+                  <p className="text-sm font-medium">
+                    {t("config.qrUnavailableTitle")}
+                  </p>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    {t("config.qrUnavailableBody")}
+                  </p>
+                </div>
+              ) : (
               <div className="space-y-2">
                 <div className="flex items-center justify-between">
                   <Label>{t("config.qr")}</Label>
@@ -181,6 +199,7 @@ export function ConfigDownloadDialog({
                   {t("config.qrHint")}
                 </p>
               </div>
+              )
             ) : null}
 
             {me?.policy.allowConfDownload && target ? (

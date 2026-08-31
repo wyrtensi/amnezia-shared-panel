@@ -158,6 +158,7 @@ const ru = {
   "keyCard.reissue": "Перевыпустить",
   "keyCard.reissueTip":
     "Выдать новый ключ с текущими правилами. Старый перестанет работать — переустановите конфиг на устройстве.",
+  "keyCard.provisioning": "Создаётся…",
   "keyCard.showQr": "Показать QR-код",
   "keyCard.qrAndLink": "QR-код и ссылка",
   "keyCard.revoke": "Отозвать ключ",
@@ -216,6 +217,9 @@ const ru = {
   "config.qrSizeItemAria": "Размер: {size}",
   "config.qrAlt": "QR-код для подключения",
   "config.qrHint": "Наведите камеру телефона на код",
+  "config.qrUnavailableTitle": "QR-код недоступен для этого профиля",
+  "config.qrUnavailableBody":
+    "В профилях с раздельным туннелированием слишком много маршрутов, чтобы отобразить QR-код. Удобнее всего использовать конфиг-файл выше — скопируйте ключ и вставьте его в вашем клиенте (Добавить → Из строки/файла). Работа ключа на таких профилях не гарантируется.",
 
   // Quota request dialog
   "quota.sent": "Запрос отправлен администратору",
@@ -707,6 +711,7 @@ const en = {
   "keyCard.reissue": "Reissue",
   "keyCard.reissueTip":
     "Issue a new key with the current rules. The old one will stop working — reinstall the config on the device.",
+  "keyCard.provisioning": "Creating…",
   "keyCard.showQr": "Show QR code",
   "keyCard.qrAndLink": "QR code and link",
   "keyCard.revoke": "Revoke key",
@@ -765,6 +770,9 @@ const en = {
   "config.qrSizeItemAria": "Size: {size}",
   "config.qrAlt": "Connection QR code",
   "config.qrHint": "Point your phone camera at the code",
+  "config.qrUnavailableTitle": "QR code is unavailable for this profile",
+  "config.qrUnavailableBody":
+    "Split-tunnel profiles carry too many routes to fit in a QR code. Use the config above instead — copy the key and paste it into your client (Add → From string/file). Key operation on such profiles is not guaranteed.",
 
   // Quota request dialog
   "quota.sent": "Request sent to the administrator",

@@ -23,6 +23,10 @@ export type StoredKeyConfig = {
   id: string;
   ownerId: string;
   deviceLabel: string | null;
+  // Per-owner key number and the node's user-facing name, used to label the
+  // server shown in the client as "<nodeDisplayName> #<keyNumber>".
+  keyNumber: number | null;
+  nodeDisplayName: string;
   encrypted: EncryptedSecret;
   policy: PortalPolicy;
   routeProfile: RouteProfile;

@@ -698,6 +698,7 @@ export class PostgresControlRepository implements ControlRepository {
       state: key.state,
       deviceType: key.deviceType,
       deviceLabel: key.deviceLabel,
+      keyNumber: key.keyNumber,
       routeProfile: key.routeProfile,
       rulesOutdated:
         key.routeProfile !== "full_tunnel" &&
@@ -900,6 +901,15 @@ export class PostgresControlRepository implements ControlRepository {
           keyId,
           Buffer.from(labelSecret, "base64"),
         );
+        // Per-owner sequential key number. Safe from races: the owner's `users`
+        // row is locked FOR UPDATE above, so concurrent creations serialize.
+        const [numbering] = await tx
+          .select({
+            next: sql<number>`coalesce(max(${vpnKeys.keyNumber}), 0) + 1`,
+          })
+          .from(vpnKeys)
+          .where(eq(vpnKeys.ownerId, actor.id));
+        const keyNumber = Number(numbering?.next ?? 1);
         await tx.insert(vpnKeys).values({
           id: keyId,
           ownerId: actor.id,
@@ -909,6 +919,7 @@ export class PostgresControlRepository implements ControlRepository {
           state: "provisioning",
           deviceType: request.deviceType,
           deviceLabel: request.deviceLabel,
+          keyNumber,
           routeProfile: request.routeProfile,
           routeRuleVersionId,
         });
@@ -943,9 +954,16 @@ export class PostgresControlRepository implements ControlRepository {
 
   findKeyConfig = async (keyId: string): Promise<StoredKeyConfig | null> => {
     const rows = await this.options.db
-      .select({ key: vpnKeys, user: users, policy: portalPolicy })
+      .select({
+        key: vpnKeys,
+        user: users,
+        policy: portalPolicy,
+        nodeName: nodes.name,
+        nodePublicName: nodes.publicName,
+      })
       .from(vpnKeys)
       .innerJoin(users, eq(users.id, vpnKeys.ownerId))
+      .innerJoin(nodes, eq(nodes.id, vpnKeys.nodeId))
       .leftJoin(portalPolicy, eq(portalPolicy.id, true))
       .where(and(eq(vpnKeys.id, keyId), isNotNull(vpnKeys.configCiphertext)))
       .limit(1);
@@ -966,6 +984,8 @@ export class PostgresControlRepository implements ControlRepository {
       id: row.key.id,
       ownerId: row.key.ownerId,
       deviceLabel: row.key.deviceLabel,
+      keyNumber: row.key.keyNumber,
+      nodeDisplayName: row.nodePublicName ?? row.nodeName,
       encrypted: {
         ciphertext: row.key.configCiphertext,
         nonce: row.key.configNonce,

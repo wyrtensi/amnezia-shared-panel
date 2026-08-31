@@ -13,6 +13,7 @@ import {
   applyRouteProfileToVpnLink,
   extractConfFromVpnLink,
   mergeRulePayload,
+  setVpnDescription,
 } from "./vpnConfig.js";
 
 export type DefaultServiceOptions = {
@@ -98,10 +99,16 @@ export const createDefaultControlApiService = ({
     );
     const hasRoutes =
       mergedPayload.cidrs.length > 0 || mergedPayload.domains.length > 0;
-    const vpnLink =
+    const routedLink =
       key.routeProfile !== "full_tunnel" && hasRoutes
         ? applyRouteProfileToVpnLink(storedLink, key.routeProfile, mergedPayload)
         : storedLink;
+    // Label the connection in the client as "<node public name> #<keyNumber>"
+    // so a user with several keys can tell their servers apart.
+    const serverName = key.keyNumber
+      ? `${key.nodeDisplayName} #${key.keyNumber}`
+      : key.nodeDisplayName;
+    const vpnLink = setVpnDescription(routedLink, serverName);
     if (
       key.activeRule &&
       key.appliedRuleVersionId !== key.activeRule.versionId

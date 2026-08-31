@@ -4,6 +4,7 @@ import {
   applyRouteProfileToVpnLink,
   decodeVpnLink,
   extractConfFromVpnLink,
+  setVpnDescription,
 } from "./vpnConfig.js";
 
 const encode = (value: unknown): string => {
@@ -35,6 +36,23 @@ describe("vpn config extraction and split tunneling", () => {
     expect(() => extractConfFromVpnLink(encode({ containers: [] }))).toThrow(
       /embedded config/i,
     );
+  });
+
+  it("sets the client-visible server name (description)", () => {
+    const vpnLink = encode({
+      description: "old name",
+      containers: [
+        { awg: { last_config: JSON.stringify({ config: "[Interface]\n" }) } },
+      ],
+    });
+    const named = setVpnDescription(vpnLink, "Frankfurt #3");
+    expect(decodeVpnLink(named).description).toBe("Frankfurt #3");
+  });
+
+  it("returns the link unchanged when it cannot be decoded or name is empty", () => {
+    expect(setVpnDescription("vpn://bad", "X")).toBe("vpn://bad");
+    const link = encode({ description: "keep", containers: [] });
+    expect(setVpnDescription(link, "")).toBe(link);
   });
 
   it("leaves full_tunnel config unchanged", () => {

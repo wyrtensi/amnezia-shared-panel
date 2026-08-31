@@ -57,6 +57,13 @@
       "when": 1788145422290,
       "tag": "0007_luxuriant_zaran",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1788153792720,
+      "tag": "0008_condemned_imperial_guard",
+      "breakpoints": true
     }
   ]
 }

@@ -266,6 +266,105 @@ async function cmdCfConfig(args: string[]): Promise<void> {
   console.log(`Updated Cloudflare config: ${Object.keys(body).join(", ")}`);
 }
 
+// Every settable portal-policy field, grouped by how the flag value is coerced.
+const POLICY_BOOL_FIELDS = [
+  "allowKeyCreation",
+  "allowNodeSelection",
+  "allowRouteProfileSelection",
+  "allowCustomRoutes",
+  "allowConfigRedownload",
+  "allowQrDownload",
+  "allowConfDownload",
+  "allowSelfRevoke",
+  "showPublicKey",
+  "showLastUsed",
+  "showTraffic",
+] as const;
+const POLICY_INT_FIELDS = ["defaultKeyLimit"] as const;
+const POLICY_INT_NULL_FIELDS = ["dailyRetentionDays"] as const;
+const POLICY_STR_NULL_FIELDS = [
+  "cfAccessAccountId",
+  "cfAccessAppId",
+  "cfAccessPolicyId",
+] as const;
+const POLICY_STR_FIELDS = ["cfApiToken"] as const;
+
+async function cmdPolicy(args: string[]): Promise<void> {
+  const rows = await api<Array<Record<string, unknown>>>(
+    "/api/admin/portal-policy",
+  );
+  const policy = rows[0] ?? {};
+  if (wantsJson(args)) return json(policy);
+  for (const [key, value] of Object.entries(policy)) {
+    const shown = Array.isArray(value)
+      ? value.length
+        ? value.join(",")
+        : "(all)"
+      : String(value);
+    console.log(`${key.padEnd(28)} ${shown}`);
+  }
+}
+
+async function cmdPolicySet(args: string[]): Promise<void> {
+  const flag = (name: string): string | undefined => {
+    const found = args.find((arg) => arg.startsWith(`--${name}=`));
+    return found ? found.split("=").slice(1).join("=") : undefined;
+  };
+  const parseBool = (name: string, value: string): boolean => {
+    if (value === "true") return true;
+    if (value === "false") return false;
+    throw new Error(`--${name} expects true/false, got "${value}"`);
+  };
+  const body: Record<string, unknown> = {};
+  for (const field of POLICY_BOOL_FIELDS) {
+    const value = flag(field);
+    if (value !== undefined) body[field] = parseBool(field, value);
+  }
+  for (const field of POLICY_INT_FIELDS) {
+    const value = flag(field);
+    if (value !== undefined) body[field] = Number(value);
+  }
+  for (const field of POLICY_INT_NULL_FIELDS) {
+    const value = flag(field);
+    if (value !== undefined) body[field] = value === "null" ? null : Number(value);
+  }
+  for (const field of POLICY_STR_NULL_FIELDS) {
+    const value = flag(field);
+    if (value !== undefined) body[field] = value === "null" ? null : value;
+  }
+  for (const field of POLICY_STR_FIELDS) {
+    const value = flag(field);
+    if (value !== undefined) body[field] = value;
+  }
+  const protocols = flag("allowedProtocols");
+  if (protocols !== undefined) {
+    body.allowedProtocols = protocols
+      .split(",")
+      .map((value) => value.trim())
+      .filter(Boolean);
+  }
+  const nodeIds = flag("allowedNodeIds");
+  if (nodeIds !== undefined) {
+    body.allowedNodeIds =
+      nodeIds === "null"
+        ? null
+        : nodeIds
+            .split(",")
+            .map((value) => value.trim())
+            .filter(Boolean);
+  }
+  if (Object.keys(body).length === 0) {
+    throw new Error(
+      "Usage: policy-set --<field>=<value> …  (run `help` for the field list)",
+    );
+  }
+  await api("/api/admin/portal-policy/global/update", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+  console.log(`Updated policy: ${Object.keys(body).join(", ")}`);
+}
+
 async function cmdAction(
   resource: string,
   action: string,
@@ -291,6 +390,7 @@ Read:
   keys                     List keys (with owner + traffic)
   nodes                    List nodes (with protocols + capacity)
   audit [--limit=N]        Recent audit events
+  policy [--json]          Show all panel settings + Cloudflare config
 
 Write:
   user-create <email> [name] [--admin]   Add a user
@@ -299,6 +399,19 @@ Write:
   key-disable <id> / key-enable <id>      Disable / enable a key
   cf-token <token>                        Store the Cloudflare API token (encrypted)
   cf-config --account= --app= --policy=   Set Cloudflare Access IDs
+  policy-set --<field>=<value> …          Set any panel setting(s), see below
+
+policy-set fields:
+  Booleans (true/false): allowKeyCreation, allowNodeSelection,
+    allowRouteProfileSelection, allowCustomRoutes, allowConfigRedownload,
+    allowQrDownload, allowConfDownload, allowSelfRevoke, showPublicKey,
+    showLastUsed, showTraffic
+  defaultKeyLimit=<int 0..1000>
+  dailyRetentionDays=<int 1..36500 | null>
+  allowedProtocols=awg3[,awg2]            allowedNodeIds=<uuid,…|null>
+  cfAccessAccountId / cfAccessAppId / cfAccessPolicyId=<id|null>
+  cfApiToken=<token>   (write-only, encrypted)
+  e.g.  amnezia-panel policy-set --allowQrDownload=false --defaultKeyLimit=10
 
 Env:
   CONTROL_API_URL          default http://127.0.0.1:3001
@@ -335,6 +448,10 @@ async function main(): Promise<void> {
       return cmdCfToken(args);
     case "cf-config":
       return cmdCfConfig(args);
+    case "policy":
+      return cmdPolicy(args);
+    case "policy-set":
+      return cmdPolicySet(args);
     case undefined:
     case "help":
     case "--help":

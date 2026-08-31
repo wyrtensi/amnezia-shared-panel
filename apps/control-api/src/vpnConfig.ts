@@ -66,6 +66,24 @@ export const extractConfFromVpnLink = (vpnLink: string): string => {
 };
 
 /**
+ * Set the human-readable server name the AmneziaVPN client shows for this
+ * connection (the vpn:// payload's `description`). We label it
+ * "<node public name> #<keyNumber>" so a user with several keys can tell their
+ * connections apart in the client. No-op-safe: a link that cannot be decoded is
+ * returned unchanged.
+ */
+export const setVpnDescription = (vpnLink: string, description: string): string => {
+  if (!description) return vpnLink;
+  try {
+    const payload = decodeVpnLink(vpnLink);
+    payload.description = description;
+    return encodeVpnPayload(payload);
+  } catch {
+    return vpnLink;
+  }
+};
+
+/**
  * Union a base rule payload with a user's custom extras, de-duplicating. Layers
  * per-user routes on top of a split-tunnel profile's base feed at export time.
  * Returns the base object unchanged when there are no extras.

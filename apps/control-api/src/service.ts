@@ -37,6 +37,7 @@ export type KeyView = {
   state: KeyState;
   deviceType: DeviceType;
   deviceLabel?: string | null;
+  keyNumber?: number | null;
   routeProfile: RouteProfile;
   rulesOutdated?: boolean;
   createdAt: string;

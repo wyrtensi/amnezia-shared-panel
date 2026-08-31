@@ -53,6 +53,8 @@ export function EmployeeDashboard() {
   const [configTarget, setConfigTarget] = React.useState<ConfigTarget | null>(
     null,
   );
+  const [justCreatedId, setJustCreatedId] = React.useState<string | null>(null);
+  const scrolledForId = React.useRef<string | null>(null);
 
   const load = React.useCallback(async () => {
     try {
@@ -83,6 +85,29 @@ export function EmployeeDashboard() {
   React.useEffect(() => {
     void load();
   }, [load]);
+
+  // While any key is still provisioning, poll so its card flips to "active"
+  // (and its spinner clears) without the user hitting Refresh.
+  const anyProvisioning = React.useMemo(
+    () => keys.some((key) => key.state === "provisioning"),
+    [keys],
+  );
+  React.useEffect(() => {
+    if (!anyProvisioning) return;
+    const timer = setInterval(() => void load(), 4000);
+    return () => clearInterval(timer);
+  }, [anyProvisioning, load]);
+
+  // After creating a key, scroll to and focus its card once it appears — no
+  // dialog, the card's own spinner shows progress while it provisions.
+  React.useEffect(() => {
+    if (!justCreatedId || scrolledForId.current === justCreatedId) return;
+    const el = document.getElementById(`key-card-${justCreatedId}`);
+    if (!el) return;
+    scrolledForId.current = justCreatedId;
+    el.scrollIntoView({ behavior: "smooth", block: "center" });
+    el.focus({ preventScroll: true });
+  }, [justCreatedId, keys]);
 
   // Per-server traffic (Today / 7 days / Month, all inline).
   const showTraffic = me?.policy.showTraffic ?? false;
@@ -153,13 +178,15 @@ export function EmployeeDashboard() {
       }),
     });
     toast.success(t("emp.keyCreated"));
-    await load();
     if (created?.id) {
-      setConfigTarget({
-        id: created.id,
-        deviceLabel: payload.deviceLabel || payload.deviceType,
-      });
+      // Don't pop the config dialog — the key is still provisioning and its
+      // config isn't ready (that was the "load failed" error). Mark it so the
+      // list scrolls to and focuses the new card, which shows a spinner until
+      // provisioning finishes.
+      scrolledForId.current = null;
+      setJustCreatedId(created.id);
     }
+    await load();
   };
 
   const rotate = async (keyId: string) => {
@@ -315,7 +342,17 @@ export function EmployeeDashboard() {
           // no longer forces a gap under its shorter neighbour.
           <div className="columns-1 gap-3 sm:columns-2 [&>*]:mb-3">
             {visibleKeys.map((key) => (
-              <div key={key.id} className="break-inside-avoid">
+              <div
+                key={key.id}
+                id={`key-card-${key.id}`}
+                tabIndex={-1}
+                className={cn(
+                  "break-inside-avoid rounded-2xl outline-none transition-shadow",
+                  key.id === justCreatedId &&
+                    key.state === "provisioning" &&
+                    "ring-2 ring-primary/40",
+                )}
+              >
                 <KeyCard
                   keyView={key}
                   node={nodeById.get(key.nodeId)}
@@ -325,6 +362,7 @@ export function EmployeeDashboard() {
                     setConfigTarget({
                       id: key.id,
                       deviceLabel: key.deviceLabel || key.deviceType,
+                      routeProfile: key.routeProfile,
                     })
                   }
                   onRotate={() => void rotate(key.id)}

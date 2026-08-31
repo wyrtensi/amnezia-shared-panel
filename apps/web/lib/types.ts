@@ -67,6 +67,7 @@ export type KeyView = {
   protocol: string;
   deviceType: string;
   deviceLabel?: string | null;
+  keyNumber?: number | null;
   routeProfile: string;
   rulesOutdated?: boolean;
   createdAt: string;

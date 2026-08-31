@@ -87,6 +87,7 @@ export function KeyCard({
 }) {
   const { t, lang } = useT();
   const active = keyView.state === "active";
+  const provisioning = keyView.state === "provisioning";
   // Rotation re-issues the peer with current rules; only meaningful for
   // rule-based profiles (a full-tunnel key never needs new rules).
   const canRotate = keyView.routeProfile !== "full_tunnel";
@@ -106,13 +107,23 @@ export function KeyCard({
             <div className="min-w-0">
               <p className="truncate font-medium leading-tight">
                 {keyView.deviceLabel || keyView.deviceType}
+                {keyView.keyNumber != null ? (
+                  <span className="ml-1.5 text-xs font-normal text-muted-foreground">
+                    #{keyView.keyNumber}
+                  </span>
+                ) : null}
               </p>
               <p className="truncate text-xs text-muted-foreground">
                 {node?.name ?? "—"}
               </p>
             </div>
           </div>
-          <StatusBadge value={keyView.state} />
+          <div className="flex shrink-0 items-center gap-1.5">
+            {provisioning ? (
+              <Loader2 className="h-4 w-4 animate-spin text-warning" />
+            ) : null}
+            <StatusBadge value={keyView.state} />
+          </div>
         </div>
 
         <div className="flex flex-wrap items-center gap-1.5">
@@ -171,27 +182,14 @@ export function KeyCard({
         </dl>
 
         <div className="flex items-center gap-1.5 border-t pt-3">
+          {provisioning ? (
+            <span className="flex items-center gap-2 text-sm text-muted-foreground">
+              <Loader2 className="h-4 w-4 animate-spin" />
+              {t("keyCard.provisioning")}
+            </span>
+          ) : null}
           {active && me.policy.allowConfigRedownload ? (
             <>
-              {canRotate && !keyView.rulesOutdated ? (
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <Button
-                      type="button"
-                      variant="secondary"
-                      size="sm"
-                      disabled={busy}
-                      onClick={onRotate}
-                    >
-                      <RefreshCw className="h-4 w-4" />
-                      {t("keyCard.reissue")}
-                    </Button>
-                  </TooltipTrigger>
-                  <TooltipContent>
-                    {t("keyCard.reissueTip")}
-                  </TooltipContent>
-                </Tooltip>
-              ) : null}
               <CopyKeyButton keyId={keyView.id} disabled={busy} />
               {me.policy.allowQrDownload ? (
                 <Tooltip>
@@ -219,7 +217,30 @@ export function KeyCard({
               ) : null}
             </>
           ) : null}
-          <div className="ml-auto">
+          <div className="ml-auto flex items-center gap-1.5">
+            {/* Reissue lives here, apart from Copy and as a muted icon, so it is
+                not mistaken for the primary "copy key" action. */}
+            {active &&
+            me.policy.allowConfigRedownload &&
+            canRotate &&
+            !keyView.rulesOutdated ? (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    disabled={busy}
+                    onClick={onRotate}
+                    aria-label={t("keyCard.reissue")}
+                    className="text-muted-foreground hover:text-foreground"
+                  >
+                    <RefreshCw className="h-4 w-4" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>{t("keyCard.reissueTip")}</TooltipContent>
+              </Tooltip>
+            ) : null}
             {revocable ? (
               <Tooltip>
                 <TooltipTrigger asChild>

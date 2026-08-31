@@ -206,6 +206,10 @@ export const vpnKeys = pgTable(
     state: keyStateEnum("state").default("provisioning").notNull(),
     deviceType: deviceTypeEnum("device_type").default("unspecified").notNull(),
     deviceLabel: varchar("device_label", { length: 80 }),
+    // Per-owner sequential key number (1, 2, 3, ...), assigned at creation.
+    // Shown to the user and embedded in the client's server name as
+    // "<node public name> #<keyNumber>". Nullable only for pre-migration rows.
+    keyNumber: integer("key_number"),
     routeProfile: routeProfileEnum("route_profile").notNull(),
     routeRuleVersionId: uuid("route_rule_version_id").references(
       () => routeRuleVersions.id,
