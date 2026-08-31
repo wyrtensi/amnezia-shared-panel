@@ -84,8 +84,8 @@ const ru = {
 
   // Route profiles (shared)
   "route.full_tunnel": "Весь трафик",
-  "route.ru_whitelist": "Только зарубежные",
-  "route.ru_blacklist": "Только заблокированные",
+  "route.ru_whitelist": "Только зарубежные (whitelist)",
+  "route.ru_blacklist": "Только заблокированные (blacklist)",
 
   // Protocols (shared)
   "protocol.awg2": "AWG 2.0",
@@ -650,8 +650,8 @@ const en = {
 
   // Route profiles (shared)
   "route.full_tunnel": "All traffic",
-  "route.ru_whitelist": "Foreign only",
-  "route.ru_blacklist": "Blocked only",
+  "route.ru_whitelist": "Foreign only (whitelist)",
+  "route.ru_blacklist": "Blocked only (blacklist)",
 
   // Protocols (shared)
   "protocol.awg2": "AWG 2.0",

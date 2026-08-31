@@ -62,13 +62,13 @@ export function OptionCards<T extends string>({
           >
             <span
               className={cn(
-                "absolute right-3 top-3 flex h-5 w-5 items-center justify-center rounded-full border transition-colors",
+                "pointer-events-none absolute right-2 top-2 flex h-4 w-4 items-center justify-center rounded-full border transition-colors",
                 selected
                   ? "border-primary bg-primary text-primary-foreground"
                   : "border-border text-transparent",
               )}
             >
-              <Check className="h-3.5 w-3.5" />
+              <Check className="h-3 w-3" />
             </span>
             <div className="flex min-w-0 items-center gap-2.5">
               {option.icon ? (
@@ -84,8 +84,8 @@ export function OptionCards<T extends string>({
                 </span>
               ) : null}
               <span className="flex min-w-0 flex-col">
-                <span className="flex items-center gap-1.5 pr-7 font-medium leading-tight">
-                  <span className="truncate">{option.label}</span>
+                <span className="flex items-start gap-1.5 pr-5 font-medium leading-tight">
+                  <span className="break-words">{option.label}</span>
                   {option.badge}
                 </span>
                 {option.description ? (
