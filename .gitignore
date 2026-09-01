@@ -7,6 +7,8 @@
 secrets/
 .secrets
 /infra/node/state/
+# Deployment-specific config for scripts/add-node.sh (addresses and paths).
+/scripts/add-node.env
 /agent-changes/
 /plans/
 /.worktrees/
@@ -32,3 +34,4 @@ Thumbs.db
 /backups/
 backups/
 *.sql.gz
+data/
