@@ -28,7 +28,7 @@ or token.)*
 | # | What you need | Where it's used |
 | --- | --- | --- |
 | 1 | **The server that will host the VPN node** — its public IP/hostname and SSH access. Note RAM/disk: 1 GB is fine for a node alone; add ~1 GB free if the panel shares the box. | Phase 1 |
-| 2 | **The public name users should see for that server** — e.g. `Germany`, `Server 1`. Shown in the client as `<name> #<key number>`; separate from the internal admin name. | Node setup / Phase 6 |
+| 2 | **The public name users should see for that server** — e.g. `Germany`, `Server 1`. It is the first part of the connection title in the client (`<name> <key name>` by default, with the key number optional per key); separate from the internal admin name. | Node setup / Phase 6 |
 | 3 | **Which machine runs the panel** — the same server as the node (co-located) or a separate host. Co-location is supported. | Phase 2 |
 | 4 | **The domain the panel will live at** — e.g. `vpn.yourcompany.com`. Its DNS zone must be on Cloudflare. | Phase 3 |
 | 5 | **Which emails are panel admins** — the first login by any of these becomes an admin. | Phase 2 / 5 |

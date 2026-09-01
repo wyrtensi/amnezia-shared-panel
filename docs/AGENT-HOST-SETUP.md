@@ -423,12 +423,22 @@ Feeds are configured in the **worker** env (`apps/worker/.env.example`):
 - **Gates default open.** The fetcher activates fetched versions by default; set
   `RU_WHITELIST_POC_APPROVED=false` / `RU_BLACKLIST_POC_APPROVED=false` to hold a
   profile's auto-fetched versions quarantined for operator review (`!== "false"`
-  is treated as approved). Fetchers run every 6 h. The admin "Load base list" seed
-  activates a bundled starter set immediately, independent of the gate.
+  is treated as approved). Fetchers run every 6 h.
+- **No bundled starter list.** Rule versions come from the feeds or from an
+  explicit operator upload (`POST /api/admin/rules/global/import` with a
+  `profile`, `version` and at least one entry). There is nothing to fall back on,
+  so a misconfigured feed leaves a profile unavailable instead of silently
+  serving a stub list.
+- **Global route overrides** (`global_route_overrides`, admin-wide) are layered on
+  the active feed at export time: feed − admin exclusions + admin additions +
+  the owner's own custom routes. Excluding a domain also excludes its
+  subdomains; the user's own routes are applied last and can therefore re-add an
+  excluded entry. Edit them from the admin UI or with
+  `amnezia-panel global-routes-set` (see [`CLI.md`](./CLI.md)).
 
 See `infra/dev/ROUTE-PROFILES-POC.md` for the per-profile validation checklist
-(seed/fetch → confirm `available: true` → export → import into AmneziaVPN 5.0.1.5+
-→ verify split routing both directions → repeat for AWG2 and AWG3).
+(fetch/import → confirm `available: true` → export → import into AmneziaVPN
+5.0.1.5+ → verify split routing both directions → repeat for AWG2 and AWG3).
 
 ### Key rotation
 

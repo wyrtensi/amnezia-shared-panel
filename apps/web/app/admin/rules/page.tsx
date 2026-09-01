@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { Check, Eye, Sparkles } from "lucide-react";
+import { Check, Eye } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import {
   Table,
@@ -37,19 +37,12 @@ const PROFILE_LABEL: Record<string, string> = {
 export default function AdminRulesPage() {
   const { rules, loading, action } = useAdminData();
   const { t, lang } = useT();
-  const [seeding, setSeeding] = React.useState(false);
   const [preview, setPreview] = React.useState<RuleVersion | null>(null);
-
-  const seed = async () => {
-    setSeeding(true);
-    await action("rules", "default", "seed", { profile: "ru_blacklist" });
-    setSeeding(false);
-  };
 
   return (
     <Card>
       <CardContent className="p-0">
-        <div className="flex flex-wrap items-center justify-between gap-2 px-5 py-4">
+        <div className="space-y-1 px-5 py-4">
           <div className="flex items-center gap-2">
             <h2 className="font-semibold">
               {t("rules.title")}
@@ -58,10 +51,9 @@ export default function AdminRulesPage() {
               {rules.length}
             </span>
           </div>
-          <Button size="sm" variant="secondary" onClick={() => void seed()} disabled={seeding}>
-            <Sparkles className="h-4 w-4" />
-            {seeding ? t("rules.loading") : t("rules.loadBase")}
-          </Button>
+          <p className="text-xs leading-snug text-muted-foreground">
+            {t("rules.autoUpdate")}
+          </p>
         </div>
         {loading ? (
           <div className="space-y-2 p-5">

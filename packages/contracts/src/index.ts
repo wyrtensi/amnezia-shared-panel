@@ -51,12 +51,60 @@ export const PROTOCOL_META: Record<
 
 export const protocolListSchema = z.array(protocolKindSchema);
 
+// --- Per-key client display name -------------------------------------------
+// Which parts make up the connection name the AmneziaVPN client shows for a
+// key (the vpn:// payload's `description`). Chosen per key at creation time.
+export const keyNameDisplaySchema = z.object({
+  // Node public name, e.g. "Frankfurt".
+  server: z.boolean().default(true),
+  // The key's own device label, e.g. "Main laptop".
+  label: z.boolean().default(true),
+  // Per-owner sequential key number, rendered as "#3".
+  number: z.boolean().default(false),
+});
+
+export type KeyNameDisplay = z.infer<typeof keyNameDisplaySchema>;
+
+export const defaultKeyNameDisplay: KeyNameDisplay =
+  keyNameDisplaySchema.parse({});
+
+// A fresh copy per parse, so a request object can never mutate the shared default.
+const newKeyNameDisplay = (): KeyNameDisplay => ({ ...defaultKeyNameDisplay });
+
+/**
+ * Build the client-visible connection name from the enabled parts, joined by a
+ * single space in a fixed order: server, label, "#N". Empty parts are skipped.
+ * When nothing is enabled (or every enabled part is empty) it falls back to the
+ * server name, then the label, then "#N", and finally the literal "VPN" so the
+ * client never shows a blank connection.
+ */
+export const composeKeyDisplayName = (input: {
+  serverName: string;
+  label?: string | null;
+  keyNumber?: number | null;
+  display: KeyNameDisplay;
+}): string => {
+  const serverName = input.serverName.trim();
+  const label = (input.label ?? "").trim();
+  const number =
+    typeof input.keyNumber === "number" && Number.isFinite(input.keyNumber)
+      ? `#${input.keyNumber}`
+      : "";
+  const parts: string[] = [];
+  if (input.display.server && serverName) parts.push(serverName);
+  if (input.display.label && label) parts.push(label);
+  if (input.display.number && number) parts.push(number);
+  if (parts.length > 0) return parts.join(" ");
+  return serverName || label || number || "VPN";
+};
+
 export const createKeyRequestSchema = z.object({
   nodeId: z.uuid(),
   protocol: protocolKindSchema.default("awg3"),
   deviceType: deviceTypeSchema.default("unspecified"),
   deviceLabel: z.string().trim().min(1).max(80).optional(),
   routeProfile: routeProfileSchema.default("full_tunnel"),
+  nameDisplay: keyNameDisplaySchema.default(newKeyNameDisplay),
 });
 
 export const quotaRequestSchema = z.object({
@@ -110,8 +158,8 @@ export const portalPolicySchema = z.object({
   allowedNodeIds: z.array(z.uuid()).nullish(),
   allowRouteProfileSelection: z.boolean().default(true),
   // Let users manage their OWN custom routes (extra CIDRs/domains layered on a
-  // split-tunnel profile). Off by default; admins can always edit them per user.
-  allowCustomRoutes: z.boolean().default(false),
+  // split-tunnel profile). Admins can always edit them per user.
+  allowCustomRoutes: z.boolean().default(true),
   allowConfigRedownload: z.boolean().default(true),
   allowQrDownload: z.boolean().default(true),
   allowConfDownload: z.boolean().default(true),
@@ -123,6 +171,34 @@ export const portalPolicySchema = z.object({
 
 export const portalPolicyOverrideSchema = portalPolicySchema.partial();
 export const defaultPortalPolicy = portalPolicySchema.parse({});
+
+// --- Per-user, per-node key limits -----------------------------------------
+// The key limit has always been PER NODE (a user may hold up to `limit` keys on
+// each node). This map lets an admin give a single user a different limit on a
+// single node. Keys are node ids; a node with no entry falls back to the user's
+// flat override and then to the global default.
+export const nodeKeyLimitsSchema = z.record(z.uuid(), z.int().min(0).max(1_000));
+export type NodeKeyLimits = z.infer<typeof nodeKeyLimitsSchema>;
+
+/**
+ * Payload of the admin `users/set-limit` action. It owns everything a single
+ * user's quota is made of: the flat override, which nodes they may use, and
+ * the per-node limits.
+ *
+ * - `keyLimitOverride` is required; `null` clears the override so the global
+ *   default applies.
+ * - `allowedNodeIds` is optional. Omitted leaves node availability untouched;
+ *   `null` clears the per-user override so the global list applies again; `[]`
+ *   means "no node at all" (deliberately distinct from `null`).
+ * - `nodeKeyLimits` is optional. Omitted leaves the per-node limits untouched;
+ *   `null` (or an empty map) clears them.
+ */
+export const setUserLimitRequestSchema = z.object({
+  keyLimitOverride: z.int().min(0).max(1_000).nullable(),
+  allowedNodeIds: z.array(z.uuid()).nullish(),
+  nodeKeyLimits: nodeKeyLimitsSchema.nullish(),
+});
+export type SetUserLimitRequest = z.infer<typeof setUserLimitRequestSchema>;
 
 export type ProtocolKind = z.infer<typeof protocolKindSchema>;
 export type KeyState = z.infer<typeof keyStateSchema>;
@@ -187,61 +263,42 @@ export const updateCustomRoutesRequestSchema = customRoutesSchema;
 export type CustomRouteList = z.infer<typeof customRouteListSchema>;
 export type CustomRoutes = z.infer<typeof customRoutesSchema>;
 
-/**
- * Curated starter rule sets used when an operator seeds a routing profile with
- * one click. Production deployments replace these via the worker rule feeds.
- * Both profiles route the listed destinations through the VPN; the naming
- * reflects intent (foreign services vs. RKN-blocked resources).
- */
-// Small, correct fallback seeds used only until the live RoscomVPN/Re:filter
-// feeds load (configure RULE_FEEDS in the worker). Real routing uses tens of
-// thousands of entries fetched at runtime — see infra/dev/ROUTE-PROFILES-POC.md.
-export const routeRuleSeeds: Record<
-  Exclude<RouteProfile, "full_tunnel">,
-  RulePayload
-> = {
-  // "Everything except RU": a representative set of popular foreign services RU
-  // users route through the VPN. Replaced at runtime by the RoscomVPN whitelist.
-  ru_whitelist: {
-    cidrs: [
-      "31.13.24.0/21", // Meta / Instagram / Facebook
-      "157.240.0.0/16", // Meta
-      "104.244.42.0/24", // Twitter / X
-      "91.108.4.0/22", // Telegram
-      "149.154.160.0/20", // Telegram
-      "185.70.40.0/22", // Proton
-    ],
-    domains: [
-      "instagram.com",
-      "facebook.com",
-      "x.com",
-      "linkedin.com",
-      "discord.com",
-      "notion.so",
-      "openai.com",
-      "claude.ai",
-    ],
-  },
-  // "Only blocked": RKN-blocked resources through the VPN. Replaced at runtime
-  // by the Re:filter blocklists.
-  ru_blacklist: {
-    cidrs: [
-      "104.244.42.0/24", // Twitter / X
-      "91.108.4.0/22", // Telegram
-      "149.154.160.0/20", // Telegram
-      "31.13.24.0/21", // Meta
-    ],
-    domains: [
-      "rutracker.org",
-      "rutor.org",
-      "nnmclub.to",
-      "flibusta.is",
-      "kinozal.tv",
-      "instagram.com",
-      "facebook.com",
-      "x.com",
-      "pornhub.com",
-      "linkedin.com",
-    ],
-  },
-};
+// --- Global route overrides (admin-wide) -----------------------------------
+// Admins layer their own additions and exclusions on top of a split-tunnel
+// profile's base feed for EVERY user. Exclusions are applied before additions;
+// a user's own custom routes are applied last and therefore re-add anything the
+// admin excluded (a deliberate per-user opt-back-in).
+export const MAX_GLOBAL_CIDRS = 2_000;
+export const MAX_GLOBAL_DOMAINS = 2_000;
+
+export const globalRouteListSchema = z.object({
+  cidrs: z.array(customCidrSchema).max(MAX_GLOBAL_CIDRS).default([]),
+  domains: z.array(customDomainSchema).max(MAX_GLOBAL_DOMAINS).default([]),
+});
+
+// Factories, not shared literals: every parse gets its own arrays so a stored
+// payload can never alias another one.
+const newGlobalRouteList = (): GlobalRouteList => ({ cidrs: [], domains: [] });
+
+export const globalRouteProfileSchema = z.object({
+  add: globalRouteListSchema.default(newGlobalRouteList),
+  exclude: globalRouteListSchema.default(newGlobalRouteList),
+});
+
+const newGlobalRouteProfile = (): GlobalRouteProfile => ({
+  add: newGlobalRouteList(),
+  exclude: newGlobalRouteList(),
+});
+
+export const globalRoutesSchema = z.object({
+  ru_whitelist: globalRouteProfileSchema.default(newGlobalRouteProfile),
+  ru_blacklist: globalRouteProfileSchema.default(newGlobalRouteProfile),
+});
+
+export const updateGlobalRoutesRequestSchema = globalRoutesSchema;
+
+export type GlobalRouteList = z.infer<typeof globalRouteListSchema>;
+export type GlobalRouteProfile = z.infer<typeof globalRouteProfileSchema>;
+export type GlobalRoutes = z.infer<typeof globalRoutesSchema>;
+
+export const emptyGlobalRoutes: GlobalRoutes = globalRoutesSchema.parse({});

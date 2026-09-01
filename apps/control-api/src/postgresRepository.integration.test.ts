@@ -1,6 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { count, eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { defaultKeyNameDisplay } from "@amnezia/contracts";
 import {
   auditEvents,
   createDatabase,
@@ -87,6 +88,7 @@ describe("PostgresControlRepository quota race", () => {
           deviceType: "other",
           deviceLabel: `race-${index}`,
           routeProfile: "full_tunnel",
+          nameDisplay: defaultKeyNameDisplay,
         }),
       ),
     );
@@ -170,6 +172,7 @@ describe("PostgresControlRepository quota race", () => {
         deviceType: "other",
         deviceLabel: "awg3-device",
         routeProfile: "full_tunnel",
+        nameDisplay: defaultKeyNameDisplay,
       })) as { id: string; state: string };
 
       expect(key.state).toBe("provisioning");

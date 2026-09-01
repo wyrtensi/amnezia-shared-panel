@@ -17,6 +17,8 @@ import {
 } from "drizzle-orm/pg-core";
 import type {
   CustomRoutes,
+  GlobalRoutes,
+  NodeKeyLimits,
   PortalPolicyOverride,
   ProtocolKind,
 } from "@amnezia/contracts";
@@ -83,6 +85,9 @@ export const users = pgTable(
     role: roleEnum("role").default("user").notNull(),
     status: userStatusEnum("status").default("active").notNull(),
     keyLimitOverride: integer("key_limit_override"),
+    // Per-node key limits for this user: { nodeId: limit }. Null (or a missing
+    // node) falls back to `keyLimitOverride` and then to the global default.
+    nodeKeyLimits: jsonb("node_key_limits").$type<NodeKeyLimits>(),
     policyOverride: jsonb("policy_override").$type<PortalPolicyOverride>(),
     // Per-user extra routes layered on a split-tunnel profile's base feed at
     // export time (null = none). Keyed by profile: { ru_whitelist, ru_blacklist }.
@@ -210,6 +215,12 @@ export const vpnKeys = pgTable(
     // Shown to the user and embedded in the client's server name as
     // "<node public name> #<keyNumber>". Nullable only for pre-migration rows.
     keyNumber: integer("key_number"),
+    // Which parts make up the connection name shown by the AmneziaVPN client.
+    // Defaults to "<node public name> <device label>"; the number is opt-in.
+    // Rows created before this feature keep node + number (their old name).
+    nameShowNode: boolean("name_show_node").default(true).notNull(),
+    nameShowLabel: boolean("name_show_label").default(true).notNull(),
+    nameShowNumber: boolean("name_show_number").default(false).notNull(),
     routeProfile: routeProfileEnum("route_profile").notNull(),
     routeRuleVersionId: uuid("route_rule_version_id").references(
       () => routeRuleVersions.id,
@@ -338,10 +349,10 @@ export const portalPolicy = pgTable(
     // policyOverride.allowedNodeIds.
     allowedNodeIds: jsonb("allowed_node_ids").$type<string[]>(),
     allowRouteProfileSelection: boolean("allow_route_profile_selection")
-      .default(false)
+      .default(true)
       .notNull(),
     // Gate for user self-service custom-route editing; admins bypass it.
-    allowCustomRoutes: boolean("allow_custom_routes").default(false).notNull(),
+    allowCustomRoutes: boolean("allow_custom_routes").default(true).notNull(),
     allowConfigRedownload: boolean("allow_config_redownload")
       .default(true)
       .notNull(),
@@ -372,6 +383,33 @@ export const portalPolicy = pgTable(
     check("portal_policy_singleton", sql`${table.id} = true`),
     check("portal_policy_default_limit_positive", sql`${table.defaultKeyLimit} >= 0`),
   ],
+);
+
+/**
+ * Admin-wide additions/exclusions layered on the split-tunnel route feeds at
+ * export time. Singleton, mirroring `portal_policy`: exactly one row with
+ * `id = true`.
+ */
+export const globalRouteOverrides = pgTable(
+  "global_route_overrides",
+  {
+    id: boolean("id").primaryKey().default(true),
+    payload: jsonb("payload")
+      .$type<GlobalRoutes>()
+      .default({
+        ru_whitelist: {
+          add: { cidrs: [], domains: [] },
+          exclude: { cidrs: [], domains: [] },
+        },
+        ru_blacklist: {
+          add: { cidrs: [], domains: [] },
+          exclude: { cidrs: [], domains: [] },
+        },
+      })
+      .notNull(),
+    ...timestamps,
+  },
+  (table) => [check("global_route_overrides_singleton", sql`${table.id} = true`)],
 );
 
 export const auditEvents = pgTable(

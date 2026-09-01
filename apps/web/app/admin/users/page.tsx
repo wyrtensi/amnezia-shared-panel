@@ -49,12 +49,18 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { Checkbox } from "@/components/ui/checkbox";
 import { StatusBadge } from "@/components/status-badge";
 import { Hint, FieldHint } from "@/components/ui/hint";
+import {
+  composeKeyDisplayName,
+  defaultKeyNameDisplay,
+  type KeyNameDisplay,
+} from "@amnezia/contracts";
 import { ProtocolSelect } from "@/components/protocol-select";
-import { NodeSelect } from "@/components/node-select";
 import type { ProtocolKind } from "@/lib/types";
-import { formatBytes, formatTraffic } from "@/lib/format";
+import { trafficTotal } from "@/lib/format";
+import { TrafficBytes } from "@/components/inline-traffic";
 import {
   INACTIVE_DAYS,
   formatLastSeen,
@@ -67,6 +73,7 @@ import {
   type AdminKey,
   type AdminUser,
   type AdminNode,
+  type GlobalPortalPolicy,
 } from "@/components/admin/admin-data";
 import {
   AdminConfigDialog,
@@ -87,6 +94,9 @@ const DEACTIVATION_LABEL: Record<string, string> = {
   admin_offboard: "users.deact.admin_offboard",
   access_removed: "users.deact.access_removed",
 };
+// Order of the toggles in the "name shown in the client" row; also the order
+// composeKeyDisplayName joins the parts in.
+const NAME_DISPLAY_PARTS = ["server", "label", "number"] as const;
 
 const POLICY_LABELS: Array<[string, string]> = [
   ["allowKeyCreation", "upolicy.allowKeyCreation"],
@@ -454,23 +464,24 @@ export default function AdminUsersPage() {
       />
       <LimitDialog
         user={limitUser}
+        nodes={nodes}
+        globalPolicy={policy}
         onClose={() => setLimitUser(null)}
-        onSave={(value) =>
-          action("users", limitUser!.id, "set-limit", {
-            keyLimitOverride: value,
-          })
+        onSave={(payload) =>
+          action("users", limitUser!.id, "set-limit", payload)
         }
       />
       <PolicyDialog
         user={policyUser}
         globalPolicy={policy}
-        nodes={nodes.map((node) => ({ id: node.id, name: node.name }))}
         onClose={() => setPolicyUser(null)}
         onSave={(next) => action("users", policyUser!.id, "set-policy", next)}
       />
       <CreateKeyDialog
         user={keyUser}
         nodes={nodes}
+        defaultKeyLimit={policy.defaultKeyLimit}
+        userKeys={keyUser ? (keysByOwner.get(keyUser.id) ?? []) : []}
         onClose={() => setKeyUser(null)}
         onSave={(payload) =>
           action("users", keyUser!.id, "create-key", payload)
@@ -574,9 +585,7 @@ function UserMiniCard({
             {formatLastSeen(lastSeen, now, lang)}
           </span>
         )}
-        <span className="tabular ml-auto">
-          {formatBytes(stats.traffic, lang)}
-        </span>
+        <TrafficBytes bytes={stats.traffic} className="ml-auto" />
       </div>
     </button>
   );
@@ -607,7 +616,7 @@ function UserDetail({
   onKeyAction: (id: string, action: string) => Promise<boolean>;
   onExportKey: (id: string, deviceLabel: string) => void;
 }) {
-  const { t, lang } = useT();
+  const { t } = useT();
   const stats = statsFor(keys);
   const disabled = user.status !== "active";
   const nodeName = (id: string) =>
@@ -615,6 +624,8 @@ function UserDetail({
   const overrides = user.policyOverride
     ? Object.keys(user.policyOverride).length
     : 0;
+  // How many servers carry their own key limit, shown on the limit button.
+  const perNodeLimits = Object.keys(user.nodeKeyLimits ?? {}).length;
 
   return (
     <Card className="overflow-hidden">
@@ -666,6 +677,7 @@ function UserDetail({
             {user.keyLimitOverride !== null
               ? user.keyLimitOverride
               : t("users.default")}
+            {perNodeLimits > 0 ? ` (${perNodeLimits})` : ""}
           </Button>
           <Button variant="outline" size="sm" onClick={onEditPolicy}>
             <Settings className="h-4 w-4" />
@@ -728,7 +740,7 @@ function UserDetail({
             icon={<ArrowUpDown className="h-4 w-4" />}
             tone="chart-5"
             label={t("users.statTraffic")}
-            value={formatBytes(stats.traffic, lang)}
+            value={<TrafficBytes bytes={stats.traffic} strong />}
           />
         </div>
 
@@ -818,7 +830,7 @@ function AdminKeyRow({
   onAction: (id: string, action: string) => Promise<boolean>;
   onExport: () => void;
 }) {
-  const { t, lang } = useT();
+  const { t } = useT();
   const confirmAction = (name: string, message: string) => {
     if (window.confirm(message)) void onAction(keyView.id, name);
   };
@@ -850,8 +862,8 @@ function AdminKeyRow({
           · {t(PROTOCOL_LABEL[keyView.protocol] ?? keyView.protocol)}
         </div>
       </div>
-      <span className="tabular hidden shrink-0 text-xs text-muted-foreground sm:block">
-        {formatTraffic(keyView.traffic, lang)}
+      <span className="hidden shrink-0 text-xs text-muted-foreground sm:block">
+        <TrafficBytes bytes={trafficTotal(keyView.traffic)} />
       </span>
       <StatusBadge value={keyView.state} />
       <div className="flex shrink-0 items-center gap-0.5">
@@ -1039,51 +1051,258 @@ function CreateUserDialog({
   );
 }
 
+/**
+ * Parses one limit field: an empty field means "inherit", `undefined` marks a
+ * value the API would reject (so the dialog can block the save instead).
+ */
+function parseLimitField(raw: string): number | null | undefined {
+  const text = raw.trim();
+  if (text === "") return null;
+  const value = Number(text);
+  if (!Number.isInteger(value) || value < 0 || value > 1000) return undefined;
+  return value;
+}
+
+type LimitPayload = {
+  keyLimitOverride: number | null;
+  allowedNodeIds: string[] | null;
+  nodeKeyLimits: Record<string, number> | null;
+};
+
+/**
+ * Servers and quotas of a single user: the default limit, which servers the
+ * user may use, and a per-server limit. Node availability has three states —
+ * "all servers" (sent as `allowedNodeIds: null`, so the global list applies
+ * again), an explicit list, and an empty list (no server at all).
+ */
 function LimitDialog({
   user,
+  nodes,
+  globalPolicy,
   onClose,
   onSave,
 }: {
   user: AdminUser | null;
+  nodes: AdminNode[];
+  globalPolicy: GlobalPortalPolicy;
   onClose: () => void;
-  onSave: (value: number | null) => Promise<boolean>;
+  onSave: (payload: LimitPayload) => Promise<boolean>;
 }) {
   const { t } = useT();
   const [value, setValue] = React.useState("");
+  const [allNodes, setAllNodes] = React.useState(true);
+  const [allowed, setAllowed] = React.useState<string[]>([]);
+  const [nodeLimits, setNodeLimits] = React.useState<Record<string, string>>({});
+
   React.useEffect(() => {
     setValue(
       user?.keyLimitOverride != null ? String(user.keyLimitOverride) : "",
     );
+    // The per-user node list lives in policyOverride.allowedNodeIds; missing or
+    // null there means the global list applies.
+    const override = user?.policyOverride?.allowedNodeIds as
+      | string[]
+      | null
+      | undefined;
+    setAllNodes(!Array.isArray(override));
+    setAllowed(Array.isArray(override) ? [...override] : []);
+    setNodeLimits(
+      Object.fromEntries(
+        Object.entries(user?.nodeKeyLimits ?? {}).map(([nodeId, limit]) => [
+          nodeId,
+          String(limit),
+        ]),
+      ),
+    );
   }, [user]);
+
+  const globalNodeIds = globalPolicy.allowedNodeIds;
+  // Placeholder of the per-server inputs: what a server without its own limit
+  // ends up using, recomputed live from the default field above.
+  const parsedDefault = parseLimitField(value);
+  const fallbackLimit =
+    typeof parsedDefault === "number"
+      ? parsedDefault
+      : globalPolicy.defaultKeyLimit;
+
+  const isAvailable = (nodeId: string) =>
+    allNodes
+      ? globalNodeIds === null || globalNodeIds.includes(nodeId)
+      : allowed.includes(nodeId);
+
+  const toggleNode = (nodeId: string, checked: boolean) =>
+    setAllowed((current) =>
+      checked
+        ? current.includes(nodeId)
+          ? current
+          : [...current, nodeId]
+        : current.filter((id) => id !== nodeId),
+    );
+
+  const valid =
+    parsedDefault !== undefined &&
+    Object.values(nodeLimits).every(
+      (raw) => parseLimitField(raw) !== undefined,
+    );
+  const noneSelected = !allNodes && allowed.length === 0;
+
   return (
     <Dialog open={Boolean(user)} onOpenChange={(next) => !next && onClose()}>
-      <DialogContent className="sm:max-w-sm">
+      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-md">
         <DialogHeader>
           <DialogTitle>{t("users.limitTitle")}</DialogTitle>
-          <DialogDescription>{user?.email}</DialogDescription>
+          <DialogDescription>
+            {t("users.limitDesc", { email: user?.email ?? "" })}
+          </DialogDescription>
         </DialogHeader>
-        <div className="space-y-1.5">
-          <Label htmlFor="limit-input">
-            {t("users.limitLabel")}
-          </Label>
-          <Input
-            id="limit-input"
-            type="number"
-            min={0}
-            max={1000}
-            value={value}
-            onChange={(event) => setValue(event.target.value)}
-          />
+        <div className="space-y-3">
+          <div className="space-y-1.5">
+            <Label htmlFor="limit-input">{t("users.limitLabel")}</Label>
+            <Input
+              id="limit-input"
+              type="number"
+              min={0}
+              max={1000}
+              placeholder={String(globalPolicy.defaultKeyLimit)}
+              value={value}
+              onChange={(event) => setValue(event.target.value)}
+            />
+            <FieldHint>
+              {t("users.limitLabelHint", {
+                value: globalPolicy.defaultKeyLimit,
+              })}
+            </FieldHint>
+          </div>
+
+          <div className="rounded-lg border p-2.5">
+            <label className="flex items-center justify-between gap-3 text-sm">
+              <span className="flex items-center gap-1.5">
+                {t("users.limitAllNodes")}
+                <Hint>{t("users.limitAllNodesHint")}</Hint>
+              </span>
+              <Switch
+                checked={allNodes}
+                onCheckedChange={(checked) => {
+                  setAllNodes(checked);
+                  // Leaving "all servers" starts from what the user sees today,
+                  // so turning the switch off does not silently revoke access.
+                  if (!checked && allowed.length === 0) {
+                    setAllowed(
+                      nodes
+                        .map((node) => node.id)
+                        .filter(
+                          (id) =>
+                            globalNodeIds === null || globalNodeIds.includes(id),
+                        ),
+                    );
+                  }
+                }}
+              />
+            </label>
+            {allNodes && globalNodeIds !== null ? (
+              <FieldHint className="mt-2">
+                {t("users.limitGlobalNodes", {
+                  nodes:
+                    nodes
+                      .filter((node) => globalNodeIds.includes(node.id))
+                      .map((node) => node.name)
+                      .join(", ") || t("users.limitNoneWord"),
+                })}
+              </FieldHint>
+            ) : null}
+          </div>
+
+          <div className="space-y-1.5">
+            <div className="flex items-center justify-between gap-3">
+              <div className="flex items-center gap-1.5">
+                <Label>{t("users.limitPerNode")}</Label>
+                <Hint>{t("users.limitPerNodeHint")}</Hint>
+              </div>
+              <span className="text-xs text-muted-foreground">
+                {t("users.limitColumnLimit")}
+              </span>
+            </div>
+            {nodes.length === 0 ? (
+              <FieldHint>{t("nodeSelect.noNodes")}</FieldHint>
+            ) : (
+              <div className="max-h-64 space-y-1.5 overflow-y-auto pr-1">
+                {nodes.map((node) => (
+                  <div
+                    key={node.id}
+                    className="flex items-center gap-2.5 rounded-lg border p-2"
+                  >
+                    <Checkbox
+                      id={`limit-node-${node.id}`}
+                      checked={isAvailable(node.id)}
+                      disabled={allNodes}
+                      onChange={(event) =>
+                        toggleNode(node.id, event.target.checked)
+                      }
+                    />
+                    <Label
+                      htmlFor={`limit-node-${node.id}`}
+                      className={cn(
+                        "min-w-0 flex-1 cursor-pointer truncate font-normal",
+                        allNodes && "cursor-default",
+                      )}
+                    >
+                      {node.name}
+                      {node.enabled ? "" : t("users.nodeDisabledSuffix")}
+                    </Label>
+                    <Input
+                      type="number"
+                      min={0}
+                      max={1000}
+                      aria-label={t("users.limitPerNodeAria", {
+                        node: node.name,
+                      })}
+                      placeholder={String(fallbackLimit)}
+                      className="h-8 w-20 shrink-0"
+                      value={nodeLimits[node.id] ?? ""}
+                      onChange={(event) =>
+                        setNodeLimits((current) => ({
+                          ...current,
+                          [node.id]: event.target.value,
+                        }))
+                      }
+                    />
+                  </div>
+                ))}
+              </div>
+            )}
+            {noneSelected ? (
+              <FieldHint className="text-destructive">
+                {t("users.limitNoNodesWarning")}
+              </FieldHint>
+            ) : null}
+          </div>
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={onClose}>
             {t("common.cancel")}
           </Button>
           <Button
+            disabled={!valid}
             onClick={() => {
               void (async () => {
-                const parsed = value.trim() === "" ? null : Number(value);
-                if (await onSave(parsed)) onClose();
+                const known = new Set(nodes.map((node) => node.id));
+                const limits: Record<string, number> = {};
+                for (const [nodeId, raw] of Object.entries(nodeLimits)) {
+                  // Drop entries for nodes that no longer exist: the API
+                  // rejects unknown ids with NODE_NOT_FOUND.
+                  if (!known.has(nodeId)) continue;
+                  const parsed = parseLimitField(raw);
+                  if (typeof parsed === "number") limits[nodeId] = parsed;
+                }
+                const ok = await onSave({
+                  keyLimitOverride: parsedDefault ?? null,
+                  allowedNodeIds: allNodes
+                    ? null
+                    : allowed.filter((id) => known.has(id)),
+                  nodeKeyLimits:
+                    Object.keys(limits).length > 0 ? limits : null,
+                });
+                if (ok) onClose();
               })();
             }}
           >
@@ -1098,13 +1317,11 @@ function LimitDialog({
 function PolicyDialog({
   user,
   globalPolicy,
-  nodes,
   onClose,
   onSave,
 }: {
   user: AdminUser | null;
   globalPolicy: Record<string, unknown>;
-  nodes: Array<{ id: string; name: string }>;
   onClose: () => void;
   onSave: (next: Record<string, unknown>) => Promise<boolean>;
 }) {
@@ -1119,10 +1336,6 @@ function PolicyDialog({
     | undefined) ?? ["awg3"];
   const overrideProtocols = form.allowedProtocols as ProtocolKind[] | undefined;
   const customProtocols = Array.isArray(overrideProtocols);
-
-  const hasNodeOverride = "allowedNodeIds" in form;
-  const overrideNodeIds = (form.allowedNodeIds as string[] | null | undefined) ??
-    null;
 
   return (
     <Dialog open={Boolean(user)} onOpenChange={(next) => !next && onClose()}>
@@ -1170,40 +1383,10 @@ function PolicyDialog({
               </div>
             ) : null}
           </div>
-          <div className="rounded-lg border p-2.5">
-            <label className="flex items-center justify-between gap-3 text-sm">
-              <span className="flex items-center gap-1.5">
-                {t("users.customNodes")}
-                <Hint>{t("users.customNodesHint")}</Hint>
-              </span>
-              <Switch
-                checked={hasNodeOverride}
-                onCheckedChange={(checked) =>
-                  setForm((current) => {
-                    const next = { ...current };
-                    if (checked)
-                      next.allowedNodeIds =
-                        (globalPolicy.allowedNodeIds as string[] | null) ?? null;
-                    else delete next.allowedNodeIds;
-                    return next;
-                  })
-                }
-              />
-            </label>
-            {hasNodeOverride ? (
-              <div className="mt-2.5">
-                <NodeSelect
-                  nodes={nodes}
-                  value={overrideNodeIds}
-                  onChange={(nextNodes) =>
-                    setForm((current) => ({
-                      ...current,
-                      allowedNodeIds: nextNodes,
-                    }))
-                  }
-                />
-              </div>
-            ) : null}
+          {/* Node availability moved into the servers-and-limits dialog, where
+              it sits next to the per-server key limit it belongs with. */}
+          <div className="rounded-lg border border-dashed p-2.5">
+            <FieldHint>{t("users.nodesMovedHint")}</FieldHint>
           </div>
           {POLICY_LABELS.map(([key, label]) => {
             const value = Boolean(form[key] ?? globalPolicy[key] ?? false);
@@ -1266,14 +1449,24 @@ function pickProtocol(node: AdminNode | undefined): string {
   return pool.includes("awg3") ? "awg3" : (pool[0] ?? "awg3");
 }
 
+// Key states that count against a user's per-node quota; mirrors the control
+// API's `quotaStates` so the dialog shows the same numbers the server enforces.
+const QUOTA_STATES = ["provisioning", "active", "disabled"];
+
 function CreateKeyDialog({
   user,
   nodes,
+  defaultKeyLimit,
+  userKeys,
   onClose,
   onSave,
 }: {
   user: AdminUser | null;
   nodes: AdminNode[];
+  /** Global fallback limit, used for nodes with no per-user limit. */
+  defaultKeyLimit: number;
+  /** The target user's existing keys — used to estimate the next key number. */
+  userKeys: AdminKey[];
   onClose: () => void;
   onSave: (payload: {
     nodeId: string;
@@ -1281,20 +1474,65 @@ function CreateKeyDialog({
     deviceType: string;
     routeProfile: string;
     protocol: string;
+    nameDisplay: KeyNameDisplay;
   }) => Promise<boolean>;
 }) {
   const { t } = useT();
   const [nodeId, setNodeId] = React.useState("");
   const [deviceLabel, setDeviceLabel] = React.useState("");
   const [routeProfile, setRouteProfile] = React.useState("full_tunnel");
+  const [nameDisplay, setNameDisplay] = React.useState<KeyNameDisplay>(() => ({
+    ...defaultKeyNameDisplay,
+  }));
+  // Per-node quota of the target user: the limit is per node and may differ
+  // per node, so a full node has to be excluded on its own.
+  const quotaByNode = React.useMemo(() => {
+    const used = new Map<string, number>();
+    for (const key of userKeys) {
+      if (!QUOTA_STATES.includes(key.state)) continue;
+      used.set(key.nodeId, (used.get(key.nodeId) ?? 0) + 1);
+    }
+    return new Map(
+      nodes.map((item) => {
+        const limit =
+          user?.nodeKeyLimits?.[item.id] ??
+          user?.keyLimitOverride ??
+          defaultKeyLimit;
+        const count = used.get(item.id) ?? 0;
+        return [item.id, { used: count, limit, full: count >= limit }];
+      }),
+    );
+  }, [nodes, userKeys, user, defaultKeyLimit]);
+
+  // Read through a ref so a background refresh of `userKeys` cannot re-run the
+  // reset effect below and wipe what the admin already filled in.
+  const quotaRef = React.useRef(quotaByNode);
+  React.useEffect(() => {
+    quotaRef.current = quotaByNode;
+  }, [quotaByNode]);
+
   React.useEffect(() => {
     const enabled = nodes.filter((node) => node.enabled);
-    setNodeId(enabled[0]?.id ?? nodes[0]?.id ?? "");
+    const withRoom = enabled.filter(
+      (node) => !quotaRef.current.get(node.id)?.full,
+    );
+    setNodeId(withRoom[0]?.id ?? enabled[0]?.id ?? nodes[0]?.id ?? "");
     setDeviceLabel("");
     setRouteProfile("full_tunnel");
+    setNameDisplay({ ...defaultKeyNameDisplay });
   }, [user, nodes]);
   const node = nodes.find((item) => item.id === nodeId);
   const protocol = pickProtocol(node);
+
+  // Estimated only: the control API assigns the real number on provisioning.
+  const nextKeyNumber =
+    userKeys.reduce((max, key) => Math.max(max, key.keyNumber ?? 0), 0) + 1;
+  const previewName = composeKeyDisplayName({
+    serverName: node?.publicName?.trim() || node?.name || "",
+    label: deviceLabel.trim(),
+    keyNumber: nextKeyNumber,
+    display: nameDisplay,
+  });
   return (
     <Dialog open={Boolean(user)} onOpenChange={(next) => !next && onClose()}>
       <DialogContent className="sm:max-w-sm">
@@ -1314,16 +1552,31 @@ function CreateKeyDialog({
                 <SelectValue placeholder={t("wizard.serverPlaceholder")} />
               </SelectTrigger>
               <SelectContent>
-                {nodes.map((item) => (
-                  <SelectItem
-                    key={item.id}
-                    value={item.id}
-                    disabled={!item.enabled}
-                  >
-                    {item.name}
-                    {item.enabled ? "" : t("users.nodeDisabledSuffix")}
-                  </SelectItem>
-                ))}
+                {nodes.map((item) => {
+                  const quota = quotaByNode.get(item.id);
+                  return (
+                    <SelectItem
+                      key={item.id}
+                      value={item.id}
+                      disabled={!item.enabled || quota?.full}
+                    >
+                      <span className="flex w-full items-center justify-between gap-3">
+                        <span className="truncate">
+                          {item.name}
+                          {item.enabled ? "" : t("users.nodeDisabledSuffix")}
+                        </span>
+                        {quota ? (
+                          <span className="shrink-0 tabular-nums text-xs text-muted-foreground">
+                            {t("wizard.serverQuota", {
+                              used: quota.used,
+                              limit: quota.limit,
+                            })}
+                          </span>
+                        ) : null}
+                      </span>
+                    </SelectItem>
+                  );
+                })}
               </SelectContent>
             </Select>
           </div>
@@ -1355,6 +1608,37 @@ function CreateKeyDialog({
               onChange={(event) => setDeviceLabel(event.target.value)}
             />
           </div>
+          <div className="space-y-1.5">
+            <div className="flex items-center gap-1.5">
+              <Label>{t("wizard.nameDisplay")}</Label>
+              <Hint>{t("wizard.nameDisplayHint")}</Hint>
+            </div>
+            <div className="flex flex-wrap items-center gap-x-5 gap-y-2">
+              {NAME_DISPLAY_PARTS.map((part) => (
+                <div key={part} className="flex items-center gap-2">
+                  <Checkbox
+                    id={`admin-key-name-${part}`}
+                    checked={nameDisplay[part]}
+                    onChange={(event) =>
+                      setNameDisplay((prev) => ({
+                        ...prev,
+                        [part]: event.target.checked,
+                      }))
+                    }
+                  />
+                  <Label
+                    htmlFor={`admin-key-name-${part}`}
+                    className="cursor-pointer font-normal"
+                  >
+                    {t(`wizard.nameDisplay.${part}`)}
+                  </Label>
+                </div>
+              ))}
+            </div>
+            <FieldHint>
+              {t("wizard.nameDisplayPreview", { value: previewName })}
+            </FieldHint>
+          </div>
           <FieldHint>
             {t("users.keyCreatedHint")}
           </FieldHint>
@@ -1374,6 +1658,7 @@ function CreateKeyDialog({
                     deviceType: "desktop",
                     routeProfile,
                     protocol,
+                    nameDisplay,
                   })
                 )
                   onClose();

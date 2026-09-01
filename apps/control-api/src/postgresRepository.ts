@@ -17,8 +17,10 @@ import type {
   CreateKeyRequest,
   CreateUserRequest,
   CustomRoutes,
+  GlobalRoutes,
   KeyState,
   PortalPolicy,
+  PortalPolicyOverride,
   ProtocolKind,
   QuotaRequest,
   RouteProfile,
@@ -29,10 +31,13 @@ import {
   customRoutesSchema,
   DEFAULT_ALLOWED_PROTOCOLS,
   defaultPortalPolicy,
+  emptyGlobalRoutes,
+  globalRoutesSchema,
   PROTOCOL_KINDS,
   portalPolicyOverrideSchema,
   portalPolicySchema,
-  routeRuleSeeds,
+  setUserLimitRequestSchema,
+  updateGlobalRoutesRequestSchema,
 } from "@amnezia/contracts";
 import {
   auditEvents,
@@ -40,6 +45,7 @@ import {
   deterministicPeerLabel,
   effectiveKeyLimit,
   encryptSecret,
+  globalRouteOverrides,
   identities,
   jobOutbox,
   nodes,
@@ -64,6 +70,12 @@ import type {
 } from "./repository.js";
 import { ApiError, type Actor, type IdentityClaim, type KeyView } from "./service.js";
 import { diffRulePayloads } from "./ruleDiff.js";
+import {
+  isNodeAvailable,
+  nodeIdsWithExplicitLimit,
+  resolveNodeKeyLimit,
+  type NodeQuotaContext,
+} from "./nodeQuota.js";
 
 const quotaStates: KeyState[] = ["provisioning", "active", "disabled"];
 
@@ -111,6 +123,39 @@ const adminPolicyUpdateSchema = portalPolicySchema.partial().extend({
 });
 
 type PortalPolicyRow = typeof portalPolicy.$inferSelect;
+
+// Canonicalize a validated global-routes object the same way custom routes are
+// canonicalized: de-duplicate every list so stored data and merges stay minimal.
+const dedupeGlobalRouteList = (list: {
+  cidrs: string[];
+  domains: string[];
+}): { cidrs: string[]; domains: string[] } => ({
+  cidrs: [...new Set(list.cidrs)],
+  domains: [...new Set(list.domains)],
+});
+
+const dedupeGlobalRoutes = (routes: GlobalRoutes): GlobalRoutes => ({
+  ru_whitelist: {
+    add: dedupeGlobalRouteList(routes.ru_whitelist.add),
+    exclude: dedupeGlobalRouteList(routes.ru_whitelist.exclude),
+  },
+  ru_blacklist: {
+    add: dedupeGlobalRouteList(routes.ru_blacklist.add),
+    exclude: dedupeGlobalRouteList(routes.ru_blacklist.exclude),
+  },
+});
+
+// Audit metadata for a global-routes update: sizes only, never the entries.
+const globalRouteCounts = (routes: GlobalRoutes): Record<string, number> => ({
+  whitelistAddCidrs: routes.ru_whitelist.add.cidrs.length,
+  whitelistAddDomains: routes.ru_whitelist.add.domains.length,
+  whitelistExcludeCidrs: routes.ru_whitelist.exclude.cidrs.length,
+  whitelistExcludeDomains: routes.ru_whitelist.exclude.domains.length,
+  blacklistAddCidrs: routes.ru_blacklist.add.cidrs.length,
+  blacklistAddDomains: routes.ru_blacklist.add.domains.length,
+  blacklistExcludeCidrs: routes.ru_blacklist.exclude.cidrs.length,
+  blacklistExcludeDomains: routes.ru_blacklist.exclude.domains.length,
+});
 
 // Canonicalize a validated custom-routes object: de-duplicate each list so the
 // stored value and the export-time union stay minimal.
@@ -327,18 +372,35 @@ export class PostgresControlRepository implements ControlRepository {
     const user = userRow[0];
     if (!user) throw new ApiError(404, "User not found", "USER_NOT_FOUND");
     const globalPolicy = policyRow[0];
+    const policy = resolvePortalPolicy(toPolicy(globalPolicy), user.policyOverride);
+    const quotaContext: NodeQuotaContext = {
+      defaultKeyLimit: globalPolicy?.defaultKeyLimit ?? 5,
+      keyLimitOverride: user.keyLimitOverride,
+      nodeKeyLimits: user.nodeKeyLimits,
+    };
+    const usedByNode = new Map(perNodeRows.map((row) => [row.nodeId, row.value]));
+    // Report a node when the user already holds keys there OR when an admin set
+    // an explicit per-node limit for it, so the client never has to guess a
+    // configured limit from a node with no keys yet.
+    const perNodeIds = [
+      ...new Set([
+        ...usedByNode.keys(),
+        ...nodeIdsWithExplicitLimit(user.nodeKeyLimits),
+      ]),
+    ].sort();
     return {
-      // Per-node key limit (each node allows this many keys per user).
+      // Per-node key limit fallback: used for every node without its own entry.
       keyLimit: effectiveKeyLimit(
         globalPolicy?.defaultKeyLimit ?? 5,
         user.keyLimitOverride,
       ),
       keyCount: keyCountRow[0]?.value ?? 0,
-      perNode: perNodeRows.map((row) => ({
-        nodeId: row.nodeId,
-        used: row.value,
+      perNode: perNodeIds.map((nodeId) => ({
+        nodeId,
+        used: usedByNode.get(nodeId) ?? 0,
+        limit: resolveNodeKeyLimit(quotaContext, nodeId),
       })),
-      policy: resolvePortalPolicy(toPolicy(globalPolicy), user.policyOverride),
+      policy,
       // The user's own custom routes (normalized to both split-tunnel profiles).
       customRoutes: customRoutesSchema.parse(user.customRoutes ?? {}),
     };
@@ -459,9 +521,8 @@ export class PostgresControlRepository implements ControlRepository {
       userRow[0]?.policyOverride,
     );
     // A null/absent allowedNodeIds means "all nodes"; a list restricts to it.
-    const allowedNodeIds = policy.allowedNodeIds ?? null;
     return rows
-      .filter((row) => allowedNodeIds === null || allowedNodeIds.includes(row.id))
+      .filter((row) => isNodeAvailable(policy.allowedNodeIds, row.id))
       .map(({ capabilities, enabledProtocols, publicName, ...row }) => {
         const supportedProtocols = deriveSupportedProtocols(
           row.protocol,
@@ -723,6 +784,11 @@ export class PostgresControlRepository implements ControlRepository {
       deviceType: key.deviceType,
       deviceLabel: key.deviceLabel,
       keyNumber: key.keyNumber,
+      nameDisplay: {
+        server: key.nameShowNode,
+        label: key.nameShowLabel,
+        number: key.nameShowNumber,
+      },
       routeProfile: key.routeProfile,
       rulesOutdated:
         key.routeProfile !== "full_tunnel" &&
@@ -798,11 +864,12 @@ export class PostgresControlRepository implements ControlRepository {
           routeRuleVersionId = activeRule[0].id;
         }
         // The key limit is PER NODE: a user may hold up to `limit` keys on each
-        // node, not `limit` total.
-        const limit = effectiveKeyLimit(
-          globalPolicy?.defaultKeyLimit ?? 5,
-          user.keyLimitOverride,
-        );
+        // node, not `limit` total, and the limit itself may differ per node.
+        const quotaContext: NodeQuotaContext = {
+          defaultKeyLimit: globalPolicy?.defaultKeyLimit ?? 5,
+          keyLimitOverride: user.keyLimitOverride,
+          nodeKeyLimits: user.nodeKeyLimits,
+        };
 
         // A node serves the requested protocol if it is the node's primary
         // protocol or the node reported the protocol in its capabilities.
@@ -835,10 +902,7 @@ export class PostgresControlRepository implements ControlRepository {
         let availabilityBlocked = false;
         for (const candidate of candidateNodes) {
           // Node availability (global default or per-user override).
-          if (
-            policy.allowedNodeIds != null &&
-            !policy.allowedNodeIds.includes(candidate.id)
-          ) {
+          if (!isNodeAvailable(policy.allowedNodeIds, candidate.id)) {
             availabilityBlocked = true;
             continue;
           }
@@ -866,7 +930,8 @@ export class PostgresControlRepository implements ControlRepository {
                   ),
                 )
             )[0]?.value ?? 0;
-          if (userKeysOnNode >= limit) {
+          // Resolved per candidate: a per-node limit beats the flat override.
+          if (userKeysOnNode >= resolveNodeKeyLimit(quotaContext, candidate.id)) {
             userQuotaBlocked = true;
             continue;
           }
@@ -944,6 +1009,9 @@ export class PostgresControlRepository implements ControlRepository {
           deviceType: request.deviceType,
           deviceLabel: request.deviceLabel,
           keyNumber,
+          nameShowNode: request.nameDisplay.server,
+          nameShowLabel: request.nameDisplay.label,
+          nameShowNumber: request.nameDisplay.number,
           routeProfile: request.routeProfile,
           routeRuleVersionId,
         });
@@ -962,6 +1030,7 @@ export class PostgresControlRepository implements ControlRepository {
             nodeId: selectedNode.id,
             protocol: request.protocol,
             routeProfile: request.routeProfile,
+            nameDisplay: request.nameDisplay,
           },
         });
             return { id: keyId, state: "provisioning" as const };
@@ -1010,6 +1079,11 @@ export class PostgresControlRepository implements ControlRepository {
       deviceLabel: row.key.deviceLabel,
       keyNumber: row.key.keyNumber,
       nodeDisplayName: row.nodePublicName ?? row.nodeName,
+      nameDisplay: {
+        server: row.key.nameShowNode,
+        label: row.key.nameShowLabel,
+        number: row.key.nameShowNumber,
+      },
       encrypted: {
         ciphertext: row.key.configCiphertext,
         nonce: row.key.configNonce,
@@ -1046,6 +1120,19 @@ export class PostgresControlRepository implements ControlRepository {
       .limit(1);
     if (!rule) return null;
     return { versionId: rule.id, version: rule.version, payload: rule.payload };
+  };
+
+  getGlobalRoutes = async (): Promise<GlobalRoutes> => {
+    const [row] = await this.options.db
+      .select({ payload: globalRouteOverrides.payload })
+      .from(globalRouteOverrides)
+      .where(eq(globalRouteOverrides.id, true))
+      .limit(1);
+    if (!row) return emptyGlobalRoutes;
+    // Re-parse so a payload written by an older schema version still yields a
+    // complete object instead of tripping over a missing profile key.
+    const parsed = globalRoutesSchema.safeParse(row.payload);
+    return parsed.success ? parsed.data : emptyGlobalRoutes;
   };
 
   markKeyRuleVersion = async (
@@ -1387,6 +1474,8 @@ export class PostgresControlRepository implements ControlRepository {
   adminList = async (_actor: Actor, resource: string): Promise<unknown> => {
     switch (resource) {
       case "users":
+        // Every column, so the admin UI sees keyLimitOverride, nodeKeyLimits
+        // and policyOverride (which carries allowedNodeIds) in one round trip.
         return this.options.db.select().from(users).orderBy(users.email);
       case "keys": {
         const rows = await this.options.db
@@ -1399,6 +1488,10 @@ export class PostgresControlRepository implements ControlRepository {
             state: vpnKeys.state,
             deviceType: vpnKeys.deviceType,
             deviceLabel: vpnKeys.deviceLabel,
+            keyNumber: vpnKeys.keyNumber,
+            nameShowNode: vpnKeys.nameShowNode,
+            nameShowLabel: vpnKeys.nameShowLabel,
+            nameShowNumber: vpnKeys.nameShowNumber,
             routeProfile: vpnKeys.routeProfile,
             routeRuleVersionId: vpnKeys.routeRuleVersionId,
             lastUsedAt: vpnKeys.lastUsedAt,
@@ -1413,8 +1506,24 @@ export class PostgresControlRepository implements ControlRepository {
           .from(vpnKeys)
           .leftJoin(peerCurrent, eq(peerCurrent.keyId, vpnKeys.id))
           .orderBy(desc(vpnKeys.createdAt));
-        return rows.map(({ receivedBytes, sentBytes, online, ...row }) => ({
+        return rows.map(
+          ({
+            receivedBytes,
+            sentBytes,
+            online,
+            nameShowNode,
+            nameShowLabel,
+            nameShowNumber,
+            ...row
+          }) => ({
           ...row,
+          // Same shape the owner-facing key list uses, so both views can feed
+          // `composeKeyDisplayName` directly.
+          nameDisplay: {
+            server: nameShowNode,
+            label: nameShowLabel,
+            number: nameShowNumber,
+          },
           online: online ?? false,
           traffic:
             receivedBytes !== null && sentBytes !== null
@@ -1493,22 +1602,13 @@ export class PostgresControlRepository implements ControlRepository {
       case "portal-policy": {
         const rows = await this.options.db.select().from(portalPolicy).limit(1);
         if (rows[0]) return [stripPolicySecrets(rows[0])];
+        // Fresh install with no row yet: report exactly the contract defaults so
+        // the UI cannot show a setting the API would apply differently.
         return [
           {
             id: true,
-            allowKeyCreation: defaultPortalPolicy.allowKeyCreation,
-            allowNodeSelection: defaultPortalPolicy.allowNodeSelection,
-            allowedProtocols: defaultPortalPolicy.allowedProtocols,
-            allowedNodeIds: null,
-            allowRouteProfileSelection:
-              defaultPortalPolicy.allowRouteProfileSelection,
-            allowConfigRedownload: defaultPortalPolicy.allowConfigRedownload,
-            allowQrDownload: defaultPortalPolicy.allowQrDownload,
-            allowConfDownload: defaultPortalPolicy.allowConfDownload,
-            allowSelfRevoke: defaultPortalPolicy.allowSelfRevoke,
-            showPublicKey: defaultPortalPolicy.showPublicKey,
-            showLastUsed: defaultPortalPolicy.showLastUsed,
-            showTraffic: defaultPortalPolicy.showTraffic,
+            ...defaultPortalPolicy,
+            allowedNodeIds: defaultPortalPolicy.allowedNodeIds ?? null,
             defaultKeyLimit: 5,
             dailyRetentionDays: 730,
             cfAccessAccountId: null,
@@ -1520,6 +1620,8 @@ export class PostgresControlRepository implements ControlRepository {
           },
         ];
       }
+      case "global-routes":
+        return [await this.getGlobalRoutes()];
       default:
         throw new ApiError(404, "Admin resource not found", "NOT_FOUND");
     }
@@ -1628,25 +1730,89 @@ export class PostgresControlRepository implements ControlRepository {
         return { ...updatedUser, keysQueuedForRevoke: keysToRevoke.length };
       });
     } else if (resource === "users" && action === "set-limit") {
-      const parsed = z
-        .object({ keyLimitOverride: z.int().min(0).max(1_000).nullable() })
-        .parse(payload);
+      // One action owns a user's whole quota: the flat override, which nodes
+      // they may use, and the per-node limits. Applied in a single transaction
+      // so the three can never land half-written.
+      const parsed = setUserLimitRequestSchema.parse(payload);
       return this.options.db.transaction(async (tx) => {
+        const [current] = await tx
+          .select({ id: users.id, policyOverride: users.policyOverride })
+          .from(users)
+          .where(eq(users.id, targetId))
+          .for("update");
+        if (!current) throw new ApiError(404, "User not found", "USER_NOT_FOUND");
+        // Reject references to nodes that do not exist, so the stored quota can
+        // never contain a dead node id that silently does nothing.
+        const referencedNodeIds = [
+          ...new Set([
+            ...Object.keys(parsed.nodeKeyLimits ?? {}),
+            ...(parsed.allowedNodeIds ?? []),
+          ]),
+        ];
+        if (referencedNodeIds.length > 0) {
+          const known = await tx
+            .select({ id: nodes.id })
+            .from(nodes)
+            .where(inArray(nodes.id, referencedNodeIds));
+          if (known.length !== referencedNodeIds.length) {
+            throw new ApiError(400, "Unknown node id", "NODE_NOT_FOUND");
+          }
+        }
+        const changes: Partial<typeof users.$inferInsert> = {
+          keyLimitOverride: parsed.keyLimitOverride,
+          updatedAt: new Date(),
+        };
+        if (parsed.nodeKeyLimits !== undefined) {
+          // An empty map carries no information; store it as null so "no
+          // per-node limits" always has one shape on disk.
+          changes.nodeKeyLimits =
+            parsed.nodeKeyLimits && Object.keys(parsed.nodeKeyLimits).length > 0
+              ? parsed.nodeKeyLimits
+              : null;
+        }
+        if (parsed.allowedNodeIds !== undefined) {
+          // Merge into the existing per-user policy override instead of
+          // replacing it, so the other override fields survive. A null clears
+          // just this key and the global allowedNodeIds applies again.
+          const merged: PortalPolicyOverride = { ...(current.policyOverride ?? {}) };
+          delete merged.allowedNodeIds;
+          if (parsed.allowedNodeIds !== null) {
+            merged.allowedNodeIds = parsed.allowedNodeIds;
+          }
+          changes.policyOverride =
+            Object.keys(merged).length > 0 ? merged : null;
+        }
         const [updated] = await tx
           .update(users)
-          .set({ ...parsed, updatedAt: new Date() })
+          .set(changes)
           .where(eq(users.id, targetId))
-          .returning({ id: users.id, keyLimitOverride: users.keyLimitOverride });
+          .returning({
+            id: users.id,
+            keyLimitOverride: users.keyLimitOverride,
+            nodeKeyLimits: users.nodeKeyLimits,
+            policyOverride: users.policyOverride,
+          });
         if (!updated) throw new ApiError(404, "User not found", "USER_NOT_FOUND");
+        const allowedNodeIds = updated.policyOverride?.allowedNodeIds ?? null;
         await tx.insert(auditEvents).values({
           actorUserId: actor.id,
           actorType: "user",
           action: `admin.${resource}.${action}`,
           targetType: resource,
           targetId,
-          metadata: { keyLimitOverride: parsed.keyLimitOverride },
+          // Counts and the limit only — never the node ids themselves.
+          metadata: {
+            keyLimitOverride: updated.keyLimitOverride,
+            nodeKeyLimitCount: Object.keys(updated.nodeKeyLimits ?? {}).length,
+            allowedNodeCount: allowedNodeIds === null ? null : allowedNodeIds.length,
+          },
         });
-        return updated;
+        return {
+          id: updated.id,
+          keyLimitOverride: updated.keyLimitOverride,
+          nodeKeyLimits: updated.nodeKeyLimits ?? null,
+          allowedNodeIds,
+        };
       });
     } else if (resource === "users" && action === "set-policy") {
       const policyOverride = portalPolicyOverrideSchema.parse(payload);
@@ -1858,6 +2024,30 @@ export class PostgresControlRepository implements ControlRepository {
         });
         return updated ? stripPolicySecrets(updated) : updated;
       });
+    } else if (resource === "global-routes" && action === "update") {
+      const routes = dedupeGlobalRoutes(
+        updateGlobalRoutesRequestSchema.parse(payload),
+      );
+      return this.options.db.transaction(async (tx) => {
+        const [updated] = await tx
+          .insert(globalRouteOverrides)
+          .values({ id: true, payload: routes })
+          .onConflictDoUpdate({
+            target: globalRouteOverrides.id,
+            set: { payload: routes, updatedAt: new Date() },
+          })
+          .returning({ payload: globalRouteOverrides.payload });
+        await tx.insert(auditEvents).values({
+          actorUserId: actor.id,
+          actorType: "user",
+          action: "admin.global-routes.update",
+          targetType: "global-routes",
+          targetId: "global",
+          // Counts only — the entries themselves stay out of the audit log.
+          metadata: globalRouteCounts(routes),
+        });
+        return updated?.payload ?? routes;
+      });
     } else if (resource === "nodes" && action === "reconcile") {
       return this.options.db.transaction(async (tx) => {
         const [node] = await tx
@@ -1910,30 +2100,25 @@ export class PostgresControlRepository implements ControlRepository {
         });
         return activated;
       });
-    } else if (resource === "rules" && (action === "seed" || action === "import")) {
-      const raw = z
+    } else if (resource === "rules" && action === "import") {
+      // Rule lists come from the worker's feeds or from an explicit operator
+      // upload. There is deliberately no bundled starter list to fall back on,
+      // so an import without entries is rejected instead of silently publishing
+      // a stub feed as the active routing rules.
+      const input = z
         .object({
-          profile: z
-            .enum(["ru_whitelist", "ru_blacklist"])
-            .default("ru_whitelist"),
-          version: z.string().min(1).max(96).optional(),
-          sourceUrl: z.string().min(1).optional(),
-          cidrs: z.array(z.string()).optional(),
-          domains: z.array(z.string()).optional(),
+          profile: z.enum(["ru_whitelist", "ru_blacklist"]),
+          version: z.string().trim().min(1).max(96),
+          sourceUrl: z.string().trim().min(1).max(2_048).default("manual://import"),
+          cidrs: z.array(z.string()).default([]),
+          domains: z.array(z.string()).default([]),
           activate: z.boolean().default(true),
         })
+        .refine(
+          (value) => value.cidrs.length + value.domains.length > 0,
+          "An imported rule version must contain at least one entry",
+        )
         .parse(payload ?? {});
-      // Fall back to the bundled starter set when the operator seeds a profile
-      // without supplying an explicit rule list.
-      const seed = routeRuleSeeds[raw.profile];
-      const input = {
-        profile: raw.profile,
-        version: raw.version ?? `bundled-${raw.profile}`,
-        sourceUrl: raw.sourceUrl ?? "bundled://seed",
-        cidrs: raw.cidrs ?? seed.cidrs,
-        domains: raw.domains ?? seed.domains,
-        activate: raw.activate,
-      };
       return this.options.db.transaction(async (tx) => {
         if (input.activate) {
           await tx
@@ -1975,7 +2160,7 @@ export class PostgresControlRepository implements ControlRepository {
         await tx.insert(auditEvents).values({
           actorUserId: actor.id,
           actorType: "user",
-          action: `admin.rules.${action}`,
+          action: "admin.rules.import",
           targetType: "rules",
           targetId: saved?.id,
           metadata: { profile: input.profile, version: input.version },

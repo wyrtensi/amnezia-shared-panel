@@ -2,11 +2,11 @@
 
 import * as React from "react";
 import { toast } from "sonner";
-import { Plus, Route, X } from "lucide-react";
+import { Route } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { Callout, Hint } from "@/components/ui/hint";
+import { RouteListEditor } from "@/components/route-list-editor";
 import { apiRequest } from "@/lib/api";
 import { useT } from "@/lib/i18n/provider";
 import {
@@ -21,14 +21,6 @@ const PROFILE_LABEL: Record<Profile, string> = {
   ru_whitelist: "route.ru_whitelist",
   ru_blacklist: "route.ru_blacklist",
 };
-
-// Light client-side checks; the control API is authoritative on save.
-const looksLikeCidr = (value: string): boolean =>
-  /^[0-9a-f.:]+(\/\d{1,3})?$/i.test(value) && /[.:]/.test(value);
-const looksLikeDomain = (value: string): boolean =>
-  /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+(?:[a-z]{2,63}|xn--[a-z0-9-]{2,59})$/.test(
-    value,
-  );
 
 const cloneRoutes = (routes: CustomRoutes): CustomRoutes => ({
   ru_whitelist: {
@@ -58,8 +50,6 @@ export function CustomRoutesCard({
     cloneRoutes(me.customRoutes ?? EMPTY_CUSTOM_ROUTES),
   );
   const [profile, setProfile] = React.useState<Profile>("ru_whitelist");
-  const [cidrInput, setCidrInput] = React.useState("");
-  const [domainInput, setDomainInput] = React.useState("");
   const [saving, setSaving] = React.useState(false);
 
   const baseline = React.useRef(
@@ -74,49 +64,17 @@ export function CustomRoutesCard({
 
   const list = routes[profile];
 
-  const addCidr = () => {
-    const value = cidrInput.trim().toLowerCase();
-    if (!value) return;
-    if (!looksLikeCidr(value)) {
-      toast.error(t("routes.badIp"));
-      return;
-    }
-    setCidrInput("");
-    if (list.cidrs.includes(value)) return;
+  const setCidrs = (next: string[]) =>
     setRoutes((prev) => {
-      const next = cloneRoutes(prev);
-      next[profile].cidrs.push(value);
-      return next;
+      const updated = cloneRoutes(prev);
+      updated[profile].cidrs = next;
+      return updated;
     });
-  };
-
-  const addDomain = () => {
-    const value = domainInput.trim().toLowerCase();
-    if (!value) return;
-    if (!looksLikeDomain(value)) {
-      toast.error(t("routes.badDomain"));
-      return;
-    }
-    setDomainInput("");
-    if (list.domains.includes(value)) return;
+  const setDomains = (next: string[]) =>
     setRoutes((prev) => {
-      const next = cloneRoutes(prev);
-      next[profile].domains.push(value);
-      return next;
-    });
-  };
-
-  const removeCidr = (value: string) =>
-    setRoutes((prev) => {
-      const next = cloneRoutes(prev);
-      next[profile].cidrs = next[profile].cidrs.filter((x) => x !== value);
-      return next;
-    });
-  const removeDomain = (value: string) =>
-    setRoutes((prev) => {
-      const next = cloneRoutes(prev);
-      next[profile].domains = next[profile].domains.filter((x) => x !== value);
-      return next;
+      const updated = cloneRoutes(prev);
+      updated[profile].domains = next;
+      return updated;
     });
 
   const save = async () => {
@@ -185,23 +143,11 @@ export function CustomRoutesCard({
           </p>
         </div>
 
-        <RouteEditor
-          label={t("routes.ipLabel")}
-          placeholder={t("routes.ipPlaceholder")}
-          value={cidrInput}
-          onChange={setCidrInput}
-          onAdd={addCidr}
-          entries={list.cidrs}
-          onRemove={removeCidr}
-        />
-        <RouteEditor
-          label={t("routes.domainLabel")}
-          placeholder={t("routes.domainPlaceholder")}
-          value={domainInput}
-          onChange={setDomainInput}
-          onAdd={addDomain}
+        <RouteListEditor kind="cidr" entries={list.cidrs} onChange={setCidrs} />
+        <RouteListEditor
+          kind="domain"
           entries={list.domains}
-          onRemove={removeDomain}
+          onChange={setDomains}
         />
 
         <div className="flex justify-end">
@@ -211,65 +157,5 @@ export function CustomRoutesCard({
         </div>
       </CardContent>
     </Card>
-  );
-}
-
-function RouteEditor({
-  label,
-  placeholder,
-  value,
-  onChange,
-  onAdd,
-  entries,
-  onRemove,
-}: {
-  label: string;
-  placeholder: string;
-  value: string;
-  onChange: (next: string) => void;
-  onAdd: () => void;
-  entries: string[];
-  onRemove: (value: string) => void;
-}) {
-  return (
-    <div className="space-y-2">
-      <p className="text-xs font-medium text-muted-foreground">{label}</p>
-      <div className="flex gap-2">
-        <Input
-          value={value}
-          placeholder={placeholder}
-          onChange={(event) => onChange(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key === "Enter") {
-              event.preventDefault();
-              onAdd();
-            }
-          }}
-        />
-        <Button type="button" size="icon" variant="outline" onClick={onAdd}>
-          <Plus className="h-4 w-4" />
-        </Button>
-      </div>
-      {entries.length > 0 ? (
-        <div className="flex flex-wrap gap-1.5">
-          {entries.map((entry) => (
-            <span
-              key={entry}
-              className="inline-flex items-center gap-1 rounded-md bg-muted px-2 py-0.5 font-mono text-xs"
-            >
-              {entry}
-              <button
-                type="button"
-                onClick={() => onRemove(entry)}
-                className="text-muted-foreground transition-colors hover:text-destructive"
-                aria-label={`Remove ${entry}`}
-              >
-                <X className="h-3 w-3" />
-              </button>
-            </span>
-          ))}
-        </div>
-      ) : null}
-    </div>
   );
 }

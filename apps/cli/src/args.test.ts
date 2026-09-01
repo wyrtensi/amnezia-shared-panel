@@ -1,5 +1,11 @@
 import { describe, it, expect } from "vitest";
-import { flagOf, positionals, csvList, parseNodeSpec } from "./args.js";
+import {
+  flagOf,
+  positionals,
+  csvList,
+  parseNodeLimits,
+  parseNodeSpec,
+} from "./args.js";
 
 describe("flagOf", () => {
   it("reads --name=value and preserves '=' in the value", () => {
@@ -32,5 +38,31 @@ describe("parseNodeSpec", () => {
   });
   it("maps a csv to a trimmed list", () => {
     expect(parseNodeSpec("a, b ,c")).toEqual(["a", "b", "c"]);
+  });
+});
+
+describe("parseNodeLimits", () => {
+  const nodeA = "11111111-1111-4111-8111-111111111111";
+  const nodeB = "22222222-2222-4222-8222-222222222222";
+
+  it("parses a <nodeId>:<n> list", () => {
+    expect(parseNodeLimits(`${nodeA}:2, ${nodeB}:0`)).toEqual({
+      [nodeA]: 2,
+      [nodeB]: 0,
+    });
+  });
+
+  it("clears every per-node limit for an empty value, 'none' or 'clear'", () => {
+    expect(parseNodeLimits("")).toBeNull();
+    expect(parseNodeLimits("none")).toBeNull();
+    expect(parseNodeLimits("clear")).toBeNull();
+  });
+
+  it("rejects a malformed entry or an out-of-range limit", () => {
+    expect(() => parseNodeLimits(nodeA)).toThrowError(/expected <nodeId>:<n>/);
+    expect(() => parseNodeLimits(`${nodeA}:`)).toThrowError(/integer 0\.\.1000/);
+    expect(() => parseNodeLimits(`${nodeA}:-1`)).toThrowError(/integer 0\.\.1000/);
+    expect(() => parseNodeLimits(`${nodeA}:1001`)).toThrowError(/integer 0\.\.1000/);
+    expect(() => parseNodeLimits(`${nodeA}:two`)).toThrowError(/integer 0\.\.1000/);
   });
 });

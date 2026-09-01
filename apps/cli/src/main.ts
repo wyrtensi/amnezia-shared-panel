@@ -14,7 +14,13 @@
  */
 
 import { authHeaders } from "./identity.js";
-import { flagOf, positionals, csvList, parseNodeSpec } from "./args.js";
+import {
+  flagOf,
+  positionals,
+  csvList,
+  parseNodeLimits,
+  parseNodeSpec,
+} from "./args.js";
 
 const API = (process.env.CONTROL_API_URL ?? "http://127.0.0.1:3001").replace(
   /\/$/,
@@ -72,6 +78,10 @@ type AdminUser = {
   role: string;
   status: string;
   keyLimitOverride: number | null;
+  // Per-node limits ({ nodeId: limit }) and the per-user policy override that
+  // carries node availability. Both are null when nothing is overridden.
+  nodeKeyLimits?: Record<string, number> | null;
+  policyOverride?: { allowedNodeIds?: string[] | null } | null;
 };
 type AdminKey = {
   id: string;
@@ -155,6 +165,18 @@ async function cmdOverview(args: string[]): Promise<void> {
   console.log(`Quota requests pending: ${overview.pendingQuotaRequests ?? 0}`);
 }
 
+/**
+ * Compact "which servers, how many custom limits" cell for the users table:
+ * "all" / "3 of N" node availability plus the number of per-node limits.
+ */
+function describeUserNodes(user: AdminUser): string {
+  const allowed = user.policyOverride?.allowedNodeIds ?? null;
+  const availability =
+    allowed === null ? "all" : allowed.length ? `${allowed.length} allowed` : "none";
+  const perNode = Object.keys(user.nodeKeyLimits ?? {}).length;
+  return perNode > 0 ? `${availability}, ${perNode} custom` : availability;
+}
+
 async function cmdUsers(args: string[]): Promise<void> {
   const users = await api<AdminUser[]>("/api/admin/users");
   if (wantsJson(args)) return json(users);
@@ -165,8 +187,10 @@ async function cmdUsers(args: string[]): Promise<void> {
         role: user.role,
         status: user.status,
         limit: user.keyLimitOverride?.toString() ?? "default",
+        // Counts only; `user-limit --node-limits=` shows and sets the detail.
+        nodes: describeUserNodes(user),
       })),
-      ["email", "role", "status", "limit"],
+      ["email", "role", "status", "limit", "nodes"],
     ),
   );
 }
@@ -262,8 +286,9 @@ async function cmdUserRole(args: string[]): Promise<void> {
 }
 
 async function cmdUserLimit(args: string[]): Promise<void> {
-  const positional = args.filter((arg) => !arg.startsWith("--"));
-  const usage = "Usage: user-limit <id|email> <n|default>";
+  const positional = positionals(args);
+  const usage =
+    "Usage: user-limit <id|email> <n|default> [--node-limits=<uuid>:<n>,…|none] [--allowed-nodes=all|none|uuid,…]";
   const id = await resolveUserId(positional[0], usage);
   const raw = positional[1];
   if (raw === undefined) throw new Error(usage);
@@ -276,8 +301,34 @@ async function cmdUserLimit(args: string[]): Promise<void> {
   ) {
     throw new Error("limit must be an integer 0..1000, or 'default'");
   }
-  await userAction(id, "set-limit", { keyLimitOverride });
+  // Both extras are optional: an omitted flag leaves that part untouched, so
+  // this command stays a plain "set the flat limit" when neither is given.
+  const body: Record<string, unknown> = { keyLimitOverride };
+  const nodeLimitsFlag = flagOf(args, "node-limits");
+  if (nodeLimitsFlag !== undefined) {
+    body.nodeKeyLimits = parseNodeLimits(nodeLimitsFlag);
+  }
+  const allowedNodesFlag = flagOf(args, "allowed-nodes");
+  if (allowedNodesFlag !== undefined) {
+    body.allowedNodeIds = parseNodeSpec(allowedNodesFlag);
+  }
+  await userAction(id, "set-limit", body);
   console.log(`user ${positional[0]}: key limit → ${keyLimitOverride ?? "default"}`);
+  if (nodeLimitsFlag !== undefined) {
+    const limits = body.nodeKeyLimits as Record<string, number> | null;
+    const shown = limits
+      ? Object.entries(limits)
+          .map(([nodeId, limit]) => `${nodeId}:${limit}`)
+          .join(",") || "none"
+      : "none";
+    console.log(`  per-node limits → ${shown}`);
+  }
+  if (allowedNodesFlag !== undefined) {
+    const allowed = body.allowedNodeIds as string[] | null;
+    const shown =
+      allowed === null ? "all" : allowed.length ? allowed.join(",") : "none";
+    console.log(`  node availability → ${shown}`);
+  }
 }
 
 async function cmdUserDisable(args: string[]): Promise<void> {
@@ -428,15 +479,10 @@ async function cmdPolicySet(args: string[]): Promise<void> {
     const found = args.find((arg) => arg.startsWith(`--${name}=`));
     return found ? found.split("=").slice(1).join("=") : undefined;
   };
-  const parseBool = (name: string, value: string): boolean => {
-    if (value === "true") return true;
-    if (value === "false") return false;
-    throw new Error(`--${name} expects true/false, got "${value}"`);
-  };
   const body: Record<string, unknown> = {};
   for (const field of POLICY_BOOL_FIELDS) {
     const value = flag(field);
-    if (value !== undefined) body[field] = parseBool(field, value);
+    if (value !== undefined) body[field] = parseBoolFlag(field, value);
   }
   for (const field of POLICY_INT_FIELDS) {
     const value = flag(field);
@@ -614,11 +660,23 @@ async function cmdUserRoutes(args: string[]): Promise<void> {
 async function cmdUserCreateKey(args: string[]): Promise<void> {
   const pos = positionals(args);
   const usage =
-    "Usage: user-create-key <id|email> --node=<uuid> [--device=<label>] [--protocol=awg3|awg2] [--route=full_tunnel|ru_whitelist|ru_blacklist] [--device-type=<type>]";
+    "Usage: user-create-key <id|email> --node=<uuid> [--device=<label>] [--protocol=awg3|awg2] [--route=full_tunnel|ru_whitelist|ru_blacklist] [--device-type=<type>] [--name-server=true|false] [--name-label=true|false] [--name-number=true|false]";
   const id = await resolveUserId(pos[0], usage);
   const nodeId = flagOf(args, "node");
   if (!nodeId) throw new Error(usage);
   const body: Record<string, unknown> = { nodeId };
+  // Which parts the AmneziaVPN client shows as the connection name. Omitted
+  // flags keep the API defaults (server + label, no number).
+  const nameDisplay: Record<string, boolean> = {};
+  for (const [flag, field] of [
+    ["name-server", "server"],
+    ["name-label", "label"],
+    ["name-number", "number"],
+  ] as const) {
+    const value = flagOf(args, flag);
+    if (value !== undefined) nameDisplay[field] = parseBoolFlag(flag, value);
+  }
+  if (Object.keys(nameDisplay).length > 0) body.nameDisplay = nameDisplay;
   const protocol = flagOf(args, "protocol");
   if (protocol) body.protocol = protocol;
   const device = flagOf(args, "device");
@@ -629,6 +687,84 @@ async function cmdUserCreateKey(args: string[]): Promise<void> {
   if (deviceType) body.deviceType = deviceType;
   const result = (await userAction(id, "create-key", body)) as { id?: string };
   console.log(`key created for ${pos[0]}: ${result?.id ?? "(ok)"}`);
+}
+
+/** Parse a `--flag=true|false` value, rejecting anything else. */
+function parseBoolFlag(name: string, value: string): boolean {
+  if (value === "true") return true;
+  if (value === "false") return false;
+  throw new Error(`--${name} expects true/false, got "${value}"`);
+}
+
+type GlobalRouteList = { cidrs: string[]; domains: string[] };
+type GlobalRouteProfile = { add: GlobalRouteList; exclude: GlobalRouteList };
+type GlobalRoutes = Record<"ru_whitelist" | "ru_blacklist", GlobalRouteProfile>;
+
+const emptyRouteList = (): GlobalRouteList => ({ cidrs: [], domains: [] });
+const emptyRouteProfile = (): GlobalRouteProfile => ({
+  add: emptyRouteList(),
+  exclude: emptyRouteList(),
+});
+
+async function fetchGlobalRoutes(): Promise<GlobalRoutes> {
+  const rows = await api<GlobalRoutes[]>("/api/admin/global-routes");
+  const current = rows[0];
+  return {
+    ru_whitelist: current?.ru_whitelist ?? emptyRouteProfile(),
+    ru_blacklist: current?.ru_blacklist ?? emptyRouteProfile(),
+  };
+}
+
+async function cmdGlobalRoutes(args: string[]): Promise<void> {
+  const routes = await fetchGlobalRoutes();
+  if (wantsJson(args)) return json(routes);
+  for (const profile of ["ru_whitelist", "ru_blacklist"] as const) {
+    const entry = routes[profile];
+    console.log(profile);
+    for (const bucket of ["add", "exclude"] as const) {
+      const list = entry[bucket];
+      console.log(
+        `  ${bucket} cidrs   (${list.cidrs.length}): ${list.cidrs.join(", ") || "-"}`,
+      );
+      console.log(
+        `  ${bucket} domains (${list.domains.length}): ${list.domains.join(", ") || "-"}`,
+      );
+    }
+  }
+}
+
+async function cmdGlobalRoutesSet(args: string[]): Promise<void> {
+  const usage =
+    "Usage: global-routes-set --profile=ru_whitelist|ru_blacklist [--add-domains=a,b] [--add-cidrs=...] [--exclude-domains=...] [--exclude-cidrs=...]  (each list given REPLACES that list)";
+  const profile = flagOf(args, "profile");
+  if (profile !== "ru_whitelist" && profile !== "ru_blacklist") {
+    throw new Error(usage);
+  }
+  // The endpoint replaces the whole object, so read first and patch in place to
+  // leave the other profile (and the lists no flag mentions) untouched.
+  const routes = await fetchGlobalRoutes();
+  const target = routes[profile];
+  const changed: string[] = [];
+  const apply = (
+    bucket: "add" | "exclude",
+    field: "cidrs" | "domains",
+    flag: string,
+  ) => {
+    const value = flagOf(args, flag);
+    if (value === undefined) return;
+    target[bucket][field] = csvList(value);
+    changed.push(flag);
+  };
+  apply("add", "cidrs", "add-cidrs");
+  apply("add", "domains", "add-domains");
+  apply("exclude", "cidrs", "exclude-cidrs");
+  apply("exclude", "domains", "exclude-domains");
+  if (changed.length === 0) throw new Error(usage);
+  await api("/api/admin/global-routes/global/update", {
+    method: "POST",
+    body: JSON.stringify(routes),
+  });
+  console.log(`global routes ${profile}: updated ${changed.join(", ")}`);
 }
 
 async function cmdVersion(args: string[]): Promise<void> {
@@ -668,18 +804,29 @@ Read:
   audit [--limit=N]        Recent audit events
   quota [--all] [--json]   Key-limit requests (pending by default; --all = every state)
   policy [--json]          Show all panel settings + Cloudflare config
+  global-routes [--json]   Admin-wide route additions / exclusions
   version [--json]         Panel version + commit
   traffic [--days=N]       Aggregate traffic series (JSON)
 
 Users (accept a user id OR email):
   user-create <email> [name] [--admin]   Add a user
   user-role <id|email> <admin|user>      Promote / demote (last admin is protected)
-  user-limit <id|email> <n|default>      Set key-limit override (default = clear)
+  user-limit <id|email> <n|default> [--node-limits=<uuid>:<n>,…|none] [--allowed-nodes=all|none|uuid,…]
+                                         Set the per-node key limit (default = clear the override).
+                                         --node-limits REPLACES the per-node limits (none = clear);
+                                         --allowed-nodes sets node availability (all = every node).
+                                         Omitted flags leave that part unchanged.
   user-disable <id|email>                Offboard: disable + revoke their keys
   user-enable <id|email>                 Reinstate a disabled user
-  user-nodes <id|email> <all|none|uuid,…>  Per-user node availability (all=every node; overrides global)
+  user-nodes <id|email> <all|none|uuid,…>  Per-user node availability (all=every node; overrides global).
+                                         REPLACES the whole per-user policy override; use
+                                         user-limit --allowed-nodes to change only availability.
   user-routes <id|email> [--wl-domains=] [--wl-cidrs=] [--bl-domains=] [--bl-cidrs=]  Replace a user's custom routes
-  user-create-key <id|email> --node=<uuid> [--device=] [--protocol=awg3] [--route=full_tunnel]  Create a key for a user
+  user-create-key <id|email> --node=<uuid> [--device=] [--protocol=awg3] [--route=full_tunnel]
+                  [--name-server=true|false] [--name-label=true|false] [--name-number=true|false]
+                                         Create a key for a user. The --name-* flags pick which
+                                         parts the VPN client shows as the connection name
+                                         (default: server + label, no number)
   quota-approve <request-id> [note]      Approve a quota request (applies the limit)
   quota-reject <request-id> [note]       Reject a quota request
 
@@ -699,6 +846,13 @@ Write:
   cf-token <token>                        Store the Cloudflare API token (encrypted)
   cf-config --account= --app= --policy=   Set Cloudflare Access IDs
   policy-set --<field>=<value> …          Set any panel setting(s), see below
+  global-routes-set --profile=ru_whitelist|ru_blacklist [--add-domains=] [--add-cidrs=]
+                    [--exclude-domains=] [--exclude-cidrs=]
+                                          Admin-wide route overrides for a split-tunnel profile.
+                                          Each list given REPLACES that list; omitted lists stay.
+                                          Exclusions drop feed entries (excluding a domain also
+                                          drops its subdomains); a user's own custom routes are
+                                          applied last and can opt back in.
   panel-update [--status]                 Trigger the in-panel update (or show its status)
 
 policy-set fields:
@@ -790,6 +944,10 @@ async function main(): Promise<void> {
       return cmdPolicy(args);
     case "policy-set":
       return cmdPolicySet(args);
+    case "global-routes":
+      return cmdGlobalRoutes(args);
+    case "global-routes-set":
+      return cmdGlobalRoutesSet(args);
     case undefined:
     case "help":
     case "--help":

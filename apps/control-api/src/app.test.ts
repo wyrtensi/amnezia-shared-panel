@@ -200,3 +200,83 @@ describe("control API authorization", () => {
     await app.close();
   });
 });
+
+describe("admin global route overrides", () => {
+  const globalRoutes = {
+    ru_whitelist: {
+      add: { cidrs: ["203.0.113.0/24"], domains: [] },
+      exclude: { cidrs: [], domains: ["example.com"] },
+    },
+    ru_blacklist: {
+      add: { cidrs: [], domains: [] },
+      exclude: { cidrs: [], domains: [] },
+    },
+  };
+
+  it("exposes the current overrides to an admin", async () => {
+    const service = createService();
+    const admin = { ...user, role: "admin" as const };
+    vi.mocked(service.resolveIdentity).mockResolvedValue(admin);
+    vi.mocked(service.adminList).mockResolvedValue([globalRoutes]);
+    const app = await buildApp({ service, environment: "development" });
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/admin/global-routes",
+      headers: { "x-dev-user-email": admin.email },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual([globalRoutes]);
+    expect(service.adminList).toHaveBeenCalledWith(admin, "global-routes");
+    await app.close();
+  });
+
+  it("routes the update through the admin action handler", async () => {
+    const service = createService();
+    const admin = { ...user, role: "admin" as const };
+    vi.mocked(service.resolveIdentity).mockResolvedValue(admin);
+    vi.mocked(service.adminAction).mockResolvedValue(globalRoutes);
+    const app = await buildApp({ service, environment: "development" });
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/admin/global-routes/global/update",
+      headers: { "x-dev-user-email": admin.email },
+      payload: globalRoutes,
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(service.adminAction).toHaveBeenCalledWith(
+      admin,
+      "global-routes",
+      "global",
+      "update",
+      globalRoutes,
+    );
+    await app.close();
+  });
+
+  it("keeps both global route endpoints away from an employee", async () => {
+    const service = createService();
+    const app = await buildApp({ service, environment: "development" });
+
+    for (const request of [
+      { method: "GET" as const, url: "/api/admin/global-routes" },
+      {
+        method: "POST" as const,
+        url: "/api/admin/global-routes/global/update",
+        payload: globalRoutes,
+      },
+    ]) {
+      const response = await app.inject({
+        ...request,
+        headers: { "x-dev-user-email": user.email },
+      });
+      expect(response.statusCode).toBe(403);
+    }
+    expect(service.adminList).not.toHaveBeenCalled();
+    expect(service.adminAction).not.toHaveBeenCalled();
+    await app.close();
+  });
+});

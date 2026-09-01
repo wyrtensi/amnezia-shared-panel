@@ -134,6 +134,7 @@ via `CONTROL_API_URL` plus one of, in priority order:
 | Command | Purpose |
 | --- | --- |
 | `overview` / `users` / `keys` / `nodes` / `audit [--limit=N]` / `policy` | State snapshots |
+| `global-routes` | Admin-wide route additions / exclusions per split-tunnel profile |
 | `quota [--all]` | Key-limit requests (pending by default; `--all` = every state), with ids, `current → requested`, and date |
 | `version` | Panel version + commit of the running control-api |
 | `traffic [--days=N]` | Aggregate traffic series across all users (JSON) |
@@ -144,12 +145,12 @@ via `CONTROL_API_URL` plus one of, in priority order:
 | --- | --- |
 | `user-create <email> [name] [--admin]` | Create a user or admin |
 | `user-role <id\|email> <admin\|user>` | Promote / demote (the last admin is protected) |
-| `user-limit <id\|email> <n\|default>` | Set the key-limit override (`default` clears it) |
+| `user-limit <id\|email> <n\|default> [--node-limits=<uuid>:<n>,…\|none] [--allowed-nodes=all\|none\|uuid,…]` | Set the user's key quota. The positional value is the flat per-node limit (`default` clears the override). `--node-limits` **replaces** the per-node limits (`none`/empty clears them; `0` means no keys on that node); `--allowed-nodes` sets node availability (`all` clears the per-user override so the global list applies, `none` allows no node). An omitted flag leaves that part unchanged, and `--allowed-nodes` merges into the per-user policy override instead of replacing it |
 | `user-disable <id\|email>` | Offboard: disable the user and revoke their keys |
 | `user-enable <id\|email>` | Reinstate a disabled user |
-| `user-nodes <id\|email> <all\|none\|uuid,…>` | Per-user node availability — `all` = every node, overriding the global allowed-node list (this is how an admin sees every node while regular users are limited) |
+| `user-nodes <id\|email> <all\|none\|uuid,…>` | Per-user node availability — `all` = every node, overriding the global allowed-node list (this is how an admin sees every node while regular users are limited). It **replaces** the whole per-user policy override; use `user-limit --allowed-nodes=` to change availability alone |
 | `user-routes <id\|email> [--wl-domains=] [--wl-cidrs=] [--bl-domains=] [--bl-cidrs=]` | Replace a user's custom routes (whitelist/blacklist domains + CIDRs) |
-| `user-create-key <id\|email> --node=<uuid> [--device=] [--protocol=awg3] [--route=full_tunnel]` | Provision a key on behalf of a user |
+| `user-create-key <id\|email> --node=<uuid> [--device=] [--protocol=awg3] [--route=full_tunnel] [--name-server=] [--name-label=] [--name-number=]` | Provision a key on behalf of a user. The `--name-*` flags (`true`/`false`) choose which parts the VPN client shows as the connection name — default server + device label, no number |
 | `quota-approve <req-id> [note]` | Approve a quota request (applies the new limit) |
 | `quota-reject <req-id> [note]` | Reject a quota request |
 
@@ -163,6 +164,7 @@ via `CONTROL_API_URL` plus one of, in priority order:
 | `node-remove <id>` | Delete a node |
 | `node-reconcile <id>` | Force a node re-sync |
 | `policy-set --<field>=<value> …` | Set portal-policy fields (e.g. `--defaultKeyLimit=10`) |
+| `global-routes-set --profile=ru_whitelist\|ru_blacklist [--add-domains=] [--add-cidrs=] [--exclude-domains=] [--exclude-cidrs=]` | Admin-wide route overrides for one split-tunnel profile. Each list given **replaces** that list; omitted lists stay as they were |
 | `cf-config --account= --app= --policy=` | Set Cloudflare Access IDs |
 | `cf-token <token>` | Store the Cloudflare API token (encrypted at rest) |
 | `panel-update [--status]` | Trigger the in-panel update (backup → pull → migrate → restart), or show its status |
@@ -184,6 +186,28 @@ docker exec "$CID" node apps/cli/dist/main.js cf-token <cf-api-token>
 Dev example: `CONTROL_API_URL=http://127.0.0.1:3001 PANEL_ADMIN_EMAIL=admin@example.com
 node apps/cli/dist/main.js overview`. Typical flow to grant more keys:
 `… quota` (copy the request id) → `… quota-approve <req-id>`.
+
+#### Global route overrides
+
+`global-routes` / `global-routes-set` edit an admin-wide layer applied to every
+split-tunnel export, on top of the profile's active feed:
+
+1. the active feed payload;
+2. **minus** the admin exclusions — CIDRs match exactly, a domain also removes
+   every subdomain of it (`example.com` drops `a.b.example.com`);
+3. **plus** the admin additions;
+4. **plus** the owner's own custom routes — applied last on purpose, so a user
+   who lists an excluded entry in `user-routes` opts back into it.
+
+```sh
+amnezia-panel global-routes
+amnezia-panel global-routes-set --profile=ru_blacklist \
+  --exclude-domains=example.com,ads.example.net --add-cidrs=203.0.113.0/24
+```
+
+Entries are validated exactly like per-user custom routes (bare IPs normalized
+to host routes, domains lowercased, no wildcards), with a 2000-entry cap per
+list. The audit log records only the resulting counts, never the entries.
 
 ### Direct-login (server-side Google) operator notes
 

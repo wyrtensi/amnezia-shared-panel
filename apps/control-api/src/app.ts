@@ -266,6 +266,7 @@ export const buildApp = async ({
     "rules",
     "audit",
     "portal-policy",
+    "global-routes",
   ]) {
     app.get(`/api/admin/${resource}`, async (request) =>
       service.adminList(adminFor(request), resource),

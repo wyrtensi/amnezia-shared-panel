@@ -155,8 +155,9 @@ export function EmployeeDashboard({
 
   // The limit is per node: quota is shown and enforced per available node.
   const keyLimit = me?.keyLimit ?? 5;
-  const usedByNode = React.useMemo(
-    () => new Map((me?.perNode ?? []).map((entry) => [entry.nodeId, entry.used])),
+  // A node may carry its own limit; nodes without one use the flat `keyLimit`.
+  const quotaByNode = React.useMemo(
+    () => new Map((me?.perNode ?? []).map((entry) => [entry.nodeId, entry])),
     [me],
   );
   const trafficByNode = React.useMemo(
@@ -167,14 +168,15 @@ export function EmployeeDashboard({
     () =>
       nodes.map((node) => ({
         node,
-        used: usedByNode.get(node.id) ?? 0,
+        used: quotaByNode.get(node.id)?.used ?? 0,
+        limit: quotaByNode.get(node.id)?.limit ?? keyLimit,
         traffic: trafficByNode.get(node.id),
       })),
-    [nodes, usedByNode, trafficByNode],
+    [nodes, quotaByNode, keyLimit, trafficByNode],
   );
   const atLimit =
     nodeQuota.length === 0 ||
-    nodeQuota.every((entry) => entry.used >= keyLimit);
+    nodeQuota.every((entry) => entry.used >= entry.limit);
   const canCreate = Boolean(me?.policy.allowKeyCreation) && !atLimit;
 
   const createKey = async (payload: CreateKeyPayload) => {
@@ -186,6 +188,7 @@ export function EmployeeDashboard({
         deviceType: payload.deviceType,
         deviceLabel: payload.deviceLabel || undefined,
         routeProfile: payload.routeProfile,
+        nameDisplay: payload.nameDisplay,
       }),
     });
     toast.success(t("emp.keyCreated"));
@@ -287,7 +290,7 @@ export function EmployeeDashboard({
             </div>
             {nodeQuota.length > 0 ? (
               <div className="space-y-2.5 border-t pt-3">
-                {nodeQuota.map(({ node, used, traffic }) => (
+                {nodeQuota.map(({ node, used, limit, traffic }) => (
                   <div
                     key={node.id}
                     className="flex flex-wrap items-start justify-between gap-2"
@@ -306,9 +309,9 @@ export function EmployeeDashboard({
                     </div>
                     <div className="flex shrink-0 items-center gap-2.5">
                       <span className="tabular-nums text-xs text-muted-foreground">
-                        {used}/{keyLimit}
+                        {used}/{limit}
                       </span>
-                      <QuotaCells used={used} limit={keyLimit} />
+                      <QuotaCells used={used} limit={limit} />
                     </div>
                   </div>
                 ))}

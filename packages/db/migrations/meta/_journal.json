@@ -64,6 +64,20 @@
       "when": 1788153792720,
       "tag": "0008_condemned_imperial_guard",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1788256286631,
+      "tag": "0009_volatile_grey_gargoyle",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1788257418536,
+      "tag": "0010_previous_mariko_yashida",
+      "breakpoints": true
     }
   ]
 }

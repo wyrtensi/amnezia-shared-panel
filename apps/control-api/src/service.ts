@@ -4,6 +4,7 @@ import type {
   CreateKeyRequest,
   CustomRoutes,
   DeviceType,
+  KeyNameDisplay,
   KeyState,
   ProtocolKind,
   QuotaRequest,
@@ -38,6 +39,9 @@ export type KeyView = {
   deviceType: DeviceType;
   deviceLabel?: string | null;
   keyNumber?: number | null;
+  // Which parts the client-visible connection name is composed of. Feed it to
+  // `composeKeyDisplayName` together with the node's public name.
+  nameDisplay: KeyNameDisplay;
   routeProfile: RouteProfile;
   rulesOutdated?: boolean;
   createdAt: string;

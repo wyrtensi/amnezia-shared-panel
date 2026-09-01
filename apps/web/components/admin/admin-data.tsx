@@ -4,7 +4,20 @@ import * as React from "react";
 import { toast } from "sonner";
 import { apiRequest } from "@/lib/api";
 import { useT } from "@/lib/i18n/provider";
+import type { GlobalRoutes } from "@amnezia/contracts";
 import type { ProtocolKind, TrafficPair } from "@/lib/types";
+
+/** Fresh empty payload — a factory so no two callers share the same arrays. */
+export const newGlobalRoutes = (): GlobalRoutes => ({
+  ru_whitelist: {
+    add: { cidrs: [], domains: [] },
+    exclude: { cidrs: [], domains: [] },
+  },
+  ru_blacklist: {
+    add: { cidrs: [], domains: [] },
+    exclude: { cidrs: [], domains: [] },
+  },
+});
 
 export type Overview = {
   pendingQuotaRequests: number;
@@ -32,6 +45,8 @@ export type AdminUser = {
   role: string;
   status: string;
   keyLimitOverride: number | null;
+  /** Per-node key limits (nodeId -> limit); null when the user has none. */
+  nodeKeyLimits: Record<string, number> | null;
   policyOverride: Record<string, unknown> | null;
   deactivationReason: string | null;
   createdAt: string;
@@ -75,6 +90,7 @@ export type AdminKey = {
   state: string;
   deviceType: string;
   deviceLabel: string;
+  keyNumber?: number | null;
   routeProfile: string;
   routeRuleVersionId: string | null;
   rulesOutdated?: boolean;
@@ -136,7 +152,7 @@ const DEFAULT_POLICY: GlobalPortalPolicy = {
   allowedProtocols: ["awg3"],
   allowedNodeIds: null,
   allowRouteProfileSelection: true,
-  allowCustomRoutes: false,
+  allowCustomRoutes: true,
   allowConfigRedownload: true,
   allowQrDownload: true,
   allowConfDownload: true,
@@ -161,6 +177,7 @@ export type AdminData = {
   rules: RuleVersion[];
   audit: AuditEvent[];
   policy: GlobalPortalPolicy;
+  globalRoutes: GlobalRoutes;
   loading: boolean;
   reload: () => Promise<void>;
   action: (
@@ -183,6 +200,8 @@ export function AdminDataProvider({ children }: { children: React.ReactNode }) {
   const [rules, setRules] = React.useState<RuleVersion[]>([]);
   const [audit, setAudit] = React.useState<AuditEvent[]>([]);
   const [policy, setPolicy] = React.useState<GlobalPortalPolicy>(DEFAULT_POLICY);
+  const [globalRoutes, setGlobalRoutes] =
+    React.useState<GlobalRoutes>(newGlobalRoutes);
   const [loading, setLoading] = React.useState(true);
 
   // Keep the latest translator in a ref so the memoized callbacks below do not
@@ -205,6 +224,7 @@ export function AdminDataProvider({ children }: { children: React.ReactNode }) {
         ruleResult,
         auditResult,
         policyResult,
+        globalRouteResult,
       ] = await Promise.all([
         apiRequest<Overview>("/api/admin/overview"),
         apiRequest<AdminUser[]>("/api/admin/users"),
@@ -214,6 +234,7 @@ export function AdminDataProvider({ children }: { children: React.ReactNode }) {
         apiRequest<RuleVersion[]>("/api/admin/rules"),
         apiRequest<AuditEvent[]>("/api/admin/audit"),
         apiRequest<GlobalPortalPolicy[]>("/api/admin/portal-policy"),
+        apiRequest<GlobalRoutes[]>("/api/admin/global-routes"),
       ]);
       setOverview(overviewResult);
       setUsers(userResult);
@@ -223,6 +244,7 @@ export function AdminDataProvider({ children }: { children: React.ReactNode }) {
       setRules(ruleResult);
       setAudit(auditResult);
       setPolicy(policyResult?.[0] ?? DEFAULT_POLICY);
+      setGlobalRoutes(globalRouteResult?.[0] ?? newGlobalRoutes());
     } catch (cause) {
       toast.error(
         cause instanceof Error ? cause.message : tRef.current("common.loadFailed"),
@@ -268,12 +290,26 @@ export function AdminDataProvider({ children }: { children: React.ReactNode }) {
       rules,
       audit,
       policy,
+      globalRoutes,
       loading,
       reload,
       action,
       request: apiRequest,
     }),
-    [overview, users, requests, nodes, keys, rules, audit, policy, loading, reload, action],
+    [
+      overview,
+      users,
+      requests,
+      nodes,
+      keys,
+      rules,
+      audit,
+      policy,
+      globalRoutes,
+      loading,
+      reload,
+      action,
+    ],
   );
 
   return (

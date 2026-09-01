@@ -20,12 +20,12 @@ routing on an already-imported config, so a rules change flags the key as
 - The worker fetcher **activates fetched versions by default**. To hold a
   profile's auto-fetched versions in quarantine for review, set
   `RU_WHITELIST_POC_APPROVED=false` / `RU_BLACKLIST_POC_APPROVED=false`.
-- The admin "Load base list" seed activates a bundled starter set immediately
-  (manual operator action, already reviewed), independent of the fetcher gate.
+- There is no bundled starter list. Every rule version comes from a configured
+  feed, or from an explicit `POST /api/admin/rules/:id/import` payload.
 
 ## Checklist per profile
 
-1. Seed or fetch a rule version for the profile and activate it (admin → Маршрутизация).
+1. Fetch (or import) a rule version for the profile and activate it (admin → Маршрутизация).
 2. Confirm `GET /api/route-profiles` reports the profile `available: true`.
 3. Create a key with the profile against a real node and export the `vpn://` link.
 4. Import into the official AmneziaVPN client (Windows / Android / iOS, 5.0.1.5+).

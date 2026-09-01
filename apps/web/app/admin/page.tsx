@@ -5,9 +5,7 @@ import Link from "next/link";
 import {
   Activity,
   AlertTriangle,
-  ArrowDown,
   ArrowRight,
-  ArrowUp,
   ArrowUpDown,
   Check,
   KeyRound,
@@ -28,7 +26,7 @@ import {
 } from "@/components/ui/table";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
-import { formatBytes, formatDate } from "@/lib/format";
+import { formatDate } from "@/lib/format";
 import {
   INACTIVE_DAYS,
   formatLastSeen,
@@ -36,8 +34,8 @@ import {
   lastSeenFromKeys,
 } from "@/lib/activity";
 import { cn } from "@/lib/utils";
-import { TrafficCard } from "@/components/traffic-card";
-import { TrafficSplit } from "@/components/inline-traffic";
+import { TrafficSummary } from "@/components/traffic-summary";
+import { TrafficBytes, TrafficSplit } from "@/components/inline-traffic";
 import { useAdminData } from "@/components/admin/admin-data";
 import { PanelUpdateCard } from "@/components/admin/panel-update-card";
 import { useT } from "@/lib/i18n/provider";
@@ -132,16 +130,18 @@ export default function AdminOverviewPage() {
     },
     {
       label: t("ov.totalTraffic"),
-      value: overview
-        ? formatBytes(overview.totalTrafficBytes ?? "0", lang)
-        : "—",
+      value: overview ? (
+        <TrafficBytes bytes={overview.totalTrafficBytes ?? "0"} strong />
+      ) : (
+        "—"
+      ),
       sub: overview ? (
-        <span className="inline-flex items-center gap-1 tabular-nums">
-          <ArrowDown className="h-3 w-3 text-chart-2" />
-          {formatBytes(overview.totalReceivedBytes ?? "0", lang)}
-          <ArrowUp className="ml-0.5 h-3 w-3 text-chart-5" />
-          {formatBytes(overview.totalSentBytes ?? "0", lang)}
-        </span>
+        <TrafficSplit
+          pair={{
+            receivedBytes: overview.totalReceivedBytes ?? "0",
+            sentBytes: overview.totalSentBytes ?? "0",
+          }}
+        />
       ) : null,
       icon: ArrowUpDown,
       tone: "chart-5",
@@ -312,7 +312,10 @@ export default function AdminOverviewPage() {
         )}
       </div>
 
-      <TrafficCard endpoint="/api/admin/traffic" title={t("ov.trafficByDay")} />
+      <TrafficSummary
+        endpoint="/api/admin/traffic"
+        title={t("ov.trafficSummary")}
+      />
 
       <Card>
         <CardContent className="p-0">

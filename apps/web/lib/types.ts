@@ -34,7 +34,10 @@ export type Me = {
   role: "user" | "admin";
   keyLimit: number;
   keyCount: number;
-  perNode?: Array<{ nodeId: string; used: number }>;
+  // Per-node quota. `limit` is the effective limit on that node (per-node
+  // override, else the user's flat limit); it is absent only on older payloads,
+  // where `keyLimit` is the fallback.
+  perNode?: Array<{ nodeId: string; used: number; limit?: number }>;
   policy: PortalPolicy;
   customRoutes?: CustomRoutes;
 };

@@ -28,3 +28,34 @@ export const parseNodeSpec = (spec: string): string[] | null => {
   if (spec === "none") return [];
   return csvList(spec);
 };
+
+/**
+ * Parse a per-node key-limit spec for the per-user override:
+ *   ""/"none"/"clear" -> null            (drop every per-node limit)
+ *   "<id>:2,<id>:0"   -> { id: 2, id: 0 }
+ *
+ * Limits must be integers in 0..1000; 0 means "no keys on that node".
+ */
+export const parseNodeLimits = (
+  spec: string,
+): Record<string, number> | null => {
+  const trimmed = spec.trim();
+  if (trimmed === "" || trimmed === "none" || trimmed === "clear") return null;
+  const limits: Record<string, number> = {};
+  for (const entry of csvList(trimmed)) {
+    const separator = entry.lastIndexOf(":");
+    if (separator <= 0) {
+      throw new Error(`Invalid node limit "${entry}" — expected <nodeId>:<n>`);
+    }
+    const nodeId = entry.slice(0, separator).trim();
+    const raw = entry.slice(separator + 1).trim();
+    const limit = Number(raw);
+    if (!nodeId || raw === "" || !Number.isInteger(limit) || limit < 0 || limit > 1000) {
+      throw new Error(
+        `Invalid node limit "${entry}" — limit must be an integer 0..1000`,
+      );
+    }
+    limits[nodeId] = limit;
+  }
+  return limits;
+};

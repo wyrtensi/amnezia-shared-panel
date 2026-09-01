@@ -27,8 +27,14 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Checkbox } from "@/components/ui/checkbox";
 import { OptionCards, type CardOption } from "@/components/option-cards";
 import { Hint, FieldHint } from "@/components/ui/hint";
+import {
+  composeKeyDisplayName,
+  defaultKeyNameDisplay,
+  type KeyNameDisplay,
+} from "@amnezia/contracts";
 import { useT } from "@/lib/i18n/provider";
 import { suggestKeyName, type DeviceType } from "@/lib/suggest-key-name";
 import type {
@@ -77,12 +83,17 @@ const nodeSelectableProtocols = (
   return node ? [node.protocol] : ["awg3"];
 };
 
+// Order of the toggles in the "name shown in the client" row; also the order
+// composeKeyDisplayName joins the parts in.
+const NAME_DISPLAY_PARTS = ["server", "label", "number"] as const;
+
 export type CreateKeyPayload = {
   nodeId: string;
   deviceType: DeviceType;
   deviceLabel: string;
   protocol: ProtocolKind;
   routeProfile: RouteProfile;
+  nameDisplay: KeyNameDisplay;
 };
 
 export function CreateKeyWizard({
@@ -110,6 +121,9 @@ export function CreateKeyWizard({
   const [protocol, setProtocol] = React.useState<ProtocolKind>("awg3");
   const [routeProfile, setRouteProfile] =
     React.useState<RouteProfile>("full_tunnel");
+  const [nameDisplay, setNameDisplay] = React.useState<KeyNameDisplay>(() => ({
+    ...defaultKeyNameDisplay,
+  }));
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState("");
 
@@ -126,13 +140,48 @@ export function CreateKeyWizard({
       setNodeId(nodes[0]?.id ?? "");
       setProtocol(preferredProtocol(nodeSelectableProtocols(nodes[0])));
       setRouteProfile("full_tunnel");
+      setNameDisplay({ ...defaultKeyNameDisplay });
       setError("");
     } else if (!open) {
       wasOpen.current = false;
     }
   }, [open, nodes, existingNames, t]);
 
+  // Per-node quota. The key limit is per server and may differ per server, so a
+  // full server never blocks the others. `me.perNode` only lists servers the
+  // user holds keys on or that carry an explicit limit; anything else falls
+  // back to the flat `me.keyLimit`.
+  const quotaByNode = React.useMemo(() => {
+    const entries = new Map(
+      (me.perNode ?? []).map((entry) => [entry.nodeId, entry]),
+    );
+    return new Map(
+      nodes.map((node) => {
+        const entry = entries.get(node.id);
+        const used = entry?.used ?? 0;
+        const limit = entry?.limit ?? me.keyLimit;
+        return [node.id, { used, limit, full: used >= limit }];
+      }),
+    );
+  }, [me, nodes]);
+
+  // The server picker is only offered when the policy allows it; otherwise the
+  // control API picks a node with room itself and the choice below is ignored.
+  const canPickNode = me.policy.allowNodeSelection && nodes.length > 1;
+
+  // Never leave the form on a server with no room left: hop to the first one
+  // that still has some (a no-op while the selected server is not full).
+  React.useEffect(() => {
+    if (!open || !canPickNode || !quotaByNode.get(nodeId)?.full) return;
+    const free = nodes.find((node) => !quotaByNode.get(node.id)?.full);
+    if (free) setNodeId(free.id);
+  }, [open, canPickNode, nodeId, nodes, quotaByNode]);
+
   const selectedNode = nodes.find((node) => node.id === nodeId) ?? nodes[0];
+  const selectedFull =
+    canPickNode && selectedNode
+      ? (quotaByNode.get(selectedNode.id)?.full ?? false)
+      : false;
   const nodeProtocols: ProtocolKind[] = nodeSelectableProtocols(selectedNode);
 
   // Keep the selected protocol valid for the chosen node.
@@ -146,6 +195,16 @@ export function CreateKeyWizard({
     setDeviceType(next);
     if (!labelEdited) setDeviceLabel(suggestKeyName(next, existingNames, t));
   };
+
+  // Preview of the connection title the AmneziaVPN client will show, built with
+  // the same composer the control API uses. The number is an estimate — the real
+  // one is assigned when the key is provisioned.
+  const previewName = composeKeyDisplayName({
+    serverName: selectedNode?.name ?? "",
+    label: deviceLabel.trim(),
+    keyNumber: existingNames.length + 1,
+    display: nameDisplay,
+  });
 
   const deviceOptions: Array<CardOption<DeviceType>> = DEVICE_ORDER.map(
     (type) => ({
@@ -205,6 +264,7 @@ export function CreateKeyWizard({
         deviceLabel: deviceLabel.trim(),
         protocol,
         routeProfile,
+        nameDisplay,
       });
       onOpenChange(false);
     } catch (cause) {
@@ -251,21 +311,78 @@ export function CreateKeyWizard({
             />
           </div>
 
-          {me.policy.allowNodeSelection && nodes.length > 1 ? (
+          <div className="space-y-2">
+            <div className="flex items-center gap-1.5">
+              <Label>{t("wizard.nameDisplay")}</Label>
+              <Hint>{t("wizard.nameDisplayHint")}</Hint>
+            </div>
+            <div className="flex flex-wrap items-center gap-x-5 gap-y-2">
+              {NAME_DISPLAY_PARTS.map((part) => (
+                <div key={part} className="flex items-center gap-2">
+                  <Checkbox
+                    id={`key-name-${part}`}
+                    checked={nameDisplay[part]}
+                    onChange={(event) =>
+                      setNameDisplay((prev) => ({
+                        ...prev,
+                        [part]: event.target.checked,
+                      }))
+                    }
+                  />
+                  <Label
+                    htmlFor={`key-name-${part}`}
+                    className="cursor-pointer font-normal"
+                  >
+                    {t(`wizard.nameDisplay.${part}`)}
+                  </Label>
+                </div>
+              ))}
+            </div>
+            <FieldHint>
+              {t("wizard.nameDisplayPreview", { value: previewName })}
+            </FieldHint>
+          </div>
+
+          {canPickNode ? (
             <div className="space-y-2">
-              <Label>{t("wizard.server")}</Label>
+              <div className="flex items-center gap-1.5">
+                <Label>{t("wizard.server")}</Label>
+                <Hint>{t("wizard.serverQuotaHint")}</Hint>
+              </div>
               <Select value={nodeId} onValueChange={setNodeId}>
                 <SelectTrigger>
                   <SelectValue placeholder={t("wizard.serverPlaceholder")} />
                 </SelectTrigger>
                 <SelectContent>
-                  {nodes.map((node) => (
-                    <SelectItem key={node.id} value={node.id}>
-                      {node.name}
-                    </SelectItem>
-                  ))}
+                  {nodes.map((node) => {
+                    const quota = quotaByNode.get(node.id);
+                    return (
+                      <SelectItem
+                        key={node.id}
+                        value={node.id}
+                        disabled={quota?.full}
+                      >
+                        <span className="flex w-full items-center justify-between gap-3">
+                          <span className="truncate">{node.name}</span>
+                          {quota ? (
+                            <span className="shrink-0 tabular-nums text-xs text-muted-foreground">
+                              {t("wizard.serverQuota", {
+                                used: quota.used,
+                                limit: quota.limit,
+                              })}
+                            </span>
+                          ) : null}
+                        </span>
+                      </SelectItem>
+                    );
+                  })}
                 </SelectContent>
               </Select>
+              {selectedFull ? (
+                <FieldHint className="text-destructive">
+                  {t("wizard.serverFull")}
+                </FieldHint>
+              ) : null}
             </div>
           ) : null}
 
@@ -315,7 +432,7 @@ export function CreateKeyWizard({
             >
               {t("common.cancel")}
             </Button>
-            <Button type="submit" disabled={busy || !selectedNode}>
+            <Button type="submit" disabled={busy || !selectedNode || selectedFull}>
               {busy ? t("wizard.creating") : t("wizard.create")}
             </Button>
           </DialogFooter>

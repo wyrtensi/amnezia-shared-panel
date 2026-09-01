@@ -45,6 +45,7 @@ const ru = {
   "nav.nodes": "VPN-ноды",
   "nav.policy": "Политики",
   "nav.rules": "Маршрутизация",
+  "nav.globalRoutes": "Глобальные маршруты",
   "nav.audit": "Журнал",
   "nav.logout": "Выйти",
   "admin.myKeys": "Мои ключи",
@@ -140,6 +141,7 @@ const ru = {
   "routes.saveFailed": "Не удалось сохранить маршруты",
   "routes.badIp": "Некорректный IP или подсеть",
   "routes.badDomain": "Некорректный домен",
+  "routes.removeAria": "Удалить {value}",
   "routes.profileHint":
     "Выберите, к какому профилю добавить адреса. Профиль задаётся при создании ключа — ваши адреса применяются к ключам с этим профилем.",
   "routes.wl.desc":
@@ -197,8 +199,19 @@ const ru = {
   "wizard.desc": "Один ключ предназначен для одного устройства.",
   "wizard.deviceType": "Тип устройства",
   "wizard.namePlaceholder": "Например, рабочий ноутбук",
+  "wizard.nameDisplay": "Отображение ключа в клиенте",
+  "wizard.nameDisplayHint":
+    "Из чего собрать название подключения в приложении AmneziaVPN. Задаётся при создании ключа и позже не меняется.",
+  "wizard.nameDisplay.server": "Название сервера",
+  "wizard.nameDisplay.label": "Название ключа",
+  "wizard.nameDisplay.number": "Номер ключа",
+  "wizard.nameDisplayPreview": "В клиенте: {value}",
   "wizard.server": "Сервер",
   "wizard.serverPlaceholder": "Выберите сервер",
+  "wizard.serverQuota": "ключей {used}/{limit}",
+  "wizard.serverQuotaHint":
+    "Лимит ключей считается по каждому серверу отдельно. Сервер, где лимит уже выбран, выбрать нельзя.",
+  "wizard.serverFull": "На этом сервере лимит ключей уже исчерпан.",
   "wizard.protocol": "Протокол",
   "wizard.protocolHint":
     "AmneziaWG 3.1 маскирует заголовки и добавляет случайные трейлеры — сложнее обнаружить. 2.0 оставлен для старых клиентов.",
@@ -246,12 +259,15 @@ const ru = {
   "quota.sending": "Отправляем…",
   "quota.submit": "Отправить запрос",
 
-  // Traffic card
+  // Traffic
   "traffic.rangeToday": "Сегодня",
   "traffic.range7": "7 дней",
   "traffic.range30": "Месяц",
   "traffic.noData": "Нет данных о трафике за период",
+  "traffic.none": "Трафика ещё не было",
   "traffic.total": "Всего: ",
+  "traffic.received": "Принято",
+  "traffic.sent": "Отправлено",
 
   // Node select
   "nodeSelect.allNodes": "Доступны все ноды",
@@ -283,7 +299,7 @@ const ru = {
   "ov.byProtocol": "По протоколу",
   "ov.byRouting": "По маршрутизации",
   "ov.byStatus": "По статусу",
-  "ov.trafficByDay": "Трафик по дням",
+  "ov.trafficSummary": "Трафик за период",
   "ov.serversTitle": "Серверы",
   "ov.noServers": "Серверы ещё не добавлены",
   "ov.inactiveTitle": "Неактивны более {days} дней",
@@ -374,16 +390,29 @@ const ru = {
   "users.namePlaceholder": "Иван Петров",
   "users.role": "Роль",
   "users.roleHint": "Администратор видит эту панель и управляет всеми ключами.",
-  "users.limitTitle": "Лимит ключей на ноду",
-  "users.limitLabel": "Персональный лимит на ноду (пусто — по умолчанию)",
+  "users.limitTitle": "Серверы и лимиты ключей",
+  "users.limitDesc": "{email} — доступные серверы и лимит ключей на каждом",
+  "users.limitLabel": "Лимит по умолчанию на каждом сервере",
+  "users.limitLabelHint": "Пусто — глобальный лимит ({value}).",
+  "users.limitAllNodes": "Доступны все серверы",
+  "users.limitAllNodesHint":
+    "Выключите, чтобы выбрать серверы именно для этого пользователя. Включено — действует глобальный список.",
+  "users.limitGlobalNodes": "Глобально доступны: {nodes}",
+  "users.limitNoneWord": "нет серверов",
+  "users.limitPerNode": "Серверы",
+  "users.limitPerNodeHint":
+    "Галочка — сервер доступен пользователю. Число — лимит ключей на этом сервере; пусто — лимит по умолчанию.",
+  "users.limitPerNodeAria": "Лимит ключей на сервере {node}",
+  "users.limitColumnLimit": "Лимит",
+  "users.limitNoNodesWarning":
+    "Не выбран ни один сервер — пользователь не сможет создать ключ.",
   "users.policyTitle": "Индивидуальные политики",
   "users.policyDesc": "{email} — переопределяют глобальные настройки",
   "users.customProtocols": "Свой набор протоколов",
   "users.customProtocolsHint":
     "Иначе пользователь видит глобальный набор ({protocols}).",
-  "users.customNodes": "Свой набор нод",
-  "users.customNodesHint":
-    "Иначе пользователь видит глобально доступные ноды.",
+  "users.nodesMovedHint":
+    "Доступные серверы и лимиты по серверам настраиваются в «Серверы и лимиты ключей».",
   "users.savePolicies": "Сохранить политики",
   "users.keyForTitle": "Ключ для {email}",
   "users.keyForDesc": "Протокол выбирается автоматически: {protocol}",
@@ -575,8 +604,8 @@ const ru = {
   "rules.status.superseded": "Заменено",
   "rules.status.quarantined": "Карантин",
   "rules.title": "Правила маршрутизации (RoscomVPN)",
-  "rules.loading": "Загружаем…",
-  "rules.loadBase": "Загрузить базовый список",
+  "rules.autoUpdate":
+    "Списки обновляются автоматически каждые 6 часов из настроенных источников (RULE_FEEDS).",
   "rules.colProfile": "Профиль",
   "rules.colVersion": "Версия",
   "rules.colSubnets": "Подсети / Домены",
@@ -588,6 +617,21 @@ const ru = {
   "rules.viewTitle": "Просмотр и сравнение",
   "rules.activate": "Активировать",
   "rules.empty": "Версии правил пока не загружены.",
+
+  // Admin global routes
+  "groutes.title": "Глобальные маршруты",
+  "groutes.subtitle":
+    "Общие дополнения и исключения поверх списков RoscomVPN — применяются ко всем пользователям.",
+  "groutes.hint":
+    "Записи применяются при следующем экспорте конфигурации. Сначала убираются исключения, затем добавляются глобальные записи, и последними — собственные маршруты пользователя.",
+  "groutes.count": "Записей: {count}",
+  "groutes.add": "Добавить маршруты",
+  "groutes.addHint":
+    "Дополнительные подсети и домены, которые попадут в список выбранного профиля у каждого пользователя.",
+  "groutes.exclude": "Исключить из списков RoscomVPN",
+  "groutes.excludeHint":
+    "Подсети и домены, которые убираются из списка до его выдачи. Исключение домена убирает и все его поддомены. Если пользователь добавит ту же запись в свои маршруты, она вернётся — личные маршруты имеют приоритет.",
+  "groutes.save": "Сохранить маршруты",
 
   // Rule preview dialog
   "rpd.loadFailed": "Не удалось загрузить",
@@ -645,6 +689,7 @@ const en = {
   "nav.nodes": "VPN nodes",
   "nav.policy": "Policies",
   "nav.rules": "Routing",
+  "nav.globalRoutes": "Global routes",
   "nav.audit": "Audit log",
   "nav.logout": "Sign out",
   "admin.myKeys": "My keys",
@@ -740,6 +785,7 @@ const en = {
   "routes.saveFailed": "Could not save routes",
   "routes.badIp": "Invalid IP or subnet",
   "routes.badDomain": "Invalid domain",
+  "routes.removeAria": "Remove {value}",
   "routes.profileHint":
     "Choose which profile to add addresses to. A key's profile is set when it's created — your addresses apply to keys using that profile.",
   "routes.wl.desc":
@@ -798,8 +844,19 @@ const en = {
   "wizard.desc": "One key is meant for a single device.",
   "wizard.deviceType": "Device type",
   "wizard.namePlaceholder": "E.g., work laptop",
+  "wizard.nameDisplay": "Key name shown in the client",
+  "wizard.nameDisplayHint":
+    "What the connection title is built from inside the AmneziaVPN app. Set when the key is created and not changed later.",
+  "wizard.nameDisplay.server": "Server name",
+  "wizard.nameDisplay.label": "Key name",
+  "wizard.nameDisplay.number": "Key number",
+  "wizard.nameDisplayPreview": "In the client: {value}",
   "wizard.server": "Server",
   "wizard.serverPlaceholder": "Select a server",
+  "wizard.serverQuota": "keys {used}/{limit}",
+  "wizard.serverQuotaHint":
+    "The key limit is counted per server. A server that already reached its limit cannot be selected.",
+  "wizard.serverFull": "This server has already reached its key limit.",
   "wizard.protocol": "Protocol",
   "wizard.protocolHint":
     "AmneziaWG 3.1 masks headers and adds random trailers — harder to detect. 2.0 is kept for older clients.",
@@ -847,12 +904,15 @@ const en = {
   "quota.sending": "Sending…",
   "quota.submit": "Send request",
 
-  // Traffic card
+  // Traffic
   "traffic.rangeToday": "Today",
   "traffic.range7": "7 days",
   "traffic.range30": "Month",
   "traffic.noData": "No traffic data for this period",
+  "traffic.none": "No traffic yet",
   "traffic.total": "Total: ",
+  "traffic.received": "Received",
+  "traffic.sent": "Sent",
 
   // Node select
   "nodeSelect.allNodes": "All nodes available",
@@ -884,7 +944,7 @@ const en = {
   "ov.byProtocol": "By protocol",
   "ov.byRouting": "By routing",
   "ov.byStatus": "By status",
-  "ov.trafficByDay": "Traffic by day",
+  "ov.trafficSummary": "Traffic by period",
   "ov.serversTitle": "Servers",
   "ov.noServers": "No servers added yet",
   "ov.inactiveTitle": "Inactive for more than {days} days",
@@ -974,14 +1034,28 @@ const en = {
   "users.namePlaceholder": "John Smith",
   "users.role": "Role",
   "users.roleHint": "An administrator sees this panel and manages all keys.",
-  "users.limitTitle": "Key limit per node",
-  "users.limitLabel": "Personal per-node limit (empty — default)",
+  "users.limitTitle": "Servers and key limits",
+  "users.limitDesc": "{email} — available servers and the key limit on each",
+  "users.limitLabel": "Default limit on every server",
+  "users.limitLabelHint": "Empty — the global limit ({value}).",
+  "users.limitAllNodes": "All servers available",
+  "users.limitAllNodesHint":
+    "Turn off to pick servers for this user. While on, the global list applies.",
+  "users.limitGlobalNodes": "Globally available: {nodes}",
+  "users.limitNoneWord": "no servers",
+  "users.limitPerNode": "Servers",
+  "users.limitPerNodeHint":
+    "The checkbox makes a server available to the user. The number is the key limit on that server; empty means the default limit.",
+  "users.limitPerNodeAria": "Key limit on server {node}",
+  "users.limitColumnLimit": "Limit",
+  "users.limitNoNodesWarning":
+    "No server selected — the user cannot create a key.",
   "users.policyTitle": "Individual policies",
   "users.policyDesc": "{email} — overrides global settings",
   "users.customProtocols": "Custom protocol set",
   "users.customProtocolsHint": "Otherwise the user sees the global set ({protocols}).",
-  "users.customNodes": "Custom node set",
-  "users.customNodesHint": "Otherwise the user sees globally available nodes.",
+  "users.nodesMovedHint":
+    "Available servers and per-server limits are configured in “Servers and key limits”.",
   "users.savePolicies": "Save policies",
   "users.keyForTitle": "Key for {email}",
   "users.keyForDesc": "Protocol is selected automatically: {protocol}",
@@ -1168,8 +1242,8 @@ const en = {
   "rules.status.superseded": "Superseded",
   "rules.status.quarantined": "Quarantined",
   "rules.title": "Routing rules (RoscomVPN)",
-  "rules.loading": "Loading…",
-  "rules.loadBase": "Load base list",
+  "rules.autoUpdate":
+    "Lists refresh automatically every 6 hours from the configured sources (RULE_FEEDS).",
   "rules.colProfile": "Profile",
   "rules.colVersion": "Version",
   "rules.colSubnets": "Subnets / Domains",
@@ -1181,6 +1255,21 @@ const en = {
   "rules.viewTitle": "View and compare",
   "rules.activate": "Activate",
   "rules.empty": "No rule versions loaded yet.",
+
+  // Admin global routes
+  "groutes.title": "Global routes",
+  "groutes.subtitle":
+    "Shared additions and exclusions on top of the RoscomVPN lists — applied to every user.",
+  "groutes.hint":
+    "Entries take effect on the next config export. Exclusions are removed first, then the global additions are merged in, and the user's own routes are applied last.",
+  "groutes.count": "{count} total",
+  "groutes.add": "Add routes",
+  "groutes.addHint":
+    "Extra subnets and domains merged into the selected profile's list for every user.",
+  "groutes.exclude": "Exclude from the RoscomVPN lists",
+  "groutes.excludeHint":
+    "Subnets and domains stripped from the list before it is handed out. Excluding a domain also removes its subdomains. If a user adds the same entry to their own routes it comes back — personal routes win.",
+  "groutes.save": "Save routes",
 
   // Rule preview dialog
   "rpd.loadFailed": "Failed to load",

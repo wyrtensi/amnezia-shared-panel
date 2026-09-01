@@ -7,12 +7,25 @@ const BYTE_UNITS: Record<Lang, string[]> = {
 const LOCALES: Record<Lang, string> = { ru: "ru-RU", en: "en-US" };
 const NEVER: Record<Lang, string> = { ru: "Никогда", en: "Never" };
 
+/** A byte count split into its rounded amount and its unit suffix. */
+export type ByteParts = { value: string; unit: string };
+
+/** A traffic pair parsed into exact byte counters. */
+export type TrafficTotals = { received: bigint; sent: bigint; total: bigint };
+
+type RawTraffic = { receivedBytes: string; sentBytes: string };
+
 /**
- * Format a byte count (given as a numeric string or bigint) for display.
+ * Format a byte count (given as a numeric string or bigint) into a separate
+ * amount and unit, so the UI can style the number and its unit differently.
+ * Returns null when the input is not a finite number.
  */
-export function formatBytes(raw: string | bigint, lang: Lang = "ru"): string {
+export function formatBytesParts(
+  raw: string | bigint,
+  lang: Lang = "ru",
+): ByteParts | null {
   const value = Number(raw);
-  if (!Number.isFinite(value)) return "—";
+  if (!Number.isFinite(value)) return null;
   const units = BYTE_UNITS[lang];
   let amount = value;
   let unit = 0;
@@ -20,44 +33,50 @@ export function formatBytes(raw: string | bigint, lang: Lang = "ru"): string {
     amount /= 1024;
     unit += 1;
   }
-  return `${amount.toFixed(unit > 1 ? 1 : 0)} ${units[unit]}`;
+  return { value: amount.toFixed(unit > 1 ? 1 : 0), unit: units[unit] ?? "" };
 }
 
 /**
- * Sum a key's received and sent counters, returning a formatted total.
+ * Exact byte count with grouped digits, used for `title` tooltips where the
+ * rounded readout is not precise enough.
  */
-export function formatTraffic(
-  traffic?: { receivedBytes: string; sentBytes: string } | null,
+export function formatExactBytes(
+  raw: string | bigint,
   lang: Lang = "ru",
 ): string {
-  if (!traffic) return "—";
+  let exact: bigint;
   try {
-    return formatBytes(
-      (BigInt(traffic.receivedBytes) + BigInt(traffic.sentBytes)).toString(),
-      lang,
-    );
+    exact = typeof raw === "bigint" ? raw : BigInt(raw);
   } catch {
     return "—";
   }
+  return `${exact.toLocaleString(LOCALES[lang])} ${BYTE_UNITS[lang][0] ?? ""}`;
 }
 
 /**
- * Split a traffic pair into formatted received / sent strings (for the "↓ … ↑ …"
- * display). Returns null when the pair is missing or malformed.
+ * Parse a traffic pair into exact received / sent / total counters. Returns
+ * null when the pair is missing or malformed, so callers can tell "no data"
+ * apart from "no traffic yet" (`total === 0n`).
  */
-export function formatTrafficParts(
-  traffic?: { receivedBytes: string; sentBytes: string } | null,
-  lang: Lang = "ru",
-): { received: string; sent: string } | null {
+export function parseTraffic(
+  traffic?: RawTraffic | null,
+): TrafficTotals | null {
   if (!traffic) return null;
   try {
-    return {
-      received: formatBytes(traffic.receivedBytes, lang),
-      sent: formatBytes(traffic.sentBytes, lang),
-    };
+    const received = BigInt(traffic.receivedBytes);
+    const sent = BigInt(traffic.sentBytes);
+    return { received, sent, total: received + sent };
   } catch {
     return null;
   }
+}
+
+/**
+ * Sum a key's received and sent counters. Returns null when the pair is
+ * missing or malformed.
+ */
+export function trafficTotal(traffic?: RawTraffic | null): bigint | null {
+  return parseTraffic(traffic)?.total ?? null;
 }
 
 /**

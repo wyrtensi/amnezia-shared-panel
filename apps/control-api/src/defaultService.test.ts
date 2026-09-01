@@ -1,10 +1,10 @@
 import { randomBytes } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
-import { defaultPortalPolicy } from "@amnezia/contracts";
+import { defaultPortalPolicy, emptyGlobalRoutes } from "@amnezia/contracts";
 import { encryptSecret } from "@amnezia/db";
 import type { Actor } from "./service.js";
 import { createDefaultControlApiService } from "./defaultService.js";
-import { encodeVpnPayload } from "./vpnConfig.js";
+import { decodeVpnLink, encodeVpnPayload } from "./vpnConfig.js";
 import type { ControlRepository } from "./repository.js";
 
 const employee: Actor = {
@@ -43,11 +43,13 @@ const createRepository = (): ControlRepository => ({
       routeProfile: "full_tunnel" as const,
       keyNumber: 3,
       nodeDisplayName: "Frankfurt",
+      nameDisplay: { server: true, label: true, number: false },
       appliedRuleVersionId: null,
       activeRule: null,
       customRoutes: null,
     }),
   ),
+  getGlobalRoutes: vi.fn(() => Promise.resolve(emptyGlobalRoutes)),
   markKeyRuleVersion: vi.fn(() => Promise.resolve()),
   listRouteProfiles: vi.fn(() => Promise.resolve([])),
   getRuleVersion: vi.fn(() => Promise.resolve({ id: "rule-1" })),
@@ -78,6 +80,37 @@ const createRepository = (): ControlRepository => ({
   appendAudit: vi.fn(() => Promise.resolve()),
 });
 
+const splitTunnelLink = encodeVpnPayload({
+  dns1: "1.1.1.1",
+  dns2: "1.0.0.1",
+  containers: [
+    {
+      container: "amnezia-awg",
+      awg: {
+        last_config: JSON.stringify({
+          config:
+            "[Interface]\nPrivateKey = x\n\n[Peer]\nAllowedIPs = 0.0.0.0/0, ::/0\n",
+        }),
+      },
+    },
+  ],
+});
+
+const splitTunnelKey = () => ({
+  id: "key-1",
+  ownerId: employee.id,
+  deviceLabel: "phone",
+  encrypted: encryptSecret(splitTunnelLink, keyring, 1),
+  policy: defaultPortalPolicy,
+  routeProfile: "ru_blacklist" as const,
+  keyNumber: 3,
+  nodeDisplayName: "Frankfurt",
+  nameDisplay: { server: true, label: true, number: false },
+  appliedRuleVersionId: null,
+  activeRule: null,
+  customRoutes: null,
+});
+
 describe("default control service policy enforcement", () => {
   it("blocks QR retrieval when the effective policy disables it", async () => {
     const repository = createRepository();
@@ -90,6 +123,7 @@ describe("default control service policy enforcement", () => {
       routeProfile: "full_tunnel" as const,
       keyNumber: 3,
       nodeDisplayName: "Frankfurt",
+      nameDisplay: { server: true, label: true, number: false },
       appliedRuleVersionId: null,
       activeRule: null,
       customRoutes: null,
@@ -139,6 +173,7 @@ describe("default control service policy enforcement", () => {
       routeProfile: "full_tunnel" as const,
       keyNumber: 3,
       nodeDisplayName: "Frankfurt",
+      nameDisplay: { server: true, label: true, number: false },
       appliedRuleVersionId: null,
       activeRule: null,
       customRoutes: null,
@@ -176,6 +211,7 @@ describe("default control service policy enforcement", () => {
       routeProfile: "ru_blacklist",
       keyNumber: 3,
       nodeDisplayName: "Frankfurt",
+      nameDisplay: { server: true, label: true, number: false },
       appliedRuleVersionId: null,
       activeRule: {
         versionId: "v1",
@@ -221,6 +257,7 @@ describe("default control service policy enforcement", () => {
       routeProfile: "ru_blacklist",
       keyNumber: 3,
       nodeDisplayName: "Frankfurt",
+      nameDisplay: { server: true, label: true, number: false },
       appliedRuleVersionId: null,
       activeRule: {
         versionId: "v1",
@@ -242,5 +279,128 @@ describe("default control service policy enforcement", () => {
     expect(conf).toContain("203.0.113.0/24");
     expect(conf).toContain("10.0.0.0/8");
     expect(conf.match(/10\.0\.0\.0\/8/g)?.length).toBe(1);
+  });
+
+  it("applies the admin's global exclusions and additions to the export", async () => {
+    const repository = createRepository();
+    vi.mocked(repository.findKeyConfig).mockResolvedValue({
+      ...splitTunnelKey(),
+      activeRule: {
+        versionId: "v1",
+        version: "v1",
+        payload: {
+          cidrs: ["10.0.0.0/8", "192.0.2.0/24"],
+          domains: ["cdn.example.com"],
+        },
+      },
+    });
+    vi.mocked(repository.getGlobalRoutes).mockResolvedValue({
+      ru_whitelist: {
+        add: { cidrs: [], domains: [] },
+        exclude: { cidrs: [], domains: [] },
+      },
+      ru_blacklist: {
+        add: { cidrs: ["198.51.100.0/24"], domains: [] },
+        // Excluding the parent zone also drops cdn.example.com.
+        exclude: { cidrs: ["10.0.0.0/8"], domains: ["example.com"] },
+      },
+    });
+    const service = createDefaultControlApiService({ repository, keyring });
+
+    const conf = String(
+      (await service.getKeyConfig(employee, "key-1", "conf", false)).body,
+    );
+
+    expect(conf).not.toContain("10.0.0.0/8");
+    expect(conf).toContain("192.0.2.0/24");
+    expect(conf).toContain("198.51.100.0/24");
+    expect(conf).not.toContain("cdn.example.com");
+  });
+
+  it("lets the owner's custom routes override a global exclusion", async () => {
+    const repository = createRepository();
+    vi.mocked(repository.findKeyConfig).mockResolvedValue({
+      ...splitTunnelKey(),
+      activeRule: {
+        versionId: "v1",
+        version: "v1",
+        payload: { cidrs: ["10.0.0.0/8"], domains: [] },
+      },
+      customRoutes: {
+        ru_whitelist: { cidrs: [], domains: [] },
+        ru_blacklist: { cidrs: ["10.0.0.0/8"], domains: [] },
+      },
+    });
+    vi.mocked(repository.getGlobalRoutes).mockResolvedValue({
+      ru_whitelist: {
+        add: { cidrs: [], domains: [] },
+        exclude: { cidrs: [], domains: [] },
+      },
+      ru_blacklist: {
+        add: { cidrs: [], domains: [] },
+        exclude: { cidrs: ["10.0.0.0/8"], domains: [] },
+      },
+    });
+    const service = createDefaultControlApiService({ repository, keyring });
+
+    const conf = String(
+      (await service.getKeyConfig(employee, "key-1", "conf", false)).body,
+    );
+
+    expect(conf).toContain("10.0.0.0/8");
+  });
+
+  it("does not consult the global overrides for a full-tunnel key", async () => {
+    const repository = createRepository();
+    const service = createDefaultControlApiService({ repository, keyring });
+
+    await service.getKeyConfig(employee, "key-1", "vpn", false);
+
+    expect(repository.getGlobalRoutes).not.toHaveBeenCalled();
+  });
+});
+
+describe("client-visible connection name", () => {
+  const nameOf = async (
+    display: { server: boolean; label: boolean; number: boolean },
+  ): Promise<string | undefined> => {
+    const repository = createRepository();
+    vi.mocked(repository.findKeyConfig).mockResolvedValue({
+      id: "key-1",
+      ownerId: employee.id,
+      deviceLabel: "Main laptop",
+      encrypted: encryptSecret(
+        encodeVpnPayload({
+          containers: [
+            { awg: { last_config: JSON.stringify({ config: "[Interface]\n" }) } },
+          ],
+        }),
+        keyring,
+        1,
+      ),
+      policy: defaultPortalPolicy,
+      routeProfile: "full_tunnel" as const,
+      keyNumber: 3,
+      nodeDisplayName: "Frankfurt",
+      nameDisplay: display,
+      appliedRuleVersionId: null,
+      activeRule: null,
+      customRoutes: null,
+    });
+    const service = createDefaultControlApiService({ repository, keyring });
+    const result = await service.getKeyConfig(employee, "key-1", "vpn", false);
+    return decodeVpnLink(String(result.body)).description;
+  };
+
+  it("uses the key's own name parts", async () => {
+    await expect(
+      nameOf({ server: true, label: true, number: false }),
+    ).resolves.toBe("Frankfurt Main laptop");
+    await expect(
+      nameOf({ server: true, label: false, number: true }),
+    ).resolves.toBe("Frankfurt #3");
+    await expect(
+      nameOf({ server: false, label: true, number: true }),
+    ).resolves.toBe("Main laptop #3");
   });
 });

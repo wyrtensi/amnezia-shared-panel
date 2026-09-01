@@ -3,6 +3,8 @@ import type {
   CreateKeyRequest,
   CreateUserRequest,
   CustomRoutes,
+  GlobalRoutes,
+  KeyNameDisplay,
   KeyState,
   PortalPolicy,
   QuotaRequest,
@@ -23,10 +25,11 @@ export type StoredKeyConfig = {
   id: string;
   ownerId: string;
   deviceLabel: string | null;
-  // Per-owner key number and the node's user-facing name, used to label the
-  // server shown in the client as "<nodeDisplayName> #<keyNumber>".
+  // Per-owner key number and the node's user-facing name. Which of them end up
+  // in the client-visible connection name is decided by `nameDisplay`.
   keyNumber: number | null;
   nodeDisplayName: string;
+  nameDisplay: KeyNameDisplay;
   encrypted: EncryptedSecret;
   policy: PortalPolicy;
   routeProfile: RouteProfile;
@@ -68,6 +71,11 @@ export interface ControlRepository {
     request: CreateKeyRequest,
   ) => Promise<{ id: string; state: KeyState }>;
   findKeyConfig: (keyId: string) => Promise<StoredKeyConfig | null>;
+  /**
+   * Admin-wide route additions/exclusions applied to every split-tunnel export.
+   * Returns the empty set when no admin has configured any.
+   */
+  getGlobalRoutes: () => Promise<GlobalRoutes>;
   markKeyRuleVersion: (keyId: string, versionId: string) => Promise<void>;
   listRouteProfiles: () => Promise<RouteProfileAvailability[]>;
   getRuleVersion: (id: string) => Promise<unknown>;
