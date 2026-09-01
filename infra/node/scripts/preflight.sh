@@ -35,7 +35,12 @@ case "$api_key" in
   *'
 '*) fail "API key must be a single line" ;;
 esac
-LC_ALL=C grep -Eq '^[[:graph:]]{32,4096}$' "$SECRET_FILE" || \
+# Checked by deleting every acceptable byte rather than with a bounded-repetition
+# regex: `grep -E '^[[:graph:]]{32,4096}$'` expands that interval into an
+# automaton that costs ~280MB of RSS, which the OOM killer reaps on a small node
+# — and the killed grep then reports a valid key as malformed. Length is already
+# bounded above, and a trailing newline is tolerated the same way "$(cat)" is.
+[ -z "$(LC_ALL=C tr -d '[:graph:]' <"$SECRET_FILE")" ] || \
   fail "API key must contain only printable non-space ASCII characters"
 unset api_key
 
@@ -98,7 +103,15 @@ available_kb="$(df -Pk "$NODE_DIR" | awk 'NR==2 { print $4 }')"
 [ "$available_kb" -ge 3145728 ] || fail "at least 3 GiB of free disk is required"
 available_mem_kb="$(awk '/^MemAvailable:/ { print $2 }' /proc/meminfo)"
 [ -n "$available_mem_kb" ] || fail "cannot read available memory"
-[ "$available_mem_kb" -ge 358400 ] || fail "at least 350 MiB of available RAM is required"
+# The 350 MiB gate sizes a node at the 500-peer maximum, so scale it with the
+# capacity this node is actually configured for -- a 500-peer node still gets
+# exactly 350 MiB. The floor covers the resident stack, measured at ~117 MiB
+# (node-agent 109, awg3 4, awg2 4) plus room for the transient container the
+# clientsTable check below starts.
+required_mem_kb=$(( 358400 * server_max_peers / 500 ))
+[ "$required_mem_kb" -ge 196608 ] || required_mem_kb=196608
+[ "$available_mem_kb" -ge "$required_mem_kb" ] || \
+  fail "at least $(( required_mem_kb / 1024 )) MiB of available RAM is required for ${server_max_peers} peers"
 
 forbidden_found=0
 if grep -niE 'watchtower|(^|[^[:alnum:]_.-])latest([^[:alnum:]_.-]|$)' "$COMPOSE_FILE" >/dev/null; then
@@ -157,4 +170,4 @@ for state_dir in "$STATE_DIR" "$STATE_DIR_AWG3"; do
   fi
 done
 
-info "Preflight passed: linux/amd64, 3 GiB disk gate, 350 MiB RAM gate, immutable images, strict permissions, and fixed ports verified."
+info "Preflight passed: linux/amd64, 3 GiB disk gate, $(( required_mem_kb / 1024 )) MiB RAM gate for ${server_max_peers} peers, immutable images, strict permissions, and fixed ports verified."
