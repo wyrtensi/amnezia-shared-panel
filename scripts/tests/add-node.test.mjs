@@ -103,3 +103,56 @@ test("never prints the node-agent API key", async () => {
   assert.match(register, /key="\$\(ssh -n -i "\$NODE_KEY"/);
   assert.match(register, /--api-key="\$key"/);
 });
+
+const runShellFunction = async (name, ...args) => {
+  const start = script.indexOf(`${name}() {`);
+  assert.notEqual(start, -1, `${name} must be defined in add-node.sh`);
+  const end = script.indexOf("\n}\n", start);
+  assert.notEqual(end, -1, `${name} must be a top-level function`);
+  const body = script.slice(start, end + 3);
+  const { execFile } = await import("node:child_process");
+  const { promisify } = await import("node:util");
+  const { stdout } = await promisify(execFile)("bash", [
+    "-c",
+    `${body}\n${name} ${args.map((value) => `'${value}'`).join(" ")}`,
+  ]);
+  return stdout.trim();
+};
+
+test("derives node capacity from the host's memory, capped at 500 peers", async () => {
+  // The preflight RAM gate asks for 358400 KiB * peers / 500 of MemAvailable,
+  // so the recommendation inverts it: whatever the host can actually carry,
+  // never above the 500-peer ceiling the panel and the agent are validated for.
+  assert.equal(await runShellFunction("recommended_max_peers", 358400), "500");
+  assert.equal(await runShellFunction("recommended_max_peers", 4194304), "500");
+  assert.equal(await runShellFunction("recommended_max_peers", 196608), "274");
+  // Below the gate's 192 MiB floor no capacity passes, so the honest answer is
+  // "none" rather than a number the deploy would then refuse.
+  assert.equal(await runShellFunction("recommended_max_peers", 196607), "0");
+  assert.equal(await runShellFunction("recommended_max_peers", 100000), "0");
+});
+
+test("uses that recommendation only when no capacity was asked for", async () => {
+  // An explicit --max-peers or NODE_MAX_PEERS is an operator decision and must
+  // win over anything derived from a memory reading taken at one instant.
+  assert.match(script, /MAX_PEERS="\$\{MAX_PEERS:-\$\{NODE_MAX_PEERS:-\}\}"/);
+  const step = script.slice(script.indexOf("[1/7]"), script.indexOf("[2/7]"));
+  assert.match(step, /recommended_max_peers/);
+  assert.match(step, /MemAvailable/);
+});
+
+test("--help prints the header comment and nothing below it", async () => {
+  const { execFile } = await import("node:child_process");
+  const { promisify } = await import("node:util");
+  const { stdout } = await promisify(execFile)("bash", [
+    new URL("../add-node.sh", import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, "$1"),
+    "--help",
+  ]);
+
+  assert.match(stdout, /Usage:/);
+  assert.match(stdout, /--dry-run/);
+  // A line-numbered `sed` range drifts every time the header grows a line, and
+  // then --help starts printing the script's own code back at the operator.
+  assert.doesNotMatch(stdout, /^set -euo pipefail$/m);
+  assert.doesNotMatch(stdout, /REPO_ROOT=/);
+});

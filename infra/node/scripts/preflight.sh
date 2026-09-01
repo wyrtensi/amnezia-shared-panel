@@ -100,7 +100,10 @@ esac
 [ "$server_max_peers" -ge 1 ] || fail "SERVER_MAX_PEERS must be positive"
 
 available_kb="$(df -Pk "$NODE_DIR" | awk 'NR==2 { print $4 }')"
-[ "$available_kb" -ge 3145728 ] || fail "at least 3 GiB of free disk is required"
+# Free space is what actually binds on a small host, and it is nearly always
+# reclaimable rather than absent -- so say how, instead of only refusing.
+[ "$available_kb" -ge 3145728 ] || \
+  fail "at least 3 GiB of free disk is required (have $(( available_kb / 1024 )) MiB); reclaim with: docker image prune -a, journalctl --vacuum-size=100M"
 available_mem_kb="$(awk '/^MemAvailable:/ { print $2 }' /proc/meminfo)"
 [ -n "$available_mem_kb" ] || fail "cannot read available memory"
 # The 350 MiB gate sizes a node at the 500-peer maximum, so scale it with the
@@ -111,7 +114,7 @@ available_mem_kb="$(awk '/^MemAvailable:/ { print $2 }' /proc/meminfo)"
 required_mem_kb=$(( 358400 * server_max_peers / 500 ))
 [ "$required_mem_kb" -ge 196608 ] || required_mem_kb=196608
 [ "$available_mem_kb" -ge "$required_mem_kb" ] || \
-  fail "at least $(( required_mem_kb / 1024 )) MiB of available RAM is required for ${server_max_peers} peers"
+  fail "at least $(( required_mem_kb / 1024 )) MiB of available RAM is required for ${server_max_peers} peers (have $(( available_mem_kb / 1024 )) MiB); lower SERVER_MAX_PEERS in .env to size this node for the memory it has"
 
 forbidden_found=0
 if grep -niE 'watchtower|(^|[^[:alnum:]_.-])latest([^[:alnum:]_.-]|$)' "$COMPOSE_FILE" >/dev/null; then
