@@ -91,8 +91,11 @@ the host firewall. The control plane reaches it over an approved private transpo
 - **Docker Engine (Linux containers, amd64) + Docker Compose v2.** GNU `tar`,
   `sha256sum`, `stat`, `df`, `awk`, `sed`, `grep`, `ss`, `openssl` on `PATH`.
 - **Resource gates enforced by preflight:** at least **3 GiB free disk** on the
-  `infra/node` filesystem (`>= 3145728` KiB) and at least **350 MiB available RAM**
-  (`>= 358400` KiB `MemAvailable`).
+  `infra/node` filesystem (`>= 3145728` KiB) and **available RAM scaled to the
+  node's capacity** — `358400 KiB * SERVER_MAX_PEERS / 500`, never below 192 MiB.
+  A 500-peer node therefore still needs 350 MiB, while a 100-peer node needs the
+  192 MiB floor, which is what lets a 512 MB VPS host a small node (the resident
+  stack measures ~117 MiB: node-agent ~109, awg3 ~4, awg2 ~4).
 - **Firewall:** inbound UDP **51889** and **51890** approved at the provider and
   host; TCP **4001 closed** on every public interface.
 - **Fixed image pins** (immutable, `pull_policy: never` for the built image):
@@ -114,9 +117,23 @@ the host firewall. The control plane reaches it over an approved private transpo
 
 ## Part A — Install the VPN node
 
+> **There is a scripted path for all of Part A and Part B.**
+> `scripts/add-node.sh --host <ip> --name <panel name>` installs Docker, deploys
+> `infra/node`, ships the image, opens the tunnel, and registers the node, in one
+> idempotent command driven by `scripts/add-node.env`. See
+> [`NODE-CONNECT.md` §0](./NODE-CONNECT.md). Follow the manual steps below when a
+> rollout deviates from it, or to understand what the script is doing.
+
 Run everything from `infra/node` on the target Linux/amd64 host. The scripts are
 local-only: they never SSH anywhere and never mutate a remote host. Follow
 `infra/node/CHECKLIST.md` alongside this section.
+
+**Copying `infra/node` to the host:** preserve root ownership. The AWG
+entrypoints are mounted into the containers at mode 0700, so a copy that carries
+your workstation's uid (a plain `tar -c`, or `scp` as a non-root user) makes them
+unreadable and both AWG containers crash-loop with `can't open
+/usr/local/libexec/awg2-entrypoint.sh: Permission denied`. Use
+`tar --owner=0 --group=0 --numeric-owner`, or `chown -R root:root` after copying.
 
 > **Ask first:** per `AGENTS.md`, before registering a node ask the human operator
 > what the node should be **named in the panel** (e.g. "Hetzner DE").
@@ -153,7 +170,7 @@ Edit `infra/node/.env` (mode `0600`). Every value is validated by preflight:
 
 | Variable | How to set it | Preflight rule |
 | --- | --- | --- |
-| `NODE_AGENT_IMAGE` | Paste the `sha256:…` ID printed by `build-node-agent.sh`. | Must be `sha256:<64hex>` or `repo@sha256:<digest>`, present locally, linux/amd64. |
+| `NODE_AGENT_IMAGE` | Paste the `sha256:…` ID printed by `build-node-agent.sh` — or, when the image was shipped with `docker save`/`docker load`, the ID `docker load` printed **on this host** (newer engines re-encode the config, so it differs from the sending host's ID). | Must be `sha256:<64hex>` or `repo@sha256:<digest>`, present locally, linux/amd64. |
 | `DOCKER_GID` | `stat -c '%g' /var/run/docker.sock` | Must be an integer equal to the socket's GID. |
 | `DOCKER_API_VERSION` | Leave `1.44` unless your Engine differs. | — |
 | `SERVER_PUBLIC_HOST` | Real public IPv4 or DNS name for generated configs. | Cannot be empty / `0.0.0.0` / `127.0.0.1` / `localhost` / `vpn.example.com` / contain a scheme, path, port, or space. |
@@ -175,7 +192,7 @@ sh scripts/preflight.sh
 
 It verifies Linux/amd64, Docker/Compose, TUN + socket, immutable image references,
 strict file permissions, the fixed Compose configuration, port conflicts on
-51889/51890/4001, the 3 GiB disk and 350 MiB RAM gates, and JSON-validates any
+51889/51890/4001, the 3 GiB disk and capacity-scaled RAM gates, and JSON-validates any
 existing `clientsTable`. Retain its (non-secret) output with the change record.
 
 ### A.4 Deploy
@@ -191,6 +208,14 @@ backup **if** AWG2 state already exists, runs
 `amnezia-awg2`, `amnezia-awg3`, and `amnezia-node-agent` in turn. It fails closed —
 persistent state is never removed on failure — and asserts the agent is bound
 exclusively to `127.0.0.1:4001`.
+
+**Re-deploying a node that has served peers.** The node-agent rewrites
+`awg0.conf` and `clientsTable` with the default umask whenever a client changes,
+so they come back `0644` while preflight requires exactly `0600` — and the
+re-deploy stops with `state file permissions must be 0600`. Restore the mode
+(`find state -type f -exec chmod 600 {} +`) and re-run; never relax the gate.
+The 0700 `state/` directory still gates access, so this breaks the update path
+rather than exposing key material.
 
 **AWG3 container specifics.** The AWG images are minimal toolkits whose default
 command is `/bin/sh`; `scripts/awg2-entrypoint.sh` and `scripts/awg3-entrypoint.sh`
@@ -278,8 +303,25 @@ Preferred path — the admin UI (`apps/web/app/admin/nodes/page.tsx`): open
 The UI submits `POST /api/admin/nodes` with `protocol: "awg2"`, `enabled: true`,
 and `capabilities: { peerLifecycle: true, telemetry: true, backup: true }`.
 
-Scriptable equivalent (dev identity injected via the `x-dev-user-email` header;
-the email must be an admin — see Part C):
+Scriptable equivalent on a **production** panel — the bundled admin CLI, run
+inside the `control-api` container, which already holds `PANEL_IDENTITY_SECRET`
+and `BOOTSTRAP_ADMIN_EMAILS`. It mints the same `x-panel-identity` token the web
+issues after a Google login, so no Cloudflare service token is involved:
+
+```sh
+docker compose exec -T -e CONTROL_API_URL=http://127.0.0.1:3001 control-api \
+  node /app/apps/cli/dist/main.js node-add \
+  --name="<node display name>" \
+  --api-url=http://host.docker.internal:<tunnel port> \
+  --api-key="<contents of secrets/node-agent-api-key>" \
+  --protocol=awg3 --max-peers=500 --enabled-protocols=awg3
+```
+
+See [`apps/cli/README.md`](../apps/cli/README.md) for the identity chain and the
+rest of the node commands (`node-update`, `node-remove`, `node-reconcile`).
+
+Raw HTTP equivalent (dev identity injected via the `x-dev-user-email` header;
+works only against a dev API — see Part C):
 
 ```sh
 curl -s -X POST http://127.0.0.1:3001/api/admin/nodes \

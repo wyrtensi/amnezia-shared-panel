@@ -18,6 +18,50 @@ Fill in the placeholders with your real values — the repo hardcodes none of th
 
 ---
 
+## 0. The scripted path
+
+`scripts/add-node.sh` performs everything in this document — install Docker on
+the target host, deploy `infra/node`, ship the node-agent image, open the
+supervised tunnel on the panel host, register the node, reconcile it — in one
+idempotent command. Read the rest of this file to understand what it does, or
+when a rollout needs to deviate from it.
+
+```sh
+cp scripts/add-node.env.example scripts/add-node.env   # once per deployment
+$EDITOR scripts/add-node.env                           # panel address, SSH key, paths
+scripts/add-node.sh --host <NODE_HOST> --name <NODE_NAME> --dry-run
+scripts/add-node.sh --host <NODE_HOST> --name <NODE_NAME>
+```
+
+`scripts/add-node.env` is git-ignored and holds addresses, paths, and defaults —
+never key material. The node-agent API key is generated **on the node**, and the
+only place it is ever read is the panel host's own SSH hop during registration.
+
+Requirements it assumes: root SSH from your workstation to both hosts, a
+Linux/amd64 target with `/dev/net/tun`, and a panel host whose `control-api`
+container has `PANEL_IDENTITY_SECRET` (it drives the admin API through the
+bundled CLI, so no Cloudflare service token is needed).
+
+Re-running is safe: an existing node-agent API key and `SERVER_ID` are never
+regenerated, the tunnel keeps the port it already has, and an already-registered
+node is left alone.
+
+| Flag | Default | Effect |
+| --- | --- | --- |
+| `--host` | *(required)* | The node's SSH host. |
+| `--name` | *(required)* | Display name in the panel; also names the tunnel unit. |
+| `--region` | the name | `SERVER_REGION` on the node. |
+| `--public-host` | `--host` | Address written into generated client configs. |
+| `--max-peers` | `NODE_MAX_PEERS` | Capacity, 1..500. Also scales the preflight RAM gate. |
+| `--protocol` | `NODE_PROTOCOL` | Fallback protocol on the node record (`awg2`/`awg3`). |
+| `--enabled-protocols` | `NODE_ENABLED_PROTOCOLS` | Comma list offered to the key wizard. |
+| `--ssh-user` | `NODE_SSH_USER` | SSH user on the node. |
+| `--config` | `scripts/add-node.env` | Alternate config file. |
+| `--skip-register` | off | Deploy the node without registering it. |
+| `--dry-run` | off | Report what would change, change nothing. |
+
+---
+
 ## 1. What a node is
 
 | Field | Value |
@@ -77,7 +121,12 @@ compose file sets `pull_policy: never` and pins `NODE_AGENT_IMAGE` to an immutab
 docker save "$NODE_AGENT_IMAGE" | ssh -i ~/.ssh/<NODE_KEY> root@<NODE_HOST> 'docker load'
 ```
 
-Then set the same `NODE_AGENT_IMAGE=sha256:<id>` in that host's `infra/node/.env`.
+> **Take the image ID from the receiving host, not the sending one.** Newer
+> Docker engines re-encode the image config on load, so `docker load` prints a
+> *different* `sha256:` than the source host has. Set that host's
+> `NODE_AGENT_IMAGE` to the ID `docker load` reported **there** — pinning the
+> source ID makes preflight fail with the image "not present locally".
+
 See [`AGENT-HOST-SETUP.md`](./AGENT-HOST-SETUP.md) for building the image.
 
 ---
@@ -220,6 +269,12 @@ starts advancing and `lastError` clears, the link is live.
 | `401` from the node-agent | `apiKey` mismatch | Re-copy the key from `secrets/` into the node record. |
 | Key stuck in `provisioning` | Worker can't reach the agent, or outbox stalled | Confirm the tunnel, then check worker logs for the `vpn-key.provision` job. |
 | `host.docker.internal` unresolved | Tunnel bound to `127.0.0.1` only | Re-open with `-L 0.0.0.0:4001:...` (§2). |
+| AWG container restarts, logs `can't open /usr/local/libexec/awgN-entrypoint.sh: Permission denied` | `infra/node` was copied with a non-root uid (a plain `tar -c`, `scp` from a workstation), and the entrypoints are mode 0700 | `chown -R root:root <node dir>` on the node, then re-deploy. Copy with `tar --owner=0 --group=0 --numeric-owner` to avoid it. |
+| Preflight fails `state file permissions must be 0600` | The node-agent rewrites `awg0.conf` / `clientsTable` with the default umask after a client changes, so they come back 0644 | `find <node dir>/state -type f -exec chmod 600 {} +`, then re-deploy. Access is still gated by the 0700 `state/` directory, so this blocks updates rather than exposing anything. |
+| Preflight fails with the node-agent image "not present locally" | `NODE_AGENT_IMAGE` was pinned to the *sending* host's ID after a `docker save`/`load` | Re-read the ID from `docker load`'s output **on the node** (§2). |
+| Preflight rejects a valid API key: "must contain only printable non-space ASCII characters" | On a memory-constrained node, `grep -E '…{32,4096}'` was OOM-killed and its non-zero exit read as a malformed key (`dmesg`: `Out of memory: Killed process (grep)`) | Fixed in `preflight.sh` — the check no longer uses bounded repetition. Avoid `{n,m}` over a character class in any node-side shell check: it cost ~280 MiB of RSS versus ~2 MiB for the linear equivalent. |
+| Preflight fails the RAM gate on a re-deploy of a small node | `MemAvailable` is measured **while the stack is running**, so on a tiny host it hovers near the required floor | `docker compose down` first, or size the host up. Adding swap does not help — the gate reads `MemAvailable`. |
+| A rollout reports success but the node never appears | A step that pipes a script into a remote `bash` also ran `ssh` inside it; the inner `ssh` drained the rest of the heredoc, so the remaining commands never executed and `bash` exited 0 at EOF | Use `ssh -n` inside any block fed to a remote shell on stdin. Never treat exit 0 from registration as proof — confirm with `nodes`. |
 
 See [`AGENT-HOST-SETUP.md`](./AGENT-HOST-SETUP.md) for the node side (agent logs,
 `/server` shape, backup/rollback).
