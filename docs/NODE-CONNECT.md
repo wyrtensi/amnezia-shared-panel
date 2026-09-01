@@ -113,11 +113,40 @@ and add its public key to each node's `authorized_keys` (keep the private key in
 ssh-keygen -t ed25519 -f /root/.ssh/panel_nodes_key -N '' -C panel-to-nodes
 #   then append /root/.ssh/panel_nodes_key.pub to each node's ~/.ssh/authorized_keys
 
-# one persistent tunnel per node, as a systemd service (ExecStart):
-autossh -M 0 -N -o ServerAliveInterval=30 -o ExitOnForwardFailure=yes \
+# one persistent tunnel per node, as a systemd unit:
+cat >/etc/systemd/system/panel-tunnel-<NODE_NAME>.service <<'UNIT'
+[Unit]
+Description=Panel -> node tunnel (<NODE_NAME>)
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+# Without this, autossh gives up FOR GOOD if the first connection dies within
+# 30 s — which is exactly what happens when the node is down while the panel
+# host boots, leaving a tunnel that never comes back on its own.
+Environment=AUTOSSH_GATETIME=0
+ExecStart=/usr/bin/autossh -M 0 -N \
+  -o ServerAliveInterval=30 -o ServerAliveCountMax=3 \
+  -o ExitOnForwardFailure=yes \
+  -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/root/.ssh/known_hosts \
   -i /root/.ssh/panel_nodes_key \
   -L 172.17.0.1:4105:127.0.0.1:4001 root@<NODE_HOST>
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+systemctl daemon-reload
+systemctl enable --now panel-tunnel-<NODE_NAME>
 ```
+
+Two layers of recovery, and both matter: `autossh` respawns `ssh` when the link
+dies (`ServerAliveInterval` × `ServerAliveCountMax` ≈ 90 s to notice a black-holed
+connection), and `Restart=always` brings `autossh` itself back if it is killed.
+`enable` is what restores the tunnel after a reboot of the panel host; `After=`
+`docker.service` matters because the forward binds the `docker0` address, which
+does not exist until Docker is up.
 
 Register that node with **`apiBaseUrl: http://host.docker.internal:4105`**, and
 verify the panel reaches it:
@@ -129,6 +158,11 @@ docker compose -f infra/prod/compose.yaml exec control-api \
 
 - If a tunnel drops, `autossh` reconnects; meanwhile the panel shows that node
   unhealthy with `lastError: "fetch failed"` until the next successful poll.
+  VPN clients are unaffected — they reach the node's UDP port directly, and the
+  tunnel only carries the panel's management calls to the node-agent.
+- While the node is unreachable, `autossh` retries in a widening loop (a few
+  attempts in the first second, then seconds apart). That is expected; check it
+  with `journalctl -u panel-tunnel-<NODE_NAME> -f`.
 
 **B. Directly exposed agent (simpler URL, needs TLS).** If you publish the
 node-agent on the server behind TLS + the `x-api-key` (e.g. via a reverse proxy),

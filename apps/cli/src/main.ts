@@ -13,6 +13,7 @@
  *   CONTROL_API_URL (default http://127.0.0.1:3001)
  */
 
+import { buildRequestHeaders } from "./http.js";
 import { authHeaders } from "./identity.js";
 import {
   flagOf,
@@ -30,11 +31,10 @@ const API = (process.env.CONTROL_API_URL ?? "http://127.0.0.1:3001").replace(
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${API}${path}`, {
     ...init,
-    headers: {
-      "content-type": "application/json",
-      ...authHeaders(),
-      ...(init?.headers ?? {}),
-    },
+    headers: buildRequestHeaders(
+      init as { body?: BodyInit | null; headers?: Record<string, string> },
+      authHeaders(),
+    ),
   });
   const body = await res.text();
   if (!res.ok) {
