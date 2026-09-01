@@ -82,11 +82,21 @@ export default function AdminOverviewPage() {
   const pending = requests.filter((request) => request.status === "pending");
   const userEmail = (id: string) =>
     users.find((user) => user.id === id)?.email ?? id;
-  // The requester's current per-node key limit (override, else the global default),
-  // so the admin sees "have now → requested".
-  const currentLimit = (userId: string) =>
-    users.find((user) => user.id === userId)?.keyLimitOverride ??
-    policy.defaultKeyLimit;
+  // The limit the request builds on, resolved the way the backend resolves it:
+  // the per-node entry for a per-server request, then the user's flat override,
+  // then the global default. So the admin sees "have now → requested".
+  const currentLimit = (userId: string, nodeId: string | null) => {
+    const user = users.find((entry) => entry.id === userId);
+    const perNode = nodeId ? user?.nodeKeyLimits?.[nodeId] : undefined;
+    return perNode ?? user?.keyLimitOverride ?? policy.defaultKeyLimit;
+  };
+
+  // An every-server grant clears the user's per-node limits, so the admin has to
+  // see that before approving.
+  const perNodeLimitCount = (userId: string) =>
+    Object.keys(
+      users.find((entry) => entry.id === userId)?.nodeKeyLimits ?? {},
+    ).length;
 
   const [now] = React.useState(() => Date.now());
   const inactiveUsers = React.useMemo(() => {
@@ -392,6 +402,7 @@ export default function AdminOverviewPage() {
               <TableHeader>
                 <TableRow>
                   <TableHead>{t("ov.colEmployee")}</TableHead>
+                  <TableHead>{t("ov.colTarget")}</TableHead>
                   <TableHead>{t("ov.colLimitChange")}</TableHead>
                   <TableHead>{t("ov.colReason")}</TableHead>
                   <TableHead>{t("ov.colDate")}</TableHead>
@@ -399,60 +410,78 @@ export default function AdminOverviewPage() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {pending.map((request) => (
-                  <TableRow key={request.id}>
-                    <TableCell className="font-medium">
-                      {userEmail(request.userId)}
-                    </TableCell>
-                    <TableCell className="tabular-nums">
-                      <span className="text-muted-foreground">
-                        {currentLimit(request.userId)}
-                      </span>
-                      <span className="mx-1 text-muted-foreground">→</span>
-                      <span className="font-semibold">
-                        {request.requestedLimit}
-                      </span>
-                      <span className="ml-1 text-xs text-success">
-                        (+{request.requestedLimit - currentLimit(request.userId)})
-                      </span>
-                    </TableCell>
-                    <TableCell className="max-w-xs text-sm text-muted-foreground">
-                      {request.reason || "—"}
-                    </TableCell>
-                    <TableCell>{formatDate(request.createdAt, lang)}</TableCell>
-                    <TableCell>
-                      <div className="flex justify-end gap-1.5">
-                        <Button
-                          size="sm"
-                          variant="secondary"
-                          onClick={() =>
-                            void action(
-                              "quota-requests",
-                              request.id,
-                              "approve",
-                            )
-                          }
-                        >
-                          <Check className="h-4 w-4" /> {t("ov.approve")}
-                        </Button>
-                        <Button
-                          size="icon"
-                          variant="ghost"
-                          aria-label={t("ov.reject")}
-                          onClick={() =>
-                            void action("quota-requests", request.id, "reject")
-                          }
-                        >
-                          <X className="h-4 w-4" />
-                        </Button>
-                      </div>
-                    </TableCell>
-                  </TableRow>
-                ))}
+                {pending.map((request) => {
+                  const nodeId = request.nodeId ?? null;
+                  const limitNow = currentLimit(request.userId, nodeId);
+                  const replacedPerNode =
+                    nodeId === null ? perNodeLimitCount(request.userId) : 0;
+                  return (
+                    <TableRow key={request.id}>
+                      <TableCell className="font-medium">
+                        {userEmail(request.userId)}
+                      </TableCell>
+                      <TableCell className="text-sm">
+                        {nodeId ? (
+                          request.nodeName ?? nodeId
+                        ) : (
+                          <span>{t("ov.quotaTargetAll")}</span>
+                        )}
+                        {replacedPerNode > 0 ? (
+                          <p className="text-xs leading-snug text-muted-foreground">
+                            {t("ov.quotaReplacesPerNode", {
+                              count: replacedPerNode,
+                            })}
+                          </p>
+                        ) : null}
+                      </TableCell>
+                      <TableCell className="tabular-nums">
+                        <span className="text-muted-foreground">{limitNow}</span>
+                        <span className="mx-1 text-muted-foreground">→</span>
+                        <span className="font-semibold">
+                          {request.requestedLimit}
+                        </span>
+                        <span className="ml-1 text-xs text-success">
+                          (+{request.requestedLimit - limitNow})
+                        </span>
+                      </TableCell>
+                      <TableCell className="max-w-xs text-sm text-muted-foreground">
+                        {request.reason || "—"}
+                      </TableCell>
+                      <TableCell>{formatDate(request.createdAt, lang)}</TableCell>
+                      <TableCell>
+                        <div className="flex justify-end gap-1.5">
+                          <Button
+                            size="sm"
+                            variant="secondary"
+                            onClick={() =>
+                              void action(
+                                "quota-requests",
+                                request.id,
+                                "approve",
+                              )
+                            }
+                          >
+                            <Check className="h-4 w-4" /> {t("ov.approve")}
+                          </Button>
+                          <Button
+                            size="icon"
+                            variant="ghost"
+                            aria-label={t("ov.reject")}
+                            onClick={() =>
+                              void action("quota-requests", request.id, "reject")
+                            }
+                          >
+                            <X className="h-4 w-4" />
+                          </Button>
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  );
+                })}
                 {pending.length === 0 ? (
                   <TableRow>
                     <TableCell
-                      colSpan={5}
+                      colSpan={6}
                       className="py-8 text-center text-muted-foreground"
                     >
                       {t("ov.noRequests")}

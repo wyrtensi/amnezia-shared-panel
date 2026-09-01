@@ -11,6 +11,7 @@ import {
   nodeKeyLimitsSchema,
   portalPolicySchema,
   quotaRequestSchema,
+  rulesRefreshStatusSchema,
   setUserLimitRequestSchema,
   updateGlobalRoutesRequestSchema,
 } from "./index.js";
@@ -77,6 +78,30 @@ describe("quotaRequestSchema", () => {
     expect(
       quotaRequestSchema.safeParse({ requestedLimit: 8, reason: "more" }).success,
     ).toBe(true);
+  });
+
+  it("targets one server when a node id is given", () => {
+    const nodeId = "11111111-1111-4111-8111-111111111111";
+    expect(quotaRequestSchema.parse({ requestedLimit: 3, nodeId })).toEqual({
+      requestedLimit: 3,
+      nodeId,
+    });
+  });
+
+  it("treats an omitted or explicitly null node as every server", () => {
+    expect(quotaRequestSchema.parse({ requestedLimit: 3 }).nodeId).toBe(
+      undefined,
+    );
+    expect(
+      quotaRequestSchema.parse({ requestedLimit: 3, nodeId: null }).nodeId,
+    ).toBeNull();
+  });
+
+  it("rejects a node id that is not a uuid", () => {
+    expect(
+      quotaRequestSchema.safeParse({ requestedLimit: 3, nodeId: "node-a" })
+        .success,
+    ).toBe(false);
   });
 
   it("rejects an out-of-range limit or an over-long reason", () => {
@@ -400,5 +425,37 @@ describe("setUserLimitRequestSchema", () => {
       nodeKeyLimits: { [nodeId]: 2 },
     });
     expect(setUserLimitRequestSchema.safeParse({}).success).toBe(false);
+  });
+});
+
+describe("rulesRefreshStatusSchema", () => {
+  it("accepts the idle state and a completed run", () => {
+    expect(
+      rulesRefreshStatusSchema.parse({
+        status: "idle",
+        queuedAt: null,
+        completedAt: null,
+        lastError: null,
+      }).status,
+    ).toBe("idle");
+    expect(
+      rulesRefreshStatusSchema.safeParse({
+        status: "completed",
+        queuedAt: "2026-09-01T10:00:00.000Z",
+        completedAt: "2026-09-01T10:00:05.000Z",
+        lastError: null,
+      }).success,
+    ).toBe(true);
+  });
+
+  it("rejects a status the worker can never report", () => {
+    expect(
+      rulesRefreshStatusSchema.safeParse({
+        status: "running",
+        queuedAt: null,
+        completedAt: null,
+        lastError: null,
+      }).success,
+    ).toBe(false);
   });
 });

@@ -1,0 +1,2 @@
+ALTER TABLE "quota_requests" ADD COLUMN "node_id" uuid;--> statement-breakpoint
+ALTER TABLE "quota_requests" ADD CONSTRAINT "quota_requests_node_id_nodes_id_fk" FOREIGN KEY ("node_id") REFERENCES "public"."nodes"("id") ON DELETE set null ON UPDATE no action;

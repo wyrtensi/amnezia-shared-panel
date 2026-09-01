@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { RULES_REFRESH_JOB_TYPE } from "@amnezia/contracts";
 import type { NodeAgent } from "./nodeAgent.js";
 import type {
   OutboxJob,
@@ -13,6 +14,12 @@ const nodeJobPayloadSchema = z.object({ nodeId: z.uuid().or(z.string().min(1)) }
 export type JobProcessorOptions = {
   repository: WorkerRepository;
   createNodeAgent: (node: WorkerKeyContext["node"]) => NodeAgent;
+  /**
+   * The same fetchers the periodic timer runs, one per configured feed. An
+   * empty list means no feed is configured — a manual refresh then fails with
+   * a clear message instead of reporting a successful check that did nothing.
+   */
+  ruleFetchers?: Array<() => Promise<void>>;
   now?: () => Date;
 };
 
@@ -24,6 +31,7 @@ const findPeer = (
 export const createJobProcessor = ({
   repository,
   createNodeAgent,
+  ruleFetchers = [],
   now = () => new Date(),
 }: JobProcessorOptions) => {
   const reconcileOrphan = async (
@@ -38,6 +46,40 @@ export const createJobProcessor = ({
   };
 
   return async (job: OutboxJob): Promise<void> => {
+    if (job.type === RULES_REFRESH_JOB_TYPE) {
+      // Operator-triggered "check for updates": run exactly the fetchers the
+      // 6-hourly timer runs. A feed whose checksum still matches the active
+      // version is a no-op by design, so finishing without a new version is a
+      // success.
+      if (ruleFetchers.length === 0) {
+        // Configuration, not a transient fault: retrying cannot fix it, so the
+        // job is failed outright with a message the admin UI can show.
+        await repository.failJob(
+          job.id,
+          "No route-rule feeds are configured (set RULE_FEEDS on the worker)",
+        );
+        return;
+      }
+      // Every feed is attempted even if one fails, so a single broken source
+      // cannot hide an update on another; the job still reports the failures.
+      const results = await Promise.allSettled(
+        ruleFetchers.map((fetchRules) => fetchRules()),
+      );
+      const failures = results.flatMap((result) =>
+        result.status === "rejected"
+          ? [
+              result.reason instanceof Error
+                ? result.reason.message
+                : String(result.reason),
+            ]
+          : [],
+      );
+      if (failures.length > 0) {
+        throw new Error(`Rule feed refresh failed: ${failures.join("; ")}`);
+      }
+      await repository.completeJob(job.id);
+      return;
+    }
     if (job.type === "node.reconcile") {
       const { nodeId } = nodeJobPayloadSchema.parse(job.payload);
       const context = await repository.loadNodeReconcileContext(nodeId);

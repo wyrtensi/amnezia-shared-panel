@@ -9,6 +9,7 @@ import type {
   PortalPolicy,
   QuotaRequest,
   RouteProfile,
+  RulesRefreshStatus,
   UpdateNodeRequest,
 } from "@amnezia/contracts";
 import type { EncryptedSecret } from "@amnezia/db";
@@ -79,6 +80,8 @@ export interface ControlRepository {
   markKeyRuleVersion: (keyId: string, versionId: string) => Promise<void>;
   listRouteProfiles: () => Promise<RouteProfileAvailability[]>;
   getRuleVersion: (id: string) => Promise<unknown>;
+  /** State of the manual "check the route feeds now" job. */
+  getRulesRefreshStatus: () => Promise<RulesRefreshStatus>;
   diffRuleVersions: (baseId: string, nextId: string) => Promise<unknown>;
   enqueueOwnRevoke: (actor: Actor, keyId: string) => Promise<void>;
   enqueueOwnRotate: (actor: Actor, keyId: string) => Promise<void>;

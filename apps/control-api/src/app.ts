@@ -272,6 +272,11 @@ export const buildApp = async ({
       service.adminList(adminFor(request), resource),
     );
   }
+  // Declared alongside the parametric rule routes; a static segment always wins
+  // over `:id`, so "refresh" can never be parsed as a rule version id.
+  app.get("/api/admin/rules/refresh", async (request) =>
+    service.getRulesRefreshStatus(adminFor(request)),
+  );
   app.get("/api/admin/rules/:id", async (request) => {
     const { id } = idParamsSchema.parse(request.params);
     return service.getRuleVersion(adminFor(request), id);

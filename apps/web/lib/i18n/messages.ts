@@ -45,7 +45,6 @@ const ru = {
   "nav.nodes": "VPN-ноды",
   "nav.policy": "Политики",
   "nav.rules": "Маршрутизация",
-  "nav.globalRoutes": "Глобальные маршруты",
   "nav.audit": "Журнал",
   "nav.logout": "Выйти",
   "admin.myKeys": "Мои ключи",
@@ -251,7 +250,11 @@ const ru = {
   "quota.title": "Дополнительные ключи",
   "quota.desc": "Запросите увеличение лимита ключей у администратора.",
   "quota.additional": "Сколько ещё слотов под ключи запросить",
+  "quota.target": "Для какого сервера",
+  "quota.targetAll": "Все серверы",
+  "quota.currentLimit": "Сейчас доступно: {limit}",
   "quota.willBecome": "Станет {total} на каждом сервере",
+  "quota.willBecomeNode": "Станет {total} на сервере «{node}»",
   "quota.reason": "Обоснование",
   "quota.reasonPlaceholder":
     "Опишите, зачем нужны дополнительные ключи (не менее 10 символов).",
@@ -308,6 +311,10 @@ const ru = {
     "Все активные пользователи выходили на связь за последние {days} дней.",
   "ov.quotaReqTitle": "Запросы на увеличение лимита",
   "ov.colEmployee": "Сотрудник",
+  "ov.colTarget": "Сервер",
+  "ov.quotaTargetAll": "Все серверы",
+  "ov.quotaReplacesPerNode":
+    "Одобрение заменит персональные лимиты по серверам ({count}).",
   "ov.colNewLimit": "Новый лимит",
   "ov.colLimitChange": "Лимит: сейчас → запрос",
   "ov.colReason": "Обоснование",
@@ -617,6 +624,15 @@ const ru = {
   "rules.viewTitle": "Просмотр и сравнение",
   "rules.activate": "Активировать",
   "rules.empty": "Версии правил пока не загружены.",
+  "rules.refresh": "Проверить обновления",
+  "rules.refreshQueued": "В очереди…",
+  "rules.refreshRunning": "Проверяем…",
+  "rules.refreshUnchanged": "Проверено, изменений нет",
+  "rules.refreshUpdated": "Загружена новая версия списков",
+  "rules.refreshFailed": "Не удалось проверить обновления",
+  "rules.refreshFailedWith": "Не удалось проверить обновления: {error}",
+  "rules.refreshTimeout":
+    "Проверка идёт дольше обычного — обновите страницу чуть позже",
 
   // Admin global routes
   "groutes.title": "Глобальные маршруты",
@@ -625,6 +641,9 @@ const ru = {
   "groutes.hint":
     "Записи применяются при следующем экспорте конфигурации. Сначала убираются исключения, затем добавляются глобальные записи, и последними — собственные маршруты пользователя.",
   "groutes.count": "Записей: {count}",
+  "groutes.expand": "Открыть",
+  "groutes.collapse": "Свернуть",
+  "groutes.unsaved": "Есть несохранённые изменения",
   "groutes.add": "Добавить маршруты",
   "groutes.addHint":
     "Дополнительные подсети и домены, которые попадут в список выбранного профиля у каждого пользователя.",
@@ -689,7 +708,6 @@ const en = {
   "nav.nodes": "VPN nodes",
   "nav.policy": "Policies",
   "nav.rules": "Routing",
-  "nav.globalRoutes": "Global routes",
   "nav.audit": "Audit log",
   "nav.logout": "Sign out",
   "admin.myKeys": "My keys",
@@ -896,7 +914,11 @@ const en = {
   "quota.title": "Additional keys",
   "quota.desc": "Request a higher key limit from the administrator.",
   "quota.additional": "How many more key slots to request",
+  "quota.target": "Which server",
+  "quota.targetAll": "Every server",
+  "quota.currentLimit": "Available now: {limit}",
   "quota.willBecome": "Will become {total} on each server",
+  "quota.willBecomeNode": "Will become {total} on \"{node}\"",
   "quota.reason": "Reason",
   "quota.reasonPlaceholder":
     "Explain why you need additional keys (at least 10 characters).",
@@ -953,6 +975,10 @@ const en = {
     "All active users have connected within the last {days} days.",
   "ov.quotaReqTitle": "Quota increase requests",
   "ov.colEmployee": "Employee",
+  "ov.colTarget": "Server",
+  "ov.quotaTargetAll": "Every server",
+  "ov.quotaReplacesPerNode":
+    "Approving this replaces the user's per-server limits ({count}).",
   "ov.colNewLimit": "New limit",
   "ov.colLimitChange": "Limit: now → requested",
   "ov.colReason": "Reason",
@@ -1255,6 +1281,15 @@ const en = {
   "rules.viewTitle": "View and compare",
   "rules.activate": "Activate",
   "rules.empty": "No rule versions loaded yet.",
+  "rules.refresh": "Check for updates",
+  "rules.refreshQueued": "Queued…",
+  "rules.refreshRunning": "Checking…",
+  "rules.refreshUnchanged": "Checked, nothing new",
+  "rules.refreshUpdated": "A new list version was loaded",
+  "rules.refreshFailed": "The update check failed",
+  "rules.refreshFailedWith": "The update check failed: {error}",
+  "rules.refreshTimeout":
+    "The check is taking longer than usual — reload the page a bit later",
 
   // Admin global routes
   "groutes.title": "Global routes",
@@ -1263,6 +1298,9 @@ const en = {
   "groutes.hint":
     "Entries take effect on the next config export. Exclusions are removed first, then the global additions are merged in, and the user's own routes are applied last.",
   "groutes.count": "{count} total",
+  "groutes.expand": "Open",
+  "groutes.collapse": "Collapse",
+  "groutes.unsaved": "Unsaved changes",
   "groutes.add": "Add routes",
   "groutes.addHint":
     "Extra subnets and domains merged into the selected profile's list for every user.",

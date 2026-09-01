@@ -24,6 +24,7 @@ import type {
   ProtocolKind,
   QuotaRequest,
   RouteProfile,
+  RulesRefreshStatus,
   UpdateNodeRequest,
 } from "@amnezia/contracts";
 import {
@@ -36,6 +37,8 @@ import {
   PROTOCOL_KINDS,
   portalPolicyOverrideSchema,
   portalPolicySchema,
+  RULES_REFRESH_DEDUPLICATION_KEY,
+  RULES_REFRESH_JOB_TYPE,
   setUserLimitRequestSchema,
   updateGlobalRoutesRequestSchema,
 } from "@amnezia/contracts";
@@ -74,8 +77,11 @@ import {
   isNodeAvailable,
   nodeIdsWithExplicitLimit,
   resolveNodeKeyLimit,
+  resolveQuotaApproval,
   type NodeQuotaContext,
+  type QuotaApproval,
 } from "./nodeQuota.js";
+import { toRulesRefreshStatus } from "./rulesRefresh.js";
 
 const quotaStates: KeyState[] = ["provisioning", "active", "disabled"];
 
@@ -742,6 +748,24 @@ export class PostgresControlRepository implements ControlRepository {
         );
       }
 
+      // quota_requests.node_id is ON DELETE SET NULL, which would silently turn
+      // a pending per-server request into an every-server one. Cancel those in
+      // the same transaction instead, before the node row disappears.
+      const cancelled = await tx
+        .update(quotaRequests)
+        .set({
+          status: "cancelled",
+          reviewNote: "target server was removed",
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(quotaRequests.nodeId, nodeId),
+            eq(quotaRequests.status, "pending"),
+          ),
+        )
+        .returning({ id: quotaRequests.id });
+
       await tx.delete(nodes).where(eq(nodes.id, nodeId));
       await tx.insert(auditEvents).values({
         actorUserId: actor.id,
@@ -749,9 +773,12 @@ export class PostgresControlRepository implements ControlRepository {
         action: "node.deleted",
         targetType: "node",
         targetId: nodeId,
-        metadata: { name: existing.name },
+        metadata: {
+          name: existing.name,
+          cancelledQuotaRequests: cancelled.length,
+        },
       });
-      return { id: nodeId, deleted: true };
+      return { id: nodeId, deleted: true, cancelledQuotaRequests: cancelled.length };
     });
 
   listKeys = async (actor: Actor): Promise<KeyView[]> => {
@@ -1330,21 +1357,67 @@ export class PostgresControlRepository implements ControlRepository {
     });
   };
 
-  listQuotaRequests = async (actor: Actor): Promise<unknown[]> =>
-    this.options.db
-      .select()
+  listQuotaRequests = async (actor: Actor): Promise<unknown[]> => {
+    const rows = await this.options.db
+      .select({
+        request: quotaRequests,
+        nodeName: nodes.name,
+        nodePublicName: nodes.publicName,
+      })
       .from(quotaRequests)
+      .leftJoin(nodes, eq(nodes.id, quotaRequests.nodeId))
       .where(eq(quotaRequests.userId, actor.id))
       .orderBy(desc(quotaRequests.createdAt));
+    // Users see the node's public name only; the internal admin name never
+    // leaves this method. Null nodeName = the request targets every server.
+    return rows.map(({ request, nodeName, nodePublicName }) => ({
+      ...request,
+      nodeName: request.nodeId ? (nodePublicName ?? nodeName) : null,
+    }));
+  };
 
   createQuotaRequest = async (
     actor: Actor,
     request: QuotaRequest,
   ): Promise<{ id: string; status: string }> => {
+    const targetNodeId = request.nodeId ?? null;
     try {
       return await this.options.db.transaction(async (tx) => {
+        if (targetNodeId) {
+          // A per-server request may only name a server this user can actually
+          // use, checked inside the transaction so it cannot race a node being
+          // disabled or removed.
+          const [node] = await tx
+            .select({ id: nodes.id, enabled: nodes.enabled })
+            .from(nodes)
+            .where(eq(nodes.id, targetNodeId))
+            .limit(1);
+          if (!node || !node.enabled) {
+            throw new ApiError(400, "Node not found", "NODE_NOT_FOUND");
+          }
+          const [user] = await tx
+            .select({ policyOverride: users.policyOverride })
+            .from(users)
+            .where(eq(users.id, actor.id))
+            .limit(1);
+          const globalPolicy = (
+            await tx.select().from(portalPolicy).limit(1)
+          )[0];
+          const policy = resolvePortalPolicy(
+            toPolicy(globalPolicy),
+            user?.policyOverride,
+          );
+          if (!isNodeAvailable(policy.allowedNodeIds, targetNodeId)) {
+            throw new ApiError(
+              403,
+              "Selected node is not available",
+              "NODE_NOT_ALLOWED",
+            );
+          }
+        }
         // A new request supersedes the user's still-pending one (if any) — the
-        // latest ask replaces the stale one instead of being rejected.
+        // latest ask replaces the stale one instead of being rejected, whatever
+        // the old one targeted.
         await tx
           .update(quotaRequests)
           .set({
@@ -1363,6 +1436,7 @@ export class PostgresControlRepository implements ControlRepository {
           .values({
             userId: actor.id,
             requestedLimit: request.requestedLimit,
+            nodeId: targetNodeId,
             reason: request.reason ?? "",
           })
           .returning({ id: quotaRequests.id, status: quotaRequests.status });
@@ -1373,7 +1447,10 @@ export class PostgresControlRepository implements ControlRepository {
           action: "quota_request.created",
           targetType: "quota_request",
           targetId: created.id,
-          metadata: { requestedLimit: request.requestedLimit },
+          metadata: {
+            requestedLimit: request.requestedLimit,
+            nodeId: targetNodeId,
+          },
         });
         return created;
       });
@@ -1583,11 +1660,18 @@ export class PostgresControlRepository implements ControlRepository {
           ),
         }));
       }
-      case "quota-requests":
-        return this.options.db
-          .select()
+      case "quota-requests": {
+        const rows = await this.options.db
+          .select({ request: quotaRequests, nodeName: nodes.name })
           .from(quotaRequests)
+          .leftJoin(nodes, eq(nodes.id, quotaRequests.nodeId))
           .orderBy(desc(quotaRequests.createdAt));
+        // Admins see the internal node name. Null = every-server request.
+        return rows.map(({ request, nodeName }) => ({
+          ...request,
+          nodeName: request.nodeId ? nodeName : null,
+        }));
+      }
       case "rules":
         return this.options.db
           .select()
@@ -1963,10 +2047,31 @@ export class PostgresControlRepository implements ControlRepository {
         if (!request) {
           throw new ApiError(404, "Pending request not found", "NOT_FOUND");
         }
+        let approval: QuotaApproval | null = null;
         if (action === "approve") {
+          // The grant follows the request's own target and must actually hold:
+          // an every-server grant also clears the per-node entries that would
+          // otherwise shadow it. Node availability is never widened here.
+          const [owner] = await tx
+            .select({
+              keyLimitOverride: users.keyLimitOverride,
+              nodeKeyLimits: users.nodeKeyLimits,
+            })
+            .from(users)
+            .where(eq(users.id, request.userId))
+            .for("update");
+          if (!owner) throw new ApiError(404, "User not found", "USER_NOT_FOUND");
+          approval = resolveQuotaApproval(owner, {
+            requestedLimit: request.requestedLimit,
+            nodeId: request.nodeId,
+          });
           await tx
             .update(users)
-            .set({ keyLimitOverride: request.requestedLimit, updatedAt: new Date() })
+            .set({
+              keyLimitOverride: approval.keyLimitOverride,
+              nodeKeyLimits: approval.nodeKeyLimits,
+              updatedAt: new Date(),
+            })
             .where(eq(users.id, request.userId));
         }
         const [updated] = await tx
@@ -1986,7 +2091,14 @@ export class PostgresControlRepository implements ControlRepository {
           action: `admin.${resource}.${action}`,
           targetType: resource,
           targetId,
-          metadata: { requestedLimit: request.requestedLimit, status: updated?.status },
+          metadata: {
+            requestedLimit: request.requestedLimit,
+            nodeId: request.nodeId,
+            status: updated?.status,
+            ...(approval
+              ? { clearedNodeLimitCount: approval.clearedNodeLimitCount }
+              : {}),
+          },
         });
         return updated;
       });
@@ -2100,6 +2212,60 @@ export class PostgresControlRepository implements ControlRepository {
         });
         return activated;
       });
+    } else if (resource === "rules" && action === "refresh") {
+      // Control-api never fetches a feed itself: `RULE_FEEDS` and the
+      // fetch/validate/quarantine logic belong to the worker. This only
+      // enqueues the job the periodic timer already runs.
+      return this.options.db.transaction(async (tx) => {
+        const requestedAt = new Date();
+        const [armed] = await tx
+          .insert(jobOutbox)
+          .values({
+            type: RULES_REFRESH_JOB_TYPE,
+            deduplicationKey: RULES_REFRESH_DEDUPLICATION_KEY,
+            payload: { requestedAt: requestedAt.toISOString() },
+            availableAt: requestedAt,
+          })
+          // The deduplication key is UNIQUE and survives a completed run, so a
+          // second ask reuses that row. `setWhere` re-arms only a finished run:
+          // while one is pending or processing the click is a no-op and cannot
+          // queue a second fetch.
+          .onConflictDoUpdate({
+            target: jobOutbox.deduplicationKey,
+            set: {
+              status: "pending",
+              payload: { requestedAt: requestedAt.toISOString() },
+              availableAt: requestedAt,
+              attempts: 0,
+              lockedAt: null,
+              completedAt: null,
+              lastError: null,
+              updatedAt: requestedAt,
+            },
+            setWhere: inArray(jobOutbox.status, ["completed", "failed"]),
+          })
+          .returning();
+        const row =
+          armed ??
+          (
+            await tx
+              .select()
+              .from(jobOutbox)
+              .where(
+                eq(jobOutbox.deduplicationKey, RULES_REFRESH_DEDUPLICATION_KEY),
+              )
+              .limit(1)
+          )[0];
+        await tx.insert(auditEvents).values({
+          actorUserId: actor.id,
+          actorType: "user",
+          action: "admin.rules.refresh",
+          targetType: "rules",
+          targetId,
+          metadata: { alreadyRunning: !armed },
+        });
+        return toRulesRefreshStatus(row);
+      });
     } else if (resource === "rules" && action === "import") {
       // Rule lists come from the worker's feeds or from an explicit operator
       // upload. There is deliberately no bundled starter list to fall back on,
@@ -2170,6 +2336,15 @@ export class PostgresControlRepository implements ControlRepository {
     } else {
       throw new ApiError(404, "Admin action not found", "NOT_FOUND");
     }
+  };
+
+  getRulesRefreshStatus = async (): Promise<RulesRefreshStatus> => {
+    const [row] = await this.options.db
+      .select()
+      .from(jobOutbox)
+      .where(eq(jobOutbox.deduplicationKey, RULES_REFRESH_DEDUPLICATION_KEY))
+      .limit(1);
+    return toRulesRefreshStatus(row);
   };
 
   appendAudit = async (event: AuditInput): Promise<void> => {

@@ -43,3 +43,56 @@ export const isNodeAvailable = (
 export const nodeIdsWithExplicitLimit = (
   nodeKeyLimits: NodeKeyLimits | null | undefined,
 ): string[] => Object.keys(nodeKeyLimits ?? {});
+
+/** A pending quota request, reduced to what approving it needs. */
+export type ApprovableQuotaRequest = {
+  requestedLimit: number;
+  /** Target server, or null for "every server". */
+  nodeId: string | null;
+};
+
+/** The user columns an approval rewrites, plus what the audit log records. */
+export type QuotaApproval = {
+  keyLimitOverride: number | null;
+  nodeKeyLimits: NodeKeyLimits | null;
+  /** Per-node entries dropped so the grant cannot be shadowed. */
+  clearedNodeLimitCount: number;
+};
+
+/**
+ * What approving a quota request writes on the user row.
+ *
+ * An approval is a deliberate admin decision, so the granted number must
+ * actually hold and must never be shadowed by an earlier per-node value:
+ *
+ * - Target = one server: set `nodeKeyLimits[nodeId]`, keeping every other entry
+ *   and the flat override untouched. A per-node entry already beats the flat
+ *   override, so nothing else is needed.
+ * - Target = every server: set the flat override AND clear the per-node
+ *   entries, which would otherwise keep overriding the grant on exactly the
+ *   servers the admin just said yes to.
+ *
+ * This concerns the number of keys only — node availability
+ * (`policyOverride.allowedNodeIds`) is never widened here.
+ */
+export const resolveQuotaApproval = (
+  current: {
+    keyLimitOverride: number | null | undefined;
+    nodeKeyLimits: NodeKeyLimits | null | undefined;
+  },
+  request: ApprovableQuotaRequest,
+): QuotaApproval => {
+  const existing = current.nodeKeyLimits ?? {};
+  if (request.nodeId === null) {
+    return {
+      keyLimitOverride: request.requestedLimit,
+      nodeKeyLimits: null,
+      clearedNodeLimitCount: Object.keys(existing).length,
+    };
+  }
+  return {
+    keyLimitOverride: current.keyLimitOverride ?? null,
+    nodeKeyLimits: { ...existing, [request.nodeId]: request.requestedLimit },
+    clearedNodeLimitCount: 0,
+  };
+};

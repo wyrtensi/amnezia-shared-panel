@@ -57,6 +57,10 @@ export type QuotaRequest = {
   id: string;
   userId: string;
   requestedLimit: number;
+  /** Target server; null means the request covers every server. */
+  nodeId: string | null;
+  /** Admin-facing name of the target node; null for an every-server request. */
+  nodeName: string | null;
   reason: string;
   status: string;
   createdAt: string;

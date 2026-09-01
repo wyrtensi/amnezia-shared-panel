@@ -115,6 +115,9 @@ type QuotaRequest = {
   id: string;
   userId: string;
   requestedLimit: number;
+  // Target server: null = every server. `nodeName` is resolved by the API.
+  nodeId: string | null;
+  nodeName: string | null;
   reason: string | null;
   status: string;
   createdAt: string;
@@ -356,9 +359,15 @@ async function cmdQuota(args: string[]): Promise<void> {
   ]);
   if (wantsJson(args)) return json(requests);
   const emailById = new Map(users.map((user) => [user.id, user.email]));
-  const limitById = new Map(
-    users.map((user) => [user.id, user.keyLimitOverride]),
-  );
+  const userById = new Map(users.map((user) => [user.id, user]));
+  // The limit a request would replace, resolved the way the API resolves it:
+  // a per-node entry beats the flat override. Showing the flat number for a
+  // per-server request would misstate what the admin is about to change.
+  const currentLimit = (userId: string, nodeId: string | null): string => {
+    const user = userById.get(userId);
+    const perNode = nodeId ? user?.nodeKeyLimits?.[nodeId] : undefined;
+    return String(perNode ?? user?.keyLimitOverride ?? "default");
+  };
   // Default to the actionable set (pending); `--all` shows every request.
   const showAll = args.includes("--all");
   const rows = requests
@@ -376,12 +385,17 @@ async function cmdQuota(args: string[]): Promise<void> {
       rows.map((req) => ({
         id: req.id,
         user: emailById.get(req.userId) ?? req.userId.slice(0, 8),
-        change: `${limitById.get(req.userId) ?? "default"} → ${req.requestedLimit}`,
+        // A request names one server or every server; approving it grants the
+        // limit exactly there.
+        target: req.nodeId
+          ? (req.nodeName ?? req.nodeId.slice(0, 8))
+          : "all servers",
+        change: `${currentLimit(req.userId, req.nodeId)} → ${req.requestedLimit}`,
         status: req.status,
         created: (req.createdAt ?? "").replace("T", " ").slice(0, 16),
         reason: (req.reason ?? "").replace(/\s+/g, " ").slice(0, 36) || "—",
       })),
-      ["id", "user", "change", "status", "created", "reason"],
+      ["id", "user", "target", "change", "status", "created", "reason"],
     ),
   );
 }
@@ -802,7 +816,8 @@ Read:
   keys                     List keys (with owner + traffic)
   nodes                    List nodes (with protocols + capacity)
   audit [--limit=N]        Recent audit events
-  quota [--all] [--json]   Key-limit requests (pending by default; --all = every state)
+  quota [--all] [--json]   Key-limit requests (pending by default; --all = every state),
+                          with the target server of each request
   policy [--json]          Show all panel settings + Cloudflare config
   global-routes [--json]   Admin-wide route additions / exclusions
   version [--json]         Panel version + commit
@@ -827,7 +842,8 @@ Users (accept a user id OR email):
                                          Create a key for a user. The --name-* flags pick which
                                          parts the VPN client shows as the connection name
                                          (default: server + label, no number)
-  quota-approve <request-id> [note]      Approve a quota request (applies the limit)
+  quota-approve <request-id> [note]      Approve a quota request (grants the limit on the
+                                        request's own target: one server, or all servers)
   quota-reject <request-id> [note]       Reject a quota request
 
 Nodes:

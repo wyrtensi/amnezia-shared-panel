@@ -37,6 +37,14 @@ const createService = (): ControlApiService => ({
   ),
   listRouteProfiles: vi.fn(() => Promise.resolve([])),
   getRuleVersion: vi.fn(() => Promise.resolve({ id: "rule-1" })),
+  getRulesRefreshStatus: vi.fn(() =>
+    Promise.resolve({
+      status: "idle" as const,
+      queuedAt: null,
+      completedAt: null,
+      lastError: null,
+    }),
+  ),
   diffRuleVersions: vi.fn(() => Promise.resolve({ diff: {} })),
   listQuotaRequests: vi.fn(() => Promise.resolve([])),
   createQuotaRequest: vi.fn(() =>
@@ -276,6 +284,142 @@ describe("admin global route overrides", () => {
       expect(response.statusCode).toBe(403);
     }
     expect(service.adminList).not.toHaveBeenCalled();
+    expect(service.adminAction).not.toHaveBeenCalled();
+    await app.close();
+  });
+});
+
+describe("quota requests target a server", () => {
+  it("passes an explicit node id through to the service", async () => {
+    const service = createService();
+    const app = await buildApp({ service, environment: "development" });
+    const nodeId = "5b2ad2b8-2c4e-4a3d-8f8e-6f3a1c0d9a11";
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/quota-requests",
+      headers: { "x-dev-user-email": user.email },
+      payload: { requestedLimit: 7, nodeId, reason: "one more phone" },
+    });
+
+    expect(response.statusCode).toBe(201);
+    expect(service.createQuotaRequest).toHaveBeenCalledWith(user, {
+      requestedLimit: 7,
+      nodeId,
+      reason: "one more phone",
+    });
+    await app.close();
+  });
+
+  it("accepts a request without a node as an every-server ask", async () => {
+    const service = createService();
+    const app = await buildApp({ service, environment: "development" });
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/quota-requests",
+      headers: { "x-dev-user-email": user.email },
+      payload: { requestedLimit: 7 },
+    });
+
+    expect(response.statusCode).toBe(201);
+    expect(service.createQuotaRequest).toHaveBeenCalledWith(user, {
+      requestedLimit: 7,
+    });
+    await app.close();
+  });
+
+  it("rejects a node id that is not a uuid before it reaches the service", async () => {
+    const service = createService();
+    const app = await buildApp({ service, environment: "development" });
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/quota-requests",
+      headers: { "x-dev-user-email": user.email },
+      payload: { requestedLimit: 7, nodeId: "primary" },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(service.createQuotaRequest).not.toHaveBeenCalled();
+    await app.close();
+  });
+});
+
+describe("manual route-feed refresh", () => {
+  const status = {
+    status: "pending" as const,
+    queuedAt: "2026-09-01T10:00:00.000Z",
+    completedAt: null,
+    lastError: null,
+  };
+
+  it("enqueues the refresh through the admin action handler", async () => {
+    const service = createService();
+    const admin = { ...user, role: "admin" as const };
+    vi.mocked(service.resolveIdentity).mockResolvedValue(admin);
+    vi.mocked(service.adminAction).mockResolvedValue(status);
+    const app = await buildApp({ service, environment: "development" });
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/admin/rules/global/refresh",
+      headers: { "x-dev-user-email": admin.email },
+      payload: {},
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual(status);
+    expect(service.adminAction).toHaveBeenCalledWith(
+      admin,
+      "rules",
+      "global",
+      "refresh",
+      {},
+    );
+    await app.close();
+  });
+
+  it("reads the refresh state without colliding with a rule version id", async () => {
+    const service = createService();
+    const admin = { ...user, role: "admin" as const };
+    vi.mocked(service.resolveIdentity).mockResolvedValue(admin);
+    vi.mocked(service.getRulesRefreshStatus).mockResolvedValue(status);
+    const app = await buildApp({ service, environment: "development" });
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/admin/rules/refresh",
+      headers: { "x-dev-user-email": admin.email },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual(status);
+    expect(service.getRulesRefreshStatus).toHaveBeenCalledWith(admin);
+    // The static segment wins: it never reaches the rule-version route.
+    expect(service.getRuleVersion).not.toHaveBeenCalled();
+    await app.close();
+  });
+
+  it("keeps both refresh endpoints away from an employee", async () => {
+    const service = createService();
+    const app = await buildApp({ service, environment: "development" });
+
+    for (const request of [
+      { method: "GET" as const, url: "/api/admin/rules/refresh" },
+      {
+        method: "POST" as const,
+        url: "/api/admin/rules/global/refresh",
+        payload: {},
+      },
+    ]) {
+      const response = await app.inject({
+        ...request,
+        headers: { "x-dev-user-email": user.email },
+      });
+      expect(response.statusCode).toBe(403);
+    }
+    expect(service.getRulesRefreshStatus).not.toHaveBeenCalled();
     expect(service.adminAction).not.toHaveBeenCalled();
     await app.close();
   });

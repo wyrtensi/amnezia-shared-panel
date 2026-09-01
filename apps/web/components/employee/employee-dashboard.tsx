@@ -412,7 +412,8 @@ export function EmployeeDashboard({
           <QuotaRequestDialog
             open={showQuota}
             onOpenChange={setShowQuota}
-            currentLimit={me.keyLimit}
+            me={me}
+            nodeQuota={nodeQuota}
             onSubmitted={load}
           />
         </>

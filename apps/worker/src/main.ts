@@ -68,10 +68,6 @@ const repository = new PostgresWorkerRepository({
   keyring,
   activeKeyVersion,
 });
-const processJob = createJobProcessor({
-  repository,
-  createNodeAgent: (node) => createNodeAgentClient(node),
-});
 const pollTelemetry = createTelemetryPoller({
   repository,
   createNodeAgent: (node) => createNodeAgentClient(node),
@@ -139,6 +135,14 @@ const buildRuleFetchers = (): Array<() => Promise<void>> => {
 };
 
 const ruleFetchers = buildRuleFetchers();
+
+// Built after the fetchers so the operator-triggered `rules.refresh` job can
+// run exactly the same feed fetchers the 6-hourly timer runs.
+const processJob = createJobProcessor({
+  repository,
+  createNodeAgent: (node) => createNodeAgentClient(node),
+  ruleFetchers,
+});
 
 /**
  * Optional Cloudflare Access deactivation sync. Off unless

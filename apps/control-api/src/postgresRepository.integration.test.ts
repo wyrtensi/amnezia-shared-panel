@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { count, eq } from "drizzle-orm";
+import { and, count, eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { defaultKeyNameDisplay } from "@amnezia/contracts";
 import {
@@ -10,6 +10,7 @@ import {
   jobOutbox,
   nodes,
   portalPolicy,
+  quotaRequests,
   users,
   vpnKeys,
 } from "@amnezia/db";
@@ -246,6 +247,291 @@ describe("PostgresControlRepository quota race", () => {
       .where(eq(auditEvents.targetId, created.id));
     expect(events).toEqual([{ action: "node.created" }]);
   });
+
+  /** A node with no keys, so `deleteNode` can remove it. */
+  const seedNode = async (name: string): Promise<string> => {
+    if (!database) throw new Error("No database");
+    const credentials = encryptSecret("api-key", keyring, 1);
+    const label = encryptSecret(randomBytes(32).toString("base64"), keyring, 1);
+    const [node] = await database.db
+      .insert(nodes)
+      .values({
+        name,
+        publicName: `${name} (public)`,
+        apiBaseUrl: `http://127.0.0.1:4001/${name}`,
+        credentialsCiphertext: credentials.ciphertext,
+        credentialsNonce: credentials.nonce,
+        credentialsAuthTag: credentials.authTag,
+        credentialsKeyVersion: credentials.keyVersion,
+        labelSecretCiphertext: label.ciphertext,
+        labelSecretNonce: label.nonce,
+        labelSecretAuthTag: label.authTag,
+        labelSecretKeyVersion: label.keyVersion,
+      })
+      .returning({ id: nodes.id });
+    if (!node) throw new Error("Failed to seed node");
+    return node.id;
+  };
+
+  const seedQuotaUser = async (
+    email: string,
+    values: {
+      keyLimitOverride?: number | null;
+      nodeKeyLimits?: Record<string, number> | null;
+      allowedNodeIds?: string[] | null;
+    } = {},
+  ): Promise<Actor> => {
+    if (!database) throw new Error("No database");
+    const [user] = await database.db
+      .insert(users)
+      .values({
+        email,
+        keyLimitOverride: values.keyLimitOverride ?? null,
+        nodeKeyLimits: values.nodeKeyLimits ?? null,
+        policyOverride:
+          values.allowedNodeIds === undefined
+            ? null
+            : { allowedNodeIds: values.allowedNodeIds },
+      })
+      .returning();
+    if (!user) throw new Error("Failed to seed quota user");
+    return {
+      id: user.id,
+      email: user.email,
+      displayName: null,
+      role: "user",
+      status: "active",
+    };
+  };
+
+  runDatabaseTest(
+    "approving a per-server request raises that server only",
+    async () => {
+      if (!database) return;
+      const repository = new PostgresControlRepository({
+        db: database.db,
+        keyring,
+      });
+      const admin: Actor = { ...actor, role: "admin" };
+      const targetNode = await seedNode("quota-target");
+      const owner = await seedQuotaUser("per-node@example.com", {
+        keyLimitOverride: 4,
+        // An explicit per-node limit that used to beat the flat override and
+        // made approvals a no-op on exactly the server that ran out of room.
+        nodeKeyLimits: { [targetNode]: 1 },
+      });
+
+      const created = await repository.createQuotaRequest(owner, {
+        requestedLimit: 7,
+        nodeId: targetNode,
+      });
+      await repository.adminAction(
+        admin,
+        "quota-requests",
+        created.id,
+        "approve",
+        {},
+      );
+
+      const [updated] = await database.db
+        .select({
+          keyLimitOverride: users.keyLimitOverride,
+          nodeKeyLimits: users.nodeKeyLimits,
+        })
+        .from(users)
+        .where(eq(users.id, owner.id));
+      expect(updated?.nodeKeyLimits).toEqual({ [targetNode]: 7 });
+      // The flat override is untouched, so every other server keeps its limit.
+      expect(updated?.keyLimitOverride).toBe(4);
+    },
+  );
+
+  runDatabaseTest(
+    "approving an every-server request clears shadowing per-node limits",
+    async () => {
+      if (!database) return;
+      const repository = new PostgresControlRepository({
+        db: database.db,
+        keyring,
+      });
+      const admin: Actor = { ...actor, role: "admin" };
+      const nodeA = await seedNode("quota-all-a");
+      const owner = await seedQuotaUser("every-node@example.com", {
+        keyLimitOverride: 2,
+        nodeKeyLimits: { [nodeA]: 1 },
+      });
+
+      const created = await repository.createQuotaRequest(owner, {
+        requestedLimit: 9,
+      });
+      await repository.adminAction(
+        admin,
+        "quota-requests",
+        created.id,
+        "approve",
+        {},
+      );
+
+      const [updated] = await database.db
+        .select({
+          keyLimitOverride: users.keyLimitOverride,
+          nodeKeyLimits: users.nodeKeyLimits,
+        })
+        .from(users)
+        .where(eq(users.id, owner.id));
+      expect(updated?.keyLimitOverride).toBe(9);
+      // Approval outranks the earlier per-node values, which would otherwise
+      // keep overriding the grant on the servers the admin just said yes to.
+      expect(updated?.nodeKeyLimits).toBeNull();
+      const [event] = await database.db
+        .select({ metadata: auditEvents.metadata })
+        .from(auditEvents)
+        .where(eq(auditEvents.targetId, created.id));
+      expect(event?.metadata).toMatchObject({ clearedNodeLimitCount: 1 });
+    },
+  );
+
+  runDatabaseTest(
+    "refuses a request for a server the user may not use",
+    async () => {
+      if (!database) return;
+      const repository = new PostgresControlRepository({
+        db: database.db,
+        keyring,
+      });
+      const allowedNode = await seedNode("quota-allowed");
+      const forbiddenNode = await seedNode("quota-forbidden");
+      const owner = await seedQuotaUser("restricted@example.com", {
+        allowedNodeIds: [allowedNode],
+      });
+
+      await expect(
+        repository.createQuotaRequest(owner, {
+          requestedLimit: 3,
+          nodeId: forbiddenNode,
+        }),
+      ).rejects.toMatchObject({ code: "NODE_NOT_ALLOWED", statusCode: 403 });
+      await expect(
+        repository.createQuotaRequest(owner, {
+          requestedLimit: 3,
+          nodeId: "11111111-1111-4111-8111-111111111111",
+        }),
+      ).rejects.toMatchObject({ code: "NODE_NOT_FOUND", statusCode: 400 });
+      const [pending] = await database.db
+        .select({ value: count() })
+        .from(quotaRequests)
+        .where(eq(quotaRequests.userId, owner.id));
+      expect(pending?.value).toBe(0);
+    },
+  );
+
+  runDatabaseTest(
+    "cancels pending requests aimed at a removed server",
+    async () => {
+      if (!database) return;
+      const repository = new PostgresControlRepository({
+        db: database.db,
+        keyring,
+      });
+      const admin: Actor = { ...actor, role: "admin" };
+      const doomedNode = await seedNode("quota-doomed");
+      const owner = await seedQuotaUser("doomed-node@example.com");
+      const created = await repository.createQuotaRequest(owner, {
+        requestedLimit: 6,
+        nodeId: doomedNode,
+      });
+
+      await repository.deleteNode(admin, doomedNode);
+
+      const [request] = await database.db
+        .select({
+          status: quotaRequests.status,
+          nodeId: quotaRequests.nodeId,
+          reviewNote: quotaRequests.reviewNote,
+        })
+        .from(quotaRequests)
+        .where(eq(quotaRequests.id, created.id));
+      // Without this the ON DELETE SET NULL would silently turn a per-server
+      // ask into an every-server one.
+      expect(request?.status).toBe("cancelled");
+      expect(request?.reviewNote).toBe("target server was removed");
+      expect(request?.nodeId).toBeNull();
+    },
+  );
+
+  runDatabaseTest(
+    "keeps one rule refresh in flight and re-arms a finished one",
+    async () => {
+      if (!database) return;
+      const repository = new PostgresControlRepository({
+        db: database.db,
+        keyring,
+      });
+      const admin: Actor = { ...actor, role: "admin" };
+      await database.db
+        .delete(jobOutbox)
+        .where(eq(jobOutbox.deduplicationKey, "rules.refresh"));
+
+      const first = await repository.adminAction(
+        admin,
+        "rules",
+        "global",
+        "refresh",
+        {},
+      );
+      const second = await repository.adminAction(
+        admin,
+        "rules",
+        "global",
+        "refresh",
+        {},
+      );
+      expect(first).toMatchObject({ status: "pending" });
+      // A second click while one run is in flight must not queue another.
+      expect(second).toMatchObject({
+        status: "pending",
+        queuedAt: (first as { queuedAt: string }).queuedAt,
+      });
+      const [queued] = await database.db
+        .select({ value: count() })
+        .from(jobOutbox)
+        .where(eq(jobOutbox.deduplicationKey, "rules.refresh"));
+      expect(queued?.value).toBe(1);
+
+      // The completed row still holds the unique key, so the next ask has to
+      // reuse it rather than insert a duplicate.
+      await database.db
+        .update(jobOutbox)
+        .set({ status: "completed", completedAt: new Date() })
+        .where(eq(jobOutbox.deduplicationKey, "rules.refresh"));
+      const rearmed = await repository.adminAction(
+        admin,
+        "rules",
+        "global",
+        "refresh",
+        {},
+      );
+      expect(rearmed).toMatchObject({ status: "pending", completedAt: null });
+      const [afterRearm] = await database.db
+        .select({ value: count() })
+        .from(jobOutbox)
+        .where(eq(jobOutbox.deduplicationKey, "rules.refresh"));
+      expect(afterRearm?.value).toBe(1);
+      expect(await repository.getRulesRefreshStatus()).toMatchObject({
+        status: "pending",
+      });
+      const [audits] = await database.db
+        .select({ value: count() })
+        .from(auditEvents)
+        .where(
+          and(
+            eq(auditEvents.action, "admin.rules.refresh"),
+            eq(auditEvents.targetType, "rules"),
+          ),
+        );
+      expect(audits?.value).toBe(3);
+    },
+  );
 
   runDatabaseTest("deduplicates retries but allows later lifecycle cycles", async () => {
     if (!database) return;

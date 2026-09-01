@@ -354,3 +354,93 @@ describe("rotate job", () => {
     });
   });
 });
+
+describe("manual route-feed refresh job", () => {
+  const refreshJob = {
+    id: "job-refresh",
+    type: "rules.refresh",
+    attempts: 0,
+    payload: { requestedAt: "2026-09-01T10:00:00.000Z" },
+  };
+
+  it("runs every configured feed fetcher and completes the job", async () => {
+    const repository = createRepository();
+    const first = vi.fn(() => Promise.resolve());
+    const second = vi.fn(() => Promise.resolve());
+    const process = createJobProcessor({
+      repository,
+      createNodeAgent: () => createAgent(),
+      ruleFetchers: [first, second],
+    });
+
+    await process(refreshJob);
+
+    expect(first).toHaveBeenCalledTimes(1);
+    expect(second).toHaveBeenCalledTimes(1);
+    // An unchanged feed is a no-op by design, so finishing is a success.
+    expect(repository.completeJob).toHaveBeenCalledWith(refreshJob.id);
+    expect(repository.failJob).not.toHaveBeenCalled();
+  });
+
+  it("fails the job with a clear message when no feed is configured", async () => {
+    const repository = createRepository();
+    const process = createJobProcessor({
+      repository,
+      createNodeAgent: () => createAgent(),
+      ruleFetchers: [],
+    });
+
+    await process(refreshJob);
+
+    expect(repository.failJob).toHaveBeenCalledWith(
+      refreshJob.id,
+      "No route-rule feeds are configured (set RULE_FEEDS on the worker)",
+    );
+    expect(repository.completeJob).not.toHaveBeenCalled();
+  });
+
+  it("still attempts every feed when one of them fails, then reports it", async () => {
+    const repository = createRepository();
+    const broken = vi.fn(() => Promise.reject(new Error("feed 502")));
+    const healthy = vi.fn(() => Promise.resolve());
+    const process = createJobProcessor({
+      repository,
+      createNodeAgent: () => createAgent(),
+      ruleFetchers: [broken, healthy],
+    });
+
+    await expect(process(refreshJob)).rejects.toThrowError(
+      "Rule feed refresh failed: feed 502",
+    );
+    expect(healthy).toHaveBeenCalledTimes(1);
+    expect(repository.completeJob).not.toHaveBeenCalled();
+  });
+
+  it("lets the runner retry a failed refresh instead of losing it", async () => {
+    const repository = createRepository();
+    const process = createJobProcessor({
+      repository,
+      createNodeAgent: () => createAgent(),
+      ruleFetchers: [() => Promise.reject(new Error("feed 502"))],
+    });
+    const controller = new AbortController();
+    vi.mocked(repository.claimJob)
+      .mockResolvedValueOnce(refreshJob)
+      .mockImplementation(() => {
+        controller.abort();
+        return Promise.resolve(null);
+      });
+
+    await runWorker({
+      repository,
+      processJob: process,
+      signal: controller.signal,
+      idleDelayMs: 0,
+    });
+
+    expect(repository.retryJob).toHaveBeenCalledWith(
+      refreshJob.id,
+      "Rule feed refresh failed: feed 502",
+    );
+  });
+});

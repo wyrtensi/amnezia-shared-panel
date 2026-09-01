@@ -7,7 +7,6 @@ import {
   Activity,
   FileText,
   KeyRound,
-  Route,
   Server,
   Settings,
   Shield,
@@ -30,7 +29,6 @@ const NAV = [
   { href: "/admin/nodes", label: "nav.nodes", icon: Server },
   { href: "/admin/policy", label: "nav.policy", icon: Settings },
   { href: "/admin/rules", label: "nav.rules", icon: Shield },
-  { href: "/admin/routes", label: "nav.globalRoutes", icon: Route },
   { href: "/admin/audit", label: "nav.audit", icon: FileText },
 ];
 

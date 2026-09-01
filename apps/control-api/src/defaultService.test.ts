@@ -53,6 +53,14 @@ const createRepository = (): ControlRepository => ({
   markKeyRuleVersion: vi.fn(() => Promise.resolve()),
   listRouteProfiles: vi.fn(() => Promise.resolve([])),
   getRuleVersion: vi.fn(() => Promise.resolve({ id: "rule-1" })),
+  getRulesRefreshStatus: vi.fn(() =>
+    Promise.resolve({
+      status: "idle" as const,
+      queuedAt: null,
+      completedAt: null,
+      lastError: null,
+    }),
+  ),
   diffRuleVersions: vi.fn(() => Promise.resolve({ diff: {} })),
   enqueueOwnRevoke: vi.fn(() => Promise.resolve()),
   enqueueOwnRotate: vi.fn(() => Promise.resolve()),

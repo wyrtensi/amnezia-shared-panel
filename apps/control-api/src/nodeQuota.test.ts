@@ -3,6 +3,7 @@ import {
   isNodeAvailable,
   nodeIdsWithExplicitLimit,
   resolveNodeKeyLimit,
+  resolveQuotaApproval,
   type NodeQuotaContext,
 } from "./nodeQuota.js";
 
@@ -96,5 +97,85 @@ describe("nodeIdsWithExplicitLimit", () => {
     expect(
       nodeIdsWithExplicitLimit({ [NODE_A]: 0, [NODE_B]: 4 }).sort(),
     ).toEqual([NODE_A, NODE_B].sort());
+  });
+});
+
+describe("resolveQuotaApproval", () => {
+  it("grants a per-server request on that server only", () => {
+    const approval = resolveQuotaApproval(
+      { keyLimitOverride: 4, nodeKeyLimits: { [NODE_B]: 1 } },
+      { requestedLimit: 7, nodeId: NODE_A },
+    );
+    expect(approval).toEqual({
+      keyLimitOverride: 4,
+      nodeKeyLimits: { [NODE_A]: 7, [NODE_B]: 1 },
+      clearedNodeLimitCount: 0,
+    });
+  });
+
+  it("makes the granted per-node number actually hold on that server", () => {
+    // The whole point of F8: the user ran out of room on a server that carried
+    // an explicit per-node limit, so the grant has to land there.
+    const before = context({
+      keyLimitOverride: 4,
+      nodeKeyLimits: { [NODE_A]: 1 },
+    });
+    expect(resolveNodeKeyLimit(before, NODE_A)).toBe(1);
+
+    const approval = resolveQuotaApproval(before, {
+      requestedLimit: 7,
+      nodeId: NODE_A,
+    });
+    const after = context({
+      keyLimitOverride: approval.keyLimitOverride,
+      nodeKeyLimits: approval.nodeKeyLimits,
+    });
+    expect(resolveNodeKeyLimit(after, NODE_A)).toBe(7);
+    // Every other server keeps the untouched flat override.
+    expect(resolveNodeKeyLimit(after, NODE_B)).toBe(4);
+  });
+
+  it("raises the flat override for an every-server request", () => {
+    const approval = resolveQuotaApproval(
+      { keyLimitOverride: null, nodeKeyLimits: null },
+      { requestedLimit: 9, nodeId: null },
+    );
+    expect(approval).toEqual({
+      keyLimitOverride: 9,
+      nodeKeyLimits: null,
+      clearedNodeLimitCount: 0,
+    });
+  });
+
+  it("clears per-node limits that would shadow an every-server grant", () => {
+    const before = context({
+      keyLimitOverride: 2,
+      nodeKeyLimits: { [NODE_A]: 1, [NODE_B]: 3 },
+    });
+    const approval = resolveQuotaApproval(before, {
+      requestedLimit: 9,
+      nodeId: null,
+    });
+    expect(approval).toEqual({
+      keyLimitOverride: 9,
+      nodeKeyLimits: null,
+      clearedNodeLimitCount: 2,
+    });
+
+    const after = context({
+      keyLimitOverride: approval.keyLimitOverride,
+      nodeKeyLimits: approval.nodeKeyLimits,
+    });
+    expect(resolveNodeKeyLimit(after, NODE_A)).toBe(9);
+    expect(resolveNodeKeyLimit(after, NODE_B)).toBe(9);
+  });
+
+  it("never touches the source map, so a rollback cannot see a mutation", () => {
+    const nodeKeyLimits = { [NODE_A]: 1 };
+    resolveQuotaApproval({ keyLimitOverride: null, nodeKeyLimits }, {
+      requestedLimit: 5,
+      nodeId: NODE_A,
+    });
+    expect(nodeKeyLimits).toEqual({ [NODE_A]: 1 });
   });
 });

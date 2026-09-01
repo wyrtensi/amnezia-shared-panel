@@ -10,6 +10,7 @@ import type {
   QuotaRequest,
   Role,
   RouteProfile,
+  RulesRefreshStatus,
   UserStatus,
   UpdateNodeRequest,
 } from "@amnezia/contracts";
@@ -81,6 +82,7 @@ export interface ControlApiService {
   ) => Promise<CustomRoutes>;
   listRouteProfiles: (actor: Actor) => Promise<unknown[]>;
   getRuleVersion: (actor: Actor, id: string) => Promise<unknown>;
+  getRulesRefreshStatus: (actor: Actor) => Promise<RulesRefreshStatus>;
   diffRuleVersions: (
     actor: Actor,
     baseId: string,

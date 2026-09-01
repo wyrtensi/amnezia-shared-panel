@@ -258,6 +258,12 @@ export const quotaRequests = pgTable(
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
     requestedLimit: integer("requested_limit").notNull(),
+    // Which server the request is for. Null = every server (raises the flat
+    // per-user override). A node id targets that one server. The node may be
+    // removed while a request is still pending, so this is `set null` — the
+    // node-removal path cancels such requests instead of letting them silently
+    // become every-server asks.
+    nodeId: uuid("node_id").references(() => nodes.id, { onDelete: "set null" }),
     reason: text("reason").notNull(),
     status: quotaRequestStatusEnum("status").default("pending").notNull(),
     reviewedBy: uuid("reviewed_by").references(() => users.id, {

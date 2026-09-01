@@ -109,6 +109,10 @@ export const createKeyRequestSchema = z.object({
 
 export const quotaRequestSchema = z.object({
   requestedLimit: z.int().min(1).max(1_000),
+  // Which server the extra keys are for. Null or omitted = every server, which
+  // raises the flat per-user override; a node id targets that one server and
+  // raises its entry in `users.nodeKeyLimits`.
+  nodeId: z.uuid().nullish(),
   // Optional — a reason is helpful but not required. Stored as "" when omitted.
   reason: z.string().trim().max(1_000).optional(),
 });
@@ -302,3 +306,32 @@ export type GlobalRouteProfile = z.infer<typeof globalRouteProfileSchema>;
 export type GlobalRoutes = z.infer<typeof globalRoutesSchema>;
 
 export const emptyGlobalRoutes: GlobalRoutes = globalRoutesSchema.parse({});
+
+// --- Manual route-feed refresh ---------------------------------------------
+// The worker fetches the configured feeds on a timer; an operator can also ask
+// for a check right now. Control-api only enqueues the job (the feeds and the
+// fetch logic live in the worker), so both sides agree on this job type and on
+// the single outbox deduplication key that keeps one run in flight at a time.
+export const RULES_REFRESH_JOB_TYPE = "rules.refresh";
+export const RULES_REFRESH_DEDUPLICATION_KEY = "rules.refresh";
+
+export const rulesRefreshStatusSchema = z.object({
+  // "idle" = never requested. The rest mirror the outbox row: a completed run
+  // means "checked" — an unchanged feed is a successful no-op, not a failure.
+  status: z.enum(["idle", "pending", "processing", "completed", "failed"]),
+  /** When the run was last requested (ISO-8601), null while idle. */
+  queuedAt: z.iso.datetime().nullable(),
+  /** When the last run finished (ISO-8601), null if it never has. */
+  completedAt: z.iso.datetime().nullable(),
+  /** Message of the last failed or retried attempt, null otherwise. */
+  lastError: z.string().nullable(),
+});
+
+export type RulesRefreshStatus = z.infer<typeof rulesRefreshStatusSchema>;
+
+export const idleRulesRefreshStatus: RulesRefreshStatus = {
+  status: "idle",
+  queuedAt: null,
+  completedAt: null,
+  lastError: null,
+};
