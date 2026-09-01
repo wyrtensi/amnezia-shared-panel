@@ -36,6 +36,35 @@ telemetry and drives the nodes. A **node** is a VPN server running AmneziaWG 3.1
 fingerprint and block) with a small agent the panel talks to. One panel, one or
 more nodes, each updated on its own.
 
+## What it looks like
+
+**Administration** — one overview with the numbers that matter, per-node capacity
+and traffic, stale accounts, pending quota requests, and a one-click panel update.
+
+<p align="center">
+  <img src="docs/assets/admin-overview.png" alt="Administration overview: active keys, online devices, traffic, per-node capacity, quota requests, and the panel update card" width="100%">
+</p>
+
+**A team member's own page** — their devices, what each key routes, how much of
+their quota is left, and the extra routes they may layer on top. Below it is the
+same screen twice: the UI ships English and Russian and follows the system theme.
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/assets/user-keys-light-ru.png" alt="A user's keys page in Russian, light theme" width="100%"></td>
+    <td width="50%"><img src="docs/assets/user-keys-dark-en.png" alt="The same keys page in English, dark theme" width="100%"></td>
+  </tr>
+</table>
+
+**Creating a key** takes one dialog: pick the device, name it, choose what the
+AmneziaVPN client will show as the connection title, and pick how traffic is
+routed. The preview under the checkboxes is built with the same function the API
+uses at export time, so it cannot drift from the name the client actually gets.
+
+<p align="center">
+  <img src="docs/assets/new-key-dialog.png" alt="New VPN key dialog: device type, name, the parts of the client-visible name, and the routing profile" width="72%">
+</p>
+
 ## Protocol
 
 **This project targets AmneziaWG 3.1 as its primary protocol.** New nodes and new
