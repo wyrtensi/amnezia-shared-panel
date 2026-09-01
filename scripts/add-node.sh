@@ -26,7 +26,8 @@
 # Options:
 #   --region <label>           SERVER_REGION on the node (default: the name)
 #   --public-host <ip|dns>     address written into client configs (default: --host)
-#   --max-peers <n>            capacity, 1..500 (default: NODE_MAX_PEERS)
+#   --max-peers <n>            capacity, 1..500 (default: NODE_MAX_PEERS, else
+#                              derived from the node's available memory)
 #   --protocol <awg2|awg3>     fallback protocol on the node record
 #   --enabled-protocols <list> comma-separated, offered to the key wizard
 #   --ssh-user <user>          SSH user on the node (default: NODE_SSH_USER)
@@ -45,7 +46,12 @@ die() { echo "add-node: $*" >&2; exit 1; }
 say() { printf '==> %s\n' "$*"; }
 note() { printf '    %s\n' "$*"; }
 
-usage() { sed -n '2,40p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
+# Prints the header comment and stops at the first line that is not one, so
+# adding an option never drifts a line-numbered range into the script's code.
+usage() {
+  awk 'NR > 1 { if ($0 !~ /^#/) exit; sub(/^# ?/, ""); print }' "${BASH_SOURCE[0]}"
+  exit "${1:-0}"
+}
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -90,11 +96,28 @@ NODE_WEIGHT="${NODE_WEIGHT:-100}"
 SSH_USER="${SSH_USER:-${NODE_SSH_USER:-root}}"
 NODE_REGION="${NODE_REGION:-$NODE_NAME}"
 PUBLIC_HOST="${PUBLIC_HOST:-$NODE_HOST}"
-MAX_PEERS="${MAX_PEERS:-${NODE_MAX_PEERS:-500}}"
+MAX_PEERS="${MAX_PEERS:-${NODE_MAX_PEERS:-}}"
 PROTOCOL="${PROTOCOL:-${NODE_PROTOCOL:-awg3}}"
 ENABLED_PROTOCOLS="${ENABLED_PROTOCOLS:-${NODE_ENABLED_PROTOCOLS:-awg3}}"
 NODE_TARGET="${SSH_USER}@${NODE_HOST}"
 UNIT="panel-tunnel-${NODE_NAME}"
+
+# Largest capacity the node's memory can carry, given the preflight RAM gate:
+# 358400 KiB * peers / 500 of MemAvailable, never below a 192 MiB floor. Below
+# that floor no capacity passes, so the answer is 0 rather than a number the
+# deploy would refuse. 500 stays the ceiling both the panel and the agent are
+# validated for.
+recommended_max_peers() {
+  local available_kb="$1" peers
+  if [ "$available_kb" -lt 196608 ]; then
+    printf '0\n'
+    return
+  fi
+  peers=$(( available_kb * 500 / 358400 ))
+  [ "$peers" -le 500 ] || peers=500
+  [ "$peers" -ge 1 ] || peers=1
+  printf '%s\n' "$peers"
+}
 
 SSH_OPTS=(-o StrictHostKeyChecking=accept-new -o ConnectTimeout=15)
 node_ssh() { ssh "${SSH_OPTS[@]}" "$NODE_TARGET" "$@"; }
@@ -114,6 +137,14 @@ node_arch="$(node_ssh 'uname -m')"
 [ "$node_arch" = "x86_64" ] || die "node is $node_arch; the AWG images are linux/amd64 only"
 node_ssh 'test -c /dev/net/tun' || die "/dev/net/tun is missing on the node"
 note "node $NODE_TARGET is reachable (linux/$node_arch), panel $PANEL_SSH is reachable"
+
+if [ -z "$MAX_PEERS" ]; then
+  node_mem_kb="$(node_ssh "awk '/^MemAvailable:/ { print \$2 }' /proc/meminfo")"
+  MAX_PEERS="$(recommended_max_peers "$node_mem_kb")"
+  [ "$MAX_PEERS" != 0 ] || die "node has $(( node_mem_kb / 1024 )) MiB available; \
+at least 192 MiB is required. Add swap or free memory, or pass --max-peers to override."
+  note "capacity derived from $(( node_mem_kb / 1024 )) MiB available: --max-peers $MAX_PEERS"
+fi
 
 cli() {
   panel_ssh "cd '$PANEL_COMPOSE_DIR' && docker compose exec -T \

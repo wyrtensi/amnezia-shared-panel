@@ -178,7 +178,7 @@ Edit `infra/node/.env` (mode `0600`). Every value is validated by preflight:
 | `SERVER_NAME` | Human-readable name. | required |
 | `SERVER_REGION` | Region / AZ label. | required |
 | `SERVER_WEIGHT` | Routing weight. | integer `1..1000` |
-| `SERVER_MAX_PEERS` | Client cap. | integer `1..500` (500 is the unvalidated ceiling) |
+| `SERVER_MAX_PEERS` | Client cap. Also scales the preflight RAM gate, so set it to the capacity the host can carry rather than the ceiling. | integer `1..500` (500 is the unvalidated ceiling) |
 
 The compose file forces the node-agent container to
 `PROTOCOLS_ENABLED=amneziawg2,amneziawg3` and `FASTIFY_ROUTES=0.0.0.0:4001`, but

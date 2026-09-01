@@ -52,7 +52,7 @@ node is left alone.
 | `--name` | *(required)* | Display name in the panel; also names the tunnel unit. |
 | `--region` | the name | `SERVER_REGION` on the node. |
 | `--public-host` | `--host` | Address written into generated client configs. |
-| `--max-peers` | `NODE_MAX_PEERS` | Capacity, 1..500. Also scales the preflight RAM gate. |
+| `--max-peers` | `NODE_MAX_PEERS` | Capacity, 1..500. Also scales the preflight RAM gate. **Unset by default:** the script then derives it from the node's available memory (`MemAvailable * 500 / 358400`, capped at 500) and prints what it chose. |
 | `--protocol` | `NODE_PROTOCOL` | Fallback protocol on the node record (`awg2`/`awg3`). |
 | `--enabled-protocols` | `NODE_ENABLED_PROTOCOLS` | Comma list offered to the key wizard. |
 | `--ssh-user` | `NODE_SSH_USER` | SSH user on the node. |
