@@ -141,7 +141,8 @@ worker after a one-time `sudo bash infra/prod/install-updater.sh`.
 - [`docs/AGENT-HOST-SETUP.md`](docs/AGENT-HOST-SETUP.md) — install a fresh AWG host
   and wire it to the panel.
 - [`docs/NODE-CONNECT.md`](docs/NODE-CONNECT.md) — register and reach a live node
-  (SSH tunnel or direct TLS) and its safety constraints.
+  (SSH tunnel or direct TLS) and its safety constraints. `scripts/add-node.sh`
+  does the whole rollout — bare host to registered node — in one command.
 - [`docs/CLOUDFLARE-SETUP.md`](docs/CLOUDFLARE-SETUP.md) / [`docs/CLOUDFLARE-ACCESS.md`](docs/CLOUDFLARE-ACCESS.md)
   — the tunnel + Google login, and the Access app / allowlist / two-way sync.
 - [`docs/DEPLOY-UPDATE.md`](docs/DEPLOY-UPDATE.md) · [`docs/UPDATE-MECHANISM.md`](docs/UPDATE-MECHANISM.md)

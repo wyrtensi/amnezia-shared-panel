@@ -40,6 +40,8 @@
 ## Server and Node Management
 
 - When setting up, registering, or configuring a new VPN server/node, ALWAYS ask the user for the desired node display name (e.g. asking how the node should be named in the panel, such as "Hetzner DE", "Amsterdam Primary", etc.) rather than assuming or hardcoding a name.
+- Roll a new node out with `scripts/add-node.sh --host <ip> --name <name>` (config in the git-ignored `scripts/add-node.env`; `--dry-run` first). It is idempotent and encodes the traps that break a hand-rolled rollout — see [`docs/NODE-CONNECT.md`](docs/NODE-CONNECT.md).
+- A rollout step exiting 0 is not evidence it did anything. Confirm the node actually appears in the admin CLI's `nodes` output before reporting success.
 
 ## Documentation
 
