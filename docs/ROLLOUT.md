@@ -55,7 +55,9 @@ Run the **`infra/prod`** stack (not `infra/dev`). Full steps:
 - **On a small box:** add a **2 GB swapfile** (the image pull/build and the Node
   services are memory-hungry) and install the **Docker Compose v2 plugin** if it is
   missing. `compose.yaml` already caps each service's memory so a co-located node's
-  VPN containers can never be OOM-killed by the panel.
+  VPN containers can never be OOM-killed by the panel. Full guidance —
+  swap, task budgets, Postgres sizing, and why you must not build images
+  there — is in [`SMALL-HOSTS.md`](./SMALL-HOSTS.md).
 - Turn on one-click updates once: `sudo bash infra/prod/install-updater.sh`
   ([`UPDATE-MECHANISM.md`](./UPDATE-MECHANISM.md)).
 

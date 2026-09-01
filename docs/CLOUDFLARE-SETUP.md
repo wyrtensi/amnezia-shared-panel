@@ -102,8 +102,8 @@ Fill these with your real values; the repo hardcodes none of them.
 
 4. **Docker Engine + Docker Compose v2.** On a small box install the compose v2
    plugin if it is missing, and add a **2 GB swapfile** so the build/pull and the
-   Node services do not OOM. If an Amnezia node already runs here, Docker is
-   present already.
+   Node services do not OOM — see [`SMALL-HOSTS.md`](./SMALL-HOSTS.md). If an
+   Amnezia node already runs here, Docker is present already.
 5. **Outbound HTTPS/QUIC (443) allowed** to Cloudflare — that is the only
    connectivity the tunnel needs. **No inbound port is opened.**
 

@@ -18,6 +18,17 @@ x-app: &app
     dockerfile: infra/dev/Dockerfile
   image: ${PANEL_IMAGE:-amnezia-panel/app:dev}
   restart: unless-stopped
+  # PID 1 in these containers is pnpm/node, which never reaps adopted children.
+  # Docker's healthchecks run a busybox `wget` that forks an `ssl_client`
+  # helper; when wget exits the helper is reparented to PID 1 and stays a
+  # zombie. That is one leaked task every healthcheck interval, forever.
+  init: true
+  # Containment for the same class of leak. Without this the container inherits
+  # systemd's DefaultTasksMax, which is a percentage of kernel.threads-max —
+  # and threads-max scales with host RAM, so on a small box a leaking container
+  # exhausts the host's task budget instead of its own. Steady state is ~25
+  # tasks per service.
+  pids_limit: ${PANEL_PIDS_LIMIT:-256}
   env_file:
     - .env
   networks:
@@ -30,9 +41,29 @@ services:
   postgres:
     image: postgres:16-alpine@sha256:cf78e76683b9ca8c5733cbbdce6c9262b45b6767934dd0a95e671f9a0fc20685
     restart: unless-stopped
+    init: true
+    pids_limit: ${POSTGRES_PIDS_LIMIT:-256}
     # Memory ceiling so a co-located node's VPN containers can never be OOM-killed
     # by the panel — the panel restarts itself instead. Tune via env on tiny boxes.
     mem_limit: ${POSTGRES_MEM_LIMIT:-192m}
+    # Engine settings sized for that ceiling. Stock Postgres asks for 128MB of
+    # shared_buffers and allows 100 backends that can each claim work_mem, which
+    # is a delayed OOM inside a 192MiB cgroup rather than a protection. Raise all
+    # of these through .env on a host with memory to spare.
+    command:
+      - postgres
+      - -c
+      - shared_buffers=${POSTGRES_SHARED_BUFFERS:-32MB}
+      - -c
+      - work_mem=${POSTGRES_WORK_MEM:-2MB}
+      - -c
+      - maintenance_work_mem=${POSTGRES_MAINTENANCE_WORK_MEM:-32MB}
+      - -c
+      - effective_cache_size=${POSTGRES_EFFECTIVE_CACHE_SIZE:-128MB}
+      # packages/db/src/client.ts opens `max: 10` per process; control-api,
+      # worker, a transient migrate and the co-located CLI run concurrently.
+      - -c
+      - max_connections=${POSTGRES_MAX_CONNECTIONS:-50}
     environment:
       POSTGRES_DB: amnezia_panel
       POSTGRES_USER: amnezia_panel

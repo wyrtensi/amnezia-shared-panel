@@ -344,3 +344,5 @@ deactivating everyone.
 - [`docs/NODE-CONNECT.md`](./NODE-CONNECT.md) — connecting a node.
 - [`docs/CLOUDFLARE-ACCESS.md`](./CLOUDFLARE-ACCESS.md) — access-removal
   reconcile.
+- [`docs/SMALL-HOSTS.md`](./SMALL-HOSTS.md) — running the stack on a 512 MB - 1 GB
+  box: swap, task budgets, Postgres sizing, disk reclamation.
