@@ -233,6 +233,108 @@ export type RuleFetcherOptions = {
   now?: () => Date;
 };
 
+/** A feed without the operator-controlled approval gate. */
+export type RuleFeedSources = { profile: RuleProfile; sources: RuleSource[] };
+
+/**
+ * The RoscomVPN / Re:filter sources every deployment gets out of the box, so a
+ * fresh install has working route profiles without an operator pasting JSON.
+ * `RULE_FEEDS` overrides this list entirely; `RULE_FEEDS=[]` opts out of feeds.
+ */
+export const DEFAULT_RULE_FEEDS: RuleFeedSources[] = [
+  {
+    profile: "ru_blacklist",
+    sources: [
+      {
+        url: "https://github.com/1andrevich/Re-filter-lists/releases/latest/download/ipsum.lst",
+        format: "cidr-lines",
+      },
+      {
+        url: "https://github.com/1andrevich/Re-filter-lists/releases/latest/download/domains_all.lst",
+        format: "domain-lines",
+      },
+    ],
+  },
+  {
+    profile: "ru_whitelist",
+    sources: [
+      {
+        url: "https://cdn.jsdelivr.net/gh/hydraponique/roscomvpn-geoip/release/text/whitelist.txt",
+        format: "cidr-lines",
+      },
+    ],
+  },
+];
+
+const RULE_FEED_FORMATS: RuleFeedFormat[] = ["json", "cidr-lines", "domain-lines"];
+
+/**
+ * Resolve the feeds to fetch from the environment, in priority order:
+ *
+ *   1. `RULE_FEEDS` — a JSON array of `{ profile, sources: [{ url, format }] }`.
+ *   2. `ROSCOMVPN_RULES_URL` — the legacy single JSON ru_whitelist feed, still
+ *      layered on top of `RULE_FEEDS` when that carries no ru_whitelist entry.
+ *   3. `DEFAULT_RULE_FEEDS` — only when the operator configured neither, so a
+ *      fresh install fetches RoscomVPN without any configuration at all.
+ *
+ * `RULE_FEEDS=[]` is a deliberate "no feeds": it counts as configuration, so it
+ * opts out of the defaults instead of being treated as an absent value. A
+ * malformed `RULE_FEEDS` throws rather than falling back — a typo in the
+ * operator's own configuration must be visible, not silently replaced.
+ */
+export const resolveRuleFeeds = (
+  env: Record<string, string | undefined>,
+  isProfileApproved: (profile: RuleProfile) => boolean,
+): RuleFeed[] => {
+  const feeds: RuleFeedSources[] = [];
+  let configured = false;
+
+  const raw = env.RULE_FEEDS?.trim();
+  if (raw) {
+    configured = true;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      throw new Error("RULE_FEEDS is not valid JSON");
+    }
+    if (!Array.isArray(parsed)) throw new Error("RULE_FEEDS must be an array");
+    for (const entry of parsed as Array<Record<string, unknown>>) {
+      const profile = entry.profile;
+      if (profile !== "ru_whitelist" && profile !== "ru_blacklist") {
+        throw new Error(`RULE_FEEDS has an invalid profile: ${String(profile)}`);
+      }
+      const sources = (entry.sources as RuleSource[] | undefined)?.filter(
+        (source) =>
+          typeof source?.url === "string" &&
+          RULE_FEED_FORMATS.includes(source?.format),
+      );
+      if (!sources?.length) {
+        throw new Error(`RULE_FEEDS entry for ${profile} has no valid sources`);
+      }
+      feeds.push({ profile, sources });
+    }
+  }
+
+  const legacyUrl = env.ROSCOMVPN_RULES_URL?.trim();
+  if (legacyUrl && !feeds.some((feed) => feed.profile === "ru_whitelist")) {
+    configured = true;
+    feeds.push({
+      profile: "ru_whitelist",
+      sources: [{ url: legacyUrl, format: "json" }],
+    });
+  }
+
+  const resolved = configured ? feeds : DEFAULT_RULE_FEEDS;
+  // Copy the sources: the defaults are a module-level constant, and handing out
+  // the same array would let any caller's mutation corrupt every later call.
+  return resolved.map((feed) => ({
+    profile: feed.profile,
+    sources: feed.sources.map((source) => ({ ...source })),
+    pocApproved: isProfileApproved(feed.profile),
+  }));
+};
+
 const stableChecksum = (payload: RulePayload): string =>
   createHash("sha256")
     .update(

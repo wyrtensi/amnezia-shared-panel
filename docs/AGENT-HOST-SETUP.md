@@ -411,11 +411,17 @@ RKN-blocked via VPN). Non-full-tunnel profiles apply their active rule set to
 imported config, so a rules change flags the key `rulesOutdated` and the user
 re-downloads.
 
-Feeds are configured in the **worker** env (`apps/worker/.env.example`):
+Feeds work **out of the box**: with no feed configuration at all the worker uses
+the built-in RoscomVPN / Re:filter sources for both split-tunnel profiles, so a
+fresh install fetches real rules without an operator pasting anything. The worker
+env (`apps/worker/.env.example`) only overrides that:
 
 - `RULE_FEEDS` — JSON array of `{ profile, sources:[{ url, format }] }`, formats
   `json` | `cidr-lines` | `domain-lines` (multiple sources per profile are merged
-  and de-duplicated). Legacy single `ru_whitelist` JSON feed: `ROSCOMVPN_RULES_URL`.
+  and de-duplicated). Leave it empty to keep the built-in defaults; set
+  `RULE_FEEDS=[]` to run with no feeds at all. A malformed value fails the worker
+  at startup instead of quietly reverting to the defaults. Legacy single
+  `ru_whitelist` JSON feed: `ROSCOMVPN_RULES_URL`.
   `domain-lines` entries must be **bare ASCII/punycode hostnames** (`.рф` →
   `xn--p1ai`); raw Unicode, wildcards (`*.`), and leading dots are dropped as
   invalid. A feed with more than 15 % invalid entries is quarantined whole, so

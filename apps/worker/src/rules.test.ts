@@ -2,8 +2,10 @@ import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import {
   createRuleFetcher,
+  DEFAULT_RULE_FEEDS,
   mergeRulePayloads,
   parseRuleSource,
+  resolveRuleFeeds,
   validateRulePayload,
   type RuleRepository,
 } from "./rules.js";
@@ -242,5 +244,135 @@ describe("RoscomVPN rule ingestion", () => {
     expect(textSpy).not.toHaveBeenCalled();
     expect(repository.activateRuleVersion).not.toHaveBeenCalled();
     expect(repository.storeQuarantinedRule).not.toHaveBeenCalled();
+  });
+});
+
+describe("resolveRuleFeeds", () => {
+  const approveAll = () => true;
+
+  it("falls back to the built-in RoscomVPN feeds when nothing is configured", () => {
+    const feeds = resolveRuleFeeds({}, approveAll);
+
+    expect(feeds.map((feed) => feed.profile)).toEqual([
+      "ru_blacklist",
+      "ru_whitelist",
+    ]);
+    // The defaults must be usable as-is, not placeholders an operator has to fix.
+    for (const feed of feeds) {
+      expect(feed.sources.length).toBeGreaterThan(0);
+      for (const source of feed.sources) {
+        expect(source.url).toMatch(/^https:\/\//);
+        expect(["json", "cidr-lines", "domain-lines"]).toContain(source.format);
+      }
+    }
+  });
+
+  it("treats an empty RULE_FEEDS array as a deliberate opt-out", () => {
+    expect(resolveRuleFeeds({ RULE_FEEDS: "[]" }, approveAll)).toEqual([]);
+  });
+
+  it("uses a configured RULE_FEEDS instead of the defaults", () => {
+    const feeds = resolveRuleFeeds(
+      {
+        RULE_FEEDS: JSON.stringify([
+          {
+            profile: "ru_whitelist",
+            sources: [{ url: "https://example.com/a.lst", format: "cidr-lines" }],
+          },
+        ]),
+      },
+      approveAll,
+    );
+
+    expect(feeds).toEqual([
+      {
+        profile: "ru_whitelist",
+        sources: [{ url: "https://example.com/a.lst", format: "cidr-lines" }],
+        pocApproved: true,
+      },
+    ]);
+  });
+
+  it("still layers the legacy URL on top of a RULE_FEEDS without a whitelist", () => {
+    const feeds = resolveRuleFeeds(
+      {
+        RULE_FEEDS: JSON.stringify([
+          {
+            profile: "ru_blacklist",
+            sources: [{ url: "https://example.com/b.lst", format: "cidr-lines" }],
+          },
+        ]),
+        ROSCOMVPN_RULES_URL: "https://example.com/legacy.json",
+      },
+      approveAll,
+    );
+
+    expect(feeds.map((feed) => feed.profile)).toEqual([
+      "ru_blacklist",
+      "ru_whitelist",
+    ]);
+    expect(feeds[1]?.sources).toEqual([
+      { url: "https://example.com/legacy.json", format: "json" },
+    ]);
+  });
+
+  it("uses the legacy URL alone rather than the defaults", () => {
+    const feeds = resolveRuleFeeds(
+      { ROSCOMVPN_RULES_URL: "https://example.com/legacy.json" },
+      approveAll,
+    );
+
+    expect(feeds).toHaveLength(1);
+    expect(feeds[0]?.profile).toBe("ru_whitelist");
+  });
+
+  it("carries the per-profile approval gate onto the defaults", () => {
+    const feeds = resolveRuleFeeds(
+      {},
+      (profile) => profile !== "ru_blacklist",
+    );
+
+    expect(
+      Object.fromEntries(
+        feeds.map((feed) => [feed.profile, feed.pocApproved]),
+      ),
+    ).toEqual({ ru_blacklist: false, ru_whitelist: true });
+  });
+
+  it("throws on malformed configuration instead of silently using the defaults", () => {
+    expect(() => resolveRuleFeeds({ RULE_FEEDS: "{" }, approveAll)).toThrow(
+      "not valid JSON",
+    );
+    expect(() => resolveRuleFeeds({ RULE_FEEDS: "{}" }, approveAll)).toThrow(
+      "must be an array",
+    );
+    expect(() =>
+      resolveRuleFeeds(
+        { RULE_FEEDS: JSON.stringify([{ profile: "nope", sources: [] }]) },
+        approveAll,
+      ),
+    ).toThrow("invalid profile");
+    expect(() =>
+      resolveRuleFeeds(
+        {
+          RULE_FEEDS: JSON.stringify([
+            { profile: "ru_whitelist", sources: [{ url: "x", format: "bad" }] },
+          ]),
+        },
+        approveAll,
+      ),
+    ).toThrow("no valid sources");
+  });
+
+  it("does not let a caller's mutation leak into the shared defaults", () => {
+    // Captured before the mutation: comparing against the constant afterwards
+    // would compare it with itself and pass no matter what.
+    const expected = DEFAULT_RULE_FEEDS[0]!.sources.length;
+
+    const first = resolveRuleFeeds({}, approveAll);
+    first[0]!.sources.push({ url: "https://example.com/x", format: "json" });
+
+    expect(DEFAULT_RULE_FEEDS[0]!.sources).toHaveLength(expected);
+    expect(resolveRuleFeeds({}, approveAll)[0]?.sources).toHaveLength(expected);
   });
 });

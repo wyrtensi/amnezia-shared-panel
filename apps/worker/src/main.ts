@@ -6,9 +6,8 @@ import { runWorker } from "./runner.js";
 import { createMaintenanceRunner } from "./maintenance.js";
 import {
   createRuleFetcher,
-  type RuleFeed,
+  resolveRuleFeeds,
   type RuleProfile,
-  type RuleSource,
 } from "./rules.js";
 import { runPeriodicTask } from "./scheduler.js";
 import { createTelemetryPoller } from "./telemetry.js";
@@ -92,49 +91,13 @@ const pocApprovedFor = (profile: RuleProfile): boolean =>
     : process.env.RU_BLACKLIST_POC_APPROVED !== "false";
 
 /**
- * Build one rule fetcher per configured routing-rule feed. `RULE_FEEDS` is a
- * JSON array of `{ profile, sources: [{ url, format }] }`; the legacy
- * `ROSCOMVPN_RULES_URL` maps to a single JSON ru_whitelist feed.
+ * One rule fetcher per resolved routing-rule feed. With no feed configuration
+ * at all this is the built-in RoscomVPN set, so route profiles work on a fresh
+ * install; see `resolveRuleFeeds` for the full precedence.
  */
-const buildRuleFetchers = (): Array<() => Promise<void>> => {
-  const feeds: RuleFeed[] = [];
-  const raw = process.env.RULE_FEEDS?.trim();
-  if (raw) {
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(raw);
-    } catch {
-      throw new Error("RULE_FEEDS is not valid JSON");
-    }
-    if (!Array.isArray(parsed)) throw new Error("RULE_FEEDS must be an array");
-    for (const entry of parsed as Array<Record<string, unknown>>) {
-      const profile = entry.profile;
-      if (profile !== "ru_whitelist" && profile !== "ru_blacklist") {
-        throw new Error(`RULE_FEEDS has an invalid profile: ${String(profile)}`);
-      }
-      const sources = (entry.sources as RuleSource[] | undefined)?.filter(
-        (source) =>
-          typeof source?.url === "string" &&
-          ["json", "cidr-lines", "domain-lines"].includes(source?.format),
-      );
-      if (!sources?.length) {
-        throw new Error(`RULE_FEEDS entry for ${profile} has no valid sources`);
-      }
-      feeds.push({ profile, sources, pocApproved: pocApprovedFor(profile) });
-    }
-  }
-  const legacyUrl = process.env.ROSCOMVPN_RULES_URL?.trim();
-  if (legacyUrl && !feeds.some((feed) => feed.profile === "ru_whitelist")) {
-    feeds.push({
-      profile: "ru_whitelist",
-      sources: [{ url: legacyUrl, format: "json" }],
-      pocApproved: pocApprovedFor("ru_whitelist"),
-    });
-  }
-  return feeds.map((feed) => createRuleFetcher({ repository, feed }));
-};
-
-const ruleFetchers = buildRuleFetchers();
+const ruleFetchers = resolveRuleFeeds(process.env, pocApprovedFor).map((feed) =>
+  createRuleFetcher({ repository, feed }),
+);
 
 // Built after the fetchers so the operator-triggered `rules.refresh` job can
 // run exactly the same feed fetchers the 6-hourly timer runs.

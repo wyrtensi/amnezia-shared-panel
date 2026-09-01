@@ -40,6 +40,8 @@ routing on an already-imported config, so a rules change flags the key as
 
 ## Feed sources
 
-Configure `RULE_FEEDS` (see `apps/worker/.env.example`). Community lists such as
+Both profiles ship with working default sources, so nothing has to be configured
+for the fetchers to run. `RULE_FEEDS` (see `apps/worker/.env.example`) overrides
+them, and `RULE_FEEDS=[]` turns feeds off. Community lists such as
 antifilter.download are supported via the `cidr-lines` / `domain-lines` formats;
 multiple sources per profile are merged and de-duplicated before validation.
