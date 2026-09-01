@@ -161,7 +161,8 @@ via `CONTROL_API_URL` plus one of, in priority order:
 | `key-revoke <id>` · `key-disable <id>` · `key-enable <id>` | Key lifecycle |
 | `node-add --name= --api-url= --api-key= [--public-name=] [--protocol=awg3] [--max-peers=N] [--enabled-protocols=awg3,awg2] [--disabled]` | Register a node |
 | `node-update <id> --<field>=<value> …` | Edit a node (name, api-url, api-key, public-name, protocol, max-peers, enabled, enabled-protocols) |
-| `node-remove <id>` | Delete a node |
+| `node-remove <id>` | Delete a node. Refused with `409 NODE_HAS_KEYS` while it still has keys (revoked ones count) — disable it, or use the form below |
+| `node-remove <id> --with-keys --confirm=<node name>` | Delete a node **and every key ever issued on it**, in one transaction. Irreversible. Without a matching `--confirm` the command only prints what it would destroy. Note that peers already configured on a still-running node keep working — the panel cannot reach a node it is deleting, so wipe the server itself too |
 | `node-reconcile <id>` | Force a node re-sync |
 | `policy-set --<field>=<value> …` | Set portal-policy fields (e.g. `--defaultKeyLimit=10`) |
 | `global-routes-set --profile=ru_whitelist\|ru_blacklist [--add-domains=] [--add-cidrs=] [--exclude-domains=] [--exclude-cidrs=]` | Admin-wide route overrides for one split-tunnel profile. Each list given **replaces** that list; omitted lists stay as they were |

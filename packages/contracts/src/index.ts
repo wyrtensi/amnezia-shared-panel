@@ -107,6 +107,15 @@ export const createKeyRequestSchema = z.object({
   nameDisplay: keyNameDisplaySchema.default(newKeyNameDisplay),
 });
 
+/**
+ * Deleting a node also deletes every key ever issued on it, so the destructive
+ * half is opt-in: without `deleteKeys` a node that still has keys is refused.
+ */
+export const deleteNodeOptionsSchema = z.object({
+  deleteKeys: z.boolean().default(false),
+});
+export type DeleteNodeOptions = z.infer<typeof deleteNodeOptionsSchema>;
+
 export const quotaRequestSchema = z.object({
   requestedLimit: z.int().min(1).max(1_000),
   // Which server the extra keys are for. Null or omitted = every server, which

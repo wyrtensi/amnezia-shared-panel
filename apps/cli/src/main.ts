@@ -86,6 +86,7 @@ type AdminUser = {
 type AdminKey = {
   id: string;
   ownerId: string;
+  nodeId: string;
   state: string;
   protocol: string;
   deviceLabel: string;
@@ -630,9 +631,50 @@ async function cmdNodeUpdate(args: string[]): Promise<void> {
 
 async function cmdNodeRemove(args: string[]): Promise<void> {
   const id = args.find((arg) => !arg.startsWith("--"));
-  if (!id) throw new Error("Usage: node-remove <id>");
-  await api(`/api/admin/nodes/${id}`, { method: "DELETE" });
-  console.log(`node ${id} removed`);
+  const usage =
+    "Usage: node-remove <id> [--with-keys --confirm=<node name>]";
+  if (!id) throw new Error(usage);
+  const withKeys = args.includes("--with-keys");
+
+  if (!withKeys) {
+    // Plain delete. The API refuses with 409 NODE_HAS_KEYS when the node still
+    // has keys, and its message already tells the operator what to do.
+    await api(`/api/admin/nodes/${id}`, { method: "DELETE" });
+    console.log(`node ${id} removed`);
+    return;
+  }
+
+  // Deleting a node WITH its keys is destructive and irreversible, so it needs a
+  // confirmation that cannot be produced by a stray flag: the operator has to
+  // type the node's own name. A prompt is not an option — the CLI normally runs
+  // through `docker exec` with no TTY.
+  const nodes = await api<AdminNode[]>("/api/admin/nodes");
+  const node = nodes.find((candidate) => candidate.id === id);
+  if (!node) throw new Error(`node ${id} not found`);
+  const keys = await api<AdminKey[]>("/api/admin/keys");
+  const affected = keys.filter((key) => key.nodeId === id);
+  const owners = new Set(affected.map((key) => key.ownerId)).size;
+  const confirm = flagOf(args, "confirm");
+  if (confirm !== node.name) {
+    throw new Error(
+      [
+        `About to DELETE node "${node.name}" and ${affected.length} key(s) of ${owners} user(s).`,
+        "This cannot be undone, and peers already configured on that server keep",
+        "working until the server itself is wiped — the panel cannot reach a node",
+        "it is deleting.",
+        "",
+        `To proceed, repeat the command with: --confirm=${node.name}`,
+      ].join("\n"),
+    );
+  }
+
+  const result = await api<{
+    deletedKeys: number;
+    affectedOwners: number;
+  }>(`/api/admin/nodes/${id}?deleteKeys=true`, { method: "DELETE" });
+  console.log(
+    `node ${node.name} removed with ${result.deletedKeys} key(s) of ${result.affectedOwners} user(s)`,
+  );
 }
 
 async function cmdUserNodes(args: string[]): Promise<void> {
@@ -851,7 +893,9 @@ Nodes:
   node-update <id> --<field>=<value> …    Edit a node (name, api-url, api-key,
                                           public-name, protocol, max-peers,
                                           enabled=true|false, enabled-protocols)
-  node-remove <id>                        Delete a node
+  node-remove <id>                        Delete a node (refused while it has keys)
+  node-remove <id> --with-keys            Delete a node AND every key ever issued
+             --confirm=<node name>        on it. Irreversible; the name must match
   node-reconcile <id>                     Trigger a node sync
   node-add flags: [--public-name=] [--protocol=awg3] [--max-peers=500]
                   [--enabled-protocols=awg3,awg2] [--disabled]

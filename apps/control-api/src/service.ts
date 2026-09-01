@@ -3,6 +3,7 @@ import type {
   CreateUserRequest,
   CreateKeyRequest,
   CustomRoutes,
+  DeleteNodeOptions,
   DeviceType,
   KeyNameDisplay,
   KeyState,
@@ -111,7 +112,11 @@ export interface ControlApiService {
     nodeId: string,
     request: UpdateNodeRequest,
   ) => Promise<unknown>;
-  deleteNode: (actor: Actor, nodeId: string) => Promise<unknown>;
+  deleteNode: (
+    actor: Actor,
+    nodeId: string,
+    options: DeleteNodeOptions,
+  ) => Promise<unknown>;
   adminList: (actor: Actor, resource: string) => Promise<unknown>;
   adminAction: (
     actor: Actor,

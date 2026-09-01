@@ -256,7 +256,14 @@ export const buildApp = async ({
   });
   app.delete("/api/admin/nodes/:id", async (request) => {
     const { id } = idParamsSchema.parse(request.params);
-    return service.deleteNode(adminFor(request), id);
+    // Carried in the query, not a body: a DELETE with a JSON body is what makes
+    // Fastify reject bodyless requests that still declare a content-type.
+    const { deleteKeys } = z
+      .object({ deleteKeys: z.enum(["true", "false"]).optional() })
+      .parse(request.query ?? {});
+    return service.deleteNode(adminFor(request), id, {
+      deleteKeys: deleteKeys === "true",
+    });
   });
   for (const resource of [
     "users",

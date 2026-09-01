@@ -11,6 +11,7 @@ import {
   RefreshCw,
   Server,
   Trash2,
+  TriangleAlert,
 } from "lucide-react";
 import { toast } from "sonner";
 import { Card, CardContent } from "@/components/ui/card";
@@ -56,11 +57,49 @@ const CAPABILITY_LABEL: Record<string, string> = {
   backup: "nodes.cap.backup",
 };
 
+/** Keys a node still owns, in every state, plus how many users hold them. */
+type NodeKeyStats = { total: number; active: number; owners: number };
+
+const NO_KEYS: NodeKeyStats = { total: 0, active: 0, owners: 0 };
+
+/** What `DELETE /api/admin/nodes/:id` reports back. */
+type DeleteNodeResult = {
+  id: string;
+  deleted: boolean;
+  deletedKeys: number;
+  affectedOwners: number;
+  droppedJobs: number;
+  cancelledQuotaRequests: number;
+};
+
 export default function AdminNodesPage() {
-  const { nodes, loading, reload, action, request } = useAdminData();
+  const { nodes, keys, loading, reload, action, request } = useAdminData();
   const { t } = useT();
   const [showCreate, setShowCreate] = React.useState(false);
   const [editNode, setEditNode] = React.useState<AdminNode | null>(null);
+  const [deleteTarget, setDeleteTarget] = React.useState<AdminNode | null>(null);
+
+  // Count keys per node in EVERY state, not just the active ones: revoked keys
+  // still reference the node and still block (or get destroyed by) a deletion.
+  const keyStats = React.useMemo(() => {
+    const owners = new Map<string, Set<string>>();
+    const stats = new Map<string, NodeKeyStats>();
+    for (const key of keys) {
+      const entry = stats.get(key.nodeId) ?? { total: 0, active: 0, owners: 0 };
+      entry.total += 1;
+      if (key.state === "active") entry.active += 1;
+      stats.set(key.nodeId, entry);
+      const seen = owners.get(key.nodeId) ?? new Set<string>();
+      seen.add(key.ownerId);
+      owners.set(key.nodeId, seen);
+    }
+    for (const [nodeId, entry] of stats) {
+      entry.owners = owners.get(nodeId)?.size ?? 0;
+    }
+    return stats;
+  }, [keys]);
+
+  const statsFor = (nodeId: string) => keyStats.get(nodeId) ?? NO_KEYS;
 
   const toggleEnabled = async (node: AdminNode, enabled: boolean) => {
     try {
@@ -73,19 +112,6 @@ export default function AdminNodesPage() {
     } catch (cause) {
       toast.error(
         cause instanceof Error ? cause.message : t("nodes.changeFailed"),
-      );
-    }
-  };
-
-  const removeNode = async (node: AdminNode) => {
-    if (!window.confirm(t("nodes.deleteConfirm", { name: node.name }))) return;
-    try {
-      await request(`/api/admin/nodes/${node.id}`, { method: "DELETE" });
-      toast.success(t("nodes.deleted"));
-      await reload();
-    } catch (cause) {
-      toast.error(
-        cause instanceof Error ? cause.message : t("nodes.deleteFailed"),
       );
     }
   };
@@ -138,10 +164,11 @@ export default function AdminNodesPage() {
             <NodeCard
               key={node.id}
               node={node}
+              keyStats={statsFor(node.id)}
               onToggle={(enabled) => void toggleEnabled(node, enabled)}
               onReconcile={() => void action("nodes", node.id, "reconcile")}
               onEdit={() => setEditNode(node)}
-              onDelete={() => void removeNode(node)}
+              onDelete={() => setDeleteTarget(node)}
             />
           ))}
         </div>
@@ -159,18 +186,27 @@ export default function AdminNodesPage() {
         request={request}
         reload={reload}
       />
+      <DeleteNodeDialog
+        node={deleteTarget}
+        keyStats={deleteTarget ? statsFor(deleteTarget.id) : NO_KEYS}
+        onClose={() => setDeleteTarget(null)}
+        request={request}
+        reload={reload}
+      />
     </div>
   );
 }
 
 function NodeCard({
   node,
+  keyStats,
   onToggle,
   onReconcile,
   onEdit,
   onDelete,
 }: {
   node: AdminNode;
+  keyStats: NodeKeyStats;
   onToggle: (enabled: boolean) => void;
   onReconcile: () => void;
   onEdit: () => void;
@@ -335,24 +371,24 @@ function NodeCard({
             <Pencil className="h-4 w-4" /> {t("nodes.edit")}
           </Button>
           <div className="ml-auto">
-            {peers === 0 ? (
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="text-muted-foreground hover:text-destructive"
-                    aria-label={t("nodes.deleteAria")}
-                    onClick={onDelete}
-                  >
-                    <Trash2 className="h-4 w-4" />
-                  </Button>
-                </TooltipTrigger>
-                <TooltipContent>
-                  {t("nodes.deleteTip")}
-                </TooltipContent>
-              </Tooltip>
-            ) : null}
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="text-muted-foreground hover:text-destructive"
+                  aria-label={t("nodes.deleteAria")}
+                  onClick={onDelete}
+                >
+                  <Trash2 className="h-4 w-4" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>
+                {keyStats.total > 0
+                  ? t("nodes.deleteTipKeys", { keys: keyStats.total })
+                  : t("nodes.deleteTip")}
+              </TooltipContent>
+            </Tooltip>
           </div>
         </div>
       </CardContent>
@@ -535,6 +571,145 @@ function EditNodeDialog({
             </Button>
             <Button type="submit" disabled={busy}>
               {busy ? t("common.saving") : t("common.save")}
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+/**
+ * Two-step confirmation for an irreversible deletion.
+ *
+ * A node without keys is a plain "are you sure". A node that still owns keys
+ * destroys all of them in the same transaction, so the dialog spells out the
+ * counts, warns that the peers survive on a still-running server, and keeps the
+ * delete button disabled until the operator retypes the node's internal name.
+ */
+function DeleteNodeDialog({
+  node,
+  keyStats,
+  onClose,
+  request,
+  reload,
+}: {
+  node: AdminNode | null;
+  keyStats: NodeKeyStats;
+  onClose: () => void;
+  request: <T>(path: string, init?: RequestInit) => Promise<T>;
+  reload: () => Promise<void>;
+}) {
+  const { t } = useT();
+  const [typedName, setTypedName] = React.useState("");
+  const [busy, setBusy] = React.useState(false);
+  const [error, setError] = React.useState<string | null>(null);
+
+  React.useEffect(() => {
+    setTypedName("");
+    setError(null);
+  }, [node]);
+
+  const hasKeys = keyStats.total > 0;
+  // The destructive path stays disarmed until the typed name matches exactly.
+  const armed = Boolean(node) && (!hasKeys || typedName.trim() === node?.name);
+
+  const submit = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!node || !armed || busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      // The destructive half is opt-in through the query string; a DELETE with
+      // a JSON body is what the API deliberately does not accept.
+      const result = await request<DeleteNodeResult>(
+        `/api/admin/nodes/${node.id}${hasKeys ? "?deleteKeys=true" : ""}`,
+        { method: "DELETE" },
+      );
+      toast.success(
+        result.deletedKeys > 0
+          ? t("nodes.deletedWithKeys", {
+              name: node.name,
+              keys: result.deletedKeys,
+              users: result.affectedOwners,
+            })
+          : t("nodes.deleted"),
+      );
+      onClose();
+      await reload();
+    } catch (cause) {
+      // Covers 409 NODE_HAS_KEYS, which happens when the loaded key list was
+      // stale: keep the dialog open and show exactly what the API said.
+      const message =
+        cause instanceof Error ? cause.message : t("nodes.deleteFailed");
+      setError(message);
+      toast.error(message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Dialog open={Boolean(node)} onOpenChange={(next) => !next && onClose()}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>
+            {t("nodes.deleteTitle", { name: node?.name ?? "" })}
+          </DialogTitle>
+          <DialogDescription>
+            {hasKeys
+              ? t("nodes.deleteWithKeys")
+              : t("nodes.deleteConfirm", { name: node?.name ?? "" })}
+          </DialogDescription>
+        </DialogHeader>
+        <form onSubmit={(event) => void submit(event)} className="space-y-3">
+          {hasKeys ? (
+            <>
+              <Callout
+                tone="danger"
+                icon={<TriangleAlert className="h-4 w-4 text-destructive" />}
+                title={t("nodes.deleteImpact", {
+                  keys: keyStats.total,
+                  users: keyStats.owners,
+                })}
+              >
+                {t("nodes.deleteImpactStates", {
+                  active: keyStats.active,
+                  other: keyStats.total - keyStats.active,
+                })}
+              </Callout>
+              <Callout tone="warning" title={t("nodes.deletePeersTitle")}>
+                {t("nodes.deletePeersBody")}
+              </Callout>
+              <Field
+                label={t("nodes.deleteTypeName")}
+                hint={t("nodes.deleteTypeNameHint", { name: node?.name ?? "" })}
+              >
+                <Input
+                  autoComplete="off"
+                  autoCorrect="off"
+                  spellCheck={false}
+                  value={typedName}
+                  onChange={(event) => setTypedName(event.target.value)}
+                />
+              </Field>
+            </>
+          ) : null}
+          {error ? (
+            <Callout tone="danger" className="text-xs">
+              {error}
+            </Callout>
+          ) : null}
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={onClose}>
+              {t("common.cancel")}
+            </Button>
+            <Button type="submit" variant="destructive" disabled={busy || !armed}>
+              {busy
+                ? t("nodes.deleting")
+                : hasKeys
+                  ? t("nodes.deleteActionKeys")
+                  : t("nodes.deleteAction")}
             </Button>
           </DialogFooter>
         </form>

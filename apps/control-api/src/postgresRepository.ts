@@ -17,6 +17,7 @@ import type {
   CreateKeyRequest,
   CreateUserRequest,
   CustomRoutes,
+  DeleteNodeOptions,
   GlobalRoutes,
   KeyState,
   PortalPolicy,
@@ -725,7 +726,11 @@ export class PostgresControlRepository implements ControlRepository {
       return updated;
     });
 
-  deleteNode = async (actor: Actor, nodeId: string): Promise<unknown> =>
+  deleteNode = async (
+    actor: Actor,
+    nodeId: string,
+    options: DeleteNodeOptions = { deleteKeys: false },
+  ): Promise<unknown> =>
     this.options.db.transaction(async (tx) => {
       const [existing] = await tx
         .select({ id: nodes.id, name: nodes.name })
@@ -734,18 +739,42 @@ export class PostgresControlRepository implements ControlRepository {
         .limit(1);
       if (!existing) throw new ApiError(404, "Node not found", "NODE_NOT_FOUND");
 
-      // vpn_keys.node_id is ON DELETE RESTRICT: a node that ever held a key
-      // (revoked keys included) cannot be removed. Disable it instead.
-      const [keyCount] = await tx
-        .select({ value: count() })
+      // vpn_keys.node_id is ON DELETE RESTRICT, so the node's keys have to go
+      // first. That is destructive and irreversible, so it never happens by
+      // accident: without an explicit `deleteKeys` the call is refused and the
+      // operator can disable the node instead.
+      const keyRows = await tx
+        .select({ id: vpnKeys.id, ownerId: vpnKeys.ownerId })
         .from(vpnKeys)
         .where(eq(vpnKeys.nodeId, nodeId));
-      if ((keyCount?.value ?? 0) > 0) {
+      if (keyRows.length > 0 && !options.deleteKeys) {
         throw new ApiError(
           409,
-          "Node still has keys (revoked keys count too) — disable it instead of deleting.",
+          `Node still has ${keyRows.length} key(s), revoked ones included. Disable it, or delete it together with its keys.`,
           "NODE_HAS_KEYS",
         );
+      }
+
+      let deletedKeys = 0;
+      let affectedOwners = 0;
+      let droppedJobs = 0;
+      if (keyRows.length > 0) {
+        const keyIds = keyRows.map((row) => row.id);
+        affectedOwners = new Set(keyRows.map((row) => row.ownerId)).size;
+        // peer_current / traffic_samples / traffic_rollups all cascade from
+        // vpn_keys, but job_outbox does NOT reference it — the key id only lives
+        // in the payload. Those rows must go explicitly, or the worker keeps
+        // retrying provision/revoke jobs for keys that no longer exist.
+        const dropped = await tx
+          .delete(jobOutbox)
+          .where(inArray(sql`${jobOutbox.payload} ->> 'keyId'`, keyIds))
+          .returning({ id: jobOutbox.id });
+        droppedJobs = dropped.length;
+        const removed = await tx
+          .delete(vpnKeys)
+          .where(eq(vpnKeys.nodeId, nodeId))
+          .returning({ id: vpnKeys.id });
+        deletedKeys = removed.length;
       }
 
       // quota_requests.node_id is ON DELETE SET NULL, which would silently turn
@@ -775,10 +804,20 @@ export class PostgresControlRepository implements ControlRepository {
         targetId: nodeId,
         metadata: {
           name: existing.name,
+          deletedKeys,
+          affectedOwners,
+          droppedJobs,
           cancelledQuotaRequests: cancelled.length,
         },
       });
-      return { id: nodeId, deleted: true, cancelledQuotaRequests: cancelled.length };
+      return {
+        id: nodeId,
+        deleted: true,
+        deletedKeys,
+        affectedOwners,
+        droppedJobs,
+        cancelledQuotaRequests: cancelled.length,
+      };
     });
 
   listKeys = async (actor: Actor): Promise<KeyView[]> => {

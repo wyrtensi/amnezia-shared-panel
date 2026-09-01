@@ -439,6 +439,22 @@ const ru = {
   "nodes.deleteConfirm": "Удалить ноду «{name}»? Действие необратимо.",
   "nodes.deleted": "Нода удалена",
   "nodes.deleteFailed": "Не удалось удалить ноду",
+  "nodes.deleteTitle": "Удаление ноды «{name}»",
+  "nodes.deleteWithKeys":
+    "Вместе с нодой будут безвозвратно удалены все выпущенные на ней ключи. Отменить это нельзя.",
+  "nodes.deleteImpact":
+    "Будет удалено ключей: {keys} — включая отозванные. Затронуто пользователей: {users}.",
+  "nodes.deleteImpactStates": "Из них активных: {active}, остальных: {other}.",
+  "nodes.deletePeersTitle": "Пиры на сервере продолжат работать",
+  "nodes.deletePeersBody":
+    "Панель удаляет ключи только из своей базы — обратиться к удаляемой ноде она уже не может. Конфигурации пиров останутся в контейнерах AmneziaWG на самом сервере: если сервер продолжает работать, эти конфигурации будут работать, пока сервер не выключат или не очистят вручную.",
+  "nodes.deleteTypeName": "Введите внутреннее название ноды, чтобы подтвердить",
+  "nodes.deleteTypeNameHint": "Ровно так: {name}",
+  "nodes.deleteAction": "Удалить ноду",
+  "nodes.deleteActionKeys": "Удалить ноду и ключи",
+  "nodes.deleting": "Удаляем…",
+  "nodes.deletedWithKeys":
+    "Нода «{name}» удалена. Ключей удалено: {keys}, затронуто пользователей: {users}.",
   "nodes.titleHint":
     "Нода — это сервер с node-agent, на котором создаются VPN-ключи. Панель управляет ими через защищённый API.",
   "nodes.summary": "{total} серв. · {enabled} включено",
@@ -462,7 +478,8 @@ const ru = {
   "nodes.reconcile": "Сверка",
   "nodes.edit": "Изменить",
   "nodes.deleteAria": "Удалить ноду",
-  "nodes.deleteTip": "Удалить (только если на ноде нет ключей)",
+  "nodes.deleteTip": "Удалить ноду — ключей на ней нет",
+  "nodes.deleteTipKeys": "Удалить ноду вместе со всеми её ключами ({keys})",
   "nodes.added": "Нода добавлена",
   "nodes.addFailed": "Не удалось добавить ноду",
   "nodes.createTitle": "Добавить VPN-ноду",
@@ -1101,6 +1118,22 @@ const en = {
   "nodes.deleteConfirm": "Delete node “{name}”? This cannot be undone.",
   "nodes.deleted": "Node deleted",
   "nodes.deleteFailed": "Failed to delete the node",
+  "nodes.deleteTitle": "Delete node “{name}”",
+  "nodes.deleteWithKeys":
+    "Deleting the node also permanently deletes every key issued on it. This cannot be undone.",
+  "nodes.deleteImpact":
+    "{keys} key(s) will be destroyed, revoked ones included. {users} user(s) affected.",
+  "nodes.deleteImpactStates": "Of those: {active} active, {other} other.",
+  "nodes.deletePeersTitle": "Peers keep working on the server",
+  "nodes.deletePeersBody":
+    "The panel only removes the keys from its own database — it can no longer reach a node it is deleting. The peer configurations stay in the AmneziaWG containers on the server itself: while that server keeps running, those configurations keep working until it is shut down or wiped by hand.",
+  "nodes.deleteTypeName": "Type the node's internal name to confirm",
+  "nodes.deleteTypeNameHint": "Exactly: {name}",
+  "nodes.deleteAction": "Delete node",
+  "nodes.deleteActionKeys": "Delete node and keys",
+  "nodes.deleting": "Deleting…",
+  "nodes.deletedWithKeys":
+    "Node “{name}” deleted. {keys} key(s) removed, {users} user(s) affected.",
   "nodes.titleHint":
     "A node is a server running node-agent where VPN keys are created. The panel manages them via a secure API.",
   "nodes.summary": "{total} servers · {enabled} enabled",
@@ -1123,7 +1156,8 @@ const en = {
   "nodes.reconcile": "Reconcile",
   "nodes.edit": "Edit",
   "nodes.deleteAria": "Delete node",
-  "nodes.deleteTip": "Delete (only if the node has no keys)",
+  "nodes.deleteTip": "Delete the node — it has no keys",
+  "nodes.deleteTipKeys": "Delete the node together with all its keys ({keys})",
   "nodes.added": "Node added",
   "nodes.addFailed": "Failed to add the node",
   "nodes.createTitle": "Add VPN node",

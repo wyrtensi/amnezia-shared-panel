@@ -596,4 +596,88 @@ describe("PostgresControlRepository quota race", () => {
       repository.adminAction(admin, "keys", key.id, "enable", {}),
     ).rejects.toMatchObject({ code: "INVALID_KEY_TRANSITION" });
   });
+
+  runDatabaseTest("refuses to delete a node that still has keys", async () => {
+    if (!database) return;
+    const repository = new PostgresControlRepository({ db: database.db, keyring });
+    const admin: Actor = { ...actor, role: "admin" };
+    const node = await seedNode("delete-guard");
+    const owner = await seedQuotaUser("delete-guard@example.com");
+    await repository.createProvisioningKey(owner, {
+      nodeId: node,
+      protocol: "awg2",
+      deviceType: "other",
+      deviceLabel: "laptop",
+      routeProfile: "full_tunnel",
+      nameDisplay: defaultKeyNameDisplay,
+    });
+
+    await expect(
+      repository.deleteNode(admin, node, { deleteKeys: false }),
+    ).rejects.toMatchObject({ code: "NODE_HAS_KEYS" });
+    // The refusal must leave everything exactly as it was.
+    const [stillThere] = await database.db
+      .select({ id: nodes.id })
+      .from(nodes)
+      .where(eq(nodes.id, node));
+    expect(stillThere?.id).toBe(node);
+  });
+
+  runDatabaseTest("deletes a node together with its keys when asked", async () => {
+    if (!database) return;
+    const repository = new PostgresControlRepository({ db: database.db, keyring });
+    const admin: Actor = { ...actor, role: "admin" };
+    const node = await seedNode("delete-cascade");
+    const owner = await seedQuotaUser("delete-cascade@example.com");
+    const key = (await repository.createProvisioningKey(owner, {
+      nodeId: node,
+      protocol: "awg2",
+      deviceType: "other",
+      deviceLabel: "laptop",
+      routeProfile: "full_tunnel",
+      nameDisplay: defaultKeyNameDisplay,
+    })) as { id: string };
+    // Provisioning enqueues a job whose key id lives in the payload, not in a
+    // foreign key — the delete has to clear it or the worker retries forever.
+    const jobKey = `vpn-key.provision:${key.id}`;
+    const [queued] = await database.db
+      .select({ id: jobOutbox.id })
+      .from(jobOutbox)
+      .where(eq(jobOutbox.deduplicationKey, jobKey));
+    expect(queued?.id).toBeDefined();
+
+    const result = (await repository.deleteNode(admin, node, {
+      deleteKeys: true,
+    })) as { deletedKeys: number; affectedOwners: number; droppedJobs: number };
+    expect(result.deletedKeys).toBe(1);
+    expect(result.affectedOwners).toBe(1);
+    expect(result.droppedJobs).toBe(1);
+
+    expect(
+      await database.db.select().from(nodes).where(eq(nodes.id, node)),
+    ).toHaveLength(0);
+    expect(
+      await database.db.select().from(vpnKeys).where(eq(vpnKeys.id, key.id)),
+    ).toHaveLength(0);
+    expect(
+      await database.db
+        .select()
+        .from(jobOutbox)
+        .where(eq(jobOutbox.deduplicationKey, jobKey)),
+    ).toHaveLength(0);
+    // The owner survives; only their key on that node is gone.
+    expect(
+      await database.db.select().from(users).where(eq(users.id, owner.id)),
+    ).toHaveLength(1);
+    const [event] = await database.db
+      .select({ metadata: auditEvents.metadata })
+      .from(auditEvents)
+      .where(
+        and(
+          eq(auditEvents.targetId, node),
+          eq(auditEvents.action, "node.deleted"),
+        ),
+      );
+    expect(event?.metadata).toMatchObject({ deletedKeys: 1, affectedOwners: 1 });
+  });
 });

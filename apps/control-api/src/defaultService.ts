@@ -207,7 +207,8 @@ export const createDefaultControlApiService = ({
   createNode: (actor, request) => repository.createNode(actor, request),
   updateNode: (actor, nodeId, request) =>
     repository.updateNode(actor, nodeId, request),
-  deleteNode: (actor, nodeId) => repository.deleteNode(actor, nodeId),
+  deleteNode: (actor, nodeId, options) =>
+    repository.deleteNode(actor, nodeId, options),
   adminList: (actor, resource) => repository.adminList(actor, resource),
   adminAction: (actor, resource, targetId, action, payload) =>
     repository.adminAction(actor, resource, targetId, action, payload),
