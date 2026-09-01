@@ -32,6 +32,11 @@ describe("PostgresControlRepository quota race", () => {
     await database.db.delete(vpnKeys);
     await database.db.delete(nodes);
     await database.db.delete(portalPolicy);
+    // Audit rows are cascaded away with their users, but rows left by an
+    // earlier run against a re-used database are not: some assertions here
+    // COUNT audit events, so the table has to start empty for the suite to be
+    // self-contained rather than only passing on CI's throwaway database.
+    await database.db.delete(auditEvents);
     await database.db.delete(users);
     const [user] = await database.db
       .insert(users)
@@ -383,10 +388,18 @@ describe("PostgresControlRepository quota race", () => {
       // Approval outranks the earlier per-node values, which would otherwise
       // keep overriding the grant on the servers the admin just said yes to.
       expect(updated?.nodeKeyLimits).toBeNull();
+      // Filter on the action too: the request id is also the target of the
+      // earlier `quota_request.created` event, so matching on the id alone
+      // would assert against whichever of the two the planner returned first.
       const [event] = await database.db
         .select({ metadata: auditEvents.metadata })
         .from(auditEvents)
-        .where(eq(auditEvents.targetId, created.id));
+        .where(
+          and(
+            eq(auditEvents.targetId, created.id),
+            eq(auditEvents.action, "admin.quota-requests.approve"),
+          ),
+        );
       expect(event?.metadata).toMatchObject({ clearedNodeLimitCount: 1 });
     },
   );
