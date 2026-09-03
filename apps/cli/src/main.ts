@@ -17,6 +17,10 @@ import {
   keyNeedsRouteProfileWarning,
   routeProfileWarning,
 } from "./deviceProfiles.js";
+import {
+  cliInstallVideoEmbed,
+  describeVideoTarget,
+} from "./installVideo.js";
 import { buildRequestHeaders } from "./http.js";
 import { authHeaders } from "./identity.js";
 import {
@@ -585,10 +589,24 @@ async function cmdPolicySet(args: string[]): Promise<void> {
       string | null
     >;
     const videos: Record<string, string | null> = { ...current };
+    const summary: string[] = [];
     for (const [audience, value] of videoFlags) {
-      videos[audience] = value === "none" || value === "null" ? null : value!;
+      const cleared = value === "none" || value === "null";
+      const next = cleared ? null : value!;
+      // Refuse a URL the panel cannot play now, rather than storing it and
+      // leaving the guide showing its placeholder with no explanation.
+      if (next !== null && !cliInstallVideoEmbed(next)) {
+        throw new Error(
+          `--video-${audience}: not a playable video link. Use a Google Drive ` +
+            "share link (https://drive.google.com/file/d/<id>/view), a direct " +
+            "http(s) video file, or 'none' to clear it.",
+        );
+      }
+      videos[audience] = next;
+      summary.push(describeVideoTarget(audience, next));
     }
     body.installGuideVideos = videos;
+    for (const line of summary) console.log(line);
   }
 
   const protocols = flag("allowedProtocols");
@@ -1043,7 +1061,11 @@ policy-set fields:
   cfApiToken=<token>   (write-only, encrypted)
   video-desktop / video-android / video-ios=<url|none>
     Walkthrough video shown in the panel's connection guide, per audience.
-    Merges with the ones already set, so naming one does not clear the others.
+    A Google Drive share link (the file must be readable by anyone with the
+    link) is embedded as a Drive preview; any other http(s) URL is played as a
+    direct video file. Merges with the ones already set, so naming one audience
+    does not clear the other two. These URLs are deployment settings and belong
+    on your panel, never in the repository.
   e.g.  amnezia-panel policy-set --allowQrDownload=false --defaultKeyLimit=10
         amnezia-panel policy-set --video-ios=https://example.com/ios.mp4
 
