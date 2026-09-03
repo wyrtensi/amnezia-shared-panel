@@ -15,9 +15,14 @@ Related: [`INSTALL.md`](./INSTALL.md) (§ prerequisites),
 | | Panel alone | Panel + co-located node |
 |---|---|---|
 | RAM | 512 MB + swap | 1 GB + swap |
-| Swap | 1 GB | 2 GB |
+| Swap | **2 GB** | **2 GB** |
 | Disk | 10 GB | 10 GB, kept below ~70 % |
 | vCPU | 1 | 1 |
+
+**2 GB of swap on every server**, panel or node, large host or small. It is not a
+small-host-only measure: the events that need it — an image pull, a migration, a
+telemetry burst — happen on every host, and the cost is 2 GB of disk that is
+otherwise idle.
 
 Measured steady state of the whole stack on the reference host: panel ~96 MiB
 across four containers (web 32, worker 39, control-api 12, postgres 13), node
@@ -25,7 +30,9 @@ across four containers (web 32, worker 39, control-api 12, postgres 13), node
 what absorbs an image pull, a migration, and the transient container preflight
 starts.
 
-## 2. Add swap before anything else
+## 2. Add 2 GB of swap before anything else
+
+Every server this project runs on — panel, node, or both — gets a 2 GB swapfile.
 
 ```bash
 fallocate -l 2G /swapfile && chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile
@@ -37,10 +44,22 @@ sysctl -w vm.swappiness=10 && echo 'vm.swappiness=10' > /etc/sysctl.d/99-swappin
 hot, while still letting it evict genuinely idle pages instead of invoking the
 OOM killer. Verify with `swapon --show` and `free -m`.
 
-The cost is honest and worth stating: a swapfile is 1-2 GB of a 10 GB disk, and
-paging on a VPN node trades latency for survival. Take the trade — the
-alternative is a global OOM kill, which on this stack means the database or the
-node-agent, not the process that asked for the memory.
+**Growing an existing 1 GB swapfile** needs the space free first; on a full disk,
+reclaim before you resize (§6), because `fallocate` on a nearly-full filesystem
+gives you a swapfile you cannot actually page into:
+
+```bash
+swapoff /swapfile && rm -f /swapfile
+fallocate -l 2G /swapfile && chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile
+```
+
+Run it in one go: between `swapoff` and `swapon` the host has no swap at all, and
+that is exactly the window in which a memory spike becomes an OOM kill.
+
+The cost is honest and worth stating: 2 GB of a 10 GB disk, and paging on a VPN
+node trades latency for survival. Take the trade — the alternative is a global
+OOM kill, which on this stack means the database or the node-agent, not the
+process that asked for the memory.
 
 ## 3. Never build images on a small host
 
@@ -114,10 +133,42 @@ in `.env`:
 | `POSTGRES_WORK_MEM` | `2MB` | per sort, per backend |
 | `POSTGRES_MAINTENANCE_WORK_MEM` | `32MB` | |
 | `POSTGRES_EFFECTIVE_CACHE_SIZE` | `128MB` | planner hint only |
-| `POSTGRES_MAX_CONNECTIONS` | `50` | floor is 30: `max: 10` per pool × control-api, worker, migrate |
+| `POSTGRES_MAX_CONNECTIONS` | `70` | see below |
 
 On a host with memory to spare, raise them — these defaults trade throughput for
 survival, which is the wrong trade on a large box.
+
+### Who actually opens those connections
+
+Not panel users, and not nodes. Every connection belongs to a **panel process**,
+and each one opens a pool of `max: 10` (`packages/db/src/client.ts`):
+
+| Process | Connections | When |
+|---|---|---|
+| `control-api` | up to 10 | always |
+| `worker` | up to 10 | always |
+| `migrate` | up to 10 | during an update, then exits |
+| CLI (`docker exec … apps/cli/dist/main.js`) | up to 10 | for one command |
+
+A user opening the panel creates no database connection: the request borrows one
+from control-api's pool of ten and returns it. Five users or five hundred, it is
+the same ten. Nodes never talk to Postgres at all — the worker polls them over
+HTTP and writes through its own pool.
+
+So the ceiling is structural, not statistical: ~20 at rest, ~40 in the worst case,
+plus Postgres's 3 reserved superuser slots. The default of 70 leaves room for a
+second CLI, a stuck migrate, or a process added later.
+
+**This number cannot grow on its own, so nothing auto-raises it.** Reaching 70
+would require adding panel processes or raising the pool constant — both are
+deploy-time changes, made in the same commit that would raise this. Raising it
+automatically under pressure would also be backwards: the limit is what keeps
+total backend memory inside `POSTGRES_MEM_LIMIT`, so lifting it converts a
+recoverable `FATAL: sorry, too many connections` (one request fails) into a cgroup
+OOM kill (the database dies). If it ever does bind, the right levers are a smaller
+per-process pool or pgbouncer — not a higher ceiling. And `max_connections` is a
+postmaster parameter: changing it restarts Postgres, which is not something to do
+automatically to a busy database.
 
 ## 6. Disk is usually the binding constraint
 
@@ -141,6 +192,49 @@ and a 500-peer node still needs the full 350 MiB.
 Leaving the template's `500` on a small host therefore asks for the maximum
 requirement regardless of what the node will actually carry. Set it to the
 capacity you intend; 500 remains the hard upper bound.
+
+### Two caps, not one
+
+A node's capacity is enforced twice, independently, and they are different
+numbers:
+
+| Cap | Where it lives | What it stops |
+|---|---|---|
+| `nodes.max_peers` | the panel's database, editable in **Админ → VPN-ноды** | the panel refusing to place a new key on a full node (`postgresRepository.ts`) |
+| `SERVER_MAX_PEERS` | `infra/node/.env` **on the node** | the node-agent refusing to create the peer (`clients.service.ts`, returns `CONFLICT`) |
+
+The node-agent reads its value once at container start, so changing it means
+editing the node's `.env` and recreating the container — there is no API for it.
+The panel's value is a normal database column and can change at any time.
+
+**Consequence:** raising the panel's number above the node's own cap does not
+give you capacity. It gives you key creation that fails at the node with a
+conflict instead of a clear "node is full". Whenever the panel's number moves,
+the node's must be at least as high.
+
+### Automatic capacity growth
+
+> **Not shipped yet.** This section is the agreed behaviour, written down so the
+> implementation and the docs do not drift. Today `nodes.max_peers` only changes
+> when an admin edits it.
+
+The panel raises `nodes.max_peers` on its own as a node fills up, up to
+`min(500, SERVER_MAX_PEERS as reported by the node)`. It never crosses either
+bound, and each raise is written to the audit log.
+
+**It raises the number and nothing else** — deliberately. It does not check
+whether the node still has the memory for the peers it is about to allow, and it
+does not touch the node's `.env`. Watching the memory is the operator's job:
+
+- If a node's own `SERVER_MAX_PEERS` is below 500 and the panel has grown to meet
+  it, the node has stopped growing. Raising it further means editing
+  `infra/node/.env` on that node and recreating the container — and checking that
+  the host actually has the memory first (§1, §7).
+- `MemAvailable` on a node that is filling up is worth looking at before, not
+  after, you raise its cap.
+- Growth stops dead at 500 in every case. `preflight.sh` rejects anything above
+  it, and the value is described there as the *unvalidated* ceiling: nobody has
+  run a node past it.
 
 ## 8. Shell gotcha worth knowing
 

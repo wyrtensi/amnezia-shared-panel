@@ -3,6 +3,8 @@
 ## Preflight
 
 - [ ] Confirm the host is Linux/amd64 and `/dev/net/tun` exists.
+- [ ] Confirm the host has a **2 GB swapfile** and `vm.swappiness=10` (`swapon --show`). This is required on every server, whatever its RAM — see [`docs/SMALL-HOSTS.md`](../../docs/SMALL-HOSTS.md) §2.
+- [ ] Set `SERVER_MAX_PEERS` to the capacity this host can carry, not the template's 500. It scales the preflight RAM gate, and the node-agent enforces it independently of the panel.
 - [ ] Confirm inbound UDP 51889 (AWG2) and UDP 51890 (AWG3) are approved in the provider and host firewalls.
 - [ ] Confirm TCP 4001 is not open in any public firewall.
 - [ ] Set `.env` mode to `0600` and every directory under `secrets/`, `state/`, and `backups/` to `0700`.
