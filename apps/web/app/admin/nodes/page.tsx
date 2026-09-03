@@ -5,6 +5,7 @@ import {
   Activity,
   ArrowUpDown,
   Boxes,
+  Download,
   Gauge,
   Globe,
   Pencil,
@@ -80,6 +81,9 @@ export default function AdminNodesPage() {
   const [showCreate, setShowCreate] = React.useState(false);
   const [editNode, setEditNode] = React.useState<AdminNode | null>(null);
   const [deleteTarget, setDeleteTarget] = React.useState<AdminNode | null>(null);
+  const [updateAgentNode, setUpdateAgentNode] = React.useState<AdminNode | null>(
+    null,
+  );
 
   // Count keys per node in EVERY state, not just the active ones: revoked keys
   // still reference the node and still block (or get destroyed by) a deletion.
@@ -171,6 +175,7 @@ export default function AdminNodesPage() {
               onReconcile={() => void action("nodes", node.id, "reconcile")}
               onEdit={() => setEditNode(node)}
               onDelete={() => setDeleteTarget(node)}
+              onUpdateAgent={() => setUpdateAgentNode(node)}
             />
           ))}
         </div>
@@ -185,6 +190,12 @@ export default function AdminNodesPage() {
       <EditNodeDialog
         node={editNode}
         onClose={() => setEditNode(null)}
+        request={request}
+        reload={reload}
+      />
+      <UpdateAgentDialog
+        node={updateAgentNode}
+        onClose={() => setUpdateAgentNode(null)}
         request={request}
         reload={reload}
       />
@@ -206,6 +217,7 @@ function NodeCard({
   onReconcile,
   onEdit,
   onDelete,
+  onUpdateAgent,
 }: {
   node: AdminNode;
   keyStats: NodeKeyStats;
@@ -213,6 +225,7 @@ function NodeCard({
   onReconcile: () => void;
   onEdit: () => void;
   onDelete: () => void;
+  onUpdateAgent: () => void;
 }) {
   const { t, lang } = useT();
   const peers = node.peerCount ?? 0;
@@ -377,10 +390,40 @@ function NodeCard({
           </Callout>
         ) : null}
 
+        <NodeAgentUpdateStatus node={node} />
+
         <div className="flex items-center gap-1.5 border-t pt-3">
           <Button variant="secondary" size="sm" onClick={onReconcile}>
             <RefreshCw className="h-4 w-4" /> {t("nodes.reconcile")}
           </Button>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <span>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  // Disabled while the panel has nothing to offer, and while an
+                  // update is in flight: a second request would only queue
+                  // behind the first, and the node is busy replacing itself.
+                  disabled={
+                    !node.availableAgent ||
+                    node.agentUpdateState === "requested" ||
+                    node.agentUpdateState === "running"
+                  }
+                  onClick={onUpdateAgent}
+                >
+                  <Download className="h-4 w-4" /> {t("nodes.agentUpdate")}
+                </Button>
+              </span>
+            </TooltipTrigger>
+            <TooltipContent>
+              {node.availableAgent
+                ? t("nodes.agentUpdateTip", {
+                    version: node.availableAgent.version,
+                  })
+                : t("nodes.agentUpdateUnresolved")}
+            </TooltipContent>
+          </Tooltip>
           <Button variant="secondary" size="sm" onClick={onEdit}>
             <Pencil className="h-4 w-4" /> {t("nodes.edit")}
           </Button>
@@ -671,6 +714,148 @@ function EditNodeDialog({
  * counts, warns that the peers survive on a still-running server, and keeps the
  * delete button disabled until the operator retypes the node's internal name.
  */
+/**
+ * The node's own record of its last agent update. It is a mirror of what the
+ * node reports, kept on the row so a failure is still readable long after the
+ * job that caused it - which is the whole point: the alternative is an SSH
+ * session on the host that just refused to update.
+ */
+function NodeAgentUpdateStatus({ node }: { node: AdminNode }) {
+  const { t, lang } = useT();
+  const state = node.agentUpdateState ?? "idle";
+  if (state === "idle") return null;
+
+  const tone =
+    state === "failed" ? "danger" : state === "succeeded" ? "success" : "info";
+  const log = node.agentUpdateLog?.trim() ?? "";
+
+  return (
+    <Callout tone={tone} className="space-y-1 text-xs">
+      <div className="font-medium">{t(`nodes.agentUpdate.${state}`)}</div>
+      {node.agentUpdateImage ? (
+        <code className="block truncate text-[11px] opacity-80">
+          {node.agentUpdateImage}
+        </code>
+      ) : null}
+      {node.agentUpdateMessage ? <div>{node.agentUpdateMessage}</div> : null}
+      {node.agentUpdateAt ? (
+        <div className="opacity-70">
+          {formatDateTime(node.agentUpdateAt, lang)}
+        </div>
+      ) : null}
+      {log ? (
+        <details className="mt-1">
+          <summary className="cursor-pointer select-none opacity-80">
+            {t("nodes.agentUpdateLog")}
+          </summary>
+          <pre className="mt-1 max-h-48 overflow-auto whitespace-pre-wrap break-all rounded bg-muted p-2 text-[11px]">
+            {log}
+          </pre>
+        </details>
+      ) : null}
+    </Callout>
+  );
+}
+
+/**
+ * The confirm step. It names the node and the exact digest, and that digest is
+ * what gets sent: if a newer release lands between this dialog opening and the
+ * click, the admin still installs what they were shown.
+ */
+function UpdateAgentDialog({
+  node,
+  onClose,
+  request,
+  reload,
+}: {
+  node: AdminNode | null;
+  onClose: () => void;
+  request: <T>(path: string, init?: RequestInit) => Promise<T>;
+  reload: () => Promise<void>;
+}) {
+  const { t } = useT();
+  const [busy, setBusy] = React.useState(false);
+  const [error, setError] = React.useState<string | null>(null);
+
+  React.useEffect(() => {
+    setError(null);
+  }, [node]);
+
+  const release = node?.availableAgent ?? null;
+
+  const submit = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!node || !release || busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await request(`/api/admin/nodes/${node.id}/agent-update`, {
+        method: "POST",
+        body: JSON.stringify({ image: release.image }),
+      });
+      toast.success(t("nodes.agentUpdateQueued", { name: node.name }));
+      onClose();
+      await reload();
+    } catch (cause) {
+      const message =
+        cause instanceof Error ? cause.message : t("nodes.agentUpdateFailed");
+      setError(message);
+      toast.error(message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Dialog open={Boolean(node)} onOpenChange={(next) => !next && onClose()}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>
+            {t("nodes.agentUpdateTitle", { name: node?.name ?? "" })}
+          </DialogTitle>
+          <DialogDescription>{t("nodes.agentUpdateBody")}</DialogDescription>
+        </DialogHeader>
+        <form onSubmit={(event) => void submit(event)} className="space-y-3">
+          <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">
+            <dt className="text-muted-foreground">
+              {t("nodes.agentUpdateRunning")}
+            </dt>
+            <dd className="min-w-0 truncate font-mono">
+              {node?.agentUpdateImage ?? t("nodes.agentUpdateUnknown")}
+            </dd>
+            <dt className="text-muted-foreground">
+              {t("nodes.agentUpdateInstall")}
+            </dt>
+            <dd className="min-w-0 break-all font-mono">
+              {release?.image ?? "—"}
+            </dd>
+            <dt className="text-muted-foreground">
+              {t("nodes.agentUpdateVersion")}
+            </dt>
+            <dd>{release?.version ?? "—"}</dd>
+          </dl>
+          <Callout tone="info" className="text-xs">
+            {t("nodes.agentUpdateNoDowntime")}
+          </Callout>
+          {error ? (
+            <Callout tone="danger" className="text-xs">
+              {error}
+            </Callout>
+          ) : null}
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={onClose}>
+              {t("common.cancel")}
+            </Button>
+            <Button type="submit" disabled={!release || busy}>
+              {busy ? t("nodes.agentUpdateBusy") : t("nodes.agentUpdateConfirm")}
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 function DeleteNodeDialog({
   node,
   keyStats,

@@ -73,3 +73,21 @@ export type ServerStatusPayload = {
   // SERVER_PUBLIC_HOST: the host written into every issued client config.
   publicHost: string;
 };
+
+// The lifecycle of an in-panel agent update, derived from the spool rather than
+// from memory: the process answering a status call is usually not the process
+// that made the request, because the update replaces it.
+export type AgentUpdateState =
+  | "idle"
+  | "requested"
+  | "running"
+  | "succeeded"
+  | "failed";
+
+export type AgentUpdateStatus = {
+  state: AgentUpdateState;
+  image: string | null;
+  log: string;
+  updatedAt: string | null;
+  message: string | null;
+};

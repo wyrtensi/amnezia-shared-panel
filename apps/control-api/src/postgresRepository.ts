@@ -37,6 +37,8 @@ import {
   emptyGlobalRoutes,
   globalRoutesSchema,
   installGuideVideosSchema,
+  isPublishableAgentImage,
+  nodeAgentUpdateActionSchema,
   nodeOrderSchema,
   PROTOCOL_KINDS,
   recommendedNodeIdsSchema,
@@ -55,6 +57,7 @@ import {
   globalRouteOverrides,
   identities,
   jobOutbox,
+  nodeAgentReleases,
   nodes,
   peerCurrent,
   portalPolicy,
@@ -1837,6 +1840,14 @@ export class PostgresControlRepository implements ControlRepository {
             lastHealthAt: nodes.lastHealthAt,
             lastSyncAt: nodes.lastSyncAt,
             lastError: nodes.lastError,
+            // The node's own view of its last agent update, mirrored by the
+            // telemetry poll. The log is what explains a failure without anyone
+            // opening an SSH session.
+            agentUpdateState: nodes.agentUpdateState,
+            agentUpdateImage: nodes.agentUpdateImage,
+            agentUpdateMessage: nodes.agentUpdateMessage,
+            agentUpdateLog: nodes.agentUpdateLog,
+            agentUpdateAt: nodes.agentUpdateAt,
             createdAt: nodes.createdAt,
             updatedAt: nodes.updatedAt,
           })
@@ -1857,8 +1868,27 @@ export class PostgresControlRepository implements ControlRepository {
           (await this.nodeTrafficPeriods({})).map((row) => [row.nodeId, row]),
         );
         const emptyPair = { receivedBytes: "0", sentBytes: "0" };
+        // The release the panel currently offers, resolved by the worker. There
+        // is at most one repository configured, so the newest row is it. Absent
+        // means "cannot resolve the current image" and the button stays off -
+        // never a fall back to a tag, which is the mutable reference the node's
+        // preflight refuses.
+        const [release] = await this.options.db
+          .select()
+          .from(nodeAgentReleases)
+          .orderBy(desc(nodeAgentReleases.resolvedAt))
+          .limit(1);
+        const availableAgent = release
+          ? {
+              repository: release.repository,
+              version: release.version,
+              image: `${release.repository}@${release.digest}`,
+              resolvedAt: release.resolvedAt,
+            }
+          : null;
         return nodeRows.map((row) => ({
           ...row,
+          availableAgent,
           peerCount: peerCounts.get(row.id) ?? 0,
           traffic: {
             today: nodeTraffic.get(row.id)?.today ?? emptyPair,
@@ -2559,6 +2589,56 @@ export class PostgresControlRepository implements ControlRepository {
           targetId,
         });
         return { id: targetId, queued: true };
+      });
+    } else if (resource === "nodes" && action === "agent-update") {
+      // Modelled on "reconcile" above: check the target, enqueue, audit. The
+      // difference that matters is the image - the panel resolves it, the admin
+      // confirms exactly what was shown, and that digest travels unchanged to
+      // the node. Nothing downstream re-resolves anything.
+      const requested = nodeAgentUpdateActionSchema.parse(payload ?? {});
+      return this.options.db.transaction(async (tx) => {
+        const [node] = await tx
+          .select({ id: nodes.id })
+          .from(nodes)
+          .where(eq(nodes.id, targetId));
+        if (!node) throw new ApiError(404, "Node not found", "NODE_NOT_FOUND");
+        const [release] = await tx
+          .select()
+          .from(nodeAgentReleases)
+          .orderBy(desc(nodeAgentReleases.resolvedAt))
+          .limit(1);
+        if (!release) {
+          throw new ApiError(
+            409,
+            "No published node-agent image has been resolved yet",
+            "AGENT_IMAGE_UNRESOLVED",
+          );
+        }
+        const image = requested.image ?? `${release.repository}@${release.digest}`;
+        // The admin may only confirm what the panel resolved. A pasted digest
+        // for another repository, or a tag, is refused here as well as on the
+        // node and in the host-side updater.
+        if (!isPublishableAgentImage(image, release.repository)) {
+          throw new ApiError(
+            400,
+            "The image must be a digest in the published repository",
+            "AGENT_IMAGE_INVALID",
+          );
+        }
+        await tx.insert(jobOutbox).values({
+          type: "node.agent-update",
+          deduplicationKey: `node.agent-update:${targetId}:${randomUUID()}`,
+          payload: { nodeId: targetId, image },
+        });
+        await tx.insert(auditEvents).values({
+          actorUserId: actor.id,
+          actorType: "user",
+          action: "admin.nodes.agent-update",
+          targetType: "node",
+          targetId,
+          metadata: { image },
+        });
+        return { id: targetId, image, queued: true };
       });
     } else if (resource === "rules" && action === "activate") {
       return this.options.db.transaction(async (tx) => {

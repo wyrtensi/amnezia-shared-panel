@@ -127,6 +127,13 @@
       "when": 1788451042486,
       "tag": "0017_install_guide_videos_not_null",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1788464014638,
+      "tag": "0018_node_agent_update",
+      "breakpoints": true
     }
   ]
 }

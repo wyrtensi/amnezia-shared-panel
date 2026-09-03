@@ -47,6 +47,13 @@ export type NodeReconcileResult = {
   summary: NodeReconcileSummary;
 };
 
+export type NodeAgentUpdateRequested = {
+  jobId: string;
+  nodeId: string;
+  image: string;
+  requestedAt: Date;
+};
+
 export type AccessReconcileResult = {
   /** Emails of accounts disabled because they are no longer allowed. */
   deactivated: string[];
@@ -68,6 +75,17 @@ export interface WorkerRepository {
     nodeId: string,
   ) => Promise<NodeReconcileContext | null>;
   completeNodeReconcile: (result: NodeReconcileResult) => Promise<void>;
+  /** Mark the node as asked to update, and finish the job that asked. */
+  completeNodeAgentUpdate: (
+    result: NodeAgentUpdateRequested,
+  ) => Promise<void>;
+  /** Store the release the panel currently offers nodes, keyed by repository. */
+  saveNodeAgentRelease: (release: {
+    repository: string;
+    version: string;
+    digest: string;
+    resolvedAt: Date;
+  }) => Promise<void>;
   completeProvision: (result: {
     jobId: string;
     keyId: string;

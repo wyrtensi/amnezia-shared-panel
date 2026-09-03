@@ -170,6 +170,26 @@ export const SwaggerContract = {
     };
   },
 
+  // Same body shape as a client error; separate because 5xx is a different
+  // enum. Used for 501, which a node returns when it was never wired for
+  // in-panel agent updates - a configuration answer, not a failure.
+  ServerErrorResponseFactory(
+    serverErrorCode: ServerErrorCode,
+  ): ActionResponseType {
+    return {
+      type: this.ActionResponseSchema.type,
+      required: this.ActionResponseSchema.required,
+      description: "Ответ на запрос с ошибкой",
+      properties: {
+        message: {
+          type: this.ActionResponseSchema.properties.message.type,
+          description: "Описание ошибки",
+          example: i18next.t(this.CodeDescriptions[serverErrorCode]),
+        },
+      },
+    };
+  },
+
   GetConfig(): FastifyDynamicSwaggerOptions {
     const openapi: FastifyDynamicSwaggerOptions["openapi"] = {
       openapi: "3.0.0",

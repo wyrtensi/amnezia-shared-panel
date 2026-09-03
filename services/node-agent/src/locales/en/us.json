@@ -105,7 +105,10 @@
       "INVALID_INTERVAL": "Invalid interval specified for the task"
     },
     "server": {
-      "REBOOTING": "Server is rebooting..."
+      "REBOOTING": "Server is rebooting...",
+      "UPDATE_REQUESTED": "Agent update requested",
+      "UPDATE_UNAVAILABLE": "Agent updates are not configured on this server",
+      "UPDATE_INVALID_IMAGE": "The image must be a digest reference in the trusted repository"
     }
   },
   "system": {

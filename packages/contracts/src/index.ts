@@ -728,3 +728,75 @@ export function deviceSupportsRouteProfiles(deviceType: string): boolean {
     deviceType,
   );
 }
+
+// --- Node-agent self-update -------------------------------------------------
+// The panel telling a node "run this image" is a remote-code-execution channel
+// by construction, so the reference is constrained twice: it must be a DIGEST
+// (a tag is mutable, and preflight refuses mutable references anyway), and it
+// must live under the repository the node is configured to trust. Validated on
+// the agent before anything is spooled, and again by the host-side updater,
+// which reads the spool from disk and has a different threat model.
+const AGENT_IMAGE_DIGEST = /^sha256:[0-9a-f]{64}$/;
+
+/**
+ * True when `reference` is `<repo>@sha256:<64 hex>` for exactly `repo`.
+ * Rejects a tag, a bare image id, another repository, a short digest, and
+ * anything carrying a scheme or whitespace.
+ */
+export const isPublishableAgentImage = (
+  reference: string,
+  repository: string,
+): boolean => {
+  if (reference !== reference.trim() || /\s/.test(reference)) return false;
+  if (reference.includes("://")) return false;
+  const at = reference.indexOf("@");
+  if (at < 0) return false;
+  // No lastIndexOf: a second "@" means the reference is not what it claims.
+  if (reference.indexOf("@", at + 1) >= 0) return false;
+  const repo = reference.slice(0, at);
+  const digest = reference.slice(at + 1);
+  return repo === repository && AGENT_IMAGE_DIGEST.test(digest);
+};
+
+/**
+ * The body of `POST /api/admin/nodes/:id/agent-update`. `image` is optional and
+ * omitting it means "the release the panel currently offers": the admin
+ * confirms what the dialog showed, and passing it back explicitly is what makes
+ * the confirmation binding when a newer release lands in between.
+ */
+export const nodeAgentUpdateActionSchema = z.object({
+  image: z.string().min(1).max(512).optional(),
+});
+export type NodeAgentUpdateAction = z.infer<typeof nodeAgentUpdateActionSchema>;
+
+/** What the panel sends a node when it asks it to update its agent. */
+export const nodeAgentUpdateRequestSchema = z.object({
+  // Always the resolved digest the admin confirmed, never a tag: the node must
+  // install the image that was shown, not whatever a tag points at by then.
+  image: z.string().min(1).max(512),
+});
+export type NodeAgentUpdateRequest = z.infer<
+  typeof nodeAgentUpdateRequestSchema
+>;
+
+export const NODE_AGENT_UPDATE_STATES = [
+  "idle",
+  "requested",
+  "running",
+  "succeeded",
+  "failed",
+] as const;
+export const nodeAgentUpdateStateSchema = z.enum(NODE_AGENT_UPDATE_STATES);
+export type NodeAgentUpdateState = z.infer<typeof nodeAgentUpdateStateSchema>;
+
+export const nodeAgentUpdateStatusSchema = z.object({
+  state: nodeAgentUpdateStateSchema,
+  // The digest the node is installing or last installed, null when it has
+  // never been asked.
+  image: z.string().nullable(),
+  // The updater's output, served back so the panel can show why an update
+  // failed without anyone opening an SSH session.
+  log: z.string(),
+  updatedAt: z.iso.datetime().nullable(),
+});
+export type NodeAgentUpdateStatus = z.infer<typeof nodeAgentUpdateStatusSchema>;

@@ -211,6 +211,20 @@ type AdminNode = {
   publicIp?: string | null;
   publicIpResolvedAt?: string | null;
   lastError: string | null;
+  // The node's own view of its last agent update, mirrored by the telemetry
+  // poll, plus the release the panel currently offers. All optional so a CLI
+  // newer than the API it talks to still lists nodes.
+  agentUpdateState?: string;
+  agentUpdateImage?: string | null;
+  agentUpdateMessage?: string | null;
+  agentUpdateLog?: string;
+  agentUpdateAt?: string | null;
+  availableAgent?: {
+    repository: string;
+    version: string;
+    image: string;
+    resolvedAt: string;
+  } | null;
 };
 type AuditEvent = {
   id: string;
@@ -877,6 +891,76 @@ async function cmdAction(
   console.log(`${resource} ${id}: ${action} done`);
 }
 
+/** The one node `id` names, by id or by exact name. */
+async function findAdminNode(id: string): Promise<AdminNode> {
+  const nodes = await api<AdminNode[]>("/api/admin/nodes");
+  const node = nodes.find((row) => row.id === id || row.name === id);
+  if (!node) throw new Error(`No node with id or name ${id}`);
+  return node;
+}
+
+async function cmdNodeAgentUpdate(args: string[]): Promise<void> {
+  const id = args.find((arg) => !arg.startsWith("--"));
+  if (!id) {
+    throw new Error(
+      "Usage: node-agent-update <id> [--image=<repo@sha256:...>] [--confirm]",
+    );
+  }
+  const node = await findAdminNode(id);
+  const image = flagOf(args, "image") ?? node.availableAgent?.image;
+  if (!image) {
+    throw new Error(
+      "The panel has not resolved a published node-agent image yet, so there is " +
+        "nothing to install. Check NODE_AGENT_UPDATE_REPO on the worker.",
+    );
+  }
+  // Same shape as the panel's confirm dialog: see the digest, then say yes. The
+  // update replaces software on a live host, so it is never the default.
+  if (!args.includes("--confirm")) {
+    console.log(`node ${node.name} (${node.id})`);
+    console.log(`  running:  ${node.agentUpdateImage ?? "unknown"}`);
+    console.log(`  install:  ${image}`);
+    if (node.availableAgent) {
+      console.log(
+        `  version:  ${node.availableAgent.version} (resolved ${node.availableAgent.resolvedAt})`,
+      );
+    }
+    console.log("Re-run with --confirm to install it.");
+    return;
+  }
+  const result = await api<{ image: string }>(
+    `/api/admin/nodes/${node.id}/agent-update`,
+    { method: "POST", body: JSON.stringify({ image }) },
+  );
+  console.log(`node ${node.name}: update to ${result.image} requested`);
+  console.log("Follow it with: node-agent-log " + node.id);
+}
+
+async function cmdNodeAgentLog(args: string[]): Promise<void> {
+  const id = args.find((arg) => !arg.startsWith("--"));
+  if (!id) throw new Error("Usage: node-agent-log <id>");
+  const node = await findAdminNode(id);
+  if (wantsJson(args)) {
+    return json({
+      state: node.agentUpdateState ?? "idle",
+      image: node.agentUpdateImage ?? null,
+      message: node.agentUpdateMessage ?? null,
+      updatedAt: node.agentUpdateAt ?? null,
+      log: node.agentUpdateLog ?? "",
+    });
+  }
+  console.log(`node ${node.name} (${node.id})`);
+  console.log(`  state:    ${node.agentUpdateState ?? "idle"}`);
+  console.log(`  image:    ${node.agentUpdateImage ?? "—"}`);
+  console.log(`  finished: ${node.agentUpdateAt ?? "—"}`);
+  if (node.agentUpdateMessage) console.log(`  message:  ${node.agentUpdateMessage}`);
+  const log = node.agentUpdateLog ?? "";
+  if (log.trim()) {
+    console.log("");
+    console.log(log.trimEnd());
+  }
+}
+
 async function cmdNodeAdd(args: string[]): Promise<void> {
   const name = flagOf(args, "name");
   const apiBaseUrl = flagOf(args, "api-url");
@@ -1331,6 +1415,11 @@ Nodes:
   node-remove <id> --with-keys            Delete a node AND every key ever issued
              --confirm=<node name>        on it. Irreversible; the name must match
   node-reconcile <id>                     Trigger a node sync
+  node-agent-update <id> [--image=<ref>]  Replace a node's agent with the published
+                    [--confirm]           image. Without --confirm it prints what would
+                                          be installed and changes nothing. One node at
+                                          a time on purpose; there is no fleet variant
+  node-agent-log <id>                     Show the node's last agent update and its log
   node-add flags: [--public-name=] [--protocol=awg3] [--max-peers=500]
                   [--enabled-protocols=awg3,awg2] [--disabled]
 
@@ -1451,6 +1540,10 @@ async function main(): Promise<void> {
       return cmdNodeRemove(args);
     case "node-reconcile":
       return cmdAction("nodes", "reconcile", args);
+    case "node-agent-update":
+      return cmdNodeAgentUpdate(args);
+    case "node-agent-log":
+      return cmdNodeAgentLog(args);
     case "key-revoke":
       return cmdAction("keys", "revoke", args);
     case "key-disable":

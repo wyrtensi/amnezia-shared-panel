@@ -19,6 +19,7 @@ import type {
   CustomRoutes,
   GlobalRoutes,
   InstallGuideVideos,
+  NodeAgentUpdateState,
   NodeKeyLimits,
   PortalPolicyOverride,
   ProtocolKind,
@@ -178,6 +179,19 @@ export const nodes = pgTable(
     lastHealthAt: timestamp("last_health_at", { withTimezone: true }),
     lastSyncAt: timestamp("last_sync_at", { withTimezone: true }),
     lastError: text("last_error"),
+    // The last in-panel agent update, mirrored from the node's own spool. It is
+    // a cache of what the node reports, not the source of truth: the node
+    // survives the panel and answers GET /server/update on its own.
+    agentUpdateState: text("agent_update_state")
+      .$type<NodeAgentUpdateState>()
+      .default("idle")
+      .notNull(),
+    agentUpdateImage: text("agent_update_image"),
+    agentUpdateMessage: text("agent_update_message"),
+    // The tail the updater wrote. Kept on the node row so the card can show why
+    // an update failed after the job that ran it is long gone.
+    agentUpdateLog: text("agent_update_log").default("").notNull(),
+    agentUpdateAt: timestamp("agent_update_at", { withTimezone: true }),
     ...timestamps,
   },
   (table) => [
@@ -185,6 +199,19 @@ export const nodes = pgTable(
     check("nodes_max_peers_positive", sql`${table.maxPeers} > 0`),
   ],
 );
+
+// The node-agent image the panel currently offers nodes, resolved from the
+// registry by the worker. The panel never asks an admin to paste a digest and
+// never passes a tag to a node: a tag is mutable, so the thing installed could
+// differ from the thing confirmed. Keyed by repository, because that is what a
+// node is configured to trust; `resolvedAt` is what lets a reader decide the
+// answer is too old to offer.
+export const nodeAgentReleases = pgTable("node_agent_releases", {
+  repository: text("repository").primaryKey(),
+  version: varchar("version", { length: 64 }).notNull(),
+  digest: varchar("digest", { length: 80 }).notNull(),
+  resolvedAt: timestamp("resolved_at", { withTimezone: true }).notNull(),
+});
 
 export const routeRuleVersions = pgTable(
   "route_rule_versions",

@@ -3,3 +3,5 @@ export * from "./getServerLoad.schema";
 export * from "./getServerBackup.schema";
 export * from "./importServerBackup.schema";
 export * from "./rebootServer.schema";
+export * from "./getServerUpdate.schema";
+export * from "./requestServerUpdate.schema";

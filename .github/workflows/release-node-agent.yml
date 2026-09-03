@@ -61,6 +61,12 @@ jobs:
         with:
           context: services/node-agent
           file: services/node-agent/Dockerfile
+          # infra/node is outside the build context, and the image has to carry
+          # the compose file it expects for the node updater to reconcile it. A
+          # named context ships it without making the whole monorepo the build
+          # context.
+          build-contexts: |
+            deploy=infra/node
           push: true
           platforms: linux/amd64
           tags: ghcr.io/${{ github.repository }}/node-agent:${{ steps.version.outputs.value }}

@@ -495,6 +495,55 @@ Rotation re-issues a key with the **current** rules and a fresh config
 (`POST /api/keys/:id/rotate`, admin can rotate any key; users rotate their own).
 This is how RoscomVPN keys were re-issued against the current rule set.
 
+### Updating a node's agent from the panel (opt-in)
+
+The node-agent container mounts only the Docker socket, so it cannot read
+`compose.yaml`, cannot write the `.env` that `preflight.sh` validates, and has no
+compose binary — it cannot durably replace itself. A self-update would be undone
+by the next `deploy.sh`, and preflight would still pin the old digest. The swap
+therefore happens on the host, in a port of the panel's own updater
+(`docs/UPDATE-MECHANISM.md`).
+
+Wire a node for it once, as root, from the node directory:
+
+```sh
+sudo NODE_AGENT_UPDATE_REPO=ghcr.io/<owner>/<repo>/node-agent   bash scripts/install-agent-updater.sh
+docker compose --env-file .env -f compose.yaml up -d --no-deps node-agent
+```
+
+Until that has been run the node answers `501` and the panel button reports that
+the node cannot update itself. Nothing about an existing node changes on its own.
+
+What then happens when an admin confirms the button (or runs
+`node-agent-update <id> --confirm`):
+
+1. the worker asks the node with the **digest the admin was shown**; a tag is
+   refused at all three layers, because a tag is mutable and what was confirmed
+   would not be what gets installed;
+2. the agent writes a request into the spool and answers `202` — it does not
+   perform the update, and it is about to be replaced;
+3. `amnezia-node-agent-update.path` fires `scripts/agent-update.sh`, which pulls
+   the digest, rewrites `NODE_AGENT_IMAGE` in `.env` (temp file, then rename) and
+   runs `docker compose up -d --no-deps node-agent`. **`--no-deps` is the whole
+   point**: `node-agent` declares `depends_on` on both AWG containers, so without
+   it compose would recreate them and every live tunnel would drop;
+4. if the new agent fails its health gate the node restores the previous digest
+   and brings the old agent back — a node whose agent will not start has lost its
+   only management path;
+5. the telemetry poll carries the outcome and the updater's log back to the node
+   card, where `node-agent-log <id>` shows the same thing.
+
+Published images carry the `compose.yaml` they expect at
+`/opt/node-agent/deploy/`. That is how the updater tells a node's untouched
+compose file (safe to move forward) from one edited deliberately on that host
+(stop, and report the diff instead of overwriting local configuration). A
+`${KEY:?}` the new compose requires and this node does not set also stops the
+update rather than starting a container that would fail at once.
+
+One node at a time, on purpose: a bad agent image taken by the whole fleet
+simultaneously removes the panel's management path to every node, and the panel
+is the tool you would use to notice.
+
 ### Backups, rollback, disk hygiene
 
 - Node state: `sh scripts/backup.sh` (accepts the brief interruption) and copy the

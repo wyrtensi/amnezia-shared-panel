@@ -89,6 +89,20 @@ export type AdminNode = {
   lastHealthAt: string | null;
   lastSyncAt: string | null;
   lastError: string | null;
+  /** The node's own record of its last agent update, mirrored by the worker. */
+  agentUpdateState?: "idle" | "requested" | "running" | "succeeded" | "failed";
+  agentUpdateImage?: string | null;
+  agentUpdateMessage?: string | null;
+  agentUpdateLog?: string;
+  agentUpdateAt?: string | null;
+  /** The release the panel offers; null when it could not be resolved, which
+   *  is what disables the update button rather than falling back to a tag. */
+  availableAgent?: {
+    repository: string;
+    version: string;
+    image: string;
+    resolvedAt: string;
+  } | null;
   createdAt: string;
   updatedAt: string;
 };

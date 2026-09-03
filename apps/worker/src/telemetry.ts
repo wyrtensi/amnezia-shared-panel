@@ -1,5 +1,6 @@
 import type {
   NodeAgent,
+  NodeAgentUpdateStatus,
   NodeClientRecord,
   NodeServer,
   NodeServerLoad,
@@ -31,6 +32,11 @@ export type TelemetryNode = {
   publicHost: string | null;
   /** Last resolved address; null until the first successful lookup. */
   publicIp: string | null;
+  /**
+   * The node's last known agent-update state. Only a node in flight is asked
+   * about it, so a fleet with nothing to update costs no extra requests.
+   */
+  agentUpdateState: NodeAgentUpdateStatus["state"];
 };
 
 export type NodeSnapshot = {
@@ -45,6 +51,12 @@ export type NodeSnapshot = {
   // A newly resolved address for `publicHost`, or null when there was nothing
   // to resolve (the address is already known) or the lookup failed.
   publicIp: string | null;
+  // The node's own view of the update it was asked to perform. `undefined`
+  // means there is no new answer - not asked this tick, or the node could not
+  // be reached, which is expected while it restarts - and the stored state must
+  // be left alone. `null` is an answer: the agent does not serve the route at
+  // all, so nothing will ever arrive and the wait has to end.
+  agentUpdate?: NodeAgentUpdateStatus | null;
 };
 
 export interface TelemetryRepository {
@@ -100,7 +112,11 @@ export type TelemetryPollerOptions = {
     node: Pick<TelemetryNode, "baseUrl" | "apiKey">,
   ) => Pick<
     NodeAgent,
-    "getHealth" | "getServer" | "getServerLoad" | "listClients"
+    | "getHealth"
+    | "getServer"
+    | "getServerLoad"
+    | "listClients"
+    | "getAgentUpdate"
   >;
   // Host → IP for the reported public host. Injectable for tests; the default
   // uses the system resolver with a bounded timeout.
@@ -151,6 +167,15 @@ export const createTelemetryPoller = ({
           publicHost !== null &&
           (node.publicIp === null || node.publicHost !== publicHost);
         const publicIp = needsLookup ? await resolvePublicIp(publicHost) : null;
+        // This is what moves an update from "requested" to its outcome. It is
+        // done here, not inside the job that asked, because the worker claims
+        // jobs one at a time and the swap takes minutes - and because the node
+        // is deliberately unreachable in the middle of it, which this loop
+        // already tolerates.
+        const agentUpdate =
+          node.agentUpdateState === "requested" || node.agentUpdateState === "running"
+            ? await agent.getAgentUpdate().catch(() => undefined)
+            : undefined;
         await repository.recordNodeSnapshot({
           nodeId: node.id,
           observedAt,
@@ -159,6 +184,7 @@ export const createTelemetryPoller = ({
           peers,
           publicHost,
           publicIp,
+          agentUpdate,
         });
       } catch (error) {
         const reason = error instanceof Error ? error.message : "Unknown polling error";
