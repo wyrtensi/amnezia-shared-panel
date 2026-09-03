@@ -17,6 +17,27 @@ SPOOL_DIR="${UPDATE_SPOOL_HOST_DIR:-/var/lib/amnezia-panel/update}"
 LOCK_DIR="${PANEL_UPDATER_LOCK_DIR:-/run/amnezia-panel}"
 REQUEST="${SPOOL_DIR}/request.json"
 RESULT="${SPOOL_DIR}/result.json"
+# Request id, overwritten once the request body is parsed. write_result() is
+# defined this early because the refusal branch below has to report through it
+# before the body has been read.
+ID="unknown"
+
+write_result() {
+  local ok="$1" msg="$2" ts tmp
+  ts="$(date -u -Iseconds)"
+  # Minimal JSON escaping for the message (backslash, quote, newline).
+  msg="${msg//\\/\\\\}"
+  msg="${msg//\"/\\\"}"
+  msg="${msg//$'\n'/ }"
+  # Write to a FRESH random file in the spool (mktemp: O_EXCL, unpredictable
+  # name — the container can't pre-plant a symlink at it), then rename onto
+  # $RESULT. A same-filesystem rename() replaces whatever is at $RESULT (even a
+  # planted symlink) instead of writing through it as root.
+  tmp="$(mktemp "${SPOOL_DIR}/result.XXXXXX")" || return 1
+  printf '{"id":"%s","finishedAt":"%s","ok":%s,"message":"%s"}\n' \
+    "$ID" "$ts" "$ok" "$msg" >"$tmp"
+  mv -f "$tmp" "$RESULT"
+}
 
 [ -e "$REQUEST" ] || exit 0   # nothing to do
 
@@ -31,6 +52,12 @@ mkdir -p "$LOCK_DIR"
 chmod 0700 "$LOCK_DIR"
 exec 9<"$LOCK_DIR"
 if ! flock -n 9; then
+  # Deliberately does NOT write a result. This branch leaves request.json in
+  # place, and panel-updater.path is level-triggered (PathExists=), so the unit
+  # re-arms and the request is retried once the running update finishes. The
+  # panel keeps showing it as pending, which is exactly what is true. Writing
+  # ok=false here would report a failure for a request that is still queued and
+  # would clobber the last real result while the other run is still going.
   echo "panel-updater: another run holds the lock; skipping"
   exit 0
 fi
@@ -52,6 +79,10 @@ if [ "$OPENED" != "$EXPECTED" ] || [ ! -f "/proc/$$/fd/8" ]; then
   echo "panel-updater: request file is not a regular spool file — refusing" >&2
   exec 8<&-
   rm -f "$REQUEST"
+  # The request is consumed and nothing will retry it, so the panel must be
+  # told: without this the operator sees pending:null and a stale lastResult,
+  # indistinguishable from "no update was ever requested".
+  write_result false "request file is not a regular spool file"
   exit 1
 fi
 # Read the body once (bounded), close the descriptor; nothing re-opens the path.
@@ -64,23 +95,6 @@ ID="$(printf '%s' "$BODY" | sed -n 's/.*"id"[[:space:]]*:[[:space:]]*"\([^"]*\)"
 
 # Consume the request up front — a failure must not loop the path unit.
 rm -f "$REQUEST"
-
-write_result() {
-  local ok="$1" msg="$2" ts tmp
-  ts="$(date -u -Iseconds)"
-  # Minimal JSON escaping for the message (backslash, quote, newline).
-  msg="${msg//\\/\\\\}"
-  msg="${msg//\"/\\\"}"
-  msg="${msg//$'\n'/ }"
-  # Write to a FRESH random file in the spool (mktemp: O_EXCL, unpredictable
-  # name — the container can't pre-plant a symlink at it), then rename onto
-  # $RESULT. A same-filesystem rename() replaces whatever is at $RESULT (even a
-  # planted symlink) instead of writing through it as root.
-  tmp="$(mktemp "${SPOOL_DIR}/result.XXXXXX")" || return 1
-  printf '{"id":"%s","finishedAt":"%s","ok":%s,"message":"%s"}\n' \
-    "$ID" "$ts" "$ok" "$msg" >"$tmp"
-  mv -f "$tmp" "$RESULT"
-}
 
 if ! cd "$REPO_DIR"; then
   write_result false "repo dir $REPO_DIR not found"
