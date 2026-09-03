@@ -68,6 +68,7 @@ const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
  * Release asset names, verified against release 5.0.1.5 on 2026-09-02:
  *   AmneziaVPN_<version>_windows_x64.exe
  *   AmneziaVPN_<version>_macos_x64.pkg
+ *   AmneziaVPN_<version>_linux_x64.run
  *   AmneziaVPN_<version>_android11+_arm64-v8a.apk
  * The Android release also carries armeabi-v7a / x86 / x86_64 builds and an
  * android9-10 variant of each. We link one: arm64 is every Android phone sold
@@ -79,6 +80,7 @@ const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
 const ASSET_PATTERNS = {
   windows: /_windows_x64\.exe$/i,
   macos: /_macos_x64\.pkg$/i,
+  linux: /_linux_x64\.run$/i,
   android: /_android11\+_arm64-v8a\.apk$/i,
 } as const;
 
@@ -156,6 +158,11 @@ const toClientRelease = (release: GitHubRelease, now: Date): ClientRelease => {
       alternate: null,
     },
     {
+      platform: "linux",
+      primary: installerAsset(release, ASSET_PATTERNS.linux) ?? page(),
+      alternate: null,
+    },
+    {
       platform: "android",
       primary: storeAsset(PLAY_STORE_URL),
       // Google Play is unreachable for some users; the APK is the way round it.
@@ -195,6 +202,11 @@ const pinnedFallback = (now: Date): ClientRelease => ({
     },
     {
       platform: "macos",
+      primary: releasePageAsset(RELEASES_LATEST_URL),
+      alternate: null,
+    },
+    {
+      platform: "linux",
       primary: releasePageAsset(RELEASES_LATEST_URL),
       alternate: null,
     },

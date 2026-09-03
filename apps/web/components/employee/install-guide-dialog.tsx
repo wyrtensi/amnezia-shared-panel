@@ -43,6 +43,7 @@ import type { Lang } from "@/lib/i18n/messages";
 const PLATFORM_ICON: Record<ClientPlatform, PlatformMark> = {
   windows: DEVICE_ICON.windows,
   macos: DEVICE_ICON.macos,
+  linux: DEVICE_ICON.linux,
   android: DEVICE_ICON.android,
   ios: DEVICE_ICON.ios,
 };
@@ -118,9 +119,17 @@ export function InstallGuideDialog({
     };
   }, [open, release, failed]);
 
-  const android = release?.downloads.find(
-    (entry) => entry.platform === "android",
-  );
+  // The three groups the guide is organised into. Built by filtering the flat
+  // per-platform list the API returns, so a platform added to the contract
+  // shows up here rather than silently disappearing from the dialog.
+  const byPlatform = (...wanted: ClientPlatform[]) =>
+    (release?.downloads ?? []).filter((entry) =>
+      wanted.includes(entry.platform),
+    );
+  const desktop = byPlatform("windows", "macos", "linux");
+  const androidGroup = byPlatform("android");
+  const ios = byPlatform("ios");
+  const android = androidGroup[0];
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -137,9 +146,9 @@ export function InstallGuideDialog({
                 {t("install.linksUnavailable")}
               </Callout>
             ) : !release ? (
-              <div className="grid grid-cols-2 gap-2">
-                {[0, 1, 2, 3].map((index) => (
-                  <Skeleton key={index} className="h-11 rounded-md" />
+              <div className="space-y-2">
+                {[0, 1, 2].map((index) => (
+                  <Skeleton key={index} className="h-16 rounded-md" />
                 ))}
               </div>
             ) : (
@@ -152,10 +161,54 @@ export function InstallGuideDialog({
                     {t("install.linksStale")}
                   </Callout>
                 ) : null}
-                <div className="grid grid-cols-2 gap-2">
-                  {release.downloads.map((entry) => (
-                    <PlatformButton key={entry.platform} download={entry} />
-                  ))}
+                {/* Three groups, not five buttons: the steps that follow differ
+                    by group, not by vendor. Windows, macOS and Linux are one
+                    desktop story (download an installer, run it); Android has a
+                    store plus an APK escape hatch; iOS has a differently-named
+                    store listing and the route-profile limitation. Each group
+                    carries its own notes so a user reads one block, not all. */}
+                <div className="space-y-4">
+                  <PlatformGroup
+                    title={t("install.group.desktop")}
+                    downloads={desktop}
+                  >
+                    <p className="text-xs leading-snug text-muted-foreground">
+                      {t("install.desktopNote")}
+                    </p>
+                  </PlatformGroup>
+
+                  <PlatformGroup
+                    title={t("install.group.android")}
+                    downloads={androidGroup}
+                  >
+                    {android?.alternate ? (
+                      <ApkFallback
+                        asset={android.alternate}
+                        releaseUrl={release.releaseUrl}
+                      />
+                    ) : null}
+                  </PlatformGroup>
+
+                  <PlatformGroup title={t("install.group.ios")} downloads={ios}>
+                    <Callout
+                      tone="info"
+                      icon={<TabletSmartphone className="h-4 w-4" />}
+                    >
+                      {t("install.iosNote")}
+                    </Callout>
+                    {/*
+                      iOS connects with a route profile but applies none of its
+                      rules — a silent failure the user cannot see. Stated here,
+                      inside the iOS block, so it reaches iPhone users whose
+                      policy hides the .conf section below. See D8.
+                    */}
+                    <Callout
+                      tone="warning"
+                      icon={<TriangleAlert className="h-4 w-4" />}
+                    >
+                      {t("install.iosProfileWarning")}
+                    </Callout>
+                  </PlatformGroup>
                 </div>
                 {release.version ? (
                   <p className="text-xs leading-snug text-muted-foreground">
@@ -166,30 +219,8 @@ export function InstallGuideDialog({
             )}
 
             <p className="text-xs leading-snug text-muted-foreground">
-              {t("install.desktopNote")}
-            </p>
-            <Callout tone="info" icon={<TabletSmartphone className="h-4 w-4" />}>
-              {t("install.iosNote")}
-            </Callout>
-            {/*
-              iOS connects with a route profile but applies none of its rules —
-              a silent failure the user cannot see. Stated here, in the always-
-              visible install section, so it reaches iPhone users whose policy
-              hides the .conf section below. See D8.
-            */}
-            <Callout tone="warning" icon={<TriangleAlert className="h-4 w-4" />}>
-              {t("install.iosProfileWarning")}
-            </Callout>
-            <p className="text-xs leading-snug text-muted-foreground">
               {t("install.versionNote", { version: MIN_AWG3_CLIENT_VERSION })}
             </p>
-
-            {android?.alternate ? (
-              <ApkFallback
-                asset={android.alternate}
-                releaseUrl={release?.releaseUrl ?? null}
-              />
-            ) : null}
           </GuideSection>
 
           <GuideSection number={2} title={t("install.addTitle")}>
@@ -310,6 +341,34 @@ function PlatformButton({ download }: { download: ClientPlatformDownload }) {
         <ExternalLink className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
       </a>
     </Button>
+  );
+}
+
+/**
+ * One audience's block: a heading, its download buttons, and the notes that
+ * apply only to it. Grouping is what makes the guide readable — a user on an
+ * iPhone should not have to filter Windows advice out of a flat list.
+ */
+function PlatformGroup({
+  title,
+  downloads,
+  children,
+}: {
+  title: string;
+  downloads: ClientPlatformDownload[];
+  children?: React.ReactNode;
+}) {
+  if (downloads.length === 0) return null;
+  return (
+    <div className="space-y-2 rounded-lg border border-border/60 p-3">
+      <p className="text-sm font-medium">{title}</p>
+      <div className="grid gap-2 sm:grid-cols-2">
+        {downloads.map((entry) => (
+          <PlatformButton key={entry.platform} download={entry} />
+        ))}
+      </div>
+      {children}
+    </div>
   );
 }
 

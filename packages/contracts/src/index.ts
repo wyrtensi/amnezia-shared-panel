@@ -433,8 +433,22 @@ export const idleRulesRefreshStatus: RulesRefreshStatus = {
  */
 export const MIN_AWG3_CLIENT_VERSION = "5.0.1.5";
 
-/** Platforms the install guide offers, in the order the buttons render. */
-export const CLIENT_PLATFORMS = ["windows", "macos", "android", "ios"] as const;
+/**
+ * Platforms the install guide offers, in the order the buttons render.
+ *
+ * Grouped by the instructions they share, not by vendor: Windows, macOS and
+ * Linux are one desktop group (same app, same steps, a downloaded installer),
+ * Android is its own (a store plus an APK), and iOS is its own (a store listing
+ * under a different name, and no working route profiles). The guide renders
+ * those three groups; this array is the flat list behind them.
+ */
+export const CLIENT_PLATFORMS = [
+  "windows",
+  "macos",
+  "linux",
+  "android",
+  "ios",
+] as const;
 
 export const clientPlatformSchema = z.enum(CLIENT_PLATFORMS);
 export type ClientPlatform = z.infer<typeof clientPlatformSchema>;
