@@ -146,6 +146,22 @@ export function KeyCard({
           </Callout>
         ) : null}
 
+        {/* A key the user labelled "iPhone iPad" that carries a route profile.
+            The wizard can no longer create this (D9); it exists for keys
+            created before that gate, through the CLI, or by an admin. It is a
+            note and not a block: the same key works normally on a desktop, and
+            the panel has no idea which device a key is actually used on — this
+            reads the label the user chose, and detects nothing. */}
+        {keyView.deviceType === "ios" &&
+        keyView.routeProfile !== "full_tunnel" ? (
+          <Callout
+            tone="warning"
+            icon={<TriangleAlert className="h-4 w-4 text-warning" />}
+          >
+            {t("keyCard.iphoneProfileWarning")}
+          </Callout>
+        ) : null}
+
         <dl className="grid grid-cols-2 gap-x-3 gap-y-1 text-xs text-muted-foreground">
           <div>
             <dt className="inline">{t("keyCard.created")}</dt>
