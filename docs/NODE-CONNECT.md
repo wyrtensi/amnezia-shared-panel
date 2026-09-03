@@ -277,6 +277,23 @@ when somebody remembers to do it, so a change merged and released to the panel
 could reach no node at all, with nothing anywhere reporting that the agent was
 old. Prefer the published digest.
 
+#### After the first deploy: the button
+
+Once a node runs a published digest, later agent versions can be installed from
+the panel instead of over SSH. It is opt-in per host:
+
+```sh
+sudo NODE_AGENT_UPDATE_REPO=ghcr.io/<owner>/<repo>/node-agent   bash scripts/install-agent-updater.sh
+```
+
+The swap runs on the host (`scripts/agent-update.sh`, a port of the panel's own
+`panel-updater`), recreates **only** the agent container with `--no-deps` so no
+tunnel drops, and rolls back to the previous digest if the new agent fails its
+health gate. On a shared host that `--no-deps` matters twice over — see "Shared
+hosts" above. Details and the failure modes are in
+[`AGENT-HOST-SETUP.md`](./AGENT-HOST-SETUP.md), "Updating a node's agent from the
+panel".
+
 See [`AGENT-HOST-SETUP.md`](./AGENT-HOST-SETUP.md) for building the image.
 
 ---
