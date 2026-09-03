@@ -25,6 +25,13 @@ import { renderKeyQr, type RenderedQr } from "./qrRender.js";
  */
 const QR_MAX_USABLE_FRAMES = 8;
 
+/** How the symbol was drawn, for the response headers the CLI prints. */
+const describeQr = (rendered: RenderedQr): ConfigResult["qrParams"] => ({
+  errorCorrectionLevel: rendered.params.errorCorrectionLevel,
+  modules: rendered.modules,
+  scale: rendered.params.scale,
+});
+
 export type DefaultServiceOptions = {
   repository: ControlRepository;
   keyring: EncryptionKeyring;
@@ -175,6 +182,7 @@ export const createDefaultControlApiService = ({
       // picture of the same one. Rendered as SVG so it inherits the quiet zone
       // and crisp edges, and so the panel's zoom slider works on it.
       let frames: string[];
+      let firstParams: ConfigResult["qrParams"];
       try {
         const texts = buildQrFrameTexts(vpnLink);
         // Chunking removes the capacity limit that makes the single-frame
@@ -188,11 +196,11 @@ export const createDefaultControlApiService = ({
         if (texts.length > QR_MAX_USABLE_FRAMES) {
           throw new Error("too many frames to scan");
         }
-        frames = await Promise.all(
-          texts.map(async (text) =>
-            String((await renderKeyQr(text, "svg")).body),
-          ),
+        const drawn = await Promise.all(
+          texts.map((text) => renderKeyQr(text, "svg")),
         );
+        frames = drawn.map((frame) => String(frame.body));
+        firstParams = drawn[0] && describeQr(drawn[0]);
       } catch {
         throw new ApiError(
           422,
@@ -204,6 +212,9 @@ export const createDefaultControlApiService = ({
         format,
         contentType: "application/json; charset=utf-8",
         body: JSON.stringify({ total: frames.length, frames }),
+        // Every frame is chunked to the same size, so frame 0's parameters
+        // describe the series.
+        qrParams: firstParams,
       };
     }
     let rendered: RenderedQr;
@@ -222,6 +233,7 @@ export const createDefaultControlApiService = ({
         format,
         contentType: rendered.contentType,
         body: rendered.body,
+        qrParams: describeQr(rendered),
       };
     }
     return {
@@ -229,6 +241,7 @@ export const createDefaultControlApiService = ({
       contentType: rendered.contentType,
       body: rendered.body,
       filename: `${safeFilename(key.deviceLabel)}.png`,
+      qrParams: describeQr(rendered),
     };
   },
   revokeOwnKey: (actor, keyId) => repository.enqueueOwnRevoke(actor, keyId),

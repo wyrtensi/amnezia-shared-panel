@@ -125,18 +125,26 @@ export const measureQrModules = (payload: string): QrModuleCounts => {
   return counts;
 };
 
+/**
+ * `modules` sits beside `params` rather than inside it because it is a property
+ * of this payload at the chosen level, not a setting handed to the encoder --
+ * and it is the number that decides whether a scan works, so it is reported on
+ * the response for `amnezia-panel key-config` to print.
+ */
 export type RenderedQr =
   | {
       kind: "png";
       contentType: "image/png";
       body: Buffer;
       params: QrRenderParams;
+      modules: number;
     }
   | {
       kind: "svg";
       contentType: "image/svg+xml; charset=utf-8";
       body: string;
       params: QrRenderParams;
+      modules: number;
     };
 
 /**
@@ -155,7 +163,10 @@ export const renderKeyQr = async (
   payload: string,
   kind: "png" | "svg",
 ): Promise<RenderedQr> => {
-  const params = chooseQrRenderParams(measureQrModules(payload));
+  const counts = measureQrModules(payload);
+  const params = chooseQrRenderParams(counts);
+  // The chosen level is one this payload measured at, so the count is present.
+  const modules = counts[params.errorCorrectionLevel] ?? 0;
   if (kind === "svg") {
     const body = await QRCode.toString(payload, {
       type: "svg",
@@ -167,6 +178,7 @@ export const renderKeyQr = async (
       contentType: "image/svg+xml; charset=utf-8",
       body,
       params,
+      modules,
     };
   }
   const body = await QRCode.toBuffer(payload, {
@@ -175,5 +187,5 @@ export const renderKeyQr = async (
     margin: params.margin,
     scale: params.scale,
   });
-  return { kind: "png", contentType: "image/png", body, params };
+  return { kind: "png", contentType: "image/png", body, params, modules };
 };
