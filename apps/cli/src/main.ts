@@ -17,11 +17,14 @@ import { buildRequestHeaders } from "./http.js";
 import { authHeaders } from "./identity.js";
 import {
   flagOf,
+  formatUpdateStatus,
   positionals,
   csvList,
   parseNodeLimits,
   parseNodeSpec,
 } from "./args.js";
+import type { UpdateStatusView } from "./args.js";
+import { resolveApiKey, resolveSecret } from "./apiKey.js";
 
 const API = (process.env.CONTROL_API_URL ?? "http://127.0.0.1:3001").replace(
   /\/$/,
@@ -419,8 +422,16 @@ async function cmdQuotaReview(
 }
 
 async function cmdCfToken(args: string[]): Promise<void> {
-  const token = args.find((arg) => !arg.startsWith("--"));
-  if (!token) throw new Error("Usage: cf-token <cloudflare-api-token>");
+  // Prefer --token-file=<path|->: a token passed as an argument is visible in
+  // `ps` and in shell history for as long as the process lives. The positional
+  // form stays supported so existing scripts keep working.
+  const token =
+    resolveSecret(args, "token") ?? args.find((arg) => !arg.startsWith("--"));
+  if (!token) {
+    throw new Error(
+      "Usage: cf-token --token-file=<path|-> (or cf-token <cloudflare-api-token>)",
+    );
+  }
   await api("/api/admin/portal-policy/global/update", {
     method: "POST",
     body: JSON.stringify({ cfApiToken: token }),
@@ -561,11 +572,11 @@ async function cmdAction(
 async function cmdNodeAdd(args: string[]): Promise<void> {
   const name = flagOf(args, "name");
   const apiBaseUrl = flagOf(args, "api-url");
-  const apiKey = flagOf(args, "api-key");
+  const apiKey = resolveApiKey(args);
   if (!name || !apiBaseUrl || !apiKey) {
     throw new Error(
-      "Usage: node-add --name= --api-url= --api-key= [--public-name=] " +
-        "[--protocol=awg3] [--max-peers=500] [--enabled-protocols=awg3,awg2] [--disabled]",
+      "Usage: node-add --name= --api-url= --api-key-file=<path|-> (or --api-key=) " +
+        "[--public-name=] [--protocol=awg3] [--max-peers=500] [--enabled-protocols=awg3,awg2] [--disabled]",
     );
   }
   const body: Record<string, unknown> = { name, apiBaseUrl, apiKey };
@@ -598,13 +609,14 @@ async function cmdNodeUpdate(args: string[]): Promise<void> {
     ["name", "name"],
     ["public-name", "publicName"],
     ["api-url", "apiBaseUrl"],
-    ["api-key", "apiKey"],
     ["protocol", "protocol"],
   ];
   for (const [cli, field] of strFields) {
     const value = flagOf(args, cli);
     if (value !== undefined) body[field] = value;
   }
+  const apiKey = resolveApiKey(args);
+  if (apiKey !== undefined) body.apiKey = apiKey;
   const maxPeers = flagOf(args, "max-peers");
   if (maxPeers !== undefined) body.maxPeers = Number(maxPeers);
   const enabled = flagOf(args, "enabled");
@@ -839,7 +851,11 @@ async function cmdTraffic(args: string[]): Promise<void> {
 
 async function cmdPanelUpdate(args: string[]): Promise<void> {
   if (args.includes("--status")) {
-    json(await api<unknown>("/api/admin/update"));
+    const status = await api<UpdateStatusView>("/api/admin/update");
+    // --json stays byte-identical to the previous behaviour; the default is a
+    // line an operator can read, including the updater's refusal reason.
+    if (wantsJson(args)) return json(status);
+    console.log(formatUpdateStatus(status));
     return;
   }
   const result = await api<unknown>("/api/admin/update", { method: "POST" });
@@ -889,8 +905,9 @@ Users (accept a user id OR email):
   quota-reject <request-id> [note]       Reject a quota request
 
 Nodes:
-  node-add --name= --api-url= --api-key=  Register a node (see flags below)
-  node-update <id> --<field>=<value> …    Edit a node (name, api-url, api-key,
+  node-add --name= --api-url= --api-key-file=<path|->  Register a node (see flags below;
+                                          --api-key=<key> still works but lands in ps/history)
+  node-update <id> --<field>=<value> …    Edit a node (name, api-url, api-key-file|api-key,
                                           public-name, protocol, max-peers,
                                           enabled=true|false, enabled-protocols)
   node-remove <id>                        Delete a node (refused while it has keys)
@@ -903,7 +920,9 @@ Nodes:
 Write:
   key-revoke <id>                         Revoke a key
   key-disable <id> / key-enable <id>      Disable / enable a key
-  cf-token <token>                        Store the Cloudflare API token (encrypted)
+  cf-token --token-file=<path|->          Store the Cloudflare API token (encrypted).
+                                          cf-token <token> still works but lands in
+                                          ps/history
   cf-config --account= --app= --policy=   Set Cloudflare Access IDs
   policy-set --<field>=<value> …          Set any panel setting(s), see below
   global-routes-set --profile=ru_whitelist|ru_blacklist [--add-domains=] [--add-cidrs=]
@@ -913,7 +932,8 @@ Write:
                                           Exclusions drop feed entries (excluding a domain also
                                           drops its subdomains); a user's own custom routes are
                                           applied last and can opt back in.
-  panel-update [--status]                 Trigger the in-panel update (or show its status)
+  panel-update [--status] [--json]        Trigger the in-panel update, or show its status
+                                          as one line (--json = the raw status object)
 
 policy-set fields:
   Booleans (true/false): allowKeyCreation, allowNodeSelection,

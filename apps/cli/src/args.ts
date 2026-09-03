@@ -59,3 +59,56 @@ export const parseNodeLimits = (
   }
   return limits;
 };
+
+/**
+ * Shape of `GET /api/admin/update` as far as the rendering below cares. Every
+ * field is optional so a host running an older updater (or a run that was
+ * refused before it could name an id) still renders.
+ */
+export type UpdateStatusView = {
+  enabled: boolean;
+  pending?: { id?: string; requestedAt?: string } | null;
+  lastResult?: {
+    id?: string;
+    ok?: boolean;
+    finishedAt?: string;
+    /** Written by panel-updater.sh. */
+    message?: string;
+    /** Alternate spelling accepted so a refusal reason is never dropped. */
+    error?: string;
+  } | null;
+};
+
+/**
+ * Human-readable `panel-update --status`. Pure: it prints the timestamps it is
+ * handed and never reads a clock, so the output is reproducible under test.
+ *
+ * The failure line matters most — the host updater can refuse a request and
+ * exit without ever running an update, and that outcome is otherwise invisible
+ * from the panel and the CLI (there is no TTY on the host).
+ */
+export const formatUpdateStatus = (status: UpdateStatusView): string => {
+  if (!status.enabled) return "update mechanism not configured on this host";
+  const lines: string[] = [];
+  const pending = status.pending;
+  lines.push(
+    pending
+      ? `pending: ${pending.id ?? "unknown"}${
+          pending.requestedAt ? ` (requested ${pending.requestedAt})` : ""
+        }`
+      : "pending: none",
+  );
+  const last = status.lastResult;
+  if (!last) {
+    lines.push("last run: none recorded");
+    return lines.join("\n");
+  }
+  const outcome = last.ok ? "ok" : "FAILED";
+  const detail = last.error ?? last.message;
+  lines.push(
+    `last run: ${outcome} — ${last.id ?? "unknown"}${
+      last.finishedAt ? ` at ${last.finishedAt}` : ""
+    }${detail ? `: ${detail}` : ""}`,
+  );
+  return lines.join("\n");
+};

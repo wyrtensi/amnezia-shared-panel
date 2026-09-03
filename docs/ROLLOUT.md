@@ -208,8 +208,9 @@ which already carries the secret — see [`CLI.md`](./CLI.md):
 ```sh
 CID=$(docker compose -f infra/prod/compose.yaml ps -q control-api)
 # register the co-located node
-docker exec "$CID" node apps/cli/dist/main.js \
-  node-add --name=germany --api-url=http://amnezia-node-agent:4001 --api-key=<NODE_KEY>
+docker exec -i "$CID" node apps/cli/dist/main.js \
+  node-add --name=germany --api-url=http://amnezia-node-agent:4001 --api-key-file=- \
+  < infra/node/secrets/node-agent-api-key
 # and the Cloudflare two-way sync config, headless
 docker exec "$CID" node apps/cli/dist/main.js cf-config --account=<ACCOUNT_ID> --app=<APP_ID> --policy=<POLICY_ID>
 docker exec "$CID" node apps/cli/dist/main.js cf-token <CF_API_TOKEN>
