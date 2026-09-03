@@ -8,7 +8,15 @@
 set -euo pipefail
 
 COMPOSE_DIR="${COMPOSE_DIR:-infra/dev}"
-COMPOSE="docker compose -f ${COMPOSE_DIR}/compose.yaml"
+# Honour an operator-supplied override exactly like infra/prod/update.sh does.
+# Without this, deploying through this script drops the override — including the
+# co-located-node network wiring from compose.override.colocated.yaml.example —
+# and the panel silently loses its route to the node-agent on the next `up -d`.
+OVERRIDE=""
+if [ -f "${COMPOSE_DIR}/compose.override.yaml" ]; then
+  OVERRIDE="-f ${COMPOSE_DIR}/compose.override.yaml"
+fi
+COMPOSE="docker compose -f ${COMPOSE_DIR}/compose.yaml ${OVERRIDE}"
 GIT_SHA="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
 BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 

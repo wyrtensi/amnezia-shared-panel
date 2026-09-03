@@ -1,0 +1,60 @@
+# Co-located node: attach the panel to the node's Docker network. EXAMPLE FILE.
+#
+# WHEN YOU NEED THIS
+# The panel and an Amnezia node can share one host while running as two separate
+# compose projects (`amnezia-panel` here, `amnezia-node` there). Two projects mean
+# two Docker networks, so `http://amnezia-node-agent:4001` does NOT resolve from
+# the panel's containers unless they are also attached to the node's network.
+# The node-agent publishes on the host loopback only (a deliberate security
+# property, see docs/HOSTING.md §7.1), so `http://host.docker.internal:4001`
+# cannot substitute: the bridge gateway gets ECONNREFUSED.
+#
+# Doing it by hand (`docker network connect amnezia-node_default <container>`)
+# works until the next `up -d` recreates the containers — the attachment is lost
+# and every node call fails with `fetch failed`. This override makes it
+# declarative so it survives a redeploy.
+#
+# HOW TO USE IT
+#   cp infra/prod/compose.override.colocated.yaml.example infra/prod/compose.override.yaml
+# Both infra/prod/update.sh and scripts/deploy.sh auto-load
+# `${COMPOSE_DIR}/compose.override.yaml` when it exists, so nothing else changes.
+# Then register the node with apiBaseUrl `http://amnezia-node-agent:4001`.
+#
+# Do NOT commit this as `compose.override.yaml` and do NOT apply it on a
+# panel-only host: the network below is declared `external`, so compose fails
+# hard ("network ... not found") if the node stack is not on this machine.
+#
+# NETWORK NAME
+# Defaults to `amnezia-node_default` — compose's default network for a project
+# named `amnezia-node`. If the node stack uses another project or network name,
+# set NODE_DOCKER_NETWORK in infra/prod/.env. Confirm the real name with:
+#   docker network ls --filter name=amnezia-node
+#
+# VERIFY (from the repo root, after `up -d`):
+#   docker network inspect "${NODE_DOCKER_NETWORK:-amnezia-node_default}" \
+#     -f '{{range .Containers}}{{.Name}} {{end}}'
+# must list the panel's control-api and worker containers, and
+#   docker compose -f infra/prod/compose.yaml -f infra/prod/compose.override.yaml \
+#     exec control-api wget -qO- http://amnezia-node-agent:4001/healthz
+# must answer.
+
+services:
+  # control-api resolves the node for admin actions (registration, Сверка,
+  # config reads); worker runs provisioning and the 60 s telemetry poll. Both
+  # call the node-agent directly, so both need the node network. `web` and
+  # `postgres` never talk to a node and stay on the panel network only.
+  control-api:
+    networks:
+      panel: {}
+      node: {}
+
+  worker:
+    networks:
+      panel: {}
+      node: {}
+
+networks:
+  # Owned by the node's compose project — created there, never by the panel.
+  node:
+    external: true
+    name: ${NODE_DOCKER_NETWORK:-amnezia-node_default}
