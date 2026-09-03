@@ -10,6 +10,12 @@ import { toPeerObservation } from "./telemetry.js";
 
 const keyJobPayloadSchema = z.object({ keyId: z.uuid().or(z.string().min(1)) });
 const nodeJobPayloadSchema = z.object({ nodeId: z.uuid().or(z.string().min(1)) });
+// The digest the admin confirmed travels in the payload. The node re-validates
+// it, and so does the host-side updater; nothing anywhere re-resolves a tag,
+// or the thing installed could differ from the thing that was shown.
+const nodeAgentUpdatePayloadSchema = nodeJobPayloadSchema.extend({
+  image: z.string().min(1).max(512),
+});
 
 export type JobProcessorOptions = {
   repository: WorkerRepository;
@@ -120,6 +126,29 @@ export const createJobProcessor = ({
           missingManagedPeerCount: context.keys.length - peers.length,
           orphanNodePeerCount: unmatchedPeerIndexes.size,
         },
+      });
+      return;
+    }
+    if (job.type === "node.agent-update") {
+      const { nodeId, image } = nodeAgentUpdatePayloadSchema.parse(job.payload);
+      const context = await repository.loadNodeReconcileContext(nodeId);
+      if (!context) {
+        await repository.failJob(job.id, "Node agent update target not found");
+        return;
+      }
+      // The job ends here rather than waiting for the outcome. The worker
+      // claims jobs one at a time, so holding this one open across a pull, a
+      // container swap and a health gate would stop every other job on the
+      // panel for minutes. The telemetry poller already visits every node each
+      // minute and mirrors the node's own update state onto its row, which also
+      // survives a worker restart and tolerates the node being unreachable
+      // during the restart it was asked to perform.
+      await createNodeAgent(context.node).requestAgentUpdate(image);
+      await repository.completeNodeAgentUpdate({
+        jobId: job.id,
+        nodeId,
+        image,
+        requestedAt: now(),
       });
       return;
     }

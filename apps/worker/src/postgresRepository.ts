@@ -18,6 +18,7 @@ import {
   encryptSecret,
   auditEvents,
   jobOutbox,
+  nodeAgentReleases,
   nodes,
   peerCurrent,
   peerSamples,
@@ -32,6 +33,7 @@ import {
 import type {
   AccessReconcileResult,
   OutboxJob,
+  NodeAgentUpdateRequested,
   NodeReconcileContext,
   NodeReconcileResult,
   WorkerKeyContext,
@@ -289,6 +291,64 @@ export class PostgresWorkerRepository
         })
         .where(eq(jobOutbox.id, result.jobId));
     });
+  };
+
+  completeNodeAgentUpdate = async (
+    result: NodeAgentUpdateRequested,
+  ): Promise<void> => {
+    await this.options.db.transaction(async (tx) => {
+      // The node has been asked, not updated. The outcome arrives through the
+      // telemetry poll, which is also what clears this state if the node never
+      // comes back with one.
+      await tx
+        .update(nodes)
+        .set({
+          agentUpdateState: "requested",
+          agentUpdateImage: result.image,
+          agentUpdateMessage: null,
+          agentUpdateLog: "",
+          agentUpdateAt: null,
+          updatedAt: result.requestedAt,
+        })
+        .where(eq(nodes.id, result.nodeId));
+      await tx.insert(auditEvents).values({
+        actorType: "system",
+        action: "node.agent-update.requested",
+        targetType: "node",
+        targetId: result.nodeId,
+        metadata: { jobId: result.jobId, image: result.image },
+        createdAt: result.requestedAt,
+      });
+      await tx
+        .update(jobOutbox)
+        .set({
+          status: "completed",
+          completedAt: result.requestedAt,
+          lockedAt: null,
+          lastError: null,
+          updatedAt: result.requestedAt,
+        })
+        .where(eq(jobOutbox.id, result.jobId));
+    });
+  };
+
+  saveNodeAgentRelease = async (release: {
+    repository: string;
+    version: string;
+    digest: string;
+    resolvedAt: Date;
+  }): Promise<void> => {
+    await this.options.db
+      .insert(nodeAgentReleases)
+      .values(release)
+      .onConflictDoUpdate({
+        target: nodeAgentReleases.repository,
+        set: {
+          version: release.version,
+          digest: release.digest,
+          resolvedAt: release.resolvedAt,
+        },
+      });
   };
 
   // Disable one user and queue their keys for revocation, inside a transaction.
@@ -703,6 +763,9 @@ export class PostgresWorkerRepository
           // already known and skip the DNS lookup.
           publicHost: row.node.publicHost,
           publicIp: row.node.publicIp,
+          // Only a node with an update in flight is asked about one, so a fleet
+          // with nothing to update costs no extra request per tick.
+          agentUpdateState: row.node.agentUpdateState,
         };
         result.set(row.node.id, node);
       }
@@ -759,6 +822,28 @@ export class PostgresWorkerRepository
                 publicIp: snapshot.publicIp,
                 publicIpResolvedAt: snapshot.observedAt,
               }),
+          // undefined means the node was not asked this tick, so the stored
+          // state is left alone; null means the agent does not serve the route,
+          // which ends the wait rather than leaving the card spinning forever.
+          ...(snapshot.agentUpdate === undefined
+            ? {}
+            : snapshot.agentUpdate === null
+              ? {
+                  agentUpdateState: "failed" as const,
+                  agentUpdateMessage:
+                    "The node-agent does not serve /server/update",
+                  agentUpdateAt: snapshot.observedAt,
+                }
+              : {
+                  agentUpdateState: snapshot.agentUpdate.state,
+                  agentUpdateImage:
+                    snapshot.agentUpdate.image ?? node.agentUpdateImage,
+                  agentUpdateMessage: snapshot.agentUpdate.message ?? null,
+                  agentUpdateLog: snapshot.agentUpdate.log,
+                  agentUpdateAt: snapshot.agentUpdate.updatedAt
+                    ? new Date(snapshot.agentUpdate.updatedAt)
+                    : null,
+                }),
           lastHealthAt: snapshot.observedAt,
           lastSyncAt: snapshot.observedAt,
           lastError: null,

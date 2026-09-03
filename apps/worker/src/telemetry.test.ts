@@ -70,6 +70,7 @@ const telemetryNode: TelemetryNode = {
   keys: [],
   publicHost: null,
   publicIp: null,
+  agentUpdateState: "idle" as const,
 };
 
 const stubAgent = (publicHost?: string) => ({
@@ -87,6 +88,7 @@ const stubAgent = (publicHost?: string) => ({
   ),
   getServerLoad: vi.fn(() => Promise.resolve(serverLoad)),
   listClients: vi.fn(() => Promise.resolve([])),
+  getAgentUpdate: vi.fn(() => Promise.resolve(null)),
 });
 
 const stubRepository = (nodes: TelemetryNode[]): TelemetryRepository => ({
@@ -160,6 +162,7 @@ describe("node telemetry poll", () => {
           },
         ]),
       ),
+      getAgentUpdate: vi.fn(() => Promise.resolve(null)),
     };
     const resolvePublicIp = vi.fn((host: string) =>
       Promise.resolve(host === "vpn.example.com" ? "203.0.113.10" : null),
@@ -301,6 +304,7 @@ describe("node telemetry poll", () => {
         getServer: vi.fn(),
         getServerLoad: vi.fn(),
         listClients: vi.fn(),
+        getAgentUpdate: vi.fn(),
       }),
       now: () => observedAt,
     });
@@ -312,6 +316,97 @@ describe("node telemetry poll", () => {
       "node-1",
       observedAt,
       "line one line two",
+    );
+  });
+
+  it("does not ask an idle node about an update it never requested", async () => {
+    const repository = stubRepository([telemetryNode]);
+    const agent = stubAgent();
+    const poll = createTelemetryPoller({
+      repository,
+      createNodeAgent: () => agent,
+      now: () => observedAt,
+    });
+
+    await poll();
+
+    // Steady state is a fleet with nothing to update, and this runs every
+    // minute against every node: an unconditional extra request would be a
+    // permanent cost for an event that happens a few times a year.
+    expect(agent.getAgentUpdate).not.toHaveBeenCalled();
+    expect(repository.recordNodeSnapshot).toHaveBeenCalledWith(
+      expect.objectContaining({ agentUpdate: undefined }),
+    );
+  });
+
+  it("carries the outcome of an update in flight back to the panel", async () => {
+    const repository = stubRepository([
+      { ...telemetryNode, agentUpdateState: "requested" },
+    ]);
+    const status = {
+      available: true,
+      repository: "ghcr.io/owner/repo/node-agent",
+      state: "succeeded" as const,
+      image: `ghcr.io/owner/repo/node-agent@sha256:${"a".repeat(64)}`,
+      log: "pulled\nrecreated\n",
+      updatedAt: "2026-09-03T12:00:00.000Z",
+      message: "updated",
+    };
+    const agent = { ...stubAgent(), getAgentUpdate: vi.fn(() => Promise.resolve(status)) };
+    const poll = createTelemetryPoller({
+      repository,
+      createNodeAgent: () => agent,
+      now: () => observedAt,
+    });
+
+    await poll();
+
+    expect(repository.recordNodeSnapshot).toHaveBeenCalledWith(
+      expect.objectContaining({ agentUpdate: status }),
+    );
+  });
+
+  it("leaves the stored state alone when the node in flight cannot answer", async () => {
+    const repository = stubRepository([
+      { ...telemetryNode, agentUpdateState: "running" },
+    ]);
+    const agent = {
+      ...stubAgent(),
+      getAgentUpdate: vi.fn(() => Promise.reject(new Error("connection reset"))),
+    };
+    const poll = createTelemetryPoller({
+      repository,
+      createNodeAgent: () => agent,
+      now: () => observedAt,
+    });
+
+    await poll();
+
+    // A node is deliberately unreachable in the middle of replacing its own
+    // agent. That must not turn the whole poll into a recorded node failure -
+    // and it must not be confused with the node answering "I do not serve that
+    // route", which is what null means and which ends the wait.
+    expect(repository.recordNodeFailure).not.toHaveBeenCalled();
+    expect(repository.recordNodeSnapshot).toHaveBeenCalledWith(
+      expect.objectContaining({ agentUpdate: undefined }),
+    );
+  });
+
+  it("ends the wait when the node's agent does not serve the route", async () => {
+    const repository = stubRepository([
+      { ...telemetryNode, agentUpdateState: "running" },
+    ]);
+    const agent = { ...stubAgent(), getAgentUpdate: vi.fn(() => Promise.resolve(null)) };
+    const poll = createTelemetryPoller({
+      repository,
+      createNodeAgent: () => agent,
+      now: () => observedAt,
+    });
+
+    await poll();
+
+    expect(repository.recordNodeSnapshot).toHaveBeenCalledWith(
+      expect.objectContaining({ agentUpdate: null }),
     );
   });
 });

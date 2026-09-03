@@ -28,6 +28,8 @@ const createRepository = (): WorkerRepository => ({
   loadKeyContext: vi.fn(() => Promise.resolve(keyContext)),
   loadNodeReconcileContext: vi.fn(() => Promise.resolve(null)),
   completeNodeReconcile: vi.fn(() => Promise.resolve()),
+  completeNodeAgentUpdate: vi.fn(() => Promise.resolve()),
+  saveNodeAgentRelease: vi.fn(() => Promise.resolve()),
   completeProvision: vi.fn(() => Promise.resolve()),
   completeLifecycle: vi.fn(() => Promise.resolve()),
   completeJob: vi.fn(() => Promise.resolve()),
@@ -36,6 +38,10 @@ const createRepository = (): WorkerRepository => ({
 });
 
 const createAgent = (): NodeAgent => ({
+  getAgentUpdate: vi.fn(() => Promise.resolve(null)),
+  requestAgentUpdate: vi.fn((image: string) =>
+    Promise.resolve({ id: "req-1", image }),
+  ),
   getHealth: vi.fn(() => Promise.resolve({ ok: true as const })),
   getServer: vi.fn(() =>
     Promise.resolve({
@@ -441,6 +447,66 @@ describe("manual route-feed refresh job", () => {
     expect(repository.retryJob).toHaveBeenCalledWith(
       refreshJob.id,
       "Rule feed refresh failed: feed 502",
+    );
+  });
+
+  it("asks the node to update and finishes without waiting for the outcome", async () => {
+    const repository = createRepository();
+    const agent = createAgent();
+    vi.mocked(repository.loadNodeReconcileContext).mockResolvedValue({
+      node: keyContext.node,
+      keys: [],
+    });
+    const now = new Date("2026-09-03T12:00:00.000Z");
+    const processJob = createJobProcessor({
+      repository,
+      createNodeAgent: () => agent,
+      now: () => now,
+    });
+    const image = `ghcr.io/owner/repo/node-agent@sha256:${"a".repeat(64)}`;
+
+    await processJob({
+      id: "update-1",
+      type: "node.agent-update",
+      attempts: 1,
+      payload: { nodeId: "node-1", image },
+    });
+
+    expect(agent.requestAgentUpdate).toHaveBeenCalledWith(image);
+    // The worker claims jobs one at a time, so waiting here for a pull, a
+    // container swap and a health gate would stall every other job for minutes.
+    // The telemetry poll is what learns the outcome.
+    expect(repository.completeNodeAgentUpdate).toHaveBeenCalledWith({
+      jobId: "update-1",
+      nodeId: "node-1",
+      image,
+      requestedAt: now,
+    });
+    expect(agent.getAgentUpdate).not.toHaveBeenCalled();
+  });
+
+  it("fails an update aimed at a node that is gone", async () => {
+    const repository = createRepository();
+    const agent = createAgent();
+    const processJob = createJobProcessor({
+      repository,
+      createNodeAgent: () => agent,
+    });
+
+    await processJob({
+      id: "update-2",
+      type: "node.agent-update",
+      attempts: 1,
+      payload: {
+        nodeId: "gone",
+        image: `ghcr.io/owner/repo/node-agent@sha256:${"b".repeat(64)}`,
+      },
+    });
+
+    expect(agent.requestAgentUpdate).not.toHaveBeenCalled();
+    expect(repository.failJob).toHaveBeenCalledWith(
+      "update-2",
+      "Node agent update target not found",
     );
   });
 });

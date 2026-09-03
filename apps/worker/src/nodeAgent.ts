@@ -105,16 +105,38 @@ const serverLoadSchema = z.object({
     .nullable(),
 });
 
+// GET /server/update. `available` is false on a node that was never wired for
+// in-panel updates, and the whole object is absent on an agent too old to serve
+// the route at all - both mean "this node cannot update itself from here".
+const agentUpdateStatusSchema = z.object({
+  available: z.boolean(),
+  repository: z.string().nullable().optional(),
+  state: z.enum(["idle", "requested", "running", "succeeded", "failed"]),
+  image: z.string().nullable(),
+  log: z.string(),
+  updatedAt: z.string().nullable(),
+  message: z.string().nullable().optional(),
+});
+const agentUpdateAcceptedSchema = z.object({
+  id: z.string(),
+  image: z.string(),
+});
+
 export type NodeClientRecord = z.infer<typeof clientRecordSchema>;
 export type CreatedNodeClient = z.infer<typeof createResponseSchema>["client"];
 export type NodeHealth = z.infer<typeof healthSchema>;
 export type NodeServer = z.infer<typeof serverSchema>;
 export type NodeServerLoad = z.infer<typeof serverLoadSchema>;
+export type NodeAgentUpdateStatus = z.infer<typeof agentUpdateStatusSchema>;
 
 export interface NodeAgent {
   getHealth: () => Promise<NodeHealth>;
   getServer: () => Promise<NodeServer>;
   getServerLoad: () => Promise<NodeServerLoad>;
+  // null when this agent does not serve the route at all, i.e. it predates the
+  // feature. That is not an error: it is the answer.
+  getAgentUpdate: () => Promise<NodeAgentUpdateStatus | null>;
+  requestAgentUpdate: (image: string) => Promise<{ id: string; image: string }>;
   listClients: () => Promise<NodeClientRecord[]>;
   createClient: (
     label: string,
@@ -164,6 +186,24 @@ export const createNodeAgentClient = ({
     getServer: async () => serverSchema.parse(await request("/server")),
     getServerLoad: async () =>
       serverLoadSchema.parse(await request("/server/load")),
+    getAgentUpdate: async () => {
+      try {
+        return agentUpdateStatusSchema.parse(await request("/server/update"));
+      } catch (error) {
+        // An agent built before this feature answers 404, and one being
+        // replaced right now answers nothing at all. Neither is a failure of
+        // the poll that called this - the node simply has no answer yet.
+        if (error instanceof Error && /status 404/.test(error.message)) return null;
+        throw error;
+      }
+    },
+    requestAgentUpdate: async (image) =>
+      agentUpdateAcceptedSchema.parse(
+        await request("/server/update", {
+          method: "POST",
+          body: JSON.stringify({ image }),
+        }),
+      ),
     listClients: async () => {
       const items: NodeClientRecord[] = [];
       let skip = 0;

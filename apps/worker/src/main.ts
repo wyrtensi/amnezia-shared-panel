@@ -9,6 +9,7 @@ import {
   resolveRuleFeeds,
   type RuleProfile,
 } from "./rules.js";
+import { resolveNodeAgentRelease } from "./agentRelease.js";
 import { runPeriodicTask } from "./scheduler.js";
 import { createTelemetryPoller } from "./telemetry.js";
 import {
@@ -173,6 +174,29 @@ const buildAccessTasks = (): Array<() => Promise<void>> => {
 
 const accessTasks = buildAccessTasks();
 
+// Resolve the node-agent release the panel offers nodes. This is the worker's
+// job and not the control API's: it is the process that already reaches the
+// network, and an admin opening a node card must not wait on a registry round
+// trip. The result is stored, and a stale or missing row is what makes the
+// panel say "cannot resolve the current image" rather than fall back to a tag.
+const nodeAgentUpdateRepository = process.env.NODE_AGENT_UPDATE_REPO?.trim();
+const refreshNodeAgentRelease = async (): Promise<void> => {
+  if (!nodeAgentUpdateRepository) return;
+  const release = await resolveNodeAgentRelease(nodeAgentUpdateRepository);
+  if (!release) {
+    console.warn(
+      `Could not resolve a node-agent release for ${nodeAgentUpdateRepository}`,
+    );
+    return;
+  }
+  await repository.saveNodeAgentRelease({
+    repository: release.repository,
+    version: release.version,
+    digest: release.digest,
+    resolvedAt: new Date(),
+  });
+};
+
 const abortController = new AbortController();
 process.once("SIGINT", () => abortController.abort());
 process.once("SIGTERM", () => abortController.abort());
@@ -189,6 +213,12 @@ try {
     runPeriodicTask({
       task: runMaintenance,
       intervalMs: 60 * 60_000,
+      signal: abortController.signal,
+      onError: reportBackgroundError,
+    }),
+    runPeriodicTask({
+      task: refreshNodeAgentRelease,
+      intervalMs: 30 * 60_000,
       signal: abortController.signal,
       onError: reportBackgroundError,
     }),
