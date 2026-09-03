@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   flagOf,
+  formatUpdateStatus,
   positionals,
   csvList,
   parseNodeLimits,
@@ -64,5 +65,37 @@ describe("parseNodeLimits", () => {
     expect(() => parseNodeLimits(`${nodeA}:-1`)).toThrowError(/integer 0\.\.1000/);
     expect(() => parseNodeLimits(`${nodeA}:1001`)).toThrowError(/integer 0\.\.1000/);
     expect(() => parseNodeLimits(`${nodeA}:two`)).toThrowError(/integer 0\.\.1000/);
+  });
+});
+
+describe("formatUpdateStatus", () => {
+  it("says when the mechanism is not installed", () => {
+    expect(formatUpdateStatus({ enabled: false, pending: null, lastResult: null }))
+      .toBe("update mechanism not configured on this host");
+  });
+  it("shows a request that is still queued", () => {
+    const shown = formatUpdateStatus({
+      enabled: true,
+      pending: { id: "req-1", requestedAt: "2026-09-02T10:00:00.000Z" },
+      lastResult: null,
+    });
+    expect(shown).toContain("pending");
+    expect(shown).toContain("req-1");
+  });
+  it("shows a REFUSED run and its reason — the case that is silent today", () => {
+    const shown = formatUpdateStatus({
+      enabled: true,
+      pending: null,
+      lastResult: { id: "unknown", ok: false, error: "request file is not a regular spool file" },
+    });
+    expect(shown).toContain("FAILED");
+    expect(shown).toContain("regular spool file");
+  });
+  it("shows a successful run", () => {
+    const shown = formatUpdateStatus({
+      enabled: true, pending: null, lastResult: { id: "req-1", ok: true },
+    });
+    expect(shown).toContain("ok");
+    expect(shown).toContain("req-1");
   });
 });

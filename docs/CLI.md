@@ -159,16 +159,16 @@ via `CONTROL_API_URL` plus one of, in priority order:
 | Command | Purpose |
 | --- | --- |
 | `key-revoke <id>` · `key-disable <id>` · `key-enable <id>` | Key lifecycle |
-| `node-add --name= --api-url= --api-key= [--public-name=] [--protocol=awg3] [--max-peers=N] [--enabled-protocols=awg3,awg2] [--disabled]` | Register a node |
-| `node-update <id> --<field>=<value> …` | Edit a node (name, api-url, api-key, public-name, protocol, max-peers, enabled, enabled-protocols) |
+| `node-add --name= --api-url= --api-key-file=<path\|-> [--public-name=] [--protocol=awg3] [--max-peers=N] [--enabled-protocols=awg3,awg2] [--disabled]` | Register a node. `--api-key-file=-` reads the key from stdin; the legacy `--api-key=<key>` still works but exposes the key in `ps` and shell history |
+| `node-update <id> --<field>=<value> …` | Edit a node (name, api-url, api-key-file (or api-key), public-name, protocol, max-peers, enabled, enabled-protocols) |
 | `node-remove <id>` | Delete a node. Refused with `409 NODE_HAS_KEYS` while it still has keys (revoked ones count) — disable it, or use the form below |
 | `node-remove <id> --with-keys --confirm=<node name>` | Delete a node **and every key ever issued on it**, in one transaction. Irreversible. Without a matching `--confirm` the command only prints what it would destroy. Note that peers already configured on a still-running node keep working — the panel cannot reach a node it is deleting, so wipe the server itself too |
 | `node-reconcile <id>` | Force a node re-sync |
 | `policy-set --<field>=<value> …` | Set portal-policy fields (e.g. `--defaultKeyLimit=10`) |
 | `global-routes-set --profile=ru_whitelist\|ru_blacklist [--add-domains=] [--add-cidrs=] [--exclude-domains=] [--exclude-cidrs=]` | Admin-wide route overrides for one split-tunnel profile. Each list given **replaces** that list; omitted lists stay as they were |
 | `cf-config --account= --app= --policy=` | Set Cloudflare Access IDs |
-| `cf-token <token>` | Store the Cloudflare API token (encrypted at rest) |
-| `panel-update [--status]` | Trigger the in-panel update (backup → pull → migrate → restart), or show its status |
+| `cf-token <token>` · `cf-token --token-file=<path\|->` | Store the Cloudflare API token (encrypted at rest). Prefer the file/stdin form: a token passed as an argument is visible in `ps` and in shell history for as long as the process lives |
+| `panel-update [--status] [--json]` | Trigger the in-panel update (backup → pull → migrate → restart), or show its status. `--status` prints a readable line — the pending request, and whether the last host run finished `ok` or `FAILED` with its reason; `--status --json` returns the raw status object unchanged |
 
 **Co-located production example** — run inside the control-api container, which already
 carries `PANEL_IDENTITY_SECRET` + `BOOTSTRAP_ADMIN_EMAILS`:
@@ -177,8 +177,9 @@ carries `PANEL_IDENTITY_SECRET` + `BOOTSTRAP_ADMIN_EMAILS`:
 CID=$(docker compose -f infra/prod/compose.yaml ps -q control-api)
 docker exec "$CID" node apps/cli/dist/main.js overview
 # register the co-located node
-docker exec "$CID" node apps/cli/dist/main.js \
-  node-add --name=germany --api-url=http://amnezia-node-agent:4001 --api-key=<node-key>
+docker exec -i "$CID" node apps/cli/dist/main.js \
+  node-add --name=germany --api-url=http://amnezia-node-agent:4001 --api-key-file=- \
+  < infra/node/secrets/node-agent-api-key
 # wire two-way Cloudflare Access sync
 docker exec "$CID" node apps/cli/dist/main.js cf-config --account=<id> --app=<id> --policy=<id>
 docker exec "$CID" node apps/cli/dist/main.js cf-token <cf-api-token>
