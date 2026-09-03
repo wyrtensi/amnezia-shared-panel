@@ -61,6 +61,28 @@ AmneziaVPN client will show as the connection title, and pick how traffic is
 routed. The preview under the checkboxes is built with the same function the API
 uses at export time, so it cannot drift from the name the client actually gets.
 
+**Connecting** is explained in the panel itself: the "How to connect" button in
+the keys page header opens a guide that installs the AmneziaVPN client for
+Windows, macOS, Android and iOS (where the App Store listing is named
+*DefaultVPN*), walks through pasting a key, explains how to import a `.conf`
+file — the easier route for split-tunnel profiles on Windows, macOS and Android —
+and lists what to try when a connection fails. It also states the one platform
+difference we know of: on iPhone and iPad a key with a routing profile connects
+but applies none of its rules — verified with both the pasted key and the `.conf`
+file — so the guide tells them to use a key without a profile. For the same
+reason the "New key" wizard greys out the routing profiles once you pick
+iPhone / iPad, with the reason shown on the card, and a key that already has that
+combination carries a warning and a muted profile badge on its card;
+`amnezia-panel user-create-key --device-type=ios` prints the same warning. This
+is a stop-gap that makes the limitation visible, not a decision that iOS will
+never support routing profiles. The download links are not hardcoded:
+`GET /api/client-releases` resolves the newest `amnezia-client` release on the
+panel host, caches it for six hours, and falls back to version-free release-page
+links when GitHub is unreachable, so a user on a network that cannot reach GitHub
+still gets working buttons. The AmneziaWG 3.1 client floor is a single constant
+in `packages/contracts`. Operators can inspect and force-refresh what the panel
+resolves with `amnezia-panel client-releases [--refresh]` (see `docs/CLI.md`).
+
 <p align="center">
   <img src="docs/assets/new-key-dialog.png" alt="New VPN key dialog: device type, name, the parts of the client-visible name, and the routing profile" width="72%">
 </p>
