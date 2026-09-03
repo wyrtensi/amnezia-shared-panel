@@ -2288,7 +2288,18 @@ export class PostgresControlRepository implements ControlRepository {
       });
     } else if (resource === "portal-policy" && action === "update") {
       const parsed = adminPolicyUpdateSchema.parse(payload);
-      const { cfApiToken, ...rest } = parsed;
+      // `.partial()` does NOT strip `.default()`: parsing `{ defaultKeyLimit: 10 }`
+      // hands back every defaulted policy field as well. Writing that wholesale
+      // would reset showNodeAddress, keyLimitMode, installGuideVideos and the
+      // rest to their defaults on any single-field update — and `policy-set`
+      // sends exactly the flags it was given. Keep only what the caller named.
+      const named = new Set(
+        payload && typeof payload === "object" ? Object.keys(payload) : [],
+      );
+      const provided = Object.fromEntries(
+        Object.entries(parsed).filter(([field]) => named.has(field)),
+      ) as typeof parsed;
+      const { cfApiToken, ...rest } = provided;
       const changes: Partial<typeof portalPolicy.$inferInsert> = { ...rest };
       if (cfApiToken) {
         const encrypted = encryptSecret(
@@ -2316,7 +2327,7 @@ export class PostgresControlRepository implements ControlRepository {
           action: "admin.portal-policy.update",
           targetType: "portal-policy",
           targetId: "global",
-          metadata: { fields: Object.keys(parsed) },
+          metadata: { fields: Object.keys(provided) },
         });
         return updated ? stripPolicySecrets(updated) : updated;
       });

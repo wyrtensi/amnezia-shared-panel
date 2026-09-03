@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { and, count, eq } from "drizzle-orm";
+import { and, count, desc, eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { defaultKeyNameDisplay } from "@amnezia/contracts";
 import type { KeyLimitMode } from "@amnezia/contracts";
@@ -1215,6 +1215,86 @@ describe("PostgresControlRepository user node order", () => {
         .where(eq(nodes.id, seeded[0]!));
       const second = await repository.listNodes(viewer);
       expect(names(second)).toEqual(names(first));
+    },
+  );
+});
+
+describe("PostgresControlRepository global policy update", () => {
+  const database = databaseUrl ? createDatabase(databaseUrl) : null;
+  const keyring = { 1: randomBytes(32) };
+  let admin: Actor;
+
+  beforeAll(async () => {
+    if (!database) return;
+    const [adminUser] = await database.db
+      .insert(users)
+      .values({ email: "policy-admin@example.com", role: "admin" })
+      .returning();
+    if (!adminUser) throw new Error("Failed to seed admin");
+    admin = {
+      id: adminUser.id,
+      email: adminUser.email,
+      displayName: null,
+      role: "admin",
+      status: "active",
+    };
+  });
+
+  afterAll(async () => {
+    if (!database) return;
+    await database.db.delete(users).where(eq(users.id, admin.id));
+    await database.client.end();
+  });
+
+  runDatabaseTest(
+    "a single-field update leaves every other policy field alone",
+    async () => {
+      if (!database) return;
+      const repository = new PostgresControlRepository({
+        db: database.db,
+        keyring,
+      });
+      // Two fields that are NOT sent by the second call, each with a value
+      // that differs from its schema default, so a full-replace write is
+      // visible as a reset rather than a no-op.
+      await repository.adminAction(admin, "portal-policy", "global", "update", {
+        showNodeAddress: true,
+        keyLimitMode: "global",
+      });
+
+      await repository.adminAction(admin, "portal-policy", "global", "update", {
+        defaultKeyLimit: 7,
+      });
+
+      const [row] = (await repository.adminList(
+        admin,
+        "portal-policy",
+      )) as Array<{
+        showNodeAddress: boolean;
+        keyLimitMode: string;
+        defaultKeyLimit: number | null;
+      }>;
+      expect(row?.defaultKeyLimit).toBe(7);
+      // `portalPolicySchema.partial()` still applies every `.default()`, so
+      // parsing the one-field payload yields sixteen fields. Writing those
+      // would put both of these back to false / "per_node".
+      expect(row?.showNodeAddress).toBe(true);
+      expect(row?.keyLimitMode).toBe("global");
+
+      const [event] = await database.db
+        .select({ metadata: auditEvents.metadata })
+        .from(auditEvents)
+        .where(
+          and(
+            eq(auditEvents.actorUserId, admin.id),
+            eq(auditEvents.action, "admin.portal-policy.update"),
+          ),
+        )
+        .orderBy(desc(auditEvents.createdAt))
+        .limit(1);
+      // The audit trail must name the field the admin actually changed, not
+      // every field the schema defaulted on their behalf.
+      expect(event?.metadata).toMatchObject({ fields: ["defaultKeyLimit"] });
     },
   );
 });
