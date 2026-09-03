@@ -1,0 +1,83 @@
+name: Release node-agent image
+
+# Build the node-agent image where there is RAM (GitHub runners) and push it to
+# GHCR, so a node can PULL a pinned digest instead of building a three-stage
+# Node image on a 1 GB VPS. Without this the agent image is only ever produced
+# by hand, so nodes silently fall behind main: a feature can be merged, tagged
+# and deployed to the panel and still never reach a single node, with nothing
+# anywhere saying the agent is old.
+#
+# Separate workflow, separate tag: services/node-agent is versioned on its own
+# (its package.json, not the panel's release tags) and lives outside the pnpm
+# workspace, so hanging it off `v*` would publish a version number that is not
+# the agent's.
+on:
+  push:
+    tags: ["node-agent-v*"]
+  workflow_dispatch:
+
+concurrency:
+  group: release-node-agent-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  image:
+    name: Build & push node-agent (GHCR)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # The agent's own version, not the panel's. On a manual run there is no
+      # tag to read, so fall back to the short sha - still immutable, still
+      # never "latest".
+      - name: Image tag
+        id: version
+        run: |
+          ref="${GITHUB_REF_NAME}"
+          case "$ref" in
+            node-agent-v*) version="${ref#node-agent-v}" ;;
+            *) version="sha-${GITHUB_SHA::12}" ;;
+          esac
+          echo "value=$version" >> "$GITHUB_OUTPUT"
+
+      # Deliberately NO `latest` tag. A node pins its agent by digest and
+      # preflight fails a deploy that names a mutable tag; publishing one would
+      # only invite the mistake the node design exists to prevent.
+      - name: Build & push
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: services/node-agent
+          file: services/node-agent/Dockerfile
+          push: true
+          platforms: linux/amd64
+          tags: ghcr.io/${{ github.repository }}/node-agent:${{ steps.version.outputs.value }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # The operator needs the digest, not the tag: NODE_AGENT_IMAGE must be an
+      # immutable reference, so put the exact line to paste into the node's
+      # .env in the run summary.
+      - name: Report the pinned reference
+        run: |
+          {
+            echo "## node-agent image published"
+            echo
+            echo "Put this in the node's \`.env\`, then run \`sh scripts/deploy.sh\`:"
+            echo
+            echo '```'
+            echo "NODE_AGENT_IMAGE=ghcr.io/${{ github.repository }}/node-agent@${{ steps.build.outputs.digest }}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
