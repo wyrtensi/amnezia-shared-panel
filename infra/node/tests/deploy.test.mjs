@@ -33,3 +33,13 @@ test("the node-agent gate stays unconditional", () => {
   // Every node runs the agent; there is no shape where it is optional.
   assert.match(code, /^if ! wait_healthy amnezia-node-agent/m);
 });
+
+test("the success line names only the protocols this node serves", () => {
+  // "AWG2 is on UDP 51889" printed by a node with no awg2 service reads as a
+  // report that awg2 came up.
+  assert.doesNotMatch(
+    code,
+    /Deployment health gates passed\. AWG2 is on UDP 51889, AWG3/,
+  );
+  assert.match(code, /has_service awg2 && deployed_ports=/);
+});

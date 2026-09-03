@@ -71,5 +71,13 @@ agent_binding="$(docker port amnezia-node-agent 4001/tcp)"
 [ "$agent_binding" = "127.0.0.1:4001" ] || fail "node-agent is not bound exclusively to 127.0.0.1:4001"
 
 compose ps
-info "Deployment health gates passed. AWG2 is on UDP 51889, AWG3 is on UDP 51890, and node-agent is loopback-only on TCP 4001."
+# Report what this node actually runs. Naming a protocol it does not serve
+# reads as "awg2 is up" to whoever is watching the deploy.
+deployed_ports=''
+has_service awg2 && deployed_ports="AWG2 is on UDP 51889"
+if has_service awg3; then
+  [ -z "$deployed_ports" ] || deployed_ports="$deployed_ports, "
+  deployed_ports="${deployed_ports}AWG3 is on UDP 51890"
+fi
+info "Deployment health gates passed. ${deployed_ports}, and node-agent is loopback-only on TCP 4001."
 release_lock
