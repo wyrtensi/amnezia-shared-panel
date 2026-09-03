@@ -1847,4 +1847,69 @@ describe("PostgresControlRepository global policy update", () => {
       expect(row?.installGuideVideos).toEqual({});
     },
   );
+
+  // The other half of the same guarantee, in a second field. A node id that
+  // names no node is inert on every read path (it matches nothing) but the
+  // update's existence check rejects it - so a stale id in the stored order
+  // made the whole policy page unsaveable, exactly like the null did.
+  // deleteNode scrubs both lists, so this state comes from a row removed
+  // out-of-band; the read drops the id, and the next save cleans the row.
+  runDatabaseTest(
+    "survives a node id in the stored order whose node is gone",
+    async () => {
+      if (!database) return;
+      const repository = new PostgresControlRepository({
+        db: database.db,
+        keyring,
+      });
+      const encryptedCredentials = encryptSecret("api-key", keyring, 1);
+      const encryptedLabel = encryptSecret(
+        randomBytes(32).toString("base64"),
+        keyring,
+        1,
+      );
+      const [doomed] = await database.db
+        .insert(nodes)
+        .values({
+          name: "policy-stale",
+          apiBaseUrl: "http://127.0.0.1:4100/policy-stale",
+          credentialsCiphertext: encryptedCredentials.ciphertext,
+          credentialsNonce: encryptedCredentials.nonce,
+          credentialsAuthTag: encryptedCredentials.authTag,
+          credentialsKeyVersion: encryptedCredentials.keyVersion,
+          labelSecretCiphertext: encryptedLabel.ciphertext,
+          labelSecretNonce: encryptedLabel.nonce,
+          labelSecretAuthTag: encryptedLabel.authTag,
+          labelSecretKeyVersion: encryptedLabel.keyVersion,
+        })
+        .returning({ id: nodes.id });
+      if (!doomed) throw new Error("Failed to seed the node");
+
+      await repository.adminAction(admin, "portal-policy", "global", "update", {
+        nodeOrder: [doomed.id],
+        recommendedNodeIds: [doomed.id],
+      });
+      // Deleted around deleteNode, which is what leaves the id behind.
+      await database.db.delete(nodes).where(eq(nodes.id, doomed.id));
+
+      const [row] = (await repository.adminList(
+        admin,
+        "portal-policy",
+      )) as Array<Record<string, unknown>>;
+      expect(row?.nodeOrder).toEqual([]);
+      expect(row?.recommendedNodeIds).toEqual([]);
+
+      const payload = { ...row };
+      delete payload.cfApiTokenSet;
+      await expect(
+        repository.adminAction(
+          admin,
+          "portal-policy",
+          "global",
+          "update",
+          payload,
+        ),
+      ).resolves.toBeDefined();
+    },
+  );
 });

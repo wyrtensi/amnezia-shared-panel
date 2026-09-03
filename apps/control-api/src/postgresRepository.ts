@@ -1896,7 +1896,45 @@ export class PostgresControlRepository implements ControlRepository {
           .limit(500);
       case "portal-policy": {
         const rows = await this.options.db.select().from(portalPolicy).limit(1);
-        if (rows[0]) return [stripPolicySecrets(rows[0])];
+        if (rows[0]) {
+          const policyRow = rows[0];
+          // Same rule as installGuideVideos above: the admin page posts this
+          // row straight back, so the read must not emit anything the write
+          // refuses. A node id that names no node is inert everywhere it is
+          // READ (it matches nothing) but the update's existence check rejects
+          // it, which would make the whole policy page unsaveable. deleteNode
+          // scrubs both lists, so a stale id means a row was removed
+          // out-of-band; dropping it here also means the next save cleans the
+          // stored lists up.
+          const referenced = [
+            ...new Set([
+              ...policyRow.recommendedNodeIds,
+              ...policyRow.nodeOrder,
+            ]),
+          ];
+          if (referenced.length > 0) {
+            const known = new Set(
+              (
+                await this.options.db
+                  .select({ id: nodes.id })
+                  .from(nodes)
+                  .where(inArray(nodes.id, referenced))
+              ).map((row) => row.id),
+            );
+            if (known.size !== referenced.length) {
+              return [
+                stripPolicySecrets({
+                  ...policyRow,
+                  recommendedNodeIds: policyRow.recommendedNodeIds.filter(
+                    (id) => known.has(id),
+                  ),
+                  nodeOrder: policyRow.nodeOrder.filter((id) => known.has(id)),
+                }),
+              ];
+            }
+          }
+          return [stripPolicySecrets(policyRow)];
+        }
         // Fresh install with no row yet: report exactly the contract defaults so
         // the UI cannot show a setting the API would apply differently.
         return [
