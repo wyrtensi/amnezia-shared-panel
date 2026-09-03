@@ -1123,3 +1123,98 @@ describe("PostgresControlRepository quota race", () => {
     },
   );
 });
+
+describe("PostgresControlRepository user node order", () => {
+  const database = databaseUrl ? createDatabase(databaseUrl) : null;
+  const keyring = { 1: randomBytes(32) };
+  let viewer: Actor;
+  const seeded: string[] = [];
+
+  const seedNode = async (name: string, publicName: string | null) => {
+    if (!database) throw new Error("no database");
+    const encryptedCredentials = encryptSecret("api-key", keyring, 1);
+    const encryptedLabel = encryptSecret(
+      randomBytes(32).toString("base64"),
+      keyring,
+      1,
+    );
+    const [node] = await database.db
+      .insert(nodes)
+      .values({
+        name,
+        publicName,
+        apiBaseUrl: `http://127.0.0.1:4100/${name}`,
+        credentialsCiphertext: encryptedCredentials.ciphertext,
+        credentialsNonce: encryptedCredentials.nonce,
+        credentialsAuthTag: encryptedCredentials.authTag,
+        credentialsKeyVersion: encryptedCredentials.keyVersion,
+        labelSecretCiphertext: encryptedLabel.ciphertext,
+        labelSecretNonce: encryptedLabel.nonce,
+        labelSecretAuthTag: encryptedLabel.authTag,
+        labelSecretKeyVersion: encryptedLabel.keyVersion,
+      })
+      .returning({ id: nodes.id });
+    if (!node) throw new Error(`Failed to seed node ${name}`);
+    seeded.push(node.id);
+    return node.id;
+  };
+
+  beforeAll(async () => {
+    if (!database) return;
+    const [user] = await database.db
+      .insert(users)
+      .values({ email: "order-viewer@example.com" })
+      .returning();
+    if (!user) throw new Error("Failed to seed viewer");
+    viewer = {
+      id: user.id,
+      email: user.email,
+      displayName: null,
+      role: "user",
+      status: "active",
+    };
+    // Internal names deliberately sort the other way round from the public
+    // names, so a test that passes must be sorting on what the user sees.
+    await seedNode("order-c", "Zurich");
+    await seedNode("order-b", "amsterdam");
+    await seedNode("order-a", null);
+  });
+
+  afterAll(async () => {
+    if (!database) return;
+    for (const id of seeded) {
+      await database.db.delete(nodes).where(eq(nodes.id, id));
+    }
+    await database.db.delete(users).where(eq(users.id, viewer.id));
+    await database.client.end();
+  });
+
+  runDatabaseTest(
+    "returns the same name-ordered list before and after a node row is rewritten",
+    async () => {
+      if (!database) return;
+      const repository = new PostgresControlRepository({
+        db: database.db,
+        keyring,
+      });
+      const names = (rows: unknown[]) =>
+        rows.map((row) => (row as { name: string }).name);
+
+      // Only this block's nodes: the first describe in this file leaves its own
+      // seeded nodes behind, and listNodes returns every enabled node.
+      const ours = (rows: unknown[]) =>
+        names(rows.filter((row) => seeded.includes((row as { id: string }).id)));
+      const first = await repository.listNodes(viewer);
+      expect(ours(first)).toEqual(["amsterdam", "order-a", "Zurich"]);
+
+      // The worker touches node rows on every poll; a rewrite must not move
+      // the node in the user's list.
+      await database.db
+        .update(nodes)
+        .set({ lastHealthAt: new Date(), updatedAt: new Date() })
+        .where(eq(nodes.id, seeded[0]!));
+      const second = await repository.listNodes(viewer);
+      expect(names(second)).toEqual(names(first));
+    },
+  );
+});

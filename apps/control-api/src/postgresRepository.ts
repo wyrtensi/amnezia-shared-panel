@@ -84,6 +84,7 @@ import {
   type NodeQuotaContext,
   type QuotaApproval,
 } from "./nodeQuota.js";
+import { orderNodesForUsers } from "./nodeOrder.js";
 import { toRulesRefreshStatus } from "./rulesRefresh.js";
 
 const quotaStates: KeyState[] = ["provisioning", "active", "disabled"];
@@ -546,48 +547,53 @@ export class PostgresControlRepository implements ControlRepository {
       userRow[0]?.policyOverride,
     );
     // A null/absent allowedNodeIds means "all nodes"; a list restricts to it.
-    return rows
-      .filter((row) => isNodeAvailable(policy.allowedNodeIds, row.id))
-      .map(
-        ({
-          capabilities,
-          enabledProtocols,
-          publicName,
-          publicHost,
-          publicIp,
-          ...row
-        }) => {
-          const supportedProtocols = deriveSupportedProtocols(
-            row.protocol,
+    // The SELECT above has no ORDER BY and the worker rewrites node rows on
+    // every telemetry poll, so the order is fixed here, on the name the user
+    // sees — after the availability filter, never before it.
+    return orderNodesForUsers(
+      rows
+        .filter((row) => isNodeAvailable(policy.allowedNodeIds, row.id))
+        .map(
+          ({
             capabilities,
-          );
-          // One address, and only behind the policy flag: the resolved IPv4 when
-          // the panel has one, else the host the node reported. The host/IP pair
-          // and the resolution timestamp are operator diagnostics and stay on the
-          // admin side, so publicHost/publicIp are destructured OUT of `...row`
-          // above — leaving them in would hand every user the raw pair
-          // regardless of the flag.
-          const publicAddress = policy.showNodeAddress
-            ? (publicIp ?? publicHost)
-            : null;
-          return {
-            ...row,
-            // Users see the public name; the internal admin name never leaves here.
-            name: publicName ?? row.name,
-            // Spread conditionally rather than assigning `undefined`: there is no
-            // "unknown address" state on the user side, so the key must be truly
-            // absent — a user cannot fix a node's DNS, and a null would only
-            // invite the UI to render an empty line.
-            ...(publicAddress === null ? {} : { publicAddress }),
-            supportedProtocols,
-            selectableProtocols: computeSelectableProtocols(
+            enabledProtocols,
+            publicName,
+            publicHost,
+            publicIp,
+            ...row
+          }) => {
+            const supportedProtocols = deriveSupportedProtocols(
+              row.protocol,
+              capabilities,
+            );
+            // One address, and only behind the policy flag: the resolved IPv4 when
+            // the panel has one, else the host the node reported. The host/IP pair
+            // and the resolution timestamp are operator diagnostics and stay on the
+            // admin side, so publicHost/publicIp are destructured OUT of `...row`
+            // above — leaving them in would hand every user the raw pair
+            // regardless of the flag.
+            const publicAddress = policy.showNodeAddress
+              ? (publicIp ?? publicHost)
+              : null;
+            return {
+              ...row,
+              // Users see the public name; the internal admin name never leaves here.
+              name: publicName ?? row.name,
+              // Spread conditionally rather than assigning `undefined`: there is no
+              // "unknown address" state on the user side, so the key must be truly
+              // absent — a user cannot fix a node's DNS, and a null would only
+              // invite the UI to render an empty line.
+              ...(publicAddress === null ? {} : { publicAddress }),
               supportedProtocols,
-              enabledProtocols,
-              policy.allowedProtocols,
-            ),
-          };
-        },
-      );
+              selectableProtocols: computeSelectableProtocols(
+                supportedProtocols,
+                enabledProtocols,
+                policy.allowedProtocols,
+              ),
+            };
+          },
+        ),
+    );
   };
 
   createUser = async (
