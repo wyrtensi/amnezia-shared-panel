@@ -242,6 +242,37 @@ comma list scopes it to specific nodes). Note the **admin Nodes page always list
 every node**; this list only governs the **key-wizard** node choice. Use it to keep
 some nodes admin-only or to stage a node before opening it to everyone.
 
+**Server order and recommended servers.** Separately from availability, the
+global policy carries two lists. *Server order* is the order users see: the
+servers you arrange come first, in your order; the ones you have not arranged
+follow, sorted by name. *Recommended* servers get a "Recommended" badge on the
+dashboard and in the key wizard.
+
+The badge is only a badge: it never moves a server. To keep the badge where the
+eye expects it, only servers at the **top** of the order may be recommended —
+the recommended list has to be the first N entries of the server order, and a
+server you have not placed in the order cannot be recommended at all. The admin
+UI enforces this by letting you tick servers from the top down; the API rejects
+anything else with an error naming the server that is out of place. If you
+reorder the list and the current recommendations would end up in the middle,
+send both lists in one command.
+
+Neither list changes who may use what. A recommended server that a user is not
+allowed to use is not shown to that user at all, is never chosen for them when
+server selection is off, and nothing is substituted for it — availability
+(`allowedNodeIds`, globally or per user) is always decided first.
+
+```sh
+amnezia-panel nodes                                     # the order users see, with ids
+amnezia-panel policy                                    # both lists + an order check
+amnezia-panel policy-set --nodeOrder=<node-id>,<node-id>,<node-id>
+amnezia-panel policy-set --recommendedNodeIds=<node-id>   # must be first in the order
+amnezia-panel policy-set --nodeOrder=<node-b>,<node-a> --recommendedNodeIds=<node-b>
+amnezia-panel policy-set --recommendedNodeIds=none        # clear the badges
+```
+
+Deleting a node removes it from both lists automatically.
+
 ---
 
 ## 9. Verify end to end

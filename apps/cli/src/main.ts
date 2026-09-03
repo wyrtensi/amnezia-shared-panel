@@ -27,10 +27,13 @@ import { buildRequestHeaders } from "./http.js";
 import { authHeaders } from "./identity.js";
 import {
   KEY_LIMIT_MODES,
+  annotateNodeOrder,
+  checkRecommendedPrefix,
   deviceTypeUsage,
   effectiveKeyLimitMode,
   flagOf,
   formatDeviceType,
+  formatPolicyValue,
   formatUpdateStatus,
   matchesNodeFilter,
   parseDeviceType,
@@ -40,6 +43,7 @@ import {
   csvList,
   parseNodeLimits,
   parseNodeSpec,
+  parsePolicyNodeList,
   quotaCurrentLimit,
   quotaTargetLabel,
 } from "./args.js";
@@ -398,7 +402,12 @@ async function cmdKeys(args: string[]): Promise<void> {
 }
 
 async function cmdNodes(args: string[]): Promise<void> {
-  const nodes = await api<AdminNode[]>("/api/admin/nodes");
+  const [nodes, policyRows] = await Promise.all([
+    api<AdminNode[]>("/api/admin/nodes"),
+    api<Array<{ nodeOrder?: string[]; recommendedNodeIds?: string[] }>>(
+      "/api/admin/portal-policy",
+    ),
+  ]);
   if (wantsJson(args)) return json(nodes);
   // The panel->node half of the IP-vs-DNS audit, as one command rather than a
   // script pasted out of a runbook. Its own table: the default one is about
@@ -417,9 +426,22 @@ async function cmdNodes(args: string[]): Promise<void> {
     );
     return;
   }
+  // The list users actually see: the admin's stored order first, then the
+  // nodes nobody has placed, by name. `#` is the position a user sees and `-`
+  // marks a node that has never been placed - which is worth noticing, since
+  // an unplaced node sorts last and cannot be recommended.
+  const policy = policyRows[0] ?? {};
+  const ordered = annotateNodeOrder(
+    nodes,
+    policy.nodeOrder ?? [],
+    policy.recommendedNodeIds ?? [],
+  );
   console.log(
     table(
-      nodes.map((node) => ({
+      ordered.map((node) => ({
+        "#": node.rank,
+        rec: node.rec,
+        id: node.id,
         name: node.name,
         enabled: node.enabled ? "yes" : "no",
         protocols: (node.enabledProtocols?.length
@@ -432,7 +454,7 @@ async function cmdNodes(args: string[]): Promise<void> {
         address: formatNodeAddress(node.publicHost ?? null, node.publicIp ?? null),
         health: node.lastError ? "ERROR" : "ok",
       })),
-      ["name", "enabled", "protocols", "peers", "address", "health"],
+      ["#", "rec", "id", "name", "enabled", "protocols", "peers", "address", "health"],
     ),
   );
 }
@@ -718,13 +740,24 @@ async function cmdPolicy(args: string[]): Promise<void> {
   const policy = rows[0] ?? {};
   if (wantsJson(args)) return json(policy);
   for (const [key, value] of Object.entries(policy)) {
-    const shown = Array.isArray(value)
-      ? value.length
-        ? value.join(",")
-        : "(all)"
-      : String(value);
-    console.log(`${key.padEnd(28)} ${shown}`);
+    console.log(`${key.padEnd(28)} ${formatPolicyValue(key, value)}`);
   }
+  // The API validates the recommended-must-be-a-prefix rule when it accepts a
+  // write and never re-checks it afterwards, so a row edited in SQL can
+  // violate it with nothing to say so. This is the only read-side guard.
+  const verdict = checkRecommendedPrefix(
+    (policy.recommendedNodeIds as string[] | undefined) ?? [],
+    (policy.nodeOrder as string[] | undefined) ?? [],
+  );
+  console.log(
+    verdict.ok
+      ? "order check                  ok"
+      : `order check                  FAIL - ${verdict.nodeId} is recommended but is ${
+          verdict.reason === "behind"
+            ? "not in the top of the server order"
+            : "not in the server order at all"
+        }`,
+  );
 }
 
 async function cmdPolicySet(args: string[]): Promise<void> {
@@ -756,6 +789,14 @@ async function cmdPolicySet(args: string[]): Promise<void> {
   for (const [field, allowed] of Object.entries(POLICY_ENUM_FIELDS)) {
     const value = flag(field);
     if (value !== undefined) body[field] = parseEnumFlag(field, value, allowed);
+  }
+  // The hand-made server order and the recommended servers. Both take a
+  // comma-separated id list; "none" clears one. Passing both in one call is
+  // how you reorder past a recommended set that would no longer be the top of
+  // the list - the API validates them together.
+  for (const field of ["nodeOrder", "recommendedNodeIds"] as const) {
+    const value = flag(field);
+    if (value !== undefined) body[field] = parsePolicyNodeList(value);
   }
   // Walkthrough videos are a nested map, one entry per guide audience, so they
   // cannot ride the flat --field=value loops above. Setting one audience must
@@ -1331,6 +1372,8 @@ policy-set fields:
     limit is counted; a user can be moved off it with user-limit --mode=
   dailyRetentionDays=<int 1..36500 | null>
   allowedProtocols=awg3[,awg2]            allowedNodeIds=<uuid,…|null>
+  nodeOrder=<uuid,…|none>                 (the order users see; the rest follow)
+  recommendedNodeIds=<uuid,…|none>        (badge only; must be the top of nodeOrder)
   cfAccessAccountId / cfAccessAppId / cfAccessPolicyId=<id|null>
   cfApiToken=<token>   (write-only, encrypted)
   video-desktop / video-android / video-ios=<url|none>
