@@ -13,6 +13,7 @@
  *   CONTROL_API_URL (default http://127.0.0.1:3001)
  */
 
+import { routeProfileWarning } from "./deviceProfiles.js";
 import { buildRequestHeaders } from "./http.js";
 import { authHeaders } from "./identity.js";
 import {
@@ -743,7 +744,7 @@ async function cmdUserRoutes(args: string[]): Promise<void> {
 async function cmdUserCreateKey(args: string[]): Promise<void> {
   const pos = positionals(args);
   const usage =
-    `Usage: user-create-key <id|email> --node=<uuid> [--device=<label>] [--protocol=awg3|awg2] [--route=full_tunnel|ru_whitelist|ru_blacklist] [${deviceTypeUsage()}] [--name-server=true|false] [--name-label=true|false] [--name-number=true|false]`;
+    `Usage: user-create-key <id|email> --node=<uuid> [--device=<label>] [--protocol=awg3|awg2] [--route=full_tunnel|ru_whitelist|ru_blacklist] [${deviceTypeUsage()}] [--name-server=true|false] [--name-label=true|false] [--name-number=true|false]\n  --device-type=ios with a --route other than full_tunnel is warned about: route profiles do not filter on iPhone or iPad.`;
   const id = await resolveUserId(pos[0], usage);
   const nodeId = flagOf(args, "node");
   if (!nodeId) throw new Error(usage);
@@ -768,6 +769,10 @@ async function cmdUserCreateKey(args: string[]): Promise<void> {
   if (route) body.routeProfile = route;
   const deviceType = flagOf(args, "device-type");
   if (deviceType) body.deviceType = parseDeviceType(deviceType);
+  // Same check the create-key wizard applies (contracts:
+  // deviceSupportsRouteProfiles). A warning, not a refusal — see the plan's D9.
+  const warning = routeProfileWarning(deviceType, route);
+  if (warning) console.error(warning);
   const result = (await userAction(id, "create-key", body)) as { id?: string };
   console.log(`key created for ${pos[0]}: ${result?.id ?? "(ok)"}`);
 }

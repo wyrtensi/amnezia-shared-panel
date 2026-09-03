@@ -27,10 +27,12 @@ import {
   composeKeyDisplayName,
   defaultKeyNameDisplay,
   DEVICE_TYPE_ORDER,
+  deviceSupportsRouteProfiles,
   MIN_AWG3_CLIENT_VERSION,
   type DeviceType,
   type KeyNameDisplay,
 } from "@amnezia/contracts";
+import { routeProfileChoice } from "@/lib/route-profile-choice";
 import { useT } from "@/lib/i18n/provider";
 import { DEVICE_ICON } from "@/components/device-icon";
 import { suggestKeyName } from "@/lib/suggest-key-name";
@@ -177,6 +179,10 @@ export function CreateKeyWizard({
   const chooseDevice = (next: DeviceType) => {
     setDeviceType(next);
     if (!labelEdited) setDeviceLabel(suggestKeyName(next, existingNames, t));
+    // Never leave a now-disabled profile selected. Switching to a device where
+    // route profiles do not apply falls back to the full tunnel, so the form
+    // can never submit a profile the cards are showing as greyed out.
+    if (!deviceSupportsRouteProfiles(next)) setRouteProfile("full_tunnel");
   };
 
   // Preview of the connection title the AmneziaVPN client will show, built with
@@ -215,25 +221,27 @@ export function CreateKeyWizard({
   }));
 
   const policyLocked = !me.policy.allowRouteProfileSelection;
+  const profilesBlockedByDevice = !deviceSupportsRouteProfiles(deviceType);
   const routeOptions: Array<CardOption<RouteProfile>> = (
     ["full_tunnel", "ru_whitelist", "ru_blacklist"] as RouteProfile[]
   ).map((profile) => {
     const availability = routeProfiles.find((item) => item.profile === profile);
-    const rulesReady = profile === "full_tunnel" || availability?.available;
-    // A profile is selectable when its rules are active and the admin policy
-    // permits choosing profiles (full_tunnel is always allowed).
-    const disabled =
-      !rulesReady || (policyLocked && profile !== "full_tunnel");
+    // Which reasons apply, and which explanation to show, is decided in one
+    // testable place — see lib/route-profile-choice.ts and the plan's D9.
+    const { disabled, hintKey } = routeProfileChoice({
+      profile,
+      rulesReady: Boolean(availability?.available),
+      policyLocked,
+      deviceType,
+    });
     return {
       value: profile,
       label: t(`route.${profile}`),
       description: t(`wizard.route.${profile}.desc`),
       disabled,
-      hint: !rulesReady
-        ? t("wizard.rulesNotActive")
-        : policyLocked && profile !== "full_tunnel"
-          ? t("wizard.profileDisabled")
-          : undefined,
+      // OptionCards renders this as the native title on hover AND as visible
+      // text inside the greyed card, so the reason is readable on a phone too.
+      hint: hintKey ? t(hintKey) : undefined,
     };
   });
 
@@ -398,7 +406,10 @@ export function CreateKeyWizard({
               columns={3}
               ariaLabel={t("wizard.routing")}
             />
-            {policyLocked ? (
+            {/* The device reason first: it is the one the user can change. */}
+            {profilesBlockedByDevice ? (
+              <FieldHint>{t("wizard.routingNoIphone")}</FieldHint>
+            ) : policyLocked ? (
               <FieldHint>{t("wizard.routingLocked")}</FieldHint>
             ) : null}
           </div>

@@ -171,6 +171,8 @@ const ru = {
   "keyCard.updateKey": "Обновить ключ",
   "keyCard.rulesUpdatedBody":
     "Перевыпустите ключ, чтобы применить новые правила. Старый конфиг перестанет работать — переустановите ключ на устройстве.",
+  "keyCard.iphoneProfileWarning":
+    "Этот ключ создан для iPhone или iPad и содержит профиль маршрутизации. На iPhone и iPad правила профиля не применяются: подключение работает, но весь трафик идёт мимо VPN. Для iPhone и iPad создайте ключ с профилем «Весь трафик». На Windows, macOS и Android этот ключ работает как обычно.",
   "keyCard.created": "Создан: ",
   "keyCard.traffic": "Трафик: ",
   "keyCard.reissue": "Перевыпустить",
@@ -199,6 +201,9 @@ const ru = {
   "wizard.awg3Hint": "Требуется AmneziaVPN {version}+",
   "wizard.rulesNotActive": "Правила ещё не активированы",
   "wizard.profileDisabled": "Выбор профиля отключён администратором",
+  "wizard.profileNoIphone": "На iPhone и iPad профили не работают",
+  "wizard.routingNoIphone":
+    "Для iPhone и iPad профили маршрутизации недоступны: ключ с профилем подключается, но правила не применяются — весь трафик идёт мимо VPN. Доступен только «Весь трафик». Профили работают на Windows, macOS и Android.",
   "wizard.createFailed": "Не удалось создать ключ",
   "wizard.title": "Новый VPN-ключ",
   "wizard.desc": "Один ключ предназначен для одного устройства.",
@@ -935,6 +940,8 @@ const en = {
   "keyCard.updateKey": "Update key",
   "keyCard.rulesUpdatedBody":
     "Reissue the key to apply the new rules. The old config will stop working — reinstall the key on the device.",
+  "keyCard.iphoneProfileWarning":
+    "This key was created for an iPhone or iPad and carries a route profile. On iPhone and iPad the profile's rules are not applied: it connects, but all traffic goes outside the VPN. For an iPhone or iPad, create a key with the “All traffic” profile. On Windows, macOS and Android this key works normally.",
   "keyCard.created": "Created: ",
   "keyCard.traffic": "Traffic: ",
   "keyCard.reissue": "Reissue",
@@ -963,6 +970,9 @@ const en = {
   "wizard.awg3Hint": "Requires AmneziaVPN {version}+",
   "wizard.rulesNotActive": "Rules not activated yet",
   "wizard.profileDisabled": "Profile selection disabled by the administrator",
+  "wizard.profileNoIphone": "Profiles do not work on iPhone and iPad",
+  "wizard.routingNoIphone":
+    "Route profiles are not available for iPhone and iPad: a key with a profile connects, but the rules are not applied and all traffic goes outside the VPN. Only “All traffic” can be selected. Profiles work on Windows, macOS and Android.",
   "wizard.createFailed": "Failed to create the key",
   "wizard.title": "New VPN key",
   "wizard.desc": "One key is meant for a single device.",
