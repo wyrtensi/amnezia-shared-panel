@@ -6,10 +6,7 @@ import {
   Download,
   ExternalLink,
   FileDown,
-  Laptop,
-  Monitor,
   RefreshCw,
-  Smartphone,
   TabletSmartphone,
   TriangleAlert,
 } from "lucide-react";
@@ -34,16 +31,20 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { apiRequest } from "@/lib/api";
 import { formatBytesParts } from "@/lib/format";
 import { useT } from "@/lib/i18n/provider";
+import { DEVICE_ICON } from "@/components/device-icon";
+import type { PlatformMark } from "@/components/icons/platform-marks";
 import type { Lang } from "@/lib/i18n/messages";
 
-const PLATFORM_ICON: Record<
-  ClientPlatform,
-  React.ComponentType<{ className?: string }>
-> = {
-  windows: Monitor,
-  macos: Laptop,
-  android: Smartphone,
-  ios: TabletSmartphone,
+// The guide reuses the wizard's vendored brand marks rather than keeping its
+// own glyphs: ClientPlatform is a strict subset of DeviceType, so the same map
+// serves both, and a user meets the same mark on the card they picked and on
+// the download button they press. A second map here would be one more place to
+// drift.
+const PLATFORM_ICON: Record<ClientPlatform, PlatformMark> = {
+  windows: DEVICE_ICON.windows,
+  macos: DEVICE_ICON.macos,
+  android: DEVICE_ICON.android,
+  ios: DEVICE_ICON.ios,
 };
 
 // Ordered walkthroughs. Numbering is rendered by <ol>, never translated.
