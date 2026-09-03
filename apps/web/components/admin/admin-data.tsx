@@ -140,6 +140,10 @@ export type GlobalPortalPolicy = {
   allowNodeSelection: boolean;
   allowedProtocols: ProtocolKind[];
   allowedNodeIds: string[] | null;
+  // Global-only lists: the hand-made server order, and the recommended prefix
+  // of it. Never part of a per-user override.
+  recommendedNodeIds: string[];
+  nodeOrder: string[];
   allowRouteProfileSelection: boolean;
   allowCustomRoutes: boolean;
   allowConfigRedownload: boolean;
@@ -165,6 +169,8 @@ const DEFAULT_POLICY: GlobalPortalPolicy = {
   allowNodeSelection: true,
   allowedProtocols: ["awg3"],
   allowedNodeIds: null,
+  recommendedNodeIds: [],
+  nodeOrder: [],
   allowRouteProfileSelection: true,
   allowCustomRoutes: true,
   allowConfigRedownload: true,

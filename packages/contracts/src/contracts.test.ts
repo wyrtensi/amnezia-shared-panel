@@ -16,6 +16,10 @@ import {
   LEGACY_DEVICE_TYPE_REPLACEMENT,
   MAX_GLOBAL_CIDRS,
   MAX_GLOBAL_DOMAINS,
+  MAX_ORDERED_NODES,
+  MAX_RECOMMENDED_NODES,
+  nodeOrderSchema,
+  recommendedNodeIdsSchema,
   installGuideVideosSchema,
   installVideoEmbed,
   isIpLiteral,
@@ -943,5 +947,59 @@ describe("a quota request cannot carry a key limit mode", () => {
         reason: "need more",
       }).success,
     ).toBe(true);
+  });
+});
+
+describe("recommendedNodeIdsSchema", () => {
+  const id = (n: number) =>
+    `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
+
+  it("accepts a list of node uuids, including the empty list", () => {
+    expect(recommendedNodeIdsSchema.parse([])).toEqual([]);
+    expect(recommendedNodeIdsSchema.parse([id(1), id(2)])).toEqual([
+      id(1),
+      id(2),
+    ]);
+  });
+
+  it("rejects non-uuid entries and null", () => {
+    expect(() => recommendedNodeIdsSchema.parse(["node-1"])).toThrow();
+    expect(() => recommendedNodeIdsSchema.parse(null)).toThrow();
+  });
+
+  it("caps the list so a policy row cannot grow without bound", () => {
+    const tooMany = Array.from({ length: MAX_RECOMMENDED_NODES + 1 }, (_, n) =>
+      id(n),
+    );
+    expect(() => recommendedNodeIdsSchema.parse(tooMany)).toThrow();
+    expect(
+      recommendedNodeIdsSchema.parse(tooMany.slice(0, MAX_RECOMMENDED_NODES)),
+    ).toHaveLength(MAX_RECOMMENDED_NODES);
+  });
+});
+
+describe("nodeOrderSchema", () => {
+  const id = (n: number) =>
+    `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
+
+  it("accepts an ordered list of node uuids, including the empty list", () => {
+    expect(nodeOrderSchema.parse([])).toEqual([]);
+    // Order is the payload: it must survive parsing exactly as sent.
+    expect(nodeOrderSchema.parse([id(2), id(1)])).toEqual([id(2), id(1)]);
+  });
+
+  it("rejects non-uuid entries and null", () => {
+    expect(() => nodeOrderSchema.parse(["node-1"])).toThrow();
+    expect(() => nodeOrderSchema.parse(null)).toThrow();
+  });
+
+  it("caps the list at MAX_ORDERED_NODES", () => {
+    const tooMany = Array.from({ length: MAX_ORDERED_NODES + 1 }, (_, n) =>
+      id(n),
+    );
+    expect(() => nodeOrderSchema.parse(tooMany)).toThrow();
+    expect(
+      nodeOrderSchema.parse(tooMany.slice(0, MAX_ORDERED_NODES)),
+    ).toHaveLength(MAX_ORDERED_NODES);
   });
 });

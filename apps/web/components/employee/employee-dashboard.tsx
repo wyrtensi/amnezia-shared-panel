@@ -7,6 +7,7 @@ import type { GuideAudience } from "@amnezia/contracts";
 import { toast } from "sonner";
 import { AppHeader } from "@/components/app-header";
 import { LogoutButton } from "@/components/logout-button";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -328,8 +329,15 @@ export function EmployeeDashboard({
                     className="flex flex-wrap items-start justify-between gap-2"
                   >
                     <div className="min-w-0 space-y-0.5">
-                      <span className="block truncate text-sm text-muted-foreground">
-                        {node.name}
+                      <span className="flex min-w-0 items-center gap-1.5">
+                        <span className="truncate text-sm text-muted-foreground">
+                          {node.name}
+                        </span>
+                        {node.recommended ? (
+                          <Badge variant="success" className="shrink-0">
+                            {t("wizard.recommended")}
+                          </Badge>
+                        ) : null}
                       </span>
                       {/* Conditional on the field, not on a policy flag: the
                           control API omits it when the policy says no, so the

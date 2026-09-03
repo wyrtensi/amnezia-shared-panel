@@ -36,7 +36,9 @@ import {
   defaultPortalPolicy,
   emptyGlobalRoutes,
   globalRoutesSchema,
+  nodeOrderSchema,
   PROTOCOL_KINDS,
+  recommendedNodeIdsSchema,
   portalPolicyOverrideSchema,
   portalPolicySchema,
   RULES_REFRESH_DEDUPLICATION_KEY,
@@ -84,6 +86,8 @@ import {
   type NodeQuotaContext,
   type QuotaApproval,
 } from "./nodeQuota.js";
+import { orderNodesForUsers } from "./nodeOrder.js";
+import { checkRecommendedPrefix, dedupeNodeIds } from "./policyNodeLists.js";
 import { toRulesRefreshStatus } from "./rulesRefresh.js";
 
 const quotaStates: KeyState[] = ["provisioning", "active", "disabled"];
@@ -129,6 +133,10 @@ const adminPolicyUpdateSchema = portalPolicySchema.partial().extend({
   cfAccessAccountId: z.string().max(64).nullable().optional(),
   cfAccessAppId: z.string().max(64).nullable().optional(),
   cfAccessPolicyId: z.string().max(64).nullable().optional(),
+  // Global-only, exactly like defaultKeyLimit above: keeping them out of
+  // portalPolicySchema is what stops them being overridable per user.
+  recommendedNodeIds: recommendedNodeIdsSchema.optional(),
+  nodeOrder: nodeOrderSchema.optional(),
 });
 
 type PortalPolicyRow = typeof portalPolicy.$inferSelect;
@@ -545,49 +553,63 @@ export class PostgresControlRepository implements ControlRepository {
       toPolicy(policyRow[0]),
       userRow[0]?.policyOverride,
     );
+    // Both come straight from the policy ROW, never from the resolved policy:
+    // they are global-only, so a per-user override can neither recommend a node
+    // nor reorder the list for one account. The two are used for two different
+    // things and never mixed: `nodeOrder` decides the position, `recommended`
+    // only paints a badge.
+    const recommended = new Set(policyRow[0]?.recommendedNodeIds ?? []);
+    const nodeOrder = policyRow[0]?.nodeOrder ?? [];
     // A null/absent allowedNodeIds means "all nodes"; a list restricts to it.
-    return rows
-      .filter((row) => isNodeAvailable(policy.allowedNodeIds, row.id))
-      .map(
-        ({
-          capabilities,
-          enabledProtocols,
-          publicName,
-          publicHost,
-          publicIp,
-          ...row
-        }) => {
-          const supportedProtocols = deriveSupportedProtocols(
-            row.protocol,
+    // The SELECT above has no ORDER BY and the worker rewrites node rows on
+    // every telemetry poll, so the order is fixed here, on the name the user
+    // sees — after the availability filter, never before it.
+    return orderNodesForUsers(
+      rows
+        .filter((row) => isNodeAvailable(policy.allowedNodeIds, row.id))
+        .map(
+          ({
             capabilities,
-          );
-          // One address, and only behind the policy flag: the resolved IPv4 when
-          // the panel has one, else the host the node reported. The host/IP pair
-          // and the resolution timestamp are operator diagnostics and stay on the
-          // admin side, so publicHost/publicIp are destructured OUT of `...row`
-          // above — leaving them in would hand every user the raw pair
-          // regardless of the flag.
-          const publicAddress = policy.showNodeAddress
-            ? (publicIp ?? publicHost)
-            : null;
-          return {
-            ...row,
-            // Users see the public name; the internal admin name never leaves here.
-            name: publicName ?? row.name,
-            // Spread conditionally rather than assigning `undefined`: there is no
-            // "unknown address" state on the user side, so the key must be truly
-            // absent — a user cannot fix a node's DNS, and a null would only
-            // invite the UI to render an empty line.
-            ...(publicAddress === null ? {} : { publicAddress }),
-            supportedProtocols,
-            selectableProtocols: computeSelectableProtocols(
+            enabledProtocols,
+            publicName,
+            publicHost,
+            publicIp,
+            ...row
+          }) => {
+            const supportedProtocols = deriveSupportedProtocols(
+              row.protocol,
+              capabilities,
+            );
+            // One address, and only behind the policy flag: the resolved IPv4 when
+            // the panel has one, else the host the node reported. The host/IP pair
+            // and the resolution timestamp are operator diagnostics and stay on the
+            // admin side, so publicHost/publicIp are destructured OUT of `...row`
+            // above — leaving them in would hand every user the raw pair
+            // regardless of the flag.
+            const publicAddress = policy.showNodeAddress
+              ? (publicIp ?? publicHost)
+              : null;
+            return {
+              ...row,
+              // Users see the public name; the internal admin name never leaves here.
+              name: publicName ?? row.name,
+              recommended: recommended.has(row.id),
+              // Spread conditionally rather than assigning `undefined`: there is no
+              // "unknown address" state on the user side, so the key must be truly
+              // absent — a user cannot fix a node's DNS, and a null would only
+              // invite the UI to render an empty line.
+              ...(publicAddress === null ? {} : { publicAddress }),
               supportedProtocols,
-              enabledProtocols,
-              policy.allowedProtocols,
-            ),
-          };
-        },
-      );
+              selectableProtocols: computeSelectableProtocols(
+                supportedProtocols,
+                enabledProtocols,
+                policy.allowedProtocols,
+              ),
+            };
+          },
+        ),
+      nodeOrder,
+    );
   };
 
   createUser = async (
@@ -845,6 +867,41 @@ export class PostgresControlRepository implements ControlRepository {
         )
         .returning({ id: quotaRequests.id });
 
+      // The policy's node lists hold ids, not foreign keys, so nothing removes
+      // this node from them. A stale id is harmless at read time, but it shows
+      // a phantom row in the admin's order editor and makes the stored order
+      // describe a fleet that no longer exists. Same transaction as the delete.
+      const [policyRow] = await tx
+        .select({
+          recommendedNodeIds: portalPolicy.recommendedNodeIds,
+          nodeOrder: portalPolicy.nodeOrder,
+        })
+        .from(portalPolicy)
+        .limit(1);
+      let scrubbedFromRecommended = false;
+      let scrubbedFromOrder = false;
+      if (policyRow) {
+        scrubbedFromRecommended = policyRow.recommendedNodeIds.includes(nodeId);
+        scrubbedFromOrder = policyRow.nodeOrder.includes(nodeId);
+        if (scrubbedFromRecommended || scrubbedFromOrder) {
+          await tx
+            .update(portalPolicy)
+            .set({
+              recommendedNodeIds: policyRow.recommendedNodeIds.filter(
+                (id) => id !== nodeId,
+              ),
+              // Removing an element shifts the rest up by one, which is exactly
+              // right: positions are relative, so the surviving order is kept.
+              // Filtering the same id out of both lists also preserves the
+              // "recommended must be a prefix of the order" invariant, so this
+              // path needs no reconciliation of its own.
+              nodeOrder: policyRow.nodeOrder.filter((id) => id !== nodeId),
+              updatedAt: new Date(),
+            })
+            .where(eq(portalPolicy.id, true));
+        }
+      }
+
       await tx.delete(nodes).where(eq(nodes.id, nodeId));
       await tx.insert(auditEvents).values({
         actorUserId: actor.id,
@@ -858,6 +915,8 @@ export class PostgresControlRepository implements ControlRepository {
           affectedOwners,
           droppedJobs,
           cancelledQuotaRequests: cancelled.length,
+          scrubbedFromRecommended,
+          scrubbedFromOrder,
         },
       });
       return {
@@ -1024,6 +1083,15 @@ export class PostgresControlRepository implements ControlRepository {
           )
           .orderBy(nodes.id)
           .for("update");
+        // The SELECT above keeps ORDER BY id so row locks are always acquired
+        // in the same order; the admin's order is applied after locking, in
+        // memory, and never changes WHICH rows are locked. recommendedNodeIds
+        // is deliberately not consulted: a badge does not promote a node here
+        // any more than it does in listNodes.
+        const orderedCandidates = orderNodesForUsers(
+          candidateNodes,
+          globalPolicy?.nodeOrder ?? [],
+        );
         let selectedNode: (typeof candidateNodes)[number] | undefined;
         // Track why candidates were rejected, so the error is accurate. All
         // constraints (availability, protocol, per-user quota, capacity) are
@@ -1033,7 +1101,7 @@ export class PostgresControlRepository implements ControlRepository {
         let nodeCapacityBlocked = false;
         let protocolBlocked = false;
         let availabilityBlocked = false;
-        for (const candidate of candidateNodes) {
+        for (const candidate of orderedCandidates) {
           // Node availability (global default or per-user override).
           if (!isNodeAvailable(policy.allowedNodeIds, candidate.id)) {
             availabilityBlocked = true;
@@ -1822,6 +1890,8 @@ export class PostgresControlRepository implements ControlRepository {
             id: true,
             ...defaultPortalPolicy,
             allowedNodeIds: defaultPortalPolicy.allowedNodeIds ?? null,
+            recommendedNodeIds: [] as string[],
+            nodeOrder: [] as string[],
             defaultKeyLimit: 5,
             dailyRetentionDays: 730,
             cfAccessAccountId: null,
@@ -2282,7 +2352,18 @@ export class PostgresControlRepository implements ControlRepository {
       });
     } else if (resource === "portal-policy" && action === "update") {
       const parsed = adminPolicyUpdateSchema.parse(payload);
-      const { cfApiToken, ...rest } = parsed;
+      // `.partial()` does NOT strip `.default()`: parsing `{ defaultKeyLimit: 10 }`
+      // hands back every defaulted policy field as well. Writing that wholesale
+      // would reset showNodeAddress, keyLimitMode, installGuideVideos and the
+      // rest to their defaults on any single-field update — and `policy-set`
+      // sends exactly the flags it was given. Keep only what the caller named.
+      const named = new Set(
+        payload && typeof payload === "object" ? Object.keys(payload) : [],
+      );
+      const provided = Object.fromEntries(
+        Object.entries(parsed).filter(([field]) => named.has(field)),
+      ) as typeof parsed;
+      const { cfApiToken, recommendedNodeIds, nodeOrder, ...rest } = provided;
       const changes: Partial<typeof portalPolicy.$inferInsert> = { ...rest };
       if (cfApiToken) {
         const encrypted = encryptSecret(
@@ -2295,7 +2376,71 @@ export class PostgresControlRepository implements ControlRepository {
         changes.cfApiTokenAuthTag = encrypted.authTag;
         changes.cfApiTokenKeyVersion = encrypted.keyVersion;
       }
+      // Canonical form: no duplicates, and every id must name a real node so a
+      // stored list can never contain an id that silently does nothing (same
+      // rule as the per-user node lists in users/set-limit).
+      const recommended =
+        recommendedNodeIds === undefined
+          ? undefined
+          : dedupeNodeIds(recommendedNodeIds);
+      const order =
+        nodeOrder === undefined ? undefined : dedupeNodeIds(nodeOrder);
       return this.options.db.transaction(async (tx) => {
+        // One existence check for both lists: fewer round trips, and the
+        // rejection is all-or-nothing, so a bad id never half-applies. This
+        // runs BEFORE the prefix rule, so an id that names no node is reported
+        // as such rather than as "not at the top of the order".
+        const referenced = [
+          ...new Set([...(recommended ?? []), ...(order ?? [])]),
+        ];
+        if (referenced.length > 0) {
+          const known = await tx
+            .select({ id: nodes.id })
+            .from(nodes)
+            .where(inArray(nodes.id, referenced));
+          if (known.length !== referenced.length) {
+            throw new ApiError(400, "Unknown node id", "NODE_NOT_FOUND");
+          }
+        }
+        if (order) changes.nodeOrder = order;
+        // Only the servers at the TOP of the manual order may be recommended.
+        // The rule spans both columns, so it is checked on the EFFECTIVE state:
+        // a write that touches only one field is validated against the stored
+        // value of the other. A reorder that would leave a recommended server
+        // behind is rejected - never silently un-recommended, because that
+        // would be a policy change nobody asked for and nothing would record it.
+        if (recommended !== undefined || order !== undefined) {
+          const [stored] = await tx
+            .select({
+              recommendedNodeIds: portalPolicy.recommendedNodeIds,
+              nodeOrder: portalPolicy.nodeOrder,
+            })
+            .from(portalPolicy)
+            .limit(1);
+          const effectiveRecommended =
+            recommended ?? stored?.recommendedNodeIds ?? [];
+          const effectiveOrder = order ?? stored?.nodeOrder ?? [];
+          const check = checkRecommendedPrefix(
+            effectiveRecommended,
+            effectiveOrder,
+          );
+          if (!check.ok) {
+            throw new ApiError(
+              400,
+              check.reason === "unpositioned"
+                ? `Node ${check.nodeId} cannot be recommended: it has no place in the server order. Only servers at the top of the order can be recommended.`
+                : `Node ${check.nodeId} cannot be recommended: it is at position ${check.position} of the server order, behind servers that are not recommended. Only servers at the top of the order can be recommended.`,
+              "RECOMMENDED_NOT_PREFIX",
+            );
+          }
+          // Store the canonical form (order sequence), even when only the order
+          // moved: a reorder inside the recommended prefix must be reflected.
+          // The recommended SET is unchanged in that case, so the audit event
+          // still describes the change honestly as a nodeOrder edit.
+          if (recommended !== undefined || check.canonical.length > 0) {
+            changes.recommendedNodeIds = check.canonical;
+          }
+        }
         const [updated] = await tx
           .insert(portalPolicy)
           .values({ id: true, ...changes })
@@ -2310,7 +2455,11 @@ export class PostgresControlRepository implements ControlRepository {
           action: "admin.portal-policy.update",
           targetType: "portal-policy",
           targetId: "global",
-          metadata: { fields: Object.keys(parsed) },
+          metadata: {
+            fields: Object.keys(provided),
+            ...(recommended ? { recommendedNodeCount: recommended.length } : {}),
+            ...(order ? { orderedNodeCount: order.length } : {}),
+          },
         });
         return updated ? stripPolicySecrets(updated) : updated;
       });

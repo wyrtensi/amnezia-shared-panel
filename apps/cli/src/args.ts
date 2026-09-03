@@ -273,3 +273,105 @@ export const matchesNodeFilter = (
   filter: string | undefined,
 ): boolean =>
   filter === undefined || nodeId.toLowerCase() === filter.toLowerCase();
+
+/**
+ * Parse the global policy's ordered/marked node lists (`recommendedNodeIds`,
+ * `nodeOrder`):
+ *   ""/"none" -> []        (clear the list)
+ *   "a,b"     -> ["a","b"] (kept in the given order - for nodeOrder the order
+ *                           IS the value, so this never sorts or dedupes)
+ * Unlike `parseNodeSpec` there is no "all": recommending every node recommends
+ * nothing, and an order is only meaningful as an explicit sequence.
+ */
+export const parsePolicyNodeList = (spec: string): string[] => {
+  const trimmed = spec.trim();
+  if (trimmed === "" || trimmed === "none") return [];
+  if (trimmed === "all") {
+    throw new Error(
+      'Invalid value "all" - pass a comma-separated node id list, or "none" to clear',
+    );
+  }
+  return csvList(trimmed);
+};
+
+// Lists whose empty value means "no node", not "every node".
+const EMPTY_MEANS_NONE = new Set(["recommendedNodeIds", "nodeOrder"]);
+
+/** Render one portal-policy field for the `policy` snapshot command. */
+export const formatPolicyValue = (key: string, value: unknown): string => {
+  if (Array.isArray(value)) {
+    if (value.length > 0) return value.join(",");
+    return EMPTY_MEANS_NONE.has(key) ? "(none)" : "(all)";
+  }
+  // `allowedNodeIds` is nullable, and null there means "every node".
+  if (value === null && !EMPTY_MEANS_NONE.has(key)) return "(all)";
+  return String(value);
+};
+
+/**
+ * `nodes` in the order users actually see it: the stored `nodeOrder` first, in
+ * its own sequence, then everything unpositioned by name. `rank` is the
+ * position a user sees; `-` means the node has never been placed, which is a
+ * state an admin needs to notice (an unpositioned node sorts last and cannot
+ * be recommended).
+ */
+export const annotateNodeOrder = <T extends { id: string; name: string }>(
+  rows: readonly T[],
+  order: readonly string[],
+  recommended: readonly string[],
+): Array<T & { rank: string; rec: string }> => {
+  const rank = new Map(order.map((id, index) => [id, index]));
+  const badge = new Set(recommended);
+  return [...rows]
+    .sort((left, right) => {
+      const l = rank.get(left.id);
+      const r = rank.get(right.id);
+      if (l !== undefined && r !== undefined) return l - r;
+      if (l !== undefined) return -1;
+      if (r !== undefined) return 1;
+      return (
+        left.name.localeCompare(right.name) || left.id.localeCompare(right.id)
+      );
+    })
+    // The rank is re-derived AFTER sorting, counting only nodes that exist:
+    // `nodeOrder` may still name a node deleted between these two reads, and
+    // the raw array index would then shift every printed position by one -
+    // showing a list that no user sees. (The control API never has this
+    // problem: its comparator only ever compares ranks, never prints them.)
+    .map((row, index) => ({
+      ...row,
+      rank: rank.has(row.id) ? String(index + 1) : "-",
+      rec: badge.has(row.id) ? "yes" : "",
+    }));
+};
+
+/**
+ * Read-only check that the STORED row still satisfies the prefix invariant.
+ * This is not a duplicate of the API's write validation (a structural sibling
+ * of `checkRecommendedPrefix` in @amnezia/control-api, which this CLI cannot
+ * import - see the drift note in `deviceProfiles.ts`): the API checks a
+ * payload before accepting it and never re-checks afterwards, so a row edited
+ * in SQL - or written before this feature existed - can violate the rule with
+ * nothing to say so. `policy` is the only place an operator would find out.
+ */
+export const checkRecommendedPrefix = (
+  recommended: readonly string[],
+  order: readonly string[],
+):
+  | { ok: true }
+  | { ok: false; nodeId: string; reason: "unpositioned" | "behind" } => {
+  const prefix = new Set(order.slice(0, recommended.length));
+  for (const nodeId of order) {
+    // Report the offender nearest the top of the order, so fixing them in the
+    // printed sequence converges instead of chasing a new name each time.
+    if (recommended.includes(nodeId) && !prefix.has(nodeId)) {
+      return { ok: false, nodeId, reason: "behind" };
+    }
+  }
+  for (const nodeId of recommended) {
+    if (!order.includes(nodeId)) {
+      return { ok: false, nodeId, reason: "unpositioned" };
+    }
+  }
+  return { ok: true };
+};

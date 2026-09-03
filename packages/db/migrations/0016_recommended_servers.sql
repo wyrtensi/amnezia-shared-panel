@@ -1,0 +1,2 @@
+ALTER TABLE "portal_policy" ADD COLUMN "recommended_node_ids" jsonb DEFAULT '[]'::jsonb NOT NULL;--> statement-breakpoint
+ALTER TABLE "portal_policy" ADD COLUMN "node_order" jsonb DEFAULT '[]'::jsonb NOT NULL;

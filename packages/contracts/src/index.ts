@@ -403,6 +403,32 @@ export const portalPolicySchema = z.object({
 export const portalPolicyOverrideSchema = portalPolicySchema.partial();
 export const defaultPortalPolicy = portalPolicySchema.parse({});
 
+// --- Manual server order and recommended servers ----------------------------
+// Both are GLOBAL-ONLY on purpose: neither is part of `portalPolicySchema`, so
+// they cannot be overridden per user and do not travel in `me.policy`.
+//
+// `nodeOrder` is the admin's hand-made order and the ONLY thing that decides
+// position: the array index IS the position, so the list is stored and returned
+// verbatim (never sorted, never deduplicated into a different order).
+// `recommendedNodeIds` is a highlight and nothing else - it never moves a node.
+// The control API additionally requires it to be a PREFIX of `nodeOrder` (only
+// the top of the list may be recommended), which is a cross-field rule and so
+// lives in the update handler, not in these schemas. Ids of deleted nodes are
+// scrubbed on delete and, if any survive, simply match nothing. Users never
+// receive either list - `GET /api/nodes` arrives already ordered, with a
+// `recommended` flag per node.
+export const MAX_RECOMMENDED_NODES = 100;
+export const recommendedNodeIdsSchema = z
+  .array(z.uuid())
+  .max(MAX_RECOMMENDED_NODES);
+export type RecommendedNodeIds = z.infer<typeof recommendedNodeIdsSchema>;
+
+// Higher cap than the recommended list: the order may legitimately name every
+// node in the fleet, while "recommended" is a shortlist by definition.
+export const MAX_ORDERED_NODES = 500;
+export const nodeOrderSchema = z.array(z.uuid()).max(MAX_ORDERED_NODES);
+export type NodeOrder = z.infer<typeof nodeOrderSchema>;
+
 // --- Per-user, per-node key limits -----------------------------------------
 // The key limit has always been PER NODE (a user may hold up to `limit` keys on
 // each node). This map lets an admin give a single user a different limit on a

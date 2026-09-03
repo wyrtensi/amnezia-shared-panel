@@ -10,6 +10,7 @@ import { Separator } from "@/components/ui/separator";
 import { Hint } from "@/components/ui/hint";
 import { ProtocolSelect } from "@/components/protocol-select";
 import { NodeSelect } from "@/components/node-select";
+import { NodeOrderList } from "@/components/node-order-list";
 import {
   useAdminData,
   type GlobalPortalPolicy,
@@ -149,6 +150,24 @@ export default function AdminPolicyPage() {
 
           <Separator />
 
+          <div className="space-y-2">
+            <h3 className="flex items-center gap-1.5 text-sm font-semibold">
+              {t("policy.nodeOrder")}
+              <Hint>{t("policy.nodeOrderHint")}</Hint>
+            </h3>
+            <NodeOrderList
+              nodes={nodes}
+              order={form.nodeOrder ?? []}
+              recommended={form.recommendedNodeIds ?? []}
+              // Both fields move together: the recommended set is always the
+              // prefix of the order the editor just produced, so the payload
+              // can never be rejected by the API's prefix check.
+              onChange={(next) => setForm({ ...form, ...next })}
+            />
+          </div>
+
+          <Separator />
+
           <div className="space-y-3">
             <h3 className="text-sm font-semibold">{t("policy.employeePerms")}</h3>
             <div className="grid gap-2 sm:grid-cols-2">
@@ -247,9 +266,18 @@ export default function AdminPolicyPage() {
             </div>
           </div>
 
-          <Button type="submit" disabled={busy}>
-            {busy ? t("common.saving") : t("policy.saveGlobal")}
-          </Button>
+          {/*
+            Sticky, not a plain button at the bottom: this page is long enough
+            that a switch near the top is several screens away from Save on a
+            short window, which is how a change gets made and then lost. The
+            bar sits at the bottom of the viewport while any part of the form
+            is on screen, and scrolls away with the card's end.
+          */}
+          <div className="sticky bottom-0 -mx-6 -mb-6 mt-2 border-t bg-background/95 px-6 py-3 backdrop-blur supports-[backdrop-filter]:bg-background/80">
+            <Button type="submit" disabled={busy} className="w-full sm:w-auto">
+              {busy ? t("common.saving") : t("policy.saveGlobal")}
+            </Button>
+          </div>
         </CardContent>
       </Card>
     </form>

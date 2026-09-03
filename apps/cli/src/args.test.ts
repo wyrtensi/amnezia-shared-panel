@@ -17,7 +17,11 @@ import {
   parseEnumFlag,
   parseKeyLimitMode,
   quotaCurrentLimit,
+  annotateNodeOrder,
+  checkRecommendedPrefix,
+  formatPolicyValue,
   matchesNodeFilter,
+  parsePolicyNodeList,
   quotaTargetLabel,
 } from "./args.js";
 
@@ -347,5 +351,124 @@ describe("matchesNodeFilter", () => {
 
   it("is case-insensitive, because ids are pasted from other output", () => {
     expect(matchesNodeFilter("A1B2", "a1b2")).toBe(true);
+  });
+});
+
+describe("parsePolicyNodeList", () => {
+  const nodeA = "11111111-1111-4111-8111-111111111111";
+  const nodeB = "22222222-2222-4222-8222-222222222222";
+
+  it("keeps the given order — the order IS the value", () => {
+    expect(parsePolicyNodeList(`${nodeB}, ${nodeA}`)).toEqual([nodeB, nodeA]);
+  });
+
+  it("clears the list for 'none' and for an empty value", () => {
+    expect(parsePolicyNodeList("none")).toEqual([]);
+    expect(parsePolicyNodeList("")).toEqual([]);
+  });
+
+  it("rejects 'all', which means nothing for these lists", () => {
+    // `allowedNodeIds` takes "all"; recommending or ordering "all" does not
+    // parse, and must say so rather than posting a literal ["all"].
+    expect(() => parsePolicyNodeList("all")).toThrow(/all/);
+  });
+});
+
+describe("formatPolicyValue", () => {
+  const nodeA = "11111111-1111-4111-8111-111111111111";
+
+  it("prints an empty allowed-node list as (all)", () => {
+    expect(formatPolicyValue("allowedNodeIds", [])).toBe("(all)");
+    expect(formatPolicyValue("allowedNodeIds", null)).toBe("(all)");
+  });
+
+  it("prints an empty recommended list and an empty order as (none)", () => {
+    expect(formatPolicyValue("recommendedNodeIds", [])).toBe("(none)");
+    expect(formatPolicyValue("nodeOrder", [])).toBe("(none)");
+  });
+
+  it("joins a non-empty list and stringifies scalars", () => {
+    expect(formatPolicyValue("nodeOrder", [nodeA, nodeA])).toBe(
+      `${nodeA},${nodeA}`,
+    );
+    expect(formatPolicyValue("defaultKeyLimit", 10)).toBe("10");
+    expect(formatPolicyValue("allowKeyCreation", false)).toBe("false");
+  });
+});
+
+describe("annotateNodeOrder", () => {
+  const a = { id: "a", name: "zurich" };
+  const b = { id: "b", name: "frankfurt" };
+  const c = { id: "c", name: "amsterdam" };
+
+  it("puts positioned nodes in the stored order, not in name order", () => {
+    // The whole point of the feature: `nodes` must show what a user sees.
+    expect(
+      annotateNodeOrder([a, b, c], ["b", "a"], []).map((r) => r.name),
+    ).toEqual(["frankfurt", "zurich", "amsterdam"]);
+  });
+
+  it("ranks positioned nodes from one and marks the rest", () => {
+    const rows = annotateNodeOrder([a, b], ["b"], []);
+    expect(rows.map((r) => r.rank)).toEqual(["1", "-"]);
+  });
+
+  it("sorts unpositioned nodes after, by name", () => {
+    expect(annotateNodeOrder([a, c], [], []).map((r) => r.name)).toEqual([
+      "amsterdam",
+      "zurich",
+    ]);
+  });
+
+  it("ignores an id in the order that names no node", () => {
+    // A node deleted between the two reads must not leave a hole or throw.
+    expect(annotateNodeOrder([a], ["gone", "a"], []).map((r) => r.rank)).toEqual(
+      ["1"],
+    );
+  });
+
+  it("marks exactly the recommended ids", () => {
+    expect(
+      annotateNodeOrder([a, b], ["a", "b"], ["a"]).map((r) => r.rec),
+    ).toEqual(["yes", ""]);
+  });
+
+  it("does not mutate its input", () => {
+    const rows = [a, b];
+    annotateNodeOrder(rows, ["b", "a"], []);
+    expect(rows).toEqual([a, b]);
+  });
+});
+
+describe("checkRecommendedPrefix", () => {
+  it("accepts an empty recommended list against any order", () => {
+    expect(checkRecommendedPrefix([], ["a", "b"])).toEqual({ ok: true });
+  });
+
+  it("accepts a true prefix regardless of the order it is written in", () => {
+    expect(checkRecommendedPrefix(["b", "a"], ["a", "b", "c"])).toEqual({
+      ok: true,
+    });
+  });
+
+  it("names a recommended node that is not in the prefix", () => {
+    expect(checkRecommendedPrefix(["a", "c"], ["a", "b", "c"])).toEqual({
+      ok: false,
+      nodeId: "c",
+      reason: "behind",
+    });
+  });
+
+  it("names a recommended node that is not in the order at all", () => {
+    expect(checkRecommendedPrefix(["x"], ["a", "b"])).toEqual({
+      ok: false,
+      nodeId: "x",
+      reason: "unpositioned",
+    });
+    expect(checkRecommendedPrefix(["a"], [])).toEqual({
+      ok: false,
+      nodeId: "a",
+      reason: "unpositioned",
+    });
   });
 });
