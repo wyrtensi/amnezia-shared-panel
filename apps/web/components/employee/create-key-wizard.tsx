@@ -401,7 +401,14 @@ export function CreateKeyWizard({
                         disabled={quota?.full}
                       >
                         <span className="flex w-full items-center justify-between gap-3">
-                          <span className="truncate">{node.name}</span>
+                          <span className="flex min-w-0 items-center gap-1.5">
+                            <span className="truncate">{node.name}</span>
+                            {node.recommended ? (
+                              <Badge variant="success" className="shrink-0">
+                                {t("wizard.recommended")}
+                              </Badge>
+                            ) : null}
+                          </span>
                           {quota ? (
                             <span className="shrink-0 tabular-nums text-xs text-muted-foreground">
                               {/* Global mode: the per-server denominator is

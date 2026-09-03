@@ -67,6 +67,12 @@ export type NodeTraffic = {
 export type NodeView = {
   id: string;
   name: string;
+  /**
+   * Set by the global policy. Presentation only: it decides whether the badge
+   * is drawn, never where the node appears — the API sends the list already in
+   * the admin's order.
+   */
+  recommended?: boolean;
   protocol: ProtocolKind;
   maxPeers: number;
   supportedProtocols?: ProtocolKind[];
