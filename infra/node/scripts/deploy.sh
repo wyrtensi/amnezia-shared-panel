@@ -34,6 +34,14 @@ case "$node_image" in
 esac
 verify_linux_amd64_image "$node_image"
 
+# Who else is on this box, before we touch anything. A node often shares a host
+# with a legacy AmneziaVPN install or another tenant's tunnel, and "we never
+# touch them" has until now been a promise in the documentation with nothing
+# enforcing it. The check after the deploy is what turns it into a fact.
+COTENANTS_SNAPSHOT="${TMPDIR:-/tmp}/amnezia-cotenants.$$"
+sh "$SCRIPT_DIR/cotenants.sh" snapshot "$COTENANTS_SNAPSHOT"
+trap 'rm -f "$COTENANTS_SNAPSHOT"' EXIT INT TERM
+
 backup_path=''
 if [ -s "$STATE_DIR/awg0.conf" ]; then
   if backup_path="$(create_backup 0)"; then
@@ -65,6 +73,12 @@ if ! wait_healthy amnezia-node-agent; then
   info "Node-agent failed its health gate. Persistent state was not removed."
   [ -z "$backup_path" ] || info "Rollback source: $backup_path"
   exit 1
+fi
+
+# Before the success line, never after it: a deploy that broke somebody else's
+# VPN must not be able to report that it went fine.
+if ! sh "$SCRIPT_DIR/cotenants.sh" verify "$COTENANTS_SNAPSHOT"; then
+  fail "deployment disturbed another tenant on this host"
 fi
 
 agent_binding="$(docker port amnezia-node-agent 4001/tcp)"
