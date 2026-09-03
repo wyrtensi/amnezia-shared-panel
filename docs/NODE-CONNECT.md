@@ -229,12 +229,38 @@ If the defaults (`51889`/`51890` UDP, `4001` TCP loopback) collide with an
 existing install, choose free ports before deploying — never re-port the other
 tenant's containers.
 
-### Shipping the node-agent image (build once, load on each host)
+### Getting the node-agent image onto a host
 
-The node-agent image is **built once** (centrally or on a build host) and
-**shipped** to each node; hosts only **load** the image, they never build it (the
-compose file sets `pull_policy: never` and pins `NODE_AGENT_IMAGE` to an immutable
-`sha256:` ID). Ship it with `docker save` piped into a remote `docker load`:
+A node never builds the agent: the compose file sets `pull_policy: never` and
+`NODE_AGENT_IMAGE` must be an immutable reference. Building it on the node is
+not merely discouraged — a three-stage Node build with `npm ci` does not fit on
+a 1 GB box that also has to pass preflight's 3 GiB free-disk gate.
+
+#### Preferred: pull a published digest
+
+Tagging `node-agent-v<version>` runs
+[`release-node-agent.yml`](../.github/workflows/release-node-agent.yml), which
+builds on a GitHub runner and pushes to
+`ghcr.io/<owner>/<repo>/node-agent`. The run summary prints the exact line to
+paste:
+
+```
+NODE_AGENT_IMAGE=ghcr.io/<owner>/<repo>/node-agent@sha256:<digest>
+```
+
+Put that in the node's `.env` and run `sh scripts/deploy.sh`. `deploy.sh` pulls
+any `…@sha256:…` reference before preflight checks the image is present, so
+nothing else is needed on the host — and because the reference is a digest,
+preflight's "immutable image" rule is satisfied by construction.
+
+There is deliberately **no `latest` tag** for this image. A node pins its agent
+by digest and preflight fails a deploy that names a mutable tag; publishing one
+would only invite the mistake that rule exists to prevent.
+
+#### Fallback: build elsewhere and ship the tarball
+
+For an air-gapped node, or before the image is published, build on a host with
+headroom and ship it with `docker save` piped into a remote `docker load`:
 
 ```sh
 docker save "$NODE_AGENT_IMAGE" | ssh -i ~/.ssh/<NODE_KEY> root@<NODE_HOST> 'docker load'
@@ -245,6 +271,11 @@ docker save "$NODE_AGENT_IMAGE" | ssh -i ~/.ssh/<NODE_KEY> root@<NODE_HOST> 'doc
 > *different* `sha256:` than the source host has. Set that host's
 > `NODE_AGENT_IMAGE` to the ID `docker load` reported **there** — pinning the
 > source ID makes preflight fail with the image "not present locally".
+
+The tarball path is also why the agent used to fall behind: it only happens
+when somebody remembers to do it, so a change merged and released to the panel
+could reach no node at all, with nothing anywhere reporting that the agent was
+old. Prefer the published digest.
 
 See [`AGENT-HOST-SETUP.md`](./AGENT-HOST-SETUP.md) for building the image.
 
