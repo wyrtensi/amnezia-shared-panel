@@ -1,12 +1,4 @@
-export type DeviceType =
-  | "unspecified"
-  | "desktop"
-  | "laptop"
-  | "iphone"
-  | "android"
-  | "phone"
-  | "tablet"
-  | "other";
+import type { DeviceType } from "@amnezia/contracts";
 
 type Translate = (key: string) => string;
 
@@ -14,9 +6,11 @@ type Translate = (key: string) => string;
  * Suggest a device name from its type, avoiding collisions with existing names
  * by appending an incrementing counter ("iPhone", "iPhone 2", ...).
  *
- * The base name is localized through the caller's translator so English mode
- * gets English defaults; generic/unspecified types fall back to a neutral
- * "Device" label instead of a UI option label like "Unspecified".
+ * The base comes from the `device.name.*` namespace rather than the card labels
+ * in `device.*`: a card reads "iPhone / iPad", which is a poor key name. It is
+ * localized through the caller's translator so English mode gets English
+ * defaults; the generic types fall back to a neutral "Device" instead of a UI
+ * option label like "Unspecified".
  */
 export function suggestKeyName(
   deviceType: DeviceType,
@@ -26,7 +20,7 @@ export function suggestKeyName(
   const base =
     deviceType === "unspecified" || deviceType === "other"
       ? t("device.base")
-      : t(`device.${deviceType}`);
+      : t(`device.name.${deviceType}`);
   const taken = new Set(
     existingNames.map((name) => name.trim().toLowerCase()).filter(Boolean),
   );
