@@ -47,7 +47,8 @@ and traffic, stale accounts, pending quota requests, and a one-click panel updat
 
 **A team member's own page** — their devices, what each key routes, how much of
 their quota is left, and the extra routes they may layer on top. Below it is the
-same screen twice: the UI ships English and Russian and follows the system theme.
+same screen twice: the UI ships English and Russian, follows the browser language
+on first visit (the RU/EN switch is remembered afterwards) and the system theme.
 
 <table>
   <tr>

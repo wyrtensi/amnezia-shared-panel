@@ -1,10 +1,32 @@
 "use client";
 
 import * as React from "react";
+import { resolveInitialLang } from "@/lib/i18n/detect";
 import { messages, type Lang, type MessageKey } from "@/lib/i18n/messages";
 
 const STORAGE_KEY = "amnezia-lang";
+// What the server and the first client render use. Unchanged: changing it
+// would change the SSR output and reintroduce the hydration problem.
 const DEFAULT_LANG: Lang = "ru";
+// What a visitor gets when neither storage nor the browser decides. Separate
+// from DEFAULT_LANG on purpose: the first paint stays Russian, but a browser
+// that asks for neither Russian nor English lands in English.
+const DETECTION_FALLBACK: Lang = "en";
+
+/**
+ * The browser's ordered preference list.
+ *
+ * The DOM types say `languages` is always there, but it is missing on older
+ * engines and in some embedded webviews -- and this runs inside the provider's
+ * mount effect, where a TypeError takes the whole language context down with
+ * it. So neither value is trusted to exist, and an engine that exposes neither
+ * simply reports no preference and lands on the fallback.
+ */
+function browserLanguages(): readonly string[] {
+  const list = navigator.languages as readonly string[] | undefined;
+  if (list && list.length > 0) return list;
+  return typeof navigator.language === "string" ? [navigator.language] : [];
+}
 
 /** A message key with autocomplete, while still accepting computed strings. */
 type TKey = MessageKey | (string & {});
@@ -40,17 +62,32 @@ const LanguageContext = React.createContext<LanguageContextValue>({
 export function LanguageProvider({ children }: { children: React.ReactNode }) {
   const [lang, setLangState] = React.useState<Lang>(DEFAULT_LANG);
 
-  // Read the persisted choice after mount so SSR and first paint stay on the
-  // server-rendered default (ru) and hydration does not mismatch.
+  // Resolve the language after mount so SSR and the first paint stay on the
+  // server-rendered default (ru) and hydration does not mismatch. A stored
+  // explicit choice wins; on a first visit the browser's preference list
+  // decides and that pick is persisted, so later visits read it as stored.
+  // A fallback is not persisted: a browser that gains a supported language
+  // later should still be detected.
   React.useEffect(() => {
+    let stored: string | null = null;
     try {
-      const stored = window.localStorage.getItem(STORAGE_KEY);
-      if (stored === "ru" || stored === "en") {
-        setLangState(stored);
-        document.documentElement.lang = stored;
-      }
+      stored = window.localStorage.getItem(STORAGE_KEY);
     } catch {
-      /* localStorage unavailable — keep the default */
+      /* localStorage unavailable — behave as a first visit */
+    }
+    const resolved = resolveInitialLang(
+      stored,
+      browserLanguages(),
+      DETECTION_FALLBACK,
+    );
+    setLangState(resolved.lang);
+    document.documentElement.lang = resolved.lang;
+    if (resolved.source === "browser") {
+      try {
+        window.localStorage.setItem(STORAGE_KEY, resolved.lang);
+      } catch {
+        /* ignore persistence failures */
+      }
     }
   }, []);
 
