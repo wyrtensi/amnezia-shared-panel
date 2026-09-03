@@ -378,6 +378,19 @@ export const portalPolicy = pgTable(
     // Nodes offered to users; null = all nodes. A per-user override lives in
     // policyOverride.allowedNodeIds.
     allowedNodeIds: jsonb("allowed_node_ids").$type<string[]>(),
+    // Nodes badged as recommended for users. A HIGHLIGHT ONLY: it never
+    // changes the order. Global-only (no per-user override); validated against
+    // existing nodes on write, required to be a prefix of node_order, and
+    // scrubbed on node delete.
+    recommendedNodeIds: jsonb("recommended_node_ids")
+      .$type<string[]>()
+      .default([])
+      .notNull(),
+    // The admin's hand-made server order: the array index is the position, and
+    // it is the only thing that decides where a node appears. Nodes missing
+    // from it sort after every node that is in it (by name, then by id).
+    // Global-only, same validation and scrubbing as above.
+    nodeOrder: jsonb("node_order").$type<string[]>().default([]).notNull(),
     allowRouteProfileSelection: boolean("allow_route_profile_selection")
       .default(true)
       .notNull(),
