@@ -1,0 +1,19 @@
+[Unit]
+Description=Amnezia node-agent updater (swaps the agent image on request)
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+# install-agent-updater.sh rewrites these to this host's actual node directory,
+# spool and repository.
+Environment=AMNEZIA_NODE_DIR=/opt/amnezia-node
+Environment=NODE_UPDATE_SPOOL_DIR=/var/lib/amnezia-node/update
+# Root-owned lock directory, outside the container-writable spool (created by
+# the script itself, not by RuntimeDirectory=, which would delete and recreate
+# it around every run and let two overlapping runs lock different inodes).
+Environment=NODE_UPDATER_LOCK_DIR=/run/amnezia-node
+Environment=NODE_AGENT_UPDATE_REPO=
+ExecStart=/opt/amnezia-node/scripts/agent-update.sh
+# A pull on a small VPS is the slow part; the health gate adds up to 90s.
+TimeoutStartSec=900

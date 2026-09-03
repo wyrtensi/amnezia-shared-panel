@@ -57,6 +57,32 @@ Edit `.env`, including the immutable image ID, the node's public IPv4 address (t
 Then follow [CHECKLIST.md](CHECKLIST.md). `preflight.sh` is non-deploying: it checks Linux/amd64, Docker, TUN, immutable image references, strict permissions, fixed Compose configuration, port conflicts, 2 GiB free disk (3 GiB recommended), and available RAM scaled to `SERVER_MAX_PEERS`
 (`358400 KiB * peers / 500`, floored at 192 MiB).
 
+## Updating the agent from the panel (opt-in)
+
+The node-agent container mounts only the Docker socket, so it cannot read this
+compose file, cannot write `.env`, and has no compose binary — it cannot durably
+replace itself. `scripts/agent-update.sh` does the swap from the host instead, a
+port of the panel's own `infra/prod/panel-updater.sh`: the agent drops a request
+into a spool, `systemd/amnezia-node-agent-update.path` notices it, and the script
+pulls the requested digest, rewrites `NODE_AGENT_IMAGE` in `.env` and recreates
+**only** the agent (`--no-deps`), so no tunnel drops. A new agent that fails its
+health gate is rolled back to the previous digest.
+
+The feature is off until a host is deliberately wired for it:
+
+```sh
+sudo NODE_AGENT_UPDATE_REPO=ghcr.io/<owner>/<repo>/node-agent \
+  bash scripts/install-agent-updater.sh
+```
+
+Only a digest inside that repository is ever accepted — a tag is mutable, so what
+the admin confirmed would not be what the node installs.
+
+Published images also carry the `compose.yaml` they expect at
+`/opt/node-agent/deploy/`. That is how the updater tells a node's untouched
+compose file (safe to move forward) from one edited on purpose here (stop, and
+report the diff for a human to reconcile).
+
 ## State and recovery
 
 `backup.sh` stops the node-agent, AWG2, and AWG3 briefly so each `awg0.conf` and `clientsTable` cannot be captured across a mutation. It creates a mode-`0600` archive plus a SHA-256 sidecar in `backups/` covering `state/amnezia-awg2` and (once initialized) `state/amnezia-awg3`, then restarts only services that were previously running. The archive contains VPN private material; copy it only to approved encrypted backup storage.

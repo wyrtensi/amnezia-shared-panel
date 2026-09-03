@@ -44,6 +44,17 @@ COPY --from=prod_deps /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
 COPY package.json ./
 
+# The compose file this image expects. The host-side updater compares a node's
+# compose.yaml against the one shipped by the image it is running and the one
+# shipped by the image it is about to install - the only way to tell a file
+# nobody touched from one an operator edited on purpose. It is also the
+# authority on which environment variables this agent reads, so the updater
+# reports new ones from here rather than from a second file. `deploy` is a named
+# build context (infra/node) because compose.yaml lives outside this build's
+# context; .github/workflows/release-node-agent.yml and
+# infra/node/scripts/build-node-agent.sh both pass it.
+COPY --from=deploy compose.yaml /opt/node-agent/deploy/
+
 EXPOSE 4001
 
 HEALTHCHECK --interval=10s --timeout=3s --start-period=15s --retries=6 \
