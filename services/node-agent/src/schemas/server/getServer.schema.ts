@@ -58,6 +58,13 @@ export const getServerSchema = {
             "Публичный хост сервера (SERVER_PUBLIC_HOST), который записывается в клиентские конфигурации",
           example: "vpn.example.com",
         },
+        listenPorts: {
+          type: "array",
+          description:
+            "UDP-порты, на которых нода реально слушает, считанные из живых конфигов интерфейсов",
+          items: { type: "number" },
+          example: [51890],
+        },
       },
     },
     401: SwaggerContract.ClientErrorResponseFactory(401),

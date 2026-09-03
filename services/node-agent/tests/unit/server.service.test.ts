@@ -15,7 +15,34 @@ import { ServerBackupPayload } from "@/types/server";
 import { AmneziaWgService } from "@/services/amneziaWg";
 import { AmneziaWg2Service } from "@/services/amneziaWg2";
 import { AmneziaWg3Service } from "@/services/amneziaWg3";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+// The two host files the metrics call reads. They do not exist on the Windows
+// dev box and differ between kernels in CI, so they are supplied here and every
+// other path still goes to the real fs - the point of the test is the wiring,
+// and the parsers have their own table-driven tests.
+const MEMINFO = [
+  "MemTotal:         984064 kB",
+  "MemFree:           98304 kB",
+  "MemAvailable:     344800 kB",
+  "SwapTotal:       1048572 kB",
+  "SwapFree:         555000 kB",
+  "",
+].join("\n");
+
+vi.mock("fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("fs/promises")>();
+  const readFile = (path: unknown, encoding?: unknown) => {
+    if (path === "/proc/meminfo") return Promise.resolve(MEMINFO);
+    if (path === "/sys/fs/cgroup/pids.current") return Promise.resolve("12\n");
+    if (path === "/sys/fs/cgroup/pids.max") return Promise.resolve("128\n");
+    return (actual.readFile as (...args: unknown[]) => Promise<unknown>)(
+      path,
+      encoding,
+    );
+  };
+  return { ...actual, default: { ...actual, readFile }, readFile };
+});
 
 const originalAppConfig = {
   SERVER_ID: appConfig.SERVER_ID,
@@ -106,7 +133,36 @@ describe("ServerService", () => {
       totalPeers: 6,
       protocols: [Protocol.AMNEZIAWG, Protocol.AMNEZIAWG2, Protocol.XRAY],
       publicHost: "127.0.0.1",
+      // Read from the live interface config, not assumed from the protocol:
+      // a node whose port was changed on the host stops being a mystery.
+      listenPorts: [51820],
     });
+  });
+
+  // The metrics the panel's node card is built from. Every one of them is
+  // nullable on the wire, so the assertions are about the shape being present
+  // and the AWG entries following the protocols this node actually serves.
+  it("reports host metrics and the state of the AWG interfaces it serves", async () => {
+    const { service } = createSubject();
+
+    const load = await service.getServerLoad();
+
+    // MemAvailable, not MemFree: the two differ by the page cache on any real
+    // host, and the node's own deploy gate reads MemAvailable - if the panel
+    // read the other one the two would disagree about whether a node is healthy.
+    expect(load.memory.availableBytes).toBe(344800 * 1024);
+    expect(load.memory.totalBytes).toEqual(expect.any(Number));
+    expect(load.swap).toEqual({
+      totalBytes: 1048572 * 1024,
+      usedBytes: (1048572 - 555000) * 1024,
+    });
+    expect(load.agent).toEqual({ pidsCurrent: 12, pidsMax: 128 });
+
+    // The fixture enables amneziawg2 but not amneziawg3, and the payload must
+    // say so rather than reporting a down interface for a protocol this node
+    // was never asked to run.
+    expect(load.awg.amneziawg2).toEqual({ up: true, peers: expect.any(Number) });
+    expect(load.awg.amneziawg3).toBeNull();
   });
 
   // Тестирование экспорта резервной копии всех протоколов

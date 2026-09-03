@@ -1,5 +1,6 @@
 import os from "os";
 import {
+  AwgInterfaceState,
   ServerLoadPayload,
   ServerBackupPayload,
   ServerStatusPayload,
@@ -11,6 +12,7 @@ import {
   parseMemUsage,
   parseCpuPercent,
 } from "@/helpers/dockerStats";
+import { parseCgroupPids, parseMemInfo } from "@/helpers/hostMetrics";
 import { APIError } from "@/utils/APIError";
 import appConfig from "@/constants/appConfig";
 import { XrayService } from "@/services/xray";
@@ -22,6 +24,7 @@ import { ClientsService } from "@/services/clients";
 import { AmneziaWgService } from "@/services/amneziaWg";
 import { AmneziaWg2Service } from "@/services/amneziaWg2";
 import { AmneziaWg3Service } from "@/services/amneziaWg3";
+import { AmneziaWgServiceBase } from "@/services/amneziaWgShared/amneziaWgServiceBase";
 import { ServerConnection } from "@/helpers/serverConnection";
 import { listRunningDockerContainers } from "@/helpers/docker";
 import { resolveEnabledProtocols } from "@/helpers/resolveEnabledProtocols";
@@ -51,6 +54,18 @@ export class ServerService {
   async getServerStatus(): Promise<ServerStatusPayload> {
     const clients = await this.clientsService.getClients();
     const protocols = await resolveEnabledProtocols();
+    const interfaces = await this.getAwgInterfaceStates(protocols);
+
+    // The UDP ports clients actually dial. Reported so the panel can say "this
+    // node serves 51890" without an operator reading compose.yaml on the host,
+    // and so a node whose port was changed locally stops being a mystery.
+    const listenPorts = [
+      ...new Set(
+        Object.values(interfaces)
+          .map((state) => state.listenPort)
+          .filter((port): port is number => port !== null),
+      ),
+    ].sort((a, b) => a - b);
 
     return {
       id: appConfig.SERVER_ID || "",
@@ -60,7 +75,41 @@ export class ServerService {
       totalPeers: clients.reduce((acc, client) => acc + client.peers.length, 0),
       protocols,
       publicHost: appConfig.SERVER_PUBLIC_HOST || "",
+      listenPorts,
     };
+  }
+
+  /**
+   * Live interface state for the AWG protocols this node actually runs. Only
+   * amneziawg2 and amneziawg3 are asked: the panel models those two, and
+   * probing a protocol the node does not serve would turn a normal shape into
+   * a logged error on every poll.
+   */
+  private async getAwgInterfaceStates(
+    protocols: Protocol[],
+  ): Promise<Partial<Record<Protocol, AwgInterfaceState>>> {
+    const services: Partial<Record<Protocol, AmneziaWgServiceBase>> = {
+      [Protocol.AMNEZIAWG2]: this.amneziaWg2Service,
+      [Protocol.AMNEZIAWG3]: this.amneziaWg3Service,
+    };
+    const wanted = protocols.filter((protocol) => services[protocol]);
+    const states = await Promise.all(
+      wanted.map(async (protocol) => {
+        const service = services[protocol];
+        if (!service) return null;
+        try {
+          return [protocol, await service.getInterfaceState()] as const;
+        } catch (error) {
+          // One unreachable container must not cost the whole metrics call.
+          appLogger.warn(
+            `Не удалось получить состояние интерфейса ${protocol}: ${error}`,
+          );
+          return null;
+        }
+      }),
+    );
+
+    return Object.fromEntries(states.filter(isNotNull));
   }
 
   /**
@@ -251,12 +300,71 @@ export class ServerService {
       }
     })();
 
+    // What the kernel says is actually usable, and the swap that backs it.
+    // os.freemem() is not this number on any host with a page cache, and the
+    // node's own deploy gate reads MemAvailable - so the panel must read the
+    // same thing or the two will disagree about whether a node is healthy.
+    const memInfo = await (async () => {
+      try {
+        return parseMemInfo(await fs.readFile("/proc/meminfo", "utf-8"));
+      } catch {
+        return {
+          availableBytes: null,
+          swapTotalBytes: null,
+          swapFreeBytes: null,
+        };
+      }
+    })();
+
+    // The cgroup task budget of the agent's own container. On a small host this
+    // is what runs out first, and a container that cannot fork looks healthy
+    // and low on memory the whole time it is wedged.
+    const pids = await (async () => {
+      try {
+        const [current, max] = await Promise.all([
+          fs.readFile("/sys/fs/cgroup/pids.current", "utf-8"),
+          fs.readFile("/sys/fs/cgroup/pids.max", "utf-8"),
+        ]);
+        return parseCgroupPids(current, max);
+      } catch {
+        return { pidsCurrent: null, pidsMax: null };
+      }
+    })();
+
+    const interfaces = await this.getAwgInterfaceStates(
+      await resolveEnabledProtocols(),
+    );
+    const awgEntry = (protocol: Protocol) => {
+      const state = interfaces[protocol];
+      return state ? { up: state.up, peers: state.peers } : null;
+    };
+
     const payload: ServerLoadPayload = {
       timestamp,
       uptimeSec: os.uptime(),
       loadavg,
       cpu: { cores },
-      memory: { totalBytes, freeBytes, usedBytes },
+      memory: {
+        totalBytes,
+        freeBytes,
+        usedBytes,
+        availableBytes: memInfo.availableBytes,
+      },
+      swap:
+        memInfo.swapTotalBytes === null
+          ? null
+          : {
+              totalBytes: memInfo.swapTotalBytes,
+              usedBytes:
+                memInfo.swapFreeBytes === null
+                  ? null
+                  : Math.max(0, memInfo.swapTotalBytes - memInfo.swapFreeBytes),
+            },
+      agent: { pidsCurrent: pids.pidsCurrent, pidsMax: pids.pidsMax },
+      awg: {
+        amneziawg2: awgEntry(Protocol.AMNEZIAWG2),
+        amneziawg3: awgEntry(Protocol.AMNEZIAWG3),
+      },
       disk,
       network,
       docker,
