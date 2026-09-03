@@ -9,6 +9,7 @@ import {
   decryptSecret,
   encryptSecret,
   jobOutbox,
+  nodeAgentReleases,
   nodes,
   portalPolicy,
   quotaRequests,
@@ -1912,4 +1913,167 @@ describe("PostgresControlRepository global policy update", () => {
       ).resolves.toBeDefined();
     },
   );
+});
+
+describe("PostgresControlRepository node agent update", () => {
+  const database = databaseUrl ? createDatabase(databaseUrl) : null;
+  const keyring = { 1: randomBytes(32) };
+  const repository = database
+    ? new PostgresControlRepository({ db: database.db, keyring })
+    : null;
+  const repositoryName = "ghcr.io/owner/repo/node-agent";
+  const digest = `sha256:${"a".repeat(64)}`;
+  let admin: Actor;
+  let nodeId: string;
+
+  // Other blocks in this file leave rows in job_outbox, so every assertion here
+  // is scoped to this job type rather than to the table.
+  const agentJobs = async () =>
+    database
+      ? database.db
+          .select()
+          .from(jobOutbox)
+          .where(eq(jobOutbox.type, "node.agent-update"))
+      : [];
+  const clearAgentJobs = async () => {
+    if (database) {
+      await database.db
+        .delete(jobOutbox)
+        .where(eq(jobOutbox.type, "node.agent-update"));
+    }
+  };
+
+  beforeAll(async () => {
+    if (!database) return;
+    const [adminUser] = await database.db
+      .insert(users)
+      .values({ email: "agent-update-admin@example.com", role: "admin" })
+      .returning();
+    if (!adminUser) throw new Error("Failed to seed admin");
+    admin = {
+      id: adminUser.id,
+      email: adminUser.email,
+      displayName: null,
+      role: "admin",
+      status: "active",
+    };
+    const encryptedCredentials = encryptSecret("api-key", keyring, 1);
+    const encryptedLabel = encryptSecret(
+      randomBytes(32).toString("base64"),
+      keyring,
+      1,
+    );
+    const [node] = await database.db
+      .insert(nodes)
+      .values({
+        name: "agent-update-node",
+        apiBaseUrl: "http://127.0.0.1:4100/agent-update",
+        credentialsCiphertext: encryptedCredentials.ciphertext,
+        credentialsNonce: encryptedCredentials.nonce,
+        credentialsAuthTag: encryptedCredentials.authTag,
+        credentialsKeyVersion: encryptedCredentials.keyVersion,
+        labelSecretCiphertext: encryptedLabel.ciphertext,
+        labelSecretNonce: encryptedLabel.nonce,
+        labelSecretAuthTag: encryptedLabel.authTag,
+        labelSecretKeyVersion: encryptedLabel.keyVersion,
+      })
+      .returning({ id: nodes.id });
+    if (!node) throw new Error("Failed to seed node");
+    nodeId = node.id;
+  });
+
+  afterAll(async () => {
+    if (!database) return;
+    await clearAgentJobs();
+    await database.db.delete(auditEvents).where(eq(auditEvents.targetId, nodeId));
+    await database.db.delete(nodes).where(eq(nodes.id, nodeId));
+    await database.db.delete(users).where(eq(users.id, admin.id));
+    await database.db.delete(nodeAgentReleases);
+    await database.client.end();
+  });
+
+  runDatabaseTest("refuses until a release has been resolved", async () => {
+    if (!database || !repository) return;
+    await database.db.delete(nodeAgentReleases);
+
+    // There is deliberately no fall back to a tag: a tag is the mutable
+    // reference the node's own preflight refuses, so "not resolved" has to mean
+    // "not offered".
+    const failure = await failureOf(
+      repository.adminAction(admin, "nodes", nodeId, "agent-update", {}),
+    );
+    expect(failure?.code).toBe("AGENT_IMAGE_UNRESOLVED");
+    expect(await agentJobs()).toHaveLength(0);
+  });
+
+  runDatabaseTest("enqueues the resolved digest and audits it", async () => {
+    if (!database || !repository) return;
+    await clearAgentJobs();
+    await database.db.insert(nodeAgentReleases).values({
+      repository: repositoryName,
+      version: "1.1.3",
+      digest,
+      resolvedAt: new Date(),
+    });
+
+    const result = (await repository.adminAction(
+      admin,
+      "nodes",
+      nodeId,
+      "agent-update",
+      {},
+    )) as { image: string; queued: boolean };
+    expect(result).toMatchObject({
+      image: `${repositoryName}@${digest}`,
+      queued: true,
+    });
+
+    const [job] = await agentJobs();
+    expect(job?.type).toBe("node.agent-update");
+    expect(job?.payload).toEqual({
+      nodeId,
+      image: `${repositoryName}@${digest}`,
+    });
+    const [event] = await database.db
+      .select()
+      .from(auditEvents)
+      .where(eq(auditEvents.action, "admin.nodes.agent-update"));
+    expect(event?.metadata).toEqual({ image: `${repositoryName}@${digest}` });
+  });
+
+  runDatabaseTest("refuses an image outside the published repository", async () => {
+    if (!database || !repository) return;
+    await clearAgentJobs();
+
+    // The admin may only confirm what the panel resolved. This is checked here,
+    // again on the node, and again by the host-side updater.
+    const failure = await failureOf(
+      repository.adminAction(admin, "nodes", nodeId, "agent-update", {
+        image: `ghcr.io/evil/repo/node-agent@${digest}`,
+      }),
+    );
+    expect(failure?.code).toBe("AGENT_IMAGE_INVALID");
+
+    const tagFailure = await failureOf(
+      repository.adminAction(admin, "nodes", nodeId, "agent-update", {
+        image: `${repositoryName}:1.1.3`,
+      }),
+    );
+    expect(tagFailure?.code).toBe("AGENT_IMAGE_INVALID");
+    expect(await agentJobs()).toHaveLength(0);
+  });
+
+  runDatabaseTest("refuses an update aimed at a node that is gone", async () => {
+    if (!database || !repository) return;
+    const failure = await failureOf(
+      repository.adminAction(
+        admin,
+        "nodes",
+        "00000000-0000-4000-8000-000000000000",
+        "agent-update",
+        {},
+      ),
+    );
+    expect(failure?.code).toBe("NODE_NOT_FOUND");
+  });
 });

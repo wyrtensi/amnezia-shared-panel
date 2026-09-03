@@ -758,6 +758,17 @@ export const isPublishableAgentImage = (
   return repo === repository && AGENT_IMAGE_DIGEST.test(digest);
 };
 
+/**
+ * The body of `POST /api/admin/nodes/:id/agent-update`. `image` is optional and
+ * omitting it means "the release the panel currently offers": the admin
+ * confirms what the dialog showed, and passing it back explicitly is what makes
+ * the confirmation binding when a newer release lands in between.
+ */
+export const nodeAgentUpdateActionSchema = z.object({
+  image: z.string().min(1).max(512).optional(),
+});
+export type NodeAgentUpdateAction = z.infer<typeof nodeAgentUpdateActionSchema>;
+
 /** What the panel sends a node when it asks it to update its agent. */
 export const nodeAgentUpdateRequestSchema = z.object({
   // Always the resolved digest the admin confirmed, never a tag: the node must
