@@ -2,6 +2,7 @@ import helmet from "@fastify/helmet";
 import Fastify, { type FastifyRequest } from "fastify";
 import { z } from "zod";
 import {
+  MIN_AWG3_CLIENT_VERSION,
   createKeyRequestSchema,
   createNodeRequestSchema,
   createUserRequestSchema,
@@ -236,7 +237,11 @@ export const buildApp = async ({
 
   app.get("/api/admin/version", (request) => {
     adminFor(request);
-    return versionInfo();
+    // The AWG 3.1 client floor rides along with the build info so the CLI can
+    // report it without copying the constant: it is a protocol fact that lives
+    // once, in @amnezia/contracts, beside the wizard hint and the install guide
+    // that interpolate the same value.
+    return { ...versionInfo(), minAwg3ClientVersion: MIN_AWG3_CLIENT_VERSION };
   });
   app.get("/api/admin/update", async (request) => {
     adminFor(request);
