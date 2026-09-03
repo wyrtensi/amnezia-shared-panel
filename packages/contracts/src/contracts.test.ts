@@ -24,6 +24,9 @@ import {
   installVideoEmbed,
   isIpLiteral,
   isIpv4Literal,
+  isPublishableAgentImage,
+  nodeAgentUpdateRequestSchema,
+  nodeAgentUpdateStatusSchema,
   MIN_AWG3_CLIENT_VERSION,
   nodeKeyLimitsSchema,
   nodePublicAddressSchema,
@@ -1001,5 +1004,92 @@ describe("nodeOrderSchema", () => {
     expect(
       nodeOrderSchema.parse(tooMany.slice(0, MAX_ORDERED_NODES)),
     ).toHaveLength(MAX_ORDERED_NODES);
+  });
+});
+
+describe("isPublishableAgentImage", () => {
+  const repo = "ghcr.io/owner/repo/node-agent";
+  const digest = `sha256:${"a".repeat(64)}`;
+
+  it("accepts a digest reference for exactly the trusted repository", () => {
+    expect(isPublishableAgentImage(`${repo}@${digest}`, repo)).toBe(true);
+  });
+
+  it("rejects a tag, because a tag is mutable", () => {
+    // The whole point of pinning: what the admin confirmed must be what the
+    // node installs, and a tag can point somewhere else by then.
+    expect(isPublishableAgentImage(`${repo}:1.1.2`, repo)).toBe(false);
+    expect(isPublishableAgentImage(`${repo}:latest`, repo)).toBe(false);
+  });
+
+  it("rejects another repository, however similar", () => {
+    expect(isPublishableAgentImage(`ghcr.io/evil/repo/node-agent@${digest}`, repo)).toBe(
+      false,
+    );
+    // A prefix match would accept this; the comparison is on the whole name.
+    expect(isPublishableAgentImage(`${repo}-evil@${digest}`, repo)).toBe(false);
+    expect(isPublishableAgentImage(`evil.io/${repo}@${digest}`, repo)).toBe(false);
+  });
+
+  it("rejects a bare image id, which names no repository at all", () => {
+    expect(isPublishableAgentImage(digest, repo)).toBe(false);
+  });
+
+  it("rejects a malformed or short digest", () => {
+    expect(isPublishableAgentImage(`${repo}@sha256:abc`, repo)).toBe(false);
+    expect(isPublishableAgentImage(`${repo}@sha512:${"a".repeat(64)}`, repo)).toBe(
+      false,
+    );
+    // Uppercase hex is not what any registry emits, and accepting it would
+    // mean two spellings of one digest.
+    expect(isPublishableAgentImage(`${repo}@sha256:${"A".repeat(64)}`, repo)).toBe(
+      false,
+    );
+  });
+
+  it("rejects anything carrying a scheme, whitespace or a second @", () => {
+    expect(isPublishableAgentImage(`https://${repo}@${digest}`, repo)).toBe(false);
+    expect(isPublishableAgentImage(` ${repo}@${digest}`, repo)).toBe(false);
+    expect(isPublishableAgentImage(`${repo}@${digest} rm -rf /`, repo)).toBe(false);
+    expect(isPublishableAgentImage(`${repo}@${digest}@${digest}`, repo)).toBe(false);
+  });
+
+  it("rejects the empty string", () => {
+    expect(isPublishableAgentImage("", repo)).toBe(false);
+  });
+});
+
+describe("nodeAgentUpdateRequestSchema", () => {
+  it("carries the image the panel resolved", () => {
+    const image = `ghcr.io/owner/repo/node-agent@sha256:${"b".repeat(64)}`;
+    expect(nodeAgentUpdateRequestSchema.parse({ image })).toEqual({ image });
+  });
+
+  it("rejects an empty image", () => {
+    expect(() => nodeAgentUpdateRequestSchema.parse({ image: "" })).toThrow();
+  });
+});
+
+describe("nodeAgentUpdateStatusSchema", () => {
+  it("accepts a node that has never been asked to update", () => {
+    expect(
+      nodeAgentUpdateStatusSchema.parse({
+        state: "idle",
+        image: null,
+        log: "",
+        updatedAt: null,
+      }),
+    ).toMatchObject({ state: "idle", image: null });
+  });
+
+  it("rejects a state outside the known set", () => {
+    expect(() =>
+      nodeAgentUpdateStatusSchema.parse({
+        state: "rebooting",
+        image: null,
+        log: "",
+        updatedAt: null,
+      }),
+    ).toThrow();
   });
 });
