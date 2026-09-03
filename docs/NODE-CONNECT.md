@@ -234,7 +234,7 @@ tenant's containers.
 A node never builds the agent: the compose file sets `pull_policy: never` and
 `NODE_AGENT_IMAGE` must be an immutable reference. Building it on the node is
 not merely discouraged — a three-stage Node build with `npm ci` does not fit on
-a 1 GB box that also has to pass preflight's 3 GiB free-disk gate.
+a 1 GB box that also has to pass preflight's free-disk gate.
 
 #### Preferred: pull a published digest
 

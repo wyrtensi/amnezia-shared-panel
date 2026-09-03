@@ -172,9 +172,22 @@ automatically to a busy database.
 
 ## 6. Disk is usually the binding constraint
 
-`infra/node/scripts/preflight.sh` requires **3 GiB free** before a node deploy,
-and that gate is not negotiable — the deploy really does need the space. When it
-refuses, reclaim rather than lower it:
+`infra/node/scripts/preflight.sh` requires **2 GiB free** before a node deploy
+and *recommends* 3 GiB, printing a `NOTE:` in between.
+
+The floor is derived rather than chosen: the only image a deploy actually pulls
+is the node-agent (~500 MiB — the two AWG images are pinned by digest and are
+already on the host), it needs transient space to extract it, and the pre-deploy
+state backup is measured in kilobytes. 2 GiB is four times the largest pull.
+
+It used to be a flat 3 GiB with no derivation, which refused hosts a deploy
+would have fitted on comfortably: a panel co-located with a node on a 10 GB disk
+sits near that line permanently, so the gate blocked redeploying a node that was
+running perfectly well. A gate that stops maintenance on a healthy node is not
+protecting anything. Below 3 GiB you are still told, because a host there is one
+image or one unattended month of logs from the floor.
+
+When the floor refuses, reclaim rather than lower it further:
 
 ```bash
 docker image prune -a          # superseded images are usually >1 GB
