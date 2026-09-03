@@ -24,6 +24,8 @@ import {
 } from "@/components/ui/tooltip";
 import { StatusBadge } from "@/components/status-badge";
 import { Callout } from "@/components/ui/hint";
+import { deviceSupportsRouteProfiles } from "@amnezia/contracts";
+import { cn } from "@/lib/utils";
 import { configUrl } from "@/lib/api";
 import { formatDate } from "@/lib/format";
 import { TrafficSplit } from "@/components/inline-traffic";
@@ -73,6 +75,12 @@ export function KeyCard({
   // Rotation re-issues the peer with current rules; only meaningful for
   // rule-based profiles (a full-tunnel key never needs new rules).
   const canRotate = keyView.routeProfile !== "full_tunnel";
+  // A route profile on an iOS key is stored and shown, but the client does not
+  // apply it (contracts: deviceSupportsRouteProfiles). full_tunnel is unaffected
+  // — there is nothing to filter, so nothing is misleading.
+  const profileInEffect =
+    keyView.routeProfile === "full_tunnel" ||
+    deviceSupportsRouteProfiles(keyView.deviceType);
   const revocable =
     me.policy.allowSelfRevoke &&
     !["revoked", "revoking"].includes(keyView.state);
@@ -115,7 +123,18 @@ export function KeyCard({
           </Badge>
           <Tooltip>
             <TooltipTrigger asChild>
-              <Badge variant="outline" className="cursor-help gap-1">
+              {/* D9: on an iOS key the profile is set but not in effect, so the
+                  badge is muted — the same visual signal the wizard's greyed-out
+                  option carries. It stays readable on purpose: hiding it would
+                  make the key look like a full-tunnel key, which is the exact
+                  confusion this is meant to prevent. The Callout above says why. */}
+              <Badge
+                variant="outline"
+                className={cn(
+                  "cursor-help gap-1",
+                  profileInEffect ? undefined : "text-muted-foreground",
+                )}
+              >
                 <Globe className="h-3 w-3" />
                 {t(ROUTE_LABEL[keyView.routeProfile] ?? keyView.routeProfile)}
               </Badge>
