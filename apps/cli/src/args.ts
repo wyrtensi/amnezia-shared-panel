@@ -263,3 +263,13 @@ export const parseDeviceType = (value: string): string => {
  */
 export const formatDeviceType = (value: string | undefined): string =>
   !value || value === "unspecified" ? "—" : value;
+
+/**
+ * `keys --node=<id>`: no filter keeps everything. Case-insensitive because the
+ * id is pasted out of `nodes --hosts` or a URL, where its case is not stable.
+ */
+export const matchesNodeFilter = (
+  nodeId: string,
+  filter: string | undefined,
+): boolean =>
+  filter === undefined || nodeId.toLowerCase() === filter.toLowerCase();

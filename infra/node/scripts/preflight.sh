@@ -74,9 +74,16 @@ verify_linux_amd64_image "$node_image"
 
 public_host="$(env_value SERVER_PUBLIC_HOST)"
 case "$public_host" in
-  ''|0.0.0.0|127.0.0.1|localhost|vpn.example.com|*://*|*/*|*:*|*' '*)
+  ''|0.0.0.0|127.0.0.1|localhost|vpn.example.com|203.0.113.10|*://*|*/*|*:*|*' '*)
     fail "SERVER_PUBLIC_HOST must be a real public address or DNS name"
     ;;
+esac
+# An IPv4 literal is the recommended value: the VPN client resolves a DNS name
+# on its own network before the tunnel exists, and the panel cannot observe that
+# failing. A name still deploys, but the operator is told what to do about it
+# and how (docs/NODE-CONNECT.md).
+case "$public_host" in
+  *[!0-9.]*) info "NOTE: SERVER_PUBLIC_HOST is a DNS name ($public_host) - an IPv4 address is strongly recommended. Resolve it against public DNS (dig +short A $public_host @1.1.1.1) and confirm it matches this node's own address (curl -s https://api.ipify.org) - not with getent, which answers 127.0.0.1 for a host named after itself. Put the address in .env and redeploy: this value is baked into every key this node issues, clients resolve it on the network you are trying to get through, and the panel cannot see it fail." ;;
 esac
 
 server_id="$(env_value SERVER_ID)"

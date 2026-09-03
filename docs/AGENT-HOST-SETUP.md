@@ -173,7 +173,7 @@ Edit `infra/node/.env` (mode `0600`). Every value is validated by preflight:
 | `NODE_AGENT_IMAGE` | Paste the `sha256:…` ID printed by `build-node-agent.sh` — or, when the image was shipped with `docker save`/`docker load`, the ID `docker load` printed **on this host** (newer engines re-encode the config, so it differs from the sending host's ID). | Must be `sha256:<64hex>` or `repo@sha256:<digest>`, present locally, linux/amd64. |
 | `DOCKER_GID` | `stat -c '%g' /var/run/docker.sock` | Must be an integer equal to the socket's GID. |
 | `DOCKER_API_VERSION` | Leave `1.44` unless your Engine differs. | — |
-| `SERVER_PUBLIC_HOST` | Real public IPv4 or DNS name for generated configs. Also reported to the panel as the node's public address (admin → nodes; users see it only when the global policy's "show server address" is on). | Cannot be empty / `0.0.0.0` / `127.0.0.1` / `localhost` / `vpn.example.com` / contain a scheme, path, port, or space. |
+| `SERVER_PUBLIC_HOST` | The node's public IPv4 address; it becomes the `Endpoint` of every generated config ([`NODE-CONNECT.md` §1.1](./NODE-CONNECT.md#use-the-ip-address-not-a-dns-name)). Also reported to the panel as the node's public address (admin → nodes; users see it only when the global policy's "show server address" is on). | Cannot be empty / `0.0.0.0` / `127.0.0.1` / `localhost` / the placeholders `203.0.113.10` and `vpn.example.com` / contain a scheme, path, port, or space. A DNS name still deploys, but preflight prints a `NOTE:` telling you to resolve it on the server and use the IPv4 address — do that. |
 | `SERVER_ID` | A unique UUID (`uuidgen`). | Must be a UUID and not the placeholder. |
 | `SERVER_NAME` | Human-readable name. | required |
 | `SERVER_REGION` | Region / AZ label. | required |
@@ -623,7 +623,8 @@ stored node key). Read worker logs for the redacted background error line.
 - **`DOCKER_GID` mismatch** — preflight fails unless `.env` `DOCKER_GID` equals
   `stat -c '%g' /var/run/docker.sock`.
 - **Placeholder `SERVER_PUBLIC_HOST` / `SERVER_ID`** — preflight rejects
-  `vpn.example.com` and the placeholder UUID; set real values.
+  `203.0.113.10` (and the older `vpn.example.com`) and the placeholder UUID; set
+  the node's public IPv4 address and a real UUID.
 - **Permissions** — `.env` must be `0600`; `secrets/node-agent-api-key` must be
   `0640` owned `root:root`; state files, if present, must be `0600`.
 - **Port already in use** — 51889/51890 (UDP) or 4001 (TCP) held by a non-Amnezia

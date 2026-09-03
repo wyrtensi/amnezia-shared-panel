@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatNodeAddress } from "./nodeAddress.js";
+import { classifyNodeHost, formatNodeAddress } from "./nodeAddress.js";
 
 describe("formatNodeAddress", () => {
   it("shows a dash when the agent has not reported an address", () => {
@@ -35,5 +35,32 @@ describe("formatNodeAddress", () => {
 
   it("treats the host as the authority", () => {
     expect(formatNodeAddress(null, "203.0.113.10")).toBe("—");
+  });
+});
+
+describe("classifyNodeHost", () => {
+  it("calls an IPv4 endpoint an ip", () => {
+    expect(classifyNodeHost("http://203.0.113.10:4001")).toBe("ip");
+  });
+
+  it("calls a loopback tunnel end an ip", () => {
+    // The panel reaches most nodes through an SSH tunnel bound to loopback.
+    // That is an address, not a name, and must not be reported as a DNS risk.
+    expect(classifyNodeHost("http://127.0.0.1:4105")).toBe("ip");
+  });
+
+  it("recognises the co-located and docker-network forms", () => {
+    expect(classifyNodeHost("http://amnezia-node-agent:4001")).toBe("docker-local");
+    expect(classifyNodeHost("http://host.docker.internal:4105")).toBe("docker-local");
+  });
+
+  it("calls a real hostname a dns endpoint", () => {
+    expect(classifyNodeHost("https://vpn.example.com:4001")).toBe("dns");
+  });
+
+  it("never throws mid-table on a malformed value", () => {
+    // A hand-edited row must degrade to a word, not abort the whole listing.
+    expect(classifyNodeHost("not a url")).toBe("unknown");
+    expect(classifyNodeHost("")).toBe("unknown");
   });
 });

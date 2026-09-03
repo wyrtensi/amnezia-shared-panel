@@ -238,7 +238,7 @@ The installer creates `.env` from `.env.example` and fills the most important va
 | `SERVER_REGION` | Region, availability zone, or custom label |
 | `SERVER_WEIGHT` | Routing weight; the recommended range is `1..1000` |
 | `SERVER_MAX_PEERS` | Maximum number of clients on this server |
-| `SERVER_PUBLIC_HOST` | Public host or domain placed into generated endpoints |
+| `SERVER_PUBLIC_HOST` | Public address placed into generated endpoints; an IPv4 literal is recommended, a domain is accepted |
 | `DOCKER_GID` | Docker socket group ID used by Docker mode |
 | `DOCKER_API_VERSION` | Docker Engine API version used by the bundled CLI |
 | `AMNEZIA_API_VERSION` | GHCR image tag used by `docker-compose.ghcr.yml`; defaults to `latest` |

@@ -10,7 +10,7 @@
 - [ ] Set `.env` mode to `0600` and every directory under `secrets/`, `state/`, and `backups/` to `0700`.
 - [ ] Generate a distinct single-line node-agent API key of at least 32 bytes in `secrets/node-agent-api-key`; set owner `root:root` and mode `0640` so the non-root service in group `0` can read the file-backed Compose secret.
 - [ ] Build or load the reviewed node-agent and set `NODE_AGENT_IMAGE` to an immutable `sha256:...` image ID or `repository@sha256:digest`.
-- [ ] Record the real public VPN host, a unique UUID, region, and Docker socket GID in `.env`.
+- [ ] Record the node's public IPv4 address as `SERVER_PUBLIC_HOST` (not a DNS name — see [`docs/NODE-CONNECT.md` §1.1](../../docs/NODE-CONNECT.md#use-the-ip-address-not-a-dns-name)), a unique UUID, region, and Docker socket GID in `.env`.
 - [ ] Run `sh scripts/preflight.sh` and retain its non-secret output with the change record.
 
 ## Backup

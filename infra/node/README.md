@@ -52,7 +52,7 @@ chmod 700 scripts/*.sh
 sh scripts/build-node-agent.sh
 ```
 
-Edit `.env`, including the immutable image ID, real public VPN hostname/address, unique server UUID, and the exact Docker socket group from `stat -c '%g' /var/run/docker.sock`. Never put the API key in `.env` or pass it on a command line.
+Edit `.env`, including the immutable image ID, the node's public IPv4 address (the recommended `SERVER_PUBLIC_HOST`; a DNS name is accepted with a preflight `NOTE:`), unique server UUID, and the exact Docker socket group from `stat -c '%g' /var/run/docker.sock`. Never put the API key in `.env` or pass it on a command line.
 
 Then follow [CHECKLIST.md](CHECKLIST.md). `preflight.sh` is non-deploying: it checks Linux/amd64, Docker, TUN, immutable image references, strict permissions, fixed Compose configuration, port conflicts, 3 GiB free disk, and available RAM scaled to `SERVER_MAX_PEERS`
 (`358400 KiB * peers / 500`, floored at 192 MiB).

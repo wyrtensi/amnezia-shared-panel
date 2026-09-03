@@ -37,3 +37,52 @@ test("the disk gate says how to reclaim the space it wants", async () => {
   assert.match(gate, /docker image prune/);
   assert.match(gate, /journalctl --vacuum-size/);
 });
+
+const envExampleUrl = new URL("../.env.example", import.meta.url);
+// Windows checkouts may carry CRLF; the CI job runs on Linux with LF.
+const normalize = (text) => text.replace(/\r\n/g, "\n");
+const preflight = normalize(script);
+const envExample = normalize(await readFile(envExampleUrl, "utf8"));
+
+const publicHostPlaceholder = () => {
+  const value = /^SERVER_PUBLIC_HOST=(.*)$/m.exec(envExample)?.[1];
+  assert.ok(value, ".env.example must define SERVER_PUBLIC_HOST");
+  return value;
+};
+
+const rejectedPublicHosts = () => {
+  const match =
+    /public_host="\$\(env_value SERVER_PUBLIC_HOST\)"\ncase "\$public_host" in\n +([^)\n]+)\)\n +fail /.exec(
+      preflight,
+    );
+  assert.ok(match, "preflight must reject a fixed list of SERVER_PUBLIC_HOST values");
+  return match[1].split("|");
+};
+
+test("the .env.example SERVER_PUBLIC_HOST placeholder is an unroutable IPv4 literal", () => {
+  // RFC 5737 TEST-NET-3 is documentation-only and never routed, so a template
+  // copied without editing can never point clients at a real host.
+  assert.match(publicHostPlaceholder(), /^203\.0\.113\.\d{1,3}$/);
+});
+
+test("preflight rejects the .env.example placeholder and the one it replaced", () => {
+  const rejected = rejectedPublicHosts();
+  assert.ok(rejected.includes(publicHostPlaceholder()), "current placeholder must be rejected");
+  // Copies of the old template are still deployed; keep rejecting its value.
+  assert.ok(rejected.includes("vpn.example.com"), "previous placeholder must stay rejected");
+});
+
+test("preflight insists on an IPv4 address for SERVER_PUBLIC_HOST without failing on a DNS name", () => {
+  // One case arm, on one line, so the handler is unambiguous: capture the
+  // command it runs and the message it prints.
+  const advisory =
+    /^ +\*\[!0-9\.\]\*\) (\w+) "(NOTE: SERVER_PUBLIC_HOST is a DNS name[^"]*)" ;;$/m.exec(preflight);
+  assert.ok(advisory, "preflight must carry a one-line DNS-name advisory");
+  // `info` writes to stdout and returns; `fail` exits 1. This is the whole
+  // difference between an advisory and a gate, so assert on it directly.
+  assert.equal(advisory[1], "info", "the DNS-name advisory must not be a hard failure");
+  // The recommendation is insistent and the fix is to resolve the name on the
+  // server, so the line must say both.
+  assert.match(advisory[2], /strongly recommended/);
+  assert.match(advisory[2], /resolve/i);
+});
