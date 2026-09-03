@@ -8,8 +8,14 @@ export const buildWriteFileCommand = (
   const encoded = Buffer.from(content, "utf-8").toString("base64");
   const tmpPath = `${path}.tmp`;
 
+  // chmod before the mv, not after: `>` creates the temp file with the shell's
+  // umask (022 in these containers, so 0644) and `mv -f` replaces the target
+  // together with its mode. Without this every write silently widened a state
+  // file the entrypoint had created 0600, and the node's own preflight then
+  // refused the next deploy - normal operation breaking the deploy path.
   return (
     `echo '${encoded}' | base64 -d > '${tmpPath}' && ` +
+    `chmod 600 '${tmpPath}' && ` +
     `mv -f '${tmpPath}' '${path}'`
   );
 };
@@ -33,6 +39,7 @@ export const buildValidatedWgConfigCommand = (
 
   return (
     `{ echo '${encoded}' | base64 -d > '${tmpPath}' && ` +
+    `chmod 600 '${tmpPath}' && ` +
     `sync && ` +
     `${stripBinary} strip '${tmpPath}' > /dev/null && ` +
     `mv -f '${tmpPath}' '${path}' && ` +
