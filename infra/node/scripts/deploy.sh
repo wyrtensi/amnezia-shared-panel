@@ -9,11 +9,24 @@ sh "$SCRIPT_DIR/preflight.sh"
 acquire_lock
 ensure_layout
 
-docker pull --platform linux/amd64 "$AWG2_IMAGE" >/dev/null
-verify_awg2_image
+# Which AWG services this node actually defines. AWG 3.1 alone is a supported
+# shape -- a node with no legacy peers never needs awg2 -- so pulling and
+# health-gating a service that is not in this node's compose file would make
+# `deploy.sh` permanently unusable there, which is exactly what it did.
+compose_services="$(compose config --services 2>/dev/null || true)"
+has_service() {
+  printf '%s\n' "$compose_services" | grep -qx "$1"
+}
 
-docker pull --platform linux/amd64 "$AWG3_IMAGE" >/dev/null
-verify_awg3_image
+if has_service awg2; then
+  docker pull --platform linux/amd64 "$AWG2_IMAGE" >/dev/null
+  verify_awg2_image
+fi
+
+if has_service awg3; then
+  docker pull --platform linux/amd64 "$AWG3_IMAGE" >/dev/null
+  verify_awg3_image
+fi
 
 node_image="$(env_value NODE_AGENT_IMAGE)"
 case "$node_image" in
@@ -36,13 +49,13 @@ if ! compose up --detach --no-build --remove-orphans; then
   exit 1
 fi
 
-if ! wait_healthy amnezia-awg2; then
+if has_service awg2 && ! wait_healthy amnezia-awg2; then
   info "AWG2 failed its health gate. Persistent state was not removed."
   [ -z "$backup_path" ] || info "Rollback source: $backup_path"
   exit 1
 fi
 
-if ! wait_healthy amnezia-awg3; then
+if has_service awg3 && ! wait_healthy amnezia-awg3; then
   info "AWG3 failed its health gate. Persistent state was not removed."
   [ -z "$backup_path" ] || info "Rollback source: $backup_path"
   exit 1
