@@ -60,10 +60,17 @@ services:
       - maintenance_work_mem=${POSTGRES_MAINTENANCE_WORK_MEM:-32MB}
       - -c
       - effective_cache_size=${POSTGRES_EFFECTIVE_CACHE_SIZE:-128MB}
-      # packages/db/src/client.ts opens `max: 10` per process; control-api,
-      # worker, a transient migrate and the co-located CLI run concurrently.
+      # Connections are opened by the panel's own processes, never by panel
+      # users or by nodes: packages/db/src/client.ts opens a pool of `max: 10`
+      # per process, and control-api, worker, a transient migrate and the
+      # co-located CLI are the only ones that connect. Structural worst case is
+      # therefore ~40 plus Postgres's 3 reserved superuser slots. 70 leaves room
+      # for a second CLI, a stuck migrate, or an extra process added later.
+      # Unused slots cost only a small fixed allocation in shared memory — the
+      # per-backend cost is paid when a backend actually connects, and nothing
+      # in the panel can open 70 of them.
       - -c
-      - max_connections=${POSTGRES_MAX_CONNECTIONS:-50}
+      - max_connections=${POSTGRES_MAX_CONNECTIONS:-70}
     environment:
       POSTGRES_DB: amnezia_panel
       POSTGRES_USER: amnezia_panel
