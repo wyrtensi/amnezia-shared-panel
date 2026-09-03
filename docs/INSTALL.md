@@ -27,7 +27,7 @@ or token.)*
 
 | # | What you need | Where it's used |
 | --- | --- | --- |
-| 1 | **The server that will host the VPN node** — its public IP/hostname and SSH access. Note RAM/disk: 1 GB is fine for a node alone; add ~1 GB free if the panel shares the box. **Every server gets a 2 GB swapfile**, whatever its RAM — that and the rest of the small-host settings are in [`SMALL-HOSTS.md`](./SMALL-HOSTS.md). | Phase 1 |
+| 1 | **The server that will host the VPN node** — its **public IPv4 address** (use the address, not a DNS name: it is baked into every key and resolved by clients on their own network — [`NODE-CONNECT.md` §1.1](./NODE-CONNECT.md#use-the-ip-address-not-a-dns-name)) and SSH access. Note RAM/disk: 1 GB is fine for a node alone; add ~1 GB free if the panel shares the box. **Every server gets a 2 GB swapfile**, whatever its RAM — that and the rest of the small-host settings are in [`SMALL-HOSTS.md`](./SMALL-HOSTS.md). | Phase 1 |
 | 2 | **The public name users should see for that server** — e.g. `Germany`, `Server 1`. It is the first part of the connection title in the client (`<name> <key name>` by default, with the key number optional per key); separate from the internal admin name. | Node setup / Phase 6 |
 | 3 | **Which machine runs the panel** — the same server as the node (co-located) or a separate host. Co-location is supported. | Phase 2 |
 | 4 | **The domain the panel will live at** — e.g. `vpn.yourcompany.com`. Its DNS zone must be on Cloudflare. | Phase 3 |
@@ -55,9 +55,10 @@ commands. The shape of it:
 
 1. Lay out `/opt/amnezia-panel-node`, generate the node API key (≥ 32 bytes), and
    build or pull the node-agent image (`infra/node`).
-2. Fill in `infra/node/.env`; set `PROTOCOLS_ENABLED=amneziawg3` (3.1 only). Bring
-   it up — the awg3 entrypoint randomises the obfuscation headers and writes
-   `awg0.conf`.
+2. Fill in `infra/node/.env`: `SERVER_PUBLIC_HOST` is the public IPv4 address
+   from input #1 (preflight prints a `NOTE:` if you give it a DNS name), and set
+   `PROTOCOLS_ENABLED=amneziawg3` (3.1 only). Bring it up — the awg3 entrypoint
+   randomises the obfuscation headers and writes `awg0.conf`.
 3. Check `GET /server` reports `amneziawg3` and the container is healthy.
 
 The public name from input #2 isn't set on the box — you'll enter it when you
@@ -216,7 +217,8 @@ the panel web on `127.0.0.1:5430`.
 
 1. **DNS.** Add an A record like `direct.<panel domain>` → the panel server's IP,
    **not** proxied by Cloudflare (grey cloud). Open the ports your method needs
-   (A/B need 80 + 443).
+   (A/B need 80 + 443). This name is for the panel only — on a co-located host
+   do not reuse it as the node's `SERVER_PUBLIC_HOST` (input #1 is the address).
 2. **TLS/edge.** Apply method A, B, or C.
 3. **A Google OAuth client — from your Workspace, not a throwaway project.** In a
    Google Cloud project **owned by your Workspace org**, set the OAuth consent
