@@ -6,16 +6,22 @@ import {
   rebootServerSchema,
   GetServerBackupType,
   getServerLoadSchema,
+  GetServerUpdateType,
   getServerBackupSchema,
+  getServerUpdateSchema,
   ImportServerBackupType,
   importServerBackupSchema,
+  RequestServerUpdateType,
+  requestServerUpdateSchema,
 } from "@/schemas";
 import {
   getServerHandler,
   rebootServerHandler,
   getServerLoadHandler,
   getServerBackupHandler,
+  getServerUpdateHandler,
   importServerBackupHandler,
+  requestServerUpdateHandler,
 } from "@/handlers/server";
 import { authPreHandler } from "@/middleware/auth";
 import { defineController } from "@/helpers/registerControllers";
@@ -63,6 +69,29 @@ export const importServerBackupController =
     schema: importServerBackupSchema,
     preHandler: authPreHandler(),
     handler: importServerBackupHandler,
+  });
+
+/**
+ * Состояние обновления агента
+ */
+export const getServerUpdateController = defineController<GetServerUpdateType>({
+  url: "/server/update",
+  method: "GET",
+  schema: getServerUpdateSchema,
+  preHandler: authPreHandler(),
+  handler: getServerUpdateHandler,
+});
+
+/**
+ * Запросить обновление агента
+ */
+export const requestServerUpdateController =
+  defineController<RequestServerUpdateType>({
+    url: "/server/update",
+    method: "POST",
+    schema: requestServerUpdateSchema,
+    preHandler: authPreHandler(),
+    handler: requestServerUpdateHandler,
   });
 
 /**

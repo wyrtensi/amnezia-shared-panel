@@ -2,7 +2,7 @@
   "openapi": "3.0.0",
   "info": {
     "title": "Amnezia API",
-    "version": "1.1.2",
+    "version": "1.1.3",
     "description": "Self-hosted REST API for automating Amnezia VPN servers.",
     "license": {
       "name": "MIT"
@@ -1941,6 +1941,273 @@
                       "type": "string",
                       "description": "Описание ошибки",
                       "example": "Доступ запрещён"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/server/update": {
+      "get": {
+        "summary": "Состояние обновления агента",
+        "tags": [
+          "Server"
+        ],
+        "description": "Состояние выводится из спула, а не из памяти процесса: обновление заменяет сам агент, поэтому отвечает уже другой процесс. Панель опрашивает этот маршрут, а не держит открытым запрос на обновление.",
+        "responses": {
+          "200": {
+            "description": "Состояние обновления агента",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "Состояние обновления агента",
+                  "required": [
+                    "available",
+                    "state",
+                    "image",
+                    "log",
+                    "updatedAt",
+                    "message"
+                  ],
+                  "properties": {
+                    "available": {
+                      "type": "boolean",
+                      "description": "Настроено ли обновление на этом сервере (репозиторий + спул)",
+                      "example": true
+                    },
+                    "repository": {
+                      "type": "string",
+                      "nullable": true,
+                      "description": "Репозиторий, digest из которого сервер примет",
+                      "example": "ghcr.io/owner/repo/node-agent"
+                    },
+                    "state": {
+                      "type": "string",
+                      "enum": [
+                        "idle",
+                        "requested",
+                        "running",
+                        "succeeded",
+                        "failed"
+                      ],
+                      "description": "Стадия последнего обновления",
+                      "example": "succeeded"
+                    },
+                    "image": {
+                      "type": "string",
+                      "nullable": true,
+                      "description": "Образ последнего запроса или результата",
+                      "example": "ghcr.io/owner/repo/node-agent@sha256:0000000000000000000000000000000000000000000000000000000000000000"
+                    },
+                    "log": {
+                      "type": "string",
+                      "description": "Хвост журнала обновления (до 64 КиБ)",
+                      "example": "pulled\nrecreated\n"
+                    },
+                    "updatedAt": {
+                      "type": "string",
+                      "nullable": true,
+                      "description": "Когда обновление завершилось (ISO)",
+                      "example": "2024-12-16T10:51:47.087Z"
+                    },
+                    "message": {
+                      "type": "string",
+                      "nullable": true,
+                      "description": "Итог, записанный обновлятором на хосте",
+                      "example": "updated to ghcr.io/owner/repo/node-agent@sha256:..."
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Ответ на запрос с ошибкой",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "message"
+                  ],
+                  "description": "Ответ на запрос с ошибкой",
+                  "properties": {
+                    "message": {
+                      "type": "string",
+                      "description": "Описание ошибки",
+                      "example": "Требуется авторизация"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Ответ на запрос с ошибкой",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "message"
+                  ],
+                  "description": "Ответ на запрос с ошибкой",
+                  "properties": {
+                    "message": {
+                      "type": "string",
+                      "description": "Описание ошибки",
+                      "example": "Доступ запрещён"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "Запросить обновление агента",
+        "tags": [
+          "Server"
+        ],
+        "description": "Записывает запрос в спул; замену образа выполняет systemd-юнит на хосте. Принимается только digest-ссылка в доверенном репозитории (NODE_AGENT_UPDATE_REPO). Если обновление на сервере не настроено, возвращается 501.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "image"
+                ],
+                "additionalProperties": false,
+                "properties": {
+                  "image": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 512,
+                    "description": "Digest-ссылка вида repository@sha256:<64 hex>",
+                    "example": "ghcr.io/owner/repo/node-agent@sha256:0000000000000000000000000000000000000000000000000000000000000000"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Запрос принят; результат появится в GET /server/update",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "Запрос принят; результат появится в GET /server/update",
+                  "required": [
+                    "id",
+                    "image",
+                    "message"
+                  ],
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "description": "Идентификатор запроса, он же будет в результате",
+                      "example": "3fa85f64-5717-4562-b3fc-2c963f66afa6"
+                    },
+                    "image": {
+                      "type": "string",
+                      "example": "ghcr.io/owner/repo/node-agent@sha256:0000000000000000000000000000000000000000000000000000000000000000"
+                    },
+                    "message": {
+                      "type": "string",
+                      "example": "Обновление агента запрошено"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Ответ на запрос с ошибкой",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "message"
+                  ],
+                  "description": "Ответ на запрос с ошибкой",
+                  "properties": {
+                    "message": {
+                      "type": "string",
+                      "description": "Описание ошибки",
+                      "example": "Некорректный запрос"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Ответ на запрос с ошибкой",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "message"
+                  ],
+                  "description": "Ответ на запрос с ошибкой",
+                  "properties": {
+                    "message": {
+                      "type": "string",
+                      "description": "Описание ошибки",
+                      "example": "Требуется авторизация"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Ответ на запрос с ошибкой",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "message"
+                  ],
+                  "description": "Ответ на запрос с ошибкой",
+                  "properties": {
+                    "message": {
+                      "type": "string",
+                      "description": "Описание ошибки",
+                      "example": "Доступ запрещён"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "501": {
+            "description": "Ответ на запрос с ошибкой",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "message"
+                  ],
+                  "description": "Ответ на запрос с ошибкой",
+                  "properties": {
+                    "message": {
+                      "type": "string",
+                      "description": "Описание ошибки",
+                      "example": "Не реализовано"
                     }
                   }
                 }

@@ -138,6 +138,9 @@ const appConfig: IAppConfig = {
   SERVER_WEIGHT: toInt(process.env.SERVER_WEIGHT),
   SERVER_MAX_PEERS: toInt(process.env.SERVER_MAX_PEERS),
   PROTOCOLS_ENABLED: parseProtocols(process.env.PROTOCOLS_ENABLED),
+  NODE_AGENT_UPDATE_REPO: process.env.NODE_AGENT_UPDATE_REPO?.trim() || undefined,
+  NODE_AGENT_UPDATE_SPOOL:
+    process.env.NODE_AGENT_UPDATE_SPOOL?.trim() || undefined,
 };
 
 /**
