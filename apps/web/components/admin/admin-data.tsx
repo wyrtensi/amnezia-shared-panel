@@ -5,7 +5,7 @@ import { toast } from "sonner";
 import { apiRequest } from "@/lib/api";
 import { useT } from "@/lib/i18n/provider";
 import type { GlobalRoutes } from "@amnezia/contracts";
-import type { ProtocolKind, TrafficPair } from "@/lib/types";
+import type { KeyLimitMode, ProtocolKind, TrafficPair } from "@/lib/types";
 
 /** Fresh empty payload — a factory so no two callers share the same arrays. */
 export const newGlobalRoutes = (): GlobalRoutes => ({
@@ -143,6 +143,7 @@ export type GlobalPortalPolicy = {
   showLastUsed: boolean;
   showTraffic: boolean;
   defaultKeyLimit: number;
+  keyLimitMode: KeyLimitMode;
   dailyRetentionDays: number | null;
   cfAccessAccountId?: string | null;
   cfAccessAppId?: string | null;
@@ -165,6 +166,9 @@ const DEFAULT_POLICY: GlobalPortalPolicy = {
   showLastUsed: true,
   showTraffic: true,
   defaultKeyLimit: 5,
+  // Per-node is the pre-existing behaviour, so a panel that has not loaded the
+  // policy yet never flashes the global-pool wording.
+  keyLimitMode: "per_node",
   dailyRetentionDays: 730,
   cfAccessAccountId: null,
   cfAccessAppId: null,

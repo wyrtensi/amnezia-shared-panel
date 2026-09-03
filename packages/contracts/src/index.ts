@@ -197,7 +197,13 @@ export const quotaRequestSchema = z.object({
   nodeId: z.uuid().nullish(),
   // Optional — a reason is helpful but not required. Stored as "" when omitted.
   reason: z.string().trim().max(1_000).optional(),
-});
+  // Strict, unlike every other payload here: this is the ONE request a user can
+  // raise for themselves, and the key limit mode is an administrator's decision
+  // about how everyone's numbers are read. Stripping an unknown key silently
+  // would still be safe, but it would answer 200 to a client that believes it
+  // changed the mode. Refusing says what happened. The panel's own dialog sends
+  // exactly these three fields, so nothing legitimate is broken by it.
+}).strict();
 
 const nodeApiBaseUrlSchema = z.url().refine((value) => {
   const protocol = new URL(value).protocol;
@@ -304,6 +310,16 @@ export const installVideoEmbed = (
   return { kind: "file", src: url.href };
 };
 
+// --- Key limit mode ----------------------------------------------------------
+// "per_node": a user may hold up to `limit` keys on EACH server (the original
+// behaviour, and the default). "global": `limit` is one total shared by every
+// server. The global value lives on portal_policy; a per-user override is an
+// ordinary policyOverride field, so `resolvePortalPolicy` applies it. Per-node
+// limits (`users.nodeKeyLimits`) are kept but not enforced while the effective
+// mode is "global".
+export const keyLimitModeSchema = z.enum(["per_node", "global"]);
+export type KeyLimitMode = z.infer<typeof keyLimitModeSchema>;
+
 export const portalPolicySchema = z.object({
   allowKeyCreation: z.boolean().default(true),
   allowNodeSelection: z.boolean().default(true),
@@ -314,6 +330,8 @@ export const portalPolicySchema = z.object({
   // Nodes users may create keys on; null = all. Per-user override in
   // policyOverride.allowedNodeIds.
   allowedNodeIds: z.array(z.uuid()).nullish(),
+  // Whether the key limit is counted per server or as one shared pool.
+  keyLimitMode: keyLimitModeSchema.default("per_node"),
   allowRouteProfileSelection: z.boolean().default(true),
   // Let users manage their OWN custom routes (extra CIDRs/domains layered on a
   // split-tunnel profile). Admins can always edit them per user.
@@ -353,11 +371,14 @@ export type NodeKeyLimits = z.infer<typeof nodeKeyLimitsSchema>;
  *   means "no node at all" (deliberately distinct from `null`).
  * - `nodeKeyLimits` is optional. Omitted leaves the per-node limits untouched;
  *   `null` (or an empty map) clears them.
+ * - `keyLimitMode` is optional. Omitted leaves the per-user mode untouched;
+ *   `null` clears the override so the global mode applies again.
  */
 export const setUserLimitRequestSchema = z.object({
   keyLimitOverride: z.int().min(0).max(1_000).nullable(),
   allowedNodeIds: z.array(z.uuid()).nullish(),
   nodeKeyLimits: nodeKeyLimitsSchema.nullish(),
+  keyLimitMode: keyLimitModeSchema.nullish(),
 });
 export type SetUserLimitRequest = z.infer<typeof setUserLimitRequestSchema>;
 

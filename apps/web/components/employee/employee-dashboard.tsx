@@ -26,6 +26,7 @@ import {
 } from "@/components/employee/install-guide-dialog";
 import { QuotaRequestDialog } from "@/components/employee/quota-request-dialog";
 import { apiRequest } from "@/lib/api";
+import { isAtLimit } from "@/lib/key-quota";
 import { InlineTraffic } from "@/components/inline-traffic";
 import { cn } from "@/lib/utils";
 import { deviceTypeLabel } from "@/lib/device-type";
@@ -168,8 +169,11 @@ export function EmployeeDashboard({
     [keys],
   );
 
-  // The limit is per node: quota is shown and enforced per available node.
+  // Per-node or one shared pool, as the API enforces it (absent = per-node).
+  const keyLimitMode = me?.keyLimitMode ?? "per_node";
   const keyLimit = me?.keyLimit ?? 5;
+  const keyCount = me?.keyCount ?? 0;
+  const totals = { used: keyCount, limit: keyLimit };
   // A node may carry its own limit; nodes without one use the flat `keyLimit`.
   const quotaByNode = React.useMemo(
     () => new Map((me?.perNode ?? []).map((entry) => [entry.nodeId, entry])),
@@ -189,9 +193,11 @@ export function EmployeeDashboard({
       })),
     [nodes, quotaByNode, keyLimit, trafficByNode],
   );
-  const atLimit =
-    nodeQuota.length === 0 ||
-    nodeQuota.every((entry) => entry.used >= entry.limit);
+  const atLimit = isAtLimit(
+    keyLimitMode,
+    nodeQuota.map(({ node, used, limit }) => ({ nodeId: node.id, used, limit })),
+    totals,
+  );
   const canCreate = Boolean(me?.policy.allowKeyCreation) && !atLimit;
 
   const createKey = async (payload: CreateKeyPayload) => {
@@ -280,7 +286,7 @@ export function EmployeeDashboard({
       <main className="flex flex-1 flex-col gap-5 p-4 sm:p-6">
         <Card>
           <CardContent className="flex flex-col gap-3 p-4">
-            <div className="flex items-center justify-between gap-3">
+            <div className="flex flex-wrap items-center justify-between gap-3">
               <div className="flex items-center gap-4">
                 <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-primary/10 text-primary">
                   <KeyRound className="h-6 w-6" />
@@ -290,10 +296,21 @@ export function EmployeeDashboard({
                     {t("emp.quotaUsage")}
                   </p>
                   <p className="text-sm font-medium">
-                    {t("emp.quotaPerNode", { limit: keyLimit })}
+                    {keyLimitMode === "global"
+                      ? t("emp.quotaTotal", { limit: keyLimit })
+                      : t("emp.quotaPerNode", { limit: keyLimit })}
                   </p>
                 </div>
               </div>
+              {keyLimitMode === "global" ? (
+                // Global mode only: the pool as one grid, sized to the total.
+                <div className="flex items-center gap-2.5">
+                  <span className="tabular-nums text-xs text-muted-foreground">
+                    {keyCount}/{keyLimit}
+                  </span>
+                  <QuotaCells used={keyCount} limit={keyLimit} />
+                </div>
+              ) : null}
               <Button
                 variant="link"
                 size="sm"
@@ -324,9 +341,14 @@ export function EmployeeDashboard({
                     </div>
                     <div className="flex shrink-0 items-center gap-2.5">
                       <span className="tabular-nums text-xs text-muted-foreground">
-                        {used}/{limit}
+                        {keyLimitMode === "global" ? used : `${used}/${limit}`}
                       </span>
-                      <QuotaCells used={used} limit={limit} />
+                      {keyLimitMode === "global" ? (
+                        // The free slots belong to the pool, not to this server.
+                        <QuotaCells used={used} limit={used} issuedOnly />
+                      ) : (
+                        <QuotaCells used={used} limit={limit} />
+                      )}
                     </div>
                   </div>
                 ))}
@@ -445,6 +467,7 @@ export function EmployeeDashboard({
             open={showQuota}
             onOpenChange={setShowQuota}
             me={me}
+            keyLimitMode={keyLimitMode}
             nodeQuota={nodeQuota}
             onSubmitted={load}
           />
@@ -474,16 +497,37 @@ export function EmployeeDashboard({
 
 /**
  * Quota shown as one cell per key slot: filled (green) = issued, empty (grey) =
- * free. One cell per key so "3 of 5 used" reads at a glance.
+ * free. One cell per key so "3 of 5 used" reads at a glance. With `issuedOnly`
+ * (global-mode server rows) only the green cells are drawn: the free slots
+ * belong to the pool, not to any one server.
  */
-function QuotaCells({ used, limit }: { used: number; limit: number }) {
+function QuotaCells({
+  used,
+  limit,
+  issuedOnly = false,
+}: {
+  used: number;
+  limit: number;
+  issuedOnly?: boolean;
+}) {
   const { t } = useT();
-  const total = Math.max(limit, used, 1);
+  const total = issuedOnly ? used : Math.max(limit, used, 1);
   const shown = Math.min(total, 40);
+  if (issuedOnly && used === 0) {
+    return (
+      <span className="text-xs text-muted-foreground">
+        {t("quota.noKeysOnServer")}
+      </span>
+    );
+  }
   return (
     <div
       className="flex flex-wrap items-center gap-1"
-      aria-label={t("quota.cellsAria", { used, limit })}
+      aria-label={
+        issuedOnly
+          ? t("quota.cellsIssuedAria", { used })
+          : t("quota.cellsAria", { used, limit })
+      }
     >
       {Array.from({ length: shown }, (_, index) => (
         <span

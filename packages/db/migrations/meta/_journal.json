@@ -99,6 +99,13 @@
       "when": 1788423647574,
       "tag": "0013_install_guide_videos",
       "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1788432517988,
+      "tag": "0014_global_key_limits",
+      "breakpoints": true
     }
   ]
 }

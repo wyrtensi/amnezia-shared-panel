@@ -162,6 +162,88 @@ export const RETIRED_DEVICE_TYPES: Record<string, string> = {
   tablet: "android or ios",
 };
 
+/**
+ * How a key limit is counted. A deliberate copy of `keyLimitModeSchema.options`
+ * in @amnezia/contracts, for the same reason as DEVICE_TYPES above: this CLI
+ * ships with no dependencies, so the two literals are pinned by a test on each
+ * side rather than shared through an import.
+ */
+export const KEY_LIMIT_MODES = ["per_node", "global"] as const;
+export type KeyLimitMode = (typeof KEY_LIMIT_MODES)[number];
+
+/**
+ * `--mode=` on `user-limit`. `inherit` is not a mode: it is the CLI's spelling
+ * of "clear the per-user override", which the API expects as an explicit null,
+ * so it cannot be folded into the enum above.
+ */
+export const parseKeyLimitMode = (value: string): KeyLimitMode | null => {
+  if (value === "inherit") return null;
+  if (value === "per_node" || value === "global") return value;
+  throw new Error("--mode must be per_node, global or inherit");
+};
+
+/** A `policy-set --<field>=` value constrained to a fixed word list. */
+export const parseEnumFlag = (
+  field: string,
+  value: string,
+  allowed: readonly string[],
+): string => {
+  if (!allowed.includes(value)) {
+    throw new Error(`--${field} must be one of ${allowed.join(", ")}`);
+  }
+  return value;
+};
+
+/**
+ * How a user's limit is counted. Mirrors the resolution the API performs: the
+ * per-user override wins, the global switch is the fallback, and anything
+ * unrecognised degrades to per_node — the meaning every limit had before the
+ * mode existed, so an older panel or a hand-written row can never silently turn
+ * a per-server limit into a shared pool.
+ */
+export const effectiveKeyLimitMode = (
+  globalMode: string | null | undefined,
+  userMode: string | null | undefined,
+): KeyLimitMode => {
+  for (const candidate of [userMode, globalMode]) {
+    if (candidate === "global" || candidate === "per_node") return candidate;
+  }
+  return "per_node";
+};
+
+/**
+ * The limit a quota request would replace, resolved the way the API resolves
+ * it. In global mode the per-node entries are dormant, so consulting them would
+ * misstate what the admin is about to change right before they approve it.
+ */
+export const quotaCurrentLimit = (
+  mode: KeyLimitMode,
+  user: {
+    keyLimitOverride?: number | null;
+    nodeKeyLimits?: Record<string, number> | null;
+  },
+  nodeId: string | null,
+  defaultKeyLimit: number | null | undefined,
+): string => {
+  const perNode =
+    mode === "per_node" && nodeId ? user.nodeKeyLimits?.[nodeId] : undefined;
+  return String(perNode ?? user.keyLimitOverride ?? defaultKeyLimit ?? "default");
+};
+
+/**
+ * What approving the request will actually target. A per-server request in
+ * global mode is approved as a raise of the shared total, so the table must not
+ * keep calling it by the server's name — the admin would read a per-server
+ * grant that is not what the click does.
+ */
+export const quotaTargetLabel = (
+  mode: KeyLimitMode,
+  nodeName: string | null,
+): string => {
+  if (nodeName === null) return "all servers";
+  return mode === "global" ? `all servers (request named ${nodeName})` : nodeName;
+};
+
 /** Validate `--device-type`, naming the replacement for a retired value. */
 export const parseDeviceType = (value: string): string => {
   if ((DEVICE_TYPES as readonly string[]).includes(value)) return value;

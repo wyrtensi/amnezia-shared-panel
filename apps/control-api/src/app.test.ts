@@ -407,6 +407,46 @@ describe("quota requests target a server", () => {
     await app.close();
   });
 
+  // S8: the key limit mode decides how every number in the panel is read, so a
+  // user must never be able to change it. "The dialog does not offer it" is not
+  // a guarantee -- a hand-written request has to be refused, and the refusal is
+  // what these two tests pin.
+  it("refuses a keyLimitMode smuggled into a quota request", async () => {
+    const service = createService();
+    const app = await buildApp({ service, environment: "development" });
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/quota-requests",
+      headers: { "x-dev-user-email": user.email },
+      payload: { requestedLimit: 5, keyLimitMode: "global" },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(vi.mocked(service.createQuotaRequest)).not.toHaveBeenCalled();
+    await app.close();
+  });
+
+  it("keeps a non-admin away from both routes that can set the mode", async () => {
+    const service = createService();
+    const app = await buildApp({ service, environment: "development" });
+
+    for (const url of [
+      "/api/admin/portal-policy/global/update",
+      "/api/admin/users/f5e8308c-e09d-4d55-9b5d-da1597f486e6/set-limit",
+    ]) {
+      const response = await app.inject({
+        method: "POST",
+        url,
+        headers: { "x-dev-user-email": user.email },
+        payload: { keyLimitMode: "global" },
+      });
+
+      expect(response.statusCode, url).toBe(403);
+    }
+    await app.close();
+  });
+
   it("accepts a request without a node as an every-server ask", async () => {
     const service = createService();
     const app = await buildApp({ service, environment: "development" });

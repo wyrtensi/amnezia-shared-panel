@@ -23,7 +23,7 @@ import {
 import { Textarea } from "@/components/ui/textarea";
 import { apiRequest } from "@/lib/api";
 import { useT } from "@/lib/i18n/provider";
-import type { Me, NodeView } from "@/lib/types";
+import type { KeyLimitMode, Me, NodeView } from "@/lib/types";
 
 /** Sentinel for "every server" — the API takes `nodeId: null` for it. */
 const ALL_SERVERS = "all";
@@ -48,12 +48,14 @@ export function QuotaRequestDialog({
   open,
   onOpenChange,
   me,
+  keyLimitMode,
   nodeQuota,
   onSubmitted,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   me: Me;
+  keyLimitMode: KeyLimitMode;
   nodeQuota: QuotaTargetNode[];
   onSubmitted: () => Promise<void> | void;
 }) {
@@ -63,9 +65,11 @@ export function QuotaRequestDialog({
   const [reason, setReason] = React.useState("");
   const [busy, setBusy] = React.useState(false);
 
-  // A target selector only makes sense with more than one available server;
-  // with a single one the request is simply about that server's limit.
-  const canPickTarget = nodeQuota.length > 1;
+  // A target selector only makes sense with more than one available server AND
+  // per-node limits; in global mode the number is the pool and has no server.
+  // The API refuses a per-server request in global mode
+  // (400 NODE_TARGET_NOT_APPLICABLE), so none is ever offered or sent.
+  const canPickTarget = keyLimitMode === "per_node" && nodeQuota.length > 1;
 
   React.useEffect(() => {
     if (open) {
@@ -146,11 +150,16 @@ export function QuotaRequestDialog({
                   ))}
                 </SelectContent>
               </Select>
-              <p className="text-xs text-muted-foreground">
-                {t("quota.currentLimit", { limit: currentLimit })}
-              </p>
             </div>
           ) : null}
+          {/* Outside the target picker, which global mode hides: without it a
+              user asking for more keys is told only what the limit WILL be, and
+              never what it is now -- so they cannot tell what they are asking
+              for. It reads the same in both modes; only the picker is
+              mode-dependent. */}
+          <p className="text-xs text-muted-foreground">
+            {t("quota.currentLimit", { limit: currentLimit })}
+          </p>
           <div className="space-y-1.5">
             <Label htmlFor="quota-additional">{t("quota.additional")}</Label>
             <Input
@@ -174,7 +183,9 @@ export function QuotaRequestDialog({
                     total,
                     node: targetNode.node.name,
                   })
-                : t("quota.willBecome", { total })}
+                : keyLimitMode === "global"
+                  ? t("quota.willBecomeTotal", { total })
+                  : t("quota.willBecome", { total })}
             </p>
           </div>
           <div className="space-y-1.5">

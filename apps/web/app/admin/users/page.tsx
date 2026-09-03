@@ -58,7 +58,8 @@ import {
   type KeyNameDisplay,
 } from "@amnezia/contracts";
 import { ProtocolSelect } from "@/components/protocol-select";
-import type { ProtocolKind } from "@/lib/types";
+import type { KeyLimitMode, ProtocolKind } from "@/lib/types";
+import { effectiveKeyLimitMode, isNodeFull } from "@/lib/key-quota";
 import { trafficTotal } from "@/lib/format";
 import { TrafficBytes } from "@/components/inline-traffic";
 import {
@@ -121,6 +122,29 @@ function initials(user: AdminUser): string {
   const parts = base.split(/[\s@._-]+/).filter(Boolean);
   const letters = (parts[0]?.[0] ?? "") + (parts[1]?.[0] ?? "");
   return (letters || base.slice(0, 2)).toUpperCase();
+}
+
+/**
+ * The user's own key-limit mode, or null when they inherit the global one.
+ * `policyOverride` is an untyped JSON blob, so an unrecognised value has to
+ * read as "no override" instead of leaking into the UI.
+ */
+function modeOverrideOf(user: AdminUser): KeyLimitMode | null {
+  const raw = user.policyOverride?.keyLimitMode;
+  if (raw === "global") return "global";
+  if (raw === "per_node") return "per_node";
+  return null;
+}
+
+/**
+ * The explicit per-user server list from `policyOverride.allowedNodeIds`, or
+ * null when the global list applies. Same untyped-JSON caveat as above.
+ */
+function explicitNodeIdsOf(user: AdminUser): string[] | null {
+  const raw: unknown = user.policyOverride?.allowedNodeIds;
+  return Array.isArray(raw)
+    ? raw.filter((id): id is string => typeof id === "string")
+    : null;
 }
 
 function sumTraffic(list: AdminKey[]): bigint {
@@ -481,7 +505,7 @@ export default function AdminUsersPage() {
       <CreateKeyDialog
         user={keyUser}
         nodes={nodes}
-        defaultKeyLimit={policy.defaultKeyLimit}
+        globalPolicy={policy}
         userKeys={keyUser ? (keysByOwner.get(keyUser.id) ?? []) : []}
         onClose={() => setKeyUser(null)}
         onSave={(payload) =>
@@ -627,6 +651,28 @@ function UserDetail({
     : 0;
   // How many servers carry their own key limit, shown on the limit button.
   const perNodeLimits = Object.keys(user.nodeKeyLimits ?? {}).length;
+  // S7: the button summarises the whole limit state — the number, an explicit
+  // mode override (the global mode is not repeated here), how many servers
+  // carry their own limit, and the explicit server list when there is one.
+  // Built as a single string so the same text can truncate and go into `title`.
+  const modeOverride = modeOverrideOf(user);
+  const explicitNodes = explicitNodeIdsOf(user);
+  const limitSummary =
+    `${t("users.limitNode")} ` +
+    `${user.keyLimitOverride !== null ? user.keyLimitOverride : t("users.default")}` +
+    (modeOverride === "global"
+      ? ` · ${t("users.limitModeGlobalShort")}`
+      : modeOverride === "per_node"
+        ? ` · ${t("users.limitModePerNodeShort")}`
+        : "") +
+    (perNodeLimits > 0 ? ` (${perNodeLimits})` : "") +
+    (explicitNodes !== null
+      ? ` · ${
+          explicitNodes.length > 0
+            ? explicitNodes.map(nodeName).join(", ")
+            : t("users.limitNoneWord")
+        }`
+      : "");
 
   return (
     <Card className="overflow-hidden">
@@ -672,13 +718,19 @@ function UserDetail({
 
         {/* Management actions */}
         <div className="flex flex-wrap gap-1.5">
-          <Button variant="outline" size="sm" onClick={onEditLimit}>
+          {/* Adaptive width (answered question 5): every server name is written
+              out and the row absorbs it; the label only truncates at the real
+              edge of the available space, and `title` keeps the full text
+              reachable by hover and by screen readers. */}
+          <Button
+            variant="outline"
+            size="sm"
+            className="min-w-0 max-w-full"
+            title={limitSummary}
+            onClick={onEditLimit}
+          >
             <Sliders className="h-4 w-4" />
-            {t("users.limitNode")}{" "}
-            {user.keyLimitOverride !== null
-              ? user.keyLimitOverride
-              : t("users.default")}
-            {perNodeLimits > 0 ? ` (${perNodeLimits})` : ""}
+            <span className="truncate">{limitSummary}</span>
           </Button>
           <Button variant="outline" size="sm" onClick={onEditPolicy}>
             <Settings className="h-4 w-4" />
@@ -1068,6 +1120,8 @@ type LimitPayload = {
   keyLimitOverride: number | null;
   allowedNodeIds: string[] | null;
   nodeKeyLimits: Record<string, number> | null;
+  /** null clears the per-user override, i.e. inherit the global mode. */
+  keyLimitMode: KeyLimitMode | null;
 };
 
 /**
@@ -1094,6 +1148,8 @@ function LimitDialog({
   const [allNodes, setAllNodes] = React.useState(true);
   const [allowed, setAllowed] = React.useState<string[]>([]);
   const [nodeLimits, setNodeLimits] = React.useState<Record<string, string>>({});
+  // "" = inherit the global mode; otherwise an explicit per-user mode.
+  const [mode, setMode] = React.useState<"" | KeyLimitMode>("");
 
   React.useEffect(() => {
     setValue(
@@ -1115,6 +1171,7 @@ function LimitDialog({
         ]),
       ),
     );
+    setMode(user ? (modeOverrideOf(user) ?? "") : "");
   }, [user]);
 
   const globalNodeIds = globalPolicy.allowedNodeIds;
@@ -1125,6 +1182,17 @@ function LimitDialog({
     typeof parsedDefault === "number"
       ? parsedDefault
       : globalPolicy.defaultKeyLimit;
+
+  // What the API will actually enforce for this user once saved, so the labels
+  // and the dormant per-server inputs follow the select without a round-trip.
+  const effectiveMode = effectiveKeyLimitMode(
+    globalPolicy.keyLimitMode,
+    mode === "" ? undefined : mode,
+  );
+  const globalModeLabel =
+    globalPolicy.keyLimitMode === "global"
+      ? t("users.limitModeGlobal")
+      : t("users.limitModePerNode");
 
   const isAvailable = (nodeId: string) =>
     allNodes
@@ -1158,7 +1226,11 @@ function LimitDialog({
         </DialogHeader>
         <div className="space-y-3">
           <div className="space-y-1.5">
-            <Label htmlFor="limit-input">{t("users.limitLabel")}</Label>
+            <Label htmlFor="limit-input">
+              {effectiveMode === "global"
+                ? t("users.limitLabelGlobal")
+                : t("users.limitLabel")}
+            </Label>
             <Input
               id="limit-input"
               type="number"
@@ -1169,10 +1241,41 @@ function LimitDialog({
               onChange={(event) => setValue(event.target.value)}
             />
             <FieldHint>
-              {t("users.limitLabelHint", {
-                value: globalPolicy.defaultKeyLimit,
-              })}
+              {t(
+                effectiveMode === "global"
+                  ? "users.limitLabelGlobalHint"
+                  : "users.limitLabelHint",
+                { value: globalPolicy.defaultKeyLimit },
+              )}
             </FieldHint>
+          </div>
+
+          <div className="space-y-1.5">
+            <div className="flex items-center gap-1.5">
+              <Label htmlFor="limit-mode">{t("users.limitMode")}</Label>
+              <Hint>{t("users.limitModeHint")}</Hint>
+            </div>
+            <Select
+              value={mode === "" ? "inherit" : mode}
+              onValueChange={(next) =>
+                setMode(next === "inherit" ? "" : (next as KeyLimitMode))
+              }
+            >
+              <SelectTrigger id="limit-mode">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="inherit">
+                  {t("users.limitModeInherit", { mode: globalModeLabel })}
+                </SelectItem>
+                <SelectItem value="per_node">
+                  {t("users.limitModePerNode")}
+                </SelectItem>
+                <SelectItem value="global">
+                  {t("users.limitModeGlobal")}
+                </SelectItem>
+              </SelectContent>
+            </Select>
           </div>
 
           <div className="rounded-lg border p-2.5">
@@ -1223,6 +1326,11 @@ function LimitDialog({
                 {t("users.limitColumnLimit")}
               </span>
             </div>
+            {/* S3: the numbers stay in the database, they are just not enforced
+                while the pool is in charge. */}
+            {effectiveMode === "global" ? (
+              <FieldHint>{t("users.limitPerNodeDormant")}</FieldHint>
+            ) : null}
             {nodes.length === 0 ? (
               <FieldHint>{t("nodeSelect.noNodes")}</FieldHint>
             ) : (
@@ -1257,6 +1365,7 @@ function LimitDialog({
                       aria-label={t("users.limitPerNodeAria", {
                         node: node.name,
                       })}
+                      disabled={effectiveMode === "global"}
                       placeholder={String(fallbackLimit)}
                       className="h-8 w-20 shrink-0"
                       value={nodeLimits[node.id] ?? ""}
@@ -1302,6 +1411,10 @@ function LimitDialog({
                     : allowed.filter((id) => known.has(id)),
                   nodeKeyLimits:
                     Object.keys(limits).length > 0 ? limits : null,
+                  // The select shows "inherit" exactly when there is no
+                  // override, so sending null here never clears a mode the
+                  // admin did not mean to clear.
+                  keyLimitMode: mode === "" ? null : mode,
                 });
                 if (ok) onClose();
               })();
@@ -1327,6 +1440,14 @@ function PolicyDialog({
   onSave: (next: Record<string, unknown>) => Promise<boolean>;
 }) {
   const { t } = useT();
+  // The form is seeded from the stored override and sent back whole, because
+  // `set-policy` replaces `policyOverride` with exactly the fields the payload
+  // names. So keys this dialog has no control over -- `allowedNodeIds` and
+  // `keyLimitMode`, both written by the servers-and-limits dialog -- must be
+  // carried through unchanged; dropping them would silently delete the user's
+  // server list and pin/unpin their limit mode on an unrelated toggle save.
+  // Nothing here ever introduces `keyLimitMode`: it can only be in the payload
+  // when the user already had that override.
   const [form, setForm] = React.useState<Record<string, unknown>>({});
   React.useEffect(() => {
     setForm(user?.policyOverride ?? {});
@@ -1457,15 +1578,15 @@ const QUOTA_STATES = ["provisioning", "active", "disabled"];
 function CreateKeyDialog({
   user,
   nodes,
-  defaultKeyLimit,
+  globalPolicy,
   userKeys,
   onClose,
   onSave,
 }: {
   user: AdminUser | null;
   nodes: AdminNode[];
-  /** Global fallback limit, used for nodes with no per-user limit. */
-  defaultKeyLimit: number;
+  /** Global policy: the fallback limit and the key limit mode. */
+  globalPolicy: GlobalPortalPolicy;
   /** The target user's existing keys — used to estimate the next key number. */
   userKeys: AdminKey[];
   onClose: () => void;
@@ -1485,25 +1606,44 @@ function CreateKeyDialog({
   const [nameDisplay, setNameDisplay] = React.useState<KeyNameDisplay>(() => ({
     ...defaultKeyNameDisplay,
   }));
-  // Per-node quota of the target user: the limit is per node and may differ
-  // per node, so a full node has to be excluded on its own.
+  // Quota of the target user per server. In per-node mode each server has its
+  // own limit, so a full one is excluded on its own; in global mode one shared
+  // pool decides, so a full pool closes every server at once (S2).
   const quotaByNode = React.useMemo(() => {
+    const mode = effectiveKeyLimitMode(
+      globalPolicy.keyLimitMode,
+      user?.policyOverride?.keyLimitMode,
+    );
     const used = new Map<string, number>();
+    let total = 0;
     for (const key of userKeys) {
       if (!QUOTA_STATES.includes(key.state)) continue;
       used.set(key.nodeId, (used.get(key.nodeId) ?? 0) + 1);
+      total += 1;
     }
+    const pool = user?.keyLimitOverride ?? globalPolicy.defaultKeyLimit;
     return new Map(
       nodes.map((item) => {
+        // S3: per-server numbers are dormant in global mode, so the pool is
+        // what the admin is shown against.
         const limit =
-          user?.nodeKeyLimits?.[item.id] ??
-          user?.keyLimitOverride ??
-          defaultKeyLimit;
+          mode === "global" ? pool : (user?.nodeKeyLimits?.[item.id] ?? pool);
         const count = used.get(item.id) ?? 0;
-        return [item.id, { used: count, limit, full: count >= limit }];
+        return [
+          item.id,
+          {
+            used: count,
+            limit,
+            full: isNodeFull(
+              mode,
+              { nodeId: item.id, used: count, limit },
+              { used: total, limit: pool },
+            ),
+          },
+        ];
       }),
     );
-  }, [nodes, userKeys, user, defaultKeyLimit]);
+  }, [nodes, userKeys, user, globalPolicy]);
 
   // Read through a ref so a background refresh of `userKeys` cannot re-run the
   // reset effect below and wipe what the admin already filled in.
