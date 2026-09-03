@@ -9,6 +9,7 @@ import {
   pgEnum,
   pgTable,
   primaryKey,
+  real,
   text,
   timestamp,
   uniqueIndex,
@@ -386,6 +387,140 @@ export const trafficRollups = pgTable(
   ],
 );
 
+export const serviceCheckStatusEnum = pgEnum("service_check_status", [
+  "ok",
+  "failed",
+  "error",
+]);
+
+/**
+ * The latest host metrics a node's agent reported: one row per node, replaced on
+ * every telemetry tick. Every metric is nullable, because an agent that predates
+ * a field simply does not report it and the UI shows a dash - a missing metric
+ * must never turn into a failed poll or a zero that reads as a measurement.
+ */
+export const nodeMetricsCurrent = pgTable("node_metrics_current", {
+  nodeId: uuid("node_id")
+    .primaryKey()
+    .references(() => nodes.id, { onDelete: "cascade" }),
+  observedAt: timestamp("observed_at", { withTimezone: true }).notNull(),
+  agentLatencyMs: integer("agent_latency_ms"),
+  uptimeSec: bigint("uptime_sec", { mode: "number" }),
+  cpuCores: integer("cpu_cores"),
+  load1: real("load1"),
+  load5: real("load5"),
+  load15: real("load15"),
+  memTotalBytes: bigint("mem_total_bytes", { mode: "bigint" }),
+  memAvailableBytes: bigint("mem_available_bytes", { mode: "bigint" }),
+  swapTotalBytes: bigint("swap_total_bytes", { mode: "bigint" }),
+  swapUsedBytes: bigint("swap_used_bytes", { mode: "bigint" }),
+  diskTotalBytes: bigint("disk_total_bytes", { mode: "bigint" }),
+  diskAvailableBytes: bigint("disk_available_bytes", { mode: "bigint" }),
+  diskUsedPercent: real("disk_used_percent"),
+  // The cgroup task budget. On a small host this is what runs out first, and a
+  // container that cannot fork looks healthy and low on memory while it does.
+  agentPidsCurrent: integer("agent_pids_current"),
+  agentPidsMax: integer("agent_pids_max"),
+  awg3Up: boolean("awg3_up"),
+  awg3Peers: integer("awg3_peers"),
+  awg2Up: boolean("awg2_up"),
+  awg2Peers: integer("awg2_peers"),
+  publicHost: varchar("public_host", { length: 253 }),
+  listenPorts: jsonb("listen_ports").$type<number[]>(),
+});
+
+/**
+ * A trimmed history of the six metrics worth a graph. Deliberately not every
+ * field: this table grows per node per tick forever, and the rest are either
+ * constant (cpuCores) or only interesting as their latest value.
+ */
+export const nodeMetricsSamples = pgTable(
+  "node_metrics_samples",
+  {
+    id: bigint("id", { mode: "number" })
+      .primaryKey()
+      .generatedAlwaysAsIdentity(),
+    nodeId: uuid("node_id")
+      .notNull()
+      .references(() => nodes.id, { onDelete: "cascade" }),
+    sampledAt: timestamp("sampled_at", { withTimezone: true }).notNull(),
+    load1: real("load1"),
+    memAvailableBytes: bigint("mem_available_bytes", { mode: "bigint" }),
+    swapUsedBytes: bigint("swap_used_bytes", { mode: "bigint" }),
+    diskUsedPercent: real("disk_used_percent"),
+    agentPidsCurrent: integer("agent_pids_current"),
+    awg3Peers: integer("awg3_peers"),
+  },
+  (table) => [
+    index("node_metrics_samples_node_sampled_idx").on(
+      table.nodeId,
+      table.sampledAt,
+    ),
+  ],
+);
+
+/** Admin-defined HTTP probes every enabled node runs from its own egress. */
+export const nodeServiceChecks = pgTable(
+  "node_service_checks",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    name: varchar("name", { length: 80 }).notNull(),
+    url: text("url").notNull(),
+    expectedStatuses: jsonb("expected_statuses")
+      .$type<number[]>()
+      .default([200])
+      .notNull(),
+    bodyMustContain: varchar("body_must_contain", { length: 200 }),
+    bodyMustNotContain: varchar("body_must_not_contain", { length: 200 }),
+    finalUrlMustNotContain: varchar("final_url_must_not_contain", {
+      length: 200,
+    }),
+    // 12 hours. A blocked region is a state that lasts days, not minutes, so a
+    // fast period would only add traffic from every node at once. An admin can
+    // lower it per check while calibrating; the range check is the guard rail.
+    intervalSec: integer("interval_sec").default(43_200).notNull(),
+    enabled: boolean("enabled").default(true).notNull(),
+    // A "run now" marker, not a schedule. Normal scheduling is per (node,
+    // check) and derives from the result's checkedAt; the admin action sets
+    // this to now(), and every node whose last result predates it runs once.
+    nextDueAt: timestamp("next_due_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    ...timestamps,
+  },
+  (table) => [
+    uniqueIndex("node_service_checks_name_unique").on(table.name),
+    check(
+      "node_service_checks_interval_range",
+      sql`${table.intervalSec} >= 60 AND ${table.intervalSec} <= 86400`,
+    ),
+  ],
+);
+
+export const nodeServiceCheckResults = pgTable(
+  "node_service_check_results",
+  {
+    nodeId: uuid("node_id")
+      .notNull()
+      .references(() => nodes.id, { onDelete: "cascade" }),
+    checkId: uuid("check_id")
+      .notNull()
+      .references(() => nodeServiceChecks.id, { onDelete: "cascade" }),
+    status: serviceCheckStatusEnum("status").notNull(),
+    httpStatus: integer("http_status"),
+    latencyMs: integer("latency_ms"),
+    detail: varchar("detail", { length: 300 }),
+    // Where the node actually landed. Admin-only, and the reason a newly seeded
+    // check's first run is a calibration reading rather than a verdict: a
+    // service that answers a redirect instead of an error tells you nothing
+    // until you can see the redirect target.
+    finalUrl: varchar("final_url", { length: 500 }),
+    checkedAt: timestamp("checked_at", { withTimezone: true }).notNull(),
+    failingSince: timestamp("failing_since", { withTimezone: true }),
+  },
+  (table) => [primaryKey({ columns: [table.nodeId, table.checkId] })],
+);
+
 export const portalPolicy = pgTable(
   "portal_policy",
   {
@@ -432,6 +567,10 @@ export const portalPolicy = pgTable(
     showPublicKey: boolean("show_public_key").default(false).notNull(),
     showLastUsed: boolean("show_last_used").default(true).notNull(),
     showTraffic: boolean("show_traffic").default(true).notNull(),
+    // Whether users see the per-node service-check chips. Ships ON: telling a
+    // user that a service is unavailable from this node is what stops a ticket
+    // about a node that is behaving exactly as designed.
+    showNodeStatus: boolean("show_node_status").default(true).notNull(),
     // Whether users see each node's public address on their dashboard. Default
     // OFF, unlike the other display flags around it: an existing deployment
     // must not start showing the fleet's addresses because it was upgraded.

@@ -134,6 +134,13 @@
       "when": 1788464014638,
       "tag": "0018_node_agent_update",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1788467411734,
+      "tag": "0019_node_metrics_and_service_checks",
+      "breakpoints": true
     }
   ]
 }
