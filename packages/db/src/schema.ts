@@ -39,12 +39,16 @@ export const routeProfileEnum = pgEnum("route_profile", [
   "ru_whitelist",
   "ru_blacklist",
 ]);
+// Mirrors `deviceTypeSchema` in @amnezia/contracts, value for value and in the
+// same order; `schema.test.ts` fails if the two drift. Written out as a literal
+// rather than imported because drizzle-kit reads this file directly and must
+// not depend on the contracts package being built.
 export const deviceTypeEnum = pgEnum("device_type", [
-  "desktop",
-  "laptop",
-  "iphone",
   "android",
-  "phone",
+  "ios",
+  "macos",
+  "windows",
+  "linux",
   "other",
   "unspecified",
 ]);

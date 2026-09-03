@@ -85,6 +85,13 @@
       "when": 1788259876528,
       "tag": "0011_sturdy_chameleon",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1788416195190,
+      "tag": "0012_device_type_platforms",
+      "breakpoints": true
     }
   ]
 }
