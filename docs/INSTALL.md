@@ -89,9 +89,31 @@ stack):
    (`openssl rand -base64 32`), `BOOTSTRAP_ADMIN_EMAILS` (input #5), and the
    `CF_ACCESS_*` values (you get those in Phase 3). Point `PANEL_IMAGE` at the GHCR
    image.
-3. If the panel shares the box with the node (input #3), register the node with
-   `apiBaseUrl http://amnezia-node-agent:4001` if they're on the same Docker
-   network, or `http://host.docker.internal:4001` for a host-published agent.
+3. If the panel shares the box with the node (input #3), **put them on the same
+   Docker network first** — they are two separate compose projects, so the panel
+   cannot resolve `amnezia-node-agent` out of the box:
+
+   ```bash
+   cp infra/prod/compose.override.colocated.yaml.example infra/prod/compose.override.yaml
+   ```
+
+   That override attaches `control-api` and `worker` to the node's external
+   network (`amnezia-node_default` by default; set `NODE_DOCKER_NETWORK` in
+   `.env` if the node stack uses a different name — check with
+   `docker network ls --filter name=amnezia-node`). Both `infra/prod/update.sh`
+   and `scripts/deploy.sh` auto-load `compose.override.yaml`, so the wiring
+   survives every redeploy. Then register the node with
+   `apiBaseUrl http://amnezia-node-agent:4001`.
+
+   Only use `http://host.docker.internal:4001` when the node-agent actually
+   publishes on the host and that binding is reachable from the docker bridge.
+   The stock node-agent binds `127.0.0.1` only ([`HOSTING.md` §7.1](./HOSTING.md)),
+   so on a stock co-located host that address gets `ECONNREFUSED` — use the
+   override, not the host route.
+
+   Do **not** copy the override on a panel-only host: it declares the node
+   network as `external`, and compose refuses to start if that network does not
+   exist.
 4. Bring it up: `bash infra/prod/update.sh` (it also runs the DB migrations).
 
 The web and API are published on loopback only (`127.0.0.1:5430` / `5431`); what

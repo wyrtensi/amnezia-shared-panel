@@ -529,7 +529,7 @@ This is how RoscomVPN keys were re-issued against the current rule set.
 
 ## Troubleshooting
 
-### Node shows `lastError` / "fetch failed" (tunnel down)
+### Node shows `lastError` / "fetch failed" (remote node, tunnel down)
 
 Symptom: the admin nodes row leaves "Норма" and shows an error; provisioning jobs
 fail. The worker's node client (`apps/worker/src/nodeAgent.ts`) uses `fetch` with a
@@ -542,6 +542,53 @@ Fix: confirm the tunnel is up on the control-plane host
 agent is healthy and loopback-bound: `docker port amnezia-node-agent 4001/tcp`
 must print `127.0.0.1:4001`. The worker retries telemetry every 60 s and clears
 `lastError` once `GET /server` succeeds again (or press **Сверка**).
+
+### Node shows `lastError` / "fetch failed" (co-located node, network detached)
+
+Symptom: the same `fetch failed`, but the node runs on the **same host** as the
+panel and is registered with `apiBaseUrl http://amnezia-node-agent:4001`. There is
+no tunnel to check. Existing VPN clients keep working (the data plane is the AWG
+container, untouched) — only provisioning and telemetry are dead, so this can go
+unnoticed for days. It typically appears right after the panel stack was recreated
+(`update.sh`, `deploy.sh`, `up -d`).
+
+Cause: the panel and the node are two compose projects with two networks
+(`amnezia-panel_panel` and `amnezia-node_default`). `amnezia-node-agent` resolves
+only from containers attached to the node's network. If that attachment was made
+by hand with `docker network connect`, recreating the panel containers throws it
+away.
+
+Diagnosis — one line, run on the host:
+
+```bash
+docker network inspect amnezia-node_default -f '{{range .Containers}}{{.Name}} {{end}}'
+```
+
+If the output lists only the node's own containers and no panel `control-api` /
+`worker`, that is the fault.
+
+Immediate unblock (survives until the next recreate, nothing more):
+
+```bash
+docker network connect amnezia-node_default amnezia-panel-control-api-1
+docker network connect amnezia-node_default amnezia-panel-worker-1
+```
+
+Durable fix — make the attachment declarative so a redeploy keeps it:
+
+```bash
+cp infra/prod/compose.override.colocated.yaml.example infra/prod/compose.override.yaml
+bash infra/prod/update.sh
+```
+
+Both `infra/prod/update.sh` and `scripts/deploy.sh` load
+`${COMPOSE_DIR}/compose.override.yaml` automatically. Set `NODE_DOCKER_NETWORK` in
+`infra/prod/.env` if the node stack's network is not named `amnezia-node_default`.
+
+Note that `http://host.docker.internal:4001` is **not** a substitute here: the
+node-agent binds `127.0.0.1` on purpose (§7.1 of [`HOSTING.md`](./HOSTING.md)), so
+the docker bridge gateway gets `ECONNREFUSED`. Widening that binding to reach the
+panel would trade a container-network problem for an exposed control port.
 
 ### `401` from the node-agent
 

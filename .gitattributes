@@ -6,6 +6,9 @@
 *.mjs text eol=lf
 *.yaml text eol=lf
 *.yml text eol=lf
+# Compose templates are copied verbatim into a compose file on the server.
+*.yaml.example text eol=lf
+*.yml.example text eol=lf
 pnpm-lock.yaml text eol=lf
 
 # Treat lockfiles and generated artifacts as such in diffs.
