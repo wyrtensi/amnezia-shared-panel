@@ -753,6 +753,8 @@ const ru = {
   "policy.recommendedSummary": "Рекомендуется первых: {count} из {total}",
   "policy.moveUp": "Выше",
   "policy.moveDown": "Ниже",
+  "policy.dragHint":
+    "Строки можно перетаскивать мышью; стрелками — с клавиатуры и на телефоне.",
   "policy.employeePerms": "Разрешения для сотрудников",
   "policy.telemetryDisplay": "Отображение телеметрии",
   "policy.cfAccessHint":
@@ -1608,6 +1610,8 @@ const en = {
   "policy.recommendedSummary": "Recommended: the first {count} of {total}",
   "policy.moveUp": "Move up",
   "policy.moveDown": "Move down",
+  "policy.dragHint":
+    "Drag a row to reorder it; the arrows do the same from a keyboard or a phone.",
   "policy.employeePerms": "Employee permissions",
   "policy.telemetryDisplay": "Telemetry display",
   "policy.cfAccessHint":

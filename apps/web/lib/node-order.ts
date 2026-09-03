@@ -66,6 +66,27 @@ export const moveNodeInOrder = (
 };
 
 /**
+ * Moves one id to an absolute position, which is what a drag produces (the
+ * up/down buttons move by one; a drag can cross the whole list). The target is
+ * clamped, and an unknown id is a no-op, so a drop that lands outside the list
+ * or on a row that vanished mid-drag cannot corrupt the order.
+ */
+export const moveNodeToIndex = (
+  orderedIds: readonly string[],
+  id: string,
+  targetIndex: number,
+): string[] => {
+  const from = orderedIds.indexOf(id);
+  if (from < 0) return [...orderedIds];
+  const to = Math.max(0, Math.min(targetIndex, orderedIds.length - 1));
+  if (to === from) return [...orderedIds];
+  const next = [...orderedIds];
+  next.splice(from, 1);
+  next.splice(to, 0, id);
+  return next;
+};
+
+/**
  * How many rows from the top are recommended. The API guarantees the saved set
  * IS a prefix, so this normally just counts it; the walk exists so a row that
  * somehow violates the invariant (a hand-edited database) shows up as the

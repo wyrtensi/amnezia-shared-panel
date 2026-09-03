@@ -1,6 +1,7 @@
 "use client";
 
-import { ChevronDown, ChevronUp } from "lucide-react";
+import * as React from "react";
+import { ChevronDown, ChevronUp, GripVertical } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -8,6 +9,7 @@ import { useT } from "@/lib/i18n/provider";
 import {
   materializeNodeOrder,
   moveNodeInOrder,
+  moveNodeToIndex,
   recommendedCountFromIds,
   recommendedPrefix,
 } from "@/lib/node-order";
@@ -15,13 +17,16 @@ import {
 /**
  * Hand-made server order, with the "recommended" prefix on top.
  *
- * Up/down buttons instead of drag-and-drop: no extra dependency, and
- * keyboard/screen-reader accessible for free. The recommended set is edited as
- * a COUNT from the top, because the API only accepts a prefix — ticking a row
- * recommends everything above it as well, unticking it drops everything below.
- * Every interaction emits the FULL explicit order together with the resolved
- * recommended ids, so what the admin sees is what users get and the payload can
- * never violate the prefix rule.
+ * Rows are dragged with the native HTML5 drag-and-drop API — no dependency,
+ * and `apps/web` has no dnd library. The up/down buttons stay: HTML5 dragging
+ * has no keyboard story at all and is unreliable under touch, so the buttons
+ * are the accessible path, not a leftover.
+ *
+ * The recommended set is edited as a COUNT from the top, because the API only
+ * accepts a prefix — ticking a row recommends everything above it as well,
+ * unticking it drops everything below. Every interaction emits the FULL
+ * explicit order together with the resolved recommended ids, so what the admin
+ * sees is what users get and the payload can never violate the prefix rule.
  */
 export function NodeOrderList({
   nodes,
@@ -38,6 +43,8 @@ export function NodeOrderList({
   }) => void;
 }) {
   const { t } = useT();
+  const [dragging, setDragging] = React.useState<string | null>(null);
+  const [over, setOver] = React.useState<string | null>(null);
   const ordered = materializeNodeOrder(nodes, order);
   const count = recommendedCountFromIds(ordered, recommended);
   const byId = new Map(nodes.map((node) => [node.id, node]));
@@ -46,6 +53,18 @@ export function NodeOrderList({
       nodeOrder: nextOrder,
       recommendedNodeIds: recommendedPrefix(nextOrder, nextCount),
     });
+  const endDrag = () => {
+    setDragging(null);
+    setOver(null);
+  };
+  const dropOn = (targetId: string) => {
+    // Read the id from state rather than the drop event: Safari hands back an
+    // empty dataTransfer on some drops, and the source row is ours either way.
+    if (dragging && dragging !== targetId) {
+      emit(moveNodeToIndex(ordered, dragging, ordered.indexOf(targetId)), count);
+    }
+    endDrag();
+  };
   if (nodes.length === 0) {
     return (
       <p className="text-xs text-muted-foreground">{t("nodeSelect.noNodes")}</p>
@@ -61,15 +80,43 @@ export function NodeOrderList({
           const node = byId.get(id);
           if (!node) return null;
           const isRecommended = index < count;
+          const rowStyle = [
+            "flex items-center gap-2 rounded-lg border p-2 text-sm transition-colors",
+            isRecommended ? "border-primary bg-primary/10" : "",
+            over === id && dragging !== id ? "border-dashed border-primary" : "",
+            dragging === id ? "opacity-50" : "",
+          ]
+            .filter(Boolean)
+            .join(" ");
           return (
             <li
               key={id}
-              className={
-                isRecommended
-                  ? "flex items-center gap-2 rounded-lg border border-primary bg-primary/10 p-2 text-sm"
-                  : "flex items-center gap-2 rounded-lg border p-2 text-sm"
-              }
+              className={rowStyle}
+              draggable
+              onDragStart={(event) => {
+                setDragging(id);
+                // Firefox starts no drag at all without data on the transfer.
+                event.dataTransfer.setData("text/plain", id);
+                event.dataTransfer.effectAllowed = "move";
+              }}
+              onDragOver={(event) => {
+                // Without preventDefault the browser refuses the drop.
+                event.preventDefault();
+                event.dataTransfer.dropEffect = "move";
+                if (over !== id) setOver(id);
+              }}
+              onDrop={(event) => {
+                event.preventDefault();
+                dropOn(id);
+              }}
+              onDragEnd={endDrag}
             >
+              <span
+                className="shrink-0 cursor-grab text-muted-foreground active:cursor-grabbing"
+                aria-hidden="true"
+              >
+                <GripVertical className="size-4" />
+              </span>
               <span className="w-6 shrink-0 text-xs text-muted-foreground">
                 {index + 1}
               </span>
@@ -114,6 +161,7 @@ export function NodeOrderList({
           );
         })}
       </ol>
+      <p className="text-xs text-muted-foreground">{t("policy.dragHint")}</p>
     </div>
   );
 }
