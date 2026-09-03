@@ -172,7 +172,7 @@ const ru = {
   "keyCard.rulesUpdatedBody":
     "Перевыпустите ключ, чтобы применить новые правила. Старый конфиг перестанет работать — переустановите ключ на устройстве.",
   "keyCard.iphoneProfileWarning":
-    "Этот ключ создан для iPhone или iPad и содержит профиль маршрутизации. На iPhone и iPad правила профиля не применяются: подключение работает, но весь трафик идёт мимо VPN. Для iPhone и iPad создайте ключ с профилем «Весь трафик». На Windows, macOS, Linux и Android этот ключ работает как обычно.",
+    "Этот ключ создан для iPhone или iPad и содержит профиль маршрутизации. В приложении Default VPN правила профиля не применяются: подключение работает, но весь трафик идёт мимо VPN, и приложение об этом не предупреждает. Если у вас AmneziaVPN — ключ работает как задумано; Default VPN стоит у тех, кто ставил из российского App Store. Подробнее — в инструкции «Как подключиться». На Windows, macOS, Linux и Android этот ключ работает как обычно.",
   "keyCard.created": "Создан: ",
   "keyCard.traffic": "Трафик: ",
   "keyCard.reissue": "Перевыпустить",
@@ -201,9 +201,12 @@ const ru = {
   "wizard.awg3Hint": "Требуется AmneziaVPN {version}+",
   "wizard.rulesNotActive": "Правила ещё не активированы",
   "wizard.profileDisabled": "Выбор профиля отключён администратором",
-  "wizard.profileNoIphone": "На iPhone и iPad профили не работают",
+  "wizard.profileNoIphone": "Не работает в Default VPN — см. инструкцию",
+  "wizard.hasAmneziaClient": "У меня AmneziaVPN, а не Default VPN",
+  "wizard.hasAmneziaClientHint":
+    "Отметьте, только если вы действительно поставили AmneziaVPN (в российском App Store его нет). Профили маршрутизации станут доступны. Если на деле стоит Default VPN, ключ подключится, но правила применяться не будут.",
   "wizard.routingNoIphone":
-    "Для iPhone и iPad профили маршрутизации недоступны: ключ с профилем подключается, но правила не применяются — весь трафик идёт мимо VPN. Доступен только «Весь трафик». Профили работают на Windows, macOS, Linux и Android.",
+    "В App Store из России ставится Default VPN — в нём ключ с профилем подключается, но правила не применяются: весь трафик идёт мимо VPN, и приложение об этом не предупреждает. Поэтому для iPhone и iPad по умолчанию доступен только «Весь трафик». Настоящий AmneziaVPN на iOS есть, но он скрыт из российского App Store — если он у вас установлен, отметьте это ниже.",
   "wizard.createFailed": "Не удалось создать ключ",
   "wizard.title": "Новый VPN-ключ",
   "wizard.desc": "Один ключ предназначен для одного устройства.",
@@ -309,12 +312,16 @@ const ru = {
   "install.group.android": "Android",
   "install.group.ios": "iPhone и iPad (iOS)",
   "install.pickFile": "Выберите файл для своей системы",
+  "install.iosAmneziaTitle": "Если ваш аккаунт Apple не российский",
+  "install.iosAmneziaBody":
+    "Тогда можно поставить сам AmneziaVPN — он умеет больше, в том числе профили маршрутизации. Из российского App Store он скрыт, так что кнопка откроется не у всех.",
+  "install.iosAmneziaOpen": "Открыть AmneziaVPN в App Store",
   "install.desktopNote":
     "Кнопки Windows, macOS и Linux скачивают установщик последнего выпуска. Запустите скачанный файл и следуйте установщику.",
   "install.iosNote":
-    "В App Store приложение называется DefaultVPN, а не Amnezia. Это официальный клиент от тех же разработчиков, ставьте именно его.",
+    "В российском App Store приложение называется Default VPN, а не Amnezia — это официальный клиент от тех же разработчиков, ставьте его. Настоящий AmneziaVPN на iOS тоже есть и умеет больше, но он скрыт из российского App Store по требованию Роскомнадзора: он ставится, только если аккаунт Apple зарегистрирован в другой стране.",
   "install.iosProfileWarning":
-    "На iPhone и iPad работает ключ без профиля маршрутизации — весь трафик идёт через VPN. Ключ с профилем («Иностранные ресурсы через VPN», «Только заблокированные сайты») на iPhone и iPad подключается, но правила не применяются: весь трафик идёт напрямую, мимо VPN, и приложение об этом не предупреждает. Для iPhone и iPad создавайте ключ без профиля маршрутизации, а ключи с профилями используйте на Windows, macOS, Linux и Android.",
+    "В Default VPN ключ с профилем («Иностранные ресурсы через VPN», «Только заблокированные сайты») подключается, но правила не применяются: весь трафик идёт напрямую, мимо VPN, и приложение об этом не предупреждает. Поэтому для iPhone и iPad создавайте ключ без профиля — весь трафик через VPN. Если вы поставили не Default VPN, а сам AmneziaVPN, отметьте это при создании ключа, и профили станут доступны.",
   "install.versionNote":
     "Ключи AmneziaWG 3.1 работают только в клиенте версии {version} или новее.",
   "install.apkTitle": "Google Play не открывается или установка не проходит?",
@@ -977,7 +984,7 @@ const en = {
   "keyCard.rulesUpdatedBody":
     "Reissue the key to apply the new rules. The old config will stop working — reinstall the key on the device.",
   "keyCard.iphoneProfileWarning":
-    "This key was created for an iPhone or iPad and carries a route profile. On iPhone and iPad the profile's rules are not applied: it connects, but all traffic goes outside the VPN. For an iPhone or iPad, create a key with the “All traffic” profile. On Windows, macOS, Linux and Android this key works normally.",
+    "This key was created for an iPhone or iPad and carries a route profile. In the Default VPN app the profile's rules are not applied: it connects, but all traffic goes outside the VPN and the app gives no warning. If you have AmneziaVPN the key works as intended; Default VPN is what installs from the Russian App Store. See the “How to connect” guide. On Windows, macOS, Linux and Android this key works normally.",
   "keyCard.created": "Created: ",
   "keyCard.traffic": "Traffic: ",
   "keyCard.reissue": "Reissue",
@@ -1006,9 +1013,12 @@ const en = {
   "wizard.awg3Hint": "Requires AmneziaVPN {version}+",
   "wizard.rulesNotActive": "Rules not activated yet",
   "wizard.profileDisabled": "Profile selection disabled by the administrator",
-  "wizard.profileNoIphone": "Profiles do not work on iPhone and iPad",
+  "wizard.profileNoIphone": "Does not work in Default VPN — see the guide",
+  "wizard.hasAmneziaClient": "I have AmneziaVPN, not Default VPN",
+  "wizard.hasAmneziaClientHint":
+    "Tick this only if you really installed AmneziaVPN (it is not in the Russian App Store). Route profiles become selectable. If Default VPN is what you actually have, the key connects but the rules are not applied.",
   "wizard.routingNoIphone":
-    "Route profiles are not available for iPhone and iPad: a key with a profile connects, but the rules are not applied and all traffic goes outside the VPN. Only “All traffic” can be selected. Profiles work on Windows, macOS, Linux and Android.",
+    "The App Store in Russia offers Default VPN, and there a key with a profile connects but applies none of its rules: all traffic goes outside the VPN and the app gives no warning. So iPhone and iPad get “All traffic” only by default. AmneziaVPN itself does exist on iOS, but it is hidden from the Russian App Store — if you have it installed, say so below.",
   "wizard.createFailed": "Failed to create the key",
   "wizard.title": "New VPN key",
   "wizard.desc": "One key is meant for a single device.",
@@ -1114,12 +1124,16 @@ const en = {
   "install.group.android": "Android",
   "install.group.ios": "iPhone and iPad (iOS)",
   "install.pickFile": "Pick the file for your system",
+  "install.iosAmneziaTitle": "If your Apple account is not Russian",
+  "install.iosAmneziaBody":
+    "Then you can install AmneziaVPN itself — it does more, route profiles included. It is hidden from the Russian App Store, so the button will not open for everyone.",
+  "install.iosAmneziaOpen": "Open AmneziaVPN on the App Store",
   "install.desktopNote":
     "The Windows, macOS and Linux buttons download the installer from the latest release. Run the downloaded file and follow the installer.",
   "install.iosNote":
-    "On the App Store the app is called DefaultVPN, not Amnezia. It is the official client from the same developers — install that one.",
+    "In the Russian App Store the app is called Default VPN, not Amnezia — it is the official client from the same developers, so install that one. AmneziaVPN itself is also on iOS and does more, but it is hidden from the Russian App Store by Roskomnadzor requirement: it installs only if your Apple account is registered in another country.",
   "install.iosProfileWarning":
-    "On iPhone and iPad, use a key with no route profile — all traffic goes through the VPN. A key with a profile (“Foreign resources via VPN”, “Only blocked sites”) does connect on iPhone and iPad, but the rules are not applied: all traffic goes direct, outside the VPN, and the app gives no warning. Create keys without a route profile for iPhone and iPad, and use profile keys on Windows, macOS, Linux and Android.",
+    "In Default VPN a key with a profile (“Foreign resources via VPN”, “Only blocked sites”) does connect, but the rules are not applied: all traffic goes direct, outside the VPN, and the app gives no warning. So on iPhone and iPad create a key with no profile — all traffic through the VPN. If you installed AmneziaVPN itself rather than Default VPN, say so when creating the key and the profiles become available.",
   "install.versionNote":
     "AmneziaWG 3.1 keys only work in client version {version} or newer.",
   "install.apkTitle": "Google Play will not open, or the install fails?",

@@ -554,8 +554,10 @@ export const clientPlatformDownloadSchema = z.object({
   /** Where the platform's main button goes. */
   primary: clientAssetSchema,
   /**
-   * The escape hatch when the primary route does not work for the user. Today
-   * only Android has one: the APK, behind the Google Play button.
+   * The platform's second way in, when one button cannot serve everyone.
+   * Android's is an escape hatch — the APK, for users Google Play does not
+   * reach. iOS's is a different app: AmneziaVPN, which is hidden from the
+   * Russian App Store, behind the DefaultVPN listing that is not.
    */
   alternate: clientAssetSchema.nullable(),
 });
@@ -592,6 +594,13 @@ export type ClientRelease = z.infer<typeof clientReleaseSchema>;
  * iOS will never support route profiles. The cause is not established (see the
  * T2-a backlog item); when it is fixed, empty this list and the create-key
  * wizard offers the profiles again with no other change.
+ *
+ * The client observed was Default VPN -- the listing the Russian App Store
+ * offers, because AmneziaVPN itself is hidden from it by Roskomnadzor
+ * requirement. AmneziaVPN on iOS is a different app and was never observed
+ * failing, so the wizard lets a user say they run it and lifts the block for
+ * that key. "ios" stays on this list because Default VPN is what most iOS users
+ * end up with, and the default has to be the common case.
  *
  * Only "ios" is listed, and it covers iPhone AND iPad — they are one value, so
  * iPad is covered by construction rather than by a guess. The other platforms

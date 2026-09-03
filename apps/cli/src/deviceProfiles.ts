@@ -11,7 +11,12 @@
  *
  * Operator-verified 2026-09-02 / 2026-09-03: on an iPhone a key with a route
  * profile connects but applies no rules, with both the vpn:// key and an
- * imported .conf. Stop-gap, not a permanent design decision — see T2-a.
+ * imported .conf. The client observed was Default VPN — the listing the Russian
+ * App Store offers, because AmneziaVPN itself is hidden from it. AmneziaVPN on
+ * iOS is a different app and was NOT observed, so it is not claimed to fail;
+ * the panel's wizard lets a user say they run it and lifts the block. This list
+ * stays the default because Default VPN is what most iOS users end up with.
+ * Stop-gap, not a permanent design decision — see T2-a.
  */
 const ROUTE_PROFILE_UNSUPPORTED_DEVICES = ["ios"];
 
@@ -35,7 +40,7 @@ export function routeProfileWarning(
   if (!deviceType || cliDeviceSupportsRouteProfiles(deviceType)) return null;
   const profile = routeProfile ?? "full_tunnel";
   if (profile === "full_tunnel") return null;
-  return `warning: device-type "${deviceType}" does not apply route profiles — a key with "${profile}" will connect but send all traffic outside the VPN. Use --route=full_tunnel for this device. Creating it anyway.`;
+  return `warning: device-type "${deviceType}" usually means the Default VPN app, which connects but applies no route profile — a key with "${profile}" will send all traffic outside the VPN. Use --route=full_tunnel unless the user runs AmneziaVPN itself. Creating it anyway.`;
 }
 
 /**

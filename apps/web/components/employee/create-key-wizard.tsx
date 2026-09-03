@@ -110,6 +110,13 @@ export function CreateKeyWizard({
     ...defaultKeyNameDisplay,
   }));
   const [busy, setBusy] = React.useState(false);
+  /**
+   * The user's word that they run AmneziaVPN itself, not the Default VPN
+   * listing the Russian App Store offers. It never leaves the wizard: the key
+   * that results is an ordinary key with a route profile, and nothing in the
+   * export path branches on the client.
+   */
+  const [hasAmneziaClient, setHasAmneziaClient] = React.useState(false);
   const [error, setError] = React.useState("");
 
   // Reset the form only when the wizard OPENS (open false→true) — not on every
@@ -179,10 +186,23 @@ export function CreateKeyWizard({
   const chooseDevice = (next: DeviceType) => {
     setDeviceType(next);
     if (!labelEdited) setDeviceLabel(suggestKeyName(next, existingNames, t));
+    // The assertion is about one device's app, so it does not survive picking
+    // another one -- and clearing it here is what makes the fallback below
+    // correct rather than dependent on stale state.
+    setHasAmneziaClient(false);
     // Never leave a now-disabled profile selected. Switching to a device where
     // route profiles do not apply falls back to the full tunnel, so the form
     // can never submit a profile the cards are showing as greyed out.
     if (!deviceSupportsRouteProfiles(next)) setRouteProfile("full_tunnel");
+  };
+
+  // Unticking after picking a profile would leave a greyed-out card selected,
+  // the exact state chooseDevice exists to prevent.
+  const setAmneziaClient = (next: boolean) => {
+    setHasAmneziaClient(next);
+    if (!next && !deviceSupportsRouteProfiles(deviceType)) {
+      setRouteProfile("full_tunnel");
+    }
   };
 
   // Preview of the connection title the AmneziaVPN client will show, built with
@@ -221,7 +241,10 @@ export function CreateKeyWizard({
   }));
 
   const policyLocked = !me.policy.allowRouteProfileSelection;
-  const profilesBlockedByDevice = !deviceSupportsRouteProfiles(deviceType);
+  // The device's own client cannot apply profiles, and the user has not said
+  // they run a different one. Only then is the choice offered at all.
+  const deviceNeedsAmneziaClient = !deviceSupportsRouteProfiles(deviceType);
+  const profilesBlockedByDevice = deviceNeedsAmneziaClient && !hasAmneziaClient;
   const routeOptions: Array<CardOption<RouteProfile>> = (
     ["full_tunnel", "ru_whitelist", "ru_blacklist"] as RouteProfile[]
   ).map((profile) => {
@@ -233,6 +256,7 @@ export function CreateKeyWizard({
       rulesReady: Boolean(availability?.available),
       policyLocked,
       deviceType,
+      hasAmneziaClient,
     });
     return {
       value: profile,
@@ -411,6 +435,30 @@ export function CreateKeyWizard({
               <FieldHint>{t("wizard.routingNoIphone")}</FieldHint>
             ) : policyLocked ? (
               <FieldHint>{t("wizard.routingLocked")}</FieldHint>
+            ) : null}
+            {/* Offered only where the block applies, and phrased as what the
+                user has installed rather than as an override -- the panel
+                cannot see which iOS app they run, so this is their word, and
+                the hint says plainly what happens if the word is wrong. */}
+            {deviceNeedsAmneziaClient ? (
+              <div className="space-y-1.5 rounded-lg border border-border p-3">
+                <div className="flex items-center gap-2">
+                  <Checkbox
+                    id="key-has-amnezia-client"
+                    checked={hasAmneziaClient}
+                    onChange={(event) =>
+                      setAmneziaClient(event.target.checked)
+                    }
+                  />
+                  <Label
+                    htmlFor="key-has-amnezia-client"
+                    className="cursor-pointer font-normal"
+                  >
+                    {t("wizard.hasAmneziaClient")}
+                  </Label>
+                </div>
+                <FieldHint>{t("wizard.hasAmneziaClientHint")}</FieldHint>
+              </div>
             ) : null}
           </div>
 

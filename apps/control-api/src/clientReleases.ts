@@ -37,9 +37,14 @@ const RELEASES_LATEST_URL =
 const PLAY_STORE_URL =
   "https://play.google.com/store/apps/details?id=org.amnezia.vpn";
 
-// The App Store listing is published under the name "DefaultVPN", not
-// "Amnezia"; the guide says so next to the button.
+// Two iOS listings, and which one a user can install depends on where their
+// Apple account is registered. AmneziaVPN is the real client; it is hidden from
+// the Russian App Store by Roskomnadzor requirement (and from the Chinese one),
+// which is why DefaultVPN -- the same developers under another listing name --
+// exists and is the primary button here. The guide says both, in that order.
 const APP_STORE_URL = "https://apps.apple.com/us/app/defaultvpn/id6744725017";
+const AMNEZIA_APP_STORE_URL =
+  "https://apps.apple.com/us/app/amneziavpn/id1600529900";
 
 /**
  * How long a resolved release is served before GitHub is asked again.
@@ -168,7 +173,13 @@ const toClientRelease = (release: GitHubRelease, now: Date): ClientRelease => {
       // Google Play is unreachable for some users; the APK is the way round it.
       alternate: installerAsset(release, ASSET_PATTERNS.android) ?? page(),
     },
-    { platform: "ios", primary: storeAsset(APP_STORE_URL), alternate: null },
+    {
+      platform: "ios",
+      primary: storeAsset(APP_STORE_URL),
+      // Not a fallback for a broken primary, as Android's APK is: a different
+      // app, better where it can be installed at all.
+      alternate: storeAsset(AMNEZIA_APP_STORE_URL),
+    },
   ];
 
   // Parse our own output: a URL GitHub hands us that the contract refuses is a
@@ -215,7 +226,11 @@ const pinnedFallback = (now: Date): ClientRelease => ({
       primary: storeAsset(PLAY_STORE_URL),
       alternate: releasePageAsset(RELEASES_LATEST_URL),
     },
-    { platform: "ios", primary: storeAsset(APP_STORE_URL), alternate: null },
+    {
+      platform: "ios",
+      primary: storeAsset(APP_STORE_URL),
+      alternate: storeAsset(AMNEZIA_APP_STORE_URL),
+    },
   ],
 });
 

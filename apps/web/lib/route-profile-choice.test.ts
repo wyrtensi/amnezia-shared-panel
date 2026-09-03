@@ -124,3 +124,76 @@ describe("iPhone strings", () => {
     }
   });
 });
+
+// The block on iOS is about Default VPN, the app the Russian App Store offers,
+// not about the hardware -- so a user running AmneziaVPN itself can lift it.
+// The escape must not leak: it may only ever undo the device reason, never the
+// admin's policy lock or a rule set that is not live yet.
+describe("the AmneziaVPN assertion", () => {
+  const ask = (over: Record<string, unknown> = {}) =>
+    routeProfileChoice({
+      profile: "ru_whitelist",
+      rulesReady: true,
+      policyLocked: false,
+      deviceType: "ios",
+      ...over,
+    });
+
+  it("blocks an iOS key by default", () => {
+    expect(ask()).toEqual({
+      disabled: true,
+      hintKey: "wizard.profileNoIphone",
+    });
+  });
+
+  it("lifts the block when the user says they run AmneziaVPN", () => {
+    expect(ask({ hasAmneziaClient: true })).toEqual({
+      disabled: false,
+      hintKey: null,
+    });
+  });
+
+  it("does not let the assertion override the admin's policy lock", () => {
+    expect(ask({ hasAmneziaClient: true, policyLocked: true })).toEqual({
+      disabled: true,
+      hintKey: "wizard.profileDisabled",
+    });
+  });
+
+  it("does not let the assertion override a rule set that is not live", () => {
+    expect(ask({ hasAmneziaClient: true, rulesReady: false })).toEqual({
+      disabled: true,
+      hintKey: "wizard.rulesNotActive",
+    });
+  });
+
+  it("changes nothing for a device that was never blocked", () => {
+    expect(ask({ deviceType: "android", hasAmneziaClient: true })).toEqual(
+      ask({ deviceType: "android" }),
+    );
+  });
+
+  it("keeps the full tunnel selectable either way", () => {
+    for (const hasAmneziaClient of [true, false]) {
+      expect(ask({ profile: "full_tunnel", hasAmneziaClient })).toEqual({
+        disabled: false,
+        hintKey: null,
+      });
+    }
+  });
+});
+
+describe("AmneziaVPN assertion strings", () => {
+  it("exist in both languages", () => {
+    for (const key of [
+      "wizard.hasAmneziaClient",
+      "wizard.hasAmneziaClientHint",
+      "install.iosAmneziaTitle",
+      "install.iosAmneziaBody",
+      "install.iosAmneziaOpen",
+    ]) {
+      expect(messages.ru, `ru is missing ${key}`).toHaveProperty(key);
+      expect(messages.en, `en is missing ${key}`).toHaveProperty(key);
+    }
+  });
+});
