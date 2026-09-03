@@ -107,14 +107,10 @@ describe("the docker-unavailable branches still win", () => {
       .run(`echo '${ENCODED}' | base64 -d`)
       .then(() => null, (e: Error) => e);
 
-    // The docker branch must win over the redacted-Error branch. Asserted by
-    // type and status rather than by `.message`, because APIError declares
-    // `public message!: I18n` and the ES2022 class-field semantics of this
-    // tsconfig re-define that property to undefined after super() sets it --
-    // a live defect in APIError, unrelated to redaction and out of T1's scope.
-    // See plans/2026-09-02-T1-security-fixes.md "Execution notes".
+    // The docker branch must win over the redacted-Error branch.
     expect(error).toBeInstanceOf(APIError);
     expect((error as APIError).statusCode).toBe(503);
+    expect(error?.message).toBe("swagger.errors.DOCKER_NOT_AVAILABLE");
     // Whatever the branch, the payload must not ride along.
     expect(String(error)).not.toContain(ENCODED);
     expect(String(error)).not.toContain(PRIVATE_KEY);
