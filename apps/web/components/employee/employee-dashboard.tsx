@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import Link from "next/link";
-import { KeyRound, Plus, RefreshCw, ShieldCheck } from "lucide-react";
+import { CircleHelp, KeyRound, Plus, RefreshCw, ShieldCheck } from "lucide-react";
 import { toast } from "sonner";
 import { AppHeader } from "@/components/app-header";
 import { LogoutButton } from "@/components/logout-button";
@@ -19,6 +19,7 @@ import {
   ConfigDownloadDialog,
   type ConfigTarget,
 } from "@/components/employee/config-download-dialog";
+import { InstallGuideDialog } from "@/components/employee/install-guide-dialog";
 import { QuotaRequestDialog } from "@/components/employee/quota-request-dialog";
 import { apiRequest } from "@/lib/api";
 import { InlineTraffic } from "@/components/inline-traffic";
@@ -56,6 +57,7 @@ export function EmployeeDashboard({
   const [busy, setBusy] = React.useState(false);
   const [showCreate, setShowCreate] = React.useState(false);
   const [showQuota, setShowQuota] = React.useState(false);
+  const [showGuide, setShowGuide] = React.useState(false);
   const [configTarget, setConfigTarget] = React.useState<ConfigTarget | null>(
     null,
   );
@@ -243,6 +245,15 @@ export function EmployeeDashboard({
         subtitle={me?.email ?? t("emp.loadingProfile")}
         actions={
           <>
+            {/* First in the row: the one action a lost user is looking for. It
+                stays available while /api/me is still loading or has failed. */}
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setShowGuide(true)}
+            >
+              <CircleHelp className="h-4 w-4" /> {t("install.button")}
+            </Button>
             {me?.role === "admin" ? (
               <Button asChild variant="ghost" size="sm">
                 <Link href="/admin" prefetch={false}>
@@ -344,13 +355,17 @@ export function EmployeeDashboard({
               <p className="max-w-sm text-sm text-muted-foreground">
                 {t("emp.noKeysHint")}
               </p>
-              <Button
-                className="mt-2"
-                disabled={!canCreate}
-                onClick={() => setShowCreate(true)}
-              >
-                <Plus className="h-4 w-4" /> {t("emp.createFirst")}
-              </Button>
+              <div className="mt-2 flex flex-wrap justify-center gap-2">
+                <Button
+                  disabled={!canCreate}
+                  onClick={() => setShowCreate(true)}
+                >
+                  <Plus className="h-4 w-4" /> {t("emp.createFirst")}
+                </Button>
+                <Button variant="outline" onClick={() => setShowGuide(true)}>
+                  <CircleHelp className="h-4 w-4" /> {t("install.button")}
+                </Button>
+              </div>
             </CardContent>
           </Card>
         ) : (
@@ -423,6 +438,15 @@ export function EmployeeDashboard({
         target={configTarget}
         onClose={() => setConfigTarget(null)}
         me={me}
+      />
+      <InstallGuideDialog
+        open={showGuide}
+        onOpenChange={setShowGuide}
+        // Both flags, matching assertDownloadAllowed in the control API: a
+        // .conf is only downloadable when redownload AND .conf are permitted.
+        showConfSection={Boolean(
+          me?.policy.allowConfigRedownload && me?.policy.allowConfDownload,
+        )}
       />
     </div>
   );
