@@ -58,6 +58,10 @@ const serverSchema = z.object({
   maxPeers: z.number().int().nonnegative(),
   totalPeers: z.number().int().nonnegative(),
   protocols: z.array(z.string()),
+  // Reported by node-agents that expose SERVER_PUBLIC_HOST; absent on older
+  // builds, so it must stay optional here or every poll against an old agent
+  // would fail validation.
+  publicHost: z.string().optional(),
 });
 const nullableMetricSchema = z.number().nonnegative().nullable();
 const serverLoadSchema = z.object({

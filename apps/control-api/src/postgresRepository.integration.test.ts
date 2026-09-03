@@ -974,4 +974,152 @@ describe("PostgresControlRepository quota race", () => {
       );
     expect(event?.metadata).toMatchObject({ deletedKeys: 1, affectedOwners: 1 });
   });
+
+  // The panel resolves a host once and keeps the answer, which is right because
+  // a server's address does not change under it. The one case that breaks is a
+  // server moving to a new IP behind the same DNS name -- and without this the
+  // only remedy would be an UPDATE against production. Both columns must clear
+  // together: the timestamp answers "when did the panel learn this address", so
+  // leaving it behind would stamp an address that is gone.
+  runDatabaseTest("forgets a resolved public IP on request", async () => {
+    if (!database) return;
+    const repository = new PostgresControlRepository({
+      db: database.db,
+      keyring,
+    });
+    const admin: Actor = { ...actor, role: "admin" };
+    const nodeId = await seedNode("address-clearable");
+    await database.db
+      .update(nodes)
+      .set({
+        publicHost: "vpn.example.com",
+        publicIp: "203.0.113.10",
+        publicIpResolvedAt: new Date("2026-09-03T08:00:00Z"),
+      })
+      .where(eq(nodes.id, nodeId));
+
+    await repository.updateNode(admin, nodeId, { publicIp: null });
+
+    const [row] = await database.db
+      .select({
+        publicHost: nodes.publicHost,
+        publicIp: nodes.publicIp,
+        publicIpResolvedAt: nodes.publicIpResolvedAt,
+      })
+      .from(nodes)
+      .where(eq(nodes.id, nodeId));
+    expect(row?.publicIp).toBeNull();
+    expect(row?.publicIpResolvedAt).toBeNull();
+    // The reported host survives: it is the node's own configuration, not
+    // something the panel worked out, and clearing it would only make the
+    // worker wait for the next poll before it could resolve anything.
+    expect(row?.publicHost).toBe("vpn.example.com");
+  });
+
+  runDatabaseTest(
+    "lists each node's public host and resolved IP for admins",
+    async () => {
+      if (!database) return;
+      const repository = new PostgresControlRepository({
+        db: database.db,
+        keyring,
+      });
+      const admin: Actor = { ...actor, role: "admin" };
+      const reported = await seedNode("address-reported");
+      const unreported = await seedNode("address-unreported");
+      await database.db
+        .update(nodes)
+        .set({ publicHost: "vpn.example.com", publicIp: "203.0.113.10" })
+        .where(eq(nodes.id, reported));
+
+      const rows = (await repository.adminList(admin, "nodes")) as Array<{
+        id: string;
+        publicHost: string | null;
+        publicIp: string | null;
+      }>;
+
+      expect(rows.find((row) => row.id === reported)).toMatchObject({
+        publicHost: "vpn.example.com",
+        publicIp: "203.0.113.10",
+      });
+      expect(rows.find((row) => row.id === unreported)).toMatchObject({
+        publicHost: null,
+        publicIp: null,
+      });
+    },
+  );
+
+  // Both sides of the gate live in one test on purpose: the "off" branch passes
+  // trivially before the feature exists, so only pairing it with the "on"
+  // branch keeps the two from drifting apart.
+  runDatabaseTest(
+    "shows users a node's address only when the policy allows it",
+    async () => {
+      if (!database) return;
+      const repository = new PostgresControlRepository({
+        db: database.db,
+        keyring,
+      });
+      const named = await seedNode("user-address-named");
+      await database.db
+        .update(nodes)
+        .set({
+          publicHost: "vpn.example.com",
+          publicIp: "203.0.113.10",
+          publicIpResolvedAt: new Date("2026-08-20T08:10:00.000Z"),
+        })
+        .where(eq(nodes.id, named));
+
+      // Default policy: the field is absent entirely, not null and not empty —
+      // an absent key is what keeps it out of the JSON the browser receives.
+      await database.db.update(portalPolicy).set({ showNodeAddress: false });
+      const hidden = (await repository.listNodes(actor)) as Array<
+        Record<string, unknown>
+      >;
+      const hiddenRow = hidden.find((row) => row.id === named);
+      expect(hiddenRow).toBeDefined();
+      expect("publicAddress" in (hiddenRow ?? {})).toBe(false);
+      // The raw pair must never reach a user either, flag or no flag.
+      expect("publicHost" in (hiddenRow ?? {})).toBe(false);
+      expect("publicIp" in (hiddenRow ?? {})).toBe(false);
+      expect("publicIpResolvedAt" in (hiddenRow ?? {})).toBe(false);
+
+      await database.db.update(portalPolicy).set({ showNodeAddress: true });
+      const shown = (await repository.listNodes(actor)) as Array<
+        Record<string, unknown>
+      >;
+      const shownRow = shown.find((row) => row.id === named);
+      // One string, the resolved IPv4 — not the host, not a pair, no timestamp.
+      expect(shownRow).toMatchObject({ publicAddress: "203.0.113.10" });
+      expect("publicIpResolvedAt" in (shownRow ?? {})).toBe(false);
+      expect("publicHost" in (shownRow ?? {})).toBe(false);
+      expect("publicIp" in (shownRow ?? {})).toBe(false);
+
+      // A node whose name has never resolved still has a truthful answer.
+      const unresolved = await seedNode("user-address-unresolved");
+      await database.db
+        .update(nodes)
+        .set({ publicHost: "v6.example.com", publicIp: null })
+        .where(eq(nodes.id, unresolved));
+      const withFallback = (await repository.listNodes(actor)) as Array<
+        Record<string, unknown>
+      >;
+      expect(withFallback.find((row) => row.id === unresolved)).toMatchObject({
+        publicAddress: "v6.example.com",
+      });
+
+      // A node that reported nothing at all stays silent even with the flag on:
+      // there is no "unknown" state on the user side.
+      const silent = await seedNode("user-address-silent");
+      const withSilent = (await repository.listNodes(actor)) as Array<
+        Record<string, unknown>
+      >;
+      const silentRow = withSilent.find((row) => row.id === silent);
+      expect(silentRow).toBeDefined();
+      expect("publicAddress" in (silentRow ?? {})).toBe(false);
+
+      // Restore the default so a later test cannot inherit an enabled flag.
+      await database.db.update(portalPolicy).set({ showNodeAddress: false });
+    },
+  );
 });

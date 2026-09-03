@@ -123,6 +123,7 @@ const ru = {
   "emp.refresh": "Обновить",
   "emp.quotaUsage": "Лимит ключей",
   "emp.quotaPerNode": "До {limit} на каждом сервере",
+  "emp.nodeAddress": "Адрес сервера",
   "emp.quotaTotal": "До {limit} на всех серверах вместе",
   "emp.requestMore": "Запросить больше",
   "emp.devices": "Устройства",
@@ -483,6 +484,7 @@ const ru = {
   "upolicy.allowSelfRevoke": "Самостоятельный отзыв",
   "upolicy.showLastUsed": "Дата активности",
   "upolicy.showTraffic": "Объём трафика",
+  "upolicy.showNodeAddress": "Адрес сервера",
   "users.filter.all": "Все",
   "users.filter.inactive": "Неактивные ({days}д)",
   "users.filter.online": "Онлайн сейчас",
@@ -659,6 +661,16 @@ const ru = {
     "Как пользователи видят этот сервер. Пусто — берётся внутреннее название.",
   "nodes.publicNamePlaceholder": "Напр. Нидерланды",
   "nodes.seenAs": "Пользователи видят: {name}",
+  "nodes.publicAddress": "Публичный адрес",
+  "nodes.publicAddressHint":
+    "Адрес, к которому подключаются клиенты (SERVER_PUBLIC_HOST ноды). IP панель определяет сама; если определить не удалось, показывается последний известный.",
+  "nodes.publicAddressUnknown": "Нода ещё не сообщила адрес",
+  "nodes.publicAddressUnknownHint":
+    "Node-agent на этой ноде не отдаёт publicHost — обновите его образ.",
+  "nodes.publicIpResolvedAt": "IP определён {when}",
+  "nodes.publicIpUnresolved": "IP не определён",
+  "nodes.publicIpUnresolvedHint":
+    "Панель не смогла разрешить это имя в IP при последнем опросе.",
   "nodes.agentAddr": "Адрес node-agent",
   "nodes.agentHint":
     "URL агента amnezia-api на сервере: прямой https://СЕРВЕР:ПОРТ либо http://host.docker.internal:4001 через SSH-туннель",
@@ -681,6 +693,7 @@ const ru = {
   "gpolicy.showPublicKey": "Показывать публичный ключ",
   "gpolicy.showLastUsed": "Показывать дату активности",
   "gpolicy.showTraffic": "Показывать объём трафика",
+  "gpolicy.showNodeAddress": "Показывать адрес сервера",
   "gpolicy.allowKeyCreationHint":
     "Пользователь может сам создавать новые ключи для своих устройств.",
   "gpolicy.allowNodeSelectionHint":
@@ -703,6 +716,8 @@ const ru = {
     "Показывать время последнего использования ключа.",
   "gpolicy.showTrafficHint":
     "Показывать объём трафика (получено/отдано) по ключу.",
+  "gpolicy.showNodeAddressHint":
+    "Пользователь видит адрес каждого доступного ему сервера (IP или домен) в списке серверов. По умолчанию выключено: адрес уже есть в его конфиге, но показывать его в панели — решение администратора.",
   "gpolicy.keyLimitMode": "Общий лимит на все серверы",
   "gpolicy.keyLimitModeHint":
     "Включено — лимит считается суммарно по всем серверам. Выключено — отдельно на каждом сервере. Лимиты по серверам при этом сохраняются, но не действуют. Отдельному пользователю режим можно задать в «Лимиты и серверы».",
@@ -970,6 +985,7 @@ const en = {
   "emp.refresh": "Refresh",
   "emp.quotaUsage": "Key limit",
   "emp.quotaPerNode": "Up to {limit} on each server",
+  "emp.nodeAddress": "Server address",
   "emp.quotaTotal": "Up to {limit} across all servers",
   "emp.requestMore": "Request more",
   "emp.devices": "Devices",
@@ -1326,6 +1342,7 @@ const en = {
   "upolicy.allowSelfRevoke": "Self-revoke",
   "upolicy.showLastUsed": "Last activity",
   "upolicy.showTraffic": "Traffic volume",
+  "upolicy.showNodeAddress": "Server address",
   "users.filter.all": "All",
   "users.filter.inactive": "Inactive ({days}d)",
   "users.filter.online": "Online now",
@@ -1496,6 +1513,16 @@ const en = {
     "How users see this server. Empty falls back to the internal name.",
   "nodes.publicNamePlaceholder": "e.g. Netherlands",
   "nodes.seenAs": "Users see: {name}",
+  "nodes.publicAddress": "Public address",
+  "nodes.publicAddressHint":
+    "The address clients connect to (the node's SERVER_PUBLIC_HOST). The panel resolves the IP itself; if it cannot, the last known one is shown.",
+  "nodes.publicAddressUnknown": "Not reported by the node yet",
+  "nodes.publicAddressUnknownHint":
+    "The node-agent on this node does not report publicHost — update its image.",
+  "nodes.publicIpResolvedAt": "IP resolved {when}",
+  "nodes.publicIpUnresolved": "IP not resolved",
+  "nodes.publicIpUnresolvedHint":
+    "The panel could not resolve this name to an IP at the last poll.",
   "nodes.agentAddr": "Node-agent address",
   "nodes.agentHint":
     "URL of the amnezia-api agent on the server: a direct https://SERVER:PORT or http://host.docker.internal:4001 over an SSH tunnel",
@@ -1518,6 +1545,7 @@ const en = {
   "gpolicy.showPublicKey": "Show public key",
   "gpolicy.showLastUsed": "Show last activity date",
   "gpolicy.showTraffic": "Show traffic volume",
+  "gpolicy.showNodeAddress": "Show server address",
   "gpolicy.allowKeyCreationHint":
     "The user can create new keys for their own devices.",
   "gpolicy.allowNodeSelectionHint":
@@ -1538,6 +1566,8 @@ const en = {
   "gpolicy.showLastUsedHint": "Show when the key was last used.",
   "gpolicy.showTrafficHint":
     "Show traffic volume (received/sent) per key.",
+  "gpolicy.showNodeAddressHint":
+    "Users see the address (IP or domain) of every server available to them. Off by default: the address is already in their config, but showing it in the panel is an admin's decision.",
   "gpolicy.keyLimitMode": "One limit shared by every server",
   "gpolicy.keyLimitModeHint":
     "On — the limit is counted across every server together. Off — separately on each server. Per-server limits are kept but not applied meanwhile. A single user's mode is set in \"Limits and servers\".",

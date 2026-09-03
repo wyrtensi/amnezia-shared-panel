@@ -195,6 +195,8 @@ describe("PostgresWorkerRepository outbox leases", () => {
         docker: null,
       },
       peers: [],
+      publicHost: null,
+      publicIp: null,
     });
 
     const [stored] = await database.db
@@ -205,6 +207,138 @@ describe("PostgresWorkerRepository outbox leases", () => {
     expect(stored?.capabilities).toMatchObject({
       reportedMaxPeers: 100,
       reportedTotalPeers: 12,
+    });
+  });
+
+  runDatabaseTest("stores the reported public host and its resolved IP", async () => {
+    if (!database || !repository) return;
+    const { node } = await seedTelemetryKey();
+    const observedAt = new Date("2026-08-20T08:10:00.000Z");
+    const load = {
+      timestamp: observedAt.toISOString(),
+      uptimeSec: 60,
+      loadavg: [0, 0, 0] as [number, number, number],
+      cpu: { cores: 2 },
+      memory: { totalBytes: 1024, freeBytes: 512, usedBytes: 512 },
+      disk: null,
+      network: null,
+      docker: null,
+    };
+    const server = {
+      id: "agent-node",
+      region: "NL",
+      weight: 100,
+      maxPeers: 100,
+      totalPeers: 0,
+      protocols: ["amneziawg3"],
+      publicHost: "vpn.example.com",
+    };
+
+    await repository.recordNodeSnapshot({
+      nodeId: node.id,
+      observedAt,
+      server,
+      load,
+      peers: [],
+      publicHost: "vpn.example.com",
+      publicIp: "203.0.113.10",
+    });
+    const [resolved] = await database.db
+      .select({ publicHost: nodes.publicHost, publicIp: nodes.publicIp })
+      .from(nodes)
+      .where(eq(nodes.id, node.id));
+    expect(resolved).toEqual({
+      publicHost: "vpn.example.com",
+      publicIp: "203.0.113.10",
+    });
+
+    // A later poll with no new answer — the address is already known, so no
+    // lookup was made — must KEEP the last known IP and must not move its
+    // timestamp: that timestamp records when the address was learned.
+    await repository.recordNodeSnapshot({
+      nodeId: node.id,
+      observedAt: new Date("2026-08-20T08:11:00.000Z"),
+      server,
+      load,
+      peers: [],
+      publicHost: "vpn.example.com",
+      publicIp: null,
+    });
+    const [afterFailure] = await database.db
+      .select({
+        publicHost: nodes.publicHost,
+        publicIp: nodes.publicIp,
+        publicIpResolvedAt: nodes.publicIpResolvedAt,
+      })
+      .from(nodes)
+      .where(eq(nodes.id, node.id));
+    expect(afterFailure).toEqual({
+      publicHost: "vpn.example.com",
+      publicIp: "203.0.113.10",
+      publicIpResolvedAt: new Date("2026-08-20T08:10:00.000Z"),
+    });
+
+    // A successful lookup with a NEW address overwrites both.
+    await repository.recordNodeSnapshot({
+      nodeId: node.id,
+      observedAt: new Date("2026-08-20T08:12:00.000Z"),
+      server,
+      load,
+      peers: [],
+      publicHost: "vpn.example.com",
+      publicIp: "203.0.113.11",
+    });
+    const [moved] = await database.db
+      .select({
+        publicIp: nodes.publicIp,
+        publicIpResolvedAt: nodes.publicIpResolvedAt,
+      })
+      .from(nodes)
+      .where(eq(nodes.id, node.id));
+    expect(moved).toEqual({
+      publicIp: "203.0.113.11",
+      publicIpResolvedAt: new Date("2026-08-20T08:12:00.000Z"),
+    });
+
+    // An agent that stops reporting a host clears the host but keeps the IP:
+    // the host is an observation of this poll, the IP is the last good answer.
+    await repository.recordNodeSnapshot({
+      nodeId: node.id,
+      observedAt: new Date("2026-08-20T08:13:00.000Z"),
+      server: { ...server, publicHost: undefined },
+      load,
+      peers: [],
+      publicHost: null,
+      publicIp: null,
+    });
+    const [unreported] = await database.db
+      .select({ publicHost: nodes.publicHost, publicIp: nodes.publicIp })
+      .from(nodes)
+      .where(eq(nodes.id, node.id));
+    expect(unreported).toEqual({
+      publicHost: null,
+      publicIp: "203.0.113.11",
+    });
+  });
+
+  runDatabaseTest("reports the stored address so the poll can skip the lookup", async () => {
+    if (!database || !repository) return;
+    const { node } = await seedTelemetryKey();
+    await database.db
+      .update(nodes)
+      .set({
+        publicHost: "vpn.example.com",
+        publicIp: "203.0.113.10",
+        publicIpResolvedAt: new Date("2026-08-20T08:10:00.000Z"),
+      })
+      .where(eq(nodes.id, node.id));
+
+    const telemetryNodes = await repository.listTelemetryNodes();
+
+    expect(telemetryNodes).toHaveLength(1);
+    expect(telemetryNodes[0]).toMatchObject({
+      publicHost: "vpn.example.com",
+      publicIp: "203.0.113.10",
     });
   });
 

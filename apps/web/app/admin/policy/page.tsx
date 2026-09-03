@@ -31,6 +31,7 @@ const TELEMETRY: Array<[keyof GlobalPortalPolicy, string]> = [
   ["showPublicKey", "gpolicy.showPublicKey"],
   ["showLastUsed", "gpolicy.showLastUsed"],
   ["showTraffic", "gpolicy.showTraffic"],
+  ["showNodeAddress", "gpolicy.showNodeAddress"],
 ];
 
 export default function AdminPolicyPage() {

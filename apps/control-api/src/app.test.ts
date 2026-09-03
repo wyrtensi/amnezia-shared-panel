@@ -210,6 +210,40 @@ describe("control API authorization", () => {
     await app.close();
   });
 
+  // The admin projection carries the full host/IP pair; the route must not
+  // filter it, because the node card is the only place an operator can see
+  // where clients actually reach a node.
+  it("returns each node's public host and resolved IP to admins", async () => {
+    const service = createService();
+    const admin = { ...user, role: "admin" as const };
+    vi.mocked(service.resolveIdentity).mockResolvedValue(admin);
+    vi.mocked(service.adminList).mockResolvedValue([
+      {
+        id: "0b48cc4c-404b-47a6-af28-4cf15f305e30",
+        name: "primary",
+        publicHost: "vpn.example.com",
+        publicIp: "203.0.113.10",
+      },
+    ]);
+    const app = await buildApp({ service, environment: "development" });
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/admin/nodes",
+      headers: { "x-dev-user-email": admin.email },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual([
+      expect.objectContaining({
+        publicHost: "vpn.example.com",
+        publicIp: "203.0.113.10",
+      }),
+    ]);
+    expect(service.adminList).toHaveBeenCalledWith(admin, "nodes");
+    await app.close();
+  });
+
   // `amnezia-panel key-config` prints these to answer "the QR does not scan".
   // It degrades silently when they are absent -- which is exactly what happened
   // while they were specified but never emitted -- so the route pins them.

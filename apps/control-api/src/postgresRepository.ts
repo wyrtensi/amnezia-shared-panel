@@ -203,6 +203,7 @@ const toPolicy = (row: PortalPolicyRow | undefined): PortalPolicy =>
         showPublicKey: row.showPublicKey,
         showLastUsed: row.showLastUsed,
         showTraffic: row.showTraffic,
+        showNodeAddress: row.showNodeAddress,
         // Null until an admin attaches recordings; the guide falls back to a
         // placeholder, so an empty object is the honest "none configured".
         installGuideVideos: row.installGuideVideos ?? {},
@@ -528,6 +529,8 @@ export class PostgresControlRepository implements ControlRepository {
           maxPeers: nodes.maxPeers,
           lastHealthAt: nodes.lastHealthAt,
           capabilities: nodes.capabilities,
+          publicHost: nodes.publicHost,
+          publicIp: nodes.publicIp,
         })
         .from(nodes)
         .where(eq(nodes.enabled, true)),
@@ -545,23 +548,46 @@ export class PostgresControlRepository implements ControlRepository {
     // A null/absent allowedNodeIds means "all nodes"; a list restricts to it.
     return rows
       .filter((row) => isNodeAvailable(policy.allowedNodeIds, row.id))
-      .map(({ capabilities, enabledProtocols, publicName, ...row }) => {
-        const supportedProtocols = deriveSupportedProtocols(
-          row.protocol,
+      .map(
+        ({
           capabilities,
-        );
-        return {
-          ...row,
-          // Users see the public name; the internal admin name never leaves here.
-          name: publicName ?? row.name,
-          supportedProtocols,
-          selectableProtocols: computeSelectableProtocols(
+          enabledProtocols,
+          publicName,
+          publicHost,
+          publicIp,
+          ...row
+        }) => {
+          const supportedProtocols = deriveSupportedProtocols(
+            row.protocol,
+            capabilities,
+          );
+          // One address, and only behind the policy flag: the resolved IPv4 when
+          // the panel has one, else the host the node reported. The host/IP pair
+          // and the resolution timestamp are operator diagnostics and stay on the
+          // admin side, so publicHost/publicIp are destructured OUT of `...row`
+          // above — leaving them in would hand every user the raw pair
+          // regardless of the flag.
+          const publicAddress = policy.showNodeAddress
+            ? (publicIp ?? publicHost)
+            : null;
+          return {
+            ...row,
+            // Users see the public name; the internal admin name never leaves here.
+            name: publicName ?? row.name,
+            // Spread conditionally rather than assigning `undefined`: there is no
+            // "unknown address" state on the user side, so the key must be truly
+            // absent — a user cannot fix a node's DNS, and a null would only
+            // invite the UI to render an empty line.
+            ...(publicAddress === null ? {} : { publicAddress }),
             supportedProtocols,
-            enabledProtocols,
-            policy.allowedProtocols,
-          ),
-        };
-      });
+            selectableProtocols: computeSelectableProtocols(
+              supportedProtocols,
+              enabledProtocols,
+              policy.allowedProtocols,
+            ),
+          };
+        },
+      );
   };
 
   createUser = async (
@@ -713,6 +739,15 @@ export class PostgresControlRepository implements ControlRepository {
         changes.credentialsNonce = credentials.nonce;
         changes.credentialsAuthTag = credentials.authTag;
         changes.credentialsKeyVersion = credentials.keyVersion;
+      }
+      if (request.publicIp === null) {
+        // Both together, always: `public_ip_resolved_at` answers "when did the
+        // panel learn this address", so leaving a timestamp behind for an
+        // address that is gone would be a stamp on nothing. The worker resolves
+        // again on the next tick, because it looks up exactly when it holds no
+        // IP for the node.
+        changes.publicIp = null;
+        changes.publicIpResolvedAt = null;
       }
 
       const [updated] = await tx
@@ -1710,6 +1745,13 @@ export class PostgresControlRepository implements ControlRepository {
             enabledProtocols: nodes.enabledProtocols,
             maxPeers: nodes.maxPeers,
             capabilities: nodes.capabilities,
+            // Where clients reach the node, as reported by its agent and
+            // resolved by the worker; null until the first poll of an agent
+            // that reports it. Admins get the full pair plus the diagnostic
+            // timestamp — users get at most the collapsed string in listNodes.
+            publicHost: nodes.publicHost,
+            publicIp: nodes.publicIp,
+            publicIpResolvedAt: nodes.publicIpResolvedAt,
             lastHealthAt: nodes.lastHealthAt,
             lastSyncAt: nodes.lastSyncAt,
             lastError: nodes.lastError,

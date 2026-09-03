@@ -111,6 +111,7 @@ const POLICY_LABELS: Array<[string, string]> = [
   ["allowSelfRevoke", "upolicy.allowSelfRevoke"],
   ["showLastUsed", "upolicy.showLastUsed"],
   ["showTraffic", "upolicy.showTraffic"],
+  ["showNodeAddress", "upolicy.showNodeAddress"],
 ];
 
 function displayName(user: AdminUser): string {

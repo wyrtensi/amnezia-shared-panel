@@ -1,4 +1,4 @@
-import { getTableName } from "drizzle-orm";
+import { getTableColumns, getTableName } from "drizzle-orm";
 import { deviceTypeSchema } from "@amnezia/contracts";
 import { describe, expect, it } from "vitest";
 import {
@@ -48,6 +48,23 @@ describe("database schema", () => {
       "audit_events",
       "job_outbox",
     ]);
+  });
+
+  it("stores the node's reported public host and its resolved IP", () => {
+    const columns = getTableColumns(nodes);
+    expect(columns.publicHost.name).toBe("public_host");
+    expect(columns.publicHost.notNull).toBe(false);
+    expect(columns.publicIp.name).toBe("public_ip");
+    expect(columns.publicIp.notNull).toBe(false);
+    expect(columns.publicIpResolvedAt.name).toBe("public_ip_resolved_at");
+    expect(columns.publicIpResolvedAt.notNull).toBe(false);
+  });
+
+  it("hides the node address from users until the policy turns it on", () => {
+    const columns = getTableColumns(portalPolicy);
+    expect(columns.showNodeAddress.name).toBe("show_node_address");
+    expect(columns.showNodeAddress.notNull).toBe(true);
+    expect(columns.showNodeAddress.default).toBe(false);
   });
 });
 

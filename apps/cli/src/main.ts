@@ -43,6 +43,7 @@ import {
   quotaTargetLabel,
 } from "./args.js";
 import type { UpdateStatusView } from "./args.js";
+import { formatNodeAddress } from "./nodeAddress.js";
 import {
   CLI_CONFIG_FORMATS,
   configFrameName,
@@ -195,6 +196,12 @@ type AdminNode = {
   supportedProtocols?: string[];
   peerCount?: number;
   maxPeers: number;
+  // Where clients reach the node: the agent's own SERVER_PUBLIC_HOST and what
+  // the panel resolved it to, plus when. Optional so a CLI newer than the API
+  // it talks to still lists nodes instead of printing "undefined".
+  publicHost?: string | null;
+  publicIp?: string | null;
+  publicIpResolvedAt?: string | null;
   lastError: string | null;
 };
 type AuditEvent = {
@@ -396,9 +403,12 @@ async function cmdNodes(args: string[]): Promise<void> {
           : (node.supportedProtocols ?? [node.protocol])
         ).join(","),
         peers: `${node.peerCount ?? 0}/${node.maxPeers}`,
+        // The address clients reach this node at, including whether a DNS name
+        // has actually resolved — the same distinction the node card draws.
+        address: formatNodeAddress(node.publicHost ?? null, node.publicIp ?? null),
         health: node.lastError ? "ERROR" : "ok",
       })),
-      ["name", "enabled", "protocols", "peers", "health"],
+      ["name", "enabled", "protocols", "peers", "address", "health"],
     ),
   );
 }
@@ -653,6 +663,10 @@ const POLICY_BOOL_FIELDS = [
   "showPublicKey",
   "showLastUsed",
   "showTraffic",
+  // Off by default: a node's address is operational information about the
+  // fleet, so showing it to ordinary users is an operator's decision rather
+  // than something an upgrade makes on their behalf. Admins always see it.
+  "showNodeAddress",
 ] as const;
 const POLICY_INT_FIELDS = ["defaultKeyLimit"] as const;
 const POLICY_INT_NULL_FIELDS = ["dailyRetentionDays"] as const;
@@ -860,6 +874,12 @@ async function cmdNodeUpdate(args: string[]): Promise<void> {
             .map((value) => value.trim())
             .filter(Boolean);
   }
+  // A flag, not a value: the resolved address is something the panel observed,
+  // never something an operator types. The panel looks a node's host up once
+  // and keeps the answer -- correct, because a server's address does not change
+  // under it. If one ever does while keeping the same DNS name, this is the
+  // recovery: clear the stored IP and the next telemetry tick resolves again.
+  if (args.includes("--clear-public-ip")) body.publicIp = null;
   if (Object.keys(body).length === 0) {
     throw new Error("Usage: node-update <id> --<field>=<value> …");
   }
@@ -1179,7 +1199,11 @@ Read:
                           --needs-profile-warning lists only the keys whose platform
                           ignores route profiles yet carry a split tunnel, and adds
                           the route column
-  nodes                    List nodes (with protocols + capacity)
+  nodes                    List nodes (with protocols, capacity and the public
+                          address clients connect to: "name (ip)" once the panel
+                          has resolved a DNS name, "name (unresolved)" when it
+                          never could, "—" when the node-agent does not report
+                          one. --json also carries publicIpResolvedAt
   audit [--limit=N]        Recent audit events
   quota [--all] [--json]   Key-limit requests (pending by default; --all = every state).
                           The target and "now → requested" cells are read in that
@@ -1232,6 +1256,8 @@ Nodes:
   node-update <id> --<field>=<value> …    Edit a node (name, api-url, api-key-file|api-key,
                                           public-name, protocol, max-peers,
                                           enabled=true|false, enabled-protocols)
+  node-update <id> --clear-public-ip      Forget the resolved public IP so the
+                                          worker looks it up again next tick
   node-remove <id>                        Delete a node (refused while it has keys)
   node-remove <id> --with-keys            Delete a node AND every key ever issued
              --confirm=<node name>        on it. Irreversible; the name must match
@@ -1267,7 +1293,9 @@ policy-set fields:
   Booleans (true/false): allowKeyCreation, allowNodeSelection,
     allowRouteProfileSelection, allowCustomRoutes, allowConfigRedownload,
     allowQrDownload, allowConfDownload, allowSelfRevoke, showPublicKey,
-    showLastUsed, showTraffic
+    showLastUsed, showTraffic, showNodeAddress
+    showNodeAddress=true also shows ordinary users the address of each node
+    they may use (off by default; admins always see it on the node card).
   defaultKeyLimit=<int 0..1000>
     Per server in per_node mode, the shared total in global mode — the number
     does not move, its meaning does.

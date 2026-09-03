@@ -912,7 +912,8 @@
                     "weight",
                     "maxPeers",
                     "totalPeers",
-                    "protocols"
+                    "protocols",
+                    "publicHost"
                   ],
                   "properties": {
                     "id": {
@@ -956,6 +957,11 @@
                         "amneziawg",
                         "xray"
                       ]
+                    },
+                    "publicHost": {
+                      "type": "string",
+                      "description": "Публичный хост сервера (SERVER_PUBLIC_HOST), который записывается в клиентские конфигурации",
+                      "example": "vpn.example.com"
                     }
                   }
                 }
@@ -1843,7 +1849,8 @@
                     "weight",
                     "maxPeers",
                     "totalPeers",
-                    "protocols"
+                    "protocols",
+                    "publicHost"
                   ],
                   "properties": {
                     "id": {
@@ -1887,6 +1894,11 @@
                         "amneziawg",
                         "xray"
                       ]
+                    },
+                    "publicHost": {
+                      "type": "string",
+                      "description": "Публичный хост сервера (SERVER_PUBLIC_HOST), который записывается в клиентские конфигурации",
+                      "example": "vpn.example.com"
                     }
                   }
                 }

@@ -79,6 +79,13 @@ export type AdminNode = {
   peerCount?: number;
   traffic?: { today: TrafficPair; week: TrafficPair; month: TrafficPair };
   capabilities: Record<string, unknown>;
+  /** Node-agent's SERVER_PUBLIC_HOST as reported; null until reported. */
+  publicHost: string | null;
+  /** `publicHost` as last resolved by the worker; sticky — a failed lookup
+   *  keeps it. Null only before the first successful resolution. */
+  publicIp: string | null;
+  /** ISO timestamp of that last successful resolution; null when publicIp is. */
+  publicIpResolvedAt: string | null;
   lastHealthAt: string | null;
   lastSyncAt: string | null;
   lastError: string | null;
@@ -142,6 +149,8 @@ export type GlobalPortalPolicy = {
   showPublicKey: boolean;
   showLastUsed: boolean;
   showTraffic: boolean;
+  /** Whether users see each node's address on their dashboard. Off by default. */
+  showNodeAddress: boolean;
   defaultKeyLimit: number;
   keyLimitMode: KeyLimitMode;
   dailyRetentionDays: number | null;
@@ -165,6 +174,9 @@ const DEFAULT_POLICY: GlobalPortalPolicy = {
   showPublicKey: false,
   showLastUsed: true,
   showTraffic: true,
+  // Matches the contract default: the form must not flash the switch on before
+  // the real policy arrives.
+  showNodeAddress: false,
   defaultKeyLimit: 5,
   // Per-node is the pre-existing behaviour, so a panel that has not loaded the
   // policy yet never flashes the global-pool wording.

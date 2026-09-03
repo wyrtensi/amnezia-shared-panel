@@ -4,6 +4,7 @@ import type {
   NodeServer,
   NodeServerLoad,
 } from "./nodeAgent.js";
+import { createPublicIpResolver, normalizePublicHost } from "./publicAddress.js";
 
 const SAMPLE_INTERVAL_MS = 5 * 60 * 1_000;
 
@@ -26,6 +27,10 @@ export type TelemetryNode = {
     publicKey: string | null;
     nodeLabel: string;
   }>;
+  /** Last host the stored publicIp was resolved from; null until reported. */
+  publicHost: string | null;
+  /** Last resolved address; null until the first successful lookup. */
+  publicIp: string | null;
 };
 
 export type NodeSnapshot = {
@@ -34,6 +39,12 @@ export type NodeSnapshot = {
   server: NodeServer;
   load: NodeServerLoad;
   peers: PeerObservation[];
+  // The node-agent's SERVER_PUBLIC_HOST as reported (normalised), or null for
+  // an agent that does not report it.
+  publicHost: string | null;
+  // A newly resolved address for `publicHost`, or null when there was nothing
+  // to resolve (the address is already known) or the lookup failed.
+  publicIp: string | null;
 };
 
 export interface TelemetryRepository {
@@ -91,12 +102,16 @@ export type TelemetryPollerOptions = {
     NodeAgent,
     "getHealth" | "getServer" | "getServerLoad" | "listClients"
   >;
+  // Host → IP for the reported public host. Injectable for tests; the default
+  // uses the system resolver with a bounded timeout.
+  resolvePublicIp?: (host: string) => Promise<string | null>;
   now?: () => Date;
 };
 
 export const createTelemetryPoller = ({
   repository,
   createNodeAgent,
+  resolvePublicIp = createPublicIpResolver(),
   now = () => new Date(),
 }: TelemetryPollerOptions) => async (): Promise<void> => {
   const telemetryNodes = await repository.listTelemetryNodes();
@@ -127,12 +142,23 @@ export const createTelemetryPoller = ({
           if (!peer) return [];
           return [toPeerObservation(key.keyId, peer, observedAt)];
         });
+        const publicHost = normalizePublicHost(server.publicHost);
+        // A node's public address is fixed for the life of the server, so this
+        // is resolved once and then left alone: only when we have no IP yet, or
+        // when the node starts reporting a different host, is a lookup worth a
+        // DNS round trip. Steady state is zero lookups per tick.
+        const needsLookup =
+          publicHost !== null &&
+          (node.publicIp === null || node.publicHost !== publicHost);
+        const publicIp = needsLookup ? await resolvePublicIp(publicHost) : null;
         await repository.recordNodeSnapshot({
           nodeId: node.id,
           observedAt,
           server,
           load,
           peers,
+          publicHost,
+          publicIp,
         });
       } catch (error) {
         const reason = error instanceof Error ? error.message : "Unknown polling error";
