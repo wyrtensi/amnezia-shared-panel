@@ -22,6 +22,12 @@ const RELEASE_BODY = {
       size: 111_188_003,
     },
     {
+      name: "AmneziaVPN_5.0.1.5_linux_x64.run",
+      browser_download_url:
+        "https://github.com/amnezia-vpn/amnezia-client/releases/download/5.0.1.5/AmneziaVPN_5.0.1.5_linux_x64.run",
+      size: 96_380_585,
+    },
+    {
       name: "AmneziaVPN_5.0.1.5_android11+_arm64-v8a.apk",
       browser_download_url:
         "https://github.com/amnezia-vpn/amnezia-client/releases/download/5.0.1.5/AmneziaVPN_5.0.1.5_android11%2B_arm64-v8a.apk",
@@ -84,6 +90,11 @@ describe("createClientReleaseResolver", () => {
     expect(forPlatform(release.downloads, "macos").primary.fileName).toBe(
       "AmneziaVPN_5.0.1.5_macos_x64.pkg",
     );
+
+    const linux = forPlatform(release.downloads, "linux");
+    expect(linux.primary.kind).toBe("installer");
+    expect(linux.primary.fileName).toBe("AmneziaVPN_5.0.1.5_linux_x64.run");
+    expect(linux.primary.sizeBytes).toBe(96_380_585);
 
     // Android leads with Google Play; the APK is the fallback route.
     const android = forPlatform(release.downloads, "android");

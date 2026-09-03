@@ -62,10 +62,11 @@ routed. The preview under the checkboxes is built with the same function the API
 uses at export time, so it cannot drift from the name the client actually gets.
 
 **Connecting** is explained in the panel itself: the "How to connect" button in
-the keys page header opens a guide that installs the AmneziaVPN client for
-Windows, macOS, Android and iOS (where the App Store listing is named
-*DefaultVPN*), walks through pasting a key, explains how to import a `.conf`
-file — the easier route for split-tunnel profiles on Windows, macOS and Android —
+the keys page header opens a guide that installs the AmneziaVPN client. It is
+organised as the three audiences whose steps actually differ — a computer
+(Windows, macOS, Linux), Android, and iPhone / iPad (where the App Store listing
+is named *DefaultVPN*) — walks through pasting a key, explains how to import a `.conf`
+file — the easier route for split-tunnel profiles on a computer and on Android —
 and lists what to try when a connection fails. It also states the one platform
 difference we know of: on iPhone and iPad a key with a routing profile connects
 but applies none of its rules — verified with both the pasted key and the `.conf`

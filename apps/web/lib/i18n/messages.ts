@@ -172,7 +172,7 @@ const ru = {
   "keyCard.rulesUpdatedBody":
     "Перевыпустите ключ, чтобы применить новые правила. Старый конфиг перестанет работать — переустановите ключ на устройстве.",
   "keyCard.iphoneProfileWarning":
-    "Этот ключ создан для iPhone или iPad и содержит профиль маршрутизации. На iPhone и iPad правила профиля не применяются: подключение работает, но весь трафик идёт мимо VPN. Для iPhone и iPad создайте ключ с профилем «Весь трафик». На Windows, macOS и Android этот ключ работает как обычно.",
+    "Этот ключ создан для iPhone или iPad и содержит профиль маршрутизации. На iPhone и iPad правила профиля не применяются: подключение работает, но весь трафик идёт мимо VPN. Для iPhone и iPad создайте ключ с профилем «Весь трафик». На Windows, macOS, Linux и Android этот ключ работает как обычно.",
   "keyCard.created": "Создан: ",
   "keyCard.traffic": "Трафик: ",
   "keyCard.reissue": "Перевыпустить",
@@ -203,7 +203,7 @@ const ru = {
   "wizard.profileDisabled": "Выбор профиля отключён администратором",
   "wizard.profileNoIphone": "На iPhone и iPad профили не работают",
   "wizard.routingNoIphone":
-    "Для iPhone и iPad профили маршрутизации недоступны: ключ с профилем подключается, но правила не применяются — весь трафик идёт мимо VPN. Доступен только «Весь трафик». Профили работают на Windows, macOS и Android.",
+    "Для iPhone и iPad профили маршрутизации недоступны: ключ с профилем подключается, но правила не применяются — весь трафик идёт мимо VPN. Доступен только «Весь трафик». Профили работают на Windows, macOS, Linux и Android.",
   "wizard.createFailed": "Не удалось создать ключ",
   "wizard.title": "Новый VPN-ключ",
   "wizard.desc": "Один ключ предназначен для одного устройства.",
@@ -270,15 +270,19 @@ const ru = {
   "install.installTitle": "Установите приложение",
   "install.platform.windows": "Windows",
   "install.platform.macos": "macOS",
+  "install.platform.linux": "Linux",
   "install.platform.android": "Android",
   "install.platform.ios": "iPhone и iPad",
+  "install.group.desktop": "Компьютер — Windows, macOS, Linux",
+  "install.group.android": "Android",
+  "install.group.ios": "iPhone и iPad",
   "install.pickFile": "Выберите файл для своей системы",
   "install.desktopNote":
-    "Кнопки Windows и macOS скачивают установщик последнего выпуска. Запустите скачанный файл и следуйте установщику.",
+    "Кнопки Windows, macOS и Linux скачивают установщик последнего выпуска. Запустите скачанный файл и следуйте установщику.",
   "install.iosNote":
     "В App Store приложение называется DefaultVPN, а не Amnezia. Это официальный клиент от тех же разработчиков, ставьте именно его.",
   "install.iosProfileWarning":
-    "На iPhone и iPad работает ключ без профиля маршрутизации — весь трафик идёт через VPN. Ключ с профилем («Иностранные ресурсы через VPN», «Только заблокированные сайты») на iPhone и iPad подключается, но правила не применяются: весь трафик идёт напрямую, мимо VPN, и приложение об этом не предупреждает. Для iPhone и iPad создавайте ключ без профиля маршрутизации, а ключи с профилями используйте на Windows, macOS и Android.",
+    "На iPhone и iPad работает ключ без профиля маршрутизации — весь трафик идёт через VPN. Ключ с профилем («Иностранные ресурсы через VPN», «Только заблокированные сайты») на iPhone и iPad подключается, но правила не применяются: весь трафик идёт напрямую, мимо VPN, и приложение об этом не предупреждает. Для iPhone и iPad создавайте ключ без профиля маршрутизации, а ключи с профилями используйте на Windows, macOS, Linux и Android.",
   "install.versionNote":
     "Ключи AmneziaWG 3.1 работают только в клиенте версии {version} или новее.",
   "install.apkTitle": "Google Play не открывается или установка не проходит?",
@@ -308,7 +312,7 @@ const ru = {
   "install.confBody":
     "Кнопка «Скачать .conf» на карточке ключа даёт файл конфигурации. Его не вставляют как текст — его импортируют как файл.",
   "install.confSplitBest":
-    "Для профилей «Иностранные ресурсы через VPN» и «Только заблокированные сайты» это лучший вариант на Windows, macOS и Android: ключ подключения там очень длинный, QR-код недоступен, а файл переносится и импортируется одним действием. Список подсетей маршрутизации в файле сохраняется полностью.",
+    "Для профилей «Иностранные ресурсы через VPN» и «Только заблокированные сайты» это лучший вариант на Windows, macOS, Linux и Android: ключ подключения там очень длинный, QR-код недоступен, а файл переносится и импортируется одним действием. Список подсетей маршрутизации в файле сохраняется полностью.",
   "install.confIosWarning":
     "К iPhone и iPad это не относится: там ключ с профилем маршрутизации подключается, но правила не применяются — ни через файл, ни через ключ подключения. На iPhone и iPad используйте ключ без профиля маршрутизации.",
   "install.confAmneziaTitle": "В AmneziaVPN",
@@ -941,7 +945,7 @@ const en = {
   "keyCard.rulesUpdatedBody":
     "Reissue the key to apply the new rules. The old config will stop working — reinstall the key on the device.",
   "keyCard.iphoneProfileWarning":
-    "This key was created for an iPhone or iPad and carries a route profile. On iPhone and iPad the profile's rules are not applied: it connects, but all traffic goes outside the VPN. For an iPhone or iPad, create a key with the “All traffic” profile. On Windows, macOS and Android this key works normally.",
+    "This key was created for an iPhone or iPad and carries a route profile. On iPhone and iPad the profile's rules are not applied: it connects, but all traffic goes outside the VPN. For an iPhone or iPad, create a key with the “All traffic” profile. On Windows, macOS, Linux and Android this key works normally.",
   "keyCard.created": "Created: ",
   "keyCard.traffic": "Traffic: ",
   "keyCard.reissue": "Reissue",
@@ -972,7 +976,7 @@ const en = {
   "wizard.profileDisabled": "Profile selection disabled by the administrator",
   "wizard.profileNoIphone": "Profiles do not work on iPhone and iPad",
   "wizard.routingNoIphone":
-    "Route profiles are not available for iPhone and iPad: a key with a profile connects, but the rules are not applied and all traffic goes outside the VPN. Only “All traffic” can be selected. Profiles work on Windows, macOS and Android.",
+    "Route profiles are not available for iPhone and iPad: a key with a profile connects, but the rules are not applied and all traffic goes outside the VPN. Only “All traffic” can be selected. Profiles work on Windows, macOS, Linux and Android.",
   "wizard.createFailed": "Failed to create the key",
   "wizard.title": "New VPN key",
   "wizard.desc": "One key is meant for a single device.",
@@ -1039,15 +1043,19 @@ const en = {
   "install.installTitle": "Install the app",
   "install.platform.windows": "Windows",
   "install.platform.macos": "macOS",
+  "install.platform.linux": "Linux",
   "install.platform.android": "Android",
   "install.platform.ios": "iPhone and iPad",
+  "install.group.desktop": "Computer — Windows, macOS, Linux",
+  "install.group.android": "Android",
+  "install.group.ios": "iPhone and iPad",
   "install.pickFile": "Pick the file for your system",
   "install.desktopNote":
-    "The Windows and macOS buttons download the installer from the latest release. Run the downloaded file and follow the installer.",
+    "The Windows, macOS and Linux buttons download the installer from the latest release. Run the downloaded file and follow the installer.",
   "install.iosNote":
     "On the App Store the app is called DefaultVPN, not Amnezia. It is the official client from the same developers — install that one.",
   "install.iosProfileWarning":
-    "On iPhone and iPad, use a key with no route profile — all traffic goes through the VPN. A key with a profile (“Foreign resources via VPN”, “Only blocked sites”) does connect on iPhone and iPad, but the rules are not applied: all traffic goes direct, outside the VPN, and the app gives no warning. Create keys without a route profile for iPhone and iPad, and use profile keys on Windows, macOS and Android.",
+    "On iPhone and iPad, use a key with no route profile — all traffic goes through the VPN. A key with a profile (“Foreign resources via VPN”, “Only blocked sites”) does connect on iPhone and iPad, but the rules are not applied: all traffic goes direct, outside the VPN, and the app gives no warning. Create keys without a route profile for iPhone and iPad, and use profile keys on Windows, macOS, Linux and Android.",
   "install.versionNote":
     "AmneziaWG 3.1 keys only work in client version {version} or newer.",
   "install.apkTitle": "Google Play will not open, or the install fails?",
@@ -1076,7 +1084,7 @@ const en = {
   "install.confBody":
     "The Download .conf button on the key card gives you a configuration file. It is not pasted as text — it is imported as a file.",
   "install.confSplitBest":
-    "For the “Foreign resources via VPN” and “Only blocked sites” profiles this is the better route on Windows, macOS and Android: the connection key there is very long, no QR code is available, and a file is moved and imported in one step. The file keeps the profile's full list of routed subnets.",
+    "For the “Foreign resources via VPN” and “Only blocked sites” profiles this is the better route on Windows, macOS, Linux and Android: the connection key there is very long, no QR code is available, and a file is moved and imported in one step. The file keeps the profile's full list of routed subnets.",
   "install.confIosWarning":
     "This does not apply to iPhone and iPad: there a key with a route profile connects but the rules are not applied — neither from the file nor from the connection key. On iPhone and iPad use a key with no route profile.",
   "install.confAmneziaTitle": "In AmneziaVPN",

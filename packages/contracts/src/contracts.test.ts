@@ -610,10 +610,11 @@ describe("clientReleaseSchema", () => {
     ).toBe(true);
   });
 
-  it("covers exactly the four supported platforms", () => {
+  it("covers exactly the supported platforms", () => {
     expect([...CLIENT_PLATFORMS].sort()).toEqual([
       "android",
       "ios",
+      "linux",
       "macos",
       "windows",
     ]);
