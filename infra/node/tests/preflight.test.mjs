@@ -86,3 +86,26 @@ test("preflight insists on an IPv4 address for SERVER_PUBLIC_HOST without failin
   assert.match(advisory[2], /strongly recommended/);
   assert.match(advisory[2], /resolve/i);
 });
+
+test("the disk gate is a floor derived from what a deploy pulls, not a round number", () => {
+  // 2 GiB, not 3: the only image a deploy actually pulls is the node-agent
+  // (~500 MiB; the AWG images are pinned by digest and already present), plus
+  // transient space to extract it and a state backup measured in kilobytes.
+  // A gate four times the largest pull is a floor; the old 3 GiB was an
+  // unexplained constant that refused hosts the deploy would have fitted on.
+  const gate = /\[ "\$available_kb" -ge (\d+) \]/.exec(preflight);
+  assert.ok(gate, "preflight must gate on free disk");
+  assert.equal(gate[1], "2097152");
+});
+
+test("preflight still recommends 3 GiB, as advice rather than a refusal", () => {
+  // Below the recommendation the host is one deploy away from trouble, so it
+  // must be told - but a node that fits is not stopped from redeploying.
+  const advisory =
+    /^ +(\w+) "(NOTE: free disk is below the recommended[^"]*)"$/m.exec(preflight);
+  assert.ok(advisory, "preflight must carry a free-disk advisory");
+  assert.equal(advisory[1], "info", "the disk recommendation must not be a gate");
+  assert.match(advisory[2], /3 GiB/);
+  // Same rule as every other advisory here: say how to fix it, not just what.
+  assert.match(advisory[2], /journalctl --vacuum-size/);
+});

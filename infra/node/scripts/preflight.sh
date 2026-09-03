@@ -109,8 +109,20 @@ esac
 available_kb="$(df -Pk "$NODE_DIR" | awk 'NR==2 { print $4 }')"
 # Free space is what actually binds on a small host, and it is nearly always
 # reclaimable rather than absent -- so say how, instead of only refusing.
+#
+# The floor is derived, not chosen: a deploy pulls at most the node-agent image
+# (~500 MiB; the two AWG images are pinned by digest and already present),
+# needs transient space to extract it, and writes a state backup measured in
+# kilobytes. 2 GiB is four times the largest pull. The previous 3 GiB was a
+# flat constant with no derivation, and it refused hosts a deploy would have
+# fitted on comfortably -- a gate that stops the redeploy of a node that is
+# running fine protects nothing.
+[ "$available_kb" -ge 2097152 ] || \
+  fail "at least 2 GiB of free disk is required (have $(( available_kb / 1024 )) MiB); reclaim with: docker image prune -a, journalctl --vacuum-size=100M"
+# Above the floor but below what a host should be run at: one more image or one
+# unattended month of logs away from the floor, so say so without blocking.
 [ "$available_kb" -ge 3145728 ] || \
-  fail "at least 3 GiB of free disk is required (have $(( available_kb / 1024 )) MiB); reclaim with: docker image prune -a, journalctl --vacuum-size=100M"
+  info "NOTE: free disk is below the recommended 3 GiB (have $(( available_kb / 1024 )) MiB). The deploy will proceed, but reclaim space soon: docker image prune -a, journalctl --vacuum-size=100M"
 available_mem_kb="$(awk '/^MemAvailable:/ { print $2 }' /proc/meminfo)"
 [ -n "$available_mem_kb" ] || fail "cannot read available memory"
 # The 350 MiB gate sizes a node at the 500-peer maximum, so scale it with the
@@ -180,4 +192,4 @@ for state_dir in "$STATE_DIR" "$STATE_DIR_AWG3"; do
   fi
 done
 
-info "Preflight passed: linux/amd64, 3 GiB disk gate, $(( required_mem_kb / 1024 )) MiB RAM gate for ${server_max_peers} peers, immutable images, strict permissions, and fixed ports verified."
+info "Preflight passed: linux/amd64, 2 GiB disk gate (3 GiB recommended), $(( required_mem_kb / 1024 )) MiB RAM gate for ${server_max_peers} peers, immutable images, strict permissions, and fixed ports verified."

@@ -90,8 +90,9 @@ the host firewall. The control plane reaches it over an approved private transpo
   must exist and `/var/run/docker.sock` must be reachable.
 - **Docker Engine (Linux containers, amd64) + Docker Compose v2.** GNU `tar`,
   `sha256sum`, `stat`, `df`, `awk`, `sed`, `grep`, `ss`, `openssl` on `PATH`.
-- **Resource gates enforced by preflight:** at least **3 GiB free disk** on the
-  `infra/node` filesystem (`>= 3145728` KiB) and **available RAM scaled to the
+- **Resource gates enforced by preflight:** at least **2 GiB free disk** on the
+  `infra/node` filesystem (`>= 2097152` KiB), with **3 GiB recommended** — below
+  that the deploy proceeds and prints a `NOTE:` — and **available RAM scaled to the
   node's capacity** — `358400 KiB * SERVER_MAX_PEERS / 500`, never below 192 MiB.
   A 500-peer node therefore still needs 350 MiB, while a 100-peer node needs the
   192 MiB floor, which is what lets a 512 MB VPS host a small node (the resident
@@ -192,7 +193,7 @@ sh scripts/preflight.sh
 
 It verifies Linux/amd64, Docker/Compose, TUN + socket, immutable image references,
 strict file permissions, the fixed Compose configuration, port conflicts on
-51889/51890/4001, the 3 GiB disk and capacity-scaled RAM gates, and JSON-validates any
+51889/51890/4001, the 2 GiB disk floor and capacity-scaled RAM gates, and JSON-validates any
 existing `clientsTable`. Retain its (non-secret) output with the change record.
 
 ### A.4 Deploy
@@ -500,7 +501,7 @@ This is how RoscomVPN keys were re-issued against the current rule set.
   `.tar.gz` + `.sha256` off-box to encrypted storage; verify with
   `sha256sum -c <archive>.sha256`. Restore with `sh scripts/rollback.sh <abs path>`.
 - Container logs are capped (`json-file`, `max-size: 10m`, `max-file: "3"`) on
-  every node service. Watch `infra/node/backups/` growth against the 3 GiB
+  every node service. Watch `infra/node/backups/` growth against the 2 GiB
   preflight gate and prune old archives per your retention policy after copying
   them to encrypted storage.
 - Control-plane telemetry retention is bounded by
