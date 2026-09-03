@@ -13,7 +13,10 @@
  *   CONTROL_API_URL (default http://127.0.0.1:3001)
  */
 
-import { routeProfileWarning } from "./deviceProfiles.js";
+import {
+  keyNeedsRouteProfileWarning,
+  routeProfileWarning,
+} from "./deviceProfiles.js";
 import { buildRequestHeaders } from "./http.js";
 import { authHeaders } from "./identity.js";
 import {
@@ -28,6 +31,14 @@ import {
   parseNodeSpec,
 } from "./args.js";
 import type { UpdateStatusView } from "./args.js";
+import {
+  CLIENT_RELEASE_COLUMNS,
+  clientReleaseRows,
+  clientReleaseSummary,
+  formatVersionLine,
+  type CliClientRelease,
+  type CliVersionInfo,
+} from "./clientReleases.js";
 import { resolveApiKey, resolveSecret } from "./apiKey.js";
 
 const API = (process.env.CONTROL_API_URL ?? "http://127.0.0.1:3001").replace(
@@ -215,9 +226,17 @@ async function cmdKeys(args: string[]): Promise<void> {
   // Filter before rendering AND before --json, so `keys --device-type=unspecified
   // --json` is a scriptable census of the rows that still need re-classifying.
   const deviceFilter = flagOf(args, "device-type");
-  const shown = deviceFilter
+  const byDevice = deviceFilter
     ? keys.filter((key) => (key.deviceType ?? "unspecified") === deviceFilter)
     : keys;
+  // The audit behind the key card's warning: which existing keys pair a
+  // platform whose client ignores route profiles with a split tunnel. The
+  // wizard can no longer create that pair, but older keys, the CLI and an
+  // admin still can, so an operator needs a way to count them.
+  const needsWarning = args.includes("--needs-profile-warning");
+  const shown = needsWarning
+    ? byDevice.filter((key) => keyNeedsRouteProfileWarning(key))
+    : byDevice;
   if (wantsJson(args)) return json(shown);
   const emailById = new Map(users.map((user) => [user.id, user.email]));
   console.log(
@@ -229,6 +248,10 @@ async function cmdKeys(args: string[]): Promise<void> {
         // The platform is the stored value; showing both is the only way an
         // operator can see which rows still need re-classifying.
         platform: formatDeviceType(key.deviceType),
+        // The value the filter's predicate read, so a listed row shows why it
+        // is listed. Only under --needs-profile-warning: the default table is
+        // already wide.
+        route: key.routeProfile,
         owner: emailById.get(key.ownerId) ?? key.ownerId.slice(0, 8),
         state: key.state,
         proto: key.protocol,
@@ -242,7 +265,9 @@ async function cmdKeys(args: string[]): Promise<void> {
             )
           : "—",
       })),
-      ["device", "platform", "owner", "state", "proto", "online", "traffic"],
+      needsWarning
+        ? ["device", "platform", "route", "owner", "state", "proto", "online", "traffic"]
+        : ["device", "platform", "owner", "state", "proto", "online", "traffic"],
     ),
   );
 }
@@ -856,11 +881,9 @@ async function cmdGlobalRoutesSet(args: string[]): Promise<void> {
 }
 
 async function cmdVersion(args: string[]): Promise<void> {
-  const info = await api<{ version?: string; commit?: string }>(
-    "/api/admin/version",
-  );
+  const info = await api<CliVersionInfo>("/api/admin/version");
   if (wantsJson(args)) return json(info);
-  console.log(`version: ${info.version ?? "?"}   commit: ${info.commit ?? "?"}`);
+  console.log(formatVersionLine(info));
 }
 
 async function cmdTraffic(args: string[]): Promise<void> {
@@ -883,6 +906,23 @@ async function cmdPanelUpdate(args: string[]): Promise<void> {
   json(result);
 }
 
+/**
+ * What the panel currently hands users for each platform, and (with --refresh)
+ * a forced re-resolve. The read uses the same route the web dialog uses, so
+ * what this prints is exactly what a user sees.
+ */
+async function cmdClientReleases(args: string[]): Promise<void> {
+  const release = args.includes("--refresh")
+    ? await api<CliClientRelease>("/api/admin/client-releases/refresh", {
+        method: "POST",
+      })
+    : await api<CliClientRelease>("/api/client-releases");
+  if (wantsJson(args)) return json(release);
+  console.log(clientReleaseSummary(release));
+  console.log("");
+  console.log(table(clientReleaseRows(release), CLIENT_RELEASE_COLUMNS));
+}
+
 function usage(): void {
   console.log(`amnezia-panel — control-plane admin CLI
 
@@ -892,15 +932,24 @@ Read:
   overview                 Key metrics
   users                    List users
   keys [--device-type=X]   List keys (with owner, platform + traffic); the flag filters
-                          to one stored platform, "unspecified" included
+      [--needs-profile-warning]
+                          to one stored platform, "unspecified" included.
+                          --needs-profile-warning lists only the keys whose platform
+                          ignores route profiles yet carry a split tunnel, and adds
+                          the route column
   nodes                    List nodes (with protocols + capacity)
   audit [--limit=N]        Recent audit events
   quota [--all] [--json]   Key-limit requests (pending by default; --all = every state),
                           with the target server of each request
   policy [--json]          Show all panel settings + Cloudflare config
   global-routes [--json]   Admin-wide route additions / exclusions
-  version [--json]         Panel version + commit
+  version [--json]         Panel version + commit + the AWG 3.1 client floor
   traffic [--days=N]       Aggregate traffic series (JSON)
+  client-releases [--refresh]  What the panel hands users per platform (Windows,
+                          macOS, Android + APK, iOS), which release it resolved and
+                          whether it is serving the offline fallback.
+                          --refresh forces a re-resolve now (admin) instead of
+                          waiting out the 6 h cache.
 
 Users (accept a user id OR email):
   user-create <email> [name] [--admin]   Add a user
@@ -1000,6 +1049,8 @@ async function main(): Promise<void> {
       return cmdTraffic(args);
     case "panel-update":
       return cmdPanelUpdate(args);
+    case "client-releases":
+      return cmdClientReleases(args);
     case "user-create":
       return cmdUserCreate(args);
     case "user-role":

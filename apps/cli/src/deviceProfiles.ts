@@ -37,3 +37,23 @@ export function routeProfileWarning(
   if (profile === "full_tunnel") return null;
   return `warning: device-type "${deviceType}" does not apply route profiles — a key with "${profile}" will connect but send all traffic outside the VPN. Use --route=full_tunnel for this device. Creating it anyway.`;
 }
+
+/**
+ * Does an existing key pair a gated platform with a split-tunnel profile?
+ *
+ * This is the combination the key card warns about. The wizard can no longer
+ * create it, but an admin, the CLI or a key created before the gate still can,
+ * so `keys --needs-profile-warning` exists to count them on a live panel.
+ *
+ * Both fields must be present: a key whose platform was never recorded is not
+ * evidence of anything, and guessing would inflate the count.
+ */
+export function keyNeedsRouteProfileWarning(key: {
+  deviceType?: string;
+  routeProfile?: string;
+}): boolean {
+  const { deviceType, routeProfile } = key;
+  if (!deviceType || !routeProfile) return false;
+  if (cliDeviceSupportsRouteProfiles(deviceType)) return false;
+  return routeProfile !== "full_tunnel";
+}
