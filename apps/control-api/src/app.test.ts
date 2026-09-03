@@ -571,7 +571,12 @@ const SNAPSHOT: ClientRelease = {
         fileName: null,
         sizeBytes: null,
       },
-      alternate: null,
+      alternate: {
+        url: "https://apps.apple.com/us/app/amneziavpn/id1600529900",
+        kind: "store",
+        fileName: null,
+        sizeBytes: null,
+      },
     },
   ],
 };
@@ -622,6 +627,64 @@ describe("client release routes", () => {
     // Private: the route sits behind the panel's identity check.
     expect(response.headers["cache-control"]).toBe("private, max-age=1800");
     await app.close();
+  });
+
+  // The QR is an image this panel serves, so what it encodes must come from the
+  // release the panel resolved and never from the request. `variant` selects
+  // between two known links; anything else falls back to the primary rather
+  // than reaching for a URL the caller supplied.
+  describe("the download QR", () => {
+    const qr = async (url: string) => {
+      const app = await buildApp({
+        service: createService(),
+        environment: "development",
+        clientReleaseResolver: stubResolver(),
+      });
+      const response = await app.inject({
+        method: "GET",
+        url,
+        headers: { "x-dev-user-email": user.email },
+      });
+      await app.close();
+      return response;
+    };
+
+    it("encodes the platform's primary link by default", async () => {
+      const response = await qr("/api/client-releases/qr/ios");
+
+      expect(response.statusCode).toBe(200);
+      expect(response.headers["content-type"]).toContain("image/png");
+    });
+
+    it("encodes the alternate link when asked for it", async () => {
+      const primary = await qr("/api/client-releases/qr/ios");
+      const alternate = await qr(
+        "/api/client-releases/qr/ios?variant=alternate",
+      );
+
+      expect(alternate.statusCode).toBe(200);
+      // Two different listings, so two different symbols. Comparing the bytes
+      // is what proves the variant reached the encoder at all.
+      expect(alternate.rawPayload.equals(primary.rawPayload)).toBe(false);
+    });
+
+    it("ignores a variant it does not know", async () => {
+      const primary = await qr("/api/client-releases/qr/ios");
+      const bogus = await qr(
+        "/api/client-releases/qr/ios?variant=https://evil.example",
+      );
+
+      expect(bogus.statusCode).toBe(200);
+      expect(bogus.rawPayload.equals(primary.rawPayload)).toBe(true);
+    });
+
+    it("404s a platform with no alternate", async () => {
+      const response = await qr(
+        "/api/client-releases/qr/windows?variant=alternate",
+      );
+
+      expect(response.statusCode).toBe(404);
+    });
   });
 
   it("stays behind the identity gate", async () => {

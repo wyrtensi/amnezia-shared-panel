@@ -525,13 +525,22 @@ export function InstallInstructions({
  * (GET /api/client-releases/qr/:platform); this component holds no link, and
  * the panel already produces QR codes that way for key configs.
  */
-function PlatformQr({ platform }: { platform: ClientPlatform }) {
+function PlatformQr({
+  platform,
+  variant = "primary",
+}: {
+  platform: ClientPlatform;
+  /** Which of the platform's two links to encode. */
+  variant?: "primary" | "alternate";
+}) {
   const { t } = useT();
   return (
     <div className="space-y-2 rounded-lg border bg-muted/30 p-3">
       <img
         className="mx-auto h-44 w-44 rounded-md bg-white p-2"
-        src={`/api/control/api/client-releases/qr/${platform}`}
+        src={`/api/control/api/client-releases/qr/${platform}${
+          variant === "alternate" ? "?variant=alternate" : ""
+        }`}
         alt={t("install.qrAlt")}
       />
       <p className="text-center text-xs leading-snug text-muted-foreground">
@@ -692,6 +701,7 @@ function GuideSection({
  */
 function IosAmneziaOption({ asset }: { asset: ClientAsset }) {
   const { t } = useT();
+  const [showQr, setShowQr] = React.useState(false);
 
   return (
     <details className="group rounded-lg border bg-muted/30 px-3 py-2">
@@ -703,17 +713,35 @@ function IosAmneziaOption({ asset }: { asset: ClientAsset }) {
         <p className="text-xs leading-snug text-muted-foreground">
           {t("install.iosAmneziaBody")}
         </p>
-        <Button asChild variant="secondary" size="sm" className="w-fit">
-          <a
-            href={asset.url}
-            target="_blank"
-            rel="noreferrer"
-            title={t("install.opensNewTab")}
+        {/* The same QR affordance the store buttons above carry: this reader is
+            on a computer, and the App Store opens on the phone. It matters more
+            here than there -- the listing is region-locked, so they may well be
+            scanning it onto a second device with a different Apple account. */}
+        <div className="flex flex-wrap gap-2">
+          <Button asChild variant="secondary" size="sm" className="w-fit">
+            <a
+              href={asset.url}
+              target="_blank"
+              rel="noreferrer"
+              title={t("install.opensNewTab")}
+            >
+              <ExternalLink className="h-4 w-4" />
+              {t("install.iosAmneziaOpen")}
+            </a>
+          </Button>
+          <Button
+            type="button"
+            variant="secondary"
+            size="sm"
+            className="w-fit"
+            aria-expanded={showQr}
+            onClick={() => setShowQr((current) => !current)}
           >
-            <ExternalLink className="h-4 w-4" />
-            {t("install.iosAmneziaOpen")}
-          </a>
-        </Button>
+            <QrCode className="h-4 w-4" />
+            {t("install.showQr")}
+          </Button>
+        </div>
+        {showQr ? <PlatformQr platform="ios" variant="alternate" /> : null}
       </div>
     </details>
   );

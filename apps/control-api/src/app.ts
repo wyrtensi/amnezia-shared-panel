@@ -239,12 +239,13 @@ export const buildApp = async ({
    * A QR of one platform's download link, for a user reading the guide on a
    * computer who needs the app on a phone.
    *
-   * The URL is never taken from the request: the platform is looked up in the
-   * release the panel itself resolved, so this cannot be pointed at an
-   * arbitrary target. Rendered here rather than in apps/web because the panel
+   * The URL is never taken from the request: the platform and the variant are
+   * looked up in the release the panel itself resolved, so this cannot be
+   * pointed at an arbitrary target. `?variant=alternate` is the platform's
+   * second link -- Android's APK, or the AmneziaVPN listing on iOS. Rendered here rather than in apps/web because the panel
    * already produces QR codes server-side and the web app ships no QR library.
    */
-  app.get<{ Params: { platform: string } }>(
+  app.get<{ Params: { platform: string }; Querystring: { variant?: string } }>(
     "/api/client-releases/qr/:platform",
     async (request, reply) => {
       actorFor(request);
@@ -252,14 +253,21 @@ export const buildApp = async ({
       if (!platform.success) {
         return reply.code(404).send({ error: "UNKNOWN_PLATFORM" });
       }
+      // Which of the platform's two links, never the link itself: the URL is
+      // read from the release this panel resolved, so a request can ask for one
+      // of two known destinations and cannot make the panel encode arbitrary
+      // content into an image it serves.
+      const variant =
+        request.query.variant === "alternate" ? "alternate" : "primary";
       const release = await clientReleases.get();
       const download = release.downloads.find(
         (entry) => entry.platform === platform.data,
       );
-      if (!download) {
+      const asset = download?.[variant];
+      if (!asset) {
         return reply.code(404).send({ error: "UNKNOWN_PLATFORM" });
       }
-      const png = await QRCode.toBuffer(download.primary.url, {
+      const png = await QRCode.toBuffer(asset.url, {
         type: "png",
         errorCorrectionLevel: "M",
         margin: 2,
