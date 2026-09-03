@@ -274,6 +274,12 @@ const ru = {
   "install.platform.android": "Android",
   "install.platform.ios": "iPhone и iPad",
   "install.chooseTitle": "Выберите устройство",
+  "install.showQr": "Показать QR",
+  "install.qrAlt": "QR-код со ссылкой на приложение",
+  "install.qrHint":
+    "Наведите камеру телефона — откроется страница приложения.",
+  "install.videoTitle": "Видео с разбором",
+  "install.videoSoon": "Видео появится здесь позже.",
   "install.chooseHint":
     "Выберите устройство выше — покажем инструкцию именно для него.",
   "install.group.desktop": "Windows, macOS, Linux",
@@ -1050,6 +1056,12 @@ const en = {
   "install.platform.android": "Android",
   "install.platform.ios": "iPhone and iPad",
   "install.chooseTitle": "Choose your device",
+  "install.showQr": "Show QR",
+  "install.qrAlt": "QR code linking to the app",
+  "install.qrHint":
+    "Point your phone camera at it to open the app page.",
+  "install.videoTitle": "Walkthrough video",
+  "install.videoSoon": "A video will appear here.",
   "install.chooseHint":
     "Pick a device above and the guide shows the steps for it.",
   "install.group.desktop": "Windows, macOS, Linux",

@@ -196,6 +196,9 @@ const toPolicy = (row: PortalPolicyRow | undefined): PortalPolicy =>
         showPublicKey: row.showPublicKey,
         showLastUsed: row.showLastUsed,
         showTraffic: row.showTraffic,
+        // Null until an admin attaches recordings; the guide falls back to a
+        // placeholder, so an empty object is the honest "none configured".
+        installGuideVideos: row.installGuideVideos ?? {},
       }
     : defaultPortalPolicy;
 

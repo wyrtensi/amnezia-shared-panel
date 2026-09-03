@@ -447,6 +447,9 @@ export function EmployeeDashboard({
         showConfSection={Boolean(
           me?.policy.allowConfigRedownload && me?.policy.allowConfDownload,
         )}
+        // Walkthrough videos are a policy value, so an admin can attach one
+        // without a deploy. Absent until then — the guide shows a placeholder.
+        videos={me?.policy.installGuideVideos ?? null}
       />
     </div>
   );

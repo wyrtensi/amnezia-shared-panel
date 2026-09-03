@@ -10,10 +10,12 @@ import {
   deviceTypeSchema,
   deviceSupportsRouteProfiles,
   globalRoutesSchema,
+  GUIDE_AUDIENCES,
   keyNameDisplaySchema,
   LEGACY_DEVICE_TYPE_REPLACEMENT,
   MAX_GLOBAL_CIDRS,
   MAX_GLOBAL_DOMAINS,
+  installGuideVideosSchema,
   MIN_AWG3_CLIENT_VERSION,
   nodeKeyLimitsSchema,
   portalPolicySchema,
@@ -145,6 +147,8 @@ describe("portalPolicySchema", () => {
       showPublicKey: false,
       showLastUsed: true,
       showTraffic: true,
+      // No recordings until an admin adds them; the guide reads without one.
+      installGuideVideos: {},
     });
   });
 
@@ -685,5 +689,43 @@ describe("deviceSupportsRouteProfiles", () => {
     for (const device of ROUTE_PROFILE_UNSUPPORTED_DEVICES) {
       expect(deviceTypeSchema.safeParse(device).success, device).toBe(true);
     }
+  });
+});
+
+describe("installGuideVideos", () => {
+  it("is empty by default, so a panel with no recordings still works", () => {
+    const policy = portalPolicySchema.parse({});
+    expect(policy.installGuideVideos).toEqual({});
+    for (const audience of GUIDE_AUDIENCES) {
+      expect(policy.installGuideVideos[audience] ?? null).toBeNull();
+    }
+  });
+
+  it("covers exactly the audiences the guide is organised into", () => {
+    expect([...GUIDE_AUDIENCES]).toEqual(["desktop", "android", "ios"]);
+    expect(Object.keys(installGuideVideosSchema.shape).sort()).toEqual(
+      [...GUIDE_AUDIENCES].sort(),
+    );
+  });
+
+  it("accepts an http(s) recording per audience", () => {
+    const parsed = portalPolicySchema.parse({
+      installGuideVideos: {
+        desktop: "https://videos.example.com/desktop.mp4",
+        ios: "https://videos.example.com/ios.mp4",
+      },
+    });
+    expect(parsed.installGuideVideos.desktop).toBe(
+      "https://videos.example.com/desktop.mp4",
+    );
+    expect(parsed.installGuideVideos.android ?? null).toBeNull();
+  });
+
+  it("rejects a scheme that would execute instead of play", () => {
+    expect(
+      portalPolicySchema.safeParse({
+        installGuideVideos: { desktop: "javascript:alert(1)" },
+      }).success,
+    ).toBe(false);
   });
 });

@@ -48,14 +48,16 @@ describe("install guide dialog source", () => {
 // audience, it simply stops being offered — no error, no empty state, just a
 // download nobody can reach. Pinned here.
 describe("guide audiences", () => {
-  it("offers exactly the three audiences whose steps differ", async () => {
-    const { GUIDE_AUDIENCES } = await import("./install-guide-dialog");
-    expect([...GUIDE_AUDIENCES]).toEqual(["desktop", "android", "ios"]);
-  });
-
   it("assigns every client platform to exactly one audience", async () => {
     const { AUDIENCE_PLATFORMS } = await import("./install-guide-dialog");
-    const { CLIENT_PLATFORMS } = await import("@amnezia/contracts");
+    const { CLIENT_PLATFORMS, GUIDE_AUDIENCES } = await import(
+      "@amnezia/contracts"
+    );
+    // The audience list is the contract's — the portal policy carries a video
+    // per audience — so the UI map must cover exactly it, no more, no less.
+    expect(Object.keys(AUDIENCE_PLATFORMS).sort()).toEqual(
+      [...GUIDE_AUDIENCES].sort(),
+    );
     const assigned = Object.values(AUDIENCE_PLATFORMS).flat();
     expect([...assigned].sort()).toEqual([...CLIENT_PLATFORMS].sort());
     expect(new Set(assigned).size).toBe(assigned.length);

@@ -1,8 +1,10 @@
 import helmet from "@fastify/helmet";
 import Fastify, { type FastifyRequest } from "fastify";
+import QRCode from "qrcode";
 import { z } from "zod";
 import {
   MIN_AWG3_CLIENT_VERSION,
+  clientPlatformSchema,
   createKeyRequestSchema,
   createNodeRequestSchema,
   createUserRequestSchema,
@@ -224,6 +226,40 @@ export const buildApp = async ({
     reply.header("cache-control", "private, max-age=1800");
     return release;
   });
+  /**
+   * A QR of one platform's download link, for a user reading the guide on a
+   * computer who needs the app on a phone.
+   *
+   * The URL is never taken from the request: the platform is looked up in the
+   * release the panel itself resolved, so this cannot be pointed at an
+   * arbitrary target. Rendered here rather than in apps/web because the panel
+   * already produces QR codes server-side and the web app ships no QR library.
+   */
+  app.get<{ Params: { platform: string } }>(
+    "/api/client-releases/qr/:platform",
+    async (request, reply) => {
+      actorFor(request);
+      const platform = clientPlatformSchema.safeParse(request.params.platform);
+      if (!platform.success) {
+        return reply.code(404).send({ error: "UNKNOWN_PLATFORM" });
+      }
+      const release = await clientReleases.get();
+      const download = release.downloads.find(
+        (entry) => entry.platform === platform.data,
+      );
+      if (!download) {
+        return reply.code(404).send({ error: "UNKNOWN_PLATFORM" });
+      }
+      const png = await QRCode.toBuffer(download.primary.url, {
+        type: "png",
+        errorCorrectionLevel: "M",
+        margin: 2,
+        width: 512,
+      });
+      reply.header("cache-control", "private, max-age=1800");
+      return reply.type("image/png").send(png);
+    },
+  );
   app.get("/api/quota-requests", async (request) =>
     service.listQuotaRequests(actorFor(request)),
   );
