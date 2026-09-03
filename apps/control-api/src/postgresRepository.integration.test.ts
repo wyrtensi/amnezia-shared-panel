@@ -1456,6 +1456,114 @@ describe("PostgresControlRepository user node order", () => {
     },
   );
 
+
+  runDatabaseTest(
+    "lists nodes in the admin order and flags the recommended prefix",
+    async () => {
+      if (!database) return;
+      const repository = new PostgresControlRepository({
+        db: database.db,
+        keyring,
+      });
+      await repository.adminAction(admin, "portal-policy", "global", "update", {
+        // Deliberately not the name order: "Zurich" first, "amsterdam" last.
+        nodeOrder: [seeded[0]!, seeded[2]!, seeded[1]!],
+        recommendedNodeIds: [seeded[0]!],
+      });
+      const rows = (await repository.listNodes(viewer)) as Array<{
+        id: string;
+        name: string;
+        recommended: boolean;
+      }>;
+      const ours = rows.filter((row) => seeded.includes(row.id));
+      expect(ours.map((row) => [row.name, row.recommended])).toEqual([
+        ["Zurich", true],
+        ["order-a", false],
+        ["amsterdam", false],
+      ]);
+      // Nothing outside our seed is recommended either.
+      expect(
+        rows.filter((row) => row.recommended).map((row) => row.id),
+      ).toEqual([seeded[0]]);
+    },
+  );
+
+  runDatabaseTest(
+    "un-recommending a server does not move it, and recommending does not either",
+    async () => {
+      if (!database) return;
+      const repository = new PostgresControlRepository({
+        db: database.db,
+        keyring,
+      });
+      const order = [seeded[0]!, seeded[2]!, seeded[1]!];
+      const names = async () => {
+        const rows = (await repository.listNodes(viewer)) as Array<{
+          id: string;
+          name: string;
+        }>;
+        return rows
+          .filter((row) => seeded.includes(row.id))
+          .map((row) => row.name);
+      };
+
+      // Recommend the top two, then none at all. The badge is the only thing
+      // that changes: the order is the admin list in both cases.
+      await repository.adminAction(admin, "portal-policy", "global", "update", {
+        nodeOrder: order,
+        recommendedNodeIds: [seeded[0]!, seeded[2]!],
+      });
+      const withBadges = await names();
+      await repository.adminAction(admin, "portal-policy", "global", "update", {
+        recommendedNodeIds: [],
+      });
+      const withoutBadges = await names();
+
+      expect(withBadges).toEqual(["Zurich", "order-a", "amsterdam"]);
+      expect(withoutBadges).toEqual(withBadges);
+    },
+  );
+
+  runDatabaseTest(
+    "hides a node excluded by a per-user override and closes the gap",
+    async () => {
+      if (!database) return;
+      const repository = new PostgresControlRepository({
+        db: database.db,
+        keyring,
+      });
+      await repository.adminAction(admin, "portal-policy", "global", "update", {
+        nodeOrder: [seeded[1]!, seeded[2]!, seeded[0]!],
+        // "amsterdam" is the recommended one, at the top of the order ...
+        recommendedNodeIds: [seeded[1]!],
+      });
+      // ... but this user may only use the other two. Recommending a node must
+      // never widen what a user can see, and nothing is substituted for it:
+      // the user simply gets the remaining two, in the admin order.
+      await database.db
+        .update(users)
+        .set({ policyOverride: { allowedNodeIds: [seeded[2]!, seeded[0]!] } })
+        .where(eq(users.id, viewer.id));
+
+      const rows = (await repository.listNodes(viewer)) as Array<{
+        id: string;
+        name: string;
+        recommended: boolean;
+      }>;
+      const ours = rows.filter((row) => seeded.includes(row.id));
+      expect(ours.map((row) => row.name)).toEqual(["order-a", "Zurich"]);
+      expect(ours.some((row) => row.id === seeded[1])).toBe(false);
+      // No other node inherits the badge.
+      expect(ours.some((row) => row.recommended)).toBe(false);
+
+      // Restore, so the later cases see the unrestricted user again.
+      await database.db
+        .update(users)
+        .set({ policyOverride: null })
+        .where(eq(users.id, viewer.id));
+    },
+  );
+
 });
 
 describe("PostgresControlRepository global policy update", () => {

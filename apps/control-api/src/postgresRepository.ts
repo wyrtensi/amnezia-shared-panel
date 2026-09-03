@@ -553,6 +553,13 @@ export class PostgresControlRepository implements ControlRepository {
       toPolicy(policyRow[0]),
       userRow[0]?.policyOverride,
     );
+    // Both come straight from the policy ROW, never from the resolved policy:
+    // they are global-only, so a per-user override can neither recommend a node
+    // nor reorder the list for one account. The two are used for two different
+    // things and never mixed: `nodeOrder` decides the position, `recommended`
+    // only paints a badge.
+    const recommended = new Set(policyRow[0]?.recommendedNodeIds ?? []);
+    const nodeOrder = policyRow[0]?.nodeOrder ?? [];
     // A null/absent allowedNodeIds means "all nodes"; a list restricts to it.
     // The SELECT above has no ORDER BY and the worker rewrites node rows on
     // every telemetry poll, so the order is fixed here, on the name the user
@@ -586,6 +593,7 @@ export class PostgresControlRepository implements ControlRepository {
               ...row,
               // Users see the public name; the internal admin name never leaves here.
               name: publicName ?? row.name,
+              recommended: recommended.has(row.id),
               // Spread conditionally rather than assigning `undefined`: there is no
               // "unknown address" state on the user side, so the key must be truly
               // absent — a user cannot fix a node's DNS, and a null would only
@@ -600,6 +608,7 @@ export class PostgresControlRepository implements ControlRepository {
             };
           },
         ),
+      nodeOrder,
     );
   };
 
