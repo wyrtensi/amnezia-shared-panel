@@ -21,10 +21,16 @@ const runDatabaseTest = databaseUrl ? it : it.skip;
 
 describe("PostgresWorkerRepository outbox leases", () => {
   const database = databaseUrl ? createDatabase(databaseUrl) : null;
+  // One keyring for the repository AND for anything the tests seed. They used
+  // to generate their own, which worked only for as long as no test decrypted
+  // what a helper had encrypted -- the first one that did failed with
+  // "unable to authenticate data", which reads like corruption rather than two
+  // different keys.
+  const keyring = { 1: randomBytes(32) };
   const repository = database
     ? new PostgresWorkerRepository({
         db: database.db,
-        keyring: { 1: randomBytes(32) },
+        keyring,
         activeKeyVersion: 1,
       })
     : null;
@@ -90,7 +96,6 @@ describe("PostgresWorkerRepository outbox leases", () => {
 
   const seedTelemetryKey = async () => {
     if (!database) throw new Error("Database test is disabled");
-    const keyring = { 1: randomBytes(32) };
     const credentials = encryptSecret("api-key", keyring, 1);
     const label = encryptSecret(randomBytes(32).toString("base64"), keyring, 1);
     const [user] = await database.db
