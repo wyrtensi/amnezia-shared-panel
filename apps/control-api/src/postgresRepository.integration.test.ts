@@ -1048,6 +1048,90 @@ describe("PostgresControlRepository quota race", () => {
     },
   );
 
+  runDatabaseTest(
+    "auto-picks in the admin order and never a node the user may not use",
+    async () => {
+      if (!database) return;
+      const repository = new PostgresControlRepository({
+        db: database.db,
+        keyring,
+      });
+      const admin: Actor = { ...actor, role: "admin" };
+      const alpha = await seedNode("auto-alpha");
+      const beta = await seedNode("auto-beta");
+      await database.db
+        .update(portalPolicy)
+        .set({ allowNodeSelection: false })
+        .where(eq(portalPolicy.id, true));
+      try {
+        // Phase A: both nodes available, admin put beta first. The pick must
+        // follow that, not the uuid order the SELECT locks rows in.
+        const bothUser = await seedQuotaUser("auto-both@example.com", {
+          allowedNodeIds: [alpha, beta],
+        });
+        await repository.adminAction(
+          admin,
+          "portal-policy",
+          "global",
+          "update",
+          { nodeOrder: [beta, alpha], recommendedNodeIds: [] },
+        );
+        const firstKey = (await repository.createProvisioningKey(bothUser, {
+          nodeId: alpha, // ignored while node selection is off
+          protocol: "awg2",
+          deviceType: "other",
+          deviceLabel: "auto-a",
+          routeProfile: "full_tunnel",
+          nameDisplay: defaultKeyNameDisplay,
+        })) as { id: string };
+        const [storedA] = await database.db
+          .select({ nodeId: vpnKeys.nodeId })
+          .from(vpnKeys)
+          .where(eq(vpnKeys.id, firstKey.id));
+        expect(storedA?.nodeId).toBe(beta);
+
+        // Phase B: alpha is now first in the order AND the recommended one
+        // (which the prefix rule allows, since it is the top), but this user is
+        // not allowed to use it. It must not be picked, and beta must not
+        // inherit any "recommended" preference - it is simply the next
+        // available node in the admin order.
+        const limitedUser = await seedQuotaUser("auto-limited@example.com", {
+          allowedNodeIds: [beta],
+        });
+        await repository.adminAction(
+          admin,
+          "portal-policy",
+          "global",
+          "update",
+          { nodeOrder: [alpha, beta], recommendedNodeIds: [alpha] },
+        );
+        const secondKey = (await repository.createProvisioningKey(limitedUser, {
+          nodeId: alpha,
+          protocol: "awg2",
+          deviceType: "other",
+          deviceLabel: "auto-b",
+          routeProfile: "full_tunnel",
+          nameDisplay: defaultKeyNameDisplay,
+        })) as { id: string };
+        const [storedB] = await database.db
+          .select({ nodeId: vpnKeys.nodeId })
+          .from(vpnKeys)
+          .where(eq(vpnKeys.id, secondKey.id));
+        expect(storedB?.nodeId).toBe(beta);
+      } finally {
+        // Restore the shared policy row for the cases that run after this one.
+        await database.db
+          .update(portalPolicy)
+          .set({
+            allowNodeSelection: true,
+            recommendedNodeIds: [],
+            nodeOrder: [],
+          })
+          .where(eq(portalPolicy.id, true));
+      }
+    },
+  );
+
   // The panel resolves a host once and keeps the answer, which is right because
   // a server's address does not change under it. The one case that breaks is a
   // server moving to a new IP behind the same DNS name -- and without this the

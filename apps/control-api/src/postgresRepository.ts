@@ -1083,6 +1083,15 @@ export class PostgresControlRepository implements ControlRepository {
           )
           .orderBy(nodes.id)
           .for("update");
+        // The SELECT above keeps ORDER BY id so row locks are always acquired
+        // in the same order; the admin's order is applied after locking, in
+        // memory, and never changes WHICH rows are locked. recommendedNodeIds
+        // is deliberately not consulted: a badge does not promote a node here
+        // any more than it does in listNodes.
+        const orderedCandidates = orderNodesForUsers(
+          candidateNodes,
+          globalPolicy?.nodeOrder ?? [],
+        );
         let selectedNode: (typeof candidateNodes)[number] | undefined;
         // Track why candidates were rejected, so the error is accurate. All
         // constraints (availability, protocol, per-user quota, capacity) are
@@ -1092,7 +1101,7 @@ export class PostgresControlRepository implements ControlRepository {
         let nodeCapacityBlocked = false;
         let protocolBlocked = false;
         let availabilityBlocked = false;
-        for (const candidate of candidateNodes) {
+        for (const candidate of orderedCandidates) {
           // Node availability (global default or per-user override).
           if (!isNodeAvailable(policy.allowedNodeIds, candidate.id)) {
             availabilityBlocked = true;
