@@ -83,7 +83,7 @@ esac
 # failing. A name still deploys, but the operator is told what to do about it
 # and how (docs/NODE-CONNECT.md).
 case "$public_host" in
-  *[!0-9.]*) info "NOTE: SERVER_PUBLIC_HOST is a DNS name ($public_host) - an IPv4 address is strongly recommended. Resolve it here (getent ahostsv4 $public_host), put the address in .env and redeploy: this value is baked into every key this node issues, clients resolve it on the network you are trying to get through, and the panel cannot see it fail." ;;
+  *[!0-9.]*) info "NOTE: SERVER_PUBLIC_HOST is a DNS name ($public_host) - an IPv4 address is strongly recommended. Resolve it against public DNS (dig +short A $public_host @1.1.1.1) and confirm it matches this node's own address (curl -s https://api.ipify.org) - not with getent, which answers 127.0.0.1 for a host named after itself. Put the address in .env and redeploy: this value is baked into every key this node issues, clients resolve it on the network you are trying to get through, and the panel cannot see it fail." ;;
 esac
 
 server_id="$(env_value SERVER_ID)"

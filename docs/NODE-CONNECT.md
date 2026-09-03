@@ -85,9 +85,26 @@ node configured with a DNS name, but it prints
 `NOTE: SERVER_PUBLIC_HOST is a DNS name …`, and that note is an instruction, not
 a remark: **resolve the name on the server and use the address**.
 
+Ask public DNS, and cross-check it against the address the node itself
+egresses from — the two must agree before anything is written:
+
 ```sh
-getent ahostsv4 <the name currently in SERVER_PUBLIC_HOST> | awk '{ print $1; exit }'
+dig +short A <the name currently in SERVER_PUBLIC_HOST> @1.1.1.1   # what clients will get
+curl -s https://api.ipify.org; echo                                # where this node actually is
 ```
+
+**Do not use `getent`/`ping` on the node for this.** They consult `/etc/hosts`
+first, and a host named after itself — every co-located panel+node — has a line
+mapping its own FQDN to `127.0.0.1`. `getent ahostsv4 <own name>` then answers
+`127.0.0.1`, and writing that into `SERVER_PUBLIC_HOST` would point every key at
+the client's own loopback. Preflight rejects `127.0.0.1` outright, so this fails
+the deploy rather than shipping broken keys — but the reject reads like a bug in
+preflight instead of a wrong lookup, so use the two commands above.
+
+If the two answers disagree, **stop**: either the record is stale, or it is
+proxied (a Cloudflare-proxied name resolves to Cloudflare, which carries no UDP
+at all and can never be a VPN endpoint). That is a misconfiguration to
+understand, not an address to paste in.
 
 Put that address in `.env` and redeploy. (On a node that has already issued keys,
 read "What switching costs" at the end of this section first — the existing keys
