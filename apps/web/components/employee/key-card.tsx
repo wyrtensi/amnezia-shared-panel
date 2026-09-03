@@ -3,6 +3,7 @@
 import * as React from "react";
 import {
   Check,
+  CircleHelp,
   Copy,
   Download,
   Globe,
@@ -58,6 +59,7 @@ export function KeyCard({
   me,
   busy,
   onShowConfig,
+  onShowGuide,
   onRotate,
   onRevoke,
 }: {
@@ -66,6 +68,7 @@ export function KeyCard({
   me: Me;
   busy: boolean;
   onShowConfig: () => void;
+  onShowGuide: () => void;
   onRotate: () => void;
   onRevoke: () => void;
 }) {
@@ -95,14 +98,35 @@ export function KeyCard({
               <DeviceIcon className="size-7" />
             </span>
             <div className="min-w-0">
-              <p className="truncate font-medium leading-tight">
-                {keyView.deviceLabel || deviceTypeLabel(t, keyView.deviceType)}
-                {keyView.keyNumber != null ? (
-                  <span className="ml-1.5 text-xs font-normal text-muted-foreground">
-                    #{keyView.keyNumber}
-                  </span>
-                ) : null}
-              </p>
+              <div className="flex min-w-0 items-center gap-0.5">
+                <p className="truncate font-medium leading-tight">
+                  {keyView.deviceLabel || deviceTypeLabel(t, keyView.deviceType)}
+                  {keyView.keyNumber != null ? (
+                    <span className="ml-1.5 text-xs font-normal text-muted-foreground">
+                      #{keyView.keyNumber}
+                    </span>
+                  ) : null}
+                </p>
+                {/* The guide lives on the key, not in the page header: the card
+                    knows which device the key was labelled for, so it opens
+                    straight to that instruction. Icon-only because the title
+                    must keep the room it needs to stay readable. */}
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon"
+                      className="size-6 shrink-0 text-muted-foreground"
+                      aria-label={t("install.button")}
+                      onClick={onShowGuide}
+                    >
+                      <CircleHelp className="size-4" />
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent>{t("install.button")}</TooltipContent>
+                </Tooltip>
+              </div>
               <p className="truncate text-xs text-muted-foreground">
                 {node?.name ?? "—"}
               </p>

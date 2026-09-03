@@ -3,6 +3,7 @@
 import * as React from "react";
 import Link from "next/link";
 import { CircleHelp, KeyRound, Plus, RefreshCw, ShieldCheck } from "lucide-react";
+import type { GuideAudience } from "@amnezia/contracts";
 import { toast } from "sonner";
 import { AppHeader } from "@/components/app-header";
 import { LogoutButton } from "@/components/logout-button";
@@ -19,7 +20,10 @@ import {
   ConfigDownloadDialog,
   type ConfigTarget,
 } from "@/components/employee/config-download-dialog";
-import { InstallGuideDialog } from "@/components/employee/install-guide-dialog";
+import {
+  guideAudienceForDevice,
+  InstallGuideDialog,
+} from "@/components/employee/install-guide-dialog";
 import { QuotaRequestDialog } from "@/components/employee/quota-request-dialog";
 import { apiRequest } from "@/lib/api";
 import { InlineTraffic } from "@/components/inline-traffic";
@@ -58,6 +62,14 @@ export function EmployeeDashboard({
   const [showCreate, setShowCreate] = React.useState(false);
   const [showQuota, setShowQuota] = React.useState(false);
   const [showGuide, setShowGuide] = React.useState(false);
+  // The audience the guide opens on. A key card sets its own device; the
+  // empty-state button leaves it null, so a user with no keys still chooses.
+  const [guideAudience, setGuideAudience] =
+    React.useState<GuideAudience | null>(null);
+  const openGuide = React.useCallback((audience: GuideAudience | null) => {
+    setGuideAudience(audience);
+    setShowGuide(true);
+  }, []);
   const [configTarget, setConfigTarget] = React.useState<ConfigTarget | null>(
     null,
   );
@@ -245,15 +257,6 @@ export function EmployeeDashboard({
         subtitle={me?.email ?? t("emp.loadingProfile")}
         actions={
           <>
-            {/* First in the row: the one action a lost user is looking for. It
-                stays available while /api/me is still loading or has failed. */}
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => setShowGuide(true)}
-            >
-              <CircleHelp className="h-4 w-4" /> {t("install.button")}
-            </Button>
             {me?.role === "admin" ? (
               <Button asChild variant="ghost" size="sm">
                 <Link href="/admin" prefetch={false}>
@@ -362,7 +365,7 @@ export function EmployeeDashboard({
                 >
                   <Plus className="h-4 w-4" /> {t("emp.createFirst")}
                 </Button>
-                <Button variant="outline" onClick={() => setShowGuide(true)}>
+                <Button variant="outline" onClick={() => openGuide(null)}>
                   <CircleHelp className="h-4 w-4" /> {t("install.button")}
                 </Button>
               </div>
@@ -395,6 +398,9 @@ export function EmployeeDashboard({
                       deviceLabel: key.deviceLabel || deviceTypeLabel(t, key.deviceType),
                       routeProfile: key.routeProfile,
                     })
+                  }
+                  onShowGuide={() =>
+                    openGuide(guideAudienceForDevice(key.deviceType))
                   }
                   onRotate={() => void rotate(key.id)}
                   onRevoke={() => void revoke(key.id)}
@@ -450,6 +456,7 @@ export function EmployeeDashboard({
         // Walkthrough videos are a policy value, so an admin can attach one
         // without a deploy. Absent until then — the guide shows a placeholder.
         videos={me?.policy.installGuideVideos ?? null}
+        initialAudience={guideAudience}
       />
     </div>
   );

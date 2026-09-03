@@ -63,3 +63,37 @@ describe("guide audiences", () => {
     expect(new Set(assigned).size).toBe(assigned.length);
   });
 });
+
+// A key card opens the guide on its own device, so this map decides which
+// instruction a user is shown without being asked. A device that quietly
+// resolves to the wrong audience — or to none, sending a known device back to
+// the chooser — is invisible in review.
+describe("guideAudienceForDevice", () => {
+  it("routes every known device type", async () => {
+    const { guideAudienceForDevice } = await import("./install-guide-dialog");
+    const { deviceTypeSchema } = await import("@amnezia/contracts");
+    const routed = Object.fromEntries(
+      deviceTypeSchema.options.map((device) => [
+        device,
+        guideAudienceForDevice(device),
+      ]),
+    );
+    expect(routed).toEqual({
+      windows: "desktop",
+      macos: "desktop",
+      linux: "desktop",
+      android: "android",
+      ios: "ios",
+      // Neither names a platform, so the chooser stays: guessing here would
+      // hand a user an instruction for a device they do not have.
+      other: null,
+      unspecified: null,
+    });
+  });
+
+  it("falls back to the chooser for a device this build does not know", async () => {
+    const { guideAudienceForDevice } = await import("./install-guide-dialog");
+    // A tab left open across a deploy receives whatever the new API sends.
+    expect(guideAudienceForDevice("holodeck")).toBeNull();
+  });
+});
