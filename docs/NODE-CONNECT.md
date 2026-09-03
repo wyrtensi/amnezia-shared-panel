@@ -9,7 +9,7 @@ Fill in the placeholders with your real values — the repo hardcodes none of th
 
 | Placeholder | What it is |
 | --- | --- |
-| `<NODE_HOST>` | The node's SSH host (IP or hostname). |
+| `<NODE_HOST>` | The node's public IPv4 address. Use the address, not a DNS name — see [§1.1](#use-the-ip-address-not-a-dns-name). |
 | `<NODE_NAME>` | The display name you give the node in the panel (ask the operator). |
 | `<NODE_KEY>` | Your SSH private key for the node, e.g. `~/.ssh/<NODE_KEY>`. |
 
@@ -76,6 +76,79 @@ node is left alone.
 
 Both protocols can be served; `GET /server` reports each. AWG 3.1 is the primary
 protocol for new keys — 2.0 is kept only for peers that already use it.
+
+### Use the IP address, not a DNS name
+
+Set `SERVER_PUBLIC_HOST` in the node's `.env` — and `<NODE_HOST>` everywhere in
+this runbook — to the node's **public IPv4 address**. Preflight still deploys a
+node configured with a DNS name, but it prints
+`NOTE: SERVER_PUBLIC_HOST is a DNS name …`, and that note is an instruction, not
+a remark: **resolve the name on the server and use the address**.
+
+```sh
+getent ahostsv4 <the name currently in SERVER_PUBLIC_HOST> | awk '{ print $1; exit }'
+```
+
+Put that address in `.env` and redeploy. (On a node that has already issued keys,
+read "What switching costs" at the end of this section first — the existing keys
+carry the old value until they are reissued.) The reasons:
+
+1. **The client resolves it, on its own network, before the tunnel exists.**
+   The node-agent writes the value into the `Endpoint =` line of every generated
+   `.conf` and into the `hostName` of the `vpn://` payload. That lookup happens on
+   the very network AmneziaWG is built to get through — a DNS name gives it a
+   plaintext query to block, poison or log; an address gives it nothing.
+2. **It is baked into every issued key, and the panel never rewrites it.** The
+   panel re-exports the node's payload as-is. A wrong value is fixed only by
+   reissuing keys. (A DNS name would let the node's address move without
+   reissuing — but a VPS keeps its address for the life of the box, and moving to
+   another box means migrating the AWG state anyway.)
+3. **The panel cannot see DNS failing.** The worker polls the node-agent over the
+   management path, not the name clients use. A broken record looks like "node
+   healthy, every client failing".
+4. **Neither panel hostname is a VPN endpoint.** The Cloudflare-proxied panel
+   name resolves to Cloudflare, which does not carry UDP. The direct
+   (`direct.<panel domain>`, grey-cloud) name points at the panel server and
+   works only until someone proxies it — never reuse it on a co-located node.
+5. **IPv4 sidesteps A/AAAA ambiguity.** Preflight does not accept an IPv6
+   literal today, so an IPv4 address is the only literal that deploys.
+
+The panel-to-node path is a different matter: `http://host.docker.internal:<port>`
+and `http://amnezia-node-agent:4001` are Docker-local names (resolved by
+`extra_hosts: host-gateway` and compose DNS, never by public DNS) and are the
+right `apiBaseUrl` values. The SSH tunnel's target (`root@<NODE_HOST>` in the unit
+below) should be the address for reason 1: with a name, every `autossh`
+reconnect depends on the panel host's resolver.
+
+Where each value lives and what breaks with the other choice:
+
+| Where | Expects | What breaks with the other choice |
+| --- | --- | --- |
+| `infra/node/.env` `SERVER_PUBLIC_HOST` → node-agent → `Endpoint =` and `hostName` in every key | **IPv4 address** (DNS name accepted with a `NOTE:`) | DNS name: reasons 1-5 above. Placeholders `203.0.113.10` / `vpn.example.com` are rejected by preflight. |
+| `nodes.apiBaseUrl` (panel → node-agent) | Docker-local name: `http://host.docker.internal:<port>` or `http://amnezia-node-agent:4001` | A public DNS name here would be wrong for a loopback-only agent; the direct option below needs a hostname that matches its TLS certificate (an address needs an IP-SAN cert). |
+| `root@<NODE_HOST>` in `panel-tunnel-<NODE_NAME>.service` | **IPv4 address** | DNS name: the tunnel cannot come back while the panel host's resolver is down; `known_hosts` is keyed by the name. |
+| Panel public URL (Cloudflare-proxied) | hostname, orange cloud | Required for TLS + Access. Can never be a node endpoint. |
+| `PANEL_PUBLIC_URL` / `direct.<panel domain>` | hostname, grey cloud | Required for the direct login. Not a node endpoint (reason 4). |
+
+#### What switching costs
+
+The two values above are switched at very different prices, so decide them
+separately.
+
+- **The tunnel target** (`root@<NODE_HOST>` in `panel-tunnel-<NODE_NAME>.service`)
+  is free to switch: resolve the name, edit the one line, `daemon-reload`,
+  restart the unit. No key is reissued, no client config changes, nobody
+  reconnects. Do this as soon as you find a unit on a name.
+- **`SERVER_PUBLIC_HOST`** is not free on a node that has already issued keys.
+  Every `.conf` and `vpn://` link already in a user's hands carries the old
+  value, and the panel cannot rewrite them — only reissuing the key does. Switch
+  it freely on a new node; on a node in service, schedule it together with the
+  reissue.
+
+Both are worth doing. Only the second one needs a maintenance window.
+
+The node cards in the admin panel show whatever `SERVER_PUBLIC_HOST` holds;
+following this section is what makes that display an address.
 
 ### Shared hosts — do not disturb other tenants
 
@@ -195,7 +268,9 @@ dies (`ServerAliveInterval` × `ServerAliveCountMax` ≈ 90 s to notice a black-
 connection), and `Restart=always` brings `autossh` itself back if it is killed.
 `enable` is what restores the tunnel after a reboot of the panel host; `After=`
 `docker.service` matters because the forward binds the `docker0` address, which
-does not exist until Docker is up.
+does not exist until Docker is up. `<NODE_HOST>` is the node's IPv4 address here
+for the same reason it is in `SERVER_PUBLIC_HOST` — a reconnecting tunnel must
+not depend on a resolver.
 
 Register that node with **`apiBaseUrl: http://host.docker.internal:4105`**, and
 verify the panel reaches it:
@@ -237,7 +312,7 @@ and polling telemetry. Use the admin UI (**VPN-ноды → Добавить н�
 | Field | Value |
 | --- | --- |
 | `name` | `<NODE_NAME>` |
-| `apiBaseUrl` | `http://host.docker.internal:4001` (tunnel) or `https://<NODE_HOST>:<PORT>` (direct) |
+| `apiBaseUrl` | `http://host.docker.internal:<tunnel port>` (tunnel, e.g. `4105`) or `https://<node hostname>:<PORT>` (direct; the hostname must match the TLS certificate) |
 | `apiKey` | *(from `secrets/`)* |
 | `protocol` | `awg3` (primary; the node still serves awg2 peers) |
 | `maxPeers` | node capacity (e.g. `250`) |
@@ -288,6 +363,7 @@ off by default.
 | `401` from the node-agent | `apiKey` mismatch | Re-copy the key from `secrets/` into the node record. |
 | Key stuck in `provisioning` | Worker can't reach the agent, or outbox stalled | Confirm the tunnel, then check worker logs for the `vpn-key.provision` job. |
 | `host.docker.internal` unresolved | Tunnel bound to `127.0.0.1` only | Re-open with `-L 0.0.0.0:4001:...` (§2). |
+| Node healthy in the panel, no client can connect | `SERVER_PUBLIC_HOST` is a DNS name the client's network blocks or poisons, or it resolves to Cloudflare | Set it to the node's public IPv4 address (§1.1), redeploy, reissue the keys. |
 | AWG container restarts, logs `can't open /usr/local/libexec/awgN-entrypoint.sh: Permission denied` | `infra/node` was copied with a non-root uid (a plain `tar -c`, `scp` from a workstation), and the entrypoints are mode 0700 | `chown -R root:root <node dir>` on the node, then re-deploy. Copy with `tar --owner=0 --group=0 --numeric-owner` to avoid it. |
 | Preflight fails `state file permissions must be 0600` | The node-agent rewrites `awg0.conf` / `clientsTable` with the default umask after a client changes, so they come back 0644 | `find <node dir>/state -type f -exec chmod 600 {} +`, then re-deploy. Access is still gated by the 0700 `state/` directory, so this blocks updates rather than exposing anything. |
 | Preflight fails with the node-agent image "not present locally" | `NODE_AGENT_IMAGE` was pinned to the *sending* host's ID after a `docker save`/`load` | Re-read the ID from `docker load`'s output **on the node** (§2). |
