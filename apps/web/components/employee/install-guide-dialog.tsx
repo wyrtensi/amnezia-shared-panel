@@ -67,6 +67,25 @@ export const AUDIENCE_PLATFORMS: Record<GuideAudience, readonly ClientPlatform[]
   ios: ["ios"],
 };
 
+/**
+ * The guide audience that covers a device type, or null when the device names
+ * no platform ("other", "unspecified") and the user must still choose. Takes a
+ * plain string for the same reason as deviceTypeLabel: a tab left open across a
+ * deploy receives whatever the new API sends, and an unknown value must fall
+ * back to the chooser rather than to a wrong instruction.
+ *
+ * Derived from AUDIENCE_PLATFORMS rather than written out a second time:
+ * ClientPlatform is a subset of DeviceType, and a hand-written copy would drift
+ * the moment a platform moves between audiences.
+ */
+export function guideAudienceForDevice(device: string): GuideAudience | null {
+  return (
+    GUIDE_AUDIENCES.find((audience) =>
+      (AUDIENCE_PLATFORMS[audience] as readonly string[]).includes(device),
+    ) ?? null
+  );
+}
+
 /** The mark shown on each chooser card; the desktop card leads with Windows. */
 const AUDIENCE_ICON: Record<GuideAudience, PlatformMark> = {
   desktop: DEVICE_ICON.windows,
@@ -122,11 +141,18 @@ export function InstallGuideDialog({
   onOpenChange,
   showConfSection,
   videos,
+  initialAudience = null,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   showConfSection: boolean;
   videos?: InstallGuideVideos | null;
+  /**
+   * Audience to open on, skipping the chooser. A key card knows the device the
+   * key was labelled for, so it opens the one instruction that applies; the
+   * chooser stays visible above so a wrong guess is one click to correct.
+   */
+  initialAudience?: GuideAudience | null;
 }) {
   const { t } = useT();
   const [release, setRelease] = React.useState<ClientRelease | null>(null);
@@ -147,7 +173,18 @@ export function InstallGuideDialog({
     };
   }, [open, release, failed]);
 
-  const [audience, setAudience] = React.useState<GuideAudience | null>(null);
+  const [audience, setAudience] = React.useState<GuideAudience | null>(
+    initialAudience,
+  );
+
+  // Each opening starts from the caller's audience: the header opens the
+  // chooser, a key card opens its own device. Without this the dialog would
+  // keep whatever the previous opening left behind.
+  const wasOpen = React.useRef(open);
+  React.useEffect(() => {
+    if (open && !wasOpen.current) setAudience(initialAudience);
+    wasOpen.current = open;
+  }, [open, initialAudience]);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
