@@ -80,7 +80,13 @@ test("a symlinked request.json is refused before it is read", executing, async (
 
   assert.equal(result.status, 1);
   assert.match(result.stderr, /refusing/);
-  assert.equal(await exists(join(f.spool, "result.json")), false, "nothing is written for a refused request");
+  // The refusal consumes the request and nothing retries it, so it MUST be
+  // reported: a silent refusal is indistinguishable from "never requested".
+  const refusal = JSON.parse(await readFile(join(f.spool, "result.json"), "utf8"));
+  assert.equal(refusal.ok, false);
+  assert.equal(refusal.id, "unknown", "the id is never parsed from a refused request");
+  assert.match(refusal.message, /not a regular spool file/);
+  assert.doesNotMatch(refusal.message, /stolen/, "the target content must not reach the result");
   assert.equal(await exists(join(f.spool, "request.json")), false, "the link is removed so the path unit stops re-firing");
   assert.doesNotMatch(result.stdout + result.stderr, /stolen/, "the target content must never be read");
 });
