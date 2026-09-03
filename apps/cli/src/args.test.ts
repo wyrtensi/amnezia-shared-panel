@@ -17,6 +17,7 @@ import {
   parseEnumFlag,
   parseKeyLimitMode,
   quotaCurrentLimit,
+  matchesNodeFilter,
   quotaTargetLabel,
 } from "./args.js";
 
@@ -331,5 +332,20 @@ describe("formatDeviceType", () => {
     // D7's rule for the web: an unknown string is shown, never mapped to a
     // message key. A pre-migration row must be visible, not silently blank.
     expect(formatDeviceType("laptop")).toBe("laptop");
+  });
+});
+
+describe("matchesNodeFilter", () => {
+  it("keeps every key when no filter is given", () => {
+    expect(matchesNodeFilter("n1", undefined)).toBe(true);
+  });
+
+  it("keeps only the named node", () => {
+    expect(matchesNodeFilter("n1", "n1")).toBe(true);
+    expect(matchesNodeFilter("n2", "n1")).toBe(false);
+  });
+
+  it("is case-insensitive, because ids are pasted from other output", () => {
+    expect(matchesNodeFilter("A1B2", "a1b2")).toBe(true);
   });
 });

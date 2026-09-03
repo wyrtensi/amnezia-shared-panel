@@ -147,6 +147,12 @@ separately.
 
 Both are worth doing. Only the second one needs a maintenance window.
 
+To audit a running fleet rather than one node, the CLI answers both halves:
+`nodes --hosts` classifies how the **panel** reaches each agent (`ip`,
+`docker-local`, `dns`), `nodes` shows the address **clients** reach each node at,
+and `keys --node=<id>` counts what a `SERVER_PUBLIC_HOST` switch would have to
+reissue.
+
 The node cards in the admin panel show whatever `SERVER_PUBLIC_HOST` holds;
 following this section is what makes that display an address.
 

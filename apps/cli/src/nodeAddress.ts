@@ -43,3 +43,39 @@ export const formatNodeAddress = (
   }
   return ip === host ? host : `${host} (${ip})`;
 };
+
+/**
+ * How the PANEL reaches a node's agent — the `apiBaseUrl` half of the
+ * IP-vs-DNS question. (The client half is the node's own SERVER_PUBLIC_HOST,
+ * rendered by `formatNodeAddress` above; the two are independent and a node
+ * can be wrong in either.) A DNS name here means the panel host resolves it
+ * before every poll, and a resolver failure is indistinguishable from an
+ * unhealthy node.
+ *
+ *   ip            an address literal, including a loopback tunnel end
+ *   docker-local  a container/compose name, resolved by Docker's own DNS
+ *   dns           a real hostname resolved by the panel host's resolver
+ *   unknown       unparseable — reported, never thrown
+ *
+ * See docs/NODE-CONNECT.md, "Use the IP address, not a DNS name".
+ */
+export const classifyNodeHost = (
+  apiBaseUrl: string,
+): "ip" | "docker-local" | "dns" | "unknown" => {
+  let host: string;
+  try {
+    host = new URL(apiBaseUrl).hostname;
+  } catch {
+    return "unknown";
+  }
+  if (!host) return "unknown";
+  // `new URL` hands back an IPv6 literal still wrapped in its brackets, which
+  // is the only place a colon can survive into a hostname.
+  if (IPV4_SHAPE.test(host) || host.startsWith("[")) return "ip";
+  // A single label (no dot) is resolved by Docker, not by public DNS; so is
+  // the Docker Desktop escape hatch, which has dots but is not public either.
+  if (!host.includes(".") || host === "host.docker.internal") {
+    return "docker-local";
+  }
+  return "dns";
+};

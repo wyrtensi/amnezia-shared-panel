@@ -32,6 +32,7 @@ import {
   flagOf,
   formatDeviceType,
   formatUpdateStatus,
+  matchesNodeFilter,
   parseDeviceType,
   parseEnumFlag,
   parseKeyLimitMode,
@@ -43,7 +44,7 @@ import {
   quotaTargetLabel,
 } from "./args.js";
 import type { UpdateStatusView } from "./args.js";
-import { formatNodeAddress } from "./nodeAddress.js";
+import { classifyNodeHost, formatNodeAddress } from "./nodeAddress.js";
 import {
   CLI_CONFIG_FORMATS,
   configFrameName,
@@ -190,6 +191,9 @@ type AdminKey = {
 type AdminNode = {
   id: string;
   name: string;
+  // How the PANEL reaches the agent, as opposed to publicHost below, which is
+  // how CLIENTS reach the node. Optional for the same reason as publicHost.
+  apiBaseUrl?: string;
   enabled: boolean;
   protocol: string;
   enabledProtocols?: string[] | null;
@@ -344,9 +348,12 @@ async function cmdKeys(args: string[]): Promise<void> {
   // Filter before rendering AND before --json, so `keys --device-type=unspecified
   // --json` is a scriptable census of the rows that still need re-classifying.
   const deviceFilter = flagOf(args, "device-type");
-  const byDevice = deviceFilter
-    ? keys.filter((key) => (key.deviceType ?? "unspecified") === deviceFilter)
-    : keys;
+  const nodeFilter = flagOf(args, "node");
+  const byDevice = keys
+    .filter((key) => matchesNodeFilter(key.nodeId, nodeFilter))
+    .filter((key) =>
+      deviceFilter ? (key.deviceType ?? "unspecified") === deviceFilter : true,
+    );
   // The audit behind the key card's warning: which existing keys pair a
   // platform whose client ignores route profiles with a split tunnel. The
   // wizard can no longer create that pair, but older keys, the CLI and an
@@ -393,6 +400,23 @@ async function cmdKeys(args: string[]): Promise<void> {
 async function cmdNodes(args: string[]): Promise<void> {
   const nodes = await api<AdminNode[]>("/api/admin/nodes");
   if (wantsJson(args)) return json(nodes);
+  // The panel->node half of the IP-vs-DNS audit, as one command rather than a
+  // script pasted out of a runbook. Its own table: the default one is about
+  // capacity and health, this one about how the panel dials each agent.
+  if (args.includes("--hosts")) {
+    console.log(
+      table(
+        nodes.map((node) => ({
+          name: node.name,
+          id: node.id,
+          "api host": node.apiBaseUrl ?? "—",
+          kind: classifyNodeHost(node.apiBaseUrl ?? ""),
+        })),
+        ["name", "id", "api host", "kind"],
+      ),
+    );
+    return;
+  }
   console.log(
     table(
       nodes.map((node) => ({
@@ -1193,17 +1217,21 @@ Read:
   overview                 Key metrics
   users                    List users (with each user's effective key-limit mode;
                           * marks a mode set on the user rather than inherited)
-  keys [--device-type=X]   List keys (with owner, platform + traffic); the flag filters
+  keys [--device-type=X]   List keys (with owner, platform + traffic); the flags filter
+      [--node=<id>]       to one stored platform, "unspecified" included, and/or to
       [--needs-profile-warning]
-                          to one stored platform, "unspecified" included.
+                          one node — the non-destructive way to count what a
+                          node-remove would take with it.
                           --needs-profile-warning lists only the keys whose platform
                           ignores route profiles yet carry a split tunnel, and adds
                           the route column
-  nodes                    List nodes (with protocols, capacity and the public
+  nodes [--hosts]          List nodes (with protocols, capacity and the public
                           address clients connect to: "name (ip)" once the panel
                           has resolved a DNS name, "name (unresolved)" when it
                           never could, "—" when the node-agent does not report
-                          one. --json also carries publicIpResolvedAt
+                          one. --json also carries publicIpResolvedAt.
+                          --hosts instead shows how the PANEL reaches each agent
+                          (apiBaseUrl) classified ip / docker-local / dns
   audit [--limit=N]        Recent audit events
   quota [--all] [--json]   Key-limit requests (pending by default; --all = every state).
                           The target and "now → requested" cells are read in that
