@@ -101,14 +101,20 @@ const ru = {
 
   // Device types
   "device.base": "Устройство",
-  "device.unspecified": "Не указывать",
-  "device.desktop": "Компьютер",
-  "device.laptop": "Ноутбук",
-  "device.iphone": "iPhone",
+  "device.unspecified": "Не указано",
   "device.android": "Android",
-  "device.phone": "Телефон",
-  "device.tablet": "Планшет",
+  "device.ios": "iPhone / iPad",
+  "device.macos": "macOS / MacBook",
+  "device.windows": "Windows / ПК",
+  "device.linux": "Linux",
   "device.other": "Другое",
+  // Base for the suggested key name. Separate from the card labels above
+  // because "iPhone / iPad" is a fine label and a terrible key name.
+  "device.name.android": "Android",
+  "device.name.ios": "iPhone",
+  "device.name.macos": "Mac",
+  "device.name.windows": "ПК",
+  "device.name.linux": "Linux",
 
   // Employee dashboard
   "emp.title": "Мои VPN-ключи",
@@ -782,13 +788,17 @@ const en = {
   // Device types
   "device.base": "Device",
   "device.unspecified": "Unspecified",
-  "device.desktop": "Desktop",
-  "device.laptop": "Laptop",
-  "device.iphone": "iPhone",
   "device.android": "Android",
-  "device.phone": "Phone",
-  "device.tablet": "Tablet",
+  "device.ios": "iPhone / iPad",
+  "device.macos": "macOS / MacBook",
+  "device.windows": "Windows / PC",
+  "device.linux": "Linux",
   "device.other": "Other",
+  "device.name.android": "Android",
+  "device.name.ios": "iPhone",
+  "device.name.macos": "Mac",
+  "device.name.windows": "PC",
+  "device.name.linux": "Linux",
 
   // Employee dashboard
   "emp.title": "My VPN keys",
