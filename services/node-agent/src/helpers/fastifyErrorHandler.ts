@@ -1,6 +1,7 @@
 import i18next from "i18next";
 import { APIError } from "@/utils/APIError";
 import { appLogger } from "@/config/winstonLogger";
+import { redactCommand } from "@/utils/redactCommand";
 import { FastifyError, FastifyReply, FastifyRequest } from "fastify";
 
 /**
@@ -54,7 +55,7 @@ export const fastifyErrorHandler = (
   if (error instanceof APIError) {
     if (error.statusCode >= 500) {
       appLogger.error(
-        `APIError ${error.statusCode} в ${req.method} ${req.url}: ${error.message}`,
+        `APIError ${error.statusCode} в ${req.method} ${req.url}: ${redactCommand(String(error.message))}`,
       );
     }
 
@@ -67,7 +68,7 @@ export const fastifyErrorHandler = (
 
   // Неизвестная ошибка
   appLogger.error(
-    `Необработанная ошибка в ${req.method} ${req.url}: ${error.message}`,
+    `Необработанная ошибка в ${req.method} ${req.url}: ${redactCommand(String(error.message))}`,
   );
 
   reply.code(500).send({
