@@ -1784,4 +1784,55 @@ describe("PostgresControlRepository global policy update", () => {
       expect(event?.metadata).toMatchObject({ fields: ["defaultKeyLimit"] });
     },
   );
+
+  // The admin policy page reads this row and posts it straight back, so the
+  // read output must always be valid write input. It was not: install_guide_videos
+  // was nullable while the contract models an object, so on any panel that had
+  // never attached a video the whole form failed with a VALIDATION_ERROR and
+  // nothing on the page could be saved. This case is written against the row
+  // rather than that one field, so the next column with the same shape is
+  // caught here instead of in production.
+  runDatabaseTest(
+    "accepts its own policy read back unchanged, nulls included",
+    async () => {
+      if (!database) return;
+      const repository = new PostgresControlRepository({
+        db: database.db,
+        keyring,
+      });
+      // Force the pre-0017 shape, which is what an upgraded panel actually
+      // holds until the backfill runs.
+      await database.db
+        .update(portalPolicy)
+        .set({ installGuideVideos: null as unknown as Record<string, never> })
+        .where(eq(portalPolicy.id, true));
+
+      const [row] = (await repository.adminList(
+        admin,
+        "portal-policy",
+      )) as Array<Record<string, unknown>>;
+      expect(row).toBeDefined();
+      // Exactly what apps/web/app/admin/policy/page.tsx submits.
+      const payload = { ...row };
+      delete payload.cfApiTokenSet;
+
+      await expect(
+        repository.adminAction(
+          admin,
+          "portal-policy",
+          "global",
+          "update",
+          payload,
+        ),
+      ).resolves.toBeDefined();
+
+      const [after] = (await repository.adminList(
+        admin,
+        "portal-policy",
+      )) as Array<Record<string, unknown>>;
+      // Null reads back as the empty object it always meant, and stays that
+      // way once written.
+      expect(after?.installGuideVideos).toEqual({});
+    },
+  );
 });

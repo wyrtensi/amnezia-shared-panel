@@ -36,6 +36,7 @@ import {
   defaultPortalPolicy,
   emptyGlobalRoutes,
   globalRoutesSchema,
+  installGuideVideosSchema,
   nodeOrderSchema,
   PROTOCOL_KINDS,
   recommendedNodeIdsSchema,
@@ -137,6 +138,13 @@ const adminPolicyUpdateSchema = portalPolicySchema.partial().extend({
   // portalPolicySchema is what stops them being overridable per user.
   recommendedNodeIds: recommendedNodeIdsSchema.optional(),
   nodeOrder: nodeOrderSchema.optional(),
+  // Accept the pre-0017 null as "no videos" instead of refusing the request.
+  // Null and {} mean the same thing here, and a client echoing back a row it
+  // read from an older panel must not be unable to save anything at all.
+  installGuideVideos: installGuideVideosSchema
+    .nullish()
+    .transform((value) => value ?? {})
+    .optional(),
 });
 
 type PortalPolicyRow = typeof portalPolicy.$inferSelect;
@@ -224,6 +232,12 @@ const stripPolicySecrets = (
   row: Record<string, unknown>,
 ): Record<string, unknown> => {
   const clone: Record<string, unknown> = { ...row };
+  // The admin page reads this row and posts it straight back, so anything it
+  // emits must be something the update schema accepts. Rows written before
+  // migration 0017 carry a null here while the contract models an object,
+  // which rejected the whole form with a VALIDATION_ERROR - the same
+  // normalisation toPolicy already does for the user-facing path.
+  clone.installGuideVideos ??= {};
   const cfApiTokenSet = Boolean(clone.cfApiTokenCiphertext);
   delete clone.cfApiTokenCiphertext;
   delete clone.cfApiTokenNonce;

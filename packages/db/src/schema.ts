@@ -413,7 +413,14 @@ export const portalPolicy = pgTable(
     // audience ({ desktop, android, ios }). Nullable and null by default: the
     // guide renders a placeholder until an admin attaches recordings, so a
     // panel that has none is not broken, just not illustrated.
-    installGuideVideos: jsonb("install_guide_videos").$type<InstallGuideVideos>(),
+    // NOT NULL with an empty-object default: the contract models this as an
+    // object with a `.default({})`, so a null here is a value the API's own
+    // read hands out and its own write refuses - which wedged the whole admin
+    // policy form on every panel that never set a video.
+    installGuideVideos: jsonb("install_guide_videos")
+      .$type<InstallGuideVideos>()
+      .default({})
+      .notNull(),
     dailyRetentionDays: integer("daily_retention_days"),
     // Cloudflare Access two-way sync config. The API token is stored encrypted
     // and never returned to the client (write-only, replaceable).
