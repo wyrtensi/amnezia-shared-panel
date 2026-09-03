@@ -273,9 +273,12 @@ const ru = {
   "install.platform.linux": "Linux",
   "install.platform.android": "Android",
   "install.platform.ios": "iPhone и iPad",
-  "install.group.desktop": "Компьютер — Windows, macOS, Linux",
+  "install.chooseTitle": "Выберите устройство",
+  "install.chooseHint":
+    "Выберите устройство выше — покажем инструкцию именно для него.",
+  "install.group.desktop": "Windows, macOS, Linux",
   "install.group.android": "Android",
-  "install.group.ios": "iPhone и iPad",
+  "install.group.ios": "iPhone и iPad (iOS)",
   "install.pickFile": "Выберите файл для своей системы",
   "install.desktopNote":
     "Кнопки Windows, macOS и Linux скачивают установщик последнего выпуска. Запустите скачанный файл и следуйте установщику.",
@@ -1046,9 +1049,12 @@ const en = {
   "install.platform.linux": "Linux",
   "install.platform.android": "Android",
   "install.platform.ios": "iPhone and iPad",
-  "install.group.desktop": "Computer — Windows, macOS, Linux",
+  "install.chooseTitle": "Choose your device",
+  "install.chooseHint":
+    "Pick a device above and the guide shows the steps for it.",
+  "install.group.desktop": "Windows, macOS, Linux",
   "install.group.android": "Android",
-  "install.group.ios": "iPhone and iPad",
+  "install.group.ios": "iPhone and iPad (iOS)",
   "install.pickFile": "Pick the file for your system",
   "install.desktopNote":
     "The Windows, macOS and Linux buttons download the installer from the latest release. Run the downloaded file and follow the installer.",

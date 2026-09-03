@@ -32,6 +32,7 @@ import { apiRequest } from "@/lib/api";
 import { formatBytesParts } from "@/lib/format";
 import { useT } from "@/lib/i18n/provider";
 import { DEVICE_ICON } from "@/components/device-icon";
+import { OptionCards } from "@/components/option-cards";
 import type { PlatformMark } from "@/components/icons/platform-marks";
 import type { Lang } from "@/lib/i18n/messages";
 
@@ -44,6 +45,32 @@ const PLATFORM_ICON: Record<ClientPlatform, PlatformMark> = {
   windows: DEVICE_ICON.windows,
   macos: DEVICE_ICON.macos,
   linux: DEVICE_ICON.linux,
+  android: DEVICE_ICON.android,
+  ios: DEVICE_ICON.ios,
+};
+
+/**
+ * The three audiences the guide is written for. They are not vendors: they are
+ * the groups whose steps actually differ. Windows, macOS and Linux share one
+ * story (download an installer, run it), Android has a store plus an APK escape
+ * hatch, and iPhone / iPad have a differently-named store listing and the
+ * route-profile limitation.
+ *
+ * The user picks one and reads only that. A flat guide made an iPhone user
+ * scroll past Windows advice to find theirs.
+ */
+export const GUIDE_AUDIENCES = ["desktop", "android", "ios"] as const;
+export type GuideAudience = (typeof GUIDE_AUDIENCES)[number];
+
+export const AUDIENCE_PLATFORMS: Record<GuideAudience, readonly ClientPlatform[]> = {
+  desktop: ["windows", "macos", "linux"],
+  android: ["android"],
+  ios: ["ios"],
+};
+
+/** The mark shown on each chooser card; the desktop card leads with Windows. */
+const AUDIENCE_ICON: Record<GuideAudience, PlatformMark> = {
+  desktop: DEVICE_ICON.windows,
   android: DEVICE_ICON.android,
   ios: DEVICE_ICON.ios,
 };
@@ -119,17 +146,7 @@ export function InstallGuideDialog({
     };
   }, [open, release, failed]);
 
-  // The three groups the guide is organised into. Built by filtering the flat
-  // per-platform list the API returns, so a platform added to the contract
-  // shows up here rather than silently disappearing from the dialog.
-  const byPlatform = (...wanted: ClientPlatform[]) =>
-    (release?.downloads ?? []).filter((entry) =>
-      wanted.includes(entry.platform),
-    );
-  const desktop = byPlatform("windows", "macos", "linux");
-  const androidGroup = byPlatform("android");
-  const ios = byPlatform("ios");
-  const android = androidGroup[0];
+  const [audience, setAudience] = React.useState<GuideAudience | null>(null);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -139,160 +156,34 @@ export function InstallGuideDialog({
           <DialogDescription>{t("install.desc")}</DialogDescription>
         </DialogHeader>
 
-        <div className="space-y-6">
-          <GuideSection number={1} title={t("install.installTitle")}>
-            {failed ? (
-              <Callout tone="warning" icon={<TriangleAlert className="h-4 w-4" />}>
-                {t("install.linksUnavailable")}
-              </Callout>
-            ) : !release ? (
-              <div className="space-y-2">
-                {[0, 1, 2].map((index) => (
-                  <Skeleton key={index} className="h-16 rounded-md" />
-                ))}
-              </div>
-            ) : (
-              <>
-                {release.fallback ? (
-                  <Callout
-                    tone="warning"
-                    icon={<TriangleAlert className="h-4 w-4" />}
-                  >
-                    {t("install.linksStale")}
-                  </Callout>
-                ) : null}
-                {/* Three groups, not five buttons: the steps that follow differ
-                    by group, not by vendor. Windows, macOS and Linux are one
-                    desktop story (download an installer, run it); Android has a
-                    store plus an APK escape hatch; iOS has a differently-named
-                    store listing and the route-profile limitation. Each group
-                    carries its own notes so a user reads one block, not all. */}
-                <div className="space-y-4">
-                  <PlatformGroup
-                    title={t("install.group.desktop")}
-                    downloads={desktop}
-                  >
-                    <p className="text-xs leading-snug text-muted-foreground">
-                      {t("install.desktopNote")}
-                    </p>
-                  </PlatformGroup>
+        {/* Pick the device first, read one instruction after. */}
+        <OptionCards
+          ariaLabel={t("install.chooseTitle")}
+          columns={3}
+          value={audience}
+          onChange={setAudience}
+          options={GUIDE_AUDIENCES.map((value) => {
+            const Icon = AUDIENCE_ICON[value];
+            return {
+              value,
+              label: t(`install.group.${value}`),
+              icon: <Icon />,
+            };
+          })}
+        />
 
-                  <PlatformGroup
-                    title={t("install.group.android")}
-                    downloads={androidGroup}
-                  >
-                    {android?.alternate ? (
-                      <ApkFallback
-                        asset={android.alternate}
-                        releaseUrl={release.releaseUrl}
-                      />
-                    ) : null}
-                  </PlatformGroup>
-
-                  <PlatformGroup title={t("install.group.ios")} downloads={ios}>
-                    <Callout
-                      tone="info"
-                      icon={<TabletSmartphone className="h-4 w-4" />}
-                    >
-                      {t("install.iosNote")}
-                    </Callout>
-                    {/*
-                      iOS connects with a route profile but applies none of its
-                      rules — a silent failure the user cannot see. Stated here,
-                      inside the iOS block, so it reaches iPhone users whose
-                      policy hides the .conf section below. See D8.
-                    */}
-                    <Callout
-                      tone="warning"
-                      icon={<TriangleAlert className="h-4 w-4" />}
-                    >
-                      {t("install.iosProfileWarning")}
-                    </Callout>
-                  </PlatformGroup>
-                </div>
-                {release.version ? (
-                  <p className="text-xs leading-snug text-muted-foreground">
-                    {t("install.latestVersion", { version: release.version })}
-                  </p>
-                ) : null}
-              </>
-            )}
-
-            <p className="text-xs leading-snug text-muted-foreground">
-              {t("install.versionNote", { version: MIN_AWG3_CLIENT_VERSION })}
-            </p>
-          </GuideSection>
-
-          <GuideSection number={2} title={t("install.addTitle")}>
-            <ol className="list-decimal space-y-1.5 pl-5 text-sm">
-              {ADD_STEPS.map((key) => (
-                <li key={key}>{t(key)}</li>
-              ))}
-            </ol>
-            <p className="text-xs leading-snug text-muted-foreground">
-              {t("install.addResult")}
-            </p>
-          </GuideSection>
-
-          {showConfSection ? (
-            <GuideSection number={3} title={t("install.confTitle")}>
-              <p className="text-sm">{t("install.confBody")}</p>
-              <p className="text-sm">{t("install.confSplitBest")}</p>
-              {/*
-                confSplitBest recommends a split-profile .conf; on iOS that
-                config connects and filters nothing. The exception must stay
-                directly under the recommendation — install-guide-dialog.test.ts
-                asserts the adjacency so an edit cannot separate them. See D8.
-              */}
-              <Callout tone="warning" icon={<TriangleAlert className="h-4 w-4" />}>
-                {t("install.confIosWarning")}
-              </Callout>
-
-              <h4 className="text-sm font-medium">
-                {t("install.confAmneziaTitle")}
-              </h4>
-              <ol className="list-decimal space-y-1.5 pl-5 text-sm">
-                {CONF_AMNEZIA_STEPS.map((key) => (
-                  <li key={key}>{t(key)}</li>
-                ))}
-              </ol>
-
-              <h4 className="text-sm font-medium">
-                {t("install.confOtherTitle")}
-              </h4>
-              <p className="text-sm">{t("install.confOtherBody")}</p>
-              <Callout tone="warning" icon={<TriangleAlert className="h-4 w-4" />}>
-                {t("install.confStockWarning")}
-              </Callout>
-              <Callout tone="info" icon={<FileDown className="h-4 w-4" />}>
-                {t("install.confDomainsWarning")}
-              </Callout>
-            </GuideSection>
-          ) : null}
-
-          <GuideSection
-            number={showConfSection ? 4 : 3}
-            title={t("install.fixTitle")}
-          >
-            <ul className="list-disc space-y-1.5 pl-5 text-sm">
-              {FIXES.map((key) => (
-                <li key={key}>{t(key)}</li>
-              ))}
-            </ul>
-            {release ? (
-              <Button asChild variant="secondary" size="sm" className="w-fit">
-                <a
-                  href={release.releaseUrl}
-                  target="_blank"
-                  rel="noreferrer"
-                  title={t("install.opensNewTab")}
-                >
-                  <RefreshCw className="h-4 w-4" /> {t("install.checkUpdates")}
-                </a>
-              </Button>
-            ) : null}
-          </GuideSection>
-        </div>
+        {audience ? (
+          <InstallInstructions
+            audience={audience}
+            release={release}
+            failed={failed}
+            showConfSection={showConfSection}
+          />
+        ) : (
+          <p className="text-sm text-muted-foreground">
+            {t("install.chooseHint")}
+          </p>
+        )}
 
         <DialogFooter>
           <Button
@@ -344,31 +235,183 @@ function PlatformButton({ download }: { download: ClientPlatformDownload }) {
   );
 }
 
+
 /**
- * One audience's block: a heading, its download buttons, and the notes that
- * apply only to it. Grouping is what makes the guide readable — a user on an
- * iPhone should not have to filter Windows advice out of a flat list.
+ * The guide itself, for ONE audience. Exported separately from the dialog so
+ * the same instruction can later be embedded elsewhere — the create-key wizard
+ * or a key card — without copying it.
  */
-function PlatformGroup({
-  title,
-  downloads,
-  children,
+export function InstallInstructions({
+  audience,
+  release,
+  failed,
+  showConfSection,
 }: {
-  title: string;
-  downloads: ClientPlatformDownload[];
-  children?: React.ReactNode;
+  audience: GuideAudience;
+  release: ClientRelease | null;
+  failed: boolean;
+  showConfSection: boolean;
 }) {
-  if (downloads.length === 0) return null;
+  const { t } = useT();
+  const downloads = (release?.downloads ?? []).filter((entry) =>
+    AUDIENCE_PLATFORMS[audience].includes(entry.platform),
+  );
+  const android = downloads.find((entry) => entry.platform === "android");
+  // The .conf route is a real improvement on a computer and on Android. On iOS
+  // it changes nothing — the rules are ignored either way — so that audience
+  // gets the reason instead of instructions it cannot use. See D8.
+  const confApplies = showConfSection && audience !== "ios";
+  const fixNumber = confApplies ? 4 : 3;
+
   return (
-    <div className="space-y-2 rounded-lg border border-border/60 p-3">
-      <p className="text-sm font-medium">{title}</p>
-      <div className="grid gap-2 sm:grid-cols-2">
-        {downloads.map((entry) => (
-          <PlatformButton key={entry.platform} download={entry} />
-        ))}
-      </div>
-      {children}
-    </div>
+    <div className="space-y-6">
+          <GuideSection number={1} title={t("install.installTitle")}>
+            {failed ? (
+              <Callout tone="warning" icon={<TriangleAlert className="h-4 w-4" />}>
+                {t("install.linksUnavailable")}
+              </Callout>
+            ) : !release ? (
+              <div className="space-y-2">
+                {[0, 1, 2].map((index) => (
+                  <Skeleton key={index} className="h-16 rounded-md" />
+                ))}
+              </div>
+            ) : (
+              <>
+                {release.fallback ? (
+                  <Callout
+                    tone="warning"
+                    icon={<TriangleAlert className="h-4 w-4" />}
+                  >
+                    {t("install.linksStale")}
+                  </Callout>
+                ) : null}
+                {/* One audience's buttons and only its notes. */}
+                <div className="grid gap-2 sm:grid-cols-2">
+                  {downloads.map((entry) => (
+                    <PlatformButton key={entry.platform} download={entry} />
+                  ))}
+                </div>
+
+                {audience === "desktop" ? (
+                  <p className="text-xs leading-snug text-muted-foreground">
+                    {t("install.desktopNote")}
+                  </p>
+                ) : null}
+
+                {audience === "android" && android?.alternate ? (
+                  <ApkFallback
+                    asset={android.alternate}
+                    releaseUrl={release.releaseUrl}
+                  />
+                ) : null}
+
+                {audience === "ios" ? (
+                  <>
+                    <Callout
+                      tone="info"
+                      icon={<TabletSmartphone className="h-4 w-4" />}
+                    >
+                      {t("install.iosNote")}
+                    </Callout>
+                    {/*
+                      iOS connects with a route profile but applies none of its
+                      rules — a silent failure the user cannot see. Shown to the
+                      iOS audience whatever the .conf policy is, because the
+                      section that repeats it below can be switched off. See D8.
+                    */}
+                    <Callout
+                      tone="warning"
+                      icon={<TriangleAlert className="h-4 w-4" />}
+                    >
+                      {t("install.iosProfileWarning")}
+                    </Callout>
+                  </>
+                ) : null}
+                {release.version ? (
+                  <p className="text-xs leading-snug text-muted-foreground">
+                    {t("install.latestVersion", { version: release.version })}
+                  </p>
+                ) : null}
+              </>
+            )}
+
+            <p className="text-xs leading-snug text-muted-foreground">
+              {t("install.versionNote", { version: MIN_AWG3_CLIENT_VERSION })}
+            </p>
+          </GuideSection>
+
+          <GuideSection number={2} title={t("install.addTitle")}>
+            <ol className="list-decimal space-y-1.5 pl-5 text-sm">
+              {ADD_STEPS.map((key) => (
+                <li key={key}>{t(key)}</li>
+              ))}
+            </ol>
+            <p className="text-xs leading-snug text-muted-foreground">
+              {t("install.addResult")}
+            </p>
+          </GuideSection>
+
+          {confApplies ? (
+            <GuideSection number={3} title={t("install.confTitle")}>
+              <p className="text-sm">{t("install.confBody")}</p>
+              <p className="text-sm">{t("install.confSplitBest")}</p>
+              {/*
+                confSplitBest recommends a split-profile .conf; on iOS that
+                config connects and filters nothing. The exception must stay
+                directly under the recommendation — install-guide-dialog.test.ts
+                asserts the adjacency so an edit cannot separate them. See D8.
+              */}
+              <Callout tone="warning" icon={<TriangleAlert className="h-4 w-4" />}>
+                {t("install.confIosWarning")}
+              </Callout>
+
+              <h4 className="text-sm font-medium">
+                {t("install.confAmneziaTitle")}
+              </h4>
+              <ol className="list-decimal space-y-1.5 pl-5 text-sm">
+                {CONF_AMNEZIA_STEPS.map((key) => (
+                  <li key={key}>{t(key)}</li>
+                ))}
+              </ol>
+
+              <h4 className="text-sm font-medium">
+                {t("install.confOtherTitle")}
+              </h4>
+              <p className="text-sm">{t("install.confOtherBody")}</p>
+              <Callout tone="warning" icon={<TriangleAlert className="h-4 w-4" />}>
+                {t("install.confStockWarning")}
+              </Callout>
+              <Callout tone="info" icon={<FileDown className="h-4 w-4" />}>
+                {t("install.confDomainsWarning")}
+              </Callout>
+            </GuideSection>
+          ) : null}
+
+          <GuideSection
+            number={fixNumber}
+            title={t("install.fixTitle")}
+          >
+            <ul className="list-disc space-y-1.5 pl-5 text-sm">
+              {FIXES.map((key) => (
+                <li key={key}>{t(key)}</li>
+              ))}
+            </ul>
+            {release ? (
+              <Button asChild variant="secondary" size="sm" className="w-fit">
+                <a
+                  href={release.releaseUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  title={t("install.opensNewTab")}
+                >
+                  <RefreshCw className="h-4 w-4" /> {t("install.checkUpdates")}
+                </a>
+              </Button>
+            ) : null}
+          </GuideSection>
+        </div>
+
   );
 }
 
