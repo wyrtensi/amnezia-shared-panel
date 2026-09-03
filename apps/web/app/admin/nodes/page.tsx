@@ -6,6 +6,7 @@ import {
   ArrowUpDown,
   Boxes,
   Gauge,
+  Globe,
   Pencil,
   Plus,
   RefreshCw,
@@ -42,6 +43,7 @@ import { cn } from "@/lib/utils";
 import { useAdminData, type AdminNode } from "@/components/admin/admin-data";
 import { useT } from "@/lib/i18n/provider";
 import type { ProtocolKind } from "@/lib/types";
+import { isIpLiteral } from "@amnezia/contracts";
 
 const preferredProtocol = (list: ProtocolKind[]): ProtocolKind =>
   list.includes("awg3") ? "awg3" : (list[0] ?? "awg3");
@@ -355,6 +357,18 @@ function NodeCard({
           <div className="text-right text-foreground">
             {formatDateTime(node.lastSyncAt, lang)}
           </div>
+          <div className="flex items-center gap-1">
+            <Globe className="h-3.5 w-3.5" />
+            <span>{t("nodes.publicAddress")}</span>
+            <Hint>{t("nodes.publicAddressHint")}</Hint>
+          </div>
+          <div className="min-w-0 text-right text-foreground">
+            <NodePublicAddress
+              host={node.publicHost}
+              ip={node.publicIp}
+              resolvedAt={node.publicIpResolvedAt}
+            />
+          </div>
         </dl>
 
         {node.lastError ? (
@@ -393,6 +407,76 @@ function NodeCard({
         </div>
       </CardContent>
     </Card>
+  );
+}
+
+/**
+ * The value cell of the card's "public address" row: where clients reach the
+ * node, plus the IP the panel resolved it to when the host is a DNS name. Three
+ * states an operator must not confuse: the agent never told us; it told us and
+ * the name resolved; it told us and the name has never resolved.
+ */
+function NodePublicAddress({
+  host,
+  ip,
+  resolvedAt,
+}: {
+  host: string | null;
+  ip: string | null;
+  resolvedAt: string | null;
+}) {
+  const { t, lang } = useT();
+  if (host === null) {
+    return (
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <span className="truncate text-muted-foreground">
+            {t("nodes.publicAddressUnknown")}
+          </span>
+        </TooltipTrigger>
+        <TooltipContent>{t("nodes.publicAddressUnknownHint")}</TooltipContent>
+      </Tooltip>
+    );
+  }
+  // An IP literal is its own answer; repeating it as a resolved address would
+  // be noise, and there was no lookup to date-stamp.
+  if (isIpLiteral(host)) {
+    return <span className="truncate tabular">{host}</span>;
+  }
+  return (
+    <div className="flex min-w-0 flex-col items-end gap-0.5">
+      <span className="truncate">{host}</span>
+      {ip === null ? (
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <span>
+              <Badge variant="outline" className="gap-1">
+                <TriangleAlert className="h-3 w-3" />
+                {t("nodes.publicIpUnresolved")}
+              </Badge>
+            </span>
+          </TooltipTrigger>
+          <TooltipContent>{t("nodes.publicIpUnresolvedHint")}</TooltipContent>
+        </Tooltip>
+      ) : (
+        // The resolution time lives in the tooltip, not on the row: it says
+        // when the panel learned the address, which an operator wants once and
+        // never again. There is deliberately no staleness warning — the address
+        // is resolved once because a node's public address does not change, so
+        // a "this might be old" badge would fire on a condition that cannot
+        // happen and would train the operator to ignore badges.
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <span className="truncate tabular">{ip}</span>
+          </TooltipTrigger>
+          <TooltipContent>
+            {t("nodes.publicIpResolvedAt", {
+              when: formatDateTime(resolvedAt, lang),
+            })}
+          </TooltipContent>
+        </Tooltip>
+      )}
+    </div>
   );
 }
 

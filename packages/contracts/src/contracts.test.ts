@@ -18,8 +18,11 @@ import {
   MAX_GLOBAL_DOMAINS,
   installGuideVideosSchema,
   installVideoEmbed,
+  isIpLiteral,
+  isIpv4Literal,
   MIN_AWG3_CLIENT_VERSION,
   nodeKeyLimitsSchema,
+  nodePublicAddressSchema,
   portalPolicyOverrideSchema,
   portalPolicySchema,
   quotaRequestSchema,
@@ -150,6 +153,7 @@ describe("portalPolicySchema", () => {
       showPublicKey: false,
       showLastUsed: true,
       showTraffic: true,
+      showNodeAddress: false,
       // No recordings until an admin adds them; the guide reads without one.
       installGuideVideos: {},
       keyLimitMode: "per_node",
@@ -190,8 +194,89 @@ describe("portalPolicySchema", () => {
     ] as const) {
       expect(policy[field], field).toBe(true);
     }
-    // The public key stays hidden until an admin turns it on.
+    // The public key and the node's address stay hidden until an admin turns
+    // them on. Unlike T8's showNodeStatus (default true), a node's address is
+    // operational information about the fleet, so an upgrade must not start
+    // showing it to every user on an existing deployment.
     expect(policy.showPublicKey).toBe(false);
+    expect(policy.showNodeAddress).toBe(false);
+  });
+});
+
+describe("nodePublicAddressSchema", () => {
+  it("accepts a DNS host with a resolved IPv4", () => {
+    expect(
+      nodePublicAddressSchema.parse({
+        publicHost: "vpn.example.com",
+        publicIp: "203.0.113.10",
+        publicIpResolvedAt: "2026-09-03T00:00:00.000Z",
+      }),
+    ).toEqual({
+      publicHost: "vpn.example.com",
+      publicIp: "203.0.113.10",
+      publicIpResolvedAt: "2026-09-03T00:00:00.000Z",
+    });
+  });
+
+  it("accepts an unreported node (all null) and an unresolved host", () => {
+    expect(
+      nodePublicAddressSchema.parse({
+        publicHost: null,
+        publicIp: null,
+        publicIpResolvedAt: null,
+      }),
+    ).toEqual({ publicHost: null, publicIp: null, publicIpResolvedAt: null });
+    expect(
+      nodePublicAddressSchema.parse({
+        publicHost: "vpn.example.com",
+        publicIp: null,
+        publicIpResolvedAt: null,
+      }),
+    ).toEqual({
+      publicHost: "vpn.example.com",
+      publicIp: null,
+      publicIpResolvedAt: null,
+    });
+  });
+
+  it("rejects a publicIp that is not an IP literal", () => {
+    expect(
+      nodePublicAddressSchema.safeParse({
+        publicHost: "vpn.example.com",
+        publicIp: "vpn.example.com",
+        publicIpResolvedAt: null,
+      }).success,
+    ).toBe(false);
+  });
+
+  it("classifies an IPv6 literal as an IP but refuses to store one as publicIp", () => {
+    expect(isIpLiteral("2001:db8::1")).toBe(true);
+    expect(
+      nodePublicAddressSchema.safeParse({
+        publicHost: "v6.example.com",
+        publicIp: "2001:db8::1",
+        publicIpResolvedAt: "2026-09-03T00:00:00.000Z",
+      }).success,
+    ).toBe(false);
+  });
+});
+
+describe("isIpLiteral", () => {
+  it("recognises IPv4 and IPv6 literals", () => {
+    expect(isIpLiteral("203.0.113.10")).toBe(true);
+    expect(isIpLiteral("2001:db8::1")).toBe(true);
+  });
+
+  it("treats DNS names and junk as non-literals", () => {
+    expect(isIpLiteral("vpn.example.com")).toBe(false);
+    expect(isIpLiteral("")).toBe(false);
+    expect(isIpLiteral("203.0.113.10:51820")).toBe(false);
+  });
+
+  it("narrows to IPv4 only for what may be stored as publicIp", () => {
+    expect(isIpv4Literal("203.0.113.10")).toBe(true);
+    expect(isIpv4Literal("2001:db8::1")).toBe(false);
+    expect(isIpv4Literal("vpn.example.com")).toBe(false);
   });
 });
 

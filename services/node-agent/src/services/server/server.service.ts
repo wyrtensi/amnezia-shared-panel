@@ -59,6 +59,7 @@ export class ServerService {
       maxPeers: appConfig.SERVER_MAX_PEERS || 0,
       totalPeers: clients.reduce((acc, client) => acc + client.peers.length, 0),
       protocols,
+      publicHost: appConfig.SERVER_PUBLIC_HOST || "",
     };
   }
 

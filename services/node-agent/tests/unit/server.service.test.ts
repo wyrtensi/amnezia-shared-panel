@@ -105,6 +105,7 @@ describe("ServerService", () => {
       maxPeers: 200,
       totalPeers: 6,
       protocols: [Protocol.AMNEZIAWG, Protocol.AMNEZIAWG2, Protocol.XRAY],
+      publicHost: "127.0.0.1",
     });
   });
 

@@ -72,6 +72,13 @@ export type NodeView = {
   supportedProtocols?: ProtocolKind[];
   selectableProtocols?: ProtocolKind[];
   lastHealthAt?: string | null;
+  /**
+   * Where clients reach this node — the resolved IPv4 when the panel has one,
+   * else the host the node reported. Present only when the portal policy's
+   * showNodeAddress is on for this user; absent otherwise, which is why it is
+   * optional rather than nullable.
+   */
+  publicAddress?: string | null;
 };
 
 export type KeyTraffic = { receivedBytes: string; sentBytes: string };

@@ -331,6 +331,17 @@ export function EmployeeDashboard({
                       <span className="block truncate text-sm text-muted-foreground">
                         {node.name}
                       </span>
+                      {/* Conditional on the field, not on a policy flag: the
+                          control API omits it when the policy says no, so the
+                          dashboard holds no rule of its own. */}
+                      {node.publicAddress ? (
+                        <span className="block truncate text-xs text-muted-foreground">
+                          <span className="sr-only">
+                            {t("emp.nodeAddress")}:{" "}
+                          </span>
+                          <code className="tabular">{node.publicAddress}</code>
+                        </span>
+                      ) : null}
                       {showTraffic ? (
                         <InlineTraffic
                           today={traffic?.today}

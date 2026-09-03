@@ -229,8 +229,54 @@ export const createNodeRequestSchema = z.object({
 export const updateNodeRequestSchema = createNodeRequestSchema
   .omit({ apiKey: true })
   .partial()
-  .extend({ apiKey: z.string().min(32).max(4_096).optional() })
+  .extend({
+    apiKey: z.string().min(32).max(4_096).optional(),
+    // Only ever null: the resolved address is an observation the worker makes,
+    // never something an operator types, so this clears it rather than setting
+    // it. The panel resolves a node's host once and keeps the answer, which is
+    // right because a server's address does not change under it -- but if one
+    // ever does while keeping the same DNS name, nothing would notice. Clearing
+    // the stored value makes the next telemetry tick look it up again, so the
+    // recovery is a command rather than an UPDATE against production.
+    publicIp: z.null().optional(),
+  })
   .refine((value) => Object.keys(value).length > 0, "At least one field is required");
+
+// --- Node public address ---------------------------------------------------
+// Where clients reach a node. `publicHost` is the node-agent's own
+// SERVER_PUBLIC_HOST as it reports it (an IP literal or a DNS name, never a
+// URL). `publicIp` is what the panel's worker resolved that host to: the host
+// itself when it is already an IPv4 literal, otherwise the first A record.
+// Both are null until an agent that reports the field has been polled;
+// `publicIp` alone is null when the lookup failed or the host has no IPv4
+// address. Consumed by the IP-vs-domain audit (backlog T6).
+
+// Two different questions, deliberately two different schemas:
+//  - "is this string an IP rather than a DNS name?" — both families count, and
+//    T6's audit needs to classify an IPv6 host as an IP, not as a name.
+//  - "what may be stored as this node's resolved address?" — IPv4 only, because
+//    the client endpoint line cannot carry an IPv6 address (no bracketing in
+//    amneziaWg{,2,3}.service.ts), so an IPv6 value would be unusable.
+const ipLiteralSchema = z.union([z.ipv4(), z.ipv6()]);
+
+export const nodePublicAddressSchema = z.object({
+  publicHost: z.string().trim().min(1).max(253).nullable(),
+  publicIp: z.ipv4().nullable(),
+  // When publicIp was learned. A node's public address is a property of the
+  // server and does not change, so the worker resolves it once and this is a
+  // diagnostic — "where the panel got that number, and when" — not a freshness
+  // indicator. Null exactly when publicIp is null.
+  publicIpResolvedAt: z.iso.datetime().nullable(),
+});
+export type NodePublicAddress = z.infer<typeof nodePublicAddressSchema>;
+
+/** True when `host` is a bare IPv4/IPv6 literal (no port, no brackets). */
+export const isIpLiteral = (host: string): boolean =>
+  ipLiteralSchema.safeParse(host).success;
+
+/** True only for a bare IPv4 literal — what may be stored as `publicIp`. */
+export const isIpv4Literal = (host: string): boolean =>
+  z.ipv4().safeParse(host).success;
 
 export const createUserRequestSchema = z.object({
   email: z.email().max(320),
@@ -343,6 +389,12 @@ export const portalPolicySchema = z.object({
   showPublicKey: z.boolean().default(false),
   showLastUsed: z.boolean().default(true),
   showTraffic: z.boolean().default(true),
+  // Whether ordinary users see the address of each node they may use
+  // (GET /api/nodes -> publicAddress). Default OFF: a node's address is
+  // operational information, so turning it on is a deliberate decision rather
+  // than something an upgrade does to an existing deployment. Note this is the
+  // opposite default from showNodeStatus, which ships on.
+  showNodeAddress: z.boolean().default(false),
   // Walkthrough videos for the connection guide, one per audience. Empty by
   // default; an admin fills them in when the recordings exist.
   installGuideVideos: installGuideVideosSchema.default({}),

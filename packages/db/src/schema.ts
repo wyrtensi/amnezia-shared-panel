@@ -154,6 +154,19 @@ export const nodes = pgTable(
       .$type<Record<string, boolean | number>>()
       .default({})
       .notNull(),
+    // Where clients reach this node: the node-agent's SERVER_PUBLIC_HOST as it
+    // reports it in GET /server (IP literal or DNS name). Null until an agent
+    // that reports the field has been polled successfully.
+    publicHost: text("public_host"),
+    // `publicHost` resolved to an IPv4 address by the worker. Null until the
+    // first successful resolution; after that it is sticky, because a node's
+    // public address is fixed for the server's lifetime and is therefore
+    // resolved once rather than on every poll.
+    publicIp: text("public_ip"),
+    // When publicIp was learned. Null exactly when publicIp is null. It records
+    // where the panel got that number and when — a diagnostic, not a staleness
+    // clock.
+    publicIpResolvedAt: timestamp("public_ip_resolved_at", { withTimezone: true }),
     credentialsCiphertext: text("credentials_ciphertext").notNull(),
     credentialsNonce: text("credentials_nonce").notNull(),
     credentialsAuthTag: text("credentials_auth_tag").notNull(),
@@ -379,6 +392,10 @@ export const portalPolicy = pgTable(
     showPublicKey: boolean("show_public_key").default(false).notNull(),
     showLastUsed: boolean("show_last_used").default(true).notNull(),
     showTraffic: boolean("show_traffic").default(true).notNull(),
+    // Whether users see each node's public address on their dashboard. Default
+    // OFF, unlike the other display flags around it: an existing deployment
+    // must not start showing the fleet's addresses because it was upgraded.
+    showNodeAddress: boolean("show_node_address").default(false).notNull(),
     // Walkthrough videos for the in-panel connection guide, one URL per
     // audience ({ desktop, android, ios }). Nullable and null by default: the
     // guide renders a placeholder until an admin attaches recordings, so a

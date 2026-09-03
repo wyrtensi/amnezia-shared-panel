@@ -15,6 +15,7 @@ export const getServerSchema = {
         "maxPeers",
         "totalPeers",
         "protocols",
+        "publicHost",
       ],
       properties: {
         id: {
@@ -50,6 +51,12 @@ export const getServerSchema = {
             enum: Object.values(Protocol),
           },
           example: [Protocol.AMNEZIAWG, Protocol.XRAY],
+        },
+        publicHost: {
+          type: "string",
+          description:
+            "Публичный хост сервера (SERVER_PUBLIC_HOST), который записывается в клиентские конфигурации",
+          example: "vpn.example.com",
         },
       },
     },

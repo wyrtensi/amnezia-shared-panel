@@ -242,9 +242,28 @@ and polling telemetry. Use the admin UI (**VPN-ноды → Добавить н�
 | `protocol` | `awg3` (primary; the node still serves awg2 peers) |
 | `maxPeers` | node capacity (e.g. `250`) |
 
-`supportedProtocols`, health, and capabilities are filled in automatically by
-the worker's telemetry sync after the first successful poll. When `lastHealthAt`
-starts advancing and `lastError` clears, the link is live.
+`supportedProtocols`, health, capabilities and the node's public address are
+filled in automatically by the worker's telemetry sync after the first
+successful poll. The address is the agent's own `SERVER_PUBLIC_HOST`
+(`publicHost`) plus the IPv4 the panel resolved it to (`publicIp`); an agent
+image built before this field was added leaves both empty and the admin card
+says so until the image is rebuilt and reloaded (see "Shipping the node-agent
+image" above). When `lastHealthAt` starts advancing and `lastError` clears, the
+link is live.
+
+The name is resolved once, when the panel first learns it or when the node
+starts reporting a different host — a server's public address does not change
+under it, so there is no periodic lookup and `publicIpResolvedAt` records when
+the address was learned rather than how fresh it is. Only `A` records are used:
+the endpoint line in a client config is written as `host:port` with no
+bracketing, so an IPv6 address would produce a config no client can parse, and
+a host with only an `AAAA` record is shown without an IP rather than with an
+unusable one.
+
+Admins always see the address on the node card. Ordinary users see it on their
+dashboard only when the global portal policy's `showNodeAddress` is turned on
+(admin → policy, or `amnezia-panel policy-set --showNodeAddress=true`); it is
+off by default.
 
 ---
 

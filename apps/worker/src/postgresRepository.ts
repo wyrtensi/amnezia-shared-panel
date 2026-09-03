@@ -699,6 +699,10 @@ export class PostgresWorkerRepository
             this.options.keyring,
           ),
           keys: [],
+          // Carried into the poll so it can tell whether this node's address is
+          // already known and skip the DNS lookup.
+          publicHost: row.node.publicHost,
+          publicIp: row.node.publicIp,
         };
         result.set(row.node.id, node);
       }
@@ -740,6 +744,21 @@ export class PostgresWorkerRepository
             awg2: supportedProtocols.includes("awg2"),
             awg3: supportedProtocols.includes("awg3"),
           },
+          // The host is what the node reported this poll, including null when
+          // it stops reporting one, so it is written unconditionally.
+          publicHost: snapshot.publicHost,
+          // The IP is not: a null here means "no new answer" — either the
+          // address was already known and no lookup was made, or the lookup
+          // failed. Writing it would blank a good value and make the admin card
+          // flicker between an address and "not resolved". The timestamp
+          // records when the address was LEARNED, not how fresh it is; a node's
+          // public address does not change, so there is nothing to go stale.
+          ...(snapshot.publicIp === null
+            ? {}
+            : {
+                publicIp: snapshot.publicIp,
+                publicIpResolvedAt: snapshot.observedAt,
+              }),
           lastHealthAt: snapshot.observedAt,
           lastSyncAt: snapshot.observedAt,
           lastError: null,

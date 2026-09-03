@@ -70,4 +70,6 @@ export type ServerStatusPayload = {
   maxPeers: number;
   totalPeers: number;
   protocols: Protocol[];
+  // SERVER_PUBLIC_HOST: the host written into every issued client config.
+  publicHost: string;
 };
