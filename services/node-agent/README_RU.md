@@ -217,7 +217,7 @@ curl -X PATCH "https://vpn.example.com/clients" \
 | `SERVER_REGION` | Регион, зона или произвольная метка |
 | `SERVER_WEIGHT` | Вес для маршрутизации; рекомендуется `1..1000` |
 | `SERVER_MAX_PEERS` | Максимальное число клиентов |
-| `SERVER_PUBLIC_HOST` | Публичный хост для сгенерированных endpoint |
+| `SERVER_PUBLIC_HOST` | Публичный адрес для сгенерированных endpoint; рекомендуется IPv4-адрес, домен допускается |
 | `DOCKER_GID` | ID группы Docker socket в Docker-режиме |
 | `DOCKER_API_VERSION` | Версия Docker Engine API |
 | `AMNEZIA_API_VERSION` | Тег GHCR-образа для `docker-compose.ghcr.yml`; по умолчанию `latest` |
