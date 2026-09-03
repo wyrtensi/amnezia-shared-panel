@@ -185,6 +185,29 @@ Disk cleanup is limited to rotated logs (`journalctl --vacuum-size`) and
 dangling/obsolete unused images. **Never** `docker system prune -a` or prune
 volumes on a shared host.
 
+**A foreign container can hold the name compose wants.** A container created
+outside compose carries no `com.docker.compose.*` labels, and if it is named
+`amnezia-awg2` or `amnezia-awg3` a plain `docker compose up -d` fails on a name
+conflict — including a single-service command, because `node-agent` declares
+`depends_on`. Check before assuming the container is ours:
+
+```sh
+docker inspect <name> --format '{{index .Config.Labels "com.docker.compose.project"}}'
+```
+
+An empty answer means it is not ours. Do **not** remove or rename it to unblock
+the deploy — that kills a live service belonging to someone else, possibly with
+peers connected. Change only our own services, and skip the dependency graph so
+compose never touches the foreign one:
+
+```sh
+docker compose up -d --no-deps node-agent
+```
+
+Back up `state/`, `secrets/` and `.env` first if the node has no `scripts/deploy.sh`
+to take a pre-deploy backup for you (nodes provisioned by `scripts/add-node.sh`
+ship a reduced layout and have neither `deploy.sh` nor `preflight.sh`).
+
 ### Installing alongside an existing, unrelated Amnezia install
 
 A node can be installed on a host that **already** runs a separate, unrelated
