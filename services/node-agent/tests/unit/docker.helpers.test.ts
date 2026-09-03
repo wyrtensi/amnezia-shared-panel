@@ -88,6 +88,17 @@ describe("buildWriteFileCommand", () => {
     );
   });
 
+  // The temp file is created by `>`, so it gets the shell's umask (0644 here),
+  // and `mv -f` replaces the target together with its mode. Every write
+  // therefore widened a state file the entrypoint had created 0600, and
+  // preflight refused the next deploy on that node.
+  it("sets the mode on the temp file before it replaces the target", () => {
+    const command = buildWriteFileCommand("/tmp/config.json", "value");
+
+    expect(command).toContain("chmod 600 '/tmp/config.json.tmp'");
+    expect(command.indexOf("chmod 600")).toBeLessThan(command.indexOf("mv -f"));
+  });
+
   it("validates and durably replaces a WireGuard config", () => {
     const content = "[Interface]\nAddress = 10.89.0.1/22\n";
     const command = buildValidatedWgConfigCommand(
