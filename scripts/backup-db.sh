@@ -3,6 +3,10 @@
 # Data lives in the `postgres-data` volume; this is a logical export for
 # restore/rollback. Usage: scripts/backup-db.sh [output-dir]
 set -euo pipefail
+# The dump carries the full user roster, emails, roles and traffic history:
+# create it (and its directory) readable by the owner only, matching the
+# node-side policy in infra/node/scripts/common.sh (ensure_layout).
+umask 077
 
 COMPOSE_DIR="${COMPOSE_DIR:-infra/dev}"
 COMPOSE="docker compose -f ${COMPOSE_DIR}/compose.yaml"
@@ -11,6 +15,7 @@ DB_NAME="${POSTGRES_DB:-amnezia_panel}"
 OUT_DIR="${1:-backups}"
 
 mkdir -p "$OUT_DIR"
+chmod 700 "$OUT_DIR"
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 FILE="${OUT_DIR}/panel-db-${STAMP}.sql.gz"
 TMP="${FILE}.part"
