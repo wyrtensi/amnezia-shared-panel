@@ -106,9 +106,14 @@ describe("createClientReleaseResolver", () => {
     expect(android.alternate?.url).toContain("android11%2B_arm64-v8a.apk");
 
     const ios = forPlatform(release.downloads, "ios");
+    // Default VPN leads: AmneziaVPN itself is hidden from the Russian App
+    // Store, so the button most users can actually press has to be the primary
+    // one. Both ids are pinned because swapping them silently would send every
+    // Russian user to a listing that does not open for them.
     expect(ios.primary.kind).toBe("store");
     expect(ios.primary.url).toContain("id6744725017");
-    expect(ios.alternate).toBeNull();
+    expect(ios.alternate?.kind).toBe("store");
+    expect(ios.alternate?.url).toContain("id1600529900");
   });
 
   it("degrades a single platform to the release page when its asset is missing", async () => {

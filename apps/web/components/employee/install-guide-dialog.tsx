@@ -306,6 +306,7 @@ export function InstallInstructions({
     AUDIENCE_PLATFORMS[audience].includes(entry.platform),
   );
   const android = downloads.find((entry) => entry.platform === "android");
+  const ios = downloads.find((entry) => entry.platform === "ios");
   // The .conf route is a real improvement on a computer and on Android. On iOS
   // it changes nothing — the rules are ignored either way — so that audience
   // gets the reason instead of instructions it cannot use. See D8.
@@ -405,6 +406,13 @@ export function InstallInstructions({
                     >
                       {t("install.iosNote")}
                     </Callout>
+                    {/* The better client, second and behind a spoiler: it is
+                        hidden from the Russian App Store, so for most readers
+                        the button leads nowhere and leading with it would send
+                        them down a dead end. */}
+                    {ios?.alternate ? (
+                      <IosAmneziaOption asset={ios.alternate} />
+                    ) : null}
                     {/*
                       iOS connects with a route profile but applies none of its
                       rules — a silent failure the user cannot see. Shown to the
@@ -672,5 +680,41 @@ function GuideSection({
       </h3>
       <div className="space-y-2.5 pl-8">{children}</div>
     </section>
+  );
+}
+
+/**
+ * The AmneziaVPN listing, offered under the Default VPN button rather than
+ * beside it. It is the same developers' real client and it does more, but it is
+ * hidden from the Russian App Store by Roskomnadzor requirement -- so for most
+ * of this panel's users the link simply will not open, and a second
+ * equal-looking button would read as a choice when it is not one.
+ */
+function IosAmneziaOption({ asset }: { asset: ClientAsset }) {
+  const { t } = useT();
+
+  return (
+    <details className="group rounded-lg border bg-muted/30 px-3 py-2">
+      <summary className="flex cursor-pointer list-none items-center gap-2 text-sm font-medium">
+        <ChevronDown className="h-4 w-4 shrink-0 transition-transform group-open:rotate-180" />
+        {t("install.iosAmneziaTitle")}
+      </summary>
+      <div className="mt-2.5 space-y-2.5">
+        <p className="text-xs leading-snug text-muted-foreground">
+          {t("install.iosAmneziaBody")}
+        </p>
+        <Button asChild variant="secondary" size="sm" className="w-fit">
+          <a
+            href={asset.url}
+            target="_blank"
+            rel="noreferrer"
+            title={t("install.opensNewTab")}
+          >
+            <ExternalLink className="h-4 w-4" />
+            {t("install.iosAmneziaOpen")}
+          </a>
+        </Button>
+      </div>
+    </details>
   );
 }
