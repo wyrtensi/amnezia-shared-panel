@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
+  hasRoomForKey,
   isNodeAvailable,
   nodeIdsWithExplicitLimit,
   resolveNodeKeyLimit,
+  resolvePoolKeyLimit,
   resolveQuotaApproval,
   type NodeQuotaContext,
 } from "./nodeQuota.js";
@@ -105,11 +107,13 @@ describe("resolveQuotaApproval", () => {
     const approval = resolveQuotaApproval(
       { keyLimitOverride: 4, nodeKeyLimits: { [NODE_B]: 1 } },
       { requestedLimit: 7, nodeId: NODE_A },
+      "per_node",
     );
     expect(approval).toEqual({
       keyLimitOverride: 4,
       nodeKeyLimits: { [NODE_A]: 7, [NODE_B]: 1 },
       clearedNodeLimitCount: 0,
+      targetCoerced: false,
     });
   });
 
@@ -122,10 +126,11 @@ describe("resolveQuotaApproval", () => {
     });
     expect(resolveNodeKeyLimit(before, NODE_A)).toBe(1);
 
-    const approval = resolveQuotaApproval(before, {
-      requestedLimit: 7,
-      nodeId: NODE_A,
-    });
+    const approval = resolveQuotaApproval(
+      before,
+      { requestedLimit: 7, nodeId: NODE_A },
+      "per_node",
+    );
     const after = context({
       keyLimitOverride: approval.keyLimitOverride,
       nodeKeyLimits: approval.nodeKeyLimits,
@@ -139,11 +144,13 @@ describe("resolveQuotaApproval", () => {
     const approval = resolveQuotaApproval(
       { keyLimitOverride: null, nodeKeyLimits: null },
       { requestedLimit: 9, nodeId: null },
+      "per_node",
     );
     expect(approval).toEqual({
       keyLimitOverride: 9,
       nodeKeyLimits: null,
       clearedNodeLimitCount: 0,
+      targetCoerced: false,
     });
   });
 
@@ -152,14 +159,16 @@ describe("resolveQuotaApproval", () => {
       keyLimitOverride: 2,
       nodeKeyLimits: { [NODE_A]: 1, [NODE_B]: 3 },
     });
-    const approval = resolveQuotaApproval(before, {
-      requestedLimit: 9,
-      nodeId: null,
-    });
+    const approval = resolveQuotaApproval(
+      before,
+      { requestedLimit: 9, nodeId: null },
+      "per_node",
+    );
     expect(approval).toEqual({
       keyLimitOverride: 9,
       nodeKeyLimits: null,
       clearedNodeLimitCount: 2,
+      targetCoerced: false,
     });
 
     const after = context({
@@ -172,10 +181,98 @@ describe("resolveQuotaApproval", () => {
 
   it("never touches the source map, so a rollback cannot see a mutation", () => {
     const nodeKeyLimits = { [NODE_A]: 1 };
-    resolveQuotaApproval({ keyLimitOverride: null, nodeKeyLimits }, {
-      requestedLimit: 5,
-      nodeId: NODE_A,
-    });
+    resolveQuotaApproval(
+      { keyLimitOverride: null, nodeKeyLimits },
+      { requestedLimit: 5, nodeId: NODE_A },
+      "per_node",
+    );
     expect(nodeKeyLimits).toEqual({ [NODE_A]: 1 });
+  });
+});
+
+describe("resolvePoolKeyLimit", () => {
+  it("is the flat override, else the global default, and ignores per-node entries", () => {
+    expect(resolvePoolKeyLimit(context())).toBe(5);
+    expect(resolvePoolKeyLimit(context({ keyLimitOverride: 8 }))).toBe(8);
+    expect(
+      resolvePoolKeyLimit(
+        context({ keyLimitOverride: 8, nodeKeyLimits: { [NODE_A]: 1 } }),
+      ),
+    ).toBe(8);
+    expect(resolvePoolKeyLimit(context({ keyLimitOverride: 0 }))).toBe(0);
+  });
+});
+
+describe("hasRoomForKey", () => {
+  it("per-node mode compares the keys on that node with that node's limit", () => {
+    const ctx = context({ keyLimitOverride: 3, nodeKeyLimits: { [NODE_A]: 1 } });
+    expect(
+      hasRoomForKey(ctx, "per_node", NODE_A, { keysOnNode: 0, keysTotal: 9 }),
+    ).toBe(true);
+    expect(
+      hasRoomForKey(ctx, "per_node", NODE_A, { keysOnNode: 1, keysTotal: 1 }),
+    ).toBe(false);
+    expect(
+      hasRoomForKey(ctx, "per_node", NODE_B, { keysOnNode: 2, keysTotal: 9 }),
+    ).toBe(true);
+  });
+
+  it("global mode compares the total across every node with the pool", () => {
+    const ctx = context({ keyLimitOverride: 3, nodeKeyLimits: { [NODE_A]: 1 } });
+    // The dormant per-node limit of 1 on A does not block a second key there.
+    expect(
+      hasRoomForKey(ctx, "global", NODE_A, { keysOnNode: 1, keysTotal: 2 }),
+    ).toBe(true);
+    // A full pool blocks every node, even one with no keys.
+    expect(
+      hasRoomForKey(ctx, "global", NODE_B, { keysOnNode: 0, keysTotal: 3 }),
+    ).toBe(false);
+  });
+
+  it("treats a pool of zero as no keys anywhere", () => {
+    expect(
+      hasRoomForKey(context({ keyLimitOverride: 0 }), "global", NODE_A, {
+        keysOnNode: 0,
+        keysTotal: 0,
+      }),
+    ).toBe(false);
+  });
+});
+
+describe("resolveQuotaApproval in global mode", () => {
+  it("raises the pool for an every-server request and keeps per-node entries dormant", () => {
+    const approval = resolveQuotaApproval(
+      { keyLimitOverride: 2, nodeKeyLimits: { [NODE_A]: 1 } },
+      { requestedLimit: 9, nodeId: null },
+      "global",
+    );
+    expect(approval).toEqual({
+      keyLimitOverride: 9,
+      nodeKeyLimits: { [NODE_A]: 1 },
+      clearedNodeLimitCount: 0,
+      targetCoerced: false,
+    });
+  });
+
+  it("coerces a legacy per-server request into a pool raise and says so", () => {
+    const approval = resolveQuotaApproval(
+      { keyLimitOverride: 4, nodeKeyLimits: null },
+      { requestedLimit: 7, nodeId: NODE_A },
+      "global",
+    );
+    expect(approval).toEqual({
+      keyLimitOverride: 7,
+      nodeKeyLimits: null,
+      clearedNodeLimitCount: 0,
+      targetCoerced: true,
+    });
+    expect(
+      resolvePoolKeyLimit(
+        context({
+          keyLimitOverride: approval.keyLimitOverride,
+          nodeKeyLimits: approval.nodeKeyLimits,
+        }),
+      ),
+    ).toBe(7);
   });
 });

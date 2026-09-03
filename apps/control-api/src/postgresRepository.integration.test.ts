@@ -2,6 +2,7 @@ import { randomBytes } from "node:crypto";
 import { and, count, eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { defaultKeyNameDisplay } from "@amnezia/contracts";
+import type { KeyLimitMode } from "@amnezia/contracts";
 import {
   auditEvents,
   createDatabase,
@@ -309,6 +310,12 @@ describe("PostgresControlRepository quota race", () => {
     };
   };
 
+  /** Flip the singleton's mode; the row exists because beforeAll inserted it. */
+  const setGlobalKeyLimitMode = async (mode: KeyLimitMode): Promise<void> => {
+    if (!database) throw new Error("No database");
+    await database.db.update(portalPolicy).set({ keyLimitMode: mode });
+  };
+
   runDatabaseTest(
     "approving a per-server request raises that server only",
     async () => {
@@ -405,6 +412,264 @@ describe("PostgresControlRepository quota race", () => {
   );
 
   runDatabaseTest(
+    "global mode: the limit is one pool across every server",
+    async () => {
+      if (!database) return;
+      const repository = new PostgresControlRepository({
+        db: database.db,
+        keyring,
+      });
+      await setGlobalKeyLimitMode("global");
+      try {
+        const nodeA = await seedNode("pool-a");
+        const nodeB = await seedNode("pool-b");
+        // Pool of 2, with a dormant per-node limit of 0 on B that must NOT apply.
+        const owner = await seedQuotaUser("pool@example.com", {
+          keyLimitOverride: 2,
+          nodeKeyLimits: { [nodeB]: 0 },
+        });
+        const create = (nodeId: string, label: string) =>
+          repository.createProvisioningKey(owner, {
+            nodeId,
+            protocol: "awg2",
+            deviceType: "other",
+            deviceLabel: label,
+            routeProfile: "full_tunnel",
+            nameDisplay: defaultKeyNameDisplay,
+          });
+
+        await create(nodeA, "pool-1");
+        await create(nodeB, "pool-2");
+        await expect(create(nodeA, "pool-3")).rejects.toMatchObject({
+          code: "QUOTA_EXCEEDED",
+        });
+
+        const me = (await repository.getMe(owner)) as {
+          keyLimit: number;
+          keyLimitMode: string;
+          keyCount: number;
+          perNode: Array<{ nodeId: string; used: number; limit: number }>;
+        };
+        expect(me.keyLimitMode).toBe("global");
+        expect(me.keyLimit).toBe(2);
+        expect(me.keyCount).toBe(2);
+        // Every per-node entry reports the pool, not the dormant per-node value.
+        expect(me.perNode.find((entry) => entry.nodeId === nodeB)?.limit).toBe(2);
+      } finally {
+        await setGlobalKeyLimitMode("per_node");
+      }
+    },
+  );
+
+  runDatabaseTest(
+    "global mode: ten concurrent requests across two servers create exactly the pool",
+    async () => {
+      if (!database) return;
+      const repository = new PostgresControlRepository({
+        db: database.db,
+        keyring,
+      });
+      await setGlobalKeyLimitMode("global");
+      try {
+        const nodeA = await seedNode("pool-race-a");
+        const nodeB = await seedNode("pool-race-b");
+        const owner = await seedQuotaUser("pool-race@example.com", {
+          keyLimitOverride: 3,
+        });
+        const results = await Promise.allSettled(
+          Array.from({ length: 10 }, (_, index) =>
+            repository.createProvisioningKey(owner, {
+              nodeId: index % 2 === 0 ? nodeA : nodeB,
+              protocol: "awg2",
+              deviceType: "other",
+              deviceLabel: `pool-race-${index}`,
+              routeProfile: "full_tunnel",
+              nameDisplay: defaultKeyNameDisplay,
+            }),
+          ),
+        );
+        expect(
+          results.filter((result) => result.status === "fulfilled"),
+        ).toHaveLength(3);
+        const [total] = await database.db
+          .select({ value: count() })
+          .from(vpnKeys)
+          .where(eq(vpnKeys.ownerId, owner.id));
+        expect(total?.value).toBe(3);
+      } finally {
+        await setGlobalKeyLimitMode("per_node");
+      }
+    },
+  );
+
+  runDatabaseTest("a per-user mode override wins over the global mode", async () => {
+    if (!database) return;
+    const repository = new PostgresControlRepository({
+      db: database.db,
+      keyring,
+    });
+    const admin: Actor = { ...actor, role: "admin" };
+    const nodeA = await seedNode("override-a");
+    const nodeB = await seedNode("override-b");
+    const owner = await seedQuotaUser("override@example.com", {
+      keyLimitOverride: 1,
+    });
+    // Global policy stays per_node; this user alone is switched to global.
+    const result = await repository.adminAction(
+      admin,
+      "users",
+      owner.id,
+      "set-limit",
+      { keyLimitOverride: 1, keyLimitMode: "global" },
+    );
+    expect(result).toMatchObject({ keyLimitMode: "global" });
+    const [row] = await database.db
+      .select({ policyOverride: users.policyOverride })
+      .from(users)
+      .where(eq(users.id, owner.id));
+    expect(row?.policyOverride).toEqual({ keyLimitMode: "global" });
+
+    await repository.createProvisioningKey(owner, {
+      nodeId: nodeA,
+      protocol: "awg2",
+      deviceType: "other",
+      deviceLabel: "override-1",
+      routeProfile: "full_tunnel",
+      nameDisplay: defaultKeyNameDisplay,
+    });
+    // Per-node mode would allow one key on B as well; the pool of 1 does not.
+    await expect(
+      repository.createProvisioningKey(owner, {
+        nodeId: nodeB,
+        protocol: "awg2",
+        deviceType: "other",
+        deviceLabel: "override-2",
+        routeProfile: "full_tunnel",
+        nameDisplay: defaultKeyNameDisplay,
+      }),
+    ).rejects.toMatchObject({ code: "QUOTA_EXCEEDED" });
+
+    // Clearing the override (null) removes the key and leaves nothing behind.
+    await repository.adminAction(admin, "users", owner.id, "set-limit", {
+      keyLimitOverride: 1,
+      keyLimitMode: null,
+    });
+    const [cleared] = await database.db
+      .select({ policyOverride: users.policyOverride })
+      .from(users)
+      .where(eq(users.id, owner.id));
+    expect(cleared?.policyOverride).toBeNull();
+  });
+
+  runDatabaseTest(
+    "global mode: a per-server request is refused, a legacy one is coerced on approval",
+    async () => {
+      if (!database) return;
+      const repository = new PostgresControlRepository({
+        db: database.db,
+        keyring,
+      });
+      const admin: Actor = { ...actor, role: "admin" };
+      const nodeA = await seedNode("coerce-a");
+      const owner = await seedQuotaUser("coerce@example.com", {
+        keyLimitOverride: 2,
+        nodeKeyLimits: { [nodeA]: 1 },
+      });
+      // Created while the user is still in per-node mode.
+      const legacy = await repository.createQuotaRequest(owner, {
+        requestedLimit: 6,
+        nodeId: nodeA,
+      });
+      await setGlobalKeyLimitMode("global");
+      try {
+        await expect(
+          repository.createQuotaRequest(owner, {
+            requestedLimit: 7,
+            nodeId: nodeA,
+          }),
+        ).rejects.toMatchObject({ code: "NODE_TARGET_NOT_APPLICABLE" });
+
+        await repository.adminAction(
+          admin,
+          "quota-requests",
+          legacy.id,
+          "approve",
+          {},
+        );
+        const [updated] = await database.db
+          .select({
+            keyLimitOverride: users.keyLimitOverride,
+            nodeKeyLimits: users.nodeKeyLimits,
+          })
+          .from(users)
+          .where(eq(users.id, owner.id));
+        // The pool was raised; the dormant per-node entry is untouched.
+        expect(updated?.keyLimitOverride).toBe(6);
+        expect(updated?.nodeKeyLimits).toEqual({ [nodeA]: 1 });
+        const [event] = await database.db
+          .select({ metadata: auditEvents.metadata })
+          .from(auditEvents)
+          .where(
+            and(
+              eq(auditEvents.targetId, legacy.id),
+              eq(auditEvents.action, "admin.quota-requests.approve"),
+            ),
+          );
+        expect(event?.metadata).toMatchObject({
+          keyLimitMode: "global",
+          targetCoerced: true,
+          clearedNodeLimitCount: 0,
+        });
+      } finally {
+        await setGlobalKeyLimitMode("per_node");
+      }
+    },
+  );
+
+  // S8, the half that is easiest to break by accident: approving a request moves
+  // a NUMBER. It must never move the mode, in either direction -- an admin who
+  // clicks approve is answering "may they have more keys", not "should everyone
+  // read their limits differently". Checked against the database rather than the
+  // return value, because the damage would be a stray column write.
+  runDatabaseTest("approving a request never moves the key limit mode", async () => {
+    if (!database) return;
+    const repository = new PostgresControlRepository({
+      db: database.db,
+      keyring,
+    });
+    const admin: Actor = { ...actor, role: "admin" };
+    await setGlobalKeyLimitMode("global");
+    try {
+      const owner = await seedQuotaUser("mode-invariant@example.com", {
+        keyLimitOverride: 2,
+      });
+      const request = await repository.createQuotaRequest(owner, {
+        requestedLimit: 6,
+      });
+
+      await repository.adminAction(
+        admin,
+        "quota-requests",
+        request.id,
+        "approve",
+        {},
+      );
+
+      const [policy] = await database.db.select().from(portalPolicy);
+      expect(policy?.keyLimitMode).toBe("global");
+      const [user] = await database.db
+        .select({ policyOverride: users.policyOverride })
+        .from(users)
+        .where(eq(users.id, owner.id));
+      // Untouched: the user never had a mode override, and approval must not
+      // invent one -- that would silently pin them against a later switch.
+      expect(user?.policyOverride?.keyLimitMode).toBeUndefined();
+    } finally {
+      await setGlobalKeyLimitMode("per_node");
+    }
+  });
+
+  runDatabaseTest(
     "refuses a request for a server the user may not use",
     async () => {
       if (!database) return;
@@ -469,6 +734,35 @@ describe("PostgresControlRepository quota race", () => {
       expect(request?.status).toBe("cancelled");
       expect(request?.reviewNote).toBe("target server was removed");
       expect(request?.nodeId).toBeNull();
+    },
+  );
+
+  // resolvePortalPolicy spreads a user's override over the global policy, so
+  // every field the override carries is a field that user stops inheriting.
+  // zod materialises defaults on a .partial() parse, so persisting the parse
+  // result verbatim would freeze a user against every future global change the
+  // moment an admin saved anything about them. Pinned against a real database
+  // because the damage is in what is written, not in what is computed.
+  runDatabaseTest(
+    "stores only the policy fields an admin actually named",
+    async () => {
+      if (!database) return;
+      const repository = new PostgresControlRepository({
+        db: database.db,
+        keyring,
+      });
+      const admin: Actor = { ...actor, role: "admin" };
+      const target = await seedQuotaUser("policy-target@example.com");
+
+      await repository.adminAction(admin, "users", target.id, "set-policy", {
+        allowKeyCreation: false,
+      });
+
+      const [row] = await database.db
+        .select({ policyOverride: users.policyOverride })
+        .from(users)
+        .where(eq(users.id, target.id));
+      expect(row?.policyOverride).toEqual({ allowKeyCreation: false });
     },
   );
 

@@ -11,6 +11,7 @@ import {
   deviceSupportsRouteProfiles,
   globalRoutesSchema,
   GUIDE_AUDIENCES,
+  keyLimitModeSchema,
   keyNameDisplaySchema,
   LEGACY_DEVICE_TYPE_REPLACEMENT,
   MAX_GLOBAL_CIDRS,
@@ -19,6 +20,7 @@ import {
   installVideoEmbed,
   MIN_AWG3_CLIENT_VERSION,
   nodeKeyLimitsSchema,
+  portalPolicyOverrideSchema,
   portalPolicySchema,
   quotaRequestSchema,
   replaceLegacyDeviceType,
@@ -150,7 +152,26 @@ describe("portalPolicySchema", () => {
       showTraffic: true,
       // No recordings until an admin adds them; the guide reads without one.
       installGuideVideos: {},
+      keyLimitMode: "per_node",
     });
+  });
+
+  it("defaults the key limit mode to per-node so existing deployments keep their behaviour", () => {
+    expect(portalPolicySchema.parse({}).keyLimitMode).toBe("per_node");
+    expect(portalPolicySchema.parse({ keyLimitMode: "global" }).keyLimitMode).toBe(
+      "global",
+    );
+    expect(portalPolicySchema.safeParse({ keyLimitMode: "total" }).success).toBe(
+      false,
+    );
+    // zod's `.partial()` makes a key optional but does not strip its default,
+    // so the override schema materializes the mode exactly like every other
+    // defaulted policy field. "Inherit" is an override object that never went
+    // through this schema with the key absent, not a parse result.
+    expect(portalPolicySchema.partial().parse({}).keyLimitMode).toBe("per_node");
+    expect(
+      portalPolicySchema.partial().parse({ keyLimitMode: "global" }).keyLimitMode,
+    ).toBe("global");
   });
 
   it("enables every self-service capability out of the box", () => {
@@ -440,6 +461,25 @@ describe("setUserLimitRequestSchema", () => {
       nodeKeyLimits: { [nodeId]: 2 },
     });
     expect(setUserLimitRequestSchema.safeParse({}).success).toBe(false);
+  });
+
+  it("accepts a per-user key limit mode, null to clear it, or nothing to leave it alone", () => {
+    expect(
+      setUserLimitRequestSchema.parse({ keyLimitOverride: 3, keyLimitMode: "global" })
+        .keyLimitMode,
+    ).toBe("global");
+    expect(
+      setUserLimitRequestSchema.parse({ keyLimitOverride: 3, keyLimitMode: null })
+        .keyLimitMode,
+    ).toBeNull();
+    expect(
+      setUserLimitRequestSchema.parse({ keyLimitOverride: 3 }).keyLimitMode,
+    ).toBeUndefined();
+    expect(
+      setUserLimitRequestSchema.safeParse({ keyLimitOverride: 3, keyLimitMode: "x" })
+        .success,
+    ).toBe(false);
+    expect(keyLimitModeSchema.options).toEqual(["per_node", "global"]);
   });
 });
 
@@ -776,5 +816,47 @@ describe("installVideoEmbed", () => {
     expect(installVideoEmbed("javascript:alert(1)")).toBeNull();
     // A Drive URL with no recoverable file id.
     expect(installVideoEmbed("https://drive.google.com/drive/my-drive")).toBeNull();
+  });
+});
+
+// A trap worth pinning, because it reads the other way round: zod's .partial()
+// makes every key optional but leaves its .default() in place, so parsing an
+// empty override yields every defaulted field rather than nothing. Callers that
+// persist the parse result must therefore keep only the fields the caller named
+// -- see the set-policy route -- or "absent means inherit" quietly stops being
+// true. Pinned so nobody reads the schema and assumes otherwise.
+describe("the portal policy override schema", () => {
+  it("materialises defaults rather than staying empty", () => {
+    const parsed = portalPolicyOverrideSchema.parse({});
+    expect(Object.keys(parsed).length).toBeGreaterThan(0);
+  });
+
+  it("still carries a value the caller did name", () => {
+    expect(portalPolicyOverrideSchema.parse({ allowKeyCreation: false })).toMatchObject(
+      { allowKeyCreation: false },
+    );
+  });
+});
+
+// S8: a user may ask for a bigger number, never for a different KIND of limit.
+// The mode decides how every limit in the panel is read, so "the UI does not
+// offer it" is not the guarantee -- this is.
+describe("a quota request cannot carry a key limit mode", () => {
+  it("refuses a smuggled keyLimitMode", () => {
+    const result = quotaRequestSchema.safeParse({
+      requestedLimit: 5,
+      keyLimitMode: "global",
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("still accepts the three fields the panel sends", () => {
+    expect(
+      quotaRequestSchema.safeParse({
+        requestedLimit: 5,
+        nodeId: null,
+        reason: "need more",
+      }).success,
+    ).toBe(true);
   });
 });

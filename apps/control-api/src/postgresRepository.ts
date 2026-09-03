@@ -19,6 +19,7 @@ import type {
   CustomRoutes,
   DeleteNodeOptions,
   GlobalRoutes,
+  KeyLimitMode,
   KeyState,
   PortalPolicy,
   PortalPolicyOverride,
@@ -47,7 +48,6 @@ import {
   auditEvents,
   decryptSecret,
   deterministicPeerLabel,
-  effectiveKeyLimit,
   encryptSecret,
   globalRouteOverrides,
   identities,
@@ -75,9 +75,11 @@ import type {
 import { ApiError, type Actor, type IdentityClaim, type KeyView } from "./service.js";
 import { diffRulePayloads } from "./ruleDiff.js";
 import {
+  hasRoomForKey,
   isNodeAvailable,
   nodeIdsWithExplicitLimit,
   resolveNodeKeyLimit,
+  resolvePoolKeyLimit,
   resolveQuotaApproval,
   type NodeQuotaContext,
   type QuotaApproval,
@@ -187,6 +189,11 @@ const toPolicy = (row: PortalPolicyRow | undefined): PortalPolicy =>
             ? row.allowedProtocols
             : DEFAULT_ALLOWED_PROTOCOLS,
         allowedNodeIds: row.allowedNodeIds ?? null,
+        // Whether a key limit is per server or one shared pool. This list is
+        // explicit, so a column missing from it never reaches
+        // resolvePortalPolicy and the feature would silently read as its
+        // default for everyone.
+        keyLimitMode: row.keyLimitMode,
         allowRouteProfileSelection: row.allowRouteProfileSelection,
         allowCustomRoutes: row.allowCustomRoutes,
         allowConfigRedownload: row.allowConfigRedownload,
@@ -398,17 +405,22 @@ export class PostgresControlRepository implements ControlRepository {
         ...nodeIdsWithExplicitLimit(user.nodeKeyLimits),
       ]),
     ].sort();
+    const keyLimitMode = policy.keyLimitMode;
+    // Per-node mode: the flat limit is the fallback for nodes with no entry.
+    // Global mode: the flat limit IS the pool, and every node reports it, so a
+    // client that only knows per-node numbers still sees the right ceiling.
+    const keyLimit = resolvePoolKeyLimit(quotaContext);
     return {
-      // Per-node key limit fallback: used for every node without its own entry.
-      keyLimit: effectiveKeyLimit(
-        globalPolicy?.defaultKeyLimit ?? 5,
-        user.keyLimitOverride,
-      ),
+      keyLimit,
+      keyLimitMode,
       keyCount: keyCountRow[0]?.value ?? 0,
       perNode: perNodeIds.map((nodeId) => ({
         nodeId,
         used: usedByNode.get(nodeId) ?? 0,
-        limit: resolveNodeKeyLimit(quotaContext, nodeId),
+        limit:
+          keyLimitMode === "global"
+            ? keyLimit
+            : resolveNodeKeyLimit(quotaContext, nodeId),
       })),
       policy,
       // The user's own custom routes (normalized to both split-tunnel profiles).
@@ -932,13 +944,30 @@ export class PostgresControlRepository implements ControlRepository {
           }
           routeRuleVersionId = activeRule[0].id;
         }
-        // The key limit is PER NODE: a user may hold up to `limit` keys on each
-        // node, not `limit` total, and the limit itself may differ per node.
+        // The key limit is per node or one shared pool, depending on the
+        // effective mode; see nodeQuota.hasRoomForKey.
         const quotaContext: NodeQuotaContext = {
           defaultKeyLimit: globalPolicy?.defaultKeyLimit ?? 5,
           keyLimitOverride: user.keyLimitOverride,
           nodeKeyLimits: user.nodeKeyLimits,
         };
+        const keyLimitMode: KeyLimitMode = policy.keyLimitMode;
+        // Global mode counts every key the user holds, once, under the users
+        // row lock taken above; per-node mode never needs the total.
+        const userKeysTotal =
+          keyLimitMode === "global"
+            ? ((
+                await tx
+                  .select({ value: count() })
+                  .from(vpnKeys)
+                  .where(
+                    and(
+                      eq(vpnKeys.ownerId, actor.id),
+                      inArray(vpnKeys.state, quotaStates),
+                    ),
+                  )
+              )[0]?.value ?? 0)
+            : 0;
 
         // A node serves the requested protocol if it is the node's primary
         // protocol or the node reported the protocol in its capabilities.
@@ -999,8 +1028,15 @@ export class PostgresControlRepository implements ControlRepository {
                   ),
                 )
             )[0]?.value ?? 0;
-          // Resolved per candidate: a per-node limit beats the flat override.
-          if (userKeysOnNode >= resolveNodeKeyLimit(quotaContext, candidate.id)) {
+          // Per-node mode: this node's resolved limit, where a per-node entry
+          // beats the flat override. Global mode: the pool, which a full total
+          // exhausts on every candidate at once.
+          if (
+            !hasRoomForKey(quotaContext, keyLimitMode, candidate.id, {
+              keysOnNode: userKeysOnNode,
+              keysTotal: userKeysTotal,
+            })
+          ) {
             userQuotaBlocked = true;
             continue;
           }
@@ -1456,6 +1492,15 @@ export class PostgresControlRepository implements ControlRepository {
               "NODE_NOT_ALLOWED",
             );
           }
+          // In global mode a request has no server: the number is the pool.
+          // Refuse rather than silently widen the ask to every server.
+          if (policy.keyLimitMode === "global") {
+            throw new ApiError(
+              400,
+              "Per-server requests are not accepted while the key limit is shared",
+              "NODE_TARGET_NOT_APPLICABLE",
+            );
+          }
         }
         // A new request supersedes the user's still-pending one (if any) — the
         // latest ask replaces the stale one instead of being rejected, whatever
@@ -1896,14 +1941,25 @@ export class PostgresControlRepository implements ControlRepository {
               ? parsed.nodeKeyLimits
               : null;
         }
-        if (parsed.allowedNodeIds !== undefined) {
+        if (
+          parsed.allowedNodeIds !== undefined ||
+          parsed.keyLimitMode !== undefined
+        ) {
           // Merge into the existing per-user policy override instead of
           // replacing it, so the other override fields survive. A null clears
-          // just this key and the global allowedNodeIds applies again.
+          // just that key and the global value applies again.
           const merged: PortalPolicyOverride = { ...(current.policyOverride ?? {}) };
-          delete merged.allowedNodeIds;
-          if (parsed.allowedNodeIds !== null) {
-            merged.allowedNodeIds = parsed.allowedNodeIds;
+          if (parsed.allowedNodeIds !== undefined) {
+            delete merged.allowedNodeIds;
+            if (parsed.allowedNodeIds !== null) {
+              merged.allowedNodeIds = parsed.allowedNodeIds;
+            }
+          }
+          if (parsed.keyLimitMode !== undefined) {
+            delete merged.keyLimitMode;
+            if (parsed.keyLimitMode !== null) {
+              merged.keyLimitMode = parsed.keyLimitMode;
+            }
           }
           changes.policyOverride =
             Object.keys(merged).length > 0 ? merged : null;
@@ -1920,6 +1976,9 @@ export class PostgresControlRepository implements ControlRepository {
           });
         if (!updated) throw new ApiError(404, "User not found", "USER_NOT_FOUND");
         const allowedNodeIds = updated.policyOverride?.allowedNodeIds ?? null;
+        // Null means "inherit the global mode", which is what an absent
+        // override key means everywhere else in this codebase.
+        const keyLimitMode = updated.policyOverride?.keyLimitMode ?? null;
         await tx.insert(auditEvents).values({
           actorUserId: actor.id,
           actorType: "user",
@@ -1931,6 +1990,7 @@ export class PostgresControlRepository implements ControlRepository {
             keyLimitOverride: updated.keyLimitOverride,
             nodeKeyLimitCount: Object.keys(updated.nodeKeyLimits ?? {}).length,
             allowedNodeCount: allowedNodeIds === null ? null : allowedNodeIds.length,
+            keyLimitMode,
           },
         });
         return {
@@ -1938,10 +1998,25 @@ export class PostgresControlRepository implements ControlRepository {
           keyLimitOverride: updated.keyLimitOverride,
           nodeKeyLimits: updated.nodeKeyLimits ?? null,
           allowedNodeIds,
+          keyLimitMode,
         };
       });
     } else if (resource === "users" && action === "set-policy") {
-      const policyOverride = portalPolicyOverrideSchema.parse(payload);
+      // zod's .partial() makes a key optional but does NOT drop its .default(),
+      // so parsing an override materialises every field the global policy has a
+      // default for -- fourteen of them -- however few the admin actually sent.
+      // Storing that pins the user to today's global values forever:
+      // resolvePortalPolicy spreads the override over the global policy, so a
+      // later global change would silently never reach anyone who has ever had
+      // a policy saved. Persist only what the caller named, so an absent field
+      // still means "inherit".
+      const parsed = portalPolicyOverrideSchema.parse(payload);
+      const named = new Set(
+        payload && typeof payload === "object" ? Object.keys(payload) : [],
+      );
+      const policyOverride = Object.fromEntries(
+        Object.entries(parsed).filter(([field]) => named.has(field)),
+      ) as PortalPolicyOverride;
       return this.options.db.transaction(async (tx) => {
         const [updated] = await tx
           .update(users)
@@ -2090,6 +2165,7 @@ export class PostgresControlRepository implements ControlRepository {
           throw new ApiError(404, "Pending request not found", "NOT_FOUND");
         }
         let approval: QuotaApproval | null = null;
+        let keyLimitMode: KeyLimitMode | null = null;
         if (action === "approve") {
           // The grant follows the request's own target and must actually hold:
           // an every-server grant also clears the per-node entries that would
@@ -2098,15 +2174,29 @@ export class PostgresControlRepository implements ControlRepository {
             .select({
               keyLimitOverride: users.keyLimitOverride,
               nodeKeyLimits: users.nodeKeyLimits,
+              policyOverride: users.policyOverride,
             })
             .from(users)
             .where(eq(users.id, request.userId))
             .for("update");
           if (!owner) throw new ApiError(404, "User not found", "USER_NOT_FOUND");
-          approval = resolveQuotaApproval(owner, {
-            requestedLimit: request.requestedLimit,
-            nodeId: request.nodeId,
-          });
+          // The owner's effective mode decides what the granted number means:
+          // a per-server limit, or the shared pool. Approving only ever moves a
+          // number — the mode itself is an admin-only setting and is never
+          // changed here, in either direction.
+          const globalPolicy = (await tx.select().from(portalPolicy).limit(1))[0];
+          keyLimitMode = resolvePortalPolicy(
+            toPolicy(globalPolicy),
+            owner.policyOverride,
+          ).keyLimitMode;
+          approval = resolveQuotaApproval(
+            owner,
+            {
+              requestedLimit: request.requestedLimit,
+              nodeId: request.nodeId,
+            },
+            keyLimitMode,
+          );
           await tx
             .update(users)
             .set({
@@ -2138,7 +2228,11 @@ export class PostgresControlRepository implements ControlRepository {
             nodeId: request.nodeId,
             status: updated?.status,
             ...(approval
-              ? { clearedNodeLimitCount: approval.clearedNodeLimitCount }
+              ? {
+                  keyLimitMode,
+                  clearedNodeLimitCount: approval.clearedNodeLimitCount,
+                  targetCoerced: approval.targetCoerced,
+                }
               : {}),
           },
         });

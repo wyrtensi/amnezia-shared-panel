@@ -2,6 +2,10 @@ import type { InstallGuideVideos } from "@amnezia/contracts";
 
 export type ProtocolKind = "awg2" | "awg3";
 
+// How a user's key limit is counted: separately on each server, or as one
+// shared pool across all of them. Mirrors the contract's `keyLimitModeSchema`.
+export type KeyLimitMode = "per_node" | "global";
+
 export type PortalPolicy = {
   allowKeyCreation?: boolean;
   allowNodeSelection?: boolean;
@@ -15,6 +19,7 @@ export type PortalPolicy = {
   showLastUsed?: boolean;
   showTraffic?: boolean;
   allowedProtocols?: ProtocolKind[];
+  keyLimitMode?: KeyLimitMode;
   // Sourced from the contract rather than restated: this file is a hand-written
   // mirror of PortalPolicy, and a per-audience map is exactly the shape that
   // drifts silently when it is copied.
@@ -39,9 +44,11 @@ export type Me = {
   displayName: string | null;
   role: "user" | "admin";
   keyLimit: number;
+  // Absent only on older payloads; treat as "per_node".
+  keyLimitMode?: KeyLimitMode;
   keyCount: number;
-  // Per-node quota. `limit` is the effective limit on that node (per-node
-  // override, else the user's flat limit); it is absent only on older payloads,
+  // Per-node quota. In per-node mode `limit` is that node's effective limit; in
+  // global mode every entry carries the pool. Absent only on older payloads,
   // where `keyLimit` is the fallback.
   perNode?: Array<{ nodeId: string; used: number; limit?: number }>;
   policy: PortalPolicy;

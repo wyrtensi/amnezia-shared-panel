@@ -12,6 +12,12 @@ import {
   csvList,
   parseNodeLimits,
   parseNodeSpec,
+  KEY_LIMIT_MODES,
+  effectiveKeyLimitMode,
+  parseEnumFlag,
+  parseKeyLimitMode,
+  quotaCurrentLimit,
+  quotaTargetLabel,
 } from "./args.js";
 
 describe("flagOf", () => {
@@ -198,6 +204,118 @@ describe("parseDeviceType — unspecified", () => {
     // DEVICE_TYPE_ORDER because the wizard does not offer it, and documented in
     // docs/CLI.md so the spelling is discoverable.
     expect(parseDeviceType("unspecified")).toBe("unspecified");
+  });
+});
+
+describe("KEY_LIMIT_MODES", () => {
+  // The same literal packages/contracts/src/contracts.test.ts asserts against
+  // keyLimitModeSchema.options. Copied, not imported — the CLI has no deps.
+  it("is exactly the contract's modes, in the same order", () => {
+    expect([...KEY_LIMIT_MODES]).toEqual(["per_node", "global"]);
+  });
+});
+
+describe("parseKeyLimitMode", () => {
+  it("accepts the two real modes", () => {
+    expect(parseKeyLimitMode("global")).toBe("global");
+    expect(parseKeyLimitMode("per_node")).toBe("per_node");
+  });
+  it("maps inherit to null, which clears the per-user override", () => {
+    expect(parseKeyLimitMode("inherit")).toBeNull();
+  });
+  it("names the three accepted words for anything else", () => {
+    expect(() => parseKeyLimitMode("total")).toThrowError(
+      /--mode must be per_node, global or inherit/,
+    );
+    expect(() => parseKeyLimitMode("")).toThrowError(
+      /per_node, global or inherit/,
+    );
+  });
+});
+
+describe("parseEnumFlag", () => {
+  it("returns an allowed value unchanged", () => {
+    expect(parseEnumFlag("keyLimitMode", "global", ["per_node", "global"])).toBe(
+      "global",
+    );
+  });
+  it("lists the allowed values in the error", () => {
+    expect(() =>
+      parseEnumFlag("keyLimitMode", "x", ["per_node", "global"]),
+    ).toThrowError(/--keyLimitMode must be one of per_node, global/);
+  });
+  it("does not accept 'inherit' here — the global switch has no inherit", () => {
+    expect(() =>
+      parseEnumFlag("keyLimitMode", "inherit", ["per_node", "global"]),
+    ).toThrowError(/must be one of/);
+  });
+});
+
+describe("effectiveKeyLimitMode", () => {
+  // The CLI-side mirror of the API's resolution: the per-user override wins,
+  // and anything unrecognised falls back to per_node — the pre-mode behaviour
+  // and therefore the safe default.
+  it("prefers the per-user override over the global mode", () => {
+    expect(effectiveKeyLimitMode("per_node", "global")).toBe("global");
+  });
+  it("falls back to the global mode when the user has no override", () => {
+    expect(effectiveKeyLimitMode("global", undefined)).toBe("global");
+    expect(effectiveKeyLimitMode("global", null)).toBe("global");
+  });
+  it("falls back to per_node for anything unrecognised", () => {
+    expect(effectiveKeyLimitMode(undefined, "bogus")).toBe("per_node");
+    expect(effectiveKeyLimitMode(undefined, undefined)).toBe("per_node");
+  });
+});
+
+describe("quotaCurrentLimit", () => {
+  const user = { keyLimitOverride: 3, nodeKeyLimits: { n1: 1 } };
+
+  it("prefers a per-node entry in per_node mode", () => {
+    expect(quotaCurrentLimit("per_node", user, "n1", 5)).toBe("1");
+  });
+  it("IGNORES per-node entries in global mode — they are dormant", () => {
+    // The bug this test exists to stop: without the mode, the CLI would print
+    // "1 → 8" for a user whose real pool is 3, right before quota-approve.
+    expect(quotaCurrentLimit("global", user, "n1", 5)).toBe("3");
+  });
+  it("falls back to the policy default when nothing is overridden", () => {
+    expect(
+      quotaCurrentLimit(
+        "global",
+        { keyLimitOverride: null, nodeKeyLimits: null },
+        null,
+        5,
+      ),
+    ).toBe("5");
+    expect(
+      quotaCurrentLimit(
+        "per_node",
+        { keyLimitOverride: null, nodeKeyLimits: null },
+        "n1",
+        5,
+      ),
+    ).toBe("5");
+  });
+  it("says 'default' when even the policy default is unknown", () => {
+    // A panel older than this field, or a request whose user is gone: the cell
+    // must still render rather than printing "undefined".
+    expect(quotaCurrentLimit("per_node", {}, null, undefined)).toBe("default");
+  });
+});
+
+describe("quotaTargetLabel", () => {
+  it("names the server in per_node mode", () => {
+    expect(quotaTargetLabel("per_node", "frankfurt")).toBe("frankfurt");
+    expect(quotaTargetLabel("per_node", null)).toBe("all servers");
+  });
+  it("says the named server is coerced away in global mode", () => {
+    // Approving this grants a total, not a per-server limit, and the admin
+    // must see that before they type quota-approve.
+    expect(quotaTargetLabel("global", "frankfurt")).toBe(
+      "all servers (request named frankfurt)",
+    );
+    expect(quotaTargetLabel("global", null)).toBe("all servers");
   });
 });
 

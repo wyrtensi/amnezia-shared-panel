@@ -123,6 +123,7 @@ const ru = {
   "emp.refresh": "Обновить",
   "emp.quotaUsage": "Лимит ключей",
   "emp.quotaPerNode": "До {limit} на каждом сервере",
+  "emp.quotaTotal": "До {limit} на всех серверах вместе",
   "emp.requestMore": "Запросить больше",
   "emp.devices": "Устройства",
   "emp.newKey": "Новый ключ",
@@ -163,6 +164,9 @@ const ru = {
   "emp.revoked": "Ключ отозван",
   "emp.revokeFailed": "Не удалось отозвать ключ",
   "quota.cellsAria": "{used} из {limit} ключей",
+  // In global mode the per-server row has no limit of its own to announce.
+  "quota.cellsIssuedAria": "{used} ключей на этом сервере",
+  "quota.noKeysOnServer": "нет ключей",
   "quota.cellIssued": "Ключ выпущен",
   "quota.cellFree": "Свободный слот",
 
@@ -222,9 +226,14 @@ const ru = {
   "wizard.server": "Сервер",
   "wizard.serverPlaceholder": "Выберите сервер",
   "wizard.serverQuota": "ключей {used}/{limit}",
+  // Global mode has no per-server denominator to show, only the count.
+  "wizard.serverKeys": "ключей {used}",
   "wizard.serverQuotaHint":
     "Лимит ключей считается по каждому серверу отдельно. Сервер, где лимит уже выбран, выбрать нельзя.",
+  "wizard.serverQuotaHintGlobal":
+    "Лимит общий на все серверы: занято {used} из {limit}.",
   "wizard.serverFull": "На этом сервере лимит ключей уже исчерпан.",
+  "wizard.poolFull": "Общий лимит ключей исчерпан.",
   "wizard.protocol": "Протокол",
   "wizard.protocolHint":
     "AmneziaWG 3.1 маскирует заголовки и добавляет случайные трейлеры — сложнее обнаружить. 2.0 оставлен для старых клиентов.",
@@ -388,6 +397,7 @@ const ru = {
   "quota.currentLimit": "Сейчас доступно: {limit}",
   "quota.willBecome": "Станет {total} на каждом сервере",
   "quota.willBecomeNode": "Станет {total} на сервере «{node}»",
+  "quota.willBecomeTotal": "Станет {total} на все серверы вместе",
   "quota.reason": "Обоснование",
   "quota.reasonPlaceholder":
     "Опишите, зачем нужны дополнительные ключи (не менее 10 символов).",
@@ -448,6 +458,10 @@ const ru = {
   "ov.quotaTargetAll": "Все серверы",
   "ov.quotaReplacesPerNode":
     "Одобрение заменит персональные лимиты по серверам ({count}).",
+  // S4: a request raised before the switch to a shared pool still names a
+  // server; the admin must see that approving it now raises the total instead.
+  "ov.quotaTargetCoerced":
+    "Запрос был создан для сервера «{node}». Сейчас лимит общий — одобрение поднимет общий лимит.",
   "ov.colNewLimit": "Новый лимит",
   "ov.colLimitChange": "Лимит: сейчас → запрос",
   "ov.colReason": "Обоснование",
@@ -495,7 +509,10 @@ const ru = {
     "Отключить и удалить {email}? Все ключи будут отозваны, аккаунт удаляется после их отзыва.",
   "users.keysWord": "ключей",
   "users.onlineCount": "{count} онлайн",
-  "users.limitNode": "Лимит ключей:",
+  // S7: the button now covers both the number and the server list.
+  "users.limitNode": "Лимиты и серверы:",
+  "users.limitModeGlobalShort": "общий",
+  "users.limitModePerNodeShort": "на сервер",
   "users.default": "по умолч.",
   "users.policies": "Политики",
   "users.removeAdmin": "Снять админа",
@@ -532,8 +549,20 @@ const ru = {
   "users.roleHint": "Администратор видит эту панель и управляет всеми ключами.",
   "users.limitTitle": "Серверы и лимиты ключей",
   "users.limitDesc": "{email} — доступные серверы и лимит ключей на каждом",
+  "users.limitMode": "Режим лимита",
+  "users.limitModeHint":
+    "Как считать лимит для этого пользователя: на каждом сервере отдельно или одним числом на все серверы. Пусто — как в глобальной политике.",
+  "users.limitModeInherit": "Как в глобальной политике ({mode})",
+  "users.limitModePerNode": "На каждом сервере",
+  "users.limitModeGlobal": "Общий на все серверы",
   "users.limitLabel": "Лимит по умолчанию на каждом сервере",
   "users.limitLabelHint": "Пусто — глобальный лимит ({value}).",
+  "users.limitLabelGlobal": "Общий лимит ключей",
+  "users.limitLabelGlobalHint":
+    "Пусто — глобальный лимит ({value}). Считается суммарно по всем серверам.",
+  // S3: per-server numbers stay in the DB while the pool is in charge.
+  "users.limitPerNodeDormant":
+    "Пока лимит общий, лимиты по серверам не действуют. Они сохраняются и вернутся при переключении обратно.",
   "users.limitAllNodes": "Доступны все серверы",
   "users.limitAllNodesHint":
     "Выключите, чтобы выбрать серверы именно для этого пользователя. Включено — действует глобальный список.",
@@ -674,10 +703,17 @@ const ru = {
     "Показывать время последнего использования ключа.",
   "gpolicy.showTrafficHint":
     "Показывать объём трафика (получено/отдано) по ключу.",
+  "gpolicy.keyLimitMode": "Общий лимит на все серверы",
+  "gpolicy.keyLimitModeHint":
+    "Включено — лимит считается суммарно по всем серверам. Выключено — отдельно на каждом сервере. Лимиты по серверам при этом сохраняются, но не действуют. Отдельному пользователю режим можно задать в «Лимиты и серверы».",
   "policy.title": "Глобальная политика портала",
   "policy.keyLimit": "Лимит ключей на ноду",
   "policy.keyLimitHint":
     "Сколько ключей по умолчанию доступно пользователю на каждой ноде. Для отдельного человека лимит можно переопределить.",
+  // The same number, relabelled: in global mode it is a pool, not a per-node cap.
+  "policy.keyLimitGlobal": "Общий лимит ключей",
+  "policy.keyLimitGlobalHint":
+    "Сколько ключей суммарно на всех серверах доступно пользователю по умолчанию. Для отдельного человека лимит можно переопределить.",
   "policy.retention": "Срок хранения истории (дней)",
   "policy.retentionHint":
     "Сколько дней хранить посуточную статистику трафика; более старые записи удаляются.",
@@ -934,6 +970,7 @@ const en = {
   "emp.refresh": "Refresh",
   "emp.quotaUsage": "Key limit",
   "emp.quotaPerNode": "Up to {limit} on each server",
+  "emp.quotaTotal": "Up to {limit} across all servers",
   "emp.requestMore": "Request more",
   "emp.devices": "Devices",
   "emp.newKey": "New key",
@@ -975,6 +1012,8 @@ const en = {
   "emp.revoked": "Key revoked",
   "emp.revokeFailed": "Failed to revoke the key",
   "quota.cellsAria": "{used} of {limit} keys",
+  "quota.cellsIssuedAria": "{used} keys on this server",
+  "quota.noKeysOnServer": "no keys",
   "quota.cellIssued": "Key issued",
   "quota.cellFree": "Free slot",
 
@@ -1034,9 +1073,13 @@ const en = {
   "wizard.server": "Server",
   "wizard.serverPlaceholder": "Select a server",
   "wizard.serverQuota": "keys {used}/{limit}",
+  "wizard.serverKeys": "keys {used}",
   "wizard.serverQuotaHint":
     "The key limit is counted per server. A server that already reached its limit cannot be selected.",
+  "wizard.serverQuotaHintGlobal":
+    "The limit is shared by every server: {used} of {limit} used.",
   "wizard.serverFull": "This server has already reached its key limit.",
+  "wizard.poolFull": "The shared key limit is used up.",
   "wizard.protocol": "Protocol",
   "wizard.protocolHint":
     "AmneziaWG 3.1 masks headers and adds random trailers — harder to detect. 2.0 is kept for older clients.",
@@ -1199,6 +1242,7 @@ const en = {
   "quota.currentLimit": "Available now: {limit}",
   "quota.willBecome": "Will become {total} on each server",
   "quota.willBecomeNode": "Will become {total} on \"{node}\"",
+  "quota.willBecomeTotal": "Will become {total} across all servers",
   "quota.reason": "Reason",
   "quota.reasonPlaceholder":
     "Explain why you need additional keys (at least 10 characters).",
@@ -1259,6 +1303,8 @@ const en = {
   "ov.quotaTargetAll": "Every server",
   "ov.quotaReplacesPerNode":
     "Approving this replaces the user's per-server limits ({count}).",
+  "ov.quotaTargetCoerced":
+    "The request named \"{node}\". The limit is now shared, so approving raises the total.",
   "ov.colNewLimit": "New limit",
   "ov.colLimitChange": "Limit: now → requested",
   "ov.colReason": "Reason",
@@ -1306,7 +1352,9 @@ const en = {
     "Disable and delete {email}? All keys will be revoked, and the account is deleted after they are revoked.",
   "users.keysWord": "keys",
   "users.onlineCount": "{count} online",
-  "users.limitNode": "Key limit:",
+  "users.limitNode": "Limits and servers:",
+  "users.limitModeGlobalShort": "total",
+  "users.limitModePerNodeShort": "per server",
   "users.default": "default",
   "users.policies": "Policies",
   "users.removeAdmin": "Remove admin",
@@ -1342,8 +1390,19 @@ const en = {
   "users.roleHint": "An administrator sees this panel and manages all keys.",
   "users.limitTitle": "Servers and key limits",
   "users.limitDesc": "{email} — available servers and the key limit on each",
+  "users.limitMode": "Limit mode",
+  "users.limitModeHint":
+    "How this user's limit is counted: per server, or as one total across every server. Empty — as in the global policy.",
+  "users.limitModeInherit": "As in the global policy ({mode})",
+  "users.limitModePerNode": "Per server",
+  "users.limitModeGlobal": "Total across all servers",
   "users.limitLabel": "Default limit on every server",
   "users.limitLabelHint": "Empty — the global limit ({value}).",
+  "users.limitLabelGlobal": "Total key limit",
+  "users.limitLabelGlobalHint":
+    "Empty — the global limit ({value}). Counted across every server together.",
+  "users.limitPerNodeDormant":
+    "While the limit is shared, per-server limits are not applied. They are kept and come back when switched back.",
   "users.limitAllNodes": "All servers available",
   "users.limitAllNodesHint":
     "Turn off to pick servers for this user. While on, the global list applies.",
@@ -1479,10 +1538,16 @@ const en = {
   "gpolicy.showLastUsedHint": "Show when the key was last used.",
   "gpolicy.showTrafficHint":
     "Show traffic volume (received/sent) per key.",
+  "gpolicy.keyLimitMode": "One limit shared by every server",
+  "gpolicy.keyLimitModeHint":
+    "On — the limit is counted across every server together. Off — separately on each server. Per-server limits are kept but not applied meanwhile. A single user's mode is set in \"Limits and servers\".",
   "policy.title": "Global portal policy",
   "policy.keyLimit": "Key limit per node",
   "policy.keyLimitHint":
     "How many keys a user gets per node by default. Individual users can have this overridden.",
+  "policy.keyLimitGlobal": "Total key limit",
+  "policy.keyLimitGlobalHint":
+    "How many keys a user gets in total across every server by default. Individual users can have this overridden.",
   "policy.retention": "History retention (days)",
   "policy.retentionHint":
     "How many days of daily traffic history to keep; older rows are pruned.",

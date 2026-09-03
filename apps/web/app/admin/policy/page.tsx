@@ -63,8 +63,14 @@ export default function AdminPolicyPage() {
           <div className="grid gap-4 sm:grid-cols-2">
             <div className="space-y-1.5">
               <Label htmlFor="default-limit" className="flex items-center gap-1.5">
-                {t("policy.keyLimit")}
-                <Hint>{t("policy.keyLimitHint")}</Hint>
+                {form.keyLimitMode === "global"
+                  ? t("policy.keyLimitGlobal")
+                  : t("policy.keyLimit")}
+                <Hint>
+                  {form.keyLimitMode === "global"
+                    ? t("policy.keyLimitGlobalHint")
+                    : t("policy.keyLimitHint")}
+                </Hint>
               </Label>
               <Input
                 id="default-limit"
@@ -101,6 +107,17 @@ export default function AdminPolicyPage() {
               />
             </div>
           </div>
+
+          {/* Directly under the number it reinterprets: the same value means
+              "per server" or "in total" depending on this switch. */}
+          <PolicyToggle
+            label={t("gpolicy.keyLimitMode")}
+            hint={t("gpolicy.keyLimitModeHint")}
+            checked={form.keyLimitMode === "global"}
+            onChange={(checked) =>
+              setForm({ ...form, keyLimitMode: checked ? "global" : "per_node" })
+            }
+          />
 
           <Separator />
 

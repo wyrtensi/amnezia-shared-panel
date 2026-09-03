@@ -37,6 +37,7 @@ import { cn } from "@/lib/utils";
 import { TrafficSummary } from "@/components/traffic-summary";
 import { TrafficBytes, TrafficSplit } from "@/components/inline-traffic";
 import { useAdminData } from "@/components/admin/admin-data";
+import { effectiveKeyLimitMode } from "@/lib/key-quota";
 import { PanelUpdateCard } from "@/components/admin/panel-update-card";
 import { useT } from "@/lib/i18n/provider";
 
@@ -82,21 +83,33 @@ export default function AdminOverviewPage() {
   const pending = requests.filter((request) => request.status === "pending");
   const userEmail = (id: string) =>
     users.find((user) => user.id === id)?.email ?? id;
-  // The limit the request builds on, resolved the way the backend resolves it:
-  // the per-node entry for a per-server request, then the user's flat override,
-  // then the global default. So the admin sees "have now → requested".
+  // The mode the API will approve under: the user's override, else the global.
+  const modeFor = (userId: string) =>
+    effectiveKeyLimitMode(
+      policy.keyLimitMode,
+      users.find((entry) => entry.id === userId)?.policyOverride?.keyLimitMode,
+    );
+  // The limit the request builds on, resolved the way the backend resolves it.
+  // Per-node mode: the per-node entry for a per-server request, then the flat
+  // override, then the global default. Global mode: the pool, whatever the
+  // request targeted. So the admin sees "have now → requested".
   const currentLimit = (userId: string, nodeId: string | null) => {
     const user = users.find((entry) => entry.id === userId);
-    const perNode = nodeId ? user?.nodeKeyLimits?.[nodeId] : undefined;
+    const perNode =
+      nodeId && modeFor(userId) === "per_node"
+        ? user?.nodeKeyLimits?.[nodeId]
+        : undefined;
     return perNode ?? user?.keyLimitOverride ?? policy.defaultKeyLimit;
   };
 
-  // An every-server grant clears the user's per-node limits, so the admin has to
-  // see that before approving.
+  // An every-server grant in per-node mode clears the user's per-node limits,
+  // so the admin has to see that before approving. Global mode keeps them.
   const perNodeLimitCount = (userId: string) =>
-    Object.keys(
-      users.find((entry) => entry.id === userId)?.nodeKeyLimits ?? {},
-    ).length;
+    modeFor(userId) === "global"
+      ? 0
+      : Object.keys(
+          users.find((entry) => entry.id === userId)?.nodeKeyLimits ?? {},
+        ).length;
 
   const [now] = React.useState(() => Date.now());
   const inactiveUsers = React.useMemo(() => {
@@ -421,11 +434,18 @@ export default function AdminOverviewPage() {
                         {userEmail(request.userId)}
                       </TableCell>
                       <TableCell className="text-sm">
-                        {nodeId ? (
+                        {nodeId && modeFor(request.userId) === "per_node" ? (
                           request.nodeName ?? nodeId
                         ) : (
                           <span>{t("ov.quotaTargetAll")}</span>
                         )}
+                        {nodeId && modeFor(request.userId) === "global" ? (
+                          <p className="text-xs leading-snug text-muted-foreground">
+                            {t("ov.quotaTargetCoerced", {
+                              node: request.nodeName ?? nodeId,
+                            })}
+                          </p>
+                        ) : null}
                         {replacedPerNode > 0 ? (
                           <p className="text-xs leading-snug text-muted-foreground">
                             {t("ov.quotaReplacesPerNode", {

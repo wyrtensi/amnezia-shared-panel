@@ -33,6 +33,7 @@ import {
   type KeyNameDisplay,
 } from "@amnezia/contracts";
 import { routeProfileChoice } from "@/lib/route-profile-choice";
+import { isNodeFull, isPoolExhausted } from "@/lib/key-quota";
 import { useT } from "@/lib/i18n/provider";
 import { DEVICE_ICON } from "@/components/device-icon";
 import { suggestKeyName } from "@/lib/suggest-key-name";
@@ -139,23 +140,39 @@ export function CreateKeyWizard({
     }
   }, [open, nodes, existingNames, t]);
 
-  // Per-node quota. The key limit is per server and may differ per server, so a
-  // full server never blocks the others. `me.perNode` only lists servers the
-  // user holds keys on or that carry an explicit limit; anything else falls
-  // back to the flat `me.keyLimit`.
+  // Per-node quota. In per-node mode the key limit is per server and may differ
+  // per server, so a full server never blocks the others; in global mode one
+  // exhausted pool makes every server full at once. `me.perNode` only lists
+  // servers the user holds keys on or that carry an explicit limit; anything
+  // else falls back to the flat `me.keyLimit`.
+  const keyLimitMode = me.keyLimitMode ?? "per_node";
+  const totals = { used: me.keyCount, limit: me.keyLimit };
   const quotaByNode = React.useMemo(() => {
     const entries = new Map(
       (me.perNode ?? []).map((entry) => [entry.nodeId, entry]),
     );
+    // `totals` is a fresh object every render but derives only from `me`, which
+    // is in the dependency list — so it can never go stale here.
     return new Map(
       nodes.map((node) => {
         const entry = entries.get(node.id);
         const used = entry?.used ?? 0;
         const limit = entry?.limit ?? me.keyLimit;
-        return [node.id, { used, limit, full: used >= limit }];
+        return [
+          node.id,
+          {
+            used,
+            limit,
+            full: isNodeFull(
+              keyLimitMode,
+              { nodeId: node.id, used, limit },
+              totals,
+            ),
+          },
+        ];
       }),
     );
-  }, [me, nodes]);
+  }, [me, nodes, keyLimitMode]);
 
   // The server picker is only offered when the policy allows it; otherwise the
   // control API picks a node with room itself and the choice below is ignored.
@@ -364,7 +381,11 @@ export function CreateKeyWizard({
             <div className="space-y-2">
               <div className="flex items-center gap-1.5">
                 <Label>{t("wizard.server")}</Label>
-                <Hint>{t("wizard.serverQuotaHint")}</Hint>
+                <Hint>
+                  {keyLimitMode === "global"
+                    ? t("wizard.serverQuotaHintGlobal", totals)
+                    : t("wizard.serverQuotaHint")}
+                </Hint>
               </div>
               <Select value={nodeId} onValueChange={setNodeId}>
                 <SelectTrigger>
@@ -383,10 +404,14 @@ export function CreateKeyWizard({
                           <span className="truncate">{node.name}</span>
                           {quota ? (
                             <span className="shrink-0 tabular-nums text-xs text-muted-foreground">
-                              {t("wizard.serverQuota", {
-                                used: quota.used,
-                                limit: quota.limit,
-                              })}
+                              {/* Global mode: the per-server denominator is
+                                  meaningless, only the count is real. */}
+                              {keyLimitMode === "global"
+                                ? t("wizard.serverKeys", { used: quota.used })
+                                : t("wizard.serverQuota", {
+                                    used: quota.used,
+                                    limit: quota.limit,
+                                  })}
                             </span>
                           ) : null}
                         </span>
@@ -397,7 +422,9 @@ export function CreateKeyWizard({
               </Select>
               {selectedFull ? (
                 <FieldHint className="text-destructive">
-                  {t("wizard.serverFull")}
+                  {isPoolExhausted(keyLimitMode, totals)
+                    ? t("wizard.poolFull")
+                    : t("wizard.serverFull")}
                 </FieldHint>
               ) : null}
             </div>

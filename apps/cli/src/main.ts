@@ -26,15 +26,21 @@ import {
 import { buildRequestHeaders } from "./http.js";
 import { authHeaders } from "./identity.js";
 import {
+  KEY_LIMIT_MODES,
   deviceTypeUsage,
+  effectiveKeyLimitMode,
   flagOf,
   formatDeviceType,
   formatUpdateStatus,
   parseDeviceType,
+  parseEnumFlag,
+  parseKeyLimitMode,
   positionals,
   csvList,
   parseNodeLimits,
   parseNodeSpec,
+  quotaCurrentLimit,
+  quotaTargetLabel,
 } from "./args.js";
 import type { UpdateStatusView } from "./args.js";
 import {
@@ -162,7 +168,11 @@ type AdminUser = {
   // Per-node limits ({ nodeId: limit }) and the per-user policy override that
   // carries node availability. Both are null when nothing is overridden.
   nodeKeyLimits?: Record<string, number> | null;
-  policyOverride?: { allowedNodeIds?: string[] | null } | null;
+  policyOverride?: {
+    allowedNodeIds?: string[] | null;
+    // Absent = this user inherits the panel-wide key-limit mode.
+    keyLimitMode?: string | null;
+  } | null;
 };
 type AdminKey = {
   id: string;
@@ -263,9 +273,46 @@ function describeUserNodes(user: AdminUser): string {
   return perNode > 0 ? `${availability}, ${perNode} custom` : availability;
 }
 
+/**
+ * The two portal-policy fields the users / quota tables need to state a limit
+ * correctly. Read out of the untyped policy row and narrowed here because the
+ * CLI carries no contract dependency: a panel older than the key-limit modes
+ * returns neither field, and both call sites have to survive that.
+ */
+function policyLimitContext(rows: Array<Record<string, unknown>>): {
+  globalMode: string | undefined;
+  defaultKeyLimit: number | undefined;
+} {
+  const policy = rows[0] ?? {};
+  const mode = policy.keyLimitMode;
+  const fallback = policy.defaultKeyLimit;
+  return {
+    globalMode: typeof mode === "string" ? mode : undefined,
+    defaultKeyLimit: typeof fallback === "number" ? fallback : undefined,
+  };
+}
+
+/**
+ * The key-limit mode cell: the mode that actually applies to this user, with
+ * `*` marking one set on the user rather than inherited from the panel. The
+ * effective value is what matters — it decides whether the `limit` column next
+ * to it reads as a per-server number or as one shared total.
+ */
+function describeUserMode(
+  user: AdminUser,
+  globalMode: string | undefined,
+): string {
+  const own = user.policyOverride?.keyLimitMode ?? null;
+  return `${effectiveKeyLimitMode(globalMode, own)}${own ? "*" : ""}`;
+}
+
 async function cmdUsers(args: string[]): Promise<void> {
-  const users = await api<AdminUser[]>("/api/admin/users");
+  const [users, policyRows] = await Promise.all([
+    api<AdminUser[]>("/api/admin/users"),
+    api<Array<Record<string, unknown>>>("/api/admin/portal-policy"),
+  ]);
   if (wantsJson(args)) return json(users);
+  const { globalMode } = policyLimitContext(policyRows);
   console.log(
     table(
       users.map((user) => ({
@@ -273,10 +320,11 @@ async function cmdUsers(args: string[]): Promise<void> {
         role: user.role,
         status: user.status,
         limit: user.keyLimitOverride?.toString() ?? "default",
+        mode: describeUserMode(user, globalMode),
         // Counts only; `user-limit --node-limits=` shows and sets the detail.
         nodes: describeUserNodes(user),
       })),
-      ["email", "role", "status", "limit", "nodes"],
+      ["email", "role", "status", "limit", "mode", "nodes"],
     ),
   );
 }
@@ -399,7 +447,7 @@ async function cmdUserRole(args: string[]): Promise<void> {
 async function cmdUserLimit(args: string[]): Promise<void> {
   const positional = positionals(args);
   const usage =
-    "Usage: user-limit <id|email> <n|default> [--node-limits=<uuid>:<n>,…|none] [--allowed-nodes=all|none|uuid,…]";
+    "Usage: user-limit <id|email> <n|default> [--node-limits=<uuid>:<n>,…|none] [--allowed-nodes=all|none|uuid,…] [--mode=per_node|global|inherit]";
   const id = await resolveUserId(positional[0], usage);
   const raw = positional[1];
   if (raw === undefined) throw new Error(usage);
@@ -423,6 +471,11 @@ async function cmdUserLimit(args: string[]): Promise<void> {
   if (allowedNodesFlag !== undefined) {
     body.allowedNodeIds = parseNodeSpec(allowedNodesFlag);
   }
+  // How this user's number is counted. Null is meaningful here (it clears the
+  // per-user override), so the flag's presence — not its value — decides
+  // whether the field is sent at all.
+  const modeFlag = flagOf(args, "mode");
+  if (modeFlag !== undefined) body.keyLimitMode = parseKeyLimitMode(modeFlag);
   await userAction(id, "set-limit", body);
   console.log(`user ${positional[0]}: key limit → ${keyLimitOverride ?? "default"}`);
   if (nodeLimitsFlag !== undefined) {
@@ -439,6 +492,15 @@ async function cmdUserLimit(args: string[]): Promise<void> {
     const shown =
       allowed === null ? "all" : allowed.length ? allowed.join(",") : "none";
     console.log(`  node availability → ${shown}`);
+  }
+  if (modeFlag !== undefined) {
+    console.log(`  key limit mode → ${modeFlag}`);
+    if (modeFlag === "global" && nodeLimitsFlag !== undefined) {
+      // The per-node write is kept, but it does not bite until the mode goes
+      // back to per_node. Saying so is the difference between a stored value
+      // and a silently ignored one.
+      console.log("  (per-node limits are stored but dormant in global mode)");
+    }
   }
 }
 
@@ -461,21 +523,23 @@ async function cmdUserEnable(args: string[]): Promise<void> {
 }
 
 async function cmdQuota(args: string[]): Promise<void> {
-  const [requests, users] = await Promise.all([
+  const [requests, users, policyRows] = await Promise.all([
     api<QuotaRequest[]>("/api/admin/quota-requests"),
     api<AdminUser[]>("/api/admin/users"),
+    api<Array<Record<string, unknown>>>("/api/admin/portal-policy"),
   ]);
   if (wantsJson(args)) return json(requests);
   const emailById = new Map(users.map((user) => [user.id, user.email]));
   const userById = new Map(users.map((user) => [user.id, user]));
-  // The limit a request would replace, resolved the way the API resolves it:
-  // a per-node entry beats the flat override. Showing the flat number for a
-  // per-server request would misstate what the admin is about to change.
-  const currentLimit = (userId: string, nodeId: string | null): string => {
-    const user = userById.get(userId);
-    const perNode = nodeId ? user?.nodeKeyLimits?.[nodeId] : undefined;
-    return String(perNode ?? user?.keyLimitOverride ?? "default");
-  };
+  const { globalMode, defaultKeyLimit } = policyLimitContext(policyRows);
+  // Both cells below are read in that requester's own mode: what a click on
+  // quota-approve changes depends on it, and the per-node numbers it would
+  // otherwise quote are dormant under a shared pool.
+  const modeFor = (userId: string) =>
+    effectiveKeyLimitMode(
+      globalMode,
+      userById.get(userId)?.policyOverride?.keyLimitMode ?? null,
+    );
   // Default to the actionable set (pending); `--all` shows every request.
   const showAll = args.includes("--all");
   const rows = requests
@@ -490,19 +554,30 @@ async function cmdQuota(args: string[]): Promise<void> {
   }
   console.log(
     table(
-      rows.map((req) => ({
-        id: req.id,
-        user: emailById.get(req.userId) ?? req.userId.slice(0, 8),
-        // A request names one server or every server; approving it grants the
-        // limit exactly there.
-        target: req.nodeId
-          ? (req.nodeName ?? req.nodeId.slice(0, 8))
-          : "all servers",
-        change: `${currentLimit(req.userId, req.nodeId)} → ${req.requestedLimit}`,
-        status: req.status,
-        created: (req.createdAt ?? "").replace("T", " ").slice(0, 16),
-        reason: (req.reason ?? "").replace(/\s+/g, " ").slice(0, 36) || "—",
-      })),
+      rows.map((req) => {
+        const mode = modeFor(req.userId);
+        const current = quotaCurrentLimit(
+          mode,
+          userById.get(req.userId) ?? {},
+          req.nodeId,
+          defaultKeyLimit,
+        );
+        return {
+          id: req.id,
+          user: emailById.get(req.userId) ?? req.userId.slice(0, 8),
+          // A request names one server or every server; in per_node mode
+          // approving it grants the limit exactly there, in global mode it
+          // always raises the shared total, whatever the request named.
+          target: quotaTargetLabel(
+            mode,
+            req.nodeId ? (req.nodeName ?? req.nodeId.slice(0, 8)) : null,
+          ),
+          change: `${current} → ${req.requestedLimit}`,
+          status: req.status,
+          created: (req.createdAt ?? "").replace("T", " ").slice(0, 16),
+          reason: (req.reason ?? "").replace(/\s+/g, " ").slice(0, 36) || "—",
+        };
+      }),
       ["id", "user", "target", "change", "status", "created", "reason"],
     ),
   );
@@ -587,6 +662,14 @@ const POLICY_STR_NULL_FIELDS = [
   "cfAccessPolicyId",
 ] as const;
 const POLICY_STR_FIELDS = ["cfApiToken"] as const;
+/**
+ * Policy fields whose value is one of a fixed word list. Unlike `user-limit
+ * --mode`, the panel-wide switch has no `inherit`: it is the value everything
+ * else inherits from.
+ */
+const POLICY_ENUM_FIELDS: Record<string, readonly string[]> = {
+  keyLimitMode: KEY_LIMIT_MODES,
+};
 /** Audiences the connection guide is split into; mirrors the contract. */
 const GUIDE_AUDIENCE_VALUES = ["desktop", "android", "ios"] as const;
 
@@ -631,6 +714,10 @@ async function cmdPolicySet(args: string[]): Promise<void> {
   for (const field of POLICY_STR_FIELDS) {
     const value = flag(field);
     if (value !== undefined) body[field] = value;
+  }
+  for (const [field, allowed] of Object.entries(POLICY_ENUM_FIELDS)) {
+    const value = flag(field);
+    if (value !== undefined) body[field] = parseEnumFlag(field, value, allowed);
   }
   // Walkthrough videos are a nested map, one entry per guide audience, so they
   // cannot ride the flat --field=value loops above. Setting one audience must
@@ -1084,7 +1171,8 @@ Usage: amnezia-panel <command> [args] [--json]
 
 Read:
   overview                 Key metrics
-  users                    List users
+  users                    List users (with each user's effective key-limit mode;
+                          * marks a mode set on the user rather than inherited)
   keys [--device-type=X]   List keys (with owner, platform + traffic); the flag filters
       [--needs-profile-warning]
                           to one stored platform, "unspecified" included.
@@ -1093,8 +1181,10 @@ Read:
                           the route column
   nodes                    List nodes (with protocols + capacity)
   audit [--limit=N]        Recent audit events
-  quota [--all] [--json]   Key-limit requests (pending by default; --all = every state),
-                          with the target server of each request
+  quota [--all] [--json]   Key-limit requests (pending by default; --all = every state).
+                          The target and "now → requested" cells are read in that
+                          user's own key-limit mode: under a global (shared) limit a
+                          request that named a server still reads "all servers"
   policy [--json]          Show all panel settings + Cloudflare config
   global-routes [--json]   Admin-wide route additions / exclusions
   version [--json]         Panel version + commit + the AWG 3.1 client floor
@@ -1109,9 +1199,13 @@ Users (accept a user id OR email):
   user-create <email> [name] [--admin]   Add a user
   user-role <id|email> <admin|user>      Promote / demote (last admin is protected)
   user-limit <id|email> <n|default> [--node-limits=<uuid>:<n>,…|none] [--allowed-nodes=all|none|uuid,…]
-                                         Set the per-node key limit (default = clear the override).
+             [--mode=per_node|global|inherit]
+                                         Set the key limit (default = clear the override).
                                          --node-limits REPLACES the per-node limits (none = clear);
-                                         --allowed-nodes sets node availability (all = every node).
+                                         --allowed-nodes sets node availability (all = every node);
+                                         --mode overrides how the number is counted for this user
+                                         (global = one total across every server, per-server limits
+                                         kept but dormant; inherit = clear the override).
                                          Omitted flags leave that part unchanged.
   user-disable <id|email>                Offboard: disable + revoke their keys
   user-enable <id|email>                 Reinstate a disabled user
@@ -1126,8 +1220,10 @@ Users (accept a user id OR email):
                                          platform (ios covers iPhone and iPad). The --name-*
                                          flags pick which parts the VPN client shows as the
                                          connection name (default: server + label, no number)
-  quota-approve <request-id> [note]      Approve a quota request (grants the limit on the
-                                        request's own target: one server, or all servers)
+  quota-approve <request-id> [note]      Approve a quota request. In per_node mode the limit
+                                        lands on the request's own target (one server, or all
+                                        servers); in global mode it always raises the shared
+                                        total and leaves per-server limits untouched
   quota-reject <request-id> [note]       Reject a quota request
 
 Nodes:
@@ -1173,6 +1269,10 @@ policy-set fields:
     allowQrDownload, allowConfDownload, allowSelfRevoke, showPublicKey,
     showLastUsed, showTraffic
   defaultKeyLimit=<int 0..1000>
+    Per server in per_node mode, the shared total in global mode — the number
+    does not move, its meaning does.
+  keyLimitMode=per_node|global            Panel-wide default for how every key
+    limit is counted; a user can be moved off it with user-limit --mode=
   dailyRetentionDays=<int 1..36500 | null>
   allowedProtocols=awg3[,awg2]            allowedNodeIds=<uuid,…|null>
   cfAccessAccountId / cfAccessAppId / cfAccessPolicyId=<id|null>

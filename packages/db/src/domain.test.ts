@@ -1,6 +1,8 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
+import { getTableColumns } from "drizzle-orm";
 import { defaultPortalPolicy } from "@amnezia/contracts";
+import { portalPolicy } from "./schema.js";
 import {
   countQuotaKeys,
   decryptSecret,
@@ -63,6 +65,23 @@ describe("quota and policy", () => {
     expect(resolved.allowSelfRevoke).toBe(false);
     expect(resolved.allowQrDownload).toBe(
       defaultPortalPolicy.allowQrDownload,
+    );
+  });
+
+  it("stores the key limit mode on the policy singleton, defaulting to per-node", () => {
+    const columns = getTableColumns(portalPolicy);
+    expect(columns.keyLimitMode.name).toBe("key_limit_mode");
+    expect(columns.keyLimitMode.notNull).toBe(true);
+    expect(columns.keyLimitMode.default).toBe("per_node");
+  });
+
+  it("lets a user override the key limit mode through the policy override", () => {
+    const resolved = resolvePortalPolicy(defaultPortalPolicy, {
+      keyLimitMode: "global",
+    });
+    expect(resolved.keyLimitMode).toBe("global");
+    expect(resolvePortalPolicy(defaultPortalPolicy, null).keyLimitMode).toBe(
+      "per_node",
     );
   });
 });

@@ -59,6 +59,7 @@ export const quotaRequestStatusEnum = pgEnum("quota_request_status", [
   "rejected",
   "cancelled",
 ]);
+export const keyLimitModeEnum = pgEnum("key_limit_mode", ["per_node", "global"]);
 export const ruleVersionStatusEnum = pgEnum("rule_version_status", [
   "active",
   "superseded",
@@ -350,6 +351,11 @@ export const portalPolicy = pgTable(
   {
     id: boolean("id").primaryKey().default(true),
     defaultKeyLimit: integer("default_key_limit").default(5).notNull(),
+    // How `defaultKeyLimit` / `users.keyLimitOverride` are read: per server
+    // (the original behaviour) or as one total shared by every server. A user
+    // may override it in `policyOverride.keyLimitMode`. See the contract
+    // `keyLimitModeSchema` for the semantics.
+    keyLimitMode: keyLimitModeEnum("key_limit_mode").default("per_node").notNull(),
     allowKeyCreation: boolean("allow_key_creation").default(true).notNull(),
     allowNodeSelection: boolean("allow_node_selection").default(true).notNull(),
     allowedProtocols: jsonb("allowed_protocols")
