@@ -15,7 +15,10 @@ Admin clicks "Обновить панель"
   → host: panel-updater.path notices request.json
       → starts panel-updater.service (oneshot)
           → panel-updater.sh:
-              flock → read request id → rm request.json
+              flock on /run/amnezia-panel (root-only, outside the spool)
+              → open request.json once, verify via /proc it is a real spool file
+                (refused → result.json says so, and nothing is read as root)
+              → read request id → rm request.json
               → bash infra/prod/update.sh
                   (backup DB → down → drop old image → pull → migrate → up)
               → writes {spool}/result.json  {id, finishedAt, ok, message}
@@ -38,7 +41,7 @@ fails.
 | API | `apps/control-api/src/updateController.ts` | Write the request file, read status. `GET/POST /api/admin/update`. |
 | UI | `apps/web/components/admin/panel-update-card.tsx` | Version + button + live status on the admin overview. |
 | Spool mount | `infra/prod/compose.yaml` (control-api) | `UPDATE_SPOOL_DIR=/var/run/panel-update`, bind-mounted from `UPDATE_SPOOL_HOST_DIR`. |
-| Host worker | `infra/prod/panel-updater.sh` | Runs `update.sh`, writes the result. |
+| Host worker | `infra/prod/panel-updater.sh` | Runs `update.sh`, writes the result. Treats the spool as untrusted: the lock is held outside it (`PANEL_UPDATER_LOCK_DIR`, default `/run/amnezia-panel`), the request is read once through a descriptor verified via `/proc`, and the result is written via `mktemp` + rename. |
 | Trigger | `infra/prod/panel-updater.path` + `.service` | systemd path unit → oneshot service. |
 | Updater | `infra/prod/update.sh` | Backup → down → drop old image → pull → migrate → up (disk-safe for a tiny box). |
 | Installer | `infra/prod/install-updater.sh` | One-time host install of the units + spool. |

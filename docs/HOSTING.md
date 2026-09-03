@@ -293,6 +293,25 @@ command output or handoff.
 
 ---
 
+### 7.1 Accepted risks (security audit, 2026-09-01)
+
+Fixed from that audit: the `/api/control` proxy could be steered off the control
+API origin with a `%2F`-smuggled segment (now rejected with 400, and only the
+media types the control API emits are relayed); the host updater held its lock
+on a container-writable path (now `/run/amnezia-panel`, opened read-only);
+backups were world-readable (now `0600`/`0700`); the node API key had to be
+passed on the CLI command line (now `--api-key-file=`); and node-agent command
+failures could print an encoded `awg0.conf` — private key included — to
+container stdout (now redacted).
+
+Left as they are, deliberately — each sits inside the documented trust boundary:
+
+| Item | Where | Why it is accepted |
+| --- | --- | --- |
+| Read-write Docker socket in the node-agent container | `infra/node/compose.yaml` | Load-bearing: the agent drives the AWG containers with `docker exec`, so the socket *is* the feature. Its compromise is already host-level (§1, `AGENT-HOST-SETUP.md`). Compensating controls: the agent stays loopback-only and the key file `0640 root:root`. Containing it properly needs a filtering socket proxy restricted to `exec` against the two AWG containers — a separate piece of infrastructure, tracked as its own backlog item. |
+| `PostUp = <cmd>` in an operator-supplied `wgConfig` | node-agent `POST /server/backup` | Only a caller holding the node API key can supply a config, and that same key already grants `POST /server/reboot` and, through the socket above, root on the node. Blocking `PostUp` would break legitimate configs without narrowing what that caller can do. |
+| Unauthenticated `/metrics` and Swagger UI | node-agent, loopback port only | Published on `127.0.0.1` (`infra/node/compose.yaml`); anything able to read them is already on the host and already holds the Docker socket. Adding auth here would not raise the bar. |
+
 ## 8. Infrastructure-as-code direction (not implemented yet)
 
 Today the Access application, its Google IdP, and the allow policy are set up by

@@ -107,7 +107,9 @@ safe wrapper (backup → pull/build → migrate → up).
 | `COMPOSE_DIR=infra/prod bash scripts/backup-db.sh` | root | Back up the **prod** DB (what `update.sh` runs first) |
 
 Overridable env: `COMPOSE_DIR` (default `infra/dev`), `POSTGRES_USER`/`POSTGRES_DB`
-(default `amnezia_panel`). `backups/` is git-ignored.
+(default `amnezia_panel`). `backups/` is git-ignored. Dumps are written `0600`
+inside a `0700` directory (the script sets `umask 077` and tightens `out-dir`),
+because a dump carries every user, email, role and traffic row.
 
 ### Bootstrap & admin CLI
 
