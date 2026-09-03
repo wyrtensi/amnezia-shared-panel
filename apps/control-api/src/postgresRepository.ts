@@ -36,6 +36,7 @@ import {
   defaultPortalPolicy,
   emptyGlobalRoutes,
   globalRoutesSchema,
+  installGuideVideosSchema,
   nodeOrderSchema,
   PROTOCOL_KINDS,
   recommendedNodeIdsSchema,
@@ -137,6 +138,13 @@ const adminPolicyUpdateSchema = portalPolicySchema.partial().extend({
   // portalPolicySchema is what stops them being overridable per user.
   recommendedNodeIds: recommendedNodeIdsSchema.optional(),
   nodeOrder: nodeOrderSchema.optional(),
+  // Accept the pre-0017 null as "no videos" instead of refusing the request.
+  // Null and {} mean the same thing here, and a client echoing back a row it
+  // read from an older panel must not be unable to save anything at all.
+  installGuideVideos: installGuideVideosSchema
+    .nullish()
+    .transform((value) => value ?? {})
+    .optional(),
 });
 
 type PortalPolicyRow = typeof portalPolicy.$inferSelect;
@@ -224,6 +232,12 @@ const stripPolicySecrets = (
   row: Record<string, unknown>,
 ): Record<string, unknown> => {
   const clone: Record<string, unknown> = { ...row };
+  // The admin page reads this row and posts it straight back, so anything it
+  // emits must be something the update schema accepts. Rows written before
+  // migration 0017 carry a null here while the contract models an object,
+  // which rejected the whole form with a VALIDATION_ERROR - the same
+  // normalisation toPolicy already does for the user-facing path.
+  clone.installGuideVideos ??= {};
   const cfApiTokenSet = Boolean(clone.cfApiTokenCiphertext);
   delete clone.cfApiTokenCiphertext;
   delete clone.cfApiTokenNonce;
@@ -1882,7 +1896,45 @@ export class PostgresControlRepository implements ControlRepository {
           .limit(500);
       case "portal-policy": {
         const rows = await this.options.db.select().from(portalPolicy).limit(1);
-        if (rows[0]) return [stripPolicySecrets(rows[0])];
+        if (rows[0]) {
+          const policyRow = rows[0];
+          // Same rule as installGuideVideos above: the admin page posts this
+          // row straight back, so the read must not emit anything the write
+          // refuses. A node id that names no node is inert everywhere it is
+          // READ (it matches nothing) but the update's existence check rejects
+          // it, which would make the whole policy page unsaveable. deleteNode
+          // scrubs both lists, so a stale id means a row was removed
+          // out-of-band; dropping it here also means the next save cleans the
+          // stored lists up.
+          const referenced = [
+            ...new Set([
+              ...policyRow.recommendedNodeIds,
+              ...policyRow.nodeOrder,
+            ]),
+          ];
+          if (referenced.length > 0) {
+            const known = new Set(
+              (
+                await this.options.db
+                  .select({ id: nodes.id })
+                  .from(nodes)
+                  .where(inArray(nodes.id, referenced))
+              ).map((row) => row.id),
+            );
+            if (known.size !== referenced.length) {
+              return [
+                stripPolicySecrets({
+                  ...policyRow,
+                  recommendedNodeIds: policyRow.recommendedNodeIds.filter(
+                    (id) => known.has(id),
+                  ),
+                  nodeOrder: policyRow.nodeOrder.filter((id) => known.has(id)),
+                }),
+              ];
+            }
+          }
+          return [stripPolicySecrets(policyRow)];
+        }
         // Fresh install with no row yet: report exactly the contract defaults so
         // the UI cannot show a setting the API would apply differently.
         return [

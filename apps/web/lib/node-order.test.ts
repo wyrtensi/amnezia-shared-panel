@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   materializeNodeOrder,
   moveNodeInOrder,
+  moveNodeToIndex,
   recommendedCountFromIds,
   recommendedPrefix,
 } from "./node-order";
@@ -82,5 +83,42 @@ describe("recommendedPrefix", () => {
   it("clamps out-of-range counts instead of producing holes", () => {
     expect(recommendedPrefix(["a", "b"], 9)).toEqual(["a", "b"]);
     expect(recommendedPrefix(["a", "b"], -3)).toEqual([]);
+  });
+});
+
+describe("moveNodeToIndex", () => {
+  it("moves a row to an absolute position, in both directions", () => {
+    // What a drag produces: the row lands where it was dropped, and the rows
+    // it passed close up behind it.
+    expect(moveNodeToIndex(["a", "b", "c", "d"], "d", 0)).toEqual([
+      "d",
+      "a",
+      "b",
+      "c",
+    ]);
+    expect(moveNodeToIndex(["a", "b", "c", "d"], "a", 3)).toEqual([
+      "b",
+      "c",
+      "d",
+      "a",
+    ]);
+  });
+
+  it("clamps a drop outside the list instead of leaving a hole", () => {
+    expect(moveNodeToIndex(["a", "b"], "a", 9)).toEqual(["b", "a"]);
+    expect(moveNodeToIndex(["a", "b"], "b", -4)).toEqual(["b", "a"]);
+  });
+
+  it("is a no-op for the same position and for an unknown id", () => {
+    expect(moveNodeToIndex(["a", "b"], "a", 0)).toEqual(["a", "b"]);
+    // A row that vanished mid-drag must not corrupt the order.
+    expect(moveNodeToIndex(["a", "b"], "zz", 0)).toEqual(["a", "b"]);
+  });
+
+  it("never mutates the input", () => {
+    const input = ["a", "b", "c"];
+    const snapshot = [...input];
+    moveNodeToIndex(input, "c", 0);
+    expect(input).toEqual(snapshot);
   });
 });

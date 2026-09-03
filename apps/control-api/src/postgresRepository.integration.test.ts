@@ -1784,4 +1784,132 @@ describe("PostgresControlRepository global policy update", () => {
       expect(event?.metadata).toMatchObject({ fields: ["defaultKeyLimit"] });
     },
   );
+
+  // The admin policy page reads this row and posts it straight back, so the
+  // read output must always be valid write input. It was not: install_guide_videos
+  // was nullable while the contract models an object, so on any panel that had
+  // never attached a video the whole form failed with a VALIDATION_ERROR and
+  // nothing on the page could be saved. The round trip is asserted over the
+  // whole row rather than that one field, so the next column with the same
+  // shape is caught here instead of in production.
+  runDatabaseTest(
+    "accepts its own policy read back unchanged",
+    async () => {
+      if (!database) return;
+      const repository = new PostgresControlRepository({
+        db: database.db,
+        keyring,
+      });
+      const [row] = (await repository.adminList(
+        admin,
+        "portal-policy",
+      )) as Array<Record<string, unknown>>;
+      expect(row).toBeDefined();
+      // Exactly what apps/web/app/admin/policy/page.tsx submits.
+      const payload = { ...row };
+      delete payload.cfApiTokenSet;
+
+      await expect(
+        repository.adminAction(
+          admin,
+          "portal-policy",
+          "global",
+          "update",
+          payload,
+        ),
+      ).resolves.toBeDefined();
+    },
+  );
+
+  // The write-side half of the same fix. The column is NOT NULL from migration
+  // 0017 on, so a stored null can no longer be produced to test the read-side
+  // normalisation against a migrated database - but a CLIENT can still send
+  // one (an older panel's row echoed back, a script), and that must save
+  // rather than reject the whole request.
+  runDatabaseTest(
+    "takes a null installGuideVideos as 'no videos' rather than refusing",
+    async () => {
+      if (!database) return;
+      const repository = new PostgresControlRepository({
+        db: database.db,
+        keyring,
+      });
+      await expect(
+        repository.adminAction(admin, "portal-policy", "global", "update", {
+          installGuideVideos: null,
+        }),
+      ).resolves.toBeDefined();
+
+      const [row] = (await repository.adminList(
+        admin,
+        "portal-policy",
+      )) as Array<{ installGuideVideos: unknown }>;
+      expect(row?.installGuideVideos).toEqual({});
+    },
+  );
+
+  // The other half of the same guarantee, in a second field. A node id that
+  // names no node is inert on every read path (it matches nothing) but the
+  // update's existence check rejects it - so a stale id in the stored order
+  // made the whole policy page unsaveable, exactly like the null did.
+  // deleteNode scrubs both lists, so this state comes from a row removed
+  // out-of-band; the read drops the id, and the next save cleans the row.
+  runDatabaseTest(
+    "survives a node id in the stored order whose node is gone",
+    async () => {
+      if (!database) return;
+      const repository = new PostgresControlRepository({
+        db: database.db,
+        keyring,
+      });
+      const encryptedCredentials = encryptSecret("api-key", keyring, 1);
+      const encryptedLabel = encryptSecret(
+        randomBytes(32).toString("base64"),
+        keyring,
+        1,
+      );
+      const [doomed] = await database.db
+        .insert(nodes)
+        .values({
+          name: "policy-stale",
+          apiBaseUrl: "http://127.0.0.1:4100/policy-stale",
+          credentialsCiphertext: encryptedCredentials.ciphertext,
+          credentialsNonce: encryptedCredentials.nonce,
+          credentialsAuthTag: encryptedCredentials.authTag,
+          credentialsKeyVersion: encryptedCredentials.keyVersion,
+          labelSecretCiphertext: encryptedLabel.ciphertext,
+          labelSecretNonce: encryptedLabel.nonce,
+          labelSecretAuthTag: encryptedLabel.authTag,
+          labelSecretKeyVersion: encryptedLabel.keyVersion,
+        })
+        .returning({ id: nodes.id });
+      if (!doomed) throw new Error("Failed to seed the node");
+
+      await repository.adminAction(admin, "portal-policy", "global", "update", {
+        nodeOrder: [doomed.id],
+        recommendedNodeIds: [doomed.id],
+      });
+      // Deleted around deleteNode, which is what leaves the id behind.
+      await database.db.delete(nodes).where(eq(nodes.id, doomed.id));
+
+      const [row] = (await repository.adminList(
+        admin,
+        "portal-policy",
+      )) as Array<Record<string, unknown>>;
+      expect(row?.nodeOrder).toEqual([]);
+      expect(row?.recommendedNodeIds).toEqual([]);
+
+      const payload = { ...row };
+      delete payload.cfApiTokenSet;
+      await expect(
+        repository.adminAction(
+          admin,
+          "portal-policy",
+          "global",
+          "update",
+          payload,
+        ),
+      ).resolves.toBeDefined();
+    },
+  );
 });

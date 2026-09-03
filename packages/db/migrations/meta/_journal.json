@@ -120,6 +120,13 @@
       "when": 1788440629910,
       "tag": "0016_recommended_servers",
       "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1788451042486,
+      "tag": "0017_install_guide_videos_not_null",
+      "breakpoints": true
     }
   ]
 }
