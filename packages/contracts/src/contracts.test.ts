@@ -4,13 +4,18 @@ import {
   composeKeyDisplayName,
   createKeyRequestSchema,
   customRoutesSchema,
+  DEVICE_TYPE_ORDER,
+  deviceTypeSchema,
   globalRoutesSchema,
   keyNameDisplaySchema,
+  LEGACY_DEVICE_TYPE_REPLACEMENT,
   MAX_GLOBAL_CIDRS,
   MAX_GLOBAL_DOMAINS,
   nodeKeyLimitsSchema,
   portalPolicySchema,
   quotaRequestSchema,
+  replaceLegacyDeviceType,
+  RETIRED_STORED_DEVICE_TYPES,
   rulesRefreshStatusSchema,
   setUserLimitRequestSchema,
   updateGlobalRoutesRequestSchema,
@@ -457,5 +462,100 @@ describe("rulesRefreshStatusSchema", () => {
         lastError: null,
       }).success,
     ).toBe(false);
+  });
+});
+
+// T14: the device type names a PLATFORM. This literal is duplicated on purpose
+// in apps/cli/src/args.ts (the CLI ships with no dependencies), and both copies
+// are pinned to this same array — change one, change the other.
+describe("deviceTypeSchema", () => {
+  it("names platforms, not form factors", () => {
+    expect(deviceTypeSchema.options).toEqual([
+      "android",
+      "ios",
+      "macos",
+      "windows",
+      "linux",
+      "other",
+      "unspecified",
+    ]);
+  });
+
+  it("offers exactly six choices, in the order the operator asked for", () => {
+    expect([...DEVICE_TYPE_ORDER]).toEqual([
+      "android",
+      "ios",
+      "macos",
+      "windows",
+      "linux",
+      "other",
+    ]);
+  });
+
+  it("never offers the stored default as a choice", () => {
+    expect(DEVICE_TYPE_ORDER).not.toContain("unspecified");
+  });
+
+  // This is the assertion the "Планшет" bug needed: whatever the UI and the CLI
+  // offer must survive the request schema the route parses.
+  it("accepts every offered choice through the create-key request", () => {
+    for (const device of DEVICE_TYPE_ORDER) {
+      const result = createKeyRequestSchema.safeParse({
+        nodeId: "2c65d1c2-e077-4d14-bba2-03e67ecba9fe",
+        deviceType: device,
+      });
+      expect(result.success, device).toBe(true);
+    }
+  });
+
+  it("rejects every retired device type instead of coercing it", () => {
+    for (const legacy of Object.keys(LEGACY_DEVICE_TYPE_REPLACEMENT)) {
+      const result = createKeyRequestSchema.safeParse({
+        nodeId: "2c65d1c2-e077-4d14-bba2-03e67ecba9fe",
+        deviceType: legacy,
+      });
+      expect(result.success, legacy).toBe(false);
+    }
+  });
+});
+
+describe("replaceLegacyDeviceType", () => {
+  it("keeps the platform it knew and refuses to invent one it did not", () => {
+    expect(replaceLegacyDeviceType("iphone")).toBe("ios");
+    expect(replaceLegacyDeviceType("laptop")).toBe("unspecified");
+    expect(replaceLegacyDeviceType("desktop")).toBe("unspecified");
+    expect(replaceLegacyDeviceType("phone")).toBe("unspecified");
+    expect(replaceLegacyDeviceType("tablet")).toBe("unspecified");
+  });
+
+  it("is null for anything that was never a device type", () => {
+    expect(replaceLegacyDeviceType("router")).toBeNull();
+    expect(replaceLegacyDeviceType("")).toBeNull();
+  });
+
+  it("is null for a current value, so callers cannot double-map", () => {
+    for (const device of deviceTypeSchema.options) {
+      expect(replaceLegacyDeviceType(device), device).toBeNull();
+    }
+  });
+
+  it("only ever produces a current device type", () => {
+    for (const replacement of Object.values(LEGACY_DEVICE_TYPE_REPLACEMENT)) {
+      expect(deviceTypeSchema.options).toContain(replacement);
+    }
+  });
+
+  it("lists as storable only the values the old DB enum could hold", () => {
+    // "tablet" was offered by the wizard but never existed in the enum, so no
+    // stored row can hold it and the migration must not mention it.
+    expect([...RETIRED_STORED_DEVICE_TYPES]).toEqual([
+      "desktop",
+      "laptop",
+      "iphone",
+      "phone",
+    ]);
+    for (const value of RETIRED_STORED_DEVICE_TYPES) {
+      expect(LEGACY_DEVICE_TYPE_REPLACEMENT).toHaveProperty(value);
+    }
   });
 });
