@@ -36,7 +36,9 @@ import {
   defaultPortalPolicy,
   emptyGlobalRoutes,
   globalRoutesSchema,
+  nodeOrderSchema,
   PROTOCOL_KINDS,
+  recommendedNodeIdsSchema,
   portalPolicyOverrideSchema,
   portalPolicySchema,
   RULES_REFRESH_DEDUPLICATION_KEY,
@@ -85,6 +87,7 @@ import {
   type QuotaApproval,
 } from "./nodeQuota.js";
 import { orderNodesForUsers } from "./nodeOrder.js";
+import { checkRecommendedPrefix, dedupeNodeIds } from "./policyNodeLists.js";
 import { toRulesRefreshStatus } from "./rulesRefresh.js";
 
 const quotaStates: KeyState[] = ["provisioning", "active", "disabled"];
@@ -130,6 +133,10 @@ const adminPolicyUpdateSchema = portalPolicySchema.partial().extend({
   cfAccessAccountId: z.string().max(64).nullable().optional(),
   cfAccessAppId: z.string().max(64).nullable().optional(),
   cfAccessPolicyId: z.string().max(64).nullable().optional(),
+  // Global-only, exactly like defaultKeyLimit above: keeping them out of
+  // portalPolicySchema is what stops them being overridable per user.
+  recommendedNodeIds: recommendedNodeIdsSchema.optional(),
+  nodeOrder: nodeOrderSchema.optional(),
 });
 
 type PortalPolicyRow = typeof portalPolicy.$inferSelect;
@@ -1828,6 +1835,8 @@ export class PostgresControlRepository implements ControlRepository {
             id: true,
             ...defaultPortalPolicy,
             allowedNodeIds: defaultPortalPolicy.allowedNodeIds ?? null,
+            recommendedNodeIds: [] as string[],
+            nodeOrder: [] as string[],
             defaultKeyLimit: 5,
             dailyRetentionDays: 730,
             cfAccessAccountId: null,
@@ -2299,7 +2308,7 @@ export class PostgresControlRepository implements ControlRepository {
       const provided = Object.fromEntries(
         Object.entries(parsed).filter(([field]) => named.has(field)),
       ) as typeof parsed;
-      const { cfApiToken, ...rest } = provided;
+      const { cfApiToken, recommendedNodeIds, nodeOrder, ...rest } = provided;
       const changes: Partial<typeof portalPolicy.$inferInsert> = { ...rest };
       if (cfApiToken) {
         const encrypted = encryptSecret(
@@ -2312,7 +2321,71 @@ export class PostgresControlRepository implements ControlRepository {
         changes.cfApiTokenAuthTag = encrypted.authTag;
         changes.cfApiTokenKeyVersion = encrypted.keyVersion;
       }
+      // Canonical form: no duplicates, and every id must name a real node so a
+      // stored list can never contain an id that silently does nothing (same
+      // rule as the per-user node lists in users/set-limit).
+      const recommended =
+        recommendedNodeIds === undefined
+          ? undefined
+          : dedupeNodeIds(recommendedNodeIds);
+      const order =
+        nodeOrder === undefined ? undefined : dedupeNodeIds(nodeOrder);
       return this.options.db.transaction(async (tx) => {
+        // One existence check for both lists: fewer round trips, and the
+        // rejection is all-or-nothing, so a bad id never half-applies. This
+        // runs BEFORE the prefix rule, so an id that names no node is reported
+        // as such rather than as "not at the top of the order".
+        const referenced = [
+          ...new Set([...(recommended ?? []), ...(order ?? [])]),
+        ];
+        if (referenced.length > 0) {
+          const known = await tx
+            .select({ id: nodes.id })
+            .from(nodes)
+            .where(inArray(nodes.id, referenced));
+          if (known.length !== referenced.length) {
+            throw new ApiError(400, "Unknown node id", "NODE_NOT_FOUND");
+          }
+        }
+        if (order) changes.nodeOrder = order;
+        // Only the servers at the TOP of the manual order may be recommended.
+        // The rule spans both columns, so it is checked on the EFFECTIVE state:
+        // a write that touches only one field is validated against the stored
+        // value of the other. A reorder that would leave a recommended server
+        // behind is rejected - never silently un-recommended, because that
+        // would be a policy change nobody asked for and nothing would record it.
+        if (recommended !== undefined || order !== undefined) {
+          const [stored] = await tx
+            .select({
+              recommendedNodeIds: portalPolicy.recommendedNodeIds,
+              nodeOrder: portalPolicy.nodeOrder,
+            })
+            .from(portalPolicy)
+            .limit(1);
+          const effectiveRecommended =
+            recommended ?? stored?.recommendedNodeIds ?? [];
+          const effectiveOrder = order ?? stored?.nodeOrder ?? [];
+          const check = checkRecommendedPrefix(
+            effectiveRecommended,
+            effectiveOrder,
+          );
+          if (!check.ok) {
+            throw new ApiError(
+              400,
+              check.reason === "unpositioned"
+                ? `Node ${check.nodeId} cannot be recommended: it has no place in the server order. Only servers at the top of the order can be recommended.`
+                : `Node ${check.nodeId} cannot be recommended: it is at position ${check.position} of the server order, behind servers that are not recommended. Only servers at the top of the order can be recommended.`,
+              "RECOMMENDED_NOT_PREFIX",
+            );
+          }
+          // Store the canonical form (order sequence), even when only the order
+          // moved: a reorder inside the recommended prefix must be reflected.
+          // The recommended SET is unchanged in that case, so the audit event
+          // still describes the change honestly as a nodeOrder edit.
+          if (recommended !== undefined || check.canonical.length > 0) {
+            changes.recommendedNodeIds = check.canonical;
+          }
+        }
         const [updated] = await tx
           .insert(portalPolicy)
           .values({ id: true, ...changes })
@@ -2327,7 +2400,11 @@ export class PostgresControlRepository implements ControlRepository {
           action: "admin.portal-policy.update",
           targetType: "portal-policy",
           targetId: "global",
-          metadata: { fields: Object.keys(provided) },
+          metadata: {
+            fields: Object.keys(provided),
+            ...(recommended ? { recommendedNodeCount: recommended.length } : {}),
+            ...(order ? { orderedNodeCount: order.length } : {}),
+          },
         });
         return updated ? stripPolicySecrets(updated) : updated;
       });

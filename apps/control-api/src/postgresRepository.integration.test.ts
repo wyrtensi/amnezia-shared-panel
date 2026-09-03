@@ -21,6 +21,23 @@ import type { Actor } from "./service.js";
 const databaseUrl = process.env.TEST_DATABASE_URL;
 const runDatabaseTest = databaseUrl ? it : it.skip;
 
+/**
+ * Resolves to the rejection value of `promise`, or null when it fulfils.
+ * `expect(...).rejects.toMatchObject({ message: expect.stringContaining(x) })`
+ * would type the matcher as `any`, which the lint rules reject; this keeps the
+ * assertion on the message explicit and typed.
+ */
+const failureOf = async (
+  promise: Promise<unknown>,
+): Promise<{ statusCode?: number; code?: string; message?: string } | null> => {
+  try {
+    await promise;
+    return null;
+  } catch (error) {
+    return error as { statusCode?: number; code?: string; message?: string };
+  }
+};
+
 describe("PostgresControlRepository quota race", () => {
   const database = databaseUrl ? createDatabase(databaseUrl) : null;
   const keyring = { 1: randomBytes(32) };
@@ -1128,6 +1145,7 @@ describe("PostgresControlRepository user node order", () => {
   const database = databaseUrl ? createDatabase(databaseUrl) : null;
   const keyring = { 1: randomBytes(32) };
   let viewer: Actor;
+  let admin: Actor;
   const seeded: string[] = [];
 
   const seedNode = async (name: string, publicName: string | null) => {
@@ -1173,6 +1191,18 @@ describe("PostgresControlRepository user node order", () => {
       role: "user",
       status: "active",
     };
+    const [adminUser] = await database.db
+      .insert(users)
+      .values({ email: "order-admin@example.com", role: "admin" })
+      .returning();
+    if (!adminUser) throw new Error("Failed to seed admin");
+    admin = {
+      id: adminUser.id,
+      email: adminUser.email,
+      displayName: null,
+      role: "admin",
+      status: "active",
+    };
     // Internal names deliberately sort the other way round from the public
     // names, so a test that passes must be sorting on what the user sees.
     await seedNode("order-c", "Zurich");
@@ -1186,6 +1216,7 @@ describe("PostgresControlRepository user node order", () => {
       await database.db.delete(nodes).where(eq(nodes.id, id));
     }
     await database.db.delete(users).where(eq(users.id, viewer.id));
+    await database.db.delete(users).where(eq(users.id, admin.id));
     await database.client.end();
   });
 
@@ -1217,6 +1248,214 @@ describe("PostgresControlRepository user node order", () => {
       expect(names(second)).toEqual(names(first));
     },
   );
+
+  // The order is set FIRST, because nothing can be recommended before it has a
+  // position: the recommended set must be a prefix of the order.
+  runDatabaseTest(
+    "stores the node order verbatim, first duplicate wins",
+    async () => {
+      if (!database) return;
+      const repository = new PostgresControlRepository({
+        db: database.db,
+        keyring,
+      });
+      // Deliberately NOT the name order, and with a duplicate in the middle:
+      // the stored value must keep the admin positions, dropping the later copy.
+      const wanted = [seeded[2]!, seeded[0]!, seeded[2]!, seeded[1]!];
+
+      const updated = (await repository.adminAction(
+        admin,
+        "portal-policy",
+        "global",
+        "update",
+        { nodeOrder: wanted },
+      )) as { nodeOrder: string[] };
+      expect(updated.nodeOrder).toEqual([seeded[2], seeded[0], seeded[1]]);
+
+      const [row] = (await repository.adminList(
+        admin,
+        "portal-policy",
+      )) as Array<{ nodeOrder: string[] }>;
+      expect(row?.nodeOrder).toEqual([seeded[2], seeded[0], seeded[1]]);
+
+      const events = await database.db
+        .select({ metadata: auditEvents.metadata })
+        .from(auditEvents)
+        .where(
+          and(
+            eq(auditEvents.actorUserId, admin.id),
+            eq(auditEvents.action, "admin.portal-policy.update"),
+          ),
+        )
+        .orderBy(desc(auditEvents.createdAt))
+        .limit(1);
+      expect(events[0]?.metadata).toMatchObject({
+        fields: ["nodeOrder"],
+        orderedNodeCount: 3,
+      });
+    },
+  );
+
+  runDatabaseTest(
+    "stores a deduplicated recommended list, canonicalized into order sequence",
+    async () => {
+      if (!database) return;
+      const repository = new PostgresControlRepository({
+        db: database.db,
+        keyring,
+      });
+      // The order is [seeded[2], seeded[0], seeded[1]]; recommend its top two,
+      // sent bottom-up and with a duplicate. The check is on the set, the
+      // stored form follows the order.
+      const updated = (await repository.adminAction(
+        admin,
+        "portal-policy",
+        "global",
+        "update",
+        { recommendedNodeIds: [seeded[0]!, seeded[2]!, seeded[0]!] },
+      )) as { recommendedNodeIds: string[] };
+      expect(updated.recommendedNodeIds).toEqual([seeded[2], seeded[0]]);
+
+      const [row] = (await repository.adminList(
+        admin,
+        "portal-policy",
+      )) as Array<{ recommendedNodeIds: string[]; nodeOrder: string[] }>;
+      expect(row?.recommendedNodeIds).toEqual([seeded[2], seeded[0]]);
+      // The order itself was not touched by a recommended-only write.
+      expect(row?.nodeOrder).toEqual([seeded[2], seeded[0], seeded[1]]);
+
+      const events = await database.db
+        .select({ metadata: auditEvents.metadata })
+        .from(auditEvents)
+        .where(
+          and(
+            eq(auditEvents.actorUserId, admin.id),
+            eq(auditEvents.action, "admin.portal-policy.update"),
+          ),
+        )
+        .orderBy(desc(auditEvents.createdAt))
+        .limit(1);
+      expect(events[0]?.metadata).toMatchObject({
+        fields: ["recommendedNodeIds"],
+        recommendedNodeCount: 2,
+      });
+    },
+  );
+
+  runDatabaseTest(
+    "rejects an id that is not a node, in either list",
+    async () => {
+      if (!database) return;
+      const repository = new PostgresControlRepository({
+        db: database.db,
+        keyring,
+      });
+      const ghost = "00000000-0000-4000-8000-000000000000";
+      // Existence is checked before the prefix rule, so a ghost id reports the
+      // problem the admin can actually act on.
+      await expect(
+        repository.adminAction(admin, "portal-policy", "global", "update", {
+          recommendedNodeIds: [ghost],
+        }),
+      ).rejects.toMatchObject({ statusCode: 400, code: "NODE_NOT_FOUND" });
+      await expect(
+        repository.adminAction(admin, "portal-policy", "global", "update", {
+          nodeOrder: [seeded[0]!, ghost],
+        }),
+      ).rejects.toMatchObject({ statusCode: 400, code: "NODE_NOT_FOUND" });
+      // The rejected write must not have half-applied.
+      const [row] = (await repository.adminList(
+        admin,
+        "portal-policy",
+      )) as Array<{ nodeOrder: string[]; recommendedNodeIds: string[] }>;
+      expect(row?.nodeOrder).toEqual([seeded[2], seeded[0], seeded[1]]);
+      expect(row?.recommendedNodeIds).toEqual([seeded[2], seeded[0]]);
+    },
+  );
+
+  runDatabaseTest(
+    "refuses to recommend a server that is not at the top of the order",
+    async () => {
+      if (!database) return;
+      const repository = new PostgresControlRepository({
+        db: database.db,
+        keyring,
+      });
+      // seeded[1] is last in the order and seeded[0] before it would stop being
+      // recommended, so this set is not a prefix.
+      const failure = await failureOf(
+        repository.adminAction(admin, "portal-policy", "global", "update", {
+          recommendedNodeIds: [seeded[2]!, seeded[1]!],
+        }),
+      );
+      expect(failure).toMatchObject({
+        statusCode: 400,
+        code: "RECOMMENDED_NOT_PREFIX",
+      });
+      // The message names the node the admin has to move or un-recommend.
+      expect(failure?.message).toContain(seeded[1]!);
+
+      const [row] = (await repository.adminList(
+        admin,
+        "portal-policy",
+      )) as Array<{ recommendedNodeIds: string[] }>;
+      expect(row?.recommendedNodeIds).toEqual([seeded[2], seeded[0]]);
+    },
+  );
+
+  runDatabaseTest(
+    "refuses a reorder that would leave an already recommended server behind",
+    async () => {
+      if (!database) return;
+      const repository = new PostgresControlRepository({
+        db: database.db,
+        keyring,
+      });
+      // Recommended is [seeded[2], seeded[0]]; moving seeded[1] to the top
+      // would push both down. The reorder is REJECTED rather than silently
+      // trimming the recommended set.
+      const failure = await failureOf(
+        repository.adminAction(admin, "portal-policy", "global", "update", {
+          nodeOrder: [seeded[1]!, seeded[2]!, seeded[0]!],
+        }),
+      );
+      expect(failure).toMatchObject({
+        statusCode: 400,
+        code: "RECOMMENDED_NOT_PREFIX",
+      });
+      expect(failure?.message).toContain(seeded[2]!);
+      const [row] = (await repository.adminList(
+        admin,
+        "portal-policy",
+      )) as Array<{ nodeOrder: string[] }>;
+      expect(row?.nodeOrder).toEqual([seeded[2], seeded[0], seeded[1]]);
+
+      // The way out: send both fields together. The admin is never stuck.
+      const updated = (await repository.adminAction(
+        admin,
+        "portal-policy",
+        "global",
+        "update",
+        {
+          nodeOrder: [seeded[1]!, seeded[2]!, seeded[0]!],
+          recommendedNodeIds: [seeded[1]!],
+        },
+      )) as { nodeOrder: string[]; recommendedNodeIds: string[] };
+      expect(updated.nodeOrder).toEqual([seeded[1], seeded[2], seeded[0]]);
+      expect(updated.recommendedNodeIds).toEqual([seeded[1]]);
+
+      // Clearing the recommended set is always valid, whatever the order is.
+      const cleared = (await repository.adminAction(
+        admin,
+        "portal-policy",
+        "global",
+        "update",
+        { recommendedNodeIds: [] },
+      )) as { recommendedNodeIds: string[] };
+      expect(cleared.recommendedNodeIds).toEqual([]);
+    },
+  );
+
 });
 
 describe("PostgresControlRepository global policy update", () => {

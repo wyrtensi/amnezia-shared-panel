@@ -395,6 +395,52 @@ describe("admin global route overrides", () => {
     await app.close();
   });
 
+  it("passes recommended node ids and the node order through the portal-policy update action", async () => {
+    const service = createService();
+    const admin = { ...user, role: "admin" as const };
+    vi.mocked(service.resolveIdentity).mockResolvedValue(admin);
+    const payload = {
+      recommendedNodeIds: ["0f1b8b7e-4c3a-4c8d-9d1e-0a1b2c3d4e5f"],
+      nodeOrder: [
+        "0f1b8b7e-4c3a-4c8d-9d1e-0a1b2c3d4e5f",
+        "1a2b3c4d-5e6f-4a8b-9c0d-1e2f3a4b5c6d",
+      ],
+    };
+    vi.mocked(service.adminAction).mockResolvedValue({ id: true, ...payload });
+    const app = await buildApp({ service, environment: "development" });
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/admin/portal-policy/global/update",
+      headers: { "x-dev-user-email": admin.email },
+      payload,
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(service.adminAction).toHaveBeenCalledWith(
+      admin,
+      "portal-policy",
+      "global",
+      "update",
+      payload,
+    );
+    await app.close();
+  });
+
+  it("refuses the portal-policy update to an employee", async () => {
+    const service = createService();
+    const app = await buildApp({ service, environment: "development" });
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/admin/portal-policy/global/update",
+      headers: { "x-dev-user-email": user.email },
+      payload: { recommendedNodeIds: [], nodeOrder: [] },
+    });
+    expect(response.statusCode).toBe(403);
+    expect(service.adminAction).not.toHaveBeenCalled();
+    await app.close();
+  });
+
   it("keeps both global route endpoints away from an employee", async () => {
     const service = createService();
     const app = await buildApp({ service, environment: "development" });
