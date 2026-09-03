@@ -524,6 +524,8 @@ const POLICY_STR_NULL_FIELDS = [
   "cfAccessPolicyId",
 ] as const;
 const POLICY_STR_FIELDS = ["cfApiToken"] as const;
+/** Audiences the connection guide is split into; mirrors the contract. */
+const GUIDE_AUDIENCE_VALUES = ["desktop", "android", "ios"] as const;
 
 async function cmdPolicy(args: string[]): Promise<void> {
   const rows = await api<Array<Record<string, unknown>>>(
@@ -567,6 +569,28 @@ async function cmdPolicySet(args: string[]): Promise<void> {
     const value = flag(field);
     if (value !== undefined) body[field] = value;
   }
+  // Walkthrough videos are a nested map, one entry per guide audience, so they
+  // cannot ride the flat --field=value loops above. Setting one audience must
+  // not clear the others, so the current map is read first and merged into --
+  // the update replaces the whole object.
+  const videoFlags = GUIDE_AUDIENCE_VALUES.map(
+    (audience) => [audience, flag(`video-${audience}`)] as const,
+  ).filter(([, value]) => value !== undefined);
+  if (videoFlags.length > 0) {
+    const rows = await api<Array<Record<string, unknown>>>(
+      "/api/admin/portal-policy",
+    );
+    const current = (rows[0]?.installGuideVideos ?? {}) as Record<
+      string,
+      string | null
+    >;
+    const videos: Record<string, string | null> = { ...current };
+    for (const [audience, value] of videoFlags) {
+      videos[audience] = value === "none" || value === "null" ? null : value!;
+    }
+    body.installGuideVideos = videos;
+  }
+
   const protocols = flag("allowedProtocols");
   if (protocols !== undefined) {
     body.allowedProtocols = protocols
@@ -1017,7 +1041,11 @@ policy-set fields:
   allowedProtocols=awg3[,awg2]            allowedNodeIds=<uuid,…|null>
   cfAccessAccountId / cfAccessAppId / cfAccessPolicyId=<id|null>
   cfApiToken=<token>   (write-only, encrypted)
+  video-desktop / video-android / video-ios=<url|none>
+    Walkthrough video shown in the panel's connection guide, per audience.
+    Merges with the ones already set, so naming one does not clear the others.
   e.g.  amnezia-panel policy-set --allowQrDownload=false --defaultKeyLimit=10
+        amnezia-panel policy-set --video-ios=https://example.com/ios.mp4
 
 Env (auth, in priority order):
   CONTROL_API_URL          default http://127.0.0.1:3001

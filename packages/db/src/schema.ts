@@ -18,6 +18,7 @@ import {
 import type {
   CustomRoutes,
   GlobalRoutes,
+  InstallGuideVideos,
   NodeKeyLimits,
   PortalPolicyOverride,
   ProtocolKind,
@@ -372,6 +373,11 @@ export const portalPolicy = pgTable(
     showPublicKey: boolean("show_public_key").default(false).notNull(),
     showLastUsed: boolean("show_last_used").default(true).notNull(),
     showTraffic: boolean("show_traffic").default(true).notNull(),
+    // Walkthrough videos for the in-panel connection guide, one URL per
+    // audience ({ desktop, android, ios }). Nullable and null by default: the
+    // guide renders a placeholder until an admin attaches recordings, so a
+    // panel that has none is not broken, just not illustrated.
+    installGuideVideos: jsonb("install_guide_videos").$type<InstallGuideVideos>(),
     dailyRetentionDays: integer("daily_retention_days"),
     // Cloudflare Access two-way sync config. The API token is stored encrypted
     // and never returned to the client (write-only, replaceable).

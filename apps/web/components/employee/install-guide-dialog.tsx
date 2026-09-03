@@ -8,14 +8,19 @@ import {
   FileDown,
   RefreshCw,
   TabletSmartphone,
+  QrCode,
   TriangleAlert,
+  Video,
 } from "lucide-react";
 import {
+  GUIDE_AUDIENCES,
   MIN_AWG3_CLIENT_VERSION,
   type ClientAsset,
   type ClientPlatform,
   type ClientPlatformDownload,
   type ClientRelease,
+  type GuideAudience,
+  type InstallGuideVideos,
 } from "@amnezia/contracts";
 import {
   Dialog,
@@ -50,18 +55,10 @@ const PLATFORM_ICON: Record<ClientPlatform, PlatformMark> = {
 };
 
 /**
- * The three audiences the guide is written for. They are not vendors: they are
- * the groups whose steps actually differ. Windows, macOS and Linux share one
- * story (download an installer, run it), Android has a store plus an APK escape
- * hatch, and iPhone / iPad have a differently-named store listing and the
- * route-profile limitation.
- *
- * The user picks one and reads only that. A flat guide made an iPhone user
- * scroll past Windows advice to find theirs.
+ * Which platforms each audience's instruction covers. The audience list itself
+ * is in the contract — the portal policy carries a video per audience — and
+ * this map is the UI half: which download buttons that audience sees.
  */
-export const GUIDE_AUDIENCES = ["desktop", "android", "ios"] as const;
-export type GuideAudience = (typeof GUIDE_AUDIENCES)[number];
-
 export const AUDIENCE_PLATFORMS: Record<GuideAudience, readonly ClientPlatform[]> = {
   desktop: ["windows", "macos", "linux"],
   android: ["android"],
@@ -122,10 +119,12 @@ export function InstallGuideDialog({
   open,
   onOpenChange,
   showConfSection,
+  videos,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   showConfSection: boolean;
+  videos?: InstallGuideVideos | null;
 }) {
   const { t } = useT();
   const [release, setRelease] = React.useState<ClientRelease | null>(null);
@@ -178,6 +177,7 @@ export function InstallGuideDialog({
             release={release}
             failed={failed}
             showConfSection={showConfSection}
+            videos={videos}
           />
         ) : (
           <p className="text-sm text-muted-foreground">
@@ -246,11 +246,14 @@ export function InstallInstructions({
   release,
   failed,
   showConfSection,
+  videos,
 }: {
   audience: GuideAudience;
   release: ClientRelease | null;
   failed: boolean;
   showConfSection: boolean;
+  /** Per-audience walkthrough videos from the portal policy; empty by default. */
+  videos?: InstallGuideVideos | null;
 }) {
   const { t } = useT();
   const downloads = (release?.downloads ?? []).filter((entry) =>
@@ -261,10 +264,13 @@ export function InstallInstructions({
   // it changes nothing — the rules are ignored either way — so that audience
   // gets the reason instead of instructions it cannot use. See D8.
   const confApplies = showConfSection && audience !== "ios";
+  const videoUrl = videos?.[audience] ?? null;
   const fixNumber = confApplies ? 4 : 3;
 
   return (
     <div className="space-y-6">
+          <GuideVideo url={videoUrl} />
+
           <GuideSection number={1} title={t("install.installTitle")}>
             {failed ? (
               <Callout tone="warning" icon={<TriangleAlert className="h-4 w-4" />}>
@@ -298,6 +304,15 @@ export function InstallInstructions({
                     {t("install.desktopNote")}
                   </p>
                 ) : null}
+
+                {/* Store links are the ones worth scanning: a desktop
+                    installer is downloaded on the machine already in front of
+                    the reader. */}
+                {downloads
+                  .filter((entry) => entry.primary.kind === "store")
+                  .map((entry) => (
+                    <PlatformQr key={entry.platform} platform={entry.platform} />
+                  ))}
 
                 {audience === "android" && android?.alternate ? (
                   <ApkFallback
@@ -412,6 +427,80 @@ export function InstallInstructions({
           </GuideSection>
         </div>
 
+  );
+}
+
+/**
+ * A QR of one platform's download link, shown beside the button.
+ *
+ * The guide is usually read on a computer while the app has to end up on a
+ * phone, so the store link is exactly the thing a camera should be able to
+ * grab. Collapsed by default — it is a shortcut, not a step.
+ *
+ * The image is rendered by the control API from the URL it resolved itself
+ * (GET /api/client-releases/qr/:platform); this component holds no link, and
+ * the panel already produces QR codes that way for key configs.
+ */
+function PlatformQr({ platform }: { platform: ClientPlatform }) {
+  const { t } = useT();
+  return (
+    <details className="group rounded-lg border bg-muted/30 px-3 py-2">
+      <summary className="flex cursor-pointer list-none items-center gap-2 text-sm font-medium">
+        <ChevronDown className="h-4 w-4 shrink-0 transition-transform group-open:rotate-180" />
+        <QrCode className="h-4 w-4 shrink-0" aria-hidden="true" />
+        {t("install.showQr")}
+      </summary>
+      <div className="mt-2.5 space-y-2">
+        <img
+          className="mx-auto h-44 w-44 rounded-md bg-white p-2"
+          src={`/api/control/api/client-releases/qr/${platform}`}
+          alt={t("install.qrAlt")}
+        />
+        <p className="text-center text-xs leading-snug text-muted-foreground">
+          {t("install.qrHint")}
+        </p>
+      </div>
+    </details>
+  );
+}
+
+/**
+ * The walkthrough video for one audience, collapsed by default.
+ *
+ * Collapsed because the video is an aid, not the instruction: a player opened
+ * on arrival pushes the actual steps below the fold. The summary row still
+ * holds the place, so the video is visibly there rather than discovered by
+ * accident.
+ *
+ * When no recording is configured the row still renders, with a line saying one
+ * is coming. A silent gap would read as a broken page; a labelled empty slot
+ * reads as "not yet". The URL comes from the portal policy, so an admin adds one
+ * without a deploy and this component holds no link.
+ */
+function GuideVideo({ url }: { url: string | null }) {
+  const { t } = useT();
+  return (
+    <details className="group rounded-lg border bg-muted/30 px-3 py-2">
+      <summary className="flex cursor-pointer list-none items-center gap-2 text-sm font-medium">
+        <ChevronDown className="h-4 w-4 shrink-0 transition-transform group-open:rotate-180" />
+        <Video className="h-4 w-4 shrink-0" aria-hidden="true" />
+        {t("install.videoTitle")}
+      </summary>
+      <div className="mt-2.5">
+        {url ? (
+          <video
+            className="w-full rounded-md border border-border"
+            src={url}
+            controls
+            preload="metadata"
+          />
+        ) : (
+          <p className="text-xs leading-snug text-muted-foreground">
+            {t("install.videoSoon")}
+          </p>
+        )}
+      </div>
+    </details>
   );
 }
 

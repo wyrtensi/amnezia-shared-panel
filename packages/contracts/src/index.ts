@@ -232,6 +232,36 @@ export const createUserRequestSchema = z.object({
   role: roleSchema.default("user"),
 });
 
+/**
+ * The three audiences the in-panel connection guide is written for. They are
+ * not vendors but the groups whose install steps actually differ: a computer
+ * (Windows / macOS / Linux) downloads and runs an installer, Android has a
+ * store plus an APK, and iPhone / iPad have a differently-named store listing
+ * and the route-profile limitation.
+ *
+ * Lives here rather than in apps/web because the portal policy carries a value
+ * per audience — see installGuideVideosSchema.
+ */
+export const GUIDE_AUDIENCES = ["desktop", "android", "ios"] as const;
+export const guideAudienceSchema = z.enum(GUIDE_AUDIENCES);
+export type GuideAudience = z.infer<typeof guideAudienceSchema>;
+
+/**
+ * An optional walkthrough video per audience, shown at the top of that
+ * audience's instruction. Null everywhere by default: the guide works without
+ * one, so a panel that has recorded no videos shows a placeholder rather than a
+ * broken player.
+ *
+ * Protocol-constrained for the same reason as the client download links — the
+ * value is rendered as a URL, and `z.url()` alone accepts `javascript:`.
+ */
+export const installGuideVideosSchema = z.object({
+  desktop: z.url({ protocol: /^https?$/ }).nullish(),
+  android: z.url({ protocol: /^https?$/ }).nullish(),
+  ios: z.url({ protocol: /^https?$/ }).nullish(),
+});
+export type InstallGuideVideos = z.infer<typeof installGuideVideosSchema>;
+
 export const portalPolicySchema = z.object({
   allowKeyCreation: z.boolean().default(true),
   allowNodeSelection: z.boolean().default(true),
@@ -253,6 +283,9 @@ export const portalPolicySchema = z.object({
   showPublicKey: z.boolean().default(false),
   showLastUsed: z.boolean().default(true),
   showTraffic: z.boolean().default(true),
+  // Walkthrough videos for the connection guide, one per audience. Empty by
+  // default; an admin fills them in when the recordings exist.
+  installGuideVideos: installGuideVideosSchema.default({}),
 });
 
 export const portalPolicyOverrideSchema = portalPolicySchema.partial();

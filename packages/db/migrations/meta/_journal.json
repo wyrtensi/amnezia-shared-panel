@@ -92,6 +92,13 @@
       "when": 1788416195190,
       "tag": "0012_device_type_platforms",
       "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1788423647574,
+      "tag": "0013_install_guide_videos",
+      "breakpoints": true
     }
   ]
 }

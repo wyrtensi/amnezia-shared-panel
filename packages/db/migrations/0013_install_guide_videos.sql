@@ -1,0 +1,1 @@
+ALTER TABLE "portal_policy" ADD COLUMN "install_guide_videos" jsonb;

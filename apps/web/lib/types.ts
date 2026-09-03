@@ -1,3 +1,5 @@
+import type { InstallGuideVideos } from "@amnezia/contracts";
+
 export type ProtocolKind = "awg2" | "awg3";
 
 export type PortalPolicy = {
@@ -13,6 +15,10 @@ export type PortalPolicy = {
   showLastUsed?: boolean;
   showTraffic?: boolean;
   allowedProtocols?: ProtocolKind[];
+  // Sourced from the contract rather than restated: this file is a hand-written
+  // mirror of PortalPolicy, and a per-audience map is exactly the shape that
+  // drifts silently when it is copied.
+  installGuideVideos?: InstallGuideVideos | null;
 };
 
 // Per-user extra routes layered on a split-tunnel profile's base feed.

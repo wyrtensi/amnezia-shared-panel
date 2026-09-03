@@ -50,3 +50,18 @@ describe("0012_device_type_platforms", () => {
     expect(migration).toContain(`"device_type" SET DEFAULT 'unspecified'`);
   });
 });
+
+describe("0013_install_guide_videos", () => {
+  const sql = readFileSync(
+    fileURLToPath(new URL("../migrations/0013_install_guide_videos.sql", import.meta.url)),
+    "utf8",
+  );
+
+  it("adds the column without a default, so existing panels keep no videos", () => {
+    expect(sql).toContain('ALTER TABLE "portal_policy"');
+    expect(sql).toContain('ADD COLUMN "install_guide_videos" jsonb');
+    // A NOT NULL or a default would rewrite every row for a value the guide
+    // treats as absent anyway.
+    expect(sql).not.toMatch(/NOT NULL|DEFAULT/i);
+  });
+});
