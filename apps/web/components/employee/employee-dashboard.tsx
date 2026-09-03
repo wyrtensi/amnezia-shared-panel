@@ -23,6 +23,7 @@ import { QuotaRequestDialog } from "@/components/employee/quota-request-dialog";
 import { apiRequest } from "@/lib/api";
 import { InlineTraffic } from "@/components/inline-traffic";
 import { cn } from "@/lib/utils";
+import { deviceTypeLabel } from "@/lib/device-type";
 import { useT } from "@/lib/i18n/provider";
 import type {
   KeyView,
@@ -376,7 +377,7 @@ export function EmployeeDashboard({
                   onShowConfig={() =>
                     setConfigTarget({
                       id: key.id,
-                      deviceLabel: key.deviceLabel || key.deviceType,
+                      deviceLabel: key.deviceLabel || deviceTypeLabel(t, key.deviceType),
                       routeProfile: key.routeProfile,
                     })
                   }
