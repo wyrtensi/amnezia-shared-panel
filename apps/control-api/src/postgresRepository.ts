@@ -867,6 +867,41 @@ export class PostgresControlRepository implements ControlRepository {
         )
         .returning({ id: quotaRequests.id });
 
+      // The policy's node lists hold ids, not foreign keys, so nothing removes
+      // this node from them. A stale id is harmless at read time, but it shows
+      // a phantom row in the admin's order editor and makes the stored order
+      // describe a fleet that no longer exists. Same transaction as the delete.
+      const [policyRow] = await tx
+        .select({
+          recommendedNodeIds: portalPolicy.recommendedNodeIds,
+          nodeOrder: portalPolicy.nodeOrder,
+        })
+        .from(portalPolicy)
+        .limit(1);
+      let scrubbedFromRecommended = false;
+      let scrubbedFromOrder = false;
+      if (policyRow) {
+        scrubbedFromRecommended = policyRow.recommendedNodeIds.includes(nodeId);
+        scrubbedFromOrder = policyRow.nodeOrder.includes(nodeId);
+        if (scrubbedFromRecommended || scrubbedFromOrder) {
+          await tx
+            .update(portalPolicy)
+            .set({
+              recommendedNodeIds: policyRow.recommendedNodeIds.filter(
+                (id) => id !== nodeId,
+              ),
+              // Removing an element shifts the rest up by one, which is exactly
+              // right: positions are relative, so the surviving order is kept.
+              // Filtering the same id out of both lists also preserves the
+              // "recommended must be a prefix of the order" invariant, so this
+              // path needs no reconciliation of its own.
+              nodeOrder: policyRow.nodeOrder.filter((id) => id !== nodeId),
+              updatedAt: new Date(),
+            })
+            .where(eq(portalPolicy.id, true));
+        }
+      }
+
       await tx.delete(nodes).where(eq(nodes.id, nodeId));
       await tx.insert(auditEvents).values({
         actorUserId: actor.id,
@@ -880,6 +915,8 @@ export class PostgresControlRepository implements ControlRepository {
           affectedOwners,
           droppedJobs,
           cancelledQuotaRequests: cancelled.length,
+          scrubbedFromRecommended,
+          scrubbedFromOrder,
         },
       });
       return {

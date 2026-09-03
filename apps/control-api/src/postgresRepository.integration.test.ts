@@ -992,6 +992,62 @@ describe("PostgresControlRepository quota race", () => {
     expect(event?.metadata).toMatchObject({ deletedKeys: 1, affectedOwners: 1 });
   });
 
+  runDatabaseTest(
+    "scrubs a deleted node from the policy node lists",
+    async () => {
+      if (!database) return;
+      const repository = new PostgresControlRepository({
+        db: database.db,
+        keyring,
+      });
+      const admin: Actor = { ...actor, role: "admin" };
+      const doomed = await seedNode("scrub-doomed");
+      const survivor = await seedNode("scrub-survivor");
+      const tail = await seedNode("scrub-tail");
+      // doomed and survivor are the recommended top two; tail is only
+      // positioned.
+      await repository.adminAction(admin, "portal-policy", "global", "update", {
+        nodeOrder: [doomed, survivor, tail],
+        recommendedNodeIds: [doomed, survivor],
+      });
+
+      await repository.deleteNode(admin, doomed, { deleteKeys: false });
+
+      const [policy] = await database.db
+        .select({
+          recommendedNodeIds: portalPolicy.recommendedNodeIds,
+          nodeOrder: portalPolicy.nodeOrder,
+        })
+        .from(portalPolicy);
+      // Only the deleted id goes; the survivors keep their relative positions,
+      // and the recommended set is still a prefix of the order.
+      expect(policy?.recommendedNodeIds).toEqual([survivor]);
+      expect(policy?.nodeOrder).toEqual([survivor, tail]);
+
+      const [event] = await database.db
+        .select({ metadata: auditEvents.metadata })
+        .from(auditEvents)
+        .where(
+          and(
+            eq(auditEvents.action, "node.deleted"),
+            eq(auditEvents.targetId, doomed),
+          ),
+        );
+      expect(event?.metadata).toMatchObject({
+        scrubbedFromRecommended: true,
+        scrubbedFromOrder: true,
+      });
+
+      // Leave the shared policy row as the later cases expect to find it.
+      // Both fields go in one payload: clearing the order alone while a
+      // recommended id survives is exactly what the prefix check rejects.
+      await repository.adminAction(admin, "portal-policy", "global", "update", {
+        recommendedNodeIds: [],
+        nodeOrder: [],
+      });
+    },
+  );
+
   // The panel resolves a host once and keeps the answer, which is right because
   // a server's address does not change under it. The one case that breaks is a
   // server moving to a new IP behind the same DNS name -- and without this the
