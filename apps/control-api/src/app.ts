@@ -20,6 +20,10 @@ import {
   createUpdateController,
   type UpdateController,
 } from "./updateController.js";
+import {
+  createClientReleaseResolver,
+  type ClientReleaseResolver,
+} from "./clientReleases.js";
 
 type Environment = "development" | "test" | "production";
 
@@ -44,6 +48,12 @@ export type BuildAppOptions = {
    * `UPDATE_SPOOL_DIR` (the feature reports itself disabled if that is unset).
    */
   updateController?: UpdateController;
+  /**
+   * Resolves the newest AmneziaVPN client release for the in-panel install
+   * guide. Injectable for tests; the default talks to GitHub, caches the
+   * answer and falls back to version-free links when GitHub is unreachable.
+   */
+  clientReleaseResolver?: ClientReleaseResolver;
 };
 
 const idParamsSchema = z.object({ id: z.uuid() });
@@ -81,6 +91,7 @@ export const buildApp = async ({
   logger = false,
   allowDevIdentity,
   updateController,
+  clientReleaseResolver,
 }: BuildAppOptions) => {
   const app = Fastify({ logger, trustProxy: true });
   const actors = new WeakMap<FastifyRequest, Actor>();
@@ -91,6 +102,7 @@ export const buildApp = async ({
       spoolDir: process.env.UPDATE_SPOOL_DIR,
       version: versionInfo(),
     });
+  const clientReleases = clientReleaseResolver ?? createClientReleaseResolver();
 
   await app.register(helmet, { contentSecurityPolicy: false });
 
@@ -201,6 +213,16 @@ export const buildApp = async ({
   app.get("/api/route-profiles", async (request) =>
     service.listRouteProfiles(actorFor(request)),
   );
+  app.get("/api/client-releases", async (request, reply) => {
+    // Any signed-in user; the guide is for users, not administrators.
+    actorFor(request);
+    const release = await clientReleases.get();
+    // The resolver already caches hard server-side; this only spares a re-open
+    // of the dialog a round trip. Private — the route is behind the identity
+    // check, and apps/web forwards cache-control to the browser.
+    reply.header("cache-control", "private, max-age=1800");
+    return release;
+  });
   app.get("/api/quota-requests", async (request) =>
     service.listQuotaRequests(actorFor(request)),
   );
@@ -224,6 +246,12 @@ export const buildApp = async ({
     const admin = adminFor(request);
     const result = await updates.request(admin.email);
     return reply.code(202).send(result);
+  });
+  app.post("/api/admin/client-releases/refresh", async (request) => {
+    // A write against shared state — it discards the cached snapshot for every
+    // user and may cause an outbound request — so admin only, unlike the read.
+    adminFor(request);
+    return clientReleases.refresh();
   });
   app.get("/api/admin/overview", async (request) =>
     service.getAdminOverview(adminFor(request)),

@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
+import type { ClientRelease } from "@amnezia/contracts";
 import { buildApp } from "./app.js";
+import type { ClientReleaseResolver } from "./clientReleases.js";
 import { parseEnvironment } from "./main.js";
 import type { ControlApiService } from "./service.js";
 
@@ -421,6 +423,172 @@ describe("manual route-feed refresh", () => {
     }
     expect(service.getRulesRefreshStatus).not.toHaveBeenCalled();
     expect(service.adminAction).not.toHaveBeenCalled();
+    await app.close();
+  });
+});
+
+const SNAPSHOT: ClientRelease = {
+  version: "5.0.1.5",
+  releaseUrl: "https://github.com/amnezia-vpn/amnezia-client/releases/tag/5.0.1.5",
+  publishedAt: "2026-08-21T14:47:49.000Z",
+  fallback: false,
+  resolvedAt: "2026-09-02T09:00:00.000Z",
+  downloads: [
+    {
+      platform: "windows",
+      primary: {
+        url: "https://github.com/amnezia-vpn/amnezia-client/releases/download/5.0.1.5/AmneziaVPN_5.0.1.5_windows_x64.exe",
+        kind: "installer",
+        fileName: "AmneziaVPN_5.0.1.5_windows_x64.exe",
+        sizeBytes: 91_991_200,
+      },
+      alternate: null,
+    },
+    {
+      platform: "macos",
+      primary: {
+        url: "https://github.com/amnezia-vpn/amnezia-client/releases/download/5.0.1.5/AmneziaVPN_5.0.1.5_macos_x64.pkg",
+        kind: "installer",
+        fileName: "AmneziaVPN_5.0.1.5_macos_x64.pkg",
+        sizeBytes: 111_188_003,
+      },
+      alternate: null,
+    },
+    {
+      platform: "android",
+      primary: {
+        url: "https://play.google.com/store/apps/details?id=org.amnezia.vpn",
+        kind: "store",
+        fileName: null,
+        sizeBytes: null,
+      },
+      alternate: {
+        url: "https://github.com/amnezia-vpn/amnezia-client/releases/download/5.0.1.5/AmneziaVPN_5.0.1.5_android11%2B_arm64-v8a.apk",
+        kind: "installer",
+        fileName: "AmneziaVPN_5.0.1.5_android11+_arm64-v8a.apk",
+        sizeBytes: 75_586_403,
+      },
+    },
+    {
+      platform: "ios",
+      primary: {
+        url: "https://apps.apple.com/us/app/defaultvpn/id6744725017",
+        kind: "store",
+        fileName: null,
+        sizeBytes: null,
+      },
+      alternate: null,
+    },
+  ],
+};
+
+describe("client release routes", () => {
+  // `satisfies`, not an annotation: it still checks the stub against the
+  // contract, but keeps the inferred Mock types so the assertions below read a
+  // mock property rather than an unbound interface method.
+  const stubResolver = () =>
+    ({
+      get: vi.fn(() => Promise.resolve(SNAPSHOT)),
+      refresh: vi.fn(() => Promise.resolve(SNAPSHOT)),
+    }) satisfies ClientReleaseResolver;
+
+  it("serves the resolver's snapshot to any signed-in user", async () => {
+    const clientReleaseResolver = stubResolver();
+    const app = await buildApp({
+      service: createService(),
+      environment: "development",
+      clientReleaseResolver,
+    });
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/client-releases",
+      headers: { "x-dev-user-email": user.email },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual(SNAPSHOT);
+    expect(clientReleaseResolver.get).toHaveBeenCalledTimes(1);
+    await app.close();
+  });
+
+  it("lets the browser cache the answer for a while", async () => {
+    const app = await buildApp({
+      service: createService(),
+      environment: "development",
+      clientReleaseResolver: stubResolver(),
+    });
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/client-releases",
+      headers: { "x-dev-user-email": user.email },
+    });
+
+    // Private: the route sits behind the panel's identity check.
+    expect(response.headers["cache-control"]).toBe("private, max-age=1800");
+    await app.close();
+  });
+
+  it("stays behind the identity gate", async () => {
+    const clientReleaseResolver = stubResolver();
+    const app = await buildApp({
+      service: createService(),
+      environment: "production",
+      clientReleaseResolver,
+    });
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/client-releases",
+    });
+
+    expect(response.statusCode).toBe(401);
+    expect(clientReleaseResolver.get).not.toHaveBeenCalled();
+    await app.close();
+  });
+
+  it("lets an admin force a re-resolve", async () => {
+    const clientReleaseResolver = stubResolver();
+    const service = createService();
+    const admin = { ...user, role: "admin" as const };
+    vi.mocked(service.resolveIdentity).mockResolvedValue(admin);
+    const app = await buildApp({
+      service,
+      environment: "development",
+      clientReleaseResolver,
+    });
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/admin/client-releases/refresh",
+      headers: { "x-dev-user-email": admin.email },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual(SNAPSHOT);
+    expect(clientReleaseResolver.refresh).toHaveBeenCalledTimes(1);
+    // The refresh must not also be served from the cache.
+    expect(clientReleaseResolver.get).not.toHaveBeenCalled();
+    await app.close();
+  });
+
+  it("refuses a re-resolve to a non-admin", async () => {
+    const clientReleaseResolver = stubResolver();
+    const app = await buildApp({
+      service: createService(),
+      environment: "development",
+      clientReleaseResolver,
+    });
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/admin/client-releases/refresh",
+      headers: { "x-dev-user-email": user.email },
+    });
+
+    expect(response.statusCode).toBe(403);
+    expect(clientReleaseResolver.refresh).not.toHaveBeenCalled();
     await app.close();
   });
 });
