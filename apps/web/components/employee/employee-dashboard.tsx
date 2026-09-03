@@ -335,8 +335,18 @@ export function EmployeeDashboard({
           </CardContent>
         </Card>
 
-        <div className="flex items-center justify-between">
-          <h2 className="text-base font-semibold">{t("emp.devices")}</h2>
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-center gap-1">
+            <h2 className="text-base font-semibold">{t("emp.devices")}</h2>
+            {/* Spelled out, beside the section heading: this is the one action a
+                user who cannot connect is looking for, and the icon on each card
+                did not read as a button. The card's icon stays because it knows
+                that key's device and opens straight to its instruction; this one
+                asks first, because from here no device is implied. */}
+            <Button variant="ghost" size="sm" onClick={() => openGuide(null)}>
+              <CircleHelp className="h-4 w-4" /> {t("install.button")}
+            </Button>
+          </div>
           <Button disabled={!canCreate} onClick={() => setShowCreate(true)}>
             <Plus className="h-4 w-4" /> {t("emp.newKey")}
           </Button>
