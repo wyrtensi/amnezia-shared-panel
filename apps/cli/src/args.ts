@@ -112,3 +112,72 @@ export const formatUpdateStatus = (status: UpdateStatusView): string => {
   );
   return lines.join("\n");
 };
+
+/**
+ * Device types `--device-type` accepts. A deliberate copy of
+ * `deviceTypeSchema.options` in @amnezia/contracts: this CLI ships with no
+ * dependencies, so the list is duplicated and each side asserts the same
+ * literal array in its own test.
+ */
+export const DEVICE_TYPES = [
+  "android",
+  "ios",
+  "macos",
+  "windows",
+  "linux",
+  "other",
+  "unspecified",
+] as const;
+
+/**
+ * The device types the panel actually offers, in the order the wizard shows
+ * them. A copy of `DEVICE_TYPE_ORDER` in @amnezia/contracts, pinned by the same
+ * literal on both sides. `unspecified` is deliberately absent: it is storable
+ * but never offered.
+ */
+export const DEVICE_TYPE_ORDER = [
+  "android",
+  "ios",
+  "macos",
+  "windows",
+  "linux",
+  "other",
+] as const;
+
+/** The `--device-type=…` fragment for a usage string, built from the list. */
+export const deviceTypeUsage = (): string =>
+  `--device-type=${DEVICE_TYPE_ORDER.join("|")}`;
+
+/**
+ * Retired device types and what to use instead. Phrased as advice rather than a
+ * mapping: the panel remapped stored rows to "unspecified" because it could not
+ * know the platform, but a person running the CLI does know, so the message
+ * asks them for it.
+ */
+export const RETIRED_DEVICE_TYPES: Record<string, string> = {
+  iphone: "ios",
+  desktop: "windows, macos or linux",
+  laptop: "windows, macos or linux",
+  phone: "android or ios",
+  tablet: "android or ios",
+};
+
+/** Validate `--device-type`, naming the replacement for a retired value. */
+export const parseDeviceType = (value: string): string => {
+  if ((DEVICE_TYPES as readonly string[]).includes(value)) return value;
+  const replacement = RETIRED_DEVICE_TYPES[value];
+  if (replacement !== undefined) {
+    throw new Error(`--device-type="${value}" was retired — use ${replacement}`);
+  }
+  throw new Error(
+    `--device-type expects one of ${DEVICE_TYPES.join(", ")}; got "${value}"`,
+  );
+};
+
+/**
+ * Render a stored device type for a table cell. `unspecified` and a missing
+ * value both read as a dash; anything else — including a value retired by a
+ * migration this build predates — is printed verbatim rather than hidden.
+ */
+export const formatDeviceType = (value: string | undefined): string =>
+  !value || value === "unspecified" ? "—" : value;

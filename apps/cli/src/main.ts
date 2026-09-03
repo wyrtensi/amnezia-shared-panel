@@ -16,8 +16,11 @@
 import { buildRequestHeaders } from "./http.js";
 import { authHeaders } from "./identity.js";
 import {
+  deviceTypeUsage,
   flagOf,
+  formatDeviceType,
   formatUpdateStatus,
+  parseDeviceType,
   positionals,
   csvList,
   parseNodeLimits,
@@ -93,6 +96,7 @@ type AdminKey = {
   state: string;
   protocol: string;
   deviceLabel: string;
+  deviceType?: string;
   routeProfile: string;
   online?: boolean;
   traffic?: { receivedBytes: string; sentBytes: string } | null;
@@ -207,12 +211,23 @@ async function cmdKeys(args: string[]): Promise<void> {
     api<AdminKey[]>("/api/admin/keys"),
     api<AdminUser[]>("/api/admin/users"),
   ]);
-  if (wantsJson(args)) return json(keys);
+  // Filter before rendering AND before --json, so `keys --device-type=unspecified
+  // --json` is a scriptable census of the rows that still need re-classifying.
+  const deviceFilter = flagOf(args, "device-type");
+  const shown = deviceFilter
+    ? keys.filter((key) => (key.deviceType ?? "unspecified") === deviceFilter)
+    : keys;
+  if (wantsJson(args)) return json(shown);
   const emailById = new Map(users.map((user) => [user.id, user.email]));
   console.log(
     table(
-      keys.map((key) => ({
+      shown.map((key) => ({
         device: key.deviceLabel || "—",
+        // The label is free text the user typed and D3 deliberately preserves
+        // it across the migration, so "Laptop" can sit on an `unspecified` row.
+        // The platform is the stored value; showing both is the only way an
+        // operator can see which rows still need re-classifying.
+        platform: formatDeviceType(key.deviceType),
         owner: emailById.get(key.ownerId) ?? key.ownerId.slice(0, 8),
         state: key.state,
         proto: key.protocol,
@@ -226,7 +241,7 @@ async function cmdKeys(args: string[]): Promise<void> {
             )
           : "—",
       })),
-      ["device", "owner", "state", "proto", "online", "traffic"],
+      ["device", "platform", "owner", "state", "proto", "online", "traffic"],
     ),
   );
 }
@@ -728,7 +743,7 @@ async function cmdUserRoutes(args: string[]): Promise<void> {
 async function cmdUserCreateKey(args: string[]): Promise<void> {
   const pos = positionals(args);
   const usage =
-    "Usage: user-create-key <id|email> --node=<uuid> [--device=<label>] [--protocol=awg3|awg2] [--route=full_tunnel|ru_whitelist|ru_blacklist] [--device-type=<type>] [--name-server=true|false] [--name-label=true|false] [--name-number=true|false]";
+    `Usage: user-create-key <id|email> --node=<uuid> [--device=<label>] [--protocol=awg3|awg2] [--route=full_tunnel|ru_whitelist|ru_blacklist] [${deviceTypeUsage()}] [--name-server=true|false] [--name-label=true|false] [--name-number=true|false]`;
   const id = await resolveUserId(pos[0], usage);
   const nodeId = flagOf(args, "node");
   if (!nodeId) throw new Error(usage);
@@ -752,7 +767,7 @@ async function cmdUserCreateKey(args: string[]): Promise<void> {
   const route = flagOf(args, "route");
   if (route) body.routeProfile = route;
   const deviceType = flagOf(args, "device-type");
-  if (deviceType) body.deviceType = deviceType;
+  if (deviceType) body.deviceType = parseDeviceType(deviceType);
   const result = (await userAction(id, "create-key", body)) as { id?: string };
   console.log(`key created for ${pos[0]}: ${result?.id ?? "(ok)"}`);
 }
@@ -871,7 +886,8 @@ Usage: amnezia-panel <command> [args] [--json]
 Read:
   overview                 Key metrics
   users                    List users
-  keys                     List keys (with owner + traffic)
+  keys [--device-type=X]   List keys (with owner, platform + traffic); the flag filters
+                          to one stored platform, "unspecified" included
   nodes                    List nodes (with protocols + capacity)
   audit [--limit=N]        Recent audit events
   quota [--all] [--json]   Key-limit requests (pending by default; --all = every state),
@@ -896,10 +912,12 @@ Users (accept a user id OR email):
                                          user-limit --allowed-nodes to change only availability.
   user-routes <id|email> [--wl-domains=] [--wl-cidrs=] [--bl-domains=] [--bl-cidrs=]  Replace a user's custom routes
   user-create-key <id|email> --node=<uuid> [--device=] [--protocol=awg3] [--route=full_tunnel]
+                  [${deviceTypeUsage()}]
                   [--name-server=true|false] [--name-label=true|false] [--name-number=true|false]
-                                         Create a key for a user. The --name-* flags pick which
-                                         parts the VPN client shows as the connection name
-                                         (default: server + label, no number)
+                                         Create a key for a user. --device-type names the
+                                         platform (ios covers iPhone and iPad). The --name-*
+                                         flags pick which parts the VPN client shows as the
+                                         connection name (default: server + label, no number)
   quota-approve <request-id> [note]      Approve a quota request (grants the limit on the
                                         request's own target: one server, or all servers)
   quota-reject <request-id> [note]       Reject a quota request
