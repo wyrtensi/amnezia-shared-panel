@@ -36,6 +36,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { apiRequest } from "@/lib/api";
 import { formatBytesParts } from "@/lib/format";
 import { useT } from "@/lib/i18n/provider";
+import { cn } from "@/lib/utils";
 import { DEVICE_ICON } from "@/components/device-icon";
 import { OptionCards } from "@/components/option-cards";
 import type { PlatformMark } from "@/components/icons/platform-marks";
@@ -207,7 +208,14 @@ function PlatformButton({ download }: { download: ClientPlatformDownload }) {
   const size = assetSize(asset, lang);
 
   return (
-    <Button asChild variant="outline" className="h-auto justify-start py-2">
+    // w-full because `asChild` hands the classes to an <a>, which is
+    // inline-flex and would otherwise keep its intrinsic width and overlap
+    // the QR button beside it.
+    <Button
+      asChild
+      variant="outline"
+      className="h-auto w-full justify-start py-2"
+    >
       <a
         href={asset.url}
         target="_blank"
@@ -265,6 +273,7 @@ export function InstallInstructions({
   // gets the reason instead of instructions it cannot use. See D8.
   const confApplies = showConfSection && audience !== "ios";
   const videoUrl = videos?.[audience] ?? null;
+  const [qrFor, setQrFor] = React.useState<ClientPlatform | null>(null);
   const fixNumber = confApplies ? 4 : 3;
 
   return (
@@ -293,9 +302,47 @@ export function InstallInstructions({
                   </Callout>
                 ) : null}
                 {/* One audience's buttons and only its notes. */}
-                <div className="grid gap-2 sm:grid-cols-2">
+                {/* Two columns only when there is a pair to pair up. The
+                    store audiences have a single download, and halving that row
+                    left no room for its label beside the QR button. */}
+                <div
+                  className={cn(
+                    "grid gap-2",
+                    downloads.length > 1 && "sm:grid-cols-2",
+                  )}
+                >
                   {downloads.map((entry) => (
-                    <PlatformButton key={entry.platform} download={entry} />
+                    <div key={entry.platform} className="space-y-2">
+                      <div className="flex gap-2">
+                        <div className="min-w-0 flex-1">
+                          <PlatformButton download={entry} />
+                        </div>
+                        {/* Only a store link is worth scanning: a desktop
+                            installer is downloaded on the machine already in
+                            front of the reader. */}
+                        {entry.primary.kind === "store" ? (
+                          <Button
+                            type="button"
+                            variant="secondary"
+                            className="h-auto shrink-0"
+                            aria-expanded={qrFor === entry.platform}
+                            onClick={() =>
+                              setQrFor((current) =>
+                                current === entry.platform
+                                  ? null
+                                  : entry.platform,
+                              )
+                            }
+                          >
+                            <QrCode className="h-4 w-4" />
+                            {t("install.showQr")}
+                          </Button>
+                        ) : null}
+                      </div>
+                      {qrFor === entry.platform ? (
+                        <PlatformQr platform={entry.platform} />
+                      ) : null}
+                    </div>
                   ))}
                 </div>
 
@@ -304,15 +351,6 @@ export function InstallInstructions({
                     {t("install.desktopNote")}
                   </p>
                 ) : null}
-
-                {/* Store links are the ones worth scanning: a desktop
-                    installer is downloaded on the machine already in front of
-                    the reader. */}
-                {downloads
-                  .filter((entry) => entry.primary.kind === "store")
-                  .map((entry) => (
-                    <PlatformQr key={entry.platform} platform={entry.platform} />
-                  ))}
 
                 {audience === "android" && android?.alternate ? (
                   <ApkFallback
@@ -431,11 +469,11 @@ export function InstallInstructions({
 }
 
 /**
- * A QR of one platform's download link, shown beside the button.
+ * The QR itself, revealed by the button beside a store link.
  *
  * The guide is usually read on a computer while the app has to end up on a
  * phone, so the store link is exactly the thing a camera should be able to
- * grab. Collapsed by default — it is a shortcut, not a step.
+ * grab. Hidden until asked for — it is a shortcut, not a step.
  *
  * The image is rendered by the control API from the URL it resolved itself
  * (GET /api/client-releases/qr/:platform); this component holds no link, and
@@ -444,23 +482,16 @@ export function InstallInstructions({
 function PlatformQr({ platform }: { platform: ClientPlatform }) {
   const { t } = useT();
   return (
-    <details className="group rounded-lg border bg-muted/30 px-3 py-2">
-      <summary className="flex cursor-pointer list-none items-center gap-2 text-sm font-medium">
-        <ChevronDown className="h-4 w-4 shrink-0 transition-transform group-open:rotate-180" />
-        <QrCode className="h-4 w-4 shrink-0" aria-hidden="true" />
-        {t("install.showQr")}
-      </summary>
-      <div className="mt-2.5 space-y-2">
-        <img
-          className="mx-auto h-44 w-44 rounded-md bg-white p-2"
-          src={`/api/control/api/client-releases/qr/${platform}`}
-          alt={t("install.qrAlt")}
-        />
-        <p className="text-center text-xs leading-snug text-muted-foreground">
-          {t("install.qrHint")}
-        </p>
-      </div>
-    </details>
+    <div className="space-y-2 rounded-lg border bg-muted/30 p-3">
+      <img
+        className="mx-auto h-44 w-44 rounded-md bg-white p-2"
+        src={`/api/control/api/client-releases/qr/${platform}`}
+        alt={t("install.qrAlt")}
+      />
+      <p className="text-center text-xs leading-snug text-muted-foreground">
+        {t("install.qrHint")}
+      </p>
+    </div>
   );
 }
 
