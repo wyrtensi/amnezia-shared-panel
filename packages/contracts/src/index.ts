@@ -14,15 +14,88 @@ export const routeProfileSchema = z.enum([
   "ru_whitelist",
   "ru_blacklist",
 ]);
+/**
+ * What kind of device a key is for. The value names a **platform**, not a form
+ * factor: it is the signal platform-specific behaviour hangs off (today only
+ * `deviceSupportsRouteProfiles`, which is not offered on iOS). "ios" covers
+ * iPhone and iPad — the same platform for every purpose this panel has.
+ *
+ * "unspecified" is the stored default and is never offered as a choice; see
+ * DEVICE_TYPE_ORDER.
+ *
+ * Mirrored by `deviceTypeEnum` in `packages/db/src/schema.ts` (pinned by a
+ * parity test) and by `DEVICE_TYPES` in `apps/cli/src/args.ts` (a deliberate
+ * copy — the CLI has no dependencies; pinned by a test on each side).
+ */
 export const deviceTypeSchema = z.enum([
-  "desktop",
-  "laptop",
-  "iphone",
   "android",
-  "phone",
+  "ios",
+  "macos",
+  "windows",
+  "linux",
   "other",
   "unspecified",
 ]);
+
+/**
+ * The device types the create-key UI and the CLI offer, in the order they are
+ * shown: the mobile and Apple platforms on top, the desktop ones and the escape
+ * hatch at the bottom. This order is the operator's, not an implementation
+ * detail, so it lives here rather than in a component — a UI-local copy of this
+ * list is what once let the wizard offer a "tablet" the API rejected.
+ */
+export const DEVICE_TYPE_ORDER = [
+  "android",
+  "ios",
+  "macos",
+  "windows",
+  "linux",
+  "other",
+] as const satisfies readonly DeviceType[];
+
+/**
+ * Device types the panel used before the platform rework, and what a row
+ * holding one becomes.
+ *
+ * `desktop`, `laptop` and `phone` named a form factor and never told the panel
+ * which platform the device ran, so they become "unspecified" rather than
+ * "other": "other" would claim the platform is outside the list, which the
+ * panel cannot know. `iphone` maps exactly onto the wider `ios`.
+ *
+ * `tablet` was only ever offered by the create-key wizard — deviceTypeSchema
+ * never contained it, so no stored row can hold it — but a stale browser tab
+ * can still send it, so it is named here and refused by name.
+ */
+export const LEGACY_DEVICE_TYPE_REPLACEMENT = {
+  iphone: "ios",
+  desktop: "unspecified",
+  laptop: "unspecified",
+  phone: "unspecified",
+  tablet: "unspecified",
+} as const satisfies Record<string, DeviceType>;
+
+export type LegacyDeviceType = keyof typeof LEGACY_DEVICE_TYPE_REPLACEMENT;
+
+/**
+ * The retired values a stored row could actually hold — the pre-rework
+ * Postgres enum. The data migration handles exactly these; "tablet" is absent
+ * because the column could never contain it.
+ */
+export const RETIRED_STORED_DEVICE_TYPES = [
+  "desktop",
+  "laptop",
+  "iphone",
+  "phone",
+] as const satisfies readonly LegacyDeviceType[];
+
+/**
+ * What a retired device type becomes, or null when the value was never one.
+ * Current values return null too, so a caller cannot map twice.
+ */
+export const replaceLegacyDeviceType = (value: string): DeviceType | null =>
+  Object.hasOwn(LEGACY_DEVICE_TYPE_REPLACEMENT, value)
+    ? LEGACY_DEVICE_TYPE_REPLACEMENT[value as LegacyDeviceType]
+    : null;
 export const roleSchema = z.enum(["user", "admin"]);
 export const userStatusSchema = z.enum(["active", "disabled"]);
 
