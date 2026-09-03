@@ -1,21 +1,26 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  CLIENT_PLATFORMS,
+  clientReleaseSchema,
   composeKeyDisplayName,
   createKeyRequestSchema,
   customRoutesSchema,
   DEVICE_TYPE_ORDER,
   deviceTypeSchema,
+  deviceSupportsRouteProfiles,
   globalRoutesSchema,
   keyNameDisplaySchema,
   LEGACY_DEVICE_TYPE_REPLACEMENT,
   MAX_GLOBAL_CIDRS,
   MAX_GLOBAL_DOMAINS,
+  MIN_AWG3_CLIENT_VERSION,
   nodeKeyLimitsSchema,
   portalPolicySchema,
   quotaRequestSchema,
   replaceLegacyDeviceType,
   RETIRED_STORED_DEVICE_TYPES,
+  ROUTE_PROFILE_UNSUPPORTED_DEVICES,
   rulesRefreshStatusSchema,
   setUserLimitRequestSchema,
   updateGlobalRoutesRequestSchema,
@@ -556,6 +561,128 @@ describe("replaceLegacyDeviceType", () => {
     ]);
     for (const value of RETIRED_STORED_DEVICE_TYPES) {
       expect(LEGACY_DEVICE_TYPE_REPLACEMENT).toHaveProperty(value);
+    }
+  });
+});
+
+describe("clientReleaseSchema", () => {
+  const asset = {
+    url: "https://github.com/amnezia-vpn/amnezia-client/releases/download/x/y.exe",
+    kind: "installer" as const,
+    fileName: "y.exe",
+    sizeBytes: 91_991_200,
+  };
+  const release = {
+    version: "9.9.9.9",
+    releaseUrl: "https://github.com/amnezia-vpn/amnezia-client/releases/tag/9.9.9.9",
+    publishedAt: "2026-08-21T14:47:49.000Z",
+    fallback: false,
+    resolvedAt: "2026-09-02T09:00:00.000Z",
+    downloads: CLIENT_PLATFORMS.map((platform) => ({
+      platform,
+      primary: asset,
+      alternate: null,
+    })),
+  };
+
+  it("accepts a fully resolved release", () => {
+    expect(clientReleaseSchema.safeParse(release).success).toBe(true);
+  });
+
+  it("accepts the version-free fallback shape", () => {
+    expect(
+      clientReleaseSchema.safeParse({
+        ...release,
+        version: null,
+        publishedAt: null,
+        fallback: true,
+        downloads: CLIENT_PLATFORMS.map((platform) => ({
+          platform,
+          primary: {
+            url: "https://github.com/amnezia-vpn/amnezia-client/releases/latest",
+            kind: "releasePage" as const,
+            fileName: null,
+            sizeBytes: null,
+          },
+          alternate: null,
+        })),
+      }).success,
+    ).toBe(true);
+  });
+
+  it("covers exactly the four supported platforms", () => {
+    expect([...CLIENT_PLATFORMS].sort()).toEqual([
+      "android",
+      "ios",
+      "macos",
+      "windows",
+    ]);
+    // One entry per platform — the UI maps the array directly.
+    expect(
+      clientReleaseSchema.safeParse({ ...release, downloads: [] }).success,
+    ).toBe(false);
+  });
+
+  it("rejects an asset kind the resolver can never produce", () => {
+    expect(
+      clientReleaseSchema.safeParse({
+        ...release,
+        downloads: [
+          { platform: "windows", primary: { ...asset, kind: "torrent" }, alternate: null },
+          ...release.downloads.slice(1),
+        ],
+      }).success,
+    ).toBe(false);
+  });
+
+  it("rejects a non-URL download target", () => {
+    expect(
+      clientReleaseSchema.safeParse({
+        ...release,
+        downloads: [
+          { platform: "windows", primary: { ...asset, url: "javascript:alert(1)" }, alternate: null },
+          ...release.downloads.slice(1),
+        ],
+      }).success,
+    ).toBe(false);
+  });
+
+  it("pins the AmneziaWG 3.1 client floor from AGENTS.md", () => {
+    expect(MIN_AWG3_CLIENT_VERSION).toBe("5.0.1.5");
+  });
+});
+
+// D9: the one fact behind the wizard's greyed-out route profiles, the key
+// card's warning and the CLI's warning. Kept here, beside deviceTypeSchema,
+// because three callers need the same answer and apps/web holds no facts.
+describe("deviceSupportsRouteProfiles", () => {
+  it("says the Apple mobile platform cannot use route profiles", () => {
+    // "ios" covers iPhone AND iPad — one value, so iPad is covered by
+    // construction rather than by a guess.
+    expect(deviceSupportsRouteProfiles("ios")).toBe(false);
+  });
+
+  it("says every other declared device type can", () => {
+    for (const device of deviceTypeSchema.options) {
+      if (device === "ios") continue;
+      expect(deviceSupportsRouteProfiles(device), device).toBe(true);
+    }
+  });
+
+  it("treats an unknown device type as supported", () => {
+    // A retired value can still arrive from a browser tab left open across a
+    // deploy, and future values may appear before this rule is revisited.
+    // Nothing is disabled without a recorded observation.
+    expect(deviceSupportsRouteProfiles("laptop")).toBe(true);
+    expect(deviceSupportsRouteProfiles("")).toBe(true);
+  });
+
+  it("lists only what has actually been observed to fail", () => {
+    expect([...ROUTE_PROFILE_UNSUPPORTED_DEVICES]).toEqual(["ios"]);
+    // Every entry must be a real device type, or the wizard would grey out
+    // nothing while looking like it does.
+    for (const device of ROUTE_PROFILE_UNSUPPORTED_DEVICES) {
+      expect(deviceTypeSchema.safeParse(device).success, device).toBe(true);
     }
   });
 });

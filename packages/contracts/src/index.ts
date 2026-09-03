@@ -417,3 +417,117 @@ export const idleRulesRefreshStatus: RulesRefreshStatus = {
   completedAt: null,
   lastError: null,
 };
+
+// --- AmneziaVPN client releases --------------------------------------------
+// The panel tells users where to get the client. A panel user may sit on a
+// network with no route to GitHub, so control-api resolves the current release
+// server-side and the web app only renders the answer. These shapes are that
+// answer; the resolution itself lives in apps/control-api/src/clientReleases.ts.
+
+/**
+ * Oldest official AmneziaVPN client that can use an AmneziaWG 3.1 key
+ * (AGENTS.md "Protocol"). This is a protocol floor, not "the newest release" —
+ * the two are different questions, so it is deliberately not part of the
+ * resolved release payload. Single source for the create-key wizard hint and
+ * the install guide alike.
+ */
+export const MIN_AWG3_CLIENT_VERSION = "5.0.1.5";
+
+/** Platforms the install guide offers, in the order the buttons render. */
+export const CLIENT_PLATFORMS = ["windows", "macos", "android", "ios"] as const;
+
+export const clientPlatformSchema = z.enum(CLIENT_PLATFORMS);
+export type ClientPlatform = z.infer<typeof clientPlatformSchema>;
+
+/**
+ * One place a user can be sent to get the client.
+ *
+ * - `store`      — Google Play / the App Store. No file name or size.
+ * - `installer`  — a single release asset; `fileName` and `sizeBytes` are set
+ *                  so the UI can show what is about to be downloaded.
+ * - `releasePage` — the release listing, used when the expected asset was not
+ *                  found and by the offline fallback. The user picks the file.
+ */
+export const clientAssetSchema = z.object({
+  // Protocol-constrained on purpose: bare z.url() accepts `javascript:` (it is
+  // a valid URL), and every one of these values is rendered as an href in the
+  // install guide. The resolver only ever produces https, so this costs
+  // nothing and closes the one shape that would matter if it ever did.
+  url: z.url({ protocol: /^https?$/ }),
+  kind: z.enum(["store", "installer", "releasePage"]),
+  fileName: z.string().min(1).max(200).nullable(),
+  sizeBytes: z.int().nonnegative().nullable(),
+});
+export type ClientAsset = z.infer<typeof clientAssetSchema>;
+
+export const clientPlatformDownloadSchema = z.object({
+  platform: clientPlatformSchema,
+  /** Where the platform's main button goes. */
+  primary: clientAssetSchema,
+  /**
+   * The escape hatch when the primary route does not work for the user. Today
+   * only Android has one: the APK, behind the Google Play button.
+   */
+  alternate: clientAssetSchema.nullable(),
+});
+export type ClientPlatformDownload = z.infer<typeof clientPlatformDownloadSchema>;
+
+export const clientReleaseSchema = z.object({
+  /** Resolved release tag, e.g. "5.0.1.5". Null in the offline fallback. */
+  version: z.string().min(1).max(40).nullable(),
+  /** The release page. In the fallback, GitHub's permanent latest redirect. */
+  releaseUrl: z.url({ protocol: /^https?$/ }),
+  /** When the release was published (ISO-8601), null when unknown. */
+  publishedAt: z.iso.datetime().nullable(),
+  /** True when GitHub could not be reached and the pinned links are served. */
+  fallback: z.boolean(),
+  /** When this snapshot was produced (ISO-8601). */
+  resolvedAt: z.iso.datetime(),
+  /** Exactly one entry per platform, so the UI can map it straight to buttons. */
+  downloads: z
+    .array(clientPlatformDownloadSchema)
+    .length(CLIENT_PLATFORMS.length),
+});
+export type ClientRelease = z.infer<typeof clientReleaseSchema>;
+
+// --- Route profiles per device type ----------------------------------------
+
+/**
+ * Device types on which the official client is known NOT to apply a route
+ * profile. Operator-verified on an iPhone, 2026-09-02 and 2026-09-03: a key
+ * with `ru_whitelist` or `ru_blacklist` connects, but every destination goes
+ * direct and the app gives no warning. Confirmed for BOTH import paths — the
+ * pasted vpn:// key and an imported .conf.
+ *
+ * This is a STOP-GAP that makes the limitation visible, not a statement that
+ * iOS will never support route profiles. The cause is not established (see the
+ * T2-a backlog item); when it is fixed, empty this list and the create-key
+ * wizard offers the profiles again with no other change.
+ *
+ * Only "ios" is listed, and it covers iPhone AND iPad — they are one value, so
+ * iPad is covered by construction rather than by a guess. The other platforms
+ * are deliberately absent: disabling a working feature on hardware where the
+ * limitation was never observed would be the same class of mistake in the
+ * other direction.
+ */
+export const ROUTE_PROFILE_UNSUPPORTED_DEVICES = ["ios"] as const;
+
+/**
+ * Whether a key created for this device type can usefully carry a route
+ * profile. Drives the create-key wizard's greyed-out profile cards, the key
+ * card's warning and the CLI's `user-create-key` warning.
+ *
+ * Takes a plain `string`, not `DeviceType`: `KeyView.deviceType` arrives from
+ * the API as a string, and a browser tab left open across a deploy can still
+ * send a retired value. An unrecognised value is treated as supported —
+ * nothing is disabled without an observation.
+ *
+ * This is advice about where a key is being CREATED, not about where it will
+ * be used: nothing in the export path branches on the device type, and nothing
+ * should. See the plan's D9.
+ */
+export function deviceSupportsRouteProfiles(deviceType: string): boolean {
+  return !(ROUTE_PROFILE_UNSUPPORTED_DEVICES as readonly string[]).includes(
+    deviceType,
+  );
+}
