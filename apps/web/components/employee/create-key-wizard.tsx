@@ -2,13 +2,6 @@
 
 import * as React from "react";
 import {
-  HardDrive,
-  Laptop,
-  Monitor,
-  Smartphone,
-  Tablet,
-} from "lucide-react";
-import {
   Dialog,
   DialogContent,
   DialogDescription,
@@ -33,10 +26,13 @@ import { Hint, FieldHint } from "@/components/ui/hint";
 import {
   composeKeyDisplayName,
   defaultKeyNameDisplay,
+  DEVICE_TYPE_ORDER,
+  type DeviceType,
   type KeyNameDisplay,
 } from "@amnezia/contracts";
 import { useT } from "@/lib/i18n/provider";
-import { suggestKeyName, type DeviceType } from "@/lib/suggest-key-name";
+import { DEVICE_ICON } from "@/components/device-icon";
+import { suggestKeyName } from "@/lib/suggest-key-name";
 import type {
   Me,
   NodeView,
@@ -45,25 +41,9 @@ import type {
   RouteProfileAvailability,
 } from "@/lib/types";
 
-const DEVICE_ICONS: Record<DeviceType, React.ReactNode> = {
-  unspecified: <HardDrive />,
-  desktop: <Monitor />,
-  laptop: <Laptop />,
-  iphone: <Smartphone />,
-  android: <Smartphone />,
-  phone: <Smartphone />,
-  tablet: <Tablet />,
-  other: <HardDrive />,
-};
-
-const DEVICE_ORDER: DeviceType[] = [
-  "laptop",
-  "desktop",
-  "iphone",
-  "android",
-  "tablet",
-  "other",
-];
+// The first card is preselected, so the default follows the operator's order
+// rather than being a second thing to keep in step with it.
+const DEFAULT_DEVICE_TYPE: DeviceType = DEVICE_TYPE_ORDER[0];
 
 // AWG 3.1 is the project's primary protocol; prefer it whenever a node offers it.
 const preferredProtocol = (protocols: ProtocolKind[]): ProtocolKind =>
@@ -114,7 +94,9 @@ export function CreateKeyWizard({
   onCreate: (payload: CreateKeyPayload) => Promise<void>;
 }) {
   const { t } = useT();
-  const [deviceType, setDeviceType] = React.useState<DeviceType>("laptop");
+  const [deviceType, setDeviceType] = React.useState<DeviceType>(
+    DEFAULT_DEVICE_TYPE,
+  );
   const [deviceLabel, setDeviceLabel] = React.useState("");
   const [labelEdited, setLabelEdited] = React.useState(false);
   const [nodeId, setNodeId] = React.useState("");
@@ -134,9 +116,9 @@ export function CreateKeyWizard({
   React.useEffect(() => {
     if (open && !wasOpen.current) {
       wasOpen.current = true;
-      setDeviceType("laptop");
+      setDeviceType(DEFAULT_DEVICE_TYPE);
       setLabelEdited(false);
-      setDeviceLabel(suggestKeyName("laptop", existingNames, t));
+      setDeviceLabel(suggestKeyName(DEFAULT_DEVICE_TYPE, existingNames, t));
       setNodeId(nodes[0]?.id ?? "");
       setProtocol(preferredProtocol(nodeSelectableProtocols(nodes[0])));
       setRouteProfile("full_tunnel");
@@ -206,12 +188,11 @@ export function CreateKeyWizard({
     display: nameDisplay,
   });
 
-  const deviceOptions: Array<CardOption<DeviceType>> = DEVICE_ORDER.map(
-    (type) => ({
-      value: type,
-      label: t(`device.${type}`),
-      icon: DEVICE_ICONS[type],
-    }),
+  const deviceOptions: Array<CardOption<DeviceType>> = DEVICE_TYPE_ORDER.map(
+    (type) => {
+      const Icon = DEVICE_ICON[type];
+      return { value: type, label: t(`device.${type}`), icon: <Icon /> };
+    },
   );
 
   const protocolOptions: Array<CardOption<ProtocolKind>> = orderProtocols(

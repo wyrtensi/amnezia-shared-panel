@@ -6,16 +6,10 @@ import {
   Copy,
   Download,
   Globe,
-  HardDrive,
-  Laptop,
   Loader2,
-  Monitor,
   QrCode,
   RefreshCw,
   ShieldHalf,
-  Smartphone,
-  Tablet,
-  TabletSmartphone,
   TriangleAlert,
   Trash2,
 } from "lucide-react";
@@ -34,6 +28,8 @@ import { configUrl } from "@/lib/api";
 import { formatDate } from "@/lib/format";
 import { TrafficSplit } from "@/components/inline-traffic";
 import { useT } from "@/lib/i18n/provider";
+import { deviceIconFor } from "@/components/device-icon";
+import { deviceTypeLabel } from "@/lib/device-type";
 import type { KeyView, Me, NodeView } from "@/lib/types";
 
 const ROUTE_LABEL: Record<string, string> = {
@@ -53,21 +49,6 @@ const PROTOCOL_LABEL: Record<string, string> = {
   awg2: "protocol.awg2",
   awg3: "protocol.awg3",
 };
-
-// Bigger, device-themed glyph per key so a phone key reads as a phone at a
-// glance rather than a generic key icon.
-const DEVICE_ICON: Record<string, React.ComponentType<{ className?: string }>> =
-  {
-    laptop: Laptop,
-    desktop: Monitor,
-    iphone: Smartphone,
-    android: Smartphone,
-    phone: Smartphone,
-    phone2: Smartphone,
-    tablet: Tablet,
-    other: TabletSmartphone,
-    unspecified: HardDrive,
-  };
 
 export function KeyCard({
   keyView,
@@ -95,7 +76,7 @@ export function KeyCard({
   const revocable =
     me.policy.allowSelfRevoke &&
     !["revoked", "revoking"].includes(keyView.state);
-  const DeviceIcon = DEVICE_ICON[keyView.deviceType] ?? HardDrive;
+  const DeviceIcon = deviceIconFor(keyView.deviceType);
 
   return (
     <Card className="overflow-hidden transition-shadow hover:shadow-md">
@@ -107,7 +88,7 @@ export function KeyCard({
             </span>
             <div className="min-w-0">
               <p className="truncate font-medium leading-tight">
-                {keyView.deviceLabel || keyView.deviceType}
+                {keyView.deviceLabel || deviceTypeLabel(t, keyView.deviceType)}
                 {keyView.keyNumber != null ? (
                   <span className="ml-1.5 text-xs font-normal text-muted-foreground">
                     #{keyView.keyNumber}

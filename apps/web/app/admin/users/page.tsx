@@ -68,6 +68,7 @@ import {
   lastSeenFromKeys,
 } from "@/lib/activity";
 import { cn } from "@/lib/utils";
+import { deviceTypeLabel } from "@/lib/device-type";
 import {
   useAdminData,
   type AdminKey,
@@ -846,7 +847,7 @@ function AdminKeyRow({
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-1.5">
           <span className="truncate text-sm font-medium">
-            {keyView.deviceLabel || keyView.deviceType}
+            {keyView.deviceLabel || deviceTypeLabel(t, keyView.deviceType)}
           </span>
           {keyView.rulesOutdated ? (
             <Tooltip>
@@ -1655,7 +1656,9 @@ function CreateKeyDialog({
                   await onSave({
                     nodeId,
                     deviceLabel,
-                    deviceType: "desktop",
+                    // This dialog has no device-type field, so the panel does
+                    // not know the platform. It used to claim "desktop".
+                    deviceType: "unspecified",
                     routeProfile,
                     protocol,
                     nameDisplay,
