@@ -40,7 +40,9 @@ describe("device type labels", () => {
   });
 
   it("labels the combined Apple mobile option as both devices", () => {
-    expect(deviceTypeLabel(ru, "ios")).toBe("iPhone / iPad");
+    // No separator: the card stacks the two words on their own lines, where a
+    // slash just dangles at the end of the first one.
+    expect(deviceTypeLabel(ru, "ios")).toBe("iPhone iPad");
   });
 
   it("shows a value this build does not know verbatim, not as a message key", () => {
