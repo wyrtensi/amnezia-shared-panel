@@ -2,6 +2,7 @@ import { exec } from "child_process";
 import { RunOptions } from "@/types/amnezia";
 import { CommandResult } from "@/types/shared";
 import { TimeContract } from "@/contracts/time";
+import { redactCommand } from "@/utils/redactCommand";
 
 /**
  * Создать соединение с сервером
@@ -18,7 +19,9 @@ export class ServerConnection {
       exec(cmd, { timeout, maxBuffer }, (error, stdout, stderr) => {
         if (error) {
           return reject(
-            new Error(`Ошибка выполнения команды ${cmd}: ${error}`),
+            new Error(
+              `Ошибка выполнения команды ${redactCommand(cmd)}: ${redactCommand(String(error))}`,
+            ),
           );
         }
 

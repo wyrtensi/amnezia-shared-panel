@@ -17,6 +17,7 @@ import {
   buildValidatedWgConfigCommand,
   buildWriteFileCommand,
 } from "@/utils/shellWrite";
+import { redactCommand } from "@/utils/redactCommand";
 
 /**
  * Создать соединение с AmneziaWG 2.0
@@ -63,7 +64,9 @@ export class AmneziaWg2Connection implements IAmneziaConnection {
           }
 
           return reject(
-            new Error(`Ошибка выполнения команды ${cmd}: ${error}`),
+            new Error(
+              `Ошибка выполнения команды ${redactCommand(cmd)}: ${redactCommand(String(error))}`,
+            ),
           );
         }
 

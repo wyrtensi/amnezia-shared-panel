@@ -17,6 +17,7 @@ import {
   buildValidatedWgConfigCommand,
   buildWriteFileCommand,
 } from "@/utils/shellWrite";
+import { redactCommand } from "@/utils/redactCommand";
 
 /**
  * Connection to the AmneziaWG 3.1 container.
@@ -62,7 +63,11 @@ export class AmneziaWg3Connection implements IAmneziaConnection {
             );
           }
 
-          return reject(new Error(`Failed to run command ${cmd}: ${error}`));
+          return reject(
+            new Error(
+              `Failed to run command ${redactCommand(cmd)}: ${redactCommand(String(error))}`,
+            ),
+          );
         }
 
         resolve({ stdout, stderr });

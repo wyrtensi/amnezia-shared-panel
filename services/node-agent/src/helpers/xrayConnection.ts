@@ -10,6 +10,7 @@ import { CommandResult } from "@/types/shared";
 import { TimeContract } from "@/contracts/time";
 import { ServerErrorCode } from "@/types/shared";
 import { buildWriteFileCommand } from "@/utils/shellWrite";
+import { redactCommand } from "@/utils/redactCommand";
 
 /**
  * Создать соединение с Xray
@@ -56,7 +57,9 @@ export class XrayConnection {
           }
 
           return reject(
-            new Error(`Ошибка выполнения команды ${cmd}: ${error}`),
+            new Error(
+              `Ошибка выполнения команды ${redactCommand(cmd)}: ${redactCommand(String(error))}`,
+            ),
           );
         }
 
@@ -76,7 +79,9 @@ export class XrayConnection {
       exec(cmd, { timeout, maxBuffer }, (error, stdout, stderr) => {
         if (error) {
           return reject(
-            new Error(`Ошибка выполнения команды ${cmd}: ${error}`),
+            new Error(
+              `Ошибка выполнения команды ${redactCommand(cmd)}: ${redactCommand(String(error))}`,
+            ),
           );
         }
 
