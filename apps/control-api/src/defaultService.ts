@@ -1,4 +1,3 @@
-import QRCode from "qrcode";
 import type { EncryptionKeyring } from "@amnezia/db";
 import { decryptSecret } from "@amnezia/db";
 import type { PortalPolicy } from "@amnezia/contracts";
@@ -16,6 +15,15 @@ import {
   extractConfFromVpnLink,
   setVpnDescription,
 } from "./vpnConfig.js";
+import { buildQrFrameTexts } from "./qrFrames.js";
+import { renderKeyQr, type RenderedQr } from "./qrRender.js";
+
+/**
+ * The most frames a person will actually scan. This is a product limit, not a
+ * format one: the envelope's own ceiling is 255 (a one-byte counter), which no
+ * real config would ever reach.
+ */
+const QR_MAX_USABLE_FRAMES = 8;
 
 export type DefaultServiceOptions = {
   repository: ControlRepository;
@@ -29,7 +37,10 @@ const assertDownloadAllowed = (
   const allowed =
     policy.allowConfigRedownload &&
     (format === "vpn" ||
-      (format === "qr" && policy.allowQrDownload) ||
+      // All three QR containers are the same capability: an admin who turned QR
+      // off must not get it back through a new format string.
+      ((format === "qr" || format === "qr-svg" || format === "qr-frames") &&
+        policy.allowQrDownload) ||
       (format === "conf" && policy.allowConfDownload));
   if (!allowed) {
     throw new ApiError(403, "Config download is disabled", "POLICY_DENIED");
@@ -154,19 +165,50 @@ export const createDefaultControlApiService = ({
         filename: `${safeFilename(key.deviceLabel)}.conf`,
       };
     }
-    // A split-tunnel config embeds thousands of CIDRs, which overflows the QR
-    // capacity — QRCode.toBuffer would otherwise throw a raw 500. Refuse with a
-    // clear error (the UI hides QR for these profiles and offers the config file).
-    let qr: Buffer;
+    // A split-tunnel config embeds thousands of CIDRs and overflows QR capacity
+    // at every error-correction level — the renderer would otherwise throw a raw
+    // 500. Refuse with a clear error (the UI hides QR for these profiles and
+    // offers the config file instead).
+    if (format === "qr-frames") {
+      // AmneziaVPN's in-app scanner reads only its own chunk envelope, never a
+      // `vpn://` URL, so this is a different payload rather than a different
+      // picture of the same one. Rendered as SVG so it inherits the quiet zone
+      // and crisp edges, and so the panel's zoom slider works on it.
+      let frames: string[];
+      try {
+        const texts = buildQrFrameTexts(vpnLink);
+        // Chunking removes the capacity limit that makes the single-frame
+        // formats refuse a split-tunnel config, so without this a whitelist key
+        // would return dozens of codes (a 20 KB config is 24 frames) instead of
+        // the 422 every other QR format gives it. Nobody scans 24 codes; the
+        // config file is the answer for those keys. Eight is well clear of a
+        // full-tunnel key (860 bytes, two frames) and still a few seconds of
+        // holding a phone at the animation, so it refuses only what is
+        // genuinely unusable.
+        if (texts.length > QR_MAX_USABLE_FRAMES) {
+          throw new Error("too many frames to scan");
+        }
+        frames = await Promise.all(
+          texts.map(async (text) =>
+            String((await renderKeyQr(text, "svg")).body),
+          ),
+        );
+      } catch {
+        throw new ApiError(
+          422,
+          "This config is too large for a QR code — use the config file instead",
+          "QR_TOO_LARGE",
+        );
+      }
+      return {
+        format,
+        contentType: "application/json; charset=utf-8",
+        body: JSON.stringify({ total: frames.length, frames }),
+      };
+    }
+    let rendered: RenderedQr;
     try {
-      qr = await QRCode.toBuffer(vpnLink, {
-        type: "png",
-        // Higher error correction ("Q" = ~25%) survives low-quality cameras,
-        // glare and partial occlusion far better than the default "M".
-        errorCorrectionLevel: "Q",
-        margin: 2,
-        width: 1024,
-      });
+      rendered = await renderKeyQr(vpnLink, format === "qr-svg" ? "svg" : "png");
     } catch {
       throw new ApiError(
         422,
@@ -174,10 +216,18 @@ export const createDefaultControlApiService = ({
         "QR_TOO_LARGE",
       );
     }
+    if (rendered.kind === "svg") {
+      // A display format, not a download: no content-disposition, no filename.
+      return {
+        format,
+        contentType: rendered.contentType,
+        body: rendered.body,
+      };
+    }
     return {
       format,
-      contentType: "image/png",
-      body: qr,
+      contentType: rendered.contentType,
+      body: rendered.body,
       filename: `${safeFilename(key.deviceLabel)}.png`,
     };
   },

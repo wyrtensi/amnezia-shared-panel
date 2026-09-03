@@ -358,6 +358,33 @@ describe("default control service policy enforcement", () => {
     expect(conf).toContain("10.0.0.0/8");
   });
 
+  it("blocks every QR container under the same policy flag", async () => {
+    for (const format of ["qr", "qr-svg", "qr-frames"] as const) {
+      const repository = createRepository();
+      vi.mocked(repository.findKeyConfig).mockResolvedValue({
+        id: "key-1",
+        ownerId: employee.id,
+        deviceLabel: null,
+        encrypted,
+        policy: { ...defaultPortalPolicy, allowQrDownload: false },
+        routeProfile: "full_tunnel" as const,
+        keyNumber: 3,
+        nodeDisplayName: "Frankfurt",
+        nameDisplay: { server: true, label: true, number: false },
+        appliedRuleVersionId: null,
+        activeRule: null,
+        customRoutes: null,
+      });
+      const service = createDefaultControlApiService({ repository, keyring });
+
+      await expect(
+        service.getKeyConfig(employee, "key-1", format, false),
+      ).rejects.toEqual(
+        expect.objectContaining({ statusCode: 403, code: "POLICY_DENIED" }),
+      );
+    }
+  });
+
   it("does not consult the global overrides for a full-tunnel key", async () => {
     const repository = createRepository();
     const service = createDefaultControlApiService({ repository, keyring });
@@ -410,5 +437,96 @@ describe("client-visible connection name", () => {
     await expect(
       nameOf({ server: false, label: true, number: true }),
     ).resolves.toBe("Main laptop #3");
+  });
+});
+
+describe("simple-key QR rendering", () => {
+  it("returns an SVG with no attachment disposition", async () => {
+    const repository = createRepository();
+    const service = createDefaultControlApiService({ repository, keyring });
+
+    const result = await service.getKeyConfig(employee, "key-1", "qr-svg", false);
+
+    expect(result.format).toBe("qr-svg");
+    expect(result.contentType).toBe("image/svg+xml; charset=utf-8");
+    expect(result.filename).toBeUndefined();
+    expect(String(result.body)).toContain("<svg");
+    // The quiet zone is four modules per side, as the QR spec requires.
+    expect(String(result.body)).toMatch(/viewBox="0 0 (\d+) \1"/);
+  });
+
+  it("returns a PNG with a download name for the raster format", async () => {
+    const repository = createRepository();
+    const service = createDefaultControlApiService({ repository, keyring });
+
+    const result = await service.getKeyConfig(employee, "key-1", "qr", false);
+
+    expect(result.contentType).toBe("image/png");
+    expect(result.filename).toBe("phone.png");
+    expect(Buffer.isBuffer(result.body)).toBe(true);
+  });
+
+  it("returns the AmneziaVPN frame series as JSON SVGs", async () => {
+    const repository = createRepository();
+    const service = createDefaultControlApiService({ repository, keyring });
+
+    const result = await service.getKeyConfig(
+      employee,
+      "key-1",
+      "qr-frames",
+      false,
+    );
+
+    expect(result.format).toBe("qr-frames");
+    expect(result.contentType).toBe("application/json; charset=utf-8");
+    expect(result.filename).toBeUndefined();
+    const parsed = JSON.parse(String(result.body)) as {
+      total: number;
+      frames: string[];
+    };
+    expect(parsed.total).toBe(parsed.frames.length);
+    expect(parsed.total).toBeGreaterThanOrEqual(1);
+    for (const frame of parsed.frames) {
+      expect(frame).toContain("<svg");
+      expect(frame).toContain('shape-rendering="crispEdges"');
+    }
+  });
+});
+
+// Chunking removes the capacity limit that makes `qr` and `qr-svg` refuse a
+// split-tunnel config, so `qr-frames` would otherwise answer a whitelist key
+// with dozens of codes where every other QR format gives it a 422. Pinned
+// because the failure is silent: a valid, useless response.
+describe("the AmneziaVPN series refuses a config nobody could scan", () => {
+  it("returns 422 rather than dozens of frames", async () => {
+    const repository = createRepository();
+    // ~20 KB of payload: 24 frames at the client's 850-byte chunk size, which
+    // is the scale a real whitelist config reaches.
+    const huge = encryptSecret(
+      `vpn://${"A".repeat(28000)}`,
+      keyring,
+      1,
+    );
+    vi.mocked(repository.findKeyConfig).mockResolvedValue({
+      id: "key-1",
+      ownerId: employee.id,
+      deviceLabel: "phone",
+      encrypted: huge,
+      policy: defaultPortalPolicy,
+      routeProfile: "full_tunnel" as const,
+      keyNumber: 3,
+      nodeDisplayName: "Frankfurt",
+      nameDisplay: { server: true, label: true, number: false },
+      appliedRuleVersionId: null,
+      activeRule: null,
+      customRoutes: null,
+    });
+    const service = createDefaultControlApiService({ repository, keyring });
+
+    await expect(
+      service.getKeyConfig(employee, "key-1", "qr-frames", false),
+    ).rejects.toEqual(
+      expect.objectContaining({ statusCode: 422, code: "QR_TOO_LARGE" }),
+    );
   });
 });

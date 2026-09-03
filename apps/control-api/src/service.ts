@@ -51,7 +51,22 @@ export type KeyView = {
   traffic?: { receivedBytes: string; sentBytes: string };
 };
 
-export type ConfigFormat = "vpn" | "conf" | "qr";
+/**
+ * Three QR containers, for two different scanners:
+ * - `qr-frames` the config in AmneziaVPN's own chunk envelope — the only thing
+ *               the client's in-app "scan QR" button can read, and the format
+ *               this panel ships for it.
+ *               JSON: { total: number; frames: string[] } of SVG strings;
+ * - `qr-svg`    the single-frame `vpn://` link, resolution-independent, for
+ *               display — the panel is normally open on a PC monitor or a
+ *               laptop and the code is scanned with a phone camera, so the
+ *               displayed symbol has to survive being enlarged to most of the
+ *               screen. A camera app cannot read `qr-frames` at all, so this
+ *               stays supported rather than being superseded by it;
+ * - `qr`        the same single-frame link as a downloadable PNG.
+ * All three are gated by the same `allowQrDownload` policy flag.
+ */
+export type ConfigFormat = "vpn" | "conf" | "qr" | "qr-svg" | "qr-frames";
 
 export type ConfigResult = {
   format: ConfigFormat;

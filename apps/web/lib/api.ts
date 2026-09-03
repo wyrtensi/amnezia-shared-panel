@@ -35,5 +35,8 @@ export const apiRequest = async <T>(
   return response.json() as Promise<T>;
 };
 
-export const configUrl = (keyId: string, format: "vpn" | "conf" | "qr") =>
+export const configUrl = (
+  keyId: string,
+  format: "vpn" | "conf" | "qr" | "qr-svg" | "qr-frames",
+) =>
   `/api/control/api/keys/${encodeURIComponent(keyId)}/config?format=${format}`;
