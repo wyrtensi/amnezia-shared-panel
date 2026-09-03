@@ -74,7 +74,10 @@ export function OptionCards<T extends string>({
               {option.icon ? (
                 <span
                   className={cn(
-                    "flex h-9 w-9 shrink-0 items-center justify-center rounded-lg [&_svg]:size-5",
+                    // The glyph carries the recognition here (the platform marks), so it gets
+                    // most of the tile: 24px inside 40px leaves an 8px ring, which is
+                    // the largest the mark can go before it crowds the rounded corners.
+                    "flex h-10 w-10 shrink-0 items-center justify-center rounded-lg [&_svg]:size-6",
                     selected
                       ? "bg-primary/15 text-primary"
                       : "bg-muted text-muted-foreground group-hover:text-foreground",
