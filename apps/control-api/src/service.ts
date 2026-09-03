@@ -73,6 +73,14 @@ export type ConfigResult = {
   contentType: string;
   body: string | Buffer;
   filename?: string;
+  /**
+   * How the symbol was actually drawn, for the QR formats. Reported on the
+   * response so `amnezia-panel key-config` can answer "the QR does not scan"
+   * with the numbers that decide it -- the error-correction level and the module
+   * count are what set how many camera pixels land on each module -- instead of
+   * an operator having to reason about it from the payload.
+   */
+  qrParams?: { errorCorrectionLevel: string; modules: number; scale: number };
 };
 
 export interface ControlApiService {

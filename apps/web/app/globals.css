@@ -21,7 +21,8 @@
   --radius: 0.875rem;
 
   --background: #f4e9d7;
-  --foreground: #2b231c;
+  --light-foreground: #2b231c;
+  --foreground: var(--light-foreground);
 
   --card: #fffdf8;
   --card-foreground: #2b231c;
@@ -29,17 +30,21 @@
   --popover: #fffdf8;
   --popover-foreground: #2b231c;
 
-  --primary: #cc7328;
+  --light-primary: #cc7328;
+  --primary: var(--light-primary);
   --primary-foreground: #fffaf2;
 
   --secondary: #eee0c8;
   --secondary-foreground: #3a2f24;
 
   --muted: #ece0ca;
-  --muted-foreground: #635648;
+  --light-muted-foreground: #635648;
+  --muted-foreground: var(--light-muted-foreground);
 
-  --accent: #e4eedd;
-  --accent-foreground: #3d5636;
+  --light-accent: #e4eedd;
+  --accent: var(--light-accent);
+  --light-accent-foreground: #3d5636;
+  --accent-foreground: var(--light-accent-foreground);
 
   --destructive: #cf5236;
   --destructive-foreground: #fffaf2;
@@ -50,7 +55,8 @@
   --warning: #d9871f;
   --warning-foreground: #40300f;
 
-  --border: #e3d1b1;
+  --light-border: #e3d1b1;
+  --border: var(--light-border);
   --input: #d6c2a0;
   --ring: #cc7328;
 
@@ -129,6 +135,23 @@
   --sidebar-ring: #f0a24e;
 
   --header-gradient: linear-gradient(120deg, #f0a24e 0%, #3fbfa6 120%);
+}
+
+/*
+ * A surface that is white in both themes -- the full-screen QR, which must stay
+ * black on white for any scanner. Controls reused there resolve --border,
+ * --muted-foreground and --primary from the dark theme and render light on
+ * white, which is how the frame counter and mode switch became unreadable. Pin
+ * the light values for the subtree rather than giving every shared control a
+ * second colour variant, which would drift the moment one of them changed.
+ */
+.on-light-surface {
+  --foreground: var(--light-foreground);
+  --muted-foreground: var(--light-muted-foreground);
+  --primary: var(--light-primary);
+  --accent: var(--light-accent);
+  --accent-foreground: var(--light-accent-foreground);
+  --border: var(--light-border);
 }
 
 @theme inline {

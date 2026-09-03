@@ -188,6 +188,15 @@ export const buildApp = async ({
     reply.header("pragma", "no-cache");
     reply.header("x-content-type-options", "nosniff");
     reply.type(result.contentType);
+    if (result.qrParams) {
+      // How the symbol was actually drawn. `amnezia-panel key-config` prints
+      // these so a "the QR does not scan" report carries the numbers that
+      // decide it -- the level and the module count set how many camera pixels
+      // land on each module -- instead of an operator inferring them.
+      reply.header("x-qr-ecc", result.qrParams.errorCorrectionLevel);
+      reply.header("x-qr-modules", String(result.qrParams.modules));
+      reply.header("x-qr-scale", String(result.qrParams.scale));
+    }
     if (result.filename) {
       reply.header(
         "content-disposition",

@@ -627,8 +627,12 @@ export function ConfigDownloadDialog({
                     className="block aspect-square max-h-full max-w-full"
                   />
                 </div>
-                {/* The single chrome row the 86vh budget assumes. */}
-                <div className="flex w-full shrink-0 flex-wrap items-center justify-center gap-3 px-12">
+                {/* The single chrome row the 86vh budget assumes.
+                    `on-light-surface` because this row is on the permanent white
+                    of the overlay while the page may be in dark mode: the shared
+                    frame controls resolve their colours from theme tokens and
+                    would otherwise render light on white. */}
+                <div className="on-light-surface flex w-full shrink-0 flex-wrap items-center justify-center gap-3 px-12">
                   {frameControls}
                   <input
                     type="range"

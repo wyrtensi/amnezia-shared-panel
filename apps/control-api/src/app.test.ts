@@ -210,6 +210,50 @@ describe("control API authorization", () => {
     await app.close();
   });
 
+  // `amnezia-panel key-config` prints these to answer "the QR does not scan".
+  // It degrades silently when they are absent -- which is exactly what happened
+  // while they were specified but never emitted -- so the route pins them.
+  it("reports how the symbol was drawn", async () => {
+    const service = createService();
+    vi.mocked(service.getKeyConfig).mockResolvedValue({
+      format: "qr-svg",
+      contentType: "image/svg+xml; charset=utf-8",
+      body: "<svg/>",
+      qrParams: { errorCorrectionLevel: "L", modules: 113, scale: 8 },
+    });
+    const app = await buildApp({ service, environment: "development" });
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/keys/0b48cc4c-404b-47a6-af28-4cf15f305e30/config?format=qr-svg",
+      headers: { "x-dev-user-email": user.email },
+    });
+
+    expect(response.headers["x-qr-ecc"]).toBe("L");
+    expect(response.headers["x-qr-modules"]).toBe("113");
+    expect(response.headers["x-qr-scale"]).toBe("8");
+    await app.close();
+  });
+
+  it("omits the QR parameter headers for a non-QR format", async () => {
+    const service = createService();
+    vi.mocked(service.getKeyConfig).mockResolvedValue({
+      format: "vpn",
+      contentType: "text/plain; charset=utf-8",
+      body: "vpn://x",
+    });
+    const app = await buildApp({ service, environment: "development" });
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/keys/0b48cc4c-404b-47a6-af28-4cf15f305e30/config?format=vpn",
+      headers: { "x-dev-user-email": user.email },
+    });
+
+    expect(response.headers["x-qr-ecc"]).toBeUndefined();
+    await app.close();
+  });
+
   it("accepts qr-svg as a config format", async () => {
     const service = createService();
     vi.mocked(service.getKeyConfig).mockResolvedValue({
