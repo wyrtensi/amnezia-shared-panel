@@ -162,6 +162,7 @@ via `CONTROL_API_URL` plus one of, in priority order:
 | Command | Purpose |
 | --- | --- |
 | `key-revoke <id>` · `key-disable <id>` · `key-enable <id>` | Key lifecycle |
+| `key-config <id> [--format=vpn\|conf\|qr\|qr-svg\|qr-frames] [--out=<path>] [--confirm]` | Download one key's config. `vpn` (default) and `conf` print to stdout; `qr` writes the PNG a user downloads (to `<id>.png` unless `--out` is given), `qr-svg` the SVG the panel displays, and `qr-frames` the AmneziaVPN-format series as `<id>.frame-N.svg`. `--confirm` is required to read a key you do not own, and is audited as `vpn_key.private_config_viewed` |
 | `node-add --name= --api-url= --api-key-file=<path\|-> [--public-name=] [--protocol=awg3] [--max-peers=N] [--enabled-protocols=awg3,awg2] [--disabled]` | Register a node. `--api-key-file=-` reads the key from stdin; the legacy `--api-key=<key>` still works but exposes the key in `ps` and shell history |
 | `node-update <id> --<field>=<value> …` | Edit a node (name, api-url, api-key-file (or api-key), public-name, protocol, max-peers, enabled, enabled-protocols) |
 | `node-remove <id>` | Delete a node. Refused with `409 NODE_HAS_KEYS` while it still has keys (revoked ones count) — disable it, or use the form below |
@@ -173,6 +174,56 @@ via `CONTROL_API_URL` plus one of, in priority order:
 | `cf-token <token>` · `cf-token --token-file=<path\|->` | Store the Cloudflare API token (encrypted at rest). Prefer the file/stdin form: a token passed as an argument is visible in `ps` and in shell history for as long as the process lives |
 | `panel-update [--status] [--json]` | Trigger the in-panel update (backup → pull → migrate → restart), or show its status. `--status` prints a readable line — the pending request, and whether the last host run finished `ok` or `FAILED` with its reason; `--status --json` returns the raw status object unchanged |
 | `client-releases --refresh` | Discard the cached release snapshot and resolve it again now (admin only). The panel otherwise re-checks every 6 hours after a success, and every 15 minutes after a failure — use this after restoring egress on a host that was serving the offline fallback |
+
+**Two QR codes, two scanners.** The panel offers a different code depending on
+what the user will point at the screen, because the two scanners do not read the
+same thing:
+
+- **AmneziaVPN's own "scan QR" button** does not read a `vpn://` URL at all. It
+  expects the app's own frame format — a base64url blob behind an 8-byte header
+  with a magic number — and silently ignores anything else, however large and
+  sharp it is. That is `--format=qr-frames`, and it is the format the panel now
+  ships for that scanner. A series of more than one frame is shown in the panel
+  in one of two modes, animated or static.
+- **An ordinary camera app** reads the QR as text, sees the `vpn://…` URL and
+  hands it to the OS, which opens AmneziaVPN. That is `--format=qr` (PNG, for
+  download) and `--format=qr-svg` (what the panel displays). A camera app cannot
+  read `qr-frames` at all, so these stay fully supported and the config dialog
+  opens on the camera code by default.
+
+**Reproducing a "the QR does not scan" report.** First establish *which* scanner
+the person used, because the two failures have nothing in common.
+
+```sh
+# what a camera app sees
+amnezia-panel key-config <key-id> --format=qr --out=/tmp/key.png --confirm
+amnezia-panel key-config <key-id> --format=qr-svg --confirm > /tmp/key.svg
+
+# what the AmneziaVPN app's own scanner sees
+amnezia-panel key-config <key-id> --format=qr-frames --out=/tmp/key --confirm
+```
+
+If a code will not scan **with a camera app** off a monitor or a laptop screen,
+it is an optical problem: the first thing to try is the full-screen button in the
+config dialog, which sizes the symbol against the viewport rather than a fixed
+pixel width and therefore survives a high-DPI display. The panel also picks the
+error-correction level from the payload's measured symbol size, so a long
+full-tunnel key gets a sparser, larger-module code than a short one. Changing
+that level never changes the config itself — only how much redundancy is packed
+around it. The inline code is large enough on coarse-pitch screens (a 1366×768
+laptop, a 24″ 1080p monitor); on a 13″ 1080p laptop with OS scaling turned off,
+or on any unscaled high-DPI monitor, the full-screen view is not optional.
+
+If a code will not scan **from inside the AmneziaVPN app**, size is irrelevant:
+check that the person is looking at the "AmneziaVPN app" code and not the camera
+one — the dialog opens on the camera code.
+
+The QR is offered only for keys with the `full_tunnel` route profile.
+Whitelist/blacklist profiles carry thousands of routes and are refused with
+`422 QR_TOO_LARGE` for all three QR formats — that is expected, not a fault; the
+CLI prints the refusal as one line and you should use `--format=conf`. The frame
+series is capped the same way: a config that would need more than eight frames is
+refused rather than handed over, because nobody scans eight codes.
 
 **Co-located production example** — run inside the control-api container, which already
 carries `PANEL_IDENTITY_SECRET` + `BOOTSTRAP_ADMIN_EMAILS`:

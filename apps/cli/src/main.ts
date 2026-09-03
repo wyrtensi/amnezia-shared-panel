@@ -13,6 +13,8 @@
  *   CONTROL_API_URL (default http://127.0.0.1:3001)
  */
 
+import { writeFile } from "node:fs/promises";
+
 import {
   keyNeedsRouteProfileWarning,
   routeProfileWarning,
@@ -35,6 +37,15 @@ import {
   parseNodeSpec,
 } from "./args.js";
 import type { UpdateStatusView } from "./args.js";
+import {
+  CLI_CONFIG_FORMATS,
+  configFrameName,
+  configOutputName,
+  confirmedFromArgs,
+  configRequestPath,
+  formatQrParams,
+  type CliConfigFormat,
+} from "./configPath.js";
 import {
   CLIENT_RELEASE_COLUMNS,
   clientReleaseRows,
@@ -63,6 +74,54 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
     throw new Error(`HTTP ${res.status} ${res.statusText} — ${body.slice(0, 400)}`);
   }
   return (body ? JSON.parse(body) : undefined) as T;
+}
+
+/**
+ * Turn a failed response body into a line an operator can act on. The API
+ * answers errors as `{ error, message }`, and the one this command hits most is
+ * `422 QR_TOO_LARGE` — a routine, expected answer for a split-tunnel key, not a
+ * malfunction. Printing the raw JSON envelope for it would read like a crash.
+ */
+function describeApiError(status: number, statusText: string, body: string): string {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(body) as unknown;
+  } catch {
+    return `HTTP ${status} ${statusText} — ${body.slice(0, 400)}`;
+  }
+  const { error, message } = (parsed ?? {}) as {
+    error?: unknown;
+    message?: unknown;
+  };
+  const code = typeof error === "string" ? error : undefined;
+  const detail = typeof message === "string" ? message : undefined;
+  if (!code && !detail) {
+    return `HTTP ${status} ${statusText} — ${body.slice(0, 400)}`;
+  }
+  const head = `${code ?? `HTTP ${status}`}: ${detail ?? statusText}`;
+  return code === "QR_TOO_LARGE"
+    ? `${head}\nThis key's route profile carries too many routes to fit a scannable code. Use --format=conf.`
+    : head;
+}
+
+/**
+ * Fetch a non-JSON response body. `api()` parses JSON, which would corrupt a
+ * PNG; this is the raw-bytes path used by `key-config`. The headers come back
+ * with the body because the QR formats carry the chosen render parameters there.
+ */
+async function apiRaw(
+  path: string,
+): Promise<{ body: Buffer; headers: Headers }> {
+  const res = await fetch(`${API}${path}`, {
+    headers: buildRequestHeaders(undefined, authHeaders()),
+  });
+  const body = Buffer.from(await res.arrayBuffer());
+  if (!res.ok) {
+    throw new Error(
+      describeApiError(res.status, res.statusText, body.toString("utf8")),
+    );
+  }
+  return { body, headers: res.headers };
 }
 
 const BYTE_UNITS = ["B", "KB", "MB", "GB", "TB", "PB"];
@@ -844,6 +903,59 @@ async function cmdUserCreateKey(args: string[]): Promise<void> {
   console.log(`key created for ${pos[0]}: ${result?.id ?? "(ok)"}`);
 }
 
+/**
+ * Download one key's config. `--format=qr` writes the exact PNG a user is shown
+ * for download, `--format=qr-svg` the exact SVG the panel displays to a camera
+ * app, and `--format=qr-frames` the AmneziaVPN-format series the app's own
+ * scanner reads — so either half of a "the QR does not scan" report can be
+ * reproduced from a shell.
+ */
+async function cmdKeyConfig(args: string[]): Promise<void> {
+  const usageText =
+    "Usage: key-config <key-id> [--format=vpn|conf|qr|qr-svg|qr-frames] [--out=<path>] [--confirm]";
+  const [keyId] = positionals(args);
+  if (!keyId) throw new Error(usageText);
+  const rawFormat = flagOf(args, "format") ?? "vpn";
+  const format = CLI_CONFIG_FORMATS.find(
+    (candidate): candidate is CliConfigFormat => candidate === rawFormat,
+  );
+  if (!format) throw new Error(usageText);
+  const { body, headers } = await apiRaw(
+    configRequestPath(keyId, format, confirmedFromArgs(args)),
+  );
+  // stderr, so `key-config --format=qr-svg > key.svg` still pipes cleanly.
+  const params = formatQrParams(headers);
+  if (params) console.error(`qr params: ${params}`);
+
+  if (format === "qr-frames") {
+    const parsed = JSON.parse(body.toString("utf8")) as {
+      total: number;
+      frames: string[];
+    };
+    // Frames are only useful as separate images, so `--out` names the stem.
+    const base = (flagOf(args, "out") ?? keyId).replace(/\.svg$/i, "");
+    for (const [index, frame] of parsed.frames.entries()) {
+      const name = configFrameName(base, index);
+      await writeFile(name, frame, "utf8");
+      console.log(`${name} (${Buffer.byteLength(frame)} bytes)`);
+    }
+    console.log(`${parsed.total} frame(s) — readable only by the AmneziaVPN app`);
+    return;
+  }
+
+  // Only `qr` gets a default file name: its bytes are binary and would be
+  // mangled by a terminal. The text formats print, so they stay pipeable.
+  const out =
+    flagOf(args, "out") ??
+    (format === "qr" ? configOutputName(keyId, format) : undefined);
+  if (out) {
+    await writeFile(out, body);
+    console.log(`${out} (${body.length} bytes)`);
+    return;
+  }
+  console.log(body.toString("utf8"));
+}
+
 /** Parse a `--flag=true|false` value, rejecting anything else. */
 function parseBoolFlag(name: string, value: string): boolean {
   if (value === "true") return true;
@@ -1034,6 +1146,12 @@ Nodes:
 Write:
   key-revoke <id>                         Revoke a key
   key-disable <id> / key-enable <id>      Disable / enable a key
+  key-config <id> [--format=vpn|conf|qr|qr-svg|qr-frames]
+             [--out=<path>] [--confirm]   Download a key's config. --format=qr writes a
+                                          PNG (defaults to <id>.png unless --out is given);
+                                          --format=qr-frames writes <id>.frame-N.svg, which
+                                          only the AmneziaVPN app can read;
+                                          --confirm is required to read another user's key
   cf-token --token-file=<path|->          Store the Cloudflare API token (encrypted).
                                           cf-token <token> still works but lands in
                                           ps/history
@@ -1140,6 +1258,8 @@ async function main(): Promise<void> {
       return cmdAction("keys", "disable", args);
     case "key-enable":
       return cmdAction("keys", "enable", args);
+    case "key-config":
+      return cmdKeyConfig(args);
     case "cf-token":
       return cmdCfToken(args);
     case "cf-config":

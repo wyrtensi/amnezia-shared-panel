@@ -1,7 +1,19 @@
 "use client";
 
 import * as React from "react";
-import { Check, Copy, Download, QrCode } from "lucide-react";
+import { createPortal } from "react-dom";
+import {
+  Check,
+  ChevronLeft,
+  ChevronRight,
+  Copy,
+  Download,
+  Maximize2,
+  Pause,
+  Play,
+  QrCode,
+  X,
+} from "lucide-react";
 import { toast } from "sonner";
 import {
   Dialog,
@@ -25,13 +37,77 @@ export type ConfigTarget = {
   routeProfile: string;
 };
 
-const QR_SIZES = { s: 220, m: 320, l: 460 } as const;
-type QrSize = keyof typeof QR_SIZES;
-const QR_SIZE_LABEL: Record<QrSize, string> = {
-  s: "config.qrSmall",
-  m: "config.qrMedium",
-  l: "config.qrLarge",
-};
+/**
+ * Which scanner the user is holding. `amnezia` serves AmneziaVPN's own chunk
+ * format -- the QR this panel ships, and the only thing the app's in-app
+ * "scan QR" button can read. `camera` serves the single-frame `vpn://` code that
+ * a camera app hands to the OS, which is kept because a camera app cannot read
+ * the chunk format at all. These are different payloads, not two pictures of the
+ * same one, and neither scanner can use the other's.
+ */
+type QrAudience = "camera" | "amnezia";
+
+/** The two display modes for a multi-frame series. */
+type QrFrameMode = "animated" | "static";
+
+// The QR is displayed on a PC monitor or a laptop screen and scanned with a
+// phone camera, so the only thing that reliably decides whether a *camera app*
+// scan succeeds is how many camera pixels land on one module. The old control
+// was three fixed sizes capped at 460 px, which did not even fit the dialog's
+// 464 px content box and shrank further on a high-DPI screen. It is replaced by
+// one continuous slider, expressed as a percentage of whatever box the code is
+// in, plus a full-screen view whose size is viewport-relative and therefore
+// independent of OS scaling.
+const QR_MIN_ZOOM = 40;
+const QR_MAX_ZOOM = 100;
+/** Widest the inline code may get: the dialog content box is 464 px. */
+const QR_DIALOG_MAX_PX = 440;
+/**
+ * Full-screen size. Height binds on every 16:9 screen (96vw never does), and a
+ * 1366x768 laptop leaves only ~625 CSS px of viewport once the OS taskbar and
+ * the browser chrome are gone -- so each point of vh is worth about 1 % of
+ * camera pixels per module. 86vh is as much as can be taken while one 64 px row
+ * of controls still fits: 0.86 * 625 + 64 + padding = 618 of 625. The image also
+ * carries `max-h-full` inside a `flex-1 min-h-0` region, so if the controls ever
+ * grow the code shrinks instead of them scrolling off screen.
+ */
+const QR_FULLSCREEN_BOX = "min(96vw, 86vh)";
+/**
+ * One frame per 1.5 s in animated mode. The production payload is at most two
+ * frames, so a full cycle is 3 s and speed buys nothing, while a slow rate stops
+ * the camera catching a mid-transition composite and gives the scanner time to
+ * lock on.
+ */
+const QR_FRAME_INTERVAL_MS = 1500;
+
+/**
+ * Which code the dialog opens on.
+ *
+ * "camera" on purpose, even though the AmneziaVPN envelope is the format this
+ * panel ships. Pointing a phone camera at a QR on a screen is reflexive, and the
+ * Amnezia code is *invisible* to a camera app -- no error, no scheme, no
+ * feedback -- so it must not be what an unthinking camera meets. The camera code
+ * is also the one with a positive field report, while the Amnezia code's fix is
+ * inferred from this repo's port of the client's format. Both codes are one
+ * labelled click apart in either direction, so neither user is stuck.
+ *
+ * This constant is also the restore knob: flipping it is the entire cost of
+ * changing which code the dialog leads with, and it needs a rebuild of this app
+ * and nothing else in the system.
+ */
+const QR_DEFAULT_AUDIENCE: QrAudience = "camera";
+
+/**
+ * Which mode a multi-frame series opens in. "animated" on purpose: a user who
+ * touches nothing must still be shown every frame, because the app's scanner
+ * needs all of them, and a still first frame that never advances is a silent
+ * dead end for someone who has not noticed there is a second one. "static" is
+ * one click away for a scanner that keeps missing a frame.
+ */
+const QR_DEFAULT_FRAME_MODE: QrFrameMode = "animated";
+
+const frameSrc = (svg: string): string =>
+  `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
 
 export function ConfigDownloadDialog({
   target,
@@ -47,7 +123,15 @@ export function ConfigDownloadDialog({
   const [loading, setLoading] = React.useState(false);
   const [failed, setFailed] = React.useState(false);
   const [copied, setCopied] = React.useState(false);
-  const [qrSize, setQrSize] = React.useState<QrSize>("m");
+  const [qrZoom, setQrZoom] = React.useState(QR_MAX_ZOOM);
+  const [zoomed, setZoomed] = React.useState(false);
+  const [qrFor, setQrFor] = React.useState<QrAudience>(QR_DEFAULT_AUDIENCE);
+  const [frames, setFrames] = React.useState<string[] | null>(null);
+  const [framesError, setFramesError] = React.useState(false);
+  const [frameAttempt, setFrameAttempt] = React.useState(0);
+  const [frameIndex, setFrameIndex] = React.useState(0);
+  const [frameMode, setFrameMode] =
+    React.useState<QrFrameMode>(QR_DEFAULT_FRAME_MODE);
 
   React.useEffect(() => {
     if (!target) return;
@@ -55,7 +139,13 @@ export function ConfigDownloadDialog({
     setVpnLink(null);
     setFailed(false);
     setCopied(false);
-    setQrSize("m");
+    setQrZoom(QR_MAX_ZOOM);
+    setZoomed(false);
+    setQrFor(QR_DEFAULT_AUDIENCE);
+    setFrames(null);
+    setFramesError(false);
+    setFrameIndex(0);
+    setFrameMode(QR_DEFAULT_FRAME_MODE);
     setLoading(true);
     void (async () => {
       try {
@@ -73,6 +163,151 @@ export function ConfigDownloadDialog({
       active = false;
     };
   }, [target]);
+
+  // The frame series is fetched only when the user actually asks for the
+  // AmneziaVPN code, because it is several rendered SVGs. Only a *successful*
+  // fetch is final: a failure leaves `frames` null, so switching back to this
+  // tab or pressing retry tries again. `frameAttempt` is in the dependency list
+  // solely as the retry trigger — nothing else changes when retry is pressed.
+  React.useEffect(() => {
+    if (!target || qrFor !== "amnezia" || frames) return;
+    let active = true;
+    void (async () => {
+      try {
+        const res = await fetch(configUrl(target.id, "qr-frames"));
+        if (!res.ok) throw new Error("failed");
+        const payload = (await res.json()) as { total: number; frames: string[] };
+        if (!active) return;
+        setFrames(payload.frames);
+        setFrameIndex(0);
+        setFramesError(false);
+      } catch {
+        if (active) setFramesError(true);
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, [target, qrFor, frames, frameAttempt]);
+
+  // Only the animated mode ticks. A single-frame series is a still picture in
+  // either mode, so nothing animates and no mode switch is rendered for it.
+  React.useEffect(() => {
+    if (
+      qrFor !== "amnezia" ||
+      !frames ||
+      frames.length < 2 ||
+      frameMode !== "animated"
+    ) {
+      return;
+    }
+    const timer = window.setInterval(
+      () => setFrameIndex((index) => (index + 1) % frames.length),
+      QR_FRAME_INTERVAL_MS,
+    );
+    return () => window.clearInterval(timer);
+  }, [qrFor, frames, frameMode]);
+
+  const currentFrame =
+    frames && frames.length > 0 ? frames[frameIndex % frames.length] : undefined;
+  const qrSrc = !target
+    ? null
+    : qrFor === "camera"
+      ? configUrl(target.id, "qr-svg")
+      : currentFrame
+        ? frameSrc(currentFrame)
+        : null;
+
+  // A one-frame series is a still picture: no modes, no stepping, no dots.
+  const frameCount = qrFor === "amnezia" && frames ? frames.length : 0;
+  const showFrameControls = frameCount > 1;
+
+  const stepFrame = (delta: number): void => {
+    if (frameCount === 0) return;
+    // Stepping is a statement of intent, so it drops out of animation.
+    setFrameMode("static");
+    setFrameIndex((index) => (index + delta + frameCount) % frameCount);
+  };
+
+  /*
+    Built once and rendered in BOTH the dialog and the full-screen overlay, so
+    the two cannot drift apart. Everything is on one line on purpose: in the
+    overlay this is the single 64 px row the 86vh sizing budget assumes, and on a
+    1366x768 laptop a stacked version costs ~90 px more, which is the difference
+    between a code above and below the camera's decode floor.
+
+    The mode switch is a labelled two-button control, not a play/pause toggle:
+    the operator asked for two modes, and a mode you can read off the screen is
+    what that means.
+  */
+  const frameControls = showFrameControls ? (
+    <div className="flex flex-wrap items-center justify-center gap-2">
+      <button
+        type="button"
+        onClick={() => stepFrame(-1)}
+        aria-label={t("config.qrFramePrev")}
+        className="flex h-8 w-8 items-center justify-center rounded-md border border-border text-muted-foreground hover:bg-accent"
+      >
+        <ChevronLeft className="h-4 w-4" />
+      </button>
+      <div
+        role="group"
+        aria-label={t("config.qrFrameModeAria")}
+        className="flex items-center gap-1 rounded-md border border-border p-0.5"
+      >
+        {(["animated", "static"] as const).map((mode) => (
+          <button
+            key={mode}
+            type="button"
+            onClick={() => setFrameMode(mode)}
+            aria-pressed={frameMode === mode}
+            className={cn(
+              "flex items-center gap-1 rounded px-2 py-1 text-xs font-medium transition-colors",
+              frameMode === mode
+                ? "bg-primary/10 text-primary"
+                : "text-muted-foreground hover:bg-accent",
+            )}
+          >
+            {mode === "animated" ? (
+              <Play className="h-3 w-3" />
+            ) : (
+              <Pause className="h-3 w-3" />
+            )}
+            {t(
+              mode === "animated"
+                ? "config.qrFrameModeAnimated"
+                : "config.qrFrameModeStatic",
+            )}
+          </button>
+        ))}
+      </div>
+      <button
+        type="button"
+        onClick={() => stepFrame(1)}
+        aria-label={t("config.qrFrameNext")}
+        className="flex h-8 w-8 items-center justify-center rounded-md border border-border text-muted-foreground hover:bg-accent"
+      >
+        <ChevronRight className="h-4 w-4" />
+      </button>
+      <span className="text-xs text-muted-foreground">
+        {t("config.qrFrameCounter", {
+          current: String((frameIndex % frameCount) + 1),
+          total: String(frameCount),
+        })}
+      </span>
+      <div className="flex items-center gap-1">
+        {Array.from({ length: frameCount }, (_, index) => (
+          <span
+            key={index}
+            className={cn(
+              "h-1.5 w-1.5 rounded-full",
+              index === frameIndex % frameCount ? "bg-primary" : "bg-border",
+            )}
+          />
+        ))}
+      </div>
+    </div>
+  ) : null;
 
   const copy = async () => {
     if (!vpnLink) return;
@@ -150,54 +385,181 @@ export function ConfigDownloadDialog({
                 </div>
               ) : (
               <div className="space-y-2">
-                <div className="flex items-center justify-between">
-                  <Label>{t("config.qr")}</Label>
-                  <div
-                    className="flex items-center gap-1"
-                    role="group"
-                    aria-label={t("config.qrSizeAria")}
+                <div className="flex items-center justify-between gap-3">
+                  <Label htmlFor="qr-zoom">{t("config.qr")}</Label>
+                  <div className="flex items-center gap-2">
+                    <input
+                      id="qr-zoom"
+                      type="range"
+                      min={QR_MIN_ZOOM}
+                      max={QR_MAX_ZOOM}
+                      step={5}
+                      value={qrZoom}
+                      onChange={(event) => setQrZoom(Number(event.target.value))}
+                      aria-label={t("config.qrZoom")}
+                      className="h-7 w-28 cursor-pointer accent-primary"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setZoomed(true)}
+                      aria-label={t("config.qrMaximize")}
+                      className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-border text-muted-foreground transition-colors hover:bg-accent"
+                    >
+                      <Maximize2 className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                </div>
+
+                {/*
+                  Two scanners, two payloads. The choice is labelled by the tool
+                  the user is holding, never by the format: a camera app reads
+                  the `vpn://` URL, while AmneziaVPN's in-app scanner reads only
+                  its own chunk envelope and ignores a `vpn://` symbol entirely,
+                  however large and crisp it is. Only one code is ever shown, so
+                  nobody points a camera at the wrong one.
+
+                  The legend is VISIBLE, not just an aria-label: the user has to
+                  pick a tool before looking at a code, otherwise they discover
+                  the mismatch only by pointing something at a symbol it cannot
+                  read and getting silence back.
+                */}
+                <div className="space-y-1">
+                  <span
+                    id="qr-audience-label"
+                    className="block text-xs font-medium text-muted-foreground"
                   >
-                    {(Object.keys(QR_SIZES) as QrSize[]).map((size, index) => (
+                    {t("config.qrAudienceLabel")}
+                  </span>
+                  <div
+                    role="group"
+                    aria-labelledby="qr-audience-label"
+                    className="grid grid-cols-2 gap-1 rounded-lg border border-border p-1"
+                  >
+                    {(["camera", "amnezia"] as const).map((audience) => (
                       <button
-                        key={size}
+                        key={audience}
                         type="button"
-                        onClick={() => setQrSize(size)}
-                        aria-label={t("config.qrSizeItemAria", {
-                          size: t(QR_SIZE_LABEL[size]),
-                        })}
-                        aria-pressed={qrSize === size}
+                        onClick={() => setQrFor(audience)}
+                        aria-pressed={qrFor === audience}
                         className={cn(
-                          "flex h-7 w-7 items-center justify-center rounded-md border transition-colors",
-                          qrSize === size
-                            ? "border-primary bg-primary/10 text-primary"
-                            : "border-border text-muted-foreground hover:bg-accent",
+                          "rounded-md px-2 py-1 text-xs font-medium transition-colors",
+                          qrFor === audience
+                            ? "bg-primary/10 text-primary"
+                            : "text-muted-foreground hover:bg-accent",
                         )}
                       >
-                        <span
-                          className="rounded-[2px] bg-current"
-                          style={{
-                            width: 6 + index * 3,
-                            height: 6 + index * 3,
-                          }}
-                        />
+                        {t(
+                          audience === "camera"
+                            ? "config.qrForCamera"
+                            : "config.qrForApp",
+                        )}
                       </button>
                     ))}
                   </div>
                 </div>
-                <div className="mx-auto w-fit rounded-xl border bg-white p-3 shadow-sm">
-                  <img
-                    src={configUrl(target.id, "qr")}
-                    alt={t("config.qrAlt")}
-                    style={{
-                      width: `min(${QR_SIZES[qrSize]}px, 82vw)`,
-                      height: "auto",
-                    }}
-                    className="block aspect-square"
-                  />
+
+                {qrFor === "amnezia" ? (
+                  // Permanent and non-dismissible on purpose: this code is
+                  // unreadable by anything but the AmneziaVPN app, and that has
+                  // to be visible in the same glance as the code itself.
+                  <p className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-center text-xs text-amber-900">
+                    {t("config.qrAppWarning")}
+                  </p>
+                ) : null}
+
+                {/*
+                  `bg-white` is a hard-coded literal on purpose, not a theme
+                  token: an inverted or tinted QR fails on many scanners, and
+                  the panel has a dark mode. The padding is the outer half of
+                  the quiet zone. The width is computed rather than clamped with
+                  `min()` so the top of the slider is not a dead zone.
+                */}
+                <div
+                  className="mx-auto rounded-xl border bg-white p-3 shadow-sm"
+                  style={{
+                    width: `calc(${qrZoom} * min(100%, ${QR_DIALOG_MAX_PX}px) / 100)`,
+                  }}
+                >
+                  {qrSrc ? (
+                    <button
+                      type="button"
+                      onClick={() => setZoomed(true)}
+                      aria-label={t("config.qrMaximize")}
+                      className="block w-full cursor-zoom-in"
+                    >
+                      {/*
+                        SVG, not PNG: the raster form was generated at 1024 px
+                        and downscaled by CSS, which smeared module edges on a
+                        symbol that was already near the camera's resolution
+                        limit. An SVG carries no intrinsic size, so it is never
+                        resampled at any zoom level.
+                      */}
+                      <img
+                        src={qrSrc}
+                        alt={t("config.qrAlt")}
+                        className="block aspect-square w-full"
+                      />
+                    </button>
+                  ) : framesError ? (
+                    <div className="flex aspect-square w-full flex-col items-center justify-center gap-2 p-2 text-center text-xs text-neutral-700">
+                      <span>{t("config.qrFramesFailed")}</span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setFramesError(false);
+                          setFrameAttempt((attempt) => attempt + 1);
+                        }}
+                        className="rounded-md border border-neutral-300 px-2 py-1"
+                      >
+                        {t("config.qrFramesRetry")}
+                      </button>
+                    </div>
+                  ) : (
+                    <Skeleton className="aspect-square w-full" />
+                  )}
                 </div>
+
+                {showFrameControls ? (
+                  <div className="space-y-1">
+                    {frameControls}
+                    {/*
+                      The standing line says what the CURRENT mode does, so the
+                      two modes read differently at a glance and neither leaves
+                      the user waiting for something that will not happen.
+                    */}
+                    <p className="text-center text-xs text-muted-foreground">
+                      {t(
+                        frameMode === "animated"
+                          ? "config.qrFramesLoop"
+                          : "config.qrFramesManual",
+                      )}
+                    </p>
+                  </div>
+                ) : null}
+
                 <p className="text-center text-xs text-muted-foreground">
-                  {t("config.qrHint")}
+                  {t(qrFor === "camera" ? "config.qrHint" : "config.qrHintApp")}
                 </p>
+                <p className="text-center text-xs text-muted-foreground">
+                  {t("config.qrZoomHint")}
+                </p>
+                {/*
+                  The wrong-tool recovery, permanent and one click: whichever
+                  code is showing, the other tool is named here.
+                */}
+                <button
+                  type="button"
+                  onClick={() =>
+                    setQrFor(qrFor === "camera" ? "amnezia" : "camera")
+                  }
+                  className="mx-auto block text-center text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground"
+                >
+                  {t(
+                    qrFor === "camera"
+                      ? "config.qrSwitchToApp"
+                      : "config.qrSwitchToCamera",
+                  )}
+                </button>
               </div>
               )
             ) : null}
@@ -211,6 +573,86 @@ export function ConfigDownloadDialog({
             ) : null}
           </div>
         ) : null}
+
+        {/*
+          Rendered into document.body: DialogContent carries a translate
+          (components/ui/dialog.tsx:40), which makes it the containing block for
+          `position: fixed` descendants — an inline overlay would be positioned
+          against the dialog, not the viewport.
+
+          The size is `min(96vw, 86vh)` rather than a pixel constant on purpose.
+          A viewport-relative size grows with the screen's CSS resolution, so it
+          stays physically large on a high-DPI panel where a fixed 460 px would
+          shrink to roughly half a millimetre per module. Measured: 806 CSS px on
+          a 1080p laptop and 538 on a 1366x768 one, against the old 460.
+
+          Height is the binding dimension on every 16:9 screen -- 96vw never
+          binds there -- which is why the chrome is ONE row rather than the
+          stacked column an earlier draft had. On a 1366x768 laptop the browser
+          leaves ~625 CSS px of viewport, and ~90 px of stacked chrome was the
+          difference between a code above and below the camera's decode floor.
+          `flex-1 min-h-0` plus `max-h-full` on the image means that if the
+          chrome ever grows anyway (a wrapped warning, a longer translation) the
+          code shrinks instead of the controls scrolling off screen.
+
+          It shows whichever code is currently selected, in whichever display
+          mode is selected, so the AmneziaVPN frames get the same screen the
+          camera code does.
+        */}
+        {zoomed && qrSrc
+          ? createPortal(
+              <div
+                role="dialog"
+                aria-modal="true"
+                aria-label={t("config.qrFullscreen")}
+                onClick={(event) => {
+                  // Only a click on the backdrop itself closes: clicking the
+                  // slider, the frame controls or the code must not dismiss it.
+                  if (event.target === event.currentTarget) setZoomed(false);
+                }}
+                className="fixed inset-0 z-[60] flex flex-col items-center justify-center gap-2 bg-white p-2"
+              >
+                {qrFor === "amnezia" ? (
+                  <p className="max-w-[90vw] shrink-0 text-center text-xs text-neutral-700">
+                    {t("config.qrAppWarning")}
+                  </p>
+                ) : null}
+                <div className="flex min-h-0 w-full flex-1 items-center justify-center">
+                  <img
+                    src={qrSrc}
+                    alt={t("config.qrAlt")}
+                    style={{
+                      width: `calc(${qrZoom} * ${QR_FULLSCREEN_BOX} / 100)`,
+                    }}
+                    className="block aspect-square max-h-full max-w-full"
+                  />
+                </div>
+                {/* The single chrome row the 86vh budget assumes. */}
+                <div className="flex w-full shrink-0 flex-wrap items-center justify-center gap-3 px-12">
+                  {frameControls}
+                  <input
+                    type="range"
+                    min={QR_MIN_ZOOM}
+                    max={QR_MAX_ZOOM}
+                    step={5}
+                    value={qrZoom}
+                    onChange={(event) => setQrZoom(Number(event.target.value))}
+                    aria-label={t("config.qrZoom")}
+                    className="w-48 max-w-[70vw] cursor-pointer accent-neutral-900"
+                  />
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setZoomed(false)}
+                  aria-label={t("common.close")}
+                  className="absolute right-2 top-2 rounded-md border border-neutral-300 bg-white p-2 text-neutral-900"
+                >
+                  <X className="h-5 w-5" />
+                </button>
+              </div>,
+              document.body,
+            )
+          : null}
       </DialogContent>
     </Dialog>
   );

@@ -234,9 +234,6 @@ const ru = {
   "wizard.create": "Создать ключ",
 
   // Config download dialog
-  "config.qrSmall": "маленький",
-  "config.qrMedium": "средний",
-  "config.qrLarge": "большой",
   "config.keyCopied": "Ключ скопирован",
   "config.copyFailed": "Не удалось скопировать",
   "config.title": "Ключ: {label}",
@@ -247,10 +244,36 @@ const ru = {
   "config.done": "Готово",
   "config.copy": "Копировать",
   "config.qr": "QR-код",
-  "config.qrSizeAria": "Размер QR-кода",
-  "config.qrSizeItemAria": "Размер: {size}",
   "config.qrAlt": "QR-код для подключения",
-  "config.qrHint": "Наведите камеру телефона на код",
+  "config.qrHint": "Наведите камеру телефона на код — откроется AmneziaVPN",
+  "config.qrZoom": "Размер QR-кода",
+  "config.qrZoomHint":
+    "Не сканируется? Разверните код на весь экран — и на мониторе, и на экране ноутбука это помогает больше всего.",
+  "config.qrMaximize": "Развернуть код на весь экран",
+  "config.qrFullscreen": "QR-код на весь экран",
+  "config.qrAudienceLabel": "Чем будете сканировать?",
+  "config.qrForCamera": "Камера телефона",
+  "config.qrForApp": "Приложение AmneziaVPN",
+  "config.qrHintApp":
+    "В приложении AmneziaVPN нажмите «Добавить» → «Сканировать QR-код» и наведите камеру на этот код",
+  "config.qrAppWarning":
+    "Этот код понимает только приложение AmneziaVPN. Обычная камера его не откроет.",
+  "config.qrSwitchToApp":
+    "Сканируете из самого приложения AmneziaVPN? Откройте код для приложения",
+  "config.qrSwitchToCamera":
+    "Сканируете обычной камерой телефона? Вернитесь к коду для камеры",
+  "config.qrFrameModeAria": "Режим показа кадров",
+  "config.qrFrameModeAnimated": "Анимация",
+  "config.qrFrameModeStatic": "Статика",
+  "config.qrFramesLoop":
+    "Кадры сменяются сами и повторяются по кругу — держите камеру на коде, пока приложение не соберёт все кадры",
+  "config.qrFramesManual":
+    "Кадр стоит на месте — переключайте кадры стрелками, пока приложение не соберёт все",
+  "config.qrFrameCounter": "Кадр {current} из {total}",
+  "config.qrFramePrev": "Предыдущий кадр",
+  "config.qrFrameNext": "Следующий кадр",
+  "config.qrFramesFailed": "Не удалось загрузить код для приложения",
+  "config.qrFramesRetry": "Попробовать снова",
   "config.qrUnavailableTitle": "QR-код недоступен для этого профиля",
   "config.qrUnavailableBody":
     "В профилях с раздельным туннелированием слишком много маршрутов, чтобы отобразить QR-код. Удобнее всего использовать конфиг-файл выше — скопируйте ключ и вставьте его в вашем клиенте (Добавить → Из строки/файла). Работа ключа на таких профилях не гарантируется.",
@@ -1016,9 +1039,6 @@ const en = {
   "wizard.create": "Create key",
 
   // Config download dialog
-  "config.qrSmall": "small",
-  "config.qrMedium": "medium",
-  "config.qrLarge": "large",
   "config.keyCopied": "Key copied",
   "config.copyFailed": "Failed to copy",
   "config.title": "Key: {label}",
@@ -1029,10 +1049,36 @@ const en = {
   "config.done": "Done",
   "config.copy": "Copy",
   "config.qr": "QR code",
-  "config.qrSizeAria": "QR code size",
-  "config.qrSizeItemAria": "Size: {size}",
   "config.qrAlt": "Connection QR code",
-  "config.qrHint": "Point your phone camera at the code",
+  "config.qrHint": "Point your phone camera at the code — it opens AmneziaVPN",
+  "config.qrZoom": "QR code size",
+  "config.qrZoomHint":
+    "Not scanning? Open the code full screen — on a monitor or a laptop screen that helps most.",
+  "config.qrMaximize": "Show the code full screen",
+  "config.qrFullscreen": "Full-screen QR code",
+  "config.qrAudienceLabel": "What will you scan with?",
+  "config.qrForCamera": "Phone camera",
+  "config.qrForApp": "AmneziaVPN app",
+  "config.qrHintApp":
+    "In the AmneziaVPN app tap Add → Scan QR code, then point it at this code",
+  "config.qrAppWarning":
+    "Only the AmneziaVPN app can read this code. A plain camera app cannot.",
+  "config.qrSwitchToApp":
+    "Scanning from inside the AmneziaVPN app? Open the code for the app",
+  "config.qrSwitchToCamera":
+    "Scanning with your phone's ordinary camera? Go back to the camera code",
+  "config.qrFrameModeAria": "How the frames are shown",
+  "config.qrFrameModeAnimated": "Animation",
+  "config.qrFrameModeStatic": "Static",
+  "config.qrFramesLoop":
+    "The frames change by themselves and repeat in a loop — keep the camera on the code until the app has collected every frame",
+  "config.qrFramesManual":
+    "The frame is held still — step through the frames with the arrows until the app has collected every one",
+  "config.qrFrameCounter": "Frame {current} of {total}",
+  "config.qrFramePrev": "Previous frame",
+  "config.qrFrameNext": "Next frame",
+  "config.qrFramesFailed": "Could not load the code for the app",
+  "config.qrFramesRetry": "Try again",
   "config.qrUnavailableTitle": "QR code is unavailable for this profile",
   "config.qrUnavailableBody":
     "Split-tunnel profiles carry too many routes to fit in a QR code. Use the config above instead — copy the key and paste it into your client (Add → From string/file). Key operation on such profiles is not guaranteed.",
