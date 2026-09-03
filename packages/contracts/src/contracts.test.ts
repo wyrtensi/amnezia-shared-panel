@@ -16,6 +16,7 @@ import {
   MAX_GLOBAL_CIDRS,
   MAX_GLOBAL_DOMAINS,
   installGuideVideosSchema,
+  installVideoEmbed,
   MIN_AWG3_CLIENT_VERSION,
   nodeKeyLimitsSchema,
   portalPolicySchema,
@@ -727,5 +728,53 @@ describe("installGuideVideos", () => {
         installGuideVideos: { desktop: "javascript:alert(1)" },
       }).success,
     ).toBe(false);
+  });
+});
+
+describe("installVideoEmbed", () => {
+  it("turns a Drive share link into its embeddable preview", () => {
+    expect(
+      installVideoEmbed(
+        "https://drive.google.com/file/d/1ExampleDriveFileIdForTests/view?usp=sharing",
+      ),
+    ).toEqual({
+      kind: "drive",
+      src: "https://drive.google.com/file/d/1ExampleDriveFileIdForTests/preview",
+    });
+  });
+
+  it("accepts the older open?id= share shape", () => {
+    expect(
+      installVideoEmbed("https://drive.google.com/open?id=1ExampleDriveFileIdForTests"),
+    ).toEqual({
+      kind: "drive",
+      src: "https://drive.google.com/file/d/1ExampleDriveFileIdForTests/preview",
+    });
+  });
+
+  it("drops everything after the id, so no query rides into the frame", () => {
+    const embed = installVideoEmbed(
+      "https://drive.google.com/file/d/1ExampleDriveFileIdForTests/view?x=1#y",
+    );
+    expect(embed?.src).toBe(
+      "https://drive.google.com/file/d/1ExampleDriveFileIdForTests/preview",
+    );
+  });
+
+  it("keeps a self-hosted file as a real video element", () => {
+    expect(installVideoEmbed("https://cdn.example.com/guide.mp4")).toEqual({
+      kind: "file",
+      src: "https://cdn.example.com/guide.mp4",
+    });
+  });
+
+  it("is null for anything that cannot be played", () => {
+    // A mistyped setting shows the placeholder rather than a broken frame.
+    expect(installVideoEmbed(null)).toBeNull();
+    expect(installVideoEmbed("")).toBeNull();
+    expect(installVideoEmbed("not a url")).toBeNull();
+    expect(installVideoEmbed("javascript:alert(1)")).toBeNull();
+    // A Drive URL with no recoverable file id.
+    expect(installVideoEmbed("https://drive.google.com/drive/my-drive")).toBeNull();
   });
 });

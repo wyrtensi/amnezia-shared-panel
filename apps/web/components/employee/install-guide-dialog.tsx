@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 import {
   GUIDE_AUDIENCES,
+  installVideoEmbed,
   MIN_AWG3_CLIENT_VERSION,
   type ClientAsset,
   type ClientPlatform,
@@ -510,6 +511,7 @@ function PlatformQr({ platform }: { platform: ClientPlatform }) {
  */
 function GuideVideo({ url }: { url: string | null }) {
   const { t } = useT();
+  const embed = installVideoEmbed(url);
   return (
     <details className="group rounded-lg border bg-muted/30 px-3 py-2">
       <summary className="flex cursor-pointer list-none items-center gap-2 text-sm font-medium">
@@ -518,17 +520,31 @@ function GuideVideo({ url }: { url: string | null }) {
         {t("install.videoTitle")}
       </summary>
       <div className="mt-2.5">
-        {url ? (
-          <video
-            className="w-full rounded-md border border-border"
-            src={url}
-            controls
-            preload="metadata"
-          />
-        ) : (
+        {!embed ? (
           <p className="text-xs leading-snug text-muted-foreground">
             {t("install.videoSoon")}
           </p>
+        ) : embed.kind === "drive" ? (
+          // Google Drive will not serve a file to a <video> tag — only its
+          // /preview page embeds dependably — so a Drive link becomes a frame.
+          // aspect-video keeps it responsive instead of a fixed height.
+          <div className="relative aspect-video w-full overflow-hidden rounded-md border border-border">
+            <iframe
+              className="absolute inset-0 h-full w-full border-0"
+              src={embed.src}
+              title={t("install.videoTitle")}
+              allow="autoplay; fullscreen"
+              allowFullScreen
+              referrerPolicy="no-referrer"
+            />
+          </div>
+        ) : (
+          <video
+            className="w-full rounded-md border border-border"
+            src={embed.src}
+            controls
+            preload="metadata"
+          />
         )}
       </div>
     </details>

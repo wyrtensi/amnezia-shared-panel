@@ -262,6 +262,48 @@ export const installGuideVideosSchema = z.object({
 });
 export type InstallGuideVideos = z.infer<typeof installGuideVideosSchema>;
 
+/**
+ * How a configured walkthrough video should be shown.
+ *
+ * Google Drive is the expected host for these: recording a short clip and
+ * dropping it in Drive is the whole workflow, and Drive will not serve a file
+ * to a plain `<video>` tag — its direct-download URLs stopped being dependable,
+ * and only the `/preview` page embeds reliably. So a Drive link becomes an
+ * iframe and everything else stays a real video element.
+ *
+ * Returns null when the value is not a usable http(s) URL, so a mistyped
+ * setting shows the "no video yet" placeholder instead of a broken frame.
+ */
+export type InstallVideoEmbed = { kind: "drive" | "file"; src: string };
+
+/** Drive file ids are opaque but always in this alphabet. */
+const DRIVE_FILE_ID = /^[A-Za-z0-9_-]{10,200}$/;
+
+export const installVideoEmbed = (
+  value: string | null | undefined,
+): InstallVideoEmbed | null => {
+  if (!value) return null;
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    return null;
+  }
+  if (url.protocol !== "https:" && url.protocol !== "http:") return null;
+
+  const host = url.hostname.replace(/^www\./, "");
+  if (host === "drive.google.com") {
+    // Both shapes Drive hands out: /file/d/<id>/view and /open?id=<id>.
+    const fromPath = /^\/file\/d\/([^/]+)/.exec(url.pathname)?.[1];
+    const id = fromPath ?? url.searchParams.get("id") ?? "";
+    if (!DRIVE_FILE_ID.test(id)) return null;
+    // Rebuilt from the validated id rather than rewritten from the input, so
+    // nothing from the original query or fragment survives into the frame.
+    return { kind: "drive", src: `https://drive.google.com/file/d/${id}/preview` };
+  }
+  return { kind: "file", src: url.href };
+};
+
 export const portalPolicySchema = z.object({
   allowKeyCreation: z.boolean().default(true),
   allowNodeSelection: z.boolean().default(true),
