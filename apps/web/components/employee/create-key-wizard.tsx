@@ -27,6 +27,7 @@ import {
   composeKeyDisplayName,
   defaultKeyNameDisplay,
   DEVICE_TYPE_ORDER,
+  MIN_AWG3_CLIENT_VERSION,
   type DeviceType,
   type KeyNameDisplay,
 } from "@amnezia/contracts";
@@ -207,7 +208,10 @@ export function CreateKeyWizard({
           {t("wizard.recommended")}
         </Badge>
       ) : undefined,
-    hint: kind === "awg3" ? t("wizard.awg3Hint") : undefined,
+    hint:
+      kind === "awg3"
+        ? t("wizard.awg3Hint", { version: MIN_AWG3_CLIENT_VERSION })
+        : undefined,
   }));
 
   const policyLocked = !me.policy.allowRouteProfileSelection;
