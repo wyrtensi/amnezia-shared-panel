@@ -135,7 +135,7 @@ via `CONTROL_API_URL` plus one of, in priority order:
 
 | Command | Purpose |
 | --- | --- |
-| `overview` / `users` / `keys` / `nodes` / `audit [--limit=N]` / `policy` | State snapshots |
+| `overview` / `users` / `keys [--device-type=<value>]` / `nodes` / `audit [--limit=N]` / `policy` | State snapshots. `keys` shows each key's stored **platform** beside the free-text device label — they can disagree, and after the T14 migration a key labelled `Laptop` legitimately reads platform `—` (`unspecified`) until someone re-classifies it. `keys --device-type=<value>` filters to one platform (including `unspecified`), which is how to count what still needs re-classifying without opening `psql` |
 | `global-routes` | Admin-wide route additions / exclusions per split-tunnel profile |
 | `quota [--all]` | Key-limit requests (pending by default; `--all` = every state), with ids, the **target** server (its name, or `all servers`), `current → requested`, and date |
 | `version` | Panel version + commit of the running control-api |
@@ -152,7 +152,7 @@ via `CONTROL_API_URL` plus one of, in priority order:
 | `user-enable <id\|email>` | Reinstate a disabled user |
 | `user-nodes <id\|email> <all\|none\|uuid,…>` | Per-user node availability — `all` = every node, overriding the global allowed-node list (this is how an admin sees every node while regular users are limited). It **replaces** the whole per-user policy override; use `user-limit --allowed-nodes=` to change availability alone |
 | `user-routes <id\|email> [--wl-domains=] [--wl-cidrs=] [--bl-domains=] [--bl-cidrs=]` | Replace a user's custom routes (whitelist/blacklist domains + CIDRs) |
-| `user-create-key <id\|email> --node=<uuid> [--device=] [--protocol=awg3] [--route=full_tunnel] [--name-server=] [--name-label=] [--name-number=]` | Provision a key on behalf of a user. The `--name-*` flags (`true`/`false`) choose which parts the VPN client shows as the connection name — default server + device label, no number |
+| `user-create-key <id\|email> --node=<uuid> [--device=] [--protocol=awg3] [--route=full_tunnel] [--device-type=android\|ios\|macos\|windows\|linux\|other] [--name-server=] [--name-label=] [--name-number=]` | Provision a key on behalf of a user. `--device-type` names the platform the key is for — `ios` covers both iPhone and iPad. The retired values `desktop`, `laptop`, `phone`, `tablet` and `iphone` are refused with the replacement named. `unspecified` is also accepted, for a scripted import that genuinely does not know the platform; omitting the flag stores the same thing. The `--name-*` flags (`true`/`false`) choose which parts the VPN client shows as the connection name — default server + device label, no number |
 | `quota-approve <req-id> [note]` | Approve a quota request. The grant follows the request's own target: a per-server request sets that node's per-node limit, an all-servers request sets the flat override **and clears the user's per-node limits** so the granted number cannot be shadowed. Approval never widens node availability |
 | `quota-reject <req-id> [note]` | Reject a quota request |
 
