@@ -24,11 +24,34 @@ small-host-only measure: the events that need it — an image pull, a migration,
 telemetry burst — happen on every host, and the cost is 2 GB of disk that is
 otherwise idle.
 
-Measured steady state of the whole stack on the reference host: panel ~96 MiB
-across four containers (web 32, worker 39, control-api 12, postgres 13), node
-~57 MiB (node-agent 51, AWG3 6). The headroom above that is not slack — it is
-what absorbs an image pull, a migration, and the transient container preflight
-starts.
+**Measured steady state, re-taken 2026-09-04 on two live hosts.** The figures
+that stood here before were roughly a third of what the stack actually uses, so
+treat any older number in this repository as stale.
+
+| Container | 2 GiB host, panel + node + legacy | 1 GiB host, panel + node |
+|---|---|---|
+| web | 133 MiB | — |
+| postgres | 57 MiB | — |
+| worker | 46 MiB | — |
+| control-api | 44 MiB | — |
+| **panel subtotal** | **280 MiB** | — |
+| node-agent | 83 MiB | 79 MiB |
+| awg3 | 26 MiB | 10 MiB |
+| **node subtotal** | **109 MiB** | **90 MiB** |
+
+Both node readings were taken with one or two peers, so the node figures are a
+floor rather than a steady state at capacity. `web` is the largest single
+consumer by a wide margin and it is the one container a node does not run.
+
+The headroom above these numbers is not slack — it is what absorbs an image
+pull, a migration, and the transient container preflight starts.
+
+The node-agent's own ceiling is set explicitly (`NODE_AGENT_MEM_LIMIT`,
+`NODE_AGENT_MAX_OLD_SPACE_MB` in `infra/node/.env`): left alone, V8 sizes its
+old space from **host** memory and had chosen 1006 MiB for itself on the 2 GiB
+host. The AWG containers are deliberately left uncapped — `amneziawg-go`
+allocates per-peer queues, and a ceiling guessed from a two-peer reading would
+be an OOM kill of the data plane at some peer count nobody has measured.
 
 ## 2. Add 2 GB of swap before anything else
 
