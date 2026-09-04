@@ -902,6 +902,17 @@ export class PostgresControlRepository implements ControlRepository {
         changes.enabledProtocols = request.enabledProtocols ?? null;
       }
       if (request.maxPeers !== undefined) changes.maxPeers = request.maxPeers;
+      // Which service checks this node runs. Missed when the fields were added
+      // to the contract: the patch is built field by field here, so a field the
+      // schema accepts and this block does not know is silently dropped - the
+      // API answers 200 for a change that never happened, and the CLI says
+      // "updated". A silent no-op is worse than a rejection.
+      if (request.checksEnabled !== undefined) {
+        changes.checksEnabled = request.checksEnabled;
+      }
+      if (request.disabledCheckIds !== undefined) {
+        changes.disabledCheckIds = request.disabledCheckIds;
+      }
       if (request.capabilities !== undefined) {
         changes.capabilities = request.capabilities;
       }

@@ -2423,6 +2423,41 @@ describe("PostgresControlRepository node status surfaces", () => {
     await database.db.delete(nodeMetricsCurrent);
   });
 
+  runDatabaseTest("persists the per-node service-check policy", async () => {
+    if (!database) return;
+    // The patch is built field by field in updateNode, so a field the schema
+    // accepts and that block does not know is dropped in silence: the API
+    // answers 200 and the CLI prints "updated" for a change that never
+    // happened. Asserted against the ROW, not the response.
+    const repository = subject();
+    await repository.updateNode({ ...actor, role: "admin" }, nodeId, {
+      checksEnabled: false,
+      disabledCheckIds: ["11111111-1111-4111-8111-111111111111"],
+    });
+    const [stored] = await database.db
+      .select({
+        checksEnabled: nodes.checksEnabled,
+        disabledCheckIds: nodes.disabledCheckIds,
+      })
+      .from(nodes)
+      .where(eq(nodes.id, nodeId));
+    expect(stored).toEqual({
+      checksEnabled: false,
+      disabledCheckIds: ["11111111-1111-4111-8111-111111111111"],
+    });
+
+    // And back, so neither direction is one-way.
+    await repository.updateNode({ ...actor, role: "admin" }, nodeId, {
+      checksEnabled: true,
+      disabledCheckIds: [],
+    });
+    const [restored] = await database.db
+      .select({ checksEnabled: nodes.checksEnabled })
+      .from(nodes)
+      .where(eq(nodes.id, nodeId));
+    expect(restored?.checksEnabled).toBe(true);
+  });
+
   runDatabaseTest(
     "reads the handshake age on a node that actually has a peer",
     async () => {
