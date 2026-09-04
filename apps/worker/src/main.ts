@@ -4,6 +4,7 @@ import { createJobProcessor } from "./processor.js";
 import { PostgresWorkerRepository } from "./postgresRepository.js";
 import { runWorker } from "./runner.js";
 import { createMaintenanceRunner } from "./maintenance.js";
+import { resolveWorkerPeriods } from "./config.js";
 import {
   createRuleFetcher,
   resolveRuleFeeds,
@@ -63,10 +64,14 @@ const activeKeyVersion = Number(requiredEnv("CONFIG_ENCRYPTION_ACTIVE_VERSION"))
 if (!keyring[activeKeyVersion]) {
   throw new Error("CONFIG_ENCRYPTION_ACTIVE_VERSION is not present in the keyring");
 }
+// Read before anything is constructed: an unusable period should stop the
+// worker at boot, not after it has already opened a pool and polled the fleet.
+const periods = resolveWorkerPeriods(process.env);
 const repository = new PostgresWorkerRepository({
   db: database.db,
   keyring,
   activeKeyVersion,
+  metricsSampleSec: periods.metricsSampleMs / 1_000,
 });
 const pollTelemetry = createTelemetryPoller({
   repository,
@@ -83,6 +88,7 @@ const runMaintenance = createMaintenanceRunner({
     "TELEMETRY_DAILY_RETENTION_DAYS",
     730,
   ),
+  nodeMetricsRetentionDays: periods.metricsRetentionDays,
 });
 // Route-rule feeds activate by default. Set RU_*_POC_APPROVED=false to hold a
 // profile's auto-fetched versions in quarantine until an operator reviews them.
@@ -206,7 +212,7 @@ try {
     runWorker({ repository, processJob, signal: abortController.signal }),
     runPeriodicTask({
       task: pollTelemetry,
-      intervalMs: 60_000,
+      intervalMs: periods.telemetryPollMs,
       signal: abortController.signal,
       onError: reportBackgroundError,
     }),

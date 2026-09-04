@@ -140,7 +140,22 @@ services:
         export FASTIFY_API_KEY="$$api_key"
         unset api_key
         exec node dist/main.js
+    # Measured on two live nodes (2026-09-04): the agent sits at 79-83 MiB RSS
+    # with a handful of peers, while V8 had chosen a 1006 MiB heap ceiling for
+    # itself on the 2 GiB host and would choose ~480 MiB on a 1 GiB one - it
+    # sizes the old space from host memory, and the host is shared with the
+    # data plane and, on some boxes, with the panel. The pair below turns that
+    # into a bounded number. Both parts are needed: a mem_limit without the
+    # engine setting is a delayed OOM kill rather than a ceiling, because V8
+    # would still grow towards its own idea of the limit before collecting
+    # hard.
+    mem_limit: ${NODE_AGENT_MEM_LIMIT:-320m}
     environment:
+      # 192 MiB of old space is ~2.4x the measured RSS of the whole process and
+      # far above its ~5 MiB live heap, so it does not constrain the workload;
+      # what it does is cap a leak or an outsized response at 192 instead of
+      # 1006. Raise both this and NODE_AGENT_MEM_LIMIT together.
+      NODE_OPTIONS: --max-old-space-size=${NODE_AGENT_MAX_OLD_SPACE_MB:-192}
       FASTIFY_ROUTES: "0.0.0.0:4001"
       ENV: production
       DOCKER_API_VERSION: ${DOCKER_API_VERSION:-1.44}

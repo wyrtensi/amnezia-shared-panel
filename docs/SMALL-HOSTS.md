@@ -24,15 +24,55 @@ small-host-only measure: the events that need it — an image pull, a migration,
 telemetry burst — happen on every host, and the cost is 2 GB of disk that is
 otherwise idle.
 
-Measured steady state of the whole stack on the reference host: panel ~96 MiB
-across four containers (web 32, worker 39, control-api 12, postgres 13), node
-~57 MiB (node-agent 51, AWG3 6). The headroom above that is not slack — it is
-what absorbs an image pull, a migration, and the transient container preflight
-starts.
+**Measured steady state, re-taken 2026-09-04 on two live hosts.** The figures
+that stood here before were roughly a third of what the stack actually uses, so
+treat any older number in this repository as stale.
+
+| Container | 2 GiB host, panel + node + legacy | 1 GiB host, panel + node |
+|---|---|---|
+| web | 133 MiB | — |
+| postgres | 57 MiB | — |
+| worker | 46 MiB | — |
+| control-api | 44 MiB | — |
+| **panel subtotal** | **280 MiB** | — |
+| node-agent | 83 MiB | 79 MiB |
+| awg3 | 26 MiB | 10 MiB |
+| **node subtotal** | **109 MiB** | **90 MiB** |
+
+Both node readings were taken with one or two peers, so the node figures are a
+floor rather than a steady state at capacity. `web` is the largest single
+consumer by a wide margin and it is the one container a node does not run.
+
+The headroom above these numbers is not slack — it is what absorbs an image
+pull, a migration, and the transient container preflight starts.
+
+The node-agent's own ceiling is set explicitly (`NODE_AGENT_MEM_LIMIT`,
+`NODE_AGENT_MAX_OLD_SPACE_MB` in `infra/node/.env`): left alone, V8 sizes its
+old space from **host** memory and had chosen 1006 MiB for itself on the 2 GiB
+host. The AWG containers are deliberately left uncapped — `amneziawg-go`
+allocates per-peer queues, and a ceiling guessed from a two-peer reading would
+be an OOM kill of the data plane at some peer count nobody has measured.
 
 ## 2. Add 2 GB of swap before anything else
 
 Every server this project runs on — panel, node, or both — gets a 2 GB swapfile.
+
+**Automated.** `scripts/ensure-swap.sh` is the one place this rule lives:
+
+```bash
+sudo bash scripts/ensure-swap.sh --check    # report only; exit 10 = change needed
+sudo bash scripts/ensure-swap.sh --apply    # create or grow /swapfile to 2 GiB
+```
+
+`add-node.sh` runs it against a new node as step 2/8, before Docker, because
+`apt-get install docker-ce` is itself a memory spike. It **refuses** rather than
+proceeds when the disk cannot spare 2 GiB and still keep 3 GiB free
+(`--min-free-mib` lowers that; floor 1024), and when more is paged out than
+would fit back into RAM — there `swapoff` would fail and the host would be left
+on its old, smaller swapfile while the operator believed it had grown.
+
+The commands below are what the script runs. Keep them for a host you cannot
+reach with the repo checked out.
 
 ```bash
 fallocate -l 2G /swapfile && chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile
@@ -54,7 +94,15 @@ fallocate -l 2G /swapfile && chmod 600 /swapfile && mkswap /swapfile && swapon /
 ```
 
 Run it in one go: between `swapoff` and `swapon` the host has no swap at all, and
-that is exactly the window in which a memory spike becomes an OOM kill.
+that is exactly the window in which a memory spike becomes an OOM kill. This is
+why `ensure-swap.sh --apply` does the whole sequence in one process rather than
+leaving an operator to type two commands.
+
+**When the script reports `refused: … swapoff would fail`,** the host has more
+paged out than it can fault back in. Do not force it: `swapoff(2)` returns
+ENOMEM and leaves the old swapfile in place, which is the safe outcome. Free
+memory first — stop the heaviest container, let the pages come back, then re-run
+`--apply`.
 
 The cost is honest and worth stating: 2 GB of a 10 GB disk, and paging on a VPN
 node trades latency for survival. Take the trade — the alternative is a global

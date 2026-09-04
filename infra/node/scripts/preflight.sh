@@ -103,8 +103,16 @@ server_max_peers="$(env_value SERVER_MAX_PEERS)"
 case "$server_max_peers" in
   ''|*[!0-9]*) fail "SERVER_MAX_PEERS must be an integer" ;;
 esac
-[ "$server_max_peers" -le 500 ] || fail "SERVER_MAX_PEERS must not exceed the unvalidated 500-peer limit"
+# 500 is the VALIDATED ceiling -- the panel, the agent and this script are
+# tested at it. 1000 is the PHYSICAL one: both AWG interfaces are pinned to a
+# /22 (1021 usable peer addresses each) and SERVER_MAX_PEERS is one budget
+# shared by both protocols, so past that the node answers NO_FREE_IP while the
+# panel keeps sending it keys. Refusing at 500 made the two indistinguishable.
+[ "$server_max_peers" -le 1000 ] || fail "SERVER_MAX_PEERS must not exceed 1000 (the /22 address pool)"
 [ "$server_max_peers" -ge 1 ] || fail "SERVER_MAX_PEERS must be positive"
+if [ "$server_max_peers" -gt 500 ]; then
+  info "WARNING: SERVER_MAX_PEERS=$server_max_peers is above the validated 500-peer limit; this configuration is unvalidated."
+fi
 
 available_kb="$(df -Pk "$NODE_DIR" | awk 'NR==2 { print $4 }')"
 # Free space is what actually binds on a small host, and it is nearly always
@@ -127,9 +135,15 @@ available_mem_kb="$(awk '/^MemAvailable:/ { print $2 }' /proc/meminfo)"
 [ -n "$available_mem_kb" ] || fail "cannot read available memory"
 # The 350 MiB gate sizes a node at the 500-peer maximum, so scale it with the
 # capacity this node is actually configured for -- a 500-peer node still gets
-# exactly 350 MiB. The floor covers the resident stack, measured at ~117 MiB
-# (node-agent 109, awg3 4, awg2 4) plus room for the transient container the
-# clientsTable check below starts.
+# exactly 350 MiB. The 192 MiB floor covers the resident stack plus room for the
+# transient container the clientsTable check below starts.
+#
+# Re-measured 2026-09-04 on two live nodes: node-agent 79-83 MiB, awg3 10-26
+# MiB, so the stack is 90-109 MiB rather than the 117 MiB (agent 109, awg3 4)
+# this comment used to claim. The total was about right and the breakdown was
+# not - which is why the gate itself is unchanged. Both readings were taken
+# with one or two peers, so they are a floor, not a steady state at capacity;
+# lowering the gate would need a measurement at capacity that nobody has.
 required_mem_kb=$(( 358400 * server_max_peers / 500 ))
 [ "$required_mem_kb" -ge 196608 ] || required_mem_kb=196608
 [ "$available_mem_kb" -ge "$required_mem_kb" ] || \

@@ -51,6 +51,7 @@ describe("retention and rollup maintenance", () => {
       replaceRollups: vi.fn(() => Promise.resolve()),
       deleteSamplesBefore: vi.fn(() => Promise.resolve()),
       deleteRollupsBefore: vi.fn(() => Promise.resolve()),
+      deleteNodeMetricsSamplesBefore: vi.fn(() => Promise.resolve()),
       purgeOffboardedUsers: vi.fn(() => Promise.resolve({ deleted: [] })),
     };
     const now = new Date("2026-08-20T12:00:00.000Z");
@@ -73,6 +74,38 @@ describe("retention and rollup maintenance", () => {
     expect(repository.deleteRollupsBefore).toHaveBeenCalledWith(
       "day",
       new Date("2024-08-20T12:00:00.000Z"),
+    );
+    expect(repository.deleteNodeMetricsSamplesBefore).toHaveBeenCalledWith(
+      new Date("2026-08-13T12:00:00.000Z"),
+    );
+  });
+
+  // node_metrics_samples grows one row per node per sample period forever, and
+  // nothing else prunes it. Until this ran, the only thing keeping the table
+  // small was how recently the feature had been deployed.
+  it("prunes host-metric history at the configured retention window", async () => {
+    const repository: MaintenanceRepository = {
+      loadSamplesSince: vi.fn(() => Promise.resolve([])),
+      replaceRollups: vi.fn(() => Promise.resolve()),
+      deleteSamplesBefore: vi.fn(() => Promise.resolve()),
+      deleteRollupsBefore: vi.fn(() => Promise.resolve()),
+      deleteNodeMetricsSamplesBefore: vi.fn(() => Promise.resolve()),
+      purgeOffboardedUsers: vi.fn(() => Promise.resolve({ deleted: [] })),
+    };
+    const now = new Date("2026-08-20T12:00:00.000Z");
+
+    await createMaintenanceRunner({
+      repository,
+      now: () => now,
+      nodeMetricsRetentionDays: 14,
+    })();
+
+    expect(repository.deleteNodeMetricsSamplesBefore).toHaveBeenCalledWith(
+      new Date("2026-08-06T12:00:00.000Z"),
+    );
+    // The traffic-sample window is a separate setting and must not follow it.
+    expect(repository.deleteSamplesBefore).toHaveBeenCalledWith(
+      new Date("2026-08-13T12:00:00.000Z"),
     );
   });
 });

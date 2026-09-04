@@ -26,6 +26,13 @@ export interface MaintenanceRepository {
   deleteSamplesBefore: (cutoff: Date) => Promise<void>;
   deleteRollupsBefore: (period: RollupPeriod, cutoff: Date) => Promise<void>;
   /**
+   * Prune the host-metrics history (`node_metrics_samples`). Separate from
+   * `deleteSamplesBefore`, which prunes per-key traffic samples: the two tables
+   * grow at different rates - one row per KEY per change, versus one row per
+   * NODE per sample period - so they get their own windows.
+   */
+  deleteNodeMetricsSamplesBefore: (cutoff: Date) => Promise<void>;
+  /**
    * Hard-delete disabled users once all their keys have been revoked (peers
    * removed), along with the revoked key rows. Returns the deleted emails.
    */
@@ -85,6 +92,7 @@ export type MaintenanceRunnerOptions = {
   rawRetentionDays?: number;
   hourlyRetentionDays?: number;
   dailyRetentionDays?: number;
+  nodeMetricsRetentionDays?: number;
 };
 
 export const createMaintenanceRunner = ({
@@ -93,6 +101,7 @@ export const createMaintenanceRunner = ({
   rawRetentionDays = 7,
   hourlyRetentionDays = 90,
   dailyRetentionDays = 730,
+  nodeMetricsRetentionDays = 7,
 }: MaintenanceRunnerOptions) => async (): Promise<void> => {
   const current = now();
   const rawCutoff = new Date(current.getTime() - rawRetentionDays * DAY_MS);
@@ -123,6 +132,9 @@ export const createMaintenanceRunner = ({
   await repository.deleteRollupsBefore(
     "day",
     new Date(current.getTime() - dailyRetentionDays * DAY_MS),
+  );
+  await repository.deleteNodeMetricsSamplesBefore(
+    new Date(current.getTime() - nodeMetricsRetentionDays * DAY_MS),
   );
   // Disabled accounts are removed once their keys have finished revoking.
   await repository.purgeOffboardedUsers();
