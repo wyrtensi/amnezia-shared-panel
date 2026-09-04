@@ -111,6 +111,28 @@ describe("/api/control/[...path] — response headers", () => {
     expect(response.headers.get("x-content-type-options")).toBe("nosniff");
   });
 
+  it("relays format=qr-svg as an image the dialog's <img> can decode", async () => {
+    // The reproduction for the broken-image placeholder on a full-tunnel key:
+    // the renderer is fine (apps/control-api/src/qrRender.test.ts measures the
+    // real payload at 113 modules), but this proxy was rewriting the image
+    // content-type, and `nosniff` then stopped the browser decoding it.
+    stubFetch({
+      contentType: "image/svg+xml; charset=utf-8",
+      body: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 121 121"></svg>',
+    });
+    const response = await invoke(GET, ["api", "keys", "k1", "config"], {
+      search: "?format=qr-svg",
+    });
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toBe("image/svg+xml; charset=utf-8");
+    expect(response.headers.get("x-content-type-options")).toBe("nosniff");
+    // Relayed as an image, but never as an executable same-origin document.
+    expect(response.headers.get("content-security-policy")).toBe(
+      "default-src 'none'; style-src 'unsafe-inline'; sandbox",
+    );
+  });
+
   it("never echoes an HTML content-type from upstream", async () => {
     stubFetch({ contentType: "text/html; charset=utf-8", body: "<script>1</script>" });
     const response = await invoke(GET, ["api", "me"]);

@@ -1,5 +1,9 @@
 import { describe, it, expect } from "vitest";
-import { buildControlTarget, relayedContentType } from "./control-proxy";
+import {
+  buildControlTarget,
+  relayedContentSecurityPolicy,
+  relayedContentType,
+} from "./control-proxy";
 
 const BASE = "http://127.0.0.1:3001";
 
@@ -48,7 +52,7 @@ describe("buildControlTarget", () => {
 });
 
 describe("relayedContentType", () => {
-  it("passes through the three media types the control API emits", () => {
+  it("passes through the media types the control API emits", () => {
     expect(relayedContentType("application/json; charset=utf-8")).toBe(
       "application/json; charset=utf-8",
     );
@@ -56,12 +60,39 @@ describe("relayedContentType", () => {
     expect(relayedContentType("image/png")).toBe("image/png");
   });
 
+  it("relays the QR SVG, which the dialog loads straight into an <img>", () => {
+    // format=qr-svg answers image/svg+xml. Downgrading it to
+    // application/octet-stream under `nosniff` makes the browser refuse to
+    // decode it, and the config dialog shows a broken-image placeholder for a
+    // full-tunnel key that has a perfectly good code.
+    expect(relayedContentType("image/svg+xml; charset=utf-8")).toBe(
+      "image/svg+xml; charset=utf-8",
+    );
+  });
+
   it("downgrades anything else to an opaque download", () => {
     expect(relayedContentType("text/html; charset=utf-8")).toBe("application/octet-stream");
-    expect(relayedContentType("image/svg+xml")).toBe("application/octet-stream");
+    expect(relayedContentType("application/xml")).toBe("application/octet-stream");
   });
 
   it("returns null when the upstream sent no content-type (e.g. 204)", () => {
     expect(relayedContentType(null)).toBeNull();
+  });
+});
+
+describe("relayedContentSecurityPolicy", () => {
+  it("locks down an SVG body, which can carry script when opened as a document", () => {
+    // <img> never runs script in an SVG, but the same URL can be typed into the
+    // address bar, and then it is a same-origin document. The policy makes that
+    // document inert rather than trusting the renderer's output shape.
+    expect(relayedContentSecurityPolicy("image/svg+xml; charset=utf-8")).toBe(
+      "default-src 'none'; style-src 'unsafe-inline'; sandbox",
+    );
+  });
+
+  it("adds no policy to the media types that cannot execute", () => {
+    expect(relayedContentSecurityPolicy("application/json; charset=utf-8")).toBeNull();
+    expect(relayedContentSecurityPolicy("image/png")).toBeNull();
+    expect(relayedContentSecurityPolicy(null)).toBeNull();
   });
 });

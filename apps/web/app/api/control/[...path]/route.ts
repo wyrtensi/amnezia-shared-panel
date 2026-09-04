@@ -1,6 +1,10 @@
 import type { NextRequest } from "next/server";
 import { SESSION_COOKIE } from "@/lib/session";
-import { buildControlTarget, relayedContentType } from "@/lib/control-proxy";
+import {
+  buildControlTarget,
+  relayedContentSecurityPolicy,
+  relayedContentType,
+} from "@/lib/control-proxy";
 
 // This route is reachable without the page middleware (apps/web/proxy.ts
 // excludes /api), and it forwards the caller's session as the API bearer
@@ -52,6 +56,10 @@ const proxy = async (request: NextRequest, context: { params: Promise<{ path: st
   // else becomes an opaque download so the body can never render as HTML.
   const upstreamContentType = relayedContentType(response.headers.get("content-type"));
   if (upstreamContentType) outgoingHeaders.set("content-type", upstreamContentType);
+  // A relayed SVG is an image to `<img>` but a document to the address bar;
+  // this makes the document case inert.
+  const csp = relayedContentSecurityPolicy(upstreamContentType);
+  if (csp) outgoingHeaders.set("content-security-policy", csp);
   for (const name of ["content-disposition", "cache-control"]) {
     const value = response.headers.get(name);
     if (value) outgoingHeaders.set(name, value);

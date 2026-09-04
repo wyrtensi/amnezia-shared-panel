@@ -20,7 +20,14 @@ const fromBase64Url = (text: string): Buffer =>
 
 describe("the constants copied from the node agent", () => {
   // services/node-agent/src/contracts/app/app.contract.ts:140,143
-  it("matches AmneziaVPN's own magic number and chunk size", () => {
+  //
+  // The same three numbers are what DefaultVPN reads, which is why the panel
+  // serves one format and not two: github.com/amnezia-vpn/DefaultVPN@dev,
+  // client/core/qrCodeUtils.h:10 (`qrMagicCode = 1984`) and
+  // client/core/qrCodeUtils.cpp:8-17 (`double k = 850`, then magic, uint8
+  // chunk count, uint8 index, the length-prefixed chunk). Its reader,
+  // client/ui/controllers/importController.cpp:643-669, parses that layout back.
+  it("matches the magic number and chunk size both client apps read", () => {
     expect(QR_FRAME_MAGIC).toBe(1984);
     expect(QR_FRAME_CHUNK_BYTES).toBe(850);
     expect(QR_FRAME_HEADER_BYTES).toBe(8);

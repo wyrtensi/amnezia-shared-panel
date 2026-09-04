@@ -177,7 +177,7 @@ const ru = {
   "keyCard.rulesUpdatedBody":
     "Перевыпустите ключ, чтобы применить новые правила. Старый конфиг перестанет работать — переустановите ключ на устройстве.",
   "keyCard.iphoneProfileWarning":
-    "Этот ключ создан для iPhone или iPad и содержит профиль маршрутизации. В приложении Default VPN правила профиля не применяются: подключение работает, но весь трафик идёт мимо VPN, и приложение об этом не предупреждает. Если у вас AmneziaVPN — ключ работает как задумано; Default VPN стоит у тех, кто ставил из российского App Store. Подробнее — в инструкции «Как подключиться». На Windows, macOS, Linux и Android этот ключ работает как обычно.",
+    "Этот ключ создан для iPhone или iPad и содержит профиль маршрутизации, а на iPhone и iPad профили маршрутизации недоступны. Создайте для этого устройства ключ «Весь трафик». На Windows, macOS, Linux и Android этот ключ работает как обычно.",
   "keyCard.created": "Создан: ",
   "keyCard.traffic": "Трафик: ",
   "keyCard.reissue": "Перевыпустить",
@@ -206,12 +206,12 @@ const ru = {
   "wizard.awg3Hint": "Требуется AmneziaVPN {version}+",
   "wizard.rulesNotActive": "Правила ещё не активированы",
   "wizard.profileDisabled": "Выбор профиля отключён администратором",
-  "wizard.profileNoIphone": "Не работает в Default VPN — см. инструкцию",
+  "wizard.profileNoIphone": "Недоступно на iPhone и iPad",
   "wizard.hasAmneziaClient": "У меня AmneziaVPN, а не Default VPN",
   "wizard.hasAmneziaClientHint":
-    "Отметьте, только если вы действительно поставили AmneziaVPN (в российском App Store его нет). Профили маршрутизации станут доступны. Если на деле стоит Default VPN, ключ подключится, но правила применяться не будут.",
+    "Отметьте, только если вы действительно поставили AmneziaVPN (в российском App Store его нет). Профили маршрутизации станут доступны, но их работа на iOS не проверена.",
   "wizard.routingNoIphone":
-    "В App Store из России ставится Default VPN — в нём ключ с профилем подключается, но правила не применяются: весь трафик идёт мимо VPN, и приложение об этом не предупреждает. Поэтому для iPhone и iPad по умолчанию доступен только «Весь трафик». Настоящий AmneziaVPN на iOS есть, но он скрыт из российского App Store — если он у вас установлен, отметьте это ниже.",
+    "На iPhone и iPad профили маршрутизации недоступны — доступен только «Весь трафик».",
   "wizard.createFailed": "Не удалось создать ключ",
   "wizard.title": "Новый VPN-ключ",
   "wizard.desc": "Один ключ предназначен для одного устройства.",
@@ -288,13 +288,13 @@ const ru = {
   "config.qrFullscreen": "QR-код на весь экран",
   "config.qrAudienceLabel": "Чем будете сканировать?",
   "config.qrForCamera": "Камера телефона",
-  "config.qrForApp": "Приложение AmneziaVPN",
+  "config.qrForApp": "Приложение VPN",
   "config.qrHintApp":
-    "В приложении AmneziaVPN нажмите «Добавить» → «Сканировать QR-код» и наведите камеру на этот код",
+    "В приложении (AmneziaVPN или Default VPN) нажмите «Добавить» → «Сканировать QR-код» и наведите камеру на этот код",
   "config.qrAppWarning":
-    "Этот код понимает только приложение AmneziaVPN. Обычная камера его не откроет.",
+    "Этот код понимает только само приложение. Обычная камера его не откроет.",
   "config.qrSwitchToApp":
-    "Сканируете из самого приложения AmneziaVPN? Откройте код для приложения",
+    "Сканируете из самого приложения (AmneziaVPN или Default VPN)? Откройте код для приложения",
   "config.qrSwitchToCamera":
     "Сканируете обычной камерой телефона? Вернитесь к коду для камеры",
   "config.qrFrameModeAria": "Режим показа кадров",
@@ -310,8 +310,10 @@ const ru = {
   "config.qrFramesFailed": "Не удалось загрузить код для приложения",
   "config.qrFramesRetry": "Попробовать снова",
   "config.qrUnavailableTitle": "QR-код недоступен для этого профиля",
+  "config.qrUnavailableWhy":
+    "Дело не в размере кода: в этом профиле тысячи маршрутов, ключ занимает от 60 тысяч символов, а в QR-код помещается около 2900. Такой ключ не влезает ни в один код — ни в большой, ни в серию кадров.",
   "config.qrUnavailableBody":
-    "В профилях с раздельным туннелированием слишком много маршрутов, чтобы отобразить QR-код. Удобнее всего использовать конфиг-файл выше — скопируйте ключ и вставьте его в вашем клиенте (Добавить → Из строки/файла). Работа ключа на таких профилях не гарантируется.",
+    "Скопируйте ключ кнопкой выше и вставьте его в вашем клиенте (Добавить → Из строки/файла) — или скачайте конфиг-файл. Работа ключа на таких профилях не гарантируется.",
 
   // Install guide dialog (user page)
   "install.button": "Как подключиться",
@@ -351,10 +353,11 @@ const ru = {
     "Запустите скачанный файл и следуйте установщику.",
   "install.iosNote":
     "В российском App Store приложение называется Default VPN — ставьте его.",
-  // Shortened, never dropped: on iOS a profile key connects and filters
-  // nothing, and the user has no way to see it. See D8.
+  // Says only what is known. What a client does with a profile key on iOS has
+  // not been checked on a device, and a claim a user acts on has to be one we
+  // can stand behind.
   "install.iosProfileWarning":
-    "В Default VPN ключ с профилем подключается, но правила не применяются: весь трафик идёт мимо VPN, и приложение об этом не предупреждает. Для iPhone и iPad создавайте ключ «Весь трафик».",
+    "На iPhone и iPad профили маршрутизации недоступны — создавайте ключ «Весь трафик».",
   "install.versionNote":
     "Ключи AmneziaWG 3.1 работают в клиенте {version} или новее.",
   "install.apkTitle": "Google Play не открывается?",
@@ -1130,7 +1133,7 @@ const en = {
   "keyCard.rulesUpdatedBody":
     "Reissue the key to apply the new rules. The old config will stop working — reinstall the key on the device.",
   "keyCard.iphoneProfileWarning":
-    "This key was created for an iPhone or iPad and carries a route profile. In the Default VPN app the profile's rules are not applied: it connects, but all traffic goes outside the VPN and the app gives no warning. If you have AmneziaVPN the key works as intended; Default VPN is what installs from the Russian App Store. See the “How to connect” guide. On Windows, macOS, Linux and Android this key works normally.",
+    "This key was created for an iPhone or iPad and carries a route profile, and route profiles are not available on iPhone and iPad. Create an “All traffic” key for that device. On Windows, macOS, Linux and Android this key works normally.",
   "keyCard.created": "Created: ",
   "keyCard.traffic": "Traffic: ",
   "keyCard.reissue": "Reissue",
@@ -1159,12 +1162,12 @@ const en = {
   "wizard.awg3Hint": "Requires AmneziaVPN {version}+",
   "wizard.rulesNotActive": "Rules not activated yet",
   "wizard.profileDisabled": "Profile selection disabled by the administrator",
-  "wizard.profileNoIphone": "Does not work in Default VPN — see the guide",
+  "wizard.profileNoIphone": "Not available on iPhone and iPad",
   "wizard.hasAmneziaClient": "I have AmneziaVPN, not Default VPN",
   "wizard.hasAmneziaClientHint":
-    "Tick this only if you really installed AmneziaVPN (it is not in the Russian App Store). Route profiles become selectable. If Default VPN is what you actually have, the key connects but the rules are not applied.",
+    "Tick this only if you really installed AmneziaVPN (it is not in the Russian App Store). Route profiles become selectable, though how they behave on iOS has not been verified.",
   "wizard.routingNoIphone":
-    "The App Store in Russia offers Default VPN, and there a key with a profile connects but applies none of its rules: all traffic goes outside the VPN and the app gives no warning. So iPhone and iPad get “All traffic” only by default. AmneziaVPN itself does exist on iOS, but it is hidden from the Russian App Store — if you have it installed, say so below.",
+    "Route profiles are not available on iPhone and iPad — only “All traffic” is offered.",
   "wizard.createFailed": "Failed to create the key",
   "wizard.title": "New VPN key",
   "wizard.desc": "One key is meant for a single device.",
@@ -1240,13 +1243,13 @@ const en = {
   "config.qrFullscreen": "Full-screen QR code",
   "config.qrAudienceLabel": "What will you scan with?",
   "config.qrForCamera": "Phone camera",
-  "config.qrForApp": "AmneziaVPN app",
+  "config.qrForApp": "VPN app",
   "config.qrHintApp":
-    "In the AmneziaVPN app tap Add → Scan QR code, then point it at this code",
+    "In the app (AmneziaVPN or Default VPN) tap Add → Scan QR code, then point it at this code",
   "config.qrAppWarning":
-    "Only the AmneziaVPN app can read this code. A plain camera app cannot.",
+    "Only the app itself can read this code. A plain camera app cannot.",
   "config.qrSwitchToApp":
-    "Scanning from inside the AmneziaVPN app? Open the code for the app",
+    "Scanning from inside the app (AmneziaVPN or Default VPN)? Open the code for the app",
   "config.qrSwitchToCamera":
     "Scanning with your phone's ordinary camera? Go back to the camera code",
   "config.qrFrameModeAria": "How the frames are shown",
@@ -1262,8 +1265,10 @@ const en = {
   "config.qrFramesFailed": "Could not load the code for the app",
   "config.qrFramesRetry": "Try again",
   "config.qrUnavailableTitle": "QR code is unavailable for this profile",
+  "config.qrUnavailableWhy":
+    "It is not about the size of the code: this profile carries thousands of routes, the key runs to 60 000 characters and more, and a QR code holds about 2 900. A key that long fits no code at all — not a large one, not a series of frames.",
   "config.qrUnavailableBody":
-    "Split-tunnel profiles carry too many routes to fit in a QR code. Use the config above instead — copy the key and paste it into your client (Add → From string/file). Key operation on such profiles is not guaranteed.",
+    "Copy the key with the button above and paste it into your client (Add → From string/file), or download the config file. Key operation on such profiles is not guaranteed.",
 
   // Install guide dialog (user page)
   "install.button": "How to connect",
@@ -1303,10 +1308,11 @@ const en = {
     "Run the downloaded file and follow the installer.",
   "install.iosNote":
     "In the Russian App Store the app is called Default VPN — install that one.",
-  // Shortened, never dropped: on iOS a profile key connects and filters
-  // nothing, and the user has no way to see it. See D8.
+  // Says only what is known. What a client does with a profile key on iOS has
+  // not been checked on a device, and a claim a user acts on has to be one we
+  // can stand behind.
   "install.iosProfileWarning":
-    "In Default VPN a key with a profile does connect, but the rules are not applied: all traffic goes outside the VPN, and the app gives no warning. On iPhone and iPad create an “All traffic” key.",
+    "Route profiles are not available on iPhone and iPad — create an “All traffic” key.",
   "install.versionNote":
     "AmneziaWG 3.1 keys work in client {version} or newer.",
   "install.apkTitle": "Google Play will not open?",
