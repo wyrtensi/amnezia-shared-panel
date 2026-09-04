@@ -63,6 +63,10 @@ createNode: vi.fn(() => Promise.resolve({ id: "node-1" })),
   deleteNode: vi.fn(() => Promise.resolve({ id: "node-1", deleted: true })),
   adminList: vi.fn(() => Promise.resolve([])),
   adminAction: vi.fn(() => Promise.resolve({ ok: true })),
+  createServiceCheck: vi.fn(() => Promise.resolve({ id: "check-1" })),
+  updateServiceCheck: vi.fn(() => Promise.resolve({ id: "check-1" })),
+  deleteServiceCheck: vi.fn(() => Promise.resolve({ id: "check-1" })),
+  runServiceCheckNow: vi.fn(() => Promise.resolve({ id: "check-1" })),
 });
 
 describe("control API identity boundary", () => {
@@ -866,6 +870,148 @@ describe("client release routes", () => {
 
     expect(response.statusCode).toBe(403);
     expect(clientReleaseResolver.refresh).not.toHaveBeenCalled();
+    await app.close();
+  });
+});
+
+describe("service check routes", () => {
+  const probe = {
+    kind: "http",
+    url: "https://gemini.google.com/",
+    method: "GET",
+    timeoutMs: 10_000,
+  };
+  const body = {
+    name: "Gemini",
+    probe,
+    assertions: [{ type: "bodyContains", value: "conversation-container" }],
+  };
+
+  const adminApp = async () => {
+    const service = createService();
+    const admin = { ...user, role: "admin" as const };
+    vi.mocked(service.resolveIdentity).mockResolvedValue(admin);
+    return { service, admin, app: await buildApp({ service, environment: "development" }) };
+  };
+
+  it("creates a check and answers 201", async () => {
+    const { service, admin, app } = await adminApp();
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/admin/service-checks",
+      headers: { "x-dev-user-email": admin.email },
+      payload: body,
+    });
+    expect(response.statusCode).toBe(201);
+    expect(service.createServiceCheck).toHaveBeenCalledWith(
+      admin,
+      expect.objectContaining({ name: "Gemini", intervalSec: 43_200, enabled: true }),
+    );
+    await app.close();
+  });
+
+  it("refuses a check with no assertions", async () => {
+    // Always green, and indistinguishable on the card from one that is passing.
+    const { service, admin, app } = await adminApp();
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/admin/service-checks",
+      headers: { "x-dev-user-email": admin.email },
+      payload: { ...body, assertions: [] },
+    });
+    expect(response.statusCode).toBe(400);
+    expect(service.createServiceCheck).not.toHaveBeenCalled();
+    await app.close();
+  });
+
+  it("refuses a probe aimed at the node's own network", async () => {
+    const { service, admin, app } = await adminApp();
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/admin/service-checks",
+      headers: { "x-dev-user-email": admin.email },
+      payload: { ...body, probe: { ...probe, url: "http://localhost/" } },
+    });
+    expect(response.statusCode).toBe(400);
+    expect(service.createServiceCheck).not.toHaveBeenCalled();
+    await app.close();
+  });
+
+  it("passes only the named fields on an update", async () => {
+    // The whole reason the update schema is built from a defaultless shape: a
+    // partial of the defaulted one would turn "disable it" into "disable it and
+    // reset the period and replace the assertions".
+    const { service, admin, app } = await adminApp();
+    const response = await app.inject({
+      method: "PATCH",
+      url: "/api/admin/service-checks/0b48cc4c-404b-47a6-af28-4cf15f305e30",
+      headers: { "x-dev-user-email": admin.email },
+      payload: { enabled: false },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(service.updateServiceCheck).toHaveBeenCalledWith(
+      admin,
+      "0b48cc4c-404b-47a6-af28-4cf15f305e30",
+      { enabled: false },
+    );
+    await app.close();
+  });
+
+  it("routes run as its own endpoint, not as a generic admin action", async () => {
+    // `/api/admin/:resource/:id/:action` would otherwise swallow this and hand
+    // "service-checks" to adminAction, which knows nothing about them.
+    const { service, admin, app } = await adminApp();
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/admin/service-checks/0b48cc4c-404b-47a6-af28-4cf15f305e30/run",
+      headers: { "x-dev-user-email": admin.email },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(service.runServiceCheckNow).toHaveBeenCalledWith(
+      admin,
+      "0b48cc4c-404b-47a6-af28-4cf15f305e30",
+    );
+    expect(service.adminAction).not.toHaveBeenCalled();
+    await app.close();
+  });
+
+  it("deletes a check", async () => {
+    const { service, admin, app } = await adminApp();
+    const response = await app.inject({
+      method: "DELETE",
+      url: "/api/admin/service-checks/0b48cc4c-404b-47a6-af28-4cf15f305e30",
+      headers: { "x-dev-user-email": admin.email },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(service.deleteServiceCheck).toHaveBeenCalled();
+    await app.close();
+  });
+
+  it("lists checks through the same admin listing as every other resource", async () => {
+    const { service, admin, app } = await adminApp();
+    vi.mocked(service.adminList).mockResolvedValue([]);
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/admin/service-checks",
+      headers: { "x-dev-user-email": admin.email },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(service.adminList).toHaveBeenCalledWith(admin, "service-checks");
+    await app.close();
+  });
+
+  it("refuses a non-admin", async () => {
+    const service = createService();
+    vi.mocked(service.resolveIdentity).mockResolvedValue(user);
+    const app = await buildApp({ service, environment: "development" });
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/admin/service-checks",
+      headers: { "x-dev-user-email": user.email },
+      payload: body,
+    });
+    expect(response.statusCode).toBe(403);
+    expect(service.createServiceCheck).not.toHaveBeenCalled();
     await app.close();
   });
 });

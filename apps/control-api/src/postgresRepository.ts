@@ -14,6 +14,7 @@ import {
 } from "drizzle-orm";
 import type {
   CreateNodeRequest,
+  CreateServiceCheckRequest,
   CreateKeyRequest,
   CreateUserRequest,
   CustomRoutes,
@@ -28,6 +29,7 @@ import type {
   RouteProfile,
   RulesRefreshStatus,
   UpdateNodeRequest,
+  UpdateServiceCheckRequest,
 } from "@amnezia/contracts";
 import {
   createKeyRequestSchema,
@@ -58,6 +60,8 @@ import {
   identities,
   jobOutbox,
   nodeAgentReleases,
+  nodeServiceCheckResults,
+  nodeServiceChecks,
   nodes,
   peerCurrent,
   portalPolicy,
@@ -290,6 +294,20 @@ export type PostgresRepositoryOptions = {
   // may log in directly.
   allowedEmailDomains?: ReadonlySet<string>;
 };
+
+/**
+ * `node_service_checks_name_unique` exists so two checks cannot share a name -
+ * the name is what a user sees on a chip, and two "Gemini" chips with different
+ * verdicts are unreadable. Without this translation an admin retyping a name
+ * gets a 500 for an ordinary mistake.
+ */
+const duplicateCheckName = (error: unknown): unknown =>
+  typeof error === "object" &&
+  error !== null &&
+  "code" in error &&
+  (error as { code?: string }).code === "23505"
+    ? new ApiError(409, "A check with this name already exists", "CHECK_NAME_TAKEN")
+    : error;
 
 export class PostgresControlRepository implements ControlRepository {
   private readonly activeKeyVersion: number;
@@ -1986,11 +2004,160 @@ export class PostgresControlRepository implements ControlRepository {
           },
         ];
       }
+      case "service-checks": {
+        // Definitions plus every node's latest verdict, joined here rather than
+        // fetched per check by the UI: there are single digits of both, and a
+        // card that issued one request per check would make the page's cost
+        // depend on how many checks an admin had added.
+        const [definitions, results] = await Promise.all([
+          this.options.db
+            .select()
+            .from(nodeServiceChecks)
+            .orderBy(nodeServiceChecks.name),
+          this.options.db
+            .select({
+              checkId: nodeServiceCheckResults.checkId,
+              nodeId: nodeServiceCheckResults.nodeId,
+              nodeName: nodes.name,
+              status: nodeServiceCheckResults.status,
+              httpStatus: nodeServiceCheckResults.httpStatus,
+              latencyMs: nodeServiceCheckResults.latencyMs,
+              detail: nodeServiceCheckResults.detail,
+              finalUrl: nodeServiceCheckResults.finalUrl,
+              checkedAt: nodeServiceCheckResults.checkedAt,
+              failingSince: nodeServiceCheckResults.failingSince,
+            })
+            .from(nodeServiceCheckResults)
+            .innerJoin(nodes, eq(nodes.id, nodeServiceCheckResults.nodeId))
+            .orderBy(nodes.name),
+        ]);
+        return definitions.map((check) => ({
+          ...check,
+          results: results.filter((row) => row.checkId === check.id),
+        }));
+      }
       case "global-routes":
         return [await this.getGlobalRoutes()];
       default:
         throw new ApiError(404, "Admin resource not found", "NOT_FOUND");
     }
+  };
+
+  /**
+   * One audit row for a service-check change. These four methods are the only
+   * writers of that table's rows, so the helper stays here rather than becoming
+   * a general one the rest of the file would have to be rewritten to use.
+   */
+  private writeAudit = async (
+    actor: Actor,
+    action: string,
+    targetId: string,
+    metadata: Record<string, unknown>,
+  ): Promise<void> => {
+    await this.options.db.insert(auditEvents).values({
+      actorUserId: actor.id,
+      actorType: "user",
+      action: `admin.${action}`,
+      targetType: "service_check",
+      targetId,
+      metadata,
+    });
+  };
+
+  createServiceCheck = async (
+    actor: Actor,
+    request: CreateServiceCheckRequest,
+  ): Promise<unknown> => {
+    const [created] = await this.options.db
+      .insert(nodeServiceChecks)
+      .values({
+        name: request.name,
+        probe: request.probe,
+        assertions: request.assertions,
+        intervalSec: request.intervalSec,
+        enabled: request.enabled,
+      })
+      .returning()
+      .catch((error: unknown) => {
+        throw duplicateCheckName(error);
+      });
+    if (!created) throw new ApiError(500, "Check was not created", "CHECK_NOT_CREATED");
+    await this.writeAudit(actor, "service_check.create", created.id, {
+      name: created.name,
+    });
+    return created;
+  };
+
+  updateServiceCheck = async (
+    actor: Actor,
+    checkId: string,
+    request: UpdateServiceCheckRequest,
+  ): Promise<unknown> => {
+    // Exactly the keys the caller named. The update schema is built from a
+    // DEFAULTLESS shape for this reason: a partial built from the defaulted one
+    // would materialise every key and turn "disable this check" into "disable
+    // it AND reset its period AND replace its assertions".
+    const patch = {
+      ...(request.name === undefined ? {} : { name: request.name }),
+      ...(request.probe === undefined ? {} : { probe: request.probe }),
+      ...(request.assertions === undefined
+        ? {}
+        : { assertions: request.assertions }),
+      ...(request.intervalSec === undefined
+        ? {}
+        : { intervalSec: request.intervalSec }),
+      ...(request.enabled === undefined ? {} : { enabled: request.enabled }),
+      updatedAt: new Date(),
+    };
+    const [updated] = await this.options.db
+      .update(nodeServiceChecks)
+      .set(patch)
+      .where(eq(nodeServiceChecks.id, checkId))
+      .returning()
+      .catch((error: unknown) => {
+        throw duplicateCheckName(error);
+      });
+    if (!updated) throw new ApiError(404, "Check not found", "CHECK_NOT_FOUND");
+    await this.writeAudit(actor, "service_check.update", checkId, {
+      fields: Object.keys(patch).filter((key) => key !== "updatedAt"),
+    });
+    return updated;
+  };
+
+  deleteServiceCheck = async (
+    actor: Actor,
+    checkId: string,
+  ): Promise<unknown> => {
+    const [deleted] = await this.options.db
+      .delete(nodeServiceChecks)
+      .where(eq(nodeServiceChecks.id, checkId))
+      .returning({ id: nodeServiceChecks.id, name: nodeServiceChecks.name });
+    if (!deleted) throw new ApiError(404, "Check not found", "CHECK_NOT_FOUND");
+    // Results are removed with it by the foreign key: a verdict with no
+    // definition is a chip nobody can explain.
+    await this.writeAudit(actor, "service_check.delete", checkId, {
+      name: deleted.name,
+    });
+    return { id: deleted.id };
+  };
+
+  runServiceCheckNow = async (
+    actor: Actor,
+    checkId: string,
+  ): Promise<unknown> => {
+    // A marker, not an execution. The panel cannot reach a node synchronously -
+    // it talks to them on the telemetry tick - so this sets the "due" mark and
+    // every node whose last result predates it runs the check once. Returning a
+    // result here would mean an HTTP request that waits on the whole fleet.
+    const now = new Date();
+    const [updated] = await this.options.db
+      .update(nodeServiceChecks)
+      .set({ nextDueAt: now, updatedAt: now })
+      .where(eq(nodeServiceChecks.id, checkId))
+      .returning({ id: nodeServiceChecks.id, nextDueAt: nodeServiceChecks.nextDueAt });
+    if (!updated) throw new ApiError(404, "Check not found", "CHECK_NOT_FOUND");
+    await this.writeAudit(actor, "service_check.run", checkId, {});
+    return updated;
   };
 
   adminAction = async (

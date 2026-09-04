@@ -1,5 +1,6 @@
 import type {
   CreateNodeRequest,
+  CreateServiceCheckRequest,
   CreateUserRequest,
   CreateKeyRequest,
   CustomRoutes,
@@ -14,6 +15,7 @@ import type {
   RulesRefreshStatus,
   UserStatus,
   UpdateNodeRequest,
+  UpdateServiceCheckRequest,
 } from "@amnezia/contracts";
 import type { NodeTrafficPeriods } from "./repository.js";
 
@@ -141,6 +143,23 @@ export interface ControlApiService {
     options: DeleteNodeOptions,
   ) => Promise<unknown>;
   adminList: (actor: Actor, resource: string) => Promise<unknown>;
+  createServiceCheck: (
+    actor: Actor,
+    request: CreateServiceCheckRequest,
+  ) => Promise<unknown>;
+  updateServiceCheck: (
+    actor: Actor,
+    checkId: string,
+    request: UpdateServiceCheckRequest,
+  ) => Promise<unknown>;
+  deleteServiceCheck: (actor: Actor, checkId: string) => Promise<unknown>;
+  /**
+   * Mark every node's copy of a check due on the next telemetry tick. It moves
+   * a marker rather than running anything: the panel cannot reach a node
+   * synchronously, and pretending otherwise would mean an HTTP request that
+   * waits on a fleet.
+   */
+  runServiceCheckNow: (actor: Actor, checkId: string) => Promise<unknown>;
   adminAction: (
     actor: Actor,
     resource: string,

@@ -7,6 +7,8 @@ import {
   clientPlatformSchema,
   createKeyRequestSchema,
   createNodeRequestSchema,
+  createServiceCheckRequestSchema,
+  updateServiceCheckRequestSchema,
   createUserRequestSchema,
   quotaRequestSchema,
   updateCustomRoutesRequestSchema,
@@ -325,6 +327,32 @@ export const buildApp = async ({
     );
     return reply.code(201).send(result);
   });
+  app.post("/api/admin/service-checks", async (request, reply) => {
+    const result = await service.createServiceCheck(
+      adminFor(request),
+      createServiceCheckRequestSchema.parse(request.body),
+    );
+    return reply.code(201).send(result);
+  });
+  app.patch("/api/admin/service-checks/:id", async (request) => {
+    const { id } = idParamsSchema.parse(request.params);
+    return service.updateServiceCheck(
+      adminFor(request),
+      id,
+      updateServiceCheckRequestSchema.parse(request.body),
+    );
+  });
+  app.delete("/api/admin/service-checks/:id", async (request) => {
+    const { id } = idParamsSchema.parse(request.params);
+    return service.deleteServiceCheck(adminFor(request), id);
+  });
+  // A static segment beats `:resource/:id/:action` in Fastify's router, so this
+  // can never be parsed as a generic admin action on some resource called
+  // "service-checks".
+  app.post("/api/admin/service-checks/:id/run", async (request) => {
+    const { id } = idParamsSchema.parse(request.params);
+    return service.runServiceCheckNow(adminFor(request), id);
+  });
   app.post("/api/admin/nodes", async (request, reply) => {
     const result = await service.createNode(
       adminFor(request),
@@ -360,6 +388,7 @@ export const buildApp = async ({
     "audit",
     "portal-policy",
     "global-routes",
+    "service-checks",
   ]) {
     app.get(`/api/admin/${resource}`, async (request) =>
       service.adminList(adminFor(request), resource),
