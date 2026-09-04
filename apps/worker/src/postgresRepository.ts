@@ -870,13 +870,14 @@ export class PostgresWorkerRepository
       // as the node row above, so a card never shows a fresh lastHealthAt next
       // to metrics from the previous tick.
       const metricsRow = toNodeMetricsRow(snapshot);
-      const { nodeId: _metricsNodeId, ...metricsUpdate } = metricsRow;
       await tx
         .insert(nodeMetricsCurrent)
         .values(metricsRow)
+        // nodeId is the conflict target, so setting it to the value it already
+        // has is a no-op and the row can be reused as the update verbatim.
         .onConflictDoUpdate({
           target: nodeMetricsCurrent.nodeId,
-          set: metricsUpdate,
+          set: metricsRow,
         });
 
       const [latestSample] = await tx
