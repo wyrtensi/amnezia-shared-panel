@@ -255,11 +255,26 @@ Cloudflare" are told apart:
   write-back reasserts its set. Remove-in-Cloudflare is honoured; add-in-Cloudflare
   is not (there is no account to create).
 
-Safety rails carry over: an unconfigured token or an empty active-user set is a
-no-op (never wipes the allowlist), bootstrap admins (`BOOTSTRAP_ADMIN_EMAILS`)
-are never disabled or dropped, and non-email rules (`email_domain`, groups) are
-always preserved. The write-back uses **`PUT`** on the app-scoped policy endpoint
-(see the verb note under Direction 2).
+Safety rails carry over, and three more make the sync unable to destroy what it
+did not create:
+
+- an unconfigured token or an empty active-user set is a no-op (never wipes the
+  allowlist), and bootstrap admins (`BOOTSTRAP_ADMIN_EMAILS`) are never disabled
+  or dropped;
+- **ownership** — the panel deletes only the email rules the stored baseline says
+  it added. An address put in the policy by hand, or by another tool, is
+  preserved exactly as written. Non-email rules (`email_domain`, groups) are
+  preserved as before;
+- **domain cover** — an address the policy still admits through a surviving
+  `email_domain` rule is never judged "removed in Cloudflare". Without this,
+  tidying away corporate addresses that a domain rule already covers would
+  disable every one of those users and revoke their keys;
+- **blast radius** — a run that would disable more accounts than
+  `ACCESS_SYNC_MAX_DISABLES` (default 10, `0` for no cap) stops without acting
+  and writes an `access.sync_aborted` audit event.
+
+The write-back uses **`PUT`** on the app-scoped policy endpoint (see the verb
+note under Direction 2).
 
 ### Direction 1 — Access → panel (deactivate on removal)
 
@@ -461,6 +476,10 @@ write-back, where Direction 1's read path may instead use `CF_ACCESS_GROUP_ID`.)
   that admits everyone or no one depending on decision — mirror Direction 1's
   empty-guard: if the computed `include` would be empty, abort and log instead of
   writing.
+- **Never rebuild `include` from the panel's set alone.** The policy may hold
+  rules the panel did not write. Compute the next `include` as: every non-email
+  rule, plus every email rule outside the panel's baseline, plus the panel's
+  desired set — in that order.
 - **Keep the bootstrap admins in the list.** Do not let a panel-side delete
   remove an address that is also in `BOOTSTRAP_ADMIN_EMAILS`, or an admin could
   lock themselves out at the edge.
