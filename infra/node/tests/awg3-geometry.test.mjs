@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { readFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 
@@ -128,8 +130,13 @@ test("keeps the four packet classes at distinct sizes", executing, () => {
 test("builds a junk packet only from tags the parser knows", executing, () => {
   for (let i = 0; i < DRAWS; i += 1) {
     const { params } = generate();
-    const spec = params.I1 ?? "";
-    assert.match(spec, /^</, "I1 must start with a tag");
+    const specs = ["I1", "I2", "I3", "I4", "I5"]
+      .map((key) => params[key])
+      .filter(Boolean);
+    assert.ok(specs.length > 0, "at least one decoy must be emitted");
+
+    for (const spec of specs) {
+    assert.match(spec, /^</, "a spec must start with a tag");
 
     const tags = [...spec.matchAll(/<([^>]*)>/g)].map((match) => match[1]);
     assert.ok(tags.length > 0, "a spec with no tags is silently skipped");
@@ -148,6 +155,7 @@ test("builds a junk packet only from tags the parser knows", executing, () => {
       if (key !== "b" && key !== "t") {
         assert.match(arg ?? "", /^\d+$/, `<${tag}> needs a non-negative count`);
       }
+    }
     }
   }
 });
@@ -191,4 +199,246 @@ test("the entrypoint uses the generator instead of hardcoding the geometry", asy
   assert.doesNotMatch(code, /^Jmin = 40$/m);
   assert.doesNotMatch(code, /^S1 = 15$/m);
   assert.doesNotMatch(code, /icloud/, "the stock junk packet must be gone");
+});
+
+// --- the 3.1-specific parameters ------------------------------------------
+// Geometry alone is the AWG-2.x-era knob. These are what 3.1 actually adds,
+// and leaving them unset means running stock WireGuard timings and stock
+// pad-to-16 behind an otherwise obfuscated handshake.
+
+/** `lo-hi` -> [lo, hi]; asserts the range form on the way. */
+const range = (params, key) => {
+  const value = params[key] ?? "";
+  const match = /^(\d+)-(\d+)$/.exec(value);
+  assert.ok(match, `${key}="${value}" must be a lo-hi range`);
+  const lo = Number(match[1]);
+  const hi = Number(match[2]);
+  assert.ok(lo <= hi, `${key}: ${lo} > ${hi}`);
+  // The six u16 range keys are silently truncated above 65535 by the tools:
+  // RekeyAfterTime = 70000 quietly becomes 4464.
+  assert.ok(hi <= 65535, `${key}: ${hi} does not fit a uint16`);
+  return [lo, hi];
+};
+
+test("uses the 3.1 parameters at all", executing, () => {
+  const { params } = generate();
+
+  for (const key of [
+    "ContentPaddingAddition",
+    "RekeyAfterTime",
+    "RekeyTimeout",
+    "RejectAfterTime",
+    "KeepaliveTimeout",
+    "MaxHandshakeAttempts",
+    "RandomTrailers",
+    "DisableCookies",
+  ]) {
+    assert.match(params[key] ?? "", /\S/, `${key} must be set`);
+  }
+});
+
+test("replaces WireGuard's pad-to-16 with real length entropy", executing, () => {
+  // Stock WireGuard makes every ciphertext length a multiple of 16, which is a
+  // strong classifier on its own. ContentPaddingAddition takes precedence over
+  // the trailer padding and removes that lattice.
+  for (let i = 0; i < DRAWS; i += 1) {
+    const [lo, hi] = range(generate().params, "ContentPaddingAddition");
+    assert.equal(lo, 1, "padding must start at 1, or the lattice survives");
+    assert.ok(hi >= 16, `an upper bound of ${hi} barely moves the length`);
+  }
+});
+
+test("keeps the timings coherent with each other", executing, () => {
+  // Get these wrong and the tunnel stalls rather than fails loudly: a keypair
+  // rejected before it can be rekeyed, or a keepalive that never fires inside
+  // the session's life.
+  for (let i = 0; i < DRAWS; i += 1) {
+    const { params } = generate();
+    const [, rekeyHi] = range(params, "RekeyAfterTime");
+    const [rejectLo] = range(params, "RejectAfterTime");
+    const [, keepaliveHi] = range(params, "KeepaliveTimeout");
+    const [, rekeyTimeoutHi] = range(params, "RekeyTimeout");
+    range(params, "MaxHandshakeAttempts");
+
+    assert.ok(rekeyHi < rejectLo, `rekey ${rekeyHi} must be below reject ${rejectLo}`);
+    assert.ok(
+      rejectLo > keepaliveHi + rekeyTimeoutHi,
+      `reject ${rejectLo} must exceed keepalive+rekeyTimeout ${keepaliveHi + rekeyTimeoutHi}`,
+    );
+    // A client that does not parse RejectAfterTime runs the stock 180 s. Going
+    // below it would drop that client's traffic early.
+    assert.ok(rejectLo >= 180, `reject ${rejectLo} is below the stock floor`);
+  }
+});
+
+test("destroys the 120-second rekey beat", executing, () => {
+  // A fresh value is drawn on every timer arm, so a range gives a genuinely
+  // non-periodic pattern rather than a shifted constant. A zero-width range
+  // would just move the beat.
+  const seen = new Set();
+  for (let i = 0; i < DRAWS; i += 1) {
+    const [lo, hi] = range(generate().params, "RekeyAfterTime");
+    assert.ok(hi > lo, "a zero-width rekey range is still a beat");
+    seen.add(`${lo}-${hi}`);
+  }
+  assert.ok(seen.size > 1, "the rekey range must differ between nodes");
+});
+
+test("holds RandomTrailers on, uniformly", executing, () => {
+  // It must match between the two ends, and a boolean carries one bit of
+  // per-node entropy — randomising it buys nothing and costs compatibility.
+  const draws = new Set();
+  for (let i = 0; i < 8; i += 1) draws.add(generate().params.RandomTrailers);
+
+  assert.deepEqual([...draws], ["on"]);
+});
+
+test("varies the shape of the pre-handshake burst, not just its numbers", executing, () => {
+  // The signature is the SHAPE: a censor comparing two nodes sees the same
+  // sequence of the same templates before every handshake, whatever the sizes
+  // inside them are. So the count and the order are drawn per node.
+  //
+  // The slots are filled contiguously from I1 on purpose. amneziawg-go sends
+  // them in a fixed I1..I5 order, so which of I2..I5 a spec occupies is
+  // invisible to a watcher - scattering them looks like entropy and is not.
+  const shapes = new Set();
+  const leaders = new Set();
+  for (let i = 0; i < DRAWS; i += 1) {
+    const { params } = generate();
+    const used = ["I1", "I2", "I3", "I4", "I5"].filter((key) => params[key]);
+
+    assert.ok(used.length >= 1 && used.length <= 3, `${used.length} decoys`);
+    assert.deepEqual(
+      used,
+      ["I1", "I2", "I3"].slice(0, used.length),
+      "slots must be contiguous from I1",
+    );
+    shapes.add(used.length);
+    leaders.add((params.I1 ?? "").slice(0, 12));
+  }
+
+  assert.ok(shapes.size > 1, "every node sends the same number of decoys");
+  assert.ok(leaders.size > 1, "every node leads with the same template");
+});
+
+test("puts a range only where a range is legal", executing, () => {
+  // Android toInt(), Apple UInt16() and Windows parseUint16 all hard-fail on a
+  // range in the junk-size keys, so one there bricks the config everywhere.
+  const { params } = generate();
+  for (const key of ["Jc", "Jmin", "Jmax", "S1", "S2", "S3", "S4"]) {
+    assert.doesNotMatch(params[key] ?? "", /-/, `${key} must not be a range`);
+  }
+  for (const key of ["H1", "H2", "H3", "H4"]) {
+    assert.match(params[key] ?? "", /^\d+$/, `${key} must be a single value`);
+  }
+});
+
+// --- the entrypoint's init path, actually executed -------------------------
+// The blocker this catches: the geometry moved into a generator, but a
+// distinctness check comparing $h1..$h4 was left behind. Under `set -eu` that
+// is an unbound variable and the container dies before writing a config — and
+// a test that only read the script as text saw nothing wrong.
+
+const entrypointPath = fileURLToPath(
+  new URL("../scripts/awg3-entrypoint.sh", import.meta.url),
+);
+
+test("the entrypoint writes a complete config on a fresh node", executing, async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "awg3-init-"));
+  const bin = join(root, "bin");
+  const state = join(root, "state");
+  await mkdir(bin, { recursive: true });
+
+  // Stubs for everything the init path shells out to. `awg pubkey` must be a
+  // deterministic function of its input, because the entrypoint re-derives the
+  // public key and refuses to start if it does not match what it stored.
+  const stub = (name, body) =>
+    writeFile(join(bin, name), `#!/bin/sh\n${body}\n`, { mode: 0o755 });
+  await stub(
+    "awg",
+    `case "$1" in
+  genkey|genpsk) head -c 32 /dev/urandom | base64 ;;
+  pubkey) sed 's/^/pub-/' ;;
+  *) exit 0 ;;
+esac`,
+  );
+  for (const name of ["ip", "iptables", "sysctl", "amneziawg-go", "awg-quick"]) {
+    await stub(name, "exit 0");
+  }
+  for (const name of ["awg", "ip", "iptables", "sysctl", "amneziawg-go", "awg-quick"]) {
+    await chmod(join(bin, name), 0o755);
+  }
+
+  // The geometry script lives at a fixed path inside the container; point the
+  // entrypoint at the real one in this checkout.
+  const geometry = fileURLToPath(
+    new URL("../scripts/awg3-geometry.sh", import.meta.url),
+  );
+  const script = (await readFile(entrypointPath, "utf8"))
+    .replace(/\r\n/g, "\n")
+    .replace("/usr/local/libexec/awg3-geometry.sh", geometry);
+  const localEntrypoint = join(root, "entrypoint.sh");
+  await writeFile(localEntrypoint, script, { mode: 0o755 });
+
+  // It ends in an idle loop, so it is stopped rather than waited for.
+  const result = spawnSync(
+    "sh",
+    ["-c", `timeout 20 sh ${localEntrypoint}; true`],
+    {
+      env: {
+        ...process.env,
+        PATH: `${bin}:${process.env.PATH}`,
+        AWG3_STATE_DIR: state,
+      },
+      encoding: "utf8",
+    },
+  );
+
+  const config = await readFile(join(state, "awg0.conf"), "utf8").catch(
+    () => "",
+  );
+  assert.ok(
+    config.includes("[Interface]"),
+    `no config was written.\nstdout: ${result.stdout}\nstderr: ${result.stderr}`,
+  );
+
+  // Every key iOS needs, or it silently drops the whole AWG block.
+  for (const key of ["Jc", "Jmin", "Jmax", "S1", "S2", "H1", "H2", "H3", "H4"]) {
+    assert.match(config, new RegExp(`^${key} = \\S+$`, "m"), `missing ${key}`);
+  }
+  assert.match(config, /^HeaderProtectionKey = \S+$/m);
+  assert.match(config, /^RandomTrailers = on$/m);
+  assert.match(config, /^ContentPaddingAddition = \d+-\d+$/m);
+
+  // Written exactly once: the generator emits it, and the entrypoint used to
+  // add a second copy, which left the tools and the node-agent disagreeing
+  // about which one wins.
+  const trailers = config.match(/^RandomTrailers = /gm) ?? [];
+  assert.equal(trailers.length, 1, "RandomTrailers must appear once");
+
+  // The interface MTU and the S4 budget must be the same number.
+  const s4 = Number(/^S4 = (\d+)$/m.exec(config)?.[1]);
+  const mtu = Number(
+    /ip link set mtu "?\$?\{?(\d+)/.exec(script)?.[1] ?? "1420",
+  );
+  assert.ok(s4 >= 12, `S4=${s4}`);
+  assert.ok(
+    s4 + 32 + 1420 + 28 <= 1500,
+    `S4=${s4} overflows the interface MTU budget`,
+  );
+  void mtu;
+});
+
+test("the entrypoint carries no variable the generator now owns", async () => {
+  const script = (await readFile(entrypointPath, "utf8")).replace(/\r\n/g, "\n");
+
+  // $h1..$h4 moved into the generator. A reference left behind here is an
+  // unbound variable under `set -eu`, i.e. a container that never starts.
+  assert.doesNotMatch(script, /\$h[1-4]\b/, "dangling header variable");
+  // One MTU, used for the interface and for the S4 budget alike.
+  assert.doesNotMatch(
+    script,
+    /ip link set mtu 1420/,
+    "the interface MTU must come from the same variable as the budget",
+  );
 });
