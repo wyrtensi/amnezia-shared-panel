@@ -201,7 +201,8 @@ const ru = {
   "wizard.proto.awg2.desc": "Совместимость со старыми клиентами",
   "wizard.route.full_tunnel.desc": "Всё соединение идёт через VPN",
   "wizard.route.ru_whitelist.desc": "Иностранные ресурсы через VPN, RU напрямую",
-  "wizard.route.ru_blacklist.desc": "Через VPN идут лишь заблокированные сайты",
+  "wizard.route.ru_blacklist.desc":
+    "Через VPN идут лишь сайты из списка. Нужного вам сайта в нём может не оказаться — тогда он не откроется.",
   "wizard.recommended": "Рекомендуется",
   "wizard.awg3Hint": "Требуется AmneziaVPN {version}+",
   "wizard.rulesNotActive": "Правила ещё не активированы",
@@ -1157,7 +1158,8 @@ const en = {
   "wizard.proto.awg2.desc": "Compatibility with older clients",
   "wizard.route.full_tunnel.desc": "All traffic goes through the VPN",
   "wizard.route.ru_whitelist.desc": "Foreign resources via VPN, RU direct",
-  "wizard.route.ru_blacklist.desc": "Only blocked sites go through the VPN",
+  "wizard.route.ru_blacklist.desc":
+    "Only sites on the list go through the VPN. The site you need may not be on it — and then it will not open.",
   "wizard.recommended": "Recommended",
   "wizard.awg3Hint": "Requires AmneziaVPN {version}+",
   "wizard.rulesNotActive": "Rules not activated yet",
