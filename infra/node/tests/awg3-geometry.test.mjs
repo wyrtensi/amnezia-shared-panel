@@ -404,7 +404,7 @@ esac`,
 
   // Every key iOS needs, or it silently drops the whole AWG block.
   for (const key of ["Jc", "Jmin", "Jmax", "S1", "S2", "H1", "H2", "H3", "H4"]) {
-    assert.match(config, new RegExp(`^${key} = \S+$`, "m"), `missing ${key}`);
+    assert.match(config, new RegExp(`^${key} = \\S+$`, "m"), `missing ${key}`);
   }
   assert.match(config, /^HeaderProtectionKey = \S+$/m);
   assert.match(config, /^RandomTrailers = on$/m);
