@@ -188,6 +188,7 @@ via `CONTROL_API_URL` plus one of, in priority order:
 | `node-checks <node> --enable=<check>` / `--disable=<check>` | Turn one check on or off **for this node only**. A check is defined once for the fleet; whether a given node runs it is a property of the node |
 | `cf-config --account= --app= --policy=` | Set Cloudflare Access IDs |
 | `cf-token <token>` · `cf-token --token-file=<path\|->` | Store the Cloudflare API token (encrypted at rest). Prefer the file/stdin form: a token passed as an argument is visible in `ps` and in shell history for as long as the process lives |
+| `cf-sync [--status] [--json]` | Ask the outbox to reconcile the Cloudflare Access allowlist now, instead of waiting for the hourly timer or the next panel-side user change. Refuses up front, without queueing anything, when Cloudflare is not configured (`cf-config` / `cf-token`). `--status` shows the last run as one line, including a run that refused to act (Cloudflare unconfigured, or the blast-radius cap tripped) — that finishes as `failed` with the reason, same as any other failure; `--status --json` returns the raw status object |
 | `panel-update [--status] [--json]` | Trigger the in-panel update (backup → pull → migrate → restart), or show its status. `--status` prints a readable line — the pending request, and whether the last host run finished `ok` or `FAILED` with its reason; `--status --json` returns the raw status object unchanged |
 | `client-releases --refresh` | Discard the cached release snapshot and resolve it again now (admin only). The panel otherwise re-checks every 6 hours after a success, and every 15 minutes after a failure — use this after restoring egress on a host that was serving the offline fallback |
 
@@ -257,6 +258,8 @@ docker exec -i "$CID" node apps/cli/dist/main.js \
 # wire two-way Cloudflare Access sync
 docker exec "$CID" node apps/cli/dist/main.js cf-config --account=<id> --app=<id> --policy=<id>
 docker exec "$CID" node apps/cli/dist/main.js cf-token <cf-api-token>
+# cf-sync --status shows whether the last push landed
+docker exec "$CID" node apps/cli/dist/main.js cf-sync --status
 ```
 
 Dev example: `CONTROL_API_URL=http://127.0.0.1:3001 PANEL_ADMIN_EMAIL=admin@example.com

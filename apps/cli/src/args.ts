@@ -114,6 +114,40 @@ export const formatUpdateStatus = (status: UpdateStatusView): string => {
 };
 
 /**
+ * Shape of `GET /api/admin/access-sync` as far as the rendering below cares.
+ * `job_outbox` shares this status machine with `rules.refresh`, and "idle"
+ * (no row at all) means nobody has ever asked for a reconcile.
+ */
+export type AccessSyncStatusView = {
+  status: "idle" | "pending" | "processing" | "completed" | "failed";
+  queuedAt?: string | null;
+  completedAt?: string | null;
+  lastError?: string | null;
+};
+
+/**
+ * Human-readable `cf-sync --status`, one line.
+ *
+ * A run that refused to act — Cloudflare unconfigured, or the blast-radius
+ * cap tripped — still finishes as "failed" with the reason, deliberately not
+ * reported as success, so the failed branch is the one that matters most.
+ */
+export const formatAccessSyncStatus = (status: AccessSyncStatusView): string => {
+  switch (status.status) {
+    case "idle":
+      return "no reconcile requested yet";
+    case "pending":
+      return `pending since ${status.queuedAt ?? "unknown"}`;
+    case "processing":
+      return "running";
+    case "completed":
+      return `completed at ${status.completedAt ?? "unknown"}`;
+    case "failed":
+      return `failed: ${status.lastError ?? "unknown reason"}`;
+  }
+};
+
+/**
  * Device types `--device-type` accepts. A deliberate copy of
  * `deviceTypeSchema.options` in @amnezia/contracts: this CLI ships with no
  * dependencies, so the list is duplicated and each side asserts the same

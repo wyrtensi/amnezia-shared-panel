@@ -237,6 +237,19 @@ separate env-driven tasks (which would fight — see the safety note at the end 
 Direction 2). The per-direction sections below remain the reference for the
 underlying Cloudflare API and the exact token scopes.
 
+**How fast a change lands.** A panel-side user change (add, remove, edit) arms
+this task immediately, so the write reaches the Access policy within seconds
+rather than waiting for the next scheduled run. The periodic reconcile
+(`ACCESS_RECONCILE_INTERVAL_MS`, default hourly) remains the source of truth
+and keeps running regardless — it is what catches anything a panel-side change
+did not, such as a removal made directly in Cloudflare (Direction 1). An
+operator can also ask for a reconcile right now with `amnezia-panel cf-sync`
+(refuses immediately, without queuing anything, if Cloudflare is not yet
+configured) and check the outcome of the last run with `cf-sync --status`. A
+run that refused to act — Cloudflare unconfigured, or the blast-radius cap
+below tripped — finishes as **failed** with the reason, which is exactly what
+`cf-sync --status` reports; it is deliberately not reported as success.
+
 Bootstrap admins (`BOOTSTRAP_ADMIN_EMAILS`) are **pinned**: the sync never drops
 them from the policy `include` list and never disables them, so the policy can
 never empty itself and lock everyone out of the edge.

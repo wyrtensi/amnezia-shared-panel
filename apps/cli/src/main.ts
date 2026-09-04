@@ -14,6 +14,7 @@
  */
 
 import { writeFile } from "node:fs/promises";
+import { pathToFileURL } from "node:url";
 
 import {
   keyNeedsRouteProfileWarning,
@@ -32,6 +33,7 @@ import {
   deviceTypeUsage,
   effectiveKeyLimitMode,
   flagOf,
+  formatAccessSyncStatus,
   formatDeviceType,
   formatPolicyValue,
   formatUpdateStatus,
@@ -47,7 +49,7 @@ import {
   quotaCurrentLimit,
   quotaTargetLabel,
 } from "./args.js";
-import type { UpdateStatusView } from "./args.js";
+import type { AccessSyncStatusView, UpdateStatusView } from "./args.js";
 import { classifyNodeHost, formatNodeAddress } from "./nodeAddress.js";
 import {
   awgCell,
@@ -759,6 +761,65 @@ async function cmdCfConfig(args: string[]): Promise<void> {
     body: JSON.stringify(body),
   });
   console.log(`Updated Cloudflare config: ${Object.keys(body).join(", ")}`);
+}
+
+/**
+ * Cloudflare is configured once every id is set and a token has been stored.
+ * `/api/admin/portal-policy` returns a one-row list everywhere else in this
+ * file (see `cmdPolicy`, `cmdCfConfig`'s siblings); tolerate a bare object
+ * too so a differently-shaped response still gets checked correctly.
+ */
+function cfAccessConfigured(raw: unknown): boolean {
+  const rows = Array.isArray(raw) ? (raw as unknown[]) : [raw];
+  const row = (rows[0] ?? {}) as Record<string, unknown>;
+  return (
+    typeof row.cfAccessAccountId === "string" &&
+    typeof row.cfAccessAppId === "string" &&
+    typeof row.cfAccessPolicyId === "string" &&
+    row.cfApiTokenSet === true
+  );
+}
+
+/**
+ * Ask the outbox to reconcile the Cloudflare Access allowlist now, instead of
+ * waiting for the hourly timer or the next panel-side user change. Refuses
+ * up front when Cloudflare is not configured: the worker would fail the run
+ * anyway, and an operator who explicitly asked for this deserves an
+ * immediate answer instead of a queued run that dies later.
+ *
+ * `--status` reads the same job the worker executes and prints its last
+ * outcome. A run that refused to act (unconfigured, or the blast-radius cap
+ * tripped) finishes as "failed" with the reason, which shows up here too.
+ */
+async function cmdCfSync(args: string[]): Promise<void> {
+  if (args.includes("--status")) {
+    const status = await api<AccessSyncStatusView>("/api/admin/access-sync");
+    if (wantsJson(args)) return json(status);
+    console.log(formatAccessSyncStatus(status));
+    return;
+  }
+  const policy = await api<unknown>("/api/admin/portal-policy");
+  if (!cfAccessConfigured(policy)) {
+    throw new Error(
+      "Cloudflare Access is not configured — set the account/app/policy ids " +
+        "with cf-config and the API token with cf-token, then run cf-sync again.",
+    );
+  }
+  const result = await api<Record<string, unknown>>(
+    "/api/admin/access-sync/global/run",
+    { method: "POST", body: JSON.stringify({}) },
+  );
+  // The run endpoint arms the outbox row and hands back its resulting state.
+  // A row already mid-flight (locked by the worker's poller) stays
+  // "processing" through the arm, which is the one case that is genuinely a
+  // coalesce into a run already on its way rather than a fresh queue.
+  const alreadyRunning =
+    result.alreadyRunning === true || result.status === "processing";
+  console.log(
+    alreadyRunning
+      ? "cf-sync: coalesced into a run already on its way"
+      : "cf-sync: queued a reconcile",
+  );
 }
 
 // Every settable portal-policy field, grouped by how the flag value is coerced.
@@ -1622,6 +1683,12 @@ Write:
                                           cf-token <token> still works but lands in
                                           ps/history
   cf-config --account= --app= --policy=   Set Cloudflare Access IDs
+  cf-sync [--status] [--json]             Ask for a Cloudflare Access reconcile now instead of
+                                          waiting for the hourly timer (refuses if Cloudflare
+                                          isn't configured — see cf-config / cf-token).
+                                          --status shows the last run as one line, including a
+                                          refused run's reason ("failed: …"); --json = the raw
+                                          status object
   policy-set --<field>=<value> …          Set any panel setting(s), see below
   global-routes-set --profile=ru_whitelist|ru_blacklist [--add-domains=] [--add-cidrs=]
                     [--exclude-domains=] [--exclude-cidrs=]
@@ -1986,8 +2053,14 @@ async function cmdNodeChecks(args: string[]): Promise<void> {
   console.log(`node ${node.name}: ${Object.keys(patch).join(", ")} updated`);
 }
 
-async function main(): Promise<void> {
-  const [command, ...args] = process.argv.slice(2);
+/**
+ * Parse a command line and run it. Exported so tests can drive the CLI
+ * end-to-end (stubbing `fetch`) without spawning a subprocess; the bottom of
+ * this file only calls it when the file is executed directly, so importing
+ * main.ts for a test never runs a command against `process.argv`.
+ */
+export async function dispatch(argv: string[]): Promise<void> {
+  const [command, ...args] = argv;
   switch (command) {
     case "overview":
       return cmdOverview(args);
@@ -2062,6 +2135,8 @@ async function main(): Promise<void> {
       return cmdCfToken(args);
     case "cf-config":
       return cmdCfConfig(args);
+    case "cf-sync":
+      return cmdCfSync(args);
     case "policy":
       return cmdPolicy(args);
     case "policy-set":
@@ -2101,7 +2176,11 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch((error: unknown) => {
-  console.error(error instanceof Error ? error.message : String(error));
-  process.exitCode = 1;
-});
+// Only run as a CLI when this file is the entry point — importing it (e.g.
+// from main.test.ts) must never dispatch a command against process.argv.
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  dispatch(process.argv.slice(2)).catch((error: unknown) => {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exitCode = 1;
+  });
+}

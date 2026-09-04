@@ -5,6 +5,7 @@ import {
   RETIRED_DEVICE_TYPES,
   deviceTypeUsage,
   flagOf,
+  formatAccessSyncStatus,
   formatDeviceType,
   formatUpdateStatus,
   parseDeviceType,
@@ -114,6 +115,41 @@ describe("formatUpdateStatus", () => {
     });
     expect(shown).toContain("ok");
     expect(shown).toContain("req-1");
+  });
+});
+
+describe("formatAccessSyncStatus", () => {
+  it("says when nothing has ever been requested", () => {
+    expect(formatAccessSyncStatus({ status: "idle" })).toBe(
+      "no reconcile requested yet",
+    );
+  });
+  it("shows a queued run and when it was queued", () => {
+    expect(
+      formatAccessSyncStatus({
+        status: "pending",
+        queuedAt: "2026-09-05T09:00:00.000Z",
+      }),
+    ).toBe("pending since 2026-09-05T09:00:00.000Z");
+  });
+  it("shows a run in flight", () => {
+    expect(formatAccessSyncStatus({ status: "processing" })).toBe("running");
+  });
+  it("shows a completed run and when it finished", () => {
+    expect(
+      formatAccessSyncStatus({
+        status: "completed",
+        completedAt: "2026-09-05T09:00:10.000Z",
+      }),
+    ).toBe("completed at 2026-09-05T09:00:10.000Z");
+  });
+  it("shows a REFUSED run and its reason — deliberately not reported as success", () => {
+    expect(
+      formatAccessSyncStatus({
+        status: "failed",
+        lastError: "aborted: 12 account(s) would be disabled",
+      }),
+    ).toBe("failed: aborted: 12 account(s) would be disabled");
   });
 });
 
