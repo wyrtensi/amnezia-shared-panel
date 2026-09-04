@@ -169,6 +169,13 @@
       "when": 1788520977112,
       "tag": "0023_disable_gemini_check",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1788524022989,
+      "tag": "0024_repoint_gemini_check",
+      "breakpoints": true
     }
   ]
 }
