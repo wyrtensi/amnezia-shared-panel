@@ -403,4 +403,36 @@ describe("createAccessSync", () => {
       ],
     });
   });
+
+  it("does not disable a user still admitted by a surviving email_domain rule", async () => {
+    const { repository, deactivateByEmail } = makeRepo({
+      active: ["ivan@company.tld"],
+      baseline: ["ivan@company.tld"],
+    });
+    // An admin removed the "redundant" corporate addresses, trusting the domain
+    // rule to cover them. Gmail rules remain, so the empty-include guard is silent.
+    const { createClient } = clientWith([
+      { email_domain: { domain: "company.tld" } },
+      { email: { email: "outside@gmail.com" } },
+    ]);
+
+    await createAccessSync({ repository, createClient })();
+
+    expect(deactivateByEmail).not.toHaveBeenCalled();
+  });
+
+  it("still disables a user no domain rule covers", async () => {
+    const { repository, deactivateByEmail } = makeRepo({
+      active: ["ivan@other.tld"],
+      baseline: ["ivan@other.tld"],
+    });
+    const { createClient } = clientWith([
+      { email_domain: { domain: "company.tld" } },
+      { email: { email: "outside@gmail.com" } },
+    ]);
+
+    await createAccessSync({ repository, createClient })();
+
+    expect(deactivateByEmail).toHaveBeenCalledWith(["ivan@other.tld"]);
+  });
 });

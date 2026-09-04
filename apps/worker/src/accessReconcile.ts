@@ -170,6 +170,23 @@ export function createAccessWriteback(options: {
 const normalizeEmail = (email: string): string => email.trim().toLowerCase();
 
 /**
+ * Domains admitted by the policy's `email_domain` ("emails ending in") rules.
+ * Cloudflare stores the bare domain, but the dashboard shows it with a leading
+ * "@" and operators paste it that way, so both forms are accepted.
+ */
+const domainAllowlist = (rules: CfAccessRule[]): Set<string> =>
+  new Set(
+    rules
+      .map(
+        (rule) =>
+          (rule as { email_domain?: { domain?: string } }).email_domain?.domain,
+      )
+      .filter((domain): domain is string => Boolean(domain))
+      .map((domain) => domain.trim().toLowerCase().replace(/^@/, ""))
+      .filter(Boolean),
+  );
+
+/**
  * Two-way Cloudflare Access sync (the "2 side" policy editor).
  *
  * A single task reconciles the panel's active-user set against the Access
@@ -232,6 +249,14 @@ export function createAccessSync(options: {
         .filter((value): value is string => Boolean(value)),
     );
 
+    // A person the policy still admits through a domain rule has not been
+    // "removed in Cloudflare" — treating them as removed would disable them and
+    // revoke every key they own. Guards the common tidy-up where an admin drops
+    // the explicit corporate addresses because a domain rule already covers them.
+    const allowedDomains = domainAllowlist(nonEmailRules);
+    const coveredByDomain = (email: string): boolean =>
+      allowedDomains.has(email.split("@")[1] ?? "");
+
     const activeSet = new Set(
       (await repository.listActiveUserEmails()).map(normalizeEmail).filter(Boolean),
     );
@@ -254,7 +279,8 @@ export function createAccessSync(options: {
             (email) =>
               activeSet.has(email) &&
               !cfEmails.has(email) &&
-              !pinnedSet.has(email),
+              !pinnedSet.has(email) &&
+              !coveredByDomain(email),
           );
     if (cfEmails.size === 0 && nonEmailRules.length > 0) {
       log(
