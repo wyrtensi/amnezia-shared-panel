@@ -253,7 +253,7 @@ const ru = {
   "keyHelp.title": "Как создать ключ",
   "keyHelp.desc": "Что значит каждое поле в форме создания ключа.",
   "keyHelp.deviceOneEach":
-    "На каждое устройство нужен свой ключ. Один ключ на два устройства работает нестабильно: они мешают друг другу, и соединение постоянно рвётся.",
+    "На каждое устройство нужен свой ключ. Один ключ на два устройства работает нестабильно: они мешают друг другу, и соединение может прерываться.",
   "keyHelp.thenConnect": "Как подключиться →",
   "keyHelp.deviceBody":
     "Выберите устройство, на котором будете подключаться. Один ключ — одно устройство; для второго создайте ещё один.",
@@ -1233,7 +1233,7 @@ const en = {
   "keyHelp.title": "How to create a key",
   "keyHelp.desc": "What each field of the create-key form means.",
   "keyHelp.deviceOneEach":
-    "Each device needs its own key. Sharing one between two devices is unstable: they interfere with each other and the connection keeps dropping.",
+    "Each device needs its own key. Sharing one between two devices is unstable: they interfere with each other and the connection may drop.",
   "keyHelp.thenConnect": "How to connect →",
   "keyHelp.deviceBody":
     "Pick the device you will connect from. One key is for one device — make another for the second.",
