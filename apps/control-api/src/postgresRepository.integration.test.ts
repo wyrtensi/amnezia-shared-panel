@@ -10,6 +10,8 @@ import {
   encryptSecret,
   jobOutbox,
   nodeAgentReleases,
+  nodeMetricsCurrent,
+  nodeServiceCheckResults,
   nodeServiceChecks,
   nodes,
   portalPolicy,
@@ -2231,5 +2233,166 @@ describe("PostgresControlRepository service checks", () => {
     await expect(
       repository.deleteServiceCheck(admin, missing),
     ).rejects.toMatchObject({ statusCode: 404 });
+  });
+});
+
+describe("PostgresControlRepository node status surfaces", () => {
+  const database = databaseUrl ? createDatabase(databaseUrl) : null;
+  const keyring = { 1: randomBytes(32) };
+  let actor: Actor;
+  let nodeId: string;
+  let checkId: string;
+
+  const probe = {
+    kind: "http" as const,
+    url: "https://gemini.google.com/",
+    method: "GET" as const,
+    timeoutMs: 10_000,
+  };
+
+  beforeAll(async () => {
+    if (!database) return;
+    await database.db.delete(nodeServiceChecks);
+    await database.db.delete(portalPolicy);
+    const credentials = encryptSecret("api-key", keyring, 1);
+    const label = encryptSecret("label-secret", keyring, 1);
+    const [node] = await database.db
+      .insert(nodes)
+      .values({
+        name: "status-node",
+        apiBaseUrl: "http://127.0.0.1:4001",
+        credentialsCiphertext: credentials.ciphertext,
+        credentialsNonce: credentials.nonce,
+        credentialsAuthTag: credentials.authTag,
+        credentialsKeyVersion: credentials.keyVersion,
+        labelSecretCiphertext: label.ciphertext,
+        labelSecretNonce: label.nonce,
+        labelSecretAuthTag: label.authTag,
+        labelSecretKeyVersion: label.keyVersion,
+      })
+      .returning();
+    if (!node) throw new Error("Failed to seed node");
+    nodeId = node.id;
+
+    const [user] = await database.db
+      .insert(users)
+      .values({ email: "status-viewer@example.com" })
+      .onConflictDoUpdate({ target: users.email, set: { status: "active" } })
+      .returning();
+    if (!user) throw new Error("Failed to seed user");
+    actor = {
+      id: user.id,
+      email: user.email,
+      displayName: null,
+      role: "user",
+      status: "active",
+    };
+
+    const [check] = await database.db
+      .insert(nodeServiceChecks)
+      .values({
+        name: "Google Gemini",
+        probe,
+        assertions: [{ type: "statusIn", statuses: [200] }],
+      })
+      .returning();
+    if (!check) throw new Error("Failed to seed check");
+    checkId = check.id;
+    await database.db.insert(nodeServiceCheckResults).values({
+      nodeId,
+      checkId,
+      status: "failed",
+      httpStatus: 200,
+      latencyMs: 412,
+      detail: 'body does not contain "conversation-container"',
+      finalUrl: "https://gemini.google.com/",
+      checkedAt: new Date(),
+      failingSince: new Date(),
+    });
+  });
+
+  afterAll(async () => {
+    if (database) await database.client.end();
+  });
+
+  const subject = () =>
+    new PostgresControlRepository({ db: database!.db, keyring });
+
+  runDatabaseTest("gives a user a name and a state, and nothing else", async () => {
+    if (!database) return;
+    const [node] = (await subject().listNodes(actor)) as Array<{
+      status?: { checks: Array<{ name: string; state: string }> };
+      endpoint?: unknown;
+    }>;
+
+    // The narrowing, asserted rather than described: `checks` and only `checks`.
+    // A `state` key here would be a second vocabulary for node health, which
+    // the panel already shows from enabled/lastError/lastHealthAt.
+    expect(Object.keys(node?.status ?? {})).toEqual(["checks"]);
+    expect(node?.status?.checks).toEqual([
+      { name: "Google Gemini", state: "unavailable" },
+    ]);
+    // The handshake signal is an admin diagnostic and must not leak here.
+    expect(node?.endpoint).toBeUndefined();
+  });
+
+  runDatabaseTest("shows a user no detail, no URL and no HTTP status", async () => {
+    if (!database) return;
+    const payload = JSON.stringify(await subject().listNodes(actor));
+    expect(payload).not.toContain("conversation-container");
+    expect(payload).not.toContain("gemini.google.com");
+    expect(payload).not.toContain("412");
+  });
+
+  runDatabaseTest("omits status entirely when the policy says so", async () => {
+    if (!database) return;
+    await database.db.insert(portalPolicy).values({ showNodeStatus: false });
+    const [node] = (await subject().listNodes(actor)) as Array<{
+      status?: unknown;
+    }>;
+    // Absent, not empty: an empty array would render as a node with no checks,
+    // which is a different statement from "this panel does not show them".
+    expect(node && "status" in node).toBe(false);
+    await database.db.delete(portalPolicy);
+  });
+
+  runDatabaseTest("gives an admin the metrics row and the handshake signal", async () => {
+    if (!database) return;
+    await database.db.insert(nodeMetricsCurrent).values({
+      nodeId,
+      observedAt: new Date(),
+      agentLatencyMs: 12,
+      uptimeSec: 3_600,
+      cpuCores: 2,
+      memAvailableBytes: 361_267_200n,
+    });
+
+    const [node] = (await subject().adminList(
+      { ...actor, role: "admin" },
+      "nodes",
+    )) as Array<{
+      metrics: { memAvailableBytes: bigint | string } | null;
+      endpoint: { status: string; lastHandshakeAt: Date | null };
+    }>;
+
+    expect(String(node?.metrics?.memAvailableBytes)).toBe("361267200");
+    // No peer has ever handshaked on this node, so the honest answer is
+    // "unknown" - not "stale", which would claim we once saw one.
+    expect(node?.endpoint).toEqual({
+      status: "unknown",
+      lastHandshakeAt: null,
+    });
+    await database.db.delete(nodeMetricsCurrent);
+  });
+
+  runDatabaseTest("reports no metrics for a node that has never been polled", async () => {
+    if (!database) return;
+    const [node] = (await subject().adminList(
+      { ...actor, role: "admin" },
+      "nodes",
+    )) as Array<{ metrics: unknown }>;
+    // null, not an object of nulls: "we have never heard from this node" and
+    // "this node reports nothing" are different, and the card says so.
+    expect(node?.metrics).toBeNull();
   });
 });
