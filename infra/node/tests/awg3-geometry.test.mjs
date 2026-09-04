@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { readFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 
@@ -307,4 +309,114 @@ test("puts a range only where a range is legal", executing, () => {
   for (const key of ["H1", "H2", "H3", "H4"]) {
     assert.match(params[key] ?? "", /^\d+$/, `${key} must be a single value`);
   }
+});
+
+// --- the entrypoint's init path, actually executed -------------------------
+// The blocker this catches: the geometry moved into a generator, but a
+// distinctness check comparing $h1..$h4 was left behind. Under `set -eu` that
+// is an unbound variable and the container dies before writing a config — and
+// a test that only read the script as text saw nothing wrong.
+
+const entrypointPath = fileURLToPath(
+  new URL("../scripts/awg3-entrypoint.sh", import.meta.url),
+);
+
+test("the entrypoint writes a complete config on a fresh node", executing, async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "awg3-init-"));
+  const bin = join(root, "bin");
+  const state = join(root, "state");
+  await mkdir(bin, { recursive: true });
+
+  // Stubs for everything the init path shells out to. `awg pubkey` must be a
+  // deterministic function of its input, because the entrypoint re-derives the
+  // public key and refuses to start if it does not match what it stored.
+  const stub = (name, body) =>
+    writeFile(join(bin, name), `#!/bin/sh\n${body}\n`, { mode: 0o755 });
+  await stub(
+    "awg",
+    `case "$1" in
+  genkey|genpsk) head -c 32 /dev/urandom | base64 ;;
+  pubkey) sed 's/^/pub-/' ;;
+  *) exit 0 ;;
+esac`,
+  );
+  for (const name of ["ip", "iptables", "sysctl", "amneziawg-go", "awg-quick"]) {
+    await stub(name, "exit 0");
+  }
+  for (const name of ["awg", "ip", "iptables", "sysctl", "amneziawg-go", "awg-quick"]) {
+    await chmod(join(bin, name), 0o755);
+  }
+
+  // The geometry script lives at a fixed path inside the container; point the
+  // entrypoint at the real one in this checkout.
+  const geometry = fileURLToPath(
+    new URL("../scripts/awg3-geometry.sh", import.meta.url),
+  );
+  const script = (await readFile(entrypointPath, "utf8"))
+    .replace(/\r\n/g, "\n")
+    .replace("/usr/local/libexec/awg3-geometry.sh", geometry);
+  const localEntrypoint = join(root, "entrypoint.sh");
+  await writeFile(localEntrypoint, script, { mode: 0o755 });
+
+  // It ends in an idle loop, so it is stopped rather than waited for.
+  const result = spawnSync(
+    "sh",
+    ["-c", `timeout 20 sh ${localEntrypoint}; true`],
+    {
+      env: {
+        ...process.env,
+        PATH: `${bin}:${process.env.PATH}`,
+        AWG3_STATE_DIR: state,
+      },
+      encoding: "utf8",
+    },
+  );
+
+  const config = await readFile(join(state, "awg0.conf"), "utf8").catch(
+    () => "",
+  );
+  assert.ok(
+    config.includes("[Interface]"),
+    `no config was written.\nstdout: ${result.stdout}\nstderr: ${result.stderr}`,
+  );
+
+  // Every key iOS needs, or it silently drops the whole AWG block.
+  for (const key of ["Jc", "Jmin", "Jmax", "S1", "S2", "H1", "H2", "H3", "H4"]) {
+    assert.match(config, new RegExp(`^${key} = \S+$`, "m"), `missing ${key}`);
+  }
+  assert.match(config, /^HeaderProtectionKey = \S+$/m);
+  assert.match(config, /^RandomTrailers = on$/m);
+  assert.match(config, /^ContentPaddingAddition = \d+-\d+$/m);
+
+  // Written exactly once: the generator emits it, and the entrypoint used to
+  // add a second copy, which left the tools and the node-agent disagreeing
+  // about which one wins.
+  const trailers = config.match(/^RandomTrailers = /gm) ?? [];
+  assert.equal(trailers.length, 1, "RandomTrailers must appear once");
+
+  // The interface MTU and the S4 budget must be the same number.
+  const s4 = Number(/^S4 = (\d+)$/m.exec(config)?.[1]);
+  const mtu = Number(
+    /ip link set mtu "?\$?\{?(\d+)/.exec(script)?.[1] ?? "1420",
+  );
+  assert.ok(s4 >= 12, `S4=${s4}`);
+  assert.ok(
+    s4 + 32 + 1420 + 28 <= 1500,
+    `S4=${s4} overflows the interface MTU budget`,
+  );
+  void mtu;
+});
+
+test("the entrypoint carries no variable the generator now owns", async () => {
+  const script = (await readFile(entrypointPath, "utf8")).replace(/\r\n/g, "\n");
+
+  // $h1..$h4 moved into the generator. A reference left behind here is an
+  // unbound variable under `set -eu`, i.e. a container that never starts.
+  assert.doesNotMatch(script, /\$h[1-4]\b/, "dangling header variable");
+  // One MTU, used for the interface and for the S4 budget alike.
+  assert.doesNotMatch(
+    script,
+    /ip link set mtu 1420/,
+    "the interface MTU must come from the same variable as the budget",
+  );
 });

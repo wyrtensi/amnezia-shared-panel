@@ -52,10 +52,13 @@ rand_span() {
 
 # --- Magic headers -----------------------------------------------------------
 # amneziawg-go refuses a device whose headers overlap, so they must be distinct.
-# 0..4 are the literal WireGuard message types: picking one puts the type field
-# back where a plain-WireGuard classifier expects it. 0 is worse still - it
-# reads back as "unset". Upper bound stays below 2^31 so nothing downstream has
-# to care about sign.
+#
+# 0 is excluded because a 0-0 range reads back as "unset" and round-trips wrong.
+# 1..4 are excluded defensively: with a header-protection key the type field is
+# XORed with keystream, so on the wire it does not matter - but the same config
+# shape is used where that key might be absent, and there those four values are
+# exactly the plain-WireGuard message types. Upper bound stays below 2^31 so
+# nothing downstream has to care about sign.
 h1=""; h2=""; h3=""; h4=""
 for slot in 1 2 3 4; do
   while :; do
@@ -136,16 +139,23 @@ i1="${i1}<b 0x03636f6d00><b 0x00010001><b 0xc00c><b 0x00010001>"
 i1="${i1}<b 0x${ttl_hex}><b 0x0004><r 4>"
 
 # A second decoy in a different shape, because one template used by every node
-# is a template every node shares. STUN binding success response: the tunnel
-# and the decoys leave from the same UDP port, so the cover has to be a UDP
-# protocol that plausibly lives there.
-stun_port_hex="$(rand_hex 2)"
-i_stun="<b 0x0101><b 0x0044><b 0x2112a442><r 12><b 0x00200008><b 0x0001>"
-i_stun="${i_stun}<b 0x${stun_port_hex}><r 4><b 0x802a0008><r 8><b 0x80280004><r 4>"
+# is a template every node shares. The tunnel and the decoys leave from the same
+# UDP port, so the cover has to be a protocol that plausibly lives there.
+#
+# A STUN Binding REQUEST, which is what a client actually sends - and one whose
+# length field matches its contents. A response with a length that disagrees
+# with its own attributes is worse than random noise: it is a malformed packet
+# no real stack produces, so it identifies the fleet instead of hiding it.
+# Header is 20 bytes; the declared length counts only the attributes.
+soft_len=8
+i_stun="<b 0x0001><b 0x000c><b 0x2112a442><r 12>"        # type, len=12, cookie, txid
+i_stun="${i_stun}<b 0x8022><b 0x0008><rc ${soft_len}>"    # SOFTWARE, len=8, value
 
-# A third, plainer one: a length-prefixed blob with a node-specific prefix.
-blob_len="$(rand_range 24 96)"
-i_blob="<b 0x$(rand_hex 2)><rd 4><r ${blob_len}>"
+# A third decoy that claims no structure at all: a datagram of random bytes at
+# a node-specific size. Deliberately not given a fake header - invented
+# structure is a signature, whereas noise is only noise.
+blob_len="$(rand_range 48 220)"
+i_blob="<r ${blob_len}>"
 
 # Which slots are occupied is itself a fingerprint if it never varies, so I1 is
 # always used and the other two land in a random pair of the remaining slots.
@@ -170,8 +180,13 @@ done
 # the receiver from the IP length field, so it needs no support on the far end.
 content_padding="1-$(rand_range 16 64)"
 
-# Timings. Each is redrawn on every timer arm, so the ranges destroy the 120 s
-# rekey beat and the 10 s keepalive beat rather than moving them.
+# Timings. RekeyTimeout, KeepaliveTimeout and MaxHandshakeAttempts are redrawn
+# on every timer arm, so a range genuinely removes their periodicity.
+#
+# RekeyAfterTime is weaker than it looks: keyRefreshTimeoutSending draws on
+# every sent batch, so under continuous traffic the rekey lands close to the
+# range's LOW end. The range still varies the interval per node and softens the
+# beat, but it does not make it non-periodic - do not claim that it does.
 rekey_after="$(rand_span 95 115 25 55)"
 rekey_timeout="$(rand_span 4 6 2 4)"
 reject_after="$(rand_span 200 230 30 60)"

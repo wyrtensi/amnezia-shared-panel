@@ -1,7 +1,10 @@
 #!/bin/sh
 set -eu
 
-STATE_DIR=/opt/amnezia/awg
+# Overridable so the init path can be exercised by a test. It is the container's
+# real path in production; the point of the seam is that a dangling variable in
+# this block used to be invisible to a test that only read the file as text.
+STATE_DIR="${AWG3_STATE_DIR:-/opt/amnezia/awg}"
 CONFIG_FILE="$STATE_DIR/awg0.conf"
 PRIVATE_KEY_FILE="$STATE_DIR/wireguard_server_private_key.key"
 PUBLIC_KEY_FILE="$STATE_DIR/wireguard_server_public_key.key"
@@ -10,9 +13,11 @@ CLIENTS_FILE="$STATE_DIR/clientsTable"
 INIT_MARKER="$STATE_DIR/.initializing"
 RUNTIME_CONFIG_FILE=/tmp/awg0.runtime.conf
 GEOMETRY_SCRIPT=/usr/local/libexec/awg3-geometry.sh
-# The tunnel MTU the client will use; S4 comes out of the same budget, so the
-# generator needs it. Matches AppContract.AmneziaWG3.DEFAULTS.MTU.
-TUNNEL_MTU="${AWG3_TUNNEL_MTU:-1376}"
+# ONE number, used both to size the interface below and to compute S4's share
+# of the MTU budget. They were two numbers once - the interface was set to 1420
+# while the budget was computed for 1376 - and the result was transport packets
+# of up to 1525 bytes on a 1500-byte path.
+IFACE_MTU="${AWG3_TUNNEL_MTU:-1420}"
 
 umask 077
 mkdir -p "$STATE_DIR"
@@ -63,13 +68,18 @@ if [ "$config_exists" -eq 0 ]; then
   # rules (S >= 12 with header protection, headers distinct and clear of the
   # WireGuard message types) and the one rule nothing enforces: Jmin < Jmax,
   # where an inversion is a multi-gigabyte allocation per handshake.
-  geometry="$(sh "$GEOMETRY_SCRIPT" "$TUNNEL_MTU")"
+  geometry="$(sh "$GEOMETRY_SCRIPT" "$IFACE_MTU")"
 
-  if [ "$h1" = "$h2" ] || [ "$h1" = "$h3" ] || [ "$h1" = "$h4" ] || \
-     [ "$h2" = "$h3" ] || [ "$h2" = "$h4" ] || [ "$h3" = "$h4" ]; then
-    echo "Refusing to start: generated AWG3 headers are not unique" >&2
-    exit 1
-  fi
+  # The generator draws the headers and guarantees they are distinct, so the
+  # check that used to live here is gone with the variables it compared. What
+  # is still worth asserting is that we got a usable block at all: an empty
+  # $geometry would produce a config with no obfuscation and no error.
+  for required in Jc Jmin Jmax S1 S2 S3 S4 H1 H2 H3 H4; do
+    printf '%s\n' "$geometry" | grep -Eq "^${required} = .+$" || {
+      echo "Refusing to start: geometry generator did not emit ${required}" >&2
+      exit 1
+    }
+  done
 
   temporary_private="$STATE_DIR/.init.$$.private"
   temporary_public="$STATE_DIR/.init.$$.public"
@@ -88,7 +98,6 @@ Address = 10.90.0.1/22
 ListenPort = 51890
 $geometry
 HeaderProtectionKey = $header_protection_key
-RandomTrailers = on
 PostUp = iptables -A FORWARD -i %i -j ACCEPT; iptables -A FORWARD -o %i -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT; iptables -t nat -A POSTROUTING -s 10.90.0.0/22 -o eth0 -j MASQUERADE
 PostDown = iptables -D FORWARD -i %i -j ACCEPT; iptables -D FORWARD -o %i -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT; iptables -t nat -D POSTROUTING -s 10.90.0.0/22 -o eth0 -j MASQUERADE
 EOF
@@ -107,7 +116,7 @@ EOF
   mv "$temporary_clients" "$CLIENTS_FILE"
   rm -f "$INIT_MARKER"
 
-  unset private_key public_key preshared_key header_protection_key h1 h2 h3 h4
+  unset private_key public_key preshared_key header_protection_key geometry
   unset temporary_private temporary_public temporary_psk temporary_config temporary_clients
 fi
 
@@ -162,7 +171,7 @@ chmod 600 "$RUNTIME_CONFIG_FILE"
 awg setconf awg0 "$RUNTIME_CONFIG_FILE"
 rm -f "$RUNTIME_CONFIG_FILE"
 ip -4 address add 10.90.0.1/22 dev awg0
-ip link set mtu 1420 up dev awg0
+ip link set mtu "$IFACE_MTU" up dev awg0
 iptables -A FORWARD -i awg0 -j ACCEPT
 iptables -A FORWARD -o awg0 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
 iptables -t nat -A POSTROUTING -s 10.90.0.0/22 -o eth0 -j MASQUERADE

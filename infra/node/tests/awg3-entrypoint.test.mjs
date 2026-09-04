@@ -24,7 +24,12 @@ test("configures and removes the AWG3 interface on its own subnet and port", asy
   assert.match(script, /Address = 10\.90\.0\.1\/22/);
   assert.match(script, /ListenPort = 51890/);
   assert.match(script, /ip -4 address add 10\.90\.0\.1\/22 dev awg0/);
-  assert.match(script, /ip link set mtu 1420 up dev awg0/);
+  // One number for the interface and for S4's share of the MTU budget. They
+  // were two once - interface 1420, budget computed for 1376 - which put up to
+  // 1525 bytes on a 1500-byte path.
+  assert.match(script, /ip link set mtu "\$IFACE_MTU" up dev awg0/);
+  assert.match(script, /IFACE_MTU="\$\{AWG3_TUNNEL_MTU:-1420\}"/);
+  assert.match(script, /GEOMETRY_SCRIPT" "\$IFACE_MTU"/);
   assert.match(script, /iptables -t nat -A POSTROUTING -s 10\.90\.0\.0\/22 -o eth0 -j MASQUERADE/);
   assert.match(script, /iptables -t nat -D POSTROUTING -s 10\.90\.0\.0\/22 -o eth0 -j MASQUERADE/);
   assert.match(script, /ip link delete dev awg0/);
@@ -36,7 +41,9 @@ test("generates AmneziaWG 3.1 obfuscation parameters", async () => {
   // Header protection key marks the config as 3.1 and must be generated + verified
   assert.match(script, /HeaderProtectionKey = \$header_protection_key/);
   assert.match(script, /header_protection_key="\$\(awg genpsk\)"/);
-  assert.match(script, /RandomTrailers = on/);
+  // RandomTrailers is emitted by the geometry generator now. It used to be
+  // written here as well, and the two tools disagreed about which copy wins.
+  assert.doesNotMatch(script, /^RandomTrailers = /m);
   assert.match(
     script,
     /Refusing to start: AWG3 config must define HeaderProtectionKey/,
