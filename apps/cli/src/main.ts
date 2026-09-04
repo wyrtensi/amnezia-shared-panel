@@ -243,6 +243,11 @@ type AdminNode = {
   agentUpdateMessage?: string | null;
   agentUpdateLog?: string;
   agentUpdateAt?: string | null;
+  capacityState?: string;
+  capacityRequestedPeers?: number | null;
+  capacityMessage?: string | null;
+  capacityLog?: string;
+  capacityAt?: string | null;
   availableAgent?: {
     repository: string;
     version: string;
@@ -1037,6 +1042,61 @@ async function cmdNodeAgentLog(args: string[]): Promise<void> {
   }
 }
 
+async function cmdNodeCapacity(args: string[]): Promise<void> {
+  const id = args.find((arg) => !arg.startsWith("--"));
+  if (!id) throw new Error("Usage: node-capacity <id> [--set=<peers>] [--confirm]");
+  const node = await findAdminNode(id);
+  const requested = flagOf(args, "set");
+
+  if (requested === undefined) {
+    if (wantsJson(args)) {
+      return json({
+        maxPeers: node.maxPeers,
+        state: node.capacityState ?? "idle",
+        requestedMaxPeers: node.capacityRequestedPeers ?? null,
+        message: node.capacityMessage ?? null,
+        updatedAt: node.capacityAt ?? null,
+        log: node.capacityLog ?? "",
+      });
+    }
+    console.log(`node ${node.name} (${node.id})`);
+    console.log(`  panel limit: ${node.maxPeers}`);
+    console.log(`  state:       ${node.capacityState ?? "idle"}`);
+    console.log(`  requested:   ${node.capacityRequestedPeers ?? "—"}`);
+    console.log(`  finished:    ${node.capacityAt ?? "—"}`);
+    if (node.capacityMessage) console.log(`  message:     ${node.capacityMessage}`);
+    const log = node.capacityLog ?? "";
+    if (log.trim()) {
+      console.log("");
+      console.log(log.trimEnd());
+    }
+    return;
+  }
+
+  const maxPeers = Number(requested);
+  if (!Number.isInteger(maxPeers) || maxPeers < 1 || maxPeers > 500) {
+    throw new Error("--set must be a whole number between 1 and 500");
+  }
+  // Same shape as the panel's dialog: see what changes, then say yes. This
+  // recreates a container on a live host, so it is never the default.
+  if (!args.includes("--confirm")) {
+    console.log(`node ${node.name} (${node.id})`);
+    console.log(`  panel limit now: ${node.maxPeers}`);
+    console.log(`  change to:       ${maxPeers}`);
+    console.log(
+      "The node-agent is recreated to pick this up; tunnels stay up and no peer is lost.",
+    );
+    console.log("Re-run with --confirm to apply it.");
+    return;
+  }
+  const result = await api<{ maxPeers: number }>(
+    `/api/admin/nodes/${node.id}/set-capacity`,
+    { method: "POST", body: JSON.stringify({ maxPeers }) },
+  );
+  console.log(`node ${node.name}: capacity change to ${result.maxPeers} requested`);
+  console.log("Follow it with: node-capacity " + node.id);
+}
+
 async function cmdNodeAdd(args: string[]): Promise<void> {
   const name = flagOf(args, "name");
   const apiBaseUrl = flagOf(args, "api-url");
@@ -1491,6 +1551,10 @@ Nodes:
   node-remove <id> --with-keys            Delete a node AND every key ever issued
              --confirm=<node name>        on it. Irreversible; the name must match
   node-reconcile <id>                     Trigger a node sync
+  node-capacity <id> [--set=<peers>]     Show or change a node's peer capacity.
+                       [--confirm]         Recreates only the node-agent, so no
+                                           tunnel drops. Needs the host-side
+                                           applier installed on that node.
   node-agent-update <id> [--image=<ref>]  Replace a node's agent with the published
                     [--confirm]           image. Without --confirm it prints what would
                                           be installed and changes nothing. One node at
@@ -1950,6 +2014,8 @@ async function main(): Promise<void> {
       return cmdNodeRemove(args);
     case "node-reconcile":
       return cmdAction("nodes", "reconcile", args);
+    case "node-capacity":
+      return cmdNodeCapacity(args);
     case "node-agent-update":
       return cmdNodeAgentUpdate(args);
     case "node-agent-log":

@@ -1215,6 +1215,50 @@ export type NodeAgentUpdateRequest = z.infer<
   typeof nodeAgentUpdateRequestSchema
 >;
 
+/**
+ * The body of `POST /api/admin/nodes/:id/set-capacity`. The panel sends the
+ * number the admin typed; nothing downstream re-derives it.
+ */
+export const nodeCapacityActionSchema = z.object({
+  // 500 is the validated ceiling. infra/node/scripts/set-capacity.sh accepts up
+  // to 1000 behind --force, and this path never passes it: an unvalidated
+  // capacity stays an operator's decision at a shell.
+  maxPeers: z.int().min(1).max(500),
+});
+export type NodeCapacityAction = z.infer<typeof nodeCapacityActionSchema>;
+
+/** What the panel sends a node when it asks it to change its own capacity. */
+export const nodeCapacityRequestSchema = z.object({
+  maxPeers: z.int().min(1).max(500),
+});
+export type NodeCapacityRequest = z.infer<typeof nodeCapacityRequestSchema>;
+
+export const NODE_CAPACITY_STATES = [
+  "idle",
+  "requested",
+  "running",
+  "succeeded",
+  "failed",
+] as const;
+export const nodeCapacityStateSchema = z.enum(NODE_CAPACITY_STATES);
+export type NodeCapacityState = z.infer<typeof nodeCapacityStateSchema>;
+
+export const nodeCapacityStatusSchema = z.object({
+  // Whether this node has been wired for in-panel capacity changes at all.
+  available: z.boolean(),
+  // SERVER_MAX_PEERS the container is actually running with. This is the number
+  // that binds; nodes.max_peers is only the panel's own limit.
+  currentMaxPeers: z.number().int().nonnegative(),
+  state: nodeCapacityStateSchema,
+  requestedMaxPeers: z.number().int().nullable(),
+  // The applier's output, served back so an admin can see why a change failed
+  // without opening an SSH session.
+  log: z.string(),
+  updatedAt: z.iso.datetime().nullable(),
+  message: z.string().nullable(),
+});
+export type NodeCapacityStatus = z.infer<typeof nodeCapacityStatusSchema>;
+
 export const NODE_AGENT_UPDATE_STATES = [
   "idle",
   "requested",

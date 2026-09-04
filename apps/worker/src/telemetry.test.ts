@@ -73,6 +73,7 @@ const telemetryNode: TelemetryNode = {
   publicHost: null,
   publicIp: null,
   agentUpdateState: "idle" as const,
+  capacityState: "idle" as const,
   checksEnabled: true,
   disabledCheckIds: [],
 };
@@ -93,6 +94,7 @@ const stubAgent = (publicHost?: string) => ({
   getServerLoad: vi.fn(() => Promise.resolve(serverLoad)),
   listClients: vi.fn(() => Promise.resolve([])),
   getAgentUpdate: vi.fn(() => Promise.resolve(null)),
+  getCapacity: vi.fn(() => Promise.resolve(null)),
   runChecks: vi.fn(() => Promise.resolve(null)),
 });
 
@@ -168,6 +170,7 @@ describe("node telemetry poll", () => {
         ]),
       ),
       getAgentUpdate: vi.fn(() => Promise.resolve(null)),
+      getCapacity: vi.fn(() => Promise.resolve(null)),
       runChecks: vi.fn(() => Promise.resolve(null)),
     };
     const resolvePublicIp = vi.fn((host: string) =>
@@ -311,6 +314,7 @@ describe("node telemetry poll", () => {
         getServerLoad: vi.fn(),
         listClients: vi.fn(),
         getAgentUpdate: vi.fn(),
+        getCapacity: vi.fn(),
         runChecks: vi.fn(() => Promise.resolve(null)),
       }),
       now: () => observedAt,

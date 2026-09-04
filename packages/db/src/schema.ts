@@ -23,6 +23,7 @@ import type {
   GlobalRoutes,
   InstallGuideVideos,
   NodeAgentUpdateState,
+  NodeCapacityState,
   NodeKeyLimits,
   PortalPolicyOverride,
   ProtocolKind,
@@ -203,6 +204,20 @@ export const nodes = pgTable(
     // an update failed after the job that ran it is long gone.
     agentUpdateLog: text("agent_update_log").default("").notNull(),
     agentUpdateAt: timestamp("agent_update_at", { withTimezone: true }),
+    // The last in-panel capacity change, mirrored from the node's own spool on
+    // exactly the same terms as the agent update above: a cache of what the node
+    // reports, never the source of truth. SERVER_MAX_PEERS lives in the node's
+    // .env and the node answers GET /server/capacity on its own.
+    capacityState: text("capacity_state")
+      .$type<NodeCapacityState>()
+      .default("idle")
+      .notNull(),
+    capacityRequestedPeers: integer("capacity_requested_peers"),
+    capacityMessage: text("capacity_message"),
+    // The tail the applier wrote, kept on the row so the card can show why a
+    // change failed after the job that ran it is long gone.
+    capacityLog: text("capacity_log").default("").notNull(),
+    capacityAt: timestamp("capacity_at", { withTimezone: true }),
     ...timestamps,
   },
   (table) => [

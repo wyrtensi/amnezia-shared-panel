@@ -1,6 +1,7 @@
 import type {
   NodeAgent,
   NodeAgentUpdateStatus,
+  NodeCapacityStatus,
   NodeClientRecord,
   NodeServer,
   NodeServerLoad,
@@ -54,6 +55,11 @@ export type TelemetryNode = {
    * about it, so a fleet with nothing to update costs no extra requests.
    */
   agentUpdateState: NodeAgentUpdateStatus["state"];
+  /**
+   * The node's last known capacity-change state, on the same terms: only a node
+   * in flight is asked, so a fleet with nothing pending costs no extra requests.
+   */
+  capacityState: NodeCapacityStatus["state"];
   /** Whether this node takes part in service checks, and which it skips. */
   checksEnabled: boolean;
   disabledCheckIds: string[];
@@ -81,6 +87,11 @@ export type NodeSnapshot = {
   // be left alone. `null` is an answer: the agent does not serve the route at
   // all, so nothing will ever arrive and the wait has to end.
   agentUpdate?: NodeAgentUpdateStatus | null;
+  // The node's own view of the capacity change it was asked to perform, on the
+  // same terms as `agentUpdate` above: `undefined` means no new answer and the
+  // stored state must be left alone; `null` is an answer - the agent does not
+  // serve the route, so nothing will ever arrive.
+  capacity?: NodeCapacityStatus | null;
 };
 
 export interface TelemetryRepository {
@@ -154,6 +165,7 @@ export type TelemetryPollerOptions = {
     | "getServerLoad"
     | "listClients"
     | "getAgentUpdate"
+    | "getCapacity"
     | "runChecks"
   >;
   // Host → IP for the reported public host. Injectable for tests; the default
@@ -272,6 +284,12 @@ export const createTelemetryPoller = ({
           node.agentUpdateState === "requested" || node.agentUpdateState === "running"
             ? await agent.getAgentUpdate().catch(() => undefined)
             : undefined;
+        // The same for capacity, and for the same reasons: the recreate takes
+        // the node offline for a few seconds, which this loop already tolerates.
+        const capacity =
+          node.capacityState === "requested" || node.capacityState === "running"
+            ? await agent.getCapacity().catch(() => undefined)
+            : undefined;
         await repository.recordNodeSnapshot({
           nodeId: node.id,
           observedAt,
@@ -282,6 +300,7 @@ export const createTelemetryPoller = ({
           publicHost,
           publicIp,
           agentUpdate,
+          capacity,
         });
 
         // Service checks come last and are deliberately outside the try above:
