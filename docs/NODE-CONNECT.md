@@ -20,10 +20,10 @@ Fill in the placeholders with your real values — the repo hardcodes none of th
 
 ## 0. The scripted path
 
-`scripts/add-node.sh` performs everything in this document — install Docker on
-the target host, deploy `infra/node`, ship the node-agent image, open the
-supervised tunnel on the panel host, register the node, reconcile it — in one
-idempotent command. Read the rest of this file to understand what it does, or
+`scripts/add-node.sh` performs everything in this document — ensure 2 GiB of
+swap, install Docker on the target host, deploy `infra/node`, ship the
+node-agent image, open the supervised tunnel on the panel host, register the
+node, reconcile it — in one idempotent command. Read the rest of this file to understand what it does, or
 when a rollout needs to deviate from it.
 
 ```sh

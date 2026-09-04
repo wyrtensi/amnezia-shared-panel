@@ -34,6 +34,23 @@ starts.
 
 Every server this project runs on — panel, node, or both — gets a 2 GB swapfile.
 
+**Automated.** `scripts/ensure-swap.sh` is the one place this rule lives:
+
+```bash
+sudo bash scripts/ensure-swap.sh --check    # report only; exit 10 = change needed
+sudo bash scripts/ensure-swap.sh --apply    # create or grow /swapfile to 2 GiB
+```
+
+`add-node.sh` runs it against a new node as step 2/8, before Docker, because
+`apt-get install docker-ce` is itself a memory spike. It **refuses** rather than
+proceeds when the disk cannot spare 2 GiB and still keep 3 GiB free
+(`--min-free-mib` lowers that; floor 1024), and when more is paged out than
+would fit back into RAM — there `swapoff` would fail and the host would be left
+on its old, smaller swapfile while the operator believed it had grown.
+
+The commands below are what the script runs. Keep them for a host you cannot
+reach with the repo checked out.
+
 ```bash
 fallocate -l 2G /swapfile && chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile
 echo '/swapfile none swap sw 0 0' >> /etc/fstab
@@ -54,7 +71,15 @@ fallocate -l 2G /swapfile && chmod 600 /swapfile && mkswap /swapfile && swapon /
 ```
 
 Run it in one go: between `swapoff` and `swapon` the host has no swap at all, and
-that is exactly the window in which a memory spike becomes an OOM kill.
+that is exactly the window in which a memory spike becomes an OOM kill. This is
+why `ensure-swap.sh --apply` does the whole sequence in one process rather than
+leaving an operator to type two commands.
+
+**When the script reports `refused: … swapoff would fail`,** the host has more
+paged out than it can fault back in. Do not force it: `swapoff(2)` returns
+ENOMEM and leaves the old swapfile in place, which is the safe outcome. Free
+memory first — stop the heaviest container, let the pages come back, then re-run
+`--apply`.
 
 The cost is honest and worth stating: 2 GB of a 10 GB disk, and paging on a VPN
 node trades latency for survival. Take the trade — the alternative is a global
