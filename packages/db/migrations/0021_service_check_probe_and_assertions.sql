@@ -1,0 +1,3 @@
+ALTER TABLE "node_service_checks" ADD COLUMN "probe" jsonb NOT NULL;--> statement-breakpoint
+ALTER TABLE "node_service_checks" ADD COLUMN "assertions" jsonb NOT NULL;--> statement-breakpoint
+ALTER TABLE "node_service_checks" ADD CONSTRAINT "node_service_checks_assertions_present" CHECK (jsonb_typeof("node_service_checks"."assertions") = 'array' AND jsonb_array_length("node_service_checks"."assertions") >= 1);

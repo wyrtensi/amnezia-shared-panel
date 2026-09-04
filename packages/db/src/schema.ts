@@ -17,6 +17,8 @@ import {
   varchar,
 } from "drizzle-orm/pg-core";
 import type {
+  CheckAssertion,
+  CheckProbe,
   CustomRoutes,
   GlobalRoutes,
   InstallGuideVideos,
@@ -465,16 +467,18 @@ export const nodeServiceChecks = pgTable(
   {
     id: uuid("id").defaultRandom().primaryKey(),
     name: varchar("name", { length: 80 }).notNull(),
-    url: text("url").notNull(),
-    expectedStatuses: jsonb("expected_statuses")
-      .$type<number[]>()
-      .default([200])
-      .notNull(),
-    bodyMustContain: varchar("body_must_contain", { length: 200 }),
-    bodyMustNotContain: varchar("body_must_not_contain", { length: 200 }),
-    finalUrlMustNotContain: varchar("final_url_must_not_contain", {
-      length: 200,
-    }),
+    // What to do, and what must be true of the result. Both are open sets
+    // validated by `checkProbeSchema` / `checkAssertionSchema` in
+    // @amnezia/contracts, which is why they are documents rather than columns:
+    // a new probe kind or assertion type must not need a migration, and the
+    // four fixed columns this replaced (url, expected_statuses,
+    // body_must_contain, body_must_not_contain, final_url_must_not_contain)
+    // would have needed one for every rule nobody had thought of yet.
+    //
+    // The trade is that Postgres cannot check their shape. The control API
+    // parses every write through the contract, and nothing else writes here.
+    probe: jsonb("probe").$type<CheckProbe>().notNull(),
+    assertions: jsonb("assertions").$type<CheckAssertion[]>().notNull(),
     // 12 hours. A blocked region is a state that lasts days, not minutes, so a
     // fast period would only add traffic from every node at once. An admin can
     // lower it per check while calibrating; the range check is the guard rail.
@@ -490,6 +494,13 @@ export const nodeServiceChecks = pgTable(
   },
   (table) => [
     uniqueIndex("node_service_checks_name_unique").on(table.name),
+    // A check with no assertion is always green and looks exactly like a check
+    // that is passing. The contract refuses it; so does the table, because the
+    // contract is not the only thing that could ever write here.
+    check(
+      "node_service_checks_assertions_present",
+      sql`jsonb_typeof(${table.assertions}) = 'array' AND jsonb_array_length(${table.assertions}) >= 1`,
+    ),
     check(
       "node_service_checks_interval_range",
       sql`${table.intervalSec} >= 60 AND ${table.intervalSec} <= 86400`,

@@ -141,6 +141,20 @@
       "when": 1788467411734,
       "tag": "0019_node_metrics_and_service_checks",
       "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1788501158263,
+      "tag": "0020_drop_fixed_service_check_columns",
+      "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1788501185439,
+      "tag": "0021_service_check_probe_and_assertions",
+      "breakpoints": true
     }
   ]
 }

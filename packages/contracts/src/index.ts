@@ -466,6 +466,148 @@ const checkUrlSchema = z.url().refine((value) => {
   );
 }, "Check URL must be a public http(s) address");
 
+// --- How a check is described ------------------------------------------------
+//
+// A check is a PROBE (what to do) plus a list of ASSERTIONS (what must be true
+// of the result). Both are open sets: a new probe kind or a new assertion type
+// is one entry in a registry, not a new column in two tables and a new field in
+// four layers.
+//
+// The first shape of this was four fixed fields - expectedStatuses,
+// bodyMustContain, bodyMustNotContain, finalUrlMustNotContain. That set was
+// derived from two captured pages and would have held exactly until the next
+// service needed a rule nobody had thought of. The evidence that shaped it
+// already points past it: the two Gemini captures differ by a substring COUNT
+// (20 against 0) and by 600 KB of body, and neither of those is expressible as
+// "contains" or "does not contain".
+
+/**
+ * Assertion types, each evaluated against one probe result.
+ *
+ * Every one of these is linear in the size of the body. That is a deliberate
+ * limit rather than an oversight: a regular expression built from an
+ * admin-supplied string can backtrack catastrophically over a 64 KiB body, and
+ * checks run inside the node-agent on a host with one vCPU that is also
+ * carrying the tunnels - a runaway match there blocks the event loop and takes
+ * the node's API down with it. `bodyOccurrencesAtLeast` covers what regexes
+ * were wanted for here, counting a marker, at a cost bounded by the body length.
+ *
+ * To add a type: add the variant below, add its evaluator to the node-agent's
+ * registry, and add it to the list that registry advertises. A node that does
+ * not know a type reports `error` for that check, never `ok`.
+ */
+export const CHECK_ASSERTION_TYPES = [
+  "statusIn",
+  "bodyContains",
+  "bodyOmits",
+  "bodyContainsAll",
+  "bodyContainsAny",
+  "bodyOccurrencesAtLeast",
+  "bodyBytesAtLeast",
+  "finalUrlContains",
+  "finalUrlOmits",
+  "headerContains",
+] as const;
+export type CheckAssertionType = (typeof CHECK_ASSERTION_TYPES)[number];
+
+const checkMarker = z.string().trim().min(1).max(200);
+const checkMarkerList = z.array(checkMarker).min(1).max(10);
+
+export const checkAssertionSchema = z.discriminatedUnion("type", [
+  z.object({
+    type: z.literal("statusIn"),
+    statuses: z.array(z.int().min(100).max(599)).min(1).max(10),
+  }),
+  z.object({ type: z.literal("bodyContains"), value: checkMarker }),
+  z.object({ type: z.literal("bodyOmits"), value: checkMarker }),
+  z.object({ type: z.literal("bodyContainsAll"), values: checkMarkerList }),
+  z.object({ type: z.literal("bodyContainsAny"), values: checkMarkerList }),
+  // The count primitive. A marker that appears twice on a refusal page and
+  // twenty times on a working one is a signal `contains` cannot express.
+  z.object({
+    type: z.literal("bodyOccurrencesAtLeast"),
+    value: checkMarker,
+    count: z.int().min(1).max(10_000),
+  }),
+  // Bodies that differ by hundreds of KB are ordinary between a served app and
+  // a served refusal page. Counted over what was actually read, so it can never
+  // exceed the node's read cap.
+  z.object({
+    type: z.literal("bodyBytesAtLeast"),
+    count: z.int().min(1).max(65_536),
+  }),
+  z.object({ type: z.literal("finalUrlContains"), value: checkMarker }),
+  z.object({ type: z.literal("finalUrlOmits"), value: checkMarker }),
+  z.object({
+    type: z.literal("headerContains"),
+    name: z
+      .string()
+      .trim()
+      .min(1)
+      .max(80)
+      .regex(/^[A-Za-z0-9!#$%&*+.^_|~-]+$/, "Not a header name"),
+    value: checkMarker,
+  }),
+]);
+export type CheckAssertion = z.infer<typeof checkAssertionSchema>;
+
+/** Probe kinds. `http` is the only one implemented; the union is the seam. */
+export const CHECK_PROBE_KINDS = ["http"] as const;
+export type CheckProbeKind = (typeof CHECK_PROBE_KINDS)[number];
+
+export const checkProbeSchema = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("http"),
+    url: checkUrlSchema,
+    // HEAD is worth having for a check that only asserts on status or headers:
+    // it is the difference between every node reading 64 KiB twice a day and
+    // reading none. A body assertion against a HEAD probe is refused below.
+    method: z.enum(["GET", "HEAD"]).default("GET"),
+    timeoutMs: z.int().min(1_000).max(15_000).default(10_000),
+  }),
+]);
+export type CheckProbe = z.infer<typeof checkProbeSchema>;
+
+const BODY_ASSERTION_TYPES = new Set<CheckAssertionType>([
+  "bodyContains",
+  "bodyOmits",
+  "bodyContainsAll",
+  "bodyContainsAny",
+  "bodyOccurrencesAtLeast",
+  "bodyBytesAtLeast",
+]);
+
+/**
+ * One line describing an assertion, for an admin card, a CLI table and an audit
+ * entry. It lives here rather than in the UI so the three cannot drift, and so
+ * that adding an assertion type is one place to edit rather than four.
+ */
+export const describeAssertion = (assertion: CheckAssertion): string => {
+  const quoted = (value: string): string => JSON.stringify(value);
+  switch (assertion.type) {
+    case "statusIn":
+      return `status is one of ${assertion.statuses.join(", ")}`;
+    case "bodyContains":
+      return `body contains ${quoted(assertion.value)}`;
+    case "bodyOmits":
+      return `body does not contain ${quoted(assertion.value)}`;
+    case "bodyContainsAll":
+      return `body contains all of ${assertion.values.map(quoted).join(", ")}`;
+    case "bodyContainsAny":
+      return `body contains any of ${assertion.values.map(quoted).join(", ")}`;
+    case "bodyOccurrencesAtLeast":
+      return `body contains ${quoted(assertion.value)} at least ${assertion.count} times`;
+    case "bodyBytesAtLeast":
+      return `body is at least ${assertion.count} bytes`;
+    case "finalUrlContains":
+      return `final URL contains ${quoted(assertion.value)}`;
+    case "finalUrlOmits":
+      return `final URL does not contain ${quoted(assertion.value)}`;
+    case "headerContains":
+      return `header ${assertion.name} contains ${quoted(assertion.value)}`;
+  }
+};
+
 // The fields WITHOUT their defaults. `.partial()` makes a key optional but does
 // NOT strip its `.default()`, so a partial built from a defaulted schema
 // materialises those keys on every parse - which is exactly how an "update one
@@ -473,22 +615,42 @@ const checkUrlSchema = z.url().refine((value) => {
 // The update schema is built from this shape; only the create schema defaults.
 const serviceCheckFields = {
   name: z.string().trim().min(1).max(80),
-  url: checkUrlSchema,
-  expectedStatuses: z.array(z.int().min(100).max(599)).min(1).max(10),
-  bodyMustContain: z.string().trim().min(1).max(200).nullish(),
-  bodyMustNotContain: z.string().trim().min(1).max(200).nullish(),
-  finalUrlMustNotContain: z.string().trim().min(1).max(200).nullish(),
+  probe: checkProbeSchema,
+  // At least one. A check with no assertion is a check that is always green,
+  // which is worse than no check at all because it looks like one.
+  assertions: z.array(checkAssertionSchema).min(1).max(10),
   // 12 hours, and this is the service checks' period only - host metrics have
   // their own, separate periods.
   intervalSec: z.int().min(60).max(86_400),
   enabled: z.boolean(),
 };
 
-export const serviceCheckSchema = z.object(serviceCheckFields).extend({
-  expectedStatuses: serviceCheckFields.expectedStatuses.default([200]),
-  intervalSec: serviceCheckFields.intervalSec.default(43_200),
-  enabled: serviceCheckFields.enabled.default(true),
-});
+// A HEAD probe never reads a body, so a body assertion against one could only
+// ever fail - silently, and in the direction that reads as "the service is
+// blocked from this node". Refused at the contract rather than left to the node.
+const refuseBodyAssertionsOnHead = (
+  value: { probe?: CheckProbe; assertions?: CheckAssertion[] },
+  ctx: z.RefinementCtx,
+): void => {
+  if (value.probe?.kind !== "http" || value.probe.method !== "HEAD") return;
+  const offender = value.assertions?.find((assertion) =>
+    BODY_ASSERTION_TYPES.has(assertion.type),
+  );
+  if (!offender) return;
+  ctx.addIssue({
+    code: "custom",
+    path: ["assertions"],
+    message: `A HEAD probe reads no body, so ${offender.type} could only ever fail`,
+  });
+};
+
+export const serviceCheckSchema = z
+  .object(serviceCheckFields)
+  .extend({
+    intervalSec: serviceCheckFields.intervalSec.default(43_200),
+    enabled: serviceCheckFields.enabled.default(true),
+  })
+  .superRefine(refuseBodyAssertionsOnHead);
 export const createServiceCheckRequestSchema = serviceCheckSchema;
 export const updateServiceCheckRequestSchema = z
   .object(serviceCheckFields)
@@ -496,7 +658,8 @@ export const updateServiceCheckRequestSchema = z
   .refine(
     (value) => Object.keys(value).length > 0,
     "At least one field is required",
-  );
+  )
+  .superRefine(refuseBodyAssertionsOnHead);
 export type ServiceCheck = z.infer<typeof serviceCheckSchema>;
 export type CreateServiceCheckRequest = z.infer<
   typeof createServiceCheckRequestSchema
@@ -504,6 +667,46 @@ export type CreateServiceCheckRequest = z.infer<
 export type UpdateServiceCheckRequest = z.infer<
   typeof updateServiceCheckRequestSchema
 >;
+
+/**
+ * What one node-agent can actually run, as it reports it.
+ *
+ * This is the half that makes an open set safe. A node that predates an
+ * assertion type must not silently treat it as satisfied, and the panel has to
+ * be able to tell "this node cannot run that check" from "the service is down".
+ * The agent advertises what it knows; anything else comes back as `error`,
+ * which collapses to `unknown` for a user rather than to `unavailable`.
+ *
+ * The arrays are plain strings, not the enums above, on purpose: a NEWER node
+ * may advertise a type this panel has never heard of, and parsing that as an
+ * enum would turn a forward-compatible fleet into a validation error.
+ */
+export const checkCapabilitiesSchema = z.object({
+  probeKinds: z.array(z.string().max(40)).max(20),
+  assertionTypes: z.array(z.string().max(40)).max(50),
+});
+export type CheckCapabilities = z.infer<typeof checkCapabilitiesSchema>;
+
+/**
+ * Which of a check's assertion types a given node does not advertise. Empty
+ * when the node reports no capabilities at all: an agent too old to say what it
+ * supports is not evidence that it supports nothing, and the node's own `error`
+ * result is the authority either way.
+ */
+export const unsupportedAssertionTypes = (
+  check: Pick<ServiceCheck, "assertions">,
+  capabilities: CheckCapabilities | null,
+): string[] => {
+  if (!capabilities) return [];
+  const known = new Set(capabilities.assertionTypes);
+  return [
+    ...new Set(
+      check.assertions
+        .map((assertion) => assertion.type)
+        .filter((type) => !known.has(type)),
+    ),
+  ];
+};
 
 /** Admin/diagnostic status. Collapsed to three states for users, see below. */
 export const serviceCheckStatusSchema = z.enum(["ok", "failed", "error"]);
