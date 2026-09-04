@@ -19,6 +19,19 @@ test("the API key charset check stays linear in the key length", async () => {
   assert.match(code, /tr -d '\[:graph:\]'/);
 });
 
+test("accepts a capacity above 500 but says it is unvalidated", async () => {
+  const gate = code.slice(
+    code.indexOf("server_max_peers="),
+    code.indexOf("available_kb="),
+  );
+  // 500 stays the only validated value and the panel's default ceiling; the
+  // physical wall is the /22 address pool, 1021 usable peers per protocol.
+  // Refusing at 500 made "unvalidated" and "impossible" indistinguishable.
+  assert.match(gate, /-le 1000/);
+  assert.doesNotMatch(gate, /-le 500/);
+  assert.match(gate, /unvalidated/);
+});
+
 test("the RAM gate names the lever that lowers it", async () => {
   const gate = code.slice(
     code.indexOf("required_mem_kb="),

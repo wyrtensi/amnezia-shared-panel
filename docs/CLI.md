@@ -339,6 +339,14 @@ Operator scripts under `infra/node/scripts/` wrap Compose with preflight + backu
 | `sh scripts/build-node-agent.sh` | Build + pin the node-agent image; prints the `sha256:` for `.env` |
 | `sh scripts/preflight.sh` | Gate: amd64, Docker/TUN, image pins, perms, port conflicts, disk/RAM |
 | `sh scripts/deploy.sh` | **Production deploy**: preflight → pull/verify images → backup → up → health |
+| `sh scripts/set-capacity.sh <peers> [--force]` | Change this node's `SERVER_MAX_PEERS` and put it into effect. Checks the preflight RAM gate for the **new** number first and refuses if the host cannot carry it; then recreates **only** `amnezia-node-agent` (`--no-deps`, after asserting the data plane is healthy), so AWG tunnels stay up, existing peers keep passing traffic and **no peer state is touched** — it lives in the AWG containers' bind mounts, not in the agent. Above 500 peers needs `--force` (unvalidated; 1000 is the hard bound of the /22 address pool). Rollback: run it again with the previous number — a failed health gate restores it automatically. |
+
+> `set-capacity.sh` is the one supported exception to "always deploy through
+> `scripts/deploy.sh`": `deploy.sh` stops the AWG containers for its pre-deploy
+> backup, which drops every tunnel — far more than a one-line `.env` change
+> needs. `set-capacity.sh` still runs `preflight.sh`, takes the same deploy
+> lock, and gates on health. It requires `amnezia-awg3` to be healthy, and
+> `amnezia-awg2` only on a node where `PROTOCOLS_ENABLED` includes it.
 
 `PROTOCOLS_ENABLED` selects protocols (`amneziawg3` for a 3.1-only node). The awg3
 entrypoint randomises the obfuscation headers and writes `awg0.conf` with
