@@ -2318,41 +2318,72 @@ describe("PostgresControlRepository node status surfaces", () => {
   const subject = () =>
     new PostgresControlRepository({ db: database!.db, keyring });
 
+  /**
+   * The node THIS suite seeded, found by id.
+   *
+   * `listNodes` returns every enabled node in the database, and the earlier
+   * suites in this file leave theirs behind - so taking the first row asserted
+   * against whichever name happened to sort first, which is a test that passes
+   * or fails on the alphabet.
+   */
+  const seededNode = <T extends { id: string }>(rows: T[]): T => {
+    const row = rows.find((candidate) => candidate.id === nodeId);
+    if (!row) throw new Error("the seeded node is missing from the listing");
+    return row;
+  };
+
   runDatabaseTest("gives a user a name and a state, and nothing else", async () => {
     if (!database) return;
-    const [node] = (await subject().listNodes(actor)) as Array<{
-      status?: { checks: Array<{ name: string; state: string }> };
-      endpoint?: unknown;
-    }>;
+    const node = seededNode(
+      (await subject().listNodes(actor)) as Array<{
+        id: string;
+        status?: { checks: Array<{ name: string; state: string }> };
+        endpoint?: unknown;
+      }>,
+    );
 
     // The narrowing, asserted rather than described: `checks` and only `checks`.
     // A `state` key here would be a second vocabulary for node health, which
     // the panel already shows from enabled/lastError/lastHealthAt.
-    expect(Object.keys(node?.status ?? {})).toEqual(["checks"]);
-    expect(node?.status?.checks).toEqual([
+    expect(Object.keys(node.status ?? {})).toEqual(["checks"]);
+    expect(node.status?.checks).toEqual([
       { name: "Google Gemini", state: "unavailable" },
     ]);
     // The handshake signal is an admin diagnostic and must not leak here.
-    expect(node?.endpoint).toBeUndefined();
+    expect(node.endpoint).toBeUndefined();
   });
 
   runDatabaseTest("shows a user no detail, no URL and no HTTP status", async () => {
     if (!database) return;
-    const payload = JSON.stringify(await subject().listNodes(actor));
+    const node = seededNode(
+      (await subject().listNodes(actor)) as Array<{
+        id: string;
+        status?: { checks: Array<Record<string, unknown>> };
+      }>,
+    );
+    const payload = JSON.stringify(node);
     expect(payload).not.toContain("conversation-container");
     expect(payload).not.toContain("gemini.google.com");
-    expect(payload).not.toContain("412");
+    // Asserted on the chip's own KEYS rather than by searching the payload for
+    // "412": a random uuid contains three-digit runs, so that search failed on
+    // a node id and said nothing about latency.
+    for (const chip of node.status?.checks ?? []) {
+      expect(Object.keys(chip).sort()).toEqual(["name", "state"]);
+    }
   });
 
   runDatabaseTest("omits status entirely when the policy says so", async () => {
     if (!database) return;
     await database.db.insert(portalPolicy).values({ showNodeStatus: false });
-    const [node] = (await subject().listNodes(actor)) as Array<{
-      status?: unknown;
-    }>;
+    const node = seededNode(
+      (await subject().listNodes(actor)) as Array<{
+        id: string;
+        status?: unknown;
+      }>,
+    );
     // Absent, not empty: an empty array would render as a node with no checks,
     // which is a different statement from "this panel does not show them".
-    expect(node && "status" in node).toBe(false);
+    expect("status" in node).toBe(false);
     await database.db.delete(portalPolicy);
   });
 
@@ -2367,18 +2398,18 @@ describe("PostgresControlRepository node status surfaces", () => {
       memAvailableBytes: 361_267_200n,
     });
 
-    const [node] = (await subject().adminList(
-      { ...actor, role: "admin" },
-      "nodes",
-    )) as Array<{
-      metrics: { memAvailableBytes: bigint | string } | null;
-      endpoint: { status: string; lastHandshakeAt: Date | null };
-    }>;
+    const node = seededNode(
+      (await subject().adminList({ ...actor, role: "admin" }, "nodes")) as Array<{
+        id: string;
+        metrics: { memAvailableBytes: bigint | string } | null;
+        endpoint: { status: string; lastHandshakeAt: Date | null };
+      }>,
+    );
 
-    expect(String(node?.metrics?.memAvailableBytes)).toBe("361267200");
+    expect(String(node.metrics?.memAvailableBytes)).toBe("361267200");
     // No peer has ever handshaked on this node, so the honest answer is
     // "unknown" - not "stale", which would claim we once saw one.
-    expect(node?.endpoint).toEqual({
+    expect(node.endpoint).toEqual({
       status: "unknown",
       lastHandshakeAt: null,
     });
@@ -2387,12 +2418,14 @@ describe("PostgresControlRepository node status surfaces", () => {
 
   runDatabaseTest("reports no metrics for a node that has never been polled", async () => {
     if (!database) return;
-    const [node] = (await subject().adminList(
-      { ...actor, role: "admin" },
-      "nodes",
-    )) as Array<{ metrics: unknown }>;
+    const node = seededNode(
+      (await subject().adminList({ ...actor, role: "admin" }, "nodes")) as Array<{
+        id: string;
+        metrics: unknown;
+      }>,
+    );
     // null, not an object of nulls: "we have never heard from this node" and
     // "this node reports nothing" are different, and the card says so.
-    expect(node?.metrics).toBeNull();
+    expect(node.metrics).toBeNull();
   });
 });
