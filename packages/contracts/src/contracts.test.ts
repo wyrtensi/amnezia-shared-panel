@@ -38,8 +38,13 @@ import {
   RETIRED_STORED_DEVICE_TYPES,
   ROUTE_PROFILE_UNSUPPORTED_DEVICES,
   rulesRefreshStatusSchema,
+  CHECK_ASSERTION_TYPES,
+  checkAssertionSchema,
+  describeAssertion,
   serviceCheckSchema,
   serviceCheckUserStateSchema,
+  unsupportedAssertionTypes,
+  type CheckAssertion,
   setUserLimitRequestSchema,
   toUserCheckState,
   updateGlobalRoutesRequestSchema,
@@ -1271,13 +1276,46 @@ describe("the three states are scoped to service checks", () => {
 });
 
 describe("serviceCheckSchema", () => {
-  const base = { name: "Gemini", url: "https://gemini.google.com/" };
+  const probe = { kind: "http" as const, url: "https://gemini.google.com/" };
+  const base = {
+    name: "Gemini",
+    probe,
+    assertions: [{ type: "bodyContains" as const, value: "conversation-container" }],
+  };
 
-  it("defaults to one 12-hour check expecting 200", () => {
+  it("defaults the period, the method and the timeout", () => {
     const parsed = serviceCheckSchema.parse(base);
-    expect(parsed.expectedStatuses).toEqual([200]);
     expect(parsed.intervalSec).toBe(43_200);
     expect(parsed.enabled).toBe(true);
+    expect(parsed.probe).toMatchObject({ method: "GET", timeoutMs: 10_000 });
+  });
+
+  it("refuses a check with no assertion at all", () => {
+    // Always green, and it looks exactly like a check that is passing.
+    expect(
+      serviceCheckSchema.safeParse({ ...base, assertions: [] }).success,
+    ).toBe(false);
+  });
+
+  it("refuses a body assertion against a HEAD probe", () => {
+    // HEAD reads no body, so this could only ever fail - and it would fail in
+    // the direction that reads as "the service is blocked from this node".
+    const result = serviceCheckSchema.safeParse({
+      ...base,
+      probe: { ...probe, method: "HEAD" },
+    });
+    expect(result.success).toBe(false);
+    expect(JSON.stringify(result.error?.issues)).toMatch(/reads no body/);
+  });
+
+  it("allows a HEAD probe that only asserts on status or headers", () => {
+    expect(
+      serviceCheckSchema.safeParse({
+        ...base,
+        probe: { ...probe, method: "HEAD" },
+        assertions: [{ type: "statusIn", statuses: [200] }],
+      }).success,
+    ).toBe(true);
   });
 
   it("refuses a URL that would make the node probe itself or its network", () => {
@@ -1291,9 +1329,11 @@ describe("serviceCheckSchema", () => {
       "ftp://example.com/",
       "file:///etc/passwd",
     ]) {
-      expect(serviceCheckSchema.safeParse({ ...base, url }).success, url).toBe(
-        false,
-      );
+      expect(
+        serviceCheckSchema.safeParse({ ...base, probe: { ...probe, url } })
+          .success,
+        url,
+      ).toBe(false);
     }
   });
 
@@ -1313,5 +1353,85 @@ describe("serviceCheckSchema", () => {
     expect(
       Object.keys(updateServiceCheckRequestSchema.parse({ enabled: false })),
     ).toEqual(["enabled"]);
+  });
+});
+
+describe("check assertions are an open set", () => {
+  it("every declared type is a variant of the union, and the reverse", () => {
+    // The list is what the node-agent's registry is checked against, so a type
+    // in one and not the other is how a check silently stops being evaluated.
+    const variants = new Set(
+      checkAssertionSchema.options.map(
+        (option) => option.shape.type.value as string,
+      ),
+    );
+    expect([...variants].sort()).toEqual([...CHECK_ASSERTION_TYPES].sort());
+  });
+
+  it("describes every type, so no card or CLI can print an empty line", () => {
+    const samples: CheckAssertion[] = [
+      { type: "statusIn", statuses: [200, 204] },
+      { type: "bodyContains", value: "a" },
+      { type: "bodyOmits", value: "b" },
+      { type: "bodyContainsAll", values: ["a", "b"] },
+      { type: "bodyContainsAny", values: ["a", "b"] },
+      { type: "bodyOccurrencesAtLeast", value: "a", count: 20 },
+      { type: "bodyBytesAtLeast", count: 1_000 },
+      { type: "finalUrlContains", value: "/ok" },
+      { type: "finalUrlOmits", value: "unsupported-country" },
+      { type: "headerContains", name: "content-type", value: "text/html" },
+    ];
+    expect(samples.map((sample) => sample.type).sort()).toEqual(
+      [...CHECK_ASSERTION_TYPES].sort(),
+    );
+    for (const sample of samples) {
+      expect(describeAssertion(sample).length, sample.type).toBeGreaterThan(5);
+    }
+  });
+
+  it("keeps the count primitive the two Gemini captures actually needed", () => {
+    // 20 occurrences on the working page against 0 on the blocked one is the
+    // measured separator, and "contains" cannot express it.
+    expect(
+      checkAssertionSchema.safeParse({
+        type: "bodyOccurrencesAtLeast",
+        value: "conversation-container",
+        count: 20,
+      }).success,
+    ).toBe(true);
+  });
+});
+
+describe("unsupportedAssertionTypes", () => {
+  const check = {
+    assertions: [
+      { type: "bodyContains" as const, value: "a" },
+      { type: "bodyOccurrencesAtLeast" as const, value: "b", count: 2 },
+    ],
+  };
+
+  it("names the types an older node cannot run", () => {
+    expect(
+      unsupportedAssertionTypes(check, {
+        probeKinds: ["http"],
+        assertionTypes: ["statusIn", "bodyContains"],
+      }),
+    ).toEqual(["bodyOccurrencesAtLeast"]);
+  });
+
+  it("claims nothing about an agent that does not report capabilities", () => {
+    // Silence is not evidence of absence. The node's own `error` result is the
+    // authority, and it collapses to "unknown" for a user, never "unavailable".
+    expect(unsupportedAssertionTypes(check, null)).toEqual([]);
+  });
+
+  it("accepts a node that advertises more than this panel knows", () => {
+    // A newer agent in a mixed fleet must not fail validation here.
+    expect(
+      unsupportedAssertionTypes(check, {
+        probeKinds: ["http", "dns"],
+        assertionTypes: [...CHECK_ASSERTION_TYPES, "dnsAnswerOmits"],
+      }),
+    ).toEqual([]);
   });
 });

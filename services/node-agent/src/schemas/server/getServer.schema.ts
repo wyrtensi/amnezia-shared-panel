@@ -65,6 +65,25 @@ export const getServerSchema = {
           items: { type: "number" },
           example: [51890],
         },
+        checkCapabilities: {
+          type: "object",
+          description:
+            "Что этот агент умеет выполнять в POST /checks/run: виды проб и типы проверок. " +
+            "Панель сверяет проверку с этим списком; неизвестный тип возвращается как error, а не ok.",
+          required: ["probeKinds", "assertionTypes"],
+          properties: {
+            probeKinds: {
+              type: "array",
+              items: { type: "string" },
+              example: ["http"],
+            },
+            assertionTypes: {
+              type: "array",
+              items: { type: "string" },
+              example: ["bodyContains", "statusIn"],
+            },
+          },
+        },
       },
     },
     401: SwaggerContract.ClientErrorResponseFactory(401),

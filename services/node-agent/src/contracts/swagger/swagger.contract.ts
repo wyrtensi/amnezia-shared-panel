@@ -16,6 +16,7 @@ import { FastifyDynamicSwaggerOptions } from "@fastify/swagger";
 
 export const SwaggerContract = {
   Tags: {
+    CHECKS: "Checks",
     CLIENTS: "Clients",
     SERVER: "Server",
   },
@@ -228,6 +229,10 @@ export const SwaggerContract = {
     openapi.tags!.push({
       name: this.Tags.SERVER,
       description: "Маршруты для управления сервером",
+    });
+    openapi.tags!.push({
+      name: this.Tags.CHECKS,
+      description: "Маршруты для проверок доступности сервисов",
     });
 
     return {
