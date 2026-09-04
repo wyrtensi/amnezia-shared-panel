@@ -123,53 +123,59 @@ while :; do
   break
 done
 
-# --- Special junk packet -----------------------------------------------------
-# A DNS-response shape: static bytes carry the structure a censor would expect,
-# the random tags carry the entropy. The stock spec everybody ships is a fixed
-# DNS answer for icloud.com and is itself a fingerprint the moment two nodes are
-# compared - this one differs per node in both its constants and its length.
+# --- Special junk packets ----------------------------------------------------
+# I-packets are sent before every handshake, in the fixed order I1..I5, and are
+# never parsed by the peer - so a wrong spec cannot break a tunnel, only fail
+# `awg setconf`. That makes them the safest thing to vary aggressively.
 #
-# I-packets are never parsed by the peer, so a wrong spec cannot break a tunnel;
-# it can only fail `awg setconf`. That makes this the safest thing to vary.
+# What is worth varying is the SHAPE of the burst, not only the numbers in it.
+# Per-node sizes change the constants; a censor watching two nodes still sees
+# the same sequence of the same templates every time. So both the number of
+# decoys and their order are drawn per node, and the slots are filled
+# contiguously from I1 because the send order is what a watcher sees - which of
+# I2..I5 a spec sits in is invisible once the order is fixed.
+
+# A DNS QUERY, which is what a client actually sends to a server. The stock
+# Amnezia spec is a DNS *response* travelling towards the server, which no
+# resolver ever does; a response also needs a TTL, and a random 32-bit TTL is
+# its own oddity (RFC 2181 reads anything above 2^31 as zero).
 label_len="$(rand_range 3 12)"
-ttl_hex="$(rand_hex 4)"
-i1="<r 2><b 0x8180><b 0x00010001><b 0x00000000>"
-i1="${i1}<b 0x$(printf '%02x' "$label_len")><rc ${label_len}>"
-i1="${i1}<b 0x03636f6d00><b 0x00010001><b 0xc00c><b 0x00010001>"
-i1="${i1}<b 0x${ttl_hex}><b 0x0004><r 4>"
+t_dns="<r 2><b 0x0100><b 0x00010000><b 0x00000000>"
+t_dns="${t_dns}<b 0x$(printf '%02x' "$label_len")><rc ${label_len}>"
+t_dns="${t_dns}<b 0x03636f6d00><b 0x0001><b 0x0001>"
 
-# A second decoy in a different shape, because one template used by every node
-# is a template every node shares. The tunnel and the decoys leave from the same
-# UDP port, so the cover has to be a protocol that plausibly lives there.
-#
-# A STUN Binding REQUEST, which is what a client actually sends - and one whose
-# length field matches its contents. A response with a length that disagrees
-# with its own attributes is worse than random noise: it is a malformed packet
-# no real stack produces, so it identifies the fleet instead of hiding it.
-# Header is 20 bytes; the declared length counts only the attributes.
-soft_len=8
-i_stun="<b 0x0001><b 0x000c><b 0x2112a442><r 12>"        # type, len=12, cookie, txid
-i_stun="${i_stun}<b 0x8022><b 0x0008><rc ${soft_len}>"    # SOFTWARE, len=8, value
+# A STUN Binding Request whose length field matches its contents. A response
+# with a length that disagrees with its own attributes is worse than noise: it
+# is a packet no real stack produces, so it identifies the fleet.
+t_stun="<b 0x0001><b 0x000c><b 0x2112a442><r 12><b 0x8022><b 0x0008><rc 8>"
 
-# A third decoy that claims no structure at all: a datagram of random bytes at
-# a node-specific size. Deliberately not given a fake header - invented
-# structure is a signature, whereas noise is only noise.
-blob_len="$(rand_range 48 220)"
-i_blob="<r ${blob_len}>"
+# No claimed structure at all. Invented structure is a signature; noise is only
+# noise, and at a node-specific size it is not even a constant one.
+t_noise="<r $(rand_range 48 220)>"
 
-# Which slots are occupied is itself a fingerprint if it never varies, so I1 is
-# always used and the other two land in a random pair of the remaining slots.
-i2=""; i3=""; i4=""; i5=""
-slot_a="$(rand_range 2 5)"
-slot_b="$slot_a"
-while [ "$slot_b" = "$slot_a" ]; do slot_b="$(rand_range 2 5)"; done
-for pair in "$slot_a:$i_stun" "$slot_b:$i_blob"; do
-  slot="${pair%%:*}"; spec="${pair#*:}"
-  case "$slot" in
+# Draw how many, and in which order. Both are per node.
+decoy_count="$(rand_range 1 3)"
+order="$(rand_range 1 6)"
+case "$order" in
+  1) templates="$t_dns|$t_stun|$t_noise" ;;
+  2) templates="$t_dns|$t_noise|$t_stun" ;;
+  3) templates="$t_stun|$t_dns|$t_noise" ;;
+  4) templates="$t_stun|$t_noise|$t_dns" ;;
+  5) templates="$t_noise|$t_dns|$t_stun" ;;
+  *) templates="$t_noise|$t_stun|$t_dns" ;;
+esac
+
+i1=""; i2=""; i3=""; i4=""; i5=""
+index=0
+rest="$templates"
+while [ "$index" -lt "$decoy_count" ]; do
+  spec="${rest%%|*}"
+  rest="${rest#*|}"
+  index=$(( index + 1 ))
+  case "$index" in
+    1) i1="$spec" ;;
     2) i2="$spec" ;;
     3) i3="$spec" ;;
-    4) i4="$spec" ;;
-    5) i5="$spec" ;;
   esac
 done
 

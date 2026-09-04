@@ -130,8 +130,13 @@ test("keeps the four packet classes at distinct sizes", executing, () => {
 test("builds a junk packet only from tags the parser knows", executing, () => {
   for (let i = 0; i < DRAWS; i += 1) {
     const { params } = generate();
-    const spec = params.I1 ?? "";
-    assert.match(spec, /^</, "I1 must start with a tag");
+    const specs = ["I1", "I2", "I3", "I4", "I5"]
+      .map((key) => params[key])
+      .filter(Boolean);
+    assert.ok(specs.length > 0, "at least one decoy must be emitted");
+
+    for (const spec of specs) {
+    assert.match(spec, /^</, "a spec must start with a tag");
 
     const tags = [...spec.matchAll(/<([^>]*)>/g)].map((match) => match[1]);
     assert.ok(tags.length > 0, "a spec with no tags is silently skipped");
@@ -150,6 +155,7 @@ test("builds a junk packet only from tags the parser knows", executing, () => {
       if (key !== "b" && key !== "t") {
         assert.match(arg ?? "", /^\d+$/, `<${tag}> needs a non-negative count`);
       }
+    }
     }
   }
 });
@@ -287,16 +293,32 @@ test("holds RandomTrailers on, uniformly", executing, () => {
   assert.deepEqual([...draws], ["on"]);
 });
 
-test("uses more than one junk slot, and varies which", executing, () => {
-  const slotsPerDraw = [];
+test("varies the shape of the pre-handshake burst, not just its numbers", executing, () => {
+  // The signature is the SHAPE: a censor comparing two nodes sees the same
+  // sequence of the same templates before every handshake, whatever the sizes
+  // inside them are. So the count and the order are drawn per node.
+  //
+  // The slots are filled contiguously from I1 on purpose. amneziawg-go sends
+  // them in a fixed I1..I5 order, so which of I2..I5 a spec occupies is
+  // invisible to a watcher - scattering them looks like entropy and is not.
+  const shapes = new Set();
+  const leaders = new Set();
   for (let i = 0; i < DRAWS; i += 1) {
     const { params } = generate();
     const used = ["I1", "I2", "I3", "I4", "I5"].filter((key) => params[key]);
-    assert.ok(used.length >= 2, `only ${used.length} junk slot(s) used`);
-    slotsPerDraw.push(used.join(","));
+
+    assert.ok(used.length >= 1 && used.length <= 3, `${used.length} decoys`);
+    assert.deepEqual(
+      used,
+      ["I1", "I2", "I3"].slice(0, used.length),
+      "slots must be contiguous from I1",
+    );
+    shapes.add(used.length);
+    leaders.add((params.I1 ?? "").slice(0, 12));
   }
-  // Which slots are occupied is itself a fingerprint if it never changes.
-  assert.ok(new Set(slotsPerDraw).size > 1, "the slot layout never varies");
+
+  assert.ok(shapes.size > 1, "every node sends the same number of decoys");
+  assert.ok(leaders.size > 1, "every node leads with the same template");
 });
 
 test("puts a range only where a range is legal", executing, () => {
