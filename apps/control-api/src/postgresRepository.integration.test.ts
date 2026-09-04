@@ -2402,12 +2402,18 @@ describe("PostgresControlRepository node status surfaces", () => {
     const node = seededNode(
       (await subject().adminList({ ...actor, role: "admin" }, "nodes")) as Array<{
         id: string;
-        metrics: { memAvailableBytes: bigint | string } | null;
+        metrics: { memAvailableBytes: unknown } | null;
         endpoint: { status: string; lastHandshakeAt: Date | null };
       }>,
     );
 
-    expect(String(node.metrics?.memAvailableBytes)).toBe("361267200");
+    // A STRING, and asserted as one. The previous version of this test wrote
+    // String(...) around it, so it passed with a BigInt - and a BigInt is what
+    // shipped, where JSON.stringify refuses it and the whole page 500s.
+    expect(node.metrics?.memAvailableBytes).toBe("361267200");
+    expect(typeof node.metrics?.memAvailableBytes).toBe("string");
+    // The real test is that the payload can leave the process at all.
+    expect(() => JSON.stringify(node)).not.toThrow();
     // No peer has ever handshaked on this node, so the honest answer is
     // "unknown" - not "stale", which would claim we once saw one.
     expect(node.endpoint).toEqual({
