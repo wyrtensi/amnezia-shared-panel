@@ -13,6 +13,10 @@ import {
   importServerBackupSchema,
   RequestServerUpdateType,
   requestServerUpdateSchema,
+  GetServerCapacityType,
+  getServerCapacitySchema,
+  RequestServerCapacityType,
+  requestServerCapacitySchema,
 } from "@/schemas";
 import {
   getServerHandler,
@@ -22,6 +26,8 @@ import {
   getServerUpdateHandler,
   importServerBackupHandler,
   requestServerUpdateHandler,
+  getServerCapacityHandler,
+  requestServerCapacityHandler,
 } from "@/handlers/server";
 import { authPreHandler } from "@/middleware/auth";
 import { defineController } from "@/helpers/registerControllers";
@@ -104,3 +110,27 @@ export const rebootServerController = defineController<RebootServerType>({
   preHandler: authPreHandler(),
   handler: rebootServerHandler,
 });
+
+/**
+ * Состояние изменения ёмкости узла
+ */
+export const getServerCapacityController =
+  defineController<GetServerCapacityType>({
+    url: "/server/capacity",
+    method: "GET",
+    schema: getServerCapacitySchema,
+    preHandler: authPreHandler(),
+    handler: getServerCapacityHandler,
+  });
+
+/**
+ * Запросить изменение ёмкости узла
+ */
+export const requestServerCapacityController =
+  defineController<RequestServerCapacityType>({
+    url: "/server/capacity",
+    method: "POST",
+    schema: requestServerCapacitySchema,
+    preHandler: authPreHandler(),
+    handler: requestServerCapacityHandler,
+  });

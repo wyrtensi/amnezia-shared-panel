@@ -47,6 +47,7 @@ import {
   installGuideVideosSchema,
   isPublishableAgentImage,
   nodeAgentUpdateActionSchema,
+  nodeCapacityActionSchema,
   nodeOrderSchema,
   PROTOCOL_KINDS,
   recommendedNodeIdsSchema,
@@ -2020,6 +2021,13 @@ export class PostgresControlRepository implements ControlRepository {
             agentUpdateMessage: nodes.agentUpdateMessage,
             agentUpdateLog: nodes.agentUpdateLog,
             agentUpdateAt: nodes.agentUpdateAt,
+            // Same again for the last capacity change: the state drives the
+            // card's control, and the log is why a change failed.
+            capacityState: nodes.capacityState,
+            capacityRequestedPeers: nodes.capacityRequestedPeers,
+            capacityMessage: nodes.capacityMessage,
+            capacityLog: nodes.capacityLog,
+            capacityAt: nodes.capacityAt,
             createdAt: nodes.createdAt,
             updatedAt: nodes.updatedAt,
           })
@@ -3066,6 +3074,49 @@ export class PostgresControlRepository implements ControlRepository {
           metadata: { image },
         });
         return { id: targetId, image, queued: true };
+      });
+    } else if (resource === "nodes" && action === "set-capacity") {
+      // The same shape as "agent-update" above: check the target, enqueue,
+      // audit. The number the admin typed travels unchanged to the node, which
+      // re-validates it, as does the host-side applier and set-capacity.sh
+      // after that. Three checks across three threat models, not duplication.
+      const requested = nodeCapacityActionSchema.parse(payload ?? {});
+      return this.options.db.transaction(async (tx) => {
+        const [node] = await tx
+          .select({ id: nodes.id, maxPeers: nodes.maxPeers })
+          .from(nodes)
+          .where(eq(nodes.id, targetId));
+        if (!node) throw new ApiError(404, "Node not found", "NODE_NOT_FOUND");
+        await tx.insert(jobOutbox).values({
+          type: "node.set-capacity",
+          deduplicationKey: `node.set-capacity:${targetId}:${randomUUID()}`,
+          payload: { nodeId: targetId, maxPeers: requested.maxPeers },
+        });
+        // The panel's own limit follows the node's, so the two cannot drift
+        // into the state that produces a key stuck in provisioning: the panel
+        // sending keys to a node that is already full by its own count.
+        await tx
+          .update(nodes)
+          .set({
+            maxPeers: requested.maxPeers,
+            capacityState: "requested",
+            capacityRequestedPeers: requested.maxPeers,
+            capacityMessage: null,
+            updatedAt: new Date(),
+          })
+          .where(eq(nodes.id, targetId));
+        await tx.insert(auditEvents).values({
+          actorUserId: actor.id,
+          actorType: "user",
+          action: "admin.nodes.set-capacity",
+          targetType: "node",
+          targetId,
+          metadata: {
+            maxPeers: requested.maxPeers,
+            previousMaxPeers: node.maxPeers,
+          },
+        });
+        return { id: targetId, maxPeers: requested.maxPeers, queued: true };
       });
     } else if (resource === "rules" && action === "activate") {
       return this.options.db.transaction(async (tx) => {

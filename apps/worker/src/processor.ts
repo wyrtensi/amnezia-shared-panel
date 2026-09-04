@@ -16,6 +16,11 @@ const nodeJobPayloadSchema = z.object({ nodeId: z.uuid().or(z.string().min(1)) }
 const nodeAgentUpdatePayloadSchema = nodeJobPayloadSchema.extend({
   image: z.string().min(1).max(512),
 });
+// The number the admin typed. The node re-validates it, the host-side applier
+// re-validates it, and set-capacity.sh validates it a third time.
+const nodeCapacityPayloadSchema = nodeJobPayloadSchema.extend({
+  maxPeers: z.number().int().min(1).max(500),
+});
 
 export type JobProcessorOptions = {
   repository: WorkerRepository;
@@ -148,6 +153,29 @@ export const createJobProcessor = ({
         jobId: job.id,
         nodeId,
         image,
+        requestedAt: now(),
+      });
+      return;
+    }
+    if (job.type === "node.set-capacity") {
+      const { nodeId, maxPeers } = nodeCapacityPayloadSchema.parse(job.payload);
+      const context = await repository.loadNodeReconcileContext(nodeId);
+      if (!context) {
+        await repository.failJob(job.id, "Node capacity target not found");
+        return;
+      }
+      // The job ends here rather than waiting for the outcome, for the same
+      // reason the agent update does: the worker claims jobs one at a time, and
+      // holding this one open across a container recreate and its health gate
+      // would stop every other job on the panel. The telemetry poller visits
+      // every node each minute and mirrors the node's own capacity state onto
+      // its row - which also survives a worker restart and tolerates the node
+      // being unreachable during the recreate it was asked to perform.
+      await createNodeAgent(context.node).requestCapacity(maxPeers);
+      await repository.completeNodeCapacityChange({
+        jobId: job.id,
+        nodeId,
+        maxPeers,
         requestedAt: now(),
       });
       return;

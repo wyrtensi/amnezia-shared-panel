@@ -90,6 +90,7 @@ export default function AdminNodesPage() {
   const [updateAgentNode, setUpdateAgentNode] = React.useState<AdminNode | null>(
     null,
   );
+  const [capacityNode, setCapacityNode] = React.useState<AdminNode | null>(null);
 
   // Count keys per node in EVERY state, not just the active ones: revoked keys
   // still reference the node and still block (or get destroyed by) a deletion.
@@ -206,6 +207,7 @@ export default function AdminNodesPage() {
               onEdit={() => setEditNode(node)}
               onDelete={() => setDeleteTarget(node)}
               onUpdateAgent={() => setUpdateAgentNode(node)}
+              onSetCapacity={() => setCapacityNode(node)}
               checkResults={serviceChecks.byNode.get(node.id) ?? []}
               checksConfigured={serviceChecks.checks.length > 0}
               onSetChecks={(patch) => void setNodeChecks(node, patch)}
@@ -237,6 +239,12 @@ export default function AdminNodesPage() {
         request={request}
         reload={reload}
       />
+      <SetCapacityDialog
+        node={capacityNode}
+        onClose={() => setCapacityNode(null)}
+        request={request}
+        reload={reload}
+      />
       <DeleteNodeDialog
         node={deleteTarget}
         keyStats={deleteTarget ? statsFor(deleteTarget.id) : NO_KEYS}
@@ -256,6 +264,7 @@ function NodeCard({
   onEdit,
   onDelete,
   onUpdateAgent,
+  onSetCapacity,
   checkResults,
   checksConfigured,
   onSetChecks,
@@ -280,6 +289,7 @@ function NodeCard({
   onEdit: () => void;
   onDelete: () => void;
   onUpdateAgent: () => void;
+  onSetCapacity: () => void;
 }) {
   const { t, lang } = useT();
   const peers = node.peerCount ?? 0;
@@ -567,6 +577,27 @@ function NodeCard({
                   })
                 : t("nodes.agentUpdateUnresolved")}
             </TooltipContent>
+          </Tooltip>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <span>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  // Disabled while a change is in flight: a second request would
+                  // be refused by the node anyway, which recreates its agent to
+                  // pick the first one up.
+                  disabled={
+                    node.capacityState === "requested" ||
+                    node.capacityState === "running"
+                  }
+                  onClick={onSetCapacity}
+                >
+                  <Gauge className="h-4 w-4" /> {t("nodes.capacityChange")}
+                </Button>
+              </span>
+            </TooltipTrigger>
+            <TooltipContent>{t("nodes.capacityTip")}</TooltipContent>
           </Tooltip>
           <Button variant="secondary" size="sm" onClick={onEdit}>
             <Pencil className="h-4 w-4" /> {t("nodes.edit")}
@@ -906,6 +937,114 @@ function NodeAgentUpdateStatus({ node }: { node: AdminNode }) {
  * what gets sent: if a newer release lands between this dialog opening and the
  * click, the admin still installs what they were shown.
  */
+/**
+ * Change how many peers a node accepts.
+ *
+ * This is not the same as editing the node's row: the number that actually
+ * binds is SERVER_MAX_PEERS inside the node's own .env, and the panel's limit
+ * only decides where it stops sending keys. This dialog changes both - the node
+ * rewrites its .env and recreates ONLY its agent, so no tunnel drops and no peer
+ * is lost, and if the agent does not come back healthy the node restores the
+ * previous value by itself.
+ */
+function SetCapacityDialog({
+  node,
+  onClose,
+  request,
+  reload,
+}: {
+  node: AdminNode | null;
+  onClose: () => void;
+  request: <T>(path: string, init?: RequestInit) => Promise<T>;
+  reload: () => Promise<void>;
+}) {
+  const { t } = useT();
+  const [busy, setBusy] = React.useState(false);
+  const [error, setError] = React.useState<string | null>(null);
+  const [value, setValue] = React.useState("");
+
+  React.useEffect(() => {
+    setError(null);
+    setValue(node ? String(node.maxPeers) : "");
+  }, [node]);
+
+  const maxPeers = Number(value);
+  const valid = Number.isInteger(maxPeers) && maxPeers >= 1 && maxPeers <= 500;
+
+  const submit = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!node || !valid || busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await request(`/api/admin/nodes/${node.id}/set-capacity`, {
+        method: "POST",
+        body: JSON.stringify({ maxPeers }),
+      });
+      toast.success(t("nodes.capacityQueued", { name: node.name }));
+      onClose();
+      await reload();
+    } catch (cause) {
+      const message =
+        cause instanceof Error ? cause.message : t("nodes.capacityFailed");
+      setError(message);
+      toast.error(message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Dialog open={Boolean(node)} onOpenChange={(next) => !next && onClose()}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>
+            {t("nodes.capacityTitle", { name: node?.name ?? "" })}
+          </DialogTitle>
+          <DialogDescription>{t("nodes.capacityBody")}</DialogDescription>
+        </DialogHeader>
+        <form onSubmit={(event) => void submit(event)} className="space-y-3">
+          <div className="space-y-1">
+            <Label htmlFor="capacity-peers">{t("nodes.capacityPeers")}</Label>
+            <Input
+              id="capacity-peers"
+              type="number"
+              min={1}
+              max={500}
+              value={value}
+              onChange={(event) => setValue(event.target.value)}
+            />
+            <p className="text-xs text-muted-foreground">
+              {t("nodes.capacityRange")}
+            </p>
+          </div>
+          <Callout tone="info" className="text-xs">
+            {t("nodes.capacityNoDowntime")}
+          </Callout>
+          {node?.capacityState === "failed" && node.capacityMessage ? (
+            <Callout tone="warning" className="text-xs">
+              {t("nodes.capacityLastFailure", { message: node.capacityMessage })}
+            </Callout>
+          ) : null}
+          {error ? (
+            <Callout tone="danger" className="text-xs">
+              {error}
+            </Callout>
+          ) : null}
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={onClose}>
+              {t("common.cancel")}
+            </Button>
+            <Button type="submit" disabled={!valid || busy}>
+              {busy ? t("nodes.capacityBusy") : t("nodes.capacityConfirm")}
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 function UpdateAgentDialog({
   node,
   onClose,

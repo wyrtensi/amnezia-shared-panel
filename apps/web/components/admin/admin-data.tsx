@@ -109,6 +109,12 @@ export type AdminNode = {
   agentUpdateMessage?: string | null;
   agentUpdateLog?: string;
   agentUpdateAt?: string | null;
+  /** The node's own record of its last capacity change, mirrored by the worker. */
+  capacityState?: "idle" | "requested" | "running" | "succeeded" | "failed";
+  capacityRequestedPeers?: number | null;
+  capacityMessage?: string | null;
+  capacityLog?: string;
+  capacityAt?: string | null;
   /** The release the panel offers; null when it could not be resolved, which
    *  is what disables the update button rather than falling back to a tag. */
   availableAgent?: {

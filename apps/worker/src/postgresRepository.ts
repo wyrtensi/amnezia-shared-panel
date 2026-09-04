@@ -38,6 +38,7 @@ import type {
   AccessReconcileResult,
   OutboxJob,
   NodeAgentUpdateRequested,
+  NodeCapacityRequested,
   NodeReconcileContext,
   NodeReconcileResult,
   WorkerKeyContext,
@@ -338,6 +339,45 @@ export class PostgresWorkerRepository
         targetType: "node",
         targetId: result.nodeId,
         metadata: { jobId: result.jobId, image: result.image },
+        createdAt: result.requestedAt,
+      });
+      await tx
+        .update(jobOutbox)
+        .set({
+          status: "completed",
+          completedAt: result.requestedAt,
+          lockedAt: null,
+          lastError: null,
+          updatedAt: result.requestedAt,
+        })
+        .where(eq(jobOutbox.id, result.jobId));
+    });
+  };
+
+  completeNodeCapacityChange = async (
+    result: NodeCapacityRequested,
+  ): Promise<void> => {
+    await this.options.db.transaction(async (tx) => {
+      // The node has been asked, not changed. The outcome arrives through the
+      // telemetry poll, which is also what clears this state if the node never
+      // comes back with one.
+      await tx
+        .update(nodes)
+        .set({
+          capacityState: "requested",
+          capacityRequestedPeers: result.maxPeers,
+          capacityMessage: null,
+          capacityLog: "",
+          capacityAt: null,
+          updatedAt: result.requestedAt,
+        })
+        .where(eq(nodes.id, result.nodeId));
+      await tx.insert(auditEvents).values({
+        actorType: "system",
+        action: "node.set-capacity.requested",
+        targetType: "node",
+        targetId: result.nodeId,
+        metadata: { jobId: result.jobId, maxPeers: result.maxPeers },
         createdAt: result.requestedAt,
       });
       await tx
@@ -795,6 +835,8 @@ export class PostgresWorkerRepository
           // Only a node with an update in flight is asked about one, so a fleet
           // with nothing to update costs no extra request per tick.
           agentUpdateState: row.node.agentUpdateState,
+          // Same again for a capacity change in flight.
+          capacityState: row.node.capacityState,
           // Whether this node takes part in service checks at all, and which it
           // skips. Read here rather than joined per check: the poll already has
           // the node row, and a check the node does not run must never be
@@ -877,6 +919,27 @@ export class PostgresWorkerRepository
                   agentUpdateLog: snapshot.agentUpdate.log,
                   agentUpdateAt: snapshot.agentUpdate.updatedAt
                     ? new Date(snapshot.agentUpdate.updatedAt)
+                    : null,
+                }),
+          // The same three cases for capacity.
+          ...(snapshot.capacity === undefined
+            ? {}
+            : snapshot.capacity === null
+              ? {
+                  capacityState: "failed" as const,
+                  capacityMessage:
+                    "The node-agent does not serve /server/capacity",
+                  capacityAt: snapshot.observedAt,
+                }
+              : {
+                  capacityState: snapshot.capacity.state,
+                  capacityRequestedPeers:
+                    snapshot.capacity.requestedMaxPeers ??
+                    node.capacityRequestedPeers,
+                  capacityMessage: snapshot.capacity.message ?? null,
+                  capacityLog: snapshot.capacity.log,
+                  capacityAt: snapshot.capacity.updatedAt
+                    ? new Date(snapshot.capacity.updatedAt)
                     : null,
                 }),
           lastHealthAt: snapshot.observedAt,

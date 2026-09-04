@@ -29,6 +29,7 @@ const createRepository = (): WorkerRepository => ({
   loadNodeReconcileContext: vi.fn(() => Promise.resolve(null)),
   completeNodeReconcile: vi.fn(() => Promise.resolve()),
   completeNodeAgentUpdate: vi.fn(() => Promise.resolve()),
+  completeNodeCapacityChange: vi.fn(() => Promise.resolve()),
   saveNodeAgentRelease: vi.fn(() => Promise.resolve()),
   completeProvision: vi.fn(() => Promise.resolve()),
   completeLifecycle: vi.fn(() => Promise.resolve()),
@@ -39,6 +40,10 @@ const createRepository = (): WorkerRepository => ({
 
 const createAgent = (): NodeAgent => ({
   getAgentUpdate: vi.fn(() => Promise.resolve(null)),
+  getCapacity: vi.fn(() => Promise.resolve(null)),
+  requestCapacity: vi.fn((maxPeers: number) =>
+    Promise.resolve({ id: "capacity-request", maxPeers }),
+  ),
   runChecks: vi.fn(() => Promise.resolve(null)),
   requestAgentUpdate: vi.fn((image: string) =>
     Promise.resolve({ id: "req-1", image }),
@@ -484,6 +489,63 @@ describe("manual route-feed refresh job", () => {
       requestedAt: now,
     });
     expect(agent.getAgentUpdate).not.toHaveBeenCalled();
+  });
+
+  it("asks the node to change its capacity and does not wait for the outcome", async () => {
+    const repository = createRepository();
+    const agent = createAgent();
+    vi.mocked(repository.loadNodeReconcileContext).mockResolvedValue({
+      node: keyContext.node,
+      keys: [],
+    });
+    const now = new Date("2026-09-04T12:00:00.000Z");
+    const processJob = createJobProcessor({
+      repository,
+      createNodeAgent: () => agent,
+      now: () => now,
+    });
+
+    await processJob({
+      id: "capacity-1",
+      type: "node.set-capacity",
+      attempts: 1,
+      payload: { nodeId: "node-1", maxPeers: 300 },
+    });
+
+    expect(agent.requestCapacity).toHaveBeenCalledWith(300);
+    // Same reasoning as the agent update above: the recreate and its health
+    // gate take longer than a job slot is worth, and the telemetry poll is what
+    // learns the outcome.
+    expect(repository.completeNodeCapacityChange).toHaveBeenCalledWith({
+      jobId: "capacity-1",
+      nodeId: "node-1",
+      maxPeers: 300,
+      requestedAt: now,
+    });
+    expect(agent.getCapacity).not.toHaveBeenCalled();
+  });
+
+  it("fails a capacity change aimed at a node that is gone", async () => {
+    const repository = createRepository();
+    const agent = createAgent();
+    const processJob = createJobProcessor({
+      repository,
+      createNodeAgent: () => agent,
+    });
+    vi.mocked(repository.loadNodeReconcileContext).mockResolvedValue(null);
+
+    await processJob({
+      id: "capacity-2",
+      type: "node.set-capacity",
+      attempts: 1,
+      payload: { nodeId: "gone", maxPeers: 300 },
+    });
+
+    expect(agent.requestCapacity).not.toHaveBeenCalled();
+    expect(repository.failJob).toHaveBeenCalledWith(
+      "capacity-2",
+      "Node capacity target not found",
+    );
   });
 
   it("fails an update aimed at a node that is gone", async () => {

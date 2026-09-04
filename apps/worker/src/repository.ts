@@ -54,6 +54,13 @@ export type NodeAgentUpdateRequested = {
   requestedAt: Date;
 };
 
+export type NodeCapacityRequested = {
+  jobId: string;
+  nodeId: string;
+  maxPeers: number;
+  requestedAt: Date;
+};
+
 export type AccessReconcileResult = {
   /** Emails of accounts disabled because they are no longer allowed. */
   deactivated: string[];
@@ -78,6 +85,9 @@ export interface WorkerRepository {
   /** Mark the node as asked to update, and finish the job that asked. */
   completeNodeAgentUpdate: (
     result: NodeAgentUpdateRequested,
+  ) => Promise<void>;
+  completeNodeCapacityChange: (
+    result: NodeCapacityRequested,
   ) => Promise<void>;
   /** Store the release the panel currently offers nodes, keyed by repository. */
   saveNodeAgentRelease: (release: {

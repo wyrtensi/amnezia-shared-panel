@@ -163,12 +163,31 @@ const agentUpdateAcceptedSchema = z.object({
   image: z.string(),
 });
 
+// The same shape for capacity. `available` is false on a node where nobody has
+// installed the host-side applier, and the whole object is absent on an agent
+// too old to serve the route - both mean "this node cannot change its capacity
+// from here".
+const capacityStatusSchema = z.object({
+  available: z.boolean(),
+  currentMaxPeers: z.number().int().nonnegative(),
+  state: z.enum(["idle", "requested", "running", "succeeded", "failed"]),
+  requestedMaxPeers: z.number().int().nullable(),
+  log: z.string(),
+  updatedAt: z.string().nullable(),
+  message: z.string().nullable().optional(),
+});
+const capacityAcceptedSchema = z.object({
+  id: z.string(),
+  maxPeers: z.number().int(),
+});
+
 export type NodeClientRecord = z.infer<typeof clientRecordSchema>;
 export type CreatedNodeClient = z.infer<typeof createResponseSchema>["client"];
 export type NodeHealth = z.infer<typeof healthSchema>;
 export type NodeServer = z.infer<typeof serverSchema>;
 export type NodeServerLoad = z.infer<typeof serverLoadSchema>;
 export type NodeAgentUpdateStatus = z.infer<typeof agentUpdateStatusSchema>;
+export type NodeCapacityStatus = z.infer<typeof capacityStatusSchema>;
 
 /**
  * One check's verdict as the node reports it.
@@ -206,6 +225,10 @@ export interface NodeAgent {
   // feature. That is not an error: it is the answer.
   getAgentUpdate: () => Promise<NodeAgentUpdateStatus | null>;
   requestAgentUpdate: (image: string) => Promise<{ id: string; image: string }>;
+  // null when this agent does not serve the route at all, i.e. it predates the
+  // feature. That is not an error: it is the answer.
+  getCapacity: () => Promise<NodeCapacityStatus | null>;
+  requestCapacity: (maxPeers: number) => Promise<{ id: string; maxPeers: number }>;
   listClients: () => Promise<NodeClientRecord[]>;
   createClient: (
     label: string,
@@ -290,6 +313,25 @@ export const createNodeAgentClient = ({
         await request("/server/update", {
           method: "POST",
           body: JSON.stringify({ image }),
+        }),
+      ),
+
+    getCapacity: async () => {
+      try {
+        return capacityStatusSchema.parse(await request("/server/capacity"));
+      } catch (error) {
+        // An agent built before this feature answers 404, and one being
+        // recreated by a capacity change right now answers nothing at all.
+        // Neither is a failure of the poll that called this.
+        if (error instanceof Error && /status 404/.test(error.message)) return null;
+        throw error;
+      }
+    },
+    requestCapacity: async (maxPeers) =>
+      capacityAcceptedSchema.parse(
+        await request("/server/capacity", {
+          method: "POST",
+          body: JSON.stringify({ maxPeers }),
         }),
       ),
     listClients: async () => {

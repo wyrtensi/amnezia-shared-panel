@@ -197,6 +197,14 @@ services:
       # not be what the node installs.
       NODE_AGENT_UPDATE_REPO: ${NODE_AGENT_UPDATE_REPO:-}
       NODE_AGENT_UPDATE_SPOOL: /var/lib/node-agent/update
+      # The in-panel "change this node's capacity" control. There is no second
+      # setting to gate it, the way a repository gates updates: the gate is the
+      # spool's OWNERSHIP. Docker creates the host directory for the bind below
+      # root-owned, so this container (uid 10001) cannot write it and the agent
+      # reports the feature as unavailable. scripts/install-capacity-applier.sh
+      # chowns it and installs the unit that watches it - until then a request
+      # would drop into a directory nothing reads.
+      NODE_AGENT_CAPACITY_SPOOL: /var/lib/node-agent/capacity
     secrets:
       - source: node_agent_api_key
         target: node_agent_api_key
@@ -207,6 +215,10 @@ services:
       # because the agent cannot durably replace itself (it cannot read this
       # compose file or write .env, and .env is what preflight validates).
       - ${NODE_UPDATE_SPOOL_DIR:-/var/lib/amnezia-node/update}:/var/lib/node-agent/update
+      # The capacity spool, on the same reasoning and deliberately a different
+      # directory: an agent update in flight must not block a capacity change,
+      # and neither may read the other's result as its own.
+      - ${NODE_CAPACITY_SPOOL_DIR:-/var/lib/amnezia-node/capacity}:/var/lib/node-agent/capacity
     group_add:
       - ${DOCKER_GID:?DOCKER_GID is required}
     ports:
