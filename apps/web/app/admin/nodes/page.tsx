@@ -40,6 +40,8 @@ import { Callout, Hint } from "@/components/ui/hint";
 import { ProtocolSelect } from "@/components/protocol-select";
 import { formatDateTime } from "@/lib/format";
 import { InlineTraffic } from "@/components/inline-traffic";
+import { NodeMetrics } from "@/components/admin/node-metrics";
+import { ServiceChecksCard } from "@/components/admin/service-checks-card";
 import { cn } from "@/lib/utils";
 import { useAdminData, type AdminNode } from "@/components/admin/admin-data";
 import { useT } from "@/lib/i18n/provider";
@@ -180,6 +182,11 @@ export default function AdminNodesPage() {
           ))}
         </div>
       )}
+
+      {/* Under the fleet rather than on its own page: a check is a statement
+          about what works FROM these servers, and reading it beside them is
+          what makes a red chip actionable. */}
+      <ServiceChecksCard />
 
       <CreateNodeDialog
         open={showCreate}
@@ -383,6 +390,13 @@ function NodeCard({
             />
           </div>
         </dl>
+
+        <div className="space-y-1 border-t pt-3">
+          <span className="text-xs text-muted-foreground">
+            {t("nodes.metrics.title")}
+          </span>
+          <NodeMetrics metrics={node.metrics} endpoint={node.endpoint} />
+        </div>
 
         {node.lastError ? (
           <Callout tone="danger" className="text-xs">

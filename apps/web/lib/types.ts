@@ -64,6 +64,73 @@ export type NodeTraffic = {
   month: TrafficPair;
 };
 
+/** A check as an ADMIN sees it, with every node's verdict in full. */
+export type AdminServiceCheck = {
+  id: string;
+  name: string;
+  probe: { kind: string; url?: string; method?: string };
+  assertions: Array<Record<string, unknown>>;
+  intervalSec: number;
+  enabled: boolean;
+  results?: Array<{
+    nodeId: string;
+    nodeName: string;
+    // ok / failed / error, and the three stay distinct here: an admin needs to
+    // know the node could not look, which the user surface collapses.
+    status: "ok" | "failed" | "error";
+    httpStatus: number | null;
+    latencyMs: number | null;
+    detail: string | null;
+    finalUrl: string | null;
+    checkedAt: string;
+    failingSince: string | null;
+  }>;
+};
+
+/** One service check on one server, as a user is shown it: a name and a word. */
+export type ServiceCheckSummary = {
+  name: string;
+  state: "works" | "unavailable" | "unknown";
+};
+
+/**
+ * Host metrics as of the node's last poll. Every field is nullable in both
+ * directions: an agent that predates a field omits it, and one that cannot read
+ * it reports null. A zero would read as a measurement, so the card shows a dash.
+ */
+export type AdminNodeMetrics = {
+  observedAt: string;
+  agentLatencyMs: number | null;
+  uptimeSec: number | null;
+  cpuCores: number | null;
+  load1: number | null;
+  memTotalBytes: string | null;
+  memAvailableBytes: string | null;
+  swapTotalBytes: string | null;
+  swapUsedBytes: string | null;
+  diskTotalBytes: string | null;
+  diskAvailableBytes: string | null;
+  diskUsedPercent: number | null;
+  agentPidsCurrent: number | null;
+  agentPidsMax: number | null;
+  awg3Up: boolean | null;
+  awg3Peers: number | null;
+  awg2Up: boolean | null;
+  awg2Peers: number | null;
+  listenPorts: number[] | null;
+};
+
+/**
+ * Derived from the newest peer handshake, never probed. The panel cannot reach
+ * a node's public endpoint, so a real user's connection succeeding is the
+ * evidence - which is why this is shown as "last handshake N minutes ago"
+ * rather than as a reachability verdict.
+ */
+export type NodeEndpointSignal = {
+  status: "reachable" | "stale" | "unknown";
+  lastHandshakeAt: string | null;
+};
+
 export type NodeView = {
   id: string;
   name: string;
@@ -78,6 +145,15 @@ export type NodeView = {
   supportedProtocols?: ProtocolKind[];
   selectableProtocols?: ProtocolKind[];
   lastHealthAt?: string | null;
+  /**
+   * Service checks for this server. Present only when the portal policy's
+   * showNodeStatus is on, which is why it is optional rather than nullable -
+   * "this panel does not show them" is a different statement from "this server
+   * has none". It carries `checks` and nothing else: node health is already
+   * shown from enabled/lastError/lastHealthAt, and a second vocabulary for the
+   * same thing is what the narrowing exists to prevent.
+   */
+  status?: { checks: ServiceCheckSummary[] };
   /**
    * Where clients reach this node — the resolved IPv4 when the panel has one,
    * else the host the node reported. Present only when the portal policy's

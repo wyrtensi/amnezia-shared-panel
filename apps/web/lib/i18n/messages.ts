@@ -596,6 +596,45 @@ const ru = {
     "Ключ создаётся на сервере — устройство подключится сразу после импорта конфигурации.",
 
   // Admin nodes
+  // Host metrics on the admin node card, and the three words a USER is shown
+  // for one service check. The prefix is deliberate: `checks.state.*`, not
+  // `nodes.state.*` - these words describe a check, and a key under `nodes.`
+  // would invite the next person to reuse them for a node.
+  "checks.title": "Проверки сервисов",
+  "checks.cliHint":
+    "Набор правил открытый, поэтому проверки создаются и правятся из CLI: check-create, check-set. Здесь — включить, запустить и посмотреть, что отвечают ноды.",
+  "checks.empty": "Проверок пока нет.",
+  "checks.every": "раз в {minutes} мин",
+  "checks.run": "Запустить",
+  "checks.runQueued":
+    "Проверка помечена как готовая к запуску: ноды выполнят её на ближайшем опросе.",
+  "checks.noResults": "Результатов ещё нет.",
+  "checks.deleteConfirm":
+    "Удалить проверку «{name}» и все её результаты по нодам?",
+  "checks.loadFailed": "Не удалось загрузить проверки",
+  "checks.actionFailed": "Не удалось выполнить действие",
+  "checks.state.works": "работает",
+  "checks.state.unavailable": "недоступен",
+  "checks.state.unknown": "неизвестно",
+  "nodes.metrics.title": "Метрики хоста",
+  "nodes.metrics.never": "Нода ещё не отвечала — метрик нет.",
+  "nodes.metrics.ram": "Память",
+  "nodes.metrics.swap": "Swap",
+  "nodes.metrics.disk": "Диск",
+  "nodes.metrics.free": "свободно",
+  "nodes.metrics.load": "Нагрузка / ядра",
+  "nodes.metrics.pids": "Задачи агента",
+  "nodes.metrics.awg3": "AWG 3.1",
+  "nodes.metrics.awg2": "AWG 2.0",
+  "nodes.metrics.up": "поднят",
+  "nodes.metrics.down": "не поднят",
+  "nodes.metrics.agentLatency": "Ответ агента",
+  "nodes.metrics.lastHandshake": "Последний handshake",
+  "nodes.metrics.handshakeAgo": "{minutes} мин назад",
+  "nodes.metrics.handshakeNever": "не было",
+  "gpolicy.showNodeStatus": "Показывать состояние сервисов",
+  "gpolicy.showNodeStatusHint":
+    "Рядом с сервером пользователь видит название сервиса и одно из трёх слов: работает, недоступен, неизвестно. Ни адреса, ни подробностей.",
   "nodes.cap.peerLifecycle": "Ключи",
   "nodes.cap.telemetry": "Телеметрия",
   "nodes.cap.backup": "Бэкап",
@@ -1482,6 +1521,41 @@ const en = {
     "The key is created on the server — the device connects right after importing the configuration.",
 
   // Admin nodes
+  "checks.title": "Service checks",
+  "checks.cliHint":
+    "The rule set is open, so checks are created and edited from the CLI: check-create, check-set. Here you can enable, run, and read what the nodes say.",
+  "checks.empty": "No checks yet.",
+  "checks.every": "every {minutes} min",
+  "checks.run": "Run",
+  "checks.runQueued":
+    "Marked due: the nodes will run it on their next poll.",
+  "checks.noResults": "No results yet.",
+  "checks.deleteConfirm":
+    "Delete the check “{name}” and every node's result for it?",
+  "checks.loadFailed": "Failed to load the checks",
+  "checks.actionFailed": "The action failed",
+  "checks.state.works": "Works",
+  "checks.state.unavailable": "Unavailable",
+  "checks.state.unknown": "Unknown",
+  "nodes.metrics.title": "Host metrics",
+  "nodes.metrics.never": "This node has not answered yet — no metrics.",
+  "nodes.metrics.ram": "Memory",
+  "nodes.metrics.swap": "Swap",
+  "nodes.metrics.disk": "Disk",
+  "nodes.metrics.free": "free",
+  "nodes.metrics.load": "Load / cores",
+  "nodes.metrics.pids": "Agent tasks",
+  "nodes.metrics.awg3": "AWG 3.1",
+  "nodes.metrics.awg2": "AWG 2.0",
+  "nodes.metrics.up": "up",
+  "nodes.metrics.down": "down",
+  "nodes.metrics.agentLatency": "Agent latency",
+  "nodes.metrics.lastHandshake": "Last handshake",
+  "nodes.metrics.handshakeAgo": "{minutes} min ago",
+  "nodes.metrics.handshakeNever": "never",
+  "gpolicy.showNodeStatus": "Show service status",
+  "gpolicy.showNodeStatusHint":
+    "Beside each server a user sees a service name and one of three words: works, unavailable, unknown. No address, no details.",
   "nodes.cap.peerLifecycle": "Keys",
   "nodes.cap.telemetry": "Telemetry",
   "nodes.cap.backup": "Backup",

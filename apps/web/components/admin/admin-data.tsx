@@ -5,7 +5,13 @@ import { toast } from "sonner";
 import { apiRequest } from "@/lib/api";
 import { useT } from "@/lib/i18n/provider";
 import type { GlobalRoutes } from "@amnezia/contracts";
-import type { KeyLimitMode, ProtocolKind, TrafficPair } from "@/lib/types";
+import type {
+  AdminNodeMetrics,
+  KeyLimitMode,
+  NodeEndpointSignal,
+  ProtocolKind,
+  TrafficPair,
+} from "@/lib/types";
 
 /** Fresh empty payload — a factory so no two callers share the same arrays. */
 export const newGlobalRoutes = (): GlobalRoutes => ({
@@ -89,6 +95,10 @@ export type AdminNode = {
   lastHealthAt: string | null;
   lastSyncAt: string | null;
   lastError: string | null;
+  /** Host metrics from the last poll; null until this node has been polled. */
+  metrics?: AdminNodeMetrics | null;
+  /** Derived from the newest peer handshake, never probed. */
+  endpoint?: NodeEndpointSignal | null;
   /** The node's own record of its last agent update, mirrored by the worker. */
   agentUpdateState?: "idle" | "requested" | "running" | "succeeded" | "failed";
   agentUpdateImage?: string | null;
@@ -169,6 +179,8 @@ export type GlobalPortalPolicy = {
   showTraffic: boolean;
   /** Whether users see each node's address on their dashboard. Off by default. */
   showNodeAddress: boolean;
+  /** Gates the service-check chips a user sees beside each server. */
+  showNodeStatus: boolean;
   defaultKeyLimit: number;
   keyLimitMode: KeyLimitMode;
   dailyRetentionDays: number | null;
@@ -197,6 +209,9 @@ const DEFAULT_POLICY: GlobalPortalPolicy = {
   // Matches the contract default: the form must not flash the switch on before
   // the real policy arrives.
   showNodeAddress: false,
+  // Default true, matching the contract: a user seeing which services work
+  // from a server is the point of collecting the checks at all.
+  showNodeStatus: true,
   defaultKeyLimit: 5,
   // Per-node is the pre-existing behaviour, so a panel that has not loaded the
   // policy yet never flashes the global-pool wording.

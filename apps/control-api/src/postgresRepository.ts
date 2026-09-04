@@ -31,6 +31,8 @@ import type {
   UpdateNodeRequest,
   UpdateServiceCheckRequest,
 } from "@amnezia/contracts";
+import { toUserCheckState } from "@amnezia/contracts";
+import type { ServiceCheckUserState } from "@amnezia/contracts";
 import {
   createKeyRequestSchema,
   customRoutesSchema,
@@ -60,6 +62,7 @@ import {
   identities,
   jobOutbox,
   nodeAgentReleases,
+  nodeMetricsCurrent,
   nodeServiceCheckResults,
   nodeServiceChecks,
   nodes,
@@ -577,7 +580,7 @@ export class PostgresControlRepository implements ControlRepository {
   };
 
   listNodes = async (actor: Actor): Promise<unknown[]> => {
-    const [rows, policyRow, userRow] = await Promise.all([
+    const [rows, policyRow, userRow, checkRows] = await Promise.all([
       this.options.db
         .select({
           id: nodes.id,
@@ -599,6 +602,24 @@ export class PostgresControlRepository implements ControlRepository {
         .from(users)
         .where(eq(users.id, actor.id))
         .limit(1),
+      // Enabled checks joined to each node's verdict. Read unconditionally and
+      // discarded below when the policy says no: the alternative is a second
+      // round trip inside a branch, for a table with single-digit rows.
+      this.options.db
+        .select({
+          nodeId: nodeServiceCheckResults.nodeId,
+          name: nodeServiceChecks.name,
+          status: nodeServiceCheckResults.status,
+          checkedAt: nodeServiceCheckResults.checkedAt,
+          intervalSec: nodeServiceChecks.intervalSec,
+        })
+        .from(nodeServiceCheckResults)
+        .innerJoin(
+          nodeServiceChecks,
+          eq(nodeServiceChecks.id, nodeServiceCheckResults.checkId),
+        )
+        .where(eq(nodeServiceChecks.enabled, true))
+        .orderBy(nodeServiceChecks.name),
     ]);
     const policy = resolvePortalPolicy(
       toPolicy(policyRow[0]),
@@ -610,6 +631,34 @@ export class PostgresControlRepository implements ControlRepository {
     // things and never mixed: `nodeOrder` decides the position, `recommended`
     // only paints a badge.
     const recommended = new Set(policyRow[0]?.recommendedNodeIds ?? []);
+    // Three words and a name, and nothing else. No URL, no detail, no HTTP
+    // status: a user is told whether a service works from a server, not how the
+    // panel found out. `error` collapses to "unknown" rather than to
+    // "unavailable" - the node could not look, so nothing is known about the
+    // service, and saying "blocked" there would be a claim we cannot support.
+    // Stale is unknown too: a stale green light is worse than no light.
+    const checksNow = new Date();
+    const checksByNode = new Map<
+      string,
+      Array<{ name: string; state: ServiceCheckUserState }>
+    >();
+    if (policy.showNodeStatus) {
+      for (const row of checkRows) {
+        const list = checksByNode.get(row.nodeId) ?? [];
+        list.push({
+          name: row.name,
+          state: toUserCheckState({
+            status: row.status,
+            checkedAt: row.checkedAt,
+            now: checksNow,
+            // Three times the CHECK'S OWN period, so a check an admin set to
+            // five minutes goes stale after fifteen, not after thirty-six hours.
+            staleAfterSec: row.intervalSec * 3,
+          }),
+        });
+        checksByNode.set(row.nodeId, list);
+      }
+    }
     const nodeOrder = policyRow[0]?.nodeOrder ?? [];
     // A null/absent allowedNodeIds means "all nodes"; a list restricts to it.
     // The SELECT above has no ORDER BY and the worker rewrites node rows on
@@ -656,6 +705,13 @@ export class PostgresControlRepository implements ControlRepository {
                 enabledProtocols,
                 policy.allowedProtocols,
               ),
+              // Only `checks`, deliberately. There is no node state word here
+              // and there must never be one: node health is already shown from
+              // enabled/lastError/lastHealthAt, and a second vocabulary for the
+              // same thing is what the three-state narrowing exists to prevent.
+              ...(policy.showNodeStatus
+                ? { status: { checks: checksByNode.get(row.id) ?? [] } }
+                : {}),
             };
           },
         ),
@@ -1912,6 +1968,29 @@ export class PostgresControlRepository implements ControlRepository {
           .from(nodeAgentReleases)
           .orderBy(desc(nodeAgentReleases.resolvedAt))
           .limit(1);
+        // Host metrics as of the last poll, and the newest peer handshake on
+        // each node. The handshake is the ONLY honest reachability signal the
+        // panel has: it cannot probe a node's public endpoint (AWG answers no
+        // unauthenticated UDP, and the worker container has no CAP_NET_RAW), so
+        // a real user's connection succeeding is the evidence. It can only
+        // under-report, never over-report.
+        const [metricsRows, handshakeRows] = await Promise.all([
+          this.options.db.select().from(nodeMetricsCurrent),
+          this.options.db
+            .select({
+              nodeId: vpnKeys.nodeId,
+              latestHandshakeAt: sql<Date | null>`max(${peerCurrent.latestHandshakeAt})`,
+            })
+            .from(peerCurrent)
+            .innerJoin(vpnKeys, eq(vpnKeys.id, peerCurrent.keyId))
+            .groupBy(vpnKeys.nodeId),
+        ]);
+        const metricsByNode = new Map(
+          metricsRows.map((row) => [row.nodeId, row]),
+        );
+        const handshakeByNode = new Map(
+          handshakeRows.map((row) => [row.nodeId, row.latestHandshakeAt]),
+        );
         const availableAgent = release
           ? {
               repository: release.repository,
@@ -1920,9 +1999,21 @@ export class PostgresControlRepository implements ControlRepository {
               resolvedAt: release.resolvedAt,
             }
           : null;
+        const now = Date.now();
         return nodeRows.map((row) => ({
           ...row,
           availableAgent,
+          metrics: metricsByNode.get(row.id) ?? null,
+          endpoint: {
+            // Stated as "last handshake N minutes ago", never as a probe result.
+            // ONLINE_THRESHOLD_SECONDS is 180 in the node-agent's own contract.
+            status: (() => {
+              const last = handshakeByNode.get(row.id);
+              if (!last) return "unknown";
+              return now - last.getTime() <= 180_000 ? "reachable" : "stale";
+            })(),
+            lastHandshakeAt: handshakeByNode.get(row.id) ?? null,
+          },
           peerCount: peerCounts.get(row.id) ?? 0,
           traffic: {
             today: nodeTraffic.get(row.id)?.today ?? emptyPair,
