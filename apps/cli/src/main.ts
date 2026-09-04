@@ -765,13 +765,11 @@ async function cmdCfConfig(args: string[]): Promise<void> {
 
 /**
  * Cloudflare is configured once every id is set and a token has been stored.
- * `/api/admin/portal-policy` returns a one-row list everywhere else in this
- * file (see `cmdPolicy`, `cmdCfConfig`'s siblings); tolerate a bare object
- * too so a differently-shaped response still gets checked correctly.
+ * `/api/admin/portal-policy` returns a one-row list, as everywhere else in
+ * this file (see `cmdPolicy`, `cmdCfConfig`'s siblings).
  */
-function cfAccessConfigured(raw: unknown): boolean {
-  const rows = Array.isArray(raw) ? (raw as unknown[]) : [raw];
-  const row = (rows[0] ?? {}) as Record<string, unknown>;
+function cfAccessConfigured(rows: Array<Record<string, unknown>>): boolean {
+  const row = rows[0] ?? {};
   return (
     typeof row.cfAccessAccountId === "string" &&
     typeof row.cfAccessAppId === "string" &&
@@ -798,23 +796,24 @@ async function cmdCfSync(args: string[]): Promise<void> {
     console.log(formatAccessSyncStatus(status));
     return;
   }
-  const policy = await api<unknown>("/api/admin/portal-policy");
+  const policy = await api<Array<Record<string, unknown>>>(
+    "/api/admin/portal-policy",
+  );
   if (!cfAccessConfigured(policy)) {
     throw new Error(
       "Cloudflare Access is not configured — set the account/app/policy ids " +
         "with cf-config and the API token with cf-token, then run cf-sync again.",
     );
   }
-  const result = await api<Record<string, unknown>>(
+  const result = await api<AccessSyncStatusView>(
     "/api/admin/access-sync/global/run",
-    { method: "POST", body: JSON.stringify({}) },
+    { method: "POST" },
   );
   // The run endpoint arms the outbox row and hands back its resulting state.
   // A row already mid-flight (locked by the worker's poller) stays
   // "processing" through the arm, which is the one case that is genuinely a
   // coalesce into a run already on its way rather than a fresh queue.
-  const alreadyRunning =
-    result.alreadyRunning === true || result.status === "processing";
+  const alreadyRunning = result.status === "processing";
   console.log(
     alreadyRunning
       ? "cf-sync: coalesced into a run already on its way"

@@ -70,7 +70,14 @@ describe("cf-sync", () => {
           },
         ],
       },
-      { body: { queued: true, alreadyRunning: false } },
+      {
+        body: {
+          status: "pending",
+          queuedAt: "2026-09-05T10:00:00.000Z",
+          completedAt: null,
+          lastError: null,
+        },
+      },
     ]);
     const out = await run(["cf-sync"]);
     expect(calls[1]?.url).toMatch(/\/api\/admin\/access-sync\/global\/run$/);
