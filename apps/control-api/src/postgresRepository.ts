@@ -33,6 +33,7 @@ import type {
 } from "@amnezia/contracts";
 import {
   nodeRunsCheck,
+  isPurgeableKeyState,
   REVOCABLE_KEY_STATES,
   toUserCheckState,
 } from "@amnezia/contracts";
@@ -2488,6 +2489,68 @@ export class PostgresControlRepository implements ControlRepository {
           targetId,
         });
         return updated;
+      });
+    } else if (resource === "keys" && action === "purge") {
+      // Delete the row, not the peer. The peer is already gone -- that is what
+      // `revoked` means, and it is the only state this accepts (see
+      // PURGEABLE_KEY_STATES). In any other state the node may still be
+      // carrying the peer, and deleting the row is what would strand it: the
+      // reconcile path finds an orphan by the label the row holds, so with the
+      // row gone nothing on the panel knows that peer ever existed.
+      return this.options.db.transaction(async (tx) => {
+        const [existing] = await tx
+          .select({
+            id: vpnKeys.id,
+            state: vpnKeys.state,
+            ownerId: vpnKeys.ownerId,
+            nodeId: vpnKeys.nodeId,
+            nodeLabel: vpnKeys.nodeLabel,
+            deviceLabel: vpnKeys.deviceLabel,
+            internalName: vpnKeys.internalName,
+            keyNumber: vpnKeys.keyNumber,
+            createdAt: vpnKeys.createdAt,
+            revokedAt: vpnKeys.revokedAt,
+          })
+          .from(vpnKeys)
+          .where(eq(vpnKeys.id, targetId))
+          .limit(1);
+        if (!existing) throw new ApiError(404, "Key not found", "KEY_NOT_FOUND");
+        if (!isPurgeableKeyState(existing.state)) {
+          throw new ApiError(
+            409,
+            `A key can only be deleted from the panel once the node has confirmed its peer is gone. This one is ${existing.state} — delete the key first, then remove it.`,
+            "KEY_NOT_PURGEABLE",
+          );
+        }
+        // job_outbox does NOT reference vpn_keys -- the key id lives in the
+        // payload -- so its rows have to go explicitly or the worker keeps
+        // retrying jobs for a key that no longer exists. peer_current,
+        // traffic_samples and traffic_rollups all cascade.
+        await tx
+          .delete(jobOutbox)
+          .where(sql`${jobOutbox.payload} ->> 'keyId' = ${targetId}`);
+        await tx.delete(vpnKeys).where(eq(vpnKeys.id, targetId));
+        // The row is about to stop existing, so this event is the only record
+        // that it ever did. It carries what an operator would need to answer
+        // "what was this?" afterwards.
+        await tx.insert(auditEvents).values({
+          actorUserId: actor.id,
+          actorType: "user",
+          action: `admin.${resource}.${action}`,
+          targetType: resource,
+          targetId,
+          metadata: {
+            ownerId: existing.ownerId,
+            nodeId: existing.nodeId,
+            nodeLabel: existing.nodeLabel,
+            deviceLabel: existing.deviceLabel,
+            internalName: existing.internalName,
+            keyNumber: existing.keyNumber,
+            createdAt: existing.createdAt?.toISOString() ?? null,
+            revokedAt: existing.revokedAt?.toISOString() ?? null,
+          },
+        });
+        return { id: targetId, purged: true };
       });
     } else if (resource === "users" && action === "offboard") {
       return this.options.db.transaction(async (tx) => {

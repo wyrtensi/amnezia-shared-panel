@@ -18,6 +18,7 @@ import {
   Shield,
   ShieldOff,
   Sliders,
+  Eraser,
   Trash2,
   UserPlus,
   Users,
@@ -56,6 +57,7 @@ import { Hint, FieldHint } from "@/components/ui/hint";
 import {
   composeKeyDisplayName,
   defaultKeyNameDisplay,
+  isPurgeableKeyState,
   isRevocableKeyState,
   type KeyNameDisplay,
 } from "@amnezia/contracts";
@@ -1000,6 +1002,23 @@ function AdminKeyRow({
               confirmAction(
                 "revoke",
                 t("users.revokeConfirm", { label: keyView.deviceLabel }),
+              )
+            }
+          />
+        ) : null}
+        {/* Only `revoked`: the node has confirmed the peer is gone, so the row
+            is history and nothing on a node depends on it any more. This
+            deletes the row itself, which is why it is a separate action from
+            the delete above rather than a second click on it. */}
+        {isPurgeableKeyState(keyView.state) ? (
+          <RowAction
+            label={t("users.purge")}
+            destructive
+            icon={<Eraser className="h-4 w-4" />}
+            onClick={() =>
+              confirmAction(
+                "purge",
+                t("users.purgeConfirm", { label: keyView.deviceLabel }),
               )
             }
           />

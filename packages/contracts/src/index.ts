@@ -33,6 +33,27 @@ export const REVOCABLE_KEY_STATES = [
 export const isRevocableKeyState = (state: string): boolean =>
   (REVOCABLE_KEY_STATES as readonly string[]).includes(state);
 
+/**
+ * States a key may be **deleted from the panel** in — the row itself removed,
+ * not just marked.
+ *
+ * Only `revoked`, and the reason is the peer rather than the row. Every other
+ * state can still have something on a node: `provisioning` may have got half
+ * way, `active` and `disabled` certainly do, `revoking` is waiting for the node
+ * to confirm, and `failed` may have created a peer before the job gave up.
+ * Deleting the row is what makes such a peer unreachable for ever: reconcile
+ * finds an orphan by the label the row carries, so with the row gone the peer
+ * stays on the node with nothing left that knows what it was.
+ *
+ * `revoked` is the one state where the node has already confirmed the peer is
+ * gone. Then the row is only history, and history is what the audit log is for.
+ */
+export const PURGEABLE_KEY_STATES = ["revoked"] as const satisfies readonly KeyState[];
+
+/** Whether a key in this state may be deleted from the panel outright. */
+export const isPurgeableKeyState = (state: string): boolean =>
+  (PURGEABLE_KEY_STATES as readonly string[]).includes(state);
+
 export const routeProfileSchema = z.enum([
   "full_tunnel",
   "ru_whitelist",
