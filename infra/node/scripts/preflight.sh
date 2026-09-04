@@ -135,9 +135,15 @@ available_mem_kb="$(awk '/^MemAvailable:/ { print $2 }' /proc/meminfo)"
 [ -n "$available_mem_kb" ] || fail "cannot read available memory"
 # The 350 MiB gate sizes a node at the 500-peer maximum, so scale it with the
 # capacity this node is actually configured for -- a 500-peer node still gets
-# exactly 350 MiB. The floor covers the resident stack, measured at ~117 MiB
-# (node-agent 109, awg3 4, awg2 4) plus room for the transient container the
-# clientsTable check below starts.
+# exactly 350 MiB. The 192 MiB floor covers the resident stack plus room for the
+# transient container the clientsTable check below starts.
+#
+# Re-measured 2026-09-04 on two live nodes: node-agent 79-83 MiB, awg3 10-26
+# MiB, so the stack is 90-109 MiB rather than the 117 MiB (agent 109, awg3 4)
+# this comment used to claim. The total was about right and the breakdown was
+# not - which is why the gate itself is unchanged. Both readings were taken
+# with one or two peers, so they are a floor, not a steady state at capacity;
+# lowering the gate would need a measurement at capacity that nobody has.
 required_mem_kb=$(( 358400 * server_max_peers / 500 ))
 [ "$required_mem_kb" -ge 196608 ] || required_mem_kb=196608
 [ "$available_mem_kb" -ge "$required_mem_kb" ] || \
