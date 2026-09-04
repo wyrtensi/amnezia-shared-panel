@@ -76,6 +76,18 @@ services:
       - ./state/amnezia-awg3:/opt/amnezia/awg
       - ./scripts/awg3-entrypoint.sh:/usr/local/libexec/awg3-entrypoint.sh:ro
       - ./scripts/awg3-geometry.sh:/usr/local/libexec/awg3-geometry.sh:ro
+    environment:
+      # Read once, at first initialization, by awg3-geometry.sh.
+      #
+      # DisableCookies is an availability posture rather than obfuscation
+      # entropy, which is why it is a knob and not randomised. `on` (upstream's
+      # own client default) keeps the node silent to unauthenticated probes -
+      # a cookie reply is a distinctive artefact an active prober can elicit -
+      # at the cost of WireGuard's per-source rate limiter under load. Set it
+      # to `off` on a node where availability matters more than silence.
+      AWG3_DISABLE_COOKIES: ${AWG3_DISABLE_COOKIES:-on}
+      # The client's tunnel MTU; S4 comes out of the same budget.
+      AWG3_TUNNEL_MTU: ${AWG3_TUNNEL_MTU:-1376}
     healthcheck:
       test:
         - CMD-SHELL

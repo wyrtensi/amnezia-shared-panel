@@ -192,3 +192,119 @@ test("the entrypoint uses the generator instead of hardcoding the geometry", asy
   assert.doesNotMatch(code, /^S1 = 15$/m);
   assert.doesNotMatch(code, /icloud/, "the stock junk packet must be gone");
 });
+
+// --- the 3.1-specific parameters ------------------------------------------
+// Geometry alone is the AWG-2.x-era knob. These are what 3.1 actually adds,
+// and leaving them unset means running stock WireGuard timings and stock
+// pad-to-16 behind an otherwise obfuscated handshake.
+
+/** `lo-hi` -> [lo, hi]; asserts the range form on the way. */
+const range = (params, key) => {
+  const value = params[key] ?? "";
+  const match = /^(\d+)-(\d+)$/.exec(value);
+  assert.ok(match, `${key}="${value}" must be a lo-hi range`);
+  const lo = Number(match[1]);
+  const hi = Number(match[2]);
+  assert.ok(lo <= hi, `${key}: ${lo} > ${hi}`);
+  // The six u16 range keys are silently truncated above 65535 by the tools:
+  // RekeyAfterTime = 70000 quietly becomes 4464.
+  assert.ok(hi <= 65535, `${key}: ${hi} does not fit a uint16`);
+  return [lo, hi];
+};
+
+test("uses the 3.1 parameters at all", executing, () => {
+  const { params } = generate();
+
+  for (const key of [
+    "ContentPaddingAddition",
+    "RekeyAfterTime",
+    "RekeyTimeout",
+    "RejectAfterTime",
+    "KeepaliveTimeout",
+    "MaxHandshakeAttempts",
+    "RandomTrailers",
+    "DisableCookies",
+  ]) {
+    assert.match(params[key] ?? "", /\S/, `${key} must be set`);
+  }
+});
+
+test("replaces WireGuard's pad-to-16 with real length entropy", executing, () => {
+  // Stock WireGuard makes every ciphertext length a multiple of 16, which is a
+  // strong classifier on its own. ContentPaddingAddition takes precedence over
+  // the trailer padding and removes that lattice.
+  for (let i = 0; i < DRAWS; i += 1) {
+    const [lo, hi] = range(generate().params, "ContentPaddingAddition");
+    assert.equal(lo, 1, "padding must start at 1, or the lattice survives");
+    assert.ok(hi >= 16, `an upper bound of ${hi} barely moves the length`);
+  }
+});
+
+test("keeps the timings coherent with each other", executing, () => {
+  // Get these wrong and the tunnel stalls rather than fails loudly: a keypair
+  // rejected before it can be rekeyed, or a keepalive that never fires inside
+  // the session's life.
+  for (let i = 0; i < DRAWS; i += 1) {
+    const { params } = generate();
+    const [, rekeyHi] = range(params, "RekeyAfterTime");
+    const [rejectLo] = range(params, "RejectAfterTime");
+    const [, keepaliveHi] = range(params, "KeepaliveTimeout");
+    const [, rekeyTimeoutHi] = range(params, "RekeyTimeout");
+    range(params, "MaxHandshakeAttempts");
+
+    assert.ok(rekeyHi < rejectLo, `rekey ${rekeyHi} must be below reject ${rejectLo}`);
+    assert.ok(
+      rejectLo > keepaliveHi + rekeyTimeoutHi,
+      `reject ${rejectLo} must exceed keepalive+rekeyTimeout ${keepaliveHi + rekeyTimeoutHi}`,
+    );
+    // A client that does not parse RejectAfterTime runs the stock 180 s. Going
+    // below it would drop that client's traffic early.
+    assert.ok(rejectLo >= 180, `reject ${rejectLo} is below the stock floor`);
+  }
+});
+
+test("destroys the 120-second rekey beat", executing, () => {
+  // A fresh value is drawn on every timer arm, so a range gives a genuinely
+  // non-periodic pattern rather than a shifted constant. A zero-width range
+  // would just move the beat.
+  const seen = new Set();
+  for (let i = 0; i < DRAWS; i += 1) {
+    const [lo, hi] = range(generate().params, "RekeyAfterTime");
+    assert.ok(hi > lo, "a zero-width rekey range is still a beat");
+    seen.add(`${lo}-${hi}`);
+  }
+  assert.ok(seen.size > 1, "the rekey range must differ between nodes");
+});
+
+test("holds RandomTrailers on, uniformly", executing, () => {
+  // It must match between the two ends, and a boolean carries one bit of
+  // per-node entropy — randomising it buys nothing and costs compatibility.
+  const draws = new Set();
+  for (let i = 0; i < 8; i += 1) draws.add(generate().params.RandomTrailers);
+
+  assert.deepEqual([...draws], ["on"]);
+});
+
+test("uses more than one junk slot, and varies which", executing, () => {
+  const slotsPerDraw = [];
+  for (let i = 0; i < DRAWS; i += 1) {
+    const { params } = generate();
+    const used = ["I1", "I2", "I3", "I4", "I5"].filter((key) => params[key]);
+    assert.ok(used.length >= 2, `only ${used.length} junk slot(s) used`);
+    slotsPerDraw.push(used.join(","));
+  }
+  // Which slots are occupied is itself a fingerprint if it never changes.
+  assert.ok(new Set(slotsPerDraw).size > 1, "the slot layout never varies");
+});
+
+test("puts a range only where a range is legal", executing, () => {
+  // Android toInt(), Apple UInt16() and Windows parseUint16 all hard-fail on a
+  // range in the junk-size keys, so one there bricks the config everywhere.
+  const { params } = generate();
+  for (const key of ["Jc", "Jmin", "Jmax", "S1", "S2", "S3", "S4"]) {
+    assert.doesNotMatch(params[key] ?? "", /-/, `${key} must not be a range`);
+  }
+  for (const key of ["H1", "H2", "H3", "H4"]) {
+    assert.match(params[key] ?? "", /^\d+$/, `${key} must be a single value`);
+  }
+});

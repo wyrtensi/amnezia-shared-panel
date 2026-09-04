@@ -41,6 +41,15 @@ rand_hex() {
   od -An -N"$1" -tx1 /dev/urandom | tr -d ' \n'
 }
 
+# A `lo-hi` range: lo drawn from [$1,$2], width from [$3,$4]. The 3.1 timing
+# keys draw a fresh value on EVERY timer arm, so a range makes the pattern
+# genuinely non-periodic rather than a shifted constant - which is the whole
+# point, since stock WireGuard's 120 s rekey beat is itself a signature.
+rand_span() {
+  lo="$(rand_range "$1" "$2")"
+  printf '%s-%s\n' "$lo" "$(( lo + $(rand_range "$3" "$4") ))"
+}
+
 # --- Magic headers -----------------------------------------------------------
 # amneziawg-go refuses a device whose headers overlap, so they must be distinct.
 # 0..4 are the literal WireGuard message types: picking one puts the type field
@@ -126,6 +135,60 @@ i1="${i1}<b 0x$(printf '%02x' "$label_len")><rc ${label_len}>"
 i1="${i1}<b 0x03636f6d00><b 0x00010001><b 0xc00c><b 0x00010001>"
 i1="${i1}<b 0x${ttl_hex}><b 0x0004><r 4>"
 
+# A second decoy in a different shape, because one template used by every node
+# is a template every node shares. STUN binding success response: the tunnel
+# and the decoys leave from the same UDP port, so the cover has to be a UDP
+# protocol that plausibly lives there.
+stun_port_hex="$(rand_hex 2)"
+i_stun="<b 0x0101><b 0x0044><b 0x2112a442><r 12><b 0x00200008><b 0x0001>"
+i_stun="${i_stun}<b 0x${stun_port_hex}><r 4><b 0x802a0008><r 8><b 0x80280004><r 4>"
+
+# A third, plainer one: a length-prefixed blob with a node-specific prefix.
+blob_len="$(rand_range 24 96)"
+i_blob="<b 0x$(rand_hex 2)><rd 4><r ${blob_len}>"
+
+# Which slots are occupied is itself a fingerprint if it never varies, so I1 is
+# always used and the other two land in a random pair of the remaining slots.
+i2=""; i3=""; i4=""; i5=""
+slot_a="$(rand_range 2 5)"
+slot_b="$slot_a"
+while [ "$slot_b" = "$slot_a" ]; do slot_b="$(rand_range 2 5)"; done
+for pair in "$slot_a:$i_stun" "$slot_b:$i_blob"; do
+  slot="${pair%%:*}"; spec="${pair#*:}"
+  case "$slot" in
+    2) i2="$spec" ;;
+    3) i3="$spec" ;;
+    4) i4="$spec" ;;
+    5) i5="$spec" ;;
+  esac
+done
+
+# --- 3.1 behaviour -----------------------------------------------------------
+# ContentPaddingAddition REPLACES WireGuard's pad-to-a-multiple-of-16 on every
+# transport packet. That lattice - "all ciphertext lengths are 0 mod 16" - is a
+# strong classifier on its own, and this is what removes it. It is stripped by
+# the receiver from the IP length field, so it needs no support on the far end.
+content_padding="1-$(rand_range 16 64)"
+
+# Timings. Each is redrawn on every timer arm, so the ranges destroy the 120 s
+# rekey beat and the 10 s keepalive beat rather than moving them.
+rekey_after="$(rand_span 95 115 25 55)"
+rekey_timeout="$(rand_span 4 6 2 4)"
+reject_after="$(rand_span 200 230 30 60)"
+keepalive_timeout="$(rand_span 8 12 5 10)"
+max_handshakes="$(rand_span 12 16 4 8)"
+
+# Deliberately NOT randomised. RandomTrailers must be identical on both ends,
+# and a boolean carries one bit of per-node entropy - randomising it would buy
+# nothing and cost a compatibility break. DisableCookies is an availability
+# posture, not obfuscation entropy: on means the node stays silent to
+# unauthenticated probes (a cookie reply is a distinctive artefact an active
+# prober can elicit), at the cost of WireGuard's own DoS rate limiter. `on`
+# matches upstream's own client default; override per host if a node is exposed
+# and availability matters more than silence.
+random_trailers=on
+disable_cookies="${AWG3_DISABLE_COOKIES:-on}"
+
 # --- Assertions --------------------------------------------------------------
 # Everything above is generated; this is what refuses to emit a broken node.
 fail_assert() { echo "Refusing to generate: $1" >&2; exit 1; }
@@ -137,6 +200,31 @@ for s in "$s1" "$s2" "$s3" "$s4"; do
   [ "$s" -le 65535 ] || fail_assert "S value $s does not fit a uint16"
 done
 [ $(( s4 + 32 + MTU + 28 )) -le 1500 ] || fail_assert "S4 ($s4) overflows the MTU budget"
+
+# Every range must fit a uint16: the tools validate against UINT32_MAX but store
+# into a uint16, so a larger value is silently truncated - RekeyAfterTime =
+# 70000 quietly becomes 4464, and nothing anywhere says so.
+range_lo() { printf '%s' "${1%%-*}"; }
+range_hi() { printf '%s' "${1##*-}"; }
+for r in "$content_padding" "$rekey_after" "$rekey_timeout" "$reject_after" \
+         "$keepalive_timeout" "$max_handshakes"; do
+  lo="$(range_lo "$r")"; hi="$(range_hi "$r")"
+  [ "$lo" -le "$hi" ] || fail_assert "range $r is inverted"
+  [ "$hi" -le 65535 ] || fail_assert "range $r would be truncated to a uint16"
+done
+
+# Timing coherence. Getting this wrong stalls a tunnel rather than failing it
+# loudly: a keypair rejected before it can be rekeyed, or a keepalive that never
+# fires within the session's life.
+[ "$(range_hi "$rekey_after")" -lt "$(range_lo "$reject_after")" ] \
+  || fail_assert "RekeyAfterTime must finish below RejectAfterTime"
+[ "$(range_lo "$reject_after")" -gt \
+  $(( $(range_hi "$keepalive_timeout") + $(range_hi "$rekey_timeout") )) ] \
+  || fail_assert "RejectAfterTime must exceed KeepaliveTimeout + RekeyTimeout"
+# A client that does not parse RejectAfterTime runs the stock 180 s; going below
+# it would drop that client's traffic early.
+[ "$(range_lo "$reject_after")" -ge 180 ] \
+  || fail_assert "RejectAfterTime must not go below the stock 180s floor"
 
 printf 'Jc = %s\n' "$jc"
 printf 'Jmin = %s\n' "$jmin"
@@ -150,3 +238,15 @@ printf 'H2 = %s\n' "$h2"
 printf 'H3 = %s\n' "$h3"
 printf 'H4 = %s\n' "$h4"
 printf 'I1 = %s\n' "$i1"
+[ -z "$i2" ] || printf 'I2 = %s\n' "$i2"
+[ -z "$i3" ] || printf 'I3 = %s\n' "$i3"
+[ -z "$i4" ] || printf 'I4 = %s\n' "$i4"
+[ -z "$i5" ] || printf 'I5 = %s\n' "$i5"
+printf 'ContentPaddingAddition = %s\n' "$content_padding"
+printf 'RekeyAfterTime = %s\n' "$rekey_after"
+printf 'RekeyTimeout = %s\n' "$rekey_timeout"
+printf 'RejectAfterTime = %s\n' "$reject_after"
+printf 'KeepaliveTimeout = %s\n' "$keepalive_timeout"
+printf 'MaxHandshakeAttempts = %s\n' "$max_handshakes"
+printf 'RandomTrailers = %s\n' "$random_trailers"
+printf 'DisableCookies = %s\n' "$disable_cookies"
