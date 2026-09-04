@@ -16,6 +16,7 @@ import {
 import { LanguageToggle } from "@/components/language-toggle";
 import { Logo } from "@/components/logo";
 import { LogoutButton } from "@/components/logout-button";
+import type { LogoutMode } from "@/lib/logout";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -34,10 +35,10 @@ const NAV = [
 
 export function AdminShell({
   children,
-  canLogout = false,
+  logoutMode = null,
 }: {
   children: React.ReactNode;
-  canLogout?: boolean;
+  logoutMode?: LogoutMode | null;
 }) {
   const pathname = usePathname();
   const { t } = useT();
@@ -94,7 +95,7 @@ export function AdminShell({
             <div className="flex items-center gap-2">
               <LanguageToggle />
               <ThemeToggle />
-              {canLogout ? <LogoutButton /> : null}
+              {logoutMode ? <LogoutButton mode={logoutMode} /> : null}
             </div>
           </header>
 

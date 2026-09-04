@@ -1,8 +1,7 @@
-import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { getMe } from "@/lib/server-api";
 import { AdminShell } from "@/components/admin/admin-shell";
-import { SESSION_COOKIE } from "@/lib/session";
+import { resolveLogoutMode } from "@/lib/logout";
 
 export default async function AdminLayout({
   children,
@@ -14,7 +13,7 @@ export default async function AdminLayout({
   if (!me || me.role !== "admin") {
     redirect("/");
   }
-  // A direct (server-side Google) session → offer a logout button (see page.tsx).
-  const canLogout = Boolean((await cookies()).get(SESSION_COOKIE)?.value);
-  return <AdminShell canLogout={canLogout}>{children}</AdminShell>;
+  return (
+    <AdminShell logoutMode={await resolveLogoutMode()}>{children}</AdminShell>
+  );
 }

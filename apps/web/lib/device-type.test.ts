@@ -39,10 +39,21 @@ describe("device type labels", () => {
     }
   });
 
-  it("labels the combined Apple mobile option as both devices", () => {
-    // No separator: the card stacks the two words on their own lines, where a
-    // slash just dangles at the end of the first one.
-    expect(deviceTypeLabel(ru, "ios")).toBe("iPhone iPad");
+  it("labels the combined Apple mobile option as both devices, and names iOS", () => {
+    // No separator between the two device names: the card stacks them on their
+    // own lines, where a slash just dangles at the end of the first one. The
+    // platform is spelled out because "iPhone / iPad" does not tell someone
+    // whose device runs iPadOS, or who is looking for the word from the guide.
+    expect(deviceTypeLabel(ru, "ios")).toBe("iPhone iPad (iOS)");
+  });
+
+  it("keeps the platform on the same line as iPad", () => {
+    // A normal space here breaks "(iOS)" onto a third line of its own on the
+    // narrow device card. The non-breaking space is load-bearing, not a typo.
+    for (const lang of ["ru", "en"] as const) {
+      const dict = messages[lang] as Record<string, string>;
+      expect(dict["device.ios"], lang).toContain("iPad (iOS)");
+    }
   });
 
   it("shows a value this build does not know verbatim, not as a message key", () => {
