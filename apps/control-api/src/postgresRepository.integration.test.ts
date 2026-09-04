@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { and, count, desc, eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { defaultKeyNameDisplay } from "@amnezia/contracts";
+import { defaultKeyNameDisplay, idleAccessSyncStatus } from "@amnezia/contracts";
 import type { KeyLimitMode } from "@amnezia/contracts";
 import {
   auditEvents,
@@ -3107,6 +3107,143 @@ describe("PostgresControlRepository Access sync arming", () => {
       });
       const after = (await readAccessSyncRow())!.payload.armId;
       expect(after).toBe(before);
+    },
+  );
+
+  // The field set is the business rule at the centre of this gate: exercising
+  // two of its members (not just one) is what would catch a future edit that
+  // drops a field from CF_ACCESS_CONFIG_FIELDS without anyone noticing.
+  runDatabaseTest(
+    "arms the Access sync when a portal-policy update names a Cloudflare configuration field",
+    async () => {
+      if (!database) return;
+      const repository = subject();
+      expect(await readAccessSyncRow()).toBeUndefined();
+
+      await repository.adminAction(admin, "portal-policy", "global", "update", {
+        cfAccessAccountId: "cf-account-placeholder",
+      });
+      const afterAccountId = await readAccessSyncRow();
+      expect(afterAccountId).not.toBeUndefined();
+
+      const beforeToken = afterAccountId!.payload.armId;
+      await repository.adminAction(admin, "portal-policy", "global", "update", {
+        cfApiToken: "cf-api-token-placeholder",
+      });
+      const afterToken = await readAccessSyncRow();
+      expect(afterToken!.payload.armId).not.toBe(beforeToken);
+    },
+  );
+
+  runDatabaseTest(
+    "does not arm the Access sync for a portal-policy update that names no Cloudflare configuration field",
+    async () => {
+      if (!database) return;
+      const repository = subject();
+      // Arm a baseline row first so the marker has something to stay equal
+      // to -- comparing against "no row" would make this assertion vacuous.
+      await repository.adminAction(admin, "portal-policy", "global", "update", {
+        cfAccessAccountId: "cf-account-placeholder",
+      });
+      const before = (await readAccessSyncRow())!.payload.armId;
+
+      await repository.adminAction(admin, "portal-policy", "global", "update", {
+        defaultKeyLimit: 9,
+      });
+      const after = (await readAccessSyncRow())!.payload.armId;
+      expect(after).toBe(before);
+    },
+  );
+
+  const latestRunAudit = async () => {
+    if (!database) throw new Error("No database");
+    const [event] = await database.db
+      .select({ metadata: auditEvents.metadata })
+      .from(auditEvents)
+      .where(
+        and(
+          eq(auditEvents.actorUserId, admin.id),
+          eq(auditEvents.action, "admin.access-sync.run"),
+        ),
+      )
+      .orderBy(desc(auditEvents.createdAt))
+      .limit(1);
+    return event;
+  };
+
+  runDatabaseTest(
+    "the run action arms with the operator reason and reports whether a run was already under way",
+    async () => {
+      if (!database) return;
+      const repository = subject();
+      expect(await readAccessSyncRow()).toBeUndefined();
+
+      // Idle (no row at all) -> not already running.
+      await repository.adminAction(admin, "access-sync", "global", "run", {});
+      const armed = await readAccessSyncRow();
+      expect(armed!.payload.reason).toBe("operator");
+      expect((await latestRunAudit())?.metadata).toMatchObject({
+        alreadyRunning: false,
+      });
+
+      // The arm above leaves the row "pending" -> a second click coalesces
+      // into the run already on its way.
+      await repository.adminAction(admin, "access-sync", "global", "run", {});
+      expect((await latestRunAudit())?.metadata).toMatchObject({
+        alreadyRunning: true,
+      });
+
+      // Simulate the worker having finished the run.
+      await database.db
+        .update(jobOutbox)
+        .set({ status: "completed", completedAt: new Date() })
+        .where(eq(jobOutbox.deduplicationKey, "access.sync"));
+      await repository.adminAction(admin, "access-sync", "global", "run", {});
+      expect((await latestRunAudit())?.metadata).toMatchObject({
+        alreadyRunning: false,
+      });
+
+      // Simulate a run that is already mid-flight (locked by the poller).
+      await database.db
+        .update(jobOutbox)
+        .set({ status: "processing" })
+        .where(eq(jobOutbox.deduplicationKey, "access.sync"));
+      await repository.adminAction(admin, "access-sync", "global", "run", {});
+      expect((await latestRunAudit())?.metadata).toMatchObject({
+        alreadyRunning: true,
+      });
+    },
+  );
+
+  runDatabaseTest(
+    "getAccessSyncStatus reports idle with no row and maps a real row's fields",
+    async () => {
+      if (!database) return;
+      const repository = subject();
+      expect(await repository.getAccessSyncStatus()).toEqual(idleAccessSyncStatus);
+
+      const requestedAt = new Date("2026-01-01T00:00:00.000Z");
+      const completedAt = new Date("2026-01-01T00:05:00.000Z");
+      await database.db.insert(jobOutbox).values({
+        type: "access.sync",
+        deduplicationKey: "access.sync",
+        payload: {
+          requestedAt: requestedAt.toISOString(),
+          armId: "status-read-test-arm-id",
+          reason: "operator",
+        },
+        status: "failed",
+        availableAt: requestedAt,
+        completedAt,
+        lastError: "Cloudflare API request timed out",
+      });
+
+      expect(await repository.getAccessSyncStatus()).toEqual({
+        status: "failed",
+        queuedAt: requestedAt.toISOString(),
+        completedAt: completedAt.toISOString(),
+        lastError: "Cloudflare API request timed out",
+      });
     },
   );
 });
