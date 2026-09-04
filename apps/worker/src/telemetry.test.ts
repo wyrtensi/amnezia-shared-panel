@@ -90,6 +90,7 @@ const stubAgent = (publicHost?: string) => ({
   getServerLoad: vi.fn(() => Promise.resolve(serverLoad)),
   listClients: vi.fn(() => Promise.resolve([])),
   getAgentUpdate: vi.fn(() => Promise.resolve(null)),
+  runChecks: vi.fn(() => Promise.resolve(null)),
 });
 
 const stubRepository = (nodes: TelemetryNode[]): TelemetryRepository => ({
@@ -164,6 +165,7 @@ describe("node telemetry poll", () => {
         ]),
       ),
       getAgentUpdate: vi.fn(() => Promise.resolve(null)),
+      runChecks: vi.fn(() => Promise.resolve(null)),
     };
     const resolvePublicIp = vi.fn((host: string) =>
       Promise.resolve(host === "vpn.example.com" ? "203.0.113.10" : null),
@@ -306,6 +308,7 @@ describe("node telemetry poll", () => {
         getServerLoad: vi.fn(),
         listClients: vi.fn(),
         getAgentUpdate: vi.fn(),
+        runChecks: vi.fn(() => Promise.resolve(null)),
       }),
       now: () => observedAt,
     });
@@ -374,6 +377,7 @@ describe("node telemetry poll", () => {
     const agent = {
       ...stubAgent(),
       getAgentUpdate: vi.fn(() => Promise.reject(new Error("connection reset"))),
+      runChecks: vi.fn(() => Promise.resolve(null)),
     };
     const poll = createTelemetryPoller({
       repository,
@@ -458,5 +462,143 @@ describe("node telemetry poll", () => {
     expect(peakInFlight).toBe(concurrency);
     expect(polled).toHaveLength(nodeCount);
     expect(new Set(polled).size).toBe(nodeCount);
+  });
+});
+
+describe("service checks during the poll", () => {
+  const check = {
+    id: "check-1",
+    name: "Gemini",
+    probe: { kind: "http", url: "https://gemini.google.com/" },
+    assertions: [{ type: "statusIn", statuses: [200] }],
+    intervalSec: 43_200,
+    enabled: true,
+    nextDueAt: null,
+  };
+
+  // Typed from the poller's own parameter rather than from stubAgent: the stub
+  // answers `null` for runChecks, and inferring from it would pin every case
+  // here to that one return type.
+  type PollerAgent = ReturnType<
+    Parameters<typeof createTelemetryPoller>[0]["createNodeAgent"]
+  >;
+
+  const withChecks = (agent: PollerAgent, previousByNode = new Map()) => {
+    const repository = {
+      ...stubRepository([telemetryNode]),
+      listServiceChecks: vi.fn(() =>
+        Promise.resolve({ checks: [check], previousByNode }),
+      ),
+      recordServiceCheckResults: vi.fn(() => Promise.resolve()),
+    };
+    const poll = createTelemetryPoller({
+      repository,
+      createNodeAgent: () => agent,
+      now: () => observedAt,
+    });
+    return { repository, poll };
+  };
+
+  it("runs a node's due checks and stores what came back", async () => {
+    const agent = {
+      ...stubAgent(),
+      runChecks: vi.fn(() =>
+        Promise.resolve([
+          {
+            id: "check-1",
+            status: "failed" as const,
+            httpStatus: 200,
+            latencyMs: 120,
+            finalUrl: "https://gemini.google.com/",
+            detail: "body does not contain x",
+          },
+        ]),
+      ),
+    };
+    const { repository, poll } = withChecks(agent);
+
+    await poll();
+
+    expect(agent.runChecks).toHaveBeenCalledWith([
+      { id: check.id, probe: check.probe, assertions: check.assertions },
+    ]);
+    expect(repository.recordServiceCheckResults).toHaveBeenCalledWith([
+      expect.objectContaining({
+        nodeId: "node-1",
+        checkId: "check-1",
+        status: "failed",
+        failingSince: observedAt,
+      }),
+    ]);
+  });
+
+  it("writes nothing for an agent that predates the route", async () => {
+    // null is "this node does not serve /checks/run". Writing an `error` row
+    // for it would fast-retry every tick against an agent that cannot answer
+    // until someone updates it.
+    const agent = { ...stubAgent(), runChecks: vi.fn(() => Promise.resolve(null)) };
+    const { repository, poll } = withChecks(agent);
+
+    await poll();
+
+    expect(repository.recordServiceCheckResults).not.toHaveBeenCalled();
+    expect(repository.recordNodeFailure).not.toHaveBeenCalled();
+  });
+
+  it("does not turn a failed check dispatch into a node failure", async () => {
+    // A check describes a THIRD-PARTY service. A node that could not be asked
+    // is not a node that is unhealthy, and marking it broken here would put a
+    // red node card on the admin page because Google was slow.
+    const agent = {
+      ...stubAgent(),
+      runChecks: vi.fn(() => Promise.reject(new Error("socket hang up"))),
+    };
+    const { repository, poll } = withChecks(agent);
+
+    await poll();
+
+    expect(repository.recordNodeFailure).not.toHaveBeenCalled();
+    expect(repository.recordNodeSnapshot).toHaveBeenCalledOnce();
+    expect(repository.recordServiceCheckResults).not.toHaveBeenCalled();
+  });
+
+  it("asks for nothing when no check is due for this node", async () => {
+    const previousByNode = new Map([
+      [
+        "node-1",
+        new Map([
+          [
+            "check-1",
+            {
+              status: "ok" as const,
+              checkedAt: new Date(observedAt.getTime() - 60_000),
+              failingSince: null,
+            },
+          ],
+        ]),
+      ],
+    ]);
+    const agent = { ...stubAgent(), runChecks: vi.fn(() => Promise.resolve([])) };
+    const { poll } = withChecks(agent, previousByNode);
+
+    await poll();
+
+    expect(agent.runChecks).not.toHaveBeenCalled();
+  });
+
+  it("polls exactly as before on a repository that has no checks at all", async () => {
+    // The two methods are optional so a repository built before this feature
+    // still satisfies the interface. That is only worth having if the poll
+    // really does skip the whole path.
+    const repository = stubRepository([telemetryNode]);
+    const agent = { ...stubAgent(), runChecks: vi.fn(() => Promise.resolve([])) };
+    await createTelemetryPoller({
+      repository,
+      createNodeAgent: () => agent,
+      now: () => observedAt,
+    })();
+
+    expect(agent.runChecks).not.toHaveBeenCalled();
+    expect(repository.recordNodeSnapshot).toHaveBeenCalledOnce();
   });
 });

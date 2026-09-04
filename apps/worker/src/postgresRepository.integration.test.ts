@@ -7,6 +7,8 @@ import {
   jobOutbox,
   nodeMetricsCurrent,
   nodeMetricsSamples,
+  nodeServiceCheckResults,
+  nodeServiceChecks,
   nodes,
   peerCurrent,
   peerSamples,
@@ -43,6 +45,8 @@ describe("PostgresWorkerRepository outbox leases", () => {
     await database.db.delete(trafficRollups);
     await database.db.delete(peerSamples);
     await database.db.delete(peerCurrent);
+    await database.db.delete(nodeServiceCheckResults);
+    await database.db.delete(nodeServiceChecks);
     await database.db.delete(nodeMetricsSamples);
     await database.db.delete(nodeMetricsCurrent);
     await database.db.delete(jobOutbox);
@@ -238,6 +242,125 @@ describe("PostgresWorkerRepository outbox leases", () => {
       .select({ sampledAt: nodeMetricsSamples.sampledAt })
       .from(nodeMetricsSamples);
     expect(remaining).toEqual([{ sampledAt: new Date("2026-08-20T12:00:00.000Z") }]);
+  });
+
+  runDatabaseTest(
+    "reads check definitions and each node's last result in one pass",
+    async () => {
+      if (!database || !repository) return;
+      const { node } = await seedTelemetryKey();
+      const [check] = await database.db
+        .insert(nodeServiceChecks)
+        .values({
+          name: "Gemini",
+          probe: {
+            kind: "http" as const,
+            url: "https://gemini.google.com/",
+            method: "GET" as const,
+            timeoutMs: 10_000,
+          },
+          assertions: [{ type: "statusIn", statuses: [200] }],
+        })
+        .returning();
+      if (!check) throw new Error("Failed to seed a service check");
+
+      const first = await repository.listServiceChecks();
+      expect(first.checks).toHaveLength(1);
+      expect(first.checks[0]).toMatchObject({
+        name: "Gemini",
+        intervalSec: 43_200,
+        enabled: true,
+        assertions: [{ type: "statusIn", statuses: [200] }],
+      });
+      // Never run anywhere yet, so no node has a previous result - which is
+      // exactly what makes every check due on a new node's next tick.
+      expect(first.previousByNode.size).toBe(0);
+
+      const checkedAt = new Date("2026-09-02T09:00:00.000Z");
+      await repository.recordServiceCheckResults([
+        {
+          nodeId: node.id,
+          checkId: check.id,
+          status: "failed",
+          httpStatus: 200,
+          latencyMs: 412,
+          detail: 'body does not contain "conversation-container"',
+          finalUrl: "https://gemini.google.com/",
+          checkedAt,
+          failingSince: checkedAt,
+        },
+      ]);
+
+      const second = await repository.listServiceChecks();
+      expect(second.previousByNode.get(node.id)?.get(check.id)).toEqual({
+        status: "failed",
+        checkedAt,
+        failingSince: checkedAt,
+      });
+    },
+  );
+
+  runDatabaseTest("keeps one result row per node and check", async () => {
+    if (!database || !repository) return;
+    const { node } = await seedTelemetryKey();
+    const [check] = await database.db
+      .insert(nodeServiceChecks)
+      .values({
+        name: "Flow",
+        probe: {
+          kind: "http" as const,
+          url: "https://labs.google/fx/tools/flow/",
+          method: "GET" as const,
+          timeoutMs: 10_000,
+        },
+        assertions: [{ type: "finalUrlOmits", value: "unsupported-country" }],
+      })
+      .returning();
+    if (!check) throw new Error("Failed to seed a service check");
+
+    const row = {
+      nodeId: node.id,
+      checkId: check.id,
+      httpStatus: 200,
+      latencyMs: 100,
+      detail: null,
+      finalUrl: null,
+      failingSince: null,
+    };
+    await repository.recordServiceCheckResults([
+      { ...row, status: "failed", checkedAt: new Date("2026-09-02T09:00:00.000Z") },
+    ]);
+    await repository.recordServiceCheckResults([
+      { ...row, status: "ok", checkedAt: new Date("2026-09-02T21:00:00.000Z") },
+    ]);
+
+    // The latest result IS the schedule, so a second run must replace the row
+    // rather than accumulate: an insert-only table here would grow forever and
+    // make "what does this node say now" a query with an ORDER BY.
+    const stored = await database.db.select().from(nodeServiceCheckResults);
+    expect(stored).toHaveLength(1);
+    expect(stored[0]).toMatchObject({
+      status: "ok",
+      checkedAt: new Date("2026-09-02T21:00:00.000Z"),
+    });
+  });
+
+  runDatabaseTest("refuses a check with no assertions at the table", async () => {
+    if (!database) return;
+    // The contract refuses this too. Both, because a check that asserts nothing
+    // is always green and looks exactly like a check that is passing.
+    await expect(
+      database.db.insert(nodeServiceChecks).values({
+        name: "Empty",
+        probe: {
+          kind: "http" as const,
+          url: "https://example.com/",
+          method: "GET" as const,
+          timeoutMs: 10_000,
+        },
+        assertions: [],
+      }),
+    ).rejects.toThrow();
   });
 
   runDatabaseTest("keeps the pre-cutoff sample as the rollup baseline", async () => {
