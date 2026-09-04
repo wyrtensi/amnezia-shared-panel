@@ -43,25 +43,28 @@ const parseKeyring = (raw: string): EncryptionKeyring => {
   return keyring;
 };
 
-const positiveIntegerEnv = (name: string, fallback: number): number => {
+// Shared by the two variants below: `min` and `invalidMessage` are the only
+// ways they differ (whether 0 is allowed, and the wording of the error).
+const integerEnvAtLeast = (
+  name: string,
+  fallback: number,
+  min: number,
+  invalidMessage: string,
+): number => {
   const raw = process.env[name];
   if (!raw) return fallback;
   const value = Number(raw);
-  if (!Number.isInteger(value) || value <= 0) {
-    throw new Error(`${name} must be a positive integer`);
+  if (!Number.isInteger(value) || value < min) {
+    throw new Error(invalidMessage);
   }
   return value;
 };
 
-const nonNegativeIntegerEnv = (name: string, fallback: number): number => {
-  const raw = process.env[name];
-  if (!raw) return fallback;
-  const value = Number(raw);
-  if (!Number.isInteger(value) || value < 0) {
-    throw new Error(`${name} must be a non-negative integer`);
-  }
-  return value;
-};
+const positiveIntegerEnv = (name: string, fallback: number): number =>
+  integerEnvAtLeast(name, fallback, 1, `${name} must be a positive integer`);
+
+const nonNegativeIntegerEnv = (name: string, fallback: number): number =>
+  integerEnvAtLeast(name, fallback, 0, `${name} must be a non-negative integer`);
 
 const reportBackgroundError = (error: unknown): void => {
   const message = error instanceof Error ? error.message : "Unknown background error";

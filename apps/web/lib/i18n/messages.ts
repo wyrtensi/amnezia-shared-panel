@@ -920,6 +920,8 @@ const ru = {
   "audit.exact.node.reconcile": "синхронизировал ноду",
   "audit.exact.quota_request.created": "создал запрос на лимит",
   "audit.exact.user.access_revoked": "деактивирован — доступ Cloudflare отозван",
+  "audit.exact.access.sync_aborted":
+    "синхронизация остановлена без отключений — превышен лимит",
   "audit.exact.user.deleted": "удалён (после отзыва ключей)",
   "audit.exact.admin.users.create": "добавил пользователя",
   "audit.exact.admin.users.create-key": "создал ключ пользователю",
@@ -1894,6 +1896,8 @@ const en = {
   "audit.exact.node.reconcile": "synchronized a node",
   "audit.exact.quota_request.created": "created a limit request",
   "audit.exact.user.access_revoked": "deactivated — Cloudflare access revoked",
+  "audit.exact.access.sync_aborted":
+    "sync stopped without disabling anyone — over the limit",
   "audit.exact.user.deleted": "deleted (after keys revoked)",
   "audit.exact.admin.users.create": "added a user",
   "audit.exact.admin.users.create-key": "created a key for a user",

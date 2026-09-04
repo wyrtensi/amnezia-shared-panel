@@ -81,6 +81,10 @@ const EXACT: Record<string, { textKey: string; tone: Tone }> = {
     textKey: "audit.exact.user.access_revoked",
     tone: "danger",
   },
+  "access.sync_aborted": {
+    textKey: "audit.exact.access.sync_aborted",
+    tone: "warning",
+  },
   "user.deleted": { textKey: "audit.exact.user.deleted", tone: "danger" },
   "admin.users.create": {
     textKey: "audit.exact.admin.users.create",
