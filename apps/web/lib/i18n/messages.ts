@@ -103,7 +103,7 @@ const ru = {
   "device.base": "Устройство",
   "device.unspecified": "Не указано",
   "device.android": "Android",
-  "device.ios": "iPhone iPad",
+  "device.ios": "iPhone iPad (iOS)",
   "device.macos": "macOS MacBook",
   "device.windows": "Windows ПК",
   "device.linux": "Linux",
@@ -357,32 +357,34 @@ const ru = {
   "install.addResult":
     "Сервер появится в списке приложения под тем же именем, что и в панели, и приложение подключится к нему.",
 
-  "install.confTitle": "Файл .conf — удобнее для профилей с маршрутизацией",
+  "install.confTitle": "Файл .conf — второй способ добавить ключ",
   "install.confBody":
-    "Кнопка «Скачать .conf» на карточке ключа даёт файл конфигурации. Его не вставляют как текст — его импортируют как файл.",
+    "Кнопка «Скачать .conf» на карточке ключа сохраняет ключ в файл. Этот файл не копируют и не вставляют текстом — его открывают в приложении.",
   "install.confSplitBest":
-    "Для профилей «Иностранные ресурсы через VPN» и «Только заблокированные сайты» это лучший вариант на Windows, macOS, Linux и Android: ключ подключения там очень длинный, QR-код недоступен, а файл переносится и импортируется одним действием. Список подсетей маршрутизации в файле сохраняется полностью.",
+    "Если вы выбрали «Иностранные ресурсы через VPN» или «Только заблокированные сайты», на компьютере и на Android удобнее файл: такой ключ получается очень длинным, QR-кода для него нет, а файл достаточно один раз открыть. Все адреса, которые должны идти через VPN, в нём уже записаны.",
   "install.confIosWarning":
-    "К iPhone и iPad это не относится: там ключ с профилем маршрутизации подключается, но правила не применяются — ни через файл, ни через ключ подключения. На iPhone и iPad используйте ключ без профиля маршрутизации.",
+    "На iPhone и iPad это не поможет. Там такой ключ подключится, но выбранные вами правила работать не будут — ни из файла, ни из ключа. Для iPhone и iPad создавайте ключ без профиля, чтобы через VPN шло всё.",
   "install.confAmneziaTitle": "В AmneziaVPN",
   "install.confAmneziaStep1": "Скачайте файл .conf на карточке ключа.",
   "install.confAmneziaStep2":
     "Откройте AmneziaVPN, нажмите «+» и выберите импорт файла конфигурации.",
   "install.confAmneziaStep3":
     "Укажите скачанный файл и нажмите «Подключиться». На телефоне проще открыть файл и передать его в AmneziaVPN через «Поделиться».",
-  "install.confOtherTitle": "В другом клиенте",
+  "install.confOtherTitle": "Другие приложения",
   "install.confOtherBody":
-    "Файл понимают клиенты с поддержкой AmneziaWG: awg-quick из amneziawg-tools, приложение AmneziaWG для Android, роутеры с пакетом amneziawg. Импортируйте файл как обычный туннель.",
+    "Файл подойдёт и другим приложениям, которые умеют AmneziaWG, — например приложению AmneziaWG для Android или роутеру с такой поддержкой. Если вы не настраивали такое специально, вам это не нужно: пользуйтесь AmneziaVPN.",
   "install.confStockWarning":
-    "Обычный клиент WireGuard такой файл не примет: в нём есть параметры маскировки AmneziaWG (Jc, S1, H1 и другие), которых в WireGuard нет. Нужен AmneziaVPN или клиент с поддержкой AmneziaWG.",
+    "Обычное приложение WireGuard этот файл не откроет. Оно не умеет маскировку, из-за которой ключ и работает там, где VPN блокируют. Нужен именно AmneziaVPN.",
   "install.confDomainsWarning":
-    "Файл несёт диапазоны адресов, но не правила, записанные именем сайта. В профиле «Только заблокированные сайты» такой сайт не пойдёт через VPN и останется недоступен. В профиле «Всё, кроме…» — наоборот, пойдёт через VPN, а не мимо него. Подключение в обоих случаях рабочее: не применяется только это правило. Если это важно, добавьте ключ подключения в AmneziaVPN вместо файла.",
+    "Одно исключение. Если в правилах есть сайт, записанный по имени (например, example.com), в файл он не попадёт — в файле хранятся только числовые адреса. Подключение будет работать, но именно этот сайт пойдёт не туда, куда вы ожидали. Чтобы такие правила сохранились, добавьте ключ обычным способом — копированием, а не файлом.",
 
   "install.fixTitle": "Если не работает",
   "install.fixServer":
     "Попробуйте другой сервер: создайте ключ на другом сервере из списка.",
   "install.fixFullTunnel":
     "Попробуйте ключ без профиля маршрутизации (весь трафик через VPN) — так видно, дело в сети или в правилах.",
+  "install.fixAmneziaDns":
+    "В настройках AmneziaVPN выключите «Использовать DNS-серверы Amnezia, если установлены». На наших серверах их нет, и с включённой галочкой подключение может быть успешным, а сайты при этом не открываться.",
   "install.fixUpdate":
     "Обновите AmneziaVPN и делайте это регулярно: устаревший клиент — частая причина, по которой ключ AmneziaWG 3.1 не подключается.",
   "install.checkUpdates": "Страница последнего выпуска",
@@ -401,7 +403,7 @@ const ru = {
   "quota.willBecomeTotal": "Станет {total} на все серверы вместе",
   "quota.reason": "Обоснование",
   "quota.reasonPlaceholder":
-    "Опишите, зачем нужны дополнительные ключи (не менее 10 символов).",
+    "Например: рабочий ноутбук и телефон, ключей на всех не хватает.",
   "quota.reasonOptional": "Необязательно, но желательно кратко пояснить.",
   "quota.sending": "Отправляем…",
   "quota.submit": "Отправить запрос",
@@ -997,7 +999,7 @@ const en = {
   "device.base": "Device",
   "device.unspecified": "Unspecified",
   "device.android": "Android",
-  "device.ios": "iPhone iPad",
+  "device.ios": "iPhone iPad (iOS)",
   "device.macos": "macOS MacBook",
   "device.windows": "Windows PC",
   "device.linux": "Linux",
@@ -1247,32 +1249,34 @@ const en = {
   "install.addResult":
     "The server appears in the app's list under the same name as in the panel, and the app connects to it.",
 
-  "install.confTitle": "The .conf file — easier for split-tunnel profiles",
+  "install.confTitle": "The .conf file — the second way to add a key",
   "install.confBody":
-    "The Download .conf button on the key card gives you a configuration file. It is not pasted as text — it is imported as a file.",
+    "The Download .conf button on the key card saves the key as a file. You do not copy and paste this one — you open it in the app.",
   "install.confSplitBest":
-    "For the “Foreign resources via VPN” and “Only blocked sites” profiles this is the better route on Windows, macOS, Linux and Android: the connection key there is very long, no QR code is available, and a file is moved and imported in one step. The file keeps the profile's full list of routed subnets.",
+    "If you chose “Foreign resources via VPN” or “Only blocked sites”, the file is easier on a computer and on Android: that kind of key comes out very long, there is no QR code for it, and the file only has to be opened once. Every address that should go through the VPN is already written into it.",
   "install.confIosWarning":
-    "This does not apply to iPhone and iPad: there a key with a route profile connects but the rules are not applied — neither from the file nor from the connection key. On iPhone and iPad use a key with no route profile.",
+    "This will not help on iPhone or iPad. The key connects there, but the rules you chose are not applied — neither from the file nor from the key. For iPhone and iPad, create a key with no profile so that everything goes through the VPN.",
   "install.confAmneziaTitle": "In AmneziaVPN",
   "install.confAmneziaStep1": "Download the .conf file from the key card.",
   "install.confAmneziaStep2":
     "Open AmneziaVPN, tap + and choose importing a configuration file.",
   "install.confAmneziaStep3":
     "Pick the downloaded file and tap Connect. On a phone it is easiest to open the file and share it to AmneziaVPN.",
-  "install.confOtherTitle": "In another client",
+  "install.confOtherTitle": "Other apps",
   "install.confOtherBody":
-    "The file works in clients that understand AmneziaWG: awg-quick from amneziawg-tools, the AmneziaWG app for Android, routers with the amneziawg package. Import it as an ordinary tunnel.",
+    "The file also works in other apps that understand AmneziaWG — the AmneziaWG app for Android, for instance, or a router that supports it. If you have not set anything like that up on purpose, you do not need this: use AmneziaVPN.",
   "install.confStockWarning":
-    "A stock WireGuard client will not accept this file: it carries AmneziaWG obfuscation parameters (Jc, S1, H1 and others) that WireGuard does not know. Use AmneziaVPN or an AmneziaWG-capable client.",
+    "The plain WireGuard app will not open this file. It does not do the disguising that makes the key work where VPNs are blocked. You need AmneziaVPN itself.",
   "install.confDomainsWarning":
-    "The file carries the address ranges, but not the rules written as a site name. In the “Only blocked sites” profile such a site is not routed through the VPN and stays unavailable. In the “Everything except…” profile it goes through the VPN instead of past it. The connection itself works either way — only that one rule is not applied. If it matters, add the connection key in AmneziaVPN instead of the file.",
+    "One exception. If a rule names a site (example.com, say), it does not fit in the file — the file holds only numeric addresses. The connection still works, but that one site goes somewhere other than you expected. To keep rules like that, add the key the usual way, by copying it, rather than as a file.",
 
   "install.fixTitle": "If it does not work",
   "install.fixServer":
     "Try another server: create a key on a different server from the list.",
   "install.fixFullTunnel":
     "Try a key with no route profile (all traffic through the VPN) — that shows whether the problem is the network or the routing rules.",
+  "install.fixAmneziaDns":
+    "In AmneziaVPN's settings, turn off “Use Amnezia DNS servers if installed”. Our servers do not run them, and with that switch on the connection can succeed while no site opens.",
   "install.fixUpdate":
     "Update AmneziaVPN, and keep doing so regularly: an outdated client is a common reason an AmneziaWG 3.1 key will not connect.",
   "install.checkUpdates": "Latest release page",
@@ -1291,7 +1295,7 @@ const en = {
   "quota.willBecomeTotal": "Will become {total} across all servers",
   "quota.reason": "Reason",
   "quota.reasonPlaceholder":
-    "Explain why you need additional keys (at least 10 characters).",
+    "For example: a work laptop and a phone, and not enough keys for both.",
   "quota.reasonOptional": "Optional, but a short note helps.",
   "quota.sending": "Sending…",
   "quota.submit": "Send request",

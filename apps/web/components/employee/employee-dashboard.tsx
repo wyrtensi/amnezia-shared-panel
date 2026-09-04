@@ -7,6 +7,7 @@ import type { GuideAudience } from "@amnezia/contracts";
 import { toast } from "sonner";
 import { AppHeader } from "@/components/app-header";
 import { LogoutButton } from "@/components/logout-button";
+import type { LogoutMode } from "@/lib/logout";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -41,9 +42,9 @@ import type {
 } from "@/lib/types";
 
 export function EmployeeDashboard({
-  canLogout = false,
+  logoutMode = null,
 }: {
-  canLogout?: boolean;
+  logoutMode?: LogoutMode | null;
 }) {
   const { t } = useT();
   // `load` is memoized with empty deps; a ref keeps its error toast on the
@@ -279,7 +280,7 @@ export function EmployeeDashboard({
             >
               <RefreshCw className="h-4 w-4" /> {t("emp.refresh")}
             </Button>
-            {canLogout ? <LogoutButton /> : null}
+            {logoutMode ? <LogoutButton mode={logoutMode} /> : null}
           </>
         }
       />
@@ -322,11 +323,15 @@ export function EmployeeDashboard({
               </Button>
             </div>
             {nodeQuota.length > 0 ? (
-              <div className="space-y-2.5 border-t pt-3">
+              // The same rule that separates this block from the header now
+              // also separates the servers from each other: with three or four
+              // of them and a traffic line each, a plain gap left it unclear
+              // which numbers belonged to which name.
+              <div className="divide-y border-t">
                 {nodeQuota.map(({ node, used, limit, traffic }) => (
                   <div
                     key={node.id}
-                    className="flex flex-wrap items-start justify-between gap-2"
+                    className="flex flex-wrap items-start justify-between gap-2 py-2.5 first:pt-3"
                   >
                     <div className="min-w-0 space-y-0.5">
                       <span className="flex min-w-0 items-center gap-1.5">

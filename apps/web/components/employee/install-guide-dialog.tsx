@@ -117,6 +117,9 @@ const CONF_AMNEZIA_STEPS = [
 const FIXES = [
   "install.fixServer",
   "install.fixFullTunnel",
+  // Ahead of "update the app", because it is the one that looks like a fix and
+  // is not: a user hunting for a setting to change finds this switch first.
+  "install.fixAmneziaDns",
   "install.fixUpdate",
 ] as const;
 
