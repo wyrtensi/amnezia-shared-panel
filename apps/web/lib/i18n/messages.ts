@@ -252,19 +252,24 @@ const ru = {
   "keyHelp.button": "Не понятно как создать ключ →",
   "keyHelp.title": "Как создать ключ",
   "keyHelp.desc": "Что значит каждое поле в форме создания ключа.",
-  "keyHelp.namesTitle": "Названия и галочки",
+  "keyHelp.deviceBody":
+    "Выберите устройство, на котором будете подключаться. Один ключ — одно устройство; для второго создайте ещё один.",
+  "keyHelp.nameBody":
+    "Как вы сами будете отличать этот ключ от других. Можно оставить как есть.",
   "keyHelp.namesBody":
     "Это то, как ключ будет отображаться у вас в приложении, чтобы не запутаться. Строка «в клиенте» показывает предпросмотр.",
   "keyHelp.serverBody":
     "Лучше всегда выбирать рекомендуемый. Обычно доступно несколько локаций, можете выбрать любую.",
+  "keyHelp.alwaysWorks": "работает всегда",
+  "keyHelp.noGuarantee": "без гарантий",
   "keyHelp.routingBody":
-    "Режим «Весь трафик» будет работать всегда. Если у вас что-то не работает — выбирайте его.",
+    "Самый надёжный вариант. Если у вас что-то не работает — выбирайте его.",
   "keyHelp.profilesIntro":
     "Про остальные два профиля читайте внимательно. Их работа не гарантируется, они сделаны для удобства:",
   "keyHelp.whitelistBody":
-    "мы постараемся, чтобы для российских сервисов выглядело, что вы сидите из дома. Лучше, чем «Только заблокированные», но менее надёжно для стабильной работы VPN в целом.",
+    "Мы постараемся, чтобы для российских сервисов выглядело, что вы сидите из дома. Лучше, чем «Только заблокированные», но менее надёжно для стабильной работы VPN в целом.",
   "keyHelp.blacklistBody":
-    "профиль со списком определённых сайтов. Список большой, но в нём могут быть не все нужные вам заблокированные ресурсы, и они не откроются через VPN.",
+    "Профиль со списком определённых сайтов. Список большой, но в нём могут быть не все нужные вам заблокированные ресурсы, и они не откроются через VPN.",
   "keyHelp.troubleTitle": "Если есть проблемы в работе",
   "keyHelp.troubleBody":
     "Смените сервер или переключите маршрутизацию на «Весь трафик». Если у вас мобильный интернет, переход на Wi-Fi часто решает проблемы с доступом.",
@@ -1224,19 +1229,24 @@ const en = {
   "keyHelp.button": "Not sure how to create a key →",
   "keyHelp.title": "How to create a key",
   "keyHelp.desc": "What each field of the create-key form means.",
-  "keyHelp.namesTitle": "Names and tick boxes",
+  "keyHelp.deviceBody":
+    "Pick the device you will connect from. One key is for one device — make another for the second.",
+  "keyHelp.nameBody":
+    "How you will tell this key from your others. You can leave it as it is.",
   "keyHelp.namesBody":
     "This is how the key will show up in your app, so you do not mix them up. The “in the client” line is a live preview.",
   "keyHelp.serverBody":
     "Always take the recommended one. There are usually several locations available — any of them will do.",
+  "keyHelp.alwaysWorks": "always works",
+  "keyHelp.noGuarantee": "no guarantee",
   "keyHelp.routingBody":
-    "“All traffic” always works. If something is not working for you, pick that one.",
+    "The dependable one. If something is not working for you, pick this.",
   "keyHelp.profilesIntro":
     "Read the other two profiles carefully. They are not guaranteed to work; they exist for convenience:",
   "keyHelp.whitelistBody":
-    "we do our best to make Russian services see you as if you were at home. Better than “Blocked only”, but less dependable for the VPN working steadily overall.",
+    "We do our best to make Russian services see you as if you were at home. Better than “Blocked only”, but less dependable for the VPN working steadily overall.",
   "keyHelp.blacklistBody":
-    "a profile with a list of certain sites. The list is large, but it may not hold every blocked resource you need, and those will not open through the VPN.",
+    "A profile with a list of certain sites. The list is large, but it may not hold every blocked resource you need, and those will not open through the VPN.",
   "keyHelp.troubleTitle": "If something is not working",
   "keyHelp.troubleBody":
     "Change the server, or switch the routing to “All traffic”. If you are on mobile data, moving to Wi-Fi often fixes access problems.",
