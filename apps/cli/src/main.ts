@@ -50,6 +50,13 @@ import {
 import type { UpdateStatusView } from "./args.js";
 import { classifyNodeHost, formatNodeAddress } from "./nodeAddress.js";
 import {
+  awgCell,
+  handshakeCell,
+  metricPair,
+  metricWarnings,
+  type NodeMetricsView,
+} from "./nodeMetrics.js";
+import {
   assertionUsageLines,
   describeAssertions,
   parseAssertions,
@@ -202,6 +209,10 @@ type AdminKey = {
 type AdminNode = {
   id: string;
   name: string;
+  /** Host metrics from the last poll; null until this node has been polled. */
+  metrics?: NodeMetricsView | null;
+  /** Derived from the newest peer handshake, never probed. */
+  endpoint?: { status: string; lastHandshakeAt: string | null } | null;
   // How the PANEL reaches the agent, as opposed to publicHost below, which is
   // how CLIENTS reach the node. Optional for the same reason as publicHost.
   apiBaseUrl?: string;
@@ -734,6 +745,10 @@ const POLICY_BOOL_FIELDS = [
   // fleet, so showing it to ordinary users is an operator's decision rather
   // than something an upgrade makes on their behalf. Admins always see it.
   "showNodeAddress",
+  // On by default: a user seeing which services work from a server is the whole
+  // point of collecting the checks. What it gates is the check chips, never a
+  // node state word.
+  "showNodeStatus",
 ] as const;
 const POLICY_INT_FIELDS = ["defaultKeyLimit"] as const;
 const POLICY_INT_NULL_FIELDS = ["dailyRetentionDays"] as const;
@@ -1428,6 +1443,7 @@ Nodes:
                                           a time on purpose; there is no fleet variant
   node-agent-log <id>                     Show the node's last agent update and its log
 
+  node-metrics [--json]                   Host metrics per node, with the panel's own warnings
   checks                                  List service checks and what each asserts
   check-results [<id>]                    Per-node verdicts (ok / failed / error)
   check-create --name= --url= <asserts>   Add a check; needs at least one assertion
@@ -1467,7 +1483,8 @@ policy-set fields:
   Booleans (true/false): allowKeyCreation, allowNodeSelection,
     allowRouteProfileSelection, allowCustomRoutes, allowConfigRedownload,
     allowQrDownload, allowConfDownload, allowSelfRevoke, showPublicKey,
-    showLastUsed, showTraffic, showNodeAddress
+    showLastUsed, showTraffic, showNodeAddress, showNodeStatus
+    showNodeStatus=false hides the service-check chips from ordinary users
     showNodeAddress=true also shows ordinary users the address of each node
     they may use (off by default; admins always see it on the node card).
   defaultKeyLimit=<int 0..1000>
@@ -1674,6 +1691,67 @@ async function cmdCheckRun(args: string[]): Promise<void> {
   );
 }
 
+
+async function cmdNodeMetrics(args: string[]): Promise<void> {
+  const nodes = await api<AdminNode[]>("/api/admin/nodes");
+  if (wantsJson(args)) {
+    return json(
+      nodes.map((node) => ({
+        id: node.id,
+        name: node.name,
+        metrics: node.metrics ?? null,
+        endpoint: node.endpoint ?? null,
+      })),
+    );
+  }
+  if (nodes.length === 0) {
+    console.log("No nodes are registered.");
+    return;
+  }
+  console.log(
+    table(
+      nodes.map((node) => {
+        const metrics = node.metrics;
+        return {
+          node: node.name,
+          // A dash, never a zero. A zero here reads as a measurement, and "this
+          // agent does not report swap" is not "this host has no swap".
+          ram: metricPair(metrics?.memAvailableBytes, metrics?.memTotalBytes),
+          swap: metricPair(metrics?.swapUsedBytes, metrics?.swapTotalBytes),
+          disk:
+            metrics?.diskUsedPercent === null || metrics?.diskUsedPercent === undefined
+              ? "—"
+              : `${metrics.diskUsedPercent}%`,
+          load:
+            metrics?.load1 === null || metrics?.load1 === undefined
+              ? "—"
+              : `${metrics.load1.toFixed(2)}/${metrics.cpuCores ?? "?"}`,
+          pids: `${metrics?.agentPidsCurrent ?? "—"}/${metrics?.agentPidsMax ?? "—"}`,
+          awg3: awgCell(metrics?.awg3Up, metrics?.awg3Peers),
+          // Reported only where AWG 2.0 is actually enabled - a dash means the
+          // node does not serve it, not that the reading failed. It is in the
+          // table rather than only in --json because hiding a protocol the panel
+          // deliberately reports would undo that decision for anyone without a
+          // browser.
+          awg2: awgCell(metrics?.awg2Up, metrics?.awg2Peers),
+          agent: metrics?.agentLatencyMs === null || metrics?.agentLatencyMs === undefined
+            ? "—"
+            : `${metrics.agentLatencyMs}ms`,
+          handshake: handshakeCell(node.endpoint?.lastHandshakeAt ?? null),
+        };
+      }),
+      ["node", "ram", "swap", "disk", "load", "pids", "awg3", "awg2", "agent", "handshake"],
+    ),
+  );
+  const warnings = nodes.flatMap((node) => metricWarnings(node.name, node.metrics));
+  if (warnings.length > 0) {
+    // The same three numbers the admin card paints red. An operator over SSH
+    // got the raw figures and no idea which one the panel considers a problem.
+    console.log("");
+    for (const warning of warnings) console.log(warning);
+  }
+}
+
 async function main(): Promise<void> {
   const [command, ...args] = process.argv.slice(2);
   switch (command) {
@@ -1750,6 +1828,8 @@ async function main(): Promise<void> {
       return cmdPolicySet(args);
     case "global-routes":
       return cmdGlobalRoutes(args);
+    case "node-metrics":
+      return cmdNodeMetrics(args);
     case "checks":
       return cmdChecks(args);
     case "check-results":
