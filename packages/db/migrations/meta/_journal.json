@@ -162,6 +162,13 @@
       "when": 1788504331731,
       "tag": "0022_seed_service_checks",
       "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1788520977112,
+      "tag": "0023_disable_gemini_check",
+      "breakpoints": true
     }
   ]
 }

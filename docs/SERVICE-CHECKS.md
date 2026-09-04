@@ -67,6 +67,23 @@ marker only catches a block of the exact shape the service served on the day of
 the capture; a success marker fails for *any* reason the working UI is missing —
 a redesigned block page, a captive portal, a DNS hijack, an error shell.
 
+**Use `scripts/calibrate-check.mjs` rather than a browser's Save As.** It fetches
+a page the way the probe does and saves what was *served*, then ranks the strings
+that separate two captures - and refuses to propose anything from one capture,
+which is the mistake this whole section exists to prevent.
+
+```bash
+# From the same machine: once on an address the service accepts, once on one it
+# refuses. Two different clients differ for reasons unrelated to a block.
+node scripts/calibrate-check.mjs capture --url=https://example.com/ --out=working.html
+node scripts/calibrate-check.mjs capture --url=https://example.com/ --out=blocked.html
+node scripts/calibrate-check.mjs diff working.html blocked.html
+```
+
+It reports success markers, failure markers, and **traps** - strings present on
+both pages where only the count differs - and flags any marker that first
+appears past the probe's 64 KiB read cap, because a check cannot see one there.
+
 Watch for near-misses. `input-area-container` appears **58** times on a blocked
 Gemini page and **86** times on a working one: it reads like a chat-input class,
 it sits one word away from a marker that *is* discriminating, and it would be
@@ -128,6 +145,18 @@ belongs in this document rather than inside whoever adds the rule.
   only ever fail — silently, and in the direction that reads as "blocked".
 - **More than 64 KiB of body**, and **more than 15 s** per probe. The body cap
   is enforced by cancelling the stream, not by reading and discarding.
+
+**A marker has to appear within that first 64 KiB.** This is not theoretical: on
+gemini.google.com the string `input-area-container` occurs 85 times in the served
+page and not once before the cap, so a check asserting on it would have read as
+a failure on a perfectly working service. Measure the *position* of a marker,
+not only its presence.
+
+**Response headers are capped too, at 64 KiB** (`--max-http-header-size` on the
+agent). Node's default is 16 KiB, and a real site exceeded it: every probe of
+gemini.google.com failed with `UND_ERR_HEADERS_OVERFLOW` until the limit was
+raised. It surfaced as `error`, not `failed`, so nobody was told a working
+service was blocked — but the check could not have succeeded anywhere.
 
 ---
 
