@@ -172,6 +172,12 @@ via `CONTROL_API_URL` plus one of, in priority order:
 | `node-agent-log <id>` | The node's own record of its last agent update: state, image, when it finished, and the updater's log — which is what explains a failure (a locally edited `compose.yaml`, a missing `.env` key, a health gate) without opening an SSH session |
 | `policy-set --<field>=<value> …` | Set portal-policy fields (e.g. `--defaultKeyLimit=10`). `--nodeOrder=<id>,<id>` is the order users see servers in; `--recommendedNodeIds=<id>` badges servers as recommended and **must be the top of that order** (`none` clears either list). Send both in one call when a reorder would leave a badged server out of the top — the API validates them together and otherwise rejects the reorder, naming the server that is out of place, rather than silently un-recommending it. `--keyLimitMode=per_node\|global` is the panel-wide default for how every key limit is counted (`user-limit --mode=` overrides it for one user); there is no `inherit` here, since this **is** the value everyone inherits. `--defaultKeyLimit` is per server in `per_node` mode and the shared total in `global` mode — the number does not move, its meaning does, so switching the mode re-reads every existing limit without writing a row. `--showNodeAddress=true` also shows ordinary users the public address of each node they may use, under the node's name on their dashboard; it is **off by default**, because a node's address is operational information about the fleet and switching it on should be an operator's decision rather than something an upgrade does on their behalf. Admins always see it in `nodes` and on the node card regardless. Users get one collapsed string (the resolved IP, or the reported host when it never resolved) and never the host/IP pair or the resolution timestamp. `--video-desktop=`, `--video-android=`, `--video-ios=` attach the walkthrough video shown at the top of each audience's block in the in-panel connection guide (`none` clears one). They **merge** with the videos already set, so naming one audience does not clear the other two; until a URL is set that block shows a placeholder rather than a player. A **Google Drive share link** (the file must be readable by anyone with the link) is embedded as a Drive preview — Drive no longer serves files dependably to a plain `<video>` tag; any other http(s) URL plays as a direct file. A link the panel cannot play is refused when you type it. **These URLs are deployment settings: they live in your panel's database, never in this repository** — `scripts/tests/no-deployment-links.test.mjs` fails the build if one is committed |
 | `global-routes-set --profile=ru_whitelist\|ru_blacklist [--add-domains=] [--add-cidrs=] [--exclude-domains=] [--exclude-cidrs=]` | Admin-wide route overrides for one split-tunnel profile. Each list given **replaces** that list; omitted lists stay as they were |
+| `checks` | Every service check: what it targets, how often it runs, and what it asserts |
+| `check-results [<id>]` | Each node's verdict, with the final URL and how long it has been failing. Three statuses, and they are not interchangeable: `ok` (the probe ran and every assertion held), `failed` (the probe ran and one did not), `error` (**the node could not look**, so nothing is known about the service) |
+| `check-create --name= --url= <assertion flags>` | Add a check. At least one assertion is required — a check that asserts nothing is always green and looks exactly like one that is passing |
+| `check-set <id> [--name=] [--url=] [--method=] [--interval-sec=] [--enabled=true\|false] [<assertion flags>]` | Change **only** the fields you name. Assertion flags replace the whole list |
+| `check-delete <id> [--confirm]` | Delete a check and every node's result for it |
+| `check-run <id>` | Mark it due on every node. It does **not** run anything synchronously: the panel reaches nodes on the telemetry poll, so the reading appears after the next one |
 | `cf-config --account= --app= --policy=` | Set Cloudflare Access IDs |
 | `cf-token <token>` · `cf-token --token-file=<path\|->` | Store the Cloudflare API token (encrypted at rest). Prefer the file/stdin form: a token passed as an argument is visible in `ps` and in shell history for as long as the process lives |
 | `panel-update [--status] [--json]` | Trigger the in-panel update (backup → pull → migrate → restart), or show its status. `--status` prints a readable line — the pending request, and whether the last host run finished `ok` or `FAILED` with its reason; `--status --json` returns the raw status object unchanged |
@@ -277,6 +283,42 @@ older client sees a key that imports and then fails to connect — check this
 number first.
 
 #### Global route overrides
+
+### Service checks
+
+A check is a **probe** (what to do) and a list of **assertions** (what must be
+true of the result); all of them must hold. Both sets are open — adding a rule
+is one entry in the node-agent's registry, not a migration. `docs/SERVICE-CHECKS.md`
+has the full list and the rules for deriving a new one.
+
+Assertion flags, repeatable:
+
+```
+--status-in=200,204                        the status is one of these
+--contains=<text>                          the body contains it
+--omits=<text>                             the body does not
+--contains-all=<a>,<b>                     the body contains every one
+--contains-any=<a>,<b>                     the body contains at least one
+--contains-at-least=<count>:<text>         it appears at least <count> times
+--bytes-at-least=<n>                       at least <n> bytes were read (cap 64 KiB)
+--final-url-contains=<text>                where the request landed contains it
+--final-url-omits=<text>                   it does not
+--header-contains=<name>:<text>            a response header contains it
+```
+
+```bash
+# The seeded Gemini check, written out: a SUCCESS marker plus an independent
+# failure marker. Measured across two captures - 20 occurrences on a working
+# page, 0 on a blocked one - which is why it is a count rather than "contains".
+amnezia-panel check-create --name="Google Gemini" \
+  --url=https://gemini.google.com/ \
+  --status-in=200 \
+  --contains-at-least=10:conversation-container \
+  --omits=account-rejected
+```
+
+A `HEAD` probe reads no body, so a body assertion against one is refused rather
+than left to fail silently in the direction that reads as "blocked".
 
 `global-routes` / `global-routes-set` edit an admin-wide layer applied to every
 split-tunnel export, on top of the profile's active feed:
