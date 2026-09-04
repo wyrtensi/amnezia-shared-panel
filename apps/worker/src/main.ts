@@ -97,14 +97,6 @@ const ruleFetchers = resolveRuleFeeds(process.env, pocApprovedFor).map((feed) =>
   createRuleFetcher({ repository, feed }),
 );
 
-// Built after the fetchers so the operator-triggered `rules.refresh` job can
-// run exactly the same feed fetchers the 6-hourly timer runs.
-const processJob = createJobProcessor({
-  repository,
-  createNodeAgent: (node) => createNodeAgentClient(node),
-  ruleFetchers,
-});
-
 /**
  * Optional Cloudflare Access deactivation sync. Off unless
  * `ACCESS_RECONCILE_ENABLED=true`. Picks the allowed-email source from
@@ -137,33 +129,55 @@ const bootstrapAdminEmails = (process.env.BOOTSTRAP_ADMIN_EMAILS ?? "")
   .map((email) => email.trim())
   .filter(Boolean);
 
-// Cloudflare Access sync tasks.
-//   ACCESS_SYNC_ENABLED=true → two-way sync (panel <-> CF policy include list) in
-//     a single task. This is the recommended mode and supersedes the separate
-//     reconcile + write-back tasks (running those alongside it would fight).
-//   Otherwise the legacy pieces stay available independently:
-//     ACCESS_RECONCILE_ENABLED (+ ACCESS_DIRECTORY) → CF → panel disable, and
-//     ACCESS_WRITEBACK_ENABLED → panel → CF write-back.
+/**
+ * The two-way Cloudflare Access sync instance (panel <-> CF policy include
+ * list). Built once, directly into a const, so its closure's abort-audit
+ * de-duplication state (see accessReconcile.ts) persists across every run --
+ * a second instance would silently break that. `undefined` unless
+ * `ACCESS_SYNC_ENABLED=true`.
+ *
+ * The timer no longer calls this directly (see the `runPeriodicTask` below):
+ * it only arms the outbox row, and the outbox runner -- which processes one
+ * job at a time -- is the sole executor. That removes the race where the
+ * timer and the runner could both be mid-sync at once, cross their policy and
+ * baseline writes, and leave the next run disabling a freshly created user.
+ */
+const buildAccessSyncTask = (): ReturnType<typeof createAccessSync> | undefined => {
+  if (process.env.ACCESS_SYNC_ENABLED !== "true") return undefined;
+  return createAccessSync({
+    repository,
+    bootstrapAdminEmails,
+    maxDisablesPerRun: nonNegativeIntegerEnv("ACCESS_SYNC_MAX_DISABLES", 10),
+    recordAccessSyncAborted: (details) =>
+      repository.recordAccessSyncAborted(details),
+    log: (message) => console.log(message),
+  });
+};
+
+// The single instance, or undefined. Constructed here -- above the processor
+// -- so `processJob` below can receive it and become the only place that
+// runs it.
+const accessSyncTask = buildAccessSyncTask();
+
+// Built after the fetchers and the access-sync instance so the
+// operator-triggered `rules.refresh` job can run exactly the same feed
+// fetchers the 6-hourly timer runs, and the outbox runner can run the same
+// access-sync instance the timer only arms.
+const processJob = createJobProcessor({
+  repository,
+  createNodeAgent: (node) => createNodeAgentClient(node),
+  ruleFetchers,
+  accessSync: accessSyncTask,
+});
+
+// Legacy Cloudflare Access pieces, independent features kept exactly as they
+// were and out of scope for this change:
+//   ACCESS_RECONCILE_ENABLED (+ ACCESS_DIRECTORY) → CF → panel disable, and
+//   ACCESS_WRITEBACK_ENABLED → panel → CF write-back.
+// Both stay off when the two-way sync above is enabled -- running them
+// alongside it would fight over the same state.
 const buildAccessTasks = (): Array<() => Promise<void>> => {
-  if (process.env.ACCESS_SYNC_ENABLED === "true") {
-    // Built once so the closure's abort-audit de-duplication state (see
-    // accessReconcile.ts) persists across periodic runs.
-    const sync = createAccessSync({
-      repository,
-      bootstrapAdminEmails,
-      maxDisablesPerRun: nonNegativeIntegerEnv("ACCESS_SYNC_MAX_DISABLES", 10),
-      recordAccessSyncAborted: (details) =>
-        repository.recordAccessSyncAborted(details),
-      log: (message) => console.log(message),
-    });
-    // The periodic loop does not yet act on the outcome (Task 3 wires that
-    // up) — discard it here to keep this task's signature `() => Promise<void>`.
-    return [
-      async () => {
-        await sync();
-      },
-    ];
-  }
+  if (accessSyncTask) return [];
   const tasks: Array<() => Promise<void>> = [];
   const reconcile = buildAccessReconciler();
   if (reconcile) tasks.push(reconcile);
@@ -245,6 +259,20 @@ try {
         onError: reportBackgroundError,
       }),
     ),
+    ...(accessSyncTask
+      ? [
+          runPeriodicTask({
+            // The timer no longer runs the sync: it arms the same outbox row a
+            // user change arms, so the runner stays the ONLY executor. Two
+            // concurrent runs can cross their policy and baseline writes and
+            // leave the next run disabling a freshly created user.
+            task: () => repository.armAccessSync("timer"),
+            intervalMs: accessReconcileIntervalMs,
+            signal: abortController.signal,
+            onError: reportBackgroundError,
+          }),
+        ]
+      : []),
   ]);
 } finally {
   await database.client.end();

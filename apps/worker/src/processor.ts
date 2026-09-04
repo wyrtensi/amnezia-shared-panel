@@ -1,5 +1,6 @@
 import { z } from "zod";
-import { RULES_REFRESH_JOB_TYPE } from "@amnezia/contracts";
+import { ACCESS_SYNC_JOB_TYPE, RULES_REFRESH_JOB_TYPE } from "@amnezia/contracts";
+import type { AccessSyncOutcome } from "./accessReconcile.js";
 import type { NodeAgent } from "./nodeAgent.js";
 import type {
   OutboxJob,
@@ -24,13 +25,24 @@ const nodeCapacityPayloadSchema = nodeJobPayloadSchema.extend({
 
 export type JobProcessorOptions = {
   repository: WorkerRepository;
-  createNodeAgent: (node: WorkerKeyContext["node"]) => NodeAgent;
+  /**
+   * Optional because the Access-sync job never needs a node agent — VPN-key
+   * and node jobs still require a real implementation, and get one from
+   * every caller that handles those job types.
+   */
+  createNodeAgent?: (node: WorkerKeyContext["node"]) => NodeAgent;
   /**
    * The same fetchers the periodic timer runs, one per configured feed. An
    * empty list means no feed is configured — a manual refresh then fails with
    * a clear message instead of reporting a successful check that did nothing.
    */
   ruleFetchers?: Array<() => Promise<void>>;
+  /**
+   * The single `createAccessSync(...)` instance (Task 3), or undefined when
+   * the worker does not have `ACCESS_SYNC_ENABLED=true`. The timer only arms
+   * the outbox row; this processor is the sole place that runs it.
+   */
+  accessSync?: () => Promise<AccessSyncOutcome>;
   now?: () => Date;
 };
 
@@ -41,8 +53,11 @@ const findPeer = (
 
 export const createJobProcessor = ({
   repository,
-  createNodeAgent,
+  createNodeAgent = () => {
+    throw new Error("createNodeAgent is required for this job type");
+  },
   ruleFetchers = [],
+  accessSync,
   now = () => new Date(),
 }: JobProcessorOptions) => {
   const reconcileOrphan = async (
@@ -89,6 +104,33 @@ export const createJobProcessor = ({
         throw new Error(`Rule feed refresh failed: ${failures.join("; ")}`);
       }
       await repository.completeJob(job.id);
+      return;
+    }
+    if (job.type === ACCESS_SYNC_JOB_TYPE) {
+      if (!accessSync) {
+        // Configuration, not a transient fault — retrying cannot fix it.
+        await repository.failJob(
+          job.id,
+          "Two-way Access sync is not enabled on this worker (set ACCESS_SYNC_ENABLED=true)",
+        );
+        return;
+      }
+      const result = await accessSync();
+      if (result.outcome === "skipped") {
+        await repository.failJob(
+          job.id,
+          "Cloudflare Access is not configured — run cf-config and cf-token",
+        );
+        return;
+      }
+      if (result.outcome === "aborted") {
+        // A run that refused to act is not a success. Failed re-arms on the next
+        // trigger and on the next hourly tick, so nothing is stuck.
+        await repository.failJob(job.id, `aborted: ${result.detail ?? "blast-radius cap"}`);
+        return;
+      }
+      const armId = typeof job.payload.armId === "string" ? job.payload.armId : "";
+      await repository.finishAccessSync(job.id, armId);
       return;
     }
     if (job.type === "node.reconcile") {

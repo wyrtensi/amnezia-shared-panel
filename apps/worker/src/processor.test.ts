@@ -576,3 +576,73 @@ describe("manual route-feed refresh job", () => {
     );
   });
 });
+
+describe("Access sync job", () => {
+  const syncJob = {
+    id: "job-sync",
+    type: "access.sync",
+    payload: { requestedAt: "2026-09-05T00:00:00.000Z", armId: "arm-1", reason: "timer" },
+    attempts: 0,
+  };
+
+  it("runs the Access sync job and finishes it with the arm marker it claimed", async () => {
+    const repository = createRepository();
+    const accessSync = vi.fn(() => Promise.resolve({ outcome: "synced" as const }));
+    const processJob = createJobProcessor({ repository, accessSync });
+
+    await processJob(syncJob);
+
+    expect(accessSync).toHaveBeenCalledOnce();
+    expect(repository.finishAccessSync).toHaveBeenCalledWith("job-sync", "arm-1");
+    expect(repository.failJob).not.toHaveBeenCalled();
+  });
+
+  it("fails the sync job when the worker does not have the sync enabled", async () => {
+    const repository = createRepository();
+    const processJob = createJobProcessor({ repository });
+
+    await processJob(syncJob);
+
+    expect(repository.failJob).toHaveBeenCalledWith(
+      "job-sync",
+      expect.stringMatching(/ACCESS_SYNC_ENABLED/),
+    );
+    expect(repository.finishAccessSync).not.toHaveBeenCalled();
+  });
+
+  it("fails the sync job when Cloudflare is not configured", async () => {
+    const repository = createRepository();
+    const accessSync = vi.fn(() => Promise.resolve({ outcome: "skipped" as const }));
+    const processJob = createJobProcessor({ repository, accessSync });
+
+    await processJob(syncJob);
+
+    expect(repository.failJob).toHaveBeenCalledWith(
+      "job-sync",
+      expect.stringMatching(/not configured/i),
+    );
+  });
+
+  it("fails the sync job, without throwing, when the run aborted on the cap", async () => {
+    const repository = createRepository();
+    const accessSync = vi.fn(() =>
+      Promise.resolve({ outcome: "aborted" as const, detail: "3 account(s) would be disabled" }),
+    );
+    const processJob = createJobProcessor({ repository, accessSync });
+
+    await expect(processJob(syncJob)).resolves.toBeUndefined();
+    expect(repository.failJob).toHaveBeenCalledWith(
+      "job-sync",
+      expect.stringMatching(/3 account\(s\)/),
+    );
+  });
+
+  it("lets the runner retry a sync that threw", async () => {
+    const repository = createRepository();
+    const accessSync = vi.fn(() => Promise.reject(new Error("cloudflare 502")));
+    const processJob = createJobProcessor({ repository, accessSync });
+
+    await expect(processJob(syncJob)).rejects.toThrow(/cloudflare 502/);
+    expect(repository.failJob).not.toHaveBeenCalled();
+  });
+});
