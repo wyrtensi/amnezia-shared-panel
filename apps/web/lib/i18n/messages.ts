@@ -264,7 +264,7 @@ const ru = {
     "Это то, как ключ будет отображаться у вас в приложении, чтобы не запутаться. Строка «в клиенте» показывает предпросмотр.",
   "keyHelp.serverBody":
     "Лучше всегда выбирать рекомендуемый. Обычно доступно несколько локаций, можете выбрать любую.",
-  "keyHelp.alwaysWorks": "работает всегда",
+  "keyHelp.alwaysWorks": "стандарт, стабильность",
   "keyHelp.noGuarantee": "без гарантий",
   "keyHelp.routingBody":
     "Самый надёжный вариант. Если у вас что-то не работает — выбирайте его.",
@@ -1245,7 +1245,7 @@ const en = {
     "This is how the key will show up in your app, so you do not mix them up. The “in the client” line is a live preview.",
   "keyHelp.serverBody":
     "Always take the recommended one. There are usually several locations available — any of them will do.",
-  "keyHelp.alwaysWorks": "always works",
+  "keyHelp.alwaysWorks": "standard, dependable",
   "keyHelp.noGuarantee": "no guarantee",
   "keyHelp.routingBody":
     "The dependable one. If something is not working for you, pick this.",
