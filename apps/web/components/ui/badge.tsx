@@ -11,7 +11,15 @@ const badgeVariants = cva(
         secondary:
           "border-transparent bg-secondary text-secondary-foreground",
         success: "border-transparent bg-success/15 text-success",
-        warning: "border-transparent bg-warning/20 text-warning-foreground",
+        // `-foreground` is the colour for a SOLID warning fill. On the 20%
+        // wash it works in light, where the token is near-black, and fails in
+        // dark, where it is also near-black and the wash is dim - the text
+        // came out all but invisible. Its siblings (success, destructive) use
+        // the accent itself for exactly this reason; warning could not,
+        // because the accent is too light against a pale wash. So: one per
+        // theme.
+        warning:
+          "border-transparent bg-warning/20 text-warning-foreground dark:text-warning",
         destructive:
           "border-transparent bg-destructive/15 text-destructive",
         outline: "text-foreground",
