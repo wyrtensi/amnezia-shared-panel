@@ -155,7 +155,26 @@ services:
       # far above its ~5 MiB live heap, so it does not constrain the workload;
       # what it does is cap a leak or an outsized response at 192 instead of
       # 1006. Raise both this and NODE_AGENT_MEM_LIMIT together.
-      NODE_OPTIONS: --max-old-space-size=${NODE_AGENT_MAX_OLD_SPACE_MB:-192}
+      # Two flags, for two different reasons.
+      #
+      # --max-old-space-size bounds the heap (see mem_limit above).
+      #
+      # --max-http-header-size raises Node's 16 KiB response-header limit,
+      # because a service check against a real site hits it: gemini.google.com
+      # answers with more than 16 KiB of headers, and the probe failed with
+      # UND_ERR_HEADERS_OVERFLOW on every attempt - measured on a live node
+      # 2026-09-04. The result was an honest `error` rather than a false
+      # "blocked", so nobody was misled, but the check could never succeed
+      # anywhere. fetch() has no per-request setting for this and undici is not
+      # resolvable from the image, so it is a process flag.
+      #
+      # The cost is that the agent's OWN http server accepts larger headers
+      # too. That is bounded and acceptable here: the API is authenticated by
+      # x-api-key, published only on the panel's tunnel, and the container runs
+      # with cap_drop ALL.
+      NODE_OPTIONS: >-
+        --max-old-space-size=${NODE_AGENT_MAX_OLD_SPACE_MB:-192}
+        --max-http-header-size=${NODE_AGENT_MAX_HEADER_BYTES:-65536}
       FASTIFY_ROUTES: "0.0.0.0:4001"
       ENV: production
       DOCKER_API_VERSION: ${DOCKER_API_VERSION:-1.44}

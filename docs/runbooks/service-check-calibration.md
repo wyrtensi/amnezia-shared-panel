@@ -47,9 +47,15 @@ expected one from a blocked node. Two failure modes to tell apart from the
 - `body contains "conversation-container" 0 times, wanted at least 10` **on an
   unblocked node** → the marker is not in the served HTML, only in the DOM the
   browser builds. Try the alternatives in order — `above-input-area`, then
-  `chat-history-list` — because a plain fetch may ship a different Angular style
-  bundle than the capture shows. If none of them work, **disable the check** and
-  record the finding.
+  `chat-history-list`.
+
+  **This already happened, and all three failed.** Calibrated 2026-09-04 against
+  the served page (822 KB, HTTP 200, from a node Google accepts): every one of
+  the four candidate markers occurs **zero** times. They exist only in the DOM
+  the browser builds. The Gemini check ships disabled for that reason
+  (migration 0023), and re-enabling it needs a diff of two *served* pages — one
+  from a node Google accepts and one from a node it refuses — not another scan
+  of a browser capture.
 - `body contains "account-rejected"` **on a blocked node** → the block is
   visible server-side and the check is working exactly as designed. Nothing to
   change.
@@ -69,9 +75,21 @@ not that the node should start running a browser. Record what you observed
 (status, HTTP status, final URL, detail) so the next person starts from a
 measurement rather than repeating this run.
 
-## 5. Adding a fourth check
+## 5. Adding a fourth check, or repairing a disabled one
 
-Derive the marker from a **diff of two captures**, never from a scan of one. On
-a single blocked page the absence of a marker cannot be distinguished from the
-absence of evidence. `docs/SERVICE-CHECKS.md` has the rules and the list of
-available assertions.
+Derive the marker from a **diff of two captures of the SERVED page**, never from
+a scan of one and never from a browser's Save As. The Gemini check is the worked
+example of why: it was derived correctly from two browser captures and still
+could not work, because every marker in it existed only in the DOM the browser
+builds.
+
+```bash
+# Same machine, same url, two addresses: one the service accepts, one it refuses.
+node scripts/calibrate-check.mjs capture --url=https://gemini.google.com/ --out=working.html
+node scripts/calibrate-check.mjs capture --url=https://gemini.google.com/ --out=blocked.html
+node scripts/calibrate-check.mjs diff working.html blocked.html
+```
+
+The diff ranks success markers, failure markers and **traps**, and flags any
+marker that first appears past the probe's 64 KiB read cap. `docs/SERVICE-CHECKS.md`
+has the rules and the list of available assertions.

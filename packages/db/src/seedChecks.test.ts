@@ -53,6 +53,28 @@ describe("the seeded service checks", () => {
     expect(assertionBlocks).toHaveLength(3);
   });
 
+  it("does not leave the Gemini check enabled after calibration", () => {
+    // 0022 seeds it enabled; 0023 turns it off, because a live calibration
+    // found every one of its markers absent from the SERVED page - they exist
+    // only in the DOM a browser builds. The seed is deliberately left as it
+    // was written rather than edited: an applied migration is history, and the
+    // reasoning for the change belongs in the change.
+    const disable = readFileSync(
+      join(
+        migrationsDir,
+        readdirSync(migrationsDir).find((name) =>
+          name.endsWith("_disable_gemini_check.sql"),
+        )!,
+      ),
+      "utf8",
+    );
+    expect(disable).toMatch(/UPDATE "node_service_checks"/);
+    expect(disable).toMatch(/"enabled" = false/);
+    expect(disable).toContain("Google Gemini");
+    // The measurement, kept where the next person will read it.
+    expect(disable).toMatch(/conversation-container\s+0/);
+  });
+
   it("gives all three the 12-hour period and re-runs safely", () => {
     expect(seed.match(/43200/g)).toHaveLength(3);
     expect(seed).toContain("ON CONFLICT");

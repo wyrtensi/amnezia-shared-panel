@@ -12,13 +12,24 @@ const nodeAgentService = compose.slice(
   compose.indexOf("\nvolumes:"),
 );
 
+test("the probe can read a real site's response headers", async () => {
+  // Node's default is 16 KiB and gemini.google.com answers with more, so every
+  // probe against it failed with UND_ERR_HEADERS_OVERFLOW - measured on a live
+  // node. It surfaced as an honest `error` rather than a false "blocked", so
+  // nobody was misled, but the check could never succeed anywhere.
+  assert.match(
+    nodeAgentService,
+    /--max-http-header-size=\$\{NODE_AGENT_MAX_HEADER_BYTES:-65536\}/,
+  );
+});
+
 test("the agent's heap is bounded, not sized from host memory", async () => {
   // Unset, V8 picks its old-space limit from the host: measured 1006 MiB on a
   // 2 GiB node, and it would be ~480 MiB on a 1 GiB one - on a host shared
   // with the data plane and sometimes with the panel.
   assert.match(
     nodeAgentService,
-    /NODE_OPTIONS: --max-old-space-size=\$\{NODE_AGENT_MAX_OLD_SPACE_MB:-192\}/,
+    /--max-old-space-size=\$\{NODE_AGENT_MAX_OLD_SPACE_MB:-192\}/,
   );
 });
 
