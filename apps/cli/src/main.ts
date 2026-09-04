@@ -50,6 +50,13 @@ import {
 import type { UpdateStatusView } from "./args.js";
 import { classifyNodeHost, formatNodeAddress } from "./nodeAddress.js";
 import {
+  assertionUsageLines,
+  describeAssertions,
+  parseAssertions,
+  parseProbe,
+  resultLabel,
+} from "./serviceChecks.js";
+import {
   CLI_CONFIG_FORMATS,
   configFrameName,
   configOutputName,
@@ -1420,6 +1427,15 @@ Nodes:
                                           be installed and changes nothing. One node at
                                           a time on purpose; there is no fleet variant
   node-agent-log <id>                     Show the node's last agent update and its log
+
+  checks                                  List service checks and what each asserts
+  check-results [<id>]                    Per-node verdicts (ok / failed / error)
+  check-create --name= --url= <asserts>   Add a check; needs at least one assertion
+  check-set <id> [flags] [<asserts>]      Change only the fields you name
+  check-delete <id> [--confirm]           Delete a check and every node's result for it
+  check-run <id>                          Mark it due on every node (result after the next poll)
+    Assertion flags (repeatable; all must hold):
+${assertionUsageLines().join("\n")}
   node-add flags: [--public-name=] [--protocol=awg3] [--max-peers=500]
                   [--enabled-protocols=awg3,awg2] [--disabled]
 
@@ -1484,6 +1500,178 @@ Env (auth, in priority order):
   CF_ACCESS_CLIENT_SECRET  auth through Cloudflare Access (service token)
   PANEL_ADMIN_EMAIL        dev auth (x-dev-user-email; dev API only)
 `);
+}
+
+
+type AdminServiceCheck = {
+  id: string;
+  name: string;
+  probe: { kind: string; url?: string; method?: string };
+  assertions: Array<Record<string, unknown>>;
+  intervalSec: number;
+  enabled: boolean;
+  results?: Array<{
+    nodeId: string;
+    nodeName: string;
+    status: string;
+    httpStatus: number | null;
+    latencyMs: number | null;
+    detail: string | null;
+    finalUrl: string | null;
+    checkedAt: string;
+    failingSince: string | null;
+  }>;
+};
+
+async function findServiceCheck(id: string): Promise<AdminServiceCheck> {
+  const checks = await api<AdminServiceCheck[]>("/api/admin/service-checks");
+  const check = checks.find((row) => row.id === id || row.name === id);
+  if (!check) throw new Error(`No service check with id or name ${id}`);
+  return check;
+}
+
+async function cmdChecks(args: string[]): Promise<void> {
+  const checks = await api<AdminServiceCheck[]>("/api/admin/service-checks");
+  if (wantsJson(args)) return json(checks);
+  if (checks.length === 0) {
+    console.log("No service checks are defined.");
+    return;
+  }
+  console.log(
+    table(
+      checks.map((check) => ({
+        id: check.id,
+        name: check.name,
+        target: check.probe?.url ?? check.probe?.kind ?? "—",
+        every: `${Math.round(check.intervalSec / 60)}m`,
+        enabled: check.enabled ? "yes" : "no",
+        asserts: describeAssertions(check.assertions ?? []),
+      })),
+      ["id", "name", "target", "every", "enabled", "asserts"],
+    ),
+  );
+}
+
+async function cmdCheckResults(args: string[]): Promise<void> {
+  const id = args.find((arg) => !arg.startsWith("--"));
+  const checks = await api<AdminServiceCheck[]>("/api/admin/service-checks");
+  const selected = id
+    ? checks.filter((check) => check.id === id || check.name === id)
+    : checks;
+  if (id && selected.length === 0) {
+    throw new Error(`No service check with id or name ${id}`);
+  }
+  if (wantsJson(args)) {
+    return json(
+      selected.map((check) => ({ name: check.name, results: check.results ?? [] })),
+    );
+  }
+  const rows = selected.flatMap((check) =>
+    (check.results ?? []).map((result) => ({
+      check: check.name,
+      node: result.nodeName,
+      // The three statuses stay distinct here for the same reason they do in
+      // the UI: `error` means the node could not look, so nothing is known
+      // about the service.
+      result: resultLabel(result),
+      when: result.checkedAt,
+      "failing since": result.failingSince ?? "—",
+      "final url": result.finalUrl ?? "—",
+    })),
+  );
+  if (rows.length === 0) {
+    console.log("No results yet. Run `check-run <id>` and wait for a poll.");
+    return;
+  }
+  console.log(
+    table(rows, ["check", "node", "result", "when", "failing since", "final url"]),
+  );
+}
+
+async function cmdCheckCreate(args: string[]): Promise<void> {
+  const name = flagOf(args, "name");
+  if (!name) throw new Error("Usage: check-create --name=<name> --url=<url> <assertion flags>");
+  const probe = parseProbe(
+    flagOf(args, "url"),
+    flagOf(args, "method"),
+    flagOf(args, "timeout-ms"),
+  );
+  const assertions = parseAssertions(args);
+  if (assertions.length === 0) {
+    throw new Error(
+      "A check needs at least one assertion, or it is always green. Try --status-in=200.",
+    );
+  }
+  const interval = flagOf(args, "interval-sec");
+  const created = await api<AdminServiceCheck>("/api/admin/service-checks", {
+    method: "POST",
+    body: JSON.stringify({
+      name,
+      probe,
+      assertions,
+      ...(interval === undefined ? {} : { intervalSec: Number(interval) }),
+    }),
+  });
+  console.log(`check ${created.name} created (${created.id})`);
+}
+
+async function cmdCheckSet(args: string[]): Promise<void> {
+  const id = args.find((arg) => !arg.startsWith("--"));
+  if (!id) throw new Error("Usage: check-set <id> [--name=] [--url=] [--interval-sec=] [--enabled=true|false] <assertion flags>");
+  const check = await findServiceCheck(id);
+  const url = flagOf(args, "url");
+  const assertions = parseAssertions(args);
+  const enabled = flagOf(args, "enabled");
+  const interval = flagOf(args, "interval-sec");
+  const name = flagOf(args, "name");
+  // Only what was named. The API refuses an empty patch, and sending the whole
+  // check back would silently overwrite fields this invocation never mentioned.
+  const patch = {
+    ...(name === undefined ? {} : { name }),
+    ...(url === undefined
+      ? {}
+      : {
+          probe: parseProbe(url, flagOf(args, "method"), flagOf(args, "timeout-ms")),
+        }),
+    ...(assertions.length === 0 ? {} : { assertions }),
+    ...(interval === undefined ? {} : { intervalSec: Number(interval) }),
+    ...(enabled === undefined ? {} : { enabled: enabled !== "false" }),
+  };
+  if (Object.keys(patch).length === 0) {
+    throw new Error("Nothing to change. Give at least one of --name, --url, --interval-sec, --enabled or an assertion flag.");
+  }
+  await api(`/api/admin/service-checks/${check.id}`, {
+    method: "PATCH",
+    body: JSON.stringify(patch),
+  });
+  console.log(`check ${check.name}: ${Object.keys(patch).join(", ")} updated`);
+}
+
+async function cmdCheckDelete(args: string[]): Promise<void> {
+  const id = args.find((arg) => !arg.startsWith("--"));
+  if (!id) throw new Error("Usage: check-delete <id> [--confirm]");
+  const check = await findServiceCheck(id);
+  if (!args.includes("--confirm")) {
+    console.log(`check ${check.name} (${check.id})`);
+    console.log("  every node's result for it is deleted with it.");
+    console.log("Re-run with --confirm to delete it.");
+    return;
+  }
+  await api(`/api/admin/service-checks/${check.id}`, { method: "DELETE" });
+  console.log(`check ${check.name} deleted`);
+}
+
+async function cmdCheckRun(args: string[]): Promise<void> {
+  const id = args.find((arg) => !arg.startsWith("--"));
+  if (!id) throw new Error("Usage: check-run <id>");
+  const check = await findServiceCheck(id);
+  await api(`/api/admin/service-checks/${check.id}/run`, { method: "POST" });
+  // Deliberately not "done": this marks the check due. The reading appears
+  // after the next telemetry poll, and saying otherwise would have an operator
+  // reading a stale row and concluding the check is broken.
+  console.log(
+    `check ${check.name}: marked due on every node; results appear after the next poll`,
+  );
 }
 
 async function main(): Promise<void> {
@@ -1562,6 +1750,18 @@ async function main(): Promise<void> {
       return cmdPolicySet(args);
     case "global-routes":
       return cmdGlobalRoutes(args);
+    case "checks":
+      return cmdChecks(args);
+    case "check-results":
+      return cmdCheckResults(args);
+    case "check-create":
+      return cmdCheckCreate(args);
+    case "check-set":
+      return cmdCheckSet(args);
+    case "check-delete":
+      return cmdCheckDelete(args);
+    case "check-run":
+      return cmdCheckRun(args);
     case "global-routes-set":
       return cmdGlobalRoutesSet(args);
     case undefined:
