@@ -14,6 +14,7 @@ import {
   sql,
 } from "drizzle-orm";
 import {
+  armAccessSyncRow,
   decryptSecret,
   encryptSecret,
   auditEvents,
@@ -31,6 +32,7 @@ import {
   trafficRollups,
   users,
   vpnKeys,
+  type AccessSyncArmReason,
   type Database,
   type EncryptionKeyring,
 } from "@amnezia/db";
@@ -581,6 +583,32 @@ export class PostgresWorkerRepository
         overMajority: details.overMajority,
       },
     });
+  };
+
+  // The upsert lives in @amnezia/db (armAccessSyncRow) because Task 4 arms the
+  // same row from control-api's postgresRepository, inside the transaction of
+  // the user mutation that triggers it -- two copies of this statement would
+  // only ever drift.
+  armAccessSync = async (reason: AccessSyncArmReason): Promise<void> => {
+    await armAccessSyncRow(this.options.db, reason);
+  };
+
+  finishAccessSync = async (jobId: string, armId: string): Promise<void> => {
+    // Complete only if nothing armed the row again while this run was in
+    // flight. If something did, leave it pending so the change costs one more
+    // run rather than an hour of staleness.
+    await this.options.db
+      .update(jobOutbox)
+      .set({
+        status: sql`CASE WHEN ${jobOutbox.payload} ->> 'armId' = ${armId} THEN 'completed'::outbox_status ELSE 'pending'::outbox_status END`,
+        completedAt: sql`CASE WHEN ${jobOutbox.payload} ->> 'armId' = ${armId} THEN now() ELSE NULL END`,
+        availableAt: sql`CASE WHEN ${jobOutbox.payload} ->> 'armId' = ${armId} THEN ${jobOutbox.availableAt} ELSE now() END`,
+        attempts: 0,
+        lockedAt: null,
+        lastError: null,
+        updatedAt: new Date(),
+      })
+      .where(eq(jobOutbox.id, jobId));
   };
 
   getCloudflareConfig = async (): Promise<{

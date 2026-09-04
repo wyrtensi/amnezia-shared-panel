@@ -1,5 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { ACCESS_SYNC_DEDUPLICATION_KEY } from "@amnezia/contracts";
 import {
   createDatabase,
   auditEvents,
@@ -101,6 +102,82 @@ describe("PostgresWorkerRepository outbox leases", () => {
 
     await expect(repository.claimJob()).resolves.toBeNull();
   });
+
+  const readAccessSyncRow = async () => {
+    if (!database) throw new Error("Database test is disabled");
+    const [row] = await database.db
+      .select()
+      .from(jobOutbox)
+      .where(eq(jobOutbox.deduplicationKey, ACCESS_SYNC_DEDUPLICATION_KEY));
+    if (!row) throw new Error("access.sync row not found");
+    return row;
+  };
+
+  const markAccessSyncRow = async (patch: {
+    status?: "pending" | "processing" | "completed" | "failed";
+    attempts?: number;
+    lastError?: string | null;
+    availableAt?: Date;
+  }) => {
+    if (!database) throw new Error("Database test is disabled");
+    await database.db
+      .update(jobOutbox)
+      .set(patch)
+      .where(eq(jobOutbox.deduplicationKey, ACCESS_SYNC_DEDUPLICATION_KEY));
+  };
+
+  runDatabaseTest(
+    "arms one row, refreshes the marker on every arm, and restarts only a finished row",
+    async () => {
+      if (!database || !repository) return;
+      await repository.armAccessSync("timer");
+      const first = await readAccessSyncRow();
+      expect(first.status).toBe("pending");
+
+      // A second arm while the row is still pending keeps the row and its
+      // lifecycle but replaces the marker, so a change cannot be swallowed by
+      // a run in flight.
+      await repository.armAccessSync("user-change");
+      const second = await readAccessSyncRow();
+      expect(second.id).toBe(first.id);
+      expect(second.payload.armId).not.toBe(first.payload.armId);
+      expect(second.status).toBe("pending");
+
+      // A finished row restarts.
+      await markAccessSyncRow({ status: "completed", attempts: 3, lastError: "x" });
+      await repository.armAccessSync("timer");
+      const third = await readAccessSyncRow();
+      expect(third.status).toBe("pending");
+      expect(third.attempts).toBe(0);
+      expect(third.lastError).toBeNull();
+    },
+  );
+
+  runDatabaseTest(
+    "completes the job only when the marker still matches, and re-arms it otherwise",
+    async () => {
+      if (!database || !repository) return;
+      await repository.armAccessSync("timer");
+      // armAccessSync debounces the row (ACCESS_SYNC_DEBOUNCE_MS) so a burst of
+      // changes coalesces into one run; claimJob only picks up a pending row
+      // once `availableAt` has passed. Simulate that window having elapsed —
+      // the way it would in production once the debounce expires — so this
+      // test can exercise the claim/finish path instead of racing a real
+      // 10-second wait.
+      await markAccessSyncRow({ availableAt: new Date() });
+      const claimed = await repository.claimJob();
+      // A change lands mid-run: the marker moves on.
+      await repository.armAccessSync("user-change");
+
+      await repository.finishAccessSync(
+        claimed!.id,
+        claimed!.payload.armId as string,
+      );
+
+      const row = await readAccessSyncRow();
+      expect(row.status).toBe("pending"); // one more run, not a lost hour
+    },
+  );
 
   // Same database, a sample period stated explicitly rather than inherited:
   // the cadence is the thing under test, so it must not depend on a default.

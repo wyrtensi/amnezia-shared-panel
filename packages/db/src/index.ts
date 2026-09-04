@@ -3,12 +3,18 @@ import {
   createDecipheriv,
   createHmac,
   randomBytes,
+  randomUUID,
 } from "node:crypto";
-import type {
-  KeyState,
-  PortalPolicy,
-  PortalPolicyOverride,
+import { sql } from "drizzle-orm";
+import {
+  ACCESS_SYNC_DEDUPLICATION_KEY,
+  ACCESS_SYNC_JOB_TYPE,
+  type KeyState,
+  type PortalPolicy,
+  type PortalPolicyOverride,
 } from "@amnezia/contracts";
+import type { Database } from "./client.js";
+import { jobOutbox } from "./schema.js";
 
 export * from "./client.js";
 export * from "./schema.js";
@@ -114,3 +120,77 @@ export const trafficDelta = (
   current >= previous
     ? { delta: current - previous, reset: false }
     : { delta: current, reset: true };
+
+// --- Two-way Cloudflare Access sync arm -------------------------------------
+// Both the worker (a panel-side user change, or its own hourly timer) and
+// control-api (Task 4: the same user mutations, from the admin side) arm the
+// single `access.sync` outbox row. The statement lives here, once, so both
+// apps run the exact same upsert rather than two copies that can drift.
+export type AccessSyncArmReason = "user-change" | "timer" | "operator" | "config";
+
+// The transaction handle drizzle passes to `db.transaction(async (tx) => ...)`.
+// armAccessSyncRow accepts this or the top-level Database handle so a caller
+// that already holds a transaction -- control-api arms the sync inside the
+// same transaction as the user mutation that triggered it -- can pass it
+// straight through instead of opening a second, separate transaction.
+type DbTransaction = Parameters<Parameters<Database["transaction"]>[0]>[0];
+
+/** A fresh arm is debounced by this much, so a burst of changes is one run. */
+const ACCESS_SYNC_DEBOUNCE_MS = 10_000;
+
+const accessSyncPayload = (reason: AccessSyncArmReason) => ({
+  requestedAt: new Date().toISOString(),
+  // A UUID, not the timestamp: two arms in the same millisecond must differ.
+  armId: randomUUID(),
+  reason,
+});
+
+/**
+ * Arm the single `access.sync` outbox row so the worker's poller runs a
+ * reconciliation shortly, coalescing any number of changes inside the
+ * debounce window into one run.
+ *
+ * The marker (`payload.armId`) is refreshed on every call, whatever the
+ * row's current status -- a change committed after a running sync already
+ * read the user table must still cause one more run, so a processing row
+ * cannot be left alone the way the rules-refresh precedent leaves it.
+ * `finishAccessSync` compares this marker before marking the job complete.
+ *
+ * Only a finished row (completed/failed) restarts its lifecycle columns
+ * (status/availableAt/attempts/lockedAt/completedAt/lastError); a pending or
+ * processing row keeps them so the attempt already in flight is undisturbed.
+ */
+export const armAccessSyncRow = async (
+  executor: Database | DbTransaction,
+  reason: AccessSyncArmReason,
+): Promise<void> => {
+  const availableAt = new Date(Date.now() + ACCESS_SYNC_DEBOUNCE_MS);
+  await executor
+    .insert(jobOutbox)
+    .values({
+      type: ACCESS_SYNC_JOB_TYPE,
+      deduplicationKey: ACCESS_SYNC_DEDUPLICATION_KEY,
+      payload: accessSyncPayload(reason),
+      availableAt,
+    })
+    .onConflictDoUpdate({
+      target: jobOutbox.deduplicationKey,
+      set: {
+        payload: accessSyncPayload(reason),
+        status: sql`CASE WHEN ${jobOutbox.status} IN ('completed','failed') THEN 'pending'::outbox_status ELSE ${jobOutbox.status} END`,
+        // Interpolated as an ISO string cast to timestamptz, not as a raw
+        // Date: the postgres.js driver can only bind a JS Date on drizzle's
+        // typed `.set({ col: date })` path, which converts it first. A Date
+        // handed straight to a `sql` template throws at bind time ("The
+        // 'string' argument must be of type string or an instance of Buffer
+        // or ArrayBuffer. Received an instance of Date") -- verified against
+        // a real database while building this statement.
+        availableAt: sql`CASE WHEN ${jobOutbox.status} IN ('completed','failed') THEN ${availableAt.toISOString()}::timestamptz ELSE ${jobOutbox.availableAt} END`,
+        attempts: sql`CASE WHEN ${jobOutbox.status} IN ('completed','failed') THEN 0 ELSE ${jobOutbox.attempts} END`,
+        lockedAt: sql`CASE WHEN ${jobOutbox.status} IN ('completed','failed') THEN NULL ELSE ${jobOutbox.lockedAt} END`,
+        completedAt: sql`CASE WHEN ${jobOutbox.status} IN ('completed','failed') THEN NULL ELSE ${jobOutbox.completedAt} END`,
+        lastError: sql`CASE WHEN ${jobOutbox.status} IN ('completed','failed') THEN NULL ELSE ${jobOutbox.lastError} END`,
+        updatedAt: new Date(),
+      },
+    });
+};

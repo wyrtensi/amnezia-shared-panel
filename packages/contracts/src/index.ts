@@ -1049,6 +1049,18 @@ export const idleRulesRefreshStatus: RulesRefreshStatus = {
   lastError: null,
 };
 
+// --- Two-way Cloudflare Access sync -----------------------------------------
+// The worker reconciles the panel's active users with the Access policy. Both
+// the hourly timer and every panel-side user change arm ONE outbox row; the
+// outbox runner is the only executor, which is what keeps two runs from
+// crossing their writes. Control-api and worker share the type and the key.
+export const ACCESS_SYNC_JOB_TYPE = "access.sync";
+export const ACCESS_SYNC_DEDUPLICATION_KEY = "access.sync";
+
+export const accessSyncStatusSchema = rulesRefreshStatusSchema;
+export type AccessSyncStatus = z.infer<typeof accessSyncStatusSchema>;
+export const idleAccessSyncStatus: AccessSyncStatus = idleRulesRefreshStatus;
+
 // --- AmneziaVPN client releases --------------------------------------------
 // The panel tells users where to get the client. A panel user may sit on a
 // network with no route to GitHub, so control-api resolves the current release

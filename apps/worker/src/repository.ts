@@ -1,5 +1,8 @@
 import type { KeyState, ProtocolKind } from "@amnezia/contracts";
+import type { AccessSyncArmReason } from "@amnezia/db";
 import type { PeerObservation } from "./telemetry.js";
+
+export type { AccessSyncArmReason };
 
 export type OutboxJob = {
   id: string;
@@ -92,6 +95,22 @@ export interface WorkerRepository {
     overAbsoluteCap: boolean;
     overMajority: boolean;
   }) => Promise<void>;
+  /**
+   * Arm the single `access.sync` outbox row so the next poll runs a
+   * reconciliation, coalescing a burst of changes into one run. A row already
+   * pending or processing keeps its lifecycle columns -- the attempt in
+   * flight is not disturbed -- but always gets a fresh marker, so a change
+   * that lands mid-run causes one more run rather than being swallowed for an
+   * hour. `reason` is recorded on the row for observability only.
+   */
+  armAccessSync: (reason: AccessSyncArmReason) => Promise<void>;
+  /**
+   * Complete the Access-sync job, but only if `armId` still matches the
+   * row's current marker. If something armed the row again while this run
+   * was in flight, leave it pending instead of completing it -- the change
+   * costs one more run rather than being lost until the next hourly tick.
+   */
+  finishAccessSync: (jobId: string, armId: string) => Promise<void>;
   loadKeyContext: (keyId: string) => Promise<WorkerKeyContext | null>;
   loadNodeReconcileContext: (
     nodeId: string,
