@@ -559,6 +559,9 @@ export class PostgresWorkerRepository
   recordAccessSyncAborted = async (details: {
     candidates: string[];
     limit: number;
+    activeCount: number;
+    overAbsoluteCap: boolean;
+    overMajority: boolean;
   }): Promise<void> => {
     await this.options.db.insert(auditEvents).values({
       actorType: "system",
@@ -569,6 +572,13 @@ export class PostgresWorkerRepository
         // Capped so one anomalous run cannot write an unbounded audit row.
         candidates: details.candidates.slice(0, 50),
         limit: details.limit,
+        // Which half of the blast-radius cap fired (either or both), and the
+        // active-user count it was judged against — without these a
+        // proportional-only abort reads as self-contradictory
+        // (candidateCount under limit) to whoever opens this row.
+        activeCount: details.activeCount,
+        overAbsoluteCap: details.overAbsoluteCap,
+        overMajority: details.overMajority,
       },
     });
   };

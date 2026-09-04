@@ -252,10 +252,12 @@ Cloudflare" are told apart:
   panel disables that account and revokes its keys — **unless** a surviving
   `email_domain` rule still admits that same address (see "domain cover"
   below), in which case the sync disables nothing and revokes nothing. For a
-  domain-covered address, removing it from the Access policy no longer offboards
-  anyone: disable the person **in the panel** instead — the address will keep
-  being re-added to the policy on every sync interval regardless (see "domain
-  cover").
+  domain-covered address, removing it from the Access policy `include` list
+  alone no longer offboards anyone: also name the address in `exclude` (see
+  "domain cover" below) to offboard from the Cloudflare side, or disable the
+  person **in the panel** instead — either reaches their keys. Leaving the
+  address out of both `include` and `exclude` just means it keeps being
+  re-added to the policy on every sync interval (see "domain cover").
 - **Added directly in Cloudflare** (an unknown email) → turned into a panel
   account the moment that person first signs in. Cloudflare already gated
   their identity at the edge, so `resolveIdentity`
@@ -291,21 +293,33 @@ did not create:
   and its keys still revoked, domain rule or not. (`require` — AND-style
   conditions — is a known gap: it is not evaluated, so a person gated behind a
   `require` rule is treated the same as anyone the `include` rules alone would
-  admit.) This rail is a genuine trade, not a free win: it
-  removes the *only* Cloudflare-side way to revoke a domain-covered person's
-  keys — the same run that spares them from the disable also PUTs their
-  "redundant" explicit address straight back into `include`, so removing it
-  from the Access policy alone accomplishes nothing. **The panel is now the
-  only offboarding path that reaches that person's keys.** Resolving this for
-  good needs a panel-managed allowed-domain setting — one where the panel
-  itself owns the `email_domain` rule instead of treating every non-email
-  rule as untouchable — which is planned but not yet built.
+  admit.) This rail is a genuine trade, not a free win: it changes what
+  "remove this person from Cloudflare" has to mean for a domain-covered
+  address. Dropping their explicit entry from `include` alone now
+  accomplishes nothing — they are not disabled, and the same run that spares
+  them from the disable also PUTs that "redundant" address straight back into
+  `include` on the next sync. Offboarding a domain-covered person from the
+  Cloudflare side still works, it just needs the deliberate step: also name
+  their address in `exclude` (or exclude the whole domain), and the next sync
+  disables them and revokes their keys like any other removal. Disabling them
+  **in the panel** is the other path, and it works regardless of what the
+  Access policy says. What changed is that the old "tidy up the redundant
+  address" gesture silently stopped offboarding anyone — Cloudflare itself did
+  not stop being a valid offboarding surface. Resolving the underlying
+  awkwardness for good needs a panel-managed allowed-domain setting — one
+  where the panel itself owns the `email_domain` rule instead of treating
+  every non-email rule as untouchable — which is planned but not yet built.
 - **blast radius** — a run that would disable more accounts than
   `ACCESS_SYNC_MAX_DISABLES` (default 10), **or** more than half of the active
-  panel, stops without acting and writes an `access.sync_aborted` audit event.
-  The proportional half exists because the absolute count alone protects
-  nothing on a small panel: removing all 5 users of a 5-person panel is
-  `5 <= 10` and trips no count-based guard at all. Setting `ACCESS_SYNC_MAX_DISABLES=0`
+  panel rounded up (`candidates > Math.ceil(activeCount / 2)`), stops without
+  acting and writes an `access.sync_aborted` audit event. The rounding is
+  deliberate, not an off-by-one: it means a bare majority on an odd-sized
+  panel proceeds without aborting — 2 of 3, 3 of 5 are disabled, not blocked —
+  so a single active user's own offboarding (1 of 1) never trips the
+  proportional guard either. The proportional half exists because the
+  absolute count alone protects nothing on a small panel: removing all 5 users
+  of a 5-person panel is `5 <= 10` and trips no count-based guard at all.
+  Setting `ACCESS_SYNC_MAX_DISABLES=0`
   disables **both** halves of the cap, not just the absolute one — the
   documented escape hatch for a genuine mass offboarding. While the cap is
   tripped, sync is paused in **both** directions, not just the disable side:

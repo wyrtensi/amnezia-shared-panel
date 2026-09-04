@@ -80,11 +80,17 @@ export interface WorkerRepository {
   /**
    * Record that an Access sync run refused to disable an unexpectedly large set
    * of accounts. Written to the audit log so an operator sees it in the panel
-   * rather than only in the worker's stdout.
+   * rather than only in the worker's stdout. `overAbsoluteCap`/`overMajority`
+   * say which half of the blast-radius cap fired (either or both) — without
+   * them a proportional abort reads as self-contradictory (candidateCount
+   * under limit) to whoever opens the row.
    */
   recordAccessSyncAborted: (details: {
     candidates: string[];
     limit: number;
+    activeCount: number;
+    overAbsoluteCap: boolean;
+    overMajority: boolean;
   }) => Promise<void>;
   loadKeyContext: (keyId: string) => Promise<WorkerKeyContext | null>;
   loadNodeReconcileContext: (

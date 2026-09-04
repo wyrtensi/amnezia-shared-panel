@@ -693,6 +693,9 @@ describe("createAccessSync", () => {
     expect(recordAccessSyncAborted).toHaveBeenCalledWith({
       candidates: active,
       limit: 2,
+      activeCount: 3,
+      overAbsoluteCap: true,
+      overMajority: true,
     });
   });
 
@@ -744,6 +747,9 @@ describe("createAccessSync", () => {
     expect(recordAccessSyncAborted).toHaveBeenCalledWith({
       candidates: active,
       limit: 10,
+      activeCount: 5,
+      overAbsoluteCap: false,
+      overMajority: true,
     });
   });
 
@@ -767,6 +773,9 @@ describe("createAccessSync", () => {
     expect(recordAccessSyncAborted).toHaveBeenCalledWith({
       candidates: removed,
       limit: 10,
+      activeCount: 100,
+      overAbsoluteCap: true,
+      overMajority: false,
     });
   });
 
@@ -824,6 +833,9 @@ describe("createAccessSync", () => {
       expect(recordAccessSyncAborted).toHaveBeenCalledWith({
         candidates: active,
         limit: 2,
+        activeCount: 3,
+        overAbsoluteCap: true,
+        overMajority: true,
       });
     });
 
@@ -855,10 +867,16 @@ describe("createAccessSync", () => {
       expect(recordAccessSyncAborted).toHaveBeenNthCalledWith(1, {
         candidates: active,
         limit: 2,
+        activeCount: 4,
+        overAbsoluteCap: true,
+        overMajority: true,
       });
       expect(recordAccessSyncAborted).toHaveBeenNthCalledWith(2, {
         candidates: ["b@x.io", "c@x.io", "d@x.io"],
         limit: 2,
+        activeCount: 4,
+        overAbsoluteCap: true,
+        overMajority: true,
       });
     });
 
@@ -891,10 +909,72 @@ describe("createAccessSync", () => {
       expect(recordAccessSyncAborted).toHaveBeenNthCalledWith(1, {
         candidates: active,
         limit: 2,
+        activeCount: 3,
+        overAbsoluteCap: true,
+        overMajority: true,
       });
       expect(recordAccessSyncAborted).toHaveBeenNthCalledWith(2, {
         candidates: active,
         limit: 2,
+        activeCount: 3,
+        overAbsoluteCap: true,
+        overMajority: true,
+      });
+    });
+
+    it("distinguishes a proportional abort from an absolute one in what it records", async () => {
+      // Same candidate count (11) on two panels of very different sizes: on the
+      // 100-user panel only the absolute cap fires, on the 15-user panel only
+      // the majority guard does. The recorded metadata must say which.
+      const activeLarge = Array.from({ length: 100 }, (_, i) => `user${i}@x.io`);
+      const removedLarge = activeLarge.slice(0, 11);
+      const remainingLarge = activeLarge.slice(11);
+      const { repository: repoLarge } = makeRepo({
+        active: activeLarge,
+        baseline: activeLarge,
+      });
+      const { createClient: clientLarge } = clientWith([
+        ...remainingLarge.map((email) => ({ email: { email } })),
+        { email: { email: "outside@gmail.com" } },
+      ]);
+      const recordAbsolute = vi.fn(() => Promise.resolve());
+      await createAccessSync({
+        repository: repoLarge,
+        createClient: clientLarge,
+        recordAccessSyncAborted: recordAbsolute,
+      })();
+      expect(recordAbsolute).toHaveBeenCalledWith({
+        candidates: removedLarge,
+        limit: 10,
+        activeCount: 100,
+        overAbsoluteCap: true,
+        overMajority: false,
+      });
+
+      const activeSmall = Array.from({ length: 15 }, (_, i) => `person${i}@x.io`);
+      const removedSmall = activeSmall.slice(0, 11);
+      const remainingSmall = activeSmall.slice(11);
+      const { repository: repoSmall } = makeRepo({
+        active: activeSmall,
+        baseline: activeSmall,
+      });
+      const { createClient: clientSmall } = clientWith([
+        ...remainingSmall.map((email) => ({ email: { email } })),
+        { email: { email: "outside@gmail.com" } },
+      ]);
+      const recordProportional = vi.fn(() => Promise.resolve());
+      await createAccessSync({
+        repository: repoSmall,
+        createClient: clientSmall,
+        maxDisablesPerRun: 20,
+        recordAccessSyncAborted: recordProportional,
+      })();
+      expect(recordProportional).toHaveBeenCalledWith({
+        candidates: removedSmall,
+        limit: 20,
+        activeCount: 15,
+        overAbsoluteCap: false,
+        overMajority: true,
       });
     });
   });

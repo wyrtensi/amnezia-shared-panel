@@ -214,12 +214,17 @@ const domainOf = (email: string): string => {
  *   - removed in CLOUDFLARE (in the baseline, now gone) → disable that panel
  *     user and revoke their keys.
  *
- * The panel is the source of truth for ADDING users: an unknown email added
- * directly in the Cloudflare policy is not turned into a panel account (there is
- * nothing to create) — the write-back reasserts the panel's set, so add users in
- * the panel. Removing a user in Cloudflare IS honoured (disable). Non-email
- * rules (email_domain, groups, ...) are always preserved. Safe by construction:
- * unconfigured or "no active users" are no-ops that never wipe the allowlist.
+ * An unknown email added directly in the Cloudflare policy IS turned into a
+ * panel account: Cloudflare already gated that identity at the edge, so
+ * `resolveIdentity` (`apps/control-api/src/postgresRepository.ts`) skips the
+ * panel's own allowlist gate for the `cloudflare-access` login provider and
+ * auto-provisions the account on that person's first request. Ownership
+ * (below) then keeps the hand-added rule in the policy indefinitely — this is
+ * the standing trust model, not a narrow race: membership in the Access
+ * policy is equivalent to being granted a panel account. Removing a user in
+ * Cloudflare IS honoured (disable). Non-email rules (email_domain, groups,
+ * ...) are always preserved. Safe by construction: unconfigured or "no active
+ * users" are no-ops that never wipe the allowlist.
  */
 export function createAccessSync(options: {
   repository: {
@@ -245,6 +250,13 @@ export function createAccessSync(options: {
   recordAccessSyncAborted?: (details: {
     candidates: string[];
     limit: number;
+    // The active-user count at abort time, and which half of the cap actually
+    // fired — a proportional abort (overMajority) can hold with candidates
+    // under `limit`, which reads as self-contradictory in the audit log
+    // unless the row also says so.
+    activeCount: number;
+    overAbsoluteCap: boolean;
+    overMajority: boolean;
   }) => Promise<void>;
   log?: (message: string) => void;
 }): () => Promise<void> {
@@ -380,11 +392,21 @@ export function createAccessSync(options: {
       // otherwise re-assert the emails an operator has just removed, silently
       // undoing a deliberate change. Leaving the baseline untouched means the
       // next run sees the same anomaly rather than adopting it.
+      //
+      // Name whichever condition(s) actually fired, and give advice that
+      // fits: `overMajority` ignores ACCESS_SYNC_MAX_DISABLES entirely except
+      // at the 0 escape hatch, so "raise the limit" is wrong advice whenever
+      // it fired — telling an operator to raise a knob that cannot help.
+      const reasons = [
+        overAbsoluteCap ? `over the limit of ${maxDisablesPerRun}` : null,
+        overMajority ? `over half of ${activeSet.size} active user(s)` : null,
+      ].filter((reason): reason is string => reason !== null);
+      const advice = overMajority
+        ? "Set ACCESS_SYNC_MAX_DISABLES=0 to proceed."
+        : "Raise ACCESS_SYNC_MAX_DISABLES to proceed.";
       log(
-        `access-sync: ${cfRemoved.length} account(s) would be disabled, over the ` +
-          `limit of ${maxDisablesPerRun} or over half of ${activeSet.size} active ` +
-          `user(s) — aborting the run and recording it. Raise ` +
-          `ACCESS_SYNC_MAX_DISABLES to proceed.`,
+        `access-sync: ${cfRemoved.length} account(s) would be disabled, ` +
+          `${reasons.join(" and ")} — aborting the run and recording it. ${advice}`,
       );
       // The log line above fires on every run (the high-frequency channel);
       // the audit row is the notification, so write it only when the
@@ -396,6 +418,9 @@ export function createAccessSync(options: {
         await recordAccessSyncAborted?.({
           candidates: cfRemoved,
           limit: maxDisablesPerRun,
+          activeCount: activeSet.size,
+          overAbsoluteCap,
+          overMajority,
         });
       }
       lastAbortedCandidates = candidates;
