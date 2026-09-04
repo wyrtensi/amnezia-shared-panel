@@ -1,4 +1,5 @@
 import type {
+  AccessSyncStatus,
   CreateNodeRequest,
   CreateServiceCheckRequest,
   CreateKeyRequest,
@@ -85,6 +86,8 @@ export interface ControlRepository {
   getRuleVersion: (id: string) => Promise<unknown>;
   /** State of the manual "check the route feeds now" job. */
   getRulesRefreshStatus: () => Promise<RulesRefreshStatus>;
+  /** State of the single `access.sync` outbox row, "idle" when never armed. */
+  getAccessSyncStatus: () => Promise<AccessSyncStatus>;
   diffRuleVersions: (baseId: string, nextId: string) => Promise<unknown>;
   enqueueOwnRevoke: (actor: Actor, keyId: string) => Promise<void>;
   enqueueOwnRotate: (actor: Actor, keyId: string) => Promise<void>;

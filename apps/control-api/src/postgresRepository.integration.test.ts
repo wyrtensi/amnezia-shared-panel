@@ -3015,3 +3015,98 @@ describe("PostgresControlRepository internal key name", () => {
     });
   });
 });
+
+describe("PostgresControlRepository Access sync arming", () => {
+  const database = databaseUrl ? createDatabase(databaseUrl) : null;
+  const keyring = { 1: randomBytes(32) };
+  let admin: Actor;
+
+  beforeAll(async () => {
+    if (!database) return;
+    await database.db.delete(portalPolicy);
+    await database.db.insert(portalPolicy).values({});
+  });
+
+  beforeEach(async () => {
+    if (!database) return;
+    await database.db
+      .delete(jobOutbox)
+      .where(eq(jobOutbox.deduplicationKey, "access.sync"));
+    const suffix = randomBytes(6).toString("hex");
+    const [user] = await database.db
+      .insert(users)
+      .values({ email: `access-sync-admin-${suffix}@example.com`, role: "admin" })
+      .returning();
+    if (!user) throw new Error("Failed to seed admin");
+    admin = {
+      id: user.id,
+      email: user.email,
+      displayName: null,
+      role: "admin",
+      status: "active",
+    };
+  });
+
+  afterAll(async () => {
+    if (database) await database.client.end();
+  });
+
+  const subject = (): PostgresControlRepository => {
+    if (!database) throw new Error("No database");
+    return new PostgresControlRepository({ db: database.db, keyring });
+  };
+
+  const readAccessSyncRow = async () => {
+    if (!database) throw new Error("No database");
+    const [row] = await database.db
+      .select()
+      .from(jobOutbox)
+      .where(eq(jobOutbox.deduplicationKey, "access.sync"));
+    return row;
+  };
+
+  runDatabaseTest(
+    "arms the Access sync when an admin creates, offboards or reinstates a user",
+    async () => {
+      if (!database) return;
+      const repository = subject();
+      const created = (await repository.createUser(admin, {
+        email: `access-sync-user-${randomBytes(6).toString("hex")}@example.com`,
+        role: "user",
+      })) as { id: string };
+
+      const afterCreate = await readAccessSyncRow();
+      expect(afterCreate).not.toBeUndefined();
+
+      const beforeOffboard = afterCreate!.payload.armId;
+      await repository.adminAction(admin, "users", created.id, "offboard", {});
+      const afterOffboard = await readAccessSyncRow();
+      expect(afterOffboard!.payload.armId).not.toBe(beforeOffboard);
+
+      const beforeReinstate = afterOffboard!.payload.armId;
+      await repository.adminAction(admin, "users", created.id, "reinstate", {});
+      const afterReinstate = await readAccessSyncRow();
+      expect(afterReinstate!.payload.armId).not.toBe(beforeReinstate);
+    },
+  );
+
+  runDatabaseTest(
+    "does not arm the Access sync for changes the policy cannot see",
+    async () => {
+      if (!database) return;
+      const repository = subject();
+      const created = (await repository.createUser(admin, {
+        email: `access-sync-user-${randomBytes(6).toString("hex")}@example.com`,
+        role: "user",
+      })) as { id: string };
+      // The row exists because the create above armed it -- control-api has no
+      // public arm method, the helper is private and joins a transaction.
+      const before = (await readAccessSyncRow())!.payload.armId;
+      await repository.adminAction(admin, "users", created.id, "set-role", {
+        role: "admin",
+      });
+      const after = (await readAccessSyncRow())!.payload.armId;
+      expect(after).toBe(before);
+    },
+  );
+});

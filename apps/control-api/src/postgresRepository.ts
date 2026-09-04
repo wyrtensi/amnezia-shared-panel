@@ -13,6 +13,7 @@ import {
   sum,
 } from "drizzle-orm";
 import type {
+  AccessSyncStatus,
   CreateNodeRequest,
   CreateServiceCheckRequest,
   CreateKeyRequest,
@@ -39,12 +40,14 @@ import {
 } from "@amnezia/contracts";
 import type { ServiceCheckUserState } from "@amnezia/contracts";
 import {
+  ACCESS_SYNC_DEDUPLICATION_KEY,
   createKeyRequestSchema,
   customRoutesSchema,
   DEFAULT_ALLOWED_PROTOCOLS,
   defaultPortalPolicy,
   emptyGlobalRoutes,
   globalRoutesSchema,
+  idleAccessSyncStatus,
   installGuideVideosSchema,
   isPublishableAgentImage,
   nodeAgentUpdateActionSchema,
@@ -61,6 +64,7 @@ import {
   updateGlobalRoutesRequestSchema,
 } from "@amnezia/contracts";
 import {
+  armAccessSyncRow,
   auditEvents,
   decryptSecret,
   deterministicPeerLabel,
@@ -81,6 +85,7 @@ import {
   trafficRollups,
   users,
   vpnKeys,
+  type AccessSyncArmReason,
   type Database,
   type EncryptionKeyring,
 } from "@amnezia/db";
@@ -171,6 +176,25 @@ const adminPolicyUpdateSchema = portalPolicySchema.partial().extend({
 });
 
 type PortalPolicyRow = typeof portalPolicy.$inferSelect;
+
+// The transaction handle drizzle passes to `db.transaction(async (tx) => ...)`.
+// Mirrors the private type of the same name in @amnezia/db's armAccessSyncRow,
+// which is structurally, not nominally, matched against it.
+type DbTransaction = Parameters<Parameters<Database["transaction"]>[0]>[0];
+
+/**
+ * The portal-policy fields that configure the Cloudflare Access two-way sync.
+ * A request that names any of them changes what the sync connects to or
+ * authenticates with, which is why it arms a run the same way a user change
+ * does (reason "config") -- everything else about the policy is invisible to
+ * the sync.
+ */
+const CF_ACCESS_CONFIG_FIELDS = [
+  "cfApiToken",
+  "cfAccessAccountId",
+  "cfAccessAppId",
+  "cfAccessPolicyId",
+] as const;
 
 // Canonicalize a validated global-routes object the same way custom routes are
 // canonicalized: de-duplicate every list so stored data and merges stay minimal.
@@ -802,6 +826,8 @@ export class PostgresControlRepository implements ControlRepository {
         })
         .returning();
       if (!created) throw new Error("User insert returned no row");
+      // A new user is a new candidate for the Cloudflare Access allowlist.
+      await this.armAccessSync(tx, "user-change");
       await tx.insert(auditEvents).values({
         actorUserId: actor.id,
         actorType: "user",
@@ -2405,6 +2431,23 @@ export class PostgresControlRepository implements ControlRepository {
     return { cleared: deleted.length };
   };
 
+  /**
+   * Ask the worker to reconcile with Cloudflare Access now. Joins the
+   * caller's transaction: if the mutation rolls back, so does the arm.
+   * Unconditional -- control-api cannot know whether the worker has the sync
+   * enabled or whether Cloudflare is configured, so the handler decides (it
+   * fails the job with a readable reason rather than pretending to succeed).
+   * The upsert lives in @amnezia/db (armAccessSyncRow) -- the worker arms the
+   * same row from its own timer, so two copies of this statement would only
+   * ever drift.
+   */
+  private armAccessSync = async (
+    tx: DbTransaction,
+    reason: AccessSyncArmReason,
+  ): Promise<void> => {
+    await armAccessSyncRow(tx, reason);
+  };
+
   adminAction = async (
     actor: Actor,
     resource: string,
@@ -2582,6 +2625,8 @@ export class PostgresControlRepository implements ControlRepository {
             })
             .onConflictDoNothing();
         }
+        // An offboarded user must leave the Access allowlist along with them.
+        await this.armAccessSync(tx, "user-change");
         await tx.insert(auditEvents).values({
           actorUserId: actor.id,
           actorType: "user",
@@ -2765,6 +2810,8 @@ export class PostgresControlRepository implements ControlRepository {
           .where(eq(users.id, targetId))
           .returning({ id: users.id, status: users.status });
         if (!updated) throw new ApiError(404, "User not found", "USER_NOT_FOUND");
+        // A reinstated user is a candidate for the Access allowlist again.
+        await this.armAccessSync(tx, "user-change");
         await tx.insert(auditEvents).values({
           actorUserId: actor.id,
           actorType: "user",
@@ -2965,6 +3012,11 @@ export class PostgresControlRepository implements ControlRepository {
           : dedupeNodeIds(recommendedNodeIds);
       const order =
         nodeOrder === undefined ? undefined : dedupeNodeIds(nodeOrder);
+      // The sync connects to Cloudflare with these fields; nothing else about
+      // the policy is visible to it, so only naming one of them re-arms it.
+      const touchesAccessConfig = CF_ACCESS_CONFIG_FIELDS.some((field) =>
+        named.has(field),
+      );
       return this.options.db.transaction(async (tx) => {
         // One existence check for both lists: fewer round trips, and the
         // rejection is all-or-nothing, so a bad id never half-applies. This
@@ -3029,6 +3081,7 @@ export class PostgresControlRepository implements ControlRepository {
             set: { ...changes, updatedAt: new Date() },
           })
           .returning();
+        if (touchesAccessConfig) await this.armAccessSync(tx, "config");
         await tx.insert(auditEvents).values({
           actorUserId: actor.id,
           actorType: "user",
@@ -3333,6 +3386,33 @@ export class PostgresControlRepository implements ControlRepository {
         });
         return saved;
       });
+    } else if (resource === "access-sync" && action === "run") {
+      // Control-api never talks to Cloudflare itself: this only enqueues the
+      // job the hourly timer and every armed user change already run.
+      return this.options.db.transaction(async (tx) => {
+        const [existing] = await tx
+          .select({ status: jobOutbox.status })
+          .from(jobOutbox)
+          .where(eq(jobOutbox.deduplicationKey, ACCESS_SYNC_DEDUPLICATION_KEY))
+          .for("update");
+        const alreadyRunning =
+          existing?.status === "pending" || existing?.status === "processing";
+        await this.armAccessSync(tx, "operator");
+        const [row] = await tx
+          .select()
+          .from(jobOutbox)
+          .where(eq(jobOutbox.deduplicationKey, ACCESS_SYNC_DEDUPLICATION_KEY))
+          .limit(1);
+        await tx.insert(auditEvents).values({
+          actorUserId: actor.id,
+          actorType: "user",
+          action: "admin.access-sync.run",
+          targetType: "access-sync",
+          targetId,
+          metadata: { alreadyRunning },
+        });
+        return toRulesRefreshStatus(row);
+      });
     } else {
       throw new ApiError(404, "Admin action not found", "NOT_FOUND");
     }
@@ -3345,6 +3425,18 @@ export class PostgresControlRepository implements ControlRepository {
       .where(eq(jobOutbox.deduplicationKey, RULES_REFRESH_DEDUPLICATION_KEY))
       .limit(1);
     return toRulesRefreshStatus(row);
+  };
+
+  // `access.sync` shares job_outbox's shape with `rules.refresh`, and
+  // AccessSyncStatus is the same type as RulesRefreshStatus (Task 2), so the
+  // same row-to-status mapper applies unchanged.
+  getAccessSyncStatus = async (): Promise<AccessSyncStatus> => {
+    const [row] = await this.options.db
+      .select()
+      .from(jobOutbox)
+      .where(eq(jobOutbox.deduplicationKey, ACCESS_SYNC_DEDUPLICATION_KEY))
+      .limit(1);
+    return row ? toRulesRefreshStatus(row) : idleAccessSyncStatus;
   };
 
   appendAudit = async (event: AuditInput): Promise<void> => {

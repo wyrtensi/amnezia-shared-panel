@@ -251,6 +251,7 @@ export const createDefaultControlApiService = ({
   listRouteProfiles: () => repository.listRouteProfiles(),
   getRuleVersion: (_actor, id) => repository.getRuleVersion(id),
   getRulesRefreshStatus: () => repository.getRulesRefreshStatus(),
+  getAccessSyncStatus: () => repository.getAccessSyncStatus(),
   diffRuleVersions: (_actor, baseId, nextId) =>
     repository.diffRuleVersions(baseId, nextId),
   listQuotaRequests: (actor) => repository.listQuotaRequests(actor),

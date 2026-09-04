@@ -1,4 +1,5 @@
 import type {
+  AccessSyncStatus,
   CreateNodeRequest,
   CreateServiceCheckRequest,
   CreateUserRequest,
@@ -111,6 +112,7 @@ export interface ControlApiService {
   listRouteProfiles: (actor: Actor) => Promise<unknown[]>;
   getRuleVersion: (actor: Actor, id: string) => Promise<unknown>;
   getRulesRefreshStatus: (actor: Actor) => Promise<RulesRefreshStatus>;
+  getAccessSyncStatus: (actor: Actor) => Promise<AccessSyncStatus>;
   diffRuleVersions: (
     actor: Actor,
     baseId: string,

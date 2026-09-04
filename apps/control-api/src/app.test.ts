@@ -47,6 +47,14 @@ const createService = (): ControlApiService => ({
       lastError: null,
     }),
   ),
+  getAccessSyncStatus: vi.fn(() =>
+    Promise.resolve({
+      status: "idle" as const,
+      queuedAt: null,
+      completedAt: null,
+      lastError: null,
+    }),
+  ),
   diffRuleVersions: vi.fn(() => Promise.resolve({ diff: {} })),
   listQuotaRequests: vi.fn(() => Promise.resolve([])),
   createQuotaRequest: vi.fn(() =>

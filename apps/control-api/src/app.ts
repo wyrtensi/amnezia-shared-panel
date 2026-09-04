@@ -407,6 +407,12 @@ export const buildApp = async ({
   app.get("/api/admin/rules/refresh", async (request) =>
     service.getRulesRefreshStatus(adminFor(request)),
   );
+  // Declared before the parametric admin routes below for the same reason:
+  // this is a static path and must not be swallowed by a `:id`/`:resource`
+  // segment.
+  app.get("/api/admin/access-sync", async (request) =>
+    service.getAccessSyncStatus(adminFor(request)),
+  );
   app.get("/api/admin/rules/:id", async (request) => {
     const { id } = idParamsSchema.parse(request.params);
     return service.getRuleVersion(adminFor(request), id);
