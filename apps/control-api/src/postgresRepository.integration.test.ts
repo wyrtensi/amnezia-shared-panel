@@ -14,6 +14,7 @@ import {
   nodeServiceCheckResults,
   nodeServiceChecks,
   nodes,
+  peerCurrent,
   portalPolicy,
   quotaRequests,
   users,
@@ -2414,6 +2415,117 @@ describe("PostgresControlRepository node status surfaces", () => {
       lastHandshakeAt: null,
     });
     await database.db.delete(nodeMetricsCurrent);
+  });
+
+  runDatabaseTest(
+    "reads the handshake age on a node that actually has a peer",
+    async () => {
+      if (!database) return;
+      // The case the other endpoint test could not reach: its node has no
+      // peers, so `max(latest_handshake_at)` came back NULL and the branch that
+      // reads the value was never taken. It threw in production the first time
+      // an admin opened the page - a raw `sql` fragment gets no type parser, so
+      // postgres-js returns a STRING and .getTime() is not a function on it.
+      const [user] = await database.db
+        .insert(users)
+        .values({ email: "handshake-owner@example.com" })
+        .onConflictDoUpdate({ target: users.email, set: { status: "active" } })
+        .returning();
+      if (!user) throw new Error("Failed to seed the key owner");
+      const credentials = encryptSecret("cfg", keyring, 1);
+      const [key] = await database.db
+        .insert(vpnKeys)
+        .values({
+          ownerId: user.id,
+          nodeId,
+          nodeLabel: "handshake_probe",
+          protocol: "awg3",
+          state: "active",
+          routeProfile: "full_tunnel",
+          configCiphertext: credentials.ciphertext,
+          configNonce: credentials.nonce,
+          configAuthTag: credentials.authTag,
+          configKeyVersion: credentials.keyVersion,
+        })
+        .returning();
+      if (!key) throw new Error("Failed to seed the key");
+      const handshake = new Date(Date.now() - 30_000);
+      await database.db.insert(peerCurrent).values({
+        keyId: key.id,
+        online: true,
+        latestHandshakeAt: handshake,
+        receivedBytes: 0n,
+        sentBytes: 0n,
+        observedAt: new Date(),
+      });
+
+      const node = seededNode(
+        (await subject().adminList({ ...actor, role: "admin" }, "nodes")) as Array<{
+          id: string;
+          endpoint: { status: string; lastHandshakeAt: Date | string | null };
+        }>,
+      );
+
+      // 30 seconds is inside the 180-second window the node-agent's own
+      // contract calls online.
+      expect(node.endpoint.status).toBe("reachable");
+      expect(node.endpoint.lastHandshakeAt).not.toBeNull();
+      expect(new Date(node.endpoint.lastHandshakeAt!).getTime()).toBeCloseTo(
+        handshake.getTime(),
+        -3,
+      );
+
+      await database.db.delete(peerCurrent);
+      await database.db.delete(vpnKeys);
+    },
+  );
+
+  runDatabaseTest("calls a handshake older than the window stale", async () => {
+    if (!database) return;
+    const [user] = await database.db
+      .insert(users)
+      .values({ email: "handshake-owner@example.com" })
+      .onConflictDoUpdate({ target: users.email, set: { status: "active" } })
+      .returning();
+    if (!user) throw new Error("Failed to seed the key owner");
+    const credentials = encryptSecret("cfg", keyring, 1);
+    const [key] = await database.db
+      .insert(vpnKeys)
+      .values({
+        ownerId: user.id,
+        nodeId,
+        nodeLabel: "handshake_stale",
+        protocol: "awg3",
+        state: "active",
+        routeProfile: "full_tunnel",
+        configCiphertext: credentials.ciphertext,
+        configNonce: credentials.nonce,
+        configAuthTag: credentials.authTag,
+        configKeyVersion: credentials.keyVersion,
+      })
+      .returning();
+    if (!key) throw new Error("Failed to seed the key");
+    await database.db.insert(peerCurrent).values({
+      keyId: key.id,
+      online: false,
+      latestHandshakeAt: new Date(Date.now() - 10 * 60_000),
+      receivedBytes: 0n,
+      sentBytes: 0n,
+      observedAt: new Date(),
+    });
+
+    const node = seededNode(
+      (await subject().adminList({ ...actor, role: "admin" }, "nodes")) as Array<{
+        id: string;
+        endpoint: { status: string };
+      }>,
+    );
+    // Stale, not unknown: we HAVE seen a handshake, it is simply old. Reporting
+    // "unknown" there would throw away the one reachability fact we hold.
+    expect(node.endpoint.status).toBe("stale");
+
+    await database.db.delete(peerCurrent);
+    await database.db.delete(vpnKeys);
   });
 
   runDatabaseTest("reports no metrics for a node that has never been polled", async () => {

@@ -1979,7 +1979,11 @@ export class PostgresControlRepository implements ControlRepository {
           this.options.db
             .select({
               nodeId: vpnKeys.nodeId,
-              latestHandshakeAt: sql<Date | null>`max(${peerCurrent.latestHandshakeAt})`,
+              // Typed as unknown on purpose: a raw fragment gets no type parser, and
+              // claiming Date here is what produced a 500 on every admin
+              // node listing with a peer. `toDate` below is the only place
+              // that decides what this value is.
+              latestHandshakeAt: sql<unknown>`max(${peerCurrent.latestHandshakeAt})`,
             })
             .from(peerCurrent)
             .innerJoin(vpnKeys, eq(vpnKeys.id, peerCurrent.keyId))
@@ -1988,8 +1992,20 @@ export class PostgresControlRepository implements ControlRepository {
         const metricsByNode = new Map(
           metricsRows.map((row) => [row.nodeId, row]),
         );
+        // Coerced, not trusted. `max(...)` goes through a raw `sql` fragment, so
+        // drizzle applies no type parser and postgres-js hands back a STRING -
+        // declaring the column as Date made it look like one and .getTime()
+        // threw on every admin node listing that had a peer. The integration
+        // test missed it because its node had no peers, so the only branch that
+        // could throw was the one never taken.
+        const toDate = (value: unknown): Date | null => {
+          if (value instanceof Date) return value;
+          if (typeof value !== "string" && typeof value !== "number") return null;
+          const parsed = new Date(value);
+          return Number.isNaN(parsed.getTime()) ? null : parsed;
+        };
         const handshakeByNode = new Map(
-          handshakeRows.map((row) => [row.nodeId, row.latestHandshakeAt]),
+          handshakeRows.map((row) => [row.nodeId, toDate(row.latestHandshakeAt)]),
         );
         const availableAgent = release
           ? {
@@ -2008,8 +2024,8 @@ export class PostgresControlRepository implements ControlRepository {
             // Stated as "last handshake N minutes ago", never as a probe result.
             // ONLINE_THRESHOLD_SECONDS is 180 in the node-agent's own contract.
             status: (() => {
-              const last = handshakeByNode.get(row.id);
-              if (!last) return "unknown";
+              const last = handshakeByNode.get(row.id) ?? null;
+              if (last === null) return "unknown";
               return now - last.getTime() <= 180_000 ? "reachable" : "stale";
             })(),
             lastHandshakeAt: handshakeByNode.get(row.id) ?? null,
