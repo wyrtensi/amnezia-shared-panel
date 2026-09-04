@@ -1076,6 +1076,12 @@ export class PostgresWorkerRepository
       .where(lt(peerSamples.sampledAt, cutoff));
   };
 
+  deleteNodeMetricsSamplesBefore = async (cutoff: Date): Promise<void> => {
+    await this.options.db
+      .delete(nodeMetricsSamples)
+      .where(lt(nodeMetricsSamples.sampledAt, cutoff));
+  };
+
   deleteRollupsBefore = async (
     period: RollupPeriod,
     cutoff: Date,

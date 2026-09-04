@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   createTelemetryPoller,
   shouldStoreSample,
+  type NodeSnapshot,
   type PeerObservation,
   type TelemetryNode,
   type TelemetryRepository,
@@ -408,5 +409,54 @@ describe("node telemetry poll", () => {
     expect(repository.recordNodeSnapshot).toHaveBeenCalledWith(
       expect.objectContaining({ agentUpdate: null }),
     );
+  });
+  // A6's sibling: the poll fans out, and the bound on that fan-out is the only
+  // thing between a growing fleet and four concurrent HTTP requests per node
+  // inside a 160 MiB cgroup. Asserted by observation rather than by reading the
+  // option back, so removing `mapWithConcurrency` fails this test.
+  it("never has more nodes in flight than the concurrency bound", async () => {
+    const nodeCount = 7;
+    const concurrency = 3;
+    let inFlight = 0;
+    let peakInFlight = 0;
+    const polled: string[] = [];
+    const repository: TelemetryRepository = {
+      listTelemetryNodes: vi.fn(() =>
+        Promise.resolve(
+          Array.from({ length: nodeCount }, (_unused, index) => ({
+            ...telemetryNode,
+            id: `node-${index}`,
+          })),
+        ),
+      ),
+      recordNodeSnapshot: vi.fn((snapshot: NodeSnapshot) => {
+        polled.push(snapshot.nodeId);
+        inFlight -= 1;
+        return Promise.resolve();
+      }),
+      recordNodeFailure: vi.fn(() => Promise.resolve()),
+    };
+    const poll = createTelemetryPoller({
+      repository,
+      createNodeAgent: () => ({
+        ...stubAgent(),
+        getHealth: vi.fn(async () => {
+          inFlight += 1;
+          peakInFlight = Math.max(peakInFlight, inFlight);
+          // Yield the macrotask so every lane that is allowed to start does
+          // start before any of them finishes.
+          await new Promise((resolve) => setTimeout(resolve, 0));
+          return { ok: true as const };
+        }),
+      }),
+      now: () => observedAt,
+      concurrency,
+    });
+
+    await poll();
+
+    expect(peakInFlight).toBe(concurrency);
+    expect(polled).toHaveLength(nodeCount);
+    expect(new Set(polled).size).toBe(nodeCount);
   });
 });

@@ -5,6 +5,8 @@ import {
   auditEvents,
   encryptSecret,
   jobOutbox,
+  nodeMetricsCurrent,
+  nodeMetricsSamples,
   nodes,
   peerCurrent,
   peerSamples,
@@ -41,6 +43,8 @@ describe("PostgresWorkerRepository outbox leases", () => {
     await database.db.delete(trafficRollups);
     await database.db.delete(peerSamples);
     await database.db.delete(peerCurrent);
+    await database.db.delete(nodeMetricsSamples);
+    await database.db.delete(nodeMetricsCurrent);
     await database.db.delete(jobOutbox);
     await database.db.delete(vpnKeys);
     await database.db.delete(nodes);
@@ -94,6 +98,17 @@ describe("PostgresWorkerRepository outbox leases", () => {
     await expect(repository.claimJob()).resolves.toBeNull();
   });
 
+  // Same database, a sample period stated explicitly rather than inherited:
+  // the cadence is the thing under test, so it must not depend on a default.
+  const sampledRepository = database
+    ? new PostgresWorkerRepository({
+        db: database.db,
+        keyring,
+        activeKeyVersion: 1,
+        metricsSampleSec: 300,
+      })
+    : null;
+
   const seedTelemetryKey = async () => {
     if (!database) throw new Error("Database test is disabled");
     const credentials = encryptSecret("api-key", keyring, 1);
@@ -134,6 +149,96 @@ describe("PostgresWorkerRepository outbox leases", () => {
     if (!key) throw new Error("Failed to seed telemetry key");
     return { key, node };
   };
+
+  const metricsSnapshot = (nodeId: string, observedAt: Date, load1: number) => ({
+    nodeId,
+    observedAt,
+    agentLatencyMs: 12,
+    server: {
+      id: "agent-node",
+      region: "NL",
+      weight: 100,
+      maxPeers: 100,
+      totalPeers: 0,
+      protocols: ["amneziawg3"],
+      listenPorts: [51890],
+    },
+    load: {
+      timestamp: observedAt.toISOString(),
+      uptimeSec: 60,
+      loadavg: [load1, 0, 0] as [number, number, number],
+      cpu: { cores: 2 },
+      memory: { totalBytes: 1024, freeBytes: 512, usedBytes: 512, availableBytes: 361_267_200 },
+      disk: null,
+      network: null,
+      docker: null,
+    },
+    peers: [],
+    publicHost: null,
+    publicIp: null,
+  });
+
+  runDatabaseTest(
+    "keeps one current row per node and a sample only once per period",
+    async () => {
+      if (!database || !sampledRepository) return;
+      const { node } = await seedTelemetryKey();
+      const first = new Date("2026-08-20T08:00:00.000Z");
+
+      await sampledRepository.recordNodeSnapshot(metricsSnapshot(node.id, first, 0.1));
+      // 60 s later: inside the 300 s window, so the current row moves and the
+      // history does not. This is the whole point of two tables.
+      await sampledRepository.recordNodeSnapshot(
+        metricsSnapshot(node.id, new Date("2026-08-20T08:01:00.000Z"), 0.2),
+      );
+
+      const afterTwoPolls = await database.db
+        .select()
+        .from(nodeMetricsCurrent)
+        .where(eq(nodeMetricsCurrent.nodeId, node.id));
+      expect(afterTwoPolls).toHaveLength(1);
+      expect(afterTwoPolls[0]).toMatchObject({
+        load1: 0.2,
+        memAvailableBytes: 361_267_200n,
+        observedAt: new Date("2026-08-20T08:01:00.000Z"),
+        listenPorts: [51890],
+      });
+      await expect(
+        database.db.select().from(nodeMetricsSamples),
+      ).resolves.toHaveLength(1);
+
+      // Exactly one period later the next sample is due.
+      await sampledRepository.recordNodeSnapshot(
+        metricsSnapshot(node.id, new Date("2026-08-20T08:05:00.000Z"), 0.3),
+      );
+      const samples = await database.db
+        .select({ sampledAt: nodeMetricsSamples.sampledAt, load1: nodeMetricsSamples.load1 })
+        .from(nodeMetricsSamples)
+        .orderBy(nodeMetricsSamples.sampledAt);
+      expect(samples).toEqual([
+        { sampledAt: first, load1: 0.1 },
+        { sampledAt: new Date("2026-08-20T08:05:00.000Z"), load1: 0.3 },
+      ]);
+    },
+  );
+
+  runDatabaseTest("prunes host-metric history past the retention cutoff", async () => {
+    if (!database || !repository) return;
+    const { node } = await seedTelemetryKey();
+    await database.db.insert(nodeMetricsSamples).values([
+      { nodeId: node.id, sampledAt: new Date("2026-08-10T12:00:00.000Z"), load1: 0.1 },
+      { nodeId: node.id, sampledAt: new Date("2026-08-20T12:00:00.000Z"), load1: 0.2 },
+    ]);
+
+    await repository.deleteNodeMetricsSamplesBefore(
+      new Date("2026-08-13T12:00:00.000Z"),
+    );
+
+    const remaining = await database.db
+      .select({ sampledAt: nodeMetricsSamples.sampledAt })
+      .from(nodeMetricsSamples);
+    expect(remaining).toEqual([{ sampledAt: new Date("2026-08-20T12:00:00.000Z") }]);
+  });
 
   runDatabaseTest("keeps the pre-cutoff sample as the rollup baseline", async () => {
     if (!database || !repository) return;
