@@ -62,8 +62,17 @@ const serverSchema = z.object({
   // builds, so it must stay optional here or every poll against an old agent
   // would fail validation.
   publicHost: z.string().optional(),
+  // The UDP ports the node reports listening on. Optional for the same reason:
+  // an agent that predates the field must not fail the poll.
+  listenPorts: z.array(z.number().int()).optional(),
 });
 const nullableMetricSchema = z.number().nonnegative().nullable();
+const awgInterfaceSchema = z
+  .object({
+    up: z.boolean(),
+    peers: z.number().int().nonnegative(),
+  })
+  .nullish();
 const serverLoadSchema = z.object({
   timestamp: z.iso.datetime(),
   uptimeSec: z.number().nonnegative(),
@@ -73,7 +82,29 @@ const serverLoadSchema = z.object({
     totalBytes: z.number().nonnegative(),
     freeBytes: z.number().nonnegative(),
     usedBytes: z.number().nonnegative(),
+    // MemAvailable. `.nullish()` and not `.nullable()`: an agent that predates
+    // the field omits the key entirely, and that must parse rather than fail
+    // the whole poll for a node that is otherwise perfectly healthy.
+    availableBytes: z.number().nonnegative().nullish(),
   }),
+  swap: z
+    .object({
+      totalBytes: z.number().nonnegative(),
+      usedBytes: z.number().nonnegative().nullish(),
+    })
+    .nullish(),
+  agent: z
+    .object({
+      pidsCurrent: z.number().int().nonnegative().nullish(),
+      pidsMax: z.number().int().nonnegative().nullish(),
+    })
+    .nullish(),
+  awg: z
+    .object({
+      amneziawg2: awgInterfaceSchema,
+      amneziawg3: awgInterfaceSchema,
+    })
+    .nullish(),
   disk: z
     .object({
       totalBytes: z.number().nonnegative(),

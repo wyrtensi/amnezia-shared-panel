@@ -5,9 +5,17 @@ import type {
   NodeServer,
   NodeServerLoad,
 } from "./nodeAgent.js";
+import { mapWithConcurrency } from "./concurrency.js";
 import { createPublicIpResolver, normalizePublicHost } from "./publicAddress.js";
 
-const SAMPLE_INTERVAL_MS = 5 * 60 * 1_000;
+// PEER samples, not host-metric samples. The two periods are different things
+// and this file now touches both: peers are downsampled on state change plus
+// this floor, while host metrics use the configurable `sampleIntervalMs` option
+// below. Two similarly named intervals in one file is exactly how they drift.
+const PEER_SAMPLE_INTERVAL_MS = 5 * 60 * 1_000;
+
+/** How many nodes the poll talks to at once. */
+const DEFAULT_POLL_CONCURRENCY = 4;
 
 export type PeerObservation = {
   keyId: string;
@@ -42,6 +50,10 @@ export type TelemetryNode = {
 export type NodeSnapshot = {
   nodeId: string;
   observedAt: Date;
+  // How long the node's health check took. The one latency figure the panel can
+  // honestly report: it is the panel's own round trip to the agent, not a claim
+  // about what a user's connection looks like.
+  agentLatencyMs: number;
   server: NodeServer;
   load: NodeServerLoad;
   peers: PeerObservation[];
@@ -79,7 +91,7 @@ export const shouldStoreSample = (
   observation.latestHandshakeAt?.getTime() !==
     previousSample.latestHandshakeAt?.getTime() ||
   observation.observedAt.getTime() - previousSample.observedAt.getTime() >=
-    SAMPLE_INTERVAL_MS;
+    PEER_SAMPLE_INTERVAL_MS;
 
 const cleanReason = (reason: string): string =>
   reason.replace(/[\r\n\t]+/g, " ").slice(0, 2_000);
@@ -122,6 +134,8 @@ export type TelemetryPollerOptions = {
   // uses the system resolver with a bounded timeout.
   resolvePublicIp?: (host: string) => Promise<string | null>;
   now?: () => Date;
+  /** Nodes contacted at once; bounded so a large fleet cannot exhaust the worker. */
+  concurrency?: number;
 };
 
 export const createTelemetryPoller = ({
@@ -129,15 +143,20 @@ export const createTelemetryPoller = ({
   createNodeAgent,
   resolvePublicIp = createPublicIpResolver(),
   now = () => new Date(),
+  concurrency = DEFAULT_POLL_CONCURRENCY,
 }: TelemetryPollerOptions) => async (): Promise<void> => {
   const telemetryNodes = await repository.listTelemetryNodes();
-  await Promise.all(
-    telemetryNodes.map(async (node) => {
+  await mapWithConcurrency(telemetryNodes, concurrency, async (node) => {
       const observedAt = now();
       try {
         const agent = createNodeAgent(node);
-        const [health, server, load, clients] = await Promise.all([
-          agent.getHealth(),
+        const healthStartedAt = Date.now();
+        const health = await agent.getHealth();
+        // Measured around the health call alone: it is the smallest request the
+        // agent serves, so it is the closest thing to the transport's own cost
+        // rather than a mix of that and however long a client list takes.
+        const agentLatencyMs = Math.max(0, Date.now() - healthStartedAt);
+        const [server, load, clients] = await Promise.all([
           agent.getServer(),
           agent.getServerLoad(),
           agent.listClients(),
@@ -179,6 +198,7 @@ export const createTelemetryPoller = ({
         await repository.recordNodeSnapshot({
           nodeId: node.id,
           observedAt,
+          agentLatencyMs,
           server,
           load,
           peers,
@@ -194,6 +214,5 @@ export const createTelemetryPoller = ({
           cleanReason(reason),
         );
       }
-    }),
-  );
+  });
 };

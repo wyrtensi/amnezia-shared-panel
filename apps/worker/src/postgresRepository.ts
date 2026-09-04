@@ -19,6 +19,8 @@ import {
   auditEvents,
   jobOutbox,
   nodeAgentReleases,
+  nodeMetricsCurrent,
+  nodeMetricsSamples,
   nodes,
   peerCurrent,
   peerSamples,
@@ -52,6 +54,11 @@ import type {
 } from "./rules.js";
 import { protocolsFromAgent } from "./nodeAgent.js";
 import {
+  DEFAULT_METRICS_SAMPLE_SEC,
+  shouldStoreMetricsSample,
+  toNodeMetricsRow,
+} from "./nodeMetrics.js";
+import {
   shouldStoreSample,
   type NodeSnapshot,
   type PeerObservation,
@@ -64,6 +71,13 @@ export type PostgresWorkerRepositoryOptions = {
   keyring: EncryptionKeyring;
   activeKeyVersion: number;
   jobLeaseMs?: number;
+  /**
+   * How often a host-metrics history row is kept, in seconds. It decides how
+   * fast node_metrics_samples grows, so it is an operator setting rather than a
+   * constant - and it lives here rather than in nodeMetrics.ts so there is one
+   * place it can be wrong.
+   */
+  metricsSampleSec?: number;
 };
 
 // The transaction handle drizzle passes to `db.transaction(async (tx) => ...)`.
@@ -850,6 +864,50 @@ export class PostgresWorkerRepository
           updatedAt: snapshot.observedAt,
         })
         .where(eq(nodes.id, snapshot.nodeId));
+
+      // Host metrics: one current row per node, replaced every tick, plus a
+      // downsampled history row. They are written inside the same transaction
+      // as the node row above, so a card never shows a fresh lastHealthAt next
+      // to metrics from the previous tick.
+      const metricsRow = toNodeMetricsRow(snapshot);
+      const { nodeId: _metricsNodeId, ...metricsUpdate } = metricsRow;
+      await tx
+        .insert(nodeMetricsCurrent)
+        .values(metricsRow)
+        .onConflictDoUpdate({
+          target: nodeMetricsCurrent.nodeId,
+          set: metricsUpdate,
+        });
+
+      const [latestSample] = await tx
+        .select({ sampledAt: nodeMetricsSamples.sampledAt })
+        .from(nodeMetricsSamples)
+        .where(eq(nodeMetricsSamples.nodeId, snapshot.nodeId))
+        .orderBy(desc(nodeMetricsSamples.sampledAt))
+        .limit(1);
+      const sampleIntervalMs =
+        (this.options.metricsSampleSec ?? DEFAULT_METRICS_SAMPLE_SEC) * 1_000;
+      if (
+        shouldStoreMetricsSample(
+          snapshot.observedAt,
+          latestSample?.sampledAt ?? null,
+          sampleIntervalMs,
+        )
+      ) {
+        // Deliberately a subset of the current row: this table grows per node
+        // per period forever, and the rest is either constant or only
+        // interesting as its latest value.
+        await tx.insert(nodeMetricsSamples).values({
+          nodeId: snapshot.nodeId,
+          sampledAt: snapshot.observedAt,
+          load1: metricsRow.load1 ?? null,
+          memAvailableBytes: metricsRow.memAvailableBytes ?? null,
+          swapUsedBytes: metricsRow.swapUsedBytes ?? null,
+          diskUsedPercent: metricsRow.diskUsedPercent ?? null,
+          agentPidsCurrent: metricsRow.agentPidsCurrent ?? null,
+          awg3Peers: metricsRow.awg3Peers ?? null,
+        });
+      }
 
       const observedKeyIds = new Set(snapshot.peers.map((peer) => peer.keyId));
       const missingRows = await tx
