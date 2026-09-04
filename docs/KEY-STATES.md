@@ -80,3 +80,35 @@ Three things must change together, and each has a test that fails without it:
    state cannot reach a user's list by default.
 
 Then ask whether the new state belongs in `REVOCABLE_KEY_STATES`.
+
+## Deleting a key from the panel
+
+Revoking a key gets rid of the peer. The row stays: it is what the traffic
+history, the audit trail and the node's key count are attached to.
+
+`PURGEABLE_KEY_STATES` in `packages/contracts/src/index.ts` says when the row
+itself may go, and it holds exactly one state:
+
+`revoked`
+
+That is the only state where the node has **confirmed** the peer is gone. In
+every other state something may still be on a node -- `provisioning` may have
+got half way, `active` and `disabled` certainly have one, `revoking` is waiting
+for the node to answer, and `failed` may have created a peer before the job gave
+up -- and deleting the row is what strands it: reconcile finds an orphan by the
+label the row carries, so with the row gone nothing knows what that peer was.
+The API answers `409 KEY_NOT_PURGEABLE` and says to delete the key first.
+
+The delete takes the row, its `peer_current`, `traffic_samples` and
+`traffic_rollups` (all cascade), and any `job_outbox` rows still carrying the
+key id -- those do **not** cascade, because the id lives in a JSON payload
+rather than in a foreign key, and a leftover job makes the worker retry for a
+key that no longer exists.
+
+Afterwards the only record is the audit event `admin.keys.purge`, which is why
+it carries the owner, the node, both labels and the dates rather than just an
+id: it is the last thing that can answer "what was this?".
+
+Surfaces: `key-purge <id> --confirm` in the CLI, and **Delete from panel** on an
+admin's key row. There is no owner-facing equivalent, and there should not be:
+owners never see a revoked key at all.

@@ -1042,6 +1042,30 @@ async function cmdNodeAgentLog(args: string[]): Promise<void> {
   }
 }
 
+async function cmdKeyPurge(args: string[]): Promise<void> {
+  const id = args.find((arg) => !arg.startsWith("--"));
+  if (!id) throw new Error("Usage: key-purge <id> --confirm");
+  // Irreversible and silent: the row and its traffic history stop existing, and
+  // there is no state left to notice afterwards. Never the default.
+  if (!args.includes("--confirm")) {
+    console.log(`key ${id}`);
+    console.log(
+      "This deletes the key from the panel: the row, its traffic history and any",
+    );
+    console.log(
+      "pending jobs. The peer is already gone from the node - that is what being",
+    );
+    console.log("revoked means. Only the audit log will remember it.");
+    console.log("Re-run with --confirm to delete it.");
+    return;
+  }
+  await api(`/api/admin/keys/${id}/purge`, {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+  console.log(`key ${id}: deleted from the panel`);
+}
+
 async function cmdNodeCapacity(args: string[]): Promise<void> {
   const id = args.find((arg) => !arg.startsWith("--"));
   if (!id) throw new Error("Usage: node-capacity <id> [--set=<peers>] [--confirm]");
@@ -1579,6 +1603,8 @@ ${assertionUsageLines().join("\n")}
                   [--enabled-protocols=awg3,awg2] [--disabled]
 
 Write:
+  key-purge <id> --confirm  Delete a revoked key from the panel entirely.
+                            Refused in any other state.
   key-revoke <id>                         Revoke a key. Also retries a delete stuck in
                                           "revoking" because a node was unreachable
   key-disable <id> / key-enable <id>      Disable / enable a key
@@ -2020,6 +2046,8 @@ async function main(): Promise<void> {
       return cmdNodeAgentUpdate(args);
     case "node-agent-log":
       return cmdNodeAgentLog(args);
+    case "key-purge":
+      return cmdKeyPurge(args);
     case "key-revoke":
       return cmdAction("keys", "revoke", args);
     case "key-disable":

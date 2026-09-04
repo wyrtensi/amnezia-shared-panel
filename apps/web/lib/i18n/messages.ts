@@ -552,6 +552,10 @@ const ru = {
   "users.enableConfirm": "Включить «{label}»?",
   "users.exportConfig": "Экспорт конфигурации",
   "users.revoke": "Отозвать",
+  "users.purge":
+    "Удалить из панели",
+  "users.purgeConfirm":
+    "Удалить ключ «{{label}}» из панели совсем? На ноде его уже нет. Исчезнет сама запись и вся её статистика — останется только запись в журнале аудита. Отменить нельзя.",
   "users.revokeConfirm": "Отозвать «{label}» безвозвратно?",
   "users.internalName": "Служебное имя",
   "users.internalNamePrompt":
@@ -1517,6 +1521,10 @@ const en = {
   "users.enableConfirm": "Enable “{label}”?",
   "users.exportConfig": "Export configuration",
   "users.revoke": "Revoke",
+  "users.purge":
+    "Delete from panel",
+  "users.purgeConfirm":
+    "Delete the key “{{label}}” from the panel entirely? It is already gone from the node. The row and all of its traffic history disappear — only the audit event will remember it. This cannot be undone.",
   "users.revokeConfirm": "Revoke “{label}” permanently?",
   "users.internalName": "Internal name",
   "users.internalNamePrompt":

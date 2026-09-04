@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { and, count, desc, eq } from "drizzle-orm";
+import { and, count, desc, eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { defaultKeyNameDisplay } from "@amnezia/contracts";
 import type { KeyLimitMode } from "@amnezia/contracts";
@@ -2880,6 +2880,97 @@ describe("PostgresControlRepository internal key name", () => {
     });
 
     expect(await storedInternalName()).toBeNull();
+  });
+
+  runDatabaseTest(
+    "deletes a revoked key from the panel, row and pending jobs alike",
+    async () => {
+      if (!database) return;
+      await database.db
+        .update(vpnKeys)
+        .set({ state: "revoked", revokedAt: new Date() })
+        .where(eq(vpnKeys.id, keyId));
+      // A job the worker never got to. job_outbox does not reference vpn_keys,
+      // so nothing cascades it away, and a leftover row makes the worker retry
+      // for a key that no longer exists.
+      await database.db.insert(jobOutbox).values({
+        type: "vpn-key.revoke",
+        deduplicationKey: `vpn-key.revoke:${keyId}:purge-test`,
+        payload: { keyId },
+      });
+
+      await subject().adminAction(admin, "keys", keyId, "purge", {});
+
+      const rows = await database.db
+        .select({ id: vpnKeys.id })
+        .from(vpnKeys)
+        .where(eq(vpnKeys.id, keyId));
+      expect(rows).toHaveLength(0);
+      const jobs = await database.db
+        .select({ id: jobOutbox.id })
+        .from(jobOutbox)
+        .where(sql`${jobOutbox.payload} ->> 'keyId' = ${keyId}`);
+      expect(jobs).toHaveLength(0);
+    },
+  );
+
+  // The row is the only thing that remembers the peer's label, and reconcile
+  // finds an orphan by that label. Deleting it while the node may still carry
+  // the peer strands the peer for good.
+  runDatabaseTest(
+    "refuses every state where the node may still carry the peer",
+    async () => {
+      if (!database) return;
+      const states = [
+        "provisioning",
+        "active",
+        "disabled",
+        "revoking",
+        "failed",
+      ] as const;
+
+      for (const state of states) {
+        await database.db
+          .update(vpnKeys)
+          .set({ state })
+          .where(eq(vpnKeys.id, keyId));
+
+        await expect(
+          subject().adminAction(admin, "keys", keyId, "purge", {}),
+        ).rejects.toMatchObject({ statusCode: 409, code: "KEY_NOT_PURGEABLE" });
+
+        const rows = await database.db
+          .select({ id: vpnKeys.id })
+          .from(vpnKeys)
+          .where(eq(vpnKeys.id, keyId));
+        expect(rows, `a ${state} key must survive`).toHaveLength(1);
+      }
+    },
+  );
+
+  runDatabaseTest("records what the key was, since the row will not exist", async () => {
+    if (!database) return;
+    await database.db
+      .update(vpnKeys)
+      .set({ state: "revoked", internalName: internalName })
+      .where(eq(vpnKeys.id, keyId));
+
+    await subject().adminAction(admin, "keys", keyId, "purge", {});
+
+    const [event] = await database.db
+      .select({ metadata: auditEvents.metadata })
+      .from(auditEvents)
+      .where(
+        and(
+          eq(auditEvents.action, "admin.keys.purge"),
+          eq(auditEvents.targetId, keyId),
+        ),
+      );
+    expect(event?.metadata).toMatchObject({
+      nodeId,
+      deviceLabel: "Laptop",
+      internalName,
+    });
   });
 
   runDatabaseTest("keeps the internal name out of config generation", async () => {
