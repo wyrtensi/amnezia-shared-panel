@@ -176,6 +176,13 @@
       "when": 1788524022989,
       "tag": "0024_repoint_gemini_check",
       "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1788525541054,
+      "tag": "0025_per_node_service_checks",
+      "breakpoints": true
     }
   ]
 }

@@ -31,7 +31,7 @@ import type {
   UpdateNodeRequest,
   UpdateServiceCheckRequest,
 } from "@amnezia/contracts";
-import { toUserCheckState } from "@amnezia/contracts";
+import { nodeRunsCheck, toUserCheckState } from "@amnezia/contracts";
 import type { ServiceCheckUserState } from "@amnezia/contracts";
 import {
   createKeyRequestSchema,
@@ -620,6 +620,8 @@ export class PostgresControlRepository implements ControlRepository {
           capabilities: nodes.capabilities,
           publicHost: nodes.publicHost,
           publicIp: nodes.publicIp,
+          checksEnabled: nodes.checksEnabled,
+          disabledCheckIds: nodes.disabledCheckIds,
         })
         .from(nodes)
         .where(eq(nodes.enabled, true)),
@@ -635,6 +637,7 @@ export class PostgresControlRepository implements ControlRepository {
       this.options.db
         .select({
           nodeId: nodeServiceCheckResults.nodeId,
+          checkId: nodeServiceChecks.id,
           name: nodeServiceChecks.name,
           status: nodeServiceCheckResults.status,
           checkedAt: nodeServiceCheckResults.checkedAt,
@@ -667,12 +670,13 @@ export class PostgresControlRepository implements ControlRepository {
     const checksNow = new Date();
     const checksByNode = new Map<
       string,
-      Array<{ name: string; state: ServiceCheckUserState }>
+      Array<{ checkId: string; name: string; state: ServiceCheckUserState }>
     >();
     if (policy.showNodeStatus) {
       for (const row of checkRows) {
         const list = checksByNode.get(row.nodeId) ?? [];
         list.push({
+          checkId: row.checkId,
           name: row.name,
           state: toUserCheckState({
             status: row.status,
@@ -701,6 +705,8 @@ export class PostgresControlRepository implements ControlRepository {
             publicName,
             publicHost,
             publicIp,
+            checksEnabled,
+            disabledCheckIds,
             ...row
           }) => {
             const supportedProtocols = deriveSupportedProtocols(
@@ -736,8 +742,22 @@ export class PostgresControlRepository implements ControlRepository {
               // and there must never be one: node health is already shown from
               // enabled/lastError/lastHealthAt, and a second vocabulary for the
               // same thing is what the three-state narrowing exists to prevent.
+              // Only checks this node actually runs. A chip for one it has
+              // been taken out of would show a user a verdict that will never
+              // change again - worse than showing nothing, because it looks
+              // live. Destructured above so the two flags cannot leak into the
+              // user payload with the rest of the row.
               ...(policy.showNodeStatus
-                ? { status: { checks: checksByNode.get(row.id) ?? [] } }
+                ? {
+                    status: {
+                      checks: (checksByNode.get(row.id) ?? []).filter((chip) =>
+                        nodeRunsCheck(
+                          { checksEnabled, disabledCheckIds },
+                          chip.checkId,
+                        ),
+                      ).map(({ name, state }) => ({ name, state })),
+                    },
+                  }
                 : {}),
             };
           },
@@ -1946,6 +1966,8 @@ export class PostgresControlRepository implements ControlRepository {
             protocol: nodes.protocol,
             enabledProtocols: nodes.enabledProtocols,
             maxPeers: nodes.maxPeers,
+            checksEnabled: nodes.checksEnabled,
+            disabledCheckIds: nodes.disabledCheckIds,
             capabilities: nodes.capabilities,
             // Where clients reach the node, as reported by its agent and
             // resolved by the worker; null until the first poll of an agent
@@ -2314,6 +2336,31 @@ export class PostgresControlRepository implements ControlRepository {
     if (!updated) throw new ApiError(404, "Check not found", "CHECK_NOT_FOUND");
     await this.writeAudit(actor, "service_check.run", checkId, {});
     return updated;
+  };
+
+  resetServiceCheckResults = async (
+    actor: Actor,
+    checkId: string | null,
+  ): Promise<unknown> => {
+    // Deleting a result is not losing data - the result IS the schedule, so a
+    // check with no result is due on the next tick and measures itself again.
+    // That is exactly what an operator needs after changing what a check
+    // asserts: the old verdict describes a question nobody is asking any more.
+    const deleted = checkId
+      ? await this.options.db
+          .delete(nodeServiceCheckResults)
+          .where(eq(nodeServiceCheckResults.checkId, checkId))
+          .returning({ nodeId: nodeServiceCheckResults.nodeId })
+      : await this.options.db
+          .delete(nodeServiceCheckResults)
+          .returning({ nodeId: nodeServiceCheckResults.nodeId });
+    await this.writeAudit(
+      actor,
+      "service_check.reset",
+      checkId ?? "all",
+      { cleared: deleted.length },
+    );
+    return { cleared: deleted.length };
   };
 
   adminAction = async (

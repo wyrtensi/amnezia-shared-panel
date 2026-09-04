@@ -787,6 +787,12 @@ export class PostgresWorkerRepository
           // Only a node with an update in flight is asked about one, so a fleet
           // with nothing to update costs no extra request per tick.
           agentUpdateState: row.node.agentUpdateState,
+          // Whether this node takes part in service checks at all, and which it
+          // skips. Read here rather than joined per check: the poll already has
+          // the node row, and a check the node does not run must never be
+          // dispatched to it.
+          checksEnabled: row.node.checksEnabled,
+          disabledCheckIds: row.node.disabledCheckIds ?? [],
         };
         result.set(row.node.id, node);
       }

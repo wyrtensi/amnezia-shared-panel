@@ -154,6 +154,15 @@ export interface ControlApiService {
   ) => Promise<unknown>;
   deleteServiceCheck: (actor: Actor, checkId: string) => Promise<unknown>;
   /**
+   * Clear stored results for one check, or for every check when checkId is
+   * null. Not destructive in the way it looks: the result IS the schedule, so a
+   * cleared check is due again on the next tick and measures itself afresh.
+   */
+  resetServiceCheckResults: (
+    actor: Actor,
+    checkId: string | null,
+  ) => Promise<unknown>;
+  /**
    * Mark every node's copy of a check due on the next telemetry tick. It moves
    * a marker rather than running anything: the panel cannot reach a node
    * synchronously, and pretending otherwise would mean an HTTP request that

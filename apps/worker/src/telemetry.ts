@@ -7,6 +7,7 @@ import type {
 } from "./nodeAgent.js";
 import { mapWithConcurrency } from "./concurrency.js";
 import {
+  checksForNode,
   selectDueChecks,
   toCheckRequests,
   toResultRows,
@@ -53,6 +54,9 @@ export type TelemetryNode = {
    * about it, so a fleet with nothing to update costs no extra requests.
    */
   agentUpdateState: NodeAgentUpdateStatus["state"];
+  /** Whether this node takes part in service checks, and which it skips. */
+  checksEnabled: boolean;
+  disabledCheckIds: string[];
 };
 
 export type NodeSnapshot = {
@@ -170,12 +174,14 @@ export type TelemetryPollerOptions = {
  */
 const runNodeServiceChecks = async ({
   nodeId,
+  policy,
   agent,
   serviceChecks,
   observedAt,
   repository,
 }: {
   nodeId: string;
+  policy: { checksEnabled: boolean; disabledCheckIds: string[] };
   agent: { runChecks: NodeAgent["runChecks"] };
   serviceChecks: {
     checks: NodeServiceCheck[];
@@ -185,7 +191,11 @@ const runNodeServiceChecks = async ({
   repository: TelemetryRepository;
 }): Promise<void> => {
   const previous = serviceChecks.previousByNode.get(nodeId) ?? new Map();
-  const due = selectDueChecks(serviceChecks.checks, previous, observedAt);
+  const due = selectDueChecks(
+    checksForNode(serviceChecks.checks, policy),
+    previous,
+    observedAt,
+  );
   if (due.length === 0) return;
   try {
     const results = await agent.runChecks(toCheckRequests(due));
@@ -281,6 +291,10 @@ export const createTelemetryPoller = ({
         if (serviceChecks && repository.recordServiceCheckResults) {
           await runNodeServiceChecks({
             nodeId: node.id,
+            policy: {
+              checksEnabled: node.checksEnabled,
+              disabledCheckIds: node.disabledCheckIds,
+            },
             agent,
             serviceChecks,
             observedAt,

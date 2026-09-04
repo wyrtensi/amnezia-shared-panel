@@ -25,6 +25,7 @@
  */
 
 import { readFile, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import http from "node:http";
 
@@ -62,6 +63,16 @@ const capture = async () => {
   if (!url || !out) {
     throw new Error("capture needs --url=<url> and --out=<file>");
   }
+  // Refuse to overwrite. The whole workflow is "capture twice and keep both",
+  // and a second capture written over the first destroys exactly the half that
+  // cannot be taken again later - the one from the refused address. This has
+  // already happened once.
+  if (!process.argv.includes("--force") && existsSync(out)) {
+    throw new Error(
+      `${out} already exists. Capture the two addresses to two files ` +
+        `(working.html and blocked.html), or pass --force to overwrite.`,
+    );
+  }
   const started = Date.now();
   const response = await fetch(url, {
     redirect: "follow",
@@ -73,6 +84,24 @@ const capture = async () => {
   });
   const body = await response.text();
   await writeFile(out, body, "utf8");
+  // A sidecar, so a capture says what it is months later. Which address it came
+  // from is the one thing a file of HTML cannot tell you.
+  await writeFile(
+    `${out}.json`,
+    JSON.stringify(
+      {
+        url,
+        finalUrl: response.url,
+        status: response.status,
+        bytes: body.length,
+        capturedAt: new Date().toISOString(),
+        note: "Record here whether this address was accepted or refused.",
+      },
+      null,
+      2,
+    ),
+    "utf8",
+  );
 
   console.log(`url        ${url}`);
   console.log(`final url  ${response.url}`);

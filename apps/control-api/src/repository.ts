@@ -130,6 +130,10 @@ export interface ControlRepository {
     request: UpdateServiceCheckRequest,
   ) => Promise<unknown>;
   deleteServiceCheck: (actor: Actor, checkId: string) => Promise<unknown>;
+  resetServiceCheckResults: (
+    actor: Actor,
+    checkId: string | null,
+  ) => Promise<unknown>;
   runServiceCheckNow: (actor: Actor, checkId: string) => Promise<unknown>;
   adminAction: (
     actor: Actor,

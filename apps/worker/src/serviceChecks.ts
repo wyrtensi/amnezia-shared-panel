@@ -33,6 +33,32 @@ export type ServiceCheckResultRow = {
   failingSince: Date | null;
 };
 
+/** Which checks this node takes part in at all. */
+export type NodeCheckPolicy = {
+  checksEnabled: boolean;
+  disabledCheckIds: string[];
+};
+
+/**
+ * The checks a node runs, before anything is asked about scheduling.
+ *
+ * A check is defined once for the fleet, but whether a given node runs it is a
+ * property of the NODE: a server behind a provider that one of the targets
+ * refuses would otherwise sit permanently red for a fact nobody can act on.
+ *
+ * Applied BEFORE `selectDueChecks` on purpose. Filtering afterwards would let a
+ * disabled check keep its place in the retry schedule and come back the moment
+ * it was re-enabled, claiming a measurement from a period when nothing ran.
+ */
+export const checksForNode = (
+  checks: readonly NodeServiceCheck[],
+  policy: NodeCheckPolicy,
+): NodeServiceCheck[] => {
+  if (!policy.checksEnabled) return [];
+  const disabled = new Set(policy.disabledCheckIds);
+  return checks.filter((check) => !disabled.has(check.id));
+};
+
 /** An unperformed check is retried this soon, not after the full period. */
 const ERROR_RETRY_MS = 5 * 60 * 1_000;
 /** ...but only while the error is fresh, so broken egress settles down. */

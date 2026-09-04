@@ -279,6 +279,8 @@ export const createDefaultControlApiService = ({
     repository.updateServiceCheck(actor, checkId, request),
   deleteServiceCheck: (actor, checkId) =>
     repository.deleteServiceCheck(actor, checkId),
+  resetServiceCheckResults: (actor, checkId) =>
+    repository.resetServiceCheckResults(actor, checkId),
   runServiceCheckNow: (actor, checkId) =>
     repository.runServiceCheckNow(actor, checkId),
   adminAction: (actor, resource, targetId, action, payload) =>

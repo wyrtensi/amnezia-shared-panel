@@ -179,6 +179,10 @@ via `CONTROL_API_URL` plus one of, in priority order:
 | `check-set <id> [--name=] [--url=] [--method=] [--interval-sec=] [--enabled=true\|false] [<assertion flags>]` | Change **only** the fields you name. Assertion flags replace the whole list |
 | `check-delete <id> [--confirm]` | Delete a check and every node's result for it |
 | `check-run <id>` | Mark it due on every node. It does **not** run anything synchronously: the panel reaches nodes on the telemetry poll, so the reading appears after the next one |
+| `check-reset <id>` / `check-reset --all` | Clear stored results. **Not destructive**: the result *is* the schedule, so a cleared check is due again and every node measures it afresh on the next poll — which is what you want after changing what a check asserts |
+| `node-checks <node>` | What this node runs and what it last answered, check by check |
+| `node-checks <node> --all=on\|off` | Take one node in or out of checking entirely — a different statement from "it skips every check today" |
+| `node-checks <node> --enable=<check>` / `--disable=<check>` | Turn one check on or off **for this node only**. A check is defined once for the fleet; whether a given node runs it is a property of the node |
 | `cf-config --account= --app= --policy=` | Set Cloudflare Access IDs |
 | `cf-token <token>` · `cf-token --token-file=<path\|->` | Store the Cloudflare API token (encrypted at rest). Prefer the file/stdin form: a token passed as an argument is visible in `ps` and in shell history for as long as the process lives |
 | `panel-update [--status] [--json]` | Trigger the in-panel update (backup → pull → migrate → restart), or show its status. `--status` prints a readable line — the pending request, and whether the last host run finished `ok` or `FAILED` with its reason; `--status --json` returns the raw status object unchanged |
