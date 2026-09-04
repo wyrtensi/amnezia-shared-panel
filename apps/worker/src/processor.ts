@@ -25,12 +25,7 @@ const nodeCapacityPayloadSchema = nodeJobPayloadSchema.extend({
 
 export type JobProcessorOptions = {
   repository: WorkerRepository;
-  /**
-   * Optional because the Access-sync job never needs a node agent — VPN-key
-   * and node jobs still require a real implementation, and get one from
-   * every caller that handles those job types.
-   */
-  createNodeAgent?: (node: WorkerKeyContext["node"]) => NodeAgent;
+  createNodeAgent: (node: WorkerKeyContext["node"]) => NodeAgent;
   /**
    * The same fetchers the periodic timer runs, one per configured feed. An
    * empty list means no feed is configured — a manual refresh then fails with
@@ -53,9 +48,7 @@ const findPeer = (
 
 export const createJobProcessor = ({
   repository,
-  createNodeAgent = () => {
-    throw new Error("createNodeAgent is required for this job type");
-  },
+  createNodeAgent,
   ruleFetchers = [],
   accessSync,
   now = () => new Date(),

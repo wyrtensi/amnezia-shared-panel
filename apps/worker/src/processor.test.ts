@@ -588,7 +588,11 @@ describe("Access sync job", () => {
   it("runs the Access sync job and finishes it with the arm marker it claimed", async () => {
     const repository = createRepository();
     const accessSync = vi.fn(() => Promise.resolve({ outcome: "synced" as const }));
-    const processJob = createJobProcessor({ repository, accessSync });
+    const processJob = createJobProcessor({
+      repository,
+      createNodeAgent: () => createAgent(),
+      accessSync,
+    });
 
     await processJob(syncJob);
 
@@ -599,7 +603,10 @@ describe("Access sync job", () => {
 
   it("fails the sync job when the worker does not have the sync enabled", async () => {
     const repository = createRepository();
-    const processJob = createJobProcessor({ repository });
+    const processJob = createJobProcessor({
+      repository,
+      createNodeAgent: () => createAgent(),
+    });
 
     await processJob(syncJob);
 
@@ -613,7 +620,11 @@ describe("Access sync job", () => {
   it("fails the sync job when Cloudflare is not configured", async () => {
     const repository = createRepository();
     const accessSync = vi.fn(() => Promise.resolve({ outcome: "skipped" as const }));
-    const processJob = createJobProcessor({ repository, accessSync });
+    const processJob = createJobProcessor({
+      repository,
+      createNodeAgent: () => createAgent(),
+      accessSync,
+    });
 
     await processJob(syncJob);
 
@@ -628,7 +639,11 @@ describe("Access sync job", () => {
     const accessSync = vi.fn(() =>
       Promise.resolve({ outcome: "aborted" as const, detail: "3 account(s) would be disabled" }),
     );
-    const processJob = createJobProcessor({ repository, accessSync });
+    const processJob = createJobProcessor({
+      repository,
+      createNodeAgent: () => createAgent(),
+      accessSync,
+    });
 
     await expect(processJob(syncJob)).resolves.toBeUndefined();
     expect(repository.failJob).toHaveBeenCalledWith(
@@ -640,7 +655,11 @@ describe("Access sync job", () => {
   it("lets the runner retry a sync that threw", async () => {
     const repository = createRepository();
     const accessSync = vi.fn(() => Promise.reject(new Error("cloudflare 502")));
-    const processJob = createJobProcessor({ repository, accessSync });
+    const processJob = createJobProcessor({
+      repository,
+      createNodeAgent: () => createAgent(),
+      accessSync,
+    });
 
     await expect(processJob(syncJob)).rejects.toThrow(/cloudflare 502/);
     expect(repository.failJob).not.toHaveBeenCalled();
