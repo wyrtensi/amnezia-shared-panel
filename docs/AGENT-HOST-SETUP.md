@@ -119,9 +119,10 @@ the host firewall. The control plane reaches it over an approved private transpo
 ## Part A — Install the VPN node
 
 > **There is a scripted path for all of Part A and Part B.**
-> `scripts/add-node.sh --host <ip> --name <panel name>` installs Docker, deploys
-> `infra/node`, ships the image, opens the tunnel, and registers the node, in one
-> idempotent command driven by `scripts/add-node.env`. See
+> `scripts/add-node.sh --host <ip> --name <panel name>` ensures the node's
+> 2 GiB swapfile, installs Docker, deploys `infra/node`, ships the image, opens
+> the tunnel, and registers the node, in one idempotent command driven by
+> `scripts/add-node.env`. See
 > [`NODE-CONNECT.md` §0](./NODE-CONNECT.md). Follow the manual steps below when a
 > rollout deviates from it, or to understand what the script is doing.
 

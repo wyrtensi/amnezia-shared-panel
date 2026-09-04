@@ -30,7 +30,7 @@ test("pins NODE_AGENT_IMAGE to the id the receiving host reported", async () => 
 });
 
 test("restores 0600 state permissions instead of relaxing the preflight gate", async () => {
-  const step = script.slice(script.indexOf("[5/7]"), script.indexOf("[6/7]"));
+  const step = script.slice(script.indexOf("[6/8]"), script.indexOf("[7/8]"));
   assert.match(step, /find '\$NODE_DIR\/state' -type f -exec chmod 600/);
   // Order matters, so compare the commands only — the comments above them name
   // the same scripts and would otherwise satisfy the assertions on their own.
@@ -50,7 +50,7 @@ test("restores 0600 state permissions instead of relaxing the preflight gate", a
 });
 
 test("binds the tunnel on a private address and survives a panel reboot", async () => {
-  const step = script.slice(script.indexOf("[6/7]"), script.indexOf("[7/7]"));
+  const step = script.slice(script.indexOf("[7/8]"), script.indexOf("[8/8]"));
   assert.match(step, /-L \$\{BIND\}:\$\{PORT\}:127\.0\.0\.1:4001/);
   assert.match(step, /AUTOSSH_GATETIME=0/);
   assert.match(step, /systemctl enable --now/);
@@ -96,7 +96,7 @@ test("never prints the node-agent API key", async () => {
   // not reach this workstation, the script's output, or a shell trace.
   assert.doesNotMatch(script, /echo .*node-agent-api-key/);
   assert.doesNotMatch(script, /set -x/);
-  const register = script.slice(script.indexOf("[7/7]"));
+  const register = script.slice(script.indexOf("[8/8]"));
   // -n is load-bearing: this block reaches bash on stdin, so without it the ssh
   // drains the rest of the heredoc and the node-add below never runs -- the step
   // prints nothing and exits 0 while registering no node.
@@ -136,7 +136,7 @@ test("uses that recommendation only when no capacity was asked for", async () =>
   // An explicit --max-peers or NODE_MAX_PEERS is an operator decision and must
   // win over anything derived from a memory reading taken at one instant.
   assert.match(script, /MAX_PEERS="\$\{MAX_PEERS:-\$\{NODE_MAX_PEERS:-\}\}"/);
-  const step = script.slice(script.indexOf("[1/7]"), script.indexOf("[2/7]"));
+  const step = script.slice(script.indexOf("[1/8]"), script.indexOf("[2/8]"));
   assert.match(step, /recommended_max_peers/);
   assert.match(step, /MemAvailable/);
 });
@@ -155,4 +155,98 @@ test("--help prints the header comment and nothing below it", async () => {
   // then --help starts printing the script's own code back at the operator.
   assert.doesNotMatch(stdout, /^set -euo pipefail$/m);
   assert.doesNotMatch(stdout, /REPO_ROOT=/);
+});
+
+// The swap step is the only one that streams a second script to the node, so it
+// gets its own harness: stub node_ssh, keep the REAL node_do, and run the
+// function the way the script does.
+const runSwapStep = async ({ status, dryRun, applyStatus = 0 }) => {
+  // node_do is a one-liner, not a braced block - take the line itself.
+  const nodeDo = script
+    .split("\n")
+    .find((line) => line.startsWith("node_do() {"));
+  const stepStart = script.indexOf("ensure_node_swap() {");
+  const step = script.slice(stepStart, script.indexOf("\n}\n", stepStart) + 3);
+  const harness = [
+    "set -euo pipefail",
+    'REPO_ROOT="$PWD"',
+    `DRY_RUN=${dryRun ? 1 : 0}`,
+    'note() { printf "    %s\\n" "$*"; }',
+    'die() { printf "add-node: %s\\n" "$*" >&2; exit 1; }',
+    // Consume the streamed script the way ssh would, then answer with a canned
+    // report and the exit code under test. --check and --apply answer
+    // separately, because on a real node they do: --check reports 10 for "a
+    // change is needed" and --apply reports 0 for "made it".
+    `node_ssh() { cat >/dev/null; printf 'REPORT: %s\\n' "$*"; ` +
+      `case "$*" in *--apply*) return ${applyStatus} ;; *) return ${status} ;; esac; }`,
+    nodeDo,
+    step,
+    "ensure_node_swap",
+  ].join("\n");
+  const { execFile } = await import("node:child_process");
+  const { promisify } = await import("node:util");
+  try {
+    const { stdout } = await promisify(execFile)("bash", ["-c", harness]);
+    return { code: 0, out: stdout };
+  } catch (error) {
+    return { code: error.code, out: `${error.stdout ?? ""}${error.stderr ?? ""}` };
+  }
+};
+
+test("the swap step does nothing when the node already has 2 GiB", async () => {
+  const { code, out } = await runSwapStep({ status: 0, dryRun: false });
+  assert.equal(code, 0);
+  assert.doesNotMatch(out, /--apply/);
+});
+
+test("the swap step applies when the check asks for a change", async () => {
+  const { code, out } = await runSwapStep({ status: 10, dryRun: false });
+  assert.equal(code, 0);
+  assert.match(out, /REPORT: bash -s -- --apply/);
+});
+
+test("--dry-run reports the swap change without making it", async () => {
+  const { code, out } = await runSwapStep({ status: 10, dryRun: true });
+  assert.equal(code, 0);
+  assert.match(out, /\[dry-run\] node: bash -s -- --apply/);
+  assert.doesNotMatch(out, /REPORT: bash -s -- --apply/);
+});
+
+test("an apply that fails on the node stops the rollout with a reason", async () => {
+  // Without an explicit check this exits through `set -e` with a bare status,
+  // at the one step whose failure most needs explaining.
+  const { code, out } = await runSwapStep({ status: 10, dryRun: false, applyStatus: 2 });
+  assert.equal(code, 1);
+  assert.match(out, /refused to create its 2 GiB swapfile/);
+});
+
+test("a node that cannot get 2 GiB stops the rollout", async () => {
+  // Continuing would install Docker on a host the deploy gate will refuse
+  // anyway, and leave the operator to work out why from step 6.
+  const { code, out } = await runSwapStep({ status: 2, dryRun: false });
+  assert.equal(code, 1);
+  assert.match(out, /cannot get its 2 GiB swapfile/);
+});
+
+test("the swap step streams ensure-swap.sh instead of installing it", async () => {
+  const step = script.slice(script.indexOf("[2/8]"), script.indexOf("[3/8]"));
+  assert.match(script, /ensure_node_swap\(\) \{/);
+  assert.match(step, /ensure_node_swap$/m);
+  const fn = script.slice(
+    script.indexOf("ensure_node_swap() {"),
+    script.indexOf("\n}\n", script.indexOf("ensure_node_swap() {")),
+  );
+  // --check under the read-only helper, --apply under the dry-run-aware one.
+  assert.match(fn, /node_ssh 'bash -s -- --check' < "\$\{REPO_ROOT\}\/scripts\/ensure-swap\.sh"/);
+  assert.match(fn, /node_do 'bash -s -- --apply' < "\$\{REPO_ROOT\}\/scripts\/ensure-swap\.sh"/);
+  // No copy is left behind on the node.
+  assert.doesNotMatch(fn, /scp|tar/);
+});
+
+test("the header comment lists all eight steps", async () => {
+  const header = script.slice(0, script.indexOf("set -euo pipefail"));
+  for (const step of ["1.", "2.", "3.", "4.", "5.", "6.", "7.", "8."]) {
+    assert.ok(header.includes(`#   ${step}`), `header is missing step ${step}`);
+  }
+  assert.match(header, /2\. ensure the node has 2 GiB of swap/);
 });

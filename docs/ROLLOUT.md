@@ -52,9 +52,10 @@ Run the **`infra/prod`** stack (not `infra/dev`). Full steps:
   also runs migrations). Web binds `127.0.0.1:5430`, control-api `127.0.0.1:5431`,
   postgres is never published. Ports are overridable via `WEB_PUBLISH_PORT` /
   `CONTROL_API_PUBLISH_PORT`.
-- **On a small box:** add a **2 GB swapfile** (the image pull/build and the Node
-  services are memory-hungry) and install the **Docker Compose v2 plugin** if it is
-  missing. `compose.yaml` already caps each service's memory so a co-located node's
+- **On a small box:** add a **2 GB swapfile** — `sudo bash scripts/ensure-swap.sh --apply`
+  from the checked-out repo, which is idempotent and safe to re-run (the image
+  pull/build and the Node services are memory-hungry) — and install the
+  **Docker Compose v2 plugin** if it is missing. `compose.yaml` already caps each service's memory so a co-located node's
   VPN containers can never be OOM-killed by the panel. Full guidance —
   swap, task budgets, Postgres sizing, and why you must not build images
   there — is in [`SMALL-HOSTS.md`](./SMALL-HOSTS.md).
