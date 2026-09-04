@@ -172,7 +172,9 @@ const normalizeEmail = (email: string): string => email.trim().toLowerCase();
 /**
  * Domains admitted by the policy's `email_domain` ("emails ending in") rules.
  * Cloudflare stores the bare domain, but the dashboard shows it with a leading
- * "@" and operators paste it that way, so both forms are accepted.
+ * "@" and operators paste it that way, so both forms are accepted (and a
+ * doubled "@@" typo is stripped too — `replace` with a `+` quantifier, not a
+ * single `@`).
  */
 const domainAllowlist = (rules: CfAccessRule[]): Set<string> =>
   new Set(
@@ -182,9 +184,22 @@ const domainAllowlist = (rules: CfAccessRule[]): Set<string> =>
           (rule as { email_domain?: { domain?: string } }).email_domain?.domain,
       )
       .filter((domain): domain is string => Boolean(domain))
-      .map((domain) => domain.trim().toLowerCase().replace(/^@/, ""))
+      .map((domain) => domain.trim().toLowerCase().replace(/^@+/, ""))
       .filter(Boolean),
   );
+
+/**
+ * The domain half of an email address: everything after the LAST "@", not the
+ * second "@"-delimited segment — an address with a literal "@" in its local
+ * part (rare, but RFC-legal when quoted) would otherwise yield the wrong
+ * domain. Worker-local; `apps/control-api` has its own copy of this
+ * extraction for a different code path (the panel signup allowlist gate) and
+ * is intentionally left alone here.
+ */
+const domainOf = (email: string): string => {
+  const at = email.lastIndexOf("@");
+  return at === -1 ? "" : email.slice(at + 1);
+};
 
 /**
  * Two-way Cloudflare Access sync (the "2 side" policy editor).
@@ -220,9 +235,11 @@ export function createAccessSync(options: {
   // Emails that must never be removed from Cloudflare or disabled (bootstrap
   // admins) even if they are not active panel users — avoids self-lockout.
   bootstrapAdminEmails?: string[];
-  // Blast-radius cap. A run that would disable more accounts than this stops and
-  // reports instead of acting: rails 1 and 2 cover the known ways the disable set
-  // can be wrong, and this covers the unknown ones. 0 disables the cap.
+  // Blast-radius cap. A run that would disable more accounts than this, OR more
+  // than half of the active panel, stops and reports instead of acting: rails 1
+  // and 2 cover the known ways the disable set can be wrong, and this covers the
+  // unknown ones — including a majority removal on a small panel that would
+  // never reach the absolute count. 0 disables both halves of the cap.
   maxDisablesPerRun?: number;
   /** Called instead of disabling when the cap is exceeded. */
   recordAccessSyncAborted?: (details: {
@@ -265,21 +282,59 @@ export function createAccessSync(options: {
     const client = createClient(config);
     const policy = await client.getPolicy();
     const include = Array.isArray(policy.include) ? policy.include : [];
+    const exclude = Array.isArray(policy.exclude) ? policy.exclude : [];
     // Rules the panel never writes: everything that is not an email rule.
     const nonEmailRules = include.filter((rule) => !rule.email?.email);
     const cfEmails = new Set(
       include
-        .map((rule) => rule.email?.email?.toLowerCase())
-        .filter((value): value is string => Boolean(value)),
+        .map((rule) => rule.email?.email)
+        .filter((value): value is string => Boolean(value))
+        .map(normalizeEmail),
     );
 
     // A person the policy still admits through a domain rule has not been
     // "removed in Cloudflare" — treating them as removed would disable them and
     // revoke every key they own. Guards the common tidy-up where an admin drops
     // the explicit corporate addresses because a domain rule already covers them.
+    //
+    // `include` alone is not the whole story: `exclude` is the idiomatic
+    // Cloudflare way to carve someone back out of a domain rule, either by
+    // their exact address or by naming that same domain again in an
+    // `email_domain` exclude rule (matching is exact, not by sub-domain, so
+    // this is how the whole domain gets carved back out). A person named in
+    // `exclude` is blocked at the edge already — judging them "covered" here
+    // would spare them from the disable, and the write-back would re-add
+    // their address, undoing the operator's exclusion.
+    // `require` (AND-conditions) is intentionally NOT evaluated — a known
+    // limitation, documented in docs/CLOUDFLARE-ACCESS.md, not silent coverage.
     const allowedDomains = domainAllowlist(nonEmailRules);
-    const coveredByDomain = (email: string): boolean =>
-      allowedDomains.has(email.split("@")[1] ?? "");
+    if (
+      nonEmailRules.some((rule) => "email_domain" in rule) &&
+      allowedDomains.size === 0
+    ) {
+      // The whole point of this guard is to protect people a domain rule
+      // still admits. If the rule is there but nothing usable was parsed from
+      // it (a blank `domain`, an unexpected shape), the guard silently
+      // protects no one — say so, rather than leaving an operator who thinks
+      // the domain rule has their back with no signal at all.
+      log(
+        "access-sync: the policy has an email_domain rule but no usable domain " +
+          "was parsed from it — the domain-cover guard is not protecting anyone.",
+      );
+    }
+    const excludedEmails = new Set(
+      exclude
+        .map((rule) => rule.email?.email)
+        .filter((value): value is string => Boolean(value))
+        .map(normalizeEmail),
+    );
+    const excludedDomains = domainAllowlist(exclude);
+    const coveredByDomain = (email: string): boolean => {
+      const domain = domainOf(email);
+      if (!allowedDomains.has(domain)) return false;
+      if (excludedEmails.has(email) || excludedDomains.has(domain)) return false;
+      return true;
+    };
 
     const activeSet = new Set(
       (await repository.listActiveUserEmails()).map(normalizeEmail).filter(Boolean),
@@ -311,15 +366,25 @@ export function createAccessSync(options: {
         "access-sync: policy grants access via non-email rules only (no email include) — skipping CF→panel disable.",
       );
     }
-    if (maxDisablesPerRun > 0 && cfRemoved.length > maxDisablesPerRun) {
+    // Blast-radius cap: the absolute count, OR more than half of the active
+    // panel — whichever trips first. The absolute cap alone protects a large
+    // panel; on a small one, an operator removing "only" a handful can still
+    // be removing everyone (5 <= 10 trips nothing on a 5-user panel), so a
+    // run that would disable a majority of active users aborts even when the
+    // raw count sits under the absolute cap. 0 disables BOTH halves — the
+    // documented escape hatch for a genuine mass offboarding.
+    const overAbsoluteCap = cfRemoved.length > maxDisablesPerRun;
+    const overMajority = cfRemoved.length > Math.ceil(activeSet.size / 2);
+    if (maxDisablesPerRun > 0 && (overAbsoluteCap || overMajority)) {
       // Abort the whole run, not just the disable half: the write-back would
       // otherwise re-assert the emails an operator has just removed, silently
       // undoing a deliberate change. Leaving the baseline untouched means the
       // next run sees the same anomaly rather than adopting it.
       log(
         `access-sync: ${cfRemoved.length} account(s) would be disabled, over the ` +
-          `limit of ${maxDisablesPerRun} — aborting the run and recording it. ` +
-          `Raise ACCESS_SYNC_MAX_DISABLES to proceed.`,
+          `limit of ${maxDisablesPerRun} or over half of ${activeSet.size} active ` +
+          `user(s) — aborting the run and recording it. Raise ` +
+          `ACCESS_SYNC_MAX_DISABLES to proceed.`,
       );
       // The log line above fires on every run (the high-frequency channel);
       // the audit row is the notification, so write it only when the

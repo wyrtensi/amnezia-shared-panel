@@ -249,11 +249,23 @@ Cloudflare" are told apart:
   policy; **never** disabled, even before the first push (a freshly-added user is
   protected against a race with the write-back).
 - **Removed in Cloudflare** (in the baseline, now gone from the policy) → the
-  panel disables that account and revokes its keys.
-- **Added directly in Cloudflare** (an unknown email) → **not** turned into a
-  panel account; the panel stays the place where users are added, and the
-  write-back reasserts its set. Remove-in-Cloudflare is honoured; add-in-Cloudflare
-  is not (there is no account to create).
+  panel disables that account and revokes its keys — **unless** a surviving
+  `email_domain` rule still admits that same address (see "domain cover"
+  below), in which case the sync disables nothing and revokes nothing. For a
+  domain-covered address, removing it from the Access policy no longer offboards
+  anyone: disable the person **in the panel** instead — the address will keep
+  being re-added to the policy on every sync interval regardless (see "domain
+  cover").
+- **Added directly in Cloudflare** (an unknown email) → turned into a panel
+  account the moment that person first signs in. Cloudflare already gated
+  their identity at the edge, so `resolveIdentity`
+  (`apps/control-api/src/postgresRepository.ts`) skips the panel's own
+  allowlist check for the `cloudflare-access` login provider and
+  auto-provisions the account on that first request; ownership (below) then
+  keeps the hand-added rule in the policy indefinitely, so this is not a
+  narrow race but the standing trust model — **membership in the Access
+  policy is equivalent to being granted a panel account.** Add an address to
+  the policy only when you mean for that person to have a panel account.
 
 Safety rails carry over, and three more make the sync unable to destroy what it
 did not create:
@@ -270,21 +282,35 @@ did not create:
   this client does not model are lost, and the panel owns the address from then
   on. Non-email rules (`email_domain`, groups) are preserved as before.
 - **domain cover** — an address the policy still admits through a surviving
-  `email_domain` rule is never judged "removed in Cloudflare". Without this,
-  tidying away corporate addresses that a domain rule already covers would
-  disable every one of those users and revoke their keys. This rail prevents
-  the damage but does not make the cleanup stick: in that exact scenario the
-  same run also PUTs those "redundant" explicit addresses straight back into
-  `include`, so the admin's deliberate removal reverts on every sync interval.
-  Resolving that for good needs a panel-managed allowed-domain setting — one
-  where the panel itself owns the `email_domain` rule instead of treating every
-  non-email rule as untouchable — which is planned but not yet built.
+  `email_domain` rule, and that no `exclude` rule denies, is never judged
+  "removed in Cloudflare". `exclude` is the idiomatic Cloudflare way to carve
+  someone back out of a domain rule — by their exact address, or by naming
+  that same domain again in an `email_domain` exclude rule (matching is exact,
+  not by sub-domain, so this is how the whole domain gets carved back out, not
+  a narrower one) — and it is honoured: an excluded address is still disabled
+  and its keys still revoked, domain rule or not. (`require` — AND-style
+  conditions — is a known gap: it is not evaluated, so a person gated behind a
+  `require` rule is treated the same as anyone the `include` rules alone would
+  admit.) This rail is a genuine trade, not a free win: it
+  removes the *only* Cloudflare-side way to revoke a domain-covered person's
+  keys — the same run that spares them from the disable also PUTs their
+  "redundant" explicit address straight back into `include`, so removing it
+  from the Access policy alone accomplishes nothing. **The panel is now the
+  only offboarding path that reaches that person's keys.** Resolving this for
+  good needs a panel-managed allowed-domain setting — one where the panel
+  itself owns the `email_domain` rule instead of treating every non-email
+  rule as untouchable — which is planned but not yet built.
 - **blast radius** — a run that would disable more accounts than
-  `ACCESS_SYNC_MAX_DISABLES` (default 10, `0` for no cap) stops without acting
-  and writes an `access.sync_aborted` audit event. While the cap is tripped,
-  sync is paused in **both** directions, not just the disable side: newly added
-  panel users are not pushed to the Access policy either, so they cannot sign in
-  until an operator raises the limit or resolves the anomaly.
+  `ACCESS_SYNC_MAX_DISABLES` (default 10), **or** more than half of the active
+  panel, stops without acting and writes an `access.sync_aborted` audit event.
+  The proportional half exists because the absolute count alone protects
+  nothing on a small panel: removing all 5 users of a 5-person panel is
+  `5 <= 10` and trips no count-based guard at all. Setting `ACCESS_SYNC_MAX_DISABLES=0`
+  disables **both** halves of the cap, not just the absolute one — the
+  documented escape hatch for a genuine mass offboarding. While the cap is
+  tripped, sync is paused in **both** directions, not just the disable side:
+  newly added panel users are not pushed to the Access policy either, so they
+  cannot sign in until an operator raises the limit or resolves the anomaly.
 
 The write-back uses **`PUT`** on the app-scoped policy endpoint (see the verb
 note under Direction 2).
