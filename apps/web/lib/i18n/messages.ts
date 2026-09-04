@@ -398,13 +398,19 @@ const ru = {
     "Кнопка «Скачать .conf» сохраняет ключ файлом. Его открывают в приложении.",
   "install.confSplitBest":
     "Удобно для профилей «Только зарубежные» и «Только заблокированные»: такой ключ очень длинный, а файл достаточно открыть один раз.",
-  "install.confIosWarning":
-    "На iPhone и iPad не поможет: правила не применятся. Там нужен ключ «Весь трафик».",
   "install.confHow":
     "В AmneziaVPN: «+» → импорт файла конфигурации. Обычный WireGuard этот файл не откроет.",
   "install.confDomainsWarning":
     "Правило по имени сайта в файл не попадёт — там только числовые адреса. Чтобы оно сохранилось, добавляйте ключ копированием.",
 
+  "install.confStep1": "Скачайте файл кнопкой «Скачать .conf» на карточке ключа.",
+  "install.confStep2":
+    "В AmneziaVPN нажмите «+» → «Импортировать из файла» и выберите скачанный файл.",
+  "install.confStep3": "Нажмите «Подключиться».",
+  "install.routesWhy":
+    "На профиле с ограничениями нужный сайт может не открыться. Добавьте его домен или IP здесь — он пойдёт через VPN.",
+  "install.routesWhenNot":
+    "Для «Весь трафик» не нужен. Правила попадут в ключ при следующем экспорте.",
   "install.fixTitle": "Если не работает",
   "install.fixServer": "Создайте ключ на другом сервере.",
   "install.fixFullTunnel":
@@ -1385,13 +1391,19 @@ const en = {
     "The Download .conf button saves the key as a file. You open it in the app.",
   "install.confSplitBest":
     "Handy for the “Foreign only” and “Blocked only” profiles: that kind of key is very long, and the file only has to be opened once.",
-  "install.confIosWarning":
-    "It will not help on iPhone or iPad: the rules are not applied. There you need an “All traffic” key.",
   "install.confHow":
     "In AmneziaVPN: + → import a configuration file. The plain WireGuard app will not open it.",
   "install.confDomainsWarning":
     "A rule that names a site does not fit in the file — it holds only numeric addresses. To keep it, add the key by copying.",
 
+  "install.confStep1": "Download the file with “Download .conf” on the key card.",
+  "install.confStep2":
+    "In AmneziaVPN tap “+” → “Import from file” and pick the downloaded file.",
+  "install.confStep3": "Tap “Connect”.",
+  "install.routesWhy":
+    "On a restricted profile a site you need may not open. Add its domain or IP here and it goes through the VPN.",
+  "install.routesWhenNot":
+    "“All traffic” does not need it. Rules reach a key at its next export.",
   "install.fixTitle": "If it does not work",
   "install.fixServer": "Create a key on a different server.",
   "install.fixFullTunnel":

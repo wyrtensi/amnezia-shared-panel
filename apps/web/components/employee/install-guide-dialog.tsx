@@ -100,6 +100,13 @@ const ADD_STEPS = [
   "install.addStep3",
 ] as const;
 
+/** Importing the file, for someone who has never opened that menu. */
+const CONF_STEPS = [
+  "install.confStep1",
+  "install.confStep2",
+  "install.confStep3",
+] as const;
+
 const APK_STEPS = [
   "install.apkStep1",
   "install.apkStep2",
@@ -147,12 +154,15 @@ export function InstallGuideDialog({
   open,
   onOpenChange,
   showConfSection,
+  allowCustomRoutes,
   videos,
   initialAudience = null,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   showConfSection: boolean;
+  /** Whether this user's key page offers the custom-routes section at all. */
+  allowCustomRoutes: boolean;
   videos?: InstallGuideVideos | null;
   /**
    * Audience to open on, skipping the chooser. A key card knows the device the
@@ -244,6 +254,7 @@ export function InstallGuideDialog({
               showConfSection={showConfSection}
               videos={videos}
               advanced={advanced}
+              allowCustomRoutes={allowCustomRoutes}
             />
           </>
         ) : (
@@ -364,6 +375,7 @@ export function InstallInstructions({
   showConfSection,
   videos,
   advanced,
+  allowCustomRoutes,
 }: {
   audience: GuideAudience;
   release: ClientRelease | null;
@@ -372,6 +384,7 @@ export function InstallInstructions({
   /** Per-audience walkthrough videos from the portal policy; empty by default. */
   videos?: InstallGuideVideos | null;
   advanced: boolean;
+  allowCustomRoutes: boolean;
 }) {
   const { t } = useT();
   const downloads = (release?.downloads ?? []).filter((entry) =>
@@ -536,6 +549,7 @@ export function InstallInstructions({
             {/* The .conf route is an alternative to those three steps, not a
                 fourth step, so it sits inside this section and collapsed. */}
             {confApplies ? <ConfAlternative /> : null}
+            {advanced && allowCustomRoutes ? <CustomRoutesExplainer /> : null}
           </GuideSection>
 
           <GuideSection number={3} title={t("install.fixTitle")}>
@@ -670,15 +684,14 @@ function ConfAlternative() {
       <div className="mt-2.5 space-y-2.5">
         <p className="text-sm">{t("install.confBody")}</p>
         <p className="text-sm">{t("install.confSplitBest")}</p>
-        {/*
-          confSplitBest recommends a split-profile .conf; on iOS that config
-          connects and filters nothing. The exception must stay directly under
-          the recommendation — install-guide-dialog.test.ts asserts the
-          adjacency so an edit cannot separate them. See D8.
-        */}
-        <Callout tone="warning" icon={<TriangleAlert className="h-4 w-4" />}>
-          {t("install.confIosWarning")}
-        </Callout>
+        {/* Three steps rather than a sentence: "import the file" is obvious to
+            whoever wrote it and is not the part people get stuck on - finding
+            the menu is. */}
+        <ol className="list-decimal space-y-1 pl-5 text-sm">
+          {CONF_STEPS.map((key) => (
+            <li key={key}>{t(key)}</li>
+          ))}
+        </ol>
         {/* Carries the "only AmneziaVPN opens this" warning: without it a
             reader tries the stock WireGuard app, which cannot do the
             disguising the key depends on, and gets no useful error. */}
@@ -686,6 +699,32 @@ function ConfAlternative() {
         <Callout tone="info" icon={<FileDown className="h-4 w-4" />}>
           {t("install.confDomainsWarning")}
         </Callout>
+      </div>
+    </details>
+  );
+}
+
+/**
+ * What the "rules in your profile" section on the key page is for.
+ *
+ * That section is powerful and narrow: it matters only to somebody already on a
+ * split profile who has found a site the built-in list does not cover. Everyone
+ * else does not need to know it exists, which is why it is collapsed here and
+ * collapsed there.
+ */
+function CustomRoutesExplainer() {
+  const { t } = useT();
+  return (
+    <details className="group rounded-lg border bg-muted/30 px-3 py-2">
+      <summary className="flex cursor-pointer list-none items-center gap-2 text-sm font-medium">
+        <ChevronDown className="h-4 w-4 shrink-0 transition-transform group-open:rotate-180" />
+        {t("routes.sectionTitle")}
+      </summary>
+      <div className="mt-2.5 space-y-2">
+        <p className="text-sm">{t("install.routesWhy")}</p>
+        <p className="text-sm text-muted-foreground">
+          {t("install.routesWhenNot")}
+        </p>
       </div>
     </details>
   );

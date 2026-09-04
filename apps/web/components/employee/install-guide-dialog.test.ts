@@ -33,13 +33,11 @@ describe("install guide dialog source", () => {
     expect(source).toContain("install.iosProfileWarning");
   });
 
-  it("keeps the iOS exception directly under the split-tunnel recommendation", () => {
-    const best = source.indexOf("install.confSplitBest");
-    const warning = source.indexOf("install.confIosWarning");
-    expect(best).toBeGreaterThan(-1);
-    expect(warning).toBeGreaterThan(best);
-    // Nothing but the intervening comment and one Callout wrapper between them.
-    expect(source.slice(best, warning)).not.toContain("GuideSection");
+  // The .conf section is rendered only for desktop and Android, so an iOS
+  // exception inside it was advice about a device the reader is not holding.
+  // iOS keeps its own warning in step 1, which the test above pins.
+  it("does not discuss iPhones inside the .conf section", () => {
+    expect(source).not.toContain("install.confIosWarning");
   });
 });
 

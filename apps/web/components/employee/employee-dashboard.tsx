@@ -2,7 +2,14 @@
 
 import * as React from "react";
 import Link from "next/link";
-import { CircleHelp, KeyRound, Plus, RefreshCw, ShieldCheck } from "lucide-react";
+import {
+  ChevronDown,
+  CircleHelp,
+  KeyRound,
+  Plus,
+  RefreshCw,
+  ShieldCheck,
+} from "lucide-react";
 import type { GuideAudience } from "@amnezia/contracts";
 import { toast } from "sonner";
 import { AppHeader } from "@/components/app-header";
@@ -516,13 +523,23 @@ export function EmployeeDashboard({
           </div>
         )}
 
+        {/*
+          Collapsed, because it puzzles the people who do not need it: a list of
+          addresses to add by hand, sitting under the keys, reads as something
+          that has to be filled in. It matters only to somebody on a split
+          profile who has found a site the built-in list misses. Full width
+          either way, so opening it does not move the page around.
+        */}
         {me?.policy.allowCustomRoutes ? (
-          <>
-            <h2 className="text-base font-semibold">
+          <details className="group w-full">
+            <summary className="flex cursor-pointer list-none items-center gap-2 text-base font-semibold">
+              <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground transition-transform group-open:rotate-180" />
               {t("routes.sectionTitle")}
-            </h2>
-            <CustomRoutesCard me={me} onSaved={load} />
-          </>
+            </summary>
+            <div className="mt-3">
+              <CustomRoutesCard me={me} onSaved={load} />
+            </div>
+          </details>
         ) : null}
       </main>
 
@@ -571,6 +588,7 @@ export function EmployeeDashboard({
         showConfSection={Boolean(
           me?.policy.allowConfigRedownload && me?.policy.allowConfDownload,
         )}
+        allowCustomRoutes={Boolean(me?.policy.allowCustomRoutes)}
         // Walkthrough videos are a policy value, so an admin can attach one
         // without a deploy. Absent until then — the guide shows a placeholder.
         videos={me?.policy.installGuideVideos ?? null}
