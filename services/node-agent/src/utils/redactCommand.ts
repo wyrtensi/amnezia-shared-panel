@@ -1,18 +1,19 @@
 /**
  * Strip secret material out of a string that is about to reach a log.
  *
- * The agent builds file writes as `echo '<base64>' | base64 -d > …`
- * (utils/shellWrite.ts). For writeWgConfig that base64 is the WHOLE awg0.conf,
- * interface PrivateKey included. On failure the connection helpers reject with
- * a message built from the command AND from the ExecException — and Node's
- * exec error message is `Command failed: <the full command>\n<stderr>`, so the
- * payload is present twice. fastifyErrorHandler then writes that message to
+ * File contents no longer travel inside the command - they go on stdin
+ * (utils/shellWrite.ts, utils/execWithInput.ts) - so the biggest source of
+ * payload-in-a-log is gone by construction. What remains is what the tools
+ * themselves say back: `awg-quick strip` quotes the offending line on a parse
+ * error, PrivateKey included, and that stderr is what the connection helpers
+ * build their rejection from. fastifyErrorHandler then writes that message to
  * appLogger, which AGENTS.md forbids for private keys and VPN configs.
  *
- * Matching is on the base64 run itself, not on the `echo '...'` syntax around
- * it, because buildCommand() re-quotes the command as
- * `docker exec <c> sh -lc '<cmd with ' -> '\''>'`: the raw command and the
- * error carry different quoting but the same payload.
+ * Matching is on the base64 run itself rather than on any surrounding syntax,
+ * because a payload reaches a log through several shapes - raw stderr, a
+ * stringified error, a command re-quoted by buildCommand() as
+ * `docker exec <c> sh -lc '<cmd with ' -> '\''>'` - and only the payload is
+ * common to all of them.
  */
 export const REDACTED = "<redacted>";
 

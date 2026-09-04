@@ -39,10 +39,6 @@ export const createAmneziaConnectionMock = ({
       return { stdout: "client-private-key\n", stderr: "" };
     }
 
-    if (/\| (?:a?wg) pubkey$/.test(command)) {
-      return { stdout: "generated-client-id\n", stderr: "" };
-    }
-
     if (command.includes("wireguard_psk.key")) {
       return { stdout: "preshared-key\n", stderr: "" };
     }
@@ -53,6 +49,17 @@ export const createAmneziaConnectionMock = ({
 
     return { stdout: "", stderr: "" };
   });
+
+  // Run a command whose payload arrives on stdin
+  const runWithInput = vi.fn<IAmneziaConnection["runWithInput"]>(
+    async (command) => {
+      if (/^(?:a?wg) pubkey$/.test(command)) {
+        return { stdout: "generated-client-id\n", stderr: "" };
+      }
+
+      return { stdout: "", stderr: "" };
+    },
+  );
 
   // Прочитать файл внутри контейнера
   const readFile = vi.fn<IAmneziaConnection["readFile"]>(
@@ -107,6 +114,7 @@ export const createAmneziaConnectionMock = ({
 
   const connection: IAmneziaConnection = {
     run,
+    runWithInput,
     readFile,
     writeFile,
     readWgConfig,
@@ -123,6 +131,7 @@ export const createAmneziaConnectionMock = ({
     state,
     spies: {
       run,
+      runWithInput,
       readFile,
       writeFile,
       readWgConfig,

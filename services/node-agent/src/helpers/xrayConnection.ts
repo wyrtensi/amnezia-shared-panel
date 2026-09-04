@@ -9,7 +9,11 @@ import { AppContract } from "@/contracts/app";
 import { CommandResult } from "@/types/shared";
 import { TimeContract } from "@/contracts/time";
 import { ServerErrorCode } from "@/types/shared";
-import { buildWriteFileCommand } from "@/utils/shellWrite";
+import {
+  buildWriteFileCommand,
+  encodeWritePayload,
+} from "@/utils/shellWrite";
+import { runWithInput as runCommandWithInput } from "@/utils/execWithInput";
 import { redactCommand } from "@/utils/redactCommand";
 
 /**
@@ -91,6 +95,23 @@ export class XrayConnection {
   }
 
   /**
+   * Execute a command inside the container with its payload on stdin.
+   */
+  runWithInput(
+    cmd: string,
+    input: string,
+    options?: RunOptions,
+  ): Promise<CommandResult> {
+    return runCommandWithInput({
+      container: AppContract.Xray.DOCKER_CONTAINER,
+      cmd,
+      input,
+      timeout: options?.timeout,
+      maxBufferBytes: options?.maxBufferBytes,
+    });
+  }
+
+  /**
    * Прочитать файл
    */
   async readFile(path: string): Promise<string> {
@@ -103,7 +124,10 @@ export class XrayConnection {
    * Записать файл
    */
   async writeFile(path: string, content: string): Promise<void> {
-    await this.run(buildWriteFileCommand(path, content));
+    await this.runWithInput(
+      buildWriteFileCommand(path),
+      encodeWritePayload(content),
+    );
   }
 
   /**

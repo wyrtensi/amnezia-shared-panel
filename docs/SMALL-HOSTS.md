@@ -305,3 +305,21 @@ Bounded repetition in a POSIX character class is not free. On GNU grep 3.11,
 measurable time. On a small host the OOM killer reaps the grep and the script
 reports the *validation* as failed, which sends you looking in the wrong place
 entirely. Prefer a linear formulation (`tr -d '[:graph:]'` and a length check).
+
+### A command is one argument, and one argument has a ceiling
+
+Linux caps a single argv string at `MAX_ARG_STRLEN` — 128 KiB. Measured on a
+node: an argument of 131000 bytes runs, 140000 fails. Anything built as
+`exec("… " + payload)` therefore has a hard size limit that has nothing to do
+with the host being small, and it is invisible until the payload grows.
+
+The node-agent hit exactly this. Every file it writes into an AmneziaWG
+container travelled inside the command as base64, so the clients table stopped
+fitting at roughly **420 peers**: past that, each new key failed while both the
+node's `SERVER_MAX_PEERS` and the panel's `nodes.max_peers` still reported free
+slots — a capacity error that no capacity number explained. Fixed by passing
+the payload on stdin (`utils/execWithInput.ts`), which has no such cap and, as
+a side effect, keeps private keys out of `ps` and out of error messages.
+
+Rule: a payload whose size depends on how much the node is carrying belongs on
+stdin, never in the command.

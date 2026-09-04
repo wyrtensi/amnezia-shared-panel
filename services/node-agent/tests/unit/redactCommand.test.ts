@@ -27,47 +27,52 @@ const dockerWrap = (cmd: string) =>
   `docker exec amnezia-awg sh -lc '${cmd.replace(/'/g, "'\\''")}'`;
 
 describe("redactCommand", () => {
-  it("removes the encoded config from a writeWgConfig command", () => {
-    const cmd = buildValidatedWgConfigCommand(
-      "/opt/amnezia/awg/wg0.conf",
-      WG_CONFIG,
-      "awg-quick",
-    );
+  // The write commands are the reason this helper exists, so keep asserting
+  // that they carry nothing to redact in the first place. Content travels on
+  // stdin now; if it ever moves back into the command, this fails here rather
+  // than quietly in a log on a node.
+  it("has nothing to redact in a write command, because the payload is on stdin", () => {
     const encoded = Buffer.from(WG_CONFIG, "utf-8").toString("base64");
+    const commands = [
+      buildValidatedWgConfigCommand("/opt/amnezia/awg/wg0.conf", "awg-quick"),
+      buildWriteFileCommand("/opt/amnezia/awg/clientsTable"),
+    ];
 
-    expect(cmd).toContain(encoded); // guard: the payload really is in there
-    const redacted = redactCommand(cmd);
-
-    expect(redacted).not.toContain(encoded);
-    expect(redacted).toContain(REDACTED);
-    // The diagnostically useful shape survives.
-    expect(redacted).toContain("awg-quick strip");
-    expect(redacted).toContain("/opt/amnezia/awg/wg0.conf");
+    for (const cmd of commands) {
+      expect(cmd).not.toContain(encoded);
+      expect(cmd).not.toContain(PRIVATE_KEY);
+      expect(redactCommand(cmd)).toBe(cmd);
+    }
   });
 
-  it("removes it from the docker exec / sh -lc escaped form as well", () => {
-    const cmd = buildWriteFileCommand("/opt/amnezia/awg/clientsTable", WG_CONFIG);
+  it("removes an encoded payload from a stringified error", () => {
     const encoded = Buffer.from(WG_CONFIG, "utf-8").toString("base64");
-
-    const redacted = redactCommand(dockerWrap(cmd));
-
-    expect(redacted).not.toContain(encoded);
-    expect(redacted).toContain("docker exec amnezia-awg");
-  });
-
-  it("removes it from a stringified exec error, which repeats the command", () => {
-    const cmd = buildValidatedWgConfigCommand(
-      "/opt/amnezia/awg/wg0.conf",
-      WG_CONFIG,
-      "awg-quick",
-    );
-    const encoded = Buffer.from(WG_CONFIG, "utf-8").toString("base64");
-    const execError = `Error: Command failed: ${dockerWrap(cmd)}\nwg-quick: parse error`;
+    const execError = `Error: Command failed: ${dockerWrap(
+      `echo '${encoded}' | base64 -d`,
+    )}\nwg-quick: parse error`;
 
     const redacted = redactCommand(execError);
 
     expect(redacted).not.toContain(encoded);
+    expect(redacted).toContain(REDACTED);
+    // The diagnostically useful shape survives.
     expect(redacted).toContain("wg-quick: parse error");
+    expect(redacted).toContain("docker exec amnezia-awg");
+  });
+
+  // What `awg-quick strip` actually prints when the config it was handed does
+  // not parse: the offending line, verbatim, PrivateKey and all.
+  it("removes a key from the stderr the tool itself prints back", () => {
+    const stderr = [
+      "#[1] Line unrecognized: `PrivateKey = " + PRIVATE_KEY + "`",
+      "#[2] Line unrecognized: `PresharedKey = " + PRESHARED_KEY + "`",
+    ].join("\n");
+
+    const redacted = redactCommand(stderr);
+
+    expect(redacted).not.toContain(PRIVATE_KEY);
+    expect(redacted).not.toContain(PRESHARED_KEY);
+    expect(redacted).toContain("Line unrecognized");
   });
 
   it("removes a key written out literally, e.g. echoed back in stderr", () => {

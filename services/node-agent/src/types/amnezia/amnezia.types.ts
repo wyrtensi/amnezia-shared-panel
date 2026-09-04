@@ -32,6 +32,11 @@ export type ClientTableEntry = {
 
 export interface IAmneziaConnection {
   run(cmd: string, options?: RunOptions): Promise<CommandResult>;
+  runWithInput(
+    cmd: string,
+    input: string,
+    options?: RunOptions,
+  ): Promise<CommandResult>;
   readFile(path: string): Promise<string>;
   writeFile(path: string, content: string): Promise<void>;
   readWgConfig(): Promise<string>;

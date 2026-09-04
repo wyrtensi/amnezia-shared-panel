@@ -365,7 +365,8 @@ export abstract class AmneziaWgServiceBase {
 
     // Generate the client public key
     const clientId = (
-      await this.connection.run(`echo '${clientPrivateKey}' | awg pubkey`)
+      await this.connection.runWithInput(`awg pubkey`, `${clientPrivateKey}
+`)
     ).stdout.trim();
 
     // Read the server config

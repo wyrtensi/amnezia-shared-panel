@@ -12,6 +12,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildValidatedWgConfigCommand,
   buildWriteFileCommand,
+  encodeWritePayload,
 } from "@/utils/shellWrite";
 
 /**
@@ -76,16 +77,32 @@ describe("dockerStats", () => {
  */
 describe("buildWriteFileCommand", () => {
   // Тестирование кодирования содержимого и атомарного перемещения
-  it("builds an atomic command without interpolating raw content", () => {
-    const content = "secret ' value\nsecond line";
-    const command = buildWriteFileCommand("/tmp/config.json", content);
+  it("builds an atomic command that carries no content at all", () => {
+    const command = buildWriteFileCommand("/tmp/config.json");
 
-    expect(command).not.toContain(content);
-    expect(command).toContain(Buffer.from(content).toString("base64"));
-    expect(command).toContain("'/tmp/config.json.tmp'");
+    expect(command).toContain("base64 -d > '/tmp/config.json.tmp'");
     expect(command).toContain(
       "mv -f '/tmp/config.json.tmp' '/tmp/config.json'",
     );
+  });
+
+  // The regression this whole shape exists for. The content used to be
+  // interpolated into the command as base64, and `exec` passes a command as ONE
+  // argv string, which Linux caps at MAX_ARG_STRLEN (128 KiB). The clients
+  // table crossed that at roughly 420 peers, and from there every create failed
+  // with E2BIG while both peer caps still reported free slots. Assert on the
+  // property that prevents it: command length must not depend on content size.
+  it("keeps the command a fixed size no matter how large the payload is", () => {
+    const MAX_ARG_STRLEN = 128 * 1024;
+    const small = encodeWritePayload("x");
+    const huge = encodeWritePayload("y".repeat(4 * MAX_ARG_STRLEN));
+
+    const command = buildWriteFileCommand("/opt/amnezia/awg/clientsTable");
+
+    expect(huge.length).toBeGreaterThan(MAX_ARG_STRLEN);
+    expect(command.length).toBeLessThan(1024);
+    expect(command).not.toContain(small);
+    expect(command).not.toContain(huge);
   });
 
   // The temp file is created by `>`, so it gets the shell's umask (0644 here),
@@ -93,17 +110,15 @@ describe("buildWriteFileCommand", () => {
   // therefore widened a state file the entrypoint had created 0600, and
   // preflight refused the next deploy on that node.
   it("sets the mode on the temp file before it replaces the target", () => {
-    const command = buildWriteFileCommand("/tmp/config.json", "value");
+    const command = buildWriteFileCommand("/tmp/config.json");
 
     expect(command).toContain("chmod 600 '/tmp/config.json.tmp'");
     expect(command.indexOf("chmod 600")).toBeLessThan(command.indexOf("mv -f"));
   });
 
   it("validates and durably replaces a WireGuard config", () => {
-    const content = "[Interface]\nAddress = 10.89.0.1/22\n";
     const command = buildValidatedWgConfigCommand(
       "/opt/amnezia/awg/awg0.conf",
-      content,
       "awg-quick",
     );
 
