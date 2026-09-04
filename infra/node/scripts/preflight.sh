@@ -154,7 +154,16 @@ compose config --quiet
 # live peers, its .env predates PROTOCOLS_ENABLED, and the new default is AWG 3.1
 # only. Deploying that would stop awg2 and drop every legacy peer, reporting
 # success the whole way. Refuse instead, and say exactly what to add.
-if container_is_running amnezia-awg2 && ! awg2_enabled; then
+# ...but only for an awg2 that is OURS. Two hosts in this fleet run an
+# unlabelled `amnezia-awg2` belonging to somebody else's AmneziaVPN install, one
+# of them with 41 peers. Those are exactly the nodes where our profile must stay
+# off, so a guard that keys on the container name alone would refuse to deploy
+# precisely where it matters most.
+awg2_is_ours() {
+  [ "$(docker inspect --format '{{index .Config.Labels "com.docker.compose.project"}}' amnezia-awg2 2>/dev/null || true)" = "amnezia-node" ]
+}
+
+if container_is_running amnezia-awg2 && awg2_is_ours && ! awg2_enabled; then
   peers="$(docker exec amnezia-awg2 wg show 2>/dev/null | grep -c '^peer:' || true)"
   fail "amnezia-awg2 is running with ${peers:-?} peer(s) but PROTOCOLS_ENABLED does not include amneziawg2.
   Deploying now would stop it and drop those peers.
