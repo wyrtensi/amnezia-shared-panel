@@ -818,8 +818,8 @@ const ru = {
     "На каких нодах пользователи могут создавать ключи. Отдельным пользователям можно назначить свой набор в их политиках.",
   "policy.nodeOrder": "Порядок серверов",
   "policy.nodeOrderHint":
-    "Порядок, в котором пользователи видят серверы — на панели и при создании ключа. Отметка «Рекомендуется» ставится только на верхние серверы списка: отметьте нужный, и все, что выше него, тоже станут рекомендуемыми. Отметка ничего не меняет в порядке и не расширяет доступ: недоступный пользователю сервер он не увидит, даже если тот рекомендован.",
-  "policy.recommendToggle": "Рекомендовать (вместе со всеми, кто выше)",
+    "Порядок, в котором пользователи видят серверы — на панели и при создании ключа. Рекомендуемые серверы всегда стоят наверху списка: отметьте нужный, и он сам поднимется в этот блок, остальные строки останутся как были. Снимете отметку — сервер опустится сразу под блоком рекомендуемых. Отметка не расширяет доступ: недоступный пользователю сервер он не увидит, даже если тот рекомендован.",
+  "policy.recommendToggle": "Рекомендовать (поднимет сервер наверх)",
   "policy.recommendedSummary": "Рекомендуется первых: {count} из {total}",
   "policy.moveUp": "Выше",
   "policy.moveDown": "Ниже",
@@ -1743,8 +1743,8 @@ const en = {
     "Which nodes users can create keys on. Individual users can be assigned their own set in their policies.",
   "policy.nodeOrder": "Server order",
   "policy.nodeOrderHint":
-    "The order users see servers in — on the dashboard and when creating a key. The \"Recommended\" badge can only go on servers at the top of the list: tick one and everything above it is recommended too. The badge changes nothing about the order and widens nothing: a server a user may not use stays hidden from them even when it is recommended.",
-  "policy.recommendToggle": "Recommend (together with everything above it)",
+    "The order users see servers in — on the dashboard and when creating a key. Recommended servers always sit at the top of the list: tick one and it rises into that block on its own, while every other row keeps the state it had. Untick it and it drops just below the block. The badge widens nothing: a server a user may not use stays hidden from them even when it is recommended.",
+  "policy.recommendToggle": "Recommend (raises the server to the top)",
   "policy.recommendedSummary": "Recommended: the first {count} of {total}",
   "policy.moveUp": "Move up",
   "policy.moveDown": "Move down",

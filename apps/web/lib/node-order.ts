@@ -10,7 +10,10 @@
  *
  * Recommending is modelled here as a COUNT from the top, because the control
  * API only accepts a recommended set that is a prefix of the order. The count
- * never leaves the editor: it is resolved back to ids on save.
+ * never leaves the editor: it is resolved back to ids on save. Ticking a row
+ * therefore cannot recommend it where it stands — `recommendNode` moves it into
+ * the prefix instead, and `unrecommendNode` moves it out, so the tick reads as
+ * "recommend this server" rather than "recommend these first N servers".
  */
 export type OrderableNode = { id: string; name: string };
 
@@ -110,3 +113,50 @@ export const recommendedPrefix = (
   count: number,
 ): string[] =>
   orderedIds.slice(0, Math.max(0, Math.min(count, orderedIds.length)));
+
+/** A full order together with the recommended ids it resolves to. */
+export type NodeOrderChange = {
+  nodeOrder: string[];
+  recommendedNodeIds: string[];
+};
+
+const settle = (orderedIds: readonly string[], count: number): NodeOrderChange => ({
+  nodeOrder: [...orderedIds],
+  recommendedNodeIds: recommendedPrefix(orderedIds, count),
+});
+
+/**
+ * Recommends one node by RAISING it to the bottom of the recommended block —
+ * the reading an operator expects from a checkbox. Everything the node passed
+ * closes up behind it and keeps whatever recommendation it had, so ticking row
+ * 4 no longer recommends rows 1-3 along with it.
+ *
+ * Ticking a node that is already recommended, or an id that is not in the list
+ * (a row that vanished under the click), changes nothing.
+ */
+export const recommendNode = (
+  orderedIds: readonly string[],
+  count: number,
+  id: string,
+): NodeOrderChange => {
+  const from = orderedIds.indexOf(id);
+  if (from < 0 || from < count) return settle(orderedIds, count);
+  return settle(moveNodeToIndex(orderedIds, id, count), count + 1);
+};
+
+/**
+ * Unrecommends one node by dropping it just BELOW the shrunken prefix, so the
+ * nodes that were recommended alongside it stay recommended and the unticked
+ * node keeps the best position it can. Unticking the last recommended row moves
+ * nothing — it is already where it needs to be.
+ */
+export const unrecommendNode = (
+  orderedIds: readonly string[],
+  count: number,
+  id: string,
+): NodeOrderChange => {
+  const from = orderedIds.indexOf(id);
+  if (from < 0 || from >= count) return settle(orderedIds, count);
+  const nextCount = count - 1;
+  return settle(moveNodeToIndex(orderedIds, id, nextCount), nextCount);
+};

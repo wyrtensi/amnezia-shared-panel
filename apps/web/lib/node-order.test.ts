@@ -5,6 +5,8 @@ import {
   moveNodeToIndex,
   recommendedCountFromIds,
   recommendedPrefix,
+  recommendNode,
+  unrecommendNode,
 } from "./node-order";
 
 const nodes = [
@@ -119,6 +121,80 @@ describe("moveNodeToIndex", () => {
     const input = ["a", "b", "c"];
     const snapshot = [...input];
     moveNodeToIndex(input, "c", 0);
+    expect(input).toEqual(snapshot);
+  });
+});
+
+describe("recommendNode", () => {
+  it("raises a node into the recommended prefix instead of recommending everything above it", () => {
+    const order = ["a", "b", "c", "d"];
+    const next = recommendNode(order, 1, "c");
+    expect(next.nodeOrder).toEqual(["a", "c", "b", "d"]);
+    expect(next.recommendedNodeIds).toEqual(["a", "c"]);
+  });
+
+  it("recommends the top row without moving anything", () => {
+    const next = recommendNode(["a", "b", "c"], 0, "a");
+    expect(next.nodeOrder).toEqual(["a", "b", "c"]);
+    expect(next.recommendedNodeIds).toEqual(["a"]);
+  });
+
+  it("promotes the last row all the way to the top when nothing is recommended", () => {
+    const next = recommendNode(["a", "b", "c"], 0, "c");
+    expect(next.nodeOrder).toEqual(["c", "a", "b"]);
+    expect(next.recommendedNodeIds).toEqual(["c"]);
+  });
+
+  it("is a no-op for a row that is already recommended", () => {
+    const next = recommendNode(["a", "b", "c"], 2, "b");
+    expect(next.nodeOrder).toEqual(["a", "b", "c"]);
+    expect(next.recommendedNodeIds).toEqual(["a", "b"]);
+  });
+
+  it("is a no-op for an unknown id, and keeps the prefix honest", () => {
+    const next = recommendNode(["a", "b"], 1, "zz");
+    expect(next.nodeOrder).toEqual(["a", "b"]);
+    expect(next.recommendedNodeIds).toEqual(["a"]);
+  });
+
+  it("never mutates the input", () => {
+    const input = ["a", "b", "c"];
+    const snapshot = [...input];
+    recommendNode(input, 0, "c");
+    expect(input).toEqual(snapshot);
+  });
+});
+
+describe("unrecommendNode", () => {
+  it("drops one node out of the prefix and leaves the rest recommended", () => {
+    const next = unrecommendNode(["a", "b", "c", "d"], 3, "a");
+    // "a" lands directly under the shrunken prefix, not at the bottom.
+    expect(next.nodeOrder).toEqual(["b", "c", "a", "d"]);
+    expect(next.recommendedNodeIds).toEqual(["b", "c"]);
+  });
+
+  it("keeps the last recommended row in place when it is the one unticked", () => {
+    const next = unrecommendNode(["a", "b", "c", "d"], 3, "c");
+    expect(next.nodeOrder).toEqual(["a", "b", "c", "d"]);
+    expect(next.recommendedNodeIds).toEqual(["a", "b"]);
+  });
+
+  it("is a no-op for a row that is not recommended", () => {
+    const next = unrecommendNode(["a", "b", "c"], 1, "c");
+    expect(next.nodeOrder).toEqual(["a", "b", "c"]);
+    expect(next.recommendedNodeIds).toEqual(["a"]);
+  });
+
+  it("is a no-op for an unknown id", () => {
+    const next = unrecommendNode(["a", "b"], 2, "zz");
+    expect(next.nodeOrder).toEqual(["a", "b"]);
+    expect(next.recommendedNodeIds).toEqual(["a", "b"]);
+  });
+
+  it("never mutates the input", () => {
+    const input = ["a", "b", "c"];
+    const snapshot = [...input];
+    unrecommendNode(input, 2, "a");
     expect(input).toEqual(snapshot);
   });
 });
