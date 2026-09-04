@@ -2937,7 +2937,7 @@ describe("PostgresControlRepository internal key name", () => {
 
         await expect(
           subject().adminAction(admin, "keys", keyId, "purge", {}),
-        ).rejects.toMatchObject({ status: 409, code: "KEY_NOT_PURGEABLE" });
+        ).rejects.toMatchObject({ statusCode: 409, code: "KEY_NOT_PURGEABLE" });
 
         const rows = await database.db
           .select({ id: vpnKeys.id })
