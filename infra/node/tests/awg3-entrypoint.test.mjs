@@ -54,5 +54,7 @@ test("exposes the AWG3 container on UDP 51890 in the node stack", async () => {
   assert.match(compose, /container_name: amnezia-awg3/);
   assert.match(compose, /amneziavpn\/amneziawg-go:3\.1\.\d+@sha256:[0-9a-f]{64}/);
   assert.match(compose, /"51890:51890\/udp"/);
-  assert.match(compose, /PROTOCOLS_ENABLED: amneziawg2,amneziawg3/);
+  // AWG 3.1 alone is the default shape; awg2 is opt-in through the same
+  // variable, which is also what activates its compose profile.
+  assert.match(compose, /PROTOCOLS_ENABLED: \$\{PROTOCOLS_ENABLED:-amneziawg3\}/);
 });

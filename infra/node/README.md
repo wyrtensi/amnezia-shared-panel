@@ -1,8 +1,10 @@
 # Production AWG2 + AWG3 node
 
-This directory contains local, operator-run deployment assets for one Linux/amd64 VPN node. The scripts do not use SSH and do not mutate remote hosts. The node runs AmneziaWG 2.0 and AmneziaWG 3.1 side by side in separate containers so clients can be issued keys for either protocol.
+This directory contains local, operator-run deployment assets for one Linux/amd64 VPN node. The scripts do not use SSH and do not mutate remote hosts.
 
-**AmneziaWG 3.1 is the primary protocol** for new keys and new nodes. AmneziaWG 2.0 is kept only for backward compatibility with existing peers on already-deployed nodes; a brand-new node can run AWG 3.1 alone.
+**A node serves AmneziaWG 3.1 only by default.** AmneziaWG 2.0 is opt-in: it lives behind the `awg2` compose profile and is started only when `PROTOCOLS_ENABLED` names `amneziawg2`, which is the same value the agent uses to decide what it manages. Keep it enabled on a node that still carries legacy peers; leave it off everywhere else. `node-agent` no longer depends on awg2, so a 3.1-only node starts without it — previously the agent refused to come up until somebody brought up a protocol the node does not serve.
+
+`preflight.sh` refuses to deploy when `amnezia-awg2` is running but `PROTOCOLS_ENABLED` does not name it, so an upgrade cannot silently stop a container that is carrying peers.
 
 ## Fixed deployment contract
 
@@ -13,7 +15,7 @@ This directory contains local, operator-run deployment assets for one Linux/amd6
 - Approved AWG3 multi-platform index digest: `sha256:4450928744b051589bb3ba5cf6dd0cd8d7dc470b9432dc32d03d5ff5ede11b7a`.
 - VPN endpoints: UDP `51889` (AWG2), UDP `51890` (AWG3).
 - VPN subnets: `10.89.0.0/22` (AWG2, server `10.89.0.1/22`); `10.90.0.0/22` (AWG3, server `10.90.0.1/22`).
-- Node-agent endpoint: host loopback `127.0.0.1:4001` only, `PROTOCOLS_ENABLED=amneziawg2,amneziawg3`.
+- Node-agent endpoint: host loopback `127.0.0.1:4001` only. `PROTOCOLS_ENABLED` defaults to `amneziawg3`; add `amneziawg2` to it on a node that still carries legacy peers, which is also what activates the `awg2` compose profile.
 - Persistent state: `state/amnezia-awg2` and `state/amnezia-awg3` (`awg0.conf`, key material, and `clientsTable`).
 - Restart policy: `unless-stopped`; Watchtower and mutable `latest` tags are forbidden.
 

@@ -25,12 +25,35 @@ fail() {
   exit 1
 }
 
+# Does this node serve AWG 2.0? Read from PROTOCOLS_ENABLED so there is exactly
+# one switch: the same value the agent gets, and the one that decides whether
+# the awg2 compose profile is active. A node whose .env predates this key is
+# AWG 3.1 only - preflight refuses to act on that if awg2 is actually running.
+awg2_enabled() {
+  case ",$(env_value PROTOCOLS_ENABLED)," in
+    *,amneziawg2,*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# Every compose call goes through here so `config --services`, the health gates
+# and `up` all see the same set of services. A profile passed to one and not the
+# others would deploy awg2 and then never gate it.
 compose() {
-  docker compose \
-    --project-directory "$NODE_DIR" \
-    --env-file "$ENV_FILE" \
-    --file "$COMPOSE_FILE" \
-    "$@"
+  if awg2_enabled; then
+    docker compose \
+      --project-directory "$NODE_DIR" \
+      --env-file "$ENV_FILE" \
+      --file "$COMPOSE_FILE" \
+      --profile awg2 \
+      "$@"
+  else
+    docker compose \
+      --project-directory "$NODE_DIR" \
+      --env-file "$ENV_FILE" \
+      --file "$COMPOSE_FILE" \
+      "$@"
+  fi
 }
 
 env_value() {

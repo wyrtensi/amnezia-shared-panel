@@ -51,7 +51,7 @@ if [ -s "$STATE_DIR/awg0.conf" ]; then
   fi
 fi
 
-if ! compose up --detach --no-build --remove-orphans; then
+if ! compose up --detach --no-build; then
   info "Deployment failed before health verification. Persistent state was not removed."
   [ -z "$backup_path" ] || info "Rollback source: $backup_path"
   exit 1

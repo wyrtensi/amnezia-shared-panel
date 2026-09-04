@@ -125,7 +125,7 @@ if [ "$has_awg3" -eq 1 ]; then
 fi
 
 rollback_healthy=0
-if compose up --detach --no-build --remove-orphans && \
+if compose up --detach --no-build && \
    wait_healthy amnezia-awg2 && \
    { [ "$has_awg3" -eq 0 ] || wait_healthy amnezia-awg3; } && \
    wait_healthy amnezia-node-agent; then
@@ -152,6 +152,6 @@ if [ "$has_awg3" -eq 1 ]; then
   fi
 fi
 if [ -d "$STATE_DIR" ]; then
-  compose up --detach --no-build --remove-orphans >/dev/null 2>&1 || true
+  compose up --detach --no-build >/dev/null 2>&1 || true
 fi
 fail "rollback health gate failed; the pre-rollback state was restored"
