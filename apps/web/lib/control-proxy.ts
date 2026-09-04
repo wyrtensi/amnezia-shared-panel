@@ -50,18 +50,58 @@ export const buildControlTarget = (
 
 /**
  * The control API answers with JSON (every route), text/plain (config
- * downloads) or image/png (QR codes) — see apps/control-api/src/defaultService.ts
- * and app.ts `reply.type(result.contentType)`. Anything else is relayed as an
- * opaque download instead of being echoed, so no upstream can ever make the
- * browser render a body as same-origin HTML. Null means "upstream sent none"
- * (a 204) and the route sets no content-type at all.
+ * downloads), image/png (the downloadable QR) or image/svg+xml (the QR the
+ * config dialog displays, `format=qr-svg`) — see
+ * apps/control-api/src/defaultService.ts and app.ts
+ * `reply.type(result.contentType)`. Anything else is relayed as an opaque
+ * download instead of being echoed, so no upstream can ever make the browser
+ * render a body as same-origin HTML. Null means "upstream sent none" (a 204)
+ * and the route sets no content-type at all.
+ *
+ * image/svg+xml was absent here while `format=qr-svg` was already being served,
+ * so the dialog's `<img src=".../config?format=qr-svg">` received
+ * application/octet-stream under `nosniff` and rendered a broken-image
+ * placeholder for every full-tunnel key. It is relayed as an image and made
+ * inert as a document by `relayedContentSecurityPolicy` below.
  */
-const RELAYED_MEDIA_TYPES = new Set(["application/json", "text/plain", "image/png"]);
+const RELAYED_MEDIA_TYPES = new Set([
+  "application/json",
+  "text/plain",
+  "image/png",
+  "image/svg+xml",
+]);
+
+/**
+ * Media types that a browser will execute script from when the URL is opened as
+ * a top-level document rather than loaded through `<img>`. SVG is the only one
+ * the control API emits.
+ */
+const SCRIPTABLE_MEDIA_TYPES = new Set(["image/svg+xml"]);
+
+/**
+ * The policy that keeps a relayed SVG from being an executable same-origin
+ * page. `default-src 'none'` kills scripts and subresources, the style
+ * allowance is what the QR's own inline attributes need, and `sandbox` with no
+ * token drops the response into an opaque origin so it cannot reach the
+ * panel's cookies even if the other two are ever relaxed.
+ */
+const SVG_CONTENT_SECURITY_POLICY = "default-src 'none'; style-src 'unsafe-inline'; sandbox";
+
+const mediaTypeOf = (upstream: string | null): string | null =>
+  upstream ? (upstream.split(";")[0]?.trim().toLowerCase() ?? null) : null;
 
 export const relayedContentType = (upstream: string | null): string | null => {
   if (!upstream) return null;
-  const mediaType = upstream.split(";")[0]?.trim().toLowerCase();
+  const mediaType = mediaTypeOf(upstream);
   return mediaType && RELAYED_MEDIA_TYPES.has(mediaType)
     ? upstream
     : "application/octet-stream";
+};
+
+/** The `content-security-policy` for a relayed body, or null when none is needed. */
+export const relayedContentSecurityPolicy = (upstream: string | null): string | null => {
+  const mediaType = mediaTypeOf(upstream);
+  return mediaType && SCRIPTABLE_MEDIA_TYPES.has(mediaType)
+    ? SVG_CONTENT_SECURITY_POLICY
+    : null;
 };

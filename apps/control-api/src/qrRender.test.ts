@@ -143,6 +143,19 @@ describe("renderKeyQr", () => {
     );
   });
 
+  it("renders an SVG for the largest real full-tunnel payload, inside the budget", async () => {
+    // The reproduction for the broken-image placeholder the operator saw on an
+    // "All traffic" key: this is the render path that `format=qr-svg` uses, and
+    // it succeeds. The failure was downstream, in apps/web's control proxy,
+    // which rewrote image/svg+xml to application/octet-stream — see
+    // apps/web/lib/control-proxy.ts.
+    const rendered = await renderKeyQr(fakeVpnLink(1147), "svg");
+
+    expect(rendered.kind).toBe("svg");
+    expect(rendered.modules).toBe(113);
+    expect(rendered.modules).toBeLessThanOrEqual(QR_MAX_MODULES);
+  });
+
   it("keeps the module budget below the density that failed in production", () => {
     expect(QR_MAX_MODULES).toBeLessThan(149);
   });
