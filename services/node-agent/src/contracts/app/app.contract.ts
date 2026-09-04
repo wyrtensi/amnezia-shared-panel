@@ -117,6 +117,10 @@ export const AppContract = {
 
     // Значение выключенного переключателя AmneziaWG 3.1 (RandomTrailers/DisableCookies)
     TOGGLE_OFF: "off",
+
+    // The word form of an enabled toggle. `awg` also accepts a decimal number
+    // (non-zero is on), which isAwgToggleEnabled handles separately.
+    TOGGLE_ON: "on",
   } as const,
 
   // DNS-серверы по умолчанию для клиентских конфигов
