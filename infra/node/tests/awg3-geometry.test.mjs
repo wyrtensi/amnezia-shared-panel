@@ -1,0 +1,194 @@
+import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { readFile } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
+import test from "node:test";
+
+const scriptPath = fileURLToPath(
+  new URL("../scripts/awg3-geometry.sh", import.meta.url),
+);
+
+const executing = {
+  skip: process.platform === "linux" ? false : "needs a POSIX shell",
+};
+
+/** One generated parameter block, as a key -> value map. */
+const generate = (mtu = "1376") => {
+  const result = spawnSync("sh", [scriptPath, mtu], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  const params = {};
+  for (const line of result.stdout.split("\n")) {
+    const match = /^([A-Za-z0-9]+) = (.*)$/.exec(line);
+    if (match) params[match[1]] = match[2];
+  }
+  return { params, raw: result.stdout };
+};
+
+const num = (params, key) => {
+  assert.match(params[key] ?? "", /^\d+$/, `${key} must be a plain integer`);
+  return Number(params[key]);
+};
+
+// 40 draws: the invariants below are probabilistic failures, and a single run
+// would pass with a broken generator most of the time.
+const DRAWS = 40;
+
+test("emits every key the client needs, as plain integers", executing, () => {
+  const { params } = generate();
+
+  // iOS and macOS silently drop the whole AWG block - connecting as plain
+  // WireGuard, with no error - if any of these is missing or empty. It is the
+  // worst client-side failure mode there is, because it looks like success.
+  for (const key of ["Jc", "Jmin", "Jmax", "S1", "S2", "H1", "H2", "H3", "H4"]) {
+    assert.match(params[key] ?? "", /\S/, `${key} must be present and non-empty`);
+  }
+  // Android's toInt(), Apple's UInt16() and Windows' parseUint16 all hard-fail
+  // on a range in these keys, so a range here bricks the config everywhere.
+  for (const key of ["Jc", "Jmin", "Jmax", "S1", "S2", "S3", "S4"]) {
+    assert.doesNotMatch(params[key] ?? "", /-/, `${key} must not be a range`);
+  }
+});
+
+test("keeps S1..S4 above the header-protection nonce floor", executing, () => {
+  // amneziawg-go rejects the device outright when header protection is set and
+  // any S is below the 12-byte cipher nonce.
+  for (let i = 0; i < DRAWS; i += 1) {
+    const { params } = generate();
+    for (const key of ["S1", "S2", "S3", "S4"]) {
+      assert.ok(num(params, key) >= 12, `${key}=${params[key]} is below 12`);
+    }
+    assert.ok(num(params, "S1") <= 150);
+    assert.ok(num(params, "S2") <= 150);
+    assert.ok(num(params, "S3") <= 64);
+  }
+});
+
+test("fits S4 inside the MTU budget it is given", executing, () => {
+  // S4 is the only S that costs payload: S4 + 32 + tunnelMTU + 28 <= pathMTU.
+  for (const mtu of ["1376", "1420"]) {
+    for (let i = 0; i < 10; i += 1) {
+      const { params } = generate(mtu);
+      assert.ok(
+        num(params, "S4") + 32 + Number(mtu) + 28 <= 1500,
+        `S4=${params.S4} does not fit an MTU of ${mtu}`,
+      );
+    }
+  }
+});
+
+test("never inverts the junk range", executing, () => {
+  // The one that is not merely wrong but dangerous: amneziawg-go computes the
+  // junk size as `min + fastrandn(max - min)` on uint32 and validates nothing,
+  // so Jmax < Jmin wraps to a ~4 GB allocation per junk packet per handshake.
+  // Nothing downstream protects us; the generator has to.
+  for (let i = 0; i < DRAWS; i += 1) {
+    const { params } = generate();
+    assert.ok(
+      num(params, "Jmin") < num(params, "Jmax"),
+      `Jmin=${params.Jmin} Jmax=${params.Jmax}`,
+    );
+    assert.ok(num(params, "Jmax") <= 1000);
+    assert.ok(num(params, "Jc") >= 1 && num(params, "Jc") <= 12);
+  }
+});
+
+test("draws four distinct magic headers, clear of the WireGuard message types", executing, () => {
+  for (let i = 0; i < DRAWS; i += 1) {
+    const { params } = generate();
+    const headers = ["H1", "H2", "H3", "H4"].map((key) => num(params, key));
+
+    // amneziawg-go refuses a device whose headers overlap.
+    assert.equal(new Set(headers).size, 4, `headers collide: ${headers.join()}`);
+    for (const value of headers) {
+      // 0..4 are the literal WireGuard message types: using one makes the type
+      // field indistinguishable from plain WireGuard, which is the opposite of
+      // the point. 0 additionally round-trips as "unset".
+      assert.ok(value >= 16, `header ${value} is too low`);
+      assert.ok(value < 2 ** 31, `header ${value} is out of range`);
+    }
+  }
+});
+
+test("keeps the four packet classes at distinct sizes", executing, () => {
+  // The server tolerates a collision here; amnezia-client's settings UI rejects
+  // the config outright, so an operator would find out only when a user
+  // complains that the app will not accept their key.
+  for (let i = 0; i < DRAWS; i += 1) {
+    const { params } = generate();
+    const sizes = [
+      num(params, "S1") + 148,
+      num(params, "S2") + 92,
+      num(params, "S3") + 64,
+      num(params, "S4") + 32,
+    ];
+    assert.equal(new Set(sizes).size, 4, `size classes collide: ${sizes.join()}`);
+  }
+});
+
+test("builds a junk packet only from tags the parser knows", executing, () => {
+  for (let i = 0; i < DRAWS; i += 1) {
+    const { params } = generate();
+    const spec = params.I1 ?? "";
+    assert.match(spec, /^</, "I1 must start with a tag");
+
+    const tags = [...spec.matchAll(/<([^>]*)>/g)].map((match) => match[1]);
+    assert.ok(tags.length > 0, "a spec with no tags is silently skipped");
+    for (const tag of tags) {
+      const [key, arg] = tag.split(/\s+/);
+      // <c N> does not exist, and <d>/<ds>/<dz> emit nothing in an I-packet.
+      assert.ok(["b", "r", "rc", "rd", "t"].includes(key), `unknown tag <${tag}>`);
+      if (key === "b") {
+        assert.match(arg ?? "", /^0x[0-9a-f]+$/, `bad hex in <${tag}>`);
+        assert.equal(
+          (arg.length - 2) % 2,
+          0,
+          `<${tag}> has an odd number of hex digits`,
+        );
+      }
+      if (key !== "b" && key !== "t") {
+        assert.match(arg ?? "", /^\d+$/, `<${tag}> needs a non-negative count`);
+      }
+    }
+  }
+});
+
+test("writes I1 flush-left, because an indented one breaks awg setconf", executing, () => {
+  const { raw } = generate();
+  const line = raw.split("\n").find((candidate) => candidate.startsWith("I1"));
+
+  assert.ok(line, "I1 must be emitted");
+  assert.doesNotMatch(line, /^\s/);
+  assert.doesNotMatch(line, /#/);
+});
+
+test("actually randomises: two nodes do not share a geometry", executing, () => {
+  const first = generate().params;
+  const second = generate().params;
+
+  // The whole reason for this change: identical geometry on every node means a
+  // classifier that learns one node has learned the fleet.
+  const differing = Object.keys(first).filter(
+    (key) => first[key] !== second[key],
+  );
+  assert.ok(
+    differing.length >= 6,
+    `two draws shared too much: only ${differing.join()} differed`,
+  );
+});
+
+test("the entrypoint uses the generator instead of hardcoding the geometry", async () => {
+  const entrypoint = (
+    await readFile(new URL("../scripts/awg3-entrypoint.sh", import.meta.url), "utf8")
+  ).replace(/\r\n/g, "\n");
+  const code = entrypoint
+    .split("\n")
+    .filter((line) => !line.trimStart().startsWith("#"))
+    .join("\n");
+
+  assert.match(code, /awg3-geometry\.sh/);
+  // The constants that made every node in the fleet look the same.
+  assert.doesNotMatch(code, /^Jc = 4$/m);
+  assert.doesNotMatch(code, /^Jmin = 40$/m);
+  assert.doesNotMatch(code, /^S1 = 15$/m);
+  assert.doesNotMatch(code, /icloud/, "the stock junk packet must be gone");
+});

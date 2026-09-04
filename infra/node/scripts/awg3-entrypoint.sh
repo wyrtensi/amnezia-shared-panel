@@ -9,6 +9,10 @@ PSK_FILE="$STATE_DIR/wireguard_psk.key"
 CLIENTS_FILE="$STATE_DIR/clientsTable"
 INIT_MARKER="$STATE_DIR/.initializing"
 RUNTIME_CONFIG_FILE=/tmp/awg0.runtime.conf
+GEOMETRY_SCRIPT=/usr/local/libexec/awg3-geometry.sh
+# The tunnel MTU the client will use; S4 comes out of the same budget, so the
+# generator needs it. Matches AppContract.AmneziaWG3.DEFAULTS.MTU.
+TUNNEL_MTU="${AWG3_TUNNEL_MTU:-1376}"
 
 umask 077
 mkdir -p "$STATE_DIR"
@@ -46,16 +50,6 @@ if [ "$config_exists" -ne 0 ] && [ ! -f "$CLIENTS_FILE" ]; then
   exit 1
 fi
 
-random_header() {
-  while :; do
-    value="$(od -An -N4 -tu4 /dev/urandom | tr -d ' ')"
-    case "$value" in
-      ''|0|1|2|3|4) ;;
-      *) printf '%s\n' "$value"; return 0 ;;
-    esac
-  done
-}
-
 if [ "$config_exists" -eq 0 ]; then
   : >"$INIT_MARKER"
   private_key="$(awg genkey)"
@@ -63,10 +57,13 @@ if [ "$config_exists" -eq 0 ]; then
   preshared_key="$(awg genpsk)"
   # AmneziaWG 3.1 header protection key (32-byte base64, same generator as PSK)
   header_protection_key="$(awg genpsk)"
-  h1="$(random_header)"
-  h2="$(random_header)"
-  h3="$(random_header)"
-  h4="$(random_header)"
+  # Obfuscation geometry, drawn once for THIS node. Previously these were
+  # constants identical on every node we deploy, so a classifier that learned
+  # one node had learned the fleet. The generator enforces the protocol's own
+  # rules (S >= 12 with header protection, headers distinct and clear of the
+  # WireGuard message types) and the one rule nothing enforces: Jmin < Jmax,
+  # where an inversion is a multi-gigabyte allocation per handshake.
+  geometry="$(sh "$GEOMETRY_SCRIPT" "$TUNNEL_MTU")"
 
   if [ "$h1" = "$h2" ] || [ "$h1" = "$h3" ] || [ "$h1" = "$h4" ] || \
      [ "$h2" = "$h3" ] || [ "$h2" = "$h4" ] || [ "$h3" = "$h4" ]; then
@@ -84,24 +81,12 @@ if [ "$config_exists" -eq 0 ]; then
   printf '%s\n' "$public_key" >"$temporary_public"
   printf '%s\n' "$preshared_key" >"$temporary_psk"
 
-  # S1-S4 are all >= 12 so header protection can use the first 12 bytes as a nonce
   cat >"$temporary_config" <<EOF
 [Interface]
 PrivateKey = $private_key
 Address = 10.90.0.1/22
 ListenPort = 51890
-Jc = 4
-Jmin = 40
-Jmax = 70
-S1 = 15
-S2 = 20
-S3 = 20
-S4 = 23
-H1 = $h1
-H2 = $h2
-H3 = $h3
-H4 = $h4
-I1 = <r 2><b 0x858000010001000000000669636c6f756403636f6d0000010001c00c000100010000105a00044d583737>
+$geometry
 HeaderProtectionKey = $header_protection_key
 RandomTrailers = on
 PostUp = iptables -A FORWARD -i %i -j ACCEPT; iptables -A FORWARD -o %i -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT; iptables -t nat -A POSTROUTING -s 10.90.0.0/22 -o eth0 -j MASQUERADE

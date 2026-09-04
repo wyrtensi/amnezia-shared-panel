@@ -42,10 +42,11 @@ test("generates AmneziaWG 3.1 obfuscation parameters", async () => {
     /Refusing to start: AWG3 config must define HeaderProtectionKey/,
   );
 
-  // Header-protection nonce requires every S1-S4 padding to be at least 12 bytes
-  for (const value of [/S1 = 15/, /S2 = 20/, /S3 = 20/, /S4 = 23/]) {
-    assert.match(script, value);
-  }
+  // The geometry itself is drawn per node now, so there are no S values to
+  // assert here. The nonce floor, the header distinctness and the junk-range
+  // invariant are enforced and tested in awg3-geometry.sh instead — a constant
+  // here would put the whole fleet back on one fingerprint.
+  assert.match(script, /awg3-geometry\.sh/);
 });
 
 test("exposes the AWG3 container on UDP 51890 in the node stack", async () => {

@@ -75,6 +75,7 @@ services:
     volumes:
       - ./state/amnezia-awg3:/opt/amnezia/awg
       - ./scripts/awg3-entrypoint.sh:/usr/local/libexec/awg3-entrypoint.sh:ro
+      - ./scripts/awg3-geometry.sh:/usr/local/libexec/awg3-geometry.sh:ro
     healthcheck:
       test:
         - CMD-SHELL
