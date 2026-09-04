@@ -29,6 +29,10 @@ import { ServerConnection } from "@/helpers/serverConnection";
 import { listRunningDockerContainers } from "@/helpers/docker";
 import { resolveEnabledProtocols } from "@/helpers/resolveEnabledProtocols";
 import { Protocol, ClientErrorCode, ServerErrorCode } from "@/types/shared";
+import {
+  SUPPORTED_ASSERTION_TYPES,
+  SUPPORTED_PROBE_KINDS,
+} from "@/services/checks";
 
 /**
  * Сервис управления сервером
@@ -76,6 +80,13 @@ export class ServerService {
       protocols,
       publicHost: appConfig.SERVER_PUBLIC_HOST || "",
       listenPorts,
+      // Read from the registries themselves, never written out by hand: a
+      // hand-kept list is a list that eventually advertises a rule this agent
+      // cannot run, which is the one failure the whole design has to prevent.
+      checkCapabilities: {
+        probeKinds: SUPPORTED_PROBE_KINDS,
+        assertionTypes: SUPPORTED_ASSERTION_TYPES,
+      },
     };
   }
 

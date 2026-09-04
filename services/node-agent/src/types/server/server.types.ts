@@ -98,6 +98,14 @@ export type ServerStatusPayload = {
   // The UDP ports this node actually listens on, read from the live interface
   // configs rather than from anything the panel assumes.
   listenPorts: number[];
+  // What this agent can actually run as a service check. Reported so the panel
+  // can tell "this node is too old for that rule" from "the service is down":
+  // a check whose assertion type is absent here comes back as `error`, which
+  // is "unknown" to a user, never "unavailable".
+  checkCapabilities: {
+    probeKinds: string[];
+    assertionTypes: string[];
+  };
 };
 
 // The lifecycle of an in-panel agent update, derived from the spool rather than

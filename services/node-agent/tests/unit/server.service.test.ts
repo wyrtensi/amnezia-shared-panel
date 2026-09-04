@@ -16,6 +16,10 @@ import { AmneziaWgService } from "@/services/amneziaWg";
 import { AmneziaWg2Service } from "@/services/amneziaWg2";
 import { AmneziaWg3Service } from "@/services/amneziaWg3";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  SUPPORTED_ASSERTION_TYPES,
+  SUPPORTED_PROBE_KINDS,
+} from "@/services/checks";
 
 // The two host files the metrics call reads. They do not exist on the Windows
 // dev box and differ between kernels in CI, so they are supplied here and every
@@ -136,7 +140,25 @@ describe("ServerService", () => {
       // Read from the live interface config, not assumed from the protocol:
       // a node whose port was changed on the host stops being a mystery.
       listenPorts: [51820],
+      // Read from the registries themselves. The panel uses this to tell "this
+      // node is too old to run that rule" from "the service is down", so a
+      // hand-kept list here would eventually advertise a rule the agent cannot
+      // actually run - the one failure the open set has to prevent.
+      checkCapabilities: {
+        probeKinds: SUPPORTED_PROBE_KINDS,
+        assertionTypes: SUPPORTED_ASSERTION_TYPES,
+      },
     });
+  });
+
+  it("advertises only what its registries implement", async () => {
+    const { service } = createSubject();
+    const status = await service.getServerStatus();
+    expect(status.checkCapabilities.probeKinds).toEqual(["http"]);
+    expect(status.checkCapabilities.assertionTypes).toContain("bodyContains");
+    expect(status.checkCapabilities.assertionTypes).not.toContain(
+      "bodyMatchesRegex",
+    );
   });
 
   // The metrics the panel's node card is built from. Every one of them is
