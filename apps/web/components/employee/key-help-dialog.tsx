@@ -23,15 +23,14 @@ import { Callout } from "@/components/ui/hint";
 import { useT } from "@/lib/i18n/provider";
 
 /**
- * The example key and server the mock controls show.
+ * The example key name the mock controls show.
  *
- * Not translated: they stand in for what the user typed and for a server name,
- * and both are the same in every language. They agree with each other on
- * purpose - step 3's preview line is built from both, exactly as the form
- * builds it.
+ * Not translated: it stands in for what the user typed, and a device name looks
+ * the same in every language. The server beside it IS translated
+ * (`keyHelp.sampleNode`) because it stands in for a place, and because a real
+ * node name here would read as "this is your server" rather than as an example.
  */
 const SAMPLE_KEY_NAME = "Android 8";
-const SAMPLE_NODE = "london1";
 
 /**
  * "I don't understand how to make a key" — the form, field by field.
@@ -124,7 +123,7 @@ export function KeyHelpDialog({
               </div>
               <p className="mt-1.5 text-xs text-muted-foreground">
                 {t("wizard.nameDisplayPreview", {
-                  value: `${SAMPLE_NODE} ${SAMPLE_KEY_NAME}`,
+                  value: `${t("keyHelp.sampleNode")} ${SAMPLE_KEY_NAME}`,
                 })}
               </p>
             </Mock>
@@ -134,7 +133,7 @@ export function KeyHelpDialog({
             <p>{t("keyHelp.serverBody")}</p>
             <Mock>
               <div className="flex items-center gap-2 rounded-md border border-border bg-background px-2.5 py-1.5 text-xs">
-                <span className="font-medium text-foreground">{SAMPLE_NODE}</span>
+                <span className="font-medium text-foreground">{t("keyHelp.sampleNode")}</span>
                 <Badge variant="success">{t("wizard.recommended")}</Badge>
                 <ChevronDown className="ml-auto h-3.5 w-3.5 text-muted-foreground" />
               </div>
