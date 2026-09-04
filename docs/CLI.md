@@ -163,7 +163,7 @@ via `CONTROL_API_URL` plus one of, in priority order:
 | --- | --- |
 | `key-revoke <id>` · `key-disable <id>` · `key-enable <id>` | Key lifecycle. `key-revoke` is also the **retry** for a delete that did not go through: a key left in `revoking` because its node was unreachable, or one stuck in `failed` by a panel from before that was fixed. Every call queues a fresh job, and the node-side delete is idempotent, so repeating it is safe. `docs/KEY-STATES.md` has the full state model |
 | `key-internal-name <id> --name="<text>"` | Set the operator-only note on a key — who it was really issued to, what it replaced, why it exists. Up to 80 characters; `--name=` with nothing after it clears it. It is **never** returned to the key's owner and **never** part of a generated config, which is what makes it safe to write a person's name in. Distinct from the device label the user typed, which does feed the connection name their client shows. It appears in the `keys` table's `internal` column and on the key's row in the admin panel |
-| `key-config <id> [--format=vpn\|conf\|qr\|qr-svg\|qr-frames] [--out=<path>] [--confirm]` | Download one key's config. `vpn` (default) and `conf` print to stdout; `qr` writes the PNG a user downloads (to `<id>.png` unless `--out` is given), `qr-svg` the SVG the panel displays, and `qr-frames` the AmneziaVPN-format series as `<id>.frame-N.svg`. `--confirm` is required to read a key you do not own, and is audited as `vpn_key.private_config_viewed` |
+| `key-config <id> [--format=vpn\|conf\|qr\|qr-svg\|qr-frames] [--out=<path>] [--confirm]` | Download one key's config. `vpn` (default) and `conf` print to stdout; `qr` writes the PNG a user downloads (to `<id>.png` unless `--out` is given), `qr-svg` the SVG the panel displays, and `qr-frames` the in-app-scanner series as `<id>.frame-N.svg` (read by AmneziaVPN and DefaultVPN alike). `--confirm` is required to read a key you do not own, and is audited as `vpn_key.private_config_viewed` |
 | `node-add --name= --api-url= --api-key-file=<path\|-> [--public-name=] [--protocol=awg3] [--max-peers=N] [--enabled-protocols=awg3,awg2] [--disabled]` | Register a node. `--api-key-file=-` reads the key from stdin; the legacy `--api-key=<key>` still works but exposes the key in `ps` and shell history |
 | `node-update <id> --<field>=<value> …` | Edit a node (name, api-url, api-key-file (or api-key), public-name, protocol, max-peers, enabled, enabled-protocols). `--clear-public-ip` is a flag rather than a field: it forgets the resolved public IP and its timestamp so the worker resolves the node's host again on the next telemetry tick. The panel resolves a host **once** and keeps the answer, because a server's public address does not change under it — this is the recovery for the one case where that assumption breaks, a server moving to a new IP while keeping the same DNS name |
 | `node-remove <id>` | Delete a node. Refused with `409 NODE_HAS_KEYS` while it still has keys (revoked ones count) — disable it, or use the form below |
@@ -193,17 +193,20 @@ via `CONTROL_API_URL` plus one of, in priority order:
 what the user will point at the screen, because the two scanners do not read the
 same thing:
 
-- **AmneziaVPN's own "scan QR" button** does not read a `vpn://` URL at all. It
+- **A VPN app's own "scan QR" button** does not read a `vpn://` URL at all. It
   expects the app's own frame format — a base64url blob behind an 8-byte header
   with a magic number — and silently ignores anything else, however large and
   sharp it is. That is `--format=qr-frames`, and it is the format the panel now
   ships for that scanner. A series of more than one frame is shown in the panel
-  in one of two modes, animated or static.
+  in one of two modes, animated or static. This one format serves **both**
+  clients: DefaultVPN is a fork of amnezia-client and reads a byte-identical
+  envelope, so the panel shows the same code under two labels rather than
+  building a second format.
 - **An ordinary camera app** reads the QR as text, sees the `vpn://…` URL and
-  hands it to the OS, which opens AmneziaVPN. That is `--format=qr` (PNG, for
+  hands it to the OS, which opens the app. That is `--format=qr` (PNG, for
   download) and `--format=qr-svg` (what the panel displays). A camera app cannot
-  read `qr-frames` at all, so these stay fully supported and the config dialog
-  opens on the camera code by default.
+  read `qr-frames` at all, so these stay fully supported, and the config dialog
+  keeps the camera code one labelled click away.
 
 **Reproducing a "the QR does not scan" report.** First establish *which* scanner
 the person used, because the two failures have nothing in common.
@@ -213,7 +216,7 @@ the person used, because the two failures have nothing in common.
 amnezia-panel key-config <key-id> --format=qr --out=/tmp/key.png --confirm
 amnezia-panel key-config <key-id> --format=qr-svg --confirm > /tmp/key.svg
 
-# what the AmneziaVPN app's own scanner sees
+# what an in-app scanner sees (AmneziaVPN and DefaultVPN alike)
 amnezia-panel key-config <key-id> --format=qr-frames --out=/tmp/key --confirm
 ```
 

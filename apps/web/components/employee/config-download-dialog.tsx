@@ -29,6 +29,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { configUrl } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { useT } from "@/lib/i18n/provider";
+import type { MessageKey } from "@/lib/i18n/messages";
 import type { Me } from "@/lib/types";
 
 export type ConfigTarget = {
@@ -38,14 +39,54 @@ export type ConfigTarget = {
 };
 
 /**
- * Which scanner the user is holding. `amnezia` serves AmneziaVPN's own chunk
- * format -- the QR this panel ships, and the only thing the app's in-app
- * "scan QR" button can read. `camera` serves the single-frame `vpn://` code that
- * a camera app hands to the OS, which is kept because a camera app cannot read
- * the chunk format at all. These are different payloads, not two pictures of the
- * same one, and neither scanner can use the other's.
+ * Which scanner the user is holding.
+ *
+ * `amnezia` and `defaultvpn` are served the SAME payload -- AmneziaVPN's chunk
+ * envelope, `qr-frames` -- because DefaultVPN is a fork of amnezia-client and
+ * its scanner is byte-identical: magic 1984, an 8-byte header, 850-byte chunks,
+ * a qCompress body, base64url (`client/core/qrCodeUtils.cpp:8-17` and
+ * `client/ui/controllers/importController.cpp:643-669` in
+ * github.com/amnezia-vpn/DefaultVPN@dev). They are two tabs rather than one
+ * because the users of the two apps do not know they are the same app, and the
+ * in-app menu path is branded differently in each.
+ *
+ * `camera` serves the single-frame `vpn://` code that a camera app hands to the
+ * OS. It is a different payload, not a different picture of the same one:
+ * neither app's in-app scanner can read a `vpn://` symbol (the prefix is
+ * stripped only on the paste/import path, never on the scan path), and no
+ * camera app can read the chunk envelope.
  */
-type QrAudience = "camera" | "amnezia";
+type QrAudience = "amnezia" | "defaultvpn" | "camera";
+
+/** Tab order: the app this panel is built for leads; the camera is the fallback. */
+const QR_AUDIENCES = ["amnezia", "defaultvpn", "camera"] as const;
+
+/**
+ * True for the audiences served by the chunk envelope. Both VPN apps read it;
+ * only the camera path takes the `vpn://` symbol.
+ */
+const usesFrames = (audience: QrAudience): boolean => audience !== "camera";
+
+/**
+ * Copy per audience, kept in one place so a fourth client is three strings and
+ * no new branches. The two app tabs differ only in wording: the code they show
+ * is the same one.
+ */
+const QR_AUDIENCE_LABEL_KEYS: Record<QrAudience, MessageKey> = {
+  amnezia: "config.qrForAmnezia",
+  defaultvpn: "config.qrForDefaultVpn",
+  camera: "config.qrForCamera",
+};
+const QR_AUDIENCE_WARNING_KEYS: Record<QrAudience, MessageKey> = {
+  amnezia: "config.qrAppWarning",
+  defaultvpn: "config.qrDefaultVpnWarning",
+  camera: "config.qrAppWarning", // unused: the camera code needs no warning.
+};
+const QR_AUDIENCE_HINT_KEYS: Record<QrAudience, MessageKey> = {
+  amnezia: "config.qrHintApp",
+  defaultvpn: "config.qrHintDefaultVpn",
+  camera: "config.qrHint",
+};
 
 /** The two display modes for a multi-frame series. */
 type QrFrameMode = "animated" | "static";
@@ -83,19 +124,18 @@ const QR_FRAME_INTERVAL_MS = 1500;
 /**
  * Which code the dialog opens on.
  *
- * "camera" on purpose, even though the AmneziaVPN envelope is the format this
- * panel ships. Pointing a phone camera at a QR on a screen is reflexive, and the
- * Amnezia code is *invisible* to a camera app -- no error, no scheme, no
- * feedback -- so it must not be what an unthinking camera meets. The camera code
- * is also the one with a positive field report, while the Amnezia code's fix is
- * inferred from this repo's port of the client's format. Both codes are one
- * labelled click apart in either direction, so neither user is stuck.
+ * "amnezia": the app this panel is built for leads, and the envelope it reads is
+ * also what DefaultVPN reads, so the default tab is the right one for both VPN
+ * apps -- which is every user who has followed the install guide. The audience
+ * chooser sits directly above the code and names the tool rather than the
+ * format, so a user holding a bare camera is one labelled click away, and the
+ * standing recovery link below the code names the other tool either way.
  *
  * This constant is also the restore knob: flipping it is the entire cost of
  * changing which code the dialog leads with, and it needs a rebuild of this app
  * and nothing else in the system.
  */
-const QR_DEFAULT_AUDIENCE: QrAudience = "camera";
+const QR_DEFAULT_AUDIENCE: QrAudience = "amnezia";
 
 /**
  * Which mode a multi-frame series opens in. "animated" on purpose: a user who
@@ -164,13 +204,14 @@ export function ConfigDownloadDialog({
     };
   }, [target]);
 
-  // The frame series is fetched only when the user actually asks for the
-  // AmneziaVPN code, because it is several rendered SVGs. Only a *successful*
-  // fetch is final: a failure leaves `frames` null, so switching back to this
-  // tab or pressing retry tries again. `frameAttempt` is in the dependency list
-  // solely as the retry trigger — nothing else changes when retry is pressed.
+  // The frame series is fetched only when the user actually asks for an in-app
+  // code, because it is several rendered SVGs. Both app tabs share one fetch —
+  // it is one payload — so switching between them costs nothing. Only a
+  // *successful* fetch is final: a failure leaves `frames` null, so switching
+  // back to an app tab or pressing retry tries again. `frameAttempt` is in the
+  // dependency list solely as the retry trigger.
   React.useEffect(() => {
-    if (!target || qrFor !== "amnezia" || frames) return;
+    if (!target || !usesFrames(qrFor) || frames) return;
     let active = true;
     void (async () => {
       try {
@@ -194,7 +235,7 @@ export function ConfigDownloadDialog({
   // either mode, so nothing animates and no mode switch is rendered for it.
   React.useEffect(() => {
     if (
-      qrFor !== "amnezia" ||
+      !usesFrames(qrFor) ||
       !frames ||
       frames.length < 2 ||
       frameMode !== "animated"
@@ -212,14 +253,14 @@ export function ConfigDownloadDialog({
     frames && frames.length > 0 ? frames[frameIndex % frames.length] : undefined;
   const qrSrc = !target
     ? null
-    : qrFor === "camera"
+    : !usesFrames(qrFor)
       ? configUrl(target.id, "qr-svg")
       : currentFrame
         ? frameSrc(currentFrame)
         : null;
 
   // A one-frame series is a still picture: no modes, no stepping, no dots.
-  const frameCount = qrFor === "amnezia" && frames ? frames.length : 0;
+  const frameCount = usesFrames(qrFor) && frames ? frames.length : 0;
   const showFrameControls = frameCount > 1;
 
   const stepFrame = (delta: number): void => {
@@ -372,12 +413,19 @@ export function ConfigDownloadDialog({
             {me?.policy.allowQrDownload && target ? (
               target.routeProfile !== "full_tunnel" ? (
                 // Split-tunnel profiles carry thousands of routes/domains, so a
-                // QR would be unscannably dense (and a plain .conf drops the
-                // domain rules). Point the user at the pasteable config instead.
+                // QR is not merely dense — it does not exist. Measured on the
+                // shipped feeds: ru_whitelist is a 59 745-character link and
+                // ru_blacklist a 1 787 465-character one, against a hard QR
+                // ceiling of ~2 900 bytes at any error-correction level. The
+                // copy says the reason rather than only the refusal, and points
+                // at the copy button above.
                 <div className="rounded-xl border border-dashed bg-muted/40 p-4 text-center">
                   <QrCode className="mx-auto mb-2 h-8 w-8 text-muted-foreground" />
                   <p className="text-sm font-medium">
                     {t("config.qrUnavailableTitle")}
+                  </p>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    {t("config.qrUnavailableWhy")}
                   </p>
                   <p className="mt-1 text-xs text-muted-foreground">
                     {t("config.qrUnavailableBody")}
@@ -411,12 +459,16 @@ export function ConfigDownloadDialog({
                 </div>
 
                 {/*
-                  Two scanners, two payloads. The choice is labelled by the tool
+                  Three tabs, two payloads. The choice is labelled by the tool
                   the user is holding, never by the format: a camera app reads
-                  the `vpn://` URL, while AmneziaVPN's in-app scanner reads only
-                  its own chunk envelope and ignores a `vpn://` symbol entirely,
-                  however large and crisp it is. Only one code is ever shown, so
-                  nobody points a camera at the wrong one.
+                  the `vpn://` URL, while either VPN app's in-app scanner reads
+                  only the chunk envelope and ignores a `vpn://` symbol
+                  entirely, however large and crisp it is. AmneziaVPN leads
+                  because it is the app this panel is built for; DefaultVPN gets
+                  its own tab because its users do not know it is the same app,
+                  and its own wording because its menu is branded differently.
+                  Only one code is ever shown, so nobody points a camera at the
+                  wrong one.
 
                   The legend is VISIBLE, not just an aria-label: the user has to
                   pick a tool before looking at a code, otherwise they discover
@@ -433,37 +485,33 @@ export function ConfigDownloadDialog({
                   <div
                     role="group"
                     aria-labelledby="qr-audience-label"
-                    className="grid grid-cols-2 gap-1 rounded-lg border border-border p-1"
+                    className="grid grid-cols-3 gap-1 rounded-lg border border-border p-1"
                   >
-                    {(["camera", "amnezia"] as const).map((audience) => (
+                    {QR_AUDIENCES.map((audience) => (
                       <button
                         key={audience}
                         type="button"
                         onClick={() => setQrFor(audience)}
                         aria-pressed={qrFor === audience}
                         className={cn(
-                          "rounded-md px-2 py-1 text-xs font-medium transition-colors",
+                          "rounded-md px-1.5 py-1 text-center text-xs font-medium transition-colors",
                           qrFor === audience
                             ? "bg-primary/10 text-primary"
                             : "text-muted-foreground hover:bg-accent",
                         )}
                       >
-                        {t(
-                          audience === "camera"
-                            ? "config.qrForCamera"
-                            : "config.qrForApp",
-                        )}
+                        {t(QR_AUDIENCE_LABEL_KEYS[audience])}
                       </button>
                     ))}
                   </div>
                 </div>
 
-                {qrFor === "amnezia" ? (
+                {usesFrames(qrFor) ? (
                   // Permanent and non-dismissible on purpose: this code is
-                  // unreadable by anything but the AmneziaVPN app, and that has
-                  // to be visible in the same glance as the code itself.
+                  // unreadable by any camera app, and that has to be visible in
+                  // the same glance as the code itself.
                   <p className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-center text-xs text-amber-900">
-                    {t("config.qrAppWarning")}
+                    {t(QR_AUDIENCE_WARNING_KEYS[qrFor])}
                   </p>
                 ) : null}
 
@@ -538,26 +586,35 @@ export function ConfigDownloadDialog({
                 ) : null}
 
                 <p className="text-center text-xs text-muted-foreground">
-                  {t(qrFor === "camera" ? "config.qrHint" : "config.qrHintApp")}
+                  {t(QR_AUDIENCE_HINT_KEYS[qrFor])}
                 </p>
+                {qrFor === "defaultvpn" ? (
+                  // Why the DefaultVPN tab shows the very same picture as the
+                  // AmneziaVPN one. Without this a user who notices the two
+                  // codes are identical assumes the tab is broken.
+                  <p className="text-center text-xs text-muted-foreground">
+                    {t("config.qrDefaultVpnSameCode")}
+                  </p>
+                ) : null}
                 <p className="text-center text-xs text-muted-foreground">
                   {t("config.qrZoomHint")}
                 </p>
                 {/*
-                  The wrong-tool recovery, permanent and one click: whichever
-                  code is showing, the other tool is named here.
+                  The wrong-tool recovery, permanent and one click. With three
+                  tabs it stays a two-way switch between the two things that are
+                  actually different — an in-app scanner and a camera app —
+                  because that is the mistake it exists to undo. Switching
+                  between the two app tabs changes no code, only the wording.
                 */}
                 <button
                   type="button"
-                  onClick={() =>
-                    setQrFor(qrFor === "camera" ? "amnezia" : "camera")
-                  }
+                  onClick={() => setQrFor(usesFrames(qrFor) ? "camera" : "amnezia")}
                   className="mx-auto block text-center text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground"
                 >
                   {t(
-                    qrFor === "camera"
-                      ? "config.qrSwitchToApp"
-                      : "config.qrSwitchToCamera",
+                    usesFrames(qrFor)
+                      ? "config.qrSwitchToCamera"
+                      : "config.qrSwitchToApp",
                   )}
                 </button>
               </div>
@@ -612,9 +669,9 @@ export function ConfigDownloadDialog({
                 }}
                 className="fixed inset-0 z-[60] flex flex-col items-center justify-center gap-2 bg-white p-2"
               >
-                {qrFor === "amnezia" ? (
+                {usesFrames(qrFor) ? (
                   <p className="max-w-[90vw] shrink-0 text-center text-xs text-neutral-700">
-                    {t("config.qrAppWarning")}
+                    {t(QR_AUDIENCE_WARNING_KEYS[qrFor])}
                   </p>
                 ) : null}
                 <div className="flex min-h-0 w-full flex-1 items-center justify-center">

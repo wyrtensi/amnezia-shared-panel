@@ -1238,9 +1238,9 @@ async function cmdUserCreateKey(args: string[]): Promise<void> {
 /**
  * Download one key's config. `--format=qr` writes the exact PNG a user is shown
  * for download, `--format=qr-svg` the exact SVG the panel displays to a camera
- * app, and `--format=qr-frames` the AmneziaVPN-format series the app's own
- * scanner reads — so either half of a "the QR does not scan" report can be
- * reproduced from a shell.
+ * app, and `--format=qr-frames` the chunk-envelope series an in-app scanner
+ * reads — AmneziaVPN and DefaultVPN alike, the format is the same — so either
+ * half of a "the QR does not scan" report can be reproduced from a shell.
  */
 async function cmdKeyConfig(args: string[]): Promise<void> {
   const usageText =
@@ -1525,7 +1525,8 @@ Write:
              [--out=<path>] [--confirm]   Download a key's config. --format=qr writes a
                                           PNG (defaults to <id>.png unless --out is given);
                                           --format=qr-frames writes <id>.frame-N.svg, which
-                                          only the AmneziaVPN app can read;
+                                          only a VPN app's own scanner can read
+                                          (AmneziaVPN and DefaultVPN alike);
                                           --confirm is required to read another user's key
   cf-token --token-file=<path|->          Store the Cloudflare API token (encrypted).
                                           cf-token <token> still works but lands in

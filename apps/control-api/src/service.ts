@@ -56,8 +56,10 @@ export type KeyView = {
 /**
  * Three QR containers, for two different scanners:
  * - `qr-frames` the config in AmneziaVPN's own chunk envelope — the only thing
- *               the client's in-app "scan QR" button can read, and the format
- *               this panel ships for it.
+ *               an in-app "scan QR" button can read, and the format this panel
+ *               ships for it. It serves DefaultVPN too: that client is a fork
+ *               of amnezia-client and its scanner is byte-identical, so there
+ *               is one format here and not two (see the note in qrFrames.ts).
  *               JSON: { total: number; frames: string[] } of SVG strings;
  * - `qr-svg`    the single-frame `vpn://` link, resolution-independent, for
  *               display — the panel is normally open on a PC monitor or a

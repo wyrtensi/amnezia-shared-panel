@@ -288,13 +288,20 @@ const ru = {
   "config.qrFullscreen": "QR-код на весь экран",
   "config.qrAudienceLabel": "Чем будете сканировать?",
   "config.qrForCamera": "Камера телефона",
-  "config.qrForApp": "Приложение AmneziaVPN",
+  "config.qrForAmnezia": "AmneziaVPN",
+  "config.qrForDefaultVpn": "Default VPN",
   "config.qrHintApp":
     "В приложении AmneziaVPN нажмите «Добавить» → «Сканировать QR-код» и наведите камеру на этот код",
+  "config.qrHintDefaultVpn":
+    "В приложении Default VPN нажмите «Добавить» → «Сканировать QR-код» и наведите камеру на этот код",
+  "config.qrDefaultVpnSameCode":
+    "Код тот же, что и для AmneziaVPN: Default VPN — это тот же клиент от тех же разработчиков, и сканер у него такой же.",
   "config.qrAppWarning":
     "Этот код понимает только приложение AmneziaVPN. Обычная камера его не откроет.",
+  "config.qrDefaultVpnWarning":
+    "Этот код понимает только приложение Default VPN (или AmneziaVPN). Обычная камера его не откроет.",
   "config.qrSwitchToApp":
-    "Сканируете из самого приложения AmneziaVPN? Откройте код для приложения",
+    "Сканируете из самого приложения (AmneziaVPN или Default VPN)? Откройте код для приложения",
   "config.qrSwitchToCamera":
     "Сканируете обычной камерой телефона? Вернитесь к коду для камеры",
   "config.qrFrameModeAria": "Режим показа кадров",
@@ -310,8 +317,10 @@ const ru = {
   "config.qrFramesFailed": "Не удалось загрузить код для приложения",
   "config.qrFramesRetry": "Попробовать снова",
   "config.qrUnavailableTitle": "QR-код недоступен для этого профиля",
+  "config.qrUnavailableWhy":
+    "Дело не в размере кода: в этом профиле тысячи маршрутов, ключ занимает от 60 тысяч символов, а в QR-код помещается около 2900. Такой ключ не влезает ни в один код — ни в большой, ни в серию кадров.",
   "config.qrUnavailableBody":
-    "В профилях с раздельным туннелированием слишком много маршрутов, чтобы отобразить QR-код. Удобнее всего использовать конфиг-файл выше — скопируйте ключ и вставьте его в вашем клиенте (Добавить → Из строки/файла). Работа ключа на таких профилях не гарантируется.",
+    "Скопируйте ключ кнопкой выше и вставьте его в вашем клиенте (Добавить → Из строки/файла) — или скачайте конфиг-файл. Работа ключа на таких профилях не гарантируется.",
 
   // Install guide dialog (user page)
   "install.button": "Как подключиться",
@@ -1240,13 +1249,20 @@ const en = {
   "config.qrFullscreen": "Full-screen QR code",
   "config.qrAudienceLabel": "What will you scan with?",
   "config.qrForCamera": "Phone camera",
-  "config.qrForApp": "AmneziaVPN app",
+  "config.qrForAmnezia": "AmneziaVPN",
+  "config.qrForDefaultVpn": "Default VPN",
   "config.qrHintApp":
     "In the AmneziaVPN app tap Add → Scan QR code, then point it at this code",
+  "config.qrHintDefaultVpn":
+    "In the Default VPN app tap Add → Scan QR code, then point it at this code",
+  "config.qrDefaultVpnSameCode":
+    "It is the same code as for AmneziaVPN: Default VPN is the same client from the same developers, and its scanner is the same too.",
   "config.qrAppWarning":
     "Only the AmneziaVPN app can read this code. A plain camera app cannot.",
+  "config.qrDefaultVpnWarning":
+    "Only the Default VPN app (or AmneziaVPN) can read this code. A plain camera app cannot.",
   "config.qrSwitchToApp":
-    "Scanning from inside the AmneziaVPN app? Open the code for the app",
+    "Scanning from inside the app (AmneziaVPN or Default VPN)? Open the code for the app",
   "config.qrSwitchToCamera":
     "Scanning with your phone's ordinary camera? Go back to the camera code",
   "config.qrFrameModeAria": "How the frames are shown",
@@ -1262,8 +1278,10 @@ const en = {
   "config.qrFramesFailed": "Could not load the code for the app",
   "config.qrFramesRetry": "Try again",
   "config.qrUnavailableTitle": "QR code is unavailable for this profile",
+  "config.qrUnavailableWhy":
+    "It is not about the size of the code: this profile carries thousands of routes, the key runs to 60 000 characters and more, and a QR code holds about 2 900. A key that long fits no code at all — not a large one, not a series of frames.",
   "config.qrUnavailableBody":
-    "Split-tunnel profiles carry too many routes to fit in a QR code. Use the config above instead — copy the key and paste it into your client (Add → From string/file). Key operation on such profiles is not guaranteed.",
+    "Copy the key with the button above and paste it into your client (Add → From string/file), or download the config file. Key operation on such profiles is not guaranteed.",
 
   // Install guide dialog (user page)
   "install.button": "How to connect",

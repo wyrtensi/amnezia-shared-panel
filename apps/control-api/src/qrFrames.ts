@@ -16,6 +16,17 @@
  * so the format is duplicated on purpose; qrFrames.test.ts pins the constants
  * and the byte layout so the two copies cannot drift silently.
  *
+ * This ONE format serves both client apps. DefaultVPN — the client that installs
+ * from the Russian App Store — is a live fork of amnezia-client
+ * (github.com/amnezia-vpn/DefaultVPN@dev) whose scanner is byte-identical:
+ * `client/core/qrCodeUtils.cpp:8-17` writes magic 1984, a uint8 chunk count and
+ * index, a uint32BE length and an 850-byte chunk, base64url-encoded, and
+ * `client/ui/controllers/importController.cpp:643-669` reads exactly that back.
+ * It also shares the limitation: `vpn://` is stripped only on the paste/import
+ * path (`importController.cpp:156`), never on the scan path, so a `vpn://`
+ * symbol is unreadable to its scanner too. There is therefore no separate
+ * DefaultVPN format to build; the panel shows the same code under two labels.
+ *
  * Frame layout, big-endian, matching Qt's QDataStream on the client side:
  *   int16  magic (1984 == 0x07C0)
  *   uint8  chunks count
