@@ -86,19 +86,67 @@ describe("install guide messages", () => {
     }
   });
 
+  // Everything the guide shows only in its detailed view. The budget below is
+  // about the SIMPLE view — the one a stuck user is handed — so these are
+  // subtracted from it. Listed by hand because there is no marker in the string
+  // itself; the test right after this one is what stops the list going stale.
+  const DETAILED_ONLY = [
+    "install.apkTitle",
+    "install.apkIntro",
+    "install.apkStep1",
+    "install.apkStep2",
+    "install.apkStep3",
+    "install.apkDownload",
+    "install.apkOtherBuilds",
+    "install.latestVersion",
+    "install.versionNote",
+    "install.confTitle",
+    "install.confBody",
+    "install.confSplitBest",
+    "install.confIosWarning",
+    "install.confHow",
+    "install.confDomainsWarning",
+    "install.fixAmneziaDns",
+    "install.fixUpdate",
+    "install.checkUpdates",
+  ];
+
+  // A renamed or deleted key would silently shrink the measured set and let the
+  // simple view grow unnoticed, which is the one thing the budget exists to
+  // prevent.
+  it("has a detailed-only list that still matches the strings", () => {
+    for (const key of DETAILED_ONLY) {
+      expect(messages.ru, `ru is missing ${key}`).toHaveProperty(key);
+      expect(messages.en, `en is missing ${key}`).toHaveProperty(key);
+    }
+  });
+
   // The guide was rewritten from documentation into three steps because the
   // audience does not read documentation: the old version ran to roughly 5000
   // characters a locale. This is a budget, not a style rule — raise it
   // deliberately and with a reason, or the guide grows back one paragraph at a
   // time and stops being read again.
-  it("keeps the guide short enough that someone reads it", () => {
+  it("keeps the simple view short enough that someone reads it", () => {
+    for (const lang of ["ru", "en"] as const) {
+      const dict = messages[lang] as Record<string, string>;
+      const total = installKeys(dict)
+        .filter((key) => !DETAILED_ONLY.includes(key))
+        .reduce((sum, key) => sum + (dict[key] ?? "").length, 0);
+      expect(total, `${lang} simple install copy`).toBeLessThanOrEqual(2200);
+    }
+  });
+
+  // The detailed view is opt-in, so it gets room the simple one does not — but
+  // not unlimited room: "put it behind the switch" is otherwise a licence to
+  // write anything.
+  it("keeps the detailed view from growing without limit either", () => {
     for (const lang of ["ru", "en"] as const) {
       const dict = messages[lang] as Record<string, string>;
       const total = installKeys(dict).reduce(
         (sum, key) => sum + (dict[key] ?? "").length,
         0,
       );
-      expect(total, `${lang} install copy`).toBeLessThanOrEqual(2500);
+      expect(total, `${lang} install copy`).toBeLessThanOrEqual(2900);
     }
   });
 

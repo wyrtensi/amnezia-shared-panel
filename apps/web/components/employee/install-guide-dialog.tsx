@@ -106,9 +106,18 @@ const APK_STEPS = [
   "install.apkStep3",
 ] as const;
 
-const FIXES = [
-  "install.fixServer",
-  "install.fixFullTunnel",
+/**
+ * The two fixes that need nothing but this page: pick another server, or make a
+ * plain "All traffic" key. Between them they clear most "it does not work".
+ */
+const FIXES = ["install.fixServer", "install.fixFullTunnel"] as const;
+
+/**
+ * The rest, which all ask the reader to go and change a setting somewhere. Real
+ * fixes, and the wrong thing to hand somebody in their first two minutes -- so
+ * they live behind the detailed view.
+ */
+const ADVANCED_FIXES = [
   // Ahead of "update the app", because it is the one that looks like a fix and
   // is not: a user hunting for a setting to change finds this switch first.
   "install.fixAmneziaDns",
@@ -174,13 +183,28 @@ export function InstallGuideDialog({
   const [audience, setAudience] = React.useState<GuideAudience | null>(
     initialAudience,
   );
+  /**
+   * Simple by default, every time.
+   *
+   * The guide's job is to get somebody connected in the next two minutes; the
+   * .conf route, the APK, the release pages and the settings to go and change
+   * are all real, and all of them are somebody else's two minutes. They live
+   * behind this switch instead of in front of the reader who does not need
+   * them. Not remembered between openings on purpose: whoever opens this is
+   * usually stuck, and stuck is not the moment to hand back the detailed view
+   * they once turned on.
+   */
+  const [advanced, setAdvanced] = React.useState(false);
 
   // Each opening starts from the caller's audience: the header opens the
   // chooser, a key card opens its own device. Without this the dialog would
   // keep whatever the previous opening left behind.
   const wasOpen = React.useRef(open);
   React.useEffect(() => {
-    if (open && !wasOpen.current) setAudience(initialAudience);
+    if (open && !wasOpen.current) {
+      setAudience(initialAudience);
+      setAdvanced(false);
+    }
     wasOpen.current = open;
   }, [open, initialAudience]);
 
@@ -209,13 +233,19 @@ export function InstallGuideDialog({
         />
 
         {audience ? (
-          <InstallInstructions
-            audience={audience}
-            release={release}
-            failed={failed}
-            showConfSection={showConfSection}
-            videos={videos}
-          />
+          <>
+            <div className="flex justify-end">
+              <ModeSwitch advanced={advanced} onChange={setAdvanced} />
+            </div>
+            <InstallInstructions
+              audience={audience}
+              release={release}
+              failed={failed}
+              showConfSection={showConfSection}
+              videos={videos}
+              advanced={advanced}
+            />
+          </>
         ) : (
           <p className="text-sm text-muted-foreground">
             {t("install.chooseHint")}
@@ -233,6 +263,48 @@ export function InstallGuideDialog({
         </DialogFooter>
       </DialogContent>
     </Dialog>
+  );
+}
+
+/**
+ * Simple / detailed.
+ *
+ * Two buttons rather than a checkbox, because it is a choice between two views
+ * and not a setting being turned on; and labelled with what each one is rather
+ * than with what it hides.
+ */
+function ModeSwitch({
+  advanced,
+  onChange,
+}: {
+  advanced: boolean;
+  onChange: (next: boolean) => void;
+}) {
+  const { t } = useT();
+  return (
+    <div
+      role="radiogroup"
+      aria-label={t("install.modeLabel")}
+      className="inline-flex rounded-lg border border-border p-0.5"
+    >
+      {[false, true].map((value) => (
+        <button
+          key={String(value)}
+          type="button"
+          role="radio"
+          aria-checked={advanced === value}
+          onClick={() => onChange(value)}
+          className={cn(
+            "rounded-md px-2.5 py-1 text-xs font-medium transition-colors",
+            advanced === value
+              ? "bg-primary/10 text-primary"
+              : "text-muted-foreground hover:text-foreground",
+          )}
+        >
+          {t(value ? "install.modeAdvanced" : "install.modeSimple")}
+        </button>
+      ))}
+    </div>
   );
 }
 
@@ -291,6 +363,7 @@ export function InstallInstructions({
   failed,
   showConfSection,
   videos,
+  advanced,
 }: {
   audience: GuideAudience;
   release: ClientRelease | null;
@@ -298,6 +371,7 @@ export function InstallInstructions({
   showConfSection: boolean;
   /** Per-audience walkthrough videos from the portal policy; empty by default. */
   videos?: InstallGuideVideos | null;
+  advanced: boolean;
 }) {
   const { t } = useT();
   const downloads = (release?.downloads ?? []).filter((entry) =>
@@ -308,7 +382,9 @@ export function InstallInstructions({
   // The .conf route is a real improvement on a computer and on Android. On iOS
   // it changes nothing — the rules are ignored either way — so that audience
   // gets the reason instead of instructions it cannot use. See D8.
-  const confApplies = showConfSection && audience !== "ios";
+  // The .conf route is detail: it is the second way to do something the first
+  // way already does, and it only pays off for the long split-tunnel keys.
+  const confApplies = advanced && showConfSection && audience !== "ios";
   const videoUrl = videos?.[audience] ?? null;
   const [qrFor, setQrFor] = React.useState<ClientPlatform | null>(null);
 
@@ -388,7 +464,7 @@ export function InstallInstructions({
                   </p>
                 ) : null}
 
-                {audience === "android" && android?.alternate ? (
+                {advanced && audience === "android" && android?.alternate ? (
                   <ApkFallback
                     asset={android.alternate}
                     releaseUrl={release.releaseUrl}
@@ -424,7 +500,7 @@ export function InstallInstructions({
                     </Callout>
                   </>
                 ) : null}
-                {release.version ? (
+                {advanced && release.version ? (
                   <p className="text-xs leading-snug text-muted-foreground">
                     {t("install.latestVersion", { version: release.version })}
                   </p>
@@ -432,9 +508,11 @@ export function InstallInstructions({
               </>
             )}
 
-            <p className="text-xs leading-snug text-muted-foreground">
-              {t("install.versionNote", { version: MIN_AWG3_CLIENT_VERSION })}
-            </p>
+            {advanced ? (
+              <p className="text-xs leading-snug text-muted-foreground">
+                {t("install.versionNote", { version: MIN_AWG3_CLIENT_VERSION })}
+              </p>
+            ) : null}
           </GuideSection>
 
           <GuideSection number={2} title={t("install.addTitle")}>
@@ -443,6 +521,18 @@ export function InstallInstructions({
                 <li key={key}>{t(key)}</li>
               ))}
             </ol>
+            {/*
+              A split-tunnel key is thousands of characters. Messengers truncate
+              it, and the paste then fails inside the app with nothing to say
+              why - so this is shown in the simple view, where the person who is
+              about to try it will be. The .conf half of the advice is dropped
+              when that download is switched off, rather than pointing at a
+              button the reader does not have.
+            */}
+            <Callout tone="warning" icon={<TriangleAlert className="h-4 w-4" />}>
+              {t("install.longKeyBody")}
+              {showConfSection ? ` ${t("install.longKeyConf")}` : null}
+            </Callout>
             {/* The .conf route is an alternative to those three steps, not a
                 fourth step, so it sits inside this section and collapsed. */}
             {confApplies ? <ConfAlternative /> : null}
@@ -450,11 +540,11 @@ export function InstallInstructions({
 
           <GuideSection number={3} title={t("install.fixTitle")}>
             <ul className="list-disc space-y-1.5 pl-5 text-sm">
-              {FIXES.map((key) => (
+              {[...FIXES, ...(advanced ? ADVANCED_FIXES : [])].map((key) => (
                 <li key={key}>{t(key)}</li>
               ))}
             </ul>
-            {release ? (
+            {advanced && release ? (
               <Button asChild variant="secondary" size="sm" className="w-fit">
                 <a
                   href={release.releaseUrl}
