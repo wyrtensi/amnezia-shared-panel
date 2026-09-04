@@ -301,11 +301,26 @@ export type PostgresRepositoryOptions = {
  * verdicts are unreadable. Without this translation an admin retyping a name
  * gets a 500 for an ordinary mistake.
  */
+const isUniqueViolation = (error: unknown): boolean => {
+  // drizzle wraps the driver's error, so the SQLSTATE is on `cause`, not on the
+  // error it throws. Checking only the top level looks right, passes a unit
+  // test with a hand-made error, and never fires against a real database -
+  // which is exactly what it did until CI ran it against Postgres.
+  for (let current = error, depth = 0; current && depth < 4; depth += 1) {
+    if (
+      typeof current === "object" &&
+      "code" in current &&
+      (current as { code?: string }).code === "23505"
+    ) {
+      return true;
+    }
+    current = (current as { cause?: unknown }).cause;
+  }
+  return false;
+};
+
 const duplicateCheckName = (error: unknown): unknown =>
-  typeof error === "object" &&
-  error !== null &&
-  "code" in error &&
-  (error as { code?: string }).code === "23505"
+  isUniqueViolation(error)
     ? new ApiError(409, "A check with this name already exists", "CHECK_NAME_TAKEN")
     : error;
 
