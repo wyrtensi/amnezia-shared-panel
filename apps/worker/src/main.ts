@@ -146,15 +146,22 @@ const bootstrapAdminEmails = (process.env.BOOTSTRAP_ADMIN_EMAILS ?? "")
 //     ACCESS_WRITEBACK_ENABLED → panel → CF write-back.
 const buildAccessTasks = (): Array<() => Promise<void>> => {
   if (process.env.ACCESS_SYNC_ENABLED === "true") {
+    // Built once so the closure's abort-audit de-duplication state (see
+    // accessReconcile.ts) persists across periodic runs.
+    const sync = createAccessSync({
+      repository,
+      bootstrapAdminEmails,
+      maxDisablesPerRun: nonNegativeIntegerEnv("ACCESS_SYNC_MAX_DISABLES", 10),
+      recordAccessSyncAborted: (details) =>
+        repository.recordAccessSyncAborted(details),
+      log: (message) => console.log(message),
+    });
+    // The periodic loop does not yet act on the outcome (Task 3 wires that
+    // up) — discard it here to keep this task's signature `() => Promise<void>`.
     return [
-      createAccessSync({
-        repository,
-        bootstrapAdminEmails,
-        maxDisablesPerRun: nonNegativeIntegerEnv("ACCESS_SYNC_MAX_DISABLES", 10),
-        recordAccessSyncAborted: (details) =>
-          repository.recordAccessSyncAborted(details),
-        log: (message) => console.log(message),
-      }),
+      async () => {
+        await sync();
+      },
     ];
   }
   const tasks: Array<() => Promise<void>> = [];

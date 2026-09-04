@@ -55,7 +55,10 @@ export function createCloudflareAccessClient(
 
   return {
     async getPolicy() {
-      const result = await check(await fetch(url, { headers }), "get policy");
+      const result = await check(
+        await fetch(url, { headers, signal: AbortSignal.timeout(30_000) }),
+        "get policy",
+      );
       return result as CfAccessPolicy;
     },
     async updatePolicy(policy) {
@@ -75,6 +78,7 @@ export function createCloudflareAccessClient(
             exclude: policy.exclude ?? [],
             require: policy.require ?? [],
           }),
+          signal: AbortSignal.timeout(30_000),
         }),
         "update policy",
       );

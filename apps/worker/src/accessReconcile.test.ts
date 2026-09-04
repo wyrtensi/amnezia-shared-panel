@@ -978,4 +978,41 @@ describe("createAccessSync", () => {
       });
     });
   });
+
+  it("reports skipped when Cloudflare is not configured", async () => {
+    const { repository } = makeRepo({ config: null, active: ["a@x.io"], baseline: [] });
+    const { createClient } = clientWith([]);
+    await expect(createAccessSync({ repository, createClient })()).resolves.toMatchObject({
+      outcome: "skipped",
+    });
+  });
+
+  it("reports synced when it wrote the policy", async () => {
+    const { repository } = makeRepo({ active: ["keep@x.io"], baseline: [] });
+    const { createClient } = clientWith([]);
+    await expect(createAccessSync({ repository, createClient })()).resolves.toMatchObject({
+      outcome: "synced",
+    });
+  });
+
+  it("reports unchanged when the policy already matched", async () => {
+    const { repository } = makeRepo({ active: ["keep@x.io"], baseline: ["keep@x.io"] });
+    const { createClient } = clientWith([{ email: { email: "keep@x.io" } }]);
+    await expect(createAccessSync({ repository, createClient })()).resolves.toMatchObject({
+      outcome: "unchanged",
+    });
+  });
+
+  it("reports aborted, with the reason, when the blast-radius cap trips", async () => {
+    const active = ["a@x.io", "b@x.io", "c@x.io"];
+    const { repository } = makeRepo({ active, baseline: active });
+    const { createClient } = clientWith([{ email: { email: "outside@gmail.com" } }]);
+    const result = await createAccessSync({
+      repository,
+      createClient,
+      maxDisablesPerRun: 2,
+    })();
+    expect(result.outcome).toBe("aborted");
+    expect(result.detail).toMatch(/3 account\(s\)/);
+  });
 });

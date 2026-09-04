@@ -167,6 +167,17 @@ export function createAccessWriteback(options: {
   };
 }
 
+/**
+ * What one sync run did. The outbox handler needs this to tell a run that acted
+ * from one that deliberately refused to: a refusal must not finish the job as a
+ * success (see the "no acting run is a success" rule in the plan).
+ */
+export type AccessSyncOutcome = {
+  outcome: "skipped" | "aborted" | "synced" | "unchanged";
+  /** Human-readable reason, present for `aborted`. */
+  detail?: string;
+};
+
 const normalizeEmail = (email: string): string => email.trim().toLowerCase();
 
 /**
@@ -259,7 +270,7 @@ export function createAccessSync(options: {
     overMajority: boolean;
   }) => Promise<void>;
   log?: (message: string) => void;
-}): () => Promise<void> {
+}): () => Promise<AccessSyncOutcome> {
   const {
     repository,
     createClient = createCloudflareAccessClient,
@@ -288,7 +299,7 @@ export function createAccessSync(options: {
       // This run did not abort (it never got far enough to check), so forget
       // any previously recorded abort — see the closure comment above.
       lastAbortedCandidates = null;
-      return;
+      return { outcome: "skipped" };
     }
 
     const client = createClient(config);
@@ -404,10 +415,11 @@ export function createAccessSync(options: {
       const advice = overMajority
         ? "Set ACCESS_SYNC_MAX_DISABLES=0 to proceed."
         : "Raise ACCESS_SYNC_MAX_DISABLES to proceed.";
-      log(
-        `access-sync: ${cfRemoved.length} account(s) would be disabled, ` +
-          `${reasons.join(" and ")} — aborting the run and recording it. ${advice}`,
-      );
+      // Built once so the log line and the job's failure reason cannot drift apart.
+      const abortReason =
+        `${cfRemoved.length} account(s) would be disabled, ` +
+        `${reasons.join(" and ")} — aborting the run and recording it. ${advice}`;
+      log(`access-sync: ${abortReason}`);
       // The log line above fires on every run (the high-frequency channel);
       // the audit row is the notification, so write it only when the
       // candidate set actually changed since the last recorded abort —
@@ -424,7 +436,7 @@ export function createAccessSync(options: {
         });
       }
       lastAbortedCandidates = candidates;
-      return;
+      return { outcome: "aborted", detail: abortReason };
     }
     // This run did not take the abort branch above (the only abort exit in
     // this function), so forget any previously recorded abort: a recurrence
@@ -452,7 +464,8 @@ export function createAccessSync(options: {
     ];
     if (desired.length === 0) {
       log("access-sync: no active users — skipping write-back (safety guard).");
-      return; // Keep the old baseline; never treat "empty" as "remove everyone".
+      // Keep the old baseline; never treat "empty" as "remove everyone".
+      return { outcome: "skipped" };
     }
 
     const desiredSet = new Set(desired);
@@ -492,5 +505,6 @@ export function createAccessSync(options: {
 
     // Record what Cloudflare now reflects so the next run can diff against it.
     await repository.setAccessSyncBaseline(desired);
+    return { outcome: cfInSync ? "unchanged" : "synced" };
   };
 }
