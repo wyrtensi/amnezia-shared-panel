@@ -78,6 +78,19 @@ test("no script removes orphans any more", () => {
   }
 });
 
+test("the awg2 guard only fires for an awg2 that is ours", () => {
+  // Two of our hosts run an unlabelled `amnezia-awg2` from somebody else's
+  // AmneziaVPN install - one of them carrying 41 peers. Those are precisely
+  // the nodes where the profile must stay OFF, so a guard that keys on the
+  // container name alone refuses to deploy exactly where it matters most.
+  assert.match(
+    preflight,
+    /com\.docker\.compose\.project/,
+    "the guard must check ownership, not just the name",
+  );
+  assert.match(preflight, /awg2_is_ours/);
+});
+
 test("preflight refuses to silently drop a running awg2", () => {
   // The upgrade hazard: an existing node runs awg2 with live peers, its .env
   // predates PROTOCOLS_ENABLED, and the new default is awg3-only. Deploying
