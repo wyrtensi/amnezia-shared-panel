@@ -6,6 +6,14 @@ import type {
   NodeServerLoad,
 } from "./nodeAgent.js";
 import { mapWithConcurrency } from "./concurrency.js";
+import {
+  selectDueChecks,
+  toCheckRequests,
+  toResultRows,
+  type NodeServiceCheck,
+  type PreviousResult,
+  type ServiceCheckResultRow,
+} from "./serviceChecks.js";
 import { createPublicIpResolver, normalizePublicHost } from "./publicAddress.js";
 
 // PEER samples, not host-metric samples. The two periods are different things
@@ -79,6 +87,19 @@ export interface TelemetryRepository {
     observedAt: Date,
     reason: string,
   ) => Promise<void>;
+  /**
+   * Every check definition, plus what each node last recorded for each of them.
+   * Read once per tick rather than per node: the definitions are the same for
+   * the whole fleet, and a per-node query would be one round trip per node for
+   * a table with single-digit rows.
+   */
+  listServiceChecks?: () => Promise<{
+    checks: NodeServiceCheck[];
+    previousByNode: Map<string, Map<string, PreviousResult>>;
+  }>;
+  recordServiceCheckResults?: (
+    rows: ServiceCheckResultRow[],
+  ) => Promise<void>;
 }
 
 export const shouldStoreSample = (
@@ -129,6 +150,7 @@ export type TelemetryPollerOptions = {
     | "getServerLoad"
     | "listClients"
     | "getAgentUpdate"
+    | "runChecks"
   >;
   // Host → IP for the reported public host. Injectable for tests; the default
   // uses the system resolver with a bounded timeout.
@@ -136,6 +158,46 @@ export type TelemetryPollerOptions = {
   now?: () => Date;
   /** Nodes contacted at once; bounded so a large fleet cannot exhaust the worker. */
   concurrency?: number;
+};
+
+/**
+ * Run whichever of a node's checks are due, and store what came back.
+ *
+ * Failures here are swallowed on purpose. A check describes a third-party
+ * service; a node that could not be asked is not a node that is unhealthy, and
+ * letting this reach `recordNodeFailure` would mark a perfectly good node
+ * broken because Google was slow.
+ */
+const runNodeServiceChecks = async ({
+  nodeId,
+  agent,
+  serviceChecks,
+  observedAt,
+  repository,
+}: {
+  nodeId: string;
+  agent: { runChecks: NodeAgent["runChecks"] };
+  serviceChecks: {
+    checks: NodeServiceCheck[];
+    previousByNode: Map<string, Map<string, PreviousResult>>;
+  };
+  observedAt: Date;
+  repository: TelemetryRepository;
+}): Promise<void> => {
+  const previous = serviceChecks.previousByNode.get(nodeId) ?? new Map();
+  const due = selectDueChecks(serviceChecks.checks, previous, observedAt);
+  if (due.length === 0) return;
+  try {
+    const results = await agent.runChecks(toCheckRequests(due));
+    // null means the agent predates the route. That is a fact about the node,
+    // not a result, and writing an `error` row for it would fast-retry every
+    // tick against an agent that will never answer until it is updated.
+    if (results === null) return;
+    const rows = toResultRows(nodeId, results, previous, observedAt);
+    if (rows.length > 0) await repository.recordServiceCheckResults?.(rows);
+  } catch {
+    // Deliberately silent: see the doc comment.
+  }
 };
 
 export const createTelemetryPoller = ({
@@ -146,6 +208,11 @@ export const createTelemetryPoller = ({
   concurrency = DEFAULT_POLL_CONCURRENCY,
 }: TelemetryPollerOptions) => async (): Promise<void> => {
   const telemetryNodes = await repository.listTelemetryNodes();
+  // Read before the fan-out, so every node in this tick is scheduled against
+  // the same definitions and the same instant.
+  const serviceChecks = repository.listServiceChecks
+    ? await repository.listServiceChecks()
+    : null;
   await mapWithConcurrency(telemetryNodes, concurrency, async (node) => {
       const observedAt = now();
       try {
@@ -206,6 +273,20 @@ export const createTelemetryPoller = ({
           publicIp,
           agentUpdate,
         });
+
+        // Service checks come last and are deliberately outside the try above:
+        // a check is a statement about a third-party service, and failing to
+        // run one must not turn a perfectly good telemetry poll into a recorded
+        // node failure.
+        if (serviceChecks && repository.recordServiceCheckResults) {
+          await runNodeServiceChecks({
+            nodeId: node.id,
+            agent,
+            serviceChecks,
+            observedAt,
+            repository,
+          });
+        }
       } catch (error) {
         const reason = error instanceof Error ? error.message : "Unknown polling error";
         await repository.recordNodeFailure(

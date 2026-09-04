@@ -21,6 +21,8 @@ import {
   nodeAgentReleases,
   nodeMetricsCurrent,
   nodeMetricsSamples,
+  nodeServiceCheckResults,
+  nodeServiceChecks,
   nodes,
   peerCurrent,
   peerSamples,
@@ -53,6 +55,11 @@ import type {
   StoredRuleInput,
 } from "./rules.js";
 import { protocolsFromAgent } from "./nodeAgent.js";
+import type {
+  NodeServiceCheck,
+  PreviousResult,
+  ServiceCheckResultRow,
+} from "./serviceChecks.js";
 import {
   DEFAULT_METRICS_SAMPLE_SEC,
   shouldStoreMetricsSample,
@@ -1016,6 +1023,79 @@ export class PostgresWorkerRepository
       .update(nodes)
       .set({ lastError: cleanReason(reason), updatedAt: observedAt })
       .where(eq(nodes.id, nodeId));
+  };
+
+  listServiceChecks = async (): Promise<{
+    checks: NodeServiceCheck[];
+    previousByNode: Map<string, Map<string, PreviousResult>>;
+  }> => {
+    // Two reads per tick for the whole fleet, not two per node: the definitions
+    // are shared, and the results table has one row per (node, check).
+    const [definitions, results] = await Promise.all([
+      this.options.db
+        .select({
+          id: nodeServiceChecks.id,
+          name: nodeServiceChecks.name,
+          probe: nodeServiceChecks.probe,
+          assertions: nodeServiceChecks.assertions,
+          intervalSec: nodeServiceChecks.intervalSec,
+          enabled: nodeServiceChecks.enabled,
+          nextDueAt: nodeServiceChecks.nextDueAt,
+        })
+        .from(nodeServiceChecks),
+      this.options.db
+        .select({
+          nodeId: nodeServiceCheckResults.nodeId,
+          checkId: nodeServiceCheckResults.checkId,
+          status: nodeServiceCheckResults.status,
+          checkedAt: nodeServiceCheckResults.checkedAt,
+          failingSince: nodeServiceCheckResults.failingSince,
+        })
+        .from(nodeServiceCheckResults),
+    ]);
+
+    const previousByNode = new Map<string, Map<string, PreviousResult>>();
+    for (const row of results) {
+      const perNode =
+        previousByNode.get(row.nodeId) ?? new Map<string, PreviousResult>();
+      perNode.set(row.checkId, {
+        status: row.status,
+        checkedAt: row.checkedAt,
+        failingSince: row.failingSince,
+      });
+      previousByNode.set(row.nodeId, perNode);
+    }
+
+    return {
+      checks: definitions.map((row) => ({
+        ...row,
+        assertions: row.assertions ?? [],
+      })),
+      previousByNode,
+    };
+  };
+
+  recordServiceCheckResults = async (
+    rows: ServiceCheckResultRow[],
+  ): Promise<void> => {
+    if (rows.length === 0) return;
+    // One row per (node, check): the latest result IS the schedule, so there is
+    // no history table here and nothing to prune.
+    await this.options.db
+      .insert(nodeServiceCheckResults)
+      .values(rows)
+      .onConflictDoUpdate({
+        target: [nodeServiceCheckResults.nodeId, nodeServiceCheckResults.checkId],
+        set: {
+          status: sql`excluded.status`,
+          httpStatus: sql`excluded.http_status`,
+          latencyMs: sql`excluded.latency_ms`,
+          detail: sql`excluded.detail`,
+          finalUrl: sql`excluded.final_url`,
+          checkedAt: sql`excluded.checked_at`,
+          failingSince: sql`excluded.failing_since`,
+        },
+      });
   };
 
   loadSamplesSince = async (since: Date): Promise<TrafficSample[]> => {

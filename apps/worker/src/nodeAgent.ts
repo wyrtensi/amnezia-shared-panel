@@ -65,6 +65,16 @@ const serverSchema = z.object({
   // The UDP ports the node reports listening on. Optional for the same reason:
   // an agent that predates the field must not fail the poll.
   listenPorts: z.array(z.number().int()).optional(),
+  // What this agent can run as a service check. Plain strings rather than the
+  // panel's enums on purpose: a NEWER agent may advertise a type this panel has
+  // never heard of, and parsing that as an enum would turn a forward-compatible
+  // fleet into a failed poll.
+  checkCapabilities: z
+    .object({
+      probeKinds: z.array(z.string()),
+      assertionTypes: z.array(z.string()),
+    })
+    .optional(),
 });
 const nullableMetricSchema = z.number().nonnegative().nullable();
 const awgInterfaceSchema = z
@@ -160,6 +170,34 @@ export type NodeServer = z.infer<typeof serverSchema>;
 export type NodeServerLoad = z.infer<typeof serverLoadSchema>;
 export type NodeAgentUpdateStatus = z.infer<typeof agentUpdateStatusSchema>;
 
+/**
+ * One check's verdict as the node reports it.
+ *
+ * `status` is not validated against a three-value enum by accident: `error`
+ * carries "this node cannot run part of that check", which is what a mixed
+ * fleet looks like while an agent update rolls out.
+ */
+const checkResultSchema = z.object({
+  id: z.string(),
+  status: z.enum(["ok", "failed", "error"]),
+  httpStatus: z.number().int().nullable().optional(),
+  latencyMs: z.number().int().nonnegative(),
+  finalUrl: z.string().nullable().optional(),
+  detail: z.string().nullable().optional(),
+});
+const runChecksResponseSchema = z.object({
+  results: z.array(checkResultSchema),
+});
+export type NodeCheckResult = z.infer<typeof checkResultSchema>;
+
+/** What the panel sends: the stored definition, verbatim. */
+export type NodeCheckRequest = {
+  id: string;
+  probe: unknown;
+  assertions: unknown[];
+  timeoutMs?: number;
+};
+
 export interface NodeAgent {
   getHealth: () => Promise<NodeHealth>;
   getServer: () => Promise<NodeServer>;
@@ -174,6 +212,9 @@ export interface NodeAgent {
     protocol: ProtocolKind,
   ) => Promise<CreatedNodeClient>;
   deleteClient: (publicKey: string, protocol: ProtocolKind) => Promise<void>;
+  // null when this agent does not serve the route - it predates service checks.
+  // Not an error: it is the answer, and the poll must not fail because of it.
+  runChecks: (checks: NodeCheckRequest[]) => Promise<NodeCheckResult[] | null>;
   setClientStatus: (
     publicKey: string,
     protocol: ProtocolKind,
@@ -217,6 +258,22 @@ export const createNodeAgentClient = ({
     getServer: async () => serverSchema.parse(await request("/server")),
     getServerLoad: async () =>
       serverLoadSchema.parse(await request("/server/load")),
+    runChecks: async (checks) => {
+      if (checks.length === 0) return [];
+      try {
+        const payload = await request("/checks/run", {
+          method: "POST",
+          body: JSON.stringify({ checks }),
+        });
+        return runChecksResponseSchema.parse(payload).results;
+      } catch (error) {
+        // Same shape as getAgentUpdate: an agent built before this feature
+        // answers 404. That is a fact about the node, not a failed poll.
+        if (error instanceof Error && /status 404/.test(error.message)) return null;
+        throw error;
+      }
+    },
+
     getAgentUpdate: async () => {
       try {
         return agentUpdateStatusSchema.parse(await request("/server/update"));

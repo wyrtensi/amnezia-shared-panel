@@ -39,6 +39,7 @@ const createRepository = (): WorkerRepository => ({
 
 const createAgent = (): NodeAgent => ({
   getAgentUpdate: vi.fn(() => Promise.resolve(null)),
+  runChecks: vi.fn(() => Promise.resolve(null)),
   requestAgentUpdate: vi.fn((image: string) =>
     Promise.resolve({ id: "req-1", image }),
   ),
