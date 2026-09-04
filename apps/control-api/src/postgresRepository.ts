@@ -54,6 +54,7 @@ import {
   portalPolicySchema,
   RULES_REFRESH_DEDUPLICATION_KEY,
   RULES_REFRESH_JOB_TYPE,
+  setKeyInternalNameRequestSchema,
   setUserLimitRequestSchema,
   updateGlobalRoutesRequestSchema,
 } from "@amnezia/contracts";
@@ -1937,6 +1938,10 @@ export class PostgresControlRepository implements ControlRepository {
             state: vpnKeys.state,
             deviceType: vpnKeys.deviceType,
             deviceLabel: vpnKeys.deviceLabel,
+            // Operator-only. This is the ONE projection that carries it: the
+            // owner-facing `listKeys` and `findKeyConfig` both list their
+            // columns explicitly and must keep leaving it out.
+            internalName: vpnKeys.internalName,
             keyNumber: vpnKeys.keyNumber,
             nameShowNode: vpnKeys.nameShowNode,
             nameShowLabel: vpnKeys.nameShowLabel,
@@ -2445,6 +2450,28 @@ export class PostgresControlRepository implements ControlRepository {
             payload: { keyId: targetId },
           })
           .onConflictDoNothing();
+        await tx.insert(auditEvents).values({
+          actorUserId: actor.id,
+          actorType: "user",
+          action: `admin.${resource}.${action}`,
+          targetType: resource,
+          targetId,
+        });
+        return updated;
+      });
+    } else if (resource === "keys" && action === "set-internal-name") {
+      // The operator's own note on a key. It changes nothing about the key --
+      // no job, no state -- so it is a plain update, but it is still audited:
+      // it is the field that says who a key belongs to in the real world.
+      const parsed = setKeyInternalNameRequestSchema.parse(payload);
+      const internalName = parsed.internalName === "" ? null : parsed.internalName;
+      return this.options.db.transaction(async (tx) => {
+        const [updated] = await tx
+          .update(vpnKeys)
+          .set({ internalName, updatedAt: new Date() })
+          .where(eq(vpnKeys.id, targetId))
+          .returning({ id: vpnKeys.id, internalName: vpnKeys.internalName });
+        if (!updated) throw new ApiError(404, "Key not found", "KEY_NOT_FOUND");
         await tx.insert(auditEvents).values({
           actorUserId: actor.id,
           actorType: "user",

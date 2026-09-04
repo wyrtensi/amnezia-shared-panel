@@ -2742,3 +2742,185 @@ describe("PostgresControlRepository revoke retries", () => {
     expect(await revokeJobsFor(keyId)).toBe(0);
   });
 });
+
+describe("PostgresControlRepository internal key name", () => {
+  const database = databaseUrl ? createDatabase(databaseUrl) : null;
+  const keyring = { 1: randomBytes(32) };
+  // Distinctive enough that a substring search over a whole response body is a
+  // real assertion rather than a coincidence.
+  const internalName = "kochkina, replaced 04.09";
+  let nodeId: string;
+  let owner: Actor;
+  let admin: Actor;
+  let keyId: string;
+
+  beforeAll(async () => {
+    if (!database) return;
+    await database.db.delete(portalPolicy);
+    await database.db.insert(portalPolicy).values({});
+    const credentials = encryptSecret("api-key", keyring, 1);
+    const label = encryptSecret("label-secret", keyring, 1);
+    const [node] = await database.db
+      .insert(nodes)
+      .values({
+        name: "internal-name-node",
+        publicName: "Internal Name Node",
+        apiBaseUrl: "http://127.0.0.1:4001",
+        credentialsCiphertext: credentials.ciphertext,
+        credentialsNonce: credentials.nonce,
+        credentialsAuthTag: credentials.authTag,
+        credentialsKeyVersion: credentials.keyVersion,
+        labelSecretCiphertext: label.ciphertext,
+        labelSecretNonce: label.nonce,
+        labelSecretAuthTag: label.authTag,
+        labelSecretKeyVersion: label.keyVersion,
+      })
+      .returning();
+    if (!node) throw new Error("Failed to seed node");
+    nodeId = node.id;
+  });
+
+  beforeEach(async () => {
+    if (!database) return;
+    const suffix = randomBytes(6).toString("hex");
+    const [user] = await database.db
+      .insert(users)
+      .values({ email: `internal-name-${suffix}@example.com` })
+      .returning();
+    if (!user) throw new Error("Failed to seed owner");
+    owner = {
+      id: user.id,
+      email: user.email,
+      displayName: null,
+      role: "user",
+      status: "active",
+    };
+    admin = { ...owner, role: "admin" };
+    const config = encryptSecret("vpn://stored-config", keyring, 1);
+    const [key] = await database.db
+      .insert(vpnKeys)
+      .values({
+        ownerId: user.id,
+        nodeId,
+        publicKey: `pk-${suffix}`,
+        nodeLabel: `ap_internal_${suffix}`,
+        protocol: "awg2",
+        state: "active",
+        routeProfile: "full_tunnel",
+        deviceLabel: "Laptop",
+        configCiphertext: config.ciphertext,
+        configNonce: config.nonce,
+        configAuthTag: config.authTag,
+        configKeyVersion: config.keyVersion,
+      })
+      .returning({ id: vpnKeys.id });
+    if (!key) throw new Error("Failed to seed key");
+    keyId = key.id;
+  });
+
+  afterAll(async () => {
+    if (database) await database.client.end();
+  });
+
+  const subject = (): PostgresControlRepository => {
+    if (!database) throw new Error("No database");
+    return new PostgresControlRepository({ db: database.db, keyring });
+  };
+
+  const storedInternalName = async (): Promise<string | null> => {
+    if (!database) throw new Error("No database");
+    const [row] = await database.db
+      .select({ internalName: vpnKeys.internalName })
+      .from(vpnKeys)
+      .where(eq(vpnKeys.id, keyId));
+    return row?.internalName ?? null;
+  };
+
+  runDatabaseTest(
+    "persists the internal name and never leaks it to the owner",
+    async () => {
+      if (!database) return;
+      await subject().adminAction(admin, "keys", keyId, "set-internal-name", {
+        internalName,
+      });
+
+      // Asserted against the ROW, not the response. An update path built field
+      // by field answers 200 for a column it silently drops, and a test that
+      // read the response body would have passed with that bug (see PR #49).
+      expect(await storedInternalName()).toBe(internalName);
+
+      const ownerView = await subject().listKeys(owner);
+      expect(JSON.stringify(ownerView)).not.toContain("kochkina");
+    },
+  );
+
+  runDatabaseTest("shows the internal name to admins", async () => {
+    if (!database) return;
+    await subject().adminAction(admin, "keys", keyId, "set-internal-name", {
+      internalName,
+    });
+
+    const rows = (await subject().adminList(admin, "keys")) as Array<{
+      id: string;
+      internalName?: string | null;
+    }>;
+    expect(rows.find((row) => row.id === keyId)?.internalName).toBe(
+      internalName,
+    );
+  });
+
+  runDatabaseTest("clears the internal name when given an empty one", async () => {
+    if (!database) return;
+    await subject().adminAction(admin, "keys", keyId, "set-internal-name", {
+      internalName,
+    });
+
+    await subject().adminAction(admin, "keys", keyId, "set-internal-name", {
+      internalName: "",
+    });
+
+    expect(await storedInternalName()).toBeNull();
+  });
+
+  runDatabaseTest("keeps the internal name out of config generation", async () => {
+    if (!database) return;
+    await subject().adminAction(admin, "keys", keyId, "set-internal-name", {
+      internalName,
+    });
+
+    // Everything the config path is given about a key. The name the client
+    // shows is built from `deviceLabel` and the node's name; the operator's
+    // note must not be reachable from here at all.
+    const stored = await subject().findKeyConfig(keyId);
+    expect(stored).not.toBeNull();
+    expect(JSON.stringify(stored)).not.toContain("kochkina");
+  });
+
+  runDatabaseTest("refuses a name longer than the column", async () => {
+    if (!database) return;
+    const failure = await failureOf(
+      subject().adminAction(admin, "keys", keyId, "set-internal-name", {
+        internalName: "x".repeat(81),
+      }),
+    );
+
+    expect(failure).not.toBeNull();
+    expect(await storedInternalName()).toBeNull();
+  });
+
+  runDatabaseTest("records who renamed the key", async () => {
+    if (!database) return;
+    await subject().adminAction(admin, "keys", keyId, "set-internal-name", {
+      internalName,
+    });
+
+    const events = await database.db
+      .select({ action: auditEvents.action, actorUserId: auditEvents.actorUserId })
+      .from(auditEvents)
+      .where(eq(auditEvents.targetId, keyId));
+    expect(events).toContainEqual({
+      action: "admin.keys.set-internal-name",
+      actorUserId: admin.id,
+    });
+  });
+});

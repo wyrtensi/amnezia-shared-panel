@@ -201,6 +201,8 @@ type AdminKey = {
   state: string;
   protocol: string;
   deviceLabel: string;
+  /** Operator-only note; served on /api/admin/keys and nowhere else. */
+  internalName?: string | null;
   deviceType?: string;
   routeProfile: string;
   online?: boolean;
@@ -408,6 +410,9 @@ async function cmdKeys(args: string[]): Promise<void> {
     table(
       shown.map((key) => ({
         device: key.deviceLabel || "—",
+        // The operator's own note, so `keys` answers "whose key is this really"
+        // without a second lookup. Empty for the keys that have none.
+        internal: key.internalName || "—",
         // The label is free text the user typed and D3 deliberately preserves
         // it across the migration, so "Laptop" can sit on an `unspecified` row.
         // The platform is the stored value; showing both is the only way an
@@ -431,8 +436,27 @@ async function cmdKeys(args: string[]): Promise<void> {
           : "—",
       })),
       needsWarning
-        ? ["device", "platform", "route", "owner", "state", "proto", "online", "traffic"]
-        : ["device", "platform", "owner", "state", "proto", "online", "traffic"],
+        ? [
+            "device",
+            "internal",
+            "platform",
+            "route",
+            "owner",
+            "state",
+            "proto",
+            "online",
+            "traffic",
+          ]
+        : [
+            "device",
+            "internal",
+            "platform",
+            "owner",
+            "state",
+            "proto",
+            "online",
+            "traffic",
+          ],
     ),
   );
 }
@@ -915,6 +939,32 @@ async function cmdAction(
     body: JSON.stringify({}),
   });
   console.log(`${resource} ${id}: ${action} done`);
+}
+
+/**
+ * Set (or clear) a key's operator-only note.
+ *
+ * `--name=` with nothing after it clears the note, which is why the flag is
+ * read rather than taken as a positional: an empty positional is indistinguishable
+ * from a missing one, and "clear it" must not be spelt the same way as a typo.
+ */
+async function cmdKeyInternalName(args: string[]): Promise<void> {
+  const usage = 'Usage: key-internal-name <id> --name="<text>"';
+  const id = positionals(args)[0];
+  const name = flagOf(args, "name");
+  if (!id || name === undefined) throw new Error(usage);
+  if (name.length > 80) {
+    throw new Error("An internal name is at most 80 characters");
+  }
+  await api(`/api/admin/keys/${id}/set-internal-name`, {
+    method: "POST",
+    body: JSON.stringify({ internalName: name }),
+  });
+  console.log(
+    name === ""
+      ? `key ${id}: internal name cleared`
+      : `key ${id}: internal name set to ${name}`,
+  );
 }
 
 /** The one node `id` names, by id or by exact name. */
@@ -1465,8 +1515,12 @@ ${assertionUsageLines().join("\n")}
                   [--enabled-protocols=awg3,awg2] [--disabled]
 
 Write:
-  key-revoke <id>                         Revoke a key
+  key-revoke <id>                         Revoke a key. Also retries a delete stuck in
+                                          "revoking" because a node was unreachable
   key-disable <id> / key-enable <id>      Disable / enable a key
+  key-internal-name <id> --name="<text>"  Set the operator-only note on a key; --name=
+                                          with nothing after it clears it. Never shown
+                                          to the key's owner, never in a config
   key-config <id> [--format=vpn|conf|qr|qr-svg|qr-frames]
              [--out=<path>] [--confirm]   Download a key's config. --format=qr writes a
                                           PNG (defaults to <id>.png unless --out is given);
@@ -1905,6 +1959,8 @@ async function main(): Promise<void> {
       return cmdAction("keys", "disable", args);
     case "key-enable":
       return cmdAction("keys", "enable", args);
+    case "key-internal-name":
+      return cmdKeyInternalName(args);
     case "key-config":
       return cmdKeyConfig(args);
     case "cf-token":

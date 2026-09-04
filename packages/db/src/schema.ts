@@ -268,6 +268,12 @@ export const vpnKeys = pgTable(
     state: keyStateEnum("state").default("provisioning").notNull(),
     deviceType: deviceTypeEnum("device_type").default("unspecified").notNull(),
     deviceLabel: varchar("device_label", { length: 80 }),
+    // Operator-only note about this key -- who it was issued to, what it
+    // replaced, why it exists. Never rendered to the key's owner and never part
+    // of a generated config. Distinct from `nodeLabel`, which is the peer's
+    // name on the node itself, and from `deviceLabel`, which is the owner's own
+    // name and feeds the connection name their client shows.
+    internalName: varchar("internal_name", { length: 80 }),
     // Per-owner sequential key number (1, 2, 3, ...), assigned at creation.
     // Shown to the user and embedded in the client's server name as
     // "<node public name> #<keyNumber>". Nullable only for pre-migration rows.

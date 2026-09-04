@@ -129,6 +129,11 @@ export type AdminKey = {
   state: string;
   deviceType: string;
   deviceLabel: string;
+  /**
+   * The operator's own note on this key. Admin-only: the API returns it on
+   * `/api/admin/keys` and nowhere else, and it is never part of a config.
+   */
+  internalName?: string | null;
   keyNumber?: number | null;
   routeProfile: string;
   routeRuleVersionId: string | null;

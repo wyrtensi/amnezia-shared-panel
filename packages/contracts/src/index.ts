@@ -881,6 +881,21 @@ export const setUserLimitRequestSchema = z.object({
 });
 export type SetUserLimitRequest = z.infer<typeof setUserLimitRequestSchema>;
 
+/**
+ * The operator's own note on a key: who it was issued to, what it replaced,
+ * why it exists. Admin-only in both directions -- it is never returned to the
+ * key's owner and never reaches a generated config.
+ *
+ * Empty clears it; the trim means a name of nothing but spaces clears it too
+ * rather than storing whitespace. 80 characters is the column's width.
+ */
+export const setKeyInternalNameRequestSchema = z.object({
+  internalName: z.string().trim().max(80),
+});
+export type SetKeyInternalNameRequest = z.infer<
+  typeof setKeyInternalNameRequestSchema
+>;
+
 export type ProtocolKind = z.infer<typeof protocolKindSchema>;
 export type KeyState = z.infer<typeof keyStateSchema>;
 export type RouteProfile = z.infer<typeof routeProfileSchema>;

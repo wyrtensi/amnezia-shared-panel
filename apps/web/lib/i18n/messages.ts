@@ -542,6 +542,9 @@ const ru = {
   "users.exportConfig": "Экспорт конфигурации",
   "users.revoke": "Отозвать",
   "users.revokeConfirm": "Отозвать «{label}» безвозвратно?",
+  "users.internalName": "Служебное имя",
+  "users.internalNamePrompt":
+    "Служебное имя ключа. Видно только администраторам, пользователю не показывается и в конфигурацию не попадает. Пустое значение — очистить.",
   "users.newUser": "Новый пользователь",
   "users.newUserDesc":
     "Пользователь входит по своему e-mail через Cloudflare Access.",
@@ -1480,6 +1483,9 @@ const en = {
   "users.exportConfig": "Export configuration",
   "users.revoke": "Revoke",
   "users.revokeConfirm": "Revoke “{label}” permanently?",
+  "users.internalName": "Internal name",
+  "users.internalNamePrompt":
+    "Internal name for this key. Administrators only — never shown to the user and never part of a configuration. Leave empty to clear it.",
   "users.newUser": "New user",
   "users.newUserDesc": "The user signs in with their e-mail via Cloudflare Access.",
   "users.email": "E-mail",
