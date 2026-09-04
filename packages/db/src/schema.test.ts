@@ -6,7 +6,11 @@ import {
   deviceTypeEnum,
   identities,
   jobOutbox,
+  nodeMetricsCurrent,
+  nodeMetricsSamples,
   nodes,
+  nodeServiceCheckResults,
+  nodeServiceChecks,
   peerCurrent,
   peerSamples,
   portalPolicy,
@@ -33,6 +37,10 @@ describe("database schema", () => {
         portalPolicy,
         auditEvents,
         jobOutbox,
+        nodeMetricsCurrent,
+        nodeMetricsSamples,
+        nodeServiceChecks,
+        nodeServiceCheckResults,
       ].map(getTableName),
     ).toEqual([
       "users",
@@ -47,6 +55,10 @@ describe("database schema", () => {
       "portal_policy",
       "audit_events",
       "job_outbox",
+      "node_metrics_current",
+      "node_metrics_samples",
+      "node_service_checks",
+      "node_service_check_results",
     ]);
   });
 

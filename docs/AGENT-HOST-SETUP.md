@@ -47,7 +47,7 @@ directly.
 | --- | --- | --- |
 | `amnezia-awg3` | `amneziavpn/amneziawg-go:3.1.20260814@sha256:4450…1b7a` | UDP **51890**, subnet **10.90.0.0/22** (server `10.90.0.1/22`) |
 | `amnezia-awg2` | `amneziavpn/amneziawg-go:0.2.19@sha256:3c78…77c44` | UDP **51889**, subnet **10.89.0.0/22** (server `10.89.0.1/22`) |
-| `amnezia-node-agent` | built locally from `services/node-agent` (reviewed fork of `kyoresuas/amnezia-api`) | TCP **`127.0.0.1:4001` only**, `PROTOCOLS_ENABLED=amneziawg2,amneziawg3` |
+| `amnezia-node-agent` | built locally from `services/node-agent` (reviewed fork of `kyoresuas/amnezia-api`) | TCP **`127.0.0.1:4001` only**, `PROTOCOLS_ENABLED` (default `amneziawg3`) |
 
 **AmneziaWG 3.1 is the primary protocol** for all new nodes and new keys (header
 protection, ranged headers, random trailers; requires the official AmneziaVPN
@@ -182,7 +182,7 @@ Edit `infra/node/.env` (mode `0600`). Every value is validated by preflight:
 | `SERVER_MAX_PEERS` | Client cap. Also scales the preflight RAM gate, so set it to the capacity the host can carry rather than the ceiling. | integer `1..500` (500 is the unvalidated ceiling) |
 
 The compose file forces the node-agent container to
-`PROTOCOLS_ENABLED=amneziawg2,amneziawg3` and `FASTIFY_ROUTES=0.0.0.0:4001`, but
+`PROTOCOLS_ENABLED` (default `amneziawg3`) and `FASTIFY_ROUTES=0.0.0.0:4001`, but
 publishes the port only as `127.0.0.1:4001:4001`, so the agent stays loopback-only.
 
 ### A.3 Preflight (non-deploying)
@@ -205,7 +205,7 @@ sh scripts/deploy.sh
 `deploy.sh` re-runs preflight, then (under a lock) pulls and digest-verifies the
 two pinned AWG images, verifies the local node-agent image, takes a pre-deploy
 backup **if** AWG2 state already exists, runs
-`docker compose up --detach --no-build --remove-orphans`, and gates on health for
+`docker compose up --detach --no-build`, and gates on health for
 `amnezia-awg2`, `amnezia-awg3`, and `amnezia-node-agent` in turn. It fails closed —
 persistent state is never removed on failure — and asserts the agent is bound
 exclusively to `127.0.0.1:4001`.

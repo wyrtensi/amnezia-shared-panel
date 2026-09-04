@@ -42,10 +42,11 @@ test("generates AmneziaWG 3.1 obfuscation parameters", async () => {
     /Refusing to start: AWG3 config must define HeaderProtectionKey/,
   );
 
-  // Header-protection nonce requires every S1-S4 padding to be at least 12 bytes
-  for (const value of [/S1 = 15/, /S2 = 20/, /S3 = 20/, /S4 = 23/]) {
-    assert.match(script, value);
-  }
+  // The geometry itself is drawn per node now, so there are no S values to
+  // assert here. The nonce floor, the header distinctness and the junk-range
+  // invariant are enforced and tested in awg3-geometry.sh instead — a constant
+  // here would put the whole fleet back on one fingerprint.
+  assert.match(script, /awg3-geometry\.sh/);
 });
 
 test("exposes the AWG3 container on UDP 51890 in the node stack", async () => {
@@ -54,5 +55,7 @@ test("exposes the AWG3 container on UDP 51890 in the node stack", async () => {
   assert.match(compose, /container_name: amnezia-awg3/);
   assert.match(compose, /amneziavpn\/amneziawg-go:3\.1\.\d+@sha256:[0-9a-f]{64}/);
   assert.match(compose, /"51890:51890\/udp"/);
-  assert.match(compose, /PROTOCOLS_ENABLED: amneziawg2,amneziawg3/);
+  // AWG 3.1 alone is the default shape; awg2 is opt-in through the same
+  // variable, which is also what activates its compose profile.
+  assert.match(compose, /PROTOCOLS_ENABLED: \$\{PROTOCOLS_ENABLED:-amneziawg3\}/);
 });

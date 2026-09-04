@@ -181,6 +181,7 @@ describe("PostgresWorkerRepository outbox leases", () => {
     await repository.recordNodeSnapshot({
       nodeId: node.id,
       observedAt,
+      agentLatencyMs: 12,
       server: {
         id: "agent-node",
         region: "NL",
@@ -242,6 +243,7 @@ describe("PostgresWorkerRepository outbox leases", () => {
     await repository.recordNodeSnapshot({
       nodeId: node.id,
       observedAt,
+      agentLatencyMs: 12,
       server,
       load,
       peers: [],
@@ -263,6 +265,7 @@ describe("PostgresWorkerRepository outbox leases", () => {
     await repository.recordNodeSnapshot({
       nodeId: node.id,
       observedAt: new Date("2026-08-20T08:11:00.000Z"),
+      agentLatencyMs: 12,
       server,
       load,
       peers: [],
@@ -287,6 +290,7 @@ describe("PostgresWorkerRepository outbox leases", () => {
     await repository.recordNodeSnapshot({
       nodeId: node.id,
       observedAt: new Date("2026-08-20T08:12:00.000Z"),
+      agentLatencyMs: 12,
       server,
       load,
       peers: [],
@@ -310,6 +314,7 @@ describe("PostgresWorkerRepository outbox leases", () => {
     await repository.recordNodeSnapshot({
       nodeId: node.id,
       observedAt: new Date("2026-08-20T08:13:00.000Z"),
+      agentLatencyMs: 12,
       server: { ...server, publicHost: undefined },
       load,
       peers: [],

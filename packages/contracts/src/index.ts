@@ -389,6 +389,11 @@ export const portalPolicySchema = z.object({
   showPublicKey: z.boolean().default(false),
   showLastUsed: z.boolean().default(true),
   showTraffic: z.boolean().default(true),
+  // Whether ordinary users see the per-node service-check chips (a service name
+  // and one of three states, never a URL and never a failure detail). Default
+  // ON: knowing that a service is unavailable from a node is what stops a user
+  // filing a ticket about a node that is working exactly as it should.
+  showNodeStatus: z.boolean().default(true),
   // Whether ordinary users see the address of each node they may use
   // (GET /api/nodes -> publicAddress). Default OFF: a node's address is
   // operational information, so turning it on is a deliberate decision rather
@@ -402,6 +407,171 @@ export const portalPolicySchema = z.object({
 
 export const portalPolicyOverrideSchema = portalPolicySchema.partial();
 export const defaultPortalPolicy = portalPolicySchema.parse({});
+
+// --- Node host metrics (reported by the node-agent, persisted by the worker) --
+//
+// Every field a node might not know is nullable, so an agent that predates this
+// feature still produces a valid snapshot instead of failing the whole poll.
+// Byte counters travel as decimal strings, like traffic counters: they cross
+// Number.MAX_SAFE_INTEGER on a large disk, and a JSON number would silently
+// round.
+export const nodeHostMetricsSchema = z.object({
+  observedAt: z.iso.datetime(),
+  agentLatencyMs: z.int().nonnegative().nullable(),
+  uptimeSec: z.number().nonnegative().nullable(),
+  cpuCores: z.int().positive().nullable(),
+  load: z.tuple([z.number(), z.number(), z.number()]).nullable(),
+  memTotalBytes: z.string().nullable(),
+  memAvailableBytes: z.string().nullable(),
+  swapTotalBytes: z.string().nullable(),
+  swapUsedBytes: z.string().nullable(),
+  diskTotalBytes: z.string().nullable(),
+  diskAvailableBytes: z.string().nullable(),
+  diskUsedPercent: z.number().min(0).max(100).nullable(),
+  // The cgroup task budget, which is what actually breaks first on a small
+  // host: a container that cannot fork looks healthy and low on memory.
+  agentPidsCurrent: z.int().nonnegative().nullable(),
+  agentPidsMax: z.int().nonnegative().nullable(),
+  awg3: z.object({ up: z.boolean(), peers: z.int().nonnegative() }).nullable(),
+  awg2: z.object({ up: z.boolean(), peers: z.int().nonnegative() }).nullable(),
+  publicHost: z.string().max(253).nullable(),
+  listenPorts: z.array(z.int().min(1).max(65535)).nullable(),
+  // Derived by the panel from peer handshakes, never probed: a node cannot test
+  // its own reachability from outside, and nothing else may.
+  endpoint: z.object({
+    status: z.enum(["reachable", "stale", "unknown"]),
+    lastHandshakeAt: z.iso.datetime().nullable(),
+  }),
+});
+export type NodeHostMetrics = z.infer<typeof nodeHostMetricsSchema>;
+
+// --- Service checks -----------------------------------------------------------
+//
+// A check runs on the node, with the node's own network. An admin-supplied URL
+// is therefore an SSRF primitive unless it is constrained: loopback and internal
+// names would let one point a check at the node's own services.
+const checkUrlSchema = z.url().refine((value) => {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    return false;
+  }
+  if (url.protocol !== "http:" && url.protocol !== "https:") return false;
+  const host = url.hostname.toLowerCase();
+  return (
+    host !== "localhost" &&
+    !host.endsWith(".localhost") &&
+    !host.endsWith(".internal")
+  );
+}, "Check URL must be a public http(s) address");
+
+// The fields WITHOUT their defaults. `.partial()` makes a key optional but does
+// NOT strip its `.default()`, so a partial built from a defaulted schema
+// materialises those keys on every parse - which is exactly how an "update one
+// field" request in this repo once rewrote every other field it never named.
+// The update schema is built from this shape; only the create schema defaults.
+const serviceCheckFields = {
+  name: z.string().trim().min(1).max(80),
+  url: checkUrlSchema,
+  expectedStatuses: z.array(z.int().min(100).max(599)).min(1).max(10),
+  bodyMustContain: z.string().trim().min(1).max(200).nullish(),
+  bodyMustNotContain: z.string().trim().min(1).max(200).nullish(),
+  finalUrlMustNotContain: z.string().trim().min(1).max(200).nullish(),
+  // 12 hours, and this is the service checks' period only - host metrics have
+  // their own, separate periods.
+  intervalSec: z.int().min(60).max(86_400),
+  enabled: z.boolean(),
+};
+
+export const serviceCheckSchema = z.object(serviceCheckFields).extend({
+  expectedStatuses: serviceCheckFields.expectedStatuses.default([200]),
+  intervalSec: serviceCheckFields.intervalSec.default(43_200),
+  enabled: serviceCheckFields.enabled.default(true),
+});
+export const createServiceCheckRequestSchema = serviceCheckSchema;
+export const updateServiceCheckRequestSchema = z
+  .object(serviceCheckFields)
+  .partial()
+  .refine(
+    (value) => Object.keys(value).length > 0,
+    "At least one field is required",
+  );
+export type ServiceCheck = z.infer<typeof serviceCheckSchema>;
+export type CreateServiceCheckRequest = z.infer<
+  typeof createServiceCheckRequestSchema
+>;
+export type UpdateServiceCheckRequest = z.infer<
+  typeof updateServiceCheckRequestSchema
+>;
+
+/** Admin/diagnostic status. Collapsed to three states for users, see below. */
+export const serviceCheckStatusSchema = z.enum(["ok", "failed", "error"]);
+export type ServiceCheckStatus = z.infer<typeof serviceCheckStatusSchema>;
+
+export const serviceCheckResultSchema = z.object({
+  checkId: z.uuid(),
+  name: z.string(),
+  status: serviceCheckStatusSchema,
+  httpStatus: z.int().nullable(),
+  latencyMs: z.int().nonnegative().nullable(),
+  detail: z.string().max(300).nullable(),
+  // Admin-only: where the request actually landed, which is the whole signal
+  // for a service that answers a redirect instead of an error.
+  finalUrl: z.string().max(500).nullable(),
+  checkedAt: z.iso.datetime(),
+  failingSince: z.iso.datetime().nullable(),
+});
+export type ServiceCheckResult = z.infer<typeof serviceCheckResultSchema>;
+
+// --- The three states a user is shown FOR A SERVICE CHECK ---------------------
+//
+// Scope: this enum describes one service check on one node. It is NOT a node
+// state and NOT an endpoint state. The name says so on purpose - a general name
+// invites a second consumer, and the two things are not the same thing. Node
+// health keeps `enabled` + `lastError` + `lastHealthAt`; endpoint reachability
+// keeps its own reachable/stale/unknown enum above; host metrics keep numbers
+// and nulls.
+export const serviceCheckUserStateSchema = z.enum([
+  "works",
+  "unavailable",
+  "unknown",
+]);
+export type ServiceCheckUserState = z.infer<typeof serviceCheckUserStateSchema>;
+
+/**
+ * Collapse a check's internal status into what a user is shown. `error` means
+ * the node could not perform the check, so nothing is known about the service
+ * itself - that is "unknown", not "unavailable". A result older than
+ * `staleAfterSec` is "unknown" too: a stale green light is worse than no light.
+ *
+ * `staleAfterSec` is a parameter rather than a constant because it is three
+ * times the check's OWN interval, so a check an admin set to five minutes goes
+ * stale after fifteen, not after thirty-six hours.
+ *
+ * There is deliberately no sibling `toUserNodeState`. A node is not a check.
+ */
+export const toUserCheckState = (input: {
+  status: ServiceCheckStatus | null;
+  checkedAt: Date | null;
+  now: Date;
+  staleAfterSec: number;
+}): ServiceCheckUserState => {
+  if (input.status === null || input.checkedAt === null) return "unknown";
+  const ageSec = (input.now.getTime() - input.checkedAt.getTime()) / 1_000;
+  if (ageSec > input.staleAfterSec) return "unknown";
+  if (input.status === "ok") return "works";
+  if (input.status === "failed") return "unavailable";
+  return "unknown";
+};
+
+/** What a user may see for one check: a name and one of three states. No URL, no detail. */
+export const userServiceStatusSchema = z.object({
+  name: z.string(),
+  state: serviceCheckUserStateSchema,
+});
+export type UserServiceStatus = z.infer<typeof userServiceStatusSchema>;
+
 
 // --- Manual server order and recommended servers ----------------------------
 // Both are GLOBAL-ONLY on purpose: neither is part of `portalPolicySchema`, so

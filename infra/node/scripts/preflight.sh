@@ -150,6 +150,19 @@ fi
 
 compose config --quiet
 
+# The upgrade hazard of making awg2 optional: an existing node runs awg2 with
+# live peers, its .env predates PROTOCOLS_ENABLED, and the new default is AWG 3.1
+# only. Deploying that would stop awg2 and drop every legacy peer, reporting
+# success the whole way. Refuse instead, and say exactly what to add.
+if container_is_running amnezia-awg2 && ! awg2_enabled; then
+  peers="$(docker exec amnezia-awg2 wg show 2>/dev/null | grep -c '^peer:' || true)"
+  fail "amnezia-awg2 is running with ${peers:-?} peer(s) but PROTOCOLS_ENABLED does not include amneziawg2.
+  Deploying now would stop it and drop those peers.
+  Add this line to .env to keep serving them:
+    PROTOCOLS_ENABLED=amneziawg2,amneziawg3
+  Or stop amnezia-awg2 deliberately first if the node really is done with AWG 2.0."
+fi
+
 for container_name in amnezia-awg2 amnezia-awg3 amnezia-node-agent; do
   existing_project="$(docker inspect --format '{{index .Config.Labels "com.docker.compose.project"}}' "$container_name" 2>/dev/null || true)"
   if [ -n "$existing_project" ] && [ "$existing_project" != "amnezia-node" ]; then

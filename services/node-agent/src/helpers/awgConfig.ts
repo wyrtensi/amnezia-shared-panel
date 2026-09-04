@@ -57,12 +57,28 @@ const isValidSpecialJunk = (value: string): boolean =>
   Boolean(value) && !value.includes("#") && !value.includes("[Peer]");
 
 /**
- * Check whether an AmneziaWG 3.1 toggle is enabled.
+ * Check whether an AmneziaWG 3.1 toggle is enabled, the way `awg` itself reads
+ * one.
+ *
+ * `parse_bool` in amneziawg-tools accepts `on`/`off` case-insensitively AND a
+ * decimal number, taking the value as `ret != 0`. So `DisableCookies = 0` is a
+ * legal way to write "off", and reading it as "on" - which a plain
+ * "anything that is not the word off" test does - reports a node as running a
+ * feature the daemon has switched off.
+ *
+ * `awg` exits on a value that is neither form. Here we are only reading a
+ * config, so an unparseable value is treated as disabled: it must never be
+ * allowed to read as enabled.
  */
 export const isAwgToggleEnabled = (value: string): boolean => {
-  const trimmed = value.trim();
+  const trimmed = value.trim().toLowerCase();
 
-  return Boolean(trimmed) && trimmed.toLowerCase() !== AppContract.WG.TOGGLE_OFF;
+  if (!trimmed) return false;
+  if (trimmed === AppContract.WG.TOGGLE_OFF) return false;
+  if (trimmed === AppContract.WG.TOGGLE_ON) return true;
+  if (!/^\d+$/.test(trimmed)) return false;
+
+  return Number(trimmed) !== 0;
 };
 
 /**

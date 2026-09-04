@@ -58,6 +58,80 @@ export const getServerLoadSchema = {
               description: "Занято RAM (bytes)",
               example: 1413480448,
             },
+            availableBytes: {
+              type: "number",
+              nullable: true,
+              description:
+                "MemAvailable из /proc/meminfo — сколько реально можно выделить. " +
+                "Не то же самое, что freeBytes. Может быть null, если /proc недоступен",
+              example: 361267200,
+            },
+          },
+        },
+        swap: {
+          type: "object",
+          nullable: true,
+          description: "Swap. null, если на хосте его нет вообще",
+          required: ["totalBytes", "usedBytes"],
+          properties: {
+            totalBytes: {
+              type: "number",
+              description: "Всего swap (bytes)",
+              example: 2147483648,
+            },
+            usedBytes: {
+              type: "number",
+              nullable: true,
+              description: "Занято swap (bytes)",
+              example: 325058560,
+            },
+          },
+        },
+        agent: {
+          type: "object",
+          description:
+            "Бюджет задач cgroup у контейнера агента. На маленьком хосте " +
+            "кончается первым, при этом контейнер выглядит здоровым",
+          required: ["pidsCurrent", "pidsMax"],
+          properties: {
+            pidsCurrent: {
+              type: "number",
+              nullable: true,
+              description: "Текущее число задач",
+              example: 12,
+            },
+            pidsMax: {
+              type: "number",
+              nullable: true,
+              description: "Лимит задач; null означает cgroup без лимита",
+              example: 128,
+            },
+          },
+        },
+        awg: {
+          type: "object",
+          description:
+            "Состояние AWG-интерфейсов. null у протокола, который эта нода не обслуживает",
+          required: ["amneziawg2", "amneziawg3"],
+          properties: {
+            amneziawg2: {
+              type: "object",
+              nullable: true,
+              required: ["up", "peers"],
+              properties: {
+                up: { type: "boolean", example: true },
+                peers: { type: "number", example: 2 },
+              },
+            },
+            amneziawg3: {
+              type: "object",
+              nullable: true,
+              required: ["up", "peers"],
+              properties: {
+                up: { type: "boolean", example: true },
+                peers: { type: "number", example: 7 },
+              },
+            },
           },
         },
         disk: {

@@ -11,6 +11,7 @@ import { AmneziaBackupData } from "@/types/server";
 import { Protocol, ClientErrorCode } from "@/types/shared";
 import { encodeVpnConfig } from "@/helpers/encodeVpnConfig";
 import { allocatePeerIp } from "@/helpers/allocatePeerIp";
+import { countDumpPeers, parseListenPort } from "@/helpers/hostMetrics";
 import { ClientTableEntry, IAmneziaConnection } from "@/types/amnezia";
 
 /**
@@ -144,6 +145,36 @@ export abstract class AmneziaWgServiceBase {
     });
 
     return changed ? updatedSections.join("[Peer]") : config;
+  }
+
+  /**
+   * What this protocol's interface is actually doing right now, for the panel's
+   * node card. `up` means the dump answered at all: a container that is down,
+   * or an interface that never came up, throws from the connection rather than
+   * returning an empty dump, and the caller must be able to tell that apart
+   * from an interface with no peers.
+   *
+   * This lives on the service rather than in the caller so nothing outside
+   * reaches into `connection`, which is protected for a reason.
+   */
+  async getInterfaceState(): Promise<{
+    up: boolean;
+    peers: number;
+    listenPort: number | null;
+  }> {
+    try {
+      const [dump, config] = await Promise.all([
+        this.connection.getWgDump(),
+        this.connection.readWgConfig().catch(() => ""),
+      ]);
+      return {
+        up: true,
+        peers: countDumpPeers(dump),
+        listenPort: parseListenPort(config),
+      };
+    } catch {
+      return { up: false, peers: 0, listenPort: null };
+    }
   }
 
   /**

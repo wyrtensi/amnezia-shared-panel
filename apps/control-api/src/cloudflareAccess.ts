@@ -1,9 +1,9 @@
-import {
-  createRemoteJWKSet,
-  jwtVerify,
-  type JWTVerifyGetKey,
-} from "jose";
+import { jwtVerify, type JWTVerifyGetKey } from "jose";
 import type { IdentityAdapter } from "./app.js";
+import {
+  createJwksFetcher,
+  createResilientJWKSet,
+} from "./resilientJwks.js";
 import { ApiError } from "./service.js";
 
 export type CloudflareAccessOptions = {
@@ -18,8 +18,14 @@ export const createCloudflareAccessAdapter = ({
   jwks,
 }: CloudflareAccessOptions): IdentityAdapter => {
   const issuer = issuerRaw.replace(/\/$/, "");
+  // Not createRemoteJWKSet: it throws when a refresh fails, and this runs on
+  // every authenticated request, so a brief outage at the identity provider
+  // returns 500 for the entire API. See resilientJwks.ts.
   const keySet =
-    jwks ?? createRemoteJWKSet(new URL(`${issuer}/cdn-cgi/access/certs`));
+    jwks ??
+    createResilientJWKSet({
+      fetchJwks: createJwksFetcher(new URL(`${issuer}/cdn-cgi/access/certs`)),
+    });
 
   return async (request) => {
     const rawToken = request.headers["cf-access-jwt-assertion"];

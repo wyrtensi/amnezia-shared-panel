@@ -2,6 +2,11 @@ name: amnezia-node
 
 services:
   awg2:
+    # AWG 2.0 is opt-in. A node created today serves AWG 3.1 only; awg2 exists
+    # for nodes that still carry legacy peers, and is started only when
+    # PROTOCOLS_ENABLED names amneziawg2 (see scripts/common.sh: awg2_enabled).
+    profiles:
+      - awg2
     container_name: amnezia-awg2
     image: amneziavpn/amneziawg-go:0.2.19@sha256:3c78eb57ef5cb44f63aed185e79c104593c854a5ebde3e1075470301bcc77c44
     platform: linux/amd64
@@ -70,6 +75,7 @@ services:
     volumes:
       - ./state/amnezia-awg3:/opt/amnezia/awg
       - ./scripts/awg3-entrypoint.sh:/usr/local/libexec/awg3-entrypoint.sh:ro
+      - ./scripts/awg3-geometry.sh:/usr/local/libexec/awg3-geometry.sh:ro
     healthcheck:
       test:
         - CMD-SHELL
@@ -99,9 +105,10 @@ services:
     init: true
     user: "10001:0"
     restart: unless-stopped
+    # Only awg3. While this also named awg2, a 3.1-only node could not start
+    # its agent without someone first bringing up a protocol the node does not
+    # serve - which had to be done by hand on a live host.
     depends_on:
-      awg2:
-        condition: service_healthy
       awg3:
         condition: service_healthy
     entrypoint:
@@ -122,7 +129,10 @@ services:
       ENV: production
       DOCKER_API_VERSION: ${DOCKER_API_VERSION:-1.44}
       CORS_ORIGINS: ""
-      PROTOCOLS_ENABLED: amneziawg2,amneziawg3
+      # The single switch: it tells the agent what to manage AND decides
+      # whether the awg2 profile is started. Two flags could disagree, and the
+      # failure mode of that is an agent managing a protocol that is not up.
+      PROTOCOLS_ENABLED: ${PROTOCOLS_ENABLED:-amneziawg3}
       SERVER_ID: ${SERVER_ID:?SERVER_ID is required}
       SERVER_NAME: ${SERVER_NAME:?SERVER_NAME is required}
       SERVER_REGION: ${SERVER_REGION:?SERVER_REGION is required}

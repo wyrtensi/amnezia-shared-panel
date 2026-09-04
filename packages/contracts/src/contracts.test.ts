@@ -28,6 +28,7 @@ import {
   nodeAgentUpdateRequestSchema,
   nodeAgentUpdateStatusSchema,
   MIN_AWG3_CLIENT_VERSION,
+  nodeHostMetricsSchema,
   nodeKeyLimitsSchema,
   nodePublicAddressSchema,
   portalPolicyOverrideSchema,
@@ -37,8 +38,12 @@ import {
   RETIRED_STORED_DEVICE_TYPES,
   ROUTE_PROFILE_UNSUPPORTED_DEVICES,
   rulesRefreshStatusSchema,
+  serviceCheckSchema,
+  serviceCheckUserStateSchema,
   setUserLimitRequestSchema,
+  toUserCheckState,
   updateGlobalRoutesRequestSchema,
+  updateServiceCheckRequestSchema,
 } from "./index.js";
 
 describe("createKeyRequestSchema", () => {
@@ -160,6 +165,7 @@ describe("portalPolicySchema", () => {
       showPublicKey: false,
       showLastUsed: true,
       showTraffic: true,
+      showNodeStatus: true,
       showNodeAddress: false,
       // No recordings until an admin adds them; the guide reads without one.
       installGuideVideos: {},
@@ -1091,5 +1097,221 @@ describe("nodeAgentUpdateStatusSchema", () => {
         updatedAt: null,
       }),
     ).toThrow();
+  });
+});
+
+describe("nodeHostMetricsSchema", () => {
+  it("accepts a fully reported node and keeps big counters as strings", () => {
+    const parsed = nodeHostMetricsSchema.parse({
+      observedAt: "2026-09-02T10:00:00.000Z",
+      agentLatencyMs: 12,
+      uptimeSec: 86400,
+      cpuCores: 1,
+      load: [0.1, 0.2, 0.3],
+      memTotalBytes: "1007681536",
+      memAvailableBytes: "361267200",
+      swapTotalBytes: "2147483648",
+      swapUsedBytes: "325058560",
+      diskTotalBytes: "10522067968",
+      diskAvailableBytes: "1277952000",
+      diskUsedPercent: 86,
+      agentPidsCurrent: 12,
+      agentPidsMax: 128,
+      awg3: { up: true, peers: 2 },
+      awg2: null,
+      publicHost: "203.0.113.10",
+      listenPorts: [51890],
+      endpoint: {
+        status: "reachable",
+        lastHandshakeAt: "2026-09-02T09:59:30.000Z",
+      },
+    });
+
+    // Byte counters cross Number.MAX_SAFE_INTEGER on a large disk and are
+    // carried as decimal strings for the same reason traffic is.
+    expect(parsed.memAvailableBytes).toBe("361267200");
+    expect(parsed.endpoint.status).toBe("reachable");
+  });
+
+  it("accepts an older agent that reports nothing beyond the timestamp", () => {
+    // Every field a node might not know is nullable, so an agent that predates
+    // this feature still produces a valid snapshot instead of failing the poll.
+    expect(
+      nodeHostMetricsSchema.safeParse({
+        observedAt: "2026-09-02T10:00:00.000Z",
+        agentLatencyMs: null,
+        uptimeSec: null,
+        cpuCores: null,
+        load: null,
+        memTotalBytes: null,
+        memAvailableBytes: null,
+        swapTotalBytes: null,
+        swapUsedBytes: null,
+        diskTotalBytes: null,
+        diskAvailableBytes: null,
+        diskUsedPercent: null,
+        agentPidsCurrent: null,
+        agentPidsMax: null,
+        awg3: null,
+        awg2: null,
+        publicHost: null,
+        listenPorts: null,
+        endpoint: { status: "unknown", lastHandshakeAt: null },
+      }).success,
+    ).toBe(true);
+  });
+
+  it("rejects values a host cannot actually report", () => {
+    const base = {
+      observedAt: "2026-09-02T10:00:00.000Z",
+      agentLatencyMs: null,
+      uptimeSec: null,
+      cpuCores: null,
+      load: null,
+      memTotalBytes: null,
+      memAvailableBytes: null,
+      swapTotalBytes: null,
+      swapUsedBytes: null,
+      diskTotalBytes: null,
+      diskAvailableBytes: null,
+      diskUsedPercent: null,
+      agentPidsCurrent: null,
+      agentPidsMax: null,
+      awg3: null,
+      awg2: null,
+      publicHost: null,
+      listenPorts: null,
+      endpoint: { status: "unknown" as const, lastHandshakeAt: null },
+    };
+
+    expect(
+      nodeHostMetricsSchema.safeParse({ ...base, diskUsedPercent: 101 }).success,
+    ).toBe(false);
+    expect(
+      nodeHostMetricsSchema.safeParse({ ...base, cpuCores: 0 }).success,
+    ).toBe(false);
+    expect(
+      nodeHostMetricsSchema.safeParse({ ...base, listenPorts: [0] }).success,
+    ).toBe(false);
+    expect(
+      nodeHostMetricsSchema.safeParse({ ...base, listenPorts: [65536] }).success,
+    ).toBe(false);
+    // A two-entry load average is a parsing bug on the node, not a shorter list.
+    expect(
+      nodeHostMetricsSchema.safeParse({ ...base, load: [0.1, 0.2] }).success,
+    ).toBe(false);
+  });
+});
+
+describe("toUserCheckState", () => {
+  const now = new Date("2026-09-02T12:00:00.000Z");
+  const fresh = new Date("2026-09-02T11:00:00.000Z");
+  const staleAfterSec = 3 * 43_200; // three missed 12-hour runs
+
+  it.each([
+    ["ok", "works"],
+    ["failed", "unavailable"],
+    // "error" means the node could not perform the check. Nothing is known
+    // about the service, so the user is told "unknown", not "unavailable".
+    ["error", "unknown"],
+  ] as const)("maps %s to %s", (status, expected) => {
+    expect(toUserCheckState({ status, checkedAt: fresh, now, staleAfterSec })).toBe(
+      expected,
+    );
+  });
+
+  it("is unknown when the check has never run", () => {
+    expect(
+      toUserCheckState({ status: null, checkedAt: null, now, staleAfterSec }),
+    ).toBe("unknown");
+  });
+
+  it("is unknown when the last result is older than the stale window", () => {
+    // A stale green light is worse than no light: it says "works" about a
+    // measurement nobody has taken since yesterday.
+    const old = new Date("2026-08-30T12:00:00.000Z");
+    expect(
+      toUserCheckState({ status: "ok", checkedAt: old, now, staleAfterSec }),
+    ).toBe("unknown");
+  });
+
+  it("keeps a result at exactly the stale boundary", () => {
+    const boundary = new Date(now.getTime() - staleAfterSec * 1_000);
+    expect(
+      toUserCheckState({ status: "ok", checkedAt: boundary, now, staleAfterSec }),
+    ).toBe("works");
+  });
+});
+
+// The three states belong to service checks and to nothing else. These two
+// tests are the guard rail: the first pins the scope of the enum, the second
+// keeps it from being unified with the endpoint enum, which shares the word
+// "unknown" by coincidence of English and by nothing else.
+describe("the three states are scoped to service checks", () => {
+  it("has exactly the three service-check states and no node state", async () => {
+    expect(serviceCheckUserStateSchema.options).toEqual([
+      "works",
+      "unavailable",
+      "unknown",
+    ]);
+    const contracts = await import("./index.js");
+    expect("toUserNodeState" in contracts).toBe(false);
+    expect("userStateSchema" in contracts).toBe(false);
+  });
+
+  it("does not share its enum with endpoint reachability", () => {
+    // The endpoint enum lives inside nodeHostMetricsSchema and says
+    // reachable/stale/unknown. If someone ever "simplifies" the two into one
+    // type, one of these two assertions fails.
+    const endpointStates =
+      nodeHostMetricsSchema.shape.endpoint.shape.status.options;
+    expect(endpointStates).toEqual(["reachable", "stale", "unknown"]);
+    expect(endpointStates).not.toEqual(serviceCheckUserStateSchema.options);
+  });
+});
+
+describe("serviceCheckSchema", () => {
+  const base = { name: "Gemini", url: "https://gemini.google.com/" };
+
+  it("defaults to one 12-hour check expecting 200", () => {
+    const parsed = serviceCheckSchema.parse(base);
+    expect(parsed.expectedStatuses).toEqual([200]);
+    expect(parsed.intervalSec).toBe(43_200);
+    expect(parsed.enabled).toBe(true);
+  });
+
+  it("refuses a URL that would make the node probe itself or its network", () => {
+    // A check runs on the node with the node's own network. A loopback or
+    // internal target turns an admin-supplied string into an SSRF primitive
+    // against the node's own services.
+    for (const url of [
+      "http://localhost/",
+      "https://app.localhost/",
+      "https://metadata.internal/",
+      "ftp://example.com/",
+      "file:///etc/passwd",
+    ]) {
+      expect(serviceCheckSchema.safeParse({ ...base, url }).success, url).toBe(
+        false,
+      );
+    }
+  });
+
+  it("keeps an update partial but never empty", () => {
+    expect(updateServiceCheckRequestSchema.safeParse({}).success).toBe(false);
+    expect(
+      updateServiceCheckRequestSchema.parse({ enabled: false }).enabled,
+    ).toBe(false);
+  });
+
+  it("does not materialize defaults on a partial update", () => {
+    // zod's `.partial()` makes a key optional but keeps its `.default()`, so a
+    // partial built from the defaulted schema turns "set enabled=false" into
+    // "set enabled=false AND reset the interval AND reset the expected
+    // statuses". That silent full-replace has already cost this repo one
+    // production bug, so the update schema is built from a defaultless shape.
+    expect(
+      Object.keys(updateServiceCheckRequestSchema.parse({ enabled: false })),
+    ).toEqual(["enabled"]);
   });
 });
