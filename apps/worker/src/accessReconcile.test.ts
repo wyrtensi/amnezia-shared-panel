@@ -363,4 +363,44 @@ describe("createAccessSync", () => {
     // Baseline is left intact so the next run does not treat "empty" as removals.
     expect(setAccessSyncBaseline).not.toHaveBeenCalled();
   });
+
+  it("leaves an email rule the panel never added untouched", async () => {
+    const { repository, getBaseline } = makeRepo({
+      active: ["keep@x.io"],
+      baseline: ["keep@x.io"],
+    });
+    const { createClient, updatePolicy } = clientWith([
+      { email: { email: "keep@x.io" } },
+      { email: { email: "outsider@gmail.com" } },
+    ]);
+
+    await createAccessSync({ repository, createClient })();
+
+    // The policy already holds exactly what it should: the panel's own email plus
+    // a foreign one it must not touch. Nothing to write.
+    expect(updatePolicy).not.toHaveBeenCalled();
+    expect(getBaseline()).toEqual(["keep@x.io"]);
+  });
+
+  it("drops its own stale email while keeping a foreign one", async () => {
+    const { repository } = makeRepo({
+      active: ["keep@x.io"],
+      baseline: ["keep@x.io", "gone@x.io"],
+    });
+    const { createClient, updatePolicy } = clientWith([
+      { email: { email: "keep@x.io" } },
+      { email: { email: "gone@x.io" } },
+      { email: { email: "outsider@gmail.com" } },
+    ]);
+
+    await createAccessSync({ repository, createClient })();
+
+    expect(updatePolicy).toHaveBeenCalledWith({
+      id: "pol",
+      include: [
+        { email: { email: "outsider@gmail.com" } },
+        { email: { email: "keep@x.io" } },
+      ],
+    });
+  });
 });

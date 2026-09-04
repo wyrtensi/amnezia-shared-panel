@@ -224,7 +224,8 @@ export function createAccessSync(options: {
     const client = createClient(config);
     const policy = await client.getPolicy();
     const include = Array.isArray(policy.include) ? policy.include : [];
-    const preserved = include.filter((rule) => !rule.email?.email);
+    // Rules the panel never writes: everything that is not an email rule.
+    const nonEmailRules = include.filter((rule) => !rule.email?.email);
     const cfEmails = new Set(
       include
         .map((rule) => rule.email?.email?.toLowerCase())
@@ -244,7 +245,7 @@ export function createAccessSync(options: {
     // Safety guard (mirrors reconcileAccess's empty-allowlist guard): if the
     // policy include has ZERO email rules, treat it as an anomaly, NOT as "every
     // synced user was removed". This happens when access is granted by a
-    // surviving `email_domain`/group rule (kept in `preserved`) rather than
+    // surviving `email_domain`/group rule (kept in `nonEmailRules`) rather than
     // explicit emails — disabling everyone there would be catastrophic.
     const cfRemoved =
       cfEmails.size === 0
@@ -255,7 +256,7 @@ export function createAccessSync(options: {
               !cfEmails.has(email) &&
               !pinnedSet.has(email),
           );
-    if (cfEmails.size === 0 && preserved.length > 0) {
+    if (cfEmails.size === 0 && nonEmailRules.length > 0) {
       log(
         "access-sync: policy grants access via non-email rules only (no email include) — skipping CF→panel disable.",
       );
@@ -286,12 +287,32 @@ export function createAccessSync(options: {
     }
 
     const desiredSet = new Set(desired);
+    // Ownership: the panel may only delete email rules it put there itself, and
+    // the baseline is the record of exactly that. An email rule that is neither
+    // in the baseline nor in the desired set was added by someone else (by hand
+    // in the dashboard, by another tool) and is preserved verbatim, keeping any
+    // fields this client does not model.
+    const owned = new Set(baseline);
+    const ruleEmail = (rule: CfAccessRule): string | undefined =>
+      rule.email?.email?.toLowerCase();
+    const foreignRules = include.filter((rule) => {
+      const email = ruleEmail(rule);
+      if (!email) return false;
+      return !owned.has(email) && !desiredSet.has(email);
+    });
+    const foreignEmails = foreignRules
+      .map(ruleEmail)
+      .filter((email): email is string => Boolean(email));
+    // In sync when the email set the policy would end up with already matches
+    // the one it has. Compared as sets, because foreign rules keep their place.
+    const nextEmails = new Set([...foreignEmails, ...desired]);
     const cfInSync =
-      cfEmails.size === desiredSet.size &&
-      [...desiredSet].every((email) => cfEmails.has(email));
+      nextEmails.size === cfEmails.size &&
+      [...nextEmails].every((email) => cfEmails.has(email));
     if (!cfInSync) {
       const nextInclude: CfAccessRule[] = [
-        ...preserved,
+        ...nonEmailRules,
+        ...foreignRules,
         ...desired.map((email) => ({ email: { email } })),
       ];
       await client.updatePolicy({ ...policy, include: nextInclude });
