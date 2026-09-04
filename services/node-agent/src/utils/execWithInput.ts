@@ -52,7 +52,6 @@ export const runWithInput = async ({
     let stdout = "";
     let stderr = "";
     let settled = false;
-    let killedForTimeout = false;
     let killedForOverflow = false;
 
     const finish = (fn: () => void) => {
@@ -62,9 +61,20 @@ export const runWithInput = async ({
       fn();
     };
 
+    // Reject on the timeout itself rather than waiting for `close`. `close`
+    // fires only once the child has exited AND its stdio pipes are closed, and
+    // killing `sh` does not kill what it exec'd - a grandchild inherits those
+    // pipes and holds them open. Waiting for `close` therefore means waiting
+    // out the very command the timeout was meant to abandon.
     const timer = setTimeout(() => {
-      killedForTimeout = true;
       child.kill("SIGKILL");
+      finish(() =>
+        reject(
+          new Error(
+            `Command ${redactCommand(cmd)} timed out after ${timeout} ms`,
+          ),
+        ),
+      );
     }, timeout);
 
     const collect = (into: "stdout" | "stderr") => (chunk: Buffer) => {
@@ -94,13 +104,6 @@ export const runWithInput = async ({
 
     child.on("close", (code) => {
       finish(() => {
-        if (killedForTimeout) {
-          return reject(
-            new Error(
-              `Command ${redactCommand(cmd)} timed out after ${timeout} ms`,
-            ),
-          );
-        }
         if (killedForOverflow) {
           return reject(
             new Error(

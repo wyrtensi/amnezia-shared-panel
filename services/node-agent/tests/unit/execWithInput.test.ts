@@ -51,15 +51,25 @@ onPosix("runWithInput", () => {
     ).rejects.toThrow(/no such thing/);
   });
 
-  it("rejects when the command outruns its timeout", async () => {
+  // And it must reject AT the timeout, not once the command finishes anyway.
+  // `close` waits for the stdio pipes to close, and killing `sh` does not kill
+  // what it exec'd - the grandchild keeps them open, so a promise that waits
+  // for `close` sits out the full `sleep`, which is exactly what a timeout is
+  // for. Caught in CI: the first version of this took 5004 ms for a 100 ms
+  // timeout.
+  it("rejects when the command outruns its timeout, and does so promptly", async () => {
+    const started = Date.now();
+
     await expect(
       runWithInput({
         container: "",
-        cmd: "sleep 5",
+        cmd: "sleep 30",
         input: "",
         timeout: 100,
       }),
     ).rejects.toThrow(/timed out/);
+
+    expect(Date.now() - started).toBeLessThan(2000);
   });
 
   // A command that never reads stdin closes the pipe under us. That surfaces as
