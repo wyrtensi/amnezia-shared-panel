@@ -298,6 +298,33 @@ export type PostgresRepositoryOptions = {
   allowedEmailDomains?: ReadonlySet<string>;
 };
 
+const BIGINT_METRIC_FIELDS = [
+  "memTotalBytes",
+  "memAvailableBytes",
+  "swapTotalBytes",
+  "swapUsedBytes",
+  "diskTotalBytes",
+  "diskAvailableBytes",
+] as const;
+
+/**
+ * One host-metrics row, with its byte counters as decimal strings.
+ *
+ * Derived from the field list rather than written out field by field: a new
+ * bigint column added to the table would otherwise serialise straight through
+ * and 500 the page again, and the failure would look nothing like its cause.
+ */
+const toMetricsPayload = (
+  row: Record<string, unknown>,
+): Record<string, unknown> => {
+  const payload: Record<string, unknown> = { ...row };
+  for (const field of BIGINT_METRIC_FIELDS) {
+    const value = payload[field];
+    payload[field] = typeof value === "bigint" ? value.toString() : (value ?? null);
+  }
+  return payload;
+};
+
 /**
  * `node_service_checks_name_unique` exists so two checks cannot share a name -
  * the name is what a user sees on a chip, and two "Gemini" chips with different
@@ -1989,8 +2016,15 @@ export class PostgresControlRepository implements ControlRepository {
             .innerJoin(vpnKeys, eq(vpnKeys.id, peerCurrent.keyId))
             .groupBy(vpnKeys.nodeId),
         ]);
+        // Byte counters leave as decimal STRINGS, the way every other byte
+        // counter in this API does. They are `bigint` in the column and drizzle
+        // hands back a JS BigInt, which JSON.stringify refuses outright - a 500
+        // on the whole admin nodes page, which is what shipped in v0.9.6. The
+        // web and CLI types already declared these as strings; only the
+        // repository disagreed, and `adminList` returns `unknown` so nothing
+        // typed the gap.
         const metricsByNode = new Map(
-          metricsRows.map((row) => [row.nodeId, row]),
+          metricsRows.map((row) => [row.nodeId, toMetricsPayload(row)]),
         );
         // Coerced, not trusted. `max(...)` goes through a raw `sql` fragment, so
         // drizzle applies no type parser and postgres-js hands back a STRING -
