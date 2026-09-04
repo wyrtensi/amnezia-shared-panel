@@ -103,6 +103,23 @@ import { toRulesRefreshStatus } from "./rulesRefresh.js";
 
 const quotaStates: KeyState[] = ["provisioning", "active", "disabled"];
 
+/**
+ * States a revoke may be asked for from. Wider than `quotaStates` on purpose:
+ * `revoking` and `failed` are the states a delete that did not go through
+ * leaves behind, and a user must be able to ask for it again. `revoked` is not
+ * here -- there is nothing left to do -- and neither state change is a no-op,
+ * because every attempt queues a fresh job.
+ *
+ * See `docs/KEY-STATES.md`.
+ */
+const REVOCABLE_KEY_STATES: KeyState[] = [
+  "provisioning",
+  "active",
+  "disabled",
+  "revoking",
+  "failed",
+];
+
 const panelProtocols: ProtocolKind[] = ["awg2", "awg3"];
 
 /**
@@ -1587,6 +1604,11 @@ export class PostgresControlRepository implements ControlRepository {
       if (!policy.allowSelfRevoke) {
         throw new ApiError(403, "Self revoke is disabled", "POLICY_DENIED");
       }
+      // `revoking` and `failed` are here so a delete that did not go through
+      // can be asked for again: a node that was down leaves the key in
+      // `revoking`, and rows from before that fix are stuck in `failed`.
+      // Answering 404 to the second attempt is what left keys in a user's list
+      // that they had already deleted and could not delete again.
       const updated = await tx
         .update(vpnKeys)
         .set({ state: "revoking", updatedAt: new Date() })
@@ -1594,19 +1616,21 @@ export class PostgresControlRepository implements ControlRepository {
           and(
             eq(vpnKeys.id, keyId),
             eq(vpnKeys.ownerId, actor.id),
-            inArray(vpnKeys.state, ["provisioning", "active", "disabled"]),
+            inArray(vpnKeys.state, REVOCABLE_KEY_STATES),
           ),
         )
         .returning({ id: vpnKeys.id });
       if (!updated[0]) throw new ApiError(404, "Key not found", "KEY_NOT_FOUND");
-      await tx
-        .insert(jobOutbox)
-        .values({
-          type: "vpn-key.revoke",
-          deduplicationKey: `vpn-key.revoke:${keyId}`,
-          payload: { keyId },
-        })
-        .onConflictDoNothing();
+      await tx.insert(jobOutbox).values({
+        type: "vpn-key.revoke",
+        // Unique per attempt, like the admin path. A fixed key deduplicated
+        // against the row of the attempt that already failed, so the retry was
+        // accepted and then silently enqueued nothing. The worker's revoke
+        // handler looks the peer up before deleting it, so a duplicate job on
+        // an already-deleted peer completes cleanly.
+        deduplicationKey: `vpn-key.revoke:${keyId}:${randomUUID()}`,
+        payload: { keyId },
+      });
       await tx.insert(auditEvents).values({
         actorUserId: actor.id,
         actorType: "user",
@@ -2394,17 +2418,18 @@ export class PostgresControlRepository implements ControlRepository {
           .where(eq(vpnKeys.id, targetId))
           .for("update");
         if (!current) throw new ApiError(404, "Key not found", "KEY_NOT_FOUND");
+        // A key already in `revoking` is NOT a no-op for `revoke`: that is the
+        // state a delete sits in when the node was unreachable, and asking
+        // again is the retry. Returning early there is what let an operator
+        // press Delete on a stuck key and see nothing happen.
         const isNoOp =
-          current.state === state ||
+          (action !== "revoke" && current.state === state) ||
           (action === "revoke" && current.state === "revoked");
         if (isNoOp) return current;
         const allowed =
           (action === "disable" && current.state === "active") ||
           (action === "enable" && current.state === "disabled") ||
-          (action === "revoke" &&
-            ["provisioning", "active", "disabled", "failed"].includes(
-              current.state,
-            ));
+          (action === "revoke" && REVOCABLE_KEY_STATES.includes(current.state));
         if (!allowed) {
           throw new ApiError(
             409,
