@@ -350,7 +350,12 @@ export function EmployeeDashboard({
                     className={cn(
                       "flex flex-wrap items-start justify-between gap-2 border-l-2 py-2.5 pl-2.5 first:pt-3",
                       node.recommended
-                        ? "border-l-primary bg-primary/5"
+                        // Green, to match the "Recommended" badge beside it, and
+                        // an edge only: a tinted row reads as selected or as
+                        // disabled depending on who is looking, and in a list of
+                        // servers it drew a horizontal band across the card that
+                        // competed with the row's own content.
+                        ? "border-l-success"
                         : "border-l-transparent",
                     )}
                   >

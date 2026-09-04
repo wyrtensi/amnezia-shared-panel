@@ -409,7 +409,7 @@ export function CreateKeyWizard({
                         // a 2px edge on a row this short into an arc.
                         className={
                           node.recommended
-                            ? "rounded-l-none border-l-2 border-l-primary bg-primary/5"
+                            ? "rounded-l-none border-l-2 border-l-success"
                             : "border-l-2 border-l-transparent"
                         }
                       >
