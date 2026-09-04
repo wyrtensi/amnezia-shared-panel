@@ -442,3 +442,28 @@ test("the entrypoint carries no variable the generator now owns", async () => {
     "the interface MTU must come from the same variable as the budget",
   );
 });
+
+test("compose and the entrypoint agree on the interface MTU", async () => {
+  // The same defect twice: the budget for S4 and the size of awg0 must come
+  // from one number. They were 1376 and 1420 once, and the node generated an
+  // S4 that put 1512 bytes on a 1500-byte path. compose sets the environment
+  // variable the entrypoint falls back on, so a mismatch here silently wins.
+  const compose = await readFile(
+    new URL("../compose.yaml", import.meta.url),
+    "utf8",
+  );
+  const entrypoint = await readFile(
+    new URL("../scripts/awg3-entrypoint.sh", import.meta.url),
+    "utf8",
+  );
+
+  const fromCompose = /AWG3_TUNNEL_MTU: \$\{AWG3_TUNNEL_MTU:-(\d+)\}/.exec(compose)?.[1];
+  const fromEntrypoint = /IFACE_MTU="\$\{AWG3_TUNNEL_MTU:-(\d+)\}"/.exec(entrypoint)?.[1];
+
+  assert.ok(fromCompose, "compose must define the MTU default");
+  assert.ok(fromEntrypoint, "the entrypoint must define the MTU default");
+  assert.equal(fromCompose, fromEntrypoint);
+
+  // And it must be the value the interface is actually set to.
+  assert.match(entrypoint, /ip link set mtu "\$IFACE_MTU" up dev awg0/);
+});
