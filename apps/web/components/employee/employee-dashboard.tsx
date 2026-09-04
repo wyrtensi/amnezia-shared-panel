@@ -547,7 +547,17 @@ export function EmployeeDashboard({
         onClose={() => setConfigTarget(null)}
         me={me}
       />
-      <KeyHelpDialog open={showKeyHelp} onOpenChange={setShowKeyHelp} />
+      <KeyHelpDialog
+        open={showKeyHelp}
+        onOpenChange={setShowKeyHelp}
+        // Making the key is half the job; the other half is behind the connect
+        // guide, and someone who needed this dialog will need that one next.
+        // Hands over rather than stacking: this closes as that opens.
+        onOpenGuide={() => {
+          setShowKeyHelp(false);
+          setShowGuide(true);
+        }}
+      />
       <InstallGuideDialog
         open={showGuide}
         onOpenChange={setShowGuide}

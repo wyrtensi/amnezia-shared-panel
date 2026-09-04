@@ -252,6 +252,9 @@ const ru = {
   "keyHelp.button": "Не понятно как создать ключ →",
   "keyHelp.title": "Как создать ключ",
   "keyHelp.desc": "Что значит каждое поле в форме создания ключа.",
+  "keyHelp.deviceOneEach":
+    "На каждое устройство нужен свой ключ. Один ключ на два устройства работает нестабильно: они мешают друг другу, и соединение постоянно рвётся.",
+  "keyHelp.thenConnect": "Как подключиться →",
   "keyHelp.deviceBody":
     "Выберите устройство, на котором будете подключаться. Один ключ — одно устройство; для второго создайте ещё один.",
   "keyHelp.nameBody":
@@ -265,7 +268,7 @@ const ru = {
   "keyHelp.routingBody":
     "Самый надёжный вариант. Если у вас что-то не работает — выбирайте его.",
   "keyHelp.profilesIntro":
-    "Про остальные два профиля читайте внимательно. Их работа не гарантируется, они сделаны для удобства:",
+    "Остальные два профиля сделаны для удобства и оба менее надёжны, чем «Весь трафик». Читайте внимательно:",
   "keyHelp.whitelistBody":
     "Мы постараемся, чтобы для российских сервисов выглядело, что вы сидите из дома. Лучше, чем «Только заблокированные», но менее надёжно для стабильной работы VPN в целом.",
   "keyHelp.blacklistBody":
@@ -1229,6 +1232,9 @@ const en = {
   "keyHelp.button": "Not sure how to create a key →",
   "keyHelp.title": "How to create a key",
   "keyHelp.desc": "What each field of the create-key form means.",
+  "keyHelp.deviceOneEach":
+    "Each device needs its own key. Sharing one between two devices is unstable: they interfere with each other and the connection keeps dropping.",
+  "keyHelp.thenConnect": "How to connect →",
   "keyHelp.deviceBody":
     "Pick the device you will connect from. One key is for one device — make another for the second.",
   "keyHelp.nameBody":
@@ -1242,7 +1248,7 @@ const en = {
   "keyHelp.routingBody":
     "The dependable one. If something is not working for you, pick this.",
   "keyHelp.profilesIntro":
-    "Read the other two profiles carefully. They are not guaranteed to work; they exist for convenience:",
+    "The other two profiles exist for convenience and both are less dependable than “All traffic”. Read them carefully:",
   "keyHelp.whitelistBody":
     "We do our best to make Russian services see you as if you were at home. Better than “Blocked only”, but less dependable for the VPN working steadily overall.",
   "keyHelp.blacklistBody":

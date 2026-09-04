@@ -1,7 +1,13 @@
 "use client";
 
 import * as React from "react";
-import { Check, ChevronDown, LifeBuoy, TriangleAlert } from "lucide-react";
+import {
+  BookOpen,
+  Check,
+  ChevronDown,
+  LifeBuoy,
+  TriangleAlert,
+} from "lucide-react";
 import { DEVICE_ICON } from "@/components/device-icon";
 import {
   Dialog,
@@ -56,9 +62,12 @@ const SAMPLE_NODE = "london1";
 export function KeyHelpDialog({
   open,
   onOpenChange,
+  onOpenGuide,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  /** Hand over to the connect guide — the half this dialog deliberately omits. */
+  onOpenGuide: () => void;
 }) {
   const { t } = useT();
   return (
@@ -72,6 +81,7 @@ export function KeyHelpDialog({
         <ol className="divide-y divide-border">
           <Step number={1} title={t("wizard.deviceType")}>
             <p>{t("keyHelp.deviceBody")}</p>
+            <p>{t("keyHelp.deviceOneEach")}</p>
             <Mock>
               <div className="grid grid-cols-3 gap-1.5">
                 {(["android", "ios", "windows"] as const).map((device, index) => {
@@ -174,7 +184,11 @@ export function KeyHelpDialog({
           {t("keyHelp.troubleBody")}
         </Callout>
 
-        <DialogFooter>
+        <DialogFooter className="sm:justify-between">
+          <Button type="button" variant="secondary" onClick={onOpenGuide}>
+            <BookOpen className="h-4 w-4" />
+            {t("keyHelp.thenConnect")}
+          </Button>
           <Button
             type="button"
             variant="outline"
