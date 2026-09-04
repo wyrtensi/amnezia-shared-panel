@@ -30,6 +30,7 @@ import { QuotaRequestDialog } from "@/components/employee/quota-request-dialog";
 import { apiRequest } from "@/lib/api";
 import { isAtLimit } from "@/lib/key-quota";
 import { InlineTraffic } from "@/components/inline-traffic";
+import { ServiceCheckChips } from "@/components/service-check-chips";
 import { cn } from "@/lib/utils";
 import { deviceTypeLabel } from "@/lib/device-type";
 import { useT } from "@/lib/i18n/provider";
@@ -362,6 +363,10 @@ export function EmployeeDashboard({
                           month={traffic?.month}
                         />
                       ) : null}
+                      {/* Present only when the policy allows it - the API omits
+                          the key entirely otherwise, so the dashboard holds no
+                          rule of its own. */}
+                      <ServiceCheckChips checks={node.status?.checks} />
                     </div>
                     <div className="flex shrink-0 items-center gap-2.5">
                       <span className="tabular-nums text-xs text-muted-foreground">
