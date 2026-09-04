@@ -113,22 +113,25 @@ const APK_STEPS = [
 ] as const;
 
 /**
- * The two fixes that need nothing but this page: pick another server, or make a
- * plain "All traffic" key. Between them they clear most "it does not work".
+ * What to try, in the order to try it.
+ *
+ * Updating the client leads: an out-of-date AmneziaVPN is the most common
+ * reason a working key will not connect, and it is the cheapest thing to check.
+ * The other two need nothing but this page - pick another server, or make a
+ * plain "All traffic" key.
  */
-const FIXES = ["install.fixServer", "install.fixFullTunnel"] as const;
+const FIXES = [
+  "install.fixUpdate",
+  "install.fixServer",
+  "install.fixFullTunnel",
+] as const;
 
 /**
- * The rest, which all ask the reader to go and change a setting somewhere. Real
- * fixes, and the wrong thing to hand somebody in their first two minutes -- so
- * they live behind the detailed view.
+ * The one that asks the reader to go and find a setting. It is the fix that
+ * looks like a fix and usually is not, so it stays behind the detailed view
+ * rather than sending somebody into the client's settings first.
  */
-const ADVANCED_FIXES = [
-  // Ahead of "update the app", because it is the one that looks like a fix and
-  // is not: a user hunting for a setting to change finds this switch first.
-  "install.fixAmneziaDns",
-  "install.fixUpdate",
-] as const;
+const ADVANCED_FIXES = ["install.fixAmneziaDns"] as const;
 
 /** Rounded download size, or null when the asset is a store or a page link. */
 const assetSize = (asset: ClientAsset, lang: Lang): string | null => {
@@ -402,7 +405,11 @@ export function InstallInstructions({
 
   return (
     <div className="space-y-6">
-          <GuideVideo url={videoUrl} />
+          {/* Hidden until there is something to watch. A spoiler promising a
+              walkthrough and opening onto "coming soon" costs the reader a
+              click and gives nothing; the block itself stays, and returns the
+              moment an admin sets the URL in the policy. */}
+          {videoUrl ? <GuideVideo url={videoUrl} /> : null}
 
           <GuideSection number={1} title={t("install.installTitle")}>
             {failed ? (
