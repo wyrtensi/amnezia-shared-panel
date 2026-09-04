@@ -2,7 +2,7 @@
   "openapi": "3.0.0",
   "info": {
     "title": "Amnezia API",
-    "version": "1.1.6",
+    "version": "1.1.7",
     "description": "Self-hosted REST API for automating Amnezia VPN servers.",
     "license": {
       "name": "MIT"

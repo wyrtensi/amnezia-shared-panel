@@ -315,7 +315,8 @@ export class AmneziaWgService {
 
     // Сгенерировать публичный ключ
     const clientId = (
-      await this.amneziaWg.run(`echo '${clientPrivateKey}' | wg pubkey`)
+      await this.amneziaWg.runWithInput(`wg pubkey`, `${clientPrivateKey}
+`)
     ).stdout.trim();
 
     // Считать конфиг

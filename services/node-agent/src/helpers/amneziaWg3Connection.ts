@@ -16,7 +16,9 @@ import { ServerErrorCode } from "@/types/shared";
 import {
   buildValidatedWgConfigCommand,
   buildWriteFileCommand,
+  encodeWritePayload,
 } from "@/utils/shellWrite";
+import { runWithInput as runCommandWithInput } from "@/utils/execWithInput";
 import { redactCommand } from "@/utils/redactCommand";
 
 /**
@@ -76,6 +78,23 @@ export class AmneziaWg3Connection implements IAmneziaConnection {
   }
 
   /**
+   * Execute a command inside the container with its payload on stdin.
+   */
+  runWithInput(
+    cmd: string,
+    input: string,
+    options?: RunOptions,
+  ): Promise<CommandResult> {
+    return runCommandWithInput({
+      container: AppContract.AmneziaWG3.DOCKER_CONTAINER,
+      cmd,
+      input,
+      timeout: options?.timeout,
+      maxBufferBytes: options?.maxBufferBytes,
+    });
+  }
+
+  /**
    * Read a file from the container.
    */
   async readFile(path: string): Promise<string> {
@@ -88,7 +107,10 @@ export class AmneziaWg3Connection implements IAmneziaConnection {
    * Write a file into the container.
    */
   async writeFile(path: string, content: string): Promise<void> {
-    await this.run(buildWriteFileCommand(path, content));
+    await this.runWithInput(
+      buildWriteFileCommand(path),
+      encodeWritePayload(content),
+    );
   }
 
   /**
@@ -106,12 +128,12 @@ export class AmneziaWg3Connection implements IAmneziaConnection {
    * Write and validate awg0.conf.
    */
   async writeWgConfig(content: string): Promise<void> {
-    await this.run(
+    await this.runWithInput(
       buildValidatedWgConfigCommand(
         AppContract.AmneziaWG3.PATHS.WG_CONF,
-        content,
         "awg-quick",
       ),
+      encodeWritePayload(content),
     );
   }
 

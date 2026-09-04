@@ -1,8 +1,10 @@
+import { EventEmitter } from "events";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-// vi.mock is hoisted above the imports, so the fake must be hoisted too.
+// vi.mock is hoisted above the imports, so the fakes must be hoisted too.
 const execMock = vi.hoisted(() => vi.fn());
-vi.mock("child_process", () => ({ exec: execMock }));
+const spawnMock = vi.hoisted(() => vi.fn());
+vi.mock("child_process", () => ({ exec: execMock, spawn: spawnMock }));
 
 import { AppContract } from "@/contracts/app";
 import { APIError } from "@/utils/APIError";
@@ -36,7 +38,39 @@ const failExec = () => {
   });
 };
 
-beforeEach(failExec);
+/**
+ * A child process that writes to stderr and exits non-zero. Everything the
+ * payload could ride out on - stderr, the exit path, the recorded argv - is
+ * observable afterwards through `spawnMock.mock.calls`.
+ */
+const failSpawn = (stderrText = "wg-quick: parse error") => {
+  spawnMock.mockImplementation(() => {
+    const child = new EventEmitter() as EventEmitter & {
+      stdout: EventEmitter;
+      stderr: EventEmitter;
+      stdin: EventEmitter & { end: (chunk?: string) => void };
+      kill: () => void;
+    };
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    child.stdin = Object.assign(new EventEmitter(), { end: vi.fn() });
+    child.kill = vi.fn();
+
+    setImmediate(() => {
+      child.stderr.emit("data", Buffer.from(stderrText));
+      child.emit("close", 1);
+    });
+
+    return child;
+  });
+};
+
+beforeEach(() => {
+  execMock.mockReset();
+  spawnMock.mockReset();
+  failExec();
+  failSpawn();
+});
 
 const wgFixtures = [
   { name: "AmneziaWgConnection", create: () => new AmneziaWgConnection() },
@@ -53,16 +87,32 @@ describe.each(wgFixtures)("$name.writeWgConfig failure", (fixture) => {
       .writeWgConfig(WG_CONFIG)
       .then(() => "", (e: Error) => e.message);
 
-    expect(execMock).toHaveBeenCalled();
+    expect(spawnMock).toHaveBeenCalled();
     expect(message).not.toContain(ENCODED);
     expect(message).not.toContain(PRIVATE_KEY);
     // Still diagnosable.
     expect(message).toContain("wg-quick: parse error");
   });
+
+  // The stronger property, and the one the E2BIG fix bought: the config is not
+  // in the arguments at all, so there is nothing for redaction to miss and
+  // nothing for `ps` on the host to show.
+  it("never puts the config in argv", async () => {
+    const connection = fixture.create();
+
+    await connection.writeWgConfig(WG_CONFIG).catch(() => undefined);
+
+    const [, args] = spawnMock.mock.calls[0] as [string, string[]];
+    const argv = args.join(" ");
+
+    expect(argv).not.toContain(ENCODED);
+    expect(argv).not.toContain(PRIVATE_KEY);
+    expect(argv).toContain("base64 -d");
+  });
 });
 
 describe("XrayConnection", () => {
-  it("redacts in run()", async () => {
+  it("keeps the payload out of a writeFile rejection", async () => {
     const connection = new XrayConnection();
     const message = await connection
       .writeFile("/opt/amnezia/xray/config.json", WG_CONFIG)
@@ -115,5 +165,19 @@ describe("the docker-unavailable branches still win", () => {
     expect(String(error)).not.toContain(ENCODED);
     expect(String(error)).not.toContain(PRIVATE_KEY);
     expect(AppContract.AmneziaWG.DOCKER_CONTAINER).toBe("amnezia-awg");
+  });
+
+  it("maps it on the stdin path too, where the write actually happens", async () => {
+    failSpawn("Cannot connect to the Docker daemon at unix:///var/run/docker.sock");
+    const connection = new AmneziaWgConnection();
+
+    const error = await connection
+      .writeWgConfig(WG_CONFIG)
+      .then(() => null, (e: Error) => e);
+
+    expect(error).toBeInstanceOf(APIError);
+    expect((error as APIError).statusCode).toBe(503);
+    expect(error?.message).toBe("swagger.errors.DOCKER_NOT_AVAILABLE");
+    expect(String(error)).not.toContain(ENCODED);
   });
 });
