@@ -252,6 +252,10 @@ const ru = {
   "keyHelp.button": "Не понятно как создать ключ →",
   "keyHelp.title": "Как создать ключ",
   "keyHelp.desc": "Что значит каждое поле в форме создания ключа.",
+  "keyHelp.deviceOneEach":
+    "На каждое устройство нужен свой ключ. Один ключ на два устройства работает нестабильно: они мешают друг другу, и соединение может прерываться.",
+  "keyHelp.sampleNode": "локация",
+  "keyHelp.thenConnect": "Как подключиться →",
   "keyHelp.deviceBody":
     "Выберите устройство, на котором будете подключаться. Один ключ — одно устройство; для второго создайте ещё один.",
   "keyHelp.nameBody":
@@ -260,12 +264,12 @@ const ru = {
     "Это то, как ключ будет отображаться у вас в приложении, чтобы не запутаться. Строка «в клиенте» показывает предпросмотр.",
   "keyHelp.serverBody":
     "Лучше всегда выбирать рекомендуемый. Обычно доступно несколько локаций, можете выбрать любую.",
-  "keyHelp.alwaysWorks": "работает всегда",
+  "keyHelp.alwaysWorks": "стандарт, стабильность",
   "keyHelp.noGuarantee": "без гарантий",
   "keyHelp.routingBody":
     "Самый надёжный вариант. Если у вас что-то не работает — выбирайте его.",
   "keyHelp.profilesIntro":
-    "Про остальные два профиля читайте внимательно. Их работа не гарантируется, они сделаны для удобства:",
+    "Остальные два профиля сделаны для удобства и оба менее надёжны, чем «Весь трафик». Читайте внимательно:",
   "keyHelp.whitelistBody":
     "Мы постараемся, чтобы для российских сервисов выглядело, что вы сидите из дома. Лучше, чем «Только заблокированные», но менее надёжно для стабильной работы VPN в целом.",
   "keyHelp.blacklistBody":
@@ -1229,6 +1233,10 @@ const en = {
   "keyHelp.button": "Not sure how to create a key →",
   "keyHelp.title": "How to create a key",
   "keyHelp.desc": "What each field of the create-key form means.",
+  "keyHelp.deviceOneEach":
+    "Each device needs its own key. Sharing one between two devices is unstable: they interfere with each other and the connection may drop.",
+  "keyHelp.sampleNode": "location",
+  "keyHelp.thenConnect": "How to connect →",
   "keyHelp.deviceBody":
     "Pick the device you will connect from. One key is for one device — make another for the second.",
   "keyHelp.nameBody":
@@ -1237,12 +1245,12 @@ const en = {
     "This is how the key will show up in your app, so you do not mix them up. The “in the client” line is a live preview.",
   "keyHelp.serverBody":
     "Always take the recommended one. There are usually several locations available — any of them will do.",
-  "keyHelp.alwaysWorks": "always works",
+  "keyHelp.alwaysWorks": "standard, dependable",
   "keyHelp.noGuarantee": "no guarantee",
   "keyHelp.routingBody":
     "The dependable one. If something is not working for you, pick this.",
   "keyHelp.profilesIntro":
-    "Read the other two profiles carefully. They are not guaranteed to work; they exist for convenience:",
+    "The other two profiles exist for convenience and both are less dependable than “All traffic”. Read them carefully:",
   "keyHelp.whitelistBody":
     "We do our best to make Russian services see you as if you were at home. Better than “Blocked only”, but less dependable for the VPN working steadily overall.",
   "keyHelp.blacklistBody":
