@@ -9,6 +9,30 @@ export const keyStateSchema = z.enum([
   "revoked",
   "failed",
 ]);
+/**
+ * States a revoke may be asked for from, for owners and admins alike.
+ *
+ * `revoking` and `failed` are in the list because they are where a delete that
+ * did not go through comes to rest: a node that was unreachable leaves the key
+ * in `revoking`, and rows written before that behaviour was fixed are stuck in
+ * `failed`. Refusing the second attempt is what left keys in a user's list that
+ * they had already deleted and could not delete again.
+ *
+ * `revoked` is not here: there is nothing left to do. The full state model is
+ * `docs/KEY-STATES.md`.
+ */
+export const REVOCABLE_KEY_STATES = [
+  "provisioning",
+  "active",
+  "disabled",
+  "revoking",
+  "failed",
+] as const satisfies readonly KeyState[];
+
+/** Whether a revoke may be asked for a key in this state. */
+export const isRevocableKeyState = (state: string): boolean =>
+  (REVOCABLE_KEY_STATES as readonly string[]).includes(state);
+
 export const routeProfileSchema = z.enum([
   "full_tunnel",
   "ru_whitelist",
@@ -856,6 +880,21 @@ export const setUserLimitRequestSchema = z.object({
   keyLimitMode: keyLimitModeSchema.nullish(),
 });
 export type SetUserLimitRequest = z.infer<typeof setUserLimitRequestSchema>;
+
+/**
+ * The operator's own note on a key: who it was issued to, what it replaced,
+ * why it exists. Admin-only in both directions -- it is never returned to the
+ * key's owner and never reaches a generated config.
+ *
+ * Empty clears it; the trim means a name of nothing but spaces clears it too
+ * rather than storing whitespace. 80 characters is the column's width.
+ */
+export const setKeyInternalNameRequestSchema = z.object({
+  internalName: z.string().trim().max(80),
+});
+export type SetKeyInternalNameRequest = z.infer<
+  typeof setKeyInternalNameRequestSchema
+>;
 
 export type ProtocolKind = z.infer<typeof protocolKindSchema>;
 export type KeyState = z.infer<typeof keyStateSchema>;

@@ -714,4 +714,104 @@ describe("PostgresWorkerRepository outbox leases", () => {
     expect(storedJob?.status).toBe("processing");
     expect(storedNode?.lastSyncAt).toBeNull();
   });
+
+  /**
+   * A key plus a job of `type` that carries its id, so `failJob` has something
+   * to act on. Returns both ids.
+   */
+  const seedKeyWithJob = async (
+    state: "provisioning" | "revoking",
+    type: string,
+  ): Promise<{ keyId: string; jobId: string }> => {
+    if (!database) throw new Error("Database test is disabled");
+    const credentials = encryptSecret("api-key", keyring, 1);
+    const label = encryptSecret(randomBytes(32).toString("base64"), keyring, 1);
+    const [user] = await database.db
+      .insert(users)
+      .values({ email: `fail-job-${randomBytes(6).toString("hex")}@example.com` })
+      .returning();
+    const [node] = await database.db
+      .insert(nodes)
+      .values({
+        name: `fail-job-node-${randomBytes(6).toString("hex")}`,
+        apiBaseUrl: "http://127.0.0.1:4001",
+        maxPeers: 500,
+        credentialsCiphertext: credentials.ciphertext,
+        credentialsNonce: credentials.nonce,
+        credentialsAuthTag: credentials.authTag,
+        credentialsKeyVersion: credentials.keyVersion,
+        labelSecretCiphertext: label.ciphertext,
+        labelSecretNonce: label.nonce,
+        labelSecretAuthTag: label.authTag,
+        labelSecretKeyVersion: label.keyVersion,
+      })
+      .returning();
+    if (!user || !node) throw new Error("Failed to seed fail-job context");
+    const [key] = await database.db
+      .insert(vpnKeys)
+      .values({
+        ownerId: user.id,
+        nodeId: node.id,
+        publicKey: `public-key-${randomBytes(6).toString("hex")}`,
+        nodeLabel: `ap_fail_${randomBytes(6).toString("hex")}`,
+        protocol: "awg2",
+        state,
+        routeProfile: "full_tunnel",
+      })
+      .returning();
+    if (!key) throw new Error("Failed to seed fail-job key");
+    const [job] = await database.db
+      .insert(jobOutbox)
+      .values({
+        type,
+        deduplicationKey: `${type}:${key.id}`,
+        payload: { keyId: key.id },
+        status: "processing",
+        attempts: 5,
+        lockedAt: new Date(),
+      })
+      .returning();
+    if (!job) throw new Error("Failed to seed fail-job outbox row");
+    return { keyId: key.id, jobId: job.id };
+  };
+
+  runDatabaseTest(
+    "keeps a failed revoke in revoking, so the user does not see a deleted key",
+    async () => {
+      if (!database || !repository) return;
+      const { keyId, jobId } = await seedKeyWithJob(
+        "revoking",
+        "vpn-key.revoke",
+      );
+
+      await repository.failJob(jobId, "node unreachable");
+
+      const [row] = await database.db
+        .select()
+        .from(vpnKeys)
+        .where(eq(vpnKeys.id, keyId));
+      expect(row?.state).toBe("revoking");
+      expect(row?.failureReason).toContain("node unreachable");
+    },
+  );
+
+  runDatabaseTest(
+    "marks a key whose provisioning failed as failed",
+    async () => {
+      if (!database || !repository) return;
+      const { keyId, jobId } = await seedKeyWithJob(
+        "provisioning",
+        "vpn-key.provision",
+      );
+
+      await repository.failJob(jobId, "node rejected the peer");
+
+      const [row] = await database.db
+        .select()
+        .from(vpnKeys)
+        .where(eq(vpnKeys.id, keyId));
+      expect(row?.state).toBe("failed");
+      expect(row?.failureReason).toContain("node rejected the peer");
+    },
+  );
 });

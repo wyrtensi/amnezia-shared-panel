@@ -29,6 +29,7 @@ import {
 import { QuotaRequestDialog } from "@/components/employee/quota-request-dialog";
 import { apiRequest } from "@/lib/api";
 import { isAtLimit } from "@/lib/key-quota";
+import { isVisibleToOwner } from "@/lib/key-states";
 import { InlineTraffic } from "@/components/inline-traffic";
 import { ServiceCheckChips } from "@/components/service-check-chips";
 import { cn } from "@/lib/utils";
@@ -166,9 +167,11 @@ export function EmployeeDashboard({
     [keys],
   );
 
-  // Revoked / admin-removed keys are not shown to the owner.
+  // Which states an owner sees is one decision, made in `lib/key-states.ts`
+  // and written down in `docs/KEY-STATES.md`. Inlining the list here is how it
+  // drifted from the state model in the first place.
   const visibleKeys = React.useMemo(
-    () => keys.filter((key) => !["revoked", "revoking"].includes(key.state)),
+    () => keys.filter((key) => isVisibleToOwner(key.state)),
     [keys],
   );
 

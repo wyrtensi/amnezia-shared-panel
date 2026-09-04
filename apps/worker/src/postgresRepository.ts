@@ -733,6 +733,13 @@ export class PostgresWorkerRepository
         .where(eq(jobOutbox.id, jobId));
       const keyId = job?.payload.keyId;
       if (typeof keyId === "string") {
+        // `failed` means "this key never came into existence" -- a provision
+        // that did not complete. A revoke that did not complete is a different
+        // thing: the owner asked for the key to be gone, and the request is
+        // still outstanding. Moving it to `failed` used to surface a key the
+        // user had just deleted, labelled "Error", that could not be deleted
+        // again. It stays in `revoking` and only records why the attempt
+        // failed, so the retry paths still recognise it.
         await tx
           .update(vpnKeys)
           .set({
@@ -741,11 +748,12 @@ export class PostgresWorkerRepository
             updatedAt: new Date(),
           })
           .where(
-            and(
-              eq(vpnKeys.id, keyId),
-              inArray(vpnKeys.state, ["provisioning", "revoking"]),
-            ),
+            and(eq(vpnKeys.id, keyId), eq(vpnKeys.state, "provisioning")),
           );
+        await tx
+          .update(vpnKeys)
+          .set({ failureReason: cleanReason(reason), updatedAt: new Date() })
+          .where(and(eq(vpnKeys.id, keyId), eq(vpnKeys.state, "revoking")));
       }
     });
   };

@@ -10,6 +10,7 @@ import {
   KeyRound,
   ListFilter,
   Lock,
+  Pencil,
   Plus,
   RefreshCw,
   Search,
@@ -55,6 +56,7 @@ import { Hint, FieldHint } from "@/components/ui/hint";
 import {
   composeKeyDisplayName,
   defaultKeyNameDisplay,
+  isRevocableKeyState,
   type KeyNameDisplay,
 } from "@amnezia/contracts";
 import { ProtocolSelect } from "@/components/protocol-select";
@@ -469,7 +471,9 @@ export default function AdminUsersPage() {
             onEditLimit={() => setLimitUser(selected)}
             onEditPolicy={() => setPolicyUser(selected)}
             onCreateKey={() => setKeyUser(selected)}
-            onKeyAction={(id, name) => action("keys", id, name)}
+            onKeyAction={(id, name, payload) =>
+              action("keys", id, name, payload)
+            }
             onExportKey={(id, deviceLabel) =>
               setConfigTarget({ id, deviceLabel })
             }
@@ -639,7 +643,11 @@ function UserDetail({
   onEditLimit: () => void;
   onEditPolicy: () => void;
   onCreateKey: () => void;
-  onKeyAction: (id: string, action: string) => Promise<boolean>;
+  onKeyAction: (
+    id: string,
+    action: string,
+    payload?: unknown,
+  ) => Promise<boolean>;
   onExportKey: (id: string, deviceLabel: string) => void;
 }) {
   const { t } = useT();
@@ -881,12 +889,28 @@ function AdminKeyRow({
 }: {
   keyView: AdminKey;
   nodeName: string;
-  onAction: (id: string, action: string) => Promise<boolean>;
+  onAction: (
+    id: string,
+    action: string,
+    payload?: unknown,
+  ) => Promise<boolean>;
   onExport: () => void;
 }) {
   const { t } = useT();
   const confirmAction = (name: string, message: string) => {
     if (window.confirm(message)) void onAction(keyView.id, name);
+  };
+  const renameInternal = () => {
+    // Same idiom as the confirmations on this row. An empty answer clears the
+    // note; Cancel (null) leaves it alone, which are different answers.
+    const next = window.prompt(
+      t("users.internalNamePrompt"),
+      keyView.internalName ?? "",
+    );
+    if (next === null) return;
+    void onAction(keyView.id, "set-internal-name", {
+      internalName: next.slice(0, 80),
+    });
   };
   return (
     <div className="flex items-center gap-2.5 rounded-lg border bg-muted/40 px-3 py-2 transition-colors hover:bg-accent/40">
@@ -915,12 +939,24 @@ function AdminKeyRow({
           {nodeName} · {t(PROFILE_LABEL[keyView.routeProfile] ?? keyView.routeProfile)}{" "}
           · {t(PROTOCOL_LABEL[keyView.protocol] ?? keyView.protocol)}
         </div>
+        {/* Operators only. Never shown to the key's owner and never part of a
+            config, so it can say who the key is really for. */}
+        {keyView.internalName ? (
+          <div className="truncate text-xs italic text-muted-foreground/80">
+            {keyView.internalName}
+          </div>
+        ) : null}
       </div>
       <span className="hidden shrink-0 text-xs text-muted-foreground sm:block">
         <TrafficBytes bytes={trafficTotal(keyView.traffic)} />
       </span>
       <StatusBadge value={keyView.state} />
       <div className="flex shrink-0 items-center gap-0.5">
+        <RowAction
+          label={t("users.internalName")}
+          icon={<Pencil className="h-4 w-4" />}
+          onClick={renameInternal}
+        />
         {keyView.state === "active" ? (
           <RowAction
             label={t("users.disable")}
@@ -952,9 +988,10 @@ function AdminKeyRow({
             onClick={onExport}
           />
         ) : null}
-        {["provisioning", "active", "disabled", "failed"].includes(
-          keyView.state,
-        ) ? (
+        {/* Includes `revoking`: that is where a delete waits when the node was
+            unreachable, and the retry is what unsticks it. The list comes from
+            the contract so the button and the route cannot disagree. */}
+        {isRevocableKeyState(keyView.state) ? (
           <RowAction
             label={t("users.revoke")}
             destructive

@@ -183,6 +183,13 @@
       "when": 1788525541054,
       "tag": "0025_per_node_service_checks",
       "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1788538713734,
+      "tag": "0026_key_internal_name",
+      "breakpoints": true
     }
   ]
 }

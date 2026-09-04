@@ -31,7 +31,11 @@ import type {
   UpdateNodeRequest,
   UpdateServiceCheckRequest,
 } from "@amnezia/contracts";
-import { nodeRunsCheck, toUserCheckState } from "@amnezia/contracts";
+import {
+  nodeRunsCheck,
+  REVOCABLE_KEY_STATES,
+  toUserCheckState,
+} from "@amnezia/contracts";
 import type { ServiceCheckUserState } from "@amnezia/contracts";
 import {
   createKeyRequestSchema,
@@ -50,6 +54,7 @@ import {
   portalPolicySchema,
   RULES_REFRESH_DEDUPLICATION_KEY,
   RULES_REFRESH_JOB_TYPE,
+  setKeyInternalNameRequestSchema,
   setUserLimitRequestSchema,
   updateGlobalRoutesRequestSchema,
 } from "@amnezia/contracts";
@@ -102,6 +107,12 @@ import { checkRecommendedPrefix, dedupeNodeIds } from "./policyNodeLists.js";
 import { toRulesRefreshStatus } from "./rulesRefresh.js";
 
 const quotaStates: KeyState[] = ["provisioning", "active", "disabled"];
+
+/**
+ * Wider than `quotaStates` on purpose, and shared with the panel so the button
+ * and the route agree on when a delete may be asked for. See the contract.
+ */
+const revocableStates: KeyState[] = [...REVOCABLE_KEY_STATES];
 
 const panelProtocols: ProtocolKind[] = ["awg2", "awg3"];
 
@@ -1587,6 +1598,11 @@ export class PostgresControlRepository implements ControlRepository {
       if (!policy.allowSelfRevoke) {
         throw new ApiError(403, "Self revoke is disabled", "POLICY_DENIED");
       }
+      // `revoking` and `failed` are here so a delete that did not go through
+      // can be asked for again: a node that was down leaves the key in
+      // `revoking`, and rows from before that fix are stuck in `failed`.
+      // Answering 404 to the second attempt is what left keys in a user's list
+      // that they had already deleted and could not delete again.
       const updated = await tx
         .update(vpnKeys)
         .set({ state: "revoking", updatedAt: new Date() })
@@ -1594,19 +1610,21 @@ export class PostgresControlRepository implements ControlRepository {
           and(
             eq(vpnKeys.id, keyId),
             eq(vpnKeys.ownerId, actor.id),
-            inArray(vpnKeys.state, ["provisioning", "active", "disabled"]),
+            inArray(vpnKeys.state, revocableStates),
           ),
         )
         .returning({ id: vpnKeys.id });
       if (!updated[0]) throw new ApiError(404, "Key not found", "KEY_NOT_FOUND");
-      await tx
-        .insert(jobOutbox)
-        .values({
-          type: "vpn-key.revoke",
-          deduplicationKey: `vpn-key.revoke:${keyId}`,
-          payload: { keyId },
-        })
-        .onConflictDoNothing();
+      await tx.insert(jobOutbox).values({
+        type: "vpn-key.revoke",
+        // Unique per attempt, like the admin path. A fixed key deduplicated
+        // against the row of the attempt that already failed, so the retry was
+        // accepted and then silently enqueued nothing. The worker's revoke
+        // handler looks the peer up before deleting it, so a duplicate job on
+        // an already-deleted peer completes cleanly.
+        deduplicationKey: `vpn-key.revoke:${keyId}:${randomUUID()}`,
+        payload: { keyId },
+      });
       await tx.insert(auditEvents).values({
         actorUserId: actor.id,
         actorType: "user",
@@ -1920,6 +1938,10 @@ export class PostgresControlRepository implements ControlRepository {
             state: vpnKeys.state,
             deviceType: vpnKeys.deviceType,
             deviceLabel: vpnKeys.deviceLabel,
+            // Operator-only. This is the ONE projection that carries it: the
+            // owner-facing `listKeys` and `findKeyConfig` both list their
+            // columns explicitly and must keep leaving it out.
+            internalName: vpnKeys.internalName,
             keyNumber: vpnKeys.keyNumber,
             nameShowNode: vpnKeys.nameShowNode,
             nameShowLabel: vpnKeys.nameShowLabel,
@@ -2394,17 +2416,18 @@ export class PostgresControlRepository implements ControlRepository {
           .where(eq(vpnKeys.id, targetId))
           .for("update");
         if (!current) throw new ApiError(404, "Key not found", "KEY_NOT_FOUND");
+        // A key already in `revoking` is NOT a no-op for `revoke`: that is the
+        // state a delete sits in when the node was unreachable, and asking
+        // again is the retry. Returning early there is what let an operator
+        // press Delete on a stuck key and see nothing happen.
         const isNoOp =
-          current.state === state ||
+          (action !== "revoke" && current.state === state) ||
           (action === "revoke" && current.state === "revoked");
         if (isNoOp) return current;
         const allowed =
           (action === "disable" && current.state === "active") ||
           (action === "enable" && current.state === "disabled") ||
-          (action === "revoke" &&
-            ["provisioning", "active", "disabled", "failed"].includes(
-              current.state,
-            ));
+          (action === "revoke" && revocableStates.includes(current.state));
         if (!allowed) {
           throw new ApiError(
             409,
@@ -2427,6 +2450,28 @@ export class PostgresControlRepository implements ControlRepository {
             payload: { keyId: targetId },
           })
           .onConflictDoNothing();
+        await tx.insert(auditEvents).values({
+          actorUserId: actor.id,
+          actorType: "user",
+          action: `admin.${resource}.${action}`,
+          targetType: resource,
+          targetId,
+        });
+        return updated;
+      });
+    } else if (resource === "keys" && action === "set-internal-name") {
+      // The operator's own note on a key. It changes nothing about the key --
+      // no job, no state -- so it is a plain update, but it is still audited:
+      // it is the field that says who a key belongs to in the real world.
+      const parsed = setKeyInternalNameRequestSchema.parse(payload);
+      const internalName = parsed.internalName === "" ? null : parsed.internalName;
+      return this.options.db.transaction(async (tx) => {
+        const [updated] = await tx
+          .update(vpnKeys)
+          .set({ internalName, updatedAt: new Date() })
+          .where(eq(vpnKeys.id, targetId))
+          .returning({ id: vpnKeys.id, internalName: vpnKeys.internalName });
+        if (!updated) throw new ApiError(404, "Key not found", "KEY_NOT_FOUND");
         await tx.insert(auditEvents).values({
           actorUserId: actor.id,
           actorType: "user",

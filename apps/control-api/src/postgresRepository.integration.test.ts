@@ -895,9 +895,12 @@ describe("PostgresControlRepository quota race", () => {
       .where(eq(jobOutbox.type, "vpn-key.enable"));
     await repository.adminAction(admin, "keys", key.id, "disable", {});
 
+    // Ordered explicitly: the assertion is a sequence, and an unordered select
+    // returns rows in whatever physical order the updates above left them in.
     const jobs = await database.db
       .select({ type: jobOutbox.type })
-      .from(jobOutbox);
+      .from(jobOutbox)
+      .orderBy(jobOutbox.createdAt);
     expect(jobs.map(({ type }) => type)).toEqual([
       "vpn-key.disable",
       "vpn-key.enable",
@@ -2580,5 +2583,344 @@ describe("PostgresControlRepository node status surfaces", () => {
     // null, not an object of nulls: "we have never heard from this node" and
     // "this node reports nothing" are different, and the card says so.
     expect(node.metrics).toBeNull();
+  });
+});
+
+describe("PostgresControlRepository revoke retries", () => {
+  const database = databaseUrl ? createDatabase(databaseUrl) : null;
+  const keyring = { 1: randomBytes(32) };
+  let nodeId: string;
+
+  beforeAll(async () => {
+    if (!database) return;
+    await database.db.delete(portalPolicy);
+    await database.db.insert(portalPolicy).values({});
+    const credentials = encryptSecret("api-key", keyring, 1);
+    const label = encryptSecret("label-secret", keyring, 1);
+    const [node] = await database.db
+      .insert(nodes)
+      .values({
+        name: "revoke-retry-node",
+        apiBaseUrl: "http://127.0.0.1:4001",
+        credentialsCiphertext: credentials.ciphertext,
+        credentialsNonce: credentials.nonce,
+        credentialsAuthTag: credentials.authTag,
+        credentialsKeyVersion: credentials.keyVersion,
+        labelSecretCiphertext: label.ciphertext,
+        labelSecretNonce: label.nonce,
+        labelSecretAuthTag: label.authTag,
+        labelSecretKeyVersion: label.keyVersion,
+      })
+      .returning();
+    if (!node) throw new Error("Failed to seed node");
+    nodeId = node.id;
+  });
+
+  beforeEach(async () => {
+    if (!database) return;
+    await database.db.delete(jobOutbox);
+  });
+
+  afterAll(async () => {
+    if (database) await database.client.end();
+  });
+
+  const subject = (): PostgresControlRepository => {
+    if (!database) throw new Error("No database");
+    return new PostgresControlRepository({ db: database.db, keyring });
+  };
+
+  /** An owner and one key of theirs, in the state under test. */
+  const seedOwnedKey = async (
+    state: "active" | "revoking",
+  ): Promise<{ owner: Actor; keyId: string }> => {
+    if (!database) throw new Error("No database");
+    const suffix = randomBytes(6).toString("hex");
+    const [user] = await database.db
+      .insert(users)
+      .values({ email: `revoke-retry-${suffix}@example.com` })
+      .returning();
+    if (!user) throw new Error("Failed to seed owner");
+    const [key] = await database.db
+      .insert(vpnKeys)
+      .values({
+        ownerId: user.id,
+        nodeId,
+        publicKey: `pk-${suffix}`,
+        nodeLabel: `ap_retry_${suffix}`,
+        protocol: "awg2",
+        state,
+        routeProfile: "full_tunnel",
+      })
+      .returning({ id: vpnKeys.id });
+    if (!key) throw new Error("Failed to seed key");
+    return {
+      owner: {
+        id: user.id,
+        email: user.email,
+        displayName: null,
+        role: "user",
+        status: "active",
+      },
+      keyId: key.id,
+    };
+  };
+
+  const revokeJobsFor = async (keyId: string): Promise<number> => {
+    if (!database) throw new Error("No database");
+    const rows = await database.db
+      .select({ payload: jobOutbox.payload })
+      .from(jobOutbox)
+      .where(eq(jobOutbox.type, "vpn-key.revoke"));
+    return rows.filter((row) => row.payload.keyId === keyId).length;
+  };
+
+  runDatabaseTest(
+    "lets the owner retry a revoke that is still stuck in revoking",
+    async () => {
+      if (!database) return;
+      const { owner, keyId } = await seedOwnedKey("revoking");
+
+      await subject().enqueueOwnRevoke(owner, keyId);
+
+      expect(await revokeJobsFor(keyId)).toBe(1);
+    },
+  );
+
+  runDatabaseTest(
+    "queues a fresh job when the previous revoke attempt already failed",
+    async () => {
+      if (!database) return;
+      const { owner, keyId } = await seedOwnedKey("active");
+
+      await subject().enqueueOwnRevoke(owner, keyId);
+      // The worker gave up on the first attempt: the row stays behind, failed.
+      await database.db
+        .update(jobOutbox)
+        .set({ status: "failed", lastError: "node unreachable" });
+      await subject().enqueueOwnRevoke(owner, keyId);
+
+      // A deduplication key that never changed made the second insert a no-op,
+      // so the user's retry was accepted and then did nothing at all.
+      const pending = await database.db
+        .select({ id: jobOutbox.id })
+        .from(jobOutbox)
+        .where(
+          and(
+            eq(jobOutbox.type, "vpn-key.revoke"),
+            eq(jobOutbox.status, "pending"),
+          ),
+        );
+      expect(pending).toHaveLength(1);
+    },
+  );
+
+  runDatabaseTest(
+    "lets an admin retry a revoke that is still stuck in revoking",
+    async () => {
+      if (!database) return;
+      const { owner, keyId } = await seedOwnedKey("revoking");
+      const admin: Actor = { ...owner, role: "admin" };
+
+      await subject().adminAction(admin, "keys", keyId, "revoke", {});
+
+      expect(await revokeJobsFor(keyId)).toBe(1);
+    },
+  );
+
+  runDatabaseTest("still refuses to revoke an already revoked key", async () => {
+    if (!database) return;
+    const { owner, keyId } = await seedOwnedKey("active");
+    await database.db
+      .update(vpnKeys)
+      .set({ state: "revoked" })
+      .where(eq(vpnKeys.id, keyId));
+
+    const failure = await failureOf(subject().enqueueOwnRevoke(owner, keyId));
+
+    expect(failure?.code).toBe("KEY_NOT_FOUND");
+    expect(await revokeJobsFor(keyId)).toBe(0);
+  });
+});
+
+describe("PostgresControlRepository internal key name", () => {
+  const database = databaseUrl ? createDatabase(databaseUrl) : null;
+  const keyring = { 1: randomBytes(32) };
+  // Distinctive enough that a substring search over a whole response body is a
+  // real assertion rather than a coincidence.
+  const internalName = "kochkina, replaced 04.09";
+  let nodeId: string;
+  let owner: Actor;
+  let admin: Actor;
+  let keyId: string;
+
+  beforeAll(async () => {
+    if (!database) return;
+    await database.db.delete(portalPolicy);
+    await database.db.insert(portalPolicy).values({});
+    const credentials = encryptSecret("api-key", keyring, 1);
+    const label = encryptSecret("label-secret", keyring, 1);
+    const [node] = await database.db
+      .insert(nodes)
+      .values({
+        name: "internal-name-node",
+        publicName: "Internal Name Node",
+        apiBaseUrl: "http://127.0.0.1:4001",
+        credentialsCiphertext: credentials.ciphertext,
+        credentialsNonce: credentials.nonce,
+        credentialsAuthTag: credentials.authTag,
+        credentialsKeyVersion: credentials.keyVersion,
+        labelSecretCiphertext: label.ciphertext,
+        labelSecretNonce: label.nonce,
+        labelSecretAuthTag: label.authTag,
+        labelSecretKeyVersion: label.keyVersion,
+      })
+      .returning();
+    if (!node) throw new Error("Failed to seed node");
+    nodeId = node.id;
+  });
+
+  beforeEach(async () => {
+    if (!database) return;
+    const suffix = randomBytes(6).toString("hex");
+    const [user] = await database.db
+      .insert(users)
+      .values({ email: `internal-name-${suffix}@example.com` })
+      .returning();
+    if (!user) throw new Error("Failed to seed owner");
+    owner = {
+      id: user.id,
+      email: user.email,
+      displayName: null,
+      role: "user",
+      status: "active",
+    };
+    admin = { ...owner, role: "admin" };
+    const config = encryptSecret("vpn://stored-config", keyring, 1);
+    const [key] = await database.db
+      .insert(vpnKeys)
+      .values({
+        ownerId: user.id,
+        nodeId,
+        publicKey: `pk-${suffix}`,
+        nodeLabel: `ap_internal_${suffix}`,
+        protocol: "awg2",
+        state: "active",
+        routeProfile: "full_tunnel",
+        deviceLabel: "Laptop",
+        configCiphertext: config.ciphertext,
+        configNonce: config.nonce,
+        configAuthTag: config.authTag,
+        configKeyVersion: config.keyVersion,
+      })
+      .returning({ id: vpnKeys.id });
+    if (!key) throw new Error("Failed to seed key");
+    keyId = key.id;
+  });
+
+  afterAll(async () => {
+    if (database) await database.client.end();
+  });
+
+  const subject = (): PostgresControlRepository => {
+    if (!database) throw new Error("No database");
+    return new PostgresControlRepository({ db: database.db, keyring });
+  };
+
+  const storedInternalName = async (): Promise<string | null> => {
+    if (!database) throw new Error("No database");
+    const [row] = await database.db
+      .select({ internalName: vpnKeys.internalName })
+      .from(vpnKeys)
+      .where(eq(vpnKeys.id, keyId));
+    return row?.internalName ?? null;
+  };
+
+  runDatabaseTest(
+    "persists the internal name and never leaks it to the owner",
+    async () => {
+      if (!database) return;
+      await subject().adminAction(admin, "keys", keyId, "set-internal-name", {
+        internalName,
+      });
+
+      // Asserted against the ROW, not the response. An update path built field
+      // by field answers 200 for a column it silently drops, and a test that
+      // read the response body would have passed with that bug (see PR #49).
+      expect(await storedInternalName()).toBe(internalName);
+
+      const ownerView = await subject().listKeys(owner);
+      expect(JSON.stringify(ownerView)).not.toContain("kochkina");
+    },
+  );
+
+  runDatabaseTest("shows the internal name to admins", async () => {
+    if (!database) return;
+    await subject().adminAction(admin, "keys", keyId, "set-internal-name", {
+      internalName,
+    });
+
+    const rows = (await subject().adminList(admin, "keys")) as Array<{
+      id: string;
+      internalName?: string | null;
+    }>;
+    expect(rows.find((row) => row.id === keyId)?.internalName).toBe(
+      internalName,
+    );
+  });
+
+  runDatabaseTest("clears the internal name when given an empty one", async () => {
+    if (!database) return;
+    await subject().adminAction(admin, "keys", keyId, "set-internal-name", {
+      internalName,
+    });
+
+    await subject().adminAction(admin, "keys", keyId, "set-internal-name", {
+      internalName: "",
+    });
+
+    expect(await storedInternalName()).toBeNull();
+  });
+
+  runDatabaseTest("keeps the internal name out of config generation", async () => {
+    if (!database) return;
+    await subject().adminAction(admin, "keys", keyId, "set-internal-name", {
+      internalName,
+    });
+
+    // Everything the config path is given about a key. The name the client
+    // shows is built from `deviceLabel` and the node's name; the operator's
+    // note must not be reachable from here at all.
+    const stored = await subject().findKeyConfig(keyId);
+    expect(stored).not.toBeNull();
+    expect(JSON.stringify(stored)).not.toContain("kochkina");
+  });
+
+  runDatabaseTest("refuses a name longer than the column", async () => {
+    if (!database) return;
+    const failure = await failureOf(
+      subject().adminAction(admin, "keys", keyId, "set-internal-name", {
+        internalName: "x".repeat(81),
+      }),
+    );
+
+    expect(failure).not.toBeNull();
+    expect(await storedInternalName()).toBeNull();
+  });
+
+  runDatabaseTest("records who renamed the key", async () => {
+    if (!database) return;
+    await subject().adminAction(admin, "keys", keyId, "set-internal-name", {
+      internalName,
+    });
+
+    const events = await database.db
+      .select({ action: auditEvents.action, actorUserId: auditEvents.actorUserId })
+      .from(auditEvents)
+      .where(eq(auditEvents.targetId, keyId));
+    expect(events).toContainEqual({
+      action: "admin.keys.set-internal-name",
+      actorUserId: admin.id,
+    });
   });
 });
