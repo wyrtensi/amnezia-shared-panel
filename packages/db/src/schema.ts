@@ -154,6 +154,14 @@ export const nodes = pgTable(
     // Subset of the node's supported protocols offered to users; null = all.
     enabledProtocols: jsonb("enabled_protocols").$type<ProtocolKind[]>(),
     maxPeers: integer("max_peers").default(500).notNull(),
+    // Service checks on THIS node. `checksEnabled` false takes the node out of
+    // checking entirely; `disabledCheckIds` names the ones it skips. Default is
+    // on with nothing skipped, so an existing node keeps behaving as it did.
+    checksEnabled: boolean("checks_enabled").default(true).notNull(),
+    disabledCheckIds: jsonb("disabled_check_ids")
+      .$type<string[]>()
+      .default([])
+      .notNull(),
     capabilities: jsonb("capabilities")
       .$type<Record<string, boolean | number>>()
       .default({})

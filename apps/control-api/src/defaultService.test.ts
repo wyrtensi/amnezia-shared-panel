@@ -89,6 +89,7 @@ const createRepository = (): ControlRepository => ({
   updateServiceCheck: vi.fn(() => Promise.resolve({ id: "check-1" })),
   deleteServiceCheck: vi.fn(() => Promise.resolve({ id: "check-1" })),
   runServiceCheckNow: vi.fn(() => Promise.resolve({ id: "check-1" })),
+  resetServiceCheckResults: vi.fn(() => Promise.resolve({ cleared: 3 })),
   appendAudit: vi.fn(() => Promise.resolve()),
 });
 

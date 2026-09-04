@@ -239,8 +239,32 @@ export const updateNodeRequestSchema = createNodeRequestSchema
     // the stored value makes the next telemetry tick look it up again, so the
     // recovery is a command rather than an UPDATE against production.
     publicIp: z.null().optional(),
+    // Which service checks this node runs. A check is defined once for the
+    // fleet, but whether a given node runs it is a property of the NODE - a
+    // server behind a provider that refuses one of the targets would otherwise
+    // sit permanently red for a fact nobody can act on.
+    //
+    // Two switches rather than one, because they answer different questions:
+    // `checksEnabled` is "does this node take part at all", and
+    // `disabledCheckIds` is "all but these". Folding them together would make
+    // "run nothing here" indistinguishable from "no check happens to apply".
+    checksEnabled: z.boolean().optional(),
+    disabledCheckIds: z.array(z.uuid()).max(100).optional(),
   })
   .refine((value) => Object.keys(value).length > 0, "At least one field is required");
+
+/**
+ * Whether a node runs a given check.
+ *
+ * Both sides have to agree - the worker decides what to dispatch, the panel
+ * decides what to show a user - so the rule lives here rather than being
+ * written twice.
+ */
+export const nodeRunsCheck = (
+  node: { checksEnabled?: boolean | null; disabledCheckIds?: string[] | null },
+  checkId: string,
+): boolean =>
+  node.checksEnabled !== false && !(node.disabledCheckIds ?? []).includes(checkId);
 
 // --- Node public address ---------------------------------------------------
 // Where clients reach a node. `publicHost` is the node-agent's own

@@ -16,7 +16,10 @@ import type { AdminServiceCheck } from "@/lib/types";
 export type ServiceChecksState = {
   checks: AdminServiceCheck[];
   /** Node id -> that node's verdict for each check, in check-name order. */
-  byNode: Map<string, Array<{ name: string; status: string; detail: string | null }>>;
+  byNode: Map<
+    string,
+    Array<{ id: string; name: string; status: string; detail: string | null }>
+  >;
   loading: boolean;
   failed: boolean;
   reload: () => Promise<void>;
@@ -47,12 +50,17 @@ export function useServiceChecks(): ServiceChecksState {
   const byNode = React.useMemo(() => {
     const map = new Map<
       string,
-      Array<{ name: string; status: string; detail: string | null }>
+      Array<{ id: string; name: string; status: string; detail: string | null }>
     >();
     for (const check of checks) {
       for (const result of check.results ?? []) {
         const list = map.get(result.nodeId) ?? [];
-        list.push({ name: check.name, status: result.status, detail: result.detail });
+        list.push({
+          id: check.id,
+          name: check.name,
+          status: result.status,
+          detail: result.detail,
+        });
         map.set(result.nodeId, list);
       }
     }

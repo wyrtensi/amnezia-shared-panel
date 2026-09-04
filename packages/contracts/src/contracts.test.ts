@@ -29,6 +29,7 @@ import {
   nodeAgentUpdateStatusSchema,
   MIN_AWG3_CLIENT_VERSION,
   nodeHostMetricsSchema,
+  nodeRunsCheck,
   nodeKeyLimitsSchema,
   nodePublicAddressSchema,
   portalPolicyOverrideSchema,
@@ -1433,5 +1434,43 @@ describe("unsupportedAssertionTypes", () => {
         assertionTypes: [...CHECK_ASSERTION_TYPES, "dnsAnswerOmits"],
       }),
     ).toEqual([]);
+  });
+});
+
+describe("nodeRunsCheck", () => {
+  const check = "11111111-1111-4111-8111-111111111111";
+
+  it("runs everything on a node with nothing turned off", () => {
+    expect(nodeRunsCheck({}, check)).toBe(true);
+    expect(
+      nodeRunsCheck({ checksEnabled: true, disabledCheckIds: [] }, check),
+    ).toBe(true);
+  });
+
+  it("runs nothing on a node taken out of checking", () => {
+    expect(nodeRunsCheck({ checksEnabled: false }, check)).toBe(false);
+  });
+
+  it("skips only the check a node opts out of", () => {
+    expect(nodeRunsCheck({ disabledCheckIds: [check] }, check)).toBe(false);
+    expect(nodeRunsCheck({ disabledCheckIds: ["other"] }, check)).toBe(true);
+  });
+
+  it("treats a missing flag as taking part", () => {
+    // A node row written before these columns existed, or a payload that
+    // omits them. Defaulting to "does not run" would silently stop checking a
+    // whole fleet on an upgrade.
+    expect(nodeRunsCheck({ checksEnabled: null, disabledCheckIds: null }, check)).toBe(
+      true,
+    );
+  });
+
+  it("is the same rule the worker and the panel both apply", () => {
+    // The worker decides what to DISPATCH, the panel decides what to SHOW. If
+    // they disagreed, a user would see a chip for a check their node never
+    // runs - a verdict frozen at whatever it said last.
+    const node = { checksEnabled: true, disabledCheckIds: [check] };
+    expect(nodeRunsCheck(node, check)).toBe(false);
+    expect(nodeRunsCheck(node, "22222222-2222-4222-8222-222222222222")).toBe(true);
   });
 });

@@ -349,6 +349,14 @@ export const buildApp = async ({
   // A static segment beats `:resource/:id/:action` in Fastify's router, so this
   // can never be parsed as a generic admin action on some resource called
   // "service-checks".
+  // Static segments again, so neither can be read as an id.
+  app.delete("/api/admin/service-checks/results", async (request) =>
+    service.resetServiceCheckResults(adminFor(request), null),
+  );
+  app.delete("/api/admin/service-checks/:id/results", async (request) => {
+    const { id } = idParamsSchema.parse(request.params);
+    return service.resetServiceCheckResults(adminFor(request), id);
+  });
   app.post("/api/admin/service-checks/:id/run", async (request) => {
     const { id } = idParamsSchema.parse(request.params);
     return service.runServiceCheckNow(adminFor(request), id);

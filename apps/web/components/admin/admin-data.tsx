@@ -80,6 +80,10 @@ export type AdminNode = {
   enabled: boolean;
   protocol: string;
   maxPeers: number;
+  /** Whether this node takes part in service checks at all. */
+  checksEnabled?: boolean;
+  /** Checks this node skips, by id. */
+  disabledCheckIds?: string[];
   supportedProtocols?: ProtocolKind[];
   enabledProtocols?: ProtocolKind[] | null;
   peerCount?: number;

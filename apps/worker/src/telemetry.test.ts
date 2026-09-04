@@ -7,6 +7,7 @@ import {
   type TelemetryNode,
   type TelemetryRepository,
 } from "./telemetry.js";
+import { checksForNode } from "./serviceChecks.js";
 
 const observedAt = new Date("2026-08-20T08:05:00.000Z");
 const observation: PeerObservation = {
@@ -72,6 +73,8 @@ const telemetryNode: TelemetryNode = {
   publicHost: null,
   publicIp: null,
   agentUpdateState: "idle" as const,
+  checksEnabled: true,
+  disabledCheckIds: [],
 };
 
 const stubAgent = (publicHost?: string) => ({
@@ -600,5 +603,66 @@ describe("service checks during the poll", () => {
 
     expect(agent.runChecks).not.toHaveBeenCalled();
     expect(repository.recordNodeSnapshot).toHaveBeenCalledOnce();
+  });
+});
+
+describe("checksForNode", () => {
+  const one = {
+    id: "check-1",
+    name: "Flow",
+    probe: {},
+    assertions: [{ type: "statusIn", statuses: [200] }],
+    intervalSec: 43_200,
+    enabled: true,
+    nextDueAt: null,
+  };
+  const two = { ...one, id: "check-2", name: "Gemini" };
+
+  it("runs every check on a node that takes part", () => {
+    expect(
+      checksForNode([one, two], { checksEnabled: true, disabledCheckIds: [] }),
+    ).toHaveLength(2);
+  });
+
+  it("runs none on a node taken out of checking", () => {
+    // A different statement from "no check happens to apply", which is why the
+    // master switch is its own field rather than an empty disabled list.
+    expect(
+      checksForNode([one, two], { checksEnabled: false, disabledCheckIds: [] }),
+    ).toEqual([]);
+  });
+
+  it("skips only the checks this node opts out of", () => {
+    expect(
+      checksForNode([one, two], {
+        checksEnabled: true,
+        disabledCheckIds: ["check-2"],
+      }).map((check) => check.id),
+    ).toEqual(["check-1"]);
+  });
+
+  it("asks nothing of a node that runs nothing", async () => {
+    // The filter has to reach the AGENT, not just the results: dispatching a
+    // check a node does not run would cost the request and the fetch anyway.
+    const agent = { ...stubAgent(), runChecks: vi.fn(() => Promise.resolve([])) };
+    const repository = {
+      ...stubRepository([
+        { ...telemetryNode, checksEnabled: false },
+      ]),
+      listServiceChecks: vi.fn(() =>
+        Promise.resolve({
+          checks: [one as never],
+          previousByNode: new Map(),
+        }),
+      ),
+      recordServiceCheckResults: vi.fn(() => Promise.resolve()),
+    };
+    await createTelemetryPoller({
+      repository,
+      createNodeAgent: () => agent,
+      now: () => observedAt,
+    })();
+
+    expect(agent.runChecks).not.toHaveBeenCalled();
   });
 });

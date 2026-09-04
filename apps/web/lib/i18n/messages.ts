@@ -600,7 +600,12 @@ const ru = {
   // for one service check. The prefix is deliberate: `checks.state.*`, not
   // `nodes.state.*` - these words describe a check, and a key under `nodes.`
   // would invite the next person to reuse them for a node.
-   "checks.scope":
+    "checks.resetHint":
+    "Сбросить сохранённые результаты этой проверки. Ничего не теряется: результат и есть расписание, поэтому все ноды измерят её заново на ближайшем опросе.",
+  "checks.resetDone":
+    "Результаты сброшены — ноды измерят проверку заново на ближайшем опросе.",
+  "nodes.checks.all": "Все проверки",
+ "checks.scope":
     "Каждая проверка выполняется на всех нодах — ниже под ней видно, что ответила каждая. Отдельной проверки «для одной ноды» нет.",
   "nodes.checks.title": "Сервисы с этой ноды",
   "nodes.checks.none":
@@ -1526,7 +1531,12 @@ const en = {
     "The key is created on the server — the device connects right after importing the configuration.",
 
   // Admin nodes
-   "checks.scope":
+    "checks.resetHint":
+    "Clear this check's stored results. Nothing is lost: the result IS the schedule, so every node measures it again on the next poll.",
+  "checks.resetDone":
+    "Results cleared — the nodes will measure the check again on the next poll.",
+  "nodes.checks.all": "All checks",
+ "checks.scope":
     "Every check runs on every node — the lines under it are what each one answered. There is no such thing as a check for one node.",
   "nodes.checks.title": "Services from this node",
   "nodes.checks.none":

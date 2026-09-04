@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { Play, Trash2 } from "lucide-react";
+import { Play, RotateCcw, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
 import { Badge } from "@/components/ui/badge";
@@ -114,6 +114,26 @@ export function ServiceChecksCard({
                   }}
                 >
                   <Play className="h-4 w-4" /> {t("checks.run")}
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  disabled={busy === check.id}
+                  title={t("checks.resetHint")}
+                  onClick={() => {
+                    void act(check.id, async () => {
+                      await apiRequest(
+                        `/api/admin/service-checks/${check.id}/results`,
+                        { method: "DELETE" },
+                      );
+                      // Not "deleted": the result IS the schedule, so clearing
+                      // it makes every node measure the check again rather than
+                      // losing anything.
+                      toast.success(t("checks.resetDone"));
+                    });
+                  }}
+                >
+                  <RotateCcw className="h-4 w-4" />
                 </Button>
                 <Button
                   variant="ghost"

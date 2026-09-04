@@ -113,6 +113,30 @@ export default function AdminNodesPage() {
 
   const statsFor = (nodeId: string) => keyStats.get(nodeId) ?? NO_KEYS;
 
+  /**
+   * Change which service checks this node runs.
+   *
+   * Sends only the field that changed, and reloads BOTH the nodes and the
+   * checks: the two views show the same data from different ends, and leaving
+   * one stale is how a switch appears not to have worked.
+   */
+  const setNodeChecks = async (
+    node: AdminNode,
+    patch: { checksEnabled?: boolean; disabledCheckIds?: string[] },
+  ) => {
+    try {
+      await request(`/api/admin/nodes/${node.id}`, {
+        method: "PATCH",
+        body: JSON.stringify(patch),
+      });
+      await Promise.all([reload(), serviceChecks.reload()]);
+    } catch (cause) {
+      toast.error(
+        cause instanceof Error ? cause.message : t("nodes.changeFailed"),
+      );
+    }
+  };
+
   const toggleEnabled = async (node: AdminNode, enabled: boolean) => {
     try {
       await request(`/api/admin/nodes/${node.id}`, {
@@ -184,6 +208,7 @@ export default function AdminNodesPage() {
               onUpdateAgent={() => setUpdateAgentNode(node)}
               checkResults={serviceChecks.byNode.get(node.id) ?? []}
               checksConfigured={serviceChecks.checks.length > 0}
+              onSetChecks={(patch) => void setNodeChecks(node, patch)}
             />
           ))}
         </div>
@@ -233,13 +258,23 @@ function NodeCard({
   onUpdateAgent,
   checkResults,
   checksConfigured,
+  onSetChecks,
 }: {
   node: AdminNode;
   keyStats: NodeKeyStats;
   /** This node's verdict for each service check. Empty until it has run one. */
-  checkResults: Array<{ name: string; status: string; detail: string | null }>;
+  checkResults: Array<{
+    id: string;
+    name: string;
+    status: string;
+    detail: string | null;
+  }>;
   /** Whether any check exists at all, which is a different thing from none run. */
   checksConfigured: boolean;
+  onSetChecks: (patch: {
+    checksEnabled?: boolean;
+    disabledCheckIds?: string[];
+  }) => void;
   onToggle: (enabled: boolean) => void;
   onReconcile: () => void;
   onEdit: () => void;
@@ -412,9 +447,21 @@ function NodeCard({
 
         {checksConfigured ? (
           <div className="space-y-1 border-t pt-3">
-            <span className="text-xs text-muted-foreground">
-              {t("nodes.checks.title")}
-            </span>
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-xs text-muted-foreground">
+                {t("nodes.checks.title")}
+              </span>
+              {/* The node's master switch. Separate from the per-check ones
+                  because "this server takes no part in checking" is a different
+                  statement from "it happens to skip all of them today". */}
+              <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                {t("nodes.checks.all")}
+                <Switch
+                  checked={node.checksEnabled !== false}
+                  onCheckedChange={(enabled) => onSetChecks({ checksEnabled: enabled })}
+                />
+              </label>
+            </div>
             {checkResults.length === 0 ? (
               // Nothing has come back FROM THIS NODE yet. Said plainly, because
               // an empty space here reads as "this node has no services" - and
@@ -424,12 +471,34 @@ function NodeCard({
               </p>
             ) : (
               <ul className="space-y-0.5">
-                {checkResults.map((result) => (
+                {checkResults.map((result) => {
+                  const runs = !(node.disabledCheckIds ?? []).includes(result.id);
+                  return (
                   <li
                     key={result.name}
-                    className="flex flex-wrap items-baseline justify-between gap-2 text-xs"
+                    className={cn(
+                      "flex flex-wrap items-baseline justify-between gap-2 text-xs",
+                      // Dimmed rather than hidden: the last verdict is still the
+                      // last thing this node said, and removing the row would
+                      // hide that a check was ever turned off here.
+                      (!runs || node.checksEnabled === false) && "opacity-50",
+                    )}
                   >
-                    <span className="text-muted-foreground">{result.name}</span>
+                    <label className="flex items-center gap-1.5 text-muted-foreground">
+                      <Switch
+                        checked={runs}
+                        disabled={node.checksEnabled === false}
+                        onCheckedChange={(enabled) => {
+                          const current = node.disabledCheckIds ?? [];
+                          onSetChecks({
+                            disabledCheckIds: enabled
+                              ? current.filter((id) => id !== result.id)
+                              : [...current, result.id],
+                          });
+                        }}
+                      />
+                      {result.name}
+                    </label>
                     <span className="flex min-w-0 items-center gap-1.5">
                       {result.detail ? (
                         <span className="min-w-0 truncate text-muted-foreground">
@@ -452,7 +521,8 @@ function NodeCard({
                       </Badge>
                     </span>
                   </li>
-                ))}
+                  );
+                })}
               </ul>
             )}
           </div>

@@ -209,6 +209,10 @@ type AdminKey = {
 type AdminNode = {
   id: string;
   name: string;
+  /** Whether this node takes part in service checks at all. */
+  checksEnabled?: boolean;
+  /** Checks this node skips, by id. */
+  disabledCheckIds?: string[];
   /** Host metrics from the last poll; null until this node has been polled. */
   metrics?: NodeMetricsView | null;
   /** Derived from the newest peer handshake, never probed. */
@@ -1450,6 +1454,11 @@ Nodes:
   check-set <id> [flags] [<asserts>]      Change only the fields you name
   check-delete <id> [--confirm]           Delete a check and every node's result for it
   check-run <id>                          Mark it due on every node (result after the next poll)
+  check-reset <id> | check-reset --all    Clear stored results; every node measures again next poll
+  node-checks <node>                      What this node runs, and what it last answered
+  node-checks <node> --all=on|off         Take one node in or out of checking entirely
+  node-checks <node> --enable|--disable=<check>
+                                          Turn one check on or off for this node only
     Assertion flags (repeatable; all must hold):
 ${assertionUsageLines().join("\n")}
   node-add flags: [--public-name=] [--protocol=awg3] [--max-peers=500]
@@ -1752,6 +1761,86 @@ async function cmdNodeMetrics(args: string[]): Promise<void> {
   }
 }
 
+
+async function cmdCheckReset(args: string[]): Promise<void> {
+  const id = args.find((arg) => !arg.startsWith("--"));
+  if (!id && !args.includes("--all")) {
+    throw new Error("Usage: check-reset <id> | check-reset --all");
+  }
+  if (id) {
+    const check = await findServiceCheck(id);
+    const result = await api<{ cleared: number }>(
+      `/api/admin/service-checks/${check.id}/results`,
+      { method: "DELETE" },
+    );
+    console.log(`check ${check.name}: ${result.cleared} result(s) cleared`);
+  } else {
+    const result = await api<{ cleared: number }>(
+      "/api/admin/service-checks/results",
+      { method: "DELETE" },
+    );
+    console.log(`${result.cleared} result(s) cleared across every check`);
+  }
+  // Not "deleted": the stored result IS the schedule, so a cleared check is due
+  // again and measures itself afresh. Saying "deleted" would read as data loss.
+  console.log("Every node measures the check again on its next poll.");
+}
+
+async function cmdNodeChecks(args: string[]): Promise<void> {
+  const id = args.find((arg) => !arg.startsWith("--"));
+  if (!id) {
+    throw new Error(
+      "Usage: node-checks <node> [--all=on|off] [--enable=<check>] [--disable=<check>]",
+    );
+  }
+  const node = await findAdminNode(id);
+  const all = flagOf(args, "all");
+  const enable = flagOf(args, "enable");
+  const disable = flagOf(args, "disable");
+
+  if (all === undefined && enable === undefined && disable === undefined) {
+    // Report, not a no-op error: "what does this node run" is the question an
+    // operator asks first, and it needs no flags.
+    const checks = await api<AdminServiceCheck[]>("/api/admin/service-checks");
+    const disabled = new Set(node.disabledCheckIds ?? []);
+    console.log(
+      `node ${node.name}: service checks ${node.checksEnabled === false ? "OFF" : "on"}`,
+    );
+    console.log(
+      table(
+        checks.map((check) => ({
+          check: check.name,
+          runs:
+            node.checksEnabled === false
+              ? "no (node off)"
+              : disabled.has(check.id)
+                ? "no"
+                : "yes",
+          result:
+            check.results?.find((row) => row.nodeId === node.id)?.status ?? "—",
+        })),
+        ["check", "runs", "result"],
+      ),
+    );
+    return;
+  }
+
+  const patch: { checksEnabled?: boolean; disabledCheckIds?: string[] } = {};
+  if (all !== undefined) patch.checksEnabled = all !== "off" && all !== "false";
+  if (enable !== undefined || disable !== undefined) {
+    const check = await findServiceCheck((enable ?? disable) as string);
+    const current = new Set(node.disabledCheckIds ?? []);
+    if (enable !== undefined) current.delete(check.id);
+    else current.add(check.id);
+    patch.disabledCheckIds = [...current];
+  }
+  await api(`/api/admin/nodes/${node.id}`, {
+    method: "PATCH",
+    body: JSON.stringify(patch),
+  });
+  console.log(`node ${node.name}: ${Object.keys(patch).join(", ")} updated`);
+}
+
 async function main(): Promise<void> {
   const [command, ...args] = process.argv.slice(2);
   switch (command) {
@@ -1842,6 +1931,10 @@ async function main(): Promise<void> {
       return cmdCheckDelete(args);
     case "check-run":
       return cmdCheckRun(args);
+    case "check-reset":
+      return cmdCheckReset(args);
+    case "node-checks":
+      return cmdNodeChecks(args);
     case "global-routes-set":
       return cmdGlobalRoutesSet(args);
     case undefined:

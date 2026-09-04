@@ -67,6 +67,7 @@ createNode: vi.fn(() => Promise.resolve({ id: "node-1" })),
   updateServiceCheck: vi.fn(() => Promise.resolve({ id: "check-1" })),
   deleteServiceCheck: vi.fn(() => Promise.resolve({ id: "check-1" })),
   runServiceCheckNow: vi.fn(() => Promise.resolve({ id: "check-1" })),
+  resetServiceCheckResults: vi.fn(() => Promise.resolve({ cleared: 3 })),
 });
 
 describe("control API identity boundary", () => {
@@ -972,6 +973,39 @@ describe("service check routes", () => {
       "0b48cc4c-404b-47a6-af28-4cf15f305e30",
     );
     expect(service.adminAction).not.toHaveBeenCalled();
+    await app.close();
+  });
+
+  it("resets one check's results without deleting the check", async () => {
+    // The result IS the schedule, so clearing it makes the check due again
+    // rather than losing anything - which is what an operator needs after
+    // changing what it asserts.
+    const { service, admin, app } = await adminApp();
+    const response = await app.inject({
+      method: "DELETE",
+      url: "/api/admin/service-checks/0b48cc4c-404b-47a6-af28-4cf15f305e30/results",
+      headers: { "x-dev-user-email": admin.email },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(service.resetServiceCheckResults).toHaveBeenCalledWith(
+      admin,
+      "0b48cc4c-404b-47a6-af28-4cf15f305e30",
+    );
+    expect(service.deleteServiceCheck).not.toHaveBeenCalled();
+    await app.close();
+  });
+
+  it("resets every check's results on the bare results path", async () => {
+    // A static segment beats `:id`, so "results" can never be parsed as a
+    // check id and quietly reset one check instead of all of them.
+    const { service, admin, app } = await adminApp();
+    const response = await app.inject({
+      method: "DELETE",
+      url: "/api/admin/service-checks/results",
+      headers: { "x-dev-user-email": admin.email },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(service.resetServiceCheckResults).toHaveBeenCalledWith(admin, null);
     await app.close();
   });
 
