@@ -31,7 +31,11 @@ import type {
   UpdateNodeRequest,
   UpdateServiceCheckRequest,
 } from "@amnezia/contracts";
-import { nodeRunsCheck, toUserCheckState } from "@amnezia/contracts";
+import {
+  nodeRunsCheck,
+  REVOCABLE_KEY_STATES,
+  toUserCheckState,
+} from "@amnezia/contracts";
 import type { ServiceCheckUserState } from "@amnezia/contracts";
 import {
   createKeyRequestSchema,
@@ -104,21 +108,10 @@ import { toRulesRefreshStatus } from "./rulesRefresh.js";
 const quotaStates: KeyState[] = ["provisioning", "active", "disabled"];
 
 /**
- * States a revoke may be asked for from. Wider than `quotaStates` on purpose:
- * `revoking` and `failed` are the states a delete that did not go through
- * leaves behind, and a user must be able to ask for it again. `revoked` is not
- * here -- there is nothing left to do -- and neither state change is a no-op,
- * because every attempt queues a fresh job.
- *
- * See `docs/KEY-STATES.md`.
+ * Wider than `quotaStates` on purpose, and shared with the panel so the button
+ * and the route agree on when a delete may be asked for. See the contract.
  */
-const REVOCABLE_KEY_STATES: KeyState[] = [
-  "provisioning",
-  "active",
-  "disabled",
-  "revoking",
-  "failed",
-];
+const revocableStates: KeyState[] = [...REVOCABLE_KEY_STATES];
 
 const panelProtocols: ProtocolKind[] = ["awg2", "awg3"];
 
@@ -1616,7 +1609,7 @@ export class PostgresControlRepository implements ControlRepository {
           and(
             eq(vpnKeys.id, keyId),
             eq(vpnKeys.ownerId, actor.id),
-            inArray(vpnKeys.state, REVOCABLE_KEY_STATES),
+            inArray(vpnKeys.state, revocableStates),
           ),
         )
         .returning({ id: vpnKeys.id });
@@ -2429,7 +2422,7 @@ export class PostgresControlRepository implements ControlRepository {
         const allowed =
           (action === "disable" && current.state === "active") ||
           (action === "enable" && current.state === "disabled") ||
-          (action === "revoke" && REVOCABLE_KEY_STATES.includes(current.state));
+          (action === "revoke" && revocableStates.includes(current.state));
         if (!allowed) {
           throw new ApiError(
             409,

@@ -55,6 +55,7 @@ import { Hint, FieldHint } from "@/components/ui/hint";
 import {
   composeKeyDisplayName,
   defaultKeyNameDisplay,
+  isRevocableKeyState,
   type KeyNameDisplay,
 } from "@amnezia/contracts";
 import { ProtocolSelect } from "@/components/protocol-select";
@@ -952,9 +953,10 @@ function AdminKeyRow({
             onClick={onExport}
           />
         ) : null}
-        {["provisioning", "active", "disabled", "failed"].includes(
-          keyView.state,
-        ) ? (
+        {/* Includes `revoking`: that is where a delete waits when the node was
+            unreachable, and the retry is what unsticks it. The list comes from
+            the contract so the button and the route cannot disagree. */}
+        {isRevocableKeyState(keyView.state) ? (
           <RowAction
             label={t("users.revoke")}
             destructive
