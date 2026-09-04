@@ -2094,11 +2094,18 @@ describe("PostgresControlRepository service checks", () => {
   beforeAll(async () => {
     if (!database) return;
     await database.db.delete(nodeServiceChecks);
-    await database.db.delete(auditEvents);
-    await database.db.delete(users);
+    // Deliberately NOT deleting users or audit rows. The suites in this file
+    // share one database and run in order, and the one before this leaves keys
+    // behind - a blanket `delete from users` here fails on their foreign key
+    // and takes this suite down with it. Nothing below needs an empty table:
+    // the audit assertion filters by target id.
     const [user] = await database.db
       .insert(users)
       .values({ email: "checks-admin@example.com", role: "admin" })
+      .onConflictDoUpdate({
+        target: users.email,
+        set: { role: "admin" },
+      })
       .returning();
     if (!user) throw new Error("Failed to seed admin");
     admin = {
@@ -2133,12 +2140,14 @@ describe("PostgresControlRepository service checks", () => {
     })) as { id: string; name: string };
 
     expect(created.name).toBe("Gemini");
-    const audit = await database.db.select().from(auditEvents);
+    const audit = await database.db
+      .select()
+      .from(auditEvents)
+      .where(eq(auditEvents.targetId, created.id));
     expect(audit).toEqual([
       expect.objectContaining({
         action: "admin.service_check.create",
         targetType: "service_check",
-        targetId: created.id,
       }),
     ]);
   });
