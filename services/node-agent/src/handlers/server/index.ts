@@ -5,3 +5,5 @@ export * from "./importServerBackup.handler";
 export * from "./rebootServer.handler";
 export * from "./getServerUpdate.handler";
 export * from "./requestServerUpdate.handler";
+export * from "./getServerCapacity.handler";
+export * from "./requestServerCapacity.handler";

@@ -125,3 +125,21 @@ export type AgentUpdateStatus = {
   updatedAt: string | null;
   message: string | null;
 };
+
+// The lifecycle of an in-panel capacity change. Same shape and same reasoning as
+// AgentUpdateState: applying a change recreates the agent container, so the state
+// lives in the spool on the host rather than in this process's memory.
+export type CapacityState =
+  | "idle"
+  | "requested"
+  | "running"
+  | "succeeded"
+  | "failed";
+
+export type CapacityStatus = {
+  state: CapacityState;
+  requestedMaxPeers: number | null;
+  log: string;
+  updatedAt: string | null;
+  message: string | null;
+};

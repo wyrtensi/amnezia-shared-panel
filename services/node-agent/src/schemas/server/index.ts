@@ -5,3 +5,5 @@ export * from "./importServerBackup.schema";
 export * from "./rebootServer.schema";
 export * from "./getServerUpdate.schema";
 export * from "./requestServerUpdate.schema";
+export * from "./getServerCapacity.schema";
+export * from "./requestServerCapacity.schema";

@@ -1,0 +1,19 @@
+[Unit]
+Description=Amnezia node capacity applier (changes SERVER_MAX_PEERS on request)
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+# install-node-actions.sh rewrites these to this host's actual node directory
+# and spool.
+Environment=AMNEZIA_NODE_DIR=/opt/amnezia-node
+Environment=NODE_CAPACITY_SPOOL_DIR=/var/lib/amnezia-node/capacity
+# Root-owned lock directory, outside the container-writable spool (created by
+# the script itself, not by RuntimeDirectory=, which would delete and recreate
+# it around every run and let two overlapping runs lock different inodes).
+Environment=NODE_CAPACITY_LOCK_DIR=/run/amnezia-node-capacity
+ExecStart=/opt/amnezia-node/scripts/capacity-apply.sh
+# No image pull here, but set-capacity.sh recreates the agent and waits on its
+# health gate, and it restores the previous value if that gate fails.
+TimeoutStartSec=600

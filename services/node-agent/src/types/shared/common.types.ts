@@ -48,6 +48,7 @@ export interface IAppConfig {
   // means nothing on the host is watching for one.
   NODE_AGENT_UPDATE_REPO?: string;
   NODE_AGENT_UPDATE_SPOOL?: string;
+  NODE_AGENT_CAPACITY_SPOOL?: string;
 }
 
 export interface IPagination {

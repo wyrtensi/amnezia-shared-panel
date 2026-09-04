@@ -1,0 +1,12 @@
+[Unit]
+Description=Watch for node capacity changes requested from the panel
+
+[Path]
+# Level-triggered: fires the service whenever the request file exists. The
+# applier deletes it when done, so the unit re-arms for the next request - and a
+# request that arrives while a change is running is retried instead of lost.
+PathExists=/var/lib/amnezia-node/capacity/request.json
+Unit=amnezia-node-capacity.service
+
+[Install]
+WantedBy=multi-user.target

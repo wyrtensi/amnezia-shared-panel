@@ -2,7 +2,7 @@
   "openapi": "3.0.0",
   "info": {
     "title": "Amnezia API",
-    "version": "1.1.7",
+    "version": "1.1.8",
     "description": "Self-hosted REST API for automating Amnezia VPN servers.",
     "license": {
       "name": "MIT"
@@ -2670,6 +2670,294 @@
                       "type": "string",
                       "description": "Описание ошибки",
                       "example": "Доступ запрещён"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/server/capacity": {
+      "get": {
+        "summary": "Состояние изменения ёмкости узла",
+        "tags": [
+          "Server"
+        ],
+        "description": "Состояние выводится из спула, а не из памяти процесса: применение изменения пересоздаёт сам агент, поэтому отвечает уже другой процесс. Панель опрашивает этот маршрут, а не держит открытым запрос на изменение.",
+        "responses": {
+          "200": {
+            "description": "Состояние изменения ёмкости",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "Состояние изменения ёмкости",
+                  "required": [
+                    "available",
+                    "currentMaxPeers",
+                    "state",
+                    "requestedMaxPeers",
+                    "log",
+                    "updatedAt",
+                    "message"
+                  ],
+                  "properties": {
+                    "available": {
+                      "type": "boolean",
+                      "description": "Настроено ли изменение ёмкости на этом сервере (спул + юнит)",
+                      "example": true
+                    },
+                    "currentMaxPeers": {
+                      "type": "integer",
+                      "description": "SERVER_MAX_PEERS, с которым запущен контейнер прямо сейчас. 0 означает, что лимит не задан и агент его не проверяет.",
+                      "example": 500
+                    },
+                    "state": {
+                      "type": "string",
+                      "enum": [
+                        "idle",
+                        "requested",
+                        "running",
+                        "succeeded",
+                        "failed"
+                      ],
+                      "description": "Стадия последнего изменения",
+                      "example": "succeeded"
+                    },
+                    "requestedMaxPeers": {
+                      "type": "integer",
+                      "nullable": true,
+                      "description": "Значение из последнего запроса или результата",
+                      "example": 300
+                    },
+                    "log": {
+                      "type": "string",
+                      "description": "Хвост журнала применения (до 64 КиБ)",
+                      "example": "preflight ok\nrecreated node-agent\n"
+                    },
+                    "updatedAt": {
+                      "type": "string",
+                      "nullable": true,
+                      "description": "Когда изменение завершилось (ISO)",
+                      "example": "2024-12-16T10:51:47.087Z"
+                    },
+                    "message": {
+                      "type": "string",
+                      "nullable": true,
+                      "description": "Итог, записанный скриптом на хосте",
+                      "example": "SERVER_MAX_PEERS=300 applied"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Ответ на запрос с ошибкой",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "message"
+                  ],
+                  "description": "Ответ на запрос с ошибкой",
+                  "properties": {
+                    "message": {
+                      "type": "string",
+                      "description": "Описание ошибки",
+                      "example": "Требуется авторизация"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Ответ на запрос с ошибкой",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "message"
+                  ],
+                  "description": "Ответ на запрос с ошибкой",
+                  "properties": {
+                    "message": {
+                      "type": "string",
+                      "description": "Описание ошибки",
+                      "example": "Доступ запрещён"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "Запросить изменение ёмкости узла",
+        "tags": [
+          "Server"
+        ],
+        "description": "Записывает запрос в спул; .env правит и контейнер пересоздаёт systemd-юнит на хосте, через scripts/set-capacity.sh. Туннели при этом не рвутся: пересоздаётся только node-agent. Если изменение ёмкости на сервере не настроено, возвращается 501; если предыдущее ещё не завершилось — 409.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "maxPeers"
+                ],
+                "additionalProperties": false,
+                "properties": {
+                  "maxPeers": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 500,
+                    "description": "Новое значение SERVER_MAX_PEERS. Верхняя граница — проверенные 500, хотя set-capacity.sh физически принимает до 1000.",
+                    "example": 300
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Запрос принят; результат появится в GET /server/capacity",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "Запрос принят; результат появится в GET /server/capacity",
+                  "required": [
+                    "id",
+                    "maxPeers",
+                    "message"
+                  ],
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "description": "Идентификатор запроса, он же будет в результате",
+                      "example": "3fa85f64-5717-4562-b3fc-2c963f66afa6"
+                    },
+                    "maxPeers": {
+                      "type": "integer",
+                      "example": 300
+                    },
+                    "message": {
+                      "type": "string",
+                      "example": "Изменение ёмкости запрошено"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Ответ на запрос с ошибкой",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "message"
+                  ],
+                  "description": "Ответ на запрос с ошибкой",
+                  "properties": {
+                    "message": {
+                      "type": "string",
+                      "description": "Описание ошибки",
+                      "example": "Некорректный запрос"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Ответ на запрос с ошибкой",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "message"
+                  ],
+                  "description": "Ответ на запрос с ошибкой",
+                  "properties": {
+                    "message": {
+                      "type": "string",
+                      "description": "Описание ошибки",
+                      "example": "Требуется авторизация"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Ответ на запрос с ошибкой",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "message"
+                  ],
+                  "description": "Ответ на запрос с ошибкой",
+                  "properties": {
+                    "message": {
+                      "type": "string",
+                      "description": "Описание ошибки",
+                      "example": "Доступ запрещён"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Ответ на запрос с ошибкой",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "message"
+                  ],
+                  "description": "Ответ на запрос с ошибкой",
+                  "properties": {
+                    "message": {
+                      "type": "string",
+                      "description": "Описание ошибки",
+                      "example": "Конфликт"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "501": {
+            "description": "Ответ на запрос с ошибкой",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "message"
+                  ],
+                  "description": "Ответ на запрос с ошибкой",
+                  "properties": {
+                    "message": {
+                      "type": "string",
+                      "description": "Описание ошибки",
+                      "example": "Не реализовано"
                     }
                   }
                 }
