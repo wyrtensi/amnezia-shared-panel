@@ -249,7 +249,7 @@ const ru = {
 
   // "How do I make a key?" dialog — the form only. Anything about installing
   // the client or connecting belongs to install.* instead.
-  "keyHelp.button": "Не понятно как создать ключ →",
+  "keyHelp.button": "Не понятно как создать ключ ←",
   "keyHelp.title": "Как создать ключ",
   "keyHelp.desc": "Что значит каждое поле в форме создания ключа.",
   "keyHelp.deviceOneEach":
@@ -1239,7 +1239,7 @@ const en = {
 
   // "How do I make a key?" dialog — the form only. Anything about installing
   // the client or connecting belongs to install.* instead.
-  "keyHelp.button": "Not sure how to create a key →",
+  "keyHelp.button": "Not sure how to create a key ←",
   "keyHelp.title": "How to create a key",
   "keyHelp.desc": "What each field of the create-key form means.",
   "keyHelp.deviceOneEach":
