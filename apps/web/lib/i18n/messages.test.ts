@@ -55,7 +55,6 @@ const REQUIRED = [
   "install.fixServer",
   "install.fixFullTunnel",
   "install.fixUpdate",
-  "install.checkUpdates",
 ];
 
 describe("install guide messages", () => {
@@ -114,7 +113,6 @@ describe("install guide messages", () => {
     "install.confDomainsWarning",
     "install.fixAmneziaDns",
     "install.fixUpdate",
-    "install.checkUpdates",
   ];
 
   // A renamed or deleted key would silently shrink the measured set and let the

@@ -419,9 +419,6 @@ const ru = {
     "В настройках AmneziaVPN выключите «Использовать DNS-серверы Amnezia»: с ней подключение есть, а сайты не открываются.",
   "install.fixUpdate":
     "Обновите AmneziaVPN: устаревший клиент — частая причина отказа.",
-  "install.checkUpdates": "Страница последнего выпуска",
-
-  // Quota request dialog
   "quota.sent": "Запрос отправлен администратору",
   "quota.sendFailed": "Не удалось отправить запрос",
   "quota.title": "Дополнительные ключи",
@@ -1412,9 +1409,6 @@ const en = {
     "In AmneziaVPN's settings, turn off “Use Amnezia DNS servers”: with it on, the connection succeeds while no site opens.",
   "install.fixUpdate":
     "Update AmneziaVPN: an outdated client is a common cause.",
-  "install.checkUpdates": "Latest release page",
-
-  // Quota request dialog
   "quota.sent": "Request sent to the administrator",
   "quota.sendFailed": "Failed to send the request",
   "quota.title": "Additional keys",

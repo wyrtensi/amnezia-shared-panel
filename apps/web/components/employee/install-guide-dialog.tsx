@@ -6,7 +6,6 @@ import {
   Download,
   ExternalLink,
   FileDown,
-  RefreshCw,
   TabletSmartphone,
   QrCode,
   TriangleAlert,
@@ -558,18 +557,6 @@ export function InstallInstructions({
                 <li key={key}>{t(key)}</li>
               ))}
             </ul>
-            {advanced && release ? (
-              <Button asChild variant="secondary" size="sm" className="w-fit">
-                <a
-                  href={release.releaseUrl}
-                  target="_blank"
-                  rel="noreferrer"
-                  title={t("install.opensNewTab")}
-                >
-                  <RefreshCw className="h-4 w-4" /> {t("install.checkUpdates")}
-                </a>
-              </Button>
-            ) : null}
           </GuideSection>
         </div>
 
