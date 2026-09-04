@@ -25,6 +25,7 @@ const createRepository = (): WorkerRepository => ({
   reconcileAccess: vi.fn(() =>
     Promise.resolve({ deactivated: [], skippedAdmins: [] }),
   ),
+  recordAccessSyncAborted: vi.fn(() => Promise.resolve()),
   loadKeyContext: vi.fn(() => Promise.resolve(keyContext)),
   loadNodeReconcileContext: vi.fn(() => Promise.resolve(null)),
   completeNodeReconcile: vi.fn(() => Promise.resolve()),

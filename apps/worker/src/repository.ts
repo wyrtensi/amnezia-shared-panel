@@ -77,6 +77,15 @@ export interface WorkerRepository {
    * misconfiguration and changes nothing.
    */
   reconcileAccess: (allowedEmails: string[]) => Promise<AccessReconcileResult>;
+  /**
+   * Record that an Access sync run refused to disable an unexpectedly large set
+   * of accounts. Written to the audit log so an operator sees it in the panel
+   * rather than only in the worker's stdout.
+   */
+  recordAccessSyncAborted: (details: {
+    candidates: string[];
+    limit: number;
+  }) => Promise<void>;
   loadKeyContext: (keyId: string) => Promise<WorkerKeyContext | null>;
   loadNodeReconcileContext: (
     nodeId: string,

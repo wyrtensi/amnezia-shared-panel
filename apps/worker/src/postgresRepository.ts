@@ -556,6 +556,23 @@ export class PostgresWorkerRepository
       .where(eq(portalPolicy.id, true));
   };
 
+  recordAccessSyncAborted = async (details: {
+    candidates: string[];
+    limit: number;
+  }): Promise<void> => {
+    await this.options.db.insert(auditEvents).values({
+      actorType: "system",
+      action: "access.sync_aborted",
+      targetType: "access_policy",
+      metadata: {
+        candidateCount: details.candidates.length,
+        // Capped so one anomalous run cannot write an unbounded audit row.
+        candidates: details.candidates.slice(0, 50),
+        limit: details.limit,
+      },
+    });
+  };
+
   getCloudflareConfig = async (): Promise<{
     accountId: string;
     appId: string;

@@ -435,4 +435,53 @@ describe("createAccessSync", () => {
 
     expect(deactivateByEmail).toHaveBeenCalledWith(["ivan@other.tld"]);
   });
+
+  it("aborts the run instead of disabling more accounts than the cap allows", async () => {
+    const active = ["a@x.io", "b@x.io", "c@x.io"];
+    const { repository, deactivateByEmail, setAccessSyncBaseline } = makeRepo({
+      active,
+      baseline: active,
+    });
+    const { createClient, updatePolicy } = clientWith([
+      { email: { email: "outside@gmail.com" } },
+    ]);
+    const recordAccessSyncAborted = vi.fn(() => Promise.resolve());
+
+    await createAccessSync({
+      repository,
+      createClient,
+      maxDisablesPerRun: 2,
+      recordAccessSyncAborted,
+    })();
+
+    expect(deactivateByEmail).not.toHaveBeenCalled();
+    expect(updatePolicy).not.toHaveBeenCalled();
+    expect(setAccessSyncBaseline).not.toHaveBeenCalled();
+    expect(recordAccessSyncAborted).toHaveBeenCalledWith({
+      candidates: active,
+      limit: 2,
+    });
+  });
+
+  it("disables normally when the count is within the cap", async () => {
+    const { repository, deactivateByEmail } = makeRepo({
+      active: ["a@x.io", "b@x.io"],
+      baseline: ["a@x.io", "b@x.io"],
+    });
+    const { createClient } = clientWith([{ email: { email: "outside@gmail.com" } }]);
+
+    await createAccessSync({ repository, createClient, maxDisablesPerRun: 2 })();
+
+    expect(deactivateByEmail).toHaveBeenCalledWith(["a@x.io", "b@x.io"]);
+  });
+
+  it("applies no cap when maxDisablesPerRun is zero", async () => {
+    const active = ["a@x.io", "b@x.io", "c@x.io"];
+    const { repository, deactivateByEmail } = makeRepo({ active, baseline: active });
+    const { createClient } = clientWith([{ email: { email: "outside@gmail.com" } }]);
+
+    await createAccessSync({ repository, createClient, maxDisablesPerRun: 0 })();
+
+    expect(deactivateByEmail).toHaveBeenCalledWith(active);
+  });
 });

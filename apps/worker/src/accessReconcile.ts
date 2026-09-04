@@ -220,12 +220,23 @@ export function createAccessSync(options: {
   // Emails that must never be removed from Cloudflare or disabled (bootstrap
   // admins) even if they are not active panel users — avoids self-lockout.
   bootstrapAdminEmails?: string[];
+  // Blast-radius cap. A run that would disable more accounts than this stops and
+  // reports instead of acting: rails 1 and 2 cover the known ways the disable set
+  // can be wrong, and this covers the unknown ones. 0 disables the cap.
+  maxDisablesPerRun?: number;
+  /** Called instead of disabling when the cap is exceeded. */
+  recordAccessSyncAborted?: (details: {
+    candidates: string[];
+    limit: number;
+  }) => Promise<void>;
   log?: (message: string) => void;
 }): () => Promise<void> {
   const {
     repository,
     createClient = createCloudflareAccessClient,
     bootstrapAdminEmails = [],
+    maxDisablesPerRun = 10,
+    recordAccessSyncAborted,
     log = () => undefined,
   } = options;
   const pinned = bootstrapAdminEmails.map(normalizeEmail).filter(Boolean);
@@ -286,6 +297,22 @@ export function createAccessSync(options: {
       log(
         "access-sync: policy grants access via non-email rules only (no email include) — skipping CF→panel disable.",
       );
+    }
+    if (maxDisablesPerRun > 0 && cfRemoved.length > maxDisablesPerRun) {
+      // Abort the whole run, not just the disable half: the write-back would
+      // otherwise re-assert the emails an operator has just removed, silently
+      // undoing a deliberate change. Leaving the baseline untouched means the
+      // next run sees the same anomaly rather than adopting it.
+      log(
+        `access-sync: ${cfRemoved.length} account(s) would be disabled, over the ` +
+          `limit of ${maxDisablesPerRun} — aborting the run and recording it. ` +
+          `Raise ACCESS_SYNC_MAX_DISABLES to proceed.`,
+      );
+      await recordAccessSyncAborted?.({
+        candidates: cfRemoved,
+        limit: maxDisablesPerRun,
+      });
+      return;
     }
     if (cfRemoved.length > 0) {
       const result = await repository.deactivateByEmail(cfRemoved);

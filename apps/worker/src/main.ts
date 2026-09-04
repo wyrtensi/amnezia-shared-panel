@@ -53,6 +53,16 @@ const positiveIntegerEnv = (name: string, fallback: number): number => {
   return value;
 };
 
+const nonNegativeIntegerEnv = (name: string, fallback: number): number => {
+  const raw = process.env[name];
+  if (!raw) return fallback;
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < 0) {
+    throw new Error(`${name} must be a non-negative integer`);
+  }
+  return value;
+};
+
 const reportBackgroundError = (error: unknown): void => {
   const message = error instanceof Error ? error.message : "Unknown background error";
   console.error(message.replace(/[\r\n\t]+/g, " ").slice(0, 2_000));
@@ -159,6 +169,9 @@ const buildAccessTasks = (): Array<() => Promise<void>> => {
       createAccessSync({
         repository,
         bootstrapAdminEmails,
+        maxDisablesPerRun: nonNegativeIntegerEnv("ACCESS_SYNC_MAX_DISABLES", 10),
+        recordAccessSyncAborted: (details) =>
+          repository.recordAccessSyncAborted(details),
         log: (message) => console.log(message),
       }),
     ];
