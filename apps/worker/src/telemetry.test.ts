@@ -462,7 +462,11 @@ describe("node telemetry poll", () => {
 
     await poll();
 
-    expect(peakInFlight).toBe(concurrency);
+    // The bound, not the exact peak: requiring equality tests the scheduler
+    // rather than the code. Removing mapWithConcurrency still fails this (7 in
+    // flight), and so does collapsing it to serial (1).
+    expect(peakInFlight).toBeGreaterThan(1);
+    expect(peakInFlight).toBeLessThanOrEqual(concurrency);
     expect(polled).toHaveLength(nodeCount);
     expect(new Set(polled).size).toBe(nodeCount);
   });

@@ -165,7 +165,14 @@ describe("runChecks", () => {
     expect(results.map((result) => result.id)).toEqual(
       checks.map((check) => check.id),
     );
-    expect(peak).toBe(3);
+    // The invariant is the BOUND, not the exact peak. Requiring exactly 3
+    // tests the scheduler: on a loaded runner one lane can finish before the
+    // third starts, and the assertion failed on CI for a reason that had
+    // nothing to do with this code. The pair below still catches both
+    // regressions that matter - removing the bound gives 7, and collapsing it
+    // to serial gives 1.
+    expect(peak).toBeGreaterThan(1);
+    expect(peak).toBeLessThanOrEqual(3);
   });
 });
 

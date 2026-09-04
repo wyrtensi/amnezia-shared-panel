@@ -132,6 +132,51 @@ const tally = (text) => {
   return { counts, firstAt };
 };
 
+/**
+ * A token that looks like it was minted for this one page load.
+ *
+ * Every page Google serves carries fresh nonces, consent blobs and randomised
+ * example prompts. They appear in exactly one capture and never in the other,
+ * which makes them look like PERFECT markers and makes them the worst possible
+ * choice: a check built on one flips on every load, for every node, forever.
+ *
+ * Judged on shape rather than by a list: long, mixed case, or mixed letters and
+ * digits with no word-like structure.
+ */
+const looksLikeNonce = (token) => {
+  if (token.length >= 16 && /[A-Z]/.test(token) && /[a-z]/.test(token)) return true;
+  if (token.length >= 12 && /\d/.test(token) && /[A-Za-z]/.test(token) && !/^[a-z-]+$/.test(token)) {
+    return true;
+  }
+  return false;
+};
+
+/**
+ * Do these two captures actually differ the way a working and a refused page
+ * differ? A refusal is a DIFFERENT PAGE: another status, another final URL, or
+ * a body a fraction of the size. Two captures of the same app shell differ only
+ * in per-load noise, and proposing markers from that pair is worse than
+ * proposing nothing.
+ */
+const looksLikeSamePage = (a, b) => {
+  if (!a || !b) return null;
+  const sameStatus = a.status === b.status;
+  const sameFinal = a.finalUrl === b.finalUrl;
+  const ratio =
+    Math.min(a.bytes, b.bytes) / Math.max(a.bytes, b.bytes || 1);
+  return sameStatus && sameFinal && ratio > 0.9
+    ? { sameStatus, sameFinal, ratio }
+    : null;
+};
+
+const readSidecar = async (path) => {
+  try {
+    return JSON.parse(await readFile(`${path}.json`, "utf8"));
+  } catch {
+    return null;
+  }
+};
+
 const diff = async () => {
   const [, , , workingPath, blockedPath] = process.argv;
   if (!workingPath || !blockedPath) {
@@ -141,6 +186,28 @@ const diff = async () => {
     readFile(workingPath, "utf8"),
     readFile(blockedPath, "utf8"),
   ]);
+  const [metaA, metaB] = await Promise.all([
+    readSidecar(workingPath),
+    readSidecar(blockedPath),
+  ]);
+  const same = looksLikeSamePage(metaA, metaB);
+  if (same) {
+    console.log("");
+    console.log("!! THESE TWO CAPTURES LOOK LIKE THE SAME PAGE.");
+    console.log(
+      `!! Both answered ${metaA.status} at ${metaA.finalUrl}, and their sizes are within ` +
+        `${Math.round((1 - same.ratio) * 100)}% of each other (${metaA.bytes} vs ${metaB.bytes}).`,
+    );
+    console.log("!!");
+    console.log("!! A refusal is a DIFFERENT page: another status, another final URL, or a");
+    console.log("!! body a fraction of the size. What follows is almost certainly per-load");
+    console.log("!! noise - fresh nonces, consent blobs, randomised example prompts - and a");
+    console.log("!! check built on any of it would flip on every load, on every node.");
+    console.log("!!");
+    console.log("!! Capture again and check the refused address was actually in effect. If it");
+    console.log("!! was, that address is not refused for this service, and there is nothing");
+    console.log("!! here to detect.");
+  }
   const a = tally(working);
   const b = tally(blocked);
 
@@ -160,6 +227,7 @@ const diff = async () => {
   // Reachable first, then by how loudly it separates the two pages.
   rows.sort(
     (left, right) =>
+      Number(looksLikeNonce(left.token)) - Number(looksLikeNonce(right.token)) ||
       Number(left.at >= MAX_BODY_BYTES) - Number(right.at >= MAX_BODY_BYTES) ||
       Math.max(right.working, right.blocked) - Math.max(left.working, left.blocked),
   );
@@ -173,9 +241,14 @@ const diff = async () => {
       return;
     }
     for (const row of list) {
-      const reach = row.at < MAX_BODY_BYTES ? "" : "  [PAST THE 64 KiB CAP - unusable]";
+      const notes = [];
+      if (row.at >= MAX_BODY_BYTES) notes.push("PAST THE 64 KiB CAP - unusable");
+      // Named rather than hidden: an operator who sees a nonce ranked first and
+      // no explanation will reasonably assume it is the answer.
+      if (looksLikeNonce(row.token)) notes.push("looks like a per-load nonce - do not use");
       console.log(
-        `  ${row.token.padEnd(42)} working=${String(row.working).padStart(4)} blocked=${String(row.blocked).padStart(4)} first@${row.at}${reach}`,
+        `  ${row.token.padEnd(42)} working=${String(row.working).padStart(4)} blocked=${String(row.blocked).padStart(4)} first@${row.at}` +
+          (notes.length ? `  [${notes.join("; ")}]` : ""),
       );
     }
   };

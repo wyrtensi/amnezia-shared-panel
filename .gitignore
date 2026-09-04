@@ -35,3 +35,10 @@ Thumbs.db
 backups/
 *.sql.gz
 data/
+
+# Service-check calibration captures. A saved page can carry the account name
+# and conversation content of whoever took it, and these land in the repo root
+# by default - so they are ignored rather than left to be swept in by a
+# `git add -A`. Keep them outside the repo if you need them long-term.
+/*.html
+/*.html.json
