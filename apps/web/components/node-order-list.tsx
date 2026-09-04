@@ -12,6 +12,8 @@ import {
   moveNodeToIndex,
   recommendedCountFromIds,
   recommendedPrefix,
+  recommendNode,
+  unrecommendNode,
 } from "@/lib/node-order";
 
 /**
@@ -22,11 +24,13 @@ import {
  * has no keyboard story at all and is unreliable under touch, so the buttons
  * are the accessible path, not a leftover.
  *
- * The recommended set is edited as a COUNT from the top, because the API only
- * accepts a prefix — ticking a row recommends everything above it as well,
- * unticking it drops everything below. Every interaction emits the FULL
- * explicit order together with the resolved recommended ids, so what the admin
- * sees is what users get and the payload can never violate the prefix rule.
+ * The API only accepts a recommended set that is a PREFIX of the order, so the
+ * tick cannot recommend a row where it stands. It moves the row instead:
+ * ticking raises it to the bottom of the recommended block, unticking drops it
+ * just below the shrunken block. Every other row keeps the recommendation it
+ * had. Every interaction emits the FULL explicit order together with the
+ * resolved recommended ids, so what the admin sees is what users get and the
+ * payload can never violate the prefix rule.
  */
 export function NodeOrderList({
   nodes,
@@ -123,10 +127,15 @@ export function NodeOrderList({
               <Checkbox
                 checked={isRecommended}
                 aria-label={`${t("policy.recommendToggle")}: ${node.name}`}
-                // Ticking row i recommends the first i+1 rows; unticking it
-                // leaves the first i. Both stay a prefix by construction.
+                // The row moves, the other rows keep their state: ticking
+                // raises this one into the recommended block, unticking drops
+                // it just under it. Both stay a prefix by construction.
                 onChange={(event) =>
-                  emit(ordered, event.target.checked ? index + 1 : index)
+                  onChange(
+                    event.target.checked
+                      ? recommendNode(ordered, count, id)
+                      : unrecommendNode(ordered, count, id),
+                  )
                 }
               />
               <span className="min-w-0 flex-1 truncate">{node.name}</span>
