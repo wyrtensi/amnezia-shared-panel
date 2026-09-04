@@ -37,26 +37,17 @@ const REQUIRED = [
   "install.apkStep1",
   "install.apkStep2",
   "install.apkStep3",
-  "install.apkStep4",
   "install.apkDownload",
   "install.apkOtherBuilds",
   "install.addTitle",
   "install.addStep1",
   "install.addStep2",
   "install.addStep3",
-  "install.addStep4",
-  "install.addResult",
   "install.confTitle",
   "install.confBody",
   "install.confSplitBest",
   "install.confIosWarning",
-  "install.confAmneziaTitle",
-  "install.confAmneziaStep1",
-  "install.confAmneziaStep2",
-  "install.confAmneziaStep3",
-  "install.confOtherTitle",
-  "install.confOtherBody",
-  "install.confStockWarning",
+  "install.confHow",
   "install.confDomainsWarning",
   "install.fixTitle",
   "install.fixServer",
@@ -92,6 +83,22 @@ describe("install guide messages", () => {
           VERSION_LITERAL,
         );
       }
+    }
+  });
+
+  // The guide was rewritten from documentation into three steps because the
+  // audience does not read documentation: the old version ran to roughly 5000
+  // characters a locale. This is a budget, not a style rule — raise it
+  // deliberately and with a reason, or the guide grows back one paragraph at a
+  // time and stops being read again.
+  it("keeps the guide short enough that someone reads it", () => {
+    for (const lang of ["ru", "en"] as const) {
+      const dict = messages[lang] as Record<string, string>;
+      const total = installKeys(dict).reduce(
+        (sum, key) => sum + (dict[key] ?? "").length,
+        0,
+      );
+      expect(total, `${lang} install copy`).toBeLessThanOrEqual(2500);
     }
   });
 

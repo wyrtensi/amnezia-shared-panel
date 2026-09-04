@@ -98,20 +98,12 @@ const ADD_STEPS = [
   "install.addStep1",
   "install.addStep2",
   "install.addStep3",
-  "install.addStep4",
 ] as const;
 
 const APK_STEPS = [
   "install.apkStep1",
   "install.apkStep2",
   "install.apkStep3",
-  "install.apkStep4",
-] as const;
-
-const CONF_AMNEZIA_STEPS = [
-  "install.confAmneziaStep1",
-  "install.confAmneziaStep2",
-  "install.confAmneziaStep3",
 ] as const;
 
 const FIXES = [
@@ -131,8 +123,11 @@ const assetSize = (asset: ClientAsset, lang: Lang): string | null => {
 };
 
 /**
- * How to install AmneziaVPN and connect: get the client, add a pasted key, use
- * a .conf file, and what to try when nothing connects.
+ * How to install AmneziaVPN and connect, in three numbered steps: get the
+ * client, add the key, and what to try when nothing connects. Everything that
+ * is not one of those three — the .conf route, the APK, the non-Russian App
+ * Store listing — is collapsed behind a spoiler, because this audience does not
+ * read documentation and every extra paragraph pushes the three steps down.
  *
  * Every download link comes from GET /api/client-releases — control-api
  * resolves the newest release and caches it, because a user may be on a network
@@ -316,7 +311,6 @@ export function InstallInstructions({
   const confApplies = showConfSection && audience !== "ios";
   const videoUrl = videos?.[audience] ?? null;
   const [qrFor, setQrFor] = React.useState<ClientPlatform | null>(null);
-  const fixNumber = confApplies ? 4 : 3;
 
   return (
     <div className="space-y-6">
@@ -449,51 +443,12 @@ export function InstallInstructions({
                 <li key={key}>{t(key)}</li>
               ))}
             </ol>
-            <p className="text-xs leading-snug text-muted-foreground">
-              {t("install.addResult")}
-            </p>
+            {/* The .conf route is an alternative to those three steps, not a
+                fourth step, so it sits inside this section and collapsed. */}
+            {confApplies ? <ConfAlternative /> : null}
           </GuideSection>
 
-          {confApplies ? (
-            <GuideSection number={3} title={t("install.confTitle")}>
-              <p className="text-sm">{t("install.confBody")}</p>
-              <p className="text-sm">{t("install.confSplitBest")}</p>
-              {/*
-                confSplitBest recommends a split-profile .conf; on iOS that
-                config connects and filters nothing. The exception must stay
-                directly under the recommendation — install-guide-dialog.test.ts
-                asserts the adjacency so an edit cannot separate them. See D8.
-              */}
-              <Callout tone="warning" icon={<TriangleAlert className="h-4 w-4" />}>
-                {t("install.confIosWarning")}
-              </Callout>
-
-              <h4 className="text-sm font-medium">
-                {t("install.confAmneziaTitle")}
-              </h4>
-              <ol className="list-decimal space-y-1.5 pl-5 text-sm">
-                {CONF_AMNEZIA_STEPS.map((key) => (
-                  <li key={key}>{t(key)}</li>
-                ))}
-              </ol>
-
-              <h4 className="text-sm font-medium">
-                {t("install.confOtherTitle")}
-              </h4>
-              <p className="text-sm">{t("install.confOtherBody")}</p>
-              <Callout tone="warning" icon={<TriangleAlert className="h-4 w-4" />}>
-                {t("install.confStockWarning")}
-              </Callout>
-              <Callout tone="info" icon={<FileDown className="h-4 w-4" />}>
-                {t("install.confDomainsWarning")}
-              </Callout>
-            </GuideSection>
-          ) : null}
-
-          <GuideSection
-            number={fixNumber}
-            title={t("install.fixTitle")}
-          >
+          <GuideSection number={3} title={t("install.fixTitle")}>
             <ul className="list-disc space-y-1.5 pl-5 text-sm">
               {FIXES.map((key) => (
                 <li key={key}>{t(key)}</li>
@@ -603,6 +558,44 @@ function GuideVideo({ url }: { url: string | null }) {
             preload="metadata"
           />
         )}
+      </div>
+    </details>
+  );
+}
+
+/**
+ * The .conf file — the second way to add a key, collapsed. Copying the key is
+ * the path almost everyone takes; the file only wins for a split-tunnel profile,
+ * whose key is too long to be pleasant to paste. Behind a spoiler so the three
+ * steps above stay the whole of what a first-time reader sees.
+ */
+function ConfAlternative() {
+  const { t } = useT();
+  return (
+    <details className="group rounded-lg border bg-muted/30 px-3 py-2">
+      <summary className="flex cursor-pointer list-none items-center gap-2 text-sm font-medium">
+        <ChevronDown className="h-4 w-4 shrink-0 transition-transform group-open:rotate-180" />
+        {t("install.confTitle")}
+      </summary>
+      <div className="mt-2.5 space-y-2.5">
+        <p className="text-sm">{t("install.confBody")}</p>
+        <p className="text-sm">{t("install.confSplitBest")}</p>
+        {/*
+          confSplitBest recommends a split-profile .conf; on iOS that config
+          connects and filters nothing. The exception must stay directly under
+          the recommendation — install-guide-dialog.test.ts asserts the
+          adjacency so an edit cannot separate them. See D8.
+        */}
+        <Callout tone="warning" icon={<TriangleAlert className="h-4 w-4" />}>
+          {t("install.confIosWarning")}
+        </Callout>
+        {/* Carries the "only AmneziaVPN opens this" warning: without it a
+            reader tries the stock WireGuard app, which cannot do the
+            disguising the key depends on, and gets no useful error. */}
+        <p className="text-sm">{t("install.confHow")}</p>
+        <Callout tone="info" icon={<FileDown className="h-4 w-4" />}>
+          {t("install.confDomainsWarning")}
+        </Callout>
       </div>
     </details>
   );

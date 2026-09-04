@@ -246,6 +246,28 @@ const ru = {
   "wizard.creating": "Создаём…",
   "wizard.create": "Создать ключ",
 
+  // "How do I make a key?" dialog — the form only. Anything about installing
+  // the client or connecting belongs to install.* instead.
+  "keyHelp.button": "Не понятно как создать ключ →",
+  "keyHelp.title": "Как создать ключ",
+  "keyHelp.desc": "Что значит каждое поле в форме создания ключа.",
+  "keyHelp.namesTitle": "Названия и галочки",
+  "keyHelp.namesBody":
+    "Это то, как ключ будет отображаться у вас в приложении, чтобы не запутаться. Строка «в клиенте» показывает предпросмотр.",
+  "keyHelp.serverBody":
+    "Лучше всегда выбирать рекомендуемый. Обычно доступно несколько локаций, можете выбрать любую.",
+  "keyHelp.routingBody":
+    "Режим «Весь трафик» будет работать всегда. Если у вас что-то не работает — выбирайте его.",
+  "keyHelp.profilesIntro":
+    "Про остальные два профиля читайте внимательно. Их работа не гарантируется, они сделаны для удобства:",
+  "keyHelp.whitelistBody":
+    "мы постараемся, чтобы для российских сервисов выглядело, что вы сидите из дома. Лучше, чем «Только заблокированные», но менее надёжно для стабильной работы VPN в целом.",
+  "keyHelp.blacklistBody":
+    "профиль со списком определённых сайтов. Список большой, но в нём могут быть не все нужные вам заблокированные ресурсы, и они не откроются через VPN.",
+  "keyHelp.troubleTitle": "Если есть проблемы в работе",
+  "keyHelp.troubleBody":
+    "Смените сервер или переключите маршрутизацию на «Весь трафик». Если у вас мобильный интернет, переход на Wi-Fi часто решает проблемы с доступом.",
+
   // Config download dialog
   "config.keyCopied": "Ключ скопирован",
   "config.copyFailed": "Не удалось скопировать",
@@ -295,13 +317,13 @@ const ru = {
   "install.button": "Как подключиться",
   "install.title": "Установка AmneziaVPN и подключение",
   "install.desc":
-    "Установите приложение, добавьте ключ — и посмотрите, что делать, если подключение не работает.",
+    "Три шага: поставить приложение, добавить ключ, что делать, если не работает.",
   "install.opensNewTab": "Откроется в новой вкладке",
   "install.latestVersion": "Последняя версия: {version}",
   "install.linksUnavailable":
-    "Не удалось получить ссылки на приложение. Обновите страницу или попробуйте позже.",
+    "Не удалось получить ссылки. Обновите страницу или попробуйте позже.",
   "install.linksStale":
-    "Не удалось проверить последний выпуск. Кнопки ведут на страницу выпусков — выберите там файл для своей системы.",
+    "Не удалось проверить выпуск. Кнопки ведут на страницу выпусков.",
 
   "install.installTitle": "Установите приложение",
   "install.platform.windows": "Windows",
@@ -316,77 +338,62 @@ const ru = {
     "Наведите камеру телефона — откроется страница приложения.",
   "install.videoTitle": "Видео с разбором",
   "install.videoSoon": "Видео появится здесь позже.",
-  "install.chooseHint":
-    "Выберите устройство выше — покажем инструкцию именно для него.",
+  "install.chooseHint": "Выберите устройство выше.",
   "install.group.desktop": "Windows, macOS, Linux",
   "install.group.android": "Android",
   "install.group.ios": "iPhone и iPad (iOS)",
   "install.pickFile": "Выберите файл для своей системы",
   "install.iosAmneziaTitle": "Если ваш аккаунт Apple не российский",
   "install.iosAmneziaBody":
-    "Тогда можно поставить сам AmneziaVPN — он умеет больше, в том числе профили маршрутизации. Из российского App Store он скрыт, так что кнопка откроется не у всех.",
+    "Тогда можно поставить сам AmneziaVPN — он умеет больше. Из российского App Store он скрыт.",
   "install.iosAmneziaOpen": "Открыть AmneziaVPN в App Store",
   "install.desktopNote":
-    "Кнопки Windows, macOS и Linux скачивают установщик последнего выпуска. Запустите скачанный файл и следуйте установщику.",
+    "Запустите скачанный файл и следуйте установщику.",
   "install.iosNote":
-    "В российском App Store приложение называется Default VPN, а не Amnezia — это официальный клиент от тех же разработчиков, ставьте его. Настоящий AmneziaVPN на iOS тоже есть и умеет больше, но он скрыт из российского App Store по требованию Роскомнадзора: он ставится, только если аккаунт Apple зарегистрирован в другой стране.",
+    "В российском App Store приложение называется Default VPN — ставьте его.",
+  // Shortened, never dropped: on iOS a profile key connects and filters
+  // nothing, and the user has no way to see it. See D8.
   "install.iosProfileWarning":
-    "В Default VPN ключ с профилем («Иностранные ресурсы через VPN», «Только заблокированные сайты») подключается, но правила не применяются: весь трафик идёт напрямую, мимо VPN, и приложение об этом не предупреждает. Поэтому для iPhone и iPad создавайте ключ без профиля — весь трафик через VPN. Если вы поставили не Default VPN, а сам AmneziaVPN, отметьте это при создании ключа, и профили станут доступны.",
+    "В Default VPN ключ с профилем подключается, но правила не применяются: весь трафик идёт мимо VPN, и приложение об этом не предупреждает. Для iPhone и iPad создавайте ключ «Весь трафик».",
   "install.versionNote":
-    "Ключи AmneziaWG 3.1 работают только в клиенте версии {version} или новее.",
-  "install.apkTitle": "Google Play не открывается или установка не проходит?",
+    "Ключи AmneziaWG 3.1 работают в клиенте {version} или новее.",
+  "install.apkTitle": "Google Play не открывается?",
   "install.apkIntro":
-    "Установите приложение из APK — это официальный установочный файл AmneziaVPN со страницы выпусков проекта.",
-  "install.apkStep1": "Нажмите кнопку ниже и дождитесь окончания загрузки.",
+    "Поставьте официальный APK AmneziaVPN со страницы выпусков.",
+  "install.apkStep1": "Нажмите кнопку ниже и дождитесь загрузки.",
   "install.apkStep2":
-    "Откройте скачанный файл: из шторки загрузок или через «Файлы» → «Загрузки».",
+    "Откройте скачанный файл: шторка загрузок или «Файлы» → «Загрузки».",
   "install.apkStep3":
-    "Если Android попросит — разрешите установку из этого источника («Разрешить установку неизвестных приложений» для браузера или файлового менеджера) и вернитесь назад.",
-  "install.apkStep4": "Нажмите «Установить», затем «Открыть».",
+    "Разрешите установку из источника, если Android попросит, и нажмите «Установить».",
   "install.apkDownload": "Скачать APK",
   "install.apkOtherBuilds":
-    "Другое устройство (32-битное или Android 9-10)? Выберите нужный файл на странице выпуска.",
+    "32-битное устройство или Android 9-10? Выберите файл на странице выпуска.",
 
   "install.addTitle": "Добавьте ключ",
-  "install.addStep1":
-    "Скопируйте ключ подключения (vpn://…) на карточке ключа — кнопка «Копировать».",
-  "install.addStep2": "Откройте AmneziaVPN и нажмите «+» (добавить сервер).",
-  "install.addStep3":
-    "Выберите «Вставить» (ключ подключения) и вставьте скопированный ключ.",
-  "install.addStep4": "Нажмите «Подключиться».",
-  "install.addResult":
-    "Сервер появится в списке приложения под тем же именем, что и в панели, и приложение подключится к нему.",
+  "install.addStep1": "На карточке ключа нажмите «Копировать».",
+  "install.addStep2": "В приложении: «+» → «Вставить», вставьте ключ.",
+  "install.addStep3": "Нажмите «Подключиться».",
 
-  "install.confTitle": "Файл .conf — второй способ добавить ключ",
+  "install.confTitle": "Второй способ: файл .conf",
   "install.confBody":
-    "Кнопка «Скачать .conf» на карточке ключа сохраняет ключ в файл. Этот файл не копируют и не вставляют текстом — его открывают в приложении.",
+    "Кнопка «Скачать .conf» сохраняет ключ файлом. Его открывают в приложении.",
   "install.confSplitBest":
-    "Если вы выбрали «Иностранные ресурсы через VPN» или «Только заблокированные сайты», на компьютере и на Android удобнее файл: такой ключ получается очень длинным, QR-кода для него нет, а файл достаточно один раз открыть. Все адреса, которые должны идти через VPN, в нём уже записаны.",
+    "Удобно для профилей «Только зарубежные» и «Только заблокированные»: такой ключ очень длинный, а файл достаточно открыть один раз.",
   "install.confIosWarning":
-    "На iPhone и iPad это не поможет. Там такой ключ подключится, но выбранные вами правила работать не будут — ни из файла, ни из ключа. Для iPhone и iPad создавайте ключ без профиля, чтобы через VPN шло всё.",
-  "install.confAmneziaTitle": "В AmneziaVPN",
-  "install.confAmneziaStep1": "Скачайте файл .conf на карточке ключа.",
-  "install.confAmneziaStep2":
-    "Откройте AmneziaVPN, нажмите «+» и выберите импорт файла конфигурации.",
-  "install.confAmneziaStep3":
-    "Укажите скачанный файл и нажмите «Подключиться». На телефоне проще открыть файл и передать его в AmneziaVPN через «Поделиться».",
-  "install.confOtherTitle": "Другие приложения",
-  "install.confOtherBody":
-    "Файл подойдёт и другим приложениям, которые умеют AmneziaWG, — например приложению AmneziaWG для Android или роутеру с такой поддержкой. Если вы не настраивали такое специально, вам это не нужно: пользуйтесь AmneziaVPN.",
-  "install.confStockWarning":
-    "Обычное приложение WireGuard этот файл не откроет. Оно не умеет маскировку, из-за которой ключ и работает там, где VPN блокируют. Нужен именно AmneziaVPN.",
+    "На iPhone и iPad не поможет: правила не применятся. Там нужен ключ «Весь трафик».",
+  "install.confHow":
+    "В AmneziaVPN: «+» → импорт файла конфигурации. Обычный WireGuard этот файл не откроет.",
   "install.confDomainsWarning":
-    "Одно исключение. Если в правилах есть сайт, записанный по имени (например, example.com), в файл он не попадёт — в файле хранятся только числовые адреса. Подключение будет работать, но именно этот сайт пойдёт не туда, куда вы ожидали. Чтобы такие правила сохранились, добавьте ключ обычным способом — копированием, а не файлом.",
+    "Правило по имени сайта в файл не попадёт — там только числовые адреса. Чтобы оно сохранилось, добавляйте ключ копированием.",
 
   "install.fixTitle": "Если не работает",
-  "install.fixServer":
-    "Попробуйте другой сервер: создайте ключ на другом сервере из списка.",
+  "install.fixServer": "Создайте ключ на другом сервере.",
   "install.fixFullTunnel":
-    "Попробуйте ключ без профиля маршрутизации (весь трафик через VPN) — так видно, дело в сети или в правилах.",
+    "Попробуйте ключ «Весь трафик» — так видно, дело в сети или в правилах.",
   "install.fixAmneziaDns":
-    "В настройках AmneziaVPN выключите «Использовать DNS-серверы Amnezia, если установлены». На наших серверах их нет, и с включённой галочкой подключение может быть успешным, а сайты при этом не открываться.",
+    "В настройках AmneziaVPN выключите «Использовать DNS-серверы Amnezia»: с ней подключение есть, а сайты не открываются.",
   "install.fixUpdate":
-    "Обновите AmneziaVPN и делайте это регулярно: устаревший клиент — частая причина, по которой ключ AmneziaWG 3.1 не подключается.",
+    "Обновите AmneziaVPN: устаревший клиент — частая причина отказа.",
   "install.checkUpdates": "Страница последнего выпуска",
 
   // Quota request dialog
@@ -1188,6 +1195,28 @@ const en = {
   "wizard.creating": "Creating…",
   "wizard.create": "Create key",
 
+  // "How do I make a key?" dialog — the form only. Anything about installing
+  // the client or connecting belongs to install.* instead.
+  "keyHelp.button": "Not sure how to create a key →",
+  "keyHelp.title": "How to create a key",
+  "keyHelp.desc": "What each field of the create-key form means.",
+  "keyHelp.namesTitle": "Names and tick boxes",
+  "keyHelp.namesBody":
+    "This is how the key will show up in your app, so you do not mix them up. The “in the client” line is a live preview.",
+  "keyHelp.serverBody":
+    "Always take the recommended one. There are usually several locations available — any of them will do.",
+  "keyHelp.routingBody":
+    "“All traffic” always works. If something is not working for you, pick that one.",
+  "keyHelp.profilesIntro":
+    "Read the other two profiles carefully. They are not guaranteed to work; they exist for convenience:",
+  "keyHelp.whitelistBody":
+    "we do our best to make Russian services see you as if you were at home. Better than “Blocked only”, but less dependable for the VPN working steadily overall.",
+  "keyHelp.blacklistBody":
+    "a profile with a list of certain sites. The list is large, but it may not hold every blocked resource you need, and those will not open through the VPN.",
+  "keyHelp.troubleTitle": "If something is not working",
+  "keyHelp.troubleBody":
+    "Change the server, or switch the routing to “All traffic”. If you are on mobile data, moving to Wi-Fi often fixes access problems.",
+
   // Config download dialog
   "config.keyCopied": "Key copied",
   "config.copyFailed": "Failed to copy",
@@ -1237,13 +1266,13 @@ const en = {
   "install.button": "How to connect",
   "install.title": "Install AmneziaVPN and connect",
   "install.desc":
-    "Install the app, add your key — and see what to try if the connection does not work.",
+    "Three steps: install the app, add the key, what to try if it does not work.",
   "install.opensNewTab": "Opens in a new tab",
   "install.latestVersion": "Latest version: {version}",
   "install.linksUnavailable":
-    "Could not fetch the app download links. Reload the page or try again later.",
+    "Could not fetch the links. Reload the page or try again later.",
   "install.linksStale":
-    "Could not check the latest release. The buttons open the releases page — pick the file for your system there.",
+    "Could not check the release. The buttons open the releases page.",
 
   "install.installTitle": "Install the app",
   "install.platform.windows": "Windows",
@@ -1258,76 +1287,62 @@ const en = {
     "Point your phone camera at it to open the app page.",
   "install.videoTitle": "Walkthrough video",
   "install.videoSoon": "A video will appear here.",
-  "install.chooseHint":
-    "Pick a device above and the guide shows the steps for it.",
+  "install.chooseHint": "Pick a device above.",
   "install.group.desktop": "Windows, macOS, Linux",
   "install.group.android": "Android",
   "install.group.ios": "iPhone and iPad (iOS)",
   "install.pickFile": "Pick the file for your system",
   "install.iosAmneziaTitle": "If your Apple account is not Russian",
   "install.iosAmneziaBody":
-    "Then you can install AmneziaVPN itself — it does more, route profiles included. It is hidden from the Russian App Store, so the button will not open for everyone.",
+    "Then you can install AmneziaVPN itself — it does more. It is hidden from the Russian App Store.",
   "install.iosAmneziaOpen": "Open AmneziaVPN on the App Store",
   "install.desktopNote":
-    "The Windows, macOS and Linux buttons download the installer from the latest release. Run the downloaded file and follow the installer.",
+    "Run the downloaded file and follow the installer.",
   "install.iosNote":
-    "In the Russian App Store the app is called Default VPN, not Amnezia — it is the official client from the same developers, so install that one. AmneziaVPN itself is also on iOS and does more, but it is hidden from the Russian App Store by Roskomnadzor requirement: it installs only if your Apple account is registered in another country.",
+    "In the Russian App Store the app is called Default VPN — install that one.",
+  // Shortened, never dropped: on iOS a profile key connects and filters
+  // nothing, and the user has no way to see it. See D8.
   "install.iosProfileWarning":
-    "In Default VPN a key with a profile (“Foreign resources via VPN”, “Only blocked sites”) does connect, but the rules are not applied: all traffic goes direct, outside the VPN, and the app gives no warning. So on iPhone and iPad create a key with no profile — all traffic through the VPN. If you installed AmneziaVPN itself rather than Default VPN, say so when creating the key and the profiles become available.",
+    "In Default VPN a key with a profile does connect, but the rules are not applied: all traffic goes outside the VPN, and the app gives no warning. On iPhone and iPad create an “All traffic” key.",
   "install.versionNote":
-    "AmneziaWG 3.1 keys only work in client version {version} or newer.",
-  "install.apkTitle": "Google Play will not open, or the install fails?",
+    "AmneziaWG 3.1 keys work in client {version} or newer.",
+  "install.apkTitle": "Google Play will not open?",
   "install.apkIntro":
-    "Install from the APK — the official AmneziaVPN installer file from the project's releases page.",
-  "install.apkStep1": "Tap the button below and wait for the download to finish.",
+    "Install the official AmneziaVPN APK from the releases page.",
+  "install.apkStep1": "Tap the button below and wait for the download.",
   "install.apkStep2":
-    "Open the downloaded file: from the notification shade, or via Files → Downloads.",
+    "Open the downloaded file: the notification shade, or Files → Downloads.",
   "install.apkStep3":
-    "If Android asks, allow installing from this source (“Allow from this source” for your browser or file manager) and go back.",
-  "install.apkStep4": "Tap Install, then Open.",
+    "Allow installing from the source if Android asks, then tap Install.",
   "install.apkDownload": "Download the APK",
   "install.apkOtherBuilds":
-    "A different device (32-bit, or Android 9-10)? Pick the matching file on the release page.",
+    "A 32-bit device, or Android 9-10? Pick the matching file on the release page.",
 
   "install.addTitle": "Add the key",
-  "install.addStep1":
-    "Copy the connection key (vpn://…) from the key card — the Copy button.",
-  "install.addStep2": "Open AmneziaVPN and tap + (add a server).",
-  "install.addStep3": "Choose Insert (connection key) and paste the copied key.",
-  "install.addStep4": "Tap Connect.",
-  "install.addResult":
-    "The server appears in the app's list under the same name as in the panel, and the app connects to it.",
+  "install.addStep1": "On the key card, press Copy.",
+  "install.addStep2": "In the app: + → Insert, and paste the key.",
+  "install.addStep3": "Tap Connect.",
 
-  "install.confTitle": "The .conf file — the second way to add a key",
+  "install.confTitle": "The second way: a .conf file",
   "install.confBody":
-    "The Download .conf button on the key card saves the key as a file. You do not copy and paste this one — you open it in the app.",
+    "The Download .conf button saves the key as a file. You open it in the app.",
   "install.confSplitBest":
-    "If you chose “Foreign resources via VPN” or “Only blocked sites”, the file is easier on a computer and on Android: that kind of key comes out very long, there is no QR code for it, and the file only has to be opened once. Every address that should go through the VPN is already written into it.",
+    "Handy for the “Foreign only” and “Blocked only” profiles: that kind of key is very long, and the file only has to be opened once.",
   "install.confIosWarning":
-    "This will not help on iPhone or iPad. The key connects there, but the rules you chose are not applied — neither from the file nor from the key. For iPhone and iPad, create a key with no profile so that everything goes through the VPN.",
-  "install.confAmneziaTitle": "In AmneziaVPN",
-  "install.confAmneziaStep1": "Download the .conf file from the key card.",
-  "install.confAmneziaStep2":
-    "Open AmneziaVPN, tap + and choose importing a configuration file.",
-  "install.confAmneziaStep3":
-    "Pick the downloaded file and tap Connect. On a phone it is easiest to open the file and share it to AmneziaVPN.",
-  "install.confOtherTitle": "Other apps",
-  "install.confOtherBody":
-    "The file also works in other apps that understand AmneziaWG — the AmneziaWG app for Android, for instance, or a router that supports it. If you have not set anything like that up on purpose, you do not need this: use AmneziaVPN.",
-  "install.confStockWarning":
-    "The plain WireGuard app will not open this file. It does not do the disguising that makes the key work where VPNs are blocked. You need AmneziaVPN itself.",
+    "It will not help on iPhone or iPad: the rules are not applied. There you need an “All traffic” key.",
+  "install.confHow":
+    "In AmneziaVPN: + → import a configuration file. The plain WireGuard app will not open it.",
   "install.confDomainsWarning":
-    "One exception. If a rule names a site (example.com, say), it does not fit in the file — the file holds only numeric addresses. The connection still works, but that one site goes somewhere other than you expected. To keep rules like that, add the key the usual way, by copying it, rather than as a file.",
+    "A rule that names a site does not fit in the file — it holds only numeric addresses. To keep it, add the key by copying.",
 
   "install.fixTitle": "If it does not work",
-  "install.fixServer":
-    "Try another server: create a key on a different server from the list.",
+  "install.fixServer": "Create a key on a different server.",
   "install.fixFullTunnel":
-    "Try a key with no route profile (all traffic through the VPN) — that shows whether the problem is the network or the routing rules.",
+    "Try an “All traffic” key — that shows whether the problem is the network or the rules.",
   "install.fixAmneziaDns":
-    "In AmneziaVPN's settings, turn off “Use Amnezia DNS servers if installed”. Our servers do not run them, and with that switch on the connection can succeed while no site opens.",
+    "In AmneziaVPN's settings, turn off “Use Amnezia DNS servers”: with it on, the connection succeeds while no site opens.",
   "install.fixUpdate":
-    "Update AmneziaVPN, and keep doing so regularly: an outdated client is a common reason an AmneziaWG 3.1 key will not connect.",
+    "Update AmneziaVPN: an outdated client is a common cause.",
   "install.checkUpdates": "Latest release page",
 
   // Quota request dialog

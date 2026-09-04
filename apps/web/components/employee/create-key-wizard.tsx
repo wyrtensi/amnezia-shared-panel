@@ -399,6 +399,19 @@ export function CreateKeyWizard({
                         key={node.id}
                         value={node.id}
                         disabled={quota?.full}
+                        // An accent down the left edge, on top of the badge:
+                        // the badge is the accessible signal (colour alone is
+                        // not), the edge is what makes the row findable in a
+                        // long list. `border-primary` resolves per theme, so
+                        // it survives dark mode; the transparent border on the
+                        // other rows keeps every name on the same baseline.
+                        // `rounded-l-none`: the item's own rounding would clip
+                        // a 2px edge on a row this short into an arc.
+                        className={
+                          node.recommended
+                            ? "rounded-l-none border-l-2 border-l-primary bg-primary/5"
+                            : "border-l-2 border-l-transparent"
+                        }
                       >
                         <span className="flex w-full items-center justify-between gap-3">
                           <span className="flex min-w-0 items-center gap-1.5">

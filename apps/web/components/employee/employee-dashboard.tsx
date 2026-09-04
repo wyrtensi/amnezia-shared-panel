@@ -26,6 +26,7 @@ import {
   guideAudienceForDevice,
   InstallGuideDialog,
 } from "@/components/employee/install-guide-dialog";
+import { KeyHelpDialog } from "@/components/employee/key-help-dialog";
 import { QuotaRequestDialog } from "@/components/employee/quota-request-dialog";
 import { apiRequest } from "@/lib/api";
 import { isAtLimit } from "@/lib/key-quota";
@@ -66,6 +67,7 @@ export function EmployeeDashboard({
   const [showCreate, setShowCreate] = React.useState(false);
   const [showQuota, setShowQuota] = React.useState(false);
   const [showGuide, setShowGuide] = React.useState(false);
+  const [showKeyHelp, setShowKeyHelp] = React.useState(false);
   // The audience the guide opens on. A key card sets its own device; the
   // empty-state button leaves it null, so a user with no keys still chooses.
   const [guideAudience, setGuideAudience] =
@@ -332,7 +334,22 @@ export function EmployeeDashboard({
                 {nodeQuota.map(({ node, used, limit, traffic }) => (
                   <div
                     key={node.id}
-                    className="flex flex-wrap items-start justify-between gap-2 py-2.5 first:pt-3"
+                    // The same accent the create-key wizard puts on a
+                    // recommended server, carried onto the page the user
+                    // actually lands on. The badge stays — colour alone is not
+                    // an accessible signal — and `border-primary` resolves per
+                    // theme so the edge does not vanish in dark mode. The
+                    // transparent border on the other rows keeps every server
+                    // name on the same baseline. Only the LEFT colour is set:
+                    // the parent's `divide-y` draws its separators as a top
+                    // border on these same rows, and a blanket `border-*`
+                    // would repaint those too.
+                    className={cn(
+                      "flex flex-wrap items-start justify-between gap-2 border-l-2 py-2.5 pl-2.5 first:pt-3",
+                      node.recommended
+                        ? "border-l-primary bg-primary/5"
+                        : "border-l-transparent",
+                    )}
                   >
                     <div className="min-w-0 space-y-0.5">
                       <span className="flex min-w-0 items-center gap-1.5">
@@ -394,13 +411,33 @@ export function EmployeeDashboard({
                 did not read as a button. The card's icon stays because it knows
                 that key's device and opens straight to its instruction; this one
                 asks first, because from here no device is implied. */}
-            <Button variant="ghost" size="sm" onClick={() => openGuide(null)}>
+            {/* Drawn as a link, not as a ghost button: a user who cannot
+                connect scans for something clickable, and an unstyled label
+                beside a heading did not read as one. `text-success` is the
+                theme's own token, so the colour holds in light and dark
+                without a second rule. */}
+            <Button
+              variant="ghost"
+              size="sm"
+              className="px-2 text-success underline decoration-2 underline-offset-4 hover:text-success"
+              onClick={() => openGuide(null)}
+            >
               <CircleHelp className="h-4 w-4" /> {t("install.button")}
             </Button>
           </div>
-          <Button disabled={!canCreate} onClick={() => setShowCreate(true)}>
-            <Plus className="h-4 w-4" /> {t("emp.newKey")}
-          </Button>
+          <div className="flex flex-wrap items-center gap-2">
+            {/* To the LEFT of "New key" and the same size: the user who needs
+                it is looking at that button and not pressing it. It opens the
+                form's own explanation, never the install guide — see
+                KeyHelpDialog. Not disabled with the quota: someone at their
+                limit may still be trying to understand the form. */}
+            <Button variant="secondary" onClick={() => setShowKeyHelp(true)}>
+              <CircleHelp className="h-4 w-4" /> {t("keyHelp.button")}
+            </Button>
+            <Button disabled={!canCreate} onClick={() => setShowCreate(true)}>
+              <Plus className="h-4 w-4" /> {t("emp.newKey")}
+            </Button>
+          </div>
         </div>
 
         {loading ? (
@@ -507,6 +544,7 @@ export function EmployeeDashboard({
         onClose={() => setConfigTarget(null)}
         me={me}
       />
+      <KeyHelpDialog open={showKeyHelp} onOpenChange={setShowKeyHelp} />
       <InstallGuideDialog
         open={showGuide}
         onOpenChange={setShowGuide}
