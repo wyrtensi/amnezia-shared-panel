@@ -600,7 +600,12 @@ const ru = {
   // for one service check. The prefix is deliberate: `checks.state.*`, not
   // `nodes.state.*` - these words describe a check, and a key under `nodes.`
   // would invite the next person to reuse them for a node.
-  "checks.title": "Проверки сервисов",
+   "checks.scope":
+    "Каждая проверка выполняется на всех нодах — ниже под ней видно, что ответила каждая. Отдельной проверки «для одной ноды» нет.",
+  "nodes.checks.title": "Сервисы с этой ноды",
+  "nodes.checks.none":
+    "Эта нода ещё не отвечала по проверкам. Обычная причина — агент старее 1.1.5, он такого запроса не понимает.",
+ "checks.title": "Проверки сервисов",
   "checks.cliHint":
     "Набор правил открытый, поэтому проверки создаются и правятся из CLI: check-create, check-set. Здесь — включить, запустить и посмотреть, что отвечают ноды.",
   "checks.empty": "Проверок пока нет.",
@@ -1521,7 +1526,12 @@ const en = {
     "The key is created on the server — the device connects right after importing the configuration.",
 
   // Admin nodes
-  "checks.title": "Service checks",
+   "checks.scope":
+    "Every check runs on every node — the lines under it are what each one answered. There is no such thing as a check for one node.",
+  "nodes.checks.title": "Services from this node",
+  "nodes.checks.none":
+    "This node has not answered any check yet. The usual cause is an agent older than 1.1.5, which does not serve the request.",
+ "checks.title": "Service checks",
   "checks.cliHint":
     "The rule set is open, so checks are created and edited from the CLI: check-create, check-set. Here you can enable, run, and read what the nodes say.",
   "checks.empty": "No checks yet.",

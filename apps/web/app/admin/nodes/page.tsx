@@ -42,6 +42,7 @@ import { formatDateTime } from "@/lib/format";
 import { InlineTraffic } from "@/components/inline-traffic";
 import { NodeMetrics } from "@/components/admin/node-metrics";
 import { ServiceChecksCard } from "@/components/admin/service-checks-card";
+import { useServiceChecks } from "@/components/admin/use-service-checks";
 import { cn } from "@/lib/utils";
 import { useAdminData, type AdminNode } from "@/components/admin/admin-data";
 import { useT } from "@/lib/i18n/provider";
@@ -79,6 +80,9 @@ type DeleteNodeResult = {
 
 export default function AdminNodesPage() {
   const { nodes, keys, loading, reload, action, request } = useAdminData();
+  // One fetch for the whole page: the card below lists checks by check, the
+  // node cards show the same results by node. Two fetches could disagree.
+  const serviceChecks = useServiceChecks();
   const { t } = useT();
   const [showCreate, setShowCreate] = React.useState(false);
   const [editNode, setEditNode] = React.useState<AdminNode | null>(null);
@@ -178,6 +182,8 @@ export default function AdminNodesPage() {
               onEdit={() => setEditNode(node)}
               onDelete={() => setDeleteTarget(node)}
               onUpdateAgent={() => setUpdateAgentNode(node)}
+              checkResults={serviceChecks.byNode.get(node.id) ?? []}
+              checksConfigured={serviceChecks.checks.length > 0}
             />
           ))}
         </div>
@@ -186,7 +192,7 @@ export default function AdminNodesPage() {
       {/* Under the fleet rather than on its own page: a check is a statement
           about what works FROM these servers, and reading it beside them is
           what makes a red chip actionable. */}
-      <ServiceChecksCard />
+      <ServiceChecksCard state={serviceChecks} />
 
       <CreateNodeDialog
         open={showCreate}
@@ -225,9 +231,15 @@ function NodeCard({
   onEdit,
   onDelete,
   onUpdateAgent,
+  checkResults,
+  checksConfigured,
 }: {
   node: AdminNode;
   keyStats: NodeKeyStats;
+  /** This node's verdict for each service check. Empty until it has run one. */
+  checkResults: Array<{ name: string; status: string; detail: string | null }>;
+  /** Whether any check exists at all, which is a different thing from none run. */
+  checksConfigured: boolean;
   onToggle: (enabled: boolean) => void;
   onReconcile: () => void;
   onEdit: () => void;
@@ -397,6 +409,54 @@ function NodeCard({
           </span>
           <NodeMetrics metrics={node.metrics} endpoint={node.endpoint} />
         </div>
+
+        {checksConfigured ? (
+          <div className="space-y-1 border-t pt-3">
+            <span className="text-xs text-muted-foreground">
+              {t("nodes.checks.title")}
+            </span>
+            {checkResults.length === 0 ? (
+              // Nothing has come back FROM THIS NODE yet. Said plainly, because
+              // an empty space here reads as "this node has no services" - and
+              // the usual cause is an agent too old to serve /checks/run.
+              <p className="text-xs text-muted-foreground">
+                {t("nodes.checks.none")}
+              </p>
+            ) : (
+              <ul className="space-y-0.5">
+                {checkResults.map((result) => (
+                  <li
+                    key={result.name}
+                    className="flex flex-wrap items-baseline justify-between gap-2 text-xs"
+                  >
+                    <span className="text-muted-foreground">{result.name}</span>
+                    <span className="flex min-w-0 items-center gap-1.5">
+                      {result.detail ? (
+                        <span className="min-w-0 truncate text-muted-foreground">
+                          {result.detail}
+                        </span>
+                      ) : null}
+                      {/* ok / failed / error, not the user's three words: an
+                          admin needs `error` - the node could not look - to
+                          stay distinct from `failed`. */}
+                      <Badge
+                        variant={
+                          result.status === "ok"
+                            ? "success"
+                            : result.status === "failed"
+                              ? "destructive"
+                              : "outline"
+                        }
+                      >
+                        {result.status}
+                      </Badge>
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        ) : null}
 
         {node.lastError ? (
           <Callout tone="danger" className="text-xs">

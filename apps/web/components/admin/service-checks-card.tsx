@@ -8,10 +8,11 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Switch } from "@/components/ui/switch";
+import { Callout } from "@/components/ui/hint";
 import { apiRequest } from "@/lib/api";
 import { formatDateTime } from "@/lib/format";
 import { useT } from "@/lib/i18n/provider";
-import type { AdminServiceCheck } from "@/lib/types";
+import type { ServiceChecksState } from "@/components/admin/use-service-checks";
 
 /**
  * The admin's view of the service checks and what every node says about them.
@@ -24,22 +25,14 @@ import type { AdminServiceCheck } from "@/lib/types";
  * Everything an operator needs day to day — enable, run, delete, read the
  * verdicts — is here.
  */
-export function ServiceChecksCard() {
+export function ServiceChecksCard({
+  state,
+}: {
+  state: ServiceChecksState;
+}) {
   const { t, lang } = useT();
-  const [checks, setChecks] = React.useState<AdminServiceCheck[] | null>(null);
+  const { checks, loading, failed, reload: load } = state;
   const [busy, setBusy] = React.useState<string | null>(null);
-
-  const load = React.useCallback(async () => {
-    try {
-      setChecks(await apiRequest<AdminServiceCheck[]>("/api/admin/service-checks"));
-    } catch {
-      toast.error(t("checks.loadFailed"));
-    }
-  }, [t]);
-
-  React.useEffect(() => {
-    void load();
-  }, [load]);
 
   const act = async (id: string, run: () => Promise<unknown>) => {
     setBusy(id);
@@ -53,7 +46,7 @@ export function ServiceChecksCard() {
     }
   };
 
-  if (!checks) return null;
+  if (loading) return null;
 
   return (
     <Card>
@@ -61,8 +54,19 @@ export function ServiceChecksCard() {
         <CardTitle>{t("checks.title")}</CardTitle>
       </CardHeader>
       <CardContent className="space-y-3">
+        {/* A check is defined once and runs on EVERY node - the per-node lines
+            below are the same check seen from each server. Without this the
+            card reads as though a check belonged to something in particular. */}
+        <p className="text-xs text-muted-foreground">{t("checks.scope")}</p>
         <p className="text-xs text-muted-foreground">{t("checks.cliHint")}</p>
-        {checks.length === 0 ? (
+        {failed ? (
+          // An empty card and a card that could not load look identical, and
+          // only one of them means "there is nothing here".
+          <Callout tone="danger" className="text-xs">
+            {t("checks.loadFailed")}
+          </Callout>
+        ) : null}
+        {!failed && checks.length === 0 ? (
           <p className="text-sm text-muted-foreground">{t("checks.empty")}</p>
         ) : null}
         {checks.map((check) => (
