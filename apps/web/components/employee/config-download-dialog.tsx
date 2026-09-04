@@ -41,50 +41,42 @@ export type ConfigTarget = {
 /**
  * Which scanner the user is holding.
  *
- * `amnezia` and `defaultvpn` are served the SAME payload -- AmneziaVPN's chunk
- * envelope, `qr-frames` -- because DefaultVPN is a fork of amnezia-client and
- * its scanner is byte-identical: magic 1984, an 8-byte header, 850-byte chunks,
- * a qCompress body, base64url (`client/core/qrCodeUtils.cpp:8-17` and
+ * `app` is the in-app scanner of AmneziaVPN **and** of DefaultVPN. One tab, not
+ * two: DefaultVPN is a fork of amnezia-client and its scanner is byte-identical
+ * -- magic 1984, an 8-byte header, 850-byte chunks, a qCompress body, base64url
+ * (`client/core/qrCodeUtils.cpp:8-17` and
  * `client/ui/controllers/importController.cpp:643-669` in
- * github.com/amnezia-vpn/DefaultVPN@dev). They are two tabs rather than one
- * because the users of the two apps do not know they are the same app, and the
- * in-app menu path is branded differently in each.
+ * github.com/amnezia-vpn/DefaultVPN@dev). Showing the same picture twice under
+ * two brand names only invites the question of what the difference is.
  *
  * `camera` serves the single-frame `vpn://` code that a camera app hands to the
- * OS. It is a different payload, not a different picture of the same one:
- * neither app's in-app scanner can read a `vpn://` symbol (the prefix is
- * stripped only on the paste/import path, never on the scan path), and no
- * camera app can read the chunk envelope.
+ * OS. It is a different payload, not a different picture of the same one: no
+ * in-app scanner can read a `vpn://` symbol (the prefix is stripped only on the
+ * paste/import path, never on the scan path), and no camera app can read the
+ * chunk envelope.
  */
-type QrAudience = "amnezia" | "defaultvpn" | "camera";
+type QrAudience = "app" | "camera";
 
-/** Tab order: the app this panel is built for leads; the camera is the fallback. */
-const QR_AUDIENCES = ["amnezia", "defaultvpn", "camera"] as const;
+/** Tab order: the in-app scanner leads; the camera is the fallback. */
+const QR_AUDIENCES = ["app", "camera"] as const;
 
 /**
- * True for the audiences served by the chunk envelope. Both VPN apps read it;
- * only the camera path takes the `vpn://` symbol.
+ * True for the audience served by the chunk envelope. Every VPN app that reads
+ * a code reads that one; only the camera path takes the `vpn://` symbol.
  */
 const usesFrames = (audience: QrAudience): boolean => audience !== "camera";
 
-/**
- * Copy per audience, kept in one place so a fourth client is three strings and
- * no new branches. The two app tabs differ only in wording: the code they show
- * is the same one.
- */
+/** Copy per audience, kept in one place so a new client is three strings. */
 const QR_AUDIENCE_LABEL_KEYS: Record<QrAudience, MessageKey> = {
-  amnezia: "config.qrForAmnezia",
-  defaultvpn: "config.qrForDefaultVpn",
+  app: "config.qrForApp",
   camera: "config.qrForCamera",
 };
 const QR_AUDIENCE_WARNING_KEYS: Record<QrAudience, MessageKey> = {
-  amnezia: "config.qrAppWarning",
-  defaultvpn: "config.qrDefaultVpnWarning",
+  app: "config.qrAppWarning",
   camera: "config.qrAppWarning", // unused: the camera code needs no warning.
 };
 const QR_AUDIENCE_HINT_KEYS: Record<QrAudience, MessageKey> = {
-  amnezia: "config.qrHintApp",
-  defaultvpn: "config.qrHintDefaultVpn",
+  app: "config.qrHintApp",
   camera: "config.qrHint",
 };
 
@@ -124,7 +116,7 @@ const QR_FRAME_INTERVAL_MS = 1500;
 /**
  * Which code the dialog opens on.
  *
- * "amnezia": the app this panel is built for leads, and the envelope it reads is
+ * "app": the app this panel is built for leads, and the envelope it reads is
  * also what DefaultVPN reads, so the default tab is the right one for both VPN
  * apps -- which is every user who has followed the install guide. The audience
  * chooser sits directly above the code and names the tool rather than the
@@ -135,7 +127,7 @@ const QR_FRAME_INTERVAL_MS = 1500;
  * changing which code the dialog leads with, and it needs a rebuild of this app
  * and nothing else in the system.
  */
-const QR_DEFAULT_AUDIENCE: QrAudience = "amnezia";
+const QR_DEFAULT_AUDIENCE: QrAudience = "app";
 
 /**
  * Which mode a multi-frame series opens in. "animated" on purpose: a user who
@@ -588,14 +580,6 @@ export function ConfigDownloadDialog({
                 <p className="text-center text-xs text-muted-foreground">
                   {t(QR_AUDIENCE_HINT_KEYS[qrFor])}
                 </p>
-                {qrFor === "defaultvpn" ? (
-                  // Why the DefaultVPN tab shows the very same picture as the
-                  // AmneziaVPN one. Without this a user who notices the two
-                  // codes are identical assumes the tab is broken.
-                  <p className="text-center text-xs text-muted-foreground">
-                    {t("config.qrDefaultVpnSameCode")}
-                  </p>
-                ) : null}
                 <p className="text-center text-xs text-muted-foreground">
                   {t("config.qrZoomHint")}
                 </p>
@@ -608,7 +592,7 @@ export function ConfigDownloadDialog({
                 */}
                 <button
                   type="button"
-                  onClick={() => setQrFor(usesFrames(qrFor) ? "camera" : "amnezia")}
+                  onClick={() => setQrFor(usesFrames(qrFor) ? "camera" : "app")}
                   className="mx-auto block text-center text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground"
                 >
                   {t(
