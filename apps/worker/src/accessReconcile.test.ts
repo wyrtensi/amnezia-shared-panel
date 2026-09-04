@@ -281,6 +281,37 @@ describe("createAccessSync", () => {
     expect(getBaseline()).toEqual(["keep@x.io"]);
   });
 
+  it("first run against an already-populated policy adopts nothing pre-existing", async () => {
+    // The production day-one scenario: the baseline column starts empty, but
+    // the Cloudflare policy already carries hand-added addresses (rail 1's
+    // headline claim is that this exact case is safe). An empty baseline must
+    // not be read as "the panel owns everything already there" — both
+    // hand-added rules stay foreign, preserved verbatim, and only the active
+    // panel user is appended.
+    const { repository, getBaseline } = makeRepo({
+      active: ["new@x.io"],
+      baseline: [],
+    });
+    const { createClient, updatePolicy } = clientWith([
+      { email: { email: "hand-added-1@gmail.com" } },
+      { email: { email: "hand-added-2@gmail.com" } },
+    ]);
+
+    await createAccessSync({ repository, createClient })();
+
+    expect(updatePolicy).toHaveBeenCalledWith({
+      id: "pol",
+      include: [
+        { email: { email: "hand-added-1@gmail.com" } },
+        { email: { email: "hand-added-2@gmail.com" } },
+        { email: { email: "new@x.io" } },
+      ],
+    });
+    // The baseline records only what the panel itself pushed, not the
+    // pre-existing hand-added rules.
+    expect(getBaseline()).toEqual(["new@x.io"]);
+  });
+
   it("protects a panel-added user (not yet in Cloudflare) from being disabled", async () => {
     const { repository, deactivateByEmail } = makeRepo({
       active: ["keep@x.io", "new@x.io"],
@@ -483,5 +514,122 @@ describe("createAccessSync", () => {
     await createAccessSync({ repository, createClient, maxDisablesPerRun: 0 })();
 
     expect(deactivateByEmail).toHaveBeenCalledWith(active);
+  });
+
+  describe("abort audit de-duplication", () => {
+    // A client whose policy `include` can be swapped between calls to
+    // `sync()`, so a single `createAccessSync` instance (and its closure
+    // state) can be run repeatedly across a changing Cloudflare-side anomaly.
+    const makeMutableClient = (initialInclude: CfAccessRule[]) => {
+      let include = initialInclude;
+      const updatePolicy = vi.fn(() => Promise.resolve());
+      const createClient = () => ({
+        getPolicy: () => Promise.resolve({ id: "pol", include }),
+        updatePolicy,
+      });
+      return {
+        createClient,
+        updatePolicy,
+        setInclude: (next: CfAccessRule[]) => {
+          include = next;
+        },
+      };
+    };
+
+    it("writes only one audit row for repeated identical aborts", async () => {
+      const active = ["a@x.io", "b@x.io", "c@x.io"];
+      const { repository } = makeRepo({ active, baseline: active });
+      const { createClient } = makeMutableClient([
+        { email: { email: "outside@gmail.com" } },
+      ]);
+      const recordAccessSyncAborted = vi.fn(() => Promise.resolve());
+      const sync = createAccessSync({
+        repository,
+        createClient,
+        maxDisablesPerRun: 2,
+        recordAccessSyncAborted,
+      });
+
+      await sync();
+      await sync();
+      await sync();
+
+      expect(recordAccessSyncAborted).toHaveBeenCalledTimes(1);
+      expect(recordAccessSyncAborted).toHaveBeenCalledWith({
+        candidates: active,
+        limit: 2,
+      });
+    });
+
+    it("writes another audit row when the candidate set changes", async () => {
+      const active = ["a@x.io", "b@x.io", "c@x.io", "d@x.io"];
+      const { repository } = makeRepo({ active, baseline: active });
+      const { createClient, setInclude } = makeMutableClient([
+        { email: { email: "outside@gmail.com" } },
+      ]);
+      const recordAccessSyncAborted = vi.fn(() => Promise.resolve());
+      const sync = createAccessSync({
+        repository,
+        createClient,
+        maxDisablesPerRun: 2,
+        recordAccessSyncAborted,
+      });
+
+      await sync();
+      // "a@x.io" is now covered by Cloudflare too, shrinking the candidate set
+      // from 4 accounts to 3 — still over the cap, so the run aborts again,
+      // but for a different set of accounts.
+      setInclude([
+        { email: { email: "outside@gmail.com" } },
+        { email: { email: "a@x.io" } },
+      ]);
+      await sync();
+
+      expect(recordAccessSyncAborted).toHaveBeenCalledTimes(2);
+      expect(recordAccessSyncAborted).toHaveBeenNthCalledWith(1, {
+        candidates: active,
+        limit: 2,
+      });
+      expect(recordAccessSyncAborted).toHaveBeenNthCalledWith(2, {
+        candidates: ["b@x.io", "c@x.io", "d@x.io"],
+        limit: 2,
+      });
+    });
+
+    it("writes an audit row again after a clean run recovers, even with the same candidates", async () => {
+      const active = ["a@x.io", "b@x.io", "c@x.io"];
+      const { repository } = makeRepo({ active, baseline: active });
+      const badInclude: CfAccessRule[] = [{ email: { email: "outside@gmail.com" } }];
+      const cleanInclude: CfAccessRule[] = [
+        { email: { email: "outside@gmail.com" } },
+        { email: { email: "a@x.io" } },
+        { email: { email: "b@x.io" } },
+        { email: { email: "c@x.io" } },
+      ];
+      const { createClient, setInclude } = makeMutableClient(badInclude);
+      const recordAccessSyncAborted = vi.fn(() => Promise.resolve());
+      const sync = createAccessSync({
+        repository,
+        createClient,
+        maxDisablesPerRun: 2,
+        recordAccessSyncAborted,
+      });
+
+      await sync(); // aborts: 3 candidates over the cap of 2
+      setInclude(cleanInclude);
+      await sync(); // clean run: Cloudflare now covers every candidate, nothing to disable
+      setInclude(badInclude);
+      await sync(); // the exact same anomaly recurs
+
+      expect(recordAccessSyncAborted).toHaveBeenCalledTimes(2);
+      expect(recordAccessSyncAborted).toHaveBeenNthCalledWith(1, {
+        candidates: active,
+        limit: 2,
+      });
+      expect(recordAccessSyncAborted).toHaveBeenNthCalledWith(2, {
+        candidates: active,
+        limit: 2,
+      });
+    });
   });
 });

@@ -241,11 +241,24 @@ export function createAccessSync(options: {
   } = options;
   const pinned = bootstrapAdminEmails.map(normalizeEmail).filter(Boolean);
   const pinnedSet = new Set(pinned);
+  // The candidate set (normalised: trimmed, lower-cased, sorted) the most
+  // recent abort recorded an audit row for. `null` means either nothing has
+  // aborted yet, or the last run completed without aborting. Kept in the
+  // closure so a repeated identical abort writes only one row, while a
+  // changed candidate set — or a recurrence after a clean run — writes again.
+  let lastAbortedCandidates: string[] | null = null;
+  const sortedCandidates = (candidates: string[]): string[] =>
+    [...candidates].map(normalizeEmail).sort();
+  const sameCandidates = (a: string[], b: string[]): boolean =>
+    a.length === b.length && a.every((email, index) => email === b[index]);
 
   return async () => {
     const config = await repository.getCloudflareConfig();
     if (!config) {
       log("access-sync: Cloudflare not configured — skipping.");
+      // This run did not abort (it never got far enough to check), so forget
+      // any previously recorded abort — see the closure comment above.
+      lastAbortedCandidates = null;
       return;
     }
 
@@ -308,12 +321,25 @@ export function createAccessSync(options: {
           `limit of ${maxDisablesPerRun} — aborting the run and recording it. ` +
           `Raise ACCESS_SYNC_MAX_DISABLES to proceed.`,
       );
-      await recordAccessSyncAborted?.({
-        candidates: cfRemoved,
-        limit: maxDisablesPerRun,
-      });
+      // The log line above fires on every run (the high-frequency channel);
+      // the audit row is the notification, so write it only when the
+      // candidate set actually changed since the last recorded abort —
+      // otherwise an unattended anomaly writes one row per interval forever
+      // and crowds real history out of the audit view's 500-row window.
+      const candidates = sortedCandidates(cfRemoved);
+      if (!lastAbortedCandidates || !sameCandidates(candidates, lastAbortedCandidates)) {
+        await recordAccessSyncAborted?.({
+          candidates: cfRemoved,
+          limit: maxDisablesPerRun,
+        });
+      }
+      lastAbortedCandidates = candidates;
       return;
     }
+    // This run did not take the abort branch above (the only abort exit in
+    // this function), so forget any previously recorded abort: a recurrence
+    // after this clean run must write a fresh audit row, not read as silence.
+    lastAbortedCandidates = null;
     if (cfRemoved.length > 0) {
       const result = await repository.deactivateByEmail(cfRemoved);
       if (result.deactivated.length > 0 || result.skippedAdmins.length > 0) {
@@ -346,8 +372,10 @@ export function createAccessSync(options: {
     // in the dashboard, by another tool) and is preserved verbatim, keeping any
     // fields this client does not model.
     const owned = new Set(baseline);
-    const ruleEmail = (rule: CfAccessRule): string | undefined =>
-      rule.email?.email?.toLowerCase();
+    const ruleEmail = (rule: CfAccessRule): string | undefined => {
+      const email = rule.email?.email;
+      return email ? normalizeEmail(email) : undefined;
+    };
     const foreignRules = include.filter((rule) => {
       const email = ruleEmail(rule);
       if (!email) return false;

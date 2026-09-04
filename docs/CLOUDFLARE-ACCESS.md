@@ -262,16 +262,29 @@ did not create:
   allowlist), and bootstrap admins (`BOOTSTRAP_ADMIN_EMAILS`) are never disabled
   or dropped;
 - **ownership** — the panel deletes only the email rules the stored baseline says
-  it added. An address put in the policy by hand, or by another tool, is
-  preserved exactly as written. Non-email rules (`email_domain`, groups) are
-  preserved as before;
+  it added. Ownership is claimed by being an active panel user, not by the
+  baseline alone: an address put in the policy by hand, or by another tool,
+  keeps its rule untouched only for as long as it is not also an active panel
+  user. The moment it is, the panel claims that rule — it is dropped from the
+  foreign set and re-emitted as a bare `{"email":{"email":...}}`, so any fields
+  this client does not model are lost, and the panel owns the address from then
+  on. Non-email rules (`email_domain`, groups) are preserved as before.
 - **domain cover** — an address the policy still admits through a surviving
   `email_domain` rule is never judged "removed in Cloudflare". Without this,
   tidying away corporate addresses that a domain rule already covers would
-  disable every one of those users and revoke their keys;
+  disable every one of those users and revoke their keys. This rail prevents
+  the damage but does not make the cleanup stick: in that exact scenario the
+  same run also PUTs those "redundant" explicit addresses straight back into
+  `include`, so the admin's deliberate removal reverts on every sync interval.
+  Resolving that for good needs a panel-managed allowed-domain setting — one
+  where the panel itself owns the `email_domain` rule instead of treating every
+  non-email rule as untouchable — which is planned but not yet built.
 - **blast radius** — a run that would disable more accounts than
   `ACCESS_SYNC_MAX_DISABLES` (default 10, `0` for no cap) stops without acting
-  and writes an `access.sync_aborted` audit event.
+  and writes an `access.sync_aborted` audit event. While the cap is tripped,
+  sync is paused in **both** directions, not just the disable side: newly added
+  panel users are not pushed to the Access policy either, so they cannot sign in
+  until an operator raises the limit or resolves the anomaly.
 
 The write-back uses **`PUT`** on the app-scoped policy endpoint (see the verb
 note under Direction 2).
@@ -478,8 +491,11 @@ write-back, where Direction 1's read path may instead use `CF_ACCESS_GROUP_ID`.)
   writing.
 - **Never rebuild `include` from the panel's set alone.** The policy may hold
   rules the panel did not write. Compute the next `include` as: every non-email
-  rule, plus every email rule outside the panel's baseline, plus the panel's
-  desired set — in that order.
+  rule, plus every email rule that is outside **both** the panel's baseline
+  and its desired set (the truly foreign ones), plus the panel's desired set —
+  in that order. An address that is hand-added in Cloudflare and also an
+  active panel user is outside the baseline but inside the desired set, so it
+  must be excluded from the foreign group — otherwise it is emitted twice.
 - **Keep the bootstrap admins in the list.** Do not let a panel-side delete
   remove an address that is also in `BOOTSTRAP_ADMIN_EMAILS`, or an admin could
   lock themselves out at the edge.

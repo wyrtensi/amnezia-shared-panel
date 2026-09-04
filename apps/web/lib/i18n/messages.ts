@@ -937,6 +937,7 @@ const ru = {
   "audit.target.route_rule": "правила",
   "audit.target.rule_version": "правила",
   "audit.target.quota_request": "запрос",
+  "audit.target.access_policy": "политика доступа",
 
   // Admin rules
   "rules.status.active": "Активно",
@@ -1913,6 +1914,7 @@ const en = {
   "audit.target.route_rule": "rules",
   "audit.target.rule_version": "rules",
   "audit.target.quota_request": "request",
+  "audit.target.access_policy": "access policy",
 
   // Admin rules
   "rules.status.active": "Active",

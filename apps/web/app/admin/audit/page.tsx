@@ -116,6 +116,7 @@ const TARGET_TYPE: Record<string, string> = {
   route_rule: "audit.target.route_rule",
   rule_version: "audit.target.rule_version",
   quota_request: "audit.target.quota_request",
+  access_policy: "audit.target.access_policy",
 };
 
 function describe(action: string, t: Translate): { text: string; tone: Tone } {
