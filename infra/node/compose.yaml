@@ -86,8 +86,12 @@ services:
       # at the cost of WireGuard's per-source rate limiter under load. Set it
       # to `off` on a node where availability matters more than silence.
       AWG3_DISABLE_COOKIES: ${AWG3_DISABLE_COOKIES:-on}
-      # The client's tunnel MTU; S4 comes out of the same budget.
-      AWG3_TUNNEL_MTU: ${AWG3_TUNNEL_MTU:-1376}
+      # The awg0 interface MTU. S4 comes out of the same budget, and the
+      # entrypoint sizes the interface from this same value - so this default
+      # MUST equal the entrypoint's. They disagreed once (1376 here, 1420
+      # there) and the generator sized S4 for a smaller packet than the
+      # interface actually carries, putting 1512 bytes on a 1500-byte path.
+      AWG3_TUNNEL_MTU: ${AWG3_TUNNEL_MTU:-1420}
     healthcheck:
       test:
         - CMD-SHELL
