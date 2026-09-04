@@ -1,5 +1,6 @@
 import type {
   CreateNodeRequest,
+  CreateServiceCheckRequest,
   CreateKeyRequest,
   CreateUserRequest,
   CustomRoutes,
@@ -12,6 +13,7 @@ import type {
   RouteProfile,
   RulesRefreshStatus,
   UpdateNodeRequest,
+  UpdateServiceCheckRequest,
 } from "@amnezia/contracts";
 import type { EncryptedSecret } from "@amnezia/db";
 import type { Actor, IdentityClaim, KeyView } from "./service.js";
@@ -118,6 +120,17 @@ export interface ControlRepository {
     options: DeleteNodeOptions,
   ) => Promise<unknown>;
   adminList: (actor: Actor, resource: string) => Promise<unknown>;
+  createServiceCheck: (
+    actor: Actor,
+    request: CreateServiceCheckRequest,
+  ) => Promise<unknown>;
+  updateServiceCheck: (
+    actor: Actor,
+    checkId: string,
+    request: UpdateServiceCheckRequest,
+  ) => Promise<unknown>;
+  deleteServiceCheck: (actor: Actor, checkId: string) => Promise<unknown>;
+  runServiceCheckNow: (actor: Actor, checkId: string) => Promise<unknown>;
   adminAction: (
     actor: Actor,
     resource: string,

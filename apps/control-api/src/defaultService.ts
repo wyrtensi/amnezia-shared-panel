@@ -273,6 +273,14 @@ export const createDefaultControlApiService = ({
   deleteNode: (actor, nodeId, options) =>
     repository.deleteNode(actor, nodeId, options),
   adminList: (actor, resource) => repository.adminList(actor, resource),
+  createServiceCheck: (actor, request) =>
+    repository.createServiceCheck(actor, request),
+  updateServiceCheck: (actor, checkId, request) =>
+    repository.updateServiceCheck(actor, checkId, request),
+  deleteServiceCheck: (actor, checkId) =>
+    repository.deleteServiceCheck(actor, checkId),
+  runServiceCheckNow: (actor, checkId) =>
+    repository.runServiceCheckNow(actor, checkId),
   adminAction: (actor, resource, targetId, action, payload) =>
     repository.adminAction(actor, resource, targetId, action, payload),
 });

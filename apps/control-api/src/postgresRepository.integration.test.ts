@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { and, count, desc, eq } from "drizzle-orm";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { defaultKeyNameDisplay } from "@amnezia/contracts";
 import type { KeyLimitMode } from "@amnezia/contracts";
 import {
@@ -10,6 +10,7 @@ import {
   encryptSecret,
   jobOutbox,
   nodeAgentReleases,
+  nodeServiceChecks,
   nodes,
   portalPolicy,
   quotaRequests,
@@ -2075,5 +2076,160 @@ describe("PostgresControlRepository node agent update", () => {
       ),
     );
     expect(failure?.code).toBe("NODE_NOT_FOUND");
+  });
+});
+
+describe("PostgresControlRepository service checks", () => {
+  const database = databaseUrl ? createDatabase(databaseUrl) : null;
+  const keyring = { 1: randomBytes(32) };
+  let admin: Actor;
+
+  const probe = {
+    kind: "http" as const,
+    url: "https://gemini.google.com/",
+    method: "GET" as const,
+    timeoutMs: 10_000,
+  };
+
+  beforeAll(async () => {
+    if (!database) return;
+    await database.db.delete(nodeServiceChecks);
+    // Deliberately NOT deleting users or audit rows. The suites in this file
+    // share one database and run in order, and the one before this leaves keys
+    // behind - a blanket `delete from users` here fails on their foreign key
+    // and takes this suite down with it. Nothing below needs an empty table:
+    // the audit assertion filters by target id.
+    const [user] = await database.db
+      .insert(users)
+      .values({ email: "checks-admin@example.com", role: "admin" })
+      .onConflictDoUpdate({
+        target: users.email,
+        set: { role: "admin" },
+      })
+      .returning();
+    if (!user) throw new Error("Failed to seed admin");
+    admin = {
+      id: user.id,
+      email: user.email,
+      displayName: null,
+      role: "admin",
+      status: "active",
+    };
+  });
+
+  beforeEach(async () => {
+    if (!database) return;
+    await database.db.delete(nodeServiceChecks);
+  });
+
+  afterAll(async () => {
+    if (database) await database.client.end();
+  });
+
+  const subject = () =>
+    new PostgresControlRepository({ db: database!.db, keyring });
+
+  runDatabaseTest("creates a check and audits it", async () => {
+    if (!database) return;
+    const created = (await subject().createServiceCheck(admin, {
+      name: "Gemini",
+      probe,
+      assertions: [{ type: "bodyContains", value: "conversation-container" }],
+      intervalSec: 43_200,
+      enabled: true,
+    })) as { id: string; name: string };
+
+    expect(created.name).toBe("Gemini");
+    const audit = await database.db
+      .select()
+      .from(auditEvents)
+      .where(eq(auditEvents.targetId, created.id));
+    expect(audit).toEqual([
+      expect.objectContaining({
+        action: "admin.service_check.create",
+        targetType: "service_check",
+      }),
+    ]);
+  });
+
+  runDatabaseTest("changes only the field an update names", async () => {
+    if (!database) return;
+    const repository = subject();
+    const created = (await repository.createServiceCheck(admin, {
+      name: "Flow",
+      probe,
+      assertions: [{ type: "statusIn", statuses: [200] }],
+      intervalSec: 600,
+      enabled: true,
+    })) as { id: string };
+
+    await repository.updateServiceCheck(admin, created.id, { enabled: false });
+
+    // The bug this guards against is not hypothetical: a partial built from a
+    // DEFAULTED schema materialises every key, so "disable this check" would
+    // also have reset the period to twelve hours and replaced the assertions.
+    const [stored] = await database.db
+      .select()
+      .from(nodeServiceChecks)
+      .where(eq(nodeServiceChecks.id, created.id));
+    expect(stored).toMatchObject({
+      enabled: false,
+      intervalSec: 600,
+      assertions: [{ type: "statusIn", statuses: [200] }],
+    });
+  });
+
+  runDatabaseTest("answers 409 for a duplicate name, not 500", async () => {
+    if (!database) return;
+    const repository = subject();
+    const definition = {
+      name: "Gemini",
+      probe,
+      assertions: [{ type: "statusIn" as const, statuses: [200] }],
+      intervalSec: 43_200,
+      enabled: true,
+    };
+    await repository.createServiceCheck(admin, definition);
+
+    // Two checks named "Gemini" would put two chips with different verdicts in
+    // front of a user. Retyping a name is an ordinary mistake and deserves an
+    // ordinary answer.
+    await expect(
+      repository.createServiceCheck(admin, definition),
+    ).rejects.toMatchObject({ statusCode: 409, code: "CHECK_NAME_TAKEN" });
+  });
+
+  runDatabaseTest("run-now moves the marker rather than running anything", async () => {
+    if (!database) return;
+    const repository = subject();
+    const created = (await repository.createServiceCheck(admin, {
+      name: "Flow",
+      probe,
+      assertions: [{ type: "statusIn", statuses: [200] }],
+      intervalSec: 43_200,
+      enabled: true,
+    })) as { id: string; nextDueAt: Date };
+
+    const before = created.nextDueAt;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    await repository.runServiceCheckNow(admin, created.id);
+
+    const [stored] = await database.db
+      .select({ nextDueAt: nodeServiceChecks.nextDueAt })
+      .from(nodeServiceChecks)
+      .where(eq(nodeServiceChecks.id, created.id));
+    expect(stored!.nextDueAt.getTime()).toBeGreaterThan(before.getTime());
+  });
+
+  runDatabaseTest("refuses to update or delete a check that is not there", async () => {
+    if (!database) return;
+    const repository = subject();
+    const missing = "0b48cc4c-404b-47a6-af28-4cf15f305e30";
+    await expect(
+      repository.updateServiceCheck(admin, missing, { enabled: false }),
+    ).rejects.toMatchObject({ statusCode: 404 });
+    await expect(
+      repository.deleteServiceCheck(admin, missing),
+    ).rejects.toMatchObject({ statusCode: 404 });
   });
 });
