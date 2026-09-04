@@ -382,6 +382,12 @@ const ru = {
   "install.apkOtherBuilds":
     "32-битное устройство или Android 9-10? Выберите файл на странице выпуска.",
 
+  "install.modeLabel": "Подробность инструкции",
+  "install.modeSimple": "Простая",
+  "install.modeAdvanced": "Расширенная",
+  "install.longKeyBody":
+    "Ключ с профилем очень длинный — мессенджер его обрежет. Откройте этот сайт на самом телефоне и скопируйте ключ там.",
+  "install.longKeyConf": "Или отправьте на телефон файл .conf.",
   "install.addTitle": "Добавьте ключ",
   "install.addStep1": "На карточке ключа нажмите «Копировать».",
   "install.addStep2": "В приложении: «+» → «Вставить», вставьте ключ.",
@@ -1363,6 +1369,12 @@ const en = {
   "install.apkOtherBuilds":
     "A 32-bit device, or Android 9-10? Pick the matching file on the release page.",
 
+  "install.modeLabel": "Level of detail",
+  "install.modeSimple": "Simple",
+  "install.modeAdvanced": "Detailed",
+  "install.longKeyBody":
+    "A key with a profile is very long — a messenger truncates it. Open this site on the phone itself and copy the key there.",
+  "install.longKeyConf": "Or send the phone the .conf file instead.",
   "install.addTitle": "Add the key",
   "install.addStep1": "On the key card, press Copy.",
   "install.addStep2": "In the app: + → Insert, and paste the key.",
