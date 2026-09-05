@@ -31,6 +31,7 @@ const ru = {
   "common.notFound": "Ничего не найдено",
   "common.loadFailed": "Не удалось загрузить данные",
   "common.downloadConf": "Скачать .conf",
+  "common.downloadVpnFile": "Скачать .vpn",
 
   // Roles
   "role.user": "Пользователь",
@@ -319,6 +320,8 @@ const ru = {
     "Дело не в размере кода: в этом профиле тысячи маршрутов, ключ занимает от 60 тысяч символов, а в QR-код помещается около 2900. Такой ключ не влезает ни в один код — ни в большой, ни в серию кадров.",
   "config.qrUnavailableBody":
     "Скопируйте ключ кнопкой выше и вставьте его в вашем клиенте (Добавить → Из строки/файла) — или скачайте конфиг-файл. Работа ключа на таких профилях не гарантируется.",
+  "config.fileShapesHint":
+    "Файл .vpn импортируется в AmneziaVPN под именем подключения. Файл .conf нужен для awg-quick и роутеров: клиент всегда назовёт его «Server 1».",
 
   // Install guide dialog (user page)
   "install.button": "Как подключиться",
@@ -1060,6 +1063,7 @@ const en = {
   "common.notFound": "Nothing found",
   "common.loadFailed": "Failed to load data",
   "common.downloadConf": "Download .conf",
+  "common.downloadVpnFile": "Download .vpn",
 
   // Roles
   "role.user": "User",
@@ -1345,6 +1349,8 @@ const en = {
     "It is not about the size of the code: this profile carries thousands of routes, the key runs to 60 000 characters and more, and a QR code holds about 2 900. A key that long fits no code at all — not a large one, not a series of frames.",
   "config.qrUnavailableBody":
     "Copy the key with the button above and paste it into your client (Add → From string/file), or download the config file. Key operation on such profiles is not guaranteed.",
+  "config.fileShapesHint":
+    "A .vpn file imports into AmneziaVPN under its connection name. The .conf file is for awg-quick and routers: the client always calls it \"Server 1\".",
 
   // Install guide dialog (user page)
   "install.button": "How to connect",

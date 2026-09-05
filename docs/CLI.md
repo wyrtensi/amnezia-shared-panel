@@ -164,7 +164,7 @@ via `CONTROL_API_URL` plus one of, in priority order:
 | `key-purge <id> --confirm` | **Delete a revoked key from the panel** — the row itself, its traffic history and any pending jobs. Accepted only for a key in `revoked`, the one state where the node has confirmed the peer is gone; anything else is refused with `409 KEY_NOT_PURGEABLE`, because the row is what remembers the peer's label and reconcile finds an orphan by that label. Irreversible: afterwards only the audit event `admin.keys.purge` says the key ever existed, which is why it carries the owner, node, labels and dates. Without `--confirm` it prints what would be lost and does nothing |
 | `key-revoke <id>` · `key-disable <id>` · `key-enable <id>` | Key lifecycle. `key-revoke` is also the **retry** for a delete that did not go through: a key left in `revoking` because its node was unreachable, or one stuck in `failed` by a panel from before that was fixed. Every call queues a fresh job, and the node-side delete is idempotent, so repeating it is safe. `docs/KEY-STATES.md` has the full state model |
 | `key-internal-name <id> --name="<text>"` | Set the operator-only note on a key — who it was really issued to, what it replaced, why it exists. Up to 80 characters; `--name=` with nothing after it clears it. It is **never** returned to the key's owner and **never** part of a generated config, which is what makes it safe to write a person's name in. Distinct from the device label the user typed, which does feed the connection name their client shows. It appears in the `keys` table's `internal` column and on the key's row in the admin panel |
-| `key-config <id> [--format=vpn\|conf\|qr\|qr-svg\|qr-frames] [--out=<path>] [--confirm]` | Download one key's config. `vpn` (default) and `conf` print to stdout; `qr` writes the PNG a user downloads (to `<id>.png` unless `--out` is given), `qr-svg` the SVG the panel displays, and `qr-frames` the in-app-scanner series as `<id>.frame-N.svg` (read by AmneziaVPN and DefaultVPN alike). `--confirm` is required to read a key you do not own, and is audited as `vpn_key.private_config_viewed` |
+| `key-config <id> [--format=vpn\|conf\|qr\|qr-svg\|qr-frames] [--out=<path>] [--save] [--confirm]` | Download one key's config. `vpn` (default) and `conf` print to stdout; `qr` writes the PNG a user downloads (to `<id>.png` unless `--out` is given), `qr-svg` the SVG the panel displays, and `qr-frames` the in-app-scanner series as `<id>.frame-N.svg` (read by AmneziaVPN and DefaultVPN alike). `--save` writes the file under the name the panel serves it as — the key's own connection name, e.g. `Frankfurt Main laptop #3.vpn` — instead of printing it; `--out` still wins over it, and it is a no-op for `qr-frames`, which always writes files. `--confirm` is required to read a key you do not own, and is audited as `vpn_key.private_config_viewed` |
 | `node-add --name= --api-url= --api-key-file=<path\|-> [--public-name=] [--protocol=awg3] [--max-peers=N] [--enabled-protocols=awg3,awg2] [--disabled]` | Register a node. `--api-key-file=-` reads the key from stdin; the legacy `--api-key=<key>` still works but exposes the key in `ps` and shell history |
 | `node-update <id> --<field>=<value> …` | Edit a node (name, api-url, api-key-file (or api-key), public-name, protocol, max-peers, enabled, enabled-protocols). `--clear-public-ip` is a flag rather than a field: it forgets the resolved public IP and its timestamp so the worker resolves the node's host again on the next telemetry tick. The panel resolves a host **once** and keeps the answer, because a server's public address does not change under it — this is the recovery for the one case where that assumption breaks, a server moving to a new IP while keeping the same DNS name |
 | `node-remove <id>` | Delete a node. Refused with `409 NODE_HAS_KEYS` while it still has keys (revoked ones count) — disable it, or use the form below |
@@ -192,6 +192,36 @@ via `CONTROL_API_URL` plus one of, in priority order:
 | `cf-domains` · `cf-domains --add=<domain>` · `cf-domains --remove=<domain>` · `cf-domains --set=<a,b,…>` · `cf-domains --set=none` | List, or edit, the domains the panel keeps as `email_domain` rules in the Access policy (see `docs/CLOUDFLARE-ACCESS.md`). With no flag it prints the current list. `--add` and `--remove` change one domain at a time; `--set` replaces the whole list. Only one of the three may be given per call — combining them is refused rather than picking a winner. A bare `--set=` (nothing after the `=`, e.g. from an unset shell variable) is **refused**, not treated as "replace with an empty list" — that would silently wipe every domain rule the panel owns on the next sync. `--set=none` is the explicit way to clear the list; it prints the domains it is about to remove before posting the change. The CLI does a light trim/lower-case/strip-`@` locally and posts only `cfAccessAllowedDomains`, never the rest of the policy row; the API is the judge of what counts as a domain, and a rejection (e.g. an address instead of a domain, or a bare TLD) is printed with its own reason. `--remove` of a domain not currently in the list says so and posts nothing; removing a domain that **is** there disables nobody — the next sync re-emits every signed-in user's own explicit rule in the same write. An accepted change arms an immediate reconcile, the same as `cf-config` (`cf-sync --status` shows it) |
 | `panel-update [--status] [--json]` | Trigger the in-panel update (backup → pull → migrate → restart), or show its status. `--status` prints a readable line — the pending request, and whether the last host run finished `ok` or `FAILED` with its reason; `--status --json` returns the raw status object unchanged |
 | `client-releases --refresh` | Discard the cached release snapshot and resolve it again now (admin only). The panel otherwise re-checks every 6 hours after a success, and every 15 minutes after a failure — use this after restoring egress on a host that was serving the offline fallback |
+
+**Two config files, and only one of them keeps the key's name.** A key's
+connection name — node, device label, `#N`, composed at creation — travels in the
+`vpn://` payload's `description`. Every shape built from that payload carries it:
+the `vpn://` text, both QR codes, and the frame series. The plain `.conf` does
+not, and cannot:
+
+- `--format=vpn` is the **file to hand a user who imports a file**. Saved as
+  `<connection name>.vpn` it goes through the client's own "File with connection
+  settings" flow — the picker offers `*.vpn *.ovpn *.conf *.json`, and the
+  importer sniffs the file's content rather than its extension — and the
+  connection appears under the name the panel gave it.
+- `--format=conf` is the bare WireGuard/AmneziaWG config, for `awg-quick` and
+  router firmwares. Imported into the AmneziaVPN client it always lands as
+  "Server 1", "Server 2", …: `ImportController::extractWireGuardConfig` assigns
+  `nextAvailableServerName()` unconditionally, the INI parser reads back only a
+  fixed whitelist of WireGuard keys, and the file name is shown on the review
+  screen but never used as the connection name. There is no comment or extra key
+  that changes this, and inventing one would be actively harmful — the client
+  sniffs the whole file for the words `containers`, `api_key` and `auth_data`
+  *before* it looks for `[Interface]`, so a comment carrying one of those would
+  fail the import outright. The panel therefore writes nothing into the file and
+  only names the download after the connection, so the user knows what to rename
+  "Server 1" to.
+
+```sh
+# the file a user should import into AmneziaVPN
+amnezia-panel key-config <key-id> --format=vpn --save --confirm
+# -> Frankfurt Main laptop #3.vpn
+```
 
 **Two QR codes, two scanners.** The panel offers a different code depending on
 what the user will point at the screen, because the two scanners do not read the

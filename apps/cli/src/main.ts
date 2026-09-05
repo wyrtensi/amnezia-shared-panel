@@ -72,6 +72,7 @@ import {
   configOutputName,
   confirmedFromArgs,
   configRequestPath,
+  filenameFromContentDisposition,
   formatQrParams,
   type CliConfigFormat,
 } from "./configPath.js";
@@ -1502,10 +1503,17 @@ async function cmdUserCreateKey(args: string[]): Promise<void> {
  * app, and `--format=qr-frames` the chunk-envelope series an in-app scanner
  * reads — AmneziaVPN and DefaultVPN alike, the format is the same — so either
  * half of a "the QR does not scan" report can be reproduced from a shell.
+ *
+ * `--save` writes the file under the name the panel serves it as, which is the
+ * key's own connection name. That matters for `--format=vpn`: those bytes are
+ * the only downloadable shape whose name survives an import into the client, and
+ * the client's file picker only offers `*.vpn *.ovpn *.conf *.json`, so the file
+ * has to reach the user's disk named the way the panel named it. Reproducing a
+ * "my connection is called Server 1" report means producing that exact file.
  */
 async function cmdKeyConfig(args: string[]): Promise<void> {
   const usageText =
-    "Usage: key-config <key-id> [--format=vpn|conf|qr|qr-svg|qr-frames] [--out=<path>] [--confirm]";
+    "Usage: key-config <key-id> [--format=vpn|conf|qr|qr-svg|qr-frames] [--out=<path>] [--save] [--confirm]";
   const [keyId] = positionals(args);
   if (!keyId) throw new Error(usageText);
   const rawFormat = flagOf(args, "format") ?? "vpn";
@@ -1536,10 +1544,18 @@ async function cmdKeyConfig(args: string[]): Promise<void> {
     return;
   }
 
-  // Only `qr` gets a default file name: its bytes are binary and would be
-  // mangled by a terminal. The text formats print, so they stay pipeable.
+  // Only `qr` gets a default file name without being asked: its bytes are
+  // binary and would be mangled by a terminal. The text formats print, so they
+  // stay pipeable — unless `--save` asks for the panel's own name, which is the
+  // connection name and therefore the whole point of the `vpn` file shape.
+  // `--out` still wins: an explicit path is an explicit answer.
+  const saved = args.includes("--save")
+    ? (filenameFromContentDisposition(headers) ??
+      configOutputName(keyId, format))
+    : undefined;
   const out =
     flagOf(args, "out") ??
+    saved ??
     (format === "qr" ? configOutputName(keyId, format) : undefined);
   if (out) {
     await writeFile(out, body);
@@ -1789,12 +1805,18 @@ Write:
                                           with nothing after it clears it. Never shown
                                           to the key's owner, never in a config
   key-config <id> [--format=vpn|conf|qr|qr-svg|qr-frames]
-             [--out=<path>] [--confirm]   Download a key's config. --format=qr writes a
+             [--out=<path>] [--save]
+             [--confirm]                  Download a key's config. --format=qr writes a
                                           PNG (defaults to <id>.png unless --out is given);
                                           --format=qr-frames writes <id>.frame-N.svg, which
                                           only a VPN app's own scanner can read
                                           (AmneziaVPN and DefaultVPN alike);
-                                          --confirm is required to read another user's key
+                                          --save writes the file under the panel's own
+                                          name, which is the key's connection name — use
+                                          it with --format=vpn, the only file shape whose
+                                          name survives an import (a .conf always lands
+                                          as "Server N"); --confirm is required to read
+                                          another user's key
   cf-token --token-file=<path|->          Store the Cloudflare API token (encrypted).
                                           cf-token <token> still works but lands in
                                           ps/history

@@ -305,8 +305,12 @@ the panel role still decides admin capability.
    that limits which nodes **regular users** may pick; **admins always see every
    node**. Use it to keep a node admin-only or to stage it before general release.
 2. **Make a test key** for yourself, import the **config file** into the Amnezia
-   client (use the config file, not the QR, for split-tunnel profiles — a QR can't
-   hold thousands of routes), and confirm the handshake completes and traffic flows.
+   client (use a config file, not the QR, for split-tunnel profiles — a QR can't
+   hold thousands of routes), and confirm the handshake completes and traffic
+   flows. Import the **`.vpn` file**, not the `.conf`: both configure the same
+   tunnel, but only the `.vpn` one keeps the connection name the panel composed.
+   A `.conf` always arrives as "Server 1" — the client names it itself and
+   nothing in the file changes that ([`CLI.md`](./CLI.md) has the detail).
 3. **Check login** with the VPN off: `https://<panel domain>` → Google Workspace →
    panel.
 4. **Check the two-way sync**: add or remove a user in the panel and confirm the

@@ -15,6 +15,7 @@ import {
   extractConfFromVpnLink,
   setVpnDescription,
 } from "./vpnConfig.js";
+import { configFilename } from "./configFilename.js";
 import { buildQrFrameTexts } from "./qrFrames.js";
 import { renderKeyQr, type RenderedQr } from "./qrRender.js";
 
@@ -52,15 +53,6 @@ const assertDownloadAllowed = (
   if (!allowed) {
     throw new ApiError(403, "Config download is disabled", "POLICY_DENIED");
   }
-};
-
-const safeFilename = (value: string | null): string => {
-  const cleaned = (value ?? "amnezia-key")
-    .normalize("NFKD")
-    .replace(/[^A-Za-z0-9._-]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 60);
-  return cleaned || "amnezia-key";
 };
 
 export const createDefaultControlApiService = ({
@@ -161,7 +153,12 @@ export const createDefaultControlApiService = ({
         format,
         contentType: "text/plain; charset=utf-8",
         body: vpnLink,
-        filename: `${safeFilename(key.deviceLabel)}.vpn.txt`,
+        // `.vpn`, not the `.vpn.txt` this used to be. These bytes are the ONLY
+        // downloadable shape that survives an import with its name: the client
+        // reads the file's content, not its extension, but its file picker only
+        // offers `*.vpn *.ovpn *.conf *.json`, so a `.txt` suffix hid the one
+        // shape that works. See configFilename.ts for the client sources.
+        filename: configFilename(displayName, "vpn"),
       };
     }
     if (format === "conf") {
@@ -169,7 +166,12 @@ export const createDefaultControlApiService = ({
         format,
         contentType: "text/plain; charset=utf-8",
         body: extractConfFromVpnLink(vpnLink),
-        filename: `${safeFilename(key.deviceLabel)}.conf`,
+        // A `.conf` import is always named "Server N" by the client, whatever
+        // the file says or is called. Naming the download after the connection
+        // is the most this shape can do: it tells the user what to rename that
+        // "Server N" to. Nothing is written INTO the file — a name comment the
+        // parser ignores would only look like a fix.
+        filename: configFilename(displayName, "conf"),
       };
     }
     // A split-tunnel config embeds thousands of CIDRs and overflows QR capacity
@@ -240,7 +242,7 @@ export const createDefaultControlApiService = ({
       format,
       contentType: rendered.contentType,
       body: rendered.body,
-      filename: `${safeFilename(key.deviceLabel)}.png`,
+      filename: configFilename(displayName, "png"),
       qrParams: describeQr(rendered),
     };
   },

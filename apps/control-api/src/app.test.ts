@@ -282,6 +282,32 @@ describe("control API authorization", () => {
     await app.close();
   });
 
+  // The download's name is the connection's name now, and those are written in
+  // the operator's language. A single `filename=` is a byte string, so without
+  // the `filename*` half every Russian-named key would arrive as `amnezia-key`.
+  it("offers a non-Latin download name in both header forms", async () => {
+    const service = createService();
+    vi.mocked(service.getKeyConfig).mockResolvedValue({
+      format: "vpn",
+      contentType: "text/plain; charset=utf-8",
+      body: "vpn://x",
+      filename: "Франкфурт #3.vpn",
+    });
+    const app = await buildApp({ service, environment: "development" });
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/keys/0b48cc4c-404b-47a6-af28-4cf15f305e30/config?format=vpn",
+      headers: { "x-dev-user-email": user.email },
+    });
+
+    const disposition = String(response.headers["content-disposition"]);
+    expect(disposition).toContain("attachment;");
+    expect(disposition).toContain("filename*=UTF-8''");
+    expect(disposition).toContain("%233.vpn");
+    await app.close();
+  });
+
   it("omits the QR parameter headers for a non-QR format", async () => {
     const service = createService();
     vi.mocked(service.getKeyConfig).mockResolvedValue({
