@@ -58,10 +58,12 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { StatusBadge } from "@/components/status-badge";
 import { Hint, FieldHint, Callout } from "@/components/ui/hint";
 import {
+  accessDomainSchema,
   composeKeyDisplayName,
   defaultKeyNameDisplay,
   isPurgeableKeyState,
   isRevocableKeyState,
+  normalizeAccessDomain,
   type KeyNameDisplay,
 } from "@amnezia/contracts";
 import { ProtocolSelect } from "@/components/protocol-select";
@@ -316,6 +318,7 @@ export default function AdminUsersPage() {
   const [sort, setSort] = React.useState<SortKey>("name");
   const [selectedId, setSelectedId] = React.useState<string | null>(null);
   const [createOpen, setCreateOpen] = React.useState(false);
+  const [accessDomainsOpen, setAccessDomainsOpen] = React.useState(false);
   const [limitUser, setLimitUser] = React.useState<AdminUser | null>(null);
   const [policyUser, setPolicyUser] = React.useState<AdminUser | null>(null);
   const [keyUser, setKeyUser] = React.useState<AdminUser | null>(null);
@@ -487,21 +490,26 @@ export default function AdminUsersPage() {
             ))}
           </SelectContent>
         </Select>
-        <Button onClick={() => setCreateOpen(true)}>
-          <UserPlus className="h-4 w-4" />
-          {t("users.addBtn")}
-        </Button>
+        {/* Siblings of the same size, kept in one wrapping unit so a narrow
+            toolbar never splits them across two rows: both open a dialog, and
+            neither should sit permanently open eating vertical space. Outline
+            keeps adding a user the one primary action here. */}
+        <div className="flex items-center gap-2">
+          <Button variant="outline" onClick={() => setAccessDomainsOpen(true)}>
+            <Globe className="h-4 w-4" />
+            {t("users.accessDomainsBtn")}
+            {(policy.cfAccessAllowedDomains ?? []).length > 0 ? (
+              <Badge variant="secondary" className="px-1.5 py-0 text-[11px]">
+                {(policy.cfAccessAllowedDomains ?? []).length}
+              </Badge>
+            ) : null}
+          </Button>
+          <Button onClick={() => setCreateOpen(true)}>
+            <UserPlus className="h-4 w-4" />
+            {t("users.addBtn")}
+          </Button>
+        </div>
       </div>
-
-      <AccessDomainsCard
-        domains={policy.cfAccessAllowedDomains ?? []}
-        configured={isAccessConfigured(policy)}
-        onSave={(next) =>
-          action("portal-policy", "global", "update", {
-            cfAccessAllowedDomains: next,
-          })
-        }
-      />
 
       <div className="grid gap-4 lg:grid-cols-[19rem_1fr]">
         {/* Master: compact user mini-cards */}
@@ -590,6 +598,17 @@ export default function AdminUsersPage() {
         onClose={() => setCreateOpen(false)}
         onSave={createUser}
       />
+      <AccessDomainsDialog
+        open={accessDomainsOpen}
+        onClose={() => setAccessDomainsOpen(false)}
+        domains={policy.cfAccessAllowedDomains ?? []}
+        configured={isAccessConfigured(policy)}
+        onSave={(next) =>
+          action("portal-policy", "global", "update", {
+            cfAccessAllowedDomains: next,
+          })
+        }
+      />
       <LimitDialog
         user={limitUser}
         nodes={nodes}
@@ -624,18 +643,58 @@ export default function AdminUsersPage() {
 }
 
 /**
- * Appends `entry` to `list` unless an entry already there is the same domain
- * case-insensitively. `entry` arrives already trimmed and non-empty; the raw
- * text (a leading "@", mixed case) is otherwise left untouched for the server
- * to normalize, so its accepted/rejected shape — accessDomainSchema in
- * packages/contracts — stays the single source of truth on what a domain
- * looks like. This only stops an obviously duplicate chip from appearing.
+ * Appends `entry` to `list` unless an entry already there is the same domain.
+ * Sameness is judged on the normalized form — `normalizeAccessDomain` from the
+ * contracts package, the very spelling the server stores — so "@company.tld"
+ * and "COMPANY.TLD" are recognised as the domain "company.tld" already in the
+ * list. `entry` arrives already trimmed, non-empty and validated; the raw text
+ * it was typed in is stored untouched for the server to normalize, so
+ * `accessDomainSchema` stays the single source of truth on what a domain
+ * looks like. This only stops a duplicate chip from appearing.
  */
 export function addAccessDomain(list: string[], entry: string): string[] {
-  const key = entry.toLowerCase();
-  return list.some((item) => item.toLowerCase() === key)
+  const key = normalizeAccessDomain(entry);
+  return list.some((item) => normalizeAccessDomain(item) === key)
     ? list
     : [...list, entry];
+}
+
+/**
+ * i18n key for each way `accessDomainSchema` can refuse a domain, keyed by the
+ * exact message the contract attaches to that refusal. Matching on the message
+ * keeps the contract the single source of truth for WHAT is rejected while the
+ * operator still reads the reason in their own language; a message reworded on
+ * the contract side falls through to the generic key, and the test that pins
+ * this map fails rather than the panel silently going vague.
+ */
+const ACCESS_DOMAIN_ERROR_KEYS: Record<string, string> = {
+  "that is an address, add the user instead": "users.accessDomainErrEmail",
+  "not a domain name": "users.accessDomainErrHostname",
+};
+
+/**
+ * Checks one typed domain before it becomes a chip: the contract's own rules
+ * first, then "already in this draft". Returns the i18n key of the reason so
+ * the dialog can show it inline under the field instead of firing a toast the
+ * operator has to read and dismiss before retyping.
+ */
+export function validateAccessDomain(
+  entry: string,
+  list: string[],
+): { ok: true } | { ok: false; messageKey: string } {
+  const parsed = accessDomainSchema.safeParse(entry);
+  if (!parsed.success) {
+    const message = parsed.error.issues[0]?.message ?? "";
+    return {
+      ok: false,
+      messageKey:
+        ACCESS_DOMAIN_ERROR_KEYS[message] ?? "users.accessDomainErrGeneric",
+    };
+  }
+  if (list.some((item) => normalizeAccessDomain(item) === parsed.data)) {
+    return { ok: false, messageKey: "users.accessDomainErrDuplicate" };
+  }
+  return { ok: true };
 }
 
 /**
@@ -645,18 +704,31 @@ export function addAccessDomain(list: string[], entry: string): string[] {
  * stale copy of unrelated fields can never overwrite a concurrent edit made
  * on the Policies page.
  *
+ * Lives behind a button in the page toolbar, next to "add user", rather than
+ * as a card standing permanently open: it is configuration an admin visits,
+ * not something to read on every trip to the Users page.
+ *
  * `configured` gates the whole editor on Cloudflare actually being set up
  * (account, app and policy id, plus a stored API token — see
  * `isAccessConfigured`). Without it, nothing typed here would ever reach
  * Cloudflare: the write-back silently no-ops on an unconfigured panel, so the
- * card is shown plainly disabled with a pointer to where Cloudflare is
+ * editor is shown plainly disabled with a pointer to where Cloudflare is
  * configured, rather than making promises a save cannot keep.
+ *
+ * Removing a domain is a two-step: the chip's "x" only arms a confirmation
+ * that spells out what dropping the rule costs (see
+ * `users.accessDomainRemove*`), because the cost is invisible from here — the
+ * people it locks out are exactly the ones who have no panel account yet.
  */
-function AccessDomainsCard({
+function AccessDomainsDialog({
+  open,
+  onClose,
   domains,
   configured,
   onSave,
 }: {
+  open: boolean;
+  onClose: () => void;
   domains: string[];
   configured: boolean;
   onSave: (next: string[]) => Promise<boolean>;
@@ -664,123 +736,238 @@ function AccessDomainsCard({
   const { t } = useT();
   const [list, setList] = React.useState<string[]>(domains);
   const [value, setValue] = React.useState("");
+  const [error, setError] = React.useState<string | null>(null);
+  const [pendingRemoval, setPendingRemoval] = React.useState<string | null>(null);
   const [saving, setSaving] = React.useState(false);
 
-  // Follows the policy row like the Policies page's own form does: a reload
-  // after a successful save (or an edit from another tab) replaces the draft.
-  React.useEffect(() => setList(domains), [domains]);
+  // Follows the policy row like the Policies page's own form does, and starts
+  // clean on every open: a draft abandoned by closing the dialog must not come
+  // back later looking like it was saved.
+  React.useEffect(() => {
+    if (!open) return;
+    setList(domains);
+    setValue("");
+    setError(null);
+    setPendingRemoval(null);
+  }, [open, domains]);
   const dirty = JSON.stringify(list) !== JSON.stringify(domains);
 
   const add = () => {
     const entry = value.trim();
     if (!entry) return;
+    // Validated against the contract's own schema before it can become a chip,
+    // so "someone@company.tld" or "tld" is refused right here with the reason,
+    // instead of travelling to the API and coming back as a toast.
+    const checked = validateAccessDomain(entry, list);
+    if (!checked.ok) {
+      setError(t(checked.messageKey, { value: entry }));
+      return;
+    }
     setValue("");
+    setError(null);
     setList((current) => addAccessDomain(current, entry));
   };
 
-  const remove = (entry: string) =>
-    setList((current) => current.filter((item) => item !== entry));
-
   const save = async () => {
     setSaving(true);
-    await onSave(list);
+    const ok = await onSave(list);
     setSaving(false);
+    if (ok) onClose();
   };
 
   return (
-    <Card>
-      <CardContent className="space-y-3 p-4 sm:p-5">
-        <h3 className="flex items-center gap-2 text-base font-semibold">
-          <Globe className="h-5 w-5 text-primary" />
-          {t("users.accessDomainsTitle")}
-        </h3>
+    <>
+      <Dialog open={open} onOpenChange={(next) => !next && onClose()}>
+        <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Globe className="h-5 w-5 text-primary" />
+              {t("users.accessDomainsTitle")}
+            </DialogTitle>
+            <DialogDescription>{t("users.accessDomainsDesc")}</DialogDescription>
+          </DialogHeader>
 
-        {configured ? (
-          <Callout tone="info" title={t("users.accessWhoTitle")}>
-            {t("users.accessWhoSummary")}
-          </Callout>
-        ) : (
-          <Callout
-            tone="warning"
-            title={t("users.accessDomainsDisabledTitle")}
-            action={
-              <Button asChild size="sm" variant="outline">
-                <Link href="/admin/policy" prefetch={false}>
-                  {t("users.accessDomainsDisabledLink")}
-                </Link>
-              </Button>
-            }
-          >
-            {t("users.accessDomainsDisabledSummary")}
-          </Callout>
-        )}
-
-        <div className="flex gap-2">
-          <Input
-            value={value}
-            disabled={!configured}
-            placeholder={t("users.accessDomainsPlaceholder")}
-            onChange={(event) => setValue(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === "Enter") {
-                event.preventDefault();
-                add();
-              }
-            }}
-          />
-          <Button
-            type="button"
-            size="icon"
-            variant="outline"
-            disabled={!configured}
-            aria-label={t("common.add")}
-            onClick={add}
-          >
-            <Plus className="h-4 w-4" />
-          </Button>
-        </div>
-
-        {list.length > 0 ? (
-          <div className="flex flex-wrap gap-1.5">
-            {list.map((domain) => (
-              <span
-                key={domain}
-                className="inline-flex items-center gap-1 rounded-md bg-muted px-2 py-0.5 font-mono text-xs"
+          <div className="space-y-3">
+            {configured ? (
+              <Callout tone="info" title={t("users.accessWhoTitle")}>
+                {t("users.accessWhoSummary")}
+              </Callout>
+            ) : (
+              <Callout
+                tone="warning"
+                title={t("users.accessDomainsDisabledTitle")}
+                action={
+                  <Button asChild size="sm" variant="outline">
+                    <Link href="/admin/policy" prefetch={false}>
+                      {t("users.accessDomainsDisabledLink")}
+                    </Link>
+                  </Button>
+                }
               >
-                {domain}
-                <button
-                  type="button"
+                {t("users.accessDomainsDisabledSummary")}
+              </Callout>
+            )}
+
+            <div className="space-y-1.5">
+              <div className="flex gap-2">
+                <Input
+                  value={value}
                   disabled={!configured}
-                  onClick={() => remove(domain)}
-                  className="text-muted-foreground transition-colors hover:text-destructive disabled:pointer-events-none disabled:opacity-50"
-                  aria-label={t("users.accessDomainRemoveAria", {
-                    value: domain,
-                  })}
+                  aria-invalid={error !== null}
+                  placeholder={t("users.accessDomainsPlaceholder")}
+                  onChange={(event) => {
+                    setValue(event.target.value);
+                    // Clears as soon as the operator starts fixing it; a stale
+                    // reason under a field they are already retyping is noise.
+                    setError(null);
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") {
+                      event.preventDefault();
+                      add();
+                    }
+                  }}
+                />
+                <Button
+                  type="button"
+                  size="icon"
+                  variant="outline"
+                  disabled={!configured}
+                  aria-label={t("common.add")}
+                  onClick={add}
                 >
-                  <X className="h-3 w-3" />
-                </button>
-              </span>
-            ))}
+                  <Plus className="h-4 w-4" />
+                </Button>
+              </div>
+              {error ? (
+                <p role="alert" className="text-xs leading-snug text-destructive">
+                  {error}
+                </p>
+              ) : null}
+            </div>
+
+            {list.length > 0 ? (
+              <div className="flex flex-wrap gap-1.5">
+                {list.map((domain) => (
+                  <span
+                    key={domain}
+                    className="inline-flex items-center gap-1 rounded-md bg-muted px-2 py-0.5 font-mono text-xs"
+                  >
+                    {domain}
+                    <button
+                      type="button"
+                      disabled={!configured}
+                      onClick={() => setPendingRemoval(domain)}
+                      className="text-muted-foreground transition-colors hover:text-destructive disabled:pointer-events-none disabled:opacity-50"
+                      aria-label={t("users.accessDomainRemoveAria", {
+                        value: domain,
+                      })}
+                    >
+                      <X className="h-3 w-3" />
+                    </button>
+                  </span>
+                ))}
+              </div>
+            ) : (
+              <FieldHint>{t("users.accessDomainsEmpty")}</FieldHint>
+            )}
+
+            <FieldHint>
+              {configured
+                ? t("users.accessDomainsHint")
+                : t("users.accessDomainsDisabledHint")}
+            </FieldHint>
           </div>
-        ) : null}
 
-        <FieldHint>
-          {configured
-            ? t("users.accessDomainsHint")
-            : t("users.accessDomainsDisabledHint")}
-        </FieldHint>
+          <DialogFooter>
+            <Button variant="outline" onClick={onClose}>
+              {t("common.cancel")}
+            </Button>
+            <Button
+              disabled={!configured || !dirty || saving}
+              onClick={() => void save()}
+            >
+              {saving ? t("common.saving") : t("common.save")}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
-        <div className="flex justify-end">
-          <Button
-            size="sm"
-            disabled={!configured || !dirty || saving}
-            onClick={() => void save()}
-          >
-            {saving ? t("common.saving") : t("common.save")}
-          </Button>
+      <AccessDomainRemoveDialog
+        domain={pendingRemoval}
+        onCancel={() => setPendingRemoval(null)}
+        onConfirm={() => {
+          setList((current) =>
+            current.filter((item) => item !== pendingRemoval),
+          );
+          setPendingRemoval(null);
+        }}
+      />
+    </>
+  );
+}
+
+/**
+ * The confirmation behind a domain chip's "x". Every claim it makes is what
+ * `createAccessSync` in apps/worker/src/accessReconcile.ts actually does, and
+ * matches docs/CLOUDFLARE-ACCESS.md ("Panel-managed domains"):
+ *
+ *  - the removal is a draft until Save, and the save arms an Access sync run
+ *    (CF_ACCESS_CONFIG_FIELDS in apps/control-api/src/postgresRepository.ts
+ *    includes cfAccessAllowedDomains), so the rule goes on the next run;
+ *  - nobody is disabled and no keys are revoked: the same PUT that drops the
+ *    `email_domain` rule re-emits every active user's own `email` rule, since
+ *    both come out of the one `include` list the sync computes;
+ *  - the people who lose their way in are those on the domain with no active
+ *    panel account — the domain rule was their only route, and it is also what
+ *    lets `resolveIdentity` auto-provision them on first sign-in.
+ */
+function AccessDomainRemoveDialog({
+  domain,
+  onCancel,
+  onConfirm,
+}: {
+  domain: string | null;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  const { t } = useT();
+  // The domain outlives `domain` going null on purpose: the dialog plays a
+  // close animation after that, and reading it straight would flash a title
+  // and a warning with an empty name for the length of the fade.
+  const [value, setValue] = React.useState(domain ?? "");
+  React.useEffect(() => {
+    if (domain !== null) setValue(domain);
+  }, [domain]);
+  return (
+    <Dialog open={domain !== null} onOpenChange={(next) => !next && onCancel()}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>
+            {t("users.accessDomainRemoveTitle", { value })}
+          </DialogTitle>
+          <DialogDescription>
+            {t("users.accessDomainRemoveWhat", { value })}
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-2">
+          <Callout tone="success" title={t("users.accessDomainRemoveKeepsTitle")}>
+            {t("users.accessDomainRemoveKeeps")}
+          </Callout>
+          <Callout tone="danger" title={t("users.accessDomainRemoveCostTitle")}>
+            {t("users.accessDomainRemoveCost", { value })}
+          </Callout>
         </div>
-      </CardContent>
-    </Card>
+        <DialogFooter>
+          <Button variant="outline" onClick={onCancel}>
+            {t("common.cancel")}
+          </Button>
+          <Button variant="destructive" onClick={onConfirm}>
+            {t("users.accessDomainRemoveConfirm")}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 
