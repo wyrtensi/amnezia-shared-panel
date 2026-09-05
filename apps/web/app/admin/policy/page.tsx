@@ -206,6 +206,9 @@ export default function AdminPolicyPage() {
               Cloudflare Access
               <Hint>{t("policy.cfAccessHint")}</Hint>
             </h3>
+            <p className="text-xs text-muted-foreground">
+              {t("policy.cfAccessDomainsPointer")}
+            </p>
             <div className="grid gap-3 sm:grid-cols-3">
               <div className="space-y-1.5">
                 <Label htmlFor="cf-account" className="flex items-center gap-1.5">

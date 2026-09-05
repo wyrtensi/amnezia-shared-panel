@@ -7,6 +7,7 @@ import {
   ArrowUpDown,
   Check,
   Download,
+  Globe,
   KeyRound,
   ListFilter,
   Lock,
@@ -23,6 +24,7 @@ import {
   UserPlus,
   Users,
   Wifi,
+  X,
 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -53,7 +55,7 @@ import {
 } from "@/components/ui/tooltip";
 import { Checkbox } from "@/components/ui/checkbox";
 import { StatusBadge } from "@/components/status-badge";
-import { Hint, FieldHint } from "@/components/ui/hint";
+import { Hint, FieldHint, Callout } from "@/components/ui/hint";
 import {
   composeKeyDisplayName,
   defaultKeyNameDisplay,
@@ -407,6 +409,15 @@ export default function AdminUsersPage() {
         </Button>
       </div>
 
+      <AccessDomainsCard
+        domains={policy.cfAccessAllowedDomains}
+        onSave={(next) =>
+          action("portal-policy", "global", "update", {
+            cfAccessAllowedDomains: next,
+          })
+        }
+      />
+
       <div className="grid gap-4 lg:grid-cols-[19rem_1fr]">
         {/* Master: compact user mini-cards */}
         <div className="space-y-2">
@@ -524,6 +535,135 @@ export default function AdminUsersPage() {
         onClose={() => setConfigTarget(null)}
       />
     </div>
+  );
+}
+
+/**
+ * Appends `entry` to `list` unless an entry already there is the same domain
+ * case-insensitively. `entry` arrives already trimmed and non-empty; the raw
+ * text (a leading "@", mixed case) is otherwise left untouched for the server
+ * to normalize, so its accepted/rejected shape — accessDomainSchema in
+ * packages/contracts — stays the single source of truth on what a domain
+ * looks like. This only stops an obviously duplicate chip from appearing.
+ */
+export function addAccessDomain(list: string[], entry: string): string[] {
+  const key = entry.toLowerCase();
+  return list.some((item) => item.toLowerCase() === key)
+    ? list
+    : [...list, entry];
+}
+
+/**
+ * Admin-only editor for the domains the Cloudflare Access policy admits, plus
+ * the honest summary of who can actually sign in. Posts only
+ * `cfAccessAllowedDomains` — never the rest of the global policy row — so a
+ * stale copy of unrelated fields can never overwrite a concurrent edit made
+ * on the Policies page.
+ */
+function AccessDomainsCard({
+  domains,
+  onSave,
+}: {
+  domains: string[];
+  onSave: (next: string[]) => Promise<boolean>;
+}) {
+  const { t } = useT();
+  const [list, setList] = React.useState<string[]>(domains);
+  const [value, setValue] = React.useState("");
+  const [saving, setSaving] = React.useState(false);
+
+  // Follows the policy row like the Policies page's own form does: a reload
+  // after a successful save (or an edit from another tab) replaces the draft.
+  React.useEffect(() => setList(domains), [domains]);
+  const dirty = JSON.stringify(list) !== JSON.stringify(domains);
+
+  const add = () => {
+    const entry = value.trim();
+    if (!entry) return;
+    setValue("");
+    setList((current) => addAccessDomain(current, entry));
+  };
+
+  const remove = (entry: string) =>
+    setList((current) => current.filter((item) => item !== entry));
+
+  const save = async () => {
+    setSaving(true);
+    await onSave(list);
+    setSaving(false);
+  };
+
+  return (
+    <Card>
+      <CardContent className="space-y-3 p-4 sm:p-5">
+        <h3 className="flex items-center gap-2 text-base font-semibold">
+          <Globe className="h-5 w-5 text-primary" />
+          {t("users.accessDomainsTitle")}
+        </h3>
+
+        <Callout tone="info" title={t("users.accessWhoTitle")}>
+          {t("users.accessWhoSummary")}
+        </Callout>
+
+        <div className="flex gap-2">
+          <Input
+            value={value}
+            placeholder={t("users.accessDomainsPlaceholder")}
+            onChange={(event) => setValue(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                event.preventDefault();
+                add();
+              }
+            }}
+          />
+          <Button
+            type="button"
+            size="icon"
+            variant="outline"
+            aria-label={t("common.add")}
+            onClick={add}
+          >
+            <Plus className="h-4 w-4" />
+          </Button>
+        </div>
+
+        {list.length > 0 ? (
+          <div className="flex flex-wrap gap-1.5">
+            {list.map((domain) => (
+              <span
+                key={domain}
+                className="inline-flex items-center gap-1 rounded-md bg-muted px-2 py-0.5 font-mono text-xs"
+              >
+                {domain}
+                <button
+                  type="button"
+                  onClick={() => remove(domain)}
+                  className="text-muted-foreground transition-colors hover:text-destructive"
+                  aria-label={t("users.accessDomainRemoveAria", {
+                    value: domain,
+                  })}
+                >
+                  <X className="h-3 w-3" />
+                </button>
+              </span>
+            ))}
+          </div>
+        ) : null}
+
+        <FieldHint>{t("users.accessDomainsHint")}</FieldHint>
+
+        <div className="flex justify-end">
+          <Button
+            size="sm"
+            disabled={!dirty || saving}
+            onClick={() => void save()}
+          >
+            {saving ? t("common.saving") : t("common.save")}
+          </Button>
+        </div>
+      </CardContent>
+    </Card>
   );
 }
 

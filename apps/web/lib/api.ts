@@ -24,11 +24,19 @@ export const apiRequest = async <T>(
     const error = (await response.json().catch(() => ({}))) as {
       error?: string;
       message?: string;
+      // A raw Zod validation failure (e.g. a rejected Access domain) has no
+      // top-level `message` — only `issues`, one per failed field. The first
+      // issue's own message is the readable reason (e.g. "not a domain name"),
+      // so it stands in for `message` rather than the caller falling back to a
+      // generic "Request failed" that hides why the input was refused.
+      issues?: Array<{ message?: string }>;
     };
     throw new ApiClientError(
       response.status,
       error.error ?? "REQUEST_FAILED",
-      error.message ?? `Request failed with status ${response.status}`,
+      error.message ??
+        error.issues?.[0]?.message ??
+        `Request failed with status ${response.status}`,
     );
   }
   if (response.status === 204) return undefined as T;

@@ -203,6 +203,12 @@ export type GlobalPortalPolicy = {
   cfAccessAppId?: string | null;
   cfAccessPolicyId?: string | null;
   cfApiTokenSet?: boolean;
+  /**
+   * Email domains admitted by the Access policy's `email_domain` rules — the
+   * only piece of the Cloudflare gate this panel writes. Defaults to `[]` so a
+   * panel that has not loaded the policy yet never renders `undefined`.
+   */
+  cfAccessAllowedDomains: string[];
 };
 
 const DEFAULT_POLICY: GlobalPortalPolicy = {
@@ -236,6 +242,7 @@ const DEFAULT_POLICY: GlobalPortalPolicy = {
   cfAccessAppId: null,
   cfAccessPolicyId: null,
   cfApiTokenSet: false,
+  cfAccessAllowedDomains: [],
 };
 
 export type AdminData = {

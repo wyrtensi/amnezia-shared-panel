@@ -630,6 +630,14 @@ const ru = {
     "Профиль вшивается в ключ. Для «зарубежных» и «заблокированных» нужны активные списки маршрутизации.",
   "users.keyCreatedHint":
     "Ключ создаётся на сервере — устройство подключится сразу после импорта конфигурации.",
+  "users.accessDomainsTitle": "Разрешённые домены Access",
+  "users.accessWhoTitle": "Кто может войти.",
+  "users.accessWhoSummary":
+    "Через Cloudflare войти могут пользователи из этого списка, любой адрес с доменов, указанных ниже, и все, кого допускает правило, добавленное прямо в панели Cloudflare, — такие правила панель не видит. При прямом входе: пользователи из этого списка и домены из AUTH_ALLOWED_DOMAINS.",
+  "users.accessDomainsPlaceholder": "company.tld или @company.tld",
+  "users.accessDomainsHint":
+    "Панель сохраняет эти домены в политике Access. Но сможет ли человек реально войти — по-прежнему решает провайдер идентификации.",
+  "users.accessDomainRemoveAria": "Удалить {value}",
 
   // Admin nodes
   // Host metrics on the admin node card, and the three words a USER is shown
@@ -877,6 +885,8 @@ const ru = {
   "policy.telemetryDisplay": "Отображение телеметрии",
   "policy.cfAccessHint":
     "Для двусторонней синхронизации пользователей с Access. API-токен хранится зашифрованным и не показывается — можно только заменить. См. docs/CLOUDFLARE-ACCESS.md.",
+  "policy.cfAccessDomainsPointer":
+    "Домены, которые допускает Access, настраиваются на странице «Пользователи».",
   "policy.cfToken": "API-токен (Access: Apps and Policies — Edit)",
   "policy.cfTokenSet": "•••••••••• — задан, введите новый чтобы заменить",
   "policy.cfTokenPlaceholder": "Вставьте токен",
@@ -1617,6 +1627,14 @@ const en = {
     "The profile is embedded in the key. “Foreign” and “blocked” require active routing lists.",
   "users.keyCreatedHint":
     "The key is created on the server — the device connects right after importing the configuration.",
+  "users.accessDomainsTitle": "Approved Access domains",
+  "users.accessWhoTitle": "Who can sign in.",
+  "users.accessWhoSummary":
+    "Through Cloudflare: the users listed here, anyone with an address on the domains below, and anyone admitted by a rule added directly in the Cloudflare dashboard — the panel does not see those. Direct login: the users listed here plus the domains in AUTH_ALLOWED_DOMAINS.",
+  "users.accessDomainsPlaceholder": "company.tld or @company.tld",
+  "users.accessDomainsHint":
+    "The panel keeps these domains in the Access policy. Whether someone can actually authenticate is still up to the identity provider.",
+  "users.accessDomainRemoveAria": "Remove {value}",
 
   // Admin nodes
     "checks.resetHint":
@@ -1854,6 +1872,8 @@ const en = {
   "policy.telemetryDisplay": "Telemetry display",
   "policy.cfAccessHint":
     "For two-way user synchronization with Access. The API token is stored encrypted and never shown — it can only be replaced. See docs/CLOUDFLARE-ACCESS.md.",
+  "policy.cfAccessDomainsPointer":
+    "The domains admitted by Access are managed on the Users page.",
   "policy.cfToken": "API token (Access: Apps and Policies — Edit)",
   "policy.cfTokenSet": "•••••••••• — set, enter a new one to replace",
   "policy.cfTokenPlaceholder": "Paste the token",
