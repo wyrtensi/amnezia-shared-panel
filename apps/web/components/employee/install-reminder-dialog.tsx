@@ -18,6 +18,66 @@ import { Callout } from "@/components/ui/hint";
 import { useT } from "@/lib/i18n/provider";
 
 /**
+ * Where the user is inside the dialog's two-step confirmation.
+ *
+ * `challenged` is round two: the first "Next" has been pressed and answered
+ * with a doubt rather than the guide. It never falls back to round one on its
+ * own — only a fresh opening resets it.
+ */
+export type InstallReminderStep = {
+  acknowledged: boolean;
+  challenged: boolean;
+};
+
+/** Every opening starts here: unticked, round one. */
+export const INSTALL_REMINDER_START: InstallReminderStep = {
+  acknowledged: false,
+  challenged: false,
+};
+
+/** Everything that can happen to the dialog while it is on screen. */
+export type InstallReminderEvent =
+  | { type: "opened" }
+  | { type: "ticked"; value: boolean }
+  | { type: "pressed" };
+
+/**
+ * The whole two-step confirmation, as a pure function.
+ *
+ * Pure and exported because the state machine has to be testable where the
+ * component is not: the dialog frame is a Radix portal that renders nothing
+ * outside a browser, and this repo's vitest runs on `environment: "node"`.
+ * Keeping "opened" in here rather than in an effect means the reset between
+ * two keys is a transition a test can exercise, not a constant it restates.
+ *
+ * `proceed` is the only way to the guide, and the FIRST press never sets it.
+ * That press takes the tick back and moves to round two, so the user has to
+ * confirm a second time — deliberate friction against clicking through a
+ * warning unread. Only the second press hands over.
+ */
+export function installReminderStep(
+  step: InstallReminderStep,
+  event: InstallReminderEvent,
+): { step: InstallReminderStep; proceed: boolean } {
+  switch (event.type) {
+    case "opened":
+      // A fresh key, a fresh dialog: back to round one, unticked. Carrying
+      // either flag over would hand the user a live button they never earned.
+      return { step: INSTALL_REMINDER_START, proceed: false };
+    case "ticked":
+      return { step: { ...step, acknowledged: event.value }, proceed: false };
+    case "pressed":
+      if (!step.challenged) {
+        return {
+          step: { acknowledged: false, challenged: true },
+          proceed: false,
+        };
+      }
+      return { step, proceed: true };
+  }
+}
+
+/**
  * The step between "your key is ready" and the connection guide.
  *
  * Why it exists: every key this panel issues is an AmneziaWG 3.1 key, and an
@@ -29,6 +89,11 @@ import { useT } from "@/lib/i18n/provider";
  *
  * Who sees it, and when, is decided in `lib/install-reminder.ts` and applied by
  * the dashboard AFTER the key exists. This component only draws it.
+ *
+ * There is no soft exit. A "Later" button would be a third state — not read,
+ * and yet dismissed approvingly — which is exactly what the two-step
+ * confirmation below exists to close off. The ✕ and Esc still work, and the
+ * dialog returns on the next key while the user is inside their first few.
  */
 export function InstallReminderDialog({
   open,
@@ -41,14 +106,17 @@ export function InstallReminderDialog({
   onContinue: () => void;
 }) {
   const { t } = useT();
-  const [acknowledged, setAcknowledged] = React.useState(false);
+  const [step, setStep] = React.useState(INSTALL_REMINDER_START);
 
-  // Every opening starts unticked. The box is a statement about the key just
-  // created, not a preference to remember: carrying a tick over from the
-  // previous key would hand the user a live "Next" they never earned.
+  // Every opening replays the "opened" event, which puts the dialog back into
+  // round one with the box clear.
   const wasOpen = React.useRef(open);
   React.useEffect(() => {
-    if (open && !wasOpen.current) setAcknowledged(false);
+    if (open && !wasOpen.current) {
+      setStep(
+        (current) => installReminderStep(current, { type: "opened" }).step,
+      );
+    }
     wasOpen.current = open;
   }, [open]);
 
@@ -60,10 +128,19 @@ export function InstallReminderDialog({
           <DialogDescription>{t("installReminder.desc")}</DialogDescription>
         </DialogHeader>
         <InstallReminderBody
-          acknowledged={acknowledged}
-          onAcknowledgedChange={setAcknowledged}
-          onLater={() => onOpenChange(false)}
-          onContinue={onContinue}
+          acknowledged={step.acknowledged}
+          challenged={step.challenged}
+          onAcknowledgedChange={(value) =>
+            setStep(
+              (current) =>
+                installReminderStep(current, { type: "ticked", value }).step,
+            )
+          }
+          onSubmit={() => {
+            const pressed = installReminderStep(step, { type: "pressed" });
+            setStep(pressed.step);
+            if (pressed.proceed) onContinue();
+          }}
         />
       </DialogContent>
     </Dialog>
@@ -73,7 +150,7 @@ export function InstallReminderDialog({
 /**
  * Everything inside the dialog frame, as a plain component.
  *
- * Split out because it is the half worth testing — the checkbox gate — and
+ * Split out because it is the half worth testing — the two-step gate — and
  * because the frame around it is a Radix portal that renders nothing at all
  * outside a browser. This part is ordinary markup, so a test can render it and
  * read the `disabled` attribute off the real button rather than trusting a
@@ -81,16 +158,39 @@ export function InstallReminderDialog({
  */
 export function InstallReminderBody({
   acknowledged,
+  challenged,
   onAcknowledgedChange,
-  onLater,
-  onContinue,
+  onSubmit,
 }: {
   acknowledged: boolean;
+  /** Round two: the first "Next" has been pressed and answered with a doubt. */
+  challenged: boolean;
   onAcknowledgedChange: (next: boolean) => void;
-  onLater: () => void;
-  onContinue: () => void;
+  /** Press of the one button. Round one challenges; round two proceeds. */
+  onSubmit: () => void;
 }) {
   const { t } = useT();
+  const checkboxRef = React.useRef<HTMLInputElement>(null);
+
+  // The button the user just pressed becomes disabled the instant round two
+  // starts, and a disabled control drops focus to <body> — leaving a keyboard
+  // or screen-reader user nowhere. Focus goes to the checkbox instead, which
+  // is the only thing left to do and announces its own new label on arrival.
+  React.useEffect(() => {
+    if (challenged) checkboxRef.current?.focus();
+  }, [challenged]);
+
+  const confirmLabel = challenged
+    ? t("installReminder.confirmAgain")
+    : t("installReminder.confirm");
+  // Round two shows the doubt until the box is ticked again; ticking it turns
+  // the button back into "Next". The round-one pair never returns — only
+  // closing and reopening the dialog resets that.
+  const buttonLabel =
+    challenged && !acknowledged
+      ? t("installReminder.doubt")
+      : t("installReminder.next");
+
   return (
     <div className="space-y-4">
       {/* The panel's existing weight signal for "read this": the same warning
@@ -124,6 +224,7 @@ export function InstallReminderBody({
             remember it. */}
         <Checkbox
           id="install-reminder-ack"
+          ref={checkboxRef}
           autoComplete="off"
           className="mt-0.5"
           checked={acknowledged}
@@ -133,19 +234,26 @@ export function InstallReminderBody({
           htmlFor="install-reminder-ack"
           className="cursor-pointer text-sm font-medium leading-snug"
         >
-          {t("installReminder.confirm")}
+          {confirmLabel}
         </Label>
       </div>
 
+      {/* The button renames itself and goes disabled while it holds focus, and
+          assistive technology does not reliably re-read a control it is
+          already sitting on. This region carries the change out of band: it is
+          in the DOM from the start (a live region added at the same moment as
+          its text is often missed) and stays empty until there is something to
+          say. `polite` so it waits for the checkbox focus announcement rather
+          than talking over it. */}
+      <p role="status" aria-live="polite" className="sr-only">
+        {challenged && !acknowledged
+          ? `${t("installReminder.doubt")}. ${t("installReminder.challenge")}`
+          : ""}
+      </p>
+
       <DialogFooter>
-        {/* Closable, and it says so. A modal with no way out is hostile, and
-            the dialog returns on the next key while the user is still inside
-            their first few — it is a reminder, not a gate on the panel. */}
-        <Button type="button" variant="outline" onClick={onLater}>
-          {t("installReminder.later")}
-        </Button>
-        <Button type="button" disabled={!acknowledged} onClick={onContinue}>
-          {t("installReminder.next")}
+        <Button type="button" disabled={!acknowledged} onClick={onSubmit}>
+          {buttonLabel}
         </Button>
       </DialogFooter>
       <p className="text-xs leading-snug text-muted-foreground">

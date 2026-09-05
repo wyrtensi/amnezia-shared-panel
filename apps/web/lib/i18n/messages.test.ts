@@ -218,10 +218,27 @@ describe("install reminder messages", () => {
     "installReminder.why",
     "installReminder.looksFine",
     "installReminder.confirm",
-    "installReminder.later",
+    "installReminder.confirmAgain",
+    "installReminder.doubt",
     "installReminder.next",
+    "installReminder.challenge",
     "installReminder.nextHint",
   ];
+
+  it("offers no soft exit", () => {
+    // The operator's instruction: «Позже» is gone and stays gone. A dialog
+    // dismissed approvingly without being read is the third state the
+    // two-step confirmation exists to close off; the ✕ and Esc remain.
+    for (const lang of ["ru", "en"] as const) {
+      const dict = messages[lang] as Record<string, string>;
+      expect(dict, `${lang} still has a Later button`).not.toHaveProperty(
+        "installReminder.later",
+      );
+      for (const key of reminderKeys(dict)) {
+        expect(dict[key], `${lang}:${key}`).not.toMatch(/Позже|\bLater\b/);
+      }
+    }
+  });
 
   it("exists in both languages with the same key set", () => {
     const ru = reminderKeys(messages.ru);

@@ -302,8 +302,16 @@ const ru = {
   "installReminder.looksFine":
     "Старое приложение при этом спокойно запустится и будет выглядеть рабочим — соединения всё равно не будет. Поэтому обновиться нужно даже тогда, когда AmneziaVPN у вас уже установлен.",
   "installReminder.confirm": "Я прочитал, действуем",
-  "installReminder.later": "Позже",
+  // Round two. The first «Далее» does not proceed, it asks again: the box
+  // unticks itself and the button turns into a doubt the user has to answer.
+  "installReminder.confirmAgain": "Теперь точно прочитал",
+  "installReminder.doubt": "Не верю, что прочитал",
   "installReminder.next": "Далее",
+  // Read out by the dialog's live region when round two starts. The button the
+  // user just pressed renames itself and goes disabled under their finger; a
+  // screen reader would otherwise keep announcing the old name.
+  "installReminder.challenge":
+    "Ещё раз: отметьте галочку, что прочитали. Кнопка «Далее» пока недоступна.",
   "installReminder.nextHint":
     "По кнопке «Далее» откроется инструкция: что скачать для вашего устройства и как добавить ключ.",
 
@@ -1485,8 +1493,14 @@ const en = {
   "installReminder.looksFine":
     "The old app still starts and still looks like it is working — there will be no connection all the same. That is why you need to update even if AmneziaVPN is already installed.",
   "installReminder.confirm": "I have read this, let us go",
-  "installReminder.later": "Later",
+  // Round two. "Sure you did" rather than a literal "I do not believe you read
+  // it": the Russian is teasing, and the flat translation reads as an
+  // accusation. This is the English formula for the same raised eyebrow.
+  "installReminder.confirmAgain": "This time I really did read it",
+  "installReminder.doubt": "Sure you did",
   "installReminder.next": "Next",
+  "installReminder.challenge":
+    "Once more: tick the box to confirm you read it. “Next” is disabled until you do.",
   "installReminder.nextHint":
     "“Next” opens the guide: what to download for your device, and how to add the key.",
 
