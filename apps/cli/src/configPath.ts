@@ -17,9 +17,16 @@ export type CliConfigFormat = (typeof CLI_CONFIG_FORMATS)[number];
 /** Every format but `qr-frames`, which returns a series rather than one file. */
 export type CliSingleFileFormat = Exclude<CliConfigFormat, "qr-frames">;
 
-/** Container each single-file format returns, for the default output name. */
+/**
+ * Container each single-file format returns, for the default output name.
+ *
+ * `vpn` is `.vpn` and not `.vpn.txt`: those bytes are the only downloadable
+ * shape whose connection name survives an import, and the AmneziaVPN client's
+ * file picker only offers `*.vpn *.ovpn *.conf *.json`. A `.txt` suffix put the
+ * one file that works where the user cannot pick it.
+ */
 const FORMAT_EXTENSION: Record<CliSingleFileFormat, string> = {
-  vpn: "vpn.txt",
+  vpn: "vpn",
   conf: "conf",
   qr: "png",
   "qr-svg": "svg",
@@ -39,6 +46,42 @@ export const configOutputName = (
   keyId: string,
   format: CliSingleFileFormat,
 ): string => `${keyId}.${FORMAT_EXTENSION[format]}`;
+
+/**
+ * The name the panel serves a config under, read back off `content-disposition`.
+ *
+ * That name is the key's own connection name, so `key-config --save` produces
+ * the same file a user gets from the web dialog -- which is the point: an
+ * operator reproducing "my connection is called Server 1" needs the exact file,
+ * name included, not an approximation of it. `filename*` is read first because
+ * it is the only form that survives a non-Latin name; the quoted `filename=` is
+ * an ASCII fold and merely the fallback.
+ *
+ * The header is our own API's, but this still returns a bare name: a value
+ * carrying `/`, `\` or `..` must land in the working directory, never above it.
+ * Returns null when there is nothing usable, and the caller falls back to
+ * `configOutputName`.
+ */
+export const filenameFromContentDisposition = (
+  headers: Headers,
+): string | null => {
+  const raw = headers.get("content-disposition");
+  if (!raw) return null;
+  const extended = /filename\*\s*=\s*UTF-8''([^;]+)/i.exec(raw);
+  const quoted = /filename\s*=\s*"([^"]*)"/i.exec(raw);
+  let value = "";
+  if (extended?.[1]) {
+    try {
+      value = decodeURIComponent(extended[1].trim());
+    } catch {
+      // A malformed percent sequence is not worth failing a download over.
+      value = "";
+    }
+  }
+  if (!value && quoted?.[1]) value = quoted[1];
+  const bare = value.split(/[/\\]/).pop()?.trim() ?? "";
+  return bare && bare !== "." && bare !== ".." ? bare : null;
+};
 
 /**
  * File name for one frame of the AmneziaVPN series. Frames are numbered from

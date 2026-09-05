@@ -14,6 +14,7 @@ import {
   updateCustomRoutesRequestSchema,
   updateNodeRequestSchema,
 } from "@amnezia/contracts";
+import { contentDispositionAttachment } from "./configFilename.js";
 import {
   ApiError,
   type Actor,
@@ -200,9 +201,14 @@ export const buildApp = async ({
       reply.header("x-qr-scale", String(result.qrParams.scale));
     }
     if (result.filename) {
+      // The connection name is the file name now, and connection names are
+      // written in the operator's own language. A bare `filename=` is a
+      // byte string, so a Cyrillic name folds away to nothing there and every
+      // user gets the same `amnezia-key` download; `contentDispositionAttachment`
+      // sends the RFC 6266 pair instead, ASCII fallback plus `filename*`.
       reply.header(
         "content-disposition",
-        `attachment; filename="${result.filename.replaceAll('"', "")}"`,
+        contentDispositionAttachment(result.filename),
       );
     }
     return reply.send(result.body);

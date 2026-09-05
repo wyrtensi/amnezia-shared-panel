@@ -70,6 +70,18 @@ export type KeyView = {
  *               stays supported rather than being superseded by it;
  * - `qr`        the same single-frame link as a downloadable PNG.
  * All three are gated by the same `allowQrDownload` policy flag.
+ *
+ * The other two are the file shapes, and only one of them keeps the key's
+ * connection name:
+ * - `vpn`       the `vpn://` payload, served as `<connection name>.vpn`. The
+ *               client's file picker offers `*.vpn` and its importer sniffs the
+ *               CONTENT, so this file imports as an Amnezia config and keeps its
+ *               `description` — the name the panel composed for the key;
+ * - `conf`      the bare WireGuard/AmneziaWG config, for awg-quick and router
+ *               firmwares. The AmneziaVPN client always renames an imported
+ *               `.conf` to "Server N" — the format has nowhere to carry a name
+ *               and the parser would ignore one anyway (configFilename.ts cites
+ *               the client source). Offer `vpn` to anyone who wants the name.
  */
 export type ConfigFormat = "vpn" | "conf" | "qr" | "qr-svg" | "qr-frames";
 

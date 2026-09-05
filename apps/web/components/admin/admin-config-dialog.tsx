@@ -103,11 +103,39 @@ export function AdminConfigDialog({
                 </Button>
               </div>
             </div>
-            <Button asChild variant="outline" className="w-full">
-              <a href={`${configUrl(target.id, "conf")}&adminConfirmed=true`} download>
-                <Download className="h-4 w-4" /> {t("common.downloadConf")}
-              </a>
-            </Button>
+            {/*
+              Two files, and only the first one keeps the key's name. The
+              client's importer sniffs a file's content, not its extension, so
+              the `.vpn` file — the same `vpn://` payload as the field above —
+              imports through the same "File with connection settings" flow and
+              arrives under the name the panel composed. A `.conf` cannot: the
+              importer assigns "Server N" itself and reads no name from the file
+              or its file name. So the `.vpn` one leads, the `.conf` stays for
+              awg-quick and router firmwares, and the line below says which is
+              which rather than leaving an admin to find out by handing a user
+              the wrong one.
+            */}
+            <div className="space-y-2">
+              <Button asChild className="w-full">
+                <a
+                  href={`${configUrl(target.id, "vpn")}&adminConfirmed=true`}
+                  download
+                >
+                  <Download className="h-4 w-4" /> {t("common.downloadVpnFile")}
+                </a>
+              </Button>
+              <Button asChild variant="outline" className="w-full">
+                <a
+                  href={`${configUrl(target.id, "conf")}&adminConfirmed=true`}
+                  download
+                >
+                  <Download className="h-4 w-4" /> {t("common.downloadConf")}
+                </a>
+              </Button>
+              <p className="text-xs text-muted-foreground">
+                {t("config.fileShapesHint")}
+              </p>
+            </div>
           </div>
         ) : null}
       </DialogContent>

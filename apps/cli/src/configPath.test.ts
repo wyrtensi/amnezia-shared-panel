@@ -6,6 +6,7 @@ import {
   configOutputName,
   configRequestPath,
   confirmedFromArgs,
+  filenameFromContentDisposition,
   formatQrParams,
 } from "./configPath.js";
 
@@ -77,9 +78,58 @@ describe("formatQrParams", () => {
   });
 });
 
+describe("filenameFromContentDisposition", () => {
+  it("prefers the form that survives a non-Latin connection name", () => {
+    const headers = new Headers({
+      "content-disposition":
+        "attachment; filename=\"amnezia-key.vpn\"; filename*=UTF-8''%D0%A4%D1%80%D0%B0%D0%BD%D0%BA%D1%84%D1%83%D1%80%D1%82.vpn",
+    });
+    expect(filenameFromContentDisposition(headers)).toBe("Франкфурт.vpn");
+  });
+
+  it("falls back to the quoted ASCII name", () => {
+    const headers = new Headers({
+      "content-disposition": 'attachment; filename="Frankfurt phone.vpn"',
+    });
+    expect(filenameFromContentDisposition(headers)).toBe("Frankfurt phone.vpn");
+  });
+
+  it("writes into the working directory and nowhere else", () => {
+    // The header is our own API's, but a name is still a name: a value with a
+    // path in it must not decide where the CLI writes.
+    const headers = new Headers({
+      "content-disposition":
+        "attachment; filename=\"x.vpn\"; filename*=UTF-8''..%2F..%2Fetc%2Fpasswd",
+    });
+    expect(filenameFromContentDisposition(headers)).toBe("passwd");
+    expect(
+      filenameFromContentDisposition(
+        new Headers({ "content-disposition": 'attachment; filename="../.."' }),
+      ),
+    ).toBeNull();
+  });
+
+  it("returns null when there is nothing to use", () => {
+    expect(filenameFromContentDisposition(new Headers())).toBeNull();
+    expect(
+      filenameFromContentDisposition(
+        new Headers({ "content-disposition": "attachment" }),
+      ),
+    ).toBeNull();
+    // A truncated percent escape must not throw the download away.
+    expect(
+      filenameFromContentDisposition(
+        new Headers({ "content-disposition": "attachment; filename*=UTF-8''%" }),
+      ),
+    ).toBeNull();
+  });
+});
+
 describe("configOutputName", () => {
   it("names the file after the format's real container", () => {
-    expect(configOutputName("key-1", "vpn")).toBe("key-1.vpn.txt");
+    // `.vpn`, not `.vpn.txt`: the client's file picker offers `*.vpn` and hides
+    // a `.txt`, and this is the only file shape that keeps the key's name.
+    expect(configOutputName("key-1", "vpn")).toBe("key-1.vpn");
     expect(configOutputName("key-1", "conf")).toBe("key-1.conf");
     expect(configOutputName("key-1", "qr")).toBe("key-1.png");
     expect(configOutputName("key-1", "qr-svg")).toBe("key-1.svg");

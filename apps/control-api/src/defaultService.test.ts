@@ -453,6 +453,75 @@ describe("client-visible connection name", () => {
   });
 });
 
+describe("the two file shapes and what each one keeps", () => {
+  const namedKeyService = () => {
+    const repository = createRepository();
+    vi.mocked(repository.findKeyConfig).mockResolvedValue({
+      id: "key-1",
+      ownerId: employee.id,
+      deviceLabel: "phone",
+      encrypted: encryptSecret(
+        encodeVpnPayload({
+          containers: [
+            {
+              awg: {
+                last_config: JSON.stringify({
+                  config: "[Interface]\nPrivateKey = x\n\n[Peer]\nAllowedIPs = 0.0.0.0/0, ::/0\n",
+                }),
+              },
+            },
+          ],
+        }),
+        keyring,
+        1,
+      ),
+      policy: defaultPortalPolicy,
+      routeProfile: "full_tunnel" as const,
+      keyNumber: 3,
+      nodeDisplayName: "Frankfurt",
+      nameDisplay: { server: true, label: true, number: false },
+      appliedRuleVersionId: null,
+      activeRule: null,
+      customRoutes: null,
+    });
+    return createDefaultControlApiService({ repository, keyring });
+  };
+
+  it("serves the vpn payload as a .vpn file that still carries the name", async () => {
+    const service = namedKeyService();
+
+    const result = await service.getKeyConfig(employee, "key-1", "vpn", false);
+
+    // The extension is the fix: the client's own file picker offers
+    // `*.vpn *.ovpn *.conf *.json`, so the `.vpn.txt` this used to be hid the
+    // one downloadable shape whose name survives an import.
+    expect(result.filename).toBe("Frankfurt phone.vpn");
+    expect(decodeVpnLink(String(result.body)).description).toBe(
+      "Frankfurt phone",
+    );
+  });
+
+  it("names the .conf after the connection but writes nothing into it", async () => {
+    const service = namedKeyService();
+
+    const result = await service.getKeyConfig(employee, "key-1", "conf", false);
+
+    expect(result.filename).toBe("Frankfurt phone.conf");
+    // The client renames every imported .conf to "Server N" regardless, so the
+    // name must NOT be smuggled into the file: its INI scrape never reads a
+    // comment back, and `checkConfigFormat` sniffs the whole text for the
+    // Amnezia JSON markers BEFORE the [Interface]/[Peer] pair -- a comment
+    // holding one of those words would fail the import outright. A line that
+    // looks like a name and does nothing is worse than no line at all.
+    const conf = String(result.body);
+    expect(conf).not.toContain("Frankfurt phone");
+    expect(conf).not.toMatch(/^\s*#/m);
+    for (const marker of ["containers", "api_key", "auth_data"]) {
+      expect(conf).not.toContain(marker);
+    }
+  });
+});
+
 describe("simple-key QR rendering", () => {
   it("returns an SVG with no attachment disposition", async () => {
     const repository = createRepository();
@@ -475,7 +544,7 @@ describe("simple-key QR rendering", () => {
     const result = await service.getKeyConfig(employee, "key-1", "qr", false);
 
     expect(result.contentType).toBe("image/png");
-    expect(result.filename).toBe("phone.png");
+    expect(result.filename).toBe("Frankfurt phone.png");
     expect(Buffer.isBuffer(result.body)).toBe(true);
   });
 

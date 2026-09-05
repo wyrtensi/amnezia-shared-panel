@@ -16,7 +16,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { Card, CardContent } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
+import { Button, type ButtonProps } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import {
   Tooltip,
@@ -213,6 +213,22 @@ export function KeyCard({
                   <TooltipContent>{t("keyCard.qrAndLink")}</TooltipContent>
                 </Tooltip>
               ) : null}
+              {/*
+                The `.vpn` file carries the same `vpn://` payload the Copy
+                button above already hands out as text, so it needs no extra
+                policy gate. It is `variant="default"` -- the same prominence
+                as Copy -- because it is the shape that keeps the connection
+                name on import; `.conf` always lands as "Server N" regardless
+                of what is inside it, so it stays a secondary, separately
+                gated option for awg-quick and router firmwares.
+              */}
+              <IconLink
+                href={configUrl(keyView.id, "vpn")}
+                label={t("common.downloadVpnFile")}
+                icon={<Download className="h-4 w-4" />}
+                download
+                variant="default"
+              />
               {me.policy.allowConfDownload ? (
                 <IconLink
                   href={configUrl(keyView.id, "conf")}
@@ -277,17 +293,19 @@ function IconLink({
   icon,
   download,
   newTab,
+  variant = "secondary",
 }: {
   href: string;
   label: string;
   icon: React.ReactNode;
   download?: boolean;
   newTab?: boolean;
+  variant?: ButtonProps["variant"];
 }) {
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        <Button asChild variant="secondary" size="icon">
+        <Button asChild variant={variant} size="icon">
           <a
             href={href}
             aria-label={label}
