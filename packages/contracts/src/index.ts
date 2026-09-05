@@ -61,9 +61,12 @@ export const routeProfileSchema = z.enum([
 ]);
 /**
  * What kind of device a key is for. The value names a **platform**, not a form
- * factor: it is the signal platform-specific behaviour hangs off (today only
- * `deviceSupportsRouteProfiles`, which is not offered on iOS). "ios" covers
- * iPhone and iPad — the same platform for every purpose this panel has.
+ * factor: it is the signal platform-specific behaviour would hang off. Nothing
+ * in the web app branches on it any more — since #67 every route profile is
+ * offered on every platform — and the one rule phrased against it,
+ * `deviceSupportsRouteProfiles` below, is now advisory and read only by the
+ * CLI. "ios" covers iPhone and iPad — the same platform for every purpose this
+ * panel has.
  *
  * "unspecified" is the stored default and is never offered as a choice; see
  * DEVICE_TYPE_ORDER.
@@ -1360,14 +1363,13 @@ export type ClientRelease = z.infer<typeof clientReleaseSchema>;
  *
  * This is a STOP-GAP that makes the limitation visible, not a statement that
  * iOS will never support route profiles. The cause is not established (see the
- * T2-a backlog item); when it is fixed, empty this list and the create-key
- * wizard offers the profiles again with no other change.
+ * T2-a backlog item); when it is fixed, empty this list and the CLI stops
+ * warning, with no other change.
  *
  * The client observed was Default VPN -- the listing the Russian App Store
  * offers, because AmneziaVPN itself is hidden from it by Roskomnadzor
  * requirement. AmneziaVPN on iOS is a different app and was never observed
- * failing, so the wizard lets a user say they run it and lifts the block for
- * that key. "ios" stays on this list because Default VPN is what most iOS users
+ * failing. "ios" stays on this list because Default VPN is what most iOS users
  * end up with, and the default has to be the common case.
  *
  * Only "ios" is listed, and it covers iPhone AND iPad — they are one value, so
@@ -1380,8 +1382,12 @@ export const ROUTE_PROFILE_UNSUPPORTED_DEVICES = ["ios"] as const;
 
 /**
  * Whether a key created for this device type can usefully carry a route
- * profile. Drives the create-key wizard's greyed-out profile cards, the key
- * card's warning and the CLI's `user-create-key` warning.
+ * profile. It drove the create-key wizard's greyed-out profile cards and the
+ * key card's warning until #67 removed both — the panel cannot see which
+ * client a device runs, so it offers every profile and lets the client sort
+ * it out. What is left is advisory and lives in the CLI: `user-create-key`'s
+ * warning and the `keys --needs-profile-warning` audit, which read the copy
+ * of this predicate in `apps/cli/src/deviceProfiles.ts`.
  *
  * Takes a plain `string`, not `DeviceType`: `KeyView.deviceType` arrives from
  * the API as a string, and a browser tab left open across a deploy can still

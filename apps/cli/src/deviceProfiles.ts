@@ -13,9 +13,12 @@
  * profile connects but applies no rules, with both the vpn:// key and an
  * imported .conf. The client observed was Default VPN — the listing the Russian
  * App Store offers, because AmneziaVPN itself is hidden from it. AmneziaVPN on
- * iOS is a different app and was NOT observed, so it is not claimed to fail;
- * the panel's wizard lets a user say they run it and lifts the block. This list
- * stays the default because Default VPN is what most iOS users end up with.
+ * iOS is a different app and was NOT observed, so it is not claimed to fail.
+ * This list stays because Default VPN is what most iOS users end up with.
+ *
+ * Since #67 it gates nothing in the panel — the wizard offers every profile on
+ * every platform and lets the client sort it out — so on this side it is only
+ * what the CLI's two warnings are phrased against, never a refusal.
  * Stop-gap, not a permanent design decision — see T2-a.
  */
 const ROUTE_PROFILE_UNSUPPORTED_DEVICES = ["ios"];
@@ -46,9 +49,11 @@ export function routeProfileWarning(
 /**
  * Does an existing key pair a gated platform with a split-tunnel profile?
  *
- * This is the combination the key card warns about. The wizard can no longer
- * create it, but an admin, the CLI or a key created before the gate still can,
- * so `keys --needs-profile-warning` exists to count them on a live panel.
+ * Nothing in the panel stops that pair being made or says anything about it:
+ * since #67 the create-key wizard offers every profile on every platform and
+ * the key card's warning is gone. `keys --needs-profile-warning` exists to
+ * count them on a live panel, and it and `user-create-key`'s warning below
+ * are the only two places the combination is visible at all.
  *
  * Both fields must be present: a key whose platform was never recorded is not
  * evidence of anything, and guessing would inflate the count.
