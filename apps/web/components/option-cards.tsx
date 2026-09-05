@@ -87,7 +87,24 @@ export function OptionCards<T extends string>({
                 </span>
               ) : null}
               <span className="flex min-w-0 flex-col">
-                <span className="break-words pr-5 font-medium leading-tight">
+                {/* `pr-3` is the tick's own footprint, not a round number: the
+                    tick above is `right-2 w-4`, so its left edge sits 24px from
+                    the card's border while the content box ends 15px from it
+                    (`p-3.5` plus the 1px border) — a 9px overlap, cleared by
+                    12px with 3px to spare. The `pr-5` this replaces reserved
+                    more than twice that, and the 8px it wasted were the
+                    difference between "MacBook" (69px) fitting the 3-up device
+                    column and not: with 68.7px of usable width the word
+                    overflowed its line, and `break-words` then split it —
+                    Chrome breaks at the overflow point instead of backtracking
+                    to the preceding space, which is how "Windows PC" came out
+                    as "Window / s PC".
+
+                    The label keeps `break-words` deliberately: it is the last
+                    resort for a word genuinely wider than its column (the
+                    longest Russian route-profile label still is, in a 3-up grid
+                    inside a 576px dialog), not what decides ordinary wrapping. */}
+                <span className="break-words pr-3 font-medium leading-tight">
                   {option.label}
                 </span>
                 {option.description ? (
