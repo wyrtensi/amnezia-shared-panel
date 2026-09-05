@@ -1,6 +1,6 @@
 import { deflateSync, inflateSync } from "node:zlib";
 import type { RouteProfile } from "@amnezia/contracts";
-import { complementIpv4 } from "./routeComplement.js";
+import { complementForTunnel, MAX_TUNNEL_ROUTES } from "./routeComplement.js";
 
 export type RulePayload = {
   cidrs: string[];
@@ -136,11 +136,27 @@ export const applyRouteProfileToVpnLink = (
   // route still belongs in the tunnel. DNS is deliberately not re-added there:
   // the complement already carries it, and naming it would drag a resolver the
   // operator put on the bypass list back into the tunnel.
-  const combinedCidrs = (
-    profile === "ru_whitelist"
-      ? [...new Set([...complementIpv4(rulePayload.cidrs || []), "::/0"])]
-      : [...new Set([...(rulePayload.cidrs || []), ...dnsCidrs])]
-  ).filter(Boolean);
+  let combinedCidrs: string[];
+  if (profile === "ru_whitelist") {
+    const complement = complementForTunnel(rulePayload.cidrs || []);
+    // A feed too fragmented to invert within the budget cannot be shipped as a
+    // whitelist at all. The full tunnel is the safe reading of "protect this
+    // key" — it tunnels more than asked, where the alternative tunnels nothing.
+    if (!complement) return vpnLink;
+    combinedCidrs = [...new Set([...complement.routes, "::/0"])].filter(Boolean);
+  } else {
+    combinedCidrs = [
+      ...new Set([...(rulePayload.cidrs || []), ...dnsCidrs]),
+    ].filter(Boolean);
+  }
+
+  // Feeds grow, and a blacklist has no lever to shorten itself: dropping
+  // entries would send that traffic outside the tunnel, which is the failure
+  // the profile exists to prevent. So an oversized one degrades to the full
+  // tunnel instead of becoming a config the Android client discards on arrival.
+  if (combinedCidrs.length > MAX_TUNNEL_ROUTES) {
+    return vpnLink;
+  }
 
   // An empty AllowedIPs would produce a config that routes nothing at all.
   // A feed that covers the whole space says "tunnel nothing", which the panel

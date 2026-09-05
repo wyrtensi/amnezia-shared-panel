@@ -6,6 +6,7 @@ import {
   extractConfFromVpnLink,
   setVpnDescription,
 } from "./vpnConfig.js";
+import { MAX_TUNNEL_ROUTES } from "./routeComplement.js";
 
 const encode = (value: unknown): string => {
   const raw = Buffer.from(JSON.stringify(value));
@@ -224,5 +225,55 @@ describe("vpn config extraction and split tunneling", () => {
         }),
       ).toBe(vpnLink);
     }
+  });
+
+  it("keeps the full tunnel when a grown feed no longer fits AllowedIPs", () => {
+    // Feeds grow. A blacklist cannot shorten itself — dropping entries would
+    // send that traffic outside the tunnel — so past the budget it has to
+    // degrade to the full tunnel rather than become a config that the Android
+    // client discards on arrival, leaving the key connected to nothing.
+    const vpnLink = encode({
+      dns1: "1.1.1.1",
+      dns2: "1.0.0.1",
+      containers: [
+        {
+          container: "amnezia-awg",
+          awg: {
+            last_config: JSON.stringify({
+              config:
+                "[Interface]\nPrivateKey = x\n\n[Peer]\nAllowedIPs = 0.0.0.0/0, ::/0\n",
+              allowed_ips: ["0.0.0.0/0", "::/0"],
+            }),
+          },
+        },
+      ],
+    });
+
+    const oversized = Array.from(
+      { length: MAX_TUNNEL_ROUTES + 1 },
+      (_, index) =>
+        `10.${(index >> 16) & 0xff}.${(index >> 8) & 0xff}.${index & 0xff}/32`,
+    );
+
+    expect(
+      applyRouteProfileToVpnLink(vpnLink, "ru_blacklist", {
+        cidrs: oversized,
+        domains: [],
+      }),
+    ).toBe(vpnLink);
+
+    // The whitelist has a lever the blacklist lacks: it widens its gap merging
+    // until the inverse fits, so the same feed still produces a usable config.
+    const whitelisted = applyRouteProfileToVpnLink(vpnLink, "ru_whitelist", {
+      cidrs: oversized,
+      domains: [],
+    });
+    expect(whitelisted).not.toBe(vpnLink);
+    const lastConfig = JSON.parse(
+      decodeVpnLink(whitelisted).containers?.[0]?.awg?.last_config ?? "{}",
+    ) as { allowed_ips?: string[] };
+    expect(lastConfig.allowed_ips?.length ?? 0).toBeLessThanOrEqual(
+      MAX_TUNNEL_ROUTES,
+    );
   });
 });
