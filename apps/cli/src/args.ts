@@ -368,6 +368,48 @@ export const matchesNodeFilter = (
   filter === undefined || nodeId.toLowerCase() === filter.toLowerCase();
 
 /**
+ * One spelling of an email domain: trimmed, lower-cased, and with a leading
+ * "@" dropped so `@company.tld` and `company.tld` are the same value.
+ *
+ * A structural copy of `normalizeAccessDomain` in @amnezia/contracts, for the
+ * reason the whole file re-states small facts (see WORKER_PERIOD_FIELDS above):
+ * the CLI ships as a dependency-free `dist/main.js`. `args.test.ts` runs both
+ * against the same inputs, so the copy cannot drift.
+ *
+ * Deliberately shallow — it normalises, it does not validate. `cf-domains`
+ * leaves the question "is this actually a domain name" to `accessDomainSchema`
+ * on the API side, and `users --domain=` never asks it at all: a value that
+ * matches no address is answered with an empty list, not an error.
+ */
+export const normalizeDomain = (value: string): string =>
+  value.trim().toLowerCase().replace(/^@+/, "");
+
+/**
+ * The domain half of an email address: everything after the LAST "@", so an
+ * address with a quoted "@" in its local part still yields the right domain.
+ * "" when there is no "@" at all. Matches how the worker
+ * (`apps/worker/src/accessReconcile.ts`) and the Users page split an address.
+ */
+export const emailDomain = (email: string): string => {
+  const at = email.lastIndexOf("@");
+  return at === -1 ? "" : normalizeDomain(email.slice(at + 1));
+};
+
+/**
+ * `users --domain=<domain>`: no filter keeps everyone. The panel's own domain
+ * filter offers only the domains actually present among the loaded users, so
+ * it can never land on a value nobody has; a shell has no such list, which is
+ * why a domain matching nobody is a legitimate answer here rather than an
+ * error — it is how "does anyone still have an address on this domain" gets
+ * asked before a `cf-domains --remove`.
+ */
+export const matchesDomainFilter = (
+  email: string,
+  filter: string | undefined,
+): boolean =>
+  filter === undefined || emailDomain(email) === normalizeDomain(filter);
+
+/**
  * Parse the global policy's ordered/marked node lists (`recommendedNodeIds`,
  * `nodeOrder`):
  *   ""/"none" -> []        (clear the list)

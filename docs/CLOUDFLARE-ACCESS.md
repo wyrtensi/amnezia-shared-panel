@@ -650,9 +650,13 @@ account is created on first sign-in only for an identity Cloudflare has already
 let through (see auto-provisioning above), no account will be created for them
 either. That is the half a shell session is most likely to miss: tidying up the
 domain list looks like housekeeping and can cut people off. To undo it, add the
-domain back, or add those people as users by address first. The removal
-confirmation in the Users dialog states this; `cf-domains --remove` and
-`--set=none` do not.
+domain back, or add those people as users by address first. Both surfaces say
+so before the change: the removal confirmation in the Users dialog, and
+`cf-domains` — which names every domain a call would drop, and what dropping it
+costs, before posting anything (`--remove`, `--set=none`, and a `--set` that
+merely stops naming a domain, alike). `amnezia-panel users --domain=<domain>`
+is the check to run first: it lists who on that domain is already a panel user,
+i.e. exactly the people a removal does **not** touch.
 
 **A domain the panel owns and someone deletes in the dashboard is put back.**
 The stored list (`cf_access_allowed_domains`), not the live policy, is what

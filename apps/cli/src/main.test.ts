@@ -256,6 +256,47 @@ describe("cf-domains", () => {
     expect(out).toMatch(/now company\.tld/);
   });
 
+  it("--remove names what a removal costs before the request goes out", async () => {
+    // The Users dialog states both halves before its confirm button; the shell
+    // said only the reassuring one, which is the half an operator already
+    // assumes. Order matters as much as the words: this has to be readable
+    // before the change, not as an epilogue to "now …".
+    stubFetch([
+      { body: [{ cfAccessAllowedDomains: ["company.tld", "other.tld"] }] },
+      { body: {} },
+    ]);
+    const out = await run(["cf-domains", "--remove=other.tld"]);
+    expect(out).toMatch(/removing other\.tld/);
+    expect(out).toMatch(/Nobody with an active panel account loses access/);
+    expect(out).toMatch(/anyone with an address on other\.tld and no/);
+    expect(out).toMatch(/no account is created for/);
+    expect(out.indexOf("Who does lose their way in")).toBeLessThan(
+      out.indexOf("cf-domains: now"),
+    );
+  });
+
+  it("a --set that stops naming a domain states the same cost", async () => {
+    // Same consequence, a different flag: the warning is computed from the
+    // difference rather than attached to --remove alone.
+    stubFetch([
+      { body: [{ cfAccessAllowedDomains: ["company.tld", "other.tld"] }] },
+      { body: {} },
+    ]);
+    const out = await run(["cf-domains", "--set=company.tld"]);
+    expect(out).toMatch(/removing other\.tld/);
+    expect(out).toMatch(/Who does lose their way in/);
+  });
+
+  it("--add says nothing about removals, having caused none", async () => {
+    stubFetch([
+      { body: [{ cfAccessAllowedDomains: ["company.tld"] }] },
+      { body: {} },
+    ]);
+    const out = await run(["cf-domains", "--add=other.tld"]);
+    expect(out).not.toMatch(/lose their way in/);
+    expect(out).not.toMatch(/removing/);
+  });
+
   it("--remove of an absent domain says so plainly, without posting an unchanged list", async () => {
     const calls = stubFetch([
       { body: [{ cfAccessAllowedDomains: ["company.tld"] }] },
@@ -297,6 +338,9 @@ describe("cf-domains", () => {
       cfAccessAllowedDomains: [],
     });
     expect(out).toMatch(/clearing a\.tld, b\.tld/);
+    // Wiping the whole list costs what removing one domain costs, times the
+    // list — it must not be the one path that stays quiet about it.
+    expect(out).toMatch(/Who does lose their way in/);
     expect(out).toMatch(/now \(none\)/);
   });
 
@@ -606,5 +650,82 @@ describe("stale keys", () => {
       run(["stale-keys-revoke", U_DEAD, "--days=thirty", "--confirm"]),
     ).rejects.toThrow(/--days must be an integer/);
     expect(calls).toHaveLength(0);
+  });
+});
+
+describe("users --domain=", () => {
+  // cmdUsers reads the user list and the portal policy, in that order.
+  const users = [
+    {
+      id: "11111111-1111-4111-8111-111111111111",
+      email: "ann@company.tld",
+      displayName: "Ann",
+      role: "user",
+      status: "active",
+      keyLimitOverride: null,
+    },
+    {
+      id: "22222222-2222-4222-8222-222222222222",
+      email: "Bob@COMPANY.tld",
+      displayName: "Bob",
+      role: "admin",
+      status: "active",
+      keyLimitOverride: null,
+    },
+    {
+      id: "33333333-3333-4333-8333-333333333333",
+      email: "carl@other.tld",
+      displayName: "Carl",
+      role: "user",
+      status: "disabled",
+      keyLimitOverride: null,
+    },
+  ];
+  const policy = [{ keyLimitMode: "per_node", defaultKeyLimit: 3 }];
+
+  beforeEach(() => {
+    process.env.PANEL_ADMIN_EMAIL = "cli-test@example.com";
+  });
+  afterEach(() => {
+    delete process.env.PANEL_ADMIN_EMAIL;
+    vi.unstubAllGlobals();
+  });
+
+  it("lists everyone when no domain is given", async () => {
+    stubFetch([{ body: users }, { body: policy }]);
+    const out = await run(["users"]);
+    expect(out).toMatch(/ann@company\.tld/);
+    expect(out).toMatch(/carl@other\.tld/);
+  });
+
+  it("keeps only the addresses on the named domain, whatever their case", async () => {
+    stubFetch([{ body: users }, { body: policy }]);
+    const out = await run(["users", "--domain=company.tld"]);
+    expect(out).toMatch(/ann@company\.tld/);
+    expect(out).toMatch(/Bob@COMPANY\.tld/);
+    expect(out).not.toMatch(/carl@other\.tld/);
+  });
+
+  it("accepts the @company.tld form the Cloudflare dashboard shows", async () => {
+    stubFetch([{ body: users }, { body: policy }]);
+    const out = await run(["users", "--domain=@Company.TLD"]);
+    expect(out).toMatch(/ann@company\.tld/);
+    expect(out).toMatch(/Bob@COMPANY\.tld/);
+    expect(out).not.toMatch(/carl@other\.tld/);
+  });
+
+  it("says (none) for a domain nobody is on, rather than failing", async () => {
+    // The shell has no list of the domains that exist, unlike the panel's
+    // picker — "nobody" is the answer to the question, not an error.
+    stubFetch([{ body: users }, { body: policy }]);
+    const out = await run(["users", "--domain=nobody.tld"]);
+    expect(out).toMatch(/\(none\)/);
+    expect(out).not.toMatch(/@/);
+  });
+
+  it("filters --json too, so the census is scriptable without jq", async () => {
+    stubFetch([{ body: users }, { body: policy }]);
+    const out = await run(["users", "--domain=other.tld", "--json"]);
+    expect(JSON.parse(out)).toEqual([users[2]]);
   });
 });

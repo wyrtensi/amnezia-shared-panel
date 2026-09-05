@@ -6,6 +6,7 @@ import { describe, it, expect } from "vitest";
 import {
   WORKER_PERIOD_FIELDS as CONTRACT_PERIOD_FIELDS,
   WORKER_PERIOD_FIELD_NAMES as CONTRACT_PERIOD_FIELD_NAMES,
+  normalizeAccessDomain,
 } from "@amnezia/contracts";
 import {
   DEVICE_TYPES,
@@ -30,7 +31,10 @@ import {
   checkRecommendedPrefix,
   formatPeriod,
   formatPolicyValue,
+  matchesDomainFilter,
   matchesNodeFilter,
+  emailDomain,
+  normalizeDomain,
   parsePolicyNodeList,
   parseWorkerPeriodFlag,
   quotaTargetLabel,
@@ -605,5 +609,67 @@ describe("checkRecommendedPrefix", () => {
       nodeId: "a",
       reason: "unpositioned",
     });
+  });
+});
+
+describe("normalizeDomain", () => {
+  it("agrees with normalizeAccessDomain in @amnezia/contracts", () => {
+    // The actual cross-check for the structural copy, not two literals each
+    // pinning their own side: the CLI ships dependency-free, so this is the
+    // only thing that catches the contract's normalisation moving without it.
+    for (const raw of [
+      "  @Company.TLD ",
+      "@@company.tld",
+      "company.tld",
+      "COMPANY.TLD",
+      "   ",
+      "@",
+      "",
+    ]) {
+      expect(normalizeDomain(raw), raw).toBe(normalizeAccessDomain(raw));
+    }
+  });
+});
+
+describe("emailDomain", () => {
+  it("reads the half after the last @, normalized", () => {
+    expect(emailDomain("Someone@Company.TLD")).toBe("company.tld");
+    // RFC-legal quoted local part with its own "@": the LAST one splits, or
+    // the domain would come back as the middle of the address.
+    expect(emailDomain('"odd@name"@company.tld')).toBe("company.tld");
+  });
+
+  it("is empty for something that is not an address", () => {
+    expect(emailDomain("no-at-sign")).toBe("");
+  });
+});
+
+describe("matchesDomainFilter", () => {
+  it("keeps every user when no filter is given", () => {
+    expect(matchesDomainFilter("a@company.tld", undefined)).toBe(true);
+  });
+
+  it("treats @company.tld and company.tld as the same filter", () => {
+    // The Cloudflare dashboard renders a domain rule as "emails ending in
+    // @company.tld", and that is the form an operator pastes.
+    for (const filter of ["company.tld", "@company.tld", " @Company.TLD "]) {
+      expect(matchesDomainFilter("Someone@COMPANY.tld", filter), filter).toBe(
+        true,
+      );
+    }
+  });
+
+  it("matches the whole domain, never a suffix of one", () => {
+    // "company.tld" must not admit "notcompany.tld" or a subdomain of it —
+    // this filter answers "who is on this Access domain", and an Access
+    // `email_domain` rule matches the domain exactly.
+    expect(matchesDomainFilter("a@notcompany.tld", "company.tld")).toBe(false);
+    expect(matchesDomainFilter("a@mail.company.tld", "company.tld")).toBe(
+      false,
+    );
+  });
+
+  it("matches nobody for a domain nobody is on", () => {
+    expect(matchesDomainFilter("a@company.tld", "other.tld")).toBe(false);
   });
 });

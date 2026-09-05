@@ -41,7 +41,9 @@ import {
   formatPeriod,
   formatPolicyValue,
   formatUpdateStatus,
+  matchesDomainFilter,
   matchesNodeFilter,
+  normalizeDomain,
   parseDeviceType,
   parseEnumFlag,
   parseKeyLimitMode,
@@ -407,11 +409,21 @@ async function cmdUsers(args: string[]): Promise<void> {
     api<AdminUser[]>("/api/admin/users"),
     api<Array<Record<string, unknown>>>("/api/admin/portal-policy"),
   ]);
-  if (wantsJson(args)) return json(users);
+  // Filter before rendering AND before --json, the same way `keys` does, so
+  // `users --domain=company.tld --json` is a scriptable census of one company
+  // rather than a list an operator has to narrow again with jq. `@company.tld`
+  // and `company.tld` are the same filter: the Cloudflare dashboard shows a
+  // domain rule as "emails ending in @company.tld" and that is what gets
+  // pasted, here as much as into `cf-domains`.
+  const domainFilter = flagOf(args, "domain");
+  const shown = users.filter((user) =>
+    matchesDomainFilter(user.email, domainFilter),
+  );
+  if (wantsJson(args)) return json(shown);
   const { globalMode } = policyLimitContext(policyRows);
   console.log(
     table(
-      users.map((user) => ({
+      shown.map((user) => ({
         email: user.email,
         role: user.role,
         status: user.status,
@@ -439,10 +451,11 @@ async function cmdKeys(args: string[]): Promise<void> {
     .filter((key) =>
       deviceFilter ? (key.deviceType ?? "unspecified") === deviceFilter : true,
     );
-  // The audit behind the key card's warning: which existing keys pair a
-  // platform whose client ignores route profiles with a split tunnel. The
-  // wizard can no longer create that pair, but older keys, the CLI and an
-  // admin still can, so an operator needs a way to count them.
+  // Which existing keys pair a platform whose client ignores route profiles
+  // with a split tunnel. Since #67 the wizard offers every profile on every
+  // platform and the key card warns about nothing, so anyone can create the
+  // pair themselves and nothing tells them: this filter and the warning
+  // `user-create-key` prints are the only two places it is still visible.
   const needsWarning = args.includes("--needs-profile-warning");
   const byWarning = needsWarning
     ? byDevice.filter((key) => keyNeedsRouteProfileWarning(key))
@@ -1049,14 +1062,34 @@ async function cmdCfSync(args: string[]): Promise<void> {
 }
 
 /**
- * Light client-side cleanup for an Access domain entry: trim, lower-case, and
- * drop a leading "@" someone might paste from a dashboard rule that reads
- * "emails ending in @company.tld". Deliberately shallow — the CLI carries no
- * dependency on packages/contracts, so accessDomainSchema, run by the API, is
- * the one place that decides whether the result is actually a valid domain.
+ * What removing an Access domain rule actually costs, printed before the
+ * change goes out. The Users dialog states this before its own confirm
+ * button; a shell session is the half most likely to read "cf-domains: now …"
+ * as housekeeping, because the reassuring half is true and visible while this
+ * half is neither.
+ *
+ * Both claims are read off `apps/worker/src/accessReconcile.ts`: the one `PUT`
+ * that drops the domain rule re-emits every active user's own address rule
+ * from the same computed `include` list, and an identity Cloudflare no longer
+ * admits never reaches the panel's login page, so it is never auto-provisioned
+ * an account either.
  */
-function normalizeCfDomain(value: string): string {
-  return value.trim().toLowerCase().replace(/^@+/, "");
+function accessDomainRemovalCost(domains: string[]): string[] {
+  const which = domains.length === 1 ? domains[0] : "one of them";
+  // Kept to roughly 80 columns a line: this is the last thing read before a
+  // change to a security-relevant allowlist, and a wrapped wall of text is
+  // read as noise.
+  return [
+    `  Nobody with an active panel account loses access: the same request`,
+    `  re-emits every active user's own address rule, and no keys are revoked.`,
+    `  Who does lose their way in: anyone with an address on ${which} and no`,
+    `  active panel account. That rule was their only route through Cloudflare`,
+    `  — they are stopped before the login page, and no account is created for`,
+    `  them on first sign-in any more.`,
+    `  To undo it, add the domain back or add those people as users by address.`,
+    `  "users --domain=<domain>" lists who on a domain is already in the panel,`,
+    `  i.e. exactly the people a removal does NOT touch.`,
+  ];
 }
 
 /**
@@ -1074,9 +1107,12 @@ function normalizeCfDomain(value: string): string {
  * "replace with an empty list": that is exactly what an unset shell variable
  * produces by accident (`--set=$DOMAINS` with `$DOMAINS` empty), and silently
  * posting `[]` would wipe every domain rule the panel owns on the next sync.
- * `--set=none` is the explicit, unambiguous way to ask for that — and it
- * prints what it is about to remove before doing it, since this is a
- * security-relevant allowlist.
+ * `--set=none` is the explicit, unambiguous way to ask for that.
+ *
+ * Any call that drops a domain names it, and says what dropping it costs,
+ * before the request goes out — the same two halves the Users dialog states
+ * before its own confirm button, and for the same reason: the reassuring half
+ * ("nobody is disabled") is the one an operator already assumes.
  */
 async function cmdCfDomains(args: string[]): Promise<void> {
   const add = flagOf(args, "add");
@@ -1112,16 +1148,12 @@ async function cmdCfDomains(args: string[]): Promise<void> {
       console.log("cf-domains: list is already empty — nothing to clear");
       return;
     }
-    // Say what is being removed before doing it — this wipes a
-    // security-relevant allowlist, so the operator sees the blast radius up
-    // front rather than discovering it from the next sync.
-    console.log(`cf-domains: clearing ${current.join(", ")}`);
     next = [];
   } else if (set !== undefined) {
-    next = [...new Set(csvList(set).map(normalizeCfDomain))];
+    next = [...new Set(csvList(set).map(normalizeDomain))];
   } else if (add !== undefined) {
-    const domain = normalizeCfDomain(add);
-    if (current.some((existing) => existing.toLowerCase() === domain)) {
+    const domain = normalizeDomain(add);
+    if (current.some((existing) => normalizeDomain(existing) === domain)) {
       console.log(
         `cf-domains: "${domain}" is already in the list — nothing to add`,
       );
@@ -1129,14 +1161,31 @@ async function cmdCfDomains(args: string[]): Promise<void> {
     }
     next = [...current, domain];
   } else {
-    const domain = normalizeCfDomain(remove as string);
-    if (!current.some((existing) => existing.toLowerCase() === domain)) {
+    const domain = normalizeDomain(remove as string);
+    if (!current.some((existing) => normalizeDomain(existing) === domain)) {
       console.log(
         `cf-domains: "${domain}" is not in the list — nothing to remove`,
       );
       return;
     }
-    next = current.filter((existing) => existing.toLowerCase() !== domain);
+    next = current.filter((existing) => normalizeDomain(existing) !== domain);
+  }
+
+  // Everything about to leave the list, whichever flag asked for it: --remove,
+  // --set=none, or a --set that simply stops naming a domain. All three cost
+  // the same thing, so the announcement is computed from the difference rather
+  // than written out once per branch — and printed BEFORE the request goes
+  // out, because this is a security-relevant allowlist and its blast radius
+  // should not first be discovered from the next sync.
+  const nextDomains = new Set(next.map(normalizeDomain));
+  const removed = current.filter(
+    (existing) => !nextDomains.has(normalizeDomain(existing)),
+  );
+  if (removed.length > 0) {
+    console.log(
+      `cf-domains: ${next.length === 0 ? "clearing" : "removing"} ${removed.join(", ")}`,
+    );
+    for (const line of accessDomainRemovalCost(removed)) console.log(line);
   }
 
   await api("/api/admin/portal-policy/global/update", {
@@ -1768,8 +1817,10 @@ async function cmdUserCreateKey(args: string[]): Promise<void> {
   if (route) body.routeProfile = route;
   const deviceType = flagOf(args, "device-type");
   if (deviceType) body.deviceType = parseDeviceType(deviceType);
-  // Same check the create-key wizard applies (contracts:
-  // deviceSupportsRouteProfiles). A warning, not a refusal — see the plan's D9.
+  // A warning, not a refusal — see the plan's D9. The create-key wizard used
+  // to apply the same check (contracts: deviceSupportsRouteProfiles) and grey
+  // the profile out; since #67 it gates nothing, so this line and
+  // `keys --needs-profile-warning` are the only places the caveat survives.
   const warning = routeProfileWarning(deviceType, route);
   if (warning) console.error(warning);
   const result = (await userAction(id, "create-key", body)) as { id?: string };
@@ -1972,8 +2023,12 @@ Usage: amnezia-panel <command> [args] [--json]
 
 Read:
   overview                 Key metrics
-  users                    List users (with each user's effective key-limit mode;
-                          * marks a mode set on the user rather than inherited)
+  users [--domain=<d>]     List users (with each user's effective key-limit mode;
+                          * marks a mode set on the user rather than inherited).
+                          --domain= keeps only the addresses on one email domain
+                          ("@company.tld" and "company.tld" are the same filter);
+                          a domain nobody is on lists (none), which is the answer
+                          to "is anyone still here" before a cf-domains --remove
   keys [--device-type=X]   List keys (with owner, platform + traffic); the flags filter
       [--node=<id>]       to one stored platform, "unspecified" included, and/or to
       [--needs-profile-warning]
@@ -2134,11 +2189,16 @@ Write:
                                           List, or edit, the domains admitted by the Access
                                           policy (one flag at a time). A bare --set= is refused
                                           (an unset shell variable, not a deliberate wipe) —
-                                          use --set=none to clear the list explicitly, which
-                                          prints what it removes first. Removing a domain
-                                          disables nobody: it only drops the domain rule, and
-                                          the next sync re-emits every signed-in user's own
-                                          rule. A rejected domain shows the API's own reason.
+                                          use --set=none to clear the list explicitly. Any call
+                                          that drops a domain names it, and what dropping it
+                                          costs, before the request goes out: nobody with an
+                                          active panel account is disabled (the same request
+                                          re-emits every one of their address rules), but
+                                          everyone on that domain WITHOUT an active account
+                                          loses their only route in and is no longer given an
+                                          account on first sign-in. Check with
+                                          users --domain=<d> first. A rejected domain shows
+                                          the API's own reason.
   policy-set --<field>=<value> …          Set any panel setting(s), see below
   global-routes-set --profile=ru_whitelist|ru_blacklist [--add-domains=] [--add-cidrs=]
                     [--exclude-domains=] [--exclude-cidrs=]
