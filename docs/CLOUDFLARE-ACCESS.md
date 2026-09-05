@@ -592,22 +592,28 @@ write-back, where Direction 1's read path may instead use `CF_ACCESS_GROUP_ID`.)
 
 Beyond individual emails, the write-back also lets the panel own whole-domain
 `email_domain` rules in the policy `include` list — set them from the Users
-page, or from a shell with `cf-domains` (see
-[`docs/CLI.md`](./CLI.md)). It is the same ownership split described above
-for email rules, one level up: the panel deletes only the domain rules its own
-stored list once added, and leaves every other domain rule (hand-added in the
-dashboard, or added by another tool) untouched — **until an operator names
-that same domain in the panel's list.** At that point ownership passes exactly
-the way an email's does: the panel claims the rule, re-emits it as a bare
-`{"email_domain":{"domain":...}}` (any fields this client does not model are
-lost), and from then on the panel — not the dashboard — decides whether the
-rule stays. A hand-added domain rule is therefore safe only until an operator
-types its domain into the panel's card; once that happens, removing the
-domain from the panel's list removes the rule, the same as if the panel had
+page, behind the **Access domains** button next to "add user", or from a shell
+with `cf-domains` (see [`docs/CLI.md`](./CLI.md)). It is the same ownership
+split described above for email rules, one level up: the panel deletes only the
+domain rules its own stored list once added, and leaves every other domain rule
+(hand-added in the dashboard, or added by another tool) untouched — **until an
+operator names that same domain in the panel's list.** At that point ownership
+passes exactly the way an email's does: the panel claims the rule, re-emits it
+as a bare `{"email_domain":{"domain":...}}` (any fields this client does not
+model are lost), and from then on the panel — not the dashboard — decides
+whether the rule stays. A hand-added domain rule is therefore safe only until
+an operator types its domain into the panel's list; once that happens, removing
+the domain from the panel's list removes the rule, the same as if the panel had
 added it in the first place. A second, duplicate hand-added rule for that same
 domain is claimed and dropped right along with it — ownership is by domain
 string, mirroring how a duplicate email rule is claimed (see "ownership"
 above).
+
+The dialog validates each entry against `accessDomainSchema` — the contract the
+API enforces — as it is typed, so an address rather than a domain
+(`someone@company.tld`) and a bare TLD are refused inline with the reason,
+before anything is saved. It is the same rule in both places: what the field
+rejects is exactly what the API would have rejected.
 
 **Two doors, two lists, deliberately not unified.** Which domains get someone
 in depends on which door they are walking through:
@@ -634,6 +640,17 @@ cover" above). Dropping the domain rule does not touch those individual
 rules — the very same `PUT` that removes it also re-emits every one of them,
 because both come from the one `include` list this sync computes and writes
 in a single request.
+
+**Who does lose their way in: everyone on that domain without an active panel
+account.** That rule was their only route through the Cloudflare door, so they
+are stopped at the edge, before the panel's login page — and because a panel
+account is created on first sign-in only for an identity Cloudflare has already
+let through (see auto-provisioning above), no account will be created for them
+either. That is the half a shell session is most likely to miss: tidying up the
+domain list looks like housekeeping and can cut people off. To undo it, add the
+domain back, or add those people as users by address first. The removal
+confirmation in the Users dialog states this; `cf-domains --remove` and
+`--set=none` do not.
 
 **A domain the panel owns and someone deletes in the dashboard is put back.**
 The stored list (`cf_access_allowed_domains`), not the live policy, is what

@@ -88,7 +88,25 @@ option.
 
 ## Node updates
 
-Node cards surface the node-agent version (`GET /server`). The node auto-updates
-its own containers via the **watchtower** already running on it; the panel does
-not push node updates (node-agent exposes no update endpoint, only
-`/server/reboot`).
+The panel **does** push node-agent updates, over `POST /server/update`, from the
+button on the node card or `amnezia-panel node-agent-update <id> --confirm`. The
+swap itself runs on the host in a port of the updater above
+(`infra/node/scripts/agent-update.sh`, driven by a `.path` unit watching a
+spool directory), because the agent container has only the Docker socket and
+could not durably replace itself. It is opt-in per host and needs node-agent
+1.1.9 or newer — earlier builds answered `500` on both `/server/update` routes,
+and the first hop to 1.1.9 has to be made over SSH. The full mechanism, the
+wiring step and every failure mode are in
+[`AGENT-HOST-SETUP.md`](./AGENT-HOST-SETUP.md), "Updating a node's agent from
+the panel".
+
+Two things the node card does **not** tell you:
+
+- **It does not show the running agent version.** `GET /server` reports no
+  version, so the version on the card is the release the panel has available,
+  not the one installed. What a node actually runs is only readable on that
+  host, as the digest in its `NODE_AGENT_IMAGE`.
+- **Nothing on a node auto-updates.** Watchtower and mutable `latest` tags are
+  forbidden on nodes and fail `preflight.sh`, exactly as they are on the panel
+  host. A watchtower seen on a node belongs to another install sharing that
+  host, not to this stack.
