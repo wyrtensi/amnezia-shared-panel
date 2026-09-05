@@ -704,7 +704,7 @@ export const portalPolicy = pgTable(
     ),
     check(
       "portal_policy_maintenance_interval_range",
-      sql`${table.maintenanceIntervalSec} IS NULL OR (${table.maintenanceIntervalSec} >= 300 AND ${table.maintenanceIntervalSec} <= 604800)`,
+      sql`${table.maintenanceIntervalSec} IS NULL OR (${table.maintenanceIntervalSec} >= 3600 AND ${table.maintenanceIntervalSec} <= 604800)`,
     ),
     check(
       "portal_policy_agent_release_refresh_range",

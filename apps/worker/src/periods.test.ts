@@ -41,7 +41,7 @@ describe("resolveWorkerPeriod", () => {
     ["telemetryPollSec", 1, 30],
     ["telemetryPollSec", 999_999, 86_400],
     ["peerSampleSec", 1, 60],
-    ["maintenanceIntervalSec", 5, 300],
+    ["maintenanceIntervalSec", 5, 3_600],
     ["ruleFetchIntervalSec", 60, 900],
     ["agentReleaseRefreshSec", 1, 300],
     ["accessReconcileSec", 1, 300],
@@ -84,6 +84,28 @@ describe("resolveWorkerPeriod", () => {
         defaults,
       ),
     ).toBe(60);
+  });
+
+  it("raises the PEER sample period to the poll period as well", () => {
+    // `peer_samples` rows are written by a poll too, so a peer sample period
+    // below the poll period would have the panel showing 60 s while an idle
+    // peer was actually recorded once an hour. The API refuses this pair on
+    // write; this is the read path, which also covers an environment poll
+    // period the API cannot see.
+    expect(
+      resolveWorkerPeriod(
+        "peerSampleSec",
+        { telemetryPollSec: 3_600, peerSampleSec: 60 },
+        defaults,
+      ),
+    ).toBe(3_600);
+    expect(
+      resolveWorkerPeriod(
+        "peerSampleSec",
+        { telemetryPollSec: 60, peerSampleSec: 300 },
+        defaults,
+      ),
+    ).toBe(300);
   });
 });
 

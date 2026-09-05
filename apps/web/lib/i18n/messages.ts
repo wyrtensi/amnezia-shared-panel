@@ -1058,7 +1058,7 @@ const ru = {
   "periods.unitDays": "дн.",
   "periods.telemetryPollSec": "Опрос состояния серверов",
   "periods.telemetryPollSecHint":
-    "Как часто панель опрашивает каждый сервер: состояние, нагрузка, список пиров и проверки сервисов, которым подошёл срок. Один опрос — это несколько запросов к каждому серверу флота, поэтому минимум 30 секунд.",
+    "Как часто панель опрашивает каждый сервер: состояние, нагрузка, список пиров и проверки сервисов, которым подошёл срок. Это не только запросы: активный ключ переустанавливает соединение примерно раз в две минуты, поэтому почти каждый опрос дописывает ему строку в историю пиров. Период опроса — это и есть скорость роста этой таблицы, а обслуживание базы загружает её целиком в память воркера. Отсюда минимум 30 секунд.",
   "periods.nodeMetricsSampleSec": "Запись истории метрик хоста",
   "periods.nodeMetricsSampleSecHint":
     "Как часто опрос сохраняет строку истории метрик хоста. Не может быть меньше периода опроса: строку пишет только опрос, поэтому меньшее значение не даст более подробной истории.",
@@ -1067,13 +1067,13 @@ const ru = {
     "Сколько дней хранятся строки истории метрик хоста. Одна строка на сервер за период выборки.",
   "periods.peerSampleSec": "Запись истории пиров",
   "periods.peerSampleSecHint":
-    "Нижняя граница для пира, состояние которого не изменилось: пир с изменившимся состоянием записывается всегда. Одна строка на ключ, поэтому таблица растёт вместе с числом ключей, а не серверов.",
+    "Нижняя граница для пира, состояние которого не изменилось: пир с изменившимся состоянием записывается всегда. Одна строка на ключ, поэтому таблица растёт вместе с числом ключей, а не серверов. Как и история метрик, не может быть меньше периода опроса: строку пишет только опрос.",
   "periods.maintenanceIntervalSec": "Обслуживание базы",
   "periods.maintenanceIntervalSecHint":
-    "Агрегация трафика и очистка старых строк. Каждый запуск — проход по скользящему окну, поэтому чаще пяти минут это тратит на сканирование больше, чем освобождает.",
+    "Агрегация трафика и очистка старых строк. Каждый запуск целиком загружает историю пиров за окно хранения в память воркера, а она ограничена 160 МБ, поэтому дело не в процессоре: минимум — час, и это тот период, с которым задача работала всегда.",
   "periods.agentReleaseRefreshSec": "Проверка релиза node-agent",
   "periods.agentReleaseRefreshSecHint":
-    "Как часто панель заново определяет образ node-agent, который она предлагает серверам. Запрос идёт к публичному реестру с ограничением по частоте.",
+    "Как часто панель заново определяет образ node-agent, который она предлагает серверам. Каждый запуск — три запроса к ghcr.io: токен, список тегов и манифест выбранного тега.",
   "periods.ruleFetchIntervalSec": "Загрузка списков маршрутов",
   "periods.ruleFetchIntervalSecHint":
     "Как часто скачиваются внешние фиды маршрутов. Сами фиды обновляются в лучшем случае раз в сутки.",
@@ -2110,7 +2110,7 @@ const en = {
   "periods.unitDays": "days",
   "periods.telemetryPollSec": "Server-status poll",
   "periods.telemetryPollSecHint":
-    "How often the panel polls each server for its status, load, peer list and any service checks that are due. One poll is several requests to every server in the fleet, which is why the floor is 30 seconds.",
+    "How often the panel polls each server for its status, load, peer list and any service checks that are due. The requests are not the binding cost: an active key re-handshakes about every two minutes, so nearly every poll writes it a peer history row. The poll period is therefore the growth rate of that table, and database maintenance loads a whole retention window of it into the worker's memory at once. Hence the 30-second floor.",
   "periods.nodeMetricsSampleSec": "Host-metrics history row",
   "periods.nodeMetricsSampleSecHint":
     "How often a poll keeps a host-metrics history row. It cannot be shorter than the poll period: only a poll writes a row, so a shorter setting would keep no extra history.",
@@ -2119,13 +2119,13 @@ const en = {
     "How many days host-metrics history rows are kept. One row per server per sample period.",
   "periods.peerSampleSec": "Peer history row",
   "periods.peerSampleSecHint":
-    "The floor for a peer whose state has not changed; a peer that moved is always recorded. One row per key, so this table grows with the number of keys rather than servers.",
+    "The floor for a peer whose state has not changed; a peer that moved is always recorded. One row per key, so this table grows with the number of keys rather than servers. Like the metrics history it cannot be shorter than the poll period: only a poll writes a row.",
   "periods.maintenanceIntervalSec": "Database maintenance",
   "periods.maintenanceIntervalSecHint":
-    "Traffic roll-ups and pruning. Every run is a pass over a rolling window, so below five minutes it spends more on the scan than it reclaims.",
+    "Traffic roll-ups and pruning. Every run loads the whole retention window of peer history into the worker's memory, which is capped at 160 MB, so the cost is memory rather than CPU: the floor is one hour, the period this task always ran on.",
   "periods.agentReleaseRefreshSec": "Node-agent release check",
   "periods.agentReleaseRefreshSecHint":
-    "How often the panel re-resolves the node-agent image it offers servers. It calls a public registry that limits how often it may be asked.",
+    "How often the panel re-resolves the node-agent image it offers servers. Every run is three requests to ghcr.io: a pull token, the tag list, and the manifest of the tag it picked.",
   "periods.ruleFetchIntervalSec": "Route-rule feed download",
   "periods.ruleFetchIntervalSecHint":
     "How often the external route feeds are downloaded. The feeds themselves publish daily at best.",

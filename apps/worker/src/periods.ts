@@ -26,7 +26,8 @@
 import {
   WORKER_PERIOD_FIELDS,
   clampWorkerPeriod,
-  metricsSampleBelowPoll,
+  isPollBoundSampleField,
+  sampleBelowPoll,
   type WorkerPeriodField,
   type WorkerPeriodOverrides,
 } from "@amnezia/contracts";
@@ -99,15 +100,17 @@ export const resolveWorkerPeriod = (
 ): number => {
   const stored = clampWorkerPeriod(field, overrides[field]);
   const value = stored ?? defaults[field];
-  if (field !== "nodeMetricsSampleSec") return value;
-  // The one cross-field rule, applied here rather than only on the write path.
-  // The control API refuses a stored pair that breaks it, but it cannot see the
-  // worker's ENVIRONMENT: a panel with TELEMETRY_POLL_SEC=120 and a sample
-  // period of 90 saved before that variable was set is a legitimate way to end
-  // up here. Raising the sample period to the poll period is the honest
-  // outcome - it is what the panel can actually deliver.
+  if (!isPollBoundSampleField(field)) return value;
+  // The one cross-field rule, applied here rather than only on the write path,
+  // and to BOTH sample periods - `peer_samples` rows are written by a poll just
+  // as `node_metrics_samples` rows are. The control API refuses a stored pair
+  // that breaks it, but it cannot see the worker's ENVIRONMENT: a panel with
+  // TELEMETRY_POLL_SEC=120 and a sample period of 90 saved before that variable
+  // was set is a legitimate way to end up here. Raising the sample period to the
+  // poll period is the honest outcome - it is what the panel can actually
+  // deliver.
   const poll = resolveWorkerPeriod("telemetryPollSec", overrides, defaults);
-  return metricsSampleBelowPoll(poll, value) ? poll : value;
+  return sampleBelowPoll(field, poll, value) ? poll : value;
 };
 
 export const createWorkerPeriods = ({

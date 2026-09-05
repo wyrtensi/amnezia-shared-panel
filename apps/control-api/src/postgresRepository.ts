@@ -58,7 +58,9 @@ import {
   recommendedNodeIdsSchema,
   portalPolicyOverrideSchema,
   portalPolicySchema,
-  metricsSampleBelowPoll,
+  POLL_BOUND_SAMPLE_FIELDS,
+  POLL_BOUND_SAMPLE_LABELS,
+  sampleBelowPoll,
   workerPeriodOverridesSchema,
   WORKER_PERIOD_FIELDS,
   WORKER_PERIOD_FIELD_NAMES,
@@ -68,6 +70,7 @@ import {
   setUserLimitRequestSchema,
   updateGlobalRoutesRequestSchema,
 } from "@amnezia/contracts";
+import type { PollBoundSampleField } from "@amnezia/contracts";
 import {
   armAccessSyncRow,
   auditEvents,
@@ -3073,39 +3076,46 @@ export class PostgresControlRepository implements ControlRepository {
             throw new ApiError(400, "Unknown node id", "NODE_NOT_FOUND");
           }
         }
-        // A metrics sample period below the telemetry poll period is not a
-        // faster history, it is the same history with a setting that lies about
-        // it: only a poll can write a sample. It used to be caught at worker
-        // boot, which is no help to an admin who has just saved the pair here —
-        // so it is refused on the way in, checked against the EFFECTIVE state
-        // so naming only one of the two is still validated against the other.
+        // A sample period below the telemetry poll period is not a faster
+        // history, it is the same history with a setting that lies about it:
+        // only a poll can write a sample row, for host metrics and for peers
+        // alike. It used to be caught at worker boot, which is no help to an
+        // admin who has just saved the pair here — so it is refused on the way
+        // in, checked against the EFFECTIVE state so naming only one of the two
+        // is still validated against the other. The worker clamps on read as
+        // well, because it can see an environment poll period that this cannot;
+        // refusing here is what stops the panel DISPLAYING a sample period that
+        // is not the one running.
         if (
           named.has("telemetryPollSec") ||
-          named.has("nodeMetricsSampleSec")
+          POLL_BOUND_SAMPLE_FIELDS.some((field) => named.has(field))
         ) {
           const [storedPeriods] = await tx
             .select({
               telemetryPollSec: portalPolicy.telemetryPollSec,
               nodeMetricsSampleSec: portalPolicy.nodeMetricsSampleSec,
+              peerSampleSec: portalPolicy.peerSampleSec,
             })
             .from(portalPolicy)
             .limit(1);
           // A field the caller named as `null` means "use the default", so it
           // resolves to the fallback rather than to the value being cleared.
           const effective = (
-            field: "telemetryPollSec" | "nodeMetricsSampleSec",
+            field: "telemetryPollSec" | PollBoundSampleField,
           ): number =>
             (named.has(field) ? provided[field] : storedPeriods?.[field]) ??
             WORKER_PERIOD_FIELDS[field].fallback;
-          const conflict = metricsSampleBelowPoll(
-            effective("telemetryPollSec"),
-            effective("nodeMetricsSampleSec"),
-          );
-          if (conflict) {
+          for (const field of POLL_BOUND_SAMPLE_FIELDS) {
+            const conflict = sampleBelowPoll(
+              field,
+              effective("telemetryPollSec"),
+              effective(field),
+            );
+            if (!conflict) continue;
             throw new ApiError(
               400,
-              `The host-metrics sample period (${conflict.nodeMetricsSampleSec} s) cannot be shorter than the server-status poll period (${conflict.telemetryPollSec} s): only a poll can write a sample, so a shorter sample period would keep no extra history. Note that a worker whose environment sets TELEMETRY_POLL_SEC uses that as the poll period when none is set here.`,
-              "METRICS_SAMPLE_BELOW_POLL",
+              `The ${POLL_BOUND_SAMPLE_LABELS[field]} (${conflict.sampleSec} s) cannot be shorter than the server-status poll period (${conflict.telemetryPollSec} s): only a poll can write a sample, so a shorter sample period would keep no extra history. Note that a worker whose environment sets TELEMETRY_POLL_SEC uses that as the poll period when none is set here.`,
+              "SAMPLE_BELOW_POLL",
             );
           }
         }

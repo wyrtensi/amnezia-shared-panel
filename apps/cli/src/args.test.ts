@@ -1,4 +1,12 @@
 import { describe, it, expect } from "vitest";
+// A DEV dependency only, and only here: the CLI ships as a dependency-free
+// `dist/main.js`, so `args.ts` re-states the period table rather than importing
+// it. Comparing the two tables in a test is what keeps that copy honest without
+// putting the package into the shipped bundle.
+import {
+  WORKER_PERIOD_FIELDS as CONTRACT_PERIOD_FIELDS,
+  WORKER_PERIOD_FIELD_NAMES as CONTRACT_PERIOD_FIELD_NAMES,
+} from "@amnezia/contracts";
 import {
   DEVICE_TYPES,
   DEVICE_TYPE_ORDER,
@@ -461,50 +469,15 @@ describe("formatPolicyValue", () => {
 });
 
 describe("worker period table", () => {
-  it("mirrors WORKER_PERIOD_FIELDS in @amnezia/contracts", () => {
-    // Structural copy, pinned on both sides: the CLI takes no runtime
-    // dependency on the contracts package, so this literal and the one in
-    // packages/contracts/src/contracts.test.ts are what keep the two honest.
-    expect(WORKER_PERIOD_FIELDS).toEqual({
-      telemetryPollSec: { min: 30, max: 86_400, fallback: 60, unit: "sec" },
-      nodeMetricsSampleSec: { min: 30, max: 86_400, fallback: 300, unit: "sec" },
-      nodeMetricsRetentionDays: { min: 1, max: 3_650, fallback: 7, unit: "day" },
-      peerSampleSec: { min: 60, max: 86_400, fallback: 300, unit: "sec" },
-      maintenanceIntervalSec: {
-        min: 300,
-        max: 604_800,
-        fallback: 3_600,
-        unit: "sec",
-      },
-      agentReleaseRefreshSec: {
-        min: 300,
-        max: 604_800,
-        fallback: 1_800,
-        unit: "sec",
-      },
-      ruleFetchIntervalSec: {
-        min: 900,
-        max: 604_800,
-        fallback: 21_600,
-        unit: "sec",
-      },
-      accessReconcileSec: {
-        min: 300,
-        max: 604_800,
-        fallback: 3_600,
-        unit: "sec",
-      },
-    });
-    expect(WORKER_PERIOD_FIELD_NAMES).toEqual([
-      "telemetryPollSec",
-      "nodeMetricsSampleSec",
-      "nodeMetricsRetentionDays",
-      "peerSampleSec",
-      "maintenanceIntervalSec",
-      "agentReleaseRefreshSec",
-      "ruleFetchIntervalSec",
-      "accessReconcileSec",
-    ]);
+  it("equals WORKER_PERIOD_FIELDS in @amnezia/contracts", () => {
+    // The actual cross-check, not two literals that each pin their own side:
+    // move a bound in the contract without moving it here and this fails, which
+    // is the whole point of the devDependency. The numbers themselves are
+    // pinned once, in packages/contracts/src/contracts.test.ts.
+    expect(WORKER_PERIOD_FIELDS).toEqual(CONTRACT_PERIOD_FIELDS);
+    // Order matters as well as content: `periods`, `policy-set` and the help
+    // text all list the fields in it.
+    expect(WORKER_PERIOD_FIELD_NAMES).toEqual(CONTRACT_PERIOD_FIELD_NAMES);
   });
 });
 

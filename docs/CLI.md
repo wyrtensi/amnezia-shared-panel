@@ -321,12 +321,12 @@ amnezia-panel policy-set --ruleFetchIntervalSec=default
 
 | Period | Default | Range | What it is |
 | --- | --- | --- | --- |
-| `telemetryPollSec` | 60 s | 30..86400 | The server-status poll: one health + server + load + client-list fan-out to **every** node, plus the service checks that are due. The 30 s floor is why nobody can point the fleet at itself |
+| `telemetryPollSec` | 60 s | 30..86400 | The server-status poll: one health + server + load + client-list fan-out to **every** node, plus the service checks that are due. The requests are not the binding cost: an active key re-handshakes about every 2 min, so nearly every poll writes it a `peer_samples` row — the poll period **is** the growth rate of that table, and maintenance loads a whole retention window of it into the worker's heap. Hence the 30 s floor |
 | `nodeMetricsSampleSec` | 300 s | 30..86400 | How often a poll keeps a `node_metrics_samples` row. Never below the poll period — only a poll can write a row, so a shorter setting keeps no extra history; the API refuses the pair and names both numbers |
 | `nodeMetricsRetentionDays` | 7 days | 1..3650 | How long that history is kept. Nothing else prunes the table |
-| `peerSampleSec` | 300 s | 60..86400 | Floor for a peer whose state has **not** moved (one that did is always recorded). One row per key, so the table grows with keys × fleet — hence a higher floor than the poll |
-| `maintenanceIntervalSec` | 3600 s | 300..604800 | Traffic roll-ups plus pruning. Every run is a pass over a rolling window, so below 5 minutes it spends more on the scan than it reclaims |
-| `agentReleaseRefreshSec` | 1800 s | 300..604800 | Re-resolves the node-agent release the panel offers. It calls a public registry that rate-limits unauthenticated callers at 60/hour per IP; 300 s is 12/hour |
+| `peerSampleSec` | 300 s | 60..86400 | Floor for a peer whose state has **not** moved (one that did is always recorded). One row per key, so the table grows with keys × fleet — hence a higher floor than the poll. Never below the poll period either, for the same reason as `nodeMetricsSampleSec`: only a poll writes the row |
+| `maintenanceIntervalSec` | 3600 s | 3600..604800 | Traffic roll-ups plus pruning. Every run loads **every** `peer_samples` row in the raw retention window into the worker's heap at once and walks it twice; the container runs under a 160 MB `mem_limit`. The floor is the hour this loop always ran on, and it stays there until the roll-up aggregates in SQL |
+| `agentReleaseRefreshSec` | 1800 s | 300..604800 | Re-resolves the node-agent release the panel offers. Each run is three ghcr.io requests — pull token, tag list, manifest HEAD — so 300 s is 36 registry calls an hour (the 60/hour limit is `api.github.com`'s, which this loop never calls) |
 | `ruleFetchIntervalSec` | 21600 s | 900..604800 | Route-rule feed download. Each run pulls the external feeds in full; they publish daily at best |
 | `accessReconcileSec` | 3600 s | 300..604800 | The Cloudflare Access reconcile timer. A panel-side user change already arms an immediate run, so a faster timer only adds API calls |
 
@@ -352,10 +352,13 @@ period, wait one cycle, and read `node-metrics` or the node cards.
 out-of-range number locally (so you are told which number, not which field), the
 control API refuses the write, and the worker clamps whatever it reads — which
 is what covers a row edited in SQL or restored from a panel with different
-bounds. The table has a `CHECK` per column as well. The one relation between two
-periods, `nodeMetricsSampleSec >= telemetryPollSec`, is refused on the write path
-with both numbers in the message and additionally clamped by the worker, because
-the API cannot see a `TELEMETRY_POLL_SEC` set in that worker's environment.
+bounds. The table has a `CHECK` per column as well. The relation between periods
+— both `nodeMetricsSampleSec` and `peerSampleSec` must be `>= telemetryPollSec`,
+since only a poll writes either row — is refused on the write path with both
+numbers in the message and additionally clamped by the worker, because the API
+cannot see a `TELEMETRY_POLL_SEC` set in that worker's environment. Refusing the
+write is what stops the panel *displaying* a sample period that is not the one
+running; the clamp is what stops it *running* one.
 
 Per-check periods are separate and always were: a service check has its own
 `intervalSec` (`check-set --interval-sec=`, or the minutes field on the check's

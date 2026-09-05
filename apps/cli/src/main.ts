@@ -17,7 +17,6 @@ import { writeFile } from "node:fs/promises";
 import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
-
 import {
   keyNeedsRouteProfileWarning,
   routeProfileWarning,
@@ -1943,7 +1942,9 @@ policy-set fields:
                                           a poll can write a sample)
     nodeMetricsRetentionDays=<1..3650>    how long that history is kept
     peerSampleSec=<60..86400>             floor for an UNCHANGED peer's row
-    maintenanceIntervalSec=<300..604800>  roll-ups + pruning
+                                          (never below telemetryPollSec, for
+                                          the same reason)
+    maintenanceIntervalSec=<3600..604800> roll-ups + pruning
     agentReleaseRefreshSec=<300..604800>  re-resolve the node-agent release
     ruleFetchIntervalSec=<900..604800>    route-rule feed download
     accessReconcileSec=<300..604800>      Cloudflare Access reconcile timer

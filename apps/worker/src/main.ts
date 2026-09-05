@@ -92,6 +92,10 @@ const repository = new PostgresWorkerRepository({
   activeKeyVersion,
   metricsSampleSec: () => periods.get("nodeMetricsSampleSec"),
   peerSampleSec: () => periods.get("peerSampleSec"),
+  // What a failed lookup falls back to. The worker's OWN defaults, not the
+  // contract's constants: on a host that sets NODE_METRICS_SAMPLE_SEC that
+  // variable is the period actually in force.
+  periodDefaults,
 });
 const pollTelemetry = createTelemetryPoller({
   repository,

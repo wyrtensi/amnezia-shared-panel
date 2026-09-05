@@ -29,6 +29,9 @@ importers:
 
   apps/cli:
     devDependencies:
+      '@amnezia/contracts':
+        specifier: workspace:*
+        version: link:../../packages/contracts
       tsx:
         specifier: 4.21.0
         version: 4.21.0

@@ -99,6 +99,20 @@ export type PostgresWorkerRepositoryOptions = {
    * moved is always sampled regardless.
    */
   peerSampleSec?: number | (() => Promise<number>);
+  /**
+   * The worker's OWN defaults for the two sample periods, used when a resolver
+   * above fails outright.
+   *
+   * Without it the fallback would be the contract's built-in constant, which is
+   * the wrong number on any host that sets NODE_METRICS_SAMPLE_SEC: that
+   * environment value is the default the worker actually runs on, so it is what
+   * a failed lookup has to land on. Optional because the tests pass fixed
+   * numbers and never reach the fallback at all.
+   */
+  periodDefaults?: {
+    nodeMetricsSampleSec: number;
+    peerSampleSec: number;
+  };
 };
 
 // The transaction handle drizzle passes to `db.transaction(async (tx) => ...)`.
@@ -985,12 +999,14 @@ export class PostgresWorkerRepository
     const metricsSampleMs =
       (await resolveSeconds(
         this.options.metricsSampleSec,
-        DEFAULT_METRICS_SAMPLE_SEC,
+        this.options.periodDefaults?.nodeMetricsSampleSec ??
+          DEFAULT_METRICS_SAMPLE_SEC,
       )) * 1_000;
     const peerSampleMs =
       (await resolveSeconds(
         this.options.peerSampleSec,
-        DEFAULT_PEER_SAMPLE_INTERVAL_MS / 1_000,
+        this.options.periodDefaults?.peerSampleSec ??
+          DEFAULT_PEER_SAMPLE_INTERVAL_MS / 1_000,
       )) * 1_000;
     await this.options.db.transaction(async (tx) => {
       const node = (

@@ -5,8 +5,10 @@
  *
  * The CLI declares no runtime dependencies on purpose (see the note in
  * `deviceProfiles.ts`), so it re-states the table rather than importing the
- * workspace package. Both copies are pinned by a test on their own side; if the
- * contract's bounds change, this one and its test change with it.
+ * workspace package at runtime. `@amnezia/contracts` IS a devDependency, and
+ * `args.test.ts` compares this copy against it field for field -- a test
+ * dependency changes nothing about the shipped `dist/main.js`, and it is the
+ * only thing that can catch a contract bound moving without this copy.
  *
  * `fallback` is the BUILT-IN default. A worker whose environment sets
  * TELEMETRY_POLL_SEC, NODE_METRICS_SAMPLE_SEC, NODE_METRICS_RETENTION_DAYS or
@@ -19,7 +21,7 @@ export const WORKER_PERIOD_FIELDS = {
   nodeMetricsRetentionDays: { min: 1, max: 3_650, fallback: 7, unit: "day" },
   peerSampleSec: { min: 60, max: 86_400, fallback: 300, unit: "sec" },
   maintenanceIntervalSec: {
-    min: 300,
+    min: 3_600,
     max: 604_800,
     fallback: 3_600,
     unit: "sec",

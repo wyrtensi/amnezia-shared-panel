@@ -11,10 +11,12 @@
     "dev": "tsx src/main.ts",
     "lint": "eslint src",
     "start": "node dist/main.js",
+    "pretest": "pnpm --filter @amnezia/contracts build",
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json"
   },
   "devDependencies": {
+    "@amnezia/contracts": "workspace:*",
     "tsx": "4.21.0"
   }
 }

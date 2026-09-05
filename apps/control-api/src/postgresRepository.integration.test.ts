@@ -2112,6 +2112,10 @@ describe("PostgresControlRepository global policy update", () => {
       { peerSampleSec: 30 },
       { ruleFetchIntervalSec: 60 },
       { nodeMetricsRetentionDays: 0 },
+      // The maintenance floor is an hour: a run loads the whole raw retention
+      // window of peer_samples into the worker's heap, and the container has
+      // 160 MB. Half an hour was legal before that cost was accounted for.
+      { maintenanceIntervalSec: 1_800 },
     ]) {
       await expect(
         repository.adminAction(admin, "portal-policy", "global", "update", payload),
@@ -2138,7 +2142,7 @@ describe("PostgresControlRepository global policy update", () => {
       );
       expect(failure).toMatchObject({
         statusCode: 400,
-        code: "METRICS_SAMPLE_BELOW_POLL",
+        code: "SAMPLE_BELOW_POLL",
       });
       expect(failure?.message).toContain("600");
 
@@ -2152,7 +2156,7 @@ describe("PostgresControlRepository global policy update", () => {
           telemetryPollSec: 600,
         }),
       );
-      expect(failure).toMatchObject({ code: "METRICS_SAMPLE_BELOW_POLL" });
+      expect(failure).toMatchObject({ code: "SAMPLE_BELOW_POLL" });
 
       // Only the sample named, checked against the stored poll period.
       await repository.adminAction(admin, "portal-policy", "global", "update", {
@@ -2164,7 +2168,7 @@ describe("PostgresControlRepository global policy update", () => {
           nodeMetricsSampleSec: 60,
         }),
       );
-      expect(failure).toMatchObject({ code: "METRICS_SAMPLE_BELOW_POLL" });
+      expect(failure).toMatchObject({ code: "SAMPLE_BELOW_POLL" });
 
       // The refused write must not have half-applied.
       const [row] = (await repository.adminList(admin, "portal-policy")) as Array<
@@ -2174,6 +2178,55 @@ describe("PostgresControlRepository global policy update", () => {
         telemetryPollSec: 300,
         nodeMetricsSampleSec: 300,
       });
+    },
+  );
+
+  runDatabaseTest(
+    "refuses a peer sample period below the poll period as well",
+    async () => {
+      if (!database) return;
+      const repository = new PostgresControlRepository({
+        db: database.db,
+        keyring,
+      });
+      await database.db.delete(portalPolicy);
+
+      // The exact pair the CLI, the schema, the CHECK and the worker all used
+      // to accept: peer_samples rows are written by a poll too, so the panel
+      // would have displayed 60 s while an idle peer was recorded once an hour.
+      let failure = await failureOf(
+        repository.adminAction(admin, "portal-policy", "global", "update", {
+          telemetryPollSec: 3_600,
+          // Kept legal, so the refusal below can only be about the peer period.
+          nodeMetricsSampleSec: 3_600,
+          peerSampleSec: 60,
+        }),
+      );
+      expect(failure).toMatchObject({
+        statusCode: 400,
+        code: "SAMPLE_BELOW_POLL",
+      });
+      // Named as the peer period, not as the metrics one.
+      expect(failure?.message).toContain("peer sample period");
+      expect(failure?.message).toContain("3600");
+
+      // And from the other side: raising the poll period past a STORED peer
+      // sample period is refused rather than silently clamped later.
+      await repository.adminAction(admin, "portal-policy", "global", "update", {
+        telemetryPollSec: 60,
+        peerSampleSec: 60,
+      });
+      failure = await failureOf(
+        repository.adminAction(admin, "portal-policy", "global", "update", {
+          telemetryPollSec: 300,
+        }),
+      );
+      expect(failure).toMatchObject({ code: "SAMPLE_BELOW_POLL" });
+
+      const [row] = (await repository.adminList(admin, "portal-policy")) as Array<
+        Record<string, unknown>
+      >;
+      expect(row).toMatchObject({ telemetryPollSec: 60, peerSampleSec: 60 });
     },
   );
 
@@ -2199,7 +2252,7 @@ describe("PostgresControlRepository global policy update", () => {
         repository.adminAction(admin, "portal-policy", "global", "update", {
           telemetryPollSec: null,
         }),
-      ).rejects.toMatchObject({ code: "METRICS_SAMPLE_BELOW_POLL" });
+      ).rejects.toMatchObject({ code: "SAMPLE_BELOW_POLL" });
     },
   );
 });

@@ -1712,7 +1712,7 @@
         },
         "portal_policy_maintenance_interval_range": {
           "name": "portal_policy_maintenance_interval_range",
-          "value": "\"portal_policy\".\"maintenance_interval_sec\" IS NULL OR (\"portal_policy\".\"maintenance_interval_sec\" >= 300 AND \"portal_policy\".\"maintenance_interval_sec\" <= 604800)"
+          "value": "\"portal_policy\".\"maintenance_interval_sec\" IS NULL OR (\"portal_policy\".\"maintenance_interval_sec\" >= 3600 AND \"portal_policy\".\"maintenance_interval_sec\" <= 604800)"
         },
         "portal_policy_agent_release_refresh_range": {
           "name": "portal_policy_agent_release_refresh_range",
