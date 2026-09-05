@@ -13,8 +13,8 @@ BACKUP_DIR="$NODE_DIR/backups"
 LOCK_DIR="$NODE_DIR/.deploy.lock"
 AWG2_IMAGE='amneziavpn/amneziawg-go:0.2.19@sha256:3c78eb57ef5cb44f63aed185e79c104593c854a5ebde3e1075470301bcc77c44'
 AWG2_REPO_DIGEST='amneziavpn/amneziawg-go@sha256:3c78eb57ef5cb44f63aed185e79c104593c854a5ebde3e1075470301bcc77c44'
-AWG3_IMAGE='amneziavpn/amneziawg-go:3.1.20260814@sha256:4450928744b051589bb3ba5cf6dd0cd8d7dc470b9432dc32d03d5ff5ede11b7a'
-AWG3_REPO_DIGEST='amneziavpn/amneziawg-go@sha256:4450928744b051589bb3ba5cf6dd0cd8d7dc470b9432dc32d03d5ff5ede11b7a'
+AWG3_IMAGE='amneziavpn/amneziawg-go:3.1.20260828@sha256:cbafc02b8373a83f428272db6d8001b37bc02e6211cbd8c0cb4e2e3759b12b72'
+AWG3_REPO_DIGEST='amneziavpn/amneziawg-go@sha256:cbafc02b8373a83f428272db6d8001b37bc02e6211cbd8c0cb4e2e3759b12b72'
 
 info() {
   printf '%s\n' "$*"

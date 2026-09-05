@@ -207,6 +207,18 @@ max_handshakes="$(rand_span 12 16 4 8)"
 # prober can elicit), at the cost of WireGuard's own DoS rate limiter. `on`
 # matches upstream's own client default; override per host if a node is exposed
 # and availability matters more than silence.
+#
+# That description is only true from amneziawg-go 3.1.20260828 on, which is what
+# common.sh pins. Up to and including 3.1.20260814 the `on` guard sat on cookie
+# *sending* alone while the MAC2 check stayed live, so a client arriving during a
+# flood could never obtain the cookie it needed and could not connect until the
+# flood ended - `on` locked out the node's own users rather than just quieting
+# it. Do not pin an older AWG3 image without re-reading this.
+#
+# Worth knowing either way: cookies go out only while the daemon reports
+# IsUnderLoad(), so a single probe elicits nothing from either setting. The
+# stealth `on` buys applies to a prober who can first flood the port into that
+# state, not to ordinary scanning.
 random_trailers=on
 disable_cookies="${AWG3_DISABLE_COOKIES:-on}"
 

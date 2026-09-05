@@ -45,7 +45,7 @@ directly.
 
 | Container | Image (pinned) | Endpoint |
 | --- | --- | --- |
-| `amnezia-awg3` | `amneziavpn/amneziawg-go:3.1.20260814@sha256:4450…1b7a` | UDP **51890**, subnet **10.90.0.0/22** (server `10.90.0.1/22`) |
+| `amnezia-awg3` | `amneziavpn/amneziawg-go:3.1.20260828@sha256:cbaf…2b72` | UDP **51890**, subnet **10.90.0.0/22** (server `10.90.0.1/22`) |
 | `amnezia-awg2` | `amneziavpn/amneziawg-go:0.2.19@sha256:3c78…77c44` | UDP **51889**, subnet **10.89.0.0/22** (server `10.89.0.1/22`) |
 | `amnezia-node-agent` | built locally from `services/node-agent` (reviewed fork of `kyoresuas/amnezia-api`) | TCP **`127.0.0.1:4001` only**, `PROTOCOLS_ENABLED` (default `amneziawg3`) |
 
@@ -101,7 +101,7 @@ the host firewall. The control plane reaches it over an approved private transpo
   host; TCP **4001 closed** on every public interface.
 - **Fixed image pins** (immutable, `pull_policy: never` for the built image):
   - AWG2: `amneziavpn/amneziawg-go:0.2.19@sha256:3c78eb57ef5cb44f63aed185e79c104593c854a5ebde3e1075470301bcc77c44`
-  - AWG3: `amneziavpn/amneziawg-go:3.1.20260814@sha256:4450928744b051589bb3ba5cf6dd0cd8d7dc470b9432dc32d03d5ff5ede11b7a`
+  - AWG3: `amneziavpn/amneziawg-go:3.1.20260828@sha256:cbafc02b8373a83f428272db6d8001b37bc02e6211cbd8c0cb4e2e3759b12b72`
   - node-agent: built locally; `NODE_AGENT_IMAGE` must be an immutable
     `sha256:<64-hex>` image ID or a `repository@sha256:<digest>` reference.
   - Mutable `latest` tags and Watchtower are forbidden (preflight scans the

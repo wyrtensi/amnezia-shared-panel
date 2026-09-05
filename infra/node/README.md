@@ -11,8 +11,8 @@ This directory contains local, operator-run deployment assets for one Linux/amd6
 - AWG2 image: `amneziavpn/amneziawg-go:0.2.19`.
 - Approved AWG2 Linux/amd64 manifest digest: `sha256:3c78eb57ef5cb44f63aed185e79c104593c854a5ebde3e1075470301bcc77c44`.
 - Verified AWG2 multi-platform index digest: `sha256:acef5ae84808a9568448e9d8c7a96f640a5ccc590b0f8dfbc2df9f9dc0e848c9`.
-- AWG3 image: `amneziavpn/amneziawg-go:3.1.20260814`.
-- Approved AWG3 multi-platform index digest: `sha256:4450928744b051589bb3ba5cf6dd0cd8d7dc470b9432dc32d03d5ff5ede11b7a`.
+- AWG3 image: `amneziavpn/amneziawg-go:3.1.20260828`.
+- Approved AWG3 multi-platform index digest: `sha256:cbafc02b8373a83f428272db6d8001b37bc02e6211cbd8c0cb4e2e3759b12b72`.
 - VPN endpoints: UDP `51889` (AWG2), UDP `51890` (AWG3).
 - VPN subnets: `10.89.0.0/22` (AWG2, server `10.89.0.1/22`); `10.90.0.0/22` (AWG3, server `10.90.0.1/22`).
 - Node-agent endpoint: host loopback `127.0.0.1:4001` only. `PROTOCOLS_ENABLED` defaults to `amneziawg3`; add `amneziawg2` to it on a node that still carries legacy peers, which is also what activates the `awg2` compose profile.
