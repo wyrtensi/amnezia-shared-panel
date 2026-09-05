@@ -683,9 +683,12 @@ const ru = {
     "Эта нода ещё не отвечала по проверкам. Обычная причина — агент старее 1.1.5, он такого запроса не понимает.",
  "checks.title": "Проверки сервисов",
   "checks.cliHint":
-    "Набор правил открытый, поэтому проверки создаются и правятся из CLI: check-create, check-set. Здесь — включить, запустить и посмотреть, что отвечают ноды.",
+    "Набор правил открытый, поэтому проверки создаются и правятся из CLI: check-create, check-set. Здесь — включить, запустить, изменить период и посмотреть, что отвечают ноды.",
   "checks.empty": "Проверок пока нет.",
-  "checks.every": "раз в {minutes} мин",
+  "checks.everyLabel": "раз в",
+  "checks.minutes": "мин",
+  "checks.intervalAria": "Период проверки в минутах",
+  "checks.intervalRange": "1–1440 мин",
   "checks.run": "Запустить",
   "checks.runQueued":
     "Проверка помечена как готовая к запуску: ноды выполнят её на ближайшем опросе.",
@@ -1045,6 +1048,41 @@ const ru = {
   "acfg.confirmLabel": "Подтверждаю служебную необходимость экспорта",
   "acfg.fetchFailed": "Не удалось получить конфигурацию",
   "acfg.copied": "Скопировано",
+
+  // Периоды фоновых задач (админ → политика)
+  "periods.title": "Периодичность фоновых задач",
+  "periods.hint":
+    "Как часто панель обращается к серверам и обслуживает свои таблицы. Пустое поле — значение по умолчанию: его берёт воркер (из своего окружения, если там задана переменная, иначе встроенное). Заданное здесь число важнее обоих.",
+  "periods.latency":
+    "Перезапуск контейнеров не нужен, но и мгновенным изменение не будет: цикл сначала досиживает уже начатую паузу, поэтому новый период применяется со следующего цикла — то есть не позже, чем через один старый период.",
+  "periods.placeholder": "по умолчанию {value} {unit}",
+  "periods.range": "{min}–{max} {unit}",
+  "periods.unitSec": "с",
+  "periods.unitDays": "дн.",
+  "periods.telemetryPollSec": "Опрос состояния серверов",
+  "periods.telemetryPollSecHint":
+    "Как часто панель опрашивает каждый сервер: состояние, нагрузка, список пиров и проверки сервисов, которым подошёл срок. Это не только запросы: активный ключ переустанавливает соединение примерно раз в две минуты, поэтому почти каждый опрос дописывает ему строку в историю пиров. Период опроса — это и есть скорость роста этой таблицы, а обслуживание базы загружает её целиком в память воркера. Отсюда минимум 30 секунд.",
+  "periods.nodeMetricsSampleSec": "Запись истории метрик хоста",
+  "periods.nodeMetricsSampleSecHint":
+    "Как часто опрос сохраняет строку истории метрик хоста. Не может быть меньше периода опроса: строку пишет только опрос, поэтому меньшее значение не даст более подробной истории.",
+  "periods.nodeMetricsRetentionDays": "Хранение истории метрик",
+  "periods.nodeMetricsRetentionDaysHint":
+    "Сколько дней хранятся строки истории метрик хоста. Одна строка на сервер за период выборки.",
+  "periods.peerSampleSec": "Запись истории пиров",
+  "periods.peerSampleSecHint":
+    "Нижняя граница для пира, состояние которого не изменилось: пир с изменившимся состоянием записывается всегда. Одна строка на ключ, поэтому таблица растёт вместе с числом ключей, а не серверов. Как и история метрик, не может быть меньше периода опроса: строку пишет только опрос.",
+  "periods.maintenanceIntervalSec": "Обслуживание базы",
+  "periods.maintenanceIntervalSecHint":
+    "Агрегация трафика и очистка старых строк. Каждый запуск целиком загружает историю пиров за окно хранения в память воркера, а она ограничена 160 МБ, поэтому дело не в процессоре: минимум — час, и это тот период, с которым задача работала всегда.",
+  "periods.agentReleaseRefreshSec": "Проверка релиза node-agent",
+  "periods.agentReleaseRefreshSecHint":
+    "Как часто панель заново определяет образ node-agent, который она предлагает серверам. Каждый запуск — три запроса к ghcr.io: токен, список тегов и манифест выбранного тега.",
+  "periods.ruleFetchIntervalSec": "Загрузка списков маршрутов",
+  "periods.ruleFetchIntervalSecHint":
+    "Как часто скачиваются внешние фиды маршрутов. Сами фиды обновляются в лучшем случае раз в сутки.",
+  "periods.accessReconcileSec": "Сверка Cloudflare Access",
+  "periods.accessReconcileSecHint":
+    "Таймер полной сверки списка доступа с Cloudflare. Изменение пользователя в панели и так запускает сверку сразу, поэтому частый таймер добавляет только запросы к API.",
 } as const;
 
 const en = {
@@ -1706,9 +1744,12 @@ const en = {
     "This node has not answered any check yet. The usual cause is an agent older than 1.1.5, which does not serve the request.",
  "checks.title": "Service checks",
   "checks.cliHint":
-    "The rule set is open, so checks are created and edited from the CLI: check-create, check-set. Here you can enable, run, and read what the nodes say.",
+    "The rule set is open, so checks are created and edited from the CLI: check-create, check-set. Here you can enable, run, change the period, and read what the nodes say.",
   "checks.empty": "No checks yet.",
-  "checks.every": "every {minutes} min",
+  "checks.everyLabel": "every",
+  "checks.minutes": "min",
+  "checks.intervalAria": "Check period in minutes",
+  "checks.intervalRange": "1-1440 min",
   "checks.run": "Run",
   "checks.runQueued":
     "Marked due: the nodes will run it on their next poll.",
@@ -2062,6 +2103,41 @@ const en = {
   "acfg.confirmLabel": "I confirm the operational need for this export",
   "acfg.fetchFailed": "Failed to fetch the configuration",
   "acfg.copied": "Copied",
+
+  // Background periods (admin -> policy)
+  "periods.title": "Background periods",
+  "periods.hint":
+    "How often the panel talks to your servers and keeps its own tables in order. An empty field means the default: the worker decides it, from its environment where a variable is set and from the built-in value otherwise. A number set here wins over both.",
+  "periods.latency":
+    "No container restart is needed, and the change is not instant either: a loop finishes the wait it had already started, so a new period applies from the next cycle - at most one old period away.",
+  "periods.placeholder": "default {value} {unit}",
+  "periods.range": "{min}-{max} {unit}",
+  "periods.unitSec": "s",
+  "periods.unitDays": "days",
+  "periods.telemetryPollSec": "Server-status poll",
+  "periods.telemetryPollSecHint":
+    "How often the panel polls each server for its status, load, peer list and any service checks that are due. The requests are not the binding cost: an active key re-handshakes about every two minutes, so nearly every poll writes it a peer history row. The poll period is therefore the growth rate of that table, and database maintenance loads a whole retention window of it into the worker's memory at once. Hence the 30-second floor.",
+  "periods.nodeMetricsSampleSec": "Host-metrics history row",
+  "periods.nodeMetricsSampleSecHint":
+    "How often a poll keeps a host-metrics history row. It cannot be shorter than the poll period: only a poll writes a row, so a shorter setting would keep no extra history.",
+  "periods.nodeMetricsRetentionDays": "Host-metrics retention",
+  "periods.nodeMetricsRetentionDaysHint":
+    "How many days host-metrics history rows are kept. One row per server per sample period.",
+  "periods.peerSampleSec": "Peer history row",
+  "periods.peerSampleSecHint":
+    "The floor for a peer whose state has not changed; a peer that moved is always recorded. One row per key, so this table grows with the number of keys rather than servers. Like the metrics history it cannot be shorter than the poll period: only a poll writes a row.",
+  "periods.maintenanceIntervalSec": "Database maintenance",
+  "periods.maintenanceIntervalSecHint":
+    "Traffic roll-ups and pruning. Every run loads the whole retention window of peer history into the worker's memory, which is capped at 160 MB, so the cost is memory rather than CPU: the floor is one hour, the period this task always ran on.",
+  "periods.agentReleaseRefreshSec": "Node-agent release check",
+  "periods.agentReleaseRefreshSecHint":
+    "How often the panel re-resolves the node-agent image it offers servers. Every run is three requests to ghcr.io: a pull token, the tag list, and the manifest of the tag it picked.",
+  "periods.ruleFetchIntervalSec": "Route-rule feed download",
+  "periods.ruleFetchIntervalSecHint":
+    "How often the external route feeds are downloaded. The feeds themselves publish daily at best.",
+  "periods.accessReconcileSec": "Cloudflare Access reconcile",
+  "periods.accessReconcileSecHint":
+    "The timer for a full reconcile of the access list with Cloudflare. A user change in the panel already triggers one immediately, so a faster timer only adds API calls.",
 } satisfies Record<keyof typeof ru, string>;
 
 export const messages = { ru, en } as const;

@@ -204,6 +204,13 @@
       "when": 1788581714045,
       "tag": "0028_minor_lord_tyger",
       "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "7",
+      "when": 1788607430815,
+      "tag": "0029_worker_polling_periods",
+      "breakpoints": true
     }
   ]
 }

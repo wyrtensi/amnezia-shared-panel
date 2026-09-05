@@ -1,4 +1,21 @@
+import { WORKER_PERIOD_FIELDS } from "@amnezia/contracts";
+
 const DAY_MS = 24 * 60 * 60 * 1_000;
+
+/** A retention window that may be a fixed number of days or a resolver. */
+const resolveRetentionDays = async (
+  option: number | (() => Promise<number>),
+): Promise<number> => {
+  if (typeof option === "number") return option;
+  try {
+    const value = await option();
+    return Number.isFinite(value) && value > 0
+      ? value
+      : WORKER_PERIOD_FIELDS.nodeMetricsRetentionDays.fallback;
+  } catch {
+    return WORKER_PERIOD_FIELDS.nodeMetricsRetentionDays.fallback;
+  }
+};
 
 export type RollupPeriod = "hour" | "day";
 
@@ -92,7 +109,12 @@ export type MaintenanceRunnerOptions = {
   rawRetentionDays?: number;
   hourlyRetentionDays?: number;
   dailyRetentionDays?: number;
-  nodeMetricsRetentionDays?: number;
+  /**
+   * How long host-metrics history rows are kept. A function is asked at the
+   * start of every run, which is how an admin's edit reaches the pruner without
+   * a restart; a plain number is still accepted and is what the tests use.
+   */
+  nodeMetricsRetentionDays?: number | (() => Promise<number>);
 };
 
 export const createMaintenanceRunner = ({
@@ -101,9 +123,17 @@ export const createMaintenanceRunner = ({
   rawRetentionDays = 7,
   hourlyRetentionDays = 90,
   dailyRetentionDays = 730,
-  nodeMetricsRetentionDays = 7,
+  nodeMetricsRetentionDays = WORKER_PERIOD_FIELDS.nodeMetricsRetentionDays
+    .fallback,
 }: MaintenanceRunnerOptions) => async (): Promise<void> => {
   const current = now();
+  // Resolved once per run rather than per statement, so one maintenance pass
+  // cannot prune against two different windows. A resolver that fails leaves
+  // the run on the default window: pruning nothing would let the table grow
+  // unbounded on exactly the panel whose database is already struggling.
+  const metricsRetentionDays = await resolveRetentionDays(
+    nodeMetricsRetentionDays,
+  );
   const rawCutoff = new Date(current.getTime() - rawRetentionDays * DAY_MS);
   const samples = await repository.loadSamplesSince(rawCutoff);
   // Only replace buckets that are FULLY inside the sample window. The bucket
@@ -134,7 +164,7 @@ export const createMaintenanceRunner = ({
     new Date(current.getTime() - dailyRetentionDays * DAY_MS),
   );
   await repository.deleteNodeMetricsSamplesBefore(
-    new Date(current.getTime() - nodeMetricsRetentionDays * DAY_MS),
+    new Date(current.getTime() - metricsRetentionDays * DAY_MS),
   );
   // Disabled accounts are removed once their keys have finished revoking.
   await repository.purgeOffboardedUsers();

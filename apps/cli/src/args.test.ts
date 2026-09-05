@@ -1,4 +1,12 @@
 import { describe, it, expect } from "vitest";
+// A DEV dependency only, and only here: the CLI ships as a dependency-free
+// `dist/main.js`, so `args.ts` re-states the period table rather than importing
+// it. Comparing the two tables in a test is what keeps that copy honest without
+// putting the package into the shipped bundle.
+import {
+  WORKER_PERIOD_FIELDS as CONTRACT_PERIOD_FIELDS,
+  WORKER_PERIOD_FIELD_NAMES as CONTRACT_PERIOD_FIELD_NAMES,
+} from "@amnezia/contracts";
 import {
   DEVICE_TYPES,
   DEVICE_TYPE_ORDER,
@@ -20,10 +28,14 @@ import {
   quotaCurrentLimit,
   annotateNodeOrder,
   checkRecommendedPrefix,
+  formatPeriod,
   formatPolicyValue,
   matchesNodeFilter,
   parsePolicyNodeList,
+  parseWorkerPeriodFlag,
   quotaTargetLabel,
+  WORKER_PERIOD_FIELDS,
+  WORKER_PERIOD_FIELD_NAMES,
 } from "./args.js";
 
 describe("flagOf", () => {
@@ -444,6 +456,78 @@ describe("formatPolicyValue", () => {
     );
     expect(formatPolicyValue("defaultKeyLimit", 10)).toBe("10");
     expect(formatPolicyValue("allowKeyCreation", false)).toBe("false");
+  });
+
+  it("prints an unset worker period as (default), not as (all)", () => {
+    // A null period means "use the worker's default". The nullable-list branch
+    // below it would have called that "(all)", which is nonsense for a number.
+    expect(formatPolicyValue("telemetryPollSec", null)).toBe("(default)");
+    expect(formatPolicyValue("nodeMetricsRetentionDays", null)).toBe("(default)");
+    expect(formatPolicyValue("telemetryPollSec", 120)).toBe("120 s (2 min)");
+    expect(formatPolicyValue("nodeMetricsRetentionDays", 7)).toBe("7 days");
+  });
+});
+
+describe("worker period table", () => {
+  it("equals WORKER_PERIOD_FIELDS in @amnezia/contracts", () => {
+    // The actual cross-check, not two literals that each pin their own side:
+    // move a bound in the contract without moving it here and this fails, which
+    // is the whole point of the devDependency. The numbers themselves are
+    // pinned once, in packages/contracts/src/contracts.test.ts.
+    expect(WORKER_PERIOD_FIELDS).toEqual(CONTRACT_PERIOD_FIELDS);
+    // Order matters as well as content: `periods`, `policy-set` and the help
+    // text all list the fields in it.
+    expect(WORKER_PERIOD_FIELD_NAMES).toEqual(CONTRACT_PERIOD_FIELD_NAMES);
+  });
+});
+
+describe("formatPeriod", () => {
+  it("keeps the raw number first, since that is what policy-set takes back", () => {
+    expect(formatPeriod("telemetryPollSec", 30)).toBe("30 s");
+    expect(formatPeriod("telemetryPollSec", 90)).toBe("90 s (1.5 min)");
+    expect(formatPeriod("maintenanceIntervalSec", 3_600)).toBe("3600 s (1 h)");
+    expect(formatPeriod("ruleFetchIntervalSec", 21_600)).toBe("21600 s (6 h)");
+    expect(formatPeriod("accessReconcileSec", 604_800)).toBe("604800 s (7 d)");
+  });
+
+  it("counts the retention window in days", () => {
+    expect(formatPeriod("nodeMetricsRetentionDays", 1)).toBe("1 day");
+    expect(formatPeriod("nodeMetricsRetentionDays", 30)).toBe("30 days");
+  });
+});
+
+describe("parseWorkerPeriodFlag", () => {
+  it("clears a period on default / none / null", () => {
+    for (const raw of ["default", "none", "null", " default "]) {
+      expect(parseWorkerPeriodFlag("telemetryPollSec", raw)).toBeNull();
+    }
+  });
+
+  it("accepts a value at each bound", () => {
+    expect(parseWorkerPeriodFlag("telemetryPollSec", "30")).toBe(30);
+    expect(parseWorkerPeriodFlag("telemetryPollSec", "86400")).toBe(86_400);
+  });
+
+  it("refuses a value outside the bounds, naming the range", () => {
+    // Refused locally so the operator reads about the number they typed rather
+    // than a schema error about a field name.
+    expect(() => parseWorkerPeriodFlag("telemetryPollSec", "1")).toThrow(
+      /outside 30\.\.86400 seconds/,
+    );
+    expect(() => parseWorkerPeriodFlag("ruleFetchIntervalSec", "60")).toThrow(
+      /outside 900\.\.604800 seconds/,
+    );
+    expect(() =>
+      parseWorkerPeriodFlag("nodeMetricsRetentionDays", "0"),
+    ).toThrow(/outside 1\.\.3650 days/);
+  });
+
+  it("refuses anything that is not a whole number", () => {
+    for (const raw of ["", "abc", "1.5", "30s"]) {
+      expect(() => parseWorkerPeriodFlag("telemetryPollSec", raw)).toThrow(
+        /whole number of seconds/,
+      );
+    }
   });
 });
 

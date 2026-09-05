@@ -477,6 +477,206 @@ export const portalPolicySchema = z.object({
 export const portalPolicyOverrideSchema = portalPolicySchema.partial();
 export const defaultPortalPolicy = portalPolicySchema.parse({});
 
+// --- Worker polling periods --------------------------------------------------
+//
+// Every background loop the panel runs against the fleet, plus the two sampling
+// floors that decide how fast the history tables grow. They live on
+// `portal_policy` as NULLABLE columns and are GLOBAL-ONLY: they are not part of
+// `portalPolicySchema`, so they can never be overridden per user and never
+// travel in `me.policy`. How often the panel talks to a node is a property of
+// the deployment, not of whoever is looking at it.
+//
+// `null` means "use the worker's own default", which is what keeps an upgraded
+// panel on exactly the periods it had: the columns start null everywhere, the
+// worker falls back to its environment (`TELEMETRY_POLL_SEC` and friends) or to
+// the built-in constant, and nothing about an existing host changes until an
+// admin sets a value. `fallback` below is that built-in constant -- it is what
+// the panel SHOWS as the default and what the write-path cross-check compares
+// against, but a worker whose environment names a different number wins over
+// it, because the environment is still the default the worker actually uses.
+//
+// Bounds are floors on how hard the panel is allowed to hit something, not
+// taste. Each `min` is justified in the comment beside it; the maxima are one
+// day (86400) for anything a user-visible freshness signal depends on -- the
+// same ceiling `node_service_checks.interval_sec` already uses -- and one week
+// (604800) for the housekeeping loops, past which "periodic" stops being true.
+export const WORKER_PERIOD_FIELDS = {
+  /**
+   * The server-status poll: one health + server + load + client-list fan-out to
+   * EVERY node, plus the due service checks.
+   *
+   * The fan-out is the visible cost -- four requests per node per period -- but
+   * it is not the binding one. WireGuard rekeys roughly every two minutes, so
+   * an active key's handshake timestamp has moved by the time nearly any poll
+   * looks at it, and a moved peer is always written to `peer_samples`. The poll
+   * period IS therefore the growth rate of that table, and every maintenance
+   * run loads its whole raw retention window into the heap of a 160 MB
+   * container in one go (see `maintenanceIntervalSec`). Halving the poll period
+   * doubles the rows that allocation has to hold, which is why 30 s is the
+   * floor.
+   */
+  telemetryPollSec: { min: 30, max: 86_400, fallback: 60, unit: "sec" },
+  /**
+   * How often a poll is allowed to keep a `node_metrics_samples` row. Same
+   * floor as the poll it rides on: only a poll can write a sample, so a shorter
+   * sample period is not a faster history, it is the same history with a
+   * setting that lies about it. Enforced against the poll period as well.
+   */
+  nodeMetricsSampleSec: { min: 30, max: 86_400, fallback: 300, unit: "sec" },
+  /**
+   * How long `node_metrics_samples` rows are kept. One day is the floor: zero
+   * would prune every row on the run after it was written, leaving the history
+   * charts permanently empty rather than short.
+   */
+  nodeMetricsRetentionDays: { min: 1, max: 3_650, fallback: 7, unit: "day" },
+  /**
+   * Floor on how often an UNCHANGED peer writes a `peer_samples` row (a peer
+   * whose state moved is always sampled). One row per KEY per period, so this
+   * table grows with keys x fleet rather than with nodes -- the reason its
+   * floor is higher than the poll's. Like the metrics sample period it is
+   * written only by a poll, so it is enforced against the poll period too; see
+   * POLL_BOUND_SAMPLE_FIELDS.
+   */
+  peerSampleSec: { min: 60, max: 86_400, fallback: 300, unit: "sec" },
+  /**
+   * Traffic roll-ups plus the pruning of four tables.
+   *
+   * The floor is an hour -- the period this loop had for its whole life before
+   * it became a setting -- and the reason is MEMORY, not CPU. Every run starts
+   * by loading every `peer_samples` row in the raw retention window
+   * (TELEMETRY_RAW_RETENTION_DAYS, 7 by default) into the Node heap at once
+   * (`loadSamplesSince`, no LIMIT) and then walks the array twice to roll it
+   * up. The worker container runs under a 160 MB `mem_limit`, which a busy
+   * fleet's week of samples is already within reach of; repeating that
+   * allocation twelve times an hour is how a panel OOM-kills its own worker.
+   * Lower this only once the roll-up aggregates in SQL instead of in an array.
+   */
+  maintenanceIntervalSec: { min: 3_600, max: 604_800, fallback: 3_600, unit: "sec" },
+  /**
+   * Re-resolves the node-agent release the panel offers. Each run is three
+   * requests to ghcr.io -- an anonymous pull token, the tag list, and a HEAD on
+   * the manifest of the tag it picked -- so at 5 minutes the panel makes 36
+   * registry calls an hour, comfortably inside what an anonymous puller is
+   * allowed even when it shares an address. (The 60/hour figure belongs to
+   * api.github.com, which this loop never touches: only the CLIENT release
+   * lookup in the control API talks to it.)
+   */
+  agentReleaseRefreshSec: { min: 300, max: 604_800, fallback: 1_800, unit: "sec" },
+  /**
+   * Route-rule feed fetch. Each run downloads the external feeds in full and
+   * writes a new version row per feed that changed; the feeds themselves
+   * publish daily at best, so 15 minutes is already far faster than the data.
+   */
+  ruleFetchIntervalSec: { min: 900, max: 604_800, fallback: 21_600, unit: "sec" },
+  /**
+   * The Cloudflare Access reconcile timer. Each run is a Cloudflare API round
+   * trip, and a panel-side user change already arms an immediate run, so a
+   * faster timer buys nothing but API calls against a rate-limited endpoint.
+   */
+  accessReconcileSec: { min: 300, max: 604_800, fallback: 3_600, unit: "sec" },
+} as const satisfies Record<
+  string,
+  { min: number; max: number; fallback: number; unit: "sec" | "day" }
+>;
+
+export type WorkerPeriodField = keyof typeof WORKER_PERIOD_FIELDS;
+
+/** Stable listing order, used by the CLI, the admin form and the docs alike. */
+export const WORKER_PERIOD_FIELD_NAMES = Object.keys(
+  WORKER_PERIOD_FIELDS,
+) as WorkerPeriodField[];
+
+const workerPeriodValue = (field: WorkerPeriodField) =>
+  z
+    .int()
+    .min(WORKER_PERIOD_FIELDS[field].min)
+    .max(WORKER_PERIOD_FIELDS[field].max)
+    // Explicitly nullable: `null` is how an admin gives a period back to the
+    // worker's default, and it has to be distinguishable from "not named".
+    .nullable();
+
+export const workerPeriodOverridesSchema = z
+  .object({
+    telemetryPollSec: workerPeriodValue("telemetryPollSec"),
+    nodeMetricsSampleSec: workerPeriodValue("nodeMetricsSampleSec"),
+    nodeMetricsRetentionDays: workerPeriodValue("nodeMetricsRetentionDays"),
+    peerSampleSec: workerPeriodValue("peerSampleSec"),
+    maintenanceIntervalSec: workerPeriodValue("maintenanceIntervalSec"),
+    agentReleaseRefreshSec: workerPeriodValue("agentReleaseRefreshSec"),
+    ruleFetchIntervalSec: workerPeriodValue("ruleFetchIntervalSec"),
+    accessReconcileSec: workerPeriodValue("accessReconcileSec"),
+  })
+  .partial();
+export type WorkerPeriodOverrides = z.infer<typeof workerPeriodOverridesSchema>;
+
+/**
+ * Bring a stored period inside its bounds.
+ *
+ * The control API refuses an out-of-range write, so this is not the primary
+ * guard -- it is the one that holds when the value did not come through the
+ * API at all (a hand-edited row, a restored dump from a panel with different
+ * bounds). The worker calls it on every read, so an impossible number can never
+ * become an impossible request rate; `null` stays `null` and means "default".
+ */
+export const clampWorkerPeriod = (
+  field: WorkerPeriodField,
+  value: number | null | undefined,
+): number | null => {
+  if (value === null || value === undefined) return null;
+  const { min, max } = WORKER_PERIOD_FIELDS[field];
+  if (!Number.isFinite(value)) return null;
+  return Math.min(max, Math.max(min, Math.trunc(value)));
+};
+
+/**
+ * The sample periods that ONLY a telemetry poll can write.
+ *
+ * Both `node_metrics_samples` and `peer_samples` rows are written from inside
+ * `recordNodeSnapshot`, and nothing but a poll calls that. A sample period
+ * below the poll period is therefore not a finer history, it is the same
+ * history with a setting that lies about it -- and the panel would go on
+ * displaying a number that is not the one running.
+ */
+export const POLL_BOUND_SAMPLE_FIELDS = [
+  "nodeMetricsSampleSec",
+  "peerSampleSec",
+] as const;
+
+export type PollBoundSampleField = (typeof POLL_BOUND_SAMPLE_FIELDS)[number];
+
+/** How each poll-bound sample period is named to an admin. */
+export const POLL_BOUND_SAMPLE_LABELS: Record<PollBoundSampleField, string> = {
+  nodeMetricsSampleSec: "host-metrics sample period",
+  peerSampleSec: "peer sample period",
+};
+
+export const isPollBoundSampleField = (
+  field: WorkerPeriodField,
+): field is PollBoundSampleField =>
+  (POLL_BOUND_SAMPLE_FIELDS as readonly WorkerPeriodField[]).includes(field);
+
+/**
+ * The one cross-field rule: a sample period below the telemetry poll period is
+ * meaningless, because only a poll can write a sample.
+ *
+ * Returns the offending pair, or null when the pair is fine. Both the control
+ * API (on the write path, so an admin is told rather than left with a setting
+ * that does nothing) and the worker (on the read path, where it clamps) use it,
+ * which is what stops the two disagreeing about the same invariant.
+ */
+export const sampleBelowPoll = (
+  field: PollBoundSampleField,
+  telemetryPollSec: number,
+  sampleSec: number,
+): {
+  field: PollBoundSampleField;
+  telemetryPollSec: number;
+  sampleSec: number;
+} | null =>
+  sampleSec < telemetryPollSec
+    ? { field, telemetryPollSec, sampleSec }
+    : null;
+
 // --- Node host metrics (reported by the node-agent, persisted by the worker) --
 //
 // Every field a node might not know is nullable, so an agent that predates this

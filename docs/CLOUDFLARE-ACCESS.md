@@ -259,7 +259,9 @@ named, not whether their value moved. This is deliberately left as documented
 behaviour rather than fixed with diffing logic: a policy save is a rare admin
 action, and the cost of an unnecessary arm is one extra request.
 
-The periodic reconcile (`ACCESS_RECONCILE_INTERVAL_MS`, default hourly)
+The periodic reconcile (the panel's `accessReconcileSec` setting, falling back
+to `ACCESS_RECONCILE_INTERVAL_MS` and then to hourly — see
+[Background periods](./CLI.md#background-periods))
 remains the source of truth and keeps running regardless — it is what catches
 anything a panel-side change did not, such as a removal made directly in
 Cloudflare (Direction 1). An operator can also ask for a reconcile right now
@@ -408,7 +410,7 @@ All off by default. See `apps/worker/.env.example`.
 | `ACCESS_RECONCILE_ENABLED` | `false` | Master switch for the periodic task. |
 | `ACCESS_DIRECTORY` | `allowlist` | `allowlist` or `cloudflare`. |
 | `ACCESS_ALLOWLIST` | — | For `allowlist`: comma/space/semicolon-separated emails. |
-| `ACCESS_RECONCILE_INTERVAL_MS` | `3600000` | How often to reconcile. |
+| `ACCESS_RECONCILE_INTERVAL_MS` | `3600000` | How often to reconcile — a **default**, see [Background periods](./CLI.md#background-periods). |
 | `CF_ACCESS_ACCOUNT_ID` | — | For `cloudflare` mode. |
 | `CF_API_TOKEN` | — | For `cloudflare` mode. |
 | `CF_ACCESS_GROUP_ID` | — | For `cloudflare` mode (group-backed read). |

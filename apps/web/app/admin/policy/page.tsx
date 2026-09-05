@@ -12,6 +12,11 @@ import { ProtocolSelect } from "@/components/protocol-select";
 import { NodeSelect } from "@/components/node-select";
 import { NodeOrderList } from "@/components/node-order-list";
 import {
+  WORKER_PERIOD_FIELDS,
+  WORKER_PERIOD_FIELD_NAMES,
+  type WorkerPeriodField,
+} from "@amnezia/contracts";
+import {
   useAdminData,
   type GlobalPortalPolicy,
 } from "@/components/admin/admin-data";
@@ -201,6 +206,36 @@ export default function AdminPolicyPage() {
 
           <Separator />
 
+          {/*
+            The panel's background periods. They used to live in the worker's
+            environment or in a constant, so changing one meant editing a file
+            on the host and recreating a container. Here because this is the
+            page an operator already opens to change how the panel behaves —
+            and because the alternative, a card next to the servers, would put
+            fleet-wide settings on a page about one server at a time.
+          */}
+          <div className="space-y-3">
+            <h3 className="flex items-center gap-1.5 text-sm font-semibold">
+              {t("periods.title")}
+              <Hint>{t("periods.hint")}</Hint>
+            </h3>
+            <p className="text-xs text-muted-foreground">
+              {t("periods.latency")}
+            </p>
+            <div className="grid gap-4 sm:grid-cols-2">
+              {WORKER_PERIOD_FIELD_NAMES.map((field) => (
+                <PeriodInput
+                  key={field}
+                  field={field}
+                  value={form[field]}
+                  onChange={(next) => setForm({ ...form, [field]: next })}
+                />
+              ))}
+            </div>
+          </div>
+
+          <Separator />
+
           <div className="space-y-3">
             <h3 className="flex items-center gap-1.5 text-sm font-semibold">
               Cloudflare Access
@@ -285,6 +320,64 @@ export default function AdminPolicyPage() {
         </CardContent>
       </Card>
     </form>
+  );
+}
+
+/**
+ * One background period: a number input that is EMPTY when the period is unset.
+ *
+ * Empty is a real value here, not a missing one — it means "use the worker's
+ * default" and is posted as null. A zero would be a different thing entirely
+ * (and a refused one), so an empty field must never collapse into 0 on the way
+ * out, which is why the change handler tests the raw string rather than
+ * `valueAsNumber` (NaN for an empty input).
+ */
+function PeriodInput({
+  field,
+  value,
+  onChange,
+}: {
+  field: WorkerPeriodField;
+  // `undefined` as well as null: a control-api older than this page returns a
+  // row without these columns, and rendering "undefined" in the box would be a
+  // worse answer than showing the period as unset.
+  value: number | null | undefined;
+  onChange: (next: number | null) => void;
+}) {
+  const { t } = useT();
+  const spec = WORKER_PERIOD_FIELDS[field];
+  const unit = spec.unit === "day" ? t("periods.unitDays") : t("periods.unitSec");
+  return (
+    <div className="space-y-1.5">
+      <Label htmlFor={`period-${field}`} className="flex items-center gap-1.5">
+        {t(`periods.${field}`)}
+        <Hint>{t(`periods.${field}Hint`)}</Hint>
+      </Label>
+      <Input
+        id={`period-${field}`}
+        type="number"
+        inputMode="numeric"
+        min={spec.min}
+        max={spec.max}
+        // Not `required`: blank is how an admin hands the period back.
+        placeholder={t("periods.placeholder", {
+          value: String(spec.fallback),
+          unit,
+        })}
+        value={value === null || value === undefined ? "" : String(value)}
+        onChange={(event) => {
+          const raw = event.target.value.trim();
+          onChange(raw === "" ? null : Number(raw));
+        }}
+      />
+      <p className="text-xs text-muted-foreground">
+        {t("periods.range", {
+          min: String(spec.min),
+          max: String(spec.max),
+          unit,
+        })}
+      </p>
+    </div>
   );
 }
 

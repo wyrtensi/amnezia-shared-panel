@@ -1,4 +1,8 @@
 import type { OutboxJob, WorkerRepository } from "./repository.js";
+// One helper for both loops, so the "already aborted" case is fixed in one
+// place: this loop has the same window, around `claimJob()` rather than around
+// a period lookup, and had its own copy of the wait to get it wrong in.
+import { abortableWait } from "./scheduler.js";
 
 export type WorkerRunnerOptions = {
   repository: WorkerRepository;
@@ -7,19 +11,6 @@ export type WorkerRunnerOptions = {
   idleDelayMs?: number;
   maxAttempts?: number;
 };
-
-const delay = (milliseconds: number, signal: AbortSignal): Promise<void> =>
-  new Promise((resolve) => {
-    const timer = setTimeout(resolve, milliseconds);
-    signal.addEventListener(
-      "abort",
-      () => {
-        clearTimeout(timer);
-        resolve();
-      },
-      { once: true },
-    );
-  });
 
 export const runWorker = async ({
   repository,
@@ -31,7 +22,7 @@ export const runWorker = async ({
   while (!signal.aborted) {
     const job = await repository.claimJob();
     if (!job) {
-      await delay(idleDelayMs, signal);
+      await abortableWait(idleDelayMs, signal);
       continue;
     }
     try {

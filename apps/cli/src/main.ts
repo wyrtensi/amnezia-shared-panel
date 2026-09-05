@@ -29,6 +29,8 @@ import { buildRequestHeaders } from "./http.js";
 import { authHeaders } from "./identity.js";
 import {
   KEY_LIMIT_MODES,
+  WORKER_PERIOD_FIELDS,
+  WORKER_PERIOD_FIELD_NAMES,
   annotateNodeOrder,
   checkRecommendedPrefix,
   deviceTypeUsage,
@@ -36,6 +38,7 @@ import {
   flagOf,
   formatAccessSyncStatus,
   formatDeviceType,
+  formatPeriod,
   formatPolicyValue,
   formatUpdateStatus,
   matchesNodeFilter,
@@ -47,10 +50,15 @@ import {
   parseNodeLimits,
   parseNodeSpec,
   parsePolicyNodeList,
+  parseWorkerPeriodFlag,
   quotaCurrentLimit,
   quotaTargetLabel,
 } from "./args.js";
-import type { AccessSyncStatusView, UpdateStatusView } from "./args.js";
+import type {
+  AccessSyncStatusView,
+  UpdateStatusView,
+  WorkerPeriodField,
+} from "./args.js";
 import { classifyNodeHost, formatNodeAddress } from "./nodeAddress.js";
 import {
   awgCell,
@@ -1007,6 +1015,71 @@ async function cmdPolicy(args: string[]): Promise<void> {
   );
 }
 
+/**
+ * Every background period the panel runs on: what is set, what applies when it
+ * is not, and the caveats an operator needs before changing one.
+ *
+ * A separate command rather than more rows in `policy` because the interesting
+ * column is the one `policy` cannot show -- a period that is unset does not run
+ * on nothing, it runs on the worker's default, and that is the number an
+ * operator is actually asking about.
+ */
+async function cmdPeriods(args: string[]): Promise<void> {
+  const rows = await api<Array<Record<string, unknown>>>(
+    "/api/admin/portal-policy",
+  );
+  const policy = rows[0] ?? {};
+  const stored = Object.fromEntries(
+    WORKER_PERIOD_FIELD_NAMES.map((field) => [
+      field,
+      typeof policy[field] === "number" ? policy[field] : null,
+    ]),
+  ) as Record<WorkerPeriodField, number | null>;
+  if (wantsJson(args)) {
+    return json(
+      Object.fromEntries(
+        WORKER_PERIOD_FIELD_NAMES.map((field) => [
+          field,
+          {
+            set: stored[field],
+            default: WORKER_PERIOD_FIELDS[field].fallback,
+            min: WORKER_PERIOD_FIELDS[field].min,
+            max: WORKER_PERIOD_FIELDS[field].max,
+            unit: WORKER_PERIOD_FIELDS[field].unit,
+          },
+        ]),
+      ),
+    );
+  }
+  console.log(
+    table(
+      WORKER_PERIOD_FIELD_NAMES.map((field) => {
+        const spec = WORKER_PERIOD_FIELDS[field];
+        return {
+          period: field,
+          set:
+            stored[field] === null ? "—" : formatPeriod(field, stored[field]),
+          default: formatPeriod(field, spec.fallback),
+          range: `${spec.min}..${spec.max}`,
+        };
+      }),
+      ["period", "set", "default", "range"],
+    ),
+  );
+  console.log(
+    "\nA period left unset (—) runs on the worker's default. For the four that\n" +
+      "still read an environment variable — TELEMETRY_POLL_SEC,\n" +
+      "NODE_METRICS_SAMPLE_SEC, NODE_METRICS_RETENTION_DAYS and\n" +
+      "ACCESS_RECONCILE_INTERVAL_MS — that environment is the default, so the\n" +
+      "column above is the BUILT-IN value and a worker configured otherwise uses\n" +
+      "its own. Setting a period here wins over both.\n" +
+      "A change needs no restart, and is not instant either: the loop finishes\n" +
+      "the wait it had already started, so a new period applies from the next\n" +
+      "cycle — up to one OLD period away.\n" +
+      "Change one with: policy-set --<period>=<value>  (or =default to clear it)",
+  );
+}
+
 async function cmdPolicySet(args: string[]): Promise<void> {
   const flag = (name: string): string | undefined => {
     const found = args.find((arg) => arg.startsWith(`--${name}=`));
@@ -1036,6 +1109,13 @@ async function cmdPolicySet(args: string[]): Promise<void> {
   for (const [field, allowed] of Object.entries(POLICY_ENUM_FIELDS)) {
     const value = flag(field);
     if (value !== undefined) body[field] = parseEnumFlag(field, value, allowed);
+  }
+  // Worker periods. `default` clears one, handing it back to the worker's own
+  // default; anything else is bounds-checked here so an out-of-range number is
+  // named locally rather than coming back as a schema error.
+  for (const field of WORKER_PERIOD_FIELD_NAMES) {
+    const value = flag(field);
+    if (value !== undefined) body[field] = parseWorkerPeriodFlag(field, value);
   }
   // The hand-made server order and the recommended servers. Both take a
   // comma-separated id list; "none" clears one. Passing both in one call is
@@ -1716,6 +1796,10 @@ Read:
                           user's own key-limit mode: under a global (shared) limit a
                           request that named a server still reads "all servers"
   policy [--json]          Show all panel settings + Cloudflare config
+  periods [--json]         Every background period the panel runs on: what is
+                          set, the built-in default an unset one falls back to,
+                          and the range each accepts. Change one with
+                          policy-set --<period>=<value> (=default clears it)
   global-routes [--json]   Admin-wide route additions / exclusions
   version [--json]         Panel version + commit + the AWG 3.1 client floor
   traffic [--days=N]       Aggregate traffic series (JSON)
@@ -1873,8 +1957,27 @@ policy-set fields:
     direct video file. Merges with the ones already set, so naming one audience
     does not clear the other two. These URLs are deployment settings and belong
     on your panel, never in the repository.
+  Polling periods (whole numbers; "default" gives one back to the worker):
+    telemetryPollSec=<30..86400>          the server-status poll of every node
+    nodeMetricsSampleSec=<30..86400>      host-metrics history row cadence
+                                          (never below telemetryPollSec — only
+                                          a poll can write a sample)
+    nodeMetricsRetentionDays=<1..3650>    how long that history is kept
+    peerSampleSec=<60..86400>             floor for an UNCHANGED peer's row
+                                          (never below telemetryPollSec, for
+                                          the same reason)
+    maintenanceIntervalSec=<3600..604800> roll-ups + pruning
+    agentReleaseRefreshSec=<300..604800>  re-resolve the node-agent release
+    ruleFetchIntervalSec=<900..604800>    route-rule feed download
+    accessReconcileSec=<300..604800>      Cloudflare Access reconcile timer
+    Run "periods" to see what is set and what an unset one falls back to. A
+    change needs no restart and is not instant: the loop finishes the wait it
+    had already started, so a new period applies from the next cycle — up to
+    one OLD period away.
   e.g.  amnezia-panel policy-set --allowQrDownload=false --defaultKeyLimit=10
         amnezia-panel policy-set --video-ios=https://example.com/ios.mp4
+        amnezia-panel policy-set --telemetryPollSec=120 --nodeMetricsSampleSec=600
+        amnezia-panel policy-set --ruleFetchIntervalSec=default
 
 Env (auth, in priority order):
   CONTROL_API_URL          default http://127.0.0.1:3001
@@ -2288,6 +2391,8 @@ export async function dispatch(argv: string[]): Promise<void> {
       return cmdCfDomains(args);
     case "policy":
       return cmdPolicy(args);
+    case "periods":
+      return cmdPeriods(args);
     case "policy-set":
       return cmdPolicySet(args);
     case "global-routes":

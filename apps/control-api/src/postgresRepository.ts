@@ -58,12 +58,19 @@ import {
   recommendedNodeIdsSchema,
   portalPolicyOverrideSchema,
   portalPolicySchema,
+  POLL_BOUND_SAMPLE_FIELDS,
+  POLL_BOUND_SAMPLE_LABELS,
+  sampleBelowPoll,
+  workerPeriodOverridesSchema,
+  WORKER_PERIOD_FIELDS,
+  WORKER_PERIOD_FIELD_NAMES,
   RULES_REFRESH_DEDUPLICATION_KEY,
   RULES_REFRESH_JOB_TYPE,
   setKeyInternalNameRequestSchema,
   setUserLimitRequestSchema,
   updateGlobalRoutesRequestSchema,
 } from "@amnezia/contracts";
+import type { PollBoundSampleField } from "@amnezia/contracts";
 import {
   armAccessSyncRow,
   auditEvents,
@@ -171,6 +178,12 @@ const adminPolicyUpdateSchema = portalPolicySchema.partial().extend({
   // portalPolicySchema is what stops them being overridable per user.
   recommendedNodeIds: recommendedNodeIdsSchema.optional(),
   nodeOrder: nodeOrderSchema.optional(),
+  // Every background period the worker runs on, global-only for the same
+  // reason: how often the panel talks to a node is a property of the
+  // deployment, not of whoever is looking at it. Each is nullable — null hands
+  // the period back to the worker's own default — and bounded by
+  // WORKER_PERIOD_FIELDS, which is where the floors are justified.
+  ...workerPeriodOverridesSchema.shape,
   // Accept the pre-0017 null as "no videos" instead of refusing the request.
   // Null and {} mean the same thing here, and a client echoing back a row it
   // read from an older panel must not be unable to save anything at all.
@@ -2252,6 +2265,13 @@ export class PostgresControlRepository implements ControlRepository {
             cfAccessPolicyId: null,
             cfAccessAllowedDomains: [] as string[],
             cfApiTokenSet: false,
+            // Every worker period unset, which is what the column actually is
+            // on a fresh install: null reads as "use the worker's default", and
+            // emitting a number here would tell the admin form a period had
+            // been chosen when nothing had.
+            ...Object.fromEntries(
+              WORKER_PERIOD_FIELD_NAMES.map((field) => [field, null]),
+            ),
             createdAt: new Date(),
             updatedAt: new Date(),
           },
@@ -3054,6 +3074,49 @@ export class PostgresControlRepository implements ControlRepository {
             .where(inArray(nodes.id, referenced));
           if (known.length !== referenced.length) {
             throw new ApiError(400, "Unknown node id", "NODE_NOT_FOUND");
+          }
+        }
+        // A sample period below the telemetry poll period is not a faster
+        // history, it is the same history with a setting that lies about it:
+        // only a poll can write a sample row, for host metrics and for peers
+        // alike. It used to be caught at worker boot, which is no help to an
+        // admin who has just saved the pair here — so it is refused on the way
+        // in, checked against the EFFECTIVE state so naming only one of the two
+        // is still validated against the other. The worker clamps on read as
+        // well, because it can see an environment poll period that this cannot;
+        // refusing here is what stops the panel DISPLAYING a sample period that
+        // is not the one running.
+        if (
+          named.has("telemetryPollSec") ||
+          POLL_BOUND_SAMPLE_FIELDS.some((field) => named.has(field))
+        ) {
+          const [storedPeriods] = await tx
+            .select({
+              telemetryPollSec: portalPolicy.telemetryPollSec,
+              nodeMetricsSampleSec: portalPolicy.nodeMetricsSampleSec,
+              peerSampleSec: portalPolicy.peerSampleSec,
+            })
+            .from(portalPolicy)
+            .limit(1);
+          // A field the caller named as `null` means "use the default", so it
+          // resolves to the fallback rather than to the value being cleared.
+          const effective = (
+            field: "telemetryPollSec" | PollBoundSampleField,
+          ): number =>
+            (named.has(field) ? provided[field] : storedPeriods?.[field]) ??
+            WORKER_PERIOD_FIELDS[field].fallback;
+          for (const field of POLL_BOUND_SAMPLE_FIELDS) {
+            const conflict = sampleBelowPoll(
+              field,
+              effective("telemetryPollSec"),
+              effective(field),
+            );
+            if (!conflict) continue;
+            throw new ApiError(
+              400,
+              `The ${POLL_BOUND_SAMPLE_LABELS[field]} (${conflict.sampleSec} s) cannot be shorter than the server-status poll period (${conflict.telemetryPollSec} s): only a poll can write a sample, so a shorter sample period would keep no extra history. Note that a worker whose environment sets TELEMETRY_POLL_SEC uses that as the poll period when none is set here.`,
+              "SAMPLE_BELOW_POLL",
+            );
           }
         }
         if (order) changes.nodeOrder = order;

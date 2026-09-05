@@ -4,7 +4,11 @@ import { createJobProcessor } from "./processor.js";
 import { PostgresWorkerRepository } from "./postgresRepository.js";
 import { runWorker } from "./runner.js";
 import { createMaintenanceRunner } from "./maintenance.js";
-import { resolveWorkerPeriods } from "./config.js";
+import { resolveWorkerPeriodDefaults } from "./config.js";
+import {
+  createWorkerPeriods,
+  readWorkerPeriodOverrides,
+} from "./periods.js";
 import {
   createRuleFetcher,
   resolveRuleFeeds,
@@ -64,12 +68,34 @@ if (!keyring[activeKeyVersion]) {
 }
 // Read before anything is constructed: an unusable period should stop the
 // worker at boot, not after it has already opened a pool and polled the fleet.
-const periods = resolveWorkerPeriods(process.env);
+// These are the DEFAULTS now -- the value each period takes when the panel has
+// not been given one, which is why an upgraded host keeps the periods it had.
+const periodDefaults = resolveWorkerPeriodDefaults(process.env);
+/**
+ * The live periods. Every loop below asks this before each wait instead of
+ * closing over a number, so an admin editing a period in the panel or from the
+ * CLI is picked up without recreating a container.
+ *
+ * The latency is honest and worth stating: a loop that is already waiting out
+ * the OLD period finishes that wait first, so a change lands at the start of
+ * the next cycle -- up to one old period away -- plus at most the short cache
+ * window inside this reader.
+ */
+const periods = createWorkerPeriods({
+  read: () => readWorkerPeriodOverrides(database.db),
+  defaults: periodDefaults,
+  onError: (error) => reportBackgroundError(error),
+});
 const repository = new PostgresWorkerRepository({
   db: database.db,
   keyring,
   activeKeyVersion,
-  metricsSampleSec: periods.metricsSampleMs / 1_000,
+  metricsSampleSec: () => periods.get("nodeMetricsSampleSec"),
+  peerSampleSec: () => periods.get("peerSampleSec"),
+  // What a failed lookup falls back to. The worker's OWN defaults, not the
+  // contract's constants: on a host that sets NODE_METRICS_SAMPLE_SEC that
+  // variable is the period actually in force.
+  periodDefaults,
 });
 const pollTelemetry = createTelemetryPoller({
   repository,
@@ -86,7 +112,7 @@ const runMaintenance = createMaintenanceRunner({
     "TELEMETRY_DAILY_RETENTION_DAYS",
     730,
   ),
-  nodeMetricsRetentionDays: periods.metricsRetentionDays,
+  nodeMetricsRetentionDays: () => periods.get("nodeMetricsRetentionDays"),
 });
 // Route-rule feeds activate by default. Set RU_*_POC_APPROVED=false to hold a
 // profile's auto-fetched versions in quarantine until an operator reviews them.
@@ -127,10 +153,6 @@ const buildAccessReconciler = (): (() => Promise<void>) | null => {
   });
 };
 
-const accessReconcileIntervalMs = positiveIntegerEnv(
-  "ACCESS_RECONCILE_INTERVAL_MS",
-  60 * 60_000,
-);
 const bootstrapAdminEmails = (process.env.BOOTSTRAP_ADMIN_EMAILS ?? "")
   .split(",")
   .map((email) => email.trim())
@@ -240,26 +262,26 @@ try {
     runWorker({ repository, processJob, signal: abortController.signal }),
     runPeriodicTask({
       task: pollTelemetry,
-      intervalMs: periods.telemetryPollMs,
+      intervalMs: () => periods.intervalMs("telemetryPollSec"),
       signal: abortController.signal,
       onError: reportBackgroundError,
     }),
     runPeriodicTask({
       task: runMaintenance,
-      intervalMs: 60 * 60_000,
+      intervalMs: () => periods.intervalMs("maintenanceIntervalSec"),
       signal: abortController.signal,
       onError: reportBackgroundError,
     }),
     runPeriodicTask({
       task: refreshNodeAgentRelease,
-      intervalMs: 30 * 60_000,
+      intervalMs: () => periods.intervalMs("agentReleaseRefreshSec"),
       signal: abortController.signal,
       onError: reportBackgroundError,
     }),
     ...ruleFetchers.map((fetchRules) =>
       runPeriodicTask({
         task: fetchRules,
-        intervalMs: 6 * 60 * 60_000,
+        intervalMs: () => periods.intervalMs("ruleFetchIntervalSec"),
         signal: abortController.signal,
         onError: reportBackgroundError,
       }),
@@ -267,7 +289,7 @@ try {
     ...accessTasks.map((task) =>
       runPeriodicTask({
         task,
-        intervalMs: accessReconcileIntervalMs,
+        intervalMs: () => periods.intervalMs("accessReconcileSec"),
         signal: abortController.signal,
         onError: reportBackgroundError,
       }),
@@ -280,7 +302,7 @@ try {
             // concurrent runs can cross their policy and baseline writes and
             // leave the next run disabling a freshly created user.
             task: () => repository.armAccessSync("timer"),
-            intervalMs: accessReconcileIntervalMs,
+            intervalMs: () => periods.intervalMs("accessReconcileSec"),
             signal: abortController.signal,
             onError: reportBackgroundError,
           }),

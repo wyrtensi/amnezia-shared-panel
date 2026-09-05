@@ -350,3 +350,66 @@ describe("cf-domains", () => {
     expect(calls).toHaveLength(2);
   });
 });
+
+describe("periods", () => {
+  beforeEach(() => {
+    process.env.PANEL_ADMIN_EMAIL = "cli-test@example.com";
+  });
+  afterEach(() => {
+    delete process.env.PANEL_ADMIN_EMAIL;
+    vi.unstubAllGlobals();
+  });
+
+  it("shows what is set, what an unset period falls back to, and the caveats", async () => {
+    stubFetch([
+      { body: [{ telemetryPollSec: 120, ruleFetchIntervalSec: null }] },
+    ]);
+    const output = await run(["periods"]);
+    expect(output).toContain("telemetryPollSec");
+    expect(output).toContain("120 s (2 min)");
+    // An unset period reads as a dash with the default beside it, never as 0.
+    expect(output).toMatch(/ruleFetchIntervalSec\s+—\s+21600 s \(6 h\)/);
+    expect(output).toContain("900..604800");
+    // The two things an operator has to know before changing one: the default
+    // may come from the worker's environment, and the change is not instant.
+    expect(output).toContain("TELEMETRY_POLL_SEC");
+    expect(output).toContain("up to one OLD period away");
+  });
+
+  it("--json carries the bounds as well as the stored value", async () => {
+    stubFetch([{ body: [{ telemetryPollSec: 300 }] }]);
+    const output = await run(["periods", "--json"]);
+    expect(JSON.parse(output)).toMatchObject({
+      telemetryPollSec: { set: 300, default: 60, min: 30, max: 86_400 },
+      peerSampleSec: { set: null, default: 300, min: 60, unit: "sec" },
+      nodeMetricsRetentionDays: { set: null, default: 7, unit: "day" },
+    });
+  });
+
+  it("policy-set posts a period, and posts null to clear one", async () => {
+    let calls = stubFetch([{ body: {} }]);
+    await run(["policy-set", "--telemetryPollSec=120"]);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.url).toContain("/api/admin/portal-policy/global/update");
+    expect(JSON.parse(calls[0]?.init?.body as string)).toEqual({
+      telemetryPollSec: 120,
+    });
+
+    vi.unstubAllGlobals();
+    calls = stubFetch([{ body: {} }]);
+    await run(["policy-set", "--ruleFetchIntervalSec=default"]);
+    // Null, not an omitted field: the API tells them apart, and only null
+    // hands the period back to the worker.
+    expect(JSON.parse(calls[0]?.init?.body as string)).toEqual({
+      ruleFetchIntervalSec: null,
+    });
+  });
+
+  it("refuses an out-of-range period before it reaches the API", async () => {
+    const calls = stubFetch([{ body: {} }]);
+    await expect(
+      run(["policy-set", "--telemetryPollSec=1"]),
+    ).rejects.toThrow(/outside 30\.\.86400/);
+    expect(calls).toHaveLength(0);
+  });
+});

@@ -2,8 +2,16 @@ import { describe, expect, it } from "vitest";
 
 import {
   CLIENT_PLATFORMS,
+  clampWorkerPeriod,
   clientReleaseSchema,
   composeKeyDisplayName,
+  isPollBoundSampleField,
+  POLL_BOUND_SAMPLE_FIELDS,
+  POLL_BOUND_SAMPLE_LABELS,
+  sampleBelowPoll,
+  WORKER_PERIOD_FIELDS,
+  WORKER_PERIOD_FIELD_NAMES,
+  workerPeriodOverridesSchema,
   createKeyRequestSchema,
   customRoutesSchema,
   DEVICE_TYPE_ORDER,
@@ -1507,5 +1515,162 @@ describe("accessDomainListSchema", () => {
   });
   it("refuses more than 50 entries", () => {
     expect(() => accessDomainListSchema.parse(Array.from({ length: 51 }, (_, i) => `d${i}.tld`))).toThrow();
+  });
+});
+
+describe("worker polling periods", () => {
+  it("names every period the worker runs on, in a stable order", () => {
+    // The CLI, the admin form and the docs all iterate this list, so a period
+    // added to the table without a home in the UI shows up here first.
+    expect(WORKER_PERIOD_FIELD_NAMES).toEqual([
+      "telemetryPollSec",
+      "nodeMetricsSampleSec",
+      "nodeMetricsRetentionDays",
+      "peerSampleSec",
+      "maintenanceIntervalSec",
+      "agentReleaseRefreshSec",
+      "ruleFetchIntervalSec",
+      "accessReconcileSec",
+    ]);
+  });
+
+  it("pins the bounds the CLI keeps its own copy of", () => {
+    // apps/cli ships dependency-free and re-states the table in args.ts. Its
+    // test compares the two tables directly (this package is a devDependency
+    // there), so this literal is the one place a bound is written out: changing
+    // a number here is a deliberate act that fails this test first.
+    expect(WORKER_PERIOD_FIELDS).toEqual({
+      telemetryPollSec: { min: 30, max: 86_400, fallback: 60, unit: "sec" },
+      nodeMetricsSampleSec: { min: 30, max: 86_400, fallback: 300, unit: "sec" },
+      nodeMetricsRetentionDays: { min: 1, max: 3_650, fallback: 7, unit: "day" },
+      peerSampleSec: { min: 60, max: 86_400, fallback: 300, unit: "sec" },
+      maintenanceIntervalSec: {
+        min: 3_600,
+        max: 604_800,
+        fallback: 3_600,
+        unit: "sec",
+      },
+      agentReleaseRefreshSec: {
+        min: 300,
+        max: 604_800,
+        fallback: 1_800,
+        unit: "sec",
+      },
+      ruleFetchIntervalSec: {
+        min: 900,
+        max: 604_800,
+        fallback: 21_600,
+        unit: "sec",
+      },
+      accessReconcileSec: {
+        min: 300,
+        max: 604_800,
+        fallback: 3_600,
+        unit: "sec",
+      },
+    });
+  });
+
+  it("gives every period a default inside its own bounds", () => {
+    // A default outside the bounds would mean the value an unset period
+    // actually runs on is one the panel refuses to let anyone type.
+    for (const [field, spec] of Object.entries(WORKER_PERIOD_FIELDS)) {
+      expect(spec.fallback, field).toBeGreaterThanOrEqual(spec.min);
+      expect(spec.fallback, field).toBeLessThanOrEqual(spec.max);
+      expect(spec.min, field).toBeLessThan(spec.max);
+    }
+  });
+
+  it("accepts a value at each bound, and null everywhere", () => {
+    for (const field of WORKER_PERIOD_FIELD_NAMES) {
+      const { min, max } = WORKER_PERIOD_FIELDS[field];
+      expect(workerPeriodOverridesSchema.parse({ [field]: min })).toEqual({
+        [field]: min,
+      });
+      expect(workerPeriodOverridesSchema.parse({ [field]: max })).toEqual({
+        [field]: max,
+      });
+      // Null is how an admin hands a period back to the worker's default, so it
+      // has to survive the schema rather than read as "not named".
+      expect(workerPeriodOverridesSchema.parse({ [field]: null })).toEqual({
+        [field]: null,
+      });
+    }
+  });
+
+  it("refuses a value outside the bounds, and a fractional one", () => {
+    for (const field of WORKER_PERIOD_FIELD_NAMES) {
+      const { min, max } = WORKER_PERIOD_FIELDS[field];
+      expect(() =>
+        workerPeriodOverridesSchema.parse({ [field]: min - 1 }),
+      ).toThrow();
+      expect(() =>
+        workerPeriodOverridesSchema.parse({ [field]: max + 1 }),
+      ).toThrow();
+      expect(() =>
+        workerPeriodOverridesSchema.parse({ [field]: min + 0.5 }),
+      ).toThrow();
+    }
+  });
+
+  it("refuses a one-second telemetry poll", () => {
+    // The floor exists so nobody can point the whole fleet at itself: every
+    // poll is a four-request fan-out to every node.
+    expect(() =>
+      workerPeriodOverridesSchema.parse({ telemetryPollSec: 1 }),
+    ).toThrow();
+    expect(workerPeriodOverridesSchema.parse({ telemetryPollSec: 30 })).toEqual({
+      telemetryPollSec: 30,
+    });
+  });
+
+  it("clamps a stored value into range and leaves null alone", () => {
+    expect(clampWorkerPeriod("telemetryPollSec", 1)).toBe(30);
+    expect(clampWorkerPeriod("telemetryPollSec", 10_000_000)).toBe(86_400);
+    expect(clampWorkerPeriod("telemetryPollSec", 120)).toBe(120);
+    expect(clampWorkerPeriod("telemetryPollSec", null)).toBeNull();
+    expect(clampWorkerPeriod("telemetryPollSec", undefined)).toBeNull();
+    expect(clampWorkerPeriod("telemetryPollSec", Number.NaN)).toBeNull();
+  });
+
+  it("reports a sample period below the poll period, and only that", () => {
+    expect(sampleBelowPoll("nodeMetricsSampleSec", 60, 30)).toEqual({
+      field: "nodeMetricsSampleSec",
+      telemetryPollSec: 60,
+      sampleSec: 30,
+    });
+    expect(sampleBelowPoll("nodeMetricsSampleSec", 60, 60)).toBeNull();
+    expect(sampleBelowPoll("nodeMetricsSampleSec", 60, 300)).toBeNull();
+  });
+
+  it("binds the peer sample period to the poll period too", () => {
+    // `peer_samples` rows are written by a poll exactly as metrics rows are, so
+    // --telemetryPollSec=3600 --peerSampleSec=60 is the same lie: the panel
+    // would show 60 s while an idle peer was recorded once an hour.
+    expect(POLL_BOUND_SAMPLE_FIELDS).toEqual([
+      "nodeMetricsSampleSec",
+      "peerSampleSec",
+    ]);
+    expect(sampleBelowPoll("peerSampleSec", 3_600, 60)).toEqual({
+      field: "peerSampleSec",
+      telemetryPollSec: 3_600,
+      sampleSec: 60,
+    });
+    expect(sampleBelowPoll("peerSampleSec", 60, 300)).toBeNull();
+  });
+
+  it("recognises exactly the poll-bound sample fields", () => {
+    // The worker's read-path clamp branches on this, so a period added to the
+    // contract must not silently join or leave the rule.
+    for (const field of WORKER_PERIOD_FIELD_NAMES) {
+      expect(isPollBoundSampleField(field), field).toBe(
+        field === "nodeMetricsSampleSec" || field === "peerSampleSec",
+      );
+    }
+    // Every poll-bound field has a name to show an admin, or the API's refusal
+    // would read "The undefined (60 s) cannot be shorter...".
+    for (const field of POLL_BOUND_SAMPLE_FIELDS) {
+      expect(POLL_BOUND_SAMPLE_LABELS[field], field).toBeTruthy();
+    }
   });
 });

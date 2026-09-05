@@ -628,6 +628,27 @@ export const portalPolicy = pgTable(
       .default({})
       .notNull(),
     dailyRetentionDays: integer("daily_retention_days"),
+    // --- Worker polling periods ---------------------------------------------
+    // Every background loop the panel runs against the fleet, plus the two
+    // sampling floors that decide how fast the history tables grow. All
+    // NULLABLE and null by default, and that is the whole upgrade story: a
+    // panel that has never set one keeps the periods it already had, because
+    // the worker falls back to its environment (TELEMETRY_POLL_SEC and friends)
+    // or to its built-in constant. See WORKER_PERIOD_FIELDS in
+    // @amnezia/contracts for the bounds and why each one is where it is.
+    //
+    // Global-only, like recommendedNodeIds/nodeOrder below: they are not part
+    // of portalPolicySchema, so they can never be overridden per user. How
+    // often the panel talks to a node is a property of the deployment, not of
+    // whoever is looking at it.
+    telemetryPollSec: integer("telemetry_poll_sec"),
+    nodeMetricsSampleSec: integer("node_metrics_sample_sec"),
+    nodeMetricsRetentionDays: integer("node_metrics_retention_days"),
+    peerSampleSec: integer("peer_sample_sec"),
+    maintenanceIntervalSec: integer("maintenance_interval_sec"),
+    agentReleaseRefreshSec: integer("agent_release_refresh_sec"),
+    ruleFetchIntervalSec: integer("rule_fetch_interval_sec"),
+    accessReconcileSec: integer("access_reconcile_sec"),
     // Cloudflare Access two-way sync config. The API token is stored encrypted
     // and never returned to the client (write-only, replaceable).
     cfAccessAccountId: varchar("cf_access_account_id", { length: 64 }),
@@ -658,6 +679,45 @@ export const portalPolicy = pgTable(
   (table) => [
     check("portal_policy_singleton", sql`${table.id} = true`),
     check("portal_policy_default_limit_positive", sql`${table.defaultKeyLimit} >= 0`),
+    // Ranges for the worker periods above, mirroring WORKER_PERIOD_FIELDS in
+    // @amnezia/contracts (schema.test.ts holds the two together). The control
+    // API refuses an out-of-range write and the worker clamps on read, so these
+    // are the third line rather than the first -- but the contract is not the
+    // only thing that could ever write here, and a hand-edited row that asks
+    // the panel to poll the whole fleet every second should be refused by the
+    // table too. NULL always passes: it means "use the worker's default".
+    check(
+      "portal_policy_telemetry_poll_range",
+      sql`${table.telemetryPollSec} IS NULL OR (${table.telemetryPollSec} >= 30 AND ${table.telemetryPollSec} <= 86400)`,
+    ),
+    check(
+      "portal_policy_node_metrics_sample_range",
+      sql`${table.nodeMetricsSampleSec} IS NULL OR (${table.nodeMetricsSampleSec} >= 30 AND ${table.nodeMetricsSampleSec} <= 86400)`,
+    ),
+    check(
+      "portal_policy_node_metrics_retention_range",
+      sql`${table.nodeMetricsRetentionDays} IS NULL OR (${table.nodeMetricsRetentionDays} >= 1 AND ${table.nodeMetricsRetentionDays} <= 3650)`,
+    ),
+    check(
+      "portal_policy_peer_sample_range",
+      sql`${table.peerSampleSec} IS NULL OR (${table.peerSampleSec} >= 60 AND ${table.peerSampleSec} <= 86400)`,
+    ),
+    check(
+      "portal_policy_maintenance_interval_range",
+      sql`${table.maintenanceIntervalSec} IS NULL OR (${table.maintenanceIntervalSec} >= 3600 AND ${table.maintenanceIntervalSec} <= 604800)`,
+    ),
+    check(
+      "portal_policy_agent_release_refresh_range",
+      sql`${table.agentReleaseRefreshSec} IS NULL OR (${table.agentReleaseRefreshSec} >= 300 AND ${table.agentReleaseRefreshSec} <= 604800)`,
+    ),
+    check(
+      "portal_policy_rule_fetch_interval_range",
+      sql`${table.ruleFetchIntervalSec} IS NULL OR (${table.ruleFetchIntervalSec} >= 900 AND ${table.ruleFetchIntervalSec} <= 604800)`,
+    ),
+    check(
+      "portal_policy_access_reconcile_range",
+      sql`${table.accessReconcileSec} IS NULL OR (${table.accessReconcileSec} >= 300 AND ${table.accessReconcileSec} <= 604800)`,
+    ),
   ],
 );
 

@@ -69,6 +69,7 @@ import {
   toNodeMetricsRow,
 } from "./nodeMetrics.js";
 import {
+  DEFAULT_PEER_SAMPLE_INTERVAL_MS,
   shouldStoreSample,
   type NodeSnapshot,
   type PeerObservation,
@@ -86,8 +87,32 @@ export type PostgresWorkerRepositoryOptions = {
    * fast node_metrics_samples grows, so it is an operator setting rather than a
    * constant - and it lives here rather than in nodeMetrics.ts so there is one
    * place it can be wrong.
+   *
+   * A function is asked before every snapshot, which is how an admin's edit
+   * reaches the sampler without a restart. A plain number is still accepted and
+   * is what the tests use.
    */
-  metricsSampleSec?: number;
+  metricsSampleSec?: number | (() => Promise<number>);
+  /**
+   * The floor on how often an UNCHANGED peer writes a peer_samples row. Same
+   * shape and the same reason as metricsSampleSec above; a peer whose state
+   * moved is always sampled regardless.
+   */
+  peerSampleSec?: number | (() => Promise<number>);
+  /**
+   * The worker's OWN defaults for the two sample periods, used when a resolver
+   * above fails outright.
+   *
+   * Without it the fallback would be the contract's built-in constant, which is
+   * the wrong number on any host that sets NODE_METRICS_SAMPLE_SEC: that
+   * environment value is the default the worker actually runs on, so it is what
+   * a failed lookup has to land on. Optional because the tests pass fixed
+   * numbers and never reach the fallback at all.
+   */
+  periodDefaults?: {
+    nodeMetricsSampleSec: number;
+    peerSampleSec: number;
+  };
 };
 
 // The transaction handle drizzle passes to `db.transaction(async (tx) => ...)`.
@@ -95,6 +120,29 @@ type DbTransaction = Parameters<Parameters<Database["transaction"]>[0]>[0];
 
 const cleanReason = (reason: string): string =>
   reason.replace(/[\r\n\t]+/g, " ").slice(0, 2_000);
+
+/**
+ * A period option that may be a fixed number or a resolver, as one number.
+ *
+ * The resolver is the live-settings path and is expected not to throw (see
+ * `periods.ts`, which swallows a failed read and hands back the last good
+ * value). The catch here is the second line: a snapshot must be written even if
+ * the panel cannot say how often to sample it, because losing the snapshot is
+ * strictly worse than sampling it on the default period.
+ */
+const resolveSeconds = async (
+  option: number | (() => Promise<number>) | undefined,
+  fallback: number,
+): Promise<number> => {
+  if (typeof option === "number") return option;
+  if (option === undefined) return fallback;
+  try {
+    const value = await option();
+    return Number.isFinite(value) && value > 0 ? value : fallback;
+  } catch {
+    return fallback;
+  }
+};
 
 export class PostgresWorkerRepository
   implements
@@ -945,6 +993,21 @@ export class PostgresWorkerRepository
   };
 
   recordNodeSnapshot = async (snapshot: NodeSnapshot): Promise<void> => {
+    // Resolved BEFORE the transaction opens, never inside it: the resolver
+    // reads the panel's settings row, and doing that while this transaction
+    // already holds a pool connection is how a small pool deadlocks itself.
+    const metricsSampleMs =
+      (await resolveSeconds(
+        this.options.metricsSampleSec,
+        this.options.periodDefaults?.nodeMetricsSampleSec ??
+          DEFAULT_METRICS_SAMPLE_SEC,
+      )) * 1_000;
+    const peerSampleMs =
+      (await resolveSeconds(
+        this.options.peerSampleSec,
+        this.options.periodDefaults?.peerSampleSec ??
+          DEFAULT_PEER_SAMPLE_INTERVAL_MS / 1_000,
+      )) * 1_000;
     await this.options.db.transaction(async (tx) => {
       const node = (
         await tx.select().from(nodes).where(eq(nodes.id, snapshot.nodeId)).limit(1)
@@ -1057,13 +1120,11 @@ export class PostgresWorkerRepository
         .where(eq(nodeMetricsSamples.nodeId, snapshot.nodeId))
         .orderBy(desc(nodeMetricsSamples.sampledAt))
         .limit(1);
-      const sampleIntervalMs =
-        (this.options.metricsSampleSec ?? DEFAULT_METRICS_SAMPLE_SEC) * 1_000;
       if (
         shouldStoreMetricsSample(
           snapshot.observedAt,
           latestSample?.sampledAt ?? null,
-          sampleIntervalMs,
+          metricsSampleMs,
         )
       ) {
         // Deliberately a subset of the current row: this table grows per node
@@ -1106,7 +1167,7 @@ export class PostgresWorkerRepository
         });
       }
       for (const observation of observations) {
-        await this.storePeerObservation(tx, observation);
+        await this.storePeerObservation(tx, observation, peerSampleMs);
       }
     });
   };
@@ -1114,6 +1175,7 @@ export class PostgresWorkerRepository
   private readonly storePeerObservation = async (
     tx: Parameters<Parameters<Database["transaction"]>[0]>[0],
     observation: PeerObservation,
+    peerSampleMs: number,
   ): Promise<void> => {
     const latestSample = (
       await tx
@@ -1165,7 +1227,7 @@ export class PostgresWorkerRepository
           observedAt: latestSample.sampledAt,
         }
       : null;
-    if (shouldStoreSample(observation, previous)) {
+    if (shouldStoreSample(observation, previous, peerSampleMs)) {
       await tx.insert(peerSamples).values({
         keyId: observation.keyId,
         online: observation.online,
