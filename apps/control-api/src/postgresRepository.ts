@@ -290,6 +290,7 @@ const toPolicy = (row: PortalPolicyRow | undefined): PortalPolicy =>
         showTraffic: row.showTraffic,
         showNodeStatus: row.showNodeStatus,
         showNodeAddress: row.showNodeAddress,
+        showInstallReminder: row.showInstallReminder,
         // Null until an admin attaches recordings; the guide falls back to a
         // placeholder, so an empty object is the honest "none configured".
         installGuideVideos: row.installGuideVideos ?? {},

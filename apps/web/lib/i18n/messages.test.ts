@@ -175,6 +175,17 @@ describe("install guide messages", () => {
     }
   });
 
+  it("keeps the install reminder out of this budget on purpose", () => {
+    // The reminder dialog's keys are `installReminder.*`, which do NOT start
+    // with "install." and are measured by their own budget at the bottom of
+    // this file. Asserted rather than left implicit: the two prefixes are one
+    // character apart, and a rename either way would silently move copy from
+    // one budget to the other.
+    expect(
+      installKeys(messages.ru).some((key) => key.includes("Reminder")),
+    ).toBe(false);
+  });
+
   it("interpolates the client floor instead of hardcoding it", () => {
     expect(messages.ru["wizard.awg3Hint"]).toContain("{version}");
     expect(messages.en["wizard.awg3Hint"]).toContain("{version}");
@@ -182,5 +193,85 @@ describe("install guide messages", () => {
     expect(messages.en["install.versionNote"]).toContain("{version}");
     expect(messages.ru["install.latestVersion"]).toContain("{version}");
     expect(messages.en["install.latestVersion"]).toContain("{version}");
+  });
+});
+
+/**
+ * The step between "key created" and the guide. Its own dictionary block and
+ * its own budget: it is not the guide, and a dialog somebody has to read before
+ * the only enabled button lights up has to stay short enough to be read.
+ */
+describe("install reminder messages", () => {
+  const PREFIX = "installReminder.";
+  const reminderKeys = (dict: Record<string, string>) =>
+    Object.keys(dict)
+      .filter((key) => key.startsWith(PREFIX))
+      .sort();
+
+  // Every key the dialog renders, so deleting one fails here rather than
+  // showing a raw key to a user mid-warning.
+  const REQUIRED = [
+    "installReminder.title",
+    "installReminder.desc",
+    "installReminder.headline",
+    "installReminder.mandatory",
+    "installReminder.why",
+    "installReminder.looksFine",
+    "installReminder.confirm",
+    "installReminder.later",
+    "installReminder.next",
+    "installReminder.nextHint",
+  ];
+
+  it("exists in both languages with the same key set", () => {
+    const ru = reminderKeys(messages.ru);
+    const en = reminderKeys(messages.en);
+    expect(ru.length).toBeGreaterThan(0);
+    expect(en).toEqual(ru);
+  });
+
+  it("covers every string the dialog renders", () => {
+    for (const key of REQUIRED) {
+      expect(messages.ru, `ru is missing ${key}`).toHaveProperty(key);
+      expect(messages.en, `en is missing ${key}`).toHaveProperty(key);
+    }
+  });
+
+  it("contains no emoji, no URLs and no bare version numbers", () => {
+    for (const lang of ["ru", "en"] as const) {
+      const dict = messages[lang] as Record<string, string>;
+      for (const key of reminderKeys(dict)) {
+        const value = dict[key] ?? "";
+        expect(value.trim().length, `${lang}:${key} is empty`).toBeGreaterThan(0);
+        expect(value, `${lang}:${key} contains an emoji`).not.toMatch(EMOJI);
+        expect(value, `${lang}:${key} inlines a URL`).not.toMatch(URL_LITERAL);
+        expect(value, `${lang}:${key} inlines a version`).not.toMatch(
+          VERSION_LITERAL,
+        );
+      }
+    }
+  });
+
+  it("interpolates the client floor rather than naming a version", () => {
+    // The dialog exists to say WHY an old client cannot use the key just
+    // issued, and the floor is that reason. It comes from
+    // MIN_AWG3_CLIENT_VERSION, like every other place that states it.
+    expect(messages.ru["installReminder.why"]).toContain("{version}");
+    expect(messages.en["installReminder.why"]).toContain("{version}");
+  });
+
+  it("stays short enough that somebody reads it before ticking the box", () => {
+    // A budget, like the guide's above. This dialog interrupts a user who has
+    // just finished a form; the moment it grows into a page it gets dismissed
+    // unread, which is the exact failure it was built to prevent. Raise it
+    // deliberately and with a reason, or not at all.
+    for (const lang of ["ru", "en"] as const) {
+      const dict = messages[lang] as Record<string, string>;
+      const total = reminderKeys(dict).reduce(
+        (sum, key) => sum + (dict[key] ?? "").length,
+        0,
+      );
+      expect(total, `${lang} install reminder copy`).toBeLessThanOrEqual(900);
+    }
   });
 });

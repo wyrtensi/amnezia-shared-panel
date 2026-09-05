@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
+  defaultPortalPolicy,
   deviceTypeSchema,
   LEGACY_DEVICE_TYPE_REPLACEMENT,
   RETIRED_STORED_DEVICE_TYPES,
@@ -163,5 +164,29 @@ describe("0029_worker_polling_periods", () => {
         `CHECK ("portal_policy"."${column}" IS NULL OR ("portal_policy"."${column}" >= ${min} AND "portal_policy"."${column}" <= ${max}))`,
       );
     }
+  });
+});
+
+describe("0031_install_reminder_policy", () => {
+  const sql = readFileSync(
+    fileURLToPath(
+      new URL("../migrations/0031_install_reminder_policy.sql", import.meta.url),
+    ),
+    "utf8",
+  );
+
+  it("adds the column NOT NULL and defaulted to true", () => {
+    // The opposite of 0029's story, and deliberately so: an unset period means
+    // "use the worker's default", while an unset flag here would mean "no
+    // warning". The warning is what an existing panel should keep on upgrade —
+    // its users are the ones still running a client too old to read an AWG 3.1
+    // key — so the default is written into the column rather than inferred.
+    expect(sql).toContain(
+      'ALTER TABLE "portal_policy" ADD COLUMN "show_install_reminder" boolean DEFAULT true NOT NULL;',
+    );
+  });
+
+  it("matches the default the contract hands out", () => {
+    expect(defaultPortalPolicy.showInstallReminder).toBe(true);
   });
 });

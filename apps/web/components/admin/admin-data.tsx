@@ -199,6 +199,11 @@ export type GlobalPortalPolicy = {
   showNodeAddress: boolean;
   /** Gates the service-check chips a user sees beside each server. */
   showNodeStatus: boolean;
+  /**
+   * Whether a regular user is stopped after creating one of their first keys
+   * and told to install or update the AmneziaVPN client. On by default.
+   */
+  showInstallReminder: boolean;
   defaultKeyLimit: number;
   keyLimitMode: KeyLimitMode;
   dailyRetentionDays: number | null;
@@ -244,6 +249,9 @@ const DEFAULT_POLICY: GlobalPortalPolicy = {
   // Default true, matching the contract: a user seeing which services work
   // from a server is the point of collecting the checks at all.
   showNodeStatus: true,
+  // Default true, matching the contract: a panel that has not loaded its
+  // policy yet must not flash the switch off and read as "already disabled".
+  showInstallReminder: true,
   defaultKeyLimit: 5,
   // Per-node is the pre-existing behaviour, so a panel that has not loaded the
   // policy yet never flashes the global-pool wording.

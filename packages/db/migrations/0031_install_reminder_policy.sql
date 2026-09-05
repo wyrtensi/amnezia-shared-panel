@@ -1,0 +1,1 @@
+ALTER TABLE "portal_policy" ADD COLUMN "show_install_reminder" boolean DEFAULT true NOT NULL;

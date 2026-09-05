@@ -472,6 +472,18 @@ export const portalPolicySchema = z.object({
   // than something an upgrade does to an existing deployment. Note this is the
   // opposite default from showNodeStatus, which ships on.
   showNodeAddress: z.boolean().default(false),
+  // Whether a regular user is stopped right after creating one of their first
+  // keys and told to install the AmneziaVPN client, or update the one they
+  // already have, before doing anything else.
+  //
+  // Deliberately NOT an `allow*` name: those grant the user a capability, and
+  // this grants nothing — it interrupts. Default ON, like the other flags that
+  // ship enabled, because switching it off is what needs a decision: keys are
+  // issued for AmneziaWG 3.1 and a client older than MIN_AWG3_CLIENT_VERSION
+  // cannot read one, so an upgrade must not quietly remove the warning from the
+  // deployments whose users most need it. An admin never sees it whatever this
+  // says — see `shouldShowInstallReminder` in the web app.
+  showInstallReminder: z.boolean().default(true),
   // Walkthrough videos for the connection guide, one per audience. Empty by
   // default; an admin fills them in when the recordings exist.
   installGuideVideos: installGuideVideosSchema.default({}),

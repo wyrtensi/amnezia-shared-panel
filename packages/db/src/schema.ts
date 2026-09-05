@@ -630,6 +630,13 @@ export const portalPolicy = pgTable(
     // OFF, unlike the other display flags around it: an existing deployment
     // must not start showing the fleet's addresses because it was upgraded.
     showNodeAddress: boolean("show_node_address").default(false).notNull(),
+    // Whether a regular user is stopped after creating one of their first keys
+    // and told to install or update the AmneziaVPN client. Ships ON: a client
+    // older than the AWG 3.1 floor cannot read the key that was just issued, so
+    // an upgrade must not remove the warning from a panel that never set it.
+    showInstallReminder: boolean("show_install_reminder")
+      .default(true)
+      .notNull(),
     // Walkthrough videos for the in-panel connection guide, one URL per
     // audience ({ desktop, android, ios }). Nullable and null by default: the
     // guide renders a placeholder until an admin attaches recordings, so a

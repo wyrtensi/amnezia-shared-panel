@@ -138,6 +138,7 @@ const POLICY_LABELS: Array<[string, string]> = [
   ["showLastUsed", "upolicy.showLastUsed"],
   ["showTraffic", "upolicy.showTraffic"],
   ["showNodeAddress", "upolicy.showNodeAddress"],
+  ["showInstallReminder", "upolicy.showInstallReminder"],
 ];
 
 function displayName(user: AdminUser): string {

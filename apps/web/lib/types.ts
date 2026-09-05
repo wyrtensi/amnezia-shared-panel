@@ -18,6 +18,13 @@ export type PortalPolicy = {
   showPublicKey?: boolean;
   showLastUsed?: boolean;
   showTraffic?: boolean;
+  /**
+   * Whether a regular user is stopped after creating one of their first keys
+   * and told to install or update the AmneziaVPN client. Optional because a
+   * control API older than the field sends nothing; `undefined` must read as
+   * ON, which is the contract's default — see `shouldShowInstallReminder`.
+   */
+  showInstallReminder?: boolean;
   allowedProtocols?: ProtocolKind[];
   keyLimitMode?: KeyLimitMode;
   // Sourced from the contract rather than restated: this file is a hand-written

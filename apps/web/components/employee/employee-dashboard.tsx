@@ -33,10 +33,15 @@ import {
   guideAudienceForDevice,
   InstallGuideDialog,
 } from "@/components/employee/install-guide-dialog";
+import { InstallReminderDialog } from "@/components/employee/install-reminder-dialog";
 import { KeyHelpDialog } from "@/components/employee/key-help-dialog";
 import { QuotaRequestDialog } from "@/components/employee/quota-request-dialog";
 import { apiRequest } from "@/lib/api";
 import { helpLinkSearch, readHelpLink, type HelpLink } from "@/lib/help-links";
+import {
+  keyNumberOf,
+  shouldShowInstallReminder,
+} from "@/lib/install-reminder";
 import { isAtLimit } from "@/lib/key-quota";
 import { isVisibleToOwner } from "@/lib/key-states";
 import { InlineTraffic } from "@/components/inline-traffic";
@@ -90,6 +95,8 @@ export function EmployeeDashboard({
   );
   const [justCreatedId, setJustCreatedId] = React.useState<string | null>(null);
   const scrolledForId = React.useRef<string | null>(null);
+  const [showInstallReminder, setShowInstallReminder] = React.useState(false);
+  const remindedForId = React.useRef<string | null>(null);
 
   const load = React.useCallback(async (silent = false) => {
     try {
@@ -201,6 +208,31 @@ export function EmployeeDashboard({
     el.focus({ preventScroll: true });
   }, [justCreatedId, keys]);
 
+  /**
+   * ...and, for a regular user's first few keys, stop them here first: the key
+   * is useless until the AmneziaVPN client is new enough to read it.
+   *
+   * Keyed on the key APPEARING IN THE LIST, not on the create button: a failed
+   * creation has nothing to install for, and the list is also where the
+   * authoritative `keyNumber` comes from. Waits for the wizard to close so two
+   * dialogs never overlap, and runs once per created key — `remindedForId` is
+   * what stops a background poll re-opening a dialog the user has dismissed.
+   */
+  React.useEffect(() => {
+    if (!justCreatedId || showCreate) return;
+    if (remindedForId.current === justCreatedId) return;
+    const created = keys.find((key) => key.id === justCreatedId);
+    if (!created) return;
+    remindedForId.current = justCreatedId;
+    if (shouldShowInstallReminder({ me, keyNumber: keyNumberOf(created) })) {
+      // The "key created" toast is top-centre and lands squarely over this
+      // dialog's title for the few seconds that matter most. The dialog opens
+      // by saying the key is ready, so the toast has nothing left to add.
+      toast.dismiss();
+      setShowInstallReminder(true);
+    }
+  }, [justCreatedId, showCreate, keys, me]);
+
   // Per-server traffic (Today / 7 days / Month, all inline).
   const showTraffic = me?.policy.showTraffic ?? false;
   React.useEffect(() => {
@@ -286,6 +318,7 @@ export function EmployeeDashboard({
       // list scrolls to and focuses the new card, which shows a spinner until
       // provisioning finishes.
       scrolledForId.current = null;
+      remindedForId.current = null;
       setJustCreatedId(created.id);
     }
     await load();
@@ -661,6 +694,20 @@ export function EmployeeDashboard({
         target={configTarget}
         onClose={() => setConfigTarget(null)}
         me={me}
+      />
+      <InstallReminderDialog
+        open={showInstallReminder}
+        onOpenChange={setShowInstallReminder}
+        // Straight into the guide the rest of the panel already uses, on its
+        // device chooser. Not pre-selected from the key's device type: the
+        // wizard preselects the first device card, so that value is often a
+        // default the user never looked at, and this is the one dialog whose
+        // whole job is to stop somebody acting on a wrong assumption. The
+        // chooser is one click and always right.
+        onContinue={() => {
+          setShowInstallReminder(false);
+          openGuide(null);
+        }}
       />
       <KeyHelpDialog
         open={showKeyHelp}

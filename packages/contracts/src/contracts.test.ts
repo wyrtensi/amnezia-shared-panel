@@ -186,6 +186,7 @@ describe("portalPolicySchema", () => {
       showTraffic: true,
       showNodeStatus: true,
       showNodeAddress: false,
+      showInstallReminder: true,
       // No recordings until an admin adds them; the guide reads without one.
       installGuideVideos: {},
       keyLimitMode: "per_node",
@@ -232,6 +233,24 @@ describe("portalPolicySchema", () => {
     // showing it to every user on an existing deployment.
     expect(policy.showPublicKey).toBe(false);
     expect(policy.showNodeAddress).toBe(false);
+  });
+
+  it("keeps the install reminder on unless an operator turns it off", () => {
+    // Not an `allow*` and not a capability: it interrupts a regular user after
+    // each of their first keys to say the AmneziaVPN client must be installed
+    // or updated. Default ON because the failure it prevents is silent — an
+    // old client starts, looks healthy, and never reads an AWG 3.1 key — so an
+    // upgrade must not remove the warning from a panel that never set it.
+    expect(portalPolicySchema.parse({}).showInstallReminder).toBe(true);
+    expect(
+      portalPolicySchema.parse({ showInstallReminder: false })
+        .showInstallReminder,
+    ).toBe(false);
+    // Per-user override comes free from `.partial()`, like every other flag.
+    expect(
+      portalPolicySchema.partial().parse({ showInstallReminder: false })
+        .showInstallReminder,
+    ).toBe(false);
   });
 });
 
