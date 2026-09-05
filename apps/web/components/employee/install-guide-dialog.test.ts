@@ -26,18 +26,28 @@ describe("install guide dialog source", () => {
 
   // D8: on iOS a route-profile key connects but filters nothing, and the user
   // cannot see that. The install section must always carry the warning, and the
-  // paragraph that recommends a split-profile .conf must never stand without
-  // its iOS exception. Both are cheap to break in an edit and invisible in
-  // review, so they are pinned here.
+  // paragraph that recommends a split-profile key file must never stand
+  // without its iOS exception. Both are cheap to break in an edit and
+  // invisible in review, so they are pinned here.
   it("always warns that route profiles do not filter on iOS", () => {
     expect(source).toContain("install.iosProfileWarning");
   });
 
-  // The .conf section is rendered only for desktop and Android, so an iOS
+  // The file section is rendered only for desktop and Android, so an iOS
   // exception inside it was advice about a device the reader is not holding.
   // iOS keeps its own warning in step 1, which the test above pins.
-  it("does not discuss iPhones inside the .conf section", () => {
-    expect(source).not.toContain("install.confIosWarning");
+  it("does not discuss iPhones inside the file section", () => {
+    expect(source).not.toContain("install.fileIosWarning");
+  });
+
+  // The file the guide teaches is .vpn: it is the only download the client's
+  // importer accepts without renaming the connection to "Server 1". A rewrite
+  // that quietly puts the .conf steps back would undo the whole point, and
+  // reads the same in a diff, so the key names are pinned.
+  it("teaches the .vpn file and keeps .conf as the fallback", () => {
+    expect(source).toContain("install.fileStep1");
+    expect(source).toContain("install.fileConfFallback");
+    expect(source).not.toContain("install.confStep1");
   });
 });
 

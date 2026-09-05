@@ -100,10 +100,10 @@ const ADD_STEPS = [
 ] as const;
 
 /** Importing the file, for someone who has never opened that menu. */
-const CONF_STEPS = [
-  "install.confStep1",
-  "install.confStep2",
-  "install.confStep3",
+const FILE_STEPS = [
+  "install.fileStep1",
+  "install.fileStep2",
+  "install.fileStep3",
 ] as const;
 
 const APK_STEPS = [
@@ -143,7 +143,7 @@ const assetSize = (asset: ClientAsset, lang: Lang): string | null => {
 /**
  * How to install AmneziaVPN and connect, in three numbered steps: get the
  * client, add the key, and what to try when nothing connects. Everything that
- * is not one of those three — the .conf route, the APK, the non-Russian App
+ * is not one of those three — the file route, the APK, the non-Russian App
  * Store listing — is collapsed behind a spoiler, because this audience does not
  * read documentation and every extra paragraph pushes the three steps down.
  *
@@ -155,14 +155,23 @@ const assetSize = (asset: ClientAsset, lang: Lang): string | null => {
 export function InstallGuideDialog({
   open,
   onOpenChange,
-  showConfSection,
+  showFileSection,
+  showConfFallback,
   allowCustomRoutes,
   videos,
   initialAudience = null,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  showConfSection: boolean;
+  /**
+   * Whether this user can download a key file at all. The file the guide now
+   * teaches is `.vpn`, which is the same payload the copy button hands out and
+   * so needs no flag of its own — but a user who cannot re-download a config
+   * has no button to press, and the steps would point at nothing.
+   */
+  showFileSection: boolean;
+  /** Whether the `.conf` fallback exists for this user (its own policy flag). */
+  showConfFallback: boolean;
   /** Whether this user's key page offers the custom-routes section at all. */
   allowCustomRoutes: boolean;
   videos?: InstallGuideVideos | null;
@@ -199,7 +208,7 @@ export function InstallGuideDialog({
    * Simple by default, every time.
    *
    * The guide's job is to get somebody connected in the next two minutes; the
-   * .conf route, the APK, the release pages and the settings to go and change
+   * file route, the APK, the release pages and the settings to go and change
    * are all real, and all of them are somebody else's two minutes. They live
    * behind this switch instead of in front of the reader who does not need
    * them. Not remembered between openings on purpose: whoever opens this is
@@ -253,7 +262,8 @@ export function InstallGuideDialog({
               audience={audience}
               release={release}
               failed={failed}
-              showConfSection={showConfSection}
+              showFileSection={showFileSection}
+              showConfFallback={showConfFallback}
               videos={videos}
               advanced={advanced}
               allowCustomRoutes={allowCustomRoutes}
@@ -374,7 +384,8 @@ export function InstallInstructions({
   audience,
   release,
   failed,
-  showConfSection,
+  showFileSection,
+  showConfFallback,
   videos,
   advanced,
   allowCustomRoutes,
@@ -382,7 +393,8 @@ export function InstallInstructions({
   audience: GuideAudience;
   release: ClientRelease | null;
   failed: boolean;
-  showConfSection: boolean;
+  showFileSection: boolean;
+  showConfFallback: boolean;
   /** Per-audience walkthrough videos from the portal policy; empty by default. */
   videos?: InstallGuideVideos | null;
   advanced: boolean;
@@ -394,12 +406,12 @@ export function InstallInstructions({
   );
   const android = downloads.find((entry) => entry.platform === "android");
   const ios = downloads.find((entry) => entry.platform === "ios");
-  // The .conf route is a real improvement on a computer and on Android. On iOS
+  // The file route is a real improvement on a computer and on Android. On iOS
   // it changes nothing — the rules are ignored either way — so that audience
   // gets the reason instead of instructions it cannot use. See D8.
-  // The .conf route is detail: it is the second way to do something the first
+  // The file route is detail: it is the second way to do something the first
   // way already does, and it only pays off for the long split-tunnel keys.
-  const confApplies = advanced && showConfSection && audience !== "ios";
+  const fileApplies = advanced && showFileSection && audience !== "ios";
   const videoUrl = videos?.[audience] ?? null;
   const [qrFor, setQrFor] = React.useState<ClientPlatform | null>(null);
 
@@ -508,7 +520,7 @@ export function InstallInstructions({
                     {/*
                       iOS connects with a route profile but applies none of its
                       rules — a silent failure the user cannot see. Shown to the
-                      iOS audience whatever the .conf policy is, because the
+                      iOS audience whatever the download policy is, because the
                       section that repeats it below can be switched off. See D8.
                     */}
                     <Callout
@@ -544,17 +556,19 @@ export function InstallInstructions({
               A split-tunnel key is thousands of characters. Messengers truncate
               it, and the paste then fails inside the app with nothing to say
               why - so this is shown in the simple view, where the person who is
-              about to try it will be. The .conf half of the advice is dropped
-              when that download is switched off, rather than pointing at a
+              about to try it will be. The file half of the advice is dropped
+              when downloads are switched off, rather than pointing at a
               button the reader does not have.
             */}
             <Callout tone="warning" icon={<TriangleAlert className="h-4 w-4" />}>
               {t("install.longKeyBody")}
-              {showConfSection ? ` ${t("install.longKeyConf")}` : null}
+              {showFileSection ? ` ${t("install.longKeyFile")}` : null}
             </Callout>
-            {/* The .conf route is an alternative to those three steps, not a
+            {/* The file route is an alternative to those three steps, not a
                 fourth step, so it sits inside this section and collapsed. */}
-            {confApplies ? <ConfAlternative /> : null}
+            {fileApplies ? (
+              <FileAlternative showConfFallback={showConfFallback} />
+            ) : null}
             {advanced && allowCustomRoutes ? <CustomRoutesExplainer /> : null}
           </GuideSection>
 
@@ -662,37 +676,53 @@ function GuideVideo({ url }: { url: string | null }) {
 }
 
 /**
- * The .conf file — the second way to add a key, collapsed. Copying the key is
+ * The key as a file — the second way to add one, collapsed. Copying the key is
  * the path almost everyone takes; the file only wins for a split-tunnel profile,
  * whose key is too long to be pleasant to paste. Behind a spoiler so the three
  * steps above stay the whole of what a first-time reader sees.
+ *
+ * The file the steps teach is `.vpn`, not `.conf`. Both go into the app through
+ * the same "import from file" menu, so for the reader they differ only in which
+ * button they pressed — but the client's importer overwrites the name of a
+ * `.conf` with "Server 1" and cannot be talked out of it, while a `.vpn`
+ * carries the connection name the panel composed. `.conf` therefore keeps one
+ * muted sentence at the end, saying what it is still for, instead of the steps.
  */
-function ConfAlternative() {
+function FileAlternative({ showConfFallback }: { showConfFallback: boolean }) {
   const { t } = useT();
   return (
     <details className="group rounded-lg border bg-muted/30 px-3 py-2">
       <summary className="flex cursor-pointer list-none items-center gap-2 text-sm font-medium">
         <ChevronDown className="h-4 w-4 shrink-0 transition-transform group-open:rotate-180" />
-        {t("install.confTitle")}
+        {t("install.fileTitle")}
       </summary>
       <div className="mt-2.5 space-y-2.5">
-        <p className="text-sm">{t("install.confBody")}</p>
-        <p className="text-sm">{t("install.confSplitBest")}</p>
+        <p className="text-sm">{t("install.fileBody")}</p>
+        <p className="text-sm">{t("install.fileSplitBest")}</p>
         {/* Three steps rather than a sentence: "import the file" is obvious to
             whoever wrote it and is not the part people get stuck on - finding
             the menu is. */}
         <ol className="list-decimal space-y-1 pl-5 text-sm">
-          {CONF_STEPS.map((key) => (
+          {FILE_STEPS.map((key) => (
             <li key={key}>{t(key)}</li>
           ))}
         </ol>
         {/* Carries the "only AmneziaVPN opens this" warning: without it a
             reader tries the stock WireGuard app, which cannot do the
             disguising the key depends on, and gets no useful error. */}
-        <p className="text-sm">{t("install.confHow")}</p>
+        <p className="text-sm">{t("install.fileHow")}</p>
         <Callout tone="info" icon={<FileDown className="h-4 w-4" />}>
-          {t("install.confDomainsWarning")}
+          {t("install.fileDomainsWarning")}
         </Callout>
+        {/* Last, muted and one sentence: `.conf` is not the way to add a key
+            any more, it is the shape awg-quick and router firmware take. Gated
+            on its own policy flag, so a panel with `.conf` switched off does
+            not mention a button its users do not have. */}
+        {showConfFallback ? (
+          <p className="text-xs leading-snug text-muted-foreground">
+            {t("install.fileConfFallback")}
+          </p>
+        ) : null}
       </div>
     </details>
   );

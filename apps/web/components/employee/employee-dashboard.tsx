@@ -588,9 +588,15 @@ export function EmployeeDashboard({
       <InstallGuideDialog
         open={showGuide}
         onOpenChange={setShowGuide}
-        // Both flags, matching assertDownloadAllowed in the control API: a
-        // .conf is only downloadable when redownload AND .conf are permitted.
-        showConfSection={Boolean(
+        // The file the guide teaches is .vpn, which carries no flag of its own
+        // — it is the payload the copy button already hands out — so the
+        // section follows the one policy that decides whether a key card shows
+        // any download at all.
+        showFileSection={Boolean(me?.policy.allowConfigRedownload)}
+        // The .conf fallback keeps both flags, matching assertDownloadAllowed
+        // in the control API: a .conf is only downloadable when redownload AND
+        // .conf are permitted.
+        showConfFallback={Boolean(
           me?.policy.allowConfigRedownload && me?.policy.allowConfDownload,
         )}
         allowCustomRoutes={Boolean(me?.policy.allowCustomRoutes)}

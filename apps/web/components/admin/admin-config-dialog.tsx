@@ -1,7 +1,13 @@
 "use client";
 
 import * as React from "react";
-import { AlertTriangle, Check, Copy, Download } from "lucide-react";
+import {
+  AlertTriangle,
+  Check,
+  ChevronDown,
+  Copy,
+  Download,
+} from "lucide-react";
 import { toast } from "sonner";
 import {
   Dialog,
@@ -110,10 +116,11 @@ export function AdminConfigDialog({
               imports through the same "File with connection settings" flow and
               arrives under the name the panel composed. A `.conf` cannot: the
               importer assigns "Server N" itself and reads no name from the file
-              or its file name. So the `.vpn` one leads, the `.conf` stays for
-              awg-quick and router firmwares, and the line below says which is
-              which rather than leaving an admin to find out by handing a user
-              the wrong one.
+              or its file name. So the `.vpn` one is the button, and the `.conf`
+              moves one click behind a disclosure that says what it is still
+              for. An admin sending a user a file should not be able to pick the
+              wrong one by reflex, and the ones who genuinely need `.conf` —
+              awg-quick, router firmware — know to open it.
             */}
             <div className="space-y-2">
               <Button asChild className="w-full">
@@ -124,17 +131,26 @@ export function AdminConfigDialog({
                   <Download className="h-4 w-4" /> {t("common.downloadVpnFile")}
                 </a>
               </Button>
-              <Button asChild variant="outline" className="w-full">
-                <a
-                  href={`${configUrl(target.id, "conf")}&adminConfirmed=true`}
-                  download
-                >
-                  <Download className="h-4 w-4" /> {t("common.downloadConf")}
-                </a>
-              </Button>
-              <p className="text-xs text-muted-foreground">
-                {t("config.fileShapesHint")}
-              </p>
+              <details className="group rounded-lg border bg-muted/30 px-3 py-2">
+                <summary className="flex cursor-pointer list-none items-center gap-2 text-xs font-medium text-muted-foreground">
+                  <ChevronDown className="h-4 w-4 shrink-0 transition-transform group-open:rotate-180" />
+                  {t("config.otherFormat")}
+                </summary>
+                <div className="mt-2.5 space-y-2">
+                  <p className="text-xs text-muted-foreground">
+                    {t("config.fileShapesHint")}
+                  </p>
+                  <Button asChild variant="outline" className="w-full">
+                    <a
+                      href={`${configUrl(target.id, "conf")}&adminConfirmed=true`}
+                      download
+                    >
+                      <Download className="h-4 w-4" />{" "}
+                      {t("common.downloadConf")}
+                    </a>
+                  </Button>
+                </div>
+              </details>
             </div>
           </div>
         ) : null}
