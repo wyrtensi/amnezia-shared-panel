@@ -85,6 +85,15 @@ test("the example config documents every setting the script requires", async () 
   }
 });
 
+test("recognises an already registered node from the JSON listing", async () => {
+  // The `nodes` table leads with the display order, not the name, so reading
+  // column one recognises nothing and step 8 registers a duplicate record.
+  const step = script.slice(script.indexOf("cli() {"), script.indexOf("--- 2."));
+  assert.match(step, /cli nodes --json/);
+  assert.doesNotMatch(step, /awk '\{print \$1\}'/);
+  assert.match(step, /grep -qx -- "\$NODE_NAME"/);
+});
+
 test("the real config is git-ignored", async () => {
   const gitignore = await readFile(gitignoreUrl, "utf8");
   assert.match(gitignore, /^\/scripts\/add-node\.env$/m);

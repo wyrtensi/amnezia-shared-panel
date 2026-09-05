@@ -152,8 +152,14 @@ cli() {
     -e CONTROL_API_URL='$PANEL_CONTROL_API_URL' '$PANEL_CONTROL_API_SERVICE' \
     node /app/apps/cli/dist/main.js $*"
 }
-existing_nodes="$(cli nodes || die "the admin CLI is not usable on $PANEL_SSH")"
-if printf '%s\n' "$existing_nodes" | awk '{print $1}' | grep -qx -- "$NODE_NAME"; then
+# Read the machine-readable listing, not the table: the table's first column
+# is the display order, so matching on it recognises no node at all, and step
+# 8 then registers a second record under a name the panel already carries.
+existing_nodes="$(cli nodes --json || die "the admin CLI is not usable on $PANEL_SSH")"
+if printf '%s\n' "$existing_nodes" \
+  | grep -oE '"name"[[:space:]]*:[[:space:]]*"[^"]*"' \
+  | sed -E 's/.*"([^"]*)"$/\1/' \
+  | grep -qx -- "$NODE_NAME"; then
   ALREADY_REGISTERED=1
   note "a node named '$NODE_NAME' is already registered — registration will be skipped"
 else
