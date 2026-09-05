@@ -200,7 +200,10 @@ const ru = {
   "wizard.proto.awg2.label": "AmneziaWG 2.0",
   "wizard.proto.awg2.desc": "Совместимость со старыми клиентами",
   "wizard.route.full_tunnel.desc": "Всё соединение идёт через VPN",
-  "wizard.route.ru_whitelist.desc": "Иностранные ресурсы через VPN, RU напрямую",
+  "wizard.route.ru_whitelist.desc":
+    "Весь трафик через VPN, кроме списка с российскими сервисами (может сработать не на все)",
+  "wizard.route.stable": "Стабильно",
+  "wizard.route.testing": "Тестируется",
   "wizard.route.ru_blacklist.desc":
     "Через VPN идут лишь сайты из списка. Нужного вам сайта в нём может не оказаться — тогда он не откроется.",
   "wizard.recommended": "Рекомендуется",
@@ -271,7 +274,7 @@ const ru = {
   "keyHelp.profilesIntro":
     "Остальные два профиля сделаны для удобства и оба менее надёжны, чем «Весь трафик». Читайте внимательно:",
   "keyHelp.whitelistBody":
-    "Мы постараемся, чтобы для российских сервисов выглядело, что вы сидите из дома. Лучше, чем «Только заблокированные», но менее надёжно для стабильной работы VPN в целом.",
+    "Мы постараемся, чтобы для российских сервисов выглядело, что вы сидите из дома. Менее надёжно для стабильной работы VPN в целом.",
   "keyHelp.blacklistBody":
     "Профиль со списком определённых сайтов. Список большой, но в нём могут быть не все нужные вам заблокированные ресурсы, и они не откроются через VPN.",
   "keyHelp.troubleTitle": "Если есть проблемы в работе",
@@ -1211,7 +1214,10 @@ const en = {
   "wizard.proto.awg2.label": "AmneziaWG 2.0",
   "wizard.proto.awg2.desc": "Compatibility with older clients",
   "wizard.route.full_tunnel.desc": "All traffic goes through the VPN",
-  "wizard.route.ru_whitelist.desc": "Foreign resources via VPN, RU direct",
+  "wizard.route.ru_whitelist.desc":
+    "All traffic through the VPN except a list of Russian services (it may not cover every one of them)",
+  "wizard.route.stable": "Stable",
+  "wizard.route.testing": "In testing",
   "wizard.route.ru_blacklist.desc":
     "Only sites on the list go through the VPN. The site you need may not be on it — and then it will not open.",
   "wizard.recommended": "Recommended",
@@ -1281,7 +1287,7 @@ const en = {
   "keyHelp.profilesIntro":
     "The other two profiles exist for convenience and both are less dependable than “All traffic”. Read them carefully:",
   "keyHelp.whitelistBody":
-    "We do our best to make Russian services see you as if you were at home. Better than “Blocked only”, but less dependable for the VPN working steadily overall.",
+    "We do our best to make Russian services see you as if you were at home. Less dependable for the VPN working steadily overall.",
   "keyHelp.blacklistBody":
     "A profile with a list of certain sites. The list is large, but it may not hold every blocked resource you need, and those will not open through the VPN.",
   "keyHelp.troubleTitle": "If something is not working",

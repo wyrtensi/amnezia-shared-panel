@@ -19,6 +19,22 @@ import { isIP } from "node:net";
  */
 export const WHITELIST_GAP_MERGE = 32;
 
+/**
+ * The most routes a profile may put in AllowedIPs.
+ *
+ * Measured on a device: a 6712-route config crossed Binder as a 941 096-byte
+ * parcel, 94% of the ~1 MB a transaction gets. Past that the client drops the
+ * message and the profile never connects, with no error anywhere. 5500 leaves
+ * roughly a quarter of the budget for the rest of the config and for the
+ * estimate itself being off.
+ *
+ * Feeds grow. Nothing here may assume today's list sizes, so the whitelist
+ * escalates its gap merging until it fits, and the caller degrades a profile
+ * that still cannot fit to the full tunnel rather than shipping a config that
+ * silently refuses to connect.
+ */
+export const MAX_TUNNEL_ROUTES = 5500;
+
 const LAST_ADDRESS = 0xff_ff_ff_ff;
 
 type Range = { start: number; end: number };
@@ -127,4 +143,30 @@ export const complementIpv4 = (
   }
   complement.push(...rangeToCidrs({ start: cursor, end: LAST_ADDRESS }));
   return complement;
+};
+
+/**
+ * The complement, merged just aggressively enough to fit `maxRoutes`.
+ *
+ * The gap starts at `WHITELIST_GAP_MERGE` — accurate enough that the current
+ * RoscomVPN list needs no escalation at all — and widens only when a feed has
+ * grown or fragmented past the budget. Each step trades a little more address
+ * space out of the tunnel for a shorter route list, which is the only trade
+ * available: the alternative is a config the Android client discards whole.
+ *
+ * Returns null when even a /16-wide merge does not fit. A feed that
+ * fragmented cannot be expressed as a whitelist at all, and the caller must
+ * fall back to the full tunnel rather than ship something that never connects.
+ */
+export const complementForTunnel = (
+  cidrs: readonly string[],
+  maxRoutes: number = MAX_TUNNEL_ROUTES,
+): { routes: string[]; gap: number } | null => {
+  let gap = WHITELIST_GAP_MERGE;
+  for (;;) {
+    const routes = complementIpv4(cidrs, gap);
+    if (routes.length <= maxRoutes) return { routes, gap };
+    if (gap >= 0x1_00_00) return null;
+    gap *= 8;
+  }
 };

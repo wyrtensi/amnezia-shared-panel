@@ -487,8 +487,21 @@ never connects — no error, no retry, no traffic. Two consequences:
   written; the only addition is 16401 addresses sitting between neighbouring
   entries (0.0004 % of IPv4).
 
+Feeds grow, so neither number is assumed to hold. `MAX_TUNNEL_ROUTES` (5500) is
+the budget both profiles are held to, and each has its own way of meeting it:
+
+- `ru_whitelist` widens its gap merging until the inverse fits — today's list
+  needs no escalation at all, a list twice its size lands at a 2048-address gap.
+- `ru_blacklist` has no such lever: dropping entries would send that traffic
+  outside the tunnel, the exact failure the profile exists to prevent.
+
+A profile that still does not fit — or whose feed came back with no CIDRs at
+all — **degrades to the full tunnel**. That tunnels more than the user asked
+for, where the alternative tunnels nothing and says nothing about it.
+
 Check a feed change against this before shipping it: count the CIDRs the profile
-will export, not the ones the feed contains.
+will export, not the ones the feed contains, and watch for keys quietly falling
+back to the full tunnel.
 
 Feeds work **out of the box**: with no feed configuration at all the worker uses
 the built-in RoscomVPN GeoIP (`ru_whitelist`) and iplist / Re:filter (`ru_blacklist`) sources, so a

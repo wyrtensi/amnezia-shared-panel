@@ -279,6 +279,19 @@ export function CreateKeyWizard({
       value: profile,
       label: t(`route.${profile}`),
       description: t(`wizard.route.${profile}.desc`),
+      // Say plainly which profile is proven and which is not. The split-tunnel
+      // profiles depend on a feed and on the client applying it, so they behave
+      // differently across platforms; the full tunnel does not.
+      badge:
+        profile === "full_tunnel" ? (
+          <Badge variant="success" className="ml-1">
+            {t("wizard.route.stable")}
+          </Badge>
+        ) : (
+          <Badge variant="warning" className="ml-1">
+            {t("wizard.route.testing")}
+          </Badge>
+        ),
       disabled,
       // OptionCards renders this as the native title on hover AND as visible
       // text inside the greyed card, so the reason is readable on a phone too.

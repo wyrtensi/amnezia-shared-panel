@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { complementIpv4, WHITELIST_GAP_MERGE } from "./routeComplement.js";
+import {
+  complementForTunnel,
+  complementIpv4,
+  MAX_TUNNEL_ROUTES,
+  WHITELIST_GAP_MERGE,
+} from "./routeComplement.js";
 
 /** Addresses the complement covers, for asserting on exact coverage. */
 const covered = (cidrs: string[]): number =>
@@ -80,5 +85,37 @@ describe("complementIpv4", () => {
     expect(complementIpv4(["10.0.0.0/32", "10.0.0.16/32"])).toEqual(
       complementIpv4(["10.0.0.0/32", "10.0.0.16/32"], WHITELIST_GAP_MERGE),
     );
+  });
+});
+
+describe("complementForTunnel", () => {
+  it("keeps the default gap when the feed already fits", () => {
+    const result = complementForTunnel(["10.0.0.0/8"], MAX_TUNNEL_ROUTES);
+    expect(result?.gap).toBe(WHITELIST_GAP_MERGE);
+    expect(result?.routes).toContain("11.0.0.0/8");
+  });
+
+  it("widens the gap until a fragmented feed fits the budget", () => {
+    // 4000 hosts scattered one per /24 across a /12: at the default gap each
+    // one carves its own hole, far past any sane route budget.
+    const hosts = Array.from(
+      { length: 4000 },
+      (_, index) => `10.${(index >> 8) & 0xff}.${index & 0xff}.7/32`,
+    );
+    const tight = complementIpv4(hosts, WHITELIST_GAP_MERGE);
+    const result = complementForTunnel(hosts, 2000);
+
+    expect(tight.length).toBeGreaterThan(2000);
+    expect(result).not.toBeNull();
+    expect(result!.routes.length).toBeLessThanOrEqual(2000);
+    expect(result!.gap).toBeGreaterThan(WHITELIST_GAP_MERGE);
+  });
+
+  it("gives up rather than returning something that cannot be shipped", () => {
+    const hosts = Array.from(
+      { length: 4000 },
+      (_, index) => `10.${(index >> 8) & 0xff}.${index & 0xff}.7/32`,
+    );
+    expect(complementForTunnel(hosts, 4)).toBeNull();
   });
 });
