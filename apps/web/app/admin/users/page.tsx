@@ -12,6 +12,7 @@ import {
   KeyRound,
   ListFilter,
   Lock,
+  Moon,
   Pencil,
   Plus,
   RefreshCw,
@@ -73,9 +74,15 @@ import { trafficTotal } from "@/lib/format";
 import { TrafficBytes } from "@/components/inline-traffic";
 import {
   INACTIVE_DAYS,
+  classifyKeyActivity,
   formatLastSeen,
   isInactive,
+  isStaleActivity,
   lastSeenFromKeys,
+  staleKeys as staleKeysOf,
+  staleSince,
+  summarizeStaleKeys,
+  type StaleKeySummary,
 } from "@/lib/activity";
 import { cn } from "@/lib/utils";
 import { deviceTypeLabel } from "@/lib/device-type";
@@ -192,20 +199,28 @@ type EnrichedUser = {
   stats: UserStats;
   lastSeen: number | null;
   inactive: boolean;
+  /** Per-key handshake tally — see `summarizeStaleKeys` in lib/activity.ts. */
+  staleness: StaleKeySummary;
 };
 
 type FilterKey =
   | "all"
   | "inactive"
+  | "stalekeys"
   | "online"
   | "nokeys"
   | "admins"
   | "disabled";
-type SortKey = "activity" | "name" | "keys" | "traffic";
+type SortKey = "activity" | "name" | "keys" | "traffic" | "stale";
 
 const FILTER_OPTIONS: Array<[FilterKey, string]> = [
   ["all", "users.filter.all"],
+  // Two different questions, kept apart on purpose. "inactive" asks whether the
+  // PERSON has gone quiet (their most recent key across the fleet);
+  // "stalekeys" asks who is holding peers nobody connects with, which a user
+  // with one live key and four dead ones answers yes to while reading active.
   ["inactive", "users.filter.inactive"],
+  ["stalekeys", "users.filter.stalekeys"],
   ["online", "users.filter.online"],
   ["nokeys", "users.filter.nokeys"],
   ["admins", "users.filter.admins"],
@@ -215,6 +230,7 @@ const FILTER_OPTIONS: Array<[FilterKey, string]> = [
 const SORT_OPTIONS: Array<[SortKey, string]> = [
   ["name", "users.sort.name"],
   ["activity", "users.sort.activity"],
+  ["stale", "users.sort.stale"],
   ["keys", "users.sort.keys"],
   ["traffic", "users.sort.traffic"],
 ];
@@ -223,6 +239,8 @@ function matchesFilter(entry: EnrichedUser, filter: FilterKey): boolean {
   switch (filter) {
     case "inactive":
       return entry.inactive;
+    case "stalekeys":
+      return entry.staleness.stale > 0;
     case "online":
       return entry.stats.online > 0;
     case "nokeys":
@@ -291,6 +309,14 @@ function sortEntries(entries: EnrichedUser[], sort: SortKey): EnrichedUser[] {
     case "activity":
       // Least-active first: never-seen (null → 0) and oldest at the top.
       return list.sort((a, b) => (a.lastSeen ?? 0) - (b.lastSeen ?? 0));
+    case "stale":
+      // Most stale keys first, ties broken by the one stale longest.
+      return list.sort(
+        (a, b) =>
+          b.staleness.stale - a.staleness.stale ||
+          (a.staleness.oldestStaleSince ?? 0) -
+            (b.staleness.oldestStaleSince ?? 0),
+      );
     case "keys":
       return list.sort((a, b) => b.stats.total - a.stats.total);
     case "traffic":
@@ -322,6 +348,7 @@ export default function AdminUsersPage() {
   const [limitUser, setLimitUser] = React.useState<AdminUser | null>(null);
   const [policyUser, setPolicyUser] = React.useState<AdminUser | null>(null);
   const [keyUser, setKeyUser] = React.useState<AdminUser | null>(null);
+  const [staleUser, setStaleUser] = React.useState<AdminUser | null>(null);
   const [configTarget, setConfigTarget] =
     React.useState<AdminConfigTarget | null>(null);
 
@@ -361,6 +388,7 @@ export default function AdminUsersPage() {
         stats: statsFor(list),
         lastSeen,
         inactive: user.status === "active" && isInactive(lastSeen, now),
+        staleness: summarizeStaleKeys(list, now),
       };
     });
   }, [users, keysByOwner, now]);
@@ -422,6 +450,37 @@ export default function AdminUsersPage() {
       );
       return false;
     }
+  };
+
+  /**
+   * Run the stale-key cleanup: one revoke per key, in order, against the same
+   * per-key route the trash button uses. Sequential rather than in parallel —
+   * each call queues a job the worker has to take to a node, and a burst of
+   * them buys nothing while making a partial failure harder to read.
+   *
+   * A key whose state moved under the operator (someone revoked it in another
+   * tab, the worker finished a delete) is refused by the API with a 409 and
+   * counted as failed rather than retried: the list they confirmed is no longer
+   * what is on the server, and the reload below shows them what is.
+   */
+  const revokeStaleKeys = async (ids: string[]) => {
+    let ok = 0;
+    let failed = 0;
+    for (const id of ids) {
+      try {
+        await request(`/api/admin/keys/${id}/revoke`, {
+          method: "POST",
+          body: JSON.stringify({}),
+        });
+        ok += 1;
+      } catch {
+        failed += 1;
+      }
+    }
+    if (failed > 0) toast.error(t("users.staleDonePartial", { ok, failed }));
+    else toast.success(t("users.staleDone", { ok }));
+    setStaleUser(null);
+    await reload();
   };
 
   return (
@@ -535,6 +594,7 @@ export default function AdminUsersPage() {
                   stats={entry.stats}
                   lastSeen={entry.lastSeen}
                   inactive={entry.inactive}
+                  staleCount={entry.staleness.stale}
                   now={now}
                   selected={selected?.id === entry.user.id}
                   onSelect={() => setSelectedId(entry.user.id)}
@@ -577,6 +637,8 @@ export default function AdminUsersPage() {
             onEditLimit={() => setLimitUser(selected)}
             onEditPolicy={() => setPolicyUser(selected)}
             onCreateKey={() => setKeyUser(selected)}
+            onCleanStale={() => setStaleUser(selected)}
+            now={now}
             onKeyAction={(id, name, payload) =>
               action("keys", id, name, payload)
             }
@@ -633,6 +695,14 @@ export default function AdminUsersPage() {
         onSave={(payload) =>
           action("users", keyUser!.id, "create-key", payload)
         }
+      />
+      <StaleKeysDialog
+        user={staleUser}
+        keys={staleUser ? (keysByOwner.get(staleUser.id) ?? []) : []}
+        nodes={nodes}
+        now={now}
+        onClose={() => setStaleUser(null)}
+        onConfirm={revokeStaleKeys}
       />
       <AdminConfigDialog
         target={configTarget}
@@ -971,11 +1041,208 @@ function AccessDomainRemoveDialog({
   );
 }
 
+/**
+ * The per-user cleanup of stale keys.
+ *
+ * It is N calls to the **existing** per-key revoke action — the same route the
+ * trash button on a key row posts to — issued one at a time, so every one of
+ * them is validated and audited on its own and nothing here bypasses the
+ * Control API. There is deliberately no bulk endpoint: a single call that
+ * decided for itself which keys are stale would put the criterion on the server
+ * where the operator cannot see it before pressing the button.
+ *
+ * What it does NOT do matters as much as what it does, and the dialog says both
+ * out loud before anything is queued:
+ *
+ *  - it revokes, it never purges. `key-purge` is irreversible and legal only
+ *    for a key already `revoked` (docs/KEY-STATES.md); nothing here deletes a
+ *    row, its traffic history or its audit trail, and the user can issue a new
+ *    key straight away;
+ *  - it only ever offers keys the staleness rule selected, and every one of
+ *    them can be unticked. A key with a handshake inside the window, a key too
+ *    young to have one yet, and a key in any state that holds no peer are not
+ *    in the list at all;
+ *  - it is a dialog with a named count on a destructive button, not a click on
+ *    a row.
+ */
+function StaleKeysDialog({
+  user,
+  keys,
+  nodes,
+  now,
+  onClose,
+  onConfirm,
+}: {
+  user: AdminUser | null;
+  keys: AdminKey[];
+  nodes: AdminNode[];
+  now: number;
+  onClose: () => void;
+  onConfirm: (ids: string[]) => Promise<void>;
+}) {
+  const { t, lang } = useT();
+  const [excluded, setExcluded] = React.useState<Set<string>>(new Set());
+  const [busy, setBusy] = React.useState(false);
+  const open = user !== null;
+  // A fresh selection on every open, not merely on a change of user. The dialog
+  // instance is reused, so without this a cancelled run leaves its unticked ids
+  // behind: reopening it on the same person would show keys already excluded
+  // for a reason nobody can see, and reopening it on the next person would skip
+  // keys the operator never looked at.
+  React.useEffect(() => {
+    if (!open) return;
+    setExcluded(new Set());
+    setBusy(false);
+  }, [open, user?.id]);
+
+  // The subject outlives `user` going null, the same way AccessDomainRemoveDialog
+  // holds its domain: the dialog plays a close animation afterwards, and reading
+  // the live props straight would blank the name and empty the list for the
+  // length of the fade — including right after a successful run, where the
+  // reload has already dropped the keys that were just revoked.
+  const [shown, setShown] = React.useState<{
+    user: AdminUser;
+    keys: AdminKey[];
+  } | null>(null);
+  React.useEffect(() => {
+    if (user) setShown({ user, keys });
+  }, [user, keys]);
+
+  const rows = React.useMemo(
+    () =>
+      staleKeysOf(shown?.keys ?? [], now).map((key) => ({
+        key,
+        activity: classifyKeyActivity(key, now),
+        since: staleSince(key, now),
+      })),
+    [shown, now],
+  );
+  const chosen = rows.filter(({ key }) => !excluded.has(key.id));
+  const nodeName = (id: string) =>
+    nodes.find((node) => node.id === id)?.name ?? id;
+
+  const toggle = (id: string) =>
+    setExcluded((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+
+  return (
+    <Dialog
+      open={open}
+      onOpenChange={(next) => {
+        if (!next && !busy) onClose();
+      }}
+    >
+      <DialogContent className="sm:max-w-2xl">
+        <DialogHeader>
+          <DialogTitle>{t("users.staleTitle")}</DialogTitle>
+          <DialogDescription>
+            {t("users.staleDesc", {
+              name: shown ? displayName(shown.user) : "",
+              days: INACTIVE_DAYS,
+            })}
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="space-y-2">
+          <Callout tone="danger" title={t("users.staleWillTitle")}>
+            {t("users.staleWill")}
+          </Callout>
+          <Callout tone="success" title={t("users.staleKeepsTitle")}>
+            {t("users.staleKeeps")}
+          </Callout>
+          <Callout tone="info" title={t("users.staleSkipsTitle")}>
+            {t("users.staleSkips", { days: INACTIVE_DAYS })}
+          </Callout>
+        </div>
+
+        <div className="flex items-center justify-end gap-2">
+          <Button
+            variant="ghost"
+            size="sm"
+            disabled={busy || excluded.size === 0}
+            onClick={() => setExcluded(new Set())}
+          >
+            {t("users.staleSelectAll")}
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            disabled={busy || chosen.length === 0}
+            onClick={() => setExcluded(new Set(rows.map(({ key }) => key.id)))}
+          >
+            {t("users.staleClearAll")}
+          </Button>
+        </div>
+
+        <div className="max-h-72 space-y-1.5 overflow-y-auto pr-1">
+          {rows.map(({ key, activity, since }) => (
+            <label
+              key={key.id}
+              className="flex cursor-pointer items-center gap-2.5 rounded-lg border bg-muted/40 px-3 py-2 hover:bg-accent/40"
+            >
+              <Checkbox
+                checked={!excluded.has(key.id)}
+                disabled={busy}
+                onChange={() => toggle(key.id)}
+              />
+              <div className="min-w-0 flex-1">
+                <div className="truncate text-sm font-medium">
+                  {key.deviceLabel || deviceTypeLabel(t, key.deviceType)}
+                  {key.internalName ? (
+                    <span className="ml-1.5 text-xs italic text-muted-foreground/80">
+                      {key.internalName}
+                    </span>
+                  ) : null}
+                </div>
+                <div className="truncate text-xs text-muted-foreground">
+                  {nodeName(key.nodeId)} ·{" "}
+                  {activity === "never"
+                    ? t("users.staleNeverWhy", {
+                        age: formatLastSeen(since, now, lang),
+                      })
+                    : t("users.staleIdleWhy", {
+                        age: formatLastSeen(since, now, lang),
+                      })}
+                </div>
+              </div>
+              <StatusBadge value={key.state} />
+            </label>
+          ))}
+        </div>
+
+        <DialogFooter>
+          <Button variant="outline" disabled={busy} onClick={onClose}>
+            {t("common.cancel")}
+          </Button>
+          <Button
+            variant="destructive"
+            disabled={busy || chosen.length === 0}
+            onClick={() => {
+              setBusy(true);
+              const ids = chosen.map(({ key }) => key.id);
+              void onConfirm(ids).finally(() => setBusy(false));
+            }}
+          >
+            {busy
+              ? t("users.staleWorking")
+              : t("users.staleConfirm", { count: chosen.length })}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 function UserMiniCard({
   user,
   stats,
   lastSeen,
   inactive,
+  staleCount,
   now,
   selected,
   onSelect,
@@ -984,6 +1251,7 @@ function UserMiniCard({
   stats: UserStats;
   lastSeen: number | null;
   inactive: boolean;
+  staleCount: number;
   now: number;
   selected: boolean;
   onSelect: () => void;
@@ -1061,6 +1329,13 @@ function UserMiniCard({
             {formatLastSeen(lastSeen, now, lang)}
           </span>
         )}
+        {/* Independent of the line beside it: this user can be online right
+            now and still be holding keys nobody has connected with. */}
+        {staleCount > 0 ? (
+          <Badge variant="warning" className="h-4 px-1.5 text-[10px]">
+            {t("users.staleBadge", { count: staleCount })}
+          </Badge>
+        ) : null}
         <TrafficBytes bytes={stats.traffic} className="ml-auto" />
       </div>
     </button>
@@ -1071,24 +1346,28 @@ function UserDetail({
   user,
   keys,
   nodes,
+  now,
   onSetRole,
   onReinstate,
   onOffboard,
   onEditLimit,
   onEditPolicy,
   onCreateKey,
+  onCleanStale,
   onKeyAction,
   onExportKey,
 }: {
   user: AdminUser;
   keys: AdminKey[];
   nodes: AdminNode[];
+  now: number;
   onSetRole: (role: string) => void;
   onReinstate: () => void;
   onOffboard: () => void;
   onEditLimit: () => void;
   onEditPolicy: () => void;
   onCreateKey: () => void;
+  onCleanStale: () => void;
   onKeyAction: (
     id: string,
     action: string,
@@ -1098,6 +1377,7 @@ function UserDetail({
 }) {
   const { t } = useT();
   const stats = statsFor(keys);
+  const staleness = summarizeStaleKeys(keys, now);
   const disabled = user.status !== "active";
   const nodeName = (id: string) =>
     nodes.find((node) => node.id === id)?.name ?? id;
@@ -1258,10 +1538,20 @@ function UserDetail({
             {t("users.keys")}
             <Hint>{t("users.keysHint")}</Hint>
           </h4>
-          <Button size="sm" variant="secondary" onClick={onCreateKey}>
-            <Plus className="h-4 w-4" />
-            {t("users.keyBtn")}
-          </Button>
+          <div className="flex items-center gap-1.5">
+            {/* Only appears when there is something to clean, and it opens a
+                dialog rather than acting — see StaleKeysDialog. */}
+            {staleness.stale > 0 ? (
+              <Button size="sm" variant="outline" onClick={onCleanStale}>
+                <Moon className="h-4 w-4" />
+                {t("users.staleCleanupBtn", { count: staleness.stale })}
+              </Button>
+            ) : null}
+            <Button size="sm" variant="secondary" onClick={onCreateKey}>
+              <Plus className="h-4 w-4" />
+              {t("users.keyBtn")}
+            </Button>
+          </div>
         </div>
 
         {keys.length === 0 ? (
@@ -1278,6 +1568,7 @@ function UserDetail({
                   key={key.id}
                   keyView={key}
                   nodeName={nodeName(key.nodeId)}
+                  now={now}
                   onAction={onKeyAction}
                   onExport={() => onExportKey(key.id, key.deviceLabel)}
                 />
@@ -1330,11 +1621,13 @@ function StatTile({
 function AdminKeyRow({
   keyView,
   nodeName,
+  now,
   onAction,
   onExport,
 }: {
   keyView: AdminKey;
   nodeName: string;
+  now: number;
   onAction: (
     id: string,
     action: string,
@@ -1342,7 +1635,19 @@ function AdminKeyRow({
   ) => Promise<boolean>;
   onExport: () => void;
 }) {
-  const { t } = useT();
+  const { t, lang } = useT();
+  // Why this row is on the cleanup list, said on the row itself, so the count
+  // on the button above is checkable without opening the dialog.
+  const activity = classifyKeyActivity(keyView, now);
+  const staleWhy = isStaleActivity(activity)
+    ? activity === "never"
+      ? t("users.staleNeverWhy", {
+          age: formatLastSeen(staleSince(keyView, now), now, lang),
+        })
+      : t("users.staleIdleWhy", {
+          age: formatLastSeen(staleSince(keyView, now), now, lang),
+        })
+    : null;
   const confirmAction = (name: string, message: string) => {
     if (window.confirm(message)) void onAction(keyView.id, name);
   };
@@ -1378,6 +1683,16 @@ function AdminKeyRow({
                 <RefreshCw className="size-3 shrink-0 text-warning" />
               </TooltipTrigger>
               <TooltipContent>{t("users.rulesOutdatedTip")}</TooltipContent>
+            </Tooltip>
+          ) : null}
+          {staleWhy ? (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Moon className="size-3 shrink-0 text-chart-3" />
+              </TooltipTrigger>
+              <TooltipContent>
+                {t("users.staleKeyTip")} — {staleWhy}
+              </TooltipContent>
             </Tooltip>
           ) : null}
         </div>

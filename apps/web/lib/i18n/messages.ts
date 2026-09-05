@@ -479,10 +479,21 @@ const ru = {
   "ov.serversTitle": "Серверы",
   "ov.noServers": "Серверы ещё не добавлены",
   "ov.checksFailing": "с ошибкой: {count}",
-  "ov.inactiveTitle": "Неактивны более {days} дней",
+  // The overview's dead-weight block. Counted per KEY: a key is what occupies a
+  // peer slot on a node, and it is what the cleanup removes. The list under it
+  // is per user, because that is where the cleanup is performed.
+  "ov.staleKeysTitle": "Протухшие ключи ({days}+ дней без хендшейка)",
+  "ov.staleKeysSub": "у {users} польз.",
+  "ov.staleKeysNever": " · {count} ни разу не подключались",
+  "ov.staleKeysNone":
+    "Каждый выданный ключ выходил на связь за последние {days} дней.",
+  // Says out loud which keys the number above does NOT include, so a fresh key
+  // is never mistaken for one the criterion missed.
+  "ov.staleKeysFreshNote":
+    "Не в счёт: новых ключей без подключений — {count}. Им меньше {days} дней.",
+  "ov.staleKeysOf": "{stale} из {held} ключей",
+  "ov.staleOldest": "дольше всего: {age}",
   "ov.showAll": "Показать всех",
-  "ov.allActiveSeen":
-    "Все активные пользователи выходили на связь за последние {days} дней.",
   "ov.quotaReqTitle": "Запросы на увеличение лимита",
   "ov.colEmployee": "Сотрудник",
   "ov.colTarget": "Сервер",
@@ -517,6 +528,7 @@ const ru = {
   "upolicy.showNodeAddress": "Адрес сервера",
   "users.filter.all": "Все",
   "users.filter.inactive": "Неактивные ({days}д)",
+  "users.filter.stalekeys": "С протухшими ключами",
   "users.filter.online": "Онлайн сейчас",
   "users.filter.nokeys": "Без ключей",
   "users.filter.admins": "Администраторы",
@@ -525,6 +537,7 @@ const ru = {
   "users.sort.activity": "По активности",
   "users.sort.keys": "По числу ключей",
   "users.sort.traffic": "По трафику",
+  "users.sort.stale": "По протухшим ключам",
   "users.domainFilterAll": "Все домены",
   "users.title": "Пользователи и ключи",
   "users.summary": "{users} польз. · {keys} ключей",
@@ -575,6 +588,34 @@ const ru = {
   "users.purgeConfirm":
     "Удалить ключ «{{label}}» из панели совсем? На ноде его уже нет. Исчезнет сама запись и вся её статистика — останется только запись в журнале аудита. Отменить нельзя.",
   "users.revokeConfirm": "Отозвать «{label}» безвозвратно?",
+
+  // Per-user cleanup of stale keys. Every claim below is what the dialog
+  // actually does: N separate calls to the existing per-key revoke action, the
+  // same one the row's trash button makes. It never purges and never touches a
+  // key the staleness rule did not select.
+  "users.staleBadge": "протухших: {count}",
+  "users.staleKeyTip": "Протухший ключ",
+  "users.staleIdleWhy": "последний хендшейк: {age}",
+  "users.staleNeverWhy": "ни разу не подключался · создан {age}",
+  "users.staleCleanupBtn": "Протухшие ({count})",
+  "users.staleTitle": "Отозвать протухшие ключи",
+  "users.staleDesc":
+    "Ключи {name} без хендшейка более {days} дней. Снимите отметку с тех, которые трогать не нужно.",
+  "users.staleWillTitle": "Что произойдёт",
+  "users.staleWill":
+    "Каждый отмеченный ключ будет отозван по отдельности: пир удаляется с сервера, конфигурация перестаёт работать, слот на ноде освобождается. Каждый отзыв ставится в очередь и пишется в журнал аудита.",
+  "users.staleKeepsTitle": "Что останется",
+  "users.staleKeeps":
+    "Запись ключа, история трафика и аудит. Это не «Удалить из панели»: ничего не стирается безвозвратно, и пользователь может выпустить новый ключ.",
+  "users.staleSkipsTitle": "Чего действие не сделает",
+  "users.staleSkips":
+    "Не тронет ключи с хендшейком за последние {days} дней, новые ключи без подключений моложе {days} дней и ключи не в состоянии «активен» или «отключён».",
+  "users.staleSelectAll": "Отметить все",
+  "users.staleClearAll": "Снять все",
+  "users.staleConfirm": "Отозвать ключей: {count}",
+  "users.staleWorking": "Отзываем…",
+  "users.staleDone": "Отозвано ключей: {ok}",
+  "users.staleDonePartial": "Отозвано: {ok}, не удалось: {failed}",
   "users.internalName": "Служебное имя",
   "users.internalNamePrompt":
     "Служебное имя ключа. Видно только администраторам, пользователю не показывается и в конфигурацию не попадает. Пустое значение — очистить.",
@@ -1550,10 +1591,16 @@ const en = {
   "ov.serversTitle": "Servers",
   "ov.noServers": "No servers added yet",
   "ov.checksFailing": "{count} failing",
-  "ov.inactiveTitle": "Inactive for more than {days} days",
+  "ov.staleKeysTitle": "Stale keys ({days}+ days with no handshake)",
+  "ov.staleKeysSub": "across {users} users",
+  "ov.staleKeysNever": " · {count} never connected",
+  "ov.staleKeysNone":
+    "Every issued key has connected within the last {days} days.",
+  "ov.staleKeysFreshNote":
+    "Not counted: {count} new keys have not connected yet. They are younger than {days} days.",
+  "ov.staleKeysOf": "{stale} of {held} keys",
+  "ov.staleOldest": "longest: {age}",
   "ov.showAll": "Show all",
-  "ov.allActiveSeen":
-    "All active users have connected within the last {days} days.",
   "ov.quotaReqTitle": "Quota increase requests",
   "ov.colEmployee": "Employee",
   "ov.colTarget": "Server",
@@ -1586,6 +1633,7 @@ const en = {
   "upolicy.showNodeAddress": "Server address",
   "users.filter.all": "All",
   "users.filter.inactive": "Inactive ({days}d)",
+  "users.filter.stalekeys": "With stale keys",
   "users.filter.online": "Online now",
   "users.filter.nokeys": "No keys",
   "users.filter.admins": "Administrators",
@@ -1594,6 +1642,7 @@ const en = {
   "users.sort.activity": "By activity",
   "users.sort.keys": "By key count",
   "users.sort.traffic": "By traffic",
+  "users.sort.stale": "By stale keys",
   "users.domainFilterAll": "All domains",
   "users.title": "Users and keys",
   "users.summary": "{users} users · {keys} keys",
@@ -1643,6 +1692,30 @@ const en = {
   "users.purgeConfirm":
     "Delete the key “{{label}}” from the panel entirely? It is already gone from the node. The row and all of its traffic history disappear — only the audit event will remember it. This cannot be undone.",
   "users.revokeConfirm": "Revoke “{label}” permanently?",
+
+  "users.staleBadge": "{count} stale",
+  "users.staleKeyTip": "Stale key",
+  "users.staleIdleWhy": "last handshake: {age}",
+  "users.staleNeverWhy": "never connected · created {age}",
+  "users.staleCleanupBtn": "Stale ({count})",
+  "users.staleTitle": "Revoke stale keys",
+  "users.staleDesc":
+    "Keys of {name} with no handshake for more than {days} days. Untick any you want left alone.",
+  "users.staleWillTitle": "What this does",
+  "users.staleWill":
+    "Each ticked key is revoked on its own: the peer is deleted from the server, the configuration stops working and the slot on the node is freed. Every revoke is queued separately and written to the audit log.",
+  "users.staleKeepsTitle": "What stays",
+  "users.staleKeeps":
+    "The key row, its traffic history and the audit trail. This is not “Delete from panel”: nothing is erased for good, and the user can issue a new key.",
+  "users.staleSkipsTitle": "What it will not touch",
+  "users.staleSkips":
+    "Keys with a handshake in the last {days} days, new keys younger than {days} days that have not connected yet, and keys in any state other than active or disabled.",
+  "users.staleSelectAll": "Tick all",
+  "users.staleClearAll": "Untick all",
+  "users.staleConfirm": "Revoke {count} keys",
+  "users.staleWorking": "Revoking…",
+  "users.staleDone": "Revoked {ok} keys",
+  "users.staleDonePartial": "Revoked {ok}, failed {failed}",
   "users.internalName": "Internal name",
   "users.internalNamePrompt":
     "Internal name for this key. Administrators only — never shown to the user and never part of a configuration. Leave empty to clear it.",

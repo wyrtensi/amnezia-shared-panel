@@ -33,8 +33,8 @@ import { formatDate } from "@/lib/format";
 import {
   INACTIVE_DAYS,
   formatLastSeen,
-  isInactive,
-  lastSeenFromKeys,
+  summarizeStaleKeys,
+  type StaleKeySummary,
 } from "@/lib/activity";
 import { cn } from "@/lib/utils";
 import { TrafficSummary } from "@/components/traffic-summary";
@@ -147,21 +147,46 @@ export default function AdminOverviewPage() {
         ).length;
 
   const [now] = React.useState(() => Date.now());
-  const inactiveUsers = React.useMemo(() => {
+  /**
+   * Dead weight on the fleet, judged one key at a time.
+   *
+   * This block used to collapse each user to their single most recent key and
+   * ask whether the PERSON had disappeared, which made a user with one live
+   * phone and five abandoned laptop keys read as fully active — the five dead
+   * peers never appeared anywhere. The criterion is now the key's own last
+   * handshake (see `classifyKeyActivity`), and the headline number counts keys,
+   * because a key is what holds a peer slot on a node and a key is what the
+   * cleanup removes. The list under it is still per user, because that is the
+   * surface the cleanup is performed on.
+   *
+   * Disabled accounts are included on purpose: their keys still hold peers.
+   */
+  const stale = React.useMemo(() => {
     const keysByOwner = new Map<string, typeof keys>();
     for (const key of keys) {
       const list = keysByOwner.get(key.ownerId);
       if (list) list.push(key);
       else keysByOwner.set(key.ownerId, [key]);
     }
-    return users
-      .filter((user) => user.status === "active")
-      .map((user) => ({
-        user,
-        lastSeen: lastSeenFromKeys(keysByOwner.get(user.id) ?? []),
-      }))
-      .filter((entry) => isInactive(entry.lastSeen, now))
-      .sort((a, b) => (a.lastSeen ?? 0) - (b.lastSeen ?? 0));
+    const owners: Array<{ user: (typeof users)[number]; summary: StaleKeySummary }> =
+      [];
+    let staleKeys = 0;
+    let neverUsed = 0;
+    let freshKeys = 0;
+    for (const user of users) {
+      const summary = summarizeStaleKeys(keysByOwner.get(user.id) ?? [], now);
+      freshKeys += summary.fresh;
+      if (summary.stale === 0) continue;
+      staleKeys += summary.stale;
+      neverUsed += summary.never;
+      owners.push({ user, summary });
+    }
+    owners.sort(
+      (a, b) =>
+        b.summary.stale - a.summary.stale ||
+        (a.summary.oldestStaleSince ?? 0) - (b.summary.oldestStaleSince ?? 0),
+    );
+    return { owners, staleKeys, neverUsed, freshKeys };
   }, [users, keys, now]);
 
   const metrics: Array<{
@@ -331,17 +356,33 @@ export default function AdminOverviewPage() {
 
       <Card>
         <CardContent className="p-0">
-          <div className="flex items-center justify-between gap-2 px-5 py-4">
-            <h2 className="flex items-center gap-2 font-semibold">
-              <Moon className="h-4 w-4 text-chart-3" />
-              {t("ov.inactiveTitle", { days: INACTIVE_DAYS })}
-              <span className="tabular text-sm font-normal text-muted-foreground">
-                {inactiveUsers.length}
-              </span>
-            </h2>
-            {inactiveUsers.length > 0 ? (
+          <div className="flex items-start justify-between gap-2 px-5 py-4">
+            <div className="min-w-0">
+              <h2 className="flex items-center gap-2 font-semibold">
+                <Moon className="h-4 w-4 text-chart-3" />
+                {t("ov.staleKeysTitle", { days: INACTIVE_DAYS })}
+                <span className="tabular text-sm font-normal text-muted-foreground">
+                  {stale.staleKeys}
+                </span>
+              </h2>
+              {stale.staleKeys > 0 ? (
+                <p className="mt-0.5 text-xs text-muted-foreground">
+                  {t("ov.staleKeysSub", { users: stale.owners.length })}
+                  {/* Only when there are any: "0 never connected" is noise, and
+                      the two kinds of stale are worth separating exactly when
+                      one of them is present. */}
+                  {stale.neverUsed > 0
+                    ? t("ov.staleKeysNever", { count: stale.neverUsed })
+                    : null}
+                </p>
+              ) : null}
+            </div>
+            {stale.staleKeys > 0 ? (
               <Button asChild variant="ghost" size="sm">
-                <Link href="/admin/users?filter=inactive" prefetch={false}>
+                <Link
+                  href="/admin/users?filter=stalekeys&sort=stale"
+                  prefetch={false}
+                >
                   {t("ov.showAll")} <ArrowRight className="h-4 w-4" />
                 </Link>
               </Button>
@@ -352,13 +393,13 @@ export default function AdminOverviewPage() {
               <Skeleton className="h-10 w-full" />
               <Skeleton className="h-10 w-full" />
             </div>
-          ) : inactiveUsers.length === 0 ? (
+          ) : stale.staleKeys === 0 ? (
             <p className="px-5 pb-5 text-sm text-muted-foreground">
-              {t("ov.allActiveSeen", { days: INACTIVE_DAYS })}
+              {t("ov.staleKeysNone", { days: INACTIVE_DAYS })}
             </p>
           ) : (
             <ul className="divide-y">
-              {inactiveUsers.slice(0, 6).map(({ user, lastSeen }) => (
+              {stale.owners.slice(0, 6).map(({ user, summary }) => (
                 <li
                   key={user.id}
                   className="flex items-center justify-between gap-3 px-5 py-2.5"
@@ -373,13 +414,34 @@ export default function AdminOverviewPage() {
                       </div>
                     ) : null}
                   </div>
-                  <span className="shrink-0 rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">
-                    {formatLastSeen(lastSeen, now, lang)}
-                  </span>
+                  <div className="shrink-0 text-right">
+                    <span className="tabular rounded-full bg-chart-3/15 px-2 py-0.5 text-xs font-medium text-chart-3">
+                      {t("ov.staleKeysOf", {
+                        stale: summary.stale,
+                        held: summary.held,
+                      })}
+                    </span>
+                    <div className="mt-0.5 text-[11px] text-muted-foreground">
+                      {t("ov.staleOldest", {
+                        age: formatLastSeen(summary.oldestStaleSince, now, lang),
+                      })}
+                    </div>
+                  </div>
                 </li>
               ))}
             </ul>
           )}
+          {/* A key issued this week has no handshake for the same reason an
+              abandoned one does. It is deliberately not counted above, and
+              saying so here is what keeps the number believable. */}
+          {!loading && stale.freshKeys > 0 ? (
+            <p className="border-t px-5 py-3 text-xs text-muted-foreground">
+              {t("ov.staleKeysFreshNote", {
+                count: stale.freshKeys,
+                days: INACTIVE_DAYS,
+              })}
+            </p>
+          ) : null}
         </CardContent>
       </Card>
 
