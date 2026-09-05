@@ -45,6 +45,39 @@ describe("QR button", () => {
   });
 });
 
+describe(".conf fallback", () => {
+  // `.conf` cannot carry the connection name -- the client renames every
+  // imported one to "Server N" -- so the card must offer one obvious way to
+  // get the key and keep this one findable only by someone looking for it.
+  it("is the only download not drawn as a button", () => {
+    expect(source).toMatch(/format="\.conf"[\s\S]{0,200}?quiet/);
+    expect(source).not.toMatch(/format="\.conf"[\s\S]{0,200}?variant=/);
+  });
+
+  it("carries no fill, no border and no glyph in the quiet dress", () => {
+    expect(source).toContain('quiet ? "link" : "secondary"');
+    expect(source).toContain("{quiet ? null : <Download");
+  });
+
+  it("comes after the .vpn download", () => {
+    expect(source.indexOf('format=".vpn"')).toBeLessThan(
+      source.indexOf('format=".conf"'),
+    );
+  });
+
+  // Quieter to the eye only. The tooltip and the `aria-label` still say the
+  // whole phrase, and the policy flag still decides on its own whether the
+  // link exists -- demoting it must not make it depend on the QR flag that
+  // gates the download dialog.
+  it("keeps the full wording and its own policy flag", () => {
+    expect(source).toContain('label={t("common.downloadConf")}');
+    expect(source).toMatch(/me\.policy\.allowConfDownload \?/);
+    expect(source).not.toMatch(
+      /allowQrDownload[\s\S]{0,200}?format="\.conf"/,
+    );
+  });
+});
+
 describe("rules-updated callout", () => {
   // `rulesOutdated` is computed per route profile, so the card knows which
   // profile moved. Dropping the variable would put the copy back to a generic

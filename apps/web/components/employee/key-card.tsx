@@ -242,25 +242,37 @@ export function KeyCard({
 
                 The `.vpn` file carries the same `vpn://` payload the Copy
                 button already hands out as text, so it needs no extra policy
-                gate. It leads because it is the shape that survives import
-                with the connection name the panel gave it; `.conf` always
-                lands as "Server N" regardless of what is inside it, so it
-                comes last, in the quietest variant, behind its own flag, for
-                awg-quick and router firmwares. Neither is coloured as a
-                primary action: the ordering says which one to take.
+                gate. It is the only download drawn as a button, because it is
+                the shape that survives import with the connection name the
+                panel gave it. It is not coloured as a primary action either —
+                Copy is — so the row still reads as one route to the key.
               */}
               <FormatDownload
                 href={configUrl(keyView.id, "vpn")}
                 format=".vpn"
                 label={t("common.downloadVpnFile")}
-                variant="secondary"
               />
+              {/*
+                `.conf` last and drawn as a bare muted link rather than a
+                button: as an outlined button beside `.vpn` it still read as a
+                choice between two files, and offered as a choice it gets taken
+                by coin-flip — the user only finds out which one they took when
+                the connection arrives named "Server 1", because the client
+                renames every imported `.conf` whatever is inside it. It stays
+                in this row rather than moving behind the download dialog's
+                disclosure the way the dialog's own copy did: that dialog is
+                reachable only through the QR button, which has a policy flag of
+                its own, and `.conf` must not start depending on that flag.
+                `allowConfDownload` still decides, by itself, whether it exists
+                at all, and the tooltip and `aria-label` still say the whole
+                phrase.
+              */}
               {me.policy.allowConfDownload ? (
                 <FormatDownload
                   href={configUrl(keyView.id, "conf")}
                   format=".conf"
                   label={t("common.downloadConf")}
-                  variant="outline"
+                  quiet
                 />
               ) : null}
             </>
@@ -320,24 +332,39 @@ export function KeyCard({
  * the same in every language and the same thing the user will see in their
  * downloads folder. The full wording stays on the tooltip and on the
  * `aria-label`, so a screen reader still hears "Download .vpn" and not a dot.
+ *
+ * `quiet` is the fallback's dress: no fill, no border, no download glyph and
+ * muted text, so it carries the weight of a footnote next to the button beside
+ * it. It stays a real, focusable link with the same tooltip and `aria-label` —
+ * quieter to the eye only, not to a screen reader or to the keyboard.
  */
 function FormatDownload({
   href,
   format,
   label,
-  variant = "secondary",
+  quiet = false,
 }: {
   href: string;
   format: string;
   label: string;
-  variant?: ButtonProps["variant"];
+  quiet?: boolean;
 }) {
+  const variant: ButtonProps["variant"] = quiet ? "link" : "secondary";
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        <Button asChild variant={variant} size="sm">
+        <Button
+          asChild
+          variant={variant}
+          size="sm"
+          className={
+            quiet
+              ? "px-1 font-normal text-muted-foreground hover:text-foreground"
+              : undefined
+          }
+        >
           <a href={href} aria-label={label} download>
-            <Download className="h-4 w-4" />
+            {quiet ? null : <Download className="h-4 w-4" />}
             {format}
           </a>
         </Button>
