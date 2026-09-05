@@ -1,7 +1,11 @@
 import { randomBytes } from "node:crypto";
 import { and, count, desc, eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { defaultKeyNameDisplay, idleAccessSyncStatus } from "@amnezia/contracts";
+import {
+  defaultKeyNameDisplay,
+  idleAccessSyncStatus,
+  WORKER_PERIOD_FIELD_NAMES,
+} from "@amnezia/contracts";
 import type { KeyLimitMode } from "@amnezia/contracts";
 import {
   auditEvents,
@@ -2039,6 +2043,163 @@ describe("PostgresControlRepository global policy update", () => {
         "portal-policy",
       )) as Array<{ cfAccessAllowedDomains: string[] }>;
       expect(row?.cfAccessAllowedDomains).toEqual([]);
+    },
+  );
+
+  runDatabaseTest("reports every worker period as unset on a fresh panel", async () => {
+    if (!database) return;
+    const repository = new PostgresControlRepository({
+      db: database.db,
+      keyring,
+    });
+    await database.db.delete(portalPolicy);
+    const [row] = (await repository.adminList(admin, "portal-policy")) as Array<
+      Record<string, unknown>
+    >;
+    // Null, not the default number: the admin form shows "default" for a period
+    // nobody has chosen, and a number here would claim one had been.
+    for (const field of WORKER_PERIOD_FIELD_NAMES) {
+      expect(row?.[field], field).toBeNull();
+    }
+  });
+
+  runDatabaseTest("stores a period and hands it back, then clears it", async () => {
+    if (!database) return;
+    const repository = new PostgresControlRepository({
+      db: database.db,
+      keyring,
+    });
+    await database.db.delete(portalPolicy);
+    await repository.adminAction(admin, "portal-policy", "global", "update", {
+      telemetryPollSec: 120,
+      nodeMetricsSampleSec: 600,
+      ruleFetchIntervalSec: 43_200,
+    });
+    let [row] = (await repository.adminList(admin, "portal-policy")) as Array<
+      Record<string, unknown>
+    >;
+    expect(row).toMatchObject({
+      telemetryPollSec: 120,
+      nodeMetricsSampleSec: 600,
+      ruleFetchIntervalSec: 43_200,
+      // Untouched periods stay unset rather than being written to a default.
+      maintenanceIntervalSec: null,
+    });
+
+    // Null is the way back to the worker's own default, and it has to survive
+    // the round trip as null rather than as "field not named".
+    await repository.adminAction(admin, "portal-policy", "global", "update", {
+      ruleFetchIntervalSec: null,
+    });
+    [row] = (await repository.adminList(admin, "portal-policy")) as Array<
+      Record<string, unknown>
+    >;
+    expect(row).toMatchObject({
+      ruleFetchIntervalSec: null,
+      telemetryPollSec: 120,
+    });
+  });
+
+  runDatabaseTest("refuses a period outside its bounds", async () => {
+    if (!database) return;
+    const repository = new PostgresControlRepository({
+      db: database.db,
+      keyring,
+    });
+    for (const payload of [
+      { telemetryPollSec: 1 },
+      { telemetryPollSec: 86_401 },
+      { peerSampleSec: 30 },
+      { ruleFetchIntervalSec: 60 },
+      { nodeMetricsRetentionDays: 0 },
+    ]) {
+      await expect(
+        repository.adminAction(admin, "portal-policy", "global", "update", payload),
+      ).rejects.toBeDefined();
+    }
+  });
+
+  runDatabaseTest(
+    "refuses a metrics sample period below the poll period, on either side of the pair",
+    async () => {
+      if (!database) return;
+      const repository = new PostgresControlRepository({
+        db: database.db,
+        keyring,
+      });
+      await database.db.delete(portalPolicy);
+
+      // Both named at once.
+      let failure = await failureOf(
+        repository.adminAction(admin, "portal-policy", "global", "update", {
+          telemetryPollSec: 600,
+          nodeMetricsSampleSec: 300,
+        }),
+      );
+      expect(failure).toMatchObject({
+        statusCode: 400,
+        code: "METRICS_SAMPLE_BELOW_POLL",
+      });
+      expect(failure?.message).toContain("600");
+
+      // Only the poll named, checked against the STORED sample period: the pair
+      // has to be validated whichever half of it an admin is editing.
+      await repository.adminAction(admin, "portal-policy", "global", "update", {
+        nodeMetricsSampleSec: 300,
+      });
+      failure = await failureOf(
+        repository.adminAction(admin, "portal-policy", "global", "update", {
+          telemetryPollSec: 600,
+        }),
+      );
+      expect(failure).toMatchObject({ code: "METRICS_SAMPLE_BELOW_POLL" });
+
+      // Only the sample named, checked against the stored poll period.
+      await repository.adminAction(admin, "portal-policy", "global", "update", {
+        telemetryPollSec: 300,
+        nodeMetricsSampleSec: 300,
+      });
+      failure = await failureOf(
+        repository.adminAction(admin, "portal-policy", "global", "update", {
+          nodeMetricsSampleSec: 60,
+        }),
+      );
+      expect(failure).toMatchObject({ code: "METRICS_SAMPLE_BELOW_POLL" });
+
+      // The refused write must not have half-applied.
+      const [row] = (await repository.adminList(admin, "portal-policy")) as Array<
+        Record<string, unknown>
+      >;
+      expect(row).toMatchObject({
+        telemetryPollSec: 300,
+        nodeMetricsSampleSec: 300,
+      });
+    },
+  );
+
+  runDatabaseTest(
+    "clearing the poll period compares against the default, not the value being cleared",
+    async () => {
+      if (!database) return;
+      const repository = new PostgresControlRepository({
+        db: database.db,
+        keyring,
+      });
+      await database.db.delete(portalPolicy);
+      // Poll 30 s, sample 45 s: legal together.
+      await repository.adminAction(admin, "portal-policy", "global", "update", {
+        telemetryPollSec: 30,
+        nodeMetricsSampleSec: 45,
+      });
+      // Clearing the poll period puts it back to the 60 s default, which the
+      // 45 s sample period is now below. A check that read the value being
+      // cleared would let this through and leave a sampler that never fires
+      // more than once per poll anyway.
+      await expect(
+        repository.adminAction(admin, "portal-policy", "global", "update", {
+          telemetryPollSec: null,
+        }),
+      ).rejects.toMatchObject({ code: "METRICS_SAMPLE_BELOW_POLL" });
     },
   );
 });

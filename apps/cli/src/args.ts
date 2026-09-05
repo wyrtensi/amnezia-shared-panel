@@ -1,5 +1,54 @@
 /** Pure argument helpers, kept out of main.ts so they are unit-testable. */
 
+/**
+ * Structural copy of `WORKER_PERIOD_FIELDS` from @amnezia/contracts.
+ *
+ * The CLI declares no runtime dependencies on purpose (see the note in
+ * `deviceProfiles.ts`), so it re-states the table rather than importing the
+ * workspace package. Both copies are pinned by a test on their own side; if the
+ * contract's bounds change, this one and its test change with it.
+ *
+ * `fallback` is the BUILT-IN default. A worker whose environment sets
+ * TELEMETRY_POLL_SEC, NODE_METRICS_SAMPLE_SEC, NODE_METRICS_RETENTION_DAYS or
+ * ACCESS_RECONCILE_INTERVAL_MS uses that instead, which is why `periods` prints
+ * the caveat with the table rather than claiming to know the live number.
+ */
+export const WORKER_PERIOD_FIELDS = {
+  telemetryPollSec: { min: 30, max: 86_400, fallback: 60, unit: "sec" },
+  nodeMetricsSampleSec: { min: 30, max: 86_400, fallback: 300, unit: "sec" },
+  nodeMetricsRetentionDays: { min: 1, max: 3_650, fallback: 7, unit: "day" },
+  peerSampleSec: { min: 60, max: 86_400, fallback: 300, unit: "sec" },
+  maintenanceIntervalSec: {
+    min: 300,
+    max: 604_800,
+    fallback: 3_600,
+    unit: "sec",
+  },
+  agentReleaseRefreshSec: {
+    min: 300,
+    max: 604_800,
+    fallback: 1_800,
+    unit: "sec",
+  },
+  ruleFetchIntervalSec: {
+    min: 900,
+    max: 604_800,
+    fallback: 21_600,
+    unit: "sec",
+  },
+  accessReconcileSec: { min: 300, max: 604_800, fallback: 3_600, unit: "sec" },
+} as const satisfies Record<
+  string,
+  { min: number; max: number; fallback: number; unit: "sec" | "day" }
+>;
+
+export type WorkerPeriodField = keyof typeof WORKER_PERIOD_FIELDS;
+
+/** Stable listing order, shared by `periods`, `policy-set` and the help text. */
+export const WORKER_PERIOD_FIELD_NAMES = Object.keys(
+  WORKER_PERIOD_FIELDS,
+) as WorkerPeriodField[];
+
 /** Value of a `--name=value` flag, or undefined. Values may contain `=`. */
 export const flagOf = (args: string[], name: string): string | undefined => {
   const found = args.find((arg) => arg.startsWith(`--${name}=`));
@@ -339,8 +388,42 @@ export const parsePolicyNodeList = (spec: string): string[] => {
 // Lists whose empty value means "no node", not "every node".
 const EMPTY_MEANS_NONE = new Set(["recommendedNodeIds", "nodeOrder"]);
 
+/** True for one of the eight worker periods stored on portal_policy. */
+export const isWorkerPeriodField = (key: string): key is WorkerPeriodField =>
+  key in WORKER_PERIOD_FIELDS;
+
+/**
+ * A period as a human reads it: the stored number in its own unit, with a
+ * rounder restatement when seconds stop being legible ("21600 s (6 h)").
+ *
+ * The raw number stays first because it is what `policy-set` takes back.
+ */
+export const formatPeriod = (
+  field: WorkerPeriodField,
+  value: number,
+): string => {
+  if (WORKER_PERIOD_FIELDS[field].unit === "day") {
+    return `${value} ${value === 1 ? "day" : "days"}`;
+  }
+  if (value < 60) return `${value} s`;
+  if (value < 3_600) return `${value} s (${round(value / 60)} min)`;
+  if (value < 86_400) return `${value} s (${round(value / 3_600)} h)`;
+  return `${value} s (${round(value / 86_400)} d)`;
+};
+
+/** One decimal at most, and never a trailing ".0". */
+const round = (value: number): string =>
+  String(Math.round(value * 10) / 10);
+
 /** Render one portal-policy field for the `policy` snapshot command. */
 export const formatPolicyValue = (key: string, value: unknown): string => {
+  // Checked before the null branch below: a worker period's null means "use the
+  // worker's default", never "every node".
+  if (isWorkerPeriodField(key)) {
+    return value === null || value === undefined
+      ? "(default)"
+      : formatPeriod(key, Number(value));
+  }
   if (Array.isArray(value)) {
     if (value.length > 0) return value.join(",");
     return EMPTY_MEANS_NONE.has(key) ? "(none)" : "(all)";
@@ -348,6 +431,39 @@ export const formatPolicyValue = (key: string, value: unknown): string => {
   // `allowedNodeIds` is nullable, and null there means "every node".
   if (value === null && !EMPTY_MEANS_NONE.has(key)) return "(all)";
   return String(value);
+};
+
+/**
+ * Parse a `policy-set --<period>=<value>` flag.
+ *
+ * `default` (and `none` / `null`, which every other clearable flag accepts)
+ * gives the period back to the worker. Anything else has to be a whole number
+ * inside the field's bounds -- refused here rather than posted, so the operator
+ * is told which number is out of range instead of reading a validation error
+ * about a field name.
+ */
+export const parseWorkerPeriodFlag = (
+  field: WorkerPeriodField,
+  raw: string,
+): number | null => {
+  const value = raw.trim();
+  if (value === "default" || value === "none" || value === "null") return null;
+  const { min, max, unit } = WORKER_PERIOD_FIELDS[field];
+  // `Number("")` is 0, so an empty flag - `--telemetryPollSec=` from an unset
+  // shell variable - would otherwise be reported as "0 is out of range" rather
+  // than as the missing value it is.
+  const parsed = value === "" ? Number.NaN : Number(value);
+  if (!Number.isInteger(parsed)) {
+    throw new Error(
+      `--${field}: expected a whole number of ${unit === "day" ? "days" : "seconds"}, or "default" to clear it`,
+    );
+  }
+  if (parsed < min || parsed > max) {
+    throw new Error(
+      `--${field}: ${parsed} is outside ${min}..${max} ${unit === "day" ? "days" : "seconds"}`,
+    );
+  }
+  return parsed;
 };
 
 /**

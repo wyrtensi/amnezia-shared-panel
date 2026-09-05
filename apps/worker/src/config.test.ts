@@ -1,27 +1,55 @@
+import { WORKER_PERIOD_FIELDS } from "@amnezia/contracts";
 import { describe, expect, it } from "vitest";
-import { resolveWorkerPeriods } from "./config.js";
+import { resolveWorkerPeriodDefaults } from "./config.js";
 
-describe("resolveWorkerPeriods", () => {
+describe("resolveWorkerPeriodDefaults", () => {
   it("uses the documented defaults on an empty environment", () => {
-    expect(resolveWorkerPeriods({})).toEqual({
-      telemetryPollMs: 60_000,
-      metricsSampleMs: 300_000,
-      metricsRetentionDays: 7,
+    expect(resolveWorkerPeriodDefaults({})).toEqual({
+      telemetryPollSec: 60,
+      nodeMetricsSampleSec: 300,
+      nodeMetricsRetentionDays: 7,
+      peerSampleSec: 300,
+      maintenanceIntervalSec: 3_600,
+      agentReleaseRefreshSec: 1_800,
+      ruleFetchIntervalSec: 21_600,
+      accessReconcileSec: 3_600,
     });
   });
 
-  it("reads all three overrides", () => {
+  it("agrees with the contract's own fallbacks", () => {
+    // The panel shows `fallback` as "the default", and the worker is what
+    // actually applies it. The two disagreeing would make the admin form lie
+    // about what an unset period does.
+    const defaults = resolveWorkerPeriodDefaults({});
+    for (const [field, spec] of Object.entries(WORKER_PERIOD_FIELDS)) {
+      expect(defaults[field as keyof typeof defaults], field).toBe(
+        spec.fallback,
+      );
+    }
+  });
+
+  it("reads every environment override that still has one", () => {
     expect(
-      resolveWorkerPeriods({
+      resolveWorkerPeriodDefaults({
         TELEMETRY_POLL_SEC: "30",
         NODE_METRICS_SAMPLE_SEC: "60",
         NODE_METRICS_RETENTION_DAYS: "14",
+        ACCESS_RECONCILE_INTERVAL_MS: "900000",
       }),
-    ).toEqual({
-      telemetryPollMs: 30_000,
-      metricsSampleMs: 60_000,
-      metricsRetentionDays: 14,
+    ).toMatchObject({
+      telemetryPollSec: 30,
+      nodeMetricsSampleSec: 60,
+      nodeMetricsRetentionDays: 14,
+      accessReconcileSec: 900,
     });
+  });
+
+  it("keeps ACCESS_RECONCILE_INTERVAL_MS in milliseconds", () => {
+    // Reinterpreting it as seconds on upgrade would run the reconcile a
+    // thousand times too often on every panel that already sets it.
+    expect(
+      resolveWorkerPeriodDefaults({ ACCESS_RECONCILE_INTERVAL_MS: "1" }),
+    ).toMatchObject({ accessReconcileSec: 1 });
   });
 
   it("refuses a sample period shorter than the poll period", () => {
@@ -29,7 +57,7 @@ describe("resolveWorkerPeriods", () => {
     // period cannot produce more rows - it would only make the setting look
     // like it did something.
     expect(() =>
-      resolveWorkerPeriods({
+      resolveWorkerPeriodDefaults({
         TELEMETRY_POLL_SEC: "120",
         NODE_METRICS_SAMPLE_SEC: "60",
       }),
@@ -38,23 +66,23 @@ describe("resolveWorkerPeriods", () => {
 
   it("accepts a sample period equal to the poll period", () => {
     expect(
-      resolveWorkerPeriods({
+      resolveWorkerPeriodDefaults({
         TELEMETRY_POLL_SEC: "120",
         NODE_METRICS_SAMPLE_SEC: "120",
       }),
-    ).toMatchObject({ telemetryPollMs: 120_000, metricsSampleMs: 120_000 });
+    ).toMatchObject({ telemetryPollSec: 120, nodeMetricsSampleSec: 120 });
   });
 
   it("compares the overridden sample period against the DEFAULT poll period", () => {
     // The floor has to hold when only one of the two is set, otherwise the
     // check passes exactly when it is least likely to be thought about.
     expect(() =>
-      resolveWorkerPeriods({ NODE_METRICS_SAMPLE_SEC: "30" }),
+      resolveWorkerPeriodDefaults({ NODE_METRICS_SAMPLE_SEC: "30" }),
     ).toThrow(/NODE_METRICS_SAMPLE_SEC must be at least TELEMETRY_POLL_SEC/);
   });
 
   it.each(["0", "-5", "abc", "1.5"])("refuses %j as a period", (raw) => {
-    expect(() => resolveWorkerPeriods({ TELEMETRY_POLL_SEC: raw })).toThrow(
+    expect(() => resolveWorkerPeriodDefaults({ TELEMETRY_POLL_SEC: raw })).toThrow(
       /TELEMETRY_POLL_SEC must be a positive integer/,
     );
   });
@@ -62,14 +90,27 @@ describe("resolveWorkerPeriods", () => {
   it.each(["", "   "])("treats %j as unset", (raw) => {
     // `TELEMETRY_POLL_SEC=` in an .env file is how an operator un-sets a knob.
     // Refusing it would make an empty line in the template a boot failure.
-    expect(resolveWorkerPeriods({ TELEMETRY_POLL_SEC: raw })).toMatchObject({
-      telemetryPollMs: 60_000,
-    });
+    expect(
+      resolveWorkerPeriodDefaults({ TELEMETRY_POLL_SEC: raw }),
+    ).toMatchObject({ telemetryPollSec: 60 });
   });
 
   it("refuses a retention window that would keep samples forever", () => {
     expect(() =>
-      resolveWorkerPeriods({ NODE_METRICS_RETENTION_DAYS: "0" }),
+      resolveWorkerPeriodDefaults({ NODE_METRICS_RETENTION_DAYS: "0" }),
     ).toThrow(/NODE_METRICS_RETENTION_DAYS must be a positive integer/);
+  });
+
+  it("does not apply the panel's bounds to an environment value", () => {
+    // The panel refuses a poll below 30 s, but an existing host that set
+    // TELEMETRY_POLL_SEC=5 years ago must keep booting: tightening the
+    // environment would turn an upgrade into an outage, which is a worse
+    // failure than the period the operator chose on purpose.
+    expect(
+      resolveWorkerPeriodDefaults({
+        TELEMETRY_POLL_SEC: "5",
+        NODE_METRICS_SAMPLE_SEC: "5",
+      }),
+    ).toMatchObject({ telemetryPollSec: 5, nodeMetricsSampleSec: 5 });
   });
 });

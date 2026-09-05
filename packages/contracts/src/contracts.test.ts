@@ -2,8 +2,13 @@ import { describe, expect, it } from "vitest";
 
 import {
   CLIENT_PLATFORMS,
+  clampWorkerPeriod,
   clientReleaseSchema,
   composeKeyDisplayName,
+  metricsSampleBelowPoll,
+  WORKER_PERIOD_FIELDS,
+  WORKER_PERIOD_FIELD_NAMES,
+  workerPeriodOverridesSchema,
   createKeyRequestSchema,
   customRoutesSchema,
   DEVICE_TYPE_ORDER,
@@ -1507,5 +1512,129 @@ describe("accessDomainListSchema", () => {
   });
   it("refuses more than 50 entries", () => {
     expect(() => accessDomainListSchema.parse(Array.from({ length: 51 }, (_, i) => `d${i}.tld`))).toThrow();
+  });
+});
+
+describe("worker polling periods", () => {
+  it("names every period the worker runs on, in a stable order", () => {
+    // The CLI, the admin form and the docs all iterate this list, so a period
+    // added to the table without a home in the UI shows up here first.
+    expect(WORKER_PERIOD_FIELD_NAMES).toEqual([
+      "telemetryPollSec",
+      "nodeMetricsSampleSec",
+      "nodeMetricsRetentionDays",
+      "peerSampleSec",
+      "maintenanceIntervalSec",
+      "agentReleaseRefreshSec",
+      "ruleFetchIntervalSec",
+      "accessReconcileSec",
+    ]);
+  });
+
+  it("pins the bounds the CLI keeps its own copy of", () => {
+    // apps/cli takes no runtime dependency on this package and re-states the
+    // table in args.ts. This literal and the one in apps/cli/src/args.test.ts
+    // are what stop the two drifting.
+    expect(WORKER_PERIOD_FIELDS).toEqual({
+      telemetryPollSec: { min: 30, max: 86_400, fallback: 60, unit: "sec" },
+      nodeMetricsSampleSec: { min: 30, max: 86_400, fallback: 300, unit: "sec" },
+      nodeMetricsRetentionDays: { min: 1, max: 3_650, fallback: 7, unit: "day" },
+      peerSampleSec: { min: 60, max: 86_400, fallback: 300, unit: "sec" },
+      maintenanceIntervalSec: {
+        min: 300,
+        max: 604_800,
+        fallback: 3_600,
+        unit: "sec",
+      },
+      agentReleaseRefreshSec: {
+        min: 300,
+        max: 604_800,
+        fallback: 1_800,
+        unit: "sec",
+      },
+      ruleFetchIntervalSec: {
+        min: 900,
+        max: 604_800,
+        fallback: 21_600,
+        unit: "sec",
+      },
+      accessReconcileSec: {
+        min: 300,
+        max: 604_800,
+        fallback: 3_600,
+        unit: "sec",
+      },
+    });
+  });
+
+  it("gives every period a default inside its own bounds", () => {
+    // A default outside the bounds would mean the value an unset period
+    // actually runs on is one the panel refuses to let anyone type.
+    for (const [field, spec] of Object.entries(WORKER_PERIOD_FIELDS)) {
+      expect(spec.fallback, field).toBeGreaterThanOrEqual(spec.min);
+      expect(spec.fallback, field).toBeLessThanOrEqual(spec.max);
+      expect(spec.min, field).toBeLessThan(spec.max);
+    }
+  });
+
+  it("accepts a value at each bound, and null everywhere", () => {
+    for (const field of WORKER_PERIOD_FIELD_NAMES) {
+      const { min, max } = WORKER_PERIOD_FIELDS[field];
+      expect(workerPeriodOverridesSchema.parse({ [field]: min })).toEqual({
+        [field]: min,
+      });
+      expect(workerPeriodOverridesSchema.parse({ [field]: max })).toEqual({
+        [field]: max,
+      });
+      // Null is how an admin hands a period back to the worker's default, so it
+      // has to survive the schema rather than read as "not named".
+      expect(workerPeriodOverridesSchema.parse({ [field]: null })).toEqual({
+        [field]: null,
+      });
+    }
+  });
+
+  it("refuses a value outside the bounds, and a fractional one", () => {
+    for (const field of WORKER_PERIOD_FIELD_NAMES) {
+      const { min, max } = WORKER_PERIOD_FIELDS[field];
+      expect(() =>
+        workerPeriodOverridesSchema.parse({ [field]: min - 1 }),
+      ).toThrow();
+      expect(() =>
+        workerPeriodOverridesSchema.parse({ [field]: max + 1 }),
+      ).toThrow();
+      expect(() =>
+        workerPeriodOverridesSchema.parse({ [field]: min + 0.5 }),
+      ).toThrow();
+    }
+  });
+
+  it("refuses a one-second telemetry poll", () => {
+    // The floor exists so nobody can point the whole fleet at itself: every
+    // poll is a four-request fan-out to every node.
+    expect(() =>
+      workerPeriodOverridesSchema.parse({ telemetryPollSec: 1 }),
+    ).toThrow();
+    expect(workerPeriodOverridesSchema.parse({ telemetryPollSec: 30 })).toEqual({
+      telemetryPollSec: 30,
+    });
+  });
+
+  it("clamps a stored value into range and leaves null alone", () => {
+    expect(clampWorkerPeriod("telemetryPollSec", 1)).toBe(30);
+    expect(clampWorkerPeriod("telemetryPollSec", 10_000_000)).toBe(86_400);
+    expect(clampWorkerPeriod("telemetryPollSec", 120)).toBe(120);
+    expect(clampWorkerPeriod("telemetryPollSec", null)).toBeNull();
+    expect(clampWorkerPeriod("telemetryPollSec", undefined)).toBeNull();
+    expect(clampWorkerPeriod("telemetryPollSec", Number.NaN)).toBeNull();
+  });
+
+  it("reports a sample period below the poll period, and only that", () => {
+    expect(metricsSampleBelowPoll(60, 30)).toEqual({
+      telemetryPollSec: 60,
+      nodeMetricsSampleSec: 30,
+    });
+    expect(metricsSampleBelowPoll(60, 60)).toBeNull();
+    expect(metricsSampleBelowPoll(60, 300)).toBeNull();
   });
 });

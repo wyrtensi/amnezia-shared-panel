@@ -4,7 +4,8 @@ import * as React from "react";
 import { toast } from "sonner";
 import { apiRequest } from "@/lib/api";
 import { useT } from "@/lib/i18n/provider";
-import type { GlobalRoutes } from "@amnezia/contracts";
+import { WORKER_PERIOD_FIELD_NAMES } from "@amnezia/contracts";
+import type { GlobalRoutes, WorkerPeriodField } from "@amnezia/contracts";
 import type {
   AdminNodeMetrics,
   KeyLimitMode,
@@ -209,6 +210,14 @@ export type GlobalPortalPolicy = {
    * panel that has not loaded the policy yet never renders `undefined`.
    */
   cfAccessAllowedDomains: string[];
+} & {
+  /**
+   * Every background period the panel runs on. Null means "unset": the worker
+   * uses its own default, which is what an upgraded panel keeps doing until an
+   * admin picks a number. Typed off the contract so a period added there
+   * cannot be forgotten here.
+   */
+  [Field in WorkerPeriodField]: number | null;
 };
 
 const DEFAULT_POLICY: GlobalPortalPolicy = {
@@ -243,6 +252,11 @@ const DEFAULT_POLICY: GlobalPortalPolicy = {
   cfAccessPolicyId: null,
   cfApiTokenSet: false,
   cfAccessAllowedDomains: [],
+  // Every period unset until the real policy arrives, so the form shows
+  // "default" rather than flashing a number nobody chose.
+  ...(Object.fromEntries(
+    WORKER_PERIOD_FIELD_NAMES.map((field) => [field, null]),
+  ) as Record<WorkerPeriodField, null>),
 };
 
 export type AdminData = {

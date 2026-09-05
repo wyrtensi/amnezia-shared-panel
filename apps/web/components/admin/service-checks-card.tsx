@@ -7,6 +7,7 @@ import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { Callout } from "@/components/ui/hint";
 import { apiRequest } from "@/lib/api";
@@ -23,8 +24,75 @@ import type { ServiceChecksState } from "@/components/admin/use-service-checks";
  * Assertions are shown as text and edited from the CLI (`check-create`,
  * `check-set`), which is the surface that stays honest as the set grows.
  * Everything an operator needs day to day — enable, run, delete, read the
- * verdicts — is here.
+ * verdicts, and change how often a check runs — is here. The period is a plain
+ * number with a range, not an open rule set, which is why it does not belong
+ * with the assertions on the other side of that line.
  */
+/**
+ * How often one check runs, in minutes, editable in place.
+ *
+ * It was read-only here for as long as the number was only settable from the
+ * CLI, which made "how often does this run" the one thing on the card an
+ * operator could see but not change. Minutes rather than seconds because that
+ * is the unit the answer is given in (the shipped checks run twice a day); the
+ * stored column is seconds, so the bounds below are the table's 60..86400
+ * expressed in minutes.
+ *
+ * Save only appears once the number differs from the stored one: a per-row save
+ * button that is always live invites a save that changes nothing and reads as
+ * though it did.
+ */
+function CheckInterval({
+  intervalSec,
+  disabled,
+  onSave,
+}: {
+  intervalSec: number;
+  disabled: boolean;
+  onSave: (intervalSec: number) => void;
+}) {
+  const { t } = useT();
+  const storedMinutes = Math.round(intervalSec / 60);
+  const [minutes, setMinutes] = React.useState(storedMinutes);
+  // Re-sync when the card reloads after a save, or after somebody else's edit.
+  React.useEffect(() => setMinutes(storedMinutes), [storedMinutes]);
+  const valid = Number.isInteger(minutes) && minutes >= 1 && minutes <= 1440;
+  const changed = minutes !== storedMinutes;
+
+  return (
+    <span className="flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
+      {t("checks.everyLabel")}
+      <Input
+        type="number"
+        inputMode="numeric"
+        min={1}
+        max={1440}
+        aria-label={t("checks.intervalAria")}
+        className="h-7 w-20 text-xs"
+        disabled={disabled}
+        value={String(minutes)}
+        onChange={(event) => setMinutes(Number(event.target.value.trim()))}
+      />
+      {t("checks.minutes")}
+      {changed ? (
+        <Button
+          type="button"
+          size="sm"
+          variant="secondary"
+          className="h-7"
+          disabled={disabled || !valid}
+          onClick={() => onSave(minutes * 60)}
+        >
+          {t("common.save")}
+        </Button>
+      ) : null}
+      {changed && !valid ? (
+        <span className="text-destructive">{t("checks.intervalRange")}</span>
+      ) : null}
+    </span>
+  );
+}
+
 export function ServiceChecksCard({
   state,
 }: {
@@ -77,11 +145,18 @@ export function ServiceChecksCard({
                 <span className="block truncate text-xs text-muted-foreground">
                   {check.probe?.url ?? check.probe?.kind}
                 </span>
-                <span className="block text-xs text-muted-foreground">
-                  {t("checks.every", {
-                    minutes: String(Math.round(check.intervalSec / 60)),
-                  })}
-                </span>
+                <CheckInterval
+                  intervalSec={check.intervalSec}
+                  disabled={busy === check.id}
+                  onSave={(intervalSec) => {
+                    void act(check.id, () =>
+                      apiRequest(`/api/admin/service-checks/${check.id}`, {
+                        method: "PATCH",
+                        body: JSON.stringify({ intervalSec }),
+                      }),
+                    );
+                  }}
+                />
               </div>
               <div className="flex shrink-0 items-center gap-1.5">
                 <Switch

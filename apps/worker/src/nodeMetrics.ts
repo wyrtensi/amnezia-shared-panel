@@ -1,3 +1,4 @@
+import { WORKER_PERIOD_FIELDS } from "@amnezia/contracts";
 import type { nodeMetricsCurrent } from "@amnezia/db";
 
 import type { NodeSnapshot } from "./telemetry.js";
@@ -5,10 +6,14 @@ import type { NodeSnapshot } from "./telemetry.js";
 export type NodeMetricsRow = typeof nodeMetricsCurrent.$inferInsert;
 
 /**
- * Default only. The live value is `NODE_METRICS_SAMPLE_SEC`, because this
- * number decides how fast a table grows and that is an operator's call.
+ * Default only. The live value is the panel's `nodeMetricsSampleSec` setting,
+ * falling back to `NODE_METRICS_SAMPLE_SEC` in the worker's environment,
+ * because this number decides how fast a table grows and that is an operator's
+ * call. Re-exported from the contract rather than repeated: two copies of a
+ * default disagree the first time one of them is changed.
  */
-export const DEFAULT_METRICS_SAMPLE_SEC = 300;
+export const DEFAULT_METRICS_SAMPLE_SEC =
+  WORKER_PERIOD_FIELDS.nodeMetricsSampleSec.fallback;
 
 /**
  * A byte counter as bigint, or null.

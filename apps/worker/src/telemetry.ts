@@ -1,3 +1,4 @@
+import { WORKER_PERIOD_FIELDS } from "@amnezia/contracts";
 import type {
   NodeAgent,
   NodeAgentUpdateStatus,
@@ -22,7 +23,13 @@ import { createPublicIpResolver, normalizePublicHost } from "./publicAddress.js"
 // and this file now touches both: peers are downsampled on state change plus
 // this floor, while host metrics use the configurable `sampleIntervalMs` option
 // below. Two similarly named intervals in one file is exactly how they drift.
-const PEER_SAMPLE_INTERVAL_MS = 5 * 60 * 1_000;
+//
+// Default only. Both are panel settings now (`peerSampleSec` and
+// `nodeMetricsSampleSec`), resolved per snapshot by the repository and passed
+// in, so this constant is what applies when neither the panel nor the
+// environment has said otherwise.
+export const DEFAULT_PEER_SAMPLE_INTERVAL_MS =
+  WORKER_PERIOD_FIELDS.peerSampleSec.fallback * 1_000;
 
 /** How many nodes the poll talks to at once. */
 const DEFAULT_POLL_CONCURRENCY = 4;
@@ -120,6 +127,10 @@ export interface TelemetryRepository {
 export const shouldStoreSample = (
   observation: PeerObservation,
   previousSample: PeerObservation | null,
+  // The floor for a peer whose state has not moved. A parameter rather than a
+  // constant because an admin sets it in the panel; the default keeps every
+  // existing caller and test on the period this always had.
+  intervalMs: number = DEFAULT_PEER_SAMPLE_INTERVAL_MS,
 ): boolean =>
   !previousSample ||
   observation.online !== previousSample.online ||
@@ -127,7 +138,7 @@ export const shouldStoreSample = (
   observation.latestHandshakeAt?.getTime() !==
     previousSample.latestHandshakeAt?.getTime() ||
   observation.observedAt.getTime() - previousSample.observedAt.getTime() >=
-    PEER_SAMPLE_INTERVAL_MS;
+    intervalMs;
 
 const cleanReason = (reason: string): string =>
   reason.replace(/[\r\n\t]+/g, " ").slice(0, 2_000);
