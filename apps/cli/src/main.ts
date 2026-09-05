@@ -59,6 +59,15 @@ import type {
   UpdateStatusView,
   WorkerPeriodField,
 } from "./args.js";
+import {
+  STALE_DAYS,
+  classifyKeyActivity,
+  formatDaysAgo,
+  parseStaleDays,
+  staleKeys,
+  staleSince,
+  summarizeStaleKeys,
+} from "./staleKeys.js";
 import { classifyNodeHost, formatNodeAddress } from "./nodeAddress.js";
 import {
   awgCell,
@@ -232,6 +241,9 @@ type AdminKey = {
   deviceType?: string;
   routeProfile: string;
   online?: boolean;
+  /** Last handshake, mirrored by the worker from peer_current. Null = never. */
+  lastUsedAt?: string | null;
+  createdAt?: string | null;
   traffic?: { receivedBytes: string; sentBytes: string } | null;
 };
 type AdminNode = {
@@ -432,10 +444,27 @@ async function cmdKeys(args: string[]): Promise<void> {
   // wizard can no longer create that pair, but older keys, the CLI and an
   // admin still can, so an operator needs a way to count them.
   const needsWarning = args.includes("--needs-profile-warning");
-  const shown = needsWarning
+  const byWarning = needsWarning
     ? byDevice.filter((key) => keyNeedsRouteProfileWarning(key))
     : byDevice;
-  if (wantsJson(args)) return json(shown);
+  // `--stale` is the key-level reading of "nobody uses this": no handshake in
+  // the window, or none ever on a key already older than it. See staleKeys.ts
+  // for why those two are one filter and a key issued this week is neither.
+  const onlyStale = args.includes("--stale");
+  const staleDays = parseStaleDays(flagOf(args, "stale-days"));
+  const now = Date.now();
+  const shown = onlyStale ? staleKeys(byWarning, now, staleDays) : byWarning;
+  if (wantsJson(args)) {
+    return json(
+      onlyStale
+        ? shown.map((key) => ({
+            ...key,
+            staleFor: formatDaysAgo(staleSince(key, now, staleDays), now),
+            activity: classifyKeyActivity(key, now, staleDays),
+          }))
+        : shown,
+    );
+  }
   const emailById = new Map(users.map((user) => [user.id, user.email]));
   console.log(
     table(
@@ -453,6 +482,11 @@ async function cmdKeys(args: string[]): Promise<void> {
         // is listed. Only under --needs-profile-warning: the default table is
         // already wide.
         route: key.routeProfile,
+        // Under --stale only, the two values the predicate read: which kind of
+        // stale ("idle" = used, long ago; "never" = never used) and for how
+        // long. A listed row must show why it is listed.
+        why: classifyKeyActivity(key, now, staleDays),
+        stale: formatDaysAgo(staleSince(key, now, staleDays), now),
         owner: emailById.get(key.ownerId) ?? key.ownerId.slice(0, 8),
         state: key.state,
         proto: key.protocol,
@@ -466,30 +500,195 @@ async function cmdKeys(args: string[]): Promise<void> {
             )
           : "—",
       })),
-      needsWarning
-        ? [
-            "device",
-            "internal",
-            "platform",
-            "route",
-            "owner",
-            "state",
-            "proto",
-            "online",
-            "traffic",
-          ]
-        : [
-            "device",
-            "internal",
-            "platform",
-            "owner",
-            "state",
-            "proto",
-            "online",
-            "traffic",
-          ],
+      [
+        "device",
+        "internal",
+        "platform",
+        ...(needsWarning ? ["route"] : []),
+        ...(onlyStale ? ["why", "stale"] : []),
+        "owner",
+        "state",
+        "proto",
+        "online",
+        "traffic",
+      ],
     ),
   );
+  if (onlyStale) {
+    console.log("");
+    console.log(
+      `${shown.length} keys with no handshake for more than ${staleDays} days.`,
+    );
+    console.log(
+      `  why=idle  the key has been used, last time that long ago`,
+    );
+    console.log(
+      `  why=never nobody has ever connected with it, and it is itself older` +
+        ` than ${staleDays} days`,
+    );
+    console.log(
+      `A key younger than ${staleDays} days that has not connected yet is NOT` +
+        ` listed. Add --json for the ids.`,
+    );
+  }
+}
+
+/**
+ * `stale-keys` — who is holding keys nobody connects with, and how many each.
+ *
+ * The shell half of the panel's overview block. Counted per key rather than per
+ * user for the same reason: a user with one live phone and five abandoned
+ * laptop keys is active by every owner-level reading, and those five peers are
+ * exactly what an operator is looking for. Only users with at least one stale
+ * key are listed; `--all` keeps everyone, which is how the census reads as a
+ * denominator rather than a finding.
+ */
+async function cmdStaleKeys(args: string[]): Promise<void> {
+  const [keys, users] = await Promise.all([
+    api<AdminKey[]>("/api/admin/keys"),
+    api<AdminUser[]>("/api/admin/users"),
+  ]);
+  const days = parseStaleDays(flagOf(args, "days"));
+  const now = Date.now();
+  const byOwner = new Map<string, AdminKey[]>();
+  for (const key of keys) {
+    const list = byOwner.get(key.ownerId);
+    if (list) list.push(key);
+    else byOwner.set(key.ownerId, [key]);
+  }
+  const rows = users
+    .map((user) => ({
+      user,
+      summary: summarizeStaleKeys(byOwner.get(user.id) ?? [], now, days),
+    }))
+    .filter((row) => args.includes("--all") || row.summary.stale > 0)
+    .sort(
+      (a, b) =>
+        b.summary.stale - a.summary.stale ||
+        (a.summary.oldestStaleSince ?? 0) - (b.summary.oldestStaleSince ?? 0),
+    );
+  if (wantsJson(args)) {
+    return json(
+      rows.map(({ user, summary }) => ({
+        userId: user.id,
+        email: user.email,
+        status: user.status,
+        days,
+        ...summary,
+      })),
+    );
+  }
+  console.log(
+    table(
+      rows.map(({ user, summary }) => ({
+        email: user.email,
+        status: user.status,
+        stale: String(summary.stale),
+        idle: String(summary.idle),
+        never: String(summary.never),
+        // The denominator: keys that hold a peer on a node right now.
+        keys: String(summary.held),
+        // Keys too young to have connected yet - never part of `stale`, but
+        // shown so the numbers beside them add up on the page.
+        fresh: String(summary.fresh),
+        oldest: formatDaysAgo(summary.oldestStaleSince, now),
+      })),
+      ["email", "status", "stale", "idle", "never", "keys", "fresh", "oldest"],
+    ),
+  );
+  const totalStale = rows.reduce((sum, row) => sum + row.summary.stale, 0);
+  console.log("");
+  console.log(
+    `${totalStale} stale keys across ${rows.filter((row) => row.summary.stale > 0).length}` +
+      ` users, at ${days} days. Clean one user up with:` +
+      `\n  amnezia-panel stale-keys-revoke <id|email> --days=${days}`,
+  );
+}
+
+/**
+ * `stale-keys-revoke` — the shell half of the panel's per-user cleanup.
+ *
+ * Revokes, never purges: the peer goes from the node, the row and its traffic
+ * history stay, and the user can issue a new key (docs/KEY-STATES.md).
+ * `key-purge` is the irreversible one and it is not reachable from here.
+ *
+ * Without `--confirm` it lists exactly what it would revoke and changes
+ * nothing — the same shape as `key-purge`, `node-remove --with-keys` and
+ * `node-agent-update`. Each key is revoked with its own call to the existing
+ * per-key route, in order, so every one is validated and audited separately
+ * and a key whose state moved under the operator is refused rather than forced.
+ */
+async function cmdStaleKeysRevoke(args: string[]): Promise<void> {
+  const usage =
+    "Usage: stale-keys-revoke <id|email> [--days=N] [--confirm]";
+  const userId = await resolveUserId(positionals(args)[0], usage);
+  const days = parseStaleDays(flagOf(args, "days"));
+  const now = Date.now();
+  const keys = await api<AdminKey[]>("/api/admin/keys");
+  const mine = keys.filter((key) => key.ownerId === userId);
+  const doomed = staleKeys(mine, now, days);
+  const summary = summarizeStaleKeys(mine, now, days);
+
+  if (doomed.length === 0) {
+    console.log(
+      `user ${userId}: no keys stale at ${days} days ` +
+        `(${summary.held} holding a peer, ${summary.fresh} not used yet)`,
+    );
+    return;
+  }
+
+  console.log(
+    table(
+      doomed.map((key) => ({
+        id: key.id,
+        device: key.deviceLabel || "—",
+        internal: key.internalName || "—",
+        node: key.nodeId,
+        state: key.state,
+        why: classifyKeyActivity(key, now, days),
+        stale: formatDaysAgo(staleSince(key, now, days), now),
+      })),
+      ["id", "device", "internal", "node", "state", "why", "stale"],
+    ),
+  );
+  console.log("");
+  if (!args.includes("--confirm")) {
+    console.log(
+      `Would revoke ${doomed.length} of this user's ${summary.held} keys, leaving` +
+        ` ${summary.live} used in the last ${days} days and ${summary.fresh} not used yet.`,
+    );
+    console.log(
+      "Revoking deletes the peer from its node: the configuration stops working",
+    );
+    console.log(
+      "and the slot is freed. The key row, its traffic history and the audit",
+    );
+    console.log(
+      "trail stay - this is NOT key-purge, and the user can issue a new key.",
+    );
+    console.log("Re-run with --confirm to revoke them.");
+    return;
+  }
+  let ok = 0;
+  const failures: string[] = [];
+  for (const key of doomed) {
+    try {
+      await api(`/api/admin/keys/${key.id}/revoke`, {
+        method: "POST",
+        body: JSON.stringify({}),
+      });
+      ok += 1;
+    } catch (cause) {
+      failures.push(
+        `${key.id}: ${cause instanceof Error ? cause.message : String(cause)}`,
+      );
+    }
+  }
+  console.log(`revoked ${ok} of ${doomed.length} keys`);
+  for (const failure of failures) console.log(`  failed ${failure}`);
+  if (failures.length > 0) {
+    throw new Error(`${failures.length} keys could not be revoked`);
+  }
 }
 
 async function cmdNodes(args: string[]): Promise<void> {
@@ -1778,11 +1977,21 @@ Read:
   keys [--device-type=X]   List keys (with owner, platform + traffic); the flags filter
       [--node=<id>]       to one stored platform, "unspecified" included, and/or to
       [--needs-profile-warning]
+      [--stale [--stale-days=N]]
                           one node — the non-destructive way to count what a
                           node-remove would take with it.
                           --needs-profile-warning lists only the keys whose platform
                           ignores route profiles yet carry a split tunnel, and adds
-                          the route column
+                          the route column.
+                          --stale lists only the keys with no handshake for more than
+                          N days (default ${STALE_DAYS}) and adds why / stale columns:
+                          why=idle means used, last time that long ago; why=never
+                          means never used AND itself older than N days. A younger
+                          key that has not connected yet is not listed
+  stale-keys [--days=N]    Who is holding stale keys and how many each: stale (idle +
+             [--all]      never), the keys they hold, the ones too young to count, and
+                          how long the oldest has been stale. Only users with at least
+                          one by default; --all lists everyone
   nodes [--hosts]          List nodes (with protocols, capacity and the public
                           address clients connect to: "name (ip)" once the panel
                           has resolved a DNS name, "name (unresolved)" when it
@@ -1882,6 +2091,16 @@ ${assertionUsageLines().join("\n")}
 Write:
   key-purge <id> --confirm  Delete a revoked key from the panel entirely.
                             Refused in any other state.
+  stale-keys-revoke <id|email>            Revoke every key of one user that has had no
+                    [--days=N]            handshake for more than N days (default
+                    [--confirm]           ${STALE_DAYS}). Revokes, never purges: the peer
+                                          goes from the node, the row, its traffic
+                                          history and the audit trail stay, and the
+                                          user can issue a new key. Without --confirm
+                                          it prints the exact keys and changes nothing.
+                                          Never touches a key used inside the window, a
+                                          key too young to have connected yet, or one
+                                          in any state but active / disabled
   key-revoke <id>                         Revoke a key. Also retries a delete stuck in
                                           "revoking" because a node was unreachable
   key-disable <id> / key-enable <id>      Disable / enable a key
@@ -2318,6 +2537,10 @@ export async function dispatch(argv: string[]): Promise<void> {
       return cmdUsers(args);
     case "keys":
       return cmdKeys(args);
+    case "stale-keys":
+      return cmdStaleKeys(args);
+    case "stale-keys-revoke":
+      return cmdStaleKeysRevoke(args);
     case "nodes":
       return cmdNodes(args);
     case "audit":

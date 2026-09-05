@@ -413,3 +413,198 @@ describe("periods", () => {
     expect(calls).toHaveLength(0);
   });
 });
+
+/**
+ * The stale-key surfaces. `now` is not injectable here, so the fixtures are
+ * expressed as offsets from the moment the test runs rather than fixed dates;
+ * the rule itself is pinned exactly in staleKeys.test.ts.
+ */
+describe("stale keys", () => {
+  const DAY = 24 * 60 * 60 * 1000;
+  const ago = (days: number) => new Date(Date.now() - days * DAY).toISOString();
+
+  // Real UUIDs so resolveUserId short-circuits without a users lookup, the
+  // way an operator pasting an id out of `stale-keys` gets.
+  const U_LIVE = "11111111-1111-4111-8111-111111111111";
+  const U_MIXED = "22222222-2222-4222-8222-222222222222";
+  const U_DEAD = "33333333-3333-4333-8333-333333333333";
+  const users = [
+    { id: U_LIVE, email: "live@example.com", status: "active" },
+    { id: U_MIXED, email: "mixed@example.com", status: "active" },
+    { id: U_DEAD, email: "dead@example.com", status: "active" },
+  ];
+  const key = (over: Record<string, unknown>) => ({
+    nodeId: "n1",
+    protocol: "awg3",
+    routeProfile: "full_tunnel",
+    state: "active",
+    ...over,
+  });
+  const keys = [
+    // Fully active user.
+    key({
+      id: "k1",
+      ownerId: U_LIVE,
+      deviceLabel: "Work phone",
+      lastUsedAt: ago(1),
+      createdAt: ago(200),
+    }),
+    // Mixed: one live key, one abandoned, one issued this week.
+    key({
+      id: "k2",
+      ownerId: U_MIXED,
+      deviceLabel: "Home phone",
+      lastUsedAt: ago(2),
+      createdAt: ago(200),
+    }),
+    key({
+      id: "k3",
+      ownerId: U_MIXED,
+      deviceLabel: "Old laptop",
+      lastUsedAt: ago(70),
+      createdAt: ago(200),
+    }),
+    key({
+      id: "k4",
+      ownerId: U_MIXED,
+      deviceLabel: "New tablet",
+      lastUsedAt: null,
+      createdAt: ago(3),
+    }),
+    // Entirely stale: one long-idle, one nobody ever connected with.
+    key({
+      id: "k5",
+      ownerId: U_DEAD,
+      deviceLabel: "Retired desktop",
+      lastUsedAt: ago(120),
+      createdAt: ago(300),
+    }),
+    key({
+      id: "k6",
+      ownerId: U_DEAD,
+      state: "disabled",
+      deviceLabel: "Unused spare",
+      lastUsedAt: null,
+      createdAt: ago(200),
+    }),
+    // Already gone: holds no peer, so it is outside the question entirely.
+    key({
+      id: "k7",
+      ownerId: U_DEAD,
+      state: "revoked",
+      deviceLabel: "Deleted phone",
+      lastUsedAt: ago(400),
+      createdAt: ago(500),
+    }),
+  ];
+
+  beforeEach(() => {
+    process.env.PANEL_ADMIN_EMAIL = "cli-test@example.com";
+  });
+  afterEach(() => {
+    delete process.env.PANEL_ADMIN_EMAIL;
+    vi.unstubAllGlobals();
+  });
+
+  it("keys --stale lists only the stale keys and says which kind each is", async () => {
+    stubFetch([{ body: keys }, { body: users }]);
+    const out = await run(["keys", "--stale"]);
+    expect(out).toMatch(/Old laptop/);
+    expect(out).toMatch(/Retired desktop/);
+    expect(out).toMatch(/Unused spare/);
+    // The live keys and the one issued this week are not on the list.
+    expect(out).not.toMatch(/Work phone/);
+    expect(out).not.toMatch(/Home phone/);
+    expect(out).not.toMatch(/New tablet/);
+    // Nor is the revoked one — it holds no peer.
+    expect(out).not.toMatch(/Deleted phone/);
+    expect(out).toMatch(/why/);
+    expect(out).toMatch(/idle/);
+    expect(out).toMatch(/never/);
+  });
+
+  it("keys --stale-days widens the window", async () => {
+    stubFetch([{ body: keys }, { body: users }]);
+    const out = await run(["keys", "--stale", "--stale-days=100"]);
+    // The 70-day-idle laptop is inside a 100-day window now.
+    expect(out).not.toMatch(/Old laptop/);
+    expect(out).toMatch(/Retired desktop/);
+  });
+
+  it("stale-keys lists who is holding them, worst first, and skips clean users", async () => {
+    stubFetch([{ body: keys }, { body: users }]);
+    const out = await run(["stale-keys", "--json"]);
+    const parsed = JSON.parse(out) as Array<Record<string, unknown>>;
+    expect(parsed.map((row) => row.email)).toEqual([
+      "dead@example.com",
+      "mixed@example.com",
+    ]);
+    expect(parsed[0]).toMatchObject({ stale: 2, idle: 1, never: 1, held: 2 });
+    // The mixed user: the live key does not hide the abandoned one, and the
+    // brand-new key counts as fresh rather than stale.
+    expect(parsed[1]).toMatchObject({
+      stale: 1,
+      idle: 1,
+      never: 0,
+      live: 1,
+      fresh: 1,
+      held: 3,
+    });
+  });
+
+  it("stale-keys --all keeps the users with nothing stale", async () => {
+    stubFetch([{ body: keys }, { body: users }]);
+    const out = await run(["stale-keys", "--all", "--json"]);
+    expect(JSON.parse(out)).toHaveLength(3);
+  });
+
+  it("stale-keys-revoke without --confirm posts nothing and names every key", async () => {
+    const calls = stubFetch([{ body: keys }]);
+    const out = await run(["stale-keys-revoke", U_DEAD]);
+    expect(calls).toHaveLength(1); // the keys read, and nothing else
+    expect(out).toMatch(/k5/);
+    expect(out).toMatch(/k6/);
+    expect(out).toMatch(/Would revoke 2/);
+    expect(out).toMatch(/NOT key-purge/);
+  });
+
+  it("stale-keys-revoke --confirm revokes each stale key on its own call", async () => {
+    const calls = stubFetch([{ body: keys }, { body: { ok: true } }]);
+    const out = await run(["stale-keys-revoke", U_DEAD, "--confirm"]);
+    // Longest stale first, and one call per key.
+    expect(calls.slice(1).map((call) => call.url)).toEqual([
+      expect.stringMatching(/\/api\/admin\/keys\/k6\/revoke$/),
+      expect.stringMatching(/\/api\/admin\/keys\/k5\/revoke$/),
+    ]);
+    // Never the purge route, whatever state the key is in.
+    expect(calls.some((call) => call.url.includes("/purge"))).toBe(false);
+    expect(out).toMatch(/revoked 2 of 2/);
+  });
+
+  it("stale-keys-revoke leaves a user with nothing stale alone", async () => {
+    const calls = stubFetch([{ body: keys }]);
+    const out = await run(["stale-keys-revoke", U_LIVE, "--confirm"]);
+    expect(calls).toHaveLength(1);
+    expect(out).toMatch(/no keys stale/);
+  });
+
+  it("stale-keys-revoke reports a key the API refused instead of swallowing it", async () => {
+    // The second key's state moved under the operator; the API answers 409.
+    stubFetch([
+      { body: keys },
+      { body: { ok: true } },
+      { status: 409, body: { error: "INVALID_KEY_TRANSITION" } },
+    ]);
+    await expect(
+      run(["stale-keys-revoke", U_DEAD, "--confirm"]),
+    ).rejects.toThrow(/could not be revoked/);
+  });
+
+  it("a --days typo is refused rather than silently restoring the default", async () => {
+    const calls = stubFetch([{ body: keys }]);
+    await expect(
+      run(["stale-keys-revoke", U_DEAD, "--days=thirty", "--confirm"]),
+    ).rejects.toThrow(/--days must be an integer/);
+    expect(calls).toHaveLength(0);
+  });
+});
