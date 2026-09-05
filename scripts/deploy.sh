@@ -19,6 +19,13 @@ fi
 COMPOSE="docker compose -f ${COMPOSE_DIR}/compose.yaml ${OVERRIDE}"
 GIT_SHA="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
 BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+# The repository this checkout came from, so the version in the admin UI links
+# at THIS deployment's code rather than at whoever it was forked from. Both
+# remote spellings are normalised to a browsable https URL; an unset or exotic
+# remote leaves it empty and control-api falls back to its documented default.
+APP_REPO_URL="$(git remote get-url origin 2>/dev/null || true)"
+APP_REPO_URL="$(printf '%s' "$APP_REPO_URL" | sed -e 's#^git@\([^:]*\):#https://\1/#' -e 's#\.git$##')"
+case "$APP_REPO_URL" in https://*) ;; *) APP_REPO_URL="" ;; esac
 
 # Safety: this script must never tear down volumes.
 for arg in "$@"; do
@@ -39,7 +46,8 @@ if [ "${1:-}" = "--build" ]; then
     $COMPOSE build \
       --build-arg "APP_VERSION=${GIT_SHA}" \
       --build-arg "GIT_SHA=${GIT_SHA}" \
-      --build-arg "BUILD_TIME=${BUILD_TIME}"
+      --build-arg "BUILD_TIME=${BUILD_TIME}" \
+      --build-arg "APP_REPO_URL=${APP_REPO_URL}"
 else
   echo "==> [2/4] Pulling images"
   $COMPOSE pull

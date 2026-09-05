@@ -129,15 +129,18 @@ describe("formatVersionLine", () => {
         version: "1.2.3",
         commit: "abc1234",
         minAwg3ClientVersion: "5.0.1.5",
+        repositoryUrl: "https://github.com/wyrtensi/amnezia-shared-panel",
       }),
-    ).toBe("version: 1.2.3   commit: abc1234   awg3-client-floor: 5.0.1.5");
+    ).toBe(
+      "version: 1.2.3   commit: abc1234   awg3-client-floor: 5.0.1.5   repo: https://github.com/wyrtensi/amnezia-shared-panel",
+    );
   });
 
   it("renders a missing field as ? rather than undefined", () => {
     // Matches the existing `?? "?"` idiom at main.ts:830, and covers a panel
     // older than this change, whose /version has no floor at all.
     expect(formatVersionLine({})).toBe(
-      "version: ?   commit: ?   awg3-client-floor: ?",
+      "version: ?   commit: ?   awg3-client-floor: ?   repo: ?",
     );
   });
 });

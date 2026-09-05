@@ -83,11 +83,28 @@ const getDevelopmentIdentity = (request: FastifyRequest): IdentityClaim | null =
   return { provider: "dev", subject: email, email };
 };
 
+/**
+ * The repository a build with no `APP_REPO_URL` stamp came from.
+ *
+ * Every path that builds an image stamps the real one — the release workflow
+ * from `github.server_url/github.repository`, `scripts/deploy.sh` from the
+ * checkout's own `origin` remote — so this is only reached by a build made
+ * outside both (a bare `docker build`, or `pnpm dev`). It is the upstream
+ * project, the one such a build's code almost certainly is. A fork that wants
+ * its own link either builds through one of those two paths or sets
+ * `APP_REPO_URL` in its environment; nothing else in the panel hard-codes an
+ * owner or a repository name.
+ */
+const DEFAULT_REPOSITORY_URL = "https://github.com/wyrtensi/amnezia-shared-panel";
+
 const versionInfo = () => ({
   // Injected at image build time (see scripts/deploy.sh); "dev" locally.
   version: process.env.APP_VERSION ?? "dev",
   commit: process.env.GIT_SHA ?? null,
   builtAt: process.env.BUILD_TIME ?? null,
+  // Where this build's code lives, so the admin UI can turn the version into a
+  // link to that exact release or commit instead of guessing an owner/repo.
+  repositoryUrl: process.env.APP_REPO_URL?.trim() || DEFAULT_REPOSITORY_URL,
 });
 
 export const buildApp = async ({
