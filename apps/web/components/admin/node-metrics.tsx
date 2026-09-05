@@ -1,6 +1,7 @@
 "use client";
 
 import { formatBytesParts } from "@/lib/format";
+import { cn } from "@/lib/utils";
 import { useT } from "@/lib/i18n/provider";
 import type { Lang } from "@/lib/i18n/messages";
 import type { AdminNodeMetrics, NodeEndpointSignal } from "@/lib/types";
@@ -123,20 +124,36 @@ export function NodeMetrics({
     [t("nodes.metrics.lastHandshake"), handshake],
   ];
 
+  // Label above value, not beside it. A node card is a third of a column wide,
+  // which leaves a side-by-side row about 90px for "142.0 MB / 960.0 MB" - so
+  // the figure wrapped under its own label, or the label collapsed to "M.".
+  // Stacked, the figure gets the whole cell and every label stays a word.
+  //
+  // The column count is a container query, not a viewport one: this grid sits
+  // inside a card in a 1-, 2- or 3-up grid, so the viewport says nothing about
+  // how much room it actually has.
   return (
-    <dl className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs sm:grid-cols-3">
-      {rows.map(([label, value, warn]) => (
-        <div key={label} className="flex items-baseline justify-between gap-2">
-          <dt className="text-muted-foreground">{label}</dt>
-          <dd
-            className={
-              warn ? "font-medium text-destructive tabular-nums" : "tabular-nums"
-            }
-          >
-            {value}
-          </dd>
-        </div>
-      ))}
-    </dl>
+    <div className="@container">
+      <dl className="grid grid-cols-2 gap-x-4 gap-y-2 text-xs @lg:grid-cols-3">
+        {rows.map(([label, value, warn]) => (
+          <div key={label} className="min-w-0">
+            <dt className="truncate text-[11px] leading-tight text-muted-foreground">
+              {label}
+            </dt>
+            <dd
+              className={cn(
+                "truncate leading-tight tabular-nums",
+                warn && "font-medium text-destructive",
+              )}
+              // The cell is narrow by design; hovering still gives the figure
+              // in full rather than making the operator widen the window.
+              title={value}
+            >
+              {value}
+            </dd>
+          </div>
+        ))}
+      </dl>
+    </div>
   );
 }
