@@ -166,7 +166,16 @@ export function KeyCard({
               </Button>
             }
           >
-            {t("keyCard.rulesUpdatedBody")}
+            {/* Named profile, not a generic "rules changed": `rulesOutdated`
+                is set per profile — this key's own profile has a newer rule
+                version than the one it was issued with — so the callout can
+                say which of them moved and why this card is the one showing
+                it. Same label the route chip above uses. */}
+            {t("keyCard.rulesUpdatedBody", {
+              profile: t(
+                ROUTE_LABEL[keyView.routeProfile] ?? keyView.routeProfile,
+              ),
+            })}
           </Callout>
         ) : null}
 
@@ -200,8 +209,13 @@ export function KeyCard({
             <>
               {/* QR first: it is the shortcut for the common case — the panel
                   is open on a computer and the key has to reach a phone — and
-                  an icon that leads the row is easier to find than one buried
-                  between two wider buttons. */}
+                  the action that leads the row is the easiest one to find.
+
+                  Labelled and outlined rather than left as a bare icon, so it
+                  reads as a sibling of Copy instead of as a stray glyph. Copy
+                  is the row's primary and paints itself `bg-primary`, so the
+                  border here is `border-primary`: the same token, tracking the
+                  theme in both light and dark rather than a pinned hex. */}
               {me.policy.allowQrDownload ? (
                 <Tooltip>
                   <TooltipTrigger asChild>
@@ -209,11 +223,12 @@ export function KeyCard({
                       type="button"
                       variant="secondary"
                       size="sm"
-                      className="w-8 px-0"
+                      className="border border-primary"
                       aria-label={t("keyCard.showQr")}
                       onClick={onShowConfig}
                     >
                       <QrCode className="h-4 w-4" />
+                      {t("keyCard.qrShort")}
                     </Button>
                   </TooltipTrigger>
                   <TooltipContent>{t("keyCard.qrAndLink")}</TooltipContent>
