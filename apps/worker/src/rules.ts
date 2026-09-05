@@ -237,16 +237,22 @@ export type RuleFetcherOptions = {
 export type RuleFeedSources = { profile: RuleProfile; sources: RuleSource[] };
 
 /**
- * The RoscomVPN / Re:filter sources every deployment gets out of the box, so a
- * fresh install has working route profiles without an operator pasting JSON.
+ * The sources every deployment gets out of the box, so a fresh install has
+ * working route profiles without an operator pasting JSON: RoscomVPN GeoIP for
+ * the whitelist, iplist plus Re:filter domains for the blacklist.
  * `RULE_FEEDS` overrides this list entirely; `RULE_FEEDS=[]` opts out of feeds.
  */
 export const DEFAULT_RULE_FEEDS: RuleFeedSources[] = [
   {
     profile: "ru_blacklist",
     sources: [
+      // iplist rather than Re:filter's ipsum.lst: ipsum carries ~27k CIDRs,
+      // and a config that large does not survive the trip to Android's VPN
+      // service — the Messenger parcel lands around 2.7 MB against a 1 MB
+      // Binder limit, so the profile never connects at all. iplist covers the
+      // same services in ~3.6k aggregated prefixes.
       {
-        url: "https://github.com/1andrevich/Re-filter-lists/releases/latest/download/ipsum.lst",
+        url: "https://iplist.opencck.org/?format=text&data=cidr4",
         format: "cidr-lines",
       },
       {
