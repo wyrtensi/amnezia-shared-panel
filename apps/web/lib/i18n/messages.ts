@@ -285,6 +285,36 @@ const ru = {
   "keyHelp.troubleBody":
     "Смените сервер или переключите маршрутизацию на «Весь трафик». Если у вас мобильный интернет, переход на Wi-Fi часто решает проблемы с доступом.",
 
+  // The step between "ключ создан" and the connection guide, shown to a regular
+  // user after each of their first three keys. Its own namespace, not install.*:
+  // that prefix is the guide, and the guide has a copy budget this dialog is
+  // not part of. Deliberately says WHY the old client fails — a user who opens
+  // it, sees it start and assumes all is well is the case this exists for.
+  "installReminder.title": "Обязательный шаг: приложение AmneziaVPN",
+  "installReminder.desc":
+    "Ключ создан. Осталось одно действие, без него подключения не будет.",
+  "installReminder.headline":
+    "Установите AmneziaVPN — или обновите то, что уже стоит",
+  "installReminder.mandatory":
+    "Это обязательный шаг. Без него VPN работать не будет.",
+  "installReminder.why":
+    "Ключ выдан по протоколу AmneziaWG 3.1, а его понимает только AmneziaVPN версии {version} или новее. Приложение постарше такой ключ просто не примет.",
+  "installReminder.looksFine":
+    "Старое приложение при этом спокойно запустится и будет выглядеть рабочим — соединения всё равно не будет. Поэтому обновиться нужно даже тогда, когда AmneziaVPN у вас уже установлен.",
+  "installReminder.confirm": "Я прочитал, действуем",
+  // Round two. The first «Далее» does not proceed, it asks again: the box
+  // unticks itself and the button turns into a doubt the user has to answer.
+  "installReminder.confirmAgain": "Теперь точно прочитал",
+  "installReminder.doubt": "Не верю, что прочитал",
+  "installReminder.next": "Далее",
+  // Read out by the dialog's live region when round two starts. The button the
+  // user just pressed renames itself and goes disabled under their finger; a
+  // screen reader would otherwise keep announcing the old name.
+  "installReminder.challenge":
+    "Ещё раз: отметьте галочку, что прочитали. Кнопка «Далее» пока недоступна.",
+  "installReminder.nextHint":
+    "По кнопке «Далее» откроется инструкция: что скачать для вашего устройства и как добавить ключ.",
+
   // Config download dialog
   "config.keyCopied": "Ключ скопирован",
   "config.copyFailed": "Не удалось скопировать",
@@ -545,6 +575,7 @@ const ru = {
   "upolicy.showLastUsed": "Дата активности",
   "upolicy.showTraffic": "Объём трафика",
   "upolicy.showNodeAddress": "Адрес сервера",
+  "upolicy.showInstallReminder": "Напоминание про установку",
   "users.filter.all": "Все",
   "users.filter.inactive": "Неактивные ({days}д)",
   "users.filter.stalekeys": "С протухшими ключами",
@@ -929,6 +960,7 @@ const ru = {
   "gpolicy.showLastUsed": "Показывать дату активности",
   "gpolicy.showTraffic": "Показывать объём трафика",
   "gpolicy.showNodeAddress": "Показывать адрес сервера",
+  "gpolicy.showInstallReminder": "Напоминать про установку приложения",
   "gpolicy.allowKeyCreationHint":
     "Пользователь может сам создавать новые ключи для своих устройств.",
   "gpolicy.allowNodeSelectionHint":
@@ -953,6 +985,8 @@ const ru = {
     "Показывать объём трафика (получено/отдано) по ключу.",
   "gpolicy.showNodeAddressHint":
     "Пользователь видит адрес каждого доступного ему сервера (IP или домен) в списке серверов. По умолчанию выключено: адрес уже есть в его конфиге, но показывать его в панели — решение администратора.",
+  "gpolicy.showInstallReminderHint":
+    "После создания каждого из первых трёх ключей обычный пользователь видит окно: нужно установить AmneziaVPN или обновить его, иначе ключ не заработает. Администраторам не показывается. По умолчанию включено — выключайте, только если ваши пользователи ставят клиент как-то иначе.",
   "gpolicy.keyLimitMode": "Общий лимит на все серверы",
   "gpolicy.keyLimitModeHint":
     "Включено — лимит считается суммарно по всем серверам. Выключено — отдельно на каждом сервере. Лимиты по серверам при этом сохраняются, но не действуют. Отдельному пользователю режим можно задать в «Лимиты и серверы».",
@@ -1446,6 +1480,30 @@ const en = {
   "keyHelp.troubleBody":
     "Change the server, or switch the routing to “All traffic”. If you are on mobile data, moving to Wi-Fi often fixes access problems.",
 
+  // The install step shown after each of a regular user's first three keys.
+  "installReminder.title": "A required step: the AmneziaVPN app",
+  "installReminder.desc":
+    "Your key is ready. One thing left, and without it there is no connection.",
+  "installReminder.headline":
+    "Install AmneziaVPN — or update the copy you already have",
+  "installReminder.mandatory":
+    "This step is required. Without it the VPN will not work.",
+  "installReminder.why":
+    "This key is issued for the AmneziaWG 3.1 protocol, and only AmneziaVPN {version} or newer can read it. An older app simply will not accept the key.",
+  "installReminder.looksFine":
+    "The old app still starts and still looks like it is working — there will be no connection all the same. That is why you need to update even if AmneziaVPN is already installed.",
+  "installReminder.confirm": "I have read this, let us go",
+  // Round two. "Sure you did" rather than a literal "I do not believe you read
+  // it": the Russian is teasing, and the flat translation reads as an
+  // accusation. This is the English formula for the same raised eyebrow.
+  "installReminder.confirmAgain": "This time I really did read it",
+  "installReminder.doubt": "Sure you did",
+  "installReminder.next": "Next",
+  "installReminder.challenge":
+    "Once more: tick the box to confirm you read it. “Next” is disabled until you do.",
+  "installReminder.nextHint":
+    "“Next” opens the guide: what to download for your device, and how to add the key.",
+
   // Config download dialog
   "config.keyCopied": "Key copied",
   "config.copyFailed": "Failed to copy",
@@ -1699,6 +1757,7 @@ const en = {
   "upolicy.showLastUsed": "Last activity",
   "upolicy.showTraffic": "Traffic volume",
   "upolicy.showNodeAddress": "Server address",
+  "upolicy.showInstallReminder": "Install reminder",
   "users.filter.all": "All",
   "users.filter.inactive": "Inactive ({days}d)",
   "users.filter.stalekeys": "With stale keys",
@@ -2067,6 +2126,7 @@ const en = {
   "gpolicy.showLastUsed": "Show last activity date",
   "gpolicy.showTraffic": "Show traffic volume",
   "gpolicy.showNodeAddress": "Show server address",
+  "gpolicy.showInstallReminder": "Remind users to install the app",
   "gpolicy.allowKeyCreationHint":
     "The user can create new keys for their own devices.",
   "gpolicy.allowNodeSelectionHint":
@@ -2089,6 +2149,8 @@ const en = {
     "Show traffic volume (received/sent) per key.",
   "gpolicy.showNodeAddressHint":
     "Users see the address (IP or domain) of every server available to them. Off by default: the address is already in their config, but showing it in the panel is an admin's decision.",
+  "gpolicy.showInstallReminderHint":
+    "After each of their first three keys a regular user is shown a dialog: install AmneziaVPN, or update it, or the key will not work. Administrators never see it. On by default — switch it off only if your users get the client some other way.",
   "gpolicy.keyLimitMode": "One limit shared by every server",
   "gpolicy.keyLimitModeHint":
     "On — the limit is counted across every server together. Off — separately on each server. Per-server limits are kept but not applied meanwhile. A single user's mode is set in \"Limits and servers\".",

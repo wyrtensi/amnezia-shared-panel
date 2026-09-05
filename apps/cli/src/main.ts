@@ -1217,6 +1217,11 @@ const POLICY_BOOL_FIELDS = [
   // point of collecting the checks. What it gates is the check chips, never a
   // node state word.
   "showNodeStatus",
+  // On by default, and NOT an `allow*`: it grants a user nothing, it interrupts
+  // them. Off means a regular user is no longer told, after each of their first
+  // three keys, that the AmneziaVPN client has to be installed or updated
+  // before the key they were just handed can work at all.
+  "showInstallReminder",
 ] as const;
 const POLICY_INT_FIELDS = ["defaultKeyLimit"] as const;
 const POLICY_INT_NULL_FIELDS = ["dailyRetentionDays"] as const;
@@ -2417,10 +2422,14 @@ policy-set fields:
   Booleans (true/false): allowKeyCreation, allowNodeSelection,
     allowRouteProfileSelection, allowCustomRoutes, allowConfigRedownload,
     allowQrDownload, allowConfDownload, allowSelfRevoke, showPublicKey,
-    showLastUsed, showTraffic, showNodeAddress, showNodeStatus
+    showLastUsed, showTraffic, showNodeAddress, showNodeStatus,
+    showInstallReminder
     showNodeStatus=false hides the service-check chips from ordinary users
     showNodeAddress=true also shows ordinary users the address of each node
     they may use (off by default; admins always see it on the node card).
+    showInstallReminder=false stops the panel telling a regular user, after
+    each of their first three keys, to install or update AmneziaVPN. On by
+    default; admins never see that dialog either way.
   defaultKeyLimit=<int 0..1000>
     Per server in per_node mode, the shared total in global mode — the number
     does not move, its meaning does.

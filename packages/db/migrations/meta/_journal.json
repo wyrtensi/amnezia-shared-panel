@@ -218,6 +218,13 @@
       "when": 1788628019630,
       "tag": "0030_rule_version_pin",
       "breakpoints": true
+    },
+    {
+      "idx": 31,
+      "version": "7",
+      "when": 1788632684698,
+      "tag": "0031_install_reminder_policy",
+      "breakpoints": true
     }
   ]
 }

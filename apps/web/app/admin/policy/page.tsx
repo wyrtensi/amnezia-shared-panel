@@ -39,6 +39,10 @@ const TELEMETRY: Array<[keyof GlobalPortalPolicy, string]> = [
   ["showTraffic", "gpolicy.showTraffic"],
   ["showNodeAddress", "gpolicy.showNodeAddress"],
   ["showNodeStatus", "gpolicy.showNodeStatus"],
+  // Not telemetry, but it belongs to the same question this section answers:
+  // what the panel puts in front of an ordinary user. The permissions above
+  // grant capabilities; this one interrupts, so it is not an `allow*`.
+  ["showInstallReminder", "gpolicy.showInstallReminder"],
 ];
 
 export default function AdminPolicyPage() {
