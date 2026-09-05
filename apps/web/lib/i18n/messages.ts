@@ -320,8 +320,9 @@ const ru = {
     "Дело не в размере кода: в этом профиле тысячи маршрутов, ключ занимает от 60 тысяч символов, а в QR-код помещается около 2900. Такой ключ не влезает ни в один код — ни в большой, ни в серию кадров.",
   "config.qrUnavailableBody":
     "Скопируйте ключ кнопкой выше и вставьте его в вашем клиенте (Добавить → Из строки/файла) — или скачайте конфиг-файл. Работа ключа на таких профилях не гарантируется.",
+  "config.otherFormat": "Другой формат файла",
   "config.fileShapesHint":
-    "Файл .vpn импортируется в AmneziaVPN под именем подключения. Файл .conf нужен для awg-quick и роутеров: клиент всегда назовёт его «Server 1».",
+    "Файл .conf нужен для awg-quick на Linux и роутеров с AmneziaWG. В приложении он тоже откроется, но подключение всё равно будет называться «Server 1».",
 
   // Install guide dialog (user page)
   "install.button": "Как подключиться",
@@ -385,26 +386,28 @@ const ru = {
   "install.modeAdvanced": "Расширенная",
   "install.longKeyBody":
     "Ключ с профилем очень длинный — мессенджер его обрежет. Откройте этот сайт на самом телефоне и скопируйте ключ там.",
-  "install.longKeyConf": "Или отправьте на телефон файл .conf.",
+  "install.longKeyFile": "Или отправьте на телефон файл .vpn.",
   "install.addTitle": "Добавьте ключ",
   "install.addStep1": "На карточке ключа нажмите «Копировать».",
   "install.addStep2": "В приложении: «+» → «Вставить», вставьте ключ.",
   "install.addStep3": "Нажмите «Подключиться».",
 
-  "install.confTitle": "Второй способ: файл .conf",
-  "install.confBody":
-    "Кнопка «Скачать .conf» сохраняет ключ файлом. Его открывают в приложении.",
-  "install.confSplitBest":
-    "Удобно для профилей «Только зарубежные» и «Только заблокированные»: такой ключ очень длинный, а файл достаточно открыть один раз.",
-  "install.confHow":
-    "В AmneziaVPN: «+» → импорт файла конфигурации. Обычный WireGuard этот файл не откроет.",
-  "install.confDomainsWarning":
+  "install.fileTitle": "Второй способ: файл .vpn",
+  "install.fileBody":
+    "Кнопка «.vpn» сохраняет ключ файлом. Откройте его в приложении — подключение появится со своим названием.",
+  "install.fileSplitBest":
+    "Удобно для длинных ключей — профилей «Только зарубежные» и «Только заблокированные»: файл достаточно открыть один раз.",
+  "install.fileHow":
+    "Обычный WireGuard этот файл не откроет — нужен AmneziaVPN.",
+  "install.fileDomainsWarning":
     "Правило по имени сайта в файл не попадёт — там только числовые адреса. Чтобы оно сохранилось, добавляйте ключ копированием.",
+  "install.fileConfFallback":
+    "Файл .conf нужен для awg-quick на Linux и роутеров с AmneziaWG. Обычный WireGuard не откроет и его, а приложение переименует подключение.",
 
-  "install.confStep1": "Скачайте файл кнопкой «Скачать .conf» на карточке ключа.",
-  "install.confStep2":
+  "install.fileStep1": "На карточке ключа нажмите «.vpn».",
+  "install.fileStep2":
     "В AmneziaVPN нажмите «+» → «Импортировать из файла» и выберите скачанный файл.",
-  "install.confStep3": "Нажмите «Подключиться».",
+  "install.fileStep3": "Нажмите «Подключиться».",
   "install.routesWhy":
     "На профиле с ограничениями нужный сайт может не открыться. Добавьте его домен или IP здесь — он пойдёт через VPN.",
   "install.routesWhenNot":
@@ -1432,8 +1435,9 @@ const en = {
     "It is not about the size of the code: this profile carries thousands of routes, the key runs to 60 000 characters and more, and a QR code holds about 2 900. A key that long fits no code at all — not a large one, not a series of frames.",
   "config.qrUnavailableBody":
     "Copy the key with the button above and paste it into your client (Add → From string/file), or download the config file. Key operation on such profiles is not guaranteed.",
+  "config.otherFormat": "Another file format",
   "config.fileShapesHint":
-    "A .vpn file imports into AmneziaVPN under its connection name. The .conf file is for awg-quick and routers: the client always calls it \"Server 1\".",
+    "The .conf file is for awg-quick on Linux and AmneziaWG router firmware. The app opens it too, but the connection still arrives called \"Server 1\".",
 
   // Install guide dialog (user page)
   "install.button": "How to connect",
@@ -1497,26 +1501,28 @@ const en = {
   "install.modeAdvanced": "Detailed",
   "install.longKeyBody":
     "A key with a profile is very long — a messenger truncates it. Open this site on the phone itself and copy the key there.",
-  "install.longKeyConf": "Or send the phone the .conf file instead.",
+  "install.longKeyFile": "Or send the phone the .vpn file instead.",
   "install.addTitle": "Add the key",
   "install.addStep1": "On the key card, press Copy.",
   "install.addStep2": "In the app: + → Insert, and paste the key.",
   "install.addStep3": "Tap Connect.",
 
-  "install.confTitle": "The second way: a .conf file",
-  "install.confBody":
-    "The Download .conf button saves the key as a file. You open it in the app.",
-  "install.confSplitBest":
-    "Handy for the “Foreign only” and “Blocked only” profiles: that kind of key is very long, and the file only has to be opened once.",
-  "install.confHow":
-    "In AmneziaVPN: + → import a configuration file. The plain WireGuard app will not open it.",
-  "install.confDomainsWarning":
+  "install.fileTitle": "The second way: a .vpn file",
+  "install.fileBody":
+    "The “.vpn” button saves the key as a file. Open it in the app — the connection arrives under its own name.",
+  "install.fileSplitBest":
+    "Handy for the long keys — the “Foreign only” and “Blocked only” profiles: the file only has to be opened once.",
+  "install.fileHow":
+    "The plain WireGuard app will not open this file — it has to be AmneziaVPN.",
+  "install.fileDomainsWarning":
     "A rule that names a site does not fit in the file — it holds only numeric addresses. To keep it, add the key by copying.",
+  "install.fileConfFallback":
+    "The .conf file is for awg-quick on Linux and AmneziaWG router firmware. Plain WireGuard will not open that one either, and the app renames the connection.",
 
-  "install.confStep1": "Download the file with “Download .conf” on the key card.",
-  "install.confStep2":
+  "install.fileStep1": "On the key card, press “.vpn”.",
+  "install.fileStep2":
     "In AmneziaVPN tap “+” → “Import from file” and pick the downloaded file.",
-  "install.confStep3": "Tap “Connect”.",
+  "install.fileStep3": "Tap “Connect”.",
   "install.routesWhy":
     "On a restricted profile a site you need may not open. Add its domain or IP here and it goes through the VPN.",
   "install.routesWhenNot":

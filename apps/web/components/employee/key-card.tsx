@@ -187,7 +187,9 @@ export function KeyCard({
           ) : null}
         </dl>
 
-        <div className="flex items-center gap-1.5 border-t pt-3">
+        {/* Wraps: at a phone width the labelled downloads no longer fit beside
+            Copy, and a row that cannot wrap pushes them out of reach instead. */}
+        <div className="flex flex-wrap items-center gap-1.5 border-t pt-3">
           {provisioning ? (
             <span className="flex items-center gap-2 text-sm text-muted-foreground">
               <Loader2 className="h-4 w-4 animate-spin" />
@@ -196,14 +198,18 @@ export function KeyCard({
           ) : null}
           {active && me.policy.allowConfigRedownload ? (
             <>
-              <CopyKeyButton keyId={keyView.id} disabled={busy} />
+              {/* QR first: it is the shortcut for the common case — the panel
+                  is open on a computer and the key has to reach a phone — and
+                  an icon that leads the row is easier to find than one buried
+                  between two wider buttons. */}
               {me.policy.allowQrDownload ? (
                 <Tooltip>
                   <TooltipTrigger asChild>
                     <Button
                       type="button"
                       variant="secondary"
-                      size="icon"
+                      size="sm"
+                      className="w-8 px-0"
                       aria-label={t("keyCard.showQr")}
                       onClick={onShowConfig}
                     >
@@ -213,28 +219,33 @@ export function KeyCard({
                   <TooltipContent>{t("keyCard.qrAndLink")}</TooltipContent>
                 </Tooltip>
               ) : null}
+              <CopyKeyButton keyId={keyView.id} disabled={busy} />
               {/*
+                Two downloads that used to be two identical download icons, so
+                which one a user pressed was luck. They now carry the extension
+                as their label.
+
                 The `.vpn` file carries the same `vpn://` payload the Copy
-                button above already hands out as text, so it needs no extra
-                policy gate. It is `variant="default"` -- the same prominence
-                as Copy -- because it is the shape that keeps the connection
-                name on import; `.conf` always lands as "Server N" regardless
-                of what is inside it, so it stays a secondary, separately
-                gated option for awg-quick and router firmwares.
+                button already hands out as text, so it needs no extra policy
+                gate. It leads because it is the shape that survives import
+                with the connection name the panel gave it; `.conf` always
+                lands as "Server N" regardless of what is inside it, so it
+                comes last, in the quietest variant, behind its own flag, for
+                awg-quick and router firmwares. Neither is coloured as a
+                primary action: the ordering says which one to take.
               */}
-              <IconLink
+              <FormatDownload
                 href={configUrl(keyView.id, "vpn")}
+                format=".vpn"
                 label={t("common.downloadVpnFile")}
-                icon={<Download className="h-4 w-4" />}
-                download
-                variant="default"
+                variant="secondary"
               />
               {me.policy.allowConfDownload ? (
-                <IconLink
+                <FormatDownload
                   href={configUrl(keyView.id, "conf")}
+                  format=".conf"
                   label={t("common.downloadConf")}
-                  icon={<Download className="h-4 w-4" />}
-                  download
+                  variant="outline"
                 />
               ) : null}
             </>
@@ -287,33 +298,32 @@ export function KeyCard({
   );
 }
 
-function IconLink({
+/**
+ * One config download, labelled with the extension it produces.
+ *
+ * The extension is written verbatim rather than translated: it is a file name,
+ * the same in every language and the same thing the user will see in their
+ * downloads folder. The full wording stays on the tooltip and on the
+ * `aria-label`, so a screen reader still hears "Download .vpn" and not a dot.
+ */
+function FormatDownload({
   href,
+  format,
   label,
-  icon,
-  download,
-  newTab,
   variant = "secondary",
 }: {
   href: string;
+  format: string;
   label: string;
-  icon: React.ReactNode;
-  download?: boolean;
-  newTab?: boolean;
   variant?: ButtonProps["variant"];
 }) {
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        <Button asChild variant={variant} size="icon">
-          <a
-            href={href}
-            aria-label={label}
-            download={download}
-            target={newTab ? "_blank" : undefined}
-            rel={newTab ? "noreferrer" : undefined}
-          >
-            {icon}
+        <Button asChild variant={variant} size="sm">
+          <a href={href} aria-label={label} download>
+            <Download className="h-4 w-4" />
+            {format}
           </a>
         </Button>
       </TooltipTrigger>

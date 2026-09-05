@@ -43,14 +43,16 @@ const REQUIRED = [
   "install.addStep1",
   "install.addStep2",
   "install.addStep3",
-  "install.confTitle",
-  "install.confBody",
-  "install.confSplitBest",
-  "install.confStep1",
-  "install.confStep2",
-  "install.confStep3",
-  "install.confHow",
-  "install.confDomainsWarning",
+  "install.fileTitle",
+  "install.fileBody",
+  "install.fileSplitBest",
+  "install.fileStep1",
+  "install.fileStep2",
+  "install.fileStep3",
+  "install.fileHow",
+  "install.fileDomainsWarning",
+  "install.fileConfFallback",
+  "install.longKeyFile",
   "install.fixTitle",
   "install.fixServer",
   "install.fixFullTunnel",
@@ -101,16 +103,17 @@ describe("install guide messages", () => {
     "install.apkOtherBuilds",
     "install.latestVersion",
     "install.versionNote",
-    "install.confTitle",
-    "install.confBody",
-    "install.confSplitBest",
-    "install.confStep1",
-    "install.confStep2",
-    "install.confStep3",
+    "install.fileTitle",
+    "install.fileBody",
+    "install.fileSplitBest",
+    "install.fileStep1",
+    "install.fileStep2",
+    "install.fileStep3",
     "install.routesWhy",
     "install.routesWhenNot",
-    "install.confHow",
-    "install.confDomainsWarning",
+    "install.fileHow",
+    "install.fileDomainsWarning",
+    "install.fileConfFallback",
     "install.fixAmneziaDns",
     "install.fixUpdate",
   ];
@@ -143,6 +146,11 @@ describe("install guide messages", () => {
   // The detailed view is opt-in, so it gets room the simple one does not — but
   // not unlimited room: "put it behind the switch" is otherwise a licence to
   // write anything.
+  //
+  // Raised from 2900 to 3000 when the file section moved from `.conf` to
+  // `.vpn`: `.conf` did not disappear, it became a fallback that has to say
+  // what it is still good for, and that paragraph is copy the guide did not
+  // carry before. The rest of the section was trimmed to pay for most of it.
   it("keeps the detailed view from growing without limit either", () => {
     for (const lang of ["ru", "en"] as const) {
       const dict = messages[lang] as Record<string, string>;
@@ -150,7 +158,7 @@ describe("install guide messages", () => {
         (sum, key) => sum + (dict[key] ?? "").length,
         0,
       );
-      expect(total, `${lang} install copy`).toBeLessThanOrEqual(2900);
+      expect(total, `${lang} install copy`).toBeLessThanOrEqual(3000);
     }
   });
 

@@ -4,6 +4,7 @@ import * as React from "react";
 import { createPortal } from "react-dom";
 import {
   Check,
+  ChevronDown,
   ChevronLeft,
   ChevronRight,
   Copy,
@@ -615,25 +616,38 @@ export function ConfigDownloadDialog({
               // connection settings" flow and keeps the connection name the
               // panel gave it, while a `.conf` always lands as "Server N" no
               // matter what is inside it or what it is named. `.conf` stays
-              // available, behind its own policy flag, for awg-quick and
-              // router firmwares that cannot take the `.vpn` shape.
+              // available — behind its own policy flag and, now, one click of
+              // a disclosure — for awg-quick and router firmwares that cannot
+              // take the `.vpn` shape.
               <div className="space-y-2">
                 <Button asChild className="w-full">
                   <a href={configUrl(target.id, "vpn")} download>
                     <Download className="h-4 w-4" /> {t("common.downloadVpnFile")}
                   </a>
                 </Button>
+                {/* `.conf` is one click away rather than side by side with the
+                    file that works: offered as an equal it gets taken by
+                    coin-flip, and the reader only finds out which one they
+                    took when the connection arrives called "Server 1". The
+                    flag it has always had still decides whether it exists. */}
                 {me?.policy.allowConfDownload ? (
-                  <>
-                    <Button asChild variant="outline" className="w-full">
-                      <a href={configUrl(target.id, "conf")} download>
-                        <Download className="h-4 w-4" /> {t("common.downloadConf")}
-                      </a>
-                    </Button>
-                    <p className="text-xs text-muted-foreground">
-                      {t("config.fileShapesHint")}
-                    </p>
-                  </>
+                  <details className="group rounded-lg border bg-muted/30 px-3 py-2">
+                    <summary className="flex cursor-pointer list-none items-center gap-2 text-xs font-medium text-muted-foreground">
+                      <ChevronDown className="h-4 w-4 shrink-0 transition-transform group-open:rotate-180" />
+                      {t("config.otherFormat")}
+                    </summary>
+                    <div className="mt-2.5 space-y-2">
+                      <p className="text-xs text-muted-foreground">
+                        {t("config.fileShapesHint")}
+                      </p>
+                      <Button asChild variant="outline" className="w-full">
+                        <a href={configUrl(target.id, "conf")} download>
+                          <Download className="h-4 w-4" />{" "}
+                          {t("common.downloadConf")}
+                        </a>
+                      </Button>
+                    </div>
+                  </details>
                 ) : null}
               </div>
             ) : null}
