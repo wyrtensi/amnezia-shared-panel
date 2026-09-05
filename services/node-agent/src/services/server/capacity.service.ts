@@ -68,12 +68,18 @@ export class CapacityService {
 
   private readonly spoolDir: string;
 
-  constructor(
-    options: { spoolDir?: string } = {
-      spoolDir: appConfig.NODE_AGENT_CAPACITY_SPOOL,
-    },
-  ) {
-    this.spoolDir = options.spoolDir?.trim() ?? "";
+  /**
+   * The config is read in the body for the reason spelled out on
+   * AgentUpdateService's constructor: awilix's CLASSIC mode parses this
+   * parameter list as text, and a comma inside a default object literal turns
+   * into a dependency the container cannot resolve. One property has no comma,
+   * so this one happened to survive - adding a second option would have broken
+   * it exactly as it broke the update service.
+   */
+  constructor(options: { spoolDir?: string } = {}) {
+    const spoolDir = options.spoolDir ?? appConfig.NODE_AGENT_CAPACITY_SPOOL;
+
+    this.spoolDir = spoolDir?.trim() ?? "";
   }
 
   /**

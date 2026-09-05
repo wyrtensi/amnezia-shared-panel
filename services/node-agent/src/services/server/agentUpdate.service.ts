@@ -54,14 +54,24 @@ export class AgentUpdateService {
   private readonly repository: string;
   private readonly spoolDir: string;
 
-  constructor(
-    options: { repository?: string; spoolDir?: string } = {
-      repository: appConfig.NODE_AGENT_UPDATE_REPO,
-      spoolDir: appConfig.NODE_AGENT_UPDATE_SPOOL,
-    },
-  ) {
-    this.repository = options.repository?.trim() ?? "";
-    this.spoolDir = options.spoolDir?.trim() ?? "";
+  /**
+   * The config is read in the body, not in a default parameter value.
+   *
+   * The container runs in awilix's CLASSIC mode, which derives dependency names
+   * by parsing this parameter list as text. A comma inside a default object
+   * literal reads to that parser as a parameter separator, so the second
+   * property became a required dependency named after the expression behind it
+   * - and every resolve of this service died with "Could not resolve
+   * 'appConfig_1.default.NODE_AGENT_UPDATE_SPOOL'", i.e. a 500 on both
+   * /server/update routes. The empty default keeps the options escape hatch
+   * tests use without handing the parser a comma.
+   */
+  constructor(options: { repository?: string; spoolDir?: string } = {}) {
+    const repository = options.repository ?? appConfig.NODE_AGENT_UPDATE_REPO;
+    const spoolDir = options.spoolDir ?? appConfig.NODE_AGENT_UPDATE_SPOOL;
+
+    this.repository = repository?.trim() ?? "";
+    this.spoolDir = spoolDir?.trim() ?? "";
   }
 
   /**
