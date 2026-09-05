@@ -5,7 +5,6 @@ import {
   ChevronDown,
   Download,
   ExternalLink,
-  FileDown,
   TabletSmartphone,
   QrCode,
   TriangleAlert,
@@ -579,6 +578,11 @@ export function InstallInstructions({
               ))}
             </ul>
           </GuideSection>
+
+          {/* Last, outside the numbered steps and only in the detailed view:
+              it is not a step, it is the way out for the reader whose problem
+              the three steps cannot solve, and it costs them their profile. */}
+          {advanced ? <SiteRulesNote /> : null}
         </div>
 
   );
@@ -711,9 +715,6 @@ function FileAlternative({ showConfFallback }: { showConfFallback: boolean }) {
             reader tries the stock WireGuard app, which cannot do the
             disguising the key depends on, and gets no useful error. */}
         <p className="text-sm">{t("install.fileHow")}</p>
-        <Callout tone="info" icon={<FileDown className="h-4 w-4" />}>
-          {t("install.fileDomainsWarning")}
-        </Callout>
         {/* Last, muted and one sentence: `.conf` is not the way to add a key
             any more, it is the shape awg-quick and router firmware take. Gated
             on its own policy flag, so a panel with `.conf` switched off does
@@ -748,6 +749,40 @@ function CustomRoutesExplainer() {
         <p className="text-sm">{t("install.routesWhy")}</p>
         <p className="text-sm text-muted-foreground">
           {t("install.routesWhenNot")}
+        </p>
+      </div>
+    </details>
+  );
+}
+
+/**
+ * The one thing a route profile cannot do, and where it can be done instead.
+ *
+ * A profile becomes a WireGuard AllowedIPs list, which takes addresses; a rule
+ * by site name has nowhere to live in it. The client can match site names, but
+ * only ones typed on its own settings page, and it switches that page off for
+ * any connection whose AllowedIPs is narrower than everything — which is every
+ * profile. So the honest advice is the trade: give up the profile, take the
+ * full-traffic key, and let the app resolve the names on the device.
+ *
+ * Marked advanced and shown only in the detailed view, at the very bottom: the
+ * reader who needs this has already read the rest.
+ */
+function SiteRulesNote() {
+  const { t } = useT();
+  return (
+    <details className="group rounded-lg border bg-muted/30 px-3 py-2">
+      <summary className="flex cursor-pointer list-none items-center gap-2 text-sm font-medium">
+        <ChevronDown className="h-4 w-4 shrink-0 transition-transform group-open:rotate-180" />
+        <span>{t("install.sitesTitle")}</span>
+        <span className="ml-auto rounded-md bg-muted px-1.5 py-0.5 text-[11px] font-normal text-muted-foreground">
+          {t("install.modeAdvanced")}
+        </span>
+      </summary>
+      <div className="mt-2.5 space-y-2">
+        <p className="text-sm">{t("install.sitesBody")}</p>
+        <p className="text-sm text-muted-foreground">
+          {t("install.sitesWhere")}
         </p>
       </div>
     </details>

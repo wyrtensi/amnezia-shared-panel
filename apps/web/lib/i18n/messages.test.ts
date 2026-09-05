@@ -50,8 +50,10 @@ const REQUIRED = [
   "install.fileStep2",
   "install.fileStep3",
   "install.fileHow",
-  "install.fileDomainsWarning",
   "install.fileConfFallback",
+  "install.sitesTitle",
+  "install.sitesBody",
+  "install.sitesWhere",
   "install.longKeyFile",
   "install.fixTitle",
   "install.fixServer",
@@ -112,10 +114,12 @@ describe("install guide messages", () => {
     "install.routesWhy",
     "install.routesWhenNot",
     "install.fileHow",
-    "install.fileDomainsWarning",
     "install.fileConfFallback",
     "install.fixAmneziaDns",
     "install.fixUpdate",
+    "install.sitesTitle",
+    "install.sitesBody",
+    "install.sitesWhere",
   ];
 
   // A renamed or deleted key would silently shrink the measured set and let the
@@ -151,6 +155,15 @@ describe("install guide messages", () => {
   // `.vpn`: `.conf` did not disappear, it became a fallback that has to say
   // what it is still good for, and that paragraph is copy the guide did not
   // carry before. The rest of the section was trimmed to pay for most of it.
+  //
+  // Raised again from 3000 to 3200 when route rules became addresses-only. The
+  // guide now has to name the one way a rule by site name still works — a
+  // full-traffic key plus the client's own settings page — because the panel no
+  // longer offers even the appearance of it. That is a new question the guide
+  // did not have to answer before, and it earns its own short section rather
+  // than a clause bolted onto another one. Most of the room was paid for by
+  // deleting the .vpn domain warning, which described a difference between the
+  // file and the clipboard that no longer exists.
   it("keeps the detailed view from growing without limit either", () => {
     for (const lang of ["ru", "en"] as const) {
       const dict = messages[lang] as Record<string, string>;
@@ -158,7 +171,7 @@ describe("install guide messages", () => {
         (sum, key) => sum + (dict[key] ?? "").length,
         0,
       );
-      expect(total, `${lang} install copy`).toBeLessThanOrEqual(3000);
+      expect(total, `${lang} install copy`).toBeLessThanOrEqual(3200);
     }
   });
 

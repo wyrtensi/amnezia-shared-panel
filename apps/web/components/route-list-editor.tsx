@@ -7,63 +7,42 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useT } from "@/lib/i18n/provider";
 
-export type RouteEntryKind = "cidr" | "domain";
-
-// Light client-side checks; the control API is authoritative on save.
+// Light client-side check; the control API is authoritative on save.
 export const looksLikeCidr = (value: string): boolean =>
   /^[0-9a-f.:]+(\/\d{1,3})?$/i.test(value) && /[.:]/.test(value);
 
-export const looksLikeDomain = (value: string): boolean =>
-  /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+(?:[a-z]{2,63}|xn--[a-z0-9-]{2,59})$/.test(
-    value,
-  );
-
-const KIND_TEXT: Record<
-  RouteEntryKind,
-  { label: string; placeholder: string; invalid: string }
-> = {
-  cidr: {
-    label: "routes.ipLabel",
-    placeholder: "routes.ipPlaceholder",
-    invalid: "routes.badIp",
-  },
-  domain: {
-    label: "routes.domainLabel",
-    placeholder: "routes.domainPlaceholder",
-    invalid: "routes.badDomain",
-  },
-};
-
 /**
- * Chip-list editor for one list of routes: type an entry, press Enter (or the
- * plus button) to add it, click a chip's cross to drop it. Shared by the
- * self-service card and the admin global-routes page so both sides validate and
- * normalise entries the same way.
+ * Chip-list editor for one list of route addresses: type an entry, press Enter
+ * (or the plus button) to add it, click a chip's cross to drop it. Shared by
+ * the self-service card and the admin global-routes page so both sides validate
+ * and normalise entries the same way.
+ *
+ * Addresses only. A route profile ends up as a WireGuard AllowedIPs list, which
+ * takes prefixes; a site name typed here would be stored and then routed
+ * nowhere, so it is not offered — see `ROUTE_DOMAINS_UNSUPPORTED` in the
+ * contracts, and `InactiveDomainList` below for what happens to the names that
+ * were stored before.
  */
 export function RouteListEditor({
-  kind,
   entries,
   onChange,
   label,
   disabled = false,
 }: {
-  kind: RouteEntryKind;
   entries: string[];
   onChange: (next: string[]) => void;
-  /** Overrides the default per-kind heading. */
+  /** Overrides the default heading. */
   label?: string;
   disabled?: boolean;
 }) {
   const { t } = useT();
   const [value, setValue] = React.useState("");
-  const text = KIND_TEXT[kind];
 
   const add = () => {
     const entry = value.trim().toLowerCase();
     if (!entry) return;
-    const valid = kind === "cidr" ? looksLikeCidr(entry) : looksLikeDomain(entry);
-    if (!valid) {
-      toast.error(t(text.invalid));
+    if (!looksLikeCidr(entry)) {
+      toast.error(t("routes.badIp"));
       return;
     }
     setValue("");
@@ -77,13 +56,13 @@ export function RouteListEditor({
   return (
     <div className="space-y-2">
       <p className="text-xs font-medium text-muted-foreground">
-        {label ?? t(text.label)}
+        {label ?? t("routes.ipLabel")}
       </p>
       <div className="flex gap-2">
         <Input
           value={value}
           disabled={disabled}
-          placeholder={t(text.placeholder)}
+          placeholder={t("routes.ipPlaceholder")}
           onChange={(event) => setValue(event.target.value)}
           onKeyDown={(event) => {
             if (event.key === "Enter") {
@@ -124,6 +103,63 @@ export function RouteListEditor({
           ))}
         </div>
       ) : null}
+    </div>
+  );
+}
+
+/**
+ * The site names a route rule was saved with before route rules became
+ * addresses-only.
+ *
+ * They are shown rather than deleted on sight: nobody typed them expecting them
+ * to disappear, and a list somebody curated is worth reading once before it
+ * goes. Struck through and unclickable, because that is what they are —
+ * stored, inert, routed nowhere. Saving the card drops them, which the note
+ * says out loud rather than leaving it to be discovered.
+ *
+ * The button is what makes that possible: a card whose only stale content is
+ * this block is not dirty, so its Save is disabled and the entries could never
+ * be cleared. Removing them here is the edit that arms it.
+ *
+ * Renders nothing when there are none, which is every deployment that never
+ * stored one.
+ */
+export function InactiveDomainList({
+  domains,
+  onClear,
+  disabled = false,
+}: {
+  domains: string[];
+  onClear: () => void;
+  disabled?: boolean;
+}) {
+  const { t } = useT();
+  if (domains.length === 0) return null;
+  return (
+    <div className="space-y-2 rounded-lg border border-dashed bg-muted/30 px-3 py-2.5">
+      <p className="text-xs font-medium">{t("routes.staleDomainsTitle")}</p>
+      <p className="text-xs leading-snug text-muted-foreground">
+        {t("routes.staleDomainsBody")}
+      </p>
+      <div className="flex flex-wrap gap-1.5">
+        {domains.map((domain) => (
+          <span
+            key={domain}
+            className="inline-flex items-center rounded-md bg-muted px-2 py-0.5 font-mono text-xs text-muted-foreground line-through"
+          >
+            {domain}
+          </span>
+        ))}
+      </div>
+      <Button
+        type="button"
+        size="sm"
+        variant="outline"
+        disabled={disabled}
+        onClick={onClear}
+      >
+        {t("routes.staleDomainsClear")}
+      </Button>
     </div>
   );
 }

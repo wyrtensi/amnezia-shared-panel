@@ -138,18 +138,21 @@ const ru = {
   "routes.title": "Свои маршруты",
   "routes.subtitle": "Дополнительные адреса поверх базовых списков",
   "routes.hint":
-    "Добавьте свои домены и IP — они пойдут через VPN вместе с базовым списком выбранного профиля. Базовый список скрыт и подставляется автоматически. Изменения применяются при следующем экспорте конфигурации.",
+    "Добавьте свои IP-адреса и подсети — они пойдут через VPN вместе с базовым списком выбранного профиля. Названия сайтов профиль не принимает — только адреса. Базовый список скрыт и подставляется автоматически. Изменения применяются при следующем экспорте конфигурации.",
   "routes.count": "Записей: {count}",
   "routes.ipLabel": "IP-адреса и подсети",
   "routes.ipPlaceholder": "например 1.2.3.4 или 10.0.0.0/8",
-  "routes.domainLabel": "Домены",
-  "routes.domainPlaceholder": "например example.com",
   "routes.save": "Сохранить маршруты",
   "routes.saving": "Сохранение…",
   "routes.saved": "Маршруты сохранены",
   "routes.saveFailed": "Не удалось сохранить маршруты",
   "routes.badIp": "Некорректный IP или подсеть",
-  "routes.badDomain": "Некорректный домен",
+  // Site names saved before profiles became addresses-only. Shown, not deleted
+  // behind the user's back; the card's Save is what removes them.
+  "routes.staleDomainsTitle": "Старые записи по названию сайта",
+  "routes.staleDomainsBody":
+    "Профиль направляет в VPN адреса, поэтому эти записи ни на что не влияют. Они показаны, чтобы вы их увидели; при следующем сохранении они будут удалены.",
+  "routes.staleDomainsClear": "Убрать из списка",
   "routes.removeAria": "Удалить {value}",
   "routes.profileHint":
     "Выберите, к какому профилю добавить адреса. Профиль задаётся при создании ключа — ваши адреса применяются к ключам с этим профилем.",
@@ -407,8 +410,6 @@ const ru = {
     "Удобно для длинных ключей — профилей «Только зарубежные» и «Только заблокированные»: файл достаточно открыть один раз.",
   "install.fileHow":
     "Обычный WireGuard этот файл не откроет — нужен AmneziaVPN.",
-  "install.fileDomainsWarning":
-    "Правило по имени сайта в файл не попадёт — там только числовые адреса. Чтобы оно сохранилось, добавляйте ключ копированием.",
   "install.fileConfFallback":
     "Файл .conf нужен для awg-quick на Linux и роутеров с AmneziaWG. Обычный WireGuard не откроет и его, а приложение переименует подключение.",
 
@@ -417,7 +418,7 @@ const ru = {
     "В AmneziaVPN нажмите «+» → «Импортировать из файла» и выберите скачанный файл.",
   "install.fileStep3": "Нажмите «Подключиться».",
   "install.routesWhy":
-    "На профиле с ограничениями нужный сайт может не открыться. Добавьте его домен или IP здесь — он пойдёт через VPN.",
+    "На профиле с ограничениями нужный сайт может не открыться. Добавьте его IP-адрес здесь — он пойдёт через VPN.",
   "install.routesWhenNot":
     "Для «Весь трафик» не нужен. Правила попадут в ключ при следующем экспорте.",
   "install.fixTitle": "Если не работает",
@@ -428,6 +429,13 @@ const ru = {
     "В настройках AmneziaVPN выключите «Использовать DNS-серверы Amnezia»: с ней подключение есть, а сайты не открываются.",
   "install.fixUpdate":
     "Обновите AmneziaVPN: устаревший клиент — частая причина отказа.",
+  // The last thing in the guide, and behind the detailed switch: the reader who
+  // wants rules by site name has to give up the profile to get them.
+  "install.sitesTitle": "Правила по названию сайта",
+  "install.sitesBody":
+    "Профиль направляет в VPN адреса, а не названия сайтов. Если правило нужно именно по названию — возьмите ключ «Весь трафик» и добавьте сайты в самом приложении: там оно само находит их адреса на устройстве.",
+  "install.sitesWhere":
+    "В AmneziaVPN: «Настройки» → «Соединение» → «Раздельное туннелирование сайтов».",
   "quota.sent": "Запрос отправлен администратору",
   "quota.sendFailed": "Не удалось отправить запрос",
   "quota.title": "Дополнительные ключи",
@@ -1080,7 +1088,7 @@ const ru = {
   // Admin global routes
   "groutes.title": "Глобальные маршруты",
   "groutes.subtitle":
-    "Общие дополнения и исключения поверх списков RoscomVPN — применяются ко всем пользователям.",
+    "Общие дополнения и исключения по адресам поверх списков RoscomVPN — применяются ко всем пользователям.",
   "groutes.hint":
     "Записи применяются при следующем экспорте конфигурации. Сначала убираются исключения, затем добавляются глобальные записи, и последними — собственные маршруты пользователя.",
   "groutes.count": "Записей: {count}",
@@ -1089,10 +1097,10 @@ const ru = {
   "groutes.unsaved": "Есть несохранённые изменения",
   "groutes.add": "Добавить маршруты",
   "groutes.addHint":
-    "Дополнительные подсети и домены, которые попадут в список выбранного профиля у каждого пользователя.",
+    "Дополнительные адреса и подсети, которые попадут в список выбранного профиля у каждого пользователя. Профиль принимает только адреса, не названия сайтов.",
   "groutes.exclude": "Исключить из списков RoscomVPN",
   "groutes.excludeHint":
-    "Подсети и домены, которые убираются из списка до его выдачи. Исключение домена убирает и все его поддомены. Если пользователь добавит ту же запись в свои маршруты, она вернётся — личные маршруты имеют приоритет.",
+    "Адреса и подсети, которые убираются из списка до его выдачи. Если пользователь добавит ту же запись в свои маршруты, она вернётся — личные маршруты имеют приоритет.",
   "groutes.save": "Сохранить маршруты",
 
   // Rule preview dialog
@@ -1277,18 +1285,21 @@ const en = {
   "routes.title": "Custom routes",
   "routes.subtitle": "Extra addresses layered on the base lists",
   "routes.hint":
-    "Add your own domains and IPs — they go through the VPN together with the selected profile's base list. The base list is hidden and applied automatically. Changes take effect on your next config export.",
+    "Add your own IP addresses and subnets — they go through the VPN together with the selected profile's base list. A profile does not take site names, only addresses. The base list is hidden and applied automatically. Changes take effect on your next config export.",
   "routes.count": "{count} total",
   "routes.ipLabel": "IP addresses & subnets",
   "routes.ipPlaceholder": "e.g. 1.2.3.4 or 10.0.0.0/8",
-  "routes.domainLabel": "Domains",
-  "routes.domainPlaceholder": "e.g. example.com",
   "routes.save": "Save routes",
   "routes.saving": "Saving…",
   "routes.saved": "Routes saved",
   "routes.saveFailed": "Could not save routes",
   "routes.badIp": "Invalid IP or subnet",
-  "routes.badDomain": "Invalid domain",
+  // Site names saved before profiles became addresses-only. Shown, not deleted
+  // behind the user's back; the card's Save is what removes them.
+  "routes.staleDomainsTitle": "Old entries by site name",
+  "routes.staleDomainsBody":
+    "A profile sends addresses through the VPN, so these entries do nothing. They are shown so you can see them; the next time you save, they are removed.",
+  "routes.staleDomainsClear": "Remove from the list",
   "routes.removeAria": "Remove {value}",
   "routes.profileHint":
     "Choose which profile to add addresses to. A key's profile is set when it's created — your addresses apply to keys using that profile.",
@@ -1539,8 +1550,6 @@ const en = {
     "Handy for the long keys — the “Foreign only” and “Blocked only” profiles: the file only has to be opened once.",
   "install.fileHow":
     "The plain WireGuard app will not open this file — it has to be AmneziaVPN.",
-  "install.fileDomainsWarning":
-    "A rule that names a site does not fit in the file — it holds only numeric addresses. To keep it, add the key by copying.",
   "install.fileConfFallback":
     "The .conf file is for awg-quick on Linux and AmneziaWG router firmware. Plain WireGuard will not open that one either, and the app renames the connection.",
 
@@ -1549,7 +1558,7 @@ const en = {
     "In AmneziaVPN tap “+” → “Import from file” and pick the downloaded file.",
   "install.fileStep3": "Tap “Connect”.",
   "install.routesWhy":
-    "On a restricted profile a site you need may not open. Add its domain or IP here and it goes through the VPN.",
+    "On a restricted profile a site you need may not open. Add its IP address here and it goes through the VPN.",
   "install.routesWhenNot":
     "“All traffic” does not need it. Rules reach a key at its next export.",
   "install.fixTitle": "If it does not work",
@@ -1560,6 +1569,13 @@ const en = {
     "In AmneziaVPN's settings, turn off “Use Amnezia DNS servers”: with it on, the connection succeeds while no site opens.",
   "install.fixUpdate":
     "Update AmneziaVPN: an outdated client is a common cause.",
+  // The last thing in the guide, and behind the detailed switch: the reader who
+  // wants rules by site name has to give up the profile to get them.
+  "install.sitesTitle": "Rules by site name",
+  "install.sitesBody":
+    "A profile sends addresses through the VPN, not site names. If you need a rule by name, take an “All traffic” key and add the sites in the app itself: it looks up their addresses on your device.",
+  "install.sitesWhere":
+    "In AmneziaVPN: Settings → Connection → Site-based split tunnelling.",
   "quota.sent": "Request sent to the administrator",
   "quota.sendFailed": "Failed to send the request",
   "quota.title": "Additional keys",
@@ -2185,7 +2201,7 @@ const en = {
   // Admin global routes
   "groutes.title": "Global routes",
   "groutes.subtitle":
-    "Shared additions and exclusions on top of the RoscomVPN lists — applied to every user.",
+    "Shared address additions and exclusions on top of the RoscomVPN lists — applied to every user.",
   "groutes.hint":
     "Entries take effect on the next config export. Exclusions are removed first, then the global additions are merged in, and the user's own routes are applied last.",
   "groutes.count": "{count} total",
@@ -2194,10 +2210,10 @@ const en = {
   "groutes.unsaved": "Unsaved changes",
   "groutes.add": "Add routes",
   "groutes.addHint":
-    "Extra subnets and domains merged into the selected profile's list for every user.",
+    "Extra addresses and subnets merged into the selected profile's list for every user. A profile takes addresses only, not site names.",
   "groutes.exclude": "Exclude from the RoscomVPN lists",
   "groutes.excludeHint":
-    "Subnets and domains stripped from the list before it is handed out. Excluding a domain also removes its subdomains. If a user adds the same entry to their own routes it comes back — personal routes win.",
+    "Addresses and subnets stripped from the list before it is handed out. If a user adds the same entry to their own routes it comes back — personal routes win.",
   "groutes.save": "Save routes",
 
   // Rule preview dialog

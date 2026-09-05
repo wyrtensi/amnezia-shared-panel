@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { ROUTE_DOMAINS_UNSUPPORTED } from "@amnezia/contracts";
 import type { ClientRelease } from "@amnezia/contracts";
 import { buildApp } from "./app.js";
 import type { ClientReleaseResolver } from "./clientReleases.js";
@@ -374,6 +375,51 @@ describe("control API authorization", () => {
     expect(response.headers["content-type"]).toContain("application/json");
     expect(response.headers["content-disposition"]).toBeUndefined();
     expect(JSON.parse(response.body)).toEqual({ total: 1, frames: ["<svg/>"] });
+    await app.close();
+  });
+});
+
+describe("custom routes take addresses, not site names", () => {
+  it("accepts an address-only update", async () => {
+    const service = createService();
+    vi.mocked(service.resolveIdentity).mockResolvedValue(user);
+    const app = await buildApp({ service, environment: "development" });
+
+    const response = await app.inject({
+      method: "PUT",
+      url: "/api/me/custom-routes",
+      headers: { "x-dev-user-email": user.email },
+      payload: { ru_whitelist: { cidrs: ["203.0.113.0/24"], domains: [] } },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(service.updateMyCustomRoutes).toHaveBeenCalled();
+    await app.close();
+  });
+
+  // Refused at the edge rather than stored-and-ignored: an entry that is kept
+  // but routes nothing is the thing this whole change is removing.
+  it("refuses a domain, says why, and never reaches the service", async () => {
+    const service = createService();
+    vi.mocked(service.resolveIdentity).mockResolvedValue(user);
+    const app = await buildApp({ service, environment: "development" });
+
+    const response = await app.inject({
+      method: "PUT",
+      url: "/api/me/custom-routes",
+      headers: { "x-dev-user-email": user.email },
+      payload: { ru_whitelist: { cidrs: [], domains: ["example.com"] } },
+    });
+
+    expect(response.statusCode).toBe(400);
+    const body: {
+      error: string;
+      issues: Array<{ message: string; path: string[] }>;
+    } = response.json();
+    expect(body.error).toBe("VALIDATION_ERROR");
+    expect(body.issues[0]?.message).toBe(ROUTE_DOMAINS_UNSUPPORTED);
+    expect(body.issues[0]?.path).toEqual(["ru_whitelist", "domains"]);
+    expect(service.updateMyCustomRoutes).not.toHaveBeenCalled();
     await app.close();
   });
 });

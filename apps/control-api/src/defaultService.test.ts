@@ -322,7 +322,8 @@ describe("default control service policy enforcement", () => {
       },
       ru_blacklist: {
         add: { cidrs: ["198.51.100.0/24"], domains: [] },
-        // Excluding the parent zone also drops cdn.example.com.
+        // The domain half of a stored override is inert: it neither adds nor
+        // excludes anything, because no name reaches an exported key.
         exclude: { cidrs: ["10.0.0.0/8"], domains: ["example.com"] },
       },
     });

@@ -729,3 +729,123 @@ describe("users --domain=", () => {
     expect(JSON.parse(out)).toEqual([users[2]]);
   });
 });
+
+describe("route rules take addresses, not site names", () => {
+  beforeEach(() => {
+    process.env.PANEL_ADMIN_EMAIL = "cli-test@example.com";
+  });
+  afterEach(() => {
+    delete process.env.PANEL_ADMIN_EMAIL;
+    vi.unstubAllGlobals();
+  });
+
+  // Refusing before the request matters more than the wording: a silent no-op
+  // would leave a script reporting success over a change that never happened.
+  for (const [command, flag] of [
+    ["user-routes", "wl-domains"],
+    ["user-routes", "bl-domains"],
+    ["global-routes-set", "add-domains"],
+    ["global-routes-set", "exclude-domains"],
+  ] as const) {
+    it(`${command} refuses --${flag} and sends nothing`, async () => {
+      const calls = stubFetch([{ body: {} }]);
+      await expect(
+        run([
+          command,
+          ...(command === "user-routes"
+            ? ["ann@company.tld"]
+            : ["--profile=ru_whitelist"]),
+          `--${flag}=example.com`,
+        ]),
+      ).rejects.toThrow(new RegExp(`--${flag}: no longer accepted`));
+      expect(calls).toHaveLength(0);
+    });
+  }
+
+  it("names the way that does work instead of just saying no", async () => {
+    stubFetch([{ body: {} }]);
+    await expect(
+      run(["user-routes", "ann@company.tld", "--wl-domains=example.com"]),
+    ).rejects.toThrow(/full_tunnel key[\s\S]*AmneziaVPN app/);
+  });
+
+  it("user-routes still writes the address lists, with no domains", async () => {
+    const calls = stubFetch([{ body: { id: "u1" } }]);
+    await run([
+      "user-routes",
+      "11111111-1111-1111-1111-111111111111",
+      "--wl-cidrs=1.2.3.4,10.0.0.0/8",
+    ]);
+    const body = JSON.parse(calls[0]?.init?.body as string) as {
+      ru_whitelist: { cidrs: string[]; domains: string[] };
+      ru_blacklist: { cidrs: string[]; domains: string[] };
+    };
+    expect(body.ru_whitelist.cidrs).toEqual(["1.2.3.4", "10.0.0.0/8"]);
+    expect(body.ru_whitelist.domains).toEqual([]);
+    expect(body.ru_blacklist.domains).toEqual([]);
+  });
+
+  // A stored payload's site names are shown, not hidden: an operator should be
+  // able to see what a row still holds before a write clears it.
+  it("global-routes marks leftover site names INACTIVE", async () => {
+    stubFetch([
+      {
+        body: [
+          {
+            ru_whitelist: {
+              add: { cidrs: ["1.2.3.0/24"], domains: ["example.com"] },
+              exclude: { cidrs: [], domains: [] },
+            },
+            ru_blacklist: {
+              add: { cidrs: [], domains: [] },
+              exclude: { cidrs: [], domains: [] },
+            },
+          },
+        ],
+      },
+    ]);
+    const out = await run(["global-routes"]);
+    expect(out).toMatch(/add domains \(1, INACTIVE/);
+    expect(out).toMatch(/example\.com/);
+    // Every other list is silent about domains rather than printing an empty one.
+    expect(out.match(/domains/g)).toHaveLength(1);
+  });
+
+  it("global-routes-set clears the site names a stored payload still holds", async () => {
+    const calls = stubFetch([
+      {
+        body: [
+          {
+            ru_whitelist: {
+              add: { cidrs: [], domains: ["example.com"] },
+              exclude: { cidrs: [], domains: ["ads.example.net"] },
+            },
+            ru_blacklist: {
+              add: { cidrs: [], domains: ["other.example"] },
+              exclude: { cidrs: [], domains: [] },
+            },
+          },
+        ],
+      },
+      { body: {} },
+    ]);
+    await run([
+      "global-routes-set",
+      "--profile=ru_whitelist",
+      "--add-cidrs=203.0.113.0/24",
+    ]);
+    const sent = JSON.parse(calls[1]?.init?.body as string) as Record<
+      string,
+      {
+        add: { cidrs: string[]; domains: string[] };
+        exclude: { domains: string[] };
+      }
+    >;
+    expect(sent.ru_whitelist?.add.cidrs).toEqual(["203.0.113.0/24"]);
+    expect(sent.ru_whitelist?.add.domains).toEqual([]);
+    expect(sent.ru_whitelist?.exclude.domains).toEqual([]);
+    // The untouched profile loses its dead entries too: the endpoint replaces
+    // the whole object, so leaving them in would write them straight back.
+    expect(sent.ru_blacklist?.add.domains).toEqual([]);
+  });
+});

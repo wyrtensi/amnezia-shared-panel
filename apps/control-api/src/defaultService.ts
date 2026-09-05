@@ -112,8 +112,9 @@ export const createDefaultControlApiService = ({
       global: splitProfile ? globalRoutes?.[splitProfile] : null,
       userExtra: splitProfile ? key.customRoutes?.[splitProfile] : null,
     });
-    const hasRoutes =
-      mergedPayload.cidrs.length > 0 || mergedPayload.domains.length > 0;
+    // Addresses only: a merged payload with nothing to put in AllowedIPs has
+    // no way to narrow the tunnel, so the key ships as the full tunnel it is.
+    const hasRoutes = mergedPayload.cidrs.length > 0;
     const routedLink =
       key.routeProfile !== "full_tunnel" && hasRoutes
         ? applyRouteProfileToVpnLink(storedLink, key.routeProfile, mergedPayload)
