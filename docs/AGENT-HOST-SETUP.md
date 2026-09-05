@@ -449,11 +449,20 @@ node-agent `POST /clients` (mapping `awg3 → amneziawg3`) and returns an import
 ### Route profiles and rule feeds
 
 Profiles (`packages/contracts` `routeProfileSchema`): `full_tunnel` (always
-available), `ru_whitelist` (foreign via VPN, RU direct), `ru_blacklist` (only
-RKN-blocked via VPN). Non-full-tunnel profiles apply their active rule set to
-`AllowedIPs` **at export time**; the official client can't refresh routing on an
-imported config, so a rules change flags the key `rulesOutdated` and the user
-re-downloads.
+available), `ru_whitelist` (everything through the tunnel **except** the
+addresses in its feed — a list of Russian services that does not cover all of
+them), `ru_blacklist` (only the addresses in its feed go through the tunnel).
+Note what `ru_whitelist` is not: it is not "RU direct". Only what the feed
+actually lists bypasses the tunnel, and a Russian service missing from the feed
+is tunnelled like anything else — which is why the panel stopped describing the
+profile as "foreign via VPN, RU direct".
+
+Non-full-tunnel profiles apply their active rule set to `AllowedIPs` **at export
+time**; the official client can't refresh routing on an imported config, so a
+rules change flags the key `rulesOutdated` and the user re-downloads. That flag
+follows the feed's version and only the feed's version — a change to how the
+feed is turned into routes leaves every already-exported key unflagged (see
+"Key rotation" below).
 
 The two profiles use their feed in **opposite directions**, and `AllowedIPs` can
 only ever say "route this", never "except this":
@@ -507,7 +516,11 @@ for, where the alternative tunnels nothing and says nothing about it.
 
 Check a feed change against this before shipping it: count the CIDRs the profile
 will export, not the ones the feed contains, and watch for keys quietly falling
-back to the full tunnel.
+back to the full tunnel. There is no command that reports the current figure —
+`global-routes` prints the admin-wide additions and exclusions, not the size of
+the exported set — so the `[routes]` line `control-api` logs at export time is
+the only reading anyone gets, and a degraded key looks exactly like a
+full-tunnel key that was asked for.
 
 Feeds work **out of the box**: with no feed configuration at all the worker uses
 the built-in RoscomVPN GeoIP (`ru_whitelist`) and iplist / Re:filter (`ru_blacklist`) sources, so a
@@ -550,6 +563,15 @@ Rotation re-issues a key with the **current** rules and a fresh config
 (`POST /api/keys/:id/rotate`, admin can rotate any key; users rotate their own).
 This is how RoscomVPN keys were re-issued against the current rule set.
 
+**A change to the export logic does not raise `rulesOutdated`.** The flag is
+computed as "the active rule set for this profile is not the version this key
+was exported from" — a feed version comparison, nothing more. Change how a feed
+is turned into `AllowedIPs` (as the whitelist inversion in v0.9.21 did) and
+every key already in a user's client keeps the old routing while the panel goes
+on calling it current. Keys like that have to be found and rotated by hand; see
+["After v0.9.21"](./DEPLOY-UPDATE.md#after-v0921-re-issue-every-ru_whitelist-key)
+in `DEPLOY-UPDATE.md`.
+
 ### Updating a node's agent from the panel (opt-in)
 
 The node-agent container mounts only the Docker socket, so it cannot read
@@ -568,6 +590,53 @@ docker compose --env-file .env -f compose.yaml up -d --no-deps node-agent
 
 Until that has been run the node answers `501` and the panel button reports that
 the node cannot update itself. Nothing about an existing node changes on its own.
+A unit that carries the *variable* but with an empty value is a different
+failure and does not produce a `501`: the agent reads the same setting from
+`.env`, so it accepts the request and answers `202`, and the host-side updater
+then refuses the spool file with `NODE_AGENT_UPDATE_REPO is not configured on
+this host` (visible in `node-agent-log`). See the CRLF row in
+[`NODE-CONNECT.md`](./NODE-CONNECT.md) §5 for the one way that has actually
+happened.
+
+**The button needs node-agent 1.1.9 or newer.** The route shipped in 1.1.3, but
+no released build before 1.1.9 could serve it. The agent's container runs awilix
+in CLASSIC mode, which derives dependency names by parsing each constructor's
+parameter list as text, and the comma inside `AgentUpdateService`'s default
+options literal read to that parser as a parameter separator — so every resolve
+of the service threw and **both `/server/update` routes answered `500` on
+1.1.3 through 1.1.8**, with the spool mounted and the environment correct
+(`Could not resolve 'appConfig_1.default.NODE_AGENT_UPDATE_SPOOL'`). The first
+hop to 1.1.9 therefore cannot be made with the button: install it over SSH (pin
+`NODE_AGENT_IMAGE` to the 1.1.9 digest, then `sh scripts/deploy.sh` — see
+[`NODE-CONNECT.md`](./NODE-CONNECT.md)). From 1.1.9 on, the button installs
+every later version.
+
+**What that `500` looks like from the panel: nothing at all.** The request is
+made inside the worker's `node.agent-update` job, which throws on the POST and
+never reaches the step that marks the node `requested`. The card's state does
+not move, and the telemetry poller — which reads `GET /server/update` only
+while a node sits in `requested` or `running` — never asks, so
+`node-agent-log` keeps showing whatever it showed before. The failure is
+retried and finally recorded in `job_outbox.last_error` and nowhere else: the
+runner turns the throw into a retry with no console output. An agent older than
+1.1.3 answers `404` and is just as silent, for the same reason. The card's
+"The node-agent does not serve /server/update" message is written by the
+poller, so it only ever appears for a node that got as far as `requested` —
+i.e. after a successful POST — not for one whose POST failed.
+
+**The panel does not record which agent version a node runs.** `GET /server`
+reports no version, so the version on the node card and in the button's tooltip
+is the release the panel has *available*, not the one installed, and there is no
+column anywhere that answers "which nodes are still behind". Read it per host,
+from the reference the node is pinned to:
+
+```sh
+grep '^NODE_AGENT_IMAGE=' <node dir>/.env
+docker inspect --format '{{.Config.Image}}' amnezia-node-agent   # what is running
+```
+
+Both give a digest, not a version — compare it against the digest the release
+workflow printed for the version you are looking for.
 
 What then happens when an admin confirms the button (or runs
 `node-agent-update <id> --confirm`):

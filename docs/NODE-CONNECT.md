@@ -279,12 +279,21 @@ old. Prefer the published digest.
 
 #### After the first deploy: the button
 
-Once a node runs a published digest, later agent versions can be installed from
-the panel instead of over SSH. It is opt-in per host:
+Once a node runs a published digest **of node-agent 1.1.9 or newer**, later
+agent versions can be installed from the panel instead of over SSH. It is
+opt-in per host:
 
 ```sh
 sudo NODE_AGENT_UPDATE_REPO=ghcr.io/<owner>/<repo>/node-agent   bash scripts/install-agent-updater.sh
 ```
+
+The version floor is not a formality: on 1.1.3 through 1.1.8 both
+`/server/update` routes answer `500` because the agent's container could not
+construct the service behind them, and the panel shows nothing at all when that
+happens — the job fails, the card's state stays where it was and
+`node-agent-log` shows nothing new. Get the node to 1.1.9 over SSH first
+("Getting the node-agent image onto a host" above); the button works from
+there on.
 
 The swap runs on the host (`scripts/agent-update.sh`, a port of the panel's own
 `panel-updater`), recreates **only** the agent container with `--no-deps` so no
@@ -464,6 +473,9 @@ off by default.
 | Preflight rejects a valid API key: "must contain only printable non-space ASCII characters" | On a memory-constrained node, `grep -E '…{32,4096}'` was OOM-killed and its non-zero exit read as a malformed key (`dmesg`: `Out of memory: Killed process (grep)`) | Fixed in `preflight.sh` — the check no longer uses bounded repetition. Avoid `{n,m}` over a character class in any node-side shell check: it cost ~280 MiB of RSS versus ~2 MiB for the linear equivalent. |
 | Preflight fails the RAM gate on a re-deploy of a small node | `MemAvailable` is measured **while the stack is running**, so on a tiny host it hovers near the required floor | `docker compose down` first, or size the host up. Adding swap does not help — the gate reads `MemAvailable`. |
 | A rollout reports success but the node never appears | A step that pipes a script into a remote `bash` also ran `ssh` inside it; the inner `ssh` drained the rest of the heredoc, so the remaining commands never executed and `bash` exited 0 at EOF | Use `ssh -n` inside any block fed to a remote shell on stdin. Never treat exit 0 from registration as proof — confirm with `nodes`. |
+| The "update agent" button (or `node-agent-update`) does nothing: the card's state never moves and `node-agent-log` shows nothing new | node-agent 1.1.3–1.1.8 answer `500` on both `/server/update` routes (the container could not construct the service). The worker's job fails on the POST, so the node never enters `requested` and nothing is ever written back to the card; the reason lands only in `job_outbox.last_error` | Update that node to 1.1.9 over SSH (pin `NODE_AGENT_IMAGE` to the 1.1.9 digest, `sh scripts/deploy.sh`). The button works for every version after it. |
+| `node-agent-log` says `NODE_AGENT_UPDATE_REPO is not configured on this host`, although `install-agent-updater.sh` ran cleanly | The systemd units were checked out with CRLF (a `git archive` from a Windows checkout, before `.gitattributes` pinned `infra/**` to LF), so the installer's `sed 's#^Environment=NODE_AGENT_UPDATE_REPO=$#…#'` anchor did not match and the unit kept an empty value. The agent reads the same setting from `.env`, so it still accepts the request and answers `202` — the host-side updater is what fails | Re-copy `infra/` from a checkout with the current `.gitattributes`, or `sed -i 's/\r$//'` the unit and `systemctl daemon-reload`, then re-run the installer. |
+| Two nodes with the same name in `nodes` | Repeated runs of `add-node.sh` before it recognised an already-registered node again; each run registered a second row | Remove the extra one with `node-remove`. |
 
 See [`AGENT-HOST-SETUP.md`](./AGENT-HOST-SETUP.md) for the node side (agent logs,
 `/server` shape, backup/rollback).
