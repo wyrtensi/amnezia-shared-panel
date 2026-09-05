@@ -605,12 +605,37 @@ export function ConfigDownloadDialog({
               )
             ) : null}
 
-            {me?.policy.allowConfDownload && target ? (
-              <Button asChild variant="outline" className="w-full">
-                <a href={configUrl(target.id, "conf")} download>
-                  <Download className="h-4 w-4" /> {t("common.downloadConf")}
-                </a>
-              </Button>
+            {target ? (
+              // The `.vpn` file is the same `vpn://` payload already shown
+              // above (as text and, for full-tunnel keys, as a QR code), so it
+              // needs no extra policy gate beyond reaching this dialog at all.
+              // It leads because it is the only shape that survives import:
+              // AmneziaVPN's client sniffs a file's content, not its
+              // extension, so `.vpn` imports through the same "File with
+              // connection settings" flow and keeps the connection name the
+              // panel gave it, while a `.conf` always lands as "Server N" no
+              // matter what is inside it or what it is named. `.conf` stays
+              // available, behind its own policy flag, for awg-quick and
+              // router firmwares that cannot take the `.vpn` shape.
+              <div className="space-y-2">
+                <Button asChild className="w-full">
+                  <a href={configUrl(target.id, "vpn")} download>
+                    <Download className="h-4 w-4" /> {t("common.downloadVpnFile")}
+                  </a>
+                </Button>
+                {me?.policy.allowConfDownload ? (
+                  <>
+                    <Button asChild variant="outline" className="w-full">
+                      <a href={configUrl(target.id, "conf")} download>
+                        <Download className="h-4 w-4" /> {t("common.downloadConf")}
+                      </a>
+                    </Button>
+                    <p className="text-xs text-muted-foreground">
+                      {t("config.fileShapesHint")}
+                    </p>
+                  </>
+                ) : null}
+              </div>
             ) : null}
           </div>
         ) : null}
