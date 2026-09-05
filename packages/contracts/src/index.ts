@@ -1313,3 +1313,39 @@ export const nodeAgentUpdateStatusSchema = z.object({
   updatedAt: z.iso.datetime().nullable(),
 });
 export type NodeAgentUpdateStatus = z.infer<typeof nodeAgentUpdateStatusSchema>;
+
+// --- Access domain normalisation --------------------------------------------
+// One spelling of a Cloudflare Access `email_domain` rule, shared by the
+// worker (which reads what Cloudflare returns) and the API (which validates
+// what the panel writes) so the two sides cannot drift into different ideas
+// of what a domain looks like.
+
+/**
+ * One spelling of an Access domain, used by the API that validates what the
+ * panel writes and by the worker that compares what Cloudflare returns. The
+ * dashboard shows "Emails ending in @company.tld" and operators paste it that
+ * way, so a leading "@" is stripped rather than refused.
+ */
+export const normalizeAccessDomain = (value: string): string =>
+  value.trim().toLowerCase().replace(/^@+/, "");
+
+const HOSTNAME = /^(?=.{1,253}$)[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$/;
+
+/**
+ * What the API accepts when an admin adds an Access domain rule. Stricter
+ * than `normalizeAccessDomain` alone: the worker stays lenient about what
+ * Cloudflare hands back (a human may have typed it in the dashboard), but the
+ * API is strict about what the panel itself writes.
+ */
+export const accessDomainSchema = z
+  .string()
+  .transform(normalizeAccessDomain)
+  // An address is a user, not a domain — say so rather than silently truncating.
+  .refine((d) => !d.includes("@"), "that is an address, add the user instead")
+  // At least two labels: a rule admitting an entire TLD is almost always a typo.
+  .refine((d) => HOSTNAME.test(d), "not a domain name");
+
+export const accessDomainListSchema = z
+  .array(accessDomainSchema)
+  .max(50)
+  .transform((list) => [...new Set(list)]);

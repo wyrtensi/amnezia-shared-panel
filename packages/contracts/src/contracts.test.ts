@@ -50,6 +50,9 @@ import {
   toUserCheckState,
   updateGlobalRoutesRequestSchema,
   updateServiceCheckRequestSchema,
+  accessDomainListSchema,
+  accessDomainSchema,
+  normalizeAccessDomain,
 } from "./index.js";
 
 describe("createKeyRequestSchema", () => {
@@ -1472,5 +1475,37 @@ describe("nodeRunsCheck", () => {
     const node = { checksEnabled: true, disabledCheckIds: [check] };
     expect(nodeRunsCheck(node, check)).toBe(false);
     expect(nodeRunsCheck(node, "22222222-2222-4222-8222-222222222222")).toBe(true);
+  });
+});
+
+describe("normalizeAccessDomain", () => {
+  it("trims, lower-cases and strips leading @", () => {
+    expect(normalizeAccessDomain("  @Company.TLD ")).toBe("company.tld");
+    expect(normalizeAccessDomain("@@company.tld")).toBe("company.tld");
+  });
+  it("returns an empty string when nothing is left", () => {
+    expect(normalizeAccessDomain("   ")).toBe("");
+    expect(normalizeAccessDomain("@")).toBe("");
+  });
+});
+
+describe("accessDomainSchema", () => {
+  it("accepts a hostname and an xn-- label", () => {
+    expect(accessDomainSchema.parse("@Company.TLD")).toBe("company.tld");
+    expect(accessDomainSchema.parse("xn--80ak6aa92e.com")).toBe("xn--80ak6aa92e.com");
+  });
+  it("refuses an address, a bare TLD and a non-hostname", () => {
+    for (const bad of ["someone@company.tld", "org", "com pany.tld", "a/b.tld", "*.tld", "-lead.tld", "trail-.tld", "укр.tld"]) {
+      expect(() => accessDomainSchema.parse(bad)).toThrow();
+    }
+  });
+});
+
+describe("accessDomainListSchema", () => {
+  it("de-duplicates after normalising and keeps order", () => {
+    expect(accessDomainListSchema.parse(["@B.tld", "a.tld", "b.tld"])).toEqual(["b.tld", "a.tld"]);
+  });
+  it("refuses more than 50 entries", () => {
+    expect(() => accessDomainListSchema.parse(Array.from({ length: 51 }, (_, i) => `d${i}.tld`))).toThrow();
   });
 });

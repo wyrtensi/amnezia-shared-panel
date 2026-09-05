@@ -1,3 +1,5 @@
+import { normalizeAccessDomain } from "@amnezia/contracts";
+
 import type { WorkerRepository } from "./repository.js";
 import {
   createCloudflareAccessClient,
@@ -189,8 +191,10 @@ const normalizeEmail = (email: string): string => email.trim().toLowerCase();
  * Domains admitted by the policy's `email_domain` ("emails ending in") rules.
  * Cloudflare stores the bare domain, but the dashboard shows it with a leading
  * "@" and operators paste it that way, so both forms are accepted (and a
- * doubled "@@" typo is stripped too — `replace` with a `+` quantifier, not a
- * single `@`).
+ * doubled "@@" typo is stripped too — `normalizeAccessDomain`'s `+`
+ * quantifier, not a single `@`). Shared with the API's `accessDomainSchema`
+ * so the two sides cannot drift; the worker stays lenient here on purpose,
+ * since a human may have typed this straight into the Cloudflare dashboard.
  */
 const domainAllowlist = (rules: CfAccessRule[]): Set<string> =>
   new Set(
@@ -200,7 +204,7 @@ const domainAllowlist = (rules: CfAccessRule[]): Set<string> =>
           (rule as { email_domain?: { domain?: string } }).email_domain?.domain,
       )
       .filter((domain): domain is string => Boolean(domain))
-      .map((domain) => domain.trim().toLowerCase().replace(/^@+/, ""))
+      .map(normalizeAccessDomain)
       .filter(Boolean),
   );
 
