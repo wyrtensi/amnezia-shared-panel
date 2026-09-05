@@ -630,8 +630,19 @@ const ru = {
   "users.staleDone": "Отозвано ключей: {ok}",
   "users.staleDonePartial": "Отозвано: {ok}, не удалось: {failed}",
   "users.internalName": "Служебное имя",
-  "users.internalNamePrompt":
-    "Служебное имя ключа. Видно только администраторам, пользователю не показывается и в конфигурацию не попадает. Пустое значение — очистить.",
+  "users.internalNameTitle": "Служебное имя ключа",
+  "users.internalNameDesc":
+    "Заметка для администраторов: кому ключ выдан на самом деле, что он заменил, зачем существует.",
+  "users.internalNamePrivateTitle": "Видно только администраторам",
+  "users.internalNamePrivate":
+    "Владельцу ключа служебное имя не показывается и в конфигурацию не попадает — поэтому здесь можно написать настоящее имя человека.",
+  "users.internalNameFor": "Ключ",
+  "users.internalNamePlaceholder": "Кочкина, взамен ключа от 04.09",
+  "users.internalNameHint": "Короткая заметка: кому и зачем этот ключ.",
+  "users.internalNameCapped": "Больше {max} символов не поместится.",
+  "users.internalNameClear": "Очистить",
+  "users.internalNameEdit": "Изменить служебное имя",
+  "users.internalNameAdd": "Добавить служебное имя",
   "users.newUser": "Новый пользователь",
   "users.newUserDesc":
     "Пользователь входит по своему e-mail через Cloudflare Access.",
@@ -1737,8 +1748,19 @@ const en = {
   "users.staleDone": "Revoked {ok} keys",
   "users.staleDonePartial": "Revoked {ok}, failed {failed}",
   "users.internalName": "Internal name",
-  "users.internalNamePrompt":
-    "Internal name for this key. Administrators only — never shown to the user and never part of a configuration. Leave empty to clear it.",
+  "users.internalNameTitle": "Internal name for this key",
+  "users.internalNameDesc":
+    "An operator's note: who the key is really for, what it replaced, why it exists.",
+  "users.internalNamePrivateTitle": "Administrators only",
+  "users.internalNamePrivate":
+    "The key's owner is never shown this and it is never part of a configuration — which is what makes it safe to write a real person's name here.",
+  "users.internalNameFor": "Key",
+  "users.internalNamePlaceholder": "Kochkina, replaced the key from 04.09",
+  "users.internalNameHint": "A short note: who this key is for and why.",
+  "users.internalNameCapped": "{max} characters is the limit.",
+  "users.internalNameClear": "Clear",
+  "users.internalNameEdit": "Edit the internal name",
+  "users.internalNameAdd": "Add an internal name",
   "users.newUser": "New user",
   "users.newUserDesc": "The user signs in with their e-mail via Cloudflare Access.",
   "users.email": "E-mail",

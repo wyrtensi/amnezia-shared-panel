@@ -287,3 +287,142 @@ describe("Access domain messages", () => {
     expect(source).toContain("users.accessDomainRemoveCostTitle");
   });
 });
+
+describe("internalNameOutcome", () => {
+  it("saves a typed note", async () => {
+    const { internalNameOutcome } = await import("./page");
+    expect(internalNameOutcome("kochkina, replaced 04.09", null)).toEqual({
+      action: "save",
+      internalName: "kochkina, replaced 04.09",
+    });
+  });
+
+  it("treats an emptied field as a deliberate clear, not as nothing", async () => {
+    // The `window.prompt` this replaced distinguished "" from `null`; the
+    // dialog has to keep the two apart itself, because clearing a note is an
+    // edit the API records and cancelling is not.
+    const { internalNameOutcome } = await import("./page");
+    expect(internalNameOutcome("", "kochkina")).toEqual({
+      action: "clear",
+      internalName: "",
+    });
+    expect(internalNameOutcome("   ", "kochkina")).toEqual({
+      action: "clear",
+      internalName: "",
+    });
+  });
+
+  it("posts nothing when the draft ends up as what the key already had", async () => {
+    // Cancel, and equally an editor opened only to read the note: neither may
+    // write an audit event saying the note was changed.
+    const { internalNameOutcome } = await import("./page");
+    expect(internalNameOutcome("kochkina", "kochkina").action).toBe("none");
+    expect(internalNameOutcome(" kochkina ", "kochkina").action).toBe("none");
+    expect(internalNameOutcome("", null).action).toBe("none");
+    expect(internalNameOutcome("", "").action).toBe("none");
+  });
+
+  it("caps the note at the column's own 80 characters", async () => {
+    // varchar(80) in migration 0026 and `.max(80)` in the contract. A longer
+    // note is refused by the API, so it must never leave the dialog.
+    const { internalNameOutcome, INTERNAL_NAME_MAX } = await import("./page");
+    expect(INTERNAL_NAME_MAX).toBe(80);
+    const outcome = internalNameOutcome("x".repeat(120), null);
+    expect(outcome.action).toBe("save");
+    expect(outcome.internalName).toHaveLength(80);
+  });
+});
+
+describe("Internal name dialog", () => {
+  it("replaces the browser prompt with the panel's own dialog", () => {
+    // The defect this fixes: a grey system box with no room to say who sees
+    // the field. A later edit reaching for window.prompt again would look
+    // harmless and lose the whole explanation.
+    expect(source).toMatch(/<KeyInternalNameDialog\s/);
+    expect(source).not.toContain("window.prompt(");
+    expect(source).not.toContain("next.slice(0, 80)");
+  });
+
+  it("says what the field is for and that only administrators see it", () => {
+    expect(source).toContain("users.internalNameDesc");
+    expect(source).toContain("users.internalNamePrivateTitle");
+    expect(source).toContain("users.internalNamePrivate");
+  });
+
+  it("shows which key is being annotated, by device label and node", () => {
+    expect(source).toContain("users.internalNameFor");
+    expect(source).toMatch(
+      /<KeyInternalNameDialog[\s\S]{0,400}deviceLabel=\{[\s\S]{0,200}nodeName=\{nodeName\}/,
+    );
+  });
+
+  it("shows the 80-character cap rather than truncating in silence", () => {
+    expect(source).toContain("maxLength={INTERNAL_NAME_MAX}");
+    expect(source).toContain("users.internalNameCapped");
+    expect(source).toMatch(/\{draft\.length\} \/ \{INTERNAL_NAME_MAX\}/);
+  });
+
+  it("keeps save, clear and cancel as three separate answers", () => {
+    // Cancel closes and posts nothing; Clear posts the empty string, which the
+    // API stores as NULL; Save posts the draft. Routing all three through
+    // internalNameOutcome is what keeps "cleared" from collapsing into
+    // "unchanged".
+    expect(source).toMatch(/onClick=\{\(\) => void submit\(""\)\}/);
+    expect(source).toMatch(/onClick=\{\(\) => void submit\(draft\)\}/);
+    expect(source).toMatch(
+      /variant="outline" disabled=\{saving\} onClick=\{onClose\}/,
+    );
+    expect(source).toContain("users.internalNameClear");
+    expect(source).toMatch(/if \(decided\.action === "none"\) \{/);
+  });
+
+  it("names the trigger on the key row instead of leaving a bare pencil", () => {
+    expect(source).toMatch(/text=\{t\("users\.internalName"\)\}/);
+    expect(source).toContain("users.internalNameEdit");
+    expect(source).toContain("users.internalNameAdd");
+  });
+
+  it("gives a set note a frame on the row rather than a third muted line", () => {
+    expect(source).not.toContain(
+      'className="truncate text-xs italic text-muted-foreground/80"',
+    );
+    expect(source).toMatch(/<NotebookPen className="size-3 shrink-0/);
+  });
+
+  it("never offers the note to the key's owner", () => {
+    // The rule that makes a real person's name safe in this field. The editor
+    // lives on the admin Users page only; nothing here may start rendering it
+    // from the employee-facing key list.
+    for (const file of [
+      "../../../components/employee/key-card.tsx",
+      "../../../components/employee/employee-dashboard.tsx",
+    ]) {
+      const owner = readFileSync(
+        fileURLToPath(new URL(file, import.meta.url)),
+        "utf8",
+      );
+      expect(owner).not.toContain("internalName");
+    }
+  });
+
+  it("carries every new key in both languages", async () => {
+    const { messages } = await import("@/lib/i18n/messages");
+    const keys = [
+      "users.internalNameTitle",
+      "users.internalNameDesc",
+      "users.internalNamePrivateTitle",
+      "users.internalNamePrivate",
+      "users.internalNameFor",
+      "users.internalNamePlaceholder",
+      "users.internalNameHint",
+      "users.internalNameCapped",
+      "users.internalNameClear",
+      "users.internalNameEdit",
+      "users.internalNameAdd",
+    ] as const;
+    for (const key of keys) {
+      expect(messages.ru[key]).toBeTruthy();
+      expect(messages.en[key]).toBeTruthy();
+    }
+  });
+});
