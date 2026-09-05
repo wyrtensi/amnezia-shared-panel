@@ -317,6 +317,27 @@ describe("createAccessSync", () => {
       expect(sent?.[0]).toBe(group); // same object, unmodelled fields intact
     });
 
+    it("keeps a malformed email_domain rule by reference — it is neither ownable nor desired", async () => {
+      // A domain rule whose `domain` is unusable ("", "@", whitespace) admits
+      // nobody, but it is still someone else's rule: the panel never put it
+      // there (it is not in the baseline) and cannot want it (normalisation
+      // yields ""), so it must fall into "other rules" and survive a write
+      // untouched — not be classified as a domain rule and then silently
+      // dropped because it is neither owned nor desired.
+      const malformed: CfAccessRule = { email_domain: { domain: "" } };
+      const { repository } = makeRepo({
+        active: ["a@x.io"], baseline: ["a@x.io"], desiredDomains: ["y.io"], syncedDomains: [],
+      });
+      const { createClient, updatePolicy } = clientWith([
+        malformed,
+        { email: { email: "a@x.io" } },
+      ]);
+      await createAccessSync({ repository, createClient })();
+      expect(updatePolicy).toHaveBeenCalledOnce();
+      const sent = updatePolicy.mock.calls[0]?.[0]?.include;
+      expect(sent?.[0]).toBe(malformed); // same object, not rebuilt
+    });
+
     it("claims a hand-added rule for a domain it now manages, without a write", async () => {
       const { repository, getSyncedDomains } = makeRepo({
         active: ["a@x.io"], baseline: ["a@x.io"], desiredDomains: ["x.io"], syncedDomains: [],

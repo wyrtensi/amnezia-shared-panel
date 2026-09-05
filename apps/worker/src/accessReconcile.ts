@@ -230,17 +230,6 @@ const domainOf = (email: string): string => {
 };
 
 /**
- * Whether a rule is an `email_domain` rule at all, regardless of whether its
- * `domain` value turns out to be usable. Used to split the policy's `include`
- * into "domain rules" and "everything else the panel does not write"; a rule
- * this predicate admits with an unusable domain is dropped later, once its
- * domain is normalised (see `ruleDomain` below).
- */
-const isDomainRule = (rule: CfAccessRule): boolean =>
-  typeof (rule as { email_domain?: { domain?: string } }).email_domain?.domain ===
-  "string";
-
-/**
  * A rule's domain, normalised, or "" if the rule has none or it does not
  * survive normalisation (blank, a bare "@", ...). Never throws on a rule that
  * is not a domain rule at all — `email_domain` is simply absent.
@@ -249,6 +238,19 @@ const ruleDomain = (rule: CfAccessRule): string =>
   normalizeAccessDomain(
     (rule as { email_domain?: { domain?: string } }).email_domain?.domain ?? "",
   );
+
+/**
+ * Whether a rule is a domain rule the panel could ever write or claim — i.e.
+ * an `email_domain` rule whose domain is USABLE (survives `ruleDomain`
+ * normalisation), not merely present as a string. Used to split the policy's
+ * `include` into "domain rules" and "everything else the panel does not
+ * write". A malformed `email_domain` rule (blank domain, a bare "@", ...) is
+ * therefore NOT a domain rule by this predicate: it falls into the "other"
+ * bucket and is preserved by reference, exactly like a group or `everyone`
+ * rule, instead of silently disappearing (it is neither ownable nor desired,
+ * so nothing would ever rebuild it).
+ */
+const isDomainRule = (rule: CfAccessRule): boolean => ruleDomain(rule) !== "";
 
 /**
  * Two-way Cloudflare Access sync (the "2 side" policy editor).
