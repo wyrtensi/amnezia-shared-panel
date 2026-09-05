@@ -1062,7 +1062,10 @@ const ru = {
   "rules.status.active": "Активно",
   "rules.status.superseded": "Заменено",
   "rules.status.quarantined": "Карантин",
-  "rules.title": "Правила маршрутизации (RoscomVPN)",
+  // No provider in this title: RoscomVPN supplies only the whitelist, and
+  // which feeds supply which profile is per-deployment configuration
+  // (RULE_FEEDS). Each profile names its own sources below.
+  "rules.title": "Правила маршрутизации",
   "rules.autoUpdate":
     "Списки обновляются автоматически каждые 6 часов из настроенных источников (RULE_FEEDS).",
   "rules.colProfile": "Профиль",
@@ -1085,11 +1088,28 @@ const ru = {
   "rules.refreshFailedWith": "Не удалось проверить обновления: {error}",
   "rules.refreshTimeout":
     "Проверка идёт дольше обычного — обновите страницу чуть позже",
+  // Source attribution, per-profile grouping and the pin
+  "rules.colSource": "Источник",
+  "rules.colFetched": "Загружено",
+  "rules.sourcesLabel": "Источники",
+  "rules.sourcesNone": "источник не записан",
+  "rules.versionCount": "Версий: {count}",
+  "rules.autoPublish": "Новая версия публикуется автоматически",
+  "rules.pinned": "Закреплено",
+  "rules.pinnedNote":
+    "Версия выбрана вручную. Списки продолжают загружаться, но новые версии не публикуются, пока закрепление не снято.",
+  "rules.newerFetched":
+    "Загружена более новая версия — она не опубликована, потому что активная версия закреплена.",
+  "rules.follow": "Вернуть автообновление",
+  "rules.followTitle":
+    "Снять закрепление: следующая загруженная версия снова станет активной",
+  "rules.activateTitle": "Сделать активной и закрепить за профилем",
+  "rules.profileEmpty": "Для этого профиля версии ещё не загружались.",
 
   // Admin global routes
   "groutes.title": "Глобальные маршруты",
   "groutes.subtitle":
-    "Общие дополнения и исключения по адресам поверх списков RoscomVPN — применяются ко всем пользователям.",
+    "Общие дополнения и исключения по адресам поверх загруженных списков — применяются ко всем пользователям.",
   "groutes.hint":
     "Записи применяются при следующем экспорте конфигурации. Сначала убираются исключения, затем добавляются глобальные записи, и последними — собственные маршруты пользователя.",
   "groutes.count": "Записей: {count}",
@@ -1099,7 +1119,7 @@ const ru = {
   "groutes.add": "Добавить маршруты",
   "groutes.addHint":
     "Дополнительные адреса и подсети, которые попадут в список выбранного профиля у каждого пользователя. Профиль принимает только адреса, не названия сайтов.",
-  "groutes.exclude": "Исключить из списков RoscomVPN",
+  "groutes.exclude": "Исключить из загруженных списков",
   "groutes.excludeHint":
     "Адреса и подсети, которые убираются из списка до его выдачи. Если пользователь добавит ту же запись в свои маршруты, она вернётся — личные маршруты имеют приоритет.",
   "groutes.save": "Сохранить маршруты",
@@ -2176,7 +2196,7 @@ const en = {
   "rules.status.active": "Active",
   "rules.status.superseded": "Superseded",
   "rules.status.quarantined": "Quarantined",
-  "rules.title": "Routing rules (RoscomVPN)",
+  "rules.title": "Routing rules",
   "rules.autoUpdate":
     "Lists refresh automatically every 6 hours from the configured sources (RULE_FEEDS).",
   "rules.colProfile": "Profile",
@@ -2199,11 +2219,28 @@ const en = {
   "rules.refreshFailedWith": "The update check failed: {error}",
   "rules.refreshTimeout":
     "The check is taking longer than usual — reload the page a bit later",
+  // Source attribution, per-profile grouping and the pin
+  "rules.colSource": "Source",
+  "rules.colFetched": "Fetched",
+  "rules.sourcesLabel": "Sources",
+  "rules.sourcesNone": "no source recorded",
+  "rules.versionCount": "{count} versions",
+  "rules.autoPublish": "A new version is published automatically",
+  "rules.pinned": "Pinned",
+  "rules.pinnedNote":
+    "This version was chosen by hand. The lists keep downloading, but no new version is published until the pin is released.",
+  "rules.newerFetched":
+    "A newer version has been fetched — it is not published, because the active version is pinned.",
+  "rules.follow": "Follow the feed again",
+  "rules.followTitle":
+    "Release the pin: the next fetched version becomes active again",
+  "rules.activateTitle": "Make active and pin it to this profile",
+  "rules.profileEmpty": "No versions fetched for this profile yet.",
 
   // Admin global routes
   "groutes.title": "Global routes",
   "groutes.subtitle":
-    "Shared address additions and exclusions on top of the RoscomVPN lists — applied to every user.",
+    "Shared address additions and exclusions on top of the fetched lists — applied to every user.",
   "groutes.hint":
     "Entries take effect on the next config export. Exclusions are removed first, then the global additions are merged in, and the user's own routes are applied last.",
   "groutes.count": "{count} total",
@@ -2213,7 +2250,7 @@ const en = {
   "groutes.add": "Add routes",
   "groutes.addHint":
     "Extra addresses and subnets merged into the selected profile's list for every user. A profile takes addresses only, not site names.",
-  "groutes.exclude": "Exclude from the RoscomVPN lists",
+  "groutes.exclude": "Exclude from the fetched lists",
   "groutes.excludeHint":
     "Addresses and subnets stripped from the list before it is handed out. If a user adds the same entry to their own routes it comes back — personal routes win.",
   "groutes.save": "Save routes",

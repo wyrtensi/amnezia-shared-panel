@@ -161,6 +161,8 @@ export type RuleVersion = {
   domainCount?: number;
   status: string;
   publishedAt?: string | null;
+  /** Set when an admin pinned this version; null while the worker publishes. */
+  pinnedAt?: string | null;
   createdAt: string;
 };
 

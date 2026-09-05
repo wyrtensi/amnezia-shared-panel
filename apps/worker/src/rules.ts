@@ -215,8 +215,16 @@ export interface RuleRepository {
   getLastKnownGoodRule: (profile: RuleProfile) => Promise<{
     version: string;
     etag: string | null;
+    /** True when an admin pinned the active version by hand. */
+    pinned: boolean;
   } | null>;
   storeQuarantinedRule: (input: StoredRuleInput) => Promise<void>;
+  /**
+   * Record a version that fetched and validated cleanly but must not go live,
+   * because an admin pinned the profile to an older one. Stored `superseded`
+   * so the admin can see it, diff it and activate it when they choose to.
+   */
+  storeUnpublishedRule: (input: StoredRuleInput) => Promise<void>;
   activateRuleVersion: (input: StoredRuleInput) => Promise<void>;
 }
 
@@ -403,6 +411,17 @@ export const createRuleFetcher = ({
     await repository.storeQuarantinedRule({
       ...baseInput,
       validationReport: { ...validation.report, reason: "poc_gate_closed" },
+    });
+    return;
+  }
+  // An admin pinned this profile to a version of their choosing. Keep
+  // fetching, keep recording what the feed now says, but do not publish it:
+  // the panel shows the newer version next to the pinned one and the admin
+  // decides. Idempotent across ticks — the insert conflicts on the second.
+  if (lastKnownGood?.pinned) {
+    await repository.storeUnpublishedRule({
+      ...baseInput,
+      validationReport: validation.report,
     });
     return;
   }

@@ -101,9 +101,14 @@ describe("RoscomVPN rule ingestion", () => {
 
   const createRepository = (): RuleRepository => ({
     getLastKnownGoodRule: vi.fn(() =>
-      Promise.resolve({ version: "old-checksum", etag: '"old-etag"' }),
+      Promise.resolve({
+        version: "old-checksum",
+        etag: '"old-etag"',
+        pinned: false,
+      }),
     ),
     storeQuarantinedRule: vi.fn(() => Promise.resolve()),
+    storeUnpublishedRule: vi.fn(() => Promise.resolve()),
     activateRuleVersion: vi.fn(() => Promise.resolve()),
   });
 
@@ -120,6 +125,7 @@ describe("RoscomVPN rule ingestion", () => {
     vi.mocked(repository.getLastKnownGoodRule).mockResolvedValue({
       version: checksum,
       etag: null,
+      pinned: false,
     });
     const fetchRules = createRuleFetcher({
       repository,
@@ -190,6 +196,77 @@ describe("RoscomVPN rule ingestion", () => {
 
     expect(repository.activateRuleVersion).toHaveBeenCalledWith(
       expect.objectContaining({ version: checksum, checksum }),
+    );
+  });
+
+  it("records but does not publish a new version while the profile is pinned", async () => {
+    // The admin picked a version by hand. Silently republishing over that on
+    // the next tick is exactly what the pin exists to prevent — but the new
+    // version must still be recorded, or the admin cannot see or diff it.
+    const repository = createRepository();
+    vi.mocked(repository.getLastKnownGoodRule).mockResolvedValue({
+      version: "pinned-checksum",
+      etag: null,
+      pinned: true,
+    });
+    const fetchRules = createRuleFetcher({
+      repository,
+      feed: jsonFeed,
+      fetchImpl: vi.fn(() => Promise.resolve(new Response(sourceBody))),
+    });
+
+    await fetchRules();
+
+    expect(repository.activateRuleVersion).not.toHaveBeenCalled();
+    expect(repository.storeQuarantinedRule).not.toHaveBeenCalled();
+    expect(repository.storeUnpublishedRule).toHaveBeenCalledWith(
+      expect.objectContaining({ version: checksum, checksum }),
+    );
+  });
+
+  it("quarantines rather than holds an invalid version, pinned or not", async () => {
+    // Order matters: a payload that fails validation is bad regardless of who
+    // pinned what, and must not be filed as a publishable candidate.
+    const repository = createRepository();
+    vi.mocked(repository.getLastKnownGoodRule).mockResolvedValue({
+      version: "pinned-checksum",
+      etag: null,
+      pinned: true,
+    });
+    const fetchRules = createRuleFetcher({
+      repository,
+      feed: jsonFeed,
+      fetchImpl: vi.fn(() =>
+        Promise.resolve(
+          new Response(JSON.stringify({ cidrs: ["nonsense"], domains: ["!!"] })),
+        ),
+      ),
+    });
+
+    await fetchRules();
+
+    expect(repository.storeUnpublishedRule).not.toHaveBeenCalled();
+    expect(repository.storeQuarantinedRule).toHaveBeenCalled();
+  });
+
+  it("publishes normally once the pin is released", async () => {
+    const repository = createRepository();
+    vi.mocked(repository.getLastKnownGoodRule).mockResolvedValue({
+      version: "old-checksum",
+      etag: null,
+      pinned: false,
+    });
+    const fetchRules = createRuleFetcher({
+      repository,
+      feed: jsonFeed,
+      fetchImpl: vi.fn(() => Promise.resolve(new Response(sourceBody))),
+    });
+
+    await fetchRules();
+
+    expect(repository.storeUnpublishedRule).not.toHaveBeenCalled();
+    expect(repository.activateRuleVersion).toHaveBeenCalledWith(
+      expect.objectContaining({ version: checksum }),
     );
   });
 

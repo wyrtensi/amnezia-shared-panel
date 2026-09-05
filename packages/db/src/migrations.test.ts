@@ -69,6 +69,31 @@ describe("0013_install_guide_videos", () => {
   });
 });
 
+describe("0030_rule_version_pin", () => {
+  const sql = readFileSync(
+    fileURLToPath(new URL("../migrations/0030_rule_version_pin.sql", import.meta.url)),
+    "utf8",
+  );
+
+  it("adds the pin nullable and without a default", () => {
+    // The whole upgrade story: nothing is pinned on an existing panel, so the
+    // worker keeps publishing exactly as it did before this column existed.
+    expect(sql).toContain(
+      'ALTER TABLE "route_rule_versions" ADD COLUMN "pinned_at" timestamp with time zone;',
+    );
+    expect(sql).not.toMatch(/ADD COLUMN[^;]*(NOT NULL|DEFAULT)/i);
+  });
+
+  it("lets the table itself refuse a second pin on one profile", () => {
+    // The worker reads the pin to decide whether it may publish. Two pins for
+    // one profile would make that read ambiguous, so it is a partial unique
+    // index rather than only a rule the writing transaction keeps.
+    expect(sql).toContain(
+      'CREATE UNIQUE INDEX "route_rule_versions_pinned_profile_unique" ON "route_rule_versions" USING btree ("profile") WHERE "route_rule_versions"."pinned_at" is not null',
+    );
+  });
+});
+
 describe("migration journal", () => {
   const journal = JSON.parse(
     readFileSync(

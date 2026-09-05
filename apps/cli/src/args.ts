@@ -577,3 +577,100 @@ export const checkRecommendedPrefix = (
   }
   return { ok: true };
 };
+
+/**
+ * Structural copy of `sourceName` / `ruleSources` from @amnezia/contracts, for
+ * the same reason as WORKER_PERIOD_FIELDS above: the CLI declares no runtime
+ * dependencies, so it cannot import the workspace package the admin page uses.
+ * `args.test.ts` runs a fixture list of URLs through both implementations and
+ * requires the same answer — an operator reading `rules` in a shell must see a
+ * provider named exactly as the panel names it.
+ *
+ * These are lists of URL SHAPES, not of known feeds. `RULE_FEEDS` is
+ * per-deployment configuration, so a table of "this URL means RoscomVPN" would
+ * go stale the moment an operator repoints a profile — which is how the page
+ * came to be titled after a provider supplying only one of its two lists.
+ */
+const FORGE_PATH_LAYOUTS: Record<string, number> = {
+  "github.com": 0,
+  "raw.githubusercontent.com": 0,
+  "gitlab.com": 0,
+  "codeberg.org": 0,
+  "bitbucket.org": 0,
+  // jsDelivr addresses a repo as /gh/<owner>/<repo>@<ref>/<path>.
+  "cdn.jsdelivr.net": 1,
+  "fastly.jsdelivr.net": 1,
+  "raw.githack.com": 0,
+  "statically.io": 1,
+};
+
+/** Host labels naming how a file is served rather than who serves it. */
+const DELIVERY_LABELS = new Set([
+  "www",
+  "cdn",
+  "raw",
+  "static",
+  "assets",
+  "files",
+  "file",
+  "dl",
+  "download",
+  "downloads",
+  "api",
+  "data",
+  "feed",
+  "feeds",
+  "list",
+  "lists",
+  "mirror",
+  "mirrors",
+  "release",
+  "releases",
+  "s3",
+  "storage",
+]);
+
+/** A short, human-readable name for one rule-source URL. */
+export const sourceName = (url: string): string => {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return url;
+  }
+  const host = parsed.hostname.toLowerCase();
+  const segments = parsed.pathname.split("/").filter(Boolean);
+
+  const skip = FORGE_PATH_LAYOUTS[host];
+  if (skip !== undefined) {
+    const repo = segments[skip + 1];
+    if (repo) return repo.split("@")[0] ?? repo;
+    const owner = segments[skip];
+    if (owner) return owner.split("@")[0] ?? owner;
+    return host;
+  }
+
+  const labels = host.split(".");
+  const named = labels
+    .slice(0, Math.max(1, labels.length - 1))
+    .filter((label) => !DELIVERY_LABELS.has(label));
+  return named[0] ?? labels[0] ?? host;
+};
+
+/**
+ * Every source behind one stored `route_rule_versions.source_url`. The worker
+ * space-joins the URLs of a version merged from several feeds, so one cell can
+ * hold several.
+ */
+export const ruleSources = (
+  sourceUrl: string | null | undefined,
+): Array<{ url: string; name: string }> => {
+  const seen = new Set<string>();
+  const refs: Array<{ url: string; name: string }> = [];
+  for (const url of (sourceUrl ?? "").split(/\s+/).filter(Boolean)) {
+    if (seen.has(url)) continue;
+    seen.add(url);
+    refs.push({ url, name: sourceName(url) });
+  }
+  return refs;
+};
