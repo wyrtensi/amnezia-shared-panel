@@ -485,16 +485,21 @@ export function EmployeeDashboard({
             </CardContent>
           </Card>
         ) : (
-          // Independent columns (masonry): a tall card (rules-outdated callout)
-          // no longer forces a gap under its shorter neighbour.
-          <div className="columns-1 gap-3 sm:columns-2 [&>*]:mb-3">
+          // Plain grid, not multi-column: multi-column fills column-major
+          // (1,3,5 / 2,4,6 reading order), which is wrong for a list people
+          // scan top to bottom. Grid fills row-major (1,2 / 3,4 / 5,6) at the
+          // cost of the masonry packing multi-column gave us: a row's height
+          // is set by its tallest card, so when a tall card (rules-outdated
+          // callout) shares a row with a shorter one, the shorter card
+          // leaves a gap below it instead of the next card flowing up into it.
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             {visibleKeys.map((key) => (
               <div
                 key={key.id}
                 id={`key-card-${key.id}`}
                 tabIndex={-1}
                 className={cn(
-                  "break-inside-avoid rounded-2xl outline-none transition-shadow",
+                  "rounded-2xl outline-none transition-shadow",
                   key.id === justCreatedId &&
                     key.state === "provisioning" &&
                     "ring-2 ring-primary/40",
