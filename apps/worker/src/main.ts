@@ -44,9 +44,16 @@ const parseKeyring = (raw: string): EncryptionKeyring => {
   return keyring;
 };
 
+// Sanitized single-line stderr write, shared by every path that surfaces a
+// failure to the operator watching `docker logs worker`: strip newlines/tabs
+// (so one failure cannot fake extra log lines) and cap the length.
+const logError = (message: string): void => {
+  console.error(message.replace(/[\r\n\t]+/g, " ").slice(0, 2_000));
+};
+
 const reportBackgroundError = (error: unknown): void => {
   const message = error instanceof Error ? error.message : "Unknown background error";
-  console.error(message.replace(/[\r\n\t]+/g, " ").slice(0, 2_000));
+  logError(message);
 };
 
 const database = createDatabase(requiredEnv("DATABASE_URL"));
@@ -168,6 +175,12 @@ const processJob = createJobProcessor({
   createNodeAgent: (node) => createNodeAgentClient(node),
   ruleFetchers,
   accessSync: accessSyncTask,
+  // Without this, a throwing access.sync run is only ever recorded in
+  // job_outbox.last_error: the runner turns the throw into retryJob/failJob
+  // with no console output, so an operator watching `docker logs worker`
+  // would see nothing for a Cloudflare 401, a 5xx, a DNS failure or the fetch
+  // timeout.
+  log: logError,
 });
 
 // Legacy Cloudflare Access pieces, independent features kept exactly as they

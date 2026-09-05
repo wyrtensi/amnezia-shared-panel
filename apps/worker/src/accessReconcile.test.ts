@@ -987,6 +987,17 @@ describe("createAccessSync", () => {
     });
   });
 
+  it("reports skipped with its own detail when there are no active users to write back", async () => {
+    // Same `outcome` string as the "not configured" case above, but the
+    // processor must tell them apart: here the disable half has already run,
+    // so "run cf-config" would be the wrong remedy.
+    const { repository } = makeRepo({ active: [], baseline: ["a@x.io"] });
+    const { createClient } = clientWith([{ email: { email: "a@x.io" } }]);
+    const result = await createAccessSync({ repository, createClient })();
+    expect(result.outcome).toBe("skipped");
+    expect(result.detail).toMatch(/no active/i);
+  });
+
   it("reports synced when it wrote the policy", async () => {
     const { repository } = makeRepo({ active: ["keep@x.io"], baseline: [] });
     const { createClient } = clientWith([]);

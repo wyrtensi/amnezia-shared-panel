@@ -14,6 +14,7 @@
  */
 
 import { writeFile } from "node:fs/promises";
+import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
 import {
@@ -770,10 +771,14 @@ async function cmdCfConfig(args: string[]): Promise<void> {
  */
 function cfAccessConfigured(rows: Array<Record<string, unknown>>): boolean {
   const row = rows[0] ?? {};
+  // Truthiness, not `typeof === "string"`: the worker's own
+  // `getCloudflareConfig` treats a cleared id (stored as "") as unconfigured,
+  // and this check must agree — otherwise cf-sync would queue a run the
+  // worker then fails.
   return (
-    typeof row.cfAccessAccountId === "string" &&
-    typeof row.cfAccessAppId === "string" &&
-    typeof row.cfAccessPolicyId === "string" &&
+    Boolean(row.cfAccessAccountId) &&
+    Boolean(row.cfAccessAppId) &&
+    Boolean(row.cfAccessPolicyId) &&
     row.cfApiTokenSet === true
   );
 }
@@ -2175,9 +2180,24 @@ export async function dispatch(argv: string[]): Promise<void> {
   }
 }
 
-// Only run as a CLI when this file is the entry point — importing it (e.g.
-// from main.test.ts) must never dispatch a command against process.argv.
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+/**
+ * Only run as a CLI when this file is the entry point — importing it (e.g.
+ * from main.test.ts) must never dispatch a command against process.argv.
+ *
+ * Both sides are resolved to a real path before comparing: Node leaves
+ * `process.argv[1]` as the path the shell invoked (no symlink resolution),
+ * while the ESM loader always realpaths the module it turns into
+ * `import.meta.url`. Comparing the raw values is fine for a direct `node
+ * dist/main.js` invocation, but is false whenever `dist/main.js` is reached
+ * through a symlink — exactly what `apps/cli/package.json`'s `bin` produces
+ * under `npm link` or a `.bin` shim — which would make the CLI exit 0 having
+ * dispatched nothing. `realpathSync` throws if the path does not exist at
+ * all, which a real invocation of this file never hits.
+ */
+if (
+  process.argv[1] &&
+  import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href
+) {
   dispatch(process.argv.slice(2)).catch((error: unknown) => {
     console.error(error instanceof Error ? error.message : String(error));
     process.exitCode = 1;

@@ -165,18 +165,23 @@ export const armAccessSyncRow = async (
   reason: AccessSyncArmReason,
 ): Promise<void> => {
   const availableAt = new Date(Date.now() + ACCESS_SYNC_DEBOUNCE_MS);
+  // Built once: the insert branch and the conflict-update branch must see the
+  // SAME marker. Calling accessSyncPayload() twice would mint two UUIDs and
+  // silently discard one, for no benefit — only one of the two branches ever
+  // actually runs per call.
+  const payload = accessSyncPayload(reason);
   await executor
     .insert(jobOutbox)
     .values({
       type: ACCESS_SYNC_JOB_TYPE,
       deduplicationKey: ACCESS_SYNC_DEDUPLICATION_KEY,
-      payload: accessSyncPayload(reason),
+      payload,
       availableAt,
     })
     .onConflictDoUpdate({
       target: jobOutbox.deduplicationKey,
       set: {
-        payload: accessSyncPayload(reason),
+        payload,
         status: sql`CASE WHEN ${jobOutbox.status} IN ('completed','failed') THEN 'pending'::outbox_status ELSE ${jobOutbox.status} END`,
         // Interpolated as an ISO string cast to timestamptz, not as a raw
         // Date: the postgres.js driver can only bind a JS Date on drizzle's

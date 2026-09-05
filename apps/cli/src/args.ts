@@ -131,13 +131,21 @@ export type AccessSyncStatusView = {
  * A run that refused to act — Cloudflare unconfigured, or the blast-radius
  * cap tripped — still finishes as "failed" with the reason, deliberately not
  * reported as success, so the failed branch is the one that matters most.
+ *
+ * A `pending` row can ALSO carry a `lastError`: the runner retries a throwing
+ * sync with backoff while leaving the row pending (see runner.ts), so a
+ * Cloudflare 401/5xx/timeout can repeat for a while before the job is ever
+ * marked failed. Without surfacing it here, that whole window reads as
+ * "pending since …" with no sign that anything is wrong.
  */
 export const formatAccessSyncStatus = (status: AccessSyncStatusView): string => {
   switch (status.status) {
     case "idle":
       return "no reconcile requested yet";
     case "pending":
-      return `pending since ${status.queuedAt ?? "unknown"}`;
+      return status.lastError
+        ? `pending since ${status.queuedAt ?? "unknown"} — retrying after: ${status.lastError}`
+        : `pending since ${status.queuedAt ?? "unknown"}`;
     case "processing":
       return "running";
     case "completed":

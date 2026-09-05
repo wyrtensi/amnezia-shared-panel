@@ -120,6 +120,26 @@ describe("cf-sync", () => {
     expect(calls).toHaveLength(1);
   });
 
+  it("cf-sync refuses when an id was cleared to an empty string, matching the worker's own check", async () => {
+    // The worker's getCloudflareConfig treats "" as unconfigured (a falsy
+    // check); cfAccessConfigured used to accept it (`typeof === "string"`),
+    // so a cleared id would let cf-sync queue a run the worker then fails.
+    const calls = stubFetch([
+      {
+        body: [
+          {
+            cfAccessAccountId: "",
+            cfAccessAppId: "app",
+            cfAccessPolicyId: "pol",
+            cfApiTokenSet: true,
+          },
+        ],
+      },
+    ]);
+    await expect(run(["cf-sync"])).rejects.toThrow(/cf-config/);
+    expect(calls).toHaveLength(1);
+  });
+
   it("cf-sync reports a coalesce when a run is already mid-flight", async () => {
     // The real run response is the outbox row's own status; "processing"
     // means the worker's poller already has it locked.

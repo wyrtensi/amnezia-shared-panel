@@ -179,6 +179,31 @@ describe("PostgresWorkerRepository outbox leases", () => {
     },
   );
 
+  runDatabaseTest(
+    "completes the job when the marker still matches -- the branch every successful run takes",
+    async () => {
+      if (!database || !repository) return;
+      await repository.armAccessSync("timer");
+      // Same debounce note as the mismatched-marker test above: fast-forward
+      // past ACCESS_SYNC_DEBOUNCE_MS so claimJob can pick the row up.
+      await markAccessSyncRow({ availableAt: new Date() });
+      const claimed = await repository.claimJob();
+
+      // Nothing re-arms the row this time, so the marker claimJob() read is
+      // still the current one -- this is the healthy path every successful
+      // sync takes, as opposed to the mismatch case above.
+      await repository.finishAccessSync(
+        claimed!.id,
+        claimed!.payload.armId as string,
+      );
+
+      const row = await readAccessSyncRow();
+      expect(row.status).toBe("completed");
+      expect(row.completedAt).not.toBeNull();
+      expect(row.lastError).toBeNull();
+    },
+  );
+
   // Same database, a sample period stated explicitly rather than inherited:
   // the cadence is the thing under test, so it must not depend on a default.
   const sampledRepository = database

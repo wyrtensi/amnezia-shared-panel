@@ -634,6 +634,33 @@ describe("Access sync job", () => {
     );
   });
 
+  it("tells the operator the disable already ran, not to run cf-config, when skipped for having no active users", async () => {
+    // The two `skipped` reasons must reach the operator distinctly: this one
+    // means the run acted (or found nothing due) and only the write-back had
+    // nothing to push, so "run cf-config" would be the wrong remedy — unlike
+    // the "not configured" case just above, which shares this same outcome
+    // string but no `detail`.
+    const repository = createRepository();
+    const accessSync = vi.fn(() =>
+      Promise.resolve({
+        outcome: "skipped" as const,
+        detail: "No active panel users to write back to Cloudflare.",
+      }),
+    );
+    const processJob = createJobProcessor({
+      repository,
+      createNodeAgent: () => createAgent(),
+      accessSync,
+    });
+
+    await processJob(syncJob);
+
+    expect(repository.failJob).toHaveBeenCalledWith(
+      "job-sync",
+      "No active panel users to write back to Cloudflare.",
+    );
+  });
+
   it("fails the sync job, without throwing, when the run aborted on the cap", async () => {
     const repository = createRepository();
     const accessSync = vi.fn(() =>
@@ -663,5 +690,58 @@ describe("Access sync job", () => {
 
     await expect(processJob(syncJob)).rejects.toThrow(/cloudflare 502/);
     expect(repository.failJob).not.toHaveBeenCalled();
+  });
+
+  it("logs a throwing sync before letting the runner retry it", async () => {
+    // Before this range, the sync ran on a timer whose onError printed every
+    // failure through reportBackgroundError. Now the outbox runner turns a
+    // throw into retryJob/failJob with no console output (runner.ts), so
+    // without this log line a Cloudflare 401/5xx/DNS failure/timeout would be
+    // recorded only in job_outbox.last_error and never reach the worker log.
+    const repository = createRepository();
+    const accessSync = vi.fn(() => Promise.reject(new Error("cloudflare 502")));
+    const log = vi.fn();
+    const processJob = createJobProcessor({
+      repository,
+      createNodeAgent: () => createAgent(),
+      accessSync,
+      log,
+    });
+
+    await expect(processJob(syncJob)).rejects.toThrow(/cloudflare 502/);
+
+    expect(log).toHaveBeenCalledWith(expect.stringContaining("cloudflare 502"));
+    // The rethrow must still be the runner's to catch, unwrapped, so its
+    // retry/backoff behaviour is unchanged.
+    expect(repository.retryJob).not.toHaveBeenCalled();
+    expect(repository.failJob).not.toHaveBeenCalled();
+  });
+
+  it("fails the job instead of spinning when the claimed payload has no arm marker", async () => {
+    // Only the arm SQL (packages/db) ever writes this row and it always sets
+    // a UUID armId, so this is unreachable today. But a silent "" fallback
+    // here would make finishAccessSync never match, leaving the row pending
+    // and immediately reclaimable — one Cloudflare request per second,
+    // forever. It must fail loudly instead.
+    const repository = createRepository();
+    const accessSync = vi.fn(() => Promise.resolve({ outcome: "synced" as const }));
+    const processJob = createJobProcessor({
+      repository,
+      createNodeAgent: () => createAgent(),
+      accessSync,
+    });
+
+    await processJob({
+      id: "job-sync-no-arm",
+      type: "access.sync",
+      payload: { requestedAt: "2026-09-05T00:00:00.000Z", reason: "timer" },
+      attempts: 0,
+    });
+
+    expect(repository.finishAccessSync).not.toHaveBeenCalled();
+    expect(repository.failJob).toHaveBeenCalledWith(
+      "job-sync-no-arm",
+      expect.stringMatching(/armId/i),
+    );
   });
 });

@@ -38,6 +38,14 @@ export type JobProcessorOptions = {
    * the outbox row; this processor is the sole place that runs it.
    */
   accessSync?: () => Promise<AccessSyncOutcome>;
+  /**
+   * Diagnostic log line. Used to surface an `access.sync` failure before it is
+   * rethrown for the runner's retry/backoff to handle — without this, a
+   * Cloudflare 401/5xx/timeout is recorded only in `job_outbox.last_error`
+   * and never reaches the worker's own log. Defaults to a no-op so tests do
+   * not need to wire one.
+   */
+  log?: (message: string) => void;
   now?: () => Date;
 };
 
@@ -51,6 +59,7 @@ export const createJobProcessor = ({
   createNodeAgent,
   ruleFetchers = [],
   accessSync,
+  log = () => undefined,
   now = () => new Date(),
 }: JobProcessorOptions) => {
   const reconcileOrphan = async (
@@ -108,11 +117,27 @@ export const createJobProcessor = ({
         );
         return;
       }
-      const result = await accessSync();
+      let result: AccessSyncOutcome;
+      try {
+        result = await accessSync();
+      } catch (error) {
+        // The runner turns a throw into retryJob/failJob with no console
+        // output (see runner.ts), so without this log line a Cloudflare
+        // 401/5xx/DNS failure/timeout would show up only in
+        // `job_outbox.last_error`, never in `docker logs worker`. Log, then
+        // rethrow the SAME error so the runner's retry/backoff is unchanged.
+        const reason = error instanceof Error ? error.message : "Unknown access-sync error";
+        log(`access-sync: run failed: ${reason}`);
+        throw error;
+      }
       if (result.outcome === "skipped") {
+        // `detail` is set only for the "no active users" skip, whose disable
+        // half may already have run — prefer it over the fixed "not
+        // configured" wording, which would send the operator to `cf-config`
+        // for a run that never needed it. Same pattern as `aborted` below.
         await repository.failJob(
           job.id,
-          "Cloudflare Access is not configured — run cf-config and cf-token",
+          result.detail ?? "Cloudflare Access is not configured — run cf-config and cf-token",
         );
         return;
       }
@@ -122,7 +147,19 @@ export const createJobProcessor = ({
         await repository.failJob(job.id, `aborted: ${result.detail ?? "blast-radius cap"}`);
         return;
       }
-      const armId = typeof job.payload.armId === "string" ? job.payload.armId : "";
+      const armId = job.payload.armId;
+      if (typeof armId !== "string" || armId === "") {
+        // Only the arm SQL (packages/db, untouched here) ever writes this
+        // row, and it always sets a UUID, so this is unreachable today. But a
+        // silent "" fallback would make `finishAccessSync` never match,
+        // leaving the row `pending` and immediately reclaimable — a hot loop
+        // of one Cloudflare request per second, forever. Fail loudly instead.
+        await repository.failJob(
+          job.id,
+          "access.sync job payload is missing its arm marker (armId) — refusing to finish it",
+        );
+        return;
+      }
       await repository.finishAccessSync(job.id, armId);
       return;
     }

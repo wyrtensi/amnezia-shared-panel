@@ -174,7 +174,12 @@ export function createAccessWriteback(options: {
  */
 export type AccessSyncOutcome = {
   outcome: "skipped" | "aborted" | "synced" | "unchanged";
-  /** Human-readable reason, present for `aborted`. */
+  /**
+   * Human-readable reason. Present for `aborted`, and for `skipped` when the
+   * run acted (disabled removed users, or nothing was due) but found no active
+   * users to write back — never for `skipped` when Cloudflare itself is not
+   * configured, which keeps its own fixed wording (see the processor).
+   */
   detail?: string;
 };
 
@@ -465,7 +470,15 @@ export function createAccessSync(options: {
     if (desired.length === 0) {
       log("access-sync: no active users — skipping write-back (safety guard).");
       // Keep the old baseline; never treat "empty" as "remove everyone".
-      return { outcome: "skipped" };
+      // This `detail` is what tells the operator apart from the OTHER skip
+      // reason above (Cloudflare unconfigured): the disable half of this very
+      // run may already have acted, so "run cf-config" would be the wrong
+      // remedy here — see the processor's skipped handling.
+      return {
+        outcome: "skipped",
+        detail:
+          "No active panel users to write back to Cloudflare — nothing to push (any due account disables already ran).",
+      };
     }
 
     const desiredSet = new Set(desired);

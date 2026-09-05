@@ -55,8 +55,14 @@ export function createCloudflareAccessClient(
 
   return {
     async getPolicy() {
+      // 10 s, not the more forgiving 30 s a one-off admin action could afford:
+      // this call runs inside the worker's single job runner, so a slow or
+      // unreachable Cloudflare holds up vpn-key.provision, vpn-key.revoke and
+      // node.reconcile for as long as this attempt takes. 10 s is still far
+      // inside the job's five-minute lease, and Cloudflare's policy endpoints
+      // normally answer in well under a second — see docs/CLOUDFLARE-ACCESS.md.
       const result = await check(
-        await fetch(url, { headers, signal: AbortSignal.timeout(30_000) }),
+        await fetch(url, { headers, signal: AbortSignal.timeout(10_000) }),
         "get policy",
       );
       return result as CfAccessPolicy;
@@ -78,7 +84,8 @@ export function createCloudflareAccessClient(
             exclude: policy.exclude ?? [],
             require: policy.require ?? [],
           }),
-          signal: AbortSignal.timeout(30_000),
+          // Same 10 s trade-off as getPolicy() above.
+          signal: AbortSignal.timeout(10_000),
         }),
         "update policy",
       );

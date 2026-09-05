@@ -654,6 +654,83 @@ describe("manual route-feed refresh", () => {
   });
 });
 
+describe("manual Cloudflare Access sync trigger", () => {
+  const status = {
+    status: "pending" as const,
+    queuedAt: "2026-09-05T10:00:00.000Z",
+    completedAt: null,
+    lastError: null,
+  };
+
+  it("arms the sync through the admin action handler", async () => {
+    const service = createService();
+    const admin = { ...user, role: "admin" as const };
+    vi.mocked(service.resolveIdentity).mockResolvedValue(admin);
+    vi.mocked(service.adminAction).mockResolvedValue(status);
+    const app = await buildApp({ service, environment: "development" });
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/admin/access-sync/global/run",
+      headers: { "x-dev-user-email": admin.email },
+      payload: {},
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual(status);
+    expect(service.adminAction).toHaveBeenCalledWith(
+      admin,
+      "access-sync",
+      "global",
+      "run",
+      {},
+    );
+    await app.close();
+  });
+
+  it("reads the last run's outcome", async () => {
+    const service = createService();
+    const admin = { ...user, role: "admin" as const };
+    vi.mocked(service.resolveIdentity).mockResolvedValue(admin);
+    vi.mocked(service.getAccessSyncStatus).mockResolvedValue(status);
+    const app = await buildApp({ service, environment: "development" });
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/admin/access-sync",
+      headers: { "x-dev-user-email": admin.email },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual(status);
+    expect(service.getAccessSyncStatus).toHaveBeenCalledWith(admin);
+    await app.close();
+  });
+
+  it("keeps both endpoints away from a non-admin", async () => {
+    const service = createService();
+    const app = await buildApp({ service, environment: "development" });
+
+    for (const request of [
+      { method: "GET" as const, url: "/api/admin/access-sync" },
+      {
+        method: "POST" as const,
+        url: "/api/admin/access-sync/global/run",
+        payload: {},
+      },
+    ]) {
+      const response = await app.inject({
+        ...request,
+        headers: { "x-dev-user-email": user.email },
+      });
+      expect(response.statusCode).toBe(403);
+    }
+    expect(service.getAccessSyncStatus).not.toHaveBeenCalled();
+    expect(service.adminAction).not.toHaveBeenCalled();
+    await app.close();
+  });
+});
+
 const SNAPSHOT: ClientRelease = {
   version: "5.0.1.5",
   releaseUrl: "https://github.com/amnezia-vpn/amnezia-client/releases/tag/5.0.1.5",

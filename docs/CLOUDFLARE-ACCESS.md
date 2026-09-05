@@ -237,18 +237,38 @@ separate env-driven tasks (which would fight — see the safety note at the end 
 Direction 2). The per-direction sections below remain the reference for the
 underlying Cloudflare API and the exact token scopes.
 
-**How fast a change lands.** A panel-side user change (add, remove, edit) arms
-this task immediately, so the write reaches the Access policy within seconds
-rather than waiting for the next scheduled run. The periodic reconcile
-(`ACCESS_RECONCILE_INTERVAL_MS`, default hourly) remains the source of truth
-and keeps running regardless — it is what catches anything a panel-side change
-did not, such as a removal made directly in Cloudflare (Direction 1). An
-operator can also ask for a reconcile right now with `amnezia-panel cf-sync`
-(refuses immediately, without queuing anything, if Cloudflare is not yet
-configured) and check the outcome of the last run with `cf-sync --status`. A
-run that refused to act — Cloudflare unconfigured, or the blast-radius cap
-below tripped — finishes as **failed** with the reason, which is exactly what
-`cf-sync --status` reports; it is deliberately not reported as success.
+**How fast a change lands.** A panel-side user change — adding, offboarding or
+reinstating one — arms this task immediately, so the write usually reaches
+the Access policy within seconds rather than waiting for the next scheduled
+run. Editing a user (role, key limit, display name, …) does **not** arm it,
+and none should: none of those fields change who Access ought to admit.
+
+"Within seconds" is the common case, not a guarantee. The sync shares the
+worker's single job runner with `vpn-key.provision`, `vpn-key.revoke` and
+`node.reconcile`, so while Cloudflare is unreachable, each reconcile attempt
+that has to fail before the runner can move on delays those key jobs by up to
+the Cloudflare fetch timeout (10 s — see `apps/worker/src/cloudflareApi.ts`).
+A worker crash is a larger delay still: the row stays locked for up to the
+five-minute job lease before anything reclaims it, and a retry backoff on top
+of that can stretch the wait further.
+
+Saving the panel's Cloudflare policy form also arms a run, even when none of
+its Cloudflare fields actually changed, because the form submits the whole
+`portal_policy` row as one update and the arm only looks at which fields were
+named, not whether their value moved. This is deliberately left as documented
+behaviour rather than fixed with diffing logic: a policy save is a rare admin
+action, and the cost of an unnecessary arm is one extra request.
+
+The periodic reconcile (`ACCESS_RECONCILE_INTERVAL_MS`, default hourly)
+remains the source of truth and keeps running regardless — it is what catches
+anything a panel-side change did not, such as a removal made directly in
+Cloudflare (Direction 1). An operator can also ask for a reconcile right now
+with `amnezia-panel cf-sync` (refuses immediately, without queuing anything,
+if Cloudflare is not yet configured) and check the outcome of the last run
+with `cf-sync --status`. A run that refused to act — Cloudflare unconfigured,
+or the blast-radius cap below tripped — finishes as **failed** with the
+reason, which is exactly what `cf-sync --status` reports; it is deliberately
+not reported as success.
 
 Bootstrap admins (`BOOTSTRAP_ADMIN_EMAILS`) are **pinned**: the sync never drops
 them from the policy `include` list and never disables them, so the policy can

@@ -132,6 +132,21 @@ describe("formatAccessSyncStatus", () => {
       }),
     ).toBe("pending since 2026-09-05T09:00:00.000Z");
   });
+  it("surfaces a retrying failure instead of a bare 'pending since'", () => {
+    // A throwing sync stays "pending" through the runner's retry/backoff
+    // (job_outbox.last_error is set, but the status never moves to "failed"
+    // until attempts are exhausted) — without this, an operator watching
+    // `cf-sync --status` sees nothing wrong while it keeps failing.
+    expect(
+      formatAccessSyncStatus({
+        status: "pending",
+        queuedAt: "2026-09-05T09:00:00.000Z",
+        lastError: "Cloudflare get policy failed (401): invalid token",
+      }),
+    ).toBe(
+      "pending since 2026-09-05T09:00:00.000Z — retrying after: Cloudflare get policy failed (401): invalid token",
+    );
+  });
   it("shows a run in flight", () => {
     expect(formatAccessSyncStatus({ status: "processing" })).toBe("running");
   });
