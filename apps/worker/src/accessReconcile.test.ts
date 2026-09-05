@@ -6,7 +6,7 @@ import {
   createAllowlistDirectory,
   createCloudflareDirectory,
 } from "./accessReconcile.js";
-import type { CfAccessRule } from "./cloudflareApi.js";
+import type { CfAccessPolicy, CfAccessRule } from "./cloudflareApi.js";
 
 const CF_CONFIG = {
   accountId: "acc",
@@ -213,11 +213,19 @@ describe("createAccessSync", () => {
     config?: typeof CF_CONFIG | null;
     active: string[];
     baseline: string[];
+    // Domain half of the two-way sync. `desiredDomains` mirrors the operator's
+    // cf_access_allowed_domains; `syncedDomains` mirrors the domain baseline
+    // (cf_access_synced_domains), defaulting to [] like a panel that has never
+    // synced a domain.
+    desiredDomains?: string[];
+    syncedDomains?: string[];
   }) => {
     const active = new Set(init.active.map((email) => email.toLowerCase()));
     let baseline = [...init.baseline];
-    const setAccessSyncBaseline = vi.fn((emails: string[]) => {
+    let syncedDomains = [...(init.syncedDomains ?? [])];
+    const setAccessSyncBaseline = vi.fn((emails: string[], domains: string[]) => {
       baseline = [...emails];
+      syncedDomains = [...domains];
       return Promise.resolve();
     });
     const deactivateByEmail = vi.fn((emails: string[]) => {
@@ -235,6 +243,8 @@ describe("createAccessSync", () => {
         Promise.resolve(init.config === undefined ? CF_CONFIG : init.config),
       listActiveUserEmails: () => Promise.resolve([...active]),
       getAccessSyncBaseline: () => Promise.resolve(baseline),
+      getAccessSyncDesiredDomains: () => Promise.resolve(init.desiredDomains ?? []),
+      getAccessSyncBaselineDomains: () => Promise.resolve(syncedDomains),
       setAccessSyncBaseline,
       deactivateByEmail,
     };
@@ -243,15 +253,100 @@ describe("createAccessSync", () => {
       deactivateByEmail,
       setAccessSyncBaseline,
       getBaseline: () => baseline,
+      getSyncedDomains: () => syncedDomains,
     };
   };
 
-  const clientWith = (include: CfAccessRule[], updatePolicy = vi.fn(() => Promise.resolve())) => ({
+  const clientWith = (
+    include: CfAccessRule[],
+    updatePolicy = vi.fn<(policy: CfAccessPolicy) => Promise<void>>(() =>
+      Promise.resolve(),
+    ),
+  ) => ({
     updatePolicy,
     createClient: () => ({
       getPolicy: () => Promise.resolve({ id: "pol", include }),
       updatePolicy,
     }),
+  });
+
+  describe("domain ownership", () => {
+    it("adds a domain the panel wants and is not in the policy", async () => {
+      const { repository } = makeRepo({ active: ["a@x.io"], baseline: ["a@x.io"], desiredDomains: ["x.io"] });
+      const { createClient, updatePolicy } = clientWith([{ email: { email: "a@x.io" } }]);
+      await createAccessSync({ repository, createClient })();
+      expect(updatePolicy).toHaveBeenCalledWith({
+        id: "pol",
+        include: [{ email_domain: { domain: "x.io" } }, { email: { email: "a@x.io" } }],
+      });
+    });
+
+    it("removes a domain it owns once the panel no longer wants it", async () => {
+      const { repository } = makeRepo({
+        active: ["a@x.io"], baseline: ["a@x.io"], desiredDomains: [], syncedDomains: ["x.io"],
+      });
+      const { createClient, updatePolicy } = clientWith([
+        { email_domain: { domain: "x.io" } },
+        { email: { email: "a@x.io" } },
+      ]);
+      await createAccessSync({ repository, createClient })();
+      expect(updatePolicy).toHaveBeenCalledWith({ id: "pol", include: [{ email: { email: "a@x.io" } }] });
+    });
+
+    it("never removes a domain rule it does not own", async () => {
+      const { repository } = makeRepo({
+        active: ["a@x.io"], baseline: ["a@x.io"], desiredDomains: [], syncedDomains: [],
+      });
+      const { createClient, updatePolicy } = clientWith([
+        { email_domain: { domain: "someone-else.tld" } },
+        { email: { email: "a@x.io" } },
+      ]);
+      await createAccessSync({ repository, createClient })();
+      expect(updatePolicy).not.toHaveBeenCalled();
+    });
+
+    it("keeps groups and other non-email rules by reference", async () => {
+      const { repository } = makeRepo({
+        active: ["a@x.io"], baseline: [], desiredDomains: ["x.io"], syncedDomains: [],
+      });
+      const group = { group: { id: "g1", extra_field: "kept" } };
+      const { createClient, updatePolicy } = clientWith([group]);
+      await createAccessSync({ repository, createClient })();
+      expect(updatePolicy).toHaveBeenCalledOnce();
+      const sent = updatePolicy.mock.calls[0]?.[0]?.include;
+      expect(sent?.[0]).toBe(group); // same object, unmodelled fields intact
+    });
+
+    it("claims a hand-added rule for a domain it now manages, without a write", async () => {
+      const { repository, getSyncedDomains } = makeRepo({
+        active: ["a@x.io"], baseline: ["a@x.io"], desiredDomains: ["x.io"], syncedDomains: [],
+      });
+      const { createClient, updatePolicy } = clientWith([
+        { email_domain: { domain: "x.io" } },
+        { email: { email: "a@x.io" } },
+      ]);
+      await createAccessSync({ repository, createClient })();
+      expect(updatePolicy).not.toHaveBeenCalled(); // the policy text already matches
+      expect(getSyncedDomains()).toEqual(["x.io"]); // but ownership is now recorded
+    });
+
+    it("re-adds a panel-owned domain someone deleted in the dashboard", async () => {
+      const { repository } = makeRepo({
+        active: ["a@x.io"], baseline: ["a@x.io"], desiredDomains: ["x.io"], syncedDomains: ["x.io"],
+      });
+      const { createClient, updatePolicy } = clientWith([{ email: { email: "a@x.io" } }]);
+      await createAccessSync({ repository, createClient })();
+      expect(updatePolicy).toHaveBeenCalled();
+    });
+
+    it("still writes an explicit email for a user the domain covers", async () => {
+      const { repository } = makeRepo({ active: ["a@x.io"], baseline: [], desiredDomains: ["x.io"] });
+      const { createClient, updatePolicy } = clientWith([]);
+      await createAccessSync({ repository, createClient })();
+      expect(updatePolicy).toHaveBeenCalledOnce();
+      const sent = updatePolicy.mock.calls[0]?.[0]?.include;
+      expect(sent).toContainEqual({ email: { email: "a@x.io" } });
+    });
   });
 
   it("skips when Cloudflare is not configured", async () => {

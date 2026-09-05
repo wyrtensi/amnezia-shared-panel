@@ -188,6 +188,14 @@ export type AccessSyncOutcome = {
 const normalizeEmail = (email: string): string => email.trim().toLowerCase();
 
 /**
+ * Trim, lower-case, and drop empties from a list of Access domains — the list
+ * equivalent of `normalizeEmail`, sharing `normalizeAccessDomain`'s leniency
+ * about the dashboard's "@domain" form (see `domainAllowlist` below).
+ */
+const normalizeList = (values: string[]): string[] =>
+  values.map(normalizeAccessDomain).filter(Boolean);
+
+/**
  * Domains admitted by the policy's `email_domain` ("emails ending in") rules.
  * Cloudflare stores the bare domain, but the dashboard shows it with a leading
  * "@" and operators paste it that way, so both forms are accepted (and a
@@ -222,6 +230,27 @@ const domainOf = (email: string): string => {
 };
 
 /**
+ * Whether a rule is an `email_domain` rule at all, regardless of whether its
+ * `domain` value turns out to be usable. Used to split the policy's `include`
+ * into "domain rules" and "everything else the panel does not write"; a rule
+ * this predicate admits with an unusable domain is dropped later, once its
+ * domain is normalised (see `ruleDomain` below).
+ */
+const isDomainRule = (rule: CfAccessRule): boolean =>
+  typeof (rule as { email_domain?: { domain?: string } }).email_domain?.domain ===
+  "string";
+
+/**
+ * A rule's domain, normalised, or "" if the rule has none or it does not
+ * survive normalisation (blank, a bare "@", ...). Never throws on a rule that
+ * is not a domain rule at all — `email_domain` is simply absent.
+ */
+const ruleDomain = (rule: CfAccessRule): string =>
+  normalizeAccessDomain(
+    (rule as { email_domain?: { domain?: string } }).email_domain?.domain ?? "",
+  );
+
+/**
  * Two-way Cloudflare Access sync (the "2 side" policy editor).
  *
  * A single task reconciles the panel's active-user set against the Access
@@ -251,7 +280,16 @@ export function createAccessSync(options: {
     getCloudflareConfig: () => Promise<CloudflareConfig | null>;
     listActiveUserEmails: () => Promise<string[]>;
     getAccessSyncBaseline: () => Promise<string[]>;
-    setAccessSyncBaseline: (emails: string[]) => Promise<void>;
+    // Domains the operator has configured to whitelist via `email_domain`
+    // rules (portal_policy.cf_access_allowed_domains).
+    getAccessSyncDesiredDomains: () => Promise<string[]>;
+    // Domain half of the baseline: the domain set the panel itself last wrote
+    // as `email_domain` rules (portal_policy.cf_access_synced_domains).
+    // Mirrors getAccessSyncBaseline for emails.
+    getAccessSyncBaselineDomains: () => Promise<string[]>;
+    // Widened to one UPDATE covering both baselines, so a crash between the
+    // two writes can never leave one ahead of the other.
+    setAccessSyncBaseline: (emails: string[], domains: string[]) => Promise<void>;
     deactivateByEmail: (
       emails: string[],
     ) => Promise<{ deactivated: string[]; skippedAdmins: string[] }>;
@@ -315,8 +353,18 @@ export function createAccessSync(options: {
     const policy = await client.getPolicy();
     const include = Array.isArray(policy.include) ? policy.include : [];
     const exclude = Array.isArray(policy.exclude) ? policy.exclude : [];
-    // Rules the panel never writes: everything that is not an email rule.
-    const nonEmailRules = include.filter((rule) => !rule.email?.email);
+    // Split for writing: `otherRules` (groups, `everyone`, anything this
+    // client does not model — never ours) and `domainRules` (`email_domain`
+    // rules, which the panel may now own — see the domain-ownership split
+    // below). `nonEmailRules` reconstructs the pre-split set from the two so
+    // rail 2 below keeps reading EXACTLY what it always has: coverage from
+    // the fetched policy's non-email rules, never from a desired list whose
+    // write has not landed.
+    const otherRules = include.filter(
+      (rule) => !rule.email?.email && !isDomainRule(rule),
+    );
+    const domainRules = include.filter(isDomainRule);
+    const nonEmailRules = [...otherRules, ...domainRules];
     const cfEmails = new Set(
       include
         .map((rule) => rule.email?.email)
@@ -496,32 +544,74 @@ export function createAccessSync(options: {
       const email = rule.email?.email;
       return email ? normalizeEmail(email) : undefined;
     };
-    const foreignRules = include.filter((rule) => {
+    const foreignEmailRules = include.filter((rule) => {
       const email = ruleEmail(rule);
       if (!email) return false;
       return !owned.has(email) && !desiredSet.has(email);
     });
-    const foreignEmails = foreignRules
+    const foreignEmails = foreignEmailRules
       .map(ruleEmail)
       .filter((email): email is string => Boolean(email));
-    // In sync when the email set the policy would end up with already matches
-    // the one it has. Compared as sets, because foreign rules keep their place.
+
+    // Same ownership split, one level up, for domain rules: the panel may only
+    // delete an `email_domain` rule it put there itself (the domain baseline),
+    // and only once it stops wanting that domain (the operator's desired list,
+    // cf_access_allowed_domains). A domain rule neither owned nor desired
+    // belongs to someone else — another team, another tool — and is preserved
+    // by reference, fields and all.
+    const desiredDomains = normalizeList(
+      await repository.getAccessSyncDesiredDomains(),
+    );
+    const ownedDomains = new Set(
+      normalizeList(await repository.getAccessSyncBaselineDomains()),
+    );
+    const desiredDomainSet = new Set(desiredDomains);
+    const foreignDomainRules = domainRules.filter((rule) => {
+      const domain = ruleDomain(rule);
+      return domain !== "" && !ownedDomains.has(domain) && !desiredDomainSet.has(domain);
+    });
+    const foreignDomains = foreignDomainRules
+      .map(ruleDomain)
+      .filter((domain) => domain !== "");
+    // The policy's CURRENT domain set — read from the fetched policy's domain
+    // rules, exactly like rail 2's coverage above, never from `desiredDomains`
+    // itself: a desired domain whose write has not landed yet is not cover,
+    // and here it must not look "already in sync" either.
+    const cfDomains = domainAllowlist(domainRules);
+    const nextDomains = new Set([...foreignDomains, ...desiredDomains]);
+    const domainsInSync =
+      nextDomains.size === cfDomains.size &&
+      [...nextDomains].every((domain) => cfDomains.has(domain));
+
+    // In sync when BOTH the email set and the domain set the policy would end
+    // up with already match what it has now — a domain-only change (nothing
+    // to do with emails) must still trigger a write.
     const nextEmails = new Set([...foreignEmails, ...desired]);
-    const cfInSync =
+    const emailsInSync =
       nextEmails.size === cfEmails.size &&
       [...nextEmails].every((email) => cfEmails.has(email));
+    const cfInSync = emailsInSync && domainsInSync;
     if (!cfInSync) {
+      // One PUT for both halves: splitting "drop the domain" and "write the
+      // emails" into two requests would leave a window where Cloudflare
+      // reflects only part of this run's decision.
       const nextInclude: CfAccessRule[] = [
-        ...nonEmailRules,
-        ...foreignRules,
+        ...otherRules,
+        ...foreignDomainRules,
+        ...desiredDomains.map((domain) => ({ email_domain: { domain } })),
+        ...foreignEmailRules,
         ...desired.map((email) => ({ email: { email } })),
       ];
       await client.updatePolicy({ ...policy, include: nextInclude });
-      log(`access-sync: pushed ${desired.length} email(s) to the Access policy.`);
+      log(
+        `access-sync: pushed ${desired.length} email(s) and ${desiredDomains.length} domain(s) to the Access policy.`,
+      );
     }
 
     // Record what Cloudflare now reflects so the next run can diff against it.
-    await repository.setAccessSyncBaseline(desired);
+    // Both baselines in the SAME call so a crash between them can never leave
+    // one ahead of the other.
+    await repository.setAccessSyncBaseline(desired, desiredDomains);
     return { outcome: cfInSync ? "unchanged" : "synced" };
   };
 }

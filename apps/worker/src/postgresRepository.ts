@@ -549,12 +549,44 @@ export class PostgresWorkerRepository
     return row?.emails ?? [];
   };
 
-  setAccessSyncBaseline = async (emails: string[]): Promise<void> => {
+  // Domains the operator has asked the panel to manage as `email_domain`
+  // rules (cf_access_allowed_domains). NOT NULL default `[]`, so no fallback
+  // is needed once the row exists; a missing row (Cloudflare never
+  // configured) reads as "no domains desired".
+  getAccessSyncDesiredDomains = async (): Promise<string[]> => {
+    const [row] = await this.options.db
+      .select({ domains: portalPolicy.cfAccessAllowedDomains })
+      .from(portalPolicy)
+      .limit(1);
+    return row?.domains ?? [];
+  };
+
+  // Domain half of the two-way Access sync baseline: the domain set the panel
+  // itself last wrote as `email_domain` rules. Mirrors getAccessSyncBaseline;
+  // null until the first domain sync.
+  getAccessSyncBaselineDomains = async (): Promise<string[]> => {
+    const [row] = await this.options.db
+      .select({ domains: portalPolicy.cfAccessSyncedDomains })
+      .from(portalPolicy)
+      .limit(1);
+    return row?.domains ?? [];
+  };
+
+  setAccessSyncBaseline = async (
+    emails: string[],
+    domains: string[],
+  ): Promise<void> => {
     // portal_policy is a singleton (id = true) that exists once Cloudflare has
-    // been configured — the only path that calls this.
+    // been configured — the only path that calls this. Both baselines are
+    // written in the SAME statement so a crash between them can never leave
+    // one ahead of the other.
     await this.options.db
       .update(portalPolicy)
-      .set({ cfAccessSyncedEmails: emails, updatedAt: new Date() })
+      .set({
+        cfAccessSyncedEmails: emails,
+        cfAccessSyncedDomains: domains,
+        updatedAt: new Date(),
+      })
       .where(eq(portalPolicy.id, true));
   };
 

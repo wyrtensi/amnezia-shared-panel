@@ -13,6 +13,7 @@ import {
   nodes,
   peerCurrent,
   peerSamples,
+  portalPolicy,
   trafficRollups,
   users,
   vpnKeys,
@@ -43,6 +44,7 @@ describe("PostgresWorkerRepository outbox leases", () => {
   beforeEach(async () => {
     if (!database) return;
     await database.db.delete(auditEvents);
+    await database.db.delete(portalPolicy);
     await database.db.delete(trafficRollups);
     await database.db.delete(peerSamples);
     await database.db.delete(peerCurrent);
@@ -201,6 +203,41 @@ describe("PostgresWorkerRepository outbox leases", () => {
       expect(row.status).toBe("completed");
       expect(row.completedAt).not.toBeNull();
       expect(row.lastError).toBeNull();
+    },
+  );
+
+  runDatabaseTest(
+    "reads the domain baseline and writes both baselines in one UPDATE",
+    async () => {
+      if (!database || !repository) return;
+      await database.db.insert(portalPolicy).values({});
+      await database.db
+        .update(portalPolicy)
+        .set({ cfAccessAllowedDomains: ["x.io", "y.io"] })
+        .where(eq(portalPolicy.id, true));
+
+      await expect(repository.getAccessSyncDesiredDomains()).resolves.toEqual([
+        "x.io",
+        "y.io",
+      ]);
+      // Null until the first domain sync -- the mirror of the email baseline.
+      await expect(repository.getAccessSyncBaselineDomains()).resolves.toEqual([]);
+
+      await repository.setAccessSyncBaseline(["a@x.io"], ["x.io"]);
+
+      const [row] = await database.db
+        .select({
+          emails: portalPolicy.cfAccessSyncedEmails,
+          domains: portalPolicy.cfAccessSyncedDomains,
+        })
+        .from(portalPolicy)
+        .where(eq(portalPolicy.id, true));
+      // Both columns landed from the SAME statement -- there is no window in
+      // which one baseline could be observed ahead of the other.
+      expect(row).toEqual({ emails: ["a@x.io"], domains: ["x.io"] });
+      await expect(repository.getAccessSyncBaselineDomains()).resolves.toEqual([
+        "x.io",
+      ]);
     },
   );
 

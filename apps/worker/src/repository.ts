@@ -96,6 +96,27 @@ export interface WorkerRepository {
     overMajority: boolean;
   }) => Promise<void>;
   /**
+   * Domains the operator has configured to whitelist via `email_domain` rules
+   * in the Access policy (`portal_policy.cf_access_allowed_domains`). Empty
+   * means the panel manages no domain rule.
+   */
+  getAccessSyncDesiredDomains: () => Promise<string[]>;
+  /**
+   * Domain half of the two-way Access sync baseline: the domain set the panel
+   * itself last wrote as `email_domain` rules
+   * (`portal_policy.cf_access_synced_domains`). Mirrors the email baseline —
+   * lets the sync tell its own domain rules from a hand-added or another
+   * tool's rule, and never delete one it did not add. Empty until the first
+   * domain sync.
+   */
+  getAccessSyncBaselineDomains: () => Promise<string[]>;
+  /**
+   * Record what the Access policy now reflects: the synced email set and the
+   * synced domain set, written together in a single `UPDATE` so a crash
+   * between the two writes can never leave one baseline ahead of the other.
+   */
+  setAccessSyncBaseline: (emails: string[], domains: string[]) => Promise<void>;
+  /**
    * Arm the single `access.sync` outbox row so the next poll runs a
    * reconciliation, coalescing a burst of changes into one run. A row already
    * pending or processing keeps its lifecycle columns -- the attempt in
