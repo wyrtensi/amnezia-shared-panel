@@ -630,12 +630,10 @@ still carves one person back out from under it by naming their address (or
 the domain itself) in the policy's `exclude` list, and the sync still never
 touches `exclude` itself, only reads it.
 
-**A domain here does not by itself let anyone in.** The identity provider is
-still domain-locked today: Google refuses sign-in from an account outside the
-Workspace domain before the Access policy is ever consulted. Adding a domain
-here widens who the *policy* would admit if a sign-in got that far — it is
-not a substitute for, and cannot override, whatever the identity provider
-decides first.
+**A domain here does not by itself let anyone in.** Whether someone can
+actually authenticate is still up to the identity provider — adding a domain
+here only widens who the *policy* would admit; it is not a substitute for,
+and cannot override, whatever the identity provider decides.
 
 **The panel does not see rules it does not own.** `control-api` never
 fetches the Access policy itself — only this worker sync does, and only to

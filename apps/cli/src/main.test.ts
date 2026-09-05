@@ -285,6 +285,22 @@ describe("cf-domains", () => {
     expect(calls).toHaveLength(0);
   });
 
+  it("refuses to combine --set and --add in one call, without reading the policy at all", async () => {
+    const calls = stubFetch([{ body: [{ cfAccessAllowedDomains: [] }] }]);
+    await expect(
+      run(["cf-domains", "--set=a.tld,b.tld", "--add=c.tld"]),
+    ).rejects.toThrow(/one at a time/);
+    expect(calls).toHaveLength(0);
+  });
+
+  it("refuses to combine --set and --remove in one call, without reading the policy at all", async () => {
+    const calls = stubFetch([{ body: [{ cfAccessAllowedDomains: [] }] }]);
+    await expect(
+      run(["cf-domains", "--set=a.tld,b.tld", "--remove=c.tld"]),
+    ).rejects.toThrow(/one at a time/);
+    expect(calls).toHaveLength(0);
+  });
+
   it("an invalid domain surfaces the API's own message instead of a generic failure", async () => {
     const calls = stubFetch([
       { body: [{ cfAccessAllowedDomains: [] }] },
