@@ -41,6 +41,7 @@ import {
 import type { ServiceCheckUserState } from "@amnezia/contracts";
 import {
   ACCESS_SYNC_DEDUPLICATION_KEY,
+  accessDomainListSchema,
   createKeyRequestSchema,
   customRoutesSchema,
   DEFAULT_ALLOWED_PROTOCOLS,
@@ -162,6 +163,10 @@ const adminPolicyUpdateSchema = portalPolicySchema.partial().extend({
   cfAccessAccountId: z.string().max(64).nullable().optional(),
   cfAccessAppId: z.string().max(64).nullable().optional(),
   cfAccessPolicyId: z.string().max(64).nullable().optional(),
+  // Domains admitted by the Access policy, global-only like the fields above:
+  // a per-user override here would let one user's policy change who Cloudflare
+  // lets in for everybody.
+  cfAccessAllowedDomains: accessDomainListSchema.optional(),
   // Global-only, exactly like defaultKeyLimit above: keeping them out of
   // portalPolicySchema is what stops them being overridable per user.
   recommendedNodeIds: recommendedNodeIdsSchema.optional(),
@@ -194,6 +199,7 @@ const CF_ACCESS_CONFIG_FIELDS = [
   "cfAccessAccountId",
   "cfAccessAppId",
   "cfAccessPolicyId",
+  "cfAccessAllowedDomains",
 ] as const;
 
 // Canonicalize a validated global-routes object the same way custom routes are
@@ -2244,6 +2250,7 @@ export class PostgresControlRepository implements ControlRepository {
             cfAccessAccountId: null,
             cfAccessAppId: null,
             cfAccessPolicyId: null,
+            cfAccessAllowedDomains: [] as string[],
             cfApiTokenSet: false,
             createdAt: new Date(),
             updatedAt: new Date(),

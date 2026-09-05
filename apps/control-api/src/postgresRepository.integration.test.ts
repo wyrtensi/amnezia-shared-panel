@@ -1920,6 +1920,60 @@ describe("PostgresControlRepository global policy update", () => {
       ).resolves.toBeDefined();
     },
   );
+
+  runDatabaseTest(
+    "normalises and de-duplicates the domains it stores",
+    async () => {
+      if (!database) return;
+      const repository = new PostgresControlRepository({
+        db: database.db,
+        keyring,
+      });
+      await repository.adminAction(admin, "portal-policy", "global", "update", {
+        cfAccessAllowedDomains: ["@Company.TLD", "company.tld", " other.tld "],
+      });
+      const [row] = (await repository.adminList(
+        admin,
+        "portal-policy",
+      )) as Array<{ cfAccessAllowedDomains: string[] }>;
+      expect(row?.cfAccessAllowedDomains).toEqual(["company.tld", "other.tld"]);
+    },
+  );
+
+  runDatabaseTest(
+    "refuses an address in the domain list",
+    async () => {
+      if (!database) return;
+      const repository = new PostgresControlRepository({
+        db: database.db,
+        keyring,
+      });
+      await expect(
+        repository.adminAction(admin, "portal-policy", "global", "update", {
+          cfAccessAllowedDomains: ["someone@company.tld"],
+        }),
+      ).rejects.toThrow(/address/i);
+    },
+  );
+
+  // Must run with no portal_policy row present, so the row is cleared here
+  // rather than relying on suite order to leave the table empty.
+  runDatabaseTest(
+    "gives a fresh install an empty domain list to round-trip",
+    async () => {
+      if (!database) return;
+      const repository = new PostgresControlRepository({
+        db: database.db,
+        keyring,
+      });
+      await database.db.delete(portalPolicy);
+      const [row] = (await repository.adminList(
+        admin,
+        "portal-policy",
+      )) as Array<{ cfAccessAllowedDomains: string[] }>;
+      expect(row?.cfAccessAllowedDomains).toEqual([]);
+    },
+  );
 });
 
 describe("PostgresControlRepository node agent update", () => {
@@ -3132,6 +3186,24 @@ describe("PostgresControlRepository Access sync arming", () => {
       });
       const afterToken = await readAccessSyncRow();
       expect(afterToken!.payload.armId).not.toBe(beforeToken);
+    },
+  );
+
+  runDatabaseTest(
+    "arms the Access sync when the domain list is named",
+    async () => {
+      if (!database) return;
+      const repository = subject();
+      await repository.adminAction(admin, "portal-policy", "global", "update", {
+        cfAccessAccountId: "cf-account-placeholder",
+      });
+      const before = (await readAccessSyncRow())!.payload.armId;
+
+      await repository.adminAction(admin, "portal-policy", "global", "update", {
+        cfAccessAllowedDomains: ["company.tld"],
+      });
+      const after = (await readAccessSyncRow())!.payload.armId;
+      expect(after).not.toBe(before);
     },
   );
 
