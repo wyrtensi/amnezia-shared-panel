@@ -25,8 +25,6 @@ import {
 } from "@/components/ui/tooltip";
 import { StatusBadge } from "@/components/status-badge";
 import { Callout } from "@/components/ui/hint";
-import { deviceSupportsRouteProfiles } from "@amnezia/contracts";
-import { cn } from "@/lib/utils";
 import { configUrl } from "@/lib/api";
 import { formatDate } from "@/lib/format";
 import { TrafficSplit } from "@/components/inline-traffic";
@@ -78,12 +76,6 @@ export function KeyCard({
   // Rotation re-issues the peer with current rules; only meaningful for
   // rule-based profiles (a full-tunnel key never needs new rules).
   const canRotate = keyView.routeProfile !== "full_tunnel";
-  // A route profile on an iOS key is stored and shown, but the client does not
-  // apply it (contracts: deviceSupportsRouteProfiles). full_tunnel is unaffected
-  // — there is nothing to filter, so nothing is misleading.
-  const profileInEffect =
-    keyView.routeProfile === "full_tunnel" ||
-    deviceSupportsRouteProfiles(keyView.deviceType);
   const revocable =
     me.policy.allowSelfRevoke &&
     !["revoked", "revoking"].includes(keyView.state);
@@ -147,18 +139,7 @@ export function KeyCard({
           </Badge>
           <Tooltip>
             <TooltipTrigger asChild>
-              {/* D9: on an iOS key the profile is set but not in effect, so the
-                  badge is muted — the same visual signal the wizard's greyed-out
-                  option carries. It stays readable on purpose: hiding it would
-                  make the key look like a full-tunnel key, which is the exact
-                  confusion this is meant to prevent. The Callout above says why. */}
-              <Badge
-                variant="outline"
-                className={cn(
-                  "cursor-help gap-1",
-                  profileInEffect ? undefined : "text-muted-foreground",
-                )}
-              >
+              <Badge variant="outline" className="cursor-help gap-1">
                 <Globe className="h-3 w-3" />
                 {t(ROUTE_LABEL[keyView.routeProfile] ?? keyView.routeProfile)}
               </Badge>
@@ -186,22 +167,6 @@ export function KeyCard({
             }
           >
             {t("keyCard.rulesUpdatedBody")}
-          </Callout>
-        ) : null}
-
-        {/* A key the user labelled "iPhone iPad" that carries a route profile.
-            The wizard can no longer create this (D9); it exists for keys
-            created before that gate, through the CLI, or by an admin. It is a
-            note and not a block: the same key works normally on a desktop, and
-            the panel has no idea which device a key is actually used on — this
-            reads the label the user chose, and detects nothing. */}
-        {keyView.deviceType === "ios" &&
-        keyView.routeProfile !== "full_tunnel" ? (
-          <Callout
-            tone="warning"
-            icon={<TriangleAlert className="h-4 w-4 text-warning" />}
-          >
-            {t("keyCard.iphoneProfileWarning")}
           </Callout>
         ) : null}
 

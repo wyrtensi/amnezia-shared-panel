@@ -1,5 +1,3 @@
-import { deviceSupportsRouteProfiles } from "@amnezia/contracts";
-
 export type RouteProfileChoice = {
   /** Whether the wizard renders this profile's card as greyed out. */
   disabled: boolean;
@@ -26,37 +24,19 @@ export function routeProfileChoice({
   profile,
   rulesReady,
   policyLocked,
-  deviceType,
-  hasAmneziaClient = false,
 }: {
   profile: string;
   /** The profile's rule set has been built and is active on the node. */
   rulesReady: boolean;
   /** The admin policy forbids choosing anything but the full tunnel. */
   policyLocked: boolean;
-  /** What the user just told us this key is for. */
-  deviceType: string;
-  /**
-   * The user asserts they run AmneziaVPN itself rather than Default VPN. Only
-   * ever true for a device type that would otherwise be blocked, and it is an
-   * assertion, not a detection: the panel cannot see which app is installed.
-   */
-  hasAmneziaClient?: boolean;
 }): RouteProfileChoice {
   if (profile === "full_tunnel") return { disabled: false, hintKey: null };
 
 
-  // Ordered by what the user can do about it. The device type is the only one
-  // of the three they can change themselves, so it wins the message when
-  // several reasons apply; the other two are for an administrator to fix.
-  // The block is about the app, not the hardware: profiles were observed to
-  // connect and apply nothing in Default VPN, which is the listing the Russian
-  // App Store offers. A user on AmneziaVPN itself can say so and have it lifted
-  // -- the panel has no way to detect the client, so the user's word is the
-  // only signal there is, and it is better than refusing them outright.
-  if (!hasAmneziaClient && !deviceSupportsRouteProfiles(deviceType)) {
-    return { disabled: true, hintKey: "wizard.profileNoIphone" };
-  }
+  // Both remaining reasons are an administrator's to fix, not the user's. The
+  // platform is deliberately not one of them: the panel cannot see which client
+  // a device runs, so it offers every profile and lets the client sort it out.
   if (!rulesReady) {
     return { disabled: true, hintKey: "wizard.rulesNotActive" };
   }

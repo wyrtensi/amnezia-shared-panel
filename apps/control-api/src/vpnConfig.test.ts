@@ -1,12 +1,15 @@
 import { deflateSync } from "node:zlib";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   applyRouteProfileToVpnLink,
   decodeVpnLink,
   extractConfFromVpnLink,
   setVpnDescription,
 } from "./vpnConfig.js";
-import { MAX_TUNNEL_ROUTES } from "./routeComplement.js";
+import {
+  MAX_TUNNEL_ROUTES,
+  WARN_TUNNEL_ROUTES,
+} from "./routeComplement.js";
 
 const encode = (value: unknown): string => {
   const raw = Buffer.from(JSON.stringify(value));
@@ -275,5 +278,60 @@ describe("vpn config extraction and split tunneling", () => {
     expect(lastConfig.allowed_ips?.length ?? 0).toBeLessThanOrEqual(
       MAX_TUNNEL_ROUTES,
     );
+  });
+
+  it("says so in the log before and when a feed outgrows the client", () => {
+    // The budget is invisible until keys stop filtering, so both crossings
+    // have to reach an operator: the headroom mark while there is still time
+    // to shrink the feed, and the ceiling when keys start coming out as full
+    // tunnels regardless.
+    const vpnLink = encode({
+      dns1: "1.1.1.1",
+      dns2: "1.0.0.1",
+      containers: [
+        {
+          container: "amnezia-awg",
+          awg: {
+            last_config: JSON.stringify({
+              config:
+                "[Interface]\nPrivateKey = x\n\n[Peer]\nAllowedIPs = 0.0.0.0/0, ::/0\n",
+              allowed_ips: ["0.0.0.0/0", "::/0"],
+            }),
+          },
+        },
+      ],
+    });
+    const cidrsOfLength = (count: number) =>
+      Array.from(
+        { length: count },
+        (_, index) =>
+          `10.${(index >> 16) & 0xff}.${(index >> 8) & 0xff}.${index & 0xff}/32`,
+      );
+
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      // Comfortably inside the budget: nothing to report.
+      applyRouteProfileToVpnLink(vpnLink, "ru_blacklist", {
+        cidrs: cidrsOfLength(10),
+        domains: [],
+      });
+      expect(warn).not.toHaveBeenCalled();
+
+      applyRouteProfileToVpnLink(vpnLink, "ru_blacklist", {
+        cidrs: cidrsOfLength(WARN_TUNNEL_ROUTES + 1),
+        domains: [],
+      });
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0]?.[0])).toContain("approaching");
+
+      applyRouteProfileToVpnLink(vpnLink, "ru_blacklist", {
+        cidrs: cidrsOfLength(MAX_TUNNEL_ROUTES + 1),
+        domains: [],
+      });
+      expect(warn).toHaveBeenCalledTimes(2);
+      expect(String(warn.mock.calls[1]?.[0])).toContain("full tunnel");
+    } finally {
+      warn.mockRestore();
+    }
   });
 });

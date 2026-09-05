@@ -9,7 +9,6 @@ const PROFILES = ["full_tunnel", "ru_whitelist", "ru_blacklist"] as const;
 const ok = {
   rulesReady: true,
   policyLocked: false,
-  deviceType: "windows",
 };
 
 describe("routeProfileChoice", () => {
@@ -21,46 +20,20 @@ describe("routeProfileChoice", () => {
     }
   });
 
-  // D9: the operator's decision of 2026-09-03. On iOS a route-profile key
-  // connects and filters nothing, with both import paths, so the panel stops
-  // offering the choice at creation time. "ios" covers iPhone and iPad.
-  it("disables the route profiles when the device is an iPhone or iPad", () => {
-    for (const profile of ["ru_whitelist", "ru_blacklist"] as const) {
-      const choice = routeProfileChoice({ ...ok, profile, deviceType: "ios" });
-      expect(choice.disabled, profile).toBe(true);
-      expect(choice.hintKey, profile).toBe("wizard.profileNoIphone");
-    }
-  });
-
-  it("always leaves the full tunnel selectable on iOS", () => {
-    const choice = routeProfileChoice({
-      ...ok,
-      profile: "full_tunnel",
-      deviceType: "ios",
-    });
-    expect(choice.disabled).toBe(false);
-    expect(choice.hintKey).toBeNull();
-  });
-
-  it("does not disable profiles for any other device type", () => {
-    for (const device of [
-      "android",
-      "macos",
-      "windows",
-      "linux",
-      "other",
-      "unspecified",
-    ]) {
-      const choice = routeProfileChoice({
-        ...ok,
-        profile: "ru_whitelist",
-        deviceType: device,
+  // The platform used to gate this: an iOS key was refused a route profile
+  // because Default VPN, the listing the Russian App Store offers, connects and
+  // filters nothing. The panel cannot tell which client a device runs, so it no
+  // longer guesses — every profile is offered on every device.
+  it("does not decide on the platform at all", () => {
+    for (const profile of PROFILES) {
+      expect(routeProfileChoice({ ...ok, profile })).toEqual({
+        disabled: false,
+        hintKey: null,
       });
-      expect(choice.disabled, device).toBe(false);
     }
   });
 
-  it("keeps the two pre-existing reasons working", () => {
+  it("keeps the two administrator reasons working", () => {
     expect(
       routeProfileChoice({ ...ok, profile: "ru_whitelist", rulesReady: false }),
     ).toEqual({ disabled: true, hintKey: "wizard.rulesNotActive" });
@@ -74,17 +47,14 @@ describe("routeProfileChoice", () => {
     ).toEqual({ disabled: false, hintKey: null });
   });
 
-  it("names the iPhone first when several reasons apply", () => {
-    // The only one of the three the user can act on themselves: change the
-    // device type, or accept a full-tunnel key. The other two need an admin.
-    const choice = routeProfileChoice({
-      profile: "ru_blacklist",
-      rulesReady: false,
-      policyLocked: true,
-      deviceType: "ios",
-    });
-    expect(choice.disabled).toBe(true);
-    expect(choice.hintKey).toBe("wizard.profileNoIphone");
+  it("names the rule set before the policy when both apply", () => {
+    expect(
+      routeProfileChoice({
+        profile: "ru_blacklist",
+        rulesReady: false,
+        policyLocked: true,
+      }),
+    ).toEqual({ disabled: true, hintKey: "wizard.rulesNotActive" });
   });
 
   it("only ever returns hint keys that exist in both languages", () => {
@@ -92,15 +62,12 @@ describe("routeProfileChoice", () => {
     for (const profile of PROFILES) {
       for (const rulesReady of [true, false]) {
         for (const policyLocked of [true, false]) {
-          for (const deviceType of ["windows", "ios"]) {
-            const { hintKey } = routeProfileChoice({
-              profile,
-              rulesReady,
-              policyLocked,
-              deviceType,
-            });
-            if (hintKey) keys.add(hintKey);
-          }
+          const { hintKey } = routeProfileChoice({
+            profile,
+            rulesReady,
+            policyLocked,
+          });
+          if (hintKey) keys.add(hintKey);
         }
       }
     }
@@ -112,82 +79,25 @@ describe("routeProfileChoice", () => {
   });
 });
 
-describe("iPhone strings", () => {
-  it("exist in both languages", () => {
+// The panel no longer tells anyone that a platform cannot apply a profile, so
+// nothing may be left saying it. A stale string is worse than a missing one:
+// it contradicts the cards the user is looking at.
+describe("the retired platform strings", () => {
+  it("are gone from both languages", () => {
     for (const key of [
       "wizard.profileNoIphone",
       "wizard.routingNoIphone",
-      "keyCard.iphoneProfileWarning",
-    ]) {
-      expect(messages.ru, `ru is missing ${key}`).toHaveProperty(key);
-      expect(messages.en, `en is missing ${key}`).toHaveProperty(key);
-    }
-  });
-});
-
-// The block on iOS is about Default VPN, the app the Russian App Store offers,
-// not about the hardware -- so a user running AmneziaVPN itself can lift it.
-// The escape must not leak: it may only ever undo the device reason, never the
-// admin's policy lock or a rule set that is not live yet.
-describe("the AmneziaVPN assertion", () => {
-  const ask = (over: Record<string, unknown> = {}) =>
-    routeProfileChoice({
-      profile: "ru_whitelist",
-      rulesReady: true,
-      policyLocked: false,
-      deviceType: "ios",
-      ...over,
-    });
-
-  it("blocks an iOS key by default", () => {
-    expect(ask()).toEqual({
-      disabled: true,
-      hintKey: "wizard.profileNoIphone",
-    });
-  });
-
-  it("lifts the block when the user says they run AmneziaVPN", () => {
-    expect(ask({ hasAmneziaClient: true })).toEqual({
-      disabled: false,
-      hintKey: null,
-    });
-  });
-
-  it("does not let the assertion override the admin's policy lock", () => {
-    expect(ask({ hasAmneziaClient: true, policyLocked: true })).toEqual({
-      disabled: true,
-      hintKey: "wizard.profileDisabled",
-    });
-  });
-
-  it("does not let the assertion override a rule set that is not live", () => {
-    expect(ask({ hasAmneziaClient: true, rulesReady: false })).toEqual({
-      disabled: true,
-      hintKey: "wizard.rulesNotActive",
-    });
-  });
-
-  it("changes nothing for a device that was never blocked", () => {
-    expect(ask({ deviceType: "android", hasAmneziaClient: true })).toEqual(
-      ask({ deviceType: "android" }),
-    );
-  });
-
-  it("keeps the full tunnel selectable either way", () => {
-    for (const hasAmneziaClient of [true, false]) {
-      expect(ask({ profile: "full_tunnel", hasAmneziaClient })).toEqual({
-        disabled: false,
-        hintKey: null,
-      });
-    }
-  });
-});
-
-describe("AmneziaVPN assertion strings", () => {
-  it("exist in both languages", () => {
-    for (const key of [
       "wizard.hasAmneziaClient",
       "wizard.hasAmneziaClientHint",
+      "keyCard.iphoneProfileWarning",
+    ]) {
+      expect(messages.ru, `ru still has ${key}`).not.toHaveProperty(key);
+      expect(messages.en, `en still has ${key}`).not.toHaveProperty(key);
+    }
+  });
+
+  it("keeps the install guide's AmneziaVPN pointer, which is still true", () => {
+    for (const key of [
       "install.iosAmneziaTitle",
       "install.iosAmneziaBody",
       "install.iosAmneziaOpen",

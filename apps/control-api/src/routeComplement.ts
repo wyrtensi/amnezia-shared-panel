@@ -23,17 +23,28 @@ export const WHITELIST_GAP_MERGE = 32;
  * The most routes a profile may put in AllowedIPs.
  *
  * Measured on a device: a 6712-route config crossed Binder as a 941 096-byte
- * parcel, 94% of the ~1 MB a transaction gets. Past that the client drops the
- * message and the profile never connects, with no error anywhere. 5500 leaves
- * roughly a quarter of the budget for the rest of the config and for the
- * estimate itself being off.
+ * parcel — 94% of the ~1 MB a transaction gets, and it connected. Past the
+ * limit the client drops the message and the profile never connects, with no
+ * error anywhere, so 6800 is close to the edge by design: it is the largest
+ * list observed to work, not a safe distance from it.
+ *
+ * That is why crossing WARN_TUNNEL_ROUTES is logged. There is no margin left
+ * to absorb a feed that grows again, and the log line is the only warning
+ * anyone gets before keys start coming out as full tunnels.
  *
  * Feeds grow. Nothing here may assume today's list sizes, so the whitelist
  * escalates its gap merging until it fits, and the caller degrades a profile
  * that still cannot fit to the full tunnel rather than shipping a config that
  * silently refuses to connect.
  */
-export const MAX_TUNNEL_ROUTES = 5500;
+export const MAX_TUNNEL_ROUTES = 6800;
+
+/**
+ * Where a profile stops having comfortable headroom, and every export starts
+ * saying so in the log. Below this a feed can still grow without anyone having
+ * to act; above it, the next growth is what turns keys into full tunnels.
+ */
+export const WARN_TUNNEL_ROUTES = 5500;
 
 const LAST_ADDRESS = 0xff_ff_ff_ff;
 

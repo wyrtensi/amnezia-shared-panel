@@ -487,8 +487,14 @@ never connects — no error, no retry, no traffic. Two consequences:
   written; the only addition is 16401 addresses sitting between neighbouring
   entries (0.0004 % of IPv4).
 
-Feeds grow, so neither number is assumed to hold. `MAX_TUNNEL_ROUTES` (5500) is
-the budget both profiles are held to, and each has its own way of meeting it:
+Feeds grow, so neither number is assumed to hold. `MAX_TUNNEL_ROUTES` (6800) is
+the budget both profiles are held to. It sits close to the edge on purpose —
+6712 routes is the largest config observed to connect, not a safe distance from
+the limit — so crossing `WARN_TUNNEL_ROUTES` (5500) is logged on every export
+as `[routes] …`. That line is the only warning anyone gets before keys start
+coming out as full tunnels; treat it as work to do, not as noise.
+
+Each profile has its own way of meeting the budget:
 
 - `ru_whitelist` widens its gap merging until the inverse fits — today's list
   needs no escalation at all, a list twice its size lands at a 2048-address gap.
