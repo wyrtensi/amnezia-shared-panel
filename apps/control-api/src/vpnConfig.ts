@@ -1,6 +1,21 @@
 import { deflateSync, inflateSync } from "node:zlib";
 import type { RouteProfile } from "@amnezia/contracts";
-import { complementForTunnel, MAX_TUNNEL_ROUTES } from "./routeComplement.js";
+import {
+  complementForTunnel,
+  MAX_TUNNEL_ROUTES,
+  WARN_TUNNEL_ROUTES,
+  WHITELIST_GAP_MERGE,
+} from "./routeComplement.js";
+
+/**
+ * The route budget is invisible until a key stops working, so every crossing
+ * says so on stdout — the same place the rest of the service reports itself.
+ * Nothing here carries a key, a user or an address: only counts, which is what
+ * an operator needs to decide whether a feed has outgrown the client.
+ */
+const warnRouteBudget = (message: string): void => {
+  console.warn(`[routes] ${message}`);
+};
 
 export type RulePayload = {
   cidrs: string[];
@@ -142,7 +157,17 @@ export const applyRouteProfileToVpnLink = (
     // A feed too fragmented to invert within the budget cannot be shipped as a
     // whitelist at all. The full tunnel is the safe reading of "protect this
     // key" — it tunnels more than asked, where the alternative tunnels nothing.
-    if (!complement) return vpnLink;
+    if (!complement) {
+      warnRouteBudget(
+        `${profile}: ${rulePayload.cidrs.length} feed CIDRs cannot be inverted within ${MAX_TUNNEL_ROUTES} routes; key exported as a full tunnel`,
+      );
+      return vpnLink;
+    }
+    if (complement.gap > WHITELIST_GAP_MERGE) {
+      warnRouteBudget(
+        `${profile}: gap merging widened to ${complement.gap} addresses to fit ${complement.routes.length} routes; more of the feed's neighbourhood now bypasses the tunnel`,
+      );
+    }
     combinedCidrs = [...new Set([...complement.routes, "::/0"])].filter(Boolean);
   } else {
     combinedCidrs = [
@@ -155,7 +180,15 @@ export const applyRouteProfileToVpnLink = (
   // the profile exists to prevent. So an oversized one degrades to the full
   // tunnel instead of becoming a config the Android client discards on arrival.
   if (combinedCidrs.length > MAX_TUNNEL_ROUTES) {
+    warnRouteBudget(
+      `${profile}: ${combinedCidrs.length} routes exceed the ${MAX_TUNNEL_ROUTES} the Android client can accept; key exported as a full tunnel`,
+    );
     return vpnLink;
+  }
+  if (combinedCidrs.length > WARN_TUNNEL_ROUTES) {
+    warnRouteBudget(
+      `${profile}: ${combinedCidrs.length} routes, past the ${WARN_TUNNEL_ROUTES} headroom mark and approaching the ${MAX_TUNNEL_ROUTES} ceiling; shrink the feed before it starts exporting full tunnels`,
+    );
   }
 
   // An empty AllowedIPs would produce a config that routes nothing at all.
