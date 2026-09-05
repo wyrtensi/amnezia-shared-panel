@@ -233,6 +233,32 @@ function matchesFilter(entry: EnrichedUser, filter: FilterKey): boolean {
   }
 }
 
+/** The lowercased part after the last "@", or "" when `email` has none. */
+export function emailDomain(email: string): string {
+  const at = email.lastIndexOf("@");
+  return at === -1 ? "" : email.slice(at + 1).toLowerCase();
+}
+
+/**
+ * The domain filter value to actually apply: `selected` itself when it is
+ * still one of the domains present in `available`, otherwise the "all"
+ * sentinel. Mirrors how `selected` (the chosen user) falls back below when
+ * its id drops out of view — the underlying selection is never mutated, so a
+ * domain that reappears (an admin's edit undone, the list reloaded) is
+ * honoured again without the operator having to reselect it. Without this,
+ * a domain that stops existing among the loaded users (renamed, offboarded,
+ * the last of it removed) would leave the list showing nobody with no
+ * visible reason why.
+ */
+export function resolveDomainFilter(
+  selected: string,
+  available: string[],
+): string {
+  return selected === "all" || available.includes(selected)
+    ? selected
+    : "all";
+}
+
 function sortEntries(entries: EnrichedUser[], sort: SortKey): EnrichedUser[] {
   const list = [...entries];
   switch (sort) {
@@ -262,6 +288,7 @@ export default function AdminUsersPage() {
   const { t } = useT();
   const [query, setQuery] = React.useState("");
   const [filter, setFilter] = React.useState<FilterKey>("all");
+  const [domain, setDomain] = React.useState("all");
   const [sort, setSort] = React.useState<SortKey>("name");
   const [selectedId, setSelectedId] = React.useState<string | null>(null);
   const [createOpen, setCreateOpen] = React.useState(false);
@@ -311,10 +338,27 @@ export default function AdminUsersPage() {
     });
   }, [users, keysByOwner, now]);
 
+  // Domains actually present among the loaded users, for the domain filter's
+  // options — never free text, so the control cannot land on a value that
+  // matches nobody by typo.
+  const domainOptions = React.useMemo(() => {
+    const set = new Set<string>();
+    for (const entry of enriched) {
+      const value = emailDomain(entry.user.email);
+      if (value) set.add(value);
+    }
+    return Array.from(set).sort((a, b) => a.localeCompare(b));
+  }, [enriched]);
+  const activeDomain = resolveDomainFilter(domain, domainOptions);
+
   const needle = query.trim().toLowerCase();
   const filtered = React.useMemo(() => {
     const matched = enriched
       .filter((entry) => matchesFilter(entry, filter))
+      .filter(
+        (entry) =>
+          activeDomain === "all" || emailDomain(entry.user.email) === activeDomain,
+      )
       .filter(
         (entry) =>
           !needle ||
@@ -323,7 +367,7 @@ export default function AdminUsersPage() {
             .includes(needle),
       );
     return sortEntries(matched, sort);
-  }, [enriched, filter, needle, sort]);
+  }, [enriched, filter, activeDomain, needle, sort]);
 
   const selected =
     filtered.find((entry) => entry.user.id === selectedId)?.user ??
@@ -363,7 +407,7 @@ export default function AdminUsersPage() {
           </h2>
           <p className="text-sm text-muted-foreground">
             {t("users.summary", { users: users.length, keys: keys.length })}
-            {filter !== "all" || needle
+            {filter !== "all" || activeDomain !== "all" || needle
               ? t("users.summaryShown", { shown: filtered.length })
               : ""}
           </p>
@@ -390,6 +434,22 @@ export default function AdminUsersPage() {
             ))}
           </SelectContent>
         </Select>
+        {domainOptions.length > 1 ? (
+          <Select value={activeDomain} onValueChange={setDomain}>
+            <SelectTrigger className="h-9 w-[172px] gap-1.5">
+              <Globe className="h-4 w-4 shrink-0 text-muted-foreground" />
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">{t("users.domainFilterAll")}</SelectItem>
+              {domainOptions.map((value) => (
+                <SelectItem key={value} value={value}>
+                  {value}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        ) : null}
         <Select value={sort} onValueChange={(v) => setSort(v as SortKey)}>
           <SelectTrigger className="h-9 w-[168px] gap-1.5">
             <ArrowDownUp className="h-4 w-4 shrink-0 text-muted-foreground" />
