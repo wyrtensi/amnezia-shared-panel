@@ -159,6 +159,7 @@ export function InstallGuideDialog({
   allowCustomRoutes,
   videos,
   initialAudience = null,
+  onAudienceChange,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -180,6 +181,12 @@ export function InstallGuideDialog({
    * chooser stays visible above so a wrong guess is one click to correct.
    */
   initialAudience?: GuideAudience | null;
+  /**
+   * Told which group the reader picked, so the caller can put it in the address
+   * bar. Advisory only — the chooser keeps its own state and never waits for an
+   * answer, so a caller that ignores this cannot freeze the dialog on a group.
+   */
+  onAudienceChange?: (audience: GuideAudience) => void;
 }) {
   const { t } = useT();
   const [release, setRelease] = React.useState<ClientRelease | null>(null);
@@ -228,6 +235,18 @@ export function InstallGuideDialog({
     wasOpen.current = open;
   }, [open, initialAudience]);
 
+  // The reader's own pick. Local state stays the source of truth for what is on
+  // screen and the callback only reports it, so a caller that mirrors the pick
+  // back through `initialAudience` cannot fight the chooser: the reset above
+  // fires on the opening transition alone, never on a prop change.
+  const pickAudience = React.useCallback(
+    (value: GuideAudience) => {
+      setAudience(value);
+      onAudienceChange?.(value);
+    },
+    [onAudienceChange],
+  );
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-xl">
@@ -241,7 +260,7 @@ export function InstallGuideDialog({
           ariaLabel={t("install.chooseTitle")}
           columns={3}
           value={audience}
-          onChange={setAudience}
+          onChange={pickAudience}
           options={GUIDE_AUDIENCES.map((value) => {
             const Icon = AUDIENCE_ICON[value];
             return {

@@ -375,6 +375,34 @@ panel rather than copied into the CLI, so the two cannot disagree. A user on an
 older client sees a key that imports and then fails to connect — check this
 number first.
 
+#### Answering with a link — the panel's help dialogs
+
+Support does not have to say "log in and find the button". The user panel's two
+help dialogs open from the URL, so an answer can be one link to exactly the
+right instruction. The base is the panel's own `PANEL_PUBLIC_URL`:
+
+| Link | Opens |
+| --- | --- |
+| `https://<panel>/?help=install` | **Как подключиться** — the connect guide, on its device chooser |
+| `https://<panel>/?help=install&os=desktop` | …already on Windows / macOS / Linux |
+| `https://<panel>/?help=install&os=android` | …already on Android |
+| `https://<panel>/?help=install&os=ios` | …already on iPhone / iPad |
+| `https://<panel>/?help=key` | **Не понятно как создать ключ** — the create-key form explained field by field |
+
+`os` values are the chooser's own three groups and are the only ones that mean
+anything; `os` is ignored on `?help=key`, which has no chooser. Everything fails
+soft, because these links get retyped by hand: an `os` the panel does not know
+(`os=windows`, `os=`, a typo) opens the guide on its chooser, and a `help` it
+does not know opens the plain dashboard. Nothing produces an error page.
+
+There is nothing to copy out of the CLI — the address bar **is** the source.
+Open a dialog in the panel, pick a device, and the URL already says
+`?help=install&os=android`; it clears itself when the dialog closes, and each
+step replaces the entry rather than pushing one, so Back leaves the panel
+instead of walking through the clicks. Both links open only once the panel knows
+who the visitor is, so an unauthenticated visitor gets the login first and the
+dialog after.
+
 #### Global route overrides
 
 ### Background periods

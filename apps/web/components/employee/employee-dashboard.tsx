@@ -36,6 +36,7 @@ import {
 import { KeyHelpDialog } from "@/components/employee/key-help-dialog";
 import { QuotaRequestDialog } from "@/components/employee/quota-request-dialog";
 import { apiRequest } from "@/lib/api";
+import { helpLinkSearch, readHelpLink, type HelpLink } from "@/lib/help-links";
 import { isAtLimit } from "@/lib/key-quota";
 import { isVisibleToOwner } from "@/lib/key-states";
 import { InlineTraffic } from "@/components/inline-traffic";
@@ -125,6 +126,57 @@ export function EmployeeDashboard({
   React.useEffect(() => {
     void load();
   }, [load]);
+
+  /**
+   * Open what the link asked for — `?help=install&os=android`, `?help=key`.
+   *
+   * Gated on `me` rather than on mount: the dialogs sit inside a page that is
+   * still deciding who the visitor is, and a guide flashing open over an
+   * unauthenticated frame is worse than a guide half a second late. It runs
+   * once, so it cannot re-open a dialog the user has since closed (the sync
+   * below clears the parameter anyway, but a background reload of `me` must not
+   * depend on that).
+   *
+   * A dialog the visitor cannot use would be skipped here, exactly as if the
+   * parameter were absent. Neither of these two is gated today — both buttons
+   * are on every user's dashboard, the key-help one deliberately so even at the
+   * quota — which is why the check reads as a plain `true` per dialog rather
+   * than as a policy lookup that would go stale beside the buttons.
+   */
+  const [linkRead, setLinkRead] = React.useState(false);
+  React.useEffect(() => {
+    if (!me || linkRead) return;
+    setLinkRead(true);
+    const link = readHelpLink(window.location.search);
+    if (!link) return;
+    if (link.dialog === "install") openGuide(link.audience);
+    else setShowKeyHelp(true);
+  }, [me, linkRead, openGuide]);
+
+  /**
+   * ...and keep the address bar on it, which is the half that makes the links
+   * obtainable: an operator gets one by opening the dialog and copying the bar,
+   * not by reading the source.
+   *
+   * `replaceState`, never a push: closing a dialog must not send the user back
+   * through every device group they clicked. Waits for the read above so it
+   * cannot wipe the incoming link before anything has looked at it.
+   */
+  React.useEffect(() => {
+    if (!linkRead) return;
+    const link: HelpLink | null = showGuide
+      ? { dialog: "install", audience: guideAudience }
+      : showKeyHelp
+        ? { dialog: "key", audience: null }
+        : null;
+    const search = helpLinkSearch(window.location.search, link);
+    if (search === window.location.search) return;
+    window.history.replaceState(
+      null,
+      "",
+      `${window.location.pathname}${search}${window.location.hash}`,
+    );
+  }, [linkRead, showGuide, showKeyHelp, guideAudience]);
 
   // While any key is still provisioning, poll so its card flips to "active"
   // (and its spinner clears) without the user hitting Refresh.
@@ -618,7 +670,10 @@ export function EmployeeDashboard({
         // Hands over rather than stacking: this closes as that opens.
         onOpenGuide={() => {
           setShowKeyHelp(false);
-          setShowGuide(true);
+          // Through `openGuide`, so the guide opens on its chooser: from here no
+          // device is implied, and the audience a key card left behind would
+          // otherwise answer a question this user was never asked.
+          openGuide(null);
         }}
       />
       <InstallGuideDialog
@@ -640,6 +695,10 @@ export function EmployeeDashboard({
         // without a deploy. Absent until then — the guide shows a placeholder.
         videos={me?.policy.installGuideVideos ?? null}
         initialAudience={guideAudience}
+        // Mirrors the reader's pick so the address bar can carry `os=`. Safe to
+        // feed back through `initialAudience`: the dialog resets only on the
+        // opening transition.
+        onAudienceChange={setGuideAudience}
       />
     </div>
   );
