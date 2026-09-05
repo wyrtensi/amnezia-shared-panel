@@ -31,13 +31,13 @@ describe("shouldShowInstallReminder", () => {
     expect(shouldShowInstallReminder({ me: user(), keyNumber: 1 })).toBe(true);
   });
 
-  it("still stops them on their third", () => {
-    expect(shouldShowInstallReminder({ me: user(), keyNumber: 3 })).toBe(true);
-    expect(INSTALL_REMINDER_KEYS).toBe(3);
+  it("shows it once and only once", () => {
+    expect(INSTALL_REMINDER_KEYS).toBe(1);
   });
 
-  it("leaves them alone from the fourth on", () => {
-    expect(shouldShowInstallReminder({ me: user(), keyNumber: 4 })).toBe(false);
+  it("leaves them alone from the second key on", () => {
+    expect(shouldShowInstallReminder({ me: user(), keyNumber: 2 })).toBe(false);
+    expect(shouldShowInstallReminder({ me: user(), keyNumber: 3 })).toBe(false);
     expect(shouldShowInstallReminder({ me: user(), keyNumber: 40 })).toBe(false);
   });
 

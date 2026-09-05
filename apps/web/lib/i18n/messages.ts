@@ -286,7 +286,7 @@ const ru = {
     "Смените сервер или переключите маршрутизацию на «Весь трафик». Если у вас мобильный интернет, переход на Wi-Fi часто решает проблемы с доступом.",
 
   // The step between "ключ создан" and the connection guide, shown to a regular
-  // user after each of their first three keys. Its own namespace, not install.*:
+  // user after their first key. Its own namespace, not install.*:
   // that prefix is the guide, and the guide has a copy budget this dialog is
   // not part of. Deliberately says WHY the old client fails — a user who opens
   // it, sees it start and assumes all is well is the case this exists for.
@@ -986,7 +986,7 @@ const ru = {
   "gpolicy.showNodeAddressHint":
     "Пользователь видит адрес каждого доступного ему сервера (IP или домен) в списке серверов. По умолчанию выключено: адрес уже есть в его конфиге, но показывать его в панели — решение администратора.",
   "gpolicy.showInstallReminderHint":
-    "После создания каждого из первых трёх ключей обычный пользователь видит окно: нужно установить AmneziaVPN или обновить его, иначе ключ не заработает. Администраторам не показывается. По умолчанию включено — выключайте, только если ваши пользователи ставят клиент как-то иначе.",
+    "После создания первого ключа обычный пользователь один раз видит окно: нужно установить AmneziaVPN или обновить его, иначе ключ не заработает. Администраторам не показывается. По умолчанию включено — выключайте, только если ваши пользователи ставят клиент как-то иначе.",
   "gpolicy.keyLimitMode": "Общий лимит на все серверы",
   "gpolicy.keyLimitModeHint":
     "Включено — лимит считается суммарно по всем серверам. Выключено — отдельно на каждом сервере. Лимиты по серверам при этом сохраняются, но не действуют. Отдельному пользователю режим можно задать в «Лимиты и серверы».",
@@ -1480,7 +1480,7 @@ const en = {
   "keyHelp.troubleBody":
     "Change the server, or switch the routing to “All traffic”. If you are on mobile data, moving to Wi-Fi often fixes access problems.",
 
-  // The install step shown after each of a regular user's first three keys.
+  // The install step shown after a regular user's first key.
   "installReminder.title": "A required step: the AmneziaVPN app",
   "installReminder.desc":
     "Your key is ready. One thing left, and without it there is no connection.",
@@ -2150,7 +2150,7 @@ const en = {
   "gpolicy.showNodeAddressHint":
     "Users see the address (IP or domain) of every server available to them. Off by default: the address is already in their config, but showing it in the panel is an admin's decision.",
   "gpolicy.showInstallReminderHint":
-    "After each of their first three keys a regular user is shown a dialog: install AmneziaVPN, or update it, or the key will not work. Administrators never see it. On by default — switch it off only if your users get the client some other way.",
+    "After their first key a regular user is shown a dialog once: install AmneziaVPN, or update it, or the key will not work. Administrators never see it. On by default — switch it off only if your users get the client some other way.",
   "gpolicy.keyLimitMode": "One limit shared by every server",
   "gpolicy.keyLimitModeHint":
     "On — the limit is counted across every server together. Off — separately on each server. Per-server limits are kept but not applied meanwhile. A single user's mode is set in \"Limits and servers\".",
