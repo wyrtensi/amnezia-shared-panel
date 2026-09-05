@@ -630,7 +630,7 @@ const ru = {
     "Профиль вшивается в ключ. Для «зарубежных» и «заблокированных» нужны активные списки маршрутизации.",
   "users.keyCreatedHint":
     "Ключ создаётся на сервере — устройство подключится сразу после импорта конфигурации.",
-  "users.accessDomainsTitle": "Разрешённые домены Access",
+  "users.accessDomainsTitle": "Домены Cloudflare Access",
   "users.accessWhoTitle": "Кто может войти.",
   "users.accessWhoSummary":
     "Через Cloudflare войти могут пользователи из этого списка, любой адрес с доменов, указанных ниже, и все, кого допускает правило, добавленное прямо в панели Cloudflare, — такие правила панель не видит. При прямом входе: пользователи из этого списка и домены из AUTH_ALLOWED_DOMAINS.",
@@ -1627,7 +1627,7 @@ const en = {
     "The profile is embedded in the key. “Foreign” and “blocked” require active routing lists.",
   "users.keyCreatedHint":
     "The key is created on the server — the device connects right after importing the configuration.",
-  "users.accessDomainsTitle": "Approved Access domains",
+  "users.accessDomainsTitle": "Cloudflare Access domains",
   "users.accessWhoTitle": "Who can sign in.",
   "users.accessWhoSummary":
     "Through Cloudflare: the users listed here, anyone with an address on the domains below, and anyone admitted by a rule added directly in the Cloudflare dashboard — the panel does not see those. Direct login: the users listed here plus the domains in AUTH_ALLOWED_DOMAINS.",
