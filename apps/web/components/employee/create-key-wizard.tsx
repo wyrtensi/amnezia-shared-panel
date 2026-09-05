@@ -222,9 +222,7 @@ export function CreateKeyWizard({
     description: t(`wizard.proto.${kind}.desc`),
     badge:
       kind === "awg3" ? (
-        <Badge variant="success" className="ml-1">
-          {t("wizard.recommended")}
-        </Badge>
+        <Badge variant="success">{t("wizard.recommended")}</Badge>
       ) : undefined,
     hint:
       kind === "awg3"
@@ -253,13 +251,9 @@ export function CreateKeyWizard({
       // differently across platforms; the full tunnel does not.
       badge:
         profile === "full_tunnel" ? (
-          <Badge variant="success" className="ml-1">
-            {t("wizard.route.stable")}
-          </Badge>
+          <Badge variant="success">{t("wizard.route.stable")}</Badge>
         ) : (
-          <Badge variant="warning" className="ml-1">
-            {t("wizard.route.testing")}
-          </Badge>
+          <Badge variant="warning">{t("wizard.route.testing")}</Badge>
         ),
       disabled,
       // OptionCards renders this as the native title on hover AND as visible

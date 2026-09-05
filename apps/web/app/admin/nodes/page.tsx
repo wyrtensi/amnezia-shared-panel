@@ -546,7 +546,10 @@ function NodeCard({
 
         <NodeAgentUpdateStatus node={node} />
 
-        <div className="flex items-center gap-1.5 border-t pt-3">
+        {/* flex-wrap: a narrow card column (2- or 3-up grid) has no room for
+            five buttons on one line; wrapping keeps every action reachable
+            instead of letting the row overflow out of view. */}
+        <div className="flex flex-wrap items-center gap-1.5 border-t pt-3">
           <Button variant="secondary" size="sm" onClick={onReconcile}>
             <RefreshCw className="h-4 w-4" /> {t("nodes.reconcile")}
           </Button>
