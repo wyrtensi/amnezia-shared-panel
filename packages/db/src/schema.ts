@@ -642,6 +642,17 @@ export const portalPolicy = pgTable(
     // the current CF set against this to tell a panel-side add (protect it) from
     // a CF-side removal (disable the panel user). Null until the first sync.
     cfAccessSyncedEmails: jsonb("cf_access_synced_emails").$type<string[]>(),
+    // Domains the panel keeps as `email_domain` rules in the Access policy.
+    // Empty means the panel manages no domain rule. The Cloudflare door only —
+    // the panel's own direct Google login is gated by AUTH_ALLOWED_DOMAINS.
+    cfAccessAllowedDomains: jsonb("cf_access_allowed_domains")
+      .$type<string[]>()
+      .default([])
+      .notNull(),
+    // Baseline: the domain set the panel last wrote, so it can tell its own
+    // rules from someone else's and never delete a rule it did not add.
+    // Null until the first sync — the mirror of cf_access_synced_emails.
+    cfAccessSyncedDomains: jsonb("cf_access_synced_domains").$type<string[]>(),
     ...timestamps,
   },
   (table) => [
