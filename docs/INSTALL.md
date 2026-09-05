@@ -321,6 +321,7 @@ the panel role still decides admin capability.
 
 ## Related documents
 
+- [`OPERATIONS.md`](./OPERATIONS.md) — after the install: which document owns which job, and the day-2 procedures.
 - [`ROLLOUT.md`](./ROLLOUT.md) — the whole rollout (Cloudflare + nodes + panel) on one page.
 - [`CLI.md`](./CLI.md) — every command for the panel and a node.
 - [`AGENT-HOST-SETUP.md`](./AGENT-HOST-SETUP.md) — node + control-plane install detail.

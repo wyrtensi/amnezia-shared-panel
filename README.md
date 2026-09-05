@@ -157,6 +157,10 @@ worker after a one-time `sudo bash infra/prod/install-updater.sh`.
   a human or an AI agent: what to decide first, then node + panel + public access
   (Cloudflare Access with Google Workspace, and the optional direct Google login),
   the temporary→least-privilege API-token hand-off, and the admin/user policy split.
+- [`docs/OPERATIONS.md`](docs/OPERATIONS.md) — **which document owns which job**,
+  and the day-2 procedures none of them cover: proving an update will not reset
+  users' keys, moving the data plane to a new engine build, editing a generated
+  config, swap and disk on a live node, and the panel→node tunnels.
 - [`docs/CLI.md`](docs/CLI.md) — every command for the panel **and** a node
   (dev, build, database, deploy/update, backup, admin CLI; AmneziaWG/awg, Docker,
   node-agent, health).

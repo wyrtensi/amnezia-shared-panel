@@ -432,6 +432,13 @@ it to `admin`. Because the dev compose seeds `BOOTSTRAP_ADMIN_EMAILS` from
 
 ## Part D — Day-2 operations
 
+This part covers the control-plane side of running the system — keys, profiles,
+rotation, the agent-update mechanism, and the hard safety rules. For operating a
+node's own state and engine — proving a change will not reset users' keys,
+moving the data plane to a new `amneziawg-go` build, editing a generated
+`awg0.conf`, disk and swap on a live host, and the panel → node tunnels — see
+[`OPERATIONS.md`](./OPERATIONS.md).
+
 ### Creating keys (AWG 3.1 default)
 
 Employees create keys through the wizard (`apps/web/components/employee/create-key-wizard.tsx`),
