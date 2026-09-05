@@ -5,6 +5,18 @@ export type Wait = (
 
 export const abortableWait: Wait = (milliseconds, signal) =>
   new Promise((resolve) => {
+    // Checked BEFORE anything is scheduled. A listener added to a signal that
+    // has ALREADY aborted never fires, so subscribing first would leave this
+    // promise sleeping out the whole period after a SIGTERM -- up to six hours
+    // for the rule fetcher. The window is real: a caller checks `signal.aborted`
+    // and then awaits a database round trip for the period before it gets here
+    // (see `runPeriodicTask`), and a shutdown landing in between would wait on a
+    // loop that is no longer listening, so the pool never closes, docker
+    // SIGKILLs the container, and a claimed outbox job is left in `processing`.
+    if (signal.aborted) {
+      resolve();
+      return;
+    }
     const timer = setTimeout(resolve, milliseconds);
     signal.addEventListener(
       "abort",

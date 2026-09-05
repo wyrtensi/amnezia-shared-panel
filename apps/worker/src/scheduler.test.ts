@@ -1,5 +1,26 @@
 import { describe, expect, it, vi } from "vitest";
-import { FAILED_RESOLVE_WAIT_MS, runPeriodicTask } from "./scheduler.js";
+import {
+  abortableWait,
+  FAILED_RESOLVE_WAIT_MS,
+  runPeriodicTask,
+} from "./scheduler.js";
+
+/** The longest a loop can be told to wait: `ruleFetchIntervalSec`'s ceiling. */
+const A_WEEK_MS = 604_800_000;
+
+/**
+ * Resolves to "settled" if `promise` finishes promptly, "still waiting"
+ * otherwise. Every other test in this file stubs `wait`, so a wait that never
+ * resolves would hang the run rather than fail it; this turns it into an
+ * assertion that names what went wrong.
+ */
+const settlesPromptly = (promise: Promise<unknown>): Promise<string> =>
+  Promise.race([
+    promise.then(() => "settled"),
+    new Promise<string>((resolve) => {
+      setTimeout(() => resolve("still waiting"), 100);
+    }),
+  ]);
 
 /**
  * Stop the loop after `cycles` waits, recording every period it waited.
@@ -138,5 +159,69 @@ describe("periodic worker scheduler", () => {
     });
 
     expect(overlapped).toBe(false);
+  });
+
+  it("stops when the signal aborts while the period is being resolved", async () => {
+    // The shutdown path, with the REAL abortableWait: SIGTERM lands after the
+    // loop's own `signal.aborted` check and while the resolver is still asking
+    // the database for the period. Every other test here stubs `wait`, which is
+    // exactly why a wait that ignored an already-aborted signal went unnoticed:
+    // the loop would sleep out a full period -- up to a week -- so Promise.all
+    // over the loops never resolved, the pool was never closed, and docker
+    // SIGKILLed the container with an outbox job still claimed.
+    const controller = new AbortController();
+
+    const outcome = await settlesPromptly(
+      runPeriodicTask({
+        task: () => Promise.resolve(),
+        // Aborting inside the resolver puts the signal in exactly the state the
+        // window produces: aborted, with the await already past the loop's check.
+        intervalMs: async () => {
+          controller.abort();
+          await Promise.resolve();
+          return A_WEEK_MS;
+        },
+        signal: controller.signal,
+      }),
+    );
+
+    expect(outcome).toBe("settled");
+  });
+});
+
+describe("abortableWait", () => {
+  it("resolves at once when the signal has already aborted", async () => {
+    // A listener attached to an already-aborted signal never fires, so checking
+    // `signal.aborted` before subscribing is the whole fix. Asserted on the
+    // real helper rather than through a loop, because both loops depend on it:
+    // runPeriodicTask around the period lookup, runWorker around claimJob().
+    const controller = new AbortController();
+    controller.abort();
+
+    const outcome = await settlesPromptly(
+      abortableWait(A_WEEK_MS, controller.signal),
+    );
+
+    expect(outcome).toBe("settled");
+  });
+
+  it("still resolves when the signal aborts during the wait", async () => {
+    const controller = new AbortController();
+    const waiting = settlesPromptly(abortableWait(A_WEEK_MS, controller.signal));
+    controller.abort();
+
+    expect(await waiting).toBe("settled");
+  });
+
+  it("waits out a period nobody aborted", async () => {
+    const controller = new AbortController();
+
+    expect(await settlesPromptly(abortableWait(5, controller.signal))).toBe(
+      "settled",
+    );
+    expect(
+      await settlesPromptly(abortableWait(A_WEEK_MS, controller.signal)),
+    ).toBe("still waiting");
+    controller.abort();
   });
 });
