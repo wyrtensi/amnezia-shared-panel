@@ -271,6 +271,39 @@ export function EmployeeDashboard({
     }
   };
 
+  /**
+   * Write the operator-only note on one of MY OWN keys, from the ordinary
+   * panel.
+   *
+   * It posts to the admin endpoint because that is the only writer there has
+   * ever been, and the endpoint is role-gated at the edge (`adminFor`): a
+   * regular user reaching it gets 403 whatever the browser sends. Nothing new
+   * is granted here — an administrator editing a note is an existing
+   * capability in a second place, and the trigger that calls this only exists
+   * on an administrator's card in the first place.
+   *
+   * Returns the boolean the dialog waits on, so a failed save keeps the draft
+   * on screen instead of closing over a note that was never stored.
+   */
+  const setInternalName = async (
+    keyId: string,
+    internalName: string,
+  ): Promise<boolean> => {
+    try {
+      await apiRequest(`/api/admin/keys/${keyId}/set-internal-name`, {
+        method: "POST",
+        body: JSON.stringify({ internalName }),
+      });
+      await load(true);
+      return true;
+    } catch (cause) {
+      toast.error(
+        cause instanceof Error ? cause.message : t("users.internalNameFailed"),
+      );
+      return false;
+    }
+  };
+
   return (
     <div className="mx-auto flex min-h-screen w-full max-w-5xl flex-col">
       <AppHeader
@@ -522,6 +555,9 @@ export function EmployeeDashboard({
                   }
                   onRotate={() => void rotate(key.id)}
                   onRevoke={() => void revoke(key.id)}
+                  onSetInternalName={(internalName) =>
+                    setInternalName(key.id, internalName)
+                  }
                 />
               </div>
             ))}

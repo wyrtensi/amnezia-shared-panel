@@ -106,6 +106,7 @@ import type {
   StoredKeyConfig,
 } from "./repository.js";
 import { ApiError, type Actor, type IdentityClaim, type KeyView } from "./service.js";
+import { toKeyView } from "./keyView.js";
 import { diffRulePayloads } from "./ruleDiff.js";
 import {
   hasRoomForKey,
@@ -1172,38 +1173,12 @@ export class PostgresControlRepository implements ControlRepository {
           .where(eq(routeRuleVersions.status, "active"))
       ).map((row) => [row.profile, row.id]),
     );
-    return rows.map(({ key, current }) => ({
-      id: key.id,
-      ownerId: key.ownerId,
-      nodeId: key.nodeId,
-      publicKey: policy.showPublicKey ? key.publicKey : undefined,
-      protocol: key.protocol,
-      state: key.state,
-      deviceType: key.deviceType,
-      deviceLabel: key.deviceLabel,
-      keyNumber: key.keyNumber,
-      nameDisplay: {
-        server: key.nameShowNode,
-        label: key.nameShowLabel,
-        number: key.nameShowNumber,
-      },
-      routeProfile: key.routeProfile,
-      rulesOutdated:
-        key.routeProfile !== "full_tunnel" &&
-        activeByProfile.has(key.routeProfile) &&
-        activeByProfile.get(key.routeProfile) !== key.routeRuleVersionId,
-      createdAt: key.createdAt.toISOString(),
-      lastUsedAt: policy.showLastUsed
-        ? (current?.latestHandshakeAt?.toISOString() ?? null)
-        : undefined,
-      traffic:
-        policy.showTraffic && current
-          ? {
-              receivedBytes: current.receivedBytes.toString(),
-              sentBytes: current.sentBytes.toString(),
-            }
-          : undefined,
-    }));
+    // The projection lives in keyView.ts as a pure function: it is what decides
+    // whether the operator-only note leaves the server at all, and that
+    // decision has to be assertable without a database.
+    return rows.map(({ key, current }) =>
+      toKeyView({ actor, key, current, policy, activeByProfile }),
+    );
   };
 
   createProvisioningKey = async (

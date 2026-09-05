@@ -44,6 +44,14 @@ export type KeyView = {
   deviceType: DeviceType;
   deviceLabel?: string | null;
   keyNumber?: number | null;
+  /**
+   * The operator-only note on the key. Present ONLY when the caller is an
+   * administrator looking at their own key; for anyone else the property is
+   * absent from the payload entirely (`internalNameFor` in keyView.ts). A
+   * regular user never receives it, which is what makes it safe to write a
+   * real person's name in.
+   */
+  internalName?: string | null;
   // Which parts the client-visible connection name is composed of. Feed it to
   // `composeKeyDisplayName` together with the node's public name.
   nameDisplay: KeyNameDisplay;

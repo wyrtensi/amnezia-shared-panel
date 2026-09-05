@@ -288,92 +288,20 @@ describe("Access domain messages", () => {
   });
 });
 
-describe("internalNameOutcome", () => {
-  it("saves a typed note", async () => {
-    const { internalNameOutcome } = await import("./page");
-    expect(internalNameOutcome("kochkina, replaced 04.09", null)).toEqual({
-      action: "save",
-      internalName: "kochkina, replaced 04.09",
-    });
-  });
-
-  it("treats an emptied field as a deliberate clear, not as nothing", async () => {
-    // The `window.prompt` this replaced distinguished "" from `null`; the
-    // dialog has to keep the two apart itself, because clearing a note is an
-    // edit the API records and cancelling is not.
-    const { internalNameOutcome } = await import("./page");
-    expect(internalNameOutcome("", "kochkina")).toEqual({
-      action: "clear",
-      internalName: "",
-    });
-    expect(internalNameOutcome("   ", "kochkina")).toEqual({
-      action: "clear",
-      internalName: "",
-    });
-  });
-
-  it("posts nothing when the draft ends up as what the key already had", async () => {
-    // Cancel, and equally an editor opened only to read the note: neither may
-    // write an audit event saying the note was changed.
-    const { internalNameOutcome } = await import("./page");
-    expect(internalNameOutcome("kochkina", "kochkina").action).toBe("none");
-    expect(internalNameOutcome(" kochkina ", "kochkina").action).toBe("none");
-    expect(internalNameOutcome("", null).action).toBe("none");
-    expect(internalNameOutcome("", "").action).toBe("none");
-  });
-
-  it("caps the note at the column's own 80 characters", async () => {
-    // varchar(80) in migration 0026 and `.max(80)` in the contract. A longer
-    // note is refused by the API, so it must never leave the dialog.
-    const { internalNameOutcome, INTERNAL_NAME_MAX } = await import("./page");
-    expect(INTERNAL_NAME_MAX).toBe(80);
-    const outcome = internalNameOutcome("x".repeat(120), null);
-    expect(outcome.action).toBe("save");
-    expect(outcome.internalName).toHaveLength(80);
-  });
-});
-
-describe("Internal name dialog", () => {
-  it("replaces the browser prompt with the panel's own dialog", () => {
-    // The defect this fixes: a grey system box with no room to say who sees
-    // the field. A later edit reaching for window.prompt again would look
-    // harmless and lose the whole explanation.
+describe("Internal name on the admin key row", () => {
+  // The editor itself now lives in components/key-internal-name-dialog.tsx,
+  // shared with an administrator's own key card; its own assertions moved with
+  // it. What stays here is how this page uses it.
+  it("opens the panel's own dialog rather than a browser prompt", () => {
     expect(source).toMatch(/<KeyInternalNameDialog\s/);
     expect(source).not.toContain("window.prompt(");
     expect(source).not.toContain("next.slice(0, 80)");
   });
 
-  it("says what the field is for and that only administrators see it", () => {
-    expect(source).toContain("users.internalNameDesc");
-    expect(source).toContain("users.internalNamePrivateTitle");
-    expect(source).toContain("users.internalNamePrivate");
-  });
-
   it("shows which key is being annotated, by device label and node", () => {
-    expect(source).toContain("users.internalNameFor");
     expect(source).toMatch(
       /<KeyInternalNameDialog[\s\S]{0,400}deviceLabel=\{[\s\S]{0,200}nodeName=\{nodeName\}/,
     );
-  });
-
-  it("shows the 80-character cap rather than truncating in silence", () => {
-    expect(source).toContain("maxLength={INTERNAL_NAME_MAX}");
-    expect(source).toContain("users.internalNameCapped");
-    expect(source).toMatch(/\{draft\.length\} \/ \{INTERNAL_NAME_MAX\}/);
-  });
-
-  it("keeps save, clear and cancel as three separate answers", () => {
-    // Cancel closes and posts nothing; Clear posts the empty string, which the
-    // API stores as NULL; Save posts the draft. Routing all three through
-    // internalNameOutcome is what keeps "cleared" from collapsing into
-    // "unchanged".
-    expect(source).toMatch(/onClick=\{\(\) => void submit\(""\)\}/);
-    expect(source).toMatch(/onClick=\{\(\) => void submit\(draft\)\}/);
-    expect(source).toMatch(
-      /variant="outline" disabled=\{saving\} onClick=\{onClose\}/,
-    );
-    expect(source).toContain("users.internalNameClear");
-    expect(source).toMatch(/if \(decided\.action === "none"\) \{/);
   });
 
   it("names the trigger on the key row instead of leaving a bare pencil", () => {
@@ -382,30 +310,17 @@ describe("Internal name dialog", () => {
     expect(source).toContain("users.internalNameAdd");
   });
 
-  it("gives a set note a frame on the row rather than a third muted line", () => {
+  it("gives a set note the shared frame rather than a third muted line", () => {
+    // The same chip an administrator sees on their own key card. Two copies of
+    // this markup would drift, and a muted italic subtitle is what the row
+    // moved away from and must not drift back to.
     expect(source).not.toContain(
       'className="truncate text-xs italic text-muted-foreground/80"',
     );
-    expect(source).toMatch(/<NotebookPen className="size-3 shrink-0/);
+    expect(source).toMatch(/<InternalNameChip>\{keyView\.internalName\}/);
   });
 
-  it("never offers the note to the key's owner", () => {
-    // The rule that makes a real person's name safe in this field. The editor
-    // lives on the admin Users page only; nothing here may start rendering it
-    // from the employee-facing key list.
-    for (const file of [
-      "../../../components/employee/key-card.tsx",
-      "../../../components/employee/employee-dashboard.tsx",
-    ]) {
-      const owner = readFileSync(
-        fileURLToPath(new URL(file, import.meta.url)),
-        "utf8",
-      );
-      expect(owner).not.toContain("internalName");
-    }
-  });
-
-  it("carries every new key in both languages", async () => {
+  it("carries every internal-name key in both languages", async () => {
     const { messages } = await import("@/lib/i18n/messages");
     const keys = [
       "users.internalNameTitle",
@@ -419,6 +334,7 @@ describe("Internal name dialog", () => {
       "users.internalNameClear",
       "users.internalNameEdit",
       "users.internalNameAdd",
+      "users.internalNameFailed",
     ] as const;
     for (const key of keys) {
       expect(messages.ru[key]).toBeTruthy();
@@ -426,3 +342,89 @@ describe("Internal name dialog", () => {
     }
   });
 });
+
+/**
+ * The rule that makes it safe to write a real person's name in a key's
+ * internal name.
+ *
+ * It used to read "never to the owner", and it was pinned by asserting that
+ * the two owner-facing components never mention `internalName` at all. That
+ * assertion is now wrong in the letter — an administrator does see the note on
+ * their OWN key, in the ordinary panel, which is the point of having admin
+ * rights — and it was never quite the invariant anyway: a component that
+ * mentions the field is not by itself a leak, and one that does not mention it
+ * is not by itself a guarantee.
+ *
+ * The invariant is that a NON-ADMIN never receives the field, and it is
+ * enforced where it can actually be enforced — on the server.
+ * `apps/control-api/src/keyView.ts` builds the owner-facing payload and leaves
+ * `internalName` off it unless the caller is an administrator who owns the
+ * key; `apps/control-api/src/keyView.test.ts` asserts on the SERIALIZED
+ * response that a regular user's payload carries no such property, which is
+ * the test that matters. What is pinned below is the half that lives in this
+ * app: nothing owner-facing renders the note outside an administrator's own
+ * view, and nothing owner-facing reintroduces it by a route the server gate
+ * does not cover.
+ */
+describe("A regular user never sees a key's internal name", () => {
+  const ownerFacing = (file: string): string =>
+    readFileSync(fileURLToPath(new URL(file, import.meta.url)), "utf8");
+
+  it("renders it on the key card only behind the caller's admin role", () => {
+    const card = ownerFacing("../../../components/employee/key-card.tsx");
+    // Every use of the note on the card hangs off this one flag, and the flag
+    // reads the role the server sent. Rendering `keyView.internalName` outside
+    // it — in a tooltip, a title attribute, a filter — would put an operator's
+    // note about a person on that person's own screen.
+    expect(card).toContain('const isAdmin = me.role === "admin";');
+    expect(card).toMatch(/\{isAdmin \? \([\s\S]{0,1600}InternalNameChip/);
+    for (const match of card.matchAll(/keyView\.internalName/g)) {
+      const gatesBefore = (
+        card.slice(0, match.index).match(/\{isAdmin (\?|&&)/g) ?? []
+      ).length;
+      expect(
+        gatesBefore,
+        `keyView.internalName at index ${match.index} is not behind the admin gate`,
+      ).toBeGreaterThan(0);
+    }
+  });
+
+  it("keeps the note out of the owner-facing dashboard's own rendering", () => {
+    // The dashboard hands the card a WRITER — the admin endpoint, which
+    // answers 403 to anyone else — and renders the note nowhere itself.
+    const dashboard = ownerFacing(
+      "../../../components/employee/employee-dashboard.tsx",
+    );
+    expect(dashboard).toContain("set-internal-name");
+    expect(dashboard).not.toMatch(/key\.internalName|keyView\.internalName/);
+  });
+
+  it("does not carry the note into a config download", () => {
+    // A config file is a thing people forward. The download dialog composes a
+    // name from the device label and the node and must not reach for the note;
+    // control-api's `findKeyConfig` does not select the column at all (pinned
+    // in postgresRepository.integration.test.ts).
+    const config = ownerFacing(
+      "../../../components/employee/config-download-dialog.tsx",
+    );
+    expect(config).not.toContain("internalName");
+  });
+
+  it("states the narrowed rule in both languages", async () => {
+    // The callout in the editor is where an operator decides whether a real
+    // name is safe to type. It has to say that a regular user gets nothing —
+    // not the older absolute "the owner never sees this", which is no longer
+    // true and would be read as a promise the panel does not keep.
+    const { messages } = await import("@/lib/i18n/messages");
+    expect(messages.ru["users.internalNamePrivate"]).toContain(
+      "Обычный пользователь",
+    );
+    expect(messages.en["users.internalNamePrivate"]).toContain(
+      "A regular user never receives this",
+    );
+    expect(messages.en["users.internalNamePrivate"]).not.toContain(
+      "The key's owner is never shown this",
+    );
+  });
+});
+

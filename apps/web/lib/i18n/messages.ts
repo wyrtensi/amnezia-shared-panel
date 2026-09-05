@@ -635,7 +635,8 @@ const ru = {
     "Заметка для администраторов: кому ключ выдан на самом деле, что он заменил, зачем существует.",
   "users.internalNamePrivateTitle": "Видно только администраторам",
   "users.internalNamePrivate":
-    "Владельцу ключа служебное имя не показывается и в конфигурацию не попадает — поэтому здесь можно написать настоящее имя человека.",
+    "Обычный пользователь служебное имя не получает — ни в панели, ни в ответе сервера, даже на своём собственном ключе. В конфигурацию оно тоже не попадает. Поэтому здесь можно написать настоящее имя человека. Администратор видит служебное имя на своих ключах и в разделе «Пользователи».",
+  "users.internalNameFailed": "Не удалось сохранить служебное имя",
   "users.internalNameFor": "Ключ",
   "users.internalNamePlaceholder": "Кочкина, взамен ключа от 04.09",
   "users.internalNameHint": "Короткая заметка: кому и зачем этот ключ.",
@@ -1753,7 +1754,8 @@ const en = {
     "An operator's note: who the key is really for, what it replaced, why it exists.",
   "users.internalNamePrivateTitle": "Administrators only",
   "users.internalNamePrivate":
-    "The key's owner is never shown this and it is never part of a configuration — which is what makes it safe to write a real person's name here.",
+    "A regular user never receives this — not in the panel and not in the server's response, not even on their own key — and it is never part of a configuration. That is what makes it safe to write a real person's name here. An administrator sees it on their own keys and under Users.",
+  "users.internalNameFailed": "Could not save the internal name",
   "users.internalNameFor": "Key",
   "users.internalNamePlaceholder": "Kochkina, replaced the key from 04.09",
   "users.internalNameHint": "A short note: who this key is for and why.",

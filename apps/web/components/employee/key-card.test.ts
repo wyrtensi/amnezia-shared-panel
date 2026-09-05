@@ -78,6 +78,49 @@ describe(".conf fallback", () => {
   });
 });
 
+describe("internal name on an administrator's own key", () => {
+  // An administrator seeing the operator note on their own key is a new
+  // PLACEMENT, not a new capability: same field, same 80-character editor,
+  // same admin endpoint that has always written it. A second dialog here would
+  // be a second copy of the callout explaining who can read the field, and
+  // that explanation is the part that must not drift.
+  it("reuses the shared editor rather than inventing a second one", () => {
+    expect(source).toContain(
+      'from "@/components/key-internal-name-dialog"',
+    );
+    expect(source).toMatch(/<KeyInternalNameDialog\s/);
+    expect(source).not.toContain("window.prompt(");
+    expect(source).not.toContain("INTERNAL_NAME_MAX");
+  });
+
+  it("draws the note in the shared frame, not as a muted subtitle", () => {
+    expect(source).toMatch(/<InternalNameChip>\{keyView\.internalName\}/);
+    expect(source).not.toMatch(/italic[^"]*text-muted-foreground/);
+  });
+
+  it("reuses the admin row's wording for the trigger", () => {
+    // Same three strings PR #82 shipped: the field's name on the button, and
+    // add/edit on the tooltip and the `aria-label`.
+    expect(source).toContain('{t("users.internalName")}');
+    expect(source).toContain('t("users.internalNameEdit")');
+    expect(source).toContain('t("users.internalNameAdd")');
+  });
+
+  it("writes through the role-gated admin endpoint, not an owner route", () => {
+    // The card only asks; the dashboard posts. There is deliberately no
+    // owner-facing writer for this field — `/api/keys` cannot set it, and the
+    // admin endpoint answers 403 to a regular user whatever a browser sends.
+    const dashboard = readFileSync(
+      fileURLToPath(new URL("./employee-dashboard.tsx", import.meta.url)),
+      "utf8",
+    );
+    expect(dashboard).toContain(
+      "`/api/admin/keys/${keyId}/set-internal-name`",
+    );
+    expect(source).not.toContain("set-internal-name");
+  });
+});
+
 describe("rules-updated callout", () => {
   // `rulesOutdated` is computed per route profile, so the card knows which
   // profile moved. Dropping the variable would put the copy back to a generic

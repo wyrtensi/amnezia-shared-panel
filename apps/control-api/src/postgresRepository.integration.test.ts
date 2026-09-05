@@ -3172,7 +3172,7 @@ describe("PostgresControlRepository internal key name", () => {
   };
 
   runDatabaseTest(
-    "persists the internal name and never leaks it to the owner",
+    "persists the internal name and never leaks it to a regular owner",
     async () => {
       if (!database) return;
       await subject().adminAction(admin, "keys", keyId, "set-internal-name", {
@@ -3184,8 +3184,60 @@ describe("PostgresControlRepository internal key name", () => {
       // read the response body would have passed with that bug (see PR #49).
       expect(await storedInternalName()).toBe(internalName);
 
+      // `owner` is the same account as `admin` below, at role `user`: the note
+      // is withheld on the caller's ROLE, not on which rows came back.
       const ownerView = await subject().listKeys(owner);
       expect(JSON.stringify(ownerView)).not.toContain("kochkina");
+      expect(JSON.stringify(ownerView)).not.toContain("internalName");
+    },
+  );
+
+  runDatabaseTest(
+    "gives an administrator the note on their own key in the ordinary panel",
+    async () => {
+      if (!database) return;
+      await subject().adminAction(admin, "keys", keyId, "set-internal-name", {
+        internalName,
+      });
+
+      // Same account, same route (`/api/keys`), admin role — the whole of what
+      // changed: an administrator sees their own operator note where they
+      // actually look at their keys.
+      const adminView = await subject().listKeys(admin);
+      expect(adminView.find((row) => row.id === keyId)?.internalName).toBe(
+        internalName,
+      );
+    },
+  );
+
+  runDatabaseTest(
+    "does not carry another user's note to an administrator's own list",
+    async () => {
+      if (!database) return;
+      await subject().adminAction(admin, "keys", keyId, "set-internal-name", {
+        internalName,
+      });
+      const [stranger] = await database.db
+        .insert(users)
+        .values({
+          email: `internal-name-admin-${randomBytes(6).toString("hex")}@example.com`,
+          role: "admin",
+        })
+        .returning();
+      if (!stranger) throw new Error("Failed to seed the second admin");
+
+      // `listKeys` filters on `ownerId`, so an owner-facing route cannot reach
+      // somebody else's key at all — role or no role. Reading another user's
+      // note stays a trip through `/api/admin/keys`.
+      const strangerView = await subject().listKeys({
+        id: stranger.id,
+        email: stranger.email,
+        displayName: null,
+        role: "admin",
+        status: "active",
+      });
+      expect(strangerView).toHaveLength(0);
+      expect(JSON.stringify(strangerView)).not.toContain("kochkina");
     },
   );
 
@@ -3316,7 +3368,9 @@ describe("PostgresControlRepository internal key name", () => {
 
     // Everything the config path is given about a key. The name the client
     // shows is built from `deviceLabel` and the node's name; the operator's
-    // note must not be reachable from here at all.
+    // note must not be reachable from here at all. Unlike `listKeys` this
+    // takes no actor, so the rule holds for an administrator downloading their
+    // own config too: a config file is a thing people forward.
     const stored = await subject().findKeyConfig(keyId);
     expect(stored).not.toBeNull();
     expect(JSON.stringify(stored)).not.toContain("kochkina");

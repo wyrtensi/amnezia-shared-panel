@@ -1458,6 +1458,11 @@ async function cmdAction(
  * `--name=` with nothing after it clears the note, which is why the flag is
  * read rather than taken as a positional: an empty positional is indistinguishable
  * from a missing one, and "clear it" must not be spelt the same way as a typo.
+ *
+ * The note is withheld from a regular user by the API's own projection, not by
+ * whoever writes it, so a note set from here is as safe as one set in the
+ * panel. An administrator does see it on their OWN keys, in the ordinary panel
+ * as well as under Users.
  */
 async function cmdKeyInternalName(args: string[]): Promise<void> {
   const usage = 'Usage: key-internal-name <id> --name="<text>"';
@@ -2160,8 +2165,9 @@ Write:
                                           "revoking" because a node was unreachable
   key-disable <id> / key-enable <id>      Disable / enable a key
   key-internal-name <id> --name="<text>"  Set the operator-only note on a key; --name=
-                                          with nothing after it clears it. Never shown
-                                          to the key's owner, never in a config
+                                          with nothing after it clears it. Never sent to
+                                          a regular user and never in a config; an admin
+                                          sees it on their own keys
   key-config <id> [--format=vpn|conf|qr|qr-svg|qr-frames]
              [--out=<path>] [--save]
              [--confirm]                  Download a key's config. --format=qr writes a
