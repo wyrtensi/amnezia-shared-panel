@@ -87,9 +87,8 @@ export function OptionCards<T extends string>({
                 </span>
               ) : null}
               <span className="flex min-w-0 flex-col">
-                <span className="flex items-start gap-1.5 pr-5 font-medium leading-tight">
-                  <span className="break-words">{option.label}</span>
-                  {option.badge}
+                <span className="break-words pr-5 font-medium leading-tight">
+                  {option.label}
                 </span>
                 {option.description ? (
                   <span className="text-xs text-muted-foreground">
@@ -102,6 +101,13 @@ export function OptionCards<T extends string>({
               <span className="text-xs text-muted-foreground">
                 {option.hint}
               </span>
+            ) : null}
+            {/* Anchored to the card's bottom edge (mt-auto in this flex-col
+                button) rather than sitting beside the title, so a badge on
+                one card no longer narrows that card's title column and
+                throws off the row's alignment. */}
+            {option.badge ? (
+              <span className="mt-auto pt-1">{option.badge}</span>
             ) : null}
           </button>
         );
