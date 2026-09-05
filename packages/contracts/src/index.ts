@@ -451,7 +451,7 @@ export const portalPolicySchema = z.object({
   // Whether the key limit is counted per server or as one shared pool.
   keyLimitMode: keyLimitModeSchema.default("per_node"),
   allowRouteProfileSelection: z.boolean().default(true),
-  // Let users manage their OWN custom routes (extra CIDRs/domains layered on a
+  // Let users manage their OWN custom routes (extra addresses layered on a
   // split-tunnel profile). Admins can always edit them per user.
   allowCustomRoutes: z.boolean().default(true),
   allowConfigRedownload: z.boolean().default(true),
@@ -1136,15 +1136,47 @@ export type PortalPolicyOverride = z.infer<typeof portalPolicyOverrideSchema>;
 
 export type RulePayload = { cidrs: string[]; domains: string[] };
 
+// --- Route rules take addresses, not site names ----------------------------
+// A route profile steers WireGuard, and WireGuard steers on `AllowedIPs` —
+// prefixes. A domain in a route rule has no path to the client at all: the
+// panel never resolves it, so it becomes no prefix, and the two fields the
+// export used to carry it in (`split_tunnel_sites`, `sites`) are not read by
+// the AmneziaVPN client. Site-based split tunnelling exists in the client, but
+// only for names typed on its own settings page, and that page is disabled
+// whenever `AllowedIPs` is narrower than the whole address space — which every
+// route profile makes it. So the rules below refuse domains on write instead
+// of storing entries that quietly do nothing.
+//
+// The stored SHAPE still carries `domains`, so rows written before this rule
+// keep parsing and stay visible; only the write path refuses them.
+export const ROUTE_DOMAINS_UNSUPPORTED =
+  "Route rules take addresses only — a site name in a route rule never reaches the client. For rules by site name use a full-traffic key and add the sites in the AmneziaVPN app itself: Settings → Connection → Site-based split tunnelling.";
+
+/** Refuses a `{ cidrs, domains }` list that carries any domain. */
+const rejectDomains = (
+  list: { domains: string[] },
+  ctx: z.RefinementCtx,
+  path: (string | number)[],
+): void => {
+  if (list.domains.length === 0) return;
+  ctx.addIssue({
+    code: "custom",
+    path: [...path, "domains"],
+    message: ROUTE_DOMAINS_UNSUPPORTED,
+  });
+};
+
 // --- Per-user custom routes ------------------------------------------------
-// Advanced users layer their OWN CIDRs/domains on top of a split-tunnel
-// profile's base feed at export time (union + dedup). Only the split-tunnel
-// profiles accept extras — full_tunnel already routes everything through VPN.
+// Advanced users layer their OWN addresses on top of a split-tunnel profile's
+// base feed at export time (union + dedup). Only the split-tunnel profiles
+// accept extras — full_tunnel already routes everything through VPN.
 // Base feed contents are never surfaced; users only ever see their own entries.
 export const CUSTOM_ROUTE_PROFILES = ["ru_whitelist", "ru_blacklist"] as const;
 export type CustomRouteProfile = (typeof CUSTOM_ROUTE_PROFILES)[number];
 
 export const MAX_CUSTOM_CIDRS = 200;
+// Only reached by rows written before route rules became addresses-only; the
+// write path refuses domains outright.
 export const MAX_CUSTOM_DOMAINS = 200;
 
 // Punycode-aware bare hostname (mirrors the worker feed validator): no scheme,
@@ -1178,17 +1210,27 @@ export const customRoutesSchema = z.object({
   ru_blacklist: customRouteListSchema.default({ cidrs: [], domains: [] }),
 });
 
-export const updateCustomRoutesRequestSchema = customRoutesSchema;
+// The write path, as opposed to `customRoutesSchema` above, which also parses
+// what is already in the database and must keep accepting the domains it finds
+// there. See ROUTE_DOMAINS_UNSUPPORTED for why one refuses and the other cannot.
+export const updateCustomRoutesRequestSchema = customRoutesSchema.superRefine(
+  (routes, ctx) => {
+    for (const profile of CUSTOM_ROUTE_PROFILES) {
+      rejectDomains(routes[profile], ctx, [profile]);
+    }
+  },
+);
 
 export type CustomRouteList = z.infer<typeof customRouteListSchema>;
 export type CustomRoutes = z.infer<typeof customRoutesSchema>;
 
 // --- Global route overrides (admin-wide) -----------------------------------
-// Admins layer their own additions and exclusions on top of a split-tunnel
-// profile's base feed for EVERY user. Exclusions are applied before additions;
+// Admins layer their own address additions and exclusions on top of a
+// split-tunnel profile's base feed for EVERY user. Exclusions are first;
 // a user's own custom routes are applied last and therefore re-add anything the
 // admin excluded (a deliberate per-user opt-back-in).
 export const MAX_GLOBAL_CIDRS = 2_000;
+// As above: a ceiling on what an older row may already hold, not on new writes.
 export const MAX_GLOBAL_DOMAINS = 2_000;
 
 export const globalRouteListSchema = z.object({
@@ -1215,7 +1257,17 @@ export const globalRoutesSchema = z.object({
   ru_blacklist: globalRouteProfileSchema.default(newGlobalRouteProfile),
 });
 
-export const updateGlobalRoutesRequestSchema = globalRoutesSchema;
+// Same split as the per-user schemas: stored payloads keep parsing, new writes
+// are refused if they carry a site name.
+export const updateGlobalRoutesRequestSchema = globalRoutesSchema.superRefine(
+  (routes, ctx) => {
+    for (const profile of CUSTOM_ROUTE_PROFILES) {
+      for (const section of ["add", "exclude"] as const) {
+        rejectDomains(routes[profile][section], ctx, [profile, section]);
+      }
+    }
+  },
+);
 
 export type GlobalRouteList = z.infer<typeof globalRouteListSchema>;
 export type GlobalRouteProfile = z.infer<typeof globalRouteProfileSchema>;

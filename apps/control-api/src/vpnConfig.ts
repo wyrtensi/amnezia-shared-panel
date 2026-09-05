@@ -22,6 +22,15 @@ export type RulePayload = {
   domains: string[];
 };
 
+/**
+ * What a routed export actually needs: prefixes. Deliberately narrower than
+ * `RulePayload` — the feed still carries a domain half, and this type is where
+ * that half stops, because nothing downstream of here can route a name.
+ */
+export type TunnelRoutes = {
+  cidrs: string[];
+};
+
 export type AmneziaContainerAwg = {
   last_config?: string;
   [key: string]: unknown;
@@ -100,26 +109,24 @@ export const setVpnDescription = (vpnLink: string, description: string): string 
 };
 
 /**
- * Apply a routing profile to a vpn:// link. For non-full-tunnel profiles the
- * peer AllowedIPs is replaced with the rule CIDRs (plus DNS), and the domain
- * list is recorded for AmneziaVPN's native .conf export.
+ * Apply a routing profile to a vpn:// link: for non-full-tunnel profiles the
+ * peer AllowedIPs is replaced with the rule CIDRs (plus DNS). Addresses are the
+ * whole of what an exported key can steer on — see the note on `TunnelRoutes`.
  */
 export const applyRouteProfileToVpnLink = (
   vpnLink: string,
   profile: RouteProfile,
-  rulePayload?: RulePayload,
+  rulePayload?: TunnelRoutes,
 ): string => {
   if (profile === "full_tunnel" || !rulePayload) {
     return vpnLink;
   }
 
   // A rule set with no CIDRs cannot steer a WireGuard peer: AllowedIPs takes
-  // prefixes, and the domain half of the payload has nowhere to go — the client
-  // builds its site list from its own settings and ignores anything a config
-  // carries. Applying such a payload would leave AllowedIPs holding the DNS
-  // servers alone, so the key would tunnel its resolver and send every other
-  // packet in the clear. A feed that failed, or one switched to domains only,
-  // must degrade to the full tunnel it started from instead.
+  // prefixes and nothing else. Applying such a payload would leave AllowedIPs
+  // holding the DNS servers alone, so the key would tunnel its resolver and
+  // send every other packet in the clear. A feed that failed must degrade to
+  // the full tunnel it started from instead.
   if ((rulePayload.cidrs?.length ?? 0) === 0) {
     return vpnLink;
   }
@@ -207,17 +214,15 @@ export const applyRouteProfileToVpnLink = (
     `AllowedIPs = ${allowedIpsString}`,
   );
 
-  // Update the embedded last_config. allowed_ips is the field the official
-  // client reads; the domain fields are kept for the native .conf export.
+  // allowed_ips is the field the official client reads, and it is the only
+  // routing this export can express. The payload used to carry the rule's
+  // domains alongside it in `split_tunnel_sites`/`sites`; the AmneziaVPN client
+  // reads neither, so writing them only made the key look like it did something
+  // it never did. Site-based split tunnelling lives on the client's own
+  // settings page, and that page is switched off for any key whose AllowedIPs
+  // is narrower than the whole address space — every key that reaches here.
   lastConfig.allowed_ips = combinedCidrs;
   lastConfig.config = updatedConfigText;
-  if (rulePayload.domains && rulePayload.domains.length > 0) {
-    lastConfig.split_tunnel_sites = rulePayload.domains.map((d) => ({
-      hostname: d,
-      ip: "",
-    }));
-    lastConfig.sites = rulePayload.domains;
-  }
 
   container.awg.last_config = JSON.stringify(lastConfig, null, 2);
 

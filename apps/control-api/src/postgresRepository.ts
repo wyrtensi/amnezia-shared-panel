@@ -68,6 +68,7 @@ import {
   RULES_REFRESH_JOB_TYPE,
   setKeyInternalNameRequestSchema,
   setUserLimitRequestSchema,
+  updateCustomRoutesRequestSchema,
   updateGlobalRoutesRequestSchema,
 } from "@amnezia/contracts";
 import type { PollBoundSampleField } from "@amnezia/contracts";
@@ -2774,7 +2775,11 @@ export class PostgresControlRepository implements ControlRepository {
         return updated;
       });
     } else if (resource === "users" && action === "set-custom-routes") {
-      const customRoutes = dedupeCustomRoutes(customRoutesSchema.parse(payload));
+      // The write schema, not the storage one: an admin setting a user's routes
+      // is refused a site name for the same reason the user is.
+      const customRoutes = dedupeCustomRoutes(
+        updateCustomRoutesRequestSchema.parse(payload),
+      );
       return this.options.db.transaction(async (tx) => {
         const [updated] = await tx
           .update(users)

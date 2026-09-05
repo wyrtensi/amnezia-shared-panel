@@ -1775,19 +1775,48 @@ async function cmdUserNodes(args: string[]): Promise<void> {
   console.log(`user ${pos[0]}: node availability → ${shown}`);
 }
 
+/**
+ * Why the domain flags are refused rather than dropped.
+ *
+ * A route profile becomes a WireGuard AllowedIPs list, and AllowedIPs takes
+ * prefixes. A site name in a route rule was stored and then routed nowhere: the
+ * panel resolves nothing, and the two fields the export carried it in are not
+ * read by the AmneziaVPN client. Accepting the flag and writing an empty list
+ * would leave a script that "succeeds" and changes nothing, so it stops here
+ * and points at the one route that does work. The API refuses the same payload
+ * for the same reason, this is only the earlier, clearer version of it.
+ */
+const ROUTE_DOMAIN_FLAGS_REFUSED = [
+  "Route rules take addresses only.",
+  "A site name in a route rule never reaches the client: a profile becomes a WireGuard",
+  "AllowedIPs list, which takes prefixes, and the panel resolves nothing.",
+  "For rules by site name, hand out a full_tunnel key and add the sites in the",
+  "AmneziaVPN app itself: Settings -> Connection -> Site-based split tunnelling.",
+].join("\n");
+
+/** Refuses any of `flags` that were given, naming the ones that were. */
+function assertNoDomainFlags(args: string[], flags: string[]): void {
+  const given = flags.filter((flag) => flagOf(args, flag) !== undefined);
+  if (given.length === 0) return;
+  throw new Error(
+    `${given.map((flag) => `--${flag}`).join(", ")}: no longer accepted.\n${ROUTE_DOMAIN_FLAGS_REFUSED}`,
+  );
+}
+
 async function cmdUserRoutes(args: string[]): Promise<void> {
   const pos = positionals(args);
   const usage =
-    "Usage: user-routes <id|email> [--wl-domains=a,b] [--wl-cidrs=…] [--bl-domains=…] [--bl-cidrs=…]  (replaces the user's custom routes)";
+    "Usage: user-routes <id|email> [--wl-cidrs=…] [--bl-cidrs=…]  (replaces the user's custom routes; addresses only)";
+  assertNoDomainFlags(args, ["wl-domains", "bl-domains"]);
   const id = await resolveUserId(pos[0], usage);
   const body = {
     ru_whitelist: {
       cidrs: csvList(flagOf(args, "wl-cidrs") ?? ""),
-      domains: csvList(flagOf(args, "wl-domains") ?? ""),
+      domains: [],
     },
     ru_blacklist: {
       cidrs: csvList(flagOf(args, "bl-cidrs") ?? ""),
-      domains: csvList(flagOf(args, "bl-domains") ?? ""),
+      domains: [],
     },
   };
   await userAction(id, "set-custom-routes", body);
@@ -1937,16 +1966,22 @@ async function cmdGlobalRoutes(args: string[]): Promise<void> {
       console.log(
         `  ${bucket} cidrs   (${list.cidrs.length}): ${list.cidrs.join(", ") || "-"}`,
       );
-      console.log(
-        `  ${bucket} domains (${list.domains.length}): ${list.domains.join(", ") || "-"}`,
-      );
+      // Only printed when a stored payload still holds site names, and labelled
+      // for what they are: kept, visible, and applying to nothing. The next
+      // global-routes-set on that profile clears them.
+      if (list.domains.length > 0) {
+        console.log(
+          `  ${bucket} domains (${list.domains.length}, INACTIVE — route rules take addresses only): ${list.domains.join(", ")}`,
+        );
+      }
     }
   }
 }
 
 async function cmdGlobalRoutesSet(args: string[]): Promise<void> {
   const usage =
-    "Usage: global-routes-set --profile=ru_whitelist|ru_blacklist [--add-domains=a,b] [--add-cidrs=...] [--exclude-domains=...] [--exclude-cidrs=...]  (each list given REPLACES that list)";
+    "Usage: global-routes-set --profile=ru_whitelist|ru_blacklist [--add-cidrs=a,b] [--exclude-cidrs=...]  (each list given REPLACES that list; addresses only)";
+  assertNoDomainFlags(args, ["add-domains", "exclude-domains"]);
   const profile = flagOf(args, "profile");
   if (profile !== "ru_whitelist" && profile !== "ru_blacklist") {
     throw new Error(usage);
@@ -1956,21 +1991,22 @@ async function cmdGlobalRoutesSet(args: string[]): Promise<void> {
   const routes = await fetchGlobalRoutes();
   const target = routes[profile];
   const changed: string[] = [];
-  const apply = (
-    bucket: "add" | "exclude",
-    field: "cidrs" | "domains",
-    flag: string,
-  ) => {
+  const apply = (bucket: "add" | "exclude", flag: string) => {
     const value = flagOf(args, flag);
     if (value === undefined) return;
-    target[bucket][field] = csvList(value);
+    target[bucket].cidrs = csvList(value);
     changed.push(flag);
   };
-  apply("add", "cidrs", "add-cidrs");
-  apply("add", "domains", "add-domains");
-  apply("exclude", "cidrs", "exclude-cidrs");
-  apply("exclude", "domains", "exclude-domains");
+  apply("add", "add-cidrs");
+  apply("exclude", "exclude-cidrs");
   if (changed.length === 0) throw new Error(usage);
+  // Whatever site names the stored payload still carries go no further: the API
+  // refuses them on write, and they route nothing anyway. Writing a profile is
+  // therefore also how an old deployment finally sheds them.
+  for (const entry of Object.values(routes)) {
+    entry.add.domains = [];
+    entry.exclude.domains = [];
+  }
   await api("/api/admin/global-routes/global/update", {
     method: "POST",
     body: JSON.stringify(routes),
@@ -2069,7 +2105,8 @@ Read:
                           set, the built-in default an unset one falls back to,
                           and the range each accepts. Change one with
                           policy-set --<period>=<value> (=default clears it)
-  global-routes [--json]   Admin-wide route additions / exclusions
+  global-routes [--json]   Admin-wide route additions / exclusions (addresses).
+                          A stored payload's leftover site names are listed as INACTIVE.
   version [--json]         Panel version + commit + the AWG 3.1 client floor
   traffic [--days=N]       Aggregate traffic series (JSON)
   client-releases [--refresh]  What the panel hands users per platform (Windows,
@@ -2095,7 +2132,12 @@ Users (accept a user id OR email):
   user-nodes <id|email> <all|none|uuid,…>  Per-user node availability (all=every node; overrides global).
                                          REPLACES the whole per-user policy override; use
                                          user-limit --allowed-nodes to change only availability.
-  user-routes <id|email> [--wl-domains=] [--wl-cidrs=] [--bl-domains=] [--bl-cidrs=]  Replace a user's custom routes
+  user-routes <id|email> [--wl-cidrs=] [--bl-cidrs=]  Replace a user's custom routes.
+                                         Addresses only — --wl-domains / --bl-domains are
+                                         refused: a site name in a route rule never reaches
+                                         the client. For rules by site name use a full_tunnel
+                                         key and the AmneziaVPN app's own site-based split
+                                         tunnelling (Settings -> Connection).
   user-create-key <id|email> --node=<uuid> [--device=] [--protocol=awg3] [--route=full_tunnel]
                   [${deviceTypeUsage()}]
                   [--name-server=true|false] [--name-label=true|false] [--name-number=true|false]
@@ -2206,13 +2248,14 @@ Write:
                                           users --domain=<d> first. A rejected domain shows
                                           the API's own reason.
   policy-set --<field>=<value> …          Set any panel setting(s), see below
-  global-routes-set --profile=ru_whitelist|ru_blacklist [--add-domains=] [--add-cidrs=]
-                    [--exclude-domains=] [--exclude-cidrs=]
+  global-routes-set --profile=ru_whitelist|ru_blacklist [--add-cidrs=] [--exclude-cidrs=]
                                           Admin-wide route overrides for a split-tunnel profile.
                                           Each list given REPLACES that list; omitted lists stay.
-                                          Exclusions drop feed entries (excluding a domain also
-                                          drops its subdomains); a user's own custom routes are
-                                          applied last and can opt back in.
+                                          Exclusions drop feed entries; a user's own custom
+                                          routes are applied last and can opt back in.
+                                          Addresses only — --add-domains / --exclude-domains
+                                          are refused, and a write clears any site names the
+                                          stored payload still holds.
   panel-update [--status] [--json]        Trigger the in-panel update, or show its status
                                           as one line (--json = the raw status object)
 

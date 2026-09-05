@@ -45,6 +45,7 @@ import {
   quotaRequestSchema,
   replaceLegacyDeviceType,
   RETIRED_STORED_DEVICE_TYPES,
+  ROUTE_DOMAINS_UNSUPPORTED,
   ROUTE_PROFILE_UNSUPPORTED_DEVICES,
   rulesRefreshStatusSchema,
   CHECK_ASSERTION_TYPES,
@@ -56,6 +57,7 @@ import {
   type CheckAssertion,
   setUserLimitRequestSchema,
   toUserCheckState,
+  updateCustomRoutesRequestSchema,
   updateGlobalRoutesRequestSchema,
   updateServiceCheckRequestSchema,
   accessDomainListSchema,
@@ -515,8 +517,59 @@ describe("globalRoutesSchema", () => {
     ).toBe(false);
   });
 
-  it("is the request schema used by the admin update endpoint", () => {
-    expect(updateGlobalRoutesRequestSchema).toBe(globalRoutesSchema);
+  // Stored rows written before route rules became addresses-only must keep
+  // parsing, or a deployment holding them could not read its own overrides.
+  it("still parses a stored payload that carries domains", () => {
+    expect(
+      globalRoutesSchema.safeParse({
+        ru_whitelist: { add: { domains: ["example.com"] } },
+      }).success,
+    ).toBe(true);
+  });
+});
+
+describe("route rules refuse site names on write", () => {
+  it("lets the admin update through when every list is addresses only", () => {
+    expect(
+      updateGlobalRoutesRequestSchema.safeParse({
+        ru_whitelist: { add: { cidrs: ["1.2.3.4"] } },
+      }).success,
+    ).toBe(true);
+  });
+
+  it("refuses a global add or exclude list that carries a domain", () => {
+    for (const section of ["add", "exclude"] as const) {
+      const result = updateGlobalRoutesRequestSchema.safeParse({
+        ru_blacklist: { [section]: { domains: ["example.com"] } },
+      });
+      expect(result.success).toBe(false);
+      expect(result.error?.issues[0]?.message).toBe(ROUTE_DOMAINS_UNSUPPORTED);
+      expect(result.error?.issues[0]?.path).toEqual([
+        "ru_blacklist",
+        section,
+        "domains",
+      ]);
+    }
+  });
+
+  it("refuses a per-user list that carries a domain, and says where to go", () => {
+    const result = updateCustomRoutesRequestSchema.safeParse({
+      ru_whitelist: { cidrs: ["1.2.3.4"], domains: ["example.com"] },
+    });
+    expect(result.success).toBe(false);
+    expect(result.error?.issues[0]?.message).toBe(ROUTE_DOMAINS_UNSUPPORTED);
+    expect(result.error?.issues[0]?.path).toEqual(["ru_whitelist", "domains"]);
+    // The refusal has to name the way that does work, or it is just a wall.
+    expect(ROUTE_DOMAINS_UNSUPPORTED).toContain("full-traffic key");
+    expect(ROUTE_DOMAINS_UNSUPPORTED).toContain("AmneziaVPN app");
+  });
+
+  it("lets a per-user update through once the domains are cleared", () => {
+    expect(
+      updateCustomRoutesRequestSchema.safeParse({
+        ru_whitelist: { cidrs: ["1.2.3.4"], domains: [] },
+      }).success,
+    ).toBe(true);
   });
 });
 

@@ -95,10 +95,7 @@ describe("vpn config extraction and split tunneling", () => {
       ],
     });
 
-    const rulePayload = {
-      cidrs: ["104.244.42.0/24", "157.240.0.0/16"],
-      domains: ["instagram.com", "x.com"],
-    };
+    const rulePayload = { cidrs: ["104.244.42.0/24", "157.240.0.0/16"] };
 
     const modifiedLink = applyRouteProfileToVpnLink(
       vpnLink,
@@ -114,7 +111,11 @@ describe("vpn config extraction and split tunneling", () => {
     const decoded = decodeVpnLink(modifiedLink);
     const lastConfig = JSON.parse(
       decoded.containers?.[0]?.awg?.last_config ?? "{}",
-    ) as { allowed_ips?: string[]; sites?: string[] };
+    ) as {
+      allowed_ips?: string[];
+      sites?: unknown;
+      split_tunnel_sites?: unknown;
+    };
     const allowedIps = lastConfig.allowed_ips ?? [];
 
     // The listed CIDRs bypass the tunnel, so they are exactly what AllowedIPs
@@ -134,7 +135,10 @@ describe("vpn config extraction and split tunneling", () => {
     // Exactly the full space minus the two bypassed blocks.
     expect(covered).toBe(2 ** 32 - 2 ** 8 - 2 ** 16);
 
-    expect(lastConfig.sites).toEqual(["instagram.com", "x.com"]);
+    // Neither site field is written any more: the AmneziaVPN client reads
+    // neither, so a key that carried them looked routed by name and was not.
+    expect(lastConfig.sites).toBeUndefined();
+    expect(lastConfig.split_tunnel_sites).toBeUndefined();
   });
 
   it("routes ONLY the ru_blacklist CIDRs", () => {
@@ -158,7 +162,6 @@ describe("vpn config extraction and split tunneling", () => {
 
     const modifiedLink = applyRouteProfileToVpnLink(vpnLink, "ru_blacklist", {
       cidrs: ["104.244.42.0/24", "157.240.0.0/16"],
-      domains: [],
     });
 
     const decoded = decodeVpnLink(modifiedLink);
@@ -189,7 +192,6 @@ describe("vpn config extraction and split tunneling", () => {
 
     const modified = applyRouteProfileToVpnLink(vpnLink, "ru_blacklist", {
       cidrs: ["100.64.0.0/10"],
-      domains: ["rutracker.org"],
     });
 
     const conf = extractConfFromVpnLink(modified);
@@ -198,11 +200,9 @@ describe("vpn config extraction and split tunneling", () => {
   });
 
   it("keeps the full tunnel when a profile payload carries no CIDRs", () => {
-    // A domains-only feed, or one that failed to fetch, has nothing AllowedIPs
-    // can express: the client builds its site list from its own settings and
-    // ignores anything a config carries. Applying such a payload would leave
-    // the peer routing its DNS servers and nothing else, so the untouched
-    // full-tunnel link has to come back instead.
+    // A feed that failed to fetch has nothing AllowedIPs can express.
+    // Applying such a payload would leave the peer routing its DNS servers and
+    // nothing else, so the untouched full-tunnel link has to come back.
     const vpnLink = encode({
       dns1: "1.1.1.1",
       dns2: "1.0.0.1",
@@ -222,10 +222,7 @@ describe("vpn config extraction and split tunneling", () => {
 
     for (const profile of ["ru_blacklist", "ru_whitelist"] as const) {
       expect(
-        applyRouteProfileToVpnLink(vpnLink, profile, {
-          cidrs: [],
-          domains: ["example.com", "example.org"],
-        }),
+        applyRouteProfileToVpnLink(vpnLink, profile, { cidrs: [] }),
       ).toBe(vpnLink);
     }
   });
@@ -261,7 +258,6 @@ describe("vpn config extraction and split tunneling", () => {
     expect(
       applyRouteProfileToVpnLink(vpnLink, "ru_blacklist", {
         cidrs: oversized,
-        domains: [],
       }),
     ).toBe(vpnLink);
 
@@ -269,7 +265,6 @@ describe("vpn config extraction and split tunneling", () => {
     // until the inverse fits, so the same feed still produces a usable config.
     const whitelisted = applyRouteProfileToVpnLink(vpnLink, "ru_whitelist", {
       cidrs: oversized,
-      domains: [],
     });
     expect(whitelisted).not.toBe(vpnLink);
     const lastConfig = JSON.parse(
@@ -313,20 +308,17 @@ describe("vpn config extraction and split tunneling", () => {
       // Comfortably inside the budget: nothing to report.
       applyRouteProfileToVpnLink(vpnLink, "ru_blacklist", {
         cidrs: cidrsOfLength(10),
-        domains: [],
       });
       expect(warn).not.toHaveBeenCalled();
 
       applyRouteProfileToVpnLink(vpnLink, "ru_blacklist", {
         cidrs: cidrsOfLength(WARN_TUNNEL_ROUTES + 1),
-        domains: [],
       });
       expect(warn).toHaveBeenCalledTimes(1);
       expect(String(warn.mock.calls[0]?.[0])).toContain("approaching");
 
       applyRouteProfileToVpnLink(vpnLink, "ru_blacklist", {
         cidrs: cidrsOfLength(MAX_TUNNEL_ROUTES + 1),
-        domains: [],
       });
       expect(warn).toHaveBeenCalledTimes(2);
       expect(String(warn.mock.calls[1]?.[0])).toContain("full tunnel");

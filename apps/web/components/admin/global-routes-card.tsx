@@ -8,7 +8,10 @@ import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Callout, FieldHint } from "@/components/ui/hint";
-import { RouteListEditor } from "@/components/route-list-editor";
+import {
+  InactiveDomainList,
+  RouteListEditor,
+} from "@/components/route-list-editor";
 import { useAdminData, newGlobalRoutes } from "@/components/admin/admin-data";
 import { cn } from "@/lib/utils";
 import { useT } from "@/lib/i18n/provider";
@@ -46,22 +49,45 @@ const cloneRoutes = (routes: GlobalRoutes): GlobalRoutes => {
   return next;
 };
 
+// Counts the addresses, which is everything an override can actually apply.
+// Site names a stored payload still holds are listed as inactive in their own
+// section instead of being counted as if they were in force.
 const countEntries = (routes: GlobalRoutes): number => {
   let total = 0;
   for (const profile of PROFILES) {
     for (const section of SECTIONS) {
-      total +=
-        routes[profile][section].cidrs.length +
-        routes[profile][section].domains.length;
+      total += routes[profile][section].cidrs.length;
     }
   }
   return total;
 };
 
 /**
+ * What the update request may contain. The form holds on to any stored site
+ * names so the card can show them; saving is what drops them, and the API
+ * refuses them regardless of who sends them.
+ */
+const addressesOnly = (routes: GlobalRoutes): GlobalRoutes => {
+  const next = newGlobalRoutes();
+  for (const profile of PROFILES) {
+    for (const section of SECTIONS) {
+      next[profile][section] = {
+        cidrs: [...routes[profile][section].cidrs],
+        domains: [],
+      };
+    }
+  }
+  return next;
+};
+
+/**
  * Admin-wide route overrides layered on every user's split-tunnel feed:
  * `add` entries are merged in, `exclude` entries are stripped out before the
  * user's own custom routes are applied. Saving replaces the whole payload.
+ *
+ * Addresses only: an override ends up in a key's AllowedIPs, which takes
+ * prefixes. Site names an older payload still carries are shown as inactive
+ * and dropped on the next save — see `InactiveDomainList`.
  *
  * Rendered collapsed by default at the top of the routing page so the fetched
  * rule-version list underneath stays reachable without a long scroll.
@@ -80,21 +106,24 @@ export function GlobalRoutesCard() {
   }, [globalRoutes]);
   const dirty = JSON.stringify(form) !== baseline.current;
 
-  const setList = (
-    profile: Profile,
-    section: Section,
-    kind: "cidrs" | "domains",
-    next: string[],
-  ) =>
+  const setCidrs = (profile: Profile, section: Section, next: string[]) =>
     setForm((prev) => {
       const updated = cloneRoutes(prev);
-      updated[profile][section][kind] = next;
+      updated[profile][section].cidrs = next;
       return updated;
     });
 
+  // Every list at once, and outside the tabs: a save replaces the whole payload,
+  // so the leftovers on the tab nobody opened go with it. Listing them per
+  // section would hide half of what the next save is about to remove.
+  const staleDomains = PROFILES.flatMap((profile) =>
+    SECTIONS.flatMap((section) => form[profile][section].domains),
+  );
+  const clearDomains = () => setForm((prev) => addressesOnly(prev));
+
   const save = async () => {
     setBusy(true);
-    await action("global-routes", "global", "update", form);
+    await action("global-routes", "global", "update", addressesOnly(form));
     setBusy(false);
   };
 
@@ -171,17 +200,9 @@ export function GlobalRoutesCard() {
                             <FieldHint>{t(SECTION_HINT[section])}</FieldHint>
                           </div>
                           <RouteListEditor
-                            kind="cidr"
                             entries={form[profile][section].cidrs}
                             onChange={(next) =>
-                              setList(profile, section, "cidrs", next)
-                            }
-                          />
-                          <RouteListEditor
-                            kind="domain"
-                            entries={form[profile][section].domains}
-                            onChange={(next) =>
-                              setList(profile, section, "domains", next)
+                              setCidrs(profile, section, next)
                             }
                           />
                         </div>
@@ -190,6 +211,14 @@ export function GlobalRoutesCard() {
                   </TabsContent>
                 ))}
               </Tabs>
+            )}
+
+            {loading ? null : (
+              <InactiveDomainList
+                domains={staleDomains}
+                onClear={clearDomains}
+                disabled={busy}
+              />
             )}
 
             <div className="flex justify-end">
