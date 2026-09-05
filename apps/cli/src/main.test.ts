@@ -277,6 +277,36 @@ describe("cf-domains", () => {
     expect(out).toMatch(/now a\.tld, b\.tld/);
   });
 
+  it("refuses a bare --set= without reading the policy, so an unset shell variable cannot wipe the list", async () => {
+    const calls = stubFetch([
+      { body: [{ cfAccessAllowedDomains: ["a.tld"] }] },
+    ]);
+    await expect(run(["cf-domains", "--set="])).rejects.toThrow(
+      /--set=none/,
+    );
+    expect(calls).toHaveLength(0);
+  });
+
+  it("--set=none clears the list explicitly, printing what is removed before posting", async () => {
+    const calls = stubFetch([
+      { body: [{ cfAccessAllowedDomains: ["a.tld", "b.tld"] }] },
+      { body: {} },
+    ]);
+    const out = await run(["cf-domains", "--set=none"]);
+    expect(JSON.parse(calls[1]?.init?.body as string)).toEqual({
+      cfAccessAllowedDomains: [],
+    });
+    expect(out).toMatch(/clearing a\.tld, b\.tld/);
+    expect(out).toMatch(/now \(none\)/);
+  });
+
+  it("--set=none on an already-empty list says so, without posting", async () => {
+    const calls = stubFetch([{ body: [{ cfAccessAllowedDomains: [] }] }]);
+    const out = await run(["cf-domains", "--set=none"]);
+    expect(calls).toHaveLength(1); // read only — no update posted
+    expect(out).toMatch(/already empty/);
+  });
+
   it("refuses to combine --add and --remove in one call, without reading the policy at all", async () => {
     const calls = stubFetch([{ body: [{ cfAccessAllowedDomains: [] }] }]);
     await expect(

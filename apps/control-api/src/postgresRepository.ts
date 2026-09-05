@@ -3025,6 +3025,21 @@ export class PostgresControlRepository implements ControlRepository {
         named.has(field),
       );
       return this.options.db.transaction(async (tx) => {
+        // The domain list widens who can reach the panel through Cloudflare,
+        // so a bare list of changed FIELD NAMES in the audit event cannot say
+        // who was let in. Read the value this update is about to replace
+        // before the write below, so the audit event can record both sides —
+        // never done for `cfApiToken` itself, which must never reach the log.
+        const previousDomains = named.has("cfAccessAllowedDomains")
+          ? ((
+              await tx
+                .select({
+                  cfAccessAllowedDomains: portalPolicy.cfAccessAllowedDomains,
+                })
+                .from(portalPolicy)
+                .limit(1)
+            )[0]?.cfAccessAllowedDomains ?? [])
+          : undefined;
         // One existence check for both lists: fewer round trips, and the
         // rejection is all-or-nothing, so a bad id never half-applies. This
         // runs BEFORE the prefix rule, so an id that names no node is reported
@@ -3099,6 +3114,15 @@ export class PostgresControlRepository implements ControlRepository {
             fields: Object.keys(provided),
             ...(recommended ? { recommendedNodeCount: recommended.length } : {}),
             ...(order ? { orderedNodeCount: order.length } : {}),
+            // The field NAME alone does not say who this let in — record the
+            // value too. Before-and-after, since "widened the allowlist" and
+            // "narrowed it" are very different events to reconstruct later.
+            ...(named.has("cfAccessAllowedDomains")
+              ? {
+                  cfAccessAllowedDomains: provided.cfAccessAllowedDomains,
+                  cfAccessAllowedDomainsBefore: previousDomains,
+                }
+              : {}),
           },
         });
         return updated ? stripPolicySecrets(updated) : updated;

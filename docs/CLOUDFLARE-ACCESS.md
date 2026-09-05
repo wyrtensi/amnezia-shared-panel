@@ -315,7 +315,10 @@ did not create:
   user. The moment it is, the panel claims that rule — it is dropped from the
   foreign set and re-emitted as a bare `{"email":{"email":...}}`, so any fields
   this client does not model are lost, and the panel owns the address from then
-  on. Non-email rules (`email_domain`, groups) are preserved as before.
+  on. Non-email, non-domain rules (groups, `everyone`) are preserved as
+  before; an `email_domain` rule now follows this exact same ownership rule
+  instead of being preserved unconditionally — see "Panel-managed domains"
+  below.
 - **domain cover** — an address the policy still admits through a surviving
   `email_domain` rule, and that no `exclude` rule denies, is never judged
   "removed in Cloudflare". `exclude` is the idiomatic Cloudflare way to carve
@@ -362,6 +365,10 @@ did not create:
   tripped, sync is paused in **both** directions, not just the disable side:
   newly added panel users are not pushed to the Access policy either, so they
   cannot sign in until an operator raises the limit or resolves the anomaly.
+  A pending change to the panel-managed domain list (see "Panel-managed
+  domains" below) is held back the same way — an aborted run returns before
+  it ever computes the next domain set, so neither an added nor a removed
+  domain reaches the policy until the run stops aborting.
 
 The write-back uses **`PUT`** on the app-scoped policy endpoint (see the verb
 note under Direction 2).
@@ -589,7 +596,18 @@ page, or from a shell with `cf-domains` (see
 [`docs/CLI.md`](./CLI.md)). It is the same ownership split described above
 for email rules, one level up: the panel deletes only the domain rules its own
 stored list once added, and leaves every other domain rule (hand-added in the
-dashboard, or added by another tool) untouched.
+dashboard, or added by another tool) untouched — **until an operator names
+that same domain in the panel's list.** At that point ownership passes exactly
+the way an email's does: the panel claims the rule, re-emits it as a bare
+`{"email_domain":{"domain":...}}` (any fields this client does not model are
+lost), and from then on the panel — not the dashboard — decides whether the
+rule stays. A hand-added domain rule is therefore safe only until an operator
+types its domain into the panel's card; once that happens, removing the
+domain from the panel's list removes the rule, the same as if the panel had
+added it in the first place. A second, duplicate hand-added rule for that same
+domain is claimed and dropped right along with it — ownership is by domain
+string, mirroring how a duplicate email rule is claimed (see "ownership"
+above).
 
 **Two doors, two lists, deliberately not unified.** Which domains get someone
 in depends on which door they are walking through:
@@ -623,6 +641,15 @@ the sync treats as the source of truth for what it owns: a domain missing
 from the policy that the stored list still names is drift, not an
 intentional removal, and is rewritten on the next run. Use
 `cf-domains --remove=<domain>` (or the Users page) to actually drop one.
+
+**Correcting a typo in the dashboard leaves two rules, not one fixed rule.**
+If the panel owns `compnay.tld` and someone fixes the spelling to
+`company.tld` directly in the Cloudflare policy, the corrected rule is not
+what the stored list names, so it is preserved as foreign — while the next
+sync still asks for the panel's own stored `compnay.tld` and writes it right
+back. The policy ends up with both spellings admitted. Correct the typo in
+the panel's list instead: the panel drops its old rule and writes the fixed
+one in the same run.
 
 **`exclude` is the override the panel never writes and always honours** — see
 "domain cover" above. Owning a domain rule does not change this: an operator

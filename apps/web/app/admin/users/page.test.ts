@@ -32,6 +32,55 @@ describe("Access domains card", () => {
       /action\("portal-policy",\s*"global",\s*"update",\s*\{\s*cfAccessAllowedDomains:\s*next,\s*\}\s*\)/,
     );
   });
+
+  it("guards a policy row without the domains field so the card cannot throw on list.length", () => {
+    // A mixed-version deploy can hand back a portal-policy row from before
+    // this field existed (`policy.cfAccessAllowedDomains` undefined); without
+    // the `?? []` here, `React.useState<string[]>(domains)` would seed `list`
+    // as `undefined` and `list.length` below would throw.
+    expect(source).toMatch(/domains=\{policy\.cfAccessAllowedDomains \?\? \[\]\}/);
+  });
+
+  it("gates the editor on Cloudflare actually being configured", () => {
+    expect(source).toContain("configured={isAccessConfigured(policy)}");
+    expect(source).toContain("users.accessDomainsDisabledTitle");
+    expect(source).toContain("users.accessDomainsDisabledSummary");
+    expect(source).toContain("users.accessDomainsDisabledHint");
+    expect(source).toContain("users.accessDomainsDisabledLink");
+    // The save button must stay disabled on an unconfigured panel even if a
+    // draft edit makes it look "dirty" — a save there would arm a background
+    // job that can never reach Cloudflare.
+    expect(source).toMatch(/disabled=\{!configured \|\| !dirty \|\| saving\}/);
+  });
+});
+
+describe("isAccessConfigured", () => {
+  const base = {
+    cfAccessAccountId: "acc",
+    cfAccessAppId: "app",
+    cfAccessPolicyId: "pol",
+    cfApiTokenSet: true,
+  };
+
+  it("is true only once every field the write-back needs is set", async () => {
+    const { isAccessConfigured } = await import("./page");
+    expect(isAccessConfigured(base)).toBe(true);
+  });
+
+  it.each([
+    "cfAccessAccountId",
+    "cfAccessAppId",
+    "cfAccessPolicyId",
+    "cfApiTokenSet",
+  ] as const)("is false when %s is missing", async (field) => {
+    const { isAccessConfigured } = await import("./page");
+    expect(
+      isAccessConfigured({
+        ...base,
+        [field]: field === "cfApiTokenSet" ? false : null,
+      }),
+    ).toBe(false);
+  });
 });
 
 describe("Domain filter", () => {

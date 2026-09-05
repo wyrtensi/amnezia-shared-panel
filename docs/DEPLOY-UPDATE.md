@@ -123,6 +123,39 @@ docker compose -f infra/dev/compose.yaml --env-file infra/dev/.env ps  # service
 Tag releases (`git tag -a v0.2.0 -m …`) so "what is in production" is a name, not
 a bare SHA — it also makes rollback (below) a checkout of a known-good tag.
 
+## Before you update: confirm the host has not skipped a migration
+
+Drizzle applies a journal entry from `packages/db/migrations/meta/_journal.json`
+only when its recorded timestamp is **newer** than the newest one already in
+`drizzle.__drizzle_migrations` on that database — never by file name or
+content hash. If a journal entry was ever committed with a timestamp **older**
+than one already applied (an out-of-order edit to the journal), a host that
+never ran that entry keeps skipping it on every future update, silently, even
+while a later migration's generated snapshot already assumes its columns
+exist — at which point regenerating a migration can no longer re-add what was
+skipped, because the generator no longer sees it as missing.
+
+Check before updating to a release with new migrations:
+
+```sql
+select count(*) from drizzle.__drizzle_migrations;
+```
+
+and compare the count against the number of entries in
+`packages/db/migrations/meta/_journal.json` for the commit you are deploying —
+or check directly for a column a specific migration adds. For example,
+migration `0027` adds `nodes.capacity_state`:
+
+```sql
+select column_name from information_schema.columns
+  where table_name = 'nodes' and column_name = 'capacity_state';
+```
+
+If a migration the count implies should be applied is missing, do not deploy
+past it yet: apply that migration's SQL by hand first (from
+`packages/db/migrations/`), confirm the column now exists, and only then
+continue with the steps below.
+
 ## Zero-downtime caveats
 
 There are **no strong zero-downtime guarantees** on this single-host Compose

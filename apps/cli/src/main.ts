@@ -861,6 +861,14 @@ function normalizeCfDomain(value: string): string {
  * `--add`, `--remove` and `--set` all touch the same list in incompatible
  * ways (grow it, shrink it, replace it outright), so combining more than one
  * in a single call is refused rather than silently picking a winner.
+ *
+ * A bare `--set=` (nothing after the `=`) is refused rather than treated as
+ * "replace with an empty list": that is exactly what an unset shell variable
+ * produces by accident (`--set=$DOMAINS` with `$DOMAINS` empty), and silently
+ * posting `[]` would wipe every domain rule the panel owns on the next sync.
+ * `--set=none` is the explicit, unambiguous way to ask for that — and it
+ * prints what it is about to remove before doing it, since this is a
+ * security-relevant allowlist.
  */
 async function cmdCfDomains(args: string[]): Promise<void> {
   const add = flagOf(args, "add");
@@ -869,6 +877,11 @@ async function cmdCfDomains(args: string[]): Promise<void> {
   if ([add, remove, set].filter((value) => value !== undefined).length > 1) {
     throw new Error(
       "Usage: cf-domains [--add=<domain> | --remove=<domain> | --set=<a,b,...>] — one at a time",
+    );
+  }
+  if (set !== undefined && set.trim() === "") {
+    throw new Error(
+      'cf-domains: --set needs a value — use --set=none to clear the list explicitly, or --set=<a,b,...> to replace it',
     );
   }
 
@@ -886,7 +899,17 @@ async function cmdCfDomains(args: string[]): Promise<void> {
   }
 
   let next: string[];
-  if (set !== undefined) {
+  if (set !== undefined && set.trim().toLowerCase() === "none") {
+    if (current.length === 0) {
+      console.log("cf-domains: list is already empty — nothing to clear");
+      return;
+    }
+    // Say what is being removed before doing it — this wipes a
+    // security-relevant allowlist, so the operator sees the blast radius up
+    // front rather than discovering it from the next sync.
+    console.log(`cf-domains: clearing ${current.join(", ")}`);
+    next = [];
+  } else if (set !== undefined) {
     next = [...new Set(csvList(set).map(normalizeCfDomain))];
   } else if (add !== undefined) {
     const domain = normalizeCfDomain(add);
@@ -1782,9 +1805,12 @@ Write:
                                           --status shows the last run as one line, including a
                                           refused run's reason ("failed: …"); --json = the raw
                                           status object
-  cf-domains [--add=<d> | --remove=<d> | --set=<a,b,...>]
+  cf-domains [--add=<d> | --remove=<d> | --set=<a,b,...>|none]
                                           List, or edit, the domains admitted by the Access
-                                          policy (one flag at a time). Removing a domain
+                                          policy (one flag at a time). A bare --set= is refused
+                                          (an unset shell variable, not a deliberate wipe) —
+                                          use --set=none to clear the list explicitly, which
+                                          prints what it removes first. Removing a domain
                                           disables nobody: it only drops the domain rule, and
                                           the next sync re-emits every signed-in user's own
                                           rule. A rejected domain shows the API's own reason.

@@ -634,11 +634,17 @@ const ru = {
   "users.accessDomainsTitle": "Домены Cloudflare Access",
   "users.accessWhoTitle": "Кто может войти.",
   "users.accessWhoSummary":
-    "Через Cloudflare войти могут пользователи из этого списка, любой адрес с доменов, указанных ниже, и все, кого допускает правило, добавленное прямо в панели Cloudflare, — такие правила панель не видит. При прямом входе: пользователи из этого списка и домены из AUTH_ALLOWED_DOMAINS.",
+    "Через Cloudflare войти могут: каждый активный пользователь панели (у него отдельное правило по своему адресу), любой адрес с доменов, указанных ниже, и все, кого допускает правило, добавленное прямо в политике Cloudflare, — control-api никогда не читает эту политику и не знает про такие правила, их видит только синхронизация воркера, когда записывает изменения обратно. При прямом входе: активные пользователи панели и домены из AUTH_ALLOWED_DOMAINS.",
   "users.accessDomainsPlaceholder": "company.tld или @company.tld",
   "users.accessDomainsHint":
     "Панель сохраняет эти домены в политике Access. Но сможет ли человек реально войти — по-прежнему решает провайдер идентификации.",
   "users.accessDomainRemoveAria": "Удалить {value}",
+  "users.accessDomainsDisabledTitle": "Cloudflare Access не настроен.",
+  "users.accessDomainsDisabledSummary":
+    "Пока не заданы Account ID, Application ID, Policy ID и API-токен, список ниже сохранится в панели, но не попадёт в политику Access — редактирование отключено.",
+  "users.accessDomainsDisabledHint":
+    "Настройте Cloudflare Access на странице «Политики», чтобы этот список заработал.",
+  "users.accessDomainsDisabledLink": "Настроить на странице «Политики»",
 
   // Admin nodes
   // Host metrics on the admin node card, and the three words a USER is shown
@@ -1632,11 +1638,17 @@ const en = {
   "users.accessDomainsTitle": "Cloudflare Access domains",
   "users.accessWhoTitle": "Who can sign in.",
   "users.accessWhoSummary":
-    "Through Cloudflare: the users listed here, anyone with an address on the domains below, and anyone admitted by a rule added directly in the Cloudflare dashboard — the panel does not see those. Direct login: the users listed here plus the domains in AUTH_ALLOWED_DOMAINS.",
+    "Through Cloudflare: every active panel user (each has their own address rule), anyone with an address on the domains below, and anyone admitted by a rule added directly in the Cloudflare policy — control-api never reads that policy and does not know about those; only the worker sync does, to write changes back. Direct login: the panel's active users plus the domains in AUTH_ALLOWED_DOMAINS.",
   "users.accessDomainsPlaceholder": "company.tld or @company.tld",
   "users.accessDomainsHint":
     "The panel keeps these domains in the Access policy. Whether someone can actually authenticate is still up to the identity provider.",
   "users.accessDomainRemoveAria": "Remove {value}",
+  "users.accessDomainsDisabledTitle": "Cloudflare Access is not configured.",
+  "users.accessDomainsDisabledSummary":
+    "Until the Account ID, Application ID, Policy ID, and API token are all set, the list below is saved in the panel but never reaches the Access policy — editing is disabled.",
+  "users.accessDomainsDisabledHint":
+    "Configure Cloudflare Access on the Policies page to make this list take effect.",
+  "users.accessDomainsDisabledLink": "Configure on the Policies page",
 
   // Admin nodes
     "checks.resetHint":

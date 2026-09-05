@@ -273,9 +273,12 @@ const isDomainRule = (rule: CfAccessRule): boolean => ruleDomain(rule) !== "";
  * (below) then keeps the hand-added rule in the policy indefinitely — this is
  * the standing trust model, not a narrow race: membership in the Access
  * policy is equivalent to being granted a panel account. Removing a user in
- * Cloudflare IS honoured (disable). Non-email rules (email_domain, groups,
- * ...) are always preserved. Safe by construction: unconfigured or "no active
- * users" are no-ops that never wipe the allowlist.
+ * Cloudflare IS honoured (disable). Non-email, non-domain rules (groups,
+ * `everyone`, ...) are always preserved by reference; `email_domain` rules
+ * follow the SAME ownership rule as email rules now — owned once the panel's
+ * stored domain list names them, foreign (and left alone) until then. Safe by
+ * construction: unconfigured or "no active users" are no-ops that never wipe
+ * the allowlist.
  */
 export function createAccessSync(options: {
   repository: {
@@ -531,7 +534,7 @@ export function createAccessSync(options: {
       return {
         outcome: "skipped",
         detail:
-          "No active panel users to write back to Cloudflare — nothing to push (any due account disables already ran).",
+          "No active panel users to write back to Cloudflare — skipping the write-back, including any desired domains (any due account disables already ran).",
       };
     }
 

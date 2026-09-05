@@ -1956,6 +1956,73 @@ describe("PostgresControlRepository global policy update", () => {
     },
   );
 
+  runDatabaseTest(
+    "records the domain list itself in the audit event, not just the field name",
+    async () => {
+      if (!database) return;
+      const repository = new PostgresControlRepository({
+        db: database.db,
+        keyring,
+      });
+      await repository.adminAction(admin, "portal-policy", "global", "update", {
+        cfAccessAllowedDomains: ["company.tld"],
+      });
+      await repository.adminAction(admin, "portal-policy", "global", "update", {
+        cfAccessAllowedDomains: ["company.tld", "other.tld"],
+      });
+
+      const [event] = await database.db
+        .select({ metadata: auditEvents.metadata })
+        .from(auditEvents)
+        .where(
+          and(
+            eq(auditEvents.actorUserId, admin.id),
+            eq(auditEvents.action, "admin.portal-policy.update"),
+          ),
+        )
+        .orderBy(desc(auditEvents.createdAt))
+        .limit(1);
+      // "who let company.tld in" is not reconstructable from `fields` alone —
+      // the value, and what it replaced, must be in the same row.
+      expect(event?.metadata).toMatchObject({
+        fields: ["cfAccessAllowedDomains"],
+        cfAccessAllowedDomains: ["company.tld", "other.tld"],
+        cfAccessAllowedDomainsBefore: ["company.tld"],
+      });
+    },
+  );
+
+  runDatabaseTest(
+    "never puts the API token's value in the audit event",
+    async () => {
+      if (!database) return;
+      const repository = new PostgresControlRepository({
+        db: database.db,
+        keyring,
+      });
+      await repository.adminAction(admin, "portal-policy", "global", "update", {
+        cfApiToken: "cf-api-token-audit-canary",
+      });
+
+      const [event] = await database.db
+        .select({ metadata: auditEvents.metadata })
+        .from(auditEvents)
+        .where(
+          and(
+            eq(auditEvents.actorUserId, admin.id),
+            eq(auditEvents.action, "admin.portal-policy.update"),
+          ),
+        )
+        .orderBy(desc(auditEvents.createdAt))
+        .limit(1);
+      // The field NAME is fine to record (it already is, via `fields`); the
+      // secret VALUE must never appear anywhere in the row.
+      expect(JSON.stringify(event?.metadata)).not.toContain(
+        "cf-api-token-audit-canary",
+      );
+    },
+  );
+
   // Must run with no portal_policy row present, so the row is cleared here
   // rather than relying on suite order to leave the table empty.
   runDatabaseTest(

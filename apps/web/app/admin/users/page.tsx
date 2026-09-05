@@ -1,6 +1,7 @@
 "use client";
 
 import * as React from "react";
+import Link from "next/link";
 import { toast } from "sonner";
 import {
   ArrowDownUp,
@@ -259,6 +260,29 @@ export function resolveDomainFilter(
     : "all";
 }
 
+/**
+ * Whether Cloudflare Access is configured enough for the panel's domain
+ * write-back to actually reach Cloudflare — the same four fields
+ * `getCloudflareConfig` in `apps/worker/src/postgresRepository.ts` requires
+ * (account, app and policy id, plus a stored API token). All four are already
+ * on the policy object this page holds, so this needs no extra request.
+ * Gates the Access-domains editor: without this, claiming "the panel keeps
+ * these domains in the Access policy" would not be true yet.
+ */
+export function isAccessConfigured(
+  policy: Pick<
+    GlobalPortalPolicy,
+    "cfAccessAccountId" | "cfAccessAppId" | "cfAccessPolicyId" | "cfApiTokenSet"
+  >,
+): boolean {
+  return Boolean(
+    policy.cfAccessAccountId &&
+      policy.cfAccessAppId &&
+      policy.cfAccessPolicyId &&
+      policy.cfApiTokenSet,
+  );
+}
+
 function sortEntries(entries: EnrichedUser[], sort: SortKey): EnrichedUser[] {
   const list = [...entries];
   switch (sort) {
@@ -470,7 +494,8 @@ export default function AdminUsersPage() {
       </div>
 
       <AccessDomainsCard
-        domains={policy.cfAccessAllowedDomains}
+        domains={policy.cfAccessAllowedDomains ?? []}
+        configured={isAccessConfigured(policy)}
         onSave={(next) =>
           action("portal-policy", "global", "update", {
             cfAccessAllowedDomains: next,
@@ -619,12 +644,21 @@ export function addAccessDomain(list: string[], entry: string): string[] {
  * `cfAccessAllowedDomains` — never the rest of the global policy row — so a
  * stale copy of unrelated fields can never overwrite a concurrent edit made
  * on the Policies page.
+ *
+ * `configured` gates the whole editor on Cloudflare actually being set up
+ * (account, app and policy id, plus a stored API token — see
+ * `isAccessConfigured`). Without it, nothing typed here would ever reach
+ * Cloudflare: the write-back silently no-ops on an unconfigured panel, so the
+ * card is shown plainly disabled with a pointer to where Cloudflare is
+ * configured, rather than making promises a save cannot keep.
  */
 function AccessDomainsCard({
   domains,
+  configured,
   onSave,
 }: {
   domains: string[];
+  configured: boolean;
   onSave: (next: string[]) => Promise<boolean>;
 }) {
   const { t } = useT();
@@ -661,13 +695,30 @@ function AccessDomainsCard({
           {t("users.accessDomainsTitle")}
         </h3>
 
-        <Callout tone="info" title={t("users.accessWhoTitle")}>
-          {t("users.accessWhoSummary")}
-        </Callout>
+        {configured ? (
+          <Callout tone="info" title={t("users.accessWhoTitle")}>
+            {t("users.accessWhoSummary")}
+          </Callout>
+        ) : (
+          <Callout
+            tone="warning"
+            title={t("users.accessDomainsDisabledTitle")}
+            action={
+              <Button asChild size="sm" variant="outline">
+                <Link href="/admin/policy" prefetch={false}>
+                  {t("users.accessDomainsDisabledLink")}
+                </Link>
+              </Button>
+            }
+          >
+            {t("users.accessDomainsDisabledSummary")}
+          </Callout>
+        )}
 
         <div className="flex gap-2">
           <Input
             value={value}
+            disabled={!configured}
             placeholder={t("users.accessDomainsPlaceholder")}
             onChange={(event) => setValue(event.target.value)}
             onKeyDown={(event) => {
@@ -681,6 +732,7 @@ function AccessDomainsCard({
             type="button"
             size="icon"
             variant="outline"
+            disabled={!configured}
             aria-label={t("common.add")}
             onClick={add}
           >
@@ -698,8 +750,9 @@ function AccessDomainsCard({
                 {domain}
                 <button
                   type="button"
+                  disabled={!configured}
                   onClick={() => remove(domain)}
-                  className="text-muted-foreground transition-colors hover:text-destructive"
+                  className="text-muted-foreground transition-colors hover:text-destructive disabled:pointer-events-none disabled:opacity-50"
                   aria-label={t("users.accessDomainRemoveAria", {
                     value: domain,
                   })}
@@ -711,12 +764,16 @@ function AccessDomainsCard({
           </div>
         ) : null}
 
-        <FieldHint>{t("users.accessDomainsHint")}</FieldHint>
+        <FieldHint>
+          {configured
+            ? t("users.accessDomainsHint")
+            : t("users.accessDomainsDisabledHint")}
+        </FieldHint>
 
         <div className="flex justify-end">
           <Button
             size="sm"
-            disabled={!dirty || saving}
+            disabled={!configured || !dirty || saving}
             onClick={() => void save()}
           >
             {saving ? t("common.saving") : t("common.save")}
