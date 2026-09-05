@@ -8,9 +8,12 @@ import {
   ArrowRight,
   ArrowUpDown,
   Check,
+  Cpu,
+  Globe,
   KeyRound,
   Moon,
   Server,
+  ShieldCheck,
   Users,
   Wifi,
   X,
@@ -35,10 +38,22 @@ import {
 } from "@/lib/activity";
 import { cn } from "@/lib/utils";
 import { TrafficSummary } from "@/components/traffic-summary";
-import { TrafficBytes, TrafficSplit } from "@/components/inline-traffic";
-import { useAdminData } from "@/components/admin/admin-data";
+import {
+  InlineTraffic,
+  TrafficBytes,
+  TrafficSplit,
+} from "@/components/inline-traffic";
+import { useAdminData, type AdminNode } from "@/components/admin/admin-data";
 import { effectiveKeyLimitMode } from "@/lib/key-quota";
 import { PanelUpdateCard } from "@/components/admin/panel-update-card";
+import { NodeCardSection } from "@/components/admin/node-card-section";
+import {
+  NodeCheckChips,
+  type NodeCheckResult,
+} from "@/components/admin/node-check-chips";
+import { NodeMetrics } from "@/components/admin/node-metrics";
+import { NodePublicAddress } from "@/components/admin/node-public-address";
+import { useServiceChecks } from "@/components/admin/use-service-checks";
 import { useT } from "@/lib/i18n/provider";
 
 const METRIC_TONE: Record<string, string> = {
@@ -78,7 +93,27 @@ const STATE_LABEL: Record<string, string> = {
 export default function AdminOverviewPage() {
   const { overview, users, requests, nodes, keys, policy, loading, action } =
     useAdminData();
+  // The same fetch the nodes page uses, so the two surfaces cannot disagree
+  // about what a server last answered.
+  const serviceChecks = useServiceChecks();
   const { t, lang } = useT();
+
+  /**
+   * The verdicts worth showing on a summary card for one node.
+   *
+   * Empty unless a check exists at all AND this node takes part in checking:
+   * a node with checking switched off has only stale verdicts, and a stale red
+   * chip on the overview is worse than no chip. Individually disabled checks
+   * drop out for the same reason — the nodes page keeps them, dimmed, because
+   * that is where "this one is turned off here" is a fact you act on.
+   */
+  const visibleChecks = (node: AdminNode) => {
+    if (node.checksEnabled === false) return [];
+    const skipped = new Set(node.disabledCheckIds ?? []);
+    return (serviceChecks.byNode.get(node.id) ?? []).filter(
+      (result) => !skipped.has(result.id),
+    );
+  };
 
   const pending = requests.filter((request) => request.status === "pending");
   const userEmail = (id: string) =>
@@ -277,59 +312,13 @@ export default function AdminOverviewPage() {
         ) : nodes.length === 0 ? (
           <p className="text-sm text-muted-foreground">{t("ov.noServers")}</p>
         ) : (
-          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+          <div className="grid items-start gap-3 sm:grid-cols-2 lg:grid-cols-3">
             {nodes.map((node) => (
-              <Card key={node.id} className="transition-shadow hover:shadow-md">
-                <CardContent className="space-y-2.5 p-4">
-                  <div className="flex items-start justify-between gap-2">
-                    <div className="flex min-w-0 items-center gap-2">
-                      <span
-                        className={cn(
-                          "h-2.5 w-2.5 shrink-0 rounded-full",
-                          node.lastError
-                            ? "bg-destructive"
-                            : node.enabled
-                              ? "bg-success"
-                              : "bg-muted-foreground",
-                        )}
-                      />
-                      <div className="min-w-0">
-                        <p className="truncate text-sm font-medium">
-                          {node.publicName || node.name}
-                        </p>
-                        {node.publicName ? (
-                          <p className="truncate text-xs text-muted-foreground">
-                            {node.name}
-                          </p>
-                        ) : null}
-                      </div>
-                    </div>
-                    <span
-                      className="shrink-0 rounded-full bg-muted px-2 py-0.5 text-xs tabular-nums text-muted-foreground"
-                      title={t("nodes.capacity")}
-                    >
-                      {node.peerCount ?? 0}/{node.maxPeers}
-                    </span>
-                  </div>
-                  <dl className="space-y-1 border-t pt-2 text-xs">
-                    {[
-                      { label: t("traffic.rangeToday"), pair: node.traffic?.today },
-                      { label: t("traffic.range7"), pair: node.traffic?.week },
-                      { label: t("traffic.range30"), pair: node.traffic?.month },
-                    ].map(({ label, pair }) => (
-                      <div
-                        key={label}
-                        className="flex items-center justify-between gap-2"
-                      >
-                        <dt className="text-muted-foreground">{label}</dt>
-                        <dd className="text-foreground">
-                          <TrafficSplit pair={pair} />
-                        </dd>
-                      </div>
-                    ))}
-                  </dl>
-                </CardContent>
-              </Card>
+              <OverviewNodeCard
+                key={node.id}
+                node={node}
+                checkResults={visibleChecks(node)}
+              />
             ))}
           </div>
         )}
@@ -516,6 +505,145 @@ export default function AdminOverviewPage() {
 
       <PanelUpdateCard />
     </div>
+  );
+}
+
+/**
+ * One server, summarised.
+ *
+ * Deliberately a reading surface: the same header, the same metrics renderer
+ * and the same public-address cell as the nodes page, so the two read as one
+ * product — but none of the controls. Everything that changes a node (the
+ * enable switch, reconcile, agent update, capacity, edit, delete, the per-check
+ * switches) lives one click away behind "show all", and everything an operator
+ * only needs while acting on a node (the agent's API URL, protocol and
+ * capability chips, health/sync timestamps, the agent-update banner, the full
+ * text of a failing check) went with it. What is left is the question this page
+ * exists to answer: is this server healthy, reachable and carrying traffic.
+ */
+function OverviewNodeCard({
+  node,
+  checkResults,
+}: {
+  node: AdminNode;
+  checkResults: NodeCheckResult[];
+}) {
+  const { t } = useT();
+  const peers = node.peerCount ?? 0;
+  const fill = Math.min(100, (peers / Math.max(1, node.maxPeers)) * 100);
+  const failing = checkResults.filter((result) => result.status !== "ok").length;
+
+  return (
+    <Card
+      className={cn(
+        "transition-shadow hover:shadow-md",
+        !node.enabled && "opacity-80",
+      )}
+    >
+      <CardContent className="flex flex-col gap-3 p-4">
+        <div className="flex items-start justify-between gap-2">
+          <div className="flex min-w-0 items-center gap-2.5">
+            <span
+              className={cn(
+                "flex size-9 shrink-0 items-center justify-center rounded-lg",
+                node.lastError
+                  ? "bg-destructive/12 text-destructive"
+                  : node.enabled
+                    ? "bg-success/15 text-success"
+                    : "bg-muted text-muted-foreground",
+              )}
+            >
+              <Server className="h-5 w-5" />
+            </span>
+            <div className="min-w-0">
+              <p className="truncate font-medium leading-tight">
+                {node.publicName || node.name}
+              </p>
+              {/* The state in words, not only in the tile's colour: a coloured
+                  square is not an answer to "what is wrong with it". */}
+              <p className="truncate text-xs text-muted-foreground">
+                {node.lastError ? (
+                  <span className="text-destructive">
+                    {t("nodes.commError")}
+                  </span>
+                ) : node.enabled ? (
+                  t("nodes.working")
+                ) : (
+                  t("nodes.stopped")
+                )}
+                {node.publicName ? ` · ${node.name}` : null}
+              </p>
+            </div>
+          </div>
+          <span
+            className="shrink-0 rounded-full bg-muted px-2 py-0.5 text-xs tabular-nums text-muted-foreground"
+            title={t("nodes.capacity")}
+          >
+            {peers}/{node.maxPeers}
+          </span>
+        </div>
+
+        <div className="h-1.5 overflow-hidden rounded-full bg-muted">
+          <div
+            className={cn(
+              "h-full rounded-full transition-all",
+              fill >= 90
+                ? "bg-destructive"
+                : fill >= 70
+                  ? "bg-warning"
+                  : "bg-success",
+            )}
+            style={{ width: `${fill}%` }}
+          />
+        </div>
+
+        <dl className="grid grid-cols-[auto_1fr] items-baseline gap-x-3 text-xs text-muted-foreground">
+          <dt className="flex items-center gap-1">
+            <Globe className="size-3.5 shrink-0" />
+            <span>{t("nodes.publicAddress")}</span>
+          </dt>
+          <dd className="min-w-0 text-right text-foreground">
+            <NodePublicAddress
+              host={node.publicHost}
+              ip={node.publicIp}
+              resolvedAt={node.publicIpResolvedAt}
+            />
+          </dd>
+        </dl>
+
+        <div className="space-y-1.5 border-t pt-3">
+          <NodeCardSection icon={Cpu}>{t("nodes.metrics.title")}</NodeCardSection>
+          <NodeMetrics metrics={node.metrics} endpoint={node.endpoint} />
+        </div>
+
+        {checkResults.length > 0 ? (
+          <div className="space-y-1.5 border-t pt-3">
+            <NodeCardSection
+              icon={ShieldCheck}
+              action={
+                failing > 0 ? (
+                  <span className="text-[11px] font-medium text-destructive">
+                    {t("ov.checksFailing", { count: failing })}
+                  </span>
+                ) : null
+              }
+            >
+              {t("nodes.checks.title")}
+            </NodeCardSection>
+            <NodeCheckChips results={checkResults} />
+          </div>
+        ) : null}
+
+        <div className="space-y-1.5 border-t pt-3">
+          <NodeCardSection icon={ArrowUpDown}>{t("nodes.traffic")}</NodeCardSection>
+          <InlineTraffic
+            today={node.traffic?.today}
+            week={node.traffic?.week}
+            month={node.traffic?.month}
+          />
+        </div>
+      </CardContent>
+    </Card>
   );
 }
 

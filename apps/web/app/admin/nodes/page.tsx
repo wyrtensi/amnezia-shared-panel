@@ -5,6 +5,7 @@ import {
   Activity,
   ArrowUpDown,
   Boxes,
+  Cpu,
   Download,
   Gauge,
   Globe,
@@ -12,6 +13,7 @@ import {
   Plus,
   RefreshCw,
   Server,
+  ShieldCheck,
   Trash2,
   TriangleAlert,
 } from "lucide-react";
@@ -38,16 +40,22 @@ import {
 } from "@/components/ui/tooltip";
 import { Callout, Hint } from "@/components/ui/hint";
 import { ProtocolSelect } from "@/components/protocol-select";
+import {
+  messageBeyondImage,
+  shortDigest,
+  splitImageRef,
+} from "@/lib/agent-update";
 import { formatDateTime } from "@/lib/format";
 import { InlineTraffic } from "@/components/inline-traffic";
+import { NodeCardSection } from "@/components/admin/node-card-section";
 import { NodeMetrics } from "@/components/admin/node-metrics";
+import { NodePublicAddress } from "@/components/admin/node-public-address";
 import { ServiceChecksCard } from "@/components/admin/service-checks-card";
 import { useServiceChecks } from "@/components/admin/use-service-checks";
 import { cn } from "@/lib/utils";
 import { useAdminData, type AdminNode } from "@/components/admin/admin-data";
 import { useT } from "@/lib/i18n/provider";
 import type { ProtocolKind } from "@/lib/types";
-import { isIpLiteral } from "@amnezia/contracts";
 
 const preferredProtocol = (list: ProtocolKind[]): ProtocolKind =>
   list.includes("awg3") ? "awg3" : (list[0] ?? "awg3");
@@ -357,11 +365,15 @@ function NodeCard({
           </Tooltip>
         </div>
 
-        <code className="truncate rounded bg-muted px-2 py-1 text-xs">
-          {node.apiBaseUrl}
-        </code>
+        {/* What this node IS - where the panel talks to it and what it can
+            serve. One block, because they answer the same question and each
+            costing its own gap is what made the card feel like a list. */}
+        <div className="space-y-2">
+          <code className="block truncate rounded bg-muted px-2 py-1 text-xs">
+            {node.apiBaseUrl}
+          </code>
 
-        <div className="flex flex-wrap gap-1">
+          <div className="flex flex-wrap gap-1">
           {supported.map((protocol) => {
             const on = enabled.includes(protocol);
             const protoKey = PROTOCOL_LABEL[protocol];
@@ -381,17 +393,20 @@ function NodeCard({
               {t(capability)}
             </Badge>
           ))}
+          </div>
         </div>
 
-        <div className="space-y-1">
-          <div className="flex items-center justify-between text-xs">
-            <span className="flex items-center gap-1 text-muted-foreground">
-              <Gauge className="h-3.5 w-3.5" /> {t("nodes.capacity")}
-            </span>
-            <span className="tabular font-medium">
-              {peers} / {node.maxPeers}
-            </span>
-          </div>
+        <div className="space-y-1.5">
+          <NodeCardSection
+            icon={Gauge}
+            action={
+              <span className="tabular text-xs font-medium">
+                {peers} / {node.maxPeers}
+              </span>
+            }
+          >
+            {t("nodes.capacity")}
+          </NodeCardSection>
           <div className="h-1.5 overflow-hidden rounded-full bg-muted">
             <div
               className={cn(
@@ -407,11 +422,8 @@ function NodeCard({
           </div>
         </div>
 
-        <div className="space-y-1 text-xs text-muted-foreground">
-          <span className="flex items-center gap-1">
-            <ArrowUpDown className="h-3.5 w-3.5" />
-            {t("nodes.traffic")}
-          </span>
+        <div className="space-y-1.5">
+          <NodeCardSection icon={ArrowUpDown}>{t("nodes.traffic")}</NodeCardSection>
           <InlineTraffic
             today={node.traffic?.today}
             week={node.traffic?.week}
@@ -419,59 +431,65 @@ function NodeCard({
           />
         </div>
 
-        <dl className="grid grid-cols-2 gap-x-3 gap-y-1 text-xs text-muted-foreground">
-          <div className="flex items-center gap-1">
-            <Activity className="h-3.5 w-3.5" />
+        {/* auto/1fr, not two even halves: the label needs exactly its own width
+            and everything left over belongs to the value, which is how a
+            timestamp stops breaking across two lines in a narrow card. */}
+        <dl className="grid grid-cols-[auto_1fr] items-baseline gap-x-3 gap-y-1 text-xs text-muted-foreground">
+          <dt className="flex items-center gap-1">
+            <Activity className="size-3.5 shrink-0" />
             <span>{t("nodes.healthCheck")}</span>
-          </div>
-          <div className="text-right text-foreground">
+          </dt>
+          <dd className="truncate text-right text-foreground">
             {formatDateTime(node.lastHealthAt, lang)}
-          </div>
-          <div className="flex items-center gap-1">
-            <Boxes className="h-3.5 w-3.5" />
+          </dd>
+          <dt className="flex items-center gap-1">
+            <Boxes className="size-3.5 shrink-0" />
             <span>{t("nodes.sync")}</span>
-          </div>
-          <div className="text-right text-foreground">
+          </dt>
+          <dd className="truncate text-right text-foreground">
             {formatDateTime(node.lastSyncAt, lang)}
-          </div>
-          <div className="flex items-center gap-1">
-            <Globe className="h-3.5 w-3.5" />
+          </dd>
+          <dt className="flex items-center gap-1">
+            <Globe className="size-3.5 shrink-0" />
             <span>{t("nodes.publicAddress")}</span>
             <Hint>{t("nodes.publicAddressHint")}</Hint>
-          </div>
-          <div className="min-w-0 text-right text-foreground">
+          </dt>
+          <dd className="min-w-0 text-right text-foreground">
             <NodePublicAddress
               host={node.publicHost}
               ip={node.publicIp}
               resolvedAt={node.publicIpResolvedAt}
             />
-          </div>
+          </dd>
         </dl>
 
-        <div className="space-y-1 border-t pt-3">
-          <span className="text-xs text-muted-foreground">
-            {t("nodes.metrics.title")}
-          </span>
+        <div className="space-y-1.5 border-t pt-3">
+          <NodeCardSection icon={Cpu}>{t("nodes.metrics.title")}</NodeCardSection>
           <NodeMetrics metrics={node.metrics} endpoint={node.endpoint} />
         </div>
 
         {checksConfigured ? (
-          <div className="space-y-1 border-t pt-3">
-            <div className="flex items-center justify-between gap-2">
-              <span className="text-xs text-muted-foreground">
-                {t("nodes.checks.title")}
-              </span>
-              {/* The node's master switch. Separate from the per-check ones
-                  because "this server takes no part in checking" is a different
-                  statement from "it happens to skip all of them today". */}
-              <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                {t("nodes.checks.all")}
-                <Switch
-                  checked={node.checksEnabled !== false}
-                  onCheckedChange={(enabled) => onSetChecks({ checksEnabled: enabled })}
-                />
-              </label>
-            </div>
+          <div className="space-y-1.5 border-t pt-3">
+            <NodeCardSection
+              icon={ShieldCheck}
+              action={
+                /* The node's master switch. Separate from the per-check ones
+                   because "this server takes no part in checking" is a
+                   different statement from "it happens to skip all of them
+                   today". */
+                <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                  {t("nodes.checks.all")}
+                  <Switch
+                    checked={node.checksEnabled !== false}
+                    onCheckedChange={(enabled) =>
+                      onSetChecks({ checksEnabled: enabled })
+                    }
+                  />
+                </label>
+              }
+            >
+              {t("nodes.checks.title")}
+            </NodeCardSection>
             {checkResults.length === 0 ? (
               // Nothing has come back FROM THIS NODE yet. Said plainly, because
               // an empty space here reads as "this node has no services" - and
@@ -628,76 +646,6 @@ function NodeCard({
         </div>
       </CardContent>
     </Card>
-  );
-}
-
-/**
- * The value cell of the card's "public address" row: where clients reach the
- * node, plus the IP the panel resolved it to when the host is a DNS name. Three
- * states an operator must not confuse: the agent never told us; it told us and
- * the name resolved; it told us and the name has never resolved.
- */
-function NodePublicAddress({
-  host,
-  ip,
-  resolvedAt,
-}: {
-  host: string | null;
-  ip: string | null;
-  resolvedAt: string | null;
-}) {
-  const { t, lang } = useT();
-  if (host === null) {
-    return (
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <span className="truncate text-muted-foreground">
-            {t("nodes.publicAddressUnknown")}
-          </span>
-        </TooltipTrigger>
-        <TooltipContent>{t("nodes.publicAddressUnknownHint")}</TooltipContent>
-      </Tooltip>
-    );
-  }
-  // An IP literal is its own answer; repeating it as a resolved address would
-  // be noise, and there was no lookup to date-stamp.
-  if (isIpLiteral(host)) {
-    return <span className="truncate tabular">{host}</span>;
-  }
-  return (
-    <div className="flex min-w-0 flex-col items-end gap-0.5">
-      <span className="truncate">{host}</span>
-      {ip === null ? (
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <span>
-              <Badge variant="outline" className="gap-1">
-                <TriangleAlert className="h-3 w-3" />
-                {t("nodes.publicIpUnresolved")}
-              </Badge>
-            </span>
-          </TooltipTrigger>
-          <TooltipContent>{t("nodes.publicIpUnresolvedHint")}</TooltipContent>
-        </Tooltip>
-      ) : (
-        // The resolution time lives in the tooltip, not on the row: it says
-        // when the panel learned the address, which an operator wants once and
-        // never again. There is deliberately no staleness warning — the address
-        // is resolved once because a node's public address does not change, so
-        // a "this might be old" badge would fire on a condition that cannot
-        // happen and would train the operator to ignore badges.
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <span className="truncate tabular">{ip}</span>
-          </TooltipTrigger>
-          <TooltipContent>
-            {t("nodes.publicIpResolvedAt", {
-              when: formatDateTime(resolvedAt, lang),
-            })}
-          </TooltipContent>
-        </Tooltip>
-      )}
-    </div>
   );
 }
 
@@ -897,6 +845,11 @@ function EditNodeDialog({
  * node reports, kept on the row so a failure is still readable long after the
  * job that caused it - which is the whole point: the alternative is an SSH
  * session on the host that just refused to update.
+ *
+ * Every line here is one line: a card is as narrow as a third of a column, and
+ * an unbroken digest that wraps pushes the whole banner past the card's edge.
+ * The verbatim image, the verbatim message and the log therefore live in the
+ * disclosure below, which is the one place in this block allowed to be long.
  */
 function NodeAgentUpdateStatus({ node }: { node: AdminNode }) {
   const { t, lang } = useT();
@@ -905,32 +858,83 @@ function NodeAgentUpdateStatus({ node }: { node: AdminNode }) {
 
   const tone =
     state === "failed" ? "danger" : state === "succeeded" ? "success" : "info";
+  const image = node.agentUpdateImage ?? null;
+  const ref = image ? splitImageRef(image) : null;
+  const message = node.agentUpdateMessage?.trim() ?? "";
+  const summary = messageBeyondImage(message, image);
   const log = node.agentUpdateLog?.trim() ?? "";
+  // The disclosure is what makes eliding safe, so it opens whenever anything
+  // was elided - not only when the node sent a log.
+  const hasDetails = Boolean(log || image || message);
 
   return (
-    <Callout tone={tone} className="space-y-1 text-xs">
-      <div className="font-medium">{t(`nodes.agentUpdate.${state}`)}</div>
-      {node.agentUpdateImage ? (
-        <code className="block truncate text-[11px] opacity-80">
-          {node.agentUpdateImage}
-        </code>
-      ) : null}
-      {node.agentUpdateMessage ? <div>{node.agentUpdateMessage}</div> : null}
-      {node.agentUpdateAt ? (
-        <div className="opacity-70">
-          {formatDateTime(node.agentUpdateAt, lang)}
+    <Callout tone={tone} className="min-w-0 text-xs">
+      <div className="min-w-0 space-y-1">
+        <div className="flex items-baseline justify-between gap-2">
+          {/* Wraps rather than truncates: this is the one line that says what
+              happened, and half of "Обновление агента не удалось" is not an
+              answer. The digest below is what must never wrap. */}
+          <span className="min-w-0 font-medium text-foreground">
+            {t(`nodes.agentUpdate.${state}`)}
+          </span>
+          {node.agentUpdateAt ? (
+            <span className="shrink-0 tabular-nums opacity-70">
+              {formatDateTime(node.agentUpdateAt, lang)}
+            </span>
+          ) : null}
         </div>
-      ) : null}
-      {log ? (
-        <details className="mt-1">
-          <summary className="cursor-pointer select-none opacity-80">
-            {t("nodes.agentUpdateLog")}
-          </summary>
-          <pre className="mt-1 max-h-48 overflow-auto whitespace-pre-wrap break-all rounded bg-muted p-2 text-[11px]">
-            {log}
-          </pre>
-        </details>
-      ) : null}
+        {ref ? (
+          // Repository truncates, digest does not: the digest is the whole
+          // point of the line, and its tail is what tells two builds apart.
+          <code
+            className="flex min-w-0 items-baseline text-[11px] opacity-80"
+            title={image ?? undefined}
+          >
+            <span className="truncate">{ref.repo}</span>
+            {ref.digest ? (
+              <span className="shrink-0">@{shortDigest(ref.digest)}</span>
+            ) : null}
+          </code>
+        ) : null}
+        {summary ? <p className="truncate">{summary}</p> : null}
+        {hasDetails ? (
+          <details className="mt-1 min-w-0">
+            <summary className="cursor-pointer select-none opacity-80">
+              {t("nodes.agentUpdateLog")}
+            </summary>
+            <dl className="mt-1 space-y-1">
+              {image ? (
+                <>
+                  <dt className="opacity-70">{t("nodes.agentUpdateImage")}</dt>
+                  <dd>
+                    <code className="block break-all rounded bg-muted p-2 text-[11px]">
+                      {image}
+                    </code>
+                  </dd>
+                </>
+              ) : null}
+              {message ? (
+                <>
+                  <dt className="opacity-70">
+                    {t("nodes.agentUpdateNodeSaid")}
+                  </dt>
+                  <dd className="break-all">{message}</dd>
+                </>
+              ) : null}
+              {log ? (
+                <>
+                  <dt className="opacity-70">{t("nodes.agentUpdateOutput")}</dt>
+                  <dd>
+                    <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-all rounded bg-muted p-2 text-[11px]">
+                      {log}
+                    </pre>
+                  </dd>
+                </>
+              ) : null}
+            </dl>
+          </details>
+        ) : null}
+      </div>
     </Callout>
   );
 }
