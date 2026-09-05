@@ -11,6 +11,17 @@
 *.yml.example text eol=lf
 pnpm-lock.yaml text eol=lf
 
+# Everything under infra/ and scripts/ is copied verbatim onto a Linux host,
+# so none of it may carry a CR. The extension rules above miss the systemd
+# units and the .env templates, and a Windows `git archive` shipped those with
+# CRLF: install-agent-updater.sh rewrites its unit with
+# `sed 's#^Environment=NODE_AGENT_UPDATE_REPO=$#...#'`, the anchor stopped
+# matching, and every node then refused the panel's agent update with
+# "NODE_AGENT_UPDATE_REPO is not configured on this host". A path rule rather
+# than more extensions, so a file added to these trees later is covered too.
+infra/** text eol=lf
+scripts/** text eol=lf
+
 # Treat lockfiles and generated artifacts as such in diffs.
 pnpm-lock.yaml linguist-generated=true
 services/node-agent/openapi/openapi.json linguist-generated=true
