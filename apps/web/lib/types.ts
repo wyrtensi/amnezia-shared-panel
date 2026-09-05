@@ -173,6 +173,16 @@ export type KeyView = {
   deviceType: string;
   deviceLabel?: string | null;
   keyNumber?: number | null;
+  /**
+   * The operator-only note on the key.
+   *
+   * Optional because the SERVER decides whether it exists: `/api/keys` carries
+   * it only when the caller is an administrator looking at their own key, and
+   * leaves the property off the payload entirely for anyone else. A regular
+   * user's key never has this field, which is why a real person's name is safe
+   * in it — the note is not sent and then hidden, it is not sent.
+   */
+  internalName?: string | null;
   routeProfile: string;
   rulesOutdated?: boolean;
   createdAt: string;
