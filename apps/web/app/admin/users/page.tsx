@@ -6,9 +6,12 @@ import { toast } from "sonner";
 import {
   ArrowDownUp,
   ArrowUpDown,
+  AtSign,
   Check,
+  ChevronDown,
   Download,
   Globe,
+  Info,
   KeyRound,
   ListFilter,
   Lock,
@@ -785,7 +788,13 @@ export function validateAccessDomain(
  * editor is shown plainly disabled with a pointer to where Cloudflare is
  * configured, rather than making promises a save cannot keep.
  *
- * Removing a domain is a two-step: the chip's "x" only arms a confirmation
+ * The domains themselves are the subject: one readable row each inside a
+ * scrolling frame, with a labelled Remove button rather than a cluster of
+ * pills carrying a 12px cross. The "who can sign in" answer keeps every word
+ * it had, but sits below the list behind a disclosure — it is read once, while
+ * the list is why the dialog is open.
+ *
+ * Removing a domain is a two-step: a row's Remove only arms a confirmation
  * that spells out what dropping the rule costs (see
  * `users.accessDomainRemove*`), because the cost is invisible from here — the
  * people it locks out are exactly the ones who have no panel account yet.
@@ -857,12 +866,13 @@ function AccessDomainsDialog({
             <DialogDescription>{t("users.accessDomainsDesc")}</DialogDescription>
           </DialogHeader>
 
-          <div className="space-y-3">
-            {configured ? (
-              <Callout tone="info" title={t("users.accessWhoTitle")}>
-                {t("users.accessWhoSummary")}
-              </Callout>
-            ) : (
+          {/* min-w-0: DialogContent is a grid, and a grid item's automatic
+              minimum size is its min-content width. Without this a domain too
+              long to fit — they are user-supplied, so one always turns up —
+              widens the whole dialog and puts a horizontal scrollbar under it
+              instead of being ellipsised by the row's `truncate`. */}
+          <div className="min-w-0 space-y-3">
+            {configured ? null : (
               <Callout
                 tone="warning"
                 title={t("users.accessDomainsDisabledTitle")}
@@ -917,30 +927,76 @@ function AccessDomainsDialog({
             </div>
 
             {list.length > 0 ? (
-              <div className="flex flex-wrap gap-1.5">
-                {list.map((domain) => (
-                  <span
-                    key={domain}
-                    className="inline-flex items-center gap-1 rounded-md bg-muted px-2 py-0.5 font-mono text-xs"
-                  >
-                    {domain}
-                    <button
-                      type="button"
-                      disabled={!configured}
-                      onClick={() => setPendingRemoval(domain)}
-                      className="text-muted-foreground transition-colors hover:text-destructive disabled:pointer-events-none disabled:opacity-50"
-                      aria-label={t("users.accessDomainRemoveAria", {
-                        value: domain,
-                      })}
+              <div className="space-y-1.5">
+                <p className="text-xs font-medium text-muted-foreground">
+                  {t("users.accessDomainsCount", { count: list.length })}
+                </p>
+                {/* One row per domain, not a cluster of pills: the list is what
+                    this dialog exists for, so a domain is readable at a glance
+                    and its removal is a button rather than a 12px cross. The
+                    frame scrolls past a handful of rows instead of pushing the
+                    footer off a short screen. */}
+                <ul className="max-h-64 divide-y divide-border overflow-y-auto rounded-lg border">
+                  {list.map((domain) => (
+                    <li
+                      key={domain}
+                      className="flex items-center justify-between gap-2 px-3 py-2"
                     >
-                      <X className="h-3 w-3" />
-                    </button>
-                  </span>
-                ))}
+                      <span className="flex min-w-0 items-center gap-2">
+                        <AtSign className="h-4 w-4 shrink-0 text-muted-foreground" />
+                        <span className="truncate font-mono text-sm">
+                          {domain}
+                        </span>
+                      </span>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="ghost"
+                        disabled={!configured}
+                        onClick={() => setPendingRemoval(domain)}
+                        className="shrink-0 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+                        aria-label={t("users.accessDomainRemoveAria", {
+                          value: domain,
+                        })}
+                      >
+                        <X className="h-4 w-4" />
+                        {/* Named at every width, not just on a wide screen: a
+                            bare cross is what this list had before, and the
+                            confirmation it arms is worth announcing. The
+                            domain beside it truncates instead. */}
+                        {t("users.accessDomainsRemoveBtn")}
+                      </Button>
+                    </li>
+                  ))}
+                </ul>
               </div>
             ) : (
-              <FieldHint>{t("users.accessDomainsEmpty")}</FieldHint>
+              // An empty list gets the same frame as a full one, and says what
+              // "empty" actually means for who can sign in — not just nothing.
+              <div className="rounded-lg border border-dashed px-4 py-6 text-center">
+                <Globe className="mx-auto h-6 w-6 text-muted-foreground/60" />
+                <p className="mt-2 text-xs leading-snug text-muted-foreground">
+                  {t("users.accessDomainsEmpty")}
+                </p>
+              </div>
             )}
+
+            {/* The full "who can sign in" answer, kept word for word but folded
+                below the list and closed by default: it is reference material
+                an admin reads once, and five lines of it above the controls
+                buried the domains this dialog is for. */}
+            {configured ? (
+              <details className="group rounded-lg border border-chart-4/40 bg-chart-4/10 px-3 py-2">
+                <summary className="flex cursor-pointer list-none items-center gap-2 text-sm font-medium [&::-webkit-details-marker]:hidden">
+                  <Info className="h-4 w-4 shrink-0 text-chart-4" />
+                  <span className="flex-1">{t("users.accessWhoTitle")}</span>
+                  <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground transition-transform group-open:rotate-180" />
+                </summary>
+                <p className="mt-2 text-xs leading-snug text-muted-foreground">
+                  {t("users.accessWhoSummary")}
+                </p>
+              </details>
+            ) : null}
 
             <FieldHint>
               {configured
@@ -978,7 +1034,7 @@ function AccessDomainsDialog({
 }
 
 /**
- * The confirmation behind a domain chip's "x". Every claim it makes is what
+ * The confirmation behind a domain row's Remove. Every claim it makes is what
  * `createAccessSync` in apps/worker/src/accessReconcile.ts actually does, and
  * matches docs/CLOUDFLARE-ACCESS.md ("Panel-managed domains"):
  *

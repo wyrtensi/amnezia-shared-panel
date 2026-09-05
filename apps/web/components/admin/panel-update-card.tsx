@@ -20,6 +20,8 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { apiRequest, ApiClientError } from "@/lib/api";
+import { VersionLink } from "@/components/admin/version-link";
+import { versionLabel } from "@/lib/version-link";
 import { formatDate } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { useT } from "@/lib/i18n/provider";
@@ -28,6 +30,7 @@ type VersionInfo = {
   version: string;
   commit: string | null;
   builtAt: string | null;
+  repositoryUrl?: string | null;
 };
 
 type UpdateStatus = {
@@ -105,9 +108,12 @@ export function PanelUpdateCard() {
   if (!status) return null; // first load — stay quiet until the state is known
 
   const version = status.version;
-  const versionLabel = version.commit
-    ? `${version.version} · ${version.commit.slice(0, 7)}`
-    : version.version;
+  // The build's name (a release tag, or the short commit when there is no tag)
+  // links to that release; the commit gets its own link beside it, and is left
+  // out when it would only repeat the name — a locally built image is stamped
+  // with its own sha as the version (scripts/deploy.sh).
+  const shortCommit = version.commit?.slice(0, 7) ?? null;
+  const showCommit = shortCommit !== null && versionLabel(version) !== shortCommit;
   const running = Boolean(status.pending);
 
   return (
@@ -119,8 +125,18 @@ export function PanelUpdateCard() {
             {t("update.title")}
           </h2>
           <p className="text-sm text-muted-foreground">
-            {t("update.current")}:{" "}
-            <span className="font-mono">{versionLabel}</span>
+            {t("update.current")}: <VersionLink info={version} />
+            {showCommit ? (
+              <>
+                {" · "}
+                <VersionLink
+                  info={{
+                    commit: version.commit,
+                    repositoryUrl: version.repositoryUrl,
+                  }}
+                />
+              </>
+            ) : null}
             {version.builtAt ? (
               <>
                 {" · "}

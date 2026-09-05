@@ -61,6 +61,7 @@ jobs:
             APP_VERSION=${{ github.ref_name }}
             GIT_SHA=${{ github.sha }}
             BUILD_TIME=${{ steps.stamp.outputs.time }}
+            APP_REPO_URL=${{ github.server_url }}/${{ github.repository }}
           # The co-located node box is amd64. Add linux/arm64 here if you deploy
           # the panel on an arm host too (roughly doubles build time).
           platforms: linux/amd64

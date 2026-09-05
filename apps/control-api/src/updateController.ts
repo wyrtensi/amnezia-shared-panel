@@ -19,6 +19,8 @@ export type VersionInfo = {
   version: string;
   commit: string | null;
   builtAt: string | null;
+  /** The repository this build came from; see `DEFAULT_REPOSITORY_URL`. */
+  repositoryUrl?: string | null;
 };
 
 export type UpdateRequestFile = {

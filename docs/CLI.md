@@ -140,7 +140,7 @@ via `CONTROL_API_URL` plus one of, in priority order:
 | `periods` | Every background period the panel runs on: what is set, the built-in default an unset one falls back to, and the range each accepts. See [Background periods](#background-periods) |
 | `global-routes` | Admin-wide route additions / exclusions per split-tunnel profile |
 | `quota [--all]` | Key-limit requests (pending by default; `--all` = every state), with ids, the **target** server (its name, or `all servers`), `current → requested`, and date. Both the target and the `current → requested` numbers are reported **in that user's own key-limit mode**: under a global (shared) limit the per-server limits are dormant, so `current` is the pool and a request that named a server reads `all servers (request named …)` — approving it raises the total, not that server |
-| `version` | Panel version + commit of the running control-api, plus `awg3-client-floor` — the AmneziaVPN client release an AWG 3.1 key needs, served by the panel so the CLI and the install guide cannot disagree |
+| `version` | Panel version + commit of the running control-api, the repository the image was built from, plus `awg3-client-floor` — the AmneziaVPN client release an AWG 3.1 key needs, served by the panel so the CLI and the install guide cannot disagree |
 | `traffic [--days=N]` | Aggregate traffic series across all users (JSON) |
 | `client-releases` | What the panel currently hands users as AmneziaVPN download links, per platform: the resolved release version, each link's kind (`store` / `installer` / `releasePage`), file name and size, plus the Android APK that backs the Google Play button. Also shows `resolvedAt` and whether the panel is serving the **offline fallback** because it could not reach GitHub |
 
@@ -358,8 +358,16 @@ The **client version floor** is a separate number and lives on `version`:
 
 ```sh
 amnezia-panel version
-# version: 1.4.0   commit: abc1234   awg3-client-floor: 5.0.1.5
+# version: 1.4.0   commit: abc1234   awg3-client-floor: 5.0.1.5   repo: https://github.com/wyrtensi/amnezia-shared-panel
 ```
+
+`repo` is the repository the running image was built from, stamped at build
+time (`APP_REPO_URL`) by `.github/workflows/release.yml` and by
+`scripts/deploy.sh`, which reads the checkout's own `origin`. It is what the
+version in the admin sidebar and on the update card link to — the release tag
+for a tagged build, the commit for anything else. Set `APP_REPO_URL` in the
+stack's `.env` to point those links elsewhere; a build stamped by neither path
+falls back to the upstream repository named in `apps/control-api/src/app.ts`.
 
 `awg3-client-floor` is the client release the panel tells users an AWG 3.1 key
 needs. It is the same constant the install guide interpolates, served from the

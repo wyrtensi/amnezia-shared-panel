@@ -40,9 +40,15 @@ ENV NODE_ENV=production
 ARG APP_VERSION=dev
 ARG GIT_SHA=
 ARG BUILD_TIME=
+# Where this build's code lives, so the admin UI can link its version at the
+# matching release/commit. Empty here on purpose: the release workflow and
+# scripts/deploy.sh each stamp the repository they actually built from, and a
+# build that goes through neither falls back to the default in control-api.
+ARG APP_REPO_URL=
 ENV APP_VERSION=$APP_VERSION
 ENV GIT_SHA=$GIT_SHA
 ENV BUILD_TIME=$BUILD_TIME
+ENV APP_REPO_URL=$APP_REPO_URL
 RUN corepack enable
 WORKDIR /app
 COPY --from=build /app /app

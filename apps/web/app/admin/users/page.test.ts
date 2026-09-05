@@ -33,8 +33,29 @@ describe("Access domains dialog", () => {
     expect(source).not.toMatch(/<AccessDomainsCard\s/);
   });
 
-  it("routes a chip removal through the confirmation, never straight to the list", () => {
-    // The "x" on a chip must only arm the confirmation dialog. A direct
+  it("gives every domain a row, not a pill, and says so when there are none", () => {
+    // The list is the subject of the dialog: one row per domain in a scrolling
+    // frame, with a count above it, and an empty list that still explains who
+    // gets in. A later edit collapsing this back into wrapped pills would not
+    // fail any type check.
+    expect(source).toMatch(/<ul className="max-h-64 divide-y/);
+    expect(source).toContain("users.accessDomainsCount");
+    expect(source).toContain("users.accessDomainsRemoveBtn");
+    expect(source).toContain("users.accessDomainsEmpty");
+    expect(source).not.toContain("rounded-md bg-muted px-2 py-0.5 font-mono");
+  });
+
+  it("folds the who-can-sign-in answer below the list without losing a word of it", () => {
+    // The callout's content is deliberate and stays whole; it just moved into
+    // a disclosure under the list instead of five lines above the controls.
+    expect(source).toMatch(/<details[\s\S]{0,1200}users\.accessWhoSummary/);
+    expect(source).toMatch(
+      /users\.accessDomainsCount[\s\S]{0,4000}users\.accessWhoSummary/,
+    );
+  });
+
+  it("routes a row removal through the confirmation, never straight to the list", () => {
+    // Remove on a row must only arm the confirmation dialog. A direct
     // setList filter here would drop the domain with one click, and the cost
     // (people on that domain with no panel account lose their only route in)
     // would never be shown.
@@ -235,8 +256,10 @@ describe("Access domain messages", () => {
     const { messages } = await import("@/lib/i18n/messages");
     const keys = [
       "users.accessDomainsBtn",
+      "users.accessDomainsCount",
       "users.accessDomainsDesc",
       "users.accessDomainsEmpty",
+      "users.accessDomainsRemoveBtn",
       "users.accessDomainErrEmail",
       "users.accessDomainErrHostname",
       "users.accessDomainErrDuplicate",

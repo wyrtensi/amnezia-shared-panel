@@ -118,6 +118,12 @@ export type CliVersionInfo = {
    * never disagree; a panel older than that change omits it.
    */
   minAwg3ClientVersion?: string;
+  /**
+   * The repository this build came from, stamped at image build time. The
+   * admin UI turns it into a link on the version; here it is the answer to
+   * "which code is this panel actually running". Absent on an older panel.
+   */
+  repositoryUrl?: string | null;
 };
 
 /**
@@ -129,5 +135,6 @@ export function formatVersionLine(info: CliVersionInfo): string {
     `version: ${info.version ?? "?"}`,
     `commit: ${info.commit ?? "?"}`,
     `awg3-client-floor: ${info.minAwg3ClientVersion ?? "?"}`,
+    `repo: ${info.repositoryUrl ?? "?"}`,
   ].join("   ");
 }
