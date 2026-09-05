@@ -455,8 +455,43 @@ RKN-blocked via VPN). Non-full-tunnel profiles apply their active rule set to
 imported config, so a rules change flags the key `rulesOutdated` and the user
 re-downloads.
 
+The two profiles use their feed in **opposite directions**, and `AllowedIPs` can
+only ever say "route this", never "except this":
+
+- `ru_blacklist` — the feed lists what belongs in the tunnel, so its CIDRs go
+  into `AllowedIPs` as they stand, with the DNS servers appended.
+- `ru_whitelist` — the feed lists what must stay **out** of the tunnel, so the
+  peer is handed the **inverse** (`apps/control-api/src/routeComplement.ts`),
+  plus `::/0` because the feed is IPv4-only and every v6 route still belongs in
+  the tunnel. DNS is not appended there: the complement already covers it, and
+  naming it would drag a resolver on the bypass list back into the tunnel.
+
+`AllowedIPs` is also **size-bounded by the Android client**, and this is a hard
+limit, not a preference. The whole config crosses to the VPN service in one
+Binder transaction (`IpcMessenger` → `Messenger.send`), and Binder allows about
+1 MB per process. A config of roughly 7000 prefixes already sits at ~94 % of
+that; past it the client logs `Sending a message to the VpnService messenger
+failed: data parcel size N bytes`, drops the message, and the profile simply
+never connects — no error, no retry, no traffic. Two consequences:
+
+- The `ru_blacklist` feed must stay aggregated. Re:filter's `ipsum.lst` carries
+  ~27k CIDRs and produced a 2.7 MB parcel that never connected on Android, which
+  is why the default source is now iplist (~3.6k prefixes covering the same
+  services).
+- `ru_whitelist` absorbs holes of 32 addresses or less between neighbouring
+  feed entries before inverting (`WHITELIST_GAP_MERGE`). The inverse costs about
+  one route per hole, and the RoscomVPN whitelist is host-level — nearly six
+  thousand `/30`–`/32` entries leaving 3853 disjoint ranges — so inverting it
+  verbatim yields 11140 routes, over the limit. Absorbing the cracks gives 4678
+  routes at ~62 % of it. Every feed prefix still bypasses the tunnel exactly as
+  written; the only addition is 16401 addresses sitting between neighbouring
+  entries (0.0004 % of IPv4).
+
+Check a feed change against this before shipping it: count the CIDRs the profile
+will export, not the ones the feed contains.
+
 Feeds work **out of the box**: with no feed configuration at all the worker uses
-the built-in RoscomVPN / Re:filter sources for both split-tunnel profiles, so a
+the built-in RoscomVPN GeoIP (`ru_whitelist`) and iplist / Re:filter (`ru_blacklist`) sources, so a
 fresh install fetches real rules without an operator pasting anything. The worker
 env (`apps/worker/.env.example`) only overrides that:
 

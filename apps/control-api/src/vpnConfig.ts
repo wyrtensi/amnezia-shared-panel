@@ -1,5 +1,6 @@
 import { deflateSync, inflateSync } from "node:zlib";
 import type { RouteProfile } from "@amnezia/contracts";
+import { complementIpv4 } from "./routeComplement.js";
 
 export type RulePayload = {
   cidrs: string[];
@@ -97,6 +98,17 @@ export const applyRouteProfileToVpnLink = (
     return vpnLink;
   }
 
+  // A rule set with no CIDRs cannot steer a WireGuard peer: AllowedIPs takes
+  // prefixes, and the domain half of the payload has nowhere to go — the client
+  // builds its site list from its own settings and ignores anything a config
+  // carries. Applying such a payload would leave AllowedIPs holding the DNS
+  // servers alone, so the key would tunnel its resolver and send every other
+  // packet in the clear. A feed that failed, or one switched to domains only,
+  // must degrade to the full tunnel it started from instead.
+  if ((rulePayload.cidrs?.length ?? 0) === 0) {
+    return vpnLink;
+  }
+
   const payload = decodeVpnLink(vpnLink);
   const container = payload.containers?.find(
     (c) => typeof c.awg?.last_config === "string",
@@ -115,9 +127,28 @@ export const applyRouteProfileToVpnLink = (
   ].filter(Boolean);
 
   const dnsCidrs = dnsServers.map((ip) => (ip.includes("/") ? ip : `${ip}/32`));
-  const combinedCidrs = [
-    ...new Set([...(rulePayload.cidrs || []), ...dnsCidrs]),
-  ].filter(Boolean);
+
+  // ru_blacklist lists what belongs in the tunnel, so its CIDRs are AllowedIPs
+  // as they stand, and the DNS servers have to be named or they would not be
+  // routed at all. ru_whitelist lists what must stay OUT of the tunnel, and
+  // AllowedIPs cannot express "except" — so the peer is handed the inverse
+  // instead, plus ::/0 because the whitelist feed is IPv4-only and every v6
+  // route still belongs in the tunnel. DNS is deliberately not re-added there:
+  // the complement already carries it, and naming it would drag a resolver the
+  // operator put on the bypass list back into the tunnel.
+  const combinedCidrs = (
+    profile === "ru_whitelist"
+      ? [...new Set([...complementIpv4(rulePayload.cidrs || []), "::/0"])]
+      : [...new Set([...(rulePayload.cidrs || []), ...dnsCidrs])]
+  ).filter(Boolean);
+
+  // An empty AllowedIPs would produce a config that routes nothing at all.
+  // A feed that covers the whole space says "tunnel nothing", which the panel
+  // has no way to express - leave the full-tunnel link rather than ship a
+  // config the client cannot use.
+  if (combinedCidrs.length === 0) {
+    return vpnLink;
+  }
 
   const allowedIpsString = combinedCidrs.join(", ");
 
