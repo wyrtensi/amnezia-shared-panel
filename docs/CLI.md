@@ -729,5 +729,7 @@ the API key; see [`NODE-CONNECT.md`](./NODE-CONNECT.md).
 ---
 
 See also: [`INSTALL.md`](./INSTALL.md) (end-to-end runbook),
+[`OPERATIONS.md`](./OPERATIONS.md) (which document owns which job, and the day-2
+procedures these commands are run for),
 [`HOSTING.md`](./HOSTING.md), [`AGENT-HOST-SETUP.md`](./AGENT-HOST-SETUP.md),
 [`NODE-CONNECT.md`](./NODE-CONNECT.md), [`UPDATE-MECHANISM.md`](./UPDATE-MECHANISM.md).

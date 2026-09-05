@@ -478,4 +478,7 @@ off by default.
 | Two nodes with the same name in `nodes` | Repeated runs of `add-node.sh` before it recognised an already-registered node again; each run registered a second row | Remove the extra one with `node-remove`. |
 
 See [`AGENT-HOST-SETUP.md`](./AGENT-HOST-SETUP.md) for the node side (agent logs,
-`/server` shape, backup/rollback).
+`/server` shape, backup/rollback), and [`OPERATIONS.md`](./OPERATIONS.md) for
+operating a node once it is connected — proving a change will not reset users'
+keys, moving the data plane to a new engine build, and inspecting the tunnel this
+document opened.

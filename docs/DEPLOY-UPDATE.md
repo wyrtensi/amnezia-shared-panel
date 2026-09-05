@@ -316,6 +316,9 @@ it is an infra step to wire per environment, not shipped yet.
 
 ## Related documents
 
+- [`docs/OPERATIONS.md`](./OPERATIONS.md) — day-2 operations: proving a node
+  change will not reset users' keys, moving the data plane to a new engine
+  build, disk and swap on a live host, and the panel → node tunnels.
 - [`docs/AGENT-HOST-SETUP.md`](./AGENT-HOST-SETUP.md) — node + control-plane
   install; node-agent build/deploy and the node safety rules.
 - [`docs/HOSTING.md`](./HOSTING.md) — production topology and the public edge.

@@ -6,7 +6,9 @@ failure modes and the settings that avoid them. Every number here was measured o
 a 961 MiB / 1 vCPU / 10 GB host running the panel and a co-located AWG3 node.
 
 Related: [`INSTALL.md`](./INSTALL.md) (§ prerequisites),
-[`ROLLOUT.md`](./ROLLOUT.md), [`NODE-CONNECT.md`](./NODE-CONNECT.md).
+[`ROLLOUT.md`](./ROLLOUT.md), [`NODE-CONNECT.md`](./NODE-CONNECT.md),
+[`OPERATIONS.md`](./OPERATIONS.md) (what to do when the swap gate refuses a host
+that genuinely cannot fit 2 GiB, and the node-side disk rules).
 
 ---
 
