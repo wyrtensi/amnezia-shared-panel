@@ -100,16 +100,23 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
   });
   const body = await res.text();
   if (!res.ok) {
-    throw new Error(`HTTP ${res.status} ${res.statusText} — ${body.slice(0, 400)}`);
+    throw new Error(describeApiError(res.status, res.statusText, body));
   }
   return (body ? JSON.parse(body) : undefined) as T;
 }
 
 /**
  * Turn a failed response body into a line an operator can act on. The API
- * answers errors as `{ error, message }`, and the one this command hits most is
- * `422 QR_TOO_LARGE` — a routine, expected answer for a split-tunnel key, not a
- * malfunction. Printing the raw JSON envelope for it would read like a crash.
+ * answers most errors as `{ error, message }`, and the one this command hits
+ * most is `422 QR_TOO_LARGE` — a routine, expected answer for a split-tunnel
+ * key, not a malfunction. Printing the raw JSON envelope for it would read
+ * like a crash.
+ *
+ * A raw Zod validation failure (e.g. a rejected Access domain) has no
+ * top-level `message` at all — only `issues`, one per failed field. The
+ * first issue's own message is the readable reason ("not a domain name"), so
+ * it stands in for `message` here, the same fallback the web admin's own
+ * apiRequest uses for the same response shape.
  */
 function describeApiError(status: number, statusText: string, body: string): string {
   let parsed: unknown;
@@ -118,12 +125,19 @@ function describeApiError(status: number, statusText: string, body: string): str
   } catch {
     return `HTTP ${status} ${statusText} — ${body.slice(0, 400)}`;
   }
-  const { error, message } = (parsed ?? {}) as {
+  const { error, message, issues } = (parsed ?? {}) as {
     error?: unknown;
     message?: unknown;
+    issues?: Array<{ message?: unknown }>;
   };
   const code = typeof error === "string" ? error : undefined;
-  const detail = typeof message === "string" ? message : undefined;
+  const firstIssue = Array.isArray(issues) ? issues[0]?.message : undefined;
+  const detail =
+    typeof message === "string"
+      ? message
+      : typeof firstIssue === "string"
+        ? firstIssue
+        : undefined;
   if (!code && !detail) {
     return `HTTP ${status} ${statusText} — ${body.slice(0, 400)}`;
   }
@@ -824,6 +838,81 @@ async function cmdCfSync(args: string[]): Promise<void> {
       ? "cf-sync: coalesced into a run already on its way"
       : "cf-sync: queued a reconcile",
   );
+}
+
+/**
+ * Light client-side cleanup for an Access domain entry: trim, lower-case, and
+ * drop a leading "@" someone might paste from a dashboard rule that reads
+ * "emails ending in @company.tld". Deliberately shallow — the CLI carries no
+ * dependency on packages/contracts, so accessDomainSchema, run by the API, is
+ * the one place that decides whether the result is actually a valid domain.
+ */
+function normalizeCfDomain(value: string): string {
+  return value.trim().toLowerCase().replace(/^@+/, "");
+}
+
+/**
+ * List, or edit, the domains the panel keeps as `email_domain` rules in the
+ * Cloudflare Access policy. Reads the current list, computes the new one
+ * locally, and posts only `cfAccessAllowedDomains` — never the rest of the
+ * policy row — so a stale copy of unrelated fields can never overwrite a
+ * concurrent edit made from the Users page.
+ *
+ * `--add`, `--remove` and `--set` all touch the same list in incompatible
+ * ways (grow it, shrink it, replace it outright), so combining more than one
+ * in a single call is refused rather than silently picking a winner.
+ */
+async function cmdCfDomains(args: string[]): Promise<void> {
+  const add = flagOf(args, "add");
+  const remove = flagOf(args, "remove");
+  const set = flagOf(args, "set");
+  if ([add, remove, set].filter((value) => value !== undefined).length > 1) {
+    throw new Error(
+      "Usage: cf-domains [--add=<domain> | --remove=<domain> | --set=<a,b,...>] — one at a time",
+    );
+  }
+
+  const policy = await api<Array<Record<string, unknown>>>(
+    "/api/admin/portal-policy",
+  );
+  const current =
+    (policy[0]?.cfAccessAllowedDomains as string[] | undefined) ?? [];
+
+  if (add === undefined && remove === undefined && set === undefined) {
+    console.log(
+      `Access domains (${current.length}): ${current.join(", ") || "(none)"}`,
+    );
+    return;
+  }
+
+  let next: string[];
+  if (set !== undefined) {
+    next = [...new Set(csvList(set).map(normalizeCfDomain))];
+  } else if (add !== undefined) {
+    const domain = normalizeCfDomain(add);
+    if (current.some((existing) => existing.toLowerCase() === domain)) {
+      console.log(
+        `cf-domains: "${domain}" is already in the list — nothing to add`,
+      );
+      return;
+    }
+    next = [...current, domain];
+  } else {
+    const domain = normalizeCfDomain(remove as string);
+    if (!current.some((existing) => existing.toLowerCase() === domain)) {
+      console.log(
+        `cf-domains: "${domain}" is not in the list — nothing to remove`,
+      );
+      return;
+    }
+    next = current.filter((existing) => existing.toLowerCase() !== domain);
+  }
+
+  await api("/api/admin/portal-policy/global/update", {
+    method: "POST",
+    body: JSON.stringify({ cfAccessAllowedDomains: next }),
+  });
+  console.log(`cf-domains: now ${next.join(", ") || "(none)"}`);
 }
 
 // Every settable portal-policy field, grouped by how the flag value is coerced.
@@ -1693,6 +1782,12 @@ Write:
                                           --status shows the last run as one line, including a
                                           refused run's reason ("failed: …"); --json = the raw
                                           status object
+  cf-domains [--add=<d> | --remove=<d> | --set=<a,b,...>]
+                                          List, or edit, the domains admitted by the Access
+                                          policy (one flag at a time). Removing a domain
+                                          disables nobody: it only drops the domain rule, and
+                                          the next sync re-emits every signed-in user's own
+                                          rule. A rejected domain shows the API's own reason.
   policy-set --<field>=<value> …          Set any panel setting(s), see below
   global-routes-set --profile=ru_whitelist|ru_blacklist [--add-domains=] [--add-cidrs=]
                     [--exclude-domains=] [--exclude-cidrs=]
@@ -2141,6 +2236,8 @@ export async function dispatch(argv: string[]): Promise<void> {
       return cmdCfConfig(args);
     case "cf-sync":
       return cmdCfSync(args);
+    case "cf-domains":
+      return cmdCfDomains(args);
     case "policy":
       return cmdPolicy(args);
     case "policy-set":

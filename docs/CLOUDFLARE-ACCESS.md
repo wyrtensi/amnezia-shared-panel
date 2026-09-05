@@ -338,10 +338,14 @@ did not create:
   **in the panel** is the other path, and it works regardless of what the
   Access policy says. What changed is that the old "tidy up the redundant
   address" gesture silently stopped offboarding anyone — Cloudflare itself did
-  not stop being a valid offboarding surface. Resolving the underlying
-  awkwardness for good needs a panel-managed allowed-domain setting — one
-  where the panel itself owns the `email_domain` rule instead of treating
-  every non-email rule as untouchable — which is planned but not yet built.
+  not stop being a valid offboarding surface. The panel can now own the
+  `email_domain` rule itself (see "Panel-managed domains" below) instead of
+  treating every domain rule as someone else's, which lets an operator drop a
+  whole admitted domain from the panel side and have it stay dropped. That
+  does not change this particular awkwardness, though: `exclude` is still the
+  only way to carve one person back out of a domain rule that stays in place
+  for everyone else, owned or not — owning the rule changes who may add or
+  remove the *domain*, not this per-person mechanism.
 - **blast radius** — a run that would disable more accounts than
   `ACCESS_SYNC_MAX_DISABLES` (default 10), **or** more than half of the active
   panel rounded up (`candidates > Math.ceil(activeCount / 2)`), stops without
@@ -577,6 +581,68 @@ write-back, where Direction 1's read path may instead use `CF_ACCESS_GROUP_ID`.)
   truth for that policy and let the panel be the editor — do not also maintain a
   separate `ACCESS_ALLOWLIST` that disagrees with it.
 
+#### Panel-managed domains — the `email_domain` rules the panel owns
+
+Beyond individual emails, the write-back also lets the panel own whole-domain
+`email_domain` rules in the policy `include` list — set them from the Users
+page, or from a shell with `cf-domains` (see
+[`docs/CLI.md`](./CLI.md)). It is the same ownership split described above
+for email rules, one level up: the panel deletes only the domain rules its own
+stored list once added, and leaves every other domain rule (hand-added in the
+dashboard, or added by another tool) untouched.
+
+**Two doors, two lists, deliberately not unified.** Which domains get someone
+in depends on which door they are walking through:
+
+- **The Cloudflare door** — the Access policy in front of the panel's public
+  hostname — is what these panel-managed domains widen. It admits these
+  domains, plus every active panel user's own email rule (written
+  automatically, one per user), plus anything added by hand in the Cloudflare
+  dashboard: a group, `everyone`, or another `email_domain` rule the panel
+  does not own.
+- **The direct door** — the panel's own server-side Google login, for a host
+  or a user that never goes through the Cloudflare proxy — is gated
+  separately, by `AUTH_ALLOWED_DOMAINS` in the panel's environment (see
+  [`CLI.md`'s direct-login notes](./CLI.md#direct-login-server-side-google-operator-notes)).
+
+These answer different questions — "can this request even reach the login
+page" versus "may the panel's own Google sign-in create an account for this
+address" — and there is no plan to unify them.
+
+**Removing a domain disables nobody and revokes no keys.** Every active panel
+user already has their own explicit `{"email":{"email":...}}` rule, written
+the same way whether or not a domain rule also covers them (see "domain
+cover" above). Dropping the domain rule does not touch those individual
+rules — the very same `PUT` that removes it also re-emits every one of them,
+because both come from the one `include` list this sync computes and writes
+in a single request.
+
+**A domain the panel owns and someone deletes in the dashboard is put back.**
+The stored list (`cf_access_allowed_domains`), not the live policy, is what
+the sync treats as the source of truth for what it owns: a domain missing
+from the policy that the stored list still names is drift, not an
+intentional removal, and is rewritten on the next run. Use
+`cf-domains --remove=<domain>` (or the Users page) to actually drop one.
+
+**`exclude` is the override the panel never writes and always honours** — see
+"domain cover" above. Owning a domain rule does not change this: an operator
+still carves one person back out from under it by naming their address (or
+the domain itself) in the policy's `exclude` list, and the sync still never
+touches `exclude` itself, only reads it.
+
+**A domain here does not by itself let anyone in.** The identity provider is
+still domain-locked today: Google refuses sign-in from an account outside the
+Workspace domain before the Access policy is ever consulted. Adding a domain
+here widens who the *policy* would admit if a sign-in got that far — it is
+not a substitute for, and cannot override, whatever the identity provider
+decides first.
+
+**The panel does not see rules it does not own.** `control-api` never
+fetches the Access policy itself — only this worker sync does, and only to
+compute what to write back. A group, `everyone`, or a hand-added domain or
+email rule admits people the panel learns about only at their first sign-in
+(see "Added directly in Cloudflare" above), never before.
+
 ---
 
 ## Credential recap
@@ -594,3 +660,5 @@ full table is in [`HOSTING.md` §6](./HOSTING.md).
   install runbook (identity model in Part C).
 - [`docs/DEPLOY-UPDATE.md`](./DEPLOY-UPDATE.md) — updating the panel stack and the
   VPN node from git.
+- [`docs/CLI.md`](./CLI.md) — `cf-config`, `cf-token`, `cf-domains` and `cf-sync`,
+  the CLI surface for everything Part B configures.

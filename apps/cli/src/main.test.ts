@@ -196,3 +196,111 @@ describe("cf-sync", () => {
     expect(JSON.parse(out)).toEqual(body);
   });
 });
+
+describe("cf-domains", () => {
+  beforeEach(() => {
+    process.env.PANEL_ADMIN_EMAIL = "cli-test@example.com";
+  });
+  afterEach(() => {
+    delete process.env.PANEL_ADMIN_EMAIL;
+    vi.unstubAllGlobals();
+  });
+
+  it("lists the current domains", async () => {
+    stubFetch([
+      { body: [{ cfAccessAllowedDomains: ["company.tld", "other.tld"] }] },
+    ]);
+    const out = await run(["cf-domains"]);
+    expect(out).toMatch(/company\.tld/);
+    expect(out).toMatch(/other\.tld/);
+  });
+
+  it("lists plainly when the policy row has no domains yet", async () => {
+    stubFetch([{ body: [{}] }]);
+    const out = await run(["cf-domains"]);
+    expect(out).toMatch(/\(none\)/);
+  });
+
+  it("--add posts the union and not the whole row", async () => {
+    const calls = stubFetch([
+      { body: [{ cfAccessAllowedDomains: ["company.tld"] }] },
+      { body: {} },
+    ]);
+    const out = await run(["cf-domains", "--add=other.tld"]);
+    expect(calls[1]?.url).toMatch(/\/api\/admin\/portal-policy\/global\/update$/);
+    expect(JSON.parse(calls[1]?.init?.body as string)).toEqual({
+      cfAccessAllowedDomains: ["company.tld", "other.tld"],
+    });
+    expect(out).toMatch(/company\.tld, other\.tld/);
+  });
+
+  it("--add normalizes case and a leading @ before comparing, and skips posting when already present", async () => {
+    const calls = stubFetch([
+      { body: [{ cfAccessAllowedDomains: ["company.tld"] }] },
+      { body: {} },
+    ]);
+    const out = await run(["cf-domains", "--add=@Company.TLD"]);
+    expect(calls).toHaveLength(1); // read only — no update posted
+    expect(out).toMatch(/already in the list/);
+  });
+
+  it("--remove of a domain in the list posts the shortened list", async () => {
+    const calls = stubFetch([
+      { body: [{ cfAccessAllowedDomains: ["company.tld", "other.tld"] }] },
+      { body: {} },
+    ]);
+    const out = await run(["cf-domains", "--remove=other.tld"]);
+    expect(JSON.parse(calls[1]?.init?.body as string)).toEqual({
+      cfAccessAllowedDomains: ["company.tld"],
+    });
+    expect(out).toMatch(/now company\.tld/);
+  });
+
+  it("--remove of an absent domain says so plainly, without posting an unchanged list", async () => {
+    const calls = stubFetch([
+      { body: [{ cfAccessAllowedDomains: ["company.tld"] }] },
+    ]);
+    const out = await run(["cf-domains", "--remove=missing.tld"]);
+    expect(calls).toHaveLength(1); // read only — no update posted
+    expect(out).toMatch(/not in the list/);
+  });
+
+  it("--set replaces the list wholesale", async () => {
+    const calls = stubFetch([
+      { body: [{ cfAccessAllowedDomains: ["old.tld"] }] },
+      { body: {} },
+    ]);
+    const out = await run(["cf-domains", "--set=a.tld,B.TLD"]);
+    expect(JSON.parse(calls[1]?.init?.body as string)).toEqual({
+      cfAccessAllowedDomains: ["a.tld", "b.tld"],
+    });
+    expect(out).toMatch(/now a\.tld, b\.tld/);
+  });
+
+  it("refuses to combine --add and --remove in one call, without reading the policy at all", async () => {
+    const calls = stubFetch([{ body: [{ cfAccessAllowedDomains: [] }] }]);
+    await expect(
+      run(["cf-domains", "--add=a.tld", "--remove=b.tld"]),
+    ).rejects.toThrow(/one at a time/);
+    expect(calls).toHaveLength(0);
+  });
+
+  it("an invalid domain surfaces the API's own message instead of a generic failure", async () => {
+    const calls = stubFetch([
+      { body: [{ cfAccessAllowedDomains: [] }] },
+      {
+        status: 400,
+        body: {
+          error: "VALIDATION_ERROR",
+          issues: [
+            { message: "not a domain name", path: ["cfAccessAllowedDomains", 0] },
+          ],
+        },
+      },
+    ]);
+    await expect(run(["cf-domains", "--add=not-a-domain"])).rejects.toThrow(
+      /not a domain name/,
+    );
+    expect(calls).toHaveLength(2);
+  });
+});
