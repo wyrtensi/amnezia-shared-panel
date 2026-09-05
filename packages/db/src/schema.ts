@@ -256,6 +256,14 @@ export const routeRuleVersions = pgTable(
       .notNull(),
     validationReport: jsonb("validation_report").$type<Record<string, unknown>>(),
     publishedAt: timestamp("published_at", { withTimezone: true }),
+    // Set when an ADMIN chose this version by hand, null when the worker
+    // published it. A pinned active version freezes the profile: the fetcher
+    // keeps downloading, still records every new version it finds, but stores
+    // it as `superseded` instead of publishing it. Without this the admin's
+    // choice would survive only until the next fetch tick, which would make
+    // the activate button a lie. Cleared by the "follow the feed" action, and
+    // at most one row per profile may hold it.
+    pinnedAt: timestamp("pinned_at", { withTimezone: true }),
     ...timestamps,
   },
   (table) => [
@@ -264,6 +272,13 @@ export const routeRuleVersions = pgTable(
       table.version,
     ),
     index("route_rule_versions_status_idx").on(table.profile, table.status),
+    // "At most one pinned version per profile", enforced by the table rather
+    // than only by the transaction that writes it. The pin is what the worker
+    // reads to decide whether it may publish; two of them for one profile
+    // would make that read ambiguous.
+    uniqueIndex("route_rule_versions_pinned_profile_unique")
+      .on(table.profile)
+      .where(sql`${table.pinnedAt} is not null`),
   ],
 );
 

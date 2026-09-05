@@ -6,6 +6,7 @@ import {
   eq,
   gte,
   inArray,
+  isNotNull,
   isNull,
   lt,
   lte,
@@ -1407,12 +1408,14 @@ export class PostgresWorkerRepository
   ): Promise<{
     version: string;
     etag: string | null;
+    pinned: boolean;
   } | null> => {
     const row = (
       await this.options.db
         .select({
           version: routeRuleVersions.version,
           etag: routeRuleVersions.sourceEtag,
+          pinnedAt: routeRuleVersions.pinnedAt,
         })
         .from(routeRuleVersions)
         .where(
@@ -1424,7 +1427,9 @@ export class PostgresWorkerRepository
         .orderBy(desc(routeRuleVersions.publishedAt))
         .limit(1)
     )[0];
-    return row ?? null;
+    return row
+      ? { version: row.version, etag: row.etag, pinned: row.pinnedAt !== null }
+      : null;
   };
 
   storeQuarantinedRule = async (input: StoredRuleInput): Promise<void> => {
@@ -1447,8 +1452,49 @@ export class PostgresWorkerRepository
       .onConflictDoNothing();
   };
 
+  storeUnpublishedRule = async (input: StoredRuleInput): Promise<void> => {
+    await this.options.db
+      .insert(routeRuleVersions)
+      .values({
+        profile: input.profile,
+        version: input.version,
+        sourceUrl: input.sourceUrl,
+        sourceEtag: input.etag,
+        sourceChecksum: input.checksum,
+        // Fetched and valid, but held back because the profile is pinned. It
+        // has never been published, so publishedAt stays null.
+        status: "superseded",
+        cidrCount: input.payload.cidrs.length,
+        domainCount: input.payload.domains.length,
+        payload: input.payload,
+        validationReport: input.validationReport,
+        createdAt: input.fetchedAt,
+        updatedAt: input.fetchedAt,
+      })
+      .onConflictDoNothing();
+  };
+
   activateRuleVersion = async (input: StoredRuleInput): Promise<void> => {
     await this.options.db.transaction(async (tx) => {
+      // Re-check the pin inside the transaction. createRuleFetcher already
+      // read it, but an admin can pin between that read and this write, and
+      // publishing over a pin would leave the pinned row superseded-yet-pinned
+      // — the one state the "at most one pin per profile" index cannot catch.
+      // Bailing here drops this fetch on the floor, which is fine: the next
+      // tick sees the pin up front and records the version via
+      // storeUnpublishedRule instead.
+      const [pinned] = await tx
+        .select({ id: routeRuleVersions.id })
+        .from(routeRuleVersions)
+        .where(
+          and(
+            eq(routeRuleVersions.profile, input.profile),
+            eq(routeRuleVersions.status, "active"),
+            isNotNull(routeRuleVersions.pinnedAt),
+          ),
+        )
+        .limit(1);
+      if (pinned) return;
       await tx
         .update(routeRuleVersions)
         .set({ status: "superseded", updatedAt: input.fetchedAt })

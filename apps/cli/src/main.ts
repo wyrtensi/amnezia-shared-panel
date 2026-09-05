@@ -55,6 +55,7 @@ import {
   parseWorkerPeriodFlag,
   quotaCurrentLimit,
   quotaTargetLabel,
+  ruleSources,
 } from "./args.js";
 import type {
   AccessSyncStatusView,
@@ -2014,6 +2015,147 @@ async function cmdGlobalRoutesSet(args: string[]): Promise<void> {
   console.log(`global routes ${profile}: updated ${changed.join(", ")}`);
 }
 
+type RuleVersionView = {
+  id: string;
+  profile: string;
+  version: string;
+  sourceUrl: string | null;
+  status: string;
+  cidrCount: number;
+  domainCount: number;
+  publishedAt: string | null;
+  pinnedAt: string | null;
+  createdAt: string;
+};
+
+/**
+ * Newest-first, exactly as `GET /api/admin/rules` returns them (ORDER BY
+ * created_at DESC), grouped the way the admin page groups them.
+ */
+async function fetchRuleVersions(): Promise<RuleVersionView[]> {
+  return api<RuleVersionView[]>("/api/admin/rules");
+}
+
+const RULE_PROFILE_ORDER = ["ru_whitelist", "ru_blacklist", "full_tunnel"];
+
+const ruleProfileRank = (profile: string): number => {
+  const rank = RULE_PROFILE_ORDER.indexOf(profile);
+  return rank < 0 ? RULE_PROFILE_ORDER.length : rank;
+};
+
+/** "iplist · Re-filter-lists", or a dash when the column was never written. */
+const ruleSourceCell = (sourceUrl: string | null): string => {
+  const names = ruleSources(sourceUrl).map((source) => source.name);
+  return names.length > 0 ? names.join(" · ") : "-";
+};
+
+async function cmdRules(args: string[]): Promise<void> {
+  const versions = await fetchRuleVersions();
+  const wanted = flagOf(args, "profile");
+  const shown = wanted
+    ? versions.filter((version) => version.profile === wanted)
+    : versions;
+  if (wantsJson(args)) return json(shown);
+  if (shown.length === 0) {
+    console.log(
+      wanted
+        ? `No rule versions fetched for ${wanted}.`
+        : "No rule versions fetched yet. Feeds come from RULE_FEEDS; see rules-activate.",
+    );
+    return;
+  }
+  const profiles = [...new Set(shown.map((version) => version.profile))].sort(
+    (a, b) => ruleProfileRank(a) - ruleProfileRank(b) || a.localeCompare(b),
+  );
+  for (const profile of profiles) {
+    const rows = shown.filter((version) => version.profile === profile);
+    const pinned = rows.find((row) => row.pinnedAt);
+    // The feeds behind these versions, newest version first, so what supplies
+    // the profile today leads and a since-removed feed still shows up.
+    const sources: string[] = [];
+    for (const row of rows) {
+      for (const { name } of ruleSources(row.sourceUrl)) {
+        if (!sources.includes(name)) sources.push(name);
+      }
+    }
+    console.log(`${profile}  (${rows.length} versions)`);
+    console.log(`  sources: ${sources.join(" · ") || "-"}`);
+    console.log(
+      pinned
+        ? `  pinned:  ${pinned.version.slice(0, 20)} — new versions are fetched but NOT published (rules-follow ${profile})`
+        : "  pinned:  no — the worker publishes each new version",
+    );
+    for (const row of rows) {
+      const marks = [row.status, row.pinnedAt ? "pinned" : null]
+        .filter(Boolean)
+        .join(", ");
+      console.log(
+        `  ${row.version.slice(0, 20)}  ${marks.padEnd(20)} cidr ${row.cidrCount}, domains ${row.domainCount}`,
+      );
+      console.log(
+        `    id ${row.id}  from ${ruleSourceCell(row.sourceUrl)}  fetched ${row.createdAt}  published ${row.publishedAt ?? "-"}`,
+      );
+    }
+  }
+}
+
+async function cmdRulesActivate(args: string[]): Promise<void> {
+  const id = positionals(args)[0];
+  if (!id) {
+    throw new Error(
+      "Usage: rules-activate <version-id>   (ids come from `rules`)",
+    );
+  }
+  const target = (await fetchRuleVersions()).find(
+    (version) => version.id === id,
+  );
+  if (!target) throw new Error(`No rule version with id ${id}`);
+  await api(`/api/admin/rules/${id}/activate`, {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+  console.log(`${target.profile}: ${target.version.slice(0, 20)} is now active`);
+  console.log(
+    "Pinned to this version: the worker keeps fetching and keeps recording new",
+  );
+  console.log(
+    `versions, but publishes none until \`rules-follow ${target.profile}\`.`,
+  );
+}
+
+async function cmdRulesFollow(args: string[]): Promise<void> {
+  const target = positionals(args)[0];
+  if (!target) {
+    throw new Error(
+      "Usage: rules-follow <profile|version-id>   (e.g. rules-follow ru_blacklist)",
+    );
+  }
+  const versions = await fetchRuleVersions();
+  // The API clears the pin by profile, but it identifies the profile from a
+  // version id. Accept either, so the operator can type the profile they read
+  // in `rules` instead of copying a uuid.
+  const pinned =
+    versions.find(
+      (version) => version.profile === target && version.pinnedAt !== null,
+    ) ?? versions.find((version) => version.id === target);
+  if (!pinned) {
+    const known = versions.some((version) => version.profile === target);
+    throw new Error(
+      known
+        ? `${target} is not pinned — the worker already publishes each new version`
+        : `No pinned version and no version with id ${target}`,
+    );
+  }
+  await api(`/api/admin/rules/${pinned.id}/follow`, {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+  console.log(
+    `${pinned.profile}: pin released. The active version is unchanged; the next`,
+  );
+  console.log("version the worker fetches will be published.");
+}
+
 async function cmdVersion(args: string[]): Promise<void> {
   const info = await api<CliVersionInfo>("/api/admin/version");
   if (wantsJson(args)) return json(info);
@@ -2107,6 +2249,9 @@ Read:
                           policy-set --<period>=<value> (=default clears it)
   global-routes [--json]   Admin-wide route additions / exclusions (addresses).
                           A stored payload's leftover site names are listed as INACTIVE.
+  rules [--profile=<p>]    Fetched route-rule versions, grouped by profile: which
+        [--json]          feeds supply each one, which version is live, whether
+                          the profile is pinned, and every version's id
   version [--json]         Panel version + commit + the AWG 3.1 client floor
   traffic [--days=N]       Aggregate traffic series (JSON)
   client-releases [--refresh]  What the panel hands users per platform (Windows,
@@ -2223,6 +2368,15 @@ Write:
                                           name survives an import (a .conf always lands
                                           as "Server N"); --confirm is required to read
                                           another user's key
+  rules-activate <version-id>             Publish one fetched rule version, including
+                                          rolling back to a superseded one. Also PINS
+                                          the profile to it: the worker keeps fetching
+                                          and keeps recording every new version, but
+                                          publishes none until the pin is released, so
+                                          the next fetch cannot silently undo this
+  rules-follow <profile|version-id>       Release that pin. The active version is left
+                                          exactly as it is; the next version the worker
+                                          fetches is published again
   cf-token --token-file=<path|->          Store the Cloudflare API token (encrypted).
                                           cf-token <token> still works but lands in
                                           ps/history
@@ -2747,6 +2901,12 @@ export async function dispatch(argv: string[]): Promise<void> {
       return cmdCheckReset(args);
     case "node-checks":
       return cmdNodeChecks(args);
+    case "rules":
+      return cmdRules(args);
+    case "rules-activate":
+      return cmdRulesActivate(args);
+    case "rules-follow":
+      return cmdRulesFollow(args);
     case "global-routes-set":
       return cmdGlobalRoutesSet(args);
     case undefined:

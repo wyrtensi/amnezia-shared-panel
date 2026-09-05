@@ -211,6 +211,13 @@
       "when": 1788607430815,
       "tag": "0029_worker_polling_periods",
       "breakpoints": true
+    },
+    {
+      "idx": 30,
+      "version": "7",
+      "when": 1788628019630,
+      "tag": "0030_rule_version_pin",
+      "breakpoints": true
     }
   ]
 }

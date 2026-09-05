@@ -1607,3 +1607,6 @@ export const accessDomainListSchema = z
   .array(accessDomainSchema)
   .max(50)
   .transform((list) => [...new Set(list)]);
+
+// Reading a rule version's stored source_url back into provider names.
+export * from "./ruleSources.js";

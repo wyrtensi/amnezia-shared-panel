@@ -1,0 +1,2 @@
+ALTER TABLE "route_rule_versions" ADD COLUMN "pinned_at" timestamp with time zone;--> statement-breakpoint
+CREATE UNIQUE INDEX "route_rule_versions_pinned_profile_unique" ON "route_rule_versions" USING btree ("profile") WHERE "route_rule_versions"."pinned_at" is not null;

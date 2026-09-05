@@ -14,6 +14,7 @@ import {
   peerCurrent,
   peerSamples,
   portalPolicy,
+  routeRuleVersions,
   trafficRollups,
   users,
   vpnKeys,
@@ -953,4 +954,98 @@ describe("PostgresWorkerRepository outbox leases", () => {
       expect(row?.failureReason).toContain("node rejected the peer");
     },
   );
+});
+
+describe("PostgresWorkerRepository rule pinning", () => {
+  const database = databaseUrl ? createDatabase(databaseUrl) : null;
+  const keyring = { 1: randomBytes(32) };
+  const repository = database
+    ? new PostgresWorkerRepository({
+        db: database.db,
+        keyring,
+        activeKeyVersion: 1,
+      })
+    : null;
+
+  const storedInput = (version: string) => ({
+    profile: "ru_blacklist" as const,
+    version,
+    sourceUrl: "https://iplist.opencck.org/?format=text&data=cidr4",
+    etag: null,
+    checksum: version,
+    payload: { cidrs: ["203.0.113.0/24"], domains: ["example.ru"] },
+    validationReport: { cidrCount: 1, domainCount: 1 },
+    fetchedAt: new Date(),
+  });
+
+  beforeEach(async () => {
+    if (!database) return;
+    await database.db.delete(routeRuleVersions);
+  });
+
+  afterAll(async () => {
+    if (database) await database.client.end();
+  });
+
+  runDatabaseTest("reports whether the live version is pinned", async () => {
+    if (!database || !repository) return;
+    await repository.activateRuleVersion(storedInput("v1"));
+    expect(await repository.getLastKnownGoodRule("ru_blacklist")).toMatchObject({
+      version: "v1",
+      pinned: false,
+    });
+
+    await database.db
+      .update(routeRuleVersions)
+      .set({ pinnedAt: new Date() })
+      .where(eq(routeRuleVersions.version, "v1"));
+
+    expect(await repository.getLastKnownGoodRule("ru_blacklist")).toMatchObject({
+      version: "v1",
+      pinned: true,
+    });
+  });
+
+  runDatabaseTest(
+    "stores a held-back version as superseded and never published",
+    async () => {
+      if (!database || !repository) return;
+      await repository.storeUnpublishedRule(storedInput("v2"));
+
+      const [row] = await database.db
+        .select()
+        .from(routeRuleVersions)
+        .where(eq(routeRuleVersions.version, "v2"));
+      expect(row?.status).toBe("superseded");
+      expect(row?.publishedAt).toBeNull();
+      expect(row?.pinnedAt).toBeNull();
+
+      // The fetcher re-derives the same version on every tick while the pin
+      // holds, so the second store has to be a no-op rather than a conflict.
+      await expect(
+        repository.storeUnpublishedRule(storedInput("v2")),
+      ).resolves.toBeUndefined();
+    },
+  );
+
+  runDatabaseTest("refuses to publish over a pin it finds mid-flight", async () => {
+    if (!database || !repository) return;
+    // The race the fetcher's own check cannot close: an admin pins between the
+    // fetcher reading getLastKnownGoodRule and this write landing.
+    await repository.activateRuleVersion(storedInput("v1"));
+    await database.db
+      .update(routeRuleVersions)
+      .set({ pinnedAt: new Date() })
+      .where(eq(routeRuleVersions.version, "v1"));
+
+    await repository.activateRuleVersion(storedInput("v2"));
+
+    const rows = await database.db.select().from(routeRuleVersions);
+    // v2 was dropped rather than published; the pinned version is untouched
+    // and still the only active one.
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.version).toBe("v1");
+    expect(rows[0]?.status).toBe("active");
+    expect(rows[0]?.pinnedAt).not.toBeNull();
+  });
 });

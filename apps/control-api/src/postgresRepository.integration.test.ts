@@ -21,6 +21,7 @@ import {
   peerCurrent,
   portalPolicy,
   quotaRequests,
+  routeRuleVersions,
   users,
   vpnKeys,
 } from "@amnezia/db";
@@ -3651,6 +3652,188 @@ describe("PostgresControlRepository Access sync arming", () => {
         completedAt: completedAt.toISOString(),
         lastError: "Cloudflare API request timed out",
       });
+    },
+  );
+});
+
+describe("PostgresControlRepository rule version pinning", () => {
+  const database = databaseUrl ? createDatabase(databaseUrl) : null;
+  const keyring = { 1: randomBytes(32) };
+  let admin: Actor;
+
+  const payload = { cidrs: ["203.0.113.0/24"], domains: ["example.ru"] };
+
+  /** Insert one version of the ru_blacklist profile. */
+  const seedVersion = async (
+    version: string,
+    status: "active" | "superseded" | "quarantined",
+    options: { pinned?: boolean; createdAt?: Date } = {},
+  ): Promise<string> => {
+    if (!database) throw new Error("No database");
+    const at = options.createdAt ?? new Date();
+    const [row] = await database.db
+      .insert(routeRuleVersions)
+      .values({
+        profile: "ru_blacklist",
+        version,
+        sourceUrl:
+          "https://iplist.opencck.org/?format=text&data=cidr4 https://github.com/1andrevich/Re-filter-lists/releases/latest/download/domains_all.lst",
+        sourceChecksum: version,
+        status,
+        cidrCount: 1,
+        domainCount: 1,
+        payload,
+        publishedAt: status === "active" ? at : null,
+        pinnedAt: options.pinned ? at : null,
+        createdAt: at,
+        updatedAt: at,
+      })
+      .returning();
+    if (!row) throw new Error("Failed to seed rule version");
+    return row.id;
+  };
+
+  const readVersions = async () => {
+    if (!database) throw new Error("No database");
+    return database.db
+      .select()
+      .from(routeRuleVersions)
+      .orderBy(desc(routeRuleVersions.createdAt));
+  };
+
+  beforeEach(async () => {
+    if (!database) return;
+    await database.db.delete(routeRuleVersions);
+    const suffix = randomBytes(6).toString("hex");
+    const [user] = await database.db
+      .insert(users)
+      .values({ email: `rules-admin-${suffix}@example.com`, role: "admin" })
+      .returning();
+    if (!user) throw new Error("Failed to seed admin");
+    admin = {
+      id: user.id,
+      email: user.email,
+      displayName: null,
+      role: "admin",
+      status: "active",
+    };
+  });
+
+  afterAll(async () => {
+    if (database) await database.client.end();
+  });
+
+  const subject = (): PostgresControlRepository => {
+    if (!database) throw new Error("No database");
+    return new PostgresControlRepository({ db: database.db, keyring });
+  };
+
+  runDatabaseTest(
+    "activating a superseded version rolls back to it and pins the profile",
+    async () => {
+      if (!database) return;
+      const older = await seedVersion("v1", "superseded", {
+        createdAt: new Date(Date.now() - 60_000),
+      });
+      const live = await seedVersion("v2", "active");
+
+      await subject().adminAction(admin, "rules", older, "activate", {});
+
+      const rows = await readVersions();
+      const byId = new Map(rows.map((row) => [row.id, row]));
+      expect(byId.get(older)?.status).toBe("active");
+      expect(byId.get(older)?.pinnedAt).not.toBeNull();
+      expect(byId.get(older)?.publishedAt).not.toBeNull();
+      // The version that was live is demoted, not deleted: it is still there
+      // to roll forward to.
+      expect(byId.get(live)?.status).toBe("superseded");
+      expect(byId.get(live)?.pinnedAt).toBeNull();
+    },
+  );
+
+  runDatabaseTest("moves the pin rather than ever holding two", async () => {
+    if (!database) return;
+    // The partial unique index would reject a second pin outright, so this
+    // failing looks like a constraint violation rather than a wrong answer.
+    const first = await seedVersion("v1", "active", { pinned: true });
+    const second = await seedVersion("v2", "superseded");
+
+    await subject().adminAction(admin, "rules", second, "activate", {});
+
+    const rows = await readVersions();
+    expect(
+      rows.filter((row) => row.pinnedAt !== null).map((row) => row.id),
+    ).toEqual([second]);
+    expect(
+      rows.filter((row) => row.status === "active").map((row) => row.id),
+    ).toEqual([second]);
+    expect(rows.find((row) => row.id === first)?.status).toBe("superseded");
+  });
+
+  runDatabaseTest(
+    "follow releases the pin and leaves the active version alone",
+    async () => {
+      if (!database) return;
+      const live = await seedVersion("v1", "active", { pinned: true });
+
+      const result = await subject().adminAction(admin, "rules", live, "follow", {});
+
+      expect(result).toEqual({ profile: "ru_blacklist", pinned: false });
+      const [row] = await readVersions();
+      // Only the pin goes. Un-pinning is not a rollback: whatever is serving
+      // traffic keeps serving it until the worker publishes something newer.
+      expect(row?.pinnedAt).toBeNull();
+      expect(row?.status).toBe("active");
+      expect(row?.publishedAt).not.toBeNull();
+    },
+  );
+
+  runDatabaseTest(
+    "follow is harmless on a profile that is not pinned",
+    async () => {
+      if (!database) return;
+      const live = await seedVersion("v1", "active");
+
+      await subject().adminAction(admin, "rules", live, "follow", {});
+
+      const [row] = await readVersions();
+      expect(row?.status).toBe("active");
+      expect(row?.pinnedAt).toBeNull();
+    },
+  );
+
+  runDatabaseTest("records who pinned and who released it", async () => {
+    if (!database) return;
+    await database.db.delete(auditEvents);
+    const live = await seedVersion("v1", "active");
+    await subject().adminAction(admin, "rules", live, "activate", {});
+    await subject().adminAction(admin, "rules", live, "follow", {});
+
+    const events = await database.db
+      .select()
+      .from(auditEvents)
+      .orderBy(desc(auditEvents.createdAt));
+    expect(events.map((event) => event.action)).toEqual([
+      "admin.rules.follow",
+      "admin.rules.activate",
+    ]);
+    expect(events.every((event) => event.actorUserId === admin.id)).toBe(true);
+  });
+
+  runDatabaseTest(
+    "refuses to activate a version that does not exist",
+    async () => {
+      if (!database) return;
+      const failure = await failureOf(
+        subject().adminAction(
+          admin,
+          "rules",
+          "00000000-0000-0000-0000-000000000000",
+          "activate",
+          {},
+        ),
+      );
+      expect(failure?.statusCode).toBe(404);
     },
   );
 });

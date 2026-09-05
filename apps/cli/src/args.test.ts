@@ -7,6 +7,8 @@ import {
   WORKER_PERIOD_FIELDS as CONTRACT_PERIOD_FIELDS,
   WORKER_PERIOD_FIELD_NAMES as CONTRACT_PERIOD_FIELD_NAMES,
   normalizeAccessDomain,
+  ruleSources as contractRuleSources,
+  sourceName as contractSourceName,
 } from "@amnezia/contracts";
 import {
   DEVICE_TYPES,
@@ -35,6 +37,8 @@ import {
   matchesNodeFilter,
   emailDomain,
   normalizeDomain,
+  ruleSources,
+  sourceName,
   parsePolicyNodeList,
   parseWorkerPeriodFlag,
   quotaTargetLabel,
@@ -671,5 +675,44 @@ describe("matchesDomainFilter", () => {
 
   it("matches nobody for a domain nobody is on", () => {
     expect(matchesDomainFilter("a@company.tld", "other.tld")).toBe(false);
+  });
+});
+
+describe("rule source names", () => {
+  // Every shape the derivation distinguishes, plus the three URLs
+  // DEFAULT_RULE_FEEDS ships with. The point of the list is coverage of URL
+  // SHAPES: a plain host, a forge, a CDN that prefixes and pins, a delivery
+  // label, and the two inputs that must not throw.
+  const URLS = [
+    "https://iplist.opencck.org/?format=text&data=cidr4",
+    "https://github.com/1andrevich/Re-filter-lists/releases/latest/download/domains_all.lst",
+    "https://cdn.jsdelivr.net/gh/hydraponique/roscomvpn-geoip/release/text/whitelist.txt",
+    "https://cdn.jsdelivr.net/gh/owner/repo@v1.2.3/list.txt",
+    "https://raw.githubusercontent.com/owner/some-list/main/a.txt",
+    "https://gitlab.com/group/routes/-/raw/main/x.lst",
+    "https://raw.lists.antifilter.net/all.lst",
+    "https://cdn.example.com/list.txt",
+    "https://example.org/a.txt",
+    "https://feeds.acme-corp.io/ru.txt",
+    "https://github.com/",
+    "not a url",
+  ];
+
+  it("names every URL shape exactly as the panel does", () => {
+    // The CLI's copy and the contract's implementation must not drift: an
+    // operator reading `rules` in a shell and an admin reading the page are
+    // looking at the same column.
+    for (const url of URLS) {
+      expect(sourceName(url), url).toBe(contractSourceName(url));
+    }
+  });
+
+  it("splits a merged version's source_url the same way", () => {
+    const merged = `${URLS[0]} ${URLS[1]}`;
+    expect(ruleSources(merged)).toEqual(contractRuleSources(merged));
+    expect(ruleSources(merged)).toHaveLength(2);
+    for (const empty of [null, undefined, "", "   "]) {
+      expect(ruleSources(empty)).toEqual(contractRuleSources(empty));
+    }
   });
 });

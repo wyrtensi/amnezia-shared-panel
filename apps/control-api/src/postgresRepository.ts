@@ -8,6 +8,7 @@ import {
   gte,
   inArray,
   isNotNull,
+  ne,
   or,
   sql,
   sum,
@@ -3309,24 +3310,53 @@ export class PostgresControlRepository implements ControlRepository {
         return { id: targetId, maxPeers: requested.maxPeers, queued: true };
       });
     } else if (resource === "rules" && action === "activate") {
+      // Activating PINS the profile to this version. The worker's fetcher
+      // reads that pin and stops publishing: it keeps downloading and keeps
+      // recording every newer version it finds (as `superseded`, never
+      // published), but the profile stays on the admin's choice until someone
+      // activates another version or presses "follow the feed". Without the
+      // pin the next fetch tick would quietly undo this click, which is the
+      // whole reason the column exists.
       return this.options.db.transaction(async (tx) => {
+        const now = new Date();
         const [targetRule] = await tx
           .select()
           .from(routeRuleVersions)
           .where(eq(routeRuleVersions.id, targetId));
         if (!targetRule) throw new ApiError(404, "Rule version not found", "NOT_FOUND");
+        // Demote whatever was live, and drop the profile's old pin. Both
+        // BEFORE the target is pinned below, or the "at most one pin per
+        // profile" unique index would fire mid-transaction. The second
+        // statement is belt and braces: by invariant only an active row can
+        // carry a pin, so it normally matches nothing.
         await tx
           .update(routeRuleVersions)
-          .set({ status: "superseded", updatedAt: new Date() })
+          .set({ status: "superseded", pinnedAt: null, updatedAt: now })
           .where(
             and(
               eq(routeRuleVersions.profile, targetRule.profile),
               eq(routeRuleVersions.status, "active"),
+              ne(routeRuleVersions.id, targetId),
+            ),
+          );
+        await tx
+          .update(routeRuleVersions)
+          .set({ pinnedAt: null, updatedAt: now })
+          .where(
+            and(
+              eq(routeRuleVersions.profile, targetRule.profile),
+              isNotNull(routeRuleVersions.pinnedAt),
+              ne(routeRuleVersions.id, targetId),
             ),
           );
         const [activated] = await tx
           .update(routeRuleVersions)
-          .set({ status: "active", publishedAt: new Date(), updatedAt: new Date() })
+          .set({
+            status: "active",
+            publishedAt: now,
+            pinnedAt: now,
+            updatedAt: now,
+          })
           .where(eq(routeRuleVersions.id, targetId))
           .returning();
         await tx.insert(auditEvents).values({
@@ -3335,9 +3365,50 @@ export class PostgresControlRepository implements ControlRepository {
           action: "admin.rules.activate",
           targetType: "rules",
           targetId,
-          metadata: { profile: targetRule.profile, version: targetRule.version },
+          metadata: {
+            profile: targetRule.profile,
+            version: targetRule.version,
+            pinned: true,
+          },
         });
         return activated;
+      });
+    } else if (resource === "rules" && action === "follow") {
+      // The other half of the pin: hand the profile back to the worker. The
+      // active version stays exactly as it is — this only says "publish the
+      // next thing you fetch", which the worker does on its next tick.
+      return this.options.db.transaction(async (tx) => {
+        const now = new Date();
+        const [targetRule] = await tx
+          .select()
+          .from(routeRuleVersions)
+          .where(eq(routeRuleVersions.id, targetId));
+        if (!targetRule) throw new ApiError(404, "Rule version not found", "NOT_FOUND");
+        // Clear by PROFILE, not by row: the caller names a version, but the
+        // pin is a property of the profile and only one may exist.
+        const cleared = await tx
+          .update(routeRuleVersions)
+          .set({ pinnedAt: null, updatedAt: now })
+          .where(
+            and(
+              eq(routeRuleVersions.profile, targetRule.profile),
+              isNotNull(routeRuleVersions.pinnedAt),
+            ),
+          )
+          .returning({ id: routeRuleVersions.id });
+        await tx.insert(auditEvents).values({
+          actorUserId: actor.id,
+          actorType: "user",
+          action: "admin.rules.follow",
+          targetType: "rules",
+          targetId,
+          metadata: {
+            profile: targetRule.profile,
+            version: targetRule.version,
+            wasPinned: cleared.length > 0,
+          },
+        });
+        return { profile: targetRule.profile, pinned: false };
       });
     } else if (resource === "rules" && action === "refresh") {
       // Control-api never fetches a feed itself: `RULE_FEEDS` and the

@@ -139,6 +139,7 @@ via `CONTROL_API_URL` plus one of, in priority order:
 | `stale-keys [--days=N] [--all]` | **Who** is holding keys nobody uses, and how many each — the shell half of the admin overview's stale-key block, and the list to work down before running the cleanup below. One row per user with at least one stale key (`--all` keeps everyone, so the finding has a denominator), worst first: `stale` (= `idle` + `never`), `keys` — how many of their keys hold a peer on a node at all, `fresh` — how many are too young to have connected yet and therefore never counted as stale, and `oldest`, how long the longest-stale one has been that way. Counted per key on purpose: a user with one live phone and five abandoned laptop keys is active by every owner-level reading, and those five peers are exactly what this is for |
 | `periods` | Every background period the panel runs on: what is set, the built-in default an unset one falls back to, and the range each accepts. See [Background periods](#background-periods) |
 | `global-routes` | Admin-wide route additions / exclusions per split-tunnel profile. Site names left in a stored payload are listed marked `INACTIVE` |
+| `rules [--profile=ru_whitelist\|ru_blacklist]` | Every fetched route-rule version, grouped by profile: which feeds supply it, whether the profile is pinned, and each version's id, status, counts, fetch time and publish time. The provider name is derived from the version's stored `source_url`, so a version merged from several feeds names all of them. See [Route rule versions](#route-rule-versions) |
 | `quota [--all]` | Key-limit requests (pending by default; `--all` = every state), with ids, the **target** server (its name, or `all servers`), `current → requested`, and date. Both the target and the `current → requested` numbers are reported **in that user's own key-limit mode**: under a global (shared) limit the per-server limits are dormant, so `current` is the pool and a request that named a server reads `all servers (request named …)` — approving it raises the total, not that server |
 | `version` | Panel version + commit of the running control-api, the repository the image was built from, plus `awg3-client-floor` — the AmneziaVPN client release an AWG 3.1 key needs, served by the panel so the CLI and the install guide cannot disagree |
 | `traffic [--days=N]` | Aggregate traffic series across all users (JSON) |
@@ -178,6 +179,8 @@ via `CONTROL_API_URL` plus one of, in priority order:
 | `node-agent-log <id>` | The node's own record of its last agent update: state, image, when it finished, and the updater's log — which is what explains a failure (a locally edited `compose.yaml`, a missing `.env` key, a health gate) without opening an SSH session |
 | `policy-set --<field>=<value> …` | Set portal-policy fields (e.g. `--defaultKeyLimit=10`). `--nodeOrder=<id>,<id>` is the order users see servers in; `--recommendedNodeIds=<id>` badges servers as recommended and **must be the top of that order** (`none` clears either list). Send both in one call when a reorder would leave a badged server out of the top — the API validates them together and otherwise rejects the reorder, naming the server that is out of place, rather than silently un-recommending it. `--keyLimitMode=per_node\|global` is the panel-wide default for how every key limit is counted (`user-limit --mode=` overrides it for one user); there is no `inherit` here, since this **is** the value everyone inherits. `--defaultKeyLimit` is per server in `per_node` mode and the shared total in `global` mode — the number does not move, its meaning does, so switching the mode re-reads every existing limit without writing a row. `--showNodeAddress=true` also shows ordinary users the public address of each node they may use, under the node's name on their dashboard; it is **off by default**, because a node's address is operational information about the fleet and switching it on should be an operator's decision rather than something an upgrade does on their behalf. Admins always see it in `nodes` and on the node card regardless. Users get one collapsed string (the resolved IP, or the reported host when it never resolved) and never the host/IP pair or the resolution timestamp. `--video-desktop=`, `--video-android=`, `--video-ios=` attach the walkthrough video shown at the top of each audience's block in the in-panel connection guide (`none` clears one). They **merge** with the videos already set, so naming one audience does not clear the other two; until a URL is set that block shows a placeholder rather than a player. A **Google Drive share link** (the file must be readable by anyone with the link) is embedded as a Drive preview — Drive no longer serves files dependably to a plain `<video>` tag; any other http(s) URL plays as a direct file. A link the panel cannot play is refused when you type it. **These URLs are deployment settings: they live in your panel's database, never in this repository** — `scripts/tests/no-deployment-links.test.mjs` fails the build if one is committed. The eight background periods — `--telemetryPollSec=`, `--nodeMetricsSampleSec=`, `--nodeMetricsRetentionDays=`, `--peerSampleSec=`, `--maintenanceIntervalSec=`, `--agentReleaseRefreshSec=`, `--ruleFetchIntervalSec=`, `--accessReconcileSec=` — are set the same way, in seconds (days for the retention window); `=default` hands one back to the worker. Out-of-range values are refused before anything is posted. See [Background periods](#background-periods) for the ranges, the defaults and how long a change takes to apply |
 | `global-routes-set --profile=ru_whitelist\|ru_blacklist [--add-cidrs=] [--exclude-cidrs=]` | Admin-wide route overrides for one split-tunnel profile. Each list given **replaces** that list; omitted lists stay as they were. **Addresses only** — `--add-domains` / `--exclude-domains` are refused, and a write clears any site names the stored payload still holds |
+| `rules-activate <version-id>` | Publish one fetched rule version — including rolling **back** to a `superseded` one. Also **pins** the profile to it, so the worker's next fetch cannot silently undo the choice. See [Route rule versions](#route-rule-versions) |
+| `rules-follow <profile\|version-id>` | Release that pin and let the worker publish again. The active version is left exactly as it is; only the *next* version the worker fetches goes live |
 | `node-metrics [--json]` | Host metrics per node — memory, swap, disk, load, the agent's cgroup task count, both AWG interfaces, the agent's own round trip, and how long ago a peer last completed a handshake. Unreported values are a dash, never a zero. Below the table it prints the panel's own warnings, using the same three thresholds the admin card paints red: 200 MiB MemAvailable, 85 % disk, 80 % of the task cap |
 | `checks` | Every service check: what it targets, how often it runs, and what it asserts |
 | `check-results [<id>]` | Each node's verdict, with the final URL and how long it has been failing. Three statuses, and they are not interchangeable: `ok` (the probe ran and every assertion held), `failed` (the probe ran and one did not), `error` (**the node could not look**, so nothing is known about the service) |
@@ -517,6 +520,70 @@ A deployment that stored site names before this rule keeps them: `global-routes`
 lists them marked `INACTIVE`, and the next `global-routes-set` on that profile —
 or the next `user-routes` for that user — clears them. Nothing resolves them in
 the meantime; they route nothing either way.
+
+### Route rule versions
+
+The worker fetches each split-tunnel profile's list from the feeds in
+`RULE_FEEDS` (or, unset, from the built-in defaults) and stores every fetch as a
+row in `route_rule_versions`. **The feeds are per profile, and they are not the
+same provider**: out of the box `ru_whitelist` comes from a RoscomVPN GeoIP
+mirror, while `ru_blacklist` is merged from iplist (CIDRs) *and* Re-filter-lists
+(domains). Nothing in the panel names a provider in a shared label for that
+reason — each version is attributed from its own stored `source_url`.
+
+```sh
+# what feeds each profile, what is live, and every version's id
+amnezia-panel rules
+amnezia-panel rules --profile=ru_blacklist
+amnezia-panel rules --json          # raw rows, including pinnedAt
+```
+
+A version merged from several feeds stores its source URLs space-joined in one
+column, so `rules` prints all of them (`iplist · Re-filter-lists`). The short
+name is **derived** from the URL — the repository for a forge or git CDN URL,
+the host's own label otherwise — rather than looked up in a table of known
+providers, which would go stale the moment `RULE_FEEDS` is repointed. The full
+URL is on the row beneath the name (and on hover in the admin panel).
+
+#### Activating a version, and what the worker does next
+
+```sh
+# roll back to a superseded version (ids come from `rules`)
+amnezia-panel rules-activate 6f1c…-…
+
+# hand the profile back to the feed
+amnezia-panel rules-follow ru_blacklist
+```
+
+`rules-activate` publishes that version and **pins the profile to it**. The pin
+is the answer to the obvious question — *what happens when the worker fetches a
+newer list five minutes later?*
+
+- The worker keeps fetching on its normal period (`ruleFetchIntervalSec`).
+- It keeps **recording** every new version it finds, stored `superseded` with
+  no `published_at`, so the admin can see it and diff it against what is live.
+- It publishes **none** of them while the pin holds. The active version stays
+  exactly what the admin chose.
+
+Without that, the pinned choice would survive only until the next fetch tick and
+the activate control would be a lie. The trade is stated plainly in both
+surfaces: a pinned profile stops taking list updates, including the ones that
+matter, until someone releases it. The admin page shows the pin as a badge on
+the profile and on the row, and says when a newer version is sitting behind it;
+`rules` prints the same thing as a `pinned:` line.
+
+`rules-follow` clears the pin and **changes nothing else** — un-pinning is not a
+rollback, so whatever is serving traffic keeps serving it until the worker
+publishes something newer. Both actions land in the audit log
+(`admin.rules.activate` / `admin.rules.follow`).
+
+At most one version per profile may be pinned; a partial unique index on
+`route_rule_versions` enforces it, because the pin is what the worker reads to
+decide whether it may publish at all.
+
+Quarantined versions are a separate thing and are never held back by a pin: a
+payload that fails validation is quarantined whether or not the profile is
+pinned.
 
 ### Direct-login (server-side Google) operator notes
 
