@@ -640,6 +640,27 @@ const ru = {
   "users.accessDomainsDisabledHint":
     "Настройте Cloudflare Access на странице «Политики», чтобы этот список заработал.",
   "users.accessDomainsDisabledLink": "Настроить на странице «Политики»",
+  "users.accessDomainsBtn": "Домены Access",
+  "users.accessDomainsDesc":
+    "Домены, адреса на которых политика Cloudflare Access пускает к панели. Список хранится в панели, а синхронизация переносит его в политику.",
+  "users.accessDomainsEmpty":
+    "Пока ни одного домена. Через Cloudflare сейчас проходят только адреса активных пользователей панели и те, кого пускают правила, добавленные в Cloudflare вручную.",
+  "users.accessDomainErrEmail":
+    "Это адрес, а не домен. Добавьте его как пользователя — кнопка «Пользователь» рядом.",
+  "users.accessDomainErrHostname":
+    "Не похоже на доменное имя. Нужно минимум два уровня, например company.tld.",
+  "users.accessDomainErrDuplicate": "Этот домен уже в списке.",
+  "users.accessDomainErrGeneric": "Такой домен панель не примет.",
+  "users.accessDomainRemoveTitle": "Убрать домен {value}?",
+  "users.accessDomainRemoveWhat":
+    "После сохранения панель удалит из политики Cloudflare Access правило «почта на домене {value}». Сохранение сразу просит синхронизацию выполниться, так что правило пропадёт на ближайшем запуске.",
+  "users.accessDomainRemoveKeepsTitle": "Никого не отключит и ключи не отзовёт.",
+  "users.accessDomainRemoveKeeps":
+    "У каждого активного пользователя панели есть собственное правило по его адресу, и тот же самый запрос переписывает их все. Кто есть в панели и активен — вход не теряет, даже если адрес на этом домене.",
+  "users.accessDomainRemoveCostTitle": "Кто потеряет вход.",
+  "users.accessDomainRemoveCost":
+    "Те, у кого адрес на {value} и нет активной учётной записи в панели: их пускало только это правило. Cloudflare остановит их до страницы входа, и учётная запись при первом входе больше не заведётся сама. Чтобы вернуть — добавьте домен обратно или заведите этих людей пользователями по адресам.",
+  "users.accessDomainRemoveConfirm": "Убрать домен",
 
   // Admin nodes
   // Host metrics on the admin node card, and the three words a USER is shown
@@ -1639,6 +1660,27 @@ const en = {
   "users.accessDomainsDisabledHint":
     "Configure Cloudflare Access on the Policies page to make this list take effect.",
   "users.accessDomainsDisabledLink": "Configure on the Policies page",
+  "users.accessDomainsBtn": "Access domains",
+  "users.accessDomainsDesc":
+    "The domains whose addresses the Cloudflare Access policy admits to the panel. The list is kept in the panel; the sync carries it into the policy.",
+  "users.accessDomainsEmpty":
+    "No domains yet. Through Cloudflare, only the addresses of active panel users get in right now, plus anyone admitted by a rule added in Cloudflare by hand.",
+  "users.accessDomainErrEmail":
+    "That is an address, not a domain. Add it as a user instead — the “User” button is next to this one.",
+  "users.accessDomainErrHostname":
+    "That is not a domain name. At least two labels are needed, e.g. company.tld.",
+  "users.accessDomainErrDuplicate": "This domain is already in the list.",
+  "users.accessDomainErrGeneric": "The panel will not accept this domain.",
+  "users.accessDomainRemoveTitle": "Remove {value}?",
+  "users.accessDomainRemoveWhat":
+    "Once you save, the panel deletes the “emails on {value}” rule from the Cloudflare Access policy. Saving asks the sync to run right away, so the rule goes on its next run.",
+  "users.accessDomainRemoveKeepsTitle": "Nobody is disabled, no keys are revoked.",
+  "users.accessDomainRemoveKeeps":
+    "Every active panel user has their own address rule, and the same request rewrites all of them. Anyone who is in the panel and active keeps their way in, even with an address on this domain.",
+  "users.accessDomainRemoveCostTitle": "Who loses their way in.",
+  "users.accessDomainRemoveCost":
+    "Anyone with an address on {value} and no active panel account: that rule was their only route. Cloudflare will stop them before the login page, and an account will no longer be created for them on first sign-in. To let them back in, add the domain again or add those people as users by address.",
+  "users.accessDomainRemoveConfirm": "Remove domain",
 
   // Admin nodes
     "checks.resetHint":
