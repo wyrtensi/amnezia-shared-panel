@@ -175,8 +175,12 @@ const ru = {
   // Key card
   "keyCard.rulesUpdatedTitle": "Правила маршрутизации обновились",
   "keyCard.updateKey": "Обновить ключ",
+  // {profile} is the key's own route profile. Nothing has broken — the key
+  // keeps working on the rules it was issued with — so the reissue is offered,
+  // not demanded. It promises no more than it can deliver: only the address
+  // lists reach the client, so "работать лучше" and not "откроются сайты".
   "keyCard.rulesUpdatedBody":
-    "Перевыпустите ключ, чтобы применить новые правила. Старый конфиг перестанет работать — переустановите ключ на устройстве.",
+    "Этот ключ работает по профилю «{profile}» — для него появились новые правила. При желании перевыпустите ключ, так он будет работать лучше.",
   "keyCard.created": "Создан: ",
   "keyCard.traffic": "Трафик: ",
   "keyCard.reissue": "Перевыпустить",
@@ -184,6 +188,9 @@ const ru = {
     "Выдать новый ключ с текущими правилами. Старый перестанет работать — переустановите конфиг на устройстве.",
   "keyCard.provisioning": "Создаётся…",
   "keyCard.showQr": "Показать QR-код",
+  // The button's own label, kept short so the action row still wraps onto a
+  // phone. The full wording stays on the tooltip and the aria-label.
+  "keyCard.qrShort": "QR",
   "keyCard.qrAndLink": "QR-код и ссылка",
   "keyCard.revoke": "Отозвать ключ",
   "keyCard.copy": "Скопировать ключ",
@@ -579,7 +586,9 @@ const ru = {
   "users.noUserKeys": "У пользователя ещё нет ключей",
   "users.online": "Онлайн",
   "users.offline": "Оффлайн",
-  "users.rulesOutdatedTip": "Правила обновились — нужен перевыпуск",
+  // Same state the employee's key card reports, so it stays as optional here
+  // as it is there: the key still works on the rules it was issued with.
+  "users.rulesOutdatedTip": "Правила обновились — ключ можно перевыпустить",
   "users.disable": "Отключить",
   "users.disableConfirm": "Отключить «{label}»?",
   "users.enable": "Включить",
@@ -1292,7 +1301,7 @@ const en = {
   "keyCard.rulesUpdatedTitle": "Routing rules have changed",
   "keyCard.updateKey": "Update key",
   "keyCard.rulesUpdatedBody":
-    "Reissue the key to apply the new rules. The old config will stop working — reinstall the key on the device.",
+    "This key uses the “{profile}” profile, and there are new rules for it. Reissue the key if you like — it will work better with them.",
   "keyCard.created": "Created: ",
   "keyCard.traffic": "Traffic: ",
   "keyCard.reissue": "Reissue",
@@ -1300,6 +1309,7 @@ const en = {
     "Issue a new key with the current rules. The old one will stop working — reinstall the config on the device.",
   "keyCard.provisioning": "Creating…",
   "keyCard.showQr": "Show QR code",
+  "keyCard.qrShort": "QR",
   "keyCard.qrAndLink": "QR code and link",
   "keyCard.revoke": "Revoke key",
   "keyCard.copy": "Copy key",
@@ -1686,7 +1696,7 @@ const en = {
   "users.noUserKeys": "This user has no keys yet",
   "users.online": "Online",
   "users.offline": "Offline",
-  "users.rulesOutdatedTip": "Rules updated — reissue required",
+  "users.rulesOutdatedTip": "Rules updated — the key can be reissued",
   "users.disable": "Disable",
   "users.disableConfirm": "Disable “{label}”?",
   "users.enable": "Enable",
