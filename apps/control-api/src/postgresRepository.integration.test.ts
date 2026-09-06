@@ -374,6 +374,36 @@ describe("PostgresControlRepository quota race", () => {
     };
   };
 
+  /**
+   * Polls `pg_stat_activity` until some backend is actually blocked on a lock
+   * while running a query matching `queryPattern`, instead of hoping a fixed
+   * sleep was long enough. Throws (failing the test) if no backend blocks
+   * within `timeoutMs` — proving the race precondition never held is more
+   * useful than a test that can silently pass without ever racing.
+   */
+  const waitForBlockedBackend = async (
+    queryPattern: string,
+    timeoutMs = 5_000,
+  ): Promise<void> => {
+    if (!database) throw new Error("No database");
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+      const blocked = await database.db.execute(sql`
+        select pid
+        from pg_stat_activity
+        where wait_event_type = 'Lock'
+          and query ilike ${`%${queryPattern}%`}
+      `);
+      if (blocked.length > 0) return;
+      if (Date.now() >= deadline) {
+        throw new Error(
+          `Timed out waiting for a backend to block on a query matching "${queryPattern}" - the race precondition never held`,
+        );
+      }
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+  };
+
   /** Flip the singleton's mode; the row exists because beforeAll inserted it. */
   const setGlobalKeyLimitMode = async (mode: KeyLimitMode): Promise<void> => {
     if (!database) throw new Error("No database");
@@ -841,9 +871,11 @@ describe("PostgresControlRepository quota race", () => {
       const conflicting = repository.createQuotaRequest(owner, {
         requestedLimit: 6,
       });
-      // Give the conflicting call's INSERT time to reach postgres and start
-      // blocking on the still-uncommitted seed row before it is released.
-      await new Promise((resolve) => setTimeout(resolve, 200));
+      // Prove the race precondition actually held: wait until the
+      // conflicting call's INSERT is really blocked in postgres on the
+      // still-uncommitted seed row (not just "probably enough time passed")
+      // before releasing it. Fails the test if it never blocks.
+      await waitForBlockedBackend('insert into "quota_requests"');
       releaseHold();
       await heldTransaction;
 
