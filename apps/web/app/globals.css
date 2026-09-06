@@ -20,6 +20,10 @@
 :root {
   --radius: 0.875rem;
 
+  /* Painted over --background by the base body rule. Light keeps a flat
+     canvas; dark defines a real backdrop below. */
+  --app-backdrop: none;
+
   --background: #f4e9d7;
   --light-foreground: #2b231c;
   --foreground: var(--light-foreground);
@@ -84,23 +88,40 @@
 
 .dark {
   /* Layered surfaces: canvas (darkest) < card < muted/secondary, with a
-     clearly visible warm border so cards never float edgelessly on the bg. */
-  --background: #16100c;
+     clearly visible warm border so cards never float edgelessly on the bg.
+
+     Every neutral here sits at hue ~21deg. That matters: the ramp used to put
+     the card at 30deg over a 24deg canvas, and a surface yellower than the
+     ground behind it reads olive even though nothing in it is green. Keep the
+     card at or below the canvas hue when touching these.
+
+     A canvas gradient rather than one flat fill: a honey spotlight at the top,
+     warm cocoa through the body. Its lightest stop stays below --card, so a
+     card never dissolves into the page at the foot of a long screen. */
+  --app-backdrop:
+    radial-gradient(
+      1100px 680px at 50% -12%,
+      rgba(242, 168, 86, 0.13),
+      transparent 56%
+    ),
+    linear-gradient(180deg, #241811 0%, #1a120e 34%, #20150f 100%);
+
+  --background: #1a120e;
   --foreground: #f4ebde;
 
-  --card: #241d16;
+  --card: #2d2018;
   --card-foreground: #f4ebde;
 
-  --popover: #2b231b;
+  --popover: #33241c;
   --popover-foreground: #f4ebde;
 
   --primary: #f2a856;
   --primary-foreground: #1a130d;
 
-  --secondary: #33291f;
+  --secondary: #382920;
   --secondary-foreground: #f4ebde;
 
-  --muted: #322a20;
+  --muted: #372820;
   --muted-foreground: #d0bfa6;
 
   --accent: #3a4633;
@@ -115,8 +136,8 @@
   --warning: #edab57;
   --warning-foreground: #1f1608;
 
-  --border: #48392b;
-  --input: #52402f;
+  --border: #4c3629;
+  --input: #573d2e;
   --ring: #f2a856;
 
   --chart-1: #f0a24e;
@@ -125,13 +146,13 @@
   --chart-4: #5aa9e6;
   --chart-5: #ee79a4;
 
-  --sidebar: #2a211b;
+  --sidebar: #302119;
   --sidebar-foreground: #f3e9db;
   --sidebar-primary: #f0a24e;
   --sidebar-primary-foreground: #1d1712;
   --sidebar-accent: #35422f;
   --sidebar-accent-foreground: #dbe8d0;
-  --sidebar-border: #3f3227;
+  --sidebar-border: #402f25;
   --sidebar-ring: #f0a24e;
 
   --header-gradient: linear-gradient(120deg, #f0a24e 0%, #3fbfa6 120%);
@@ -223,6 +244,8 @@
   }
   body {
     background-color: var(--background);
+    background-image: var(--app-backdrop);
+    background-attachment: fixed;
     color: var(--foreground);
     -webkit-font-smoothing: antialiased;
     text-rendering: optimizeLegibility;
