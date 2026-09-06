@@ -13,6 +13,14 @@
 #   7. allocate a tunnel port and install the supervised autossh unit
 #   8. register the node through the bundled admin CLI and reconcile it
 #
+# What it deliberately does NOT do: install the host-side updater
+# (infra/node/scripts/install-agent-updater.sh). That step needs the image
+# repository your panel publishes to, which this script has no way to know, so
+# it stays a separate one-time command per node. Until it is run the node is
+# healthy and registered but cannot update its own agent from the panel, which
+# is why a successful run ends by saying so -- a node silently left without an
+# update path is found out months later.
+#
 # Every deployment-specific value (panel address, SSH key, paths, tunnel range)
 # lives in scripts/add-node.env — copy scripts/add-node.env.example and fill it
 # in. This script hardcodes no site-specific value and prints no key material.
@@ -441,4 +449,16 @@ REMOTE
 fi
 
 say "Done."
+
+# The rollout is complete, but this node cannot update its own agent yet and
+# nothing else in the output would say so. Better here than the first time
+# someone presses Update and reads that the node cannot update itself.
+if [ "$DRY_RUN" != 1 ]; then
+  note "this node cannot update its own agent yet. The host-side updater is a"
+  note "separate one-time step because it needs the repository YOUR panel"
+  note "publishes to. On the node, from its node directory:"
+  note "  sudo NODE_AGENT_UPDATE_REPO=<your-repo>/node-agent \\"
+  note "       bash scripts/install-agent-updater.sh"
+  note "  docker compose --env-file .env -f compose.yaml up -d --no-deps node-agent"
+fi
 [ "$DRY_RUN" = 1 ] || cli nodes

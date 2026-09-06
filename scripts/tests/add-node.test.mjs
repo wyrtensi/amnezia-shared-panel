@@ -252,6 +252,18 @@ test("the swap step streams ensure-swap.sh instead of installing it", async () =
   assert.doesNotMatch(fn, /scp|tar/);
 });
 
+test("a finished rollout says the node cannot update itself yet", async () => {
+  // The rollout leaves the host-side updater uninstalled - it needs the image
+  // repository this script cannot know. A node whose only symptom is a button
+  // that says "cannot update itself" is discovered months later, so the run
+  // has to say it while someone is still looking at the output.
+  const tail = script.slice(script.indexOf('say "Done."'));
+  assert.match(tail, /cannot update its own agent yet/);
+  assert.match(tail, /install-agent-updater\.sh/);
+  // Only on a real run: a dry run installed nothing, so it owes no reminder.
+  assert.match(tail, /DRY_RUN" != 1/);
+});
+
 test("the header comment lists all eight steps", async () => {
   const header = script.slice(0, script.indexOf("set -euo pipefail"));
   for (const step of ["1.", "2.", "3.", "4.", "5.", "6.", "7.", "8."]) {
