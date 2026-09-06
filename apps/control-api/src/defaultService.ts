@@ -280,6 +280,8 @@ export const createDefaultControlApiService = ({
   },
   revokeOwnKey: (actor, keyId) => repository.enqueueOwnRevoke(actor, keyId),
   rotateOwnKey: (actor, keyId) => repository.enqueueOwnRotate(actor, keyId),
+  renameOwnKey: (actor, keyId, deviceLabel) =>
+    repository.renameOwnKey(actor, keyId, deviceLabel),
   updateMyCustomRoutes: (actor, routes) =>
     repository.updateOwnCustomRoutes(actor, routes),
   listRouteProfiles: () => repository.listRouteProfiles(),

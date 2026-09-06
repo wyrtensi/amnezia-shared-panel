@@ -142,6 +142,16 @@ export interface ControlApiService {
   ) => Promise<ConfigResult>;
   revokeOwnKey: (actor: Actor, keyId: string) => Promise<void>;
   rotateOwnKey: (actor: Actor, keyId: string) => Promise<void>;
+  /**
+   * Rename one of the caller's own keys, re-issuing it only when the rename
+   * actually changes the connection name the client shows. See
+   * `ControlRepository.renameOwnKey` for why that condition matters.
+   */
+  renameOwnKey: (
+    actor: Actor,
+    keyId: string,
+    deviceLabel: string,
+  ) => Promise<{ id: string; state: KeyState; reissued: boolean }>;
   updateMyCustomRoutes: (
     actor: Actor,
     routes: CustomRoutes,

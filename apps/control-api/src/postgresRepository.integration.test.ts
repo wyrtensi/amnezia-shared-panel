@@ -3679,6 +3679,249 @@ describe("PostgresControlRepository internal key name", () => {
   });
 });
 
+describe("PostgresControlRepository rename own key", () => {
+  const database = databaseUrl ? createDatabase(databaseUrl) : null;
+  const keyring = { 1: randomBytes(32) };
+  let nodeId: string;
+
+  beforeAll(async () => {
+    if (!database) return;
+    await database.db.delete(portalPolicy);
+    await database.db.insert(portalPolicy).values({});
+    const credentials = encryptSecret("api-key", keyring, 1);
+    const label = encryptSecret("label-secret", keyring, 1);
+    const [node] = await database.db
+      .insert(nodes)
+      .values({
+        name: "rename-node",
+        publicName: "Rename Node",
+        apiBaseUrl: "http://127.0.0.1:4002",
+        credentialsCiphertext: credentials.ciphertext,
+        credentialsNonce: credentials.nonce,
+        credentialsAuthTag: credentials.authTag,
+        credentialsKeyVersion: credentials.keyVersion,
+        labelSecretCiphertext: label.ciphertext,
+        labelSecretNonce: label.nonce,
+        labelSecretAuthTag: label.authTag,
+        labelSecretKeyVersion: label.keyVersion,
+      })
+      .returning();
+    if (!node) throw new Error("Failed to seed node");
+    nodeId = node.id;
+  });
+
+  afterAll(async () => {
+    if (database) await database.client.end();
+  });
+
+  const subject = (): PostgresControlRepository => {
+    if (!database) throw new Error("No database");
+    return new PostgresControlRepository({ db: database.db, keyring });
+  };
+
+  const seedOwner = async (): Promise<Actor> => {
+    if (!database) throw new Error("No database");
+    const suffix = randomBytes(6).toString("hex");
+    const [user] = await database.db
+      .insert(users)
+      .values({ email: `rename-${suffix}@example.com` })
+      .returning();
+    if (!user) throw new Error("Failed to seed owner");
+    return {
+      id: user.id,
+      email: user.email,
+      displayName: null,
+      role: "user",
+      status: "active",
+    };
+  };
+
+  const seedKey = async (
+    ownerId: string,
+    overrides: {
+      deviceLabel?: string | null;
+      routeProfile?: "full_tunnel" | "ru_blacklist";
+      nameShowLabel?: boolean;
+      state?: "active" | "disabled" | "failed" | "provisioning";
+    } = {},
+  ): Promise<string> => {
+    if (!database) throw new Error("No database");
+    const suffix = randomBytes(6).toString("hex");
+    const config = encryptSecret("vpn://stored-config", keyring, 1);
+    const [key] = await database.db
+      .insert(vpnKeys)
+      .values({
+        ownerId,
+        nodeId,
+        publicKey: `pk-${suffix}`,
+        nodeLabel: `ap_rename_${suffix}`,
+        protocol: "awg2",
+        state: overrides.state ?? "active",
+        routeProfile: overrides.routeProfile ?? "ru_blacklist",
+        deviceLabel: overrides.deviceLabel ?? "Laptop",
+        nameShowLabel: overrides.nameShowLabel ?? true,
+        configCiphertext: config.ciphertext,
+        configNonce: config.nonce,
+        configAuthTag: config.authTag,
+        configKeyVersion: config.keyVersion,
+      })
+      .returning({ id: vpnKeys.id });
+    if (!key) throw new Error("Failed to seed key");
+    return key.id;
+  };
+
+  const storedKey = async (keyId: string) => {
+    if (!database) throw new Error("No database");
+    const [row] = await database.db
+      .select({ deviceLabel: vpnKeys.deviceLabel, state: vpnKeys.state })
+      .from(vpnKeys)
+      .where(eq(vpnKeys.id, keyId));
+    return row;
+  };
+
+  const rotateJobFor = async (keyId: string) => {
+    if (!database) throw new Error("No database");
+    return database.db
+      .select({ id: jobOutbox.id })
+      .from(jobOutbox)
+      .where(
+        and(
+          eq(jobOutbox.type, "vpn-key.rotate"),
+          sql`${jobOutbox.payload} ->> 'keyId' = ${keyId}`,
+        ),
+      );
+  };
+
+  runDatabaseTest(
+    "renames the label and queues a rotate under the new name",
+    async () => {
+      if (!database) return;
+      const owner = await seedOwner();
+      const keyId = await seedKey(owner.id, {
+        deviceLabel: "Laptop",
+        nameShowLabel: true,
+      });
+
+      const result = await subject().renameOwnKey(owner, keyId, "New Laptop");
+
+      expect(result).toMatchObject({ id: keyId, state: "provisioning", reissued: true });
+      expect(await storedKey(keyId)).toMatchObject({
+        deviceLabel: "New Laptop",
+        state: "provisioning",
+      });
+      expect(await rotateJobFor(keyId)).toHaveLength(1);
+      const [event] = await database.db
+        .select({ action: auditEvents.action, metadata: auditEvents.metadata })
+        .from(auditEvents)
+        .where(
+          and(
+            eq(auditEvents.action, "vpn_key.renamed"),
+            eq(auditEvents.targetId, keyId),
+          ),
+        );
+      expect(event?.metadata).toMatchObject({
+        deviceLabel: "New Laptop",
+        reissued: true,
+      });
+    },
+  );
+
+  runDatabaseTest(
+    "reissues a full_tunnel key too, unlike the plain rotate button",
+    async () => {
+      if (!database) return;
+      const owner = await seedOwner();
+      // `enqueueOwnRotate` refuses `full_tunnel` with ROTATION_NOT_APPLICABLE
+      // because there are no rules for it to refresh. Renaming rotates for a
+      // different reason -- forcing a config with the old name out of
+      // circulation -- which applies to every profile, so this must succeed
+      // where the plain "Reissue" button would not.
+      const keyId = await seedKey(owner.id, {
+        routeProfile: "full_tunnel",
+        deviceLabel: "Laptop",
+        nameShowLabel: true,
+      });
+
+      const result = await subject().renameOwnKey(owner, keyId, "New Laptop");
+
+      expect(result.reissued).toBe(true);
+      expect(await storedKey(keyId)).toMatchObject({ state: "provisioning" });
+      expect(await rotateJobFor(keyId)).toHaveLength(1);
+    },
+  );
+
+  runDatabaseTest(
+    "updates the label without a rotate when it is not part of the displayed name",
+    async () => {
+      if (!database) return;
+      const owner = await seedOwner();
+      // `nameShowLabel: false` -- the connection name is composed from the
+      // node's name alone. A rename here changes nothing the client shows, so
+      // forcing the working config to break would have no honest payoff.
+      const keyId = await seedKey(owner.id, {
+        deviceLabel: "Laptop",
+        nameShowLabel: false,
+      });
+
+      const result = await subject().renameOwnKey(owner, keyId, "New Laptop");
+
+      expect(result).toMatchObject({ state: "active", reissued: false });
+      expect(await storedKey(keyId)).toMatchObject({
+        deviceLabel: "New Laptop",
+        state: "active",
+      });
+      expect(await rotateJobFor(keyId)).toHaveLength(0);
+      const [event] = await database.db
+        .select({ metadata: auditEvents.metadata })
+        .from(auditEvents)
+        .where(
+          and(
+            eq(auditEvents.action, "vpn_key.renamed"),
+            eq(auditEvents.targetId, keyId),
+          ),
+        );
+      expect(event?.metadata).toMatchObject({ reissued: false });
+    },
+  );
+
+  runDatabaseTest(
+    "updates nothing observable and skips the rotate when the new label composes to the same name",
+    async () => {
+      if (!database) return;
+      const owner = await seedOwner();
+      const keyId = await seedKey(owner.id, {
+        deviceLabel: "Laptop",
+        nameShowLabel: true,
+      });
+
+      const result = await subject().renameOwnKey(owner, keyId, "Laptop");
+
+      expect(result).toMatchObject({ state: "active", reissued: false });
+      expect(await rotateJobFor(keyId)).toHaveLength(0);
+    },
+  );
+
+  runDatabaseTest(
+    "refuses to rename a key owned by someone else, admin included",
+    async () => {
+      if (!database) return;
+      const owner = await seedOwner();
+      const keyId = await seedKey(owner.id, { deviceLabel: "Laptop" });
+      const stranger = await seedOwner();
+      const strangerAdmin: Actor = { ...stranger, role: "admin" };
+
+      await expect(
+        subject().renameOwnKey(stranger, keyId, "Hijacked"),
+      ).rejects.toMatchObject({ statusCode: 404, code: "KEY_NOT_FOUND" });
+      await expect(
+        subject().renameOwnKey(strangerAdmin, keyId, "Hijacked"),
+      ).rejects.toMatchObject({ statusCode: 404, code: "KEY_NOT_FOUND" });
+
+      expect(await storedKey(keyId)).toMatchObject({ deviceLabel: "Laptop" });
+    },
+  );
+});
+
 describe("PostgresControlRepository Access sync arming", () => {
   const database = databaseUrl ? createDatabase(databaseUrl) : null;
   const keyring = { 1: randomBytes(32) };

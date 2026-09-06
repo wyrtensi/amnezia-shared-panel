@@ -357,6 +357,38 @@ export function EmployeeDashboard({
   };
 
   /**
+   * Rename one of MY OWN keys. No `window.confirm` here -- unlike rotate and
+   * revoke, `KeyRenameDialog` is itself the confirmation: it already shows
+   * (or, honestly, withholds) the "your current config stops working"
+   * warning before the button that calls this is even enabled, so a second
+   * generic confirm would only repeat a decision already made in the dialog.
+   */
+  const rename = async (
+    keyId: string,
+    deviceLabel: string,
+  ): Promise<boolean> => {
+    setBusy(true);
+    try {
+      const result = await apiRequest<{ reissued: boolean }>(
+        `/api/keys/${keyId}/rename`,
+        { method: "POST", body: JSON.stringify({ deviceLabel }) },
+      );
+      toast.success(
+        result.reissued ? t("emp.renameReissueToast") : t("emp.renameToast"),
+      );
+      await load();
+      return true;
+    } catch (cause) {
+      toast.error(
+        cause instanceof Error ? cause.message : t("emp.renameFailed"),
+      );
+      return false;
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  /**
    * Write the operator-only note on one of MY OWN keys, from the ordinary
    * panel.
    *
@@ -640,6 +672,7 @@ export function EmployeeDashboard({
                   }
                   onRotate={() => void rotate(key.id)}
                   onRevoke={() => void revoke(key.id)}
+                  onRename={(deviceLabel) => rename(key.id, deviceLabel)}
                   onSetInternalName={(internalName) =>
                     setInternalName(key.id, internalName)
                   }

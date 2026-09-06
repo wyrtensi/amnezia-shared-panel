@@ -32,6 +32,13 @@ const createService = (): ControlApiService => ({
   })),
   revokeOwnKey: vi.fn(() => Promise.resolve()),
   rotateOwnKey: vi.fn(() => Promise.resolve()),
+  renameOwnKey: vi.fn(() =>
+    Promise.resolve({
+      id: "key-1",
+      state: "active" as const,
+      reissued: false,
+    }),
+  ),
   updateMyCustomRoutes: vi.fn(() =>
     Promise.resolve({
       ru_blacklist: { cidrs: [], domains: [] },
@@ -262,6 +269,84 @@ describe("control API authorization", () => {
       "vpn",
       false,
     );
+    await app.close();
+  });
+
+  it("renames a key and reports 202 when a rotate was queued", async () => {
+    const service = createService();
+    vi.mocked(service.renameOwnKey).mockResolvedValue({
+      id: "0b48cc4c-404b-47a6-af28-4cf15f305e30",
+      state: "provisioning",
+      reissued: true,
+    });
+    const app = await buildApp({
+      service,
+      environment: "development",
+      allowDevIdentity: true,
+    });
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/keys/0b48cc4c-404b-47a6-af28-4cf15f305e30/rename",
+      headers: { "x-dev-user-email": user.email },
+      payload: { deviceLabel: "  New Laptop  " },
+    });
+
+    expect(response.statusCode).toBe(202);
+    expect(response.json()).toMatchObject({ state: "provisioning", reissued: true });
+    // The schema trims before the service ever sees it -- a label of nothing
+    // but the surrounding whitespace the user happened to type must not
+    // become the stored device label.
+    expect(service.renameOwnKey).toHaveBeenCalledWith(
+      user,
+      "0b48cc4c-404b-47a6-af28-4cf15f305e30",
+      "New Laptop",
+    );
+    await app.close();
+  });
+
+  it("reports 200 for a rename that did not need to reissue", async () => {
+    const service = createService();
+    vi.mocked(service.renameOwnKey).mockResolvedValue({
+      id: "0b48cc4c-404b-47a6-af28-4cf15f305e30",
+      state: "active",
+      reissued: false,
+    });
+    const app = await buildApp({
+      service,
+      environment: "development",
+      allowDevIdentity: true,
+    });
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/keys/0b48cc4c-404b-47a6-af28-4cf15f305e30/rename",
+      headers: { "x-dev-user-email": user.email },
+      payload: { deviceLabel: "New Laptop" },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ state: "active", reissued: false });
+    await app.close();
+  });
+
+  it("rejects a rename to an empty label instead of calling the service", async () => {
+    const service = createService();
+    const app = await buildApp({
+      service,
+      environment: "development",
+      allowDevIdentity: true,
+    });
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/keys/0b48cc4c-404b-47a6-af28-4cf15f305e30/rename",
+      headers: { "x-dev-user-email": user.email },
+      payload: { deviceLabel: "   " },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(service.renameOwnKey).not.toHaveBeenCalled();
     await app.close();
   });
 

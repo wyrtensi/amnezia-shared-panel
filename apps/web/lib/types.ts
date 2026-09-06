@@ -1,4 +1,4 @@
-import type { InstallGuideVideos } from "@amnezia/contracts";
+import type { InstallGuideVideos, KeyNameDisplay } from "@amnezia/contracts";
 
 export type ProtocolKind = "awg2" | "awg3";
 
@@ -188,6 +188,11 @@ export type KeyView = {
    * in it — the note is not sent and then hidden, it is not sent.
    */
   internalName?: string | null;
+  // Which parts the client-visible connection name is composed of. Always
+  // present -- the server attaches it to every key, never just some -- so
+  // `composeKeyDisplayName` can reproduce the same name a rename would
+  // produce, before the rename is submitted.
+  nameDisplay: KeyNameDisplay;
   routeProfile: string;
   rulesOutdated?: boolean;
   createdAt: string;

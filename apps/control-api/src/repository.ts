@@ -91,6 +91,20 @@ export interface ControlRepository {
   diffRuleVersions: (baseId: string, nextId: string) => Promise<unknown>;
   enqueueOwnRevoke: (actor: Actor, keyId: string) => Promise<void>;
   enqueueOwnRotate: (actor: Actor, keyId: string) => Promise<void>;
+  /**
+   * Set the caller's own key's device label and, only when that actually
+   * changes the connection name the client shows (`composeKeyDisplayName`
+   * with this key's own `nameDisplay` flags), queue the same rotate that
+   * `enqueueOwnRotate` does. A label that is not part of the displayed name,
+   * or a rename to text that composes to the same string, is a plain update:
+   * nothing about the exported config would differ, so forcing the old one
+   * to stop working would have no visible payoff.
+   */
+  renameOwnKey: (
+    actor: Actor,
+    keyId: string,
+    deviceLabel: string,
+  ) => Promise<{ id: string; state: KeyState; reissued: boolean }>;
   updateOwnCustomRoutes: (
     actor: Actor,
     routes: CustomRoutes,

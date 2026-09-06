@@ -164,6 +164,10 @@ const ru = {
   "emp.revokeConfirm": "Отозвать этот ключ? Устройство сразу потеряет доступ.",
   "emp.revoked": "Ключ отозван",
   "emp.revokeFailed": "Не удалось отозвать ключ",
+  "emp.renameToast": "Ключ переименован",
+  "emp.renameReissueToast":
+    "Ключ переименован и перевыпускается. Когда статус станет «Активен», скачайте новый конфиг с новым именем.",
+  "emp.renameFailed": "Не удалось переименовать ключ",
   "quota.cellsAria": "{used} из {limit} ключей",
   // In global mode the per-server row has no limit of its own to announce.
   "quota.cellsIssuedAria": "{used} ключей на этом сервере",
@@ -185,6 +189,18 @@ const ru = {
   "keyCard.reissue": "Перевыпустить",
   "keyCard.reissueTip":
     "Выдать новый ключ с текущими правилами. Старый перестанет работать — переустановите конфиг на устройстве.",
+  "keyCard.rename": "Переименовать",
+  "keyCard.renameTitle": "Переименовать ключ",
+  "keyCard.renameDesc":
+    "Изменить название устройства, под которым этот ключ выпущен.",
+  "keyCard.renameLabel": "Название устройства",
+  "keyCard.renamePlaceholder": "Например, рабочий ноутбук",
+  "keyCard.renameReissueTitle": "Ключ будет перевыпущен",
+  "keyCard.renameReissueBody":
+    "Новое название входит в подключение, которое видит клиент, поэтому текущий конфиг перестанет работать. Когда статус снова станет «Активен», скачайте новый конфиг.",
+  "keyCard.renameQuietTitle": "Перевыпуск не потребуется",
+  "keyCard.renameQuietBody":
+    "У этого ключа название устройства не входит в имя подключения, которое видит клиент, — оно нигде не отображается. Текущий конфиг продолжит работать как раньше.",
   "keyCard.provisioning": "Создаётся…",
   "keyCard.showQr": "Показать QR-код",
   // The button's own label, kept short so the action row still wraps onto a
@@ -1384,6 +1400,10 @@ const en = {
     "Revoke this key? The device will immediately lose access.",
   "emp.revoked": "Key revoked",
   "emp.revokeFailed": "Failed to revoke the key",
+  "emp.renameToast": "Key renamed",
+  "emp.renameReissueToast":
+    "Key renamed and being reissued. Once the status turns “Active”, download the new config with the new name.",
+  "emp.renameFailed": "Failed to rename the key",
   "quota.cellsAria": "{used} of {limit} keys",
   "quota.cellsIssuedAria": "{used} keys on this server",
   "quota.noKeysOnServer": "no keys",
@@ -1400,6 +1420,18 @@ const en = {
   "keyCard.reissue": "Reissue",
   "keyCard.reissueTip":
     "Issue a new key with the current rules. The old one will stop working — reinstall the config on the device.",
+  "keyCard.rename": "Rename",
+  "keyCard.renameTitle": "Rename key",
+  "keyCard.renameDesc":
+    "Change the device name this key was issued under.",
+  "keyCard.renameLabel": "Device name",
+  "keyCard.renamePlaceholder": "e.g. Work laptop",
+  "keyCard.renameReissueTitle": "The key will be reissued",
+  "keyCard.renameReissueBody":
+    "The new name is part of the connection the client shows, so the current config will stop working. Once the status turns “Active” again, download the new config.",
+  "keyCard.renameQuietTitle": "No reissue needed",
+  "keyCard.renameQuietBody":
+    "This key's device name is not part of the connection name the client shows — it is not displayed anywhere. The current config keeps working as before.",
   "keyCard.provisioning": "Creating…",
   "keyCard.showQr": "Show QR code",
   "keyCard.qrShort": "QR",

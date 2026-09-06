@@ -121,6 +121,31 @@ describe("internal name on an administrator's own key", () => {
   });
 });
 
+describe("rename on the owner's own key", () => {
+  // Renaming is owner-only in the API (`renameOwnKey` checks `ownerId`, no
+  // admin bypass), so it lives under `employee/`, next to the card, rather
+  // than beside the shared internal-name editor that an admin also reaches
+  // from the Users page.
+  it("uses the employee-only dialog, not the shared admin editor", () => {
+    expect(source).toContain(
+      'from "@/components/employee/key-rename-dialog"',
+    );
+    expect(source).toMatch(/<KeyRenameDialog\s/);
+  });
+
+  it("is not hidden while the peer is mid-rotate, unlike Reissue", () => {
+    // Reissue only makes sense once a key is `active`; a rename is always
+    // offered except while the peer is mid-provisioning, since it may or may
+    // not need to queue a rotate of its own.
+    expect(source).toMatch(/\{!provisioning \?[\s\S]{0,400}?keyCard\.rename/);
+  });
+
+  it("passes the same nameDisplay and node name the exported config uses", () => {
+    expect(source).toMatch(/nameDisplay=\{keyView\.nameDisplay\}/);
+    expect(source).toMatch(/nodeName=\{node\?\.name \?\? .—.\}/);
+  });
+});
+
 describe("rules-updated callout", () => {
   // `rulesOutdated` is computed per route profile, so the card knows which
   // profile moved. Dropping the variable would put the copy back to a generic

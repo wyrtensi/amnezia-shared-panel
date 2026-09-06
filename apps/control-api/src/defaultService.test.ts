@@ -72,6 +72,9 @@ const createRepository = (): ControlRepository => ({
   diffRuleVersions: vi.fn(() => Promise.resolve({ diff: {} })),
   enqueueOwnRevoke: vi.fn(() => Promise.resolve()),
   enqueueOwnRotate: vi.fn(() => Promise.resolve()),
+  renameOwnKey: vi.fn(() =>
+    Promise.resolve({ id: "key-1", state: "active" as const, reissued: false }),
+  ),
   updateOwnCustomRoutes: vi.fn(() =>
     Promise.resolve({
       ru_blacklist: { cidrs: [], domains: [] },

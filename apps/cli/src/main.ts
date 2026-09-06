@@ -2055,6 +2055,38 @@ async function cmdKeyConfig(args: string[]): Promise<void> {
   console.log(body.toString("utf8"));
 }
 
+/**
+ * Rename YOUR OWN key -- the identity this CLI authenticates as, whatever
+ * `PANEL_ADMIN_EMAIL` (or the dev header) resolves to. There is no admin path
+ * here at all: `/api/keys/:id/rename` checks `ownerId` against the caller with
+ * no bypass, the same as `/api/keys/:id/rotate` and the `DELETE` a user's own
+ * key hits, so this reaches only a key this identity itself holds.
+ *
+ * A re-issue is queued only when the new label actually changes the
+ * connection name the client shows (server + label + number, per this key's
+ * own `nameDisplay` flags) -- a label that plays no part in that name, or new
+ * text that composes to the same name, is a plain update and the key's state
+ * does not move.
+ */
+async function cmdKeyRename(args: string[]): Promise<void> {
+  const usage = 'Usage: key-rename <id> --label="<text>"';
+  const id = positionals(args)[0];
+  const label = flagOf(args, "label");
+  if (!id || !label) throw new Error(usage);
+  const result = await api<{ state: string; reissued: boolean }>(
+    `/api/keys/${id}/rename`,
+    {
+      method: "POST",
+      body: JSON.stringify({ deviceLabel: label }),
+    },
+  );
+  console.log(
+    result.reissued
+      ? `key ${id}: renamed and re-issuing (state: ${result.state}) -- the current config will stop working; download a new one once it is active again`
+      : `key ${id}: renamed (state: ${result.state}) -- this label is not part of the connection name the client shows, so no re-issue was needed`,
+  );
+}
+
 /** Parse a `--flag=true|false` value, rejecting anything else. */
 function parseBoolFlag(name: string, value: string): boolean {
   if (value === "true") return true;
@@ -2508,6 +2540,14 @@ Write:
                                           name survives an import (a .conf always lands
                                           as "Server N"); --confirm is required to read
                                           another user's key
+  key-rename <id> --label="<text>"        Rename YOUR OWN key's device label -- there is
+                                          no admin path for someone else's, ever. Queues a
+                                          re-issue (the key goes back to "provisioning")
+                                          only when the new label actually changes the
+                                          connection name the client shows; a label that
+                                          is not part of that name, or text that composes
+                                          to the same name, is a plain update with no
+                                          re-issue
   rules-activate <version-id>             Publish one fetched rule version, including
                                           rolling back to a superseded one. Also PINS
                                           the profile to it: the worker keeps fetching
@@ -3030,6 +3070,8 @@ export async function dispatch(argv: string[]): Promise<void> {
       return cmdKeyInternalName(args);
     case "key-config":
       return cmdKeyConfig(args);
+    case "key-rename":
+      return cmdKeyRename(args);
     case "cf-token":
       return cmdCfToken(args);
     case "cf-config":

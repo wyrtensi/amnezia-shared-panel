@@ -9,6 +9,7 @@ import {
   Globe,
   Loader2,
   NotebookPen,
+  Pencil,
   QrCode,
   RefreshCw,
   ShieldHalf,
@@ -30,6 +31,7 @@ import {
   InternalNameChip,
   KeyInternalNameDialog,
 } from "@/components/key-internal-name-dialog";
+import { KeyRenameDialog } from "@/components/employee/key-rename-dialog";
 import { configUrl } from "@/lib/api";
 import { formatDate } from "@/lib/format";
 import { TrafficSplit } from "@/components/inline-traffic";
@@ -63,6 +65,7 @@ export function KeyCard({
   onShowGuide,
   onRotate,
   onRevoke,
+  onRename,
   onSetInternalName,
 }: {
   keyView: KeyView;
@@ -73,9 +76,11 @@ export function KeyCard({
   onShowGuide: () => void;
   onRotate: () => void;
   onRevoke: () => void;
+  onRename: (deviceLabel: string) => Promise<boolean>;
   onSetInternalName?: (internalName: string) => Promise<boolean>;
 }) {
   const { t, lang } = useT();
+  const [renaming, setRenaming] = React.useState(false);
   /**
    * The operator-only note is an administrator's own business, shown on an
    * administrator's own key — that is the point of having admin rights.
@@ -339,6 +344,29 @@ export function KeyCard({
               </>
             ) : null}
             <div className="ml-auto flex items-center gap-1.5">
+              {/* Renaming while the peer is mid-provisioning would race the
+                  worker's own write to this row; every other state the card
+                  can show (a key in `revoking`/`revoked` is hidden from the
+                  owner entirely) is fine, since a rename that turns out not
+                  to need a re-issue never touches `state` at all. */}
+              {!provisioning ? (
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon"
+                      disabled={busy}
+                      onClick={() => setRenaming(true)}
+                      aria-label={t("keyCard.rename")}
+                      className="text-muted-foreground hover:text-foreground"
+                    >
+                      <Pencil className="h-4 w-4" />
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent>{t("keyCard.rename")}</TooltipContent>
+                </Tooltip>
+              ) : null}
               {/* Reissue lives here, apart from Copy and as a muted icon, so it is
                   not mistaken for the primary "copy key" action. */}
               {active &&
@@ -394,6 +422,16 @@ export function KeyCard({
           onSave={onSetInternalName}
         />
       ) : null}
+
+      <KeyRenameDialog
+        open={renaming}
+        deviceLabel={keyView.deviceLabel}
+        nodeName={node?.name ?? "—"}
+        keyNumber={keyView.keyNumber}
+        nameDisplay={keyView.nameDisplay}
+        onClose={() => setRenaming(false)}
+        onSave={onRename}
+      />
     </>
   );
 }

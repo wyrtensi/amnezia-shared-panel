@@ -1189,6 +1189,18 @@ export type SetKeyInternalNameRequest = z.infer<
   typeof setKeyInternalNameRequestSchema
 >;
 
+/**
+ * The owner renaming their own key's device label. Required and non-empty,
+ * unlike `createKeyRequestSchema.deviceLabel`: creation may leave a key
+ * unlabelled, but a rename with nothing to rename to is a no-op the client
+ * should not even send. Same 80-character cap as the column and the create
+ * request.
+ */
+export const renameKeyRequestSchema = z.object({
+  deviceLabel: z.string().trim().min(1).max(80),
+});
+export type RenameKeyRequest = z.infer<typeof renameKeyRequestSchema>;
+
 export type ProtocolKind = z.infer<typeof protocolKindSchema>;
 export type KeyState = z.infer<typeof keyStateSchema>;
 export type RouteProfile = z.infer<typeof routeProfileSchema>;

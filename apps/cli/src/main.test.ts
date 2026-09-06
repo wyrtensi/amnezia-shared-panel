@@ -962,3 +962,59 @@ describe("user-delete", () => {
     );
   });
 });
+
+describe("key-rename", () => {
+  const K = "0b48cc4c-404b-47a6-af28-4cf15f305e30";
+
+  beforeEach(() => {
+    process.env.PANEL_ADMIN_EMAIL = "cli-test@example.com";
+  });
+  afterEach(() => {
+    delete process.env.PANEL_ADMIN_EMAIL;
+    vi.unstubAllGlobals();
+  });
+
+  it("requires both the id and --label", async () => {
+    await expect(run(["key-rename"])).rejects.toThrow(/Usage: key-rename/);
+    await expect(run(["key-rename", K])).rejects.toThrow(/Usage: key-rename/);
+  });
+
+  it("posts the trimmed label to the OWNER route, not an admin one", async () => {
+    // No `/api/admin/...` anywhere here: renaming has no admin path at all,
+    // so this must hit the same self-scoped route the panel's own "Rename"
+    // button does, reachable only for a key this identity owns.
+    const calls = stubFetch([
+      { body: { id: K, state: "provisioning", reissued: true } },
+    ]);
+    const out = await run(["key-rename", K, "--label=New Laptop"]);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.url).toMatch(new RegExp(`/api/keys/${K}/rename$`));
+    expect(calls[0]?.url).not.toMatch(/\/admin\//);
+    expect(calls[0]?.init?.method).toBe("POST");
+    expect(JSON.parse(calls[0]?.init?.body as string)).toEqual({
+      deviceLabel: "New Laptop",
+    });
+    expect(out).toMatch(/renamed and re-issuing/);
+    expect(out).toMatch(/provisioning/);
+  });
+
+  it("says plainly when no re-issue was needed", async () => {
+    stubFetch([{ body: { id: K, state: "active", reissued: false } }]);
+    const out = await run(["key-rename", K, "--label=New Laptop"]);
+    expect(out).toMatch(/renamed \(state: active\)/);
+    expect(out).not.toMatch(/re-issuing/);
+    expect(out).toMatch(/no re-issue was needed/);
+  });
+
+  it("surfaces a rename of someone else's key as the server's own refusal", async () => {
+    stubFetch([
+      {
+        status: 404,
+        body: { error: "KEY_NOT_FOUND", message: "Key not found" },
+      },
+    ]);
+    await expect(
+      run(["key-rename", K, "--label=Hijacked"]),
+    ).rejects.toThrow(/Key not found/);
+  });
+});

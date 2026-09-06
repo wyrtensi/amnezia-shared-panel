@@ -11,6 +11,7 @@ import {
   updateServiceCheckRequestSchema,
   createUserRequestSchema,
   quotaRequestSchema,
+  renameKeyRequestSchema,
   updateCustomRoutesRequestSchema,
   updateNodeRequestSchema,
 } from "@amnezia/contracts";
@@ -249,6 +250,19 @@ export const buildApp = async ({
     const { id } = idParamsSchema.parse(request.params);
     await service.rotateOwnKey(actorFor(request), id);
     return reply.code(202).send({ id, state: "provisioning" });
+  });
+  app.post("/api/keys/:id/rename", async (request, reply) => {
+    const { id } = idParamsSchema.parse(request.params);
+    const body = renameKeyRequestSchema.parse(request.body);
+    const result = await service.renameOwnKey(
+      actorFor(request),
+      id,
+      body.deviceLabel,
+    );
+    // 202 only when a rotate was actually queued -- a plain label update (the
+    // label was not part of the displayed name) is a completed 200, not a job
+    // in flight.
+    return reply.code(result.reissued ? 202 : 200).send(result);
   });
   app.put("/api/me/custom-routes", async (request) => {
     const routes = await service.updateMyCustomRoutes(

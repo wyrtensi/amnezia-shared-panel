@@ -43,6 +43,7 @@ import {
   portalPolicyOverrideSchema,
   portalPolicySchema,
   quotaRequestSchema,
+  renameKeyRequestSchema,
   replaceLegacyDeviceType,
   RETIRED_STORED_DEVICE_TYPES,
   ROUTE_DOMAINS_UNSUPPORTED,
@@ -105,6 +106,34 @@ describe("createKeyRequestSchema", () => {
         deviceType: "router",
       }).success,
     ).toBe(false);
+  });
+});
+
+describe("renameKeyRequestSchema", () => {
+  it("trims the new label", () => {
+    expect(
+      renameKeyRequestSchema.parse({ deviceLabel: "  New Laptop  " }),
+    ).toEqual({ deviceLabel: "New Laptop" });
+  });
+
+  it("rejects a label that is empty, or empty once trimmed", () => {
+    expect(renameKeyRequestSchema.safeParse({ deviceLabel: "" }).success).toBe(
+      false,
+    );
+    expect(
+      renameKeyRequestSchema.safeParse({ deviceLabel: "   " }).success,
+    ).toBe(false);
+  });
+
+  it("rejects a label longer than the column", () => {
+    expect(
+      renameKeyRequestSchema.safeParse({ deviceLabel: "x".repeat(81) })
+        .success,
+    ).toBe(false);
+    expect(
+      renameKeyRequestSchema.safeParse({ deviceLabel: "x".repeat(80) })
+        .success,
+    ).toBe(true);
   });
 });
 
