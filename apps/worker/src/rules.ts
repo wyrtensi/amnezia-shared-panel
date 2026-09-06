@@ -274,6 +274,13 @@ export const DEFAULT_RULE_FEEDS: RuleFeedSources[] = [
 const RULE_FEED_FORMATS: RuleFeedFormat[] = ["json", "cidr-lines", "domain-lines"];
 
 /**
+ * A profile this worker no longer supports but operators may still have in
+ * their environment. Kept as a named constant so the reason it is tolerated
+ * lives next to the code that tolerates it.
+ */
+const REMOVED_RULE_PROFILE = "ru_whitelist";
+
+/**
  * Resolve the feeds to fetch from the environment, in priority order:
  *
  *   1. `RULE_FEEDS` — a JSON array of `{ profile, sources: [{ url, format }] }`.
@@ -285,6 +292,12 @@ const RULE_FEED_FORMATS: RuleFeedFormat[] = ["json", "cidr-lines", "domain-lines
  * opts out of the defaults instead of being treated as an absent value. A
  * malformed `RULE_FEEDS` throws rather than falling back — a typo in the
  * operator's own configuration must be visible, not silently replaced.
+ *
+ * The one exception is `REMOVED_RULE_PROFILE`, which is skipped with a warning
+ * rather than refused: it was valid configuration before the profile was
+ * removed, and a host still carrying it must survive the upgrade. Skipping it
+ * still counts as configuration, so a `RULE_FEEDS` that named only that
+ * profile ends up with no feeds rather than quietly gaining the defaults.
  */
 export const resolveRuleFeeds = (
   env: Record<string, string | undefined>,
@@ -305,6 +318,18 @@ export const resolveRuleFeeds = (
     if (!Array.isArray(parsed)) throw new Error("RULE_FEEDS must be an array");
     for (const entry of parsed as Array<Record<string, unknown>>) {
       const profile = entry.profile;
+      // `ru_whitelist` was a real profile until it was removed. Hosts upgrading
+      // across that removal still carry it in their own RULE_FEEDS, and
+      // throwing here would crash-loop the worker on a configuration that was
+      // valid when it was written - taking rule updates, reconcile and every
+      // queued job down with it. Skip it loudly instead; a genuinely unknown
+      // profile is still a typo worth refusing to start on.
+      if (profile === REMOVED_RULE_PROFILE) {
+        console.warn(
+          `RULE_FEEDS still lists the removed "${REMOVED_RULE_PROFILE}" profile; ignoring that entry. Drop it from RULE_FEEDS to silence this.`,
+        );
+        continue;
+      }
       if (profile !== "ru_blacklist") {
         throw new Error(`RULE_FEEDS has an invalid profile: ${String(profile)}`);
       }

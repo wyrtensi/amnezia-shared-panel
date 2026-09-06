@@ -345,6 +345,69 @@ describe("resolveRuleFeeds", () => {
     expect(resolveRuleFeeds({ RULE_FEEDS: "[]" }, approveAll)).toEqual([]);
   });
 
+  // The exact shape of a production .env written before ru_whitelist was
+  // removed. Throwing on it crash-looped a live worker through an upgrade,
+  // so the blacklist half has to survive the whitelist half being obsolete.
+  it("ignores a leftover ru_whitelist entry and keeps the rest of the feed", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const feeds = resolveRuleFeeds(
+        {
+          RULE_FEEDS: JSON.stringify([
+            {
+              profile: "ru_blacklist",
+              sources: [
+                { url: "https://example.com/ipsum.lst", format: "cidr-lines" },
+              ],
+            },
+            {
+              profile: "ru_whitelist",
+              sources: [
+                { url: "https://example.com/whitelist.txt", format: "cidr-lines" },
+              ],
+            },
+          ]),
+        },
+        approveAll,
+      );
+
+      expect(feeds.map((feed) => feed.profile)).toEqual(["ru_blacklist"]);
+      expect(feeds[0]?.sources).toEqual([
+        { url: "https://example.com/ipsum.lst", format: "cidr-lines" },
+      ]);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining("ru_whitelist"));
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  // A configuration naming only the removed profile stays configuration: it
+  // must not silently resurrect the built-in defaults the operator never asked
+  // for. No feeds means no rule updates, and the warning above says why.
+  it("leaves no feeds when ru_whitelist was the only one configured", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      expect(
+        resolveRuleFeeds(
+          {
+            RULE_FEEDS: JSON.stringify([
+              {
+                profile: "ru_whitelist",
+                sources: [
+                  { url: "https://example.com/whitelist.txt", format: "cidr-lines" },
+                ],
+              },
+            ]),
+          },
+          approveAll,
+        ),
+      ).toEqual([]);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining("ru_whitelist"));
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it("uses a configured RULE_FEEDS instead of the defaults", () => {
     const feeds = resolveRuleFeeds(
       {
