@@ -132,7 +132,8 @@ const pocApprovedFor = (_profile: RuleProfile): boolean =>
 
 /**
  * One rule fetcher per resolved routing-rule feed. With no feed configuration
- * at all this is the built-in RoscomVPN set, so route profiles work on a fresh
+ * at all this is the built-in `ru_blacklist` feed (iplist.opencck.org CIDRs
+ * plus the Re-filter-lists domain list), so that profile works on a fresh
  * install; see `resolveRuleFeeds` for the full precedence.
  */
 const ruleFetchers = resolveRuleFeeds(process.env, pocApprovedFor).map((feed) =>

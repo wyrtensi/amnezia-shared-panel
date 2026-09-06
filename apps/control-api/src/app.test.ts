@@ -495,6 +495,38 @@ describe("control API authorization", () => {
     expect(JSON.parse(response.body)).toEqual({ total: 1, frames: ["<svg/>"] });
     await app.close();
   });
+
+  it("accepts qr-conf as a config format", async () => {
+    const service = createService();
+    vi.mocked(service.getKeyConfig).mockResolvedValue({
+      format: "qr-conf",
+      contentType: "image/svg+xml; charset=utf-8",
+      body: "<svg/>",
+    });
+    const app = await buildApp({
+      service,
+      environment: "development",
+      allowDevIdentity: true,
+    });
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/keys/0b48cc4c-404b-47a6-af28-4cf15f305e30/config?format=qr-conf",
+      headers: { "x-dev-user-email": user.email },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.headers["content-type"]).toContain("image/svg+xml");
+    // A display format, like qr-svg: must not arrive as a download.
+    expect(response.headers["content-disposition"]).toBeUndefined();
+    expect(vi.mocked(service.getKeyConfig)).toHaveBeenCalledWith(
+      user,
+      "0b48cc4c-404b-47a6-af28-4cf15f305e30",
+      "qr-conf",
+      false,
+    );
+    await app.close();
+  });
 });
 
 describe("custom routes take addresses, not site names", () => {

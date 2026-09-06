@@ -24,6 +24,9 @@ describe("configRequestPath", () => {
     expect(configRequestPath("key-1", "qr-frames", false)).toBe(
       "/api/keys/key-1/config?format=qr-frames",
     );
+    expect(configRequestPath("key-1", "qr-conf", false)).toBe(
+      "/api/keys/key-1/config?format=qr-conf",
+    );
   });
 
   it("adds the admin confirmation only when asked", () => {
@@ -133,6 +136,7 @@ describe("configOutputName", () => {
     expect(configOutputName("key-1", "conf")).toBe("key-1.conf");
     expect(configOutputName("key-1", "qr")).toBe("key-1.png");
     expect(configOutputName("key-1", "qr-svg")).toBe("key-1.svg");
+    expect(configOutputName("key-1", "qr-conf")).toBe("key-1.svg");
   });
 });
 
@@ -152,6 +156,7 @@ describe("CLI_CONFIG_FORMATS", () => {
       "qr",
       "qr-svg",
       "qr-frames",
+      "qr-conf",
     ]);
   });
 });

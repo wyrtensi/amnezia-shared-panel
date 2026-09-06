@@ -327,8 +327,11 @@ const ru = {
   "config.qrAudienceLabel": "Чем будете сканировать?",
   "config.qrForCamera": "Камера телефона",
   "config.qrForApp": "Приложение VPN",
+  "config.qrForAwg": "AmneziaWG",
   "config.qrHintApp":
     "В приложении (AmneziaVPN или Default VPN) нажмите «Добавить» → «Сканировать QR-код» и наведите камеру на этот код",
+  "config.qrHintAwg":
+    "В приложении AmneziaWG используйте импорт по QR-коду — это обычный конфиг WireGuard, а не контейнерный формат приложения AmneziaVPN",
   "config.qrAppWarning":
     "Этот код понимает только само приложение. Обычная камера его не откроет.",
   "config.qrSwitchToApp":
@@ -1526,8 +1529,11 @@ const en = {
   "config.qrAudienceLabel": "What will you scan with?",
   "config.qrForCamera": "Phone camera",
   "config.qrForApp": "VPN app",
+  "config.qrForAwg": "AmneziaWG",
   "config.qrHintApp":
     "In the app (AmneziaVPN or Default VPN) tap Add → Scan QR code, then point it at this code",
+  "config.qrHintAwg":
+    "In the AmneziaWG app, use its QR import — this is a plain WireGuard config, not the AmneziaVPN app's container format",
   "config.qrAppWarning":
     "Only the app itself can read this code. A plain camera app cannot.",
   "config.qrSwitchToApp":

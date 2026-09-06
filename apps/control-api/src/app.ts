@@ -67,7 +67,9 @@ export type BuildAppOptions = {
 const idParamsSchema = z.object({ id: z.uuid() });
 const ruleDiffParamsSchema = z.object({ id: z.uuid(), otherId: z.uuid() });
 const configQuerySchema = z.object({
-  format: z.enum(["vpn", "conf", "qr", "qr-svg", "qr-frames"]).default("vpn"),
+  format: z
+    .enum(["vpn", "conf", "qr", "qr-svg", "qr-frames", "qr-conf"])
+    .default("vpn"),
   adminConfirmed: z
     .union([
       z.boolean(),

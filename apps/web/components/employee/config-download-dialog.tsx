@@ -50,34 +50,43 @@ export type ConfigTarget = {
  * github.com/amnezia-vpn/DefaultVPN@dev). Showing the same picture twice under
  * two brand names only invites the question of what the difference is.
  *
+ * `awg` is AmneziaWG, a third and separate client: it reads neither the chunk
+ * envelope nor the `vpn://` link, only a plain WireGuard config, so it gets its
+ * own QR of that `.conf` text (`qr-conf` in service.ts) rather than a reuse of
+ * either payload above.
+ *
  * `camera` serves the single-frame `vpn://` code that a camera app hands to the
  * OS. It is a different payload, not a different picture of the same one: no
  * in-app scanner can read a `vpn://` symbol (the prefix is stripped only on the
  * paste/import path, never on the scan path), and no camera app can read the
  * chunk envelope.
  */
-type QrAudience = "app" | "camera";
+type QrAudience = "app" | "awg" | "camera";
 
-/** Tab order: the in-app scanner leads; the camera is the fallback. */
-const QR_AUDIENCES = ["app", "camera"] as const;
+/** Tab order: the in-app scanner leads, AmneziaWG is second, the camera is the fallback. */
+const QR_AUDIENCES = ["app", "awg", "camera"] as const;
 
 /**
- * True for the audience served by the chunk envelope. Every VPN app that reads
- * a code reads that one; only the camera path takes the `vpn://` symbol.
+ * True only for the audience served by the chunk envelope. `awg` and `camera`
+ * are each a single image fetched by URL and set as an `<img>` src -- the same
+ * shape, just two different payloads (the `.conf` text and the `vpn://` link).
  */
-const usesFrames = (audience: QrAudience): boolean => audience !== "camera";
+const usesFrames = (audience: QrAudience): boolean => audience === "app";
 
 /** Copy per audience, kept in one place so a new client is three strings. */
 const QR_AUDIENCE_LABEL_KEYS: Record<QrAudience, MessageKey> = {
   app: "config.qrForApp",
+  awg: "config.qrForAwg",
   camera: "config.qrForCamera",
 };
 const QR_AUDIENCE_WARNING_KEYS: Record<QrAudience, MessageKey> = {
   app: "config.qrAppWarning",
+  awg: "config.qrAppWarning", // unused: awg needs no warning, same reason as camera.
   camera: "config.qrAppWarning", // unused: the camera code needs no warning.
 };
 const QR_AUDIENCE_HINT_KEYS: Record<QrAudience, MessageKey> = {
   app: "config.qrHintApp",
+  awg: "config.qrHintAwg",
   camera: "config.qrHint",
 };
 
@@ -246,11 +255,11 @@ export function ConfigDownloadDialog({
     frames && frames.length > 0 ? frames[frameIndex % frames.length] : undefined;
   const qrSrc = !target
     ? null
-    : !usesFrames(qrFor)
-      ? configUrl(target.id, "qr-svg")
-      : currentFrame
+    : qrFor === "app"
+      ? currentFrame
         ? frameSrc(currentFrame)
-        : null;
+        : null
+      : configUrl(target.id, qrFor === "awg" ? "qr-conf" : "qr-svg");
 
   // A one-frame series is a still picture: no modes, no stepping, no dots.
   const frameCount = usesFrames(qrFor) && frames ? frames.length : 0;
@@ -451,16 +460,18 @@ export function ConfigDownloadDialog({
                 </div>
 
                 {/*
-                  Three tabs, two payloads. The choice is labelled by the tool
-                  the user is holding, never by the format: a camera app reads
-                  the `vpn://` URL, while either VPN app's in-app scanner reads
-                  only the chunk envelope and ignores a `vpn://` symbol
-                  entirely, however large and crisp it is. AmneziaVPN leads
-                  because it is the app this panel is built for; DefaultVPN gets
-                  its own tab because its users do not know it is the same app,
-                  and its own wording because its menu is branded differently.
-                  Only one code is ever shown, so nobody points a camera at the
-                  wrong one.
+                  Three tabs, three payloads. The choice is labelled by the
+                  tool the user is holding, never by the format: a camera app
+                  reads the `vpn://` URL, AmneziaWG reads a plain WireGuard
+                  config, and either VPN app's in-app scanner (AmneziaVPN or
+                  DefaultVPN, same envelope, one tab) reads only the chunk
+                  envelope and ignores a `vpn://` symbol entirely, however
+                  large and crisp it is. AmneziaVPN leads because it is the
+                  app this panel is built for; AmneziaWG is a separate app
+                  most users do not have, so it sits second; the camera is the
+                  fallback for a phone with neither app installed. Only one
+                  code is ever shown, so nobody points a camera at the wrong
+                  one.
 
                   The legend is VISIBLE, not just an aria-label: the user has to
                   pick a tool before looking at a code, otherwise they discover
