@@ -1,6 +1,14 @@
 import { randomBytes, randomUUID } from "node:crypto";
-import { and, count, desc, eq, sql } from "drizzle-orm";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { and, count, desc, eq, inArray, sql } from "drizzle-orm";
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+} from "vitest";
 import {
   defaultKeyNameDisplay,
   idleAccessSyncStatus,
@@ -4205,6 +4213,250 @@ describe("PostgresControlRepository rule version pinning", () => {
         .from(auditEvents)
         .where(eq(auditEvents.action, "admin.rules.import"));
       expect(event?.metadata).toMatchObject({ pinned: true });
+    },
+  );
+});
+
+describe("PostgresControlRepository offboard admin guards", () => {
+  const database = databaseUrl ? createDatabase(databaseUrl) : null;
+  const keyring = { 1: randomBytes(32) };
+  let nodeId: string;
+  // The last-admin guard counts every active admin in the whole `users`
+  // table. Several describe blocks above this one seed their own admin row
+  // and some never delete it (e.g. checks-admin@example.com), so without
+  // this the "sole active admin" premise below would be false. Park every
+  // stray active admin for the duration of this describe and restore them
+  // afterwards, rather than deleting rows another describe still owns.
+  let parkedAdminIds: string[] = [];
+
+  beforeAll(async () => {
+    if (!database) return;
+    const credentials = encryptSecret("api-key", keyring, 1);
+    const label = encryptSecret("label-secret", keyring, 1);
+    const [node] = await database.db
+      .insert(nodes)
+      .values({
+        name: "offboard-guard-node",
+        apiBaseUrl: "http://127.0.0.1:4001",
+        credentialsCiphertext: credentials.ciphertext,
+        credentialsNonce: credentials.nonce,
+        credentialsAuthTag: credentials.authTag,
+        credentialsKeyVersion: credentials.keyVersion,
+        labelSecretCiphertext: label.ciphertext,
+        labelSecretNonce: label.nonce,
+        labelSecretAuthTag: label.authTag,
+        labelSecretKeyVersion: label.keyVersion,
+      })
+      .returning();
+    if (!node) throw new Error("Failed to seed node");
+    nodeId = node.id;
+
+    const strays = await database.db
+      .select({ id: users.id })
+      .from(users)
+      .where(and(eq(users.role, "admin"), eq(users.status, "active")));
+    parkedAdminIds = strays.map((row) => row.id);
+    if (parkedAdminIds.length > 0) {
+      await database.db
+        .update(users)
+        .set({ status: "disabled" })
+        .where(inArray(users.id, parkedAdminIds));
+    }
+  });
+
+  afterAll(async () => {
+    if (!database) return;
+    if (parkedAdminIds.length > 0) {
+      await database.db
+        .update(users)
+        .set({ status: "active" })
+        .where(inArray(users.id, parkedAdminIds));
+    }
+    await database.client.end();
+  });
+
+  // Every user a test seeds must stop counting as an active admin once that
+  // test ends, or an admin left active by one test (a refused offboard is a
+  // no-op) would inflate the count the next test relies on. Neutralizing
+  // (rather than deleting) sidesteps vpn_keys.owner_id's `restrict` FK, which
+  // the last test's seeded owner can still be subject to.
+  let createdUserIds: string[] = [];
+
+  afterEach(async () => {
+    if (!database || createdUserIds.length === 0) return;
+    await database.db
+      .update(users)
+      .set({ role: "user", status: "disabled" })
+      .where(inArray(users.id, createdUserIds));
+    createdUserIds = [];
+  });
+
+  const subject = (): PostgresControlRepository => {
+    if (!database) throw new Error("No database");
+    return new PostgresControlRepository({ db: database.db, keyring });
+  };
+
+  const seedAdmin = async (
+    status: "active" | "disabled" = "active",
+  ): Promise<Actor> => {
+    if (!database) throw new Error("No database");
+    const suffix = randomBytes(6).toString("hex");
+    const [row] = await database.db
+      .insert(users)
+      .values({
+        email: `offboard-guard-admin-${suffix}@example.com`,
+        role: "admin",
+        status,
+      })
+      .returning();
+    if (!row) throw new Error("Failed to seed admin");
+    createdUserIds.push(row.id);
+    return {
+      id: row.id,
+      email: row.email,
+      displayName: null,
+      role: "admin",
+      status: row.status,
+    };
+  };
+
+  const seedUser = async (): Promise<Actor> => {
+    if (!database) throw new Error("No database");
+    const suffix = randomBytes(6).toString("hex");
+    const [row] = await database.db
+      .insert(users)
+      .values({ email: `offboard-guard-user-${suffix}@example.com` })
+      .returning();
+    if (!row) throw new Error("Failed to seed user");
+    createdUserIds.push(row.id);
+    return {
+      id: row.id,
+      email: row.email,
+      displayName: null,
+      role: "user",
+      status: "active",
+    };
+  };
+
+  const statusOf = async (userId: string): Promise<string | undefined> => {
+    if (!database) throw new Error("No database");
+    const [row] = await database.db
+      .select({ status: users.status })
+      .from(users)
+      .where(eq(users.id, userId));
+    return row?.status;
+  };
+
+  runDatabaseTest(
+    "refuses to offboard the sole active administrator",
+    async () => {
+      if (!database) return;
+      const admin = await seedAdmin();
+      const caller = await seedUser();
+
+      const failure = await failureOf(
+        subject().adminAction(caller, "users", admin.id, "offboard", {}),
+      );
+
+      expect(failure?.statusCode).toBe(409);
+      expect(failure?.code).toBe("LAST_ADMIN");
+      expect(await statusOf(admin.id)).toBe("active");
+    },
+  );
+
+  runDatabaseTest(
+    "lets one of two active admins be offboarded, then refuses the last one",
+    async () => {
+      if (!database) return;
+      const adminA = await seedAdmin();
+      const adminB = await seedAdmin();
+      const caller = await seedUser();
+
+      await subject().adminAction(caller, "users", adminB.id, "offboard", {});
+      expect(await statusOf(adminB.id)).toBe("disabled");
+
+      const failure = await failureOf(
+        subject().adminAction(caller, "users", adminA.id, "offboard", {}),
+      );
+
+      expect(failure?.statusCode).toBe(409);
+      expect(failure?.code).toBe("LAST_ADMIN");
+      expect(await statusOf(adminA.id)).toBe("active");
+    },
+  );
+
+  runDatabaseTest(
+    "offboards an already-disabled admin while one other stays active",
+    async () => {
+      if (!database) return;
+      await seedAdmin(); // the one other active admin
+      const disabledAdmin = await seedAdmin("disabled");
+      const caller = await seedUser();
+
+      // Without the `status === "active"` guard, this would falsely read as
+      // "the last admin" -- `disabledAdmin` never appears in the locked
+      // active-admin set, so only one row (the other admin above) does.
+      const result = (await subject().adminAction(
+        caller,
+        "users",
+        disabledAdmin.id,
+        "offboard",
+        {},
+      )) as { status: string };
+
+      expect(result.status).toBe("disabled");
+      expect(await statusOf(disabledAdmin.id)).toBe("disabled");
+    },
+  );
+
+  runDatabaseTest("refuses to let an admin offboard themselves", async () => {
+    if (!database) return;
+    const admin = await seedAdmin();
+
+    const failure = await failureOf(
+      subject().adminAction(admin, "users", admin.id, "offboard", {}),
+    );
+
+    expect(failure?.statusCode).toBe(409);
+    expect(failure?.code).toBe("SELF_OFFBOARD");
+    expect(await statusOf(admin.id)).toBe("active");
+  });
+
+  runDatabaseTest(
+    "still offboards an ordinary user exactly as before",
+    async () => {
+      if (!database) return;
+      const caller = await seedAdmin();
+      const owner = await seedUser();
+      const [key] = await database.db
+        .insert(vpnKeys)
+        .values({
+          ownerId: owner.id,
+          nodeId,
+          publicKey: `pk-${randomBytes(6).toString("hex")}`,
+          nodeLabel: `ap_offboard_guard_${randomBytes(6).toString("hex")}`,
+          protocol: "awg2",
+          state: "active",
+          routeProfile: "full_tunnel",
+        })
+        .returning({ id: vpnKeys.id });
+      if (!key) throw new Error("Failed to seed key");
+
+      const result = (await subject().adminAction(
+        caller,
+        "users",
+        owner.id,
+        "offboard",
+        {},
+      )) as { status: string; keysQueuedForRevoke: number };
+
+      expect(result.status).toBe("disabled");
+      expect(result.keysQueuedForRevoke).toBe(1);
+      const [revokedKey] = await database.db
+        .select({ state: vpnKeys.state })
+        .from(vpnKeys)
+        .where(eq(vpnKeys.id, key.id));
+      expect(revokedKey?.state).toBe("revoking");
     },
   );
 });

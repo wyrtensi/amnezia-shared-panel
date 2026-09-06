@@ -2606,6 +2606,44 @@ export class PostgresControlRepository implements ControlRepository {
       });
     } else if (resource === "users" && action === "offboard") {
       return this.options.db.transaction(async (tx) => {
+        // Lock the active-admin rows FOR UPDATE, exactly like set-role, so two
+        // concurrent offboards serialize instead of both reading "2 admins"
+        // and both proceeding.
+        const admins = await tx
+          .select({ id: users.id })
+          .from(users)
+          .where(and(eq(users.role, "admin"), eq(users.status, "active")))
+          .for("update");
+        const [target] = await tx
+          .select({ role: users.role, status: users.status })
+          .from(users)
+          .where(eq(users.id, targetId))
+          .limit(1);
+        if (!target) throw new ApiError(404, "User not found", "USER_NOT_FOUND");
+        // Independent of the last-admin check below: an admin among five
+        // would otherwise get a diagnosis about being the last one, when the
+        // real reason to refuse is that offboard is partly irreversible --
+        // reinstate restores the row but not the revoked keys, and offboard
+        // arms the Access sync, so the admin would lose the door they would
+        // undo it through.
+        if (actor.id === targetId) {
+          throw new ApiError(409, "Cannot offboard yourself", "SELF_OFFBOARD");
+        }
+        // `status === "active"` is deliberate: without it, offboarding an
+        // already-disabled admin while exactly one other active admin exists
+        // would falsely trip this, because a disabled admin never appears in
+        // the locked `admins` set above.
+        if (
+          target.role === "admin" &&
+          target.status === "active" &&
+          admins.length <= 1
+        ) {
+          throw new ApiError(
+            409,
+            "Cannot offboard the last administrator",
+            "LAST_ADMIN",
+          );
+        }
         const [updatedUser] = await tx
           .update(users)
           .set({
