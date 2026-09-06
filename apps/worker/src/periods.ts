@@ -61,7 +61,7 @@ export type CreateWorkerPeriodsOptions = {
 };
 
 /**
- * Read the eight period columns off the singleton settings row.
+ * Read every period column off the singleton settings row.
  *
  * A missing row (a panel where nothing has ever been saved) is the same answer
  * as a row of nulls: no override, so every default applies.
@@ -79,6 +79,7 @@ export const readWorkerPeriodOverrides = async (
       agentReleaseRefreshSec: portalPolicy.agentReleaseRefreshSec,
       ruleFetchIntervalSec: portalPolicy.ruleFetchIntervalSec,
       accessReconcileSec: portalPolicy.accessReconcileSec,
+      offboardedUserRetentionDays: portalPolicy.offboardedUserRetentionDays,
     })
     .from(portalPolicy)
     .where(eq(portalPolicy.id, true))

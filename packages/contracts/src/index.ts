@@ -606,6 +606,21 @@ export const WORKER_PERIOD_FIELDS = {
    * faster timer buys nothing but API calls against a rate-limited endpoint.
    */
   accessReconcileSec: { min: 300, max: 604_800, fallback: 3_600, unit: "sec" },
+  /**
+   * How long a disabled account is kept before `purgeOffboardedUsers` hard-
+   * deletes it (and its revoked keys). Measured from `users.disabled_at`, which
+   * every disabling path already sets. 30 days is the default window an admin
+   * gets to notice and reinstate a wrongly-offboarded account; 1 day is the
+   * minimum rather than 0, because a NULL `disabled_at` (a row disabled before
+   * this column existed) is never purged regardless of this setting -- see the
+   * comment on that check in `purgeOffboardedUsers`.
+   */
+  offboardedUserRetentionDays: {
+    min: 1,
+    max: 3_650,
+    fallback: 30,
+    unit: "day",
+  },
 } as const satisfies Record<
   string,
   { min: number; max: number; fallback: number; unit: "sec" | "day" }
@@ -637,6 +652,9 @@ export const workerPeriodOverridesSchema = z
     agentReleaseRefreshSec: workerPeriodValue("agentReleaseRefreshSec"),
     ruleFetchIntervalSec: workerPeriodValue("ruleFetchIntervalSec"),
     accessReconcileSec: workerPeriodValue("accessReconcileSec"),
+    offboardedUserRetentionDays: workerPeriodValue(
+      "offboardedUserRetentionDays",
+    ),
   })
   .partial();
 export type WorkerPeriodOverrides = z.infer<typeof workerPeriodOverridesSchema>;

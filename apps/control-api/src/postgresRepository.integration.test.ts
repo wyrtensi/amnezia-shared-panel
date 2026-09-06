@@ -2246,6 +2246,7 @@ describe("PostgresControlRepository global policy update", () => {
       // window of peer_samples into the worker's heap, and the container has
       // 160 MB. Half an hour was legal before that cost was accounted for.
       { maintenanceIntervalSec: 1_800 },
+      { offboardedUserRetentionDays: 0 },
     ]) {
       await expect(
         repository.adminAction(admin, "portal-policy", "global", "update", payload),

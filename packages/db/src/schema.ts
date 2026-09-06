@@ -671,6 +671,7 @@ export const portalPolicy = pgTable(
     agentReleaseRefreshSec: integer("agent_release_refresh_sec"),
     ruleFetchIntervalSec: integer("rule_fetch_interval_sec"),
     accessReconcileSec: integer("access_reconcile_sec"),
+    offboardedUserRetentionDays: integer("offboarded_user_retention_days"),
     // Cloudflare Access two-way sync config. The API token is stored encrypted
     // and never returned to the client (write-only, replaceable).
     cfAccessAccountId: varchar("cf_access_account_id", { length: 64 }),
@@ -739,6 +740,10 @@ export const portalPolicy = pgTable(
     check(
       "portal_policy_access_reconcile_range",
       sql`${table.accessReconcileSec} IS NULL OR (${table.accessReconcileSec} >= 300 AND ${table.accessReconcileSec} <= 604800)`,
+    ),
+    check(
+      "portal_policy_offboarded_user_retention_range",
+      sql`${table.offboardedUserRetentionDays} IS NULL OR (${table.offboardedUserRetentionDays} >= 1 AND ${table.offboardedUserRetentionDays} <= 3650)`,
     ),
   ],
 );

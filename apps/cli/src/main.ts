@@ -2491,6 +2491,9 @@ policy-set fields:
     agentReleaseRefreshSec=<300..604800>  re-resolve the node-agent release
     ruleFetchIntervalSec=<900..604800>    route-rule feed download
     accessReconcileSec=<300..604800>      Cloudflare Access reconcile timer
+    offboardedUserRetentionDays=<1..3650> how long a disabled account is kept
+                                          before it is purged (never a NULL
+                                          disabled_at, regardless of window)
     Run "periods" to see what is set and what an unset one falls back to. A
     change needs no restart and is not instant: the loop finishes the wait it
     had already started, so a new period applies from the next cycle — up to

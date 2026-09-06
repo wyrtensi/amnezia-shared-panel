@@ -735,12 +735,27 @@ export class PostgresWorkerRepository
     return rows.map((row) => row.email);
   };
 
-  purgeOffboardedUsers = async (): Promise<{ deleted: string[] }> => {
+  purgeOffboardedUsers = async (
+    disabledBefore: Date,
+  ): Promise<{ deleted: string[] }> => {
     return this.options.db.transaction(async (tx) => {
       const disabled = await tx
         .select({ id: users.id, email: users.email })
         .from(users)
-        .where(eq(users.status, "disabled"));
+        .where(
+          and(
+            eq(users.status, "disabled"),
+            // Fail closed: a NULL disabled_at is a row disabled before this
+            // column existed (or, in principle, a bug that skipped setting
+            // it), and there is no timestamp to measure a retention window
+            // from. Treating "no timestamp" as "not recent enough to purge"
+            // would delete exactly the accounts this window exists to
+            // protect, so such a row is never purged, no matter how long it
+            // has been disabled.
+            isNotNull(users.disabledAt),
+            lt(users.disabledAt, disabledBefore),
+          ),
+        );
       const deleted: string[] = [];
       for (const user of disabled) {
         // Keys that may still hold a peer on a node block deletion; wait until

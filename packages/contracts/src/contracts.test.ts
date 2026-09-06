@@ -1604,6 +1604,7 @@ describe("worker polling periods", () => {
       "agentReleaseRefreshSec",
       "ruleFetchIntervalSec",
       "accessReconcileSec",
+      "offboardedUserRetentionDays",
     ]);
   });
 
@@ -1640,6 +1641,12 @@ describe("worker polling periods", () => {
         max: 604_800,
         fallback: 3_600,
         unit: "sec",
+      },
+      offboardedUserRetentionDays: {
+        min: 1,
+        max: 3_650,
+        fallback: 30,
+        unit: "day",
       },
     });
   });

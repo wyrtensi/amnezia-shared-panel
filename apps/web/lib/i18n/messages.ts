@@ -1213,6 +1213,9 @@ const ru = {
   "periods.accessReconcileSec": "Сверка Cloudflare Access",
   "periods.accessReconcileSecHint":
     "Таймер полной сверки списка доступа с Cloudflare. Изменение пользователя в панели и так запускает сверку сразу, поэтому частый таймер добавляет только запросы к API.",
+  "periods.offboardedUserRetentionDays": "Хранение отключённых аккаунтов",
+  "periods.offboardedUserRetentionDaysHint":
+    "Сколько дней отключённый аккаунт хранится, прежде чем будет удалён безвозвратно вместе с отозванными ключами. Отсчёт идёт с момента отключения. Аккаунт без этой отметки (отключённый до появления настройки) не удаляется никогда, независимо от окна.",
 } as const;
 
 const en = {
@@ -2372,6 +2375,9 @@ const en = {
   "periods.accessReconcileSec": "Cloudflare Access reconcile",
   "periods.accessReconcileSecHint":
     "The timer for a full reconcile of the access list with Cloudflare. A user change in the panel already triggers one immediately, so a faster timer only adds API calls.",
+  "periods.offboardedUserRetentionDays": "Disabled-account retention",
+  "periods.offboardedUserRetentionDaysHint":
+    "How many days a disabled account is kept before it is permanently deleted along with its revoked keys, counted from when it was disabled. An account with no such timestamp (disabled before this setting existed) is never deleted, regardless of this window.",
 } satisfies Record<keyof typeof ru, string>;
 
 export const messages = { ru, en } as const;

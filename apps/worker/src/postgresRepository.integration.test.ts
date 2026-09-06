@@ -1087,6 +1087,143 @@ describe("PostgresWorkerRepository outbox leases", () => {
       expect(row?.failureReason).toContain("node rejected the peer");
     },
   );
+
+  const DAY_MS = 24 * 60 * 60 * 1_000;
+
+  /**
+   * A disabled user with one or more keys, each in a given state. Reused by
+   * the purgeOffboardedUsers tests below, which each need a different
+   * combination of `disabledAt` and key state.
+   */
+  const seedDisabledUser = async (options: {
+    disabledAt: Date | null;
+    keyStates: Array<
+      "provisioning" | "active" | "disabled" | "revoking" | "revoked" | "failed"
+    >;
+  }): Promise<{ userId: string; email: string }> => {
+    if (!database) throw new Error("Database test is disabled");
+    const credentials = encryptSecret("api-key", keyring, 1);
+    const label = encryptSecret(randomBytes(32).toString("base64"), keyring, 1);
+    const email = `purge-${randomBytes(6).toString("hex")}@example.com`;
+    const [user] = await database.db
+      .insert(users)
+      .values({
+        email,
+        status: "disabled",
+        disabledAt: options.disabledAt,
+        deactivationReason: "admin_offboard",
+      })
+      .returning();
+    const [node] = await database.db
+      .insert(nodes)
+      .values({
+        name: `purge-node-${randomBytes(6).toString("hex")}`,
+        apiBaseUrl: "http://127.0.0.1:4001",
+        maxPeers: 500,
+        credentialsCiphertext: credentials.ciphertext,
+        credentialsNonce: credentials.nonce,
+        credentialsAuthTag: credentials.authTag,
+        credentialsKeyVersion: credentials.keyVersion,
+        labelSecretCiphertext: label.ciphertext,
+        labelSecretNonce: label.nonce,
+        labelSecretAuthTag: label.authTag,
+        labelSecretKeyVersion: label.keyVersion,
+      })
+      .returning();
+    if (!user || !node) throw new Error("Failed to seed purge-test context");
+    for (const [index, state] of options.keyStates.entries()) {
+      await database.db.insert(vpnKeys).values({
+        ownerId: user.id,
+        nodeId: node.id,
+        nodeLabel: `ap_purge_${index}_${randomBytes(6).toString("hex")}`,
+        protocol: "awg2",
+        state,
+        routeProfile: "full_tunnel",
+      });
+    }
+    return { userId: user.id, email };
+  };
+
+  const stillExists = async (userId: string): Promise<boolean> => {
+    if (!database) throw new Error("Database test is disabled");
+    const [row] = await database.db
+      .select({ id: users.id })
+      .from(users)
+      .where(eq(users.id, userId));
+    return row !== undefined;
+  };
+
+  runDatabaseTest("keeps a recently disabled user", async () => {
+    if (!database || !repository) return;
+    const now = new Date();
+    const { userId } = await seedDisabledUser({
+      disabledAt: new Date(now.getTime() - 1 * DAY_MS),
+      keyStates: ["revoked"],
+    });
+
+    // 30-day window: a user disabled yesterday is nowhere near the cutoff.
+    await repository.purgeOffboardedUsers(new Date(now.getTime() - 30 * DAY_MS));
+
+    expect(await stillExists(userId)).toBe(true);
+  });
+
+  runDatabaseTest("purges a user disabled past the window", async () => {
+    if (!database || !repository) return;
+    const now = new Date();
+    const { userId, email } = await seedDisabledUser({
+      disabledAt: new Date(now.getTime() - 40 * DAY_MS),
+      keyStates: ["revoked"],
+    });
+
+    const result = await repository.purgeOffboardedUsers(
+      new Date(now.getTime() - 30 * DAY_MS),
+    );
+
+    expect(result.deleted).toEqual([email]);
+    expect(await stillExists(userId)).toBe(false);
+    const [event] = await database.db
+      .select()
+      .from(auditEvents)
+      .where(eq(auditEvents.targetId, userId));
+    expect(event).toMatchObject({
+      actorType: "system",
+      action: "user.deleted",
+      targetType: "user",
+    });
+  });
+
+  runDatabaseTest("never purges a user with no disabled_at", async () => {
+    if (!database || !repository) return;
+    const now = new Date();
+    // Disabled (status = "disabled") but disabled_at is null -- a row from
+    // before that column existed, or from a bug that skipped setting it.
+    // There is no timestamp to measure a retention window from, so it must
+    // never be purged, no matter how long ago it was disabled.
+    const { userId } = await seedDisabledUser({
+      disabledAt: null,
+      keyStates: ["revoked"],
+    });
+
+    await repository.purgeOffboardedUsers(new Date(now.getTime() - 30 * DAY_MS));
+
+    expect(await stillExists(userId)).toBe(true);
+  });
+
+  runDatabaseTest("still refuses to purge while a key is live", async () => {
+    if (!database || !repository) return;
+    const now = new Date();
+    // Past the retention window, but one key is still "revoking" -- the
+    // pre-existing guard (purge refuses while any key is not yet revoked)
+    // must keep working alongside the new retention-window check.
+    const { userId } = await seedDisabledUser({
+      disabledAt: new Date(now.getTime() - 40 * DAY_MS),
+      keyStates: ["revoked", "revoking"],
+    });
+
+    await repository.purgeOffboardedUsers(new Date(now.getTime() - 30 * DAY_MS));
+
+    expect(await stillExists(userId)).toBe(true);
+  });
 });
 
 describe("PostgresWorkerRepository rule pinning", () => {

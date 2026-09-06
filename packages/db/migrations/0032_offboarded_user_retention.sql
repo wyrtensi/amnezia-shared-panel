@@ -1,0 +1,2 @@
+ALTER TABLE "portal_policy" ADD COLUMN "offboarded_user_retention_days" integer;--> statement-breakpoint
+ALTER TABLE "portal_policy" ADD CONSTRAINT "portal_policy_offboarded_user_retention_range" CHECK ("portal_policy"."offboarded_user_retention_days" IS NULL OR ("portal_policy"."offboarded_user_retention_days" >= 1 AND "portal_policy"."offboarded_user_retention_days" <= 3650));

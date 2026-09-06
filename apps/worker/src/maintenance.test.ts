@@ -108,4 +108,57 @@ describe("retention and rollup maintenance", () => {
       new Date("2026-08-13T12:00:00.000Z"),
     );
   });
+
+  // A disabled account has to survive long enough to be reinstated, so the
+  // runner resolves a retention window and hands purgeOffboardedUsers the
+  // cutoff derived from it -- the same shape as the metrics-retention window
+  // above (a plain number or a resolver, resolved once per run).
+  it("passes the resolved offboarded-user retention window to purgeOffboardedUsers", async () => {
+    const repository: MaintenanceRepository = {
+      loadSamplesSince: vi.fn(() => Promise.resolve([])),
+      replaceRollups: vi.fn(() => Promise.resolve()),
+      deleteSamplesBefore: vi.fn(() => Promise.resolve()),
+      deleteRollupsBefore: vi.fn(() => Promise.resolve()),
+      deleteNodeMetricsSamplesBefore: vi.fn(() => Promise.resolve()),
+      purgeOffboardedUsers: vi.fn(() => Promise.resolve({ deleted: [] })),
+    };
+    const now = new Date("2026-08-20T12:00:00.000Z");
+
+    await createMaintenanceRunner({
+      repository,
+      now: () => now,
+      offboardedUserRetentionDays: 10,
+    })();
+
+    expect(repository.purgeOffboardedUsers).toHaveBeenCalledWith(
+      new Date("2026-08-10T12:00:00.000Z"),
+    );
+  });
+
+  it("falls back to the default window when the offboarded-user resolver throws", async () => {
+    const repository: MaintenanceRepository = {
+      loadSamplesSince: vi.fn(() => Promise.resolve([])),
+      replaceRollups: vi.fn(() => Promise.resolve()),
+      deleteSamplesBefore: vi.fn(() => Promise.resolve()),
+      deleteRollupsBefore: vi.fn(() => Promise.resolve()),
+      deleteNodeMetricsSamplesBefore: vi.fn(() => Promise.resolve()),
+      purgeOffboardedUsers: vi.fn(() => Promise.resolve({ deleted: [] })),
+    };
+    const now = new Date("2026-08-20T12:00:00.000Z");
+
+    // A resolver that throws (settings row unreachable) must not stop the
+    // maintenance pass, and must not degrade to a window of 0 (purges every
+    // disabled account, reinstatable or not) or Infinity (never purges any) --
+    // it falls back to the contract's default, 30 days.
+    await createMaintenanceRunner({
+      repository,
+      now: () => now,
+      offboardedUserRetentionDays: () =>
+        Promise.reject(new Error("settings row unreachable")),
+    })();
+
+    expect(repository.purgeOffboardedUsers).toHaveBeenCalledWith(
+      new Date("2026-07-21T12:00:00.000Z"),
+    );
+  });
 });
