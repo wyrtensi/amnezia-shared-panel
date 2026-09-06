@@ -386,29 +386,30 @@ const toMetricsPayload = (
 };
 
 /**
- * `node_service_checks_name_unique` exists so two checks cannot share a name -
- * the name is what a user sees on a chip, and two "Gemini" chips with different
- * verdicts are unreadable. Without this translation an admin retyping a name
- * gets a 500 for an ordinary mistake.
+ * True for a 23505 raised by `constraint` (any 23505 when it is omitted).
+ * drizzle wraps the driver's error, so the SQLSTATE and the constraint name are
+ * on `cause` (DrizzleQueryError -> postgres.js PostgresError), not on the error
+ * it throws. Checking only the top level looks right, passes a unit test with a
+ * hand-made error, and never fires against a real database.
  */
-const isUniqueViolation = (error: unknown): boolean => {
-  // drizzle wraps the driver's error, so the SQLSTATE is on `cause`, not on the
-  // error it throws. Checking only the top level looks right, passes a unit
-  // test with a hand-made error, and never fires against a real database -
-  // which is exactly what it did until CI ran it against Postgres.
+const isUniqueViolation = (error: unknown, constraint?: string): boolean => {
   for (let current = error, depth = 0; current && depth < 4; depth += 1) {
-    if (
-      typeof current === "object" &&
-      "code" in current &&
-      (current as { code?: string }).code === "23505"
-    ) {
-      return true;
+    if (typeof current === "object" && "code" in current) {
+      const row = current as { code?: string; constraint_name?: string };
+      if (row.code === "23505")
+        return constraint === undefined || row.constraint_name === constraint;
     }
     current = (current as { cause?: unknown }).cause;
   }
   return false;
 };
 
+/**
+ * `node_service_checks_name_unique` exists so two checks cannot share a name -
+ * the name is what a user sees on a chip, and two "Gemini" chips with different
+ * verdicts are unreadable. Without this translation an admin retyping a name
+ * gets a 500 for an ordinary mistake.
+ */
 const duplicateCheckName = (error: unknown): unknown =>
   isUniqueViolation(error)
     ? new ApiError(409, "A check with this name already exists", "CHECK_NAME_TAKEN")
@@ -922,12 +923,7 @@ export class PostgresControlRepository implements ControlRepository {
         return created;
       });
     } catch (error) {
-      if (
-        error &&
-        typeof error === "object" &&
-        "code" in error &&
-        error.code === "23505"
-      ) {
+      if (isUniqueViolation(error, "nodes_name_unique")) {
         throw new ApiError(409, "Node name already exists", "NODE_EXISTS");
       }
       throw error;
@@ -1854,7 +1850,9 @@ export class PostgresControlRepository implements ControlRepository {
       });
     } catch (error) {
       // Safety net for a concurrent double-submit racing the supersede above.
-      if (String(error).includes("quota_requests_one_pending_per_user")) {
+      // Matched by constraint name, not by drizzle's "Failed query" message -
+      // the partial index's name never appears in that message.
+      if (isUniqueViolation(error, "quota_requests_one_pending_per_user")) {
         throw new ApiError(
           409,
           "A pending quota request already exists",

@@ -281,6 +281,43 @@ describe("PostgresControlRepository quota race", () => {
     expect(events).toEqual([{ action: "node.created" }]);
   });
 
+  runDatabaseTest(
+    "rejects a duplicate node name with 409 NODE_EXISTS",
+    async () => {
+      if (!database) return;
+      const repository = new PostgresControlRepository({
+        db: database.db,
+        keyring,
+        activeKeyVersion: 1,
+      });
+      const admin: Actor = { ...actor, role: "admin" };
+
+      await repository.createNode(admin, {
+        name: "duplicate-node",
+        apiBaseUrl: "http://127.0.0.1:4001/",
+        apiKey: "node-api-key".padEnd(32, "x"),
+        enabled: true,
+        protocol: "awg2",
+        maxPeers: 500,
+        capabilities: { peerLifecycle: true },
+      });
+      const failure = await failureOf(
+        repository.createNode(admin, {
+          name: "duplicate-node",
+          apiBaseUrl: "http://127.0.0.1:4002/",
+          apiKey: "node-api-key-2".padEnd(32, "x"),
+          enabled: true,
+          protocol: "awg2",
+          maxPeers: 500,
+          capabilities: { peerLifecycle: true },
+        }),
+      );
+
+      expect(failure?.statusCode).toBe(409);
+      expect(failure?.code).toBe("NODE_EXISTS");
+    },
+  );
+
   /** A node with no keys, so `deleteNode` can remove it. */
   const seedNode = async (name: string): Promise<string> => {
     if (!database) throw new Error("No database");
@@ -761,6 +798,58 @@ describe("PostgresControlRepository quota race", () => {
       expect(request?.status).toBe("cancelled");
       expect(request?.reviewNote).toBe("target server was removed");
       expect(request?.nodeId).toBeNull();
+    },
+  );
+
+  runDatabaseTest(
+    "maps a duplicate pending request to 409 PENDING_QUOTA_REQUEST_EXISTS",
+    async () => {
+      if (!database) return;
+      const repository = new PostgresControlRepository({
+        db: database.db,
+        keyring,
+      });
+      const owner = await seedQuotaUser("pending-race@example.com");
+
+      // createQuotaRequest cancels the caller's own pending row before
+      // inserting a new one, so a row seeded through it (or through a
+      // same-connection insert) would just be superseded here instead of
+      // colliding. Reproduce the real race the catch block guards against -
+      // a second pending row committed by ANOTHER transaction between this
+      // call's supersede UPDATE (which cannot see an uncommitted row) and
+      // its INSERT (which then collides once that other transaction
+      // commits) - by holding the seed insert open on its own transaction.
+      let markSeeded = () => {};
+      const seeded = new Promise<void>((resolve) => {
+        markSeeded = resolve;
+      });
+      let releaseHold = () => {};
+      const holdOpen = new Promise<void>((resolve) => {
+        releaseHold = resolve;
+      });
+      const heldTransaction = database.db.transaction(async (tx) => {
+        await tx.insert(quotaRequests).values({
+          userId: owner.id,
+          requestedLimit: 5,
+          reason: "",
+        });
+        markSeeded();
+        await holdOpen;
+      });
+
+      await seeded;
+      const conflicting = repository.createQuotaRequest(owner, {
+        requestedLimit: 6,
+      });
+      // Give the conflicting call's INSERT time to reach postgres and start
+      // blocking on the still-uncommitted seed row before it is released.
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      releaseHold();
+      await heldTransaction;
+
+      const failure = await failureOf(conflicting);
+      expect(failure?.statusCode).toBe(409);
+      expect(failure?.code).toBe("PENDING_QUOTA_REQUEST_EXISTS");
     },
   );
 
