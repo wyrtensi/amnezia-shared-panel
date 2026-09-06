@@ -71,6 +71,23 @@ describe("needsCameraWarning", () => {
   });
 });
 
+describe("Default VPN QR claims", () => {
+  // The operator has not seen QR scanning work in a shipped Default VPN
+  // build and there may be different builds in the wild, so the dialog must
+  // not promise it either way. Regression for a promise that used to live in
+  // config.qrHintApp / config.qrSwitchToApp ("... AmneziaVPN or Default
+  // VPN)... tap Add -> Scan QR code ..."). qrFrames.ts records the discrepancy
+  // between this and its source analysis; this file must not repeat the claim.
+  it("never names Default VPN in the app-tab scan instructions", () => {
+    for (const lang of ["ru", "en"] as const) {
+      expect(messages[lang]["config.qrHintApp"]).not.toMatch(/Default ?VPN/i);
+      expect(messages[lang]["config.qrSwitchToApp"]).not.toMatch(
+        /Default ?VPN/i,
+      );
+    }
+  });
+});
+
 describe("config.qrAwgWarning", () => {
   it("exists in both locales with wording distinct from the app warning", () => {
     // The finding: awg's warning was the unused "same reason as camera"

@@ -27,6 +27,15 @@
  * symbol is unreadable to its scanner too. There is therefore no separate
  * DefaultVPN format to build; the panel shows the same code under two labels.
  *
+ * Discrepancy on record, 2026-09: this is a source analysis of
+ * amnezia-vpn/DefaultVPN@dev, not a device observation. The operator has since
+ * reported a shipped DefaultVPN build with no working QR scan at all, and
+ * noted that different builds may exist in the wild. The analysis above is not
+ * reversed or deleted — it may still be correct for the source it reads — but
+ * it must not be relied on for user-facing copy: nothing shown to a user
+ * should claim DefaultVPN can (or cannot) scan a QR code until that is
+ * confirmed on an actual device.
+ *
  * Frame layout, big-endian, matching Qt's QDataStream on the client side:
  *   int16  magic (1984 == 0x07C0)
  *   uint8  chunks count

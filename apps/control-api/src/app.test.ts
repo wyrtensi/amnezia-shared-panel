@@ -1122,6 +1122,7 @@ const SNAPSHOT: ClientRelease = {
         sizeBytes: 91_991_200,
       },
       alternate: null,
+      secondAlternate: null,
     },
     {
       platform: "macos",
@@ -1132,6 +1133,7 @@ const SNAPSHOT: ClientRelease = {
         sizeBytes: 111_188_003,
       },
       alternate: null,
+      secondAlternate: null,
     },
     {
       platform: "android",
@@ -1147,6 +1149,7 @@ const SNAPSHOT: ClientRelease = {
         fileName: "AmneziaVPN_5.0.1.5_android11+_arm64-v8a.apk",
         sizeBytes: 75_586_403,
       },
+      secondAlternate: null,
     },
     {
       platform: "ios",
@@ -1158,6 +1161,12 @@ const SNAPSHOT: ClientRelease = {
       },
       alternate: {
         url: "https://apps.apple.com/us/app/amneziavpn/id1600529900",
+        kind: "store",
+        fileName: null,
+        sizeBytes: null,
+      },
+      secondAlternate: {
+        url: "https://apps.apple.com/us/app/amneziawg/id6478942365",
         kind: "store",
         fileName: null,
         sizeBytes: null,
@@ -1218,8 +1227,8 @@ describe("client release routes", () => {
 
   // The QR is an image this panel serves, so what it encodes must come from the
   // release the panel resolved and never from the request. `variant` selects
-  // between two known links; anything else falls back to the primary rather
-  // than reaching for a URL the caller supplied.
+  // among a platform's known links; anything else falls back to the primary
+  // rather than reaching for a URL the caller supplied.
   describe("the download QR", () => {
     const qr = async (url: string) => {
       const app = await buildApp({
@@ -1254,6 +1263,33 @@ describe("client release routes", () => {
       // Two different listings, so two different symbols. Comparing the bytes
       // is what proves the variant reached the encoder at all.
       expect(alternate.rawPayload.equals(primary.rawPayload)).toBe(false);
+    });
+
+    it("encodes the secondAlternate link when asked for it", async () => {
+      const primary = await qr("/api/client-releases/qr/ios");
+      const alternate = await qr(
+        "/api/client-releases/qr/ios?variant=alternate",
+      );
+      const secondAlternate = await qr(
+        "/api/client-releases/qr/ios?variant=secondAlternate",
+      );
+
+      expect(secondAlternate.statusCode).toBe(200);
+      // Three distinct listings must encode to three distinct symbols.
+      expect(
+        secondAlternate.rawPayload.equals(primary.rawPayload),
+      ).toBe(false);
+      expect(
+        secondAlternate.rawPayload.equals(alternate.rawPayload),
+      ).toBe(false);
+    });
+
+    it("404s a platform with no secondAlternate", async () => {
+      const response = await qr(
+        "/api/client-releases/qr/android?variant=secondAlternate",
+      );
+
+      expect(response.statusCode).toBe(404);
     });
 
     it("ignores a variant it does not know", async () => {

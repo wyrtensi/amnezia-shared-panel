@@ -108,12 +108,15 @@ describe("createClientReleaseResolver", () => {
     const ios = forPlatform(release.downloads, "ios");
     // Default VPN leads: AmneziaVPN itself is hidden from the Russian App
     // Store, so the button most users can actually press has to be the primary
-    // one. Both ids are pinned because swapping them silently would send every
-    // Russian user to a listing that does not open for them.
+    // one. All three ids are pinned because swapping one silently would send a
+    // user to the wrong listing.
     expect(ios.primary.kind).toBe("store");
     expect(ios.primary.url).toContain("id6744725017");
     expect(ios.alternate?.kind).toBe("store");
     expect(ios.alternate?.url).toContain("id1600529900");
+    // A third, separate app: AmneziaWG, a plain WireGuard-style client.
+    expect(ios.secondAlternate?.kind).toBe("store");
+    expect(ios.secondAlternate?.url).toContain("id6478942365");
   });
 
   it("degrades a single platform to the release page when its asset is missing", async () => {
@@ -199,13 +202,22 @@ describe("createClientReleaseResolver", () => {
     // Nothing version-pinned ships in the repo: every non-store link is the
     // permanent latest redirect.
     for (const download of release.downloads) {
-      for (const asset of [download.primary, download.alternate]) {
+      for (const asset of [
+        download.primary,
+        download.alternate,
+        download.secondAlternate,
+      ]) {
         if (!asset) continue;
         expect(asset.url).not.toMatch(/\d+\.\d+\.\d+/);
       }
     }
     expect(forPlatform(release.downloads, "android").primary.kind).toBe("store");
-    expect(forPlatform(release.downloads, "ios").primary.kind).toBe("store");
+    const iosFallback = forPlatform(release.downloads, "ios");
+    expect(iosFallback.primary.kind).toBe("store");
+    // The offline fallback still offers all three iOS apps: none of them are
+    // GitHub-hosted, so nothing about them can go stale.
+    expect(iosFallback.secondAlternate?.kind).toBe("store");
+    expect(iosFallback.secondAlternate?.url).toContain("id6478942365");
   });
 
   it("keeps serving the last good snapshot when a refresh fails", async () => {

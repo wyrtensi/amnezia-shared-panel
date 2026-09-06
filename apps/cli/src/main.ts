@@ -1988,11 +1988,11 @@ async function cmdUserCreateKey(args: string[]): Promise<void> {
 /**
  * Download one key's config. `--format=qr` writes the exact PNG a user is shown
  * for download, `--format=qr-svg` the exact SVG the panel displays to a camera
- * app, `--format=qr-frames` the chunk-envelope series an in-app scanner reads —
- * AmneziaVPN and DefaultVPN alike, the format is the same — and
- * `--format=qr-conf` the SVG QR of the plain WireGuard `.conf` text, for the
- * AmneziaWG app — so any scanner's half of a "the QR does not scan" report can
- * be reproduced from a shell.
+ * app, `--format=qr-frames` the chunk-envelope series a VPN app's own in-app
+ * scanner reads (confirmed for AmneziaVPN; see qrFrames.ts for what is and is
+ * not confirmed about any other client) — and `--format=qr-conf` the SVG QR of
+ * the plain WireGuard `.conf` text, for the AmneziaWG app — so any scanner's
+ * half of a "the QR does not scan" report can be reproduced from a shell.
  *
  * `--save` writes the file under the name the panel serves it as, which is the
  * key's own connection name. That matters for `--format=vpn`: those bytes are
@@ -2530,8 +2530,7 @@ Write:
              [--confirm]                  Download a key's config. --format=qr writes a
                                           PNG (defaults to <id>.png unless --out is given);
                                           --format=qr-frames writes <id>.frame-N.svg, which
-                                          only a VPN app's own scanner can read
-                                          (AmneziaVPN and DefaultVPN alike);
+                                          only a VPN app's own in-app scanner can read;
                                           --format=qr-conf writes the SVG QR of the plain
                                           WireGuard .conf text, for the AmneziaWG app;
                                           --save writes the file under the panel's own

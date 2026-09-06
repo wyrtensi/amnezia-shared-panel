@@ -39,7 +39,7 @@ import { cn } from "@/lib/utils";
 import { DEVICE_ICON } from "@/components/device-icon";
 import { OptionCards } from "@/components/option-cards";
 import type { PlatformMark } from "@/components/icons/platform-marks";
-import type { Lang } from "@/lib/i18n/messages";
+import type { Lang, MessageKey } from "@/lib/i18n/messages";
 
 // The guide reuses the wizard's vendored brand marks rather than keeping its
 // own glyphs: ClientPlatform is a strict subset of DeviceType, so the same map
@@ -547,6 +547,14 @@ export function InstallInstructions({
                     >
                       {t("install.iosProfileWarning")}
                     </Callout>
+                    {/* A further alternative app, at the bottom of this
+                        audience's extended content: AmneziaWG is a separate,
+                        plain WireGuard-style client, not a fork of either app
+                        above, so it gets its own spoiler rather than a slot
+                        beside AmneziaVPN's. */}
+                    {ios?.secondAlternate ? (
+                      <IosAmneziaWgOption asset={ios.secondAlternate} />
+                    ) : null}
                   </>
                 ) : null}
                 {advanced && release.version ? (
@@ -623,8 +631,8 @@ function PlatformQr({
   variant = "primary",
 }: {
   platform: ClientPlatform;
-  /** Which of the platform's two links to encode. */
-  variant?: "primary" | "alternate";
+  /** Which of the platform's links to encode. */
+  variant?: "primary" | "alternate" | "secondAlternate";
 }) {
   const { t } = useT();
   return (
@@ -632,7 +640,7 @@ function PlatformQr({
       <img
         className="mx-auto h-44 w-44 rounded-md bg-white p-2"
         src={`/api/control/api/client-releases/qr/${platform}${
-          variant === "alternate" ? "?variant=alternate" : ""
+          variant === "primary" ? "" : `?variant=${variant}`
         }`}
         alt={t("install.qrAlt")}
       />
@@ -903,6 +911,57 @@ function GuideSection({
  * equal-looking button would read as a choice when it is not one.
  */
 function IosAmneziaOption({ asset }: { asset: ClientAsset }) {
+  return (
+    <IosAlternateAppOption
+      asset={asset}
+      qrVariant="alternate"
+      titleKey="install.iosAmneziaTitle"
+      bodyKey="install.iosAmneziaBody"
+      openKey="install.iosAmneziaOpen"
+    />
+  );
+}
+
+/**
+ * The AmneziaWG listing: a third, separate iOS app -- a plain WireGuard-style
+ * client, not a fork of AmneziaVPN or DefaultVPN -- for a reader who already
+ * knows they want it. Placed after the AmneziaVPN alternative, at the bottom
+ * of this audience's extended content, because it is the less common choice of
+ * the two: most readers who open this spoiler at all are after AmneziaVPN.
+ */
+function IosAmneziaWgOption({ asset }: { asset: ClientAsset }) {
+  return (
+    <IosAlternateAppOption
+      asset={asset}
+      qrVariant="secondAlternate"
+      titleKey="install.iosAmneziaWgTitle"
+      bodyKey="install.iosAmneziaWgBody"
+      openKey="install.iosAmneziaWgOpen"
+    />
+  );
+}
+
+/**
+ * Shared shape for iOS's alternate-app spoilers: a collapsed details block
+ * with a line of copy, an "open the listing" button, and the same QR affordance
+ * the store buttons above carry -- this reader is on a computer, and the App
+ * Store opens on the phone. It matters more here than there: both of these
+ * listings are region- or app-specific, so the reader may well be scanning
+ * onto a second device or a different Apple account.
+ */
+function IosAlternateAppOption({
+  asset,
+  qrVariant,
+  titleKey,
+  bodyKey,
+  openKey,
+}: {
+  asset: ClientAsset;
+  qrVariant: "alternate" | "secondAlternate";
+  titleKey: MessageKey;
+  bodyKey: MessageKey;
+  openKey: MessageKey;
+}) {
   const { t } = useT();
   const [showQr, setShowQr] = React.useState(false);
 
@@ -910,16 +969,12 @@ function IosAmneziaOption({ asset }: { asset: ClientAsset }) {
     <details className="group rounded-lg border bg-muted/30 px-3 py-2">
       <summary className="flex cursor-pointer list-none items-center gap-2 text-sm font-medium">
         <ChevronDown className="h-4 w-4 shrink-0 transition-transform group-open:rotate-180" />
-        {t("install.iosAmneziaTitle")}
+        {t(titleKey)}
       </summary>
       <div className="mt-2.5 space-y-2.5">
         <p className="text-xs leading-snug text-muted-foreground">
-          {t("install.iosAmneziaBody")}
+          {t(bodyKey)}
         </p>
-        {/* The same QR affordance the store buttons above carry: this reader is
-            on a computer, and the App Store opens on the phone. It matters more
-            here than there -- the listing is region-locked, so they may well be
-            scanning it onto a second device with a different Apple account. */}
         <div className="flex flex-wrap gap-2">
           <Button asChild variant="secondary" size="sm" className="w-fit">
             <a
@@ -929,7 +984,7 @@ function IosAmneziaOption({ asset }: { asset: ClientAsset }) {
               title={t("install.opensNewTab")}
             >
               <ExternalLink className="h-4 w-4" />
-              {t("install.iosAmneziaOpen")}
+              {t(openKey)}
             </a>
           </Button>
           <Button
@@ -944,7 +999,7 @@ function IosAmneziaOption({ asset }: { asset: ClientAsset }) {
             {t("install.showQr")}
           </Button>
         </div>
-        {showQr ? <PlatformQr platform="ios" variant="alternate" /> : null}
+        {showQr ? <PlatformQr platform="ios" variant={qrVariant} /> : null}
       </div>
     </details>
   );

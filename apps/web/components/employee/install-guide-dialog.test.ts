@@ -49,6 +49,27 @@ describe("install guide dialog source", () => {
     expect(source).toContain("install.fileConfFallback");
     expect(source).not.toContain("install.confStep1");
   });
+
+  // AmneziaWG is a third, separate iOS app and must sit at the bottom of this
+  // audience's extended content -- after the AmneziaVPN alternative and the
+  // route-profile warning -- rather than silently replacing either. Pinned so
+  // a future edit that drops or reorders it is caught here, not in review.
+  it("offers AmneziaWG as a further iOS alternative, at the bottom", () => {
+    expect(source).toContain("ios?.secondAlternate");
+    expect(source).toContain("install.iosAmneziaWgOpen");
+    const profileWarningAt = source.indexOf("install.iosProfileWarning");
+    const amneziaWgAt = source.indexOf("install.iosAmneziaWgTitle");
+    expect(profileWarningAt).toBeGreaterThan(-1);
+    expect(amneziaWgAt).toBeGreaterThan(profileWarningAt);
+  });
+
+  // The operator has not seen QR scanning work in a shipped Default VPN build.
+  // Nothing in this file may claim it can -- see qrFrames.ts, which records the
+  // discrepancy between that observation and the source analysis.
+  it("never claims Default VPN can scan a QR code", () => {
+    expect(source).not.toMatch(/Default ?VPN.*scan/i);
+    expect(source).not.toMatch(/scan.*Default ?VPN/i);
+  });
 });
 
 // The guide is organised by audience, but the API still returns a flat list of

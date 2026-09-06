@@ -344,8 +344,11 @@ const ru = {
   "config.qrForCamera": "Камера телефона",
   "config.qrForApp": "Приложение VPN",
   "config.qrForAwg": "AmneziaWG",
+  // Names AmneziaVPN only: whether Default VPN's shipped scanner reads this
+  // format has not been confirmed on a device (see qrFrames.ts), so this must
+  // not promise it does.
   "config.qrHintApp":
-    "В приложении (AmneziaVPN или Default VPN) нажмите «Добавить» → «Сканировать QR-код» и наведите камеру на этот код",
+    "В приложении AmneziaVPN нажмите «Добавить» → «Сканировать QR-код» и наведите камеру на этот код",
   "config.qrHintAwg":
     "В приложении AmneziaWG используйте импорт по QR-коду — это обычный конфиг WireGuard, а не контейнерный формат приложения AmneziaVPN",
   "config.qrAppWarning":
@@ -353,7 +356,7 @@ const ru = {
   "config.qrAwgWarning":
     "Обычная камера прочитает этот код, но покажет только текст конфига — импорт сработает только через QR-сканер в самом приложении AmneziaWG.",
   "config.qrSwitchToApp":
-    "Сканируете из самого приложения (AmneziaVPN или Default VPN)? Откройте код для приложения",
+    "Сканируете из самого приложения AmneziaVPN? Откройте код для приложения",
   "config.qrSwitchToAwg":
     "Используете приложение AmneziaWG? Откройте код для него",
   "config.qrSwitchToCamera":
@@ -413,6 +416,10 @@ const ru = {
   "install.iosAmneziaBody":
     "Тогда можно поставить сам AmneziaVPN — он умеет больше. Из российского App Store он скрыт.",
   "install.iosAmneziaOpen": "Открыть AmneziaVPN в App Store",
+  "install.iosAmneziaWgTitle": "Используете WireGuard-клиент?",
+  "install.iosAmneziaWgBody":
+    "AmneziaWG читает конфиг WireGuard, а не формат AmneziaVPN.",
+  "install.iosAmneziaWgOpen": "Открыть AmneziaWG в App Store",
   "install.desktopNote":
     "Запустите скачанный файл и следуйте установщику.",
   "install.iosNote":
@@ -1566,8 +1573,11 @@ const en = {
   "config.qrForCamera": "Phone camera",
   "config.qrForApp": "VPN app",
   "config.qrForAwg": "AmneziaWG",
+  // Names AmneziaVPN only: whether Default VPN's shipped scanner reads this
+  // format has not been confirmed on a device (see qrFrames.ts), so this must
+  // not promise it does.
   "config.qrHintApp":
-    "In the app (AmneziaVPN or Default VPN) tap Add → Scan QR code, then point it at this code",
+    "In AmneziaVPN, tap Add → Scan QR code, then point it at this code",
   "config.qrHintAwg":
     "In the AmneziaWG app, use its QR import — this is a plain WireGuard config, not the AmneziaVPN app's container format",
   "config.qrAppWarning":
@@ -1575,7 +1585,7 @@ const en = {
   "config.qrAwgWarning":
     "A plain camera can scan this code, but it only shows the raw config text — importing it needs AmneziaWG's own QR scanner.",
   "config.qrSwitchToApp":
-    "Scanning from inside the app (AmneziaVPN or Default VPN)? Open the code for the app",
+    "Scanning from inside AmneziaVPN? Open the code for the app",
   "config.qrSwitchToAwg":
     "Using the AmneziaWG app? Open its code",
   "config.qrSwitchToCamera":
@@ -1635,6 +1645,10 @@ const en = {
   "install.iosAmneziaBody":
     "Then you can install AmneziaVPN itself — it does more. It is hidden from the Russian App Store.",
   "install.iosAmneziaOpen": "Open AmneziaVPN on the App Store",
+  "install.iosAmneziaWgTitle": "Using a separate WireGuard client?",
+  "install.iosAmneziaWgBody":
+    "AmneziaWG is a separate app: it reads a plain WireGuard config, not AmneziaVPN's container format.",
+  "install.iosAmneziaWgOpen": "Open AmneziaWG on the App Store",
   "install.desktopNote":
     "Run the downloaded file and follow the installer.",
   "install.iosNote":

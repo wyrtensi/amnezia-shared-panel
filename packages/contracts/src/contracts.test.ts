@@ -852,6 +852,7 @@ describe("clientReleaseSchema", () => {
       platform,
       primary: asset,
       alternate: null,
+      secondAlternate: null,
     })),
   };
 
@@ -875,6 +876,7 @@ describe("clientReleaseSchema", () => {
             sizeBytes: null,
           },
           alternate: null,
+          secondAlternate: null,
         })),
       }).success,
     ).toBe(true);
@@ -899,7 +901,7 @@ describe("clientReleaseSchema", () => {
       clientReleaseSchema.safeParse({
         ...release,
         downloads: [
-          { platform: "windows", primary: { ...asset, kind: "torrent" }, alternate: null },
+          { platform: "windows", primary: { ...asset, kind: "torrent" }, alternate: null, secondAlternate: null },
           ...release.downloads.slice(1),
         ],
       }).success,
@@ -911,7 +913,7 @@ describe("clientReleaseSchema", () => {
       clientReleaseSchema.safeParse({
         ...release,
         downloads: [
-          { platform: "windows", primary: { ...asset, url: "javascript:alert(1)" }, alternate: null },
+          { platform: "windows", primary: { ...asset, url: "javascript:alert(1)" }, alternate: null, secondAlternate: null },
           ...release.downloads.slice(1),
         ],
       }).success,

@@ -149,7 +149,7 @@ via `CONTROL_API_URL` plus one of, in priority order:
 | `quota [--all]` | Key-limit requests (pending by default; `--all` = every state), with ids, the **target** server (its name, or `all servers`), `current → requested`, and date. Both the target and the `current → requested` numbers are reported **in that user's own key-limit mode**: under a global (shared) limit the per-server limits are dormant, so `current` is the pool and a request that named a server reads `all servers (request named …)` — approving it raises the total, not that server |
 | `version` | Panel version + commit of the running control-api, the repository the image was built from, plus `awg3-client-floor` — the AmneziaVPN client release an AWG 3.1 key needs, served by the panel so the CLI and the install guide cannot disagree |
 | `traffic [--days=N]` | Aggregate traffic series across all users (JSON) |
-| `client-releases` | What the panel currently hands users as AmneziaVPN download links, per platform: the resolved release version, each link's kind (`store` / `installer` / `releasePage`), file name and size, plus the Android APK that backs the Google Play button. Also shows `resolvedAt` and whether the panel is serving the **offline fallback** because it could not reach GitHub |
+| `client-releases` | What the panel currently hands users as AmneziaVPN download links, per platform: the resolved release version, each link's kind (`store` / `installer` / `releasePage`), file name and size, plus the Android APK that backs the Google Play button and iOS's two alternate App Store listings (AmneziaVPN, then AmneziaWG — a separate, plain WireGuard-style client). Also shows `resolvedAt` and whether the panel is serving the **offline fallback** because it could not reach GitHub |
 
 **User management** (every command below takes a user **id or email**):
 
@@ -177,7 +177,7 @@ via `CONTROL_API_URL` plus one of, in priority order:
 | `key-revoke <id>` · `key-disable <id>` · `key-enable <id>` | Key lifecycle. `key-revoke` is also the **retry** for a delete that did not go through: a key left in `revoking` because its node was unreachable, or one stuck in `failed` by a panel from before that was fixed. Every call queues a fresh job, and the node-side delete is idempotent, so repeating it is safe. `docs/KEY-STATES.md` has the full state model |
 | `key-internal-name <id> --name="<text>"` | Set the operator-only note on a key — who it was really issued to, what it replaced, why it exists. Up to 80 characters; `--name=` with nothing after it clears it. It is **never** returned to a regular user — not on any key, not even their own — and **never** part of a generated config, which is what makes it safe to write a person's name in. The one exception is an **administrator looking at their own key**: `/api/keys` carries the note for them, and only for them, so an admin sees it on their own card in the ordinary panel too. The rule is enforced in the payload, not in the page: for anybody else the `internalName` property is absent from the response entirely (`internalNameFor` in control-api's `keyView.ts`), and owner-facing routes only ever return the caller's own keys, so no route reaches another user's note without going through the admin API. Distinct from the device label the user typed, which does feed the connection name their client shows. It appears in the `keys` table's `internal` column and, in the admin panel, on the key's row under Users and on an administrator's own key card — the note itself is a framed chip, and the **Internal name** button beside it opens the editor, which repeats who can see the field, names the key it is annotating, shows the 80-character budget as you type, and keeps Clear (remove the note) apart from Cancel (change nothing) |
 | `key-rename <id> --label="<text>"` | **Rename YOUR OWN key** — there is no admin path here, ever: `/api/keys/:id/rename` checks the caller's own id against the key's owner with no bypass, the same as the self-service rotate and delete routes, so this reaches only a key the CLI's own identity holds. It sets the device label and, in the same request, queues a re-issue **only when the new label actually changes the connection name the client shows** — computed with the key's own `nameDisplay` flags (server / label / number), the same `composeKeyDisplayName` the exported config uses. That name is composed fresh into every download already, so a re-issue is not what makes the new name appear in the *next* one; a plain label update already does that. What a re-issue is actually for: the config the owner *already downloaded* keeps working, under the old name, forever otherwise — re-issuing replaces the peer, so that stale file stops connecting and the owner is pushed to fetch the one with the new name. The command says plainly which happened. A label that plays no part in the displayed name, or new text that composes to the same name as before, is a plain update instead: the key's state does not move and nothing already working is disturbed. Works for a `full_tunnel` key, unlike the plain `rotate` button, which refuses one — renaming rotates for a different reason (forcing a stale name out of circulation) that has nothing to do with refreshing routing rules |
-| `key-config <id> [--format=vpn\|conf\|qr\|qr-svg\|qr-frames\|qr-conf] [--out=<path>] [--save] [--confirm]` | Download one key's config. `vpn` (default) and `conf` print to stdout; `qr` writes the PNG a user downloads (to `<id>.png` unless `--out` is given), `qr-svg` the SVG the panel displays to a camera app, `qr-conf` the SVG QR of the plain WireGuard `.conf` text for the AmneziaWG app, and `qr-frames` the in-app-scanner series as `<id>.frame-N.svg` (read by AmneziaVPN and DefaultVPN alike). `--save` writes the file under the name the panel serves it as — the key's own connection name, e.g. `Frankfurt Main laptop #3.vpn` — instead of printing it; `--out` still wins over it, and it is a no-op for `qr-frames`, which always writes files. `--confirm` is required to read a key you do not own, and is audited as `vpn_key.private_config_viewed` |
+| `key-config <id> [--format=vpn\|conf\|qr\|qr-svg\|qr-frames\|qr-conf] [--out=<path>] [--save] [--confirm]` | Download one key's config. `vpn` (default) and `conf` print to stdout; `qr` writes the PNG a user downloads (to `<id>.png` unless `--out` is given), `qr-svg` the SVG the panel displays to a camera app, `qr-conf` the SVG QR of the plain WireGuard `.conf` text for the AmneziaWG app, and `qr-frames` the in-app-scanner series as `<id>.frame-N.svg`, read by a VPN app's own scanner. `--save` writes the file under the name the panel serves it as — the key's own connection name, e.g. `Frankfurt Main laptop #3.vpn` — instead of printing it; `--out` still wins over it, and it is a no-op for `qr-frames`, which always writes files. `--confirm` is required to read a key you do not own, and is audited as `vpn_key.private_config_viewed` |
 | `node-add --name= --api-url= --api-key-file=<path\|-> [--public-name=] [--protocol=awg3] [--max-peers=N] [--enabled-protocols=awg3,awg2] [--disabled]` | Register a node. `--api-key-file=-` reads the key from stdin; the legacy `--api-key=<key>` still works but exposes the key in `ps` and shell history |
 | `node-update <id> --<field>=<value> …` | Edit a node (name, api-url, api-key-file (or api-key), public-name, protocol, max-peers, enabled, enabled-protocols). `--clear-public-ip` is a flag rather than a field: it forgets the resolved public IP and its timestamp so the worker resolves the node's host again on the next telemetry tick. The panel resolves a host **once** and keeps the answer, because a server's public address does not change under it — this is the recovery for the one case where that assumption breaks, a server moving to a new IP while keeping the same DNS name |
 | `node-remove <id>` | Delete a node. Refused with `409 NODE_HAS_KEYS` while it still has keys (revoked ones count) — disable it, or use the form below |
@@ -247,10 +247,9 @@ read the same thing:
   with a magic number — and silently ignores anything else, however large and
   sharp it is. That is `--format=qr-frames`, and it is the format the panel now
   ships for that scanner. A series of more than one frame is shown in the panel
-  in one of two modes, animated or static. This one format serves **both**
-  clients: DefaultVPN is a fork of amnezia-client and reads a byte-identical
-  envelope, so the panel shows the same code under two labels rather than
-  building a second format.
+  in one of two modes, animated or static. This format is confirmed against
+  AmneziaVPN's scanner; `apps/control-api/src/qrFrames.ts` has the byte-level
+  analysis and records what is (and is not) confirmed for any other client.
 - **The AmneziaWG app** is a third, separate client: it reads neither the chunk
   envelope nor the `vpn://` link, only a plain WireGuard config. That is
   `--format=qr-conf`, a QR of the same text the `conf` file format serves.
@@ -271,7 +270,7 @@ amnezia-panel key-config <key-id> --format=qr-svg --confirm > /tmp/key.svg
 # what the AmneziaWG app sees
 amnezia-panel key-config <key-id> --format=qr-conf --confirm > /tmp/key-awg.svg
 
-# what an in-app scanner sees (AmneziaVPN and DefaultVPN alike)
+# what a VPN app's own in-app scanner sees
 amnezia-panel key-config <key-id> --format=qr-frames --out=/tmp/key --confirm
 ```
 
@@ -287,9 +286,9 @@ laptop, a 24″ 1080p monitor); on a 13″ 1080p laptop with OS scaling turned o
 or on any unscaled high-DPI monitor, the full-screen view is not optional.
 
 If a code will not scan **from inside a VPN app**, size is irrelevant: check
-that the person is looking at the right tab — "VPN app" for AmneziaVPN or
-DefaultVPN, "AmneziaWG" for that app — and not the camera one; the dialog opens
-on the "VPN app" code by default.
+that the person is looking at the right tab — "VPN app" for AmneziaVPN,
+"AmneziaWG" for that app — and not the camera one; the dialog opens on the
+"VPN app" code by default.
 
 The QR is offered only for keys with the `full_tunnel` route profile. The
 blacklist profile carries thousands of routes and is refused with

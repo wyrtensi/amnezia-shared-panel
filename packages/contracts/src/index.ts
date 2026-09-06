@@ -1462,6 +1462,16 @@ export const clientPlatformDownloadSchema = z.object({
    * Russian App Store, behind the DefaultVPN listing that is not.
    */
   alternate: clientAssetSchema.nullable(),
+  /**
+   * A platform's third way in, for the one platform that needs it: iOS gets a
+   * second alternate app, AmneziaWG, a separate WireGuard-style client.
+   * `primary`/`alternate` is a pair because until now no platform needed a
+   * third link; rather than turn every platform's fixed two slots into an
+   * open-ended list nothing else uses, this is one more nullable slot, null
+   * everywhere but iOS. If a platform ever needs a fourth, that is the point to
+   * generalize `alternate`/`secondAlternate` into an array.
+   */
+  secondAlternate: clientAssetSchema.nullable(),
 });
 export type ClientPlatformDownload = z.infer<typeof clientPlatformDownloadSchema>;
 

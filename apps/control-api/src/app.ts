@@ -291,8 +291,10 @@ export const buildApp = async ({
    * The URL is never taken from the request: the platform and the variant are
    * looked up in the release the panel itself resolved, so this cannot be
    * pointed at an arbitrary target. `?variant=alternate` is the platform's
-   * second link -- Android's APK, or the AmneziaVPN listing on iOS. Rendered here rather than in apps/web because the panel
-   * already produces QR codes server-side and the web app ships no QR library.
+   * second link -- Android's APK, or the AmneziaVPN listing on iOS.
+   * `?variant=secondAlternate` is iOS's third link, the AmneziaWG listing.
+   * Rendered here rather than in apps/web because the panel already produces
+   * QR codes server-side and the web app ships no QR library.
    */
   app.get<{ Params: { platform: string }; Querystring: { variant?: string } }>(
     "/api/client-releases/qr/:platform",
@@ -302,12 +304,16 @@ export const buildApp = async ({
       if (!platform.success) {
         return reply.code(404).send({ error: "UNKNOWN_PLATFORM" });
       }
-      // Which of the platform's two links, never the link itself: the URL is
-      // read from the release this panel resolved, so a request can ask for one
-      // of two known destinations and cannot make the panel encode arbitrary
+      // Which of the platform's links, never the link itself: the URL is read
+      // from the release this panel resolved, so a request can ask for one of
+      // a few known destinations and cannot make the panel encode arbitrary
       // content into an image it serves.
       const variant =
-        request.query.variant === "alternate" ? "alternate" : "primary";
+        request.query.variant === "secondAlternate"
+          ? "secondAlternate"
+          : request.query.variant === "alternate"
+            ? "alternate"
+            : "primary";
       const release = await clientReleases.get();
       const download = release.downloads.find(
         (entry) => entry.platform === platform.data,

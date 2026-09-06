@@ -24,6 +24,7 @@ const RESOLVED: CliClientRelease = {
         sizeBytes: 91_991_200,
       },
       alternate: null,
+      secondAlternate: null,
     },
     {
       platform: "android",
@@ -38,6 +39,28 @@ const RESOLVED: CliClientRelease = {
         kind: "installer",
         fileName: "AmneziaVPN_5.0.1.5_android11+_arm64-v8a.apk",
         sizeBytes: 75_586_403,
+      },
+      secondAlternate: null,
+    },
+    {
+      platform: "ios",
+      primary: {
+        url: "https://example.invalid/app/defaultvpn/id6744725017",
+        kind: "store",
+        fileName: null,
+        sizeBytes: null,
+      },
+      alternate: {
+        url: "https://example.invalid/app/amneziavpn/id1600529900",
+        kind: "store",
+        fileName: null,
+        sizeBytes: null,
+      },
+      secondAlternate: {
+        url: "https://example.invalid/app/amneziawg/id6478942365",
+        kind: "store",
+        fileName: null,
+        sizeBytes: null,
       },
     },
   ],
@@ -59,6 +82,7 @@ const FALLBACK: CliClientRelease = {
         sizeBytes: null,
       },
       alternate: null,
+      secondAlternate: null,
     },
   ],
 };
@@ -71,16 +95,31 @@ describe("formatBytes", () => {
 });
 
 describe("clientReleaseRows", () => {
-  it("emits one row per platform, plus a row for an alternate download", () => {
+  it("emits one row per platform, plus a row per alternate download", () => {
     const rows = clientReleaseRows(RESOLVED);
     expect(rows.map((row) => row.platform)).toEqual([
       "windows",
       "android",
       "android",
+      "ios",
+      "ios",
+      "ios",
     ]);
     // The alternate is marked so an operator can tell it from the main route.
     expect(rows[2]?.role).toBe("alternate");
     expect(rows[0]?.role).toBe("primary");
+  });
+
+  it("emits a third row for iOS's secondAlternate (AmneziaWG)", () => {
+    const rows = clientReleaseRows(RESOLVED).filter(
+      (row) => row.platform === "ios",
+    );
+    expect(rows.map((row) => row.role)).toEqual([
+      "primary",
+      "alternate",
+      "secondAlternate",
+    ]);
+    expect(rows[2]?.url).toContain("amneziawg");
   });
 
   it("shows the file name and size of an installer", () => {
