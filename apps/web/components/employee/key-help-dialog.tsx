@@ -142,9 +142,8 @@ export function KeyHelpDialog({
 
           <Step number={5} title={t("wizard.routing")}>
             <Mock>
-              <div className="grid grid-cols-3 gap-1.5">
+              <div className="grid grid-cols-2 gap-1.5">
                 <Tile selected>{t("route.full_tunnel")}</Tile>
-                <Tile>{t("route.ru_whitelist")}</Tile>
                 <Tile>{t("route.ru_blacklist")}</Tile>
               </div>
             </Mock>
@@ -158,13 +157,6 @@ export function KeyHelpDialog({
               {t("keyHelp.routingBody")}
             </Profile>
             <p>{t("keyHelp.profilesIntro")}</p>
-            <Profile
-              tone="caution"
-              name={t("route.ru_whitelist")}
-              badge={t("keyHelp.noGuarantee")}
-            >
-              {t("keyHelp.whitelistBody")}
-            </Profile>
             <Profile
               tone="caution"
               name={t("route.ru_blacklist")}

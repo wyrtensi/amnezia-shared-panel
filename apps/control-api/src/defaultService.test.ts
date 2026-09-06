@@ -74,7 +74,6 @@ const createRepository = (): ControlRepository => ({
   enqueueOwnRotate: vi.fn(() => Promise.resolve()),
   updateOwnCustomRoutes: vi.fn(() =>
     Promise.resolve({
-      ru_whitelist: { cidrs: [], domains: [] },
       ru_blacklist: { cidrs: [], domains: [] },
     }),
   ),
@@ -287,7 +286,6 @@ describe("default control service policy enforcement", () => {
         payload: { cidrs: ["10.0.0.0/8"], domains: ["blocked.ru"] },
       },
       customRoutes: {
-        ru_whitelist: { cidrs: [], domains: [] },
         ru_blacklist: { cidrs: ["10.0.0.0/8", "203.0.113.0/24"], domains: [] },
       },
     });
@@ -316,10 +314,6 @@ describe("default control service policy enforcement", () => {
       },
     });
     vi.mocked(repository.getGlobalRoutes).mockResolvedValue({
-      ru_whitelist: {
-        add: { cidrs: [], domains: [] },
-        exclude: { cidrs: [], domains: [] },
-      },
       ru_blacklist: {
         add: { cidrs: ["198.51.100.0/24"], domains: [] },
         // The domain half of a stored override is inert: it neither adds nor
@@ -349,15 +343,10 @@ describe("default control service policy enforcement", () => {
         payload: { cidrs: ["10.0.0.0/8"], domains: [] },
       },
       customRoutes: {
-        ru_whitelist: { cidrs: [], domains: [] },
         ru_blacklist: { cidrs: ["10.0.0.0/8"], domains: [] },
       },
     });
     vi.mocked(repository.getGlobalRoutes).mockResolvedValue({
-      ru_whitelist: {
-        add: { cidrs: [], domains: [] },
-        exclude: { cidrs: [], domains: [] },
-      },
       ru_blacklist: {
         add: { cidrs: [], domains: [] },
         exclude: { cidrs: ["10.0.0.0/8"], domains: [] },
@@ -577,14 +566,14 @@ describe("simple-key QR rendering", () => {
 });
 
 // Chunking removes the capacity limit that makes `qr` and `qr-svg` refuse a
-// split-tunnel config, so `qr-frames` would otherwise answer a whitelist key
+// split-tunnel config, so `qr-frames` would otherwise answer a blacklist key
 // with dozens of codes where every other QR format gives it a 422. Pinned
 // because the failure is silent: a valid, useless response.
 describe("the AmneziaVPN series refuses a config nobody could scan", () => {
   it("returns 422 rather than dozens of frames", async () => {
     const repository = createRepository();
     // ~20 KB of payload: 24 frames at the client's 850-byte chunk size, which
-    // is the scale a real whitelist config reaches.
+    // is the scale a real blacklist config reaches.
     const huge = encryptSecret(
       `vpn://${"A".repeat(28000)}`,
       keyring,

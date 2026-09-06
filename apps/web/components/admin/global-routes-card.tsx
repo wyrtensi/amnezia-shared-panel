@@ -20,11 +20,10 @@ import type { GlobalRouteProfile, GlobalRoutes } from "@amnezia/contracts";
 type Profile = keyof GlobalRoutes;
 type Section = keyof GlobalRouteProfile;
 
-const PROFILES: Profile[] = ["ru_whitelist", "ru_blacklist"];
+const PROFILES: Profile[] = ["ru_blacklist"];
 const SECTIONS: Section[] = ["add", "exclude"];
 
 const PROFILE_LABEL: Record<Profile, string> = {
-  ru_whitelist: "route.ru_whitelist",
   ru_blacklist: "route.ru_blacklist",
 };
 const SECTION_TITLE: Record<Section, string> = {
@@ -175,7 +174,7 @@ export function GlobalRoutesCard() {
                 ))}
               </div>
             ) : (
-              <Tabs defaultValue="ru_whitelist">
+              <Tabs defaultValue="ru_blacklist">
                 <TabsList>
                   {PROFILES.map((profile) => (
                     <TabsTrigger key={profile} value={profile}>

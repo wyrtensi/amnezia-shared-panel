@@ -742,7 +742,6 @@ describe("route rules take addresses, not site names", () => {
   // Refusing before the request matters more than the wording: a silent no-op
   // would leave a script reporting success over a change that never happened.
   for (const [command, flag] of [
-    ["user-routes", "wl-domains"],
     ["user-routes", "bl-domains"],
     ["global-routes-set", "add-domains"],
     ["global-routes-set", "exclude-domains"],
@@ -754,7 +753,7 @@ describe("route rules take addresses, not site names", () => {
           command,
           ...(command === "user-routes"
             ? ["ann@company.tld"]
-            : ["--profile=ru_whitelist"]),
+            : ["--profile=ru_blacklist"]),
           `--${flag}=example.com`,
         ]),
       ).rejects.toThrow(new RegExp(`--${flag}: no longer accepted`));
@@ -765,23 +764,21 @@ describe("route rules take addresses, not site names", () => {
   it("names the way that does work instead of just saying no", async () => {
     stubFetch([{ body: {} }]);
     await expect(
-      run(["user-routes", "ann@company.tld", "--wl-domains=example.com"]),
+      run(["user-routes", "ann@company.tld", "--bl-domains=example.com"]),
     ).rejects.toThrow(/full_tunnel key[\s\S]*AmneziaVPN app/);
   });
 
-  it("user-routes still writes the address lists, with no domains", async () => {
+  it("user-routes still writes the address list, with no domains", async () => {
     const calls = stubFetch([{ body: { id: "u1" } }]);
     await run([
       "user-routes",
       "11111111-1111-1111-1111-111111111111",
-      "--wl-cidrs=1.2.3.4,10.0.0.0/8",
+      "--bl-cidrs=1.2.3.4,10.0.0.0/8",
     ]);
     const body = JSON.parse(calls[0]?.init?.body as string) as {
-      ru_whitelist: { cidrs: string[]; domains: string[] };
       ru_blacklist: { cidrs: string[]; domains: string[] };
     };
-    expect(body.ru_whitelist.cidrs).toEqual(["1.2.3.4", "10.0.0.0/8"]);
-    expect(body.ru_whitelist.domains).toEqual([]);
+    expect(body.ru_blacklist.cidrs).toEqual(["1.2.3.4", "10.0.0.0/8"]);
     expect(body.ru_blacklist.domains).toEqual([]);
   });
 
@@ -792,12 +789,8 @@ describe("route rules take addresses, not site names", () => {
       {
         body: [
           {
-            ru_whitelist: {
-              add: { cidrs: ["1.2.3.0/24"], domains: ["example.com"] },
-              exclude: { cidrs: [], domains: [] },
-            },
             ru_blacklist: {
-              add: { cidrs: [], domains: [] },
+              add: { cidrs: ["1.2.3.0/24"], domains: ["example.com"] },
               exclude: { cidrs: [], domains: [] },
             },
           },
@@ -816,13 +809,9 @@ describe("route rules take addresses, not site names", () => {
       {
         body: [
           {
-            ru_whitelist: {
-              add: { cidrs: [], domains: ["example.com"] },
-              exclude: { cidrs: [], domains: ["ads.example.net"] },
-            },
             ru_blacklist: {
               add: { cidrs: [], domains: ["other.example"] },
-              exclude: { cidrs: [], domains: [] },
+              exclude: { cidrs: [], domains: ["ads.example.net"] },
             },
           },
         ],
@@ -831,7 +820,7 @@ describe("route rules take addresses, not site names", () => {
     ]);
     await run([
       "global-routes-set",
-      "--profile=ru_whitelist",
+      "--profile=ru_blacklist",
       "--add-cidrs=203.0.113.0/24",
     ]);
     const sent = JSON.parse(calls[1]?.init?.body as string) as Record<
@@ -841,12 +830,9 @@ describe("route rules take addresses, not site names", () => {
         exclude: { domains: string[] };
       }
     >;
-    expect(sent.ru_whitelist?.add.cidrs).toEqual(["203.0.113.0/24"]);
-    expect(sent.ru_whitelist?.add.domains).toEqual([]);
-    expect(sent.ru_whitelist?.exclude.domains).toEqual([]);
-    // The untouched profile loses its dead entries too: the endpoint replaces
-    // the whole object, so leaving them in would write them straight back.
+    expect(sent.ru_blacklist?.add.cidrs).toEqual(["203.0.113.0/24"]);
     expect(sent.ru_blacklist?.add.domains).toEqual([]);
+    expect(sent.ru_blacklist?.exclude.domains).toEqual([]);
   });
 });
 

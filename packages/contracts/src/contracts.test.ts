@@ -346,7 +346,7 @@ describe("isIpLiteral", () => {
 });
 
 describe("customRoutesSchema", () => {
-  it("normalizes bare IPs, trims, lowercases, and defaults both profiles", () => {
+  it("normalizes bare IPs, trims, lowercases, and defaults an omitted profile", () => {
     const parsed = customRoutesSchema.parse({
       ru_blacklist: {
         cidrs: [" 1.2.3.4 ", "10.0.0.0/8", "2001:db8::"],
@@ -362,16 +362,19 @@ describe("customRoutesSchema", () => {
       "example.com",
       "sub.example.org",
     ]);
-    // The omitted profile is filled with empty lists.
-    expect(parsed.ru_whitelist).toEqual({ cidrs: [], domains: [] });
+    // An omitted profile is filled with empty lists.
+    expect(customRoutesSchema.parse({}).ru_blacklist).toEqual({
+      cidrs: [],
+      domains: [],
+    });
   });
 
   it("rejects malformed CIDRs and domains", () => {
     expect(() =>
-      customRoutesSchema.parse({ ru_whitelist: { cidrs: ["10.0.0.0/33"] } }),
+      customRoutesSchema.parse({ ru_blacklist: { cidrs: ["10.0.0.0/33"] } }),
     ).toThrow();
     expect(() =>
-      customRoutesSchema.parse({ ru_whitelist: { domains: ["*.example.com"] } }),
+      customRoutesSchema.parse({ ru_blacklist: { domains: ["*.example.com"] } }),
     ).toThrow();
   });
 });
@@ -482,12 +485,8 @@ describe("composeKeyDisplayName", () => {
 });
 
 describe("globalRoutesSchema", () => {
-  it("defaults both profiles to empty add/exclude lists", () => {
+  it("defaults the profile to empty add/exclude lists", () => {
     expect(globalRoutesSchema.parse({})).toEqual({
-      ru_whitelist: {
-        add: { cidrs: [], domains: [] },
-        exclude: { cidrs: [], domains: [] },
-      },
       ru_blacklist: {
         add: { cidrs: [], domains: [] },
         exclude: { cidrs: [], domains: [] },
@@ -497,26 +496,22 @@ describe("globalRoutesSchema", () => {
 
   it("normalizes entries exactly like the per-user custom routes do", () => {
     const parsed = globalRoutesSchema.parse({
-      ru_whitelist: {
+      ru_blacklist: {
         add: { cidrs: [" 1.2.3.4 "], domains: ["Example.COM"] },
         exclude: { cidrs: ["2001:db8::"], domains: [" sub.example.org "] },
       },
     });
 
-    expect(parsed.ru_whitelist.add.cidrs).toEqual(["1.2.3.4/32"]);
-    expect(parsed.ru_whitelist.add.domains).toEqual(["example.com"]);
-    expect(parsed.ru_whitelist.exclude.cidrs).toEqual(["2001:db8::/128"]);
-    expect(parsed.ru_whitelist.exclude.domains).toEqual(["sub.example.org"]);
-    expect(parsed.ru_blacklist).toEqual({
-      add: { cidrs: [], domains: [] },
-      exclude: { cidrs: [], domains: [] },
-    });
+    expect(parsed.ru_blacklist.add.cidrs).toEqual(["1.2.3.4/32"]);
+    expect(parsed.ru_blacklist.add.domains).toEqual(["example.com"]);
+    expect(parsed.ru_blacklist.exclude.cidrs).toEqual(["2001:db8::/128"]);
+    expect(parsed.ru_blacklist.exclude.domains).toEqual(["sub.example.org"]);
   });
 
   it("rejects malformed CIDRs and wildcard domains", () => {
     expect(
       globalRoutesSchema.safeParse({
-        ru_whitelist: { add: { cidrs: ["10.0.0.0/33"] } },
+        ru_blacklist: { add: { cidrs: ["10.0.0.0/33"] } },
       }).success,
     ).toBe(false);
     expect(
@@ -532,11 +527,11 @@ describe("globalRoutesSchema", () => {
       (_, index) => `10.${Math.floor(index / 256)}.${index % 256}.0/24`,
     );
     expect(
-      globalRoutesSchema.safeParse({ ru_whitelist: { add: { cidrs } } }).success,
+      globalRoutesSchema.safeParse({ ru_blacklist: { add: { cidrs } } }).success,
     ).toBe(true);
     expect(
       globalRoutesSchema.safeParse({
-        ru_whitelist: { add: { cidrs: [...cidrs, "203.0.113.0/24"] } },
+        ru_blacklist: { add: { cidrs: [...cidrs, "203.0.113.0/24"] } },
       }).success,
     ).toBe(false);
 
@@ -555,7 +550,7 @@ describe("globalRoutesSchema", () => {
   it("still parses a stored payload that carries domains", () => {
     expect(
       globalRoutesSchema.safeParse({
-        ru_whitelist: { add: { domains: ["example.com"] } },
+        ru_blacklist: { add: { domains: ["example.com"] } },
       }).success,
     ).toBe(true);
   });
@@ -565,7 +560,7 @@ describe("route rules refuse site names on write", () => {
   it("lets the admin update through when every list is addresses only", () => {
     expect(
       updateGlobalRoutesRequestSchema.safeParse({
-        ru_whitelist: { add: { cidrs: ["1.2.3.4"] } },
+        ru_blacklist: { add: { cidrs: ["1.2.3.4"] } },
       }).success,
     ).toBe(true);
   });
@@ -587,11 +582,11 @@ describe("route rules refuse site names on write", () => {
 
   it("refuses a per-user list that carries a domain, and says where to go", () => {
     const result = updateCustomRoutesRequestSchema.safeParse({
-      ru_whitelist: { cidrs: ["1.2.3.4"], domains: ["example.com"] },
+      ru_blacklist: { cidrs: ["1.2.3.4"], domains: ["example.com"] },
     });
     expect(result.success).toBe(false);
     expect(result.error?.issues[0]?.message).toBe(ROUTE_DOMAINS_UNSUPPORTED);
-    expect(result.error?.issues[0]?.path).toEqual(["ru_whitelist", "domains"]);
+    expect(result.error?.issues[0]?.path).toEqual(["ru_blacklist", "domains"]);
     // The refusal has to name the way that does work, or it is just a wall.
     expect(ROUTE_DOMAINS_UNSUPPORTED).toContain("full-traffic key");
     expect(ROUTE_DOMAINS_UNSUPPORTED).toContain("AmneziaVPN app");
@@ -600,7 +595,7 @@ describe("route rules refuse site names on write", () => {
   it("lets a per-user update through once the domains are cleared", () => {
     expect(
       updateCustomRoutesRequestSchema.safeParse({
-        ru_whitelist: { cidrs: ["1.2.3.4"], domains: [] },
+        ru_blacklist: { cidrs: ["1.2.3.4"], domains: [] },
       }).success,
     ).toBe(true);
   });

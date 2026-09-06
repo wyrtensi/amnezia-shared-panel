@@ -407,11 +407,10 @@ export function ConfigDownloadDialog({
               target.routeProfile !== "full_tunnel" ? (
                 // Split-tunnel profiles carry thousands of routes/domains, so a
                 // QR is not merely dense — it does not exist. Measured on the
-                // shipped feeds: ru_whitelist is a 59 745-character link and
-                // ru_blacklist a 1 787 465-character one, against a hard QR
-                // ceiling of ~2 900 bytes at any error-correction level. The
-                // copy says the reason rather than only the refusal, and points
-                // at the copy button above.
+                // shipped feeds: ru_blacklist is a 1 787 465-character link,
+                // against a hard QR ceiling of ~2 900 bytes at any
+                // error-correction level. The copy says the reason rather than
+                // only the refusal, and points at the copy button above.
                 <div className="rounded-xl border border-dashed bg-muted/40 p-4 text-center">
                   <QrCode className="mx-auto mb-2 h-8 w-8 text-muted-foreground" />
                   <p className="text-sm font-medium">

@@ -36,12 +36,10 @@ export type PortalPolicy = {
 // Per-user extra routes layered on a split-tunnel profile's base feed.
 export type CustomRouteList = { cidrs: string[]; domains: string[] };
 export type CustomRoutes = {
-  ru_whitelist: CustomRouteList;
   ru_blacklist: CustomRouteList;
 };
 
 export const EMPTY_CUSTOM_ROUTES: CustomRoutes = {
-  ru_whitelist: { cidrs: [], domains: [] },
   ru_blacklist: { cidrs: [], domains: [] },
 };
 
@@ -197,7 +195,7 @@ export type KeyView = {
   traffic?: KeyTraffic;
 };
 
-export type RouteProfile = "full_tunnel" | "ru_whitelist" | "ru_blacklist";
+export type RouteProfile = "full_tunnel" | "ru_blacklist";
 
 export type RouteProfileAvailability = {
   profile: RouteProfile;

@@ -42,7 +42,6 @@ export const keyStateEnum = pgEnum("key_state", [
 ]);
 export const routeProfileEnum = pgEnum("route_profile", [
   "full_tunnel",
-  "ru_whitelist",
   "ru_blacklist",
 ]);
 // Mirrors `deviceTypeSchema` in @amnezia/contracts, value for value and in the
@@ -101,7 +100,7 @@ export const users = pgTable(
     nodeKeyLimits: jsonb("node_key_limits").$type<NodeKeyLimits>(),
     policyOverride: jsonb("policy_override").$type<PortalPolicyOverride>(),
     // Per-user extra routes layered on a split-tunnel profile's base feed at
-    // export time (null = none). Keyed by profile: { ru_whitelist, ru_blacklist }.
+    // export time (null = none). Keyed by profile: { ru_blacklist }.
     customRoutes: jsonb("custom_routes").$type<CustomRoutes>(),
     disabledAt: timestamp("disabled_at", { withTimezone: true }),
     // Why the account is disabled, e.g. "admin_offboard" or "access_removed"
@@ -777,10 +776,6 @@ export const globalRouteOverrides = pgTable(
     payload: jsonb("payload")
       .$type<GlobalRoutes>()
       .default({
-        ru_whitelist: {
-          add: { cidrs: [], domains: [] },
-          exclude: { cidrs: [], domains: [] },
-        },
         ru_blacklist: {
           add: { cidrs: [], domains: [] },
           exclude: { cidrs: [], domains: [] },

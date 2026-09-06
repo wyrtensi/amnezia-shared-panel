@@ -89,7 +89,7 @@ describe("feed source parsing", () => {
   });
 });
 
-describe("RoscomVPN rule ingestion", () => {
+describe("rule feed ingestion", () => {
   const sourceBody = JSON.stringify({
     cidrs: ["203.0.113.0/24"],
     domains: ["example.ru"],
@@ -113,9 +113,9 @@ describe("RoscomVPN rule ingestion", () => {
   });
 
   const jsonFeed = {
-    profile: "ru_whitelist" as const,
+    profile: "ru_blacklist" as const,
     sources: [
-      { url: "https://rules.example/roscomvpn.json", format: "json" as const },
+      { url: "https://rules.example/blacklist.json", format: "json" as const },
     ],
     pocApproved: true,
   };
@@ -159,7 +159,7 @@ describe("RoscomVPN rule ingestion", () => {
     const quarantined = vi.mocked(repository.storeQuarantinedRule).mock
       .calls[0]?.[0];
     expect(quarantined).toMatchObject({
-      profile: "ru_whitelist",
+      profile: "ru_blacklist",
       version: checksum,
       checksum,
     });
@@ -327,13 +327,10 @@ describe("RoscomVPN rule ingestion", () => {
 describe("resolveRuleFeeds", () => {
   const approveAll = () => true;
 
-  it("falls back to the built-in RoscomVPN feeds when nothing is configured", () => {
+  it("falls back to the built-in feeds when nothing is configured", () => {
     const feeds = resolveRuleFeeds({}, approveAll);
 
-    expect(feeds.map((feed) => feed.profile)).toEqual([
-      "ru_blacklist",
-      "ru_whitelist",
-    ]);
+    expect(feeds.map((feed) => feed.profile)).toEqual(["ru_blacklist"]);
     // The defaults must be usable as-is, not placeholders an operator has to fix.
     for (const feed of feeds) {
       expect(feed.sources.length).toBeGreaterThan(0);
@@ -353,7 +350,7 @@ describe("resolveRuleFeeds", () => {
       {
         RULE_FEEDS: JSON.stringify([
           {
-            profile: "ru_whitelist",
+            profile: "ru_blacklist",
             sources: [{ url: "https://example.com/a.lst", format: "cidr-lines" }],
           },
         ]),
@@ -363,57 +360,21 @@ describe("resolveRuleFeeds", () => {
 
     expect(feeds).toEqual([
       {
-        profile: "ru_whitelist",
+        profile: "ru_blacklist",
         sources: [{ url: "https://example.com/a.lst", format: "cidr-lines" }],
         pocApproved: true,
       },
     ]);
   });
 
-  it("still layers the legacy URL on top of a RULE_FEEDS without a whitelist", () => {
-    const feeds = resolveRuleFeeds(
-      {
-        RULE_FEEDS: JSON.stringify([
-          {
-            profile: "ru_blacklist",
-            sources: [{ url: "https://example.com/b.lst", format: "cidr-lines" }],
-          },
-        ]),
-        ROSCOMVPN_RULES_URL: "https://example.com/legacy.json",
-      },
-      approveAll,
-    );
-
-    expect(feeds.map((feed) => feed.profile)).toEqual([
-      "ru_blacklist",
-      "ru_whitelist",
-    ]);
-    expect(feeds[1]?.sources).toEqual([
-      { url: "https://example.com/legacy.json", format: "json" },
-    ]);
-  });
-
-  it("uses the legacy URL alone rather than the defaults", () => {
-    const feeds = resolveRuleFeeds(
-      { ROSCOMVPN_RULES_URL: "https://example.com/legacy.json" },
-      approveAll,
-    );
-
-    expect(feeds).toHaveLength(1);
-    expect(feeds[0]?.profile).toBe("ru_whitelist");
-  });
-
-  it("carries the per-profile approval gate onto the defaults", () => {
-    const feeds = resolveRuleFeeds(
-      {},
-      (profile) => profile !== "ru_blacklist",
-    );
+  it("carries the approval gate onto the defaults", () => {
+    const feeds = resolveRuleFeeds({}, () => false);
 
     expect(
       Object.fromEntries(
         feeds.map((feed) => [feed.profile, feed.pocApproved]),
       ),
-    ).toEqual({ ru_blacklist: false, ru_whitelist: true });
+    ).toEqual({ ru_blacklist: false });
   });
 
   it("throws on malformed configuration instead of silently using the defaults", () => {
@@ -433,7 +394,7 @@ describe("resolveRuleFeeds", () => {
       resolveRuleFeeds(
         {
           RULE_FEEDS: JSON.stringify([
-            { profile: "ru_whitelist", sources: [{ url: "x", format: "bad" }] },
+            { profile: "ru_blacklist", sources: [{ url: "x", format: "bad" }] },
           ]),
         },
         approveAll,

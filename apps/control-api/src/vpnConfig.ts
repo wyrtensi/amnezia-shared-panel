@@ -1,11 +1,33 @@
 import { deflateSync, inflateSync } from "node:zlib";
 import type { RouteProfile } from "@amnezia/contracts";
-import {
-  complementForTunnel,
-  MAX_TUNNEL_ROUTES,
-  WARN_TUNNEL_ROUTES,
-  WHITELIST_GAP_MERGE,
-} from "./routeComplement.js";
+
+/**
+ * The most routes a profile may put in AllowedIPs.
+ *
+ * Measured on a device: a 6712-route config crossed Binder as a 941 096-byte
+ * parcel — 94% of the ~1 MB a transaction gets, and it connected. Past the
+ * limit the client drops the message and the profile never connects, with no
+ * error anywhere, so 6800 is close to the edge by design: it is the largest
+ * list observed to work, not a safe distance from it.
+ *
+ * That is why crossing WARN_TUNNEL_ROUTES is logged. There is no margin left
+ * to absorb a feed that grows again, and the log line is the only warning
+ * anyone gets before keys start coming out as full tunnels.
+ *
+ * Feeds grow, and a blacklist has no lever to shorten itself — dropping
+ * entries would send that traffic outside the tunnel, which is the failure
+ * the profile exists to prevent. So a profile that still cannot fit degrades
+ * to the full tunnel rather than shipping a config that silently refuses to
+ * connect.
+ */
+export const MAX_TUNNEL_ROUTES = 6800;
+
+/**
+ * Where a profile stops having comfortable headroom, and every export starts
+ * saying so in the log. Below this a feed can still grow without anyone having
+ * to act; above it, the next growth is what turns keys into full tunnels.
+ */
+export const WARN_TUNNEL_ROUTES = 5500;
 
 /**
  * The route budget is invisible until a key stops working, so every crossing
@@ -152,35 +174,10 @@ export const applyRouteProfileToVpnLink = (
 
   // ru_blacklist lists what belongs in the tunnel, so its CIDRs are AllowedIPs
   // as they stand, and the DNS servers have to be named or they would not be
-  // routed at all. ru_whitelist lists what must stay OUT of the tunnel, and
-  // AllowedIPs cannot express "except" — so the peer is handed the inverse
-  // instead, plus ::/0 because the whitelist feed is IPv4-only and every v6
-  // route still belongs in the tunnel. DNS is deliberately not re-added there:
-  // the complement already carries it, and naming it would drag a resolver the
-  // operator put on the bypass list back into the tunnel.
-  let combinedCidrs: string[];
-  if (profile === "ru_whitelist") {
-    const complement = complementForTunnel(rulePayload.cidrs || []);
-    // A feed too fragmented to invert within the budget cannot be shipped as a
-    // whitelist at all. The full tunnel is the safe reading of "protect this
-    // key" — it tunnels more than asked, where the alternative tunnels nothing.
-    if (!complement) {
-      warnRouteBudget(
-        `${profile}: ${rulePayload.cidrs.length} feed CIDRs cannot be inverted within ${MAX_TUNNEL_ROUTES} routes; key exported as a full tunnel`,
-      );
-      return vpnLink;
-    }
-    if (complement.gap > WHITELIST_GAP_MERGE) {
-      warnRouteBudget(
-        `${profile}: gap merging widened to ${complement.gap} addresses to fit ${complement.routes.length} routes; more of the feed's neighbourhood now bypasses the tunnel`,
-      );
-    }
-    combinedCidrs = [...new Set([...complement.routes, "::/0"])].filter(Boolean);
-  } else {
-    combinedCidrs = [
-      ...new Set([...(rulePayload.cidrs || []), ...dnsCidrs]),
-    ].filter(Boolean);
-  }
+  // routed at all.
+  const combinedCidrs = [
+    ...new Set([...(rulePayload.cidrs || []), ...dnsCidrs]),
+  ].filter(Boolean);
 
   // Feeds grow, and a blacklist has no lever to shorten itself: dropping
   // entries would send that traffic outside the tunnel, which is the failure

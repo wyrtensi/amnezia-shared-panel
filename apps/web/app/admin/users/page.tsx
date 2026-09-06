@@ -111,7 +111,6 @@ import { useT } from "@/lib/i18n/provider";
 
 const PROFILE_LABEL: Record<string, string> = {
   full_tunnel: "route.full_tunnel",
-  ru_whitelist: "route.ru_whitelist",
   ru_blacklist: "route.ru_blacklist",
 };
 const PROTOCOL_LABEL: Record<string, string> = {
@@ -2481,7 +2480,6 @@ function PolicyDialog({
 
 const ADMIN_ROUTE_OPTIONS: Array<[string, string]> = [
   ["full_tunnel", "route.full_tunnel"],
-  ["ru_whitelist", "route.ru_whitelist"],
   ["ru_blacklist", "route.ru_blacklist"],
 ];
 

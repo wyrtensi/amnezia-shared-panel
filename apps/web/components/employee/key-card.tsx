@@ -40,14 +40,12 @@ import type { KeyView, Me, NodeView } from "@/lib/types";
 
 const ROUTE_LABEL: Record<string, string> = {
   full_tunnel: "route.full_tunnel",
-  ru_whitelist: "route.ru_whitelist",
   ru_blacklist: "route.ru_blacklist",
 };
 
 // Longer explanation shown on hover over the route chip.
 const ROUTE_DESC: Record<string, string> = {
   full_tunnel: "wizard.route.full_tunnel.desc",
-  ru_whitelist: "wizard.route.ru_whitelist.desc",
   ru_blacklist: "wizard.route.ru_blacklist.desc",
 };
 

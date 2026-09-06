@@ -1934,14 +1934,10 @@ function assertNoDomainFlags(args: string[], flags: string[]): void {
 async function cmdUserRoutes(args: string[]): Promise<void> {
   const pos = positionals(args);
   const usage =
-    "Usage: user-routes <id|email> [--wl-cidrs=…] [--bl-cidrs=…]  (replaces the user's custom routes; addresses only)";
-  assertNoDomainFlags(args, ["wl-domains", "bl-domains"]);
+    "Usage: user-routes <id|email> [--bl-cidrs=…]  (replaces the user's custom routes; addresses only)";
+  assertNoDomainFlags(args, ["bl-domains"]);
   const id = await resolveUserId(pos[0], usage);
   const body = {
-    ru_whitelist: {
-      cidrs: csvList(flagOf(args, "wl-cidrs") ?? ""),
-      domains: [],
-    },
     ru_blacklist: {
       cidrs: csvList(flagOf(args, "bl-cidrs") ?? ""),
       domains: [],
@@ -1954,7 +1950,7 @@ async function cmdUserRoutes(args: string[]): Promise<void> {
 async function cmdUserCreateKey(args: string[]): Promise<void> {
   const pos = positionals(args);
   const usage =
-    `Usage: user-create-key <id|email> --node=<uuid> [--device=<label>] [--protocol=awg3|awg2] [--route=full_tunnel|ru_whitelist|ru_blacklist] [${deviceTypeUsage()}] [--name-server=true|false] [--name-label=true|false] [--name-number=true|false]\n  --device-type=ios with a --route other than full_tunnel is warned about: route profiles do not filter on iPhone or iPad.`;
+    `Usage: user-create-key <id|email> --node=<uuid> [--device=<label>] [--protocol=awg3|awg2] [--route=full_tunnel|ru_blacklist] [${deviceTypeUsage()}] [--name-server=true|false] [--name-label=true|false] [--name-number=true|false]\n  --device-type=ios with a --route other than full_tunnel is warned about: route profiles do not filter on iPhone or iPad.`;
   const id = await resolveUserId(pos[0], usage);
   const nodeId = flagOf(args, "node");
   if (!nodeId) throw new Error(usage);
@@ -2066,7 +2062,7 @@ function parseBoolFlag(name: string, value: string): boolean {
 
 type GlobalRouteList = { cidrs: string[]; domains: string[] };
 type GlobalRouteProfile = { add: GlobalRouteList; exclude: GlobalRouteList };
-type GlobalRoutes = Record<"ru_whitelist" | "ru_blacklist", GlobalRouteProfile>;
+type GlobalRoutes = Record<"ru_blacklist", GlobalRouteProfile>;
 
 const emptyRouteList = (): GlobalRouteList => ({ cidrs: [], domains: [] });
 const emptyRouteProfile = (): GlobalRouteProfile => ({
@@ -2078,7 +2074,6 @@ async function fetchGlobalRoutes(): Promise<GlobalRoutes> {
   const rows = await api<GlobalRoutes[]>("/api/admin/global-routes");
   const current = rows[0];
   return {
-    ru_whitelist: current?.ru_whitelist ?? emptyRouteProfile(),
     ru_blacklist: current?.ru_blacklist ?? emptyRouteProfile(),
   };
 }
@@ -2086,7 +2081,7 @@ async function fetchGlobalRoutes(): Promise<GlobalRoutes> {
 async function cmdGlobalRoutes(args: string[]): Promise<void> {
   const routes = await fetchGlobalRoutes();
   if (wantsJson(args)) return json(routes);
-  for (const profile of ["ru_whitelist", "ru_blacklist"] as const) {
+  for (const profile of ["ru_blacklist"] as const) {
     const entry = routes[profile];
     console.log(profile);
     for (const bucket of ["add", "exclude"] as const) {
@@ -2108,10 +2103,10 @@ async function cmdGlobalRoutes(args: string[]): Promise<void> {
 
 async function cmdGlobalRoutesSet(args: string[]): Promise<void> {
   const usage =
-    "Usage: global-routes-set --profile=ru_whitelist|ru_blacklist [--add-cidrs=a,b] [--exclude-cidrs=...]  (each list given REPLACES that list; addresses only)";
+    "Usage: global-routes-set --profile=ru_blacklist [--add-cidrs=a,b] [--exclude-cidrs=...]  (each list given REPLACES that list; addresses only)";
   assertNoDomainFlags(args, ["add-domains", "exclude-domains"]);
   const profile = flagOf(args, "profile");
-  if (profile !== "ru_whitelist" && profile !== "ru_blacklist") {
+  if (profile !== "ru_blacklist") {
     throw new Error(usage);
   }
   // The endpoint replaces the whole object, so read first and patch in place to
@@ -2163,7 +2158,7 @@ async function fetchRuleVersions(): Promise<RuleVersionView[]> {
   return api<RuleVersionView[]>("/api/admin/rules");
 }
 
-const RULE_PROFILE_ORDER = ["ru_whitelist", "ru_blacklist", "full_tunnel"];
+const RULE_PROFILE_ORDER = ["ru_blacklist", "full_tunnel"];
 
 const ruleProfileRank = (profile: string): number => {
   const rank = RULE_PROFILE_ORDER.indexOf(profile);
@@ -2409,12 +2404,12 @@ Users (accept a user id OR email):
   user-nodes <id|email> <all|none|uuid,…>  Per-user node availability (all=every node; overrides global).
                                          REPLACES the whole per-user policy override; use
                                          user-limit --allowed-nodes to change only availability.
-  user-routes <id|email> [--wl-cidrs=] [--bl-cidrs=]  Replace a user's custom routes.
-                                         Addresses only — --wl-domains / --bl-domains are
-                                         refused: a site name in a route rule never reaches
-                                         the client. For rules by site name use a full_tunnel
-                                         key and the AmneziaVPN app's own site-based split
-                                         tunnelling (Settings -> Connection).
+  user-routes <id|email> [--bl-cidrs=]  Replace a user's custom routes.
+                                         Addresses only — --bl-domains is refused: a site
+                                         name in a route rule never reaches the client. For
+                                         rules by site name use a full_tunnel key and the
+                                         AmneziaVPN app's own site-based split tunnelling
+                                         (Settings -> Connection).
   user-create-key <id|email> --node=<uuid> [--device=] [--protocol=awg3] [--route=full_tunnel]
                   [${deviceTypeUsage()}]
                   [--name-server=true|false] [--name-label=true|false] [--name-number=true|false]
@@ -2543,7 +2538,7 @@ Write:
                                           users --domain=<d> first. A rejected domain shows
                                           the API's own reason.
   policy-set --<field>=<value> …          Set any panel setting(s), see below
-  global-routes-set --profile=ru_whitelist|ru_blacklist [--add-cidrs=] [--exclude-cidrs=]
+  global-routes-set --profile=ru_blacklist [--add-cidrs=] [--exclude-cidrs=]
                                           Admin-wide route overrides for a split-tunnel profile.
                                           Each list given REPLACES that list; omitted lists stay.
                                           Exclusions drop feed entries; a user's own custom

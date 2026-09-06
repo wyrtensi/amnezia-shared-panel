@@ -34,7 +34,6 @@ const createService = (): ControlApiService => ({
   rotateOwnKey: vi.fn(() => Promise.resolve()),
   updateMyCustomRoutes: vi.fn(() =>
     Promise.resolve({
-      ru_whitelist: { cidrs: [], domains: [] },
       ru_blacklist: { cidrs: [], domains: [] },
     }),
   ),
@@ -512,7 +511,7 @@ describe("custom routes take addresses, not site names", () => {
       method: "PUT",
       url: "/api/me/custom-routes",
       headers: { "x-dev-user-email": user.email },
-      payload: { ru_whitelist: { cidrs: ["203.0.113.0/24"], domains: [] } },
+      payload: { ru_blacklist: { cidrs: ["203.0.113.0/24"], domains: [] } },
     });
 
     expect(response.statusCode).toBe(200);
@@ -535,7 +534,7 @@ describe("custom routes take addresses, not site names", () => {
       method: "PUT",
       url: "/api/me/custom-routes",
       headers: { "x-dev-user-email": user.email },
-      payload: { ru_whitelist: { cidrs: [], domains: ["example.com"] } },
+      payload: { ru_blacklist: { cidrs: [], domains: ["example.com"] } },
     });
 
     expect(response.statusCode).toBe(400);
@@ -545,7 +544,7 @@ describe("custom routes take addresses, not site names", () => {
     } = response.json();
     expect(body.error).toBe("VALIDATION_ERROR");
     expect(body.issues[0]?.message).toBe(ROUTE_DOMAINS_UNSUPPORTED);
-    expect(body.issues[0]?.path).toEqual(["ru_whitelist", "domains"]);
+    expect(body.issues[0]?.path).toEqual(["ru_blacklist", "domains"]);
     expect(service.updateMyCustomRoutes).not.toHaveBeenCalled();
     await app.close();
   });
@@ -553,13 +552,9 @@ describe("custom routes take addresses, not site names", () => {
 
 describe("admin global route overrides", () => {
   const globalRoutes = {
-    ru_whitelist: {
+    ru_blacklist: {
       add: { cidrs: ["203.0.113.0/24"], domains: [] },
       exclude: { cidrs: [], domains: ["example.com"] },
-    },
-    ru_blacklist: {
-      add: { cidrs: [], domains: [] },
-      exclude: { cidrs: [], domains: [] },
     },
   };
 

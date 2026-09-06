@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { messages } from "./i18n/messages";
 import { routeProfileChoice } from "./route-profile-choice";
 
-const PROFILES = ["full_tunnel", "ru_whitelist", "ru_blacklist"] as const;
+const PROFILES = ["full_tunnel", "ru_blacklist"] as const;
 
 // The everything-is-fine baseline; each test perturbs one field.
 const ok = {
@@ -35,10 +35,10 @@ describe("routeProfileChoice", () => {
 
   it("keeps the two administrator reasons working", () => {
     expect(
-      routeProfileChoice({ ...ok, profile: "ru_whitelist", rulesReady: false }),
+      routeProfileChoice({ ...ok, profile: "ru_blacklist", rulesReady: false }),
     ).toEqual({ disabled: true, hintKey: "wizard.rulesNotActive" });
     expect(
-      routeProfileChoice({ ...ok, profile: "ru_whitelist", policyLocked: true }),
+      routeProfileChoice({ ...ok, profile: "ru_blacklist", policyLocked: true }),
     ).toEqual({ disabled: true, hintKey: "wizard.profileDisabled" });
     // A policy lock never touches the full tunnel — that was true before and
     // must stay true, or a locked-down panel could create no keys at all.

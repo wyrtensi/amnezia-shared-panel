@@ -78,7 +78,6 @@ const PROTOCOL_LABEL: Record<string, string> = {
 };
 const PROFILE_LABEL: Record<string, string> = {
   full_tunnel: "route.full_tunnel",
-  ru_whitelist: "route.ru_whitelist",
   ru_blacklist: "route.ru_blacklist",
 };
 const STATE_LABEL: Record<string, string> = {

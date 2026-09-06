@@ -37,12 +37,11 @@ const STATUS_META: Record<
 
 const PROFILE_LABEL: Record<string, string> = {
   full_tunnel: "route.full_tunnel",
-  ru_whitelist: "route.ru_whitelist",
   ru_blacklist: "route.ru_blacklist",
 };
 
 /** Profiles first in the order the panel talks about them everywhere else. */
-const PROFILE_ORDER = ["ru_whitelist", "ru_blacklist", "full_tunnel"];
+const PROFILE_ORDER = ["ru_blacklist", "full_tunnel"];
 
 type ProfileGroup = {
   profile: string;

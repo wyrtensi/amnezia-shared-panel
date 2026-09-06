@@ -236,10 +236,6 @@ const dedupeGlobalRouteList = (list: {
 });
 
 const dedupeGlobalRoutes = (routes: GlobalRoutes): GlobalRoutes => ({
-  ru_whitelist: {
-    add: dedupeGlobalRouteList(routes.ru_whitelist.add),
-    exclude: dedupeGlobalRouteList(routes.ru_whitelist.exclude),
-  },
   ru_blacklist: {
     add: dedupeGlobalRouteList(routes.ru_blacklist.add),
     exclude: dedupeGlobalRouteList(routes.ru_blacklist.exclude),
@@ -248,10 +244,6 @@ const dedupeGlobalRoutes = (routes: GlobalRoutes): GlobalRoutes => ({
 
 // Audit metadata for a global-routes update: sizes only, never the entries.
 const globalRouteCounts = (routes: GlobalRoutes): Record<string, number> => ({
-  whitelistAddCidrs: routes.ru_whitelist.add.cidrs.length,
-  whitelistAddDomains: routes.ru_whitelist.add.domains.length,
-  whitelistExcludeCidrs: routes.ru_whitelist.exclude.cidrs.length,
-  whitelistExcludeDomains: routes.ru_whitelist.exclude.domains.length,
   blacklistAddCidrs: routes.ru_blacklist.add.cidrs.length,
   blacklistAddDomains: routes.ru_blacklist.add.domains.length,
   blacklistExcludeCidrs: routes.ru_blacklist.exclude.cidrs.length,
@@ -261,10 +253,6 @@ const globalRouteCounts = (routes: GlobalRoutes): Record<string, number> => ({
 // Canonicalize a validated custom-routes object: de-duplicate each list so the
 // stored value and the export-time union stay minimal.
 const dedupeCustomRoutes = (routes: CustomRoutes): CustomRoutes => ({
-  ru_whitelist: {
-    cidrs: [...new Set(routes.ru_whitelist.cidrs)],
-    domains: [...new Set(routes.ru_whitelist.domains)],
-  },
   ru_blacklist: {
     cidrs: [...new Set(routes.ru_blacklist.cidrs)],
     domains: [...new Set(routes.ru_blacklist.domains)],
@@ -1567,7 +1555,7 @@ export class PostgresControlRepository implements ControlRepository {
       .from(routeRuleVersions)
       .where(eq(routeRuleVersions.status, "active"));
     const byProfile = new Map(active.map((row) => [row.profile, row.version]));
-    return (["full_tunnel", "ru_whitelist", "ru_blacklist"] as const).map(
+    return (["full_tunnel", "ru_blacklist"] as const).map(
       (profile) => ({
         profile,
         available: profile === "full_tunnel" || byProfile.has(profile),
@@ -2866,12 +2854,8 @@ export class PostgresControlRepository implements ControlRepository {
           targetType: resource,
           targetId,
           metadata: {
-            cidrCount:
-              customRoutes.ru_whitelist.cidrs.length +
-              customRoutes.ru_blacklist.cidrs.length,
-            domainCount:
-              customRoutes.ru_whitelist.domains.length +
-              customRoutes.ru_blacklist.domains.length,
+            cidrCount: customRoutes.ru_blacklist.cidrs.length,
+            domainCount: customRoutes.ru_blacklist.domains.length,
           },
         });
         return updated;
@@ -3603,7 +3587,7 @@ export class PostgresControlRepository implements ControlRepository {
       // a stub feed as the active routing rules.
       const input = z
         .object({
-          profile: z.enum(["ru_whitelist", "ru_blacklist"]),
+          profile: z.enum(["ru_blacklist"]),
           version: z.string().trim().min(1).max(96),
           sourceUrl: z.string().trim().min(1).max(2_048).default("manual://import"),
           cidrs: z.array(z.string()).default([]),

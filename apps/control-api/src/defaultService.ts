@@ -189,7 +189,7 @@ export const createDefaultControlApiService = ({
       try {
         const texts = buildQrFrameTexts(vpnLink);
         // Chunking removes the capacity limit that makes the single-frame
-        // formats refuse a split-tunnel config, so without this a whitelist key
+        // formats refuse a split-tunnel config, so without this a blacklist key
         // would return dozens of codes (a 20 KB config is 24 frames) instead of
         // the 422 every other QR format gives it. Nobody scans 24 codes; the
         // config file is the answer for those keys. Eight is well clear of a

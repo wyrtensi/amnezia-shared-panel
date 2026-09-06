@@ -16,10 +16,6 @@ import type {
 
 /** Fresh empty payload — a factory so no two callers share the same arrays. */
 export const newGlobalRoutes = (): GlobalRoutes => ({
-  ru_whitelist: {
-    add: { cidrs: [], domains: [] },
-    exclude: { cidrs: [], domains: [] },
-  },
   ru_blacklist: {
     add: { cidrs: [], domains: [] },
     exclude: { cidrs: [], domains: [] },

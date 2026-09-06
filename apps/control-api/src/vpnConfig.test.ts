@@ -4,12 +4,10 @@ import {
   applyRouteProfileToVpnLink,
   decodeVpnLink,
   extractConfFromVpnLink,
-  setVpnDescription,
-} from "./vpnConfig.js";
-import {
   MAX_TUNNEL_ROUTES,
+  setVpnDescription,
   WARN_TUNNEL_ROUTES,
-} from "./routeComplement.js";
+} from "./vpnConfig.js";
 
 const encode = (value: unknown): string => {
   const raw = Buffer.from(JSON.stringify(value));
@@ -76,71 +74,6 @@ describe("vpn config extraction and split tunneling", () => {
     expect(result).toBe(vpnLink);
   });
 
-  it("routes everything EXCEPT the ru_whitelist CIDRs", () => {
-    const originalConfig =
-      "[Interface]\nPrivateKey = x\n\n[Peer]\nAllowedIPs = 0.0.0.0/0, ::/0\nEndpoint = 1.2.3.4:51889\n";
-    const vpnLink = encode({
-      dns1: "1.1.1.1",
-      dns2: "1.0.0.1",
-      containers: [
-        {
-          container: "amnezia-awg",
-          awg: {
-            last_config: JSON.stringify({
-              config: originalConfig,
-              allowed_ips: ["0.0.0.0/0", "::/0"],
-            }),
-          },
-        },
-      ],
-    });
-
-    const rulePayload = { cidrs: ["104.244.42.0/24", "157.240.0.0/16"] };
-
-    const modifiedLink = applyRouteProfileToVpnLink(
-      vpnLink,
-      "ru_whitelist",
-      rulePayload,
-    );
-
-    const conf = extractConfFromVpnLink(modifiedLink);
-    expect(conf).toContain("AllowedIPs = ");
-    // The whole space would defeat the profile; the default route must be gone.
-    expect(conf).not.toContain("0.0.0.0/0,");
-
-    const decoded = decodeVpnLink(modifiedLink);
-    const lastConfig = JSON.parse(
-      decoded.containers?.[0]?.awg?.last_config ?? "{}",
-    ) as {
-      allowed_ips?: string[];
-      sites?: unknown;
-      split_tunnel_sites?: unknown;
-    };
-    const allowedIps = lastConfig.allowed_ips ?? [];
-
-    // The listed CIDRs bypass the tunnel, so they are exactly what AllowedIPs
-    // must NOT carry.
-    expect(allowedIps).not.toContain("104.244.42.0/24");
-    expect(allowedIps).not.toContain("157.240.0.0/16");
-
-    // Everything else does go through it, IPv6 included. The DNS servers are
-    // not named separately: the complement already covers them, and naming one
-    // would drag a resolver the operator bypassed back into the tunnel.
-    expect(allowedIps).toContain("::/0");
-    expect(allowedIps).not.toContain("1.1.1.1/32");
-
-    const covered = allowedIps
-      .filter((cidr) => !cidr.includes(":"))
-      .reduce((sum, cidr) => sum + 2 ** (32 - Number(cidr.split("/")[1])), 0);
-    // Exactly the full space minus the two bypassed blocks.
-    expect(covered).toBe(2 ** 32 - 2 ** 8 - 2 ** 16);
-
-    // Neither site field is written any more: the AmneziaVPN client reads
-    // neither, so a key that carried them looked routed by name and was not.
-    expect(lastConfig.sites).toBeUndefined();
-    expect(lastConfig.split_tunnel_sites).toBeUndefined();
-  });
-
   it("routes ONLY the ru_blacklist CIDRs", () => {
     const originalConfig =
       "[Interface]\nPrivateKey = x\n\n[Peer]\nAllowedIPs = 0.0.0.0/0, ::/0\nEndpoint = 1.2.3.4:51889\n";
@@ -167,16 +100,25 @@ describe("vpn config extraction and split tunneling", () => {
     const decoded = decodeVpnLink(modifiedLink);
     const lastConfig = JSON.parse(
       decoded.containers?.[0]?.awg?.last_config ?? "{}",
-    ) as { allowed_ips?: string[] };
+    ) as {
+      allowed_ips?: string[];
+      sites?: unknown;
+      split_tunnel_sites?: unknown;
+    };
     expect(lastConfig.allowed_ips).toEqual([
       "104.244.42.0/24",
       "157.240.0.0/16",
       "1.1.1.1/32",
       "1.0.0.1/32",
     ]);
+
+    // Neither site field is written: the AmneziaVPN client reads neither, so a
+    // key that carried them looked routed by name and was not.
+    expect(lastConfig.sites).toBeUndefined();
+    expect(lastConfig.split_tunnel_sites).toBeUndefined();
   });
 
-  it("applies ru_blacklist CIDRs the same way as whitelist", () => {
+  it("applies ru_blacklist CIDRs when the config has no allowed_ips field yet", () => {
     const originalConfig =
       "[Interface]\nPrivateKey = x\n\n[Peer]\nAllowedIPs = 0.0.0.0/0, ::/0\n";
     const vpnLink = encode({
@@ -220,11 +162,9 @@ describe("vpn config extraction and split tunneling", () => {
       ],
     });
 
-    for (const profile of ["ru_blacklist", "ru_whitelist"] as const) {
-      expect(
-        applyRouteProfileToVpnLink(vpnLink, profile, { cidrs: [] }),
-      ).toBe(vpnLink);
-    }
+    expect(
+      applyRouteProfileToVpnLink(vpnLink, "ru_blacklist", { cidrs: [] }),
+    ).toBe(vpnLink);
   });
 
   it("keeps the full tunnel when a grown feed no longer fits AllowedIPs", () => {
@@ -260,19 +200,6 @@ describe("vpn config extraction and split tunneling", () => {
         cidrs: oversized,
       }),
     ).toBe(vpnLink);
-
-    // The whitelist has a lever the blacklist lacks: it widens its gap merging
-    // until the inverse fits, so the same feed still produces a usable config.
-    const whitelisted = applyRouteProfileToVpnLink(vpnLink, "ru_whitelist", {
-      cidrs: oversized,
-    });
-    expect(whitelisted).not.toBe(vpnLink);
-    const lastConfig = JSON.parse(
-      decodeVpnLink(whitelisted).containers?.[0]?.awg?.last_config ?? "{}",
-    ) as { allowed_ips?: string[] };
-    expect(lastConfig.allowed_ips?.length ?? 0).toBeLessThanOrEqual(
-      MAX_TUNNEL_ROUTES,
-    );
   });
 
   it("says so in the log before and when a feed outgrows the client", () => {

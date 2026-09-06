@@ -156,27 +156,28 @@ past it yet: apply that migration's SQL by hand first (from
 `packages/db/migrations/`), confirm the column now exists, and only then
 continue with the steps below.
 
-## After v0.9.21: re-issue every `ru_whitelist` key
+## After v0.9.21, before migration `0035`: `ru_whitelist` was removed entirely
 
 v0.9.21 inverted the `ru_whitelist` profile. Before it, the profile put its
 feed's CIDRs straight into `AllowedIPs`, which tunnelled the Russian services on
 that list and sent everything else in the clear — the exact inverse of what the
 panel promises. Configs are built at download time, so every export **after**
-this release is correct.
+that release was correct.
 
-Every config exported **before** it is still wrong, sitting in a user's client,
-and the panel will not say so. `rulesOutdated` is computed as "the active rule
-set for this profile is a different version than the one this key was exported
-from": it watches the feed's version, not the logic that turns the feed into
-routes. The inversion moved no feed version, so a `ru_whitelist` key issued
-before v0.9.21 reads as current and will keep reading as current until the
-RoscomVPN list happens to change on one of its six-hourly refreshes.
+Every config exported **before** it was still wrong, sitting in a user's
+client, and the panel would not say so. `rulesOutdated` is computed as "the
+active rule set for this profile is a different version than the one this key
+was exported from": it watches the feed's version, not the logic that turns
+the feed into routes. The inversion moved no feed version, so a `ru_whitelist`
+key issued before v0.9.21 read as current and kept reading as current until the
+RoscomVPN list happened to change on one of its six-hourly refreshes.
 
 `ru_blacklist` was luckier — that profile's default source changed from Re:filter
 `ipsum.lst` to iplist in the same release, which did move the version, so those
 keys flagged themselves.
 
-So after deploying v0.9.21 or later onto a host that ran anything older:
+So after deploying v0.9.21 (and before migration `0035_drop_whitelist_profile`,
+see below) onto a host that ran anything older:
 
 1. list the keys on that profile — the panel has no filter for it, so
    `amnezia-panel keys --json` and select on `routeProfile == "ru_whitelist"`;
@@ -188,6 +189,22 @@ So after deploying v0.9.21 or later onto a host that ran anything older:
 Rotation is the safer of the two if it matters that the old, inside-out config
 stops working: a re-download leaves the previously imported config valid on
 whatever device still holds it.
+
+**`ru_whitelist` was never confirmed to work and has since been removed from
+the panel entirely** — the enum value, the feed, the inversion logic, the UI
+and the CLI. Migration `0035_drop_whitelist_profile` is the removal, and it
+**refuses to run** while any `vpn_keys` row still uses the profile — deleting
+those rows here would strand their peers on the nodes with nothing in the panel
+pointing at them. So before deploying past `0035`:
+
+1. find any key still on the profile the same way as above
+   (`routeProfile == "ru_whitelist"`);
+2. revoke each one through the panel or `key-revoke <id>` — this removes the
+   peer from its node properly, which a migration cannot do.
+
+Only once that list is empty will `0035` apply. If it is not, the migration
+raises a readable error naming how many keys are still stuck rather than
+silently deleting rows.
 
 ## Zero-downtime caveats
 

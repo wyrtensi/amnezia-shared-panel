@@ -27,10 +27,10 @@ describe("cliDeviceSupportsRouteProfiles", () => {
 
 describe("routeProfileWarning", () => {
   it("warns when an iOS key is given a route profile", () => {
-    const warning = routeProfileWarning("ios", "ru_whitelist");
+    const warning = routeProfileWarning("ios", "ru_blacklist");
     expect(warning).toBeTruthy();
     expect(warning).toContain("ios");
-    expect(warning).toContain("ru_whitelist");
+    expect(warning).toContain("ru_blacklist");
   });
 
   it("stays quiet for an iOS key with the full tunnel", () => {
@@ -49,12 +49,6 @@ describe("keyNeedsRouteProfileWarning", () => {
   it("is true for a gated device on a split-tunnel profile", () => {
     // The predicate reads the shared unsupported-platform list, so it follows
     // any later change to that list.
-    expect(
-      keyNeedsRouteProfileWarning({
-        deviceType: "ios",
-        routeProfile: "ru_whitelist",
-      }),
-    ).toBe(true);
     expect(
       keyNeedsRouteProfileWarning({
         deviceType: "ios",
