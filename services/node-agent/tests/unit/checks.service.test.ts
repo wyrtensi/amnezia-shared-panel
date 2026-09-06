@@ -385,6 +385,26 @@ describe("assertPublicAddress", () => {
     expect(resolve).not.toHaveBeenCalled();
   });
 
+  it("judges a bracketed IPv6 literal instead of resolving it", async () => {
+    // `new URL("http://[::1]/").hostname` keeps the brackets, and
+    // `ipaddr.isValid` rejects that syntax - so the literal used to fall
+    // through to DNS and be refused only because the name does not resolve.
+    // Refused by accident is not refused by design.
+    const resolve = vi.fn(async () => ["203.0.113.10"]);
+    await expect(assertPublicAddress("[::1]", resolve)).rejects.toThrow(
+      /loopback/,
+    );
+    expect(resolve).not.toHaveBeenCalled();
+  });
+
+  it("drops a zone id before judging a literal", async () => {
+    const resolve = vi.fn(async () => ["203.0.113.10"]);
+    await expect(
+      assertPublicAddress("[fe80::1%25eth0]", resolve),
+    ).rejects.toThrow(/linkLocal/);
+    expect(resolve).not.toHaveBeenCalled();
+  });
+
   it("refuses an IPv4-mapped answer that wraps an internal address", async () => {
     // ipaddr.js matches ::ffff:0:0/96 as `ipv4Mapped` BEFORE it looks at the
     // embedded IPv4, so a deny-list of IPv4 range names never sees the address
