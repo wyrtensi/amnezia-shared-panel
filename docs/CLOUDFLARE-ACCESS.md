@@ -614,8 +614,28 @@ curl -s -X PUT \
 ```
 
 Removing a user is the same read-modify-write with a filter instead of `+=` in
-step 2, e.g.
-`.include |= [.[] | select(.email.email != "new.person@gmail.com")]`.
+step 2:
+
+```sh
+BASE="https://api.cloudflare.com/client/v4"
+POLICY="$BASE/accounts/$CF_ACCESS_ACCOUNT_ID/access/apps/$CF_ACCESS_APP_ID/policies/$CF_ACCESS_POLICY_ID"
+
+# 1) Read the current policy.
+curl -s -H "Authorization: Bearer $CF_API_TOKEN" "$POLICY" > policy.json
+
+# 2) Remove the email from include[], keeping every other field of the
+#    document as read (including ones this example does not name) and
+#    dropping only the read-only ones Cloudflare will reject on a write.
+jq '.result
+    | .include |= [.[] | select(.email.email != "new.person@gmail.com")]
+    | del(.id, .uid, .created_at, .updated_at, .reusable)' policy.json > body.json
+
+# 3) Write it back (PUT with the whole policy; PATCH is rejected here with 405).
+curl -s -X PUT \
+  -H "Authorization: Bearer $CF_API_TOKEN" \
+  -H "content-type: application/json" \
+  --data @body.json "$POLICY"
+```
 
 #### Env vars
 
