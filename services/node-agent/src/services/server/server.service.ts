@@ -15,6 +15,7 @@ import {
 import { parseCgroupPids, parseMemInfo } from "@/helpers/hostMetrics";
 import { APIError } from "@/utils/APIError";
 import appConfig from "@/constants/appConfig";
+import { APP_VERSION } from "@/constants/appVersion";
 import { XrayService } from "@/services/xray";
 import { AppContract } from "@/contracts/app";
 import { isNotNull } from "@/utils/primitive";
@@ -79,6 +80,7 @@ export class ServerService {
       totalPeers: clients.reduce((acc, client) => acc + client.peers.length, 0),
       protocols,
       publicHost: appConfig.SERVER_PUBLIC_HOST || "",
+      agentVersion: APP_VERSION,
       listenPorts,
       // Read from the registries themselves, never written out by hand: a
       // hand-kept list is a list that eventually advertises a rule this agent

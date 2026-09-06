@@ -95,6 +95,7 @@ export type ServerStatusPayload = {
   protocols: Protocol[];
   // SERVER_PUBLIC_HOST: the host written into every issued client config.
   publicHost: string;
+  agentVersion: string;
   // The UDP ports this node actually listens on, read from the live interface
   // configs rather than from anything the panel assumes.
   listenPorts: number[];
