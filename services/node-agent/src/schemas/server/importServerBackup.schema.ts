@@ -8,6 +8,13 @@ const amneziaPayloadSchema = {
   properties: {
     wgConfig: {
       type: "string",
+      // Empty string passes "required" but would be written straight into
+      // the node's live WireGuard interface config on import. presharedKey
+      // and serverPublicKey deliberately do NOT get this: exportBackup reads
+      // them with `cat ... || true`, so an empty value there is what a
+      // partially-broken node legitimately produces, and a restore must not
+      // refuse that backup.
+      minLength: 1,
       description: "Содержимое файла wg0.conf",
     },
     presharedKey: {

@@ -69,8 +69,15 @@ describe("server backup routes", () => {
   });
 
   it("accepts a complete AmneziaWG 3.1 payload", async () => {
+    const backup: ServerBackupPayload = {
+      generatedAt: "2026-09-07T00:00:00.000Z",
+      serverId: "test-server-id",
+      protocols: [Protocol.AMNEZIAWG3],
+      amneziaWg3: createAmneziaBackupFixture(),
+    };
     const importBackup = vi.fn(async () => undefined);
     app = await createServerTestApp({
+      exportBackup: vi.fn(async () => backup),
       importBackup,
       // The handler replies with getServerStatus()'s result, and that reply is
       // serialized against getServerSchema's response schema, which requires
@@ -90,6 +97,40 @@ describe("server backup routes", () => {
       ),
     });
 
+    const exportResponse = await app.inject({
+      method: "GET",
+      url: "/server/backup",
+      headers: AUTH_HEADERS,
+    });
+    expect(exportResponse.statusCode).toBe(200);
+
+    // The export and import schemas are two separately hand-written blocks
+    // with no shared constant. Feeding the export route's own serialized JSON
+    // back in as the import body — rather than building it straight from
+    // createAmneziaBackupFixture() — is what would catch either schema
+    // declaring a field the other one doesn't. Do not "simplify" this back to
+    // posting the fixture directly: that would silently reopen the exact gap
+    // this branch fixes.
+    const importResponse = await app.inject({
+      method: "POST",
+      url: "/server/backup",
+      headers: AUTH_HEADERS,
+      payload: exportResponse.json(),
+    });
+
+    expect(importResponse.statusCode).toBe(200);
+    expect(importBackup).toHaveBeenCalledWith(
+      expect.objectContaining({ amneziaWg3: createAmneziaBackupFixture() }),
+    );
+  });
+
+  it("refuses an AmneziaWG 3.1 payload with an empty config", async () => {
+    const importBackup = vi.fn(async () => undefined);
+    app = await createServerTestApp({
+      importBackup,
+      getServerStatus: vi.fn(async () => ({}) as never),
+    });
+
     const response = await app.inject({
       method: "POST",
       url: "/server/backup",
@@ -98,13 +139,16 @@ describe("server backup routes", () => {
         generatedAt: "2026-09-07T00:00:00.000Z",
         serverId: "test-server-id",
         protocols: [Protocol.AMNEZIAWG3],
-        amneziaWg3: createAmneziaBackupFixture(),
+        amneziaWg3: {
+          wgConfig: "",
+          presharedKey: "psk",
+          serverPublicKey: "pub",
+          clients: [],
+        },
       },
     });
 
-    expect(response.statusCode).toBe(200);
-    expect(importBackup).toHaveBeenCalledWith(
-      expect.objectContaining({ amneziaWg3: createAmneziaBackupFixture() }),
-    );
+    expect(response.statusCode).toBe(400);
+    expect(importBackup).not.toHaveBeenCalled();
   });
 });

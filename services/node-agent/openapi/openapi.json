@@ -2010,6 +2010,7 @@
                     "properties": {
                       "wgConfig": {
                         "type": "string",
+                        "minLength": 1,
                         "description": "Содержимое файла wg0.conf"
                       },
                       "presharedKey": {
@@ -2086,6 +2087,7 @@
                     "properties": {
                       "wgConfig": {
                         "type": "string",
+                        "minLength": 1,
                         "description": "Содержимое файла wg0.conf"
                       },
                       "presharedKey": {
@@ -2162,6 +2164,7 @@
                     "properties": {
                       "wgConfig": {
                         "type": "string",
+                        "minLength": 1,
                         "description": "Содержимое файла wg0.conf"
                       },
                       "presharedKey": {
