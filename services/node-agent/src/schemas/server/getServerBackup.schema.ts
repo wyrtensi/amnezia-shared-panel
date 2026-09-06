@@ -26,6 +26,9 @@ const clientsTableItemSchema = {
         expiresAt: {
           type: "number",
         },
+        allowedIp: {
+          type: "string",
+        },
       },
     },
   },
@@ -61,7 +64,12 @@ export const getServerBackupSchema = {
             type: "string",
             enum: Object.values(Protocol),
           },
-          example: [Protocol.AMNEZIAWG, Protocol.AMNEZIAWG2, Protocol.XRAY],
+          example: [
+            Protocol.AMNEZIAWG,
+            Protocol.AMNEZIAWG2,
+            Protocol.AMNEZIAWG3,
+            Protocol.XRAY,
+          ],
         },
         amnezia: {
           type: "object",
@@ -98,6 +106,7 @@ export const getServerBackupSchema = {
                   clientName: "john.doe [iphone]",
                   creationDate: "Mon, 06 Nov 2023 10:12:45 GMT",
                   expiresAt: 1736200000,
+                  allowedIp: "10.8.1.2",
                 },
               },
             ],
@@ -122,6 +131,29 @@ export const getServerBackupSchema = {
             clients: {
               type: "array",
               description: "Содержимое таблицы клиентов AmneziaWG 2.0",
+              items: clientsTableItemSchema,
+            },
+          },
+        },
+        amneziaWg3: {
+          type: "object",
+          required: ["wgConfig", "presharedKey", "serverPublicKey", "clients"],
+          properties: {
+            wgConfig: {
+              type: "string",
+              description: "Содержимое файла awg0.conf",
+            },
+            presharedKey: {
+              type: "string",
+              description: "Содержимое файла wireguard_psk.key",
+            },
+            serverPublicKey: {
+              type: "string",
+              description: "Публичный ключ сервера AmneziaWG 3.1",
+            },
+            clients: {
+              type: "array",
+              description: "Содержимое таблицы клиентов AmneziaWG 3.1",
               items: clientsTableItemSchema,
             },
           },

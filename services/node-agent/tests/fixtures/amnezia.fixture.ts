@@ -71,8 +71,13 @@ export const AMNEZIA_WG_DUMP_FIXTURE = [
 export const createAmneziaClientsTableFixture = (): ClientTableEntry[] => [
   {
     clientId: "active-id",
+    // Only this entry carries publicKey/creationDate: both are declared in
+    // the schema but optional in practice, so one entry is enough to guard
+    // against either being silently dropped from the schema.
+    publicKey: "active-id-public-key",
     userData: {
       clientName: "alice [macbook]",
+      creationDate: "Mon, 06 Nov 2023 10:12:45 GMT",
       allowedIp: "10.8.1.2",
       expiresAt: 4_102_444_800,
     },

@@ -8,6 +8,13 @@ const amneziaPayloadSchema = {
   properties: {
     wgConfig: {
       type: "string",
+      // Empty string passes "required" but would be written straight into
+      // the node's live WireGuard interface config on import. presharedKey
+      // and serverPublicKey deliberately do NOT get this: exportBackup reads
+      // them with `cat ... || true`, so an empty value there is what a
+      // partially-broken node legitimately produces, and a restore must not
+      // refuse that backup.
+      minLength: 1,
       description: "Содержимое файла wg0.conf",
     },
     presharedKey: {
@@ -46,6 +53,9 @@ const amneziaPayloadSchema = {
               expiresAt: {
                 type: "number",
               },
+              allowedIp: {
+                type: "string",
+              },
             },
           },
         },
@@ -65,6 +75,7 @@ const amneziaPayloadSchema = {
           clientName: "john.doe [iphone]",
           creationDate: "Mon, 06 Nov 2023 10:12:45 GMT",
           expiresAt: 1736200000,
+          allowedIp: "10.8.1.2",
         },
       },
     ],
@@ -133,10 +144,16 @@ export const importServerBackupSchema = {
           type: "string",
           enum: Object.values(Protocol),
         },
-        example: [Protocol.AMNEZIAWG, Protocol.AMNEZIAWG2, Protocol.XRAY],
+        example: [
+          Protocol.AMNEZIAWG,
+          Protocol.AMNEZIAWG2,
+          Protocol.AMNEZIAWG3,
+          Protocol.XRAY,
+        ],
       },
       amnezia: amneziaPayloadSchema,
       amneziaWg2: amneziaPayloadSchema,
+      amneziaWg3: amneziaPayloadSchema,
       xray: xrayPayloadSchema,
     },
     allOf: [
@@ -166,6 +183,20 @@ export const importServerBackupSchema = {
         },
         then: {
           required: ["amneziaWg2"],
+        },
+      },
+      {
+        if: {
+          properties: {
+            protocols: {
+              type: "array",
+              contains: { const: Protocol.AMNEZIAWG3 },
+            },
+          },
+          required: ["protocols"],
+        },
+        then: {
+          required: ["amneziaWg3"],
         },
       },
       {

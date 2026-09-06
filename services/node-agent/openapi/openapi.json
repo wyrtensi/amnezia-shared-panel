@@ -2,7 +2,7 @@
   "openapi": "3.0.0",
   "info": {
     "title": "Amnezia API",
-    "version": "1.1.12",
+    "version": "1.1.13",
     "description": "Self-hosted REST API for automating Amnezia VPN servers.",
     "license": {
       "name": "MIT"
@@ -1664,6 +1664,7 @@
                       "example": [
                         "amneziawg",
                         "amneziawg2",
+                        "amneziawg3",
                         "xray"
                       ]
                     },
@@ -1715,6 +1716,9 @@
                                   },
                                   "expiresAt": {
                                     "type": "number"
+                                  },
+                                  "allowedIp": {
+                                    "type": "string"
                                   }
                                 }
                               }
@@ -1733,7 +1737,8 @@
                             "userData": {
                               "clientName": "john.doe [iphone]",
                               "creationDate": "Mon, 06 Nov 2023 10:12:45 GMT",
-                              "expiresAt": 1736200000
+                              "expiresAt": 1736200000,
+                              "allowedIp": "10.8.1.2"
                             }
                           }
                         ]
@@ -1787,6 +1792,68 @@
                                   },
                                   "expiresAt": {
                                     "type": "number"
+                                  },
+                                  "allowedIp": {
+                                    "type": "string"
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    },
+                    "amneziaWg3": {
+                      "type": "object",
+                      "required": [
+                        "wgConfig",
+                        "presharedKey",
+                        "serverPublicKey",
+                        "clients"
+                      ],
+                      "properties": {
+                        "wgConfig": {
+                          "type": "string",
+                          "description": "Содержимое файла awg0.conf"
+                        },
+                        "presharedKey": {
+                          "type": "string",
+                          "description": "Содержимое файла wireguard_psk.key"
+                        },
+                        "serverPublicKey": {
+                          "type": "string",
+                          "description": "Публичный ключ сервера AmneziaWG 3.1"
+                        },
+                        "clients": {
+                          "type": "array",
+                          "description": "Содержимое таблицы клиентов AmneziaWG 3.1",
+                          "items": {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "properties": {
+                              "clientId": {
+                                "type": "string",
+                                "description": "Публичный ключ клиента"
+                              },
+                              "publicKey": {
+                                "type": "string",
+                                "description": "Дополнительный публичный ключ"
+                              },
+                              "userData": {
+                                "type": "object",
+                                "additionalProperties": false,
+                                "properties": {
+                                  "clientName": {
+                                    "type": "string"
+                                  },
+                                  "creationDate": {
+                                    "type": "string"
+                                  },
+                                  "expiresAt": {
+                                    "type": "number"
+                                  },
+                                  "allowedIp": {
+                                    "type": "string"
                                   }
                                 }
                               }
@@ -1928,6 +1995,7 @@
                     "example": [
                       "amneziawg",
                       "amneziawg2",
+                      "amneziawg3",
                       "xray"
                     ]
                   },
@@ -1942,6 +2010,7 @@
                     "properties": {
                       "wgConfig": {
                         "type": "string",
+                        "minLength": 1,
                         "description": "Содержимое файла wg0.conf"
                       },
                       "presharedKey": {
@@ -1979,6 +2048,9 @@
                                 },
                                 "expiresAt": {
                                   "type": "number"
+                                },
+                                "allowedIp": {
+                                  "type": "string"
                                 }
                               }
                             }
@@ -1997,7 +2069,8 @@
                           "userData": {
                             "clientName": "john.doe [iphone]",
                             "creationDate": "Mon, 06 Nov 2023 10:12:45 GMT",
-                            "expiresAt": 1736200000
+                            "expiresAt": 1736200000,
+                            "allowedIp": "10.8.1.2"
                           }
                         }
                       ]
@@ -2014,6 +2087,7 @@
                     "properties": {
                       "wgConfig": {
                         "type": "string",
+                        "minLength": 1,
                         "description": "Содержимое файла wg0.conf"
                       },
                       "presharedKey": {
@@ -2051,6 +2125,9 @@
                                 },
                                 "expiresAt": {
                                   "type": "number"
+                                },
+                                "allowedIp": {
+                                  "type": "string"
                                 }
                               }
                             }
@@ -2069,7 +2146,85 @@
                           "userData": {
                             "clientName": "john.doe [iphone]",
                             "creationDate": "Mon, 06 Nov 2023 10:12:45 GMT",
-                            "expiresAt": 1736200000
+                            "expiresAt": 1736200000,
+                            "allowedIp": "10.8.1.2"
+                          }
+                        }
+                      ]
+                    }
+                  },
+                  "amneziaWg3": {
+                    "type": "object",
+                    "required": [
+                      "wgConfig",
+                      "presharedKey",
+                      "serverPublicKey",
+                      "clients"
+                    ],
+                    "properties": {
+                      "wgConfig": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "Содержимое файла wg0.conf"
+                      },
+                      "presharedKey": {
+                        "type": "string",
+                        "description": "Содержимое файла wireguard_psk.key"
+                      },
+                      "serverPublicKey": {
+                        "type": "string",
+                        "description": "Публичный ключ сервера WireGuard"
+                      },
+                      "clients": {
+                        "type": "array",
+                        "description": "Содержимое таблицы клиентов AmneziaWG",
+                        "items": {
+                          "type": "object",
+                          "additionalProperties": false,
+                          "properties": {
+                            "clientId": {
+                              "type": "string",
+                              "description": "Публичный ключ клиента"
+                            },
+                            "publicKey": {
+                              "type": "string",
+                              "description": "Дополнительный публичный ключ"
+                            },
+                            "userData": {
+                              "type": "object",
+                              "additionalProperties": false,
+                              "properties": {
+                                "clientName": {
+                                  "type": "string"
+                                },
+                                "creationDate": {
+                                  "type": "string"
+                                },
+                                "expiresAt": {
+                                  "type": "number"
+                                },
+                                "allowedIp": {
+                                  "type": "string"
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    },
+                    "example": {
+                      "wgConfig": "[Interface]\\nAddress = 10.8.1.2/32\\nPrivateKey = <client-private-key>\\n\\n[Peer]\\nPublicKey = <server-public-key>\\nAllowedIPs = 0.0.0.0/0",
+                      "presharedKey": "y8PpvlM2QEqLPTbV5X3QfUuRiK6sR3yIYB4u6Fvxtn4=",
+                      "serverPublicKey": "aDrz0wS1C8VZK7arx2n3dE0Bf2c5LQdYpO7h4g9l8m0=",
+                      "clients": [
+                        {
+                          "clientId": "YjYxMzNhZjY2YzE4MjJmN2M0OTViYzQwYmVhZTM0NjY=",
+                          "publicKey": "YjYxMzNhZjY2YzE4MjJmN2M0OTViYzQwYmVhZTM0NjY=",
+                          "userData": {
+                            "clientName": "john.doe [iphone]",
+                            "creationDate": "Mon, 06 Nov 2023 10:12:45 GMT",
+                            "expiresAt": 1736200000,
+                            "allowedIp": "10.8.1.2"
                           }
                         }
                       ]
@@ -2157,6 +2312,28 @@
                     "then": {
                       "required": [
                         "amneziaWg2"
+                      ]
+                    }
+                  },
+                  {
+                    "if": {
+                      "properties": {
+                        "protocols": {
+                          "type": "array",
+                          "contains": {
+                            "enum": [
+                              "amneziawg3"
+                            ]
+                          }
+                        }
+                      },
+                      "required": [
+                        "protocols"
+                      ]
+                    },
+                    "then": {
+                      "required": [
+                        "amneziaWg3"
                       ]
                     }
                   },
