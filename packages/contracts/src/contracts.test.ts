@@ -182,6 +182,7 @@ describe("portalPolicySchema", () => {
       allowQrDownload: true,
       allowConfDownload: true,
       allowSelfRevoke: true,
+      autoPurgeOffboardedUsers: false,
       showPublicKey: false,
       showLastUsed: true,
       showTraffic: true,
@@ -234,6 +235,18 @@ describe("portalPolicySchema", () => {
     // showing it to every user on an existing deployment.
     expect(policy.showPublicKey).toBe(false);
     expect(policy.showNodeAddress).toBe(false);
+  });
+
+  it("keeps automatic account deletion off unless an operator turns it on", () => {
+    // Deleting a user row is irreversible, so a panel that has never touched
+    // this setting must never do it on a timer -- see the comment beside the
+    // field in the schema. An admin can still delete one deliberately at any
+    // time; that path is not gated by this flag.
+    expect(portalPolicySchema.parse({}).autoPurgeOffboardedUsers).toBe(false);
+    expect(
+      portalPolicySchema.parse({ autoPurgeOffboardedUsers: true })
+        .autoPurgeOffboardedUsers,
+    ).toBe(true);
   });
 
   it("keeps the install reminder on unless an operator turns it off", () => {

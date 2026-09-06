@@ -1206,6 +1206,11 @@ const POLICY_BOOL_FIELDS = [
   "allowQrDownload",
   "allowConfDownload",
   "allowSelfRevoke",
+  // Off by default: deleting an offboarded account is irreversible, so the
+  // automatic maintenance sweep must not do it on its own until an operator
+  // turns this on. `offboarded-purge` removes one deliberately at any time,
+  // whatever this is set to.
+  "autoPurgeOffboardedUsers",
   "showPublicKey",
   "showLastUsed",
   "showTraffic",
@@ -2451,15 +2456,21 @@ Write:
 policy-set fields:
   Booleans (true/false): allowKeyCreation, allowNodeSelection,
     allowRouteProfileSelection, allowCustomRoutes, allowConfigRedownload,
-    allowQrDownload, allowConfDownload, allowSelfRevoke, showPublicKey,
-    showLastUsed, showTraffic, showNodeAddress, showNodeStatus,
-    showInstallReminder
+    allowQrDownload, allowConfDownload, allowSelfRevoke,
+    autoPurgeOffboardedUsers, showPublicKey, showLastUsed, showTraffic,
+    showNodeAddress, showNodeStatus, showInstallReminder
     showNodeStatus=false hides the service-check chips from ordinary users
     showNodeAddress=true also shows ordinary users the address of each node
     they may use (off by default; admins always see it on the node card).
     showInstallReminder=false stops the panel telling a regular user, after
     each of their first three keys, to install or update AmneziaVPN. On by
     default; admins never see that dialog either way.
+    autoPurgeOffboardedUsers=true lets the maintenance sweep hard-delete a
+    disabled account (and its revoked keys) once offboardedUserRetentionDays
+    has passed. Off by default — deleting an account is irreversible, so an
+    upgraded panel keeps NOT doing this until an admin turns it on. See
+    offboarded-purge for a deliberate one-off deletion regardless of this
+    setting.
   defaultKeyLimit=<int 0..1000>
     Per server in per_node mode, the shared total in global mode — the number
     does not move, its meaning does.

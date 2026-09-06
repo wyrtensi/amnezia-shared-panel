@@ -286,6 +286,7 @@ const toPolicy = (row: PortalPolicyRow | undefined): PortalPolicy =>
         allowQrDownload: row.allowQrDownload,
         allowConfDownload: row.allowConfDownload,
         allowSelfRevoke: row.allowSelfRevoke,
+        autoPurgeOffboardedUsers: row.autoPurgeOffboardedUsers,
         showPublicKey: row.showPublicKey,
         showLastUsed: row.showLastUsed,
         showTraffic: row.showTraffic,

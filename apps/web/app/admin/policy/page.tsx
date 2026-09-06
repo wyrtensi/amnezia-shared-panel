@@ -210,6 +210,20 @@ export default function AdminPolicyPage() {
 
           <Separator />
 
+          <div className="space-y-3">
+            <h3 className="text-sm font-semibold">{t("policy.accountDeletion")}</h3>
+            <PolicyToggle
+              label={t("gpolicy.autoPurgeOffboardedUsers")}
+              hint={t("gpolicy.autoPurgeOffboardedUsersHint")}
+              checked={form.autoPurgeOffboardedUsers}
+              onChange={(checked) =>
+                setForm({ ...form, autoPurgeOffboardedUsers: checked })
+              }
+            />
+          </div>
+
+          <Separator />
+
           {/*
             The panel's background periods. They used to live in the worker's
             environment or in a constant, so changing one meant editing a file

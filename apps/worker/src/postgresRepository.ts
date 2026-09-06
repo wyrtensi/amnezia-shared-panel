@@ -747,6 +747,24 @@ export class PostgresWorkerRepository
     return rows.map((row) => row.email);
   };
 
+  /**
+   * Whether `purgeOffboardedUsers` may run at all this cycle. Read fresh
+   * every call rather than cached, unlike the worker periods in `periods.ts`:
+   * maintenance already runs on an hourly-or-slower period, so one extra
+   * query per run costs nothing, and it is a plain boolean rather than a
+   * number, so it does not fit that module's WorkerPeriodOverrides shape.
+   * `main.ts` wires this in as `createMaintenanceRunner`'s
+   * `autoPurgeOffboardedUsers` resolver, which already treats a throw here as
+   * "off" -- see `resolveGate` in maintenance.ts.
+   */
+  getAutoPurgeOffboardedUsersEnabled = async (): Promise<boolean> => {
+    const [row] = await this.options.db
+      .select({ enabled: portalPolicy.autoPurgeOffboardedUsers })
+      .from(portalPolicy)
+      .limit(1);
+    return row?.enabled ?? false;
+  };
+
   purgeOffboardedUsers = async (
     disabledBefore: Date,
   ): Promise<{ deleted: string[] }> => {

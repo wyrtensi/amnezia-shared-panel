@@ -239,6 +239,13 @@
       "when": 1788708052108,
       "tag": "0033_completed_job_retention",
       "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "7",
+      "when": 1788718654120,
+      "tag": "0034_auto_purge_offboarded_users",
+      "breakpoints": true
     }
   ]
 }

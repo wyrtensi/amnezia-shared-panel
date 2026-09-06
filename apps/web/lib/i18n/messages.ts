@@ -956,6 +956,7 @@ const ru = {
   "gpolicy.allowQrDownload": "Отображение QR-кодов",
   "gpolicy.allowConfDownload": "Скачивание .conf файлов",
   "gpolicy.allowSelfRevoke": "Самостоятельный отзыв ключей",
+  "gpolicy.autoPurgeOffboardedUsers": "Автоматическое удаление отключённых аккаунтов",
   "gpolicy.showPublicKey": "Показывать публичный ключ",
   "gpolicy.showLastUsed": "Показывать дату активности",
   "gpolicy.showTraffic": "Показывать объём трафика",
@@ -977,6 +978,8 @@ const ru = {
     "Пользователь может скачать .conf-файл ключа.",
   "gpolicy.allowSelfRevokeHint":
     "Пользователь может сам отзывать (удалять) свои ключи.",
+  "gpolicy.autoPurgeOffboardedUsersHint":
+    "Когда включено, панель сама безвозвратно удаляет отключённый аккаунт (и его отозванные ключи) по истечении срока хранения ниже. По умолчанию выключено: удаление аккаунта необратимо, поэтому панель должна не делать это сама, пока администратор явно не разрешит. Удалить аккаунт вручную можно в любой момент через CLI (offboarded-purge) независимо от этого переключателя.",
   "gpolicy.showPublicKeyHint":
     "Показывать публичный ключ устройства в карточке ключа.",
   "gpolicy.showLastUsedHint":
@@ -1026,6 +1029,7 @@ const ru = {
     "Строки можно перетаскивать мышью; стрелками — с клавиатуры и на телефоне.",
   "policy.employeePerms": "Разрешения для сотрудников",
   "policy.telemetryDisplay": "Отображение телеметрии",
+  "policy.accountDeletion": "Удаление отключённых аккаунтов",
   "policy.cfAccessHint":
     "Для двусторонней синхронизации пользователей с Access. API-токен хранится зашифрованным и не показывается — можно только заменить. См. docs/CLOUDFLARE-ACCESS.md.",
   "policy.cfAccessDomainsPointer":
@@ -2128,6 +2132,7 @@ const en = {
   "gpolicy.allowQrDownload": "QR code display",
   "gpolicy.allowConfDownload": ".conf file download",
   "gpolicy.allowSelfRevoke": "Self-revocation of keys",
+  "gpolicy.autoPurgeOffboardedUsers": "Automatically delete offboarded accounts",
   "gpolicy.showPublicKey": "Show public key",
   "gpolicy.showLastUsed": "Show last activity date",
   "gpolicy.showTraffic": "Show traffic volume",
@@ -2148,6 +2153,8 @@ const en = {
   "gpolicy.allowConfDownloadHint": "The user can download a key's .conf file.",
   "gpolicy.allowSelfRevokeHint":
     "The user can revoke (delete) their own keys.",
+  "gpolicy.autoPurgeOffboardedUsersHint":
+    "When on, the panel itself permanently deletes a disabled account (and its revoked keys) once the retention window below has passed. Off by default: deleting an account is irreversible, so the panel must not do it on its own until an admin explicitly allows it. An account can still be deleted deliberately at any time from the CLI (offboarded-purge), regardless of this switch.",
   "gpolicy.showPublicKeyHint":
     "Show the device's public key on the key card.",
   "gpolicy.showLastUsedHint": "Show when the key was last used.",
@@ -2194,6 +2201,7 @@ const en = {
     "Drag a row to reorder it; the arrows do the same from a keyboard or a phone.",
   "policy.employeePerms": "Employee permissions",
   "policy.telemetryDisplay": "Telemetry display",
+  "policy.accountDeletion": "Deleting offboarded accounts",
   "policy.cfAccessHint":
     "For two-way user synchronization with Access. The API token is stored encrypted and never shown — it can only be replaced. See docs/CLOUDFLARE-ACCESS.md.",
   "policy.cfAccessDomainsPointer":

@@ -1,0 +1,1 @@
+ALTER TABLE "portal_policy" ADD COLUMN "auto_purge_offboarded_users" boolean DEFAULT false NOT NULL;

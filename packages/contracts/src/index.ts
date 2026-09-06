@@ -475,6 +475,15 @@ export const portalPolicySchema = z.object({
   allowQrDownload: z.boolean().default(true),
   allowConfDownload: z.boolean().default(true),
   allowSelfRevoke: z.boolean().default(true),
+  // Whether the automatic maintenance sweep may hard-delete an offboarded
+  // account at all (see WORKER_PERIOD_FIELDS.offboardedUserRetentionDays for
+  // how long it waits once this is on). Default OFF: deleting a user row is
+  // irreversible -- it takes the row's `revoked` keys with it and nulls
+  // `audit_events.actor_user_id` on that person's own history -- so a panel
+  // that has never touched this setting must not delete accounts on a timer.
+  // An admin can still remove one deliberately at any time; see the CLI's
+  // `offboarded-purge` and the matching admin action.
+  autoPurgeOffboardedUsers: z.boolean().default(false),
   showPublicKey: z.boolean().default(false),
   showLastUsed: z.boolean().default(true),
   showTraffic: z.boolean().default(true),
