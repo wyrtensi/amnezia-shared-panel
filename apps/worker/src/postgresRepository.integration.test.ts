@@ -697,6 +697,33 @@ describe("PostgresWorkerRepository outbox leases", () => {
       publicHost: null,
       publicIp: "203.0.113.11",
     });
+
+    // The agent starts reporting a NEW host and the lookup fails: the stored
+    // IP answers for the previous host and must not survive, or the next poll
+    // would see a known IP and skip the lookup forever (telemetry.ts:285).
+    await repository.recordNodeSnapshot({
+      nodeId: node.id,
+      observedAt: new Date("2026-08-20T08:14:00.000Z"),
+      agentLatencyMs: 12,
+      server: { ...server, publicHost: "new.example.com" },
+      load,
+      peers: [],
+      publicHost: "new.example.com",
+      publicIp: null,
+    });
+    const [hostChanged] = await database.db
+      .select({
+        publicHost: nodes.publicHost,
+        publicIp: nodes.publicIp,
+        publicIpResolvedAt: nodes.publicIpResolvedAt,
+      })
+      .from(nodes)
+      .where(eq(nodes.id, node.id));
+    expect(hostChanged).toEqual({
+      publicHost: "new.example.com",
+      publicIp: null,
+      publicIpResolvedAt: null,
+    });
   });
 
   runDatabaseTest("reports the stored address so the poll can skip the lookup", async () => {

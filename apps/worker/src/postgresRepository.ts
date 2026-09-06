@@ -1015,6 +1015,14 @@ export class PostgresWorkerRepository
       )[0];
       if (!node) return;
       const supportedProtocols = protocolsFromAgent(snapshot.server.protocols);
+      // A host change invalidates the stored IP: it answers for the PREVIOUS
+      // name, not a good value a lookup failed to refresh. Blanking it is what
+      // makes the next tick look the new host up (telemetry.ts:285) and what
+      // stops users being handed the old server's address. Guarded on a
+      // non-null new host for the same reason telemetry is: an agent that
+      // stops reporting a host has not moved.
+      const hostChanged =
+        snapshot.publicHost !== null && snapshot.publicHost !== node.publicHost;
       await tx
         .update(nodes)
         .set({
@@ -1044,8 +1052,13 @@ export class PostgresWorkerRepository
           // flicker between an address and "not resolved". The timestamp
           // records when the address was LEARNED, not how fresh it is; a node's
           // public address does not change, so there is nothing to go stale.
+          // The exception is a host change with a failed lookup: the stored IP
+          // then answers for the PREVIOUS host, not a good value that a lookup
+          // failed to refresh, and must be blanked (see hostChanged below).
           ...(snapshot.publicIp === null
-            ? {}
+            ? hostChanged
+              ? { publicIp: null, publicIpResolvedAt: null }
+              : {}
             : {
                 publicIp: snapshot.publicIp,
                 publicIpResolvedAt: snapshot.observedAt,
