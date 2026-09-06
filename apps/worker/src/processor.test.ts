@@ -335,6 +335,159 @@ describe("provision job reconciliation", () => {
     expect(repository.failJob).not.toHaveBeenCalled();
     expect(repository.completeJob).not.toHaveBeenCalled();
   });
+
+  it("matches a peer by public key even when another peer shares the label", async () => {
+    const repository = createRepository();
+    const loadNodeReconcileContext = vi.fn<
+      WorkerRepository["loadNodeReconcileContext"]
+    >(() =>
+      Promise.resolve({
+        node: keyContext.node,
+        keys: [
+          {
+            keyId: "key-1",
+            publicKey: "current-public-key",
+            nodeLabel: "ap_shared_label",
+          },
+        ],
+      }),
+    );
+    const completeNodeReconcile = vi.fn<
+      WorkerRepository["completeNodeReconcile"]
+    >(() => Promise.resolve());
+    Object.assign(repository, {
+      loadNodeReconcileContext,
+      completeNodeReconcile,
+    });
+    const agent = createAgent();
+    // The stale peer sits FIRST under the same deterministic label the
+    // current one also carries -- a single label-or-key pass would match it
+    // first just because of list order.
+    vi.mocked(agent.listClients).mockResolvedValue([
+      {
+        username: "ap_shared_label",
+        peers: [
+          {
+            id: "stale-public-key",
+            name: null,
+            allowedIps: [],
+            lastHandshake: 0,
+            traffic: { received: 10, sent: 5 },
+            endpoint: null,
+            online: false,
+            expiresAt: null,
+            status: "active",
+            protocol: "amneziawg2",
+          },
+          {
+            id: "current-public-key",
+            name: null,
+            allowedIps: [],
+            lastHandshake: 1_787_213_070,
+            traffic: { received: 999, sent: 888 },
+            endpoint: "203.0.113.1:51889",
+            online: true,
+            expiresAt: null,
+            status: "active",
+            protocol: "amneziawg2",
+          },
+        ],
+      },
+    ]);
+    const now = new Date("2026-08-20T08:05:00.000Z");
+    const processJob = createJobProcessor({
+      repository,
+      createNodeAgent: () => agent,
+      now: () => now,
+    });
+
+    await processJob({
+      id: "reconcile-2",
+      type: "node.reconcile",
+      attempts: 1,
+      payload: { nodeId: "node-1" },
+    });
+
+    const result = completeNodeReconcile.mock.calls[0]?.[0];
+    expect(result?.peers).toEqual([
+      expect.objectContaining({
+        keyId: "key-1",
+        online: true,
+        receivedBytes: 999n,
+        sentBytes: 888n,
+      }),
+    ]);
+    expect(result?.summary).toMatchObject({
+      managedKeyCount: 1,
+      observedPeerCount: 2,
+      matchedPeerCount: 1,
+      missingManagedPeerCount: 0,
+      orphanNodePeerCount: 1,
+    });
+    expect(agent.deleteClient).not.toHaveBeenCalled();
+  });
+
+  it("still matches by label when the key has no public key", async () => {
+    const repository = createRepository();
+    const loadNodeReconcileContext = vi.fn<
+      WorkerRepository["loadNodeReconcileContext"]
+    >(() =>
+      Promise.resolve({
+        node: keyContext.node,
+        keys: [{ keyId: "key-2", publicKey: null, nodeLabel: "ap_only_label" }],
+      }),
+    );
+    const completeNodeReconcile = vi.fn<
+      WorkerRepository["completeNodeReconcile"]
+    >(() => Promise.resolve());
+    Object.assign(repository, {
+      loadNodeReconcileContext,
+      completeNodeReconcile,
+    });
+    const agent = createAgent();
+    vi.mocked(agent.listClients).mockResolvedValue([
+      {
+        username: "ap_only_label",
+        peers: [
+          {
+            id: "generated-key",
+            name: null,
+            allowedIps: [],
+            lastHandshake: 0,
+            traffic: { received: 0, sent: 0 },
+            endpoint: null,
+            online: false,
+            expiresAt: null,
+            status: "active",
+            protocol: "amneziawg2",
+          },
+        ],
+      },
+    ]);
+    const now = new Date("2026-08-20T08:05:00.000Z");
+    const processJob = createJobProcessor({
+      repository,
+      createNodeAgent: () => agent,
+      now: () => now,
+    });
+
+    await processJob({
+      id: "reconcile-3",
+      type: "node.reconcile",
+      attempts: 1,
+      payload: { nodeId: "node-1" },
+    });
+
+    const result = completeNodeReconcile.mock.calls[0]?.[0];
+    expect(result?.peers).toEqual([
+      expect.objectContaining({ keyId: "key-2" }),
+    ]);
+    expect(result?.summary).toMatchObject({
+      matchedPeerCount: 1,
+      missingManagedPeerCount: 0,
+      orphanNodePeerCount: 0,
+    });
+  });
 });
 
 describe("rotate job", () => {

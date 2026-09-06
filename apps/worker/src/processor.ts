@@ -176,16 +176,39 @@ export const createJobProcessor = ({
         client.peers.map((peer) => ({ nodeLabel: client.username, peer })),
       );
       const unmatchedPeerIndexes = new Set(nodePeers.map((_peer, index) => index));
-      const peers = context.keys.flatMap((key) => {
+      // Two passes, public key first: a node can briefly carry a stale peer
+      // and the current one under the same deterministic label (mid-rotation,
+      // or a label collision), and a single OR'd pass matched whichever came
+      // first in the node's own list order. The public key uniquely
+      // identifies the live peer, so it must win whenever it is available;
+      // the label is only a fallback for keys that have none. Each peer is
+      // still claimed at most once, via the same `unmatchedPeerIndexes`.
+      const matchedPeerByKeyId = new Map<string, (typeof nodePeers)[number]>();
+      for (const key of context.keys) {
+        if (key.publicKey === null) continue;
         const peerIndex = nodePeers.findIndex(
-          ({ nodeLabel, peer }, index) =>
-            unmatchedPeerIndexes.has(index) &&
-            ((key.publicKey !== null && peer.id === key.publicKey) ||
-              nodeLabel === key.nodeLabel),
+          ({ peer }, index) =>
+            unmatchedPeerIndexes.has(index) && peer.id === key.publicKey,
         );
-        if (peerIndex < 0) return [];
+        if (peerIndex < 0) continue;
         unmatchedPeerIndexes.delete(peerIndex);
-        const matched = nodePeers[peerIndex];
+        matchedPeerByKeyId.set(key.keyId, nodePeers[peerIndex]!);
+      }
+      for (const key of context.keys) {
+        if (matchedPeerByKeyId.has(key.keyId)) continue;
+        const peerIndex = nodePeers.findIndex(
+          ({ nodeLabel }, index) =>
+            unmatchedPeerIndexes.has(index) && nodeLabel === key.nodeLabel,
+        );
+        if (peerIndex < 0) continue;
+        unmatchedPeerIndexes.delete(peerIndex);
+        matchedPeerByKeyId.set(key.keyId, nodePeers[peerIndex]!);
+      }
+      // Order follows `context.keys`, same as before: nothing downstream
+      // indexes into this array, `completeNodeReconcile` folds it into a
+      // Map keyed by `keyId` before using it.
+      const peers = context.keys.flatMap((key) => {
+        const matched = matchedPeerByKeyId.get(key.keyId);
         return matched
           ? [toPeerObservation(key.keyId, matched.peer, observedAt)]
           : [];
