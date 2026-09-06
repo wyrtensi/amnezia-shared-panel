@@ -254,6 +254,7 @@ export class PostgresWorkerRepository
         keyId: vpnKeys.id,
         nodeLabel: vpnKeys.nodeLabel,
         publicKey: vpnKeys.publicKey,
+        state: vpnKeys.state,
       })
       .from(vpnKeys)
       .where(

@@ -216,9 +216,24 @@ describe("provision job reconciliation", () => {
       Promise.resolve({
         node: keyContext.node,
         keys: [
-          { keyId: "key-1", publicKey: "public-key-1", nodeLabel: "label-1" },
-          { keyId: "key-2", publicKey: null, nodeLabel: "label-2" },
-          { keyId: "key-3", publicKey: "missing-key", nodeLabel: "label-3" },
+          {
+            keyId: "key-1",
+            publicKey: "public-key-1",
+            nodeLabel: "label-1",
+            state: "active",
+          },
+          {
+            keyId: "key-2",
+            publicKey: null,
+            nodeLabel: "label-2",
+            state: "active",
+          },
+          {
+            keyId: "key-3",
+            publicKey: "missing-key",
+            nodeLabel: "label-3",
+            state: "active",
+          },
         ],
       }),
     );
@@ -311,6 +326,8 @@ describe("provision job reconciliation", () => {
         matchedPeerCount: 2,
         missingManagedPeerCount: 1,
         orphanNodePeerCount: 1,
+        revokingKeyCount: 0,
+        strandedRevokingPeerCount: 0,
       },
     });
     expect(result?.peers).toEqual([
@@ -348,6 +365,7 @@ describe("provision job reconciliation", () => {
             keyId: "key-1",
             publicKey: "current-public-key",
             nodeLabel: "ap_shared_label",
+            state: "active",
           },
         ],
       }),
@@ -423,6 +441,8 @@ describe("provision job reconciliation", () => {
       matchedPeerCount: 1,
       missingManagedPeerCount: 0,
       orphanNodePeerCount: 1,
+      revokingKeyCount: 0,
+      strandedRevokingPeerCount: 0,
     });
     expect(agent.deleteClient).not.toHaveBeenCalled();
   });
@@ -434,7 +454,14 @@ describe("provision job reconciliation", () => {
     >(() =>
       Promise.resolve({
         node: keyContext.node,
-        keys: [{ keyId: "key-2", publicKey: null, nodeLabel: "ap_only_label" }],
+        keys: [
+          {
+            keyId: "key-2",
+            publicKey: null,
+            nodeLabel: "ap_only_label",
+            state: "active",
+          },
+        ],
       }),
     );
     const completeNodeReconcile = vi.fn<
@@ -486,7 +513,131 @@ describe("provision job reconciliation", () => {
       matchedPeerCount: 1,
       missingManagedPeerCount: 0,
       orphanNodePeerCount: 0,
+      revokingKeyCount: 0,
+      strandedRevokingPeerCount: 0,
     });
+  });
+
+  it("counts a revoking key whose peer is still on the node as stranded", async () => {
+    const repository = createRepository();
+    const loadNodeReconcileContext = vi.fn<
+      WorkerRepository["loadNodeReconcileContext"]
+    >(() =>
+      Promise.resolve({
+        node: keyContext.node,
+        keys: [
+          {
+            keyId: "key-3",
+            publicKey: "stuck-public-key",
+            nodeLabel: "ap_stuck_label",
+            state: "revoking",
+          },
+        ],
+      }),
+    );
+    const completeNodeReconcile = vi.fn<
+      WorkerRepository["completeNodeReconcile"]
+    >(() => Promise.resolve());
+    Object.assign(repository, {
+      loadNodeReconcileContext,
+      completeNodeReconcile,
+    });
+    const agent = createAgent();
+    // The revoke never went through: the peer this key was supposed to have
+    // deleted is still live on the node.
+    vi.mocked(agent.listClients).mockResolvedValue([
+      {
+        username: "ap_stuck_label",
+        peers: [
+          {
+            id: "stuck-public-key",
+            name: null,
+            allowedIps: [],
+            lastHandshake: 0,
+            traffic: { received: 0, sent: 0 },
+            endpoint: null,
+            online: true,
+            expiresAt: null,
+            status: "active",
+            protocol: "amneziawg2",
+          },
+        ],
+      },
+    ]);
+    const now = new Date("2026-08-20T08:05:00.000Z");
+    const processJob = createJobProcessor({
+      repository,
+      createNodeAgent: () => agent,
+      now: () => now,
+    });
+
+    await processJob({
+      id: "reconcile-4",
+      type: "node.reconcile",
+      attempts: 1,
+      payload: { nodeId: "node-1" },
+    });
+
+    const result = completeNodeReconcile.mock.calls[0]?.[0];
+    expect(result?.summary).toMatchObject({
+      strandedRevokingPeerCount: 1,
+      revokingKeyCount: 1,
+      orphanNodePeerCount: 0,
+    });
+    // The point of this task: reconcile only ever reports a stranded peer,
+    // it never starts deleting one itself.
+    expect(agent.deleteClient).not.toHaveBeenCalled();
+  });
+
+  it("does not count a revoking key with no peer as stranded", async () => {
+    const repository = createRepository();
+    const loadNodeReconcileContext = vi.fn<
+      WorkerRepository["loadNodeReconcileContext"]
+    >(() =>
+      Promise.resolve({
+        node: keyContext.node,
+        keys: [
+          {
+            keyId: "key-4",
+            publicKey: "already-gone-key",
+            nodeLabel: "ap_gone_label",
+            state: "revoking",
+          },
+        ],
+      }),
+    );
+    const completeNodeReconcile = vi.fn<
+      WorkerRepository["completeNodeReconcile"]
+    >(() => Promise.resolve());
+    Object.assign(repository, {
+      loadNodeReconcileContext,
+      completeNodeReconcile,
+    });
+    const agent = createAgent();
+    vi.mocked(agent.listClients).mockResolvedValue([]);
+    const now = new Date("2026-08-20T08:05:00.000Z");
+    const processJob = createJobProcessor({
+      repository,
+      createNodeAgent: () => agent,
+      now: () => now,
+    });
+
+    await processJob({
+      id: "reconcile-5",
+      type: "node.reconcile",
+      attempts: 1,
+      payload: { nodeId: "node-1" },
+    });
+
+    const result = completeNodeReconcile.mock.calls[0]?.[0];
+    expect(result?.summary).toMatchObject({
+      strandedRevokingPeerCount: 0,
+      revokingKeyCount: 1,
+      // The revoke actually finished (the node has nothing under this
+      // label or key), so this must not also read as a missing peer.
+      missingManagedPeerCount: 0,
+    });
+    expect(agent.deleteClient).not.toHaveBeenCalled();
   });
 });
 

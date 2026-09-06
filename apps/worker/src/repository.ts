@@ -30,6 +30,7 @@ export type NodeReconcileContext = {
     keyId: string;
     nodeLabel: string;
     publicKey: string | null;
+    state: KeyState;
   }>;
 };
 
@@ -37,8 +38,21 @@ export type NodeReconcileSummary = {
   managedKeyCount: number;
   observedPeerCount: number;
   matchedPeerCount: number;
+  /**
+   * Managed keys with no matching peer, excluding `revoking` ones: a
+   * `revoking` key with no peer is a delete that actually succeeded, not a
+   * discrepancy.
+   */
   missingManagedPeerCount: number;
   orphanNodePeerCount: number;
+  /** Managed keys in state `revoking` -- a delete that never went through. */
+  revokingKeyCount: number;
+  /**
+   * How many of those `revoking` keys actually matched a live peer: a
+   * revoke that never completed, with the peer still on the node. Reconcile
+   * only reports this -- it stays read-only and never deletes a peer.
+   */
+  strandedRevokingPeerCount: number;
 };
 
 export type NodeReconcileResult = {

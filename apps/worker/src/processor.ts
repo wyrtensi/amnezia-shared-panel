@@ -213,6 +213,23 @@ export const createJobProcessor = ({
           ? [toPeerObservation(key.keyId, matched.peer, observedAt)]
           : [];
       });
+      // A key whose revoke permanently failed sits in `revoking` with its
+      // peer still live on the node -- it is still "managed" above (removing
+      // it would freeze its peer_current row), but it should not read as a
+      // clean reconcile: the peer is cleanup work, not something the panel
+      // is knowingly keeping. Counted separately rather than folded into
+      // missing/orphan, which are about the node's inventory disagreeing
+      // with the panel's, not about a key stuck mid-delete. A `revoking` key
+      // with no peer is the delete having actually succeeded -- not a
+      // discrepancy either -- so it is excluded from `missingManagedPeerCount`
+      // the same way a matched one is excluded from it already.
+      const revokingKeys = context.keys.filter((key) => key.state === "revoking");
+      const strandedRevokingPeerCount = revokingKeys.filter((key) =>
+        matchedPeerByKeyId.has(key.keyId),
+      ).length;
+      const missingManagedPeerCount = context.keys.filter(
+        (key) => key.state !== "revoking" && !matchedPeerByKeyId.has(key.keyId),
+      ).length;
       await repository.completeNodeReconcile({
         jobId: job.id,
         nodeId,
@@ -223,8 +240,10 @@ export const createJobProcessor = ({
           managedKeyCount: context.keys.length,
           observedPeerCount: nodePeers.length,
           matchedPeerCount: peers.length,
-          missingManagedPeerCount: context.keys.length - peers.length,
+          missingManagedPeerCount,
           orphanNodePeerCount: unmatchedPeerIndexes.size,
+          revokingKeyCount: revokingKeys.length,
+          strandedRevokingPeerCount,
         },
       });
       return;

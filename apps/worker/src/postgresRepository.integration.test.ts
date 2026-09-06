@@ -768,6 +768,8 @@ describe("PostgresWorkerRepository outbox leases", () => {
       matchedPeerCount: 1,
       missingManagedPeerCount: 0,
       orphanNodePeerCount: 1,
+      revokingKeyCount: 0,
+      strandedRevokingPeerCount: 0,
     };
 
     await repository.completeNodeReconcile({
@@ -866,6 +868,8 @@ describe("PostgresWorkerRepository outbox leases", () => {
           matchedPeerCount: 0,
           missingManagedPeerCount: 1,
           orphanNodePeerCount: 0,
+          revokingKeyCount: 0,
+          strandedRevokingPeerCount: 0,
         },
       }),
     ).rejects.toThrow();
@@ -881,6 +885,108 @@ describe("PostgresWorkerRepository outbox leases", () => {
     expect(storedJob?.status).toBe("processing");
     expect(storedNode?.lastSyncAt).toBeNull();
   });
+
+  runDatabaseTest(
+    "returns each key's state, and keeps upserting peer_current for a revoking key",
+    async () => {
+      if (!database || !repository) return;
+      const credentials = encryptSecret("api-key", keyring, 1);
+      const label = encryptSecret(randomBytes(32).toString("base64"), keyring, 1);
+      const [user] = await database.db
+        .insert(users)
+        .values({ email: "worker-revoking@example.com" })
+        .returning();
+      const [node] = await database.db
+        .insert(nodes)
+        .values({
+          name: "worker-revoking-node",
+          apiBaseUrl: "http://127.0.0.1:4001",
+          maxPeers: 500,
+          credentialsCiphertext: credentials.ciphertext,
+          credentialsNonce: credentials.nonce,
+          credentialsAuthTag: credentials.authTag,
+          credentialsKeyVersion: credentials.keyVersion,
+          labelSecretCiphertext: label.ciphertext,
+          labelSecretNonce: label.nonce,
+          labelSecretAuthTag: label.authTag,
+          labelSecretKeyVersion: label.keyVersion,
+        })
+        .returning();
+      if (!user || !node) throw new Error("Failed to seed revoking-key context");
+      const [key] = await database.db
+        .insert(vpnKeys)
+        .values({
+          ownerId: user.id,
+          nodeId: node.id,
+          publicKey: "stuck-public-key",
+          nodeLabel: "ap_worker_revoking",
+          protocol: "awg2",
+          state: "revoking",
+          routeProfile: "full_tunnel",
+        })
+        .returning();
+      if (!key) throw new Error("Failed to seed revoking key");
+
+      const context = await repository.loadNodeReconcileContext(node.id);
+      expect(context?.keys).toEqual([
+        expect.objectContaining({ keyId: key.id, state: "revoking" }),
+      ]);
+
+      const [job] = await database.db
+        .insert(jobOutbox)
+        .values({
+          type: "node.reconcile",
+          deduplicationKey: "node.reconcile:revoking",
+          payload: { nodeId: node.id },
+          status: "processing",
+          lockedAt: new Date(),
+        })
+        .returning();
+      if (!job) throw new Error("Failed to seed reconciliation job");
+      const observedAt = new Date("2026-08-20T11:00:00.000Z");
+
+      // The peer never got deleted -- the revoke permanently failed -- so
+      // reconcile still observes it online, and this write must still land:
+      // dropping `revoking` from `managedKeyIds` would freeze this row
+      // instead of refreshing it.
+      await repository.completeNodeReconcile({
+        jobId: job.id,
+        nodeId: node.id,
+        observedAt,
+        managedKeyIds: [key.id],
+        peers: [
+          {
+            keyId: key.id,
+            online: true,
+            endpoint: "203.0.113.1:51889",
+            latestHandshakeAt: new Date("2026-08-20T10:59:00.000Z"),
+            receivedBytes: 10n,
+            sentBytes: 5n,
+            observedAt,
+          },
+        ],
+        summary: {
+          managedKeyCount: 1,
+          observedPeerCount: 1,
+          matchedPeerCount: 1,
+          missingManagedPeerCount: 0,
+          orphanNodePeerCount: 0,
+          revokingKeyCount: 1,
+          strandedRevokingPeerCount: 1,
+        },
+      });
+
+      const [storedCurrent] = await database.db
+        .select()
+        .from(peerCurrent)
+        .where(eq(peerCurrent.keyId, key.id));
+      expect(storedCurrent).toMatchObject({
+        online: true,
+        receivedBytes: 10n,
+        sentBytes: 5n,
+      });
+    },
+  );
 
   /**
    * A key plus a job of `type` that carries its id, so `failJob` has something
