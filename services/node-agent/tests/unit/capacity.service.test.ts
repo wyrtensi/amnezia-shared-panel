@@ -106,6 +106,60 @@ describe("CapacityService.getStatus", () => {
     });
   });
 
+  it("gives up on a capacity change the host applier never answered", async () => {
+    // Well past CAPACITY_DEADLINE_MS, no request.json (the applier consumed
+    // it) and no result.json (it never wrote one back) - the realistic shape
+    // of a host helper that died mid-run.
+    const staleRequestedAt = new Date(Date.now() - 20 * 60 * 1000).toISOString();
+    await writeFile(
+      join(spoolDir, "pending.json"),
+      JSON.stringify({ id: "stale-id", maxPeers: 300, requestedAt: staleRequestedAt }),
+    );
+
+    const status = await service().getStatus();
+    expect(status.state).toBe("failed");
+    expect(status.message).toMatch(/without writing a result/);
+    expect(status.updatedAt).not.toBeNull();
+  });
+
+  it("still reports running inside the deadline", async () => {
+    const recentRequestedAt = new Date(Date.now() - 60 * 1000).toISOString();
+    await writeFile(
+      join(spoolDir, "pending.json"),
+      JSON.stringify({ id: "recent-id", maxPeers: 300, requestedAt: recentRequestedAt }),
+    );
+
+    await expect(service().getStatus()).resolves.toMatchObject({
+      state: "running",
+      requestedMaxPeers: 300,
+    });
+  });
+
+  it("a result the applier wrote late still beats the deadline", async () => {
+    // The pending marker is stale enough to have expired on its own, but a
+    // result matching its id arrived anyway - that outcome must win.
+    const staleRequestedAt = new Date(Date.now() - 20 * 60 * 1000).toISOString();
+    await writeFile(
+      join(spoolDir, "pending.json"),
+      JSON.stringify({ id: "late-id", maxPeers: 300, requestedAt: staleRequestedAt }),
+    );
+    await writeFile(
+      join(spoolDir, "result.json"),
+      JSON.stringify({
+        id: "late-id",
+        ok: true,
+        maxPeers: 300,
+        finishedAt: "2026-09-05T10:00:00Z",
+        message: "SERVER_MAX_PEERS=300 applied",
+      }),
+    );
+
+    await expect(service().getStatus()).resolves.toMatchObject({
+      state: "succeeded",
+      requestedMaxPeers: 300,
+    });
+  });
+
   it("reads succeeded only from a result that matches this request", async () => {
     const capacity = service();
     const { id } = await capacity.requestCapacity(300);

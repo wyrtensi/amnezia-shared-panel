@@ -142,6 +142,65 @@ describe("AgentUpdateService", () => {
     expect(await svc.getStatus()).toMatchObject({ state: "running", image: IMAGE });
   });
 
+  it("gives up on an update the host updater never answered", async () => {
+    // Well past UPDATE_DEADLINE_MS, no request.json (the updater consumed it)
+    // and no result.json (it never wrote one back) - the realistic shape of a
+    // host helper that died mid-run.
+    const staleRequestedAt = new Date(Date.now() - 25 * 60 * 1000).toISOString();
+    await writeFile(
+      join(spool, "pending.json"),
+      JSON.stringify({ id: "stale-id", image: IMAGE, requestedAt: staleRequestedAt }),
+    );
+
+    const status = await service().getStatus();
+    expect(status.state).toBe("failed");
+    expect(status.message).toMatch(/without writing a result/);
+    expect(status.updatedAt).not.toBeNull();
+  });
+
+  it("still reports running inside the deadline", async () => {
+    const recentRequestedAt = new Date(Date.now() - 60 * 1000).toISOString();
+    await writeFile(
+      join(spool, "pending.json"),
+      JSON.stringify({ id: "recent-id", image: IMAGE, requestedAt: recentRequestedAt }),
+    );
+
+    expect(await service().getStatus()).toMatchObject({ state: "running", image: IMAGE });
+  });
+
+  it("a result the updater wrote late still beats the deadline", async () => {
+    // The pending marker is stale enough to have expired on its own, but a
+    // result matching its id arrived anyway - that outcome must win.
+    const staleRequestedAt = new Date(Date.now() - 25 * 60 * 1000).toISOString();
+    await writeFile(
+      join(spool, "pending.json"),
+      JSON.stringify({ id: "late-id", image: IMAGE, requestedAt: staleRequestedAt }),
+    );
+    await writeFile(
+      join(spool, "result.json"),
+      JSON.stringify({
+        id: "late-id",
+        finishedAt: "2026-09-05T10:00:00Z",
+        ok: true,
+        image: IMAGE,
+        message: "updated",
+      }),
+    );
+
+    expect(await service().getStatus()).toMatchObject({ state: "succeeded", image: IMAGE });
+  });
+
+  it("treats a pending marker it cannot date as expired", async () => {
+    // A requestedAt that will not parse gives NaN, and a pending marker that
+    // cannot be dated is exactly the one that cannot be bounded - fail closed.
+    await writeFile(
+      join(spool, "pending.json"),
+      JSON.stringify({ id: "undatable-id", image: IMAGE, requestedAt: "not a date" }),
+    );
+
+    expect(await service().getStatus()).toMatchObject({ state: "failed" });
+  });
+
   it("reports the outcome the updater wrote", async () => {
     const svc = service();
     const { id } = await svc.requestUpdate(IMAGE);

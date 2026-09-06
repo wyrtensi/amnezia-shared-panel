@@ -21,6 +21,19 @@ const LOG_FILE = "update.log";
 /** A failure's reason is on the last lines, so the tail is what is kept. */
 const MAX_LOG_BYTES = 64 * 1024;
 
+/**
+ * How long a `pending.json` is allowed to go without a matching `result.json`
+ * before the agent declares it dead rather than "running".
+ *
+ * infra/node/systemd/amnezia-node-agent-update.service sets
+ * TimeoutStartSec=900 (a pull is the slow part on a small VPS, plus up to 90s
+ * for the health gate). This must sit above that so systemd has already given
+ * up on the unit before the agent gives up on the request; the ~5 minute
+ * margin covers systemd's own SIGTERM-then-SIGKILL grace period past
+ * TimeoutStartSec plus ordinary clock/scheduling slack.
+ */
+const UPDATE_DEADLINE_MS = 20 * 60 * 1000;
+
 interface SpoolResult {
   id?: string;
   finishedAt?: string;
@@ -154,25 +167,49 @@ export class AgentUpdateService {
 
     let state: AgentUpdateState = "idle";
     let image: string | null = null;
+    let message: string | null = null;
+    let updatedAt: string | null = null;
 
-    if (hasRequest) {
-      state = "requested";
-      image = pending?.image ?? null;
-    } else if (pending?.id && !resultIsForPending) {
-      state = "running";
-      image = pending.image ?? null;
+    if (pending?.id && !resultIsForPending) {
+      // Unresolved: either the trigger is still there (requested) or it has
+      // been consumed with no result yet (running). Both windows share one
+      // deadline - a masked or stopped .path unit can pin either state
+      // forever otherwise, and the worker re-polls the node on every tick
+      // while it sits in one of them.
+      if (this.isPastDeadline(pending.requestedAt)) {
+        state = "failed";
+        image = pending.image ?? null;
+        message = "The host updater exited without writing a result before the deadline.";
+        updatedAt = new Date().toISOString();
+      } else {
+        state = hasRequest ? "requested" : "running";
+        image = pending.image ?? null;
+      }
     } else if (result) {
       state = result.ok ? "succeeded" : "failed";
       image = result.image || pending?.image || null;
+      message = result.message ?? null;
+      updatedAt = result.finishedAt ?? null;
     }
 
-    return {
-      state,
-      image,
-      log,
-      updatedAt: state === "succeeded" || state === "failed" ? result?.finishedAt ?? null : null,
-      message: result?.message ?? null,
-    };
+    return { state, image, log, updatedAt, message };
+  }
+
+  /**
+   * Whether `requestedAt` is far enough in the past that the host updater
+   * must be considered dead rather than merely slow.
+   *
+   * `now < deadline` is false both when the deadline has passed AND when
+   * `deadline` is NaN - an unparseable or missing `requestedAt` makes
+   * `Date.parse` return NaN, and NaN compares false to every number. That is
+   * deliberate: a pending marker this agent cannot date is exactly the one it
+   * cannot bound, so it must fail closed as expired rather than as "still
+   * running".
+   */
+  private isPastDeadline(requestedAt: string | undefined): boolean {
+    const deadline = Date.parse(requestedAt ?? "") + UPDATE_DEADLINE_MS;
+
+    return !(Date.now() < deadline);
   }
 
   private assertAvailable(): void {
