@@ -8,6 +8,7 @@ import { appLogger } from "@/config/winstonLogger";
 import { AgentUpdateStatus, AgentUpdateState } from "@/types/server";
 import { isPublishableAgentImage } from "@/utils/agentImage";
 import { APIError } from "@/utils/APIError";
+import { MAX_LOG_BYTES, readLogTail } from "@/utils/logTail";
 import { ClientErrorCode, ServerErrorCode } from "@/types/shared";
 
 /** The trigger the host-side path unit watches. Deleted by the updater. */
@@ -17,9 +18,6 @@ const PENDING_FILE = "pending.json";
 /** What the updater writes when it is done. */
 const RESULT_FILE = "result.json";
 const LOG_FILE = "update.log";
-
-/** A failure's reason is on the last lines, so the tail is what is kept. */
-const MAX_LOG_BYTES = 64 * 1024;
 
 /**
  * How long a `pending.json` is allowed to go without a matching `result.json`
@@ -168,7 +166,7 @@ export class AgentUpdateService {
       this.exists(REQUEST_FILE),
       this.readJson<PendingRequest>(PENDING_FILE),
       this.readJson<SpoolResult>(RESULT_FILE),
-      this.readLogTail(),
+      readLogTail(this.spoolPath(LOG_FILE), MAX_LOG_BYTES),
     ]);
 
     const resultIsForPending = Boolean(
@@ -275,16 +273,6 @@ export class AgentUpdateService {
       return parsed && typeof parsed === "object" ? (parsed as T) : null;
     } catch {
       return null;
-    }
-  }
-
-  private async readLogTail(): Promise<string> {
-    try {
-      const raw = await fs.readFile(this.spoolPath(LOG_FILE), "utf8");
-
-      return raw.length > MAX_LOG_BYTES ? raw.slice(-MAX_LOG_BYTES) : raw;
-    } catch {
-      return "";
     }
   }
 }

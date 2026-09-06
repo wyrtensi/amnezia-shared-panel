@@ -268,6 +268,16 @@ describe("AgentUpdateService", () => {
     expect(status.log.endsWith("x")).toBe(true);
   });
 
+  it("caps a multi-byte log by bytes, not by UTF-16 code units", async () => {
+    // The leading "a" shifts every following 4-byte emoji off alignment with
+    // the cap, forcing the byte cut to land inside one.
+    await writeFile(join(spool, "update.log"), "a" + "\u{1F642}".repeat(20_000), "utf8");
+
+    const status = await service().getStatus();
+    expect(Buffer.byteLength(status.log, "utf8")).toBeLessThanOrEqual(64 * 1024);
+    expect(status.log).not.toContain("�");
+  });
+
   it("survives a spool whose files are unreadable or malformed", async () => {
     await writeFile(join(spool, "result.json"), "{ not json");
 

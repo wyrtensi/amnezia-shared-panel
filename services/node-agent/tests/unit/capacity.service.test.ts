@@ -239,4 +239,15 @@ describe("CapacityService.getStatus", () => {
 
     expect(log.length).toBe(64 * 1024);
   });
+
+  it("caps a multi-byte log by bytes, not by UTF-16 code units", async () => {
+    // The leading "a" shifts every following 4-byte emoji off alignment with
+    // the cap, forcing the byte cut to land inside one.
+    await writeFile(join(spoolDir, "apply.log"), "a" + "\u{1F642}".repeat(20_000), "utf8");
+
+    const { log } = await service().getStatus();
+
+    expect(Buffer.byteLength(log, "utf8")).toBeLessThanOrEqual(64 * 1024);
+    expect(log).not.toContain("�");
+  });
 });
