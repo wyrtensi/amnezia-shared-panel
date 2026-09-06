@@ -26,6 +26,8 @@ import {
   armAccessSyncRow,
   decryptSecret,
   encryptSecret,
+  findOffboardedUsersEligibleForPurge,
+  purgeOneOffboardedUser,
   auditEvents,
   jobOutbox,
   nodeAgentReleases,
@@ -769,52 +771,21 @@ export class PostgresWorkerRepository
     disabledBefore: Date,
   ): Promise<{ deleted: string[] }> => {
     return this.options.db.transaction(async (tx) => {
-      const disabled = await tx
-        .select({ id: users.id, email: users.email })
-        .from(users)
-        .where(
-          and(
-            eq(users.status, "disabled"),
-            // Fail closed: a NULL disabled_at is a row disabled before this
-            // column existed (or, in principle, a bug that skipped setting
-            // it), and there is no timestamp to measure a retention window
-            // from. Treating "no timestamp" as "not recent enough to purge"
-            // would delete exactly the accounts this window exists to
-            // protect, so such a row is never purged, no matter how long it
-            // has been disabled.
-            isNotNull(users.disabledAt),
-            lt(users.disabledAt, disabledBefore),
-          ),
-        );
+      // The eligibility rule (disabled, past the retention cutoff, no key that
+      // could still hold a peer) is shared with the control API's manual purge
+      // admin action -- see findOffboardedUsersEligibleForPurge in @amnezia/db
+      // for why it must never fork into two copies that can disagree.
+      const eligible = await findOffboardedUsersEligibleForPurge(
+        tx,
+        disabledBefore,
+      );
       const deleted: string[] = [];
-      for (const user of disabled) {
-        // Keys that may still hold a peer on a node block deletion; wait until
-        // every key has finished revoking (only "revoked" rows may remain).
-        const [live] = await tx
-          .select({ value: count() })
-          .from(vpnKeys)
-          .where(
-            and(
-              eq(vpnKeys.ownerId, user.id),
-              inArray(vpnKeys.state, [
-                "provisioning",
-                "active",
-                "disabled",
-                "revoking",
-                "failed",
-              ]),
-            ),
-          );
-        if ((live?.value ?? 0) > 0) continue;
-        // Delete only the revoked key rows (telemetry cascades), then the user.
-        // Scoping to "revoked" means a key that raced into a live state since
-        // the check above blocks the user delete (FK restrict) and the whole
+      for (const user of eligible) {
+        // A key that raced into a live state since the eligibility check above
+        // still blocks the user delete (FK restrict), and the whole
         // transaction rolls back — the user is retried next cycle, never
         // half-deleted with a stranded peer.
-        await tx
-          .delete(vpnKeys)
-          .where(and(eq(vpnKeys.ownerId, user.id), eq(vpnKeys.state, "revoked")));
-        await tx.delete(users).where(eq(users.id, user.id));
+        await purgeOneOffboardedUser(tx, user.id);
         await tx.insert(auditEvents).values({
           actorType: "system",
           action: "user.deleted",

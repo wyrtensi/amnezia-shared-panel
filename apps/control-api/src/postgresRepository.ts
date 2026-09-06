@@ -44,6 +44,7 @@ import type { ServiceCheckUserState } from "@amnezia/contracts";
 import {
   ACCESS_SYNC_DEDUPLICATION_KEY,
   accessDomainListSchema,
+  clampWorkerPeriod,
   createKeyRequestSchema,
   customRoutesSchema,
   DEFAULT_ALLOWED_PROTOCOLS,
@@ -80,6 +81,7 @@ import {
   decryptSecret,
   deterministicPeerLabel,
   encryptSecret,
+  findOffboardedUsersEligibleForPurge,
   globalRouteOverrides,
   identities,
   jobOutbox,
@@ -90,6 +92,7 @@ import {
   nodes,
   peerCurrent,
   portalPolicy,
+  purgeOneOffboardedUser,
   quotaRequests,
   resolvePortalPolicy,
   routeRuleVersions,
@@ -126,6 +129,8 @@ import { checkRecommendedPrefix, dedupeNodeIds } from "./policyNodeLists.js";
 import { toRulesRefreshStatus } from "./rulesRefresh.js";
 
 const quotaStates: KeyState[] = ["provisioning", "active", "disabled"];
+
+const DAY_MS = 24 * 60 * 60 * 1_000;
 
 /**
  * Wider than `quotaStates` on purpose, and shared with the panel so the button
@@ -3669,6 +3674,67 @@ export class PostgresControlRepository implements ControlRepository {
           metadata: { alreadyRunning },
         });
         return toRulesRefreshStatus(row);
+      });
+    } else if (resource === "users" && action === "purge") {
+      // The deliberate, manual counterpart to the automatic sweep in
+      // apps/worker/src/maintenance.ts -- this one is never gated on
+      // autoPurgeOffboardedUsers, because an admin choosing to remove an
+      // eligible account by hand is exactly the "no" this whole feature exists
+      // to let an operator say to the automatic path, not a second instance of
+      // the thing being gated.
+      //
+      // A dry run is the default: without `confirm: true` this reports what
+      // would be deleted and deletes nothing. Modeled on deleteNode's
+      // `deleteKeys` above -- destructive, so it must be asked for.
+      const { confirm } = z
+        .object({ confirm: z.boolean().optional() })
+        .parse(payload ?? {});
+      return this.options.db.transaction(async (tx) => {
+        const [policyRow] = await tx
+          .select({
+            offboardedUserRetentionDays: portalPolicy.offboardedUserRetentionDays,
+          })
+          .from(portalPolicy)
+          .limit(1);
+        const retentionDays =
+          clampWorkerPeriod(
+            "offboardedUserRetentionDays",
+            policyRow?.offboardedUserRetentionDays,
+          ) ?? WORKER_PERIOD_FIELDS.offboardedUserRetentionDays.fallback;
+        const cutoff = new Date(Date.now() - retentionDays * DAY_MS);
+        // Same predicate the automatic sweep uses -- see the comment on
+        // findOffboardedUsersEligibleForPurge for why this must never fork
+        // into a second copy.
+        const eligible = await findOffboardedUsersEligibleForPurge(tx, cutoff);
+        const deleted: string[] = [];
+        if (confirm) {
+          for (const user of eligible) {
+            await purgeOneOffboardedUser(tx, user.id);
+            // Same event the automatic sweep writes (`user.deleted`), but with
+            // an actor: the automatic path has none, a manual purge names the
+            // admin who asked for it.
+            await tx.insert(auditEvents).values({
+              actorUserId: actor.id,
+              actorType: "user",
+              action: "user.deleted",
+              targetType: "user",
+              targetId: user.id,
+              metadata: { email: user.email },
+            });
+            deleted.push(user.email);
+          }
+        }
+        return {
+          confirmed: Boolean(confirm),
+          retentionDays,
+          eligible: eligible.map((user) => ({
+            id: user.id,
+            email: user.email,
+            disabledAt: user.disabledAt.toISOString(),
+            revokedKeyCount: user.revokedKeyCount,
+          })),
+          deleted,
+        };
       });
     } else {
       throw new ApiError(404, "Admin action not found", "NOT_FOUND");

@@ -849,3 +849,63 @@ describe("route rules take addresses, not site names", () => {
     expect(sent.ru_blacklist?.add.domains).toEqual([]);
   });
 });
+
+describe("offboarded-purge", () => {
+  beforeEach(() => {
+    process.env.PANEL_ADMIN_EMAIL = "cli-test@example.com";
+  });
+  afterEach(() => {
+    delete process.env.PANEL_ADMIN_EMAIL;
+    vi.unstubAllGlobals();
+  });
+
+  const eligible = {
+    confirmed: false,
+    retentionDays: 30,
+    eligible: [
+      {
+        id: "u1",
+        email: "gone@example.com",
+        disabledAt: "2026-07-01T00:00:00.000Z",
+        revokedKeyCount: 2,
+      },
+    ],
+    deleted: [],
+  };
+
+  it("without --confirm sends confirm:false and deletes nothing", async () => {
+    const calls = stubFetch([{ body: eligible }]);
+    const out = await run(["offboarded-purge"]);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.url).toMatch(/\/api\/admin\/users\/offboarded\/purge$/);
+    expect(JSON.parse(calls[0]?.init?.body as string)).toEqual({
+      confirm: false,
+    });
+    expect(out).toMatch(/gone@example\.com/);
+    expect(out).toMatch(/Re-run with --confirm/);
+  });
+
+  it("--confirm sends confirm:true and reports what was deleted", async () => {
+    const calls = stubFetch([
+      {
+        body: {
+          ...eligible,
+          confirmed: true,
+          deleted: ["gone@example.com"],
+        },
+      },
+    ]);
+    const out = await run(["offboarded-purge", "--confirm"]);
+    expect(JSON.parse(calls[0]?.init?.body as string)).toEqual({
+      confirm: true,
+    });
+    expect(out).toMatch(/deleted 1 account/);
+    expect(out).not.toMatch(/Re-run with --confirm/);
+  });
+
+  it("--json prints the raw result instead of a table", async () => {
+    stubFetch([{ body: eligible }]);
+    const out = await run(["offboarded-purge", "--json"]);
+    expect(JSON.parse(out)).toEqual(eligible);
+  });
+});

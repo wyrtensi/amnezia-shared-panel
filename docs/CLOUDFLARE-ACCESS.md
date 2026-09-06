@@ -440,15 +440,24 @@ The worker can run a periodic **access reconcile** task
 - **Admins are never auto-disabled.** Losing the last admin would lock the panel,
   so admin accounts that fall out of the allowlist are surfaced in the worker log
   for a human to offboard deliberately.
-- **Reversible, but only for a bounded window.** Re-adding the person to the
-  allowlist does not auto-reinstate them (keys were revoked), but an admin can
-  reinstate the account from the Пользователи tab; the deactivation reason is
-  shown there. That window is `offboardedUserRetentionDays` (default 30 days,
-  configurable with `policy-set --offboardedUserRetentionDays=`, see
+- **Reversible, but only for a bounded window — and deletion is opt-in.**
+  Re-adding the person to the allowlist does not auto-reinstate them (keys were
+  revoked), but an admin can reinstate the account from the Пользователи tab;
+  the deactivation reason is shown there. That window is
+  `offboardedUserRetentionDays` (default 30 days, configurable with
+  `policy-set --offboardedUserRetentionDays=`, see
   [Background periods](./CLI.md#background-periods)). Once a disabled account
-  has sat past it — and its keys have finished revoking —
-  `purgeOffboardedUsers` hard-deletes the row on the next maintenance run.
-  After that, reinstating is no longer possible.
+  has sat past it — and its keys have finished revoking — it becomes eligible
+  for deletion, but the panel no longer does this on its own by default:
+  deleting a user row is irreversible, so `purgeOffboardedUsers` only runs on
+  the next maintenance run when `autoPurgeOffboardedUsers` has been turned on
+  (`policy-set --autoPurgeOffboardedUsers=true`; **off** on every panel,
+  including one upgraded from before this setting existed). With the toggle
+  off, an eligible account is not deleted by itself — it sits there until an
+  admin removes it deliberately with `amnezia-panel offboarded-purge --confirm`
+  (see [`docs/CLI.md`](./CLI.md)), which lists exactly who is eligible and
+  deletes nothing without that flag, whatever the toggle is set to. Either way,
+  once the row is gone, reinstating is no longer possible.
 
 #### Enabling it
 

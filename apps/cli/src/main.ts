@@ -1617,6 +1617,66 @@ async function cmdKeyPurge(args: string[]): Promise<void> {
   console.log(`key ${id}: deleted from the panel`);
 }
 
+type OffboardedPurgeResult = {
+  confirmed: boolean;
+  retentionDays: number;
+  eligible: Array<{
+    id: string;
+    email: string;
+    disabledAt: string;
+    revokedKeyCount: number;
+  }>;
+  deleted: string[];
+};
+
+/**
+ * The deliberate, manual counterpart to the automatic sweep: prints the
+ * offboarded accounts currently eligible for deletion and deletes nothing
+ * unless `--confirm` is given. Works whether `autoPurgeOffboardedUsers` is on
+ * or off -- that toggle only decides whether the panel does this on a timer
+ * by itself, never whether an admin can do it deliberately.
+ */
+async function cmdOffboardedPurge(args: string[]): Promise<void> {
+  const confirm = args.includes("--confirm");
+  const result = await api<OffboardedPurgeResult>(
+    "/api/admin/users/offboarded/purge",
+    { method: "POST", body: JSON.stringify({ confirm }) },
+  );
+  if (wantsJson(args)) return json(result);
+  if (result.eligible.length === 0) {
+    console.log(
+      `no offboarded accounts are eligible (retention ${result.retentionDays} days)`,
+    );
+    return;
+  }
+  console.log(
+    table(
+      result.eligible.map((user) => ({
+        email: user.email,
+        "disabled at": user.disabledAt,
+        "revoked keys": String(user.revokedKeyCount),
+      })),
+      ["email", "disabled at", "revoked keys"],
+    ),
+  );
+  if (!confirm) {
+    console.log("");
+    console.log(
+      `Would permanently delete ${result.eligible.length} account(s) above: the`,
+    );
+    console.log(
+      "user row and its revoked keys. Irreversible, and unrelated to whether the",
+    );
+    console.log(
+      "automatic sweep (policy-set --autoPurgeOffboardedUsers=) is on -- this is",
+    );
+    console.log("the only other way an offboarded account is ever removed.");
+    console.log("Re-run with --confirm to delete them.");
+    return;
+  }
+  console.log(`deleted ${result.deleted.length} account(s)`);
+}
+
 async function cmdNodeCapacity(args: string[]): Promise<void> {
   const id = args.find((arg) => !arg.startsWith("--"));
   if (!id) throw new Error("Usage: node-capacity <id> [--set=<peers>] [--confirm]");
@@ -2388,6 +2448,14 @@ Write:
                                           Never touches a key used inside the window, a
                                           key too young to have connected yet, or one
                                           in any state but active / disabled
+  offboarded-purge [--confirm]            Delete offboarded accounts past their
+                                          retention window (disabled, no live keys) --
+                                          the deliberate one-off counterpart to
+                                          policy-set --autoPurgeOffboardedUsers=true.
+                                          Works whether that toggle is on or off.
+                                          Without --confirm it lists who is eligible
+                                          (email, disabled-since, revoked key count)
+                                          and deletes nothing; irreversible with it
   key-revoke <id>                         Revoke a key. Also retries a delete stuck in
                                           "revoking" because a node was unreachable
   key-disable <id> / key-enable <id>      Disable / enable a key
@@ -2861,6 +2929,8 @@ export async function dispatch(argv: string[]): Promise<void> {
       return cmdStaleKeys(args);
     case "stale-keys-revoke":
       return cmdStaleKeysRevoke(args);
+    case "offboarded-purge":
+      return cmdOffboardedPurge(args);
     case "nodes":
       return cmdNodes(args);
     case "audit":
