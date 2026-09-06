@@ -108,8 +108,18 @@ accepts either identity, side by side:
   serves itself on a DNS-only host with its **own** Google login and a signed
   session. See [`docs/INSTALL.md` §3.5](docs/INSTALL.md).
 
-Roles live in the panel (`admin` / `user`); an admin is also a user (own keys and
-quota) and is pinned so it can never lock itself out.
+Roles live in the panel (`admin` / `user`); an admin is also a user (own keys
+and quota). Two guards stop an admin from locking the panel out of every
+administrator: an admin cannot offboard themselves (`SELF_OFFBOARD`) and
+cannot demote or offboard the last active admin (`LAST_ADMIN`, checked on both
+`users/set-role` and `users/offboard`) — see
+`apps/control-api/src/postgresRepository.ts`. `BOOTSTRAP_ADMIN_EMAILS` is a
+different mechanism (it seeds the first admin(s) on their first login) and
+does not rescue anyone: `resolveIdentity` only ever promotes a matching
+email's **role** to `admin`, never its `status`, and the request gate in
+`apps/control-api/src/app.ts` still rejects a disabled actor with
+`403 USER_DISABLED`. A bootstrap admin who has been disabled stays locked out
+like any other disabled account.
 
 ## Workspace
 

@@ -440,9 +440,15 @@ The worker can run a periodic **access reconcile** task
 - **Admins are never auto-disabled.** Losing the last admin would lock the panel,
   so admin accounts that fall out of the allowlist are surfaced in the worker log
   for a human to offboard deliberately.
-- **Reversible.** Re-adding the person to the allowlist does not auto-reinstate
-  them (keys were revoked), but an admin can reinstate the account from the
-  Пользователи tab; the deactivation reason is shown there.
+- **Reversible, but only for a bounded window.** Re-adding the person to the
+  allowlist does not auto-reinstate them (keys were revoked), but an admin can
+  reinstate the account from the Пользователи tab; the deactivation reason is
+  shown there. That window is `offboardedUserRetentionDays` (default 30 days,
+  configurable with `policy-set --offboardedUserRetentionDays=`, see
+  [Background periods](./CLI.md#background-periods)). Once a disabled account
+  has sat past it — and its keys have finished revoking —
+  `purgeOffboardedUsers` hard-deletes the row on the next maintenance run.
+  After that, reinstating is no longer possible.
 
 #### Enabling it
 
@@ -486,7 +492,11 @@ instead of deactivating everyone.
 With `ACCESS_DIRECTORY=allowlist` set to a list that omits a test user, watch the
 worker log for `access-reconcile: disabled N account(s)`, then confirm in the
 admin **Журнал** (a `user.access_revoked` event) and on the **Пользователи** tab
-(the account shows "Отключён · доступ Cloudflare отозван").
+(the account shows "Отключён · доступ Cloudflare отозван"). That row on
+**Пользователи** only lasts until `offboardedUserRetentionDays` passes — past
+that the account is hard-deleted and the tab stops showing it at all. The
+durable record is the audit log: `user.access_revoked` for the disable, and
+`user.deleted` for the eventual purge.
 
 ### Direction 2 — panel → Access (add/remove on the allowlist)
 
