@@ -95,37 +95,39 @@
      ground behind it reads olive even though nothing in it is green. Keep the
      card at or below the canvas hue when touching these.
 
-     Lightness and chroma are deliberately the ones this theme has always had:
-     v0.9.32 raised both along with the hue and the result was tiring to read.
-     Rotating the hue is the whole fix; do not brighten the ramp with it.
+     The canvas is lifted cocoa, not near-black. A near-black ground under
+     cream text is what made this theme tiring: the glare comes from the
+     contrast, so the fix is to raise the ground and the card together, not to
+     dim the text. Foreground on --card lands near 12:1, comfortably past AA
+     and softer than the 14:1 it used to be.
 
-     The canvas carries a faint warm lift at the very top and is flat from a
-     quarter of the way down. It stays below --card everywhere, so a card
-     never dissolves into the page at the foot of a long screen. */
+     The backdrop is a honey lift at the top over a warm gradient. Its
+     lightest stop stays below --card, so a card never dissolves into the
+     page at the foot of a long screen. */
   --app-backdrop:
     radial-gradient(
-      1200px 460px at 50% -16%,
-      rgba(242, 168, 86, 0.05),
-      transparent 62%
+      1100px 680px at 50% -12%,
+      rgba(242, 168, 86, 0.12),
+      transparent 56%
     ),
-    linear-gradient(180deg, #1b1410 0%, #160f0c 26%, #160f0c 100%);
+    linear-gradient(180deg, #291d16 0%, #1d1410 34%, #241a14 100%);
 
-  --background: #160f0c;
+  --background: #1d1410;
   --foreground: #f4ebde;
 
-  --card: #241b16;
+  --card: #36261e;
   --card-foreground: #f4ebde;
 
-  --popover: #2b211b;
+  --popover: #3c2b21;
   --popover-foreground: #f4ebde;
 
   --primary: #f2a856;
   --primary-foreground: #1a130d;
 
-  --secondary: #33261f;
+  --secondary: #402e24;
   --secondary-foreground: #f4ebde;
 
-  --muted: #322620;
+  --muted: #3e2c23;
   --muted-foreground: #d0bfa6;
 
   --accent: #3a4633;
@@ -140,8 +142,8 @@
   --warning: #edab57;
   --warning-foreground: #1f1608;
 
-  --border: #48352b;
-  --input: #523b2f;
+  --border: #543b2e;
+  --input: #5f4334;
   --ring: #f2a856;
 
   --chart-1: #f0a24e;
@@ -150,13 +152,13 @@
   --chart-4: #5aa9e6;
   --chart-5: #ee79a4;
 
-  --sidebar: #2a201b;
+  --sidebar: #3a2920;
   --sidebar-foreground: #f3e9db;
   --sidebar-primary: #f0a24e;
   --sidebar-primary-foreground: #1d1712;
   --sidebar-accent: #35422f;
   --sidebar-accent-foreground: #dbe8d0;
-  --sidebar-border: #3f2f27;
+  --sidebar-border: #4d3629;
   --sidebar-ring: #f0a24e;
 
   --header-gradient: linear-gradient(120deg, #f0a24e 0%, #3fbfa6 120%);
