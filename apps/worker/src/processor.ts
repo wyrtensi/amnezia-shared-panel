@@ -319,11 +319,15 @@ export const createJobProcessor = ({
     }
 
     if (job.type === "vpn-key.revoke") {
-      const publicKey =
-        context.publicKey ??
-        findPeer(await agent.listClients(), context.nodeLabel)?.id ??
-        null;
-      if (publicKey) await agent.deleteClient(publicKey, context.protocol);
+      const clients = await agent.listClients();
+      const peer =
+        findPeer(clients, context.nodeLabel) ??
+        (context.publicKey
+          ? clients.flatMap((client) => client.peers).find((p) => p.id === context.publicKey)
+          : undefined);
+      // Absent means the work is done: the node-agent answers 404 for a peer that
+      // is already gone, and a revoke that cannot find its peer has nothing to do.
+      if (peer) await agent.deleteClient(peer.id, context.protocol);
       await repository.completeLifecycle(job.id, keyId, "revoked");
       return;
     }

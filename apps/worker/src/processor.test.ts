@@ -373,6 +373,114 @@ describe("rotate job", () => {
   });
 });
 
+describe("revoke job", () => {
+  const revokeJob = {
+    id: "job-revoke",
+    type: "vpn-key.revoke",
+    attempts: 1,
+    payload: { keyId: "key-1" },
+  };
+
+  it("revokes a key whose peer is still on the node", async () => {
+    const repository = createRepository();
+    vi.mocked(repository.loadKeyContext).mockResolvedValue({
+      ...keyContext,
+      publicKey: "current-public-key",
+    });
+    const agent = createAgent();
+    vi.mocked(agent.listClients).mockResolvedValue([
+      {
+        username: keyContext.nodeLabel,
+        peers: [
+          {
+            id: "current-public-key",
+            name: null,
+            allowedIps: [],
+            lastHandshake: 0,
+            traffic: { received: 0, sent: 0 },
+            endpoint: null,
+            online: false,
+            expiresAt: null,
+            status: "active",
+            protocol: "amneziawg2",
+          },
+        ],
+      },
+    ]);
+    const process = createJobProcessor({ repository, createNodeAgent: () => agent });
+
+    await process(revokeJob);
+
+    expect(agent.deleteClient).toHaveBeenCalledWith("current-public-key", "awg2");
+    expect(repository.completeLifecycle).toHaveBeenCalledWith(
+      revokeJob.id,
+      "key-1",
+      "revoked",
+    );
+  });
+
+  it("completes a revoke whose peer is already gone", async () => {
+    const repository = createRepository();
+    vi.mocked(repository.loadKeyContext).mockResolvedValue({
+      ...keyContext,
+      publicKey: "stale-public-key",
+    });
+    const agent = createAgent();
+    vi.mocked(agent.listClients).mockResolvedValue([]);
+    const process = createJobProcessor({ repository, createNodeAgent: () => agent });
+
+    await process(revokeJob);
+
+    expect(agent.deleteClient).not.toHaveBeenCalled();
+    expect(repository.completeLifecycle).toHaveBeenCalledWith(
+      revokeJob.id,
+      "key-1",
+      "revoked",
+    );
+  });
+
+  it("matches the peer by label when the key has no public key", async () => {
+    const repository = createRepository();
+    vi.mocked(repository.loadKeyContext).mockResolvedValue({
+      ...keyContext,
+      publicKey: null,
+    });
+    const agent = createAgent();
+    vi.mocked(agent.listClients).mockResolvedValue([
+      {
+        username: keyContext.nodeLabel,
+        peers: [
+          {
+            id: "label-matched-public-key",
+            name: null,
+            allowedIps: [],
+            lastHandshake: 0,
+            traffic: { received: 0, sent: 0 },
+            endpoint: null,
+            online: false,
+            expiresAt: null,
+            status: "active",
+            protocol: "amneziawg2",
+          },
+        ],
+      },
+    ]);
+    const process = createJobProcessor({ repository, createNodeAgent: () => agent });
+
+    await process(revokeJob);
+
+    expect(agent.deleteClient).toHaveBeenCalledWith(
+      "label-matched-public-key",
+      "awg2",
+    );
+    expect(repository.completeLifecycle).toHaveBeenCalledWith(
+      revokeJob.id,
+      "key-1",
+      "revoked",
+    );
+  });
+});
+
 describe("manual route-feed refresh job", () => {
   const refreshJob = {
     id: "job-refresh",
