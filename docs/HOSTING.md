@@ -152,6 +152,74 @@ one:
 Either way the public hostname terminates at Cloudflare first, which is what lets
 Access sit in front of it and what keeps the panel reachable off-VPN.
 
+### 4.1 When :443 already belongs to another service
+
+A control-plane host often already serves something on 443 — a cover website, a
+VPN transport that needs raw TLS, another panel. Only one process can bind the
+port, so the panel cannot simply take it. Put a **TCP-mode SNI router** in front
+and let it hand each connection to the right terminator by the server name the
+client asked for:
+
+```
+public :443/tcp  →  SNI router (TCP mode, no TLS termination)
+                    ├─ raw-TLS transports (e.g. a VPN protocol that needs an
+                    │  untouched TLS handshake) → their own loopback listener
+                    ├─ panel.<your-domain>  → panel terminator (loopback) → :5430
+                    └─ everything else      → the site's web server (loopback)
+```
+
+Three properties make this work, and losing any one of them breaks it:
+
+- **The router must not terminate TLS.** It routes on the SNI field of the
+  ClientHello and passes the bytes through untouched. A protocol that relies on
+  the real TLS handshake reaching its own listener stops working the moment
+  something decrypts and re-encrypts in the middle.
+- **Every terminator binds loopback only.** The router owns the public port; the
+  panel terminator, the site's server and each transport listen on `127.0.0.1`.
+  Nothing else should be reachable from outside.
+- **A hostname the router does not know falls through to the default backend.**
+  Add the panel's hostname to the router's rules *before* pointing DNS at it,
+  or the first request lands on whatever answers by default.
+
+The panel terminator is a small reverse proxy with a static certificate rather
+than one that fetches its own — it never sees port 80 or 443 directly, so
+ACME's HTTP challenge cannot reach it. Issue that certificate out of band
+(DNS-01 is simplest, see §4.2) and give the renewal a hook that reloads both the
+terminator and the site's web server.
+
+This shape is what [`infra/prod/Caddyfile.example`](../infra/prod/Caddyfile.example)
+calls "method B" and what [`INSTALL.md` §3.5](./INSTALL.md) points at for a direct
+login host. It composes with §4: the Cloudflare-proxied hostname can still arrive
+over a tunnel and never touch :443 at all, while the direct hostname goes through
+the router.
+
+### 4.2 Operator hostnames leak through Certificate Transparency
+
+Every publicly trusted certificate is published to the **Certificate
+Transparency** logs, which anyone can search by domain. A certificate issued for
+`admin.<your-domain>` therefore announces that the name exists, to everyone,
+permanently. `robots.txt` and `noindex` do nothing about this — search engines
+are not how these names get found.
+
+So for any hostname that exists for operators rather than for the public:
+
+- **Issue one wildcard certificate** (`*.<your-domain>`) over DNS-01 and serve
+  every such hostname from it. The individual names never reach a CT log.
+  Cloudflare's own edge certificate for a proxied hostname already covers the
+  zone wildcard, so a proxied name does not leak either.
+- **A name that has already been issued its own certificate cannot be
+  un-published.** The log entry is permanent. Renaming is the only remedy, and
+  it only helps if the new name is served from the wildcard from the start.
+- **Add `X-Robots-Tag: noindex, nofollow` and a `Disallow: /` robots.txt**
+  anyway, for the crawler that follows a link from somewhere else. Treat it as
+  the second layer, never the first.
+- **Check the public site does not name them.** A stray link, or an entry in
+  `sitemap.xml`, undoes the rest.
+
+None of this hides the host itself — the address is already public in the
+records that point at it. What it buys is that enumerating the zone's subdomains
+stops being free.
+
 ---
 
 ## 5. Cloudflare Access: Google IdP + email allowlist

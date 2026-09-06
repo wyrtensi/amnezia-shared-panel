@@ -32,6 +32,8 @@ this tree where it is allowed to live.
 | Install a VPN node on a bare host | [`AGENT-HOST-SETUP.md`](./AGENT-HOST-SETUP.md) Part A; `scripts/add-node.sh` does the whole rollout in one command ([`NODE-CONNECT.md` §0](./NODE-CONNECT.md#0-the-scripted-path)) |
 | Connect an already-running node to the panel | [`NODE-CONNECT.md`](./NODE-CONNECT.md) |
 | Raise the panel and put a login in front of it | [`HOSTING.md`](./HOSTING.md) for the shape, [`CLOUDFLARE-SETUP.md`](./CLOUDFLARE-SETUP.md) for the clicks |
+| Share :443 with a site or a VPN transport already on it | [`HOSTING.md` §4.1](./HOSTING.md) — the SNI router, and the three properties that break it |
+| Keep an operator hostname out of public view | [`HOSTING.md` §4.2](./HOSTING.md) — Certificate Transparency is the leak, not search engines |
 | Access application, allowlist, two-way sync | [`CLOUDFLARE-ACCESS.md`](./CLOUDFLARE-ACCESS.md) |
 | Deploy the whole estate in order | [`ROLLOUT.md`](./ROLLOUT.md) |
 | Update the panel | [`DEPLOY-UPDATE.md`](./DEPLOY-UPDATE.md); the Update button's internals are in [`UPDATE-MECHANISM.md`](./UPDATE-MECHANISM.md) |
