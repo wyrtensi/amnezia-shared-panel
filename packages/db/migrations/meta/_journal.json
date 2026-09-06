@@ -246,6 +246,13 @@
       "when": 1788718654120,
       "tag": "0034_auto_purge_offboarded_users",
       "breakpoints": true
+    },
+    {
+      "idx": 35,
+      "version": "7",
+      "when": 1788725730564,
+      "tag": "0035_drop_whitelist_profile",
+      "breakpoints": true
     }
   ]
 }

@@ -86,7 +86,6 @@ const ru = {
 
   // Route profiles (shared)
   "route.full_tunnel": "Весь трафик",
-  "route.ru_whitelist": "Только зарубежные (whitelist)",
   "route.ru_blacklist": "Только заблокированные (blacklist)",
 
   // Protocols (shared)
@@ -138,7 +137,7 @@ const ru = {
   "routes.title": "Свои маршруты",
   "routes.subtitle": "Дополнительные адреса поверх базовых списков",
   "routes.hint":
-    "Добавьте свои IP-адреса и подсети — они пойдут через VPN вместе с базовым списком выбранного профиля. Названия сайтов профиль не принимает — только адреса. Базовый список скрыт и подставляется автоматически. Изменения применяются при следующем экспорте конфигурации.",
+    "Добавьте свои IP-адреса и подсети — они пойдут через VPN вместе с базовым списком профиля. Названия сайтов профиль не принимает — только адреса. Базовый список скрыт и подставляется автоматически. Изменения применяются при следующем экспорте конфигурации.",
   "routes.count": "Записей: {count}",
   "routes.ipLabel": "IP-адреса и подсети",
   "routes.ipPlaceholder": "например 1.2.3.4 или 10.0.0.0/8",
@@ -154,10 +153,6 @@ const ru = {
     "Профиль направляет в VPN адреса, поэтому эти записи ни на что не влияют. Они показаны, чтобы вы их увидели; при следующем сохранении они будут удалены.",
   "routes.staleDomainsClear": "Убрать из списка",
   "routes.removeAria": "Удалить {value}",
-  "routes.profileHint":
-    "Выберите, к какому профилю добавить адреса. Профиль задаётся при создании ключа — ваши адреса применяются к ключам с этим профилем.",
-  "routes.wl.desc":
-    "Только зарубежные: иностранные ресурсы идут через VPN, российские — напрямую. Добавленные адреса тоже пойдут через VPN.",
   "routes.bl.desc":
     "Только заблокированные: через VPN идут лишь заблокированные сайты. Добавленные адреса тоже пойдут через VPN.",
   "emp.keyCreated": "Ключ создан",
@@ -169,6 +164,10 @@ const ru = {
   "emp.revokeConfirm": "Отозвать этот ключ? Устройство сразу потеряет доступ.",
   "emp.revoked": "Ключ отозван",
   "emp.revokeFailed": "Не удалось отозвать ключ",
+  "emp.renameToast": "Ключ переименован",
+  "emp.renameReissueToast":
+    "Ключ переименован и перевыпускается. Когда статус станет «Активен», скачайте новый конфиг с новым именем.",
+  "emp.renameFailed": "Не удалось переименовать ключ",
   "quota.cellsAria": "{used} из {limit} ключей",
   // In global mode the per-server row has no limit of its own to announce.
   "quota.cellsIssuedAria": "{used} ключей на этом сервере",
@@ -190,6 +189,18 @@ const ru = {
   "keyCard.reissue": "Перевыпустить",
   "keyCard.reissueTip":
     "Выдать новый ключ с текущими правилами. Старый перестанет работать — переустановите конфиг на устройстве.",
+  "keyCard.rename": "Переименовать",
+  "keyCard.renameTitle": "Переименовать ключ",
+  "keyCard.renameDesc":
+    "Изменить название устройства, под которым этот ключ выпущен.",
+  "keyCard.renameLabel": "Название устройства",
+  "keyCard.renamePlaceholder": "Например, рабочий ноутбук",
+  "keyCard.renameReissueTitle": "Ключ будет перевыпущен",
+  "keyCard.renameReissueBody":
+    "Новое название входит в подключение, которое видит клиент, поэтому текущий конфиг перестанет работать. Когда статус снова станет «Активен», скачайте новый конфиг.",
+  "keyCard.renameQuietTitle": "Перевыпуск не потребуется",
+  "keyCard.renameQuietBody":
+    "У этого ключа название устройства не входит в имя подключения, которое видит клиент, — оно нигде не отображается. Текущий конфиг продолжит работать как раньше.",
   "keyCard.provisioning": "Создаётся…",
   "keyCard.showQr": "Показать QR-код",
   // The button's own label, kept short so the action row still wraps onto a
@@ -210,8 +221,6 @@ const ru = {
   "wizard.proto.awg2.label": "AmneziaWG 2.0",
   "wizard.proto.awg2.desc": "Совместимость со старыми клиентами",
   "wizard.route.full_tunnel.desc": "Всё соединение идёт через VPN",
-  "wizard.route.ru_whitelist.desc":
-    "Весь трафик через VPN, кроме списка с российскими сервисами (может сработать не на все)",
   "wizard.route.stable": "Стабильно",
   "wizard.route.testing": "Тестируется",
   "wizard.route.ru_blacklist.desc":
@@ -276,9 +285,7 @@ const ru = {
   "keyHelp.routingBody":
     "Самый надёжный вариант. Если у вас что-то не работает — выбирайте его.",
   "keyHelp.profilesIntro":
-    "Остальные два профиля сделаны для удобства и оба менее надёжны, чем «Весь трафик». Читайте внимательно:",
-  "keyHelp.whitelistBody":
-    "Мы постараемся, чтобы для российских сервисов выглядело, что вы сидите из дома. Менее надёжно для стабильной работы VPN в целом.",
+    "Остальной профиль сделан для удобства и менее надёжен, чем «Весь трафик». Читайте внимательно:",
   "keyHelp.blacklistBody":
     "Профиль со списком определённых сайтов. Список большой, но в нём могут быть не все нужные вам заблокированные ресурсы, и они не откроются через VPN.",
   "keyHelp.troubleTitle": "Если есть проблемы в работе",
@@ -336,12 +343,22 @@ const ru = {
   "config.qrAudienceLabel": "Чем будете сканировать?",
   "config.qrForCamera": "Камера телефона",
   "config.qrForApp": "Приложение VPN",
+  "config.qrForAwg": "AmneziaWG",
+  // Names AmneziaVPN only: whether Default VPN's shipped scanner reads this
+  // format has not been confirmed on a device (see qrFrames.ts), so this must
+  // not promise it does.
   "config.qrHintApp":
-    "В приложении (AmneziaVPN или Default VPN) нажмите «Добавить» → «Сканировать QR-код» и наведите камеру на этот код",
+    "В приложении AmneziaVPN нажмите «Добавить» → «Сканировать QR-код» и наведите камеру на этот код",
+  "config.qrHintAwg":
+    "В приложении AmneziaWG используйте импорт по QR-коду — это обычный конфиг WireGuard, а не контейнерный формат приложения AmneziaVPN",
   "config.qrAppWarning":
     "Этот код понимает только само приложение. Обычная камера его не откроет.",
+  "config.qrAwgWarning":
+    "Обычная камера прочитает этот код, но покажет только текст конфига — импорт сработает только через QR-сканер в самом приложении AmneziaWG.",
   "config.qrSwitchToApp":
-    "Сканируете из самого приложения (AmneziaVPN или Default VPN)? Откройте код для приложения",
+    "Сканируете из самого приложения AmneziaVPN? Откройте код для приложения",
+  "config.qrSwitchToAwg":
+    "Используете приложение AmneziaWG? Откройте код для него",
   "config.qrSwitchToCamera":
     "Сканируете обычной камерой телефона? Вернитесь к коду для камеры",
   "config.qrFrameModeAria": "Режим показа кадров",
@@ -399,6 +416,10 @@ const ru = {
   "install.iosAmneziaBody":
     "Тогда можно поставить сам AmneziaVPN — он умеет больше. Из российского App Store он скрыт.",
   "install.iosAmneziaOpen": "Открыть AmneziaVPN в App Store",
+  "install.iosAmneziaWgTitle": "Используете WireGuard-клиент?",
+  "install.iosAmneziaWgBody":
+    "AmneziaWG читает конфиг WireGuard, а не формат AmneziaVPN.",
+  "install.iosAmneziaWgOpen": "Открыть AmneziaWG в App Store",
   "install.desktopNote":
     "Запустите скачанный файл и следуйте установщику.",
   "install.iosNote":
@@ -437,7 +458,7 @@ const ru = {
   "install.fileBody":
     "Кнопка «.vpn» сохраняет ключ файлом. Откройте его в приложении — подключение появится со своим названием.",
   "install.fileSplitBest":
-    "Удобно для длинных ключей — профилей «Только зарубежные» и «Только заблокированные»: файл достаточно открыть один раз.",
+    "Удобно для длинных ключей профиля «Только заблокированные»: файл достаточно открыть один раз.",
   "install.fileHow":
     "Обычный WireGuard этот файл не откроет — нужен AmneziaVPN.",
   "install.fileConfFallback":
@@ -741,7 +762,7 @@ const ru = {
   "users.keyForDesc": "Протокол выбирается автоматически: {protocol}",
   "users.nodeDisabledSuffix": " (выключена)",
   "users.routeHintAdmin":
-    "Профиль вшивается в ключ. Для «зарубежных» и «заблокированных» нужны активные списки маршрутизации.",
+    "Профиль вшивается в ключ. Для «заблокированных» нужны активные списки маршрутизации.",
   "users.keyCreatedHint":
     "Ключ создаётся на сервере — устройство подключится сразу после импорта конфигурации.",
   "users.accessDomainsTitle": "Домены Cloudflare Access",
@@ -976,9 +997,9 @@ const ru = {
   "gpolicy.allowNodeSelectionHint":
     "Пользователь может выбирать, на каком сервере (ноде) создать ключ.",
   "gpolicy.allowRouteProfileSelectionHint":
-    "Пользователь может выбирать профиль маршрутизации: весь трафик, только зарубежные или только заблокированные сайты.",
+    "Пользователь может выбирать профиль маршрутизации: весь трафик или только заблокированные сайты.",
   "gpolicy.allowCustomRoutesHint":
-    "Пользователь может добавлять свои домены и IP в списки whitelist/blacklist своего профиля.",
+    "Пользователь может добавлять свои домены и IP в список профиля.",
   "gpolicy.allowConfigRedownloadHint":
     "Пользователь может повторно скачать конфиг уже созданного ключа.",
   "gpolicy.allowQrDownloadHint":
@@ -1109,9 +1130,9 @@ const ru = {
   "rules.status.active": "Активно",
   "rules.status.superseded": "Заменено",
   "rules.status.quarantined": "Карантин",
-  // No provider in this title: RoscomVPN supplies only the whitelist, and
-  // which feeds supply which profile is per-deployment configuration
-  // (RULE_FEEDS). Each profile names its own sources below.
+  // No provider in this title: which feeds supply which profile is
+  // per-deployment configuration (RULE_FEEDS). Each profile names its own
+  // sources below.
   "rules.title": "Правила маршрутизации",
   "rules.autoUpdate":
     "Списки обновляются автоматически каждые 6 часов из настроенных источников (RULE_FEEDS).",
@@ -1309,7 +1330,6 @@ const en = {
 
   // Route profiles (shared)
   "route.full_tunnel": "All traffic",
-  "route.ru_whitelist": "Foreign only (whitelist)",
   "route.ru_blacklist": "Blocked only (blacklist)",
 
   // Protocols (shared)
@@ -1359,7 +1379,7 @@ const en = {
   "routes.title": "Custom routes",
   "routes.subtitle": "Extra addresses layered on the base lists",
   "routes.hint":
-    "Add your own IP addresses and subnets — they go through the VPN together with the selected profile's base list. A profile does not take site names, only addresses. The base list is hidden and applied automatically. Changes take effect on your next config export.",
+    "Add your own IP addresses and subnets — they go through the VPN together with the profile's base list. A profile does not take site names, only addresses. The base list is hidden and applied automatically. Changes take effect on your next config export.",
   "routes.count": "{count} total",
   "routes.ipLabel": "IP addresses & subnets",
   "routes.ipPlaceholder": "e.g. 1.2.3.4 or 10.0.0.0/8",
@@ -1375,10 +1395,6 @@ const en = {
     "A profile sends addresses through the VPN, so these entries do nothing. They are shown so you can see them; the next time you save, they are removed.",
   "routes.staleDomainsClear": "Remove from the list",
   "routes.removeAria": "Remove {value}",
-  "routes.profileHint":
-    "Choose which profile to add addresses to. A key's profile is set when it's created — your addresses apply to keys using that profile.",
-  "routes.wl.desc":
-    "Foreign only: foreign resources go through the VPN, Russian ones stay direct. The addresses you add also go through the VPN.",
   "routes.bl.desc":
     "Blocked only: only blocked sites go through the VPN. The addresses you add also go through the VPN.",
   "emp.keyCreated": "Key created",
@@ -1391,6 +1407,10 @@ const en = {
     "Revoke this key? The device will immediately lose access.",
   "emp.revoked": "Key revoked",
   "emp.revokeFailed": "Failed to revoke the key",
+  "emp.renameToast": "Key renamed",
+  "emp.renameReissueToast":
+    "Key renamed and being reissued. Once the status turns “Active”, download the new config with the new name.",
+  "emp.renameFailed": "Failed to rename the key",
   "quota.cellsAria": "{used} of {limit} keys",
   "quota.cellsIssuedAria": "{used} keys on this server",
   "quota.noKeysOnServer": "no keys",
@@ -1407,6 +1427,18 @@ const en = {
   "keyCard.reissue": "Reissue",
   "keyCard.reissueTip":
     "Issue a new key with the current rules. The old one will stop working — reinstall the config on the device.",
+  "keyCard.rename": "Rename",
+  "keyCard.renameTitle": "Rename key",
+  "keyCard.renameDesc":
+    "Change the device name this key was issued under.",
+  "keyCard.renameLabel": "Device name",
+  "keyCard.renamePlaceholder": "e.g. Work laptop",
+  "keyCard.renameReissueTitle": "The key will be reissued",
+  "keyCard.renameReissueBody":
+    "The new name is part of the connection the client shows, so the current config will stop working. Once the status turns “Active” again, download the new config.",
+  "keyCard.renameQuietTitle": "No reissue needed",
+  "keyCard.renameQuietBody":
+    "This key's device name is not part of the connection name the client shows — it is not displayed anywhere. The current config keeps working as before.",
   "keyCard.provisioning": "Creating…",
   "keyCard.showQr": "Show QR code",
   "keyCard.qrShort": "QR",
@@ -1425,8 +1457,6 @@ const en = {
   "wizard.proto.awg2.label": "AmneziaWG 2.0",
   "wizard.proto.awg2.desc": "Compatibility with older clients",
   "wizard.route.full_tunnel.desc": "All traffic goes through the VPN",
-  "wizard.route.ru_whitelist.desc":
-    "All traffic through the VPN except a list of Russian services (it may not cover every one of them)",
   "wizard.route.stable": "Stable",
   "wizard.route.testing": "In testing",
   "wizard.route.ru_blacklist.desc":
@@ -1490,9 +1520,7 @@ const en = {
   "keyHelp.routingBody":
     "The dependable one. If something is not working for you, pick this.",
   "keyHelp.profilesIntro":
-    "The other two profiles exist for convenience and both are less dependable than “All traffic”. Read them carefully:",
-  "keyHelp.whitelistBody":
-    "We do our best to make Russian services see you as if you were at home. Less dependable for the VPN working steadily overall.",
+    "The other profile exists for convenience and is less dependable than “All traffic”. Read it carefully:",
   "keyHelp.blacklistBody":
     "A profile with a list of certain sites. The list is large, but it may not hold every blocked resource you need, and those will not open through the VPN.",
   "keyHelp.troubleTitle": "If something is not working",
@@ -1544,12 +1572,22 @@ const en = {
   "config.qrAudienceLabel": "What will you scan with?",
   "config.qrForCamera": "Phone camera",
   "config.qrForApp": "VPN app",
+  "config.qrForAwg": "AmneziaWG",
+  // Names AmneziaVPN only: whether Default VPN's shipped scanner reads this
+  // format has not been confirmed on a device (see qrFrames.ts), so this must
+  // not promise it does.
   "config.qrHintApp":
-    "In the app (AmneziaVPN or Default VPN) tap Add → Scan QR code, then point it at this code",
+    "In AmneziaVPN, tap Add → Scan QR code, then point it at this code",
+  "config.qrHintAwg":
+    "In the AmneziaWG app, use its QR import — this is a plain WireGuard config, not the AmneziaVPN app's container format",
   "config.qrAppWarning":
     "Only the app itself can read this code. A plain camera app cannot.",
+  "config.qrAwgWarning":
+    "A plain camera can scan this code, but it only shows the raw config text — importing it needs AmneziaWG's own QR scanner.",
   "config.qrSwitchToApp":
-    "Scanning from inside the app (AmneziaVPN or Default VPN)? Open the code for the app",
+    "Scanning from inside AmneziaVPN? Open the code for the app",
+  "config.qrSwitchToAwg":
+    "Using the AmneziaWG app? Open its code",
   "config.qrSwitchToCamera":
     "Scanning with your phone's ordinary camera? Go back to the camera code",
   "config.qrFrameModeAria": "How the frames are shown",
@@ -1607,6 +1645,10 @@ const en = {
   "install.iosAmneziaBody":
     "Then you can install AmneziaVPN itself — it does more. It is hidden from the Russian App Store.",
   "install.iosAmneziaOpen": "Open AmneziaVPN on the App Store",
+  "install.iosAmneziaWgTitle": "Using a separate WireGuard client?",
+  "install.iosAmneziaWgBody":
+    "AmneziaWG is a separate app: it reads a plain WireGuard config, not AmneziaVPN's container format.",
+  "install.iosAmneziaWgOpen": "Open AmneziaWG on the App Store",
   "install.desktopNote":
     "Run the downloaded file and follow the installer.",
   "install.iosNote":
@@ -1645,7 +1687,7 @@ const en = {
   "install.fileBody":
     "The “.vpn” button saves the key as a file. Open it in the app — the connection arrives under its own name.",
   "install.fileSplitBest":
-    "Handy for the long keys — the “Foreign only” and “Blocked only” profiles: the file only has to be opened once.",
+    "Handy for the long keys from the “Blocked only” profile: the file only has to be opened once.",
   "install.fileHow":
     "The plain WireGuard app will not open this file — it has to be AmneziaVPN.",
   "install.fileConfFallback":
@@ -1932,7 +1974,7 @@ const en = {
   "users.keyForDesc": "Protocol is selected automatically: {protocol}",
   "users.nodeDisabledSuffix": " (disabled)",
   "users.routeHintAdmin":
-    "The profile is embedded in the key. “Foreign” and “blocked” require active routing lists.",
+    "The profile is embedded in the key. “Blocked” requires active routing lists.",
   "users.keyCreatedHint":
     "The key is created on the server — the device connects right after importing the configuration.",
   "users.accessDomainsTitle": "Cloudflare Access domains",
@@ -2161,9 +2203,9 @@ const en = {
   "gpolicy.allowNodeSelectionHint":
     "The user can choose which server (node) a key is created on.",
   "gpolicy.allowRouteProfileSelectionHint":
-    "The user can choose a routing profile: all traffic, foreign-only, or blocked-sites-only.",
+    "The user can choose a routing profile: all traffic, or blocked-sites-only.",
   "gpolicy.allowCustomRoutesHint":
-    "The user can add their own domains and IPs to their profile's whitelist/blacklist.",
+    "The user can add their own domains and IPs to their profile's list.",
   "gpolicy.allowConfigRedownloadHint":
     "The user can re-download the config of an already-created key.",
   "gpolicy.allowQrDownloadHint":

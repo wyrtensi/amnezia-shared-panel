@@ -14,7 +14,7 @@ const domainPattern =
 
 export type RulePayload = { cidrs: string[]; domains: string[] };
 export type RuleValidationReport = Record<string, unknown>;
-export type RuleProfile = "ru_whitelist" | "ru_blacklist";
+export type RuleProfile = "ru_blacklist";
 export type RuleFeedFormat = "json" | "cidr-lines" | "domain-lines";
 export type RuleSource = { url: string; format: RuleFeedFormat };
 
@@ -245,10 +245,10 @@ export type RuleFetcherOptions = {
 export type RuleFeedSources = { profile: RuleProfile; sources: RuleSource[] };
 
 /**
- * The sources every deployment gets out of the box, so a fresh install has
- * working route profiles without an operator pasting JSON: RoscomVPN GeoIP for
- * the whitelist, iplist plus Re:filter domains for the blacklist.
- * `RULE_FEEDS` overrides this list entirely; `RULE_FEEDS=[]` opts out of feeds.
+ * The sources every deployment gets out of the box, so a fresh install has a
+ * working route profile without an operator pasting JSON: iplist plus
+ * Re:filter domains for the blacklist. `RULE_FEEDS` overrides this list
+ * entirely; `RULE_FEEDS=[]` opts out of feeds.
  */
 export const DEFAULT_RULE_FEEDS: RuleFeedSources[] = [
   {
@@ -269,15 +269,6 @@ export const DEFAULT_RULE_FEEDS: RuleFeedSources[] = [
       },
     ],
   },
-  {
-    profile: "ru_whitelist",
-    sources: [
-      {
-        url: "https://cdn.jsdelivr.net/gh/hydraponique/roscomvpn-geoip/release/text/whitelist.txt",
-        format: "cidr-lines",
-      },
-    ],
-  },
 ];
 
 const RULE_FEED_FORMATS: RuleFeedFormat[] = ["json", "cidr-lines", "domain-lines"];
@@ -286,10 +277,9 @@ const RULE_FEED_FORMATS: RuleFeedFormat[] = ["json", "cidr-lines", "domain-lines
  * Resolve the feeds to fetch from the environment, in priority order:
  *
  *   1. `RULE_FEEDS` — a JSON array of `{ profile, sources: [{ url, format }] }`.
- *   2. `ROSCOMVPN_RULES_URL` — the legacy single JSON ru_whitelist feed, still
- *      layered on top of `RULE_FEEDS` when that carries no ru_whitelist entry.
- *   3. `DEFAULT_RULE_FEEDS` — only when the operator configured neither, so a
- *      fresh install fetches RoscomVPN without any configuration at all.
+ *   2. `DEFAULT_RULE_FEEDS` — only when the operator configured nothing, so a
+ *      fresh install fetches the built-in blacklist feeds without any
+ *      configuration at all.
  *
  * `RULE_FEEDS=[]` is a deliberate "no feeds": it counts as configuration, so it
  * opts out of the defaults instead of being treated as an absent value. A
@@ -315,7 +305,7 @@ export const resolveRuleFeeds = (
     if (!Array.isArray(parsed)) throw new Error("RULE_FEEDS must be an array");
     for (const entry of parsed as Array<Record<string, unknown>>) {
       const profile = entry.profile;
-      if (profile !== "ru_whitelist" && profile !== "ru_blacklist") {
+      if (profile !== "ru_blacklist") {
         throw new Error(`RULE_FEEDS has an invalid profile: ${String(profile)}`);
       }
       const sources = (entry.sources as RuleSource[] | undefined)?.filter(
@@ -328,15 +318,6 @@ export const resolveRuleFeeds = (
       }
       feeds.push({ profile, sources });
     }
-  }
-
-  const legacyUrl = env.ROSCOMVPN_RULES_URL?.trim();
-  if (legacyUrl && !feeds.some((feed) => feed.profile === "ru_whitelist")) {
-    configured = true;
-    feeds.push({
-      profile: "ru_whitelist",
-      sources: [{ url: legacyUrl, format: "json" }],
-    });
   }
 
   const resolved = configured ? feeds : DEFAULT_RULE_FEEDS;

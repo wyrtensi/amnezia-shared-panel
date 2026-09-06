@@ -6,10 +6,13 @@ import {
   splitSourceUrls,
 } from "./ruleSources.js";
 
-// The three URLs DEFAULT_RULE_FEEDS ships with (apps/worker/src/rules.ts).
-// Named here as fixtures, not as a mapping the code consults: the assertions
-// below must hold because of the URL's shape, not because these three are
-// special.
+// IPLIST and REFILTER are the two URLs DEFAULT_RULE_FEEDS ships with
+// (apps/worker/src/rules.ts). ROSCOMVPN is a retired feed (the removed
+// ru_whitelist profile's source) kept only as a fixture: it is the one URL
+// here shaped like a CDN that prefixes its own path AND pins a version, which
+// `sourceName` has to look past. Named here as fixtures, not as a mapping the
+// code consults: the assertions below must hold because of the URL's shape,
+// not because these are special.
 const IPLIST = "https://iplist.opencck.org/?format=text&data=cidr4";
 const REFILTER =
   "https://github.com/1andrevich/Re-filter-lists/releases/latest/download/domains_all.lst";

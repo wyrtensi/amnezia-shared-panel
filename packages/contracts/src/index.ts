@@ -71,11 +71,7 @@ export const PURGEABLE_KEY_STATES = ["revoked"] as const satisfies readonly KeyS
 export const isPurgeableKeyState = (state: string): boolean =>
   (PURGEABLE_KEY_STATES as readonly string[]).includes(state);
 
-export const routeProfileSchema = z.enum([
-  "full_tunnel",
-  "ru_whitelist",
-  "ru_blacklist",
-]);
+export const routeProfileSchema = z.enum(["full_tunnel", "ru_blacklist"]);
 /**
  * What kind of device a key is for. The value names a **platform**, not a form
  * factor: it is the signal platform-specific behaviour would hang off. Nothing
@@ -1193,6 +1189,18 @@ export type SetKeyInternalNameRequest = z.infer<
   typeof setKeyInternalNameRequestSchema
 >;
 
+/**
+ * The owner renaming their own key's device label. Required and non-empty,
+ * unlike `createKeyRequestSchema.deviceLabel`: creation may leave a key
+ * unlabelled, but a rename with nothing to rename to is a no-op the client
+ * should not even send. Same 80-character cap as the column and the create
+ * request.
+ */
+export const renameKeyRequestSchema = z.object({
+  deviceLabel: z.string().trim().min(1).max(80),
+});
+export type RenameKeyRequest = z.infer<typeof renameKeyRequestSchema>;
+
 export type ProtocolKind = z.infer<typeof protocolKindSchema>;
 export type KeyState = z.infer<typeof keyStateSchema>;
 export type RouteProfile = z.infer<typeof routeProfileSchema>;
@@ -1241,10 +1249,10 @@ const rejectDomains = (
 
 // --- Per-user custom routes ------------------------------------------------
 // Advanced users layer their OWN addresses on top of a split-tunnel profile's
-// base feed at export time (union + dedup). Only the split-tunnel profiles
-// accept extras — full_tunnel already routes everything through VPN.
+// base feed at export time (union + dedup). Only the split-tunnel profile
+// accepts extras — full_tunnel already routes everything through VPN.
 // Base feed contents are never surfaced; users only ever see their own entries.
-export const CUSTOM_ROUTE_PROFILES = ["ru_whitelist", "ru_blacklist"] as const;
+export const CUSTOM_ROUTE_PROFILES = ["ru_blacklist"] as const;
 export type CustomRouteProfile = (typeof CUSTOM_ROUTE_PROFILES)[number];
 
 export const MAX_CUSTOM_CIDRS = 200;
@@ -1279,7 +1287,6 @@ export const customRouteListSchema = z.object({
 });
 
 export const customRoutesSchema = z.object({
-  ru_whitelist: customRouteListSchema.default({ cidrs: [], domains: [] }),
   ru_blacklist: customRouteListSchema.default({ cidrs: [], domains: [] }),
 });
 
@@ -1326,7 +1333,6 @@ const newGlobalRouteProfile = (): GlobalRouteProfile => ({
 });
 
 export const globalRoutesSchema = z.object({
-  ru_whitelist: globalRouteProfileSchema.default(newGlobalRouteProfile),
   ru_blacklist: globalRouteProfileSchema.default(newGlobalRouteProfile),
 });
 
@@ -1456,6 +1462,16 @@ export const clientPlatformDownloadSchema = z.object({
    * Russian App Store, behind the DefaultVPN listing that is not.
    */
   alternate: clientAssetSchema.nullable(),
+  /**
+   * A platform's third way in, for the one platform that needs it: iOS gets a
+   * second alternate app, AmneziaWG, a separate WireGuard-style client.
+   * `primary`/`alternate` is a pair because until now no platform needed a
+   * third link; rather than turn every platform's fixed two slots into an
+   * open-ended list nothing else uses, this is one more nullable slot, null
+   * everywhere but iOS. If a platform ever needs a fourth, that is the point to
+   * generalize `alternate`/`secondAlternate` into an array.
+   */
+  secondAlternate: clientAssetSchema.nullable(),
 });
 export type ClientPlatformDownload = z.infer<typeof clientPlatformDownloadSchema>;
 
@@ -1482,9 +1498,9 @@ export type ClientRelease = z.infer<typeof clientReleaseSchema>;
 /**
  * Device types on which the official client is known NOT to apply a route
  * profile. Operator-verified on an iPhone, 2026-09-02 and 2026-09-03: a key
- * with `ru_whitelist` or `ru_blacklist` connects, but every destination goes
- * direct and the app gives no warning. Confirmed for BOTH import paths — the
- * pasted vpn:// key and an imported .conf.
+ * with `ru_blacklist` connects, but every destination goes direct and the app
+ * gives no warning. Confirmed for BOTH import paths — the pasted vpn:// key
+ * and an imported .conf.
  *
  * This is a STOP-GAP that makes the limitation visible, not a statement that
  * iOS will never support route profiles. The cause is not established (see the

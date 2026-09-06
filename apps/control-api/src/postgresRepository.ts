@@ -34,6 +34,7 @@ import type {
   UpdateServiceCheckRequest,
 } from "@amnezia/contracts";
 import {
+  composeKeyDisplayName,
   nodeRunsCheck,
   isPurgeableKeyState,
   REVOCABLE_KEY_STATES,
@@ -139,6 +140,23 @@ const DAY_MS = 24 * 60 * 60 * 1_000;
  */
 const revocableStates: KeyState[] = [...REVOCABLE_KEY_STATES];
 
+/**
+ * States a rotate (fresh peer material) may be asked for from, whether the
+ * reason is `enqueueOwnRotate`'s "refresh my rules" or a rename that changed
+ * the displayed connection name. A key mid-provisioning or mid-revoke has no
+ * settled peer to replace.
+ *
+ * `disabled` is deliberately absent, even though a disabled key still has a
+ * settled peer that could technically be replaced. Disabling a key is an
+ * administrator's decision (`adminAction`'s `keys/disable`), and rotating
+ * always re-issues into `active` (see `completeProvision`) -- so letting an
+ * owner rotate or rename a disabled key would let them silently undo that
+ * decision. `queueKeyRotate` below checks for `disabled` explicitly, ahead of
+ * this list, so the caller gets a reason that names what actually happened
+ * instead of a generic "cannot be rotated".
+ */
+const rotatableStates: KeyState[] = ["active", "failed"];
+
 const panelProtocols: ProtocolKind[] = ["awg2", "awg3"];
 
 /**
@@ -236,10 +254,6 @@ const dedupeGlobalRouteList = (list: {
 });
 
 const dedupeGlobalRoutes = (routes: GlobalRoutes): GlobalRoutes => ({
-  ru_whitelist: {
-    add: dedupeGlobalRouteList(routes.ru_whitelist.add),
-    exclude: dedupeGlobalRouteList(routes.ru_whitelist.exclude),
-  },
   ru_blacklist: {
     add: dedupeGlobalRouteList(routes.ru_blacklist.add),
     exclude: dedupeGlobalRouteList(routes.ru_blacklist.exclude),
@@ -248,10 +262,6 @@ const dedupeGlobalRoutes = (routes: GlobalRoutes): GlobalRoutes => ({
 
 // Audit metadata for a global-routes update: sizes only, never the entries.
 const globalRouteCounts = (routes: GlobalRoutes): Record<string, number> => ({
-  whitelistAddCidrs: routes.ru_whitelist.add.cidrs.length,
-  whitelistAddDomains: routes.ru_whitelist.add.domains.length,
-  whitelistExcludeCidrs: routes.ru_whitelist.exclude.cidrs.length,
-  whitelistExcludeDomains: routes.ru_whitelist.exclude.domains.length,
   blacklistAddCidrs: routes.ru_blacklist.add.cidrs.length,
   blacklistAddDomains: routes.ru_blacklist.add.domains.length,
   blacklistExcludeCidrs: routes.ru_blacklist.exclude.cidrs.length,
@@ -261,10 +271,6 @@ const globalRouteCounts = (routes: GlobalRoutes): Record<string, number> => ({
 // Canonicalize a validated custom-routes object: de-duplicate each list so the
 // stored value and the export-time union stay minimal.
 const dedupeCustomRoutes = (routes: CustomRoutes): CustomRoutes => ({
-  ru_whitelist: {
-    cidrs: [...new Set(routes.ru_whitelist.cidrs)],
-    domains: [...new Set(routes.ru_whitelist.domains)],
-  },
   ru_blacklist: {
     cidrs: [...new Set(routes.ru_blacklist.cidrs)],
     domains: [...new Set(routes.ru_blacklist.domains)],
@@ -1567,7 +1573,7 @@ export class PostgresControlRepository implements ControlRepository {
       .from(routeRuleVersions)
       .where(eq(routeRuleVersions.status, "active"));
     const byProfile = new Map(active.map((row) => [row.profile, row.version]));
-    return (["full_tunnel", "ru_whitelist", "ru_blacklist"] as const).map(
+    return (["full_tunnel", "ru_blacklist"] as const).map(
       (profile) => ({
         profile,
         available: profile === "full_tunnel" || byProfile.has(profile),
@@ -1702,6 +1708,66 @@ export class PostgresControlRepository implements ControlRepository {
     });
   };
 
+  /**
+   * The mechanics shared by every reason a key's peer gets replaced: flip the
+   * row to `provisioning`, queue the worker's rotate job, and audit it. Called
+   * from inside the caller's own transaction and locked row, so it never
+   * re-reads or re-checks the key itself -- the caller already decided this
+   * rotate is warranted; this only carries it out.
+   *
+   * `state` is the row's state as the caller already read it (typically under
+   * `for("update")`), not re-queried here, so a caller who has already made
+   * its own decision about which states are acceptable is not second-guessed.
+   */
+  private queueKeyRotate = async (
+    tx: DbTransaction,
+    actor: Actor,
+    keyId: string,
+    state: KeyState,
+    auditAction: string,
+    auditMetadata?: Record<string, unknown>,
+  ): Promise<void> => {
+    // Checked ahead of `rotatableStates` and with its own code: an
+    // administrator disabled this key on purpose, and re-issuing it always
+    // comes back `active` (`completeProvision` knows only one outcome), so
+    // routing a disabled key through rotate -- whether asked for directly or
+    // as a side effect of a rename -- would let the owner quietly reverse the
+    // administrator's decision. The message says that plainly instead of
+    // reusing the generic "cannot be rotated" reason below, which is about
+    // transient states (mid-provisioning, mid-revoke), not a deliberate one.
+    if (state === "disabled") {
+      throw new ApiError(
+        409,
+        "This key was disabled by an administrator. Renaming or rotating it cannot re-enable it -- ask an administrator to enable it first.",
+        "KEY_DISABLED_BY_ADMIN",
+      );
+    }
+    if (!rotatableStates.includes(state)) {
+      throw new ApiError(
+        409,
+        "Key cannot be rotated in its current state",
+        "ROTATION_NOT_ALLOWED",
+      );
+    }
+    await tx
+      .update(vpnKeys)
+      .set({ state: "provisioning", updatedAt: new Date() })
+      .where(eq(vpnKeys.id, keyId));
+    await tx.insert(jobOutbox).values({
+      type: "vpn-key.rotate",
+      deduplicationKey: `vpn-key.rotate:${keyId}:${randomUUID()}`,
+      payload: { keyId },
+    });
+    await tx.insert(auditEvents).values({
+      actorUserId: actor.id,
+      actorType: "user",
+      action: auditAction,
+      targetType: "vpn_key",
+      targetId: keyId,
+      metadata: auditMetadata,
+    });
+  };
+
   enqueueOwnRotate = async (actor: Actor, keyId: string): Promise<void> => {
     await this.options.db.transaction(async (tx) => {
       const [key] = await tx
@@ -1716,7 +1782,10 @@ export class PostgresControlRepository implements ControlRepository {
       if (!key) throw new ApiError(404, "Key not found", "KEY_NOT_FOUND");
       // Rotation replaces the peer with fresh key material and current rules.
       // It only makes sense for rule-based profiles; a full-tunnel key never
-      // needs new rules.
+      // needs new rules. This guard is specific to THIS reason to rotate --
+      // `renameOwnKey` below rotates for a different reason (forcing a config
+      // that shows a stale name to stop working) that applies to every
+      // profile, and calls `queueKeyRotate` directly without it.
       if (key.routeProfile === "full_tunnel") {
         throw new ApiError(
           400,
@@ -1724,29 +1793,107 @@ export class PostgresControlRepository implements ControlRepository {
           "ROTATION_NOT_APPLICABLE",
         );
       }
-      if (!["active", "disabled", "failed"].includes(key.state)) {
-        throw new ApiError(
-          409,
-          "Key cannot be rotated in its current state",
-          "ROTATION_NOT_ALLOWED",
-        );
-      }
+      await this.queueKeyRotate(
+        tx,
+        actor,
+        keyId,
+        key.state,
+        "vpn_key.rotate_requested",
+      );
+    });
+  };
+
+  /**
+   * Rename the caller's own key. The label is always written; a re-issue is
+   * queued only when the rename actually changes the connection name the
+   * client shows -- computed with the same `composeKeyDisplayName` the
+   * exported config uses, fed this key's own `nameDisplay` flags.
+   *
+   * Why a rename needs a rotate at all: the client-visible name is composed
+   * fresh into every export (`defaultService.ts`'s `getKeyConfig`), so the
+   * NEXT download already carries a plain label update -- no re-issue
+   * required for that. What a plain label update does NOT do is touch a
+   * config the owner already downloaded and imported: that file keeps
+   * working, under the OLD name, forever. Re-issuing replaces the peer, so
+   * that stale file stops connecting and the owner is pushed to fetch the one
+   * with the new name -- which is the whole point of the confirmation the
+   * panel shows before this runs.
+   *
+   * And why that rotate is skipped when the composed name does not change:
+   * if the label is not part of the display (`nameDisplay.label` off), or the
+   * new text composes to the same string as the old one, no exported config
+   * would differ either way. Forcing a working connection to break for a
+   * config that would look identical has no honest justification, so this
+   * stays a plain update in that case -- same as `enqueueOwnRotate` already
+   * declining to rotate a `full_tunnel` key for a reason that does not apply
+   * to it.
+   */
+  renameOwnKey = async (
+    actor: Actor,
+    keyId: string,
+    deviceLabel: string,
+  ): Promise<{ id: string; state: KeyState; reissued: boolean }> => {
+    return this.options.db.transaction(async (tx) => {
+      const [row] = await tx
+        .select({
+          state: vpnKeys.state,
+          deviceLabel: vpnKeys.deviceLabel,
+          keyNumber: vpnKeys.keyNumber,
+          nameShowNode: vpnKeys.nameShowNode,
+          nameShowLabel: vpnKeys.nameShowLabel,
+          nameShowNumber: vpnKeys.nameShowNumber,
+          nodeName: nodes.name,
+          nodePublicName: nodes.publicName,
+        })
+        .from(vpnKeys)
+        .innerJoin(nodes, eq(nodes.id, vpnKeys.nodeId))
+        .where(and(eq(vpnKeys.id, keyId), eq(vpnKeys.ownerId, actor.id)))
+        .limit(1)
+        .for("update");
+      if (!row) throw new ApiError(404, "Key not found", "KEY_NOT_FOUND");
+
+      const display = {
+        server: row.nameShowNode,
+        label: row.nameShowLabel,
+        number: row.nameShowNumber,
+      };
+      const serverName = row.nodePublicName ?? row.nodeName;
+      const before = composeKeyDisplayName({
+        serverName,
+        label: row.deviceLabel,
+        keyNumber: row.keyNumber,
+        display,
+      });
+      const after = composeKeyDisplayName({
+        serverName,
+        label: deviceLabel,
+        keyNumber: row.keyNumber,
+        display,
+      });
+      const displayChanged = before !== after;
+
       await tx
         .update(vpnKeys)
-        .set({ state: "provisioning", updatedAt: new Date() })
+        .set({ deviceLabel, updatedAt: new Date() })
         .where(eq(vpnKeys.id, keyId));
-      await tx.insert(jobOutbox).values({
-        type: "vpn-key.rotate",
-        deduplicationKey: `vpn-key.rotate:${keyId}:${randomUUID()}`,
-        payload: { keyId },
+
+      if (!displayChanged) {
+        await tx.insert(auditEvents).values({
+          actorUserId: actor.id,
+          actorType: "user",
+          action: "vpn_key.renamed",
+          targetType: "vpn_key",
+          targetId: keyId,
+          metadata: { deviceLabel, reissued: false },
+        });
+        return { id: keyId, state: row.state, reissued: false };
+      }
+
+      await this.queueKeyRotate(tx, actor, keyId, row.state, "vpn_key.renamed", {
+        deviceLabel,
+        reissued: true,
       });
-      await tx.insert(auditEvents).values({
-        actorUserId: actor.id,
-        actorType: "user",
-        action: "vpn_key.rotate_requested",
-        targetType: "vpn_key",
-        targetId: keyId,
-      });
+      return { id: keyId, state: "provisioning", reissued: true };
     });
   };
 
@@ -2866,12 +3013,8 @@ export class PostgresControlRepository implements ControlRepository {
           targetType: resource,
           targetId,
           metadata: {
-            cidrCount:
-              customRoutes.ru_whitelist.cidrs.length +
-              customRoutes.ru_blacklist.cidrs.length,
-            domainCount:
-              customRoutes.ru_whitelist.domains.length +
-              customRoutes.ru_blacklist.domains.length,
+            cidrCount: customRoutes.ru_blacklist.cidrs.length,
+            domainCount: customRoutes.ru_blacklist.domains.length,
           },
         });
         return updated;
@@ -3603,7 +3746,7 @@ export class PostgresControlRepository implements ControlRepository {
       // a stub feed as the active routing rules.
       const input = z
         .object({
-          profile: z.enum(["ru_whitelist", "ru_blacklist"]),
+          profile: z.enum(["ru_blacklist"]),
           version: z.string().trim().min(1).max(96),
           sourceUrl: z.string().trim().min(1).max(2_048).default("manual://import"),
           cidrs: z.array(z.string()).default([]),

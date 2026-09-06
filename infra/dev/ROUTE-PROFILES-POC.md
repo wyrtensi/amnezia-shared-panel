@@ -1,4 +1,4 @@
-# Route profiles PoC checklist (RoscomVPN)
+# Route profiles PoC checklist
 
 Routing profiles stay behind PoC gates until an operator confirms the official
 AmneziaVPN client accepts the rule-shaped configs and routes correctly. Rule
@@ -7,23 +7,26 @@ versions are stored **quarantined** until the matching gate is opened.
 ## Profiles
 
 - `full_tunnel` — all traffic through the VPN (always available).
-- `ru_whitelist` — foreign resources through the VPN, RU destinations direct.
 - `ru_blacklist` — only RKN-blocked resources through the VPN, everything else direct.
 
-Both non-full-tunnel profiles apply their active rule set to `AllowedIPs` at
-**export time** (`applyRouteProfileToVpnLink`). The official client cannot refresh
-routing on an already-imported config, so a rules change flags the key as
-`rulesOutdated` and the user re-downloads (the config then carries current rules).
+> An earlier `ru_whitelist` profile (foreign resources through the VPN, RU
+> destinations direct) was never confirmed through this checklist and has since
+> been removed entirely — see migration `0035_drop_whitelist_profile`.
+
+`ru_blacklist` applies its active rule set to `AllowedIPs` at **export time**
+(`applyRouteProfileToVpnLink`). The official client cannot refresh routing on an
+already-imported config, so a rules change flags the key as `rulesOutdated` and
+the user re-downloads (the config then carries current rules).
 
 ## Gates
 
-- The worker fetcher **activates fetched versions by default**. To hold a
+- The worker fetcher **activates fetched versions by default**. To hold the
   profile's auto-fetched versions in quarantine for review, set
-  `RU_WHITELIST_POC_APPROVED=false` / `RU_BLACKLIST_POC_APPROVED=false`.
+  `RU_BLACKLIST_POC_APPROVED=false`.
 - There is no bundled starter list. Every rule version comes from a configured
   feed, or from an explicit `POST /api/admin/rules/:id/import` payload.
 
-## Checklist per profile
+## Checklist
 
 1. Fetch (or import) a rule version for the profile and activate it (admin → Маршрутизация).
 2. Confirm `GET /api/route-profiles` reports the profile `available: true`.
@@ -40,8 +43,8 @@ routing on an already-imported config, so a rules change flags the key as
 
 ## Feed sources
 
-Both profiles ship with working default sources, so nothing has to be configured
-for the fetchers to run. `RULE_FEEDS` (see `apps/worker/.env.example`) overrides
+The profile ships with working default sources, so nothing has to be configured
+for the fetcher to run. `RULE_FEEDS` (see `apps/worker/.env.example`) overrides
 them, and `RULE_FEEDS=[]` turns feeds off. Community lists such as
 antifilter.download are supported via the `cidr-lines` / `domain-lines` formats;
 multiple sources per profile are merged and de-duplicated before validation.

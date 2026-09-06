@@ -145,11 +145,11 @@ via `CONTROL_API_URL` plus one of, in priority order:
 | `stale-keys [--days=N] [--all]` | **Who** is holding keys nobody uses, and how many each — the shell half of the admin overview's stale-key block, and the list to work down before running the cleanup below. One row per user with at least one stale key (`--all` keeps everyone, so the finding has a denominator), worst first: `stale` (= `idle` + `never`), `keys` — how many of their keys hold a peer on a node at all, `fresh` — how many are too young to have connected yet and therefore never counted as stale, and `oldest`, how long the longest-stale one has been that way. Counted per key on purpose: a user with one live phone and five abandoned laptop keys is active by every owner-level reading, and those five peers are exactly what this is for |
 | `periods` | Every background period the panel runs on: what is set, the built-in default an unset one falls back to, and the range each accepts. See [Background periods](#background-periods) |
 | `global-routes` | Admin-wide route additions / exclusions per split-tunnel profile. Site names left in a stored payload are listed marked `INACTIVE` |
-| `rules [--profile=ru_whitelist\|ru_blacklist]` | Every fetched route-rule version, grouped by profile: which feeds supply it, whether the profile is pinned, and each version's id, status, counts, fetch time and publish time. The provider name is derived from the version's stored `source_url`, so a version merged from several feeds names all of them. See [Route rule versions](#route-rule-versions) |
+| `rules [--profile=ru_blacklist]` | Every fetched route-rule version, grouped by profile: which feeds supply it, whether the profile is pinned, and each version's id, status, counts, fetch time and publish time. The provider name is derived from the version's stored `source_url`, so a version merged from several feeds names all of them. See [Route rule versions](#route-rule-versions) |
 | `quota [--all]` | Key-limit requests (pending by default; `--all` = every state), with ids, the **target** server (its name, or `all servers`), `current → requested`, and date. Both the target and the `current → requested` numbers are reported **in that user's own key-limit mode**: under a global (shared) limit the per-server limits are dormant, so `current` is the pool and a request that named a server reads `all servers (request named …)` — approving it raises the total, not that server |
 | `version` | Panel version + commit of the running control-api, the repository the image was built from, plus `awg3-client-floor` — the AmneziaVPN client release an AWG 3.1 key needs, served by the panel so the CLI and the install guide cannot disagree |
 | `traffic [--days=N]` | Aggregate traffic series across all users (JSON) |
-| `client-releases` | What the panel currently hands users as AmneziaVPN download links, per platform: the resolved release version, each link's kind (`store` / `installer` / `releasePage`), file name and size, plus the Android APK that backs the Google Play button. Also shows `resolvedAt` and whether the panel is serving the **offline fallback** because it could not reach GitHub |
+| `client-releases` | What the panel currently hands users as AmneziaVPN download links, per platform: the resolved release version, each link's kind (`store` / `installer` / `releasePage`), file name and size, plus the Android APK that backs the Google Play button and iOS's two alternate App Store listings (AmneziaVPN, then AmneziaWG — a separate, plain WireGuard-style client). Also shows `resolvedAt` and whether the panel is serving the **offline fallback** because it could not reach GitHub |
 
 **User management** (every command below takes a user **id or email**):
 
@@ -162,7 +162,7 @@ via `CONTROL_API_URL` plus one of, in priority order:
 | `user-enable <id\|email>` | Reinstate a disabled user |
 | `user-delete <id\|email> --confirm` | **Rung two of the Delete-button ladder** — permanently removes an account already offboarded by `user-disable`. Refused with a distinct error unless the account is `disabled` (offboard it first) and unless it holds no key that could still hold a peer on a node — the same "live" state set `offboarded-purge` uses, never a second copy of it (revoke or purge the key first). Unlike `offboarded-purge`, it does **not** wait out `offboardedUserRetentionDays`: that window governs the panel acting on its own, not an admin naming one account and confirming. Deletes the user row and its revoked keys and writes `user.deleted` naming the admin who asked. Without `--confirm` it prints what it would do and deletes nothing |
 | `user-nodes <id\|email> <all\|none\|uuid,…>` | Per-user node availability — `all` = every node, overriding the global allowed-node list (this is how an admin sees every node while regular users are limited). It **replaces** the whole per-user policy override; use `user-limit --allowed-nodes=` to change availability alone |
-| `user-routes <id\|email> [--wl-cidrs=] [--bl-cidrs=]` | Replace a user's custom routes. **Addresses only** — `--wl-domains` / `--bl-domains` are refused with the reason; see “Route rules take addresses, not site names” below |
+| `user-routes <id\|email> [--bl-cidrs=]` | Replace a user's custom routes. **Addresses only** — `--bl-domains` is refused with the reason; see “Route rules take addresses, not site names” below |
 | `user-create-key <id\|email> --node=<uuid> [--device=] [--protocol=awg3] [--route=full_tunnel] [--device-type=android\|ios\|macos\|windows\|linux\|other] [--name-server=] [--name-label=] [--name-number=]` | Provision a key on behalf of a user. `--device-type` names the platform the key is for — `ios` covers both iPhone and iPad. The retired values `desktop`, `laptop`, `phone`, `tablet` and `iphone` are refused with the replacement named. `unspecified` is also accepted, for a scripted import that genuinely does not know the platform; omitting the flag stores the same thing. Pairing `--device-type=ios` with a `--route=` other than `full_tunnel` prints a warning to stderr and **still creates the key**. The observed failure is the **Default VPN** app — the listing the Russian App Store offers, because AmneziaVPN itself is hidden from it: there a route profile imports, connects, and then applies none of its rules, so the key sends every packet outside the tunnel. AmneziaVPN on iOS is a different app and was never observed failing, which is why this is a warning and not a refusal. The panel's create-key wizard no longer gates the choice at all — it cannot tell which client a device runs, so it offers every profile on every platform and this line is the only place the caveat survives. The same key also works normally if it is opened on a desktop. The `--name-*` flags (`true`/`false`) choose which parts the VPN client shows as the connection name — default server + device label, no number |
 | `quota-approve <req-id> [note]` | Approve a quota request. In `per_node` mode the grant follows the request's own target: a per-server request sets that node's per-node limit, an all-servers request sets the flat override **and clears the user's per-node limits** so the granted number cannot be shadowed. In `global` mode any request raises the **total** and leaves per-server limits untouched; a request that still names a server is approved as a total raise and marked `targetCoerced` in the audit log — run `quota` first, its `target` cell shows that coercion before you approve. Approval never widens node availability, and it never changes the mode |
 | `quota-reject <req-id> [note]` | Reject a quota request |
@@ -176,7 +176,8 @@ via `CONTROL_API_URL` plus one of, in priority order:
 | `offboarded-purge [--confirm]` | **The deliberate, manual counterpart to the automatic sweep** — the only other way an offboarded account is ever removed, and the one that still works while `autoPurgeOffboardedUsers` is off (the default — see `policy-set` above). Reports the accounts currently eligible — disabled, past `offboardedUserRetentionDays`, and with no key that could still hold a peer on a node (the exact same rule the automatic sweep uses, never a second copy of it) — with each one's email, when it was disabled, and how many revoked keys go with it. Without `--confirm` it lists them and deletes nothing; with it, it hard-deletes exactly that set — the user row and its revoked keys — and the audit event names the admin who asked, unlike the automatic sweep's, which has no actor |
 | `key-revoke <id>` · `key-disable <id>` · `key-enable <id>` | Key lifecycle. `key-revoke` is also the **retry** for a delete that did not go through: a key left in `revoking` because its node was unreachable, or one stuck in `failed` by a panel from before that was fixed. Every call queues a fresh job, and the node-side delete is idempotent, so repeating it is safe. `docs/KEY-STATES.md` has the full state model |
 | `key-internal-name <id> --name="<text>"` | Set the operator-only note on a key — who it was really issued to, what it replaced, why it exists. Up to 80 characters; `--name=` with nothing after it clears it. It is **never** returned to a regular user — not on any key, not even their own — and **never** part of a generated config, which is what makes it safe to write a person's name in. The one exception is an **administrator looking at their own key**: `/api/keys` carries the note for them, and only for them, so an admin sees it on their own card in the ordinary panel too. The rule is enforced in the payload, not in the page: for anybody else the `internalName` property is absent from the response entirely (`internalNameFor` in control-api's `keyView.ts`), and owner-facing routes only ever return the caller's own keys, so no route reaches another user's note without going through the admin API. Distinct from the device label the user typed, which does feed the connection name their client shows. It appears in the `keys` table's `internal` column and, in the admin panel, on the key's row under Users and on an administrator's own key card — the note itself is a framed chip, and the **Internal name** button beside it opens the editor, which repeats who can see the field, names the key it is annotating, shows the 80-character budget as you type, and keeps Clear (remove the note) apart from Cancel (change nothing) |
-| `key-config <id> [--format=vpn\|conf\|qr\|qr-svg\|qr-frames] [--out=<path>] [--save] [--confirm]` | Download one key's config. `vpn` (default) and `conf` print to stdout; `qr` writes the PNG a user downloads (to `<id>.png` unless `--out` is given), `qr-svg` the SVG the panel displays, and `qr-frames` the in-app-scanner series as `<id>.frame-N.svg` (read by AmneziaVPN and DefaultVPN alike). `--save` writes the file under the name the panel serves it as — the key's own connection name, e.g. `Frankfurt Main laptop #3.vpn` — instead of printing it; `--out` still wins over it, and it is a no-op for `qr-frames`, which always writes files. `--confirm` is required to read a key you do not own, and is audited as `vpn_key.private_config_viewed` |
+| `key-rename <id> --label="<text>"` | **Rename YOUR OWN key** — there is no admin path here, ever: `/api/keys/:id/rename` checks the caller's own id against the key's owner with no bypass, the same as the self-service rotate and delete routes, so this reaches only a key the CLI's own identity holds. It sets the device label and, in the same request, queues a re-issue **only when the new label actually changes the connection name the client shows** — computed with the key's own `nameDisplay` flags (server / label / number), the same `composeKeyDisplayName` the exported config uses. That name is composed fresh into every download already, so a re-issue is not what makes the new name appear in the *next* one; a plain label update already does that. What a re-issue is actually for: the config the owner *already downloaded* keeps working, under the old name, forever otherwise — re-issuing replaces the peer, so that stale file stops connecting and the owner is pushed to fetch the one with the new name. The command says plainly which happened. A label that plays no part in the displayed name, or new text that composes to the same name as before, is a plain update instead: the key's state does not move and nothing already working is disturbed. Works for a `full_tunnel` key, unlike the plain `rotate` button, which refuses one — renaming rotates for a different reason (forcing a stale name out of circulation) that has nothing to do with refreshing routing rules. Refused with `KEY_DISABLED_BY_ADMIN` on a key an administrator disabled, same as the plain rotate route — a re-issue always comes back `active`, so neither path may be the thing that quietly reverses that decision; only an administrator re-enabling the key first can clear it |
+| `key-config <id> [--format=vpn\|conf\|qr\|qr-svg\|qr-frames\|qr-conf] [--out=<path>] [--save] [--confirm]` | Download one key's config. `vpn` (default) and `conf` print to stdout; `qr` writes the PNG a user downloads (to `<id>.png` unless `--out` is given), `qr-svg` the SVG the panel displays to a camera app, `qr-conf` the SVG QR of the plain WireGuard `.conf` text for the AmneziaWG app, and `qr-frames` the in-app-scanner series as `<id>.frame-N.svg`, read by a VPN app's own scanner. `--save` writes the file under the name the panel serves it as — the key's own connection name, e.g. `Frankfurt Main laptop #3.vpn` — instead of printing it; `--out` still wins over it, and it is a no-op for `qr-frames`, which always writes files. `--confirm` is required to read a key you do not own, and is audited as `vpn_key.private_config_viewed` |
 | `node-add --name= --api-url= --api-key-file=<path\|-> [--public-name=] [--protocol=awg3] [--max-peers=N] [--enabled-protocols=awg3,awg2] [--disabled]` | Register a node. `--api-key-file=-` reads the key from stdin; the legacy `--api-key=<key>` still works but exposes the key in `ps` and shell history |
 | `node-update <id> --<field>=<value> …` | Edit a node (name, api-url, api-key-file (or api-key), public-name, protocol, max-peers, enabled, enabled-protocols). `--clear-public-ip` is a flag rather than a field: it forgets the resolved public IP and its timestamp so the worker resolves the node's host again on the next telemetry tick. The panel resolves a host **once** and keeps the answer, because a server's public address does not change under it — this is the recovery for the one case where that assumption breaks, a server moving to a new IP while keeping the same DNS name |
 | `node-remove <id>` | Delete a node. Refused with `409 NODE_HAS_KEYS` while it still has keys (revoked ones count) — disable it, or use the form below |
@@ -186,7 +187,7 @@ via `CONTROL_API_URL` plus one of, in priority order:
 | `node-agent-update <id> [--image=<repo@sha256:…>] [--confirm]` | Replace that node's agent with the image the panel currently offers. Without `--confirm` it prints what is running, what would be installed and when that release was resolved, and changes nothing. Only a **digest** in the published repository is accepted — a tag is mutable, so what you confirmed would not be what the node installs. The node pulls the image and recreates **only** the agent (`--no-deps`), so no tunnel drops; an agent that fails its health gate is rolled back to the previous digest. One node at a time on purpose: a bad image taken by the whole fleet at once removes the panel's management path to every node simultaneously, and the panel is what you would use to notice. Requires the host-side updater (`infra/node/scripts/install-agent-updater.sh`); without it the node answers 501. It also **requires node-agent 1.1.9 or newer**: the route shipped in 1.1.3, but 1.1.3 through 1.1.8 answer `500` on both `/server/update` routes — the container could not construct the service behind them, a DI defect fixed only in 1.1.9 — so the first hop to 1.1.9 has to be made over SSH, and this command works for every version after it. That `500` is invisible from the panel: the worker's job fails on the POST, before the node is marked `requested`, so the node card's state never moves and `node-agent-log` stays silent; the reason lands in `job_outbox.last_error` and nowhere else. The panel does not record which agent version a node runs, so there is no column that answers "which nodes are still behind" — see [`AGENT-HOST-SETUP.md`](./AGENT-HOST-SETUP.md) for how to read it per host, and [`NODE-CONNECT.md`](./NODE-CONNECT.md) §5 for the troubleshooting row |
 | `node-agent-log <id>` | The node's own record of its last agent update: state, image, when it finished, and the updater's log — which is what explains a failure (a locally edited `compose.yaml`, a missing `.env` key, a health gate) without opening an SSH session |
 | `policy-set --<field>=<value> …` | Set portal-policy fields (e.g. `--defaultKeyLimit=10`). `--nodeOrder=<id>,<id>` is the order users see servers in; `--recommendedNodeIds=<id>` badges servers as recommended and **must be the top of that order** (`none` clears either list). Send both in one call when a reorder would leave a badged server out of the top — the API validates them together and otherwise rejects the reorder, naming the server that is out of place, rather than silently un-recommending it. `--keyLimitMode=per_node\|global` is the panel-wide default for how every key limit is counted (`user-limit --mode=` overrides it for one user); there is no `inherit` here, since this **is** the value everyone inherits. `--defaultKeyLimit` is per server in `per_node` mode and the shared total in `global` mode — the number does not move, its meaning does, so switching the mode re-reads every existing limit without writing a row. `--showNodeAddress=true` also shows ordinary users the public address of each node they may use, under the node's name on their dashboard; it is **off by default**, because a node's address is operational information about the fleet and switching it on should be an operator's decision rather than something an upgrade does on their behalf. Admins always see it in `nodes` and on the node card regardless. Users get one collapsed string (the resolved IP, or the reported host when it never resolved) and never the host/IP pair or the resolution timestamp. `--showInstallReminder=false` switches off the step the panel puts in front of a **regular** user after their first key — the dialog that says AmneziaVPN has to be installed, or the copy they already have updated, before the key they were just issued can work. It is **on by default**, and that default is deliberate: every key this panel hands out is an AmneziaWG 3.1 key, a client older than the floor `version` reports cannot read one, and the old client fails silently — it starts, it looks healthy, and it never connects. The dialog names that floor version and gates its **Next** button behind a checkbox, twice: the first press of **Next** does not open the guide, it unticks the box and asks again, and only the second press hands over. There is no "Later" — the ✕ and Esc close it, and it returns on their next key until they have been through it once. So switching this off is a decision to stop telling people, not a cosmetic one. Administrators never see it whatever this is set to (they create keys constantly and know what the client is), and the count is of keys **ever created** — the key's own per-owner number — so a user who revokes as they go is not reminded again on the replacement key. It can also be overridden per user on the Users page, like the other flags in that list. `--autoPurgeOffboardedUsers=true` lets the maintenance sweep hard-delete a disabled account (and its revoked keys) once `offboardedUserRetentionDays` has passed. It is **off by default**, including on a panel that was already doing this before the flag existed — the automatic sweep stops on upgrade, because deleting an account is irreversible and a panel must not do that on a timer nobody explicitly asked for. `--video-desktop=`, `--video-android=`, `--video-ios=` attach the walkthrough video shown at the top of each audience's block in the in-panel connection guide (`none` clears one). They **merge** with the videos already set, so naming one audience does not clear the other two; until a URL is set that block shows a placeholder rather than a player. A **Google Drive share link** (the file must be readable by anyone with the link) is embedded as a Drive preview — Drive no longer serves files dependably to a plain `<video>` tag; any other http(s) URL plays as a direct file. A link the panel cannot play is refused when you type it. **These URLs are deployment settings: they live in your panel's database, never in this repository** — `scripts/tests/no-deployment-links.test.mjs` fails the build if one is committed. The nine background periods — `--telemetryPollSec=`, `--nodeMetricsSampleSec=`, `--nodeMetricsRetentionDays=`, `--peerSampleSec=`, `--maintenanceIntervalSec=`, `--agentReleaseRefreshSec=`, `--ruleFetchIntervalSec=`, `--accessReconcileSec=`, `--offboardedUserRetentionDays=` — are set the same way, in seconds (days for the two retention windows); `=default` hands one back to the worker. Out-of-range values are refused before anything is posted. See [Background periods](#background-periods) for the ranges, the defaults and how long a change takes to apply |
-| `global-routes-set --profile=ru_whitelist\|ru_blacklist [--add-cidrs=] [--exclude-cidrs=]` | Admin-wide route overrides for one split-tunnel profile. Each list given **replaces** that list; omitted lists stay as they were. **Addresses only** — `--add-domains` / `--exclude-domains` are refused, and a write clears any site names the stored payload still holds |
+| `global-routes-set --profile=ru_blacklist [--add-cidrs=] [--exclude-cidrs=]` | Admin-wide route overrides for the split-tunnel profile. Each list given **replaces** that list; omitted lists stay as they were. **Addresses only** — `--add-domains` / `--exclude-domains` are refused, and a write clears any site names the stored payload still holds |
 | `rules-activate <version-id>` | Publish one fetched rule version — including rolling **back** to a `superseded` one. Also **pins** the profile to it, so the worker's next fetch cannot silently undo the choice. See [Route rule versions](#route-rule-versions) |
 | `rules-follow <profile\|version-id>` | Release that pin and let the worker publish again. The active version is left exactly as it is; only the *next* version the worker fetches goes live |
 | `node-metrics [--json]` | Host metrics per node — memory, swap, disk, load, the agent's cgroup task count, both AWG interfaces, the agent's own round trip, and how long ago a peer last completed a handshake. Unreported values are a dash, never a zero. Below the table it prints the panel's own warnings, using the same three thresholds the admin card paints red: 200 MiB MemAvailable, 85 % disk, 80 % of the task cap |
@@ -237,34 +238,39 @@ amnezia-panel key-config <key-id> --format=vpn --save --confirm
 # -> Frankfurt Main laptop #3.vpn
 ```
 
-**Two QR codes, two scanners.** The panel offers a different code depending on
-what the user will point at the screen, because the two scanners do not read the
-same thing:
+**Three scanners, four QR formats.** The panel offers a different code depending
+on what the user will point at the screen, because the three scanners do not
+read the same thing:
 
 - **A VPN app's own "scan QR" button** does not read a `vpn://` URL at all. It
   expects the app's own frame format — a base64url blob behind an 8-byte header
   with a magic number — and silently ignores anything else, however large and
   sharp it is. That is `--format=qr-frames`, and it is the format the panel now
   ships for that scanner. A series of more than one frame is shown in the panel
-  in one of two modes, animated or static. This one format serves **both**
-  clients: DefaultVPN is a fork of amnezia-client and reads a byte-identical
-  envelope, so the panel shows the same code under two labels rather than
-  building a second format.
+  in one of two modes, animated or static. This format is confirmed against
+  AmneziaVPN's scanner; `apps/control-api/src/qrFrames.ts` has the byte-level
+  analysis and records what is (and is not) confirmed for any other client.
+- **The AmneziaWG app** is a third, separate client: it reads neither the chunk
+  envelope nor the `vpn://` link, only a plain WireGuard config. That is
+  `--format=qr-conf`, a QR of the same text the `conf` file format serves.
 - **An ordinary camera app** reads the QR as text, sees the `vpn://…` URL and
   hands it to the OS, which opens the app. That is `--format=qr` (PNG, for
   download) and `--format=qr-svg` (what the panel displays). A camera app cannot
-  read `qr-frames` at all, so these stay fully supported, and the config dialog
-  keeps the camera code one labelled click away.
+  read `qr-frames` or `qr-conf` at all, so `qr`/`qr-svg` stay fully supported,
+  and the config dialog keeps the camera code one labelled click away.
 
 **Reproducing a "the QR does not scan" report.** First establish *which* scanner
-the person used, because the two failures have nothing in common.
+the person used, because the three failures have nothing in common.
 
 ```sh
 # what a camera app sees
 amnezia-panel key-config <key-id> --format=qr --out=/tmp/key.png --confirm
 amnezia-panel key-config <key-id> --format=qr-svg --confirm > /tmp/key.svg
 
-# what an in-app scanner sees (AmneziaVPN and DefaultVPN alike)
+# what the AmneziaWG app sees
+amnezia-panel key-config <key-id> --format=qr-conf --confirm > /tmp/key-awg.svg
+
+# what a VPN app's own in-app scanner sees
 amnezia-panel key-config <key-id> --format=qr-frames --out=/tmp/key --confirm
 ```
 
@@ -279,13 +285,14 @@ around it. The inline code is large enough on coarse-pitch screens (a 1366×768
 laptop, a 24″ 1080p monitor); on a 13″ 1080p laptop with OS scaling turned off,
 or on any unscaled high-DPI monitor, the full-screen view is not optional.
 
-If a code will not scan **from inside the AmneziaVPN app**, size is irrelevant:
-check that the person is looking at the "AmneziaVPN app" code and not the camera
-one — the dialog opens on the camera code.
+If a code will not scan **from inside a VPN app**, size is irrelevant: check
+that the person is looking at the right tab — "VPN app" for AmneziaVPN,
+"AmneziaWG" for that app — and not the camera one; the dialog opens on the
+"VPN app" code by default.
 
-The QR is offered only for keys with the `full_tunnel` route profile.
-Whitelist/blacklist profiles carry thousands of routes and are refused with
-`422 QR_TOO_LARGE` for all three QR formats — that is expected, not a fault; the
+The QR is offered only for keys with the `full_tunnel` route profile. The
+blacklist profile carries thousands of routes and is refused with
+`422 QR_TOO_LARGE` for all four QR formats — that is expected, not a fault; the
 CLI prints the refusal as one line and you should use `--format=conf`. The frame
 series is capped the same way: a config that would need more than eight frames is
 refused rather than handed over, because nobody scans eight codes.
@@ -537,12 +544,12 @@ resulting counts, never the entries.
 
 #### Route rules take addresses, not site names
 
-`--wl-domains`, `--bl-domains`, `--add-domains` and `--exclude-domains` are
+`--bl-domains`, `--add-domains` and `--exclude-domains` are
 **refused**, with the reason and the alternative printed:
 
 ```
-$ amnezia-panel user-routes ann@company.tld --wl-domains=example.com
---wl-domains: no longer accepted.
+$ amnezia-panel user-routes ann@company.tld --bl-domains=example.com
+--bl-domains: no longer accepted.
 Route rules take addresses only.
 A site name in a route rule never reaches the client: a profile becomes a WireGuard
 AllowedIPs list, which takes prefixes, and the panel resolves nothing.
@@ -561,13 +568,12 @@ the meantime; they route nothing either way.
 
 ### Route rule versions
 
-The worker fetches each split-tunnel profile's list from the feeds in
+The worker fetches the split-tunnel profile's list from the feeds in
 `RULE_FEEDS` (or, unset, from the built-in defaults) and stores every fetch as a
-row in `route_rule_versions`. **The feeds are per profile, and they are not the
-same provider**: out of the box `ru_whitelist` comes from a RoscomVPN GeoIP
-mirror, while `ru_blacklist` is merged from iplist (CIDRs) *and* Re-filter-lists
-(domains). Nothing in the panel names a provider in a shared label for that
-reason — each version is attributed from its own stored `source_url`.
+row in `route_rule_versions`. Out of the box `ru_blacklist` is merged from
+iplist (CIDRs) *and* Re-filter-lists (domains). Nothing in the panel names a
+provider in a shared label — each version is attributed from its own stored
+`source_url`.
 
 ```sh
 # what feeds each profile, what is live, and every version's id

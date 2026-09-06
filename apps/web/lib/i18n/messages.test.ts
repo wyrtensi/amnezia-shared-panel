@@ -292,3 +292,27 @@ describe("install reminder messages", () => {
     }
   });
 });
+
+describe("removed ru_whitelist profile leaves no trace in copy", () => {
+  // Migration 0035 dropped `ru_whitelist` entirely -- there is no wizard
+  // choice for it any more. A string still describing it as a live option
+  // (its Russian label «Только зарубежные», or the English "Foreign only")
+  // would send a reader looking for a choice the panel no longer offers. This
+  // scans every message rather than naming specific keys, so a future string
+  // that reintroduces the same stale wording fails here too.
+  const STALE_PATTERNS = [/Только зарубежные/, /\bForeign only\b/];
+
+  it("contains no stale ru_whitelist wording in either language", () => {
+    for (const lang of ["ru", "en"] as const) {
+      const dict = messages[lang] as Record<string, string>;
+      for (const [key, value] of Object.entries(dict)) {
+        for (const pattern of STALE_PATTERNS) {
+          expect(
+            value,
+            `${lang}:${key} still names the removed ru_whitelist profile`,
+          ).not.toMatch(pattern);
+        }
+      }
+    }
+  });
+});

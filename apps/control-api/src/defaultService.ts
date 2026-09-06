@@ -33,6 +33,21 @@ const describeQr = (rendered: RenderedQr): ConfigResult["qrParams"] => ({
   scale: rendered.params.scale,
 });
 
+/**
+ * Every QR format refuses the same way when a payload will not fit: a
+ * split-tunnel config carries thousands of CIDRs, and no error-correction
+ * level can hold that much text in one symbol. The UI hides QR entirely for
+ * non-full-tunnel profiles, so this is reached only through a direct request
+ * (the CLI, or an admin's confirmed view) — but it still has to answer with a
+ * clear refusal rather than a raw 500 from the QR library. Repeated inline at
+ * each call site rather than factored into a helper: `only-throw-error`
+ * flags a `throw` of a function call's result even when that function's
+ * return type is `never`, so a helper would need a lint suppression to buy
+ * nothing but a shorter `throw` line.
+ */
+const QR_TOO_LARGE_MESSAGE =
+  "This config is too large for a QR code — use the config file instead";
+
 export type DefaultServiceOptions = {
   repository: ControlRepository;
   keyring: EncryptionKeyring;
@@ -45,9 +60,12 @@ const assertDownloadAllowed = (
   const allowed =
     policy.allowConfigRedownload &&
     (format === "vpn" ||
-      // All three QR containers are the same capability: an admin who turned QR
+      // All four QR containers are the same capability: an admin who turned QR
       // off must not get it back through a new format string.
-      ((format === "qr" || format === "qr-svg" || format === "qr-frames") &&
+      ((format === "qr" ||
+        format === "qr-svg" ||
+        format === "qr-frames" ||
+        format === "qr-conf") &&
         policy.allowQrDownload) ||
       (format === "conf" && policy.allowConfDownload));
   if (!allowed) {
@@ -175,6 +193,27 @@ export const createDefaultControlApiService = ({
         filename: configFilename(displayName, "conf"),
       };
     }
+    if (format === "qr-conf") {
+      // AmneziaWG reads neither the chunk envelope nor the `vpn://` link, only
+      // a plain WireGuard config, so this QR carries the same text `conf`
+      // downloads as a file. Same capacity ceiling as the `vpn://` symbol, so
+      // a split-tunnel key's `.conf` refuses the same way.
+      const confText = extractConfFromVpnLink(vpnLink);
+      let rendered: RenderedQr;
+      try {
+        rendered = await renderKeyQr(confText, "svg");
+      } catch {
+        throw new ApiError(422, QR_TOO_LARGE_MESSAGE, "QR_TOO_LARGE");
+      }
+      // A display format, not a download: no content-disposition, no filename,
+      // same as `qr-svg`.
+      return {
+        format,
+        contentType: rendered.contentType,
+        body: rendered.body,
+        qrParams: describeQr(rendered),
+      };
+    }
     // A split-tunnel config embeds thousands of CIDRs and overflows QR capacity
     // at every error-correction level — the renderer would otherwise throw a raw
     // 500. Refuse with a clear error (the UI hides QR for these profiles and
@@ -189,7 +228,7 @@ export const createDefaultControlApiService = ({
       try {
         const texts = buildQrFrameTexts(vpnLink);
         // Chunking removes the capacity limit that makes the single-frame
-        // formats refuse a split-tunnel config, so without this a whitelist key
+        // formats refuse a split-tunnel config, so without this a blacklist key
         // would return dozens of codes (a 20 KB config is 24 frames) instead of
         // the 422 every other QR format gives it. Nobody scans 24 codes; the
         // config file is the answer for those keys. Eight is well clear of a
@@ -205,11 +244,7 @@ export const createDefaultControlApiService = ({
         frames = drawn.map((frame) => String(frame.body));
         firstParams = drawn[0] && describeQr(drawn[0]);
       } catch {
-        throw new ApiError(
-          422,
-          "This config is too large for a QR code — use the config file instead",
-          "QR_TOO_LARGE",
-        );
+        throw new ApiError(422, QR_TOO_LARGE_MESSAGE, "QR_TOO_LARGE");
       }
       return {
         format,
@@ -224,11 +259,7 @@ export const createDefaultControlApiService = ({
     try {
       rendered = await renderKeyQr(vpnLink, format === "qr-svg" ? "svg" : "png");
     } catch {
-      throw new ApiError(
-        422,
-        "This config is too large for a QR code — use the config file instead",
-        "QR_TOO_LARGE",
-      );
+      throw new ApiError(422, QR_TOO_LARGE_MESSAGE, "QR_TOO_LARGE");
     }
     if (rendered.kind === "svg") {
       // A display format, not a download: no content-disposition, no filename.
@@ -249,6 +280,8 @@ export const createDefaultControlApiService = ({
   },
   revokeOwnKey: (actor, keyId) => repository.enqueueOwnRevoke(actor, keyId),
   rotateOwnKey: (actor, keyId) => repository.enqueueOwnRotate(actor, keyId),
+  renameOwnKey: (actor, keyId, deviceLabel) =>
+    repository.renameOwnKey(actor, keyId, deviceLabel),
   updateMyCustomRoutes: (actor, routes) =>
     repository.updateOwnCustomRoutes(actor, routes),
   listRouteProfiles: () => repository.listRouteProfiles(),

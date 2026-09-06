@@ -457,13 +457,13 @@ node-agent `POST /clients` (mapping `awg3 → amneziawg3`) and returns an import
 ### Route profiles and rule feeds
 
 Profiles (`packages/contracts` `routeProfileSchema`): `full_tunnel` (always
-available), `ru_whitelist` (everything through the tunnel **except** the
-addresses in its feed — a list of Russian services that does not cover all of
-them), `ru_blacklist` (only the addresses in its feed go through the tunnel).
-Note what `ru_whitelist` is not: it is not "RU direct". Only what the feed
-actually lists bypasses the tunnel, and a Russian service missing from the feed
-is tunnelled like anything else — which is why the panel stopped describing the
-profile as "foreign via VPN, RU direct".
+available), `ru_blacklist` (only the addresses in its feed go through the
+tunnel; everything else goes direct).
+
+> An earlier `ru_whitelist` profile (everything through the tunnel **except**
+> the addresses in its feed) was never confirmed to work and has since been
+> removed entirely — see migration `0035_drop_whitelist_profile` and
+> `docs/DEPLOY-UPDATE.md`'s note on it. Nothing below describes it any more.
 
 Non-full-tunnel profiles apply their active rule set to `AllowedIPs` **at export
 time**; the official client can't refresh routing on an imported config, so a
@@ -472,16 +472,9 @@ follows the feed's version and only the feed's version — a change to how the
 feed is turned into routes leaves every already-exported key unflagged (see
 "Key rotation" below).
 
-The two profiles use their feed in **opposite directions**, and `AllowedIPs` can
-only ever say "route this", never "except this":
-
-- `ru_blacklist` — the feed lists what belongs in the tunnel, so its CIDRs go
-  into `AllowedIPs` as they stand, with the DNS servers appended.
-- `ru_whitelist` — the feed lists what must stay **out** of the tunnel, so the
-  peer is handed the **inverse** (`apps/control-api/src/routeComplement.ts`),
-  plus `::/0` because the feed is IPv4-only and every v6 route still belongs in
-  the tunnel. DNS is not appended there: the complement already covers it, and
-  naming it would drag a resolver on the bypass list back into the tunnel.
+`ru_blacklist`'s feed lists what belongs in the tunnel, so its CIDRs go into
+`AllowedIPs` as they stand, with the DNS servers appended — `AllowedIPs` can
+only ever say "route this", never "except this".
 
 `AllowedIPs` is also **size-bounded by the Android client**, and this is a hard
 limit, not a preference. The whole config crosses to the VPN service in one
@@ -489,37 +482,22 @@ Binder transaction (`IpcMessenger` → `Messenger.send`), and Binder allows abou
 1 MB per process. A config of roughly 7000 prefixes already sits at ~94 % of
 that; past it the client logs `Sending a message to the VpnService messenger
 failed: data parcel size N bytes`, drops the message, and the profile simply
-never connects — no error, no retry, no traffic. Two consequences:
+never connects — no error, no retry, no traffic. That is why the `ru_blacklist`
+feed must stay aggregated: Re:filter's `ipsum.lst` carries ~27k CIDRs and
+produced a 2.7 MB parcel that never connected on Android, which is why the
+default source is now iplist (~3.6k prefixes covering the same services).
 
-- The `ru_blacklist` feed must stay aggregated. Re:filter's `ipsum.lst` carries
-  ~27k CIDRs and produced a 2.7 MB parcel that never connected on Android, which
-  is why the default source is now iplist (~3.6k prefixes covering the same
-  services).
-- `ru_whitelist` absorbs holes of 32 addresses or less between neighbouring
-  feed entries before inverting (`WHITELIST_GAP_MERGE`). The inverse costs about
-  one route per hole, and the RoscomVPN whitelist is host-level — nearly six
-  thousand `/30`–`/32` entries leaving 3853 disjoint ranges — so inverting it
-  verbatim yields 11140 routes, over the limit. Absorbing the cracks gives 4678
-  routes at ~62 % of it. Every feed prefix still bypasses the tunnel exactly as
-  written; the only addition is 16401 addresses sitting between neighbouring
-  entries (0.0004 % of IPv4).
-
-Feeds grow, so neither number is assumed to hold. `MAX_TUNNEL_ROUTES` (6800) is
-the budget both profiles are held to. It sits close to the edge on purpose —
+Feeds grow, so that number is not assumed to hold. `MAX_TUNNEL_ROUTES` (6800) is
+the budget the profile is held to. It sits close to the edge on purpose —
 6712 routes is the largest config observed to connect, not a safe distance from
 the limit — so crossing `WARN_TUNNEL_ROUTES` (5500) is logged on every export
 as `[routes] …`. That line is the only warning anyone gets before keys start
 coming out as full tunnels; treat it as work to do, not as noise.
 
-Each profile has its own way of meeting the budget:
-
-- `ru_whitelist` widens its gap merging until the inverse fits — today's list
-  needs no escalation at all, a list twice its size lands at a 2048-address gap.
-- `ru_blacklist` has no such lever: dropping entries would send that traffic
-  outside the tunnel, the exact failure the profile exists to prevent.
-
-A profile that still does not fit — or whose feed came back with no CIDRs at
-all — **degrades to the full tunnel**. That tunnels more than the user asked
+`ru_blacklist` has no lever to shrink itself: dropping entries would send that
+traffic outside the tunnel, the exact failure the profile exists to prevent. A
+feed that does not fit the budget — or that came back with no CIDRs at all —
+**degrades to the full tunnel** instead. That tunnels more than the user asked
 for, where the alternative tunnels nothing and says nothing about it.
 
 Check a feed change against this before shipping it: count the CIDRs the profile
@@ -531,24 +509,23 @@ the only reading anyone gets, and a degraded key looks exactly like a
 full-tunnel key that was asked for.
 
 Feeds work **out of the box**: with no feed configuration at all the worker uses
-the built-in RoscomVPN GeoIP (`ru_whitelist`) and iplist / Re:filter (`ru_blacklist`) sources, so a
-fresh install fetches real rules without an operator pasting anything. The worker
-env (`apps/worker/.env.example`) only overrides that:
+the built-in iplist / Re:filter sources, so a fresh install fetches real rules
+without an operator pasting anything. The worker env
+(`apps/worker/.env.example`) only overrides that:
 
 - `RULE_FEEDS` — JSON array of `{ profile, sources:[{ url, format }] }`, formats
   `json` | `cidr-lines` | `domain-lines` (multiple sources per profile are merged
   and de-duplicated). Leave it empty to keep the built-in defaults; set
   `RULE_FEEDS=[]` to run with no feeds at all. A malformed value fails the worker
-  at startup instead of quietly reverting to the defaults. Legacy single
-  `ru_whitelist` JSON feed: `ROSCOMVPN_RULES_URL`.
+  at startup instead of quietly reverting to the defaults.
   `domain-lines` entries must be **bare ASCII/punycode hostnames** (`.рф` →
   `xn--p1ai`); raw Unicode, wildcards (`*.`), and leading dots are dropped as
   invalid. A feed with more than 15 % invalid entries is quarantined whole, so
   a wrong URL or format fails safe rather than shipping garbage.
 - **Gates default open.** The fetcher activates fetched versions by default; set
-  `RU_WHITELIST_POC_APPROVED=false` / `RU_BLACKLIST_POC_APPROVED=false` to hold a
-  profile's auto-fetched versions quarantined for operator review (`!== "false"`
-  is treated as approved). Fetchers run every 6 h.
+  `RU_BLACKLIST_POC_APPROVED=false` to hold the profile's auto-fetched versions
+  quarantined for operator review (`!== "false"` is treated as approved).
+  Fetchers run every 6 h.
 - **No bundled starter list.** Rule versions come from the feeds or from an
   explicit operator upload (`POST /api/admin/rules/global/import` with a
   `profile`, `version` and at least one entry). There is nothing to fall back on,
@@ -569,15 +546,16 @@ See `infra/dev/ROUTE-PROFILES-POC.md` for the per-profile validation checklist
 
 Rotation re-issues a key with the **current** rules and a fresh config
 (`POST /api/keys/:id/rotate`, admin can rotate any key; users rotate their own).
-This is how RoscomVPN keys were re-issued against the current rule set.
+This is how keys are re-issued against a changed rule set.
 
 **A change to the export logic does not raise `rulesOutdated`.** The flag is
 computed as "the active rule set for this profile is not the version this key
 was exported from" — a feed version comparison, nothing more. Change how a feed
-is turned into `AllowedIPs` (as the whitelist inversion in v0.9.21 did) and
-every key already in a user's client keeps the old routing while the panel goes
-on calling it current. Keys like that have to be found and rotated by hand; see
-["After v0.9.21"](./DEPLOY-UPDATE.md#after-v0921-re-issue-every-ru_whitelist-key)
+is turned into `AllowedIPs` (as the retired whitelist's inversion in v0.9.21
+did) and every key already in a user's client keeps the old routing while the
+panel goes on calling it current. Keys like that have to be found and rotated
+by hand; see
+["After v0.9.21"](./DEPLOY-UPDATE.md#after-v0921-before-migration-0035-ru_whitelist-was-removed-entirely)
 in `DEPLOY-UPDATE.md`.
 
 ### Updating a node's agent from the panel (opt-in)

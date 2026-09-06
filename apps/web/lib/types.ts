@@ -1,4 +1,4 @@
-import type { InstallGuideVideos } from "@amnezia/contracts";
+import type { InstallGuideVideos, KeyNameDisplay } from "@amnezia/contracts";
 
 export type ProtocolKind = "awg2" | "awg3";
 
@@ -36,12 +36,10 @@ export type PortalPolicy = {
 // Per-user extra routes layered on a split-tunnel profile's base feed.
 export type CustomRouteList = { cidrs: string[]; domains: string[] };
 export type CustomRoutes = {
-  ru_whitelist: CustomRouteList;
   ru_blacklist: CustomRouteList;
 };
 
 export const EMPTY_CUSTOM_ROUTES: CustomRoutes = {
-  ru_whitelist: { cidrs: [], domains: [] },
   ru_blacklist: { cidrs: [], domains: [] },
 };
 
@@ -190,6 +188,11 @@ export type KeyView = {
    * in it — the note is not sent and then hidden, it is not sent.
    */
   internalName?: string | null;
+  // Which parts the client-visible connection name is composed of. Always
+  // present -- the server attaches it to every key, never just some -- so
+  // `composeKeyDisplayName` can reproduce the same name a rename would
+  // produce, before the rename is submitted.
+  nameDisplay: KeyNameDisplay;
   routeProfile: string;
   rulesOutdated?: boolean;
   createdAt: string;
@@ -197,7 +200,7 @@ export type KeyView = {
   traffic?: KeyTraffic;
 };
 
-export type RouteProfile = "full_tunnel" | "ru_whitelist" | "ru_blacklist";
+export type RouteProfile = "full_tunnel" | "ru_blacklist";
 
 export type RouteProfileAvailability = {
   profile: RouteProfile;

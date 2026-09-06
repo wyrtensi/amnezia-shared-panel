@@ -72,9 +72,11 @@ const createRepository = (): ControlRepository => ({
   diffRuleVersions: vi.fn(() => Promise.resolve({ diff: {} })),
   enqueueOwnRevoke: vi.fn(() => Promise.resolve()),
   enqueueOwnRotate: vi.fn(() => Promise.resolve()),
+  renameOwnKey: vi.fn(() =>
+    Promise.resolve({ id: "key-1", state: "active" as const, reissued: false }),
+  ),
   updateOwnCustomRoutes: vi.fn(() =>
     Promise.resolve({
-      ru_whitelist: { cidrs: [], domains: [] },
       ru_blacklist: { cidrs: [], domains: [] },
     }),
   ),
@@ -287,7 +289,6 @@ describe("default control service policy enforcement", () => {
         payload: { cidrs: ["10.0.0.0/8"], domains: ["blocked.ru"] },
       },
       customRoutes: {
-        ru_whitelist: { cidrs: [], domains: [] },
         ru_blacklist: { cidrs: ["10.0.0.0/8", "203.0.113.0/24"], domains: [] },
       },
     });
@@ -316,10 +317,6 @@ describe("default control service policy enforcement", () => {
       },
     });
     vi.mocked(repository.getGlobalRoutes).mockResolvedValue({
-      ru_whitelist: {
-        add: { cidrs: [], domains: [] },
-        exclude: { cidrs: [], domains: [] },
-      },
       ru_blacklist: {
         add: { cidrs: ["198.51.100.0/24"], domains: [] },
         // The domain half of a stored override is inert: it neither adds nor
@@ -349,15 +346,10 @@ describe("default control service policy enforcement", () => {
         payload: { cidrs: ["10.0.0.0/8"], domains: [] },
       },
       customRoutes: {
-        ru_whitelist: { cidrs: [], domains: [] },
         ru_blacklist: { cidrs: ["10.0.0.0/8"], domains: [] },
       },
     });
     vi.mocked(repository.getGlobalRoutes).mockResolvedValue({
-      ru_whitelist: {
-        add: { cidrs: [], domains: [] },
-        exclude: { cidrs: [], domains: [] },
-      },
       ru_blacklist: {
         add: { cidrs: [], domains: [] },
         exclude: { cidrs: ["10.0.0.0/8"], domains: [] },
@@ -373,7 +365,7 @@ describe("default control service policy enforcement", () => {
   });
 
   it("blocks every QR container under the same policy flag", async () => {
-    for (const format of ["qr", "qr-svg", "qr-frames"] as const) {
+    for (const format of ["qr", "qr-svg", "qr-frames", "qr-conf"] as const) {
       const repository = createRepository();
       vi.mocked(repository.findKeyConfig).mockResolvedValue({
         id: "key-1",
@@ -574,17 +566,65 @@ describe("simple-key QR rendering", () => {
       expect(frame).toContain('shape-rendering="crispEdges"');
     }
   });
+
+  it("renders a QR of the plain WireGuard config for the AmneziaWG app", async () => {
+    const repository = createRepository();
+    // AmneziaWG reads neither the vpn:// link nor the chunk envelope, only the
+    // bare WireGuard config -- the same bytes `conf` downloads as a file, so
+    // the fixture needs a decodable payload rather than the default
+    // repository's opaque `encrypted` value.
+    const link = encodeVpnPayload({
+      containers: [
+        {
+          awg: {
+            last_config: JSON.stringify({
+              config:
+                "[Interface]\nPrivateKey = x\n\n[Peer]\nAllowedIPs = 0.0.0.0/0, ::/0\n",
+            }),
+          },
+        },
+      ],
+    });
+    vi.mocked(repository.findKeyConfig).mockResolvedValue({
+      id: "key-1",
+      ownerId: employee.id,
+      deviceLabel: "phone",
+      encrypted: encryptSecret(link, keyring, 1),
+      policy: defaultPortalPolicy,
+      routeProfile: "full_tunnel" as const,
+      keyNumber: 3,
+      nodeDisplayName: "Frankfurt",
+      nameDisplay: { server: true, label: true, number: false },
+      appliedRuleVersionId: null,
+      activeRule: null,
+      customRoutes: null,
+    });
+    const service = createDefaultControlApiService({ repository, keyring });
+
+    const result = await service.getKeyConfig(
+      employee,
+      "key-1",
+      "qr-conf",
+      false,
+    );
+
+    expect(result.format).toBe("qr-conf");
+    expect(result.contentType).toBe("image/svg+xml; charset=utf-8");
+    // A display format, like qr-svg: no attachment disposition.
+    expect(result.filename).toBeUndefined();
+    expect(String(result.body)).toContain("<svg");
+  });
 });
 
 // Chunking removes the capacity limit that makes `qr` and `qr-svg` refuse a
-// split-tunnel config, so `qr-frames` would otherwise answer a whitelist key
+// split-tunnel config, so `qr-frames` would otherwise answer a blacklist key
 // with dozens of codes where every other QR format gives it a 422. Pinned
 // because the failure is silent: a valid, useless response.
 describe("the AmneziaVPN series refuses a config nobody could scan", () => {
   it("returns 422 rather than dozens of frames", async () => {
     const repository = createRepository();
     // ~20 KB of payload: 24 frames at the client's 850-byte chunk size, which
-    // is the scale a real whitelist config reaches.
+    // is the scale a real blacklist config reaches.
     const huge = encryptSecret(
       `vpn://${"A".repeat(28000)}`,
       keyring,
@@ -608,6 +648,56 @@ describe("the AmneziaVPN series refuses a config nobody could scan", () => {
 
     await expect(
       service.getKeyConfig(employee, "key-1", "qr-frames", false),
+    ).rejects.toEqual(
+      expect.objectContaining({ statusCode: 422, code: "QR_TOO_LARGE" }),
+    );
+  });
+});
+
+// The .conf text embeds the same CIDR list applyRouteProfileToVpnLink writes
+// into AllowedIPs, so a blacklist key's plain WireGuard config is exactly as
+// oversized as its vpn:// link. `qr-conf` must degrade the same way `qr` and
+// `qr-svg` do -- refuse with QR_TOO_LARGE -- not silently answer with a symbol
+// nobody can scan.
+describe("the AmneziaWG QR refuses a config that will not fit", () => {
+  it("returns 422 rather than an unreadable code", async () => {
+    const repository = createRepository();
+    // ~7.5 KB of AllowedIPs: 500 CIDRs, well past the ~2900-byte ceiling a QR
+    // symbol can hold at any error-correction level -- the scale a real
+    // ru_blacklist .conf reaches.
+    const hugeAllowedIps = Array.from(
+      { length: 500 },
+      (_, i) => `10.${i % 256}.0.0/16`,
+    ).join(", ");
+    const link = encodeVpnPayload({
+      containers: [
+        {
+          awg: {
+            last_config: JSON.stringify({
+              config: `[Interface]\nPrivateKey = x\n\n[Peer]\nAllowedIPs = ${hugeAllowedIps}\n`,
+            }),
+          },
+        },
+      ],
+    });
+    vi.mocked(repository.findKeyConfig).mockResolvedValue({
+      id: "key-1",
+      ownerId: employee.id,
+      deviceLabel: "phone",
+      encrypted: encryptSecret(link, keyring, 1),
+      policy: defaultPortalPolicy,
+      routeProfile: "ru_blacklist" as const,
+      keyNumber: 3,
+      nodeDisplayName: "Frankfurt",
+      nameDisplay: { server: true, label: true, number: false },
+      appliedRuleVersionId: null,
+      activeRule: null,
+      customRoutes: null,
+    });
+    const service = createDefaultControlApiService({ repository, keyring });
+
+    await expect(
+      service.getKeyConfig(employee, "key-1", "qr-conf", false),
     ).rejects.toEqual(
       expect.objectContaining({ statusCode: 422, code: "QR_TOO_LARGE" }),
     );

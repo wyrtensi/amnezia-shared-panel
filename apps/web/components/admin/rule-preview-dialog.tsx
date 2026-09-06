@@ -17,7 +17,6 @@ import { useT } from "@/lib/i18n/provider";
 
 const PROFILE_LABEL: Record<string, string> = {
   full_tunnel: "route.full_tunnel",
-  ru_whitelist: "route.ru_whitelist",
   ru_blacklist: "route.ru_blacklist",
 };
 

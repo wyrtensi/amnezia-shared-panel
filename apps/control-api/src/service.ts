@@ -63,12 +63,14 @@ export type KeyView = {
 };
 
 /**
- * Three QR containers, for two different scanners:
+ * Four QR containers, for three different scanners:
  * - `qr-frames` the config in AmneziaVPN's own chunk envelope — the only thing
  *               an in-app "scan QR" button can read, and the format this panel
  *               ships for it. It serves DefaultVPN too: that client is a fork
  *               of amnezia-client and its scanner is byte-identical, so there
- *               is one format here and not two (see the note in qrFrames.ts).
+ *               is one format here and not two -- source analysis only, see
+ *               qrFrames.ts's 2026-09 discrepancy note before repeating this
+ *               as confirmed fact anywhere user-facing.
  *               JSON: { total: number; frames: string[] } of SVG strings;
  * - `qr-svg`    the single-frame `vpn://` link, resolution-independent, for
  *               display — the panel is normally open on a PC monitor or a
@@ -76,8 +78,19 @@ export type KeyView = {
  *               displayed symbol has to survive being enlarged to most of the
  *               screen. A camera app cannot read `qr-frames` at all, so this
  *               stays supported rather than being superseded by it;
- * - `qr`        the same single-frame link as a downloadable PNG.
- * All three are gated by the same `allowQrDownload` policy flag.
+ * - `qr`        the same single-frame link as a downloadable PNG;
+ * - `qr-conf`   a QR of the plain WireGuard `.conf` text — the same bytes the
+ *               `conf` file format serves, for the AmneziaWG app. AmneziaWG is
+ *               a third, separate client: it reads neither the chunk envelope
+ *               nor the `vpn://` link, only a bare WireGuard config, so this is
+ *               a different payload again rather than a different picture of
+ *               one already listed. Single-frame SVG for display, like
+ *               `qr-svg` — no filename, for the same reason.
+ * All four are gated by the same `allowQrDownload` policy flag, and all four
+ * refuse a config too large to encode with the same `QR_TOO_LARGE` (422): a
+ * `ru_blacklist` key's `.conf` embeds thousands of CIDRs, so `qr-conf` hits the
+ * same ceiling `qr`/`qr-svg` hit on the `vpn://` link, and `qr-frames` hits by
+ * needing more than eight chunks.
  *
  * The other two are the file shapes, and only one of them keeps the key's
  * connection name:
@@ -91,7 +104,13 @@ export type KeyView = {
  *               and the parser would ignore one anyway (configFilename.ts cites
  *               the client source). Offer `vpn` to anyone who wants the name.
  */
-export type ConfigFormat = "vpn" | "conf" | "qr" | "qr-svg" | "qr-frames";
+export type ConfigFormat =
+  | "vpn"
+  | "conf"
+  | "qr"
+  | "qr-svg"
+  | "qr-frames"
+  | "qr-conf";
 
 export type ConfigResult = {
   format: ConfigFormat;
@@ -125,6 +144,16 @@ export interface ControlApiService {
   ) => Promise<ConfigResult>;
   revokeOwnKey: (actor: Actor, keyId: string) => Promise<void>;
   rotateOwnKey: (actor: Actor, keyId: string) => Promise<void>;
+  /**
+   * Rename one of the caller's own keys, re-issuing it only when the rename
+   * actually changes the connection name the client shows. See
+   * `ControlRepository.renameOwnKey` for why that condition matters.
+   */
+  renameOwnKey: (
+    actor: Actor,
+    keyId: string,
+    deviceLabel: string,
+  ) => Promise<{ id: string; state: KeyState; reissued: boolean }>;
   updateMyCustomRoutes: (
     actor: Actor,
     routes: CustomRoutes,

@@ -32,9 +32,15 @@ const createService = (): ControlApiService => ({
   })),
   revokeOwnKey: vi.fn(() => Promise.resolve()),
   rotateOwnKey: vi.fn(() => Promise.resolve()),
+  renameOwnKey: vi.fn(() =>
+    Promise.resolve({
+      id: "key-1",
+      state: "active" as const,
+      reissued: false,
+    }),
+  ),
   updateMyCustomRoutes: vi.fn(() =>
     Promise.resolve({
-      ru_whitelist: { cidrs: [], domains: [] },
       ru_blacklist: { cidrs: [], domains: [] },
     }),
   ),
@@ -263,6 +269,84 @@ describe("control API authorization", () => {
       "vpn",
       false,
     );
+    await app.close();
+  });
+
+  it("renames a key and reports 202 when a rotate was queued", async () => {
+    const service = createService();
+    vi.mocked(service.renameOwnKey).mockResolvedValue({
+      id: "0b48cc4c-404b-47a6-af28-4cf15f305e30",
+      state: "provisioning",
+      reissued: true,
+    });
+    const app = await buildApp({
+      service,
+      environment: "development",
+      allowDevIdentity: true,
+    });
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/keys/0b48cc4c-404b-47a6-af28-4cf15f305e30/rename",
+      headers: { "x-dev-user-email": user.email },
+      payload: { deviceLabel: "  New Laptop  " },
+    });
+
+    expect(response.statusCode).toBe(202);
+    expect(response.json()).toMatchObject({ state: "provisioning", reissued: true });
+    // The schema trims before the service ever sees it -- a label of nothing
+    // but the surrounding whitespace the user happened to type must not
+    // become the stored device label.
+    expect(service.renameOwnKey).toHaveBeenCalledWith(
+      user,
+      "0b48cc4c-404b-47a6-af28-4cf15f305e30",
+      "New Laptop",
+    );
+    await app.close();
+  });
+
+  it("reports 200 for a rename that did not need to reissue", async () => {
+    const service = createService();
+    vi.mocked(service.renameOwnKey).mockResolvedValue({
+      id: "0b48cc4c-404b-47a6-af28-4cf15f305e30",
+      state: "active",
+      reissued: false,
+    });
+    const app = await buildApp({
+      service,
+      environment: "development",
+      allowDevIdentity: true,
+    });
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/keys/0b48cc4c-404b-47a6-af28-4cf15f305e30/rename",
+      headers: { "x-dev-user-email": user.email },
+      payload: { deviceLabel: "New Laptop" },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ state: "active", reissued: false });
+    await app.close();
+  });
+
+  it("rejects a rename to an empty label instead of calling the service", async () => {
+    const service = createService();
+    const app = await buildApp({
+      service,
+      environment: "development",
+      allowDevIdentity: true,
+    });
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/keys/0b48cc4c-404b-47a6-af28-4cf15f305e30/rename",
+      headers: { "x-dev-user-email": user.email },
+      payload: { deviceLabel: "   " },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(service.renameOwnKey).not.toHaveBeenCalled();
     await app.close();
   });
 
@@ -496,6 +580,38 @@ describe("control API authorization", () => {
     expect(JSON.parse(response.body)).toEqual({ total: 1, frames: ["<svg/>"] });
     await app.close();
   });
+
+  it("accepts qr-conf as a config format", async () => {
+    const service = createService();
+    vi.mocked(service.getKeyConfig).mockResolvedValue({
+      format: "qr-conf",
+      contentType: "image/svg+xml; charset=utf-8",
+      body: "<svg/>",
+    });
+    const app = await buildApp({
+      service,
+      environment: "development",
+      allowDevIdentity: true,
+    });
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/keys/0b48cc4c-404b-47a6-af28-4cf15f305e30/config?format=qr-conf",
+      headers: { "x-dev-user-email": user.email },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.headers["content-type"]).toContain("image/svg+xml");
+    // A display format, like qr-svg: must not arrive as a download.
+    expect(response.headers["content-disposition"]).toBeUndefined();
+    expect(vi.mocked(service.getKeyConfig)).toHaveBeenCalledWith(
+      user,
+      "0b48cc4c-404b-47a6-af28-4cf15f305e30",
+      "qr-conf",
+      false,
+    );
+    await app.close();
+  });
 });
 
 describe("custom routes take addresses, not site names", () => {
@@ -512,7 +628,7 @@ describe("custom routes take addresses, not site names", () => {
       method: "PUT",
       url: "/api/me/custom-routes",
       headers: { "x-dev-user-email": user.email },
-      payload: { ru_whitelist: { cidrs: ["203.0.113.0/24"], domains: [] } },
+      payload: { ru_blacklist: { cidrs: ["203.0.113.0/24"], domains: [] } },
     });
 
     expect(response.statusCode).toBe(200);
@@ -535,7 +651,7 @@ describe("custom routes take addresses, not site names", () => {
       method: "PUT",
       url: "/api/me/custom-routes",
       headers: { "x-dev-user-email": user.email },
-      payload: { ru_whitelist: { cidrs: [], domains: ["example.com"] } },
+      payload: { ru_blacklist: { cidrs: [], domains: ["example.com"] } },
     });
 
     expect(response.statusCode).toBe(400);
@@ -545,7 +661,7 @@ describe("custom routes take addresses, not site names", () => {
     } = response.json();
     expect(body.error).toBe("VALIDATION_ERROR");
     expect(body.issues[0]?.message).toBe(ROUTE_DOMAINS_UNSUPPORTED);
-    expect(body.issues[0]?.path).toEqual(["ru_whitelist", "domains"]);
+    expect(body.issues[0]?.path).toEqual(["ru_blacklist", "domains"]);
     expect(service.updateMyCustomRoutes).not.toHaveBeenCalled();
     await app.close();
   });
@@ -553,13 +669,9 @@ describe("custom routes take addresses, not site names", () => {
 
 describe("admin global route overrides", () => {
   const globalRoutes = {
-    ru_whitelist: {
+    ru_blacklist: {
       add: { cidrs: ["203.0.113.0/24"], domains: [] },
       exclude: { cidrs: [], domains: ["example.com"] },
-    },
-    ru_blacklist: {
-      add: { cidrs: [], domains: [] },
-      exclude: { cidrs: [], domains: [] },
     },
   };
 
@@ -1010,6 +1122,7 @@ const SNAPSHOT: ClientRelease = {
         sizeBytes: 91_991_200,
       },
       alternate: null,
+      secondAlternate: null,
     },
     {
       platform: "macos",
@@ -1020,6 +1133,7 @@ const SNAPSHOT: ClientRelease = {
         sizeBytes: 111_188_003,
       },
       alternate: null,
+      secondAlternate: null,
     },
     {
       platform: "android",
@@ -1035,6 +1149,7 @@ const SNAPSHOT: ClientRelease = {
         fileName: "AmneziaVPN_5.0.1.5_android11+_arm64-v8a.apk",
         sizeBytes: 75_586_403,
       },
+      secondAlternate: null,
     },
     {
       platform: "ios",
@@ -1046,6 +1161,12 @@ const SNAPSHOT: ClientRelease = {
       },
       alternate: {
         url: "https://apps.apple.com/us/app/amneziavpn/id1600529900",
+        kind: "store",
+        fileName: null,
+        sizeBytes: null,
+      },
+      secondAlternate: {
+        url: "https://apps.apple.com/us/app/amneziawg/id6478942365",
         kind: "store",
         fileName: null,
         sizeBytes: null,
@@ -1106,8 +1227,8 @@ describe("client release routes", () => {
 
   // The QR is an image this panel serves, so what it encodes must come from the
   // release the panel resolved and never from the request. `variant` selects
-  // between two known links; anything else falls back to the primary rather
-  // than reaching for a URL the caller supplied.
+  // among a platform's known links; anything else falls back to the primary
+  // rather than reaching for a URL the caller supplied.
   describe("the download QR", () => {
     const qr = async (url: string) => {
       const app = await buildApp({
@@ -1142,6 +1263,33 @@ describe("client release routes", () => {
       // Two different listings, so two different symbols. Comparing the bytes
       // is what proves the variant reached the encoder at all.
       expect(alternate.rawPayload.equals(primary.rawPayload)).toBe(false);
+    });
+
+    it("encodes the secondAlternate link when asked for it", async () => {
+      const primary = await qr("/api/client-releases/qr/ios");
+      const alternate = await qr(
+        "/api/client-releases/qr/ios?variant=alternate",
+      );
+      const secondAlternate = await qr(
+        "/api/client-releases/qr/ios?variant=secondAlternate",
+      );
+
+      expect(secondAlternate.statusCode).toBe(200);
+      // Three distinct listings must encode to three distinct symbols.
+      expect(
+        secondAlternate.rawPayload.equals(primary.rawPayload),
+      ).toBe(false);
+      expect(
+        secondAlternate.rawPayload.equals(alternate.rawPayload),
+      ).toBe(false);
+    });
+
+    it("404s a platform with no secondAlternate", async () => {
+      const response = await qr(
+        "/api/client-releases/qr/android?variant=secondAlternate",
+      );
+
+      expect(response.statusCode).toBe(404);
     });
 
     it("ignores a variant it does not know", async () => {

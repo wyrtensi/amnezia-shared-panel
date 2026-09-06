@@ -1934,14 +1934,10 @@ function assertNoDomainFlags(args: string[], flags: string[]): void {
 async function cmdUserRoutes(args: string[]): Promise<void> {
   const pos = positionals(args);
   const usage =
-    "Usage: user-routes <id|email> [--wl-cidrs=…] [--bl-cidrs=…]  (replaces the user's custom routes; addresses only)";
-  assertNoDomainFlags(args, ["wl-domains", "bl-domains"]);
+    "Usage: user-routes <id|email> [--bl-cidrs=…]  (replaces the user's custom routes; addresses only)";
+  assertNoDomainFlags(args, ["bl-domains"]);
   const id = await resolveUserId(pos[0], usage);
   const body = {
-    ru_whitelist: {
-      cidrs: csvList(flagOf(args, "wl-cidrs") ?? ""),
-      domains: [],
-    },
     ru_blacklist: {
       cidrs: csvList(flagOf(args, "bl-cidrs") ?? ""),
       domains: [],
@@ -1954,7 +1950,7 @@ async function cmdUserRoutes(args: string[]): Promise<void> {
 async function cmdUserCreateKey(args: string[]): Promise<void> {
   const pos = positionals(args);
   const usage =
-    `Usage: user-create-key <id|email> --node=<uuid> [--device=<label>] [--protocol=awg3|awg2] [--route=full_tunnel|ru_whitelist|ru_blacklist] [${deviceTypeUsage()}] [--name-server=true|false] [--name-label=true|false] [--name-number=true|false]\n  --device-type=ios with a --route other than full_tunnel is warned about: route profiles do not filter on iPhone or iPad.`;
+    `Usage: user-create-key <id|email> --node=<uuid> [--device=<label>] [--protocol=awg3|awg2] [--route=full_tunnel|ru_blacklist] [${deviceTypeUsage()}] [--name-server=true|false] [--name-label=true|false] [--name-number=true|false]\n  --device-type=ios with a --route other than full_tunnel is warned about: route profiles do not filter on iPhone or iPad.`;
   const id = await resolveUserId(pos[0], usage);
   const nodeId = flagOf(args, "node");
   if (!nodeId) throw new Error(usage);
@@ -1992,8 +1988,10 @@ async function cmdUserCreateKey(args: string[]): Promise<void> {
 /**
  * Download one key's config. `--format=qr` writes the exact PNG a user is shown
  * for download, `--format=qr-svg` the exact SVG the panel displays to a camera
- * app, and `--format=qr-frames` the chunk-envelope series an in-app scanner
- * reads — AmneziaVPN and DefaultVPN alike, the format is the same — so either
+ * app, `--format=qr-frames` the chunk-envelope series a VPN app's own in-app
+ * scanner reads (confirmed for AmneziaVPN; see qrFrames.ts for what is and is
+ * not confirmed about any other client) — and `--format=qr-conf` the SVG QR of
+ * the plain WireGuard `.conf` text, for the AmneziaWG app — so any scanner's
  * half of a "the QR does not scan" report can be reproduced from a shell.
  *
  * `--save` writes the file under the name the panel serves it as, which is the
@@ -2005,7 +2003,7 @@ async function cmdUserCreateKey(args: string[]): Promise<void> {
  */
 async function cmdKeyConfig(args: string[]): Promise<void> {
   const usageText =
-    "Usage: key-config <key-id> [--format=vpn|conf|qr|qr-svg|qr-frames] [--out=<path>] [--save] [--confirm]";
+    "Usage: key-config <key-id> [--format=vpn|conf|qr|qr-svg|qr-frames|qr-conf] [--out=<path>] [--save] [--confirm]";
   const [keyId] = positionals(args);
   if (!keyId) throw new Error(usageText);
   const rawFormat = flagOf(args, "format") ?? "vpn";
@@ -2057,6 +2055,38 @@ async function cmdKeyConfig(args: string[]): Promise<void> {
   console.log(body.toString("utf8"));
 }
 
+/**
+ * Rename YOUR OWN key -- the identity this CLI authenticates as, whatever
+ * `PANEL_ADMIN_EMAIL` (or the dev header) resolves to. There is no admin path
+ * here at all: `/api/keys/:id/rename` checks `ownerId` against the caller with
+ * no bypass, the same as `/api/keys/:id/rotate` and the `DELETE` a user's own
+ * key hits, so this reaches only a key this identity itself holds.
+ *
+ * A re-issue is queued only when the new label actually changes the
+ * connection name the client shows (server + label + number, per this key's
+ * own `nameDisplay` flags) -- a label that plays no part in that name, or new
+ * text that composes to the same name, is a plain update and the key's state
+ * does not move.
+ */
+async function cmdKeyRename(args: string[]): Promise<void> {
+  const usage = 'Usage: key-rename <id> --label="<text>"';
+  const id = positionals(args)[0];
+  const label = flagOf(args, "label");
+  if (!id || !label) throw new Error(usage);
+  const result = await api<{ state: string; reissued: boolean }>(
+    `/api/keys/${id}/rename`,
+    {
+      method: "POST",
+      body: JSON.stringify({ deviceLabel: label }),
+    },
+  );
+  console.log(
+    result.reissued
+      ? `key ${id}: renamed and re-issuing (state: ${result.state}) -- the current config will stop working; download a new one once it is active again`
+      : `key ${id}: renamed (state: ${result.state}) -- this label is not part of the connection name the client shows, so no re-issue was needed`,
+  );
+}
+
 /** Parse a `--flag=true|false` value, rejecting anything else. */
 function parseBoolFlag(name: string, value: string): boolean {
   if (value === "true") return true;
@@ -2066,7 +2096,7 @@ function parseBoolFlag(name: string, value: string): boolean {
 
 type GlobalRouteList = { cidrs: string[]; domains: string[] };
 type GlobalRouteProfile = { add: GlobalRouteList; exclude: GlobalRouteList };
-type GlobalRoutes = Record<"ru_whitelist" | "ru_blacklist", GlobalRouteProfile>;
+type GlobalRoutes = Record<"ru_blacklist", GlobalRouteProfile>;
 
 const emptyRouteList = (): GlobalRouteList => ({ cidrs: [], domains: [] });
 const emptyRouteProfile = (): GlobalRouteProfile => ({
@@ -2078,7 +2108,6 @@ async function fetchGlobalRoutes(): Promise<GlobalRoutes> {
   const rows = await api<GlobalRoutes[]>("/api/admin/global-routes");
   const current = rows[0];
   return {
-    ru_whitelist: current?.ru_whitelist ?? emptyRouteProfile(),
     ru_blacklist: current?.ru_blacklist ?? emptyRouteProfile(),
   };
 }
@@ -2086,7 +2115,7 @@ async function fetchGlobalRoutes(): Promise<GlobalRoutes> {
 async function cmdGlobalRoutes(args: string[]): Promise<void> {
   const routes = await fetchGlobalRoutes();
   if (wantsJson(args)) return json(routes);
-  for (const profile of ["ru_whitelist", "ru_blacklist"] as const) {
+  for (const profile of ["ru_blacklist"] as const) {
     const entry = routes[profile];
     console.log(profile);
     for (const bucket of ["add", "exclude"] as const) {
@@ -2108,10 +2137,10 @@ async function cmdGlobalRoutes(args: string[]): Promise<void> {
 
 async function cmdGlobalRoutesSet(args: string[]): Promise<void> {
   const usage =
-    "Usage: global-routes-set --profile=ru_whitelist|ru_blacklist [--add-cidrs=a,b] [--exclude-cidrs=...]  (each list given REPLACES that list; addresses only)";
+    "Usage: global-routes-set --profile=ru_blacklist [--add-cidrs=a,b] [--exclude-cidrs=...]  (each list given REPLACES that list; addresses only)";
   assertNoDomainFlags(args, ["add-domains", "exclude-domains"]);
   const profile = flagOf(args, "profile");
-  if (profile !== "ru_whitelist" && profile !== "ru_blacklist") {
+  if (profile !== "ru_blacklist") {
     throw new Error(usage);
   }
   // The endpoint replaces the whole object, so read first and patch in place to
@@ -2163,7 +2192,7 @@ async function fetchRuleVersions(): Promise<RuleVersionView[]> {
   return api<RuleVersionView[]>("/api/admin/rules");
 }
 
-const RULE_PROFILE_ORDER = ["ru_whitelist", "ru_blacklist", "full_tunnel"];
+const RULE_PROFILE_ORDER = ["ru_blacklist", "full_tunnel"];
 
 const ruleProfileRank = (profile: string): number => {
   const rank = RULE_PROFILE_ORDER.indexOf(profile);
@@ -2409,12 +2438,12 @@ Users (accept a user id OR email):
   user-nodes <id|email> <all|none|uuid,…>  Per-user node availability (all=every node; overrides global).
                                          REPLACES the whole per-user policy override; use
                                          user-limit --allowed-nodes to change only availability.
-  user-routes <id|email> [--wl-cidrs=] [--bl-cidrs=]  Replace a user's custom routes.
-                                         Addresses only — --wl-domains / --bl-domains are
-                                         refused: a site name in a route rule never reaches
-                                         the client. For rules by site name use a full_tunnel
-                                         key and the AmneziaVPN app's own site-based split
-                                         tunnelling (Settings -> Connection).
+  user-routes <id|email> [--bl-cidrs=]  Replace a user's custom routes.
+                                         Addresses only — --bl-domains is refused: a site
+                                         name in a route rule never reaches the client. For
+                                         rules by site name use a full_tunnel key and the
+                                         AmneziaVPN app's own site-based split tunnelling
+                                         (Settings -> Connection).
   user-create-key <id|email> --node=<uuid> [--device=] [--protocol=awg3] [--route=full_tunnel]
                   [${deviceTypeUsage()}]
                   [--name-server=true|false] [--name-label=true|false] [--name-number=true|false]
@@ -2496,19 +2525,28 @@ Write:
                                           with nothing after it clears it. Never sent to
                                           a regular user and never in a config; an admin
                                           sees it on their own keys
-  key-config <id> [--format=vpn|conf|qr|qr-svg|qr-frames]
+  key-config <id> [--format=vpn|conf|qr|qr-svg|qr-frames|qr-conf]
              [--out=<path>] [--save]
              [--confirm]                  Download a key's config. --format=qr writes a
                                           PNG (defaults to <id>.png unless --out is given);
                                           --format=qr-frames writes <id>.frame-N.svg, which
-                                          only a VPN app's own scanner can read
-                                          (AmneziaVPN and DefaultVPN alike);
+                                          only a VPN app's own in-app scanner can read;
+                                          --format=qr-conf writes the SVG QR of the plain
+                                          WireGuard .conf text, for the AmneziaWG app;
                                           --save writes the file under the panel's own
                                           name, which is the key's connection name — use
                                           it with --format=vpn, the only file shape whose
                                           name survives an import (a .conf always lands
                                           as "Server N"); --confirm is required to read
                                           another user's key
+  key-rename <id> --label="<text>"        Rename YOUR OWN key's device label -- there is
+                                          no admin path for someone else's, ever. Queues a
+                                          re-issue (the key goes back to "provisioning")
+                                          only when the new label actually changes the
+                                          connection name the client shows; a label that
+                                          is not part of that name, or text that composes
+                                          to the same name, is a plain update with no
+                                          re-issue
   rules-activate <version-id>             Publish one fetched rule version, including
                                           rolling back to a superseded one. Also PINS
                                           the profile to it: the worker keeps fetching
@@ -2543,7 +2581,7 @@ Write:
                                           users --domain=<d> first. A rejected domain shows
                                           the API's own reason.
   policy-set --<field>=<value> …          Set any panel setting(s), see below
-  global-routes-set --profile=ru_whitelist|ru_blacklist [--add-cidrs=] [--exclude-cidrs=]
+  global-routes-set --profile=ru_blacklist [--add-cidrs=] [--exclude-cidrs=]
                                           Admin-wide route overrides for a split-tunnel profile.
                                           Each list given REPLACES that list; omitted lists stay.
                                           Exclusions drop feed entries; a user's own custom
@@ -3031,6 +3069,8 @@ export async function dispatch(argv: string[]): Promise<void> {
       return cmdKeyInternalName(args);
     case "key-config":
       return cmdKeyConfig(args);
+    case "key-rename":
+      return cmdKeyRename(args);
     case "cf-token":
       return cmdCfToken(args);
     case "cf-config":

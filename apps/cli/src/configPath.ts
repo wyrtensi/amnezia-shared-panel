@@ -10,6 +10,7 @@ export const CLI_CONFIG_FORMATS = [
   "qr",
   "qr-svg",
   "qr-frames",
+  "qr-conf",
 ] as const;
 
 export type CliConfigFormat = (typeof CLI_CONFIG_FORMATS)[number];
@@ -24,12 +25,17 @@ export type CliSingleFileFormat = Exclude<CliConfigFormat, "qr-frames">;
  * shape whose connection name survives an import, and the AmneziaVPN client's
  * file picker only offers `*.vpn *.ovpn *.conf *.json`. A `.txt` suffix put the
  * one file that works where the user cannot pick it.
+ *
+ * `qr-conf` is `.svg`, same as `qr-svg`: both are a single displayed symbol,
+ * only the encoded payload differs (the `vpn://` link versus the plain
+ * WireGuard `.conf` text).
  */
 const FORMAT_EXTENSION: Record<CliSingleFileFormat, string> = {
   vpn: "vpn",
   conf: "conf",
   qr: "png",
   "qr-svg": "svg",
+  "qr-conf": "svg",
 };
 
 /** Admin API path for one key's config in one format. */

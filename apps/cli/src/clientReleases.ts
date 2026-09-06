@@ -24,6 +24,8 @@ export type CliClientPlatformDownload = {
   platform: string;
   primary: CliClientAsset;
   alternate: CliClientAsset | null;
+  /** A third link, iOS-only today: the AmneziaWG App Store listing. */
+  secondAlternate: CliClientAsset | null;
 };
 
 export type CliClientRelease = {
@@ -60,7 +62,7 @@ export const CLIENT_RELEASE_COLUMNS = [
 
 const row = (
   platform: string,
-  role: "primary" | "alternate",
+  role: "primary" | "alternate" | "secondAlternate",
   asset: CliClientAsset,
 ): Record<string, string> => ({
   platform,
@@ -73,8 +75,10 @@ const row = (
 
 /**
  * One row per download, in the order the panel returns them. A platform with an
- * alternate (today: Android, whose Play link is backed by a direct APK) emits a
- * second row so the operator can check both links at once.
+ * alternate (today: Android, whose Play link is backed by a direct APK, and
+ * iOS, whose alternate is the AmneziaVPN listing) emits a second row; iOS also
+ * carries a `secondAlternate` (the AmneziaWG listing) and gets a third — so the
+ * operator can check every link a platform offers at once.
  */
 export function clientReleaseRows(
   release: CliClientRelease,
@@ -84,6 +88,11 @@ export function clientReleaseRows(
     rows.push(row(download.platform, "primary", download.primary));
     if (download.alternate) {
       rows.push(row(download.platform, "alternate", download.alternate));
+    }
+    if (download.secondAlternate) {
+      rows.push(
+        row(download.platform, "secondAlternate", download.secondAlternate),
+      );
     }
   }
   return rows;

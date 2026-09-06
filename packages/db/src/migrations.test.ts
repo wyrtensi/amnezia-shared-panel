@@ -6,6 +6,7 @@ import {
   deviceTypeSchema,
   LEGACY_DEVICE_TYPE_REPLACEMENT,
   RETIRED_STORED_DEVICE_TYPES,
+  routeProfileSchema,
   WORKER_PERIOD_FIELDS,
   WORKER_PERIOD_FIELD_NAMES,
   type WorkerPeriodField,
@@ -310,5 +311,78 @@ describe("0034_auto_purge_offboarded_users", () => {
 
   it("matches the default the contract hands out", () => {
     expect(defaultPortalPolicy.autoPurgeOffboardedUsers).toBe(false);
+  });
+});
+
+describe("0035_drop_whitelist_profile", () => {
+  const sql = readFileSync(
+    fileURLToPath(
+      new URL(
+        "../migrations/0035_drop_whitelist_profile.sql",
+        import.meta.url,
+      ),
+    ),
+    "utf8",
+  );
+
+  // The dynamic half of this coverage — the guard actually firing against a
+  // real database, and the migration actually running clean once no key uses
+  // the profile — is `migration0035Guard.integration.test.ts`. This file only
+  // pins the SQL text, the way every other hand-written migration above does.
+
+  it("refuses before touching anything if a key still uses the profile", () => {
+    // The one rule this whole migration exists to protect: a vpn_keys row is
+    // never deleted here, because a stranded peer on a node cannot be found by
+    // reconcile or a revoke once its row is gone. The guard has to run FIRST,
+    // before any other statement in this file.
+    const guardIndex = sql.indexOf("RAISE EXCEPTION");
+    expect(guardIndex).toBeGreaterThan(-1);
+    expect(sql.indexOf("DELETE FROM")).toBeGreaterThan(guardIndex);
+    expect(sql).toContain(
+      'SELECT count(*) INTO stuck FROM "vpn_keys" WHERE "route_profile" = \'ru_whitelist\'',
+    );
+    expect(sql).toMatch(/RAISE EXCEPTION 'ru_whitelist is being removed but/);
+    // Never a DELETE against vpn_keys anywhere in this file.
+    expect(sql).not.toMatch(/DELETE FROM "vpn_keys"/);
+  });
+
+  it("drops the feed rows for the retired profile, which carry no peer", () => {
+    expect(sql).toContain(
+      'DELETE FROM "route_rule_versions" WHERE "profile" = \'ru_whitelist\';',
+    );
+  });
+
+  it("recreates the enum with exactly what the contract still lists", () => {
+    const values = routeProfileSchema.options.map((value) => `'${value}'`).join(", ");
+    expect(sql).toContain(`CREATE TYPE "public"."route_profile" AS ENUM(${values})`);
+    expect(routeProfileSchema.options).not.toContain("ru_whitelist");
+  });
+
+  it("moves both columns to the new enum only after the rows that would not fit it are gone", () => {
+    const deleteIndex = sql.indexOf('DELETE FROM "route_rule_versions"');
+    const createTypeIndex = sql.indexOf('CREATE TYPE "public"."route_profile"');
+    const vpnKeysCastIndex = sql.indexOf('ALTER TABLE "vpn_keys" ALTER COLUMN "route_profile"');
+    const ruleVersionsCastIndex = sql.indexOf(
+      'ALTER TABLE "route_rule_versions" ALTER COLUMN "profile"',
+    );
+    expect(deleteIndex).toBeGreaterThan(-1);
+    expect(createTypeIndex).toBeGreaterThan(deleteIndex);
+    expect(vpnKeysCastIndex).toBeGreaterThan(createTypeIndex);
+    expect(ruleVersionsCastIndex).toBeGreaterThan(createTypeIndex);
+    expect(sql).toContain('DROP TYPE "public"."route_profile_old";');
+  });
+
+  it("strips the retired key from stored JSON instead of leaving it dangling", () => {
+    expect(sql).toContain(
+      '"custom_routes" = "custom_routes" - \'ru_whitelist\'',
+    );
+    expect(sql).toContain('"payload" = "payload" - \'ru_whitelist\'');
+  });
+
+  it("gives global_route_overrides a default matching the narrower contract", () => {
+    expect(sql).toContain(
+      'ALTER TABLE "global_route_overrides" ALTER COLUMN "payload" SET DEFAULT ' +
+        '\'{"ru_blacklist":{"add":{"cidrs":[],"domains":[]},"exclude":{"cidrs":[],"domains":[]}}}\'::jsonb;',
+    );
   });
 });

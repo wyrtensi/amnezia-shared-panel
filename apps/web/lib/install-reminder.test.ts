@@ -22,6 +22,7 @@ const key = (keyNumber: number | null): KeyView => ({
   protocol: "awg3",
   deviceType: "android",
   keyNumber,
+  nameDisplay: { server: true, label: true, number: false },
   routeProfile: "full_tunnel",
   createdAt: "2026-09-05T00:00:00.000Z",
 });

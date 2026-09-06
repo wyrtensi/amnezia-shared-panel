@@ -48,7 +48,15 @@ export type ConfigTarget = {
  * (`client/core/qrCodeUtils.cpp:8-17` and
  * `client/ui/controllers/importController.cpp:643-669` in
  * github.com/amnezia-vpn/DefaultVPN@dev). Showing the same picture twice under
- * two brand names only invites the question of what the difference is.
+ * two brand names only invites the question of what the difference is. This is
+ * source analysis, not a device observation -- see qrFrames.ts's 2026-09
+ * discrepancy note for why it must not be restated as confirmed fact in
+ * anything a user reads.
+ *
+ * `awg` is AmneziaWG, a third and separate client: it reads neither the chunk
+ * envelope nor the `vpn://` link, only a plain WireGuard config, so it gets its
+ * own QR of that `.conf` text (`qr-conf` in service.ts) rather than a reuse of
+ * either payload above.
  *
  * `camera` serves the single-frame `vpn://` code that a camera app hands to the
  * OS. It is a different payload, not a different picture of the same one: no
@@ -56,29 +64,67 @@ export type ConfigTarget = {
  * paste/import path, never on the scan path), and no camera app can read the
  * chunk envelope.
  */
-type QrAudience = "app" | "camera";
+export type QrAudience = "app" | "awg" | "camera";
 
-/** Tab order: the in-app scanner leads; the camera is the fallback. */
-const QR_AUDIENCES = ["app", "camera"] as const;
+/** Tab order: the in-app scanner leads, AmneziaWG is second, the camera is the fallback. */
+const QR_AUDIENCES = ["app", "awg", "camera"] as const;
 
 /**
- * True for the audience served by the chunk envelope. Every VPN app that reads
- * a code reads that one; only the camera path takes the `vpn://` symbol.
+ * True only for the audience served by the chunk envelope. `awg` and `camera`
+ * are each a single image fetched by URL and set as an `<img>` src -- the same
+ * shape, just two different payloads (the `.conf` text and the `vpn://` link).
  */
-const usesFrames = (audience: QrAudience): boolean => audience !== "camera";
+const usesFrames = (audience: QrAudience): boolean => audience === "app";
+
+/**
+ * Whether a plain phone camera pointed at this audience's code does nothing
+ * useful. `app`'s chunk envelope is illegible to a camera at all -- one frame
+ * of it decodes to a meaningless partial payload. `awg`'s code is a valid QR
+ * of plain WireGuard-config text, so a camera decodes it fine, but the result
+ * is inert text with no scheme to act on -- the same dead end as `app`, just
+ * reached differently. Only `camera`'s own code is genuinely meant for this:
+ * it is the `vpn://` link a camera app resolves as an actionable deep link.
+ */
+export const needsCameraWarning = (audience: QrAudience): boolean =>
+  audience !== "camera";
 
 /** Copy per audience, kept in one place so a new client is three strings. */
 const QR_AUDIENCE_LABEL_KEYS: Record<QrAudience, MessageKey> = {
   app: "config.qrForApp",
+  awg: "config.qrForAwg",
   camera: "config.qrForCamera",
 };
 const QR_AUDIENCE_WARNING_KEYS: Record<QrAudience, MessageKey> = {
   app: "config.qrAppWarning",
-  camera: "config.qrAppWarning", // unused: the camera code needs no warning.
+  awg: "config.qrAwgWarning",
+  // Unused: needsCameraWarning excludes "camera" precisely because its code
+  // is the one payload a plain camera app resolves into something actionable.
+  camera: "config.qrAppWarning",
 };
 const QR_AUDIENCE_HINT_KEYS: Record<QrAudience, MessageKey> = {
   app: "config.qrHintApp",
+  awg: "config.qrHintAwg",
   camera: "config.qrHint",
+};
+
+/**
+ * The "wrong tool" recovery: from any tab, the OTHER two audiences, each
+ * named by its own tool. A two-way toggle cannot do this once there are three
+ * tabs -- whichever single destination it picks is wrong for one of the two
+ * possible "actually holding a different tool" cases (e.g. a fixed toggle
+ * that always lands on `app` sends an AmneziaWG user to a code AmneziaWG
+ * cannot read either). Listing both remaining tools and letting the user pick
+ * keeps every offered destination genuinely readable by the tool it is
+ * labelled for.
+ */
+export const qrRecoveryTargets = (current: QrAudience): QrAudience[] =>
+  QR_AUDIENCES.filter((audience) => audience !== current);
+
+/** Recovery-link copy per destination audience, independent of which tab is open. */
+const QR_AUDIENCE_SWITCH_KEYS: Record<QrAudience, MessageKey> = {
+  app: "config.qrSwitchToApp",
+  awg: "config.qrSwitchToAwg",
+  camera: "config.qrSwitchToCamera",
 };
 
 /** The two display modes for a multi-frame series. */
@@ -118,11 +164,13 @@ const QR_FRAME_INTERVAL_MS = 1500;
  * Which code the dialog opens on.
  *
  * "app": the app this panel is built for leads, and the envelope it reads is
- * also what DefaultVPN reads, so the default tab is the right one for both VPN
- * apps -- which is every user who has followed the install guide. The audience
- * chooser sits directly above the code and names the tool rather than the
- * format, so a user holding a bare camera is one labelled click away, and the
- * standing recovery link below the code names the other tool either way.
+ * also what DefaultVPN reads (source analysis, unconfirmed on a device --
+ * see the `QrAudience` doc comment above and qrFrames.ts's discrepancy note),
+ * so the default tab is the right one for both VPN apps -- which is every
+ * user who has followed the install guide. The audience chooser sits
+ * directly above the code and names the tool rather than the format, so a
+ * user holding a bare camera is one labelled click away, and the standing
+ * recovery link below the code names the other tool either way.
  *
  * This constant is also the restore knob: flipping it is the entire cost of
  * changing which code the dialog leads with, and it needs a rebuild of this app
@@ -246,11 +294,11 @@ export function ConfigDownloadDialog({
     frames && frames.length > 0 ? frames[frameIndex % frames.length] : undefined;
   const qrSrc = !target
     ? null
-    : !usesFrames(qrFor)
-      ? configUrl(target.id, "qr-svg")
-      : currentFrame
+    : qrFor === "app"
+      ? currentFrame
         ? frameSrc(currentFrame)
-        : null;
+        : null
+      : configUrl(target.id, qrFor === "awg" ? "qr-conf" : "qr-svg");
 
   // A one-frame series is a still picture: no modes, no stepping, no dots.
   const frameCount = usesFrames(qrFor) && frames ? frames.length : 0;
@@ -407,11 +455,10 @@ export function ConfigDownloadDialog({
               target.routeProfile !== "full_tunnel" ? (
                 // Split-tunnel profiles carry thousands of routes/domains, so a
                 // QR is not merely dense — it does not exist. Measured on the
-                // shipped feeds: ru_whitelist is a 59 745-character link and
-                // ru_blacklist a 1 787 465-character one, against a hard QR
-                // ceiling of ~2 900 bytes at any error-correction level. The
-                // copy says the reason rather than only the refusal, and points
-                // at the copy button above.
+                // shipped feeds: ru_blacklist is a 1 787 465-character link,
+                // against a hard QR ceiling of ~2 900 bytes at any
+                // error-correction level. The copy says the reason rather than
+                // only the refusal, and points at the copy button above.
                 <div className="rounded-xl border border-dashed bg-muted/40 p-4 text-center">
                   <QrCode className="mx-auto mb-2 h-8 w-8 text-muted-foreground" />
                   <p className="text-sm font-medium">
@@ -452,16 +499,19 @@ export function ConfigDownloadDialog({
                 </div>
 
                 {/*
-                  Three tabs, two payloads. The choice is labelled by the tool
-                  the user is holding, never by the format: a camera app reads
-                  the `vpn://` URL, while either VPN app's in-app scanner reads
-                  only the chunk envelope and ignores a `vpn://` symbol
-                  entirely, however large and crisp it is. AmneziaVPN leads
-                  because it is the app this panel is built for; DefaultVPN gets
-                  its own tab because its users do not know it is the same app,
-                  and its own wording because its menu is branded differently.
-                  Only one code is ever shown, so nobody points a camera at the
-                  wrong one.
+                  Three tabs, three payloads. The choice is labelled by the
+                  tool the user is holding, never by the format: a camera app
+                  reads the `vpn://` URL, AmneziaWG reads a plain WireGuard
+                  config, and either VPN app's in-app scanner (AmneziaVPN or
+                  DefaultVPN, same envelope, one tab -- source analysis, see
+                  qrFrames.ts's discrepancy note) reads only the chunk
+                  envelope and ignores a `vpn://` symbol entirely, however
+                  large and crisp it is. AmneziaVPN leads because it is the
+                  app this panel is built for; AmneziaWG is a separate app
+                  most users do not have, so it sits second; the camera is the
+                  fallback for a phone with neither app installed. Only one
+                  code is ever shown, so nobody points a camera at the wrong
+                  one.
 
                   The legend is VISIBLE, not just an aria-label: the user has to
                   pick a tool before looking at a code, otherwise they discover
@@ -499,10 +549,10 @@ export function ConfigDownloadDialog({
                   </div>
                 </div>
 
-                {usesFrames(qrFor) ? (
+                {needsCameraWarning(qrFor) ? (
                   // Permanent and non-dismissible on purpose: this code is
-                  // unreadable by any camera app, and that has to be visible in
-                  // the same glance as the code itself.
+                  // useless to a plain camera app, and that has to be visible
+                  // in the same glance as the code itself.
                   <p className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-center text-xs text-amber-900">
                     {t(QR_AUDIENCE_WARNING_KEYS[qrFor])}
                   </p>
@@ -585,23 +635,26 @@ export function ConfigDownloadDialog({
                   {t("config.qrZoomHint")}
                 </p>
                 {/*
-                  The wrong-tool recovery, permanent and one click. With three
-                  tabs it stays a two-way switch between the two things that are
-                  actually different — an in-app scanner and a camera app —
-                  because that is the mistake it exists to undo. Switching
-                  between the two app tabs changes no code, only the wording.
+                  The wrong-tool recovery, permanent and one click per
+                  alternative. A two-way toggle cannot name a correct
+                  destination once there are three tools, so this lists the
+                  OTHER two by name and lets the user pick the one they are
+                  actually holding -- each label names its own tool, so it
+                  stays true no matter which tab is currently open, and it
+                  never offers a code the named tool cannot read.
                 */}
-                <button
-                  type="button"
-                  onClick={() => setQrFor(usesFrames(qrFor) ? "camera" : "app")}
-                  className="mx-auto block text-center text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground"
-                >
-                  {t(
-                    usesFrames(qrFor)
-                      ? "config.qrSwitchToCamera"
-                      : "config.qrSwitchToApp",
-                  )}
-                </button>
+                <div className="mx-auto flex flex-col items-center gap-1">
+                  {qrRecoveryTargets(qrFor).map((audience) => (
+                    <button
+                      key={audience}
+                      type="button"
+                      onClick={() => setQrFor(audience)}
+                      className="text-center text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground"
+                    >
+                      {t(QR_AUDIENCE_SWITCH_KEYS[audience])}
+                    </button>
+                  ))}
+                </div>
               </div>
               )
             ) : null}
@@ -692,7 +745,7 @@ export function ConfigDownloadDialog({
                 }}
                 className="fixed inset-0 z-[60] flex flex-col items-center justify-center gap-2 bg-white p-2"
               >
-                {usesFrames(qrFor) ? (
+                {needsCameraWarning(qrFor) ? (
                   <p className="max-w-[90vw] shrink-0 text-center text-xs text-neutral-700">
                     {t(QR_AUDIENCE_WARNING_KEYS[qrFor])}
                   </p>

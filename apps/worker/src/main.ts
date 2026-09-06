@@ -124,16 +124,16 @@ const runMaintenance = createMaintenanceRunner({
     repository.getAutoPurgeOffboardedUsersEnabled(),
   onError: reportBackgroundError,
 });
-// Route-rule feeds activate by default. Set RU_*_POC_APPROVED=false to hold a
-// profile's auto-fetched versions in quarantine until an operator reviews them.
-const pocApprovedFor = (profile: RuleProfile): boolean =>
-  profile === "ru_whitelist"
-    ? process.env.RU_WHITELIST_POC_APPROVED !== "false"
-    : process.env.RU_BLACKLIST_POC_APPROVED !== "false";
+// Route-rule feeds activate by default. Set RU_BLACKLIST_POC_APPROVED=false to
+// hold the profile's auto-fetched versions in quarantine until an operator
+// reviews them.
+const pocApprovedFor = (_profile: RuleProfile): boolean =>
+  process.env.RU_BLACKLIST_POC_APPROVED !== "false";
 
 /**
  * One rule fetcher per resolved routing-rule feed. With no feed configuration
- * at all this is the built-in RoscomVPN set, so route profiles work on a fresh
+ * at all this is the built-in `ru_blacklist` feed (iplist.opencck.org CIDRs
+ * plus the Re-filter-lists domain list), so that profile works on a fresh
  * install; see `resolveRuleFeeds` for the full precedence.
  */
 const ruleFetchers = resolveRuleFeeds(process.env, pocApprovedFor).map((feed) =>

@@ -742,7 +742,6 @@ describe("route rules take addresses, not site names", () => {
   // Refusing before the request matters more than the wording: a silent no-op
   // would leave a script reporting success over a change that never happened.
   for (const [command, flag] of [
-    ["user-routes", "wl-domains"],
     ["user-routes", "bl-domains"],
     ["global-routes-set", "add-domains"],
     ["global-routes-set", "exclude-domains"],
@@ -754,7 +753,7 @@ describe("route rules take addresses, not site names", () => {
           command,
           ...(command === "user-routes"
             ? ["ann@company.tld"]
-            : ["--profile=ru_whitelist"]),
+            : ["--profile=ru_blacklist"]),
           `--${flag}=example.com`,
         ]),
       ).rejects.toThrow(new RegExp(`--${flag}: no longer accepted`));
@@ -765,23 +764,21 @@ describe("route rules take addresses, not site names", () => {
   it("names the way that does work instead of just saying no", async () => {
     stubFetch([{ body: {} }]);
     await expect(
-      run(["user-routes", "ann@company.tld", "--wl-domains=example.com"]),
+      run(["user-routes", "ann@company.tld", "--bl-domains=example.com"]),
     ).rejects.toThrow(/full_tunnel key[\s\S]*AmneziaVPN app/);
   });
 
-  it("user-routes still writes the address lists, with no domains", async () => {
+  it("user-routes still writes the address list, with no domains", async () => {
     const calls = stubFetch([{ body: { id: "u1" } }]);
     await run([
       "user-routes",
       "11111111-1111-1111-1111-111111111111",
-      "--wl-cidrs=1.2.3.4,10.0.0.0/8",
+      "--bl-cidrs=1.2.3.4,10.0.0.0/8",
     ]);
     const body = JSON.parse(calls[0]?.init?.body as string) as {
-      ru_whitelist: { cidrs: string[]; domains: string[] };
       ru_blacklist: { cidrs: string[]; domains: string[] };
     };
-    expect(body.ru_whitelist.cidrs).toEqual(["1.2.3.4", "10.0.0.0/8"]);
-    expect(body.ru_whitelist.domains).toEqual([]);
+    expect(body.ru_blacklist.cidrs).toEqual(["1.2.3.4", "10.0.0.0/8"]);
     expect(body.ru_blacklist.domains).toEqual([]);
   });
 
@@ -792,12 +789,8 @@ describe("route rules take addresses, not site names", () => {
       {
         body: [
           {
-            ru_whitelist: {
-              add: { cidrs: ["1.2.3.0/24"], domains: ["example.com"] },
-              exclude: { cidrs: [], domains: [] },
-            },
             ru_blacklist: {
-              add: { cidrs: [], domains: [] },
+              add: { cidrs: ["1.2.3.0/24"], domains: ["example.com"] },
               exclude: { cidrs: [], domains: [] },
             },
           },
@@ -816,13 +809,9 @@ describe("route rules take addresses, not site names", () => {
       {
         body: [
           {
-            ru_whitelist: {
-              add: { cidrs: [], domains: ["example.com"] },
-              exclude: { cidrs: [], domains: ["ads.example.net"] },
-            },
             ru_blacklist: {
               add: { cidrs: [], domains: ["other.example"] },
-              exclude: { cidrs: [], domains: [] },
+              exclude: { cidrs: [], domains: ["ads.example.net"] },
             },
           },
         ],
@@ -831,7 +820,7 @@ describe("route rules take addresses, not site names", () => {
     ]);
     await run([
       "global-routes-set",
-      "--profile=ru_whitelist",
+      "--profile=ru_blacklist",
       "--add-cidrs=203.0.113.0/24",
     ]);
     const sent = JSON.parse(calls[1]?.init?.body as string) as Record<
@@ -841,12 +830,9 @@ describe("route rules take addresses, not site names", () => {
         exclude: { domains: string[] };
       }
     >;
-    expect(sent.ru_whitelist?.add.cidrs).toEqual(["203.0.113.0/24"]);
-    expect(sent.ru_whitelist?.add.domains).toEqual([]);
-    expect(sent.ru_whitelist?.exclude.domains).toEqual([]);
-    // The untouched profile loses its dead entries too: the endpoint replaces
-    // the whole object, so leaving them in would write them straight back.
+    expect(sent.ru_blacklist?.add.cidrs).toEqual(["203.0.113.0/24"]);
     expect(sent.ru_blacklist?.add.domains).toEqual([]);
+    expect(sent.ru_blacklist?.exclude.domains).toEqual([]);
   });
 });
 
@@ -974,5 +960,61 @@ describe("user-delete", () => {
     await expect(run(["user-delete", U, "--confirm"])).rejects.toThrow(
       /live key/,
     );
+  });
+});
+
+describe("key-rename", () => {
+  const K = "0b48cc4c-404b-47a6-af28-4cf15f305e30";
+
+  beforeEach(() => {
+    process.env.PANEL_ADMIN_EMAIL = "cli-test@example.com";
+  });
+  afterEach(() => {
+    delete process.env.PANEL_ADMIN_EMAIL;
+    vi.unstubAllGlobals();
+  });
+
+  it("requires both the id and --label", async () => {
+    await expect(run(["key-rename"])).rejects.toThrow(/Usage: key-rename/);
+    await expect(run(["key-rename", K])).rejects.toThrow(/Usage: key-rename/);
+  });
+
+  it("posts the trimmed label to the OWNER route, not an admin one", async () => {
+    // No `/api/admin/...` anywhere here: renaming has no admin path at all,
+    // so this must hit the same self-scoped route the panel's own "Rename"
+    // button does, reachable only for a key this identity owns.
+    const calls = stubFetch([
+      { body: { id: K, state: "provisioning", reissued: true } },
+    ]);
+    const out = await run(["key-rename", K, "--label=New Laptop"]);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.url).toMatch(new RegExp(`/api/keys/${K}/rename$`));
+    expect(calls[0]?.url).not.toMatch(/\/admin\//);
+    expect(calls[0]?.init?.method).toBe("POST");
+    expect(JSON.parse(calls[0]?.init?.body as string)).toEqual({
+      deviceLabel: "New Laptop",
+    });
+    expect(out).toMatch(/renamed and re-issuing/);
+    expect(out).toMatch(/provisioning/);
+  });
+
+  it("says plainly when no re-issue was needed", async () => {
+    stubFetch([{ body: { id: K, state: "active", reissued: false } }]);
+    const out = await run(["key-rename", K, "--label=New Laptop"]);
+    expect(out).toMatch(/renamed \(state: active\)/);
+    expect(out).not.toMatch(/re-issuing/);
+    expect(out).toMatch(/no re-issue was needed/);
+  });
+
+  it("surfaces a rename of someone else's key as the server's own refusal", async () => {
+    stubFetch([
+      {
+        status: 404,
+        body: { error: "KEY_NOT_FOUND", message: "Key not found" },
+      },
+    ]);
+    await expect(
+      run(["key-rename", K, "--label=Hijacked"]),
+    ).rejects.toThrow(/Key not found/);
   });
 });

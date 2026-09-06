@@ -232,7 +232,7 @@ export function CreateKeyWizard({
 
   const policyLocked = !me.policy.allowRouteProfileSelection;
   const routeOptions: Array<CardOption<RouteProfile>> = (
-    ["full_tunnel", "ru_whitelist", "ru_blacklist"] as RouteProfile[]
+    ["full_tunnel", "ru_blacklist"] as RouteProfile[]
   ).map((profile) => {
     const availability = routeProfiles.find((item) => item.profile === profile);
     // Which reasons apply, and which explanation to show, is decided in one
@@ -247,7 +247,7 @@ export function CreateKeyWizard({
       label: t(`route.${profile}`),
       description: t(`wizard.route.${profile}.desc`),
       // Say plainly which profile is proven and which is not. The split-tunnel
-      // profiles depend on a feed and on the client applying it, so they behave
+      // profile depends on a feed and on the client applying it, so it behaves
       // differently across platforms; the full tunnel does not.
       badge:
         profile === "full_tunnel" ? (

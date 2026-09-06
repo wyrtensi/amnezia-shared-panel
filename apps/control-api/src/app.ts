@@ -11,6 +11,7 @@ import {
   updateServiceCheckRequestSchema,
   createUserRequestSchema,
   quotaRequestSchema,
+  renameKeyRequestSchema,
   updateCustomRoutesRequestSchema,
   updateNodeRequestSchema,
 } from "@amnezia/contracts";
@@ -67,7 +68,9 @@ export type BuildAppOptions = {
 const idParamsSchema = z.object({ id: z.uuid() });
 const ruleDiffParamsSchema = z.object({ id: z.uuid(), otherId: z.uuid() });
 const configQuerySchema = z.object({
-  format: z.enum(["vpn", "conf", "qr", "qr-svg", "qr-frames"]).default("vpn"),
+  format: z
+    .enum(["vpn", "conf", "qr", "qr-svg", "qr-frames", "qr-conf"])
+    .default("vpn"),
   adminConfirmed: z
     .union([
       z.boolean(),
@@ -248,6 +251,19 @@ export const buildApp = async ({
     await service.rotateOwnKey(actorFor(request), id);
     return reply.code(202).send({ id, state: "provisioning" });
   });
+  app.post("/api/keys/:id/rename", async (request, reply) => {
+    const { id } = idParamsSchema.parse(request.params);
+    const body = renameKeyRequestSchema.parse(request.body);
+    const result = await service.renameOwnKey(
+      actorFor(request),
+      id,
+      body.deviceLabel,
+    );
+    // 202 only when a rotate was actually queued -- a plain label update (the
+    // label was not part of the displayed name) is a completed 200, not a job
+    // in flight.
+    return reply.code(result.reissued ? 202 : 200).send(result);
+  });
   app.put("/api/me/custom-routes", async (request) => {
     const routes = await service.updateMyCustomRoutes(
       actorFor(request),
@@ -275,8 +291,10 @@ export const buildApp = async ({
    * The URL is never taken from the request: the platform and the variant are
    * looked up in the release the panel itself resolved, so this cannot be
    * pointed at an arbitrary target. `?variant=alternate` is the platform's
-   * second link -- Android's APK, or the AmneziaVPN listing on iOS. Rendered here rather than in apps/web because the panel
-   * already produces QR codes server-side and the web app ships no QR library.
+   * second link -- Android's APK, or the AmneziaVPN listing on iOS.
+   * `?variant=secondAlternate` is iOS's third link, the AmneziaWG listing.
+   * Rendered here rather than in apps/web because the panel already produces
+   * QR codes server-side and the web app ships no QR library.
    */
   app.get<{ Params: { platform: string }; Querystring: { variant?: string } }>(
     "/api/client-releases/qr/:platform",
@@ -286,12 +304,16 @@ export const buildApp = async ({
       if (!platform.success) {
         return reply.code(404).send({ error: "UNKNOWN_PLATFORM" });
       }
-      // Which of the platform's two links, never the link itself: the URL is
-      // read from the release this panel resolved, so a request can ask for one
-      // of two known destinations and cannot make the panel encode arbitrary
+      // Which of the platform's links, never the link itself: the URL is read
+      // from the release this panel resolved, so a request can ask for one of
+      // a few known destinations and cannot make the panel encode arbitrary
       // content into an image it serves.
       const variant =
-        request.query.variant === "alternate" ? "alternate" : "primary";
+        request.query.variant === "secondAlternate"
+          ? "secondAlternate"
+          : request.query.variant === "alternate"
+            ? "alternate"
+            : "primary";
       const release = await clientReleases.get();
       const download = release.downloads.find(
         (entry) => entry.platform === platform.data,
