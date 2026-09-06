@@ -64,7 +64,12 @@ export const getServerBackupSchema = {
             type: "string",
             enum: Object.values(Protocol),
           },
-          example: [Protocol.AMNEZIAWG, Protocol.AMNEZIAWG2, Protocol.XRAY],
+          example: [
+            Protocol.AMNEZIAWG,
+            Protocol.AMNEZIAWG2,
+            Protocol.AMNEZIAWG3,
+            Protocol.XRAY,
+          ],
         },
         amnezia: {
           type: "object",
@@ -101,6 +106,7 @@ export const getServerBackupSchema = {
                   clientName: "john.doe [iphone]",
                   creationDate: "Mon, 06 Nov 2023 10:12:45 GMT",
                   expiresAt: 1736200000,
+                  allowedIp: "10.8.1.2",
                 },
               },
             ],
