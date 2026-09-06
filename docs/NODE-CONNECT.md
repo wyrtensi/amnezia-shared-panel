@@ -20,11 +20,29 @@ Fill in the placeholders with your real values — the repo hardcodes none of th
 
 ## 0. The scripted path
 
-`scripts/add-node.sh` performs everything in this document — ensure 2 GiB of
+`scripts/add-node.sh` performs the rollout in this document — ensure 2 GiB of
 swap, install Docker on the target host, deploy `infra/node`, ship the
 node-agent image, open the supervised tunnel on the panel host, register the
 node, reconcile it — in one idempotent command. Read the rest of this file to understand what it does, or
 when a rollout needs to deviate from it.
+
+**With one exception, and it is the one people trip over.** The script does
+*not* install the host-side updater described in
+[After the first deploy: the button](#after-the-first-deploy-the-button). A node
+rolled out this way is healthy and registered but cannot update its own agent:
+`/server/update` answers `available: false`, and the panel's Update button
+reports that the node cannot update itself. Nothing in the rollout's output says
+so, which is how a node ends up with no update path and nobody noticing for
+months. Give it one, once, after the rollout:
+
+```sh
+sudo NODE_AGENT_UPDATE_REPO=ghcr.io/<owner>/<repo>/node-agent      bash scripts/install-agent-updater.sh
+docker compose --env-file .env -f compose.yaml up -d --no-deps node-agent
+```
+
+It is separate because it needs the repository *your* panel publishes to, which
+the rollout script has no way to know. `install-capacity-applier.sh`, which lets
+the panel change a node's peer capacity, is opt-in for the same reason.
 
 ```sh
 cp scripts/add-node.env.example scripts/add-node.env   # once per deployment
