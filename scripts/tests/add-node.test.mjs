@@ -110,7 +110,11 @@ test("never prints the node-agent API key", async () => {
   // drains the rest of the heredoc and the node-add below never runs -- the step
   // prints nothing and exits 0 while registering no node.
   assert.match(register, /key="\$\(ssh -n -i "\$NODE_KEY"/);
-  assert.match(register, /--api-key="\$key"/);
+  // Piped into the CLI's stdin rather than passed as --api-key=, which would
+  // sit in /proc/<pid>/cmdline and `ps` for as long as the process lives.
+  assert.match(register, /printf '%s' "\$key" \| docker compose exec/);
+  assert.match(register, /--api-key-file=-/);
+  assert.doesNotMatch(register, /--api-key="\$key"/);
 });
 
 const runShellFunction = async (name, ...args) => {

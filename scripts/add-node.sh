@@ -432,9 +432,12 @@ else
 key="$(ssh -n -i "$NODE_KEY" -o StrictHostKeyChecking=accept-new \
   -o UserKnownHostsFile=/root/.ssh/known_hosts "$TARGET" "cat '$KEYFILE'")"
 cd "$DIR"
-docker compose exec -T -e CONTROL_API_URL="$API" "$SVC" \
+# Piped in rather than passed as --api-key=: an argument would sit in
+# /proc/<pid>/cmdline and `ps` for as long as the process lives. The pipe
+# gives this command its own stdin, so the surrounding heredoc is undisturbed.
+printf '%s' "$key" | docker compose exec -T -e CONTROL_API_URL="$API" "$SVC" \
   node /app/apps/cli/dist/main.js node-add \
-  --name="$NAME" --api-url="$URL" --api-key="$key" \
+  --name="$NAME" --api-url="$URL" --api-key-file=- \
   --protocol="$PROTO" --max-peers="$PEERS" --enabled-protocols="$ENABLED"
 REMOTE
 )"

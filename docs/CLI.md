@@ -294,7 +294,7 @@ docker exec -i "$CID" node apps/cli/dist/main.js \
   < infra/node/secrets/node-agent-api-key
 # wire two-way Cloudflare Access sync
 docker exec "$CID" node apps/cli/dist/main.js cf-config --account=<id> --app=<id> --policy=<id>
-docker exec "$CID" node apps/cli/dist/main.js cf-token <cf-api-token>
+docker exec -i "$CID" node apps/cli/dist/main.js cf-token --token-file=- < path/to/cf-api-token
 # admit a whole company domain, on top of the users the panel adds automatically
 docker exec "$CID" node apps/cli/dist/main.js cf-domains --add=<domain>
 # cf-sync --status shows whether the last push landed

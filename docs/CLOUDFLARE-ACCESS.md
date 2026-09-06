@@ -268,7 +268,7 @@ CLI:
 
 ```sh
 amnezia-panel cf-config --account=<ACCOUNT_ID> --app=<APP_ID> --policy=<POLICY_ID>
-amnezia-panel cf-token <CF_API_TOKEN>     # stored encrypted, write-only
+amnezia-panel cf-token --token-file=<CF_API_TOKEN_FILE>     # stored encrypted, write-only
 ```
 
 (see [`CLI.md`](./CLI.md) — the CLI mints an admin identity from

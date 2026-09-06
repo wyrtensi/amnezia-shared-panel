@@ -265,7 +265,7 @@ broad token anywhere; the runtime token lives only encrypted inside the panel.)*
 4. **Store the runtime token in the panel.** In **Administration → Policy →
    Cloudflare Access**, enter the account/app/policy IDs and paste the token; the
    panel encrypts it and never shows it again. *(CLI equivalent: `amnezia-panel
-   cf-config --account= --app= --policy=` then `amnezia-panel cf-token <token>`.)*
+   cf-config --account= --app= --policy=` then `amnezia-panel cf-token --token-file=<path|->`.)*
    Then set `ACCESS_SYNC_ENABLED=true` in `infra/prod/.env` and recreate the worker.
 5. **Revoke the temporary broad token** in the dashboard, and confirm only the
    least-privilege runtime token remains.
