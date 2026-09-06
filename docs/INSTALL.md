@@ -170,9 +170,18 @@ session. The allow policy (who may log in) is Phase 5. Click-by-click:
 
 Read the app's **Audience (AUD)** tag and your team issuer, put them in
 `infra/prod/.env` as `CF_ACCESS_ISSUER=https://<TEAM>.cloudflareaccess.com` and
-`CF_ACCESS_AUDIENCE=<AUD>`, and recreate control-api. With the VPN **off**, check
-that `https://<panel domain>` sends you to the Google Workspace login and, after
-signing in, into the panel.
+`CF_ACCESS_AUDIENCE=<AUD>`, and recreate **both** `web` and `control-api` —
+`apps/web/proxy.ts` verifies the same assertion before rendering any page, so it
+needs these vars in its own process too, not just control-api's:
+
+```
+docker compose -f infra/prod/compose.yaml up -d web control-api
+```
+
+With the VPN **off**, check that `https://<panel domain>` sends you to the Google
+Workspace login and, after signing in, into the panel. If you land on `/login`
+instead, confirm `web` actually has the vars:
+`docker compose -f infra/prod/compose.yaml exec web printenv | grep CF_ACCESS`.
 
 > **Team domain is one per Cloudflare account.** `<TEAM>.cloudflareaccess.com` is
 > shared by every Access app on the account, so the login page shows the

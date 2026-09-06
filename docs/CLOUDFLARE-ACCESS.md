@@ -215,9 +215,11 @@ blindly:
    lower-cased) the account is promoted to `admin`. This is how the first
    admin(s) exist — there is no seed script.
 
-The two production env vars this needs (`apps/control-api/.env`) are
+The two production env vars this needs go in `infra/prod/.env`:
 `CF_ACCESS_ISSUER=https://<TEAM>.cloudflareaccess.com` and
-`CF_ACCESS_AUDIENCE=<AUD>`. See [`HOSTING.md` §2 and §5.4](./HOSTING.md).
+`CF_ACCESS_AUDIENCE=<AUD>`. `apps/web/proxy.ts` verifies the same assertion before
+rendering any page and reads the same two vars, via the `env_file` `web` and
+`control-api` share — see [`HOSTING.md` §2 and §5.4](./HOSTING.md).
 
 ### A.7 Record the IDs you will need in Part B
 
