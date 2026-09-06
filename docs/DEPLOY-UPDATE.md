@@ -294,6 +294,31 @@ destructive flag (`down`, `-v`, `--volumes`, `prune`). For the VPN node, snapsho
 its server state via the node-agent's `GET /server/backup` (import with the
 matching endpoint) plus the `infra/node/scripts/backup.sh` / `rollback.sh`.
 
+> **`GET /server/backup` needs node-agent 1.1.13 or newer, on both ends.**
+> Earlier agents answer `200` with content missing, silently:
+>
+> - On an **AmneziaWG 3.1** node the protocol block was absent entirely — the
+>   response is a well-formed JSON object with no server state in it at all. A
+>   backup taken that way restores nothing.
+> - On **every** protocol, `amnezia` and `amneziaWg2` included, each peer's
+>   allocated address (`userData.allowedIp`) was dropped. Those backups look
+>   complete and are not: a node restored from one cannot return a disabled peer
+>   to the address its issued config expects.
+>
+> **Retake every backup made before 1.1.13**, on every node, once both ends are
+> upgraded.
+>
+> Two asymmetries to know before you restore:
+>
+> - **The target matters as much as the source.** Importing a 1.1.13 backup into
+>   an agent at 1.1.12 or older strips `allowedIp` again — that agent does not
+>   declare the field, so its validator removes it — and still answers `200`.
+>   Upgrade the node you restore *onto*, not only the one you back up *from*.
+> - **An old backup is now refused, and that is correct.** A pre-1.1.13 backup of
+>   an AWG 3.1 node names the protocol but carries no payload for it, so 1.1.13
+>   rejects it with `400` where an older agent would have half-applied it. That
+>   is the intended failure, not a regression in the new release.
+
 Hard invariants the updater keeps: **never** `docker compose down -v` /
 `--volumes` / `volume prune` / `system prune -a`; keyring stable; AWG containers
 untouched by a control-plane update.
