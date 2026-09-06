@@ -83,6 +83,7 @@ import {
   encryptSecret,
   findOffboardedUsersEligibleForPurge,
   globalRouteOverrides,
+  hasLiveKeys,
   identities,
   jobOutbox,
   nodeAgentReleases,
@@ -2899,6 +2900,67 @@ export class PostgresControlRepository implements ControlRepository {
         });
         return updated;
       });
+    } else if (resource === "users" && action === "delete") {
+      // Rung two of the Delete-button ladder: pressing it on a user already
+      // offboarded (rung one, the "offboard" action above) removes the
+      // account for good. A distinct action name on purpose -- the existing
+      // bulk sweep below is "users"/"purge" with the literal target id
+      // "offboarded", and giving the same action name a second, per-user
+      // meaning distinguished only by "the id happens to be a UUID" would
+      // make the route table something a reader has to reverse-engineer
+      // rather than read.
+      return this.options.db.transaction(async (tx) => {
+        const [target] = await tx
+          .select({ id: users.id, email: users.email, status: users.status })
+          .from(users)
+          .where(eq(users.id, targetId))
+          .for("update");
+        if (!target) throw new ApiError(404, "User not found", "USER_NOT_FOUND");
+        // Rung one must already have happened. An active account still has a
+        // live session and (potentially) an Access allowlist entry; this
+        // button does not promise to tear either of those down itself.
+        if (target.status !== "disabled") {
+          throw new ApiError(
+            409,
+            "This account is still active. Offboard it first, then delete it.",
+            "USER_NOT_DISABLED",
+          );
+        }
+        // Same "live" state set the retention-gated bulk purge uses (see
+        // hasLiveKeys / findOffboardedUsersEligibleForPurge in @amnezia/db) --
+        // reused rather than re-derived so the two paths can never disagree
+        // about what counts as safe to delete. A key in any of those states
+        // could still hold a peer on a node; deleting the user row out from
+        // under it is exactly what would strand that peer with nothing left
+        // pointing at it.
+        if (await hasLiveKeys(tx, targetId)) {
+          throw new ApiError(
+            409,
+            "This account still holds a live key. Revoke or purge it before deleting the account.",
+            "USER_HAS_LIVE_KEYS",
+          );
+        }
+        // Deliberately does NOT consult offboardedUserRetentionDays. That
+        // window governs how long the panel waits before acting ON ITS OWN --
+        // the automatic sweep, and the bulk manual purge above that mirrors
+        // its eligibility rule so the two can never disagree. An admin
+        // pointing at one account and confirming this dialog is not the panel
+        // acting on its own; there is no unattended action here to put a
+        // waiting period in front of, however recently the account was
+        // disabled.
+        await purgeOneOffboardedUser(tx, targetId);
+        // Same event the bulk manual purge writes, with an actor for the same
+        // reason: unlike the automatic sweep, a human asked for this one.
+        await tx.insert(auditEvents).values({
+          actorUserId: actor.id,
+          actorType: "user",
+          action: "user.deleted",
+          targetType: "user",
+          targetId,
+          metadata: { email: target.email },
+        });
+        return { id: targetId, deleted: true, email: target.email };
+      });
     } else if (resource === "users" && action === "set-role") {
       const { role } = z
         .object({ role: z.enum(["user", "admin"]) })
@@ -3676,12 +3738,15 @@ export class PostgresControlRepository implements ControlRepository {
         return toRulesRefreshStatus(row);
       });
     } else if (resource === "users" && action === "purge") {
-      // The deliberate, manual counterpart to the automatic sweep in
+      // The deliberate, manual, BULK counterpart to the automatic sweep in
       // apps/worker/src/maintenance.ts -- this one is never gated on
       // autoPurgeOffboardedUsers, because an admin choosing to remove an
       // eligible account by hand is exactly the "no" this whole feature exists
       // to let an operator say to the automatic path, not a second instance of
-      // the thing being gated.
+      // the thing being gated. Its target id is always the literal string
+      // "offboarded"; the one-at-a-time equivalent is "users"/"delete" above,
+      // which takes a real user id and (unlike this one) ignores the
+      // retention window entirely -- see the comment there for why.
       //
       // A dry run is the default: without `confirm: true` this reports what
       // would be deleted and deletes nothing. Modeled on deleteNode's

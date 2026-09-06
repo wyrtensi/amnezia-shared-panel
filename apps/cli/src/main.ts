@@ -882,6 +882,34 @@ async function cmdUserEnable(args: string[]): Promise<void> {
   console.log("user reinstated — status active");
 }
 
+/**
+ * Rung two of the Delete-button ladder (user-disable is rung one):
+ * permanently removes an already-disabled account. Refused server-side
+ * unless the account is disabled and holds no live key -- see the "delete"
+ * admin action in apps/control-api for both refusals. Irreversible, and
+ * never the default, the same shape as key-purge and offboarded-purge.
+ */
+async function cmdUserDelete(args: string[]): Promise<void> {
+  const id = await resolveUserId(
+    args.find((arg) => !arg.startsWith("--")),
+    "Usage: user-delete <id|email> --confirm",
+  );
+  if (!args.includes("--confirm")) {
+    console.log(`user ${id}`);
+    console.log(
+      "This permanently deletes the user row and its key rows from the panel.",
+    );
+    console.log(
+      "Refused unless the account is already disabled (user-disable) and holds",
+    );
+    console.log("no live key. Only the audit log will remember it afterwards.");
+    console.log("Re-run with --confirm to delete it.");
+    return;
+  }
+  await userAction(id, "delete", {});
+  console.log(`user ${id}: deleted from the panel`);
+}
+
 async function cmdQuota(args: string[]): Promise<void> {
   const [requests, users, policyRows] = await Promise.all([
     api<QuotaRequest[]>("/api/admin/quota-requests"),
@@ -2373,6 +2401,11 @@ Users (accept a user id OR email):
                                          Omitted flags leave that part unchanged.
   user-disable <id|email>                Offboard: disable + revoke their keys
   user-enable <id|email>                 Reinstate a disabled user
+  user-delete <id|email> --confirm       Permanently delete an already-disabled
+                                         user with no live key (offboard it first
+                                         with user-disable). Irreversible; refused
+                                         otherwise. Without --confirm, prints what
+                                         it would do and deletes nothing
   user-nodes <id|email> <all|none|uuid,…>  Per-user node availability (all=every node; overrides global).
                                          REPLACES the whole per-user policy override; use
                                          user-limit --allowed-nodes to change only availability.
@@ -2537,8 +2570,10 @@ policy-set fields:
     disabled account (and its revoked keys) once offboardedUserRetentionDays
     has passed. Off by default — deleting an account is irreversible, so an
     upgraded panel keeps NOT doing this until an admin turns it on. See
-    offboarded-purge for a deliberate one-off deletion regardless of this
-    setting.
+    offboarded-purge for a deliberate one-off deletion of the whole eligible
+    set regardless of this setting, or user-delete for one account at a
+    time — which, unlike both of those, does not wait out
+    offboardedUserRetentionDays at all.
   defaultKeyLimit=<int 0..1000>
     Per server in per_node mode, the shared total in global mode — the number
     does not move, its meaning does.
@@ -2953,6 +2988,8 @@ export async function dispatch(argv: string[]): Promise<void> {
       return cmdUserDisable(args);
     case "user-enable":
       return cmdUserEnable(args);
+    case "user-delete":
+      return cmdUserDelete(args);
     case "user-nodes":
       return cmdUserNodes(args);
     case "user-routes":

@@ -454,10 +454,18 @@ The worker can run a periodic **access reconcile** task
   (`policy-set --autoPurgeOffboardedUsers=true`; **off** on every panel,
   including one upgraded from before this setting existed). With the toggle
   off, an eligible account is not deleted by itself — it sits there until an
-  admin removes it deliberately with `amnezia-panel offboarded-purge --confirm`
-  (see [`docs/CLI.md`](./CLI.md)), which lists exactly who is eligible and
-  deletes nothing without that flag, whatever the toggle is set to. Either way,
-  once the row is gone, reinstating is no longer possible.
+  admin removes it deliberately, one of two ways: `amnezia-panel
+  offboarded-purge --confirm` (see [`docs/CLI.md`](./CLI.md)) for the whole
+  eligible set at once, or, one account at a time, the panel's own **Delete**
+  button on the Пользователи tab, which is a two-step ladder — pressed on an
+  active user it offboards them (disable + revoke keys, reversible); pressed
+  again once the account already shows disabled, it reads **Удалить
+  навсегда** and deletes the row for good. That second press does **not**
+  wait out `offboardedUserRetentionDays`: the window governs the panel acting
+  on its own, not an admin pointing at one account and confirming, so it
+  refuses only for two reasons — the account is not yet disabled, or it still
+  holds a key that could hold a peer on a node — never for being too recent.
+  Either way, once the row is gone, reinstating is no longer possible.
 
 #### Enabling it
 
@@ -502,10 +510,14 @@ With `ACCESS_DIRECTORY=allowlist` set to a list that omits a test user, watch th
 worker log for `access-reconcile: disabled N account(s)`, then confirm in the
 admin **Журнал** (a `user.access_revoked` event) and on the **Пользователи** tab
 (the account shows "Отключён · доступ Cloudflare отозван"). That row on
-**Пользователи** only lasts until `offboardedUserRetentionDays` passes — past
-that the account is hard-deleted and the tab stops showing it at all. The
-durable record is the audit log: `user.access_revoked` for the disable, and
-`user.deleted` for the eventual purge.
+**Пользователи** stays until someone deliberately removes it — the automatic
+sweep once `offboardedUserRetentionDays` passes, if `autoPurgeOffboardedUsers`
+has been turned on, or, at any time regardless of that toggle, an admin
+running `offboarded-purge --confirm` or pressing **Удалить навсегда** on this
+one account. Whichever way it happens, the account is then hard-deleted and
+the tab stops showing it at all. The durable record is the audit log:
+`user.access_revoked` for the disable, and `user.deleted` for the eventual
+deletion.
 
 ### Direction 2 — panel → Access (add/remove on the allowlist)
 

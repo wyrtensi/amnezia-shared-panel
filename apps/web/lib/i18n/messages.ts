@@ -601,8 +601,12 @@ const ru = {
   "users.roleAdminLabel": "назначить администратором",
   "users.roleRemoveLabel": "снять роль",
   "users.roleConfirm": "Точно {label} {email}?",
+  // Step 1 of the ladder: disables the account and revokes its keys. This is
+  // reversible (see "Восстановить") -- it must NOT read as an eventual
+  // deletion, which is a second, separate button pressed on the account once
+  // it is already disabled.
   "users.offboardConfirm":
-    "Отключить и удалить {email}? Все ключи будут отозваны, аккаунт удаляется после их отзыва.",
+    "Отключить {email}? Аккаунт будет отключён, а его ключи отозваны. Это можно отменить, восстановив пользователя.",
   "users.keysWord": "ключей",
   "users.onlineCount": "{count} онлайн",
   // S7: the button now covers both the number and the server list.
@@ -615,6 +619,11 @@ const ru = {
   "users.makeAdmin": "Сделать админом",
   "users.reinstate": "Восстановить",
   "users.delete": "Удалить",
+  // Step 2 of the ladder: shown only on an already-disabled account, and
+  // irreversible unlike the button above.
+  "users.deletePermanently": "Удалить навсегда",
+  "users.deletePermanentlyConfirm":
+    "Удалить {email} навсегда? Это нельзя отменить: запись пользователя и его ключи будут удалены из панели. Останется только запись в журнале аудита — сам аккаунт восстановить будет нельзя.",
   "users.statKeys": "Ключей",
   "users.statActive": "Активных",
   "users.statOnline": "Онлайн",
@@ -1793,8 +1802,12 @@ const en = {
   "users.roleAdminLabel": "make an administrator",
   "users.roleRemoveLabel": "remove the role",
   "users.roleConfirm": "Are you sure you want to {label} {email}?",
+  // Step 1 of the ladder: disables the account and revokes its keys. This is
+  // reversible (see "Restore") -- it must NOT read as an eventual deletion,
+  // which is a second, separate button pressed on the account once it is
+  // already disabled.
   "users.offboardConfirm":
-    "Disable and delete {email}? All keys will be revoked, and the account is deleted after they are revoked.",
+    "Disable {email}? The account will be disabled and its keys revoked. This can be undone by restoring the user.",
   "users.keysWord": "keys",
   "users.onlineCount": "{count} online",
   "users.limitNode": "Limits and servers:",
@@ -1806,6 +1819,11 @@ const en = {
   "users.makeAdmin": "Make admin",
   "users.reinstate": "Restore",
   "users.delete": "Delete",
+  // Step 2 of the ladder: shown only on an already-disabled account, and
+  // irreversible unlike the button above.
+  "users.deletePermanently": "Delete permanently",
+  "users.deletePermanentlyConfirm":
+    "Permanently delete {email}? This cannot be undone: the user row and its keys are removed from the panel. The audit trail keeps the record — the account cannot be restored.",
   "users.statKeys": "Keys",
   "users.statActive": "Active",
   "users.statOnline": "Online",

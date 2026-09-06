@@ -202,21 +202,49 @@ export const armAccessSyncRow = async (
 
 // --- Offboarded-user purge eligibility --------------------------------------
 // Shared by the worker's automatic sweep (maintenance.ts's
-// purgeOffboardedUsers, gated on portal_policy's `autoPurgeOffboardedUsers`)
-// and the control API's manual purge admin action (never gated -- an admin
-// can always remove an eligible account deliberately). Kept in one place on
-// purpose: two copies of "who is eligible" can disagree, and if they ever did,
-// an admin reading the manual listing would eventually be surprised by what
-// the automatic sweep actually deletes, or the other way around.
+// purgeOffboardedUsers, gated on portal_policy's `autoPurgeOffboardedUsers`),
+// the control API's bulk manual purge admin action (never gated -- an admin
+// can always remove an eligible account deliberately), and its per-user
+// delete action (also never gated, and not even retention-windowed -- see the
+// comment on that action for why). Kept in one place on purpose: two copies
+// of "who is eligible" -- or of "what counts as a live key" -- can disagree,
+// and if they ever did, an admin reading one surface would eventually be
+// surprised by what another one actually does.
 
-/** Key states that could still hold a peer on a node -- any of these blocks the purge. */
-const LIVE_KEY_STATES: KeyState[] = [
+/**
+ * Key states that could still hold a peer on a node -- any of these blocks
+ * the purge. Exported so a test asserting "a live key blocks this" can pick
+ * one from the real list instead of hardcoding a state name that could drift
+ * out of sync with it.
+ */
+export const LIVE_KEY_STATES: readonly KeyState[] = [
   "provisioning",
   "active",
   "disabled",
   "revoking",
   "failed",
 ];
+
+/**
+ * Whether `userId` holds any key in a state that could still hold a peer on a
+ * node (see `LIVE_KEY_STATES`). Exported so every caller asking "is this
+ * account safe to delete" -- the retention-gated eligibility scan below, and
+ * the control API's single-account delete action, which is not gated on the
+ * retention window at all -- reads the exact same state set instead of each
+ * keeping its own list that could quietly drift from the other.
+ */
+export const hasLiveKeys = async (
+  executor: Database | DbTransaction,
+  userId: string,
+): Promise<boolean> => {
+  const [live] = await executor
+    .select({ value: count() })
+    .from(vpnKeys)
+    .where(
+      and(eq(vpnKeys.ownerId, userId), inArray(vpnKeys.state, LIVE_KEY_STATES)),
+    );
+  return (live?.value ?? 0) > 0;
+};
 
 export type PurgeEligibleUser = {
   id: string;
@@ -250,16 +278,7 @@ export const findOffboardedUsersEligibleForPurge = async (
     );
   const eligible: PurgeEligibleUser[] = [];
   for (const user of disabled) {
-    const [live] = await executor
-      .select({ value: count() })
-      .from(vpnKeys)
-      .where(
-        and(
-          eq(vpnKeys.ownerId, user.id),
-          inArray(vpnKeys.state, LIVE_KEY_STATES),
-        ),
-      );
-    if ((live?.value ?? 0) > 0) continue;
+    if (await hasLiveKeys(executor, user.id)) continue;
     const [revoked] = await executor
       .select({ value: count() })
       .from(vpnKeys)

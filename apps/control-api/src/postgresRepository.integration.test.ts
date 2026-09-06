@@ -21,6 +21,7 @@ import {
   decryptSecret,
   encryptSecret,
   jobOutbox,
+  LIVE_KEY_STATES,
   nodeAgentReleases,
   nodeMetricsCurrent,
   nodeServiceCheckResults,
@@ -4826,6 +4827,273 @@ describe("PostgresControlRepository offboarded-user purge", () => {
         targetType: "user",
         metadata: { email },
       });
+    },
+  );
+});
+
+// The Delete-button ladder's second rung: "users"/"delete" with a real user
+// id. Distinct from the bulk "users"/"purge" sweep above (whose id is always
+// the literal string "offboarded") on purpose -- see the comment on the
+// action itself. These tests exist because both refusals are load-bearing:
+// an admin must not be able to delete a user that has not been offboarded
+// yet, and must not be able to strand a peer by deleting a user whose key
+// still holds one.
+describe("PostgresControlRepository per-user delete", () => {
+  const database = databaseUrl ? createDatabase(databaseUrl) : null;
+  const keyring = { 1: randomBytes(32) };
+  const DAY_MS = 24 * 60 * 60 * 1_000;
+  let nodeId: string;
+  let createdUserIds: string[] = [];
+
+  beforeAll(async () => {
+    if (!database) return;
+    const credentials = encryptSecret("api-key", keyring, 1);
+    const label = encryptSecret("label-secret", keyring, 1);
+    const [node] = await database.db
+      .insert(nodes)
+      .values({
+        name: "user-delete-action-node",
+        apiBaseUrl: "http://127.0.0.1:4002",
+        credentialsCiphertext: credentials.ciphertext,
+        credentialsNonce: credentials.nonce,
+        credentialsAuthTag: credentials.authTag,
+        credentialsKeyVersion: credentials.keyVersion,
+        labelSecretCiphertext: label.ciphertext,
+        labelSecretNonce: label.nonce,
+        labelSecretAuthTag: label.authTag,
+        labelSecretKeyVersion: label.keyVersion,
+      })
+      .returning();
+    if (!node) throw new Error("Failed to seed node");
+    nodeId = node.id;
+    // A generous retention window on purpose: "disabled minutes ago" must
+    // still sit well inside it, so a test proving this path ignores the
+    // window cannot pass by accident because the window had already elapsed.
+    await database.db
+      .insert(portalPolicy)
+      .values({ id: true, offboardedUserRetentionDays: 30 })
+      .onConflictDoUpdate({
+        target: portalPolicy.id,
+        set: { offboardedUserRetentionDays: 30 },
+      });
+  });
+
+  afterAll(async () => {
+    if (!database) return;
+    await database.client.end();
+  });
+
+  afterEach(async () => {
+    if (!database || createdUserIds.length === 0) return;
+    await database.db
+      .delete(vpnKeys)
+      .where(inArray(vpnKeys.ownerId, createdUserIds));
+    await database.db.delete(users).where(inArray(users.id, createdUserIds));
+    createdUserIds = [];
+  });
+
+  const subject = (): PostgresControlRepository => {
+    if (!database) throw new Error("No database");
+    return new PostgresControlRepository({ db: database.db, keyring });
+  };
+
+  const seedAdmin = async (): Promise<Actor> => {
+    if (!database) throw new Error("No database");
+    const suffix = randomBytes(6).toString("hex");
+    const [row] = await database.db
+      .insert(users)
+      .values({
+        email: `delete-admin-${suffix}@example.com`,
+        role: "admin",
+        status: "active",
+      })
+      .returning();
+    if (!row) throw new Error("Failed to seed admin");
+    createdUserIds.push(row.id);
+    return {
+      id: row.id,
+      email: row.email,
+      displayName: null,
+      role: "admin",
+      status: row.status,
+    };
+  };
+
+  /** Mirrors the offboarded-purge describe block's own seedDisabledUser. */
+  const seedUser = async (options: {
+    status: "active" | "disabled";
+    disabledAt: Date | null;
+    keyStates: Array<
+      "provisioning" | "active" | "disabled" | "revoking" | "revoked" | "failed"
+    >;
+  }): Promise<{ userId: string; email: string }> => {
+    if (!database) throw new Error("No database");
+    const suffix = randomBytes(6).toString("hex");
+    const email = `delete-target-${suffix}@example.com`;
+    const [user] = await database.db
+      .insert(users)
+      .values({
+        email,
+        status: options.status,
+        disabledAt: options.disabledAt,
+        deactivationReason: options.status === "disabled" ? "admin_offboard" : null,
+      })
+      .returning();
+    if (!user) throw new Error("Failed to seed user");
+    createdUserIds.push(user.id);
+    for (const [index, state] of options.keyStates.entries()) {
+      await database.db.insert(vpnKeys).values({
+        ownerId: user.id,
+        nodeId,
+        nodeLabel: `ap_delete_action_${index}_${randomBytes(6).toString("hex")}`,
+        protocol: "awg2",
+        state,
+        routeProfile: "full_tunnel",
+      });
+    }
+    return { userId: user.id, email };
+  };
+
+  const stillExists = async (userId: string): Promise<boolean> => {
+    if (!database) throw new Error("No database");
+    const [row] = await database.db
+      .select({ id: users.id })
+      .from(users)
+      .where(eq(users.id, userId));
+    return row !== undefined;
+  };
+
+  runDatabaseTest(
+    "deletes a disabled user with only revoked keys -- the row, its key rows, and an actor-named user.deleted",
+    async () => {
+      if (!database) return;
+      const admin = await seedAdmin();
+      const { userId, email } = await seedUser({
+        status: "disabled",
+        disabledAt: new Date(Date.now() - 40 * DAY_MS),
+        keyStates: ["revoked", "revoked"],
+      });
+
+      const result = await subject().adminAction(admin, "users", userId, "delete", {});
+
+      expect(result).toMatchObject({ id: userId, deleted: true, email });
+      expect(await stillExists(userId)).toBe(false);
+      const remainingKeys = await database.db
+        .select({ id: vpnKeys.id })
+        .from(vpnKeys)
+        .where(eq(vpnKeys.ownerId, userId));
+      expect(remainingKeys).toHaveLength(0);
+
+      const [event] = await database.db
+        .select()
+        .from(auditEvents)
+        .where(
+          and(eq(auditEvents.targetId, userId), eq(auditEvents.action, "user.deleted")),
+        );
+      expect(event).toMatchObject({
+        actorUserId: admin.id,
+        actorType: "user",
+        action: "user.deleted",
+        targetType: "user",
+        metadata: { email },
+      });
+    },
+  );
+
+  runDatabaseTest(
+    "refuses an ACTIVE user with a distinct error code, and leaves the row untouched",
+    async () => {
+      if (!database) return;
+      const admin = await seedAdmin();
+      const { userId } = await seedUser({
+        status: "active",
+        disabledAt: null,
+        keyStates: [],
+      });
+
+      const failure = await failureOf(
+        subject().adminAction(admin, "users", userId, "delete", {}),
+      );
+
+      expect(failure).toMatchObject({
+        statusCode: 409,
+        code: "USER_NOT_DISABLED",
+      });
+      expect(await stillExists(userId)).toBe(true);
+    },
+  );
+
+  runDatabaseTest(
+    "refuses a disabled user still holding a live key with its own error code, and leaves the row untouched",
+    async () => {
+      if (!database) return;
+      const admin = await seedAdmin();
+      // Drawn from the shared LIVE_KEY_STATES list -- not a state hand-picked
+      // for this test -- so it stays true to whatever that list actually is.
+      const liveState = LIVE_KEY_STATES[0]!;
+      const { userId } = await seedUser({
+        status: "disabled",
+        disabledAt: new Date(Date.now() - 40 * DAY_MS),
+        keyStates: ["revoked", liveState],
+      });
+
+      const failure = await failureOf(
+        subject().adminAction(admin, "users", userId, "delete", {}),
+      );
+
+      expect(failure).toMatchObject({
+        statusCode: 409,
+        code: "USER_HAS_LIVE_KEYS",
+      });
+      expect(await stillExists(userId)).toBe(true);
+    },
+  );
+
+  runDatabaseTest(
+    "deletes an account disabled MINUTES ago -- the retention window does not gate this path",
+    async () => {
+      if (!database) return;
+      const admin = await seedAdmin();
+      const { userId } = await seedUser({
+        status: "disabled",
+        disabledAt: new Date(Date.now() - 5 * 60 * 1_000),
+        keyStates: ["revoked"],
+      });
+
+      await subject().adminAction(admin, "users", userId, "delete", {});
+
+      expect(await stillExists(userId)).toBe(false);
+    },
+  );
+
+  runDatabaseTest(
+    "the bulk offboarded-user sweep still behaves exactly as before, unaffected by the per-user action existing",
+    async () => {
+      if (!database) return;
+      const admin = await seedAdmin();
+      const now = Date.now();
+      const eligible = await seedUser({
+        status: "disabled",
+        disabledAt: new Date(now - 40 * DAY_MS),
+        keyStates: ["revoked"],
+      });
+      const insideWindow = await seedUser({
+        status: "disabled",
+        disabledAt: new Date(now - 5 * DAY_MS),
+        keyStates: ["revoked"],
+      });
+
+      const result = (await subject().adminAction(
+        admin,
+        "users",
+        "offboarded",
+        "purge",
+        { confirm: true },
+      )) as { deleted: string[] };
+
+      expect(result.deleted).toEqual([eligible.email]);
+      expect(await stillExists(eligible.userId)).toBe(false);
+      expect(await stillExists(insideWindow.userId)).toBe(true);
     },
   );
 });
