@@ -362,14 +362,30 @@ export const createJobProcessor = ({
 
     if (job.type === "vpn-key.revoke") {
       const clients = await agent.listClients();
-      const peer =
-        findPeer(clients, context.nodeLabel) ??
+      // Resolve by public key first, label as fallback - the same order the
+      // reconcile matcher uses (see telemetry.ts). A label alone is ambiguous
+      // when one username carries more than one peer (mid-rotation, or
+      // awg2/awg3 peers merged under one username by the node-agent):
+      // picking client.peers[0] on a label match could delete the stale peer
+      // and leave the live one on the node with no key row pointing at it.
+      const client =
         (context.publicKey
-          ? clients.flatMap((client) => client.peers).find((p) => p.id === context.publicKey)
-          : undefined);
-      // Absent means the work is done: the node-agent answers 404 for a peer that
-      // is already gone, and a revoke that cannot find its peer has nothing to do.
-      if (peer) await agent.deleteClient(peer.id, context.protocol);
+          ? clients.find((c) =>
+              c.peers.some((peer) => peer.id === context.publicKey),
+            )
+          : undefined) ?? clients.find((c) => c.username === context.nodeLabel);
+      // `vpn_keys` has a unique index on (node_id, node_label), so a label
+      // belongs to exactly one key. Delete every peer under it, not just the
+      // one that matched, so a stale peer from a rotation or an awg2/awg3
+      // merge cannot survive the revoke.
+      if (client) {
+        for (const peer of client.peers) {
+          await agent.deleteClient(peer.id, context.protocol);
+        }
+      }
+      // Absent still means success: the node-agent answers 404 for a peer that
+      // is already gone, and a revoke that cannot find its label has nothing
+      // to do.
       await repository.completeLifecycle(job.id, keyId, "revoked");
       return;
     }

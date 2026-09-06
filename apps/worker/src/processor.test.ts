@@ -730,12 +730,91 @@ describe("revoke job", () => {
       publicKey: "stale-public-key",
     });
     const agent = createAgent();
-    vi.mocked(agent.listClients).mockResolvedValue([]);
+    // A non-empty list of peers that match neither this key's label nor its
+    // public key - not an empty list, which would prove nothing about the
+    // filtering itself.
+    vi.mocked(agent.listClients).mockResolvedValue([
+      {
+        username: "unrelated-label",
+        peers: [
+          {
+            id: "unrelated-public-key",
+            name: null,
+            allowedIps: [],
+            lastHandshake: 0,
+            traffic: { received: 0, sent: 0 },
+            endpoint: null,
+            online: false,
+            expiresAt: null,
+            status: "active",
+            protocol: "amneziawg2",
+          },
+        ],
+      },
+    ]);
     const process = createJobProcessor({ repository, createNodeAgent: () => agent });
 
     await process(revokeJob);
 
     expect(agent.deleteClient).not.toHaveBeenCalled();
+    expect(repository.completeLifecycle).toHaveBeenCalledWith(
+      revokeJob.id,
+      "key-1",
+      "revoked",
+    );
+  });
+
+  it("resolves by public key first and deletes every peer under the label when it carries two peers", async () => {
+    const repository = createRepository();
+    vi.mocked(repository.loadKeyContext).mockResolvedValue({
+      ...keyContext,
+      publicKey: "current-public-key",
+    });
+    const agent = createAgent();
+    // One label, two peers, the stale one listed first - mid-rotation, or
+    // awg2/awg3 peers merged under one username by the node-agent.
+    // `client.peers[0]` would pick the stale peer; the fix must resolve by
+    // this key's public key instead, then delete both peers under the label
+    // (vpn_keys has a unique index on (node_id, node_label), so the label
+    // belongs to exactly this key).
+    vi.mocked(agent.listClients).mockResolvedValue([
+      {
+        username: keyContext.nodeLabel,
+        peers: [
+          {
+            id: "stale-public-key",
+            name: null,
+            allowedIps: [],
+            lastHandshake: 0,
+            traffic: { received: 0, sent: 0 },
+            endpoint: null,
+            online: false,
+            expiresAt: null,
+            status: "active",
+            protocol: "amneziawg2",
+          },
+          {
+            id: "current-public-key",
+            name: null,
+            allowedIps: [],
+            lastHandshake: 0,
+            traffic: { received: 0, sent: 0 },
+            endpoint: null,
+            online: false,
+            expiresAt: null,
+            status: "active",
+            protocol: "amneziawg2",
+          },
+        ],
+      },
+    ]);
+    const process = createJobProcessor({ repository, createNodeAgent: () => agent });
+
+    await process(revokeJob);
+
+    expect(agent.deleteClient).toHaveBeenCalledWith("current-public-key", "awg2");
+    expect(agent.deleteClient).toHaveBeenCalledWith("stale-public-key", "awg2");
+    expect(agent.deleteClient).toHaveBeenCalledTimes(2);
     expect(repository.completeLifecycle).toHaveBeenCalledWith(
       revokeJob.id,
       "key-1",
