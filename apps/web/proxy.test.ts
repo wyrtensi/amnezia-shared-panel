@@ -5,9 +5,11 @@ import {
   createLocalJWKSet,
   exportJWK,
   generateKeyPair,
+  jwtVerify,
+  type JSONWebKeySet,
   type JWTVerifyGetKey,
 } from "jose";
-import { createProxy } from "./proxy";
+import { createProxy, createResilientJwks } from "./proxy";
 import { SESSION_COOKIE, signSession } from "@/lib/session";
 
 const ISSUER = "https://example.cloudflareaccess.com";
@@ -151,5 +153,156 @@ describe("proxy — Cloudflare Access assertion", () => {
     const response = await proxy(requestWith({ header: token }));
 
     expect(redirectsToLogin(response)).toBe(true);
+  });
+});
+
+// `createResilientJwks` is the module-scope cache `resolveJwks` builds on top
+// of for the real (network) path. Every test above injects a pre-verified
+// `jwks` and never exercises this code at all, so it gets its own coverage
+// here with an injected `fetchJwks` and clock — modeled directly on
+// `apps/control-api/src/resilientJwks.test.ts`, which covers the same shape
+// for the control-api's copy.
+describe("createResilientJwks — JWKS cache", () => {
+  const jwksKeyMaterial = async (kid: string) => {
+    const { privateKey, publicKey } = await generateKeyPair("RS256");
+    const jwk = await exportJWK(publicKey);
+    return {
+      privateKey,
+      kid,
+      document: { keys: [{ ...jwk, kid, alg: "RS256" }] } as JSONWebKeySet,
+    };
+  };
+
+  const jwksTokenFor = (material: Awaited<ReturnType<typeof jwksKeyMaterial>>) =>
+    new SignJWT({ email: "person@example.com" })
+      .setProtectedHeader({ alg: "RS256", kid: material.kid })
+      .setSubject("cf-user")
+      .setIssuer(ISSUER)
+      .setAudience(AUDIENCE)
+      .setIssuedAt()
+      .setExpirationTime("5m")
+      .sign(material.privateKey);
+
+  const verifyWithJwks = (getKey: JWTVerifyGetKey, token: string) =>
+    jwtVerify(token, getKey, { issuer: ISSUER, audience: AUDIENCE });
+
+  it("fetches once and reuses the cached document within the cache window", async () => {
+    const material = await jwksKeyMaterial("k1");
+    const fetchJwks = vi.fn(() => Promise.resolve(material.document));
+    let now = 1_000_000;
+    const getKey = createResilientJwks({
+      fetchJwks,
+      cacheMaxAgeMs: 600_000,
+      staleMaxAgeMs: 86_400_000,
+      now: () => now,
+    });
+    const token = await jwksTokenFor(material);
+
+    await verifyWithJwks(getKey, token);
+    now += 599_000;
+    await verifyWithJwks(getKey, token);
+
+    // A key set refetched on every lookup turns any upstream hiccup into
+    // every page navigation failing, which is exactly the outage this cache
+    // exists to prevent.
+    expect(fetchJwks).toHaveBeenCalledTimes(1);
+  });
+
+  it("attempts a refresh once the cache window has elapsed", async () => {
+    const material = await jwksKeyMaterial("k1");
+    const fetchJwks = vi.fn(() => Promise.resolve(material.document));
+    let now = 1_000_000;
+    const getKey = createResilientJwks({
+      fetchJwks,
+      cacheMaxAgeMs: 600_000,
+      staleMaxAgeMs: 86_400_000,
+      now: () => now,
+    });
+    const token = await jwksTokenFor(material);
+
+    await verifyWithJwks(getKey, token);
+    now += 600_001;
+    await verifyWithJwks(getKey, token);
+
+    expect(fetchJwks).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps serving the last good document when a refresh fails, inside the stale window", async () => {
+    const material = await jwksKeyMaterial("k1");
+    const fetchJwks = vi
+      .fn<() => Promise<JSONWebKeySet>>()
+      .mockResolvedValueOnce(material.document)
+      .mockRejectedValue(new Error("ETIMEDOUT"));
+    let now = 1_000_000;
+    const getKey = createResilientJwks({
+      fetchJwks,
+      cacheMaxAgeMs: 600_000,
+      staleMaxAgeMs: 86_400_000,
+      now: () => now,
+    });
+    const token = await jwksTokenFor(material);
+    await verifyWithJwks(getKey, token);
+
+    now += 600_001;
+    await expect(verifyWithJwks(getKey, token)).resolves.toBeDefined();
+    expect(fetchJwks).toHaveBeenCalledTimes(2);
+  });
+
+  it("stops verifying past the stale window when refresh keeps failing, and the page gate redirects rather than 500s", async () => {
+    const material = await jwksKeyMaterial("k1");
+    const fetchJwks = vi
+      .fn<() => Promise<JSONWebKeySet>>()
+      .mockResolvedValueOnce(material.document)
+      .mockRejectedValue(new Error("ETIMEDOUT"));
+    let now = 1_000_000;
+    const getKey = createResilientJwks({
+      fetchJwks,
+      cacheMaxAgeMs: 600_000,
+      staleMaxAgeMs: 3_600_000,
+      now: () => now,
+    });
+
+    // Warm the cache with one good document.
+    await verifyWithJwks(getKey, await jwksTokenFor(material));
+
+    // Past the stale window: the cached document is no longer trusted, and
+    // the only refresh available keeps failing, so this lookup must fail...
+    now += 3_600_001;
+    await expect(verifyWithJwks(getKey, await jwksTokenFor(material))).rejects.toThrow();
+
+    // ...and driving that failure through the actual page gate must produce
+    // a redirect, never an unhandled 500 at a real user.
+    const proxy = createProxy({ jwks: getKey });
+    const response = await proxy(requestWith({ header: await signAssertion() }));
+    expect(redirectsToLogin(response)).toBe(true);
+  });
+
+  it("collapses a burst of concurrent lookups on an expired cache into exactly one fetch", async () => {
+    const material = await jwksKeyMaterial("k1");
+    let release: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const fetchJwks = vi.fn(async () => {
+      await gate;
+      return material.document;
+    });
+    const getKey = createResilientJwks({
+      fetchJwks,
+      cacheMaxAgeMs: 600_000,
+      staleMaxAgeMs: 86_400_000,
+      now: () => 1_000_000,
+    });
+    const token = await jwksTokenFor(material);
+
+    const verifications = [
+      verifyWithJwks(getKey, token),
+      verifyWithJwks(getKey, token),
+      verifyWithJwks(getKey, token),
+    ];
+    release?.();
+    await Promise.all(verifications);
+
+    expect(fetchJwks).toHaveBeenCalledTimes(1);
   });
 });

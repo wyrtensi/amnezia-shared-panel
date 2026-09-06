@@ -15,40 +15,52 @@ const CF_ACCESS_HEADER = "cf-access-jwt-assertion";
 const CACHE_MAX_AGE_MS = 10 * 60_000;
 const STALE_MAX_AGE_MS = 24 * 60 * 60_000;
 
+export type ResilientJwksOptions = {
+  /** Fetches and parses the JWKS document. Injected in tests to avoid the network. */
+  fetchJwks: () => Promise<JSONWebKeySet>;
+  /** How long a fetched document is trusted before asking again. */
+  cacheMaxAgeMs?: number;
+  /** How long a document may still be served after a refresh has failed. */
+  staleMaxAgeMs?: number;
+  now?: () => number;
+};
+
 /**
  * A JWKS lookup that survives Cloudflare's certs endpoint being briefly
- * unreachable, modeled on `apps/control-api/src/resilientJwks.ts`: `jose`'s
- * `createRemoteJWKSet` throws when a scheduled refresh fails, and this gate
- * runs on every page navigation, so a short network blip must not lock every
- * Cloudflare Access user out. `proxy.ts` always runs on Next.js's Node.js
- * runtime (the framework enforces this — it is not a `runtime` export choice
- * made here), which for a self-hosted deployment is a long-lived process, so
- * the module-scope cache below persists across requests exactly like it does
- * in the control-api.
+ * unreachable — a hand-copy of `apps/control-api/src/resilientJwks.ts`'s
+ * `createResilientJWKSet` (kept as a self-contained port rather than a shared
+ * import: `control-api` is not, and should not become, a dependency of `web`).
+ * `jose`'s `createRemoteJWKSet` throws when a scheduled refresh fails, and
+ * this gate runs on every page navigation, so a short network blip must not
+ * lock every Cloudflare Access user out. `proxy.ts` always runs on Next.js's
+ * Node.js runtime (the framework enforces this — it is not a `runtime`
+ * export choice made here), which for a self-hosted deployment is a
+ * long-lived process, so the module-scope cache built on top of this
+ * (`resolveJwks` below) persists across requests exactly like it does in the
+ * control-api.
+ *
+ * Exported so tests can inject a fake `fetchJwks` and clock and exercise the
+ * caching/staleness/dedup behaviour directly, instead of only through a
+ * pre-verified key set that never touches this code.
  */
-const createResilientJwks = (
-  issuer: string,
-  now: () => number = () => Date.now(),
-): JWTVerifyGetKey => {
+export const createResilientJwks = ({
+  fetchJwks,
+  cacheMaxAgeMs = CACHE_MAX_AGE_MS,
+  staleMaxAgeMs = STALE_MAX_AGE_MS,
+  now = () => Date.now(),
+}: ResilientJwksOptions): JWTVerifyGetKey => {
   let cached: { getKey: JWTVerifyGetKey; fetchedAt: number } | null = null;
   // One refresh at a time so a burst of requests arriving the moment the
   // cache expires doesn't become a burst of identical outbound fetches.
   let inFlight: Promise<void> | null = null;
 
   const refresh = async (): Promise<void> => {
-    const response = await fetch(new URL(`${issuer}/cdn-cgi/access/certs`), {
-      signal: AbortSignal.timeout(5_000),
-      headers: { accept: "application/jwk-set+json, application/json" },
-    });
-    if (!response.ok) {
-      throw new Error(`JWKS request failed with status ${response.status}`);
-    }
-    const document = (await response.json()) as JSONWebKeySet;
+    const document = await fetchJwks();
     cached = { getKey: createLocalJWKSet(document), fetchedAt: now() };
   };
 
   const ensureFresh = async (): Promise<void> => {
-    if (cached && now() - cached.fetchedAt <= CACHE_MAX_AGE_MS) return;
+    if (cached && now() - cached.fetchedAt <= cacheMaxAgeMs) return;
 
     inFlight ??= refresh().finally(() => {
       inFlight = null;
@@ -59,7 +71,7 @@ const createResilientJwks = (
     } catch (error) {
       // Serve the last good document rather than refusing every request,
       // unless it is old enough that continuing to trust it would be wrong.
-      if (cached && now() - cached.fetchedAt <= STALE_MAX_AGE_MS) return;
+      if (cached && now() - cached.fetchedAt <= staleMaxAgeMs) return;
       throw error;
     }
   };
@@ -71,13 +83,26 @@ const createResilientJwks = (
   };
 };
 
+/** Fetches and parses the JWKS document for an issuer over HTTP, with a timeout. */
+const fetchJwksOverHttp =
+  (issuer: string) => async (): Promise<JSONWebKeySet> => {
+    const response = await fetch(new URL(`${issuer}/cdn-cgi/access/certs`), {
+      signal: AbortSignal.timeout(5_000),
+      headers: { accept: "application/jwk-set+json, application/json" },
+    });
+    if (!response.ok) {
+      throw new Error(`JWKS request failed with status ${response.status}`);
+    }
+    return (await response.json()) as JSONWebKeySet;
+  };
+
 // One resilient key set per issuer, reused for the lifetime of this process.
 const jwksByIssuer = new Map<string, JWTVerifyGetKey>();
 
 const resolveJwks = (issuer: string): JWTVerifyGetKey => {
   let jwks = jwksByIssuer.get(issuer);
   if (!jwks) {
-    jwks = createResilientJwks(issuer);
+    jwks = createResilientJwks({ fetchJwks: fetchJwksOverHttp(issuer) });
     jwksByIssuer.set(issuer, jwks);
   }
   return jwks;
