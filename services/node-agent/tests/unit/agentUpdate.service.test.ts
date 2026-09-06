@@ -211,6 +211,29 @@ describe("AgentUpdateService", () => {
     await expect(svc.requestUpdate(IMAGE)).rejects.toMatchObject({ statusCode: 409 });
   });
 
+  it("accepts a second update once the first is past its deadline, and replaces the trigger", async () => {
+    // The host updater died without consuming request.json at all - the
+    // trigger and the pending marker are both still sitting there, both
+    // stale. A guard that only checks "does request.json exist" would 409
+    // forever with no way to recover but SSH; it must defer to the same
+    // deadline getStatus already uses to call this update dead.
+    const staleRequestedAt = new Date(Date.now() - 25 * 60 * 1000).toISOString();
+    await writeFile(
+      join(spool, "pending.json"),
+      JSON.stringify({ id: "stale-id", image: IMAGE, requestedAt: staleRequestedAt }),
+    );
+    await writeFile(
+      join(spool, "request.json"),
+      JSON.stringify({ id: "stale-id", image: IMAGE, requestedAt: staleRequestedAt }),
+    );
+
+    const NEW_IMAGE = `${REPO}@sha256:${"b".repeat(64)}`;
+    const { id } = await service().requestUpdate(NEW_IMAGE);
+
+    expect(await readJson("request.json")).toMatchObject({ id, image: NEW_IMAGE });
+    expect(await readJson("pending.json")).toMatchObject({ id, image: NEW_IMAGE });
+  });
+
   it("reports the outcome the updater wrote", async () => {
     const svc = service();
     const { id } = await svc.requestUpdate(IMAGE);

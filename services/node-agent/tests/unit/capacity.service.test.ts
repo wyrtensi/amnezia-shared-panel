@@ -74,6 +74,28 @@ describe("CapacityService.requestCapacity", () => {
       statusCode: 409,
     });
   });
+
+  it("accepts a second request once the first is past its deadline, and replaces the trigger", async () => {
+    // The host applier died without consuming request.json at all - the
+    // trigger and the pending marker are both still sitting there, both
+    // stale. A guard that only checks "does request.json exist" would 409
+    // forever with no way to recover but SSH; it must defer to the same
+    // deadline getStatus already uses to call this request dead.
+    const staleRequestedAt = new Date(Date.now() - 16 * 60 * 1000).toISOString();
+    await writeFile(
+      join(spoolDir, "pending.json"),
+      JSON.stringify({ id: "stale-id", maxPeers: 300, requestedAt: staleRequestedAt }),
+    );
+    await writeFile(
+      join(spoolDir, "request.json"),
+      JSON.stringify({ id: "stale-id", maxPeers: 300, requestedAt: staleRequestedAt }),
+    );
+
+    const { id } = await service().requestCapacity(400);
+
+    expect(await readSpool("request.json")).toMatchObject({ id, maxPeers: 400 });
+    expect(await readSpool("pending.json")).toMatchObject({ id, maxPeers: 400 });
+  });
 });
 
 describe("CapacityService.getStatus", () => {

@@ -121,14 +121,24 @@ export class AgentUpdateService {
       });
     }
 
-    // One change at a time. Mirrors CapacityService.requestCapacity: the
-    // updater pulls the image and recreates the container, so two requests
-    // racing would interleave those steps and the loser would read the
-    // winner's result as its own.
+    // One change at a time, but only while that change is still alive. Mirrors
+    // CapacityService.requestCapacity: the updater pulls the image and
+    // recreates the container, so two requests racing would interleave those
+    // steps and the loser would read the winner's result as its own. Once the
+    // pending marker is past isPastDeadline - the same test getStatus uses to
+    // stop reporting "running" - the host updater is presumed dead, so a new
+    // request must be able to replace the stale trigger rather than 409
+    // forever with no way for the panel to recover but SSH. A request.json
+    // with no readable pending.json (missing, or a requestedAt that will not
+    // parse) cannot be bounded, so it is treated the same as expired.
     if (await this.exists(REQUEST_FILE)) {
-      throw new APIError(ClientErrorCode.CONFLICT, {
-        msg: "services.server.UPDATE_IN_FLIGHT",
-      });
+      const pending = await this.readJson<PendingRequest>(PENDING_FILE);
+
+      if (!this.isPastDeadline(pending?.requestedAt)) {
+        throw new APIError(ClientErrorCode.CONFLICT, {
+          msg: "services.server.UPDATE_IN_FLIGHT",
+        });
+      }
     }
 
     const request = {
