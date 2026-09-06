@@ -334,8 +334,12 @@ const ru = {
     "В приложении AmneziaWG используйте импорт по QR-коду — это обычный конфиг WireGuard, а не контейнерный формат приложения AmneziaVPN",
   "config.qrAppWarning":
     "Этот код понимает только само приложение. Обычная камера его не откроет.",
+  "config.qrAwgWarning":
+    "Обычная камера прочитает этот код, но покажет только текст конфига — импорт сработает только через QR-сканер в самом приложении AmneziaWG.",
   "config.qrSwitchToApp":
     "Сканируете из самого приложения (AmneziaVPN или Default VPN)? Откройте код для приложения",
+  "config.qrSwitchToAwg":
+    "Используете приложение AmneziaWG? Откройте код для него",
   "config.qrSwitchToCamera":
     "Сканируете обычной камерой телефона? Вернитесь к коду для камеры",
   "config.qrFrameModeAria": "Режим показа кадров",
@@ -1536,8 +1540,12 @@ const en = {
     "In the AmneziaWG app, use its QR import — this is a plain WireGuard config, not the AmneziaVPN app's container format",
   "config.qrAppWarning":
     "Only the app itself can read this code. A plain camera app cannot.",
+  "config.qrAwgWarning":
+    "A plain camera can scan this code, but it only shows the raw config text — importing it needs AmneziaWG's own QR scanner.",
   "config.qrSwitchToApp":
     "Scanning from inside the app (AmneziaVPN or Default VPN)? Open the code for the app",
+  "config.qrSwitchToAwg":
+    "Using the AmneziaWG app? Open its code",
   "config.qrSwitchToCamera":
     "Scanning with your phone's ordinary camera? Go back to the camera code",
   "config.qrFrameModeAria": "How the frames are shown",

@@ -61,7 +61,7 @@ export type ConfigTarget = {
  * paste/import path, never on the scan path), and no camera app can read the
  * chunk envelope.
  */
-type QrAudience = "app" | "awg" | "camera";
+export type QrAudience = "app" | "awg" | "camera";
 
 /** Tab order: the in-app scanner leads, AmneziaWG is second, the camera is the fallback. */
 const QR_AUDIENCES = ["app", "awg", "camera"] as const;
@@ -73,6 +73,18 @@ const QR_AUDIENCES = ["app", "awg", "camera"] as const;
  */
 const usesFrames = (audience: QrAudience): boolean => audience === "app";
 
+/**
+ * Whether a plain phone camera pointed at this audience's code does nothing
+ * useful. `app`'s chunk envelope is illegible to a camera at all -- one frame
+ * of it decodes to a meaningless partial payload. `awg`'s code is a valid QR
+ * of plain WireGuard-config text, so a camera decodes it fine, but the result
+ * is inert text with no scheme to act on -- the same dead end as `app`, just
+ * reached differently. Only `camera`'s own code is genuinely meant for this:
+ * it is the `vpn://` link a camera app resolves as an actionable deep link.
+ */
+export const needsCameraWarning = (audience: QrAudience): boolean =>
+  audience !== "camera";
+
 /** Copy per audience, kept in one place so a new client is three strings. */
 const QR_AUDIENCE_LABEL_KEYS: Record<QrAudience, MessageKey> = {
   app: "config.qrForApp",
@@ -81,13 +93,35 @@ const QR_AUDIENCE_LABEL_KEYS: Record<QrAudience, MessageKey> = {
 };
 const QR_AUDIENCE_WARNING_KEYS: Record<QrAudience, MessageKey> = {
   app: "config.qrAppWarning",
-  awg: "config.qrAppWarning", // unused: awg needs no warning, same reason as camera.
-  camera: "config.qrAppWarning", // unused: the camera code needs no warning.
+  awg: "config.qrAwgWarning",
+  // Unused: needsCameraWarning excludes "camera" precisely because its code
+  // is the one payload a plain camera app resolves into something actionable.
+  camera: "config.qrAppWarning",
 };
 const QR_AUDIENCE_HINT_KEYS: Record<QrAudience, MessageKey> = {
   app: "config.qrHintApp",
   awg: "config.qrHintAwg",
   camera: "config.qrHint",
+};
+
+/**
+ * The "wrong tool" recovery: from any tab, the OTHER two audiences, each
+ * named by its own tool. A two-way toggle cannot do this once there are three
+ * tabs -- whichever single destination it picks is wrong for one of the two
+ * possible "actually holding a different tool" cases (e.g. a fixed toggle
+ * that always lands on `app` sends an AmneziaWG user to a code AmneziaWG
+ * cannot read either). Listing both remaining tools and letting the user pick
+ * keeps every offered destination genuinely readable by the tool it is
+ * labelled for.
+ */
+export const qrRecoveryTargets = (current: QrAudience): QrAudience[] =>
+  QR_AUDIENCES.filter((audience) => audience !== current);
+
+/** Recovery-link copy per destination audience, independent of which tab is open. */
+const QR_AUDIENCE_SWITCH_KEYS: Record<QrAudience, MessageKey> = {
+  app: "config.qrSwitchToApp",
+  awg: "config.qrSwitchToAwg",
+  camera: "config.qrSwitchToCamera",
 };
 
 /** The two display modes for a multi-frame series. */
@@ -509,10 +543,10 @@ export function ConfigDownloadDialog({
                   </div>
                 </div>
 
-                {usesFrames(qrFor) ? (
+                {needsCameraWarning(qrFor) ? (
                   // Permanent and non-dismissible on purpose: this code is
-                  // unreadable by any camera app, and that has to be visible in
-                  // the same glance as the code itself.
+                  // useless to a plain camera app, and that has to be visible
+                  // in the same glance as the code itself.
                   <p className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-center text-xs text-amber-900">
                     {t(QR_AUDIENCE_WARNING_KEYS[qrFor])}
                   </p>
@@ -595,23 +629,26 @@ export function ConfigDownloadDialog({
                   {t("config.qrZoomHint")}
                 </p>
                 {/*
-                  The wrong-tool recovery, permanent and one click. With three
-                  tabs it stays a two-way switch between the two things that are
-                  actually different — an in-app scanner and a camera app —
-                  because that is the mistake it exists to undo. Switching
-                  between the two app tabs changes no code, only the wording.
+                  The wrong-tool recovery, permanent and one click per
+                  alternative. A two-way toggle cannot name a correct
+                  destination once there are three tools, so this lists the
+                  OTHER two by name and lets the user pick the one they are
+                  actually holding -- each label names its own tool, so it
+                  stays true no matter which tab is currently open, and it
+                  never offers a code the named tool cannot read.
                 */}
-                <button
-                  type="button"
-                  onClick={() => setQrFor(usesFrames(qrFor) ? "camera" : "app")}
-                  className="mx-auto block text-center text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground"
-                >
-                  {t(
-                    usesFrames(qrFor)
-                      ? "config.qrSwitchToCamera"
-                      : "config.qrSwitchToApp",
-                  )}
-                </button>
+                <div className="mx-auto flex flex-col items-center gap-1">
+                  {qrRecoveryTargets(qrFor).map((audience) => (
+                    <button
+                      key={audience}
+                      type="button"
+                      onClick={() => setQrFor(audience)}
+                      className="text-center text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground"
+                    >
+                      {t(QR_AUDIENCE_SWITCH_KEYS[audience])}
+                    </button>
+                  ))}
+                </div>
               </div>
               )
             ) : null}
@@ -702,7 +739,7 @@ export function ConfigDownloadDialog({
                 }}
                 className="fixed inset-0 z-[60] flex flex-col items-center justify-center gap-2 bg-white p-2"
               >
-                {usesFrames(qrFor) ? (
+                {needsCameraWarning(qrFor) ? (
                   <p className="max-w-[90vw] shrink-0 text-center text-xs text-neutral-700">
                     {t(QR_AUDIENCE_WARNING_KEYS[qrFor])}
                   </p>
