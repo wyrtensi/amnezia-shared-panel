@@ -142,6 +142,98 @@ describe("AgentUpdateService", () => {
     expect(await svc.getStatus()).toMatchObject({ state: "running", image: IMAGE });
   });
 
+  it("gives up on an update the host updater never answered", async () => {
+    // Well past UPDATE_DEADLINE_MS, no request.json (the updater consumed it)
+    // and no result.json (it never wrote one back) - the realistic shape of a
+    // host helper that died mid-run.
+    const staleRequestedAt = new Date(Date.now() - 25 * 60 * 1000).toISOString();
+    await writeFile(
+      join(spool, "pending.json"),
+      JSON.stringify({ id: "stale-id", image: IMAGE, requestedAt: staleRequestedAt }),
+    );
+
+    const status = await service().getStatus();
+    expect(status.state).toBe("failed");
+    expect(status.message).toMatch(/without writing a result/);
+    expect(status.updatedAt).not.toBeNull();
+  });
+
+  it("still reports running inside the deadline", async () => {
+    const recentRequestedAt = new Date(Date.now() - 60 * 1000).toISOString();
+    await writeFile(
+      join(spool, "pending.json"),
+      JSON.stringify({ id: "recent-id", image: IMAGE, requestedAt: recentRequestedAt }),
+    );
+
+    expect(await service().getStatus()).toMatchObject({ state: "running", image: IMAGE });
+  });
+
+  it("a result the updater wrote late still beats the deadline", async () => {
+    // The pending marker is stale enough to have expired on its own, but a
+    // result matching its id arrived anyway - that outcome must win.
+    const staleRequestedAt = new Date(Date.now() - 25 * 60 * 1000).toISOString();
+    await writeFile(
+      join(spool, "pending.json"),
+      JSON.stringify({ id: "late-id", image: IMAGE, requestedAt: staleRequestedAt }),
+    );
+    await writeFile(
+      join(spool, "result.json"),
+      JSON.stringify({
+        id: "late-id",
+        finishedAt: "2026-09-05T10:00:00Z",
+        ok: true,
+        image: IMAGE,
+        message: "updated",
+      }),
+    );
+
+    expect(await service().getStatus()).toMatchObject({ state: "succeeded", image: IMAGE });
+  });
+
+  it("treats a pending marker it cannot date as expired", async () => {
+    // A requestedAt that will not parse gives NaN, and a pending marker that
+    // cannot be dated is exactly the one that cannot be bounded - fail closed.
+    await writeFile(
+      join(spool, "pending.json"),
+      JSON.stringify({ id: "undatable-id", image: IMAGE, requestedAt: "not a date" }),
+    );
+
+    expect(await service().getStatus()).toMatchObject({ state: "failed" });
+  });
+
+  it("refuses a second update while one is still in flight", async () => {
+    // Mirrors CapacityService's "refuses a second request while one is still
+    // in flight": the updater pulls the image and recreates the container, so
+    // two requests racing would interleave those steps.
+    const svc = service();
+    await svc.requestUpdate(IMAGE);
+
+    await expect(svc.requestUpdate(IMAGE)).rejects.toMatchObject({ statusCode: 409 });
+  });
+
+  it("accepts a second update once the first is past its deadline, and replaces the trigger", async () => {
+    // The host updater died without consuming request.json at all - the
+    // trigger and the pending marker are both still sitting there, both
+    // stale. A guard that only checks "does request.json exist" would 409
+    // forever with no way to recover but SSH; it must defer to the same
+    // deadline getStatus already uses to call this update dead.
+    const staleRequestedAt = new Date(Date.now() - 25 * 60 * 1000).toISOString();
+    await writeFile(
+      join(spool, "pending.json"),
+      JSON.stringify({ id: "stale-id", image: IMAGE, requestedAt: staleRequestedAt }),
+    );
+    await writeFile(
+      join(spool, "request.json"),
+      JSON.stringify({ id: "stale-id", image: IMAGE, requestedAt: staleRequestedAt }),
+    );
+
+    const NEW_IMAGE = `${REPO}@sha256:${"b".repeat(64)}`;
+    const { id } = await service().requestUpdate(NEW_IMAGE);
+
+    expect(await readJson("request.json")).toMatchObject({ id, image: NEW_IMAGE });
+    expect(await readJson("pending.json")).toMatchObject({ id, image: NEW_IMAGE });
+  });
+
   it("reports the outcome the updater wrote", async () => {
     const svc = service();
     const { id } = await svc.requestUpdate(IMAGE);
@@ -197,6 +289,16 @@ describe("AgentUpdateService", () => {
     expect(status.log.length).toBeLessThanOrEqual(64 * 1024);
     // Keep the end: a failure's reason is on the last lines, not the first.
     expect(status.log.endsWith("x")).toBe(true);
+  });
+
+  it("caps a multi-byte log by bytes, not by UTF-16 code units", async () => {
+    // The leading "a" shifts every following 4-byte emoji off alignment with
+    // the cap, forcing the byte cut to land inside one.
+    await writeFile(join(spool, "update.log"), "a" + "\u{1F642}".repeat(20_000), "utf8");
+
+    const status = await service().getStatus();
+    expect(Buffer.byteLength(status.log, "utf8")).toBeLessThanOrEqual(64 * 1024);
+    expect(status.log).not.toContain("�");
   });
 
   it("survives a spool whose files are unreadable or malformed", async () => {

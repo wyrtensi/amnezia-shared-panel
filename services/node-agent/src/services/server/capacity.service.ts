@@ -7,6 +7,7 @@ import appConfig from "@/constants/appConfig";
 import { appLogger } from "@/config/winstonLogger";
 import { CapacityState, CapacityStatus } from "@/types/server";
 import { APIError } from "@/utils/APIError";
+import { MAX_LOG_BYTES, readLogTail } from "@/utils/logTail";
 import { ClientErrorCode, ServerErrorCode } from "@/types/shared";
 
 /** The trigger the host-side path unit watches. Deleted by the applier. */
@@ -17,8 +18,19 @@ const PENDING_FILE = "pending.json";
 const RESULT_FILE = "result.json";
 const LOG_FILE = "apply.log";
 
-/** A failure's reason is on the last lines, so the tail is what is kept. */
-const MAX_LOG_BYTES = 64 * 1024;
+/**
+ * How long a `pending.json` is allowed to go without a matching `result.json`
+ * before the agent declares it dead rather than "running".
+ *
+ * infra/node/systemd/amnezia-node-capacity.service sets TimeoutStartSec=600
+ * (no image pull here, but set-capacity.sh recreates the agent and waits on
+ * its health gate, restoring the previous value if that gate fails). This
+ * must sit above that so systemd has already given up on the unit before the
+ * agent gives up on the request; the ~5 minute margin covers systemd's own
+ * SIGTERM-then-SIGKILL grace period past TimeoutStartSec plus ordinary
+ * clock/scheduling slack.
+ */
+const CAPACITY_DEADLINE_MS = 15 * 60 * 1000;
 
 /**
  * Largest capacity this agent will pass on.
@@ -121,13 +133,24 @@ export class CapacityService {
       });
     }
 
-    // One change at a time. The applier edits .env and recreates a container;
-    // two requests racing would interleave those steps, and the loser would
-    // read the winner's result as its own.
+    // One change at a time, but only while that change is still alive. The
+    // applier edits .env and recreates a container; two requests racing would
+    // interleave those steps, and the loser would read the winner's result as
+    // its own. Once the pending marker is past isPastDeadline - the same test
+    // getStatus uses to stop reporting "running" - the host applier is
+    // presumed dead, so a new request must be able to replace the stale
+    // trigger rather than 409 forever with no way for the panel to recover
+    // but SSH. A request.json with no readable pending.json (missing, or a
+    // requestedAt that will not parse) cannot be bounded, so it is treated the
+    // same as expired.
     if (await this.exists(REQUEST_FILE)) {
-      throw new APIError(ClientErrorCode.CONFLICT, {
-        msg: "services.server.CAPACITY_IN_FLIGHT",
-      });
+      const pending = await this.readJson<PendingRequest>(PENDING_FILE);
+
+      if (!this.isPastDeadline(pending?.requestedAt)) {
+        throw new APIError(ClientErrorCode.CONFLICT, {
+          msg: "services.server.CAPACITY_IN_FLIGHT",
+        });
+      }
     }
 
     const request = {
@@ -171,7 +194,7 @@ export class CapacityService {
       this.exists(REQUEST_FILE),
       this.readJson<PendingRequest>(PENDING_FILE),
       this.readJson<SpoolResult>(RESULT_FILE),
-      this.readLogTail(),
+      readLogTail(this.spoolPath(LOG_FILE), MAX_LOG_BYTES),
     ]);
 
     const resultIsForPending = Boolean(
@@ -180,28 +203,49 @@ export class CapacityService {
 
     let state: CapacityState = "idle";
     let requestedMaxPeers: number | null = null;
+    let message: string | null = null;
+    let updatedAt: string | null = null;
 
-    if (hasRequest) {
-      state = "requested";
-      requestedMaxPeers = pending?.maxPeers ?? null;
-    } else if (pending?.id && !resultIsForPending) {
-      state = "running";
-      requestedMaxPeers = pending.maxPeers ?? null;
+    if (pending?.id && !resultIsForPending) {
+      // Unresolved: either the trigger is still there (requested) or it has
+      // been consumed with no result yet (running). Both windows share one
+      // deadline - a masked or stopped .path unit can pin either state
+      // forever otherwise, and the worker re-polls the node on every tick
+      // while it sits in one of them.
+      if (this.isPastDeadline(pending.requestedAt)) {
+        state = "failed";
+        requestedMaxPeers = pending.maxPeers ?? null;
+        message = "The host applier exited without writing a result before the deadline.";
+        updatedAt = new Date().toISOString();
+      } else {
+        state = hasRequest ? "requested" : "running";
+        requestedMaxPeers = pending.maxPeers ?? null;
+      }
     } else if (result) {
       state = result.ok ? "succeeded" : "failed";
       requestedMaxPeers = result.maxPeers ?? pending?.maxPeers ?? null;
+      message = result.message ?? null;
+      updatedAt = result.finishedAt ?? null;
     }
 
-    return {
-      state,
-      requestedMaxPeers,
-      log,
-      updatedAt:
-        state === "succeeded" || state === "failed"
-          ? (result?.finishedAt ?? null)
-          : null,
-      message: result?.message ?? null,
-    };
+    return { state, requestedMaxPeers, log, updatedAt, message };
+  }
+
+  /**
+   * Whether `requestedAt` is far enough in the past that the host applier
+   * must be considered dead rather than merely slow.
+   *
+   * `now < deadline` is false both when the deadline has passed AND when
+   * `deadline` is NaN - an unparseable or missing `requestedAt` makes
+   * `Date.parse` return NaN, and NaN compares false to every number. That is
+   * deliberate: a pending marker this agent cannot date is exactly the one it
+   * cannot bound, so it must fail closed as expired rather than as "still
+   * running".
+   */
+  private isPastDeadline(requestedAt: string | undefined): boolean {
+    const deadline = Date.parse(requestedAt ?? "") + CAPACITY_DEADLINE_MS;
+
+    return !(Date.now() < deadline);
   }
 
   private assertAvailable(): void {
@@ -257,16 +301,6 @@ export class CapacityService {
       return parsed && typeof parsed === "object" ? (parsed as T) : null;
     } catch {
       return null;
-    }
-  }
-
-  private async readLogTail(): Promise<string> {
-    try {
-      const raw = await fs.readFile(this.spoolPath(LOG_FILE), "utf8");
-
-      return raw.length > MAX_LOG_BYTES ? raw.slice(-MAX_LOG_BYTES) : raw;
-    } catch {
-      return "";
     }
   }
 }
