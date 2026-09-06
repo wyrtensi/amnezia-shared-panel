@@ -1,9 +1,10 @@
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { and, count, desc, eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import {
   defaultKeyNameDisplay,
   idleAccessSyncStatus,
+  revokeJobDedupKey,
   WORKER_PERIOD_FIELD_NAMES,
 } from "@amnezia/contracts";
 import type { KeyLimitMode } from "@amnezia/contracts";
@@ -3198,6 +3199,137 @@ describe("PostgresControlRepository revoke retries", () => {
     expect(failure?.code).toBe("KEY_NOT_FOUND");
     expect(await revokeJobsFor(keyId)).toBe(0);
   });
+});
+
+describe("PostgresControlRepository offboard revoke states", () => {
+  const database = databaseUrl ? createDatabase(databaseUrl) : null;
+  const keyring = { 1: randomBytes(32) };
+  let nodeId: string;
+  let admin: Actor;
+
+  beforeAll(async () => {
+    if (!database) return;
+    await database.db.delete(portalPolicy);
+    await database.db.insert(portalPolicy).values({});
+    const credentials = encryptSecret("api-key", keyring, 1);
+    const label = encryptSecret("label-secret", keyring, 1);
+    const [node] = await database.db
+      .insert(nodes)
+      .values({
+        name: "offboard-states-node",
+        apiBaseUrl: "http://127.0.0.1:4001",
+        credentialsCiphertext: credentials.ciphertext,
+        credentialsNonce: credentials.nonce,
+        credentialsAuthTag: credentials.authTag,
+        credentialsKeyVersion: credentials.keyVersion,
+        labelSecretCiphertext: label.ciphertext,
+        labelSecretNonce: label.nonce,
+        labelSecretAuthTag: label.authTag,
+        labelSecretKeyVersion: label.keyVersion,
+      })
+      .returning();
+    if (!node) throw new Error("Failed to seed node");
+    nodeId = node.id;
+    const [adminUser] = await database.db
+      .insert(users)
+      .values({ email: "offboard-states-admin@example.com", role: "admin" })
+      .returning();
+    if (!adminUser) throw new Error("Failed to seed admin");
+    admin = {
+      id: adminUser.id,
+      email: adminUser.email,
+      displayName: null,
+      role: "admin",
+      status: "active",
+    };
+  });
+
+  afterAll(async () => {
+    if (!database) return;
+    await database.db.delete(users).where(eq(users.id, admin.id));
+    await database.client.end();
+  });
+
+  const subject = (): PostgresControlRepository => {
+    if (!database) throw new Error("No database");
+    return new PostgresControlRepository({ db: database.db, keyring });
+  };
+
+  /** A regular user, with one key of theirs seeded straight into `state`. */
+  const seedUserWithKey = async (
+    state: "provisioning" | "active" | "disabled" | "revoking" | "failed",
+  ): Promise<{ userId: string; keyId: string }> => {
+    if (!database) throw new Error("No database");
+    const suffix = randomBytes(6).toString("hex");
+    const [user] = await database.db
+      .insert(users)
+      .values({ email: `offboard-states-${suffix}@example.com` })
+      .returning();
+    if (!user) throw new Error("Failed to seed user");
+    const [key] = await database.db
+      .insert(vpnKeys)
+      .values({
+        ownerId: user.id,
+        nodeId,
+        publicKey: `pk-${suffix}`,
+        nodeLabel: `ap_offboard_${suffix}`,
+        protocol: "awg2",
+        state,
+        routeProfile: "full_tunnel",
+      })
+      .returning({ id: vpnKeys.id });
+    if (!key) throw new Error("Failed to seed key");
+    return { userId: user.id, keyId: key.id };
+  };
+
+  const revokeJobsFor = async (keyId: string): Promise<number> => {
+    if (!database) throw new Error("No database");
+    const rows = await database.db
+      .select({ payload: jobOutbox.payload })
+      .from(jobOutbox)
+      .where(eq(jobOutbox.type, "vpn-key.revoke"));
+    return rows.filter((row) => row.payload.keyId === keyId).length;
+  };
+
+  runDatabaseTest(
+    "offboard queues a revoke for a key that failed to provision",
+    async () => {
+      if (!database) return;
+      const { userId, keyId } = await seedUserWithKey("failed");
+
+      await subject().adminAction(admin, "users", userId, "offboard", {});
+
+      const [key] = await database.db
+        .select({ state: vpnKeys.state })
+        .from(vpnKeys)
+        .where(eq(vpnKeys.id, keyId));
+      expect(key?.state).toBe("revoking");
+      expect(await revokeJobsFor(keyId)).toBe(1);
+    },
+  );
+
+  runDatabaseTest(
+    "offboard queues a fresh job for a key already in revoking",
+    async () => {
+      if (!database) return;
+      const { userId, keyId } = await seedUserWithKey("revoking");
+      // A previous revoke attempt for this key already gave up.
+      await database.db.insert(jobOutbox).values({
+        type: "vpn-key.revoke",
+        deduplicationKey: revokeJobDedupKey(keyId, randomUUID()),
+        payload: { keyId },
+        status: "failed",
+        lastError: "node unreachable",
+      });
+
+      await subject().adminAction(admin, "users", userId, "offboard", {});
+
+      // This is the regression Fix 1 prevents: against the old fixed
+      // deduplication key, the insert below would have conflicted with the
+      // failed row above and been silently dropped.
+      expect(await revokeJobsFor(keyId)).toBe(2);
+    },
+  );
 });
 
 describe("PostgresControlRepository internal key name", () => {

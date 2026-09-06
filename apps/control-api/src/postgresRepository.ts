@@ -2621,7 +2621,19 @@ export class PostgresControlRepository implements ControlRepository {
           .update(vpnKeys)
           .set({ state: "revoking", updatedAt: new Date() })
           .where(
-            and(eq(vpnKeys.ownerId, targetId), inArray(vpnKeys.state, quotaStates)),
+            and(
+              eq(vpnKeys.ownerId, targetId),
+              // `revocableStates` (REVOCABLE_KEY_STATES from the contract),
+              // not the narrower `quotaStates` this used before: that left out
+              // `failed`, so an offboarded user could keep a key that had
+              // failed to provision forever, exactly like the worker's own
+              // disableAndRevoke is meant to prevent. It also reaches
+              // `revoking`, which disableAndRevoke does not select from --
+              // queuing a second job for a key already mid-revoke is safe
+              // here only because Fix 1 gave every revoke attempt its own
+              // deduplication key.
+              inArray(vpnKeys.state, revocableStates),
+            ),
           )
           .returning({ id: vpnKeys.id });
         for (const key of keysToRevoke) {
