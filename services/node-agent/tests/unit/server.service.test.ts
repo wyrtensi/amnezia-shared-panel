@@ -110,6 +110,7 @@ beforeEach(() => {
   appConfig.PROTOCOLS_ENABLED = [
     Protocol.AMNEZIAWG,
     Protocol.AMNEZIAWG2,
+    Protocol.AMNEZIAWG3,
     Protocol.XRAY,
   ];
 });
@@ -134,8 +135,13 @@ describe("ServerService", () => {
       region: "test-region",
       weight: 150,
       maxPeers: 200,
-      totalPeers: 6,
-      protocols: [Protocol.AMNEZIAWG, Protocol.AMNEZIAWG2, Protocol.XRAY],
+      totalPeers: 8,
+      protocols: [
+        Protocol.AMNEZIAWG,
+        Protocol.AMNEZIAWG2,
+        Protocol.AMNEZIAWG3,
+        Protocol.XRAY,
+      ],
       publicHost: "127.0.0.1",
       // Read from the live interface config, not assumed from the protocol:
       // a node whose port was changed on the host stops being a mystery.
@@ -180,11 +186,10 @@ describe("ServerService", () => {
     });
     expect(load.agent).toEqual({ pidsCurrent: 12, pidsMax: 128 });
 
-    // The fixture enables amneziawg2 but not amneziawg3, and the payload must
-    // say so rather than reporting a down interface for a protocol this node
-    // was never asked to run.
+    // The fixture enables both amneziawg2 and amneziawg3, so both interfaces
+    // report a live state rather than the null a disabled protocol would get.
     expect(load.awg.amneziawg2).toEqual({ up: true, peers: expect.any(Number) });
-    expect(load.awg.amneziawg3).toBeNull();
+    expect(load.awg.amneziawg3).toEqual({ up: true, peers: expect.any(Number) });
   });
 
   // Тестирование экспорта резервной копии всех протоколов
@@ -198,10 +203,12 @@ describe("ServerService", () => {
     expect(backup.protocols).toEqual([
       Protocol.AMNEZIAWG,
       Protocol.AMNEZIAWG2,
+      Protocol.AMNEZIAWG3,
       Protocol.XRAY,
     ]);
     expect(backup.amnezia).toEqual(createAmneziaBackupFixture());
     expect(backup.amneziaWg2).toEqual(createAmneziaBackupFixture());
+    expect(backup.amneziaWg3).toEqual(createAmneziaBackupFixture());
     expect(backup.xray).toMatchObject({
       uuid: "server-uuid",
       publicKey: "xray-public-key",
