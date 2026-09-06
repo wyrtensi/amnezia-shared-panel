@@ -72,12 +72,16 @@ Cloudflare Access:
    **`Cf-Access-Jwt-Assertion`** header on every request to the origin.
 2. `apps/web` forwards that header verbatim to the control-api
    (`apps/web/app/api/control/[...path]/route.ts` and `apps/web/lib/server-api.ts`).
-3. `apps/control-api` **cryptographically verifies** the JWT in
-   `apps/control-api/src/cloudflareAccess.ts` — it fetches Cloudflare's JWKS from
-   `<issuer>/cdn-cgi/access/certs`, checks `issuer`, `audience`, and `RS256`,
-   then reads the `email` claim (lower-cased) as the user identity. The verify
-   happens in the API, so the API does not blindly trust the proxy — defense in
-   depth.
+3. Two things **cryptographically verify** that JWT independently, and neither
+   trusts the header on its own — that is the actual defense in depth:
+   `apps/web/proxy.ts` (the page gate) checks it before rendering any page, and
+   `apps/control-api/src/cloudflareAccess.ts` checks it again before answering
+   any API call. Both fetch Cloudflare's JWKS from `<issuer>/cdn-cgi/access/certs`
+   and check `issuer` (`CF_ACCESS_ISSUER`), `audience` (`CF_ACCESS_AUDIENCE`),
+   and `RS256`; the control-api additionally reads the `email` claim
+   (lower-cased) as the user identity. The panel's other door, direct Google
+   login, is verified the same way it was issued: `apps/web/lib/session.ts`
+   checks the `panel_session` JWT against `PANEL_IDENTITY_SECRET`.
 4. On first request the control repository auto-provisions that email as a user.
    If the email is in **`BOOTSTRAP_ADMIN_EMAILS`** (control-api env, comma-
    separated, lower-cased), the account is promoted to `admin`. This is how the
