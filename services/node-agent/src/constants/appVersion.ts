@@ -16,6 +16,28 @@ import { join } from "node:path";
  */
 const packageJsonPath = join(__dirname, "..", "..", "package.json");
 
-export const APP_VERSION: string = JSON.parse(
-  readFileSync(packageJsonPath, "utf8"),
-).version;
+/**
+ * Pull `version` out of a parsed package.json and confirm it is a non-empty
+ * string. Exported separately from the file read so it can be exercised with
+ * a fabricated object in tests, without touching the real package.json.
+ */
+export function extractVersion(pkg: unknown, sourcePath: string): string {
+  const value = (pkg as { version?: unknown } | null)?.version;
+
+  // Crash at startup rather than let `undefined` wear the `string` type: this
+  // value is about to go on the wire via GET /server and be persisted by the
+  // panel, so an agent that cannot say what it is has nothing useful to
+  // report, and failing loudly at boot beats silently serving "undefined".
+  if (typeof value !== "string" || value.length === 0) {
+    throw new Error(
+      `${sourcePath}: "version" field is missing or not a non-empty string`,
+    );
+  }
+
+  return value;
+}
+
+export const APP_VERSION: string = extractVersion(
+  JSON.parse(readFileSync(packageJsonPath, "utf8")),
+  packageJsonPath,
+);
