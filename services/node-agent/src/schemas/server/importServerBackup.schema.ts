@@ -46,6 +46,9 @@ const amneziaPayloadSchema = {
               expiresAt: {
                 type: "number",
               },
+              allowedIp: {
+                type: "string",
+              },
             },
           },
         },
@@ -137,6 +140,7 @@ export const importServerBackupSchema = {
       },
       amnezia: amneziaPayloadSchema,
       amneziaWg2: amneziaPayloadSchema,
+      amneziaWg3: amneziaPayloadSchema,
       xray: xrayPayloadSchema,
     },
     allOf: [
@@ -166,6 +170,20 @@ export const importServerBackupSchema = {
         },
         then: {
           required: ["amneziaWg2"],
+        },
+      },
+      {
+        if: {
+          properties: {
+            protocols: {
+              type: "array",
+              contains: { const: Protocol.AMNEZIAWG3 },
+            },
+          },
+          required: ["protocols"],
+        },
+        then: {
+          required: ["amneziaWg3"],
         },
       },
       {

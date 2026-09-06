@@ -41,4 +41,70 @@ describe("server backup routes", () => {
     expect(response.statusCode).toBe(200);
     expect(response.json().amneziaWg3).toEqual(createAmneziaBackupFixture());
   });
+
+  // The import half of the same gap. An unknown property is not validated, so
+  // a half-built payload reached the service and was written to the node's own
+  // config. The schema must refuse it before the service ever sees it.
+  it("refuses an AmneziaWG 3.1 payload missing its config", async () => {
+    const importBackup = vi.fn(async () => undefined);
+    app = await createServerTestApp({
+      importBackup,
+      getServerStatus: vi.fn(async () => ({}) as never),
+    });
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/server/backup",
+      headers: AUTH_HEADERS,
+      payload: {
+        generatedAt: "2026-09-07T00:00:00.000Z",
+        serverId: "test-server-id",
+        protocols: [Protocol.AMNEZIAWG3],
+        amneziaWg3: { presharedKey: "psk", serverPublicKey: "pub", clients: [] },
+      },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(importBackup).not.toHaveBeenCalled();
+  });
+
+  it("accepts a complete AmneziaWG 3.1 payload", async () => {
+    const importBackup = vi.fn(async () => undefined);
+    app = await createServerTestApp({
+      importBackup,
+      // The handler replies with getServerStatus()'s result, and that reply is
+      // serialized against getServerSchema's response schema, which requires
+      // these fields. Unrelated to the payload under test, but needed so the
+      // route reaches 200 instead of failing serialization.
+      getServerStatus: vi.fn(
+        async () =>
+          ({
+            id: "test-server-id",
+            region: "test-region",
+            weight: 100,
+            maxPeers: 10,
+            totalPeers: 0,
+            protocols: [Protocol.AMNEZIAWG3],
+            publicHost: "test-public-host",
+          }) as never,
+      ),
+    });
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/server/backup",
+      headers: AUTH_HEADERS,
+      payload: {
+        generatedAt: "2026-09-07T00:00:00.000Z",
+        serverId: "test-server-id",
+        protocols: [Protocol.AMNEZIAWG3],
+        amneziaWg3: createAmneziaBackupFixture(),
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(importBackup).toHaveBeenCalledWith(
+      expect.objectContaining({ amneziaWg3: createAmneziaBackupFixture() }),
+    );
+  });
 });
