@@ -1,4 +1,4 @@
-import { randomBytes, randomUUID } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import { and, count, desc, eq, inArray, sql } from "drizzle-orm";
 import {
   afterAll,
@@ -12,7 +12,6 @@ import {
 import {
   defaultKeyNameDisplay,
   idleAccessSyncStatus,
-  revokeJobDedupKey,
   WORKER_PERIOD_FIELD_NAMES,
 } from "@amnezia/contracts";
 import type { KeyLimitMode } from "@amnezia/contracts";
@@ -3321,10 +3320,16 @@ describe("PostgresControlRepository offboard revoke states", () => {
     async () => {
       if (!database) return;
       const { userId, keyId } = await seedUserWithKey("revoking");
-      // A previous revoke attempt for this key already gave up.
+      // A previous revoke attempt for this key already gave up. This literal
+      // string is the PRE-FIX deduplication key shape — fixed per keyId, no
+      // per-attempt suffix — reproduced on purpose because it is what a row
+      // written before Fix 1 looks like and what is actually sitting in
+      // production `job_outbox` tables today. Written as a literal, not via
+      // `revokeJobDedupKey`, so it does not move if that helper's shape ever
+      // changes: the point of this test is to pin history's key, not today's.
       await database.db.insert(jobOutbox).values({
         type: "vpn-key.revoke",
-        deduplicationKey: revokeJobDedupKey(keyId, randomUUID()),
+        deduplicationKey: `vpn-key.revoke:${keyId}`,
         payload: { keyId },
         status: "failed",
         lastError: "node unreachable",
