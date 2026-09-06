@@ -22,6 +22,16 @@ export type CfAccessPolicy = {
    * application endpoint, so it decides where the update goes.
    */
   reusable?: boolean;
+  /**
+   * Every other field an Access policy document carries — session_duration,
+   * approval_required, approval_groups, purpose_justification_required,
+   * purpose_justification_prompt, isolation_required, precedence,
+   * created_at, updated_at, uid, and anything Cloudflare adds later. This
+   * client does not read or reason about any of these, but a PUT is a full
+   * replacement, so getPolicy()'s result must be able to carry them through
+   * to updatePolicy() unchanged rather than losing them to this type.
+   */
+  [field: string]: unknown;
 };
 
 export type CloudflareConfig = {
@@ -37,6 +47,39 @@ export interface CloudflareAccessClient {
 }
 
 const API_BASE = "https://api.cloudflare.com/client/v4";
+
+/**
+ * Fields that must NOT be echoed back on a policy PUT, even though a policy
+ * read via getPolicy() carries them. Everything else read comes back
+ * verbatim — see updatePolicy() below — so this list is deliberately narrow;
+ * an over-broad list would silently drop a real, settable field again.
+ */
+const READ_ONLY_POLICY_FIELDS = [
+  // Cloudflare-assigned identifier for the policy itself. Immutable, and not
+  // a property of the document being written.
+  "id",
+  // Same identifier under Cloudflare's other name for it; some responses use
+  // `uid` instead of (or alongside) `id`. Same reasoning as `id`.
+  "uid",
+  // Server-computed timestamps. Cloudflare sets these on write regardless of
+  // what is sent, so echoing a stale value back does nothing useful and
+  // risks the write being read as a no-op or rejected as unexpected input.
+  "created_at",
+  "updated_at",
+  // Not a document field at all: this client reads it only to decide which
+  // endpoint to PUT to (app-scoped vs. account-scoped — see
+  // createCloudflareAccessClient above). Sending it in the body has no
+  // Cloudflare-defined meaning.
+  "reusable",
+] as const;
+
+function stripReadOnlyPolicyFields(policy: CfAccessPolicy): Record<string, unknown> {
+  const body: Record<string, unknown> = { ...policy };
+  for (const field of READ_ONLY_POLICY_FIELDS) {
+    delete body[field];
+  }
+  return body;
+}
 
 export function createCloudflareAccessClient(
   config: CloudflareConfig,
@@ -101,22 +144,27 @@ export function createCloudflareAccessClient(
       return (await check(res, "get policy")) as CfAccessPolicy;
     },
     async updatePolicy(policy) {
-      // Cloudflare requires the full policy document (name + decision) and
-      // treats a bare {include} as a replacement — so echo every read field
-      // back to avoid a 400 or wiping exclude/require rules.
+      // Cloudflare's PUT replaces the whole policy document: any field this
+      // client does not send back is reset to Cloudflare's default. The
+      // caller (accessReconcile.ts) reads the current policy and spreads it
+      // back with only `include` changed, so this echoes the document it was
+      // given — session_duration, approval_required, precedence, and every
+      // other field this client has never heard of included — instead of
+      // rebuilding it from a fixed list of fields.
+      const body = stripReadOnlyPolicyFields(policy);
+      // `exclude`/`require` are the two fields this client DOES model that
+      // Cloudflare may omit from a read when empty; default them so a policy
+      // with no exclusions still round-trips as an explicit empty list
+      // rather than an absent key.
+      body.exclude = policy.exclude ?? [];
+      body.require = policy.require ?? [];
       await check(
         await fetch(policy.reusable === true ? accountScopedUrl : appScopedUrl, {
           // Both endpoints take PUT and the identical document; PATCH returns
           // 405 ("Method not allowed for this authentication scheme").
           method: "PUT",
           headers,
-          body: JSON.stringify({
-            name: policy.name,
-            decision: policy.decision,
-            include: policy.include,
-            exclude: policy.exclude ?? [],
-            require: policy.require ?? [],
-          }),
+          body: JSON.stringify(body),
           // Same 10 s trade-off as getPolicy() above.
           signal: AbortSignal.timeout(10_000),
         }),

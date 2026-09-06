@@ -579,8 +579,16 @@ The `include` array is the allowlist; each entry is one rule:
 
 Adding a user = appending their `{"email":{"email":...}}` object to `include`;
 removing = dropping the matching object. Always send back the **whole** policy
-(`name`, `decision`, `include`, `exclude`, `require`) — send the modified
-`include` together with the fields you read, not a bare fragment.
+document you just read — every field Cloudflare returned, `name` and
+`decision` included, not just the five this doc used to enumerate — with
+`include` modified and the read-only fields (`id`, `uid`, `created_at`,
+`updated_at`) deleted; `reusable` is not a document field, only a signal for
+which endpoint to write to (see above). A PUT that omits a field resets it to
+Cloudflare's default, so any policy setting an admin configured by hand in the
+dashboard — `session_duration`, `approval_required`, `precedence`, and so on —
+is silently wiped the next time the panel writes this policy unless it comes
+back too. Sending a bare fragment, or a document rebuilt from only the fields
+this client models, both fail the same way.
 
 #### Worked example (add one email, app-scoped policy)
 
@@ -591,11 +599,12 @@ POLICY="$BASE/accounts/$CF_ACCESS_ACCOUNT_ID/access/apps/$CF_ACCESS_APP_ID/polic
 # 1) Read the current policy.
 curl -s -H "Authorization: Bearer $CF_API_TOKEN" "$POLICY" > policy.json
 
-# 2) Append the new email to include[], preserving name/decision/exclude/require.
+# 2) Append the new email to include[], keeping every other field of the
+#    document as read (including ones this example does not name) and
+#    dropping only the read-only ones Cloudflare will reject on a write.
 jq '.result
-    | {name, decision,
-       include: (.include + [{"email":{"email":"new.person@gmail.com"}}]),
-       exclude, require}' policy.json > body.json
+    | .include += [{"email":{"email":"new.person@gmail.com"}}]
+    | del(.id, .uid, .created_at, .updated_at, .reusable)' policy.json > body.json
 
 # 3) Write it back (PUT with the whole policy; PATCH is rejected here with 405).
 curl -s -X PUT \
@@ -604,8 +613,9 @@ curl -s -X PUT \
   --data @body.json "$POLICY"
 ```
 
-Removing a user is the same read-modify-write with the deletion filter in step 2,
-e.g. `include: [.include[] | select(.email.email != "new.person@gmail.com")]`.
+Removing a user is the same read-modify-write with a filter instead of `+=` in
+step 2, e.g.
+`.include |= [.[] | select(.email.email != "new.person@gmail.com")]`.
 
 #### Env vars
 

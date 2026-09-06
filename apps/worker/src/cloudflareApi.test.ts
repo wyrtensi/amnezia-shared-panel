@@ -114,6 +114,8 @@ describe("createCloudflareAccessClient", () => {
 
     const body = fetchMock.mock.calls[0]?.[1]?.body;
     expect(typeof body).toBe("string");
+    // `id` and `reusable` are stripped (see the next two tests); everything
+    // else modeled by the type is echoed back unchanged.
     expect(JSON.parse(body as string)).toEqual({
       name: "panel allow",
       decision: "allow",
@@ -121,6 +123,71 @@ describe("createCloudflareAccessClient", () => {
       exclude: [{ email: { email: "b@example.com" } }],
       require: [],
     });
+  });
+
+  it("writes back a policy carrying fields it does not model, unchanged, with only include updated", async () => {
+    // This is the actual production shape: accessReconcile.ts reads a policy
+    // via getPolicy(), which casts the raw Cloudflare JSON straight into
+    // CfAccessPolicy, then spreads it back with a new `include`. Any field an
+    // admin set by hand in the dashboard — session_duration, approval_required,
+    // precedence, or something this client has genuinely never heard of —
+    // must survive that round-trip, or it gets silently reset to Cloudflare's
+    // default on every sync.
+    const fetchMock = fetchStub(() => json({ success: true, result: {} }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await createCloudflareAccessClient(CONFIG).updatePolicy({
+      id: "pol-1",
+      name: "panel allow",
+      decision: "allow",
+      include: [{ email: { email: "new@example.com" } }],
+      exclude: [],
+      require: [],
+      reusable: false,
+      session_duration: "24h",
+      approval_required: true,
+      precedence: 3,
+      some_field_this_client_has_never_heard_of: { nested: ["value"] },
+    });
+
+    const body = fetchMock.mock.calls[0]?.[1]?.body;
+    expect(JSON.parse(body as string)).toEqual({
+      name: "panel allow",
+      decision: "allow",
+      include: [{ email: { email: "new@example.com" } }],
+      exclude: [],
+      require: [],
+      session_duration: "24h",
+      approval_required: true,
+      precedence: 3,
+      some_field_this_client_has_never_heard_of: { nested: ["value"] },
+    });
+  });
+
+  it("never sends the read-only fields it strips from the read document", async () => {
+    const fetchMock = fetchStub(() => json({ success: true, result: {} }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await createCloudflareAccessClient(CONFIG).updatePolicy({
+      id: "pol-1",
+      uid: "uid-1",
+      name: "panel allow",
+      decision: "allow",
+      include: [],
+      exclude: [],
+      require: [],
+      reusable: false,
+      created_at: "2020-01-01T00:00:00Z",
+      updated_at: "2020-06-01T00:00:00Z",
+    });
+
+    const body = fetchMock.mock.calls[0]?.[1]?.body;
+    const sent = JSON.parse(body as string) as Record<string, unknown>;
+    expect(sent).not.toHaveProperty("id");
+    expect(sent).not.toHaveProperty("uid");
+    expect(sent).not.toHaveProperty("reusable");
+    expect(sent).not.toHaveProperty("created_at");
+    expect(sent).not.toHaveProperty("updated_at");
   });
 
   it("says so when the policy exists but is not attached to the application", async () => {
