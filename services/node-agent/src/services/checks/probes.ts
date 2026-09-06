@@ -86,6 +86,26 @@ export const assertPublicIp = (address: string, hostname: string): void => {
 };
 
 /**
+ * Reduce a URL host to the address it contains, if it is one.
+ *
+ * `new URL("http://[::1]/").hostname` is `"[::1]"`, brackets and all, and
+ * `ipaddr.isValid` rejects that syntax - so a bracketed IPv6 literal used to
+ * miss the address check entirely and fall through to a DNS lookup, where it
+ * was refused only because the name does not resolve. Refused by accident is
+ * not refused by design, and an accident holds only until something resolves.
+ * The `%zone` suffix goes too, in either spelling, since a URL percent-encodes
+ * it as `%25`.
+ */
+const literalFromHostname = (hostname: string): string => {
+  const unbracketed =
+    hostname.startsWith("[") && hostname.endsWith("]")
+      ? hostname.slice(1, -1)
+      : hostname;
+  const zone = unbracketed.indexOf("%");
+  return zone === -1 ? unbracketed : unbracketed.slice(0, zone);
+};
+
+/**
  * Refuse a target that resolves inside the node's own network.
  *
  * A check is an admin-supplied string that this process fetches from the
@@ -102,8 +122,9 @@ export const assertPublicAddress = async (
     return records.map((record) => record.address);
   },
 ): Promise<void> => {
-  const literal = ipaddr.isValid(hostname)
-    ? [hostname]
+  const candidate = literalFromHostname(hostname);
+  const literal = ipaddr.isValid(candidate)
+    ? [candidate]
     : await resolve(hostname);
   if (literal.length === 0) {
     throw new ProbeRefusedError(`${hostname} does not resolve`);
