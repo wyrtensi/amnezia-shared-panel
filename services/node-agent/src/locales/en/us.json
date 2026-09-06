@@ -112,7 +112,8 @@
       "CAPACITY_REQUESTED": "Capacity change requested",
       "CAPACITY_UNAVAILABLE": "Capacity changes are not configured on this server",
       "CAPACITY_INVALID": "maxPeers must be a whole number between 1 and 500",
-      "CAPACITY_IN_FLIGHT": "A capacity change is already in progress on this server"
+      "CAPACITY_IN_FLIGHT": "A capacity change is already in progress on this server",
+      "UPDATE_IN_FLIGHT": "An agent update is already in progress on this server"
     }
   },
   "system": {

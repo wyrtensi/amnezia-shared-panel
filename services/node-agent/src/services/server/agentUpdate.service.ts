@@ -123,6 +123,16 @@ export class AgentUpdateService {
       });
     }
 
+    // One change at a time. Mirrors CapacityService.requestCapacity: the
+    // updater pulls the image and recreates the container, so two requests
+    // racing would interleave those steps and the loser would read the
+    // winner's result as its own.
+    if (await this.exists(REQUEST_FILE)) {
+      throw new APIError(ClientErrorCode.CONFLICT, {
+        msg: "services.server.UPDATE_IN_FLIGHT",
+      });
+    }
+
     const request = {
       id: randomUUID(),
       image,

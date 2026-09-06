@@ -201,6 +201,16 @@ describe("AgentUpdateService", () => {
     expect(await service().getStatus()).toMatchObject({ state: "failed" });
   });
 
+  it("refuses a second update while one is still in flight", async () => {
+    // Mirrors CapacityService's "refuses a second request while one is still
+    // in flight": the updater pulls the image and recreates the container, so
+    // two requests racing would interleave those steps.
+    const svc = service();
+    await svc.requestUpdate(IMAGE);
+
+    await expect(svc.requestUpdate(IMAGE)).rejects.toMatchObject({ statusCode: 409 });
+  });
+
   it("reports the outcome the updater wrote", async () => {
     const svc = service();
     const { id } = await svc.requestUpdate(IMAGE);
