@@ -3485,14 +3485,30 @@ export class PostgresControlRepository implements ControlRepository {
         )
         .parse(payload ?? {});
       return this.options.db.transaction(async (tx) => {
+        const now = new Date();
         if (input.activate) {
+          // Demote the incumbent AND drop its pin - both before anything is
+          // pinned below, or route_rule_versions_pinned_profile_unique fires
+          // mid-transaction.
           await tx
             .update(routeRuleVersions)
-            .set({ status: "superseded", updatedAt: new Date() })
+            .set({ status: "superseded", pinnedAt: null, updatedAt: now })
             .where(
               and(
                 eq(routeRuleVersions.profile, input.profile),
                 eq(routeRuleVersions.status, "active"),
+              ),
+            );
+          // Belt and braces, and the repair path for a pin this action itself
+          // orphaned before this fix: by invariant only an active row may
+          // carry a pin.
+          await tx
+            .update(routeRuleVersions)
+            .set({ pinnedAt: null, updatedAt: now })
+            .where(
+              and(
+                eq(routeRuleVersions.profile, input.profile),
+                isNotNull(routeRuleVersions.pinnedAt),
               ),
             );
         }
@@ -3507,7 +3523,9 @@ export class PostgresControlRepository implements ControlRepository {
             cidrCount: input.cidrs.length,
             domainCount: input.domains.length,
             payload: { cidrs: input.cidrs, domains: input.domains },
-            publishedAt: input.activate ? new Date() : null,
+            publishedAt: input.activate ? now : null,
+            pinnedAt: input.activate ? now : null,
+            updatedAt: now,
           })
           .onConflictDoUpdate({
             target: [routeRuleVersions.profile, routeRuleVersions.version],
@@ -3517,8 +3535,9 @@ export class PostgresControlRepository implements ControlRepository {
               cidrCount: input.cidrs.length,
               domainCount: input.domains.length,
               payload: { cidrs: input.cidrs, domains: input.domains },
-              publishedAt: input.activate ? new Date() : null,
-              updatedAt: new Date(),
+              publishedAt: input.activate ? now : null,
+              pinnedAt: input.activate ? now : null,
+              updatedAt: now,
             },
           })
           .returning();
@@ -3528,7 +3547,11 @@ export class PostgresControlRepository implements ControlRepository {
           action: "admin.rules.import",
           targetType: "rules",
           targetId: saved?.id,
-          metadata: { profile: input.profile, version: input.version },
+          metadata: {
+            profile: input.profile,
+            version: input.version,
+            pinned: input.activate,
+          },
         });
         return saved;
       });

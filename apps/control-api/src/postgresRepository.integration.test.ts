@@ -3836,4 +3836,89 @@ describe("PostgresControlRepository rule version pinning", () => {
       expect(failure?.statusCode).toBe(404);
     },
   );
+
+  runDatabaseTest(
+    "import with activate pins the imported version and moves the pin off the incumbent",
+    async () => {
+      if (!database) return;
+      await seedVersion("v1", "active", { pinned: true });
+
+      await subject().adminAction(admin, "rules", "import", "import", {
+        profile: "ru_blacklist",
+        version: "v2",
+        cidrs: ["198.51.100.0/24"],
+      });
+
+      const rows = await readVersions();
+      const pinned = rows.filter((row) => row.pinnedAt !== null);
+      expect(pinned).toHaveLength(1);
+      expect(pinned[0]?.version).toBe("v2");
+      expect(rows.find((row) => row.version === "v2")?.status).toBe("active");
+      const superseded = rows.find((row) => row.version === "v1");
+      expect(superseded?.status).toBe("superseded");
+      expect(superseded?.pinnedAt).toBeNull();
+    },
+  );
+
+  runDatabaseTest(
+    "import over the currently active version keeps exactly one pin",
+    async () => {
+      if (!database) return;
+      await seedVersion("v1", "active", { pinned: true });
+
+      await subject().adminAction(admin, "rules", "import", "import", {
+        profile: "ru_blacklist",
+        version: "v1",
+        cidrs: ["198.51.100.0/24"],
+      });
+
+      const rows = await readVersions();
+      expect(rows.filter((row) => row.pinnedAt !== null)).toHaveLength(1);
+    },
+  );
+
+  runDatabaseTest(
+    "import without activate quarantines the row and releases its pin",
+    async () => {
+      if (!database) return;
+      await seedVersion("v1", "active", { pinned: true });
+
+      await subject().adminAction(admin, "rules", "import", "import", {
+        profile: "ru_blacklist",
+        version: "v1",
+        cidrs: ["198.51.100.0/24"],
+        activate: false,
+      });
+
+      const rows = await readVersions();
+      const row = rows.find((candidate) => candidate.version === "v1");
+      expect(row?.status).toBe("quarantined");
+      expect(row?.pinnedAt).toBeNull();
+      expect(row?.publishedAt).toBeNull();
+      expect(
+        rows.filter((candidate) => candidate.pinnedAt !== null),
+      ).toHaveLength(0);
+    },
+  );
+
+  runDatabaseTest(
+    "import records the pin in the audit trail",
+    async () => {
+      if (!database) return;
+      await database.db.delete(auditEvents);
+      await seedVersion("v1", "active");
+
+      await subject().adminAction(admin, "rules", "import", "import", {
+        profile: "ru_blacklist",
+        version: "v2",
+        cidrs: ["198.51.100.0/24"],
+      });
+
+      const [event] = await database.db
+        .select({ metadata: auditEvents.metadata })
+        .from(auditEvents)
+        .where(eq(auditEvents.action, "admin.rules.import"));
+      expect(event?.metadata).toMatchObject({ pinned: true });
+    },
+  );
 });
