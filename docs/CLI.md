@@ -104,12 +104,18 @@ safe wrapper (backup → pull/build → migrate → up).
 | --- | --- | --- |
 | `scripts/backup-db.sh [out-dir]` | root | Timestamped gzipped `pg_dump` (default `./backups`) |
 | `scripts/restore-db.sh <dump.sql.gz>` | root | Restore a dump into the running postgres |
-| `COMPOSE_DIR=infra/prod bash scripts/backup-db.sh` | root | Back up the **prod** DB (what `update.sh` runs first) |
+| `COMPOSE_DIR=infra/prod bash scripts/backup-db.sh` | root | Back up a specific stack explicitly (rarely needed, see below) |
 
-Overridable env: `COMPOSE_DIR` (default `infra/dev`), `POSTGRES_USER`/`POSTGRES_DB`
-(default `amnezia_panel`). `backups/` is git-ignored. Dumps are written `0600`
-inside a `0700` directory (the script sets `umask 077` and tightens `out-dir`),
-because a dump carries every user, email, role and traffic row.
+Overridable env: `COMPOSE_DIR`, `POSTGRES_USER`/`POSTGRES_DB` (default
+`amnezia_panel`). An explicit `COMPOSE_DIR` always wins; otherwise the script
+auto-detects the deployed stack from which of `infra/prod/.env` /
+`infra/dev/.env` exists on this host (both are git-ignored, so this is the
+same signal `docker compose` itself needs to run) and prints which one it
+picked. If neither — or both — exist, it refuses to guess and tells you to
+set `COMPOSE_DIR` explicitly, rather than risk `pg_dump`/`psql` running
+against the wrong database. `backups/` is git-ignored. Dumps are written
+`0600` inside a `0700` directory (the script sets `umask 077` and tightens
+`out-dir`), because a dump carries every user, email, role and traffic row.
 
 ### Bootstrap & admin CLI
 

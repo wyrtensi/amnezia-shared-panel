@@ -8,7 +8,9 @@ set -euo pipefail
 # node-side policy in infra/node/scripts/common.sh (ensure_layout).
 umask 077
 
-COMPOSE_DIR="${COMPOSE_DIR:-infra/dev}"
+SCRIPT_DIR="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
+. "$SCRIPT_DIR/lib/compose-dir.sh"
+COMPOSE_DIR="$(require_compose_dir)" || exit 1
 COMPOSE="docker compose -f ${COMPOSE_DIR}/compose.yaml"
 USER_NAME="${POSTGRES_USER:-amnezia_panel}"
 DB_NAME="${POSTGRES_DB:-amnezia_panel}"

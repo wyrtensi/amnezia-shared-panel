@@ -876,9 +876,14 @@ describe("PostgresControlRepository quota race", () => {
       });
 
       await seeded;
-      const conflicting = repository.createQuotaRequest(owner, {
-        requestedLimit: 6,
-      });
+      // failureOf() is attached the moment the call is made, not after the
+      // awaits below. The rejection lands while this test is still waiting on
+      // heldTransaction, and a promise that has no handler at that instant is
+      // reported by vitest as an unhandled error - failing the whole run even
+      // though the assertion further down would have consumed it.
+      const conflicting = failureOf(
+        repository.createQuotaRequest(owner, { requestedLimit: 6 }),
+      );
       // Prove the race precondition actually held: wait until the
       // conflicting call's INSERT is really blocked in postgres on the
       // still-uncommitted seed row (not just "probably enough time passed")
@@ -887,7 +892,7 @@ describe("PostgresControlRepository quota race", () => {
       releaseHold();
       await heldTransaction;
 
-      const failure = await failureOf(conflicting);
+      const failure = await conflicting;
       expect(failure?.statusCode).toBe(409);
       expect(failure?.code).toBe("PENDING_QUOTA_REQUEST_EXISTS");
     },
