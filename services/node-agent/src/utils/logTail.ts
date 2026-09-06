@@ -23,6 +23,10 @@ export const MAX_LOG_BYTES = 64 * 1024;
  * reader never sees a partial write there. Leading UTF-8 continuation bytes
  * are skipped so decoding never begins inside a multi-byte sequence.
  *
+ * The file can shrink between stat() and read() if the publisher replaces it
+ * (via mv -f), so bytesRead is load-bearing: decode only that many bytes
+ * to avoid returning NUL padding as log content.
+ *
  * A missing (or otherwise unreadable) file returns "" rather than throwing: a
  * node that has never run the host helper must still be able to answer a
  * status call. The handle is closed on every path once open succeeds.
@@ -36,17 +40,17 @@ export const readLogTail = async (path: string, maxBytes: number): Promise<strin
     const length = Math.min(size, maxBytes);
     const buffer = Buffer.alloc(length);
 
-    await handle.read(buffer, 0, length, size - length);
+    const { bytesRead } = await handle.read(buffer, 0, length, size - length);
 
     // Skip leading UTF-8 continuation bytes (10xxxxxx): a byte-oriented cut
     // can land inside a multi-byte character, and decoding from there would
     // otherwise turn the truncated half into a replacement character.
     let start = 0;
-    while (start < buffer.length && (buffer[start] & 0xc0) === 0x80) {
+    while (start < bytesRead && (buffer[start] & 0xc0) === 0x80) {
       start += 1;
     }
 
-    return buffer.toString("utf8", start);
+    return buffer.toString("utf8", start, bytesRead);
   } catch {
     return "";
   } finally {

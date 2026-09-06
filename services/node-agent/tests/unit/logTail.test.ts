@@ -1,7 +1,7 @@
 import { mkdtemp, rm, writeFile } from "fs/promises";
 import { tmpdir } from "os";
 import { join } from "path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { readLogTail } from "@/utils/logTail";
 
@@ -52,5 +52,43 @@ describe("readLogTail", () => {
 
     expect(Buffer.byteLength(result, "utf8")).toBeLessThanOrEqual(maxBytes);
     expect(result).not.toContain("�");
+  });
+
+  it("handles file shrinking between stat and read (mktemp + mv -f scenario)", async () => {
+    // When host scripts publish logs atomically via mktemp + mv -f, the file
+    // can shrink between our stat() and read() if the new file is smaller.
+    // The old code would decode the entire allocated buffer, including
+    // zero-filled bytes, as if they were actual file content.
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const fs = require("fs/promises");
+    const path = join(dir, "shrinking.log");
+    const actualContent = "ERROR";
+    const reportedSize = 1024; // stat says file is 1024 bytes
+
+    await writeFile(path, actualContent, "utf8");
+
+    const originalOpen = fs.open;
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (fs.open as any) = vi.fn(async (filePath: string, mode: string) => {
+      const handle = await originalOpen(filePath, mode);
+      const originalStat = handle.stat.bind(handle);
+
+      // Intercept stat to report a larger size
+      handle.stat = async () => {
+        const stat = await originalStat();
+        return { ...stat, size: reportedSize };
+      };
+
+      return handle;
+    });
+
+    const result = await readLogTail(path, 1024);
+
+    // Result must be exactly "ERROR" with no NUL bytes
+    expect(result).toBe(actualContent);
+    // NUL bytes appear as null character in string
+    expect(result).not.toContain(" ");
+    expect(Buffer.byteLength(result, "utf8")).toBe(Buffer.byteLength(actualContent, "utf8"));
   });
 });
