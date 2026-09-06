@@ -106,6 +106,59 @@ const githubReleaseSchema = z.object({
 
 type GitHubRelease = z.infer<typeof githubReleaseSchema>;
 
+/**
+ * Structural copy of `readBoundedResponse` from apps/worker/src/rules.ts: a
+ * content-length pre-check that cancels the body before it is read, then a
+ * chunked read that cancels the reader the moment the cap is crossed.
+ *
+ * Not shared through @amnezia/contracts: that package is zod-only, has a
+ * single export, and is bundled into apps/web client components — a
+ * Response/stream reader does not belong in a browser bundle. Both copies are
+ * pinned by tests over the same cases; change one, change the other.
+ */
+const readBoundedResponse = async (
+  response: Response,
+  maxBytes: number,
+): Promise<string> => {
+  const contentLengthRaw = response.headers.get("content-length");
+  const contentLength = contentLengthRaw ? Number(contentLengthRaw) : null;
+  if (
+    contentLength !== null &&
+    Number.isFinite(contentLength) &&
+    contentLength > maxBytes
+  ) {
+    await response.body?.cancel().catch(() => undefined);
+    throw new Error("GitHub release response is too large");
+  }
+  if (!response.body) {
+    const source = await response.text();
+    if (Buffer.byteLength(source, "utf8") > maxBytes) {
+      throw new Error("GitHub release response is too large");
+    }
+    return source;
+  }
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let byteLength = 0;
+  let source = "";
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      byteLength += value.byteLength;
+      if (byteLength > maxBytes) {
+        await reader.cancel();
+        throw new Error("GitHub release response is too large");
+      }
+      source += decoder.decode(value, { stream: true });
+    }
+    source += decoder.decode();
+    return source;
+  } finally {
+    reader.releaseLock();
+  }
+};
+
 // Factories, never shared literals: handing out a module-level object would let
 // one caller's mutation corrupt every later response (the lesson from
 // resolveRuleFeeds in apps/worker/src/rules.ts).
@@ -288,10 +341,7 @@ export function createClientReleaseResolver(
         `GitHub release lookup failed with status ${response.status}`,
       );
     }
-    const body = await response.text();
-    if (Buffer.byteLength(body, "utf8") > MAX_RESPONSE_BYTES) {
-      throw new Error("GitHub release response is too large");
-    }
+    const body = await readBoundedResponse(response, MAX_RESPONSE_BYTES);
     return toClientRelease(githubReleaseSchema.parse(JSON.parse(body)), now());
   };
 
