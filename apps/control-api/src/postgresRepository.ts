@@ -3484,6 +3484,30 @@ export class PostgresControlRepository implements ControlRepository {
         .parse(payload ?? {});
       return this.options.db.transaction(async (tx) => {
         const now = new Date();
+        if (!input.activate) {
+          // Nothing else in the rules API can un-publish a live version
+          // (`rules/activate` only promotes, `rules/follow` only clears the
+          // pin), so `import` must not become the back door for it. Refuse
+          // BEFORE any write if this exact (profile, version) row is the one
+          // currently serving the profile - quarantining it here would leave
+          // the profile with no active version at all.
+          const [existing] = await tx
+            .select({ status: routeRuleVersions.status })
+            .from(routeRuleVersions)
+            .where(
+              and(
+                eq(routeRuleVersions.profile, input.profile),
+                eq(routeRuleVersions.version, input.version),
+              ),
+            );
+          if (existing?.status === "active") {
+            throw new ApiError(
+              409,
+              "This version is the profile's active rule set; activate a different version for this profile before quarantining it",
+              "RULE_VERSION_ACTIVE",
+            );
+          }
+        }
         if (input.activate) {
           // Demote the incumbent AND drop its pin - both before anything is
           // pinned below, or route_rule_versions_pinned_profile_unique fires

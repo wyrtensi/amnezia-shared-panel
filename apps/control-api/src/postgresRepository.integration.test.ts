@@ -3970,23 +3970,56 @@ describe("PostgresControlRepository rule version pinning", () => {
     "import without activate quarantines the row and releases its pin",
     async () => {
       if (!database) return;
+      // v1 stays the active, pinned version; v2 is the one imported
+      // unactivated. Importing the currently active version itself is
+      // refused (see the next test) - this scenario is about a sibling
+      // import leaving the incumbent's pin alone.
       await seedVersion("v1", "active", { pinned: true });
 
       await subject().adminAction(admin, "rules", "import", "import", {
         profile: "ru_blacklist",
-        version: "v1",
+        version: "v2",
         cidrs: ["198.51.100.0/24"],
         activate: false,
       });
 
       const rows = await readVersions();
-      const row = rows.find((candidate) => candidate.version === "v1");
+      const row = rows.find((candidate) => candidate.version === "v2");
       expect(row?.status).toBe("quarantined");
       expect(row?.pinnedAt).toBeNull();
       expect(row?.publishedAt).toBeNull();
+      // The incumbent v1 keeps serving, still pinned - only one pin exists
+      // and it did not move.
+      const incumbent = rows.find((candidate) => candidate.version === "v1");
+      expect(incumbent?.status).toBe("active");
+      expect(incumbent?.pinnedAt).not.toBeNull();
       expect(
         rows.filter((candidate) => candidate.pinnedAt !== null),
-      ).toHaveLength(0);
+      ).toHaveLength(1);
+    },
+  );
+
+  runDatabaseTest(
+    "refuses to quarantine the version a profile is currently serving",
+    async () => {
+      if (!database) return;
+      await seedVersion("v1", "active", { pinned: true });
+
+      const failure = await failureOf(
+        subject().adminAction(admin, "rules", "import", "import", {
+          profile: "ru_blacklist",
+          version: "v1",
+          cidrs: ["198.51.100.0/24"],
+          activate: false,
+        }),
+      );
+
+      expect(failure?.statusCode).toBe(409);
+      expect(failure?.code).toBe("RULE_VERSION_ACTIVE");
+      const rows = await readVersions();
+      const row = rows.find((candidate) => candidate.version === "v1");
+      expect(row?.status).toBe("active");
+      expect(row?.pinnedAt).not.toBeNull();
     },
   );
 
