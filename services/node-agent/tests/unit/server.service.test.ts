@@ -8,6 +8,7 @@ import {
 } from "../fixtures";
 import { Protocol } from "@/types/shared";
 import appConfig from "@/constants/appConfig";
+import { APP_VERSION } from "@/constants/appVersion";
 import { XrayService } from "@/services/xray";
 import { ServerService } from "@/services/server";
 import { ClientsService } from "@/services/clients";
@@ -143,6 +144,7 @@ describe("ServerService", () => {
         Protocol.XRAY,
       ],
       publicHost: "127.0.0.1",
+      agentVersion: APP_VERSION,
       // Read from the live interface config, not assumed from the protocol:
       // a node whose port was changed on the host stops being a mystery.
       listenPorts: [51820],

@@ -16,6 +16,7 @@ export const getServerSchema = {
         "totalPeers",
         "protocols",
         "publicHost",
+        "agentVersion",
       ],
       properties: {
         id: {
@@ -57,6 +58,11 @@ export const getServerSchema = {
           description:
             "Публичный хост сервера (SERVER_PUBLIC_HOST), который записывается в клиентские конфигурации",
           example: "vpn.example.com",
+        },
+        agentVersion: {
+          type: "string",
+          description: "Версия запущенного агента",
+          example: "1.1.14",
         },
         listenPorts: {
           type: "array",

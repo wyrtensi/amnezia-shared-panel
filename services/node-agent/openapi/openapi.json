@@ -2,7 +2,7 @@
   "openapi": "3.0.0",
   "info": {
     "title": "Amnezia API",
-    "version": "1.1.13",
+    "version": "1.1.14",
     "description": "Self-hosted REST API for automating Amnezia VPN servers.",
     "license": {
       "name": "MIT"
@@ -1130,7 +1130,8 @@
                     "maxPeers",
                     "totalPeers",
                     "protocols",
-                    "publicHost"
+                    "publicHost",
+                    "agentVersion"
                   ],
                   "properties": {
                     "id": {
@@ -1179,6 +1180,11 @@
                       "type": "string",
                       "description": "Публичный хост сервера (SERVER_PUBLIC_HOST), который записывается в клиентские конфигурации",
                       "example": "vpn.example.com"
+                    },
+                    "agentVersion": {
+                      "type": "string",
+                      "description": "Версия запущенного агента",
+                      "example": "1.1.14"
                     },
                     "listenPorts": {
                       "type": "array",
@@ -2379,7 +2385,8 @@
                     "maxPeers",
                     "totalPeers",
                     "protocols",
-                    "publicHost"
+                    "publicHost",
+                    "agentVersion"
                   ],
                   "properties": {
                     "id": {
@@ -2428,6 +2435,11 @@
                       "type": "string",
                       "description": "Публичный хост сервера (SERVER_PUBLIC_HOST), который записывается в клиентские конфигурации",
                       "example": "vpn.example.com"
+                    },
+                    "agentVersion": {
+                      "type": "string",
+                      "description": "Версия запущенного агента",
+                      "example": "1.1.14"
                     },
                     "listenPorts": {
                       "type": "array",

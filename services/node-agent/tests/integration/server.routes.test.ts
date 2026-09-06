@@ -93,6 +93,7 @@ describe("server backup routes", () => {
             totalPeers: 0,
             protocols: [Protocol.AMNEZIAWG3],
             publicHost: "test-public-host",
+            agentVersion: "test-agent-version",
           }) as never,
       ),
     });
@@ -150,5 +151,33 @@ describe("server backup routes", () => {
 
     expect(response.statusCode).toBe(400);
     expect(importBackup).not.toHaveBeenCalled();
+  });
+
+  // Asserted at the route, not on the service's return value. A field the
+  // service builds but the response schema does not declare is dropped
+  // silently by Fastify's serializer — that is exactly how three fields went
+  // missing from this service's backup endpoint.
+  it("reports the running agent version to the client", async () => {
+    app = await createServerTestApp({
+      getServerStatus: vi.fn(async () => ({
+        id: "test-server-id",
+        region: "test-region",
+        weight: 100,
+        maxPeers: 250,
+        totalPeers: 1,
+        protocols: ["amneziawg3"],
+        publicHost: "test-public-host",
+        agentVersion: "9.9.9",
+      })) as never,
+    });
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/server",
+      headers: AUTH_HEADERS,
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().agentVersion).toBe("9.9.9");
   });
 });
