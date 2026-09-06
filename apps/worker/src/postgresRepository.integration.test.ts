@@ -3,6 +3,7 @@ import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import {
   ACCESS_SYNC_DEDUPLICATION_KEY,
   RULES_REFRESH_DEDUPLICATION_KEY,
+  type KeyState,
 } from "@amnezia/contracts";
 import {
   createDatabase,
@@ -24,7 +25,10 @@ import {
 } from "@amnezia/db";
 import { and, eq, sql } from "drizzle-orm";
 import { aggregateTrafficSamples } from "./maintenance.js";
-import { PostgresWorkerRepository } from "./postgresRepository.js";
+import {
+  PostgresWorkerRepository,
+  REARM_STUCK_REVOKES_LIMIT,
+} from "./postgresRepository.js";
 
 const databaseUrl = process.env.TEST_DATABASE_URL;
 const runDatabaseTest = databaseUrl ? it : it.skip;
@@ -1231,14 +1235,15 @@ describe("PostgresWorkerRepository outbox leases", () => {
   const MINUTE_MS = 60_000;
 
   /**
-   * A key in `revoking` on a node with a controllable `enabled`/`lastSyncAt`,
-   * for the `rearmStuckRevokes` bound tests below. Defaults to a fresh,
-   * enabled node -- the shape every bound test starts from before it breaks
-   * exactly one condition.
+   * A key in `revoking` (or another state, see `state` below) on a node with a
+   * controllable `enabled`/`lastSyncAt`, for the `rearmStuckRevokes` bound
+   * tests below. Defaults to a fresh, enabled, `revoking` node/key -- the
+   * shape every bound test starts from before it breaks exactly one condition.
    */
   const seedStuckRevokingKey = async (options: {
     nodeEnabled?: boolean;
     lastSyncAt?: Date | null;
+    state?: KeyState;
   } = {}): Promise<{ keyId: string }> => {
     if (!database) throw new Error("Database test is disabled");
     const credentials = encryptSecret("api-key", keyring, 1);
@@ -1274,7 +1279,7 @@ describe("PostgresWorkerRepository outbox leases", () => {
         nodeId: node.id,
         nodeLabel: `ap_rearm_${randomBytes(6).toString("hex")}`,
         protocol: "awg2",
-        state: "revoking",
+        state: options.state ?? "revoking",
         routeProfile: "full_tunnel",
       })
       .returning();
@@ -1358,20 +1363,25 @@ describe("PostgresWorkerRepository outbox leases", () => {
     expect(await revokeJobsFor(keyId)).toHaveLength(0);
   });
 
-  runDatabaseTest(
-    "bound: a key with a pending revoke job already in flight gets none",
-    async () => {
-      if (!database || !repository) return;
-      const { keyId } = await seedStuckRevokingKey();
-      await seedRevokeJob(keyId, "pending");
+  // Both "pending" and "processing" are in the query's inArray -- a job
+  // mid-flight is just as live as one still queued, so either must block a
+  // second one from stacking on top of it.
+  for (const liveStatus of ["pending", "processing"] as const) {
+    runDatabaseTest(
+      `bound: a key with a ${liveStatus} revoke job already in flight gets none`,
+      async () => {
+        if (!database || !repository) return;
+        const { keyId } = await seedStuckRevokingKey();
+        await seedRevokeJob(keyId, liveStatus);
 
-      const result = await repository.rearmStuckRevokes();
+        const result = await repository.rearmStuckRevokes();
 
-      // Without this bound a second job would stack on the one already live.
-      expect(result).toEqual({ rearmed: 0 });
-      expect(await revokeJobsFor(keyId)).toHaveLength(1);
-    },
-  );
+        // Without this bound a second job would stack on the one already live.
+        expect(result).toEqual({ rearmed: 0 });
+        expect(await revokeJobsFor(keyId)).toHaveLength(1);
+      },
+    );
+  }
 
   runDatabaseTest(
     "bound: a key with 5 failed revoke jobs gets none, with 4 gets one",
@@ -1392,6 +1402,114 @@ describe("PostgresWorkerRepository outbox leases", () => {
       const retryableJobs = await revokeJobsFor(retryableKeyId);
       expect(retryableJobs).toHaveLength(5);
       expect(retryableJobs.filter((job) => job.status === "pending")).toHaveLength(1);
+    },
+  );
+
+  runDatabaseTest(
+    "bound: only a revoking key is re-armed -- active and revoked keys on the same qualifying node are not",
+    async () => {
+      if (!database || !repository) return;
+      // Every key seeded elsewhere in this file is hardcoded state: "revoking",
+      // so nothing would fail here if `eq(vpnKeys.state, "revoking")` were
+      // dropped from the query. Prove the bound by seeding states that must
+      // NEVER be re-armed on a node that otherwise fully qualifies (enabled,
+      // fresh last_sync_at, no live job), alongside a revoking key in the SAME
+      // run -- having both in one test is what proves the clause rather than
+      // the setup.
+      const { keyId: activeKeyId } = await seedStuckRevokingKey({
+        state: "active",
+      });
+      const { keyId: revokedKeyId } = await seedStuckRevokingKey({
+        state: "revoked",
+      });
+      const { keyId: revokingKeyId } = await seedStuckRevokingKey();
+
+      const result = await repository.rearmStuckRevokes();
+
+      expect(result).toEqual({ rearmed: 1 });
+      expect(await revokeJobsFor(activeKeyId)).toHaveLength(0);
+      expect(await revokeJobsFor(revokedKeyId)).toHaveLength(0);
+      expect(await revokeJobsFor(revokingKeyId)).toHaveLength(1);
+    },
+  );
+
+  /**
+   * `count` stuck-revoking keys sharing one qualifying node, for the cap bound
+   * test below -- a single batched insert rather than `count` calls to
+   * `seedStuckRevokingKey`, which would each open their own user/node.
+   */
+  const seedManyStuckRevokingKeys = async (count: number): Promise<string[]> => {
+    if (!database) throw new Error("Database test is disabled");
+    const credentials = encryptSecret("api-key", keyring, 1);
+    const label = encryptSecret(randomBytes(32).toString("base64"), keyring, 1);
+    const [user] = await database.db
+      .insert(users)
+      .values({ email: `rearm-cap-${randomBytes(6).toString("hex")}@example.com` })
+      .returning();
+    const [node] = await database.db
+      .insert(nodes)
+      .values({
+        name: `rearm-cap-node-${randomBytes(6).toString("hex")}`,
+        apiBaseUrl: "http://127.0.0.1:4001",
+        maxPeers: 500,
+        enabled: true,
+        lastSyncAt: new Date(),
+        credentialsCiphertext: credentials.ciphertext,
+        credentialsNonce: credentials.nonce,
+        credentialsAuthTag: credentials.authTag,
+        credentialsKeyVersion: credentials.keyVersion,
+        labelSecretCiphertext: label.ciphertext,
+        labelSecretNonce: label.nonce,
+        labelSecretAuthTag: label.authTag,
+        labelSecretKeyVersion: label.keyVersion,
+      })
+      .returning();
+    if (!user || !node) throw new Error("Failed to seed cap-test context");
+    const rows = await database.db
+      .insert(vpnKeys)
+      .values(
+        Array.from({ length: count }, () => ({
+          ownerId: user.id,
+          nodeId: node.id,
+          nodeLabel: `ap_rearm_cap_${randomBytes(6).toString("hex")}`,
+          protocol: "awg2" as const,
+          state: "revoking" as const,
+          routeProfile: "full_tunnel" as const,
+        })),
+      )
+      .returning({ id: vpnKeys.id });
+    return rows.map((row) => row.id);
+  };
+
+  runDatabaseTest(
+    "bound: caps one sweep at REARM_STUCK_REVOKES_LIMIT, and a second sweep picks up the remainder",
+    async () => {
+      if (!database || !repository) return;
+      const overflow = 5;
+      await seedManyStuckRevokingKeys(REARM_STUCK_REVOKES_LIMIT + overflow);
+
+      const armedKeyIds = async (): Promise<Set<string>> => {
+        if (!database) throw new Error("Database test is disabled");
+        const rows = await database.db
+          .select({ keyId: sql<string>`${jobOutbox.payload} ->> 'keyId'` })
+          .from(jobOutbox)
+          .where(eq(jobOutbox.type, "vpn-key.revoke"));
+        return new Set(rows.map((row) => row.keyId));
+      };
+
+      const first = await repository.rearmStuckRevokes();
+      // Asserted against the named constant, not the literal 25, so this test
+      // cannot silently drift from the query if the cap ever changes.
+      expect(first).toEqual({ rearmed: REARM_STUCK_REVOKES_LIMIT });
+      expect((await armedKeyIds()).size).toBe(REARM_STUCK_REVOKES_LIMIT);
+
+      // The keys armed above each now have a live "pending" job, so the
+      // "no live job" bound excludes them from a second sweep -- this proves
+      // the cap limits one PASS's work rather than permanently blocking the
+      // remainder, which a bare arithmetic check on the count would not show.
+      const second = await repository.rearmStuckRevokes();
+      expect(second).toEqual({ rearmed: overflow });
+      expect((await armedKeyIds()).size).toBe(REARM_STUCK_REVOKES_LIMIT + overflow);
     },
   );
 

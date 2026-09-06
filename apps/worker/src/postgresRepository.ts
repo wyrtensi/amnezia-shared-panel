@@ -127,6 +127,12 @@ export type PostgresWorkerRepositoryOptions = {
 // The transaction handle drizzle passes to `db.transaction(async (tx) => ...)`.
 type DbTransaction = Parameters<Parameters<Database["transaction"]>[0]>[0];
 
+// Caps one `rearmStuckRevokes` sweep's blast radius -- see the `.limit()` call
+// in that method. Named and exported so the integration test that proves the
+// cap asserts against this rather than a literal that could silently drift
+// from the query.
+export const REARM_STUCK_REVOKES_LIMIT = 25;
+
 const cleanReason = (reason: string): string =>
   reason.replace(/[\r\n\t]+/g, " ").slice(0, 2_000);
 
@@ -873,7 +879,7 @@ export class PostgresWorkerRepository
           ),
         )
         // Caps one sweep's blast radius.
-        .limit(25);
+        .limit(REARM_STUCK_REVOKES_LIMIT);
 
       for (const key of candidates) {
         await tx.insert(jobOutbox).values({

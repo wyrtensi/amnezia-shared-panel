@@ -283,4 +283,31 @@ describe("retention and rollup maintenance", () => {
     expect(repository.deleteCompletedJobsBefore).toHaveBeenCalled();
     expect(repository.purgeOffboardedUsers).toHaveBeenCalled();
   });
+
+  it("reports a failing re-arm's error instead of letting it vanish silently", async () => {
+    const rearmError = new Error("database unreachable");
+    const repository: MaintenanceRepository = {
+      loadSamplesSince: vi.fn(() => Promise.resolve([])),
+      replaceRollups: vi.fn(() => Promise.resolve()),
+      deleteSamplesBefore: vi.fn(() => Promise.resolve()),
+      deleteRollupsBefore: vi.fn(() => Promise.resolve()),
+      deleteNodeMetricsSamplesBefore: vi.fn(() => Promise.resolve()),
+      deleteCompletedJobsBefore: vi.fn(() => Promise.resolve()),
+      rearmStuckRevokes: vi.fn(() => Promise.reject(rearmError)),
+      purgeOffboardedUsers: vi.fn(() => Promise.resolve({ deleted: [] })),
+    };
+    const now = new Date("2026-08-20T12:00:00.000Z");
+    const onError = vi.fn();
+
+    // Before this fix the error was swallowed with nothing logged -- a sweep
+    // that fails on every run was invisible to an operator watching
+    // `docker logs worker`. It must still not stop the rest of the pass.
+    await expect(
+      createMaintenanceRunner({ repository, now: () => now, onError })(),
+    ).resolves.toBeUndefined();
+
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect(onError).toHaveBeenCalledWith(rearmError);
+    expect(repository.purgeOffboardedUsers).toHaveBeenCalled();
+  });
 });

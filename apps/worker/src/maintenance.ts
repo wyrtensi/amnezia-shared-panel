@@ -157,6 +157,16 @@ export type MaintenanceRunnerOptions = {
    * resolved the same way as the retention windows above.
    */
   completedJobRetentionDays?: number | (() => Promise<number>);
+  /**
+   * Called when `rearmStuckRevokes` throws. The throw itself must not stop the
+   * rest of the pass (see the try/catch around that call below), but a
+   * persistently failing sweep still needs to be visible to whoever is
+   * watching the worker's logs. Same shape as `runPeriodicTask`'s `onError`;
+   * the caller is expected to wire it to the same `reportBackgroundError` used
+   * for every other background failure in `main.ts`. Defaults to a no-op so
+   * existing callers (and tests) that do not pass one keep swallowing quietly.
+   */
+  onError?: (error: unknown) => void;
 };
 
 export const createMaintenanceRunner = ({
@@ -171,6 +181,7 @@ export const createMaintenanceRunner = ({
     .fallback,
   completedJobRetentionDays = WORKER_PERIOD_FIELDS.completedJobRetentionDays
     .fallback,
+  onError = () => {},
 }: MaintenanceRunnerOptions) => async (): Promise<void> => {
   const current = now();
   // Resolved once per run rather than per statement, so one maintenance pass
@@ -243,11 +254,12 @@ export const createMaintenanceRunner = ({
   // purge or any other step in this pass.
   try {
     await repository.rearmStuckRevokes();
-  } catch {
-    // Swallowed on purpose -- see the comment above. The next scheduled
-    // maintenance run tries again; there is nothing more actionable to do
-    // with the error here, and the caller's own onError already reports
-    // an unhandled throw from an ordinary run.
+  } catch (error) {
+    // Reported rather than rethrown -- the pass must continue (see the
+    // comment above), but a sweep that keeps failing needs to surface
+    // somewhere, or an operator has no way to notice it. The next scheduled
+    // maintenance run tries again regardless.
+    onError(error);
   }
   // Disabled accounts are removed once their keys have finished revoking AND
   // they have sat disabled for the whole retention window -- long enough for
