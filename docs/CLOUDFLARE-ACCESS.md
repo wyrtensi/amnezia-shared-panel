@@ -136,6 +136,47 @@ You can keep the explicit addresses in this Include list, or manage them through
 an Access **group** / **reusable policy** and Include that instead (Part B
 covers writing to either).
 
+### A.3.1 App-scoped and reusable policies
+
+Cloudflare has two kinds of policy, and the difference decides where an update
+has to be sent:
+
+- **App-scoped** — belongs to one application and is addressed under it:
+  `/accounts/<ACCOUNT_ID>/access/apps/<APP_ID>/policies/<POLICY_ID>`.
+- **Reusable** — lives on the account, may be attached to several applications,
+  and is addressed at `/accounts/<ACCOUNT_ID>/access/policies/<POLICY_ID>`. It
+  is *readable* under an application it is attached to, but writing it there
+  fails with `400 … can not update reusable policies through this endpoint`.
+
+The panel handles both: it reads the policy's `reusable` flag and sends the
+update to the matching endpoint, with the identical document either way. Nothing
+needs configuring — `cf-config` takes the policy id and the rest follows.
+
+Two things are worth knowing before you create one:
+
+- **The Zero Trust dashboard now creates reusable policies**, whichever button
+  you press. If you want an app-scoped one, make it through the API:
+
+  ```sh
+  curl -X POST -H "Authorization: Bearer <CF_API_TOKEN>" \
+       -H "Content-Type: application/json" \
+       "https://api.cloudflare.com/client/v4/accounts/<ACCOUNT_ID>/access/apps/<APP_ID>/policies" \
+       --data '{"name":"Amnezia Panel management","decision":"allow","include":[{"email":{"email":"admin@company.tld"}}]}'
+  ```
+
+- **A reusable policy must be attached to the application.** An unattached one
+  gates nothing, so the panel refuses to manage it rather than maintaining an
+  allowlist that protects nobody; the refusal names the policy and the
+  application and shows up in `amnezia-panel cf-sync --status`. Attaching is a
+  `PUT` on the application with the policy id in its `policies` array — and
+  editing the application in place keeps its **AUD**, so `CF_ACCESS_AUDIENCE`
+  does not change.
+
+A second attached policy is not free: Access allows anyone matched by *any*
+attached Allow policy, so an extra one silently widens access beyond the list
+the panel manages, and the panel cannot see it. Keep one policy on the
+application.
+
 ### A.4 Login methods — Google only, instant auth on
 
 On the application's **login methods**:

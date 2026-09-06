@@ -15,6 +15,13 @@ export type CfAccessPolicy = {
   include: CfAccessRule[];
   exclude?: CfAccessRule[];
   require?: CfAccessRule[];
+  /**
+   * Reusable policies live on the account and may be attached to several
+   * applications; app-scoped ones belong to a single application. Cloudflare
+   * reports this on read and refuses a reusable policy written through the
+   * application endpoint, so it decides where the update goes.
+   */
+  reusable?: boolean;
 };
 
 export type CloudflareConfig = {
@@ -34,7 +41,12 @@ const API_BASE = "https://api.cloudflare.com/client/v4";
 export function createCloudflareAccessClient(
   config: CloudflareConfig,
 ): CloudflareAccessClient {
-  const url = `${API_BASE}/accounts/${config.accountId}/access/apps/${config.appId}/policies/${config.policyId}`;
+  // Two homes for the same policy. An app-scoped policy is only addressable
+  // under its application; a reusable one is readable under either but writable
+  // ONLY under the account (the application endpoint answers a write with
+  // "can not update reusable policies through this endpoint").
+  const appScopedUrl = `${API_BASE}/accounts/${config.accountId}/access/apps/${config.appId}/policies/${config.policyId}`;
+  const accountScopedUrl = `${API_BASE}/accounts/${config.accountId}/access/policies/${config.policyId}`;
   const headers = {
     authorization: `Bearer ${config.apiToken}`,
     "content-type": "application/json",
@@ -61,20 +73,41 @@ export function createCloudflareAccessClient(
       // node.reconcile for as long as this attempt takes. 10 s is still far
       // inside the job's five-minute lease, and Cloudflare's policy endpoints
       // normally answer in well under a second — see docs/CLOUDFLARE-ACCESS.md.
-      const result = await check(
-        await fetch(url, { headers, signal: AbortSignal.timeout(10_000) }),
-        "get policy",
-      );
-      return result as CfAccessPolicy;
+      const res = await fetch(appScopedUrl, {
+        headers,
+        signal: AbortSignal.timeout(10_000),
+      });
+      if (res.status === 404) {
+        // The policy may exist on the account and simply not be attached here.
+        // That distinction matters: an unattached policy gates nothing, so
+        // maintaining its allowlist would tell an administrator that access is
+        // controlled when it is not. Name the real problem instead of leaving
+        // them with Cloudflare's bare "policy not found".
+        const probe = await fetch(accountScopedUrl, {
+          headers,
+          signal: AbortSignal.timeout(10_000),
+        });
+        const probeBody = (await probe.json().catch(() => ({}))) as {
+          success?: boolean;
+        };
+        if (probe.ok && probeBody.success !== false) {
+          throw new Error(
+            `Cloudflare policy ${config.policyId} exists but is not attached to Access application ${config.appId}. ` +
+              "An unattached policy protects nothing, so the panel will not manage it — " +
+              "attach it to the application, or point cf-config at a policy that is attached.",
+          );
+        }
+      }
+      return (await check(res, "get policy")) as CfAccessPolicy;
     },
     async updatePolicy(policy) {
       // Cloudflare requires the full policy document (name + decision) and
       // treats a bare {include} as a replacement — so echo every read field
       // back to avoid a 400 or wiping exclude/require rules.
       await check(
-        await fetch(url, {
-          // App-scoped Access policies take PUT; PATCH returns 405
-          // ("Method not allowed for this authentication scheme").
+        await fetch(policy.reusable === true ? accountScopedUrl : appScopedUrl, {
+          // Both endpoints take PUT and the identical document; PATCH returns
+          // 405 ("Method not allowed for this authentication scheme").
           method: "PUT",
           headers,
           body: JSON.stringify({
