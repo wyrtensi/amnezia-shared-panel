@@ -1570,9 +1570,8 @@ function UserDetail({
                   already disabled, and irreversible unlike Reinstate above,
                   which must stay available on every disabled user. */}
               <Button
-                variant="outline"
+                variant="destructive"
                 size="sm"
-                className="text-muted-foreground hover:text-destructive"
                 onClick={onDeletePermanently}
               >
                 <Trash2 className="h-4 w-4" />
