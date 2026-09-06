@@ -517,7 +517,11 @@ without an operator pasting anything. The worker env
   `json` | `cidr-lines` | `domain-lines` (multiple sources per profile are merged
   and de-duplicated). Leave it empty to keep the built-in defaults; set
   `RULE_FEEDS=[]` to run with no feeds at all. A malformed value fails the worker
-  at startup instead of quietly reverting to the defaults.
+  at startup instead of quietly reverting to the defaults. The one value that
+  does not fail it is a leftover `ru_whitelist` entry from before that profile
+  was removed: the worker logs a warning and skips it, so an upgrade does not
+  crash-loop on configuration that used to be valid. Drop the entry to silence
+  the warning.
   `domain-lines` entries must be **bare ASCII/punycode hostnames** (`.рф` →
   `xn--p1ai`); raw Unicode, wildcards (`*.`), and leading dots are dropped as
   invalid. A feed with more than 15 % invalid entries is quarantined whole, so
