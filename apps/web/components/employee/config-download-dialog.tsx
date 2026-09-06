@@ -48,7 +48,10 @@ export type ConfigTarget = {
  * (`client/core/qrCodeUtils.cpp:8-17` and
  * `client/ui/controllers/importController.cpp:643-669` in
  * github.com/amnezia-vpn/DefaultVPN@dev). Showing the same picture twice under
- * two brand names only invites the question of what the difference is.
+ * two brand names only invites the question of what the difference is. This is
+ * source analysis, not a device observation -- see qrFrames.ts's 2026-09
+ * discrepancy note for why it must not be restated as confirmed fact in
+ * anything a user reads.
  *
  * `awg` is AmneziaWG, a third and separate client: it reads neither the chunk
  * envelope nor the `vpn://` link, only a plain WireGuard config, so it gets its
@@ -161,11 +164,13 @@ const QR_FRAME_INTERVAL_MS = 1500;
  * Which code the dialog opens on.
  *
  * "app": the app this panel is built for leads, and the envelope it reads is
- * also what DefaultVPN reads, so the default tab is the right one for both VPN
- * apps -- which is every user who has followed the install guide. The audience
- * chooser sits directly above the code and names the tool rather than the
- * format, so a user holding a bare camera is one labelled click away, and the
- * standing recovery link below the code names the other tool either way.
+ * also what DefaultVPN reads (source analysis, unconfirmed on a device --
+ * see the `QrAudience` doc comment above and qrFrames.ts's discrepancy note),
+ * so the default tab is the right one for both VPN apps -- which is every
+ * user who has followed the install guide. The audience chooser sits
+ * directly above the code and names the tool rather than the format, so a
+ * user holding a bare camera is one labelled click away, and the standing
+ * recovery link below the code names the other tool either way.
  *
  * This constant is also the restore knob: flipping it is the entire cost of
  * changing which code the dialog leads with, and it needs a rebuild of this app
@@ -498,7 +503,8 @@ export function ConfigDownloadDialog({
                   tool the user is holding, never by the format: a camera app
                   reads the `vpn://` URL, AmneziaWG reads a plain WireGuard
                   config, and either VPN app's in-app scanner (AmneziaVPN or
-                  DefaultVPN, same envelope, one tab) reads only the chunk
+                  DefaultVPN, same envelope, one tab -- source analysis, see
+                  qrFrames.ts's discrepancy note) reads only the chunk
                   envelope and ignores a `vpn://` symbol entirely, however
                   large and crisp it is. AmneziaVPN leads because it is the
                   app this panel is built for; AmneziaWG is a separate app

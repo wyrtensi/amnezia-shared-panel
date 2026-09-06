@@ -458,7 +458,7 @@ const ru = {
   "install.fileBody":
     "Кнопка «.vpn» сохраняет ключ файлом. Откройте его в приложении — подключение появится со своим названием.",
   "install.fileSplitBest":
-    "Удобно для длинных ключей — профилей «Только зарубежные» и «Только заблокированные»: файл достаточно открыть один раз.",
+    "Удобно для длинных ключей профиля «Только заблокированные»: файл достаточно открыть один раз.",
   "install.fileHow":
     "Обычный WireGuard этот файл не откроет — нужен AmneziaVPN.",
   "install.fileConfFallback":
@@ -762,7 +762,7 @@ const ru = {
   "users.keyForDesc": "Протокол выбирается автоматически: {protocol}",
   "users.nodeDisabledSuffix": " (выключена)",
   "users.routeHintAdmin":
-    "Профиль вшивается в ключ. Для «зарубежных» и «заблокированных» нужны активные списки маршрутизации.",
+    "Профиль вшивается в ключ. Для «заблокированных» нужны активные списки маршрутизации.",
   "users.keyCreatedHint":
     "Ключ создаётся на сервере — устройство подключится сразу после импорта конфигурации.",
   "users.accessDomainsTitle": "Домены Cloudflare Access",
@@ -1687,7 +1687,7 @@ const en = {
   "install.fileBody":
     "The “.vpn” button saves the key as a file. Open it in the app — the connection arrives under its own name.",
   "install.fileSplitBest":
-    "Handy for the long keys — the “Foreign only” and “Blocked only” profiles: the file only has to be opened once.",
+    "Handy for the long keys from the “Blocked only” profile: the file only has to be opened once.",
   "install.fileHow":
     "The plain WireGuard app will not open this file — it has to be AmneziaVPN.",
   "install.fileConfFallback":
@@ -1974,7 +1974,7 @@ const en = {
   "users.keyForDesc": "Protocol is selected automatically: {protocol}",
   "users.nodeDisabledSuffix": " (disabled)",
   "users.routeHintAdmin":
-    "The profile is embedded in the key. “Foreign” and “blocked” require active routing lists.",
+    "The profile is embedded in the key. “Blocked” requires active routing lists.",
   "users.keyCreatedHint":
     "The key is created on the server — the device connects right after importing the configuration.",
   "users.accessDomainsTitle": "Cloudflare Access domains",
