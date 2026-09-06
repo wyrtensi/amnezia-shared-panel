@@ -2494,6 +2494,10 @@ policy-set fields:
     offboardedUserRetentionDays=<1..3650> how long a disabled account is kept
                                           before it is purged (never a NULL
                                           disabled_at, regardless of window)
+    completedJobRetentionDays=<1..3650>   how long a completed job_outbox row
+                                          is kept (never a failed/pending/
+                                          processing row, and never the
+                                          rules.refresh / access.sync rows)
     Run "periods" to see what is set and what an unset one falls back to. A
     change needs no restart and is not instant: the loop finishes the wait it
     had already started, so a new period applies from the next cycle — up to

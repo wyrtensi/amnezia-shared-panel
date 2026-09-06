@@ -1,6 +1,9 @@
 import { randomBytes } from "node:crypto";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
-import { ACCESS_SYNC_DEDUPLICATION_KEY } from "@amnezia/contracts";
+import {
+  ACCESS_SYNC_DEDUPLICATION_KEY,
+  RULES_REFRESH_DEDUPLICATION_KEY,
+} from "@amnezia/contracts";
 import {
   createDatabase,
   auditEvents,
@@ -1224,6 +1227,74 @@ describe("PostgresWorkerRepository outbox leases", () => {
 
     expect(await stillExists(userId)).toBe(true);
   });
+
+  runDatabaseTest(
+    "deleteCompletedJobsBefore prunes only old completed rows, sparing failed rows and both singletons",
+    async () => {
+      if (!database || !repository) return;
+      const now = new Date();
+      const oldCutoff = new Date(now.getTime() - 30 * DAY_MS);
+      const veryOld = new Date(now.getTime() - 40 * DAY_MS);
+
+      const [completedOld] = await database.db
+        .insert(jobOutbox)
+        .values({
+          type: "vpn-key.revoke",
+          deduplicationKey: `vpn-key.revoke:completed-old:${randomBytes(6).toString("hex")}`,
+          payload: {},
+          status: "completed",
+          completedAt: veryOld,
+        })
+        .returning();
+      const [failedOld] = await database.db
+        .insert(jobOutbox)
+        .values({
+          type: "vpn-key.revoke",
+          deduplicationKey: `vpn-key.revoke:failed-old:${randomBytes(6).toString("hex")}`,
+          payload: {},
+          status: "failed",
+          completedAt: veryOld,
+        })
+        .returning();
+      await database.db.insert(jobOutbox).values([
+        {
+          type: "rules.refresh",
+          deduplicationKey: RULES_REFRESH_DEDUPLICATION_KEY,
+          payload: {},
+          status: "completed",
+          completedAt: veryOld,
+        },
+        {
+          type: "access.sync",
+          deduplicationKey: ACCESS_SYNC_DEDUPLICATION_KEY,
+          payload: {},
+          status: "completed",
+          completedAt: veryOld,
+        },
+      ]);
+      if (!completedOld || !failedOld) {
+        throw new Error("Failed to seed deleteCompletedJobsBefore rows");
+      }
+
+      await repository.deleteCompletedJobsBefore(oldCutoff);
+
+      const remainingIds = (await database.db.select({ id: jobOutbox.id }).from(jobOutbox)).map(
+        (row) => row.id,
+      );
+      expect(remainingIds).not.toContain(completedOld.id);
+      expect(remainingIds).toContain(failedOld.id);
+      const [rulesRefreshRow] = await database.db
+        .select()
+        .from(jobOutbox)
+        .where(eq(jobOutbox.deduplicationKey, RULES_REFRESH_DEDUPLICATION_KEY));
+      const [accessSyncRow] = await database.db
+        .select()
+        .from(jobOutbox)
+        .where(eq(jobOutbox.deduplicationKey, ACCESS_SYNC_DEDUPLICATION_KEY));
+      expect(rulesRefreshRow).toBeDefined();
+      expect(accessSyncRow).toBeDefined();
+    },
+  );
 });
 
 describe("PostgresWorkerRepository rule pinning", () => {

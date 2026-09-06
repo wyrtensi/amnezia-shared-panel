@@ -67,6 +67,14 @@ export interface MaintenanceRepository {
    * on a NULL `disabled_at` in `purgeOffboardedUsers`'s implementation.
    */
   purgeOffboardedUsers: (disabledBefore: Date) => Promise<{ deleted: string[] }>;
+  /**
+   * Prune `completed` `job_outbox` rows older than `cutoff` (measured from
+   * `completed_at`). Never touches `failed` rows -- a failed row is the
+   * evidence an operator reads to see what went wrong -- nor `pending`/
+   * `processing` ones. The `rules.refresh` and `access.sync` singleton rows
+   * are spared no matter their status or age; see the implementation for why.
+   */
+  deleteCompletedJobsBefore: (cutoff: Date) => Promise<void>;
 }
 
 const bucketStart = (date: Date, period: RollupPeriod): Date => {
@@ -134,6 +142,11 @@ export type MaintenanceRunnerOptions = {
    * an admin's edit applies without a restart).
    */
   offboardedUserRetentionDays?: number | (() => Promise<number>);
+  /**
+   * How long a `completed` job_outbox row is kept before it is pruned,
+   * resolved the same way as the retention windows above.
+   */
+  completedJobRetentionDays?: number | (() => Promise<number>);
 };
 
 export const createMaintenanceRunner = ({
@@ -145,6 +158,8 @@ export const createMaintenanceRunner = ({
   nodeMetricsRetentionDays = WORKER_PERIOD_FIELDS.nodeMetricsRetentionDays
     .fallback,
   offboardedUserRetentionDays = WORKER_PERIOD_FIELDS.offboardedUserRetentionDays
+    .fallback,
+  completedJobRetentionDays = WORKER_PERIOD_FIELDS.completedJobRetentionDays
     .fallback,
 }: MaintenanceRunnerOptions) => async (): Promise<void> => {
   const current = now();
@@ -163,6 +178,13 @@ export const createMaintenanceRunner = ({
   const userRetentionDays = await resolveRetentionDays(
     offboardedUserRetentionDays,
     WORKER_PERIOD_FIELDS.offboardedUserRetentionDays.fallback,
+  );
+  // Same failure tolerance again: a resolver that throws must fall back to the
+  // default rather than pruning nothing (job_outbox grows without bound) or
+  // pruning everything (a window of 0 would race a job that just completed).
+  const jobRetentionDays = await resolveRetentionDays(
+    completedJobRetentionDays,
+    WORKER_PERIOD_FIELDS.completedJobRetentionDays.fallback,
   );
   const rawCutoff = new Date(current.getTime() - rawRetentionDays * DAY_MS);
   const samples = await repository.loadSamplesSince(rawCutoff);
@@ -195,6 +217,13 @@ export const createMaintenanceRunner = ({
   );
   await repository.deleteNodeMetricsSamplesBefore(
     new Date(current.getTime() - metricsRetentionDays * DAY_MS),
+  );
+  // job_outbox is never pruned otherwise: every key create/revoke/rotate/
+  // enable/disable, every node reconcile, agent update and capacity change
+  // leaves a row forever. Only `completed` rows are ever removed -- see the
+  // interface comment for why `failed`/`pending`/`processing` are untouched.
+  await repository.deleteCompletedJobsBefore(
+    new Date(current.getTime() - jobRetentionDays * DAY_MS),
   );
   // Disabled accounts are removed once their keys have finished revoking AND
   // they have sat disabled for the whole retention window -- long enough for

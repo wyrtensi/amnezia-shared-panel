@@ -234,8 +234,55 @@ describe("0032_offboarded_user_retention", () => {
   });
 
   it("is the field the contract added after the original eight", () => {
-    expect(WORKER_PERIOD_FIELD_NAMES.at(-1)).toBe(
-      "offboardedUserRetentionDays",
+    // Not `.at(-1)`: a later period (see 0033_completed_job_retention) is
+    // added after this one, so the live list has grown past what THIS
+    // migration shipped. The position itself never moves.
+    expect(WORKER_PERIOD_FIELD_NAMES.indexOf("offboardedUserRetentionDays")).toBe(
+      8,
+    );
+  });
+});
+
+describe("0033_completed_job_retention", () => {
+  const sql = readFileSync(
+    fileURLToPath(
+      new URL(
+        "../migrations/0033_completed_job_retention.sql",
+        import.meta.url,
+      ),
+    ),
+    "utf8",
+  );
+
+  it("adds the column nullable and without a default, like the other periods", () => {
+    // Same upgrade story as 0029/0032: null means "use the worker's default",
+    // so an existing panel keeps pruning completed jobs on exactly the window
+    // it always implicitly had (the contract's fallback) until an admin sets
+    // one.
+    expect(sql).toContain(
+      'ALTER TABLE "portal_policy" ADD COLUMN "completed_job_retention_days" integer;',
+    );
+    expect(sql).not.toMatch(/ADD COLUMN[^;]*(NOT NULL|DEFAULT)/i);
+  });
+
+  it("guards the column with the range the contract validates", () => {
+    const { min, max } = WORKER_PERIOD_FIELDS.completedJobRetentionDays;
+    expect(sql).toContain(
+      `CHECK ("portal_policy"."completed_job_retention_days" IS NULL OR ("portal_policy"."completed_job_retention_days" >= ${min} AND "portal_policy"."completed_job_retention_days" <= ${max}))`,
+    );
+  });
+
+  it("is the field the contract added most recently", () => {
+    expect(WORKER_PERIOD_FIELD_NAMES.at(-1)).toBe("completedJobRetentionDays");
+  });
+
+  it("indexes the job_outbox key lookup two callers already pay unindexed", () => {
+    // apps/control-api's deleteNode and keys/purge both scan job_outbox by
+    // this same expression with no index today; the worker's stuck-revoke
+    // re-arm sweep (Task 10) adds a third, per-key, caller on every
+    // maintenance run.
+    expect(sql).toContain(
+      `CREATE INDEX "job_outbox_key_id_idx" ON "job_outbox" USING btree (("payload"->>'keyId'));`,
     );
   });
 });

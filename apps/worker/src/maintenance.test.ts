@@ -52,6 +52,7 @@ describe("retention and rollup maintenance", () => {
       deleteSamplesBefore: vi.fn(() => Promise.resolve()),
       deleteRollupsBefore: vi.fn(() => Promise.resolve()),
       deleteNodeMetricsSamplesBefore: vi.fn(() => Promise.resolve()),
+      deleteCompletedJobsBefore: vi.fn(() => Promise.resolve()),
       purgeOffboardedUsers: vi.fn(() => Promise.resolve({ deleted: [] })),
     };
     const now = new Date("2026-08-20T12:00:00.000Z");
@@ -78,6 +79,10 @@ describe("retention and rollup maintenance", () => {
     expect(repository.deleteNodeMetricsSamplesBefore).toHaveBeenCalledWith(
       new Date("2026-08-13T12:00:00.000Z"),
     );
+    // Default 30-day window, same as offboardedUserRetentionDays's default.
+    expect(repository.deleteCompletedJobsBefore).toHaveBeenCalledWith(
+      new Date("2026-07-21T12:00:00.000Z"),
+    );
   });
 
   // node_metrics_samples grows one row per node per sample period forever, and
@@ -90,6 +95,7 @@ describe("retention and rollup maintenance", () => {
       deleteSamplesBefore: vi.fn(() => Promise.resolve()),
       deleteRollupsBefore: vi.fn(() => Promise.resolve()),
       deleteNodeMetricsSamplesBefore: vi.fn(() => Promise.resolve()),
+      deleteCompletedJobsBefore: vi.fn(() => Promise.resolve()),
       purgeOffboardedUsers: vi.fn(() => Promise.resolve({ deleted: [] })),
     };
     const now = new Date("2026-08-20T12:00:00.000Z");
@@ -120,6 +126,7 @@ describe("retention and rollup maintenance", () => {
       deleteSamplesBefore: vi.fn(() => Promise.resolve()),
       deleteRollupsBefore: vi.fn(() => Promise.resolve()),
       deleteNodeMetricsSamplesBefore: vi.fn(() => Promise.resolve()),
+      deleteCompletedJobsBefore: vi.fn(() => Promise.resolve()),
       purgeOffboardedUsers: vi.fn(() => Promise.resolve({ deleted: [] })),
     };
     const now = new Date("2026-08-20T12:00:00.000Z");
@@ -142,6 +149,7 @@ describe("retention and rollup maintenance", () => {
       deleteSamplesBefore: vi.fn(() => Promise.resolve()),
       deleteRollupsBefore: vi.fn(() => Promise.resolve()),
       deleteNodeMetricsSamplesBefore: vi.fn(() => Promise.resolve()),
+      deleteCompletedJobsBefore: vi.fn(() => Promise.resolve()),
       purgeOffboardedUsers: vi.fn(() => Promise.resolve({ deleted: [] })),
     };
     const now = new Date("2026-08-20T12:00:00.000Z");
@@ -158,6 +166,55 @@ describe("retention and rollup maintenance", () => {
     })();
 
     expect(repository.purgeOffboardedUsers).toHaveBeenCalledWith(
+      new Date("2026-07-21T12:00:00.000Z"),
+    );
+  });
+
+  // job_outbox is never pruned otherwise -- every key create/revoke/rotate,
+  // node reconcile, agent update and capacity change leaves a row forever.
+  it("passes the resolved completed-job retention window to deleteCompletedJobsBefore", async () => {
+    const repository: MaintenanceRepository = {
+      loadSamplesSince: vi.fn(() => Promise.resolve([])),
+      replaceRollups: vi.fn(() => Promise.resolve()),
+      deleteSamplesBefore: vi.fn(() => Promise.resolve()),
+      deleteRollupsBefore: vi.fn(() => Promise.resolve()),
+      deleteNodeMetricsSamplesBefore: vi.fn(() => Promise.resolve()),
+      deleteCompletedJobsBefore: vi.fn(() => Promise.resolve()),
+      purgeOffboardedUsers: vi.fn(() => Promise.resolve({ deleted: [] })),
+    };
+    const now = new Date("2026-08-20T12:00:00.000Z");
+
+    await createMaintenanceRunner({
+      repository,
+      now: () => now,
+      completedJobRetentionDays: 5,
+    })();
+
+    expect(repository.deleteCompletedJobsBefore).toHaveBeenCalledWith(
+      new Date("2026-08-15T12:00:00.000Z"),
+    );
+  });
+
+  it("falls back to the default window when the completed-job resolver throws", async () => {
+    const repository: MaintenanceRepository = {
+      loadSamplesSince: vi.fn(() => Promise.resolve([])),
+      replaceRollups: vi.fn(() => Promise.resolve()),
+      deleteSamplesBefore: vi.fn(() => Promise.resolve()),
+      deleteRollupsBefore: vi.fn(() => Promise.resolve()),
+      deleteNodeMetricsSamplesBefore: vi.fn(() => Promise.resolve()),
+      deleteCompletedJobsBefore: vi.fn(() => Promise.resolve()),
+      purgeOffboardedUsers: vi.fn(() => Promise.resolve({ deleted: [] })),
+    };
+    const now = new Date("2026-08-20T12:00:00.000Z");
+
+    await createMaintenanceRunner({
+      repository,
+      now: () => now,
+      completedJobRetentionDays: () =>
+        Promise.reject(new Error("settings row unreachable")),
+    })();
+
+    expect(repository.deleteCompletedJobsBefore).toHaveBeenCalledWith(
       new Date("2026-07-21T12:00:00.000Z"),
     );
   });

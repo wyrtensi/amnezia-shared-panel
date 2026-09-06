@@ -15,7 +15,11 @@ import {
   or,
   sql,
 } from "drizzle-orm";
-import { revokeJobDedupKey } from "@amnezia/contracts";
+import {
+  ACCESS_SYNC_DEDUPLICATION_KEY,
+  RULES_REFRESH_DEDUPLICATION_KEY,
+  revokeJobDedupKey,
+} from "@amnezia/contracts";
 import {
   armAccessSyncRow,
   decryptSecret,
@@ -796,6 +800,26 @@ export class PostgresWorkerRepository
       }
       return { deleted };
     });
+  };
+
+  deleteCompletedJobsBefore = async (cutoff: Date): Promise<void> => {
+    await this.options.db
+      .delete(jobOutbox)
+      .where(
+        and(
+          eq(jobOutbox.status, "completed"),
+          lt(jobOutbox.completedAt, cutoff),
+          // The `rules.refresh` and `access.sync` rows are singletons reused
+          // forever (armAccessSyncRow / the rules-refresh arm upsert into the
+          // SAME row every time rather than inserting a new one) and back the
+          // admin status endpoints getRulesRefreshStatus / getAccessSyncStatus.
+          // Deleting either makes the admin UI report that job as "idle" and
+          // loses the last run's error, so both are spared no matter their
+          // status or age.
+          ne(jobOutbox.deduplicationKey, RULES_REFRESH_DEDUPLICATION_KEY),
+          ne(jobOutbox.deduplicationKey, ACCESS_SYNC_DEDUPLICATION_KEY),
+        ),
+      );
   };
 
   completeProvision = async ({

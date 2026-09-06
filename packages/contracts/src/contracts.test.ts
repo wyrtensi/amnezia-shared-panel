@@ -1605,6 +1605,7 @@ describe("worker polling periods", () => {
       "ruleFetchIntervalSec",
       "accessReconcileSec",
       "offboardedUserRetentionDays",
+      "completedJobRetentionDays",
     ]);
   });
 
@@ -1643,6 +1644,12 @@ describe("worker polling periods", () => {
         unit: "sec",
       },
       offboardedUserRetentionDays: {
+        min: 1,
+        max: 3_650,
+        fallback: 30,
+        unit: "day",
+      },
+      completedJobRetentionDays: {
         min: 1,
         max: 3_650,
         fallback: 30,

@@ -80,6 +80,7 @@ export const readWorkerPeriodOverrides = async (
       ruleFetchIntervalSec: portalPolicy.ruleFetchIntervalSec,
       accessReconcileSec: portalPolicy.accessReconcileSec,
       offboardedUserRetentionDays: portalPolicy.offboardedUserRetentionDays,
+      completedJobRetentionDays: portalPolicy.completedJobRetentionDays,
     })
     .from(portalPolicy)
     .where(eq(portalPolicy.id, true))

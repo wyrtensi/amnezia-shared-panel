@@ -93,5 +93,7 @@ export const resolveWorkerPeriodDefaults = (
     ruleFetchIntervalSec: WORKER_PERIOD_FIELDS.ruleFetchIntervalSec.fallback,
     offboardedUserRetentionDays:
       WORKER_PERIOD_FIELDS.offboardedUserRetentionDays.fallback,
+    completedJobRetentionDays:
+      WORKER_PERIOD_FIELDS.completedJobRetentionDays.fallback,
   };
 };

@@ -14,6 +14,7 @@ describe("resolveWorkerPeriodDefaults", () => {
       ruleFetchIntervalSec: 21_600,
       accessReconcileSec: 3_600,
       offboardedUserRetentionDays: 30,
+      completedJobRetentionDays: 30,
     });
   });
 

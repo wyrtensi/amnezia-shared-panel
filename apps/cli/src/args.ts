@@ -45,6 +45,12 @@ export const WORKER_PERIOD_FIELDS = {
     fallback: 30,
     unit: "day",
   },
+  completedJobRetentionDays: {
+    min: 1,
+    max: 3_650,
+    fallback: 30,
+    unit: "day",
+  },
 } as const satisfies Record<
   string,
   { min: number; max: number; fallback: number; unit: "sec" | "day" }

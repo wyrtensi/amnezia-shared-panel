@@ -621,6 +621,22 @@ export const WORKER_PERIOD_FIELDS = {
     fallback: 30,
     unit: "day",
   },
+  /**
+   * How long a `completed` `job_outbox` row is kept before
+   * `deleteCompletedJobsBefore` removes it. Measured from `completed_at`.
+   * `failed` rows are never touched by this window (an operator reads them to
+   * see what went wrong, and the revoke re-arm sweep counts them), and neither
+   * are `pending`/`processing` ones -- only `completed` is ever pruned. 30
+   * days is the default, same as the other retention window above; 1 day is
+   * the minimum because a window of 0 would prune a row moments after the job
+   * that just wrote it completed.
+   */
+  completedJobRetentionDays: {
+    min: 1,
+    max: 3_650,
+    fallback: 30,
+    unit: "day",
+  },
 } as const satisfies Record<
   string,
   { min: number; max: number; fallback: number; unit: "sec" | "day" }
@@ -655,6 +671,7 @@ export const workerPeriodOverridesSchema = z
     offboardedUserRetentionDays: workerPeriodValue(
       "offboardedUserRetentionDays",
     ),
+    completedJobRetentionDays: workerPeriodValue("completedJobRetentionDays"),
   })
   .partial();
 export type WorkerPeriodOverrides = z.infer<typeof workerPeriodOverridesSchema>;

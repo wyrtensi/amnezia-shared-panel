@@ -115,6 +115,8 @@ const runMaintenance = createMaintenanceRunner({
   nodeMetricsRetentionDays: () => periods.get("nodeMetricsRetentionDays"),
   offboardedUserRetentionDays: () =>
     periods.get("offboardedUserRetentionDays"),
+  completedJobRetentionDays: () =>
+    periods.get("completedJobRetentionDays"),
 });
 // Route-rule feeds activate by default. Set RU_*_POC_APPROVED=false to hold a
 // profile's auto-fetched versions in quarantine until an operator reviews them.
