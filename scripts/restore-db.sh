@@ -3,7 +3,12 @@
 # Usage: scripts/restore-db.sh <dump.sql.gz>
 set -euo pipefail
 
-COMPOSE_DIR="${COMPOSE_DIR:-infra/dev}"
+SCRIPT_DIR="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
+. "$SCRIPT_DIR/lib/compose-dir.sh"
+# Restore destroys data on whatever database it points at, so it must be at
+# least as strict as backup-db.sh about resolving COMPOSE_DIR: same function,
+# same refusal to guess.
+COMPOSE_DIR="$(require_compose_dir)" || exit 1
 COMPOSE="docker compose -f ${COMPOSE_DIR}/compose.yaml"
 USER_NAME="${POSTGRES_USER:-amnezia_panel}"
 DB_NAME="${POSTGRES_DB:-amnezia_panel}"

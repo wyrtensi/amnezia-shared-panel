@@ -7,7 +7,12 @@
 #   scripts/deploy.sh --build    # build images from the current checkout
 set -euo pipefail
 
-COMPOSE_DIR="${COMPOSE_DIR:-infra/dev}"
+SCRIPT_DIR="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
+. "$SCRIPT_DIR/lib/compose-dir.sh"
+COMPOSE_DIR="$(require_compose_dir)" || exit 1
+# Export so the scripts/backup-db.sh invocation below (step 1/4) resolves to
+# the exact same directory instead of re-running its own auto-detection.
+export COMPOSE_DIR
 # Honour an operator-supplied override exactly like infra/prod/update.sh does.
 # Without this, deploying through this script drops the override — including the
 # co-located-node network wiring from compose.override.colocated.yaml.example —
