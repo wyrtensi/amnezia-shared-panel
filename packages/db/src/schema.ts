@@ -619,6 +619,14 @@ export const portalPolicy = pgTable(
     allowQrDownload: boolean("allow_qr_download").default(true).notNull(),
     allowConfDownload: boolean("allow_conf_download").default(true).notNull(),
     allowSelfRevoke: boolean("allow_self_revoke").default(true).notNull(),
+    // Whether the automatic maintenance sweep may hard-delete an offboarded
+    // account at all. Default OFF, matching the contract: deleting a user row
+    // is irreversible, so an existing deployment must not start doing it on a
+    // timer because of an upgrade. See WORKER_PERIOD_FIELDS.offboardedUserRetentionDays
+    // for how long a disabled account is kept once this is switched on.
+    autoPurgeOffboardedUsers: boolean("auto_purge_offboarded_users")
+      .default(false)
+      .notNull(),
     showPublicKey: boolean("show_public_key").default(false).notNull(),
     showLastUsed: boolean("show_last_used").default(true).notNull(),
     showTraffic: boolean("show_traffic").default(true).notNull(),

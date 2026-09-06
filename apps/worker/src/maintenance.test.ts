@@ -138,6 +138,10 @@ describe("retention and rollup maintenance", () => {
       repository,
       now: () => now,
       offboardedUserRetentionDays: 10,
+      // The gate defaults to off; naming it explicitly is what this test is
+      // actually about (the window), not the gate itself -- see the dedicated
+      // gate tests below.
+      autoPurgeOffboardedUsers: true,
     })();
 
     expect(repository.purgeOffboardedUsers).toHaveBeenCalledWith(
@@ -167,11 +171,71 @@ describe("retention and rollup maintenance", () => {
       now: () => now,
       offboardedUserRetentionDays: () =>
         Promise.reject(new Error("settings row unreachable")),
+      autoPurgeOffboardedUsers: true,
     })();
 
     expect(repository.purgeOffboardedUsers).toHaveBeenCalledWith(
       new Date("2026-07-21T12:00:00.000Z"),
     );
+  });
+
+  // The toggle that decides whether the automatic sweep may delete an account
+  // at all. Off by default -- see the contract's `autoPurgeOffboardedUsers`.
+  describe("the automatic-purge gate", () => {
+    const buildRepository = (): MaintenanceRepository => ({
+      loadSamplesSince: vi.fn(() => Promise.resolve([])),
+      replaceRollups: vi.fn(() => Promise.resolve()),
+      deleteSamplesBefore: vi.fn(() => Promise.resolve()),
+      deleteRollupsBefore: vi.fn(() => Promise.resolve()),
+      deleteNodeMetricsSamplesBefore: vi.fn(() => Promise.resolve()),
+      deleteCompletedJobsBefore: vi.fn(() => Promise.resolve()),
+      rearmStuckRevokes: vi.fn(() => Promise.resolve({ rearmed: 0 })),
+      purgeOffboardedUsers: vi.fn(() => Promise.resolve({ deleted: [] })),
+    });
+
+    it("does not call purgeOffboardedUsers when the gate is off (the default)", async () => {
+      const repository = buildRepository();
+      const now = new Date("2026-08-20T12:00:00.000Z");
+
+      await createMaintenanceRunner({ repository, now: () => now })();
+
+      expect(repository.purgeOffboardedUsers).not.toHaveBeenCalled();
+      // The rest of the pass still runs -- this is a gate on one step, not a
+      // reason to skip the others.
+      expect(repository.deleteNodeMetricsSamplesBefore).toHaveBeenCalled();
+      expect(repository.deleteCompletedJobsBefore).toHaveBeenCalled();
+      expect(repository.rearmStuckRevokes).toHaveBeenCalled();
+    });
+
+    it("calls purgeOffboardedUsers when the gate is explicitly on", async () => {
+      const repository = buildRepository();
+      const now = new Date("2026-08-20T12:00:00.000Z");
+
+      await createMaintenanceRunner({
+        repository,
+        now: () => now,
+        autoPurgeOffboardedUsers: true,
+      })();
+
+      expect(repository.purgeOffboardedUsers).toHaveBeenCalledTimes(1);
+    });
+
+    it("treats a throwing gate resolver as off, never as on", async () => {
+      const repository = buildRepository();
+      const now = new Date("2026-08-20T12:00:00.000Z");
+
+      // Deleting an account is irreversible, so a failed read of the setting
+      // must never be mistaken for "on" -- the only safe direction is "do not
+      // delete".
+      await createMaintenanceRunner({
+        repository,
+        now: () => now,
+        autoPurgeOffboardedUsers: () =>
+          Promise.reject(new Error("settings row unreachable")),
+      })();
+
+      expect(repository.purgeOffboardedUsers).not.toHaveBeenCalled();
+    });
   });
 
   // job_outbox is never pruned otherwise -- every key create/revoke/rotate,
@@ -250,7 +314,11 @@ describe("retention and rollup maintenance", () => {
     };
     const now = new Date("2026-08-20T12:00:00.000Z");
 
-    await createMaintenanceRunner({ repository, now: () => now })();
+    await createMaintenanceRunner({
+      repository,
+      now: () => now,
+      autoPurgeOffboardedUsers: true,
+    })();
 
     expect(repository.rearmStuckRevokes).toHaveBeenCalledTimes(1);
     expect(repository.purgeOffboardedUsers).toHaveBeenCalledTimes(1);
@@ -276,7 +344,11 @@ describe("retention and rollup maintenance", () => {
     // a stuck revoke sweep is a nice-to-have, not something that should take
     // metrics pruning and the offboarded-user purge down with it.
     await expect(
-      createMaintenanceRunner({ repository, now: () => now })(),
+      createMaintenanceRunner({
+        repository,
+        now: () => now,
+        autoPurgeOffboardedUsers: true,
+      })(),
     ).resolves.toBeUndefined();
 
     expect(repository.deleteNodeMetricsSamplesBefore).toHaveBeenCalled();
@@ -303,7 +375,12 @@ describe("retention and rollup maintenance", () => {
     // that fails on every run was invisible to an operator watching
     // `docker logs worker`. It must still not stop the rest of the pass.
     await expect(
-      createMaintenanceRunner({ repository, now: () => now, onError })(),
+      createMaintenanceRunner({
+        repository,
+        now: () => now,
+        onError,
+        autoPurgeOffboardedUsers: true,
+      })(),
     ).resolves.toBeUndefined();
 
     expect(onError).toHaveBeenCalledTimes(1);

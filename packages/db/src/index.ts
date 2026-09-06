@@ -5,7 +5,7 @@ import {
   randomBytes,
   randomUUID,
 } from "node:crypto";
-import { sql } from "drizzle-orm";
+import { and, count, eq, inArray, isNotNull, lt, sql } from "drizzle-orm";
 import {
   ACCESS_SYNC_DEDUPLICATION_KEY,
   ACCESS_SYNC_JOB_TYPE,
@@ -14,7 +14,7 @@ import {
   type PortalPolicyOverride,
 } from "@amnezia/contracts";
 import type { Database } from "./client.js";
-import { jobOutbox } from "./schema.js";
+import { jobOutbox, users, vpnKeys } from "./schema.js";
 
 export * from "./client.js";
 export * from "./schema.js";
@@ -198,4 +198,114 @@ export const armAccessSyncRow = async (
         updatedAt: new Date(),
       },
     });
+};
+
+// --- Offboarded-user purge eligibility --------------------------------------
+// Shared by the worker's automatic sweep (maintenance.ts's
+// purgeOffboardedUsers, gated on portal_policy's `autoPurgeOffboardedUsers`),
+// the control API's bulk manual purge admin action (never gated -- an admin
+// can always remove an eligible account deliberately), and its per-user
+// delete action (also never gated, and not even retention-windowed -- see the
+// comment on that action for why). Kept in one place on purpose: two copies
+// of "who is eligible" -- or of "what counts as a live key" -- can disagree,
+// and if they ever did, an admin reading one surface would eventually be
+// surprised by what another one actually does.
+
+/**
+ * Key states that could still hold a peer on a node -- any of these blocks
+ * the purge. Exported so a test asserting "a live key blocks this" can pick
+ * one from the real list instead of hardcoding a state name that could drift
+ * out of sync with it.
+ */
+export const LIVE_KEY_STATES: readonly KeyState[] = [
+  "provisioning",
+  "active",
+  "disabled",
+  "revoking",
+  "failed",
+];
+
+/**
+ * Whether `userId` holds any key in a state that could still hold a peer on a
+ * node (see `LIVE_KEY_STATES`). Exported so every caller asking "is this
+ * account safe to delete" -- the retention-gated eligibility scan below, and
+ * the control API's single-account delete action, which is not gated on the
+ * retention window at all -- reads the exact same state set instead of each
+ * keeping its own list that could quietly drift from the other.
+ */
+export const hasLiveKeys = async (
+  executor: Database | DbTransaction,
+  userId: string,
+): Promise<boolean> => {
+  const [live] = await executor
+    .select({ value: count() })
+    .from(vpnKeys)
+    .where(
+      and(eq(vpnKeys.ownerId, userId), inArray(vpnKeys.state, LIVE_KEY_STATES)),
+    );
+  return (live?.value ?? 0) > 0;
+};
+
+export type PurgeEligibleUser = {
+  id: string;
+  email: string;
+  disabledAt: Date;
+  /** How many `revoked` keys would be deleted along with the account. */
+  revokedKeyCount: number;
+};
+
+/**
+ * The users eligible for the offboarded-account purge: `disabled`, disabled
+ * before `disabledBefore`, and with no key that could still hold a peer on a
+ * node (only `revoked` keys, or none, may remain). Fails closed on a NULL
+ * `disabledAt` (a row disabled before that column existed) -- there is no
+ * timestamp to measure the retention window from, so such a row is never
+ * eligible, no matter how long ago it was disabled.
+ */
+export const findOffboardedUsersEligibleForPurge = async (
+  executor: Database | DbTransaction,
+  disabledBefore: Date,
+): Promise<PurgeEligibleUser[]> => {
+  const disabled = await executor
+    .select({ id: users.id, email: users.email, disabledAt: users.disabledAt })
+    .from(users)
+    .where(
+      and(
+        eq(users.status, "disabled"),
+        isNotNull(users.disabledAt),
+        lt(users.disabledAt, disabledBefore),
+      ),
+    );
+  const eligible: PurgeEligibleUser[] = [];
+  for (const user of disabled) {
+    if (await hasLiveKeys(executor, user.id)) continue;
+    const [revoked] = await executor
+      .select({ value: count() })
+      .from(vpnKeys)
+      .where(and(eq(vpnKeys.ownerId, user.id), eq(vpnKeys.state, "revoked")));
+    eligible.push({
+      id: user.id,
+      email: user.email,
+      // Non-null: excluded above by isNotNull(users.disabledAt).
+      disabledAt: user.disabledAt as Date,
+      revokedKeyCount: revoked?.value ?? 0,
+    });
+  }
+  return eligible;
+};
+
+/**
+ * Hard-delete one eligible user: its `revoked` key rows, then the row itself.
+ * Callers insert their own `user.deleted` audit event afterwards -- the actor
+ * differs (the automatic sweep has none, a manual purge names the admin who
+ * asked), so it is not written here.
+ */
+export const purgeOneOffboardedUser = async (
+  executor: Database | DbTransaction,
+  userId: string,
+): Promise<void> => {
+  await executor
+    .delete(vpnKeys)
+    .where(and(eq(vpnKeys.ownerId, userId), eq(vpnKeys.state, "revoked")));
+  await executor.delete(users).where(eq(users.id, userId));
 };

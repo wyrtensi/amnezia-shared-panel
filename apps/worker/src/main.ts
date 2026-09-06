@@ -117,6 +117,11 @@ const runMaintenance = createMaintenanceRunner({
     periods.get("offboardedUserRetentionDays"),
   completedJobRetentionDays: () =>
     periods.get("completedJobRetentionDays"),
+  // Off unless an admin turns it on -- see the contract's
+  // `autoPurgeOffboardedUsers` and `resolveGate` in maintenance.ts, which
+  // treats a failed read (this throwing) as "off" too.
+  autoPurgeOffboardedUsers: () =>
+    repository.getAutoPurgeOffboardedUsersEnabled(),
   onError: reportBackgroundError,
 });
 // Route-rule feeds activate by default. Set RU_*_POC_APPROVED=false to hold a

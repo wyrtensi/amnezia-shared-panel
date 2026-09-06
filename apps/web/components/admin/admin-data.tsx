@@ -192,6 +192,12 @@ export type GlobalPortalPolicy = {
   allowQrDownload: boolean;
   allowConfDownload: boolean;
   allowSelfRevoke: boolean;
+  /**
+   * Whether the automatic maintenance sweep may hard-delete an offboarded
+   * account at all. Off by default: deleting a user row is irreversible, and
+   * a panel that has never touched this must not do it on a timer.
+   */
+  autoPurgeOffboardedUsers: boolean;
   showPublicKey: boolean;
   showLastUsed: boolean;
   showTraffic: boolean;
@@ -240,6 +246,9 @@ const DEFAULT_POLICY: GlobalPortalPolicy = {
   allowQrDownload: true,
   allowConfDownload: true,
   allowSelfRevoke: true,
+  // Matches the contract default: the form must not flash the switch on
+  // before the real policy arrives.
+  autoPurgeOffboardedUsers: false,
   showPublicKey: false,
   showLastUsed: true,
   showTraffic: true,

@@ -645,6 +645,14 @@ export default function AdminUsersPage() {
               )
                 void action("users", selected.id, "offboard");
             }}
+            onDeletePermanently={() => {
+              if (
+                window.confirm(
+                  t("users.deletePermanentlyConfirm", { email: selected.email }),
+                )
+              )
+                void action("users", selected.id, "delete");
+            }}
             onEditLimit={() => setLimitUser(selected)}
             onEditPolicy={() => setPolicyUser(selected)}
             onCreateKey={() => setKeyUser(selected)}
@@ -1414,6 +1422,7 @@ function UserDetail({
   onSetRole,
   onReinstate,
   onOffboard,
+  onDeletePermanently,
   onEditLimit,
   onEditPolicy,
   onCreateKey,
@@ -1428,6 +1437,7 @@ function UserDetail({
   onSetRole: (role: string) => void;
   onReinstate: () => void;
   onOffboard: () => void;
+  onDeletePermanently: () => void;
   onEditLimit: () => void;
   onEditPolicy: () => void;
   onCreateKey: () => void;
@@ -1551,10 +1561,23 @@ function UserDetail({
             </Button>
           )}
           {disabled ? (
-            <Button variant="outline" size="sm" onClick={onReinstate}>
-              <Check className="h-4 w-4" />
-              {t("users.reinstate")}
-            </Button>
+            <>
+              <Button variant="outline" size="sm" onClick={onReinstate}>
+                <Check className="h-4 w-4" />
+                {t("users.reinstate")}
+              </Button>
+              {/* Rung two of the ladder: only reachable once the account is
+                  already disabled, and irreversible unlike Reinstate above,
+                  which must stay available on every disabled user. */}
+              <Button
+                variant="destructive"
+                size="sm"
+                onClick={onDeletePermanently}
+              >
+                <Trash2 className="h-4 w-4" />
+                {t("users.deletePermanently")}
+              </Button>
+            </>
           ) : user.role !== "admin" ? (
             <Button
               variant="outline"

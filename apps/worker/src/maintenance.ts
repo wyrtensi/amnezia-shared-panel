@@ -24,6 +24,27 @@ const resolveRetentionDays = async (
   }
 };
 
+/**
+ * A gate that may be a fixed boolean or a resolver, asked once per run.
+ *
+ * Unlike `resolveRetentionDays` above, there is no "fallback" to weigh here:
+ * only one direction is ever safe for an irreversible delete. A resolver that
+ * throws is treated as OFF -- never as ON -- because a failed read gives no
+ * information about what the operator actually wants, and the one thing a
+ * failure must never do is start deleting accounts nobody asked to have
+ * deleted.
+ */
+const resolveGate = async (
+  option: boolean | (() => Promise<boolean>),
+): Promise<boolean> => {
+  if (typeof option === "boolean") return option;
+  try {
+    return await option();
+  } catch {
+    return false;
+  }
+};
+
 export type RollupPeriod = "hour" | "day";
 
 export type TrafficSample = {
@@ -158,6 +179,14 @@ export type MaintenanceRunnerOptions = {
    */
   completedJobRetentionDays?: number | (() => Promise<number>);
   /**
+   * Whether this run may call `purgeOffboardedUsers` at all. Resolved once per
+   * run like the windows above, but with no numeric fallback: see
+   * `resolveGate`. Defaults to `false`, matching the contract's
+   * `autoPurgeOffboardedUsers` -- deleting a user row is irreversible, so a
+   * panel that has never touched this setting must not do it on a timer.
+   */
+  autoPurgeOffboardedUsers?: boolean | (() => Promise<boolean>);
+  /**
    * Called when `rearmStuckRevokes` throws. The throw itself must not stop the
    * rest of the pass (see the try/catch around that call below), but a
    * persistently failing sweep still needs to be visible to whoever is
@@ -181,6 +210,7 @@ export const createMaintenanceRunner = ({
     .fallback,
   completedJobRetentionDays = WORKER_PERIOD_FIELDS.completedJobRetentionDays
     .fallback,
+  autoPurgeOffboardedUsers = false,
   onError = () => {},
 }: MaintenanceRunnerOptions) => async (): Promise<void> => {
   const current = now();
@@ -263,8 +293,13 @@ export const createMaintenanceRunner = ({
   }
   // Disabled accounts are removed once their keys have finished revoking AND
   // they have sat disabled for the whole retention window -- long enough for
-  // an admin to notice and reinstate one that should not have been offboarded.
-  await repository.purgeOffboardedUsers(
-    new Date(current.getTime() - userRetentionDays * DAY_MS),
-  );
+  // an admin to notice and reinstate one that should not have been
+  // offboarded. That is still gated on `autoPurgeOffboardedUsers`: the window
+  // above answers HOW LONG to wait, this answers whether the panel may ever
+  // do this by itself. Off by default -- see `resolveGate`.
+  if (await resolveGate(autoPurgeOffboardedUsers)) {
+    await repository.purgeOffboardedUsers(
+      new Date(current.getTime() - userRetentionDays * DAY_MS),
+    );
+  }
 };

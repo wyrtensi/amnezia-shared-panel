@@ -1232,6 +1232,26 @@ describe("PostgresWorkerRepository outbox leases", () => {
     expect(await stillExists(userId)).toBe(true);
   });
 
+  runDatabaseTest(
+    "reads the auto-purge gate off a fresh row as false, then true once set",
+    async () => {
+      if (!database || !repository) return;
+      // No portal_policy row at all -- a fresh panel -- must read as off, the
+      // same fail-safe default `resolveGate` in maintenance.ts falls back to.
+      await expect(
+        repository.getAutoPurgeOffboardedUsersEnabled(),
+      ).resolves.toBe(false);
+
+      await database.db
+        .insert(portalPolicy)
+        .values({ id: true, autoPurgeOffboardedUsers: true });
+
+      await expect(
+        repository.getAutoPurgeOffboardedUsersEnabled(),
+      ).resolves.toBe(true);
+    },
+  );
+
   const MINUTE_MS = 60_000;
 
   /**

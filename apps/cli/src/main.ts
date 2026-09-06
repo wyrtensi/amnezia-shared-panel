@@ -882,6 +882,34 @@ async function cmdUserEnable(args: string[]): Promise<void> {
   console.log("user reinstated — status active");
 }
 
+/**
+ * Rung two of the Delete-button ladder (user-disable is rung one):
+ * permanently removes an already-disabled account. Refused server-side
+ * unless the account is disabled and holds no live key -- see the "delete"
+ * admin action in apps/control-api for both refusals. Irreversible, and
+ * never the default, the same shape as key-purge and offboarded-purge.
+ */
+async function cmdUserDelete(args: string[]): Promise<void> {
+  const id = await resolveUserId(
+    args.find((arg) => !arg.startsWith("--")),
+    "Usage: user-delete <id|email> --confirm",
+  );
+  if (!args.includes("--confirm")) {
+    console.log(`user ${id}`);
+    console.log(
+      "This permanently deletes the user row and its key rows from the panel.",
+    );
+    console.log(
+      "Refused unless the account is already disabled (user-disable) and holds",
+    );
+    console.log("no live key. Only the audit log will remember it afterwards.");
+    console.log("Re-run with --confirm to delete it.");
+    return;
+  }
+  await userAction(id, "delete", {});
+  console.log(`user ${id}: deleted from the panel`);
+}
+
 async function cmdQuota(args: string[]): Promise<void> {
   const [requests, users, policyRows] = await Promise.all([
     api<QuotaRequest[]>("/api/admin/quota-requests"),
@@ -1206,6 +1234,11 @@ const POLICY_BOOL_FIELDS = [
   "allowQrDownload",
   "allowConfDownload",
   "allowSelfRevoke",
+  // Off by default: deleting an offboarded account is irreversible, so the
+  // automatic maintenance sweep must not do it on its own until an operator
+  // turns this on. `offboarded-purge` removes one deliberately at any time,
+  // whatever this is set to.
+  "autoPurgeOffboardedUsers",
   "showPublicKey",
   "showLastUsed",
   "showTraffic",
@@ -1610,6 +1643,66 @@ async function cmdKeyPurge(args: string[]): Promise<void> {
     body: JSON.stringify({}),
   });
   console.log(`key ${id}: deleted from the panel`);
+}
+
+type OffboardedPurgeResult = {
+  confirmed: boolean;
+  retentionDays: number;
+  eligible: Array<{
+    id: string;
+    email: string;
+    disabledAt: string;
+    revokedKeyCount: number;
+  }>;
+  deleted: string[];
+};
+
+/**
+ * The deliberate, manual counterpart to the automatic sweep: prints the
+ * offboarded accounts currently eligible for deletion and deletes nothing
+ * unless `--confirm` is given. Works whether `autoPurgeOffboardedUsers` is on
+ * or off -- that toggle only decides whether the panel does this on a timer
+ * by itself, never whether an admin can do it deliberately.
+ */
+async function cmdOffboardedPurge(args: string[]): Promise<void> {
+  const confirm = args.includes("--confirm");
+  const result = await api<OffboardedPurgeResult>(
+    "/api/admin/users/offboarded/purge",
+    { method: "POST", body: JSON.stringify({ confirm }) },
+  );
+  if (wantsJson(args)) return json(result);
+  if (result.eligible.length === 0) {
+    console.log(
+      `no offboarded accounts are eligible (retention ${result.retentionDays} days)`,
+    );
+    return;
+  }
+  console.log(
+    table(
+      result.eligible.map((user) => ({
+        email: user.email,
+        "disabled at": user.disabledAt,
+        "revoked keys": String(user.revokedKeyCount),
+      })),
+      ["email", "disabled at", "revoked keys"],
+    ),
+  );
+  if (!confirm) {
+    console.log("");
+    console.log(
+      `Would permanently delete ${result.eligible.length} account(s) above: the`,
+    );
+    console.log(
+      "user row and its revoked keys. Irreversible, and unrelated to whether the",
+    );
+    console.log(
+      "automatic sweep (policy-set --autoPurgeOffboardedUsers=) is on -- this is",
+    );
+    console.log("the only other way an offboarded account is ever removed.");
+    console.log("Re-run with --confirm to delete them.");
+    return;
+  }
+  console.log(`deleted ${result.deleted.length} account(s)`);
 }
 
 async function cmdNodeCapacity(args: string[]): Promise<void> {
@@ -2308,6 +2401,11 @@ Users (accept a user id OR email):
                                          Omitted flags leave that part unchanged.
   user-disable <id|email>                Offboard: disable + revoke their keys
   user-enable <id|email>                 Reinstate a disabled user
+  user-delete <id|email> --confirm       Permanently delete an already-disabled
+                                         user with no live key (offboard it first
+                                         with user-disable). Irreversible; refused
+                                         otherwise. Without --confirm, prints what
+                                         it would do and deletes nothing
   user-nodes <id|email> <all|none|uuid,…>  Per-user node availability (all=every node; overrides global).
                                          REPLACES the whole per-user policy override; use
                                          user-limit --allowed-nodes to change only availability.
@@ -2383,6 +2481,14 @@ Write:
                                           Never touches a key used inside the window, a
                                           key too young to have connected yet, or one
                                           in any state but active / disabled
+  offboarded-purge [--confirm]            Delete offboarded accounts past their
+                                          retention window (disabled, no live keys) --
+                                          the deliberate one-off counterpart to
+                                          policy-set --autoPurgeOffboardedUsers=true.
+                                          Works whether that toggle is on or off.
+                                          Without --confirm it lists who is eligible
+                                          (email, disabled-since, revoked key count)
+                                          and deletes nothing; irreversible with it
   key-revoke <id>                         Revoke a key. Also retries a delete stuck in
                                           "revoking" because a node was unreachable
   key-disable <id> / key-enable <id>      Disable / enable a key
@@ -2451,15 +2557,23 @@ Write:
 policy-set fields:
   Booleans (true/false): allowKeyCreation, allowNodeSelection,
     allowRouteProfileSelection, allowCustomRoutes, allowConfigRedownload,
-    allowQrDownload, allowConfDownload, allowSelfRevoke, showPublicKey,
-    showLastUsed, showTraffic, showNodeAddress, showNodeStatus,
-    showInstallReminder
+    allowQrDownload, allowConfDownload, allowSelfRevoke,
+    autoPurgeOffboardedUsers, showPublicKey, showLastUsed, showTraffic,
+    showNodeAddress, showNodeStatus, showInstallReminder
     showNodeStatus=false hides the service-check chips from ordinary users
     showNodeAddress=true also shows ordinary users the address of each node
     they may use (off by default; admins always see it on the node card).
     showInstallReminder=false stops the panel telling a regular user, after
     each of their first three keys, to install or update AmneziaVPN. On by
     default; admins never see that dialog either way.
+    autoPurgeOffboardedUsers=true lets the maintenance sweep hard-delete a
+    disabled account (and its revoked keys) once offboardedUserRetentionDays
+    has passed. Off by default — deleting an account is irreversible, so an
+    upgraded panel keeps NOT doing this until an admin turns it on. See
+    offboarded-purge for a deliberate one-off deletion of the whole eligible
+    set regardless of this setting, or user-delete for one account at a
+    time — which, unlike both of those, does not wait out
+    offboardedUserRetentionDays at all.
   defaultKeyLimit=<int 0..1000>
     Per server in per_node mode, the shared total in global mode — the number
     does not move, its meaning does.
@@ -2850,6 +2964,8 @@ export async function dispatch(argv: string[]): Promise<void> {
       return cmdStaleKeys(args);
     case "stale-keys-revoke":
       return cmdStaleKeysRevoke(args);
+    case "offboarded-purge":
+      return cmdOffboardedPurge(args);
     case "nodes":
       return cmdNodes(args);
     case "audit":
@@ -2872,6 +2988,8 @@ export async function dispatch(argv: string[]): Promise<void> {
       return cmdUserDisable(args);
     case "user-enable":
       return cmdUserEnable(args);
+    case "user-delete":
+      return cmdUserDelete(args);
     case "user-nodes":
       return cmdUserNodes(args);
     case "user-routes":

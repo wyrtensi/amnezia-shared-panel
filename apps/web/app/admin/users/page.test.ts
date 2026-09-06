@@ -428,3 +428,66 @@ describe("A regular user never sees a key's internal name", () => {
   });
 });
 
+/**
+ * Task 17: the Delete button is a two-step ladder rather than a single
+ * action that quietly promised deletion and delivered a disable. Pinned by
+ * source inspection because a later edit could put the permanent-delete
+ * button behind the wrong branch, or drop Restore from a disabled user,
+ * without failing any type check.
+ */
+describe("Delete button ladder", () => {
+  it("renders the permanent-delete variant for a disabled user, alongside Restore", () => {
+    expect(source).toMatch(
+      /disabled \? \(\s*<>[\s\S]{0,250}onClick=\{onReinstate\}[\s\S]{0,700}onClick=\{onDeletePermanently\}[\s\S]{0,250}users\.deletePermanently"\)/,
+    );
+  });
+
+  it("keeps the offboard variant for an active, non-admin user", () => {
+    expect(source).toMatch(/onClick=\{onOffboard\}[\s\S]{0,100}users\.delete"\)/);
+  });
+
+  it("wires the permanent-delete handler through its own window.confirm, naming the delete action", () => {
+    expect(source).toMatch(
+      /onDeletePermanently=\{\(\) => \{[\s\S]{0,200}window\.confirm\([\s\S]{0,100}users\.deletePermanentlyConfirm[\s\S]{0,150}"users",\s*selected\.id,\s*"delete"/,
+    );
+  });
+
+  it("carries both ladder keys, in both languages", async () => {
+    const { messages } = await import("@/lib/i18n/messages");
+    for (const key of [
+      "users.offboardConfirm",
+      "users.deletePermanently",
+      "users.deletePermanentlyConfirm",
+    ] as const) {
+      expect(messages.ru[key]).toBeTruthy();
+      expect(messages.en[key]).toBeTruthy();
+    }
+  });
+
+  it("step one (offboard) says it is reversible, not that the account will be deleted", async () => {
+    const { messages } = await import("@/lib/i18n/messages");
+    // The old copy read "disable and delete" / "аккаунт удаляется после
+    // отзыва" -- true only when the automatic sweep ran, which is now opt-in
+    // and off by default. It must not promise a deletion this step does not
+    // perform.
+    expect(messages.en["users.offboardConfirm"]).not.toMatch(/delete/i);
+    expect(messages.ru["users.offboardConfirm"]).not.toMatch(/удал/i);
+  });
+
+  it("step two (permanent delete) says it cannot be undone and what survives", async () => {
+    const { messages } = await import("@/lib/i18n/messages");
+    expect(messages.en["users.deletePermanentlyConfirm"]).toMatch(
+      /cannot be undone/i,
+    );
+    expect(messages.en["users.deletePermanentlyConfirm"]).toMatch(
+      /audit trail/i,
+    );
+    expect(messages.ru["users.deletePermanentlyConfirm"]).toMatch(
+      /нельзя отменить/i,
+    );
+    expect(messages.ru["users.deletePermanentlyConfirm"]).toMatch(
+      /журнал[еа] аудита/i,
+    );
+  });
+});
+

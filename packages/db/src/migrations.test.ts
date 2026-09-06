@@ -286,3 +286,29 @@ describe("0033_completed_job_retention", () => {
     );
   });
 });
+
+describe("0034_auto_purge_offboarded_users", () => {
+  const sql = readFileSync(
+    fileURLToPath(
+      new URL(
+        "../migrations/0034_auto_purge_offboarded_users.sql",
+        import.meta.url,
+      ),
+    ),
+    "utf8",
+  );
+
+  it("adds the column NOT NULL and defaulted to false", () => {
+    // The opposite upgrade story from 0031's showInstallReminder: there the
+    // unset value had to keep the existing behaviour ON, here it has to keep
+    // it OFF. Deleting a user row is irreversible, so a panel upgraded from
+    // before this column existed must stop auto-purging, not keep doing it.
+    expect(sql).toContain(
+      'ALTER TABLE "portal_policy" ADD COLUMN "auto_purge_offboarded_users" boolean DEFAULT false NOT NULL;',
+    );
+  });
+
+  it("matches the default the contract hands out", () => {
+    expect(defaultPortalPolicy.autoPurgeOffboardedUsers).toBe(false);
+  });
+});

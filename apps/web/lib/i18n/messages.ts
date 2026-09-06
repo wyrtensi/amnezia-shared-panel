@@ -601,8 +601,12 @@ const ru = {
   "users.roleAdminLabel": "назначить администратором",
   "users.roleRemoveLabel": "снять роль",
   "users.roleConfirm": "Точно {label} {email}?",
+  // Step 1 of the ladder: disables the account and revokes its keys. This is
+  // reversible (see "Восстановить") -- it must NOT read as an eventual
+  // deletion, which is a second, separate button pressed on the account once
+  // it is already disabled.
   "users.offboardConfirm":
-    "Отключить и удалить {email}? Все ключи будут отозваны, аккаунт удаляется после их отзыва.",
+    "Отключить {email}? Аккаунт будет отключён, а его ключи отозваны. Это можно отменить, восстановив пользователя.",
   "users.keysWord": "ключей",
   "users.onlineCount": "{count} онлайн",
   // S7: the button now covers both the number and the server list.
@@ -615,6 +619,11 @@ const ru = {
   "users.makeAdmin": "Сделать админом",
   "users.reinstate": "Восстановить",
   "users.delete": "Удалить",
+  // Step 2 of the ladder: shown only on an already-disabled account, and
+  // irreversible unlike the button above.
+  "users.deletePermanently": "Удалить навсегда",
+  "users.deletePermanentlyConfirm":
+    "Удалить {email} навсегда? Это нельзя отменить: запись пользователя и его ключи будут удалены из панели. Останется только запись в журнале аудита — сам аккаунт восстановить будет нельзя.",
   "users.statKeys": "Ключей",
   "users.statActive": "Активных",
   "users.statOnline": "Онлайн",
@@ -956,6 +965,7 @@ const ru = {
   "gpolicy.allowQrDownload": "Отображение QR-кодов",
   "gpolicy.allowConfDownload": "Скачивание .conf файлов",
   "gpolicy.allowSelfRevoke": "Самостоятельный отзыв ключей",
+  "gpolicy.autoPurgeOffboardedUsers": "Автоматическое удаление отключённых аккаунтов",
   "gpolicy.showPublicKey": "Показывать публичный ключ",
   "gpolicy.showLastUsed": "Показывать дату активности",
   "gpolicy.showTraffic": "Показывать объём трафика",
@@ -977,6 +987,8 @@ const ru = {
     "Пользователь может скачать .conf-файл ключа.",
   "gpolicy.allowSelfRevokeHint":
     "Пользователь может сам отзывать (удалять) свои ключи.",
+  "gpolicy.autoPurgeOffboardedUsersHint":
+    "Когда включено, панель сама безвозвратно удаляет отключённый аккаунт (и его отозванные ключи) по истечении срока хранения ниже. По умолчанию выключено: удаление аккаунта необратимо, поэтому панель должна не делать это сама, пока администратор явно не разрешит. Удалить аккаунт вручную можно в любой момент через CLI (offboarded-purge) независимо от этого переключателя.",
   "gpolicy.showPublicKeyHint":
     "Показывать публичный ключ устройства в карточке ключа.",
   "gpolicy.showLastUsedHint":
@@ -1026,6 +1038,7 @@ const ru = {
     "Строки можно перетаскивать мышью; стрелками — с клавиатуры и на телефоне.",
   "policy.employeePerms": "Разрешения для сотрудников",
   "policy.telemetryDisplay": "Отображение телеметрии",
+  "policy.accountDeletion": "Удаление отключённых аккаунтов",
   "policy.cfAccessHint":
     "Для двусторонней синхронизации пользователей с Access. API-токен хранится зашифрованным и не показывается — можно только заменить. См. docs/CLOUDFLARE-ACCESS.md.",
   "policy.cfAccessDomainsPointer":
@@ -1789,8 +1802,12 @@ const en = {
   "users.roleAdminLabel": "make an administrator",
   "users.roleRemoveLabel": "remove the role",
   "users.roleConfirm": "Are you sure you want to {label} {email}?",
+  // Step 1 of the ladder: disables the account and revokes its keys. This is
+  // reversible (see "Restore") -- it must NOT read as an eventual deletion,
+  // which is a second, separate button pressed on the account once it is
+  // already disabled.
   "users.offboardConfirm":
-    "Disable and delete {email}? All keys will be revoked, and the account is deleted after they are revoked.",
+    "Disable {email}? The account will be disabled and its keys revoked. This can be undone by restoring the user.",
   "users.keysWord": "keys",
   "users.onlineCount": "{count} online",
   "users.limitNode": "Limits and servers:",
@@ -1802,6 +1819,11 @@ const en = {
   "users.makeAdmin": "Make admin",
   "users.reinstate": "Restore",
   "users.delete": "Delete",
+  // Step 2 of the ladder: shown only on an already-disabled account, and
+  // irreversible unlike the button above.
+  "users.deletePermanently": "Delete permanently",
+  "users.deletePermanentlyConfirm":
+    "Permanently delete {email}? This cannot be undone: the user row and its keys are removed from the panel. The audit trail keeps the record — the account cannot be restored.",
   "users.statKeys": "Keys",
   "users.statActive": "Active",
   "users.statOnline": "Online",
@@ -2128,6 +2150,7 @@ const en = {
   "gpolicy.allowQrDownload": "QR code display",
   "gpolicy.allowConfDownload": ".conf file download",
   "gpolicy.allowSelfRevoke": "Self-revocation of keys",
+  "gpolicy.autoPurgeOffboardedUsers": "Automatically delete offboarded accounts",
   "gpolicy.showPublicKey": "Show public key",
   "gpolicy.showLastUsed": "Show last activity date",
   "gpolicy.showTraffic": "Show traffic volume",
@@ -2148,6 +2171,8 @@ const en = {
   "gpolicy.allowConfDownloadHint": "The user can download a key's .conf file.",
   "gpolicy.allowSelfRevokeHint":
     "The user can revoke (delete) their own keys.",
+  "gpolicy.autoPurgeOffboardedUsersHint":
+    "When on, the panel itself permanently deletes a disabled account (and its revoked keys) once the retention window below has passed. Off by default: deleting an account is irreversible, so the panel must not do it on its own until an admin explicitly allows it. An account can still be deleted deliberately at any time from the CLI (offboarded-purge), regardless of this switch.",
   "gpolicy.showPublicKeyHint":
     "Show the device's public key on the key card.",
   "gpolicy.showLastUsedHint": "Show when the key was last used.",
@@ -2194,6 +2219,7 @@ const en = {
     "Drag a row to reorder it; the arrows do the same from a keyboard or a phone.",
   "policy.employeePerms": "Employee permissions",
   "policy.telemetryDisplay": "Telemetry display",
+  "policy.accountDeletion": "Deleting offboarded accounts",
   "policy.cfAccessHint":
     "For two-way user synchronization with Access. The API token is stored encrypted and never shown — it can only be replaced. See docs/CLOUDFLARE-ACCESS.md.",
   "policy.cfAccessDomainsPointer":

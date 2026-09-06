@@ -849,3 +849,130 @@ describe("route rules take addresses, not site names", () => {
     expect(sent.ru_blacklist?.add.domains).toEqual([]);
   });
 });
+
+describe("offboarded-purge", () => {
+  beforeEach(() => {
+    process.env.PANEL_ADMIN_EMAIL = "cli-test@example.com";
+  });
+  afterEach(() => {
+    delete process.env.PANEL_ADMIN_EMAIL;
+    vi.unstubAllGlobals();
+  });
+
+  const eligible = {
+    confirmed: false,
+    retentionDays: 30,
+    eligible: [
+      {
+        id: "u1",
+        email: "gone@example.com",
+        disabledAt: "2026-07-01T00:00:00.000Z",
+        revokedKeyCount: 2,
+      },
+    ],
+    deleted: [],
+  };
+
+  it("without --confirm sends confirm:false and deletes nothing", async () => {
+    const calls = stubFetch([{ body: eligible }]);
+    const out = await run(["offboarded-purge"]);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.url).toMatch(/\/api\/admin\/users\/offboarded\/purge$/);
+    expect(JSON.parse(calls[0]?.init?.body as string)).toEqual({
+      confirm: false,
+    });
+    expect(out).toMatch(/gone@example\.com/);
+    expect(out).toMatch(/Re-run with --confirm/);
+  });
+
+  it("--confirm sends confirm:true and reports what was deleted", async () => {
+    const calls = stubFetch([
+      {
+        body: {
+          ...eligible,
+          confirmed: true,
+          deleted: ["gone@example.com"],
+        },
+      },
+    ]);
+    const out = await run(["offboarded-purge", "--confirm"]);
+    expect(JSON.parse(calls[0]?.init?.body as string)).toEqual({
+      confirm: true,
+    });
+    expect(out).toMatch(/deleted 1 account/);
+    expect(out).not.toMatch(/Re-run with --confirm/);
+  });
+
+  it("--json prints the raw result instead of a table", async () => {
+    stubFetch([{ body: eligible }]);
+    const out = await run(["offboarded-purge", "--json"]);
+    expect(JSON.parse(out)).toEqual(eligible);
+  });
+});
+
+describe("user-delete", () => {
+  beforeEach(() => {
+    process.env.PANEL_ADMIN_EMAIL = "cli-test@example.com";
+  });
+  afterEach(() => {
+    delete process.env.PANEL_ADMIN_EMAIL;
+    vi.unstubAllGlobals();
+  });
+
+  // Real UUID so resolveUserId short-circuits without a users lookup.
+  const U = "44444444-4444-4444-8444-444444444444";
+
+  it("without --confirm posts nothing and prints what it would do", async () => {
+    const calls = stubFetch([]);
+    const out = await run(["user-delete", U]);
+    expect(calls).toHaveLength(0);
+    expect(out).toMatch(/permanently deletes the user row/);
+    expect(out).toMatch(/Re-run with --confirm/);
+  });
+
+  it("--confirm posts to the per-user delete action", async () => {
+    const calls = stubFetch([
+      { body: { id: U, deleted: true, email: "gone@example.com" } },
+    ]);
+    const out = await run(["user-delete", U, "--confirm"]);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.url).toMatch(
+      new RegExp(`/api/admin/users/${U}/delete$`),
+    );
+    expect(JSON.parse(calls[0]?.init?.body as string)).toEqual({});
+    expect(out).toMatch(/deleted from the panel/);
+  });
+
+  it("surfaces the server's refusal instead of swallowing it", async () => {
+    // Rung one has not happened yet -- the account is still active.
+    stubFetch([
+      {
+        status: 409,
+        body: {
+          error: "USER_NOT_DISABLED",
+          message:
+            "This account is still active. Offboard it first, then delete it.",
+        },
+      },
+    ]);
+    await expect(run(["user-delete", U, "--confirm"])).rejects.toThrow(
+      /still active/,
+    );
+  });
+
+  it("surfaces the live-key refusal distinctly from the not-disabled one", async () => {
+    stubFetch([
+      {
+        status: 409,
+        body: {
+          error: "USER_HAS_LIVE_KEYS",
+          message:
+            "This account still holds a live key. Revoke or purge it before deleting the account.",
+        },
+      },
+    ]);
+    await expect(run(["user-delete", U, "--confirm"])).rejects.toThrow(
+      /live key/,
+    );
+  });
+});
