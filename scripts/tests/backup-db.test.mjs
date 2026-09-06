@@ -173,3 +173,18 @@ test("restore-db.sh also refuses to guess when neither stack is configured", asy
   assert.match(stderr, /COMPOSE_DIR/);
   assert.doesNotMatch(stdout, /Restoring/);
 });
+
+test("deploy.sh fails before invoking docker when neither stack is configured", async () => {
+  const dir = await fixture({ prodEnv: false, devEnv: false });
+  const { code, stdout, stderr } = await runBash([deployScriptPath], { cwd: dir });
+
+  assert.notEqual(code, 0);
+  assert.match(stderr, /COMPOSE_DIR/);
+  // The deploy script fails at require_compose_dir before reaching the
+  // "Backing up the database" message (first output after COMPOSE_DIR resolves)
+  // or any docker invocation. Absence of both messages and no backups directory
+  // proves it exited during resolution, not during execution.
+  assert.doesNotMatch(stdout, /Backing up/);
+  assert.doesNotMatch(stdout, /\[1\/4\]/);
+  await assert.rejects(access(path.join(dir, "backups")));
+});
