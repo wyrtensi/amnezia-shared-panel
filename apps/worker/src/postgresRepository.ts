@@ -5,6 +5,7 @@ import {
   count,
   desc,
   eq,
+  gt,
   gte,
   inArray,
   isNotNull,
@@ -12,6 +13,7 @@ import {
   lt,
   lte,
   ne,
+  notExists,
   or,
   sql,
 } from "drizzle-orm";
@@ -820,6 +822,76 @@ export class PostgresWorkerRepository
           ne(jobOutbox.deduplicationKey, ACCESS_SYNC_DEDUPLICATION_KEY),
         ),
       );
+  };
+
+  rearmStuckRevokes = async (): Promise<{ rearmed: number }> => {
+    return this.options.db.transaction(async (tx) => {
+      // A `vpn-key.revoke` job already live for this key -- stops a second job
+      // stacking on one already in flight.
+      const liveRevokeJob = tx
+        .select({ one: sql`1` })
+        .from(jobOutbox)
+        .where(
+          and(
+            eq(jobOutbox.type, "vpn-key.revoke"),
+            sql`${jobOutbox.payload} ->> 'keyId' = ${vpnKeys.id}::text`,
+            inArray(jobOutbox.status, ["pending", "processing"]),
+          ),
+        );
+      // How many `vpn-key.revoke` jobs for this key have already exhausted
+      // their retries and failed. `failed` rows are never pruned (Fix 1 above
+      // only prunes `completed`), so this count is monotonic and survives any
+      // future retention change: 5 sweeps x 10 attempts is at most 50 contacts
+      // with the node, then the key is left to a human. This IS the permanent
+      // stop -- without it a node that always 500s would be re-armed forever.
+      const failedRevokeJobCount = tx
+        .select({ value: count() })
+        .from(jobOutbox)
+        .where(
+          and(
+            eq(jobOutbox.type, "vpn-key.revoke"),
+            sql`${jobOutbox.payload} ->> 'keyId' = ${vpnKeys.id}::text`,
+            eq(jobOutbox.status, "failed"),
+          ),
+        );
+      const candidates = await tx
+        .select({ id: vpnKeys.id })
+        .from(vpnKeys)
+        .innerJoin(nodes, eq(nodes.id, vpnKeys.nodeId))
+        .where(
+          and(
+            eq(vpnKeys.state, "revoking"),
+            eq(nodes.enabled, true),
+            // THE hot-loop guard. `last_sync_at` is moved only by the
+            // telemetry poller and by `completeNodeReconcile`, so a node that
+            // is genuinely gone stops advancing it and its keys are never
+            // re-armed again. Without this a dead node's keys would be
+            // retried forever.
+            gt(nodes.lastSyncAt, sql`now() - interval '30 minutes'`),
+            notExists(liveRevokeJob),
+            lt(failedRevokeJobCount, 5),
+          ),
+        )
+        // Caps one sweep's blast radius.
+        .limit(25);
+
+      for (const key of candidates) {
+        await tx.insert(jobOutbox).values({
+          type: "vpn-key.revoke",
+          deduplicationKey: revokeJobDedupKey(key.id, randomUUID()),
+          payload: { keyId: key.id },
+        });
+      }
+      if (candidates.length > 0) {
+        await tx.insert(auditEvents).values({
+          actorType: "system",
+          action: "vpn_key.revoke_rearmed",
+          targetType: "vpn_key",
+          metadata: { rearmedCount: candidates.length },
+        });
+      }
+      return { rearmed: candidates.length };
+    });
   };
 
   completeProvision = async ({

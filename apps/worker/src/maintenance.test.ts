@@ -53,6 +53,7 @@ describe("retention and rollup maintenance", () => {
       deleteRollupsBefore: vi.fn(() => Promise.resolve()),
       deleteNodeMetricsSamplesBefore: vi.fn(() => Promise.resolve()),
       deleteCompletedJobsBefore: vi.fn(() => Promise.resolve()),
+      rearmStuckRevokes: vi.fn(() => Promise.resolve({ rearmed: 0 })),
       purgeOffboardedUsers: vi.fn(() => Promise.resolve({ deleted: [] })),
     };
     const now = new Date("2026-08-20T12:00:00.000Z");
@@ -96,6 +97,7 @@ describe("retention and rollup maintenance", () => {
       deleteRollupsBefore: vi.fn(() => Promise.resolve()),
       deleteNodeMetricsSamplesBefore: vi.fn(() => Promise.resolve()),
       deleteCompletedJobsBefore: vi.fn(() => Promise.resolve()),
+      rearmStuckRevokes: vi.fn(() => Promise.resolve({ rearmed: 0 })),
       purgeOffboardedUsers: vi.fn(() => Promise.resolve({ deleted: [] })),
     };
     const now = new Date("2026-08-20T12:00:00.000Z");
@@ -127,6 +129,7 @@ describe("retention and rollup maintenance", () => {
       deleteRollupsBefore: vi.fn(() => Promise.resolve()),
       deleteNodeMetricsSamplesBefore: vi.fn(() => Promise.resolve()),
       deleteCompletedJobsBefore: vi.fn(() => Promise.resolve()),
+      rearmStuckRevokes: vi.fn(() => Promise.resolve({ rearmed: 0 })),
       purgeOffboardedUsers: vi.fn(() => Promise.resolve({ deleted: [] })),
     };
     const now = new Date("2026-08-20T12:00:00.000Z");
@@ -150,6 +153,7 @@ describe("retention and rollup maintenance", () => {
       deleteRollupsBefore: vi.fn(() => Promise.resolve()),
       deleteNodeMetricsSamplesBefore: vi.fn(() => Promise.resolve()),
       deleteCompletedJobsBefore: vi.fn(() => Promise.resolve()),
+      rearmStuckRevokes: vi.fn(() => Promise.resolve({ rearmed: 0 })),
       purgeOffboardedUsers: vi.fn(() => Promise.resolve({ deleted: [] })),
     };
     const now = new Date("2026-08-20T12:00:00.000Z");
@@ -180,6 +184,7 @@ describe("retention and rollup maintenance", () => {
       deleteRollupsBefore: vi.fn(() => Promise.resolve()),
       deleteNodeMetricsSamplesBefore: vi.fn(() => Promise.resolve()),
       deleteCompletedJobsBefore: vi.fn(() => Promise.resolve()),
+      rearmStuckRevokes: vi.fn(() => Promise.resolve({ rearmed: 0 })),
       purgeOffboardedUsers: vi.fn(() => Promise.resolve({ deleted: [] })),
     };
     const now = new Date("2026-08-20T12:00:00.000Z");
@@ -203,6 +208,7 @@ describe("retention and rollup maintenance", () => {
       deleteRollupsBefore: vi.fn(() => Promise.resolve()),
       deleteNodeMetricsSamplesBefore: vi.fn(() => Promise.resolve()),
       deleteCompletedJobsBefore: vi.fn(() => Promise.resolve()),
+      rearmStuckRevokes: vi.fn(() => Promise.resolve({ rearmed: 0 })),
       purgeOffboardedUsers: vi.fn(() => Promise.resolve({ deleted: [] })),
     };
     const now = new Date("2026-08-20T12:00:00.000Z");
@@ -217,5 +223,64 @@ describe("retention and rollup maintenance", () => {
     expect(repository.deleteCompletedJobsBefore).toHaveBeenCalledWith(
       new Date("2026-07-21T12:00:00.000Z"),
     );
+  });
+
+  // A revoke that exhausted its retries is left `failed` while the key stays
+  // `revoking` (see failJob) -- nothing else ever retries it. This sweep has
+  // to run BEFORE purgeOffboardedUsers: a key it re-arms this run cannot be
+  // `revoked` in time for THIS run's purge (separate transactions), so purge
+  // must still see the OLD, still-blocking state when it runs.
+  it("re-arms stuck revokes once per pass, before purgeOffboardedUsers", async () => {
+    const calls: string[] = [];
+    const repository: MaintenanceRepository = {
+      loadSamplesSince: vi.fn(() => Promise.resolve([])),
+      replaceRollups: vi.fn(() => Promise.resolve()),
+      deleteSamplesBefore: vi.fn(() => Promise.resolve()),
+      deleteRollupsBefore: vi.fn(() => Promise.resolve()),
+      deleteNodeMetricsSamplesBefore: vi.fn(() => Promise.resolve()),
+      deleteCompletedJobsBefore: vi.fn(() => Promise.resolve()),
+      rearmStuckRevokes: vi.fn(() => {
+        calls.push("rearmStuckRevokes");
+        return Promise.resolve({ rearmed: 2 });
+      }),
+      purgeOffboardedUsers: vi.fn(() => {
+        calls.push("purgeOffboardedUsers");
+        return Promise.resolve({ deleted: [] });
+      }),
+    };
+    const now = new Date("2026-08-20T12:00:00.000Z");
+
+    await createMaintenanceRunner({ repository, now: () => now })();
+
+    expect(repository.rearmStuckRevokes).toHaveBeenCalledTimes(1);
+    expect(repository.purgeOffboardedUsers).toHaveBeenCalledTimes(1);
+    expect(calls).toEqual(["rearmStuckRevokes", "purgeOffboardedUsers"]);
+  });
+
+  it("does not let a failing re-arm stop the rest of the maintenance run", async () => {
+    const repository: MaintenanceRepository = {
+      loadSamplesSince: vi.fn(() => Promise.resolve([])),
+      replaceRollups: vi.fn(() => Promise.resolve()),
+      deleteSamplesBefore: vi.fn(() => Promise.resolve()),
+      deleteRollupsBefore: vi.fn(() => Promise.resolve()),
+      deleteNodeMetricsSamplesBefore: vi.fn(() => Promise.resolve()),
+      deleteCompletedJobsBefore: vi.fn(() => Promise.resolve()),
+      rearmStuckRevokes: vi.fn(() =>
+        Promise.reject(new Error("database unreachable")),
+      ),
+      purgeOffboardedUsers: vi.fn(() => Promise.resolve({ deleted: [] })),
+    };
+    const now = new Date("2026-08-20T12:00:00.000Z");
+
+    // Must not throw, and every other step of the pass still has to run --
+    // a stuck revoke sweep is a nice-to-have, not something that should take
+    // metrics pruning and the offboarded-user purge down with it.
+    await expect(
+      createMaintenanceRunner({ repository, now: () => now })(),
+    ).resolves.toBeUndefined();
+
+    expect(repository.deleteNodeMetricsSamplesBefore).toHaveBeenCalled();
+    expect(repository.deleteCompletedJobsBefore).toHaveBeenCalled();
+    expect(repository.purgeOffboardedUsers).toHaveBeenCalled();
   });
 });

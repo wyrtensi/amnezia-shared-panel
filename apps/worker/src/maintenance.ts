@@ -70,11 +70,21 @@ export interface MaintenanceRepository {
   /**
    * Prune `completed` `job_outbox` rows older than `cutoff` (measured from
    * `completed_at`). Never touches `failed` rows -- a failed row is the
-   * evidence an operator reads to see what went wrong -- nor `pending`/
-   * `processing` ones. The `rules.refresh` and `access.sync` singleton rows
-   * are spared no matter their status or age; see the implementation for why.
+   * evidence an operator reads to see what went wrong, and `rearmStuckRevokes`
+   * below counts them -- nor `pending`/`processing` ones. The `rules.refresh`
+   * and `access.sync` singleton rows are spared no matter their status or age;
+   * see the implementation for why.
    */
   deleteCompletedJobsBefore: (cutoff: Date) => Promise<void>;
+  /**
+   * Re-insert a fresh `vpn-key.revoke` job for a bounded set of keys stuck in
+   * `revoking` whose revoke exhausted its retries. `failJob` deliberately
+   * leaves such a key in `revoking` rather than moving it to `failed` (see its
+   * comment), and nothing else ever retries it -- without this sweep a
+   * permanently-failed revoke sits there forever, its peer still live on the
+   * node. Returns how many were re-armed.
+   */
+  rearmStuckRevokes: () => Promise<{ rearmed: number }>;
 }
 
 const bucketStart = (date: Date, period: RollupPeriod): Date => {
@@ -225,6 +235,20 @@ export const createMaintenanceRunner = ({
   await repository.deleteCompletedJobsBefore(
     new Date(current.getTime() - jobRetentionDays * DAY_MS),
   );
+  // Re-arm a bounded set of keys stuck in `revoking` BEFORE the offboarded-user
+  // purge below. The two run in separate transactions, so a key re-armed this
+  // run will not be `revoked` in time for THIS run's purge -- that is correct,
+  // the user is deleted a cycle later, once the retry has actually landed.
+  // Wrapped so a failure here (e.g. a transient DB error) cannot stop the
+  // purge or any other step in this pass.
+  try {
+    await repository.rearmStuckRevokes();
+  } catch {
+    // Swallowed on purpose -- see the comment above. The next scheduled
+    // maintenance run tries again; there is nothing more actionable to do
+    // with the error here, and the caller's own onError already reports
+    // an unhandled throw from an ordinary run.
+  }
   // Disabled accounts are removed once their keys have finished revoking AND
   // they have sat disabled for the whole retention window -- long enough for
   // an admin to notice and reinstate one that should not have been offboarded.

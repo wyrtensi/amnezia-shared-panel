@@ -22,7 +22,7 @@ import {
   users,
   vpnKeys,
 } from "@amnezia/db";
-import { eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { aggregateTrafficSamples } from "./maintenance.js";
 import { PostgresWorkerRepository } from "./postgresRepository.js";
 
@@ -1227,6 +1227,173 @@ describe("PostgresWorkerRepository outbox leases", () => {
 
     expect(await stillExists(userId)).toBe(true);
   });
+
+  const MINUTE_MS = 60_000;
+
+  /**
+   * A key in `revoking` on a node with a controllable `enabled`/`lastSyncAt`,
+   * for the `rearmStuckRevokes` bound tests below. Defaults to a fresh,
+   * enabled node -- the shape every bound test starts from before it breaks
+   * exactly one condition.
+   */
+  const seedStuckRevokingKey = async (options: {
+    nodeEnabled?: boolean;
+    lastSyncAt?: Date | null;
+  } = {}): Promise<{ keyId: string }> => {
+    if (!database) throw new Error("Database test is disabled");
+    const credentials = encryptSecret("api-key", keyring, 1);
+    const label = encryptSecret(randomBytes(32).toString("base64"), keyring, 1);
+    const [user] = await database.db
+      .insert(users)
+      .values({ email: `rearm-${randomBytes(6).toString("hex")}@example.com` })
+      .returning();
+    const [node] = await database.db
+      .insert(nodes)
+      .values({
+        name: `rearm-node-${randomBytes(6).toString("hex")}`,
+        apiBaseUrl: "http://127.0.0.1:4001",
+        maxPeers: 500,
+        enabled: options.nodeEnabled ?? true,
+        lastSyncAt:
+          options.lastSyncAt === undefined ? new Date() : options.lastSyncAt,
+        credentialsCiphertext: credentials.ciphertext,
+        credentialsNonce: credentials.nonce,
+        credentialsAuthTag: credentials.authTag,
+        credentialsKeyVersion: credentials.keyVersion,
+        labelSecretCiphertext: label.ciphertext,
+        labelSecretNonce: label.nonce,
+        labelSecretAuthTag: label.authTag,
+        labelSecretKeyVersion: label.keyVersion,
+      })
+      .returning();
+    if (!user || !node) throw new Error("Failed to seed rearm-test context");
+    const [key] = await database.db
+      .insert(vpnKeys)
+      .values({
+        ownerId: user.id,
+        nodeId: node.id,
+        nodeLabel: `ap_rearm_${randomBytes(6).toString("hex")}`,
+        protocol: "awg2",
+        state: "revoking",
+        routeProfile: "full_tunnel",
+      })
+      .returning();
+    if (!key) throw new Error("Failed to seed rearm-test key");
+    return { keyId: key.id };
+  };
+
+  /** An extra `vpn-key.revoke` outbox row for `keyId`, in a given status. */
+  const seedRevokeJob = async (
+    keyId: string,
+    status: "pending" | "processing" | "failed" | "completed",
+  ): Promise<void> => {
+    if (!database) throw new Error("Database test is disabled");
+    await database.db.insert(jobOutbox).values({
+      type: "vpn-key.revoke",
+      deduplicationKey: `vpn-key.revoke:${keyId}:${randomBytes(6).toString("hex")}`,
+      payload: { keyId },
+      status,
+      completedAt: status === "completed" ? new Date() : null,
+    });
+  };
+
+  const revokeJobsFor = async (keyId: string) => {
+    if (!database) throw new Error("Database test is disabled");
+    return database.db
+      .select()
+      .from(jobOutbox)
+      .where(
+        and(
+          eq(jobOutbox.type, "vpn-key.revoke"),
+          sql`${jobOutbox.payload} ->> 'keyId' = ${keyId}`,
+        ),
+      );
+  };
+
+  runDatabaseTest(
+    "re-arms a revoking key on a fresh, enabled node with no live job",
+    async () => {
+      if (!database || !repository) return;
+      const { keyId } = await seedStuckRevokingKey();
+
+      const result = await repository.rearmStuckRevokes();
+
+      expect(result).toEqual({ rearmed: 1 });
+      const jobs = await revokeJobsFor(keyId);
+      expect(jobs).toHaveLength(1);
+      expect(jobs[0]).toMatchObject({ status: "pending", payload: { keyId } });
+      const [event] = await database.db
+        .select()
+        .from(auditEvents)
+        .where(eq(auditEvents.action, "vpn_key.revoke_rearmed"));
+      expect(event).toMatchObject({ actorType: "system" });
+    },
+  );
+
+  runDatabaseTest(
+    "bound: a key whose node has a stale last_sync_at gets none",
+    async () => {
+      if (!database || !repository) return;
+      // 40 minutes ago -- past the 30-minute freshness floor. Without this
+      // bound a node that is genuinely gone would have its keys retried
+      // forever.
+      const { keyId } = await seedStuckRevokingKey({
+        lastSyncAt: new Date(Date.now() - 40 * MINUTE_MS),
+      });
+
+      const result = await repository.rearmStuckRevokes();
+
+      expect(result).toEqual({ rearmed: 0 });
+      expect(await revokeJobsFor(keyId)).toHaveLength(0);
+    },
+  );
+
+  runDatabaseTest("bound: a key on a disabled node gets none", async () => {
+    if (!database || !repository) return;
+    const { keyId } = await seedStuckRevokingKey({ nodeEnabled: false });
+
+    const result = await repository.rearmStuckRevokes();
+
+    expect(result).toEqual({ rearmed: 0 });
+    expect(await revokeJobsFor(keyId)).toHaveLength(0);
+  });
+
+  runDatabaseTest(
+    "bound: a key with a pending revoke job already in flight gets none",
+    async () => {
+      if (!database || !repository) return;
+      const { keyId } = await seedStuckRevokingKey();
+      await seedRevokeJob(keyId, "pending");
+
+      const result = await repository.rearmStuckRevokes();
+
+      // Without this bound a second job would stack on the one already live.
+      expect(result).toEqual({ rearmed: 0 });
+      expect(await revokeJobsFor(keyId)).toHaveLength(1);
+    },
+  );
+
+  runDatabaseTest(
+    "bound: a key with 5 failed revoke jobs gets none, with 4 gets one",
+    async () => {
+      if (!database || !repository) return;
+      const { keyId: exhaustedKeyId } = await seedStuckRevokingKey();
+      for (let i = 0; i < 5; i += 1) await seedRevokeJob(exhaustedKeyId, "failed");
+
+      const { keyId: retryableKeyId } = await seedStuckRevokingKey();
+      for (let i = 0; i < 4; i += 1) await seedRevokeJob(retryableKeyId, "failed");
+
+      const result = await repository.rearmStuckRevokes();
+
+      // The permanent stop: `failed` rows are never pruned, so this count is
+      // monotonic and survives any future retention change.
+      expect(result).toEqual({ rearmed: 1 });
+      expect(await revokeJobsFor(exhaustedKeyId)).toHaveLength(5);
+      const retryableJobs = await revokeJobsFor(retryableKeyId);
+      expect(retryableJobs).toHaveLength(5);
+      expect(retryableJobs.filter((job) => job.status === "pending")).toHaveLength(1);
+    },
+  );
 
   runDatabaseTest(
     "deleteCompletedJobsBefore prunes only old completed rows, sparing failed rows and both singletons",
