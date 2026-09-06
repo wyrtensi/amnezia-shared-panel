@@ -3920,6 +3920,189 @@ describe("PostgresControlRepository rename own key", () => {
       expect(await storedKey(keyId)).toMatchObject({ deviceLabel: "Laptop" });
     },
   );
+
+  runDatabaseTest(
+    "refuses to rename a key an administrator disabled, and touches nothing",
+    async () => {
+      if (!database) return;
+      const owner = await seedOwner();
+      // `nameShowLabel: true` so the new label WOULD change the composed
+      // name and normally trigger a rotate -- proving the rejection comes
+      // from the `disabled` guard in `queueKeyRotate`, not from the "nothing
+      // to reissue" short-circuit that a same-name rename would also hit.
+      const keyId = await seedKey(owner.id, {
+        deviceLabel: "Laptop",
+        nameShowLabel: true,
+        state: "disabled",
+      });
+
+      await expect(
+        subject().renameOwnKey(owner, keyId, "New Laptop"),
+      ).rejects.toMatchObject({ statusCode: 409, code: "KEY_DISABLED_BY_ADMIN" });
+
+      // The whole call is one transaction: the label write that happens
+      // before `queueKeyRotate` throws must roll back with it, or an owner
+      // could still rename a disabled key even though the reissue is
+      // refused.
+      expect(await storedKey(keyId)).toMatchObject({
+        deviceLabel: "Laptop",
+        state: "disabled",
+      });
+      expect(await rotateJobFor(keyId)).toHaveLength(0);
+    },
+  );
+});
+
+describe("PostgresControlRepository rotate own key", () => {
+  const database = databaseUrl ? createDatabase(databaseUrl) : null;
+  const keyring = { 1: randomBytes(32) };
+  let nodeId: string;
+
+  beforeAll(async () => {
+    if (!database) return;
+    await database.db.delete(portalPolicy);
+    await database.db.insert(portalPolicy).values({});
+    const credentials = encryptSecret("api-key", keyring, 1);
+    const label = encryptSecret("label-secret", keyring, 1);
+    const [node] = await database.db
+      .insert(nodes)
+      .values({
+        name: "rotate-node",
+        publicName: "Rotate Node",
+        apiBaseUrl: "http://127.0.0.1:4003",
+        credentialsCiphertext: credentials.ciphertext,
+        credentialsNonce: credentials.nonce,
+        credentialsAuthTag: credentials.authTag,
+        credentialsKeyVersion: credentials.keyVersion,
+        labelSecretCiphertext: label.ciphertext,
+        labelSecretNonce: label.nonce,
+        labelSecretAuthTag: label.authTag,
+        labelSecretKeyVersion: label.keyVersion,
+      })
+      .returning();
+    if (!node) throw new Error("Failed to seed node");
+    nodeId = node.id;
+  });
+
+  afterAll(async () => {
+    if (database) await database.client.end();
+  });
+
+  const subject = (): PostgresControlRepository => {
+    if (!database) throw new Error("No database");
+    return new PostgresControlRepository({ db: database.db, keyring });
+  };
+
+  const seedOwner = async (): Promise<Actor> => {
+    if (!database) throw new Error("No database");
+    const suffix = randomBytes(6).toString("hex");
+    const [user] = await database.db
+      .insert(users)
+      .values({ email: `rotate-${suffix}@example.com` })
+      .returning();
+    if (!user) throw new Error("Failed to seed owner");
+    return {
+      id: user.id,
+      email: user.email,
+      displayName: null,
+      role: "user",
+      status: "active",
+    };
+  };
+
+  const seedKey = async (
+    ownerId: string,
+    overrides: {
+      routeProfile?: "full_tunnel" | "ru_blacklist";
+      state?: "active" | "disabled" | "failed" | "provisioning";
+    } = {},
+  ): Promise<string> => {
+    if (!database) throw new Error("No database");
+    const suffix = randomBytes(6).toString("hex");
+    const config = encryptSecret("vpn://stored-config", keyring, 1);
+    const [key] = await database.db
+      .insert(vpnKeys)
+      .values({
+        ownerId,
+        nodeId,
+        publicKey: `pk-${suffix}`,
+        nodeLabel: `ap_rotate_${suffix}`,
+        protocol: "awg2",
+        state: overrides.state ?? "active",
+        routeProfile: overrides.routeProfile ?? "ru_blacklist",
+        deviceLabel: "Laptop",
+        configCiphertext: config.ciphertext,
+        configNonce: config.nonce,
+        configAuthTag: config.authTag,
+        configKeyVersion: config.keyVersion,
+      })
+      .returning({ id: vpnKeys.id });
+    if (!key) throw new Error("Failed to seed key");
+    return key.id;
+  };
+
+  const storedKey = async (keyId: string) => {
+    if (!database) throw new Error("No database");
+    const [row] = await database.db
+      .select({ state: vpnKeys.state })
+      .from(vpnKeys)
+      .where(eq(vpnKeys.id, keyId));
+    return row;
+  };
+
+  const rotateJobFor = async (keyId: string) => {
+    if (!database) throw new Error("No database");
+    return database.db
+      .select({ id: jobOutbox.id })
+      .from(jobOutbox)
+      .where(
+        and(
+          eq(jobOutbox.type, "vpn-key.rotate"),
+          sql`${jobOutbox.payload} ->> 'keyId' = ${keyId}`,
+        ),
+      );
+  };
+
+  runDatabaseTest(
+    "refuses the plain rotate on a key an administrator disabled",
+    async () => {
+      if (!database) return;
+      // Before this fix, a split-tunnel key in `disabled` was in
+      // `rotatableStates`, so the plain rotate button (or a direct API/CLI
+      // call) could re-issue it back into `active` -- silently undoing
+      // `keys/disable`. This pins that it now fails the same way rename
+      // does.
+      const owner = await seedOwner();
+      const keyId = await seedKey(owner.id, {
+        routeProfile: "ru_blacklist",
+        state: "disabled",
+      });
+
+      await expect(
+        subject().enqueueOwnRotate(owner, keyId),
+      ).rejects.toMatchObject({ statusCode: 409, code: "KEY_DISABLED_BY_ADMIN" });
+
+      expect(await storedKey(keyId)).toMatchObject({ state: "disabled" });
+      expect(await rotateJobFor(keyId)).toHaveLength(0);
+    },
+  );
+
+  runDatabaseTest(
+    "still rotates an active rule-based key",
+    async () => {
+      if (!database) return;
+      const owner = await seedOwner();
+      const keyId = await seedKey(owner.id, {
+        routeProfile: "ru_blacklist",
+        state: "active",
+      });
+
+      await subject().enqueueOwnRotate(owner, keyId);
+
+      expect(await storedKey(keyId)).toMatchObject({ state: "provisioning" });
+      expect(await rotateJobFor(keyId)).toHaveLength(1);
+    },
+  );
 });
 
 describe("PostgresControlRepository Access sync arming", () => {

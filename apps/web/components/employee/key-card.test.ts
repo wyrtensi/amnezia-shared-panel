@@ -134,15 +134,28 @@ describe("rename on the owner's own key", () => {
   });
 
   it("is not hidden while the peer is mid-rotate, unlike Reissue", () => {
-    // Reissue only makes sense once a key is `active`; a rename is always
-    // offered except while the peer is mid-provisioning, since it may or may
-    // not need to queue a rotate of its own.
-    expect(source).toMatch(/\{!provisioning \?[\s\S]{0,400}?keyCard\.rename/);
+    // Reissue only makes sense once a key is `active`; a rename is offered
+    // except while the peer is mid-provisioning (it may or may not need to
+    // queue a rotate of its own) or `disabled` (an administrator's decision
+    // that an owner's rename must never be able to reverse -- the server
+    // refuses it either way with `KEY_DISABLED_BY_ADMIN`).
+    expect(source).toMatch(
+      /\{!provisioning && !disabled \?[\s\S]{0,400}?keyCard\.rename/,
+    );
   });
 
   it("passes the same nameDisplay and node name the exported config uses", () => {
     expect(source).toMatch(/nameDisplay=\{keyView\.nameDisplay\}/);
     expect(source).toMatch(/nodeName=\{node\?\.name \?\? .—.\}/);
+  });
+
+  it("is hidden on a key an administrator disabled", () => {
+    // A rename that changes the displayed name re-issues the peer, and a
+    // re-issue always comes back `active` -- so an owner must never be
+    // offered a rename control on a `disabled` key, which would only ever
+    // end in the server's `KEY_DISABLED_BY_ADMIN` refusal.
+    expect(source).toMatch(/const disabled = keyView\.state === "disabled";/);
+    expect(source).toMatch(/\{!provisioning && !disabled \?/);
   });
 });
 

@@ -97,6 +97,7 @@ export function KeyCard({
   const [editingInternal, setEditingInternal] = React.useState(false);
   const active = keyView.state === "active";
   const provisioning = keyView.state === "provisioning";
+  const disabled = keyView.state === "disabled";
   // Rotation re-issues the peer with current rules; only meaningful for
   // rule-based profiles (a full-tunnel key never needs new rules).
   const canRotate = keyView.routeProfile !== "full_tunnel";
@@ -345,11 +346,19 @@ export function KeyCard({
             ) : null}
             <div className="ml-auto flex items-center gap-1.5">
               {/* Renaming while the peer is mid-provisioning would race the
-                  worker's own write to this row; every other state the card
-                  can show (a key in `revoking`/`revoked` is hidden from the
-                  owner entirely) is fine, since a rename that turns out not
-                  to need a re-issue never touches `state` at all. */}
-              {!provisioning ? (
+                  worker's own write to this row. Renaming a `disabled` key is
+                  excluded too, and for a different reason: a rename that
+                  changes the displayed name re-issues the peer
+                  (`renameOwnKey`), and a re-issue always comes back `active`
+                  -- so offering this control here would let the owner
+                  quietly undo an administrator's disable. The server refuses
+                  it either way (`KEY_DISABLED_BY_ADMIN`); this just avoids
+                  showing a control that can only end in that error. Every
+                  other state the card can show (a key in `revoking`/`revoked`
+                  is hidden from the owner entirely) is fine, since a rename
+                  that turns out not to need a re-issue never touches `state`
+                  at all. */}
+              {!provisioning && !disabled ? (
                 <Tooltip>
                   <TooltipTrigger asChild>
                     <Button

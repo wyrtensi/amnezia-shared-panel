@@ -145,8 +145,17 @@ const revocableStates: KeyState[] = [...REVOCABLE_KEY_STATES];
  * reason is `enqueueOwnRotate`'s "refresh my rules" or a rename that changed
  * the displayed connection name. A key mid-provisioning or mid-revoke has no
  * settled peer to replace.
+ *
+ * `disabled` is deliberately absent, even though a disabled key still has a
+ * settled peer that could technically be replaced. Disabling a key is an
+ * administrator's decision (`adminAction`'s `keys/disable`), and rotating
+ * always re-issues into `active` (see `completeProvision`) -- so letting an
+ * owner rotate or rename a disabled key would let them silently undo that
+ * decision. `queueKeyRotate` below checks for `disabled` explicitly, ahead of
+ * this list, so the caller gets a reason that names what actually happened
+ * instead of a generic "cannot be rotated".
  */
-const rotatableStates: KeyState[] = ["active", "disabled", "failed"];
+const rotatableStates: KeyState[] = ["active", "failed"];
 
 const panelProtocols: ProtocolKind[] = ["awg2", "awg3"];
 
@@ -1718,6 +1727,21 @@ export class PostgresControlRepository implements ControlRepository {
     auditAction: string,
     auditMetadata?: Record<string, unknown>,
   ): Promise<void> => {
+    // Checked ahead of `rotatableStates` and with its own code: an
+    // administrator disabled this key on purpose, and re-issuing it always
+    // comes back `active` (`completeProvision` knows only one outcome), so
+    // routing a disabled key through rotate -- whether asked for directly or
+    // as a side effect of a rename -- would let the owner quietly reverse the
+    // administrator's decision. The message says that plainly instead of
+    // reusing the generic "cannot be rotated" reason below, which is about
+    // transient states (mid-provisioning, mid-revoke), not a deliberate one.
+    if (state === "disabled") {
+      throw new ApiError(
+        409,
+        "This key was disabled by an administrator. Renaming or rotating it cannot re-enable it -- ask an administrator to enable it first.",
+        "KEY_DISABLED_BY_ADMIN",
+      );
+    }
     if (!rotatableStates.includes(state)) {
       throw new ApiError(
         409,
