@@ -1,8 +1,18 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { fetch as undiciFetch } from "undici";
 
 import { AppFastifyInstance } from "@/types/shared";
 import { TEST_API_KEY } from "../config/setupTestEnvironment";
 import { closeTestApp, createClientsTestApp } from "../helpers";
+
+// The probe calls undici's own `fetch` so its guarded dispatcher applies; the
+// global one is no longer on that path.
+vi.mock("undici", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("undici")>()),
+  fetch: vi.fn(),
+}));
+
+const fetchMock = vi.mocked(undiciFetch);
 
 const AUTH_HEADERS = { "x-api-key": TEST_API_KEY } as const;
 
@@ -17,7 +27,7 @@ const httpResponse = (status: number, bodyText: string, url: string) =>
         controller.close();
       },
     }),
-  }) as unknown as Response;
+  }) as unknown as Awaited<ReturnType<typeof undiciFetch>>;
 
 const check = (overrides: Record<string, unknown> = {}) => ({
   id: "11111111-1111-4111-8111-111111111111",
@@ -54,7 +64,7 @@ describe("checks routes", () => {
   });
 
   it("runs a check and returns its verdict", async () => {
-    vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
+    fetchMock.mockImplementation(async () =>
       httpResponse(200, "<html>conversation-container</html>", "https://example.com/"),
     );
 
@@ -89,7 +99,7 @@ describe("checks routes", () => {
     // before the panel could even send it - and the registry's `error` would
     // never be reached, so a mixed fleet would look like a 400 instead of an
     // "this node cannot run that check".
-    vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
+    fetchMock.mockImplementation(async () =>
       httpResponse(200, "<html></html>", "https://example.com/"),
     );
 
@@ -124,8 +134,7 @@ describe("checks routes", () => {
   });
 
   it("stores nothing: two identical calls are independent", async () => {
-    const fetchStub = vi
-      .spyOn(globalThis, "fetch")
+    const fetchStub = fetchMock
       .mockImplementationOnce(async () =>
         httpResponse(200, "<html>a</html>", "https://example.com/"),
       )
