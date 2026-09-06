@@ -256,8 +256,8 @@ containers. It yields the two panel env values:
 
 | Panel env var | Value | Consumed by |
 | --- | --- | --- |
-| `CF_ACCESS_ISSUER` | `https://<TEAM>.cloudflareaccess.com` | `apps/control-api/src/cloudflareAccess.ts` (fetches JWKS at `<issuer>/cdn-cgi/access/certs`, checks `iss`) |
-| `CF_ACCESS_AUDIENCE` | `<AUD>` (the application's AUD tag) | same file (checks `aud`); required by `main.ts` in production |
+| `CF_ACCESS_ISSUER` | `https://<TEAM>.cloudflareaccess.com` | `apps/control-api/src/cloudflareAccess.ts` (fetches JWKS at `<issuer>/cdn-cgi/access/certs`, checks `iss`) and `apps/web/proxy.ts` (same check, gating page navigation) |
+| `CF_ACCESS_AUDIENCE` | `<AUD>` (the application's AUD tag) | same two files (checks `aud`); required by `main.ts` in production, and by `apps/web/proxy.ts` — without it every Access user is redirected to `/login` |
 
 For the API calls, `$CF_API_TOKEN` is a **Bearer management token** (see section
 6), and `BASE="https://api.cloudflare.com/client/v4"`.

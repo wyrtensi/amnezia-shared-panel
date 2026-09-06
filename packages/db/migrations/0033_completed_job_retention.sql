@@ -1,0 +1,3 @@
+ALTER TABLE "portal_policy" ADD COLUMN "completed_job_retention_days" integer;--> statement-breakpoint
+CREATE INDEX "job_outbox_key_id_idx" ON "job_outbox" USING btree (("payload"->>'keyId'));--> statement-breakpoint
+ALTER TABLE "portal_policy" ADD CONSTRAINT "portal_policy_completed_job_retention_range" CHECK ("portal_policy"."completed_job_retention_days" IS NULL OR ("portal_policy"."completed_job_retention_days" >= 1 AND "portal_policy"."completed_job_retention_days" <= 3650));

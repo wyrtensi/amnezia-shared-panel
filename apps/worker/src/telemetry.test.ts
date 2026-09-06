@@ -262,6 +262,62 @@ describe("node telemetry poll", () => {
     });
   });
 
+  it("carries a null IP when the host changed and the lookup failed", async () => {
+    // The stored IP answers for the OLD host; a failed lookup for the new one
+    // must not carry that stale value forward in the snapshot.
+    const resolvePublicIp = vi.fn(() => Promise.resolve(null));
+    const repository = stubRepository([
+      {
+        ...telemetryNode,
+        publicHost: "old.example.com",
+        publicIp: "203.0.113.10",
+      },
+    ]);
+    const poll = createTelemetryPoller({
+      repository,
+      createNodeAgent: () => stubAgent("new.example.com"),
+      resolvePublicIp,
+      now: () => observedAt,
+    });
+
+    await poll();
+
+    expect(resolvePublicIp).toHaveBeenCalledWith("new.example.com");
+    expect(lastSnapshot(repository)).toMatchObject({
+      publicHost: "new.example.com",
+      publicIp: null,
+    });
+  });
+
+  it("looks the host up again on the tick after a failed host change", async () => {
+    // Once the repository writes the blanked IP, `node.publicIp === null`
+    // makes the next tick retry instead of going quiet forever.
+    const resolvePublicIp = vi.fn(() => Promise.resolve(null));
+    const repository = stubRepository([]);
+    vi.mocked(repository.listTelemetryNodes)
+      .mockResolvedValueOnce([
+        {
+          ...telemetryNode,
+          publicHost: "old.example.com",
+          publicIp: "203.0.113.10",
+        },
+      ])
+      .mockResolvedValueOnce([
+        { ...telemetryNode, publicHost: "new.example.com", publicIp: null },
+      ]);
+    const poll = createTelemetryPoller({
+      repository,
+      createNodeAgent: () => stubAgent("new.example.com"),
+      resolvePublicIp,
+      now: () => observedAt,
+    });
+
+    await poll();
+    await poll();
+
+    expect(resolvePublicIp).toHaveBeenCalledTimes(2);
+  });
+
   it("retries the lookup while it keeps failing", async () => {
     // Nothing is stored yet, so there is no good value to protect: the next
     // tick simply tries again. That is the only retry this needs.

@@ -82,7 +82,11 @@ createNode: vi.fn(() => Promise.resolve({ id: "node-1" })),
 describe("control API identity boundary", () => {
   it("allows the development identity adapter only in development", async () => {
     const service = createService();
-    const app = await buildApp({ service, environment: "development" });
+    const app = await buildApp({
+      service,
+      environment: "development",
+      allowDevIdentity: true,
+    });
 
     const response = await app.inject({
       method: "GET",
@@ -116,6 +120,84 @@ describe("control API identity boundary", () => {
     await app.close();
   });
 
+  it("falls back to the identity adapter when the dev header is absent", async () => {
+    const service = createService();
+    const identityAdapter = vi.fn(() =>
+      Promise.resolve({
+        provider: "test",
+        subject: "adapter@example.com",
+        email: "adapter@example.com",
+      }),
+    );
+    const app = await buildApp({
+      service,
+      environment: "development",
+      allowDevIdentity: true,
+      identityAdapter,
+    });
+
+    const response = await app.inject({ method: "GET", url: "/api/me" });
+
+    expect(response.statusCode).toBe(200);
+    expect(identityAdapter).toHaveBeenCalledTimes(1);
+    const resolveIdentity = vi.mocked(service.resolveIdentity);
+    expect(resolveIdentity).toHaveBeenCalledWith({
+      provider: "test",
+      subject: "adapter@example.com",
+      email: "adapter@example.com",
+    });
+    await app.close();
+  });
+
+  it("prefers the dev header over the identity adapter when both are present", async () => {
+    const service = createService();
+    const identityAdapter = vi.fn(() =>
+      Promise.resolve({
+        provider: "test",
+        subject: "adapter@example.com",
+        email: "adapter@example.com",
+      }),
+    );
+    const app = await buildApp({
+      service,
+      environment: "development",
+      allowDevIdentity: true,
+      identityAdapter,
+    });
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/me",
+      headers: { "x-dev-user-email": "dev@example.com" },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(identityAdapter).not.toHaveBeenCalled();
+    const resolveIdentity = vi.mocked(service.resolveIdentity);
+    expect(resolveIdentity).toHaveBeenCalledWith({
+      provider: "dev",
+      subject: "dev@example.com",
+      email: "dev@example.com",
+    });
+    await app.close();
+  });
+
+  it("does not honour the dev header without an explicit opt-in, even in development", async () => {
+    const app = await buildApp({
+      service: createService(),
+      environment: "development",
+    });
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/me",
+      headers: { "x-dev-user-email": "employee@example.com" },
+    });
+
+    expect(response.statusCode).toBe(401);
+    await app.close();
+  });
+
   it("fails closed when NODE_ENV is missing or invalid", () => {
     expect(() => parseEnvironment(undefined)).toThrowError(
       "NODE_ENV is required and must be development, test, or production",
@@ -135,7 +217,11 @@ describe("control API identity boundary", () => {
 describe("control API authorization", () => {
   it("passes the authenticated owner to config retrieval", async () => {
     const service = createService();
-    const app = await buildApp({ service, environment: "development" });
+    const app = await buildApp({
+      service,
+      environment: "development",
+      allowDevIdentity: true,
+    });
 
     const response = await app.inject({
       method: "GET",
@@ -158,7 +244,11 @@ describe("control API authorization", () => {
 
   it("does not coerce the literal false query value to true", async () => {
     const service = createService();
-    const app = await buildApp({ service, environment: "development" });
+    const app = await buildApp({
+      service,
+      environment: "development",
+      allowDevIdentity: true,
+    });
 
     const response = await app.inject({
       method: "GET",
@@ -180,6 +270,7 @@ describe("control API authorization", () => {
     const app = await buildApp({
       service: createService(),
       environment: "development",
+      allowDevIdentity: true,
     });
 
     const response = await app.inject({
@@ -200,7 +291,11 @@ describe("control API authorization", () => {
       id: "0b48cc4c-404b-47a6-af28-4cf15f305e30",
       name: "primary",
     });
-    const app = await buildApp({ service, environment: "development" });
+    const app = await buildApp({
+      service,
+      environment: "development",
+      allowDevIdentity: true,
+    });
 
     const response = await app.inject({
       method: "POST",
@@ -239,7 +334,11 @@ describe("control API authorization", () => {
         publicIp: "203.0.113.10",
       },
     ]);
-    const app = await buildApp({ service, environment: "development" });
+    const app = await buildApp({
+      service,
+      environment: "development",
+      allowDevIdentity: true,
+    });
 
     const response = await app.inject({
       method: "GET",
@@ -269,7 +368,11 @@ describe("control API authorization", () => {
       body: "<svg/>",
       qrParams: { errorCorrectionLevel: "L", modules: 113, scale: 8 },
     });
-    const app = await buildApp({ service, environment: "development" });
+    const app = await buildApp({
+      service,
+      environment: "development",
+      allowDevIdentity: true,
+    });
 
     const response = await app.inject({
       method: "GET",
@@ -294,7 +397,11 @@ describe("control API authorization", () => {
       body: "vpn://x",
       filename: "Франкфурт #3.vpn",
     });
-    const app = await buildApp({ service, environment: "development" });
+    const app = await buildApp({
+      service,
+      environment: "development",
+      allowDevIdentity: true,
+    });
 
     const response = await app.inject({
       method: "GET",
@@ -316,7 +423,11 @@ describe("control API authorization", () => {
       contentType: "text/plain; charset=utf-8",
       body: "vpn://x",
     });
-    const app = await buildApp({ service, environment: "development" });
+    const app = await buildApp({
+      service,
+      environment: "development",
+      allowDevIdentity: true,
+    });
 
     const response = await app.inject({
       method: "GET",
@@ -335,7 +446,11 @@ describe("control API authorization", () => {
       contentType: "image/svg+xml; charset=utf-8",
       body: "<svg/>",
     });
-    const app = await buildApp({ service, environment: "development" });
+    const app = await buildApp({
+      service,
+      environment: "development",
+      allowDevIdentity: true,
+    });
 
     const response = await app.inject({
       method: "GET",
@@ -363,7 +478,11 @@ describe("control API authorization", () => {
       contentType: "application/json; charset=utf-8",
       body: JSON.stringify({ total: 1, frames: ["<svg/>"] }),
     });
-    const app = await buildApp({ service, environment: "development" });
+    const app = await buildApp({
+      service,
+      environment: "development",
+      allowDevIdentity: true,
+    });
 
     const response = await app.inject({
       method: "GET",
@@ -383,7 +502,11 @@ describe("custom routes take addresses, not site names", () => {
   it("accepts an address-only update", async () => {
     const service = createService();
     vi.mocked(service.resolveIdentity).mockResolvedValue(user);
-    const app = await buildApp({ service, environment: "development" });
+    const app = await buildApp({
+      service,
+      environment: "development",
+      allowDevIdentity: true,
+    });
 
     const response = await app.inject({
       method: "PUT",
@@ -402,7 +525,11 @@ describe("custom routes take addresses, not site names", () => {
   it("refuses a domain, says why, and never reaches the service", async () => {
     const service = createService();
     vi.mocked(service.resolveIdentity).mockResolvedValue(user);
-    const app = await buildApp({ service, environment: "development" });
+    const app = await buildApp({
+      service,
+      environment: "development",
+      allowDevIdentity: true,
+    });
 
     const response = await app.inject({
       method: "PUT",
@@ -441,7 +568,11 @@ describe("admin global route overrides", () => {
     const admin = { ...user, role: "admin" as const };
     vi.mocked(service.resolveIdentity).mockResolvedValue(admin);
     vi.mocked(service.adminList).mockResolvedValue([globalRoutes]);
-    const app = await buildApp({ service, environment: "development" });
+    const app = await buildApp({
+      service,
+      environment: "development",
+      allowDevIdentity: true,
+    });
 
     const response = await app.inject({
       method: "GET",
@@ -460,7 +591,11 @@ describe("admin global route overrides", () => {
     const admin = { ...user, role: "admin" as const };
     vi.mocked(service.resolveIdentity).mockResolvedValue(admin);
     vi.mocked(service.adminAction).mockResolvedValue(globalRoutes);
-    const app = await buildApp({ service, environment: "development" });
+    const app = await buildApp({
+      service,
+      environment: "development",
+      allowDevIdentity: true,
+    });
 
     const response = await app.inject({
       method: "POST",
@@ -492,7 +627,11 @@ describe("admin global route overrides", () => {
       ],
     };
     vi.mocked(service.adminAction).mockResolvedValue({ id: true, ...payload });
-    const app = await buildApp({ service, environment: "development" });
+    const app = await buildApp({
+      service,
+      environment: "development",
+      allowDevIdentity: true,
+    });
 
     const response = await app.inject({
       method: "POST",
@@ -514,7 +653,11 @@ describe("admin global route overrides", () => {
 
   it("refuses the portal-policy update to an employee", async () => {
     const service = createService();
-    const app = await buildApp({ service, environment: "development" });
+    const app = await buildApp({
+      service,
+      environment: "development",
+      allowDevIdentity: true,
+    });
     const response = await app.inject({
       method: "POST",
       url: "/api/admin/portal-policy/global/update",
@@ -528,7 +671,11 @@ describe("admin global route overrides", () => {
 
   it("keeps both global route endpoints away from an employee", async () => {
     const service = createService();
-    const app = await buildApp({ service, environment: "development" });
+    const app = await buildApp({
+      service,
+      environment: "development",
+      allowDevIdentity: true,
+    });
 
     for (const request of [
       { method: "GET" as const, url: "/api/admin/global-routes" },
@@ -553,7 +700,11 @@ describe("admin global route overrides", () => {
 describe("quota requests target a server", () => {
   it("passes an explicit node id through to the service", async () => {
     const service = createService();
-    const app = await buildApp({ service, environment: "development" });
+    const app = await buildApp({
+      service,
+      environment: "development",
+      allowDevIdentity: true,
+    });
     const nodeId = "5b2ad2b8-2c4e-4a3d-8f8e-6f3a1c0d9a11";
 
     const response = await app.inject({
@@ -578,7 +729,11 @@ describe("quota requests target a server", () => {
   // what these two tests pin.
   it("refuses a keyLimitMode smuggled into a quota request", async () => {
     const service = createService();
-    const app = await buildApp({ service, environment: "development" });
+    const app = await buildApp({
+      service,
+      environment: "development",
+      allowDevIdentity: true,
+    });
 
     const response = await app.inject({
       method: "POST",
@@ -594,7 +749,11 @@ describe("quota requests target a server", () => {
 
   it("keeps a non-admin away from both routes that can set the mode", async () => {
     const service = createService();
-    const app = await buildApp({ service, environment: "development" });
+    const app = await buildApp({
+      service,
+      environment: "development",
+      allowDevIdentity: true,
+    });
 
     for (const url of [
       "/api/admin/portal-policy/global/update",
@@ -614,7 +773,11 @@ describe("quota requests target a server", () => {
 
   it("accepts a request without a node as an every-server ask", async () => {
     const service = createService();
-    const app = await buildApp({ service, environment: "development" });
+    const app = await buildApp({
+      service,
+      environment: "development",
+      allowDevIdentity: true,
+    });
 
     const response = await app.inject({
       method: "POST",
@@ -632,7 +795,11 @@ describe("quota requests target a server", () => {
 
   it("rejects a node id that is not a uuid before it reaches the service", async () => {
     const service = createService();
-    const app = await buildApp({ service, environment: "development" });
+    const app = await buildApp({
+      service,
+      environment: "development",
+      allowDevIdentity: true,
+    });
 
     const response = await app.inject({
       method: "POST",
@@ -660,7 +827,11 @@ describe("manual route-feed refresh", () => {
     const admin = { ...user, role: "admin" as const };
     vi.mocked(service.resolveIdentity).mockResolvedValue(admin);
     vi.mocked(service.adminAction).mockResolvedValue(status);
-    const app = await buildApp({ service, environment: "development" });
+    const app = await buildApp({
+      service,
+      environment: "development",
+      allowDevIdentity: true,
+    });
 
     const response = await app.inject({
       method: "POST",
@@ -686,7 +857,11 @@ describe("manual route-feed refresh", () => {
     const admin = { ...user, role: "admin" as const };
     vi.mocked(service.resolveIdentity).mockResolvedValue(admin);
     vi.mocked(service.getRulesRefreshStatus).mockResolvedValue(status);
-    const app = await buildApp({ service, environment: "development" });
+    const app = await buildApp({
+      service,
+      environment: "development",
+      allowDevIdentity: true,
+    });
 
     const response = await app.inject({
       method: "GET",
@@ -704,7 +879,11 @@ describe("manual route-feed refresh", () => {
 
   it("keeps both refresh endpoints away from an employee", async () => {
     const service = createService();
-    const app = await buildApp({ service, environment: "development" });
+    const app = await buildApp({
+      service,
+      environment: "development",
+      allowDevIdentity: true,
+    });
 
     for (const request of [
       { method: "GET" as const, url: "/api/admin/rules/refresh" },
@@ -739,7 +918,11 @@ describe("manual Cloudflare Access sync trigger", () => {
     const admin = { ...user, role: "admin" as const };
     vi.mocked(service.resolveIdentity).mockResolvedValue(admin);
     vi.mocked(service.adminAction).mockResolvedValue(status);
-    const app = await buildApp({ service, environment: "development" });
+    const app = await buildApp({
+      service,
+      environment: "development",
+      allowDevIdentity: true,
+    });
 
     const response = await app.inject({
       method: "POST",
@@ -765,7 +948,11 @@ describe("manual Cloudflare Access sync trigger", () => {
     const admin = { ...user, role: "admin" as const };
     vi.mocked(service.resolveIdentity).mockResolvedValue(admin);
     vi.mocked(service.getAccessSyncStatus).mockResolvedValue(status);
-    const app = await buildApp({ service, environment: "development" });
+    const app = await buildApp({
+      service,
+      environment: "development",
+      allowDevIdentity: true,
+    });
 
     const response = await app.inject({
       method: "GET",
@@ -781,7 +968,11 @@ describe("manual Cloudflare Access sync trigger", () => {
 
   it("keeps both endpoints away from a non-admin", async () => {
     const service = createService();
-    const app = await buildApp({ service, environment: "development" });
+    const app = await buildApp({
+      service,
+      environment: "development",
+      allowDevIdentity: true,
+    });
 
     for (const request of [
       { method: "GET" as const, url: "/api/admin/access-sync" },
@@ -878,6 +1069,7 @@ describe("client release routes", () => {
     const app = await buildApp({
       service: createService(),
       environment: "development",
+      allowDevIdentity: true,
       clientReleaseResolver,
     });
 
@@ -897,6 +1089,7 @@ describe("client release routes", () => {
     const app = await buildApp({
       service: createService(),
       environment: "development",
+      allowDevIdentity: true,
       clientReleaseResolver: stubResolver(),
     });
 
@@ -920,6 +1113,7 @@ describe("client release routes", () => {
       const app = await buildApp({
         service: createService(),
         environment: "development",
+        allowDevIdentity: true,
         clientReleaseResolver: stubResolver(),
       });
       const response = await app.inject({
@@ -995,6 +1189,7 @@ describe("client release routes", () => {
     const app = await buildApp({
       service,
       environment: "development",
+      allowDevIdentity: true,
       clientReleaseResolver,
     });
 
@@ -1017,6 +1212,7 @@ describe("client release routes", () => {
     const app = await buildApp({
       service: createService(),
       environment: "development",
+      allowDevIdentity: true,
       clientReleaseResolver,
     });
 
@@ -1049,7 +1245,15 @@ describe("service check routes", () => {
     const service = createService();
     const admin = { ...user, role: "admin" as const };
     vi.mocked(service.resolveIdentity).mockResolvedValue(admin);
-    return { service, admin, app: await buildApp({ service, environment: "development" }) };
+    return {
+      service,
+      admin,
+      app: await buildApp({
+        service,
+        environment: "development",
+        allowDevIdentity: true,
+      }),
+    };
   };
 
   it("creates a check and answers 201", async () => {
@@ -1194,7 +1398,11 @@ describe("service check routes", () => {
   it("refuses a non-admin", async () => {
     const service = createService();
     vi.mocked(service.resolveIdentity).mockResolvedValue(user);
-    const app = await buildApp({ service, environment: "development" });
+    const app = await buildApp({
+      service,
+      environment: "development",
+      allowDevIdentity: true,
+    });
     const response = await app.inject({
       method: "POST",
       url: "/api/admin/service-checks",

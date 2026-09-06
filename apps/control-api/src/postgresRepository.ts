@@ -37,6 +37,7 @@ import {
   nodeRunsCheck,
   isPurgeableKeyState,
   REVOCABLE_KEY_STATES,
+  revokeJobDedupKey,
   toUserCheckState,
 } from "@amnezia/contracts";
 import type { ServiceCheckUserState } from "@amnezia/contracts";
@@ -386,29 +387,30 @@ const toMetricsPayload = (
 };
 
 /**
- * `node_service_checks_name_unique` exists so two checks cannot share a name -
- * the name is what a user sees on a chip, and two "Gemini" chips with different
- * verdicts are unreadable. Without this translation an admin retyping a name
- * gets a 500 for an ordinary mistake.
+ * True for a 23505 raised by `constraint` (any 23505 when it is omitted).
+ * drizzle wraps the driver's error, so the SQLSTATE and the constraint name are
+ * on `cause` (DrizzleQueryError -> postgres.js PostgresError), not on the error
+ * it throws. Checking only the top level looks right, passes a unit test with a
+ * hand-made error, and never fires against a real database.
  */
-const isUniqueViolation = (error: unknown): boolean => {
-  // drizzle wraps the driver's error, so the SQLSTATE is on `cause`, not on the
-  // error it throws. Checking only the top level looks right, passes a unit
-  // test with a hand-made error, and never fires against a real database -
-  // which is exactly what it did until CI ran it against Postgres.
+const isUniqueViolation = (error: unknown, constraint?: string): boolean => {
   for (let current = error, depth = 0; current && depth < 4; depth += 1) {
-    if (
-      typeof current === "object" &&
-      "code" in current &&
-      (current as { code?: string }).code === "23505"
-    ) {
-      return true;
+    if (typeof current === "object" && "code" in current) {
+      const row = current as { code?: string; constraint_name?: string };
+      if (row.code === "23505")
+        return constraint === undefined || row.constraint_name === constraint;
     }
     current = (current as { cause?: unknown }).cause;
   }
   return false;
 };
 
+/**
+ * `node_service_checks_name_unique` exists so two checks cannot share a name -
+ * the name is what a user sees on a chip, and two "Gemini" chips with different
+ * verdicts are unreadable. Without this translation an admin retyping a name
+ * gets a 500 for an ordinary mistake.
+ */
 const duplicateCheckName = (error: unknown): unknown =>
   isUniqueViolation(error)
     ? new ApiError(409, "A check with this name already exists", "CHECK_NAME_TAKEN")
@@ -922,12 +924,7 @@ export class PostgresControlRepository implements ControlRepository {
         return created;
       });
     } catch (error) {
-      if (
-        error &&
-        typeof error === "object" &&
-        "code" in error &&
-        error.code === "23505"
-      ) {
+      if (isUniqueViolation(error, "nodes_name_unique")) {
         throw new ApiError(409, "Node name already exists", "NODE_EXISTS");
       }
       throw error;
@@ -1647,7 +1644,7 @@ export class PostgresControlRepository implements ControlRepository {
         // accepted and then silently enqueued nothing. The worker's revoke
         // handler looks the peer up before deleting it, so a duplicate job on
         // an already-deleted peer completes cleanly.
-        deduplicationKey: `vpn-key.revoke:${keyId}:${randomUUID()}`,
+        deduplicationKey: revokeJobDedupKey(keyId, randomUUID()),
         payload: { keyId },
       });
       await tx.insert(auditEvents).values({
@@ -1854,7 +1851,9 @@ export class PostgresControlRepository implements ControlRepository {
       });
     } catch (error) {
       // Safety net for a concurrent double-submit racing the supersede above.
-      if (String(error).includes("quota_requests_one_pending_per_user")) {
+      // Matched by constraint name, not by drizzle's "Failed query" message -
+      // the partial index's name never appears in that message.
+      if (isUniqueViolation(error, "quota_requests_one_pending_per_user")) {
         throw new ApiError(
           409,
           "A pending quota request already exists",
@@ -2503,7 +2502,12 @@ export class PostgresControlRepository implements ControlRepository {
           .insert(jobOutbox)
           .values({
             type: `vpn-key.${action}`,
-            deduplicationKey: `vpn-key.${action}:${targetId}:${randomUUID()}`,
+            // Revoke shares its dedup key shape with every other revoke path;
+            // disable/enable are not revoke attempts, so they keep their own.
+            deduplicationKey:
+              action === "revoke"
+                ? revokeJobDedupKey(targetId, randomUUID())
+                : `vpn-key.${action}:${targetId}:${randomUUID()}`,
             payload: { keyId: targetId },
           })
           .onConflictDoNothing();
@@ -2602,6 +2606,56 @@ export class PostgresControlRepository implements ControlRepository {
       });
     } else if (resource === "users" && action === "offboard") {
       return this.options.db.transaction(async (tx) => {
+        // Lock the active-admin rows FOR UPDATE, exactly like set-role, so two
+        // concurrent offboards serialize instead of both reading "2 admins"
+        // and both proceeding.
+        const admins = await tx
+          .select({ id: users.id })
+          .from(users)
+          .where(and(eq(users.role, "admin"), eq(users.status, "active")))
+          .for("update");
+        const [target] = await tx
+          .select({ role: users.role, status: users.status })
+          .from(users)
+          .where(eq(users.id, targetId))
+          .limit(1);
+        if (!target) throw new ApiError(404, "User not found", "USER_NOT_FOUND");
+        // Independent of the last-admin check below: an admin among five
+        // would otherwise get a diagnosis about being the last one, when the
+        // real reason to refuse is that offboard is partly irreversible --
+        // reinstate restores the row but not the revoked keys, and offboard
+        // arms the Access sync, so the admin would lose the door they would
+        // undo it through.
+        if (actor.id === targetId) {
+          throw new ApiError(409, "Cannot offboard yourself", "SELF_OFFBOARD");
+        }
+        // A single well-behaved admin actor can never trip this
+        // sequentially: it is itself one of the locked `admins` rows, so any
+        // *other* active admin target keeps `admins.length` at two or more,
+        // and offboarding itself is already refused above by SELF_OFFBOARD.
+        // The only way `admins` ever locks down to exactly one row is two
+        // admins racing to offboard each other at once -- FOR UPDATE
+        // serialises them, and the loser's re-read (under READ COMMITTED)
+        // finds the winner's target already disabled, leaving one active
+        // admin, namely itself, as this call's target. That race is what
+        // this guard actually protects against: without it, both concurrent
+        // offboards would succeed and the panel would be left with no active
+        // administrator at all.
+        // `status === "active"` is deliberate: without it, offboarding an
+        // already-disabled admin while exactly one other active admin exists
+        // would falsely trip this, because a disabled admin never appears in
+        // the locked `admins` set above.
+        if (
+          target.role === "admin" &&
+          target.status === "active" &&
+          admins.length <= 1
+        ) {
+          throw new ApiError(
+            409,
+            "Cannot offboard the last administrator",
+            "LAST_ADMIN",
+          );
+        }
         const [updatedUser] = await tx
           .update(users)
           .set({
@@ -2617,18 +2671,27 @@ export class PostgresControlRepository implements ControlRepository {
           .update(vpnKeys)
           .set({ state: "revoking", updatedAt: new Date() })
           .where(
-            and(eq(vpnKeys.ownerId, targetId), inArray(vpnKeys.state, quotaStates)),
+            and(
+              eq(vpnKeys.ownerId, targetId),
+              // `revocableStates` (REVOCABLE_KEY_STATES from the contract),
+              // not the narrower `quotaStates` this used before: that left out
+              // `failed`, so an offboarded user could keep a key that had
+              // failed to provision forever, exactly like the worker's own
+              // disableAndRevoke is meant to prevent. It also reaches
+              // `revoking`, which disableAndRevoke does not select from --
+              // queuing a second job for a key already mid-revoke is safe
+              // here only because Fix 1 gave every revoke attempt its own
+              // deduplication key.
+              inArray(vpnKeys.state, revocableStates),
+            ),
           )
           .returning({ id: vpnKeys.id });
         for (const key of keysToRevoke) {
-          await tx
-            .insert(jobOutbox)
-            .values({
-              type: "vpn-key.revoke",
-              deduplicationKey: `vpn-key.revoke:${key.id}`,
-              payload: { keyId: key.id },
-            })
-            .onConflictDoNothing();
+          await tx.insert(jobOutbox).values({
+            type: "vpn-key.revoke",
+            deduplicationKey: revokeJobDedupKey(key.id, randomUUID()),
+            payload: { keyId: key.id },
+          });
         }
         // An offboarded user must leave the Access allowlist along with them.
         await this.armAccessSync(tx, "user-change");
@@ -3485,14 +3548,54 @@ export class PostgresControlRepository implements ControlRepository {
         )
         .parse(payload ?? {});
       return this.options.db.transaction(async (tx) => {
+        const now = new Date();
+        if (!input.activate) {
+          // Nothing else in the rules API can un-publish a live version
+          // (`rules/activate` only promotes, `rules/follow` only clears the
+          // pin), so `import` must not become the back door for it. Refuse
+          // BEFORE any write if this exact (profile, version) row is the one
+          // currently serving the profile - quarantining it here would leave
+          // the profile with no active version at all.
+          const [existing] = await tx
+            .select({ status: routeRuleVersions.status })
+            .from(routeRuleVersions)
+            .where(
+              and(
+                eq(routeRuleVersions.profile, input.profile),
+                eq(routeRuleVersions.version, input.version),
+              ),
+            );
+          if (existing?.status === "active") {
+            throw new ApiError(
+              409,
+              "This version is the profile's active rule set; activate a different version for this profile before quarantining it",
+              "RULE_VERSION_ACTIVE",
+            );
+          }
+        }
         if (input.activate) {
+          // Demote the incumbent AND drop its pin - both before anything is
+          // pinned below, or route_rule_versions_pinned_profile_unique fires
+          // mid-transaction.
           await tx
             .update(routeRuleVersions)
-            .set({ status: "superseded", updatedAt: new Date() })
+            .set({ status: "superseded", pinnedAt: null, updatedAt: now })
             .where(
               and(
                 eq(routeRuleVersions.profile, input.profile),
                 eq(routeRuleVersions.status, "active"),
+              ),
+            );
+          // Belt and braces, and the repair path for a pin this action itself
+          // orphaned before this fix: by invariant only an active row may
+          // carry a pin.
+          await tx
+            .update(routeRuleVersions)
+            .set({ pinnedAt: null, updatedAt: now })
+            .where(
+              and(
+                eq(routeRuleVersions.profile, input.profile),
+                isNotNull(routeRuleVersions.pinnedAt),
               ),
             );
         }
@@ -3507,7 +3610,9 @@ export class PostgresControlRepository implements ControlRepository {
             cidrCount: input.cidrs.length,
             domainCount: input.domains.length,
             payload: { cidrs: input.cidrs, domains: input.domains },
-            publishedAt: input.activate ? new Date() : null,
+            publishedAt: input.activate ? now : null,
+            pinnedAt: input.activate ? now : null,
+            updatedAt: now,
           })
           .onConflictDoUpdate({
             target: [routeRuleVersions.profile, routeRuleVersions.version],
@@ -3517,8 +3622,9 @@ export class PostgresControlRepository implements ControlRepository {
               cidrCount: input.cidrs.length,
               domainCount: input.domains.length,
               payload: { cidrs: input.cidrs, domains: input.domains },
-              publishedAt: input.activate ? new Date() : null,
-              updatedAt: new Date(),
+              publishedAt: input.activate ? now : null,
+              pinnedAt: input.activate ? now : null,
+              updatedAt: now,
             },
           })
           .returning();
@@ -3528,7 +3634,11 @@ export class PostgresControlRepository implements ControlRepository {
           action: "admin.rules.import",
           targetType: "rules",
           targetId: saved?.id,
-          metadata: { profile: input.profile, version: input.version },
+          metadata: {
+            profile: input.profile,
+            version: input.version,
+            pinned: input.activate,
+          },
         });
         return saved;
       });

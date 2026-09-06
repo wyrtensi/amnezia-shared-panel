@@ -63,6 +63,7 @@ import {
   accessDomainListSchema,
   accessDomainSchema,
   normalizeAccessDomain,
+  revokeJobDedupKey,
 } from "./index.js";
 
 describe("createKeyRequestSchema", () => {
@@ -1603,6 +1604,8 @@ describe("worker polling periods", () => {
       "agentReleaseRefreshSec",
       "ruleFetchIntervalSec",
       "accessReconcileSec",
+      "offboardedUserRetentionDays",
+      "completedJobRetentionDays",
     ]);
   });
 
@@ -1639,6 +1642,18 @@ describe("worker polling periods", () => {
         max: 604_800,
         fallback: 3_600,
         unit: "sec",
+      },
+      offboardedUserRetentionDays: {
+        min: 1,
+        max: 3_650,
+        fallback: 30,
+        unit: "day",
+      },
+      completedJobRetentionDays: {
+        min: 1,
+        max: 3_650,
+        fallback: 30,
+        unit: "day",
       },
     });
   });
@@ -1744,5 +1759,19 @@ describe("worker polling periods", () => {
     for (const field of POLL_BOUND_SAMPLE_FIELDS) {
       expect(POLL_BOUND_SAMPLE_LABELS[field], field).toBeTruthy();
     }
+  });
+});
+
+describe("revokeJobDedupKey", () => {
+  it("differs between two calls for the same key, so neither swallows the other", () => {
+    const first = revokeJobDedupKey("key-1", "attempt-a");
+    const second = revokeJobDedupKey("key-1", "attempt-b");
+    expect(first).not.toBe(second);
+  });
+
+  it("matches the shape every caller and the worker's revoke handler expect", () => {
+    expect(revokeJobDedupKey("key-1", "attempt-a")).toBe(
+      "vpn-key.revoke:key-1:attempt-a",
+    );
   });
 });

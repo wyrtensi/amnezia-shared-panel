@@ -138,8 +138,21 @@ describe("0029_worker_polling_periods", () => {
     accessReconcileSec: "access_reconcile_sec",
   };
 
-  it("has a column for every period the contract names", () => {
-    expect(Object.keys(columns)).toEqual(WORKER_PERIOD_FIELD_NAMES);
+  it("has a column for every period the contract named at the time", () => {
+    // Not WORKER_PERIOD_FIELD_NAMES itself: a period added later (see
+    // 0032_offboarded_user_retention) gets its own migration, so the live list
+    // has grown past what THIS migration added. This literal is what 0029
+    // actually shipped.
+    expect(Object.keys(columns)).toEqual([
+      "telemetryPollSec",
+      "nodeMetricsSampleSec",
+      "nodeMetricsRetentionDays",
+      "peerSampleSec",
+      "maintenanceIntervalSec",
+      "agentReleaseRefreshSec",
+      "ruleFetchIntervalSec",
+      "accessReconcileSec",
+    ] satisfies WorkerPeriodField[]);
   });
 
   it("adds every column nullable and without a default", () => {
@@ -188,5 +201,88 @@ describe("0031_install_reminder_policy", () => {
 
   it("matches the default the contract hands out", () => {
     expect(defaultPortalPolicy.showInstallReminder).toBe(true);
+  });
+});
+
+describe("0032_offboarded_user_retention", () => {
+  const sql = readFileSync(
+    fileURLToPath(
+      new URL(
+        "../migrations/0032_offboarded_user_retention.sql",
+        import.meta.url,
+      ),
+    ),
+    "utf8",
+  );
+
+  it("adds the column nullable and without a default, like the other periods", () => {
+    // Same upgrade story as 0029: null means "use the worker's default", so an
+    // existing panel keeps purging on exactly the window it always implicitly
+    // had (the contract's fallback) until an admin sets one.
+    expect(sql).toContain(
+      'ALTER TABLE "portal_policy" ADD COLUMN "offboarded_user_retention_days" integer;',
+    );
+    expect(sql).not.toMatch(/ADD COLUMN[^;]*(NOT NULL|DEFAULT)/i);
+  });
+
+  it("guards the column with the range the contract validates", () => {
+    const { min, max } =
+      WORKER_PERIOD_FIELDS.offboardedUserRetentionDays;
+    expect(sql).toContain(
+      `CHECK ("portal_policy"."offboarded_user_retention_days" IS NULL OR ("portal_policy"."offboarded_user_retention_days" >= ${min} AND "portal_policy"."offboarded_user_retention_days" <= ${max}))`,
+    );
+  });
+
+  it("is the field the contract added after the original eight", () => {
+    // Not `.at(-1)`: a later period (see 0033_completed_job_retention) is
+    // added after this one, so the live list has grown past what THIS
+    // migration shipped. The position itself never moves.
+    expect(WORKER_PERIOD_FIELD_NAMES.indexOf("offboardedUserRetentionDays")).toBe(
+      8,
+    );
+  });
+});
+
+describe("0033_completed_job_retention", () => {
+  const sql = readFileSync(
+    fileURLToPath(
+      new URL(
+        "../migrations/0033_completed_job_retention.sql",
+        import.meta.url,
+      ),
+    ),
+    "utf8",
+  );
+
+  it("adds the column nullable and without a default, like the other periods", () => {
+    // Same upgrade story as 0029/0032: null means "use the worker's default",
+    // so an existing panel keeps pruning completed jobs on exactly the window
+    // it always implicitly had (the contract's fallback) until an admin sets
+    // one.
+    expect(sql).toContain(
+      'ALTER TABLE "portal_policy" ADD COLUMN "completed_job_retention_days" integer;',
+    );
+    expect(sql).not.toMatch(/ADD COLUMN[^;]*(NOT NULL|DEFAULT)/i);
+  });
+
+  it("guards the column with the range the contract validates", () => {
+    const { min, max } = WORKER_PERIOD_FIELDS.completedJobRetentionDays;
+    expect(sql).toContain(
+      `CHECK ("portal_policy"."completed_job_retention_days" IS NULL OR ("portal_policy"."completed_job_retention_days" >= ${min} AND "portal_policy"."completed_job_retention_days" <= ${max}))`,
+    );
+  });
+
+  it("is the field the contract added most recently", () => {
+    expect(WORKER_PERIOD_FIELD_NAMES.at(-1)).toBe("completedJobRetentionDays");
+  });
+
+  it("indexes the job_outbox key lookup two callers already pay unindexed", () => {
+    // apps/control-api's deleteNode and keys/purge both scan job_outbox by
+    // this same expression with no index today; the worker's stuck-revoke
+    // re-arm sweep (Task 10) adds a third, per-key, caller on every
+    // maintenance run.
+    expect(sql).toContain(
+      `CREATE INDEX "job_outbox_key_id_idx" ON "job_outbox" USING btree (("payload"->>'keyId'));`,
+    );
   });
 });

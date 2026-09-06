@@ -34,6 +34,23 @@ export const isRevocableKeyState = (state: string): boolean =>
   (REVOCABLE_KEY_STATES as readonly string[]).includes(state);
 
 /**
+ * The deduplication key for one revoke attempt.
+ *
+ * Unique per ATTEMPT, not per key. `job_outbox.deduplication_key` is globally
+ * unique and the table is never pruned, so a fixed key would let a failed
+ * attempt's row swallow every later retry: the insert conflicts, the caller sees
+ * success, and nothing is queued. The peer then stays on the node forever while
+ * the panel shows the key as revoking.
+ *
+ * `attemptId` is a parameter rather than generated in here with `node:crypto`:
+ * this package has no Node built-in imports today and is pulled into
+ * `apps/web`'s browser bundle (including from "use client" components), so
+ * adding one here would break that build. Callers pass `randomUUID()`.
+ */
+export const revokeJobDedupKey = (keyId: string, attemptId: string): string =>
+  `vpn-key.revoke:${keyId}:${attemptId}`;
+
+/**
  * States a key may be **deleted from the panel** in — the row itself removed,
  * not just marked.
  *
@@ -589,6 +606,37 @@ export const WORKER_PERIOD_FIELDS = {
    * faster timer buys nothing but API calls against a rate-limited endpoint.
    */
   accessReconcileSec: { min: 300, max: 604_800, fallback: 3_600, unit: "sec" },
+  /**
+   * How long a disabled account is kept before `purgeOffboardedUsers` hard-
+   * deletes it (and its revoked keys). Measured from `users.disabled_at`, which
+   * every disabling path already sets. 30 days is the default window an admin
+   * gets to notice and reinstate a wrongly-offboarded account; 1 day is the
+   * minimum rather than 0, because a NULL `disabled_at` (a row disabled before
+   * this column existed) is never purged regardless of this setting -- see the
+   * comment on that check in `purgeOffboardedUsers`.
+   */
+  offboardedUserRetentionDays: {
+    min: 1,
+    max: 3_650,
+    fallback: 30,
+    unit: "day",
+  },
+  /**
+   * How long a `completed` `job_outbox` row is kept before
+   * `deleteCompletedJobsBefore` removes it. Measured from `completed_at`.
+   * `failed` rows are never touched by this window (an operator reads them to
+   * see what went wrong, and the revoke re-arm sweep counts them), and neither
+   * are `pending`/`processing` ones -- only `completed` is ever pruned. 30
+   * days is the default, same as the other retention window above; 1 day is
+   * the minimum because a window of 0 would prune a row moments after the job
+   * that just wrote it completed.
+   */
+  completedJobRetentionDays: {
+    min: 1,
+    max: 3_650,
+    fallback: 30,
+    unit: "day",
+  },
 } as const satisfies Record<
   string,
   { min: number; max: number; fallback: number; unit: "sec" | "day" }
@@ -620,6 +668,10 @@ export const workerPeriodOverridesSchema = z
     agentReleaseRefreshSec: workerPeriodValue("agentReleaseRefreshSec"),
     ruleFetchIntervalSec: workerPeriodValue("ruleFetchIntervalSec"),
     accessReconcileSec: workerPeriodValue("accessReconcileSec"),
+    offboardedUserRetentionDays: workerPeriodValue(
+      "offboardedUserRetentionDays",
+    ),
+    completedJobRetentionDays: workerPeriodValue("completedJobRetentionDays"),
   })
   .partial();
 export type WorkerPeriodOverrides = z.infer<typeof workerPeriodOverridesSchema>;

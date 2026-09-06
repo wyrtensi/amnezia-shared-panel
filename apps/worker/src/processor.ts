@@ -176,20 +176,60 @@ export const createJobProcessor = ({
         client.peers.map((peer) => ({ nodeLabel: client.username, peer })),
       );
       const unmatchedPeerIndexes = new Set(nodePeers.map((_peer, index) => index));
-      const peers = context.keys.flatMap((key) => {
+      // Two passes, public key first: a node can briefly carry a stale peer
+      // and the current one under the same deterministic label (mid-rotation,
+      // or a label collision), and a single OR'd pass matched whichever came
+      // first in the node's own list order. The public key uniquely
+      // identifies the live peer, so it must win whenever it is available;
+      // the label is only a fallback for keys that have none. Each peer is
+      // still claimed at most once, via the same `unmatchedPeerIndexes`.
+      const matchedPeerByKeyId = new Map<string, (typeof nodePeers)[number]>();
+      for (const key of context.keys) {
+        if (key.publicKey === null) continue;
         const peerIndex = nodePeers.findIndex(
-          ({ nodeLabel, peer }, index) =>
-            unmatchedPeerIndexes.has(index) &&
-            ((key.publicKey !== null && peer.id === key.publicKey) ||
-              nodeLabel === key.nodeLabel),
+          ({ peer }, index) =>
+            unmatchedPeerIndexes.has(index) && peer.id === key.publicKey,
         );
-        if (peerIndex < 0) return [];
+        if (peerIndex < 0) continue;
         unmatchedPeerIndexes.delete(peerIndex);
-        const matched = nodePeers[peerIndex];
+        matchedPeerByKeyId.set(key.keyId, nodePeers[peerIndex]!);
+      }
+      for (const key of context.keys) {
+        if (matchedPeerByKeyId.has(key.keyId)) continue;
+        const peerIndex = nodePeers.findIndex(
+          ({ nodeLabel }, index) =>
+            unmatchedPeerIndexes.has(index) && nodeLabel === key.nodeLabel,
+        );
+        if (peerIndex < 0) continue;
+        unmatchedPeerIndexes.delete(peerIndex);
+        matchedPeerByKeyId.set(key.keyId, nodePeers[peerIndex]!);
+      }
+      // Order follows `context.keys`, same as before: nothing downstream
+      // indexes into this array, `completeNodeReconcile` folds it into a
+      // Map keyed by `keyId` before using it.
+      const peers = context.keys.flatMap((key) => {
+        const matched = matchedPeerByKeyId.get(key.keyId);
         return matched
           ? [toPeerObservation(key.keyId, matched.peer, observedAt)]
           : [];
       });
+      // A key whose revoke permanently failed sits in `revoking` with its
+      // peer still live on the node -- it is still "managed" above (removing
+      // it would freeze its peer_current row), but it should not read as a
+      // clean reconcile: the peer is cleanup work, not something the panel
+      // is knowingly keeping. Counted separately rather than folded into
+      // missing/orphan, which are about the node's inventory disagreeing
+      // with the panel's, not about a key stuck mid-delete. A `revoking` key
+      // with no peer is the delete having actually succeeded -- not a
+      // discrepancy either -- so it is excluded from `missingManagedPeerCount`
+      // the same way a matched one is excluded from it already.
+      const revokingKeys = context.keys.filter((key) => key.state === "revoking");
+      const strandedRevokingPeerCount = revokingKeys.filter((key) =>
+        matchedPeerByKeyId.has(key.keyId),
+      ).length;
+      const missingManagedPeerCount = context.keys.filter(
+        (key) => key.state !== "revoking" && !matchedPeerByKeyId.has(key.keyId),
+      ).length;
       await repository.completeNodeReconcile({
         jobId: job.id,
         nodeId,
@@ -200,8 +240,10 @@ export const createJobProcessor = ({
           managedKeyCount: context.keys.length,
           observedPeerCount: nodePeers.length,
           matchedPeerCount: peers.length,
-          missingManagedPeerCount: context.keys.length - peers.length,
+          missingManagedPeerCount,
           orphanNodePeerCount: unmatchedPeerIndexes.size,
+          revokingKeyCount: revokingKeys.length,
+          strandedRevokingPeerCount,
         },
       });
       return;
@@ -319,11 +361,31 @@ export const createJobProcessor = ({
     }
 
     if (job.type === "vpn-key.revoke") {
-      const publicKey =
-        context.publicKey ??
-        findPeer(await agent.listClients(), context.nodeLabel)?.id ??
-        null;
-      if (publicKey) await agent.deleteClient(publicKey, context.protocol);
+      const clients = await agent.listClients();
+      // Resolve by public key first, label as fallback - the same order the
+      // reconcile matcher uses (see telemetry.ts). A label alone is ambiguous
+      // when one username carries more than one peer (mid-rotation, or
+      // awg2/awg3 peers merged under one username by the node-agent):
+      // picking client.peers[0] on a label match could delete the stale peer
+      // and leave the live one on the node with no key row pointing at it.
+      const client =
+        (context.publicKey
+          ? clients.find((c) =>
+              c.peers.some((peer) => peer.id === context.publicKey),
+            )
+          : undefined) ?? clients.find((c) => c.username === context.nodeLabel);
+      // `vpn_keys` has a unique index on (node_id, node_label), so a label
+      // belongs to exactly one key. Delete every peer under it, not just the
+      // one that matched, so a stale peer from a rotation or an awg2/awg3
+      // merge cannot survive the revoke.
+      if (client) {
+        for (const peer of client.peers) {
+          await agent.deleteClient(peer.id, context.protocol);
+        }
+      }
+      // Absent still means success: the node-agent answers 404 for a peer that
+      // is already gone, and a revoke that cannot find its label has nothing
+      // to do.
       await repository.completeLifecycle(job.id, keyId, "revoked");
       return;
     }

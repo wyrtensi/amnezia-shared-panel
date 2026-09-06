@@ -112,3 +112,17 @@ id: it is the last thing that can answer "what was this?".
 Surfaces: `key-purge <id> --confirm` in the CLI, and **Delete from panel** on an
 admin's key row. There is no owner-facing equivalent, and there should not be:
 owners never see a revoked key at all.
+
+## The `Reconcile mismatch` string on a node card
+
+A node whose reconcile found a discrepancy shows `Reconcile mismatch:
+missing=N orphan=M` as its `lastError` (`apps/worker/src/postgresRepository.ts`).
+`missing` counts managed keys (not `revoking`) whose peer the node did not
+report — the panel expects a peer that is not there. `orphan` counts peers the
+node reported that no managed key matched — something is on the node the panel
+does not account for. It is a momentary signal, not a persistent one: the next
+telemetry poll overwrites `lastError` regardless (clearing it on success,
+replacing it with a different reason on failure), so it can vanish from the
+card before anyone reads it. The durable record is the `node.reconcile` audit
+event, which carries the same counts — see the `node-reconcile` row in
+[`docs/CLI.md`](./CLI.md#bootstrap--admin-cli) for how to read them.

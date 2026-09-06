@@ -225,6 +225,20 @@
       "when": 1788632684698,
       "tag": "0031_install_reminder_policy",
       "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "7",
+      "when": 1788700484873,
+      "tag": "0032_offboarded_user_retention",
+      "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1788708052108,
+      "tag": "0033_completed_job_retention",
+      "breakpoints": true
     }
   ]
 }

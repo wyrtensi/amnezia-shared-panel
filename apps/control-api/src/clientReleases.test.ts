@@ -325,4 +325,50 @@ describe("createClientReleaseResolver", () => {
     await resolver.get();
     expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
+
+  it("refuses an oversized response from content-length before its body is read", async () => {
+    const response = new Response("irrelevant body", {
+      headers: { "content-length": String(3 * 1024 * 1024) },
+    });
+    const textSpy = vi.spyOn(response, "text");
+    const fetchImpl = vi.fn(() => Promise.resolve(response));
+    const resolver = createClientReleaseResolver({
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      now: createClock().now,
+    });
+
+    const release = await resolver.get();
+
+    expect(textSpy).not.toHaveBeenCalled();
+    // A GitHub failure — this one included — must never reach the caller as a
+    // thrown error; it degrades to the pinned fallback instead.
+    expect(release.fallback).toBe(true);
+  });
+
+  it("stops reading a chunked oversized body early when there is no content-length", async () => {
+    const chunkSize = 1024 * 1024; // 1 MiB
+    const totalChunks = 10; // far more than the 2 MiB cap needs to trip
+    let pulls = 0;
+    const stream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        pulls += 1;
+        if (pulls > totalChunks) {
+          controller.close();
+          return;
+        }
+        controller.enqueue(new Uint8Array(chunkSize));
+      },
+    });
+    const response = new Response(stream);
+    const fetchImpl = vi.fn(() => Promise.resolve(response));
+    const resolver = createClientReleaseResolver({
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      now: createClock().now,
+    });
+
+    const release = await resolver.get();
+
+    expect(release.fallback).toBe(true);
+    expect(pulls).toBeLessThan(totalChunks);
+  });
 });

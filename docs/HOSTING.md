@@ -72,19 +72,24 @@ Cloudflare Access:
    **`Cf-Access-Jwt-Assertion`** header on every request to the origin.
 2. `apps/web` forwards that header verbatim to the control-api
    (`apps/web/app/api/control/[...path]/route.ts` and `apps/web/lib/server-api.ts`).
-3. `apps/control-api` **cryptographically verifies** the JWT in
-   `apps/control-api/src/cloudflareAccess.ts` — it fetches Cloudflare's JWKS from
-   `<issuer>/cdn-cgi/access/certs`, checks `issuer`, `audience`, and `RS256`,
-   then reads the `email` claim (lower-cased) as the user identity. The verify
-   happens in the API, so the API does not blindly trust the proxy — defense in
-   depth.
+3. Two things **cryptographically verify** that JWT independently, and neither
+   trusts the header on its own — that is the actual defense in depth:
+   `apps/web/proxy.ts` (the page gate) checks it before rendering any page, and
+   `apps/control-api/src/cloudflareAccess.ts` checks it again before answering
+   any API call. Both fetch Cloudflare's JWKS from `<issuer>/cdn-cgi/access/certs`
+   and check `issuer` (`CF_ACCESS_ISSUER`), `audience` (`CF_ACCESS_AUDIENCE`),
+   and `RS256`; the control-api additionally reads the `email` claim
+   (lower-cased) as the user identity. The panel's other door, direct Google
+   login, is verified the same way it was issued: `apps/web/lib/session.ts`
+   checks the `panel_session` JWT against `PANEL_IDENTITY_SECRET`.
 4. On first request the control repository auto-provisions that email as a user.
    If the email is in **`BOOTSTRAP_ADMIN_EMAILS`** (control-api env, comma-
    separated, lower-cased), the account is promoted to `admin`. This is how the
    first admin(s) exist — there is no seed script.
 
-The two env vars the production adapter requires (`apps/control-api/main.ts`
-creates it only when `NODE_ENV=production`):
+The two env vars **both verifiers** above need (`apps/control-api/main.ts` builds
+its adapter only when `NODE_ENV=production`; `apps/web/proxy.ts` checks for them
+unconditionally):
 
 | Var | Value | Where to find it |
 | --- | --- | --- |
@@ -275,10 +280,28 @@ BOOTSTRAP_ADMIN_EMAILS=you@company.tld,ops@company.tld
 # POSTGRES_PASSWORD / CONFIG_ENCRYPTION_* / PANEL_IMAGE also in infra/prod/.env
 ```
 
-The production `web` service carries **no** dev identity shim — it only forwards
-the real `Cf-Access-Jwt-Assertion` header it receives from Access. (The dev-only
+The production `web` service carries **no** dev identity shim: it verifies the
+`Cf-Access-Jwt-Assertion` header itself (`apps/web/proxy.ts`, §2) before forwarding
+it on to control-api, which verifies it again. Both reads come from the same
+`infra/prod/.env` values above — `web` and `control-api` share one `env_file` via
+the `x-app` anchor in `compose.yaml`, so nothing extra needs setting. (The dev-only
 `x-dev-user-email` path is a stand-in for Access and must never be enabled in
 production.)
+
+**Upgrading an existing deployment:** older builds only forwarded the header from
+`web` without checking it; `apps/web/proxy.ts` now verifies it too, so `web`'s own
+process must see `CF_ACCESS_ISSUER`/`CF_ACCESS_AUDIENCE`. It already does — the
+shared `env_file` means no `.env` or compose edit is required — but confirm it on
+the running host right after an update:
+
+```
+docker compose -f infra/prod/compose.yaml exec web printenv | grep CF_ACCESS
+```
+
+An empty result means `web` isn't picking up the shared `env_file`: check the
+`x-app` anchor in `infra/prod/compose.yaml` and that `infra/prod/.env` exists next
+to it. Until that's fixed, Cloudflare Access users are silently redirected to
+`/login` instead of reaching the panel.
 
 > The `infra/prod` stack binds web/control-api to **loopback** (`5430`/`5431`) and
 > never publishes postgres — see [`CLOUDFLARE-SETUP.md` §2](./CLOUDFLARE-SETUP.md).
@@ -352,7 +375,7 @@ logging, or quoting secret values.
 | --- | --- | --- |
 | Node-agent API key | `infra/node/secrets/node-agent-api-key` (mode `0640`, `root:root`) | in `.env`, a command line, or a log |
 | Postgres password, config-encryption keyring | the app `.env` (`infra/dev/.env`, `apps/*/.env`) | committed |
-| `CF_ACCESS_ISSUER` / `CF_ACCESS_AUDIENCE` | `apps/control-api/.env` | committed |
+| `CF_ACCESS_ISSUER` / `CF_ACCESS_AUDIENCE` | `infra/prod/.env` (`infra/dev/.env` in dev) — **both** `apps/web` (page gate) and `apps/control-api` (API gate) read them, via the shared `env_file` on the `x-app` anchor in `compose.yaml`; do not split them into a per-service file | committed |
 | `CF_API_TOKEN` (reconcile mode) | `apps/worker/.env` | committed; and it is an **API token**, not a service token (§6) |
 | SSH key for the node tunnel | referenced by absolute path from `secrets/.secrets` | copied into the repo |
 

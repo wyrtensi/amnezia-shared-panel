@@ -216,9 +216,24 @@ describe("provision job reconciliation", () => {
       Promise.resolve({
         node: keyContext.node,
         keys: [
-          { keyId: "key-1", publicKey: "public-key-1", nodeLabel: "label-1" },
-          { keyId: "key-2", publicKey: null, nodeLabel: "label-2" },
-          { keyId: "key-3", publicKey: "missing-key", nodeLabel: "label-3" },
+          {
+            keyId: "key-1",
+            publicKey: "public-key-1",
+            nodeLabel: "label-1",
+            state: "active",
+          },
+          {
+            keyId: "key-2",
+            publicKey: null,
+            nodeLabel: "label-2",
+            state: "active",
+          },
+          {
+            keyId: "key-3",
+            publicKey: "missing-key",
+            nodeLabel: "label-3",
+            state: "active",
+          },
         ],
       }),
     );
@@ -311,6 +326,8 @@ describe("provision job reconciliation", () => {
         matchedPeerCount: 2,
         missingManagedPeerCount: 1,
         orphanNodePeerCount: 1,
+        revokingKeyCount: 0,
+        strandedRevokingPeerCount: 0,
       },
     });
     expect(result?.peers).toEqual([
@@ -334,6 +351,293 @@ describe("provision job reconciliation", () => {
     expect(agent.createClient).not.toHaveBeenCalled();
     expect(repository.failJob).not.toHaveBeenCalled();
     expect(repository.completeJob).not.toHaveBeenCalled();
+  });
+
+  it("matches a peer by public key even when another peer shares the label", async () => {
+    const repository = createRepository();
+    const loadNodeReconcileContext = vi.fn<
+      WorkerRepository["loadNodeReconcileContext"]
+    >(() =>
+      Promise.resolve({
+        node: keyContext.node,
+        keys: [
+          {
+            keyId: "key-1",
+            publicKey: "current-public-key",
+            nodeLabel: "ap_shared_label",
+            state: "active",
+          },
+        ],
+      }),
+    );
+    const completeNodeReconcile = vi.fn<
+      WorkerRepository["completeNodeReconcile"]
+    >(() => Promise.resolve());
+    Object.assign(repository, {
+      loadNodeReconcileContext,
+      completeNodeReconcile,
+    });
+    const agent = createAgent();
+    // The stale peer sits FIRST under the same deterministic label the
+    // current one also carries -- a single label-or-key pass would match it
+    // first just because of list order.
+    vi.mocked(agent.listClients).mockResolvedValue([
+      {
+        username: "ap_shared_label",
+        peers: [
+          {
+            id: "stale-public-key",
+            name: null,
+            allowedIps: [],
+            lastHandshake: 0,
+            traffic: { received: 10, sent: 5 },
+            endpoint: null,
+            online: false,
+            expiresAt: null,
+            status: "active",
+            protocol: "amneziawg2",
+          },
+          {
+            id: "current-public-key",
+            name: null,
+            allowedIps: [],
+            lastHandshake: 1_787_213_070,
+            traffic: { received: 999, sent: 888 },
+            endpoint: "203.0.113.1:51889",
+            online: true,
+            expiresAt: null,
+            status: "active",
+            protocol: "amneziawg2",
+          },
+        ],
+      },
+    ]);
+    const now = new Date("2026-08-20T08:05:00.000Z");
+    const processJob = createJobProcessor({
+      repository,
+      createNodeAgent: () => agent,
+      now: () => now,
+    });
+
+    await processJob({
+      id: "reconcile-2",
+      type: "node.reconcile",
+      attempts: 1,
+      payload: { nodeId: "node-1" },
+    });
+
+    const result = completeNodeReconcile.mock.calls[0]?.[0];
+    expect(result?.peers).toEqual([
+      expect.objectContaining({
+        keyId: "key-1",
+        online: true,
+        receivedBytes: 999n,
+        sentBytes: 888n,
+      }),
+    ]);
+    expect(result?.summary).toMatchObject({
+      managedKeyCount: 1,
+      observedPeerCount: 2,
+      matchedPeerCount: 1,
+      missingManagedPeerCount: 0,
+      orphanNodePeerCount: 1,
+      revokingKeyCount: 0,
+      strandedRevokingPeerCount: 0,
+    });
+    expect(agent.deleteClient).not.toHaveBeenCalled();
+  });
+
+  it("still matches by label when the key has no public key", async () => {
+    const repository = createRepository();
+    const loadNodeReconcileContext = vi.fn<
+      WorkerRepository["loadNodeReconcileContext"]
+    >(() =>
+      Promise.resolve({
+        node: keyContext.node,
+        keys: [
+          {
+            keyId: "key-2",
+            publicKey: null,
+            nodeLabel: "ap_only_label",
+            state: "active",
+          },
+        ],
+      }),
+    );
+    const completeNodeReconcile = vi.fn<
+      WorkerRepository["completeNodeReconcile"]
+    >(() => Promise.resolve());
+    Object.assign(repository, {
+      loadNodeReconcileContext,
+      completeNodeReconcile,
+    });
+    const agent = createAgent();
+    vi.mocked(agent.listClients).mockResolvedValue([
+      {
+        username: "ap_only_label",
+        peers: [
+          {
+            id: "generated-key",
+            name: null,
+            allowedIps: [],
+            lastHandshake: 0,
+            traffic: { received: 0, sent: 0 },
+            endpoint: null,
+            online: false,
+            expiresAt: null,
+            status: "active",
+            protocol: "amneziawg2",
+          },
+        ],
+      },
+    ]);
+    const now = new Date("2026-08-20T08:05:00.000Z");
+    const processJob = createJobProcessor({
+      repository,
+      createNodeAgent: () => agent,
+      now: () => now,
+    });
+
+    await processJob({
+      id: "reconcile-3",
+      type: "node.reconcile",
+      attempts: 1,
+      payload: { nodeId: "node-1" },
+    });
+
+    const result = completeNodeReconcile.mock.calls[0]?.[0];
+    expect(result?.peers).toEqual([
+      expect.objectContaining({ keyId: "key-2" }),
+    ]);
+    expect(result?.summary).toMatchObject({
+      matchedPeerCount: 1,
+      missingManagedPeerCount: 0,
+      orphanNodePeerCount: 0,
+      revokingKeyCount: 0,
+      strandedRevokingPeerCount: 0,
+    });
+  });
+
+  it("counts a revoking key whose peer is still on the node as stranded", async () => {
+    const repository = createRepository();
+    const loadNodeReconcileContext = vi.fn<
+      WorkerRepository["loadNodeReconcileContext"]
+    >(() =>
+      Promise.resolve({
+        node: keyContext.node,
+        keys: [
+          {
+            keyId: "key-3",
+            publicKey: "stuck-public-key",
+            nodeLabel: "ap_stuck_label",
+            state: "revoking",
+          },
+        ],
+      }),
+    );
+    const completeNodeReconcile = vi.fn<
+      WorkerRepository["completeNodeReconcile"]
+    >(() => Promise.resolve());
+    Object.assign(repository, {
+      loadNodeReconcileContext,
+      completeNodeReconcile,
+    });
+    const agent = createAgent();
+    // The revoke never went through: the peer this key was supposed to have
+    // deleted is still live on the node.
+    vi.mocked(agent.listClients).mockResolvedValue([
+      {
+        username: "ap_stuck_label",
+        peers: [
+          {
+            id: "stuck-public-key",
+            name: null,
+            allowedIps: [],
+            lastHandshake: 0,
+            traffic: { received: 0, sent: 0 },
+            endpoint: null,
+            online: true,
+            expiresAt: null,
+            status: "active",
+            protocol: "amneziawg2",
+          },
+        ],
+      },
+    ]);
+    const now = new Date("2026-08-20T08:05:00.000Z");
+    const processJob = createJobProcessor({
+      repository,
+      createNodeAgent: () => agent,
+      now: () => now,
+    });
+
+    await processJob({
+      id: "reconcile-4",
+      type: "node.reconcile",
+      attempts: 1,
+      payload: { nodeId: "node-1" },
+    });
+
+    const result = completeNodeReconcile.mock.calls[0]?.[0];
+    expect(result?.summary).toMatchObject({
+      strandedRevokingPeerCount: 1,
+      revokingKeyCount: 1,
+      orphanNodePeerCount: 0,
+    });
+    // The point of this task: reconcile only ever reports a stranded peer,
+    // it never starts deleting one itself.
+    expect(agent.deleteClient).not.toHaveBeenCalled();
+  });
+
+  it("does not count a revoking key with no peer as stranded", async () => {
+    const repository = createRepository();
+    const loadNodeReconcileContext = vi.fn<
+      WorkerRepository["loadNodeReconcileContext"]
+    >(() =>
+      Promise.resolve({
+        node: keyContext.node,
+        keys: [
+          {
+            keyId: "key-4",
+            publicKey: "already-gone-key",
+            nodeLabel: "ap_gone_label",
+            state: "revoking",
+          },
+        ],
+      }),
+    );
+    const completeNodeReconcile = vi.fn<
+      WorkerRepository["completeNodeReconcile"]
+    >(() => Promise.resolve());
+    Object.assign(repository, {
+      loadNodeReconcileContext,
+      completeNodeReconcile,
+    });
+    const agent = createAgent();
+    vi.mocked(agent.listClients).mockResolvedValue([]);
+    const now = new Date("2026-08-20T08:05:00.000Z");
+    const processJob = createJobProcessor({
+      repository,
+      createNodeAgent: () => agent,
+      now: () => now,
+    });
+
+    await processJob({
+      id: "reconcile-5",
+      type: "node.reconcile",
+      attempts: 1,
+      payload: { nodeId: "node-1" },
+    });
+
+    const result = completeNodeReconcile.mock.calls[0]?.[0];
+    expect(result?.summary).toMatchObject({
+      strandedRevokingPeerCount: 0,
+      revokingKeyCount: 1,
+      // The revoke actually finished (the node has nothing under this
+      // label or key), so this must not also read as a missing peer.
+      missingManagedPeerCount: 0,
+    });
+    expect(agent.deleteClient).not.toHaveBeenCalled();
   });
 });
 
@@ -370,6 +674,193 @@ describe("rotate job", () => {
       publicKey: "new-public-key",
       vpnConfig: "vpn://rotated",
     });
+  });
+});
+
+describe("revoke job", () => {
+  const revokeJob = {
+    id: "job-revoke",
+    type: "vpn-key.revoke",
+    attempts: 1,
+    payload: { keyId: "key-1" },
+  };
+
+  it("revokes a key whose peer is still on the node", async () => {
+    const repository = createRepository();
+    vi.mocked(repository.loadKeyContext).mockResolvedValue({
+      ...keyContext,
+      publicKey: "current-public-key",
+    });
+    const agent = createAgent();
+    vi.mocked(agent.listClients).mockResolvedValue([
+      {
+        username: keyContext.nodeLabel,
+        peers: [
+          {
+            id: "current-public-key",
+            name: null,
+            allowedIps: [],
+            lastHandshake: 0,
+            traffic: { received: 0, sent: 0 },
+            endpoint: null,
+            online: false,
+            expiresAt: null,
+            status: "active",
+            protocol: "amneziawg2",
+          },
+        ],
+      },
+    ]);
+    const process = createJobProcessor({ repository, createNodeAgent: () => agent });
+
+    await process(revokeJob);
+
+    expect(agent.deleteClient).toHaveBeenCalledWith("current-public-key", "awg2");
+    expect(repository.completeLifecycle).toHaveBeenCalledWith(
+      revokeJob.id,
+      "key-1",
+      "revoked",
+    );
+  });
+
+  it("completes a revoke whose peer is already gone", async () => {
+    const repository = createRepository();
+    vi.mocked(repository.loadKeyContext).mockResolvedValue({
+      ...keyContext,
+      publicKey: "stale-public-key",
+    });
+    const agent = createAgent();
+    // A non-empty list of peers that match neither this key's label nor its
+    // public key - not an empty list, which would prove nothing about the
+    // filtering itself.
+    vi.mocked(agent.listClients).mockResolvedValue([
+      {
+        username: "unrelated-label",
+        peers: [
+          {
+            id: "unrelated-public-key",
+            name: null,
+            allowedIps: [],
+            lastHandshake: 0,
+            traffic: { received: 0, sent: 0 },
+            endpoint: null,
+            online: false,
+            expiresAt: null,
+            status: "active",
+            protocol: "amneziawg2",
+          },
+        ],
+      },
+    ]);
+    const process = createJobProcessor({ repository, createNodeAgent: () => agent });
+
+    await process(revokeJob);
+
+    expect(agent.deleteClient).not.toHaveBeenCalled();
+    expect(repository.completeLifecycle).toHaveBeenCalledWith(
+      revokeJob.id,
+      "key-1",
+      "revoked",
+    );
+  });
+
+  it("resolves by public key first and deletes every peer under the label when it carries two peers", async () => {
+    const repository = createRepository();
+    vi.mocked(repository.loadKeyContext).mockResolvedValue({
+      ...keyContext,
+      publicKey: "current-public-key",
+    });
+    const agent = createAgent();
+    // One label, two peers, the stale one listed first - mid-rotation, or
+    // awg2/awg3 peers merged under one username by the node-agent.
+    // `client.peers[0]` would pick the stale peer; the fix must resolve by
+    // this key's public key instead, then delete both peers under the label
+    // (vpn_keys has a unique index on (node_id, node_label), so the label
+    // belongs to exactly this key).
+    vi.mocked(agent.listClients).mockResolvedValue([
+      {
+        username: keyContext.nodeLabel,
+        peers: [
+          {
+            id: "stale-public-key",
+            name: null,
+            allowedIps: [],
+            lastHandshake: 0,
+            traffic: { received: 0, sent: 0 },
+            endpoint: null,
+            online: false,
+            expiresAt: null,
+            status: "active",
+            protocol: "amneziawg2",
+          },
+          {
+            id: "current-public-key",
+            name: null,
+            allowedIps: [],
+            lastHandshake: 0,
+            traffic: { received: 0, sent: 0 },
+            endpoint: null,
+            online: false,
+            expiresAt: null,
+            status: "active",
+            protocol: "amneziawg2",
+          },
+        ],
+      },
+    ]);
+    const process = createJobProcessor({ repository, createNodeAgent: () => agent });
+
+    await process(revokeJob);
+
+    expect(agent.deleteClient).toHaveBeenCalledWith("current-public-key", "awg2");
+    expect(agent.deleteClient).toHaveBeenCalledWith("stale-public-key", "awg2");
+    expect(agent.deleteClient).toHaveBeenCalledTimes(2);
+    expect(repository.completeLifecycle).toHaveBeenCalledWith(
+      revokeJob.id,
+      "key-1",
+      "revoked",
+    );
+  });
+
+  it("matches the peer by label when the key has no public key", async () => {
+    const repository = createRepository();
+    vi.mocked(repository.loadKeyContext).mockResolvedValue({
+      ...keyContext,
+      publicKey: null,
+    });
+    const agent = createAgent();
+    vi.mocked(agent.listClients).mockResolvedValue([
+      {
+        username: keyContext.nodeLabel,
+        peers: [
+          {
+            id: "label-matched-public-key",
+            name: null,
+            allowedIps: [],
+            lastHandshake: 0,
+            traffic: { received: 0, sent: 0 },
+            endpoint: null,
+            online: false,
+            expiresAt: null,
+            status: "active",
+            protocol: "amneziawg2",
+          },
+        ],
+      },
+    ]);
+    const process = createJobProcessor({ repository, createNodeAgent: () => agent });
+
+    await process(revokeJob);
+
+    expect(agent.deleteClient).toHaveBeenCalledWith(
+      "label-matched-public-key",
+      "awg2",
+    );
+    expect(repository.completeLifecycle).toHaveBeenCalledWith(
+      revokeJob.id,
+      "key-1",
+      "revoked",
+    );
   });
 });
 

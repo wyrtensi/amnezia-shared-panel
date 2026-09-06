@@ -671,6 +671,12 @@ export const portalPolicy = pgTable(
     agentReleaseRefreshSec: integer("agent_release_refresh_sec"),
     ruleFetchIntervalSec: integer("rule_fetch_interval_sec"),
     accessReconcileSec: integer("access_reconcile_sec"),
+    offboardedUserRetentionDays: integer("offboarded_user_retention_days"),
+    // How long a `completed` job_outbox row is kept before
+    // deleteCompletedJobsBefore removes it. Same nullable-period shape as the
+    // others above: null means "use the worker's own default" (30 days). See
+    // WORKER_PERIOD_FIELDS.completedJobRetentionDays in @amnezia/contracts.
+    completedJobRetentionDays: integer("completed_job_retention_days"),
     // Cloudflare Access two-way sync config. The API token is stored encrypted
     // and never returned to the client (write-only, replaceable).
     cfAccessAccountId: varchar("cf_access_account_id", { length: 64 }),
@@ -739,6 +745,14 @@ export const portalPolicy = pgTable(
     check(
       "portal_policy_access_reconcile_range",
       sql`${table.accessReconcileSec} IS NULL OR (${table.accessReconcileSec} >= 300 AND ${table.accessReconcileSec} <= 604800)`,
+    ),
+    check(
+      "portal_policy_offboarded_user_retention_range",
+      sql`${table.offboardedUserRetentionDays} IS NULL OR (${table.offboardedUserRetentionDays} >= 1 AND ${table.offboardedUserRetentionDays} <= 3650)`,
+    ),
+    check(
+      "portal_policy_completed_job_retention_range",
+      sql`${table.completedJobRetentionDays} IS NULL OR (${table.completedJobRetentionDays} >= 1 AND ${table.completedJobRetentionDays} <= 3650)`,
     ),
   ],
 );
@@ -814,5 +828,13 @@ export const jobOutbox = pgTable(
   (table) => [
     uniqueIndex("job_outbox_deduplication_unique").on(table.deduplicationKey),
     index("job_outbox_poll_idx").on(table.status, table.availableAt),
+    // job_outbox has no FK to vpn_keys -- the key id only lives in the JSON
+    // payload -- so every lookup "jobs for this key" filters on this
+    // expression. Without an index it is a full-table scan; two callers
+    // already pay it (deleteNode and the keys/purge action in
+    // apps/control-api/src/postgresRepository.ts), and the stuck-revoke
+    // re-arm sweep added in the worker adds a third, per-key, on every
+    // maintenance run.
+    index("job_outbox_key_id_idx").on(sql`(${table.payload}->>'keyId')`),
   ],
 );

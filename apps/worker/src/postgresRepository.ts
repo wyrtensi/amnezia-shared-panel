@@ -1,9 +1,11 @@
+import { randomUUID } from "node:crypto";
 import {
   and,
   asc,
   count,
   desc,
   eq,
+  gt,
   gte,
   inArray,
   isNotNull,
@@ -11,9 +13,15 @@ import {
   lt,
   lte,
   ne,
+  notExists,
   or,
   sql,
 } from "drizzle-orm";
+import {
+  ACCESS_SYNC_DEDUPLICATION_KEY,
+  RULES_REFRESH_DEDUPLICATION_KEY,
+  revokeJobDedupKey,
+} from "@amnezia/contracts";
 import {
   armAccessSyncRow,
   decryptSecret,
@@ -118,6 +126,12 @@ export type PostgresWorkerRepositoryOptions = {
 
 // The transaction handle drizzle passes to `db.transaction(async (tx) => ...)`.
 type DbTransaction = Parameters<Parameters<Database["transaction"]>[0]>[0];
+
+// Caps one `rearmStuckRevokes` sweep's blast radius -- see the `.limit()` call
+// in that method. Named and exported so the integration test that proves the
+// cap asserts against this rather than a literal that could silently drift
+// from the query.
+export const REARM_STUCK_REVOKES_LIMIT = 25;
 
 const cleanReason = (reason: string): string =>
   reason.replace(/[\r\n\t]+/g, " ").slice(0, 2_000);
@@ -252,6 +266,7 @@ export class PostgresWorkerRepository
         keyId: vpnKeys.id,
         nodeLabel: vpnKeys.nodeLabel,
         publicKey: vpnKeys.publicKey,
+        state: vpnKeys.state,
       })
       .from(vpnKeys)
       .where(
@@ -497,14 +512,11 @@ export class PostgresWorkerRepository
       .returning({ id: vpnKeys.id });
 
     for (const key of keysToRevoke) {
-      await tx
-        .insert(jobOutbox)
-        .values({
-          type: "vpn-key.revoke",
-          deduplicationKey: `vpn-key.revoke:${key.id}`,
-          payload: { keyId: key.id },
-        })
-        .onConflictDoNothing();
+      await tx.insert(jobOutbox).values({
+        type: "vpn-key.revoke",
+        deduplicationKey: revokeJobDedupKey(key.id, randomUUID()),
+        payload: { keyId: key.id },
+      });
     }
 
     await tx.insert(auditEvents).values({
@@ -735,12 +747,27 @@ export class PostgresWorkerRepository
     return rows.map((row) => row.email);
   };
 
-  purgeOffboardedUsers = async (): Promise<{ deleted: string[] }> => {
+  purgeOffboardedUsers = async (
+    disabledBefore: Date,
+  ): Promise<{ deleted: string[] }> => {
     return this.options.db.transaction(async (tx) => {
       const disabled = await tx
         .select({ id: users.id, email: users.email })
         .from(users)
-        .where(eq(users.status, "disabled"));
+        .where(
+          and(
+            eq(users.status, "disabled"),
+            // Fail closed: a NULL disabled_at is a row disabled before this
+            // column existed (or, in principle, a bug that skipped setting
+            // it), and there is no timestamp to measure a retention window
+            // from. Treating "no timestamp" as "not recent enough to purge"
+            // would delete exactly the accounts this window exists to
+            // protect, so such a row is never purged, no matter how long it
+            // has been disabled.
+            isNotNull(users.disabledAt),
+            lt(users.disabledAt, disabledBefore),
+          ),
+        );
       const deleted: string[] = [];
       for (const user of disabled) {
         // Keys that may still hold a peer on a node block deletion; wait until
@@ -780,6 +807,96 @@ export class PostgresWorkerRepository
         deleted.push(user.email);
       }
       return { deleted };
+    });
+  };
+
+  deleteCompletedJobsBefore = async (cutoff: Date): Promise<void> => {
+    await this.options.db
+      .delete(jobOutbox)
+      .where(
+        and(
+          eq(jobOutbox.status, "completed"),
+          lt(jobOutbox.completedAt, cutoff),
+          // The `rules.refresh` and `access.sync` rows are singletons reused
+          // forever (armAccessSyncRow / the rules-refresh arm upsert into the
+          // SAME row every time rather than inserting a new one) and back the
+          // admin status endpoints getRulesRefreshStatus / getAccessSyncStatus.
+          // Deleting either makes the admin UI report that job as "idle" and
+          // loses the last run's error, so both are spared no matter their
+          // status or age.
+          ne(jobOutbox.deduplicationKey, RULES_REFRESH_DEDUPLICATION_KEY),
+          ne(jobOutbox.deduplicationKey, ACCESS_SYNC_DEDUPLICATION_KEY),
+        ),
+      );
+  };
+
+  rearmStuckRevokes = async (): Promise<{ rearmed: number }> => {
+    return this.options.db.transaction(async (tx) => {
+      // A `vpn-key.revoke` job already live for this key -- stops a second job
+      // stacking on one already in flight.
+      const liveRevokeJob = tx
+        .select({ one: sql`1` })
+        .from(jobOutbox)
+        .where(
+          and(
+            eq(jobOutbox.type, "vpn-key.revoke"),
+            sql`${jobOutbox.payload} ->> 'keyId' = ${vpnKeys.id}::text`,
+            inArray(jobOutbox.status, ["pending", "processing"]),
+          ),
+        );
+      // How many `vpn-key.revoke` jobs for this key have already exhausted
+      // their retries and failed. `failed` rows are never pruned (Fix 1 above
+      // only prunes `completed`), so this count is monotonic and survives any
+      // future retention change: 5 sweeps x 10 attempts is at most 50 contacts
+      // with the node, then the key is left to a human. This IS the permanent
+      // stop -- without it a node that always 500s would be re-armed forever.
+      const failedRevokeJobCount = tx
+        .select({ value: count() })
+        .from(jobOutbox)
+        .where(
+          and(
+            eq(jobOutbox.type, "vpn-key.revoke"),
+            sql`${jobOutbox.payload} ->> 'keyId' = ${vpnKeys.id}::text`,
+            eq(jobOutbox.status, "failed"),
+          ),
+        );
+      const candidates = await tx
+        .select({ id: vpnKeys.id })
+        .from(vpnKeys)
+        .innerJoin(nodes, eq(nodes.id, vpnKeys.nodeId))
+        .where(
+          and(
+            eq(vpnKeys.state, "revoking"),
+            eq(nodes.enabled, true),
+            // THE hot-loop guard. `last_sync_at` is moved only by the
+            // telemetry poller and by `completeNodeReconcile`, so a node that
+            // is genuinely gone stops advancing it and its keys are never
+            // re-armed again. Without this a dead node's keys would be
+            // retried forever.
+            gt(nodes.lastSyncAt, sql`now() - interval '30 minutes'`),
+            notExists(liveRevokeJob),
+            lt(failedRevokeJobCount, 5),
+          ),
+        )
+        // Caps one sweep's blast radius.
+        .limit(REARM_STUCK_REVOKES_LIMIT);
+
+      for (const key of candidates) {
+        await tx.insert(jobOutbox).values({
+          type: "vpn-key.revoke",
+          deduplicationKey: revokeJobDedupKey(key.id, randomUUID()),
+          payload: { keyId: key.id },
+        });
+      }
+      if (candidates.length > 0) {
+        await tx.insert(auditEvents).values({
+          actorType: "system",
+          action: "vpn_key.revoke_rearmed",
+          targetType: "vpn_key",
+          metadata: { rearmedCount: candidates.length },
+        });
+      }
+      return { rearmed: candidates.length };
     });
   };
 
@@ -1015,6 +1132,14 @@ export class PostgresWorkerRepository
       )[0];
       if (!node) return;
       const supportedProtocols = protocolsFromAgent(snapshot.server.protocols);
+      // A host change invalidates the stored IP: it answers for the PREVIOUS
+      // name, not a good value a lookup failed to refresh. Blanking it is what
+      // makes the next tick look the new host up (telemetry.ts:285) and what
+      // stops users being handed the old server's address. Guarded on a
+      // non-null new host for the same reason telemetry is: an agent that
+      // stops reporting a host has not moved.
+      const hostChanged =
+        snapshot.publicHost !== null && snapshot.publicHost !== node.publicHost;
       await tx
         .update(nodes)
         .set({
@@ -1044,8 +1169,13 @@ export class PostgresWorkerRepository
           // flicker between an address and "not resolved". The timestamp
           // records when the address was LEARNED, not how fresh it is; a node's
           // public address does not change, so there is nothing to go stale.
+          // The exception is a host change with a failed lookup: the stored IP
+          // then answers for the PREVIOUS host, not a good value that a lookup
+          // failed to refresh, and must be blanked (see hostChanged below).
           ...(snapshot.publicIp === null
-            ? {}
+            ? hostChanged
+              ? { publicIp: null, publicIpResolvedAt: null }
+              : {}
             : {
                 publicIp: snapshot.publicIp,
                 publicIpResolvedAt: snapshot.observedAt,

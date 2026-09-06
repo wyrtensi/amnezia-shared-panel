@@ -91,5 +91,9 @@ export const resolveWorkerPeriodDefaults = (
     maintenanceIntervalSec: WORKER_PERIOD_FIELDS.maintenanceIntervalSec.fallback,
     agentReleaseRefreshSec: WORKER_PERIOD_FIELDS.agentReleaseRefreshSec.fallback,
     ruleFetchIntervalSec: WORKER_PERIOD_FIELDS.ruleFetchIntervalSec.fallback,
+    offboardedUserRetentionDays:
+      WORKER_PERIOD_FIELDS.offboardedUserRetentionDays.fallback,
+    completedJobRetentionDays:
+      WORKER_PERIOD_FIELDS.completedJobRetentionDays.fallback,
   };
 };

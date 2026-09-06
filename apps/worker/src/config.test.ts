@@ -13,6 +13,8 @@ describe("resolveWorkerPeriodDefaults", () => {
       agentReleaseRefreshSec: 1_800,
       ruleFetchIntervalSec: 21_600,
       accessReconcileSec: 3_600,
+      offboardedUserRetentionDays: 30,
+      completedJobRetentionDays: 30,
     });
   });
 

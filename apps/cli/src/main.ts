@@ -1459,6 +1459,35 @@ async function cmdAction(
 }
 
 /**
+ * Queue a node's reconciliation. This only enqueues the job -- the worker
+ * runs it on its own schedule, comparing the node's live peers against the
+ * keys the panel manages -- so there is nothing to print here yet beyond
+ * confirmation. The actual summary (managed/observed/matched/missing/orphan
+ * counts, plus how many `revoking` keys still have a live peer) lands in the
+ * audit log as a `node.reconcile` event once the worker gets to it, not in
+ * this response.
+ */
+async function cmdNodeReconcile(args: string[]): Promise<void> {
+  const id = args.find((arg) => !arg.startsWith("--"));
+  if (!id) throw new Error("Usage: node-reconcile <id>");
+  await api(`/api/admin/nodes/${id}/reconcile`, {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+  console.log(`node ${id}: reconcile queued`);
+  console.log(
+    "The worker compares this node's live peers against the keys the panel " +
+      "manages and records the result in the audit log ('audit') as a " +
+      "node.reconcile event, usually within a few seconds.",
+  );
+  console.log(
+    "A non-zero strandedRevokingPeerCount there means a key stuck in " +
+      "'revoking' (a delete that never completed) still has its peer on " +
+      "the node -- retry the delete on that key.",
+  );
+}
+
+/**
  * Set (or clear) a key's operator-only note.
  *
  * `--name=` with nothing after it clears the note, which is why the flag is
@@ -2312,7 +2341,8 @@ Nodes:
   node-remove <id>                        Delete a node (refused while it has keys)
   node-remove <id> --with-keys            Delete a node AND every key ever issued
              --confirm=<node name>        on it. Irreversible; the name must match
-  node-reconcile <id>                     Trigger a node sync
+  node-reconcile <id>                     Queue a node sync; the summary lands in
+                                          'audit' once the worker runs it
   node-capacity <id> [--set=<peers>]     Show or change a node's peer capacity.
                        [--confirm]         Recreates only the node-agent, so no
                                            tunnel drops. Needs the host-side
@@ -2461,6 +2491,13 @@ policy-set fields:
     agentReleaseRefreshSec=<300..604800>  re-resolve the node-agent release
     ruleFetchIntervalSec=<900..604800>    route-rule feed download
     accessReconcileSec=<300..604800>      Cloudflare Access reconcile timer
+    offboardedUserRetentionDays=<1..3650> how long a disabled account is kept
+                                          before it is purged (never a NULL
+                                          disabled_at, regardless of window)
+    completedJobRetentionDays=<1..3650>   how long a completed job_outbox row
+                                          is kept (never a failed/pending/
+                                          processing row, and never the
+                                          rules.refresh / access.sync rows)
     Run "periods" to see what is set and what an unset one falls back to. A
     change needs no restart and is not instant: the loop finishes the wait it
     had already started, so a new period applies from the next cycle — up to
@@ -2857,7 +2894,7 @@ export async function dispatch(argv: string[]): Promise<void> {
     case "node-delete":
       return cmdNodeRemove(args);
     case "node-reconcile":
-      return cmdAction("nodes", "reconcile", args);
+      return cmdNodeReconcile(args);
     case "node-capacity":
       return cmdNodeCapacity(args);
     case "node-agent-update":

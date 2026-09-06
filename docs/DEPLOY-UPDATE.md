@@ -255,21 +255,16 @@ scripts, and never as a side effect of a panel update:
 Keep the two clocks separate: the panel (control plane) and each node (data
 plane) are versioned and deployed independently.
 
-## Direction: an `amnezia-panel` CLI update/version command
+## The `amnezia-panel` CLI already covers version and update
 
-This runbook pairs with a future admin-CLI surface. The `apps/cli` tool already
-ships as `amnezia-panel` ([`apps/cli/README.md`](../apps/cli/README.md)); the
-natural additions are:
+`apps/cli` (binary `amnezia-panel`, [`apps/cli/README.md`](../apps/cli/README.md))
+ships both of these today — see [`docs/CLI.md`](./CLI.md):
 
-- **`amnezia-panel version`** — print the running build (git SHA / tag) and, from
-  the API, the control-api and DB migration versions, so "what is deployed" is one
-  command instead of the `git`/`docker` incantations above.
-- **`amnezia-panel update`** — a thin wrapper over the **same** operator-side
-  `git pull` + `docker compose build && up -d` flow (run on the host, outside the
-  request path), so the mechanism has one blessed entry point.
-
-This is a **direction, not a shipped feature** — today, update is the operator
-command / `scripts/deploy.sh` above.
+- **`amnezia-panel version`** — the running build (git SHA / tag), plus the
+  control-api and DB migration versions, from `GET /api/admin/version`.
+- **`amnezia-panel panel-update [--status] [--json]`** — trigger the in-panel
+  update mechanism below, or read its status, so a co-located operator can drive
+  it without the web UI.
 
 ## Backups and data persistence (data is never reset)
 
@@ -303,16 +298,19 @@ Hard invariants the updater keeps: **never** `docker compose down -v` /
 `--volumes` / `volume prune` / `system prune -a`; keyring stable; AWG containers
 untouched by a control-plane update.
 
-## Planned: in-panel "Update" button + auto toggle
+## In-panel "Update" button (shipped)
 
-The panel already exposes its build version (`GET /api/admin/version`, shown in
-the admin sidebar). The planned flow keeps the app process out of the deploy:
-a **button** records an update request, and a **separate privileged updater**
-(a small sidecar with the Docker socket, or host cron/systemd) runs
-`scripts/deploy.sh` — pulling **multi-arch images published to a registry** so it
-runs on any Docker host/arch. An **auto-update toggle** (off by default) lets the
-updater apply on a schedule. This is the safe realization of a one-click update;
-it is an infra step to wire per environment, not shipped yet.
+The panel exposes its build version (`GET /api/admin/version`, shown in the
+admin sidebar) and a one-click **Обновить панель** button on the
+Administration overview. The button keeps the app process out of the deploy:
+it only writes a request file, and a separate host-side systemd worker (not
+control-api, so the control plane never needs Docker-socket access) runs
+`infra/prod/update.sh`. See [`docs/UPDATE-MECHANISM.md`](./UPDATE-MECHANISM.md)
+for the full flow, the pieces, and how to install the host worker
+(`infra/prod/install-updater.sh`).
+
+Still unbuilt: an **auto-update toggle** that runs this on a schedule instead
+of only on demand — see UPDATE-MECHANISM.md's "Not built" section.
 
 ## Related documents
 

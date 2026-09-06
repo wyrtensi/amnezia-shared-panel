@@ -73,7 +73,7 @@ to delete a node and every key issued on it), `node-reconcile`.
 ```bash
 node apps/cli/dist/main.js node-add \
   --name=<panel name> --api-url=http://host.docker.internal:<tunnel port> \
-  --api-key=<contents of the node's secrets/node-agent-api-key> \
+  --api-key-file=<path to the node's secrets/node-agent-api-key> \
   --protocol=awg3 --max-peers=500 --enabled-protocols=awg3
 ```
 

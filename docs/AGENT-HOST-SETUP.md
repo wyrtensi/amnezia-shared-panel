@@ -315,8 +315,9 @@ docker compose exec -T -e CONTROL_API_URL=http://127.0.0.1:3001 control-api \
   node /app/apps/cli/dist/main.js node-add \
   --name="<node display name>" \
   --api-url=http://host.docker.internal:<tunnel port> \
-  --api-key="<contents of secrets/node-agent-api-key>" \
-  --protocol=awg3 --max-peers=500 --enabled-protocols=awg3
+  --api-key-file=- \
+  --protocol=awg3 --max-peers=500 --enabled-protocols=awg3 \
+  < infra/node/secrets/node-agent-api-key
 ```
 
 See [`apps/cli/README.md`](../apps/cli/README.md) for the identity chain and the

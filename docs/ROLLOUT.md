@@ -119,7 +119,7 @@ Edit`** (account-scoped, nothing else) — or headlessly via the CLI:
 
 ```sh
 amnezia-panel cf-config --account=<ACCOUNT_ID> --app=<APP_ID> --policy=<POLICY_ID>
-amnezia-panel cf-token <CF_API_TOKEN>     # stored encrypted at rest, write-only
+amnezia-panel cf-token --token-file=<CF_API_TOKEN_FILE>     # stored encrypted at rest, write-only
 ```
 
 Then enable it (`ACCESS_SYNC_ENABLED=true`) and recreate the worker. **Bootstrap
@@ -214,7 +214,8 @@ docker exec -i "$CID" node apps/cli/dist/main.js \
   < infra/node/secrets/node-agent-api-key
 # and the Cloudflare two-way sync config, headless
 docker exec "$CID" node apps/cli/dist/main.js cf-config --account=<ACCOUNT_ID> --app=<APP_ID> --policy=<POLICY_ID>
-docker exec "$CID" node apps/cli/dist/main.js cf-token <CF_API_TOKEN>
+docker exec -i "$CID" node apps/cli/dist/main.js cf-token --token-file=- \
+  < path/to/cf-api-token
 ```
 
 Register each additional node the same way (`node-add` per server). The node's

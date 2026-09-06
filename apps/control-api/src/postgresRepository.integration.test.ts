@@ -1,6 +1,14 @@
 import { randomBytes } from "node:crypto";
-import { and, count, desc, eq, sql } from "drizzle-orm";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { and, count, desc, eq, inArray, sql } from "drizzle-orm";
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+} from "vitest";
 import {
   defaultKeyNameDisplay,
   idleAccessSyncStatus,
@@ -281,6 +289,43 @@ describe("PostgresControlRepository quota race", () => {
     expect(events).toEqual([{ action: "node.created" }]);
   });
 
+  runDatabaseTest(
+    "rejects a duplicate node name with 409 NODE_EXISTS",
+    async () => {
+      if (!database) return;
+      const repository = new PostgresControlRepository({
+        db: database.db,
+        keyring,
+        activeKeyVersion: 1,
+      });
+      const admin: Actor = { ...actor, role: "admin" };
+
+      await repository.createNode(admin, {
+        name: "duplicate-node",
+        apiBaseUrl: "http://127.0.0.1:4001/",
+        apiKey: "node-api-key".padEnd(32, "x"),
+        enabled: true,
+        protocol: "awg2",
+        maxPeers: 500,
+        capabilities: { peerLifecycle: true },
+      });
+      const failure = await failureOf(
+        repository.createNode(admin, {
+          name: "duplicate-node",
+          apiBaseUrl: "http://127.0.0.1:4002/",
+          apiKey: "node-api-key-2".padEnd(32, "x"),
+          enabled: true,
+          protocol: "awg2",
+          maxPeers: 500,
+          capabilities: { peerLifecycle: true },
+        }),
+      );
+
+      expect(failure?.statusCode).toBe(409);
+      expect(failure?.code).toBe("NODE_EXISTS");
+    },
+  );
+
   /** A node with no keys, so `deleteNode` can remove it. */
   const seedNode = async (name: string): Promise<string> => {
     if (!database) throw new Error("No database");
@@ -335,6 +380,36 @@ describe("PostgresControlRepository quota race", () => {
       role: "user",
       status: "active",
     };
+  };
+
+  /**
+   * Polls `pg_stat_activity` until some backend is actually blocked on a lock
+   * while running a query matching `queryPattern`, instead of hoping a fixed
+   * sleep was long enough. Throws (failing the test) if no backend blocks
+   * within `timeoutMs` — proving the race precondition never held is more
+   * useful than a test that can silently pass without ever racing.
+   */
+  const waitForBlockedBackend = async (
+    queryPattern: string,
+    timeoutMs = 5_000,
+  ): Promise<void> => {
+    if (!database) throw new Error("No database");
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+      const blocked = await database.db.execute(sql`
+        select pid
+        from pg_stat_activity
+        where wait_event_type = 'Lock'
+          and query ilike ${`%${queryPattern}%`}
+      `);
+      if (blocked.length > 0) return;
+      if (Date.now() >= deadline) {
+        throw new Error(
+          `Timed out waiting for a backend to block on a query matching "${queryPattern}" - the race precondition never held`,
+        );
+      }
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
   };
 
   /** Flip the singleton's mode; the row exists because beforeAll inserted it. */
@@ -761,6 +836,60 @@ describe("PostgresControlRepository quota race", () => {
       expect(request?.status).toBe("cancelled");
       expect(request?.reviewNote).toBe("target server was removed");
       expect(request?.nodeId).toBeNull();
+    },
+  );
+
+  runDatabaseTest(
+    "maps a duplicate pending request to 409 PENDING_QUOTA_REQUEST_EXISTS",
+    async () => {
+      if (!database) return;
+      const repository = new PostgresControlRepository({
+        db: database.db,
+        keyring,
+      });
+      const owner = await seedQuotaUser("pending-race@example.com");
+
+      // createQuotaRequest cancels the caller's own pending row before
+      // inserting a new one, so a row seeded through it (or through a
+      // same-connection insert) would just be superseded here instead of
+      // colliding. Reproduce the real race the catch block guards against -
+      // a second pending row committed by ANOTHER transaction between this
+      // call's supersede UPDATE (which cannot see an uncommitted row) and
+      // its INSERT (which then collides once that other transaction
+      // commits) - by holding the seed insert open on its own transaction.
+      let markSeeded = () => {};
+      const seeded = new Promise<void>((resolve) => {
+        markSeeded = resolve;
+      });
+      let releaseHold = () => {};
+      const holdOpen = new Promise<void>((resolve) => {
+        releaseHold = resolve;
+      });
+      const heldTransaction = database.db.transaction(async (tx) => {
+        await tx.insert(quotaRequests).values({
+          userId: owner.id,
+          requestedLimit: 5,
+          reason: "",
+        });
+        markSeeded();
+        await holdOpen;
+      });
+
+      await seeded;
+      const conflicting = repository.createQuotaRequest(owner, {
+        requestedLimit: 6,
+      });
+      // Prove the race precondition actually held: wait until the
+      // conflicting call's INSERT is really blocked in postgres on the
+      // still-uncommitted seed row (not just "probably enough time passed")
+      // before releasing it. Fails the test if it never blocks.
+      await waitForBlockedBackend('insert into "quota_requests"');
+      releaseHold();
+      await heldTransaction;
+
+      const failure = await failureOf(conflicting);
+      expect(failure?.statusCode).toBe(409);
+      expect(failure?.code).toBe("PENDING_QUOTA_REQUEST_EXISTS");
     },
   );
 
@@ -2117,6 +2246,7 @@ describe("PostgresControlRepository global policy update", () => {
       // window of peer_samples into the worker's heap, and the container has
       // 160 MB. Half an hour was legal before that cost was accounted for.
       { maintenanceIntervalSec: 1_800 },
+      { offboardedUserRetentionDays: 0 },
     ]) {
       await expect(
         repository.adminAction(admin, "portal-policy", "global", "update", payload),
@@ -3079,6 +3209,143 @@ describe("PostgresControlRepository revoke retries", () => {
   });
 });
 
+describe("PostgresControlRepository offboard revoke states", () => {
+  const database = databaseUrl ? createDatabase(databaseUrl) : null;
+  const keyring = { 1: randomBytes(32) };
+  let nodeId: string;
+  let admin: Actor;
+
+  beforeAll(async () => {
+    if (!database) return;
+    await database.db.delete(portalPolicy);
+    await database.db.insert(portalPolicy).values({});
+    const credentials = encryptSecret("api-key", keyring, 1);
+    const label = encryptSecret("label-secret", keyring, 1);
+    const [node] = await database.db
+      .insert(nodes)
+      .values({
+        name: "offboard-states-node",
+        apiBaseUrl: "http://127.0.0.1:4001",
+        credentialsCiphertext: credentials.ciphertext,
+        credentialsNonce: credentials.nonce,
+        credentialsAuthTag: credentials.authTag,
+        credentialsKeyVersion: credentials.keyVersion,
+        labelSecretCiphertext: label.ciphertext,
+        labelSecretNonce: label.nonce,
+        labelSecretAuthTag: label.authTag,
+        labelSecretKeyVersion: label.keyVersion,
+      })
+      .returning();
+    if (!node) throw new Error("Failed to seed node");
+    nodeId = node.id;
+    const [adminUser] = await database.db
+      .insert(users)
+      .values({ email: "offboard-states-admin@example.com", role: "admin" })
+      .returning();
+    if (!adminUser) throw new Error("Failed to seed admin");
+    admin = {
+      id: adminUser.id,
+      email: adminUser.email,
+      displayName: null,
+      role: "admin",
+      status: "active",
+    };
+  });
+
+  afterAll(async () => {
+    if (!database) return;
+    await database.db.delete(users).where(eq(users.id, admin.id));
+    await database.client.end();
+  });
+
+  const subject = (): PostgresControlRepository => {
+    if (!database) throw new Error("No database");
+    return new PostgresControlRepository({ db: database.db, keyring });
+  };
+
+  /** A regular user, with one key of theirs seeded straight into `state`. */
+  const seedUserWithKey = async (
+    state: "provisioning" | "active" | "disabled" | "revoking" | "failed",
+  ): Promise<{ userId: string; keyId: string }> => {
+    if (!database) throw new Error("No database");
+    const suffix = randomBytes(6).toString("hex");
+    const [user] = await database.db
+      .insert(users)
+      .values({ email: `offboard-states-${suffix}@example.com` })
+      .returning();
+    if (!user) throw new Error("Failed to seed user");
+    const [key] = await database.db
+      .insert(vpnKeys)
+      .values({
+        ownerId: user.id,
+        nodeId,
+        publicKey: `pk-${suffix}`,
+        nodeLabel: `ap_offboard_${suffix}`,
+        protocol: "awg2",
+        state,
+        routeProfile: "full_tunnel",
+      })
+      .returning({ id: vpnKeys.id });
+    if (!key) throw new Error("Failed to seed key");
+    return { userId: user.id, keyId: key.id };
+  };
+
+  const revokeJobsFor = async (keyId: string): Promise<number> => {
+    if (!database) throw new Error("No database");
+    const rows = await database.db
+      .select({ payload: jobOutbox.payload })
+      .from(jobOutbox)
+      .where(eq(jobOutbox.type, "vpn-key.revoke"));
+    return rows.filter((row) => row.payload.keyId === keyId).length;
+  };
+
+  runDatabaseTest(
+    "offboard queues a revoke for a key that failed to provision",
+    async () => {
+      if (!database) return;
+      const { userId, keyId } = await seedUserWithKey("failed");
+
+      await subject().adminAction(admin, "users", userId, "offboard", {});
+
+      const [key] = await database.db
+        .select({ state: vpnKeys.state })
+        .from(vpnKeys)
+        .where(eq(vpnKeys.id, keyId));
+      expect(key?.state).toBe("revoking");
+      expect(await revokeJobsFor(keyId)).toBe(1);
+    },
+  );
+
+  runDatabaseTest(
+    "offboard queues a fresh job for a key already in revoking",
+    async () => {
+      if (!database) return;
+      const { userId, keyId } = await seedUserWithKey("revoking");
+      // A previous revoke attempt for this key already gave up. This literal
+      // string is the PRE-FIX deduplication key shape — fixed per keyId, no
+      // per-attempt suffix — reproduced on purpose because it is what a row
+      // written before Fix 1 looks like and what is actually sitting in
+      // production `job_outbox` tables today. Written as a literal, not via
+      // `revokeJobDedupKey`, so it does not move if that helper's shape ever
+      // changes: the point of this test is to pin history's key, not today's.
+      await database.db.insert(jobOutbox).values({
+        type: "vpn-key.revoke",
+        deduplicationKey: `vpn-key.revoke:${keyId}`,
+        payload: { keyId },
+        status: "failed",
+        lastError: "node unreachable",
+      });
+
+      await subject().adminAction(admin, "users", userId, "offboard", {});
+
+      // This is the regression Fix 1 prevents: against the old fixed
+      // deduplication key, the insert below would have conflicted with the
+      // failed row above and been silently dropped.
+      expect(await revokeJobsFor(keyId)).toBe(2);
+    },
+  );
+});
+
 describe("PostgresControlRepository internal key name", () => {
   const database = databaseUrl ? createDatabase(databaseUrl) : null;
   const keyring = { 1: randomBytes(32) };
@@ -3834,6 +4101,427 @@ describe("PostgresControlRepository rule version pinning", () => {
         ),
       );
       expect(failure?.statusCode).toBe(404);
+    },
+  );
+
+  runDatabaseTest(
+    "import with activate pins the imported version and moves the pin off the incumbent",
+    async () => {
+      if (!database) return;
+      await seedVersion("v1", "active", { pinned: true });
+
+      await subject().adminAction(admin, "rules", "import", "import", {
+        profile: "ru_blacklist",
+        version: "v2",
+        cidrs: ["198.51.100.0/24"],
+      });
+
+      const rows = await readVersions();
+      const pinned = rows.filter((row) => row.pinnedAt !== null);
+      expect(pinned).toHaveLength(1);
+      expect(pinned[0]?.version).toBe("v2");
+      expect(rows.find((row) => row.version === "v2")?.status).toBe("active");
+      const superseded = rows.find((row) => row.version === "v1");
+      expect(superseded?.status).toBe("superseded");
+      expect(superseded?.pinnedAt).toBeNull();
+    },
+  );
+
+  runDatabaseTest(
+    "import over the currently active version keeps exactly one pin",
+    async () => {
+      if (!database) return;
+      await seedVersion("v1", "active", { pinned: true });
+
+      await subject().adminAction(admin, "rules", "import", "import", {
+        profile: "ru_blacklist",
+        version: "v1",
+        cidrs: ["198.51.100.0/24"],
+      });
+
+      const rows = await readVersions();
+      expect(rows.filter((row) => row.pinnedAt !== null)).toHaveLength(1);
+    },
+  );
+
+  runDatabaseTest(
+    "import without activate quarantines the row and releases its pin",
+    async () => {
+      if (!database) return;
+      // v1 stays the active, pinned version; v2 is the one imported
+      // unactivated. Importing the currently active version itself is
+      // refused (see the next test) - this scenario is about a sibling
+      // import leaving the incumbent's pin alone.
+      await seedVersion("v1", "active", { pinned: true });
+
+      await subject().adminAction(admin, "rules", "import", "import", {
+        profile: "ru_blacklist",
+        version: "v2",
+        cidrs: ["198.51.100.0/24"],
+        activate: false,
+      });
+
+      const rows = await readVersions();
+      const row = rows.find((candidate) => candidate.version === "v2");
+      expect(row?.status).toBe("quarantined");
+      expect(row?.pinnedAt).toBeNull();
+      expect(row?.publishedAt).toBeNull();
+      // The incumbent v1 keeps serving, still pinned - only one pin exists
+      // and it did not move.
+      const incumbent = rows.find((candidate) => candidate.version === "v1");
+      expect(incumbent?.status).toBe("active");
+      expect(incumbent?.pinnedAt).not.toBeNull();
+      expect(
+        rows.filter((candidate) => candidate.pinnedAt !== null),
+      ).toHaveLength(1);
+    },
+  );
+
+  runDatabaseTest(
+    "refuses to quarantine the version a profile is currently serving",
+    async () => {
+      if (!database) return;
+      await seedVersion("v1", "active", { pinned: true });
+
+      const failure = await failureOf(
+        subject().adminAction(admin, "rules", "import", "import", {
+          profile: "ru_blacklist",
+          version: "v1",
+          cidrs: ["198.51.100.0/24"],
+          activate: false,
+        }),
+      );
+
+      expect(failure?.statusCode).toBe(409);
+      expect(failure?.code).toBe("RULE_VERSION_ACTIVE");
+      const rows = await readVersions();
+      const row = rows.find((candidate) => candidate.version === "v1");
+      expect(row?.status).toBe("active");
+      expect(row?.pinnedAt).not.toBeNull();
+    },
+  );
+
+  runDatabaseTest(
+    "import records the pin in the audit trail",
+    async () => {
+      if (!database) return;
+      await database.db.delete(auditEvents);
+      await seedVersion("v1", "active");
+
+      await subject().adminAction(admin, "rules", "import", "import", {
+        profile: "ru_blacklist",
+        version: "v2",
+        cidrs: ["198.51.100.0/24"],
+      });
+
+      const [event] = await database.db
+        .select({ metadata: auditEvents.metadata })
+        .from(auditEvents)
+        .where(eq(auditEvents.action, "admin.rules.import"));
+      expect(event?.metadata).toMatchObject({ pinned: true });
+    },
+  );
+});
+
+describe("PostgresControlRepository offboard admin guards", () => {
+  const database = databaseUrl ? createDatabase(databaseUrl) : null;
+  const keyring = { 1: randomBytes(32) };
+  let nodeId: string;
+  // The last-admin guard counts every active admin in the whole `users`
+  // table. Several describe blocks above this one seed their own admin row
+  // and some never delete it (e.g. checks-admin@example.com), so without
+  // this the "sole active admin" premise below would be false. Park every
+  // stray active admin for the duration of this describe and restore them
+  // afterwards, rather than deleting rows another describe still owns.
+  let parkedAdminIds: string[] = [];
+
+  beforeAll(async () => {
+    if (!database) return;
+    const credentials = encryptSecret("api-key", keyring, 1);
+    const label = encryptSecret("label-secret", keyring, 1);
+    const [node] = await database.db
+      .insert(nodes)
+      .values({
+        name: "offboard-guard-node",
+        apiBaseUrl: "http://127.0.0.1:4001",
+        credentialsCiphertext: credentials.ciphertext,
+        credentialsNonce: credentials.nonce,
+        credentialsAuthTag: credentials.authTag,
+        credentialsKeyVersion: credentials.keyVersion,
+        labelSecretCiphertext: label.ciphertext,
+        labelSecretNonce: label.nonce,
+        labelSecretAuthTag: label.authTag,
+        labelSecretKeyVersion: label.keyVersion,
+      })
+      .returning();
+    if (!node) throw new Error("Failed to seed node");
+    nodeId = node.id;
+
+    const strays = await database.db
+      .select({ id: users.id })
+      .from(users)
+      .where(and(eq(users.role, "admin"), eq(users.status, "active")));
+    parkedAdminIds = strays.map((row) => row.id);
+    if (parkedAdminIds.length > 0) {
+      await database.db
+        .update(users)
+        .set({ status: "disabled" })
+        .where(inArray(users.id, parkedAdminIds));
+    }
+  });
+
+  afterAll(async () => {
+    if (!database) return;
+    if (parkedAdminIds.length > 0) {
+      await database.db
+        .update(users)
+        .set({ status: "active" })
+        .where(inArray(users.id, parkedAdminIds));
+    }
+    await database.client.end();
+  });
+
+  // Every user a test seeds must stop counting as an active admin once that
+  // test ends, or an admin left active by one test (a refused offboard is a
+  // no-op) would inflate the count the next test relies on. Neutralizing
+  // (rather than deleting) sidesteps vpn_keys.owner_id's `restrict` FK, which
+  // the last test's seeded owner can still be subject to.
+  let createdUserIds: string[] = [];
+
+  afterEach(async () => {
+    if (!database || createdUserIds.length === 0) return;
+    await database.db
+      .update(users)
+      .set({ role: "user", status: "disabled" })
+      .where(inArray(users.id, createdUserIds));
+    createdUserIds = [];
+  });
+
+  const subject = (): PostgresControlRepository => {
+    if (!database) throw new Error("No database");
+    return new PostgresControlRepository({ db: database.db, keyring });
+  };
+
+  const seedAdmin = async (
+    status: "active" | "disabled" = "active",
+  ): Promise<Actor> => {
+    if (!database) throw new Error("No database");
+    const suffix = randomBytes(6).toString("hex");
+    const [row] = await database.db
+      .insert(users)
+      .values({
+        email: `offboard-guard-admin-${suffix}@example.com`,
+        role: "admin",
+        status,
+      })
+      .returning();
+    if (!row) throw new Error("Failed to seed admin");
+    createdUserIds.push(row.id);
+    return {
+      id: row.id,
+      email: row.email,
+      displayName: null,
+      role: "admin",
+      status: row.status,
+    };
+  };
+
+  const seedUser = async (): Promise<Actor> => {
+    if (!database) throw new Error("No database");
+    const suffix = randomBytes(6).toString("hex");
+    const [row] = await database.db
+      .insert(users)
+      .values({ email: `offboard-guard-user-${suffix}@example.com` })
+      .returning();
+    if (!row) throw new Error("Failed to seed user");
+    createdUserIds.push(row.id);
+    return {
+      id: row.id,
+      email: row.email,
+      displayName: null,
+      role: "user",
+      status: "active",
+    };
+  };
+
+  const statusOf = async (userId: string): Promise<string | undefined> => {
+    if (!database) throw new Error("No database");
+    const [row] = await database.db
+      .select({ status: users.status })
+      .from(users)
+      .where(eq(users.id, userId));
+    return row?.status;
+  };
+
+  // A real admin actor is itself one of the locked `admins` rows, so it can
+  // never trip LAST_ADMIN by offboarding someone else sequentially: the
+  // locked set always holds the caller plus whichever target it picks, at
+  // least two rows. These two tests used to build their caller with
+  // seedUser() (a non-admin) to force the guard to fire -- an actor state
+  // app.ts's onRequest hook and adminFor() both reject before adminAction is
+  // ever reached in production, which hid this. They now use a genuine
+  // active admin caller and assert what that caller can actually do: offboard
+  // down to itself without ever being refused. The path that DOES still
+  // reach LAST_ADMIN -- two admins racing to offboard each other -- is
+  // covered separately below.
+  runDatabaseTest(
+    "offboards the only other admin when the caller is a genuine active admin",
+    async () => {
+      if (!database) return;
+      const caller = await seedAdmin();
+      const target = await seedAdmin();
+
+      const result = (await subject().adminAction(
+        caller,
+        "users",
+        target.id,
+        "offboard",
+        {},
+      )) as { status: string };
+
+      expect(result.status).toBe("disabled");
+      expect(await statusOf(target.id)).toBe("disabled");
+      expect(await statusOf(caller.id)).toBe("active");
+    },
+  );
+
+  runDatabaseTest(
+    "keeps letting an active admin offboard others down to itself, never tripping LAST_ADMIN",
+    async () => {
+      if (!database) return;
+      const caller = await seedAdmin();
+      const adminB = await seedAdmin();
+      const adminC = await seedAdmin();
+
+      await subject().adminAction(caller, "users", adminB.id, "offboard", {});
+      expect(await statusOf(adminB.id)).toBe("disabled");
+
+      // The locked active-admin set at the start of this second call is
+      // {caller, adminC} -- still two rows, because the caller counts as an
+      // active admin right alongside whichever target it picks next.
+      await subject().adminAction(caller, "users", adminC.id, "offboard", {});
+      expect(await statusOf(adminC.id)).toBe("disabled");
+      expect(await statusOf(caller.id)).toBe("active");
+    },
+  );
+
+  runDatabaseTest(
+    "lets exactly one of two admins offboarding each other succeed, refusing the other with LAST_ADMIN",
+    async () => {
+      if (!database) return;
+      const adminA = await seedAdmin();
+      const adminB = await seedAdmin();
+
+      const results = await Promise.allSettled([
+        subject().adminAction(adminA, "users", adminB.id, "offboard", {}),
+        subject().adminAction(adminB, "users", adminA.id, "offboard", {}),
+      ]);
+
+      const fulfilled = results.filter(
+        (result): result is PromiseFulfilledResult<unknown> =>
+          result.status === "fulfilled",
+      );
+      const rejected = results.filter(
+        (result): result is PromiseRejectedResult => result.status === "rejected",
+      );
+      // FOR UPDATE serialises the two calls on the overlapping active-admin
+      // rows; whichever commits second re-reads them under READ COMMITTED,
+      // finds the winner's target already disabled, and is the one refused --
+      // regardless of which side happens to win the race.
+      expect(
+        fulfilled,
+        JSON.stringify(rejected.map((result): unknown => result.reason)),
+      ).toHaveLength(1);
+      expect(rejected).toHaveLength(1);
+      const failure = rejected[0]?.reason as {
+        statusCode?: number;
+        code?: string;
+      };
+      expect(failure?.statusCode).toBe(409);
+      expect(failure?.code).toBe("LAST_ADMIN");
+
+      const [statusA, statusB] = await Promise.all([
+        statusOf(adminA.id),
+        statusOf(adminB.id),
+      ]);
+      expect(
+        [statusA, statusB].filter((status) => status === "active"),
+      ).toHaveLength(1);
+    },
+  );
+
+  runDatabaseTest(
+    "offboards an already-disabled admin while one other stays active",
+    async () => {
+      if (!database) return;
+      await seedAdmin(); // the one other active admin
+      const disabledAdmin = await seedAdmin("disabled");
+      const caller = await seedUser();
+
+      // Without the `status === "active"` guard, this would falsely read as
+      // "the last admin" -- `disabledAdmin` never appears in the locked
+      // active-admin set, so only one row (the other admin above) does.
+      const result = (await subject().adminAction(
+        caller,
+        "users",
+        disabledAdmin.id,
+        "offboard",
+        {},
+      )) as { status: string };
+
+      expect(result.status).toBe("disabled");
+      expect(await statusOf(disabledAdmin.id)).toBe("disabled");
+    },
+  );
+
+  runDatabaseTest("refuses to let an admin offboard themselves", async () => {
+    if (!database) return;
+    const admin = await seedAdmin();
+
+    const failure = await failureOf(
+      subject().adminAction(admin, "users", admin.id, "offboard", {}),
+    );
+
+    expect(failure?.statusCode).toBe(409);
+    expect(failure?.code).toBe("SELF_OFFBOARD");
+    expect(await statusOf(admin.id)).toBe("active");
+  });
+
+  runDatabaseTest(
+    "still offboards an ordinary user exactly as before",
+    async () => {
+      if (!database) return;
+      const caller = await seedAdmin();
+      const owner = await seedUser();
+      const [key] = await database.db
+        .insert(vpnKeys)
+        .values({
+          ownerId: owner.id,
+          nodeId,
+          publicKey: `pk-${randomBytes(6).toString("hex")}`,
+          nodeLabel: `ap_offboard_guard_${randomBytes(6).toString("hex")}`,
+          protocol: "awg2",
+          state: "active",
+          routeProfile: "full_tunnel",
+        })
+        .returning({ id: vpnKeys.id });
+      if (!key) throw new Error("Failed to seed key");
+
+      const result = (await subject().adminAction(
+        caller,
+        "users",
+        owner.id,
+        "offboard",
+        {},
+      )) as { status: string; keysQueuedForRevoke: number };
+
+      expect(result.status).toBe("disabled");
+      expect(result.keysQueuedForRevoke).toBe(1);
+      const [revokedKey] = await database.db
+        .select({ state: vpnKeys.state })
+        .from(vpnKeys)
+        .where(eq(vpnKeys.id, key.id));
+      expect(revokedKey?.state).toBe("revoking");
     },
   );
 });

@@ -39,6 +39,18 @@ export const WORKER_PERIOD_FIELDS = {
     unit: "sec",
   },
   accessReconcileSec: { min: 300, max: 604_800, fallback: 3_600, unit: "sec" },
+  offboardedUserRetentionDays: {
+    min: 1,
+    max: 3_650,
+    fallback: 30,
+    unit: "day",
+  },
+  completedJobRetentionDays: {
+    min: 1,
+    max: 3_650,
+    fallback: 30,
+    unit: "day",
+  },
 } as const satisfies Record<
   string,
   { min: number; max: number; fallback: number; unit: "sec" | "day" }
@@ -432,7 +444,7 @@ export const parsePolicyNodeList = (spec: string): string[] => {
 // Lists whose empty value means "no node", not "every node".
 const EMPTY_MEANS_NONE = new Set(["recommendedNodeIds", "nodeOrder"]);
 
-/** True for one of the eight worker periods stored on portal_policy. */
+/** True for one of the worker periods stored on portal_policy. */
 export const isWorkerPeriodField = (key: string): key is WorkerPeriodField =>
   key in WORKER_PERIOD_FIELDS;
 

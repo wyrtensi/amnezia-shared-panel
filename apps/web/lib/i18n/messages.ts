@@ -1213,6 +1213,12 @@ const ru = {
   "periods.accessReconcileSec": "Сверка Cloudflare Access",
   "periods.accessReconcileSecHint":
     "Таймер полной сверки списка доступа с Cloudflare. Изменение пользователя в панели и так запускает сверку сразу, поэтому частый таймер добавляет только запросы к API.",
+  "periods.offboardedUserRetentionDays": "Хранение отключённых аккаунтов",
+  "periods.offboardedUserRetentionDaysHint":
+    "Сколько дней отключённый аккаунт хранится, прежде чем будет удалён безвозвратно вместе с отозванными ключами. Отсчёт идёт с момента отключения. Аккаунт без этой отметки (отключённый до появления настройки) не удаляется никогда, независимо от окна.",
+  "periods.completedJobRetentionDays": "Хранение завершённых задач",
+  "periods.completedJobRetentionDaysHint":
+    "Сколько дней хранится завершённая запись в очереди задач, прежде чем будет удалена. Задачи со статусом «ошибка», «ожидание» или «в обработке» это окно не трогает, как и служебные строки rules.refresh и access.sync.",
 } as const;
 
 const en = {
@@ -2372,6 +2378,12 @@ const en = {
   "periods.accessReconcileSec": "Cloudflare Access reconcile",
   "periods.accessReconcileSecHint":
     "The timer for a full reconcile of the access list with Cloudflare. A user change in the panel already triggers one immediately, so a faster timer only adds API calls.",
+  "periods.offboardedUserRetentionDays": "Disabled-account retention",
+  "periods.offboardedUserRetentionDaysHint":
+    "How many days a disabled account is kept before it is permanently deleted along with its revoked keys, counted from when it was disabled. An account with no such timestamp (disabled before this setting existed) is never deleted, regardless of this window.",
+  "periods.completedJobRetentionDays": "Completed-job retention",
+  "periods.completedJobRetentionDaysHint":
+    "How many days a completed job-queue row is kept before it is deleted. A failed, pending or processing row is never touched by this window, and neither are the rules.refresh / access.sync status rows.",
 } satisfies Record<keyof typeof ru, string>;
 
 export const messages = { ru, en } as const;

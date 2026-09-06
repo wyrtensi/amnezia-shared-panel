@@ -43,10 +43,12 @@ export type BuildAppOptions = {
   identityAdapter?: IdentityAdapter;
   logger?: boolean;
   /**
-   * Enable the `x-dev-user-email` header identity path (trusts any caller).
-   * Defaults to `environment === "development"`. The real entrypoint gates this
-   * behind an explicit opt-in so an accidental NODE_ENV=development in an
-   * exposed context cannot become an auth bypass.
+   * Enable the `x-dev-user-email` header identity path (trusts any caller),
+   * as a fallback tried when `identityAdapter` finds no claim. Defaults to
+   * `false` — a caller that builds the app without going through `main.ts`
+   * (which additionally requires `ALLOW_DEV_IDENTITY=true`) must opt in
+   * explicitly, so an accidental NODE_ENV=development in an exposed context
+   * cannot become an auth bypass.
    */
   allowDevIdentity?: boolean;
   /**
@@ -109,7 +111,10 @@ const versionInfo = () => ({
 
 export const buildApp = async ({
   service,
-  environment,
+  // No longer read here: dev identity is gated purely by `allowDevIdentity`
+  // now (see its doc comment above), and nothing else in this function
+  // branches on the environment. Still required on `BuildAppOptions` because
+  // every caller already carries it and it documents where the app runs.
   identityAdapter,
   logger = false,
   allowDevIdentity,
@@ -118,7 +123,7 @@ export const buildApp = async ({
 }: BuildAppOptions) => {
   const app = Fastify({ logger, trustProxy: true });
   const actors = new WeakMap<FastifyRequest, Actor>();
-  const devIdentityEnabled = allowDevIdentity ?? environment === "development";
+  const devIdentityEnabled = allowDevIdentity ?? false;
   const updates =
     updateController ??
     createUpdateController({
@@ -148,9 +153,12 @@ export const buildApp = async ({
 
   app.addHook("onRequest", async (request) => {
     if (request.url === "/healthz") return;
-    const claim = devIdentityEnabled
-      ? getDevelopmentIdentity(request)
-      : await identityAdapter?.(request);
+    // The dev header is a fallback, not a replacement: a request that carries
+    // no dev header still reaches the real adapters, so Cloudflare Access and
+    // panel-session logins stay exercisable in a dev build.
+    const claim =
+      (devIdentityEnabled ? getDevelopmentIdentity(request) : null) ??
+      (await identityAdapter?.(request));
     if (!claim) {
       throw new ApiError(401, "Authentication required", "UNAUTHENTICATED");
     }
