@@ -26,6 +26,9 @@ const clientsTableItemSchema = {
         expiresAt: {
           type: "number",
         },
+        allowedIp: {
+          type: "string",
+        },
       },
     },
   },
@@ -122,6 +125,29 @@ export const getServerBackupSchema = {
             clients: {
               type: "array",
               description: "Содержимое таблицы клиентов AmneziaWG 2.0",
+              items: clientsTableItemSchema,
+            },
+          },
+        },
+        amneziaWg3: {
+          type: "object",
+          required: ["wgConfig", "presharedKey", "serverPublicKey", "clients"],
+          properties: {
+            wgConfig: {
+              type: "string",
+              description: "Содержимое файла awg0.conf",
+            },
+            presharedKey: {
+              type: "string",
+              description: "Содержимое файла wireguard_psk.key",
+            },
+            serverPublicKey: {
+              type: "string",
+              description: "Публичный ключ сервера AmneziaWG 3.1",
+            },
+            clients: {
+              type: "array",
+              description: "Содержимое таблицы клиентов AmneziaWG 3.1",
               items: clientsTableItemSchema,
             },
           },
