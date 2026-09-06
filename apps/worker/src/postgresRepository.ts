@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import {
   and,
   asc,
@@ -14,6 +15,7 @@ import {
   or,
   sql,
 } from "drizzle-orm";
+import { revokeJobDedupKey } from "@amnezia/contracts";
 import {
   armAccessSyncRow,
   decryptSecret,
@@ -497,14 +499,11 @@ export class PostgresWorkerRepository
       .returning({ id: vpnKeys.id });
 
     for (const key of keysToRevoke) {
-      await tx
-        .insert(jobOutbox)
-        .values({
-          type: "vpn-key.revoke",
-          deduplicationKey: `vpn-key.revoke:${key.id}`,
-          payload: { keyId: key.id },
-        })
-        .onConflictDoNothing();
+      await tx.insert(jobOutbox).values({
+        type: "vpn-key.revoke",
+        deduplicationKey: revokeJobDedupKey(key.id, randomUUID()),
+        payload: { keyId: key.id },
+      });
     }
 
     await tx.insert(auditEvents).values({

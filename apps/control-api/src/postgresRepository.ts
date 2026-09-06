@@ -37,6 +37,7 @@ import {
   nodeRunsCheck,
   isPurgeableKeyState,
   REVOCABLE_KEY_STATES,
+  revokeJobDedupKey,
   toUserCheckState,
 } from "@amnezia/contracts";
 import type { ServiceCheckUserState } from "@amnezia/contracts";
@@ -1643,7 +1644,7 @@ export class PostgresControlRepository implements ControlRepository {
         // accepted and then silently enqueued nothing. The worker's revoke
         // handler looks the peer up before deleting it, so a duplicate job on
         // an already-deleted peer completes cleanly.
-        deduplicationKey: `vpn-key.revoke:${keyId}:${randomUUID()}`,
+        deduplicationKey: revokeJobDedupKey(keyId, randomUUID()),
         payload: { keyId },
       });
       await tx.insert(auditEvents).values({
@@ -2501,7 +2502,12 @@ export class PostgresControlRepository implements ControlRepository {
           .insert(jobOutbox)
           .values({
             type: `vpn-key.${action}`,
-            deduplicationKey: `vpn-key.${action}:${targetId}:${randomUUID()}`,
+            // Revoke shares its dedup key shape with every other revoke path;
+            // disable/enable are not revoke attempts, so they keep their own.
+            deduplicationKey:
+              action === "revoke"
+                ? revokeJobDedupKey(targetId, randomUUID())
+                : `vpn-key.${action}:${targetId}:${randomUUID()}`,
             payload: { keyId: targetId },
           })
           .onConflictDoNothing();
@@ -2619,14 +2625,11 @@ export class PostgresControlRepository implements ControlRepository {
           )
           .returning({ id: vpnKeys.id });
         for (const key of keysToRevoke) {
-          await tx
-            .insert(jobOutbox)
-            .values({
-              type: "vpn-key.revoke",
-              deduplicationKey: `vpn-key.revoke:${key.id}`,
-              payload: { keyId: key.id },
-            })
-            .onConflictDoNothing();
+          await tx.insert(jobOutbox).values({
+            type: "vpn-key.revoke",
+            deduplicationKey: revokeJobDedupKey(key.id, randomUUID()),
+            payload: { keyId: key.id },
+          });
         }
         // An offboarded user must leave the Access allowlist along with them.
         await this.armAccessSync(tx, "user-change");

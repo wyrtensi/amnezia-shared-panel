@@ -34,6 +34,23 @@ export const isRevocableKeyState = (state: string): boolean =>
   (REVOCABLE_KEY_STATES as readonly string[]).includes(state);
 
 /**
+ * The deduplication key for one revoke attempt.
+ *
+ * Unique per ATTEMPT, not per key. `job_outbox.deduplication_key` is globally
+ * unique and the table is never pruned, so a fixed key would let a failed
+ * attempt's row swallow every later retry: the insert conflicts, the caller sees
+ * success, and nothing is queued. The peer then stays on the node forever while
+ * the panel shows the key as revoking.
+ *
+ * `attemptId` is a parameter rather than generated in here with `node:crypto`:
+ * this package has no Node built-in imports today and is pulled into
+ * `apps/web`'s browser bundle (including from "use client" components), so
+ * adding one here would break that build. Callers pass `randomUUID()`.
+ */
+export const revokeJobDedupKey = (keyId: string, attemptId: string): string =>
+  `vpn-key.revoke:${keyId}:${attemptId}`;
+
+/**
  * States a key may be **deleted from the panel** in — the row itself removed,
  * not just marked.
  *
