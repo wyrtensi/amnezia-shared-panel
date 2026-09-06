@@ -2629,6 +2629,18 @@ export class PostgresControlRepository implements ControlRepository {
         if (actor.id === targetId) {
           throw new ApiError(409, "Cannot offboard yourself", "SELF_OFFBOARD");
         }
+        // A single well-behaved admin actor can never trip this
+        // sequentially: it is itself one of the locked `admins` rows, so any
+        // *other* active admin target keeps `admins.length` at two or more,
+        // and offboarding itself is already refused above by SELF_OFFBOARD.
+        // The only way `admins` ever locks down to exactly one row is two
+        // admins racing to offboard each other at once -- FOR UPDATE
+        // serialises them, and the loser's re-read (under READ COMMITTED)
+        // finds the winner's target already disabled, leaving one active
+        // admin, namely itself, as this call's target. That race is what
+        // this guard actually protects against: without it, both concurrent
+        // offboards would succeed and the panel would be left with no active
+        // administrator at all.
         // `status === "active"` is deliberate: without it, offboarding an
         // already-disabled admin while exactly one other active admin exists
         // would falsely trip this, because a disabled admin never appears in

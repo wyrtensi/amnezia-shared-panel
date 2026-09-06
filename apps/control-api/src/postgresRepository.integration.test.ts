@@ -4353,41 +4353,100 @@ describe("PostgresControlRepository offboard admin guards", () => {
     return row?.status;
   };
 
+  // A real admin actor is itself one of the locked `admins` rows, so it can
+  // never trip LAST_ADMIN by offboarding someone else sequentially: the
+  // locked set always holds the caller plus whichever target it picks, at
+  // least two rows. These two tests used to build their caller with
+  // seedUser() (a non-admin) to force the guard to fire -- an actor state
+  // app.ts's onRequest hook and adminFor() both reject before adminAction is
+  // ever reached in production, which hid this. They now use a genuine
+  // active admin caller and assert what that caller can actually do: offboard
+  // down to itself without ever being refused. The path that DOES still
+  // reach LAST_ADMIN -- two admins racing to offboard each other -- is
+  // covered separately below.
   runDatabaseTest(
-    "refuses to offboard the sole active administrator",
+    "offboards the only other admin when the caller is a genuine active admin",
     async () => {
       if (!database) return;
-      const admin = await seedAdmin();
-      const caller = await seedUser();
+      const caller = await seedAdmin();
+      const target = await seedAdmin();
 
-      const failure = await failureOf(
-        subject().adminAction(caller, "users", admin.id, "offboard", {}),
-      );
+      const result = (await subject().adminAction(
+        caller,
+        "users",
+        target.id,
+        "offboard",
+        {},
+      )) as { status: string };
 
-      expect(failure?.statusCode).toBe(409);
-      expect(failure?.code).toBe("LAST_ADMIN");
-      expect(await statusOf(admin.id)).toBe("active");
+      expect(result.status).toBe("disabled");
+      expect(await statusOf(target.id)).toBe("disabled");
+      expect(await statusOf(caller.id)).toBe("active");
     },
   );
 
   runDatabaseTest(
-    "lets one of two active admins be offboarded, then refuses the last one",
+    "keeps letting an active admin offboard others down to itself, never tripping LAST_ADMIN",
     async () => {
       if (!database) return;
-      const adminA = await seedAdmin();
+      const caller = await seedAdmin();
       const adminB = await seedAdmin();
-      const caller = await seedUser();
+      const adminC = await seedAdmin();
 
       await subject().adminAction(caller, "users", adminB.id, "offboard", {});
       expect(await statusOf(adminB.id)).toBe("disabled");
 
-      const failure = await failureOf(
-        subject().adminAction(caller, "users", adminA.id, "offboard", {}),
-      );
+      // The locked active-admin set at the start of this second call is
+      // {caller, adminC} -- still two rows, because the caller counts as an
+      // active admin right alongside whichever target it picks next.
+      await subject().adminAction(caller, "users", adminC.id, "offboard", {});
+      expect(await statusOf(adminC.id)).toBe("disabled");
+      expect(await statusOf(caller.id)).toBe("active");
+    },
+  );
 
+  runDatabaseTest(
+    "lets exactly one of two admins offboarding each other succeed, refusing the other with LAST_ADMIN",
+    async () => {
+      if (!database) return;
+      const adminA = await seedAdmin();
+      const adminB = await seedAdmin();
+
+      const results = await Promise.allSettled([
+        subject().adminAction(adminA, "users", adminB.id, "offboard", {}),
+        subject().adminAction(adminB, "users", adminA.id, "offboard", {}),
+      ]);
+
+      const fulfilled = results.filter(
+        (result): result is PromiseFulfilledResult<unknown> =>
+          result.status === "fulfilled",
+      );
+      const rejected = results.filter(
+        (result): result is PromiseRejectedResult => result.status === "rejected",
+      );
+      // FOR UPDATE serialises the two calls on the overlapping active-admin
+      // rows; whichever commits second re-reads them under READ COMMITTED,
+      // finds the winner's target already disabled, and is the one refused --
+      // regardless of which side happens to win the race.
+      expect(
+        fulfilled,
+        JSON.stringify(rejected.map((result): unknown => result.reason)),
+      ).toHaveLength(1);
+      expect(rejected).toHaveLength(1);
+      const failure = rejected[0]?.reason as {
+        statusCode?: number;
+        code?: string;
+      };
       expect(failure?.statusCode).toBe(409);
       expect(failure?.code).toBe("LAST_ADMIN");
-      expect(await statusOf(adminA.id)).toBe("active");
+
+      const [statusA, statusB] = await Promise.all([
+        statusOf(adminA.id),
+        statusOf(adminB.id),
+      ]);
+      expect(
+        [statusA, statusB].filter((status) => status === "active"),
+      ).toHaveLength(1);
     },
   );
 
