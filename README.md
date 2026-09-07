@@ -6,6 +6,8 @@
 Employees create and manage their own device keys; admins manage users, nodes,
 policy, and telemetry across one or more nodes — behind a login you control.
 
+**English** · [Русский](README.ru.md)
+
 [![CI](https://github.com/wyrtensi/amnezia-shared-panel/actions/workflows/ci.yml/badge.svg)](https://github.com/wyrtensi/amnezia-shared-panel/actions/workflows/ci.yml)
 [![Panel release](https://img.shields.io/github/v/tag/wyrtensi/amnezia-shared-panel?filter=v*&label=panel&color=cc7328)](https://github.com/wyrtensi/amnezia-shared-panel/releases)
 [![Node agent release](https://img.shields.io/github/v/tag/wyrtensi/amnezia-shared-panel?filter=node-agent-v*&label=node-agent&color=17917d)](https://github.com/wyrtensi/amnezia-shared-panel/releases)
@@ -45,7 +47,8 @@ What that buys an operator, concretely:
 - **Routing per key.** All traffic through the tunnel, or only what a published
   blocklist says is blocked. The rule set is fetched, validated and versioned by
   the panel, so a key can tell its owner when the routes it was exported with
-  have moved on.
+  have moved on. The feeds it ships with are the community blocklists this
+  project grew up around; `RULE_FEEDS` repoints them at any other list.
 - **Service checks.** Named checks — a status code, a marker in the body, where a
   redirect lands — run from every node on a schedule, so "is this reachable from
   that country" is a row in the panel rather than an experiment.

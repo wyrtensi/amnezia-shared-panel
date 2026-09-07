@@ -832,7 +832,11 @@ function QuotaCells({
             "size-4 rounded-[5px] transition-colors",
             index < used
               ? "bg-success"
-              : "bg-muted ring-1 ring-inset ring-border",
+              // A free slot is a hole, so it takes the canvas colour rather
+              // than --muted: muted is LIGHTER than the row behind these cells
+              // in dark, which turned every unused slot into a bright chip
+              // competing with the issued ones.
+              : "bg-background ring-1 ring-inset ring-border",
           )}
         />
       ))}
