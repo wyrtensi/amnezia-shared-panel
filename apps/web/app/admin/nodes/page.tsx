@@ -408,10 +408,15 @@ function NodeCard({
           >
             {t("nodes.capacity")}
           </NodeCardSection>
-          <div className="h-1.5 overflow-hidden rounded-full bg-muted">
+          {/* A groove rather than a grey strip, and a fill that cannot vanish:
+              at 5 peers of 500 the bar is 1 % wide, which rounded to nothing on
+              screen and read as "no capacity used" instead of "barely any". */}
+          <div className="h-2 overflow-hidden rounded-full bg-well shadow-[var(--inset-shadow)]">
             <div
               className={cn(
                 "h-full rounded-full transition-all",
+              // Anything above zero keeps a visible sliver.
+              fill > 0 && "min-w-[0.5rem]",
                 fill >= 90
                   ? "bg-destructive"
                   : fill >= 70
@@ -435,43 +440,54 @@ function NodeCard({
         {/* auto/1fr, not two even halves: the label needs exactly its own width
             and everything left over belongs to the value, which is how a
             timestamp stops breaking across two lines in a narrow card. */}
-        <dl className="grid grid-cols-[auto_1fr] items-baseline gap-x-3 gap-y-1 text-xs text-muted-foreground">
-          <dt className="flex items-center gap-1">
-            <Activity className="size-3.5 shrink-0" />
-            <span>{t("nodes.healthCheck")}</span>
-          </dt>
-          <dd className="truncate text-right text-foreground">
-            {formatDateTime(node.lastHealthAt, lang)}
-          </dd>
-          <dt className="flex items-center gap-1">
-            <Boxes className="size-3.5 shrink-0" />
-            <span>{t("nodes.sync")}</span>
-          </dt>
-          <dd className="truncate text-right text-foreground">
-            {formatDateTime(node.lastSyncAt, lang)}
-          </dd>
-          <dt className="flex items-center gap-1">
-            <Globe className="size-3.5 shrink-0" />
-            <span>{t("nodes.publicAddress")}</span>
-            <Hint>{t("nodes.publicAddressHint")}</Hint>
-          </dt>
-          <dd className="min-w-0 text-right text-foreground">
-            <NodePublicAddress
-              host={node.publicHost}
-              ip={node.publicIp}
-              resolvedAt={node.publicIpResolvedAt}
-            />
-          </dd>
-          <dt className="flex items-center gap-1">
-            <Tag className="size-3.5 shrink-0" />
-            <span>{t("nodes.agentVersion")}</span>
-            <Hint>{t("nodes.agentVersionHint")}</Hint>
-          </dt>
-          {/* A dash is "this node has not said", which is the honest answer for
-              an agent older than the release that started reporting it. */}
-          <dd className="truncate text-right font-mono text-xs text-foreground">
-            {node.agentVersion ?? "—"}
-          </dd>
+        {/* One recess per fact: a label on the left and a value on the right
+            with nothing between them made the reader follow a line across
+            the card to pair them up. */}
+        <dl className="space-y-1.5 text-xs text-muted-foreground">
+          <div className="flex items-baseline justify-between gap-3 rounded-md border border-border/60 bg-well px-2 py-1 shadow-[var(--inset-shadow)]">
+            <dt className="flex items-center gap-1">
+              <Activity className="size-3.5 shrink-0" />
+              <span>{t("nodes.healthCheck")}</span>
+            </dt>
+            <dd className="truncate text-right text-foreground">
+              {formatDateTime(node.lastHealthAt, lang)}
+            </dd>
+          </div>
+          <div className="flex items-baseline justify-between gap-3 rounded-md border border-border/60 bg-well px-2 py-1 shadow-[var(--inset-shadow)]">
+            <dt className="flex items-center gap-1">
+              <Boxes className="size-3.5 shrink-0" />
+              <span>{t("nodes.sync")}</span>
+            </dt>
+            <dd className="truncate text-right text-foreground">
+              {formatDateTime(node.lastSyncAt, lang)}
+            </dd>
+          </div>
+          <div className="flex items-baseline justify-between gap-3 rounded-md border border-border/60 bg-well px-2 py-1 shadow-[var(--inset-shadow)]">
+            <dt className="flex items-center gap-1">
+              <Globe className="size-3.5 shrink-0" />
+              <span>{t("nodes.publicAddress")}</span>
+              <Hint>{t("nodes.publicAddressHint")}</Hint>
+            </dt>
+            <dd className="min-w-0 text-right text-foreground">
+              <NodePublicAddress
+                host={node.publicHost}
+                ip={node.publicIp}
+                resolvedAt={node.publicIpResolvedAt}
+              />
+            </dd>
+          </div>
+          <div className="flex items-baseline justify-between gap-3 rounded-md border border-border/60 bg-well px-2 py-1 shadow-[var(--inset-shadow)]">
+            <dt className="flex items-center gap-1">
+              <Tag className="size-3.5 shrink-0" />
+              <span>{t("nodes.agentVersion")}</span>
+              <Hint>{t("nodes.agentVersionHint")}</Hint>
+            </dt>
+            {/* A dash is "this node has not said", which is the honest answer for
+                an agent older than the release that started reporting it. */}
+            <dd className="truncate text-right font-mono text-xs text-foreground">
+              {node.agentVersion ?? "—"}
+            </dd>
+          </div>
         </dl>
 
         <div className="space-y-1.5 border-t pt-3">
@@ -820,7 +836,7 @@ function EditNodeDialog({
             setForm={setForm}
             availableProtocols={node?.supportedProtocols}
           />
-          <label className="flex items-center justify-between gap-3 rounded-lg border p-2.5 text-sm">
+          <label className="flex items-center justify-between gap-3 rounded-lg border bg-well shadow-[var(--inset-shadow)] p-2.5 text-sm">
             {t("nodes.enabledToggle")}
             <Switch
               checked={form.enabled}

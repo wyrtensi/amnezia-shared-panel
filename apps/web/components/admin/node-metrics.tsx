@@ -167,9 +167,16 @@ export function NodeMetrics({
   // how much room it actually has.
   return (
     <div className="@container">
-      <dl className="grid grid-cols-2 gap-x-4 gap-y-2 text-xs @lg:grid-cols-3">
+      <dl className="grid grid-cols-2 gap-1.5 text-xs @lg:grid-cols-3">
+        {/* Each figure sits in its own recess, the way the facts on a key card
+            do. Twelve label/value pairs in a three-column grid with nothing
+            between them read as one field of text, and the eye has to count
+            columns to work out which number belongs to which label. */}
         {rows.map(([label, value, warn]) => (
-          <div key={label} className="min-w-0">
+          <div
+            key={label}
+            className="min-w-0 rounded-md border border-border/60 bg-well px-2 py-1 shadow-[var(--inset-shadow)]"
+          >
             <dt className="truncate text-[11px] leading-tight text-muted-foreground">
               {label}
             </dt>

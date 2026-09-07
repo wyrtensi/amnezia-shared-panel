@@ -645,10 +645,16 @@ function OverviewNodeCard({
           </span>
         </div>
 
-        <div className="h-1.5 overflow-hidden rounded-full bg-muted">
+        {/* A groove rather than a grey strip, and a fill that cannot vanish: at
+            a handful of peers out of 500 the bar is a percent wide, which
+            rounded to nothing and read as "nothing in use". */}
+        <div className="h-2 overflow-hidden rounded-full bg-well shadow-[var(--inset-shadow)]">
           <div
             className={cn(
               "h-full rounded-full transition-all",
+              // Anything above zero keeps a visible sliver: at a handful of
+              // peers out of 500 the width rounds to nothing on screen.
+              fill > 0 && "min-w-[0.5rem]",
               fill >= 90
                 ? "bg-destructive"
                 : fill >= 70
@@ -659,27 +665,35 @@ function OverviewNodeCard({
           />
         </div>
 
-        <dl className="grid grid-cols-[auto_1fr] items-baseline gap-x-3 text-xs text-muted-foreground">
-          <dt className="flex items-center gap-1">
-            <Globe className="size-3.5 shrink-0" />
-            <span>{t("nodes.publicAddress")}</span>
-          </dt>
-          <dd className="min-w-0 text-right text-foreground">
-            <NodePublicAddress
-              host={node.publicHost}
-              ip={node.publicIp}
-              resolvedAt={node.publicIpResolvedAt}
-            />
-          </dd>
-          <dt className="flex items-center gap-1">
-            <Tag className="size-3.5 shrink-0" />
-            <span>{t("nodes.agentVersion")}</span>
-          </dt>
-          {/* A dash means the node has not reported one — it predates the
-              release that added the field — not that it is running nothing. */}
-          <dd className="truncate text-right font-mono text-xs text-foreground">
-            {node.agentVersion ?? "—"}
-          </dd>
+        {/* One recess per fact, rather than two columns of a shared grid: with
+            a label on the left and a value on the right and nothing between
+            them, which value belonged to which label was a matter of following
+            a line across the card. */}
+        <dl className="space-y-1.5 text-xs text-muted-foreground">
+          <div className="flex items-baseline justify-between gap-3 rounded-md border border-border/60 bg-well px-2 py-1 shadow-[var(--inset-shadow)]">
+            <dt className="flex items-center gap-1">
+              <Globe className="size-3.5 shrink-0" />
+              <span>{t("nodes.publicAddress")}</span>
+            </dt>
+            <dd className="min-w-0 text-right text-foreground">
+              <NodePublicAddress
+                host={node.publicHost}
+                ip={node.publicIp}
+                resolvedAt={node.publicIpResolvedAt}
+              />
+            </dd>
+          </div>
+          <div className="flex items-baseline justify-between gap-3 rounded-md border border-border/60 bg-well px-2 py-1 shadow-[var(--inset-shadow)]">
+            <dt className="flex items-center gap-1">
+              <Tag className="size-3.5 shrink-0" />
+              <span>{t("nodes.agentVersion")}</span>
+            </dt>
+            {/* A dash means the node has not reported one — it predates the
+                release that added the field — not that it is running nothing. */}
+            <dd className="truncate text-right font-mono text-xs text-foreground">
+              {node.agentVersion ?? "—"}
+            </dd>
+          </div>
         </dl>
 
         <div className="space-y-1.5 border-t pt-3">
@@ -748,10 +762,12 @@ function DistributionCard({
                     </span>
                     <span className="tabular font-medium">{value}</span>
                   </div>
-                  <div className="h-1.5 overflow-hidden rounded-full bg-muted">
+                  <div className="h-2 overflow-hidden rounded-full bg-well shadow-[var(--inset-shadow)]">
                     <div
                       className={cn(
                         "h-full rounded-full transition-all",
+                        // Anything above zero keeps a visible sliver.
+                        value > 0 && "min-w-[0.5rem]",
                         BAR_TONE[index % BAR_TONE.length],
                       )}
                       style={{

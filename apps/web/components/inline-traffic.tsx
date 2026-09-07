@@ -206,7 +206,7 @@ export function InlineTraffic({
       {items.map(([label, pair]) => (
         <span
           key={label}
-          className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-md border border-border/60 py-1 pl-1 pr-2 shadow-[var(--chip-shadow)]"
+          className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-md border border-border/60 py-1 pl-1 pr-2 shadow-[var(--inset-shadow)]"
         >
           <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] leading-none font-medium text-muted-foreground">
             {label}

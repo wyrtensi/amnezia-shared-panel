@@ -89,9 +89,12 @@ export function TrafficSummary({
         ) : points.length === 0 ? (
           <p className="text-sm text-muted-foreground">{t("traffic.noData")}</p>
         ) : (
-          <dl className="flex flex-wrap items-start gap-x-8 gap-y-3">
+          <dl className="flex flex-wrap items-start gap-2">
             {RANGES.map(({ days, label }) => (
-              <div key={days} className="space-y-0.5">
+              <div
+                key={days}
+                className="space-y-0.5 rounded-md border border-border/60 bg-well px-2.5 py-1.5 shadow-[var(--inset-shadow)]"
+              >
                 <dt className="text-[11px] text-muted-foreground">
                   {t(label)}
                 </dt>

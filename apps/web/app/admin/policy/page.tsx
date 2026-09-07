@@ -413,7 +413,7 @@ function PolicyToggle({
   // A div (not a label) so tapping the (i) hint opens the tooltip instead of
   // toggling the switch.
   return (
-    <div className="flex items-center justify-between gap-3 rounded-lg border p-2.5 text-sm">
+    <div className="flex items-center justify-between gap-3 rounded-lg border bg-well shadow-[var(--inset-shadow)] p-2.5 text-sm">
       <span className="flex items-center gap-1.5">
         {label}
         {hint ? <Hint>{hint}</Hint> : null}

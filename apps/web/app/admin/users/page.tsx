@@ -2446,7 +2446,7 @@ function PolicyDialog({
             return (
               <label
                 key={key}
-                className="flex items-center justify-between gap-3 rounded-lg border p-2.5 text-sm"
+                className="flex items-center justify-between gap-3 rounded-lg border bg-well shadow-[var(--inset-shadow)] p-2.5 text-sm"
               >
                 {t(label)}
                 <Switch
