@@ -682,13 +682,11 @@ describe("rule source names", () => {
   // Every shape the derivation distinguishes, plus the two URLs
   // DEFAULT_RULE_FEEDS ships with. The point of the list is coverage of URL
   // SHAPES: a plain host, a forge, a CDN that prefixes and pins, a delivery
-  // label, and the two inputs that must not throw. The RoscomVPN URL is a
-  // retired feed (the removed ru_whitelist profile's source) kept only as the
-  // fixture for the CDN-prefix-and-pin shape.
+  // label, and the two inputs that must not throw.
   const URLS = [
     "https://iplist.opencck.org/?format=text&data=cidr4",
     "https://github.com/1andrevich/Re-filter-lists/releases/latest/download/domains_all.lst",
-    "https://cdn.jsdelivr.net/gh/hydraponique/roscomvpn-geoip/release/text/whitelist.txt",
+    "https://cdn.jsdelivr.net/gh/example-org/geoip-lists/release/text/list.txt",
     "https://cdn.jsdelivr.net/gh/owner/repo@v1.2.3/list.txt",
     "https://raw.githubusercontent.com/owner/some-list/main/a.txt",
     "https://gitlab.com/group/routes/-/raw/main/x.lst",

@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="docs/assets/logo.svg" alt="Shared Panel" width="360">
+<img src="docs/assets/logo.svg" alt="Shared Panel" width="480">
 
 **A self-hosted control plane for AmneziaWG VPN access.**
 Employees create and manage their own device keys; admins manage users, nodes,
@@ -37,6 +37,25 @@ telemetry and drives the nodes. A **node** is a VPN server running AmneziaWG 3.1
 fingerprint and block) with a small agent the panel talks to. One panel, one or
 more nodes, each updated on its own.
 
+What that buys an operator, concretely:
+
+- **Self-service keys.** A user picks a device and a server, gets a config, a
+  `.conf` file or a QR code, and can rename or reissue a key without asking
+  anyone. Quotas are per server or a shared pool, per user or panel-wide.
+- **Routing per key.** All traffic through the tunnel, or only what a published
+  blocklist says is blocked. The rule set is fetched, validated and versioned by
+  the panel, so a key can tell its owner when the routes it was exported with
+  have moved on.
+- **Service checks.** Named checks — a status code, a marker in the body, where a
+  redirect lands — run from every node on a schedule, so "is this reachable from
+  that country" is a row in the panel rather than an experiment.
+- **Fleet visibility.** Host metrics, agent version, peer counts and traffic per
+  node and per key, with a one-command agent update that swaps only the agent
+  container and never restarts a tunnel.
+- **Offboarding that finishes.** Disabling an account revokes its keys on the
+  nodes, and the panel refuses to delete a row while a peer might still exist —
+  so a departed teammate leaves no peer behind.
+
 ## What it looks like
 
 **Administration** — one overview with the numbers that matter, per-node capacity
@@ -46,10 +65,22 @@ and traffic, stale accounts, pending quota requests, and a one-click panel updat
   <img src="docs/assets/admin-overview.png" alt="Administration overview: active keys, online devices, traffic, per-node capacity, quota requests, and the panel update card" width="100%">
 </p>
 
+**Servers** — every node with what it is actually doing: the agent version it
+reports, host metrics read from the machine rather than from its container,
+whether each AmneziaWG interface is up and how many peers it carries, and the
+verdict of every service check on that node. Checks run on every node, so a
+service that answers in Amsterdam and refuses in Singapore shows up as a
+difference between nodes rather than as a support ticket.
+
+<p align="center">
+  <img src="docs/assets/admin-nodes.png" alt="VPN nodes: capacity, public address, agent version, host metrics, service-check verdicts per node, and the shared list of checks" width="100%">
+</p>
+
 **A team member's own page** — their devices, what each key routes, how much of
-their quota is left, and the extra routes they may layer on top. Below it is the
-same screen twice: the UI ships English and Russian, follows the browser language
-on first visit (the RU/EN switch is remembered afterwards) and the system theme.
+their quota is left on each server, and the extra routes they may layer on top.
+Below it is the same screen twice: the UI ships English and Russian, follows the
+browser language on first visit (the RU/EN switch is remembered afterwards) and
+the system theme.
 
 <table>
   <tr>

@@ -599,9 +599,10 @@ export const checkRecommendedPrefix = (
  * provider named exactly as the panel names it.
  *
  * These are lists of URL SHAPES, not of known feeds. `RULE_FEEDS` is
- * per-deployment configuration, so a table of "this URL means RoscomVPN" would
- * go stale the moment an operator repoints a profile — which is how the page
- * came to be titled after a provider supplying only one of its two lists.
+ * per-deployment configuration, so a table mapping a URL to a provider's name
+ * would go stale the moment an operator repoints a profile — which is how the
+ * page once came to be titled after a provider supplying only one of its two
+ * lists.
  */
 const FORGE_PATH_LAYOUTS: Record<string, number> = {
   "github.com": 0,

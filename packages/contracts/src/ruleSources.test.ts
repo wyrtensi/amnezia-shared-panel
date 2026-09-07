@@ -7,17 +7,16 @@ import {
 } from "./ruleSources.js";
 
 // IPLIST and REFILTER are the two URLs DEFAULT_RULE_FEEDS ships with
-// (apps/worker/src/rules.ts). ROSCOMVPN is a retired feed (the removed
-// ru_whitelist profile's source) kept only as a fixture: it is the one URL
-// here shaped like a CDN that prefixes its own path AND pins a version, which
-// `sourceName` has to look past. Named here as fixtures, not as a mapping the
-// code consults: the assertions below must hold because of the URL's shape,
-// not because these are special.
+// (apps/worker/src/rules.ts). CDN_PREFIXED is invented: it is the one shape
+// here where a CDN prefixes its own path AND the project is not the last path
+// segment, which `sourceName` has to look past. Named here as fixtures, not as
+// a mapping the code consults: the assertions below hold because of the URL's
+// shape, not because these URLs are special.
 const IPLIST = "https://iplist.opencck.org/?format=text&data=cidr4";
 const REFILTER =
   "https://github.com/1andrevich/Re-filter-lists/releases/latest/download/domains_all.lst";
-const ROSCOMVPN =
-  "https://cdn.jsdelivr.net/gh/hydraponique/roscomvpn-geoip/release/text/whitelist.txt";
+const CDN_PREFIXED =
+  "https://cdn.jsdelivr.net/gh/example-org/geoip-lists/release/text/list.txt";
 
 describe("splitSourceUrls", () => {
   it("reads the worker's space-joined column back as a list", () => {
@@ -49,7 +48,7 @@ describe("sourceName", () => {
   });
 
   it("looks past a CDN's own path prefix and its version pin", () => {
-    expect(sourceName(ROSCOMVPN)).toBe("roscomvpn-geoip");
+    expect(sourceName(CDN_PREFIXED)).toBe("geoip-lists");
     expect(
       sourceName("https://cdn.jsdelivr.net/gh/owner/repo@v1.2.3/list.txt"),
     ).toBe("repo");
@@ -84,7 +83,7 @@ describe("ruleSources", () => {
   });
 
   it("keeps the full URL alongside the label", () => {
-    expect(ruleSources(ROSCOMVPN)[0]?.url).toBe(ROSCOMVPN);
+    expect(ruleSources(CDN_PREFIXED)[0]?.url).toBe(CDN_PREFIXED);
   });
 
   it("de-duplicates a URL repeated in one cell", () => {
