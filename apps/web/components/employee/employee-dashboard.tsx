@@ -8,6 +8,7 @@ import {
   KeyRound,
   Plus,
   RefreshCw,
+  Server,
   ShieldCheck,
 } from "lucide-react";
 import type { GuideAudience } from "@amnezia/contracts";
@@ -486,38 +487,43 @@ export function EmployeeDashboard({
               </Button>
             </div>
             {nodeQuota.length > 0 ? (
-              // The same rule that separates this block from the header now
-              // also separates the servers from each other: with three or four
-              // of them and a traffic line each, a plain gap left it unclear
-              // which numbers belonged to which name.
-              <div className="divide-y border-t">
+              // Each server sits in its own recess rather than under a hairline.
+              // A rule is enough to separate two lines of text; these rows carry
+              // a name, three traffic periods, a service-check strip and a quota
+              // meter, and at that weight a divider only says where one row ends
+              // — an inset surface says where each one *is*.
+              <div className="space-y-2 border-t pt-3">
                 {nodeQuota.map(({ node, used, limit, traffic }) => (
                   <div
                     key={node.id}
                     // The same accent the create-key wizard puts on a
                     // recommended server, carried onto the page the user
                     // actually lands on. The badge stays — colour alone is not
-                    // an accessible signal — and `border-primary` resolves per
+                    // an accessible signal — and `border-l-success` resolves per
                     // theme so the edge does not vanish in dark mode. The
-                    // transparent border on the other rows keeps every server
-                    // name on the same baseline. Only the LEFT colour is set:
-                    // the parent's `divide-y` draws its separators as a top
-                    // border on these same rows, and a blanket `border-*`
-                    // would repaint those too.
+                    // transparent edge on the other rows keeps every server name
+                    // on the same baseline.
                     className={cn(
-                      "flex flex-wrap items-start justify-between gap-2 border-l-2 py-2.5 pl-2.5 first:pt-3",
+                      "flex flex-wrap items-start justify-between gap-2 rounded-lg border border-border/60 bg-well py-2.5 pl-3 pr-3 shadow-[var(--chip-shadow)]",
                       node.recommended
                         // Green, to match the "Recommended" badge beside it, and
                         // an edge only: a tinted row reads as selected or as
                         // disabled depending on who is looking, and in a list of
                         // servers it drew a horizontal band across the card that
                         // competed with the row's own content.
-                        ? "border-l-success"
-                        : "border-l-transparent",
+                        ? "border-l-2 border-l-success pl-2.5"
+                        : "border-l-2 border-l-transparent pl-2.5",
                     )}
                   >
                     <div className="min-w-0 space-y-0.5">
-                      <span className="flex min-w-0 items-center gap-1.5">
+                      <span className="flex min-w-0 items-center gap-2">
+                        {/* The device tile's smaller, quieter sibling: the row
+                            is already a surface of its own, so this marks the
+                            name rather than competing with the glyphs on the
+                            key cards below it. */}
+                        <span className="flex size-6 shrink-0 items-center justify-center rounded-md bg-[image:var(--tile-gradient-soft)] text-primary/75 ring-1 ring-primary/10">
+                          <Server className="size-3.5" />
+                        </span>
                         <span className="truncate text-sm text-muted-foreground">
                           {node.name}
                         </span>

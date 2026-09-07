@@ -22,7 +22,65 @@
 
   /* Painted over --background by the base body rule. Light keeps a flat
      canvas; dark defines a real backdrop below. */
-  --app-backdrop: none;
+  --app-backdrop:
+    radial-gradient(
+      1150px 700px at 50% -6%,
+      rgba(204, 115, 40, 0.36),
+      transparent 66%
+    ),
+    radial-gradient(1100px 720px at 50% 114%, rgba(120, 82, 40, 0.07), transparent 62%);
+
+  /* Painted over --primary by the default button and the accent badges: a
+     shallow top-down lift, so a filled control catches light the way a real
+     surface does. Two stops of the accent itself, never a second hue. */
+  --primary-gradient: linear-gradient(180deg, #d98235 0%, #cc7328 62%);
+
+  /* A modal is not a card: it floats over a dimmed page with nothing behind it
+     to give it depth, so it carries a longer gradient than a card does -- lit
+     along the top edge, settling darker at the foot. Same two hues as the rest
+     of the ramp; the range is what makes it read as a raised sheet rather than
+     a flat panel. */
+  --dialog-gradient: linear-gradient(170deg, #fffefb 0%, #fbf3e3 55%, #f6ead4 100%);
+
+  /* A recess inside a card: the surface a row sits IN, as opposed to --muted,
+     which is a surface that sits ON something. In light it is a shade below the
+     near-white card; in dark it goes DARKER than the card, because --muted is
+     lighter there and a lighter row reads as raised rather than sunk — which is
+     exactly why the `bg-muted/40` that separated these rows in light was
+     invisible in dark. */
+  --well: #f9f3e7;
+
+  /* A shadow that is actually visible on the surface it falls on. Tailwind's
+     own `shadow-sm` is black at 5 %, which reads on cream and disappears
+     entirely on a dark ground -- the small surfaces looked lifted in light and
+     flat in dark. Same one pixel of offset in both; only the opacity differs. */
+  --chip-shadow: 0 1px 2px 0 rgb(0 0 0 / 0.06);
+
+  /* The same tile, quieter: it marks a server's name in a list where the row
+     itself is already a surface, so it has to read as a marker rather than
+     compete with the device tiles on the cards below. */
+  --tile-gradient-soft:
+    linear-gradient(
+      180deg,
+      color-mix(in oklab, var(--primary) 11%, transparent),
+      color-mix(in oklab, var(--primary) 5%, transparent)
+    );
+
+  /* The soft square behind a device glyph on a key card. Derived from the
+     accent rather than pinned, so it follows the theme; two stops of the same
+     hue, so the tile reads as lit rather than as a second colour. */
+  --tile-gradient:
+    linear-gradient(
+      180deg,
+      color-mix(in oklab, var(--primary) 20%, transparent),
+      color-mix(in oklab, var(--primary) 9%, transparent)
+    );
+
+  /* Painted over --card by the Card component. Flat in light, where a tint on
+     near-white only muddies it; a shallow lift in dark, where a card that is
+     one solid block reads as a slab. Kept under two percent of lightness --
+     enough for an edge to catch, not enough to become a visible band. */
+  --card-gradient: linear-gradient(180deg, #fffefb 0%, #fbf4e7 100%);
 
   /* What the sticky app header tints itself with. It must be the colour the
      canvas ACTUALLY is where the header sits, not --background: the header is
@@ -50,12 +108,21 @@
   --secondary-foreground: #3a2f24;
 
   --muted: #ece0ca;
-  --light-muted-foreground: #635648;
+  /* A shade darker than it was, so it keeps AA where the canvas is most
+     orange. The light backdrop's glow peaks near #e6bf98 at the top of the
+     viewport, and the old value landed at 4.15:1 against it -- under the 4.5
+     floor for small text, and the page header's subtitle sits exactly there. */
+  --light-muted-foreground: #544737;
   --muted-foreground: var(--light-muted-foreground);
 
-  --light-accent: #e4eedd;
+  /* The hover surface, and nothing else: every use of --accent in this app is
+     a hover or focus state -- buttons, menu items, select items, list rows.
+     It used to be a sage green, which put a colour on the hover of controls
+     that have nothing green about them. Green is kept for what is actually
+     green: --success, and the install link that uses it. */
+  --light-accent: #ecdcc0;
   --accent: var(--light-accent);
-  --light-accent-foreground: #3d5636;
+  --light-accent-foreground: #2b231c;
   --accent-foreground: var(--light-accent-foreground);
 
   --destructive: #cf5236;
@@ -82,8 +149,8 @@
   --sidebar-foreground: #2b231c;
   --sidebar-primary: #cc7328;
   --sidebar-primary-foreground: #fffaf2;
-  --sidebar-accent: #e4eedd;
-  --sidebar-accent-foreground: #3d5636;
+  --sidebar-accent: #ecdcc0;
+  --sidebar-accent-foreground: #2b231c;
   --sidebar-border: #e3d1b1;
   --sidebar-ring: #cc7328;
 
@@ -114,42 +181,48 @@
      page at the foot of a long screen. */
   --app-backdrop:
     radial-gradient(
-      1100px 680px at 50% -12%,
-      rgba(242, 168, 86, 0.12),
-      transparent 56%
+      1250px 820px at 50% -16%,
+      rgba(242, 168, 86, 0.17),
+      transparent 64%
     ),
-    linear-gradient(180deg, #291d16 0%, #1d1410 34%, #241a14 100%);
+    radial-gradient(1100px 720px at 50% 112%, rgba(0, 0, 0, 0.3), transparent 62%);
+
+  --primary-gradient: linear-gradient(180deg, #f6b76d 0%, #f2a856 62%);
+  --well: #2a231d;
+  --chip-shadow: 0 1px 2px 0 rgb(0 0 0 / 0.45);
+  --dialog-gradient: linear-gradient(170deg, #40372f 0%, #322a24 55%, #262019 100%);
+  --card-gradient: linear-gradient(180deg, #3b322b 0%, #2f2721 100%);
 
   /* The backdrop's own top stop, because that is what lies under the header.
-     Tinting the header with --background (#1d1410) instead put 80 % of a
+     Tinting the header with --background (#1a1613) instead put 80 % of a
      colour DARKER than the canvas over a lighter one: the composite came out
      near #1f1611 against a canvas of about #261b15 just below it — the dark
      band across the top that light mode never showed, since there the backdrop
      is flat and the two colours coincide. At 80 % of the colour already there,
      the header disappears at rest and still carries enough opacity to keep
      text legible over content scrolling beneath it. */
-  --header-surface: #291d16;
+  --header-surface: #251f1a;
 
-  --background: #1d1410;
+  --background: #1a1613;
   --foreground: #f4ebde;
 
-  --card: #36261e;
+  --card: #312923;
   --card-foreground: #f4ebde;
 
-  --popover: #3c2b21;
+  --popover: #362e27;
   --popover-foreground: #f4ebde;
 
   --primary: #f2a856;
   --primary-foreground: #1a130d;
 
-  --secondary: #402e24;
+  --secondary: #3a312a;
   --secondary-foreground: #f4ebde;
 
-  --muted: #3e2c23;
+  --muted: #383029;
   --muted-foreground: #d0bfa6;
 
-  --accent: #3a4633;
-  --accent-foreground: #dceace;
+  --accent: #43392f;
+  --accent-foreground: #f4ebde;
 
   --destructive: #ec8a70;
   --destructive-foreground: #1a130d;
@@ -160,8 +233,8 @@
   --warning: #edab57;
   --warning-foreground: #1f1608;
 
-  --border: #543b2e;
-  --input: #5f4334;
+  --border: #4b4037;
+  --input: #55483e;
   --ring: #f2a856;
 
   --chart-1: #f0a24e;
@@ -170,13 +243,13 @@
   --chart-4: #5aa9e6;
   --chart-5: #ee79a4;
 
-  --sidebar: #3a2920;
+  --sidebar: #342c26;
   --sidebar-foreground: #f3e9db;
   --sidebar-primary: #f0a24e;
   --sidebar-primary-foreground: #1d1712;
-  --sidebar-accent: #35422f;
-  --sidebar-accent-foreground: #dbe8d0;
-  --sidebar-border: #4d3629;
+  --sidebar-accent: #43392f;
+  --sidebar-accent-foreground: #f4ebde;
+  --sidebar-border: #443a32;
   --sidebar-ring: #f0a24e;
 
   --header-gradient: linear-gradient(120deg, #f0a24e 0%, #3fbfa6 120%);
@@ -201,6 +274,7 @@
 
 @theme inline {
   --color-background: var(--background);
+  --color-well: var(--well);
   --color-header-surface: var(--header-surface);
   --color-foreground: var(--foreground);
   --color-card: var(--card);

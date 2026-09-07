@@ -12,6 +12,7 @@ import {
   Pencil,
   QrCode,
   RefreshCw,
+  Server,
   ShieldHalf,
   TriangleAlert,
   Trash2,
@@ -116,7 +117,7 @@ export function KeyCard({
         <CardContent className="flex h-full flex-col gap-3 p-4">
           <div className="flex items-start justify-between gap-2">
             <div className="flex items-center gap-2.5">
-              <span className="flex size-12 items-center justify-center rounded-xl bg-primary/12 text-primary ring-1 ring-primary/15">
+              <span className="flex size-12 items-center justify-center rounded-xl bg-[image:var(--tile-gradient)] text-primary ring-1 ring-primary/15">
                 <DeviceIcon className="size-7" />
               </span>
               <div className="min-w-0">
@@ -167,27 +168,38 @@ export function KeyCard({
                   ) : null}
                   {/* The guide lives on the key, not in the page header: the card
                       knows which device the key was labelled for, so it opens
-                      straight to that instruction. Icon-only because the title
-                      must keep the room it needs to stay readable. */}
+                      straight to that instruction. Labelled rather than a bare
+                      glyph — a question mark beside a title reads as a hint
+                      about the title, not as the way to the install steps —
+                      and the word sits before the icon so the row still scans
+                      left to right. */}
                   <Tooltip>
                     <TooltipTrigger asChild>
                       <Button
                         type="button"
                         variant="ghost"
-                        size="icon"
-                        className="size-6 shrink-0 text-muted-foreground"
+                        size="sm"
+                        className="h-6 shrink-0 gap-1 px-1.5 text-[11px] font-medium text-muted-foreground hover:text-foreground"
                         aria-label={t("install.button")}
                         onClick={onShowGuide}
                       >
-                        <CircleHelp className="size-4" />
+                        {t("keyCard.guideShort")}
+                        <CircleHelp className="size-3.5" />
                       </Button>
                     </TooltipTrigger>
                     <TooltipContent>{t("install.button")}</TooltipContent>
                   </Tooltip>
                 </div>
-                <p className="truncate text-xs text-muted-foreground">
-                  {node?.name ?? "—"}
-                </p>
+                {/* The server was a bare grey word under the device name, and
+                    read as a second, quieter label for the same thing. Marked
+                    up as what it is — the place this key lives — it stops
+                    competing with the name above it: an icon says which kind of
+                    fact it is, and the surface separates it from the title
+                    without making it louder. */}
+                <span className="mt-1 inline-flex max-w-full items-center gap-1.5 rounded-md bg-muted/70 px-1.5 py-0.5 text-[11px] font-medium text-muted-foreground shadow-[var(--chip-shadow)]">
+                  <Server className="size-3 shrink-0" />
+                  <span className="truncate">{node?.name ?? "—"}</span>
+                </span>
               </div>
             </div>
             <div className="flex shrink-0 items-center gap-1.5">
@@ -286,16 +298,20 @@ export function KeyCard({
             </Callout>
           ) : null}
 
-          <dl className="grid grid-cols-2 gap-x-3 gap-y-1 text-xs text-muted-foreground">
-            <div>
-              <dt className="inline">{t("keyCard.created")}</dt>
-              <dd className="inline text-foreground">
+          {/* Each fact boxed with its own value, the way the traffic ranges on
+              the quota card are: two label/value pairs sharing a row read as
+              four loose fragments otherwise, and it is the value that the eye
+              is looking for. */}
+          <dl className="grid grid-cols-2 gap-2 text-xs text-muted-foreground">
+            <div className="flex flex-wrap items-baseline gap-x-1.5 rounded-md border border-border/60 px-2 py-1 shadow-[var(--chip-shadow)]">
+              <dt>{t("keyCard.created")}</dt>
+              <dd className="text-foreground">
                 {formatDate(keyView.createdAt, lang)}
               </dd>
             </div>
             {me.policy.showTraffic ? (
-              <div>
-                <dt className="inline">{t("keyCard.traffic")}</dt>{" "}
+              <div className="flex flex-wrap items-baseline gap-x-1.5 rounded-md border border-border/60 px-2 py-1 shadow-[var(--chip-shadow)]">
+                <dt>{t("keyCard.traffic")}</dt>
                 <dd className="inline-flex text-foreground">
                   <TrafficSplit pair={keyView.traffic} />
                 </dd>

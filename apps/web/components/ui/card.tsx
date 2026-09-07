@@ -8,7 +8,10 @@ const Card = React.forwardRef<
   <div
     ref={ref}
     className={cn(
-      "rounded-xl border bg-card text-card-foreground shadow-sm",
+      // The gradient is a token, not a utility: it is `none` in light and a
+      // shallow lift in dark, and a card should not have to know which theme
+      // it is in. `bg-card` stays underneath as the fallback colour.
+      "rounded-xl border bg-card bg-[image:var(--card-gradient)] text-card-foreground shadow-sm",
       className,
     )}
     {...props}
