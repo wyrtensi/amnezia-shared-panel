@@ -197,6 +197,23 @@ the Cloudflare proxy — with its **own** Google login. Both paths run side by s
 each person uses whichever works. Skip this whole section if everyone can reach
 Cloudflare.
 
+**Before building it, know which of the two problems you have**, because only one
+of them has a setting to change:
+
+- **Encrypted ClientHello.** Cloudflare publishes an `ech=` value in the zone's
+  `HTTPS` DNS record, and a filter that cannot read the server name in a
+  handshake may drop the connection rather than let it pass. Check with
+  `dig HTTPS <host>` or a DoH query — an `ech=` in the answer means it is on.
+  On a **Free** zone it is on by default and there is **no toggle in the
+  dashboard**: the documented switch exists for paid plans, which is why looking
+  for it on the Edge Certificates page finds nothing. Upgrading the zone is the
+  only way to get the switch.
+- **The address ranges themselves.** Filtering aimed at Cloudflare's own IP
+  ranges is not a setting on any plan, and no zone-level change fixes it.
+
+The direct door answers both, which is why it is worth building even when the
+first one could in principle be turned off.
+
 **First, decide how that direct host gets its TLS certificate** — this depends on
 what already runs on the box, so there's no single answer. *(Decide / ask which of
 these applies before doing anything.)*
@@ -205,6 +222,16 @@ these applies before doing anything.)*
   [`infra/prod/Caddyfile.example`](../infra/prod/Caddyfile.example) (edit the host
   and email). It gets an automatic Let's Encrypt certificate and reverse-proxies
   `127.0.0.1:5430`. Use this when nothing else owns `:443`.
+
+  **If this door exists because the proxied host is being blocked, take a
+  wildcard over DNS-01 instead of the per-name certificate that method gets by
+  default.** A certificate naming the host publishes that name in Certificate
+  Transparency, which is public and searchable — the door announces itself to
+  whoever blocked the first one. `*.<panel domain>` discloses only the apex,
+  which is public already. The `Caddyfile.example` header carries the whole
+  recipe (`caddy add-package github.com/caddy-dns/cloudflare`, the token in an
+  `EnvironmentFile`, one wildcard site block with a host matcher) and the two
+  traps worth knowing before you meet them.
 - **B — port 443 is already taken** by another service (a website, a VPN edge, an
   haproxy/nginx SNI router). Don't fight the existing terminator. Route the direct
   hostname through it to a **local Caddy on a loopback port** (e.g. one SNI rule:

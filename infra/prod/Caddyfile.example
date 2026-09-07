@@ -18,6 +18,57 @@
 # (obtain the cert out-of-band, e.g. acme.sh HTTP-01, with a renew+reload hook).
 # See INSTALL.md §3.5 method B.
 #
+# ---------------------------------------------------------------------------
+# READ THIS IF THE DOOR EXISTS BECAUSE THE PROXIED HOST IS BEING BLOCKED
+# ---------------------------------------------------------------------------
+# The config at the bottom of this file takes a certificate for ONE name, over
+# HTTP-01. That certificate is published in Certificate Transparency, and CT is
+# public and searchable — so the exact hostname of your bypass door lands in a
+# feed that anyone, including whoever blocked the proxied host, can watch. A door
+# built to survive blocking should not announce itself the day it is created.
+#
+# The alternative is a WILDCARD taken over DNS-01: `*.example.com` discloses only
+# `example.com`, which is public anyway. It needs a Caddy with a DNS provider
+# module and a token that may edit that zone's DNS:
+#
+#     caddy add-package github.com/caddy-dns/cloudflare
+#     install -m 600 /dev/null /etc/caddy/cf-dns.env
+#     # write CF_DNS_API_TOKEN=<token with Zone:DNS:Edit> into it with a HEREDOC,
+#     # never `printf` through nested quoting — see the trap note below
+#     mkdir -p /etc/systemd/system/caddy.service.d
+#     printf '[Service]\nEnvironmentFile=/etc/caddy/cf-dns.env\n' \
+#       > /etc/systemd/system/caddy.service.d/override.conf
+#     systemctl daemon-reload && systemctl restart caddy
+#
+# ...with this site block in place of the one below. One block covers the zone, a
+# host matcher serves only the door, and everything else is closed rather than
+# answered:
+#
+#     *.example.com {
+#         tls {
+#             dns cloudflare {env.CF_DNS_API_TOKEN}
+#             resolvers 1.1.1.1 8.8.8.8
+#         }
+#         @panel host direct.example.com
+#         handle @panel {
+#             encode zstd gzip
+#             reverse_proxy 127.0.0.1:5430
+#         }
+#         handle {
+#             abort
+#         }
+#     }
+#
+# Two traps, both of which cost an hour the first time:
+#
+#   - `caddy validate` runs OUTSIDE systemd, so it does not read EnvironmentFile
+#     and fails with `API token '' appears invalid`. That is not a config error.
+#     Validate with `set -a; . /etc/caddy/cf-dns.env; set +a` first.
+#   - If the token in that env file picks up a stray character, Cloudflare answers
+#     `9109 Invalid access token` on the ACME DNS write while the same token still
+#     works fine from `curl` — which sends you hunting for a permissions problem
+#     that does not exist. Check the file with `od -c`, not with `cat`.
+#
 # Setup:
 #   1. Add a DNS-only A record, e.g. direct.example.com -> this server's IP
 #      (grey cloud in Cloudflare, or any registrar). Port 80/443 must be open.
