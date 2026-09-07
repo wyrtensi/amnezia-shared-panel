@@ -877,7 +877,37 @@ function ApkFallback({
   );
 }
 
-/** Numbered section: a small circled index, a heading, then free content. */
+/**
+ * Numbered section: a small circled index, a heading, then free content sunk
+ * into a recess of its own.
+ *
+ * The three steps used to be separated by nothing but vertical rhythm and an
+ * eight-pixel indent, and in a dialog long enough to scroll that is not a
+ * boundary — a reader coming back to it could not tell where step 2 ended and
+ * step 3 began, because the app buttons, the callouts and the disclosures
+ * inside a step are all more strongly drawn than the gap between steps.
+ *
+ * The recess is the same one the rest of the panel uses for "a surface a row
+ * sits IN" (`--well` + `--inset-shadow`, globals.css), but here the BORDER and
+ * the inset shadow carry it, not the fill — and the border is full strength
+ * rather than the `/60` those in-card wells use.
+ *
+ * The reason is that a dialog is not a card: `--dialog-gradient` runs from
+ * lighter than `--well` at the head to darker than it at the foot, so the fill
+ * inverts partway down the sheet. Measured against the three gradient stops,
+ * dark theme: delta L -0.0224 at the top (sunk), -0.0068 at 55 % (all but
+ * invisible), +0.0027 at the foot (raised). Light is worse: -0.0910, -0.0015,
+ * +0.0682. Step 3 sits at the foot, so a fill-led recess would have inverted
+ * on exactly the step a reader reaches last. The border does not move with the
+ * gradient: 1.54:1 against the fill in dark at full strength, against 1.28:1
+ * at `/60`, and the paired cut edges of `--inset-shadow` read the same at
+ * either end of the sheet. Foreground on the recess lands at 13.1:1 and
+ * muted-foreground at 8.6:1, both past AA.
+ *
+ * The indent goes with it. A bounded panel already says what the indent said,
+ * and eight pixels of every line is a real loss in a 576px dialog that carries
+ * three-up download buttons.
+ */
 function GuideSection({
   number,
   title,
@@ -898,7 +928,9 @@ function GuideSection({
         </span>
         {title}
       </h3>
-      <div className="space-y-2.5 pl-8">{children}</div>
+      <div className="space-y-2.5 rounded-xl border bg-well p-3.5 shadow-[var(--inset-shadow)]">
+        {children}
+      </div>
     </section>
   );
 }
