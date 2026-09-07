@@ -198,10 +198,15 @@ export function InlineTraffic({
         className,
       )}
     >
+      {/* Each range is boxed WITH its own figures. Three ranges in a row, each
+          a chip followed by two numbers, ran together into one long line where
+          it was not obvious which pair of numbers belonged to which label —
+          especially once a row carries all three. The outline is the grouping;
+          the chip inside it is still the label. */}
       {items.map(([label, pair]) => (
         <span
           key={label}
-          className="inline-flex items-center gap-1.5 whitespace-nowrap"
+          className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-md border border-border/60 py-1 pl-1 pr-2"
         >
           <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] leading-none font-medium text-muted-foreground">
             {label}
