@@ -776,7 +776,7 @@ const ru = {
   "users.accessDomainsTitle": "Домены Cloudflare Access",
   "users.accessWhoTitle": "Кто может войти.",
   "users.accessWhoSummary":
-    "Через Cloudflare войти могут: каждый активный пользователь панели (у него отдельное правило по своему адресу), любой адрес с доменов, указанных выше, и все, кого допускает правило, добавленное прямо в политике Cloudflare, — control-api никогда не читает эту политику и не знает про такие правила, их видит только синхронизация воркера, когда записывает изменения обратно. При прямом входе: активные пользователи панели и домены из AUTH_ALLOWED_DOMAINS.",
+    "Через Cloudflare войти могут: каждый активный пользователь панели (у него отдельное правило по своему адресу), любой адрес с доменов, указанных выше, и все, кого допускает правило, добавленное прямо в политике Cloudflare, — control-api никогда не читает эту политику и не знает про такие правила, их видит только синхронизация воркера, когда записывает изменения обратно. При прямом входе: активные пользователи панели, домены из этого же списка и домены из AUTH_ALLOWED_DOMAINS.",
   "users.accessDomainsPlaceholder": "company.tld или @company.tld",
   "users.accessDomainsHint":
     "Панель сохраняет эти домены в политике Access. Но сможет ли человек реально войти — по-прежнему решает провайдер идентификации.",
@@ -1995,7 +1995,7 @@ const en = {
   "users.accessDomainsTitle": "Cloudflare Access domains",
   "users.accessWhoTitle": "Who can sign in.",
   "users.accessWhoSummary":
-    "Through Cloudflare: every active panel user (each has their own address rule), anyone with an address on the domains above, and anyone admitted by a rule added directly in the Cloudflare policy — control-api never reads that policy and does not know about those; only the worker sync does, to write changes back. Direct login: the panel's active users plus the domains in AUTH_ALLOWED_DOMAINS.",
+    "Through Cloudflare: every active panel user (each has their own address rule), anyone with an address on the domains above, and anyone admitted by a rule added directly in the Cloudflare policy — control-api never reads that policy and does not know about those; only the worker sync does, to write changes back. Direct login: the panel's active users, the same domains listed above, and the domains in AUTH_ALLOWED_DOMAINS.",
   "users.accessDomainsPlaceholder": "company.tld or @company.tld",
   "users.accessDomainsHint":
     "The panel keeps these domains in the Access policy. Whether someone can actually authenticate is still up to the identity provider.",
