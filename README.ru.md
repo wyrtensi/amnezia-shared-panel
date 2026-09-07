@@ -11,6 +11,7 @@
 [![CI](https://github.com/wyrtensi/amnezia-shared-panel/actions/workflows/ci.yml/badge.svg)](https://github.com/wyrtensi/amnezia-shared-panel/actions/workflows/ci.yml)
 [![Panel release](https://img.shields.io/github/v/tag/wyrtensi/amnezia-shared-panel?filter=v*&label=panel&color=cc7328)](https://github.com/wyrtensi/amnezia-shared-panel/releases)
 [![Node agent release](https://img.shields.io/github/v/tag/wyrtensi/amnezia-shared-panel?filter=node-agent-v*&label=node-agent&color=17917d)](https://github.com/wyrtensi/amnezia-shared-panel/releases)
+[![Telegram-чат](https://img.shields.io/badge/Telegram-%D1%87%D0%B0%D1%82-26A5E4?logo=telegram&logoColor=white)](https://t.me/+ACFiuWoI9Es2OGZi)
 [![License: MIT](https://img.shields.io/badge/license-MIT-cc7328)](LICENSE)
 [![AmneziaWG 3.1](https://img.shields.io/badge/AmneziaWG-3.1-17917d)](#протокол)
 [![Next.js](https://img.shields.io/badge/Next.js-000?logo=nextdotjs&logoColor=white)](https://nextjs.org)
