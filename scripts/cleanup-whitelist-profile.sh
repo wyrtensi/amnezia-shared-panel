@@ -80,8 +80,15 @@ psql_query() {
 
 # The panel's own admin CLI, run where PANEL_IDENTITY_SECRET already lives, so
 # this script never has to be handed a credential or store one.
+#
+# `</dev/null` is load-bearing, not tidiness. `docker compose exec -T` forwards
+# the caller's stdin into the container, and every call below is made inside a
+# `while read` loop reading a list of keys -- so without this the first call
+# swallows the rest of that list and the loop ends after one iteration. On a
+# live panel that purged one key of three and left the migration still blocked,
+# with the script reporting success.
 panel_cli() {
-  $COMPOSE exec -T control-api node apps/cli/dist/main.js "$@"
+  $COMPOSE exec -T control-api node apps/cli/dist/main.js "$@" </dev/null
 }
 
 echo "==> [1/4] What still uses ${PROFILE}"

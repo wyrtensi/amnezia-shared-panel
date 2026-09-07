@@ -119,6 +119,31 @@ test("--confirm revokes every key, then purges it, in that order", async () => {
   assert.equal(remaining.trim(), "");
 });
 
+// The exact shape a live panel had: two keys already revoked (their peers long
+// gone) and one still active. Every row has to go, or migration 0035 stays
+// blocked by the ones left behind — which is what happened, because the first
+// purge ate the rest of the list off the loop's stdin.
+test("purges every revoked row, not just the first", async () => {
+  const KEY_C = "33333333-3333-3333-3333-333333333333";
+  const { dir, state } = await fixture({
+    keys: [
+      `${KEY_A}|revoked|one@example.com|node-1|-`,
+      `${KEY_B}|revoked|two@example.com|node-1|-`,
+      `${KEY_C}|active|three@example.com|node-2|-`,
+    ],
+  });
+
+  await cleanup(dir, state, ["--confirm"]);
+
+  assert.deepEqual(await callsOf(state), [
+    `key-revoke ${KEY_C}`,
+    `key-purge ${KEY_A}`,
+    `key-purge ${KEY_B}`,
+    `key-purge ${KEY_C}`,
+  ]);
+  assert.equal((await readFile(path.join(state, "keys"), "utf8")).trim(), "");
+});
+
 test("a key that never reaches revoked is left alone, with its job error", async () => {
   const { dir, state } = await fixture({
     keys: [

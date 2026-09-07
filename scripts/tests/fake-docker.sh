@@ -71,6 +71,14 @@ if [ "$service" = "control-api" ]; then
   fi
 
   # `node apps/cli/dist/main.js <command> <id> [flags]`
+  #
+  # Drain stdin exactly as `docker compose exec -T` does. This is not cosmetic:
+  # the real thing forwards the caller's stdin into the container, so a call
+  # made INSIDE a `while read` loop eats the rest of that loop's input and the
+  # loop ends after one iteration. A double that ignores stdin cannot see that
+  # class of bug, and did not -- the ordering assertions below passed while the
+  # script purged one key of three on a live panel.
+  cat >/dev/null
   command="${args[2]:-}"
   id="${args[3]:-}"
   printf '%s %s\n' "$command" "$id" >>"$STATE/calls.log"
