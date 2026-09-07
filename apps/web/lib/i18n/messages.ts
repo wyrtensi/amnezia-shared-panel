@@ -663,6 +663,7 @@ const ru = {
     "Управление ключами пользователя: отключить приостанавливает доступ обратимо, отозвать удаляет пира навсегда.",
   "users.keyBtn": "Ключ",
   "users.noUserKeys": "У пользователя ещё нет ключей",
+  "users.keyLastSeenTip": "Последнее подключение этого ключа",
   "users.online": "Онлайн",
   "users.offline": "Оффлайн",
   // Same state the employee's key card reports, so it stays as optional here
@@ -1932,6 +1933,7 @@ const en = {
     "Managing the user's keys: disable pauses access reversibly, revoke removes the peer permanently.",
   "users.keyBtn": "Key",
   "users.noUserKeys": "This user has no keys yet",
+  "users.keyLastSeenTip": "This key's last handshake",
   "users.online": "Online",
   "users.offline": "Offline",
   "users.rulesOutdatedTip": "Rules updated — the key can be reissued",

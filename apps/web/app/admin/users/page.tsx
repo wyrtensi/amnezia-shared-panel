@@ -2053,6 +2053,24 @@ function AdminKeyRow({
               · {t(PROTOCOL_LABEL[keyView.protocol] ?? keyView.protocol)}
             </div>
           </div>
+          {/* The same reading the owner sees on their own key card, put where
+              an operator scans a whole person's fleet at once: the moon icon
+              above only appears once a key is already stale, so without this
+              the row said nothing about a key that went quiet last week. */}
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <span className="hidden shrink-0 text-xs text-muted-foreground sm:block">
+                {formatLastSeen(
+                  keyView.lastUsedAt
+                    ? new Date(keyView.lastUsedAt).getTime()
+                    : null,
+                  now,
+                  lang,
+                )}
+              </span>
+            </TooltipTrigger>
+            <TooltipContent>{t("users.keyLastSeenTip")}</TooltipContent>
+          </Tooltip>
           <span className="hidden shrink-0 text-xs text-muted-foreground sm:block">
             <TrafficBytes bytes={trafficTotal(keyView.traffic)} />
           </span>
