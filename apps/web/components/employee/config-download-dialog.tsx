@@ -262,8 +262,16 @@ export function ConfigDownloadDialog({
   // *successful* fetch is final: a failure leaves `frames` null, so switching
   // back to an app tab or pressing retry tries again. `frameAttempt` is in the
   // dependency list solely as the retry trigger.
+  //
+  // `delivery.linkUsable` gates it as well, and not only to save the request:
+  // on a file-only profile no QR is rendered at all, but the default audience
+  // is still the in-app one, so opening the dialog fired a `qr-frames` fetch
+  // that the control-api answers 422 QR_TOO_LARGE to — after building the
+  // frames for a payload past a megabyte. Seen in production on v0.9.44.
   React.useEffect(() => {
-    if (!target || !usesFrames(qrFor) || frames) return;
+    if (!target || !delivery.linkUsable || !usesFrames(qrFor) || frames) {
+      return;
+    }
     let active = true;
     void (async () => {
       try {
@@ -281,7 +289,7 @@ export function ConfigDownloadDialog({
     return () => {
       active = false;
     };
-  }, [target, qrFor, frames, frameAttempt]);
+  }, [target, delivery.linkUsable, qrFor, frames, frameAttempt]);
 
   // Only the animated mode ticks. A single-frame series is a still picture in
   // either mode, so nothing animates and no mode switch is rendered for it.

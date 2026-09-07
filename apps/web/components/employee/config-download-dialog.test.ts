@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 import { messages } from "@/lib/i18n/messages";
@@ -101,5 +103,35 @@ describe("config.qrAwgWarning", () => {
     expect(messages.en["config.qrAwgWarning"]).not.toBe(
       messages.en["config.qrAppWarning"],
     );
+  });
+});
+
+// Regression, found in production on v0.9.44: the dialog withdrew the QR for
+// file-only profiles but kept fetching the frame series behind it, because the
+// default audience is the in-app one and the frames effect never asked about
+// delivery. The control-api answered 422 QR_TOO_LARGE — after building frames
+// for a payload past a megabyte — once per dialog open.
+describe("file-only profiles fetch nothing they cannot show", () => {
+  const source = readFileSync(
+    fileURLToPath(new URL("./config-download-dialog.tsx", import.meta.url)),
+    "utf8",
+  );
+
+  it("gates the vpn:// link fetch on delivery", () => {
+    expect(source).toMatch(/if \(!delivery\.linkUsable\) \{\s*\n\s*setLoading\(false\);/);
+  });
+
+  it("gates the qr-frames fetch on delivery too", () => {
+    expect(source).toMatch(
+      /!target \|\| !delivery\.linkUsable \|\| !usesFrames\(qrFor\)/,
+    );
+    expect(source).toContain(
+      "[target, delivery.linkUsable, qrFor, frames, frameAttempt]",
+    );
+  });
+
+  it("asks the shared rule rather than naming the profile", () => {
+    expect(source).toContain('keyDelivery(target?.routeProfile ?? "full_tunnel")');
+    expect(source).not.toContain('target.routeProfile !== "full_tunnel"');
   });
 });
