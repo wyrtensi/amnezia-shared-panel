@@ -126,3 +126,31 @@ describe("guideAudienceForDevice", () => {
     expect(guideAudienceForDevice("holodeck")).toBeNull();
   });
 });
+
+// The three steps used to be separated by vertical rhythm and an 8px indent,
+// which is not a boundary in a dialog long enough to scroll. Each step body is
+// now a recess. What is pinned is the part that would silently regress: the
+// fill cannot carry it, because --dialog-gradient crosses --well partway down
+// the sheet (measured in the component's own comment), so the border and the
+// inset shadow have to be there and the border has to be full strength.
+describe("numbered steps sit in a recess", () => {
+  const body = source.match(
+    /<div className="space-y-2\.5 [^"]*">\s*\n\s*\{children\}/,
+  )?.[0];
+
+  it("draws each step body as a bounded panel", () => {
+    expect(body).toBeTruthy();
+    expect(body).toContain("bg-well");
+    expect(body).toContain("shadow-[var(--inset-shadow)]");
+    expect(body).toContain("rounded-xl");
+  });
+
+  it("keeps the border at full strength, not the in-card /60", () => {
+    expect(body).toContain("border ");
+    expect(body).not.toContain("border-border/60");
+  });
+
+  it("drops the indent the panel replaces", () => {
+    expect(body).not.toContain("pl-8");
+  });
+});
