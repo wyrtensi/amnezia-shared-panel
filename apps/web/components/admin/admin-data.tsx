@@ -148,6 +148,13 @@ export type AdminKey = {
   lastUsedAt: string | null;
   failureReason: string | null;
   createdAt: string;
+  /**
+   * When the peer was removed from its node. Returned by `/api/admin/keys`
+   * (the projection spreads the row), and the only date that says anything
+   * about a `revoked` key — `lastUsedAt` stopped moving before the revoke and
+   * `createdAt` is about its birth.
+   */
+  revokedAt?: string | null;
   online?: boolean;
   traffic?: { receivedBytes: string; sentBytes: string } | null;
 };

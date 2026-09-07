@@ -3,6 +3,7 @@ import {
   AUDIT_CATEGORIES as CONTRACT_CATEGORIES,
   auditCategoryOf,
   auditScopeOf,
+  isPurgeableKeyState,
 } from "@amnezia/contracts";
 
 import {
@@ -11,6 +12,7 @@ import {
   cliAuditCategoryOf,
   cliAuditScopeOf,
 } from "./auditFilter.js";
+import { cliIsPurgeableKeyState } from "./main.js";
 
 // The actual cross-check for the structural copy, not two literals each pinning
 // their own side: the CLI ships dependency-free, so this is the only thing that
@@ -87,5 +89,26 @@ describe("auditEventMatches", () => {
         { actor: "people", category: "keys" },
       ),
     ).toBe(false);
+  });
+});
+
+// `keys-purge-revoked` decides locally which keys to LIST, so its idea of
+// "purgeable" has to be the server's or the preview lies about what the run
+// will do. Same cross-check as the mappings above, for the same reason.
+describe("cliIsPurgeableKeyState", () => {
+  it("agrees with isPurgeableKeyState in @amnezia/contracts", () => {
+    for (const state of [
+      "revoked",
+      "active",
+      "disabled",
+      "provisioning",
+      "revoking",
+      "failed",
+      "",
+    ]) {
+      expect(cliIsPurgeableKeyState(state), state).toBe(
+        isPurgeableKeyState(state),
+      );
+    }
   });
 });

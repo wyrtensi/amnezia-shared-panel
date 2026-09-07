@@ -688,6 +688,27 @@ const ru = {
   "users.staleKeyTip": "Протухший ключ",
   "users.staleIdleWhy": "последний хендшейк: {age}",
   "users.staleNeverWhy": "ни разу не подключался · создан {age}",
+  // Revoked-key cleanup. Deliberately a different word from the revoke that
+  // precedes it: revoking frees the slot, this removes the record.
+  "users.keyPurgeAllBtn": "Очистить отозванные · {count}",
+  "users.keyPurgeCleanupBtn": "Отозванные · {count}",
+  "users.keyPurgeTitle": "Удалить отозванные ключи из панели",
+  "users.keyPurgeDesc":
+    "Отозванный ключ уже не работает — пир удалён с сервера. Остаётся строка о нём вместе с историей трафика; здесь она удаляется. Кого чистим: {name}.",
+  "users.keyPurgeEveryone": "все пользователи",
+  "users.keyPurgeWillTitle": "Что исчезнет",
+  "users.keyPurgeWill":
+    "Сама запись о ключе, его история трафика и незавершённые задания по нему. Отменить нельзя: после этого о ключе помнит только журнал аудита.",
+  "users.keyPurgeKeepsTitle": "Что останется",
+  "users.keyPurgeKeeps":
+    "Пользователь, его рабочие ключи и лимиты. В журнале появится запись admin.keys.purge с владельцем, сервером, названием устройства и датами — чтобы и через месяц можно было ответить, что это был за ключ.",
+  "users.keyPurgeSkipsTitle": "Чего это не коснётся",
+  "users.keyPurgeSkips":
+    "Только ключи в состоянии «отозван». Рабочий или отключённый панель удалить не даст: его пир может быть ещё жив на сервере, а найти его там можно лишь по названию, которое хранит эта самая строка.",
+  "users.keyPurgeConfirm": "Удалить · {count}",
+  "users.keyPurgeBusy": "Удаляем…",
+  "users.keyPurgeDone": "Удалено ключей: {ok}",
+  "users.keyPurgeDonePartial": "Удалено: {ok}, не вышло: {failed}",
   "users.staleCleanupBtn": "Протухшие ({count})",
   "users.staleTitle": "Отозвать протухшие ключи",
   "users.staleDesc":
@@ -1930,6 +1951,25 @@ const en = {
   "users.staleKeyTip": "Stale key",
   "users.staleIdleWhy": "last handshake: {age}",
   "users.staleNeverWhy": "never connected · created {age}",
+  "users.keyPurgeAllBtn": "Purge revoked · {count}",
+  "users.keyPurgeCleanupBtn": "Revoked · {count}",
+  "users.keyPurgeTitle": "Delete revoked keys from the panel",
+  "users.keyPurgeDesc":
+    "A revoked key already does nothing — its peer is gone from the server. What is left is the row, with its traffic history; this removes it. Subject: {name}.",
+  "users.keyPurgeEveryone": "every user",
+  "users.keyPurgeWillTitle": "What disappears",
+  "users.keyPurgeWill":
+    "The key's own record, its traffic history and any pending jobs for it. There is no undo: afterwards only the audit log remembers the key existed.",
+  "users.keyPurgeKeepsTitle": "What stays",
+  "users.keyPurgeKeeps":
+    "The user, their working keys and their limits. The log gains an admin.keys.purge entry carrying the owner, the server, the device name and the dates — so that in a month someone can still answer what this key was.",
+  "users.keyPurgeSkipsTitle": "What it will not touch",
+  "users.keyPurgeSkips":
+    "Only keys in the revoked state. The panel refuses to delete an active or disabled one: its peer may still be alive on the server, and the only way to find it there is the label this very row holds.",
+  "users.keyPurgeConfirm": "Delete · {count}",
+  "users.keyPurgeBusy": "Deleting…",
+  "users.keyPurgeDone": "Keys deleted: {ok}",
+  "users.keyPurgeDonePartial": "Deleted: {ok}, failed: {failed}",
   "users.staleCleanupBtn": "Stale ({count})",
   "users.staleTitle": "Revoke stale keys",
   "users.staleDesc":
