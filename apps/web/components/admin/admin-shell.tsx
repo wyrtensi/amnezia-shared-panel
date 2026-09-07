@@ -47,8 +47,12 @@ export function AdminShell({
     <AdminDataProvider>
       <div className="flex min-h-screen bg-muted/30">
         <aside className="sticky top-0 hidden h-screen w-60 shrink-0 flex-col border-r bg-sidebar text-sidebar-foreground md:flex">
+          {/* As wide as the rail's padding allows, height following the mark's
+              own ratio. Sized off the container rather than pinned to a height,
+              so the logo cannot outgrow the 15rem rail or need a second number
+              if that width ever changes. */}
           <div className="px-4 py-4">
-            <Logo className="h-11 w-auto" />
+            <Logo className="h-auto w-full" />
           </div>
           <nav className="flex-1 space-y-1 px-3 py-2">
             {NAV.map((item) => {
@@ -65,7 +69,7 @@ export function AdminShell({
                     "flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm font-medium transition-colors",
                     active
                       ? "bg-sidebar-primary/12 text-sidebar-primary"
-                      : "text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
+                      : "text-muted-foreground hover:bg-accent hover:text-accent-foreground",
                   )}
                 >
                   <item.icon className="h-4 w-4" />

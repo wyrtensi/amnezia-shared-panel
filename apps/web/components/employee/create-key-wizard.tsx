@@ -244,12 +244,7 @@ export function CreateKeyWizard({
     });
     return {
       value: profile,
-      // The wizard has its own title for the profile, not the shared
-      // `route.<profile>` label: that one also names the rules, users and
-      // global-routes screens, where an admin wants the feed's technical name
-      // in it. In front of a user choosing how their own key routes, the
-      // parenthetical is noise.
-      label: t(`wizard.route.${profile}.title`),
+      label: t(`route.${profile}`),
       description: t(`wizard.route.${profile}.desc`),
       // Say plainly which profile is proven and which is not. The split-tunnel
       // profile depends on a feed and on the client applying it, so it behaves

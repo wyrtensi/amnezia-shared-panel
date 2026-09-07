@@ -3,6 +3,7 @@
 import * as React from "react";
 import { Play, RotateCcw, Trash2 } from "lucide-react";
 import { toast } from "sonner";
+import { checkAssertionSchema, describeAssertion } from "@amnezia/contracts";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -14,6 +15,22 @@ import { apiRequest } from "@/lib/api";
 import { formatDateTime } from "@/lib/format";
 import { useT } from "@/lib/i18n/provider";
 import type { ServiceChecksState } from "@/components/admin/use-service-checks";
+
+/**
+ * One assertion as a sentence, or as its raw JSON when this build does not know
+ * the type.
+ *
+ * The list is typed `Record<string, unknown>` on purpose — a NEWER agent may
+ * advertise an assertion this panel has never heard of, and a strict type here
+ * would turn that into a crash rather than a line an admin can still read. So
+ * the shape is checked at the point of use: understood, print the contracts'
+ * own sentence (the same one the CLI and the audit log print); not understood,
+ * print what arrived.
+ */
+const assertionLine = (assertion: Record<string, unknown>): string => {
+  const parsed = checkAssertionSchema.safeParse(assertion);
+  return parsed.success ? describeAssertion(parsed.data) : JSON.stringify(assertion);
+};
 
 /**
  * The admin's view of the service checks and what every node says about them.
@@ -229,10 +246,20 @@ export function ServiceChecksCard({
               </div>
             </div>
 
-            <ul className="space-y-0.5 text-xs text-muted-foreground">
+            {/* The rules in words, not in the shape they travel in. This card
+                used to print `JSON.stringify(assertion)` — three or four lines
+                of `{"type":"finalUrlOmits","value":"…"}` under every check.
+                `describeAssertion` is the contracts' own, shared with the CLI
+                and the audit log so the three cannot drift; it answers in
+                English in both locales, which is the same sentence
+                `amnezia-panel checks` prints. */}
+            <ul className="flex flex-wrap gap-1.5">
               {(check.assertions ?? []).map((assertion, index) => (
-                <li key={index} className="truncate">
-                  {JSON.stringify(assertion)}
+                <li
+                  key={index}
+                  className="max-w-full truncate rounded-md bg-muted/70 px-2 py-0.5 font-mono text-[11px] text-muted-foreground"
+                >
+                  {assertionLine(assertion)}
                 </li>
               ))}
             </ul>

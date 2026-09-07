@@ -13,9 +13,13 @@ export function AppHeader({
   actions?: React.ReactNode;
 }) {
   return (
-    <header className="sticky top-0 z-30 flex flex-wrap items-center justify-between gap-3 border-b bg-header-surface/80 px-4 py-3 backdrop-blur sm:px-6">
+    <header className="sticky top-0 z-30 flex flex-wrap items-center justify-between gap-3 border-b border-border/45 px-4 py-3 backdrop-blur sm:px-6">
       <div className="flex min-w-0 items-center gap-3">
-        <Logo className="h-8 w-auto shrink-0 sm:h-9" />
+        {/* Sized against the bar rather than against the title: the mark is the
+            page's one piece of identity and at 32px it read as an afterthought
+            beside a 20px heading. It stays a notch shorter than the header's
+            own height so the bar still frames it. */}
+        <Logo className="h-11 w-auto shrink-0 sm:h-14" />
         <div className="min-w-0">
           <h1 className="truncate text-lg font-semibold tracking-tight sm:text-xl">
             {title}

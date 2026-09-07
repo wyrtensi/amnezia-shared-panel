@@ -86,7 +86,7 @@ const ru = {
 
   // Route profiles (shared)
   "route.full_tunnel": "Весь трафик",
-  "route.ru_blacklist": "Только заблокированные (blacklist)",
+  "route.ru_blacklist": "Только заблокированные",
 
   // Protocols (shared)
   "protocol.awg2": "AWG 2.0",
@@ -220,11 +220,6 @@ const ru = {
   "wizard.proto.awg3.desc": "Защита заголовков и трейлеры (рекомендуется)",
   "wizard.proto.awg2.label": "AmneziaWG 2.0",
   "wizard.proto.awg2.desc": "Совместимость со старыми клиентами",
-  // The wizard's own titles for the two profiles. The shared `route.<profile>`
-  // labels keep the feed's technical name for the admin screens; a user picking
-  // how their own key routes does not need it.
-  "wizard.route.full_tunnel.title": "Весь трафик",
-  "wizard.route.ru_blacklist.title": "Только заблокированные",
   "wizard.route.full_tunnel.desc": "Всё соединение идёт через VPN",
   "wizard.route.stable": "Стабильно",
   "wizard.route.testing": "Тестируется",
@@ -1338,7 +1333,7 @@ const en = {
 
   // Route profiles (shared)
   "route.full_tunnel": "All traffic",
-  "route.ru_blacklist": "Blocked only (blacklist)",
+  "route.ru_blacklist": "Blocked only",
 
   // Protocols (shared)
   "protocol.awg2": "AWG 2.0",
@@ -1464,8 +1459,6 @@ const en = {
   "wizard.proto.awg3.desc": "Header protection and trailers (recommended)",
   "wizard.proto.awg2.label": "AmneziaWG 2.0",
   "wizard.proto.awg2.desc": "Compatibility with older clients",
-  "wizard.route.full_tunnel.title": "All traffic",
-  "wizard.route.ru_blacklist.title": "Blocked only",
   "wizard.route.full_tunnel.desc": "All traffic goes through the VPN",
   "wizard.route.stable": "Stable",
   "wizard.route.testing": "In testing",

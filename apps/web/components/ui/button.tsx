@@ -8,8 +8,12 @@ const buttonVariants = cva(
   {
     variants: {
       variant: {
+        // The gradient is a token so light and dark each get their own two
+        // stops; `bg-primary` stays under it as the fallback and as what the
+        // hover state dims. `hover:bg-none` drops the image on hover so the
+        // dimmed colour actually shows rather than sitting behind it.
         default:
-          "bg-primary text-primary-foreground shadow-sm hover:bg-primary/90",
+          "bg-primary bg-[image:var(--primary-gradient)] text-primary-foreground shadow-sm hover:bg-primary/90 hover:bg-none",
         destructive:
           "bg-destructive text-destructive-foreground shadow-sm hover:bg-destructive/90",
         outline:
