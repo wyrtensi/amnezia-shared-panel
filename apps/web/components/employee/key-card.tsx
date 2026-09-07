@@ -36,6 +36,7 @@ import {
 import { KeyRenameDialog } from "@/components/employee/key-rename-dialog";
 import { configUrl } from "@/lib/api";
 import { formatDate } from "@/lib/format";
+import { formatLastSeen } from "@/lib/activity";
 import { keyDelivery } from "@/lib/key-delivery";
 import { TrafficSplit } from "@/components/inline-traffic";
 import { useT } from "@/lib/i18n/provider";
@@ -83,6 +84,10 @@ export function KeyCard({
   onSetInternalName?: (internalName: string) => Promise<boolean>;
 }) {
   const { t, lang } = useT();
+  // Fixed once per mount, like the users page does it: a `Date.now()` read
+  // during render would differ between the server pass and the client one and
+  // make every relative label a hydration mismatch.
+  const [now] = React.useState(() => Date.now());
   const [renaming, setRenaming] = React.useState(false);
   /**
    * The operator-only note is an administrator's own business, shown on an
@@ -313,6 +318,21 @@ export function KeyCard({
               <dt>{t("keyCard.created")}</dt>
               <dd className="text-foreground">
                 {formatDate(keyView.createdAt, lang)}
+              </dd>
+            </div>
+            {/* The same last-seen reading the users page shows, per key rather
+                than rolled up per person: a user's label is the maximum across
+                their keys, which says nothing about WHICH device stopped
+                connecting. `lastUsedAt` is the peer's own last handshake, so
+                "Never" here means this key has never carried traffic. */}
+            <div className="flex flex-wrap items-baseline gap-x-1.5 rounded-md border border-border/60 bg-well px-2 py-1 shadow-[var(--inset-shadow)]">
+              <dt>{t("keyCard.lastSeen")}</dt>
+              <dd className="text-foreground">
+                {formatLastSeen(
+                  keyView.lastUsedAt ? new Date(keyView.lastUsedAt).getTime() : null,
+                  now,
+                  lang,
+                )}
               </dd>
             </div>
             {me.policy.showTraffic ? (

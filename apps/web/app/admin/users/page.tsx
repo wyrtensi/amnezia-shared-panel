@@ -359,6 +359,16 @@ export default function AdminUsersPage() {
   const [policyUser, setPolicyUser] = React.useState<AdminUser | null>(null);
   const [keyUser, setKeyUser] = React.useState<AdminUser | null>(null);
   const [staleUser, setStaleUser] = React.useState<AdminUser | null>(null);
+  /**
+   * The revoked-key cleanup's subject. `{ user: null }` means every user —
+   * the panel-wide sweep — and `{ user }` narrows it to one person. Null is
+   * the dialog being closed, which is why the scope is a wrapper object rather
+   * than `AdminUser | null | "all"`: "all users" and "no dialog" are different
+   * things and must not share a value.
+   */
+  const [purgeScope, setPurgeScope] = React.useState<{
+    user: AdminUser | null;
+  } | null>(null);
   const [configTarget, setConfigTarget] =
     React.useState<AdminConfigTarget | null>(null);
 
@@ -493,6 +503,37 @@ export default function AdminUsersPage() {
     await reload();
   };
 
+  /**
+   * One call per key, in order, exactly like the stale sweep above: the API
+   * validates and audits each purge separately, and the audit event it writes
+   * is the only record the key ever existed. A single bulk endpoint would have
+   * to re-implement both, and would turn a partial failure into an all-or-
+   * nothing question the operator never asked.
+   */
+  const purgeRevokedKeys = async (ids: string[]) => {
+    let ok = 0;
+    let failed = 0;
+    for (const id of ids) {
+      try {
+        await request(`/api/admin/keys/${id}/purge`, {
+          method: "POST",
+          body: JSON.stringify({}),
+        });
+        ok += 1;
+      } catch {
+        failed += 1;
+      }
+    }
+    if (failed > 0) toast.error(t("users.keyPurgeDonePartial", { ok, failed }));
+    else toast.success(t("users.keyPurgeDone", { ok }));
+    setPurgeScope(null);
+    await reload();
+  };
+
+  // Panel-wide count for the toolbar button: every key the API would accept a
+  // purge for, whoever owns it.
+  const revokedEverywhere = keys.filter((key) => isPurgeableKeyState(key.state));
+
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center gap-2">
@@ -508,6 +549,20 @@ export default function AdminUsersPage() {
               : ""}
           </p>
         </div>
+        {/* Panel-wide cleanup. Appears only when something is actually
+            purgeable, for the same reason the per-user button does: a control
+            that always sits there invites a click on an empty set, and this
+            one is irreversible. */}
+        {revokedEverywhere.length > 0 ? (
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => setPurgeScope({ user: null })}
+          >
+            <Eraser className="h-4 w-4" />
+            {t("users.keyPurgeAllBtn", { count: revokedEverywhere.length })}
+          </Button>
+        ) : null}
         <div className="relative">
           <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
           <Input
@@ -656,6 +711,7 @@ export default function AdminUsersPage() {
             onEditPolicy={() => setPolicyUser(selected)}
             onCreateKey={() => setKeyUser(selected)}
             onCleanStale={() => setStaleUser(selected)}
+            onPurgeRevoked={() => setPurgeScope({ user: selected })}
             now={now}
             onKeyAction={(id, name, payload) =>
               action("keys", id, name, payload)
@@ -721,6 +777,21 @@ export default function AdminUsersPage() {
         now={now}
         onClose={() => setStaleUser(null)}
         onConfirm={revokeStaleKeys}
+      />
+      <PurgeRevokedDialog
+        scope={purgeScope}
+        keys={
+          purgeScope
+            ? purgeScope.user
+              ? (keysByOwner.get(purgeScope.user.id) ?? [])
+              : keys
+            : []
+        }
+        users={users}
+        nodes={nodes}
+        now={now}
+        onClose={() => setPurgeScope(null)}
+        onConfirm={purgeRevokedKeys}
       />
       <AdminConfigDialog
         target={configTarget}
@@ -1136,6 +1207,191 @@ function AccessDomainRemoveDialog({
  *  - it is a dialog with a named count on a destructive button, not a click on
  *    a row.
  */
+/**
+ * The revoked-key cleanup, for one person or for the whole panel.
+ *
+ * Revoking removes the peer from its node; the row stays, and keeps holding
+ * the peer's label, its traffic history and its place in the audit trail. That
+ * is deliberate — reconcile finds an orphaned peer by that label — but it means
+ * a panel that has been running a while accumulates rows for keys nobody can
+ * use. This is what removes them, and it is irreversible: afterwards the audit
+ * event is the only thing that remembers the key existed.
+ *
+ * Two scopes through one dialog rather than two dialogs: the copy, the
+ * per-key list and the three callouts are identical, and only the subject line
+ * and the set of keys differ. Modelled on StaleKeysDialog above, down to the
+ * `shown` snapshot that survives the close animation.
+ */
+function PurgeRevokedDialog({
+  scope,
+  keys,
+  users,
+  nodes,
+  now,
+  onClose,
+  onConfirm,
+}: {
+  scope: { user: AdminUser | null } | null;
+  keys: AdminKey[];
+  users: AdminUser[];
+  nodes: AdminNode[];
+  now: number;
+  onClose: () => void;
+  onConfirm: (ids: string[]) => Promise<void>;
+}) {
+  const { t, lang } = useT();
+  const [excluded, setExcluded] = React.useState<Set<string>>(new Set());
+  const [busy, setBusy] = React.useState(false);
+  const open = scope !== null;
+
+  React.useEffect(() => {
+    if (!open) return;
+    setExcluded(new Set());
+    setBusy(false);
+  }, [open, scope?.user?.id]);
+
+  const [shown, setShown] = React.useState<{
+    scope: { user: AdminUser | null };
+    keys: AdminKey[];
+  } | null>(null);
+  React.useEffect(() => {
+    if (scope) setShown({ scope, keys });
+  }, [scope, keys]);
+
+  const rows = React.useMemo(
+    () => (shown?.keys ?? []).filter((key) => isPurgeableKeyState(key.state)),
+    [shown],
+  );
+  const chosen = rows.filter((key) => !excluded.has(key.id));
+  const nodeName = (id: string) =>
+    nodes.find((node) => node.id === id)?.name ?? id;
+  const ownerName = (id: string) => {
+    const owner = users.find((user) => user.id === id);
+    return owner ? displayName(owner) : id.slice(0, 8);
+  };
+
+  const toggle = (id: string) =>
+    setExcluded((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+
+  const subject = shown?.scope.user
+    ? displayName(shown.scope.user)
+    : t("users.keyPurgeEveryone");
+
+  return (
+    <Dialog
+      open={open}
+      onOpenChange={(next) => {
+        if (!next && !busy) onClose();
+      }}
+    >
+      <DialogContent className="sm:max-w-2xl">
+        <DialogHeader>
+          <DialogTitle>{t("users.keyPurgeTitle")}</DialogTitle>
+          <DialogDescription>
+            {t("users.keyPurgeDesc", { name: subject })}
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="space-y-2">
+          <Callout tone="danger" title={t("users.keyPurgeWillTitle")}>
+            {t("users.keyPurgeWill")}
+          </Callout>
+          <Callout tone="success" title={t("users.keyPurgeKeepsTitle")}>
+            {t("users.keyPurgeKeeps")}
+          </Callout>
+          <Callout tone="info" title={t("users.keyPurgeSkipsTitle")}>
+            {t("users.keyPurgeSkips")}
+          </Callout>
+        </div>
+
+        <div className="flex items-center justify-end gap-2">
+          <Button
+            variant="ghost"
+            size="sm"
+            disabled={busy || excluded.size === 0}
+            onClick={() => setExcluded(new Set())}
+          >
+            {t("users.staleSelectAll")}
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            disabled={busy || chosen.length === 0}
+            onClick={() => setExcluded(new Set(rows.map((key) => key.id)))}
+          >
+            {t("users.staleClearAll")}
+          </Button>
+        </div>
+
+        <ul className="max-h-72 space-y-1.5 overflow-y-auto">
+          {rows.map((key) => (
+            <li
+              key={key.id}
+              className="flex items-start gap-2.5 rounded-lg border bg-well px-3 py-2 shadow-[var(--inset-shadow)]"
+            >
+              <Checkbox
+                checked={!excluded.has(key.id)}
+                onChange={() => toggle(key.id)}
+                disabled={busy}
+                className="mt-0.5"
+                aria-label={key.deviceLabel || key.id}
+              />
+              <div className="min-w-0 flex-1 text-xs">
+                <p className="truncate text-sm font-medium text-foreground">
+                  {key.deviceLabel || key.id.slice(0, 8)}
+                  {key.keyNumber != null ? (
+                    <span className="ml-1.5 font-normal text-muted-foreground">
+                      #{key.keyNumber}
+                    </span>
+                  ) : null}
+                </p>
+                <p className="truncate text-muted-foreground">
+                  {/* The owner is named only on the panel-wide sweep: on one
+                      person's dialog it would repeat the title on every row. */}
+                  {shown?.scope.user ? null : `${ownerName(key.ownerId)} · `}
+                  {nodeName(key.nodeId)}
+                  {key.internalName ? ` · ${key.internalName}` : ""}
+                </p>
+              </div>
+              <time className="shrink-0 whitespace-nowrap text-xs text-muted-foreground">
+                {formatLastSeen(
+                  key.revokedAt ? new Date(key.revokedAt).getTime() : null,
+                  now,
+                  lang,
+                )}
+              </time>
+            </li>
+          ))}
+        </ul>
+
+        <DialogFooter>
+          <Button variant="outline" disabled={busy} onClick={onClose}>
+            {t("common.cancel")}
+          </Button>
+          <Button
+            variant="destructive"
+            disabled={busy || chosen.length === 0}
+            onClick={() => {
+              setBusy(true);
+              void onConfirm(chosen.map((key) => key.id));
+            }}
+          >
+            <Eraser className="h-4 w-4" />
+            {busy
+              ? t("users.keyPurgeBusy")
+              : t("users.keyPurgeConfirm", { count: chosen.length })}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 function StaleKeysDialog({
   user,
   keys,
@@ -1426,6 +1682,7 @@ function UserDetail({
   onEditPolicy,
   onCreateKey,
   onCleanStale,
+  onPurgeRevoked,
   onKeyAction,
   onExportKey,
 }: {
@@ -1441,6 +1698,7 @@ function UserDetail({
   onEditPolicy: () => void;
   onCreateKey: () => void;
   onCleanStale: () => void;
+  onPurgeRevoked: () => void;
   onKeyAction: (
     id: string,
     action: string,
@@ -1455,6 +1713,11 @@ function UserDetail({
   const { t } = useT();
   const stats = statsFor(keys);
   const staleness = summarizeStaleKeys(keys, now);
+  // What the purge would take: exactly the states the API accepts, read from
+  // the contract rather than from a second copy of the word "revoked".
+  const revokedCount = keys.filter((key) =>
+    isPurgeableKeyState(key.state),
+  ).length;
   const disabled = user.status !== "active";
   const nodeName = (id: string) =>
     nodes.find((node) => node.id === id)?.name ?? id;
@@ -1635,6 +1898,12 @@ function UserDetail({
               <Button size="sm" variant="outline" onClick={onCleanStale}>
                 <Moon className="h-4 w-4" />
                 {t("users.staleCleanupBtn", { count: staleness.stale })}
+              </Button>
+            ) : null}
+            {revokedCount > 0 ? (
+              <Button size="sm" variant="outline" onClick={onPurgeRevoked}>
+                <Eraser className="h-4 w-4" />
+                {t("users.keyPurgeCleanupBtn", { count: revokedCount })}
               </Button>
             ) : null}
             <Button size="sm" variant="secondary" onClick={onCreateKey}>
@@ -1862,7 +2131,7 @@ function AdminKeyRow({
                 onClick={() =>
                   confirmAction(
                     "purge",
-                    t("users.purgeConfirm", { label: keyView.deviceLabel }),
+                    t("users.keyPurgeConfirm", { label: keyView.deviceLabel }),
                   )
                 }
               />

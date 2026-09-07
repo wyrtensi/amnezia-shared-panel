@@ -18,6 +18,10 @@ import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
 import {
+  AUDIT_CATEGORIES,
+  auditEventMatches,
+} from "./auditFilter.js";
+import {
   keyNeedsRouteProfileWarning,
   routeDeliveryNotice,
   routeProfileWarning,
@@ -638,6 +642,98 @@ async function cmdStaleKeys(args: string[]): Promise<void> {
  * per-key route, in order, so every one is validated and audited separately
  * and a key whose state moved under the operator is refused rather than forced.
  */
+/**
+ * Structural copy of `PURGEABLE_KEY_STATES` from @amnezia/contracts, for the
+ * same reason as the other copies here: the CLI ships dependency-free. Pinned
+ * by a cross-check in `auditFilter.test.ts`.
+ */
+const CLI_PURGEABLE_KEY_STATES = ["revoked"];
+
+export const cliIsPurgeableKeyState = (state: string): boolean =>
+  CLI_PURGEABLE_KEY_STATES.includes(state);
+
+/**
+ * The bulk half of `key-purge`: delete the panel's rows for keys whose peers
+ * are already gone, for one user or for everybody.
+ *
+ * Revoking removes the peer from its node and deliberately keeps the row —
+ * reconcile finds an orphaned peer by the label that row holds. The rows
+ * therefore accumulate, and this is what clears them. Irreversible, so it
+ * prints the whole list and changes nothing without `--confirm`, exactly like
+ * `key-purge` and `stale-keys-revoke`.
+ *
+ * One call per key, in order, against the existing per-key route: each purge
+ * is validated and audited separately, and the audit event it writes is the
+ * only record the key ever existed.
+ */
+async function cmdKeysPurgeRevoked(args: string[]): Promise<void> {
+  const usage =
+    "Usage: keys-purge-revoked [<id|email>] [--confirm]   (no user = every user)";
+  const who = positionals(args)[0];
+  const userId = who ? await resolveUserId(who, usage) : null;
+  const keys = await api<AdminKey[]>("/api/admin/keys");
+  const doomed = keys.filter(
+    (key) =>
+      cliIsPurgeableKeyState(key.state) &&
+      (userId === null || key.ownerId === userId),
+  );
+
+  const scope = userId ? `user ${who}` : "the panel";
+  if (doomed.length === 0) {
+    console.log(`${scope}: no revoked keys to delete`);
+    return;
+  }
+
+  console.log(
+    table(
+      doomed.map((key) => ({
+        id: key.id,
+        owner: key.ownerId,
+        device: key.deviceLabel || "—",
+        internal: key.internalName || "—",
+        node: key.nodeId,
+      })),
+      ["id", "owner", "device", "internal", "node"],
+    ),
+  );
+  console.log("");
+  if (!args.includes("--confirm")) {
+    console.log(`Would delete ${doomed.length} revoked keys from ${scope}.`);
+    console.log(
+      "This removes the row, its traffic history and any pending jobs. The peer",
+    );
+    console.log(
+      "is already gone from its node - that is what being revoked means - so",
+    );
+    console.log(
+      "nothing stops working. It cannot be undone: afterwards only the audit",
+    );
+    console.log("log remembers these keys existed.");
+    console.log("Re-run with --confirm to delete them.");
+    return;
+  }
+  let ok = 0;
+  const failures: string[] = [];
+  for (const key of doomed) {
+    try {
+      await api(`/api/admin/keys/${key.id}/purge`, {
+        method: "POST",
+        body: JSON.stringify({}),
+      });
+      ok += 1;
+    } catch (cause) {
+      failures.push(
+        `${key.id}: ${cause instanceof Error ? cause.message : String(cause)}`,
+      );
+    }
+  }
+  console.log(`purged ${ok} of ${doomed.length} keys`);
+  for (const failure of failures) console.log(`  failed ${failure}`);
+  if (failures.length > 0) {
+    throw new Error(`${failures.length} keys could not be purged`);
+  }
+}
+
 async function cmdStaleKeysRevoke(args: string[]): Promise<void> {
   const usage =
     "Usage: stale-keys-revoke <id|email> [--days=N] [--confirm]";
@@ -785,10 +881,29 @@ async function cmdNodes(args: string[]): Promise<void> {
 }
 
 async function cmdAudit(args: string[]): Promise<void> {
-  const events = await api<AuditEvent[]>("/api/admin/audit");
+  const actor = flagOf(args, "actor");
+  if (actor !== undefined && actor !== "people" && actor !== "system") {
+    throw new Error("audit: --actor takes people or system");
+  }
+  const category = flagOf(args, "category");
+  if (category !== undefined && !AUDIT_CATEGORIES.includes(category)) {
+    throw new Error(
+      `audit: --category takes one of ${AUDIT_CATEGORIES.join(", ")}`,
+    );
+  }
+  const events = (await api<AuditEvent[]>("/api/admin/audit")).filter((event) =>
+    auditEventMatches(event, { actor, category }),
+  );
+  // Filtered before --json as well as before the table: a script asking for one
+  // category should not have to re-implement the fold between the two spellings
+  // of a target type.
   if (wantsJson(args)) return json(events);
   const limitArg = args.find((arg) => arg.startsWith("--limit="));
   const limit = limitArg ? Number(limitArg.split("=")[1]) : 20;
+  if (events.length === 0) {
+    console.log("(none)");
+    return;
+  }
   console.log(
     table(
       events.slice(0, limit).map((event) => ({
@@ -2424,7 +2539,10 @@ Read:
                           one. --json also carries publicIpResolvedAt.
                           --hosts instead shows how the PANEL reaches each agent
                           (apiBaseUrl) classified ip / docker-local / dns
-  audit [--limit=N]        Recent audit events
+  keys-purge-revoked [<id|email>] [--confirm]
+                           Delete revoked keys' rows (all users, or one)
+  audit [--limit=N] [--actor=people|system] [--category=keys|users|nodes|policy|rules|access|checks|quota|other]
+                           Recent audit events
   quota [--all] [--json]   Key-limit requests (pending by default; --all = every state).
                           The target and "now → requested" cells are read in that
                           user's own key-limit mode: under a global (shared) limit a
@@ -3037,6 +3155,8 @@ export async function dispatch(argv: string[]): Promise<void> {
       return cmdOffboardedPurge(args);
     case "nodes":
       return cmdNodes(args);
+    case "keys-purge-revoked":
+      return cmdKeysPurgeRevoked(args);
     case "audit":
       return cmdAudit(args);
     case "version":

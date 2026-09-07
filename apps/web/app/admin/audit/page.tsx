@@ -19,6 +19,13 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { formatDateTime } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { useAdminData, type AuditEvent } from "@/components/admin/admin-data";
+import {
+  AUDIT_CATEGORIES,
+  auditCategoryOf,
+  auditRowMatches,
+  type AuditCategory,
+  type AuditScope,
+} from "@/lib/audit-filter";
 import { useT } from "@/lib/i18n/provider";
 
 type Tone = "neutral" | "success" | "danger" | "warning";
@@ -119,6 +126,59 @@ const TARGET_TYPE: Record<string, string> = {
   access_policy: "audit.target.access_policy",
 };
 
+/** A person, as far as a row can tell: a name, a role, and whether they still exist. */
+type Person = { text: string; role?: string; gone?: boolean };
+
+/**
+ * The chip after a name. It carries the role when the person is still in the
+ * panel, and "deleted" when the address could only be recovered from the log —
+ * which is the more important of the two, because it says why the users page
+ * will not explain this row.
+ */
+function PersonMark({ person, t }: { person: Person; t: Translate }) {
+  if (!person.gone && !person.role) return null;
+  return (
+    <Badge
+      variant="outline"
+      className={cn(
+        "h-4 px-1.5 text-[10px] font-normal",
+        person.gone && "border-destructive/40 text-destructive",
+      )}
+    >
+      {person.gone ? t("audit.deletedUser") : t(`role.${person.role}`)}
+    </Badge>
+  );
+}
+
+const SCOPES: AuditScope[] = ["all", "people", "system"];
+
+/** One chip in a facet row: pressed state and nothing else to it. */
+function FacetChip({
+  active,
+  onClick,
+  children,
+}: {
+  active: boolean;
+  onClick: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      aria-pressed={active}
+      onClick={onClick}
+      className={cn(
+        "rounded-md px-2 py-1 text-xs font-medium transition-colors",
+        active
+          ? "bg-primary/10 text-primary"
+          : "text-muted-foreground hover:bg-accent hover:text-foreground",
+      )}
+    >
+      {children}
+    </button>
+  );
+}
+
 function describe(action: string, t: Translate): { text: string; tone: Tone } {
   const exact = EXACT[action];
   if (exact) return { text: t(exact.textKey), tone: exact.tone };
@@ -153,12 +213,37 @@ function ToneIcon({ tone, action }: { tone: Tone; action: string }) {
   return <Circle className={className} />;
 }
 
-function metaPills(metadata: Record<string, unknown> | null): string[] {
+/**
+ * Which metadata keys hold a reference to something with a name, and to what.
+ * A purge event carries `ownerId` and `nodeId`, and rendering those as raw
+ * UUIDs makes the pill wider than the row and tells the reader nothing: the
+ * question a purge raises is *whose* key it was.
+ */
+const META_REFERENCE: Record<string, "user" | "node"> = {
+  ownerId: "user",
+  userId: "user",
+  actorUserId: "user",
+  targetUserId: "user",
+  nodeId: "node",
+};
+
+function metaPills(
+  metadata: Record<string, unknown> | null,
+  resolve: (kind: "user" | "node", id: string) => string | null,
+): string[] {
   if (!metadata) return [];
   return Object.entries(metadata)
     .filter(([, value]) => value !== null && value !== undefined && value !== "")
     .slice(0, 4)
     .map(([key, value]) => {
+      const kind = META_REFERENCE[key];
+      if (kind && typeof value === "string") {
+        const name = resolve(kind, value);
+        // Fall through to the raw id when nothing knows the name — a pill that
+        // silently drops an unresolvable reference would hide the only handle
+        // the reader has left.
+        if (name) return `${key}: ${name}`;
+      }
       const rendered =
         typeof value === "object"
           ? JSON.stringify(value)
@@ -168,39 +253,92 @@ function metaPills(metadata: Record<string, unknown> | null): string[] {
 }
 
 export default function AdminAuditPage() {
-  const { audit, users, loading } = useAdminData();
+  const { audit, users, nodes, loading } = useAdminData();
   const { t, lang } = useT();
   const [query, setQuery] = React.useState("");
+  const [scope, setScope] = React.useState<AuditScope>("all");
+  const [category, setCategory] = React.useState<AuditCategory | null>(null);
 
-  const actorLabel = (event: AuditEvent) =>
-    (event.actorUserId &&
-      users.find((user) => user.id === event.actorUserId)?.email) ||
-    event.actorUserId ||
-    (event.actorType === "system" ? t("audit.system") : event.actorType);
+  /**
+   * Emails of people who are no longer in the users list, recovered from the
+   * log itself.
+   *
+   * A deletion is exactly the event whose subject cannot be looked up: by the
+   * time anyone reads the row, the user row is gone and `users.find` misses, so
+   * the record of who was removed rendered as `users d4158b91` — an id, on the
+   * one entry where the name matters most. `user.deleted` writes the address
+   * into its own metadata, so the log can answer the question the users list no
+   * longer can.
+   */
+  const emailsFromLog = React.useMemo(() => {
+    const found = new Map<string, string>();
+    for (const event of audit) {
+      const email = event.metadata?.email;
+      if (event.targetId && typeof email === "string" && email) {
+        found.set(event.targetId, email);
+      }
+    }
+    return found;
+  }, [audit]);
 
-  const targetLabel = (event: AuditEvent) => {
-    if (!event.targetId)
-      return t(TARGET_TYPE[event.targetType] ?? event.targetType);
-    const asUser = users.find((user) => user.id === event.targetId);
-    if (asUser) return asUser.email;
-    const type = t(TARGET_TYPE[event.targetType] ?? event.targetType);
-    return `${type} ${event.targetId.slice(0, 8)}`;
+  const personFor = (id: string | null): Person | null => {
+    if (!id) return null;
+    const known = users.find((user) => user.id === id);
+    if (known) return { text: known.email, role: known.role };
+    const remembered = emailsFromLog.get(id);
+    if (remembered) return { text: remembered, gone: true };
+    return null;
   };
 
-  const needle = query.trim().toLowerCase();
-  const rows = audit
-    .map((event) => ({
-      event,
-      actor: actorLabel(event),
-      target: targetLabel(event),
-      ...describe(event.action, t),
-    }))
-    .filter((row) => {
-      if (!needle) return true;
-      return `${row.actor} ${row.text} ${row.target} ${row.event.action}`
-        .toLowerCase()
-        .includes(needle);
-    });
+  const actorLabel = (event: AuditEvent): Person => {
+    const person = personFor(event.actorUserId ?? null);
+    if (person) return person;
+    if (event.actorUserId) return { text: event.actorUserId };
+    return {
+      text:
+        event.actorType === "system" ? t("audit.system") : event.actorType,
+    };
+  };
+
+  /** Names for the ids that appear inside metadata pills. */
+  const resolveReference = (kind: "user" | "node", id: string): string | null => {
+    if (kind === "node") return nodes.find((node) => node.id === id)?.name ?? null;
+    return personFor(id)?.text ?? null;
+  };
+
+  const targetLabel = (event: AuditEvent): Person => {
+    if (!event.targetId)
+      return { text: t(TARGET_TYPE[event.targetType] ?? event.targetType) };
+    const person = personFor(event.targetId);
+    if (person) return person;
+    const type = t(TARGET_TYPE[event.targetType] ?? event.targetType);
+    return { text: `${type} ${event.targetId.slice(0, 8)}` };
+  };
+
+  const described = audit.map((event) => ({
+    event,
+    actor: actorLabel(event),
+    target: targetLabel(event),
+    ...describe(event.action, t),
+  }));
+
+  // Only the categories actually present get a chip. A fixed row would offer
+  // filters that empty the list on a panel that has never touched that subject,
+  // which reads as a broken page rather than as an empty category.
+  const presentCategories = AUDIT_CATEGORIES.filter((value) =>
+    audit.some((event) => auditCategoryOf(event.targetType) === value),
+  );
+
+  const rows = described.filter((row) =>
+    auditRowMatches(
+      {
+        actorType: row.event.actorType,
+        targetType: row.event.targetType,
+        haystack: `${row.actor.text} ${row.text} ${row.target.text} ${row.event.action}`,
+      },
+      { scope, category, query },
+    ),
+  );
 
   return (
     <Card>
@@ -221,6 +359,62 @@ export default function AdminAuditPage() {
               className="h-9 w-60 pl-8"
             />
           </div>
+        </div>
+
+        {/* Two facets, because the log answers two questions badly at once: the
+            panel's own reconcile traffic outnumbers people on a quiet day, and
+            one subject at a time is what an operator actually came to read. */}
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-t px-5 py-2.5">
+          <div
+            role="group"
+            aria-label={t("audit.scopeLabel")}
+            className="flex items-center gap-0.5 rounded-lg border border-border p-0.5"
+          >
+            {SCOPES.map((value) => (
+              <FacetChip
+                key={value}
+                active={scope === value}
+                onClick={() => setScope(value)}
+              >
+                {t(`audit.scope.${value}`)}
+              </FacetChip>
+            ))}
+          </div>
+
+          {presentCategories.length > 1 ? (
+            <div
+              role="group"
+              aria-label={t("audit.categoryLabel")}
+              className="flex flex-wrap items-center gap-0.5"
+            >
+              <FacetChip active={category === null} onClick={() => setCategory(null)}>
+                {t("audit.cat.all")}
+              </FacetChip>
+              {presentCategories.map((value) => (
+                <FacetChip
+                  key={value}
+                  active={category === value}
+                  onClick={() => setCategory(category === value ? null : value)}
+                >
+                  {t(`audit.cat.${value}`)}
+                </FacetChip>
+              ))}
+            </div>
+          ) : null}
+
+          {scope !== "all" || category !== null || query ? (
+            <button
+              type="button"
+              onClick={() => {
+                setScope("all");
+                setCategory(null);
+                setQuery("");
+              }}
+              className="ml-auto text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground"
+            >
+              {t("audit.clearFilters", { count: rows.length })}
+            </button>
+          ) : null}
         </div>
 
         {loading ? (
@@ -252,13 +446,15 @@ export default function AdminAuditPage() {
                   <ToneIcon tone={row.tone} action={row.event.action} />
                 </span>
                 <div className="min-w-0 flex-1">
-                  <p className="text-sm leading-snug">
-                    <span className="font-medium">{row.actor}</span>{" "}
+                  <p className="flex flex-wrap items-center gap-x-1.5 text-sm leading-snug">
+                    <span className="font-medium">{row.actor.text}</span>
+                    <PersonMark person={row.actor} t={t} />
                     <span className="text-muted-foreground">{row.text}</span>
                   </p>
                   <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
-                    <span className="truncate">{row.target}</span>
-                    {metaPills(row.event.metadata).map((pill) => (
+                    <span className="truncate">{row.target.text}</span>
+                    <PersonMark person={row.target} t={t} />
+                    {metaPills(row.event.metadata, resolveReference).map((pill) => (
                       <Badge
                         key={pill}
                         variant="outline"

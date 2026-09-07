@@ -1,5 +1,8 @@
 import helmet from "@fastify/helmet";
-import Fastify, { type FastifyRequest } from "fastify";
+import Fastify, {
+  type FastifyRequest,
+  type FastifyServerOptions,
+} from "fastify";
 import QRCode from "qrcode";
 import { z } from "zod";
 import {
@@ -43,6 +46,12 @@ export type BuildAppOptions = {
   environment: Environment;
   identityAdapter?: IdentityAdapter;
   logger?: boolean;
+  /**
+   * A ready-made pino-shaped logger, Fastify's own `loggerInstance` option.
+   * Only tests pass it: it is how the error handler's level choice is asserted
+   * against the real wiring rather than against a second copy of the rule.
+   */
+  loggerInstance?: FastifyServerOptions["loggerInstance"];
   /**
    * Enable the `x-dev-user-email` header identity path (trusts any caller),
    * as a fallback tried when `identityAdapter` finds no claim. Defaults to
@@ -120,11 +129,16 @@ export const buildApp = async ({
   // every caller already carries it and it documents where the app runs.
   identityAdapter,
   logger = false,
+  loggerInstance,
   allowDevIdentity,
   updateController,
   clientReleaseResolver,
 }: BuildAppOptions) => {
-  const app = Fastify({ logger, trustProxy: true });
+  // `loggerInstance` and `logger` are mutually exclusive in Fastify 5, so an
+  // injected logger replaces the flag rather than sitting beside it.
+  const app = loggerInstance
+    ? Fastify({ loggerInstance, trustProxy: true })
+    : Fastify({ logger, trustProxy: true });
   const actors = new WeakMap<FastifyRequest, Actor>();
   const devIdentityEnabled = allowDevIdentity ?? false;
   const updates =
@@ -138,19 +152,32 @@ export const buildApp = async ({
   await app.register(helmet, { contentSecurityPolicy: false });
 
   app.setErrorHandler((error, request, reply) => {
-    request.log.error(error);
     if (error instanceof ApiError) {
+      // A 4xx ApiError is the API working, not failing: a refused token, an
+      // address that is not on the allowlist, a quota that is full. On a login
+      // door open to the internet those arrive as a steady trickle, and at
+      // `error` level they bury the failures that are actually the panel's own
+      // — which is the whole reason anyone greps for level 50. 5xx keeps
+      // `error`, because that shape is thrown for a fault rather than for a
+      // decision.
+      if (error.statusCode >= 500) request.log.error(error);
+      else request.log.warn(error);
       return reply.code(error.statusCode).send({
         error: error.code,
         message: error.message,
       });
     }
     if (error instanceof z.ZodError) {
+      // A malformed body is the caller's mistake and the reply names the
+      // field, so it is the same kind of event as a 4xx above.
+      request.log.warn(error);
       return reply.code(400).send({
         error: "VALIDATION_ERROR",
         issues: error.issues,
       });
     }
+    // Anything that reached here unclassified is the panel's own bug.
+    request.log.error(error);
     return reply.code(500).send({ error: "INTERNAL_ERROR" });
   });
 
