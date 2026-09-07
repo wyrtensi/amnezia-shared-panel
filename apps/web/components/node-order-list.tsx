@@ -79,13 +79,18 @@ export function NodeOrderList({
       <p className="text-xs text-muted-foreground">
         {t("policy.recommendedSummary", { count, total: ordered.length })}
       </p>
-      <ol className="space-y-1.5">
+      {/* The recess belongs to the list, not to each row: with a well under
+          every item the rows stopped reading as one ordered sequence and became
+          three separate controls. */}
+      <ol className="space-y-1.5 rounded-lg border border-border/60 bg-well p-1.5 shadow-[var(--inset-shadow)]">
         {ordered.map((id, index) => {
           const node = byId.get(id);
           if (!node) return null;
           const isRecommended = index < count;
           const rowStyle = [
-            "flex items-center gap-2 rounded-lg border p-2 text-sm transition-colors",
+            // The rows sit ON the list's recess, so they take the card colour
+            // rather than being transparent over it.
+            "flex items-center gap-2 rounded-lg border bg-card p-2 text-sm transition-colors",
             isRecommended ? "border-primary bg-primary/10" : "",
             over === id && dragging !== id ? "border-dashed border-primary" : "",
             dragging === id ? "opacity-50" : "",

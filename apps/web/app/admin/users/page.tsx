@@ -1253,7 +1253,7 @@ function StaleKeysDialog({
           {rows.map(({ key, activity, since }) => (
             <label
               key={key.id}
-              className="flex cursor-pointer items-center gap-2.5 rounded-lg border bg-muted/40 px-3 py-2 hover:bg-accent/40"
+              className="flex cursor-pointer items-center gap-2.5 rounded-lg border bg-well shadow-[var(--inset-shadow)] px-3 py-2 hover:bg-accent/40"
             >
               <Checkbox
                 checked={!excluded.has(key.id)}
@@ -1685,7 +1685,7 @@ function StatTile({
   value: React.ReactNode;
 }) {
   return (
-    <div className="flex items-center gap-2.5 rounded-xl border bg-muted/40 p-2.5">
+    <div className="flex items-center gap-2.5 rounded-xl border bg-well shadow-[var(--inset-shadow)] p-2.5">
       <span
         className={cn(
           "flex size-8 shrink-0 items-center justify-center rounded-lg",
@@ -1740,7 +1740,7 @@ function AdminKeyRow({
   const [editingInternal, setEditingInternal] = React.useState(false);
   return (
     <>
-      <div className="rounded-lg border bg-muted/40 px-3 py-2 transition-colors hover:bg-accent/40">
+      <div className="rounded-lg border bg-well shadow-[var(--inset-shadow)] px-3 py-2 transition-colors hover:bg-accent/40">
         <div className="flex items-center gap-2.5">
           <span
             className={cn(

@@ -77,14 +77,22 @@ export function AdminShell({
                 </Link>
               );
             })}
+            {/* Not pinned to the foot of the rail: it is a destination like the
+                items above it, just not part of administration. One button's
+                height of space says that without a rule or a heading. */}
+            <div className="pt-8">
+              <Button
+                asChild
+                variant="ghost"
+                size="sm"
+                className="w-full justify-start"
+              >
+                <Link href="/" prefetch={false}>
+                  <KeyRound className="h-4 w-4" /> {t("admin.myKeys")}
+                </Link>
+              </Button>
+            </div>
           </nav>
-          <div className="px-3 pt-3">
-            <Button asChild variant="ghost" size="sm" className="w-full justify-start">
-              <Link href="/" prefetch={false}>
-                <KeyRound className="h-4 w-4" /> {t("admin.myKeys")}
-              </Link>
-            </Button>
-          </div>
           <VersionBadge />
         </aside>
 
