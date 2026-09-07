@@ -47,12 +47,24 @@ describe("0035_drop_whitelist_profile guard", () => {
 
     // A migrations folder holding only what the real journal calls 0000..0034,
     // so migrating it stops one migration short of the one under test.
+    //
+    // Everything BEFORE 0035, not everything except it: drizzle's migrator
+    // applies a migration only when its journal timestamp is newer than the
+    // last one recorded, so letting a LATER migration into this folder would
+    // stamp the database past 0035 and the real run below would skip the very
+    // guard under test. That is not hypothetical — adding 0036 did exactly
+    // that, and both cases here went green-to-red on a test that had stopped
+    // running any of 0035's SQL.
     const journal = JSON.parse(
       readFileSync(join(migrationsDir, "meta/_journal.json"), "utf8"),
     ) as { entries: Array<{ tag: string }> };
-    const priorEntries = journal.entries.filter(
-      (entry) => entry.tag !== "0035_drop_whitelist_profile",
+    const guardIndex = journal.entries.findIndex(
+      (entry) => entry.tag === "0035_drop_whitelist_profile",
     );
+    if (guardIndex < 0) {
+      throw new Error("0035_drop_whitelist_profile is missing from the journal");
+    }
+    const priorEntries = journal.entries.slice(0, guardIndex);
 
     tempMigrationsDir = mkdtempSync(join(tmpdir(), "amnezia-migration-guard-"));
     const fs = await import("node:fs");

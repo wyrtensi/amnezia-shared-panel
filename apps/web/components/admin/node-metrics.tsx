@@ -29,6 +29,37 @@ const bytes = (value: string | number | null | undefined, lang: Lang): string =>
 const number = (value: number | null | undefined): string =>
   value === null || value === undefined ? "—" : String(value);
 
+/**
+ * How much memory is actually in use: total minus MemAvailable, never total
+ * minus free — the difference is the page cache, which the kernel hands back
+ * on demand and which would otherwise read as a nearly full machine.
+ *
+ * The row used to show MemAvailable itself, directly above a Swap row showing
+ * the opposite (used, not free). Two adjacent numbers with opposite meanings
+ * and nothing to tell them apart: a host with 706 MiB of its 961 MiB in use
+ * read as "280 / 961", which is not a smaller number for the same thing but a
+ * different thing entirely.
+ *
+ * Values arrive as strings (bigint columns), so the arithmetic is BigInt: at
+ * this size Number would still be exact, but the parsing would be the only
+ * place in this file that quietly assumes it.
+ */
+export const memoryUsedBytes = (
+  total: string | number | null | undefined,
+  available: string | number | null | undefined,
+): string | null => {
+  if (total === null || total === undefined) return null;
+  if (available === null || available === undefined) return null;
+  try {
+    const used = BigInt(String(total)) - BigInt(String(available));
+    // A node reporting more available than total is reporting nonsense; show a
+    // dash rather than a negative "in use".
+    return used < 0n ? null : String(used);
+  } catch {
+    return null;
+  }
+};
+
 /** A dash, never a zero. A zero here reads as a measurement. */
 export function NodeMetrics({
   metrics,
@@ -72,7 +103,9 @@ export function NodeMetrics({
   const rows: Array<[string, string, boolean?]> = [
     [
       t("nodes.metrics.ram"),
-      `${bytes(metrics.memAvailableBytes, lang)} / ${bytes(metrics.memTotalBytes, lang)}`,
+      // Used / total, like the Swap and Disk rows, with what is still free
+      // spelled out — that is the number the warning above is keyed on.
+      `${bytes(memoryUsedBytes(metrics.memTotalBytes, metrics.memAvailableBytes), lang)} / ${bytes(metrics.memTotalBytes, lang)} · ${bytes(metrics.memAvailableBytes, lang)} ${t("nodes.metrics.free")}`,
       memLow,
     ],
     [

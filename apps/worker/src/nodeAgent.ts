@@ -65,6 +65,10 @@ const serverSchema = z.object({
   // The UDP ports the node reports listening on. Optional for the same reason:
   // an agent that predates the field must not fail the poll.
   listenPorts: z.array(z.number().int()).optional(),
+  // The agent's own version, reported from 1.1.14 on. Optional on the same
+  // terms: an older agent does not send it, and a poll that failed validation
+  // over a missing version would take the whole node's telemetry down with it.
+  agentVersion: z.string().optional(),
   // What this agent can run as a service check. Plain strings rather than the
   // panel's enums on purpose: a NEWER agent may advertise a type this panel has
   // never heard of, and parsing that as an enum would turn a forward-compatible

@@ -253,6 +253,13 @@
       "when": 1788725730564,
       "tag": "0035_drop_whitelist_profile",
       "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "7",
+      "when": 1788740409990,
+      "tag": "0036_node_agent_version",
+      "breakpoints": true
     }
   ]
 }

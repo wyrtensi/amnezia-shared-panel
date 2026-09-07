@@ -244,7 +244,12 @@ export function CreateKeyWizard({
     });
     return {
       value: profile,
-      label: t(`route.${profile}`),
+      // The wizard has its own title for the profile, not the shared
+      // `route.<profile>` label: that one also names the rules, users and
+      // global-routes screens, where an admin wants the feed's technical name
+      // in it. In front of a user choosing how their own key routes, the
+      // parenthetical is noise.
+      label: t(`wizard.route.${profile}.title`),
       description: t(`wizard.route.${profile}.desc`),
       // Say plainly which profile is proven and which is not. The split-tunnel
       // profile depends on a feed and on the client applying it, so it behaves
@@ -446,11 +451,15 @@ export function CreateKeyWizard({
               <Label>{t("wizard.routing")}</Label>
               <Hint>{t("wizard.routingHint")}</Hint>
             </div>
+            {/* Two columns, not three: the third was `ru_whitelist`, and with it
+                gone a 3-up grid left each card a third of the dialog wide —
+                narrow enough that the Russian label broke mid-word and a third
+                of the row sat empty. */}
             <OptionCards
               options={routeOptions}
               value={routeProfile}
               onChange={setRouteProfile}
-              columns={3}
+              columns={2}
               ariaLabel={t("wizard.routing")}
             />
             {policyLocked ? (

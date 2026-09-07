@@ -14,6 +14,7 @@ import {
   Moon,
   Server,
   ShieldCheck,
+  Tag,
   Users,
   Wifi,
   X,
@@ -669,6 +670,15 @@ function OverviewNodeCard({
               ip={node.publicIp}
               resolvedAt={node.publicIpResolvedAt}
             />
+          </dd>
+          <dt className="flex items-center gap-1">
+            <Tag className="size-3.5 shrink-0" />
+            <span>{t("nodes.agentVersion")}</span>
+          </dt>
+          {/* A dash means the node has not reported one — it predates the
+              release that added the field — not that it is running nothing. */}
+          <dd className="truncate text-right font-mono text-xs text-foreground">
+            {node.agentVersion ?? "—"}
           </dd>
         </dl>
 

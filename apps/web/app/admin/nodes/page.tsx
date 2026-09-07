@@ -14,6 +14,7 @@ import {
   RefreshCw,
   Server,
   ShieldCheck,
+  Tag,
   Trash2,
   TriangleAlert,
 } from "lucide-react";
@@ -460,6 +461,16 @@ function NodeCard({
               ip={node.publicIp}
               resolvedAt={node.publicIpResolvedAt}
             />
+          </dd>
+          <dt className="flex items-center gap-1">
+            <Tag className="size-3.5 shrink-0" />
+            <span>{t("nodes.agentVersion")}</span>
+            <Hint>{t("nodes.agentVersionHint")}</Hint>
+          </dt>
+          {/* A dash is "this node has not said", which is the honest answer for
+              an agent older than the release that started reporting it. */}
+          <dd className="truncate text-right font-mono text-xs text-foreground">
+            {node.agentVersion ?? "—"}
           </dd>
         </dl>
 

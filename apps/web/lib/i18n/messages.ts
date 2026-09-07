@@ -220,6 +220,11 @@ const ru = {
   "wizard.proto.awg3.desc": "Защита заголовков и трейлеры (рекомендуется)",
   "wizard.proto.awg2.label": "AmneziaWG 2.0",
   "wizard.proto.awg2.desc": "Совместимость со старыми клиентами",
+  // The wizard's own titles for the two profiles. The shared `route.<profile>`
+  // labels keep the feed's technical name for the admin screens; a user picking
+  // how their own key routes does not need it.
+  "wizard.route.full_tunnel.title": "Весь трафик",
+  "wizard.route.ru_blacklist.title": "Только заблокированные",
   "wizard.route.full_tunnel.desc": "Всё соединение идёт через VPN",
   "wizard.route.stable": "Стабильно",
   "wizard.route.testing": "Тестируется",
@@ -839,6 +844,9 @@ const ru = {
   "checks.state.unknown": "неизвестно",
   "nodes.metrics.title": "Метрики хоста",
   "nodes.metrics.never": "Нода ещё не отвечала — метрик нет.",
+  "nodes.agentVersion": "Агент",
+  "nodes.agentVersionHint":
+    "Версия node-agent, которую нода сообщила при последнем опросе. Прочерк — нода ещё не опрошена или её агент старше 1.1.14 и версию не сообщает.",
   "nodes.metrics.ram": "Память",
   "nodes.metrics.swap": "Swap",
   "nodes.metrics.disk": "Диск",
@@ -1456,6 +1464,8 @@ const en = {
   "wizard.proto.awg3.desc": "Header protection and trailers (recommended)",
   "wizard.proto.awg2.label": "AmneziaWG 2.0",
   "wizard.proto.awg2.desc": "Compatibility with older clients",
+  "wizard.route.full_tunnel.title": "All traffic",
+  "wizard.route.ru_blacklist.title": "Blocked only",
   "wizard.route.full_tunnel.desc": "All traffic goes through the VPN",
   "wizard.route.stable": "Stable",
   "wizard.route.testing": "In testing",
@@ -2047,6 +2057,9 @@ const en = {
   "checks.state.unknown": "Unknown",
   "nodes.metrics.title": "Host metrics",
   "nodes.metrics.never": "This node has not answered yet — no metrics.",
+  "nodes.agentVersion": "Agent",
+  "nodes.agentVersionHint":
+    "The node-agent version this node reported on the last poll. A dash means it has not been polled yet, or its agent predates 1.1.14 and does not report one.",
   "nodes.metrics.ram": "Memory",
   "nodes.metrics.swap": "Swap",
   "nodes.metrics.disk": "Disk",

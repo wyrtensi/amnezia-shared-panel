@@ -591,6 +591,68 @@ describe("PostgresWorkerRepository outbox leases", () => {
     });
   });
 
+  runDatabaseTest(
+    "stores the reported agent version and keeps it when an older agent omits it",
+    async () => {
+      if (!database || !repository) return;
+      const { node } = await seedTelemetryKey();
+      const observedAt = new Date("2026-09-07T08:10:00.000Z");
+      const load = {
+        timestamp: observedAt.toISOString(),
+        uptimeSec: 60,
+        loadavg: [0, 0, 0] as [number, number, number],
+        cpu: { cores: 2 },
+        memory: { totalBytes: 1024, freeBytes: 512, usedBytes: 512 },
+        disk: null,
+        network: null,
+        docker: null,
+      };
+      const server = {
+        id: "agent-node",
+        region: "NL",
+        weight: 100,
+        maxPeers: 100,
+        totalPeers: 0,
+        protocols: ["amneziawg3"],
+      };
+
+      await repository.recordNodeSnapshot({
+        nodeId: node.id,
+        observedAt,
+        agentLatencyMs: 12,
+        server: { ...server, agentVersion: "1.1.14" },
+        load,
+        peers: [],
+        publicHost: null,
+        publicIp: null,
+      });
+      const [afterReport] = await database.db
+        .select({ agentVersion: nodes.agentVersion })
+        .from(nodes)
+        .where(eq(nodes.id, node.id));
+      expect(afterReport?.agentVersion).toBe("1.1.14");
+
+      // An agent that does not report the field at all must not blank what the
+      // panel already knows: the absence is the agent's age, not a new fact
+      // about the node.
+      await repository.recordNodeSnapshot({
+        nodeId: node.id,
+        observedAt: new Date(observedAt.getTime() + 60_000),
+        agentLatencyMs: 12,
+        server,
+        load,
+        peers: [],
+        publicHost: null,
+        publicIp: null,
+      });
+      const [afterSilence] = await database.db
+        .select({ agentVersion: nodes.agentVersion })
+        .from(nodes)
+        .where(eq(nodes.id, node.id));
+      expect(afterSilence?.agentVersion).toBe("1.1.14");
+    },
+  );
+
   runDatabaseTest("stores the reported public host and its resolved IP", async () => {
     if (!database || !repository) return;
     const { node } = await seedTelemetryKey();
