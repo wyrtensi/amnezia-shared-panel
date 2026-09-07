@@ -660,8 +660,8 @@ export default function AdminUsersPage() {
             onKeyAction={(id, name, payload) =>
               action("keys", id, name, payload)
             }
-            onExportKey={(id, deviceLabel) =>
-              setConfigTarget({ id, deviceLabel })
+            onExportKey={(id, deviceLabel, routeProfile) =>
+              setConfigTarget({ id, deviceLabel, routeProfile })
             }
           />
         ) : (
@@ -1446,7 +1446,11 @@ function UserDetail({
     action: string,
     payload?: unknown,
   ) => Promise<boolean>;
-  onExportKey: (id: string, deviceLabel: string) => void;
+  onExportKey: (
+    id: string,
+    deviceLabel: string,
+    routeProfile: string,
+  ) => void;
 }) {
   const { t } = useT();
   const stats = statsFor(keys);
@@ -1656,7 +1660,9 @@ function UserDetail({
                   nodeName={nodeName(key.nodeId)}
                   now={now}
                   onAction={onKeyAction}
-                  onExport={() => onExportKey(key.id, key.deviceLabel)}
+                  onExport={() =>
+                    onExportKey(key.id, key.deviceLabel, key.routeProfile)
+                  }
                 />
               ))}
           </div>

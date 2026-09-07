@@ -246,14 +246,17 @@ export function CreateKeyWizard({
       value: profile,
       label: t(`route.${profile}`),
       description: t(`wizard.route.${profile}.desc`),
-      // Say plainly which profile is proven and which is not. The split-tunnel
-      // profile depends on a feed and on the client applying it, so it behaves
-      // differently across platforms; the full tunnel does not.
+      // The badge names the cost of choosing, not the maturity of the code.
+      // "In testing" told the reader nothing they could act on; what actually
+      // separates the two is the work waiting on the other side — the full
+      // tunnel is a link or a QR and it connects, while a feed-based profile
+      // hands over a file the user has to import by hand (see
+      // lib/key-delivery.ts) and then read the guide for.
       badge:
         profile === "full_tunnel" ? (
-          <Badge variant="success">{t("wizard.route.stable")}</Badge>
+          <Badge variant="success">{t("wizard.route.easySetup")}</Badge>
         ) : (
-          <Badge variant="warning">{t("wizard.route.testing")}</Badge>
+          <Badge variant="warning">{t("wizard.route.hardSetup")}</Badge>
         ),
       disabled,
       // OptionCards renders this as the native title on hover AND as visible

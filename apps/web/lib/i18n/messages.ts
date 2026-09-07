@@ -214,6 +214,11 @@ const ru = {
   "keyCard.copyFail": "Не вышло",
   "keyCard.copyToast": "Ключ скопирован — вставьте его в AmneziaVPN",
   "keyCard.copyErrToast": "Не удалось скопировать ключ",
+  // Stands where QR and Copy would be on a file-only profile: the row must say
+  // why two buttons are missing, not just quietly lose them.
+  "keyCard.fileOnly": "Только файлом",
+  "keyCard.fileOnlyWhy":
+    "Ключ этого профиля слишком длинный: в QR-код он не помещается, а при копировании обрезается. Скачайте .vpn и откройте файл в клиенте.",
 
   // Create-key wizard
   "wizard.proto.awg3.label": "AmneziaWG 3.1",
@@ -221,10 +226,10 @@ const ru = {
   "wizard.proto.awg2.label": "AmneziaWG 2.0",
   "wizard.proto.awg2.desc": "Совместимость со старыми клиентами",
   "wizard.route.full_tunnel.desc": "Всё соединение идёт через VPN",
-  "wizard.route.stable": "Стабильно",
-  "wizard.route.testing": "Тестируется",
+  "wizard.route.easySetup": "Лёгкая настройка",
+  "wizard.route.hardSetup": "Сложная настройка",
   "wizard.route.ru_blacklist.desc":
-    "Через VPN идут лишь сайты из списка. Нужного вам сайта в нём может не оказаться — тогда он не откроется.",
+    "Через VPN идут лишь сайты из списка. Нужного вам сайта в нём может не оказаться — тогда он не откроется. Ключ передаётся только файлом: скопировать его или снять QR-кодом не получится — см. инструкцию.",
   "wizard.recommended": "Рекомендуется",
   "wizard.awg3Hint": "Требуется AmneziaVPN {version}+",
   "wizard.rulesNotActive": "Правила ещё не активированы",
@@ -287,7 +292,7 @@ const ru = {
   "keyHelp.profilesIntro":
     "Остальной профиль сделан для удобства и менее надёжен, чем «Весь трафик». Читайте внимательно:",
   "keyHelp.blacklistBody":
-    "Профиль со списком определённых сайтов. Список большой, но в нём могут быть не все нужные вам заблокированные ресурсы, и они не откроются через VPN.",
+    "Профиль со списком определённых сайтов. Список большой, но в нём могут быть не все нужные вам заблокированные ресурсы, и они не откроются через VPN. Настройка сложнее: список целиком лежит внутри ключа, поэтому ни QR-кода, ни копирования здесь нет — ключ забирается только файлом .vpn и открывается в клиенте.",
   "keyHelp.troubleTitle": "Если есть проблемы в работе",
   "keyHelp.troubleBody":
     "Смените сервер или переключите маршрутизацию на «Весь трафик». Если у вас мобильный интернет, переход на Wi-Fi часто решает проблемы с доступом.",
@@ -373,11 +378,11 @@ const ru = {
   "config.qrFrameNext": "Следующий кадр",
   "config.qrFramesFailed": "Не удалось загрузить код для приложения",
   "config.qrFramesRetry": "Попробовать снова",
-  "config.qrUnavailableTitle": "QR-код недоступен для этого профиля",
-  "config.qrUnavailableWhy":
-    "Дело не в размере кода: в этом профиле тысячи маршрутов, ключ занимает от 60 тысяч символов, а в QR-код помещается около 2900. Такой ключ не влезает ни в один код — ни в большой, ни в серию кадров.",
-  "config.qrUnavailableBody":
-    "Скопируйте ключ кнопкой выше и вставьте его в вашем клиенте (Добавить → Из строки/файла) — или скачайте конфиг-файл. Работа ключа на таких профилях не гарантируется.",
+  "config.fileOnlyTitle": "Этот профиль работает только через файл",
+  "config.fileOnlyWhy":
+    "В этом профиле тысячи маршрутов, и ключ занимает от 60 тысяч символов. В QR-код помещается около 2900, а при копировании такой ключ обрезается — клиент принимает обрезок и молча не подключается.",
+  "config.fileOnlyBody":
+    "Скачайте файл ниже и откройте его в клиенте (Добавить → Из файла). Работа ключа на таких профилях не гарантируется.",
   "config.otherFormat": "Другой формат файла",
   "config.fileShapesHint":
     "Файл .conf нужен для awg-quick на Linux и роутеров с AmneziaWG. В приложении он тоже откроется, но подключение всё равно будет называться «Server 1».",
@@ -1456,6 +1461,9 @@ const en = {
   "keyCard.copyFail": "Failed",
   "keyCard.copyToast": "Key copied — paste it into AmneziaVPN",
   "keyCard.copyErrToast": "Failed to copy the key",
+  "keyCard.fileOnly": "File only",
+  "keyCard.fileOnlyWhy":
+    "This profile's key is too long: it does not fit a QR code, and copying truncates it. Download the .vpn file and open it in your client.",
 
   // Create-key wizard
   "wizard.proto.awg3.label": "AmneziaWG 3.1",
@@ -1463,10 +1471,10 @@ const en = {
   "wizard.proto.awg2.label": "AmneziaWG 2.0",
   "wizard.proto.awg2.desc": "Compatibility with older clients",
   "wizard.route.full_tunnel.desc": "All traffic goes through the VPN",
-  "wizard.route.stable": "Stable",
-  "wizard.route.testing": "In testing",
+  "wizard.route.easySetup": "Easy setup",
+  "wizard.route.hardSetup": "Involved setup",
   "wizard.route.ru_blacklist.desc":
-    "Only sites on the list go through the VPN. The site you need may not be on it — and then it will not open.",
+    "Only sites on the list go through the VPN. The site you need may not be on it — and then it will not open. The key is handed over as a file only: copying it or scanning a QR code will not work — see the guide.",
   "wizard.recommended": "Recommended",
   "wizard.awg3Hint": "Requires AmneziaVPN {version}+",
   "wizard.rulesNotActive": "Rules not activated yet",
@@ -1528,7 +1536,7 @@ const en = {
   "keyHelp.profilesIntro":
     "The other profile exists for convenience and is less dependable than “All traffic”. Read it carefully:",
   "keyHelp.blacklistBody":
-    "A profile with a list of certain sites. The list is large, but it may not hold every blocked resource you need, and those will not open through the VPN.",
+    "A profile with a list of certain sites. The list is large, but it may not hold every blocked resource you need, and those will not open through the VPN. Setup is more involved: the whole list sits inside the key, so there is no QR code and no copying here — the key is taken as a .vpn file and opened in the client.",
   "keyHelp.troubleTitle": "If something is not working",
   "keyHelp.troubleBody":
     "Change the server, or switch the routing to “All traffic”. If you are on mobile data, moving to Wi-Fi often fixes access problems.",
@@ -1608,11 +1616,11 @@ const en = {
   "config.qrFrameNext": "Next frame",
   "config.qrFramesFailed": "Could not load the code for the app",
   "config.qrFramesRetry": "Try again",
-  "config.qrUnavailableTitle": "QR code is unavailable for this profile",
-  "config.qrUnavailableWhy":
-    "It is not about the size of the code: this profile carries thousands of routes, the key runs to 60 000 characters and more, and a QR code holds about 2 900. A key that long fits no code at all — not a large one, not a series of frames.",
-  "config.qrUnavailableBody":
-    "Copy the key with the button above and paste it into your client (Add → From string/file), or download the config file. Key operation on such profiles is not guaranteed.",
+  "config.fileOnlyTitle": "This profile works through a file only",
+  "config.fileOnlyWhy":
+    "This profile carries thousands of routes and the key runs to 60 000 characters and more. A QR code holds about 2 900, and copying a key that long truncates it — the client takes the fragment and silently fails to connect.",
+  "config.fileOnlyBody":
+    "Download the file below and open it in your client (Add → From file). Key operation on such profiles is not guaranteed.",
   "config.otherFormat": "Another file format",
   "config.fileShapesHint":
     "The .conf file is for awg-quick on Linux and AmneziaWG router firmware. The app opens it too, but the connection still arrives called \"Server 1\".",

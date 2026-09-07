@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   cliDeviceSupportsRouteProfiles,
   keyNeedsRouteProfileWarning,
+  routeDeliveryNotice,
   routeProfileWarning,
 } from "./deviceProfiles.js";
 
@@ -77,5 +78,27 @@ describe("keyNeedsRouteProfileWarning", () => {
 
   it("is false when either field is missing, rather than guessing", () => {
     expect(keyNeedsRouteProfileWarning({})).toBe(false);
+  });
+});
+
+describe("routeDeliveryNotice", () => {
+  it("says nothing about a full tunnel", () => {
+    expect(routeDeliveryNotice("full_tunnel")).toBeNull();
+    expect(routeDeliveryNotice(undefined)).toBeNull();
+  });
+
+  it("names the profile and the command that produces the file", () => {
+    const notice = routeDeliveryNotice("ru_blacklist");
+    expect(notice).toContain("ru_blacklist");
+    expect(notice).toContain("key-config");
+    expect(notice).toContain("--format=vpn");
+  });
+
+  // The two hand-offs the panel withdrew are the two this line has to name,
+  // or an operator reads it as being about the QR alone and pastes the key.
+  it("names both the QR and the clipboard as the things that truncate", () => {
+    const notice = routeDeliveryNotice("ru_blacklist") ?? "";
+    expect(notice).toMatch(/QR/);
+    expect(notice).toMatch(/clipboard|paste/);
   });
 });

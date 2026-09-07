@@ -55,7 +55,10 @@ describe(".conf fallback", () => {
   });
 
   it("carries no fill, no border and no glyph in the quiet dress", () => {
-    expect(source).toContain('quiet ? "link" : "secondary"');
+    // `quiet` is checked first and wins outright: a download can be quiet or
+    // primary, never both, and the quiet dress is the one `.conf` depends on.
+    expect(source).toMatch(/quiet\s*\?\s*"link"/);
+    expect(source).toMatch(/:\s*"secondary";/);
     expect(source).toContain("{quiet ? null : <Download");
   });
 
@@ -180,6 +183,44 @@ describe("rules-updated callout", () => {
       expect(body, `${lang} body`).not.toMatch(
         /перестанет работать|stop working/i,
       );
+    }
+  });
+});
+
+// A key whose link cannot survive the trip must not be offered as a link. The
+// rule itself is unit-tested in lib/key-delivery.test.ts; what is pinned here
+// is that the card actually asks, and that it replaces the two withdrawn
+// buttons rather than quietly shrinking the row.
+describe("file-only profiles", () => {
+  it("asks the shared rule instead of comparing the profile itself", () => {
+    expect(source).toContain("keyDelivery(keyView.routeProfile)");
+    expect(source).not.toMatch(/routeProfile !== "full_tunnel"[\s\S]{0,80}Copy/);
+  });
+
+  it("withdraws both the QR button and Copy", () => {
+    expect(source).toContain("me.policy.allowQrDownload && delivery.linkUsable");
+    expect(source).toMatch(
+      /delivery\.linkUsable \?\s*\(\s*<CopyKeyButton/,
+    );
+  });
+
+  it("keeps a door into the dialog that explains why", () => {
+    expect(source).toMatch(
+      /\{t\("keyCard\.fileOnly"\)\}[\s\S]{0,400}?keyCard\.fileOnlyWhy/,
+    );
+    expect(source).toMatch(
+      /variant="secondary"[\s\S]{0,120}?onClick=\{onShowConfig\}[\s\S]{0,200}?keyCard\.fileOnly/,
+    );
+  });
+
+  it("promotes .vpn to the row's primary action in their place", () => {
+    expect(source).toContain("primary={!delivery.linkUsable}");
+  });
+
+  it("uses only copy that exists in both languages", () => {
+    for (const key of ["keyCard.fileOnly", "keyCard.fileOnlyWhy"]) {
+      expect(messages.ru, key).toHaveProperty(key);
+      expect(messages.en, key).toHaveProperty(key);
     }
   });
 });
