@@ -1562,3 +1562,82 @@ describe("service check routes", () => {
     await app.close();
   });
 });
+
+/**
+ * A minimal pino-shaped logger that records the level each call came in at.
+ * Fastify only needs these methods plus `child`, and returning `this` from
+ * `child` keeps every request logger pointed at the same recorder.
+ */
+const recordingLogger = () => {
+  const calls: Array<{ level: string; code?: string; status?: number }> = [];
+  const record = (level: string) => (arg: unknown) => {
+    const error = arg as { code?: string; statusCode?: number } | undefined;
+    calls.push({ level, code: error?.code, status: error?.statusCode });
+  };
+  const logger = {
+    calls,
+    fatal: record("fatal"),
+    error: record("error"),
+    warn: record("warn"),
+    info: () => {},
+    debug: () => {},
+    trace: () => {},
+    silent: () => {},
+    level: "info",
+    child() {
+      return this;
+    },
+  };
+  return logger;
+};
+
+// A refusal is the API doing its job. Logging every one of them at `error`
+// buries the failures that are the panel's own — which matters most on the
+// direct login door, where NOT_ALLOWED arrives as a steady trickle from the
+// open internet.
+describe("error log levels", () => {
+  it("logs a refused request at warn, not error", async () => {
+    const logger = recordingLogger();
+    const app = await buildApp({
+      service: createService(),
+      environment: "production",
+      allowDevIdentity: true,
+      loggerInstance: logger,
+    });
+
+    // A regular user on an admin route: 403 FORBIDDEN, thrown deliberately.
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/admin/users",
+      headers: { "x-dev-user-email": "employee@example.com" },
+    });
+
+    expect(response.statusCode).toBe(403);
+    const refusal = logger.calls.find((call) => call.status === 403);
+    expect(refusal?.level).toBe("warn");
+    expect(logger.calls.some((call) => call.level === "error")).toBe(false);
+    await app.close();
+  });
+
+  it("still logs an unexpected failure at error", async () => {
+    const logger = recordingLogger();
+    const service = createService();
+    vi.mocked(service.getMe).mockRejectedValueOnce(new Error("boom"));
+    const app = await buildApp({
+      service,
+      environment: "production",
+      allowDevIdentity: true,
+      loggerInstance: logger,
+    });
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/me",
+      headers: { "x-dev-user-email": "employee@example.com" },
+    });
+
+    expect(response.statusCode).toBe(500);
+    expect(logger.calls.some((call) => call.level === "error")).toBe(true);
+    await app.close();
+  });
+});

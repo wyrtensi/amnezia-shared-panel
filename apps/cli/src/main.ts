@@ -18,6 +18,10 @@ import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
 import {
+  AUDIT_CATEGORIES,
+  auditEventMatches,
+} from "./auditFilter.js";
+import {
   keyNeedsRouteProfileWarning,
   routeDeliveryNotice,
   routeProfileWarning,
@@ -785,10 +789,29 @@ async function cmdNodes(args: string[]): Promise<void> {
 }
 
 async function cmdAudit(args: string[]): Promise<void> {
-  const events = await api<AuditEvent[]>("/api/admin/audit");
+  const actor = flagOf(args, "actor");
+  if (actor !== undefined && actor !== "people" && actor !== "system") {
+    throw new Error("audit: --actor takes people or system");
+  }
+  const category = flagOf(args, "category");
+  if (category !== undefined && !AUDIT_CATEGORIES.includes(category)) {
+    throw new Error(
+      `audit: --category takes one of ${AUDIT_CATEGORIES.join(", ")}`,
+    );
+  }
+  const events = (await api<AuditEvent[]>("/api/admin/audit")).filter((event) =>
+    auditEventMatches(event, { actor, category }),
+  );
+  // Filtered before --json as well as before the table: a script asking for one
+  // category should not have to re-implement the fold between the two spellings
+  // of a target type.
   if (wantsJson(args)) return json(events);
   const limitArg = args.find((arg) => arg.startsWith("--limit="));
   const limit = limitArg ? Number(limitArg.split("=")[1]) : 20;
+  if (events.length === 0) {
+    console.log("(none)");
+    return;
+  }
   console.log(
     table(
       events.slice(0, limit).map((event) => ({
@@ -2424,7 +2447,8 @@ Read:
                           one. --json also carries publicIpResolvedAt.
                           --hosts instead shows how the PANEL reaches each agent
                           (apiBaseUrl) classified ip / docker-local / dns
-  audit [--limit=N]        Recent audit events
+  audit [--limit=N] [--actor=people|system] [--category=keys|users|nodes|policy|rules|access|checks|quota|other]
+                           Recent audit events
   quota [--all] [--json]   Key-limit requests (pending by default; --all = every state).
                           The target and "now → requested" cells are read in that
                           user's own key-limit mode: under a global (shared) limit a

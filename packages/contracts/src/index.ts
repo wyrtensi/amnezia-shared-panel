@@ -1697,5 +1697,68 @@ export const accessDomainListSchema = z
   .max(50)
   .transform((list) => [...new Set(list)]);
 
+/**
+ * The audit log's subjects, one value per thing an operator thinks about.
+ *
+ * `audit_events.target_type` carries TWO vocabularies for the same subjects: a
+ * domain event writes the entity name (`vpn_key`, `user`, `portal_policy`)
+ * while an `admin.<resource>.<verb>` event writes the REST resource name
+ * (`keys`, `users`, `portal-policy`). Measured on a live panel: 113 `vpn_key`
+ * rows beside 34 `keys`, 24 `user` beside 12 `users`. Anything filtering the
+ * log has to fold them, or it offers two controls for one subject and splits
+ * every count in half.
+ */
+export const AUDIT_CATEGORIES = [
+  "keys",
+  "users",
+  "nodes",
+  "policy",
+  "rules",
+  "access",
+  "checks",
+  "quota",
+  "other",
+] as const;
+
+export type AuditCategory = (typeof AUDIT_CATEGORIES)[number];
+
+const AUDIT_CATEGORY_BY_TARGET: Record<string, AuditCategory> = {
+  vpn_key: "keys",
+  keys: "keys",
+  user: "users",
+  users: "users",
+  node: "nodes",
+  nodes: "nodes",
+  portal_policy: "policy",
+  "portal-policy": "policy",
+  route_rule: "rules",
+  rule_version: "rules",
+  rules: "rules",
+  access_policy: "access",
+  "access-sync": "access",
+  service_check: "checks",
+  "service-checks": "checks",
+  quota_request: "quota",
+  "quota-requests": "quota",
+};
+
+/**
+ * The category one stored `target_type` belongs to. An unrecognised value is
+ * `other` rather than an error: the table is append-only, so a build older
+ * than the rows it reads is the normal state right after a deploy, and an
+ * unknown subject must stay visible instead of vanishing from every view.
+ */
+export const auditCategoryOf = (targetType: string): AuditCategory =>
+  AUDIT_CATEGORY_BY_TARGET[targetType] ?? "other";
+
+/**
+ * Whether a row is the panel's own background work or a person's action. The
+ * panel writes `system` for the reconcile loop and the Access sync and the
+ * acting user's type otherwise, so this reads that column rather than
+ * inferring intent from the action name.
+ */
+export const auditScopeOf = (actorType: string): "people" | "system" =>
+  actorType === "system" ? "system" : "people";
+
 // Reading a rule version's stored source_url back into provider names.
 export * from "./ruleSources.js";
