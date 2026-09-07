@@ -50,6 +50,12 @@
      invisible in dark. */
   --well: #f9f3e7;
 
+  /* An unused slot on a quota meter. A shade under the surface it sits on, and
+     no further: --muted is lighter than that surface in dark (so every free
+     slot became a bright chip), and the canvas is far darker than it (so they
+     became holes). This is the half-step between. */
+  --slot: #f3e9d8;
+
   /* A shadow that is actually visible on the surface it falls on. Tailwind's
      own `shadow-sm` is black at 5 %, which reads on cream and disappears
      entirely on a dark ground -- the small surfaces looked lifted in light and
@@ -189,6 +195,7 @@
 
   --primary-gradient: linear-gradient(180deg, #f6b76d 0%, #f2a856 62%);
   --well: #2a231d;
+  --slot: #221c17;
   --chip-shadow: 0 1px 2px 0 rgb(0 0 0 / 0.45);
   --dialog-gradient: linear-gradient(170deg, #40372f 0%, #322a24 55%, #262019 100%);
   --card-gradient: linear-gradient(180deg, #3b322b 0%, #2f2721 100%);
@@ -275,6 +282,7 @@
 @theme inline {
   --color-background: var(--background);
   --color-well: var(--well);
+  --color-slot: var(--slot);
   --color-header-surface: var(--header-surface);
   --color-foreground: var(--foreground);
   --color-card: var(--card);
