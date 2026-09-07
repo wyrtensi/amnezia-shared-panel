@@ -77,7 +77,10 @@ export function KeyHelpDialog({
           <DialogDescription>{t("keyHelp.desc")}</DialogDescription>
         </DialogHeader>
 
-        <ol className="divide-y divide-border">
+        {/* Gaps and recesses, not hairlines: each step now draws its own
+            boundary (see Step below), and a divider between two bounded panels
+            is a second boundary system saying the same thing. */}
+        <ol className="space-y-2.5">
           <Step number={1} title={t("wizard.deviceType")}>
             <p>{t("keyHelp.deviceBody")}</p>
             <p>{t("keyHelp.deviceOneEach")}</p>
@@ -193,7 +196,19 @@ export function KeyHelpDialog({
   );
 }
 
-/** One field of the form: its position, its own label, then what to put in it. */
+/**
+ * One field of the form: its position, its own label, then what to put in it,
+ * the last of those sunk into a recess of its own.
+ *
+ * Same treatment and the same reasoning as the connect guide's GuideSection —
+ * five steps carrying mock tiles, badges and callouts need a boundary stronger
+ * than a hairline, or the pictures inside a step out-draw the line between two.
+ * The border carries it rather than the fill, at full strength: this is inside
+ * a dialog, and `--dialog-gradient` crosses `--well` partway down the sheet, so
+ * a fill-led recess would invert on the steps nearest the foot. The measured
+ * figures are in install-guide-dialog.tsx; the two dialogs share a gradient, so
+ * they share the answer.
+ */
 function Step({
   number,
   title,
@@ -204,7 +219,7 @@ function Step({
   children: React.ReactNode;
 }) {
   return (
-    <li className="flex gap-3 py-3 first:pt-0 last:pb-0">
+    <li className="flex gap-3">
       <span
         aria-hidden="true"
         className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-primary/10 text-xs font-medium text-primary"
@@ -212,8 +227,8 @@ function Step({
         {number}
       </span>
       <div className="min-w-0 flex-1">
-        <h3 className="mb-1 text-sm font-semibold">{title}</h3>
-        <div className="space-y-2 text-sm leading-relaxed text-muted-foreground">
+        <h3 className="mb-1.5 text-sm font-semibold">{title}</h3>
+        <div className="space-y-2 rounded-xl border bg-well p-3.5 text-sm leading-relaxed text-muted-foreground shadow-[var(--inset-shadow)]">
           {children}
         </div>
       </div>
