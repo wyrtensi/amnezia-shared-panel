@@ -108,8 +108,12 @@ export function KeyCard({
 
   return (
     <>
-      <Card className="overflow-hidden transition-shadow hover:shadow-md">
-        <CardContent className="flex flex-col gap-3 p-4">
+      {/* h-full + mt-auto on the action row below: grid rows are as tall as
+          their tallest card, and without this a shorter card stopped where its
+          content ended and left a gap under it — two cards side by side, one
+          visibly bigger than the other. */}
+      <Card className="h-full overflow-hidden transition-shadow hover:shadow-md">
+        <CardContent className="flex h-full flex-col gap-3 p-4">
           <div className="flex items-start justify-between gap-2">
             <div className="flex items-center gap-2.5">
               <span className="flex size-12 items-center justify-center rounded-xl bg-primary/12 text-primary ring-1 ring-primary/15">
@@ -125,6 +129,42 @@ export function KeyCard({
                       </span>
                     ) : null}
                   </p>
+                  {/* Rename sits against the name it changes, not down in the
+                      action row: there it was a third muted icon among the
+                      downloads, and on a key that also offers Reissue the row
+                      wrapped, leaving that card taller than its neighbour.
+
+                      Renaming while the peer is mid-provisioning would race the
+                      worker's own write to this row. Renaming a `disabled` key
+                      is excluded too, and for a different reason: a rename that
+                      changes the displayed name re-issues the peer
+                      (`renameOwnKey`), and a re-issue always comes back
+                      `active` -- so offering this control here would let the
+                      owner quietly undo an administrator's disable. The server
+                      refuses it either way (`KEY_DISABLED_BY_ADMIN`); this just
+                      avoids showing a control that can only end in that error.
+                      Every other state the card can show (a key in
+                      `revoking`/`revoked` is hidden from the owner entirely) is
+                      fine, since a rename that turns out not to need a re-issue
+                      never touches `state` at all. */}
+                  {!provisioning && !disabled ? (
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon"
+                          disabled={busy}
+                          className="size-6 shrink-0 text-muted-foreground"
+                          aria-label={t("keyCard.rename")}
+                          onClick={() => setRenaming(true)}
+                        >
+                          <Pencil className="size-3.5" />
+                        </Button>
+                      </TooltipTrigger>
+                      <TooltipContent>{t("keyCard.rename")}</TooltipContent>
+                    </Tooltip>
+                  ) : null}
                   {/* The guide lives on the key, not in the page header: the card
                       knows which device the key was labelled for, so it opens
                       straight to that instruction. Icon-only because the title
@@ -265,7 +305,7 @@ export function KeyCard({
 
           {/* Wraps: at a phone width the labelled downloads no longer fit beside
               Copy, and a row that cannot wrap pushes them out of reach instead. */}
-          <div className="flex flex-wrap items-center gap-1.5 border-t pt-3">
+          <div className="mt-auto flex flex-wrap items-center gap-1.5 border-t pt-3">
             {provisioning ? (
               <span className="flex items-center gap-2 text-sm text-muted-foreground">
                 <Loader2 className="h-4 w-4 animate-spin" />
@@ -345,37 +385,6 @@ export function KeyCard({
               </>
             ) : null}
             <div className="ml-auto flex items-center gap-1.5">
-              {/* Renaming while the peer is mid-provisioning would race the
-                  worker's own write to this row. Renaming a `disabled` key is
-                  excluded too, and for a different reason: a rename that
-                  changes the displayed name re-issues the peer
-                  (`renameOwnKey`), and a re-issue always comes back `active`
-                  -- so offering this control here would let the owner
-                  quietly undo an administrator's disable. The server refuses
-                  it either way (`KEY_DISABLED_BY_ADMIN`); this just avoids
-                  showing a control that can only end in that error. Every
-                  other state the card can show (a key in `revoking`/`revoked`
-                  is hidden from the owner entirely) is fine, since a rename
-                  that turns out not to need a re-issue never touches `state`
-                  at all. */}
-              {!provisioning && !disabled ? (
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="icon"
-                      disabled={busy}
-                      onClick={() => setRenaming(true)}
-                      aria-label={t("keyCard.rename")}
-                      className="text-muted-foreground hover:text-foreground"
-                    >
-                      <Pencil className="h-4 w-4" />
-                    </Button>
-                  </TooltipTrigger>
-                  <TooltipContent>{t("keyCard.rename")}</TooltipContent>
-                </Tooltip>
-              ) : null}
               {/* Reissue lives here, apart from Copy and as a muted icon, so it is
                   not mistaken for the primary "copy key" action. */}
               {active &&
@@ -391,7 +400,7 @@ export function KeyCard({
                       disabled={busy}
                       onClick={onRotate}
                       aria-label={t("keyCard.reissue")}
-                      className="text-muted-foreground hover:text-foreground"
+                      className="size-8 text-muted-foreground hover:text-foreground"
                     >
                       <RefreshCw className="h-4 w-4" />
                     </Button>
@@ -408,7 +417,7 @@ export function KeyCard({
                       size="icon"
                       disabled={busy}
                       onClick={onRevoke}
-                      className="text-muted-foreground hover:text-destructive"
+                      className="size-8 text-muted-foreground hover:text-destructive"
                     >
                       <Trash2 className="h-4 w-4" />
                     </Button>

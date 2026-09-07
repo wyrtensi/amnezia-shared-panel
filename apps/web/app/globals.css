@@ -24,6 +24,14 @@
      canvas; dark defines a real backdrop below. */
   --app-backdrop: none;
 
+  /* What the sticky app header tints itself with. It must be the colour the
+     canvas ACTUALLY is where the header sits, not --background: the header is
+     translucent, so tinting it with a colour the canvas does not have there
+     paints a visible band across the top of the page. On a flat canvas the two
+     are the same value, which is why light needs nothing special; the dark
+     block below is where they part. */
+  --header-surface: var(--background);
+
   --background: #f4e9d7;
   --light-foreground: #2b231c;
   --foreground: var(--light-foreground);
@@ -112,6 +120,16 @@
     ),
     linear-gradient(180deg, #291d16 0%, #1d1410 34%, #241a14 100%);
 
+  /* The backdrop's own top stop, because that is what lies under the header.
+     Tinting the header with --background (#1d1410) instead put 80 % of a
+     colour DARKER than the canvas over a lighter one: the composite came out
+     near #1f1611 against a canvas of about #261b15 just below it — the dark
+     band across the top that light mode never showed, since there the backdrop
+     is flat and the two colours coincide. At 80 % of the colour already there,
+     the header disappears at rest and still carries enough opacity to keep
+     text legible over content scrolling beneath it. */
+  --header-surface: #291d16;
+
   --background: #1d1410;
   --foreground: #f4ebde;
 
@@ -183,6 +201,7 @@
 
 @theme inline {
   --color-background: var(--background);
+  --color-header-surface: var(--header-surface);
   --color-foreground: var(--foreground);
   --color-card: var(--card);
   --color-card-foreground: var(--card-foreground);
