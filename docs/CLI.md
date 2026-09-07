@@ -674,6 +674,15 @@ can't reach Cloudflare) is env + edge only — see
 up -d web control-api`. Pre-create a user who is not on an allowed domain in
 Administration → Users (or `amnezia-panel user-create <email>`).
 
+Self-registration on this door is **not** governed by `AUTH_ALLOWED_DOMAINS`
+alone: it is the union of that env and the panel-managed Access domain list
+(`cf-domains`, stored in `portal_policy.cf_access_allowed_domains`). The panel
+list is read on every login, so adding a domain with `cf-domains --add` admits
+it at both doors immediately; the env is read once at boot and still needs the
+recreate above. The corollary is that `cf-domains --remove` closes both doors
+for anyone on that domain without an account — which is what the command prints
+before it writes.
+
 ---
 
 ## Node — data plane

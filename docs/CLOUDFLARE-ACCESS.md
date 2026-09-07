@@ -731,13 +731,17 @@ in depends on which door they are walking through:
   dashboard: a group, `everyone`, or another `email_domain` rule the panel
   does not own.
 - **The direct door** — the panel's own server-side Google login, for a host
-  or a user that never goes through the Cloudflare proxy — is gated
-  separately, by `AUTH_ALLOWED_DOMAINS` in the panel's environment (see
+  or a user that never goes through the Cloudflare proxy — reads **the same
+  panel-managed list**, unioned with `AUTH_ALLOWED_DOMAINS` from the panel's
+  environment (see
   [`CLI.md`'s direct-login notes](./CLI.md#direct-login-server-side-google-operator-notes)).
 
-These answer different questions — "can this request even reach the login
-page" versus "may the panel's own Google sign-in create an account for this
-address" — and there is no plan to unify them.
+The two still answer different questions — "can this request even reach the
+login page" versus "may the panel's own Google sign-in create an account for
+this address" — but they now answer them from one list, so adding a domain
+admits the same people at both doors and needs no redeploy. The env is kept
+alongside rather than replaced: an install with no Cloudflare at all has an
+empty panel list, and that env is then its only allowlist.
 
 **Removing a domain disables nobody and revokes no keys.** Every active panel
 user already has their own explicit `{"email":{"email":...}}` rule, written

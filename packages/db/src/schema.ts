@@ -706,8 +706,12 @@ export const portalPolicy = pgTable(
     // a CF-side removal (disable the panel user). Null until the first sync.
     cfAccessSyncedEmails: jsonb("cf_access_synced_emails").$type<string[]>(),
     // Domains the panel keeps as `email_domain` rules in the Access policy.
-    // Empty means the panel manages no domain rule. The Cloudflare door only —
-    // the panel's own direct Google login is gated by AUTH_ALLOWED_DOMAINS.
+    // Empty means the panel manages no domain rule. It gates BOTH doors: the
+    // worker writes it into the Access policy, and `resolveIdentity` reads it
+    // when the panel's own direct Google login self-registers an account.
+    // AUTH_ALLOWED_DOMAINS is unioned with it rather than replaced — an
+    // install with no Cloudflare has an empty list here and that env is then
+    // its only allowlist.
     cfAccessAllowedDomains: jsonb("cf_access_allowed_domains")
       .$type<string[]>()
       .default([])

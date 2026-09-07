@@ -1123,6 +1123,10 @@ async function cmdCfSync(args: string[]): Promise<void> {
  * from the same computed `include` list, and an identity Cloudflare no longer
  * admits never reaches the panel's login page, so it is never auto-provisioned
  * an account either.
+ *
+ * The list gates the direct Google door too (`resolveIdentity` reads it), so a
+ * removal closes both — which is why that is now said outright rather than
+ * left to be discovered on a host that has a direct door configured.
  */
 function accessDomainRemovalCost(domains: string[]): string[] {
   const which = domains.length === 1 ? domains[0] : "one of them";
@@ -1135,7 +1139,9 @@ function accessDomainRemovalCost(domains: string[]): string[] {
     `  Who does lose their way in: anyone with an address on ${which} and no`,
     `  active panel account. That rule was their only route through Cloudflare`,
     `  — they are stopped before the login page, and no account is created for`,
-    `  them on first sign-in any more.`,
+    `  them on first sign-in any more. The same is true of a direct (non-`,
+    `  Cloudflare) login, if this panel has one: the domain admitted them there`,
+    `  as well, and after this it does not.`,
     `  To undo it, add the domain back or add those people as users by address.`,
     `  "users --domain=<domain>" lists who on a domain is already in the panel,`,
     `  i.e. exactly the people a removal does NOT touch.`,

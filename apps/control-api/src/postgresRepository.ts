@@ -58,6 +58,7 @@ import {
   nodeAgentUpdateActionSchema,
   nodeCapacityActionSchema,
   nodeOrderSchema,
+  normalizeAccessDomain,
   PROTOCOL_KINDS,
   recommendedNodeIdsSchema,
   portalPolicyOverrideSchema,
@@ -490,8 +491,34 @@ export class PostgresControlRepository implements ControlRepository {
         // admin (which sets `user` above and skips this gate).
         if (claim.provider !== "cloudflare-access") {
           const domain = email.split("@")[1] ?? "";
+          // Two sources, deliberately unioned. `cfAccessAllowedDomains` is the
+          // list an admin actually manages — the Users page edits it and
+          // `cf-domains` edits it from a shell — and it is what the worker
+          // writes into the Access policy, so a domain added there now admits
+          // the same people at BOTH doors rather than only the proxied one.
+          // `allowedEmailDomains` (AUTH_ALLOWED_DOMAINS) stays because an
+          // install with no Cloudflare at all has an empty panel list and that
+          // env is then its only allowlist; it is also read once at boot, so it
+          // cannot be the place a domain is added day to day.
+          //
+          // Read inside the transaction rather than cached on the instance: an
+          // allowlist edited in the UI has to take effect on the next login,
+          // not on the next deploy.
+          const managed = (
+            await tx
+              .select({ domains: portalPolicy.cfAccessAllowedDomains })
+              .from(portalPolicy)
+              .limit(1)
+          )[0]?.domains;
+          // Normalised on the way in by `accessDomainSchema`, but the worker is
+          // deliberately lenient about what Cloudflare hands back, so a row can
+          // predate that or carry a dashboard spelling ("@company.tld").
+          const managedHasDomain = (managed ?? []).some(
+            (entry) => normalizeAccessDomain(entry) === domain,
+          );
           const allowed =
             this.options.allowedEmailDomains?.has(domain) ||
+            managedHasDomain ||
             this.options.bootstrapAdminEmails?.has(email);
           if (!allowed) {
             throw new ApiError(

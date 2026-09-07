@@ -5559,4 +5559,110 @@ describe("PostgresControlRepository per-user delete", () => {
       expect(await stillExists(insideWindow.userId)).toBe(true);
     },
   );
+  /**
+   * Self-registration on the direct Google door used to answer to
+   * AUTH_ALLOWED_DOMAINS alone — a static env read once at boot — while the
+   * Cloudflare door answered to `portal_policy.cf_access_allowed_domains`,
+   * which an admin edits in the UI and `cf-domains` edits from a shell. Two
+   * allowlists for one question, and only one of them visible where domains
+   * are actually managed. The panel list is now consulted as well, so adding a
+   * domain admits it at both doors without a redeploy.
+   */
+  runDatabaseTest(
+    "admits a new account on a domain the panel manages for Access",
+    async () => {
+      if (!database) return;
+      await database.db
+        .update(portalPolicy)
+        .set({ cfAccessAllowedDomains: ["managed.example"] });
+      const repository = new PostgresControlRepository({
+        db: database.db,
+        keyring,
+      });
+
+      const resolved = await repository.resolveIdentity({
+        provider: "google",
+        subject: "managed-domain-subject",
+        email: "newcomer@managed.example",
+      });
+
+      expect(resolved.email).toBe("newcomer@managed.example");
+      expect(resolved.role).toBe("user");
+      await database.db.update(portalPolicy).set({ cfAccessAllowedDomains: [] });
+    },
+  );
+
+  // The env keeps working on its own: an install with no Cloudflare at all has
+  // an empty panel list and must not lose its only allowlist.
+  runDatabaseTest(
+    "still admits a new account on an AUTH_ALLOWED_DOMAINS domain",
+    async () => {
+      if (!database) return;
+      await database.db.update(portalPolicy).set({ cfAccessAllowedDomains: [] });
+      const repository = new PostgresControlRepository({
+        db: database.db,
+        keyring,
+        allowedEmailDomains: new Set(["env.example"]),
+      });
+
+      const resolved = await repository.resolveIdentity({
+        provider: "google",
+        subject: "env-domain-subject",
+        email: "newcomer@env.example",
+      });
+
+      expect(resolved.email).toBe("newcomer@env.example");
+    },
+  );
+
+  runDatabaseTest(
+    "refuses a new account on a domain in neither list",
+    async () => {
+      if (!database) return;
+      await database.db
+        .update(portalPolicy)
+        .set({ cfAccessAllowedDomains: ["managed.example"] });
+      const repository = new PostgresControlRepository({
+        db: database.db,
+        keyring,
+        allowedEmailDomains: new Set(["env.example"]),
+      });
+
+      const failure = await failureOf(
+        repository.resolveIdentity({
+          provider: "google",
+          subject: "stranger-subject",
+          email: "stranger@elsewhere.example",
+        }),
+      );
+
+      expect(failure?.statusCode).toBe(403);
+      expect(failure?.code).toBe("NOT_ALLOWED");
+      await database.db.update(portalPolicy).set({ cfAccessAllowedDomains: [] });
+    },
+  );
+
+  // Cloudflare already allowlisted its own path at the edge, so that provider
+  // is trusted here and neither list applies to it. Merging the lists must not
+  // start gating the door that was never gated.
+  runDatabaseTest(
+    "leaves the Cloudflare door ungated by either list",
+    async () => {
+      if (!database) return;
+      await database.db.update(portalPolicy).set({ cfAccessAllowedDomains: [] });
+      const repository = new PostgresControlRepository({
+        db: database.db,
+        keyring,
+        allowedEmailDomains: new Set(["env.example"]),
+      });
+
+      const resolved = await repository.resolveIdentity({
+        provider: "cloudflare-access",
+        subject: "edge-subject",
+        email: "edge@anywhere.example",
+      });
+
+      expect(resolved.email).toBe("edge@anywhere.example");
+    },
+  );
 });

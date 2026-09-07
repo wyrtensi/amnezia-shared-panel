@@ -241,10 +241,13 @@ the panel web on `127.0.0.1:5430`.
    (must exactly match the redirect URI's host), and
    `AUTH_ALLOWED_DOMAINS=<your Workspace domain>`.
 5. **Who may log in here.** On the direct path the **panel** decides: someone on an
-   allowed email domain (`AUTH_ALLOWED_DOMAINS`) or a bootstrap admin logs in on
-   their own; **anyone else must be added by an admin first** (Administration →
-   Users). That's the "add a personal gmail" case — done in the panel, no Cloudflare
-   dashboard. The Cloudflare path is unaffected.
+   allowed email domain or a bootstrap admin logs in on their own; **anyone else
+   must be added by an admin first** (Administration → Users). That's the "add a
+   personal gmail" case — done in the panel, no Cloudflare dashboard. "Allowed
+   domain" means the union of the panel-managed Access domain list
+   (Administration → Users → *Cloudflare Access domains*, or `cf-domains`) and
+   `AUTH_ALLOWED_DOMAINS`, so a domain added in the UI takes effect here on the
+   next login, with no redeploy. The Cloudflare path is unaffected.
 
 Check it from a network **without** Cloudflare, VPN **off**: `https://direct.<panel
 domain>` shows the panel's own **Sign in** button and, after signing in, lands in
@@ -286,8 +289,9 @@ broad token anywhere; the runtime token lives only encrypted inside the panel.)*
 Two layers, kept separate on purpose:
 
 - **Who may log in at all** is the Cloudflare Access allow policy (or, on the direct
-  path, `AUTH_ALLOWED_DOMAINS` + pre-created users). The simplest model is one email
-  allowlist, or — with Workspace groups wired in (§3.2) — a group like `vpn-users@`.
+  path, the panel-managed domain list + `AUTH_ALLOWED_DOMAINS` + pre-created users).
+  The simplest model is one email allowlist, or — with Workspace groups wired in
+  (§3.2) — a group like `vpn-users@`.
 - **Who is an admin** is the panel role. The first sign-in by an email in
   `BOOTSTRAP_ADMIN_EMAILS` (input #5) becomes `admin`; everyone else is a regular
   `user`. You can promote/demote later in Administration → Users (the last admin can
