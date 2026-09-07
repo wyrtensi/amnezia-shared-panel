@@ -275,6 +275,11 @@ type AdminNode = {
   publicHost?: string | null;
   publicIp?: string | null;
   publicIpResolvedAt?: string | null;
+  // What the node reported its agent version to be, cached by the telemetry
+  // poll. Optional and nullable for two different reasons: optional because an
+  // older API does not send the field at all, nullable because a node whose
+  // agent predates 1.1.14 never reports one.
+  agentVersion?: string | null;
   lastError: string | null;
   // The node's own view of its last agent update, mirrored by the telemetry
   // poll, plus the release the panel currently offers. All optional so a CLI
@@ -756,9 +761,24 @@ async function cmdNodes(args: string[]): Promise<void> {
         // The address clients reach this node at, including whether a DNS name
         // has actually resolved — the same distinction the node card draws.
         address: formatNodeAddress(node.publicHost ?? null, node.publicIp ?? null),
+        // What each node says its agent is. This is the column that answers
+        // "which nodes are still behind" without an SSH session per host; a
+        // dash is an agent too old to report it, which is itself the answer.
+        agent: node.agentVersion ?? "—",
         health: node.lastError ? "ERROR" : "ok",
       })),
-      ["#", "rec", "id", "name", "enabled", "protocols", "peers", "address", "health"],
+      [
+        "#",
+        "rec",
+        "id",
+        "name",
+        "enabled",
+        "protocols",
+        "peers",
+        "address",
+        "agent",
+        "health",
+      ],
     ),
   );
 }

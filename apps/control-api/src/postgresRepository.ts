@@ -2190,6 +2190,10 @@ export class PostgresControlRepository implements ControlRepository {
             lastHealthAt: nodes.lastHealthAt,
             lastSyncAt: nodes.lastSyncAt,
             lastError: nodes.lastError,
+            // What the agent reported it is, cached by the telemetry poll.
+            // Null means "not known" — never polled yet, or an agent older than
+            // 1.1.14, which does not report the field.
+            agentVersion: nodes.agentVersion,
             // The node's own view of its last agent update, mirrored by the
             // telemetry poll. The log is what explains a failure without anyone
             // opening an SSH session.

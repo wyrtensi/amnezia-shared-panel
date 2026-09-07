@@ -1354,6 +1354,38 @@ describe("PostgresControlRepository quota race", () => {
     },
   );
 
+  runDatabaseTest(
+    "lists each node's reported agent version, null for one that never said",
+    async () => {
+      if (!database) return;
+      const repository = new PostgresControlRepository({
+        db: database.db,
+        keyring,
+      });
+      const admin: Actor = { ...actor, role: "admin" };
+      const reported = await seedNode("agent-reported");
+      const silent = await seedNode("agent-silent");
+      await database.db
+        .update(nodes)
+        .set({ agentVersion: "1.1.14" })
+        .where(eq(nodes.id, reported));
+
+      const rows = (await repository.adminList(admin, "nodes")) as Array<{
+        id: string;
+        agentVersion: string | null;
+      }>;
+
+      expect(rows.find((row) => row.id === reported)).toMatchObject({
+        agentVersion: "1.1.14",
+      });
+      // Null, not absent: the admin card and the CLI both render this as a
+      // dash, and an undefined would render as "undefined" instead.
+      expect(rows.find((row) => row.id === silent)).toMatchObject({
+        agentVersion: null,
+      });
+    },
+  );
+
   // Both sides of the gate live in one test on purpose: the "off" branch passes
   // trivially before the feature exists, so only pairing it with the "on"
   // branch keeps the two from drifting apart.

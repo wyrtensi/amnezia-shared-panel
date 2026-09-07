@@ -96,6 +96,10 @@ export type AdminNode = {
   lastHealthAt: string | null;
   lastSyncAt: string | null;
   lastError: string | null;
+  /** The agent version this node last reported. Null until it has been polled,
+   *  and for agents older than 1.1.14, which do not report it — so null reads
+   *  as "not known", never as "no agent". */
+  agentVersion?: string | null;
   /** Host metrics from the last poll; null until this node has been polled. */
   metrics?: AdminNodeMetrics | null;
   /** Derived from the newest peer handshake, never probed. */

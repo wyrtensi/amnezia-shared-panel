@@ -844,6 +844,9 @@ const ru = {
   "checks.state.unknown": "неизвестно",
   "nodes.metrics.title": "Метрики хоста",
   "nodes.metrics.never": "Нода ещё не отвечала — метрик нет.",
+  "nodes.agentVersion": "Агент",
+  "nodes.agentVersionHint":
+    "Версия node-agent, которую нода сообщила при последнем опросе. Прочерк — нода ещё не опрошена или её агент старше 1.1.14 и версию не сообщает.",
   "nodes.metrics.ram": "Память",
   "nodes.metrics.swap": "Swap",
   "nodes.metrics.disk": "Диск",
@@ -2054,6 +2057,9 @@ const en = {
   "checks.state.unknown": "Unknown",
   "nodes.metrics.title": "Host metrics",
   "nodes.metrics.never": "This node has not answered yet — no metrics.",
+  "nodes.agentVersion": "Agent",
+  "nodes.agentVersionHint":
+    "The node-agent version this node reported on the last poll. A dash means it has not been polled yet, or its agent predates 1.1.14 and does not report one.",
   "nodes.metrics.ram": "Memory",
   "nodes.metrics.swap": "Swap",
   "nodes.metrics.disk": "Disk",

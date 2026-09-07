@@ -190,6 +190,13 @@ export const nodes = pgTable(
     lastHealthAt: timestamp("last_health_at", { withTimezone: true }),
     lastSyncAt: timestamp("last_sync_at", { withTimezone: true }),
     lastError: text("last_error"),
+    // The agent version this node last reported on GET /server. Null until it
+    // has been polled once, and stays null for agents older than 1.1.14, which
+    // do not report the field at all — so a null here means "not known", never
+    // "no agent". Cached from the node the same way the update state below is:
+    // the node is the source of truth, this is what the panel can show without
+    // reaching it.
+    agentVersion: text("agent_version"),
     // The last in-panel agent update, mirrored from the node's own spool. It is
     // a cache of what the node reports, not the source of truth: the node
     // survives the panel and answers GET /server/update on its own.
