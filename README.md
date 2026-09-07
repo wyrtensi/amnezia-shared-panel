@@ -45,7 +45,9 @@ What that buys an operator, concretely:
   `.conf` file or a QR code, and can rename or reissue a key without asking
   anyone. Quotas are per server or a shared pool, per user or panel-wide.
 - **Routing per key.** All traffic through the tunnel, or only what a published
-  blocklist says is blocked. The rule set is fetched, validated and versioned by
+  blocklist says is blocked — the blocked-only profile carries its whole rule
+  set inside the key, so that key travels as a file rather than as a link or a
+  QR code. The rule set is fetched, validated and versioned by
   the panel, so a key can tell its owner when the routes it was exported with
   have moved on. The feeds it ships with are the community blocklists this
   project grew up around; `RULE_FEEDS` repoints them at any other list.

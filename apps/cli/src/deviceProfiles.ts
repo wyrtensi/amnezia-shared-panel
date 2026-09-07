@@ -67,3 +67,25 @@ export function keyNeedsRouteProfileWarning(key: {
   if (cliDeviceSupportsRouteProfiles(deviceType)) return false;
   return routeProfile !== "full_tunnel";
 }
+
+/**
+ * The line `user-create-key` prints when the key it has just made can only be
+ * handed over as a file.
+ *
+ * A profile other than the full tunnel inlines its whole rule set into the
+ * `vpn://` payload, which runs from tens of thousands of characters into the
+ * millions. Two hand-offs silently truncate that — a QR symbol (~2 900 bytes)
+ * and the clipboard — and a truncated key fails at import without saying why,
+ * so the panel offers neither for these profiles. The CLI says the same thing
+ * at the moment the key is created, because an operator scripting key creation
+ * is exactly the person who would otherwise paste the string into a chat.
+ *
+ * Mirrors `apps/web/lib/key-delivery.ts`; a warning, never a refusal.
+ */
+export function routeDeliveryNotice(
+  routeProfile: string | undefined,
+): string | null {
+  const profile = routeProfile ?? "full_tunnel";
+  if (profile === "full_tunnel") return null;
+  return `note: "${profile}" carries its whole rule set inside the key, so the vpn:// text survives neither a QR code nor a clipboard paste — it arrives truncated and the client fails the import without saying so. Hand this key over as a file: key-config <key-id> --format=vpn --save.`;
+}

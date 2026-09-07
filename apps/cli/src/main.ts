@@ -19,6 +19,7 @@ import { pathToFileURL } from "node:url";
 
 import {
   keyNeedsRouteProfileWarning,
+  routeDeliveryNotice,
   routeProfileWarning,
 } from "./deviceProfiles.js";
 import {
@@ -1970,7 +1971,7 @@ async function cmdUserRoutes(args: string[]): Promise<void> {
 async function cmdUserCreateKey(args: string[]): Promise<void> {
   const pos = positionals(args);
   const usage =
-    `Usage: user-create-key <id|email> --node=<uuid> [--device=<label>] [--protocol=awg3|awg2] [--route=full_tunnel|ru_blacklist] [${deviceTypeUsage()}] [--name-server=true|false] [--name-label=true|false] [--name-number=true|false]\n  --device-type=ios with a --route other than full_tunnel is warned about: route profiles do not filter on iPhone or iPad.`;
+    `Usage: user-create-key <id|email> --node=<uuid> [--device=<label>] [--protocol=awg3|awg2] [--route=full_tunnel|ru_blacklist] [${deviceTypeUsage()}] [--name-server=true|false] [--name-label=true|false] [--name-number=true|false]\n  --device-type=ios with a --route other than full_tunnel is warned about: route profiles do not filter on iPhone or iPad.\n  A --route other than full_tunnel produces a file-only key: its vpn:// text is too long for a QR code or a clipboard paste, so hand it over with key-config --format=vpn --save.`;
   const id = await resolveUserId(pos[0], usage);
   const nodeId = flagOf(args, "node");
   if (!nodeId) throw new Error(usage);
@@ -2003,6 +2004,10 @@ async function cmdUserCreateKey(args: string[]): Promise<void> {
   if (warning) console.error(warning);
   const result = (await userAction(id, "create-key", body)) as { id?: string };
   console.log(`key created for ${pos[0]}: ${result?.id ?? "(ok)"}`);
+  // Printed after the id, not before: it names the command that turns this
+  // key into a file, and that command needs the id the line above just gave.
+  const delivery = routeDeliveryNotice(route);
+  if (delivery) console.error(delivery);
 }
 
 /**

@@ -12,7 +12,6 @@ import {
   Maximize2,
   Pause,
   Play,
-  QrCode,
   X,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -28,6 +27,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 import { configUrl } from "@/lib/api";
+import { keyDelivery } from "@/lib/key-delivery";
 import { cn } from "@/lib/utils";
 import { useT } from "@/lib/i18n/provider";
 import type { MessageKey } from "@/lib/i18n/messages";
@@ -200,6 +200,10 @@ export function ConfigDownloadDialog({
   me: Me | null;
 }) {
   const { t } = useT();
+  // Decided in one place for the card, this dialog and the wizard — see
+  // lib/key-delivery.ts. A file-only profile shows no link field, no Copy and
+  // no QR, so nothing here needs the link text at all.
+  const delivery = keyDelivery(target?.routeProfile ?? "full_tunnel");
   const [vpnLink, setVpnLink] = React.useState<string | null>(null);
   const [loading, setLoading] = React.useState(false);
   const [failed, setFailed] = React.useState(false);
@@ -227,6 +231,13 @@ export function ConfigDownloadDialog({
     setFramesError(false);
     setFrameIndex(0);
     setFrameMode(QR_DEFAULT_FRAME_MODE);
+    // Nothing displays the link on a file-only profile, and the payload runs
+    // past a megabyte on the shipped feeds — fetching it to throw it away
+    // would be the most expensive thing this dialog does.
+    if (!delivery.linkUsable) {
+      setLoading(false);
+      return;
+    }
     setLoading(true);
     void (async () => {
       try {
@@ -243,7 +254,7 @@ export function ConfigDownloadDialog({
     return () => {
       active = false;
     };
-  }, [target]);
+  }, [target, delivery.linkUsable]);
 
   // The frame series is fetched only when the user actually asks for an in-app
   // code, because it is several rendered SVGs. Both app tabs share one fetch —
@@ -420,8 +431,9 @@ export function ConfigDownloadDialog({
           </div>
         ) : failed ? (
           <p className="text-sm text-destructive">{t("config.loadFailed")}</p>
-        ) : vpnLink ? (
+        ) : vpnLink || !delivery.linkUsable ? (
           <div className="space-y-4">
+            {delivery.linkUsable && vpnLink ? (
             <div className="space-y-1.5">
               <Label>{t("config.connectionKey")}</Label>
               <div className="flex gap-2">
@@ -450,28 +462,30 @@ export function ConfigDownloadDialog({
                 </Button>
               </div>
             </div>
+            ) : (
+              // One box replaces both the key field and the QR, because both
+              // fail for the same reason and two boxes saying it read as two
+              // separate faults. Measured on the shipped feeds: ru_blacklist is
+              // a 1 787 465-character link, against a QR ceiling of ~2 900
+              // bytes at any error-correction level — and the clipboard
+              // hand-off truncates it as well, which is what put the key on
+              // this list beside the code. The file below is the whole route,
+              // so the copy points at it rather than only refusing.
+              <div className="rounded-xl border border-dashed bg-muted/40 p-4 text-center">
+                <Download className="mx-auto mb-2 h-8 w-8 text-muted-foreground" />
+                <p className="text-sm font-medium">
+                  {t("config.fileOnlyTitle")}
+                </p>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  {t("config.fileOnlyWhy")}
+                </p>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  {t("config.fileOnlyBody")}
+                </p>
+              </div>
+            )}
 
-            {me?.policy.allowQrDownload && target ? (
-              target.routeProfile !== "full_tunnel" ? (
-                // Split-tunnel profiles carry thousands of routes/domains, so a
-                // QR is not merely dense — it does not exist. Measured on the
-                // shipped feeds: ru_blacklist is a 1 787 465-character link,
-                // against a hard QR ceiling of ~2 900 bytes at any
-                // error-correction level. The copy says the reason rather than
-                // only the refusal, and points at the copy button above.
-                <div className="rounded-xl border border-dashed bg-muted/40 p-4 text-center">
-                  <QrCode className="mx-auto mb-2 h-8 w-8 text-muted-foreground" />
-                  <p className="text-sm font-medium">
-                    {t("config.qrUnavailableTitle")}
-                  </p>
-                  <p className="mt-1 text-xs text-muted-foreground">
-                    {t("config.qrUnavailableWhy")}
-                  </p>
-                  <p className="mt-1 text-xs text-muted-foreground">
-                    {t("config.qrUnavailableBody")}
-                  </p>
-                </div>
-              ) : (
+            {me?.policy.allowQrDownload && delivery.linkUsable ? (
               <div className="space-y-2">
                 <div className="flex items-center justify-between gap-3">
                   <Label htmlFor="qr-zoom">{t("config.qr")}</Label>
@@ -656,14 +670,15 @@ export function ConfigDownloadDialog({
                   ))}
                 </div>
               </div>
-              )
             ) : null}
 
             {target ? (
-              // The `.vpn` file is the same `vpn://` payload already shown
-              // above (as text and, for full-tunnel keys, as a QR code), so it
-              // needs no extra policy gate beyond reaching this dialog at all.
-              // It leads because it is the only shape that survives import:
+              // The `.vpn` file is the same `vpn://` payload shown above as
+              // text and as a QR code on a full-tunnel key, so it needs no
+              // extra policy gate beyond reaching this dialog at all. On a
+              // file-only profile it is not merely the leading route, it is
+              // the only one. It leads because it is the only shape that
+              // survives import:
               // AmneziaVPN's client sniffs a file's content, not its
               // extension, so `.vpn` imports through the same "File with
               // connection settings" flow and keeps the connection name the

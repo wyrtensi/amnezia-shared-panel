@@ -6,6 +6,7 @@ import {
   CircleHelp,
   Copy,
   Download,
+  FileDown,
   Globe,
   Loader2,
   NotebookPen,
@@ -35,6 +36,7 @@ import {
 import { KeyRenameDialog } from "@/components/employee/key-rename-dialog";
 import { configUrl } from "@/lib/api";
 import { formatDate } from "@/lib/format";
+import { keyDelivery } from "@/lib/key-delivery";
 import { TrafficSplit } from "@/components/inline-traffic";
 import { useT } from "@/lib/i18n/provider";
 import { deviceIconFor } from "@/components/device-icon";
@@ -102,6 +104,10 @@ export function KeyCard({
   // Rotation re-issues the peer with current rules; only meaningful for
   // rule-based profiles (a full-tunnel key never needs new rules).
   const canRotate = keyView.routeProfile !== "full_tunnel";
+  // Whether this key can travel as a link at all — see lib/key-delivery.ts.
+  // On a file-only profile both QR and Copy hand over a truncated key that
+  // fails at import without saying so, which is worse than not offering them.
+  const delivery = keyDelivery(keyView.routeProfile);
   const revocable =
     me.policy.allowSelfRevoke &&
     !["revoked", "revoking"].includes(keyView.state);
@@ -339,7 +345,7 @@ export function KeyCard({
                     is the row's primary and paints itself `bg-primary`, so the
                     border here is `border-primary`: the same token, tracking the
                     theme in both light and dark rather than a pinned hex. */}
-                {me.policy.allowQrDownload ? (
+                {me.policy.allowQrDownload && delivery.linkUsable ? (
                   <Tooltip>
                     <TooltipTrigger asChild>
                       <Button
@@ -357,7 +363,33 @@ export function KeyCard({
                     <TooltipContent>{t("keyCard.qrAndLink")}</TooltipContent>
                   </Tooltip>
                 ) : null}
-                <CopyKeyButton keyId={keyView.id} disabled={busy} />
+                {delivery.linkUsable ? (
+                  <CopyKeyButton keyId={keyView.id} disabled={busy} />
+                ) : (
+                  // Stands in for BOTH buttons above, and deliberately keeps a
+                  // door into the config dialog: that dialog is the only place
+                  // the reason is written out at length, and it was reachable
+                  // only through the QR button, which this profile no longer
+                  // has. It carries no `allowQrDownload` gate because it hands
+                  // over no QR — the dialog's own flags still decide what is
+                  // inside it. `.vpn` beside it takes the primary colour.
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        size="sm"
+                        onClick={onShowConfig}
+                      >
+                        <FileDown className="h-4 w-4" />
+                        {t("keyCard.fileOnly")}
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent className="max-w-xs">
+                      {t("keyCard.fileOnlyWhy")}
+                    </TooltipContent>
+                  </Tooltip>
+                )}
                 {/*
                   Two downloads that used to be two identical download icons, so
                   which one a user pressed was luck. They now carry the extension
@@ -374,6 +406,7 @@ export function KeyCard({
                   href={configUrl(keyView.id, "vpn")}
                   format=".vpn"
                   label={t("common.downloadVpnFile")}
+                  primary={!delivery.linkUsable}
                 />
                 {/*
                   `.conf` last and drawn as a bare muted link rather than a
@@ -488,13 +521,24 @@ function FormatDownload({
   format,
   label,
   quiet = false,
+  primary = false,
 }: {
   href: string;
   format: string;
   label: string;
   quiet?: boolean;
+  /**
+   * Paint this download as the row's primary action. Set on `.vpn` when Copy
+   * is absent: on a file-only profile the row has no coloured action at all
+   * otherwise, and the one route that works reads as an afterthought.
+   */
+  primary?: boolean;
 }) {
-  const variant: ButtonProps["variant"] = quiet ? "link" : "secondary";
+  const variant: ButtonProps["variant"] = quiet
+    ? "link"
+    : primary
+      ? "default"
+      : "secondary";
   return (
     <Tooltip>
       <TooltipTrigger asChild>

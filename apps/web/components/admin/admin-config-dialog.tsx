@@ -21,9 +21,14 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { configUrl } from "@/lib/api";
+import { keyDelivery } from "@/lib/key-delivery";
 import { useT } from "@/lib/i18n/provider";
 
-export type AdminConfigTarget = { id: string; deviceLabel: string };
+export type AdminConfigTarget = {
+  id: string;
+  deviceLabel: string;
+  routeProfile: string;
+};
 
 export function AdminConfigDialog({
   target,
@@ -33,6 +38,10 @@ export function AdminConfigDialog({
   onClose: () => void;
 }) {
   const { t } = useT();
+  // The same rule the employee card and dialog follow — see lib/key-delivery.ts.
+  // An admin handing a truncated key to a user is the worst version of this
+  // bug: the user cannot tell that what they were sent was already broken.
+  const delivery = keyDelivery(target?.routeProfile ?? "full_tunnel");
   const [confirmed, setConfirmed] = React.useState(false);
   const [vpnLink, setVpnLink] = React.useState<string | null>(null);
   const [copied, setCopied] = React.useState(false);
@@ -49,6 +58,9 @@ export function AdminConfigDialog({
       setVpnLink(null);
       return;
     }
+    // Nothing renders the link for a file-only profile, and the payload runs
+    // past a megabyte, so it is not fetched at all.
+    if (!delivery.linkUsable) return;
     try {
       const res = await fetch(
         `${configUrl(target.id, "vpn")}&adminConfirmed=true`,
@@ -87,8 +99,9 @@ export function AdminConfigDialog({
           <Switch checked={confirmed} onCheckedChange={(v) => void confirm(v)} />
         </label>
 
-        {confirmed && vpnLink && target ? (
+        {confirmed && target && (vpnLink || !delivery.linkUsable) ? (
           <div className="space-y-4">
+            {delivery.linkUsable && vpnLink ? (
             <div className="space-y-1.5">
               <Label>{t("config.connectionKey")}</Label>
               <div className="flex gap-2">
@@ -109,6 +122,20 @@ export function AdminConfigDialog({
                 </Button>
               </div>
             </div>
+            ) : (
+              <div className="rounded-xl border border-dashed bg-muted/40 p-4 text-center">
+                <Download className="mx-auto mb-2 h-8 w-8 text-muted-foreground" />
+                <p className="text-sm font-medium">
+                  {t("config.fileOnlyTitle")}
+                </p>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  {t("config.fileOnlyWhy")}
+                </p>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  {t("config.fileOnlyBody")}
+                </p>
+              </div>
+            )}
             {/*
               Two files, and only the first one keeps the key's name. The
               client's importer sniffs a file's content, not its extension, so
