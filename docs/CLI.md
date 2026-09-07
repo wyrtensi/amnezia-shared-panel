@@ -117,6 +117,41 @@ against the wrong database. `backups/` is git-ignored. Dumps are written
 `0600` inside a `0700` directory (the script sets `umask 077` and tightens
 `out-dir`), because a dump carries every user, email, role and traffic row.
 
+### Ops — one-time cleanup after the whitelist profile was removed
+
+`scripts/cleanup-whitelist-profile.sh` empties what migration `0035` refuses to
+run over. That guard counts **every** `vpn_keys` row naming `ru_whitelist`,
+`revoked` ones included, because deleting a row whose peer is still on a node
+strands that peer: reconcile finds an orphan by the label the row carries, so
+with the row gone nothing on the panel knows the peer exists. A key therefore
+has to be revoked *and* purged before the upgrade, not merely revoked.
+
+| Command | Dir | Purpose |
+| --- | --- | --- |
+| `bash scripts/cleanup-whitelist-profile.sh` | root | Report only: which keys still name the profile, and whether `.env` does |
+| `bash scripts/cleanup-whitelist-profile.sh --confirm` | root | Revoke each key, wait for its node to confirm, purge the row, then clean `.env` |
+| `bash scripts/cleanup-whitelist-profile.sh --confirm --timeout=300` | root | Same, waiting longer for a slow or briefly unreachable node |
+
+It writes nothing to the database itself: every change goes through
+`key-revoke` and `key-purge` on the panel's own admin API, run inside the
+control-api container where `PANEL_IDENTITY_SECRET` already is, so no
+credential has to be passed in. A key that does not reach `revoked` keeps its
+row and is reported with its last job error — the script exits non-zero rather
+than purging on hope.
+
+**Run it before upgrading past v0.9.35.** The *running* panel performs the
+revoke, and one older than v0.9.35 cannot finish a revoke whose peer is already
+gone: it turns the node's `404` into a failed job and leaves the key in
+`revoking` forever. On such a host, upgrade to v0.9.35 first, let the worker
+drain, then run this.
+
+The `.env` half removes a `ru_whitelist` entry from `RULE_FEEDS` and drops the
+dead `RU_WHITELIST_POC_APPROVED`, after a timestamped backup, leaving every
+other feed and variable untouched. If the removed profile is the *only* one in
+`RULE_FEEDS` it refuses: an empty `RULE_FEEDS=[]` means "fetch nothing" while
+deleting the variable hands the worker its built-in defaults, and choosing
+between those is the operator's call, not a cleanup's.
+
 ### Bootstrap & admin CLI
 
 The **first admin** is provisioned by env, not a command: the first login by any
