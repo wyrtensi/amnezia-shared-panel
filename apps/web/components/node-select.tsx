@@ -28,7 +28,7 @@ export function NodeSelect({
   };
   return (
     <div className="space-y-2">
-      <label className="flex items-center justify-between gap-3 rounded-lg border p-2.5 text-sm">
+      <label className="flex items-center justify-between gap-3 rounded-lg border bg-well shadow-[var(--inset-shadow)] p-2.5 text-sm">
         <span>{t("nodeSelect.allNodes")}</span>
         <Switch
           checked={all}
