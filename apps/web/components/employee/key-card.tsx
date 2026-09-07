@@ -168,19 +168,23 @@ export function KeyCard({
                   ) : null}
                   {/* The guide lives on the key, not in the page header: the card
                       knows which device the key was labelled for, so it opens
-                      straight to that instruction. Icon-only because the title
-                      must keep the room it needs to stay readable. */}
+                      straight to that instruction. Labelled rather than a bare
+                      glyph — a question mark beside a title reads as a hint
+                      about the title, not as the way to the install steps —
+                      and the word sits before the icon so the row still scans
+                      left to right. */}
                   <Tooltip>
                     <TooltipTrigger asChild>
                       <Button
                         type="button"
                         variant="ghost"
-                        size="icon"
-                        className="size-6 shrink-0 text-muted-foreground"
+                        size="sm"
+                        className="h-6 shrink-0 gap-1 px-1.5 text-[11px] font-medium text-muted-foreground hover:text-foreground"
                         aria-label={t("install.button")}
                         onClick={onShowGuide}
                       >
-                        <CircleHelp className="size-4" />
+                        {t("keyCard.guideShort")}
+                        <CircleHelp className="size-3.5" />
                       </Button>
                     </TooltipTrigger>
                     <TooltipContent>{t("install.button")}</TooltipContent>

@@ -384,6 +384,9 @@ const ru = {
 
   // Install guide dialog (user page)
   "install.button": "Как подключиться",
+  // Short form for the key card, where the full phrase would crowd the name it
+  // sits beside.
+  "keyCard.guideShort": "Инструкция",
   "install.title": "Установка AmneziaVPN и подключение",
   "install.desc":
     "Три шага: поставить приложение, добавить ключ, что делать, если не работает.",
@@ -1616,6 +1619,7 @@ const en = {
 
   // Install guide dialog (user page)
   "install.button": "How to connect",
+  "keyCard.guideShort": "Guide",
   "install.title": "Install AmneziaVPN and connect",
   "install.desc":
     "Three steps: install the app, add the key, what to try if it does not work.",
