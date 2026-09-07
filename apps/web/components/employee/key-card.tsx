@@ -196,7 +196,7 @@ export function KeyCard({
                     competing with the name above it: an icon says which kind of
                     fact it is, and the surface separates it from the title
                     without making it louder. */}
-                <span className="mt-1 inline-flex max-w-full items-center gap-1.5 rounded-md bg-muted/70 px-1.5 py-0.5 text-[11px] font-medium text-muted-foreground shadow-sm">
+                <span className="mt-1 inline-flex max-w-full items-center gap-1.5 rounded-md bg-muted/70 px-1.5 py-0.5 text-[11px] font-medium text-muted-foreground shadow-[var(--chip-shadow)]">
                   <Server className="size-3 shrink-0" />
                   <span className="truncate">{node?.name ?? "—"}</span>
                 </span>
@@ -298,16 +298,20 @@ export function KeyCard({
             </Callout>
           ) : null}
 
-          <dl className="grid grid-cols-2 gap-x-3 gap-y-1 text-xs text-muted-foreground">
-            <div>
-              <dt className="inline">{t("keyCard.created")}</dt>
-              <dd className="inline text-foreground">
+          {/* Each fact boxed with its own value, the way the traffic ranges on
+              the quota card are: two label/value pairs sharing a row read as
+              four loose fragments otherwise, and it is the value that the eye
+              is looking for. */}
+          <dl className="grid grid-cols-2 gap-2 text-xs text-muted-foreground">
+            <div className="flex flex-wrap items-baseline gap-x-1.5 rounded-md border border-border/60 px-2 py-1 shadow-[var(--chip-shadow)]">
+              <dt>{t("keyCard.created")}</dt>
+              <dd className="text-foreground">
                 {formatDate(keyView.createdAt, lang)}
               </dd>
             </div>
             {me.policy.showTraffic ? (
-              <div>
-                <dt className="inline">{t("keyCard.traffic")}</dt>{" "}
+              <div className="flex flex-wrap items-baseline gap-x-1.5 rounded-md border border-border/60 px-2 py-1 shadow-[var(--chip-shadow)]">
+                <dt>{t("keyCard.traffic")}</dt>
                 <dd className="inline-flex text-foreground">
                   <TrafficSplit pair={keyView.traffic} />
                 </dd>

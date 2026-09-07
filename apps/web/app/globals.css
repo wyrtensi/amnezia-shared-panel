@@ -42,6 +42,30 @@
      a flat panel. */
   --dialog-gradient: linear-gradient(170deg, #fffefb 0%, #fbf3e3 55%, #f6ead4 100%);
 
+  /* A recess inside a card: the surface a row sits IN, as opposed to --muted,
+     which is a surface that sits ON something. In light it is a shade below the
+     near-white card; in dark it goes DARKER than the card, because --muted is
+     lighter there and a lighter row reads as raised rather than sunk — which is
+     exactly why the `bg-muted/40` that separated these rows in light was
+     invisible in dark. */
+  --well: #f9f3e7;
+
+  /* A shadow that is actually visible on the surface it falls on. Tailwind's
+     own `shadow-sm` is black at 5 %, which reads on cream and disappears
+     entirely on a dark ground -- the small surfaces looked lifted in light and
+     flat in dark. Same one pixel of offset in both; only the opacity differs. */
+  --chip-shadow: 0 1px 2px 0 rgb(0 0 0 / 0.06);
+
+  /* The same tile, quieter: it marks a server's name in a list where the row
+     itself is already a surface, so it has to read as a marker rather than
+     compete with the device tiles on the cards below. */
+  --tile-gradient-soft:
+    linear-gradient(
+      180deg,
+      color-mix(in oklab, var(--primary) 11%, transparent),
+      color-mix(in oklab, var(--primary) 5%, transparent)
+    );
+
   /* The soft square behind a device glyph on a key card. Derived from the
      accent rather than pinned, so it follows the theme; two stops of the same
      hue, so the tile reads as lit rather than as a second colour. */
@@ -164,6 +188,8 @@
     radial-gradient(1100px 720px at 50% 112%, rgba(0, 0, 0, 0.3), transparent 62%);
 
   --primary-gradient: linear-gradient(180deg, #f6b76d 0%, #f2a856 62%);
+  --well: #2a231d;
+  --chip-shadow: 0 1px 2px 0 rgb(0 0 0 / 0.45);
   --dialog-gradient: linear-gradient(170deg, #40372f 0%, #322a24 55%, #262019 100%);
   --card-gradient: linear-gradient(180deg, #3b322b 0%, #2f2721 100%);
 
@@ -248,6 +274,7 @@
 
 @theme inline {
   --color-background: var(--background);
+  --color-well: var(--well);
   --color-header-surface: var(--header-surface);
   --color-foreground: var(--foreground);
   --color-card: var(--card);

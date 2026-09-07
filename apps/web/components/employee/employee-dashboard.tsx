@@ -8,6 +8,7 @@ import {
   KeyRound,
   Plus,
   RefreshCw,
+  Server,
   ShieldCheck,
 } from "lucide-react";
 import type { GuideAudience } from "@amnezia/contracts";
@@ -503,7 +504,7 @@ export function EmployeeDashboard({
                     // transparent edge on the other rows keeps every server name
                     // on the same baseline.
                     className={cn(
-                      "flex flex-wrap items-start justify-between gap-2 rounded-lg border border-border/50 bg-muted/40 py-2.5 pl-3 pr-3 shadow-sm",
+                      "flex flex-wrap items-start justify-between gap-2 rounded-lg border border-border/60 bg-well py-2.5 pl-3 pr-3 shadow-[var(--chip-shadow)]",
                       node.recommended
                         // Green, to match the "Recommended" badge beside it, and
                         // an edge only: a tinted row reads as selected or as
@@ -515,7 +516,14 @@ export function EmployeeDashboard({
                     )}
                   >
                     <div className="min-w-0 space-y-0.5">
-                      <span className="flex min-w-0 items-center gap-1.5">
+                      <span className="flex min-w-0 items-center gap-2">
+                        {/* The device tile's smaller, quieter sibling: the row
+                            is already a surface of its own, so this marks the
+                            name rather than competing with the glyphs on the
+                            key cards below it. */}
+                        <span className="flex size-6 shrink-0 items-center justify-center rounded-md bg-[image:var(--tile-gradient-soft)] text-primary/75 ring-1 ring-primary/10">
+                          <Server className="size-3.5" />
+                        </span>
                         <span className="truncate text-sm text-muted-foreground">
                           {node.name}
                         </span>
