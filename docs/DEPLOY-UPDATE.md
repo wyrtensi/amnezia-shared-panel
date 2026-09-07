@@ -197,10 +197,28 @@ and the CLI. Migration `0035_drop_whitelist_profile` is the removal, and it
 those rows here would strand their peers on the nodes with nothing in the panel
 pointing at them. So before deploying past `0035`:
 
-1. find any key still on the profile the same way as above
-   (`routeProfile == "ru_whitelist"`);
-2. revoke each one through the panel or `key-revoke <id>` — this removes the
-   peer from its node properly, which a migration cannot do.
+```bash
+bash scripts/cleanup-whitelist-profile.sh            # report: what still blocks 0035
+bash scripts/cleanup-whitelist-profile.sh --confirm  # revoke, wait, purge, clean .env
+```
+
+That script is the whole procedure; see
+[`CLI.md`](./CLI.md#ops--one-time-cleanup-after-the-whitelist-profile-was-removed).
+Done by hand it is two steps per key, and **both are needed**:
+
+1. `key-revoke <id>` — removes the peer from its node properly, which a
+   migration cannot do;
+2. `key-purge <id> --confirm` once the key reads `revoked` — the guard counts
+   **every** row naming the profile, `revoked` ones included, so a revoked key
+   still blocks the migration. The API refuses to purge in any earlier state,
+   which is what makes the order safe: `revoked` is the panel's record that the
+   node confirmed the peer is gone, and only then is the row free to go.
+
+**Do this before upgrading past v0.9.35**, because the *running* panel performs
+the revoke. Older than that, a revoke whose peer is already gone cannot finish:
+the node answers `404`, the worker treats it as a failure, and the key sits in
+`revoking` — which is exactly the state such a host is likely to be in already.
+Upgrade to v0.9.35 first, let the worker drain those, then clean up and go on.
 
 Only once that list is empty will `0035` apply. If it is not, the migration
 raises a readable error naming how many keys are still stuck rather than
