@@ -257,7 +257,7 @@ export function ServiceChecksCard({
               {(check.assertions ?? []).map((assertion, index) => (
                 <li
                   key={index}
-                  className="max-w-full truncate rounded-md bg-muted/70 px-2 py-0.5 font-mono text-[11px] text-muted-foreground"
+                  className="max-w-full truncate rounded-md bg-muted/70 px-2 py-0.5 font-mono text-[11px] text-muted-foreground shadow-sm"
                 >
                   {assertionLine(assertion)}
                 </li>

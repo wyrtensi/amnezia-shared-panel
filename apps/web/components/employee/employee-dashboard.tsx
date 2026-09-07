@@ -503,7 +503,7 @@ export function EmployeeDashboard({
                     // transparent edge on the other rows keeps every server name
                     // on the same baseline.
                     className={cn(
-                      "flex flex-wrap items-start justify-between gap-2 rounded-lg border border-border/50 bg-muted/40 py-2.5 pl-3 pr-3",
+                      "flex flex-wrap items-start justify-between gap-2 rounded-lg border border-border/50 bg-muted/40 py-2.5 pl-3 pr-3 shadow-sm",
                       node.recommended
                         // Green, to match the "Recommended" badge beside it, and
                         // an edge only: a tinted row reads as selected or as

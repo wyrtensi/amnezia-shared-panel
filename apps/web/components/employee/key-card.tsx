@@ -196,7 +196,7 @@ export function KeyCard({
                     competing with the name above it: an icon says which kind of
                     fact it is, and the surface separates it from the title
                     without making it louder. */}
-                <span className="mt-1 inline-flex max-w-full items-center gap-1.5 rounded-md bg-muted/70 px-1.5 py-0.5 text-[11px] font-medium text-muted-foreground">
+                <span className="mt-1 inline-flex max-w-full items-center gap-1.5 rounded-md bg-muted/70 px-1.5 py-0.5 text-[11px] font-medium text-muted-foreground shadow-sm">
                   <Server className="size-3 shrink-0" />
                   <span className="truncate">{node?.name ?? "—"}</span>
                 </span>
