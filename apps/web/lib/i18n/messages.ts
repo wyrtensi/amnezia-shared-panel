@@ -451,6 +451,24 @@ const ru = {
   "install.iosAmneziaWgOpen": "Открыть AmneziaWG в App Store",
   "install.desktopNote":
     "Запустите скачанный файл и следуйте установщику.",
+  // AmneziaVPN keeps running beside the clock after its window is closed, so
+  // the installer refuses and Retry alone changes nothing. The menu items are
+  // quoted as the Russian build spells them; "Retry" is carried in brackets
+  // because that button is often left in English.
+  //
+  // The title names no operating system and the steps say "next to the clock"
+  // rather than "in the Windows tray": the screenshots are Windows because that
+  // is what was to hand, but a desktop client that survives its own window can
+  // refuse the same way anywhere, and a reader who has the warning in front of
+  // them should not have to decide whether this note is about their machine.
+  "install.busyTitle": "Установщик выдаёт предупреждение?",
+  "install.busyStep1":
+    "Нажмите правой кнопкой по значку AmneziaVPN рядом с часами.",
+  "install.busyStep2": "Выберите «Закрыть AmneziaVPN».",
+  "install.busyStep3":
+    "Вернитесь в установщик и нажмите «Повторить» (Retry).",
+  "install.busyWarningAlt": "Окно установщика: AmneziaVPN запущена",
+  "install.busyTrayAlt": "Меню значка AmneziaVPN в трее Windows",
   "install.iosNote":
     "В российском App Store приложение называется Default VPN — ставьте его.",
   // Says only what is known. What a client does with a profile key on iOS has
@@ -1754,6 +1772,14 @@ const en = {
   "install.iosAmneziaWgOpen": "Open AmneziaWG on the App Store",
   "install.desktopNote":
     "Run the downloaded file and follow the installer.",
+  // See the Russian block: the app survives its own window on Windows, and
+  // pressing Retry without quitting it shows the same box again.
+  "install.busyTitle": "The installer shows a warning?",
+  "install.busyStep1": "Right-click the AmneziaVPN icon next to the clock.",
+  "install.busyStep2": "Choose “Quit AmneziaVPN”.",
+  "install.busyStep3": "Go back to the installer and press “Retry”.",
+  "install.busyWarningAlt": "The installer window saying AmneziaVPN is active",
+  "install.busyTrayAlt": "The AmneziaVPN tray menu on Windows",
   "install.iosNote":
     "In the Russian App Store the app is called Default VPN — install that one.",
   // Says only what is known. What a client does with a profile key on iOS has

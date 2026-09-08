@@ -29,6 +29,12 @@ const REQUIRED = [
   "install.platform.ios",
   "install.pickFile",
   "install.desktopNote",
+  "install.busyTitle",
+  "install.busyStep1",
+  "install.busyStep2",
+  "install.busyStep3",
+  "install.busyWarningAlt",
+  "install.busyTrayAlt",
   "install.iosNote",
   "install.iosProfileWarning",
   "install.versionNote",
@@ -164,6 +170,14 @@ describe("install guide messages", () => {
   // than a clause bolted onto another one. Most of the room was paid for by
   // deleting the .vpn domain warning, which described a difference between the
   // file and the clipboard that no longer exists.
+  //
+  // Raised again from 3200 to 3500 for the installer-busy note. The panel now
+  // stops people on the way to a key to tell them to update the client, and on
+  // Windows the very next thing a fair number of them meet is an installer
+  // refusing because the app is still in the tray — a dead end, not an
+  // inconvenience, for anyone who does not know closing its window did not
+  // close it. Three steps and two alt texts a language is what saying that
+  // costs; it buys back a support conversation each time.
   it("keeps the detailed view from growing without limit either", () => {
     for (const lang of ["ru", "en"] as const) {
       const dict = messages[lang] as Record<string, string>;
@@ -171,7 +185,7 @@ describe("install guide messages", () => {
         (sum, key) => sum + (dict[key] ?? "").length,
         0,
       );
-      expect(total, `${lang} install copy`).toBeLessThanOrEqual(3200);
+      expect(total, `${lang} install copy`).toBeLessThanOrEqual(3500);
     }
   });
 
