@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  inUpdateNoticeGrace,
   SIGNATURE_MIN_LENGTH,
   shouldShowUpdateNotice,
   signatureIsEnough,
   signatureLength,
+  UPDATE_NOTICE_GRACE_MS,
   UPDATE_NOTICE_SHOWINGS,
   updateNoticeAcksOf,
   type SignatureStroke,
@@ -86,6 +88,61 @@ describe("shouldShowUpdateNotice", () => {
 
   it("shows nothing before the profile has loaded", () => {
     expect(shouldShowUpdateNotice({ me: null })).toBe(false);
+  });
+});
+
+describe("the quiet period after a signature", () => {
+  const now = 1_800_000_000_000;
+
+  it("keeps the second showing off the very next click", () => {
+    // The whole point: sign for the QR, close the config dialog, reach for the
+    // .conf file, and the same poster must not be back. Two showings are meant
+    // to land on two occasions, not on two consecutive buttons.
+    expect(
+      shouldShowUpdateNotice({ me: user(), signedAt: now - 1000, now }),
+    ).toBe(false);
+  });
+
+  it("lets it come back once the period is over", () => {
+    expect(
+      shouldShowUpdateNotice({
+        me: user(),
+        signedAt: now - UPDATE_NOTICE_GRACE_MS - 1,
+        now,
+      }),
+    ).toBe(true);
+  });
+
+  it("shows it to a browser that has never signed", () => {
+    expect(shouldShowUpdateNotice({ me: user(), signedAt: null, now })).toBe(
+      true,
+    );
+  });
+
+  it("does not suspend the count", () => {
+    // The quiet period delays a showing; it never spends one. Somebody with
+    // both showings used stays quiet for good, from the counter alone.
+    expect(
+      shouldShowUpdateNotice({
+        me: user({ notices: { install: 0, update: UPDATE_NOTICE_SHOWINGS } }),
+        signedAt: null,
+        now,
+      }),
+    ).toBe(false);
+  });
+
+  it("treats a clock that moved backwards as no grace at all", () => {
+    // A stored timestamp from the future would otherwise silence the notice
+    // until the clock caught up with it.
+    expect(inUpdateNoticeGrace(now + 60_000, now)).toBe(false);
+    expect(inUpdateNoticeGrace(Number.NaN, now)).toBe(false);
+    expect(inUpdateNoticeGrace(null, now)).toBe(false);
+  });
+
+  it("is half an hour", () => {
+    // Long enough for one sitting with a key, short enough that the second
+    // showing still happens the same day.
+    expect(UPDATE_NOTICE_GRACE_MS).toBe(30 * 60 * 1000);
   });
 });
 

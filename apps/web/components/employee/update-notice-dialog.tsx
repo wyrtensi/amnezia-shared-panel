@@ -6,6 +6,7 @@ import { MIN_AWG3_CLIENT_VERSION } from "@amnezia/contracts";
 import { Dialog, DialogOverlay, DialogPortal } from "@/components/ui/dialog";
 import {
   signatureIsEnough,
+  UPDATE_NOTICE_STAMP_MS,
   type SignaturePoint,
   type SignatureStroke,
 } from "@/lib/update-notice";
@@ -32,9 +33,6 @@ const POSTER_RED = "#cc2b26";
 const PAD_PAPER = "#fbf9f1";
 const PAD_RULE = "#b9ae95";
 const PEN_INK = "#1b3a86";
-
-/** How long the stamp stays on screen before the sheet leaves, in ms. */
-const STAMP_DWELL_MS = 1080;
 
 /**
  * The step between reaching for a key and getting it: a poster saying the
@@ -182,7 +180,7 @@ export function UpdateNoticeDialog({
     if (!armed || stamped) return;
     onSigned();
     setStamped(true);
-    window.setTimeout(() => onOpenChange(false), STAMP_DWELL_MS);
+    window.setTimeout(() => onOpenChange(false), UPDATE_NOTICE_STAMP_MS);
   };
 
   const stampDate = new Date().toLocaleDateString(

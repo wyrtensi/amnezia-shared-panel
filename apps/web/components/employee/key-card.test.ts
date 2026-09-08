@@ -256,3 +256,26 @@ describe("the update-notice gate", () => {
     expect(source).toContain("guardKeyAccess(() => downloadHref(href))");
   });
 });
+
+/**
+ * The copy button paints its confirmation on a card the notice is still
+ * covering. Timed from the click alone it is half over before anyone can see
+ * it, which reads as "nothing happened" right after the user signed for it.
+ */
+describe("copy feedback under the update notice", () => {
+  it("adds back the time the sheet spends on top of the card", () => {
+    expect(source).toContain("UPDATE_NOTICE_STAMP_MS");
+    expect(source).toMatch(
+      /COPY_FEEDBACK_MS \+ \(covered \? UPDATE_NOTICE_STAMP_MS : 0\)/,
+    );
+  });
+
+  it("takes the flag from the guard rather than guessing", () => {
+    expect(source).toContain(
+      "guardKeyAccess((deferred) => void copy(deferred))",
+    );
+    // Both endings of the copy carry it: an error message that vanishes early
+    // is the same failure as a confirmation that does.
+    expect(source.match(/reset\(covered\)/g)?.length).toBe(2);
+  });
+});

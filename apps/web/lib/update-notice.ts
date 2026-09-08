@@ -23,13 +23,95 @@ export { UPDATE_NOTICE_SHOWINGS };
  */
 export function shouldShowUpdateNotice({
   me,
+  signedAt = null,
+  now = Date.now(),
 }: {
   me: Pick<Me, "role" | "policy" | "notices"> | null;
+  /** When this browser last saw a signature, or null if it has not. */
+  signedAt?: number | null;
+  now?: number;
 }): boolean {
   if (!me) return false;
   if (me.role === "admin") return false;
   if (me.policy?.showUpdateNotice === false) return false;
+  if (inUpdateNoticeGrace(signedAt, now)) return false;
   return updateNoticeAcksOf(me) < UPDATE_NOTICE_SHOWINGS;
+}
+
+/**
+ * How long the notice stays out of the way after somebody signs it.
+ *
+ * The two showings are meant to land on two separate occasions, and without
+ * this they land on two consecutive clicks: sign for the QR, close it, reach
+ * for the `.conf` file, and the same poster is back — which teaches people to
+ * scribble through it rather than to read it. Half an hour is long enough to
+ * cover one sitting with a key and short enough that the second showing still
+ * happens the same day.
+ */
+export const UPDATE_NOTICE_GRACE_MS = 30 * 60 * 1000;
+
+/** Whether a signature is recent enough that the notice should stay down. */
+export function inUpdateNoticeGrace(
+  signedAt: number | null,
+  now: number,
+): boolean {
+  if (signedAt === null || !Number.isFinite(signedAt)) return false;
+  const since = now - signedAt;
+  // A negative age is a clock that moved (or a stored value from the future);
+  // treat it as no grace rather than as an unbounded one.
+  return since >= 0 && since < UPDATE_NOTICE_GRACE_MS;
+}
+
+/**
+ * How long the sheet stays on screen after the signature, showing the stamp.
+ *
+ * Lives here rather than in the dialog because it is not only the dialog's
+ * business: the action it releases paints its own confirmation on the card
+ * UNDERNEATH the sheet, so that confirmation has to outlast this or the user
+ * watches the poster leave and finds nothing where their click went.
+ */
+export const UPDATE_NOTICE_STAMP_MS = 1080;
+
+/**
+ * Where the quiet period is remembered, and why it is not the server.
+ *
+ * The COUNT is the server's business — it decides whether this person is owed
+ * a showing at all, and it must survive a new device and a cleared browser.
+ * The quiet period is the opposite kind of fact: it exists so the two showings
+ * do not land on two consecutive clicks in one sitting, which is a property of
+ * this browser in this half hour. Losing it costs one extra poster; giving it a
+ * column and a round trip would cost more than that.
+ *
+ * Every access is wrapped: a private window, a browser set to block site data
+ * and a thumbnailer all throw on the accessor itself, and none of them is a
+ * reason for a key to stop being handed over.
+ */
+const SIGNED_AT_KEY = "amnezia-notice-signed-at";
+
+/** Fallback for a browser that refuses storage — same tab, same session. */
+let signedAtInMemory: number | null = null;
+
+/** When this browser last saw a signature, or null. */
+export function readNoticeSignedAt(): number | null {
+  try {
+    const raw = window.localStorage.getItem(SIGNED_AT_KEY);
+    const parsed = raw === null ? Number.NaN : Number(raw);
+    if (Number.isFinite(parsed)) return parsed;
+  } catch {
+    // Storage is unavailable; the in-memory value is the whole answer.
+  }
+  return signedAtInMemory;
+}
+
+/** Start the quiet period. */
+export function rememberNoticeSignedAt(now: number = Date.now()): void {
+  signedAtInMemory = now;
+  try {
+    window.localStorage.setItem(SIGNED_AT_KEY, String(now));
+  } catch {
+    // Nothing to do and nothing to report: the in-memory value still holds for
+    // this tab, which is the case the quiet period exists for.
+  }
 }
 
 /** The signed count, reading anything missing or nonsensical as zero. */
@@ -53,8 +135,14 @@ export function updateNoticeAcksOf(
  *
  * `action` must be safe to call synchronously inside a click handler — that is
  * how the clipboard and the download keep their user activation.
+ *
+ * It is told whether it was `deferred`, i.e. whether a notice stood in front of
+ * it. An action that paints a confirmation on the card needs to know: the sheet
+ * covers that card for `UPDATE_NOTICE_STAMP_MS` after the action has already
+ * run, so a confirmation timed from the click alone is half over by the time
+ * anyone can see it.
  */
-export type KeyAccessGuard = (action: () => void) => void;
+export type KeyAccessGuard = (action: (deferred: boolean) => void) => void;
 
 /** One point of a signature stroke, in CSS pixels within the pad. */
 export type SignaturePoint = { x: number; y: number };

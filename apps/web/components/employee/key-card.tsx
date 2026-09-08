@@ -38,7 +38,10 @@ import { configUrl } from "@/lib/api";
 import { formatDate } from "@/lib/format";
 import { formatLastSeen } from "@/lib/activity";
 import { keyDelivery } from "@/lib/key-delivery";
-import type { KeyAccessGuard } from "@/lib/update-notice";
+import {
+  UPDATE_NOTICE_STAMP_MS,
+  type KeyAccessGuard,
+} from "@/lib/update-notice";
 import { TrafficSplit } from "@/components/inline-traffic";
 import { useT } from "@/lib/i18n/provider";
 import { deviceIconFor } from "@/components/device-icon";
@@ -633,6 +636,9 @@ function downloadHref(href: string) {
   anchor.remove();
 }
 
+/** How long "Copied" stays up once it is actually on screen. */
+const COPY_FEEDBACK_MS = 2500;
+
 type CopyState = "idle" | "busy" | "copied" | "error";
 
 /**
@@ -660,12 +666,21 @@ function CopyKeyButton({
     [],
   );
 
-  const reset = () => {
+  /**
+   * Hold the finished state long enough to be read, then go quiet.
+   *
+   * `covered` adds back the time the update notice spends on top of this card
+   * after the copy has already happened: without it the user signs, watches the
+   * sheet leave, and finds a button that has just gone back to "Copy" — as if
+   * nothing had been copied at all.
+   */
+  const reset = (covered = false) => {
     if (timer.current) clearTimeout(timer.current);
-    timer.current = setTimeout(() => setState("idle"), 2500);
+    const linger = COPY_FEEDBACK_MS + (covered ? UPDATE_NOTICE_STAMP_MS : 0);
+    timer.current = setTimeout(() => setState("idle"), linger);
   };
 
-  const copy = async () => {
+  const copy = async (covered = false) => {
     setState("busy");
     try {
       const res = await fetch(configUrl(keyId, "vpn"));
@@ -674,11 +689,11 @@ function CopyKeyButton({
       await navigator.clipboard.writeText(text);
       setState("copied");
       toast.success(t("keyCard.copyToast"));
-      reset();
+      reset(covered);
     } catch {
       setState("error");
       toast.error(t("keyCard.copyErrToast"));
-      reset();
+      reset(covered);
     }
   };
 
@@ -711,7 +726,7 @@ function CopyKeyButton({
       variant={state === "copied" ? "secondary" : "default"}
       size="sm"
       disabled={disabled || state === "busy"}
-      onClick={() => guardKeyAccess(() => void copy())}
+      onClick={() => guardKeyAccess((deferred) => void copy(deferred))}
       className={state === "error" ? "text-destructive" : undefined}
     >
       {content[state]}

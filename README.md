@@ -136,7 +136,9 @@ clipboard, either config file — the panel stops and asks them to **sign** that
 the app is up to date, and only then runs what they asked for. A signature
 rather than a checkbox, because one reflex tap is exactly the failure a checkbox
 does not prevent; there is a checkbox behind "cannot sign?" for keyboards and
-screen readers, and closing the sheet runs nothing and spends no showing. It is
+screen readers, and closing the sheet runs nothing and spends no showing. The
+two showings land on two separate occasions — a signature keeps the notice down
+for half an hour, so one sitting with a key is asked once. It is
 deliberately the one surface in the panel that ignores the theme and the rounded
 corners — it is a notice, not furniture. Administrators never see it, the
 counter lives on the user row (so no cleanup can resurrect it), an operator can
