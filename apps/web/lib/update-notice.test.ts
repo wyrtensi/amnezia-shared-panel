@@ -139,10 +139,10 @@ describe("the quiet period after a signature", () => {
     expect(inUpdateNoticeGrace(null, now)).toBe(false);
   });
 
-  it("is half an hour", () => {
-    // Long enough for one sitting with a key, short enough that the second
-    // showing still happens the same day.
-    expect(UPDATE_NOTICE_GRACE_MS).toBe(30 * 60 * 1000);
+  it("is ten minutes", () => {
+    // Long enough for one sitting with a key, short enough that somebody
+    // coming back later in the day still gets their second showing.
+    expect(UPDATE_NOTICE_GRACE_MS).toBe(10 * 60 * 1000);
   });
 });
 

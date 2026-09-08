@@ -44,11 +44,12 @@ export function shouldShowUpdateNotice({
  * The two showings are meant to land on two separate occasions, and without
  * this they land on two consecutive clicks: sign for the QR, close it, reach
  * for the `.conf` file, and the same poster is back — which teaches people to
- * scribble through it rather than to read it. Half an hour is long enough to
- * cover one sitting with a key and short enough that the second showing still
- * happens the same day.
+ * scribble through it rather than to read it. Ten minutes covers one sitting
+ * with a key — the QR, then the file, then the second device — and is short
+ * enough that somebody coming back later in the day still gets their second
+ * showing rather than losing it to a window they never noticed.
  */
-export const UPDATE_NOTICE_GRACE_MS = 30 * 60 * 1000;
+export const UPDATE_NOTICE_GRACE_MS = 10 * 60 * 1000;
 
 /** Whether a signature is recent enough that the notice should stay down. */
 export function inUpdateNoticeGrace(
