@@ -111,6 +111,13 @@ const APK_STEPS = [
   "install.apkStep3",
 ] as const;
 
+/** Getting past the Windows installer's "the app is still running" refusal. */
+const BUSY_STEPS = [
+  "install.busyStep1",
+  "install.busyStep2",
+  "install.busyStep3",
+] as const;
+
 /**
  * What to try, in the order to try it.
  *
@@ -508,9 +515,12 @@ export function InstallInstructions({
                 </div>
 
                 {audience === "desktop" ? (
-                  <p className="text-xs leading-snug text-muted-foreground">
-                    {t("install.desktopNote")}
-                  </p>
+                  <>
+                    <p className="text-xs leading-snug text-muted-foreground">
+                      {t("install.desktopNote")}
+                    </p>
+                    <InstallerBusyNote />
+                  </>
                 ) : null}
 
                 {advanced && audience === "android" && android?.alternate ? (
@@ -874,6 +884,138 @@ function ApkFallback({
         ) : null}
       </div>
     </details>
+  );
+}
+
+/** One screenshot file: where it lives and how big it really is. */
+type GuideShotFile = { src: string; width: number; height: number };
+
+/**
+ * A screenshot, with the twin it is swapped for in the other theme.
+ *
+ * The system draws these windows in its own light or dark mode, and a bright
+ * screenshot on a dark sheet reads as a hole punched in the dialog — so where
+ * both captures exist, the pair follows the panel's theme. `dark` is optional:
+ * a capture that looks the same either way, or one that has no twin yet, is
+ * simply shown to everybody.
+ */
+type GuideShotPair = { light: GuideShotFile; dark?: GuideShotFile };
+
+/**
+ * The two windows this note is about, per locale.
+ *
+ * A Russian system shows a Russian installer, and a reader matching a picture
+ * against their screen is doing it word by word — an English screenshot over
+ * Russian copy is the one thing that would make this note harder to follow than
+ * no note at all.
+ *
+ * The intrinsic sizes travel with the paths so the box is the right shape
+ * before the file arrives. These sit inside a closed `<details>`, so they load
+ * when it is opened, and without the dimensions the steps would jump under the
+ * cursor of somebody already reading them.
+ */
+const BUSY_SHOTS: Record<Lang, { warning: GuideShotPair; tray: GuideShotPair }> =
+  {
+    ru: {
+      warning: {
+        light: { src: "/install-warning-ru-light.webp", width: 1000, height: 337 },
+        dark: { src: "/install-warning-ru-dark.webp", width: 1000, height: 337 },
+      },
+      tray: { light: { src: "/install-tray-ru.webp", width: 900, height: 894 } },
+    },
+    en: {
+      warning: {
+        light: { src: "/install-warning-en-light.webp", width: 1000, height: 336 },
+        dark: { src: "/install-warning-en-dark.webp", width: 1000, height: 336 },
+      },
+      tray: { light: { src: "/install-tray-en.webp", width: 900, height: 959 } },
+    },
+  };
+
+/**
+ * "The installer says AmneziaVPN is still running."
+ *
+ * The panel now stops people on their way to a key to tell them to update the
+ * client, so this refusal is the very next thing a fair number of them meet —
+ * and it is a dead end for anyone who does not know the app keeps running
+ * beside the clock after its window is closed. Pressing Retry without quitting
+ * it simply shows the same box again.
+ *
+ * It stays in the SIMPLE view, unlike the other spoilers here: this is not a
+ * second way to do something that already worked, it is somebody who cannot
+ * install at all. Collapsed, so it costs every other reader one summary row.
+ *
+ * Desktop-only, and named for the warning rather than for an operating system.
+ * The screenshots are Windows because that is what was to hand; the copy stays
+ * true of any desktop client that outlives its own window, so a reader looking
+ * at the warning does not first have to decide whether this is about them.
+ */
+function InstallerBusyNote() {
+  const { t, lang } = useT();
+  const shots = BUSY_SHOTS[lang];
+
+  return (
+    <details className="group rounded-lg border bg-muted/30 px-3 py-2">
+      <summary className="flex cursor-pointer list-none items-center gap-2 text-sm font-medium">
+        <ChevronDown className="h-4 w-4 shrink-0 transition-transform group-open:rotate-180" />
+        {t("install.busyTitle")}
+      </summary>
+      {/* The window they are looking at, then what to do, then the menu the
+          steps send them to: recognition first, so a reader who opened this
+          spoiler by accident closes it again without reading three steps. */}
+      <div className="mt-2.5 space-y-2.5">
+        <GuideShot shot={shots.warning} alt={t("install.busyWarningAlt")} />
+        <ol className="list-decimal space-y-1.5 pl-5 text-sm">
+          {BUSY_STEPS.map((key) => (
+            <li key={key}>{t(key)}</li>
+          ))}
+        </ol>
+        <GuideShot shot={shots.tray} alt={t("install.busyTrayAlt")} />
+      </div>
+    </details>
+  );
+}
+
+/**
+ * A screenshot, framed the way the QR block beside it is framed.
+ *
+ * Height is capped rather than width: the tray menu is very nearly square, and
+ * at full column width it would push the steps it illustrates off a laptop
+ * screen. A plain <img> for the same reason the notice poster is one — a fixed
+ * asset the optimiser can only add a round trip to.
+ *
+ * The theme swap is CSS on the `.dark` class, not a `useTheme()` read: this
+ * panel resolves the theme only after mount (see ThemeToggle's `mounted`
+ * dance), so anything scripted paints the wrong capture first and corrects it
+ * in front of the reader. The hidden twin costs one image nobody looks at,
+ * which is the cheaper half of that trade.
+ */
+function GuideShot({ shot, alt }: { shot: GuideShotPair; alt: string }) {
+  const frame =
+    "mx-auto block h-auto max-h-[300px] w-auto max-w-full rounded-md object-contain";
+  return (
+    <div className="rounded-lg border bg-muted/30 p-2">
+      <img
+        src={shot.light.src}
+        alt={alt}
+        width={shot.light.width}
+        height={shot.light.height}
+        loading="lazy"
+        decoding="async"
+        className={cn(frame, shot.dark && "dark:hidden")}
+      />
+      {shot.dark ? (
+        <img
+          src={shot.dark.src}
+          alt={alt}
+          width={shot.dark.width}
+          height={shot.dark.height}
+          loading="lazy"
+          decoding="async"
+          className={cn(frame, "hidden dark:block")}
+        />
+      ) : null}
+    </div>
   );
 }
 

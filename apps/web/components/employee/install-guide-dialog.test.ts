@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
@@ -69,6 +69,57 @@ describe("install guide dialog source", () => {
   it("never claims Default VPN can scan a QR code", () => {
     expect(source).not.toMatch(/Default ?VPN.*scan/i);
     expect(source).not.toMatch(/scan.*Default ?VPN/i);
+  });
+});
+
+// A desktop AmneziaVPN keeps running beside the clock after its window is
+// closed, so the installer refuses and Retry on its own shows the same box
+// again. The note that says so is the one spoiler in this file that is NOT a
+// second way to do something that already worked -- its reader cannot install
+// at all -- so the two things that would quietly take it away from them are
+// pinned: the detailed switch, and an audience with no desktop installer.
+describe("the installer-busy note", () => {
+  const desktopBranch = source.match(
+    /audience === "desktop" \? \(([\s\S]*?)\) : null\}/,
+  )?.[1];
+
+  it("is shown to the desktop audience", () => {
+    expect(desktopBranch).toBeTruthy();
+    expect(desktopBranch).toContain("<InstallerBusyNote />");
+  });
+
+  it("stays in the simple view", () => {
+    expect(desktopBranch).not.toContain("advanced");
+  });
+
+  const shots = [...source.matchAll(/"(\/install-[a-z-]+\.webp)"/g)]
+    .map((match) => match[1])
+    .filter((shot): shot is string => shot !== undefined);
+
+  it("ships every screenshot it points at", () => {
+    // A path with no file behind it renders as alt text and nothing else --
+    // silent in review, silent in the browser console, and the note is then
+    // three steps about a window the reader cannot match against their screen.
+    expect(shots.length).toBeGreaterThanOrEqual(4);
+    for (const shot of shots) {
+      const path = fileURLToPath(new URL(`../../public${shot}`, import.meta.url));
+      expect(existsSync(path), `${shot} is missing from apps/web/public`).toBe(
+        true,
+      );
+    }
+  });
+
+  it("gives the two languages the same set of captures", () => {
+    // Adding a capture -- another theme, another window -- for one language and
+    // forgetting the other leaves half the readers matching an English window
+    // against a Russian screen, which is the failure this note exists to avoid.
+    const forLang = (lang: string) =>
+      shots
+        .filter((shot) => shot.includes(`-${lang}`))
+        .map((shot) => shot.replace(`-${lang}`, "-LANG"))
+        .sort();
+    expect(forLang("ru").length).toBeGreaterThanOrEqual(2);
+    expect(forLang("en")).toEqual(forLang("ru"));
   });
 });
 
