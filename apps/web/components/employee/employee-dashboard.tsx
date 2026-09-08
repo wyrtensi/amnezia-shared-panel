@@ -45,6 +45,8 @@ import {
   shouldShowInstallReminder,
 } from "@/lib/install-reminder";
 import {
+  readNoticeSignedAt,
+  rememberNoticeSignedAt,
   shouldShowUpdateNotice,
   UPDATE_NOTICE_SHOWINGS,
   updateNoticeAcksOf,
@@ -112,7 +114,9 @@ export function EmployeeDashboard({
    * screen for a beat AFTER it runs — long enough to show the stamp — so
    * "something is pending" and "the sheet is up" are two different facts.
    */
-  const pendingKeyAccess = React.useRef<(() => void) | null>(null);
+  const pendingKeyAccess = React.useRef<((deferred: boolean) => void) | null>(
+    null,
+  );
   const [noticeOpen, setNoticeOpen] = React.useState(false);
 
   const load = React.useCallback(async (silent = false) => {
@@ -162,8 +166,11 @@ export function EmployeeDashboard({
    */
   const guardKeyAccess = React.useCallback<KeyAccessGuard>(
     (action) => {
-      if (!shouldShowUpdateNotice({ me })) {
-        action();
+      // `signedAt` is read here rather than held in state on purpose: it is a
+      // fact about this browser, not about this render, and reading it at the
+      // moment of the click is what keeps two open tabs in step.
+      if (!shouldShowUpdateNotice({ me, signedAt: readNoticeSignedAt() })) {
+        action(false);
         return;
       }
       pendingKeyAccess.current = action;
@@ -184,7 +191,12 @@ export function EmployeeDashboard({
   const signUpdateNotice = React.useCallback(() => {
     const action = pendingKeyAccess.current;
     pendingKeyAccess.current = null;
-    action?.();
+    // `true`: the sheet is still on top of the card for another beat, and the
+    // action's own confirmation has to outlast it.
+    action?.(true);
+    // Starts the quiet period, so the second showing lands on a later visit
+    // rather than on the next button this person presses.
+    rememberNoticeSignedAt();
     // Counted locally as well, so a second key on this same page load does not
     // ask again while the POST is still in flight.
     setMe((current) =>
