@@ -26,6 +26,7 @@ import {
   Sliders,
   Eraser,
   Trash2,
+  Undo2,
   UserPlus,
   Users,
   Wifi,
@@ -65,9 +66,11 @@ import {
   accessDomainSchema,
   composeKeyDisplayName,
   defaultKeyNameDisplay,
+  INSTALL_NOTICE_SHOWINGS,
   isPurgeableKeyState,
   isRevocableKeyState,
   normalizeAccessDomain,
+  UPDATE_NOTICE_SHOWINGS,
   type KeyNameDisplay,
 } from "@amnezia/contracts";
 import { ProtocolSelect } from "@/components/protocol-select";
@@ -138,6 +141,7 @@ const POLICY_LABELS: Array<[string, string]> = [
   ["showTraffic", "upolicy.showTraffic"],
   ["showNodeAddress", "upolicy.showNodeAddress"],
   ["showInstallReminder", "upolicy.showInstallReminder"],
+  ["showUpdateNotice", "upolicy.showUpdateNotice"],
 ];
 
 function displayName(user: AdminUser): string {
@@ -712,6 +716,14 @@ export default function AdminUsersPage() {
             onCreateKey={() => setKeyUser(selected)}
             onCleanStale={() => setStaleUser(selected)}
             onPurgeRevoked={() => setPurgeScope({ user: selected })}
+            onResetNotices={() => {
+              if (
+                window.confirm(
+                  t("users.noticesResetConfirm", { email: selected.email }),
+                )
+              )
+                void action("users", selected.id, "reset-notices");
+            }}
             now={now}
             onKeyAction={(id, name, payload) =>
               action("keys", id, name, payload)
@@ -1683,6 +1695,7 @@ function UserDetail({
   onCreateKey,
   onCleanStale,
   onPurgeRevoked,
+  onResetNotices,
   onKeyAction,
   onExportKey,
 }: {
@@ -1699,6 +1712,8 @@ function UserDetail({
   onCreateKey: () => void;
   onCleanStale: () => void;
   onPurgeRevoked: () => void;
+  /** Put this user back in front of the notices they have already answered. */
+  onResetNotices: () => void;
   onKeyAction: (
     id: string,
     action: string,
@@ -1713,6 +1728,11 @@ function UserDetail({
   const { t } = useT();
   const stats = statsFor(keys);
   const staleness = summarizeStaleKeys(keys, now);
+  // How many of the panel's two interruptions this user has answered. Both
+  // counters are optional on the payload, so "none sent" reads as nothing to
+  // reset rather than as two unanswered notices.
+  const noticesSigned =
+    (user.installNoticeAcks ?? 0) + (user.updateNoticeAcks ?? 0);
   // What the purge would take: exactly the states the API accepts, read from
   // the contract rather than from a second copy of the word "revoked".
   const revokedCount = keys.filter((key) =>
@@ -1811,6 +1831,27 @@ function UserDetail({
             <Settings className="h-4 w-4" />
             {t("users.policies")}{overrides > 0 ? ` (${overrides})` : ""}
           </Button>
+          {/* Only offered when there is something to undo. The counters come
+              from the user row, so a panel whose control API predates them
+              sends neither and this stays out of the way entirely. */}
+          {noticesSigned > 0 ? (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button variant="outline" size="sm" onClick={onResetNotices}>
+                  <Undo2 className="h-4 w-4" />
+                  {t("users.noticesReset")}
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent className="max-w-xs">
+                {t("users.noticesTip", {
+                  install: user.installNoticeAcks ?? 0,
+                  installOf: INSTALL_NOTICE_SHOWINGS,
+                  update: user.updateNoticeAcks ?? 0,
+                  updateOf: UPDATE_NOTICE_SHOWINGS,
+                })}
+              </TooltipContent>
+            </Tooltip>
+          ) : null}
           {user.role === "admin" ? (
             <Button variant="outline" size="sm" onClick={() => onSetRole("user")}>
               <ShieldOff className="h-4 w-4" />

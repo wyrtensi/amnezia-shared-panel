@@ -8,8 +8,8 @@ import {
 import type { KeyView, Me } from "./types";
 
 const user = (
-  overrides: Partial<Pick<Me, "role" | "policy">> = {},
-): Pick<Me, "role" | "policy"> => ({
+  overrides: Partial<Pick<Me, "role" | "policy" | "notices">> = {},
+): Pick<Me, "role" | "policy" | "notices"> => ({
   role: "user",
   policy: {},
   ...overrides,
@@ -80,6 +80,61 @@ describe("shouldShowInstallReminder", () => {
     );
     // Defensive: a number below the first key is not a first key.
     expect(shouldShowInstallReminder({ me: user(), keyNumber: 0 })).toBe(false);
+  });
+});
+
+describe("the counter beats the key number", () => {
+  it("uses me.notices.install when the payload carries it", () => {
+    expect(
+      shouldShowInstallReminder({
+        me: user({ notices: { install: 0, update: 0 } }),
+        keyNumber: 40,
+      }),
+    ).toBe(true);
+    expect(
+      shouldShowInstallReminder({
+        me: user({ notices: { install: 1, update: 0 } }),
+        keyNumber: 1,
+      }),
+    ).toBe(false);
+  });
+
+  it("survives a purge that resets the key number", () => {
+    // The whole reason the counter exists. An admin purges this user's revoked
+    // rows, the next key is numbered 1 again, and the ordinal now says "first
+    // key" about somebody who has answered the step already.
+    expect(
+      shouldShowInstallReminder({
+        me: user({ notices: { install: 1, update: 0 } }),
+        keyNumber: 1,
+      }),
+    ).toBe(false);
+  });
+
+  it("still honours the policy switch and the admin exclusion", () => {
+    expect(
+      shouldShowInstallReminder({
+        me: user({
+          policy: { showInstallReminder: false },
+          notices: { install: 0, update: 0 },
+        }),
+        keyNumber: 1,
+      }),
+    ).toBe(false);
+    expect(
+      shouldShowInstallReminder({
+        me: user({ role: "admin", notices: { install: 0, update: 0 } }),
+        keyNumber: 1,
+      }),
+    ).toBe(false);
+  });
+
+  it("falls back to the ordinal when the API sends no counter", () => {
+    // A control API older than the columns. Behaviour there is exactly what it
+    // was before, ordinal and all.
+    expect(shouldShowInstallReminder({ me: user(), keyNumber: 1 })).toBe(true);
+    expect(shouldShowInstallReminder({ me: user(), keyNumber: 2 })).toBe(false);
+    expect(shouldShowInstallReminder({ me: user(), keyNumber: null })).toBe(false);
   });
 });
 

@@ -38,6 +38,7 @@ import { configUrl } from "@/lib/api";
 import { formatDate } from "@/lib/format";
 import { formatLastSeen } from "@/lib/activity";
 import { keyDelivery } from "@/lib/key-delivery";
+import type { KeyAccessGuard } from "@/lib/update-notice";
 import { TrafficSplit } from "@/components/inline-traffic";
 import { useT } from "@/lib/i18n/provider";
 import { deviceIconFor } from "@/components/device-icon";
@@ -71,11 +72,18 @@ export function KeyCard({
   onRevoke,
   onRename,
   onSetInternalName,
+  guardKeyAccess,
 }: {
   keyView: KeyView;
   node?: NodeView;
   me: Me;
   busy: boolean;
+  /**
+   * Wraps every route to the key on this card, so the update notice can come
+   * first. Passed down rather than read from a context because the dashboard
+   * owns both the profile it is decided from and the dialog that answers it.
+   */
+  guardKeyAccess: KeyAccessGuard;
   onShowConfig: () => void;
   onShowGuide: () => void;
   onRotate: () => void;
@@ -374,7 +382,7 @@ export function KeyCard({
                         size="sm"
                         className="border border-primary"
                         aria-label={t("keyCard.showQr")}
-                        onClick={onShowConfig}
+                        onClick={() => guardKeyAccess(onShowConfig)}
                       >
                         <QrCode className="h-4 w-4" />
                         {t("keyCard.qrShort")}
@@ -384,7 +392,11 @@ export function KeyCard({
                   </Tooltip>
                 ) : null}
                 {delivery.linkUsable ? (
-                  <CopyKeyButton keyId={keyView.id} disabled={busy} />
+                  <CopyKeyButton
+                    keyId={keyView.id}
+                    disabled={busy}
+                    guardKeyAccess={guardKeyAccess}
+                  />
                 ) : (
                   // Stands in for BOTH buttons above, and deliberately keeps a
                   // door into the config dialog: that dialog is the only place
@@ -399,7 +411,7 @@ export function KeyCard({
                         type="button"
                         variant="secondary"
                         size="sm"
-                        onClick={onShowConfig}
+                        onClick={() => guardKeyAccess(onShowConfig)}
                       >
                         <FileDown className="h-4 w-4" />
                         {t("keyCard.fileOnly")}
@@ -427,6 +439,7 @@ export function KeyCard({
                   format=".vpn"
                   label={t("common.downloadVpnFile")}
                   primary={!delivery.linkUsable}
+                  guardKeyAccess={guardKeyAccess}
                 />
                 {/*
                   `.conf` last and drawn as a bare muted link rather than a
@@ -449,6 +462,7 @@ export function KeyCard({
                     format=".conf"
                     label={t("common.downloadConf")}
                     quiet
+                    guardKeyAccess={guardKeyAccess}
                   />
                 ) : null}
               </>
@@ -542,6 +556,7 @@ function FormatDownload({
   label,
   quiet = false,
   primary = false,
+  guardKeyAccess,
 }: {
   href: string;
   format: string;
@@ -553,6 +568,7 @@ function FormatDownload({
    * otherwise, and the one route that works reads as an afterthought.
    */
   primary?: boolean;
+  guardKeyAccess: KeyAccessGuard;
 }) {
   const variant: ButtonProps["variant"] = quiet
     ? "link"
@@ -572,7 +588,23 @@ function FormatDownload({
               : undefined
           }
         >
-          <a href={href} aria-label={label} download>
+          {/*
+            A real link, kept as one: middle-click, "save link as" and a
+            keyboard activation all still behave. The guard intercepts the
+            ordinary click and, when it holds the download back, re-issues it
+            from the notice's confirm — synthesising the anchor rather than
+            re-clicking this one, which would re-enter the guard.
+          */}
+          <a
+            href={href}
+            aria-label={label}
+            download
+            onClick={(event) => {
+              if (event.defaultPrevented) return;
+              event.preventDefault();
+              guardKeyAccess(() => downloadHref(href));
+            }}
+          >
             {quiet ? null : <Download className="h-4 w-4" />}
             {format}
           </a>
@@ -581,6 +613,24 @@ function FormatDownload({
       <TooltipContent>{label}</TooltipContent>
     </Tooltip>
   );
+}
+
+/**
+ * Start a download of `href` from script, the way the anchor would have.
+ *
+ * Called synchronously from a click handler so the browser still counts it as
+ * user-initiated. `download` is set for the same reason the anchor sets it: the
+ * server names the file, and without the attribute Safari has been known to
+ * open the config as text instead of saving it.
+ */
+function downloadHref(href: string) {
+  const anchor = document.createElement("a");
+  anchor.href = href;
+  anchor.download = "";
+  anchor.rel = "noopener";
+  document.body.append(anchor);
+  anchor.click();
+  anchor.remove();
 }
 
 type CopyState = "idle" | "busy" | "copied" | "error";
@@ -593,9 +643,11 @@ type CopyState = "idle" | "busy" | "copied" | "error";
 function CopyKeyButton({
   keyId,
   disabled,
+  guardKeyAccess,
 }: {
   keyId: string;
   disabled?: boolean;
+  guardKeyAccess: KeyAccessGuard;
 }) {
   const { t } = useT();
   const [state, setState] = React.useState<CopyState>("idle");
@@ -659,7 +711,7 @@ function CopyKeyButton({
       variant={state === "copied" ? "secondary" : "default"}
       size="sm"
       disabled={disabled || state === "busy"}
-      onClick={() => void copy()}
+      onClick={() => guardKeyAccess(() => void copy())}
       className={state === "error" ? "text-destructive" : undefined}
     >
       {content[state]}

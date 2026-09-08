@@ -4,6 +4,7 @@ import {
   auditCategoryOf,
   auditScopeOf,
   isPurgeableKeyState,
+  NOTICE_KINDS,
 } from "@amnezia/contracts";
 
 import {
@@ -12,7 +13,7 @@ import {
   cliAuditCategoryOf,
   cliAuditScopeOf,
 } from "./auditFilter.js";
-import { cliIsPurgeableKeyState } from "./main.js";
+import { CLI_NOTICE_KINDS, cliIsPurgeableKeyState } from "./main.js";
 
 // The actual cross-check for the structural copy, not two literals each pinning
 // their own side: the CLI ships dependency-free, so this is the only thing that
@@ -110,5 +111,14 @@ describe("cliIsPurgeableKeyState", () => {
         isPurgeableKeyState(state),
       );
     }
+  });
+});
+
+// `user-notices-reset` names the notices in its payload and validates the flag
+// locally, so its list has to be the server's or the command refuses a kind the
+// panel accepts (or sends one it does not).
+describe("CLI_NOTICE_KINDS", () => {
+  it("agrees with NOTICE_KINDS in @amnezia/contracts", () => {
+    expect(CLI_NOTICE_KINDS).toEqual([...NOTICE_KINDS]);
   });
 });

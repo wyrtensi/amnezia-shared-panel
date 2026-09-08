@@ -35,7 +35,12 @@ import {
   isPublishableAgentImage,
   nodeAgentUpdateRequestSchema,
   nodeAgentUpdateStatusSchema,
+  INSTALL_NOTICE_SHOWINGS,
   MIN_AWG3_CLIENT_VERSION,
+  noticeAcksSchema,
+  NOTICE_KINDS,
+  noticeKindSchema,
+  UPDATE_NOTICE_SHOWINGS,
   nodeHostMetricsSchema,
   nodeRunsCheck,
   nodeKeyLimitsSchema,
@@ -218,6 +223,7 @@ describe("portalPolicySchema", () => {
       showNodeStatus: true,
       showNodeAddress: false,
       showInstallReminder: true,
+      showUpdateNotice: true,
       // No recordings until an admin adds them; the guide reads without one.
       installGuideVideos: {},
       keyLimitMode: "per_node",
@@ -294,6 +300,43 @@ describe("portalPolicySchema", () => {
       portalPolicySchema.partial().parse({ showInstallReminder: false })
         .showInstallReminder,
     ).toBe(false);
+  });
+
+  it("keeps the update notice on unless an operator turns it off", () => {
+    // Same shape and the same upgrade story as the reminder above, at the
+    // other moment: this one guards the key itself rather than its creation.
+    expect(portalPolicySchema.parse({}).showUpdateNotice).toBe(true);
+    expect(
+      portalPolicySchema.parse({ showUpdateNotice: false }).showUpdateNotice,
+    ).toBe(false);
+    expect(
+      portalPolicySchema.partial().parse({ showUpdateNotice: false })
+        .showUpdateNotice,
+    ).toBe(false);
+  });
+});
+
+describe("notice counters", () => {
+  it("names both interruptions the panel is allowed to make", () => {
+    expect([...NOTICE_KINDS]).toEqual(["install", "update"]);
+    expect(noticeKindSchema.safeParse("update").success).toBe(true);
+    expect(noticeKindSchema.safeParse("newsletter").success).toBe(false);
+  });
+
+  it("reads a missing counter as nobody having answered yet", () => {
+    // The payload from a control API older than the columns carries neither
+    // count. Defaulting to zero shows the notice, which is the safe direction:
+    // the alternative is silently dropping a warning the user never saw.
+    expect(noticeAcksSchema.parse({})).toEqual({ install: 0, update: 0 });
+  });
+
+  it("refuses a negative count", () => {
+    expect(noticeAcksSchema.safeParse({ update: -1 }).success).toBe(false);
+  });
+
+  it("asks twice about the update and once about the install", () => {
+    expect(UPDATE_NOTICE_SHOWINGS).toBe(2);
+    expect(INSTALL_NOTICE_SHOWINGS).toBe(1);
   });
 });
 

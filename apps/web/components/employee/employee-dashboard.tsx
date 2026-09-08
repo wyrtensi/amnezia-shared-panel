@@ -35,6 +35,7 @@ import {
   InstallGuideDialog,
 } from "@/components/employee/install-guide-dialog";
 import { InstallReminderDialog } from "@/components/employee/install-reminder-dialog";
+import { UpdateNoticeDialog } from "@/components/employee/update-notice-dialog";
 import { KeyHelpDialog } from "@/components/employee/key-help-dialog";
 import { QuotaRequestDialog } from "@/components/employee/quota-request-dialog";
 import { apiRequest } from "@/lib/api";
@@ -43,6 +44,12 @@ import {
   keyNumberOf,
   shouldShowInstallReminder,
 } from "@/lib/install-reminder";
+import {
+  shouldShowUpdateNotice,
+  UPDATE_NOTICE_SHOWINGS,
+  updateNoticeAcksOf,
+  type KeyAccessGuard,
+} from "@/lib/update-notice";
 import { isAtLimit } from "@/lib/key-quota";
 import { isVisibleToOwner } from "@/lib/key-states";
 import { InlineTraffic } from "@/components/inline-traffic";
@@ -98,6 +105,15 @@ export function EmployeeDashboard({
   const scrolledForId = React.useRef<string | null>(null);
   const [showInstallReminder, setShowInstallReminder] = React.useState(false);
   const remindedForId = React.useRef<string | null>(null);
+  /**
+   * The update notice, and the action it is holding back.
+   *
+   * The action lives in a ref rather than in state because the dialog stays on
+   * screen for a beat AFTER it runs — long enough to show the stamp — so
+   * "something is pending" and "the sheet is up" are two different facts.
+   */
+  const pendingKeyAccess = React.useRef<(() => void) | null>(null);
+  const [noticeOpen, setNoticeOpen] = React.useState(false);
 
   const load = React.useCallback(async (silent = false) => {
     try {
@@ -134,6 +150,84 @@ export function EmployeeDashboard({
   React.useEffect(() => {
     void load();
   }, [load]);
+
+  /**
+   * Every route to a finished key goes through here: the QR, the clipboard,
+   * both config files.
+   *
+   * Only the entrances are guarded, not what is behind them — the config dialog
+   * has a copy button and its own downloads, but the only way into that dialog
+   * is one of the buttons above, so gating it again would ask twice for one
+   * reach.
+   */
+  const guardKeyAccess = React.useCallback<KeyAccessGuard>(
+    (action) => {
+      if (!shouldShowUpdateNotice({ me })) {
+        action();
+        return;
+      }
+      pendingKeyAccess.current = action;
+      setNoticeOpen(true);
+    },
+    [me],
+  );
+
+  /**
+   * The user signed. Run what they came for, then record the showing.
+   *
+   * Order matters twice over. The action goes FIRST and synchronously, because
+   * a clipboard write and a file download both need the click's user
+   * activation and lose it the moment this yields. The ack is fire-and-forget
+   * for the opposite reason: if that POST fails the user still gets their key,
+   * and the worst case is one more poster on a later visit.
+   */
+  const signUpdateNotice = React.useCallback(() => {
+    const action = pendingKeyAccess.current;
+    pendingKeyAccess.current = null;
+    action?.();
+    // Counted locally as well, so a second key on this same page load does not
+    // ask again while the POST is still in flight.
+    setMe((current) =>
+      current
+        ? {
+            ...current,
+            notices: {
+              install: current.notices?.install ?? 0,
+              update: Math.min(
+                updateNoticeAcksOf(current) + 1,
+                UPDATE_NOTICE_SHOWINGS,
+              ),
+            },
+          }
+        : current,
+    );
+    void apiRequest("/api/me/notices/update", { method: "POST" }).catch(() => {
+      // Deliberately silent: the person asked for a key, not for a report on
+      // the panel's bookkeeping.
+    });
+  }, []);
+
+  /**
+   * The install step was read through to the end. Same bookkeeping, different
+   * counter — and the reason `shouldShowInstallReminder` no longer has to infer
+   * anything from a key number that an administrator's cleanup can lower.
+   */
+  const signInstallReminder = React.useCallback(() => {
+    setMe((current) =>
+      current
+        ? {
+            ...current,
+            notices: {
+              install: (current.notices?.install ?? 0) + 1,
+              update: current.notices?.update ?? 0,
+            },
+          }
+        : current,
+    );
+    void apiRequest("/api/me/notices/install", { method: "POST" }).catch(
+      () => {},
+    );
+  }, []);
 
   /**
    * Open what the link asked for — `?help=install&os=android`, `?help=key`.
@@ -666,6 +760,7 @@ export function EmployeeDashboard({
                   node={nodeById.get(key.nodeId)}
                   me={me!}
                   busy={busy}
+                  guardKeyAccess={guardKeyAccess}
                   onShowConfig={() =>
                     setConfigTarget({
                       id: key.id,
@@ -734,6 +829,17 @@ export function EmployeeDashboard({
         onClose={() => setConfigTarget(null)}
         me={me}
       />
+      <UpdateNoticeDialog
+        open={noticeOpen}
+        onOpenChange={(open) => {
+          // Esc, the ✕ and the overlay all land here with `false` while an
+          // action is still pending: that action is dropped and no showing is
+          // spent. A notice you can click past is decoration.
+          if (!open) pendingKeyAccess.current = null;
+          setNoticeOpen(open);
+        }}
+        onSigned={signUpdateNotice}
+      />
       <InstallReminderDialog
         open={showInstallReminder}
         onOpenChange={setShowInstallReminder}
@@ -745,6 +851,7 @@ export function EmployeeDashboard({
         // chooser is one click and always right.
         onContinue={() => {
           setShowInstallReminder(false);
+          signInstallReminder();
           openGuide(null);
         }}
       />

@@ -102,6 +102,18 @@ export const users = pgTable(
     // Per-user extra routes layered on a split-tunnel profile's base feed at
     // export time (null = none). Keyed by profile: { ru_blacklist }.
     customRoutes: jsonb("custom_routes").$type<CustomRoutes>(),
+    // How many times this user has answered each of the panel's two
+    // interruptions: the install step after a new key, and the update notice in
+    // front of an existing one. Monotonic counters, never derived and never
+    // reset by anything but an administrator (`users/reset-notices`).
+    //
+    // They exist because the install step used to be read off
+    // `vpn_keys.key_number`, which is max+1 per owner and therefore FALLS when
+    // an admin purges that owner's rows — so a routine cleanup re-issued a
+    // first-key warning to someone on their fortieth. A count of what the
+    // person was actually shown cannot be undone by tidying up around them.
+    installNoticeAcks: integer("install_notice_acks").default(0).notNull(),
+    updateNoticeAcks: integer("update_notice_acks").default(0).notNull(),
     disabledAt: timestamp("disabled_at", { withTimezone: true }),
     // Why the account is disabled, e.g. "admin_offboard" or "access_removed"
     // (Cloudflare Access membership revoked). Null while the account is active.
@@ -651,6 +663,11 @@ export const portalPolicy = pgTable(
     showInstallReminder: boolean("show_install_reminder")
       .default(true)
       .notNull(),
+    // Whether a regular user is stopped on their first few reaches for a key
+    // (QR, clipboard, config file) and made to sign that the client is up to
+    // date. Ships ON for the same reason as the flag above, and counted by
+    // `users.update_notice_acks` rather than by anything derived.
+    showUpdateNotice: boolean("show_update_notice").default(true).notNull(),
     // Walkthrough videos for the in-panel connection guide, one URL per
     // audience ({ desktop, android, ios }). Nullable and null by default: the
     // guide renders a placeholder until an admin attaches recordings, so a

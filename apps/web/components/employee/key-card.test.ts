@@ -208,8 +208,10 @@ describe("file-only profiles", () => {
     expect(source).toMatch(
       /\{t\("keyCard\.fileOnly"\)\}[\s\S]{0,400}?keyCard\.fileOnlyWhy/,
     );
+    // Through the update-notice guard, like every other route to a key on this
+    // card: the dialog behind this button is where the config downloads live.
     expect(source).toMatch(
-      /variant="secondary"[\s\S]{0,120}?onClick=\{onShowConfig\}[\s\S]{0,200}?keyCard\.fileOnly/,
+      /variant="secondary"[\s\S]{0,160}?onClick=\{\(\) => guardKeyAccess\(onShowConfig\)\}[\s\S]{0,200}?keyCard\.fileOnly/,
     );
   });
 
@@ -222,5 +224,35 @@ describe("file-only profiles", () => {
       expect(messages.ru, key).toHaveProperty(key);
       expect(messages.en, key).toHaveProperty(key);
     }
+  });
+});
+
+/**
+ * Every route to a finished key on this card goes through the update notice.
+ *
+ * Pinned as a property of the file rather than of one button, because the way
+ * this breaks is by addition: somebody adds a fifth way to get the key and
+ * wires it straight to `configUrl`, and the notice is silently no longer a
+ * gate. The guard wraps the ACTION, so "no ungated action" is the thing to
+ * assert.
+ */
+describe("the update-notice gate", () => {
+  it("hands every action to the guard rather than running it directly", () => {
+    // The QR, the file-only door into the dialog, the clipboard, both files.
+    expect(source).not.toMatch(/onClick=\{onShowConfig\}/);
+    expect(source).not.toMatch(/onClick=\{\(\) => void copy\(\)\}/);
+    const downloads = [...source.matchAll(/<FormatDownload[\s\S]{0,400}?\/>/g)];
+    expect(downloads.length).toBe(2);
+    for (const [block] of downloads) {
+      expect(block, block).toContain("guardKeyAccess={guardKeyAccess}");
+    }
+  });
+
+  it("keeps the download a real link the guard only intercepts", () => {
+    // Middle-click, "save link as" and keyboard activation all still work; the
+    // guard re-issues the download from its own confirm when it holds one back.
+    expect(source).toMatch(/<a\s+href=\{href\}/);
+    expect(source).toContain("event.preventDefault();");
+    expect(source).toContain("guardKeyAccess(() => downloadHref(href))");
   });
 });

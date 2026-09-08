@@ -328,6 +328,26 @@ const ru = {
   "installReminder.nextHint":
     "По кнопке «Далее» откроется инструкция: что скачать для вашего устройства и как добавить ключ.",
 
+  // Update notice: the poster in front of an existing key (QR, clipboard,
+  // config file). Wording stays plain — the picture carries the tone, and the
+  // sentence under it has to be the part somebody actually reads.
+  "updateNotice.title": "Обновите приложение перед вводом ключа",
+  "updateNotice.posterAlt":
+    "Плакат: «А ты обновил Amnezia перед вводом ключа?!»",
+  "updateNotice.why":
+    "Ключ читается только AmneziaVPN {version} и новее.",
+  "updateNotice.looksFine":
+    "Старое приложение запустится, будет выглядеть исправным и просто не подключится.",
+  "updateNotice.signLabel": "Распишитесь",
+  "updateNotice.signHint": "пальцем или мышью",
+  "updateNotice.clear": "Стереть",
+  "updateNotice.cannotSign": "Не получается расписаться?",
+  "updateNotice.fallbackLabel": "Подтверждаю: приложение обновлено",
+  "updateNotice.agree": "Согласовано",
+  "updateNotice.stamp": "Согласовано",
+  "updateNotice.bandWaiting": "Кнопка оживёт после подписи",
+  "updateNotice.bandReady": "Подпись принята",
+
   // Config download dialog
   "config.keyCopied": "Ключ скопирован",
   "config.copyFailed": "Не удалось скопировать",
@@ -606,6 +626,12 @@ const ru = {
   "upolicy.showTraffic": "Объём трафика",
   "upolicy.showNodeAddress": "Адрес сервера",
   "upolicy.showInstallReminder": "Напоминание про установку",
+  "upolicy.showUpdateNotice": "Расписка перед ключом",
+  "users.noticesReset": "Показать напоминания заново",
+  "users.noticesTip":
+    "Подписано: установка {install} из {installOf}, обновление {update} из {updateOf}. Сброс вернёт оба окна этому пользователю.",
+  "users.noticesResetConfirm":
+    "Показать {email} напоминание про установку и расписку про обновление заново?",
   "users.filter.all": "Все",
   "users.filter.inactive": "Неактивные ({days}д)",
   "users.filter.stalekeys": "С протухшими ключами",
@@ -1026,6 +1052,7 @@ const ru = {
   "gpolicy.showTraffic": "Показывать объём трафика",
   "gpolicy.showNodeAddress": "Показывать адрес сервера",
   "gpolicy.showInstallReminder": "Напоминать про установку приложения",
+  "gpolicy.showUpdateNotice": "Расписка перед выдачей ключа",
   "gpolicy.allowKeyCreationHint":
     "Пользователь может сам создавать новые ключи для своих устройств.",
   "gpolicy.allowNodeSelectionHint":
@@ -1054,6 +1081,8 @@ const ru = {
     "Пользователь видит адрес каждого доступного ему сервера (IP или домен) в списке серверов. По умолчанию выключено: адрес уже есть в его конфиге, но показывать его в панели — решение администратора.",
   "gpolicy.showInstallReminderHint":
     "После создания первого ключа обычный пользователь один раз видит окно: нужно установить AmneziaVPN или обновить его, иначе ключ не заработает. Администраторам не показывается. По умолчанию включено — выключайте, только если ваши пользователи ставят клиент как-то иначе.",
+  "gpolicy.showUpdateNoticeHint":
+    "Первые два раза, когда обычный пользователь берёт готовый ключ — QR, копирование, файл конфигурации, — панель показывает плакат про обновление приложения и просит расписаться. Потом перестаёт. Администраторам не показывается. По умолчанию включено: клиент постарше не читает ключ и молчит об этом.",
   "gpolicy.keyLimitMode": "Общий лимит на все серверы",
   "gpolicy.keyLimitModeHint":
     "Включено — лимит считается суммарно по всем серверам. Выключено — отдельно на каждом сервере. Лимиты по серверам при этом сохраняются, но не действуют. Отдельному пользователю режим можно задать в «Лимиты и серверы».",
@@ -1608,6 +1637,22 @@ const en = {
   "installReminder.nextHint":
     "“Next” opens the guide: what to download for your device, and how to add the key.",
 
+  "updateNotice.title": "Update the app before entering the key",
+  "updateNotice.posterAlt":
+    "Poster: “And you — did you update Amnezia before entering the key?!”",
+  "updateNotice.why": "Only AmneziaVPN {version} and newer can read this key.",
+  "updateNotice.looksFine":
+    "An older app starts, looks healthy, and simply never connects.",
+  "updateNotice.signLabel": "Sign here",
+  "updateNotice.signHint": "finger or mouse",
+  "updateNotice.clear": "Clear",
+  "updateNotice.cannotSign": "Cannot sign?",
+  "updateNotice.fallbackLabel": "I confirm the app is up to date",
+  "updateNotice.agree": "Agreed",
+  "updateNotice.stamp": "Agreed",
+  "updateNotice.bandWaiting": "The button wakes up once you sign",
+  "updateNotice.bandReady": "Signature accepted",
+
   // Config download dialog
   "config.keyCopied": "Key copied",
   "config.copyFailed": "Failed to copy",
@@ -1877,6 +1922,12 @@ const en = {
   "upolicy.showTraffic": "Traffic volume",
   "upolicy.showNodeAddress": "Server address",
   "upolicy.showInstallReminder": "Install reminder",
+  "upolicy.showUpdateNotice": "Signature before the key",
+  "users.noticesReset": "Show the notices again",
+  "users.noticesTip":
+    "Signed: install {install} of {installOf}, update {update} of {updateOf}. A reset brings both back for this user.",
+  "users.noticesResetConfirm":
+    "Show {email} the install reminder and the update notice again?",
   "users.filter.all": "All",
   "users.filter.inactive": "Inactive ({days}d)",
   "users.filter.stalekeys": "With stale keys",
@@ -2279,6 +2330,7 @@ const en = {
   "gpolicy.showTraffic": "Show traffic volume",
   "gpolicy.showNodeAddress": "Show server address",
   "gpolicy.showInstallReminder": "Remind users to install the app",
+  "gpolicy.showUpdateNotice": "Make users sign before handing over a key",
   "gpolicy.allowKeyCreationHint":
     "The user can create new keys for their own devices.",
   "gpolicy.allowNodeSelectionHint":
@@ -2305,6 +2357,8 @@ const en = {
     "Users see the address (IP or domain) of every server available to them. Off by default: the address is already in their config, but showing it in the panel is an admin's decision.",
   "gpolicy.showInstallReminderHint":
     "After their first key a regular user is shown a dialog once: install AmneziaVPN, or update it, or the key will not work. Administrators never see it. On by default — switch it off only if your users get the client some other way.",
+  "gpolicy.showUpdateNoticeHint":
+    "The first two times a regular user reaches for a finished key — the QR, the clipboard, either config file — the panel shows a poster about updating the app and asks for a signature. After that it stays quiet. Administrators never see it. On by default: an older client cannot read the key and says nothing about it.",
   "gpolicy.keyLimitMode": "One limit shared by every server",
   "gpolicy.keyLimitModeHint":
     "On — the limit is counted across every server together. Off — separately on each server. Per-server limits are kept but not applied meanwhile. A single user's mode is set in \"Limits and servers\".",

@@ -52,6 +52,13 @@ export type AdminUser = {
   nodeKeyLimits: Record<string, number> | null;
   policyOverride: Record<string, unknown> | null;
   deactivationReason: string | null;
+  /**
+   * How many times this user has answered each of the panel's two
+   * interruptions. Optional: a control API older than the counters sends
+   * neither, and the admin row then shows nothing rather than a made-up zero.
+   */
+  installNoticeAcks?: number;
+  updateNoticeAcks?: number;
   createdAt: string;
   updatedAt: string;
 };
@@ -217,6 +224,7 @@ export type GlobalPortalPolicy = {
    * and told to install or update the AmneziaVPN client. On by default.
    */
   showInstallReminder: boolean;
+  showUpdateNotice: boolean;
   defaultKeyLimit: number;
   keyLimitMode: KeyLimitMode;
   dailyRetentionDays: number | null;
@@ -268,6 +276,7 @@ const DEFAULT_POLICY: GlobalPortalPolicy = {
   // Default true, matching the contract: a panel that has not loaded its
   // policy yet must not flash the switch off and read as "already disabled".
   showInstallReminder: true,
+  showUpdateNotice: true,
   defaultKeyLimit: 5,
   // Per-node is the pre-existing behaviour, so a panel that has not loaded the
   // policy yet never flashes the global-pool wording.

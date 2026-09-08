@@ -15,6 +15,7 @@ import {
   createUserRequestSchema,
   quotaRequestSchema,
   renameKeyRequestSchema,
+  noticeKindSchema,
   updateCustomRoutesRequestSchema,
   updateNodeRequestSchema,
 } from "@amnezia/contracts";
@@ -290,6 +291,19 @@ export const buildApp = async ({
     // label was not part of the displayed name) is a completed 200, not a job
     // in flight.
     return reply.code(result.reissued ? 202 : 200).send(result);
+  });
+  /**
+   * "I read the notice." One POST per showing, from the dialog's own confirm.
+   *
+   * The kind is a path segment rather than a body so the browser can send it
+   * with `keepalive` from a handler that is about to navigate away — which is
+   * exactly what the config-file download does.
+   */
+  app.post("/api/me/notices/:kind", async (request) => {
+    const { kind } = z
+      .object({ kind: noticeKindSchema })
+      .parse(request.params);
+    return { notices: await service.ackNotice(actorFor(request), kind) };
   });
   app.put("/api/me/custom-routes", async (request) => {
     const routes = await service.updateMyCustomRoutes(
