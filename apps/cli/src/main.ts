@@ -653,6 +653,12 @@ export const cliIsPurgeableKeyState = (state: string): boolean =>
   CLI_PURGEABLE_KEY_STATES.includes(state);
 
 /**
+ * Structural copy of `NOTICE_KINDS` from @amnezia/contracts, same trade-off and
+ * same cross-check in `auditFilter.test.ts`.
+ */
+export const CLI_NOTICE_KINDS = ["install", "update"];
+
+/**
  * The bulk half of `key-purge`: delete the panel's rows for keys whose peers
  * are already gone, for one user or for everybody.
  *
@@ -1016,6 +1022,42 @@ async function cmdUserEnable(args: string[]): Promise<void> {
   );
   await userAction(id, "reinstate", {});
   console.log("user reinstated — status active");
+}
+
+/**
+ * Put one user back in front of the notices they have already answered.
+ *
+ * Support's command, and the reason the counters are on the user row at all:
+ * "walk me through it again" is a question an operator answers, and before
+ * these columns existed the only way to make the install step reappear was to
+ * delete the person's key rows, which is not an answer.
+ *
+ * `--notice=` narrows it to one; the default resets both, which is what
+ * "show it to them again" means when nobody said which.
+ */
+async function cmdUserNoticesReset(args: string[]): Promise<void> {
+  const usage =
+    "Usage: user-notices-reset <id|email> [--notice=install|update]";
+  const id = await resolveUserId(
+    args.find((arg) => !arg.startsWith("--")),
+    usage,
+  );
+  const chosen = flagOf(args, "notice");
+  if (chosen !== undefined && !CLI_NOTICE_KINDS.includes(chosen)) {
+    throw new Error(
+      `user-notices-reset: --notice takes one of ${CLI_NOTICE_KINDS.join(", ")}`,
+    );
+  }
+  const notices = chosen ? [chosen] : [...CLI_NOTICE_KINDS];
+  const result = (await userAction(id, "reset-notices", { notices })) as {
+    notices?: { install?: number; update?: number };
+  };
+  console.log(
+    `notices reset: ${notices.join(", ")}` +
+      (result?.notices
+        ? `  (now install=${result.notices.install ?? 0} update=${result.notices.update ?? 0})`
+        : ""),
+  );
 }
 
 /**
@@ -1397,6 +1439,10 @@ const POLICY_BOOL_FIELDS = [
   // three keys, that the AmneziaVPN client has to be installed or updated
   // before the key they were just handed can work at all.
   "showInstallReminder",
+  // On by default, and the same shape as the flag above at a different moment:
+  // off means a regular user is no longer stopped on their first couple of
+  // reaches for a finished key and asked to sign that the client is current.
+  "showUpdateNotice",
 ] as const;
 const POLICY_INT_FIELDS = ["defaultKeyLimit"] as const;
 const POLICY_INT_NULL_FIELDS = ["dailyRetentionDays"] as const;
@@ -2579,6 +2625,11 @@ Users (accept a user id OR email):
                                          Omitted flags leave that part unchanged.
   user-disable <id|email>                Offboard: disable + revoke their keys
   user-enable <id|email>                 Reinstate a disabled user
+  user-notices-reset <id|email>          Show this user the panel's interruptions
+      [--notice=install|update]          again: the install step after a new key and
+                                         the update poster in front of an existing
+                                         one. Both by default. Counted on the user
+                                         row, so nothing else resets them
   user-delete <id|email> --confirm       Permanently delete an already-disabled
                                          user with no live key (offboard it first
                                          with user-disable). Irreversible; refused
@@ -2746,13 +2797,18 @@ policy-set fields:
     allowRouteProfileSelection, allowCustomRoutes, allowConfigRedownload,
     allowQrDownload, allowConfDownload, allowSelfRevoke,
     autoPurgeOffboardedUsers, showPublicKey, showLastUsed, showTraffic,
-    showNodeAddress, showNodeStatus, showInstallReminder
+    showNodeAddress, showNodeStatus, showInstallReminder, showUpdateNotice
     showNodeStatus=false hides the service-check chips from ordinary users
     showNodeAddress=true also shows ordinary users the address of each node
     they may use (off by default; admins always see it on the node card).
     showInstallReminder=false stops the panel telling a regular user, after
     each of their first three keys, to install or update AmneziaVPN. On by
     default; admins never see that dialog either way.
+    showUpdateNotice=false stops the poster the panel puts in front of a
+    finished key -- the QR, the clipboard, either config file -- on a regular
+    user's first two reaches, which asks them to sign that AmneziaVPN is up to
+    date. On by default; admins never see it. Per user, the counter behind it
+    is user-notices-reset.
     autoPurgeOffboardedUsers=true lets the maintenance sweep hard-delete a
     disabled account (and its revoked keys) once offboardedUserRetentionDays
     has passed. Off by default — deleting an account is irreversible, so an
@@ -3157,6 +3213,8 @@ export async function dispatch(argv: string[]): Promise<void> {
       return cmdNodes(args);
     case "keys-purge-revoked":
       return cmdKeysPurgeRevoked(args);
+    case "user-notices-reset":
+      return cmdUserNoticesReset(args);
     case "audit":
       return cmdAudit(args);
     case "version":

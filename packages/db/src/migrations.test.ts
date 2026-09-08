@@ -386,3 +386,48 @@ describe("0035_drop_whitelist_profile", () => {
     );
   });
 });
+
+describe("0037_notice_counters", () => {
+  const sql = readFileSync(
+    fileURLToPath(
+      new URL("../migrations/0037_notice_counters.sql", import.meta.url),
+    ),
+    "utf8",
+  );
+
+  it("adds the policy flag NOT NULL and defaulted to true", () => {
+    // Same upgrade story as 0031's showInstallReminder: an unset flag would
+    // mean "no notice", and the panels whose users run stale clients are
+    // exactly the ones that must keep it.
+    expect(sql).toContain(
+      'ALTER TABLE "portal_policy" ADD COLUMN "show_update_notice" boolean DEFAULT true NOT NULL;',
+    );
+  });
+
+  it("matches the default the contract hands out", () => {
+    expect(defaultPortalPolicy.showUpdateNotice).toBe(true);
+  });
+
+  it("starts both counters at zero", () => {
+    for (const column of ["install_notice_acks", "update_notice_acks"]) {
+      expect(sql).toContain(
+        `ALTER TABLE "users" ADD COLUMN "${column}" integer DEFAULT 0 NOT NULL;`,
+      );
+    }
+  });
+
+  it("seeds the install counter so an upgrade does not re-warn everybody", () => {
+    // The counter replaces a rule derived from vpn_keys.key_number. Left at
+    // zero it would tell every existing account it was on its first key, which
+    // is precisely the false reading this column exists to end — so the
+    // migration carries the old rule's population across once.
+    expect(sql).toContain('UPDATE "users" SET "install_notice_acks" = 1');
+    expect(sql).toContain('FROM "vpn_keys" WHERE "vpn_keys"."owner_id" = "users"."id"');
+  });
+
+  it("does not seed the update counter", () => {
+    // The update notice is new: nobody has answered it, so everybody is owed
+    // their showings. Seeding it would ship the feature switched off.
+    expect(sql).not.toContain('SET "update_notice_acks" =');
+  });
+});

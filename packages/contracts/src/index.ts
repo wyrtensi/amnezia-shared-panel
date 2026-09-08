@@ -506,6 +506,16 @@ export const portalPolicySchema = z.object({
   // deployments whose users most need it. An admin never sees it whatever this
   // says — see `shouldShowInstallReminder` in the web app.
   showInstallReminder: z.boolean().default(true),
+  // Whether a regular user is stopped on their first few reaches for a key —
+  // the QR, the clipboard, either config file — and made to sign that the app
+  // is up to date before the panel hands it over.
+  //
+  // Same reason as `showInstallReminder` and the same default ON, but a
+  // different moment: that one fires once, right after a key is created, and
+  // the people who break their install are the ones who come back to an old
+  // key weeks later with a client they never updated. See
+  // UPDATE_NOTICE_SHOWINGS for how many times it asks.
+  showUpdateNotice: z.boolean().default(true),
   // Walkthrough videos for the connection guide, one per audience. Empty by
   // default; an admin fills them in when the recordings exist.
   installGuideVideos: installGuideVideosSchema.default({}),
@@ -1409,6 +1419,56 @@ export const idleAccessSyncStatus: AccessSyncStatus = idleRulesRefreshStatus;
  * the install guide alike.
  */
 export const MIN_AWG3_CLIENT_VERSION = "5.0.1.5";
+
+/**
+ * The two nags the panel is allowed to interrupt a user with, and the counters
+ * that remember how many of each they have already answered.
+ *
+ * `install` is the step after a key is created; `update` is the notice in front
+ * of the key itself (QR, clipboard, config file). Both counters live on the
+ * USER ROW, not on anything derived, and that is the whole point of them: the
+ * install step used to be inferred from `vpn_keys.key_number`, which is
+ * `max(number for this owner) + 1` and therefore drops when an administrator
+ * purges that owner's key rows — so a routine cleanup handed somebody their
+ * first-key warning all over again. A counter is only ever incremented.
+ */
+export const NOTICE_KINDS = ["install", "update"] as const;
+export const noticeKindSchema = z.enum(NOTICE_KINDS);
+export type NoticeKind = z.infer<typeof noticeKindSchema>;
+
+export const noticeAcksSchema = z.object({
+  install: z.number().int().min(0).default(0),
+  update: z.number().int().min(0).default(0),
+});
+export type NoticeAcks = z.infer<typeof noticeAcksSchema>;
+
+/**
+ * Put a user back in front of notices they have already answered.
+ *
+ * An omitted `notices` resets both, which is what "show it to them again"
+ * means when nobody said which — the caller that means one names it.
+ */
+export const resetNoticesRequestSchema = z.object({
+  notices: z.array(noticeKindSchema).min(1).optional(),
+});
+export type ResetNoticesRequest = z.infer<typeof resetNoticesRequestSchema>;
+
+/**
+ * How many times the update notice is put in front of a user before it gives
+ * up and stays out of the way.
+ *
+ * Two, not one: the notice is a poster to be read, and the first showing lands
+ * while the person is mid-task and reaching for a key they came for. A second
+ * one catches the reader who clicked through the first without looking. A
+ * third would only teach them that the panel nags.
+ */
+export const UPDATE_NOTICE_SHOWINGS = 2;
+
+/**
+ * How many of a user's keys are followed by the install step. One — see
+ * `shouldShowInstallReminder` in the web app for why repeating it adds nothing.
+ */
+export const INSTALL_NOTICE_SHOWINGS = 1;
 
 /**
  * Platforms the install guide offers, in the order the buttons render.

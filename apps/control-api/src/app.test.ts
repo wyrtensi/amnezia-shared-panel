@@ -19,6 +19,7 @@ const createService = (): ControlApiService => ({
   getMe: vi.fn(() =>
     Promise.resolve({ ...user, keyLimit: 5, keyCount: 1 }),
   ),
+  ackNotice: vi.fn(() => Promise.resolve({ install: 1, update: 1 })),
   listNodes: vi.fn(() => Promise.resolve([])),
   listKeys: vi.fn(() => Promise.resolve([])),
   requestKey: vi.fn(() => Promise.resolve({
@@ -663,6 +664,66 @@ describe("custom routes take addresses, not site names", () => {
     expect(body.issues[0]?.message).toBe(ROUTE_DOMAINS_UNSUPPORTED);
     expect(body.issues[0]?.path).toEqual(["ru_blacklist", "domains"]);
     expect(service.updateMyCustomRoutes).not.toHaveBeenCalled();
+    await app.close();
+  });
+});
+
+describe("POST /api/me/notices/:kind", () => {
+  const user = {
+    id: "f5e8308c-e09d-4d55-9b5d-da1597f486e6",
+    email: "employee@example.com",
+    displayName: "Employee",
+    role: "user" as const,
+    status: "active" as const,
+  };
+
+  it("records the answer and hands back both counters", async () => {
+    const service = createService();
+    vi.mocked(service.resolveIdentity).mockResolvedValue(user);
+    vi.mocked(service.ackNotice).mockResolvedValue({ install: 0, update: 2 });
+    const app = await buildApp({
+      service,
+      environment: "development",
+      allowDevIdentity: true,
+    });
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/me/notices/update",
+      headers: { "x-dev-user-email": user.email },
+    });
+
+    expect(response.statusCode).toBe(200);
+    // The whole shape, not just the field that moved: the dialog decides
+    // whether to open again from this reply, so a counter dropped on the wire
+    // reads as "never signed" and the notice comes back.
+    expect(response.json()).toEqual({ notices: { install: 0, update: 2 } });
+    expect(service.ackNotice).toHaveBeenCalledWith(
+      expect.objectContaining({ id: user.id }),
+      "update",
+    );
+    await app.close();
+  });
+
+  it("refuses a kind the panel does not have", async () => {
+    const service = createService();
+    vi.mocked(service.resolveIdentity).mockResolvedValue(user);
+    const app = await buildApp({
+      service,
+      environment: "development",
+      allowDevIdentity: true,
+    });
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/me/notices/newsletter",
+      headers: { "x-dev-user-email": user.email },
+    });
+
+    expect(response.statusCode).toBe(400);
+    const body: { error: string } = response.json();
+    expect(body.error).toBe("VALIDATION_ERROR");
+    expect(service.ackNotice).not.toHaveBeenCalled();
     await app.close();
   });
 });

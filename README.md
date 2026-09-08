@@ -127,6 +127,26 @@ resolves with `amnezia-panel client-releases [--refresh]` (see `docs/CLI.md`).
   <img src="docs/assets/new-key-dialog.png" alt="New VPN key dialog: device type, name, the parts of the client-visible name, and the routing profile" width="72%">
 </p>
 
+**A stale client is the failure this panel sees most**, and it is silent: an
+AmneziaVPN older than the AWG 3.1 floor starts, looks healthy, and never
+connects, so the person concludes the panel is broken. Two steps answer it. The
+first fires once, right after a key is created. The second is the poster below:
+the first two times a regular user reaches for a finished key — the QR, the
+clipboard, either config file — the panel stops and asks them to **sign** that
+the app is up to date, and only then runs what they asked for. A signature
+rather than a checkbox, because one reflex tap is exactly the failure a checkbox
+does not prevent; there is a checkbox behind "cannot sign?" for keyboards and
+screen readers, and closing the sheet runs nothing and spends no showing. It is
+deliberately the one surface in the panel that ignores the theme and the rounded
+corners — it is a notice, not furniture. Administrators never see it, the
+counter lives on the user row (so no cleanup can resurrect it), an operator can
+show it again with `amnezia-panel user-notices-reset`, and
+`policy-set --showUpdateNotice=false` switches it off panel-wide or per user.
+
+<p align="center">
+  <img src="docs/assets/update-notice-dialog.png" alt="The update notice: a poster asking whether the app was updated before the key was entered, with a signature pad and an Agreed button" width="62%">
+</p>
+
 ## Protocol
 
 **This project targets AmneziaWG 3.1 as its primary protocol.** New nodes and new

@@ -24,6 +24,8 @@ import type {
   GlobalRoutes,
   KeyLimitMode,
   KeyState,
+  NoticeAcks,
+  NoticeKind,
   PortalPolicy,
   PortalPolicyOverride,
   ProtocolKind,
@@ -35,6 +37,9 @@ import type {
 } from "@amnezia/contracts";
 import {
   composeKeyDisplayName,
+  noticeAcksSchema,
+  NOTICE_KINDS,
+  resetNoticesRequestSchema,
   nodeRunsCheck,
   isPurgeableKeyState,
   REVOCABLE_KEY_STATES,
@@ -306,6 +311,7 @@ const toPolicy = (row: PortalPolicyRow | undefined): PortalPolicy =>
         showNodeStatus: row.showNodeStatus,
         showNodeAddress: row.showNodeAddress,
         showInstallReminder: row.showInstallReminder,
+        showUpdateNotice: row.showUpdateNotice,
         // Null until an admin attaches recordings; the guide falls back to a
         // placeholder, so an empty object is the honest "none configured".
         installGuideVideos: row.installGuideVideos ?? {},
@@ -617,7 +623,57 @@ export class PostgresControlRepository implements ControlRepository {
       policy,
       // The user's own custom routes (normalized to both split-tunnel profiles).
       customRoutes: customRoutesSchema.parse(user.customRoutes ?? {}),
+      // How many times this person has already answered each interruption. Sent
+      // as a count rather than as a "show it?" verdict: whether to show is a
+      // question about the policy AND the role AND the count, and the policy and
+      // the role are already in this payload.
+      notices: noticeAcksSchema.parse({
+        install: user.installNoticeAcks,
+        update: user.updateNoticeAcks,
+      }),
     };
+  };
+
+  /**
+   * Record that the caller answered one of the panel's two interruptions.
+   *
+   * Increments in SQL rather than reading-then-writing: two tabs open on the
+   * same key is an ordinary way to use this panel, and a read-modify-write
+   * would lose one of the two answers and show the notice again.
+   *
+   * Not gated on the policy flag. Switching the notice off mid-flight must not
+   * turn an ack that is already in the air into a 403 the browser reports to a
+   * user who has done nothing wrong; the flag decides whether to ASK, and this
+   * only records an answer that was given.
+   */
+  ackNotice = async (actor: Actor, kind: NoticeKind): Promise<NoticeAcks> => {
+    const bump =
+      kind === "install"
+        ? { installNoticeAcks: sql`${users.installNoticeAcks} + 1` }
+        : { updateNoticeAcks: sql`${users.updateNoticeAcks} + 1` };
+    return this.options.db.transaction(async (tx) => {
+      const [updated] = await tx
+        .update(users)
+        .set({ ...bump, updatedAt: new Date() })
+        .where(eq(users.id, actor.id))
+        .returning({
+          install: users.installNoticeAcks,
+          update: users.updateNoticeAcks,
+        });
+      if (!updated) throw new ApiError(404, "User not found", "USER_NOT_FOUND");
+      // Audited because it is a signature: the user is asserting they updated
+      // the client. At most three rows per account for the lifetime of the
+      // account, so this costs the audit log nothing.
+      await tx.insert(auditEvents).values({
+        actorUserId: actor.id,
+        actorType: "user",
+        action: "user.notice_signed",
+        targetType: "user",
+        targetId: actor.id,
+        metadata: { notice: kind, count: updated[kind] },
+      });
+      return noticeAcksSchema.parse(updated);
+    });
   };
 
   trafficSeries = async ({
@@ -3049,6 +3105,38 @@ export class PostgresControlRepository implements ControlRepository {
           },
         });
         return updated;
+      });
+    } else if (resource === "users" && action === "reset-notices") {
+      // Put a user back in front of the notices they have already answered.
+      // Support's job, not a user's: "walk me through it again" and "prove to
+      // me you read it again" are both reasons an operator has and the person
+      // themselves does not.
+      const parsed = resetNoticesRequestSchema.parse(payload ?? {});
+      const kinds = parsed.notices ?? [...NOTICE_KINDS];
+      return this.options.db.transaction(async (tx) => {
+        const [updated] = await tx
+          .update(users)
+          .set({
+            ...(kinds.includes("install") ? { installNoticeAcks: 0 } : {}),
+            ...(kinds.includes("update") ? { updateNoticeAcks: 0 } : {}),
+            updatedAt: new Date(),
+          })
+          .where(eq(users.id, targetId))
+          .returning({
+            id: users.id,
+            install: users.installNoticeAcks,
+            update: users.updateNoticeAcks,
+          });
+        if (!updated) throw new ApiError(404, "User not found", "USER_NOT_FOUND");
+        await tx.insert(auditEvents).values({
+          actorUserId: actor.id,
+          actorType: "user",
+          action: `admin.${resource}.${action}`,
+          targetType: resource,
+          targetId,
+          metadata: { notices: kinds },
+        });
+        return { id: updated.id, notices: noticeAcksSchema.parse(updated) };
       });
     } else if (resource === "users" && action === "reinstate") {
       return this.options.db.transaction(async (tx) => {

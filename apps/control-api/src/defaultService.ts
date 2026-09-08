@@ -86,6 +86,7 @@ export const createDefaultControlApiService = ({
     status: actor.status,
     ...(await repository.getMe(actor)),
   }),
+  ackNotice: (actor, kind) => repository.ackNotice(actor, kind),
   listNodes: (actor) => repository.listNodes(actor),
   listKeys: (actor) => repository.listKeys(actor),
   requestKey: (actor, request) =>

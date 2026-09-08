@@ -9,6 +9,8 @@ import type {
   GlobalRoutes,
   KeyNameDisplay,
   KeyState,
+  NoticeAcks,
+  NoticeKind,
   PortalPolicy,
   QuotaRequest,
   RouteProfile,
@@ -69,6 +71,8 @@ export type AuditInput = {
 export interface ControlRepository {
   resolveIdentity: (claim: IdentityClaim) => Promise<Actor>;
   getMe: (actor: Actor) => Promise<Record<string, unknown>>;
+  /** Record that the caller answered one of the panel's two interruptions. */
+  ackNotice: (actor: Actor, kind: NoticeKind) => Promise<NoticeAcks>;
   listNodes: (actor: Actor) => Promise<unknown[]>;
   listKeys: (actor: Actor) => Promise<KeyView[]>;
   createProvisioningKey: (

@@ -25,6 +25,12 @@ export type PortalPolicy = {
    * ON, which is the contract's default — see `shouldShowInstallReminder`.
    */
   showInstallReminder?: boolean;
+  /**
+   * Whether a regular user is stopped on their first few reaches for a key and
+   * made to sign that the client is up to date. Optional for the same reason as
+   * the flag above, and read the same way — see `shouldShowUpdateNotice`.
+   */
+  showUpdateNotice?: boolean;
   allowedProtocols?: ProtocolKind[];
   keyLimitMode?: KeyLimitMode;
   // Sourced from the contract rather than restated: this file is a hand-written
@@ -58,6 +64,12 @@ export type Me = {
   perNode?: Array<{ nodeId: string; used: number; limit?: number }>;
   policy: PortalPolicy;
   customRoutes?: CustomRoutes;
+  /**
+   * How many times this user has already answered each of the panel's two
+   * interruptions. Absent on payloads from a control API older than the
+   * counters, where it reads as zero — see `updateNoticeAcksOf`.
+   */
+  notices?: { install: number; update: number };
 };
 
 // Per-node traffic totals for Today / 7 days / Month, all at once.

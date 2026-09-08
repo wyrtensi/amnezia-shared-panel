@@ -28,6 +28,7 @@ const encrypted = encryptSecret("vpn://stored-payload", keyring, 1);
 const createRepository = (): ControlRepository => ({
   resolveIdentity: vi.fn(() => Promise.resolve(employee)),
   getMe: vi.fn(() => Promise.resolve({ keyLimit: 5, keyCount: 1 })),
+  ackNotice: vi.fn(() => Promise.resolve({ install: 1, update: 1 })),
   listNodes: vi.fn(() => Promise.resolve([])),
   listKeys: vi.fn(() => Promise.resolve([])),
   createProvisioningKey: vi.fn(() =>

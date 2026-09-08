@@ -260,6 +260,13 @@
       "when": 1788740409990,
       "tag": "0036_node_agent_version",
       "breakpoints": true
+    },
+    {
+      "idx": 37,
+      "version": "7",
+      "when": 1788869931487,
+      "tag": "0037_notice_counters",
+      "breakpoints": true
     }
   ]
 }
