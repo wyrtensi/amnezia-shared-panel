@@ -69,12 +69,26 @@ export function shouldShowInstallReminder({
   if (!me) return false;
   if (me.role === "admin") return false;
   if (me.policy?.showInstallReminder === false) return false;
-  // The counter is the answer whenever the payload carries one, and it is the
-  // reason `keyNumber` is only a fallback now: see the note above.
+  // Both, ANDed, whenever both are available — each one only ever ENDS the
+  // reminder sooner, and they end it for different reasons.
+  //
+  // The counter alone would nag forever: it is incremented when the dialog is
+  // read through to the end, and the ✕ and Esc deliberately still close it, so
+  // somebody who dismisses their first one would sit at zero and be stopped on
+  // every key they ever make. The ordinal alone is the bug this counter exists
+  // to fix — it falls when an administrator purges that owner's rows, and says
+  // "first key" about somebody on their fortieth.
+  //
+  // So: the ordinal still says when they are past their first keys, and the
+  // counter still says when they have already answered.
   const signed = me.notices?.install;
   if (typeof signed === "number" && Number.isFinite(signed)) {
-    return signed < INSTALL_REMINDER_KEYS;
+    if (signed >= INSTALL_REMINDER_KEYS) return false;
+    // A payload with a counter but no ordinal (a pre-migration key row) has
+    // nothing left to disqualify it, so the counter decides on its own.
+    if (keyNumber === null) return true;
+  } else if (keyNumber === null) {
+    return false;
   }
-  if (keyNumber === null) return false;
   return keyNumber >= 1 && keyNumber <= INSTALL_REMINDER_KEYS;
 }

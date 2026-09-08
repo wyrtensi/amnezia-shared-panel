@@ -84,17 +84,45 @@ describe("shouldShowInstallReminder", () => {
 });
 
 describe("the counter beats the key number", () => {
-  it("uses me.notices.install when the payload carries it", () => {
+  it("stops as soon as either of them says to", () => {
+    // A signed counter ends it whatever the ordinal says...
+    expect(
+      shouldShowInstallReminder({
+        me: user({ notices: { install: 1, update: 0 } }),
+        keyNumber: 1,
+      }),
+    ).toBe(false);
+    // ...and the ordinal still ends it for somebody who never answered. This
+    // is the half that keeps a dismissal (✕ or Esc, which do not count) from
+    // turning into a dialog on every key they ever make.
     expect(
       shouldShowInstallReminder({
         me: user({ notices: { install: 0, update: 0 } }),
         keyNumber: 40,
       }),
+    ).toBe(false);
+    // Both agreeing is the one case that shows it.
+    expect(
+      shouldShowInstallReminder({
+        me: user({ notices: { install: 0, update: 0 } }),
+        keyNumber: 1,
+      }),
+    ).toBe(true);
+  });
+
+  it("lets the counter decide alone when there is no ordinal", () => {
+    // A key row from before `key_number` existed. The counter is all there is,
+    // and it is a better answer than the "no reminder" the ordinal gave.
+    expect(
+      shouldShowInstallReminder({
+        me: user({ notices: { install: 0, update: 0 } }),
+        keyNumber: null,
+      }),
     ).toBe(true);
     expect(
       shouldShowInstallReminder({
         me: user({ notices: { install: 1, update: 0 } }),
-        keyNumber: 1,
+        keyNumber: null,
       }),
     ).toBe(false);
   });
