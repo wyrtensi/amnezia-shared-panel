@@ -103,8 +103,15 @@ export function OptionCards<T extends string>({
                     The label keeps `break-words` deliberately: it is the last
                     resort for a word genuinely wider than its column (the
                     longest Russian route-profile label still is, in a 3-up grid
-                    inside a 576px dialog), not what decides ordinary wrapping. */}
-                <span className="break-words pr-3 font-medium leading-tight">
+                    inside a 576px dialog), not what decides ordinary wrapping.
+
+                    `whitespace-pre-line` lets a label bring its own line breaks
+                    — a card that names three platforms lists them one per line
+                    rather than letting the column decide where a comma-separated
+                    run happens to split. Every other label is a single line and
+                    is unaffected: `pre-line` preserves newlines and collapses
+                    nothing else that these labels contain. */}
+                <span className="whitespace-pre-line break-words pr-3 font-medium leading-tight">
                   {option.label}
                 </span>
                 {option.description ? (

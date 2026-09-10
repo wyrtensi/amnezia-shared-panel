@@ -437,7 +437,11 @@ const ru = {
   "install.videoTitle": "Видео с разбором",
   "install.videoSoon": "Видео появится здесь позже.",
   "install.chooseHint": "Выберите устройство выше.",
-  "install.group.desktop": "Windows, macOS, Linux",
+  // One platform per line, no commas: in a three-up grid this label is the
+  // only one that wraps, and comma-separated it broke wherever the column
+  // happened to end ("Windows" / ", macOS, Linux"). The card names three
+  // things, so it lists three.
+  "install.group.desktop": "Windows\nmacOS\nLinux",
   "install.group.android": "Android",
   "install.group.ios": "iPhone и iPad (iOS)",
   "install.pickFile": "Выберите файл для своей системы",
@@ -1758,7 +1762,11 @@ const en = {
   "install.videoTitle": "Walkthrough video",
   "install.videoSoon": "A video will appear here.",
   "install.chooseHint": "Pick a device above.",
-  "install.group.desktop": "Windows, macOS, Linux",
+  // One platform per line, no commas: in a three-up grid this label is the
+  // only one that wraps, and comma-separated it broke wherever the column
+  // happened to end ("Windows" / ", macOS, Linux"). The card names three
+  // things, so it lists three.
+  "install.group.desktop": "Windows\nmacOS\nLinux",
   "install.group.android": "Android",
   "install.group.ios": "iPhone and iPad (iOS)",
   "install.pickFile": "Pick the file for your system",

@@ -1,6 +1,11 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
+
+import { messages } from "@/lib/i18n/messages";
+import { OptionCards } from "./option-cards";
 
 const source = readFileSync(
   fileURLToPath(new URL("./option-cards.tsx", import.meta.url)),
@@ -23,9 +28,13 @@ describe("option card title", () => {
     // more than ~16px: past that the 88.7px device column no longer fits
     // "MacBook" (69px) or "Windows" (69.5px) and `break-words` splits them.
     // `pr-5` (20px) was over that ceiling, which is the bug this pins.
-    const match = source.match(
-      /className="break-words pr-([\d.]+) font-medium/,
-    );
+    // Read out of the title's whole class list rather than out of a fixed
+    // order: the classes on this span have grown since (`whitespace-pre-line`),
+    // and a pattern that pins their sequence fails for a reason that has
+    // nothing to do with the number it exists to guard.
+    const title = source.match(/className="([^"]*font-medium leading-tight)"/);
+    expect(title, "the title span is no longer recognisable").not.toBeNull();
+    const match = title![1]!.match(/\bpr-([\d.]+)\b/);
     expect(match, "the title still carries a right-padding class").not.toBeNull();
     const px = Number(match![1]) * 4;
     expect(px).toBeGreaterThanOrEqual(9);
@@ -44,5 +53,45 @@ describe("option card title", () => {
     // A badge beside the title narrows that one card's title column and
     // misaligns the row -- the reason it was anchored to the card's bottom.
     expect(source).toContain('<span className="mt-auto pt-1">{option.badge}</span>');
+  });
+});
+
+/**
+ * A card that names several things lists them one per line.
+ *
+ * The install guide's desktop card names three platforms, and as a
+ * comma-separated run it broke wherever its column happened to end -- "Windows"
+ * on one line, ", macOS, Linux" on the next, with the comma leading. The label
+ * now carries its own line breaks, which only works if the card honours them.
+ */
+describe("labels that carry their own line breaks", () => {
+  const render = (label: string) =>
+    renderToStaticMarkup(
+      createElement(OptionCards, {
+        value: "a" as const,
+        onChange: () => undefined,
+        options: [{ value: "a" as const, label }],
+      }),
+    );
+
+  it("renders each line of a multi-line label as its own line", () => {
+    // Rendered rather than read off the file: `whitespace-pre-line` is one
+    // class away from doing nothing at all, and the difference is invisible in
+    // a source-text assertion.
+    const html = render("Windows\nmacOS\nLinux");
+    expect(html).toContain("whitespace-pre-line");
+    expect(html).toContain("Windows\nmacOS\nLinux");
+  });
+
+  it("is what the desktop group label relies on, in both languages", () => {
+    for (const lang of ["ru", "en"] as const) {
+      const label = messages[lang]["install.group.desktop"];
+      expect(label, lang).not.toContain(",");
+      expect(label.split("\n"), lang).toEqual(["Windows", "macOS", "Linux"]);
+    }
+  });
+
+  it("leaves a single-line label exactly as it was", () => {
+    expect(render("Android")).toContain(">Android<");
   });
 });
