@@ -910,9 +910,10 @@ type GuideShotPair = { light: GuideShotFile; dark?: GuideShotFile };
  * no note at all.
  *
  * The intrinsic sizes travel with the paths so the box is the right shape
- * before the file arrives. These sit inside a closed `<details>`, so they load
- * when it is opened, and without the dimensions the steps would jump under the
- * cursor of somebody already reading them.
+ * before the file arrives. The note is drawn open now, so these load lazily as
+ * the reader scrolls the dialog towards them — and without the dimensions the
+ * steps between the two captures would jump under the cursor of somebody
+ * already reading them.
  */
 const BUSY_SHOTS: Record<Lang, { warning: GuideShotPair; tray: GuideShotPair }> =
   {
@@ -941,28 +942,28 @@ const BUSY_SHOTS: Record<Lang, { warning: GuideShotPair; tray: GuideShotPair }> 
  * beside the clock after its window is closed. Pressing Retry without quitting
  * it simply shows the same box again.
  *
- * It stays in the SIMPLE view, unlike the other spoilers here: this is not a
+ * It stays in the SIMPLE view, unlike the spoilers around it: this is not a
  * second way to do something that already worked, it is somebody who cannot
- * install at all. Collapsed, so it costs every other reader one summary row.
+ * install at all. And unlike them it is not a spoiler either — it is drawn
+ * open. A reader who has hit the warning is looking for the picture of their
+ * own window, and a summary row they have to guess is worth opening is exactly
+ * the wrong thing to put between them and it.
  *
  * Desktop-only, and named for the warning rather than for an operating system.
  * The screenshots are Windows because that is what was to hand; the copy stays
  * true of any desktop client that outlives its own window, so a reader looking
  * at the warning does not first have to decide whether this is about them.
  */
-function InstallerBusyNote() {
+export function InstallerBusyNote() {
   const { t, lang } = useT();
   const shots = BUSY_SHOTS[lang];
 
   return (
-    <details className="group rounded-lg border bg-muted/30 px-3 py-2">
-      <summary className="flex cursor-pointer list-none items-center gap-2 text-sm font-medium">
-        <ChevronDown className="h-4 w-4 shrink-0 transition-transform group-open:rotate-180" />
-        {t("install.busyTitle")}
-      </summary>
+    <section className="rounded-lg border bg-muted/30 px-3 py-2.5">
+      <h4 className="text-sm font-medium">{t("install.busyTitle")}</h4>
       {/* The window they are looking at, then what to do, then the menu the
-          steps send them to: recognition first, so a reader who opened this
-          spoiler by accident closes it again without reading three steps. */}
+          steps send them to: recognition first, so somebody scrolling past
+          knows in one glance whether this is their problem. */}
       <div className="mt-2.5 space-y-2.5">
         <GuideShot shot={shots.warning} alt={t("install.busyWarningAlt")} />
         <ol className="list-decimal space-y-1.5 pl-5 text-sm">
@@ -972,7 +973,7 @@ function InstallerBusyNote() {
         </ol>
         <GuideShot shot={shots.tray} alt={t("install.busyTrayAlt")} />
       </div>
-    </details>
+    </section>
   );
 }
 
