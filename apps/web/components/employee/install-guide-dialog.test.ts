@@ -1,6 +1,11 @@
 import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
+
+import { messages } from "@/lib/i18n/messages";
+import { InstallerBusyNote } from "./install-guide-dialog";
 
 // AGENTS.md keeps business logic out of apps/web, and a panel user may have no
 // route to GitHub — so every download URL must arrive from
@@ -74,10 +79,10 @@ describe("install guide dialog source", () => {
 
 // A desktop AmneziaVPN keeps running beside the clock after its window is
 // closed, so the installer refuses and Retry on its own shows the same box
-// again. The note that says so is the one spoiler in this file that is NOT a
-// second way to do something that already worked -- its reader cannot install
-// at all -- so the two things that would quietly take it away from them are
-// pinned: the detailed switch, and an audience with no desktop installer.
+// again. The note that says so is not a second way to do something that already
+// worked -- its reader cannot install at all -- so the three things that would
+// quietly take it away from them are pinned: the detailed switch, an audience
+// with no desktop installer, and a disclosure to open.
 describe("the installer-busy note", () => {
   const desktopBranch = source.match(
     /audience === "desktop" \? \(([\s\S]*?)\) : null\}/,
@@ -90,6 +95,24 @@ describe("the installer-busy note", () => {
 
   it("stays in the simple view", () => {
     expect(desktopBranch).not.toContain("advanced");
+  });
+
+  it("is drawn open rather than as a disclosure", () => {
+    // Rendered, not read off the file: "no <details>" is exactly the kind of
+    // claim a source-text assertion can pass while the browser disagrees.
+    //
+    // Every other block in this guide that folds away is a second route to
+    // something that already worked. This one is the only route left for a
+    // reader who is looking at a warning and cannot install, and a summary row
+    // they have to guess is worth opening sits squarely in the way of the one
+    // thing they came for: the picture of their own window.
+    const html = renderToStaticMarkup(createElement(InstallerBusyNote));
+    expect(html).not.toContain("<details");
+    expect(html).not.toContain("<summary");
+    expect(html).toContain(messages.ru["install.busyTitle"]);
+    // Both captures and all three steps are in the markup from the start.
+    expect(html.match(/<img/g)?.length).toBeGreaterThanOrEqual(3);
+    expect(html.match(/<li>/g)?.length).toBe(3);
   });
 
   const shots = [...source.matchAll(/"(\/install-[a-z-]+\.webp)"/g)]
