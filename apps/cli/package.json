@@ -17,6 +17,6 @@
   },
   "devDependencies": {
     "@amnezia/contracts": "workspace:*",
-    "tsx": "4.21.0"
+    "tsx": "4.23.15"
   }
 }
