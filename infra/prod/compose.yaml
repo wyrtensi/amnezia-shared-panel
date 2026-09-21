@@ -29,6 +29,18 @@ x-app: &app
   # exhausts the host's task budget instead of its own. Steady state is ~25
   # tasks per service.
   pids_limit: ${PANEL_PIDS_LIMIT:-256}
+  # Every Node service below sets NODE_OPTIONS=--max-old-space-size next to its
+  # mem_limit, and the two only work as a pair. Left alone, V8 sizes its heap
+  # from HOST memory -- 259 MiB on a 2 GiB box, measured inside a 160 MiB
+  # control-api -- so it keeps allocating instead of collecting until the
+  # cgroup is full. The kernel then swaps the container's own pages in and out
+  # (memory.swap is 2x mem_limit by default) and finally OOM-kills it; on a
+  # 1 vCPU host the swap traffic is what shows up as "the CPU is pegged". With
+  # the heap capped well inside the ceiling V8 collects first. Live heaps
+  # measured after a forced GC were ~25 MiB for control-api and the worker, so
+  # the defaults leave ~4x. Raise a MAX_OLD_SPACE_MB only together with its
+  # MEM_LIMIT, and keep ~60 MiB between them for the young generation, code and
+  # native buffers.
   env_file:
     - .env
   networks:
@@ -100,6 +112,8 @@ services:
     command: ["node", "apps/control-api/dist/main.js"]
     mem_limit: ${CONTROL_API_MEM_LIMIT:-160m}
     environment:
+      # Pairs with mem_limit; see the x-app note on NODE_OPTIONS below.
+      NODE_OPTIONS: --max-old-space-size=${CONTROL_API_MAX_OLD_SPACE_MB:-96}
       NODE_ENV: production
       CONTROL_API_HOST: 0.0.0.0
       CONTROL_API_PORT: 3001
@@ -133,6 +147,8 @@ services:
     <<: *app
     command: ["node", "apps/worker/dist/main.js"]
     mem_limit: ${WORKER_MEM_LIMIT:-160m}
+    environment:
+      NODE_OPTIONS: --max-old-space-size=${WORKER_MAX_OLD_SPACE_MB:-96}
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -142,6 +158,8 @@ services:
     command: ["pnpm", "--filter", "@amnezia/web", "start"]
     mem_limit: ${WEB_MEM_LIMIT:-320m}
     environment:
+      # Inherited by `next start` through pnpm, so the server process gets it.
+      NODE_OPTIONS: --max-old-space-size=${WEB_MAX_OLD_SPACE_MB:-192}
       CONTROL_API_URL: http://control-api:3001
       # No dev identity: the web forwards only the real Cloudflare Access JWT.
       HOSTNAME: 0.0.0.0
