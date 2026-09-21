@@ -30,11 +30,11 @@ jobs:
       DATABASE_URL: postgres://postgres:test@127.0.0.1:5432/amnezia
       TEST_DATABASE_URL: postgres://postgres:test@127.0.0.1:5432/amnezia
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
         with:
           version: 10.28.2
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: pnpm
@@ -56,8 +56,8 @@ jobs:
       run:
         working-directory: services/node-agent
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
       - run: npm ci
@@ -69,8 +69,8 @@ jobs:
     name: Infra and rollout script tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
       - run: node --test infra/node/tests/*.mjs infra/prod/tests/*.mjs scripts/tests/*.mjs
