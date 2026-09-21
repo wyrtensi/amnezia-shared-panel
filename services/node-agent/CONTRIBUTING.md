@@ -13,7 +13,7 @@ Thanks for helping improve Amnezia API. Bug fixes, protocol compatibility improv
 
 Requirements:
 
-- Node.js 20 or newer
+- Node.js 22.19 or newer
 - npm
 - Docker only when testing integration with Amnezia containers
 
