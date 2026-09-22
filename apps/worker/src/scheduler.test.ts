@@ -1,3 +1,4 @@
+import { getEventListeners } from "node:events";
 import { describe, expect, it, vi } from "vitest";
 import {
   abortableWait,
@@ -223,5 +224,19 @@ describe("abortableWait", () => {
       await settlesPromptly(abortableWait(A_WEEK_MS, controller.signal)),
     ).toBe("still waiting");
     controller.abort();
+  });
+
+  it("leaves no abort listener behind once the period has elapsed", async () => {
+    // Every loop in the worker shares ONE signal for the life of the process,
+    // and the idle outbox poll waits a second at a time. A listener left on it
+    // by each finished wait is ~86,400 closures a day that are never freed --
+    // measured as 209 MiB of live heap after 12 days on a production worker.
+    const controller = new AbortController();
+
+    for (let cycle = 0; cycle < 3; cycle += 1) {
+      await abortableWait(1, controller.signal);
+    }
+
+    expect(getEventListeners(controller.signal, "abort")).toHaveLength(0);
   });
 });

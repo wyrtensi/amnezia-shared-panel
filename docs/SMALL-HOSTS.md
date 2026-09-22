@@ -55,6 +55,21 @@ host. The AWG containers are deliberately left uncapped — `amneziawg-go`
 allocates per-peer queues, and a ceiling guessed from a two-peer reading would
 be an OOM kill of the data plane at some peer count nobody has measured.
 
+The panel's Node services get the same pair in `infra/prod/.env`:
+
+| Service | `*_MEM_LIMIT` | `*_MAX_OLD_SPACE_MB` | Live heap after a forced GC |
+|---|---|---|---|
+| `control-api` | `160m` | `96` | ~25 MiB |
+| `worker` | `160m` | `96` | ~23 MiB |
+| `web` | `320m` | `192` | — |
+
+Without the heap cap a 160 MiB `control-api` on the 2 GiB host had a 259 MiB
+V8 ceiling. It filled the cgroup instead of collecting, the kernel swapped the
+container's own pages in and out until it OOM-killed it, and on one vCPU that
+swap traffic is what reads as a pegged CPU. If a container is OOM-killed with
+these defaults, raise both numbers together and keep ~60 MiB between them;
+raising only the heap brings the swapping back.
+
 ## 2. Add 2 GB of swap before anything else
 
 Every server this project runs on — panel, node, or both — gets a 2 GB swapfile.

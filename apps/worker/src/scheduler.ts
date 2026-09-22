@@ -17,15 +17,20 @@ export const abortableWait: Wait = (milliseconds, signal) =>
       resolve();
       return;
     }
-    const timer = setTimeout(resolve, milliseconds);
-    signal.addEventListener(
-      "abort",
-      () => {
-        clearTimeout(timer);
-        resolve();
-      },
-      { once: true },
-    );
+    // Each side unsubscribes the other. `once` only removes the listener when
+    // it FIRES, and the signal is shared by every loop for the life of the
+    // process, so a wait that simply elapses must take its listener off itself
+    // -- otherwise the idle outbox poll leaves one closure behind per second,
+    // forever (209 MiB of live heap after 12 days on a production worker).
+    const onAbort = (): void => {
+      clearTimeout(timer);
+      resolve();
+    };
+    const timer = setTimeout(() => {
+      signal.removeEventListener("abort", onAbort);
+      resolve();
+    }, milliseconds);
+    signal.addEventListener("abort", onAbort, { once: true });
   });
 
 /**
