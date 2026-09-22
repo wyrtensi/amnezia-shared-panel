@@ -4,9 +4,9 @@
     "sourceMap": true,
     "rootDir": "./src",
     "outDir": "./build",
-    "module": "CommonJS",
+    "module": "Node20",
     "removeComments": true,
-    "moduleResolution": "Node"
+    "moduleResolution": "Node16"
   },
   "include": ["src/**/*.ts"],
   "exclude": ["node_modules", "build", "dist"]

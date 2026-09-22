@@ -1,4 +1,4 @@
-FROM node:24.11.1-alpine AS build
+FROM node:24.21.0-alpine AS build
 
 ENV PNPM_HOME=/pnpm
 ENV PATH=$PNPM_HOME:$PATH
@@ -31,7 +31,7 @@ RUN CI=true pnpm install --prod --frozen-lockfile
 # reads .next/cache (only `next build`/`next dev` do). ~150 MB of pure waste.
 RUN rm -rf apps/web/.next/cache
 
-FROM node:24.11.1-alpine AS runtime
+FROM node:24.21.0-alpine AS runtime
 
 ENV PNPM_HOME=/pnpm
 ENV PATH=$PNPM_HOME:$PATH

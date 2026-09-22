@@ -244,10 +244,14 @@ function metaPills(
         // the reader has left.
         if (name) return `${key}: ${name}`;
       }
+      // Metadata is parsed JSON, so anything that is not a primitive is an
+      // object or array and renders as JSON.
       const rendered =
-        typeof value === "object"
-          ? JSON.stringify(value)
-          : String(value as string | number | boolean);
+        typeof value === "string" ||
+        typeof value === "number" ||
+        typeof value === "boolean"
+          ? String(value)
+          : JSON.stringify(value);
       return `${key}: ${rendered.length > 40 ? `${rendered.slice(0, 40)}…` : rendered}`;
     });
 }

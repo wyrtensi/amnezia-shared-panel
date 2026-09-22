@@ -11,7 +11,7 @@ import {
 import { StatusCodes } from "@/types/shared";
 import { SwaggerTag } from "@/contracts/swagger";
 import { ServerResponse, IncomingMessage } from "http";
-import { JSONSchema, FromSchemaDefaultOptions } from "json-schema-to-ts";
+import { JSONSchema } from "json-schema-to-ts";
 import { JsonSchemaToTsProvider } from "@fastify/type-provider-json-schema-to-ts";
 
 export type AppFastifyInstance = FastifyInstance<
@@ -63,7 +63,7 @@ export type AppFastifyRoute<SchemaType extends AppFastifySchema> = RouteOptions<
   RouteGenericInterface,
   unknown,
   SchemaType,
-  JsonSchemaToTsProvider<FromSchemaDefaultOptions>,
+  JsonSchemaToTsProvider,
   FastifyBaseLogger
 >;
 
@@ -75,7 +75,7 @@ export type AppFastifyPreHandler<SchemaType extends AppFastifySchema> =
     RouteGenericInterface,
     unknown,
     SchemaType,
-    JsonSchemaToTsProvider<FromSchemaDefaultOptions>,
+    JsonSchemaToTsProvider,
     FastifyBaseLogger
   >;
 
@@ -87,7 +87,7 @@ export type AppFastifyHandler<SchemaType extends AppFastifySchema> =
     RouteGenericInterface,
     unknown,
     SchemaType,
-    JsonSchemaToTsProvider<FromSchemaDefaultOptions>,
+    JsonSchemaToTsProvider,
     FastifyBaseLogger
   >;
 

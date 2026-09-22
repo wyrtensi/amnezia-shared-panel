@@ -23,7 +23,6 @@ import { contentDispositionAttachment } from "./configFilename.js";
 import {
   ApiError,
   type Actor,
-  type ConfigFormat,
   type ControlApiService,
   type IdentityClaim,
 } from "./service.js";
@@ -240,7 +239,7 @@ export const buildApp = async ({
     const result = await service.getKeyConfig(
       actorFor(request),
       id,
-      query.format as ConfigFormat,
+      query.format,
       query.adminConfirmed,
     );
     reply.header("cache-control", "private, no-store");

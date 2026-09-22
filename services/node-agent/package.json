@@ -1,6 +1,6 @@
 {
   "name": "amnezia-api",
-  "version": "1.1.15",
+  "version": "1.1.16",
   "description": "Self-hosted REST API for automating Amnezia VPN servers",
   "private": true,
   "license": "MIT",
@@ -25,7 +25,7 @@
     "typescript"
   ],
   "engines": {
-    "node": ">=20.0.0"
+    "node": ">=22.19.0"
   },
   "scripts": {
     "lint": "npx eslint . --max-warnings=0",
@@ -42,47 +42,44 @@
     "deploy": "node ./scripts/deploy.js"
   },
   "dependencies": {
-    "@fastify/cookie": "^10.0.1",
-    "@fastify/cors": "^10.1.0",
-    "@fastify/formbody": "^8.0.2",
+    "@fastify/cookie": "^11.1.2",
+    "@fastify/cors": "^11.3.0",
+    "@fastify/formbody": "^9.0.0",
     "@fastify/helmet": "^13.1.1",
-    "@fastify/rate-limit": "^10.3.0",
-    "@fastify/swagger": "^9.8.1",
+    "@fastify/rate-limit": "^11.2.0",
+    "@fastify/swagger": "^9.8.2",
     "@fastify/swagger-ui": "^6.1.1",
-    "@fastify/type-provider-json-schema-to-ts": "^4.0.1",
+    "@fastify/type-provider-json-schema-to-ts": "^5.0.0",
     "ajv-errors": "^3.0.0",
     "awilix": "^13.0.5",
-    "awilix-manager": "^6.4.0",
-    "chalk": "5.6.2",
+    "awilix-manager": "^7.0.1",
+    "chalk": "6.0.0",
     "cross-env": "^10.1.0",
-    "dotenv": "^17.4.2",
-    "fastify": "^5.12.3",
-    "fastify-metrics": "^13.2.1",
+    "dotenv": "^18.0.2",
+    "fastify": "^5.12.5",
+    "fastify-metrics": "^14.1.0",
     "i18next": "^26.4.2",
     "i18next-http-middleware": "^3.9.9",
-    "ipaddr.js": "2.2.0",
+    "ipaddr.js": "2.5.0",
     "node-cron": "^4.6.0",
     "qrcode": "^1.5.4",
     "undici": "^8.10.2",
-    "uuid": "^13.0.2",
+    "uuid": "^14.0.2",
     "winston": "^3.19.0"
   },
   "devDependencies": {
-    "@eslint/js": "^9.39.5",
-    "@types/node": "^25.9.5",
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^26.6.2",
     "@types/node-cron": "^3.0.11",
     "@types/qrcode": "^1.5.6",
-    "@vitest/coverage-v8": "^4.1.11",
-    "eslint": "^9.39.5",
+    "@vitest/coverage-v8": "^5.0.1",
+    "eslint": "^10.11.0",
     "nodemon": "^3.1.14",
     "ts-node": "10.9.2",
     "tsconfig-paths": "^4.2.0",
     "tsconfig-replace-paths": "0.0.14",
     "typescript": "^6.0.3",
-    "typescript-eslint": "^8.70.0",
-    "vitest": "^4.1.11"
-  },
-  "overrides": {
-    "nanoid": "3.3.18"
+    "typescript-eslint": "^8.70.1",
+    "vitest": "^5.0.1"
   }
 }

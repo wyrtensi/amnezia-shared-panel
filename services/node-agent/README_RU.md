@@ -1,6 +1,6 @@
 # Amnezia API
 
-[![Node.js](https://img.shields.io/badge/Node.js-%3E%3D20-339933?logo=node.js&logoColor=white)](https://nodejs.org/)
+[![Node.js](https://img.shields.io/badge/Node.js-%3E%3D22.19-339933?logo=node.js&logoColor=white)](https://nodejs.org/)
 [![Fastify](https://img.shields.io/badge/Fastify-5.x-000000?logo=fastify&logoColor=white)](https://fastify.dev/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-6.x-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
 [![CI](https://github.com/kyoresuas/amnezia-api/actions/workflows/ci.yml/badge.svg)](https://github.com/kyoresuas/amnezia-api/actions/workflows/ci.yml)
@@ -58,7 +58,7 @@
 - Linux-сервер хотя бы с одним установленным протоколом Amnezia.
 - Root или `sudo` для автоматической установки.
 - Debian или Ubuntu для автоматической установки зависимостей.
-- Docker с Compose для Docker-режима или Node.js 20+ для PM2.
+- Docker с Compose для Docker-режима или Node.js 22.19+ для PM2.
 
 ## Быстрый старт
 
@@ -254,7 +254,7 @@ npm run build
 npm run openapi:check
 ```
 
-После изменения маршрутов или схем обновите переносимый контракт командой `npm run openapi:generate`. CI запускает lint, тесты, сборку и проверку контракта на Node.js 20, 22 и 24. Полный порядок подготовки изменений описан в [CONTRIBUTING.md](CONTRIBUTING.md).
+После изменения маршрутов или схем обновите переносимый контракт командой `npm run openapi:generate`. CI запускает lint, тесты, сборку и проверку контракта на Node.js 22 и 24. Полный порядок подготовки изменений описан в [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Экосистема
 

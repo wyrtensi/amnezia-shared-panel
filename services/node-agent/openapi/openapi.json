@@ -2,7 +2,7 @@
   "openapi": "3.0.0",
   "info": {
     "title": "Amnezia API",
-    "version": "1.1.15",
+    "version": "1.1.16",
     "description": "Self-hosted REST API for automating Amnezia VPN servers.",
     "license": {
       "name": "MIT"
@@ -156,29 +156,23 @@
                             "example": "ok"
                           },
                           "httpStatus": {
-                            "type": [
-                              "null",
-                              "number"
-                            ],
-                            "example": 200
+                            "type": "number",
+                            "example": 200,
+                            "nullable": true
                           },
                           "latencyMs": {
                             "type": "number",
                             "example": 412
                           },
                           "finalUrl": {
-                            "type": [
-                              "null",
-                              "string"
-                            ],
-                            "example": "https://example.com/"
+                            "type": "string",
+                            "example": "https://example.com/",
+                            "nullable": true
                           },
                           "detail": {
-                            "type": [
-                              "null",
-                              "string"
-                            ],
-                            "example": "body does not contain \"conversation-container\""
+                            "type": "string",
+                            "example": "body does not contain \"conversation-container\"",
+                            "nullable": true
                           }
                         }
                       }

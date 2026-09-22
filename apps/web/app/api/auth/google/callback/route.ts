@@ -47,7 +47,7 @@ export async function GET(request: NextRequest) {
     /\/$/,
     "",
   );
-  let allowed = false;
+  let allowed: boolean;
   try {
     const check = await fetch(`${apiBase}/api/me`, {
       headers: { "x-panel-identity": token, accept: "application/json" },
