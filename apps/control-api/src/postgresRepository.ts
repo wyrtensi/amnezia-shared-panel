@@ -2415,11 +2415,32 @@ export class PostgresControlRepository implements ControlRepository {
           nodeName: request.nodeId ? nodeName : null,
         }));
       }
-      case "rules":
+      case "rules": {
+        // Everything but the payload. Every version ever fetched is kept, each
+        // carries the whole feed (~80k domains), and this list is loaded on
+        // every admin page: with the payload it grew past control-api's heap
+        // limit. Nothing reading the list uses it -- the preview fetches one
+        // version by id (getRuleVersion).
         return this.options.db
-          .select()
+          .select({
+            id: routeRuleVersions.id,
+            profile: routeRuleVersions.profile,
+            version: routeRuleVersions.version,
+            sourceUrl: routeRuleVersions.sourceUrl,
+            sourceEtag: routeRuleVersions.sourceEtag,
+            sourceChecksum: routeRuleVersions.sourceChecksum,
+            status: routeRuleVersions.status,
+            cidrCount: routeRuleVersions.cidrCount,
+            domainCount: routeRuleVersions.domainCount,
+            validationReport: routeRuleVersions.validationReport,
+            publishedAt: routeRuleVersions.publishedAt,
+            createdAt: routeRuleVersions.createdAt,
+            updatedAt: routeRuleVersions.updatedAt,
+            pinnedAt: routeRuleVersions.pinnedAt,
+          })
           .from(routeRuleVersions)
           .orderBy(desc(routeRuleVersions.createdAt));
+      }
       case "audit":
         return this.options.db
           .select()

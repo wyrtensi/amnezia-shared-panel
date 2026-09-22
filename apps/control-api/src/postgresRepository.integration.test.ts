@@ -4482,6 +4482,29 @@ describe("PostgresControlRepository rule version pinning", () => {
     },
   );
 
+  runDatabaseTest("lists versions without their rule payload", async () => {
+    if (!database) return;
+    // Every admin page load asks for this list, and nothing that reads it
+    // uses the payload -- the preview fetches one version by id. With the
+    // payload included, 24 kept versions of an ~80k-domain feed came to 38 MB
+    // of JSON and drove control-api past its heap limit on every page load.
+    await seedVersion("v1", "superseded", {
+      createdAt: new Date(Date.now() - 60_000),
+    });
+    const live = await seedVersion("v2", "active");
+
+    const rows = (await subject().adminList(admin, "rules")) as Array<
+      Record<string, unknown>
+    >;
+
+    expect(rows.map((row) => row.id)[0]).toBe(live);
+    expect(rows).toHaveLength(2);
+    for (const row of rows) {
+      expect(row).not.toHaveProperty("payload");
+      expect(row).toMatchObject({ cidrCount: 1, domainCount: 1 });
+    }
+  });
+
   runDatabaseTest("moves the pin rather than ever holding two", async () => {
     if (!database) return;
     // The partial unique index would reject a second pin outright, so this
