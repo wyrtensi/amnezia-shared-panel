@@ -193,6 +193,29 @@ Only once that list is empty will `0035` apply. If it is not, the migration
 raises a readable error naming how many keys are still stuck rather than
 silently deleting rows.
 
+## After v0.9.60: a host with its own `RULE_FEEDS` keeps its old feed
+
+v0.9.60 changed the built-in `ru_blacklist` feed: it adds the itdoginfo
+provider ranges and subtracts Russian address space (see
+[`AGENT-HOST-SETUP.md`](./AGENT-HOST-SETUP.md#route-profiles-and-rule-feeds)).
+Those are **defaults**, so a host whose `infra/prod/.env` sets `RULE_FEEDS`
+gets neither; it gets only the compaction every feed now goes through. Check:
+
+```bash
+grep '^RULE_FEEDS=' /opt/amnezia-panel/infra/prod/.env
+```
+
+If the line is there and you did not mean to diverge, back up `.env`, delete
+the line, and recreate the worker. A feed still pointing at Re:filter's
+`ipsum.lst` is worth removing in any case: its ~27k CIDRs exceed the 6800-route
+budget, so every key on that profile has been exporting as a full tunnel. To
+keep a custom feed instead, add the exclusion source to it by hand:
+`{"url":"https://www.ipdeny.com/ipblocks/data/aggregated/ru-aggregated.zone","format":"cidr-lines","exclude":true}`.
+
+The worker fetches every 6 h; **Проверить обновления** on the admin rules page
+(`POST /api/admin/rules/global/refresh`) fetches at once. The new version flags existing keys
+as outdated, and a key keeps its old routing until its owner re-downloads it.
+
 ## Zero-downtime caveats
 
 There are **no strong zero-downtime guarantees** on this single-host Compose

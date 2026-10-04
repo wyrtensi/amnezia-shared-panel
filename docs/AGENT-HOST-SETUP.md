@@ -541,7 +541,9 @@ without an operator pasting anything. The worker env
   formats `json` | `cidr-lines` | `domain-lines` (multiple sources per profile
   are merged and de-duplicated). A source with `"exclude": true` is subtracted
   instead of merged: its CIDRs come out of the list, its domains are ignored,
-  and a profile needs at least one source that is not an exclusion. Leave it empty to keep the built-in defaults; set
+  and a profile needs at least one source that is not an exclusion. A
+  non-boolean `exclude` fails the worker at startup instead of being dropped,
+  since a dropped exclusion would ship its address space through the tunnel. Leave it empty to keep the built-in defaults; set
   `RULE_FEEDS=[]` to run with no feeds at all. A malformed value fails the worker
   at startup instead of quietly reverting to the defaults. The one value that
   does not fail it is a leftover `ru_whitelist` entry from before that profile

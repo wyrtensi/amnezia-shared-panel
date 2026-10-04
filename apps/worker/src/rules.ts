@@ -390,11 +390,22 @@ export const resolveRuleFeeds = (
       if (profile !== "ru_blacklist") {
         throw new Error(`RULE_FEEDS has an invalid profile: ${String(profile)}`);
       }
+      // A malformed `exclude` is refused, not filtered out with the other bad
+      // sources: dropping it would ship the list with the address space it
+      // was meant to keep direct, and nothing would say so.
+      const badExclude = (entry.sources as RuleSource[] | undefined)?.find(
+        (source) =>
+          source?.exclude !== undefined && typeof source.exclude !== "boolean",
+      );
+      if (badExclude) {
+        throw new Error(
+          `RULE_FEEDS entry for ${profile} has a non-boolean "exclude" on ${String(badExclude.url)}`,
+        );
+      }
       const sources = (entry.sources as RuleSource[] | undefined)?.filter(
         (source) =>
           typeof source?.url === "string" &&
-          RULE_FEED_FORMATS.includes(source?.format) &&
-          (source.exclude === undefined || typeof source.exclude === "boolean"),
+          RULE_FEED_FORMATS.includes(source?.format),
       );
       // Exclusions alone describe nothing to route.
       if (!sources?.some((source) => !source.exclude)) {

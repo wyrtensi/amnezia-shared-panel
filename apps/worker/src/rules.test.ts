@@ -534,6 +534,17 @@ describe("resolveRuleFeeds", () => {
         approveAll,
       ),
     ).toThrow("no valid sources");
+    // A quoted "true" must not quietly turn the exclusion off.
+    expect(() =>
+      resolveRuleFeeds(
+        {
+          RULE_FEEDS: JSON.stringify([
+            { profile: "ru_blacklist", sources: [include, { ...exclude, exclude: "true" }] },
+          ]),
+        },
+        approveAll,
+      ),
+    ).toThrow('non-boolean "exclude"');
   });
 
   it("carries the approval gate onto the defaults", () => {
