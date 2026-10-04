@@ -47,13 +47,6 @@ const resolveGate = async (
 
 export type RollupPeriod = "hour" | "day";
 
-export type TrafficSample = {
-  keyId: string;
-  sampledAt: Date;
-  receivedBytes: bigint;
-  sentBytes: bigint;
-};
-
 export type TrafficRollup = {
   keyId: string;
   period: RollupPeriod;
@@ -63,7 +56,23 @@ export type TrafficRollup = {
 };
 
 export interface MaintenanceRepository {
-  loadSamplesSince: (since: Date) => Promise<TrafficSample[]>;
+  /**
+   * Per-key traffic for every `period` bucket touched by the samples taken at
+   * or after `since`, computed by the database.
+   *
+   * Each sample contributes its delta against the key's previous sample -- the
+   * last one before `since` included, so the first bucket in the window is not
+   * short by one interval. A counter that went DOWN (the peer was recreated and
+   * started from zero) counts its new value as fresh traffic, never as a
+   * negative delta. Buckets are UTC hours or UTC days, keyed by the later
+   * sample's time.
+   *
+   * This used to be done in the worker: every `peer_samples` row in the raw
+   * window loaded into the heap and walked twice. On a six-node panel that was
+   * ~177k rows and ~80 MiB of heap, and the hourly run crash-looped a worker
+   * capped at 96 MiB. Only the roll-ups cross the wire now.
+   */
+  rollUpSamplesSince: (since: Date, period: RollupPeriod) => Promise<TrafficRollup[]>;
   replaceRollups: (
     period: RollupPeriod,
     rollups: TrafficRollup[],
@@ -107,53 +116,6 @@ export interface MaintenanceRepository {
    */
   rearmStuckRevokes: () => Promise<{ rearmed: number }>;
 }
-
-const bucketStart = (date: Date, period: RollupPeriod): Date => {
-  const result = new Date(date);
-  result.setUTCMinutes(0, 0, 0);
-  if (period === "day") result.setUTCHours(0);
-  return result;
-};
-
-const trafficDelta = (previous: bigint, current: bigint): bigint =>
-  current >= previous ? current - previous : current;
-
-export const aggregateTrafficSamples = (
-  samples: TrafficSample[],
-  period: RollupPeriod,
-): TrafficRollup[] => {
-  const ordered = [...samples].sort(
-    (left, right) =>
-      left.keyId.localeCompare(right.keyId) ||
-      left.sampledAt.getTime() - right.sampledAt.getTime(),
-  );
-  const previous = new Map<string, TrafficSample>();
-  const buckets = new Map<string, TrafficRollup>();
-  for (const sample of ordered) {
-    const prior = previous.get(sample.keyId);
-    previous.set(sample.keyId, sample);
-    if (!prior) continue;
-    const received = trafficDelta(prior.receivedBytes, sample.receivedBytes);
-    const sent = trafficDelta(prior.sentBytes, sample.sentBytes);
-    const start = bucketStart(sample.sampledAt, period);
-    const bucketKey = `${sample.keyId}:${start.toISOString()}`;
-    const current = buckets.get(bucketKey) ?? {
-      keyId: sample.keyId,
-      period,
-      bucketStart: start,
-      receivedBytes: 0n,
-      sentBytes: 0n,
-    };
-    current.receivedBytes += received;
-    current.sentBytes += sent;
-    buckets.set(bucketKey, current);
-  }
-  return [...buckets.values()].sort(
-    (left, right) =>
-      left.keyId.localeCompare(right.keyId) ||
-      left.bucketStart.getTime() - right.bucketStart.getTime(),
-  );
-};
 
 export type MaintenanceRunnerOptions = {
   repository: MaintenanceRepository;
@@ -238,24 +200,23 @@ export const createMaintenanceRunner = ({
     WORKER_PERIOD_FIELDS.completedJobRetentionDays.fallback,
   );
   const rawCutoff = new Date(current.getTime() - rawRetentionDays * DAY_MS);
-  const samples = await repository.loadSamplesSince(rawCutoff);
   // Only replace buckets that are FULLY inside the sample window. The bucket
   // that CONTAINS rawCutoff (bucketStart < rawCutoff) is only partially covered
   // — recomputing it would truncate the already-complete stored value to the
   // slice after rawCutoff, and as rawCutoff sweeps forward hourly it would shrink
   // that day/hour to ~its last slice. Dropping partial buckets freezes each one
   // at the last complete recompute (when rawCutoff <= its start).
-  const fullBucketsOnly = (rollups: ReturnType<typeof aggregateTrafficSamples>) =>
+  const fullBucketsOnly = (rollups: TrafficRollup[]) =>
     rollups.filter(
       (rollup) => rollup.bucketStart.getTime() >= rawCutoff.getTime(),
     );
   await repository.replaceRollups(
     "hour",
-    fullBucketsOnly(aggregateTrafficSamples(samples, "hour")),
+    fullBucketsOnly(await repository.rollUpSamplesSince(rawCutoff, "hour")),
   );
   await repository.replaceRollups(
     "day",
-    fullBucketsOnly(aggregateTrafficSamples(samples, "day")),
+    fullBucketsOnly(await repository.rollUpSamplesSince(rawCutoff, "day")),
   );
   await repository.deleteSamplesBefore(rawCutoff);
   await repository.deleteRollupsBefore(

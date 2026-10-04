@@ -1,53 +1,50 @@
 import { describe, expect, it, vi } from "vitest";
 import {
-  aggregateTrafficSamples,
   createMaintenanceRunner,
   type MaintenanceRepository,
 } from "./maintenance.js";
 
-describe("traffic rollups", () => {
-  it("counts post-reset counters as fresh traffic without negative deltas", () => {
-    const result = aggregateTrafficSamples(
-      [
-        { keyId: "key-1", sampledAt: new Date("2026-08-20T08:00:00Z"), receivedBytes: 100n, sentBytes: 200n },
-        { keyId: "key-1", sampledAt: new Date("2026-08-20T08:05:00Z"), receivedBytes: 150n, sentBytes: 250n },
-        { keyId: "key-1", sampledAt: new Date("2026-08-20T08:10:00Z"), receivedBytes: 10n, sentBytes: 5n },
-      ],
-      "hour",
-    );
+describe("retention and rollup maintenance", () => {
+  it("replaces only the buckets that lie wholly inside the raw window", async () => {
+    // The bucket holding the cutoff is only partly covered by the samples;
+    // recomputing it would shrink an already-complete value, so it is left
+    // frozen at its last full computation.
+    const cutoff = new Date("2026-08-13T12:30:00.000Z");
+    const rollup = (bucketStart: string) => ({
+      keyId: "key-1",
+      period: "hour" as const,
+      bucketStart: new Date(bucketStart),
+      receivedBytes: 1n,
+      sentBytes: 1n,
+    });
+    const repository: MaintenanceRepository = {
+      rollUpSamplesSince: vi.fn((_since: Date, period: "hour" | "day") =>
+        Promise.resolve(
+          period === "hour"
+            ? [rollup("2026-08-13T12:00:00.000Z"), rollup("2026-08-13T13:00:00.000Z")]
+            : [],
+        ),
+      ),
+      replaceRollups: vi.fn(() => Promise.resolve()),
+      deleteSamplesBefore: vi.fn(() => Promise.resolve()),
+      deleteRollupsBefore: vi.fn(() => Promise.resolve()),
+      deleteNodeMetricsSamplesBefore: vi.fn(() => Promise.resolve()),
+      deleteCompletedJobsBefore: vi.fn(() => Promise.resolve()),
+      rearmStuckRevokes: vi.fn(() => Promise.resolve({ rearmed: 0 })),
+      purgeOffboardedUsers: vi.fn(() => Promise.resolve({ deleted: [] })),
+    };
+    const now = new Date(cutoff.getTime() + 7 * 24 * 60 * 60 * 1000);
 
-    expect(result).toEqual([
-      {
-        keyId: "key-1",
-        period: "hour",
-        bucketStart: new Date("2026-08-20T08:00:00.000Z"),
-        receivedBytes: 60n,
-        sentBytes: 55n,
-      },
+    await createMaintenanceRunner({ repository, now: () => now })();
+
+    expect(repository.replaceRollups).toHaveBeenNthCalledWith(1, "hour", [
+      rollup("2026-08-13T13:00:00.000Z"),
     ]);
   });
 
-  it("assigns deltas to UTC day buckets", () => {
-    const result = aggregateTrafficSamples(
-      [
-        { keyId: "key-1", sampledAt: new Date("2026-08-20T23:55:00Z"), receivedBytes: 100n, sentBytes: 100n },
-        { keyId: "key-1", sampledAt: new Date("2026-08-21T00:05:00Z"), receivedBytes: 125n, sentBytes: 140n },
-      ],
-      "day",
-    );
-
-    expect(result[0]).toMatchObject({
-      bucketStart: new Date("2026-08-21T00:00:00.000Z"),
-      receivedBytes: 25n,
-      sentBytes: 40n,
-    });
-  });
-});
-
-describe("retention and rollup maintenance", () => {
   it("rebuilds recent rollups before deleting expired raw and aggregate data", async () => {
     const repository: MaintenanceRepository = {
-      loadSamplesSince: vi.fn(() => Promise.resolve([])),
+      rollUpSamplesSince: vi.fn(() => Promise.resolve([])),
       replaceRollups: vi.fn(() => Promise.resolve()),
       deleteSamplesBefore: vi.fn(() => Promise.resolve()),
       deleteRollupsBefore: vi.fn(() => Promise.resolve()),
@@ -61,8 +58,15 @@ describe("retention and rollup maintenance", () => {
 
     await run();
 
-    expect(repository.loadSamplesSince).toHaveBeenCalledWith(
+    expect(repository.rollUpSamplesSince).toHaveBeenNthCalledWith(
+      1,
       new Date("2026-08-13T12:00:00.000Z"),
+      "hour",
+    );
+    expect(repository.rollUpSamplesSince).toHaveBeenNthCalledWith(
+      2,
+      new Date("2026-08-13T12:00:00.000Z"),
+      "day",
     );
     expect(repository.replaceRollups).toHaveBeenNthCalledWith(1, "hour", []);
     expect(repository.replaceRollups).toHaveBeenNthCalledWith(2, "day", []);
@@ -91,7 +95,7 @@ describe("retention and rollup maintenance", () => {
   // small was how recently the feature had been deployed.
   it("prunes host-metric history at the configured retention window", async () => {
     const repository: MaintenanceRepository = {
-      loadSamplesSince: vi.fn(() => Promise.resolve([])),
+      rollUpSamplesSince: vi.fn(() => Promise.resolve([])),
       replaceRollups: vi.fn(() => Promise.resolve()),
       deleteSamplesBefore: vi.fn(() => Promise.resolve()),
       deleteRollupsBefore: vi.fn(() => Promise.resolve()),
@@ -123,7 +127,7 @@ describe("retention and rollup maintenance", () => {
   // above (a plain number or a resolver, resolved once per run).
   it("passes the resolved offboarded-user retention window to purgeOffboardedUsers", async () => {
     const repository: MaintenanceRepository = {
-      loadSamplesSince: vi.fn(() => Promise.resolve([])),
+      rollUpSamplesSince: vi.fn(() => Promise.resolve([])),
       replaceRollups: vi.fn(() => Promise.resolve()),
       deleteSamplesBefore: vi.fn(() => Promise.resolve()),
       deleteRollupsBefore: vi.fn(() => Promise.resolve()),
@@ -151,7 +155,7 @@ describe("retention and rollup maintenance", () => {
 
   it("falls back to the default window when the offboarded-user resolver throws", async () => {
     const repository: MaintenanceRepository = {
-      loadSamplesSince: vi.fn(() => Promise.resolve([])),
+      rollUpSamplesSince: vi.fn(() => Promise.resolve([])),
       replaceRollups: vi.fn(() => Promise.resolve()),
       deleteSamplesBefore: vi.fn(() => Promise.resolve()),
       deleteRollupsBefore: vi.fn(() => Promise.resolve()),
@@ -183,7 +187,7 @@ describe("retention and rollup maintenance", () => {
   // at all. Off by default -- see the contract's `autoPurgeOffboardedUsers`.
   describe("the automatic-purge gate", () => {
     const buildRepository = (): MaintenanceRepository => ({
-      loadSamplesSince: vi.fn(() => Promise.resolve([])),
+      rollUpSamplesSince: vi.fn(() => Promise.resolve([])),
       replaceRollups: vi.fn(() => Promise.resolve()),
       deleteSamplesBefore: vi.fn(() => Promise.resolve()),
       deleteRollupsBefore: vi.fn(() => Promise.resolve()),
@@ -242,7 +246,7 @@ describe("retention and rollup maintenance", () => {
   // node reconcile, agent update and capacity change leaves a row forever.
   it("passes the resolved completed-job retention window to deleteCompletedJobsBefore", async () => {
     const repository: MaintenanceRepository = {
-      loadSamplesSince: vi.fn(() => Promise.resolve([])),
+      rollUpSamplesSince: vi.fn(() => Promise.resolve([])),
       replaceRollups: vi.fn(() => Promise.resolve()),
       deleteSamplesBefore: vi.fn(() => Promise.resolve()),
       deleteRollupsBefore: vi.fn(() => Promise.resolve()),
@@ -266,7 +270,7 @@ describe("retention and rollup maintenance", () => {
 
   it("falls back to the default window when the completed-job resolver throws", async () => {
     const repository: MaintenanceRepository = {
-      loadSamplesSince: vi.fn(() => Promise.resolve([])),
+      rollUpSamplesSince: vi.fn(() => Promise.resolve([])),
       replaceRollups: vi.fn(() => Promise.resolve()),
       deleteSamplesBefore: vi.fn(() => Promise.resolve()),
       deleteRollupsBefore: vi.fn(() => Promise.resolve()),
@@ -297,7 +301,7 @@ describe("retention and rollup maintenance", () => {
   it("re-arms stuck revokes once per pass, before purgeOffboardedUsers", async () => {
     const calls: string[] = [];
     const repository: MaintenanceRepository = {
-      loadSamplesSince: vi.fn(() => Promise.resolve([])),
+      rollUpSamplesSince: vi.fn(() => Promise.resolve([])),
       replaceRollups: vi.fn(() => Promise.resolve()),
       deleteSamplesBefore: vi.fn(() => Promise.resolve()),
       deleteRollupsBefore: vi.fn(() => Promise.resolve()),
@@ -327,7 +331,7 @@ describe("retention and rollup maintenance", () => {
 
   it("does not let a failing re-arm stop the rest of the maintenance run", async () => {
     const repository: MaintenanceRepository = {
-      loadSamplesSince: vi.fn(() => Promise.resolve([])),
+      rollUpSamplesSince: vi.fn(() => Promise.resolve([])),
       replaceRollups: vi.fn(() => Promise.resolve()),
       deleteSamplesBefore: vi.fn(() => Promise.resolve()),
       deleteRollupsBefore: vi.fn(() => Promise.resolve()),
@@ -359,7 +363,7 @@ describe("retention and rollup maintenance", () => {
   it("reports a failing re-arm's error instead of letting it vanish silently", async () => {
     const rearmError = new Error("database unreachable");
     const repository: MaintenanceRepository = {
-      loadSamplesSince: vi.fn(() => Promise.resolve([])),
+      rollUpSamplesSince: vi.fn(() => Promise.resolve([])),
       replaceRollups: vi.fn(() => Promise.resolve()),
       deleteSamplesBefore: vi.fn(() => Promise.resolve()),
       deleteRollupsBefore: vi.fn(() => Promise.resolve()),

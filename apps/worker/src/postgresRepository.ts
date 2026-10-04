@@ -61,7 +61,6 @@ import type {
   MaintenanceRepository,
   RollupPeriod,
   TrafficRollup,
-  TrafficSample,
 } from "./maintenance.js";
 import type {
   RuleProfile,
@@ -134,6 +133,12 @@ type DbTransaction = Parameters<Parameters<Database["transaction"]>[0]>[0];
 // cap asserts against this rather than a literal that could silently drift
 // from the query.
 export const REARM_STUCK_REVOKES_LIMIT = 25;
+
+/**
+ * Roll-up rows per INSERT. Five bind parameters a row keeps a batch at 25,000
+ * parameters, well inside Postgres' 65,535 per statement.
+ */
+export const ROLLUP_INSERT_BATCH = 5_000;
 
 const cleanReason = (reason: string): string =>
   reason.replace(/[\r\n\t]+/g, " ").slice(0, 2_000);
@@ -1451,35 +1456,68 @@ export class PostgresWorkerRepository
       });
   };
 
-  loadSamplesSince = async (since: Date): Promise<TrafficSample[]> => {
-    const projection = {
-      keyId: peerSamples.keyId,
-      sampledAt: peerSamples.sampledAt,
-      receivedBytes: peerSamples.receivedBytes,
-      sentBytes: peerSamples.sentBytes,
-    };
-    const [baselines, samples] = await Promise.all([
-      this.options.db
-        .selectDistinctOn([peerSamples.keyId], projection)
-        .from(peerSamples)
-        .where(lt(peerSamples.sampledAt, since))
-        .orderBy(peerSamples.keyId, desc(peerSamples.sampledAt)),
-      this.options.db
-      .select({
-        keyId: peerSamples.keyId,
-        sampledAt: peerSamples.sampledAt,
-        receivedBytes: peerSamples.receivedBytes,
-        sentBytes: peerSamples.sentBytes,
-      })
-      .from(peerSamples)
-      .where(gte(peerSamples.sampledAt, since))
-        .orderBy(peerSamples.keyId, peerSamples.sampledAt),
-    ]);
-    return [...baselines, ...samples].sort(
-      (left, right) =>
-        left.keyId.localeCompare(right.keyId) ||
-        left.sampledAt.getTime() - right.sampledAt.getTime(),
-    );
+  rollUpSamplesSince = async (
+    since: Date,
+    period: RollupPeriod,
+  ): Promise<TrafficRollup[]> => {
+    // The window plus, per key, the last sample before it: that one is only
+    // ever a `lag` baseline, never a bucket of its own (it has no predecessor
+    // here), exactly like the first sample of a key with no history.
+    // `date_trunc(unit, ts, 'UTC')` buckets in UTC whatever the session's
+    // TimeZone is. Dates go in as ISO text: see the note on binding a Date in
+    // a `sql` template in @amnezia/db.
+    const sinceText = since.toISOString();
+    const rows = await this.options.db.execute<{
+      key_id: string;
+      bucket_start: Date | string;
+      received_bytes: string | number | bigint;
+      sent_bytes: string | number | bigint;
+    }>(sql`
+      with window_samples as (
+        select key_id, sampled_at, received_bytes, sent_bytes
+        from (
+          select distinct on (key_id) key_id, sampled_at, received_bytes, sent_bytes
+          from ${peerSamples}
+          where sampled_at < ${sinceText}::timestamptz
+          order by key_id, sampled_at desc
+        ) baseline
+        union all
+        select key_id, sampled_at, received_bytes, sent_bytes
+        from ${peerSamples}
+        where sampled_at >= ${sinceText}::timestamptz
+      ),
+      deltas as (
+        select
+          key_id,
+          sampled_at,
+          received_bytes,
+          lag(received_bytes) over w as prev_received,
+          sent_bytes,
+          lag(sent_bytes) over w as prev_sent
+        from window_samples
+        window w as (partition by key_id order by sampled_at)
+      )
+      select
+        key_id,
+        date_trunc(${period}, sampled_at, 'UTC') as bucket_start,
+        sum(case when received_bytes >= prev_received
+                 then received_bytes - prev_received
+                 else received_bytes end)::bigint as received_bytes,
+        sum(case when sent_bytes >= prev_sent
+                 then sent_bytes - prev_sent
+                 else sent_bytes end)::bigint as sent_bytes
+      from deltas
+      where prev_received is not null
+      group by key_id, bucket_start
+      order by key_id, bucket_start
+    `);
+    return rows.map((row) => ({
+      keyId: row.key_id,
+      period,
+      bucketStart: new Date(row.bucket_start),
+      receivedBytes: BigInt(row.received_bytes),
+      sentBytes: BigInt(row.sent_bytes),
+    }));
   };
 
   replaceRollups = async (
@@ -1487,8 +1525,13 @@ export class PostgresWorkerRepository
     rollups: TrafficRollup[],
   ): Promise<void> => {
     if (rollups.length === 0) return;
+    // A reduce, not Math.min(...spread): a spread passes every element as an
+    // argument and runs out of stack on a big enough fleet.
     const earliest = new Date(
-      Math.min(...rollups.map((rollup) => rollup.bucketStart.getTime())),
+      rollups.reduce(
+        (min, rollup) => Math.min(min, rollup.bucketStart.getTime()),
+        Number.POSITIVE_INFINITY,
+      ),
     );
     await this.options.db.transaction(async (tx) => {
       await tx
@@ -1499,7 +1542,15 @@ export class PostgresWorkerRepository
             gte(trafficRollups.bucketStart, earliest),
           ),
         );
-      await tx.insert(trafficRollups).values(rollups);
+      // Postgres takes at most 65,535 bind parameters per statement and each
+      // row binds five. A week of hourly buckets for ~80 keys is already
+      // ~11.7k rows (58k parameters), so one INSERT for all of them is a
+      // few keys away from failing outright.
+      for (let index = 0; index < rollups.length; index += ROLLUP_INSERT_BATCH) {
+        await tx
+          .insert(trafficRollups)
+          .values(rollups.slice(index, index + ROLLUP_INSERT_BATCH));
+      }
     });
   };
 

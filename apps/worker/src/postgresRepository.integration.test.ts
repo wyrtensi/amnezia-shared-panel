@@ -24,7 +24,6 @@ import {
   vpnKeys,
 } from "@amnezia/db";
 import { and, eq, sql } from "drizzle-orm";
-import { aggregateTrafficSamples } from "./maintenance.js";
 import {
   PostgresWorkerRepository,
   REARM_STUCK_REVOKES_LIMIT,
@@ -531,13 +530,8 @@ describe("PostgresWorkerRepository outbox leases", () => {
       },
     ]);
 
-    const samples = await repository.loadSamplesSince(cutoff);
-
-    expect(samples.map((sample) => sample.sampledAt)).toEqual([
-      new Date("2026-08-20T07:55:00.000Z"),
-      new Date("2026-08-20T08:05:00.000Z"),
-    ]);
-    expect(aggregateTrafficSamples(samples, "hour")).toEqual([
+    // The 07:55 sample only anchors the delta; it is not a bucket of its own.
+    expect(await repository.rollUpSamplesSince(cutoff, "hour")).toEqual([
       {
         keyId: key.id,
         period: "hour",
@@ -546,6 +540,191 @@ describe("PostgresWorkerRepository outbox leases", () => {
         sentBytes: 40n,
       },
     ]);
+  });
+
+  runDatabaseTest("counts a counter reset as fresh traffic, never a negative delta", async () => {
+    if (!database || !repository) return;
+    const { key } = await seedTelemetryKey();
+    await database.db.insert(peerSamples).values(
+      [
+        ["2026-08-20T08:00:00Z", 100n, 200n],
+        ["2026-08-20T08:05:00Z", 150n, 250n],
+        ["2026-08-20T08:10:00Z", 10n, 5n],
+      ].map(([at, received, sent]) => ({
+        keyId: key.id,
+        online: true,
+        sampledAt: new Date(at as string),
+        receivedBytes: received as bigint,
+        sentBytes: sent as bigint,
+      })),
+    );
+
+    expect(
+      await repository.rollUpSamplesSince(new Date("2026-08-20T07:00:00Z"), "hour"),
+    ).toEqual([
+      {
+        keyId: key.id,
+        period: "hour",
+        bucketStart: new Date("2026-08-20T08:00:00.000Z"),
+        receivedBytes: 60n,
+        sentBytes: 55n,
+      },
+    ]);
+  });
+
+  runDatabaseTest("buckets days in UTC whatever the session time zone", async () => {
+    if (!database || !repository) return;
+    const { key } = await seedTelemetryKey();
+    await database.db.insert(peerSamples).values(
+      [
+        ["2026-08-20T23:55:00Z", 100n, 100n],
+        ["2026-08-21T00:05:00Z", 125n, 140n],
+      ].map(([at, received, sent]) => ({
+        keyId: key.id,
+        online: true,
+        sampledAt: new Date(at as string),
+        receivedBytes: received as bigint,
+        sentBytes: sent as bigint,
+      })),
+    );
+    await database.db.execute(sql`set time zone 'Asia/Yekaterinburg'`);
+    try {
+      expect(
+        await repository.rollUpSamplesSince(new Date("2026-08-20T00:00:00Z"), "day"),
+      ).toEqual([
+        {
+          keyId: key.id,
+          period: "day",
+          bucketStart: new Date("2026-08-21T00:00:00.000Z"),
+          receivedBytes: 25n,
+          sentBytes: 40n,
+        },
+      ]);
+    } finally {
+      await database.db.execute(sql`set time zone 'UTC'`);
+    }
+  });
+
+  runDatabaseTest("rolls up in SQL exactly what the old in-heap walk produced", async () => {
+    if (!database || !repository) return;
+    // The in-heap aggregation this replaced, kept here as the oracle: same
+    // ordering, same reset rule, same UTC buckets, same pre-window baseline.
+    type Sample = { keyId: string; sampledAt: Date; receivedBytes: bigint; sentBytes: bigint };
+    const oracle = (samples: Sample[], since: Date, period: "hour" | "day") => {
+      const byKey = new Map<string, Sample[]>();
+      for (const sample of samples) {
+        byKey.set(sample.keyId, [...(byKey.get(sample.keyId) ?? []), sample]);
+      }
+      const buckets = new Map<string, { keyId: string; period: "hour" | "day"; bucketStart: Date; receivedBytes: bigint; sentBytes: bigint }>();
+      for (const [keyId, all] of byKey) {
+        const ordered = [...all].sort((a, b) => a.sampledAt.getTime() - b.sampledAt.getTime());
+        const before = ordered.filter((sample) => sample.sampledAt < since);
+        const inWindow = [
+          ...before.slice(-1),
+          ...ordered.filter((sample) => sample.sampledAt >= since),
+        ];
+        for (let index = 1; index < inWindow.length; index += 1) {
+          const prior = inWindow[index - 1]!;
+          const sample = inWindow[index]!;
+          const delta = (previous: bigint, current: bigint) =>
+            current >= previous ? current - previous : current;
+          const start = new Date(sample.sampledAt);
+          start.setUTCMinutes(0, 0, 0);
+          if (period === "day") start.setUTCHours(0);
+          const bucketKey = `${keyId}:${start.toISOString()}`;
+          const bucket = buckets.get(bucketKey) ?? {
+            keyId,
+            period,
+            bucketStart: start,
+            receivedBytes: 0n,
+            sentBytes: 0n,
+          };
+          bucket.receivedBytes += delta(prior.receivedBytes, sample.receivedBytes);
+          bucket.sentBytes += delta(prior.sentBytes, sample.sentBytes);
+          buckets.set(bucketKey, bucket);
+        }
+      }
+      return [...buckets.values()].sort(
+        (a, b) =>
+          (a.keyId < b.keyId ? -1 : a.keyId > b.keyId ? 1 : 0) ||
+          a.bucketStart.getTime() - b.bucketStart.getTime(),
+      );
+    };
+
+    const { key, node } = await seedTelemetryKey();
+    const keyIds = [key.id];
+    for (let index = 0; index < 4; index += 1) {
+      const [extra] = await database.db
+        .insert(vpnKeys)
+        .values({
+          ownerId: key.ownerId,
+          nodeId: node.id,
+          publicKey: `public-key-${index}`,
+          nodeLabel: `ap_worker_telemetry_${index}`,
+          protocol: "awg2",
+          state: "active",
+          routeProfile: "full_tunnel",
+        })
+        .returning();
+      keyIds.push(extra!.id);
+    }
+    // Deterministic pseudo-random walk: irregular spacing, counters that grow
+    // and now and then reset, across hour and day boundaries.
+    let seed = 42;
+    const next = (limit: number) => {
+      seed = (seed * 1103515245 + 12345) % 2 ** 31;
+      return seed % limit;
+    };
+    const samples: Sample[] = [];
+    for (const keyId of keyIds) {
+      let at = Date.parse("2026-08-19T20:00:00Z");
+      let received = 0n;
+      let sent = 0n;
+      for (let index = 0; index < 120; index += 1) {
+        at += (1 + next(20)) * 60_000;
+        if (next(25) === 0) {
+          received = BigInt(next(1000));
+          sent = BigInt(next(1000));
+        } else {
+          received += BigInt(next(5_000_000));
+          sent += BigInt(next(5_000_000));
+        }
+        samples.push({ keyId, sampledAt: new Date(at), receivedBytes: received, sentBytes: sent });
+      }
+    }
+    await database.db
+      .insert(peerSamples)
+      .values(samples.map((sample) => ({ ...sample, online: true })));
+
+    const since = new Date("2026-08-20T03:17:00Z");
+    for (const period of ["hour", "day"] as const) {
+      expect(await repository.rollUpSamplesSince(since, period)).toEqual(
+        oracle(samples, since, period),
+      );
+    }
+  });
+
+  runDatabaseTest("writes roll-ups past one INSERT's parameter limit", async () => {
+    if (!database || !repository) return;
+    const { key } = await seedTelemetryKey();
+    // More rows than one batch, and at 5 parameters each more than one
+    // statement could bind (65,535) if they were sent together.
+    const count = 14_000;
+    const first = Date.parse("2025-01-01T00:00:00Z");
+    const rollups = Array.from({ length: count }, (_, index) => ({
+      keyId: key.id,
+      period: "hour" as const,
+      bucketStart: new Date(first + index * 3_600_000),
+      receivedBytes: BigInt(index),
+      sentBytes: 1n,
+    }));
+
+    await repository.replaceRollups("hour", rollups);
+
+    const [stored] = await database.db
+      .select({ rows: sql<number>`count(*)::int` })
+      .from(trafficRollups);
+    expect(stored?.rows).toBe(count);
   });
 
   runDatabaseTest("stores reported capacity without changing the business limit", async () => {
