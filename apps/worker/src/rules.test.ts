@@ -305,6 +305,88 @@ describe("rule feed ingestion", () => {
     );
   });
 
+  const excludeFeed = (bodies: Record<string, string>) => {
+    const fetchImpl = vi.fn<typeof fetch>((input) =>
+      Promise.resolve(new Response(bodies[(input as string).split("/").pop()!] ?? "")),
+    );
+    return {
+      fetchImpl,
+      feed: {
+        profile: "ru_blacklist" as const,
+        sources: [
+          { url: "https://feed.example/include.lst", format: "cidr-lines" as const },
+          { url: "https://feed.example/domains.lst", format: "domain-lines" as const },
+          {
+            url: "https://feed.example/exclude.lst",
+            format: "cidr-lines" as const,
+            exclude: true,
+          },
+        ],
+        pocApproved: true,
+      },
+    };
+  };
+
+  it("takes an exclude source's address space out of the published list", async () => {
+    // A coarse /8 with a direct-only hole in it, and a prefix the exclusion
+    // does not touch: the hole goes, the rest survives, domains are untouched.
+    const repository = createRepository();
+    const { fetchImpl, feed } = excludeFeed({
+      "include.lst": "10.0.0.0/8\n203.0.113.0/24",
+      "domains.lst": "blocked.example",
+      // A stray name in a CIDR list is ignored, not treated as an address.
+      "exclude.lst": "10.0.0.0/12\nblocked.example",
+    });
+
+    await createRuleFetcher({ repository, feed, fetchImpl })();
+
+    const activated = vi.mocked(repository.activateRuleVersion).mock.calls[0]?.[0];
+    expect(activated?.payload.cidrs).toEqual(
+      expect.arrayContaining(["10.16.0.0/12", "10.32.0.0/11", "10.64.0.0/10", "10.128.0.0/9"]),
+    );
+    expect(activated?.payload.cidrs).not.toContain("10.0.0.0/8");
+    expect(activated?.payload.cidrs).toContain("203.0.113.0/24");
+    expect(activated?.payload.domains).toEqual(["blocked.example"]);
+    expect(activated?.validationReport).toMatchObject({ excludedPrefixes: 1 });
+    // The version names every source it was built from, exclusions included.
+    expect(activated?.sourceUrl).toContain("https://feed.example/exclude.lst");
+  });
+
+  it("quarantines a version an exclusion would gut", async () => {
+    // A broken mirror answering with a huge block must not silently send most
+    // of the list outside the tunnel.
+    const repository = createRepository();
+    const { fetchImpl, feed } = excludeFeed({
+      "include.lst": "10.0.0.0/8\n203.0.113.0/24",
+      "domains.lst": "blocked.example",
+      "exclude.lst": "0.0.0.0/1",
+    });
+
+    await createRuleFetcher({ repository, feed, fetchImpl })();
+
+    expect(repository.activateRuleVersion).not.toHaveBeenCalled();
+    expect(
+      vi.mocked(repository.storeQuarantinedRule).mock.calls[0]?.[0].validationReport,
+    ).toMatchObject({ reason: "exclusion_too_broad" });
+  });
+
+  it("fails the tick when an exclude source yields no CIDRs", async () => {
+    // "Exclude nothing" would put the excluded space back into the tunnel, so
+    // the last good version has to stay live instead.
+    const repository = createRepository();
+    const { fetchImpl, feed } = excludeFeed({
+      "include.lst": "203.0.113.0/24",
+      "domains.lst": "blocked.example",
+      "exclude.lst": "<html>maintenance</html>",
+    });
+
+    await expect(createRuleFetcher({ repository, feed, fetchImpl })()).rejects.toThrow(
+      "no valid CIDRs",
+    );
+    expect(repository.activateRuleVersion).not.toHaveBeenCalled();
+    expect(repository.storeQuarantinedRule).not.toHaveBeenCalled();
+  });
+
   it("rejects an oversized response from Content-Length before reading its body", async () => {
     const repository = createRepository();
     const response = new Response(sourceBody, {
@@ -428,6 +510,30 @@ describe("resolveRuleFeeds", () => {
         pocApproved: true,
       },
     ]);
+  });
+
+  it("keeps Russian address space out of the built-in feed", () => {
+    const [feed] = resolveRuleFeeds({}, approveAll);
+    expect(feed?.sources.filter((source) => source.exclude)).toEqual([
+      expect.objectContaining({ format: "cidr-lines", exclude: true }),
+    ]);
+  });
+
+  it("accepts an exclude source in RULE_FEEDS but not a feed of exclusions alone", () => {
+    const include = { url: "https://example.com/a.lst", format: "cidr-lines" };
+    const exclude = { url: "https://example.com/ru.zone", format: "cidr-lines", exclude: true };
+    expect(
+      resolveRuleFeeds(
+        { RULE_FEEDS: JSON.stringify([{ profile: "ru_blacklist", sources: [include, exclude] }]) },
+        approveAll,
+      )[0]?.sources,
+    ).toEqual([include, exclude]);
+    expect(() =>
+      resolveRuleFeeds(
+        { RULE_FEEDS: JSON.stringify([{ profile: "ru_blacklist", sources: [exclude] }]) },
+        approveAll,
+      ),
+    ).toThrow("no valid sources");
   });
 
   it("carries the approval gate onto the defaults", () => {

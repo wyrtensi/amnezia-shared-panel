@@ -108,13 +108,20 @@ function SourceNames({ sources }: { sources: RuleSourceRef[] }) {
   if (sources.length === 0) {
     return <span className="italic">{t("rules.sourcesNone")}</span>;
   }
+  // One entry per name: several files from one repository (the itdoginfo
+  // subnet lists) derive the same name, so they share a label and the
+  // tooltip lists every URL behind it.
+  const groups = new Map<string, string[]>();
+  for (const source of sources) {
+    groups.set(source.name, [...(groups.get(source.name) ?? []), source.url]);
+  }
   return (
     <>
-      {sources.map((source, index) => (
-        <React.Fragment key={source.url}>
+      {[...groups].map(([name, urls], index) => (
+        <React.Fragment key={name}>
           {index > 0 ? <span aria-hidden> · </span> : null}
-          <span className="underline decoration-dotted" title={source.url}>
-            {source.name}
+          <span className="underline decoration-dotted" title={urls.join("\n")}>
+            {name}
           </span>
         </React.Fragment>
       ))}

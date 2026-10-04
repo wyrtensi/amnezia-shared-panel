@@ -487,6 +487,30 @@ feed must stay aggregated: Re:filter's `ipsum.lst` carries ~27k CIDRs and
 produced a 2.7 MB parcel that never connected on Android, which is why the
 default source is now iplist (~3.6k prefixes covering the same services).
 
+The built-in feed is iplist plus two corrections, and the order they apply in
+matters:
+
+- **itdoginfo provider ranges are added.** iplist knows only the sites in its own
+  catalogue, so a foreign site on a Hetzner, DigitalOcean or OVH address it has
+  never seen went direct and hit the block. `itdoginfo/allow-domains`
+  publishes, weekly, the whole ranges of the hosting providers and services
+  blocked or throttled in Russia (Cloudflare, CloudFront, DigitalOcean, Hetzner,
+  OVH, Meta, Twitter, Discord, Telegram, Google Meet, Roblox).
+- **Russian address space is taken out** (an `exclude` source, ipdeny's RU
+  zone). iplist aggregates down to /7 and /8, and those blocks swallowed ~1.4M
+  Russian addresses — Yandex Cloud, Selectel and TimeWeb neighbours of a
+  blocked site, whole MTS and Beeline subscriber pools. Russian services refuse
+  a foreign address more and more, so anything hosted there broke under this
+  profile. The cost: a blocked resource hosted inside Russia is not tunnelled.
+  An exclusion that would remove more than 10 % of the included address space
+  quarantines the version (`exclusion_too_broad`), and one that answers with no
+  CIDRs at all fails the fetch, so a broken mirror cannot quietly send the list
+  outside the tunnel.
+- **The result is compacted** to the fewest prefixes covering exactly the same
+  addresses: feeds overlap and sit side by side, and every prefix is a route
+  the client has to carry. Measured on 2026-10-04: 3,757 routes for iplist +
+  itdoginfo − RU, against 3,521 for iplist alone and 4,537 uncompacted.
+
 Feeds grow, so that number is not assumed to hold. `MAX_TUNNEL_ROUTES` (6800) is
 the budget the profile is held to. It sits close to the edge on purpose —
 6712 routes is the largest config observed to connect, not a safe distance from
@@ -513,9 +537,11 @@ the built-in iplist / Re:filter sources, so a fresh install fetches real rules
 without an operator pasting anything. The worker env
 (`apps/worker/.env.example`) only overrides that:
 
-- `RULE_FEEDS` — JSON array of `{ profile, sources:[{ url, format }] }`, formats
-  `json` | `cidr-lines` | `domain-lines` (multiple sources per profile are merged
-  and de-duplicated). Leave it empty to keep the built-in defaults; set
+- `RULE_FEEDS` — JSON array of `{ profile, sources:[{ url, format, exclude? }] }`,
+  formats `json` | `cidr-lines` | `domain-lines` (multiple sources per profile
+  are merged and de-duplicated). A source with `"exclude": true` is subtracted
+  instead of merged: its CIDRs come out of the list, its domains are ignored,
+  and a profile needs at least one source that is not an exclusion. Leave it empty to keep the built-in defaults; set
   `RULE_FEEDS=[]` to run with no feeds at all. A malformed value fails the worker
   at startup instead of quietly reverting to the defaults. The one value that
   does not fail it is a leftover `ru_whitelist` entry from before that profile
