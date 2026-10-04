@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { memoryUsedBytes } from "./node-metrics";
+import { barFraction, barTone, memoryUsedBytes } from "./node-metrics";
 
 describe("memoryUsedBytes", () => {
   // The numbers a live 1 GB node reported while the row above it claimed the
@@ -29,5 +29,36 @@ describe("memoryUsedBytes", () => {
 
   it("survives a value that is not a number at all", () => {
     expect(memoryUsedBytes("many", 256)).toBeNull();
+  });
+});
+
+describe("barFraction", () => {
+  it("is the share of the ceiling", () => {
+    expect(barFraction(12, 128)).toBeCloseTo(0.09375);
+  });
+
+  it("clamps an overloaded host to a full bar", () => {
+    // load1 of 3.2 on one core
+    expect(barFraction(3.2, 1)).toBe(1);
+  });
+
+  it("has no bar rather than an empty one when a side is missing", () => {
+    expect(barFraction(null, 100)).toBeNull();
+    expect(barFraction(5, null)).toBeNull();
+    // Swap disabled: 0 / 0 is not "0 % used".
+    expect(barFraction(0, 0)).toBeNull();
+    expect(barFraction(Number.NaN, 10)).toBeNull();
+  });
+});
+
+describe("barTone", () => {
+  it("steps from ok to warn to bad", () => {
+    expect(barTone(0.45)).toBe("ok");
+    expect(barTone(0.7)).toBe("warn");
+    expect(barTone(0.85)).toBe("bad");
+  });
+
+  it("goes red when the metric's own threshold says so", () => {
+    expect(barTone(0.3, true)).toBe("bad");
   });
 });
