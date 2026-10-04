@@ -589,14 +589,13 @@ export const WORKER_PERIOD_FIELDS = {
    * Traffic roll-ups plus the pruning of four tables.
    *
    * The floor is an hour -- the period this loop had for its whole life before
-   * it became a setting -- and the reason is MEMORY, not CPU. Every run starts
-   * by loading every `peer_samples` row in the raw retention window
-   * (TELEMETRY_RAW_RETENTION_DAYS, 7 by default) into the Node heap at once
-   * (`loadSamplesSince`, no LIMIT) and then walks the array twice to roll it
-   * up. The worker container runs under a 160 MB `mem_limit`, which a busy
-   * fleet's week of samples is already within reach of; repeating that
-   * allocation twelve times an hour is how a panel OOM-kills its own worker.
-   * Lower this only once the roll-up aggregates in SQL instead of in an array.
+   * it became a setting. Each run re-aggregates the whole raw retention window
+   * (TELEMETRY_RAW_RETENTION_DAYS, 7 by default) into hourly and daily
+   * roll-ups. That now happens in SQL (`rollUpSamplesSince`); it used to load
+   * every `peer_samples` row of the window into the worker's heap, which on a
+   * six-node panel (~177k rows) crash-looped a worker capped at 96 MiB once an
+   * hour. The work is still a full pass over a week of samples in Postgres, so
+   * running it more often than the hourly buckets it produces buys nothing.
    */
   maintenanceIntervalSec: { min: 3_600, max: 604_800, fallback: 3_600, unit: "sec" },
   /**
