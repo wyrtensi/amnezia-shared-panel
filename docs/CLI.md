@@ -608,7 +608,9 @@ the meantime; they route nothing either way.
 The worker fetches the split-tunnel profile's list from the feeds in
 `RULE_FEEDS` (or, unset, from the built-in defaults) and stores every fetch as a
 row in `route_rule_versions`. Out of the box `ru_blacklist` is merged from
-iplist (CIDRs) *and* Re-filter-lists (domains). Nothing in the panel names a
+iplist and the itdoginfo provider ranges (CIDRs) *and* Re-filter-lists
+(domains), with ipdeny's Russian address space subtracted (see
+[`AGENT-HOST-SETUP.md`](./AGENT-HOST-SETUP.md#route-profiles-and-rule-feeds)). Nothing in the panel names a
 provider in a shared label — each version is attributed from its own stored
 `source_url`.
 
@@ -620,7 +622,8 @@ amnezia-panel rules --json          # raw rows, including pinnedAt
 ```
 
 A version merged from several feeds stores its source URLs space-joined in one
-column, so `rules` prints all of them (`iplist · Re-filter-lists`). The short
+column, so `rules` prints all of them (`iplist · allow-domains · Re-filter-lists ·
+ipdeny`), each name once even when several files share it. The short
 name is **derived** from the URL — the repository for a forge or git CDN URL,
 the host's own label otherwise — rather than looked up in a table of known
 providers, which would go stale the moment `RULE_FEEDS` is repointed. The full

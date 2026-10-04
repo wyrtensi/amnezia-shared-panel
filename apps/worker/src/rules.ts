@@ -1,9 +1,16 @@
 import { createHash } from "node:crypto";
 import { isIP } from "node:net";
 import { z } from "zod";
+import { subtractCidrs } from "./cidrSet.js";
 
 const MAX_SOURCE_BYTES = 10 * 1024 * 1024;
 const MAX_ENTRIES = 250_000;
+// Share of the included address space an exclusion source may remove before the
+// version is quarantined. The RU GeoIP list takes ~0.1% out of the default feed;
+// a list that suddenly takes a large bite is far more likely a wrong URL or a
+// broken mirror than a real change, and shipping it would quietly route that
+// traffic outside the tunnel.
+const MAX_EXCLUDED_SHARE = 0.1;
 // Fraction of entries allowed to be invalid before the whole feed is rejected.
 // Community lists (Re:filter etc.) always carry a little noise, so drop the bad
 // entries rather than quarantining a 100k-entry feed over a few stragglers.
@@ -16,18 +23,29 @@ export type RulePayload = { cidrs: string[]; domains: string[] };
 export type RuleValidationReport = Record<string, unknown>;
 export type RuleProfile = "ru_blacklist";
 export type RuleFeedFormat = "json" | "cidr-lines" | "domain-lines";
-export type RuleSource = { url: string; format: RuleFeedFormat };
+/**
+ * One feed source. An `exclude` source is not part of the list: its CIDRs are
+ * taken OUT of what the other sources supply (its domains are ignored), so a
+ * coarse feed can be trimmed by a list of address space that must stay direct.
+ */
+export type RuleSource = { url: string; format: RuleFeedFormat; exclude?: boolean };
 
 export type ValidRulePayload = {
   ok: true;
   payload: RulePayload;
-  report: { cidrCount: number; domainCount: number; droppedInvalid?: number };
+  report: {
+    cidrCount: number;
+    domainCount: number;
+    droppedInvalid?: number;
+    /** Included prefixes an `exclude` source cut into or removed. */
+    excludedPrefixes?: number;
+  };
 };
 
 export type InvalidRulePayload = {
   ok: false;
   payload: RulePayload;
-  report: { invalidEntries: string[]; reason?: string };
+  report: { invalidEntries: string[]; reason?: string; excludedShare?: number };
 };
 
 const inputSchema = z.object({
@@ -245,10 +263,37 @@ export type RuleFetcherOptions = {
 export type RuleFeedSources = { profile: RuleProfile; sources: RuleSource[] };
 
 /**
+ * itdoginfo/allow-domains publishes, weekly, the address space of the hosting
+ * providers and services that are blocked or throttled in Russia as a whole.
+ * iplist only knows the sites in its own catalogue, so a foreign site on a
+ * Hetzner, DigitalOcean or OVH address it has never heard of went direct and
+ * hit the block. Whole provider ranges close that gap for ~470 prefixes.
+ */
+const ITDOG_SUBNETS = [
+  "cloudflare",
+  "cloudfront",
+  "digitalocean",
+  "hetzner",
+  "ovh",
+  "meta",
+  "twitter",
+  "discord",
+  "telegram",
+  "google_meet",
+  "roblox",
+].map(
+  (name): RuleSource => ({
+    url: `https://raw.githubusercontent.com/itdoginfo/allow-domains/main/Subnets/IPv4/${name}.lst`,
+    format: "cidr-lines",
+  }),
+);
+
+/**
  * The sources every deployment gets out of the box, so a fresh install has a
- * working route profile without an operator pasting JSON: iplist plus
- * Re:filter domains for the blacklist. `RULE_FEEDS` overrides this list
- * entirely; `RULE_FEEDS=[]` opts out of feeds.
+ * working route profile without an operator pasting JSON: iplist, the
+ * itdoginfo provider ranges and Re:filter domains for the blacklist, minus
+ * Russian address space. `RULE_FEEDS` overrides this list entirely;
+ * `RULE_FEEDS=[]` opts out of feeds.
  */
 export const DEFAULT_RULE_FEEDS: RuleFeedSources[] = [
   {
@@ -263,9 +308,21 @@ export const DEFAULT_RULE_FEEDS: RuleFeedSources[] = [
         url: "https://iplist.opencck.org/?format=text&data=cidr4",
         format: "cidr-lines",
       },
+      ...ITDOG_SUBNETS,
       {
         url: "https://github.com/1andrevich/Re-filter-lists/releases/latest/download/domains_all.lst",
         format: "domain-lines",
+      },
+      // iplist aggregates down to /7 and /8, and those blocks swallow ~1.4M
+      // Russian addresses: Yandex Cloud, Selectel and TimeWeb neighbours of a
+      // blocked site, and whole MTS and Beeline subscriber pools. Russian
+      // services increasingly refuse a foreign address, so anything hosted
+      // there broke under this profile. Russian space stays direct; the cost
+      // is that a blocked resource hosted inside Russia is not tunnelled.
+      {
+        url: "https://www.ipdeny.com/ipblocks/data/aggregated/ru-aggregated.zone",
+        format: "cidr-lines",
+        exclude: true,
       },
     ],
   },
@@ -333,12 +390,25 @@ export const resolveRuleFeeds = (
       if (profile !== "ru_blacklist") {
         throw new Error(`RULE_FEEDS has an invalid profile: ${String(profile)}`);
       }
+      // A malformed `exclude` is refused, not filtered out with the other bad
+      // sources: dropping it would ship the list with the address space it
+      // was meant to keep direct, and nothing would say so.
+      const badExclude = (entry.sources as RuleSource[] | undefined)?.find(
+        (source) =>
+          source?.exclude !== undefined && typeof source.exclude !== "boolean",
+      );
+      if (badExclude) {
+        throw new Error(
+          `RULE_FEEDS entry for ${profile} has a non-boolean "exclude" on ${String(badExclude.url)}`,
+        );
+      }
       const sources = (entry.sources as RuleSource[] | undefined)?.filter(
         (source) =>
           typeof source?.url === "string" &&
           RULE_FEED_FORMATS.includes(source?.format),
       );
-      if (!sources?.length) {
+      // Exclusions alone describe nothing to route.
+      if (!sources?.some((source) => !source.exclude)) {
         throw new Error(`RULE_FEEDS entry for ${profile} has no valid sources`);
       }
       feeds.push({ profile, sources });
@@ -353,6 +423,48 @@ export const resolveRuleFeeds = (
     sources: feed.sources.map((source) => ({ ...source })),
     pocApproved: isProfileApproved(feed.profile),
   }));
+};
+
+/**
+ * Shape a validated payload's CIDRs into the list that gets published: the
+ * `exclude` sources' address space taken out, and the rest compacted to the
+ * fewest prefixes that cover it (see `subtractCidrs` for why every route
+ * counts).
+ *
+ * Runs after validation so the invalid-entry ratio is judged on what the feeds
+ * actually sent, not on a list an exclusion has already thinned. An invalid
+ * payload passes through untouched: it is quarantined either way.
+ */
+export const compactRoutes = (
+  validation: ValidRulePayload | InvalidRulePayload,
+  excluded: string[],
+): ValidRulePayload | InvalidRulePayload => {
+  if (!validation.ok) return validation;
+  const { cidrs, touched, removedShare } = subtractCidrs(
+    validation.payload.cidrs,
+    excluded,
+  );
+  const payload = { cidrs: [...cidrs].sort(), domains: validation.payload.domains };
+  if (Math.max(removedShare[4], removedShare[6]) > MAX_EXCLUDED_SHARE) {
+    return {
+      ok: false,
+      payload,
+      report: {
+        invalidEntries: [],
+        reason: "exclusion_too_broad",
+        excludedShare: Math.max(removedShare[4], removedShare[6]),
+      },
+    };
+  }
+  return {
+    ok: true,
+    payload,
+    report: {
+      ...validation.report,
+      cidrCount: payload.cidrs.length,
+      ...(touched > 0 ? { excludedPrefixes: touched } : {}),
+    },
+  };
 };
 
 const stableChecksum = (payload: RulePayload): string =>
@@ -378,6 +490,7 @@ export const createRuleFetcher = ({
   // is a stable checksum of the merged, canonical payload so unchanged feeds
   // are skipped even across multiple sources.
   const parsed: RulePayload[] = [];
+  const excluded: string[] = [];
   let firstEtag: string | null = null;
   for (const source of sources) {
     const response = await fetchImpl(source.url, {
@@ -389,11 +502,25 @@ export const createRuleFetcher = ({
       );
     }
     firstEtag ??= response.headers.get("etag");
-    parsed.push(parseRuleSource(await readBoundedResponse(response), source.format));
+    const payload = parseRuleSource(await readBoundedResponse(response), source.format);
+    if (!source.exclude) {
+      parsed.push(payload);
+      continue;
+    }
+    const cidrs = payload.cidrs.map((value) => value.trim()).filter(isCidr);
+    // An exclusion that answered with nothing usable must not pass as "exclude
+    // nothing": that would quietly put the address space it exists to keep
+    // direct back into the tunnel. Fail the tick and keep the last good list.
+    if (cidrs.length === 0) {
+      throw new Error(`Rule exclusion source ${source.url} has no valid CIDRs`);
+    }
+    excluded.push(...cidrs);
   }
 
-  const merged = mergeRulePayloads(parsed);
-  const validation = validateRuleObject(merged);
+  const validation = compactRoutes(
+    validateRuleObject(mergeRulePayloads(parsed)),
+    excluded,
+  );
   const checksum = stableChecksum(validation.payload);
   if (checksum === lastKnownGood?.version) return;
 

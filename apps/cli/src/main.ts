@@ -2391,9 +2391,13 @@ const ruleProfileRank = (profile: string): number => {
   return rank < 0 ? RULE_PROFILE_ORDER.length : rank;
 };
 
-/** "iplist · Re-filter-lists", or a dash when the column was never written. */
+/**
+ * "iplist · Re-filter-lists", or a dash when the column was never written.
+ * Each name once: several files from one repository (the itdoginfo subnet
+ * lists) all derive the same name, and repeating it says nothing.
+ */
 const ruleSourceCell = (sourceUrl: string | null): string => {
-  const names = ruleSources(sourceUrl).map((source) => source.name);
+  const names = [...new Set(ruleSources(sourceUrl).map((source) => source.name))];
   return names.length > 0 ? names.join(" · ") : "-";
 };
 
