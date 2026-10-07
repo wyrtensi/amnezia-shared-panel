@@ -1,7 +1,11 @@
 import { keyStateSchema } from "@amnezia/contracts";
 import { describe, expect, it } from "vitest";
 
-import { HIDDEN_KEY_STATES, isVisibleToOwner } from "./key-states";
+import {
+  HIDDEN_KEY_STATES,
+  isVisibleToOwner,
+  markRulesDelivered,
+} from "./key-states";
 
 describe("isVisibleToOwner", () => {
   it("hides a key the owner asked to be gone", () => {
@@ -31,5 +35,25 @@ describe("isVisibleToOwner", () => {
       (state) => !isVisibleToOwner(state),
     );
     expect(hidden).toEqual([...HIDDEN_KEY_STATES]);
+  });
+});
+
+describe("markRulesDelivered", () => {
+  const keys = [
+    { id: "a", rulesOutdated: true },
+    { id: "b", rulesOutdated: true },
+  ];
+
+  it("clears the flag on the delivered key only", () => {
+    expect(markRulesDelivered(keys, "a")).toEqual([
+      { id: "a", rulesOutdated: false },
+      { id: "b", rulesOutdated: true },
+    ]);
+  });
+
+  it("hands back the same array when there is nothing to clear", () => {
+    const current = [{ id: "a", rulesOutdated: false }];
+    expect(markRulesDelivered(current, "a")).toBe(current);
+    expect(markRulesDelivered(keys, "missing")).toBe(keys);
   });
 });

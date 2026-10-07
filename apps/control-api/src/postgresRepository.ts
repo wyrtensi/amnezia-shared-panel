@@ -1832,9 +1832,26 @@ export class PostgresControlRepository implements ControlRepository {
         "ROTATION_NOT_ALLOWED",
       );
     }
+    // A rotate kills the config the device holds, and whatever replaces it is
+    // exported later with the rules active at that moment. So the version the
+    // key was last delivered with stops describing anything: move it to the
+    // active one. Left alone, the "rules updated" callout -- whose own button
+    // is this rotate -- came straight back the moment the reissued key went
+    // active. A profile with no active version (full_tunnel never has one)
+    // keeps what it had.
     await tx
       .update(vpnKeys)
-      .set({ state: "provisioning", updatedAt: new Date() })
+      .set({
+        state: "provisioning",
+        routeRuleVersionId: sql`coalesce((
+          select ${routeRuleVersions.id} from ${routeRuleVersions}
+          where ${routeRuleVersions.profile} = ${vpnKeys.routeProfile}
+            and ${routeRuleVersions.status} = 'active'
+          order by ${routeRuleVersions.publishedAt} desc
+          limit 1
+        ), ${vpnKeys.routeRuleVersionId})`,
+        updatedAt: new Date(),
+      })
       .where(eq(vpnKeys.id, keyId));
     await tx.insert(jobOutbox).values({
       type: "vpn-key.rotate",

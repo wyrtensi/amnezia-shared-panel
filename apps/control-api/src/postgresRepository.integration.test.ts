@@ -4135,6 +4135,81 @@ describe("PostgresControlRepository rotate own key", () => {
       expect(await rotateJobFor(keyId)).toHaveLength(1);
     },
   );
+
+  const seedRuleVersion = async (
+    status: "active" | "superseded",
+    publishedAt: Date,
+  ): Promise<string> => {
+    if (!database) throw new Error("No database");
+    const version = `rotate-${randomBytes(6).toString("hex")}`;
+    const [row] = await database.db
+      .insert(routeRuleVersions)
+      .values({
+        profile: "ru_blacklist",
+        version,
+        sourceUrl: "https://feed.example/list.lst",
+        sourceChecksum: version,
+        status,
+        cidrCount: 1,
+        domainCount: 0,
+        payload: { cidrs: ["203.0.113.0/24"], domains: [] },
+        publishedAt,
+        createdAt: publishedAt,
+        updatedAt: publishedAt,
+      })
+      .returning({ id: routeRuleVersions.id });
+    if (!row) throw new Error("Failed to seed rule version");
+    return row.id;
+  };
+
+  const appliedVersion = async (keyId: string) => {
+    if (!database) throw new Error("No database");
+    const [row] = await database.db
+      .select({ id: vpnKeys.routeRuleVersionId })
+      .from(vpnKeys)
+      .where(eq(vpnKeys.id, keyId));
+    return row?.id ?? null;
+  };
+
+  runDatabaseTest(
+    "moves the key onto the active rule version, so 'rules updated' does not come straight back",
+    async () => {
+      if (!database) return;
+      // The "rules updated" callout's own button is this rotate. The flag is
+      // "active version != the key's version", and a rotate used to leave the
+      // key's version where it was: the card showed the callout again the
+      // moment the reissued key came back active. The old config is dead after
+      // a rotate and the next download is exported with the current rules, so
+      // the key now carries the active version.
+      const far = Date.now() + 365 * 24 * 60 * 60 * 1000;
+      const stale = await seedRuleVersion("superseded", new Date(far));
+      const current = await seedRuleVersion("active", new Date(far + 60_000));
+      const owner = await seedOwner();
+      const keyId = await seedKey(owner.id, { routeProfile: "ru_blacklist" });
+      await database.db
+        .update(vpnKeys)
+        .set({ routeRuleVersionId: stale })
+        .where(eq(vpnKeys.id, keyId));
+
+      await subject().enqueueOwnRotate(owner, keyId);
+
+      expect(await appliedVersion(keyId)).toBe(current);
+    },
+  );
+
+  runDatabaseTest(
+    "leaves a full_tunnel key without a rule version when a rename reissues it",
+    async () => {
+      if (!database) return;
+      const owner = await seedOwner();
+      const keyId = await seedKey(owner.id, { routeProfile: "full_tunnel" });
+
+      await subject().renameOwnKey(owner, keyId, "Renamed laptop");
+
+      expect(await rotateJobFor(keyId)).toHaveLength(1);
+      expect(await appliedVersion(keyId)).toBeNull();
+    },
+  );
 });
 
 describe("PostgresControlRepository Access sync arming", () => {
