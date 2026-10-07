@@ -34,3 +34,16 @@ describe("help deep links", () => {
     expect(source).toContain("onAudienceChange={setGuideAudience}");
   });
 });
+
+// The "rules updated" callout is cleared by the server on any owner download,
+// but this list only reloads while a key is provisioning. Both of these keep
+// the card from showing the callout after the very download it asked for.
+describe("rules-updated callout after a download", () => {
+  it("clears the flag on the card the key was fetched from", () => {
+    expect(source).toContain("markRulesDelivered(current, key.id)");
+  });
+
+  it("resyncs with the server when the config dialog closes", () => {
+    expect(source).toMatch(/setConfigTarget\(null\);[\s\S]{0,200}void load\(true\);/);
+  });
+});

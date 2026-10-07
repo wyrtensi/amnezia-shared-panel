@@ -577,8 +577,13 @@ See `infra/dev/ROUTE-PROFILES-POC.md` for the per-profile validation checklist
 ### Key rotation
 
 Rotation re-issues a key with the **current** rules and a fresh config
-(`POST /api/keys/:id/rotate`, admin can rotate any key; users rotate their own).
-This is how keys are re-issued against a changed rule set.
+(`POST /api/keys/:id/rotate`; owners rotate their own keys, and there is no
+admin rotate -- an administrator can disable, enable, revoke or purge a key).
+This is how keys are re-issued against a changed rule set, and it is the button
+on the "rules updated" callout. A rotate moves the key onto the active rule
+version straight away: the config on the device stops working, and the next
+download is exported with the rules active at that moment. Any owner download
+(copy, `.vpn`, `.conf`, QR) clears the flag as well.
 
 **A change to the export logic does not raise `rulesOutdated`.** The flag is
 computed as "the active rule set for this profile is not the version this key

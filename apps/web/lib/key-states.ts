@@ -22,3 +22,26 @@ export const HIDDEN_KEY_STATES = ["revoking", "revoked"] as const;
  */
 export const isVisibleToOwner = (state: string): boolean =>
   !(HIDDEN_KEY_STATES as readonly string[]).includes(state);
+
+/**
+ * The owner just fetched this key's config: drop its "rules updated" flag
+ * without waiting for the next list load.
+ *
+ * Mirrors the server exactly. Every owner download of a config -- the copy,
+ * either file, the QR dialog -- marks the key as carrying the active rule
+ * version (`markKeyRuleVersion`), so `rulesOutdated` is false on the next
+ * `/api/keys`. The dashboard only reloads that list while something is
+ * provisioning, so without this the callout stayed on the card after the very
+ * download it asks for, until the page was reloaded.
+ *
+ * Returns the same array when nothing changes, so React skips the re-render.
+ */
+export const markRulesDelivered = <T extends { id: string; rulesOutdated?: boolean }>(
+  keys: T[],
+  keyId: string,
+): T[] =>
+  keys.some((key) => key.id === keyId && key.rulesOutdated)
+    ? keys.map((key) =>
+        key.id === keyId ? { ...key, rulesOutdated: false } : key,
+      )
+    : keys;

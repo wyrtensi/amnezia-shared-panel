@@ -53,7 +53,7 @@ import {
   type KeyAccessGuard,
 } from "@/lib/update-notice";
 import { isAtLimit } from "@/lib/key-quota";
-import { isVisibleToOwner } from "@/lib/key-states";
+import { isVisibleToOwner, markRulesDelivered } from "@/lib/key-states";
 import { InlineTraffic } from "@/components/inline-traffic";
 import { ServiceCheckChips } from "@/components/service-check-chips";
 import { cn } from "@/lib/utils";
@@ -772,7 +772,15 @@ export function EmployeeDashboard({
                   node={nodeById.get(key.nodeId)}
                   me={me!}
                   busy={busy}
-                  guardKeyAccess={guardKeyAccess}
+                  // Every guarded action on a card is an owner download of
+                  // this key's config, which the server records as the rules
+                  // being delivered; clear the callout to match.
+                  guardKeyAccess={(action) =>
+                    guardKeyAccess((deferred) => {
+                      action(deferred);
+                      setKeys((current) => markRulesDelivered(current, key.id));
+                    })
+                  }
                   onShowConfig={() =>
                     setConfigTarget({
                       id: key.id,
@@ -838,7 +846,12 @@ export function EmployeeDashboard({
       ) : null}
       <ConfigDownloadDialog
         target={configTarget}
-        onClose={() => setConfigTarget(null)}
+        onClose={() => {
+          setConfigTarget(null);
+          // The dialog hands out the key several ways; resync with what the
+          // server recorded rather than guessing which of them was used.
+          void load(true);
+        }}
         me={me}
       />
       <UpdateNoticeDialog
