@@ -27,10 +27,12 @@ export const isVisibleToOwner = (state: string): boolean =>
  * The owner just fetched this key's config: drop its "rules updated" flag
  * without waiting for the next list load.
  *
- * Mirrors the server exactly. Every owner download of a config -- the copy,
- * either file, the QR dialog -- marks the key as carrying the active rule
- * version (`markKeyRuleVersion`), so `rulesOutdated` is false on the next
- * `/api/keys`. The dashboard only reloads that list while something is
+ * Mirrors the server. Every owner download of a config marks the key as
+ * carrying the active rule version (`markKeyRuleVersion`), so `rulesOutdated`
+ * is false on the next `/api/keys`. Call it for a real fetch only (a copy, a
+ * file): opening the config dialog fetches nothing on a file-only profile, and
+ * clearing the flag there hid the callout until the dialog closed and the list
+ * reloaded it straight back. The dashboard only reloads that list while something is
  * provisioning, so without this the callout stayed on the card after the very
  * download it asks for, until the page was reloaded.
  *

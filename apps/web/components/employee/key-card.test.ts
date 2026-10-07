@@ -163,6 +163,30 @@ describe("rename on the owner's own key", () => {
 });
 
 describe("rules-updated callout", () => {
+  // The config is assembled at download time, so getting the new rules is a
+  // download. A reissue would also replace the key pair and kill the config on
+  // every other device the user has.
+  it("sends the user to the key dialog, not to a reissue", () => {
+    const callout = source.slice(
+      source.indexOf("keyView.rulesOutdated ? ("),
+      source.indexOf('t("keyCard.rulesUpdatedBody"'),
+    );
+    expect(callout).toContain("guardKeyAccess(onShowConfig)");
+    expect(callout).toContain('t("keyCard.redownload")');
+    expect(callout).not.toContain("onRotate");
+  });
+
+  it("reports a delivery only from a real fetch, never from opening the dialog", () => {
+    // Copy, after the clipboard write; each file, as its download starts.
+    expect(source).toMatch(/writeText\(text\);\s*onDelivered\(\);/);
+    expect(source).toMatch(/downloadHref\(href\);\s*onDelivered\(\);/);
+    expect(source).not.toMatch(/onShowConfig[^\n]*onConfigDelivered/);
+  });
+
+  it("keeps the reissue icon whether or not the rules moved", () => {
+    expect(source).not.toMatch(/canRotate &&\s*!keyView\.rulesOutdated/);
+  });
+
   // `rulesOutdated` is computed per route profile, so the card knows which
   // profile moved. Dropping the variable would put the copy back to a generic
   // "rules changed" that never says why this key is the one showing it.
@@ -171,7 +195,7 @@ describe("rules-updated callout", () => {
     expect(source).toContain("ROUTE_LABEL[keyView.routeProfile]");
   });
 
-  it("offers the reissue in both languages without demanding it", () => {
+  it("offers a fresh download in both languages without demanding it", () => {
     for (const lang of ["ru", "en"] as const) {
       const body = (messages[lang] as Record<string, string>)[
         "keyCard.rulesUpdatedBody"
@@ -253,7 +277,7 @@ describe("the update-notice gate", () => {
     // guard re-issues the download from its own confirm when it holds one back.
     expect(source).toMatch(/<a\s+href=\{href\}/);
     expect(source).toContain("event.preventDefault();");
-    expect(source).toContain("guardKeyAccess(() => downloadHref(href))");
+    expect(source).toMatch(/guardKeyAccess\(\(\) => \{\s*downloadHref\(href\);/);
   });
 });
 

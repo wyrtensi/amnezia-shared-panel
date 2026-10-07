@@ -76,6 +76,7 @@ export function KeyCard({
   onRename,
   onSetInternalName,
   guardKeyAccess,
+  onConfigDelivered,
 }: {
   keyView: KeyView;
   node?: NodeView;
@@ -87,6 +88,14 @@ export function KeyCard({
    * owns both the profile it is decided from and the dialog that answers it.
    */
   guardKeyAccess: KeyAccessGuard;
+  /**
+   * This card just fetched the key's config: a copy or a file download. The
+   * server records every such owner download as the rules being delivered,
+   * so the dashboard can drop the "rules updated" flag without a reload.
+   * Opening the config dialog is NOT a delivery -- on a file-only profile it
+   * fetches nothing until a file is taken -- so it never calls this.
+   */
+  onConfigDelivered: () => void;
   onShowConfig: () => void;
   onShowGuide: () => void;
   onRotate: () => void;
@@ -297,14 +306,24 @@ export function KeyCard({
               icon={<RefreshCw className="h-4 w-4 text-warning" />}
               title={t("keyCard.rulesUpdatedTitle")}
               action={
-                <Button
-                  type="button"
-                  size="sm"
-                  disabled={busy}
-                  onClick={onRotate}
-                >
-                  {t("keyCard.updateKey")}
-                </Button>
+                // A fresh download, not a reissue. The config is assembled at
+                // download time with the rules active then, so downloading
+                // again is all it takes; a reissue would also replace the key
+                // pair and kill the config on every other device. The dialog
+                // holds every way to take the key (QR, copy, files), and any
+                // of them marks the rules as delivered. Reissue stays on its
+                // own icon in the action row.
+                me.policy.allowConfigRedownload ? (
+                  <Button
+                    type="button"
+                    size="sm"
+                    disabled={busy}
+                    onClick={() => guardKeyAccess(onShowConfig)}
+                  >
+                    <Download className="h-4 w-4" />
+                    {t("keyCard.redownload")}
+                  </Button>
+                ) : undefined
               }
             >
               {/* Named profile, not a generic "rules changed": `rulesOutdated`
@@ -399,6 +418,7 @@ export function KeyCard({
                     keyId={keyView.id}
                     disabled={busy}
                     guardKeyAccess={guardKeyAccess}
+                    onDelivered={onConfigDelivered}
                   />
                 ) : (
                   // Stands in for BOTH buttons above, and deliberately keeps a
@@ -443,6 +463,7 @@ export function KeyCard({
                   label={t("common.downloadVpnFile")}
                   primary={!delivery.linkUsable}
                   guardKeyAccess={guardKeyAccess}
+                  onDelivered={onConfigDelivered}
                 />
                 {/*
                   `.conf` last and drawn as a bare muted link rather than a
@@ -466,6 +487,7 @@ export function KeyCard({
                     label={t("common.downloadConf")}
                     quiet
                     guardKeyAccess={guardKeyAccess}
+                    onDelivered={onConfigDelivered}
                   />
                 ) : null}
               </>
@@ -475,8 +497,7 @@ export function KeyCard({
                   not mistaken for the primary "copy key" action. */}
               {active &&
               me.policy.allowConfigRedownload &&
-              canRotate &&
-              !keyView.rulesOutdated ? (
+              canRotate ? (
                 <Tooltip>
                   <TooltipTrigger asChild>
                     <Button
@@ -560,6 +581,7 @@ function FormatDownload({
   quiet = false,
   primary = false,
   guardKeyAccess,
+  onDelivered,
 }: {
   href: string;
   format: string;
@@ -572,6 +594,7 @@ function FormatDownload({
    */
   primary?: boolean;
   guardKeyAccess: KeyAccessGuard;
+  onDelivered: () => void;
 }) {
   const variant: ButtonProps["variant"] = quiet
     ? "link"
@@ -605,7 +628,10 @@ function FormatDownload({
             onClick={(event) => {
               if (event.defaultPrevented) return;
               event.preventDefault();
-              guardKeyAccess(() => downloadHref(href));
+              guardKeyAccess(() => {
+                downloadHref(href);
+                onDelivered();
+              });
             }}
           >
             {quiet ? null : <Download className="h-4 w-4" />}
@@ -650,10 +676,12 @@ function CopyKeyButton({
   keyId,
   disabled,
   guardKeyAccess,
+  onDelivered,
 }: {
   keyId: string;
   disabled?: boolean;
   guardKeyAccess: KeyAccessGuard;
+  onDelivered: () => void;
 }) {
   const { t } = useT();
   const [state, setState] = React.useState<CopyState>("idle");
@@ -687,6 +715,7 @@ function CopyKeyButton({
       if (!res.ok) throw new Error("failed");
       const text = (await res.text()).trim();
       await navigator.clipboard.writeText(text);
+      onDelivered();
       setState("copied");
       toast.success(t("keyCard.copyToast"));
       reset(covered);
