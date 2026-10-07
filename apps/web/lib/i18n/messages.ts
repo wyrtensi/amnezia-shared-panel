@@ -177,13 +177,15 @@ const ru = {
 
   // Key card
   "keyCard.rulesUpdatedTitle": "Правила маршрутизации обновились",
-  "keyCard.updateKey": "Обновить ключ",
+  "keyCard.redownload": "Скачать заново",
   // {profile} is the key's own route profile. Nothing has broken — the key
-  // keeps working on the rules it was issued with — so the reissue is offered,
-  // not demanded. It promises no more than it can deliver: only the address
-  // lists reach the client, so "работать лучше" and not "откроются сайты".
+  // keeps working on the rules it was issued with — so the download is
+  // offered, not demanded. The config is assembled at download time, so a
+  // fresh download is the whole fix; a reissue is not needed and would kill
+  // the config on every other device. Replacing the old connection matters:
+  // left in place, it keeps routing by the old rules.
   "keyCard.rulesUpdatedBody":
-    "Этот ключ работает по профилю «{profile}» — для него появились новые правила. При желании перевыпустите ключ, так он будет работать лучше.",
+    "Этот ключ работает по профилю «{profile}» — для него появились новые правила. Чтобы они заработали, скачайте ключ заново и замените им старое подключение в приложении. Перевыпускать ключ не нужно.",
   "keyCard.created": "Создан: ",
   "keyCard.lastSeen": "Активность",
   "keyCard.traffic": "Трафик: ",
@@ -1523,9 +1525,9 @@ const en = {
 
   // Key card
   "keyCard.rulesUpdatedTitle": "Routing rules have changed",
-  "keyCard.updateKey": "Update key",
+  "keyCard.redownload": "Download again",
   "keyCard.rulesUpdatedBody":
-    "This key uses the “{profile}” profile, and there are new rules for it. Reissue the key if you like — it will work better with them.",
+    "This key uses the “{profile}” profile, and there are new rules for it. To use them, download the key again and replace the old connection in the app with it. There is no need to reissue the key.",
   "keyCard.created": "Created: ",
   "keyCard.lastSeen": "Last seen",
   "keyCard.traffic": "Traffic: ",

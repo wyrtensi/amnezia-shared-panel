@@ -772,14 +772,9 @@ export function EmployeeDashboard({
                   node={nodeById.get(key.nodeId)}
                   me={me!}
                   busy={busy}
-                  // Every guarded action on a card is an owner download of
-                  // this key's config, which the server records as the rules
-                  // being delivered; clear the callout to match.
-                  guardKeyAccess={(action) =>
-                    guardKeyAccess((deferred) => {
-                      action(deferred);
-                      setKeys((current) => markRulesDelivered(current, key.id));
-                    })
+                  guardKeyAccess={guardKeyAccess}
+                  onConfigDelivered={() =>
+                    setKeys((current) => markRulesDelivered(current, key.id))
                   }
                   onShowConfig={() =>
                     setConfigTarget({

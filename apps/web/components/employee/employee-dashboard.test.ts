@@ -40,7 +40,16 @@ describe("help deep links", () => {
 // the card from showing the callout after the very download it asked for.
 describe("rules-updated callout after a download", () => {
   it("clears the flag on the card the key was fetched from", () => {
-    expect(source).toContain("markRulesDelivered(current, key.id)");
+    expect(source).toMatch(
+      /onConfigDelivered=\{\(\) =>\s*setKeys\(\(current\) => markRulesDelivered\(current, key\.id\)\)/,
+    );
+  });
+
+  // Opening the dialog is not a download: a file-only key fetches nothing until
+  // a file is taken, so clearing the flag on the guard hid the callout only
+  // until the dialog closed and the list brought it back.
+  it("does not clear the flag merely for opening a guarded action", () => {
+    expect(source).not.toMatch(/guardKeyAccess\(\(deferred\)[\s\S]{0,120}markRulesDelivered/);
   });
 
   it("resyncs with the server when the config dialog closes", () => {
