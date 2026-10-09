@@ -506,10 +506,27 @@ matters:
   quarantines the version (`exclusion_too_broad`), and one that answers with no
   CIDRs at all fails the fetch, so a broken mirror cannot quietly send the list
   outside the tunnel.
+- **IPv6 is routed too** (since v0.9.64): iplist's IPv6 list (~800 prefixes)
+  joins the include sources and ipdeny's Russian IPv6 zone the exclusions. The
+  nodes have no IPv6, so these routes do not carry traffic: they are a
+  blackhole for the listed services, and the client falls back to IPv4, which
+  goes through the tunnel. Before this, a client whose ISP hands out IPv6
+  reached those services over IPv6 directly, past the tunnel and into the
+  block. Per platform: Android, which blocked all IPv6 for VPN'd apps while the
+  tunnel carried no IPv6 route, now blocks only the listed prefixes and lets
+  other IPv6 go direct; on desktop the listed prefixes leave with the client's
+  ULA address and time out, so a browser falls back to IPv4 within its usual
+  race; iOS installs the IPv6 routes as well, which adds ~800 to the route
+  count on the platform with the large-route-list client bug
+  (amnezia-client#3207). Roll back by pinning the last version without IPv6:
+  `amnezia-panel rules-activate <id>` (or the admin rules page), and
+  `rules-follow ru_blacklist` to resume. To drop IPv6 permanently, set
+  `RULE_FEEDS` to the defaults minus the two IPv6 sources.
 - **The result is compacted** to the fewest prefixes covering exactly the same
   addresses: feeds overlap and sit side by side, and every prefix is a route
   the client has to carry. Measured on 2026-10-04: 3,757 routes for iplist +
-  itdoginfo − RU, against 3,521 for iplist alone and 4,537 uncompacted.
+  itdoginfo − RU, against 3,521 for iplist alone and 4,537 uncompacted. With
+  IPv6 added (2026-10-10): 4,587, of them 3,777 IPv4 and 810 IPv6.
 
 Feeds grow, so that number is not assumed to hold. `MAX_TUNNEL_ROUTES` (6800) is
 the budget the profile is held to. It sits close to the edge on purpose —

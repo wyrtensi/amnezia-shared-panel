@@ -308,6 +308,16 @@ export const DEFAULT_RULE_FEEDS: RuleFeedSources[] = [
         url: "https://iplist.opencck.org/?format=text&data=cidr4",
         format: "cidr-lines",
       },
+      // The same catalogue's IPv6 half. Without it a client whose ISP hands out
+      // IPv6 reached YouTube, Instagram or Cloudflare over IPv6 directly, past
+      // the tunnel and into the block. The nodes carry no IPv6, so these routes
+      // are a blackhole for the listed services: the client gives up on IPv6
+      // and falls back to IPv4, which the IPv4 half sends through the tunnel.
+      // Roll back by pinning the last version without IPv6 (`rules-activate`).
+      {
+        url: "https://iplist.opencck.org/?format=text&data=cidr6",
+        format: "cidr-lines",
+      },
       ...ITDOG_SUBNETS,
       {
         url: "https://github.com/1andrevich/Re-filter-lists/releases/latest/download/domains_all.lst",
@@ -321,6 +331,12 @@ export const DEFAULT_RULE_FEEDS: RuleFeedSources[] = [
       // is that a blocked resource hosted inside Russia is not tunnelled.
       {
         url: "https://www.ipdeny.com/ipblocks/data/aggregated/ru-aggregated.zone",
+        format: "cidr-lines",
+        exclude: true,
+      },
+      // Russian IPv6, for the same reason: iplist's IPv6 list carries Yandex.
+      {
+        url: "https://www.ipdeny.com/ipv6/ipaddresses/aggregated/ru-aggregated.zone",
         format: "cidr-lines",
         exclude: true,
       },
