@@ -1280,6 +1280,10 @@ describe("nodeHostMetricsSchema", () => {
       uptimeSec: 86400,
       cpuCores: 1,
       load: [0.1, 0.2, 0.3],
+      cpuUsedPercent: 23.4,
+      cpuIowaitPercent: 18.9,
+      cpuStealPercent: 0.5,
+      cpuPerCorePercent: [23.4],
       memTotalBytes: "1007681536",
       memAvailableBytes: "361267200",
       swapTotalBytes: "2147483648",
@@ -1303,6 +1307,7 @@ describe("nodeHostMetricsSchema", () => {
     // carried as decimal strings for the same reason traffic is.
     expect(parsed.memAvailableBytes).toBe("361267200");
     expect(parsed.endpoint.status).toBe("reachable");
+    expect(parsed.cpuPerCorePercent).toEqual([23.4]);
   });
 
   it("accepts an older agent that reports nothing beyond the timestamp", () => {
@@ -1315,6 +1320,10 @@ describe("nodeHostMetricsSchema", () => {
         uptimeSec: null,
         cpuCores: null,
         load: null,
+        cpuUsedPercent: null,
+        cpuIowaitPercent: null,
+        cpuStealPercent: null,
+        cpuPerCorePercent: null,
         memTotalBytes: null,
         memAvailableBytes: null,
         swapTotalBytes: null,
@@ -1340,6 +1349,10 @@ describe("nodeHostMetricsSchema", () => {
       uptimeSec: null,
       cpuCores: null,
       load: null,
+      cpuUsedPercent: null,
+      cpuIowaitPercent: null,
+      cpuStealPercent: null,
+      cpuPerCorePercent: null,
       memTotalBytes: null,
       memAvailableBytes: null,
       swapTotalBytes: null,
@@ -1361,6 +1374,13 @@ describe("nodeHostMetricsSchema", () => {
     ).toBe(false);
     expect(
       nodeHostMetricsSchema.safeParse({ ...base, cpuCores: 0 }).success,
+    ).toBe(false);
+    // Utilisation is a share of every core, so it cannot pass 100.
+    expect(
+      nodeHostMetricsSchema.safeParse({ ...base, cpuUsedPercent: 100.1 }).success,
+    ).toBe(false);
+    expect(
+      nodeHostMetricsSchema.safeParse({ ...base, cpuPerCorePercent: [-1] }).success,
     ).toBe(false);
     expect(
       nodeHostMetricsSchema.safeParse({ ...base, listenPorts: [0] }).success,

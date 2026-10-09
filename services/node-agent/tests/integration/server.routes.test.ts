@@ -181,3 +181,89 @@ describe("server backup routes", () => {
     expect(response.json().agentVersion).toBe("9.9.9");
   });
 });
+
+describe("server load route", () => {
+  const load = (cpu: Record<string, unknown>) => ({
+    timestamp: "2026-10-10T00:00:00.000Z",
+    uptimeSec: 86400,
+    loadavg: [0.42, 0.4, 0.37],
+    cpu,
+    memory: {
+      totalBytes: 1024,
+      freeBytes: 256,
+      usedBytes: 768,
+      availableBytes: 512,
+    },
+    swap: null,
+    agent: { pidsCurrent: 12, pidsMax: 128 },
+    awg: { amneziawg2: null, amneziawg3: { up: true, peers: 2 } },
+    disk: null,
+    network: null,
+    docker: null,
+  });
+
+  // Asserted on the wire for the same reason as the backup and version tests:
+  // the CPU figures are new keys on an existing object, and a key the schema
+  // does not declare leaves the agent as if it had never been computed.
+  it("sends real CPU utilisation, per core, to the client", async () => {
+    app = await createServerTestApp({
+      getServerLoad: vi.fn(async () =>
+        load({
+          cores: 2,
+          usedPercent: 23.4,
+          iowaitPercent: 18.9,
+          stealPercent: 0.5,
+          perCorePercent: [30.1, 16.7],
+          windowSec: 60,
+        }),
+      ) as never,
+    });
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/server/load",
+      headers: AUTH_HEADERS,
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().cpu).toEqual({
+      cores: 2,
+      usedPercent: 23.4,
+      iowaitPercent: 18.9,
+      stealPercent: 0.5,
+      perCorePercent: [30.1, 16.7],
+      windowSec: 60,
+    });
+  });
+
+  it("sends nulls through when /proc/stat could not be read", async () => {
+    app = await createServerTestApp({
+      getServerLoad: vi.fn(async () =>
+        load({
+          cores: 1,
+          usedPercent: null,
+          iowaitPercent: null,
+          stealPercent: null,
+          perCorePercent: null,
+          windowSec: null,
+        }),
+      ) as never,
+    });
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/server/load",
+      headers: AUTH_HEADERS,
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().cpu).toEqual({
+      cores: 1,
+      usedPercent: null,
+      iowaitPercent: null,
+      stealPercent: null,
+      perCorePercent: null,
+      windowSec: null,
+    });
+  });
+});

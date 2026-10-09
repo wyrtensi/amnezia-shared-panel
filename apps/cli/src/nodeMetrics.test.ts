@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   awgCell,
+  cpuCell,
   formatBytes,
   handshakeCell,
   METRIC_WARNINGS,
@@ -37,6 +38,28 @@ describe("formatting", () => {
     const now = new Date("2026-09-04T12:00:00.000Z");
     expect(handshakeCell("2026-09-04T11:58:00.000Z", now)).toBe("2m ago");
     expect(handshakeCell(null, now)).toBe("never");
+  });
+});
+
+describe("cpuCell", () => {
+  it("shows real utilisation as a percent of every core", () => {
+    expect(cpuCell({ cpuUsedPercent: 23.4, load1: 0.9, cpuCores: 1 })).toBe("23%");
+    // A real zero is an idle host, not an unreported one.
+    expect(cpuCell({ cpuUsedPercent: 0, load1: 0.9, cpuCores: 1 })).toBe("0%");
+  });
+
+  it("falls back to load / cores for an agent older than 1.1.17", () => {
+    // Labelled, because the column is now a percentage and a bare 0.42/2 under
+    // it would read as a different unit with no warning.
+    expect(cpuCell({ cpuUsedPercent: null, load1: 0.42, cpuCores: 2 })).toBe(
+      "load 0.42/2",
+    );
+    expect(cpuCell({ load1: 0.42 })).toBe("load 0.42/?");
+  });
+
+  it("shows a dash when the node reported neither", () => {
+    expect(cpuCell({ cpuUsedPercent: null, load1: null })).toBe("—");
+    expect(cpuCell(null)).toBe("—");
   });
 });
 

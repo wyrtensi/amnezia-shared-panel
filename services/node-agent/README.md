@@ -165,7 +165,7 @@ x-api-key: <FASTIFY_API_KEY>
 | `POST` | `/clients/qr` | Generate one or more Amnezia-compatible QR codes |
 | `DELETE` | `/clients` | Delete a client |
 | `GET` | `/server` | Return server identity, capacity, and enabled protocols |
-| `GET` | `/server/load` | Return CPU, RAM, disk, network, and Docker metrics |
+| `GET` | `/server/load` | Return CPU, RAM, disk, network, and Docker metrics. `cpu.usedPercent` is utilisation across every core from `/proc/stat` (busy time, without iowait and steal, which are reported separately along with `perCorePercent`), averaged since the previous call or over 0.5 s on the first one; all of them are `null` when `/proc/stat` cannot be read |
 | `GET` | `/server/backup` | Export the server configuration |
 | `POST` | `/server/backup` | Import a server configuration backup |
 | `POST` | `/server/reboot` | Reboot the server |

@@ -771,6 +771,13 @@ export const nodeHostMetricsSchema = z.object({
   uptimeSec: z.number().nonnegative().nullable(),
   cpuCores: z.int().positive().nullable(),
   load: z.tuple([z.number(), z.number(), z.number()]).nullable(),
+  // Real utilisation across every core, from the agent's /proc/stat (1.1.17+).
+  // Load average stays above: on a small VPS it is dominated by iowait and is
+  // no measure of how busy the CPU is, which is why these exist.
+  cpuUsedPercent: z.number().min(0).max(100).nullable(),
+  cpuIowaitPercent: z.number().min(0).max(100).nullable(),
+  cpuStealPercent: z.number().min(0).max(100).nullable(),
+  cpuPerCorePercent: z.array(z.number().min(0).max(100)).nullable(),
   memTotalBytes: z.string().nullable(),
   memAvailableBytes: z.string().nullable(),
   swapTotalBytes: z.string().nullable(),

@@ -53,7 +53,16 @@ export type ServerLoadPayload = {
   timestamp: string;
   uptimeSec: number;
   loadavg: [number, number, number];
-  cpu: { cores: number };
+  // Utilisation from /proc/stat, averaged over `windowSec`. Every figure is
+  // null when /proc/stat could not be read; load average stays in `loadavg`.
+  cpu: {
+    cores: number;
+    usedPercent: number | null;
+    iowaitPercent: number | null;
+    stealPercent: number | null;
+    perCorePercent: number[] | null;
+    windowSec: number | null;
+  };
   memory: {
     totalBytes: number;
     freeBytes: number;

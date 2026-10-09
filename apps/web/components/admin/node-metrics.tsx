@@ -3,7 +3,7 @@
 import { formatBytesParts } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { useT } from "@/lib/i18n/provider";
-import type { Lang } from "@/lib/i18n/messages";
+import type { Lang, MessageKey } from "@/lib/i18n/messages";
 import type { AdminNodeMetrics, NodeEndpointSignal } from "@/lib/types";
 
 /**
@@ -103,6 +103,68 @@ export const barTone = (fraction: number, forceBad = false): MetricBarTone => {
 const bar = (fraction: number | null, forceBad = false): MetricBar | null =>
   fraction === null ? null : { fraction, tone: barTone(fraction, forceBad) };
 
+type Translate = (key: MessageKey, vars?: Record<string, string | number>) => string;
+
+export type CpuCell = {
+  label: string;
+  value: string;
+  hover: string;
+  bar: MetricBar | null;
+};
+
+/**
+ * The CPU cell: real utilisation as a share of every core, with each core,
+ * iowait, steal and the load average in the hover.
+ *
+ * It used to be load1 / cores, and on a small VPS that is mostly iowait: a host
+ * whose CPU was 12-20 % busy drew a 40-90 % bar. An agent older than 1.1.17
+ * reports no utilisation, and for it the cell stays exactly what it was.
+ */
+export const cpuCell = (metrics: AdminNodeMetrics, t: Translate): CpuCell => {
+  const used = metrics.cpuUsedPercent;
+  if (used === null || used === undefined) {
+    const value =
+      metrics.load1 === null
+        ? "—"
+        : `${metrics.load1.toFixed(2)} / ${number(metrics.cpuCores)}`;
+    return {
+      label: t("nodes.metrics.load"),
+      value,
+      hover: value,
+      bar: bar(barFraction(metrics.load1, metrics.cpuCores)),
+    };
+  }
+
+  const percent = (value: number) => value.toFixed(1);
+  const hover = [t("nodes.metrics.cpuTotal", { value: percent(used) })];
+  (metrics.cpuPerCorePercent ?? []).forEach((core, index) =>
+    hover.push(t("nodes.metrics.cpuCore", { index, value: percent(core) })),
+  );
+  if (metrics.cpuIowaitPercent !== null && metrics.cpuIowaitPercent !== undefined) {
+    hover.push(t("nodes.metrics.cpuIowait", { value: percent(metrics.cpuIowaitPercent) }));
+  }
+  if (metrics.cpuStealPercent !== null && metrics.cpuStealPercent !== undefined) {
+    hover.push(t("nodes.metrics.cpuSteal", { value: percent(metrics.cpuStealPercent) }));
+  }
+  // Kept as text: it is still the number an operator compares against `uptime`
+  // on the host, it just no longer draws the bar.
+  const loads = [metrics.load1, metrics.load5, metrics.load15];
+  if (loads.every((value) => typeof value === "number")) {
+    hover.push(
+      t("nodes.metrics.cpuLoad", {
+        load: loads.map((value) => value.toFixed(2)).join(" / "),
+      }),
+    );
+  }
+
+  return {
+    label: t("nodes.metrics.cpu"),
+    value: `${Math.round(used)}%`,
+    hover: hover.join("\n"),
+    bar: bar(barFraction(used, 100)),
+  };
+};
+
 const BAR_TONE_CLASS: Record<MetricBarTone, string> = {
   ok: "bg-success",
   warn: "bg-warning",
@@ -153,7 +215,11 @@ export function NodeMetrics({
   const stateBar = (up: boolean | null): MetricBar | null =>
     up === null ? null : { fraction: 1, tone: up ? "ok" : "bad" };
 
-  type Row = [string, string, boolean | undefined, MetricBar | null];
+  const cpu = cpuCell(metrics, t);
+
+  // The optional fifth element is the hover text, for a cell whose detail does
+  // not fit in it; every other cell hovers its own figure in full.
+  type Row = [string, string, boolean | undefined, MetricBar | null, string?];
   const rows: Row[] = [
     [
       t("nodes.metrics.ram"),
@@ -182,14 +248,7 @@ export function NodeMetrics({
       diskHigh,
       bar(barFraction(metrics.diskUsedPercent, 100), diskHigh),
     ],
-    [
-      t("nodes.metrics.load"),
-      metrics.load1 === null
-        ? "—"
-        : `${metrics.load1.toFixed(2)} / ${number(metrics.cpuCores)}`,
-      undefined,
-      bar(barFraction(metrics.load1, metrics.cpuCores)),
-    ],
+    [cpu.label, cpu.value, undefined, cpu.bar, cpu.hover],
     [
       t("nodes.metrics.pids"),
       `${number(metrics.agentPidsCurrent)} / ${number(metrics.agentPidsMax)}`,
@@ -247,7 +306,7 @@ export function NodeMetrics({
             do. Twelve label/value pairs in a three-column grid with nothing
             between them read as one field of text, and the eye has to count
             columns to work out which number belongs to which label. */}
-        {rows.map(([label, value, warn, meter]) => (
+        {rows.map(([label, value, warn, meter, hover]) => (
           <div
             key={label}
             className="min-w-0 rounded-md border border-border/60 bg-well px-2 py-1 shadow-[var(--inset-shadow)]"
@@ -262,7 +321,7 @@ export function NodeMetrics({
               )}
               // The cell is narrow by design; hovering still gives the figure
               // in full rather than making the operator widen the window.
-              title={value}
+              title={hover ?? value}
             >
               {value}
             </dd>

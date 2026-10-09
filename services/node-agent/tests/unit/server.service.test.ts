@@ -22,7 +22,7 @@ import {
   SUPPORTED_PROBE_KINDS,
 } from "@/services/checks";
 
-// The two host files the metrics call reads. They do not exist on the Windows
+// The host files the metrics call reads. They do not exist on the Windows
 // dev box and differ between kernels in CI, so they are supplied here and every
 // other path still goes to the real fs - the point of the test is the wiring,
 // and the parsers have their own table-driven tests.
@@ -35,10 +35,19 @@ const MEMINFO = [
   "",
 ].join("\n");
 
+// Identical on both reads, so the first call's half-second window is all idle.
+const PROC_STAT = [
+  "cpu  1000 0 400 8000 2000 0 0 0",
+  "cpu0 500 0 200 4000 1000 0 0 0",
+  "cpu1 500 0 200 4000 1000 0 0 0",
+  "",
+].join("\n");
+
 vi.mock("fs/promises", async (importOriginal) => {
   const actual = await importOriginal<typeof import("fs/promises")>();
   const readFile = (path: unknown, encoding?: unknown) => {
     if (path === "/proc/meminfo") return Promise.resolve(MEMINFO);
+    if (path === "/proc/stat") return Promise.resolve(PROC_STAT);
     if (path === "/sys/fs/cgroup/pids.current") return Promise.resolve("12\n");
     if (path === "/sys/fs/cgroup/pids.max") return Promise.resolve("128\n");
     return (actual.readFile as (...args: unknown[]) => Promise<unknown>)(
@@ -187,6 +196,17 @@ describe("ServerService", () => {
       usedBytes: (1048572 - 555000) * 1024,
     });
     expect(load.agent).toEqual({ pidsCurrent: 12, pidsMax: 128 });
+
+    // Read from /proc/stat, not derived from load average: the first call has
+    // no stored reading, so it takes two half a second apart.
+    expect(load.cpu).toEqual({
+      cores: expect.any(Number),
+      usedPercent: 0,
+      iowaitPercent: 0,
+      stealPercent: 0,
+      perCorePercent: [0, 0],
+      windowSec: 0.5,
+    });
 
     // The fixture enables both amneziawg2 and amneziawg3, so both interfaces
     // report a live state rather than the null a disabled protocol would get.

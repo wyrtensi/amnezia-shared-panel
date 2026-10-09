@@ -474,6 +474,14 @@ export const nodeMetricsCurrent = pgTable("node_metrics_current", {
   load1: real("load1"),
   load5: real("load5"),
   load15: real("load15"),
+  // Real utilisation from the agent's /proc/stat, as a share of every core.
+  // Load average stays alongside it: on a small VPS it is dominated by iowait
+  // and reads several times the work the CPU is doing, which is why these
+  // exist. Null from an agent older than 1.1.17.
+  cpuUsedPercent: real("cpu_used_percent"),
+  cpuIowaitPercent: real("cpu_iowait_percent"),
+  cpuStealPercent: real("cpu_steal_percent"),
+  cpuPerCorePercent: jsonb("cpu_per_core_percent").$type<number[]>(),
   memTotalBytes: bigint("mem_total_bytes", { mode: "bigint" }),
   memAvailableBytes: bigint("mem_available_bytes", { mode: "bigint" }),
   swapTotalBytes: bigint("swap_total_bytes", { mode: "bigint" }),
@@ -494,7 +502,7 @@ export const nodeMetricsCurrent = pgTable("node_metrics_current", {
 });
 
 /**
- * A trimmed history of the six metrics worth a graph. Deliberately not every
+ * A trimmed history of the seven metrics worth a graph. Deliberately not every
  * field: this table grows per node per tick forever, and the rest are either
  * constant (cpuCores) or only interesting as their latest value.
  */
@@ -509,6 +517,7 @@ export const nodeMetricsSamples = pgTable(
       .references(() => nodes.id, { onDelete: "cascade" }),
     sampledAt: timestamp("sampled_at", { withTimezone: true }).notNull(),
     load1: real("load1"),
+    cpuUsedPercent: real("cpu_used_percent"),
     memAvailableBytes: bigint("mem_available_bytes", { mode: "bigint" }),
     swapUsedBytes: bigint("swap_used_bytes", { mode: "bigint" }),
     diskUsedPercent: real("disk_used_percent"),

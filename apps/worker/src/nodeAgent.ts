@@ -81,6 +81,7 @@ const serverSchema = z.object({
     .optional(),
 });
 const nullableMetricSchema = z.number().nonnegative().nullable();
+const percentSchema = z.number().min(0).max(100);
 const awgInterfaceSchema = z
   .object({
     up: z.boolean(),
@@ -91,7 +92,17 @@ const serverLoadSchema = z.object({
   timestamp: z.iso.datetime(),
   uptimeSec: z.number().nonnegative(),
   loadavg: z.tuple([z.number(), z.number(), z.number()]),
-  cpu: z.object({ cores: z.number().int().positive() }),
+  cpu: z.object({
+    cores: z.number().int().positive(),
+    // Utilisation from /proc/stat, reported from agent 1.1.17 on. `.nullish()`
+    // for the same reason as availableBytes below: an older agent omits the
+    // keys, and one that cannot read /proc/stat sends null.
+    usedPercent: percentSchema.nullish(),
+    iowaitPercent: percentSchema.nullish(),
+    stealPercent: percentSchema.nullish(),
+    perCorePercent: z.array(percentSchema).nullish(),
+    windowSec: z.number().nonnegative().nullish(),
+  }),
   memory: z.object({
     totalBytes: z.number().nonnegative(),
     freeBytes: z.number().nonnegative(),

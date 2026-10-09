@@ -121,6 +121,14 @@ export type AdminNodeMetrics = {
   uptimeSec: number | null;
   cpuCores: number | null;
   load1: number | null;
+  load5: number | null;
+  load15: number | null;
+  // Real utilisation from the agent's /proc/stat, as a share of every core.
+  // Null from an agent older than 1.1.17; the card then shows load / cores.
+  cpuUsedPercent: number | null;
+  cpuIowaitPercent: number | null;
+  cpuStealPercent: number | null;
+  cpuPerCorePercent: number[] | null;
   memTotalBytes: string | null;
   memAvailableBytes: string | null;
   swapTotalBytes: string | null;

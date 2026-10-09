@@ -13,6 +13,7 @@ import {
   parseCpuPercent,
 } from "@/helpers/dockerStats";
 import { parseCgroupPids, parseMemInfo } from "@/helpers/hostMetrics";
+import { CpuSampler } from "@/helpers/cpuUsage";
 import { APIError } from "@/utils/APIError";
 import appConfig from "@/constants/appConfig";
 import { APP_VERSION } from "@/constants/appVersion";
@@ -42,6 +43,11 @@ export class ServerService {
   static key = "serverService";
 
   private readonly server: ServerConnection;
+
+  // Holds the previous /proc/stat reading between polls, so the CPU figure is
+  // the average over the panel's poll interval. The service is a singleton in
+  // the container, which is what lets that reading survive between requests.
+  private readonly cpuSampler = new CpuSampler();
 
   constructor(
     private readonly xrayService: XrayService,
@@ -171,6 +177,10 @@ export class ServerService {
     // CPU / Load
     const cores = Math.max(1, os.cpus()?.length ?? 1);
     const loadavg = os.loadavg() as [number, number, number];
+    // Real utilisation, split from iowait and steal. Load average counts tasks
+    // waiting on disk too, so on a small VPS it reads several times the work
+    // the CPU is actually doing.
+    const cpuUsage = await this.cpuSampler.sample();
 
     // RAM
     const totalBytes = os.totalmem();
@@ -356,7 +366,7 @@ export class ServerService {
       timestamp,
       uptimeSec: os.uptime(),
       loadavg,
-      cpu: { cores },
+      cpu: { cores, ...cpuUsage },
       memory: {
         totalBytes,
         freeBytes,
