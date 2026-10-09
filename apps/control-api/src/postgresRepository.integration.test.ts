@@ -2903,13 +2903,23 @@ describe("PostgresControlRepository node status surfaces", () => {
       agentLatencyMs: 12,
       uptimeSec: 3_600,
       cpuCores: 2,
+      cpuUsedPercent: 23.5,
+      cpuIowaitPercent: 18.5,
+      cpuStealPercent: 0.5,
+      cpuPerCorePercent: [30.5, 16.5],
       memAvailableBytes: 361_267_200n,
     });
 
     const node = seededNode(
       (await subject().adminList({ ...actor, role: "admin" }, "nodes")) as Array<{
         id: string;
-        metrics: { memAvailableBytes: unknown } | null;
+        metrics: {
+          memAvailableBytes: unknown;
+          cpuUsedPercent: unknown;
+          cpuIowaitPercent: unknown;
+          cpuStealPercent: unknown;
+          cpuPerCorePercent: unknown;
+        } | null;
         endpoint: { status: string; lastHandshakeAt: Date | null };
       }>,
     );
@@ -2919,6 +2929,14 @@ describe("PostgresControlRepository node status surfaces", () => {
     // shipped, where JSON.stringify refuses it and the whole page 500s.
     expect(node.metrics?.memAvailableBytes).toBe("361267200");
     expect(typeof node.metrics?.memAvailableBytes).toBe("string");
+    // The CPU figures the card draws its bar and hover from travel as plain
+    // numbers, the per-core list as an array.
+    expect(node.metrics).toMatchObject({
+      cpuUsedPercent: 23.5,
+      cpuIowaitPercent: 18.5,
+      cpuStealPercent: 0.5,
+      cpuPerCorePercent: [30.5, 16.5],
+    });
     // The real test is that the payload can leave the process at all.
     expect(() => JSON.stringify(node)).not.toThrow();
     // No peer has ever handshaked on this node, so the honest answer is

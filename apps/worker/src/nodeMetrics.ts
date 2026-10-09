@@ -50,6 +50,15 @@ export const toNodeMetricsRow = (snapshot: NodeSnapshot): NodeMetricsRow => {
     load1: toNumber(load.loadavg[0]),
     load5: toNumber(load.loadavg[1]),
     load15: toNumber(load.loadavg[2]),
+    cpuUsedPercent: toNumber(load.cpu.usedPercent),
+    cpuIowaitPercent: toNumber(load.cpu.iowaitPercent),
+    cpuStealPercent: toNumber(load.cpu.stealPercent),
+    // An empty list is the agent saying a core came or went between its two
+    // readings, so per-core figures are unknown - not a host with no cores.
+    cpuPerCorePercent:
+      load.cpu.perCorePercent && load.cpu.perCorePercent.length > 0
+        ? load.cpu.perCorePercent
+        : null,
     memTotalBytes: toBigint(load.memory.totalBytes),
     memAvailableBytes: toBigint(load.memory.availableBytes),
     swapTotalBytes: toBigint(swap?.totalBytes),

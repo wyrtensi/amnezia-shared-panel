@@ -267,6 +267,13 @@
       "when": 1788869931487,
       "tag": "0037_notice_counters",
       "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "7",
+      "when": 1791586103394,
+      "tag": "0038_node_cpu_percent",
+      "breakpoints": true
     }
   ]
 }

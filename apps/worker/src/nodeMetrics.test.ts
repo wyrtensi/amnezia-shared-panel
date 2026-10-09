@@ -116,9 +116,52 @@ describe("toNodeMetricsRow", () => {
     expect(row.agentPidsMax).toBeNull();
     expect(row.awg3Up).toBeNull();
     expect(row.diskTotalBytes).toBeNull();
+    // An agent older than 1.1.17 has no /proc/stat figures; the card falls
+    // back to load average rather than drawing an empty CPU bar.
+    expect(row.cpuUsedPercent).toBeNull();
+    expect(row.cpuIowaitPercent).toBeNull();
+    expect(row.cpuStealPercent).toBeNull();
+    expect(row.cpuPerCorePercent).toBeNull();
     // What it does report still maps.
     expect(row.memTotalBytes).toBe(1_000n);
     expect(row.cpuCores).toBe(2);
+  });
+
+  it("maps the CPU utilisation a 1.1.17 agent reports", () => {
+    const row = toNodeMetricsRow(
+      snapshotOf({
+        ...fullLoad,
+        cpu: {
+          cores: 2,
+          usedPercent: 23.4,
+          iowaitPercent: 18.9,
+          stealPercent: 0.5,
+          perCorePercent: [30.1, 16.7],
+          windowSec: 60,
+        },
+      }),
+    );
+
+    expect(row).toMatchObject({
+      cpuCores: 2,
+      cpuUsedPercent: 23.4,
+      cpuIowaitPercent: 18.9,
+      cpuStealPercent: 0.5,
+      cpuPerCorePercent: [30.1, 16.7],
+    });
+  });
+
+  it("keeps an empty per-core list as unknown, not as zero cores", () => {
+    // The agent sends [] when a core came or went between its two readings.
+    const row = toNodeMetricsRow(
+      snapshotOf({
+        ...fullLoad,
+        cpu: { cores: 2, usedPercent: 10, perCorePercent: [] },
+      }),
+    );
+
+    expect(row.cpuUsedPercent).toBe(10);
+    expect(row.cpuPerCorePercent).toBeNull();
   });
 });
 

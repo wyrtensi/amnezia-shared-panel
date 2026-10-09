@@ -317,7 +317,14 @@ describe("PostgresWorkerRepository outbox leases", () => {
       timestamp: observedAt.toISOString(),
       uptimeSec: 60,
       loadavg: [load1, 0, 0] as [number, number, number],
-      cpu: { cores: 2 },
+      cpu: {
+        cores: 2,
+        usedPercent: Math.round(load1 * 100),
+        iowaitPercent: 5,
+        stealPercent: 0,
+        perCorePercent: [Math.round(load1 * 100), 0],
+        windowSec: 60,
+      },
       memory: { totalBytes: 1024, freeBytes: 512, usedBytes: 512, availableBytes: 361_267_200 },
       disk: null,
       network: null,
@@ -349,6 +356,10 @@ describe("PostgresWorkerRepository outbox leases", () => {
       expect(afterTwoPolls).toHaveLength(1);
       expect(afterTwoPolls[0]).toMatchObject({
         load1: 0.2,
+        cpuUsedPercent: 20,
+        cpuIowaitPercent: 5,
+        cpuStealPercent: 0,
+        cpuPerCorePercent: [20, 0],
         memAvailableBytes: 361_267_200n,
         observedAt: new Date("2026-08-20T08:01:00.000Z"),
         listenPorts: [51890],
@@ -362,12 +373,16 @@ describe("PostgresWorkerRepository outbox leases", () => {
         metricsSnapshot(node.id, new Date("2026-08-20T08:05:00.000Z"), 0.3),
       );
       const samples = await database.db
-        .select({ sampledAt: nodeMetricsSamples.sampledAt, load1: nodeMetricsSamples.load1 })
+        .select({
+          sampledAt: nodeMetricsSamples.sampledAt,
+          load1: nodeMetricsSamples.load1,
+          cpuUsedPercent: nodeMetricsSamples.cpuUsedPercent,
+        })
         .from(nodeMetricsSamples)
         .orderBy(nodeMetricsSamples.sampledAt);
       expect(samples).toEqual([
-        { sampledAt: first, load1: 0.1 },
-        { sampledAt: new Date("2026-08-20T08:05:00.000Z"), load1: 0.3 },
+        { sampledAt: first, load1: 0.1, cpuUsedPercent: 10 },
+        { sampledAt: new Date("2026-08-20T08:05:00.000Z"), load1: 0.3, cpuUsedPercent: 30 },
       ]);
     },
   );

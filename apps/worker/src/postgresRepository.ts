@@ -1266,6 +1266,7 @@ export class PostgresWorkerRepository
           nodeId: snapshot.nodeId,
           sampledAt: snapshot.observedAt,
           load1: metricsRow.load1 ?? null,
+          cpuUsedPercent: metricsRow.cpuUsedPercent ?? null,
           memAvailableBytes: metricsRow.memAvailableBytes ?? null,
           swapUsedBytes: metricsRow.swapUsedBytes ?? null,
           diskUsedPercent: metricsRow.diskUsedPercent ?? null,

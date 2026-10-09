@@ -25,6 +25,10 @@ export type NodeMetricsView = {
   diskUsedPercent?: number | null;
   load1?: number | null;
   cpuCores?: number | null;
+  cpuUsedPercent?: number | null;
+  cpuIowaitPercent?: number | null;
+  cpuStealPercent?: number | null;
+  cpuPerCorePercent?: number[] | null;
   agentPidsCurrent?: number | null;
   agentPidsMax?: number | null;
   awg3Up?: boolean | null;
@@ -62,6 +66,25 @@ export const awgCell = (
   up: boolean | null | undefined,
   peers: number | null | undefined,
 ): string => (up === null || up === undefined ? "—" : `${up ? "up" : "down"}:${peers ?? "?"}`);
+
+/**
+ * CPU as real utilisation across every core, the figure the admin card shows.
+ *
+ * Load / cores was the column before, and on a small VPS it is mostly iowait: a
+ * host whose CPU was 12-20 % busy read 0.4-0.9 per core. An agent older than
+ * 1.1.17 reports no utilisation, so it keeps the load figure - labelled, since
+ * it shares a column with percentages now. Per-core, iowait and steal are in
+ * `--json`.
+ */
+export const cpuCell = (
+  metrics: Pick<NodeMetricsView, "cpuUsedPercent" | "load1" | "cpuCores"> | null | undefined,
+): string => {
+  const used = metrics?.cpuUsedPercent;
+  if (used !== null && used !== undefined) return `${Math.round(used)}%`;
+  const load1 = metrics?.load1;
+  if (load1 === null || load1 === undefined) return "—";
+  return `load ${load1.toFixed(2)}/${metrics?.cpuCores ?? "?"}`;
+};
 
 /**
  * How long ago a peer last completed a handshake.

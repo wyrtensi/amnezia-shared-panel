@@ -130,4 +130,61 @@ describe("node-agent client", () => {
       "http://127.0.0.1:4001/clients?skip=0&limit=100",
     ]);
   });
+
+  describe("server load CPU figures", () => {
+    const loadClient = (cpu: unknown) =>
+      createNodeAgentClient({
+        baseUrl: "http://127.0.0.1:4001",
+        apiKey: "private-api-key",
+        fetchImpl: vi.fn<typeof fetch>(() =>
+          Promise.resolve(
+            new Response(
+              JSON.stringify({
+                timestamp: "2026-10-10T08:00:00.000Z",
+                uptimeSec: 60,
+                loadavg: [0.42, 0.4, 0.37],
+                cpu,
+                memory: { totalBytes: 1024, freeBytes: 512, usedBytes: 512 },
+                disk: null,
+                network: null,
+                docker: null,
+              }),
+              { status: 200, headers: { "content-type": "application/json" } },
+            ),
+          ),
+        ),
+      });
+
+    it("keeps the utilisation a 1.1.17 agent reports", async () => {
+      const cpu = {
+        cores: 2,
+        usedPercent: 23.4,
+        iowaitPercent: 18.9,
+        stealPercent: 0.5,
+        perCorePercent: [30.1, 16.7],
+        windowSec: 60,
+      };
+
+      await expect(loadClient(cpu).getServerLoad()).resolves.toMatchObject({ cpu });
+    });
+
+    it("accepts the nulls an agent that cannot read /proc/stat reports", async () => {
+      const cpu = {
+        cores: 1,
+        usedPercent: null,
+        iowaitPercent: null,
+        stealPercent: null,
+        perCorePercent: null,
+        windowSec: null,
+      };
+
+      await expect(loadClient(cpu).getServerLoad()).resolves.toMatchObject({ cpu });
+    });
+
+    it("refuses a percentage outside 0..100", async () => {
+      await expect(
+        loadClient({ cores: 1, usedPercent: 140 }).getServerLoad(),
+      ).rejects.toThrow();
+    });
+  });
 });

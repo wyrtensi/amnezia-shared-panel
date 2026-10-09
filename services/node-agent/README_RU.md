@@ -159,7 +159,7 @@ x-api-key: <FASTIFY_API_KEY>
 | `POST` | `/clients/qr` | Генерация одного или нескольких QR-кодов |
 | `DELETE` | `/clients` | Удаление клиента |
 | `GET` | `/server` | Сервер, лимиты и доступные протоколы |
-| `GET` | `/server/load` | CPU, RAM, диск, сеть и Docker-метрики |
+| `GET` | `/server/load` | CPU, RAM, диск, сеть и Docker-метрики. `cpu.usedPercent` — загрузка всех ядер по `/proc/stat` (без iowait и steal, они идут отдельно вместе с `perCorePercent`), усреднённая с прошлого вызова или за 0.5 с при первом; всё `null`, если `/proc/stat` недоступен |
 | `GET` | `/server/backup` | Экспорт конфигурации сервера |
 | `POST` | `/server/backup` | Импорт резервной копии |
 | `POST` | `/server/reboot` | Перезагрузка сервера |

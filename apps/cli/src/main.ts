@@ -79,6 +79,7 @@ import {
 import { classifyNodeHost, formatNodeAddress } from "./nodeAddress.js";
 import {
   awgCell,
+  cpuCell,
   handshakeCell,
   metricPair,
   metricWarnings,
@@ -3082,10 +3083,7 @@ async function cmdNodeMetrics(args: string[]): Promise<void> {
             metrics?.diskUsedPercent === null || metrics?.diskUsedPercent === undefined
               ? "—"
               : `${metrics.diskUsedPercent}%`,
-          load:
-            metrics?.load1 === null || metrics?.load1 === undefined
-              ? "—"
-              : `${metrics.load1.toFixed(2)}/${metrics.cpuCores ?? "?"}`,
+          cpu: cpuCell(metrics),
           pids: `${metrics?.agentPidsCurrent ?? "—"}/${metrics?.agentPidsMax ?? "—"}`,
           awg3: awgCell(metrics?.awg3Up, metrics?.awg3Peers),
           // Reported only where AWG 2.0 is actually enabled - a dash means the
@@ -3100,7 +3098,7 @@ async function cmdNodeMetrics(args: string[]): Promise<void> {
           handshake: handshakeCell(node.endpoint?.lastHandshakeAt ?? null),
         };
       }),
-      ["node", "ram", "swap", "disk", "load", "pids", "awg3", "awg2", "agent", "handshake"],
+      ["node", "ram", "swap", "disk", "cpu", "pids", "awg3", "awg2", "agent", "handshake"],
     ),
   );
   const warnings = nodes.flatMap((node) => metricWarnings(node.name, node.metrics));
