@@ -216,6 +216,32 @@ The worker fetches every 6 h; **Проверить обновления** on the
 (`POST /api/admin/rules/global/refresh`) fetches at once. The new version flags existing keys
 as outdated, and a key keeps its old routing until its owner re-downloads it.
 
+## After v0.9.64: IPv6 in the blacklist feed, and how to take it back out
+
+v0.9.64 adds iplist's IPv6 list to the built-in `ru_blacklist` feed and
+subtracts ipdeny's Russian IPv6 zone (see
+[`AGENT-HOST-SETUP.md`](./AGENT-HOST-SETUP.md#route-profiles-and-rule-feeds)).
+The first fetch after the update publishes a version of ~4,600 routes instead
+of ~3,800. A host with its own `RULE_FEEDS` is unaffected.
+
+Note the active version id **before** updating, so a rollback has a target:
+
+```bash
+amnezia-panel rules --profile=ru_blacklist
+```
+
+To roll back without a redeploy, pin that version; to resume, follow the feed:
+
+```bash
+amnezia-panel rules-activate <id-of-the-last-version-without-ipv6>
+```
+```bash
+amnezia-panel rules-follow ru_blacklist
+```
+
+Versions are never pruned, so the target stays available. Keys downloaded
+while IPv6 was live keep it until they are downloaded again.
+
 ## Zero-downtime caveats
 
 There are **no strong zero-downtime guarantees** on this single-host Compose

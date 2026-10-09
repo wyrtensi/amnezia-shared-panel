@@ -6,13 +6,14 @@ panel are IPv4-only today.
 
 Related:
 
-- [PR #140](https://github.com/wyrtensi/amnezia-shared-panel/pull/140), closed
-  without merging and kept as branch `feat/ipv6-blacklist-routes`: adds
-  iplist's IPv6 list (minus Russian IPv6 from ipdeny) to the built-in
-  `ru_blacklist` feed. On today's IPv4-only nodes those routes are a blackhole
-  that forces clients onto IPv4 through the tunnel; with Part A below they
-  would carry traffic. Measured 2026-10-10: 4,587 routes (3,777 IPv4 + 810
-  IPv6). Rollback documented in that branch's `docs/DEPLOY-UPDATE.md`.
+- [PR #140](https://github.com/wyrtensi/amnezia-shared-panel/pull/140), shipped
+  in v0.9.64: adds iplist's IPv6 list (minus Russian IPv6 from ipdeny) to the
+  built-in `ru_blacklist` feed. On today's IPv4-only nodes those routes are a
+  blackhole that forces clients onto IPv4 through the tunnel; with Part A
+  below they would carry traffic. Parked at first, then merged after a
+  Windows user with ISP IPv6 was found reaching YouTube over IPv6 past the
+  tunnel. Measured 2026-10-10: 4,587 routes (3,777 IPv4 + 810 IPv6). Rollback
+  in [`DEPLOY-UPDATE.md`](./DEPLOY-UPDATE.md).
 - The 2026-09-03 decision to keep node addresses IPv4-only, which Part B would
   supersede.
 

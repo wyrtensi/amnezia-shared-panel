@@ -512,11 +512,22 @@ describe("resolveRuleFeeds", () => {
     ]);
   });
 
-  it("keeps Russian address space out of the built-in feed", () => {
+  it("keeps Russian address space out of the built-in feed, IPv4 and IPv6", () => {
     const [feed] = resolveRuleFeeds({}, approveAll);
-    expect(feed?.sources.filter((source) => source.exclude)).toEqual([
-      expect.objectContaining({ format: "cidr-lines", exclude: true }),
+    const excluded = feed?.sources.filter((source) => source.exclude) ?? [];
+    expect(excluded.map((source) => source.url)).toEqual([
+      expect.stringContaining("/ipblocks/"),
+      expect.stringContaining("/ipv6/"),
     ]);
+  });
+
+  it("routes the blocked catalogue over IPv6 as well as IPv4", () => {
+    // Without the IPv6 half a client with an IPv6 ISP reached the listed
+    // services directly over IPv6, past the tunnel and into the block.
+    const [feed] = resolveRuleFeeds({}, approveAll);
+    const urls = feed?.sources.filter((source) => !source.exclude).map((s) => s.url);
+    expect(urls).toContain("https://iplist.opencck.org/?format=text&data=cidr4");
+    expect(urls).toContain("https://iplist.opencck.org/?format=text&data=cidr6");
   });
 
   it("accepts an exclude source in RULE_FEEDS but not a feed of exclusions alone", () => {
