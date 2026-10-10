@@ -227,6 +227,9 @@ pnpm build && pnpm test`. Полный справочник команд — **[
 - [`docs/OPERATIONS.md`](docs/OPERATIONS.md) — какой документ за что отвечает и
   процедуры второго дня, которых нет в остальных.
 - [`docs/CLI.md`](docs/CLI.md) — все команды панели **и** ноды.
+- [`docs/IPV6-DESIGN.md`](docs/IPV6-DESIGN.md) — план возможной реализации IPv6
+  на 10.10.2026,
+  работа смешанного парка нод, совместимость клиентов и сохранение full tunnel.
 - [`docs/HOSTING.md`](docs/HOSTING.md) — архитектура, модель личности, типы
   учётных данных, секреты, хостинг целиком.
 - [`docs/AGENT-HOST-SETUP.md`](docs/AGENT-HOST-SETUP.md) — поднять свежий AWG-хост
