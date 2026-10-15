@@ -39,6 +39,8 @@
 
 ## Server and Node Management
 
+- Before any action on a production host or node, and before releasing or deploying, read `FLEET.local.md` (git-ignored, in the repository root of the main checkout) and the skill `.claude/skills/operating-amnezia-fleet/SKILL.md` (Codex: `.agents/skills/operating-amnezia-fleet/SKILL.md`). `FLEET.local.md` is the only source for which hosts exist and which may be deployed to without asking.
+- Host names, addresses, domains, user emails and user counts never enter tracked files; they belong in `FLEET.local.md`, `plans/` or `agent-changes/`, which are never committed (not even with `git add -f`).
 - When setting up, registering, or configuring a new VPN server/node, ALWAYS ask the user for the desired node display name (e.g. asking how the node should be named in the panel, such as "Hetzner DE", "Amsterdam Primary", etc.) rather than assuming or hardcoding a name.
 - Roll a new node out with `scripts/add-node.sh --host <ip> --name <name>` (config in the git-ignored `scripts/add-node.env`; `--dry-run` first). It is idempotent and encodes the traps that break a hand-rolled rollout — see [`docs/NODE-CONNECT.md`](docs/NODE-CONNECT.md).
 - A rollout step exiting 0 is not evidence it did anything. Confirm the node actually appears in the admin CLI's `nodes` output before reporting success.
