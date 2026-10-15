@@ -9,6 +9,9 @@ secrets/
 /infra/node/state/
 # Deployment-specific config for scripts/add-node.sh (addresses and paths).
 /scripts/add-node.env
+# Local fleet facts (host names and addresses) and the Codex skills junction.
+*.local.md
+/.agents/
 /agent-changes/
 /plans/
 /.worktrees/
