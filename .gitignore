@@ -9,8 +9,10 @@ secrets/
 /infra/node/state/
 # Deployment-specific config for scripts/add-node.sh (addresses and paths).
 /scripts/add-node.env
-# Local fleet facts (host names and addresses) and the Codex skills junction.
+# Local-only agent files: fleet facts (host names and addresses), the fleet
+# skill that reads them, and the Codex skills junction.
 *.local.md
+/.claude/skills/operating-amnezia-fleet/
 /.agents/
 /agent-changes/
 /plans/
