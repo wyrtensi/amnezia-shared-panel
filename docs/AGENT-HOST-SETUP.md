@@ -522,6 +522,18 @@ matters:
   `amnezia-panel rules-activate <id>` (or the admin rules page), and
   `rules-follow ru_blacklist` to resume. To drop IPv6 permanently, set
   `RULE_FEEDS` to the defaults minus the two IPv6 sources.
+- **Hand-picked extras** (`apps/worker/src/ruleExtras.ts`, `RULE_EXTRAS`) cover
+  services no community feed carries, one named entry per service with a note
+  on where its ranges came from (first entry: `wardogs`, the game's AWS match
+  servers and Unity relays). They join the list after the Russian exclusion, so
+  GeoIP never cuts a range someone added on purpose, and the version names each
+  one as `extra://<name>` next to the feeds (`amnezia-panel rules`, the admin
+  rules page). They ride along with the built-in feeds only: a host with its
+  own `RULE_FEEDS` gets none. To add one, append an entry with whole provider
+  prefixes rather than the few addresses a capture happened to see — the tests
+  in `ruleExtras.test.ts` refuse a malformed prefix. Like any feed change, the
+  new version flags keys as outdated, and a key's routing changes only when its
+  owner downloads or regenerates it.
 - **The result is compacted** to the fewest prefixes covering exactly the same
   addresses: feeds overlap and sit side by side, and every prefix is a route
   the client has to carry. Measured on 2026-10-04: 3,757 routes for iplist +
