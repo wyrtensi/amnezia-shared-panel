@@ -234,6 +234,9 @@ worker after a one-time `sudo bash infra/prod/install-updater.sh`.
 - [`docs/CLI.md`](docs/CLI.md) — every command for the panel **and** a node
   (dev, build, database, deploy/update, backup, admin CLI; AmneziaWG/awg, Docker,
   node-agent, health).
+- [`docs/IPV6-DESIGN.md`](docs/IPV6-DESIGN.md) — possible IPv6 implementation plan
+  as of 2026-10-10,
+  mixed IPv4/IPv6 fleet behavior, client compatibility and full-tunnel safeguards.
 - [`docs/HOSTING.md`](docs/HOSTING.md) — architecture, identity model, credential
   types, secrets, end-to-end hosting.
 - [`docs/AGENT-HOST-SETUP.md`](docs/AGENT-HOST-SETUP.md) — install a fresh AWG host
