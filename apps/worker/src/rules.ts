@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { isIP } from "node:net";
 import { z } from "zod";
 import { subtractCidrs } from "./cidrSet.js";
+import { RULE_EXTRAS, type RuleExtra } from "./ruleExtras.js";
 
 const MAX_SOURCE_BYTES = 10 * 1024 * 1024;
 const MAX_ENTRIES = 250_000;
@@ -39,6 +40,8 @@ export type ValidRulePayload = {
     droppedInvalid?: number;
     /** Included prefixes an `exclude` source cut into or removed. */
     excludedPrefixes?: number;
+    /** Names of the hand-picked extras merged into this version. */
+    extras?: string[];
   };
 };
 
@@ -249,6 +252,8 @@ export interface RuleRepository {
 export type RuleFeed = {
   profile: RuleProfile;
   sources: RuleSource[];
+  /** Hand-picked ranges added after the exclusions; see `RULE_EXTRAS`. */
+  extras?: RuleExtra[];
   pocApproved: boolean;
 };
 
@@ -260,7 +265,11 @@ export type RuleFetcherOptions = {
 };
 
 /** A feed without the operator-controlled approval gate. */
-export type RuleFeedSources = { profile: RuleProfile; sources: RuleSource[] };
+export type RuleFeedSources = {
+  profile: RuleProfile;
+  sources: RuleSource[];
+  extras?: RuleExtra[];
+};
 
 /**
  * itdoginfo/allow-domains publishes, weekly, the address space of the hosting
@@ -292,8 +301,9 @@ const ITDOG_SUBNETS = [
  * The sources every deployment gets out of the box, so a fresh install has a
  * working route profile without an operator pasting JSON: iplist, the
  * itdoginfo provider ranges and Re:filter domains for the blacklist, minus
- * Russian address space. `RULE_FEEDS` overrides this list entirely;
- * `RULE_FEEDS=[]` opts out of feeds.
+ * Russian address space, plus the hand-picked `RULE_EXTRAS`. `RULE_FEEDS`
+ * overrides this list entirely, extras included; `RULE_FEEDS=[]` opts out of
+ * feeds.
  */
 export const DEFAULT_RULE_FEEDS: RuleFeedSources[] = [
   {
@@ -341,6 +351,7 @@ export const DEFAULT_RULE_FEEDS: RuleFeedSources[] = [
         exclude: true,
       },
     ],
+    extras: RULE_EXTRAS,
   },
 ];
 
@@ -437,6 +448,7 @@ export const resolveRuleFeeds = (
   return resolved.map((feed) => ({
     profile: feed.profile,
     sources: feed.sources.map((source) => ({ ...source })),
+    extras: (feed.extras ?? []).map((extra) => ({ ...extra, cidrs: [...extra.cidrs] })),
     pocApproved: isProfileApproved(feed.profile),
   }));
 };
@@ -450,16 +462,23 @@ export const resolveRuleFeeds = (
  * Runs after validation so the invalid-entry ratio is judged on what the feeds
  * actually sent, not on a list an exclusion has already thinned. An invalid
  * payload passes through untouched: it is quarantined either way.
+ *
+ * `extras` join after the exclusion: a range someone added by hand is a
+ * deliberate choice that a GeoIP list must not cut into. They do not count
+ * toward the excluded share, which measures what the feeds lost.
  */
 export const compactRoutes = (
   validation: ValidRulePayload | InvalidRulePayload,
   excluded: string[],
+  extras: string[] = [],
 ): ValidRulePayload | InvalidRulePayload => {
   if (!validation.ok) return validation;
-  const { cidrs, touched, removedShare } = subtractCidrs(
+  const { cidrs: trimmed, touched, removedShare } = subtractCidrs(
     validation.payload.cidrs,
     excluded,
   );
+  const cidrs =
+    extras.length > 0 ? subtractCidrs([...trimmed, ...extras], []).cidrs : trimmed;
   const payload = { cidrs: [...cidrs].sort(), domains: validation.payload.domains };
   if (Math.max(removedShare[4], removedShare[6]) > MAX_EXCLUDED_SHARE) {
     return {
@@ -499,8 +518,17 @@ export const createRuleFetcher = ({
   fetchImpl = fetch,
   now = () => new Date(),
 }: RuleFetcherOptions) => async (): Promise<void> => {
-  const { profile, sources, pocApproved } = feed;
+  const { profile, sources, extras = [], pocApproved } = feed;
   const lastKnownGood = await repository.getLastKnownGoodRule(profile);
+
+  // Extras live in code, so a bad prefix is a bug, not feed noise: refuse the
+  // tick rather than publish a list that silently lacks the range.
+  for (const extra of extras) {
+    const invalid = extra.cidrs.find((value) => !isCidr(value));
+    if (invalid !== undefined) {
+      throw new Error(`Rule extra "${extra.name}" has an invalid CIDR: ${invalid}`);
+    }
+  }
 
   // Fetch and parse every source, merging them into one payload. The version
   // is a stable checksum of the merged, canonical payload so unchanged feeds
@@ -533,17 +561,29 @@ export const createRuleFetcher = ({
     excluded.push(...cidrs);
   }
 
-  const validation = compactRoutes(
+  const extraCidrs = extras.flatMap((extra) => extra.cidrs);
+  const compacted = compactRoutes(
     validateRuleObject(mergeRulePayloads(parsed)),
     excluded,
+    extraCidrs,
   );
+  const validation =
+    compacted.ok && extras.length > 0
+      ? {
+          ...compacted,
+          report: { ...compacted.report, extras: extras.map((extra) => extra.name) },
+        }
+      : compacted;
   const checksum = stableChecksum(validation.payload);
   if (checksum === lastKnownGood?.version) return;
 
   const baseInput = {
     profile,
     version: checksum,
-    sourceUrl: sources.map((source) => source.url).join(" "),
+    sourceUrl: [
+      ...sources.map((source) => source.url),
+      ...extras.map((extra) => `extra://${extra.name}`),
+    ].join(" "),
     etag: firstEtag,
     checksum,
     payload: validation.payload,

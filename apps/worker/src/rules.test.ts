@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
+import { RULE_EXTRAS } from "./ruleExtras.js";
 import {
   createRuleFetcher,
   DEFAULT_RULE_FEEDS,
@@ -387,6 +388,53 @@ describe("rule feed ingestion", () => {
     expect(repository.storeQuarantinedRule).not.toHaveBeenCalled();
   });
 
+  it("adds a feed's extras after the exclusion, without fetching them", async () => {
+    // A hand-picked range is a deliberate choice: the GeoIP exclusion must not
+    // cut it, and there is nothing to download for it.
+    const repository = createRepository();
+    const { fetchImpl, feed } = excludeFeed({
+      "include.lst": "203.0.113.0/24",
+      "domains.lst": "blocked.example",
+      "exclude.lst": "198.51.100.0/24",
+    });
+
+    await createRuleFetcher({
+      repository,
+      feed: { ...feed, extras: [{ name: "game", cidrs: ["198.51.100.0/25", "192.0.2.0/24"] }] },
+      fetchImpl,
+    })();
+
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+    const activated = vi.mocked(repository.activateRuleVersion).mock.calls[0]?.[0];
+    expect(activated?.payload.cidrs).toEqual([
+      "192.0.2.0/24",
+      "198.51.100.0/25",
+      "203.0.113.0/24",
+    ]);
+    expect(activated?.validationReport).toMatchObject({ cidrCount: 3, extras: ["game"] });
+    // The version names the extra next to the feeds it was built from.
+    expect(activated?.sourceUrl.split(" ")).toContain("extra://game");
+  });
+
+  it("refuses an extra with a malformed CIDR instead of shipping without it", async () => {
+    const repository = createRepository();
+    const { fetchImpl, feed } = excludeFeed({
+      "include.lst": "203.0.113.0/24",
+      "domains.lst": "blocked.example",
+      "exclude.lst": "198.51.100.0/24",
+    });
+
+    await expect(
+      createRuleFetcher({
+        repository,
+        feed: { ...feed, extras: [{ name: "game", cidrs: ["192.0.2.0/33"] }] },
+        fetchImpl,
+      })(),
+    ).rejects.toThrow('Rule extra "game" has an invalid CIDR: 192.0.2.0/33');
+    expect(repository.activateRuleVersion).not.toHaveBeenCalled();
+    expect(repository.storeQuarantinedRule).not.toHaveBeenCalled();
+  });
+
   it("rejects an oversized response from Content-Length before reading its body", async () => {
     const repository = createRepository();
     const response = new Response(sourceBody, {
@@ -507,9 +555,29 @@ describe("resolveRuleFeeds", () => {
       {
         profile: "ru_blacklist",
         sources: [{ url: "https://example.com/a.lst", format: "cidr-lines" }],
+        extras: [],
         pocApproved: true,
       },
     ]);
+  });
+
+  it("adds the built-in extras to the default blacklist only", () => {
+    // An operator who wrote their own RULE_FEEDS owns the whole list; the
+    // extras ride along with the defaults and nowhere else.
+    expect(resolveRuleFeeds({}, approveAll)[0]?.extras).toEqual(RULE_EXTRAS);
+    expect(
+      resolveRuleFeeds(
+        {
+          RULE_FEEDS: JSON.stringify([
+            {
+              profile: "ru_blacklist",
+              sources: [{ url: "https://example.com/a.lst", format: "cidr-lines" }],
+            },
+          ]),
+        },
+        approveAll,
+      )[0]?.extras,
+    ).toEqual([]);
   });
 
   it("keeps Russian address space out of the built-in feed, IPv4 and IPv6", () => {
@@ -603,5 +671,15 @@ describe("resolveRuleFeeds", () => {
 
     expect(DEFAULT_RULE_FEEDS[0]!.sources).toHaveLength(expected);
     expect(resolveRuleFeeds({}, approveAll)[0]?.sources).toHaveLength(expected);
+  });
+
+  it("does not let a caller's mutation leak into the shared extras", () => {
+    const expected = structuredClone(RULE_EXTRAS);
+    const first = resolveRuleFeeds({}, approveAll);
+    first[0]!.extras![0]!.cidrs.push("192.0.2.0/24");
+    first[0]!.extras!.push({ name: "x", cidrs: [] });
+
+    expect(RULE_EXTRAS).toEqual(expected);
+    expect(resolveRuleFeeds({}, approveAll)[0]?.extras).toEqual(expected);
   });
 });

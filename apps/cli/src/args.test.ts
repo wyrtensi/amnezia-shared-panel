@@ -695,6 +695,7 @@ describe("rule source names", () => {
     "https://example.org/a.txt",
     "https://feeds.acme-corp.io/ru.txt",
     "https://github.com/",
+    "extra://wardogs",
     "not a url",
   ];
 

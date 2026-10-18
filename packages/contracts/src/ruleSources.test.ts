@@ -47,6 +47,11 @@ describe("sourceName", () => {
     );
   });
 
+  it("names a hand-picked extra by its own slug", () => {
+    // The worker records a profile's built-in extras as `extra://<name>`.
+    expect(sourceName("extra://wardogs")).toBe("wardogs");
+  });
+
   it("looks past a CDN's own path prefix and its version pin", () => {
     expect(sourceName(CDN_PREFIXED)).toBe("geoip-lists");
     expect(
