@@ -42,7 +42,7 @@ docker image inspect \
 
 Expected platform is `linux/amd64` and the repository digest is `amneziavpn/amneziawg-go@sha256:3c78...77c44`.
 
-The node-agent Dockerfile also pins its Node 22 and Docker CLI Linux/amd64 base manifests. Build it locally with `scripts/build-node-agent.sh`, then copy the printed immutable `sha256:...` image ID into `.env`. A published `repository@sha256:digest` reference is accepted as well. Deployment never builds an image implicitly.
+The node-agent Dockerfile also pins its Node 24 and Docker CLI Linux/amd64 base manifests. Build it locally with `scripts/build-node-agent.sh`, then copy the printed immutable `sha256:...` image ID into `.env`. A published `repository@sha256:digest` reference is accepted as well. Deployment never builds an image implicitly.
 
 ## Local preparation
 

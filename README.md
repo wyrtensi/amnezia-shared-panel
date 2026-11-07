@@ -199,6 +199,10 @@ Sensitive local material belongs in the git-ignored `secrets/` directory.
 
 ## Quick start (local dev)
 
+Use Node.js 24 and pnpm 12.18.0, as pinned in `package.json`. If your global
+package manager is older, run the matching version with
+`npm exec --package pnpm@12.18.0 -- pnpm <command>`.
+
 ```bash
 pnpm install
 cd infra/dev && docker compose --env-file .env up --build
@@ -209,7 +213,9 @@ The app comes up at `http://127.0.0.1:3000`. The dev stack sets a dev identity
 or Google. To run the services in watch mode without containers: `pnpm dev`.
 
 Before pushing, run what CI runs: `pnpm lint && pnpm typecheck && pnpm build &&
-pnpm test`. Full command reference: **[`docs/CLI.md`](docs/CLI.md)**.
+pnpm --filter @amnezia/db db:migrate && pnpm -r --workspace-concurrency=1 --if-present test`
+against a dedicated test database. Tests are serialized because integration
+suites reset shared tables. Full command reference: **[`docs/CLI.md`](docs/CLI.md)**.
 
 ## Deploy & update (production)
 

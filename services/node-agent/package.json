@@ -25,12 +25,12 @@
     "typescript"
   ],
   "engines": {
-    "node": ">=22.19.0"
+    "node": ">=24.0.0"
   },
   "scripts": {
     "lint": "npx eslint . --max-warnings=0",
     "dev": "npx cross-env ENV=development nodemon -q",
-    "build": "npx tsc --project tsconfig.build.json && npx tsconfig-replace-paths --project tsconfig.build.json --src ./src",
+    "build": "npx tsc --project tsconfig.build.json && npx tsc-alias -p tsconfig.build.json",
     "test": "npm run test:typecheck && vitest run",
     "test:typecheck": "tsc --project tsconfig.json",
     "test:watch": "vitest",
@@ -57,7 +57,7 @@
     "cross-env": "^10.1.0",
     "dotenv": "^18.0.9",
     "fastify": "^5.12.8",
-    "fastify-metrics": "^14.2.0",
+    "fastify-metrics": "^15.0.1",
     "i18next": "^26.7.2",
     "i18next-http-middleware": "^3.10.0",
     "ipaddr.js": "2.5.0",
@@ -69,16 +69,17 @@
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
-    "@types/node": "^26.6.6",
+    "@types/node": "^24.19.2",
     "@types/node-cron": "^3.0.11",
     "@types/qrcode": "^1.5.6",
+    "@typescript/native": "npm:typescript@^7.0.2",
     "@vitest/coverage-v8": "^5.1.0",
     "eslint": "^10.14.0",
     "nodemon": "^3.1.14",
     "ts-node": "10.9.2",
+    "tsc-alias": "^1.9.10",
     "tsconfig-paths": "^4.2.0",
-    "tsconfig-replace-paths": "0.0.14",
-    "typescript": "^6.0.3",
+    "typescript": "npm:@typescript/typescript6@^6.0.2",
     "typescript-eslint": "^8.72.1",
     "vitest": "^5.1.0"
   }

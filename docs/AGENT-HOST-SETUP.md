@@ -825,7 +825,7 @@ with a fresh `apiKey`. The key is compared in constant time and must be ≥32 ch
 
 ### node-agent build / OpenAPI issues
 
-- Build only via `sh scripts/build-node-agent.sh` (it pins Node 22 + Docker CLI
+- Build only via `sh scripts/build-node-agent.sh` (it pins Node 24 + Docker CLI
   bases and tags `amnezia-panel/node-agent:1.0.0-local`). Deployment never builds
   implicitly (`pull_policy: never`); if preflight says "NODE_AGENT_IMAGE is not
   present locally", you skipped the build or pasted the wrong ID.
