@@ -199,9 +199,11 @@ Sensitive local material belongs in the git-ignored `secrets/` directory.
 
 ## Quick start (local dev)
 
-Use Node.js 24 and pnpm 12.18.0, as pinned in `package.json`. If your global
-package manager is older, run the matching version with
-`npm exec --package pnpm@12.18.0 -- pnpm <command>`.
+Use Node.js 24 and pnpm 12.18.0, as pinned in `package.json`. Install or update
+the package manager with `npm install --global pnpm@12.18.0`, then check
+`pnpm --version`. Older JavaScript-based pnpm launchers may fail to bootstrap
+the native pnpm 12 executable. To run the matching version without a global
+installation, use `npm exec --package pnpm@12.18.0 -- pnpm <command>`.
 
 ```bash
 pnpm install
