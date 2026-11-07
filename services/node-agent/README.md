@@ -1,8 +1,8 @@
 # Amnezia API
 
-[![Node.js](https://img.shields.io/badge/Node.js-%3E%3D22.19-339933?logo=node.js&logoColor=white)](https://nodejs.org/)
+[![Node.js](https://img.shields.io/badge/Node.js-%3E%3D24-339933?logo=node.js&logoColor=white)](https://nodejs.org/)
 [![Fastify](https://img.shields.io/badge/Fastify-5.x-000000?logo=fastify&logoColor=white)](https://fastify.dev/)
-[![TypeScript](https://img.shields.io/badge/TypeScript-6.x-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
+[![TypeScript](https://img.shields.io/badge/TypeScript-7.x-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
 [![CI](https://github.com/kyoresuas/amnezia-api/actions/workflows/ci.yml/badge.svg)](https://github.com/kyoresuas/amnezia-api/actions/workflows/ci.yml)
 [![GHCR](https://img.shields.io/badge/GHCR-amnezia--api-2496ED?logo=docker&logoColor=white)](https://github.com/kyoresuas/amnezia-api/pkgs/container/amnezia-api)
 [![License](https://img.shields.io/badge/License-MIT-2ea44f.svg)](LICENSE)
@@ -60,7 +60,7 @@ Already have a working Amnezia server? You do **not** need to reinstall its VPN 
 - A Linux server with at least one supported Amnezia protocol already installed.
 - Root or `sudo` access for the guided installer.
 - Debian or Ubuntu for automatic dependency installation.
-- Docker with Compose for Docker mode, or Node.js 22.19+ for PM2 mode.
+- Docker with Compose for Docker mode, or Node.js 24+ for PM2 mode.
 
 ## Quick start
 
@@ -262,6 +262,8 @@ Report suspected vulnerabilities privately by following the instructions in [SEC
 
 ## Development
 
+The build uses native TypeScript 7. The official TypeScript 6 API compatibility package remains available for ESLint and ts-node.
+
 ```bash
 npm ci
 npm run dev
@@ -276,7 +278,7 @@ npm run build
 npm run openapi:check
 ```
 
-When routes or schemas change, regenerate the portable contract with `npm run openapi:generate`. CI runs lint, tests, build, and contract checks on Node.js 22 and 24. See [CONTRIBUTING.md](CONTRIBUTING.md) for the full contribution workflow.
+When routes or schemas change, regenerate the portable contract with `npm run openapi:generate`. The repository CI runs tests, build, and contract checks on Node.js 24. See [CONTRIBUTING.md](CONTRIBUTING.md) for the full contribution workflow.
 
 ## Ecosystem
 
