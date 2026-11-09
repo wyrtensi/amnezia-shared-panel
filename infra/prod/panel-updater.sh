@@ -7,6 +7,7 @@
 # infra/prod/update.sh and writes the outcome back into the spool for the panel
 # to display. Install with infra/prod/install-updater.sh.
 # The lock is held on $PANEL_UPDATER_LOCK_DIR (default /run/amnezia-panel), never in the spool.
+# The result is staged in $PANEL_UPDATER_STAGING_DIR (default: the spool's parent), never in the spool.
 set -uo pipefail
 
 REPO_DIR="${PANEL_REPO_DIR:-/opt/amnezia-panel}"
@@ -17,6 +18,10 @@ SPOOL_DIR="${UPDATE_SPOOL_HOST_DIR:-/var/lib/amnezia-panel/update}"
 LOCK_DIR="${PANEL_UPDATER_LOCK_DIR:-/run/amnezia-panel}"
 REQUEST="${SPOOL_DIR}/request.json"
 RESULT="${SPOOL_DIR}/result.json"
+# The result is built in the spool's parent (root-owned, not mounted into any
+# container) and renamed into the spool. It must be the same filesystem as the
+# spool, so the final step is an atomic rename(2) and not a copy.
+RESULT_STAGING_DIR="${PANEL_UPDATER_STAGING_DIR:-$(dirname "$SPOOL_DIR")}"
 # Request id, overwritten once the request body is parsed. write_result() is
 # defined this early because the refusal branch below has to report through it
 # before the body has been read.
@@ -29,13 +34,20 @@ write_result() {
   msg="${msg//\\/\\\\}"
   msg="${msg//\"/\\\"}"
   msg="${msg//$'\n'/ }"
-  # Write to a FRESH random file in the spool (mktemp: O_EXCL, unpredictable
-  # name — the container can't pre-plant a symlink at it), then rename onto
-  # $RESULT. A same-filesystem rename() replaces whatever is at $RESULT (even a
-  # planted symlink) instead of writing through it as root.
-  tmp="$(mktemp "${SPOOL_DIR}/result.XXXXXX")" || return 1
+  # Build the file OUTSIDE the spool: anything root creates inside it can be
+  # swapped for a symlink before root writes or chmods it. The staging dir is
+  # root-only, so the write and the chmod are safe there. 0644 because
+  # control-api reads the result as uid 1000; mktemp's 0600 reads as "no data".
+  if [ "$(stat -c %d "$RESULT_STAGING_DIR")" != "$(stat -c %d "$SPOOL_DIR")" ]; then
+    echo "panel-updater: $RESULT_STAGING_DIR and $SPOOL_DIR are on different filesystems; result not written" >&2
+    return 1
+  fi
+  tmp="$(mktemp "${RESULT_STAGING_DIR}/result.XXXXXX")" || return 1
   printf '{"id":"%s","finishedAt":"%s","ok":%s,"message":"%s"}\n' \
     "$ID" "$ts" "$ok" "$msg" >"$tmp"
+  chmod 0644 "$tmp"
+  # A same-filesystem rename() replaces whatever is at $RESULT (even a planted
+  # symlink) instead of writing through it as root.
   mv -f "$tmp" "$RESULT"
 }
 
