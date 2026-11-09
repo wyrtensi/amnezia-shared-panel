@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { and, count, desc, eq, inArray, sql } from "drizzle-orm";
 import {
   afterAll,
@@ -5824,6 +5824,125 @@ describe("PostgresControlRepository per-user delete", () => {
       });
 
       expect(resolved.email).toBe("edge@anywhere.example");
+    },
+  );
+});
+
+/**
+ * A key outlives the permission to create keys on its server: the admin can
+ * switch the node off for new keys or take it out of the user's allowed list.
+ * `/api/nodes` drops such a node, and the key card used to look its server up
+ * there, so it showed "—". The name now comes with the key itself.
+ */
+describe("PostgresControlRepository server name on keys", () => {
+  const database = databaseUrl ? createDatabase(databaseUrl) : null;
+  const keyring = { 1: randomBytes(32) };
+  let nodeId: string;
+  let owner: Actor;
+
+  beforeEach(async () => {
+    if (!database) return;
+    await database.db.delete(portalPolicy);
+    await database.db.insert(portalPolicy).values({});
+    const suffix = randomBytes(6).toString("hex");
+    const credentials = encryptSecret("api-key", keyring, 1);
+    const label = encryptSecret("label-secret", keyring, 1);
+    const [node] = await database.db
+      .insert(nodes)
+      .values({
+        name: `closed-node-${suffix}`,
+        publicName: `Closed ${suffix}`,
+        apiBaseUrl: "http://127.0.0.1:4001",
+        credentialsCiphertext: credentials.ciphertext,
+        credentialsNonce: credentials.nonce,
+        credentialsAuthTag: credentials.authTag,
+        credentialsKeyVersion: credentials.keyVersion,
+        labelSecretCiphertext: label.ciphertext,
+        labelSecretNonce: label.nonce,
+        labelSecretAuthTag: label.authTag,
+        labelSecretKeyVersion: label.keyVersion,
+      })
+      .returning();
+    if (!node) throw new Error("Failed to seed node");
+    nodeId = node.id;
+    const [user] = await database.db
+      .insert(users)
+      .values({ email: `server-name-${suffix}@example.com` })
+      .returning();
+    if (!user) throw new Error("Failed to seed owner");
+    owner = {
+      id: user.id,
+      email: user.email,
+      displayName: null,
+      role: "user",
+      status: "active",
+    };
+    const config = encryptSecret("vpn://stored-config", keyring, 1);
+    await database.db.insert(vpnKeys).values({
+      ownerId: user.id,
+      nodeId,
+      publicKey: `pk-${suffix}`,
+      nodeLabel: `ap_server_name_${suffix}`,
+      protocol: "awg3",
+      state: "active",
+      routeProfile: "full_tunnel",
+      deviceLabel: "Laptop",
+      configCiphertext: config.ciphertext,
+      configNonce: config.nonce,
+      configAuthTag: config.authTag,
+      configKeyVersion: config.keyVersion,
+    });
+  });
+
+  // Last block in the file: leave no keys behind, or the worker suite that
+  // shares this database cannot clear `nodes` (vpn_keys.node_id is RESTRICT).
+  afterEach(async () => {
+    if (!database) return;
+    await database.db.delete(vpnKeys).where(eq(vpnKeys.nodeId, nodeId));
+    await database.db.delete(nodes).where(eq(nodes.id, nodeId));
+    await database.db.delete(users).where(eq(users.id, owner.id));
+  });
+
+  afterAll(async () => {
+    if (database) await database.client.end();
+  });
+
+  const subject = (): PostgresControlRepository => {
+    if (!database) throw new Error("No database");
+    return new PostgresControlRepository({ db: database.db, keyring });
+  };
+
+  const listedNodeIds = async (): Promise<string[]> =>
+    ((await subject().listNodes(owner)) as Array<{ id: string }>).map(
+      (node) => node.id,
+    );
+
+  runDatabaseTest("names the server of a key on a disabled node", async () => {
+    if (!database) return;
+    await database.db
+      .update(nodes)
+      .set({ enabled: false })
+      .where(eq(nodes.id, nodeId));
+
+    const [key] = await subject().listKeys(owner);
+    expect(key?.nodeName).toMatch(/^Closed /);
+    expect(JSON.stringify(key)).not.toContain("closed-node-");
+    // The create form still does not offer it.
+    expect(await listedNodeIds()).not.toContain(nodeId);
+  });
+
+  runDatabaseTest(
+    "names the server of a key outside the user's allowed nodes",
+    async () => {
+      if (!database) return;
+      await database.db
+        .update(users)
+        .set({ policyOverride: { allowedNodeIds: [randomUUID()] } })
+        .where(eq(users.id, owner.id));
+
+      const [key] = await subject().listKeys(owner);
+      expect(key?.nodeName).toMatch(/^Closed /);
+      expect(await listedNodeIds()).not.toContain(nodeId);
     },
   );
 });

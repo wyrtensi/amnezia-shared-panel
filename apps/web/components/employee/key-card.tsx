@@ -46,7 +46,7 @@ import { TrafficSplit } from "@/components/inline-traffic";
 import { useT } from "@/lib/i18n/provider";
 import { deviceIconFor } from "@/components/device-icon";
 import { deviceTypeLabel } from "@/lib/device-type";
-import type { KeyView, Me, NodeView } from "@/lib/types";
+import type { KeyView, Me } from "@/lib/types";
 
 const ROUTE_LABEL: Record<string, string> = {
   full_tunnel: "route.full_tunnel",
@@ -66,7 +66,6 @@ const PROTOCOL_LABEL: Record<string, string> = {
 
 export function KeyCard({
   keyView,
-  node,
   me,
   busy,
   onShowConfig,
@@ -79,7 +78,6 @@ export function KeyCard({
   onConfigDelivered,
 }: {
   keyView: KeyView;
-  node?: NodeView;
   me: Me;
   busy: boolean;
   /**
@@ -229,7 +227,7 @@ export function KeyCard({
                     without making it louder. */}
                 <span className="mt-1 inline-flex max-w-full items-center gap-1.5 rounded-md bg-well px-1.5 py-0.5 text-[11px] font-medium text-muted-foreground shadow-[var(--inset-shadow)]">
                   <Server className="size-3 shrink-0" />
-                  <span className="truncate">{node?.name ?? "—"}</span>
+                  <span className="truncate">{keyView.nodeName}</span>
                 </span>
               </div>
             </div>
@@ -541,7 +539,7 @@ export function KeyCard({
         <KeyInternalNameDialog
           open={editingInternal}
           deviceLabel={keyView.deviceLabel || deviceTypeLabel(t, keyView.deviceType)}
-          nodeName={node?.name ?? "—"}
+          nodeName={keyView.nodeName}
           internalName={keyView.internalName ?? null}
           onClose={() => setEditingInternal(false)}
           onSave={onSetInternalName}
@@ -551,7 +549,7 @@ export function KeyCard({
       <KeyRenameDialog
         open={renaming}
         deviceLabel={keyView.deviceLabel}
-        nodeName={node?.name ?? "—"}
+        nodeName={keyView.nodeName}
         keyNumber={keyView.keyNumber}
         nameDisplay={keyView.nameDisplay}
         onClose={() => setRenaming(false)}

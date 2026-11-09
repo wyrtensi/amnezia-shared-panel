@@ -193,6 +193,12 @@ export type KeyTraffic = { receivedBytes: string; sentBytes: string };
 export type KeyView = {
   id: string;
   nodeId: string;
+  /**
+   * The server's user-facing name, sent with the key. Not looked up in
+   * `/api/nodes`: that list holds only the servers the user may create keys
+   * on, and a key stays on its server after that permission is gone.
+   */
+  nodeName: string;
   state: string;
   protocol: string;
   deviceType: string;

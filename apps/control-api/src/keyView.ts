@@ -25,6 +25,12 @@ export type KeyRow = {
   createdAt: Date;
 };
 
+/** The two node columns the key's server name is derived from. */
+export type KeyNodeRow = {
+  name: string;
+  publicName: string | null;
+};
+
 export type PeerCurrentRow = {
   latestHandshakeAt: Date | null;
   receivedBytes: bigint | number;
@@ -73,12 +79,14 @@ export const internalNameFor = (
 export const toKeyView = ({
   actor,
   key,
+  node,
   current,
   policy,
   activeByProfile,
 }: {
   actor: Pick<Actor, "id" | "role">;
   key: KeyRow;
+  node: KeyNodeRow;
   current: PeerCurrentRow | null;
   policy: PortalPolicy;
   activeByProfile: Map<string, string>;
@@ -86,6 +94,11 @@ export const toKeyView = ({
   id: key.id,
   ownerId: key.ownerId,
   nodeId: key.nodeId,
+  // Read from the key's own node, not from `/api/nodes`: that list holds only
+  // the servers the user may create keys on, and a key outlives that
+  // permission. Same rule as `listNodes`: the public name when there is one,
+  // so the internal admin name never leaves the server.
+  nodeName: node.publicName ?? node.name,
   publicKey: policy.showPublicKey ? key.publicKey : undefined,
   protocol: key.protocol,
   state: key.state,
