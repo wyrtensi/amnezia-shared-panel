@@ -12,6 +12,7 @@ import {
 import {
   defaultKeyNameDisplay,
   idleAccessSyncStatus,
+  quotaRequestNotifyPayloadSchema,
   WORKER_PERIOD_FIELD_NAMES,
 } from "@amnezia/contracts";
 import type { KeyLimitMode } from "@amnezia/contracts";
@@ -418,6 +419,50 @@ describe("PostgresControlRepository quota race", () => {
     if (!database) throw new Error("No database");
     await database.db.update(portalPolicy).set({ keyLimitMode: mode });
   };
+
+  runDatabaseTest(
+    "a new quota request queues one notification with what the message needs",
+    async () => {
+      if (!database) return;
+      const repository = new PostgresControlRepository({
+        db: database.db,
+        keyring,
+      });
+      const targetNode = await seedNode("quota-notify");
+      const owner = await seedQuotaUser("notify@example.com");
+
+      const created = await repository.createQuotaRequest(owner, {
+        requestedLimit: 6,
+        nodeId: targetNode,
+        reason: "second laptop",
+      });
+
+      const jobs = await database.db
+        .select({
+          type: jobOutbox.type,
+          deduplicationKey: jobOutbox.deduplicationKey,
+          payload: jobOutbox.payload,
+          status: jobOutbox.status,
+        })
+        .from(jobOutbox)
+        .where(eq(jobOutbox.type, "notify.quota_request"));
+      expect(jobs).toHaveLength(1);
+      expect(jobs[0]).toMatchObject({
+        deduplicationKey: `notify.quota_request:${created.id}`,
+        status: "pending",
+        payload: {
+          quotaRequestId: created.id,
+          email: "notify@example.com",
+          requestedLimit: 6,
+          nodeName: "quota-notify",
+          reason: "second laptop",
+        },
+      });
+      expect(
+        quotaRequestNotifyPayloadSchema.safeParse(jobs[0]?.payload).success,
+      ).toBe(true);
+    },
+  );
 
   runDatabaseTest(
     "approving a per-server request raises that server only",

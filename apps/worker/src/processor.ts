@@ -1,5 +1,11 @@
 import { z } from "zod";
-import { ACCESS_SYNC_JOB_TYPE, RULES_REFRESH_JOB_TYPE } from "@amnezia/contracts";
+import {
+  ACCESS_SYNC_JOB_TYPE,
+  QUOTA_REQUEST_NOTIFY_JOB_TYPE,
+  RULES_REFRESH_JOB_TYPE,
+  quotaRequestNotifyPayloadSchema,
+} from "@amnezia/contracts";
+import { formatQuotaRequestMessage, type TelegramNotifier } from "./telegram.js";
 import type { AccessSyncOutcome } from "./accessReconcile.js";
 import type { NodeAgent } from "./nodeAgent.js";
 import type {
@@ -46,6 +52,14 @@ export type JobProcessorOptions = {
    * not need to wire one.
    */
   log?: (message: string) => void;
+  /**
+   * Where operator notifications go (Telegram), or undefined when the worker
+   * has no TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID. Notification jobs then
+   * complete without sending.
+   */
+  notifier?: TelegramNotifier;
+  /** PANEL_PUBLIC_URL, for the link in a notification. */
+  panelPublicUrl?: string | null;
   now?: () => Date;
 };
 
@@ -60,6 +74,8 @@ export const createJobProcessor = ({
   ruleFetchers = [],
   accessSync,
   log = () => undefined,
+  notifier,
+  panelPublicUrl = null,
   now = () => new Date(),
 }: JobProcessorOptions) => {
   const reconcileOrphan = async (
@@ -74,6 +90,34 @@ export const createJobProcessor = ({
   };
 
   return async (job: OutboxJob): Promise<void> => {
+    if (job.type === QUOTA_REQUEST_NOTIFY_JOB_TYPE) {
+      // System-generated, unlike the two operator-triggered jobs below: with
+      // no chat configured there is nobody to tell, and that is not a failure.
+      if (!notifier) {
+        await repository.completeJob(job.id);
+        return;
+      }
+      const parsed = quotaRequestNotifyPayloadSchema.safeParse(job.payload);
+      if (!parsed.success) {
+        // Retrying cannot fix a payload, so fail it outright.
+        await repository.failJob(
+          job.id,
+          "notify.quota_request job payload is malformed",
+        );
+        return;
+      }
+      try {
+        await notifier.send(formatQuotaRequestMessage(parsed.data, panelPublicUrl));
+      } catch (error) {
+        // Same reason as access.sync below: the runner records a throw only in
+        // job_outbox.last_error, so log it before the retry/backoff.
+        const reason = error instanceof Error ? error.message : "unknown error";
+        log(`notify.quota_request: ${reason}`);
+        throw error;
+      }
+      await repository.completeJob(job.id);
+      return;
+    }
     if (job.type === RULES_REFRESH_JOB_TYPE) {
       // Operator-triggered "check for updates": run exactly the fetchers the
       // 6-hourly timer runs. A feed whose checksum still matches the active

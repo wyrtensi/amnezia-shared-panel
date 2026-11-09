@@ -30,6 +30,7 @@ import type {
   PortalPolicyOverride,
   ProtocolKind,
   QuotaRequest,
+  QuotaRequestNotifyPayload,
   RouteProfile,
   RulesRefreshStatus,
   UpdateNodeRequest,
@@ -49,6 +50,7 @@ import {
 import type { ServiceCheckUserState } from "@amnezia/contracts";
 import {
   ACCESS_SYNC_DEDUPLICATION_KEY,
+  QUOTA_REQUEST_NOTIFY_JOB_TYPE,
   accessDomainListSchema,
   clampWorkerPeriod,
   createKeyRequestSchema,
@@ -2023,18 +2025,20 @@ export class PostgresControlRepository implements ControlRepository {
     const targetNodeId = request.nodeId ?? null;
     try {
       return await this.options.db.transaction(async (tx) => {
+        let targetNodeName: string | null = null;
         if (targetNodeId) {
           // A per-server request may only name a server this user can actually
           // use, checked inside the transaction so it cannot race a node being
           // disabled or removed.
           const [node] = await tx
-            .select({ id: nodes.id, enabled: nodes.enabled })
+            .select({ id: nodes.id, name: nodes.name, enabled: nodes.enabled })
             .from(nodes)
             .where(eq(nodes.id, targetNodeId))
             .limit(1);
           if (!node || !node.enabled) {
             throw new ApiError(400, "Node not found", "NODE_NOT_FOUND");
           }
+          targetNodeName = node.name;
           const [user] = await tx
             .select({ policyOverride: users.policyOverride })
             .from(users)
@@ -2088,8 +2092,28 @@ export class PostgresControlRepository implements ControlRepository {
             nodeId: targetNodeId,
             reason: request.reason ?? "",
           })
-          .returning({ id: quotaRequests.id, status: quotaRequests.status });
+          .returning({
+            id: quotaRequests.id,
+            status: quotaRequests.status,
+            createdAt: quotaRequests.createdAt,
+          });
         if (!created) throw new Error("Quota request insert returned no row");
+        // Nobody is told about a new request otherwise: the worker sends this
+        // to the operator's Telegram chat, or drops it when none is set up.
+        const notifyPayload: QuotaRequestNotifyPayload = {
+          quotaRequestId: created.id,
+          email: actor.email,
+          displayName: actor.displayName,
+          requestedLimit: request.requestedLimit,
+          nodeName: targetNodeName,
+          reason: request.reason ?? "",
+          createdAt: created.createdAt.toISOString(),
+        };
+        await tx.insert(jobOutbox).values({
+          type: QUOTA_REQUEST_NOTIFY_JOB_TYPE,
+          deduplicationKey: `${QUOTA_REQUEST_NOTIFY_JOB_TYPE}:${created.id}`,
+          payload: notifyPayload,
+        });
         await tx.insert(auditEvents).values({
           actorUserId: actor.id,
           actorType: "user",
@@ -2101,7 +2125,7 @@ export class PostgresControlRepository implements ControlRepository {
             nodeId: targetNodeId,
           },
         });
-        return created;
+        return { id: created.id, status: created.status };
       });
     } catch (error) {
       // Safety net for a concurrent double-submit racing the supersede above.
