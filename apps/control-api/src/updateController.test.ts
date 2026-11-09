@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -12,6 +12,7 @@ describe("createUpdateController", () => {
     dir = await mkdtemp(join(tmpdir(), "panel-update-"));
   });
   afterEach(async () => {
+    await chmod(dir, 0o700);
     await rm(dir, { recursive: true, force: true });
   });
 
@@ -20,6 +21,34 @@ describe("createUpdateController", () => {
     const status = await controller.status();
     expect(status.enabled).toBe(false);
     expect(status.version).toEqual(VERSION);
+    await expect(controller.request("admin@x.io")).rejects.toMatchObject({
+      code: "UPDATE_NOT_CONFIGURED",
+    });
+  });
+
+  // root ignores directory modes, so the case cannot be staged under root.
+  it.skipIf(process.getuid?.() === 0)(
+    "reports disabled when the spool dir is not writable",
+    async () => {
+      // Docker creates a missing bind-mount source as root, so before
+      // install-updater.sh has run the spool exists but control-api (uid 1000)
+      // cannot write to it, and nothing on the host would pick a request up.
+      await chmod(dir, 0o555);
+      const controller = createUpdateController({ spoolDir: dir, version: VERSION });
+      const status = await controller.status();
+      expect(status.enabled).toBe(false);
+      await expect(controller.request("admin@x.io")).rejects.toMatchObject({
+        code: "UPDATE_NOT_CONFIGURED",
+      });
+    },
+  );
+
+  it("reports disabled when the spool dir does not exist", async () => {
+    const controller = createUpdateController({
+      spoolDir: join(dir, "missing"),
+      version: VERSION,
+    });
+    expect((await controller.status()).enabled).toBe(false);
     await expect(controller.request("admin@x.io")).rejects.toMatchObject({
       code: "UPDATE_NOT_CONFIGURED",
     });
