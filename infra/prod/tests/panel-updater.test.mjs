@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { lstat, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -115,4 +115,47 @@ test("concurrent runs are serialised", executing, async (t) => {
   const written = JSON.parse(await readFile(join(f.spool, "result.json"), "utf8"));
   assert.equal(written.id, "first");
   assert.equal(written.ok, true);
+});
+
+test("root never creates the result inside the container-writable spool", async () => {
+  const script = await readFile(scriptUrl, "utf8");
+
+  // A file root creates in the spool can be swapped for a symlink before root
+  // writes or chmods it. The result is built next to the spool and renamed in.
+  assert.doesNotMatch(script, /mktemp "\$\{SPOOL_DIR\}/, "the result must not be created in the spool");
+  assert.match(script, /RESULT_STAGING_DIR="\$\{PANEL_UPDATER_STAGING_DIR:-\$\(dirname "\$SPOOL_DIR"\)\}"/);
+  assert.match(script, /chmod 0644 "\$tmp"/);
+});
+
+test("the result is readable by the container", executing, async (t) => {
+  const f = await fixture("#!/usr/bin/env bash\necho updated\n");
+  t.after(f.cleanup);
+  await writeFile(join(f.spool, "request.json"), '{"id":"req-read"}\n');
+
+  const result = f.run();
+
+  assert.equal(result.status, 0, result.stderr);
+  const path = join(f.spool, "result.json");
+  // control-api runs as uid 1000 while the updater runs as root, so a 0600
+  // result reads as "no data" and the panel never shows how the update went.
+  assert.equal((await lstat(path)).mode & 0o777, 0o644);
+  assert.equal(JSON.parse(await readFile(path, "utf8")).id, "req-read");
+  const leftovers = (await readdir(f.root)).filter((name) => name.startsWith("result."));
+  assert.deepEqual(leftovers, [], "no staging file is left next to the spool");
+});
+
+test("a symlink planted at result.json is replaced, not written through", executing, async (t) => {
+  const f = await fixture("#!/usr/bin/env bash\necho updated\n");
+  t.after(f.cleanup);
+  const victim = join(f.root, "victim.txt");
+  await writeFile(victim, "keep me\n", { mode: 0o600 });
+  await symlink(victim, join(f.spool, "result.json"));
+  await writeFile(join(f.spool, "request.json"), '{"id":"req-link"}\n');
+
+  const result = f.run();
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(await readFile(victim, "utf8"), "keep me\n", "the link target must not be written");
+  assert.equal((await lstat(victim)).mode & 0o777, 0o600, "the link target must not be chmodded");
+  assert.ok((await lstat(join(f.spool, "result.json"))).isFile(), "result.json is a regular file again");
 });

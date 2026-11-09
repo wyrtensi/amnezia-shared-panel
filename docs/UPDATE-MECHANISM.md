@@ -22,6 +22,7 @@ Admin clicks "Обновить панель"
               → bash infra/prod/update.sh
                   (backup DB → down → drop old image → pull → migrate → up)
               → writes {spool}/result.json  {id, finishedAt, ok, message}
+                (built 0644 in the spool's parent, renamed in)
   → panel: GET /api/admin/update reflects pending → lastResult
 ```
 
@@ -41,7 +42,7 @@ fails.
 | API | `apps/control-api/src/updateController.ts` | Write the request file, read status. `GET/POST /api/admin/update`. |
 | UI | `apps/web/components/admin/panel-update-card.tsx` | Version + button + live status on the admin overview. |
 | Spool mount | `infra/prod/compose.yaml` (control-api) | `UPDATE_SPOOL_DIR=/var/run/panel-update`, bind-mounted from `UPDATE_SPOOL_HOST_DIR`. |
-| Host worker | `infra/prod/panel-updater.sh` | Runs `update.sh`, writes the result. Treats the spool as untrusted: the lock is held outside it (`PANEL_UPDATER_LOCK_DIR`, default `/run/amnezia-panel`), the request is read once through a descriptor verified via `/proc`, and the result is written via `mktemp` + rename. |
+| Host worker | `infra/prod/panel-updater.sh` | Runs `update.sh`, writes the result. Treats the spool as untrusted: the lock is held outside it (`PANEL_UPDATER_LOCK_DIR`, default `/run/amnezia-panel`), the request is read once through a descriptor verified via `/proc`, and the result is built in the spool's parent (`PANEL_UPDATER_STAGING_DIR`, root-only, same filesystem), made `0644` so control-api (uid 1000) can read it, and renamed in. |
 | Trigger | `infra/prod/panel-updater.path` + `.service` | systemd path unit → oneshot service. |
 | Updater | `infra/prod/update.sh` | Backup → down → drop old image → pull → migrate → up (disk-safe for a tiny box). |
 | Installer | `infra/prod/install-updater.sh` | One-time host install of the units + spool. |
@@ -49,8 +50,10 @@ fails.
 ## Install (one-time, on the server)
 
 The feature is **inert until the host worker is installed** — the card shows
-"механизм обновления не установлен" and the button is disabled. To enable it, from
-the repo root on the server:
+"механизм обновления не установлен" and the button is disabled. control-api
+decides this by whether it can write to the spool: docker creates a missing
+bind-mount source as root, so before the installer runs the spool exists but is
+not writable by uid 1000. To enable it, from the repo root on the server:
 
 ```bash
 sudo bash infra/prod/install-updater.sh

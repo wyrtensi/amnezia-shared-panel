@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { constants } from "node:fs";
+import { access, readFile, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { ApiError } from "./service.js";
 
@@ -37,7 +38,11 @@ export type UpdateResultFile = {
 };
 
 export type UpdateStatus = {
-  /** Whether the spool directory is configured (feature available). */
+  /**
+   * Whether the button can work: the spool is configured AND writable by this
+   * process. A spool docker created as root (install-updater.sh never ran)
+   * reads as disabled, since no host worker would pick a request up.
+   */
   enabled: boolean;
   version: VersionInfo;
   /** A request awaiting the host worker, or null. */
@@ -72,6 +77,22 @@ const readJsonIfPresent = async <T>(path: string): Promise<T | null> => {
   }
 };
 
+const isWritableDir = async (path: string): Promise<boolean> => {
+  try {
+    await access(path, constants.W_OK | constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+const notConfigured = () =>
+  new ApiError(
+    501,
+    "The update mechanism is not configured on this host",
+    "UPDATE_NOT_CONFIGURED",
+  );
+
 export function createUpdateController(options: {
   spoolDir?: string | null;
   version: VersionInfo;
@@ -81,7 +102,12 @@ export function createUpdateController(options: {
   const resultPath = spoolDir ? join(spoolDir, RESULT_FILE) : null;
 
   const status = async (): Promise<UpdateStatus> => {
-    if (!spoolDir || !requestPath || !resultPath) {
+    if (
+      !spoolDir ||
+      !requestPath ||
+      !resultPath ||
+      !(await isWritableDir(spoolDir))
+    ) {
       return {
         enabled: false,
         version: options.version,
@@ -97,12 +123,8 @@ export function createUpdateController(options: {
   };
 
   const request = async (requestedBy: string): Promise<UpdateRequestResult> => {
-    if (!spoolDir || !requestPath) {
-      throw new ApiError(
-        501,
-        "The update mechanism is not configured on this host",
-        "UPDATE_NOT_CONFIGURED",
-      );
+    if (!spoolDir || !requestPath || !(await isWritableDir(spoolDir))) {
+      throw notConfigured();
     }
     const existing = await readJsonIfPresent<UpdateRequestFile>(requestPath);
     if (existing) {
@@ -114,7 +136,6 @@ export function createUpdateController(options: {
       requestedAt: new Date().toISOString(),
       requestedBy,
     };
-    await mkdir(spoolDir, { recursive: true });
     // Write atomically (temp + rename) so the host path unit never sees a
     // half-written request file.
     const tmpPath = `${requestPath}.tmp`;
