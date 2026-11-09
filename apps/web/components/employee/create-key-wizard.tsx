@@ -310,52 +310,6 @@ export function CreateKeyWizard({
             />
           </div>
 
-          <div className="space-y-2">
-            <Label htmlFor="device-label">{t("common.name")}</Label>
-            <Input
-              id="device-label"
-              maxLength={80}
-              placeholder={t("wizard.namePlaceholder")}
-              value={deviceLabel}
-              onChange={(event) => {
-                setLabelEdited(true);
-                setDeviceLabel(event.target.value);
-              }}
-            />
-          </div>
-
-          <div className="space-y-2">
-            <div className="flex items-center gap-1.5">
-              <Label>{t("wizard.nameDisplay")}</Label>
-              <Hint>{t("wizard.nameDisplayHint")}</Hint>
-            </div>
-            <div className="flex flex-wrap items-center gap-x-5 gap-y-2">
-              {NAME_DISPLAY_PARTS.map((part) => (
-                <div key={part} className="flex items-center gap-2">
-                  <Checkbox
-                    id={`key-name-${part}`}
-                    checked={nameDisplay[part]}
-                    onChange={(event) =>
-                      setNameDisplay((prev) => ({
-                        ...prev,
-                        [part]: event.target.checked,
-                      }))
-                    }
-                  />
-                  <Label
-                    htmlFor={`key-name-${part}`}
-                    className="cursor-pointer font-normal"
-                  >
-                    {t(`wizard.nameDisplay.${part}`)}
-                  </Label>
-                </div>
-              ))}
-            </div>
-            <FieldHint>
-              {t("wizard.nameDisplayPreview", { value: previewName })}
-            </FieldHint>
-          </div>
-
           {canPickNode ? (
             <div className="space-y-2">
               <div className="flex items-center gap-1.5">
@@ -428,6 +382,52 @@ export function CreateKeyWizard({
               ) : null}
             </div>
           ) : null}
+
+          <div className="space-y-2">
+            <Label htmlFor="device-label">{t("common.name")}</Label>
+            <Input
+              id="device-label"
+              maxLength={80}
+              placeholder={t("wizard.namePlaceholder")}
+              value={deviceLabel}
+              onChange={(event) => {
+                setLabelEdited(true);
+                setDeviceLabel(event.target.value);
+              }}
+            />
+          </div>
+
+          <div className="space-y-2">
+            <div className="flex items-center gap-1.5">
+              <Label>{t("wizard.nameDisplay")}</Label>
+              <Hint>{t("wizard.nameDisplayHint")}</Hint>
+            </div>
+            <div className="flex flex-wrap items-center gap-x-5 gap-y-2">
+              {NAME_DISPLAY_PARTS.map((part) => (
+                <div key={part} className="flex items-center gap-2">
+                  <Checkbox
+                    id={`key-name-${part}`}
+                    checked={nameDisplay[part]}
+                    onChange={(event) =>
+                      setNameDisplay((prev) => ({
+                        ...prev,
+                        [part]: event.target.checked,
+                      }))
+                    }
+                  />
+                  <Label
+                    htmlFor={`key-name-${part}`}
+                    className="cursor-pointer font-normal"
+                  >
+                    {t(`wizard.nameDisplay.${part}`)}
+                  </Label>
+                </div>
+              ))}
+            </div>
+            <FieldHint>
+              {t("wizard.nameDisplayPreview", { value: previewName })}
+            </FieldHint>
+          </div>
 
           {protocolOptions.length > 1 ? (
             <div className="space-y-2">
