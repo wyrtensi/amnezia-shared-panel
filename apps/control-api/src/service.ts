@@ -40,6 +40,11 @@ export type KeyView = {
   id: string;
   ownerId: string;
   nodeId: string;
+  /**
+   * The server's user-facing name. Present even when the user may no longer
+   * create keys on that server, which `/api/nodes` does not list.
+   */
+  nodeName: string;
   publicKey?: string | null;
   protocol: ProtocolKind;
   state: KeyState;

@@ -1253,8 +1253,15 @@ export class PostgresControlRepository implements ControlRepository {
 
   listKeys = async (actor: Actor): Promise<KeyView[]> => {
     const rows = await this.options.db
-      .select({ key: vpnKeys, current: peerCurrent })
+      .select({
+        key: vpnKeys,
+        current: peerCurrent,
+        node: { name: nodes.name, publicName: nodes.publicName },
+      })
       .from(vpnKeys)
+      // Inner join: `vpn_keys.node_id` is NOT NULL with ON DELETE RESTRICT, so
+      // every key has its node row, enabled or not.
+      .innerJoin(nodes, eq(nodes.id, vpnKeys.nodeId))
       .leftJoin(peerCurrent, eq(peerCurrent.keyId, vpnKeys.id))
       .where(eq(vpnKeys.ownerId, actor.id))
       .orderBy(desc(vpnKeys.createdAt));
@@ -1274,8 +1281,8 @@ export class PostgresControlRepository implements ControlRepository {
     // The projection lives in keyView.ts as a pure function: it is what decides
     // whether the operator-only note leaves the server at all, and that
     // decision has to be assertable without a database.
-    return rows.map(({ key, current }) =>
-      toKeyView({ actor, key, current, policy, activeByProfile }),
+    return rows.map(({ key, node, current }) =>
+      toKeyView({ actor, key, node, current, policy, activeByProfile }),
     );
   };
 

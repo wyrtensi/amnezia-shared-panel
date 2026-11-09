@@ -149,7 +149,7 @@ describe("rename on the owner's own key", () => {
 
   it("passes the same nameDisplay and node name the exported config uses", () => {
     expect(source).toMatch(/nameDisplay=\{keyView\.nameDisplay\}/);
-    expect(source).toMatch(/nodeName=\{node\?\.name \?\? .—.\}/);
+    expect(source).toMatch(/nodeName=\{keyView\.nodeName\}/);
   });
 
   it("is hidden on a key an administrator disabled", () => {
@@ -159,6 +159,20 @@ describe("rename on the owner's own key", () => {
     // end in the server's `KEY_DISABLED_BY_ADMIN` refusal.
     expect(source).toMatch(/const disabled = keyView\.state === "disabled";/);
     expect(source).toMatch(/\{!provisioning && !disabled \?/);
+  });
+});
+
+// The card used to find its server in `/api/nodes`, which lists only the
+// servers the user may create keys on, so a key on a server closed for new
+// keys showed "—" instead of a name. The name now comes with the key.
+describe("server badge", () => {
+  it("shows the server name carried by the key", () => {
+    expect(source).toContain("{keyView.nodeName}");
+  });
+
+  it("does not look the server up in the creatable-nodes list", () => {
+    expect(source).not.toMatch(/node\?\.name/);
+    expect(source).not.toMatch(/\bnode\?: NodeView/);
   });
 });
 

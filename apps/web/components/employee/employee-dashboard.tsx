@@ -357,11 +357,6 @@ export function EmployeeDashboard({
     };
   }, [showTraffic]);
 
-  const nodeById = React.useMemo(
-    () => new Map(nodes.map((node) => [node.id, node])),
-    [nodes],
-  );
-
   const existingNames = React.useMemo(
     () => keys.map((key) => key.deviceLabel ?? "").filter(Boolean),
     [keys],
@@ -769,7 +764,6 @@ export function EmployeeDashboard({
               >
                 <KeyCard
                   keyView={key}
-                  node={nodeById.get(key.nodeId)}
                   me={me!}
                   busy={busy}
                   guardKeyAccess={guardKeyAccess}

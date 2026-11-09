@@ -43,10 +43,13 @@ const row = (overrides: Partial<KeyRow> = {}): KeyRow => ({
   ...overrides,
 });
 
+const NODE = { name: "ams-internal-04", publicName: "amster4" };
+
 const view = (actor: Actor, overrides: Partial<KeyRow> = {}) =>
   toKeyView({
     actor,
     key: row(overrides),
+    node: NODE,
     current: null,
     policy: defaultPortalPolicy,
     activeByProfile: new Map(),
@@ -121,6 +124,7 @@ describe("owner-facing key projection", () => {
     const shown = toKeyView({
       actor: owner,
       key: row(),
+      node: NODE,
       current: {
         latestHandshakeAt: new Date("2026-09-02T00:00:00.000Z"),
         receivedBytes: 10n,
@@ -138,11 +142,40 @@ describe("owner-facing key projection", () => {
     const outdated = toKeyView({
       actor: owner,
       key: row({ routeProfile: "ru_blacklist", routeRuleVersionId: "old" }),
+      node: NODE,
       current: null,
       policy: defaultPortalPolicy,
       activeByProfile: new Map([["ru_blacklist", "new"]]),
     });
     expect(outdated.rulesOutdated).toBe(true);
     expect(view(owner).rulesOutdated).toBe(false);
+  });
+});
+
+/**
+ * The key card names the server its key lives on. It used to look the server
+ * up in `/api/nodes`, which lists only the servers a user may create keys on,
+ * so a key on a server closed for creation showed "—". The name now travels
+ * with the key, under the same rule `/api/nodes` uses.
+ */
+describe("server name on the owner-facing key payload", () => {
+  it("carries the server's public name", () => {
+    expect(view(owner).nodeName).toBe("amster4");
+  });
+
+  it("never sends the internal admin name when a public name is set", () => {
+    expect(JSON.stringify(view(owner))).not.toContain("ams-internal-04");
+  });
+
+  it("falls back to the node name when there is no public name", () => {
+    const payload = toKeyView({
+      actor: owner,
+      key: row(),
+      node: { name: "london2", publicName: null },
+      current: null,
+      policy: defaultPortalPolicy,
+      activeByProfile: new Map(),
+    });
+    expect(payload.nodeName).toBe("london2");
   });
 });
