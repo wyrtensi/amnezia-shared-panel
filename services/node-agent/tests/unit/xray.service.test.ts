@@ -69,7 +69,8 @@ describe("XrayService", () => {
         {
           id: "active-id",
           status: PeerStatus.Active,
-          traffic: { received: 256, sent: 128 },
+          // Server's side: uplink (device -> server) is what the server received.
+          traffic: { received: 128, sent: 256 },
           protocol: Protocol.XRAY,
         },
       ],

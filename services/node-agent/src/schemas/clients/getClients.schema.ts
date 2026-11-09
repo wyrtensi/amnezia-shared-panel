@@ -70,9 +70,19 @@ export const getClientsSchema = {
                     traffic: {
                       type: "object",
                       required: ["received", "sent"],
+                      description:
+                        "Счётчики со стороны сервера: received - получено сервером от устройства (исходящий трафик устройства), sent - отправлено сервером устройству (входящий трафик устройства)",
                       properties: {
-                        received: { type: "number", example: 4490348984 },
-                        sent: { type: "number", example: 66372801657 },
+                        received: {
+                          type: "number",
+                          description: "Байт получено сервером от устройства",
+                          example: 4490348984,
+                        },
+                        sent: {
+                          type: "number",
+                          description: "Байт отправлено сервером устройству",
+                          example: 66372801657,
+                        },
                       },
                     },
                     endpoint: {

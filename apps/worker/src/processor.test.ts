@@ -334,8 +334,9 @@ describe("provision job reconciliation", () => {
       expect.objectContaining({
         keyId: "key-1",
         online: true,
-        receivedBytes: 120n,
-        sentBytes: 80n,
+        // Node-agent counters are the server's side; stored swapped.
+        receivedBytes: 80n,
+        sentBytes: 120n,
       }),
       expect.objectContaining({
         keyId: "key-2",
@@ -431,8 +432,8 @@ describe("provision job reconciliation", () => {
       expect.objectContaining({
         keyId: "key-1",
         online: true,
-        receivedBytes: 999n,
-        sentBytes: 888n,
+        receivedBytes: 888n,
+        sentBytes: 999n,
       }),
     ]);
     expect(result?.summary).toMatchObject({

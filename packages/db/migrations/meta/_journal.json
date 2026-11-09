@@ -274,6 +274,13 @@
       "when": 1791586103394,
       "tag": "0038_node_cpu_percent",
       "breakpoints": true
+    },
+    {
+      "idx": 39,
+      "version": "7",
+      "when": 1794219603905,
+      "tag": "0039_swap_traffic_to_device_side",
+      "breakpoints": true
     }
   ]
 }
