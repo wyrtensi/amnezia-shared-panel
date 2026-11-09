@@ -17,6 +17,7 @@ import {
 import { resolveNodeAgentRelease } from "./agentRelease.js";
 import { runPeriodicTask } from "./scheduler.js";
 import { createTelemetryPoller } from "./telemetry.js";
+import { createTelegramNotifier, resolveTelegramConfig } from "./telegram.js";
 import { nonNegativeIntegerEnv, positiveIntegerEnv } from "./envInt.js";
 import {
   createAccessReconciler,
@@ -202,11 +203,20 @@ const accessSyncTask = buildAccessSyncTask();
 // operator-triggered `rules.refresh` job can run exactly the same feed
 // fetchers the 6-hourly timer runs, and the outbox runner can run the same
 // access-sync instance the timer only arms.
+// Operator notifications (new quota requests). Off unless both
+// TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID are set.
+const telegramConfig = resolveTelegramConfig(process.env);
+console.log(
+  `notifications: Telegram ${telegramConfig ? "enabled" : "off (TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID not set)"}`,
+);
+
 const processJob = createJobProcessor({
   repository,
   createNodeAgent: (node) => createNodeAgentClient(node),
   ruleFetchers,
   accessSync: accessSyncTask,
+  notifier: telegramConfig ? createTelegramNotifier(telegramConfig) : undefined,
+  panelPublicUrl: process.env.PANEL_PUBLIC_URL ?? null,
   // Without this, a throwing access.sync run is only ever recorded in
   // job_outbox.last_error: the runner turns the throw into retryJob/failJob
   // with no console output, so an operator watching `docker logs worker`

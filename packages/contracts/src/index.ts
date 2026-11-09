@@ -1399,6 +1399,28 @@ export const idleRulesRefreshStatus: RulesRefreshStatus = {
   lastError: null,
 };
 
+// --- Quota request notification ---------------------------------------------
+// Control-api enqueues one job per new quota request, in the same transaction
+// as the request; the worker sends it to the operator's Telegram chat when one
+// is configured. The payload carries everything the message needs, so the
+// worker does not read the request back.
+export const QUOTA_REQUEST_NOTIFY_JOB_TYPE = "notify.quota_request";
+
+export const quotaRequestNotifyPayloadSchema = z.object({
+  quotaRequestId: z.string().min(1),
+  email: z.string(),
+  displayName: z.string().nullable(),
+  requestedLimit: z.number().int(),
+  /** Null for a request that covers every server (or the shared pool). */
+  nodeName: z.string().nullable(),
+  reason: z.string(),
+  createdAt: z.iso.datetime(),
+});
+
+export type QuotaRequestNotifyPayload = z.infer<
+  typeof quotaRequestNotifyPayloadSchema
+>;
+
 // --- Two-way Cloudflare Access sync -----------------------------------------
 // The worker reconciles the panel's active users with the Access policy. Both
 // the hourly timer and every panel-side user change arm ONE outbox row; the

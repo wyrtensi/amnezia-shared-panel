@@ -1240,3 +1240,88 @@ describe("Access sync job", () => {
     );
   });
 });
+
+describe("quota request notification job", () => {
+  const notifyJob = {
+    id: "job-notify",
+    type: "notify.quota_request",
+    attempts: 0,
+    payload: {
+      quotaRequestId: "req-1",
+      email: "user@example.com",
+      displayName: null,
+      requestedLimit: 8,
+      nodeName: null,
+      reason: "",
+      createdAt: "2026-11-09T12:00:00.000Z",
+    },
+  };
+
+  it("sends the request to Telegram and completes the job", async () => {
+    const repository = createRepository();
+    const send = vi.fn(() => Promise.resolve());
+    const process = createJobProcessor({
+      repository,
+      createNodeAgent: () => createAgent(),
+      notifier: { send },
+      panelPublicUrl: "https://panel.example.com",
+    });
+
+    await process(notifyJob);
+
+    expect(send).toHaveBeenCalledOnce();
+    const text = (send.mock.calls[0] as unknown as [string])[0];
+    expect(text).toContain("user@example.com");
+    expect(text).toContain("https://panel.example.com/admin");
+    expect(repository.completeJob).toHaveBeenCalledWith(notifyJob.id);
+    expect(repository.failJob).not.toHaveBeenCalled();
+  });
+
+  it("rethrows a send failure so the runner retries", async () => {
+    const repository = createRepository();
+    const log = vi.fn();
+    const process = createJobProcessor({
+      repository,
+      createNodeAgent: () => createAgent(),
+      notifier: { send: () => Promise.reject(new Error("Telegram sendMessage failed: HTTP 502")) },
+      log,
+    });
+
+    await expect(process(notifyJob)).rejects.toThrow("HTTP 502");
+    expect(repository.completeJob).not.toHaveBeenCalled();
+    expect(log).toHaveBeenCalledWith(expect.stringContaining("HTTP 502"));
+  });
+
+  it("completes quietly when no Telegram chat is configured", async () => {
+    // A notification nobody set up is not a failure: failing it would leave a
+    // failed job behind every quota request on a panel without Telegram.
+    const repository = createRepository();
+    const process = createJobProcessor({
+      repository,
+      createNodeAgent: () => createAgent(),
+    });
+
+    await process(notifyJob);
+
+    expect(repository.completeJob).toHaveBeenCalledWith(notifyJob.id);
+    expect(repository.failJob).not.toHaveBeenCalled();
+  });
+
+  it("fails a job whose payload cannot be read", async () => {
+    const repository = createRepository();
+    const send = vi.fn(() => Promise.resolve());
+    const process = createJobProcessor({
+      repository,
+      createNodeAgent: () => createAgent(),
+      notifier: { send },
+    });
+
+    await process({ ...notifyJob, payload: { quotaRequestId: "req-1" } });
+
+    expect(send).not.toHaveBeenCalled();
+    expect(repository.failJob).toHaveBeenCalledWith(
+      notifyJob.id,
+      expect.stringContaining("payload"),
+    );
+  });
+});
