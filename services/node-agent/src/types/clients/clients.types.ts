@@ -1,5 +1,10 @@
 import { Protocol } from "@/types/shared";
 
+/**
+ * Peer byte counters from the server's side, as `awg show dump` reports them:
+ * `received` is what the server got from the device (the device's upload),
+ * `sent` is what the server sent to the device (the device's download).
+ */
 export type TrafficStats = {
   received: number;
   sent: number;

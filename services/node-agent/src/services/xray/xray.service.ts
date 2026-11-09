@@ -143,9 +143,11 @@ export class XrayService {
         const [, id, direction] = match;
         const value = Number(item?.value ?? 0) || 0;
 
+        // Counters are reported from the server's side, like `awg show dump`:
+        // uplink (device -> server) is what the server received.
         const entry = stats.get(id) ?? { sent: 0, received: 0 };
-        if (direction === "uplink") entry.sent = value;
-        else entry.received = value;
+        if (direction === "uplink") entry.received = value;
+        else entry.sent = value;
         stats.set(id, entry);
       }
     } catch {

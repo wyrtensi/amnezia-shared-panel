@@ -160,8 +160,11 @@ export const toPeerObservation = (
   endpoint: peer.endpoint,
   latestHandshakeAt:
     peer.lastHandshake > 0 ? new Date(peer.lastHandshake * 1_000) : null,
-  receivedBytes: toCounter(peer.traffic.received),
-  sentBytes: toCounter(peer.traffic.sent),
+  // The node-agent counts from the server's side (`awg show dump`: rx is what
+  // the server received from the device). The panel stores and shows traffic
+  // from the device's side, so the pair is swapped here.
+  receivedBytes: toCounter(peer.traffic.sent),
+  sentBytes: toCounter(peer.traffic.received),
   observedAt,
 });
 

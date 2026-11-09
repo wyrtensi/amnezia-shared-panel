@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   createTelemetryPoller,
   shouldStoreSample,
+  toPeerObservation,
   type NodeSnapshot,
   type PeerObservation,
   type TelemetryNode,
@@ -51,6 +52,31 @@ describe("telemetry sampling", () => {
         observedAt: new Date("2026-08-20T08:00:01.000Z"),
       }),
     ).toBe(false);
+  });
+});
+
+describe("peer traffic direction", () => {
+  it("stores node-agent counters from the device's side", () => {
+    // The node-agent reports `awg show dump` as is: transfer-rx is what the
+    // server received from the device (the device's upload). The panel shows
+    // traffic from the device's side, so the pair is swapped on the way in.
+    const result = toPeerObservation(
+      "key-1",
+      {
+        id: "public-key",
+        name: null,
+        allowedIps: ["10.89.0.2/32"],
+        lastHandshake: 1_787_213_070,
+        traffic: { received: 80, sent: 120 },
+        endpoint: "203.0.113.1:51889",
+        online: true,
+        expiresAt: null,
+        status: "active",
+        protocol: "amneziawg2",
+      },
+      observedAt,
+    );
+    expect(result).toMatchObject({ receivedBytes: 120n, sentBytes: 80n });
   });
 });
 
@@ -158,7 +184,8 @@ describe("node telemetry poll", () => {
                 name: null,
                 allowedIps: ["10.89.0.2/32"],
                 lastHandshake: 1_787_213_070,
-                traffic: { received: 120, sent: 80 },
+                // Server's side: the device downloaded 120 and uploaded 80.
+                traffic: { received: 80, sent: 120 },
                 endpoint: "203.0.113.1:51889",
                 online: true,
                 expiresAt: null,
