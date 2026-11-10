@@ -1,3 +1,4 @@
+import { runInNewContext } from "node:vm";
 import { deflateSync } from "node:zlib";
 
 import { describe, expect, it } from "vitest";
@@ -8,6 +9,7 @@ import {
   buildWidgetData,
   clockDayTime,
   cutBytes,
+  peopleMinutes,
   serializeWidgetData,
   widgetCaption,
   widgetVersion,
@@ -15,7 +17,7 @@ import {
   type WidgetInput,
   type WidgetNode,
 } from "./reachabilityWidget.js";
-import { REACHABILITY_WIDGET_HTML } from "./reachabilityWidgetHtml.js";
+import { PEOPLE_CELL_JS, REACHABILITY_WIDGET_HTML } from "./reachabilityWidgetHtml.js";
 
 const lv = (ok: boolean | null, latencyMs: number | null = null) => ({
   ok,
@@ -35,6 +37,7 @@ const node = (name: string, over: Partial<WidgetNode> = {}): WidgetNode => ({
   levels: levels(true, true, 65),
   failingSince: null,
   online: 1,
+  lastPersonHandshakeAt: null,
   ...over,
 });
 
@@ -82,10 +85,10 @@ describe("buildWidgetData", () => {
       }),
     );
     // Belgrade is UTC+1 in November.
-    expect(data.n[0]).toEqual(["amster5", "000-", null, 0, "10.11 15:46"]);
-    expect(data.n[1]).toEqual(["kz2", "----", null, 0]);
-    expect(data.n[2]).toEqual(["amster3", "1111", 65, 3]);
-    expect(data.n[3]).toEqual(["us-utah", "0111", null, 1]);
+    expect(data.n[0]).toEqual(["amster5", "000-", null, 0, null, "10.11 15:46"]);
+    expect(data.n[1]).toEqual(["kz2", "----", null, 0, null]);
+    expect(data.n[2]).toEqual(["amster3", "1111", 65, 3, null]);
+    expect(data.n[3]).toEqual(["us-utah", "0111", null, 1, null]);
     expect(data).toMatchObject({ ct: "10.11 15:51", nt: "16:51", s: 0, m: 0, x: 0 });
     expect(data.c).toBe(Math.floor(Date.parse("2026-11-10T14:51:00Z") / 1000));
   });
@@ -116,6 +119,8 @@ describe("buildWidgetData", () => {
         levels: levels(false, false),
         failingSince: since,
         online: 123,
+        // The widest value: five digits of minutes.
+        lastPersonHandshakeAt: new Date("2026-10-01T00:00:00Z"),
       }),
     );
     const data = buildWidgetData(input({ label: "Длинная подпись точки проверки", nodes }));
@@ -123,6 +128,7 @@ describe("buildWidgetData", () => {
     expect(bytes).toBeLessThanOrEqual(WIDGET_DATA_MAX_BYTES);
     expect(data.n).toHaveLength(12);
     expect(data.x).toBe(0);
+    expect(data.n[0]?.[4]).toBeGreaterThan(10_000);
   });
 
   it("drops trailing rows, counted, only when even short names do not fit", () => {
@@ -168,5 +174,55 @@ describe("widget version", () => {
     expect(widgetCaption("Testland")).toBe("VPN из Testland");
     expect(widgetVersion("a")).toMatch(/^[0-9a-f]{16}$/);
     expect(widgetVersion("a")).not.toBe(widgetVersion("b"));
+  });
+});
+
+describe("people column", () => {
+  // The exact source the widget runs, in a sandbox of its own.
+  const P = runInNewContext(`${PEOPLE_CELL_JS};P`) as (m: number | null) => [string, string];
+
+  it("counts minutes from a person's last handshake to the check", () => {
+    const checkedAt = new Date("2026-11-10T14:51:00Z");
+    expect(peopleMinutes(new Date("2026-11-10T09:51:30Z"), checkedAt)).toBe(299);
+    expect(peopleMinutes(new Date("2026-11-08T22:10:00Z"), checkedAt)).toBe(2441);
+    // A handshake that landed after the check is "just now", not negative.
+    expect(peopleMinutes(new Date("2026-11-10T14:52:00Z"), checkedAt)).toBe(0);
+    expect(peopleMinutes(null, checkedAt)).toBeNull();
+    expect(peopleMinutes(new Date(), null)).toBeNull();
+    const data = buildWidgetData(
+      input({ nodes: [node("london2", { lastPersonHandshakeAt: new Date("2026-11-10T14:46:00Z") })] }),
+    );
+    expect(data.v).toBe(2);
+    expect(data.n[0]).toEqual(["london2", "1111", 65, 1, 5]);
+  });
+
+  it.each([
+    [0, "<1ч", ""],
+    [59, "<1ч", ""],
+    [60, "1ч", ""],
+    [300, "5ч", ""],
+    [1439, "23ч", ""],
+    [1440, "1.0д", ""],
+    [1441, "1.0д", "wy"],
+    [1584, "1.1д", "wy"],
+    [2629, "1.8д", "wy"],
+    [2880, "2.0д", "wy"],
+    [2881, "2.0д", "no"],
+    [17_856, "12.4д", "no"],
+  ])("shows %i minutes as %s", (minutes, text, tone) => {
+    expect(P(minutes)).toEqual([text, tone]);
+  });
+
+  it("shows a grey dash where no person has ever connected", () => {
+    expect(P(null)).toEqual(["-", "na"]);
+  });
+
+  it("is drawn by the widget: its column, the age since the check, and the new version", () => {
+    expect(REACHABILITY_WIDGET_HTML).toContain(PEOPLE_CELL_JS);
+    expect(REACHABILITY_WIDGET_HTML).toContain("<th>люди</th>");
+    expect(REACHABILITY_WIDGET_HTML).toContain("n[4]+Math.floor(age/60)");
+    expect(REACHABILITY_WIDGET_HTML).toContain("d.v!==2");
+    expect(REACHABILITY_WIDGET_HTML.match(/<col[ >]/g)).toHaveLength(7);
+    expect(REACHABILITY_WIDGET_HTML).toContain(".wy{color:");
   });
 });

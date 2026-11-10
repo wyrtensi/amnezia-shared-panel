@@ -511,9 +511,9 @@ export class PostgresReachabilityRepository
       .innerJoin(nodes, eq(nodes.id, nodeReachabilityState.nodeId))
       .where(eq(nodes.reachabilityEnabled, true));
     const nodeIds = stateRows.map((row) => row.nodeId);
-    const [resultRows, onlineRows] =
+    const [resultRows, onlineRows, handshakeRows] =
       nodeIds.length === 0
-        ? [[], []]
+        ? [[], [], []]
         : await Promise.all([
             db
               .select({
@@ -534,6 +534,19 @@ export class PostgresReachabilityRepository
               .innerJoin(users, keyOwnerIsPerson(vpnKeys))
               .where(inArray(vpnKeys.nodeId, nodeIds))
               .groupBy(vpnKeys.nodeId),
+            // A person's newest handshake on the node, as on the admin node
+            // card. Revoked keys count: a node everyone was moved off keeps
+            // saying when people last used it instead of going blank.
+            db
+              .select({
+                nodeId: vpnKeys.nodeId,
+                at: sql<unknown>`max(${peerCurrent.latestHandshakeAt})`,
+              })
+              .from(peerCurrent)
+              .innerJoin(vpnKeys, eq(vpnKeys.id, peerCurrent.keyId))
+              .innerJoin(users, keyOwnerIsPerson(vpnKeys))
+              .where(inArray(vpnKeys.nodeId, nodeIds))
+              .groupBy(vpnKeys.nodeId),
           ]);
 
     // One protocol's levels per node: the one that worked, else one that was
@@ -547,6 +560,14 @@ export class PostgresReachabilityRepository
       if (!current || rank < current.rank) best.set(row.nodeId, { rank, levels });
     }
     const online = new Map(onlineRows.map((row) => [row.nodeId, Number(row.online)]));
+    // A raw `max(...)` gets no type parser: postgres-js may hand back a string.
+    const toDate = (value: unknown): Date | null => {
+      if (value instanceof Date) return value;
+      if (typeof value !== "string" && typeof value !== "number") return null;
+      const parsed = new Date(value);
+      return Number.isNaN(parsed.getTime()) ? null : parsed;
+    };
+    const lastHandshake = new Map(handshakeRows.map((row) => [row.nodeId, toDate(row.at)]));
 
     const widgetNodes: WidgetNode[] = stateRows.map((row) => ({
       name: row.name,
@@ -554,6 +575,7 @@ export class PostgresReachabilityRepository
       levels: best.get(row.nodeId)?.levels ?? null,
       failingSince: row.failingSince,
       online: online.get(row.nodeId) ?? 0,
+      lastPersonHandshakeAt: lastHandshake.get(row.nodeId) ?? null,
     }));
     const widget: StoredWidget | null =
       probe.widgetMessageId !== null && probe.widgetChatId !== null && probe.widgetVersion !== null

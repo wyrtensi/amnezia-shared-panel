@@ -2477,10 +2477,25 @@ describe("PostgresReachabilityRepository", () => {
           routeProfile: "full_tunnel",
         })
         .returning();
+      // A revoked key of the same person, used more recently: it still counts
+      // for "люди". The probe's own handshake, newer still, does not.
+      const [revokedKey] = await database.db
+        .insert(vpnKeys)
+        .values({
+          ownerId: person?.id ?? "",
+          nodeId: a.id,
+          publicKey: "pk-person-old",
+          nodeLabel: "ap_widget_person_old",
+          protocol: "awg3",
+          state: "revoked",
+          routeProfile: "full_tunnel",
+        })
+        .returning();
       const [probeKey] = await serviceKeys();
       await database.db.insert(peerCurrent).values([
-        { keyId: personKey?.id ?? "", online: true },
-        { keyId: probeKey?.id ?? "", online: true },
+        { keyId: personKey?.id ?? "", online: true, latestHandshakeAt: new Date("2026-11-10T13:00:00Z") },
+        { keyId: revokedKey?.id ?? "", online: false, latestHandshakeAt: new Date("2026-11-10T13:30:00Z") },
+        { keyId: probeKey?.id ?? "", online: true, latestHandshakeAt: new Date("2026-11-10T14:04:00Z") },
       ]);
 
       const level = (ok: boolean) => ({ ok, detail: null, latencyMs: ok ? 40 : null });
@@ -2547,6 +2562,8 @@ describe("PostgresReachabilityRepository", () => {
       expect(byName.get("node-a")?.levels?.ping.latencyMs).toBe(40);
       expect(byName.get("node-b")).toMatchObject({ status: "failed", online: 0 });
       expect(byName.get("node-b")?.failingSince).toEqual(now);
+      expect(byName.get("node-a")?.lastPersonHandshakeAt).toEqual(new Date("2026-11-10T13:30:00Z"));
+      expect(byName.get("node-b")?.lastPersonHandshakeAt).toBeNull();
 
       await repository.saveWidget({ messageId: 77, chatId: "chat", version: "v1" }, now);
       await repository.recordWidgetResult(now, "boom");
