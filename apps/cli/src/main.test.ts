@@ -1018,3 +1018,148 @@ describe("key-rename", () => {
     ).rejects.toThrow(/Key not found/);
   });
 });
+
+describe("reachability probe commands", () => {
+  beforeEach(() => {
+    process.env.PANEL_ADMIN_EMAIL = "cli-test@example.com";
+  });
+  afterEach(() => {
+    delete process.env.PANEL_ADMIN_EMAIL;
+    vi.unstubAllGlobals();
+  });
+
+  const level = (ok: boolean | null) => ({ ok, detail: null, latencyMs: null });
+  const probe = {
+    label: "Testland",
+    apiBaseUrl: "http://host.docker.internal:4120",
+    enabled: true,
+    controlUrl: "https://example.com/",
+    egressUrl: "https://api.ipify.org",
+    intervalSec: 3600,
+    failThreshold: 2,
+    staleAfterSec: 10800,
+    lastResultAt: "2026-01-01T10:00:00.000Z",
+    lastError: null,
+    lastErrorAt: null,
+    stale: false,
+    runInFlight: false,
+    runRequestedAt: null,
+  };
+  const view = {
+    probe,
+    nodes: [
+      {
+        nodeId: "11111111-1111-4111-8111-111111111111",
+        nodeName: "node-a",
+        nodeEnabled: true,
+        reachabilityEnabled: true,
+        status: "failed",
+        checkedAt: "2026-01-01T10:00:00.000Z",
+        failingSince: "2026-01-01T09:00:00.000Z",
+        consecutiveFailures: 2,
+        incidentOpen: true,
+        detail: "no handshake",
+        protocols: [
+          {
+            protocol: "awg3",
+            status: "failed",
+            levels: { ping: level(false), tcp: level(true), handshake: level(false), http: level(null) },
+            egressIp: null,
+            detail: "no handshake",
+            checkedAt: "2026-01-01T10:00:00.000Z",
+            keyState: "active",
+          },
+        ],
+      },
+      {
+        nodeId: "22222222-2222-4222-8222-222222222222",
+        nodeName: "node-b",
+        nodeEnabled: true,
+        reachabilityEnabled: true,
+        status: "error",
+        checkedAt: "2026-01-01T10:00:00.000Z",
+        failingSince: null,
+        consecutiveFailures: 0,
+        incidentOpen: false,
+        detail: "control target failed",
+        protocols: [],
+      },
+    ],
+  };
+
+  it("probe prints the settings and never a key", async () => {
+    stubFetch([{ body: view }]);
+    const out = await run(["probe"]);
+    expect(out).toContain("label:          Testland");
+    expect(out).not.toMatch(/api ?key/i);
+  });
+
+  it("probe-set registers a probe with the key from a flag", async () => {
+    const calls = stubFetch([{ body: { probe: null, nodes: [] } }, { body: probe }]);
+    await run([
+      "probe-set",
+      "--label=Testland",
+      "--api-url=http://host.docker.internal:4120",
+      `--api-key=${"k".repeat(32)}`,
+      "--control-url=https://example.com/",
+    ]);
+    expect(calls[1]?.url).toContain("/api/admin/reachability/probe");
+    expect(calls[1]?.init?.method).toBe("PUT");
+    expect(JSON.parse(calls[1]?.init?.body as string)).toEqual({
+      label: "Testland",
+      apiBaseUrl: "http://host.docker.internal:4120",
+      controlUrl: "https://example.com/",
+      apiKey: "k".repeat(32),
+    });
+  });
+
+  it("probe-set on an existing probe changes only the named field", async () => {
+    const calls = stubFetch([{ body: view }, { body: probe }]);
+    await run(["probe-set", "--interval-sec=1800"]);
+    const body = JSON.parse(calls[1]?.init?.body as string) as Record<string, unknown>;
+    expect(body).toMatchObject({ label: "Testland", intervalSec: 1800, failThreshold: 2 });
+    expect(body).not.toHaveProperty("apiKey");
+  });
+
+  it("probe-set refuses a new probe without a key", async () => {
+    stubFetch([{ body: { probe: null, nodes: [] } }]);
+    await expect(
+      run(["probe-set", "--label=Testland", "--api-url=http://x:1", "--control-url=https://example.com/"]),
+    ).rejects.toThrow("Usage: probe-set");
+  });
+
+  it("probe-run posts the marker", async () => {
+    const calls = stubFetch([{ body: {} }]);
+    const out = await run(["probe-run"]);
+    expect(calls[0]?.url).toContain("/api/admin/reachability/run");
+    expect(calls[0]?.init?.method).toBe("POST");
+    expect(out).toContain("run requested");
+  });
+
+  it("probe-results keeps unknown apart from unavailable", async () => {
+    stubFetch([{ body: view }]);
+    const out = await run(["probe-results"]);
+    expect(out).toContain("UNAVAILABLE");
+    expect(out).toMatch(/node-b\s+\|?\s*unknown/);
+    expect(out).toContain("2026-01-01T09:00:00.000Z");
+  });
+
+  it("node-probe --off patches the node", async () => {
+    const calls = stubFetch([
+      { body: [{ id: "11111111-1111-4111-8111-111111111111", name: "node-a" }] },
+      { body: {} },
+    ]);
+    await run(["node-probe", "node-a", "--off"]);
+    const patch = calls.find((c) => c.init?.method === "PATCH");
+    expect(patch?.url).toContain("/api/admin/nodes/11111111-1111-4111-8111-111111111111");
+    expect(JSON.parse(patch?.init?.body as string)).toEqual({ reachabilityEnabled: false });
+  });
+
+  it("help lists every probe command", async () => {
+    stubFetch([{ body: {} }]);
+    const out = await run(["help"]);
+    for (const command of ["probe ", "probe-set", "probe-delete", "probe-run", "probe-results", "node-probe"]) {
+      expect(out).toContain(command);
+    }
+  });
+});

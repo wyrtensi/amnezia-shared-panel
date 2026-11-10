@@ -111,6 +111,14 @@ import {
   type CliVersionInfo,
 } from "./clientReleases.js";
 import { resolveApiKey, resolveSecret } from "./apiKey.js";
+import type { AdminReachabilityView } from "@amnezia/contracts";
+import {
+  buildProbeUpsert,
+  probeSummaryLines,
+  REACHABILITY_COLUMNS,
+  reachabilityLabel,
+  reachabilityRows,
+} from "./reachability.js";
 
 const API = (process.env.CONTROL_API_URL ?? "http://127.0.0.1:3001").replace(
   /\/$/,
@@ -2697,6 +2705,15 @@ Nodes:
   node-checks <node> --all=on|off         Take one node in or out of checking entirely
   node-checks <node> --enable|--disable=<check>
                                           Turn one check on or off for this node only
+  probe                                   External reachability probe: settings and health
+  probe-set --label= --api-url= --api-key-file=<path|-> --control-url=
+            [--egress-url=] [--interval-sec=3600] [--fail-threshold=2]
+            [--stale-after-sec=10800] [--enabled=on|off]
+                                          Register the probe, or change only the fields you name
+  probe-delete [--confirm]                Forget the probe (its keys are revoked on the next sync)
+  probe-run                               Ask for a run now (results within a few minutes)
+  probe-results [<node>] [--json]         Per node and protocol: ping, tcp, handshake, http
+  node-probe <node> [--on|--off]          Whether the probe tests this node
     Assertion flags (repeatable; all must hold):
 ${assertionUsageLines().join("\n")}
   node-add flags: [--public-name=] [--protocol=awg3] [--max-peers=500]
@@ -3135,6 +3152,106 @@ async function cmdCheckReset(args: string[]): Promise<void> {
   console.log("Every node measures the check again on its next poll.");
 }
 
+async function loadReachability(): Promise<AdminReachabilityView> {
+  return api<AdminReachabilityView>("/api/admin/reachability");
+}
+
+async function cmdProbe(args: string[]): Promise<void> {
+  const view = await loadReachability();
+  if (wantsJson(args)) return json(view.probe);
+  if (!view.probe) {
+    console.log(
+      "No reachability probe is registered. Register one with probe-set (see docs/REACHABILITY-PROBE.md).",
+    );
+    return;
+  }
+  for (const line of probeSummaryLines(view.probe)) console.log(line);
+}
+
+async function cmdProbeSet(args: string[]): Promise<void> {
+  const view = await loadReachability();
+  const body = buildProbeUpsert(
+    {
+      label: flagOf(args, "label"),
+      apiUrl: flagOf(args, "api-url"),
+      apiKey: resolveApiKey(args),
+      controlUrl: flagOf(args, "control-url"),
+      egressUrl: flagOf(args, "egress-url"),
+      intervalSec: flagOf(args, "interval-sec"),
+      failThreshold: flagOf(args, "fail-threshold"),
+      staleAfterSec: flagOf(args, "stale-after-sec"),
+      enabled: flagOf(args, "enabled"),
+    },
+    view.probe,
+  );
+  await api("/api/admin/reachability/probe", {
+    method: "PUT",
+    body: JSON.stringify(body),
+  });
+  console.log(
+    view.probe
+      ? "probe updated"
+      : "probe registered; service keys are created on the next worker tick, the first run follows",
+  );
+}
+
+async function cmdProbeDelete(args: string[]): Promise<void> {
+  if (!args.includes("--confirm")) {
+    console.log("This forgets the probe and stops every reachability check.");
+    console.log("Re-run with --confirm to delete it.");
+    return;
+  }
+  await api("/api/admin/reachability/probe", { method: "DELETE" });
+  console.log("probe deleted");
+}
+
+async function cmdProbeRun(): Promise<void> {
+  await api("/api/admin/reachability/run", { method: "POST" });
+  // Not "done": the worker starts the run on its next tick and the probe needs
+  // a few seconds per node.
+  console.log("run requested; results appear within a few minutes (probe-results)");
+}
+
+async function cmdProbeResults(args: string[]): Promise<void> {
+  const nodeFilter = args.find((arg) => !arg.startsWith("--"));
+  const view = await loadReachability();
+  if (nodeFilter && !view.nodes.some((n) => n.nodeId === nodeFilter || n.nodeName === nodeFilter)) {
+    throw new Error(`No node with id or name ${nodeFilter}`);
+  }
+  if (wantsJson(args)) {
+    return json(
+      nodeFilter
+        ? view.nodes.filter((n) => n.nodeId === nodeFilter || n.nodeName === nodeFilter)
+        : view.nodes,
+    );
+  }
+  if (!view.probe) console.log("No reachability probe is registered.");
+  console.log(table(reachabilityRows(view, nodeFilter), REACHABILITY_COLUMNS));
+}
+
+async function cmdNodeProbe(args: string[]): Promise<void> {
+  const id = args.find((arg) => !arg.startsWith("--"));
+  if (!id) throw new Error("Usage: node-probe <node> [--on|--off]");
+  const node = await findAdminNode(id);
+  const on = args.includes("--on");
+  const off = args.includes("--off");
+  if (on && off) throw new Error("Use either --on or --off");
+  if (!on && !off) {
+    const view = await loadReachability();
+    const row = view.nodes.find((n) => n.nodeId === node.id);
+    console.log(
+      `node ${node.name}: reachability probe ${row?.reachabilityEnabled === false ? "OFF" : "on"}, ` +
+        `last verdict ${reachabilityLabel(row?.status)}`,
+    );
+    return;
+  }
+  await api(`/api/admin/nodes/${node.id}`, {
+    method: "PATCH",
+    body: JSON.stringify({ reachabilityEnabled: on }),
+  });
+  console.log(`node ${node.name}: reachability probe ${on ? "on" : "off"}`);
+}
+
 async function cmdNodeChecks(args: string[]): Promise<void> {
   const id = args.find((arg) => !arg.startsWith("--"));
   if (!id) {
@@ -3316,6 +3433,18 @@ export async function dispatch(argv: string[]): Promise<void> {
       return cmdCheckReset(args);
     case "node-checks":
       return cmdNodeChecks(args);
+    case "probe":
+      return cmdProbe(args);
+    case "probe-set":
+      return cmdProbeSet(args);
+    case "probe-delete":
+      return cmdProbeDelete(args);
+    case "probe-run":
+      return cmdProbeRun();
+    case "probe-results":
+      return cmdProbeResults(args);
+    case "node-probe":
+      return cmdNodeProbe(args);
     case "rules":
       return cmdRules(args);
     case "rules-activate":
