@@ -1,5 +1,8 @@
 import { createDatabase, type EncryptionKeyring } from "@amnezia/db";
 import { createNodeAgentClient } from "./nodeAgent.js";
+import { createProbeClient } from "./probeAgent.js";
+import { PostgresReachabilityRepository } from "./reachabilityRepository.js";
+import { createReachabilityTask } from "./reachabilityTask.js";
 import { createJobProcessor } from "./processor.js";
 import { PostgresWorkerRepository } from "./postgresRepository.js";
 import { runWorker } from "./runner.js";
@@ -273,6 +276,14 @@ const refreshNodeAgentRelease = async (): Promise<void> => {
   });
 };
 
+// External reachability probe. Off until an operator registers a probe;
+// the task checks for one every tick, so registering needs no restart.
+const checkReachability = createReachabilityTask({
+  repository: new PostgresReachabilityRepository({ db: database.db, keyring }),
+  createProbeClient,
+  log: (line) => console.log(line),
+});
+
 const abortController = new AbortController();
 process.once("SIGINT", () => abortController.abort());
 process.once("SIGTERM", () => abortController.abort());
@@ -283,6 +294,12 @@ try {
     runPeriodicTask({
       task: pollTelemetry,
       intervalMs: () => periods.intervalMs("telemetryPollSec"),
+      signal: abortController.signal,
+      onError: reportBackgroundError,
+    }),
+    runPeriodicTask({
+      task: checkReachability,
+      intervalMs: 60_000,
       signal: abortController.signal,
       onError: reportBackgroundError,
     }),

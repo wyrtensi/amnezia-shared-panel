@@ -2,8 +2,10 @@ import { z } from "zod";
 import {
   ACCESS_SYNC_JOB_TYPE,
   QUOTA_REQUEST_NOTIFY_JOB_TYPE,
+  REACHABILITY_NOTIFY_JOB_TYPE,
   RULES_REFRESH_JOB_TYPE,
   quotaRequestNotifyPayloadSchema,
+  reachabilityNotifyPayloadSchema,
 } from "@amnezia/contracts";
 import { formatQuotaRequestMessage, type TelegramNotifier } from "./telegram.js";
 import type { AccessSyncOutcome } from "./accessReconcile.js";
@@ -113,6 +115,28 @@ export const createJobProcessor = ({
         // job_outbox.last_error, so log it before the retry/backoff.
         const reason = error instanceof Error ? error.message : "unknown error";
         log(`notify.quota_request: ${reason}`);
+        throw error;
+      }
+      await repository.completeJob(job.id);
+      return;
+    }
+    if (job.type === REACHABILITY_NOTIFY_JOB_TYPE) {
+      // Same contract as the quota-request message: the worker composed the
+      // text when it decided to alert, so this only relays it.
+      if (!notifier) {
+        await repository.completeJob(job.id);
+        return;
+      }
+      const parsed = reachabilityNotifyPayloadSchema.safeParse(job.payload);
+      if (!parsed.success) {
+        await repository.failJob(job.id, "notify.reachability job payload is malformed");
+        return;
+      }
+      try {
+        await notifier.send(parsed.data.text);
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : "unknown error";
+        log(`notify.reachability: ${reason}`);
         throw error;
       }
       await repository.completeJob(job.id);
