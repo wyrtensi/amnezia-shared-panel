@@ -1,0 +1,1 @@
+ALTER TABLE "vpn_keys" ADD COLUMN "awg_client_profile" jsonb;

@@ -38,6 +38,8 @@ import type {
 } from "@amnezia/contracts";
 import {
   composeKeyDisplayName,
+  CONFIG_REFRESH_STALE,
+  CONFIG_REFRESH_UNAVAILABLE,
   noticeAcksSchema,
   NOTICE_KINDS,
   resetNoticesRequestSchema,
@@ -124,9 +126,16 @@ import {
   type Database,
   type EncryptionKeyring,
 } from "@amnezia/db";
+import {
+  configRefreshToken,
+  profileRevision,
+  selectAwgClientProfile,
+  type AwgClientProfileV1,
+} from "./awgClientProfile.js";
 import type {
   ActiveRule,
   AuditInput,
+  ConfigRefreshSnapshot,
   ControlRepository,
   NodeTrafficPeriods,
   RouteProfileAvailability,
@@ -1572,6 +1581,10 @@ export class PostgresControlRepository implements ControlRepository {
           nameShowNumber: request.nameDisplay.number,
           routeProfile: request.routeProfile,
           routeRuleVersionId,
+          // Every new AWG3 key gets its own client profile. It applies only
+          // once the node's artifact turns out to be 3.1; a 2.0 one ignores it.
+          awgClientProfile:
+            request.protocol === "awg3" ? selectAwgClientProfile(1) : null,
         });
         await tx.insert(jobOutbox).values({
           type: "vpn-key.provision",
@@ -1658,6 +1671,8 @@ export class PostgresControlRepository implements ControlRepository {
       appliedRuleVersionId: row.key.routeRuleVersionId,
       activeRule,
       customRoutes: row.user.customRoutes ?? null,
+      state: row.key.state,
+      awgClientProfile: row.key.awgClientProfile ?? null,
     };
   };
 
@@ -1925,6 +1940,92 @@ export class PostgresControlRepository implements ControlRepository {
       metadata: auditMetadata,
     });
   };
+
+  refreshOwnConfigProfile = async (
+    actor: Actor,
+    keyId: string,
+    refreshToken: string,
+    prepare: (snapshot: ConfigRefreshSnapshot) => AwgClientProfileV1,
+  ): Promise<{ revision: number }> =>
+    this.options.db.transaction(async (tx) => {
+      // Owner only, admins included: this changes the owner's own config.
+      const [key] = await tx
+        .select({
+          state: vpnKeys.state,
+          awgClientProfile: vpnKeys.awgClientProfile,
+          configCiphertext: vpnKeys.configCiphertext,
+          configNonce: vpnKeys.configNonce,
+          configAuthTag: vpnKeys.configAuthTag,
+          configKeyVersion: vpnKeys.configKeyVersion,
+        })
+        .from(vpnKeys)
+        .where(and(eq(vpnKeys.id, keyId), eq(vpnKeys.ownerId, actor.id)))
+        .limit(1)
+        .for("update");
+      if (!key) throw new ApiError(404, "Key not found", "KEY_NOT_FOUND");
+      const [user, globalPolicy] = await Promise.all([
+        tx
+          .select({ policyOverride: users.policyOverride })
+          .from(users)
+          .where(eq(users.id, actor.id))
+          .limit(1),
+        tx.select().from(portalPolicy).limit(1),
+      ]);
+      const policy = resolvePortalPolicy(
+        toPolicy(globalPolicy[0]),
+        user[0]?.policyOverride,
+      );
+      if (!policy.allowConfigRedownload) {
+        throw new ApiError(403, "Config download is disabled", "POLICY_DENIED");
+      }
+      if (
+        key.state !== "active" ||
+        !key.configCiphertext ||
+        !key.configNonce ||
+        !key.configAuthTag ||
+        key.configKeyVersion === null
+      ) {
+        throw new ApiError(
+          409,
+          "This key cannot refresh its config",
+          CONFIG_REFRESH_UNAVAILABLE,
+        );
+      }
+      const revision = profileRevision(key.awgClientProfile);
+      if (configRefreshToken(keyId, key.configNonce, revision) !== refreshToken) {
+        throw new ApiError(
+          409,
+          "The config changed since it was checked",
+          CONFIG_REFRESH_STALE,
+        );
+      }
+      const profile = prepare({
+        keyId,
+        encrypted: {
+          ciphertext: key.configCiphertext,
+          nonce: key.configNonce,
+          authTag: key.configAuthTag,
+          keyVersion: key.configKeyVersion,
+        },
+        awgClientProfile: key.awgClientProfile ?? null,
+        revision,
+      });
+      await tx
+        .update(vpnKeys)
+        .set({ awgClientProfile: profile, updatedAt: new Date() })
+        .where(eq(vpnKeys.id, keyId));
+      // The revision only: the profile's values are not worth an audit trail,
+      // and nothing of the config goes there.
+      await tx.insert(auditEvents).values({
+        actorUserId: actor.id,
+        actorType: "user",
+        action: "vpn_key.config_profile_refreshed",
+        targetType: "vpn_key",
+        targetId: keyId,
+        metadata: { revision: profile.revision },
+      });
+      return { revision: profile.revision };
+    });
 
   enqueueOwnRotate = async (actor: Actor, keyId: string): Promise<void> => {
     await this.options.db.transaction(async (tx) => {

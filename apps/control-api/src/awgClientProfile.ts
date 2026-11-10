@@ -1,4 +1,4 @@
-import { randomInt } from "node:crypto";
+import { createHash, randomInt } from "node:crypto";
 import { z } from "zod";
 
 /**
@@ -100,3 +100,22 @@ export const profileOrder = (cpsOrder: number, count: number): number[] => {
   const orders = ORDERS[count];
   return orders?.[cpsOrder % orders.length] ?? identity;
 };
+
+/** The revision of a saved profile; a key without a valid one is at 0. */
+export const profileRevision = (profile: unknown): number => {
+  const parsed = awgClientProfileV1Schema.safeParse(profile);
+  return parsed.success ? parsed.data.revision : 0;
+};
+
+/**
+ * The precondition a refresh must present: lowercase SHA-256 hex of the
+ * JSON tuple `[keyId, nonce, revision]`. A new nonce means the node issued a
+ * new config (a rotation), a new revision means someone refreshed already;
+ * either turns an old token stale. Owner and policy are checked separately.
+ */
+export const configRefreshToken = (
+  keyId: string,
+  nonce: string,
+  revision: number,
+): string =>
+  createHash("sha256").update(JSON.stringify([keyId, nonce, revision])).digest("hex");

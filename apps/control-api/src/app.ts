@@ -14,6 +14,9 @@ import {
   updateServiceCheckRequestSchema,
   createUserRequestSchema,
   quotaRequestSchema,
+  configRefreshRequestSchema,
+  configRefreshResultSchema,
+  configRefreshStatusSchema,
   renameKeyRequestSchema,
   noticeKindSchema,
   updateCustomRoutesRequestSchema,
@@ -283,6 +286,23 @@ export const buildApp = async ({
     const { id } = idParamsSchema.parse(request.params);
     await service.rotateOwnKey(actorFor(request), id);
     return reply.code(202).send({ id, state: "provisioning" });
+  });
+  app.get("/api/keys/:id/config-refresh", async (request, reply) => {
+    const { id } = idParamsSchema.parse(request.params);
+    const result = await service.getConfigRefresh(actorFor(request), id);
+    reply.header("cache-control", "private, no-store");
+    return reply.send(configRefreshStatusSchema.parse(result));
+  });
+  app.post("/api/keys/:id/config-refresh", async (request, reply) => {
+    const { id } = idParamsSchema.parse(request.params);
+    const body = configRefreshRequestSchema.parse(request.body);
+    const result = await service.refreshOwnConfig(
+      actorFor(request),
+      id,
+      body.refreshToken,
+    );
+    reply.header("cache-control", "private, no-store");
+    return reply.send(configRefreshResultSchema.parse(result));
   });
   app.post("/api/keys/:id/rename", async (request, reply) => {
     const { id } = idParamsSchema.parse(request.params);

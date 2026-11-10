@@ -348,6 +348,10 @@ export const vpnKeys = pgTable(
     configNonce: text("config_nonce"),
     configAuthTag: text("config_auth_tag"),
     configKeyVersion: integer("config_key_version"),
+    // The per-key AWG 3.1 client profile (Jc/Jmin/Jmax and the I1-I3 order),
+    // applied over the encrypted node-issued config at export. Metadata only,
+    // never a config body. Null: the node's own parameters are exported.
+    awgClientProfile: jsonb("awg_client_profile").$type<Record<string, unknown>>(),
     lastUsedAt: timestamp("last_used_at", { withTimezone: true }),
     revokedAt: timestamp("revoked_at", { withTimezone: true }),
     failureReason: text("failure_reason"),

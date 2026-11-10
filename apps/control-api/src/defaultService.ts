@@ -1,7 +1,16 @@
 import type { EncryptionKeyring } from "@amnezia/db";
 import { decryptSecret } from "@amnezia/db";
 import type { PortalPolicy } from "@amnezia/contracts";
-import { composeKeyDisplayName } from "@amnezia/contracts";
+import {
+  composeKeyDisplayName,
+  CONFIG_REFRESH_UNAVAILABLE,
+} from "@amnezia/contracts";
+import {
+  awgClientProfileV1Schema,
+  configRefreshToken,
+  profileRevision,
+  selectAwgClientProfile,
+} from "./awgClientProfile.js";
 import type { ControlRepository } from "./repository.js";
 import { mergeRoutePayload } from "./routeMerge.js";
 import {
@@ -11,8 +20,10 @@ import {
   type ControlApiService,
 } from "./service.js";
 import {
+  applyAwgClientProfile,
   applyRouteProfileToVpnLink,
   extractConfFromVpnLink,
+  inspectAwg31ClientConfig,
   setVpnDescription,
 } from "./vpnConfig.js";
 import { configFilename } from "./configFilename.js";
@@ -73,6 +84,27 @@ const assertDownloadAllowed = (
   }
 };
 
+/**
+ * The saved client profile over the node-issued artifact. Comes first, so the
+ * route and name overlays apply to it like to any other export. A 2.0 or
+ * unmarked artifact comes back as it is, whatever was saved.
+ */
+const withClientProfile = (base: string, profile: unknown): string => {
+  if (profile === null || profile === undefined) return base;
+  try {
+    return applyAwgClientProfile(base, profile);
+  } catch {
+    throw new ApiError(
+      500,
+      "The saved client profile of this key is invalid",
+      "CONFIG_PROFILE_INVALID",
+    );
+  }
+};
+
+const unavailable = () =>
+  new ApiError(409, "This key cannot refresh its config", CONFIG_REFRESH_UNAVAILABLE);
+
 export const createDefaultControlApiService = ({
   repository,
   keyring,
@@ -113,7 +145,10 @@ export const createDefaultControlApiService = ({
       assertDownloadAllowed(key.policy, format);
     }
 
-    const storedLink = decryptSecret(key.encrypted, keyring);
+    const storedLink = withClientProfile(
+      decryptSecret(key.encrypted, keyring),
+      key.awgClientProfile,
+    );
     // Apply the active routing rules for non-full-tunnel profiles at export time.
     // AmneziaVPN clients cannot refresh routing on an imported config, so every
     // export carries the current rules and clears the "outdated" flag. On top of
@@ -281,6 +316,50 @@ export const createDefaultControlApiService = ({
   },
   revokeOwnKey: (actor, keyId) => repository.enqueueOwnRevoke(actor, keyId),
   rotateOwnKey: (actor, keyId) => repository.enqueueOwnRotate(actor, keyId),
+  getConfigRefresh: async (actor, keyId) => {
+    const key = await repository.findKeyConfig(keyId);
+    // Owner only: an admin may view someone's config, not change it.
+    if (!key || key.ownerId !== actor.id) {
+      throw new ApiError(404, "Key not found", "KEY_NOT_FOUND");
+    }
+    if (!key.policy.allowConfigRedownload) {
+      throw new ApiError(403, "Config download is disabled", "POLICY_DENIED");
+    }
+    if (key.state !== "active") return { eligible: false };
+    if (!inspectAwg31ClientConfig(decryptSecret(key.encrypted, keyring))) {
+      return { eligible: false };
+    }
+    const revision = profileRevision(key.awgClientProfile);
+    return {
+      eligible: true,
+      revision,
+      refreshToken: configRefreshToken(key.id, key.encrypted.nonce, revision),
+    };
+  },
+  refreshOwnConfig: (actor, keyId, refreshToken) =>
+    repository.refreshOwnConfigProfile(actor, keyId, refreshToken, (snapshot) => {
+      const base = decryptSecret(snapshot.encrypted, keyring);
+      const current = inspectAwg31ClientConfig(base);
+      if (!current) throw unavailable();
+      // The effective Jc: the saved one, or the node's when nothing is saved.
+      const saved = awgClientProfileV1Schema.safeParse(snapshot.awgClientProfile);
+      const candidate = selectAwgClientProfile(
+        snapshot.revision + 1,
+        saved.success ? saved.data.jc : current.jc,
+      );
+      // Saved only if every copy of the projected config agrees on it.
+      const projected = inspectAwg31ClientConfig(
+        applyAwgClientProfile(base, candidate),
+      );
+      if (
+        projected?.jc !== candidate.jc ||
+        projected.jmin !== candidate.jmin ||
+        projected.jmax !== candidate.jmax
+      ) {
+        throw unavailable();
+      }
+      return candidate;
+    }),
   renameOwnKey: (actor, keyId, deviceLabel) =>
     repository.renameOwnKey(actor, keyId, deviceLabel),
   updateMyCustomRoutes: (actor, routes) =>
