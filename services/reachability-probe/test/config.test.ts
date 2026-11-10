@@ -126,6 +126,24 @@ describe("parseClientConfig", () => {
     expect(lines.slice(peerAt)).toContain("AllowedIPs = 0.0.0.0/0, ::/0");
   });
 
+  it("keeps an existing keepalive, including a 3.1 range", () => {
+    const conf = CONF.replace("PersistentKeepalive = 25", "PersistentKeepalive = 25-35");
+    const lines = linesOf(parseClientConfig(conf).stripped).filter((line) =>
+      /^persistentkeepalive\s*=/i.test(line),
+    );
+    expect(lines).toEqual(["PersistentKeepalive = 25-35"]);
+  });
+
+  it("adds a keepalive to the peer when the config has none", () => {
+    const conf = CONF.replace("PersistentKeepalive = 25\n", "");
+    const lines = linesOf(parseClientConfig(conf).stripped);
+    const peerAt = lines.indexOf("[Peer]");
+    expect(lines.filter((line) => /^persistentkeepalive\s*=/i.test(line))).toEqual([
+      "PersistentKeepalive = 25",
+    ]);
+    expect(lines.indexOf("PersistentKeepalive = 25")).toBeGreaterThan(peerAt);
+  });
+
   it("rejects a missing endpoint", () => {
     expect(() => parseClientConfig(CONF.replace(/^Endpoint.*$/m, ""))).toThrow(ConfigError);
   });

@@ -95,7 +95,8 @@ PSK="$(docker exec "$ID-srv" cat /opt/amnezia/awg/wireguard_psk.key)"
 docker exec "$ID-srv" awg set awg0 peer "$CPUB" preshared-key /opt/amnezia/awg/wireguard_psk.key \
   allowed-ips 10.90.0.2/32
 
-# Client conf as the panel stores it: wg-quick keys and a split-tunnel
+# Client conf as the node-agent issues it (wg-quick keys, the server's AWG
+# parameters, a 3.1 keepalive range), except for a split-tunnel
 # AllowedIPs that does NOT cover the echo, so the egress check only passes
 # when the probe widens it to the full tunnel.
 PARAMS="$(docker exec "$ID-srv" sed -n '/^\[Interface\]/,/^\[/p' /opt/amnezia/awg/awg0.conf |
@@ -114,7 +115,7 @@ PublicKey = $SPUB
 PresharedKey = $PSK
 AllowedIPs = 192.0.2.0/24
 Endpoint = $SRV_WAN:51890
-PersistentKeepalive = 25
+PersistentKeepalive = 25-35
 EOF
 
 API_KEY="$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')"

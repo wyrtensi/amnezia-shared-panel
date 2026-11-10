@@ -153,6 +153,7 @@ export const parseClientConfig = (conf: string): ParsedClientConfig => {
   const addresses: string[] = [];
   let mtu: number | null = null;
   let endpoint: { host: string; port: number } | null = null;
+  let hasKeepalive = false;
   const kept: string[] = [];
 
   for (const line of lines) {
@@ -184,6 +185,7 @@ export const parseClientConfig = (conf: string): ParsedClientConfig => {
     if (section === "peer" && line.key === "endpoint" && endpoint === null) {
       endpoint = parseEndpoint(line.value);
     }
+    if (section === "peer" && line.key === "persistentkeepalive") hasKeepalive = true;
     if (INTERFACE_ONLY_KEYS.has(line.key)) continue;
     if (section === "peer" && line.key === "allowedips") continue;
     kept.push(line.text);
@@ -197,6 +199,9 @@ export const parseClientConfig = (conf: string): ParsedClientConfig => {
     .find((entry) => isIPv4(entry));
   if (!address) throw new ConfigError("Address has no IPv4");
   if (!endpoint) throw new ConfigError("config has no peer Endpoint");
+  // The probe sends nothing before it waits for the handshake; the keepalive
+  // is what starts one. Node-issued configs carry it (3.1 as a range).
+  if (!hasKeepalive) kept.splice(kept.indexOf("[Peer]") + 1, 0, "PersistentKeepalive = 25");
 
   return {
     address,
