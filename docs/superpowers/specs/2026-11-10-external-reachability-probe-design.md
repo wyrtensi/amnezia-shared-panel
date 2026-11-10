@@ -266,7 +266,9 @@ bot only sends: the widget has no buttons and makes no requests.
   (`peer_current.online`, the service account excluded), and "люди": the age
   of the newest person handshake on the node (`max(peer_current.latest_handshake_at)`,
   service account excluded, revoked keys included — the admin card's "last
-  handshake"). Sent as minutes before the check (wire format v2, row field 4)
+  handshake"). Sent as minutes before the check (wire format v3, row field 4;
+  every row field is a string, because Telegram merges two bare numbers in a
+  row of an array into one decimal)
   and aged by the widget itself; "<1ч", whole hours, then days with one decimal
   rounded down; yellow > 24 h, red > 48 h, grey "-" when there never was one.
   It does not affect the dot, "N из M" or the order. Failed nodes first

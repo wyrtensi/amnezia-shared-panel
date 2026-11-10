@@ -52,7 +52,7 @@ function R(){
 var d=null;try{d=JSON.parse(W&&W.chatData)}catch(e){}
 var h=$('h'),b=$('b'),r=$('r'),f=$('f'),t=$('t');
 b.textContent='';r.textContent='';
-if(!d||d.v!==2){h.textContent='Нет данных';t.style.display='none';f.textContent='';return}
+if(!d||d.v!==3){h.textContent='Нет данных';t.style.display='none';f.textContent='';return}
 t.style.display='';
 var age=d.c?Math.floor(Date.now()/1e3)-d.c:0,st=d.s||!d.c||age>d.sl;
 h.textContent='VPN из '+d.l+': '+(st?'нет данных':d.k+' из '+d.t);
@@ -65,10 +65,10 @@ nm.appendChild(E('span','d '+(st?'':hs=='1'?'g':hs=='0'?'r':'')));
 nm.appendChild(document.createTextNode(n[0]));c.appendChild(nm);
 if(n[5]&&!st)c.appendChild(E('span','sn','с '+n[5]));
 tr.appendChild(c);
-tr.appendChild(E('td',st?'':p=='1'?'ok':p=='0'&&hs!='1'?'no':'na',p=='1'?(n[2]!=null?String(n[2]):'\\u2713'):p=='0'?'\\u2715':'-'));
+tr.appendChild(E('td',st?'':p=='1'?'ok':p=='0'&&hs!='1'?'no':'na',p=='1'?(n[2]||'\\u2713'):p=='0'?'\\u2715':'-'));
 for(var i=1;i<4;i++)tr.appendChild(M(l[i],st));
-tr.appendChild(E('td','',String(n[3])));
-var q=P(n[4]==null?null:n[4]+Math.floor(age/60));tr.appendChild(E('td',st?'':q[1],q[0]));
+tr.appendChild(E('td','',n[3]));
+var q=P(n[4]===''?null:+n[4]+Math.floor(age/60));tr.appendChild(E('td',st?'':q[1],q[0]));
 r.appendChild(tr)});
 if(d.x){var x=E('tr'),c=E('td','na','\\u2026 ещё '+d.x);c.colSpan=7;x.appendChild(c);r.appendChild(x)}
 f.textContent=st?'Ждём следующую проверку':'Проверка '+d.ct+(d.nt?' \\u00b7 следующая ~'+d.nt:'');
