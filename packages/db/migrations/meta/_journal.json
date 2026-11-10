@@ -281,6 +281,13 @@
       "when": 1794219603905,
       "tag": "0039_swap_traffic_to_device_side",
       "breakpoints": true
+    },
+    {
+      "idx": 40,
+      "version": "7",
+      "when": 1794317483331,
+      "tag": "0040_reachability_probe",
+      "breakpoints": true
     }
   ]
 }
