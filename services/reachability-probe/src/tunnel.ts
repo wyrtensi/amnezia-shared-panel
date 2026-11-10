@@ -75,7 +75,9 @@ export class Tunnel {
         const done = result.stdout
           .split("\n")
           .some((line) => Number(line.trim().split(/\s+/)[1] ?? 0) > 0);
-        if (done) return { ok: true, detail: null, latencyMs: this.clock.now() - started };
+        if (done) {
+          return { ok: true, detail: null, latencyMs: Math.max(0, Math.round(this.clock.now() - started)) };
+        }
       }
       if (this.clock.now() - started >= timeoutMs) {
         return { ok: false, detail: `no handshake in ${Math.round(timeoutMs / 1000)}s`, latencyMs: null };

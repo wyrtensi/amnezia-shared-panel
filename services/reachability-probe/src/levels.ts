@@ -63,7 +63,7 @@ export const tcpBannerLevel = (
     };
     const evaluate = (line: string) => {
       const banner = printable(line.replace(/\r$/, ""));
-      finish({ ok: banner.startsWith("SSH-"), detail: banner, latencyMs: Date.now() - started });
+      finish({ ok: banner.startsWith("SSH-"), detail: banner, latencyMs: Math.max(0, Date.now() - started) });
     };
     const timer = setTimeout(() => finish({ ok: false, detail: "timeout", latencyMs: null }), timeoutMs);
     socket.setEncoding("latin1");

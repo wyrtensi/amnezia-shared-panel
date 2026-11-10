@@ -135,7 +135,9 @@ const parseEndpoint = (value: string): { host: string; port: number } => {
   if (!Number.isInteger(port) || port < 1 || port > 65535) {
     throw new ConfigError("peer Endpoint port is invalid");
   }
-  if (!host || /\s/.test(host)) throw new ConfigError("peer Endpoint host is invalid");
+  if (!host || host.length > 253 || /\s/.test(host)) {
+    throw new ConfigError("peer Endpoint host is invalid");
+  }
   return { host, port };
 };
 

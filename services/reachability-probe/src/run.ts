@@ -50,12 +50,16 @@ const emptyLevels = (): TargetLevels => ({
 
 const bounded = (text: string): string => text.slice(0, MAX_DETAIL);
 
+/** Whole, non-negative milliseconds (the wire schema's latencyMs). */
+const elapsed = (deps: RunDeps, startedMs: number): number =>
+  Math.max(0, Math.round(deps.now().getTime() - startedMs));
+
 const checkControl = async (url: string, deps: RunDeps): Promise<LevelResult> => {
   const started = deps.now().getTime();
   try {
     const { status } = await deps.httpGet(url, { timeoutMs: CONTROL_TIMEOUT_MS });
     const ok = status >= 200 && status < 400;
-    return { ok, detail: `HTTP ${status}`, latencyMs: ok ? deps.now().getTime() - started : null };
+    return { ok, detail: `HTTP ${status}`, latencyMs: ok ? elapsed(deps, started) : null };
   } catch (error) {
     return { ok: false, detail: errorCode(error), latencyMs: null };
   }
@@ -70,7 +74,7 @@ const checkEgress = async (
   const started = deps.now().getTime();
   try {
     const { status, body } = await deps.httpGet(url, { localAddress, timeoutMs: EGRESS_TIMEOUT_MS });
-    const latencyMs = deps.now().getTime() - started;
+    const latencyMs = elapsed(deps, started);
     const text = body.trim();
     const egressIp = isIP(text) ? text : null;
     if (status < 200 || status >= 300) {
@@ -144,7 +148,11 @@ const runTarget = async (
     }
     result.levels.handshake = await tunnel.waitHandshake(deps.handshakeTimeoutMs ?? 15_000);
     if (result.levels.handshake.ok) {
-      const egress = await checkEgress(egressUrl, cfg.address, target.expectedEgressIp ?? endpointIp, deps);
+      // The panel's known public IP; a value that is not an address falls
+      // back to the endpoint, as when none was sent.
+      const expected =
+        target.expectedEgressIp && isIP(target.expectedEgressIp) ? target.expectedEgressIp : endpointIp;
+      const egress = await checkEgress(egressUrl, cfg.address, expected, deps);
       result.levels.http = egress.level;
       result.egressIp = egress.egressIp;
     }

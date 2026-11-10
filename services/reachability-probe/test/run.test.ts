@@ -163,6 +163,22 @@ describe("runAll", () => {
     expect(state.results[0]?.levels.http.ok).toBe(true);
   });
 
+  it("an expectedEgressIp that is not an address falls back to the endpoint IP", async () => {
+    const { deps } = setup({ egressBody: "192.0.2.10" });
+    const state = await runAll(
+      request([
+        {
+          targetId: "node-a",
+          protocol: "amneziawg3",
+          config: conf("10.90.0.7", "192.0.2.10:51890"),
+          expectedEgressIp: "node-a.example.test",
+        },
+      ]),
+      deps,
+    );
+    expect(state.results[0]?.levels.http.ok).toBe(true);
+  });
+
   it("http level fails with the mismatch in detail otherwise", async () => {
     const { deps } = setup({ egressBody: "198.51.100.9" });
     const state = await runAll(
