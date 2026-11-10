@@ -107,6 +107,7 @@ export class PostgresReachabilityRepository
       lastIngestedRunId: row.lastIngestedRunId,
       staleAlertedAt: row.staleAlertedAt,
       enabledAt: row.enabledAt,
+      timeZone: row.timeZone,
     };
   };
 

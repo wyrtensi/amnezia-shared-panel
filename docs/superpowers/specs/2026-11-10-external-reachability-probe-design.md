@@ -273,7 +273,9 @@ bot only sends: the widget has no buttons and makes no requests.
   назад. Данные ниже устарели", table dimmed, dots grey. "N ч назад" is
   computed by the widget from the check's epoch.
 - **Time zone** is a probe setting (`time_zone`, IANA name, default `UTC`).
-  Clock times are formatted by the worker; the widget does no zone math.
+  Clock times are formatted by the worker; the widget does no zone math. The
+  alert texts use the same zone and name it after the time
+  ("2026-01-01 11:00 Europe/Berlin"; "… UTC" by default).
 - **Limits.** `chat_data` is compact JSON built to fit 1024 bytes: names are
   cut by bytes, then shorter, then trailing ok rows are dropped and counted as
   "… ещё N". HTML stays under 4096 bytes after zlib level 9.

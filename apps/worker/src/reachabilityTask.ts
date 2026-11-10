@@ -32,6 +32,8 @@ export type ProbeRow = {
   staleAlertedAt: Date | null;
   /** When monitoring (re)started; the stale clock never starts earlier. */
   enabledAt: Date;
+  /** IANA zone for the times in alert texts. */
+  timeZone: string;
 };
 
 /** A target as the panel knows it now, with its decrypted config when usable. */
@@ -110,6 +112,7 @@ export const createReachabilityTask = ({
     const staleInput = {
       now: at,
       label: probe.label,
+      timeZone: probe.timeZone,
       staleAfterSec: probe.staleAfterSec,
       intervalSec: probe.intervalSec,
       lastResultAt: probe.lastResultAt,
@@ -146,6 +149,7 @@ export const createReachabilityTask = ({
         runId: latest.runId,
         now: at,
         label: probe.label,
+        timeZone: probe.timeZone,
         failThreshold: probe.failThreshold,
         controlOk: latest.control.ok === true,
         targets,

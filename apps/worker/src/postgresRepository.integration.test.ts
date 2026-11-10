@@ -2379,6 +2379,7 @@ describe("PostgresReachabilityRepository", () => {
     expect(probe?.currentRunId).toBeNull();
     expect(probe?.lastResultAt).not.toBeNull();
     expect(probe?.apiKey).toBe("k".repeat(32));
+    expect(probe?.timeZone).toBe("UTC");
   });
 
   runDatabaseTest("ingest skips a node deleted since the run started", async () => {

@@ -31,6 +31,7 @@ const probeRow = (extra: Partial<ProbeRow> = {}): ProbeRow => ({
   lastIngestedRunId: null,
   staleAlertedAt: null,
   enabledAt: hoursAgo(48),
+  timeZone: "UTC",
   ...extra,
 });
 
@@ -288,6 +289,19 @@ describe("reachability task", () => {
     expect(repository.setStaleAlert).toHaveBeenCalledWith(NOW, [
       expect.objectContaining({ dedupKey: `notify.reachability:stale:${NOW.toISOString()}` }),
     ]);
+  });
+
+  it("writes alert times in the probe's time zone", async () => {
+    const repository = fakeRepository(
+      probeRow({
+        lastResultAt: hoursAgo(4),
+        currentRunStartedAt: minutesAgo(10),
+        timeZone: "Europe/Belgrade",
+      }),
+    );
+    await tick(repository, fakeClient(new Error("fetch failed")));
+    const [, notices] = vi.mocked(repository.setStaleAlert).mock.calls[0] ?? [];
+    expect(notices?.[0]?.text).toContain("2026-01-01 09:00 Europe/Belgrade");
   });
 
   it("a key sync failure does not stop the run", async () => {

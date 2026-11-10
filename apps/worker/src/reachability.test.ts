@@ -3,7 +3,10 @@ import { describe, expect, it } from "vitest";
 import type { ProbeLevel, ProbeTargetResult } from "@amnezia/contracts";
 
 import {
+  alertClock,
   classifyTarget,
+  formatDown,
+  formatStale,
   ingestRun,
   nodeStatus,
   staleTransition,
@@ -397,5 +400,56 @@ describe("staleTransition", () => {
         },
       ],
     });
+  });
+});
+
+describe("alert times", () => {
+  const at = new Date("2026-11-10T14:46:00Z");
+
+  it("are UTC without a zone, exactly as before", () => {
+    expect(alertClock(at)).toBe("2026-11-10 14:46 UTC");
+    expect(formatStale(LABEL, at)).toBe(
+      "Проверка из Testland не присылает результатов с 2026-11-10 14:46 UTC",
+    );
+    expect(formatDown({ nodeName: "node-a", publicIp: "192.0.2.10" }, LABEL, null, at)).toContain(
+      "с 2026-11-10 14:46 UTC",
+    );
+  });
+
+  it("follow the configured zone, named after the time", () => {
+    expect(alertClock(at, "Europe/Belgrade")).toBe("2026-11-10 15:46 Europe/Belgrade");
+    // Across midnight and daylight saving: July is UTC+2 there.
+    expect(alertClock(new Date("2026-07-01T22:30:00Z"), "Europe/Belgrade")).toBe(
+      "2026-07-02 00:30 Europe/Belgrade",
+    );
+    expect(formatStale(LABEL, at, "Europe/Belgrade")).toContain("с 2026-11-10 15:46 Europe/Belgrade");
+  });
+
+  it("reach the unavailable message and the stale message", () => {
+    const first = ingestRun({
+      runId: "r1",
+      now: new Date("2026-01-01T10:00:00Z"),
+      label: LABEL,
+      timeZone: "Europe/Belgrade",
+      failThreshold: 1,
+      controlOk: true,
+      targets: [A, B],
+      results: [down(A), up(B)],
+      previous: new Map(),
+    });
+    expect(first.notices[0]?.text).toContain("с 2026-01-01 11:00 Europe/Belgrade");
+
+    const stale = staleTransition({
+      now: new Date("2026-01-01T04:00:01Z"),
+      label: LABEL,
+      timeZone: "Europe/Belgrade",
+      staleAfterSec: 10_800,
+      intervalSec: 3_600,
+      lastResultAt: new Date("2026-01-01T01:00:00Z"),
+      since: new Date("2025-12-31T00:00:00Z"),
+      staleAlertedAt: null,
+      ingestedNow: false,
+    });
+    expect(stale.notices[0]?.text).toContain("с 2026-01-01 02:00 Europe/Belgrade");
   });
 });

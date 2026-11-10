@@ -166,8 +166,8 @@ The label is used verbatim in the admin/nodes heading ("Checks from {label}")
 and in every alert text, so write it the way it reads after "from". Optional:
 `--egress-url` (must answer the caller's IP as plain text; default
 `https://api.ipify.org`), `--interval-sec` (default 3600), `--fail-threshold`
-(2), `--stale-after-sec` (10800), `--time-zone` (IANA name for the Telegram
-widget's clock times; default `UTC`).
+(2), `--stale-after-sec` (10800), `--time-zone` (IANA name for the times in
+the alerts and the Telegram widget; default `UTC`).
 
 On its next tick (within a minute) the worker creates the service keys; each
 needs one provisioning round on its node, then the first run follows. Ask for a

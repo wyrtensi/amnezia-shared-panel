@@ -106,10 +106,26 @@ export const nodeStatus = (outcomes: readonly ProtocolOutcome[]): ReachabilitySt
   return "error";
 };
 
-const pad = (n: number) => String(n).padStart(2, "0");
-const utc = (date: Date) =>
-  `${date.getUTCFullYear()}-${pad(date.getUTCMonth() + 1)}-${pad(date.getUTCDate())} ` +
-  `${pad(date.getUTCHours())}:${pad(date.getUTCMinutes())}`;
+/**
+ * "2026-01-01 10:00 UTC", or the same in another IANA zone, named after the
+ * time ("2026-01-01 11:00 Europe/Berlin").
+ */
+export const alertClock = (date: Date, timeZone = "UTC"): string => {
+  const p = Object.fromEntries(
+    new Intl.DateTimeFormat("en-GB", {
+      timeZone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      hourCycle: "h23",
+    })
+      .formatToParts(date)
+      .map((part) => [part.type, part.value]),
+  ) as Record<string, string>;
+  return `${p.year}-${p.month}-${p.day} ${p.hour}:${p.minute} ${timeZone}`;
+};
 
 const yesNo = (level: ProbeLevel | undefined) =>
   level?.ok === true ? "да" : level?.ok === false ? "нет" : "—";
@@ -122,10 +138,11 @@ export const formatDown = (
   label: string,
   levels: ProbeLevels | null,
   since: Date,
+  timeZone = "UTC",
 ): string =>
   `${who(node)} недоступен из ${label}\n` +
   `handshake: ${yesNo(levels?.handshake)}, tcp/22: ${yesNo(levels?.tcp)}, ping: ${yesNo(levels?.ping)}\n` +
-  `с ${utc(since)} UTC`;
+  `с ${alertClock(since, timeZone)}`;
 
 export const formatUp = (node: NodeLine, label: string): string =>
   `${who(node)} снова доступен из ${label}`;
@@ -137,8 +154,8 @@ export const formatMassDown = (names: readonly string[], label: string): string 
 export const formatMassUp = (names: readonly string[], label: string): string =>
   `Проверка из ${label}: снова доступны ${names.join(", ")}`;
 
-export const formatStale = (label: string, since: Date): string =>
-  `Проверка из ${label} не присылает результатов с ${utc(since)} UTC`;
+export const formatStale = (label: string, since: Date, timeZone = "UTC"): string =>
+  `Проверка из ${label} не присылает результатов с ${alertClock(since, timeZone)}`;
 
 export const formatStaleBack = (label: string): string =>
   `Проверка из ${label} снова работает`;
@@ -157,6 +174,8 @@ export type IngestInput = {
   runId: string;
   now: Date;
   label: string;
+  /** IANA zone for the times in the messages; UTC when omitted. */
+  timeZone?: string;
   failThreshold: number;
   controlOk: boolean;
   targets: readonly ReachabilityTarget[];
@@ -272,7 +291,7 @@ export const ingestRun = (input: IngestInput): IngestOutput => {
     for (const { node, levels, since } of opened) {
       notices.push({
         dedupKey: key("down", node.nodeId, at),
-        text: formatDown(node, input.label, levels, since),
+        text: formatDown(node, input.label, levels, since, input.timeZone),
       });
     }
   }
@@ -300,6 +319,8 @@ export const ingestRun = (input: IngestInput): IngestOutput => {
 export type StaleInput = {
   now: Date;
   label: string;
+  /** IANA zone for the time in the message; UTC when omitted. */
+  timeZone?: string;
   staleAfterSec: number;
   intervalSec: number;
   lastResultAt: Date | null;
@@ -337,6 +358,7 @@ export const staleTransition = (
         text: formatStale(
           input.label,
           new Date(Math.max(input.lastResultAt?.getTime() ?? 0, input.since.getTime())),
+          input.timeZone,
         ),
       },
     ],
