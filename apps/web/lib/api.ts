@@ -40,7 +40,10 @@ export const apiRequest = async <T>(
     );
   }
   if (response.status === 204) return undefined as T;
-  return response.json() as Promise<T>;
+  // A 202 "queued" may carry no body at all; parsing it would turn a request
+  // that succeeded into a thrown error and a false failure toast.
+  const text = await response.text();
+  return (text === "" ? undefined : JSON.parse(text)) as T;
 };
 
 export const configUrl = (

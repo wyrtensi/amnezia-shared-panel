@@ -53,6 +53,8 @@ import { NodeMetrics } from "@/components/admin/node-metrics";
 import { NodePublicAddress } from "@/components/admin/node-public-address";
 import { ServiceChecksCard } from "@/components/admin/service-checks-card";
 import { useServiceChecks } from "@/components/admin/use-service-checks";
+import { ReachabilityCard } from "@/components/admin/reachability-card";
+import { useReachability } from "@/components/admin/use-reachability";
 import { cn } from "@/lib/utils";
 import { useAdminData, type AdminNode } from "@/components/admin/admin-data";
 import { useT } from "@/lib/i18n/provider";
@@ -92,6 +94,7 @@ export default function AdminNodesPage() {
   // One fetch for the whole page: the card below lists checks by check, the
   // node cards show the same results by node. Two fetches could disagree.
   const serviceChecks = useServiceChecks();
+  const reachability = useReachability();
   const { t } = useT();
   const [showCreate, setShowCreate] = React.useState(false);
   const [editNode, setEditNode] = React.useState<AdminNode | null>(null);
@@ -145,6 +148,19 @@ export default function AdminNodesPage() {
         cause instanceof Error ? cause.message : t("nodes.changeFailed"),
       );
     }
+  };
+
+  /**
+   * Include or exclude a node from the external probe. Reloads both the nodes
+   * and the probe view, for the same reason as `setNodeChecks`. Errors reach
+   * the card, which owns the toast.
+   */
+  const setNodeReachability = async (nodeId: string, enabled: boolean) => {
+    await request(`/api/admin/nodes/${nodeId}`, {
+      method: "PATCH",
+      body: JSON.stringify({ reachabilityEnabled: enabled }),
+    });
+    await Promise.all([reload(), reachability.reload()]);
   };
 
   const toggleEnabled = async (node: AdminNode, enabled: boolean) => {
@@ -229,6 +245,13 @@ export default function AdminNodesPage() {
           about what works FROM these servers, and reading it beside them is
           what makes a red chip actionable. */}
       <ServiceChecksCard state={serviceChecks} />
+
+      {/* Beside the service checks: those look out FROM the nodes, this one
+          looks AT them from outside, the way a user's client does. */}
+      <ReachabilityCard
+        state={reachability}
+        onSetNodeEnabled={setNodeReachability}
+      />
 
       <CreateNodeDialog
         open={showCreate}

@@ -88,6 +88,8 @@ export type AdminNode = {
   checksEnabled?: boolean;
   /** Checks this node skips, by id. */
   disabledCheckIds?: string[];
+  /** Whether the external reachability probe tests this node. */
+  reachabilityEnabled?: boolean;
   supportedProtocols?: ProtocolKind[];
   enabledProtocols?: ProtocolKind[] | null;
   peerCount?: number;
