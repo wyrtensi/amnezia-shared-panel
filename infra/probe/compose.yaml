@@ -1,0 +1,64 @@
+name: reachability-probe
+
+# The external reachability probe. It brings up one AWG client tunnel at a time
+# inside its own network namespace and selects tunnel traffic with a source
+# rule into table 200, so the host's routes, rules and DNS are never touched.
+# The API is published on loopback only; the panel reaches it over an SSH
+# tunnel.
+
+services:
+  probe:
+    container_name: reachability-probe
+    image: ${PROBE_IMAGE:?PROBE_IMAGE must be pinned by sha256 (image ID or digest reference)}
+    platform: linux/amd64
+    pull_policy: never
+    # amneziawg-go daemonizes, so every tunnel leaves an orphan that exits on
+    # teardown. Node as PID 1 would never reap it; init does.
+    init: true
+    restart: unless-stopped
+    networks:
+      - probe
+    ports:
+      - "127.0.0.1:${PROBE_PORT:-4002}:4002"
+    cap_drop:
+      - ALL
+    cap_add:
+      # tun interface, addresses, rules and routes in the container's netns.
+      - NET_ADMIN
+      # ping.
+      - NET_RAW
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    read_only: true
+    tmpfs:
+      # Stripped client configs, mode 0600, deleted after each target.
+      - /tmp:mode=0700
+      # amneziawg-go UAPI sockets.
+      - /var/run/amneziawg:mode=0700
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+    # A heap ceiling inside the memory limit, so a leak hits a V8 limit
+    # instead of an OOM kill. Raise both together.
+    mem_limit: ${PROBE_MEM_LIMIT:-256m}
+    environment:
+      NODE_OPTIONS: --max-old-space-size=${PROBE_MAX_OLD_SPACE_MB:-128}
+      PROBE_LISTEN: 0.0.0.0:4002
+      PROBE_API_KEY_FILE: /run/secrets/probe_api_key
+    secrets:
+      - probe_api_key
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
+networks:
+  probe:
+    driver: bridge
+
+secrets:
+  probe_api_key:
+    # Owned by root, mode 0600: with cap_drop ALL the container's root cannot
+    # read a 0600 file that belongs to another uid.
+    file: ./secrets/probe-api-key

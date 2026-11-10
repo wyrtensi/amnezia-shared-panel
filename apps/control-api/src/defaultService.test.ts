@@ -25,6 +25,26 @@ const admin: Actor = {
 const keyring = { 1: randomBytes(32) };
 const encrypted = encryptSecret("vpn://stored-payload", keyring, 1);
 
+const reachabilityProbeView = {
+  label: "Testland",
+  apiBaseUrl: "http://127.0.0.1:8090",
+  enabled: true,
+  controlUrl: "https://control.example.com/",
+  egressUrl: "https://api.ipify.org",
+  intervalSec: 3600,
+  failThreshold: 2,
+  staleAfterSec: 10800,
+  lastResultAt: null,
+  lastError: null,
+  lastErrorAt: null,
+  stale: false,
+  runInFlight: false,
+  runRequestedAt: null,
+  timeZone: "UTC",
+  widgetUpdatedAt: null,
+  widgetLastError: null,
+};
+
 const createRepository = (): ControlRepository => ({
   resolveIdentity: vi.fn(() => Promise.resolve(employee)),
   getMe: vi.fn(() => Promise.resolve({ keyLimit: 5, keyCount: 1 })),
@@ -101,6 +121,11 @@ const createRepository = (): ControlRepository => ({
   deleteServiceCheck: vi.fn(() => Promise.resolve({ id: "check-1" })),
   runServiceCheckNow: vi.fn(() => Promise.resolve({ id: "check-1" })),
   resetServiceCheckResults: vi.fn(() => Promise.resolve({ cleared: 3 })),
+  getReachability: vi.fn(() => Promise.resolve({ probe: null, nodes: [] })),
+  upsertReachabilityProbe: vi.fn(() => Promise.resolve(reachabilityProbeView)),
+  deleteReachabilityProbe: vi.fn(() => Promise.resolve()),
+  runReachabilityNow: vi.fn(() => Promise.resolve(reachabilityProbeView)),
+  listReachabilityHistory: vi.fn(() => Promise.resolve([])),
   appendAudit: vi.fn(() => Promise.resolve()),
 });
 

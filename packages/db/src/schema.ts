@@ -10,6 +10,7 @@ import {
   pgTable,
   primaryKey,
   real,
+  smallint,
   text,
   timestamp,
   uniqueIndex,
@@ -118,6 +119,9 @@ export const users = pgTable(
     // Why the account is disabled, e.g. "admin_offboard" or "access_removed"
     // (Cloudflare Access membership revoked). Null while the account is active.
     deactivationReason: varchar("deactivation_reason", { length: 64 }),
+    // A machine account, not a person: it owns the reachability probe's keys
+    // and is kept out of every user-facing list, count and sync.
+    serviceAccount: boolean("service_account").default(false).notNull(),
     ...timestamps,
   },
   (table) => [
@@ -174,6 +178,9 @@ export const nodes = pgTable(
       .$type<string[]>()
       .default([])
       .notNull(),
+    // Whether the external reachability probe tests this node. On by default,
+    // including for a disabled node, so its recovery is noticed.
+    reachabilityEnabled: boolean("reachability_enabled").default(true).notNull(),
     capabilities: jsonb("capabilities")
       .$type<Record<string, boolean | number>>()
       .default({})
@@ -601,6 +608,128 @@ export const nodeServiceCheckResults = pgTable(
     failingSince: timestamp("failing_since", { withTimezone: true }),
   },
   (table) => [primaryKey({ columns: [table.nodeId, table.checkId] })],
+);
+
+export const reachabilityAlertKindEnum = pgEnum("reachability_alert_kind", [
+  "node",
+  "mass",
+]);
+
+/**
+ * The external reachability probe: one row or none. No row means the feature
+ * is off. Settings and the worker's bookkeeping live together because there is
+ * exactly one probe and both are read on every worker tick.
+ */
+export const reachabilityProbe = pgTable(
+  "reachability_probe",
+  {
+    id: smallint("id").default(1).primaryKey(),
+    // Where the probe stands, as shown in headings and alerts.
+    label: varchar("label", { length: 80 }).notNull(),
+    apiBaseUrl: text("api_base_url").notNull(),
+    credentialsCiphertext: text("credentials_ciphertext").notNull(),
+    credentialsNonce: text("credentials_nonce").notNull(),
+    credentialsAuthTag: text("credentials_auth_tag").notNull(),
+    credentialsKeyVersion: integer("credentials_key_version").notNull(),
+    enabled: boolean("enabled").default(true).notNull(),
+    // Fetched without the tunnel on every run; when it fails nothing can be
+    // concluded about any node.
+    controlUrl: text("control_url").notNull(),
+    egressUrl: text("egress_url").default("https://api.ipify.org").notNull(),
+    intervalSec: integer("interval_sec").default(3600).notNull(),
+    failThreshold: integer("fail_threshold").default(2).notNull(),
+    staleAfterSec: integer("stale_after_sec").default(10800).notNull(),
+    runRequestedAt: timestamp("run_requested_at", { withTimezone: true }),
+    currentRunId: uuid("current_run_id"),
+    currentRunStartedAt: timestamp("current_run_started_at", { withTimezone: true }),
+    lastResultAt: timestamp("last_result_at", { withTimezone: true }),
+    lastIngestedRunId: uuid("last_ingested_run_id"),
+    lastError: varchar("last_error", { length: 300 }),
+    lastErrorAt: timestamp("last_error_at", { withTimezone: true }),
+    staleAlertedAt: timestamp("stale_alerted_at", { withTimezone: true }),
+    // When monitoring (re)started: set on registration and whenever the probe
+    // is switched back on, so a pause is not mistaken for a silent probe.
+    enabledAt: timestamp("enabled_at", { withTimezone: true }).defaultNow().notNull(),
+    // IANA zone the Telegram widget shows clock times in.
+    timeZone: varchar("time_zone", { length: 64 }).default("UTC").notNull(),
+    // The newest ingested run failed everywhere in the shape that points at
+    // the probe itself (the combined-alert rule).
+    lastRunMass: boolean("last_run_mass").default(false).notNull(),
+    // The one Telegram status widget message: where it was sent and which
+    // HTML and caption it carries (a sent widget's HTML cannot change).
+    widgetMessageId: bigint("widget_message_id", { mode: "number" }),
+    widgetChatId: text("widget_chat_id"),
+    widgetVersion: varchar("widget_version", { length: 64 }),
+    widgetUpdatedAt: timestamp("widget_updated_at", { withTimezone: true }),
+    widgetLastError: varchar("widget_last_error", { length: 300 }),
+    ...timestamps,
+  },
+  (table) => [
+    check("reachability_probe_singleton", sql`${table.id} = 1`),
+    check(
+      "reachability_probe_interval_range",
+      sql`${table.intervalSec} >= 300 AND ${table.intervalSec} <= 86400`,
+    ),
+    check(
+      "reachability_probe_threshold_range",
+      sql`${table.failThreshold} >= 1 AND ${table.failThreshold} <= 10`,
+    ),
+    check(
+      "reachability_probe_stale_range",
+      sql`${table.staleAfterSec} >= 600 AND ${table.staleAfterSec} <= 604800`,
+    ),
+  ],
+);
+
+/** The newest result per (node, protocol). */
+export const nodeReachabilityResults = pgTable(
+  "node_reachability_results",
+  {
+    nodeId: uuid("node_id")
+      .notNull()
+      .references(() => nodes.id, { onDelete: "cascade" }),
+    protocol: protocolKindEnum("protocol").notNull(),
+    status: serviceCheckStatusEnum("status").notNull(),
+    levels: jsonb("levels").$type<Record<string, unknown>>().notNull(),
+    egressIp: text("egress_ip"),
+    detail: varchar("detail", { length: 300 }),
+    runId: uuid("run_id").notNull(),
+    checkedAt: timestamp("checked_at", { withTimezone: true }).notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.nodeId, table.protocol] })],
+);
+
+/** Per-node verdict and the open incident, if any. */
+export const nodeReachabilityState = pgTable("node_reachability_state", {
+  nodeId: uuid("node_id")
+    .primaryKey()
+    .references(() => nodes.id, { onDelete: "cascade" }),
+  status: serviceCheckStatusEnum("status").notNull(),
+  consecutiveFailures: integer("consecutive_failures").default(0).notNull(),
+  failingSince: timestamp("failing_since", { withTimezone: true }),
+  // Set while an incident is open: an unavailable message was queued.
+  alertedAt: timestamp("alerted_at", { withTimezone: true }),
+  alertKind: reachabilityAlertKindEnum("alert_kind"),
+  checkedAt: timestamp("checked_at", { withTimezone: true }).notNull(),
+  detail: varchar("detail", { length: 300 }),
+});
+
+/** One row per node per ingested run, pruned by the maintenance task. */
+export const nodeReachabilityHistory = pgTable(
+  "node_reachability_history",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    nodeId: uuid("node_id")
+      .notNull()
+      .references(() => nodes.id, { onDelete: "cascade" }),
+    runId: uuid("run_id").notNull(),
+    status: serviceCheckStatusEnum("status").notNull(),
+    detail: varchar("detail", { length: 300 }),
+    checkedAt: timestamp("checked_at", { withTimezone: true }).notNull(),
+  },
+  (table) => [
+    index("node_reachability_history_node_idx").on(table.nodeId, table.checkedAt),
+  ],
 );
 
 export const portalPolicy = pgTable(

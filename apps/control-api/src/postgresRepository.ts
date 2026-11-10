@@ -85,6 +85,14 @@ import {
 } from "@amnezia/contracts";
 import type { PollBoundSampleField } from "@amnezia/contracts";
 import {
+  isProbeStale,
+  nodeServedProtocols,
+  probeLevelsSchema,
+  REACHABILITY_DEFAULTS,
+  type AdminReachabilityView,
+  type UpsertReachabilityProbeRequest,
+} from "@amnezia/contracts";
+import {
   armAccessSyncRow,
   auditEvents,
   decryptSecret,
@@ -95,11 +103,14 @@ import {
   hasLiveKeys,
   identities,
   jobOutbox,
+  keyOwnerIsPerson,
   nodeAgentReleases,
   nodeMetricsCurrent,
   nodeServiceCheckResults,
   nodeServiceChecks,
   nodes,
+  notServiceAccount,
+  SERVICE_ACCOUNT_EMAIL,
   peerCurrent,
   portalPolicy,
   purgeOneOffboardedUser,
@@ -137,8 +148,24 @@ import {
 import { orderNodesForUsers } from "./nodeOrder.js";
 import { checkRecommendedPrefix, dedupeNodeIds } from "./policyNodeLists.js";
 import { toRulesRefreshStatus } from "./rulesRefresh.js";
+import {
+  nodeReachabilityHistory,
+  nodeReachabilityResults,
+  nodeReachabilityState,
+  reachabilityProbe,
+} from "@amnezia/db";
+import type {
+  ReachabilityHistoryEntry,
+  ReachabilityHistoryQuery,
+  ReachabilityProbeView,
+} from "./service.js";
 
 const quotaStates: KeyState[] = ["provisioning", "active", "disabled"];
+
+// Comparing a non-uuid string to a uuid column is a Postgres error, so a
+// lookup by an admin-supplied id is only attempted when it has this shape.
+const UUID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 const DAY_MS = 24 * 60 * 60 * 1_000;
 
@@ -452,6 +479,11 @@ export class PostgresControlRepository implements ControlRepository {
 
   resolveIdentity = async (claim: IdentityClaim): Promise<Actor> => {
     const email = normalizeEmail(claim.email);
+    // The probe's machine account never signs in, whatever an identity
+    // provider claims.
+    if (email === SERVICE_ACCOUNT_EMAIL) {
+      throw new ApiError(403, "User is disabled", "USER_DISABLED");
+    }
     return this.options.db.transaction(async (tx) => {
       const existingIdentity = await tx
         .select({ user: users })
@@ -474,6 +506,9 @@ export class PostgresControlRepository implements ControlRepository {
               eq(identities.subject, claim.subject),
             ),
           );
+        if (existingIdentity[0].user.serviceAccount) {
+          throw new ApiError(403, "User is disabled", "USER_DISABLED");
+        }
         if (
           this.options.bootstrapAdminEmails?.has(email) &&
           existingIdentity[0].user.role !== "admin"
@@ -699,6 +734,8 @@ export class PostgresControlRepository implements ControlRepository {
       })
       .from(trafficRollups)
       .innerJoin(vpnKeys, eq(vpnKeys.id, trafficRollups.keyId))
+      // The probe's own tunnels are not anyone's traffic.
+      .innerJoin(users, keyOwnerIsPerson(vpnKeys))
       .where(
         and(
           eq(trafficRollups.period, "day"),
@@ -750,6 +787,7 @@ export class PostgresControlRepository implements ControlRepository {
       })
       .from(trafficRollups)
       .innerJoin(vpnKeys, eq(vpnKeys.id, trafficRollups.keyId))
+      .innerJoin(users, keyOwnerIsPerson(vpnKeys))
       .where(
         and(
           eq(trafficRollups.period, "day"),
@@ -931,6 +969,9 @@ export class PostgresControlRepository implements ControlRepository {
     request: CreateUserRequest,
   ): Promise<unknown> => {
     const email = normalizeEmail(request.email);
+    if (email === SERVICE_ACCOUNT_EMAIL) {
+      throw new ApiError(409, "This address is reserved by the panel", "SERVICE_ACCOUNT");
+    }
     return this.options.db.transaction(async (tx) => {
       const existing = await tx
         .select({ id: users.id })
@@ -1070,6 +1111,9 @@ export class PostgresControlRepository implements ControlRepository {
       if (request.disabledCheckIds !== undefined) {
         changes.disabledCheckIds = request.disabledCheckIds;
       }
+      if (request.reachabilityEnabled !== undefined) {
+        changes.reachabilityEnabled = request.reachabilityEnabled;
+      }
       if (request.capabilities !== undefined) {
         changes.capabilities = request.capabilities;
       }
@@ -1107,6 +1151,9 @@ export class PostgresControlRepository implements ControlRepository {
           protocol: nodes.protocol,
           maxPeers: nodes.maxPeers,
           capabilities: nodes.capabilities,
+          checksEnabled: nodes.checksEnabled,
+          disabledCheckIds: nodes.disabledCheckIds,
+          reachabilityEnabled: nodes.reachabilityEnabled,
           updatedAt: nodes.updatedAt,
         });
       await tx.insert(auditEvents).values({
@@ -1572,6 +1619,8 @@ export class PostgresControlRepository implements ControlRepository {
       .where(and(eq(vpnKeys.id, keyId), isNotNull(vpnKeys.configCiphertext)))
       .limit(1);
     const row = rows[0];
+    // The probe's keys are not handed out by the panel, to anyone.
+    if (row?.user.serviceAccount) return null;
     if (
       !row?.key.configCiphertext ||
       !row.key.configNonce ||
@@ -2165,22 +2214,28 @@ export class PostgresControlRepository implements ControlRepository {
         .select({ value: count() })
         .from(quotaRequests)
         .where(eq(quotaRequests.status, "pending")),
+      // Every key and user count below is about people: the probe's service
+      // account and its keys are kept out (see notServiceAccount in @amnezia/db).
       db
         .select({ key: vpnKeys.state, value: count() })
         .from(vpnKeys)
+        .innerJoin(users, keyOwnerIsPerson(vpnKeys))
         .groupBy(vpnKeys.state),
       db
         .select({ key: vpnKeys.protocol, value: count() })
         .from(vpnKeys)
+        .innerJoin(users, keyOwnerIsPerson(vpnKeys))
         .groupBy(vpnKeys.protocol),
       db
         .select({ key: vpnKeys.routeProfile, value: count() })
         .from(vpnKeys)
+        .innerJoin(users, keyOwnerIsPerson(vpnKeys))
         .groupBy(vpnKeys.routeProfile),
-      db.select({ value: count() }).from(users),
+      db.select({ value: count() }).from(users).where(notServiceAccount),
       db
         .select({ key: users.status, value: count() })
         .from(users)
+        .where(notServiceAccount)
         .groupBy(users.status),
       db
         .select({ enabled: nodes.enabled, lastError: nodes.lastError })
@@ -2191,7 +2246,9 @@ export class PostgresControlRepository implements ControlRepository {
           received: sum(peerCurrent.receivedBytes),
           sent: sum(peerCurrent.sentBytes),
         })
-        .from(peerCurrent),
+        .from(peerCurrent)
+        .innerJoin(vpnKeys, eq(vpnKeys.id, peerCurrent.keyId))
+        .innerJoin(users, keyOwnerIsPerson(vpnKeys)),
     ]);
 
     const tally = (rows: Array<{ key: string; value: number }>) =>
@@ -2235,7 +2292,12 @@ export class PostgresControlRepository implements ControlRepository {
       case "users":
         // Every column, so the admin UI sees keyLimitOverride, nodeKeyLimits
         // and policyOverride (which carries allowedNodeIds) in one round trip.
-        return this.options.db.select().from(users).orderBy(users.email);
+        // The probe's service account is managed by the panel, not an admin.
+        return this.options.db
+          .select()
+          .from(users)
+          .where(notServiceAccount)
+          .orderBy(users.email);
       case "keys": {
         const rows = await this.options.db
           .select({
@@ -2267,6 +2329,7 @@ export class PostgresControlRepository implements ControlRepository {
             sentBytes: peerCurrent.sentBytes,
           })
           .from(vpnKeys)
+          .innerJoin(users, keyOwnerIsPerson(vpnKeys))
           .leftJoin(peerCurrent, eq(peerCurrent.keyId, vpnKeys.id))
           .orderBy(desc(vpnKeys.createdAt));
         return rows.map(
@@ -2310,6 +2373,7 @@ export class PostgresControlRepository implements ControlRepository {
             maxPeers: nodes.maxPeers,
             checksEnabled: nodes.checksEnabled,
             disabledCheckIds: nodes.disabledCheckIds,
+            reachabilityEnabled: nodes.reachabilityEnabled,
             capabilities: nodes.capabilities,
             // Where clients reach the node, as reported by its agent and
             // resolved by the worker; null until the first poll of an agent
@@ -2345,14 +2409,26 @@ export class PostgresControlRepository implements ControlRepository {
           })
           .from(nodes)
           .orderBy(nodes.name);
+        // peerCount includes the probe's keys -- each one occupies a real peer
+        // slot on the node -- and probeKeyCount says how many of them there
+        // are, so the two can be told apart. Same state set for both, so
+        // probeKeyCount is always a subset of peerCount.
+        const slotRows = await this.options.db
+          .select({
+            nodeId: vpnKeys.nodeId,
+            value: count(),
+            // A raw fragment gets no type parser; cast in SQL and coerce below.
+            probe: sql<unknown>`(count(*) filter (where ${users.serviceAccount}))::int`,
+          })
+          .from(vpnKeys)
+          .innerJoin(users, eq(users.id, vpnKeys.ownerId))
+          .where(inArray(vpnKeys.state, quotaStates))
+          .groupBy(vpnKeys.nodeId);
         const peerCounts = new Map(
-          (
-            await this.options.db
-              .select({ nodeId: vpnKeys.nodeId, value: count() })
-              .from(vpnKeys)
-              .where(inArray(vpnKeys.state, quotaStates))
-              .groupBy(vpnKeys.nodeId)
-          ).map((row) => [row.nodeId, row.value]),
+          slotRows.map((row) => [row.nodeId, row.value]),
+        );
+        const probeKeyCounts = new Map(
+          slotRows.map((row) => [row.nodeId, Number(row.probe)]),
         );
         // Per-node traffic for Today / 7 days / Month (across all users) so each
         // server row shows all three inline.
@@ -2389,6 +2465,9 @@ export class PostgresControlRepository implements ControlRepository {
             })
             .from(peerCurrent)
             .innerJoin(vpnKeys, eq(vpnKeys.id, peerCurrent.keyId))
+            // The probe's own handshakes would make every node it reaches look
+            // reachable to people; only a person's connection is evidence here.
+            .innerJoin(users, keyOwnerIsPerson(vpnKeys))
             .groupBy(vpnKeys.nodeId),
         ]);
         // Byte counters leave as decimal STRINGS, the way every other byte
@@ -2440,6 +2519,7 @@ export class PostgresControlRepository implements ControlRepository {
             lastHandshakeAt: handshakeByNode.get(row.id) ?? null,
           },
           peerCount: peerCounts.get(row.id) ?? 0,
+          probeKeyCount: probeKeyCounts.get(row.id) ?? 0,
           traffic: {
             today: nodeTraffic.get(row.id)?.today ?? emptyPair,
             week: nodeTraffic.get(row.id)?.week ?? emptyPair,
@@ -2745,6 +2825,327 @@ export class PostgresControlRepository implements ControlRepository {
     return { cleared: deleted.length };
   };
 
+  // --- External reachability probe -------------------------------------------
+  // One settings row (id = 1) or none. The worker owns everything about a run;
+  // the panel only edits the settings, moves the "run now" marker and reads the
+  // results the worker stored.
+
+  private toReachabilityProbeView = (
+    row: typeof reachabilityProbe.$inferSelect,
+    now: Date,
+  ): ReachabilityProbeView => ({
+    label: row.label,
+    apiBaseUrl: row.apiBaseUrl,
+    enabled: row.enabled,
+    controlUrl: row.controlUrl,
+    egressUrl: row.egressUrl,
+    intervalSec: row.intervalSec,
+    failThreshold: row.failThreshold,
+    staleAfterSec: row.staleAfterSec,
+    lastResultAt: row.lastResultAt?.toISOString() ?? null,
+    lastError: row.lastError,
+    lastErrorAt: row.lastErrorAt?.toISOString() ?? null,
+    // The same rule the worker alerts on, so the badge and the message agree.
+    stale: isProbeStale({
+      now,
+      staleAfterSec: row.staleAfterSec,
+      intervalSec: row.intervalSec,
+      lastResultAt: row.lastResultAt,
+      since: row.enabledAt,
+    }),
+    runInFlight: row.currentRunId !== null,
+    runRequestedAt: row.runRequestedAt?.toISOString() ?? null,
+    timeZone: row.timeZone,
+    widgetUpdatedAt: row.widgetUpdatedAt?.toISOString() ?? null,
+    widgetLastError: row.widgetLastError,
+  });
+
+  getReachability = async (_actor: Actor): Promise<AdminReachabilityView> => {
+    const db = this.options.db;
+    const [probeRows, nodeRows, resultRows, keyRows] = await Promise.all([
+      db.select().from(reachabilityProbe).where(eq(reachabilityProbe.id, 1)),
+      // Every registered node, a disabled one included: the probe keeps
+      // testing it so that its recovery is noticed.
+      db
+        .select({
+          id: nodes.id,
+          name: nodes.name,
+          enabled: nodes.enabled,
+          reachabilityEnabled: nodes.reachabilityEnabled,
+          protocol: nodes.protocol,
+          capabilities: nodes.capabilities,
+          enabledProtocols: nodes.enabledProtocols,
+          state: nodeReachabilityState,
+        })
+        .from(nodes)
+        .leftJoin(
+          nodeReachabilityState,
+          eq(nodeReachabilityState.nodeId, nodes.id),
+        )
+        .orderBy(nodes.name),
+      db.select().from(nodeReachabilityResults),
+      // The newest probe key per (node, protocol). Only the service account's
+      // keys: a person's key on the same node says nothing about the probe.
+      db
+        .selectDistinctOn([vpnKeys.nodeId, vpnKeys.protocol], {
+          nodeId: vpnKeys.nodeId,
+          protocol: vpnKeys.protocol,
+          state: vpnKeys.state,
+        })
+        .from(vpnKeys)
+        .innerJoin(users, eq(users.id, vpnKeys.ownerId))
+        .where(eq(users.serviceAccount, true))
+        .orderBy(
+          vpnKeys.nodeId,
+          vpnKeys.protocol,
+          desc(vpnKeys.createdAt),
+          desc(vpnKeys.id),
+        ),
+    ]);
+    const now = new Date();
+    const probe = probeRows[0];
+    const slot = (nodeId: string, protocol: ProtocolKind): string =>
+      `${nodeId}:${protocol}`;
+    const results = new Map(
+      resultRows.map((row) => [slot(row.nodeId, row.protocol), row]),
+    );
+    const keyStates = new Map(
+      keyRows.map((row) => [slot(row.nodeId, row.protocol), row.state]),
+    );
+    return {
+      probe: probe ? this.toReachabilityProbeView(probe, now) : null,
+      nodes: nodeRows.map((node) => {
+        // Every protocol the node serves to anyone, without user policy: the
+        // shared rule the worker keeps a probe key by.
+        const served = nodeServedProtocols(node);
+        return {
+          nodeId: node.id,
+          nodeName: node.name,
+          nodeEnabled: node.enabled,
+          reachabilityEnabled: node.reachabilityEnabled,
+          status: node.state?.status ?? null,
+          checkedAt: node.state?.checkedAt.toISOString() ?? null,
+          failingSince: node.state?.failingSince?.toISOString() ?? null,
+          consecutiveFailures: node.state?.consecutiveFailures ?? 0,
+          incidentOpen: (node.state?.alertedAt ?? null) !== null,
+          detail: node.state?.detail ?? null,
+          protocols: served.map((protocol) => {
+            const result = results.get(slot(node.id, protocol));
+            return {
+              protocol,
+              status: result?.status ?? null,
+              // Written by the worker from a validated probe response, or `{}`
+              // when nothing was measured (an `error`). Parsed again so that,
+              // like a row in an older shape, reads as "no levels" rather than
+              // breaking the whole view.
+              levels: result
+                ? (probeLevelsSchema.safeParse(result.levels).data ?? null)
+                : null,
+              egressIp: result?.egressIp ?? null,
+              detail: result?.detail ?? null,
+              checkedAt: result?.checkedAt.toISOString() ?? null,
+              keyState: keyStates.get(slot(node.id, protocol)) ?? null,
+            };
+          }),
+        };
+      }),
+    };
+  };
+
+  upsertReachabilityProbe = async (
+    actor: Actor,
+    request: UpsertReachabilityProbeRequest,
+  ): Promise<ReachabilityProbeView> => {
+    const credentials =
+      request.apiKey === undefined
+        ? null
+        : encryptSecret(request.apiKey, this.options.keyring, this.activeKeyVersion);
+    const credentialColumns = credentials
+      ? {
+          credentialsCiphertext: credentials.ciphertext,
+          credentialsNonce: credentials.nonce,
+          credentialsAuthTag: credentials.authTag,
+          credentialsKeyVersion: credentials.keyVersion,
+        }
+      : null;
+    // Omitted optional fields keep what is stored; on create they take the
+    // defaults below.
+    const settings = {
+      label: request.label,
+      apiBaseUrl: request.apiBaseUrl.replace(/\/$/, ""),
+      controlUrl: request.controlUrl,
+      ...(request.enabled === undefined ? {} : { enabled: request.enabled }),
+      ...(request.egressUrl === undefined ? {} : { egressUrl: request.egressUrl }),
+      ...(request.intervalSec === undefined
+        ? {}
+        : { intervalSec: request.intervalSec }),
+      ...(request.failThreshold === undefined
+        ? {}
+        : { failThreshold: request.failThreshold }),
+      ...(request.staleAfterSec === undefined
+        ? {}
+        : { staleAfterSec: request.staleAfterSec }),
+      ...(request.timeZone === undefined ? {} : { timeZone: request.timeZone }),
+    };
+    return this.options.db.transaction(async (tx) => {
+      const [current] = await tx
+        .select()
+        .from(reachabilityProbe)
+        .where(eq(reachabilityProbe.id, 1))
+        .for("update");
+      let row: typeof reachabilityProbe.$inferSelect | undefined;
+      // Field NAMES only. The key is named when it is replaced, never written.
+      let fields: string[];
+      if (current) {
+        fields = Object.entries(settings)
+          .filter(
+            ([field, value]) =>
+              current[field as keyof typeof settings] !== value,
+          )
+          .map(([field]) => field);
+        if (credentialColumns) fields.push("apiKey");
+        // Switching it back on restarts the stale clock: a pause is not a
+        // silent probe.
+        const reenabled = !current.enabled && request.enabled === true;
+        [row] = await tx
+          .update(reachabilityProbe)
+          .set({
+            ...settings,
+            ...credentialColumns,
+            ...(reenabled ? { enabledAt: new Date() } : {}),
+            updatedAt: new Date(),
+          })
+          .where(eq(reachabilityProbe.id, 1))
+          .returning();
+      } else {
+        if (!credentialColumns) {
+          throw new ApiError(
+            400,
+            "An API key is required to register the probe",
+            "API_KEY_REQUIRED",
+          );
+        }
+        fields = Object.keys(request);
+        [row] = await tx
+          .insert(reachabilityProbe)
+          .values({
+            id: 1,
+            egressUrl: REACHABILITY_DEFAULTS.egressUrl,
+            intervalSec: REACHABILITY_DEFAULTS.intervalSec,
+            failThreshold: REACHABILITY_DEFAULTS.failThreshold,
+            staleAfterSec: REACHABILITY_DEFAULTS.staleAfterSec,
+            timeZone: REACHABILITY_DEFAULTS.timeZone,
+            ...settings,
+            ...credentialColumns,
+          })
+          .onConflictDoNothing()
+          .returning();
+        // A row that did not exist cannot be locked, so a concurrent create
+        // can win the insert. Refuse rather than overwrite what it wrote.
+        if (!row) {
+          throw new ApiError(
+            409,
+            "The probe was registered concurrently; reload and retry",
+            "PROBE_CONFLICT",
+          );
+        }
+      }
+      if (!row) throw new ApiError(500, "Probe was not saved", "PROBE_NOT_SAVED");
+      await tx.insert(auditEvents).values({
+        actorUserId: actor.id,
+        actorType: "user",
+        action: "admin.reachability.probe_set",
+        targetType: "reachability_probe",
+        targetId: null,
+        metadata: { created: !current, fields },
+      });
+      return this.toReachabilityProbeView(row, new Date());
+    });
+  };
+
+  deleteReachabilityProbe = async (actor: Actor): Promise<void> =>
+    this.options.db.transaction(async (tx) => {
+      // Results stay: they belong to the nodes and go when a node is deleted.
+      const [deleted] = await tx
+        .delete(reachabilityProbe)
+        .where(eq(reachabilityProbe.id, 1))
+        .returning({ label: reachabilityProbe.label });
+      if (!deleted) {
+        throw new ApiError(404, "No reachability probe is configured", "PROBE_NOT_FOUND");
+      }
+      // Its keys go with it: their configs were handed to the probe host, and
+      // nothing else would ever revoke them (they are hidden from admins).
+      const revoked = await tx
+        .update(vpnKeys)
+        .set({ state: "revoking", updatedAt: new Date() })
+        .where(
+          and(
+            inArray(vpnKeys.state, ["provisioning", "active", "disabled"]),
+            inArray(
+              vpnKeys.ownerId,
+              tx.select({ id: users.id }).from(users).where(eq(users.serviceAccount, true)),
+            ),
+          ),
+        )
+        .returning({ id: vpnKeys.id });
+      for (const key of revoked) {
+        await tx.insert(jobOutbox).values({
+          type: "vpn-key.revoke",
+          deduplicationKey: revokeJobDedupKey(key.id, randomUUID()),
+          payload: { keyId: key.id },
+        });
+      }
+      await tx.insert(auditEvents).values({
+        actorUserId: actor.id,
+        actorType: "user",
+        action: "admin.reachability.probe_deleted",
+        targetType: "reachability_probe",
+        targetId: null,
+        metadata: { label: deleted.label, revokedKeys: revoked.length },
+      });
+    });
+
+  runReachabilityNow = async (actor: Actor): Promise<ReachabilityProbeView> =>
+    this.options.db.transaction(async (tx) => {
+      // A marker, not an execution: the worker starts a run on its next tick.
+      const now = new Date();
+      const [updated] = await tx
+        .update(reachabilityProbe)
+        .set({ runRequestedAt: now, updatedAt: now })
+        .where(eq(reachabilityProbe.id, 1))
+        .returning();
+      if (!updated) {
+        throw new ApiError(404, "No reachability probe is configured", "PROBE_NOT_FOUND");
+      }
+      await tx.insert(auditEvents).values({
+        actorUserId: actor.id,
+        actorType: "user",
+        action: "admin.reachability.run",
+        targetType: "reachability_probe",
+        targetId: null,
+        metadata: {},
+      });
+      return this.toReachabilityProbeView(updated, now);
+    });
+
+  listReachabilityHistory = async (
+    _actor: Actor,
+    { nodeId, limit }: ReachabilityHistoryQuery,
+  ): Promise<ReachabilityHistoryEntry[]> => {
+    const rows = await this.options.db
+      .select({
+        runId: nodeReachabilityHistory.runId,
+        status: nodeReachabilityHistory.status,
+        detail: nodeReachabilityHistory.detail,
+        checkedAt: nodeReachabilityHistory.checkedAt,
+      })
+      .from(nodeReachabilityHistory)
+      .where(eq(nodeReachabilityHistory.nodeId, nodeId))
+      .orderBy(desc(nodeReachabilityHistory.checkedAt), desc(nodeReachabilityHistory.id))
+      .limit(limit);
+    return rows.map((row) => ({ ...row, checkedAt: row.checkedAt.toISOString() }));
+  };
+
   /**
    * Ask the worker to reconcile with Cloudflare Access now. Joins the
    * caller's transaction: if the mutation rolls back, so does the arm.
@@ -2771,6 +3172,43 @@ export class PostgresControlRepository implements ControlRepository {
   ): Promise<unknown> => {
     if (!targetId) throw new ApiError(400, "Target id is required", "BAD_REQUEST");
     let result: unknown;
+
+    // The probe's service account is managed by the panel: no admin action may
+    // offboard, delete, re-role, re-limit or hand it a key. Checked before any
+    // payload is parsed, so the refusal is the same whatever is sent. A target
+    // that is not a uuid -- the bulk "purge" sweep's literal "offboarded",
+    // which excludes the account in its own eligibility rule -- or not a user
+    // falls through to each action's own handling.
+    if (resource === "users" && UUID_PATTERN.test(targetId)) {
+      const [target] = await this.options.db
+        .select({ serviceAccount: users.serviceAccount })
+        .from(users)
+        .where(eq(users.id, targetId))
+        .limit(1);
+      if (target?.serviceAccount) {
+        throw new ApiError(
+          409,
+          "Service account is managed by the panel",
+          "SERVICE_ACCOUNT",
+        );
+      }
+    }
+    // Its keys likewise: the worker creates and revokes them.
+    if (resource === "keys" && UUID_PATTERN.test(targetId)) {
+      const [owner] = await this.options.db
+        .select({ serviceAccount: users.serviceAccount })
+        .from(vpnKeys)
+        .innerJoin(users, eq(users.id, vpnKeys.ownerId))
+        .where(eq(vpnKeys.id, targetId))
+        .limit(1);
+      if (owner?.serviceAccount) {
+        throw new ApiError(
+          409,
+          "Service account keys are managed by the panel",
+          "SERVICE_ACCOUNT",
+        );
+      }
+    }
 
     if (resource === "keys" && ["disable", "enable", "revoke"].includes(action)) {
       const state =

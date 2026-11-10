@@ -1,5 +1,5 @@
-import { randomBytes } from "node:crypto";
-import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { randomBytes, randomUUID } from "node:crypto";
+import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   ACCESS_SYNC_DEDUPLICATION_KEY,
   RULES_REFRESH_DEDUPLICATION_KEY,
@@ -12,22 +12,32 @@ import {
   jobOutbox,
   nodeMetricsCurrent,
   nodeMetricsSamples,
+  nodeReachabilityHistory,
+  nodeReachabilityResults,
+  nodeReachabilityState,
   nodeServiceCheckResults,
   nodeServiceChecks,
   nodes,
   peerCurrent,
   peerSamples,
   portalPolicy,
+  reachabilityProbe,
   routeRuleVersions,
   trafficRollups,
   users,
   vpnKeys,
 } from "@amnezia/db";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import {
   PostgresWorkerRepository,
   REARM_STUCK_REVOKES_LIMIT,
 } from "./postgresRepository.js";
+
+import { ingestRun } from "./reachability.js";
+import {
+  PostgresReachabilityRepository,
+  SERVICE_ACCOUNT_EMAIL,
+} from "./reachabilityRepository.js";
 
 const databaseUrl = process.env.TEST_DATABASE_URL;
 const runDatabaseTest = databaseUrl ? it : it.skip;
@@ -1950,4 +1960,611 @@ describe("PostgresWorkerRepository rule pinning", () => {
     expect(rows[0]?.status).toBe("active");
     expect(rows[0]?.pinnedAt).not.toBeNull();
   });
+});
+
+describe("PostgresWorkerRepository service account", () => {
+  const database = databaseUrl ? createDatabase(databaseUrl) : null;
+  const keyring = { 1: randomBytes(32) };
+  const repository = database
+    ? new PostgresWorkerRepository({
+        db: database.db,
+        keyring,
+        activeKeyVersion: 1,
+      })
+    : null;
+  const SERVICE_EMAIL = "reachability-probe@service.invalid";
+  const DAY_MS = 24 * 60 * 60 * 1_000;
+  let createdUserIds: string[] = [];
+  let createdNodeIds: string[] = [];
+
+  // Deletes rather than neutralizes, in FK RESTRICT order: keys, nodes, users.
+  // A leftover service account would also collide with the next test's seed.
+  afterEach(async () => {
+    if (!database) return;
+    if (createdNodeIds.length > 0) {
+      await database.db
+        .delete(vpnKeys)
+        .where(inArray(vpnKeys.nodeId, createdNodeIds));
+      await database.db.delete(nodes).where(inArray(nodes.id, createdNodeIds));
+    }
+    if (createdUserIds.length > 0) {
+      await database.db
+        .delete(vpnKeys)
+        .where(inArray(vpnKeys.ownerId, createdUserIds));
+      await database.db.delete(users).where(inArray(users.id, createdUserIds));
+    }
+    createdNodeIds = [];
+    createdUserIds = [];
+  });
+
+  afterAll(async () => {
+    if (database) await database.client.end();
+  });
+
+  /**
+   * One person and the service account, each owning one key on `node-a`, in
+   * the given user status. Disabled users are disabled long ago, so the purge
+   * window never protects them.
+   */
+  const seed = async (
+    status: "active" | "disabled",
+    keyState: KeyState,
+  ): Promise<{
+    person: { id: string; email: string };
+    service: { id: string; email: string };
+    serviceKeyId: string;
+  }> => {
+    if (!database) throw new Error("Database test is disabled");
+    const credentials = encryptSecret("api-key", keyring, 1);
+    const label = encryptSecret(randomBytes(32).toString("base64"), keyring, 1);
+    const [node] = await database.db
+      .insert(nodes)
+      .values({
+        name: "node-a",
+        apiBaseUrl: "http://192.0.2.10:4001",
+        credentialsCiphertext: credentials.ciphertext,
+        credentialsNonce: credentials.nonce,
+        credentialsAuthTag: credentials.authTag,
+        credentialsKeyVersion: credentials.keyVersion,
+        labelSecretCiphertext: label.ciphertext,
+        labelSecretNonce: label.nonce,
+        labelSecretAuthTag: label.authTag,
+        labelSecretKeyVersion: label.keyVersion,
+      })
+      .returning();
+    if (!node) throw new Error("Failed to seed node");
+    createdNodeIds.push(node.id);
+    const disabled =
+      status === "disabled"
+        ? {
+            disabledAt: new Date(Date.now() - 400 * DAY_MS),
+            deactivationReason: "admin_offboard" as const,
+          }
+        : {};
+    const [person] = await database.db
+      .insert(users)
+      .values({
+        email: `service-person-${randomBytes(6).toString("hex")}@example.com`,
+        status,
+        ...disabled,
+      })
+      .returning();
+    const [service] = await database.db
+      .insert(users)
+      .values({ email: SERVICE_EMAIL, serviceAccount: true, status, ...disabled })
+      .returning();
+    if (!person || !service) throw new Error("Failed to seed users");
+    createdUserIds.push(person.id, service.id);
+    const keyIds: string[] = [];
+    for (const ownerId of [person.id, service.id]) {
+      const [key] = await database.db
+        .insert(vpnKeys)
+        .values({
+          ownerId,
+          nodeId: node.id,
+          nodeLabel: `ap_service_${randomBytes(6).toString("hex")}`,
+          protocol: "awg3",
+          state: keyState,
+          routeProfile: "full_tunnel",
+        })
+        .returning();
+      if (!key) throw new Error("Failed to seed key");
+      keyIds.push(key.id);
+    }
+    return {
+      person: { id: person.id, email: person.email },
+      service: { id: service.id, email: service.email },
+      serviceKeyId: keyIds[1] as string,
+    };
+  };
+
+  const stateOf = async (
+    userId: string,
+    keyId: string,
+  ): Promise<{ user: string | undefined; key: string | undefined }> => {
+    if (!database) throw new Error("Database test is disabled");
+    const [user] = await database.db
+      .select({ status: users.status })
+      .from(users)
+      .where(eq(users.id, userId));
+    const [key] = await database.db
+      .select({ state: vpnKeys.state })
+      .from(vpnKeys)
+      .where(eq(vpnKeys.id, keyId));
+    return { user: user?.status, key: key?.state };
+  };
+
+  runDatabaseTest("leaves it out of the Access allowlist emails", async () => {
+    if (!repository) return;
+    const { person } = await seed("active", "active");
+    const emails = await repository.listActiveUserEmails();
+    expect(emails).toContain(person.email);
+    expect(emails).not.toContain(SERVICE_EMAIL);
+  });
+
+  runDatabaseTest("never deactivates it on an Access reconcile", async () => {
+    if (!repository) return;
+    const { person, service, serviceKeyId } = await seed("active", "active");
+    // A non-empty allowlist that names neither: an empty one is a no-op.
+    const result = await repository.reconcileAccess(["someone-else@example.com"]);
+    expect(result.deactivated).toContain(person.email);
+    expect(result.deactivated).not.toContain(SERVICE_EMAIL);
+    expect(result.skippedAdmins).not.toContain(SERVICE_EMAIL);
+    expect(await stateOf(service.id, serviceKeyId)).toEqual({
+      user: "active",
+      key: "active",
+    });
+  });
+
+  runDatabaseTest("never deactivates it when Access removes it by name", async () => {
+    if (!repository) return;
+    const { person, service, serviceKeyId } = await seed("active", "active");
+    const result = await repository.deactivateByEmail([person.email, SERVICE_EMAIL]);
+    expect(result.deactivated).toEqual([person.email]);
+    expect(await stateOf(service.id, serviceKeyId)).toEqual({
+      user: "active",
+      key: "active",
+    });
+  });
+
+  runDatabaseTest("skips it in the offboarded-user purge", async () => {
+    if (!repository) return;
+    const { person, service, serviceKeyId } = await seed("disabled", "revoked");
+    const result = await repository.purgeOffboardedUsers(
+      new Date(Date.now() - 30 * DAY_MS),
+    );
+    expect(result.deleted).toContain(person.email);
+    expect(result.deleted).not.toContain(SERVICE_EMAIL);
+    expect(await stateOf(service.id, serviceKeyId)).toEqual({
+      user: "disabled",
+      key: "revoked",
+    });
+  });
+});
+
+describe("PostgresReachabilityRepository", () => {
+  const database = databaseUrl ? createDatabase(databaseUrl) : null;
+  const keyring = { 1: randomBytes(32) };
+  const repository = database
+    ? new PostgresReachabilityRepository({ db: database.db, keyring })
+    : null;
+
+  const clean = async () => {
+    if (!database) return;
+    await database.db.delete(reachabilityProbe);
+    await database.db.delete(auditEvents);
+    await database.db.delete(jobOutbox);
+    await database.db.delete(vpnKeys);
+    await database.db.delete(nodes);
+    await database.db.delete(users);
+  };
+
+  beforeEach(clean);
+  afterAll(async () => {
+    await clean();
+    if (database) await database.client.end();
+  });
+
+  const seedNode = async (name: string, extra: Partial<typeof nodes.$inferInsert> = {}) => {
+    if (!database) throw new Error("disabled");
+    const credentials = encryptSecret("k".repeat(32), keyring, 1);
+    const label = encryptSecret(randomBytes(32).toString("base64"), keyring, 1);
+    const [node] = await database.db
+      .insert(nodes)
+      .values({
+        name,
+        apiBaseUrl: "http://127.0.0.1:4001",
+        protocol: "awg3",
+        publicIp: "192.0.2.10",
+        credentialsCiphertext: credentials.ciphertext,
+        credentialsNonce: credentials.nonce,
+        credentialsAuthTag: credentials.authTag,
+        credentialsKeyVersion: credentials.keyVersion,
+        labelSecretCiphertext: label.ciphertext,
+        labelSecretNonce: label.nonce,
+        labelSecretAuthTag: label.authTag,
+        labelSecretKeyVersion: label.keyVersion,
+        ...extra,
+      })
+      .returning();
+    if (!node) throw new Error("seed failed");
+    return node;
+  };
+
+  const serviceKeys = async () => {
+    if (!database) throw new Error("disabled");
+    const [owner] = await database.db
+      .select()
+      .from(users)
+      .where(eq(users.email, SERVICE_ACCOUNT_EMAIL));
+    if (!owner) return [];
+    return database.db.select().from(vpnKeys).where(eq(vpnKeys.ownerId, owner.id));
+  };
+
+  runDatabaseTest(
+    "key sync creates one key per node and protocol, including a disabled node, once",
+    async () => {
+      if (!database || !repository) return;
+      await seedNode("node-a");
+      await seedNode("node-b", { enabled: false, capabilities: { awg3: true, awg2: true } });
+
+      const first = await repository.syncServiceKeys(new Date());
+      expect(first).toEqual({ created: 3, revoked: 0, provisioning: 3 });
+      const again = await repository.syncServiceKeys(new Date());
+      expect(again).toEqual({ created: 0, revoked: 0, provisioning: 3 });
+
+      const keys = await serviceKeys();
+      expect(keys).toHaveLength(3);
+      expect(keys.every((k) => k.state === "provisioning" && k.routeProfile === "full_tunnel")).toBe(true);
+      const jobs = await database.db
+        .select()
+        .from(jobOutbox)
+        .where(eq(jobOutbox.type, "vpn-key.provision"));
+      expect(jobs).toHaveLength(3);
+      const [owner] = await database.db
+        .select()
+        .from(users)
+        .where(eq(users.email, SERVICE_ACCOUNT_EMAIL));
+      expect(owner?.serviceAccount).toBe(true);
+    },
+  );
+
+  runDatabaseTest("key sync revokes a key when the node opts out", async () => {
+    if (!database || !repository) return;
+    const node = await seedNode("node-a");
+    await repository.syncServiceKeys(new Date());
+    await database.db.update(vpnKeys).set({ state: "active" });
+    await database.db
+      .update(nodes)
+      .set({ reachabilityEnabled: false })
+      .where(eq(nodes.id, node.id));
+
+    await expect(repository.syncServiceKeys(new Date())).resolves.toEqual({
+      created: 0,
+      revoked: 1,
+      provisioning: 0,
+    });
+    const [key] = await serviceKeys();
+    expect(key?.state).toBe("revoking");
+  });
+
+  runDatabaseTest("a failed key is not recreated within a day", async () => {
+    if (!database || !repository) return;
+    await seedNode("node-a");
+    await repository.syncServiceKeys(new Date());
+    await database.db.update(vpnKeys).set({ state: "failed", failureReason: "node gone" });
+
+    await expect(repository.syncServiceKeys(new Date())).resolves.toEqual({
+      created: 0,
+      revoked: 0,
+      provisioning: 0,
+    });
+    await expect(
+      repository.syncServiceKeys(new Date(Date.now() + 25 * 3_600_000)),
+    ).resolves.toEqual({ created: 1, revoked: 0, provisioning: 1 });
+    // The failed attempt is replaced, not kept beside the new key.
+    const keys = await serviceKeys();
+    expect(keys.map((k) => k.state)).toEqual(["provisioning"]);
+  });
+
+  runDatabaseTest("targets carry the decrypted config only for an active key", async () => {
+    if (!database || !repository) return;
+    await seedNode("node-a");
+    await seedNode("node-b");
+    expect((await repository.listTargets()).map((t) => t.unavailableReason)).toEqual([
+      "no service key yet",
+      "no service key yet",
+    ]);
+    await repository.syncServiceKeys(new Date());
+    const keys = await serviceKeys();
+    const config = encryptSecret("vpn://config", keyring, 1);
+    await database.db
+      .update(vpnKeys)
+      .set({
+        state: "active",
+        configCiphertext: config.ciphertext,
+        configNonce: config.nonce,
+        configAuthTag: config.authTag,
+        configKeyVersion: config.keyVersion,
+      })
+      .where(eq(vpnKeys.id, keys[0]?.id ?? ""));
+
+    const targets = await repository.listTargets();
+    const active = targets.find((t) => t.config !== null);
+    expect(active?.config).toBe("vpn://config");
+    expect(active?.expectedEgressIp).toBe("192.0.2.10");
+    expect(targets.find((t) => t.config === null)?.unavailableReason).toBe(
+      "service key is provisioning",
+    );
+  });
+
+  const seedProbe = async (currentRunId: string | null) => {
+    if (!database) throw new Error("disabled");
+    const credentials = encryptSecret("k".repeat(32), keyring, 1);
+    await database.db.insert(reachabilityProbe).values({
+      label: "Testland",
+      apiBaseUrl: "http://probe.test",
+      credentialsCiphertext: credentials.ciphertext,
+      credentialsNonce: credentials.nonce,
+      credentialsAuthTag: credentials.authTag,
+      credentialsKeyVersion: credentials.keyVersion,
+      controlUrl: "https://example.com/",
+      currentRunId,
+    });
+  };
+
+  runDatabaseTest("ingest writes everything at once, once per run", async () => {
+    if (!database || !repository) return;
+    const a = await seedNode("node-a");
+    const runId = randomUUID();
+    const credentials = encryptSecret("k".repeat(32), keyring, 1);
+    await database.db.insert(reachabilityProbe).values({
+      label: "Testland",
+      apiBaseUrl: "http://probe.test",
+      credentialsCiphertext: credentials.ciphertext,
+      credentialsNonce: credentials.nonce,
+      credentialsAuthTag: credentials.authTag,
+      credentialsKeyVersion: credentials.keyVersion,
+      controlUrl: "https://example.com/",
+      currentRunId: runId,
+    });
+    const target = {
+      targetId: `${a.id}:awg3`,
+      nodeId: a.id,
+      nodeName: "node-a",
+      publicIp: "192.0.2.10",
+      protocol: "awg3" as const,
+      unavailableReason: null,
+    };
+    const now = new Date();
+    const out = ingestRun({
+      runId,
+      now,
+      label: "Testland",
+      failThreshold: 1,
+      controlOk: true,
+      targets: [target],
+      results: [],
+      previous: new Map(),
+    });
+    // Reuse the computed shape, but make it an incident so a notice is queued.
+    const notice = { dedupKey: `notify.reachability:down:${a.id}:x`, text: "down" };
+    const write = {
+      runId,
+      now,
+      outcomes: out.outcomes,
+      states: out.states,
+      notices: [notice],
+      staleAlertedAt: null,
+      mass: false,
+    };
+    await repository.ingest(write);
+    // The same run again (an overlapping worker) and a run never started: no-ops.
+    await repository.ingest(write);
+    await repository.ingest({ ...write, runId: randomUUID() });
+
+    const results = await database.db.select().from(nodeReachabilityResults);
+    expect(results).toHaveLength(1);
+    expect(results[0]).toMatchObject({ status: "error", detail: "probe returned no result" });
+    const [state] = await database.db.select().from(nodeReachabilityState);
+    expect(state?.status).toBe("error");
+    expect(await database.db.select().from(nodeReachabilityHistory)).toHaveLength(1);
+    const jobs = await database.db
+      .select()
+      .from(jobOutbox)
+      .where(eq(jobOutbox.type, "notify.reachability"));
+    expect(jobs).toHaveLength(1);
+    expect(jobs[0]?.payload).toEqual({ text: "down" });
+    const probe = await repository.loadProbe();
+    expect(probe?.currentRunId).toBeNull();
+    expect(probe?.lastResultAt).not.toBeNull();
+    expect(probe?.apiKey).toBe("k".repeat(32));
+    expect(probe?.timeZone).toBe("UTC");
+  });
+
+  runDatabaseTest("ingest skips a node deleted since the run started", async () => {
+    if (!database || !repository) return;
+    const runId = randomUUID();
+    await seedProbe(runId);
+    const out = ingestRun({
+      runId,
+      now: new Date(),
+      label: "Testland",
+      failThreshold: 2,
+      controlOk: true,
+      targets: [
+        {
+          targetId: "gone:awg3",
+          nodeId: randomUUID(),
+          nodeName: "node-gone",
+          publicIp: null,
+          protocol: "awg3",
+          unavailableReason: null,
+        },
+      ],
+      results: [],
+      previous: new Map(),
+    });
+    await expect(
+      repository.ingest({
+        runId,
+        now: new Date(),
+        outcomes: out.outcomes,
+        states: out.states,
+        notices: [],
+        staleAlertedAt: null,
+        mass: false,
+      }),
+    ).resolves.toBeUndefined();
+    expect(await database.db.select().from(nodeReachabilityState)).toHaveLength(0);
+  });
+
+  runDatabaseTest("ingest prunes history older than 30 days", async () => {
+    if (!database || !repository) return;
+    const a = await seedNode("node-a");
+    await database.db.insert(nodeReachabilityHistory).values({
+      nodeId: a.id,
+      runId: randomUUID(),
+      status: "ok",
+      checkedAt: new Date(Date.now() - 31 * 24 * 3_600_000),
+    });
+    const runId = randomUUID();
+    await seedProbe(runId);
+    await repository.ingest({
+      runId,
+      now: new Date(),
+      outcomes: [],
+      states: new Map(),
+      notices: [],
+      staleAlertedAt: null,
+      mass: false,
+    });
+    const left = await database.db
+      .select()
+      .from(nodeReachabilityHistory)
+      .where(and(eq(nodeReachabilityHistory.nodeId, a.id)));
+    expect(left).toHaveLength(0);
+  });
+
+  runDatabaseTest(
+    "widget: ingest queues one refresh and the snapshot reads the state as it is",
+    async () => {
+      if (!database || !repository) return;
+      const a = await seedNode("node-a");
+      const b = await seedNode("node-b");
+      await seedNode("node-off", { reachabilityEnabled: false });
+      const runId = randomUUID();
+      await seedProbe(runId);
+      await database.db
+        .update(reachabilityProbe)
+        .set({ timeZone: "Europe/Belgrade", currentRunStartedAt: new Date("2026-11-10T14:00:00Z") });
+      await repository.syncServiceKeys(new Date());
+
+      // Online now: one person on node-a; the probe's own key does not count.
+      const [person] = await database.db
+        .insert(users)
+        .values({ email: "widget-person@example.com" })
+        .returning();
+      const [personKey] = await database.db
+        .insert(vpnKeys)
+        .values({
+          ownerId: person?.id ?? "",
+          nodeId: a.id,
+          publicKey: "pk-person",
+          nodeLabel: "ap_widget_person",
+          protocol: "awg3",
+          state: "active",
+          routeProfile: "full_tunnel",
+        })
+        .returning();
+      const [probeKey] = await serviceKeys();
+      await database.db.insert(peerCurrent).values([
+        { keyId: personKey?.id ?? "", online: true },
+        { keyId: probeKey?.id ?? "", online: true },
+      ]);
+
+      const level = (ok: boolean) => ({ ok, detail: null, latencyMs: ok ? 40 : null });
+      const targets = [a, b].map((node) => ({
+        targetId: `${node.id}:awg3`,
+        nodeId: node.id,
+        nodeName: node.name,
+        publicIp: "192.0.2.10",
+        protocol: "awg3" as const,
+        unavailableReason: null,
+      }));
+      const result = (targetId: string, ok: boolean) => ({
+        targetId,
+        protocol: "awg3",
+        status: "done" as const,
+        detail: null,
+        endpointHost: null,
+        egressIp: null,
+        levels: { ping: level(ok), tcp: level(ok), handshake: level(ok), http: level(ok) },
+      });
+      const now = new Date("2026-11-10T14:05:00Z");
+      const out = ingestRun({
+        runId,
+        now,
+        label: "Testland",
+        failThreshold: 2,
+        controlOk: true,
+        targets,
+        results: [result(targets[0]?.targetId ?? "", true), result(targets[1]?.targetId ?? "", false)],
+        previous: new Map(),
+      });
+      const write = {
+        runId,
+        now,
+        outcomes: out.outcomes,
+        states: out.states,
+        notices: [],
+        staleAlertedAt: null,
+        mass: true,
+      };
+      await repository.ingest(write);
+      await repository.ingest(write);
+
+      const refreshes = await database.db
+        .select()
+        .from(jobOutbox)
+        .where(eq(jobOutbox.type, "notify.reachability-widget"));
+      expect(refreshes.map((job) => job.deduplicationKey)).toEqual([
+        `notify.reachability-widget:run:${runId}`,
+      ]);
+
+      const snapshot = await repository.loadWidgetSnapshot(now);
+      expect(snapshot?.widget).toBeNull();
+      expect(snapshot?.input).toMatchObject({
+        label: "Testland",
+        timeZone: "Europe/Belgrade",
+        mass: true,
+        stale: false,
+        nextAt: new Date("2026-11-10T15:00:00Z"),
+      });
+      const byName = new Map(snapshot?.input.nodes.map((node) => [node.name, node]));
+      expect([...byName.keys()].sort()).toEqual(["node-a", "node-b"]);
+      expect(byName.get("node-a")).toMatchObject({ status: "ok", online: 1 });
+      expect(byName.get("node-a")?.levels?.ping.latencyMs).toBe(40);
+      expect(byName.get("node-b")).toMatchObject({ status: "failed", online: 0 });
+      expect(byName.get("node-b")?.failingSince).toEqual(now);
+
+      await repository.saveWidget({ messageId: 77, chatId: "chat", version: "v1" }, now);
+      await repository.recordWidgetResult(now, "boom");
+      const again = await repository.loadWidgetSnapshot(now);
+      expect(again?.widget).toEqual({ messageId: 77, chatId: "chat", version: "v1" });
+      const [row] = await database.db.select().from(reachabilityProbe);
+      expect(row?.widgetLastError).toBe("boom");
+
+      // Going stale queues one more refresh, once.
+      const staleAt = new Date("2026-11-10T20:00:00Z");
+      await repository.setStaleAlert(staleAt, []);
+      await repository.setStaleAlert(staleAt, []);
+      const stale = await database.db
+        .select()
+        .from(jobOutbox)
+        .where(eq(jobOutbox.type, "notify.reachability-widget"));
+      expect(stale).toHaveLength(2);
+      expect((await repository.loadWidgetSnapshot(staleAt))?.input.stale).toBe(true);
+    },
+  );
 });

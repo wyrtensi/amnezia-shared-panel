@@ -1,0 +1,22 @@
+{
+  "name": "reachability-probe",
+  "version": "0.1.0",
+  "description": "Brings up AWG client tunnels to panel nodes from a remote vantage point and reports what got through",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "test": "tsc --noEmit && vitest run",
+    "start": "node dist/main.js"
+  },
+  "devDependencies": {
+    "@types/node": "26.6.5",
+    "typescript": "6.0.3",
+    "vitest": "5.0.5"
+  }
+}

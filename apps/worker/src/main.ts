@@ -1,5 +1,8 @@
 import { createDatabase, type EncryptionKeyring } from "@amnezia/db";
 import { createNodeAgentClient } from "./nodeAgent.js";
+import { createProbeClient } from "./probeAgent.js";
+import { PostgresReachabilityRepository } from "./reachabilityRepository.js";
+import { createReachabilityTask } from "./reachabilityTask.js";
 import { createJobProcessor } from "./processor.js";
 import { PostgresWorkerRepository } from "./postgresRepository.js";
 import { runWorker } from "./runner.js";
@@ -17,7 +20,12 @@ import {
 import { resolveNodeAgentRelease } from "./agentRelease.js";
 import { runPeriodicTask } from "./scheduler.js";
 import { createTelemetryPoller } from "./telemetry.js";
-import { createTelegramNotifier, resolveTelegramConfig } from "./telegram.js";
+import {
+  createTelegramBotApi,
+  createTelegramNotifier,
+  resolveTelegramConfig,
+} from "./telegram.js";
+import { createReachabilityWidget } from "./reachabilityWidgetSender.js";
 import { nonNegativeIntegerEnv, positiveIntegerEnv } from "./envInt.js";
 import {
   createAccessReconciler,
@@ -210,12 +218,26 @@ console.log(
   `notifications: Telegram ${telegramConfig ? "enabled" : "off (TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID not set)"}`,
 );
 
+// External reachability probe storage, shared by its task and the widget.
+const reachabilityRepository = new PostgresReachabilityRepository({ db: database.db, keyring });
+
+// The Telegram status widget lives in the same chat as the notifications.
+const reachabilityWidget = telegramConfig
+  ? createReachabilityWidget({
+      api: createTelegramBotApi({ token: telegramConfig.token }),
+      chatId: telegramConfig.chatId,
+      store: reachabilityRepository,
+      log: (line) => console.log(line),
+    })
+  : undefined;
+
 const processJob = createJobProcessor({
   repository,
   createNodeAgent: (node) => createNodeAgentClient(node),
   ruleFetchers,
   accessSync: accessSyncTask,
   notifier: telegramConfig ? createTelegramNotifier(telegramConfig) : undefined,
+  reachabilityWidget,
   panelPublicUrl: process.env.PANEL_PUBLIC_URL ?? null,
   // Without this, a throwing access.sync run is only ever recorded in
   // job_outbox.last_error: the runner turns the throw into retryJob/failJob
@@ -273,6 +295,14 @@ const refreshNodeAgentRelease = async (): Promise<void> => {
   });
 };
 
+// External reachability probe. Off until an operator registers a probe;
+// the task checks for one every tick, so registering needs no restart.
+const checkReachability = createReachabilityTask({
+  repository: reachabilityRepository,
+  createProbeClient,
+  log: (line) => console.log(line),
+});
+
 const abortController = new AbortController();
 process.once("SIGINT", () => abortController.abort());
 process.once("SIGTERM", () => abortController.abort());
@@ -283,6 +313,12 @@ try {
     runPeriodicTask({
       task: pollTelemetry,
       intervalMs: () => periods.intervalMs("telemetryPollSec"),
+      signal: abortController.signal,
+      onError: reportBackgroundError,
+    }),
+    runPeriodicTask({
+      task: checkReachability,
+      intervalMs: 60_000,
       signal: abortController.signal,
       onError: reportBackgroundError,
     }),

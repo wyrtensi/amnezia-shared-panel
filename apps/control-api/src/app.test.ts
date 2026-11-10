@@ -14,6 +14,26 @@ const user = {
   status: "active" as const,
 };
 
+const reachabilityProbeView = {
+  label: "Testland",
+  apiBaseUrl: "http://127.0.0.1:8090",
+  enabled: true,
+  controlUrl: "https://control.example.com/",
+  egressUrl: "https://api.ipify.org",
+  intervalSec: 3600,
+  failThreshold: 2,
+  staleAfterSec: 10800,
+  lastResultAt: null,
+  lastError: null,
+  lastErrorAt: null,
+  stale: false,
+  runInFlight: false,
+  runRequestedAt: null,
+  timeZone: "UTC",
+  widgetUpdatedAt: null,
+  widgetLastError: null,
+};
+
 const createService = (): ControlApiService => ({
   resolveIdentity: vi.fn(() => Promise.resolve(user)),
   getMe: vi.fn(() =>
@@ -84,6 +104,11 @@ createNode: vi.fn(() => Promise.resolve({ id: "node-1" })),
   deleteServiceCheck: vi.fn(() => Promise.resolve({ id: "check-1" })),
   runServiceCheckNow: vi.fn(() => Promise.resolve({ id: "check-1" })),
   resetServiceCheckResults: vi.fn(() => Promise.resolve({ cleared: 3 })),
+  getReachability: vi.fn(() => Promise.resolve({ probe: null, nodes: [] })),
+  upsertReachabilityProbe: vi.fn(() => Promise.resolve(reachabilityProbeView)),
+  deleteReachabilityProbe: vi.fn(() => Promise.resolve()),
+  runReachabilityNow: vi.fn(() => Promise.resolve(reachabilityProbeView)),
+  listReachabilityHistory: vi.fn(() => Promise.resolve([])),
 });
 
 describe("control API identity boundary", () => {
@@ -1620,6 +1645,187 @@ describe("service check routes", () => {
     });
     expect(response.statusCode).toBe(403);
     expect(service.createServiceCheck).not.toHaveBeenCalled();
+    await app.close();
+  });
+});
+
+describe("reachability probe routes", () => {
+  const nodeId = "0b48cc4c-404b-47a6-af28-4cf15f305e30";
+  const body = {
+    label: "Testland",
+    apiBaseUrl: "http://127.0.0.1:8090",
+    apiKey: "k".repeat(40),
+    controlUrl: "https://control.example.com/",
+  };
+
+  const appFor = async (role: "admin" | "user") => {
+    const service = createService();
+    const actor = { ...user, role };
+    vi.mocked(service.resolveIdentity).mockResolvedValue(actor);
+    return {
+      service,
+      actor,
+      app: await buildApp({
+        service,
+        environment: "development",
+        allowDevIdentity: true,
+      }),
+    };
+  };
+
+  it("reads the view", async () => {
+    const { service, actor, app } = await appFor("admin");
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/admin/reachability",
+      headers: { "x-dev-user-email": actor.email },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ probe: null, nodes: [] });
+    expect(service.getReachability).toHaveBeenCalledWith(actor);
+    // A static path, never one of the generic admin listings.
+    expect(service.adminList).not.toHaveBeenCalled();
+    await app.close();
+  });
+
+  it("upserts the probe and never echoes the key", async () => {
+    const { service, actor, app } = await appFor("admin");
+    const response = await app.inject({
+      method: "PUT",
+      url: "/api/admin/reachability/probe",
+      headers: { "x-dev-user-email": actor.email },
+      payload: body,
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual(reachabilityProbeView);
+    expect(response.body).not.toContain(body.apiKey);
+    expect(service.upsertReachabilityProbe).toHaveBeenCalledWith(actor, body);
+    await app.close();
+  });
+
+  it("refuses a malformed probe before it reaches the service", async () => {
+    const { service, actor, app } = await appFor("admin");
+    const response = await app.inject({
+      method: "PUT",
+      url: "/api/admin/reachability/probe",
+      headers: { "x-dev-user-email": actor.email },
+      // The control site is fetched without the tunnel and must be https.
+      payload: { ...body, controlUrl: "http://control.example.com/" },
+    });
+    expect(response.statusCode).toBe(400);
+    expect(service.upsertReachabilityProbe).not.toHaveBeenCalled();
+    await app.close();
+  });
+
+  it("deletes the probe with 204", async () => {
+    const { service, actor, app } = await appFor("admin");
+    const response = await app.inject({
+      method: "DELETE",
+      url: "/api/admin/reachability/probe",
+      headers: { "x-dev-user-email": actor.email },
+    });
+    expect(response.statusCode).toBe(204);
+    expect(response.body).toBe("");
+    expect(service.deleteReachabilityProbe).toHaveBeenCalledWith(actor);
+    await app.close();
+  });
+
+  it("asks for a run without reaching the generic admin action", async () => {
+    const { service, actor, app } = await appFor("admin");
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/admin/reachability/run",
+      headers: { "x-dev-user-email": actor.email },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual(reachabilityProbeView);
+    expect(service.runReachabilityNow).toHaveBeenCalledWith(actor);
+    expect(service.adminAction).not.toHaveBeenCalled();
+    await app.close();
+  });
+
+  it("reads a node's history with a default limit", async () => {
+    const { service, actor, app } = await appFor("admin");
+    const response = await app.inject({
+      method: "GET",
+      url: `/api/admin/reachability/history?nodeId=${nodeId}`,
+      headers: { "x-dev-user-email": actor.email },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(service.listReachabilityHistory).toHaveBeenCalledWith(actor, {
+      nodeId,
+      limit: 50,
+    });
+    await app.close();
+  });
+
+  it("passes an explicit history limit through", async () => {
+    const { service, actor, app } = await appFor("admin");
+    const response = await app.inject({
+      method: "GET",
+      url: `/api/admin/reachability/history?nodeId=${nodeId}&limit=200`,
+      headers: { "x-dev-user-email": actor.email },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(service.listReachabilityHistory).toHaveBeenCalledWith(actor, {
+      nodeId,
+      limit: 200,
+    });
+    await app.close();
+  });
+
+  it.each([
+    ["no node", ""],
+    ["a node id that is not a uuid", "?nodeId=node-a"],
+    ["a limit over the cap", `?nodeId=${nodeId}&limit=201`],
+    ["a zero limit", `?nodeId=${nodeId}&limit=0`],
+  ])("refuses a history query with %s", async (_name, query) => {
+    const { service, actor, app } = await appFor("admin");
+    const response = await app.inject({
+      method: "GET",
+      url: `/api/admin/reachability/history${query}`,
+      headers: { "x-dev-user-email": actor.email },
+    });
+    expect(response.statusCode).toBe(400);
+    expect(service.listReachabilityHistory).not.toHaveBeenCalled();
+    await app.close();
+  });
+
+  it("passes reachabilityEnabled through a node patch", async () => {
+    const { service, actor, app } = await appFor("admin");
+    const response = await app.inject({
+      method: "PATCH",
+      url: `/api/admin/nodes/${nodeId}`,
+      headers: { "x-dev-user-email": actor.email },
+      payload: { reachabilityEnabled: false },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(service.updateNode).toHaveBeenCalledWith(actor, nodeId, {
+      reachabilityEnabled: false,
+    });
+    await app.close();
+  });
+
+  it.each([
+    ["GET", "/api/admin/reachability"],
+    ["PUT", "/api/admin/reachability/probe"],
+    ["DELETE", "/api/admin/reachability/probe"],
+    ["POST", "/api/admin/reachability/run"],
+    ["GET", `/api/admin/reachability/history?nodeId=${nodeId}`],
+  ] as const)("refuses %s %s to a non-admin", async (method, url) => {
+    const { service, actor, app } = await appFor("user");
+    const response = await app.inject({
+      method,
+      url,
+      headers: { "x-dev-user-email": actor.email },
+      ...(method === "PUT" ? { payload: body } : {}),
+    });
+    expect(response.statusCode).toBe(403);
+    expect(service.getReachability).not.toHaveBeenCalled();
+    expect(service.upsertReachabilityProbe).not.toHaveBeenCalled();
+    expect(service.deleteReachabilityProbe).not.toHaveBeenCalled();
+    expect(service.runReachabilityNow).not.toHaveBeenCalled();
+    expect(service.listReachabilityHistory).not.toHaveBeenCalled();
     await app.close();
   });
 });

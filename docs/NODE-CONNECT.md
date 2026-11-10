@@ -384,6 +384,10 @@ systemctl daemon-reload
 systemctl enable --now panel-tunnel-<NODE_NAME>
 ```
 
+The external reachability probe (see [REACHABILITY-PROBE.md](REACHABILITY-PROBE.md))
+uses the same unit shape and the same `panel-tunnel-` prefix, so its local port
+comes out of the same range and `scripts/add-node.sh` never hands it to a node.
+
 Two layers of recovery, and both matter: `autossh` respawns `ssh` when the link
 dies (`ServerAliveInterval` × `ServerAliveCountMax` ≈ 90 s to notice a black-holed
 connection), and `Restart=always` brings `autossh` itself back if it is killed.

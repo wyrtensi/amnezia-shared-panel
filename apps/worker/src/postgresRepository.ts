@@ -27,6 +27,7 @@ import {
   decryptSecret,
   encryptSecret,
   findOffboardedUsersEligibleForPurge,
+  notServiceAccount,
   purgeOneOffboardedUser,
   auditEvents,
   jobOutbox,
@@ -549,10 +550,12 @@ export class PostgresWorkerRepository
     const allowed = new Set(allowedEmails.map((email) => email.toLowerCase()));
 
     return this.options.db.transaction(async (tx) => {
+      // The probe's service account is never on the Access allowlist (it never
+      // logs in), so without this filter every reconcile would disable it.
       const active = await tx
         .select({ id: users.id, email: users.email, role: users.role })
         .from(users)
-        .where(eq(users.status, "active"));
+        .where(and(eq(users.status, "active"), notServiceAccount));
 
       const deactivated: string[] = [];
       const skippedAdmins: string[] = [];
@@ -586,10 +589,11 @@ export class PostgresWorkerRepository
     if (targets.size === 0) return { deactivated: [], skippedAdmins: [] };
 
     return this.options.db.transaction(async (tx) => {
+      // Never the probe's service account, even when named explicitly.
       const active = await tx
         .select({ id: users.id, email: users.email, role: users.role })
         .from(users)
-        .where(eq(users.status, "active"));
+        .where(and(eq(users.status, "active"), notServiceAccount));
 
       const deactivated: string[] = [];
       const skippedAdmins: string[] = [];
@@ -747,10 +751,12 @@ export class PostgresWorkerRepository
   };
 
   listActiveUserEmails = async (): Promise<string[]> => {
+    // People only: the probe's service account must never reach the Access
+    // allowlist (nor count towards the sync's "majority removed" guard).
     const rows = await this.options.db
       .select({ email: users.email })
       .from(users)
-      .where(eq(users.status, "active"));
+      .where(and(eq(users.status, "active"), notServiceAccount));
     return rows.map((row) => row.email);
   };
 

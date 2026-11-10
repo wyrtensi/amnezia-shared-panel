@@ -18,6 +18,7 @@ import {
   noticeKindSchema,
   updateCustomRoutesRequestSchema,
   updateNodeRequestSchema,
+  upsertReachabilityProbeRequestSchema,
 } from "@amnezia/contracts";
 import { contentDispositionAttachment } from "./configFilename.js";
 import {
@@ -36,6 +37,11 @@ import {
 } from "./clientReleases.js";
 
 type Environment = "development" | "test" | "production";
+
+const reachabilityHistoryQuerySchema = z.object({
+  nodeId: z.uuid(),
+  limit: z.coerce.number().int().min(1).max(200).default(50),
+});
 
 export type IdentityAdapter = (
   request: FastifyRequest,
@@ -453,6 +459,31 @@ export const buildApp = async ({
   app.post("/api/admin/service-checks/:id/run", async (request) => {
     const { id } = idParamsSchema.parse(request.params);
     return service.runServiceCheckNow(adminFor(request), id);
+  });
+  // The external reachability probe. Static paths, so none of them can be
+  // read as a generic admin listing or as `:resource/:id/:action`.
+  app.get("/api/admin/reachability", async (request) =>
+    service.getReachability(adminFor(request)),
+  );
+  app.put("/api/admin/reachability/probe", async (request) => {
+    const admin = adminFor(request);
+    return service.upsertReachabilityProbe(
+      admin,
+      upsertReachabilityProbeRequestSchema.parse(request.body),
+    );
+  });
+  app.delete("/api/admin/reachability/probe", async (request, reply) => {
+    await service.deleteReachabilityProbe(adminFor(request));
+    return reply.code(204).send();
+  });
+  // Same convention as a service check's run: 200 with the moved marker.
+  app.post("/api/admin/reachability/run", async (request) =>
+    service.runReachabilityNow(adminFor(request)),
+  );
+  app.get("/api/admin/reachability/history", async (request) => {
+    const admin = adminFor(request);
+    const query = reachabilityHistoryQuerySchema.parse(request.query ?? {});
+    return service.listReachabilityHistory(admin, query);
   });
   app.post("/api/admin/nodes", async (request, reply) => {
     const result = await service.createNode(

@@ -1325,3 +1325,93 @@ describe("quota request notification job", () => {
     );
   });
 });
+
+describe("reachability notification job", () => {
+  const job = {
+    id: "job-reach",
+    type: "notify.reachability",
+    attempts: 0,
+    payload: { text: "node-a (192.0.2.10) недоступен из Testland" },
+  };
+
+  it("relays the composed text and completes the job", async () => {
+    const repository = createRepository();
+    const send = vi.fn(() => Promise.resolve());
+    const process = createJobProcessor({
+      repository,
+      createNodeAgent: () => createAgent(),
+      notifier: { send },
+    });
+    await process(job);
+    expect(send).toHaveBeenCalledWith("node-a (192.0.2.10) недоступен из Testland");
+    expect(repository.completeJob).toHaveBeenCalledWith(job.id);
+  });
+
+  it("completes quietly without a notifier", async () => {
+    const repository = createRepository();
+    const process = createJobProcessor({ repository, createNodeAgent: () => createAgent() });
+    await process(job);
+    expect(repository.completeJob).toHaveBeenCalledWith(job.id);
+  });
+
+  it("fails a malformed payload without retrying", async () => {
+    const repository = createRepository();
+    const process = createJobProcessor({
+      repository,
+      createNodeAgent: () => createAgent(),
+      notifier: { send: vi.fn(() => Promise.resolve()) },
+    });
+    await process({ ...job, payload: { text: "" } });
+    expect(repository.failJob).toHaveBeenCalledWith(job.id, expect.stringContaining("malformed"));
+  });
+
+  it("rethrows a send failure so the runner retries", async () => {
+    const repository = createRepository();
+    const process = createJobProcessor({
+      repository,
+      createNodeAgent: () => createAgent(),
+      notifier: { send: () => Promise.reject(new Error("HTTP 502")) },
+      log: vi.fn(),
+    });
+    await expect(process(job)).rejects.toThrow("HTTP 502");
+    expect(repository.completeJob).not.toHaveBeenCalled();
+  });
+});
+
+describe("reachability widget job", () => {
+  const job = { id: "job-widget", type: "notify.reachability-widget", attempts: 0, payload: {} };
+
+  it("refreshes the widget and completes the job", async () => {
+    const repository = createRepository();
+    const refresh = vi.fn(() => Promise.resolve());
+    const process = createJobProcessor({
+      repository,
+      createNodeAgent: () => createAgent(),
+      reachabilityWidget: { refresh },
+    });
+    await process(job);
+    expect(refresh).toHaveBeenCalledTimes(1);
+    expect(repository.completeJob).toHaveBeenCalledWith(job.id);
+  });
+
+  it("completes quietly without Telegram", async () => {
+    const repository = createRepository();
+    const process = createJobProcessor({ repository, createNodeAgent: () => createAgent() });
+    await process(job);
+    expect(repository.completeJob).toHaveBeenCalledWith(job.id);
+  });
+
+  it("rethrows a failed refresh so the runner retries", async () => {
+    const repository = createRepository();
+    const log = vi.fn();
+    const process = createJobProcessor({
+      repository,
+      createNodeAgent: () => createAgent(),
+      reachabilityWidget: { refresh: () => Promise.reject(new Error("HTTP 502")) },
+      log,
+    });
+    await expect(process(job)).rejects.toThrow("HTTP 502");
+    expect(repository.completeJob).not.toHaveBeenCalled();
+    expect(log).toHaveBeenCalledWith(expect.stringContaining("notify.reachability-widget"));
+  });
+});

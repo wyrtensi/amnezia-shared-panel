@@ -65,6 +65,21 @@ jobs:
       - run: npm run build
       - run: npm run openapi:check
 
+  reachability-probe:
+    name: Reachability probe (typecheck, test, build)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: services/reachability-probe
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - run: npm ci
+      - run: npm test
+      - run: npm run build
+
   infra:
     name: Infra and rollout script tests
     runs-on: ubuntu-latest

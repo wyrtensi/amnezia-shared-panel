@@ -104,6 +104,15 @@ export type AdminServiceCheck = {
   }>;
 };
 
+/**
+ * The external probe and what it saw of every node, as the control API sends
+ * it. The contract is the single definition; the panel only re-exports it.
+ */
+export type {
+  AdminReachabilityNode,
+  AdminReachabilityView,
+} from "@amnezia/contracts";
+
 /** One service check on one server, as a user is shown it: a name and a word. */
 export type ServiceCheckSummary = {
   name: string;
