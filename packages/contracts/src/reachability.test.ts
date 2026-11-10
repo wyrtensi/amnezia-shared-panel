@@ -110,27 +110,54 @@ describe("updateNodeRequestSchema", () => {
 });
 
 describe("isProbeStale", () => {
-  const createdAt = new Date("2026-01-01T00:00:00Z");
+  const since = new Date("2026-01-01T00:00:00Z");
+  const base = { staleAfterSec: 10_800, intervalSec: 3_600, since };
   it("measures from the newest result", () => {
     expect(
       isProbeStale({
+        ...base,
         now: new Date("2026-01-01T05:00:00Z"),
-        staleAfterSec: 10_800,
         lastResultAt: new Date("2026-01-01T03:00:00Z"),
-        createdAt,
       }),
     ).toBe(false);
   });
 
-  it("measures from registration before the first result", () => {
+  it("measures from when monitoring started before the first result", () => {
+    expect(
+      isProbeStale({ ...base, now: new Date("2026-01-01T03:00:01Z"), lastResultAt: null }),
+    ).toBe(true);
+  });
+
+  it("a re-enable restarts the clock even with an old result", () => {
     expect(
       isProbeStale({
-        now: new Date("2026-01-01T03:00:01Z"),
-        staleAfterSec: 10_800,
-        lastResultAt: null,
-        createdAt,
+        ...base,
+        since: new Date("2026-01-05T00:00:00Z"),
+        now: new Date("2026-01-05T01:00:00Z"),
+        lastResultAt: new Date("2026-01-01T00:00:00Z"),
       }),
-    ).toBe(true);
+    ).toBe(false);
+  });
+
+  it("is never shorter than one period plus the grace", () => {
+    const last = new Date("2026-01-01T00:00:00Z");
+    expect(
+      isProbeStale({
+        ...base,
+        intervalSec: 86_400,
+        now: new Date(last.getTime() + 86_400_000 + 60_000),
+        lastResultAt: last,
+      }),
+    ).toBe(false);
+  });
+});
+
+describe("probe api key", () => {
+  it("refuses control characters", () => {
+    expect(
+      upsertReachabilityProbeRequestSchema.safeParse({ ...validProbe, apiKey: `${"k".repeat(32)}\n` })
+        .success,
+    ).toBe(false);
   });
 });
 

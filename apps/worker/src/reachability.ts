@@ -95,10 +95,14 @@ export const classifyTarget = (
   };
 };
 
-/** A node is reachable when any protocol it serves is. */
+/**
+ * A node is reachable when any protocol it serves is, and unreachable only
+ * when every one of them was measured and failed: a protocol the probe could
+ * not measure leaves the verdict unknown rather than turning it into a block.
+ */
 export const nodeStatus = (outcomes: readonly ProtocolOutcome[]): ReachabilityStatus => {
   if (outcomes.some((o) => o.status === "ok")) return "ok";
-  if (outcomes.some((o) => o.status === "failed")) return "failed";
+  if (outcomes.length > 0 && outcomes.every((o) => o.status === "failed")) return "failed";
   return "error";
 };
 
@@ -195,14 +199,20 @@ export const ingestRun = (input: IngestInput): IngestOutput => {
 
   // Attempted = the probe measured at least one of its protocols.
   const attempted = nodes.filter((n) => n.outcomes.some((o) => o.levels !== null));
-  const massFailure =
+  // Two shapes point at the probe rather than the fleet: no tunnel came up
+  // anywhere, or every tunnel came up and the same egress check failed on all
+  // of them (the egress service itself is down or refusing the probe).
+  const allFailed =
     input.controlOk &&
     attempted.length >= 2 &&
-    attempted.every(
-      (n) =>
-        nodeStatus(n.outcomes) === "failed" &&
-        n.outcomes.every((o) => o.levels?.handshake.ok !== true),
-    );
+    attempted.every((n) => nodeStatus(n.outcomes) === "failed");
+  const noHandshake = attempted.every((n) =>
+    n.outcomes.every((o) => o.levels?.handshake.ok !== true),
+  );
+  const onlyEgressFailed = attempted.every((n) =>
+    n.outcomes.every((o) => o.levels?.handshake.ok === true && o.levels.http.ok !== true),
+  );
+  const massFailure = allFailed && (noHandshake || onlyEgressFailed);
 
   const states = new Map<string, NodeState>();
   const opened: { node: ReachabilityTarget; levels: ProbeLevels | null; since: Date }[] = [];
@@ -289,8 +299,10 @@ export type StaleInput = {
   now: Date;
   label: string;
   staleAfterSec: number;
+  intervalSec: number;
   lastResultAt: Date | null;
-  createdAt: Date;
+  /** When monitoring (re)started. */
+  since: Date;
   staleAlertedAt: Date | null;
   /** A run was ingested on this tick. */
   ingestedNow: boolean;
@@ -320,7 +332,10 @@ export const staleTransition = (
     notices: [
       {
         dedupKey: key("stale", input.now.toISOString()),
-        text: formatStale(input.label, input.lastResultAt ?? input.createdAt),
+        text: formatStale(
+          input.label,
+          new Date(Math.max(input.lastResultAt?.getTime() ?? 0, input.since.getTime())),
+        ),
       },
     ],
   };

@@ -2710,7 +2710,7 @@ Nodes:
             [--egress-url=] [--interval-sec=3600] [--fail-threshold=2]
             [--stale-after-sec=10800] [--enabled=on|off]
                                           Register the probe, or change only the fields you name
-  probe-delete [--confirm]                Forget the probe (its keys are revoked on the next sync)
+  probe-delete [--confirm]                Forget the probe and revoke its service keys
   probe-run                               Ask for a run now (results within a few minutes)
   probe-results [<node>] [--json]         Per node and protocol: ping, tcp, handshake, http
   node-probe <node> [--on|--off]          Whether the probe tests this node
@@ -3197,7 +3197,7 @@ async function cmdProbeSet(args: string[]): Promise<void> {
 
 async function cmdProbeDelete(args: string[]): Promise<void> {
   if (!args.includes("--confirm")) {
-    console.log("This forgets the probe and stops every reachability check.");
+    console.log("This forgets the probe, stops every reachability check and revokes its keys.");
     console.log("Re-run with --confirm to delete it.");
     return;
   }

@@ -647,6 +647,9 @@ export const reachabilityProbe = pgTable(
     lastError: varchar("last_error", { length: 300 }),
     lastErrorAt: timestamp("last_error_at", { withTimezone: true }),
     staleAlertedAt: timestamp("stale_alerted_at", { withTimezone: true }),
+    // When monitoring (re)started: set on registration and whenever the probe
+    // is switched back on, so a pause is not mistaken for a silent probe.
+    enabledAt: timestamp("enabled_at", { withTimezone: true }).defaultNow().notNull(),
     ...timestamps,
   },
   (table) => [

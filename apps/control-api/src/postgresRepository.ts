@@ -110,6 +110,7 @@ import {
   nodeServiceChecks,
   nodes,
   notServiceAccount,
+  SERVICE_ACCOUNT_EMAIL,
   peerCurrent,
   portalPolicy,
   purgeOneOffboardedUser,
@@ -478,6 +479,11 @@ export class PostgresControlRepository implements ControlRepository {
 
   resolveIdentity = async (claim: IdentityClaim): Promise<Actor> => {
     const email = normalizeEmail(claim.email);
+    // The probe's machine account never signs in, whatever an identity
+    // provider claims.
+    if (email === SERVICE_ACCOUNT_EMAIL) {
+      throw new ApiError(403, "User is disabled", "USER_DISABLED");
+    }
     return this.options.db.transaction(async (tx) => {
       const existingIdentity = await tx
         .select({ user: users })
@@ -500,6 +506,9 @@ export class PostgresControlRepository implements ControlRepository {
               eq(identities.subject, claim.subject),
             ),
           );
+        if (existingIdentity[0].user.serviceAccount) {
+          throw new ApiError(403, "User is disabled", "USER_DISABLED");
+        }
         if (
           this.options.bootstrapAdminEmails?.has(email) &&
           existingIdentity[0].user.role !== "admin"
@@ -960,6 +969,9 @@ export class PostgresControlRepository implements ControlRepository {
     request: CreateUserRequest,
   ): Promise<unknown> => {
     const email = normalizeEmail(request.email);
+    if (email === SERVICE_ACCOUNT_EMAIL) {
+      throw new ApiError(409, "This address is reserved by the panel", "SERVICE_ACCOUNT");
+    }
     return this.options.db.transaction(async (tx) => {
       const existing = await tx
         .select({ id: users.id })
@@ -1607,6 +1619,8 @@ export class PostgresControlRepository implements ControlRepository {
       .where(and(eq(vpnKeys.id, keyId), isNotNull(vpnKeys.configCiphertext)))
       .limit(1);
     const row = rows[0];
+    // The probe's keys are not handed out by the panel, to anyone.
+    if (row?.user.serviceAccount) return null;
     if (
       !row?.key.configCiphertext ||
       !row.key.configNonce ||
@@ -2835,8 +2849,9 @@ export class PostgresControlRepository implements ControlRepository {
     stale: isProbeStale({
       now,
       staleAfterSec: row.staleAfterSec,
+      intervalSec: row.intervalSec,
       lastResultAt: row.lastResultAt,
-      createdAt: row.createdAt,
+      since: row.enabledAt,
     }),
     runInFlight: row.currentRunId !== null,
     runRequestedAt: row.runRequestedAt?.toISOString() ?? null,
@@ -2985,9 +3000,17 @@ export class PostgresControlRepository implements ControlRepository {
           )
           .map(([field]) => field);
         if (credentialColumns) fields.push("apiKey");
+        // Switching it back on restarts the stale clock: a pause is not a
+        // silent probe.
+        const reenabled = !current.enabled && request.enabled === true;
         [row] = await tx
           .update(reachabilityProbe)
-          .set({ ...settings, ...credentialColumns, updatedAt: new Date() })
+          .set({
+            ...settings,
+            ...credentialColumns,
+            ...(reenabled ? { enabledAt: new Date() } : {}),
+            updatedAt: new Date(),
+          })
           .where(eq(reachabilityProbe.id, 1))
           .returning();
       } else {
@@ -3045,13 +3068,35 @@ export class PostgresControlRepository implements ControlRepository {
       if (!deleted) {
         throw new ApiError(404, "No reachability probe is configured", "PROBE_NOT_FOUND");
       }
+      // Its keys go with it: their configs were handed to the probe host, and
+      // nothing else would ever revoke them (they are hidden from admins).
+      const revoked = await tx
+        .update(vpnKeys)
+        .set({ state: "revoking", updatedAt: new Date() })
+        .where(
+          and(
+            inArray(vpnKeys.state, ["provisioning", "active", "disabled"]),
+            inArray(
+              vpnKeys.ownerId,
+              tx.select({ id: users.id }).from(users).where(eq(users.serviceAccount, true)),
+            ),
+          ),
+        )
+        .returning({ id: vpnKeys.id });
+      for (const key of revoked) {
+        await tx.insert(jobOutbox).values({
+          type: "vpn-key.revoke",
+          deduplicationKey: revokeJobDedupKey(key.id, randomUUID()),
+          payload: { keyId: key.id },
+        });
+      }
       await tx.insert(auditEvents).values({
         actorUserId: actor.id,
         actorType: "user",
         action: "admin.reachability.probe_deleted",
         targetType: "reachability_probe",
         targetId: null,
-        metadata: { label: deleted.label },
+        metadata: { label: deleted.label, revokedKeys: revoked.length },
       });
     });
 

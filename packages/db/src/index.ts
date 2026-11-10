@@ -129,6 +129,9 @@ export const trafficDelta = (
 // delete or purge it. Every such site filters through these two predicates,
 // so "who is a person" is decided in exactly one place.
 
+/** The probe's machine account. `.invalid` never resolves, and the API refuses it for people. */
+export const SERVICE_ACCOUNT_EMAIL = "reachability-probe@service.invalid";
+
 /** Filter on `users`: true for every row that is a person. */
 export const notServiceAccount: SQL = eq(users.serviceAccount, false);
 

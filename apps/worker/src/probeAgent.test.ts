@@ -82,4 +82,17 @@ describe("createProbeClient", () => {
     });
     await expect(client.latestRun()).rejects.toThrow("status 401");
   });
+
+  it("never echoes an unusable api key", async () => {
+    const client = createProbeClient({
+      baseUrl: "http://probe.test",
+      apiKey: `${"k".repeat(32)}\nsecret`,
+      fetchImpl: vi.fn(() =>
+        Promise.reject(new TypeError(`Headers.append: "${"k".repeat(32)}\nsecret" is an invalid header value.`)),
+      ),
+    });
+    await expect(client.latestRun()).rejects.toThrow(
+      "The stored probe API key is not a valid header value",
+    );
+  });
 });

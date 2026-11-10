@@ -72,7 +72,8 @@ Telegram, through the same chat as the quota-request notification
   **one** combined message instead, marked "the probe itself may be broken",
   and one combined recovery;
 - **one** message when the probe has reported nothing for `stale-after-sec`
-  (default 3 h), and one when it is back.
+  (default 3 h, never less than one period plus 30 min), and one when it is
+  back.
 
 `unknown` never opens or closes an incident.
 
@@ -167,11 +168,11 @@ docker exec reachability-probe ip rule
 
 | Want | Do |
 |---|---|
-| Stop checking one node | `node-probe <node> --off` (its probe keys are revoked) |
+| Stop checking one node | `node-probe <node> --off` (its probe keys are revoked within a minute) |
 | Check now | `probe-run` (or "Run now" on admin/nodes) |
 | See why a node reads unknown | `probe-results <node>`: the detail names the reason (no key yet, key failed, control failed) |
-| Pause the whole probe | `probe-set --enabled=off` |
-| Remove it | `probe-delete --confirm`, then stop the tunnel unit and the compose project |
+| Pause the whole probe | `probe-set --enabled=off`. Keys stay, so `--enabled=on` resumes at once; the stale clock restarts when it is switched back on |
+| Remove it | `probe-delete --confirm` (revokes every service key), then stop the tunnel unit and the compose project |
 
 `probe` shows `last error` for contact problems (tunnel down, wrong key, probe
 busy). A silent probe raises the stale alert; that is the tunnel or the probe

@@ -53,6 +53,7 @@ CREATE TABLE "reachability_probe" (
 	"last_error" varchar(300),
 	"last_error_at" timestamp with time zone,
 	"stale_alerted_at" timestamp with time zone,
+	"enabled_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
 	CONSTRAINT "reachability_probe_singleton" CHECK ("reachability_probe"."id" = 1),

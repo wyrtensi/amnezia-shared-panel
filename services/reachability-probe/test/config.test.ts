@@ -244,3 +244,33 @@ describe("vpn:// links", () => {
     expect(() => decodeVpnLink(link)).toThrow(ConfigError);
   });
 });
+
+describe("hardening", () => {
+  it("refuses an address the container itself would use", () => {
+    for (const address of ["0.0.0.0/32", "127.0.0.1/32", "169.254.1.1/32"]) {
+      expect(() => parseClientConfig(CONF.replace("10.90.0.7/32", address))).toThrow(ConfigError);
+    }
+  });
+
+  it("adds the keepalive under a lowercase [peer] header", () => {
+    const conf = CONF.replace("[Peer]", "[peer]").replace("PersistentKeepalive = 25\n", "");
+    const lines = linesOf(parseClientConfig(conf).stripped);
+    expect(lines[lines.indexOf("[peer]") + 1]).toBe("PersistentKeepalive = 25");
+  });
+
+  it("refuses a link whose header claims an oversized payload", () => {
+    const raw = Buffer.from("{}");
+    const header = Buffer.alloc(4);
+    header.writeUInt32BE(10 * 1024 * 1024, 0);
+    const link = `vpn://${Buffer.concat([header, deflateSync(raw)]).toString("base64url")}`;
+    expect(() => decodeVpnLink(link)).toThrow("too large");
+  });
+
+  it("does not inflate past the length in the header", () => {
+    const raw = Buffer.alloc(200_000, 0x20);
+    const header = Buffer.alloc(4);
+    header.writeUInt32BE(100, 0);
+    const link = `vpn://${Buffer.concat([header, deflateSync(raw)]).toString("base64url")}`;
+    expect(() => decodeVpnLink(link)).toThrow(ConfigError);
+  });
+});

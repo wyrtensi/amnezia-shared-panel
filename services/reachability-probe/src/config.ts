@@ -43,6 +43,9 @@ const INTERFACE_ONLY_KEYS = new Set([
  */
 const FULL_TUNNEL_ALLOWED_IPS = "AllowedIPs = 0.0.0.0/0, ::/0";
 
+/** A client link's JSON is a few KiB; anything near this is not one. */
+const MAX_INFLATED_BYTES = 256 * 1024;
+
 /** Decode an AmneziaVPN `vpn://` link: base64url, 4-byte BE length, zlib, JSON. */
 export const decodeVpnLink = (link: string): unknown => {
   const trimmed = link.trim();
@@ -54,9 +57,13 @@ export const decodeVpnLink = (link: string): unknown => {
     throw new ConfigError("vpn:// payload is too short");
   }
   const expectedLength = payload.readUInt32BE(0);
+  if (expectedLength > MAX_INFLATED_BYTES) {
+    throw new ConfigError("vpn:// payload is too large");
+  }
   let raw: Buffer;
   try {
-    raw = inflateSync(payload.subarray(4));
+    // Bounded by the header: a small link must not inflate into megabytes.
+    raw = inflateSync(payload.subarray(4), { maxOutputLength: Math.max(expectedLength, 1) });
   } catch {
     throw new ConfigError("vpn:// payload is not valid zlib data");
   }
@@ -198,10 +205,19 @@ export const parseClientConfig = (conf: string): ParsedClientConfig => {
     .map((entry) => entry.trim().split("/")[0]!.trim())
     .find((entry) => isIPv4(entry));
   if (!address) throw new ConfigError("Address has no IPv4");
+  // The source rule captures everything sent from this address; an address
+  // the container itself uses would pull its own traffic into the tunnel.
+  const [first, second] = address.split(".").map(Number);
+  if (first === 0 || first === 127 || (first === 169 && second === 254)) {
+    throw new ConfigError("Address must be a tunnel address");
+  }
   if (!endpoint) throw new ConfigError("config has no peer Endpoint");
   // The probe sends nothing before it waits for the handshake; the keepalive
   // is what starts one. Node-issued configs carry it (3.1 as a range).
-  if (!hasKeepalive) kept.splice(kept.indexOf("[Peer]") + 1, 0, "PersistentKeepalive = 25");
+  if (!hasKeepalive) {
+    const peerHeader = kept.findIndex((text) => text.trim().toLowerCase() === "[peer]");
+    kept.splice(peerHeader + 1, 0, "PersistentKeepalive = 25");
+  }
 
   return {
     address,

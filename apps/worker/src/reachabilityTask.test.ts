@@ -30,7 +30,7 @@ const probeRow = (extra: Partial<ProbeRow> = {}): ProbeRow => ({
   lastResultAt: hoursAgo(0.4),
   lastIngestedRunId: null,
   staleAlertedAt: null,
-  createdAt: hoursAgo(48),
+  enabledAt: hoursAgo(48),
   ...extra,
 });
 
@@ -75,7 +75,7 @@ const finished = (runId: string): ProbeRunState => ({
 const fakeRepository = (probe: ProbeRow | null): ReachabilityRepository => ({
   loadProbe: vi.fn(() => Promise.resolve(probe)),
   recordProbeError: vi.fn(() => Promise.resolve(undefined)),
-  syncServiceKeys: vi.fn(() => Promise.resolve(({ created: 0, revoked: 0 }))),
+  syncServiceKeys: vi.fn(() => Promise.resolve(({ created: 0, revoked: 0, provisioning: 0 }))),
   listTargets: vi.fn(() => Promise.resolve([targetA, targetB])),
   markRunStarted: vi.fn(() => Promise.resolve(undefined)),
   abandonRun: vi.fn(() => Promise.resolve(undefined)),
@@ -196,19 +196,66 @@ describe("reachability task", () => {
     expect(client.startRun).toHaveBeenCalledTimes(1);
   });
 
-  it("abandons a run older than 30 minutes and starts a new one", async () => {
+  it("abandons a run the probe no longer reports and starts a new one", async () => {
     const client = fakeClient(null);
+    const repository = fakeRepository(
+      probeRow({ currentRunId: "run-1", currentRunStartedAt: minutesAgo(70) }),
+    );
+    await tick(repository, client);
+    expect(repository.abandonRun).toHaveBeenCalledWith(NOW, expect.stringContaining("lost"));
+    expect(client.startRun).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps waiting for its own long run", async () => {
+    const client = fakeClient({ ...finished("run-1"), finishedAt: null });
     const repository = fakeRepository(
       probeRow({ currentRunId: "run-1", currentRunStartedAt: hoursAgo(1.5) }),
     );
     await tick(repository, client);
-    expect(repository.abandonRun).toHaveBeenCalledWith(NOW);
-    expect(client.startRun).toHaveBeenCalledTimes(1);
+    expect(repository.abandonRun).not.toHaveBeenCalled();
+    expect(client.startRun).not.toHaveBeenCalled();
+  });
+
+  it("gives up on its own run after six hours", async () => {
+    const client = fakeClient({ ...finished("run-1"), finishedAt: null });
+    vi.mocked(client.startRun).mockResolvedValue("busy");
+    const repository = fakeRepository(
+      probeRow({ currentRunId: "run-1", currentRunStartedAt: hoursAgo(6.5) }),
+    );
+    await tick(repository, client);
+    expect(repository.abandonRun).toHaveBeenCalledWith(NOW, expect.stringContaining("6 hours"));
+  });
+
+  it("an unreachable probe neither abandons nor starts a run", async () => {
+    const client = fakeClient(new Error("fetch failed"));
+    const repository = fakeRepository(
+      probeRow({ currentRunId: "run-1", currentRunStartedAt: hoursAgo(7) }),
+    );
+    await tick(repository, client);
+    expect(repository.abandonRun).not.toHaveBeenCalled();
+    expect(client.startRun).not.toHaveBeenCalled();
+  });
+
+  it("waits for freshly created keys before starting", async () => {
+    const client = fakeClient();
+    const repository = fakeRepository(probeRow({ currentRunStartedAt: null }));
+    vi.mocked(repository.syncServiceKeys).mockResolvedValue({
+      created: 2,
+      revoked: 0,
+      provisioning: 2,
+    });
+    await tick(repository, client);
+    expect(client.startRun).not.toHaveBeenCalled();
+  });
+
+  it("syncs keys on every tick, not only when a run is due", async () => {
+    const repository = fakeRepository(probeRow({ currentRunStartedAt: minutesAgo(5) }));
+    await tick(repository, fakeClient());
+    expect(repository.syncServiceKeys).toHaveBeenCalledTimes(1);
   });
 
   it("records an unreachable probe and moves no node state", async () => {
     const client = fakeClient(new Error("fetch failed"));
-    vi.mocked(client.startRun).mockRejectedValue(new Error("fetch failed"));
     const repository = fakeRepository(probeRow({ currentRunStartedAt: hoursAgo(2) }));
     await tick(repository, client);
     expect(repository.recordProbeError).toHaveBeenCalledWith("fetch failed", NOW);

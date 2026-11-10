@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, desc, eq, inArray, lt, notInArray, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, lt, notInArray, sql } from "drizzle-orm";
 
 import {
   nodeServedProtocols,
@@ -17,6 +17,7 @@ import {
   nodeReachabilityState,
   nodes,
   reachabilityProbe,
+  SERVICE_ACCOUNT_EMAIL,
   users,
   vpnKeys,
   type Database,
@@ -31,13 +32,14 @@ import type {
   RunTarget,
 } from "./reachabilityTask.js";
 
-/** The machine account that owns the probe's keys. `.invalid` never resolves. */
-export const SERVICE_ACCOUNT_EMAIL = "reachability-probe@service.invalid";
+export { SERVICE_ACCOUNT_EMAIL };
 
 const HISTORY_RETENTION_MS = 30 * 24 * 60 * 60 * 1_000;
 /** A failed service key is retried no sooner than this. */
 const FAILED_KEY_RETRY_MS = 24 * 60 * 60 * 1_000;
 const LIVE_KEY_STATES = ["provisioning", "active", "disabled"] as const;
+/** A run waits this long at most for freshly created keys to provision. */
+const PROVISIONING_WAIT_MS = 10 * 60 * 1_000;
 
 type Tx = Parameters<Parameters<Database["transaction"]>[0]>[0];
 
@@ -84,7 +86,7 @@ export class PostgresReachabilityRepository implements ReachabilityRepository {
       lastResultAt: row.lastResultAt,
       lastIngestedRunId: row.lastIngestedRunId,
       staleAlertedAt: row.staleAlertedAt,
-      createdAt: row.createdAt,
+      enabledAt: row.enabledAt,
     };
   };
 
@@ -99,13 +101,18 @@ export class PostgresReachabilityRepository implements ReachabilityRepository {
   };
 
   markRunStarted = async (runId: string, at: Date): Promise<void> => {
-    await this.updateProbe({ currentRunId: runId, currentRunStartedAt: at });
+    // Only over an empty slot: a second worker must not overwrite a run in
+    // flight with one the probe refused.
+    await this.options.db
+      .update(reachabilityProbe)
+      .set({ currentRunId: runId, currentRunStartedAt: at, updatedAt: new Date() })
+      .where(and(eq(reachabilityProbe.id, 1), isNull(reachabilityProbe.currentRunId)));
   };
 
-  abandonRun = async (at: Date): Promise<void> => {
+  abandonRun = async (at: Date, reason: string): Promise<void> => {
     await this.updateProbe({
       currentRunId: null,
-      lastError: "run abandoned: the probe did not finish it within 30 minutes",
+      lastError: reason.slice(0, 300),
       lastErrorAt: at,
     });
   };
@@ -139,6 +146,25 @@ export class PostgresReachabilityRepository implements ReachabilityRepository {
 
   ingest = async (write: IngestWrite): Promise<void> => {
     await this.options.db.transaction(async (tx) => {
+      // Claim the run first: only the ingest that clears `current_run_id`
+      // writes anything, so an overlapping worker cannot count it twice.
+      const claimed = await tx
+        .update(reachabilityProbe)
+        .set({
+          currentRunId: null,
+          lastIngestedRunId: write.runId,
+          lastResultAt: write.now,
+          lastError: null,
+          lastErrorAt: null,
+          staleAlertedAt: write.staleAlertedAt,
+          updatedAt: new Date(),
+        })
+        .where(
+          and(eq(reachabilityProbe.id, 1), eq(reachabilityProbe.currentRunId, write.runId)),
+        )
+        .returning({ id: reachabilityProbe.id });
+      if (claimed.length === 0) return;
+
       const nodeIds = [...write.states.keys()];
       // A node deleted since the run started is skipped, not an error.
       const existing = new Set(
@@ -211,17 +237,6 @@ export class PostgresReachabilityRepository implements ReachabilityRepository {
       if (write.notices.length > 0) {
         await tx.insert(jobOutbox).values(outboxRows(write.notices)).onConflictDoNothing();
       }
-      await this.updateProbe(
-        {
-          currentRunId: null,
-          lastIngestedRunId: write.runId,
-          lastResultAt: write.now,
-          lastError: null,
-          lastErrorAt: null,
-          staleAlertedAt: write.staleAlertedAt,
-        },
-        tx,
-      );
       await tx
         .delete(nodeReachabilityHistory)
         .where(
@@ -233,11 +248,13 @@ export class PostgresReachabilityRepository implements ReachabilityRepository {
     });
   };
 
+  /** Found by its flag, never by its address alone. */
   private serviceAccountId = async (db: Database | Tx): Promise<string | null> => {
     const [row] = await db
       .select({ id: users.id })
       .from(users)
-      .where(eq(users.email, SERVICE_ACCOUNT_EMAIL))
+      .where(eq(users.serviceAccount, true))
+      .orderBy(users.createdAt)
       .limit(1);
     return row?.id ?? null;
   };
@@ -298,17 +315,23 @@ export class PostgresReachabilityRepository implements ReachabilityRepository {
     );
   };
 
-  syncServiceKeys = async (now: Date): Promise<{ created: number; revoked: number }> =>
+  syncServiceKeys = async (
+    now: Date,
+  ): Promise<{ created: number; revoked: number; provisioning: number }> =>
     this.options.db.transaction(async (tx) => {
-      await tx
-        .insert(users)
-        .values({
-          email: SERVICE_ACCOUNT_EMAIL,
-          displayName: "Reachability probe",
-          role: "user",
-          serviceAccount: true,
-        })
-        .onConflictDoNothing({ target: users.email });
+      if (!(await this.serviceAccountId(tx))) {
+        // The address is reserved (the API refuses it for people); if a row
+        // with it exists anyway, it becomes the service account.
+        await tx
+          .insert(users)
+          .values({
+            email: SERVICE_ACCOUNT_EMAIL,
+            displayName: "Reachability probe",
+            role: "user",
+            serviceAccount: true,
+          })
+          .onConflictDoUpdate({ target: users.email, set: { serviceAccount: true } });
+      }
       const ownerId = (await this.serviceAccountId(tx)) as string;
 
       const nodeRows = await tx.select().from(nodes);
@@ -321,6 +344,7 @@ export class PostgresReachabilityRepository implements ReachabilityRepository {
       const wanted = new Set<string>();
       let created = 0;
       let revoked = 0;
+      let provisioning = 0;
       const [numbering] = await tx
         .select({ max: sql<number>`coalesce(max(${vpnKeys.keyNumber}), 0)` })
         .from(vpnKeys)
@@ -337,7 +361,19 @@ export class PostgresReachabilityRepository implements ReachabilityRepository {
         for (const protocol of protocols) {
           wanted.add(`${node.id}:${protocol}`);
           const mine = keys.filter((k) => k.nodeId === node.id && k.protocol === protocol);
-          if (mine.some((k) => (LIVE_KEY_STATES as readonly string[]).includes(k.state))) continue;
+          const live = mine.filter((k) => (LIVE_KEY_STATES as readonly string[]).includes(k.state));
+          if (live.length > 0) {
+            if (
+              live.some(
+                (k) =>
+                  k.state === "provisioning" &&
+                  now.getTime() - k.createdAt.getTime() < PROVISIONING_WAIT_MS,
+              )
+            ) {
+              provisioning += 1;
+            }
+            continue;
+          }
           const newest = mine[0];
           // A node that refused the key (for example, one that is gone) is not
           // asked again every run.
@@ -346,6 +382,13 @@ export class PostgresReachabilityRepository implements ReachabilityRepository {
             now.getTime() - newest.updatedAt.getTime() < FAILED_KEY_RETRY_MS
           ) {
             continue;
+          }
+          // The failed attempts it replaces leave no rows behind: they never
+          // reached the node, and a dead node would otherwise collect one per
+          // protocol every day.
+          const failedIds = mine.filter((k) => k.state === "failed").map((k) => k.id);
+          if (failedIds.length > 0) {
+            await tx.delete(vpnKeys).where(inArray(vpnKeys.id, failedIds));
           }
           const keyId = randomUUID();
           const labelSecret = decryptSecret(
@@ -383,12 +426,13 @@ export class PostgresReachabilityRepository implements ReachabilityRepository {
             metadata: { nodeId: node.id, protocol },
           });
           created += 1;
+          provisioning += 1;
         }
       }
 
       const unwanted = keys.filter(
         (k) =>
-          (k.state === "active" || k.state === "disabled") &&
+          (LIVE_KEY_STATES as readonly string[]).includes(k.state) &&
           !wanted.has(`${k.nodeId}:${k.protocol}`),
       );
       for (const key of unwanted) {
@@ -410,6 +454,6 @@ export class PostgresReachabilityRepository implements ReachabilityRepository {
         });
         revoked += 1;
       }
-      return { created, revoked };
+      return { created, revoked, provisioning };
     });
 }

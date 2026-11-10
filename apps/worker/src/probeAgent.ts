@@ -25,16 +25,28 @@ export const createProbeClient = ({
   fetchImpl = fetch,
   timeoutMs = 15_000,
 }: ProbeClientOptions): ProbeClient => {
-  const call = (path: string, init?: RequestInit) =>
-    fetchImpl(`${baseUrl.replace(/\/$/, "")}${path}`, {
-      ...init,
-      signal: AbortSignal.timeout(timeoutMs),
-      headers: {
-        accept: "application/json",
-        "content-type": "application/json",
-        "x-api-key": apiKey,
-      },
-    });
+  const call = async (path: string, init?: RequestInit) => {
+    try {
+      return await fetchImpl(`${baseUrl.replace(/\/$/, "")}${path}`, {
+        ...init,
+        signal: AbortSignal.timeout(timeoutMs),
+        headers: {
+          accept: "application/json",
+          "content-type": "application/json",
+          "x-api-key": apiKey,
+        },
+      });
+    } catch (error) {
+      // An unusable header value comes back with the value quoted in the
+      // message; this one ends up in the admin view, so it is replaced.
+      if (error instanceof TypeError && /header/i.test(error.message)) {
+        // No `cause` on purpose: the cause is the message that quotes the key.
+        // eslint-disable-next-line preserve-caught-error
+        throw new Error("The stored probe API key is not a valid header value");
+      }
+      throw error;
+    }
+  };
 
   return {
     startRun: async (request) => {

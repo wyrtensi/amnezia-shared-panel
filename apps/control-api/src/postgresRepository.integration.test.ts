@@ -6279,7 +6279,7 @@ describe("PostgresControlRepository reachability probe", () => {
     await database.db
       .update(reachabilityProbe)
       .set({
-        createdAt: new Date(Date.now() - 4 * 3_600_000),
+        enabledAt: new Date(Date.now() - 5 * 3_600_000),
         currentRunId: randomUUID(),
       });
     const { probe } = await subject().getReachability(admin);
@@ -6879,5 +6879,63 @@ describe("PostgresControlRepository service account", () => {
       .from(nodes)
       .where(eq(nodes.id, nodeB));
     expect(left?.value).toBe(0);
+  });
+
+  runDatabaseTest("never hands out a service-account key's config", async () => {
+    if (!database) return;
+    const config = encryptSecret("vpn://secret", keyring, 1);
+    await database.db
+      .update(vpnKeys)
+      .set({
+        configCiphertext: config.ciphertext,
+        configNonce: config.nonce,
+        configAuthTag: config.authTag,
+        configKeyVersion: config.keyVersion,
+      })
+      .where(eq(vpnKeys.id, probeKeyId));
+    await expect(subject().findKeyConfig(probeKeyId)).resolves.toBeNull();
+  });
+
+  runDatabaseTest("refuses the reserved address to people and to sign-in", async () => {
+    if (!database) return;
+    const created = await failureOf(
+      subject().createUser(person, { email: SERVICE_EMAIL, role: "user" } as never),
+    );
+    expect(created?.code).toBe("SERVICE_ACCOUNT");
+    const login = await failureOf(
+      subject().resolveIdentity({
+        email: SERVICE_EMAIL,
+        provider: "google",
+        subject: "probe-subject",
+      }),
+    );
+    expect(login?.code).toBe("USER_DISABLED");
+  });
+
+  runDatabaseTest("deleting the probe revokes every service-account key", async () => {
+    if (!database) return;
+    await database.db.delete(reachabilityProbe);
+    await subject().upsertReachabilityProbe(person, {
+      label: "Testland",
+      apiBaseUrl: "http://probe.test:4002",
+      apiKey: "k".repeat(32),
+      controlUrl: "https://example.com/",
+    });
+    await subject().deleteReachabilityProbe(person);
+    const [probeKey] = await database.db
+      .select({ state: vpnKeys.state })
+      .from(vpnKeys)
+      .where(eq(vpnKeys.id, probeKeyId));
+    expect(probeKey?.state).toBe("revoking");
+    const [personKey] = await database.db
+      .select({ state: vpnKeys.state })
+      .from(vpnKeys)
+      .where(eq(vpnKeys.id, personKeyId));
+    expect(personKey?.state).toBe("active");
+    const jobs = await database.db
+      .select()
+      .from(jobOutbox)
+      .where(eq(jobOutbox.type, "vpn-key.revoke"));
+    expect(jobs.some((job) => (job.payload as { keyId?: string }).keyId === probeKeyId)).toBe(true);
   });
 });

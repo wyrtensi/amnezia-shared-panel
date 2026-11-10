@@ -126,7 +126,8 @@ describe("nodeStatus", () => {
   const o = (status: "ok" | "failed" | "error") => ({ ...classifyTarget(A, up(A), true), status });
   it("any ok wins, then any failed, else error", () => {
     expect(nodeStatus([o("failed"), o("ok")])).toBe("ok");
-    expect(nodeStatus([o("error"), o("failed")])).toBe("failed");
+    expect(nodeStatus([o("failed"), o("failed")])).toBe("failed");
+    expect(nodeStatus([o("error"), o("failed")])).toBe("error");
     expect(nodeStatus([o("error"), o("error")])).toBe("error");
     expect(nodeStatus([])).toBe("error");
   });
@@ -293,6 +294,23 @@ describe("ingestRun: every node failing at once", () => {
     expect(notices.every((n) => n.dedupKey.includes(":down:"))).toBe(true);
   });
 
+  it("an egress check failing on every tunnel is a probe failure too", () => {
+    const egressDown = (t: ReachabilityTarget) =>
+      result(t, { ping: pass, tcp: pass, handshake: pass, http: fail });
+    const run = { targets: [A, B, C], results: [egressDown(A), egressDown(B), egressDown(C)] };
+    const { notices } = simulate([run, run]);
+    expect(notices).toHaveLength(1);
+    expect(notices[0]?.dedupKey).toBe("notify.reachability:mass-down:run-1");
+  });
+
+  it("a node with one protocol unmeasured is unknown, not unavailable", () => {
+    const A2 = target("node-a", "awg2", { unavailableReason: "service key failed: x" });
+    const run = { targets: [A, A2, B], results: [down(A), up(B)] };
+    const { notices, states } = simulate([run, run]);
+    expect(notices).toEqual([]);
+    expect(states[1]?.get("id-node-a")?.status).toBe("error");
+  });
+
   it("does not list a node whose incident is already open", () => {
     const aDown = { targets: [A, B, C], results: [down(A), up(B), up(C)] };
     const { notices } = simulate([aDown, aDown, allDown, allDown]);
@@ -317,11 +335,12 @@ describe("ingestRun: every node failing at once", () => {
 });
 
 describe("staleTransition", () => {
-  const createdAt = new Date("2026-01-01T00:00:00Z");
+  const since = new Date("2026-01-01T00:00:00Z");
   const base = {
     label: LABEL,
     staleAfterSec: 10_800,
-    createdAt,
+    intervalSec: 3_600,
+    since,
     lastResultAt: new Date("2026-01-01T01:00:00Z"),
     staleAlertedAt: null as Date | null,
     ingestedNow: false,
@@ -352,7 +371,7 @@ describe("staleTransition", () => {
     expect(again).toEqual({ staleAlertedAt: now, notices: [] });
   });
 
-  it("measures from registration before the first result", () => {
+  it("measures from when monitoring started before the first result", () => {
     const out = staleTransition({
       ...base,
       lastResultAt: null,

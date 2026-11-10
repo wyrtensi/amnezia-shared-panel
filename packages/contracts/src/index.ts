@@ -1941,7 +1941,14 @@ const httpsUrl = z
 export const upsertReachabilityProbeRequestSchema = z.object({
   label: z.string().trim().min(1).max(80),
   apiBaseUrl: httpUrl,
-  apiKey: z.string().min(32).max(4_096).optional(),
+  // Printable ASCII only: it travels as a header value, and a control
+  // character would make the HTTP client echo the whole value in its error.
+  apiKey: z
+    .string()
+    .min(32)
+    .max(4_096)
+    .regex(/^[\x21-\x7e]+$/, "Must be printable ASCII without spaces")
+    .optional(),
   enabled: z.boolean().optional(),
   controlUrl: httpsUrl,
   egressUrl: httpUrl.optional(),
@@ -2001,19 +2008,27 @@ export const adminReachabilityViewSchema = z.object({
 export type AdminReachabilityView = z.infer<typeof adminReachabilityViewSchema>;
 export type AdminReachabilityNode = z.infer<typeof adminReachabilityNodeSchema>;
 
+/** Slack on top of one period before a silent probe counts as stale. */
+export const PROBE_STALE_GRACE_SEC = 1_800;
+
 /**
  * Whether the probe has gone silent: nothing ingested for `staleAfterSec`,
- * measured from the newest result, or from when the probe was registered if
- * it never reported. Shared by the worker (alert) and the panel (badge).
+ * measured from the newest result or from when monitoring (re)started,
+ * whichever is later. Never shorter than one period plus a grace, so a long
+ * interval cannot turn every gap between runs into a stale alert. Shared by
+ * the worker (alert) and the panel (badge).
  */
 export const isProbeStale = (input: {
   now: Date;
   staleAfterSec: number;
+  intervalSec: number;
   lastResultAt: Date | null;
-  createdAt: Date;
-}): boolean =>
-  input.now.getTime() - (input.lastResultAt ?? input.createdAt).getTime() >
-  input.staleAfterSec * 1_000;
+  since: Date;
+}): boolean => {
+  const limitSec = Math.max(input.staleAfterSec, input.intervalSec + PROBE_STALE_GRACE_SEC);
+  const from = Math.max(input.lastResultAt?.getTime() ?? 0, input.since.getTime());
+  return input.now.getTime() - from > limitSec * 1_000;
+};
 
 /**
  * The protocols a node offers, which is what the probe tests: those it

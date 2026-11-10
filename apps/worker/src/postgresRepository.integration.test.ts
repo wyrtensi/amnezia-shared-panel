@@ -2209,9 +2209,9 @@ describe("PostgresReachabilityRepository", () => {
       await seedNode("node-b", { enabled: false, capabilities: { awg3: true, awg2: true } });
 
       const first = await repository.syncServiceKeys(new Date());
-      expect(first).toEqual({ created: 3, revoked: 0 });
+      expect(first).toEqual({ created: 3, revoked: 0, provisioning: 3 });
       const again = await repository.syncServiceKeys(new Date());
-      expect(again).toEqual({ created: 0, revoked: 0 });
+      expect(again).toEqual({ created: 0, revoked: 0, provisioning: 3 });
 
       const keys = await serviceKeys();
       expect(keys).toHaveLength(3);
@@ -2242,6 +2242,7 @@ describe("PostgresReachabilityRepository", () => {
     await expect(repository.syncServiceKeys(new Date())).resolves.toEqual({
       created: 0,
       revoked: 1,
+      provisioning: 0,
     });
     const [key] = await serviceKeys();
     expect(key?.state).toBe("revoking");
@@ -2256,10 +2257,14 @@ describe("PostgresReachabilityRepository", () => {
     await expect(repository.syncServiceKeys(new Date())).resolves.toEqual({
       created: 0,
       revoked: 0,
+      provisioning: 0,
     });
     await expect(
       repository.syncServiceKeys(new Date(Date.now() + 25 * 3_600_000)),
-    ).resolves.toEqual({ created: 1, revoked: 0 });
+    ).resolves.toEqual({ created: 1, revoked: 0, provisioning: 1 });
+    // The failed attempt is replaced, not kept beside the new key.
+    const keys = await serviceKeys();
+    expect(keys.map((k) => k.state)).toEqual(["provisioning"]);
   });
 
   runDatabaseTest("targets carry the decrypted config only for an active key", async () => {
@@ -2293,9 +2298,8 @@ describe("PostgresReachabilityRepository", () => {
     );
   });
 
-  runDatabaseTest("ingest writes everything at once and dedups messages", async () => {
-    if (!database || !repository) return;
-    const a = await seedNode("node-a");
+  const seedProbe = async (currentRunId: string | null) => {
+    if (!database) throw new Error("disabled");
     const credentials = encryptSecret("k".repeat(32), keyring, 1);
     await database.db.insert(reachabilityProbe).values({
       label: "Testland",
@@ -2305,7 +2309,24 @@ describe("PostgresReachabilityRepository", () => {
       credentialsAuthTag: credentials.authTag,
       credentialsKeyVersion: credentials.keyVersion,
       controlUrl: "https://example.com/",
-      currentRunId: randomUUID(),
+      currentRunId,
+    });
+  };
+
+  runDatabaseTest("ingest writes everything at once, once per run", async () => {
+    if (!database || !repository) return;
+    const a = await seedNode("node-a");
+    const runId = randomUUID();
+    const credentials = encryptSecret("k".repeat(32), keyring, 1);
+    await database.db.insert(reachabilityProbe).values({
+      label: "Testland",
+      apiBaseUrl: "http://probe.test",
+      credentialsCiphertext: credentials.ciphertext,
+      credentialsNonce: credentials.nonce,
+      credentialsAuthTag: credentials.authTag,
+      credentialsKeyVersion: credentials.keyVersion,
+      controlUrl: "https://example.com/",
+      currentRunId: runId,
     });
     const target = {
       targetId: `${a.id}:awg3`,
@@ -2315,7 +2336,6 @@ describe("PostgresReachabilityRepository", () => {
       protocol: "awg3" as const,
       unavailableReason: null,
     };
-    const runId = randomUUID();
     const now = new Date();
     const out = ingestRun({
       runId,
@@ -2338,6 +2358,8 @@ describe("PostgresReachabilityRepository", () => {
       staleAlertedAt: null,
     };
     await repository.ingest(write);
+    // The same run again (an overlapping worker) and a run never started: no-ops.
+    await repository.ingest(write);
     await repository.ingest({ ...write, runId: randomUUID() });
 
     const results = await database.db.select().from(nodeReachabilityResults);
@@ -2345,7 +2367,7 @@ describe("PostgresReachabilityRepository", () => {
     expect(results[0]).toMatchObject({ status: "error", detail: "probe returned no result" });
     const [state] = await database.db.select().from(nodeReachabilityState);
     expect(state?.status).toBe("error");
-    expect(await database.db.select().from(nodeReachabilityHistory)).toHaveLength(2);
+    expect(await database.db.select().from(nodeReachabilityHistory)).toHaveLength(1);
     const jobs = await database.db
       .select()
       .from(jobOutbox)
@@ -2360,8 +2382,10 @@ describe("PostgresReachabilityRepository", () => {
 
   runDatabaseTest("ingest skips a node deleted since the run started", async () => {
     if (!database || !repository) return;
+    const runId = randomUUID();
+    await seedProbe(runId);
     const out = ingestRun({
-      runId: randomUUID(),
+      runId,
       now: new Date(),
       label: "Testland",
       failThreshold: 2,
@@ -2381,7 +2405,7 @@ describe("PostgresReachabilityRepository", () => {
     });
     await expect(
       repository.ingest({
-        runId: randomUUID(),
+        runId,
         now: new Date(),
         outcomes: out.outcomes,
         states: out.states,
@@ -2401,8 +2425,10 @@ describe("PostgresReachabilityRepository", () => {
       status: "ok",
       checkedAt: new Date(Date.now() - 31 * 24 * 3_600_000),
     });
+    const runId = randomUUID();
+    await seedProbe(runId);
     await repository.ingest({
-      runId: randomUUID(),
+      runId,
       now: new Date(),
       outcomes: [],
       states: new Map(),
