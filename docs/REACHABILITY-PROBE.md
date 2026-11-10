@@ -85,8 +85,8 @@ probe goes stale, the worker only changes its data (`editMessageWidgetData`); no
 new messages. Production Telegram shows widgets only in the **private chat**
 with the bot, so `TELEGRAM_CHAT_ID` must be a person's id for the widget to work.
 
-- Heading "VPN из {label}: N из M"; one row per node with checks on: ping in ms
-  or ✕, ssh / vpn / internet ✓ ✕ or "-" (not run), devices online now (the
+- Heading "VPN из {label}: N из M"; one row per node with checks on: ssh / vpn /
+  internet ✓ ✕ or "-" (not run), devices online now (the
   probe's own keys excluded), and "люди": how long ago a person last
   completed a handshake on the node — the admin card's "last handshake", probe
   keys excluded, revoked keys included. Shown as "<1ч", whole hours ("5ч"), or

@@ -23,10 +23,11 @@ export const REACHABILITY_WIDGET_HTML = `<style>
 body{margin:0}
 .w{padding:8px 12px;font:13px/1.3 system-ui,sans-serif;color:var(--tg-theme-text-color)}
 h4{margin:0 0 6px;font-size:14px;font-weight:600}
-table{border-collapse:collapse;width:100%;table-layout:fixed;font-size:12px}
-th{color:var(--tg-theme-hint-color);font-weight:500;padding:2px 1px;text-align:center}
-td{text-align:center;padding:3px 1px;border-top:1px solid var(--tg-theme-section-separator-color);vertical-align:top;white-space:nowrap}
-th:first-child,td:first-child{text-align:left}
+table{border-collapse:collapse;width:100%;font-size:12px}
+th{color:var(--tg-theme-hint-color);font-weight:500;padding:2px 4px;text-align:center}
+td{text-align:center;padding:3px 4px;border-top:1px solid var(--tg-theme-section-separator-color);vertical-align:top}
+th,td{width:1%;white-space:nowrap}
+th:first-child,td:first-child{text-align:left;width:100%;max-width:0;padding-left:0}
 .nm{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .d{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:4px;background:var(--tg-theme-hint-color)}
 .g{background:#2ea043}.r{background:#e5534b}
@@ -39,8 +40,8 @@ th:first-child,td:first-child{text-align:left}
 .f{color:var(--tg-theme-hint-color);font-size:11px;margin-top:6px}
 </style>
 <div class="w"><h4 id="h"></h4><div id="b"></div>
-<table id="t"><colgroup><col><col style="width:34px"><col style="width:28px"><col style="width:28px"><col style="width:30px"><col style="width:30px"><col style="width:34px"></colgroup>
-<thead><tr><th>нода</th><th>ping</th><th>ssh</th><th>vpn</th><th>инет</th><th>онл.</th><th>люди</th></tr></thead><tbody id="r"></tbody></table>
+<table id="t">
+<thead><tr><th>нода</th><th>ssh</th><th>vpn</th><th>инет</th><th>онл.</th><th>люди</th></tr></thead><tbody id="r"></tbody></table>
 <div class="f" id="f"></div></div>
 <script>
 var W=window.TelegramWidget;
@@ -52,7 +53,7 @@ function R(){
 var d=null;try{d=JSON.parse(W&&W.chatData)}catch(e){}
 var h=$('h'),b=$('b'),r=$('r'),f=$('f'),t=$('t');
 b.textContent='';r.textContent='';
-if(!d||d.v!==2){h.textContent='Нет данных';t.style.display='none';f.textContent='';return}
+if(!d||d.v!==4){h.textContent='Нет данных';t.style.display='none';f.textContent='';return}
 t.style.display='';
 var age=d.c?Math.floor(Date.now()/1e3)-d.c:0,st=d.s||!d.c||age>d.sl;
 h.textContent='VPN из '+d.l+': '+(st?'нет данных':d.k+' из '+d.t);
@@ -60,17 +61,16 @@ if(st)b.appendChild(E('div','b st',d.c?'Последняя проверка '+d.
 else if(d.m)b.appendChild(E('div','b wa','Все ноды недоступны в одном прогоне - возможно, сломалась сама проверка'));
 t.className=st?'dim':'';
 d.n.forEach(function(n){
-var l=n[1],hs=l[2],p=l[0],tr=E('tr'),c=E('td'),nm=E('span','nm');
+var l=n[1],hs=l[2],tr=E('tr'),c=E('td'),nm=E('span','nm');
 nm.appendChild(E('span','d '+(st?'':hs=='1'?'g':hs=='0'?'r':'')));
 nm.appendChild(document.createTextNode(n[0]));c.appendChild(nm);
-if(n[5]&&!st)c.appendChild(E('span','sn','с '+n[5]));
+if(n[4]&&!st)c.appendChild(E('span','sn','с '+n[4]));
 tr.appendChild(c);
-tr.appendChild(E('td',st?'':p=='1'?'ok':p=='0'&&hs!='1'?'no':'na',p=='1'?(n[2]!=null?String(n[2]):'\\u2713'):p=='0'?'\\u2715':'-'));
 for(var i=1;i<4;i++)tr.appendChild(M(l[i],st));
-tr.appendChild(E('td','',String(n[3])));
-var q=P(n[4]==null?null:n[4]+Math.floor(age/60));tr.appendChild(E('td',st?'':q[1],q[0]));
+tr.appendChild(E('td','',n[2]));
+var q=P(n[3]===''?null:+n[3]+Math.floor(age/60));tr.appendChild(E('td',st?'':q[1],q[0]));
 r.appendChild(tr)});
-if(d.x){var x=E('tr'),c=E('td','na','\\u2026 ещё '+d.x);c.colSpan=7;x.appendChild(c);r.appendChild(x)}
+if(d.x){var x=E('tr'),c=E('td','na','\\u2026 ещё '+d.x);c.colSpan=6;x.appendChild(c);r.appendChild(x)}
 f.textContent=st?'Ждём следующую проверку':'Проверка '+d.ct+(d.nt?' \\u00b7 следующая ~'+d.nt:'');
 }
 if(W)W.onEvent('chatDataChanged',R);

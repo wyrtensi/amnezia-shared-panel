@@ -85,10 +85,10 @@ describe("buildWidgetData", () => {
       }),
     );
     // Belgrade is UTC+1 in November.
-    expect(data.n[0]).toEqual(["amster5", "000-", null, 0, null, "10.11 15:46"]);
-    expect(data.n[1]).toEqual(["kz2", "----", null, 0, null]);
-    expect(data.n[2]).toEqual(["amster3", "1111", 65, 3, null]);
-    expect(data.n[3]).toEqual(["us-utah", "0111", null, 1, null]);
+    expect(data.n[0]).toEqual(["amster5", "000-", "0", "", "10.11 15:46"]);
+    expect(data.n[1]).toEqual(["kz2", "----", "0", ""]);
+    expect(data.n[2]).toEqual(["amster3", "1111", "3", ""]);
+    expect(data.n[3]).toEqual(["us-utah", "0111", "1", ""]);
     expect(data).toMatchObject({ ct: "10.11 15:51", nt: "16:51", s: 0, m: 0, x: 0 });
     expect(data.c).toBe(Math.floor(Date.parse("2026-11-10T14:51:00Z") / 1000));
   });
@@ -128,7 +128,7 @@ describe("buildWidgetData", () => {
     expect(bytes).toBeLessThanOrEqual(WIDGET_DATA_MAX_BYTES);
     expect(data.n).toHaveLength(12);
     expect(data.x).toBe(0);
-    expect(data.n[0]?.[4]).toBeGreaterThan(10_000);
+    expect(Number(data.n[0]?.[3])).toBeGreaterThan(10_000);
   });
 
   it("drops trailing rows, counted, only when even short names do not fit", () => {
@@ -162,9 +162,13 @@ describe("widget HTML", () => {
     expect(REACHABILITY_WIDGET_HTML).toContain("createTextNode(n[0])");
   });
 
-  it("keeps a row on one line: fixed columns, no wrapping, names cut with an ellipsis", () => {
-    expect(REACHABILITY_WIDGET_HTML).toContain("table-layout:fixed");
-    expect(REACHABILITY_WIDGET_HTML).toMatch(/td\{[^}]*white-space:nowrap/);
+  // Telegram does not honour <col> widths and split the row evenly, leaving a
+  // name two letters. The name cell now takes all free width; the figures
+  // shrink to their content.
+  it("keeps a row on one line, gives the name the free width, cuts it with an ellipsis", () => {
+    expect(REACHABILITY_WIDGET_HTML).not.toContain("<col");
+    expect(REACHABILITY_WIDGET_HTML).toMatch(/th,td\{width:1%;white-space:nowrap\}/);
+    expect(REACHABILITY_WIDGET_HTML).toMatch(/td:first-child\{[^}]*width:100%;max-width:0/);
     expect(REACHABILITY_WIDGET_HTML).toMatch(/\.nm\{[^}]*text-overflow:ellipsis/);
   });
 });
@@ -192,8 +196,8 @@ describe("people column", () => {
     const data = buildWidgetData(
       input({ nodes: [node("london2", { lastPersonHandshakeAt: new Date("2026-11-10T14:46:00Z") })] }),
     );
-    expect(data.v).toBe(2);
-    expect(data.n[0]).toEqual(["london2", "1111", 65, 1, 5]);
+    expect(data.v).toBe(4);
+    expect(data.n[0]).toEqual(["london2", "1111", "1", "5"]);
   });
 
   it.each([
@@ -220,9 +224,29 @@ describe("people column", () => {
   it("is drawn by the widget: its column, the age since the check, and the new version", () => {
     expect(REACHABILITY_WIDGET_HTML).toContain(PEOPLE_CELL_JS);
     expect(REACHABILITY_WIDGET_HTML).toContain("<th>люди</th>");
-    expect(REACHABILITY_WIDGET_HTML).toContain("n[4]+Math.floor(age/60)");
-    expect(REACHABILITY_WIDGET_HTML).toContain("d.v!==2");
-    expect(REACHABILITY_WIDGET_HTML.match(/<col[ >]/g)).toHaveLength(7);
+    expect(REACHABILITY_WIDGET_HTML).toContain("+n[3]+Math.floor(age/60)");
+    expect(REACHABILITY_WIDGET_HTML).toContain("d.v!==4");
+    expect(REACHABILITY_WIDGET_HTML.match(/<th>/g)).toHaveLength(6);
+    expect(REACHABILITY_WIDGET_HTML).not.toContain("<th>ping</th>");
     expect(REACHABILITY_WIDGET_HTML).toContain(".wy{color:");
+  });
+});
+
+describe("numbers in chat_data", () => {
+  // Telegram read `[...,0,2663]` as one decimal and drew 0.2663 under "онл.":
+  // two bare numbers side by side in an array must never be sent.
+  it("never puts two bare numbers next to each other", () => {
+    const data = buildWidgetData(
+      input({
+        nodes: [
+          node("amster5", { online: 0, lastPersonHandshakeAt: new Date("2026-11-08T22:10:00Z") }),
+          node("london2", { online: 2, levels: levels(true, true, 52), lastPersonHandshakeAt: since }),
+          node("amster6", { status: "failed", levels: levels(false, false), failingSince: since, online: 1 }),
+        ],
+      }),
+    );
+    for (const row of data.n) for (const field of row) expect(typeof field).toBe("string");
+    const outsideStrings = serializeWidgetData(data).replace(/"(?:[^"\\]|\\.)*"/g, '""');
+    expect(outsideStrings).not.toMatch(/[0-9.]\s*,\s*-?[0-9]/);
   });
 });

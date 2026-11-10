@@ -9,19 +9,22 @@ import { REACHABILITY_WIDGET_HTML } from "./reachabilityWidgetHtml.js";
  * (reachabilityWidgetHtml.ts) only draws this data; every decision about
  * order, colour inputs and clock times is made here.
  *
- * Wire format, version 2 (short keys: the whole thing must fit 1024 bytes):
- *   v   2
+ * Wire format, version 4 (short keys: the whole thing must fit 1024 bytes):
+ *   v   4
  *   l   label
  *   k   nodes with status ok        t   nodes counted in the heading
  *   c   last check, epoch seconds, or null
  *   ct  last check as a clock time  nt  next check as a clock time
  *   sl  seconds after `c` when the data reads as stale
  *   s   1 when stale now            m   1 when the newest run was a mass failure
- *   n   rows: [name, levels, pingMs, online, people, since?]
+ *   n   rows: [name, levels, online, people, since?], every field a
+ *       string ("" for none). Telegram reads two numbers in a row inside an
+ *       array as one decimal ("0,2663" came out as 0.2663), so no row ever
+ *       carries a bare number.
  *       levels = 4 chars for ping, tcp, handshake, http: "1" ok, "0" failed,
  *       "-" not run
  *       people = minutes from a person's last handshake on the node to `c`,
- *       or null when no person has ever connected there; the widget adds the
+ *       or "" when no person has ever connected there; the widget adds the
  *       time since `c` itself, so the age keeps counting between runs
  *   x   rows left out to fit the size limit
  */
@@ -53,12 +56,10 @@ export type WidgetInput = {
   nodes: readonly WidgetNode[];
 };
 
-type Row =
-  | [string, string, number | null, number, number | null]
-  | [string, string, number | null, number, number | null, string];
+type Row = [string, string, string, string] | [string, string, string, string, string];
 
 export type WidgetData = {
-  v: 2;
+  v: 4;
   l: string;
   k: number;
   t: number;
@@ -140,13 +141,11 @@ export const buildWidgetData = (input: WidgetInput): WidgetData => {
   const ordered = orderNodes(input.nodes);
   const rowsAt = (nameBytes: number): Row[] =>
     ordered.map((node) => {
-      const ping = node.levels?.ping;
       const row: Row = [
         cutBytes(node.name, nameBytes),
         levelFlags(node.levels),
-        ping?.ok === true ? (ping.latencyMs ?? null) : null,
-        node.online,
-        peopleMinutes(node.lastPersonHandshakeAt, input.checkedAt),
+        String(node.online),
+        String(peopleMinutes(node.lastPersonHandshakeAt, input.checkedAt) ?? ""),
       ];
       return node.status === "failed" && node.failingSince
         ? [...row, clockDayTime(node.failingSince, input.timeZone)]
@@ -154,7 +153,7 @@ export const buildWidgetData = (input: WidgetInput): WidgetData => {
     });
 
   const data: WidgetData = {
-    v: 2,
+    v: 4,
     l: cutBytes(input.label, 80),
     k: input.nodes.filter((node) => node.status === "ok").length,
     t: input.nodes.length,
