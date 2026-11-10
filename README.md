@@ -55,6 +55,10 @@ What that buys an operator, concretely:
 - **Service checks.** Named checks — a status code, a marker in the body, where a
   redirect lands — run from every node on a schedule, so "is this reachable from
   that country" is a row in the panel rather than an experiment.
+- **External reachability probe.** A small container on a machine in the
+  network you care about brings up a real AWG tunnel to every node each hour;
+  admin/nodes shows the result per node and protocol, and Telegram gets one
+  message per incident. See [docs/REACHABILITY-PROBE.md](docs/REACHABILITY-PROBE.md).
 - **Fleet visibility.** Host metrics, agent version, peer counts and traffic per
   node and per key, with a one-command agent update that swaps only the agent
   container and never restarts a tunnel.
