@@ -1,5 +1,6 @@
 import type {
   AccessSyncStatus,
+  AdminReachabilityView,
   CreateNodeRequest,
   CreateServiceCheckRequest,
   CreateKeyRequest,
@@ -17,9 +18,17 @@ import type {
   RulesRefreshStatus,
   UpdateNodeRequest,
   UpdateServiceCheckRequest,
+  UpsertReachabilityProbeRequest,
 } from "@amnezia/contracts";
 import type { EncryptedSecret } from "@amnezia/db";
-import type { Actor, IdentityClaim, KeyView } from "./service.js";
+import type {
+  Actor,
+  IdentityClaim,
+  KeyView,
+  ReachabilityHistoryEntry,
+  ReachabilityHistoryQuery,
+  ReachabilityProbeView,
+} from "./service.js";
 import type { RulePayload } from "./vpnConfig.js";
 
 export type ActiveRule = {
@@ -156,6 +165,17 @@ export interface ControlRepository {
     checkId: string | null,
   ) => Promise<unknown>;
   runServiceCheckNow: (actor: Actor, checkId: string) => Promise<unknown>;
+  getReachability: (actor: Actor) => Promise<AdminReachabilityView>;
+  upsertReachabilityProbe: (
+    actor: Actor,
+    request: UpsertReachabilityProbeRequest,
+  ) => Promise<ReachabilityProbeView>;
+  deleteReachabilityProbe: (actor: Actor) => Promise<void>;
+  runReachabilityNow: (actor: Actor) => Promise<ReachabilityProbeView>;
+  listReachabilityHistory: (
+    actor: Actor,
+    query: ReachabilityHistoryQuery,
+  ) => Promise<ReachabilityHistoryEntry[]>;
   adminAction: (
     actor: Actor,
     resource: string,

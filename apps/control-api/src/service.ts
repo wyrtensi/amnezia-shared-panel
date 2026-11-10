@@ -1,5 +1,6 @@
 import type {
   AccessSyncStatus,
+  AdminReachabilityView,
   CreateNodeRequest,
   CreateServiceCheckRequest,
   CreateUserRequest,
@@ -13,12 +14,14 @@ import type {
   NoticeKind,
   ProtocolKind,
   QuotaRequest,
+  ReachabilityStatus,
   Role,
   RouteProfile,
   RulesRefreshStatus,
   UserStatus,
   UpdateNodeRequest,
   UpdateServiceCheckRequest,
+  UpsertReachabilityProbeRequest,
 } from "@amnezia/contracts";
 import type { NodeTrafficPeriods } from "./repository.js";
 
@@ -134,6 +137,19 @@ export type ConfigResult = {
   qrParams?: { errorCorrectionLevel: string; modules: number; scale: number };
 };
 
+/** The probe's settings and health as the admin view shows them; no secret. */
+export type ReachabilityProbeView = NonNullable<AdminReachabilityView["probe"]>;
+
+/** One ingested run's verdict for one node. */
+export type ReachabilityHistoryEntry = {
+  runId: string;
+  status: ReachabilityStatus;
+  detail: string | null;
+  checkedAt: string;
+};
+
+export type ReachabilityHistoryQuery = { nodeId: string; limit: number };
+
 export interface ControlApiService {
   resolveIdentity: (claim: IdentityClaim) => Promise<Actor>;
   getMe: (actor: Actor) => Promise<Record<string, unknown>>;
@@ -231,6 +247,27 @@ export interface ControlApiService {
    * waits on a fleet.
    */
   runServiceCheckNow: (actor: Actor, checkId: string) => Promise<unknown>;
+  /** Probe settings and health plus every node's state and per-protocol results. */
+  getReachability: (actor: Actor) => Promise<AdminReachabilityView>;
+  /**
+   * Create or replace the probe's settings. The API key is required on create
+   * and kept when omitted on update; it is never returned.
+   */
+  upsertReachabilityProbe: (
+    actor: Actor,
+    request: UpsertReachabilityProbeRequest,
+  ) => Promise<ReachabilityProbeView>;
+  /** Remove the probe. Results stay until their node is deleted. */
+  deleteReachabilityProbe: (actor: Actor) => Promise<void>;
+  /**
+   * Ask for a run on the worker's next tick. Like `runServiceCheckNow` it moves
+   * a marker: the worker is the only one that talks to the probe.
+   */
+  runReachabilityNow: (actor: Actor) => Promise<ReachabilityProbeView>;
+  listReachabilityHistory: (
+    actor: Actor,
+    query: ReachabilityHistoryQuery,
+  ) => Promise<ReachabilityHistoryEntry[]>;
   adminAction: (
     actor: Actor,
     resource: string,

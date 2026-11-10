@@ -10,9 +10,11 @@ import {
   it,
 } from "vitest";
 import {
+  adminReachabilityViewSchema,
   defaultKeyNameDisplay,
   idleAccessSyncStatus,
   quotaRequestNotifyPayloadSchema,
+  REACHABILITY_DEFAULTS,
   WORKER_PERIOD_FIELD_NAMES,
 } from "@amnezia/contracts";
 import type { KeyLimitMode } from "@amnezia/contracts";
@@ -25,12 +27,16 @@ import {
   LIVE_KEY_STATES,
   nodeAgentReleases,
   nodeMetricsCurrent,
+  nodeReachabilityHistory,
+  nodeReachabilityResults,
+  nodeReachabilityState,
   nodeServiceCheckResults,
   nodeServiceChecks,
   nodes,
   peerCurrent,
   portalPolicy,
   quotaRequests,
+  reachabilityProbe,
   routeRuleVersions,
   trafficRollups,
   users,
@@ -5835,6 +5841,588 @@ describe("PostgresControlRepository per-user delete", () => {
  * `/api/nodes` drops such a node, and the key card used to look its server up
  * there, so it showed "—". The name now comes with the key itself.
  */
+describe("PostgresControlRepository reachability probe", () => {
+  const database = databaseUrl ? createDatabase(databaseUrl) : null;
+  const keyring = { 1: randomBytes(32) };
+  const apiKey = `probe-key-${randomBytes(16).toString("hex")}`;
+  let suffix: string;
+  let admin: Actor;
+  let serviceAccountId: string;
+  let ownerId: string;
+  let nodeAId: string;
+  let nodeBId: string;
+
+  const seedNode = async (values: {
+    name: string;
+    enabled: boolean;
+    capabilities: Record<string, boolean>;
+    enabledProtocols: Array<"awg2" | "awg3"> | null;
+  }): Promise<string> => {
+    if (!database) throw new Error("No database");
+    const credentials = encryptSecret("api-key", keyring, 1);
+    const label = encryptSecret("label-secret", keyring, 1);
+    const [node] = await database.db
+      .insert(nodes)
+      .values({
+        ...values,
+        apiBaseUrl: "http://192.0.2.10:4001",
+        protocol: "awg3",
+        maxPeers: 42,
+        credentialsCiphertext: credentials.ciphertext,
+        credentialsNonce: credentials.nonce,
+        credentialsAuthTag: credentials.authTag,
+        credentialsKeyVersion: credentials.keyVersion,
+        labelSecretCiphertext: label.ciphertext,
+        labelSecretNonce: label.nonce,
+        labelSecretAuthTag: label.authTag,
+        labelSecretKeyVersion: label.keyVersion,
+      })
+      .returning({ id: nodes.id });
+    if (!node) throw new Error("Failed to seed node");
+    return node.id;
+  };
+
+  const seedKey = async (values: {
+    ownerId: string;
+    nodeId: string;
+    protocol: "awg2" | "awg3";
+    state: "provisioning" | "active" | "revoked";
+    createdAt: Date;
+  }): Promise<void> => {
+    if (!database) throw new Error("No database");
+    const config = encryptSecret("vpn://stored-config", keyring, 1);
+    const tag = randomBytes(6).toString("hex");
+    await database.db.insert(vpnKeys).values({
+      ...values,
+      publicKey: `pk-${tag}`,
+      nodeLabel: `ap_reach_${tag}`,
+      routeProfile: "full_tunnel",
+      deviceLabel: "Probe",
+      configCiphertext: config.ciphertext,
+      configNonce: config.nonce,
+      configAuthTag: config.authTag,
+      configKeyVersion: config.keyVersion,
+    });
+  };
+
+  beforeEach(async () => {
+    if (!database) return;
+    suffix = randomBytes(6).toString("hex");
+    await database.db.delete(reachabilityProbe);
+    const [adminRow] = await database.db
+      .insert(users)
+      .values({ email: `reach-admin-${suffix}@example.com`, role: "admin" })
+      .returning();
+    if (!adminRow) throw new Error("Failed to seed admin");
+    admin = {
+      id: adminRow.id,
+      email: adminRow.email,
+      displayName: null,
+      role: "admin",
+      status: "active",
+    };
+    const [serviceRow] = await database.db
+      .insert(users)
+      .values({
+        email: `reach-probe-${suffix}@probe.invalid`,
+        serviceAccount: true,
+      })
+      .returning({ id: users.id });
+    if (!serviceRow) throw new Error("Failed to seed service account");
+    serviceAccountId = serviceRow.id;
+    const [ownerRow] = await database.db
+      .insert(users)
+      .values({ email: `reach-owner-${suffix}@example.com` })
+      .returning({ id: users.id });
+    if (!ownerRow) throw new Error("Failed to seed owner");
+    ownerId = ownerRow.id;
+    nodeAId = await seedNode({
+      name: `node-a-${suffix}`,
+      enabled: true,
+      capabilities: { awg2: true, awg3: true },
+      enabledProtocols: null,
+    });
+    nodeBId = await seedNode({
+      name: `node-b-${suffix}`,
+      enabled: false,
+      capabilities: { awg2: true, awg3: true },
+      enabledProtocols: ["awg3"],
+    });
+  });
+
+  // Leave nothing behind: vpn_keys.node_id and owner_id are RESTRICT, and the
+  // worker suite that shares this database clears `nodes` and `users`.
+  afterEach(async () => {
+    if (!database) return;
+    const nodeIds = [nodeAId, nodeBId];
+    await database.db.delete(reachabilityProbe);
+    await database.db.delete(vpnKeys).where(inArray(vpnKeys.nodeId, nodeIds));
+    await database.db.delete(nodes).where(inArray(nodes.id, nodeIds));
+    await database.db
+      .delete(auditEvents)
+      .where(eq(auditEvents.actorUserId, admin.id));
+    await database.db
+      .delete(users)
+      .where(inArray(users.id, [admin.id, serviceAccountId, ownerId]));
+  });
+
+  afterAll(async () => {
+    if (database) await database.client.end();
+  });
+
+  const subject = (): PostgresControlRepository => {
+    if (!database) throw new Error("No database");
+    return new PostgresControlRepository({ db: database.db, keyring });
+  };
+
+  const probeRow = async () => {
+    if (!database) throw new Error("No database");
+    const [row] = await database.db.select().from(reachabilityProbe);
+    return row;
+  };
+
+  const auditRows = async () => {
+    if (!database) throw new Error("No database");
+    return database.db
+      .select()
+      .from(auditEvents)
+      .where(
+        and(
+          eq(auditEvents.actorUserId, admin.id),
+          eq(auditEvents.targetType, "reachability_probe"),
+        ),
+      )
+      .orderBy(auditEvents.id);
+  };
+
+  const create = () =>
+    subject().upsertReachabilityProbe(admin, {
+      label: "Testland",
+      apiBaseUrl: "http://127.0.0.1:8090/",
+      apiKey,
+      controlUrl: "https://control.example.com/",
+    });
+
+  runDatabaseTest("creates the probe with defaults and an encrypted key", async () => {
+    if (!database) return;
+    const view = await create();
+
+    expect(view).toEqual({
+      label: "Testland",
+      apiBaseUrl: "http://127.0.0.1:8090",
+      enabled: true,
+      controlUrl: "https://control.example.com/",
+      egressUrl: REACHABILITY_DEFAULTS.egressUrl,
+      intervalSec: REACHABILITY_DEFAULTS.intervalSec,
+      failThreshold: REACHABILITY_DEFAULTS.failThreshold,
+      staleAfterSec: REACHABILITY_DEFAULTS.staleAfterSec,
+      lastResultAt: null,
+      lastError: null,
+      lastErrorAt: null,
+      stale: false,
+      runInFlight: false,
+      runRequestedAt: null,
+    });
+    expect(JSON.stringify(view)).not.toContain(apiKey);
+    const row = await probeRow();
+    expect(row?.credentialsCiphertext).not.toContain(apiKey);
+    expect(
+      decryptSecret(
+        {
+          ciphertext: row!.credentialsCiphertext,
+          nonce: row!.credentialsNonce,
+          authTag: row!.credentialsAuthTag,
+          keyVersion: row!.credentialsKeyVersion,
+        },
+        keyring,
+      ),
+    ).toBe(apiKey);
+  });
+
+  runDatabaseTest("refuses to create a probe without a key", async () => {
+    if (!database) return;
+    const failure = await failureOf(
+      subject().upsertReachabilityProbe(admin, {
+        label: "Testland",
+        apiBaseUrl: "http://127.0.0.1:8090",
+        controlUrl: "https://control.example.com/",
+      }),
+    );
+    expect(failure).toMatchObject({ statusCode: 400, code: "API_KEY_REQUIRED" });
+    expect(await probeRow()).toBeUndefined();
+  });
+
+  runDatabaseTest(
+    "an update without a key keeps the stored key and the stored settings",
+    async () => {
+      if (!database) return;
+      await subject().upsertReachabilityProbe(admin, {
+        label: "Testland",
+        apiBaseUrl: "http://127.0.0.1:8090",
+        apiKey,
+        controlUrl: "https://control.example.com/",
+        intervalSec: 600,
+        enabled: false,
+      });
+
+      const view = await subject().upsertReachabilityProbe(admin, {
+        label: "Testland two",
+        apiBaseUrl: "http://127.0.0.1:8090",
+        controlUrl: "https://control.example.com/",
+      });
+
+      expect(view).toMatchObject({
+        label: "Testland two",
+        intervalSec: 600,
+        enabled: false,
+      });
+      const row = await probeRow();
+      expect(
+        decryptSecret(
+          {
+            ciphertext: row!.credentialsCiphertext,
+            nonce: row!.credentialsNonce,
+            authTag: row!.credentialsAuthTag,
+            keyVersion: row!.credentialsKeyVersion,
+          },
+          keyring,
+        ),
+      ).toBe(apiKey);
+      const audit = await auditRows();
+      expect(audit.map((entry) => entry.action)).toEqual([
+        "admin.reachability.probe_set",
+        "admin.reachability.probe_set",
+      ]);
+      expect(audit[1]?.metadata).toEqual({ created: false, fields: ["label"] });
+    },
+  );
+
+  runDatabaseTest("the audit trail never carries the key", async () => {
+    if (!database) return;
+    await create();
+    // A replaced key is named as a changed field, never written down.
+    await subject().upsertReachabilityProbe(admin, {
+      label: "Testland",
+      apiBaseUrl: "http://127.0.0.1:8090",
+      apiKey: `${apiKey}-next`,
+      controlUrl: "https://control.example.com/",
+    });
+    await subject().runReachabilityNow(admin);
+    await subject().deleteReachabilityProbe(admin);
+
+    const audit = await auditRows();
+    expect(audit.map((entry) => entry.action)).toEqual([
+      "admin.reachability.probe_set",
+      "admin.reachability.probe_set",
+      "admin.reachability.run",
+      "admin.reachability.probe_deleted",
+    ]);
+    expect(audit[1]?.metadata).toEqual({ created: false, fields: ["apiKey"] });
+    expect(JSON.stringify(audit)).not.toContain(apiKey);
+  });
+
+  runDatabaseTest(
+    "lists every node, a disabled one included, with no status before a result",
+    async () => {
+      if (!database) return;
+      const empty = await subject().getReachability(admin);
+      expect(empty.probe).toBeNull();
+
+      await create();
+      // The newest service-account key wins; a person's key never counts.
+      await seedKey({
+        ownerId: serviceAccountId,
+        nodeId: nodeAId,
+        protocol: "awg3",
+        state: "revoked",
+        createdAt: new Date("2026-01-01T00:00:00Z"),
+      });
+      await seedKey({
+        ownerId: serviceAccountId,
+        nodeId: nodeAId,
+        protocol: "awg3",
+        state: "active",
+        createdAt: new Date("2026-02-01T00:00:00Z"),
+      });
+      await seedKey({
+        ownerId,
+        nodeId: nodeAId,
+        protocol: "awg2",
+        state: "active",
+        createdAt: new Date("2026-03-01T00:00:00Z"),
+      });
+
+      const view = adminReachabilityViewSchema.parse(
+        await subject().getReachability(admin),
+      );
+      expect(view.probe).toMatchObject({ label: "Testland", stale: false });
+      const mine = view.nodes.filter((node) =>
+        [nodeAId, nodeBId].includes(node.nodeId),
+      );
+      expect(mine.map((node) => node.nodeId)).toEqual([nodeAId, nodeBId]);
+      expect(mine[0]).toEqual({
+        nodeId: nodeAId,
+        nodeName: `node-a-${suffix}`,
+        nodeEnabled: true,
+        reachabilityEnabled: true,
+        status: null,
+        checkedAt: null,
+        failingSince: null,
+        consecutiveFailures: 0,
+        incidentOpen: false,
+        detail: null,
+        protocols: [
+          {
+            protocol: "awg3",
+            status: null,
+            levels: null,
+            egressIp: null,
+            detail: null,
+            checkedAt: null,
+            keyState: "active",
+          },
+          {
+            protocol: "awg2",
+            status: null,
+            levels: null,
+            egressIp: null,
+            detail: null,
+            checkedAt: null,
+            keyState: null,
+          },
+        ],
+      });
+      // Disabled, and offering only awg3 of the two it supports.
+      expect(mine[1]).toMatchObject({
+        nodeEnabled: false,
+        status: null,
+        protocols: [{ protocol: "awg3", status: null, keyState: null }],
+      });
+    },
+  );
+
+  runDatabaseTest("maps a stored verdict and an open incident", async () => {
+    if (!database) return;
+    await create();
+    const checkedAt = new Date("2026-11-10T10:00:00Z");
+    const failingSince = new Date("2026-11-10T08:00:00Z");
+    const levels = {
+      ping: { ok: true, detail: null, latencyMs: 40 },
+      tcp: { ok: null, detail: null, latencyMs: null },
+      handshake: { ok: false, detail: "no handshake", latencyMs: null },
+      http: { ok: null, detail: null, latencyMs: null },
+    };
+    await database.db.insert(nodeReachabilityState).values({
+      nodeId: nodeAId,
+      status: "failed",
+      consecutiveFailures: 3,
+      failingSince,
+      alertedAt: checkedAt,
+      alertKind: "node",
+      checkedAt,
+      detail: "no handshake",
+    });
+    await database.db.insert(nodeReachabilityResults).values({
+      nodeId: nodeAId,
+      protocol: "awg3",
+      status: "failed",
+      levels,
+      egressIp: "192.0.2.10",
+      detail: "no handshake",
+      runId: randomUUID(),
+      checkedAt,
+    });
+    // Nothing measured: the worker stores `{}`, which reads as no levels.
+    await database.db.insert(nodeReachabilityResults).values({
+      nodeId: nodeAId,
+      protocol: "awg2",
+      status: "error",
+      levels: {},
+      egressIp: null,
+      detail: "key provisioning",
+      runId: randomUUID(),
+      checkedAt,
+    });
+
+    const view = adminReachabilityViewSchema.parse(
+      await subject().getReachability(admin),
+    );
+    const nodeA = view.nodes.find((node) => node.nodeId === nodeAId);
+    expect(nodeA).toMatchObject({
+      status: "failed",
+      checkedAt: checkedAt.toISOString(),
+      failingSince: failingSince.toISOString(),
+      consecutiveFailures: 3,
+      incidentOpen: true,
+      detail: "no handshake",
+    });
+    expect(nodeA?.protocols[0]).toEqual({
+      protocol: "awg3",
+      status: "failed",
+      levels,
+      egressIp: "192.0.2.10",
+      detail: "no handshake",
+      checkedAt: checkedAt.toISOString(),
+      keyState: null,
+    });
+    expect(nodeA?.protocols[1]).toMatchObject({
+      protocol: "awg2",
+      status: "error",
+      levels: null,
+      detail: "key provisioning",
+    });
+  });
+
+  runDatabaseTest("reports a probe silent for too long as stale", async () => {
+    if (!database) return;
+    await create();
+    await database.db
+      .update(reachabilityProbe)
+      .set({
+        createdAt: new Date(Date.now() - 4 * 3_600_000),
+        currentRunId: randomUUID(),
+      });
+    const { probe } = await subject().getReachability(admin);
+    expect(probe).toMatchObject({ stale: true, runInFlight: true });
+  });
+
+  runDatabaseTest("run sets the marker, and needs a probe", async () => {
+    if (!database) return;
+    expect(await failureOf(subject().runReachabilityNow(admin))).toMatchObject({
+      statusCode: 404,
+      code: "PROBE_NOT_FOUND",
+    });
+
+    await create();
+    const view = await subject().runReachabilityNow(admin);
+
+    expect(view.runRequestedAt).not.toBeNull();
+    const row = await probeRow();
+    expect(row?.runRequestedAt?.toISOString()).toBe(view.runRequestedAt);
+  });
+
+  runDatabaseTest("delete removes the probe and keeps results", async () => {
+    if (!database) return;
+    expect(
+      await failureOf(subject().deleteReachabilityProbe(admin)),
+    ).toMatchObject({ statusCode: 404, code: "PROBE_NOT_FOUND" });
+
+    await create();
+    await database.db.insert(nodeReachabilityState).values({
+      nodeId: nodeAId,
+      status: "ok",
+      checkedAt: new Date(),
+    });
+    await subject().deleteReachabilityProbe(admin);
+
+    expect(await probeRow()).toBeUndefined();
+    const state = await database.db
+      .select()
+      .from(nodeReachabilityState)
+      .where(eq(nodeReachabilityState.nodeId, nodeAId));
+    expect(state).toHaveLength(1);
+  });
+
+  runDatabaseTest("history is newest first and limited", async () => {
+    if (!database) return;
+    const runs = [1, 2, 3].map(() => randomUUID());
+    await database.db.insert(nodeReachabilityHistory).values([
+      {
+        nodeId: nodeAId,
+        runId: runs[0]!,
+        status: "ok",
+        detail: null,
+        checkedAt: new Date("2026-11-10T01:00:00Z"),
+      },
+      {
+        nodeId: nodeAId,
+        runId: runs[2]!,
+        status: "error",
+        detail: "key provisioning",
+        checkedAt: new Date("2026-11-10T03:00:00Z"),
+      },
+      {
+        nodeId: nodeAId,
+        runId: runs[1]!,
+        status: "failed",
+        detail: "no handshake",
+        checkedAt: new Date("2026-11-10T02:00:00Z"),
+      },
+      {
+        nodeId: nodeBId,
+        runId: runs[2]!,
+        status: "ok",
+        detail: null,
+        checkedAt: new Date("2026-11-10T04:00:00Z"),
+      },
+    ]);
+
+    const history = await subject().listReachabilityHistory(admin, {
+      nodeId: nodeAId,
+      limit: 2,
+    });
+
+    expect(history).toEqual([
+      {
+        runId: runs[2],
+        status: "error",
+        detail: "key provisioning",
+        checkedAt: "2026-11-10T03:00:00.000Z",
+      },
+      {
+        runId: runs[1],
+        status: "failed",
+        detail: "no handshake",
+        checkedAt: "2026-11-10T02:00:00.000Z",
+      },
+    ]);
+  });
+
+  runDatabaseTest(
+    "a reachabilityEnabled patch persists and touches no other column",
+    async () => {
+      if (!database) return;
+      await database.db
+        .update(nodes)
+        .set({ checksEnabled: false })
+        .where(eq(nodes.id, nodeBId));
+      const [before] = await database.db
+        .select()
+        .from(nodes)
+        .where(eq(nodes.id, nodeBId));
+
+      const updated = (await subject().updateNode(admin, nodeBId, {
+        reachabilityEnabled: false,
+      })) as Record<string, unknown>;
+
+      expect(updated).toMatchObject({
+        reachabilityEnabled: false,
+        checksEnabled: false,
+        disabledCheckIds: [],
+      });
+      const [after] = await database.db
+        .select()
+        .from(nodes)
+        .where(eq(nodes.id, nodeBId));
+      expect(after).toEqual({
+        ...before,
+        reachabilityEnabled: false,
+        updatedAt: after!.updatedAt,
+      });
+      const listed = (await subject().adminList(admin, "nodes")) as Array<{
+        id: string;
+        reachabilityEnabled: boolean;
+      }>;
+      expect(
+        listed.find((node) => node.id === nodeBId)?.reachabilityEnabled,
+      ).toBe(false);
+      expect(
+        listed.find((node) => node.id === nodeAId)?.reachabilityEnabled,
+      ).toBe(true);
+    },
+  );
+});
+
 describe("PostgresControlRepository server name on keys", () => {
   const database = databaseUrl ? createDatabase(databaseUrl) : null;
   const keyring = { 1: randomBytes(32) };
