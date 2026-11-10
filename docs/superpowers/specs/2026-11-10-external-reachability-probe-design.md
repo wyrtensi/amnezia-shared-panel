@@ -263,7 +263,13 @@ bot only sends: the widget has no buttons and makes no requests.
   M = nodes shown). One row per node with checks on and a state: dot coloured
   by the handshake level (green ok, red failed, grey not measured), ping in ms
   or ✕, ssh/vpn/inet ✓ or ✕ or "-" when not run, devices online now
-  (`peer_current.online`, the service account excluded). Failed nodes first
+  (`peer_current.online`, the service account excluded), and "люди": the age
+  of the newest person handshake on the node (`max(peer_current.latest_handshake_at)`,
+  service account excluded, revoked keys included — the admin card's "last
+  handshake"). Sent as minutes before the check (wire format v2, row field 4)
+  and aged by the widget itself; "<1ч", whole hours, then days with one decimal
+  rounded down; yellow > 24 h, red > 48 h, grey "-" when there never was one.
+  It does not affect the dot, "N из M" or the order. Failed nodes first
   with "с {failing since}", then not-measured ones, then ok ones, each by name.
   Footer "Проверка {time} · следующая ~{time}".
 - **Mass banner** when the newest ingested run was a mass failure

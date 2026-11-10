@@ -63,7 +63,7 @@ describe("reachability widget", () => {
     expect(calls.map((c) => c.method)).toEqual(["sendWidget", "pinChatMessage"]);
     expect(calls[0]?.body).toMatchObject({ chat_id: "chat", caption: "VPN из Testland" });
     expect(typeof calls[0]?.body.html).toBe("string");
-    expect(JSON.parse(calls[0]?.body.chat_data as string)).toMatchObject({ v: 1, l: "Testland" });
+    expect(JSON.parse(calls[0]?.body.chat_data as string)).toMatchObject({ v: 2, l: "Testland" });
     expect(calls[1]?.body).toEqual({ chat_id: "chat", message_id: 500, disable_notification: true });
     expect(saved).toEqual([{ messageId: 500, chatId: "chat", version: CURRENT }]);
     expect(results).toEqual([null]);

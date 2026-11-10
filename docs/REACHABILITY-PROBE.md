@@ -87,8 +87,14 @@ with the bot, so `TELEGRAM_CHAT_ID` must be a person's id for the widget to work
 
 - Heading "VPN из {label}: N из M"; one row per node with checks on: ping in ms
   or ✕, ssh / vpn / internet ✓ ✕ or "-" (not run), devices online now (the
-  probe's own keys excluded). The dot follows the handshake (vpn) level.
-  Unavailable nodes first, with the time they went down.
+  probe's own keys excluded), and "люди": how long ago a person last
+  completed a handshake on the node — the admin card's "last handshake", probe
+  keys excluded, revoked keys included. Shown as "<1ч", whole hours ("5ч"), or
+  days with one decimal ("1.1д"); yellow past 24 h, red past 48 h, a grey "-"
+  where no person has ever connected. The widget counts the age on from the
+  check, so it keeps moving between runs. The dot, "N из M" and the row order
+  follow the handshake (vpn) level only. Unavailable nodes first, with the time
+  they went down.
 - Footer: last check and the expected next one, in the probe's `--time-zone`.
 - A yellow banner when the newest run failed everywhere (the combined-alert
   rule); "нет данных" with dimmed rows when the probe is stale.

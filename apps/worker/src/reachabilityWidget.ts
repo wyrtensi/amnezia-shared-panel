@@ -9,17 +9,20 @@ import { REACHABILITY_WIDGET_HTML } from "./reachabilityWidgetHtml.js";
  * (reachabilityWidgetHtml.ts) only draws this data; every decision about
  * order, colour inputs and clock times is made here.
  *
- * Wire format, version 1 (short keys: the whole thing must fit 1024 bytes):
- *   v   1
+ * Wire format, version 2 (short keys: the whole thing must fit 1024 bytes):
+ *   v   2
  *   l   label
  *   k   nodes with status ok        t   nodes counted in the heading
  *   c   last check, epoch seconds, or null
  *   ct  last check as a clock time  nt  next check as a clock time
  *   sl  seconds after `c` when the data reads as stale
  *   s   1 when stale now            m   1 when the newest run was a mass failure
- *   n   rows: [name, levels, pingMs, online, since?]
+ *   n   rows: [name, levels, pingMs, online, people, since?]
  *       levels = 4 chars for ping, tcp, handshake, http: "1" ok, "0" failed,
  *       "-" not run
+ *       people = minutes from a person's last handshake on the node to `c`,
+ *       or null when no person has ever connected there; the widget adds the
+ *       time since `c` itself, so the age keeps counting between runs
  *   x   rows left out to fit the size limit
  */
 
@@ -34,6 +37,8 @@ export type WidgetNode = {
   levels: ProbeLevels | null;
   failingSince: Date | null;
   online: number;
+  /** The newest handshake of a person's key on the node, revoked keys included. */
+  lastPersonHandshakeAt: Date | null;
 };
 
 export type WidgetInput = {
@@ -48,10 +53,12 @@ export type WidgetInput = {
   nodes: readonly WidgetNode[];
 };
 
-type Row = [string, string, number | null, number] | [string, string, number | null, number, string];
+type Row =
+  | [string, string, number | null, number, number | null]
+  | [string, string, number | null, number, number | null, string];
 
 export type WidgetData = {
-  v: 1;
+  v: 2;
   l: string;
   k: number;
   t: number;
@@ -120,6 +127,15 @@ export const cutBytes = (text: string, max: number): string => {
 
 const byteSize = (data: WidgetData) => Buffer.byteLength(JSON.stringify(data));
 
+/**
+ * Minutes from a person's last handshake to the check, never negative. Null
+ * when nobody has connected, or when there is no check to count from.
+ */
+export const peopleMinutes = (handshakeAt: Date | null, checkedAt: Date | null): number | null =>
+  handshakeAt && checkedAt
+    ? Math.max(0, Math.floor((checkedAt.getTime() - handshakeAt.getTime()) / 60_000))
+    : null;
+
 export const buildWidgetData = (input: WidgetInput): WidgetData => {
   const ordered = orderNodes(input.nodes);
   const rowsAt = (nameBytes: number): Row[] =>
@@ -130,6 +146,7 @@ export const buildWidgetData = (input: WidgetInput): WidgetData => {
         levelFlags(node.levels),
         ping?.ok === true ? (ping.latencyMs ?? null) : null,
         node.online,
+        peopleMinutes(node.lastPersonHandshakeAt, input.checkedAt),
       ];
       return node.status === "failed" && node.failingSince
         ? [...row, clockDayTime(node.failingSince, input.timeZone)]
@@ -137,7 +154,7 @@ export const buildWidgetData = (input: WidgetInput): WidgetData => {
     });
 
   const data: WidgetData = {
-    v: 1,
+    v: 2,
     l: cutBytes(input.label, 80),
     k: input.nodes.filter((node) => node.status === "ok").length,
     t: input.nodes.length,
