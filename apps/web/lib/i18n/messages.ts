@@ -163,8 +163,10 @@ const ru = {
   "emp.rotateFailed": "Не удалось обновить ключ",
   "emp.configRefreshToast":
     "Конфиг обновлён. Импортируйте его в приложение вместо старого подключения.",
+  // The card's badge names the protocol the key was requested with; the
+  // server may still have issued it in its AmneziaWG 2.0 compatibility mode.
   "emp.configRefreshUnavailable":
-    "У этого ключа нельзя обновить конфиг: он выдан не для AmneziaWG 3.1.",
+    "У этого ключа нельзя обновить конфиг: сервер выдал его в режиме совместимости с AmneziaWG 2.0.",
   "emp.configRefreshRetry":
     "Конфиг изменился, пока шло обновление. Попробуйте ещё раз.",
   "emp.configRefreshFailed": "Не удалось обновить конфиг",
@@ -1568,7 +1570,7 @@ const en = {
   "emp.configRefreshToast":
     "Config refreshed. Import it in the app in place of the old connection.",
   "emp.configRefreshUnavailable":
-    "This key's config cannot be refreshed: it was not issued for AmneziaWG 3.1.",
+    "This key's config cannot be refreshed: the server issued it in AmneziaWG 2.0 compatibility mode.",
   "emp.configRefreshRetry":
     "The config changed while it was being refreshed. Try again.",
   "emp.configRefreshFailed": "Failed to refresh the config",

@@ -430,7 +430,11 @@ export function ConfigDownloadDialog({
 
   return (
     <Dialog open={Boolean(target)} onOpenChange={(next) => !next && onClose()}>
-      <DialogContent className="sm:max-w-lg">
+      {/* Scrolls inside the screen like the other tall dialogs: with the QR and
+          its help the content runs past a laptop's 900px, and a centred box
+          that overflows loses its top — the title and the refresh hint — with
+          no way to scroll up to them. */}
+      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-lg">
         <DialogHeader>
           <DialogTitle>{t("config.title", { label: target?.deviceLabel ?? "" })}</DialogTitle>
           <DialogDescription>

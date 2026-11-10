@@ -151,6 +151,10 @@ describe("download dialog after a config refresh", () => {
     expect(dialogSource).toContain('"qr-conf" : "qr-svg", target.revision)');
   });
 
+  it("scrolls inside the screen, so the title and the hint stay reachable", () => {
+    expect(dialogSource).toContain('<DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-lg">');
+  });
+
   it("says this is the replacement config, in both languages", () => {
     expect(dialogSource).toMatch(/target\?\.revision !== undefined \? \([\s\S]{0,200}config\.refreshedHint/);
     for (const lang of ["ru", "en"] as const) {
