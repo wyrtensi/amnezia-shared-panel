@@ -2708,8 +2708,9 @@ Nodes:
   probe                                   External reachability probe: settings and health
   probe-set --label= --api-url= --api-key-file=<path|-> --control-url=
             [--egress-url=] [--interval-sec=3600] [--fail-threshold=2]
-            [--stale-after-sec=10800] [--enabled=on|off]
+            [--stale-after-sec=10800] [--time-zone=UTC] [--enabled=on|off]
                                           Register the probe, or change only the fields you name
+                                          (--time-zone: IANA name for the Telegram widget's clock)
   probe-delete [--confirm]                Forget the probe and revoke its service keys
   probe-run                               Ask for a run now (results within a few minutes)
   probe-results [<node>] [--json]         Per node and protocol: ping, tcp, handshake, http
@@ -3180,6 +3181,7 @@ async function cmdProbeSet(args: string[]): Promise<void> {
       intervalSec: flagOf(args, "interval-sec"),
       failThreshold: flagOf(args, "fail-threshold"),
       staleAfterSec: flagOf(args, "stale-after-sec"),
+      timeZone: flagOf(args, "time-zone"),
       enabled: flagOf(args, "enabled"),
     },
     view.probe,

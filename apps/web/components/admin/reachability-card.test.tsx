@@ -33,6 +33,9 @@ const PROBE: NonNullable<AdminReachabilityView["probe"]> = {
   stale: false,
   runInFlight: false,
   runRequestedAt: null,
+  timeZone: "UTC",
+  widgetUpdatedAt: null,
+  widgetLastError: null,
 };
 
 const level = (ok: boolean | null) => ({ ok, detail: null, latencyMs: ok ? 12 : null });

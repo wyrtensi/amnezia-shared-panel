@@ -168,6 +168,8 @@ export type IngestOutput = {
   outcomes: ProtocolOutcome[];
   states: Map<string, NodeState>;
   notices: Notice[];
+  /** The run failed everywhere in a shape that points at the probe. */
+  massFailure: boolean;
 };
 
 /**
@@ -292,7 +294,7 @@ export const ingestRun = (input: IngestInput): IngestOutput => {
   }
 
   const outcomes = nodes.flatMap((n) => n.outcomes);
-  return { outcomes, states, notices };
+  return { outcomes, states, notices, massFailure };
 };
 
 export type StaleInput = {

@@ -241,6 +241,43 @@ since 2026-01-01 10:00 UTC
 The shipped templates use the same language as the existing quota-request
 notification in `apps/worker/src/telegram.ts`, with the label interpolated.
 
+### Telegram status widget
+
+One Bot API widget message (`sendWidget`) in the same chat as the alerts
+(`TELEGRAM_CHAT_ID`), pinned silently when it is sent. After that the bot only
+changes its data (`editMessageWidgetData`); alerts stay separate messages. The
+bot only sends: the widget has no buttons and makes no requests.
+
+- **Trigger.** A `notify.reachability-widget` outbox row with an empty payload,
+  queued in the ingest transaction (`…:run:<runId>`) and when the stale alert
+  opens (`…:stale:<stale opened at ISO>`). The processor builds the data from
+  the current database state when it runs, so a retried old row never writes
+  older data over newer.
+- **Stored** on `reachability_probe`: `widget_message_id`, `widget_chat_id`,
+  `widget_version` (a hash of the HTML and caption), `widget_updated_at`,
+  `widget_last_error`. A missing message ("message with widget to edit not
+  found"), another chat or another version sends a new widget, pins it and
+  unpins the old one (best effort). "message is not modified" is a success. A
+  pin failure is logged and never resends.
+- **Content.** Heading "VPN из {label}: N из M" (N = nodes with status ok,
+  M = nodes shown). One row per node with checks on and a state: dot coloured
+  by the handshake level (green ok, red failed, grey not measured), ping in ms
+  or ✕, ssh/vpn/inet ✓ or ✕ or "-" when not run, devices online now
+  (`peer_current.online`, the service account excluded). Failed nodes first
+  with "с {failing since}", then not-measured ones, then ok ones, each by name.
+  Footer "Проверка {time} · следующая ~{time}".
+- **Mass banner** when the newest ingested run was a mass failure
+  (`reachability_probe.last_run_mass`, the same rule as the combined alert).
+- **Stale** (the alert's own rule, or the widget's clock past the same limit):
+  heading "VPN из {label}: нет данных", banner "Последняя проверка {time}, N ч
+  назад. Данные ниже устарели", table dimmed, dots grey. "N ч назад" is
+  computed by the widget from the check's epoch.
+- **Time zone** is a probe setting (`time_zone`, IANA name, default `UTC`).
+  Clock times are formatted by the worker; the widget does no zone math.
+- **Limits.** `chat_data` is compact JSON built to fit 1024 bytes: names are
+  cut by bytes, then shorter, then trailing ok rows are dropped and counted as
+  "… ещё N". HTML stays under 4096 bytes after zlib level 9.
+
 ### Worker task (`reachability`), every 60 s
 
 1. Load the probe row; nothing to do if absent or disabled.

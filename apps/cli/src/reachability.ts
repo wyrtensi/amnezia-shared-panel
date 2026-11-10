@@ -76,9 +76,11 @@ export const probeSummaryLines = (probe: NonNullable<AdminReachabilityView["prob
   `every:          ${Math.round(probe.intervalSec / 60)}m`,
   `fail threshold: ${probe.failThreshold} run(s)`,
   `stale after:    ${Math.round(probe.staleAfterSec / 60)}m`,
+  `time zone:      ${probe.timeZone}`,
   `last result:    ${probe.lastResultAt ?? "never"}${probe.stale ? "  (STALE)" : ""}`,
   `run in flight:  ${probe.runInFlight ? "yes" : "no"}`,
   `last error:     ${probe.lastError ? `${probe.lastError} (${probe.lastErrorAt ?? "?"})` : "—"}`,
+  `tg widget:      ${probe.widgetLastError ? `error: ${probe.widgetLastError}` : probe.widgetUpdatedAt ? `updated ${probe.widgetUpdatedAt}` : "not sent"}`,
 ];
 
 const intFlag = (value: string | undefined, name: string): number | undefined => {
@@ -103,6 +105,7 @@ export const buildProbeUpsert = (
     intervalSec?: string;
     failThreshold?: string;
     staleAfterSec?: string;
+    timeZone?: string;
     enabled?: string;
   },
   current: AdminReachabilityView["probe"],
@@ -113,7 +116,7 @@ export const buildProbeUpsert = (
   if (!label || !apiBaseUrl || !controlUrl || (!current && !flags.apiKey)) {
     throw new Error(
       "Usage: probe-set --label= --api-url= --api-key-file=<path|-> --control-url= " +
-        "[--egress-url=] [--interval-sec=3600] [--fail-threshold=2] [--stale-after-sec=10800] [--enabled=on|off]",
+        "[--egress-url=] [--interval-sec=3600] [--fail-threshold=2] [--stale-after-sec=10800] [--time-zone=UTC] [--enabled=on|off]",
     );
   }
   if (flags.enabled !== undefined && flags.enabled !== "on" && flags.enabled !== "off") {
@@ -127,6 +130,7 @@ export const buildProbeUpsert = (
     intervalSec: intFlag(flags.intervalSec, "interval-sec") ?? current?.intervalSec,
     failThreshold: intFlag(flags.failThreshold, "fail-threshold") ?? current?.failThreshold,
     staleAfterSec: intFlag(flags.staleAfterSec, "stale-after-sec") ?? current?.staleAfterSec,
+    timeZone: flags.timeZone ?? current?.timeZone,
     enabled: flags.enabled === undefined ? current?.enabled : flags.enabled === "on",
   };
   if (flags.apiKey) body.apiKey = flags.apiKey;

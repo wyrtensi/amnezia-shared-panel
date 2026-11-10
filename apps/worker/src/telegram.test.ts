@@ -1,7 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 import type { QuotaRequestNotifyPayload } from "@amnezia/contracts";
 import {
+  createTelegramBotApi,
   createTelegramNotifier,
+  TelegramApiError,
   formatQuotaRequestMessage,
   resolveTelegramConfig,
 } from "./telegram.js";
@@ -120,6 +122,50 @@ describe("createTelegramNotifier", () => {
 
     expect(error).toBeInstanceOf(Error);
     expect(String(error)).not.toContain(TOKEN);
+    expect(String(error)).not.toContain("secret-token-value");
+  });
+});
+
+describe("createTelegramBotApi", () => {
+  it("posts the body to the method and returns the result", async () => {
+    const fetchMock = vi.fn(() =>
+      Promise.resolve(
+        new Response(JSON.stringify({ ok: true, result: { message_id: 7 } }), { status: 200 }),
+      ),
+    );
+    const api = createTelegramBotApi({ token: TOKEN, fetch: fetchMock });
+    await expect(api.call("sendWidget", { chat_id: "42", html: "<b>x</b>" })).resolves.toEqual({
+      message_id: 7,
+    });
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe(`https://api.telegram.org/bot${TOKEN}/sendWidget`);
+    expect(JSON.parse(init.body as string)).toEqual({ chat_id: "42", html: "<b>x</b>" });
+  });
+
+  it("keeps Telegram's description, never the token", async () => {
+    const fetchMock = vi.fn(() =>
+      Promise.resolve(
+        new Response(
+          JSON.stringify({ ok: false, description: `Bad Request: message is not modified bot${TOKEN}` }),
+          { status: 400 },
+        ),
+      ),
+    );
+    const api = createTelegramBotApi({ token: TOKEN, fetch: fetchMock });
+    const error = await api.call("editMessageWidgetData", {}).catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(TelegramApiError);
+    expect((error as TelegramApiError).description).toContain("message is not modified");
+    expect(String(error)).toContain("400");
+    expect(String(error)).not.toContain("secret-token-value");
+  });
+
+  it("reports a network failure by name only", async () => {
+    const fetchMock = vi.fn(() =>
+      Promise.reject(new TypeError(`fetch failed: https://api.telegram.org/bot${TOKEN}/x`)),
+    );
+    const api = createTelegramBotApi({ token: TOKEN, fetch: fetchMock });
+    const error = await api.call("sendWidget", {}).catch((caught: unknown) => caught);
+    expect(String(error)).toContain("TypeError");
     expect(String(error)).not.toContain("secret-token-value");
   });
 });

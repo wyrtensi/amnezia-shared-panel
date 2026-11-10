@@ -1870,6 +1870,7 @@ export const REACHABILITY_DEFAULTS = {
   intervalSec: 3600,
   failThreshold: 2,
   staleAfterSec: 10800,
+  timeZone: "UTC",
 } as const;
 
 export const reachabilityStatusSchema = serviceCheckStatusSchema;
@@ -1938,6 +1939,23 @@ const httpsUrl = z
   .url()
   .refine((value) => /^https:\/\//i.test(value), "Must be an https URL");
 
+/** True when the runtime knows `zone` as an IANA time zone. */
+export const isKnownTimeZone = (zone: string): boolean => {
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: zone });
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+const timeZoneSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(64)
+  .refine(isKnownTimeZone, "Must be an IANA time zone, e.g. Europe/Berlin");
+
 export const upsertReachabilityProbeRequestSchema = z.object({
   label: z.string().trim().min(1).max(80),
   apiBaseUrl: httpUrl,
@@ -1955,6 +1973,7 @@ export const upsertReachabilityProbeRequestSchema = z.object({
   intervalSec: z.int().min(300).max(86_400).optional(),
   failThreshold: z.int().min(1).max(10).optional(),
   staleAfterSec: z.int().min(600).max(604_800).optional(),
+  timeZone: timeZoneSchema.optional(),
 });
 export type UpsertReachabilityProbeRequest = z.infer<
   typeof upsertReachabilityProbeRequestSchema
@@ -1999,6 +2018,10 @@ export const adminReachabilityProbeSchema = z.object({
   stale: z.boolean(),
   runInFlight: z.boolean(),
   runRequestedAt: z.iso.datetime().nullable(),
+  timeZone: z.string(),
+  /** The Telegram status widget: when its data last went out, and why not. */
+  widgetUpdatedAt: z.iso.datetime().nullable(),
+  widgetLastError: z.string().nullable(),
 });
 
 export const adminReachabilityViewSchema = z.object({
@@ -2061,5 +2084,11 @@ export const reachabilityNotifyPayloadSchema = z.object({
 export type ReachabilityNotifyPayload = z.infer<
   typeof reachabilityNotifyPayloadSchema
 >;
+
+/**
+ * Refresh the Telegram status widget. No payload: the processor builds the
+ * data from the current state, so a retried old row cannot write old data.
+ */
+export const REACHABILITY_WIDGET_JOB_TYPE = "notify.reachability-widget";
 
 export * from "./ruleSources.js";

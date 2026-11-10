@@ -6022,6 +6022,9 @@ describe("PostgresControlRepository reachability probe", () => {
       stale: false,
       runInFlight: false,
       runRequestedAt: null,
+      timeZone: "UTC",
+      widgetUpdatedAt: null,
+      widgetLastError: null,
     });
     expect(JSON.stringify(view)).not.toContain(apiKey);
     const row = await probeRow();
@@ -6063,6 +6066,7 @@ describe("PostgresControlRepository reachability probe", () => {
         controlUrl: "https://control.example.com/",
         intervalSec: 600,
         enabled: false,
+        timeZone: "Europe/Belgrade",
       });
 
       const view = await subject().upsertReachabilityProbe(admin, {
@@ -6075,6 +6079,7 @@ describe("PostgresControlRepository reachability probe", () => {
         label: "Testland two",
         intervalSec: 600,
         enabled: false,
+        timeZone: "Europe/Belgrade",
       });
       const row = await probeRow();
       expect(

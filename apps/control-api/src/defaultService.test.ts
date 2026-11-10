@@ -40,6 +40,9 @@ const reachabilityProbeView = {
   stale: false,
   runInFlight: false,
   runRequestedAt: null,
+  timeZone: "UTC",
+  widgetUpdatedAt: null,
+  widgetLastError: null,
 };
 
 const createRepository = (): ControlRepository => ({

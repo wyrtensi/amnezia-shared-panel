@@ -47,6 +47,19 @@ describe("upsertReachabilityProbeRequestSchema", () => {
     ).toBe(false);
   });
 
+  it("takes an IANA time zone and refuses anything else", () => {
+    expect(
+      upsertReachabilityProbeRequestSchema.parse({ ...validProbe, timeZone: "Europe/Belgrade" })
+        .timeZone,
+    ).toBe("Europe/Belgrade");
+    expect(upsertReachabilityProbeRequestSchema.parse(validProbe).timeZone).toBeUndefined();
+    for (const timeZone of ["Mars/Base", "", "UTC+3; drop"]) {
+      expect(
+        upsertReachabilityProbeRequestSchema.safeParse({ ...validProbe, timeZone }).success,
+      ).toBe(false);
+    }
+  });
+
   it("refuses an empty label", () => {
     expect(
       upsertReachabilityProbeRequestSchema.safeParse({ ...validProbe, label: "  " }).success,

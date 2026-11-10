@@ -2356,6 +2356,7 @@ describe("PostgresReachabilityRepository", () => {
       states: out.states,
       notices: [notice],
       staleAlertedAt: null,
+      mass: false,
     };
     await repository.ingest(write);
     // The same run again (an overlapping worker) and a run never started: no-ops.
@@ -2411,6 +2412,7 @@ describe("PostgresReachabilityRepository", () => {
         states: out.states,
         notices: [],
         staleAlertedAt: null,
+        mass: false,
       }),
     ).resolves.toBeUndefined();
     expect(await database.db.select().from(nodeReachabilityState)).toHaveLength(0);
@@ -2434,6 +2436,7 @@ describe("PostgresReachabilityRepository", () => {
       states: new Map(),
       notices: [],
       staleAlertedAt: null,
+      mass: false,
     });
     const left = await database.db
       .select()
@@ -2441,4 +2444,126 @@ describe("PostgresReachabilityRepository", () => {
       .where(and(eq(nodeReachabilityHistory.nodeId, a.id)));
     expect(left).toHaveLength(0);
   });
+
+  runDatabaseTest(
+    "widget: ingest queues one refresh and the snapshot reads the state as it is",
+    async () => {
+      if (!database || !repository) return;
+      const a = await seedNode("node-a");
+      const b = await seedNode("node-b");
+      await seedNode("node-off", { reachabilityEnabled: false });
+      const runId = randomUUID();
+      await seedProbe(runId);
+      await database.db
+        .update(reachabilityProbe)
+        .set({ timeZone: "Europe/Belgrade", currentRunStartedAt: new Date("2026-11-10T14:00:00Z") });
+      await repository.syncServiceKeys(new Date());
+
+      // Online now: one person on node-a; the probe's own key does not count.
+      const [person] = await database.db
+        .insert(users)
+        .values({ email: "widget-person@example.com" })
+        .returning();
+      const [personKey] = await database.db
+        .insert(vpnKeys)
+        .values({
+          ownerId: person?.id ?? "",
+          nodeId: a.id,
+          publicKey: "pk-person",
+          nodeLabel: "ap_widget_person",
+          protocol: "awg3",
+          state: "active",
+          routeProfile: "full_tunnel",
+        })
+        .returning();
+      const [probeKey] = await serviceKeys();
+      await database.db.insert(peerCurrent).values([
+        { keyId: personKey?.id ?? "", online: true },
+        { keyId: probeKey?.id ?? "", online: true },
+      ]);
+
+      const level = (ok: boolean) => ({ ok, detail: null, latencyMs: ok ? 40 : null });
+      const targets = [a, b].map((node) => ({
+        targetId: `${node.id}:awg3`,
+        nodeId: node.id,
+        nodeName: node.name,
+        publicIp: "192.0.2.10",
+        protocol: "awg3" as const,
+        unavailableReason: null,
+      }));
+      const result = (targetId: string, ok: boolean) => ({
+        targetId,
+        protocol: "awg3",
+        status: "done" as const,
+        detail: null,
+        endpointHost: null,
+        egressIp: null,
+        levels: { ping: level(ok), tcp: level(ok), handshake: level(ok), http: level(ok) },
+      });
+      const now = new Date("2026-11-10T14:05:00Z");
+      const out = ingestRun({
+        runId,
+        now,
+        label: "Testland",
+        failThreshold: 2,
+        controlOk: true,
+        targets,
+        results: [result(targets[0]?.targetId ?? "", true), result(targets[1]?.targetId ?? "", false)],
+        previous: new Map(),
+      });
+      const write = {
+        runId,
+        now,
+        outcomes: out.outcomes,
+        states: out.states,
+        notices: [],
+        staleAlertedAt: null,
+        mass: true,
+      };
+      await repository.ingest(write);
+      await repository.ingest(write);
+
+      const refreshes = await database.db
+        .select()
+        .from(jobOutbox)
+        .where(eq(jobOutbox.type, "notify.reachability-widget"));
+      expect(refreshes.map((job) => job.deduplicationKey)).toEqual([
+        `notify.reachability-widget:run:${runId}`,
+      ]);
+
+      const snapshot = await repository.loadWidgetSnapshot(now);
+      expect(snapshot?.widget).toBeNull();
+      expect(snapshot?.input).toMatchObject({
+        label: "Testland",
+        timeZone: "Europe/Belgrade",
+        mass: true,
+        stale: false,
+        nextAt: new Date("2026-11-10T15:00:00Z"),
+      });
+      const byName = new Map(snapshot?.input.nodes.map((node) => [node.name, node]));
+      expect([...byName.keys()].sort()).toEqual(["node-a", "node-b"]);
+      expect(byName.get("node-a")).toMatchObject({ status: "ok", online: 1 });
+      expect(byName.get("node-a")?.levels?.ping.latencyMs).toBe(40);
+      expect(byName.get("node-b")).toMatchObject({ status: "failed", online: 0 });
+      expect(byName.get("node-b")?.failingSince).toEqual(now);
+
+      await repository.saveWidget({ messageId: 77, chatId: "chat", version: "v1" }, now);
+      await repository.recordWidgetResult(now, "boom");
+      const again = await repository.loadWidgetSnapshot(now);
+      expect(again?.widget).toEqual({ messageId: 77, chatId: "chat", version: "v1" });
+      const [row] = await database.db.select().from(reachabilityProbe);
+      expect(row?.widgetLastError).toBe("boom");
+
+      // Going stale queues one more refresh, once.
+      const staleAt = new Date("2026-11-10T20:00:00Z");
+      await repository.setStaleAlert(staleAt, []);
+      await repository.setStaleAlert(staleAt, []);
+      const stale = await database.db
+        .select()
+        .from(jobOutbox)
+        .where(eq(jobOutbox.type, "notify.reachability-widget"));
+      expect(stale).toHaveLength(2);
+      expect((await repository.loadWidgetSnapshot(staleAt))?.input.stale).toBe(true);
+    },
+  );
 });

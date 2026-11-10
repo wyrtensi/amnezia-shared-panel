@@ -650,6 +650,18 @@ export const reachabilityProbe = pgTable(
     // When monitoring (re)started: set on registration and whenever the probe
     // is switched back on, so a pause is not mistaken for a silent probe.
     enabledAt: timestamp("enabled_at", { withTimezone: true }).defaultNow().notNull(),
+    // IANA zone the Telegram widget shows clock times in.
+    timeZone: varchar("time_zone", { length: 64 }).default("UTC").notNull(),
+    // The newest ingested run failed everywhere in the shape that points at
+    // the probe itself (the combined-alert rule).
+    lastRunMass: boolean("last_run_mass").default(false).notNull(),
+    // The one Telegram status widget message: where it was sent and which
+    // HTML and caption it carries (a sent widget's HTML cannot change).
+    widgetMessageId: bigint("widget_message_id", { mode: "number" }),
+    widgetChatId: text("widget_chat_id"),
+    widgetVersion: varchar("widget_version", { length: 64 }),
+    widgetUpdatedAt: timestamp("widget_updated_at", { withTimezone: true }),
+    widgetLastError: varchar("widget_last_error", { length: 300 }),
     ...timestamps,
   },
   (table) => [

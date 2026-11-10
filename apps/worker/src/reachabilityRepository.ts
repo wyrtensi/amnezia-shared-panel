@@ -2,8 +2,13 @@ import { randomUUID } from "node:crypto";
 import { and, desc, eq, inArray, isNull, lt, notInArray, sql } from "drizzle-orm";
 
 import {
+  isProbeStale,
   nodeServedProtocols,
+  PROBE_STALE_GRACE_SEC,
+  probeLevelsSchema,
   REACHABILITY_NOTIFY_JOB_TYPE,
+  REACHABILITY_WIDGET_JOB_TYPE,
+  type ProbeLevels,
   revokeJobDedupKey,
   type ProtocolKind,
 } from "@amnezia/contracts";
@@ -12,10 +17,12 @@ import {
   decryptSecret,
   deterministicPeerLabel,
   jobOutbox,
+  keyOwnerIsPerson,
   nodeReachabilityHistory,
   nodeReachabilityResults,
   nodeReachabilityState,
   nodes,
+  peerCurrent,
   reachabilityProbe,
   SERVICE_ACCOUNT_EMAIL,
   users,
@@ -25,6 +32,8 @@ import {
 } from "@amnezia/db";
 
 import type { NodeState, Notice } from "./reachability.js";
+import type { WidgetNode } from "./reachabilityWidget.js";
+import type { ReachabilityWidgetStore, StoredWidget } from "./reachabilityWidgetSender.js";
 import type {
   IngestWrite,
   ProbeRow,
@@ -50,7 +59,18 @@ const outboxRows = (notices: readonly Notice[]) =>
     payload: { text: notice.text },
   }));
 
-export class PostgresReachabilityRepository implements ReachabilityRepository {
+/** A widget refresh; completed rows keep their key, so each trigger is unique. */
+const widgetRow = (trigger: string) => ({
+  type: REACHABILITY_WIDGET_JOB_TYPE,
+  deduplicationKey: `${REACHABILITY_WIDGET_JOB_TYPE}:${trigger}`,
+  payload: {},
+});
+
+const STATUS_RANK = { ok: 0, failed: 1, error: 2 } as const;
+
+export class PostgresReachabilityRepository
+  implements ReachabilityRepository, ReachabilityWidgetStore
+{
   constructor(
     private readonly options: { db: Database; keyring: EncryptionKeyring },
   ) {}
@@ -141,6 +161,14 @@ export class PostgresReachabilityRepository implements ReachabilityRepository {
       if (notices.length > 0) {
         await tx.insert(jobOutbox).values(outboxRows(notices)).onConflictDoNothing();
       }
+      // Going stale redraws the widget as "no data"; coming back is an ingest,
+      // which redraws it anyway.
+      if (staleAlertedAt) {
+        await tx
+          .insert(jobOutbox)
+          .values(widgetRow(`stale:${staleAlertedAt.toISOString()}`))
+          .onConflictDoNothing();
+      }
     });
   };
 
@@ -157,6 +185,7 @@ export class PostgresReachabilityRepository implements ReachabilityRepository {
           lastError: null,
           lastErrorAt: null,
           staleAlertedAt: write.staleAlertedAt,
+          lastRunMass: write.mass,
           updatedAt: new Date(),
         })
         .where(
@@ -237,6 +266,7 @@ export class PostgresReachabilityRepository implements ReachabilityRepository {
       if (write.notices.length > 0) {
         await tx.insert(jobOutbox).values(outboxRows(write.notices)).onConflictDoNothing();
       }
+      await tx.insert(jobOutbox).values(widgetRow(`run:${write.runId}`)).onConflictDoNothing();
       await tx
         .delete(nodeReachabilityHistory)
         .where(
@@ -456,4 +486,121 @@ export class PostgresReachabilityRepository implements ReachabilityRepository {
       }
       return { created, revoked, provisioning };
     });
+
+  // --- Telegram status widget ------------------------------------------------
+
+  loadWidgetSnapshot = async (now: Date) => {
+    const db = this.options.db;
+    const [probe] = await db
+      .select()
+      .from(reachabilityProbe)
+      .where(eq(reachabilityProbe.id, 1))
+      .limit(1);
+    if (!probe || !probe.enabled) return null;
+
+    // Nodes with checks on and a verdict; a deleted node took its state with it.
+    const stateRows = await db
+      .select({
+        nodeId: nodes.id,
+        name: nodes.name,
+        status: nodeReachabilityState.status,
+        failingSince: nodeReachabilityState.failingSince,
+      })
+      .from(nodeReachabilityState)
+      .innerJoin(nodes, eq(nodes.id, nodeReachabilityState.nodeId))
+      .where(eq(nodes.reachabilityEnabled, true));
+    const nodeIds = stateRows.map((row) => row.nodeId);
+    const [resultRows, onlineRows] =
+      nodeIds.length === 0
+        ? [[], []]
+        : await Promise.all([
+            db
+              .select({
+                nodeId: nodeReachabilityResults.nodeId,
+                status: nodeReachabilityResults.status,
+                levels: nodeReachabilityResults.levels,
+              })
+              .from(nodeReachabilityResults)
+              .where(inArray(nodeReachabilityResults.nodeId, nodeIds)),
+            // Devices online now, people only: the probe's own keys are not users.
+            db
+              .select({
+                nodeId: vpnKeys.nodeId,
+                online: sql<number>`count(*) filter (where ${peerCurrent.online})`,
+              })
+              .from(peerCurrent)
+              .innerJoin(vpnKeys, eq(vpnKeys.id, peerCurrent.keyId))
+              .innerJoin(users, keyOwnerIsPerson(vpnKeys))
+              .where(inArray(vpnKeys.nodeId, nodeIds))
+              .groupBy(vpnKeys.nodeId),
+          ]);
+
+    // One protocol's levels per node: the one that worked, else one that was
+    // measured, else nothing.
+    const best = new Map<string, { rank: number; levels: ProbeLevels | null }>();
+    for (const row of resultRows) {
+      const parsed = probeLevelsSchema.safeParse(row.levels);
+      const levels = parsed.success ? parsed.data : null;
+      const rank = STATUS_RANK[row.status] + (levels ? 0 : 10);
+      const current = best.get(row.nodeId);
+      if (!current || rank < current.rank) best.set(row.nodeId, { rank, levels });
+    }
+    const online = new Map(onlineRows.map((row) => [row.nodeId, Number(row.online)]));
+
+    const widgetNodes: WidgetNode[] = stateRows.map((row) => ({
+      name: row.name,
+      status: row.status,
+      levels: best.get(row.nodeId)?.levels ?? null,
+      failingSince: row.failingSince,
+      online: online.get(row.nodeId) ?? 0,
+    }));
+    const widget: StoredWidget | null =
+      probe.widgetMessageId !== null && probe.widgetChatId !== null && probe.widgetVersion !== null
+        ? {
+            messageId: probe.widgetMessageId,
+            chatId: probe.widgetChatId,
+            version: probe.widgetVersion,
+          }
+        : null;
+    return {
+      input: {
+        label: probe.label,
+        timeZone: probe.timeZone,
+        checkedAt: probe.lastResultAt,
+        nextAt: probe.currentRunStartedAt
+          ? new Date(probe.currentRunStartedAt.getTime() + probe.intervalSec * 1_000)
+          : null,
+        staleLimitSec: Math.max(probe.staleAfterSec, probe.intervalSec + PROBE_STALE_GRACE_SEC),
+        stale:
+          probe.staleAlertedAt !== null ||
+          isProbeStale({
+            now,
+            staleAfterSec: probe.staleAfterSec,
+            intervalSec: probe.intervalSec,
+            lastResultAt: probe.lastResultAt,
+            since: probe.enabledAt,
+          }),
+        mass: probe.lastRunMass,
+        nodes: widgetNodes,
+      },
+      widget,
+    };
+  };
+
+  saveWidget = async (widget: StoredWidget, at: Date): Promise<void> => {
+    await this.updateProbe({
+      widgetMessageId: widget.messageId,
+      widgetChatId: widget.chatId,
+      widgetVersion: widget.version,
+      widgetUpdatedAt: at,
+    });
+  };
+
+  recordWidgetResult = async (at: Date, error: string | null): Promise<void> => {
+    await this.updateProbe(
+      error === null
+        ? { widgetUpdatedAt: at, widgetLastError: null }
+        : { widgetLastError: error.slice(0, 300) },
+    );
+  };
 }

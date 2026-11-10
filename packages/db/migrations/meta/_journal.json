@@ -288,6 +288,13 @@
       "when": 1794320604609,
       "tag": "0040_reachability_probe",
       "breakpoints": true
+    },
+    {
+      "idx": 41,
+      "version": "7",
+      "when": 1794323756283,
+      "tag": "0041_reachability_widget",
+      "breakpoints": true
     }
   ]
 }

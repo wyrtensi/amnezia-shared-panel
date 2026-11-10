@@ -71,6 +71,61 @@ export const createTelegramNotifier = ({
   },
 });
 
+/** A Bot API refusal. `description` is Telegram's text, token removed. */
+export class TelegramApiError extends Error {
+  constructor(
+    readonly method: string,
+    readonly status: number | null,
+    readonly description: string,
+  ) {
+    super(`Telegram ${method} failed: ${status === null ? description : `HTTP ${status}: ${description}`}`);
+    this.name = "TelegramApiError";
+  }
+}
+
+export type TelegramBotApi = {
+  /** Call a Bot API method and return its `result`. */
+  call: <T>(method: string, body: Record<string, unknown>) => Promise<T>;
+};
+
+/** A thin Bot API client with the notifier's rule: no error carries the token. */
+export const createTelegramBotApi = ({
+  token,
+  fetch: fetchImpl = fetch,
+}: {
+  token: string;
+  fetch?: typeof fetch;
+}): TelegramBotApi => ({
+  call: async <T>(method: string, body: Record<string, unknown>): Promise<T> => {
+    let response: Response;
+    try {
+      response = await fetchImpl(`https://api.telegram.org/bot${token}/${method}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(SEND_TIMEOUT_MS),
+      });
+    } catch (error) {
+      // The name only: a fetch failure message can contain the URL.
+      const name = error instanceof Error ? error.name : "unknown error";
+      throw new TelegramApiError(method, null, name);
+    }
+    const parsed = (await response.json().catch(() => null)) as {
+      ok?: unknown;
+      result?: unknown;
+      description?: unknown;
+    } | null;
+    if (!response.ok || parsed?.ok !== true) {
+      const description =
+        typeof parsed?.description === "string"
+          ? redact(parsed.description, token).slice(0, 200)
+          : "no description";
+      throw new TelegramApiError(method, response.status, description);
+    }
+    return parsed.result as T;
+  },
+});
+
 /** The operator-facing text for a new quota request (Russian, plain text). */
 export const formatQuotaRequestMessage = (
   payload: QuotaRequestNotifyPayload,

@@ -47,6 +47,8 @@ export type IngestWrite = {
   states: Map<string, NodeState>;
   notices: Notice[];
   staleAlertedAt: Date | null;
+  /** The run was a mass failure (shown on the status widget). */
+  mass: boolean;
 };
 
 export interface ReachabilityRepository {
@@ -158,6 +160,7 @@ export const createReachabilityTask = ({
         states: out.states,
         notices: [...out.notices, ...stale.notices],
         staleAlertedAt: stale.staleAlertedAt,
+        mass: out.massFailure,
       });
       currentRunId = null;
       log(`reachability: ingested run ${latest.runId}, ${out.notices.length} notice(s)`);

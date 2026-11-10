@@ -1044,6 +1044,9 @@ describe("reachability probe commands", () => {
     stale: false,
     runInFlight: false,
     runRequestedAt: null,
+    timeZone: "UTC",
+    widgetUpdatedAt: null,
+    widgetLastError: null,
   };
   const view = {
     probe,
@@ -1119,6 +1122,22 @@ describe("reachability probe commands", () => {
     const body = JSON.parse(calls[1]?.init?.body as string) as Record<string, unknown>;
     expect(body).toMatchObject({ label: "Testland", intervalSec: 1800, failThreshold: 2 });
     expect(body).not.toHaveProperty("apiKey");
+  });
+
+  it("probe-set sets the widget time zone and keeps it otherwise", async () => {
+    const calls = stubFetch([{ body: view }, { body: probe }]);
+    await run(["probe-set", "--time-zone=Europe/Belgrade"]);
+    expect(JSON.parse(calls[1]?.init?.body as string)).toMatchObject({ timeZone: "Europe/Belgrade" });
+    const again = stubFetch([{ body: view }, { body: probe }]);
+    await run(["probe-set", "--interval-sec=1800"]);
+    expect(JSON.parse(again[1]?.init?.body as string)).toMatchObject({ timeZone: "UTC" });
+  });
+
+  it("probe shows the time zone and the widget state", async () => {
+    stubFetch([{ body: { ...view, probe: { ...probe, widgetLastError: "Telegram sendWidget failed" } } }]);
+    const out = await run(["probe"]);
+    expect(out).toContain("time zone:      UTC");
+    expect(out).toContain("tg widget:      error: Telegram sendWidget failed");
   });
 
   it("probe-set refuses a new probe without a key", async () => {

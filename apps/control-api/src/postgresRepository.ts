@@ -2855,6 +2855,9 @@ export class PostgresControlRepository implements ControlRepository {
     }),
     runInFlight: row.currentRunId !== null,
     runRequestedAt: row.runRequestedAt?.toISOString() ?? null,
+    timeZone: row.timeZone,
+    widgetUpdatedAt: row.widgetUpdatedAt?.toISOString() ?? null,
+    widgetLastError: row.widgetLastError,
   });
 
   getReachability = async (_actor: Actor): Promise<AdminReachabilityView> => {
@@ -2982,6 +2985,7 @@ export class PostgresControlRepository implements ControlRepository {
       ...(request.staleAfterSec === undefined
         ? {}
         : { staleAfterSec: request.staleAfterSec }),
+      ...(request.timeZone === undefined ? {} : { timeZone: request.timeZone }),
     };
     return this.options.db.transaction(async (tx) => {
       const [current] = await tx
@@ -3030,6 +3034,7 @@ export class PostgresControlRepository implements ControlRepository {
             intervalSec: REACHABILITY_DEFAULTS.intervalSec,
             failThreshold: REACHABILITY_DEFAULTS.failThreshold,
             staleAfterSec: REACHABILITY_DEFAULTS.staleAfterSec,
+            timeZone: REACHABILITY_DEFAULTS.timeZone,
             ...settings,
             ...credentialColumns,
           })

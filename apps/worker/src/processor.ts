@@ -3,6 +3,7 @@ import {
   ACCESS_SYNC_JOB_TYPE,
   QUOTA_REQUEST_NOTIFY_JOB_TYPE,
   REACHABILITY_NOTIFY_JOB_TYPE,
+  REACHABILITY_WIDGET_JOB_TYPE,
   RULES_REFRESH_JOB_TYPE,
   quotaRequestNotifyPayloadSchema,
   reachabilityNotifyPayloadSchema,
@@ -10,6 +11,7 @@ import {
 import { formatQuotaRequestMessage, type TelegramNotifier } from "./telegram.js";
 import type { AccessSyncOutcome } from "./accessReconcile.js";
 import type { NodeAgent } from "./nodeAgent.js";
+import type { ReachabilityWidget } from "./reachabilityWidgetSender.js";
 import type {
   OutboxJob,
   WorkerKeyContext,
@@ -60,6 +62,11 @@ export type JobProcessorOptions = {
    * complete without sending.
    */
   notifier?: TelegramNotifier;
+  /**
+   * The Telegram status widget, or undefined without Telegram. Its refresh
+   * jobs then complete without sending.
+   */
+  reachabilityWidget?: Pick<ReachabilityWidget, "refresh">;
   /** PANEL_PUBLIC_URL, for the link in a notification. */
   panelPublicUrl?: string | null;
   now?: () => Date;
@@ -77,6 +84,7 @@ export const createJobProcessor = ({
   accessSync,
   log = () => undefined,
   notifier,
+  reachabilityWidget,
   panelPublicUrl = null,
   now = () => new Date(),
 }: JobProcessorOptions) => {
@@ -137,6 +145,22 @@ export const createJobProcessor = ({
       } catch (error) {
         const reason = error instanceof Error ? error.message : "unknown error";
         log(`notify.reachability: ${reason}`);
+        throw error;
+      }
+      await repository.completeJob(job.id);
+      return;
+    }
+    if (job.type === REACHABILITY_WIDGET_JOB_TYPE) {
+      // No payload: the widget is drawn from the state as it is now.
+      if (!reachabilityWidget) {
+        await repository.completeJob(job.id);
+        return;
+      }
+      try {
+        await reachabilityWidget.refresh();
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : "unknown error";
+        log(`notify.reachability-widget: ${reason}`);
         throw error;
       }
       await repository.completeJob(job.id);

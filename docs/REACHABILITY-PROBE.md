@@ -77,6 +77,25 @@ Telegram, through the same chat as the quota-request notification
 
 `unknown` never opens or closes an incident.
 
+### Status widget
+
+The same bot keeps **one** widget message (Bot API `sendWidget`) in the same
+chat, pinned silently when it is sent. After each ingested run, and when the
+probe goes stale, the worker only changes its data (`editMessageWidgetData`); no
+new messages. Production Telegram shows widgets only in the **private chat**
+with the bot, so `TELEGRAM_CHAT_ID` must be a person's id for the widget to work.
+
+- Heading "VPN из {label}: N из M"; one row per node with checks on: ping in ms
+  or ✕, ssh / vpn / internet ✓ ✕ or "-" (not run), devices online now (the
+  probe's own keys excluded). The dot follows the handshake (vpn) level.
+  Unavailable nodes first, with the time they went down.
+- Footer: last check and the expected next one, in the probe's `--time-zone`.
+- A yellow banner when the newest run failed everywhere (the combined-alert
+  rule); "нет данных" with dimmed rows when the probe is stale.
+- A deleted widget message, another chat, a new label or a new widget template
+  sends a fresh widget and unpins the old one. `probe` shows the widget's last
+  update or error (`tg widget:`).
+
 ## Install
 
 You need: a Linux amd64 host in the network of interest with Docker and
@@ -147,7 +166,8 @@ The label is used verbatim in the admin/nodes heading ("Checks from {label}")
 and in every alert text, so write it the way it reads after "from". Optional:
 `--egress-url` (must answer the caller's IP as plain text; default
 `https://api.ipify.org`), `--interval-sec` (default 3600), `--fail-threshold`
-(2), `--stale-after-sec` (10800).
+(2), `--stale-after-sec` (10800), `--time-zone` (IANA name for the Telegram
+widget's clock times; default `UTC`).
 
 On its next tick (within a minute) the worker creates the service keys; each
 needs one provisioning round on its node, then the first run follows. Ask for a
