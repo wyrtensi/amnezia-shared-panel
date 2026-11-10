@@ -1,4 +1,6 @@
 import type {
+  ConfigRefreshResult,
+  ConfigRefreshStatus,
   AccessSyncStatus,
   AdminReachabilityView,
   CreateNodeRequest,
@@ -169,6 +171,14 @@ export interface ControlApiService {
   ) => Promise<ConfigResult>;
   revokeOwnKey: (actor: Actor, keyId: string) => Promise<void>;
   rotateOwnKey: (actor: Actor, keyId: string) => Promise<void>;
+  /** Whether the caller's own key can take a new client profile right now. */
+  getConfigRefresh: (actor: Actor, keyId: string) => Promise<ConfigRefreshStatus>;
+  /** A new client profile for the caller's own key; same key, same peer. */
+  refreshOwnConfig: (
+    actor: Actor,
+    keyId: string,
+    refreshToken: string,
+  ) => Promise<ConfigRefreshResult>;
   /**
    * Rename one of the caller's own keys, re-issuing it only when the rename
    * actually changes the connection name the client shows. See

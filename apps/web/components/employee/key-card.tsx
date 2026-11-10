@@ -15,6 +15,7 @@ import {
   RefreshCw,
   Server,
   ShieldHalf,
+  Shuffle,
   TriangleAlert,
   Trash2,
 } from "lucide-react";
@@ -71,6 +72,7 @@ export function KeyCard({
   onShowConfig,
   onShowGuide,
   onRotate,
+  onRefreshConfig,
   onRevoke,
   onRename,
   onSetInternalName,
@@ -97,6 +99,12 @@ export function KeyCard({
   onShowConfig: () => void;
   onShowGuide: () => void;
   onRotate: () => void;
+  /**
+   * "Refresh config": new AWG 3.1 client parameters for this same key. The
+   * dashboard puts it behind the update notice and decides, with the server,
+   * whether this key's config can take them at all.
+   */
+  onRefreshConfig: () => void;
   onRevoke: () => void;
   onRename: (deviceLabel: string) => Promise<boolean>;
   onSetInternalName?: (internalName: string) => Promise<boolean>;
@@ -127,6 +135,11 @@ export function KeyCard({
   // Rotation re-issues the peer with current rules; only meaningful for
   // rule-based profiles (a full-tunnel key never needs new rules).
   const canRotate = keyView.routeProfile !== "full_tunnel";
+  // A candidate only: whether the node issued this key as 3.1 is known to the
+  // server alone, and it says so when the button is pressed. Full tunnel too:
+  // unlike Reissue, this has nothing to do with rules.
+  const canRefreshConfig =
+    active && me.policy.allowConfigRedownload && keyView.protocol === "awg3";
   // Whether this key can travel as a link at all — see lib/key-delivery.ts.
   // On a file-only profile both QR and Copy hand over a truncated key that
   // fails at import without saying so, which is worse than not offering them.
@@ -491,6 +504,29 @@ export function KeyCard({
               </>
             ) : null}
             <div className="ml-auto flex items-center gap-1.5">
+              {/* Beside Reissue and drawn the same way, and a different icon:
+                  this one keeps the key, Reissue replaces it. */}
+              {canRefreshConfig ? (
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon"
+                      disabled={busy}
+                      onClick={onRefreshConfig}
+                      aria-label={t("keyCard.refreshConfig")}
+                      className="size-8 text-muted-foreground hover:text-foreground"
+                    >
+                      <Shuffle className="h-4 w-4" />
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent className="max-w-xs">
+                    <p className="font-medium">{t("keyCard.refreshConfig")}</p>
+                    <p>{t("keyCard.refreshConfigTip")}</p>
+                  </TooltipContent>
+                </Tooltip>
+              ) : null}
               {/* Reissue lives here, apart from Copy and as a muted icon, so it is
                   not mistaken for the primary "copy key" action. */}
               {active &&

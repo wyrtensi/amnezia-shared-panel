@@ -29,6 +29,7 @@ import type {
   ReachabilityHistoryQuery,
   ReachabilityProbeView,
 } from "./service.js";
+import type { AwgClientProfileV1 } from "./awgClientProfile.js";
 import type { RulePayload } from "./vpnConfig.js";
 
 export type ActiveRule = {
@@ -52,6 +53,17 @@ export type StoredKeyConfig = {
   appliedRuleVersionId: string | null;
   activeRule: ActiveRule | null;
   customRoutes: CustomRoutes | null;
+  state: KeyState;
+  /** The saved AWG 3.1 client profile, unvalidated; null when none. */
+  awgClientProfile: unknown;
+};
+
+/** The locked row a config refresh draws its new profile for. */
+export type ConfigRefreshSnapshot = {
+  keyId: string;
+  encrypted: EncryptedSecret;
+  awgClientProfile: unknown;
+  revision: number;
 };
 
 export type TrafficPair = { receivedBytes: string; sentBytes: string };
@@ -104,6 +116,19 @@ export interface ControlRepository {
   diffRuleVersions: (baseId: string, nextId: string) => Promise<unknown>;
   enqueueOwnRevoke: (actor: Actor, keyId: string) => Promise<void>;
   enqueueOwnRotate: (actor: Actor, keyId: string) => Promise<void>;
+  /**
+   * Commit a new client profile for the caller's own active key, only while
+   * `refreshToken` still matches the locked row. `prepare` runs inside the
+   * transaction on that row's snapshot and returns the profile to save, or
+   * throws to roll everything back. The profile and its audit event are one
+   * commit; no node, job or capacity check is involved.
+   */
+  refreshOwnConfigProfile: (
+    actor: Actor,
+    keyId: string,
+    refreshToken: string,
+    prepare: (snapshot: ConfigRefreshSnapshot) => AwgClientProfileV1,
+  ) => Promise<{ revision: number }>;
   /**
    * Set the caller's own key's device label and, only when that actually
    * changes the connection name the client shows (`composeKeyDisplayName`

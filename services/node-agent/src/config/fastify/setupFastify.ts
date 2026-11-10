@@ -65,7 +65,10 @@ export const createFastify = async (): Promise<AppFastifyInstance> => {
   // Прочие плагины
   await fastify.register(fastifyCookie);
   await fastify.register(fastifyFormbody);
-  await fastify.register(metricsPlugin, { clearRegisterOnInit: true });
+  await fastify.register(metricsPlugin, {
+    clearRegisterOnInit: true,
+    routeMetrics: { timing: "timers" },
+  });
   await fastify.register(fastifyCors, {
     origin: appConfig.CORS_ORIGINS.length ? appConfig.CORS_ORIGINS : false,
     methods: ["GET", "HEAD", "POST", "PATCH", "DELETE"],

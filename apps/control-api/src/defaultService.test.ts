@@ -1,11 +1,15 @@
 import { randomBytes } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import { defaultPortalPolicy, emptyGlobalRoutes } from "@amnezia/contracts";
+import type { GlobalRoutes } from "@amnezia/contracts";
 import { encryptSecret } from "@amnezia/db";
 import type { Actor } from "./service.js";
 import { createDefaultControlApiService } from "./defaultService.js";
 import { decodeVpnLink, encodeVpnPayload } from "./vpnConfig.js";
-import type { ControlRepository } from "./repository.js";
+import type { ConfigRefreshSnapshot, ControlRepository } from "./repository.js";
+import { awg31Link, readCopies } from "./awg31.fixture.js";
+import { configRefreshToken } from "./awgClientProfile.js";
+import { ApiError } from "./service.js";
 
 const employee: Actor = {
   id: "user-1",
@@ -66,6 +70,8 @@ const createRepository = (): ControlRepository => ({
       nodeDisplayName: "Frankfurt",
       nameDisplay: { server: true, label: true, number: false },
       appliedRuleVersionId: null,
+      state: "active" as const,
+      awgClientProfile: null,
       activeRule: null,
       customRoutes: null,
     }),
@@ -93,6 +99,7 @@ const createRepository = (): ControlRepository => ({
   diffRuleVersions: vi.fn(() => Promise.resolve({ diff: {} })),
   enqueueOwnRevoke: vi.fn(() => Promise.resolve()),
   enqueueOwnRotate: vi.fn(() => Promise.resolve()),
+  refreshOwnConfigProfile: vi.fn(() => Promise.resolve({ revision: 1 })),
   renameOwnKey: vi.fn(() =>
     Promise.resolve({ id: "key-1", state: "active" as const, reissued: false }),
   ),
@@ -156,6 +163,8 @@ const splitTunnelKey = () => ({
   nodeDisplayName: "Frankfurt",
   nameDisplay: { server: true, label: true, number: false },
   appliedRuleVersionId: null,
+  state: "active" as const,
+  awgClientProfile: null,
   activeRule: null,
   customRoutes: null,
 });
@@ -174,6 +183,8 @@ describe("default control service policy enforcement", () => {
       nodeDisplayName: "Frankfurt",
       nameDisplay: { server: true, label: true, number: false },
       appliedRuleVersionId: null,
+      state: "active" as const,
+      awgClientProfile: null,
       activeRule: null,
       customRoutes: null,
     });
@@ -224,6 +235,8 @@ describe("default control service policy enforcement", () => {
       nodeDisplayName: "Frankfurt",
       nameDisplay: { server: true, label: true, number: false },
       appliedRuleVersionId: null,
+      state: "active" as const,
+      awgClientProfile: null,
       activeRule: null,
       customRoutes: null,
     });
@@ -262,6 +275,8 @@ describe("default control service policy enforcement", () => {
       nodeDisplayName: "Frankfurt",
       nameDisplay: { server: true, label: true, number: false },
       appliedRuleVersionId: null,
+      state: "active" as const,
+      awgClientProfile: null,
       activeRule: {
         versionId: "v1",
         version: "v1",
@@ -308,6 +323,8 @@ describe("default control service policy enforcement", () => {
       nodeDisplayName: "Frankfurt",
       nameDisplay: { server: true, label: true, number: false },
       appliedRuleVersionId: null,
+      state: "active" as const,
+      awgClientProfile: null,
       activeRule: {
         versionId: "v1",
         version: "v1",
@@ -404,6 +421,8 @@ describe("default control service policy enforcement", () => {
         nodeDisplayName: "Frankfurt",
         nameDisplay: { server: true, label: true, number: false },
         appliedRuleVersionId: null,
+        state: "active" as const,
+        awgClientProfile: null,
         activeRule: null,
         customRoutes: null,
       });
@@ -451,6 +470,8 @@ describe("client-visible connection name", () => {
       nodeDisplayName: "Frankfurt",
       nameDisplay: display,
       appliedRuleVersionId: null,
+      state: "active" as const,
+      awgClientProfile: null,
       activeRule: null,
       customRoutes: null,
     });
@@ -500,6 +521,8 @@ describe("the two file shapes and what each one keeps", () => {
       nodeDisplayName: "Frankfurt",
       nameDisplay: { server: true, label: true, number: false },
       appliedRuleVersionId: null,
+      state: "active" as const,
+      awgClientProfile: null,
       activeRule: null,
       customRoutes: null,
     });
@@ -622,6 +645,8 @@ describe("simple-key QR rendering", () => {
       nodeDisplayName: "Frankfurt",
       nameDisplay: { server: true, label: true, number: false },
       appliedRuleVersionId: null,
+      state: "active" as const,
+      awgClientProfile: null,
       activeRule: null,
       customRoutes: null,
     });
@@ -667,6 +692,8 @@ describe("the AmneziaVPN series refuses a config nobody could scan", () => {
       nodeDisplayName: "Frankfurt",
       nameDisplay: { server: true, label: true, number: false },
       appliedRuleVersionId: null,
+      state: "active" as const,
+      awgClientProfile: null,
       activeRule: null,
       customRoutes: null,
     });
@@ -717,6 +744,8 @@ describe("the AmneziaWG QR refuses a config that will not fit", () => {
       nodeDisplayName: "Frankfurt",
       nameDisplay: { server: true, label: true, number: false },
       appliedRuleVersionId: null,
+      state: "active" as const,
+      awgClientProfile: null,
       activeRule: null,
       customRoutes: null,
     });
@@ -727,5 +756,226 @@ describe("the AmneziaWG QR refuses a config that will not fit", () => {
     ).rejects.toEqual(
       expect.objectContaining({ statusCode: 422, code: "QR_TOO_LARGE" }),
     );
+  });
+});
+
+describe("AWG 3.1 config refresh", () => {
+  const base31 = awg31Link();
+  const saved = { version: 1, revision: 2, jc: 5, jmin: 50, jmax: 150, cpsOrder: 1 };
+  const key31 = (over: Record<string, unknown> = {}) => ({
+    ...splitTunnelKey(),
+    routeProfile: "full_tunnel" as const,
+    encrypted: encryptSecret(base31, keyring, 1),
+    ...over,
+  });
+  const statusOf = (error: unknown) =>
+    error instanceof ApiError ? `${error.statusCode} ${error.code}` : String(error);
+
+  it("hands the owner a token for the exact config it saw", async () => {
+    const repository = createRepository();
+    const key = key31();
+    vi.mocked(repository.findKeyConfig).mockResolvedValue(key);
+    const service = createDefaultControlApiService({ repository, keyring });
+    expect(await service.getConfigRefresh(employee, "key-1")).toEqual({
+      eligible: true,
+      revision: 0,
+      refreshToken: configRefreshToken("key-1", key.encrypted.nonce, 0),
+    });
+    vi.mocked(repository.findKeyConfig).mockResolvedValue({ ...key, awgClientProfile: saved });
+    expect(await service.getConfigRefresh(employee, "key-1")).toMatchObject({
+      eligible: true,
+      revision: 2,
+      refreshToken: configRefreshToken("key-1", key.encrypted.nonce, 2),
+    });
+    // Checking is not delivering.
+    expect(repository.markKeyRuleVersion).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["a 2.0 artifact", { encrypted: encryptSecret(awg31Link({ protocolVersion: "2" }), keyring, 1) }],
+    ["an unmarked artifact", { encrypted: encryptSecret(awg31Link({ protocolVersion: null }), keyring, 1) }],
+    ["a key being rotated", { state: "provisioning" }],
+    ["a key being revoked", { state: "revoking" }],
+    ["a disabled key", { state: "disabled" }],
+  ])("says %s is not eligible", async (_name, over) => {
+    const repository = createRepository();
+    vi.mocked(repository.findKeyConfig).mockResolvedValue(key31(over));
+    const service = createDefaultControlApiService({ repository, keyring });
+    expect(await service.getConfigRefresh(employee, "key-1")).toEqual({ eligible: false });
+  });
+
+  it("answers 404 for someone else's key, admins included, and 403 without redownload", async () => {
+    const repository = createRepository();
+    vi.mocked(repository.findKeyConfig).mockResolvedValue(key31({ ownerId: "someone-else" }));
+    const service = createDefaultControlApiService({ repository, keyring });
+    for (const actor of [employee, admin]) {
+      expect(statusOf(await service.getConfigRefresh(actor, "key-1").catch((e: unknown) => e))).toBe(
+        "404 KEY_NOT_FOUND",
+      );
+    }
+    vi.mocked(repository.findKeyConfig).mockResolvedValue(
+      key31({ policy: { ...defaultPortalPolicy, allowConfigRedownload: false } }),
+    );
+    expect(statusOf(await service.getConfigRefresh(employee, "key-1").catch((e: unknown) => e))).toBe(
+      "403 POLICY_DENIED",
+    );
+  });
+
+  /** Run the service's prepare step the way the repository would. */
+  const prepared = async (snapshot: Partial<ConfigRefreshSnapshot>) => {
+    const repository = createRepository();
+    let result: unknown;
+    vi.mocked(repository.refreshOwnConfigProfile).mockImplementation(
+      (_actor, keyId, _token, prepare) => {
+        try {
+          result = prepare({
+            keyId,
+            encrypted: encryptSecret(base31, keyring, 1),
+            awgClientProfile: null,
+            revision: 0,
+            ...snapshot,
+          });
+          return Promise.resolve({ revision: 1 });
+        } catch (error) {
+          return Promise.reject(error instanceof Error ? error : new Error("prepare failed"));
+        }
+      },
+    );
+    const service = createDefaultControlApiService({ repository, keyring });
+    await service.refreshOwnConfig(employee, "key-1", "a".repeat(64));
+    return result as typeof saved;
+  };
+
+  it("draws the next revision with a Jc other than the effective one", async () => {
+    for (let n = 0; n < 50; n += 1) {
+      const fresh = await prepared({});
+      expect(fresh.revision).toBe(1);
+      expect(fresh.jc).not.toBe(8);
+      const next = await prepared({ awgClientProfile: saved, revision: 2 });
+      expect(next.revision).toBe(3);
+      expect(next.jc).not.toBe(5);
+    }
+  });
+
+  it("refuses to draw for an artifact that cannot take a profile", async () => {
+    const error = await prepared({
+      encrypted: encryptSecret(awg31Link({ protocolVersion: "2" }), keyring, 1),
+    }).catch((e: unknown) => e);
+    expect(statusOf(error)).toBe("409 CONFIG_REFRESH_UNAVAILABLE");
+  });
+});
+
+describe("export with a saved AWG 3.1 client profile", () => {
+  const profile = { version: 1, revision: 1, jc: 4, jmin: 45, jmax: 175, cpsOrder: 1 };
+  const feed = (cidrs: string[]) => ({
+    versionId: "v1",
+    version: "v1",
+    payload: { cidrs, domains: [] },
+  });
+  const withGlobals: GlobalRoutes = {
+    ru_blacklist: {
+      add: { cidrs: ["198.51.100.0/24"], domains: [] },
+      exclude: { cidrs: ["192.0.2.0/24"], domains: [] },
+    },
+  };
+  const exportAll = async (over: Record<string, unknown>, globals = withGlobals) => {
+    const repository = createRepository();
+    vi.mocked(repository.findKeyConfig).mockResolvedValue({
+      ...splitTunnelKey(),
+      encrypted: encryptSecret(awg31Link(), keyring, 1),
+      ...over,
+    });
+    vi.mocked(repository.getGlobalRoutes).mockResolvedValue(globals);
+    const service = createDefaultControlApiService({ repository, keyring });
+    const vpn = String((await service.getKeyConfig(employee, "key-1", "vpn", false)).body);
+    const conf = String((await service.getKeyConfig(employee, "key-1", "conf", false)).body);
+    return { vpn, conf, copies: readCopies(vpn, decodeVpnLink) };
+  };
+  const confLine = (conf: string, key: string) =>
+    new RegExp(`^${key} = (.*)$`, "m").exec(conf)?.[1];
+
+  it("carries the same parameters in .vpn and .conf, with the routes untouched", async () => {
+    const routes = {
+      routeProfile: "ru_blacklist" as const,
+      activeRule: feed(["10.0.0.0/8", "192.0.2.0/24"]),
+      customRoutes: { ru_blacklist: { cidrs: ["203.0.113.0/24"], domains: [] } },
+    };
+    const before = await exportAll({ ...routes, awgClientProfile: null });
+    const after = await exportAll({ ...routes, awgClientProfile: profile });
+    for (const [key, value] of [["Jc", "4"], ["Jmin", "45"], ["Jmax", "175"]] as const) {
+      expect(after.copies.awg[key]).toBe(value);
+      expect(after.copies.lastConfig[key]).toBe(value);
+      expect(after.copies.line(key)).toBe(value);
+      expect(confLine(after.conf, key)).toBe(value);
+    }
+    expect(confLine(after.conf, "I1")).toBe(after.copies.line("I1"));
+    // Same routes as before the refresh, in both shapes, DNS included.
+    const expected = ["10.0.0.0/8", "198.51.100.0/24", "203.0.113.0/24", "1.1.1.1/32", "1.0.0.1/32"];
+    expect(after.copies.lastConfig.allowed_ips).toEqual(expected);
+    expect(before.copies.lastConfig.allowed_ips).toEqual(expected);
+    expect(confLine(after.conf, "AllowedIPs")).toBe(expected.join(", "));
+    expect(confLine(before.conf, "AllowedIPs")).toBe(expected.join(", "));
+    expect(confLine(before.conf, "Jc")).toBe("8");
+  });
+
+  it.each([
+    ["an empty merge", []],
+    ["a feed past the route limit", Array.from({ length: 6800 }, (_, i) => `10.${i >> 8}.${i & 255}.0/24`)],
+  ])("keeps the profile on the full-tunnel fallback for %s", async (_name, cidrs) => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const { copies, conf } = await exportAll(
+      { routeProfile: "ru_blacklist", activeRule: feed(cidrs), awgClientProfile: profile },
+      emptyGlobalRoutes,
+    );
+    warn.mockRestore();
+    expect(confLine(conf, "AllowedIPs")).toBe("0.0.0.0/0, ::/0");
+    expect(copies.line("Jc")).toBe("4");
+    expect(confLine(conf, "Jc")).toBe("4");
+  });
+
+  it("stays split just inside the route limit, with the profile", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    // 6797 feed routes, the global addition and two DNS addresses: exactly
+    // the limit.
+    const cidrs = Array.from({ length: 6797 }, (_, i) => `10.${i >> 8}.${i & 255}.0/24`);
+    const { copies } = await exportAll({
+      routeProfile: "ru_blacklist",
+      activeRule: feed(cidrs),
+      awgClientProfile: profile,
+    });
+    warn.mockRestore();
+    expect((copies.lastConfig.allowed_ips as string[]).length).toBe(6800);
+    expect(copies.line("Jc")).toBe("4");
+  });
+
+  it("still refuses a QR for a split config that is too large", async () => {
+    const repository = createRepository();
+    vi.mocked(repository.findKeyConfig).mockResolvedValue({
+      ...splitTunnelKey(),
+      encrypted: encryptSecret(awg31Link(), keyring, 1),
+      activeRule: feed(Array.from({ length: 2000 }, (_, i) => `10.${i >> 8}.${i & 255}.0/24`)),
+      awgClientProfile: profile,
+    });
+    const service = createDefaultControlApiService({ repository, keyring });
+    const error = await service.getKeyConfig(employee, "key-1", "qr", false).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(ApiError);
+    expect((error as ApiError).code).toBe("QR_TOO_LARGE");
+  });
+
+  it("exports a 2.0 artifact exactly as before, whatever profile was saved", async () => {
+    const link = awg31Link({ protocolVersion: "2" });
+    const plain = await exportAll({ routeProfile: "full_tunnel", encrypted: encryptSecret(link, keyring, 1), awgClientProfile: null });
+    const withProfile = await exportAll({ routeProfile: "full_tunnel", encrypted: encryptSecret(link, keyring, 1), awgClientProfile: profile });
+    expect(withProfile.vpn).toBe(plain.vpn);
+    expect(withProfile.conf).toBe(plain.conf);
+  });
+
+  it("reports a broken saved profile without its content", async () => {
+    const error = await exportAll({ routeProfile: "full_tunnel", awgClientProfile: { jc: 99 } }).catch(
+      (e: unknown) => e,
+    );
+    expect(error).toBeInstanceOf(ApiError);
+    expect((error as ApiError).code).toBe("CONFIG_PROFILE_INVALID");
+    expect((error as ApiError).message).not.toContain("99");
   });
 });

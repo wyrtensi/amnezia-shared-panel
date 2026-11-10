@@ -44,7 +44,8 @@ What that buys an operator, concretely:
 
 - **Self-service keys.** A user picks a device and a server, gets a config, a
   `.conf` file or a QR code, and can rename or reissue a key without asking
-  anyone. Quotas are per server or a shared pool, per user or panel-wide.
+  anyone. Each AWG 3.1 key has its own client-side junk parameters, and its
+  owner can draw new ones with **Refresh config** without losing the key. Quotas are per server or a shared pool, per user or panel-wide.
 - **Routing per key.** All traffic through the tunnel, or only what a published
   blocklist says is blocked — the blocked-only profile carries its whole rule
   set inside the key, so that key travels as a file rather than as a link or a
@@ -203,6 +204,12 @@ Sensitive local material belongs in the git-ignored `secrets/` directory.
 
 ## Quick start (local dev)
 
+Use Node.js 24 and pnpm 12.18.0, as pinned in `package.json`. Install or update
+the package manager with `npm install --global pnpm@12.18.0`, then check
+`pnpm --version`. Older JavaScript-based pnpm launchers may fail to bootstrap
+the native pnpm 12 executable. To run the matching version without a global
+installation, use `npm exec --package pnpm@12.18.0 -- pnpm <command>`.
+
 ```bash
 pnpm install
 cd infra/dev && docker compose --env-file .env up --build
@@ -213,7 +220,9 @@ The app comes up at `http://127.0.0.1:3000`. The dev stack sets a dev identity
 or Google. To run the services in watch mode without containers: `pnpm dev`.
 
 Before pushing, run what CI runs: `pnpm lint && pnpm typecheck && pnpm build &&
-pnpm test`. Full command reference: **[`docs/CLI.md`](docs/CLI.md)**.
+pnpm --filter @amnezia/db db:migrate && pnpm -r --workspace-concurrency=1 --if-present test`
+against a dedicated test database. Tests are serialized because integration
+suites reset shared tables. Full command reference: **[`docs/CLI.md`](docs/CLI.md)**.
 
 ## Deploy & update (production)
 

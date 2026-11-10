@@ -295,6 +295,13 @@
       "when": 1794323756283,
       "tag": "0041_reachability_widget",
       "breakpoints": true
+    },
+    {
+      "idx": 42,
+      "version": "7",
+      "when": 1794327501187,
+      "tag": "0042_awg_client_profile",
+      "breakpoints": true
     }
   ]
 }

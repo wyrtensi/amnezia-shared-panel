@@ -44,6 +44,14 @@ import {
 } from "@amnezia/db";
 import { PostgresControlRepository } from "./postgresRepository.js";
 import type { Actor } from "./service.js";
+import { awg31Link } from "./awg31.fixture.js";
+import {
+  awgClientProfileV1Schema,
+  configRefreshToken,
+  selectAwgClientProfile,
+} from "./awgClientProfile.js";
+import { createDefaultControlApiService } from "./defaultService.js";
+import { decodeVpnLink } from "./vpnConfig.js";
 
 const databaseUrl = process.env.TEST_DATABASE_URL;
 const runDatabaseTest = databaseUrl ? it : it.skip;
@@ -6942,5 +6950,329 @@ describe("PostgresControlRepository service account", () => {
       .from(jobOutbox)
       .where(eq(jobOutbox.type, "vpn-key.revoke"));
     expect(jobs.some((job) => (job.payload as { keyId?: string }).keyId === probeKeyId)).toBe(true);
+  });
+});
+
+describe("PostgresControlRepository AWG 3.1 config refresh", () => {
+  const database = databaseUrl ? createDatabase(databaseUrl) : null;
+  const keyring = { 1: randomBytes(32) };
+  const createdNodeIds: string[] = [];
+  const createdUserIds: string[] = [];
+  let nodeId: string;
+
+  const seedNode = async (protocol: "awg2" | "awg3" = "awg3"): Promise<string> => {
+    if (!database) throw new Error("No database");
+    const credentials = encryptSecret("api-key", keyring, 1);
+    const label = encryptSecret(randomBytes(32).toString("base64"), keyring, 1);
+    const [node] = await database.db
+      .insert(nodes)
+      .values({
+        name: `refresh-node-${randomBytes(4).toString("hex")}`,
+        apiBaseUrl: "http://192.0.2.20:4001",
+        protocol,
+        credentialsCiphertext: credentials.ciphertext,
+        credentialsNonce: credentials.nonce,
+        credentialsAuthTag: credentials.authTag,
+        credentialsKeyVersion: credentials.keyVersion,
+        labelSecretCiphertext: label.ciphertext,
+        labelSecretNonce: label.nonce,
+        labelSecretAuthTag: label.authTag,
+        labelSecretKeyVersion: label.keyVersion,
+      })
+      .returning();
+    if (!node) throw new Error("Failed to seed node");
+    createdNodeIds.push(node.id);
+    return node.id;
+  };
+
+  beforeAll(async () => {
+    if (!database) return;
+    await database.db.delete(portalPolicy);
+    await database.db.insert(portalPolicy).values({});
+    nodeId = await seedNode();
+  });
+
+  afterAll(async () => {
+    if (!database) return;
+    // FK RESTRICT order: keys, then nodes, then users.
+    if (createdNodeIds.length > 0) {
+      await database.db.delete(vpnKeys).where(inArray(vpnKeys.nodeId, createdNodeIds));
+      await database.db.delete(nodes).where(inArray(nodes.id, createdNodeIds));
+    }
+    if (createdUserIds.length > 0) {
+      await database.db.delete(vpnKeys).where(inArray(vpnKeys.ownerId, createdUserIds));
+      await database.db.delete(users).where(inArray(users.id, createdUserIds));
+    }
+    await database.client.end();
+  });
+
+  const repository = (): PostgresControlRepository => {
+    if (!database) throw new Error("No database");
+    return new PostgresControlRepository({ db: database.db, keyring });
+  };
+  const service = () => createDefaultControlApiService({ repository: repository(), keyring });
+
+  const seedOwner = async (role: "user" | "admin" = "user"): Promise<Actor> => {
+    if (!database) throw new Error("No database");
+    const [user] = await database.db
+      .insert(users)
+      .values({ email: `refresh-${randomBytes(6).toString("hex")}@example.com`, role })
+      .returning();
+    if (!user) throw new Error("Failed to seed owner");
+    createdUserIds.push(user.id);
+    return { id: user.id, email: user.email, displayName: null, role, status: "active" };
+  };
+
+  const seedKey = async (
+    ownerId: string,
+    overrides: {
+      link?: string;
+      state?: "active" | "provisioning" | "revoking";
+      onNode?: string;
+      routeProfile?: "full_tunnel" | "ru_blacklist";
+    } = {},
+  ): Promise<string> => {
+    if (!database) throw new Error("No database");
+    const config = encryptSecret(overrides.link ?? awg31Link(), keyring, 1);
+    const suffix = randomBytes(6).toString("hex");
+    const [key] = await database.db
+      .insert(vpnKeys)
+      .values({
+        ownerId,
+        nodeId: overrides.onNode ?? nodeId,
+        publicKey: `pk-${suffix}`,
+        nodeLabel: `ap_refresh_${suffix}`,
+        protocol: "awg3",
+        state: overrides.state ?? "active",
+        routeProfile: overrides.routeProfile ?? "full_tunnel",
+        configCiphertext: config.ciphertext,
+        configNonce: config.nonce,
+        configAuthTag: config.authTag,
+        configKeyVersion: config.keyVersion,
+      })
+      .returning({ id: vpnKeys.id });
+    if (!key) throw new Error("Failed to seed key");
+    return key.id;
+  };
+
+  const row = async (keyId: string) => {
+    if (!database) throw new Error("No database");
+    const [key] = await database.db.select().from(vpnKeys).where(eq(vpnKeys.id, keyId));
+    if (!key) throw new Error("Key is gone");
+    return key;
+  };
+  const refreshAudits = async (keyId: string) => {
+    if (!database) throw new Error("No database");
+    return database.db
+      .select({ metadata: auditEvents.metadata })
+      .from(auditEvents)
+      .where(
+        and(
+          eq(auditEvents.targetId, keyId),
+          eq(auditEvents.action, "vpn_key.config_profile_refreshed"),
+        ),
+      );
+  };
+  const jobsFor = async (keyId: string) => {
+    if (!database) throw new Error("No database");
+    return database.db
+      .select({ id: jobOutbox.id })
+      .from(jobOutbox)
+      .where(sql`${jobOutbox.payload} ->> 'keyId' = ${keyId}`);
+  };
+  const tokenOf = async (actor: Actor, keyId: string): Promise<string> => {
+    const status = await service().getConfigRefresh(actor, keyId);
+    if (!status.eligible) throw new Error("Not eligible");
+    return status.refreshToken;
+  };
+
+  runDatabaseTest("gives a new awg3 key its own profile once, and an awg2 key none", async () => {
+    if (!database) return;
+    const owner = await seedOwner();
+    const awg3 = await repository().createProvisioningKey(owner, {
+      nodeId,
+      protocol: "awg3",
+      deviceType: "other",
+      deviceLabel: "refresh-new",
+      routeProfile: "full_tunnel",
+      nameDisplay: defaultKeyNameDisplay,
+    });
+    const saved = (await row(awg3.id)).awgClientProfile;
+    expect(awgClientProfileV1Schema.parse(saved)).toMatchObject({ version: 1, revision: 1 });
+
+    const awg2Node = await seedNode("awg2");
+    await database.db
+      .update(users)
+      .set({ policyOverride: { allowedProtocols: ["awg3", "awg2"] } })
+      .where(eq(users.id, owner.id));
+    const awg2 = await repository().createProvisioningKey(owner, {
+      nodeId: awg2Node,
+      protocol: "awg2",
+      deviceType: "other",
+      deviceLabel: "refresh-old",
+      routeProfile: "full_tunnel",
+      nameDisplay: defaultKeyNameDisplay,
+    });
+    expect((await row(awg2.id)).awgClientProfile).toBeNull();
+  });
+
+  runDatabaseTest(
+    "commits one revision and one audit event per token, same ciphertext, same peer, no job",
+    async () => {
+      if (!database) return;
+      const owner = await seedOwner();
+      const keyId = await seedKey(owner.id);
+      const before = await row(keyId);
+      expect(before.awgClientProfile).toBeNull();
+      const token = await tokenOf(owner, keyId);
+      expect(token).toBe(configRefreshToken(keyId, before.configNonce ?? "", 0));
+
+      // Two tabs, or a retried request, with the same token.
+      const results = await Promise.allSettled([
+        service().refreshOwnConfig(owner, keyId, token),
+        service().refreshOwnConfig(owner, keyId, token),
+      ]);
+      const accepted = results.filter((result) => result.status === "fulfilled");
+      const refused = results.filter((result) => result.status === "rejected");
+      expect(accepted).toHaveLength(1);
+      expect(refused).toHaveLength(1);
+      expect((refused[0] as PromiseRejectedResult).reason).toMatchObject({
+        statusCode: 409,
+        code: "CONFIG_REFRESH_STALE",
+      });
+
+      const after = await row(keyId);
+      const profile = awgClientProfileV1Schema.parse(after.awgClientProfile);
+      expect(profile.revision).toBe(1);
+      expect(profile.jc).not.toBe(8);
+      expect(await refreshAudits(keyId)).toEqual([{ metadata: { revision: 1 } }]);
+      expect(after.configCiphertext).toBe(before.configCiphertext);
+      expect(after.configNonce).toBe(before.configNonce);
+      expect(after.publicKey).toBe(before.publicKey);
+      expect(after.state).toBe("active");
+      expect(after.routeRuleVersionId).toBe(before.routeRuleVersionId);
+      expect(await jobsFor(keyId)).toHaveLength(0);
+
+      // The next check sees the new revision; the export carries the profile.
+      expect(await service().getConfigRefresh(owner, keyId)).toMatchObject({ revision: 1 });
+      const vpn = await service().getKeyConfig(owner, keyId, "vpn", false);
+      const awg = decodeVpnLink(String(vpn.body)).containers?.[0]?.awg;
+      expect(awg?.Jc).toBe(String(profile.jc));
+      expect(awg?.Jmax).toBe(String(profile.jmax));
+    },
+  );
+
+  runDatabaseTest("a rotation that lands between check and refresh makes the token stale", async () => {
+    if (!database) return;
+    const owner = await seedOwner();
+    const keyId = await seedKey(owner.id);
+    const token = await tokenOf(owner, keyId);
+    // What completeProvision writes: the same kind of config, freshly encrypted.
+    const reissued = encryptSecret(awg31Link(), keyring, 1);
+    await database.db
+      .update(vpnKeys)
+      .set({
+        configCiphertext: reissued.ciphertext,
+        configNonce: reissued.nonce,
+        configAuthTag: reissued.authTag,
+      })
+      .where(eq(vpnKeys.id, keyId));
+    await expect(service().refreshOwnConfig(owner, keyId, token)).rejects.toMatchObject({
+      statusCode: 409,
+      code: "CONFIG_REFRESH_STALE",
+    });
+    expect((await row(keyId)).awgClientProfile).toBeNull();
+    expect(await refreshAudits(keyId)).toHaveLength(0);
+  });
+
+  runDatabaseTest("keeps the profile through a later credential reissue", async () => {
+    if (!database) return;
+    const owner = await seedOwner();
+    const keyId = await seedKey(owner.id);
+    await service().refreshOwnConfig(owner, keyId, await tokenOf(owner, keyId));
+    const saved = (await row(keyId)).awgClientProfile;
+    const reissued = encryptSecret(awg31Link(), keyring, 1);
+    await database.db
+      .update(vpnKeys)
+      .set({ configCiphertext: reissued.ciphertext, configNonce: reissued.nonce, configAuthTag: reissued.authTag })
+      .where(eq(vpnKeys.id, keyId));
+    expect((await row(keyId)).awgClientProfile).toEqual(saved);
+    expect(await service().getConfigRefresh(owner, keyId)).toMatchObject({ eligible: true, revision: 1 });
+  });
+
+  runDatabaseTest("refuses a key being rotated or revoked, and a 2.0 artifact", async () => {
+    if (!database) return;
+    const owner = await seedOwner();
+    for (const options of [
+      { state: "provisioning" as const },
+      { state: "revoking" as const },
+      { link: awg31Link({ protocolVersion: "2" }) },
+    ]) {
+      const keyId = await seedKey(owner.id, options);
+      expect(await service().getConfigRefresh(owner, keyId)).toEqual({ eligible: false });
+      const key = await row(keyId);
+      const token = configRefreshToken(keyId, key.configNonce ?? "", 0);
+      await expect(service().refreshOwnConfig(owner, keyId, token)).rejects.toMatchObject({
+        statusCode: 409,
+        code: "CONFIG_REFRESH_UNAVAILABLE",
+      });
+      expect((await row(keyId)).awgClientProfile).toBeNull();
+      expect(await refreshAudits(keyId)).toHaveLength(0);
+    }
+  });
+
+  runDatabaseTest("still refreshes a key on a server closed for new keys", async () => {
+    if (!database) return;
+    const owner = await seedOwner();
+    const closed = await seedNode();
+    const keyId = await seedKey(owner.id, { onNode: closed });
+    await database.db.update(nodes).set({ enabled: false }).where(eq(nodes.id, closed));
+    await expect(
+      service().refreshOwnConfig(owner, keyId, await tokenOf(owner, keyId)),
+    ).resolves.toEqual({ revision: 1 });
+  });
+
+  runDatabaseTest("rolls back when preparing the profile fails", async () => {
+    if (!database) return;
+    const owner = await seedOwner();
+    const keyId = await seedKey(owner.id);
+    const token = await tokenOf(owner, keyId);
+    await expect(
+      repository().refreshOwnConfigProfile(owner, keyId, token, () => {
+        throw new Error("prepare failed");
+      }),
+    ).rejects.toThrow("prepare failed");
+    expect((await row(keyId)).awgClientProfile).toBeNull();
+    expect(await refreshAudits(keyId)).toHaveLength(0);
+    // The same token still works afterwards.
+    await expect(
+      repository().refreshOwnConfigProfile(owner, keyId, token, (snapshot) =>
+        selectAwgClientProfile(snapshot.revision + 1),
+      ),
+    ).resolves.toEqual({ revision: 1 });
+  });
+
+  runDatabaseTest("answers 404 to anyone but the owner and 403 without redownload", async () => {
+    if (!database) return;
+    const owner = await seedOwner();
+    const stranger = await seedOwner();
+    const admin = await seedOwner("admin");
+    const keyId = await seedKey(owner.id);
+    const token = await tokenOf(owner, keyId);
+    for (const actor of [stranger, admin]) {
+      await expect(service().getConfigRefresh(actor, keyId)).rejects.toMatchObject({ statusCode: 404 });
+      await expect(service().refreshOwnConfig(actor, keyId, token)).rejects.toMatchObject({
+        statusCode: 404,
+      });
+    }
+    await database.db
+      .update(users)
+      .set({ policyOverride: { allowConfigRedownload: false } })
+      .where(eq(users.id, owner.id));
+    await expect(service().getConfigRefresh(owner, keyId)).rejects.toMatchObject({ statusCode: 403 });
+    await expect(service().refreshOwnConfig(owner, keyId, token)).rejects.toMatchObject({
+      statusCode: 403,
+    });
+    expect((await row(keyId)).awgClientProfile).toBeNull();
   });
 });

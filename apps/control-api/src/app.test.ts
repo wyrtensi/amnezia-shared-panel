@@ -1,10 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
-import { ROUTE_DOMAINS_UNSUPPORTED } from "@amnezia/contracts";
+import { CONFIG_REFRESH_STALE, ROUTE_DOMAINS_UNSUPPORTED } from "@amnezia/contracts";
 import type { ClientRelease } from "@amnezia/contracts";
 import { buildApp } from "./app.js";
 import type { ClientReleaseResolver } from "./clientReleases.js";
 import { parseEnvironment } from "./main.js";
-import type { ControlApiService } from "./service.js";
+import { ApiError, type ControlApiService } from "./service.js";
 
 const user = {
   id: "f5e8308c-e09d-4d55-9b5d-da1597f486e6",
@@ -53,6 +53,8 @@ const createService = (): ControlApiService => ({
   })),
   revokeOwnKey: vi.fn(() => Promise.resolve()),
   rotateOwnKey: vi.fn(() => Promise.resolve()),
+  getConfigRefresh: vi.fn(() => Promise.resolve({ eligible: false as const })),
+  refreshOwnConfig: vi.fn(() => Promise.resolve({ revision: 1 })),
   renameOwnKey: vi.fn(() =>
     Promise.resolve({
       id: "key-1",
@@ -266,6 +268,30 @@ describe("control API authorization", () => {
     expect(response.headers["cache-control"]).toBe("private, no-store");
     const getKeyConfig = vi.mocked(service.getKeyConfig);
     expect(getKeyConfig).toHaveBeenCalledWith(
+      user,
+      "0b48cc4c-404b-47a6-af28-4cf15f305e30",
+      "vpn",
+      false,
+    );
+    await app.close();
+  });
+
+  // The panel adds `rev` after a config refresh so the browser loads the QR
+  // again; the API must take it and ignore it.
+  it("ignores the revision the panel adds to a config URL", async () => {
+    const service = createService();
+    const app = await buildApp({
+      service,
+      environment: "development",
+      allowDevIdentity: true,
+    });
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/keys/0b48cc4c-404b-47a6-af28-4cf15f305e30/config?format=vpn&rev=3",
+      headers: { "x-dev-user-email": user.email },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(vi.mocked(service.getKeyConfig)).toHaveBeenCalledWith(
       user,
       "0b48cc4c-404b-47a6-af28-4cf15f305e30",
       "vpn",
@@ -1905,6 +1931,77 @@ describe("error log levels", () => {
 
     expect(response.statusCode).toBe(500);
     expect(logger.calls.some((call) => call.level === "error")).toBe(true);
+    await app.close();
+  });
+});
+
+describe("config refresh routes", () => {
+  const keyId = "6f1c2b9e-1d2a-4c3b-9e8f-0a1b2c3d4e5f";
+  const token = "ab".repeat(32);
+  const devApp = (service: ControlApiService) =>
+    buildApp({ service, environment: "development", allowDevIdentity: true });
+  const headers = { "x-dev-user-email": "employee@example.com" };
+
+  it("answers the eligibility check privately and uncached", async () => {
+    const service = createService();
+    vi.mocked(service.getConfigRefresh).mockResolvedValue({
+      eligible: true,
+      revision: 2,
+      refreshToken: token,
+    });
+    const app = await devApp(service);
+    const response = await app.inject({
+      method: "GET",
+      url: `/api/keys/${keyId}/config-refresh`,
+      headers,
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.headers["cache-control"]).toBe("private, no-store");
+    expect(response.json()).toEqual({ eligible: true, revision: 2, refreshToken: token });
+    expect(vi.mocked(service.getConfigRefresh).mock.calls[0]?.[1]).toBe(keyId);
+    await app.close();
+  });
+
+  it("commits a refresh for a well-formed token only", async () => {
+    const service = createService();
+    vi.mocked(service.refreshOwnConfig).mockResolvedValue({ revision: 3 });
+    const app = await devApp(service);
+    const response = await app.inject({
+      method: "POST",
+      url: `/api/keys/${keyId}/config-refresh`,
+      headers,
+      payload: { refreshToken: token },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.headers["cache-control"]).toBe("private, no-store");
+    expect(response.json()).toEqual({ revision: 3 });
+    expect(vi.mocked(service.refreshOwnConfig).mock.calls[0]?.slice(1)).toEqual([keyId, token]);
+
+    const malformed = await app.inject({
+      method: "POST",
+      url: `/api/keys/${keyId}/config-refresh`,
+      headers,
+      payload: { refreshToken: "not-a-token" },
+    });
+    expect(malformed.statusCode).toBe(400);
+    expect(service.refreshOwnConfig).toHaveBeenCalledTimes(1);
+    await app.close();
+  });
+
+  it("passes a stale token's 409 through with its own code", async () => {
+    const service = createService();
+    vi.mocked(service.refreshOwnConfig).mockRejectedValue(
+      new ApiError(409, "The config changed since it was checked", CONFIG_REFRESH_STALE),
+    );
+    const app = await devApp(service);
+    const response = await app.inject({
+      method: "POST",
+      url: `/api/keys/${keyId}/config-refresh`,
+      headers,
+      payload: { refreshToken: token },
+    });
+    expect(response.statusCode).toBe(409);
+    expect(response.json()).toMatchObject({ error: CONFIG_REFRESH_STALE });
     await app.close();
   });
 });

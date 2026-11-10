@@ -1227,6 +1227,36 @@ export const renameKeyRequestSchema = z.object({
 });
 export type RenameKeyRequest = z.infer<typeof renameKeyRequestSchema>;
 
+/**
+ * "Refresh config": a new AWG 3.1 client profile for the same key and peer.
+ *
+ * The GET says whether this key can take one and hands out a token for the
+ * exact config it saw; the POST commits a new revision only for that token.
+ * A key without a profile is revision 0.
+ */
+export const configRefreshTokenSchema = z.string().regex(/^[0-9a-f]{64}$/);
+export const configRefreshStatusSchema = z.discriminatedUnion("eligible", [
+  z.object({ eligible: z.literal(false) }),
+  z.object({
+    eligible: z.literal(true),
+    revision: z.number().int().min(0),
+    refreshToken: configRefreshTokenSchema,
+  }),
+]);
+export type ConfigRefreshStatus = z.infer<typeof configRefreshStatusSchema>;
+export const configRefreshRequestSchema = z.object({
+  refreshToken: configRefreshTokenSchema,
+});
+export type ConfigRefreshRequest = z.infer<typeof configRefreshRequestSchema>;
+export const configRefreshResultSchema = z.object({
+  revision: z.number().int().min(1),
+});
+export type ConfigRefreshResult = z.infer<typeof configRefreshResultSchema>;
+/** The artifact cannot take a client profile (2.0, unmarked, not active). */
+export const CONFIG_REFRESH_UNAVAILABLE = "CONFIG_REFRESH_UNAVAILABLE";
+/** The token was issued for a revision or a config that is no longer current. */
+export const CONFIG_REFRESH_STALE = "CONFIG_REFRESH_STALE";
+
 export type ProtocolKind = z.infer<typeof protocolKindSchema>;
 export type KeyState = z.infer<typeof keyStateSchema>;
 export type RouteProfile = z.infer<typeof routeProfileSchema>;

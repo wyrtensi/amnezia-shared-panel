@@ -2,6 +2,8 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
+import { keyDelivery } from "@/lib/key-delivery";
+
 import { messages } from "@/lib/i18n/messages";
 import {
   needsCameraWarning,
@@ -133,5 +135,49 @@ describe("file-only profiles fetch nothing they cannot show", () => {
   it("asks the shared rule rather than naming the profile", () => {
     expect(source).toContain('keyDelivery(target?.routeProfile ?? "full_tunnel")');
     expect(source).not.toContain('target.routeProfile !== "full_tunnel"');
+  });
+});
+
+describe("download dialog after a config refresh", () => {
+  const dialogSource = readFileSync(
+    fileURLToPath(new URL("./config-download-dialog.tsx", import.meta.url)),
+    "utf8",
+  );
+
+  it("loads every shape under the refreshed revision, so nothing old is shown", () => {
+    for (const format of ['"vpn"', '"qr-frames"', '"conf"']) {
+      expect(dialogSource).toContain(`configUrl(target.id, ${format}, target.revision)`);
+    }
+    expect(dialogSource).toContain('"qr-conf" : "qr-svg", target.revision)');
+  });
+
+  it("scrolls inside the screen, so the title and the hint stay reachable", () => {
+    expect(dialogSource).toContain('<DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-lg">');
+  });
+
+  it("says this is the replacement config, in both languages", () => {
+    expect(dialogSource).toMatch(/target\?\.revision !== undefined \? \([\s\S]{0,200}config\.refreshedHint/);
+    for (const lang of ["ru", "en"] as const) {
+      expect(messages[lang]["config.refreshedHint"]).toBeTruthy();
+    }
+  });
+
+  it("does not promise a link or a QR above a file-only dialog", () => {
+    expect(dialogSource).toContain(
+      't(delivery.linkUsable ? "config.desc" : "config.descFileOnly")',
+    );
+    for (const lang of ["ru", "en"] as const) {
+      const text = messages[lang]["config.descFileOnly"];
+      expect(text).toBeTruthy();
+      expect(text).not.toMatch(/QR|ссылк|link/i);
+    }
+  });
+
+  it("still fetches nothing up front for a file-only profile, refreshed or not", () => {
+    expect(dialogSource).toMatch(/if \(!delivery\.linkUsable\) \{/);
+    expect(keyDelivery("ru_blacklist")).toEqual({
+      linkUsable: false,
+      reasonKey: expect.any(String) as string,
+    });
   });
 });

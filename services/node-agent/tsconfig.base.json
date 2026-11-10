@@ -5,7 +5,6 @@
     },
     "strict": true,
     "allowJs": false,
-    "baseUrl": "./",
     "lib": ["ES2022"],
     "target": "ES2022",
     "incremental": false,
@@ -18,7 +17,6 @@
     "ignoreDeprecations": "6.0",
     "emitDecoratorMetadata": true,
     "experimentalDecorators": true,
-    "noStrictGenericChecks": false,
     "noFallthroughCasesInSwitch": false,
     "allowSyntheticDefaultImports": true,
     "forceConsistentCasingInFileNames": true

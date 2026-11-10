@@ -146,3 +146,18 @@ describe("/api/control/[...path] — response headers", () => {
     expect(response.headers.get("content-type")).toBeNull();
   });
 });
+
+describe("/api/control/[...path] — config refresh", () => {
+  it("relays both refresh methods to the same control API path, body and cache header included", async () => {
+    stubFetch({ contentType: "application/json; charset=utf-8", body: '{"eligible":false}' });
+    const segments = ["api", "keys", "key-1", "config-refresh"];
+    const checked = await invoke(GET, segments);
+    expect(checked.status).toBe(200);
+    const body = JSON.stringify({ refreshToken: "ab".repeat(32) });
+    await invoke(POST, segments, { method: "POST", body });
+    expect(calls.map((call) => [call.method, call.url])).toEqual([
+      ["GET", `${CONTROL_API_URL}/api/keys/key-1/config-refresh`],
+      ["POST", `${CONTROL_API_URL}/api/keys/key-1/config-refresh`],
+    ]);
+  });
+});

@@ -1,6 +1,8 @@
 import { deflateSync, inflateSync } from "node:zlib";
 import type { RouteProfile } from "@amnezia/contracts";
 
+import { awgClientProfileV1Schema, profileOrder } from "./awgClientProfile.js";
+
 /**
  * The most routes a profile may put in AllowedIPs.
  *
@@ -224,4 +226,201 @@ export const applyRouteProfileToVpnLink = (
   container.awg.last_config = JSON.stringify(lastConfig, null, 2);
 
   return encodeVpnPayload(payload);
+};
+
+const J_KEYS = ["Jc", "Jmin", "Jmax"] as const;
+const I_KEYS = ["I1", "I2", "I3", "I4", "I5"] as const;
+/** How many leading signature packets a profile may reorder. */
+const REORDERABLE_I = 3;
+
+type JKey = (typeof J_KEYS)[number];
+type ConfLine = { index: number; value: string };
+
+/** One eligible AWG 3.1 artifact, parsed once and kept in its three places. */
+type Awg31View = {
+  payload: AmneziaPayload;
+  awg: AmneziaContainerAwg;
+  lastConfig: Record<string, unknown>;
+  lines: string[];
+  confLines: Map<string, ConfLine>;
+  j: Record<JKey, number>;
+  /** I1-I5 in order, "" for an empty slot. */
+  i: string[];
+};
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+
+const toCount = (value: unknown): number | null => {
+  if (typeof value === "number") return Number.isInteger(value) ? value : null;
+  if (typeof value === "string" && /^\s*\d+\s*$/.test(value)) return Number(value);
+  return null;
+};
+
+/** A JSON I slot: a missing key and an empty string both mean "not set". */
+const toSlot = (value: unknown): string | null => {
+  if (value === undefined) return "";
+  return typeof value === "string" ? value.trim() : null;
+};
+
+/**
+ * The `Jc/Jmin/Jmax/I1-I5` lines of the `[Interface]` section, by exact field
+ * name. A repeated field makes the config ambiguous, so it returns null.
+ */
+const readInterfaceLines = (lines: string[]): Map<string, ConfLine> | null => {
+  const wanted = new Set<string>([...J_KEYS, ...I_KEYS]);
+  const found = new Map<string, ConfLine>();
+  let section = "";
+  for (const [index, raw] of lines.entries()) {
+    // CRLF configs keep their "\r"; `.` would not match it.
+    const line = raw.replace(/\r$/, "");
+    const header = /^\s*\[([^\]]+)\]\s*$/.exec(line);
+    if (header) {
+      section = header[1]?.trim() ?? "";
+      continue;
+    }
+    if (section !== "Interface") continue;
+    const field = /^\s*([A-Za-z0-9]+)\s*=(.*)$/.exec(line);
+    const name = field?.[1];
+    if (!name || !wanted.has(name)) continue;
+    if (found.has(name)) return null;
+    found.set(name, { index, value: (field[2] ?? "").trim() });
+  }
+  return found;
+};
+
+/**
+ * Parse an artifact that a client profile can apply to, or return null.
+ *
+ * Eligible means: exactly one AWG container, it is the default one, it says
+ * `protocol_version: "3.1"`, and its outer params, `last_config` and the
+ * embedded `[Interface]` agree on `Jc/Jmin/Jmax` and on every I slot. An
+ * empty JSON slot and a missing conf line are the same thing: the node drops
+ * empty lines from the text but keeps the empty keys.
+ */
+const readAwg31 = (vpnLink: string): Awg31View | null => {
+  let payload: AmneziaPayload;
+  try {
+    payload = decodeVpnLink(vpnLink);
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(payload.containers)) return null;
+  const awgContainers = payload.containers.filter(
+    (container) => isRecord(container) && container.awg !== undefined,
+  );
+  const container = awgContainers.length === 1 ? awgContainers[0] : undefined;
+  const awg = container?.awg;
+  if (
+    !container ||
+    !isRecord(awg) ||
+    typeof awg.last_config !== "string" ||
+    typeof payload.defaultContainer !== "string" ||
+    container.container !== payload.defaultContainer ||
+    awg.protocol_version !== "3.1"
+  ) {
+    return null;
+  }
+
+  let lastConfig: unknown;
+  try {
+    lastConfig = JSON.parse(awg.last_config);
+  } catch {
+    return null;
+  }
+  if (!isRecord(lastConfig) || typeof lastConfig.config !== "string") return null;
+
+  const lines = lastConfig.config.split("\n");
+  const confLines = readInterfaceLines(lines);
+  if (!confLines) return null;
+
+  const j = {} as Record<JKey, number>;
+  for (const key of J_KEYS) {
+    const outer = toCount(awg[key]);
+    const inner = toCount(lastConfig[key]);
+    const conf = toCount(confLines.get(key)?.value);
+    if (outer === null || outer !== inner || outer !== conf) return null;
+    j[key] = outer;
+  }
+
+  const i: string[] = [];
+  for (const key of I_KEYS) {
+    const outer = toSlot(awg[key]);
+    const inner = toSlot(lastConfig[key]);
+    const conf = confLines.get(key)?.value ?? "";
+    if (outer === null || outer !== inner || outer !== conf) return null;
+    i.push(outer);
+  }
+
+  return { payload, awg, lastConfig, lines, confLines, j, i };
+};
+
+/**
+ * The effective junk parameters of an artifact a client profile can apply
+ * to, or null when it cannot: a 2.0 artifact, an unmarked one, an ambiguous
+ * container layout, or a 3.1 one whose three copies disagree.
+ */
+export const inspectAwg31ClientConfig = (
+  vpnLink: string,
+): { jc: number; jmin: number; jmax: number } | null => {
+  const view = readAwg31(vpnLink);
+  return view ? { jc: view.j.Jc, jmin: view.j.Jmin, jmax: view.j.Jmax } : null;
+};
+
+/** Write a value back with the type the field already had. */
+const sameType = (previous: unknown, value: string): unknown =>
+  typeof previous === "number" ? Number(value) : value;
+
+/**
+ * Apply a saved client profile to the node-issued artifact.
+ *
+ * Only `Jc/Jmin/Jmax` and the order of the populated `I1-I3` change, in the
+ * outer params, `last_config` and the embedded `[Interface]` alike. A single
+ * I entry, a set with gaps, or one that uses I4/I5 keeps its order. An
+ * artifact the profile cannot apply to comes back byte for byte, whatever the
+ * profile says, so a saved profile never makes a working key unexportable.
+ */
+export const applyAwgClientProfile = (
+  vpnLink: string,
+  profile: unknown,
+): string => {
+  const view = readAwg31(vpnLink);
+  if (!view) return vpnLink;
+  const parsed = awgClientProfileV1Schema.safeParse(profile);
+  if (!parsed.success) {
+    // Says nothing about the stored value: it may sit next to a config body.
+    throw new Error("The saved AWG client profile is invalid");
+  }
+  const { jc, jmin, jmax, cpsOrder } = parsed.data;
+
+  const next = new Map<string, string>([
+    ["Jc", String(jc)],
+    ["Jmin", String(jmin)],
+    ["Jmax", String(jmax)],
+  ]);
+  const populated = view.i.filter((slot) => slot !== "").length;
+  const prefix = view.i.slice(0, populated).every((slot) => slot !== "");
+  if (prefix && populated >= 2 && populated <= REORDERABLE_I) {
+    const order = profileOrder(cpsOrder, populated);
+    for (const [position, from] of order.entries()) {
+      const key = I_KEYS[position];
+      const value = view.i[from];
+      if (key && value !== undefined) next.set(key, value);
+    }
+  }
+
+  for (const [key, value] of next) {
+    view.awg[key] = sameType(view.awg[key], value);
+    view.lastConfig[key] = sameType(view.lastConfig[key], value);
+    const line = view.confLines.get(key);
+    if (line) {
+      view.lines[line.index] = (view.lines[line.index] ?? "").replace(
+        /^(\s*[A-Za-z0-9]+\s*=\s*).*?(\s*)$/,
+        (_match, head: string, tail: string) => `${head}${value}${tail}`,
+      );
+    }
+  }
+  view.lastConfig.config = view.lines.join("\n");
+  view.awg.last_config = JSON.stringify(view.lastConfig, null, 2);
+  return encodeVpnPayload(view.payload);
 };

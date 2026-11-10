@@ -2,6 +2,6 @@ packages:
   - apps/*
   - packages/*
 
-onlyBuiltDependencies:
-  - '@scarf/scarf'
-  - esbuild
+allowBuilds:
+  '@scarf/scarf': true
+  esbuild: true

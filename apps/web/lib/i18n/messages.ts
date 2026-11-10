@@ -161,6 +161,15 @@ const ru = {
   "emp.rotateToast":
     "Ключ обновляется. Когда статус станет «Активен», откройте «Показать ключ» и вставьте новый.",
   "emp.rotateFailed": "Не удалось обновить ключ",
+  "emp.configRefreshToast":
+    "Конфиг обновлён. Импортируйте его в приложение вместо старого подключения.",
+  // The card's badge names the protocol the key was requested with; the
+  // server may still have issued it in its AmneziaWG 2.0 compatibility mode.
+  "emp.configRefreshUnavailable":
+    "У этого ключа нельзя обновить конфиг: сервер выдал его в режиме совместимости с AmneziaWG 2.0.",
+  "emp.configRefreshRetry":
+    "Конфиг изменился, пока шло обновление. Попробуйте ещё раз.",
+  "emp.configRefreshFailed": "Не удалось обновить конфиг",
   "emp.revokeConfirm": "Отозвать этот ключ? Устройство сразу потеряет доступ.",
   "emp.revoked": "Ключ отозван",
   "emp.revokeFailed": "Не удалось отозвать ключ",
@@ -192,6 +201,12 @@ const ru = {
   "keyCard.reissue": "Перевыпустить",
   "keyCard.reissueTip":
     "Выдать новый ключ с текущими правилами. Старый перестанет работать — переустановите конфиг на устройстве.",
+  "keyCard.refreshConfig": "Обновить конфиг",
+  // Not a reissue: same key, same server, same address. Only the AmneziaWG 3.1
+  // parameters the client sends on its own change, so the old connection keeps
+  // working until it is replaced.
+  "keyCard.refreshConfigTip":
+    "Новые параметры маскировки для этого устройства. Ключ остаётся прежним, старое подключение работает, пока вы не замените его новым конфигом.",
   "keyCard.rename": "Переименовать",
   "keyCard.renameTitle": "Переименовать ключ",
   "keyCard.renameDesc":
@@ -354,8 +369,12 @@ const ru = {
   "config.keyCopied": "Ключ скопирован",
   "config.copyFailed": "Не удалось скопировать",
   "config.title": "Ключ: {label}",
+  "config.refreshedHint":
+    "Это обновлённый конфиг. Импортируйте его и удалите прежнее подключение в приложении — до замены оно продолжает работать.",
   "config.desc":
     "Вставьте ссылку в AmneziaVPN («Подключиться по ссылке») или отсканируйте QR-код камерой телефона.",
+  // A file-only profile has neither the link nor the QR the line above names.
+  "config.descFileOnly": "Скачайте файл и откройте его в AmneziaVPN.",
   "config.loadFailed": "Не удалось загрузить ключ.",
   "config.connectionKey": "Ключ подключения (vpn://)",
   "config.done": "Готово",
@@ -1246,6 +1265,7 @@ const ru = {
   "audit.exact.vpn_key.create_requested": "запросил создание ключа",
   "audit.exact.vpn_key.revoke_requested": "запросил отзыв ключа",
   "audit.exact.vpn_key.rotate_requested": "запросил перевыпуск ключа",
+  "audit.exact.vpn_key.config_profile_refreshed": "обновил конфиг ключа",
   "audit.exact.vpn_key.private_config_viewed": "просмотрел приватный конфиг",
   "audit.exact.node.created": "добавил ноду",
   "audit.exact.node.updated": "обновил ноду",
@@ -1549,6 +1569,13 @@ const en = {
   "emp.rotateToast":
     "The key is being updated. When the status turns “Active”, open “Show key” and paste the new one.",
   "emp.rotateFailed": "Failed to update the key",
+  "emp.configRefreshToast":
+    "Config refreshed. Import it in the app in place of the old connection.",
+  "emp.configRefreshUnavailable":
+    "This key's config cannot be refreshed: the server issued it in AmneziaWG 2.0 compatibility mode.",
+  "emp.configRefreshRetry":
+    "The config changed while it was being refreshed. Try again.",
+  "emp.configRefreshFailed": "Failed to refresh the config",
   "emp.revokeConfirm":
     "Revoke this key? The device will immediately lose access.",
   "emp.revoked": "Key revoked",
@@ -1574,6 +1601,9 @@ const en = {
   "keyCard.reissue": "Reissue",
   "keyCard.reissueTip":
     "Issue a new key with the current rules. The old one will stop working — reinstall the config on the device.",
+  "keyCard.refreshConfig": "Refresh config",
+  "keyCard.refreshConfigTip":
+    "New obfuscation parameters for this device. The key stays the same, and the old connection keeps working until you replace it with the new config.",
   "keyCard.rename": "Rename",
   "keyCard.renameTitle": "Rename key",
   "keyCard.renameDesc":
@@ -1721,8 +1751,11 @@ const en = {
   "config.keyCopied": "Key copied",
   "config.copyFailed": "Failed to copy",
   "config.title": "Key: {label}",
+  "config.refreshedHint":
+    "This is the refreshed config. Import it and remove the previous connection in the app; until then the old one keeps working.",
   "config.desc":
     "Paste the link into AmneziaVPN (“Connect by link”) or scan the QR code with your phone camera.",
+  "config.descFileOnly": "Download the file and open it in AmneziaVPN.",
   "config.loadFailed": "Failed to load the key.",
   "config.connectionKey": "Connection key (vpn://)",
   "config.done": "Done",
@@ -2570,6 +2603,7 @@ const en = {
   "audit.exact.vpn_key.create_requested": "requested key creation",
   "audit.exact.vpn_key.revoke_requested": "requested key revocation",
   "audit.exact.vpn_key.rotate_requested": "requested key reissue",
+  "audit.exact.vpn_key.config_profile_refreshed": "refreshed the key config",
   "audit.exact.vpn_key.private_config_viewed": "viewed a private config",
   "audit.exact.node.created": "added a node",
   "audit.exact.node.updated": "updated a node",
