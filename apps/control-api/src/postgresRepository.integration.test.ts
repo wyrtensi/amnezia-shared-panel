@@ -32,6 +32,7 @@ import {
   portalPolicy,
   quotaRequests,
   routeRuleVersions,
+  trafficRollups,
   users,
   vpnKeys,
 } from "@amnezia/db";
@@ -5945,4 +5946,331 @@ describe("PostgresControlRepository server name on keys", () => {
       expect(await listedNodeIds()).not.toContain(nodeId);
     },
   );
+});
+
+describe("PostgresControlRepository service account", () => {
+  const database = databaseUrl ? createDatabase(databaseUrl) : null;
+  const keyring = { 1: randomBytes(32) };
+  const SERVICE_EMAIL = "reachability-probe@service.invalid";
+  const PROBE_RECEIVED = 5_000n;
+  const PROBE_SENT = 7_000n;
+  const PERSON_RECEIVED = 100n;
+  const PERSON_SENT = 200n;
+  let person: Actor;
+  let serviceId: string;
+  let nodeId: string;
+  let personKeyId: string;
+  let probeKeyId: string;
+  const createdNodeIds: string[] = [];
+  const createdUserIds: string[] = [];
+
+  const seedNode = async (name: string): Promise<string> => {
+    if (!database) throw new Error("No database");
+    const credentials = encryptSecret("api-key", keyring, 1);
+    const label = encryptSecret("label-secret", keyring, 1);
+    const [node] = await database.db
+      .insert(nodes)
+      .values({
+        name,
+        apiBaseUrl: "http://192.0.2.10:4001",
+        credentialsCiphertext: credentials.ciphertext,
+        credentialsNonce: credentials.nonce,
+        credentialsAuthTag: credentials.authTag,
+        credentialsKeyVersion: credentials.keyVersion,
+        labelSecretCiphertext: label.ciphertext,
+        labelSecretNonce: label.nonce,
+        labelSecretAuthTag: label.authTag,
+        labelSecretKeyVersion: label.keyVersion,
+      })
+      .returning();
+    if (!node) throw new Error("Failed to seed node");
+    createdNodeIds.push(node.id);
+    return node.id;
+  };
+
+  const seedKey = async (ownerId: string, onNode: string): Promise<string> => {
+    if (!database) throw new Error("No database");
+    const [key] = await database.db
+      .insert(vpnKeys)
+      .values({
+        ownerId,
+        nodeId: onNode,
+        nodeLabel: `ap_service_${randomBytes(6).toString("hex")}`,
+        protocol: "awg3",
+        state: "active",
+        routeProfile: "full_tunnel",
+      })
+      .returning();
+    if (!key) throw new Error("Failed to seed key");
+    return key.id;
+  };
+
+  beforeAll(async () => {
+    if (!database) return;
+    const suffix = randomBytes(6).toString("hex");
+    const [personRow] = await database.db
+      .insert(users)
+      .values({ email: `service-person-${suffix}@example.com`, role: "admin" })
+      .returning();
+    const [serviceRow] = await database.db
+      .insert(users)
+      .values({ email: SERVICE_EMAIL, serviceAccount: true })
+      .returning();
+    if (!personRow || !serviceRow) throw new Error("Failed to seed users");
+    createdUserIds.push(personRow.id, serviceRow.id);
+    person = {
+      id: personRow.id,
+      email: personRow.email,
+      displayName: null,
+      role: "admin",
+      status: "active",
+    };
+    serviceId = serviceRow.id;
+    nodeId = await seedNode("node-a");
+    personKeyId = await seedKey(person.id, nodeId);
+    probeKeyId = await seedKey(serviceId, nodeId);
+    // The probe's key is the one that would flip every result: it is online
+    // with a fresh handshake and the larger traffic, the person's is stale.
+    await database.db.insert(peerCurrent).values([
+      {
+        keyId: personKeyId,
+        online: false,
+        latestHandshakeAt: new Date(Date.now() - 10 * 60_000),
+        receivedBytes: PERSON_RECEIVED,
+        sentBytes: PERSON_SENT,
+        observedAt: new Date(),
+      },
+      {
+        keyId: probeKeyId,
+        online: true,
+        latestHandshakeAt: new Date(),
+        receivedBytes: PROBE_RECEIVED,
+        sentBytes: PROBE_SENT,
+        observedAt: new Date(),
+      },
+    ]);
+    const today = new Date();
+    today.setUTCHours(0, 0, 0, 0);
+    await database.db.insert(trafficRollups).values([
+      {
+        keyId: personKeyId,
+        period: "day",
+        bucketStart: today,
+        receivedBytes: PERSON_RECEIVED,
+        sentBytes: PERSON_SENT,
+      },
+      {
+        keyId: probeKeyId,
+        period: "day",
+        bucketStart: today,
+        receivedBytes: PROBE_RECEIVED,
+        sentBytes: PROBE_SENT,
+      },
+    ]);
+  });
+
+  afterAll(async () => {
+    if (!database) return;
+    // FK RESTRICT order: keys, then nodes, then users. peer_current and
+    // traffic_rollups cascade from vpn_keys.
+    if (createdNodeIds.length > 0) {
+      await database.db
+        .delete(vpnKeys)
+        .where(inArray(vpnKeys.nodeId, createdNodeIds));
+      await database.db.delete(nodes).where(inArray(nodes.id, createdNodeIds));
+    }
+    if (createdUserIds.length > 0) {
+      await database.db
+        .delete(vpnKeys)
+        .where(inArray(vpnKeys.ownerId, createdUserIds));
+      await database.db.delete(users).where(inArray(users.id, createdUserIds));
+    }
+    await database.client.end();
+  });
+
+  const subject = (): PostgresControlRepository => {
+    if (!database) throw new Error("No database");
+    return new PostgresControlRepository({ db: database.db, keyring });
+  };
+
+  /**
+   * Runs `read` with the service account flagged, then again with the flag
+   * cleared, and restores it. A difference between the two proves the flag
+   * alone is what keeps the account out -- other describes in this file leave
+   * rows behind, so absolute counts are not meaningful here.
+   */
+  const withAndWithoutFlag = async <T>(
+    read: () => Promise<T>,
+  ): Promise<{ flagged: T; unflagged: T }> => {
+    if (!database) throw new Error("No database");
+    const flagged = await read();
+    await database.db
+      .update(users)
+      .set({ serviceAccount: false })
+      .where(eq(users.id, serviceId));
+    try {
+      return { flagged, unflagged: await read() };
+    } finally {
+      await database.db
+        .update(users)
+        .set({ serviceAccount: true })
+        .where(eq(users.id, serviceId));
+    }
+  };
+
+  runDatabaseTest("leaves the service account out of the admin users list", async () => {
+    if (!database) return;
+    const rows = (await subject().adminList(person, "users")) as Array<{ id: string }>;
+    const ids = rows.map((row) => row.id);
+    expect(ids).toContain(person.id);
+    expect(ids).not.toContain(serviceId);
+  });
+
+  runDatabaseTest("leaves its keys out of the admin keys list", async () => {
+    if (!database) return;
+    const rows = (await subject().adminList(person, "keys")) as Array<{ id: string }>;
+    const ids = rows.map((row) => row.id);
+    expect(ids).toContain(personKeyId);
+    expect(ids).not.toContain(probeKeyId);
+  });
+
+  runDatabaseTest("leaves it out of every overview count", async () => {
+    if (!database) return;
+    type Overview = {
+      totalUsers: number;
+      activeUsers: number;
+      totalKeys: number;
+      activeKeys: number;
+      onlineDevices: number;
+      totalReceivedBytes: string;
+      totalSentBytes: string;
+      keysByProtocol: Record<string, number>;
+      keysByProfile: Record<string, number>;
+    };
+    const { flagged, unflagged } = await withAndWithoutFlag(
+      async () => (await subject().getAdminOverview()) as Overview,
+    );
+    expect(unflagged.totalUsers).toBe(flagged.totalUsers + 1);
+    expect(unflagged.activeUsers).toBe(flagged.activeUsers + 1);
+    expect(unflagged.totalKeys).toBe(flagged.totalKeys + 1);
+    expect(unflagged.activeKeys).toBe(flagged.activeKeys + 1);
+    expect(unflagged.keysByProtocol.awg3).toBe(
+      (flagged.keysByProtocol.awg3 ?? 0) + 1,
+    );
+    expect(unflagged.keysByProfile.full_tunnel).toBe(
+      (flagged.keysByProfile.full_tunnel ?? 0) + 1,
+    );
+    expect(unflagged.onlineDevices).toBe(flagged.onlineDevices + 1);
+    expect(BigInt(unflagged.totalReceivedBytes)).toBe(
+      BigInt(flagged.totalReceivedBytes) + PROBE_RECEIVED,
+    );
+    expect(BigInt(unflagged.totalSentBytes)).toBe(
+      BigInt(flagged.totalSentBytes) + PROBE_SENT,
+    );
+  });
+
+  runDatabaseTest("leaves its traffic out of the admin traffic series", async () => {
+    if (!database) return;
+    const today = new Date().toISOString().slice(0, 10);
+    const todayOf = (
+      rows: Array<{ date: string; receivedBytes: string; sentBytes: string }>,
+    ) => rows.find((row) => row.date === today);
+    const { flagged, unflagged } = await withAndWithoutFlag(async () =>
+      todayOf(await subject().trafficSeries({ days: 1 })),
+    );
+    expect(BigInt(unflagged?.receivedBytes ?? "0")).toBe(
+      BigInt(flagged?.receivedBytes ?? "0") + PROBE_RECEIVED,
+    );
+    expect(BigInt(unflagged?.sentBytes ?? "0")).toBe(
+      BigInt(flagged?.sentBytes ?? "0") + PROBE_SENT,
+    );
+  });
+
+  runDatabaseTest("leaves its traffic out of the node traffic periods", async () => {
+    if (!database) return;
+    const rows = await subject().nodeTrafficPeriods({});
+    const row = rows.find((entry) => entry.nodeId === nodeId);
+    const personOnly = {
+      receivedBytes: PERSON_RECEIVED.toString(),
+      sentBytes: PERSON_SENT.toString(),
+    };
+    expect(row?.today).toEqual(personOnly);
+    expect(row?.month).toEqual(personOnly);
+  });
+
+  runDatabaseTest(
+    "ignores its handshake in the endpoint status but counts its peer slot",
+    async () => {
+      if (!database) return;
+      const rows = (await subject().adminList(person, "nodes")) as Array<{
+        id: string;
+        endpoint: { status: string };
+        peerCount: number;
+        probeKeyCount: number;
+        traffic: { today: { receivedBytes: string } };
+      }>;
+      const node = rows.find((row) => row.id === nodeId);
+      // Only the person's ten-minute-old handshake counts.
+      expect(node?.endpoint.status).toBe("stale");
+      expect(node?.peerCount).toBe(2);
+      expect(node?.probeKeyCount).toBe(1);
+      expect(node?.traffic.today.receivedBytes).toBe(PERSON_RECEIVED.toString());
+    },
+  );
+
+  runDatabaseTest("refuses every admin user action on the service account", async () => {
+    if (!database) return;
+    const actions = [
+      "offboard",
+      "set-limit",
+      "set-policy",
+      "set-custom-routes",
+      "reset-notices",
+      "reinstate",
+      "delete",
+      "set-role",
+      "create-key",
+      "purge",
+    ];
+    for (const action of actions) {
+      const failure = await failureOf(
+        subject().adminAction(person, "users", serviceId, action, {}),
+      );
+      expect({ action, statusCode: failure?.statusCode, code: failure?.code }).toEqual({
+        action,
+        statusCode: 409,
+        code: "SERVICE_ACCOUNT",
+      });
+    }
+    const [row] = await database.db
+      .select({ status: users.status, role: users.role })
+      .from(users)
+      .where(eq(users.id, serviceId));
+    expect(row).toEqual({ status: "active", role: "user" });
+    const [keys] = await database.db
+      .select({ value: count() })
+      .from(vpnKeys)
+      .where(eq(vpnKeys.ownerId, serviceId));
+    expect(keys?.value).toBe(1);
+  });
+
+  runDatabaseTest("deletes a node holding a probe key like any other node", async () => {
+    if (!database) return;
+    const nodeB = await seedNode("node-b");
+    await seedKey(person.id, nodeB);
+    await seedKey(serviceId, nodeB);
+
+    const refused = await failureOf(subject().deleteNode(person, nodeB));
+    expect(refused?.code).toBe("NODE_HAS_KEYS");
+
+    const result = (await subject().deleteNode(person, nodeB, {
+      deleteKeys: true,
+    })) as { deleted: boolean; deletedKeys: number };
+    expect(result).toMatchObject({ deleted: true, deletedKeys: 2 });
+    const [left] = await database.db
+      .select({ value: count() })
+      .from(nodes)
+      .where(eq(nodes.id, nodeB));
+    expect(left?.value).toBe(0);
+  });
 });

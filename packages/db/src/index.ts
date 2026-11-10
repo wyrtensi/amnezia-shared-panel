@@ -5,7 +5,7 @@ import {
   randomBytes,
   randomUUID,
 } from "node:crypto";
-import { and, count, eq, inArray, isNotNull, lt, sql } from "drizzle-orm";
+import { and, count, eq, inArray, isNotNull, lt, sql, type SQL } from "drizzle-orm";
 import {
   ACCESS_SYNC_DEDUPLICATION_KEY,
   ACCESS_SYNC_JOB_TYPE,
@@ -120,6 +120,25 @@ export const trafficDelta = (
   current >= previous
     ? { delta: current - previous, reset: false }
     : { delta: current, reset: true };
+
+// --- Service account ---------------------------------------------------------
+// One machine account (`users.service_account = true`) owns the external
+// reachability probe's VPN keys. It is not a person: it must never appear or
+// count anywhere a person does -- admin lists and counts, traffic totals, the
+// handshake-based endpoint status, Access sync -- and nothing may disable,
+// delete or purge it. Every such site filters through these two predicates,
+// so "who is a person" is decided in exactly one place.
+
+/** Filter on `users`: true for every row that is a person. */
+export const notServiceAccount: SQL = eq(users.serviceAccount, false);
+
+/**
+ * Join condition from a keys table to `users` that keeps only keys owned by a
+ * person: `.innerJoin(users, keyOwnerIsPerson(vpnKeys))`. A join rather than
+ * a subquery so the query plan stays a plain hash join on the owner id.
+ */
+export const keyOwnerIsPerson = (keys: typeof vpnKeys = vpnKeys): SQL =>
+  and(eq(users.id, keys.ownerId), notServiceAccount) as SQL;
 
 // --- Two-way Cloudflare Access sync arm -------------------------------------
 // Both the worker (a panel-side user change, or its own hourly timer) and
@@ -274,6 +293,8 @@ export const findOffboardedUsersEligibleForPurge = async (
         eq(users.status, "disabled"),
         isNotNull(users.disabledAt),
         lt(users.disabledAt, disabledBefore),
+        // The service account is managed by the panel, never offboarded.
+        notServiceAccount,
       ),
     );
   const eligible: PurgeEligibleUser[] = [];

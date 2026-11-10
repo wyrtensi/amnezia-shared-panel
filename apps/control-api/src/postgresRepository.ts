@@ -95,11 +95,13 @@ import {
   hasLiveKeys,
   identities,
   jobOutbox,
+  keyOwnerIsPerson,
   nodeAgentReleases,
   nodeMetricsCurrent,
   nodeServiceCheckResults,
   nodeServiceChecks,
   nodes,
+  notServiceAccount,
   peerCurrent,
   portalPolicy,
   purgeOneOffboardedUser,
@@ -139,6 +141,11 @@ import { checkRecommendedPrefix, dedupeNodeIds } from "./policyNodeLists.js";
 import { toRulesRefreshStatus } from "./rulesRefresh.js";
 
 const quotaStates: KeyState[] = ["provisioning", "active", "disabled"];
+
+// Comparing a non-uuid string to a uuid column is a Postgres error, so a
+// lookup by an admin-supplied id is only attempted when it has this shape.
+const UUID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 const DAY_MS = 24 * 60 * 60 * 1_000;
 
@@ -699,6 +706,8 @@ export class PostgresControlRepository implements ControlRepository {
       })
       .from(trafficRollups)
       .innerJoin(vpnKeys, eq(vpnKeys.id, trafficRollups.keyId))
+      // The probe's own tunnels are not anyone's traffic.
+      .innerJoin(users, keyOwnerIsPerson(vpnKeys))
       .where(
         and(
           eq(trafficRollups.period, "day"),
@@ -750,6 +759,7 @@ export class PostgresControlRepository implements ControlRepository {
       })
       .from(trafficRollups)
       .innerJoin(vpnKeys, eq(vpnKeys.id, trafficRollups.keyId))
+      .innerJoin(users, keyOwnerIsPerson(vpnKeys))
       .where(
         and(
           eq(trafficRollups.period, "day"),
@@ -2165,22 +2175,28 @@ export class PostgresControlRepository implements ControlRepository {
         .select({ value: count() })
         .from(quotaRequests)
         .where(eq(quotaRequests.status, "pending")),
+      // Every key and user count below is about people: the probe's service
+      // account and its keys are kept out (see notServiceAccount in @amnezia/db).
       db
         .select({ key: vpnKeys.state, value: count() })
         .from(vpnKeys)
+        .innerJoin(users, keyOwnerIsPerson(vpnKeys))
         .groupBy(vpnKeys.state),
       db
         .select({ key: vpnKeys.protocol, value: count() })
         .from(vpnKeys)
+        .innerJoin(users, keyOwnerIsPerson(vpnKeys))
         .groupBy(vpnKeys.protocol),
       db
         .select({ key: vpnKeys.routeProfile, value: count() })
         .from(vpnKeys)
+        .innerJoin(users, keyOwnerIsPerson(vpnKeys))
         .groupBy(vpnKeys.routeProfile),
-      db.select({ value: count() }).from(users),
+      db.select({ value: count() }).from(users).where(notServiceAccount),
       db
         .select({ key: users.status, value: count() })
         .from(users)
+        .where(notServiceAccount)
         .groupBy(users.status),
       db
         .select({ enabled: nodes.enabled, lastError: nodes.lastError })
@@ -2191,7 +2207,9 @@ export class PostgresControlRepository implements ControlRepository {
           received: sum(peerCurrent.receivedBytes),
           sent: sum(peerCurrent.sentBytes),
         })
-        .from(peerCurrent),
+        .from(peerCurrent)
+        .innerJoin(vpnKeys, eq(vpnKeys.id, peerCurrent.keyId))
+        .innerJoin(users, keyOwnerIsPerson(vpnKeys)),
     ]);
 
     const tally = (rows: Array<{ key: string; value: number }>) =>
@@ -2235,7 +2253,12 @@ export class PostgresControlRepository implements ControlRepository {
       case "users":
         // Every column, so the admin UI sees keyLimitOverride, nodeKeyLimits
         // and policyOverride (which carries allowedNodeIds) in one round trip.
-        return this.options.db.select().from(users).orderBy(users.email);
+        // The probe's service account is managed by the panel, not an admin.
+        return this.options.db
+          .select()
+          .from(users)
+          .where(notServiceAccount)
+          .orderBy(users.email);
       case "keys": {
         const rows = await this.options.db
           .select({
@@ -2267,6 +2290,7 @@ export class PostgresControlRepository implements ControlRepository {
             sentBytes: peerCurrent.sentBytes,
           })
           .from(vpnKeys)
+          .innerJoin(users, keyOwnerIsPerson(vpnKeys))
           .leftJoin(peerCurrent, eq(peerCurrent.keyId, vpnKeys.id))
           .orderBy(desc(vpnKeys.createdAt));
         return rows.map(
@@ -2345,14 +2369,26 @@ export class PostgresControlRepository implements ControlRepository {
           })
           .from(nodes)
           .orderBy(nodes.name);
+        // peerCount includes the probe's keys -- each one occupies a real peer
+        // slot on the node -- and probeKeyCount says how many of them there
+        // are, so the two can be told apart. Same state set for both, so
+        // probeKeyCount is always a subset of peerCount.
+        const slotRows = await this.options.db
+          .select({
+            nodeId: vpnKeys.nodeId,
+            value: count(),
+            // A raw fragment gets no type parser; cast in SQL and coerce below.
+            probe: sql<unknown>`(count(*) filter (where ${users.serviceAccount}))::int`,
+          })
+          .from(vpnKeys)
+          .innerJoin(users, eq(users.id, vpnKeys.ownerId))
+          .where(inArray(vpnKeys.state, quotaStates))
+          .groupBy(vpnKeys.nodeId);
         const peerCounts = new Map(
-          (
-            await this.options.db
-              .select({ nodeId: vpnKeys.nodeId, value: count() })
-              .from(vpnKeys)
-              .where(inArray(vpnKeys.state, quotaStates))
-              .groupBy(vpnKeys.nodeId)
-          ).map((row) => [row.nodeId, row.value]),
+          slotRows.map((row) => [row.nodeId, row.value]),
+        );
+        const probeKeyCounts = new Map(
+          slotRows.map((row) => [row.nodeId, Number(row.probe)]),
         );
         // Per-node traffic for Today / 7 days / Month (across all users) so each
         // server row shows all three inline.
@@ -2389,6 +2425,9 @@ export class PostgresControlRepository implements ControlRepository {
             })
             .from(peerCurrent)
             .innerJoin(vpnKeys, eq(vpnKeys.id, peerCurrent.keyId))
+            // The probe's own handshakes would make every node it reaches look
+            // reachable to people; only a person's connection is evidence here.
+            .innerJoin(users, keyOwnerIsPerson(vpnKeys))
             .groupBy(vpnKeys.nodeId),
         ]);
         // Byte counters leave as decimal STRINGS, the way every other byte
@@ -2440,6 +2479,7 @@ export class PostgresControlRepository implements ControlRepository {
             lastHandshakeAt: handshakeByNode.get(row.id) ?? null,
           },
           peerCount: peerCounts.get(row.id) ?? 0,
+          probeKeyCount: probeKeyCounts.get(row.id) ?? 0,
           traffic: {
             today: nodeTraffic.get(row.id)?.today ?? emptyPair,
             week: nodeTraffic.get(row.id)?.week ?? emptyPair,
@@ -2771,6 +2811,27 @@ export class PostgresControlRepository implements ControlRepository {
   ): Promise<unknown> => {
     if (!targetId) throw new ApiError(400, "Target id is required", "BAD_REQUEST");
     let result: unknown;
+
+    // The probe's service account is managed by the panel: no admin action may
+    // offboard, delete, re-role, re-limit or hand it a key. Checked before any
+    // payload is parsed, so the refusal is the same whatever is sent. A target
+    // that is not a uuid -- the bulk "purge" sweep's literal "offboarded",
+    // which excludes the account in its own eligibility rule -- or not a user
+    // falls through to each action's own handling.
+    if (resource === "users" && UUID_PATTERN.test(targetId)) {
+      const [target] = await this.options.db
+        .select({ serviceAccount: users.serviceAccount })
+        .from(users)
+        .where(eq(users.id, targetId))
+        .limit(1);
+      if (target?.serviceAccount) {
+        throw new ApiError(
+          409,
+          "Service account is managed by the panel",
+          "SERVICE_ACCOUNT",
+        );
+      }
+    }
 
     if (resource === "keys" && ["disable", "enable", "revoke"].includes(action)) {
       const state =

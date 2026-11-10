@@ -1,5 +1,5 @@
 import { randomBytes, randomUUID } from "node:crypto";
-import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   ACCESS_SYNC_DEDUPLICATION_KEY,
   RULES_REFRESH_DEDUPLICATION_KEY,
@@ -27,7 +27,7 @@ import {
   users,
   vpnKeys,
 } from "@amnezia/db";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import {
   PostgresWorkerRepository,
   REARM_STUCK_REVOKES_LIMIT,
@@ -1959,6 +1959,186 @@ describe("PostgresWorkerRepository rule pinning", () => {
     expect(rows[0]?.version).toBe("v1");
     expect(rows[0]?.status).toBe("active");
     expect(rows[0]?.pinnedAt).not.toBeNull();
+  });
+});
+
+describe("PostgresWorkerRepository service account", () => {
+  const database = databaseUrl ? createDatabase(databaseUrl) : null;
+  const keyring = { 1: randomBytes(32) };
+  const repository = database
+    ? new PostgresWorkerRepository({
+        db: database.db,
+        keyring,
+        activeKeyVersion: 1,
+      })
+    : null;
+  const SERVICE_EMAIL = "reachability-probe@service.invalid";
+  const DAY_MS = 24 * 60 * 60 * 1_000;
+  let createdUserIds: string[] = [];
+  let createdNodeIds: string[] = [];
+
+  // Deletes rather than neutralizes, in FK RESTRICT order: keys, nodes, users.
+  // A leftover service account would also collide with the next test's seed.
+  afterEach(async () => {
+    if (!database) return;
+    if (createdNodeIds.length > 0) {
+      await database.db
+        .delete(vpnKeys)
+        .where(inArray(vpnKeys.nodeId, createdNodeIds));
+      await database.db.delete(nodes).where(inArray(nodes.id, createdNodeIds));
+    }
+    if (createdUserIds.length > 0) {
+      await database.db
+        .delete(vpnKeys)
+        .where(inArray(vpnKeys.ownerId, createdUserIds));
+      await database.db.delete(users).where(inArray(users.id, createdUserIds));
+    }
+    createdNodeIds = [];
+    createdUserIds = [];
+  });
+
+  afterAll(async () => {
+    if (database) await database.client.end();
+  });
+
+  /**
+   * One person and the service account, each owning one key on `node-a`, in
+   * the given user status. Disabled users are disabled long ago, so the purge
+   * window never protects them.
+   */
+  const seed = async (
+    status: "active" | "disabled",
+    keyState: KeyState,
+  ): Promise<{
+    person: { id: string; email: string };
+    service: { id: string; email: string };
+    serviceKeyId: string;
+  }> => {
+    if (!database) throw new Error("Database test is disabled");
+    const credentials = encryptSecret("api-key", keyring, 1);
+    const label = encryptSecret(randomBytes(32).toString("base64"), keyring, 1);
+    const [node] = await database.db
+      .insert(nodes)
+      .values({
+        name: "node-a",
+        apiBaseUrl: "http://192.0.2.10:4001",
+        credentialsCiphertext: credentials.ciphertext,
+        credentialsNonce: credentials.nonce,
+        credentialsAuthTag: credentials.authTag,
+        credentialsKeyVersion: credentials.keyVersion,
+        labelSecretCiphertext: label.ciphertext,
+        labelSecretNonce: label.nonce,
+        labelSecretAuthTag: label.authTag,
+        labelSecretKeyVersion: label.keyVersion,
+      })
+      .returning();
+    if (!node) throw new Error("Failed to seed node");
+    createdNodeIds.push(node.id);
+    const disabled =
+      status === "disabled"
+        ? {
+            disabledAt: new Date(Date.now() - 400 * DAY_MS),
+            deactivationReason: "admin_offboard" as const,
+          }
+        : {};
+    const [person] = await database.db
+      .insert(users)
+      .values({
+        email: `service-person-${randomBytes(6).toString("hex")}@example.com`,
+        status,
+        ...disabled,
+      })
+      .returning();
+    const [service] = await database.db
+      .insert(users)
+      .values({ email: SERVICE_EMAIL, serviceAccount: true, status, ...disabled })
+      .returning();
+    if (!person || !service) throw new Error("Failed to seed users");
+    createdUserIds.push(person.id, service.id);
+    const keyIds: string[] = [];
+    for (const ownerId of [person.id, service.id]) {
+      const [key] = await database.db
+        .insert(vpnKeys)
+        .values({
+          ownerId,
+          nodeId: node.id,
+          nodeLabel: `ap_service_${randomBytes(6).toString("hex")}`,
+          protocol: "awg3",
+          state: keyState,
+          routeProfile: "full_tunnel",
+        })
+        .returning();
+      if (!key) throw new Error("Failed to seed key");
+      keyIds.push(key.id);
+    }
+    return {
+      person: { id: person.id, email: person.email },
+      service: { id: service.id, email: service.email },
+      serviceKeyId: keyIds[1] as string,
+    };
+  };
+
+  const stateOf = async (
+    userId: string,
+    keyId: string,
+  ): Promise<{ user: string | undefined; key: string | undefined }> => {
+    if (!database) throw new Error("Database test is disabled");
+    const [user] = await database.db
+      .select({ status: users.status })
+      .from(users)
+      .where(eq(users.id, userId));
+    const [key] = await database.db
+      .select({ state: vpnKeys.state })
+      .from(vpnKeys)
+      .where(eq(vpnKeys.id, keyId));
+    return { user: user?.status, key: key?.state };
+  };
+
+  runDatabaseTest("leaves it out of the Access allowlist emails", async () => {
+    if (!repository) return;
+    const { person } = await seed("active", "active");
+    const emails = await repository.listActiveUserEmails();
+    expect(emails).toContain(person.email);
+    expect(emails).not.toContain(SERVICE_EMAIL);
+  });
+
+  runDatabaseTest("never deactivates it on an Access reconcile", async () => {
+    if (!repository) return;
+    const { person, service, serviceKeyId } = await seed("active", "active");
+    // A non-empty allowlist that names neither: an empty one is a no-op.
+    const result = await repository.reconcileAccess(["someone-else@example.com"]);
+    expect(result.deactivated).toContain(person.email);
+    expect(result.deactivated).not.toContain(SERVICE_EMAIL);
+    expect(result.skippedAdmins).not.toContain(SERVICE_EMAIL);
+    expect(await stateOf(service.id, serviceKeyId)).toEqual({
+      user: "active",
+      key: "active",
+    });
+  });
+
+  runDatabaseTest("never deactivates it when Access removes it by name", async () => {
+    if (!repository) return;
+    const { person, service, serviceKeyId } = await seed("active", "active");
+    const result = await repository.deactivateByEmail([person.email, SERVICE_EMAIL]);
+    expect(result.deactivated).toEqual([person.email]);
+    expect(await stateOf(service.id, serviceKeyId)).toEqual({
+      user: "active",
+      key: "active",
+    });
+  });
+
+  runDatabaseTest("skips it in the offboarded-user purge", async () => {
+    if (!repository) return;
+    const { person, service, serviceKeyId } = await seed("disabled", "revoked");
+    const result = await repository.purgeOffboardedUsers(
+      new Date(Date.now() - 30 * DAY_MS),
+    );
+    expect(result.deleted).toContain(person.email);
+    expect(result.deleted).not.toContain(SERVICE_EMAIL);
+    expect(await stateOf(service.id, serviceKeyId)).toEqual({
+      user: "disabled",
+      key: "revoked",
+    });
   });
 });
 
