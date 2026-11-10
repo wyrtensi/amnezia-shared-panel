@@ -28,7 +28,7 @@ worker ── autossh tunnel (panel side) ──────► 127.0.0.1:<port>
   logs them.
 - Per node and protocol it measures `ping`, `tcp` (port 22 banner),
   `handshake` (a real AWG tunnel), and `http` through the tunnel (the egress IP
-  must be the node's address). A node is **available** when handshake and http
+  is shown, and noted when it is not the node's own address). A node is **available** when handshake and http
   pass for any protocol it serves.
 - Every run first fetches a **control target** without the tunnel. If that
   fails, the vantage point itself is offline: every node reads `unknown`, and no

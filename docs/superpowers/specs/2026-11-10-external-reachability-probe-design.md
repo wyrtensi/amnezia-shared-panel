@@ -124,9 +124,12 @@ any sensible HTTP timeout. The latest run lives in memory only.
      200`. Poll `awg show awgp0 latest-handshakes` for up to 15 s. The client's
      `PersistentKeepalive` makes it send a handshake as soon as the peer is set.
    - **http**: HTTPS GET of `egress.url` with the socket bound to the tunnel
-     address (`localAddress`), 10 s. Pass if the body is an IP equal to
-     `expectedEgressIp` (the node's `publicIp` as the panel knows it), or to the
-     endpoint host's address when the panel sent none.
+     address (`localAddress`), 10 s. Pass if the body is an IP: the socket is
+     bound to the tunnel address and table 200 routes it nowhere else, so any
+     answer proves traffic through the tunnel. An IP other than
+     `expectedEgressIp` (the node's `publicIp`, or the endpoint address) is a
+     note in the detail, not a failure: a node may leave through another
+     address of its own.
    - teardown, always: delete the rule, flush table 200, delete the link,
      delete the tmpfs file.
 
@@ -326,8 +329,7 @@ node: status badge, last check, failing since, per-protocol levels
 
 - `amneziawg-go` 3.1 as a client for an `awg2` node is unverified; every node
   currently serves only awg3.
-- The egress check compares to the node's known `publicIp`, falling back to the
-  endpoint address. A stale `publicIp` would read as failed; the panel shows the
-  egress IP so the operator can see why.
+- The egress IP is compared to the node's known `publicIp` only as a note; the
+  panel shows it so an unexpected exit is visible.
 - The panel's tunnel to the probe crosses the same filtered network. A blocked
   tunnel shows up as "probe is silent", not as node failures.

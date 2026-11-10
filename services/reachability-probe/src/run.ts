@@ -82,8 +82,15 @@ const checkEgress = async (
     }
     // The body is only echoed when it is an address: a block page is not ours to store.
     if (!egressIp) return { level: { ok: false, detail: "egress response is not an IP", latencyMs }, egressIp };
+    // An answer at all is the proof: the socket is bound to the tunnel address,
+    // and table 200 sends that address nowhere but the tunnel. A node may leave
+    // through another address of its own, so a different IP is a note, not a
+    // failure.
     if (egressIp !== expected) {
-      return { level: { ok: false, detail: `egress ${egressIp} != ${expected}`, latencyMs }, egressIp };
+      return {
+        level: { ok: true, detail: `egress ${egressIp} differs from ${expected}`, latencyMs },
+        egressIp,
+      };
     }
     return { level: { ok: true, detail: null, latencyMs }, egressIp };
   } catch (error) {

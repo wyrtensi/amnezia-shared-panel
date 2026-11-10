@@ -179,14 +179,14 @@ describe("runAll", () => {
     expect(state.results[0]?.levels.http.ok).toBe(true);
   });
 
-  it("http level fails with the mismatch in detail otherwise", async () => {
+  it("http level passes with a note when the egress IP differs", async () => {
     const { deps } = setup({ egressBody: "198.51.100.9" });
     const state = await runAll(
       request([{ targetId: "node-a", protocol: "amneziawg3", config: conf("10.90.0.7", "192.0.2.10:51890") }]),
       deps,
     );
     expect(state.results[0]?.status).toBe("done");
-    expect(state.results[0]?.levels.http).toMatchObject({ ok: false, detail: "egress 198.51.100.9 != 192.0.2.10" });
+    expect(state.results[0]?.levels.http).toMatchObject({ ok: true, detail: "egress 198.51.100.9 differs from 192.0.2.10" });
     expect(state.results[0]?.egressIp).toBe("198.51.100.9");
   });
 
