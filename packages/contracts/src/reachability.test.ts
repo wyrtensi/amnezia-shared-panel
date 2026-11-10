@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   isProbeStale,
+  nodeServedProtocols,
   probeRunRequestSchema,
   probeRunStateSchema,
   reachabilityNotifyPayloadSchema,
@@ -138,5 +139,21 @@ describe("updateNodeRequestSchema defaults", () => {
     expect(updateNodeRequestSchema.parse({ checksEnabled: false })).toEqual({
       checksEnabled: false,
     });
+  });
+});
+
+describe("nodeServedProtocols", () => {
+  it("uses reported capabilities, newest first", () => {
+    expect(
+      nodeServedProtocols({ protocol: "awg2", capabilities: { awg2: true, awg3: true }, enabledProtocols: null }),
+    ).toEqual(["awg3", "awg2"]);
+  });
+  it("falls back to the primary protocol", () => {
+    expect(nodeServedProtocols({ protocol: "awg3", capabilities: {}, enabledProtocols: null })).toEqual(["awg3"]);
+  });
+  it("narrows to enabledProtocols", () => {
+    expect(
+      nodeServedProtocols({ protocol: "awg3", capabilities: { awg2: true, awg3: true }, enabledProtocols: ["awg3"] }),
+    ).toEqual(["awg3"]);
   });
 });

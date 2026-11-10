@@ -2015,6 +2015,27 @@ export const isProbeStale = (input: {
   input.now.getTime() - (input.lastResultAt ?? input.createdAt).getTime() >
   input.staleAfterSec * 1_000;
 
+/**
+ * The protocols a node offers, which is what the probe tests: those it
+ * supports (its capabilities, or its primary protocol when none are reported)
+ * narrowed to `enabledProtocols` when that is set. No user policy applies.
+ */
+export const nodeServedProtocols = (node: {
+  protocol: ProtocolKind;
+  capabilities: unknown;
+  enabledProtocols: readonly ProtocolKind[] | null | undefined;
+}): ProtocolKind[] => {
+  const caps = (node.capabilities ?? {}) as Record<string, unknown>;
+  const reported = PROTOCOL_KINDS.filter((candidate) => caps[candidate] === true);
+  const supported: ProtocolKind[] = reported.length > 0 ? reported : [node.protocol];
+  const enabled = node.enabledProtocols;
+  const offered =
+    enabled && enabled.length > 0
+      ? supported.filter((candidate) => enabled.includes(candidate))
+      : supported;
+  return PROTOCOL_KINDS.filter((candidate) => offered.includes(candidate));
+};
+
 // The worker formats the message before enqueueing, so the processor only
 // relays text.
 export const REACHABILITY_NOTIFY_JOB_TYPE = "notify.reachability";
