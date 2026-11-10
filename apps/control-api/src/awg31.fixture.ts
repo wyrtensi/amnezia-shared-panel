@@ -30,7 +30,7 @@ export type Awg31FixtureOptions = {
   payload?: (payload: AmneziaPayload) => void;
 };
 
-/** amster-like defaults: Jc 8, Jmin 62, Jmax 260, I1 and I2 populated. */
+/** Defaults as a real 3.1 node issues them: Jc 8, Jmin 62, Jmax 260, I1 and I2 populated. */
 export const awg31Link = (options: Awg31FixtureOptions = {}): string => {
   const j = options.j === undefined ? { Jc: "8", Jmin: "62", Jmax: "260" } : options.j;
   const slots = options.slots ?? ["I1", "I2"];
