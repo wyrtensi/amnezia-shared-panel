@@ -100,7 +100,7 @@ inside the container with `cap_drop: ALL`, `cap_add: [NET_ADMIN, NET_RAW]`,
 | Method | Path | Body / result |
 |---|---|---|
 | GET | `/healthz` | `{ok: true}` |
-| POST | `/runs` | `{runId, control: {url}, egress: {url}, targets: [{targetId, protocol, config}]}` → `202 {runId}`; `409` while a run is in progress |
+| POST | `/runs` | `{runId, control: {url}, egress: {url}, targets: [{targetId, protocol, config, expectedEgressIp?}]}` → `202 {runId}`; `409` while a run is in progress |
 | GET | `/runs/latest` | `{runId, startedAt, finishedAt \| null, control, results[]}` or `404` before the first run |
 
 A run is asynchronous: a fleet of N nodes × protocols takes minutes, longer than
@@ -124,8 +124,9 @@ any sensible HTTP timeout. The latest run lives in memory only.
      200`. Poll `awg show awgp0 latest-handshakes` for up to 15 s. The client's
      `PersistentKeepalive` makes it send a handshake as soon as the peer is set.
    - **http**: HTTPS GET of `egress.url` with the socket bound to the tunnel
-     address (`localAddress`), 10 s. Pass if the body is an IP equal to the
-     endpoint host's address.
+     address (`localAddress`), 10 s. Pass if the body is an IP equal to
+     `expectedEgressIp` (the node's `publicIp` as the panel knows it), or to the
+     endpoint host's address when the panel sent none.
    - teardown, always: delete the rule, flush table 200, delete the link,
      delete the tmpfs file.
 
@@ -325,8 +326,8 @@ node: status badge, last check, failing since, per-protocol levels
 
 - `amneziawg-go` 3.1 as a client for an `awg2` node is unverified; every node
   currently serves only awg3.
-- The egress check compares to the endpoint's address. A node whose egress IP
-  differs from its endpoint would read as failed; the panel shows the egress IP
-  so the operator can see why.
+- The egress check compares to the node's known `publicIp`, falling back to the
+  endpoint address. A stale `publicIp` would read as failed; the panel shows the
+  egress IP so the operator can see why.
 - The panel's tunnel to the probe crosses the same filtered network. A blocked
   tunnel shows up as "probe is silent", not as node failures.
