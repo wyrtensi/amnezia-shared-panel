@@ -39,6 +39,7 @@ import { UpdateNoticeDialog } from "@/components/employee/update-notice-dialog";
 import { KeyHelpDialog } from "@/components/employee/key-help-dialog";
 import { QuotaRequestDialog } from "@/components/employee/quota-request-dialog";
 import { apiRequest } from "@/lib/api";
+import { refreshKeyConfig } from "@/lib/config-refresh";
 import { helpLinkSearch, readHelpLink, type HelpLink } from "@/lib/help-links";
 import {
   keyNumberOf,
@@ -442,6 +443,51 @@ export function EmployeeDashboard({
     }
   };
 
+  /**
+   * "Refresh config", behind the same update notice as every other route to a
+   * key: dismissing the notice drops it before anything is sent. The ref, not
+   * `busy`, is what stops a double click — two clicks in one tick both still
+   * see `busy` as false. One commit at most per click, never retried here.
+   */
+  const refreshingConfig = React.useRef(false);
+  const refreshConfig = (key: KeyView) => {
+    if (refreshingConfig.current) return;
+    guardKeyAccess(() => {
+      if (refreshingConfig.current) return;
+      refreshingConfig.current = true;
+      setBusy(true);
+      void (async () => {
+        try {
+          const outcome = await refreshKeyConfig(key.id, apiRequest);
+          if (outcome.kind === "unavailable") {
+            toast.error(t("emp.configRefreshUnavailable"));
+          } else if (outcome.kind === "retry") {
+            toast.error(t("emp.configRefreshRetry"));
+            await load(true);
+          } else {
+            toast.success(t("emp.configRefreshToast"));
+            // A new object with the new revision: the dialog drops whatever
+            // it held and loads the refreshed config.
+            setConfigTarget({
+              id: key.id,
+              deviceLabel: key.deviceLabel || deviceTypeLabel(t, key.deviceType),
+              routeProfile: key.routeProfile,
+              revision: outcome.revision,
+            });
+          }
+        } catch (cause) {
+          toast.error(
+            cause instanceof Error ? cause.message : t("emp.configRefreshFailed"),
+          );
+          await load(true);
+        } finally {
+          refreshingConfig.current = false;
+          setBusy(false);
+        }
+      })();
+    });
+  };
+
   const revoke = async (keyId: string) => {
     if (!window.confirm(t("emp.revokeConfirm"))) return;
     setBusy(true);
@@ -781,6 +827,7 @@ export function EmployeeDashboard({
                     openGuide(guideAudienceForDevice(key.deviceType))
                   }
                   onRotate={() => void rotate(key.id)}
+                  onRefreshConfig={() => refreshConfig(key)}
                   onRevoke={() => void revoke(key.id)}
                   onRename={(deviceLabel) => rename(key.id, deviceLabel)}
                   onSetInternalName={(internalName) =>

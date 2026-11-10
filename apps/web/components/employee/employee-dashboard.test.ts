@@ -56,3 +56,44 @@ describe("rules-updated callout after a download", () => {
     expect(source).toMatch(/setConfigTarget\(null\);[\s\S]{0,200}void load\(true\);/);
   });
 });
+
+describe("refresh config flow", () => {
+  const flow = source.slice(
+    source.indexOf("const refreshConfig = (key: KeyView) => {"),
+    source.indexOf("const revoke = async"),
+  );
+
+  it("sends nothing until the update notice is signed, and a dismissal drops it", () => {
+    // The request lives only inside the guarded action.
+    expect(flow).toMatch(/guardKeyAccess\(\(\) => \{[\s\S]*refreshKeyConfig\(key\.id, apiRequest\)/);
+    expect(flow.indexOf("guardKeyAccess(")).toBeLessThan(flow.indexOf("refreshKeyConfig("));
+    expect(source).toContain("if (!open) pendingKeyAccess.current = null;");
+  });
+
+  it("guards double clicks with a ref, before and after the notice", () => {
+    expect(flow.match(/if \(refreshingConfig\.current\) return;/g)).toHaveLength(2);
+    expect(flow).toContain("refreshingConfig.current = true;");
+    expect(flow).toMatch(/finally \{\s*refreshingConfig\.current = false;/);
+  });
+
+  it("calls the flow once and never retries it on its own", () => {
+    expect(flow.match(/refreshKeyConfig\(/g)).toHaveLength(1);
+    expect(flow).not.toMatch(/for \(|while \(|setTimeout|setInterval/);
+  });
+
+  it("opens fresh delivery for the key's own route profile on success", () => {
+    expect(flow).toMatch(
+      /setConfigTarget\(\{\s*id: key\.id,[\s\S]*routeProfile: key\.routeProfile,\s*revision: outcome\.revision,\s*\}\)/,
+    );
+  });
+
+  it("reloads the key list after a conflict or a failure", () => {
+    expect(flow).toMatch(/outcome\.kind === "retry"[\s\S]*await load\(true\);/);
+    expect(flow).toMatch(/catch \(cause\) \{[\s\S]*await load\(true\);/);
+  });
+
+  it("leaves the new-key install reminder on its own trigger", () => {
+    expect(flow).not.toContain("justCreatedId");
+    expect(flow).not.toContain("setShowInstallReminder");
+  });
+});

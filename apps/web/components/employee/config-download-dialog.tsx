@@ -37,6 +37,12 @@ export type ConfigTarget = {
   id: string;
   deviceLabel: string;
   routeProfile: string;
+  /**
+   * Set when the dialog opens right after "Refresh config": the revision the
+   * refresh saved. It says so at the top, and it makes every URL below new,
+   * so nothing loaded before the refresh is shown again.
+   */
+  revision?: number;
 };
 
 /**
@@ -241,7 +247,7 @@ export function ConfigDownloadDialog({
     setLoading(true);
     void (async () => {
       try {
-        const res = await fetch(configUrl(target.id, "vpn"));
+        const res = await fetch(configUrl(target.id, "vpn", target.revision));
         if (!res.ok) throw new Error("failed");
         const text = await res.text();
         if (active) setVpnLink(text.trim());
@@ -275,7 +281,7 @@ export function ConfigDownloadDialog({
     let active = true;
     void (async () => {
       try {
-        const res = await fetch(configUrl(target.id, "qr-frames"));
+        const res = await fetch(configUrl(target.id, "qr-frames", target.revision));
         if (!res.ok) throw new Error("failed");
         const payload = (await res.json()) as { total: number; frames: string[] };
         if (!active) return;
@@ -317,7 +323,7 @@ export function ConfigDownloadDialog({
       ? currentFrame
         ? frameSrc(currentFrame)
         : null
-      : configUrl(target.id, qrFor === "awg" ? "qr-conf" : "qr-svg");
+      : configUrl(target.id, qrFor === "awg" ? "qr-conf" : "qr-svg", target.revision);
 
   // A one-frame series is a still picture: no modes, no stepping, no dots.
   const frameCount = usesFrames(qrFor) && frames ? frames.length : 0;
@@ -431,6 +437,12 @@ export function ConfigDownloadDialog({
             {t("config.desc")}
           </DialogDescription>
         </DialogHeader>
+
+        {target?.revision !== undefined ? (
+          <p className="rounded-lg border border-primary/40 bg-primary/5 px-3 py-2 text-sm">
+            {t("config.refreshedHint")}
+          </p>
+        ) : null}
 
         {loading ? (
           <div className="space-y-3">
@@ -697,7 +709,7 @@ export function ConfigDownloadDialog({
               // take the `.vpn` shape.
               <div className="space-y-2">
                 <Button asChild className="w-full">
-                  <a href={configUrl(target.id, "vpn")} download>
+                  <a href={configUrl(target.id, "vpn", target.revision)} download>
                     <Download className="h-4 w-4" /> {t("common.downloadVpnFile")}
                   </a>
                 </Button>
@@ -717,7 +729,7 @@ export function ConfigDownloadDialog({
                         {t("config.fileShapesHint")}
                       </p>
                       <Button asChild variant="outline" className="w-full">
-                        <a href={configUrl(target.id, "conf")} download>
+                        <a href={configUrl(target.id, "conf", target.revision)} download>
                           <Download className="h-4 w-4" />{" "}
                           {t("common.downloadConf")}
                         </a>

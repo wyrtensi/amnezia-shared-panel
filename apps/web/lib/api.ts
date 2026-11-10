@@ -46,8 +46,17 @@ export const apiRequest = async <T>(
   return (text === "" ? undefined : JSON.parse(text)) as T;
 };
 
+/**
+ * `revision` only makes the URL new after a config refresh: an `<img>` with
+ * the same src is drawn from the page's image cache whatever the response's
+ * cache headers said, so a refreshed QR would otherwise show the old config.
+ * The control API ignores the parameter.
+ */
 export const configUrl = (
   keyId: string,
   format: "vpn" | "conf" | "qr" | "qr-svg" | "qr-frames" | "qr-conf",
+  revision?: number,
 ) =>
-  `/api/control/api/keys/${encodeURIComponent(keyId)}/config?format=${format}`;
+  `/api/control/api/keys/${encodeURIComponent(keyId)}/config?format=${format}${
+    revision === undefined ? "" : `&rev=${revision}`
+  }`;

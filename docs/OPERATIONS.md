@@ -278,6 +278,31 @@ directory is a bind mount, so a plain `docker compose … restart awg3` is enoug
 not for a file the container reads through a mount. Re-run the §2 check
 afterwards: you have just edited the file that holds every peer.
 
+### Per-key client parameters: not a node edit
+
+`Jc`, `Jmin`, `Jmax` and the order of `I1`-`I3` are sent by the client alone, and
+the server does not check them. The panel therefore gives every AWG 3.1 key its
+own set instead of the node's, with nothing written to `awg0.conf`:
+
+- `vpn_keys.awg_client_profile` holds the set (`Jc` 3-10, `Jmin` 40-100,
+  `Jmax - Jmin` 30-200, an index into the orders of the populated `I1`-`I3`).
+  A new `awg3` key gets one at creation. A key created before this has none
+  and exports the node's own values until its owner refreshes it.
+- Every export applies it over the encrypted artifact the node issued, in all
+  three copies inside the `vpn://` payload. The artifact itself is never
+  rewritten, so an older panel build still exports the node's values.
+- It applies only when the artifact says `protocol_version: "3.1"`. A 2.0
+  artifact, including an AWG3 node's 2.0 fallback, exports as before.
+- **Refresh config** on the key card (`GET` then `POST`
+  `/api/keys/:id/config-refresh`) draws a new set with a different `Jc`. It is
+  owner-only, needs config redownload in the policy, and is audited as
+  `vpn_key.config_profile_refreshed` with the revision only. No node call, no
+  outbox job, same peer and address: the old connection keeps working until
+  the owner imports the new config.
+
+The `H1`-`H4`, `S1`-`S4`, header protection and trailers stay the node's: those
+the server does check, and a key with a changed `H1` gets no handshake.
+
 ---
 
 ## 6. Disk, swap and backups

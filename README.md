@@ -44,7 +44,8 @@ What that buys an operator, concretely:
 
 - **Self-service keys.** A user picks a device and a server, gets a config, a
   `.conf` file or a QR code, and can rename or reissue a key without asking
-  anyone. Quotas are per server or a shared pool, per user or panel-wide.
+  anyone. Each AWG 3.1 key has its own client-side junk parameters, and its
+  owner can draw new ones with **Refresh config** without losing the key. Quotas are per server or a shared pool, per user or panel-wide.
 - **Routing per key.** All traffic through the tunnel, or only what a published
   blocklist says is blocked — the blocked-only profile carries its whole rule
   set inside the key, so that key travels as a file rather than as a link or a

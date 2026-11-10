@@ -317,3 +317,28 @@ describe("copy feedback under the update notice", () => {
     expect(source.match(/reset\(covered\)/g)?.length).toBe(2);
   });
 });
+
+describe("refresh config action", () => {
+  it("is offered on every active AWG3 key with redownload, full tunnel included", () => {
+    expect(source).toMatch(
+      /canRefreshConfig =\s*active && me\.policy\.allowConfigRedownload && keyView\.protocol === "awg3";/,
+    );
+    // Not tied to the rules: Reissue's `canRotate` does not gate it.
+    expect(source).not.toMatch(/canRefreshConfig =[^;]*canRotate/);
+  });
+
+  it("is its own button beside Reissue, labelled, and waits while the card is busy", () => {
+    const button = source.slice(source.indexOf("{canRefreshConfig ? ("), source.indexOf("canRotate ? ("));
+    expect(button).toContain("onClick={onRefreshConfig}");
+    expect(button).toContain('aria-label={t("keyCard.refreshConfig")}');
+    expect(button).toContain("disabled={busy}");
+    expect(source.indexOf("{canRefreshConfig ? (")).toBeLessThan(source.indexOf("onClick={onRotate}"));
+  });
+
+  it("has its copy in both languages", () => {
+    for (const lang of ["ru", "en"] as const) {
+      expect(messages[lang]["keyCard.refreshConfig"]).toBeTruthy();
+      expect(messages[lang]["keyCard.refreshConfigTip"]).toBeTruthy();
+    }
+  });
+});

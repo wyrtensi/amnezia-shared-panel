@@ -72,6 +72,10 @@ const EXACT: Record<string, { textKey: string; tone: Tone }> = {
     textKey: "audit.exact.vpn_key.rotate_requested",
     tone: "warning",
   },
+  "vpn_key.config_profile_refreshed": {
+    textKey: "audit.exact.vpn_key.config_profile_refreshed",
+    tone: "neutral",
+  },
   "vpn_key.private_config_viewed": {
     textKey: "audit.exact.vpn_key.private_config_viewed",
     tone: "warning",
