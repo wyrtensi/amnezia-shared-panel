@@ -373,6 +373,8 @@ const ru = {
     "Это обновлённый конфиг. Импортируйте его и удалите прежнее подключение в приложении — до замены оно продолжает работать.",
   "config.desc":
     "Вставьте ссылку в AmneziaVPN («Подключиться по ссылке») или отсканируйте QR-код камерой телефона.",
+  // A file-only profile has neither the link nor the QR the line above names.
+  "config.descFileOnly": "Скачайте файл и откройте его в AmneziaVPN.",
   "config.loadFailed": "Не удалось загрузить ключ.",
   "config.connectionKey": "Ключ подключения (vpn://)",
   "config.done": "Готово",
@@ -1753,6 +1755,7 @@ const en = {
     "This is the refreshed config. Import it and remove the previous connection in the app; until then the old one keeps working.",
   "config.desc":
     "Paste the link into AmneziaVPN (“Connect by link”) or scan the QR code with your phone camera.",
+  "config.descFileOnly": "Download the file and open it in AmneziaVPN.",
   "config.loadFailed": "Failed to load the key.",
   "config.connectionKey": "Connection key (vpn://)",
   "config.done": "Done",

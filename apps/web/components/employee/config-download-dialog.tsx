@@ -438,7 +438,7 @@ export function ConfigDownloadDialog({
         <DialogHeader>
           <DialogTitle>{t("config.title", { label: target?.deviceLabel ?? "" })}</DialogTitle>
           <DialogDescription>
-            {t("config.desc")}
+            {t(delivery.linkUsable ? "config.desc" : "config.descFileOnly")}
           </DialogDescription>
         </DialogHeader>
 

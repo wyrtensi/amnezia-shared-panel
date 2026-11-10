@@ -162,6 +162,17 @@ describe("download dialog after a config refresh", () => {
     }
   });
 
+  it("does not promise a link or a QR above a file-only dialog", () => {
+    expect(dialogSource).toContain(
+      't(delivery.linkUsable ? "config.desc" : "config.descFileOnly")',
+    );
+    for (const lang of ["ru", "en"] as const) {
+      const text = messages[lang]["config.descFileOnly"];
+      expect(text).toBeTruthy();
+      expect(text).not.toMatch(/QR|ссылк|link/i);
+    }
+  });
+
   it("still fetches nothing up front for a file-only profile, refreshed or not", () => {
     expect(dialogSource).toMatch(/if \(!delivery\.linkUsable\) \{/);
     expect(keyDelivery("ru_blacklist")).toEqual({
