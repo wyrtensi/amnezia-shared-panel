@@ -292,6 +292,14 @@ export const updateNodeRequestSchema = createNodeRequestSchema
   .partial()
   .extend({
     apiKey: z.string().min(32).max(4_096).optional(),
+    // Redeclared without their create-time defaults: `.partial()` keeps a
+    // `.default()`, so a patch naming one unrelated field would otherwise
+    // re-enable a disabled node, reset its capacity and capabilities, and flip
+    // its primary protocol.
+    enabled: z.boolean().optional(),
+    protocol: protocolKindSchema.optional(),
+    maxPeers: z.int().min(1).max(500).optional(),
+    capabilities: z.record(z.string().min(1).max(80), z.boolean()).optional(),
     // Only ever null: the resolved address is an observation the worker makes,
     // never something an operator types, so this clears it rather than setting
     // it. The panel resolves a node's host once and keeps the answer, which is
@@ -311,6 +319,8 @@ export const updateNodeRequestSchema = createNodeRequestSchema
     // "run nothing here" indistinguishable from "no check happens to apply".
     checksEnabled: z.boolean().optional(),
     disabledCheckIds: z.array(z.uuid()).max(100).optional(),
+    // Whether the external reachability probe tests this node.
+    reachabilityEnabled: z.boolean().optional(),
   })
   .refine((value) => Object.keys(value).length > 0, "At least one field is required");
 
@@ -1849,4 +1859,171 @@ export const auditScopeOf = (actorType: string): "people" | "system" =>
   actorType === "system" ? "system" : "people";
 
 // Reading a rule version's stored source_url back into provider names.
+// --- External reachability probe --------------------------------------------
+// A probe on a remote vantage point brings up a real AWG tunnel to every node.
+// The worker pulls its runs over an SSH tunnel; these are the wire format of
+// that probe and the admin view of the results. The vantage point is
+// configuration: its label is stored with the probe, never written in code.
+
+export const REACHABILITY_DEFAULTS = {
+  egressUrl: "https://api.ipify.org",
+  intervalSec: 3600,
+  failThreshold: 2,
+  staleAfterSec: 10800,
+} as const;
+
+export const reachabilityStatusSchema = serviceCheckStatusSchema;
+export type ReachabilityStatus = ServiceCheckStatus;
+
+/** `ok: null` means the level was not attempted. */
+export const probeLevelSchema = z.object({
+  ok: z.boolean().nullable(),
+  detail: z.string().max(500).nullable(),
+  latencyMs: z.number().int().nonnegative().nullable(),
+});
+export type ProbeLevel = z.infer<typeof probeLevelSchema>;
+
+export const PROBE_LEVELS = ["ping", "tcp", "handshake", "http"] as const;
+export type ProbeLevelName = (typeof PROBE_LEVELS)[number];
+
+export const probeLevelsSchema = z.object({
+  ping: probeLevelSchema,
+  tcp: probeLevelSchema,
+  handshake: probeLevelSchema,
+  http: probeLevelSchema,
+});
+export type ProbeLevels = z.infer<typeof probeLevelsSchema>;
+
+export const probeTargetResultSchema = z.object({
+  targetId: z.string().min(1).max(200),
+  protocol: z.string().min(1).max(20),
+  /** `error` means the target could not be attempted (bad config, setup). */
+  status: z.enum(["done", "error"]),
+  detail: z.string().max(500).nullable(),
+  endpointHost: z.string().max(255).nullable(),
+  egressIp: z.string().max(64).nullable(),
+  levels: probeLevelsSchema,
+});
+export type ProbeTargetResult = z.infer<typeof probeTargetResultSchema>;
+
+export const probeRunStateSchema = z.object({
+  runId: z.string().min(1).max(100),
+  startedAt: z.iso.datetime(),
+  finishedAt: z.iso.datetime().nullable(),
+  control: probeLevelSchema,
+  results: z.array(probeTargetResultSchema).max(2_000),
+});
+export type ProbeRunState = z.infer<typeof probeRunStateSchema>;
+
+export const probeRunTargetSchema = z.object({
+  targetId: z.string().min(1).max(200),
+  protocol: z.string().min(1).max(20),
+  /** A `vpn://` link or a raw client config. Grants VPN access: never log it. */
+  config: z.string().min(1).max(16_384),
+  expectedEgressIp: z.string().max(64).optional(),
+});
+
+export const probeRunRequestSchema = z.object({
+  runId: z.string().min(1).max(100),
+  control: z.object({ url: z.url() }),
+  egress: z.object({ url: z.url() }),
+  targets: z.array(probeRunTargetSchema).max(500),
+});
+export type ProbeRunRequest = z.infer<typeof probeRunRequestSchema>;
+
+const httpUrl = z
+  .url()
+  .refine((value) => /^https?:\/\//i.test(value), "Must be an http(s) URL");
+const httpsUrl = z
+  .url()
+  .refine((value) => /^https:\/\//i.test(value), "Must be an https URL");
+
+export const upsertReachabilityProbeRequestSchema = z.object({
+  label: z.string().trim().min(1).max(80),
+  apiBaseUrl: httpUrl,
+  apiKey: z.string().min(32).max(4_096).optional(),
+  enabled: z.boolean().optional(),
+  controlUrl: httpsUrl,
+  egressUrl: httpUrl.optional(),
+  intervalSec: z.int().min(300).max(86_400).optional(),
+  failThreshold: z.int().min(1).max(10).optional(),
+  staleAfterSec: z.int().min(600).max(604_800).optional(),
+});
+export type UpsertReachabilityProbeRequest = z.infer<
+  typeof upsertReachabilityProbeRequestSchema
+>;
+
+export const adminReachabilityProtocolSchema = z.object({
+  protocol: protocolKindSchema,
+  status: reachabilityStatusSchema.nullable(),
+  levels: probeLevelsSchema.nullable(),
+  egressIp: z.string().nullable(),
+  detail: z.string().nullable(),
+  checkedAt: z.iso.datetime().nullable(),
+  keyState: keyStateSchema.nullable(),
+});
+
+export const adminReachabilityNodeSchema = z.object({
+  nodeId: z.uuid(),
+  nodeName: z.string(),
+  nodeEnabled: z.boolean(),
+  reachabilityEnabled: z.boolean(),
+  status: reachabilityStatusSchema.nullable(),
+  checkedAt: z.iso.datetime().nullable(),
+  failingSince: z.iso.datetime().nullable(),
+  consecutiveFailures: z.int(),
+  incidentOpen: z.boolean(),
+  detail: z.string().nullable(),
+  protocols: z.array(adminReachabilityProtocolSchema),
+});
+
+export const adminReachabilityProbeSchema = z.object({
+  label: z.string(),
+  apiBaseUrl: z.string(),
+  enabled: z.boolean(),
+  controlUrl: z.string(),
+  egressUrl: z.string(),
+  intervalSec: z.int(),
+  failThreshold: z.int(),
+  staleAfterSec: z.int(),
+  lastResultAt: z.iso.datetime().nullable(),
+  lastError: z.string().nullable(),
+  lastErrorAt: z.iso.datetime().nullable(),
+  stale: z.boolean(),
+  runInFlight: z.boolean(),
+  runRequestedAt: z.iso.datetime().nullable(),
+});
+
+export const adminReachabilityViewSchema = z.object({
+  probe: adminReachabilityProbeSchema.nullable(),
+  nodes: z.array(adminReachabilityNodeSchema),
+});
+export type AdminReachabilityView = z.infer<typeof adminReachabilityViewSchema>;
+export type AdminReachabilityNode = z.infer<typeof adminReachabilityNodeSchema>;
+
+/**
+ * Whether the probe has gone silent: nothing ingested for `staleAfterSec`,
+ * measured from the newest result, or from when the probe was registered if
+ * it never reported. Shared by the worker (alert) and the panel (badge).
+ */
+export const isProbeStale = (input: {
+  now: Date;
+  staleAfterSec: number;
+  lastResultAt: Date | null;
+  createdAt: Date;
+}): boolean =>
+  input.now.getTime() - (input.lastResultAt ?? input.createdAt).getTime() >
+  input.staleAfterSec * 1_000;
+
+// The worker formats the message before enqueueing, so the processor only
+// relays text.
+export const REACHABILITY_NOTIFY_JOB_TYPE = "notify.reachability";
+
+export const reachabilityNotifyPayloadSchema = z.object({
+  text: z.string().min(1).max(3_500),
+});
+export type ReachabilityNotifyPayload = z.infer<
+  typeof reachabilityNotifyPayloadSchema
+>;
+
 export * from "./ruleSources.js";
