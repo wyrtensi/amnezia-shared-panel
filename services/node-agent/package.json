@@ -1,6 +1,6 @@
 {
   "name": "amnezia-api",
-  "version": "1.1.19",
+  "version": "1.1.20",
   "description": "Self-hosted REST API for automating Amnezia VPN servers",
   "private": true,
   "license": "MIT",
@@ -25,12 +25,12 @@
     "typescript"
   ],
   "engines": {
-    "node": ">=22.19.0"
+    "node": ">=24.0.0"
   },
   "scripts": {
     "lint": "npx eslint . --max-warnings=0",
     "dev": "npx cross-env ENV=development nodemon -q",
-    "build": "npx tsc --project tsconfig.build.json && npx tsconfig-replace-paths --project tsconfig.build.json --src ./src",
+    "build": "npx tsc --project tsconfig.build.json && npx tsc-alias -p tsconfig.build.json",
     "test": "npm run test:typecheck && vitest run",
     "test:typecheck": "tsc --project tsconfig.json",
     "test:watch": "vitest",
@@ -42,44 +42,45 @@
     "deploy": "node ./scripts/deploy.js"
   },
   "dependencies": {
-    "@fastify/cookie": "^11.1.3",
-    "@fastify/cors": "^11.3.1",
+    "@fastify/cookie": "^11.1.5",
+    "@fastify/cors": "^11.4.1",
     "@fastify/formbody": "^9.0.1",
     "@fastify/helmet": "^13.2.0",
-    "@fastify/rate-limit": "^11.2.1",
-    "@fastify/swagger": "^9.9.2",
-    "@fastify/swagger-ui": "^6.1.2",
+    "@fastify/rate-limit": "^11.2.2",
+    "@fastify/swagger": "^9.9.3",
+    "@fastify/swagger-ui": "^6.1.3",
     "@fastify/type-provider-json-schema-to-ts": "^5.0.1",
     "ajv-errors": "^3.0.0",
     "awilix": "^13.0.5",
-    "awilix-manager": "^7.1.0",
+    "awilix-manager": "^7.2.0",
     "chalk": "6.0.1",
     "cross-env": "^10.1.0",
-    "dotenv": "^18.0.8",
-    "fastify": "^5.12.7",
-    "fastify-metrics": "^14.1.1",
-    "i18next": "^26.5.0",
-    "i18next-http-middleware": "^3.9.9",
+    "dotenv": "^18.0.9",
+    "fastify": "^5.12.8",
+    "fastify-metrics": "^15.0.1",
+    "i18next": "^27.0.1",
+    "i18next-http-middleware": "^3.10.0",
     "ipaddr.js": "2.5.0",
     "node-cron": "^4.6.0",
     "qrcode": "^1.5.4",
-    "undici": "^8.12.2",
+    "undici": "^8.12.4",
     "uuid": "^14.0.3",
     "winston": "^3.19.0"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
-    "@types/node": "^26.6.5",
+    "@types/node": "^24.19.2",
     "@types/node-cron": "^3.0.11",
     "@types/qrcode": "^1.5.6",
-    "@vitest/coverage-v8": "^5.0.5",
-    "eslint": "^10.13.0",
+    "@typescript/native": "npm:typescript@^7.0.2",
+    "@vitest/coverage-v8": "^5.1.0",
+    "eslint": "^10.14.0",
     "nodemon": "^3.1.14",
     "ts-node": "10.9.2",
+    "tsc-alias": "^1.9.10",
     "tsconfig-paths": "^4.2.0",
-    "tsconfig-replace-paths": "0.0.14",
-    "typescript": "^6.0.3",
-    "typescript-eslint": "^8.71.2",
-    "vitest": "^5.0.5"
+    "typescript": "npm:@typescript/typescript6@^6.0.2",
+    "typescript-eslint": "^8.72.1",
+    "vitest": "^5.1.0"
   }
 }
