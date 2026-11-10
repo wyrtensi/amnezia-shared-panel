@@ -3143,6 +3143,22 @@ export class PostgresControlRepository implements ControlRepository {
         );
       }
     }
+    // Its keys likewise: the worker creates and revokes them.
+    if (resource === "keys" && UUID_PATTERN.test(targetId)) {
+      const [owner] = await this.options.db
+        .select({ serviceAccount: users.serviceAccount })
+        .from(vpnKeys)
+        .innerJoin(users, eq(users.id, vpnKeys.ownerId))
+        .where(eq(vpnKeys.id, targetId))
+        .limit(1);
+      if (owner?.serviceAccount) {
+        throw new ApiError(
+          409,
+          "Service account keys are managed by the panel",
+          "SERVICE_ACCOUNT",
+        );
+      }
+    }
 
     if (resource === "keys" && ["disable", "enable", "revoke"].includes(action)) {
       const state =

@@ -6842,6 +6842,25 @@ describe("PostgresControlRepository service account", () => {
     expect(keys?.value).toBe(1);
   });
 
+  runDatabaseTest("refuses every admin key action on a service-account key", async () => {
+    if (!database) return;
+    for (const action of ["disable", "enable", "revoke", "purge", "set-internal-name"]) {
+      const failure = await failureOf(
+        subject().adminAction(person, "keys", probeKeyId, action, { internalName: "x" }),
+      );
+      expect({ action, statusCode: failure?.statusCode, code: failure?.code }).toEqual({
+        action,
+        statusCode: 409,
+        code: "SERVICE_ACCOUNT",
+      });
+    }
+    const [row] = await database.db
+      .select({ state: vpnKeys.state })
+      .from(vpnKeys)
+      .where(eq(vpnKeys.id, probeKeyId));
+    expect(row?.state).toBe("active");
+  });
+
   runDatabaseTest("deletes a node holding a probe key like any other node", async () => {
     if (!database) return;
     const nodeB = await seedNode("node-b");
