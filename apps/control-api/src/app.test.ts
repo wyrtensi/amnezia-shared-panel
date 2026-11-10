@@ -276,6 +276,30 @@ describe("control API authorization", () => {
     await app.close();
   });
 
+  // The panel adds `rev` after a config refresh so the browser loads the QR
+  // again; the API must take it and ignore it.
+  it("ignores the revision the panel adds to a config URL", async () => {
+    const service = createService();
+    const app = await buildApp({
+      service,
+      environment: "development",
+      allowDevIdentity: true,
+    });
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/keys/0b48cc4c-404b-47a6-af28-4cf15f305e30/config?format=vpn&rev=3",
+      headers: { "x-dev-user-email": user.email },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(vi.mocked(service.getKeyConfig)).toHaveBeenCalledWith(
+      user,
+      "0b48cc4c-404b-47a6-af28-4cf15f305e30",
+      "vpn",
+      false,
+    );
+    await app.close();
+  });
+
   it("does not coerce the literal false query value to true", async () => {
     const service = createService();
     const app = await buildApp({
