@@ -261,12 +261,13 @@ bot only sends: the widget has no buttons and makes no requests.
   pin failure is logged and never resends.
 - **Content.** Heading "VPN из {label}: N из M" (N = nodes with status ok,
   M = nodes shown). One row per node with checks on and a state: dot coloured
-  by the handshake level (green ok, red failed, grey not measured), ping in ms
-  or ✕, ssh/vpn/inet ✓ or ✕ or "-" when not run, devices online now
+  by the handshake level (green ok, red failed, grey not measured), ssh/vpn/inet
+  ✓ or ✕ or "-" when not run (no ping column: it took the names' width),
+  devices online now
   (`peer_current.online`, the service account excluded), and "люди": the age
   of the newest person handshake on the node (`max(peer_current.latest_handshake_at)`,
   service account excluded, revoked keys included — the admin card's "last
-  handshake"). Sent as minutes before the check (wire format v3, row field 4;
+  handshake"). Sent as minutes before the check (wire format v4, row field 3;
   every row field is a string, because Telegram merges two bare numbers in a
   row of an array into one decimal)
   and aged by the widget itself; "<1ч", whole hours, then days with one decimal
