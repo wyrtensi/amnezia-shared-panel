@@ -17,7 +17,7 @@ describe("KeyGuideButton", () => {
   );
 
   it("hides the word by the card's width, not the window's", () => {
-    expect(html).toMatch(/<span class="@max-\[22rem\]:hidden">Инструкция<\/span>/);
+    expect(html).toMatch(/<span class="@max-\[26rem\]:hidden">Инструкция<\/span>/);
     // A viewport breakpoint here would leave the word on a narrow grid column.
     expect(html).not.toMatch(/\b(sm|md|lg|max-sm|max-md):hidden/);
   });

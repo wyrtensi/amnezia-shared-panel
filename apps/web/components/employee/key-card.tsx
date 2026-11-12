@@ -808,7 +808,7 @@ export function KeyGuideButton({ onClick }: { onClick: () => void }) {
         >
           {/* Hidden on a narrow card so the status badge keeps
               its whole word; the icon and the label remain. */}
-          <span className="@max-[22rem]:hidden">{t("keyCard.guideShort")}</span>
+          <span className="@max-[26rem]:hidden">{t("keyCard.guideShort")}</span>
           <CircleHelp className="size-3.5" />
         </Button>
       </TooltipTrigger>

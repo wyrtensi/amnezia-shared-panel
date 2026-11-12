@@ -3044,6 +3044,43 @@ describe("PostgresControlRepository node status surfaces", () => {
       expect((await listed()).reachability).toMatchObject({ state: "unknown" });
     });
 
+    runDatabaseTest("gives a key the verdict of a server the user can no longer pick", async () => {
+      if (!database) return;
+      await seedProbe();
+      await database.db.insert(nodeReachabilityState).values({
+        nodeId,
+        status: "failed",
+        failingSince,
+        checkedAt: new Date(),
+      });
+      // No node offered for new keys, yet the key stays on its server.
+      await database.db.insert(portalPolicy).values({ allowedNodeIds: [] });
+      const [key] = await database.db
+        .insert(vpnKeys)
+        .values({
+          ownerId: actor.id,
+          nodeId,
+          nodeLabel: `ap_status_${randomBytes(4).toString("hex")}`,
+          protocol: "awg3",
+          routeProfile: "full_tunnel",
+          state: "active",
+        })
+        .returning();
+      try {
+        const listedNodes = (await subject().listNodes(actor)) as Array<{ id: string }>;
+        expect(listedNodes.some((node) => node.id === nodeId)).toBe(false);
+        const view = (await subject().listKeys(actor)).find((row) => row.id === key?.id);
+        expect(view?.nodeReachability).toEqual({
+          state: "blocked",
+          since: failingSince.toISOString(),
+          sinceText: "12.11 10:11",
+        });
+      } finally {
+        if (key) await database.db.delete(vpnKeys).where(eq(vpnKeys.id, key.id));
+        await database.db.delete(portalPolicy);
+      }
+    });
+
     runDatabaseTest("omits the verdict when the policy hides node status", async () => {
       if (!database) return;
       await seedProbe();
