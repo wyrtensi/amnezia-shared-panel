@@ -7,7 +7,7 @@ import { keyBadgeState } from "@/lib/node-reachability";
 
 import { KeyGuideButton } from "./key-card";
 
-const blocked = { state: "blocked" as const, since: "2026-11-12T09:11:00.000Z", sinceText: "12.11 10:11" };
+const blocked = { state: "blocked" as const, since: "2026-11-12T09:11:00.000Z" };
 
 describe("KeyGuideButton", () => {
   const html = renderToStaticMarkup(

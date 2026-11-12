@@ -109,7 +109,8 @@ on their own keys, through `GET /api/nodes` (`reachability`) and
 `GET /api/keys` (`nodeReachability`), behind the `showNodeStatus` policy flag:
 
 - `blocked` from the first `failed` verdict (the alert threshold does not
-  apply), with "since" in the probe's `--time-zone`;
+  apply), with the instant it began; the cabinet shows it in the browser's own
+  time zone (the Telegram widget and alerts keep `--time-zone`);
 - `ok` for an `ok` verdict;
 - `unknown` (grey) for no probe, a disabled or stale probe, a node without
   checks or without a verdict, an `error` verdict, and a run that failed

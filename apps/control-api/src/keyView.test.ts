@@ -181,7 +181,7 @@ describe("server name on the owner-facing key payload", () => {
 });
 
 describe("toKeyView nodeReachability", () => {
-  const blocked = { state: "blocked" as const, since: "2026-11-12T09:11:00.000Z", sinceText: "12.11 10:11" };
+  const blocked = { state: "blocked" as const, since: "2026-11-12T09:11:00.000Z" };
   const withReachability = (nodeReachability?: typeof blocked) =>
     toKeyView({
       actor: owner,

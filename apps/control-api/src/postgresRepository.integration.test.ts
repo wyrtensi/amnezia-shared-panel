@@ -3003,7 +3003,6 @@ describe("PostgresControlRepository node status surfaces", () => {
       expect(node.reachability).toEqual({
         state: "blocked",
         since: failingSince.toISOString(),
-        sinceText: "12.11 10:11",
       });
       // The probe's own settings and the verdict's detail stay on the admin side.
       const payload = JSON.stringify(node);
@@ -3023,7 +3022,6 @@ describe("PostgresControlRepository node status surfaces", () => {
       expect((await listed()).reachability).toEqual({
         state: "unknown",
         since: null,
-        sinceText: null,
       });
       await database.db
         .delete(nodeReachabilityState)
@@ -3073,8 +3071,7 @@ describe("PostgresControlRepository node status surfaces", () => {
         expect(view?.nodeReachability).toEqual({
           state: "blocked",
           since: failingSince.toISOString(),
-          sinceText: "12.11 10:11",
-        });
+          });
       } finally {
         if (key) await database.db.delete(vpnKeys).where(eq(vpnKeys.id, key.id));
         await database.db.delete(portalPolicy);

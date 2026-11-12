@@ -1,4 +1,29 @@
+import * as React from "react";
+import { clockDayTime } from "@amnezia/contracts";
+
 import type { UserNodeReachability } from "@/lib/types";
+
+/**
+ * When a block began, as "12.11 10:11" in `timeZone` - the browser's own zone
+ * when none is given, which is how the cabinet shows it. The same format as
+ * the Telegram widget, which keeps the probe's configured zone instead.
+ */
+export const formatSince = (since: string, timeZone?: string): string =>
+  clockDayTime(new Date(since), timeZone);
+
+const subscribeNever = () => () => undefined;
+
+/**
+ * False on the server and during hydration, true afterwards. A clock time in
+ * the browser's zone cannot be rendered on the server (it does not know the
+ * zone), so anything zone-dependent waits for this instead of mismatching.
+ */
+export const useHydrated = (): boolean =>
+  React.useSyncExternalStore(
+    subscribeNever,
+    () => true,
+    () => false,
+  );
 
 /**
  * What the key card's status badge shows: the key's own state, except that an

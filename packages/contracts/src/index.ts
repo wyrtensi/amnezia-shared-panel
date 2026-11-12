@@ -2083,7 +2083,7 @@ export const isProbeStale = (input: {
   return input.now.getTime() - from > limitSec * 1_000;
 };
 
-const clockParts = (date: Date, timeZone: string): Record<string, string> =>
+const clockParts = (date: Date, timeZone: string | undefined): Record<string, string> =>
   Object.fromEntries(
     new Intl.DateTimeFormat("en-GB", {
       timeZone,
@@ -2098,10 +2098,11 @@ const clockParts = (date: Date, timeZone: string): Record<string, string> =>
   );
 
 /**
- * "10.11 15:46" in the given IANA zone. The one clock format the probe's
- * times are shown in: the Telegram widget and the user cabinet both use it.
+ * "10.11 15:46" in the given IANA zone, or in the runtime's own zone when none
+ * is given (the browser's, in the user cabinet). The one clock format the
+ * probe's times are shown in: the Telegram widget and the cabinet both use it.
  */
-export const clockDayTime = (date: Date, timeZone: string): string => {
+export const clockDayTime = (date: Date, timeZone?: string): string => {
   const p = clockParts(date, timeZone);
   return `${p.day}.${p.month} ${p.hour}:${p.minute}`;
 };
@@ -2115,7 +2116,8 @@ export const clockTime = (date: Date, timeZone: string): string => {
 // --- What a user is told about a node's reachability -------------------------
 // The probe's verdict, narrowed to three words and a time. Nothing about how
 // the panel found out leaves here: no levels, no detail, no egress address, no
-// probe label or host, no time zone. `unknown` is the answer whenever the
+// probe label or host, no time zone. The time goes out as an instant; the
+// cabinet shows it in the user's own zone. `unknown` is the answer whenever the
 // verdict cannot be trusted, because a "blocked" we cannot support makes a
 // user move off a working server, and a stale "ok" hides a real block.
 
@@ -2126,15 +2128,12 @@ export const userNodeReachabilitySchema = z.object({
   state: userNodeReachabilityStateSchema,
   /** When the block began; set only for `blocked`. */
   since: z.iso.datetime().nullable(),
-  /** `since` as "12.11 10:11" in the probe's configured zone. */
-  sinceText: z.string().nullable(),
 });
 export type UserNodeReachability = z.infer<typeof userNodeReachabilitySchema>;
 
 export const UNKNOWN_USER_REACHABILITY: UserNodeReachability = Object.freeze({
   state: "unknown",
   since: null,
-  sinceText: null,
 });
 
 /** The probe columns the user verdict depends on. */
@@ -2146,7 +2145,6 @@ export type UserReachabilityProbe = {
   staleAlertedAt: Date | null;
   enabledAt: Date;
   lastRunMass: boolean;
-  timeZone: string;
 };
 
 /** The node's stored verdict, or null when it has none yet. */
@@ -2188,13 +2186,9 @@ export const toUserReachability = (input: {
   ) {
     return UNKNOWN_USER_REACHABILITY;
   }
-  if (state.status === "ok") return { state: "ok", since: null, sinceText: null };
+  if (state.status === "ok") return { state: "ok", since: null };
   if (state.status === "failed") {
-    return {
-      state: "blocked",
-      since: state.failingSince?.toISOString() ?? null,
-      sinceText: state.failingSince ? clockDayTime(state.failingSince, probe.timeZone) : null,
-    };
+    return { state: "blocked", since: state.failingSince?.toISOString() ?? null };
   }
   return UNKNOWN_USER_REACHABILITY;
 };

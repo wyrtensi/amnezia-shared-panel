@@ -2,7 +2,7 @@
 
 import { Badge } from "@/components/ui/badge";
 import { useT } from "@/lib/i18n/provider";
-import { blockedFirst } from "@/lib/node-reachability";
+import { blockedFirst, formatSince, useHydrated } from "@/lib/node-reachability";
 import type { NodeView, UserNodeReachability } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -21,6 +21,8 @@ const DOT: Record<UserNodeReachability["state"], { className: string; labelKey: 
  */
 export function ServerStatusList({ nodes }: { nodes: readonly NodeView[] }) {
   const { t } = useT();
+  // "since" is shown in the browser's zone, so only once hydrated.
+  const hydrated = useHydrated();
   return (
     <ul className="space-y-1.5" aria-label={t("emp.servers")}>
       {blockedFirst(nodes).map((node) => {
@@ -48,9 +50,9 @@ export function ServerStatusList({ nodes }: { nodes: readonly NodeView[] }) {
                   </Badge>
                 ) : null}
               </span>
-              {reachability?.state === "blocked" && reachability.sinceText ? (
+              {hydrated && reachability?.state === "blocked" && reachability.since ? (
                 <span className="block text-xs text-destructive">
-                  {t("emp.blockedSince", { since: reachability.sinceText })}
+                  {t("emp.blockedSince", { since: formatSince(reachability.since) })}
                 </span>
               ) : null}
             </span>

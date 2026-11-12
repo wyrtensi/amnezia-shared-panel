@@ -19,23 +19,28 @@ describe("ServerStatusList", () => {
       nodes={[
         node("amster4", {
           recommended: true,
-          reachability: { state: "ok", since: null, sinceText: null },
+          reachability: { state: "ok", since: null },
         }),
         node("london2", {
           reachability: {
             state: "blocked",
             since: "2026-11-12T09:11:00.000Z",
-            sinceText: "12.11 10:11",
           },
         }),
-        node("kz2", { reachability: { state: "unknown", since: null, sinceText: null } }),
+        node("kz2", { reachability: { state: "unknown", since: null } }),
       ]}
     />,
   );
 
-  it("puts a blocked server first and says since when, in red", () => {
+  it("puts a blocked server first", () => {
     expect(html.indexOf("london2")).toBeLessThan(html.indexOf("amster4"));
-    expect(html).toContain('<span class="block text-xs text-destructive">с 12.11 10:11</span>');
+  });
+
+  it("leaves the browser-zone time out of the server render", () => {
+    // The server does not know the user's zone; rendering a time here would
+    // mismatch on hydration. It appears once the client has hydrated.
+    expect(html).not.toContain("text-destructive\">с ");
+    expect(html).not.toMatch(/\d\d\.\d\d \d\d:\d\d/);
   });
 
   it("draws green for ok, red for blocked, grey for no data", () => {

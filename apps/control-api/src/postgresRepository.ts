@@ -835,7 +835,6 @@ export class PostgresControlRepository implements ControlRepository {
           staleAlertedAt: reachabilityProbe.staleAlertedAt,
           enabledAt: reachabilityProbe.enabledAt,
           lastRunMass: reachabilityProbe.lastRunMass,
-          timeZone: reachabilityProbe.timeZone,
         })
         .from(reachabilityProbe)
         .where(eq(reachabilityProbe.id, 1))

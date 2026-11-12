@@ -209,6 +209,12 @@ describe("clock formats", () => {
     expect(clockDayTime(at, "Europe/Belgrade")).toBe("02.07 01:30");
     expect(clockTime(at, "Europe/Belgrade")).toBe("01:30");
   });
+
+  it("falls back to the runtime's own zone", () => {
+    const at = new Date("2026-07-01T23:30:00Z");
+    const zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    expect(clockDayTime(at)).toBe(clockDayTime(at, zone));
+  });
 });
 
 describe("toUserReachability", () => {
@@ -221,30 +227,25 @@ describe("toUserReachability", () => {
     staleAlertedAt: null,
     enabledAt: new Date("2026-11-01T00:00:00Z"),
     lastRunMass: false,
-    timeZone: "Europe/Belgrade",
   };
   const failingSince = new Date("2026-11-12T09:11:00Z");
   const failed = { status: "failed" as const, failingSince, checkedAt: probe.lastResultAt };
   const ok = { status: "ok" as const, failingSince: null, checkedAt: probe.lastResultAt };
   const map = (over: Partial<Parameters<typeof toUserReachability>[0]> = {}) =>
     toUserReachability({ probe, reachabilityEnabled: true, state: failed, now, ...over });
-  const unknown = { state: "unknown", since: null, sinceText: null };
+  const unknown = { state: "unknown", since: null };
 
   it("reports a failed verdict as blocked from the first failure, with the time", () => {
-    expect(map()).toEqual({
-      state: "blocked",
-      since: "2026-11-12T09:11:00.000Z",
-      sinceText: "12.11 10:11",
-    });
+    expect(map()).toEqual({ state: "blocked", since: "2026-11-12T09:11:00.000Z" });
   });
 
   it("reports an ok verdict as ok without a time", () => {
-    expect(map({ state: ok })).toEqual({ state: "ok", since: null, sinceText: null });
+    expect(map({ state: ok })).toEqual({ state: "ok", since: null });
   });
 
-  it("carries only the three public fields", () => {
+  it("carries only the state and the instant, no preformatted time", () => {
     const view = map();
-    expect(Object.keys(view).sort()).toEqual(["since", "sinceText", "state"]);
+    expect(Object.keys(view).sort()).toEqual(["since", "state"]);
     expect(userNodeReachabilitySchema.strict().parse(view)).toEqual(view);
   });
 
