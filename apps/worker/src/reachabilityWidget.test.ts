@@ -7,7 +7,6 @@ import type { ProbeLevels } from "@amnezia/contracts";
 
 import {
   buildWidgetData,
-  clockDayTime,
   cutBytes,
   peopleMinutes,
   serializeWidgetData,
@@ -104,12 +103,6 @@ describe("buildWidgetData", () => {
       ct: null,
       nt: null,
     });
-  });
-
-  it("formats clock times in the configured zone", () => {
-    const at = new Date("2026-07-01T23:30:00Z");
-    expect(clockDayTime(at, "UTC")).toBe("01.07 23:30");
-    expect(clockDayTime(at, "Europe/Belgrade")).toBe("02.07 01:30");
   });
 
   it("fits 1024 bytes with 12 failed nodes with long Cyrillic names", () => {

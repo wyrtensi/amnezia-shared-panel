@@ -48,8 +48,10 @@ import {
   REVOCABLE_KEY_STATES,
   revokeJobDedupKey,
   toUserCheckState,
+  toUserReachability,
+  UNKNOWN_USER_REACHABILITY,
 } from "@amnezia/contracts";
-import type { ServiceCheckUserState } from "@amnezia/contracts";
+import type { ServiceCheckUserState, UserNodeReachability } from "@amnezia/contracts";
 import {
   ACCESS_SYNC_DEDUPLICATION_KEY,
   QUOTA_REQUEST_NOTIFY_JOB_TYPE,
@@ -813,6 +815,61 @@ export class PostgresControlRepository implements ControlRepository {
     }));
   };
 
+  /**
+   * The user-facing reachability verdict for each of `nodeIds`
+   * (`toUserReachability`). Reads only the columns that verdict depends on, so
+   * nothing about the probe itself (label, host, credentials) is even loaded.
+   */
+  private loadUserReachability = async (
+    nodeIds: readonly string[],
+  ): Promise<Map<string, UserNodeReachability>> => {
+    if (nodeIds.length === 0) return new Map();
+    const db = this.options.db;
+    const [probeRows, stateRows] = await Promise.all([
+      db
+        .select({
+          enabled: reachabilityProbe.enabled,
+          lastResultAt: reachabilityProbe.lastResultAt,
+          staleAfterSec: reachabilityProbe.staleAfterSec,
+          intervalSec: reachabilityProbe.intervalSec,
+          staleAlertedAt: reachabilityProbe.staleAlertedAt,
+          enabledAt: reachabilityProbe.enabledAt,
+          lastRunMass: reachabilityProbe.lastRunMass,
+          timeZone: reachabilityProbe.timeZone,
+        })
+        .from(reachabilityProbe)
+        .where(eq(reachabilityProbe.id, 1))
+        .limit(1),
+      db
+        .select({
+          nodeId: nodes.id,
+          reachabilityEnabled: nodes.reachabilityEnabled,
+          status: nodeReachabilityState.status,
+          failingSince: nodeReachabilityState.failingSince,
+          checkedAt: nodeReachabilityState.checkedAt,
+        })
+        .from(nodes)
+        .leftJoin(nodeReachabilityState, eq(nodeReachabilityState.nodeId, nodes.id))
+        .where(inArray(nodes.id, [...nodeIds])),
+    ]);
+    const probe = probeRows[0] ?? null;
+    const now = new Date();
+    return new Map(
+      stateRows.map((row) => [
+        row.nodeId,
+        toUserReachability({
+          probe,
+          reachabilityEnabled: row.reachabilityEnabled,
+          state:
+            row.status !== null && row.checkedAt !== null
+              ? { status: row.status, failingSince: row.failingSince, checkedAt: row.checkedAt }
+              : null,
+          now,
+        }),
+      ]),
+    );
+  };
+
   listNodes = async (actor: Actor): Promise<unknown[]> => {
     const [rows, policyRow, userRow, checkRows] = await Promise.all([
       this.options.db
@@ -902,9 +959,14 @@ export class PostgresControlRepository implements ControlRepository {
     // The SELECT above has no ORDER BY and the worker rewrites node rows on
     // every telemetry poll, so the order is fixed here, on the name the user
     // sees — after the availability filter, never before it.
+    const available = rows.filter((row) => isNodeAvailable(policy.allowedNodeIds, row.id));
+    // Behind the same flag as the service checks: both tell a user whether a
+    // server works for them right now.
+    const reachability = policy.showNodeStatus
+      ? await this.loadUserReachability(available.map((row) => row.id))
+      : null;
     return orderNodesForUsers(
-      rows
-        .filter((row) => isNodeAvailable(policy.allowedNodeIds, row.id))
+      available
         .map(
           ({
             capabilities,
@@ -945,10 +1007,14 @@ export class PostgresControlRepository implements ControlRepository {
                 enabledProtocols,
                 policy.allowedProtocols,
               ),
-              // Only `checks`, deliberately. There is no node state word here
-              // and there must never be one: node health is already shown from
-              // enabled/lastError/lastHealthAt, and a second vocabulary for the
-              // same thing is what the three-state narrowing exists to prevent.
+              // The external probe's verdict, as three words and a time
+              // (`toUserReachability`). It is the one node state word a user
+              // gets, and it is deliberately not the panel's own health view
+              // (enabled/lastError/lastHealthAt): it answers "does the VPN
+              // work from outside", which a healthy node can fail.
+              ...(reachability
+                ? { reachability: reachability.get(row.id) ?? UNKNOWN_USER_REACHABILITY }
+                : {}),
               // Only checks this node actually runs. A chip for one it has
               // been taken out of would show a user a verdict that will never
               // change again - worse than showing nothing, because it looks
@@ -1337,8 +1403,23 @@ export class PostgresControlRepository implements ControlRepository {
     // The projection lives in keyView.ts as a pure function: it is what decides
     // whether the operator-only note leaves the server at all, and that
     // decision has to be assertable without a database.
+    // Read per key's own node, not from `/api/nodes`: a key outlives the
+    // permission to create keys on its server.
+    const reachability = policy.showNodeStatus
+      ? await this.loadUserReachability([...new Set(rows.map(({ key }) => key.nodeId))])
+      : null;
     return rows.map(({ key, node, current }) =>
-      toKeyView({ actor, key, node, current, policy, activeByProfile }),
+      toKeyView({
+        actor,
+        key,
+        node,
+        current,
+        policy,
+        activeByProfile,
+        nodeReachability: reachability
+          ? (reachability.get(key.nodeId) ?? UNKNOWN_USER_REACHABILITY)
+          : undefined,
+      }),
     );
   };
 

@@ -3,6 +3,7 @@ import type {
   ConfigRefreshStatus,
   AccessSyncStatus,
   AdminReachabilityView,
+  UserNodeReachability,
   CreateNodeRequest,
   CreateServiceCheckRequest,
   CreateUserRequest,
@@ -50,6 +51,11 @@ export type KeyView = {
    * create keys on that server, which `/api/nodes` does not list.
    */
   nodeName: string;
+  /**
+   * Whether the key's server works from outside (the external probe's
+   * verdict). Present only when the portal policy's showNodeStatus is on.
+   */
+  nodeReachability?: UserNodeReachability;
   publicKey?: string | null;
   protocol: ProtocolKind;
   state: KeyState;

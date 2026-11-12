@@ -2083,6 +2083,122 @@ export const isProbeStale = (input: {
   return input.now.getTime() - from > limitSec * 1_000;
 };
 
+const clockParts = (date: Date, timeZone: string): Record<string, string> =>
+  Object.fromEntries(
+    new Intl.DateTimeFormat("en-GB", {
+      timeZone,
+      day: "2-digit",
+      month: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      hourCycle: "h23",
+    })
+      .formatToParts(date)
+      .map((part) => [part.type, part.value]),
+  );
+
+/**
+ * "10.11 15:46" in the given IANA zone. The one clock format the probe's
+ * times are shown in: the Telegram widget and the user cabinet both use it.
+ */
+export const clockDayTime = (date: Date, timeZone: string): string => {
+  const p = clockParts(date, timeZone);
+  return `${p.day}.${p.month} ${p.hour}:${p.minute}`;
+};
+
+/** "15:46" in the given IANA zone. */
+export const clockTime = (date: Date, timeZone: string): string => {
+  const p = clockParts(date, timeZone);
+  return `${p.hour}:${p.minute}`;
+};
+
+// --- What a user is told about a node's reachability -------------------------
+// The probe's verdict, narrowed to three words and a time. Nothing about how
+// the panel found out leaves here: no levels, no detail, no egress address, no
+// probe label or host, no time zone. `unknown` is the answer whenever the
+// verdict cannot be trusted, because a "blocked" we cannot support makes a
+// user move off a working server, and a stale "ok" hides a real block.
+
+export const userNodeReachabilityStateSchema = z.enum(["ok", "blocked", "unknown"]);
+export type UserNodeReachabilityState = z.infer<typeof userNodeReachabilityStateSchema>;
+
+export const userNodeReachabilitySchema = z.object({
+  state: userNodeReachabilityStateSchema,
+  /** When the block began; set only for `blocked`. */
+  since: z.iso.datetime().nullable(),
+  /** `since` as "12.11 10:11" in the probe's configured zone. */
+  sinceText: z.string().nullable(),
+});
+export type UserNodeReachability = z.infer<typeof userNodeReachabilitySchema>;
+
+export const UNKNOWN_USER_REACHABILITY: UserNodeReachability = Object.freeze({
+  state: "unknown",
+  since: null,
+  sinceText: null,
+});
+
+/** The probe columns the user verdict depends on. */
+export type UserReachabilityProbe = {
+  enabled: boolean;
+  lastResultAt: Date | null;
+  staleAfterSec: number;
+  intervalSec: number;
+  staleAlertedAt: Date | null;
+  enabledAt: Date;
+  lastRunMass: boolean;
+  timeZone: string;
+};
+
+/** The node's stored verdict, or null when it has none yet. */
+export type UserReachabilityNodeState = {
+  status: ReachabilityStatus;
+  failingSince: Date | null;
+  checkedAt: Date;
+};
+
+/**
+ * Collapse the probe's verdict for one node into what a user is shown.
+ *
+ * - `blocked`: the newest verdict is `failed` - the probe measured every
+ *   protocol and none carried traffic. From the first failure: the alert
+ *   threshold is about not paging the operator, not about what is true now.
+ * - `ok`: the newest verdict is `ok`.
+ * - `unknown` otherwise: no probe or a disabled one, a stale probe, a node the
+ *   probe does not test or has no verdict for, a verdict older than the stale
+ *   limit, an `error` verdict (the probe could not measure), and a mass
+ *   failure (every node failed at once, which points at the probe itself -
+ *   it must not paint every key "blocked").
+ */
+export const toUserReachability = (input: {
+  probe: UserReachabilityProbe | null;
+  reachabilityEnabled: boolean;
+  state: UserReachabilityNodeState | null;
+  now: Date;
+}): UserNodeReachability => {
+  const { probe, state, now } = input;
+  if (!probe || !probe.enabled || !input.reachabilityEnabled || !state) {
+    return UNKNOWN_USER_REACHABILITY;
+  }
+  const limits = { now, staleAfterSec: probe.staleAfterSec, intervalSec: probe.intervalSec };
+  if (
+    probe.staleAlertedAt !== null ||
+    isProbeStale({ ...limits, lastResultAt: probe.lastResultAt, since: probe.enabledAt }) ||
+    isProbeStale({ ...limits, lastResultAt: state.checkedAt, since: state.checkedAt }) ||
+    probe.lastRunMass
+  ) {
+    return UNKNOWN_USER_REACHABILITY;
+  }
+  if (state.status === "ok") return { state: "ok", since: null, sinceText: null };
+  if (state.status === "failed") {
+    return {
+      state: "blocked",
+      since: state.failingSince?.toISOString() ?? null,
+      sinceText: state.failingSince ? clockDayTime(state.failingSince, probe.timeZone) : null,
+    };
+  }
+  return UNKNOWN_USER_REACHABILITY;
+};
+
 /**
  * The protocols a node offers, which is what the probe tests: those it
  * supports (its capabilities, or its primary protocol when none are reported)
