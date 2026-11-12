@@ -59,15 +59,15 @@ describe("buildWidgetData", () => {
     const data = buildWidgetData(
       input({
         nodes: [
-          node("us-utah", { levels: levels(false, true) }),
-          node("amster3"),
-          node("london2", { status: "failed", levels: levels(false, false), failingSince: since }),
-          node("kz2", { status: "error", levels: null }),
-          node("amster5", { status: "failed", levels: levels(false, false), failingSince: since }),
+          node("Server name 6", { levels: levels(false, true) }),
+          node("Server name 1"),
+          node("Server name 5", { status: "failed", levels: levels(false, false), failingSince: since }),
+          node("Server name 4", { status: "error", levels: null }),
+          node("Server name 3", { status: "failed", levels: levels(false, false), failingSince: since }),
         ],
       }),
     );
-    expect(data.n.map((row) => row[0])).toEqual(["amster5", "london2", "kz2", "amster3", "us-utah"]);
+    expect(data.n.map((row) => row[0])).toEqual(["Server name 3", "Server name 5", "Server name 4", "Server name 1", "Server name 6"]);
     expect(data.k).toBe(2);
     expect(data.t).toBe(5);
   });
@@ -76,18 +76,18 @@ describe("buildWidgetData", () => {
     const data = buildWidgetData(
       input({
         nodes: [
-          node("amster5", { status: "failed", levels: levels(false, false), failingSince: since, online: 0 }),
-          node("amster3", { online: 3 }),
-          node("us-utah", { levels: levels(false, true) }),
-          node("kz2", { status: "error", levels: null, online: 0 }),
+          node("Server name 3", { status: "failed", levels: levels(false, false), failingSince: since, online: 0 }),
+          node("Server name 1", { online: 3 }),
+          node("Server name 6", { levels: levels(false, true) }),
+          node("Server name 4", { status: "error", levels: null, online: 0 }),
         ],
       }),
     );
     // Belgrade is UTC+1 in November.
-    expect(data.n[0]).toEqual(["amster5", "000-", "0", "", "10.11 15:46"]);
-    expect(data.n[1]).toEqual(["kz2", "----", "0", ""]);
-    expect(data.n[2]).toEqual(["amster3", "1111", "3", ""]);
-    expect(data.n[3]).toEqual(["us-utah", "0111", "1", ""]);
+    expect(data.n[0]).toEqual(["Server name 3", "000-", "0", "", "10.11 15:46"]);
+    expect(data.n[1]).toEqual(["Server name 4", "----", "0", ""]);
+    expect(data.n[2]).toEqual(["Server name 1", "1111", "3", ""]);
+    expect(data.n[3]).toEqual(["Server name 6", "0111", "1", ""]);
     expect(data).toMatchObject({ ct: "10.11 15:51", nt: "16:51", s: 0, m: 0, x: 0 });
     expect(data.c).toBe(Math.floor(Date.parse("2026-11-10T14:51:00Z") / 1000));
   });
@@ -136,7 +136,7 @@ describe("buildWidgetData", () => {
 
 describe("cutBytes", () => {
   it("cuts on a character boundary and marks the cut", () => {
-    expect(cutBytes("amster3", 40)).toBe("amster3");
+    expect(cutBytes("Server name 1", 40)).toBe("Server name 1");
     const cut = cutBytes("ЖЖЖЖЖЖЖЖЖЖ", 9);
     expect(Buffer.byteLength(cut)).toBeLessThanOrEqual(9);
     expect(cut).toBe("ЖЖЖ…");
@@ -187,10 +187,10 @@ describe("people column", () => {
     expect(peopleMinutes(null, checkedAt)).toBeNull();
     expect(peopleMinutes(new Date(), null)).toBeNull();
     const data = buildWidgetData(
-      input({ nodes: [node("london2", { lastPersonHandshakeAt: new Date("2026-11-10T14:46:00Z") })] }),
+      input({ nodes: [node("Server name 5", { lastPersonHandshakeAt: new Date("2026-11-10T14:46:00Z") })] }),
     );
     expect(data.v).toBe(4);
-    expect(data.n[0]).toEqual(["london2", "1111", "1", "5"]);
+    expect(data.n[0]).toEqual(["Server name 5", "1111", "1", "5"]);
   });
 
   it.each([
@@ -232,9 +232,9 @@ describe("numbers in chat_data", () => {
     const data = buildWidgetData(
       input({
         nodes: [
-          node("amster5", { online: 0, lastPersonHandshakeAt: new Date("2026-11-08T22:10:00Z") }),
-          node("london2", { online: 2, levels: levels(true, true, 52), lastPersonHandshakeAt: since }),
-          node("amster6", { status: "failed", levels: levels(false, false), failingSince: since, online: 1 }),
+          node("Server name 3", { online: 0, lastPersonHandshakeAt: new Date("2026-11-08T22:10:00Z") }),
+          node("Server name 5", { online: 2, levels: levels(true, true, 52), lastPersonHandshakeAt: since }),
+          node("Server name 7", { status: "failed", levels: levels(false, false), failingSince: since, online: 1 }),
         ],
       }),
     );

@@ -46,12 +46,12 @@ describe("formatQuotaRequestMessage", () => {
 
   it("shows the server and the reason when the request has them", () => {
     const text = formatQuotaRequestMessage(
-      { ...payload, displayName: null, nodeName: "amster5", reason: "two laptops" },
+      { ...payload, displayName: null, nodeName: "Server name 3", reason: "two laptops" },
       null,
     );
     expect(text).toContain("user@example.com");
     expect(text).not.toContain("(user@example.com)");
-    expect(text).toContain("amster5");
+    expect(text).toContain("Server name 3");
     expect(text).toContain("Причина: two laptops");
     expect(text).not.toContain("/admin");
   });
