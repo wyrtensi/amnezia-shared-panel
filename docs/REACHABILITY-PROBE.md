@@ -102,6 +102,22 @@ with the bot, so `TELEGRAM_CHAT_ID` must be a person's id for the widget to work
   sends a fresh widget and unpins the old one. `probe` shows the widget's last
   update or error (`tg widget:`).
 
+### In the user cabinet
+
+Users see the verdict for the servers they may use, and the "Blocked" badge
+on their own keys, through `GET /api/nodes` (`reachability`) and
+`GET /api/keys` (`nodeReachability`), behind the `showNodeStatus` policy flag:
+
+- `blocked` from the first `failed` verdict (the alert threshold does not
+  apply), with the instant it began; the cabinet shows it in the browser's own
+  time zone (the Telegram widget and alerts keep `--time-zone`);
+- `ok` for an `ok` verdict;
+- `unknown` (grey) for no probe, a disabled or stale probe, a node without
+  checks or without a verdict, an `error` verdict, and a run that failed
+  everywhere.
+
+Nothing else leaves: no levels, details, label, host or time zone.
+
 ## Install
 
 You need: a Linux amd64 host in the network of interest with Docker and

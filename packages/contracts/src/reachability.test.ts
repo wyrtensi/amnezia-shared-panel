@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  clockDayTime,
+  clockTime,
   isProbeStale,
+  toUserReachability,
+  userNodeReachabilitySchema,
   nodeServedProtocols,
   probeRunRequestSchema,
   probeRunStateSchema,
@@ -195,5 +199,73 @@ describe("nodeServedProtocols", () => {
     expect(
       nodeServedProtocols({ protocol: "awg3", capabilities: { awg2: true, awg3: true }, enabledProtocols: ["awg3"] }),
     ).toEqual(["awg3"]);
+  });
+});
+
+describe("clock formats", () => {
+  it("formats clock times in the configured zone", () => {
+    const at = new Date("2026-07-01T23:30:00Z");
+    expect(clockDayTime(at, "UTC")).toBe("01.07 23:30");
+    expect(clockDayTime(at, "Europe/Belgrade")).toBe("02.07 01:30");
+    expect(clockTime(at, "Europe/Belgrade")).toBe("01:30");
+  });
+
+  it("falls back to the runtime's own zone", () => {
+    const at = new Date("2026-07-01T23:30:00Z");
+    const zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    expect(clockDayTime(at)).toBe(clockDayTime(at, zone));
+  });
+});
+
+describe("toUserReachability", () => {
+  const now = new Date("2026-11-12T12:00:00Z");
+  const probe = {
+    enabled: true,
+    lastResultAt: new Date("2026-11-12T11:30:00Z"),
+    staleAfterSec: 10_800,
+    intervalSec: 3_600,
+    staleAlertedAt: null,
+    enabledAt: new Date("2026-11-01T00:00:00Z"),
+    lastRunMass: false,
+  };
+  const failingSince = new Date("2026-11-12T09:11:00Z");
+  const failed = { status: "failed" as const, failingSince, checkedAt: probe.lastResultAt };
+  const ok = { status: "ok" as const, failingSince: null, checkedAt: probe.lastResultAt };
+  const map = (over: Partial<Parameters<typeof toUserReachability>[0]> = {}) =>
+    toUserReachability({ probe, reachabilityEnabled: true, state: failed, now, ...over });
+  const unknown = { state: "unknown", since: null };
+
+  it("reports a failed verdict as blocked from the first failure, with the time", () => {
+    expect(map()).toEqual({ state: "blocked", since: "2026-11-12T09:11:00.000Z" });
+  });
+
+  it("reports an ok verdict as ok without a time", () => {
+    expect(map({ state: ok })).toEqual({ state: "ok", since: null });
+  });
+
+  it("carries only the state and the instant, no preformatted time", () => {
+    const view = map();
+    expect(Object.keys(view).sort()).toEqual(["since", "state"]);
+    expect(userNodeReachabilitySchema.strict().parse(view)).toEqual(view);
+  });
+
+  it.each([
+    ["no probe", { probe: null }],
+    ["a disabled probe", { probe: { ...probe, enabled: false } }],
+    ["a node the probe does not test", { reachabilityEnabled: false }],
+    ["a node without a verdict", { state: null }],
+    ["an error verdict", { state: { ...failed, status: "error" as const } }],
+    ["a mass failure", { probe: { ...probe, lastRunMass: true } }],
+    ["a stale alert", { probe: { ...probe, staleAlertedAt: now } }],
+    [
+      "a probe silent past the stale limit",
+      { probe: { ...probe, lastResultAt: new Date("2026-11-12T08:00:00Z") } },
+    ],
+    [
+      "a node verdict older than the stale limit",
+      { state: { ...failed, checkedAt: new Date("2026-11-12T08:00:00Z") } },
+    ],
+  ])("reports %s as unknown", (_name, over) => {
+    expect(map(over)).toEqual(unknown);
   });
 });

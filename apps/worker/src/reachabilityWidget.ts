@@ -1,6 +1,12 @@
 import { createHash } from "node:crypto";
 
-import type { ProbeLevel, ProbeLevels, ReachabilityStatus } from "@amnezia/contracts";
+import {
+  clockDayTime,
+  clockTime,
+  type ProbeLevel,
+  type ProbeLevels,
+  type ReachabilityStatus,
+} from "@amnezia/contracts";
 
 import { REACHABILITY_WIDGET_HTML } from "./reachabilityWidgetHtml.js";
 
@@ -71,34 +77,6 @@ export type WidgetData = {
   m: 0 | 1;
   n: Row[];
   x: number;
-};
-
-const parts = (date: Date, timeZone: string) => {
-  const map = Object.fromEntries(
-    new Intl.DateTimeFormat("en-GB", {
-      timeZone,
-      day: "2-digit",
-      month: "2-digit",
-      hour: "2-digit",
-      minute: "2-digit",
-      hourCycle: "h23",
-    })
-      .formatToParts(date)
-      .map((part) => [part.type, part.value]),
-  ) as Record<string, string>;
-  return map;
-};
-
-/** "10.11 15:46" in the given zone. */
-export const clockDayTime = (date: Date, timeZone: string): string => {
-  const p = parts(date, timeZone);
-  return `${p.day}.${p.month} ${p.hour}:${p.minute}`;
-};
-
-/** "15:46" in the given zone. */
-export const clockTime = (date: Date, timeZone: string): string => {
-  const p = parts(date, timeZone);
-  return `${p.hour}:${p.minute}`;
 };
 
 const mark = (level: ProbeLevel | undefined): string =>

@@ -1,4 +1,4 @@
-import type { PortalPolicy, RouteProfile } from "@amnezia/contracts";
+import type { PortalPolicy, RouteProfile, UserNodeReachability } from "@amnezia/contracts";
 import type { Actor, KeyView } from "./service.js";
 
 /**
@@ -83,6 +83,7 @@ export const toKeyView = ({
   current,
   policy,
   activeByProfile,
+  nodeReachability,
 }: {
   actor: Pick<Actor, "id" | "role">;
   key: KeyRow;
@@ -90,6 +91,8 @@ export const toKeyView = ({
   current: PeerCurrentRow | null;
   policy: PortalPolicy;
   activeByProfile: Map<string, string>;
+  /** The key's server verdict; undefined when the policy hides node status. */
+  nodeReachability?: UserNodeReachability;
 }): KeyView => ({
   id: key.id,
   ownerId: key.ownerId,
@@ -99,6 +102,7 @@ export const toKeyView = ({
   // permission. Same rule as `listNodes`: the public name when there is one,
   // so the internal admin name never leaves the server.
   nodeName: node.publicName ?? node.name,
+  ...(nodeReachability ? { nodeReachability } : {}),
   publicKey: policy.showPublicKey ? key.publicKey : undefined,
   protocol: key.protocol,
   state: key.state,

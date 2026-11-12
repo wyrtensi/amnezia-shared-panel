@@ -2911,8 +2911,7 @@ describe("PostgresControlRepository node status surfaces", () => {
     );
 
     // The narrowing, asserted rather than described: `checks` and only `checks`.
-    // A `state` key here would be a second vocabulary for node health, which
-    // the panel already shows from enabled/lastError/lastHealthAt.
+    // The probe's verdict travels separately as `reachability`.
     expect(Object.keys(node.status ?? {})).toEqual(["checks"]);
     expect(node.status?.checks).toEqual([
       { name: "Google Gemini", state: "unavailable" },
@@ -2953,6 +2952,142 @@ describe("PostgresControlRepository node status surfaces", () => {
     // which is a different statement from "this panel does not show them".
     expect("status" in node).toBe(false);
     await database.db.delete(portalPolicy);
+  });
+
+  describe("reachability verdict", () => {
+    const seedProbe = async (over: Partial<typeof reachabilityProbe.$inferInsert> = {}) => {
+      if (!database) return;
+      const credentials = encryptSecret("probe-api-key", keyring, 1);
+      await database.db.delete(reachabilityProbe);
+      await database.db.insert(reachabilityProbe).values({
+        label: "Vantage-Label-Secret",
+        apiBaseUrl: "http://probe-host.invalid:4002",
+        credentialsCiphertext: credentials.ciphertext,
+        credentialsNonce: credentials.nonce,
+        credentialsAuthTag: credentials.authTag,
+        credentialsKeyVersion: credentials.keyVersion,
+        controlUrl: "https://control.invalid/",
+        lastResultAt: new Date(),
+        enabledAt: new Date(Date.now() - 86_400_000),
+        timeZone: "Europe/Belgrade",
+        ...over,
+      });
+    };
+    const failingSince = new Date("2026-11-12T09:11:00Z");
+
+    afterEach(async () => {
+      if (!database) return;
+      await database.db.delete(reachabilityProbe);
+      await database.db
+        .delete(nodeReachabilityState)
+        .where(eq(nodeReachabilityState.nodeId, nodeId));
+    });
+
+    const listed = async () =>
+      seededNode(
+        (await subject().listNodes(actor)) as Array<{ id: string; reachability?: unknown }>,
+      );
+
+    runDatabaseTest("tells a user a failed node is blocked, and since when", async () => {
+      if (!database) return;
+      await seedProbe();
+      await database.db.insert(nodeReachabilityState).values({
+        nodeId,
+        status: "failed",
+        consecutiveFailures: 1,
+        failingSince,
+        checkedAt: new Date(),
+        detail: "no handshake",
+      });
+      const node = await listed();
+      expect(node.reachability).toEqual({
+        state: "blocked",
+        since: failingSince.toISOString(),
+      });
+      // The probe's own settings and the verdict's detail stay on the admin side.
+      const payload = JSON.stringify(node);
+      expect(payload).not.toContain("Vantage-Label-Secret");
+      expect(payload).not.toContain("probe-host.invalid");
+      expect(payload).not.toContain("no handshake");
+      expect(payload).not.toContain("Europe/Belgrade");
+    });
+
+    runDatabaseTest("reads unknown without a probe or without a verdict", async () => {
+      if (!database) return;
+      await database.db.insert(nodeReachabilityState).values({
+        nodeId,
+        status: "ok",
+        checkedAt: new Date(),
+      });
+      expect((await listed()).reachability).toEqual({
+        state: "unknown",
+        since: null,
+      });
+      await database.db
+        .delete(nodeReachabilityState)
+        .where(eq(nodeReachabilityState.nodeId, nodeId));
+      await seedProbe();
+      expect((await listed()).reachability).toMatchObject({ state: "unknown" });
+    });
+
+    runDatabaseTest("reads unknown after a mass failure", async () => {
+      if (!database) return;
+      await seedProbe({ lastRunMass: true });
+      await database.db.insert(nodeReachabilityState).values({
+        nodeId,
+        status: "failed",
+        failingSince,
+        checkedAt: new Date(),
+      });
+      expect((await listed()).reachability).toMatchObject({ state: "unknown" });
+    });
+
+    runDatabaseTest("gives a key the verdict of a server the user can no longer pick", async () => {
+      if (!database) return;
+      await seedProbe();
+      await database.db.insert(nodeReachabilityState).values({
+        nodeId,
+        status: "failed",
+        failingSince,
+        checkedAt: new Date(),
+      });
+      // No node offered for new keys, yet the key stays on its server.
+      await database.db.insert(portalPolicy).values({ allowedNodeIds: [] });
+      const [key] = await database.db
+        .insert(vpnKeys)
+        .values({
+          ownerId: actor.id,
+          nodeId,
+          nodeLabel: `ap_status_${randomBytes(4).toString("hex")}`,
+          protocol: "awg3",
+          routeProfile: "full_tunnel",
+          state: "active",
+        })
+        .returning();
+      try {
+        const listedNodes = (await subject().listNodes(actor)) as Array<{ id: string }>;
+        expect(listedNodes.some((node) => node.id === nodeId)).toBe(false);
+        const view = (await subject().listKeys(actor)).find((row) => row.id === key?.id);
+        expect(view?.nodeReachability).toEqual({
+          state: "blocked",
+          since: failingSince.toISOString(),
+          });
+      } finally {
+        if (key) await database.db.delete(vpnKeys).where(eq(vpnKeys.id, key.id));
+        await database.db.delete(portalPolicy);
+      }
+    });
+
+    runDatabaseTest("omits the verdict when the policy hides node status", async () => {
+      if (!database) return;
+      await seedProbe();
+      await database.db.insert(portalPolicy).values({ showNodeStatus: false });
+      try {
+        expect("reachability" in (await listed())).toBe(false);
+      } finally {
+        await database.db.delete(portalPolicy);
+      }
+    });
   });
 
   runDatabaseTest("gives an admin the metrics row and the handshake signal", async () => {

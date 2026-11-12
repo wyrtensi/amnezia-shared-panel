@@ -1,4 +1,10 @@
-import type { InstallGuideVideos, KeyNameDisplay } from "@amnezia/contracts";
+import type {
+  InstallGuideVideos,
+  KeyNameDisplay,
+  UserNodeReachability,
+} from "@amnezia/contracts";
+
+export type { UserNodeReachability };
 
 export type ProtocolKind = "awg2" | "awg3";
 
@@ -183,11 +189,15 @@ export type NodeView = {
    * Service checks for this server. Present only when the portal policy's
    * showNodeStatus is on, which is why it is optional rather than nullable -
    * "this panel does not show them" is a different statement from "this server
-   * has none". It carries `checks` and nothing else: node health is already
-   * shown from enabled/lastError/lastHealthAt, and a second vocabulary for the
-   * same thing is what the narrowing exists to prevent.
+   * has none". It carries `checks` and nothing else.
    */
   status?: { checks: ServiceCheckSummary[] };
+  /**
+   * Whether the VPN works on this server from outside, by the external probe:
+   * ok / blocked / unknown and when a block began. Behind the same policy flag
+   * as `status`, so optional for the same reason.
+   */
+  reachability?: UserNodeReachability;
   /**
    * Where clients reach this node — the resolved IPv4 when the panel has one,
    * else the host the node reported. Present only when the portal policy's
@@ -208,6 +218,8 @@ export type KeyView = {
    * on, and a key stays on its server after that permission is gone.
    */
   nodeName: string;
+  /** The key's server verdict, as `NodeView.reachability`. */
+  nodeReachability?: UserNodeReachability;
   state: string;
   protocol: string;
   deviceType: string;

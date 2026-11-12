@@ -179,3 +179,25 @@ describe("server name on the owner-facing key payload", () => {
     expect(payload.nodeName).toBe("london2");
   });
 });
+
+describe("toKeyView nodeReachability", () => {
+  const blocked = { state: "blocked" as const, since: "2026-11-12T09:11:00.000Z" };
+  const withReachability = (nodeReachability?: typeof blocked) =>
+    toKeyView({
+      actor: owner,
+      key: row(),
+      node: NODE,
+      current: null,
+      policy: defaultPortalPolicy,
+      activeByProfile: new Map(),
+      nodeReachability,
+    });
+
+  it("carries the key's server verdict when given", () => {
+    expect(withReachability(blocked).nodeReachability).toEqual(blocked);
+  });
+
+  it("leaves the property off when node status is hidden", () => {
+    expect("nodeReachability" in withReachability()).toBe(false);
+  });
+});
