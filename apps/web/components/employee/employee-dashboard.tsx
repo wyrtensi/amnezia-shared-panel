@@ -57,6 +57,7 @@ import { isAtLimit } from "@/lib/key-quota";
 import { isVisibleToOwner, markRulesDelivered } from "@/lib/key-states";
 import { InlineTraffic } from "@/components/inline-traffic";
 import { ServiceCheckChips } from "@/components/service-check-chips";
+import { ServerStatusList } from "@/components/employee/server-status-list";
 import { cn } from "@/lib/utils";
 import { deviceTypeLabel } from "@/lib/device-type";
 import { useT } from "@/lib/i18n/provider";
@@ -634,88 +635,99 @@ export function EmployeeDashboard({
               </Button>
             </div>
             {nodeQuota.length > 0 ? (
-              // Each server sits in its own recess rather than under a hairline.
-              // A rule is enough to separate two lines of text; these rows carry
-              // a name, three traffic periods, a service-check strip and a quota
-              // meter, and at that weight a divider only says where one row ends
-              // — an inset surface says where each one *is*.
-              <div className="space-y-2 border-t pt-3">
-                {nodeQuota.map(({ node, used, limit, traffic }) => (
-                  <div
-                    key={node.id}
-                    // The same accent the create-key wizard puts on a
-                    // recommended server, carried onto the page the user
-                    // actually lands on. The badge stays — colour alone is not
-                    // an accessible signal — and `border-l-success` resolves per
-                    // theme so the edge does not vanish in dark mode. The
-                    // transparent edge on the other rows keeps every server name
-                    // on the same baseline.
-                    className={cn(
-                      "flex flex-wrap items-start justify-between gap-2 rounded-lg border border-border/60 bg-well py-2.5 pl-3 pr-3 shadow-[var(--inset-shadow)]",
-                      node.recommended
-                        // Green, to match the "Recommended" badge beside it, and
-                        // an edge only: a tinted row reads as selected or as
-                        // disabled depending on who is looking, and in a list of
-                        // servers it drew a horizontal band across the card that
-                        // competed with the row's own content.
-                        ? "border-l-2 border-l-success pl-2.5"
-                        : "border-l-2 border-l-transparent pl-2.5",
-                    )}
-                  >
-                    <div className="min-w-0 space-y-0.5">
-                      <span className="flex min-w-0 items-center gap-2">
-                        {/* The device tile's smaller, quieter sibling: the row
-                            is already a surface of its own, so this marks the
-                            name rather than competing with the glyphs on the
-                            key cards below it. */}
-                        <span className="flex size-6 shrink-0 items-center justify-center rounded-md bg-[image:var(--tile-gradient-soft)] text-primary/75 ring-1 ring-primary/10">
-                          <Server className="size-3.5" />
-                        </span>
-                        <span className="truncate text-sm text-muted-foreground">
-                          {node.name}
-                        </span>
-                        {node.recommended ? (
-                          <Badge variant="success" className="shrink-0">
-                            {t("wizard.recommended")}
-                          </Badge>
-                        ) : null}
-                      </span>
-                      {/* Conditional on the field, not on a policy flag: the
-                          control API omits it when the policy says no, so the
-                          dashboard holds no rule of its own. */}
-                      {node.publicAddress ? (
-                        <span className="block truncate text-xs text-muted-foreground">
-                          <span className="sr-only">
-                            {t("emp.nodeAddress")}:{" "}
+              // The short list first: a dot and a name per server, as in the
+              // Telegram status widget. The detailed rows below are what it
+              // replaced, kept one click away rather than removed.
+              <div className="space-y-3 border-t pt-3">
+                <ServerStatusList nodes={nodeQuota.map(({ node }) => node)} />
+                <details className="group">
+                  <summary className="cursor-pointer select-none text-xs text-muted-foreground hover:text-foreground">
+                    {t("emp.serversDetails")}
+                  </summary>
+                  {/* Each server sits in its own recess rather than under a hairline.
+                      A rule is enough to separate two lines of text; these rows carry
+                      a name, three traffic periods, a service-check strip and a quota
+                      meter, and at that weight a divider only says where one row ends
+                      — an inset surface says where each one *is*. */}
+                  <div className="mt-2 space-y-2">
+                    {nodeQuota.map(({ node, used, limit, traffic }) => (
+                      <div
+                        key={node.id}
+                        // The same accent the create-key wizard puts on a
+                        // recommended server, carried onto the page the user
+                        // actually lands on. The badge stays — colour alone is not
+                        // an accessible signal — and `border-l-success` resolves per
+                        // theme so the edge does not vanish in dark mode. The
+                        // transparent edge on the other rows keeps every server name
+                        // on the same baseline.
+                        className={cn(
+                          "flex flex-wrap items-start justify-between gap-2 rounded-lg border border-border/60 bg-well py-2.5 pl-3 pr-3 shadow-[var(--inset-shadow)]",
+                          node.recommended
+                            // Green, to match the "Recommended" badge beside it, and
+                            // an edge only: a tinted row reads as selected or as
+                            // disabled depending on who is looking, and in a list of
+                            // servers it drew a horizontal band across the card that
+                            // competed with the row's own content.
+                            ? "border-l-2 border-l-success pl-2.5"
+                            : "border-l-2 border-l-transparent pl-2.5",
+                        )}
+                      >
+                        <div className="min-w-0 space-y-0.5">
+                          <span className="flex min-w-0 items-center gap-2">
+                            {/* The device tile's smaller, quieter sibling: the row
+                                is already a surface of its own, so this marks the
+                                name rather than competing with the glyphs on the
+                                key cards below it. */}
+                            <span className="flex size-6 shrink-0 items-center justify-center rounded-md bg-[image:var(--tile-gradient-soft)] text-primary/75 ring-1 ring-primary/10">
+                              <Server className="size-3.5" />
+                            </span>
+                            <span className="truncate text-sm text-muted-foreground">
+                              {node.name}
+                            </span>
+                            {node.recommended ? (
+                              <Badge variant="success" className="shrink-0">
+                                {t("wizard.recommended")}
+                              </Badge>
+                            ) : null}
                           </span>
-                          <code className="tabular">{node.publicAddress}</code>
-                        </span>
-                      ) : null}
-                      {showTraffic ? (
-                        <InlineTraffic
-                          today={traffic?.today}
-                          week={traffic?.week}
-                          month={traffic?.month}
-                        />
-                      ) : null}
-                      {/* Present only when the policy allows it - the API omits
-                          the key entirely otherwise, so the dashboard holds no
-                          rule of its own. */}
-                      <ServiceCheckChips checks={node.status?.checks} />
-                    </div>
-                    <div className="flex shrink-0 items-center gap-2.5">
-                      <span className="tabular-nums text-xs text-muted-foreground">
-                        {keyLimitMode === "global" ? used : `${used}/${limit}`}
-                      </span>
-                      {keyLimitMode === "global" ? (
-                        // The free slots belong to the pool, not to this server.
-                        <QuotaCells used={used} limit={used} issuedOnly />
-                      ) : (
-                        <QuotaCells used={used} limit={limit} />
-                      )}
-                    </div>
+                          {/* Conditional on the field, not on a policy flag: the
+                              control API omits it when the policy says no, so the
+                              dashboard holds no rule of its own. */}
+                          {node.publicAddress ? (
+                            <span className="block truncate text-xs text-muted-foreground">
+                              <span className="sr-only">
+                                {t("emp.nodeAddress")}:{" "}
+                              </span>
+                              <code className="tabular">{node.publicAddress}</code>
+                            </span>
+                          ) : null}
+                          {showTraffic ? (
+                            <InlineTraffic
+                              today={traffic?.today}
+                              week={traffic?.week}
+                              month={traffic?.month}
+                            />
+                          ) : null}
+                          {/* Present only when the policy allows it - the API omits
+                              the key entirely otherwise, so the dashboard holds no
+                              rule of its own. */}
+                          <ServiceCheckChips checks={node.status?.checks} />
+                        </div>
+                        <div className="flex shrink-0 items-center gap-2.5">
+                          <span className="tabular-nums text-xs text-muted-foreground">
+                            {keyLimitMode === "global" ? used : `${used}/${limit}`}
+                          </span>
+                          {keyLimitMode === "global" ? (
+                            // The free slots belong to the pool, not to this server.
+                            <QuotaCells used={used} limit={used} issuedOnly />
+                          ) : (
+                            <QuotaCells used={used} limit={limit} />
+                          )}
+                        </div>
+                      </div>
+                    ))}
                   </div>
-                ))}
+                </details>
               </div>
             ) : null}
           </CardContent>

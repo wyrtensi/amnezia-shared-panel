@@ -47,6 +47,7 @@ import { TrafficSplit } from "@/components/inline-traffic";
 import { useT } from "@/lib/i18n/provider";
 import { deviceIconFor } from "@/components/device-icon";
 import { deviceTypeLabel } from "@/lib/device-type";
+import { keyBadgeState } from "@/lib/node-reachability";
 import type { KeyView, Me } from "@/lib/types";
 
 const ROUTE_LABEL: Record<string, string> = {
@@ -155,11 +156,16 @@ export function KeyCard({
           their tallest card, and without this a shorter card stopped where its
           content ended and left a gap under it — two cards side by side, one
           visibly bigger than the other. */}
-      <Card className="h-full overflow-hidden transition-shadow hover:shadow-md">
+      {/* `@container`: the guide button drops its word by the CARD's width,
+          not the window's - a grid column on a wide screen can be as narrow
+          as a phone. */}
+      <Card className="@container h-full overflow-hidden transition-shadow hover:shadow-md">
         <CardContent className="flex h-full flex-col gap-3 p-4">
           <div className="flex items-start justify-between gap-2">
-            <div className="flex items-center gap-2.5">
-              <span className="flex size-12 items-center justify-center rounded-xl bg-[image:var(--tile-gradient)] text-primary ring-1 ring-primary/15">
+            {/* min-w-0 + flex-1: the title side gives way (the name truncates)
+                instead of pushing the status badge out of the card. */}
+            <div className="flex min-w-0 flex-1 items-center gap-2.5">
+              <span className="flex size-12 shrink-0 items-center justify-center rounded-xl bg-[image:var(--tile-gradient)] text-primary ring-1 ring-primary/15">
                 <DeviceIcon className="size-7" />
               </span>
               <div className="min-w-0">
@@ -215,22 +221,7 @@ export function KeyCard({
                       about the title, not as the way to the install steps —
                       and the word sits before the icon so the row still scans
                       left to right. */}
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="sm"
-                        className="h-6 shrink-0 gap-1 px-1.5 text-[11px] font-medium text-muted-foreground hover:text-foreground"
-                        aria-label={t("install.button")}
-                        onClick={onShowGuide}
-                      >
-                        {t("keyCard.guideShort")}
-                        <CircleHelp className="size-3.5" />
-                      </Button>
-                    </TooltipTrigger>
-                    <TooltipContent>{t("install.button")}</TooltipContent>
-                  </Tooltip>
+                  <KeyGuideButton onClick={onShowGuide} />
                 </div>
                 {/* The server was a bare grey word under the device name, and
                     read as a second, quieter label for the same thing. Marked
@@ -248,7 +239,7 @@ export function KeyCard({
               {provisioning ? (
                 <Loader2 className="h-4 w-4 animate-spin text-warning" />
               ) : null}
-              <StatusBadge value={keyView.state} />
+              <StatusBadge value={keyBadgeState(keyView.state, keyView.nodeReachability)} />
             </div>
           </div>
 
@@ -794,5 +785,34 @@ function CopyKeyButton({
     >
       {content[state]}
     </Button>
+  );
+}
+
+/**
+ * The way to the install steps on a key card: the word and the icon, or the
+ * icon alone on a narrow card (container query on the card), so the status
+ * badge beside it is never cut. Either way the button is named "Guide".
+ */
+export function KeyGuideButton({ onClick }: { onClick: () => void }) {
+  const { t } = useT();
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          className="h-6 shrink-0 gap-1 px-1.5 text-[11px] font-medium text-muted-foreground hover:text-foreground"
+          aria-label={t("keyCard.guideShort")}
+          onClick={onClick}
+        >
+          {/* Hidden on a narrow card so the status badge keeps
+              its whole word; the icon and the label remain. */}
+          <span className="@max-[22rem]:hidden">{t("keyCard.guideShort")}</span>
+          <CircleHelp className="size-3.5" />
+        </Button>
+      </TooltipTrigger>
+      <TooltipContent>{t("install.button")}</TooltipContent>
+    </Tooltip>
   );
 }
