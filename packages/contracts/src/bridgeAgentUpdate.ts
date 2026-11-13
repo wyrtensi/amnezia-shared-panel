@@ -13,9 +13,10 @@ import {
 
 /**
  * Independent bridge-agent updates: the contract shared by the Control API,
- * the worker and (Task 6c) the agent's `POST/GET /v1/update`. The panel only
- * ever sends an intent (`operationId`, approved repository, full digest); the
- * host's systemd updater validates it again and owns Docker.
+ * the worker and the agent's `POST/GET /v1/update` (services/bridge-agent).
+ * The panel only ever sends an intent (`operationId`, approved repository,
+ * full digest, `notAfter`); the host's systemd updater
+ * (infra/bridge/bridge-agent-update.sh) validates it again and owns Docker.
  */
 
 /** The capability an agent reports once it implements `/v1/update`. */

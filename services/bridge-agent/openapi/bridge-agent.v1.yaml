@@ -5,7 +5,9 @@ info:
   description: >
     Loopback-only management API of an AWG node bridge. Reads the local frps
     v0.72.0 dashboard API (GET /api/serverinfo, GET /api/proxy/udp) and reports
-    only the fields below. The update operations arrive with capability update.v1.
+    only the fields below. /v1/update exists only when the agent reports the
+    capability update.v1 (an approved repository and the host update spool are
+    configured); otherwise it is 404 NOT_FOUND like any unknown path.
 servers:
   - url: http://127.0.0.1:7600
 security:
@@ -41,6 +43,48 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Status" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+  /v1/update:
+    post:
+      summary: >
+        Record one update intent in the host spool for the systemd updater. A
+        replay of a known operationId with the same intent returns its state and
+        writes nothing. An intent received at or after notAfter is recorded and
+        answered expired: the host never starts it.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/UpdateRequest" }
+      responses:
+        "202":
+          description: New intent recorded (state queued, or expired when it arrived after notAfter)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/UpdateStatus" }
+        "200":
+          description: Replay of a known operation; its current state
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/UpdateStatus" }
+        "400": { $ref: "#/components/responses/UpdateError" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "409": { $ref: "#/components/responses/UpdateError" }
+        "422": { $ref: "#/components/responses/UpdateError" }
+        "500": { $ref: "#/components/responses/UpdateError" }
+    get:
+      summary: The known state of one operation (the host's result, else the pending request)
+      parameters:
+        - { name: operationId, in: query, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: Known operation
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/UpdateStatus" }
+        "400": { $ref: "#/components/responses/UpdateError" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/UpdateError" }
+        "500": { $ref: "#/components/responses/UpdateError" }
 components:
   securitySchemes:
     bearer: { type: http, scheme: bearer }
@@ -54,6 +98,23 @@ components:
             required: [error]
             properties:
               error: { type: object, required: [code], properties: { code: { type: string, enum: [UNAUTHORIZED] } } }
+    UpdateError:
+      description: >
+        400 INVALID_REQUEST (malformed body or operationId), 422 REPOSITORY_NOT_APPROVED,
+        409 OPERATION_CONFLICT (same operationId, different intent) or UPDATE_IN_PROGRESS
+        (another operation is queued or running on this host), 404 UNKNOWN_OPERATION
+        (no record at all), 500 INTERNAL_ERROR (a spool record exists but cannot be read)
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [error]
+            properties:
+              error:
+                type: object
+                required: [code]
+                properties:
+                  code: { type: string, enum: [INVALID_REQUEST, REPOSITORY_NOT_APPROVED, OPERATION_CONFLICT, UPDATE_IN_PROGRESS, UNKNOWN_OPERATION, INTERNAL_ERROR] }
   schemas:
     Identity:
       type: object
@@ -62,7 +123,23 @@ components:
         bridgeId: { type: string, format: uuid }
         agentVersion: { type: string }
         apiVersion: { type: integer, enum: [1] }
-        capabilities: { type: array, items: { type: string }, example: ["status.v1"] }
+        capabilities: { type: array, items: { type: string }, example: ["status.v1", "update.v1"] }
+    UpdateRequest:
+      type: object
+      required: [operationId, imageRepository, imageDigest, notAfter]
+      properties:
+        operationId: { type: string, format: uuid, pattern: "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" }
+        imageRepository: { type: string, description: "must equal the agent's BRIDGE_AGENT_IMAGE_REPOSITORY" }
+        imageDigest: { type: string, pattern: "^sha256:[0-9a-f]{64}$" }
+        notAfter: { type: string, format: date-time, description: "panel pickup deadline (UTC, Date#toISOString form)" }
+    UpdateStatus:
+      type: object
+      required: [operationId, state, updatedAt]
+      properties:
+        operationId: { type: string, format: uuid }
+        state: { type: string, enum: [queued, picked_up, staging, replacing, health_check, succeeded, rolled_back, rollback_failed, failed, expired] }
+        updatedAt: { type: string, maxLength: 64 }
+        errorCode: { type: string, pattern: "^[A-Z][A-Z0-9_]{0,63}$" }
     Status:
       type: object
       required: [bridgeId, agentVersion, apiVersion, observedAt, frps, applied, proxies, errors]

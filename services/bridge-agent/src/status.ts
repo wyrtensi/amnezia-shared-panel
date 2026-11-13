@@ -1,19 +1,23 @@
 import { fetchServerVersion, fetchUdpProxies, FrpsError, type FrpsClientOptions } from "./frps.js";
 import {
   BRIDGE_API_VERSION,
-  BRIDGE_CAPABILITIES,
   MAX_ERRORS,
+  STATUS_CAPABILITY,
+  UPDATE_CAPABILITY,
   type AppliedPorts,
   type IdentityResponse,
   type StatusError,
   type StatusResponse,
 } from "./types.js";
+import type { UpdateSpool } from "./update.js";
 
 export type AgentContext = {
   bridgeId: string;
   agentVersion: string;
   applied: AppliedPorts;
   frps: FrpsClientOptions;
+  /** Present when updates are configured. */
+  update?: { approvedRepository: string; spool: UpdateSpool } | null;
   now?: () => Date;
 };
 
@@ -21,7 +25,7 @@ export const identity = (ctx: AgentContext): IdentityResponse => ({
   bridgeId: ctx.bridgeId,
   agentVersion: ctx.agentVersion,
   apiVersion: BRIDGE_API_VERSION,
-  capabilities: [...BRIDGE_CAPABILITIES],
+  capabilities: ctx.update ? [STATUS_CAPABILITY, UPDATE_CAPABILITY] : [STATUS_CAPABILITY],
 });
 
 const toError = (endpoint: string, error: unknown): StatusError =>

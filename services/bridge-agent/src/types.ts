@@ -1,8 +1,9 @@
 import { readFileSync } from "node:fs";
 
 export const BRIDGE_API_VERSION = 1;
-/** `update.v1` is added by the update task together with `/v1/update`. */
-export const BRIDGE_CAPABILITIES = ["status.v1"] as const;
+export const STATUS_CAPABILITY = "status.v1";
+/** Reported only when updates are configured (`BRIDGE_AGENT_IMAGE_REPOSITORY` and a usable spool). */
+export const UPDATE_CAPABILITY = "update.v1";
 
 /** Fixed enum: the panel keys behavior off these, never off the message text. */
 export const ERROR_CODES = [

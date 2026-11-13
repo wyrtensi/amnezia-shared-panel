@@ -19,10 +19,18 @@ const main = (): void => {
 
   const server = createServer({
     apiToken: config.apiToken,
-    context: { bridgeId: config.bridgeId, agentVersion, applied: config.applied, frps: config.frps },
+    context: {
+      bridgeId: config.bridgeId,
+      agentVersion,
+      applied: config.applied,
+      frps: config.frps,
+      update: config.update,
+    },
+    log,
   });
   server.listen(config.listen.port, config.listen.host, () => {
     log(`bridge ${config.bridgeId} agent ${agentVersion} listening on ${config.listen.host}:${config.listen.port}`);
+    log(config.update ? "updates: on (update.v1)" : "updates: off (no BRIDGE_AGENT_IMAGE_REPOSITORY)");
   });
 
   const stop = (): void => {

@@ -1,7 +1,9 @@
-import { readFileSync, statSync } from "node:fs";
+import { accessSync, constants, readFileSync, statSync } from "node:fs";
 import { isIP } from "node:net";
+import { isAbsolute } from "node:path";
 
 import type { AppliedPorts } from "./types.js";
+import { REPOSITORY, spoolOf, type UpdateSpool } from "./update.js";
 
 export const MIN_TOKEN_LENGTH = 32;
 export const DEFAULT_LISTEN = "127.0.0.1:7600";
@@ -9,6 +11,7 @@ export const DEFAULT_FRPS_URL = "http://127.0.0.1:7500";
 export const DEFAULT_DASHBOARD_ENV_FILE = "/etc/amnezia-bridge/frp/dashboard.env";
 export const DEFAULT_FRPS_TIMEOUT_MS = 3000;
 export const DEFAULT_FRPS_MAX_BYTES = 1024 * 1024;
+export const DEFAULT_UPDATE_SPOOL_DIR = "/var/lib/amnezia-bridge/update";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
@@ -24,6 +27,8 @@ export type Config = {
     maxBytes: number;
   };
   applied: AppliedPorts;
+  /** Null when no approved repository is configured: no `update.v1`, no `/v1/update`. */
+  update: { approvedRepository: string; spool: UpdateSpool } | null;
 };
 
 /** True for an IP literal in 127.0.0.0/8 or `::1`. Host names are not accepted: they resolve elsewhere. */
@@ -124,6 +129,29 @@ const positiveInt = (env: NodeJS.ProcessEnv, name: string, fallback: number, max
   return value;
 };
 
+/**
+ * Updates are on only with an approved repository. Its spool must then be
+ * usable: requests writable (the one read-write mount), results readable (a
+ * read-only mount the host updater writes).
+ */
+export const loadUpdateConfig = (env: NodeJS.ProcessEnv): Config["update"] => {
+  const approvedRepository = env.BRIDGE_AGENT_IMAGE_REPOSITORY?.trim() ?? "";
+  if (!approvedRepository) return null;
+  if (!REPOSITORY.test(approvedRepository)) {
+    throw new Error("BRIDGE_AGENT_IMAGE_REPOSITORY must be a bare repository name (no tag or digest)");
+  }
+  const spoolDir = env.BRIDGE_UPDATE_SPOOL_DIR?.trim() || DEFAULT_UPDATE_SPOOL_DIR;
+  if (!isAbsolute(spoolDir)) throw new Error("BRIDGE_UPDATE_SPOOL_DIR must be an absolute path");
+  const spool = spoolOf(spoolDir);
+  try {
+    accessSync(spool.requestsDir, constants.W_OK | constants.X_OK);
+    accessSync(spool.resultsDir, constants.R_OK | constants.X_OK);
+  } catch {
+    throw new Error("the update spool is not usable: <spool>/requests must be writable and <spool>/results readable");
+  }
+  return { approvedRepository, spool };
+};
+
 /** Throws a secret-free Error describing the first invalid setting. */
 export const loadConfig = (env: NodeJS.ProcessEnv): Config => {
   const bridgeId = env.BRIDGE_ID?.trim() ?? "";
@@ -159,5 +187,6 @@ export const loadConfig = (env: NodeJS.ProcessEnv): Config => {
       maxBytes: positiveInt(env, "BRIDGE_FRPS_MAX_BYTES", DEFAULT_FRPS_MAX_BYTES, 16 * 1024 * 1024),
     },
     applied,
+    update: loadUpdateConfig(env),
   };
 };
