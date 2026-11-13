@@ -86,7 +86,7 @@ const ru = {
   "update.unacknowledged":
     "Запрос на обновление в очереди уже {age} (срок подтверждения {deadline} с): хост его не принял. Запрос остаётся в очереди и сам не повторяется.",
   "update.unacknowledgedHint":
-    "Проверьте на хосте: systemctl status panel-updater.path panel-updater.service, затем scripts/repair-updater-units.sh --dry-run (ничего не меняет, показывает состояние юнитов и очереди).",
+    "Проверьте на хосте: systemctl status panel-updater.path panel-updater.service, затем scripts/repair-updater-units.sh --dry-run (ничего не меняет, показывает состояние юнитов и очереди). Исправлять нужно на хосте; панель запрос не повторяет.",
   "update.ageUnknown": "неизвестное время",
 
   // Route profiles (shared)
@@ -1894,7 +1894,7 @@ const en = {
   "update.unacknowledged":
     "The update request has been queued for {age} (acknowledgement deadline {deadline} s): the host has not picked it up. The request stays queued and is never retried automatically.",
   "update.unacknowledgedHint":
-    "Check on the host: systemctl status panel-updater.path panel-updater.service, then scripts/repair-updater-units.sh --dry-run (changes nothing, shows the unit and queue state).",
+    "Check on the host: systemctl status panel-updater.path panel-updater.service, then scripts/repair-updater-units.sh --dry-run (changes nothing, shows the unit and queue state). Recovery is on the host; the panel does not retry the request.",
   "update.ageUnknown": "an unknown time",
 
   // Route profiles (shared)

@@ -41,6 +41,7 @@ describe("PanelUpdateProgress", () => {
     expect(html).toContain("systemctl status panel-updater.path panel-updater.service");
     expect(html).toContain("scripts/repair-updater-units.sh --dry-run");
     expect(html).toContain("never retried automatically");
+    expect(html).toContain("Recovery is on the host");
     expect(html).not.toContain("Update in progress");
   });
 
@@ -58,6 +59,7 @@ describe("PanelUpdateProgress", () => {
     );
     expect(html).toContain("45 с");
     expect(html).toContain("сам не повторяется");
+    expect(html).toContain("Исправлять нужно на хосте");
     expect(html).toContain("repair-updater-units.sh --dry-run");
   });
 
