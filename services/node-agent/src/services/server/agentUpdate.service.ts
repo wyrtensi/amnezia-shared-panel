@@ -32,6 +32,14 @@ const LOG_FILE = "update.log";
  */
 const UPDATE_DEADLINE_MS = 20 * 60 * 1000;
 
+/**
+ * How long a queued request (trigger file still there) may wait before it is
+ * reported `unacknowledged`. Observation only: the state stays `requested`, the
+ * request is never re-queued, and the 20 minute deadline above is unchanged.
+ * Matches the panel and bridge-agent acknowledgement window.
+ */
+const DEFAULT_ACK_DEADLINE_SECONDS = 120;
+
 interface SpoolResult {
   id?: string;
   finishedAt?: string;
@@ -64,6 +72,7 @@ export class AgentUpdateService {
 
   private readonly repository: string;
   private readonly spoolDir: string;
+  private readonly ackDeadlineMs: number;
 
   /**
    * The config is read in the body, not in a default parameter value.
@@ -77,12 +86,24 @@ export class AgentUpdateService {
    * /server/update routes. The empty default keeps the options escape hatch
    * tests use without handing the parser a comma.
    */
-  constructor(options: { repository?: string; spoolDir?: string } = {}) {
+  constructor(
+    options: {
+      repository?: string;
+      spoolDir?: string;
+      ackDeadlineSeconds?: number;
+    } = {},
+  ) {
     const repository = options.repository ?? appConfig.NODE_AGENT_UPDATE_REPO;
     const spoolDir = options.spoolDir ?? appConfig.NODE_AGENT_UPDATE_SPOOL;
 
     this.repository = repository?.trim() ?? "";
     this.spoolDir = spoolDir?.trim() ?? "";
+
+    const ack =
+      options.ackDeadlineSeconds ??
+      appConfig.NODE_AGENT_UPDATE_ACK_DEADLINE_SECONDS;
+    this.ackDeadlineMs =
+      (ack && ack > 0 ? ack : DEFAULT_ACK_DEADLINE_SECONDS) * 1000;
   }
 
   /**
@@ -169,7 +190,16 @@ export class AgentUpdateService {
    */
   async getStatus(): Promise<AgentUpdateStatus> {
     if (!this.isAvailable()) {
-      return { state: "idle", image: null, log: "", updatedAt: null, message: null };
+      return {
+        state: "idle",
+        image: null,
+        log: "",
+        updatedAt: null,
+        message: null,
+        acknowledgement: null,
+        requestAgeSeconds: null,
+        diagnosticHint: null,
+      };
     }
 
     const [hasRequest, pending, result, log] = await Promise.all([
@@ -187,6 +217,8 @@ export class AgentUpdateService {
     let image: string | null = null;
     let message: string | null = null;
     let updatedAt: string | null = null;
+    let acknowledgement: AgentUpdateStatus["acknowledgement"] = null;
+    let requestAgeSeconds: number | null = null;
 
     if (pending?.id && !resultIsForPending) {
       // Unresolved: either the trigger is still there (requested) or it has
@@ -202,6 +234,18 @@ export class AgentUpdateService {
       } else {
         state = hasRequest ? "requested" : "running";
         image = pending.image ?? null;
+        const requestedMs = Date.parse(pending.requestedAt ?? "");
+        requestAgeSeconds = Number.isFinite(requestedMs)
+          ? Math.max(0, Math.floor((Date.now() - requestedMs) / 1000))
+          : null;
+        // The host consuming the trigger is the start signal; a trigger still
+        // there past the deadline was never taken. Never a retry.
+        acknowledgement = !hasRequest
+          ? "acknowledged"
+          : requestAgeSeconds === null ||
+              requestAgeSeconds * 1000 >= this.ackDeadlineMs
+            ? "unacknowledged"
+            : "pending";
       }
     } else if (result) {
       state = result.ok ? "succeeded" : "failed";
@@ -210,7 +254,17 @@ export class AgentUpdateService {
       updatedAt = result.finishedAt ?? null;
     }
 
-    return { state, image, log, updatedAt, message };
+    return {
+      state,
+      image,
+      log,
+      updatedAt,
+      message,
+      acknowledgement,
+      requestAgeSeconds,
+      diagnosticHint:
+        acknowledgement === "unacknowledged" ? "UPDATE_NOT_ACKNOWLEDGED" : null,
+    };
   }
 
   /**

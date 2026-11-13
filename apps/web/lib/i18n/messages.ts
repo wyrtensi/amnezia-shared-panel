@@ -83,6 +83,11 @@ const ru = {
   "update.disabled": "Механизм обновления не установлен на сервере",
   "update.disabledHint":
     "Установите хост-воркер один раз: sudo bash infra/prod/install-updater.sh",
+  "update.unacknowledged":
+    "Запрос на обновление в очереди уже {age} (срок подтверждения {deadline} с): хост его не принял. Запрос остаётся в очереди и сам не повторяется.",
+  "update.unacknowledgedHint":
+    "Проверьте на хосте: systemctl status panel-updater.path panel-updater.service, затем scripts/repair-updater-units.sh --dry-run (ничего не меняет, показывает состояние юнитов и очереди).",
+  "update.ageUnknown": "неизвестное время",
 
   // Route profiles (shared)
   "route.full_tunnel": "Весь трафик",
@@ -1886,6 +1891,11 @@ const en = {
   "update.disabled": "The update mechanism is not installed on the host",
   "update.disabledHint":
     "Install the host worker once: sudo bash infra/prod/install-updater.sh",
+  "update.unacknowledged":
+    "The update request has been queued for {age} (acknowledgement deadline {deadline} s): the host has not picked it up. The request stays queued and is never retried automatically.",
+  "update.unacknowledgedHint":
+    "Check on the host: systemctl status panel-updater.path panel-updater.service, then scripts/repair-updater-units.sh --dry-run (changes nothing, shows the unit and queue state).",
+  "update.ageUnknown": "an unknown time",
 
   // Route profiles (shared)
   "route.full_tunnel": "All traffic",

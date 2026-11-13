@@ -40,6 +40,7 @@ import {
 } from "./service.js";
 import {
   createUpdateController,
+  parseAcknowledgementDeadlineSeconds,
   type UpdateController,
 } from "./updateController.js";
 import {
@@ -162,6 +163,9 @@ export const buildApp = async ({
     updateController ??
     createUpdateController({
       spoolDir: process.env.UPDATE_SPOOL_DIR,
+      acknowledgementDeadlineSeconds: parseAcknowledgementDeadlineSeconds(
+        process.env.UPDATE_ACK_DEADLINE_SECONDS,
+      ),
       version: versionInfo(),
     });
   const clientReleases = clientReleaseResolver ?? createClientReleaseResolver();

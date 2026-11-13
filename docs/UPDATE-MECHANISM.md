@@ -142,6 +142,24 @@ updater whose watcher is deliberately disabled; `deferred` = running or pending,
 revisit; `unreachable` = SSH failed, revisit. The fleet-wide application of this
 procedure is an explicit operator step and is not part of a code change.
 
+## Acknowledgement deadline (queued request nobody picked up)
+
+`GET /api/admin/update` carries additive fields next to `enabled`, `version`, `pending` and `lastResult`:
+
+| Field | Meaning |
+|---|---|
+| `acknowledgement` | `pending` (queued, inside the deadline), `acknowledged` (host started that request id, or its result is present), `unacknowledged` (queued past the deadline with no host start and no result for that id); `null` when nothing is queued or running |
+| `requestAgeSeconds` | Age of the queued request (null if its `requestedAt` cannot be parsed, which reads as `unacknowledged`) |
+| `acknowledgementDeadlineSeconds` | The deadline in force: `UPDATE_ACK_DEADLINE_SECONDS`, default 120 |
+| `diagnosticHint` | `UPDATE_NOT_ACKNOWLEDGED` while unacknowledged (same code as the bridge-agent update view), else null |
+| `running` | `{id, startedAt}` when the host started a request and no result for it exists yet (the request file is already consumed) |
+
+`panel-updater.sh` writes `started.json` (`{id, startedAt}`, staged outside the spool and renamed in, id restricted to `[A-Za-z0-9-]`) after it takes the lock and before it consumes `request.json`. Records are matched by request id only, so a stale `started.json` or `result.json` never acknowledges a newer request. A host still running the previous script writes no marker: its request is then reported `unacknowledged` after the deadline even if it was taken, until the host checkout is updated; the result file still resolves it.
+
+An unacknowledged request is a status, not an action: the request stays in the spool, `POST /api/admin/update` keeps answering `alreadyPending`, and nothing is re-queued. Next step shown in the card: `systemctl status panel-updater.path panel-updater.service` on the host, then `scripts/repair-updater-units.sh --dry-run` (see above); once the watcher is healthy it fires the queued request itself.
+
+Node agents report the same vocabulary in `GET /server/update` (`acknowledgement`, `requestAgeSeconds`, `diagnosticHint`; deadline `NODE_AGENT_UPDATE_ACK_DEADLINE_SECONDS`, default 120). A node's `requested` state past the deadline reads `unacknowledged` while `state` stays `requested`; consuming the trigger is the start signal (`acknowledged`). The panel does not store or display these node fields yet. Bridge-agent updates use `pickup_timeout` / `acknowledgementOverdueSince` with `UPDATE_NOT_ACKNOWLEDGED` (see `docs/OPERATIONS.md`).
+
 ## Design choice: host systemd worker, not a docker.sock sidecar
 
 An earlier draft proposed a sidecar container with `/var/run/docker.sock`. The
