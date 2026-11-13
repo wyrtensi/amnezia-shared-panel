@@ -1,9 +1,9 @@
-import { and, desc, eq, gt, inArray, sql } from "drizzle-orm";
+import { and, desc, eq, gt, inArray, lte, sql } from "drizzle-orm";
 import {
   BRIDGE_AGENT_UPDATE_OUTSTANDING_STATES,
   type BridgeAgentUpdateState,
 } from "@amnezia/contracts";
-import { vpnBridgeAgentUpdates, type Database } from "@amnezia/db";
+import { jobOutbox, vpnBridgeAgentUpdates, type Database } from "@amnezia/db";
 
 /** One stored update operation, as the job handler and the tracker need it. */
 export type BridgeUpdateOperation = {
@@ -32,6 +32,15 @@ export type BridgeUpdateChange = {
 
 export interface BridgeUpdateRepository {
   loadOperation: (operationId: string) => Promise<BridgeUpdateOperation | null>;
+  /**
+   * Close a bridge's `queued` operations that are past the acknowledgement
+   * deadline and whose delivery job is no longer pending or processing (it
+   * failed, was dropped or was completed by a worker that does not know the
+   * job type). Nothing else can move such an operation, and it would hold the
+   * bridge's outstanding slot forever. They become `pickup_timeout`. Returns
+   * how many were closed.
+   */
+  expireOrphanedQueued: (bridgeId: string, now: Date, deadlineMs: number) => Promise<number>;
   /**
    * The operation the poller follows for a bridge: its outstanding one past
    * delivery (sent, acknowledged, running) or, when none is outstanding, its
@@ -77,6 +86,35 @@ export class PostgresBridgeUpdateRepository implements BridgeUpdateRepository {
       .where(eq(vpnBridgeAgentUpdates.id, operationId))
       .limit(1);
     return row ? rowOf(row) : null;
+  };
+
+  expireOrphanedQueued = async (
+    bridgeId: string,
+    now: Date,
+    deadlineMs: number,
+  ): Promise<number> => {
+    const table = vpnBridgeAgentUpdates;
+    const rows = await this.options.db
+      .update(table)
+      .set({
+        state: "pickup_timeout",
+        errorCode: "UPDATE_NOT_ACKNOWLEDGED",
+        finishedAt: now,
+        lastCheckedAt: now,
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(table.bridgeId, bridgeId),
+          eq(table.state, "queued"),
+          lte(table.requestedAt, new Date(now.getTime() - deadlineMs)),
+          sql`not exists (select 1 from ${jobOutbox}
+            where ${jobOutbox.deduplicationKey} = 'bridge_agent.update:' || ${table.id}::text
+              and ${jobOutbox.status} in ('pending', 'processing'))`,
+        ),
+      )
+      .returning({ id: table.id });
+    return rows.length;
   };
 
   loadTracked = async (

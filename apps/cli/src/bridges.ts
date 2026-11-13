@@ -390,7 +390,7 @@ const BRIDGE_ERROR_HINTS: Record<string, string> = {
   BRIDGE_POOL_EXHAUSTED: "The bridge has no free UDP port left in its range.",
   NODE_HAS_BRIDGE_ROUTES: "The node still holds bridge routes; release them first.",
   BRIDGE_JOBS_DISABLED:
-    "Bridge jobs are disabled on this panel (VPN_BRIDGE_JOBS_ENABLED). Use --operator-verified --registration=<marker> instead.",
+    "Bridge jobs are disabled on this panel (VPN_BRIDGE_JOBS_ENABLED), so no probe check and no agent update can be queued. For a route, use --operator-verified --registration=<marker> instead.",
   BRIDGE_UNSUPPORTED_CAPABILITY:
     "No probe with the bridge-measurement capability is configured. Test the route with bridge-route-test-config, then use --operator-verified --registration=<marker>. (For bridge-enroll: the agent must speak management API v1 with the status.v1 capability. For bridge-agent-update: the installed agent does not report update.v1; update it on the host once.)",
   BRIDGE_MANAGEMENT_URL_NOT_ALLOWED:

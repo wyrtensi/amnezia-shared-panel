@@ -197,6 +197,9 @@ export function UpdateAgentDialog({
               ) : null}
             </dl>
             {!offered ? <Callout tone="warning" className="text-xs">{t("bridge.upd.noOffer")}</Callout> : null}
+            {!view.jobsEnabled ? (
+              <Callout tone="warning" className="text-xs">{t("bridge.upd.jobsDisabled")}</Callout>
+            ) : null}
             {!view.updateSupported ? (
               <Callout tone="warning" className="text-xs">{t("bridge.upd.unsupported")}</Callout>
             ) : null}
@@ -219,7 +222,7 @@ export function UpdateAgentDialog({
           <Button type="button" variant="outline" onClick={onClose}>
             {t("common.cancel")}
           </Button>
-          <Button type="button" disabled={busy || !view || !digest} onClick={() => void submit()}>
+          <Button type="button" disabled={busy || !view || !digest || !view.jobsEnabled} onClick={() => void submit()}>
             {t("bridge.upd.confirm")}
           </Button>
         </DialogFooter>

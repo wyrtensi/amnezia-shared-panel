@@ -1559,6 +1559,7 @@ const ru = {
   "bridge.upd.alreadyOutstanding": "Обновление уже выполняется: повторный запрос вернёт его же.",
   "bridge.upd.noOffer": "Панель не предлагает образ: задайте BRIDGE_AGENT_IMAGE_REPOSITORY и дождитесь релиза bridge-agent.",
   "bridge.upd.confirm": "Запросить обновление",
+  "bridge.upd.jobsDisabled": "Фоновые задачи мостов отключены (VPN_BRIDGE_JOBS_ENABLED): запрос обновления будет отклонён.",
   "bridge.upd.requested": "Обновление запрошено",
   "bridge.upd.replayed": "Это же обновление уже выполняется",
   "ov.bridgesTitle": "Мосты",
@@ -1777,7 +1778,7 @@ const ru = {
   "bridge.err.BRIDGE_IPV4_CONFLICT":
     "Мост с таким IPv4 уже есть.",
   "bridge.err.BRIDGE_UNSUPPORTED_CAPABILITY":
-    "Пробник недоступен: используйте проверку оператором или тестовый конфиг.",
+    "Не поддерживается: пробник недоступен (используйте проверку оператором или тестовый конфиг) либо установленный агент моста не сообщает нужную возможность.",
   "bridge.err.BRIDGE_MANAGEMENT_URL_NOT_ALLOWED":
     "Этот адрес управления не входит в разрешённые для панели.",
   "bridge.err.BRIDGE_IDENTITY_MISMATCH":
@@ -3285,6 +3286,7 @@ const en = {
   "bridge.upd.alreadyOutstanding": "An update is already outstanding: asking again returns it.",
   "bridge.upd.noOffer": "The panel offers no image: set BRIDGE_AGENT_IMAGE_REPOSITORY and wait for a bridge-agent release.",
   "bridge.upd.confirm": "Request update",
+  "bridge.upd.jobsDisabled": "Bridge jobs are disabled (VPN_BRIDGE_JOBS_ENABLED): an update request will be refused.",
   "bridge.upd.requested": "Update requested",
   "bridge.upd.replayed": "That update is already outstanding",
   "ov.bridgesTitle": "Bridges",
@@ -3503,7 +3505,7 @@ const en = {
   "bridge.err.BRIDGE_IPV4_CONFLICT":
     "A bridge with this IPv4 address already exists.",
   "bridge.err.BRIDGE_UNSUPPORTED_CAPABILITY":
-    "Probe unavailable: use operator verification or the test config.",
+    "Not supported: the probe is unavailable (use operator verification or the test config) or the installed bridge agent does not report the needed capability.",
   "bridge.err.BRIDGE_MANAGEMENT_URL_NOT_ALLOWED":
     "That management address is not one the panel may reach.",
   "bridge.err.BRIDGE_IDENTITY_MISMATCH":

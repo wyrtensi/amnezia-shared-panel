@@ -469,7 +469,7 @@ rollback_failed, failed, unsupported` (the host's or the agent's verdict) and
 `pickup_timeout`. Management contact lost after the host started is an observation
 (`contactLostSince`), not a state: it clears when the agent answers again and only the host's
 matching terminal result ends the operation. `pickup_timeout` (no host acknowledgement within
-120 s; the constant `BRIDGE_AGENT_UPDATE_PICKUP_TIMEOUT_MS`, which Task 8b reuses) is shown on the
+120 s; the constant `BRIDGE_AGENT_UPDATE_PICKUP_TIMEOUT_MS`) is shown on the
 card and in `bridge-agent-log` and is never retried automatically. If the host starts the update
 late, the next poll takes over the host's state. Check the host with
 `systemctl status amnezia-bridge-agent-update.path`, then request again.

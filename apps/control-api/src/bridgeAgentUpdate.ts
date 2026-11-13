@@ -80,8 +80,9 @@ export class BridgeAgentUpdates {
     const result = new Map<string, BridgeAgentUpdateSummary>();
     if (bridges.length === 0) return result;
     const offered = await this.options.approvedRelease();
+    // Only the newest operation of each bridge: the card needs no history.
     const rows = await this.options.db
-      .select()
+      .selectDistinctOn([vpnBridgeAgentUpdates.bridgeId])
       .from(vpnBridgeAgentUpdates)
       .where(
         inArray(
@@ -89,7 +90,7 @@ export class BridgeAgentUpdates {
           bridges.map((bridge) => bridge.id),
         ),
       )
-      .orderBy(desc(vpnBridgeAgentUpdates.requestedAt));
+      .orderBy(vpnBridgeAgentUpdates.bridgeId, desc(vpnBridgeAgentUpdates.requestedAt));
     const latest = new Map<string, UpdateRow>();
     for (const row of rows) {
       // Newest first. A new operation is only created once none is

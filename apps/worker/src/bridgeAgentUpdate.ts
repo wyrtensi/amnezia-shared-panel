@@ -173,7 +173,10 @@ export const createBridgeAgentUpdate = ({
   };
 
 export type BridgeUpdateTrackerOptions = {
-  repository: Pick<BridgeUpdateRepository, "loadTracked" | "recordChange">;
+  repository: Pick<
+    BridgeUpdateRepository,
+    "loadTracked" | "recordChange" | "expireOrphanedQueued"
+  >;
   fetchImpl?: typeof fetch;
   timeoutMs?: number;
   pickupTimeoutMs?: number;
@@ -190,8 +193,9 @@ export type BridgeUpdateTrackerInput = {
 
 /**
  * Follow a bridge's outstanding update during its poll. A bridge whose status
- * read failed (`down`) is not asked again: the answer is "no contact". An
- * `unsupported` or mismatching agent is never trusted with an operation.
+ * read did not succeed (down, unsupported, wrong identity) is not asked again:
+ * the answer is "no contact", so the acknowledgement deadline still runs, and
+ * such an agent is never trusted with an operation.
  */
 export const createBridgeUpdateTracker = ({
   repository,
@@ -203,14 +207,18 @@ export const createBridgeUpdateTracker = ({
   log = () => undefined,
 }: BridgeUpdateTrackerOptions) =>
   async ({ target, outcome }: BridgeUpdateTrackerInput): Promise<void> => {
-    if (outcome.kind !== "ok" && outcome.kind !== "down") return;
+    // An operation whose delivery job is gone would hold the slot forever.
+    await repository.expireOrphanedQueued(target.bridgeId, now(), pickupTimeoutMs);
     const operation = await repository.loadTracked(target.bridgeId, now(), lateWindowMs);
     if (!operation) return;
     let read: BridgeAgentUpdateReadOutcome;
-    if (outcome.kind === "down" || target.apiKey === null) {
+    if (outcome.kind !== "ok" || target.apiKey === null) {
+      // Anything but a good status read is "no contact" for the operation, so
+      // the acknowledgement deadline still runs for an unreadable agent.
       read = {
         kind: "no_contact",
-        errorCode: outcome.kind === "down" ? knownError(outcome.errorCode) : "AGENT_CREDENTIAL_UNREADABLE",
+        errorCode:
+          outcome.kind === "ok" ? "AGENT_CREDENTIAL_UNREADABLE" : knownError(outcome.errorCode),
       };
     } else {
       read = await readBridgeAgentUpdate(operation.id, {

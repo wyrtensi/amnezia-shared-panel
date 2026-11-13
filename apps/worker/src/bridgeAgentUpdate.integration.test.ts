@@ -527,4 +527,45 @@ describe("bridge-agent update (real PostgreSQL, fake bridge-agent over HTTP)", (
     const [row] = await db().select().from(vpnBridges).where(eq(vpnBridges.id, bridge.id));
     expect(row?.agentCapabilities).toEqual(["status.v1", "update.v1"]);
   });
+  runDatabaseTest(
+    "a queued operation whose delivery job is gone does not hold the slot past the deadline",
+    async () => {
+      const bridge = await seedBridge();
+      const requestedAt = new Date("2026-11-13T10:00:00.000Z");
+      const { operationId, job } = await queueOperation(bridge.id, { requestedAt });
+      const late = new Date(requestedAt.getTime() + BRIDGE_AGENT_UPDATE_PICKUP_TIMEOUT_MS + 1_000);
+
+      // The job is still pending (its retry backoff): the send path owns it.
+      await db().update(jobOutbox).set({ status: "pending" }).where(eq(jobOutbox.id, job.id));
+      await pollOnce(bridge.id, { now: late });
+      expect((await operation(operationId)).state).toBe("queued");
+
+      // The job ended without moving the operation (failJob, a catch-all
+      // completeJob of an older worker): nothing else would ever close it.
+      await db().update(jobOutbox).set({ status: "failed" }).where(eq(jobOutbox.id, job.id));
+      await pollOnce(bridge.id, { now: new Date(late.getTime() + 60_000) });
+      expect(await operation(operationId)).toMatchObject({
+        state: "pickup_timeout",
+        errorCode: "UPDATE_NOT_ACKNOWLEDGED",
+      });
+    },
+  );
+
+  runDatabaseTest(
+    "an agent that answers as unsupported still lets the acknowledgement deadline fire",
+    async () => {
+      const bridge = await seedBridge();
+      const { operationId, job } = await queueOperation(bridge.id);
+      const sentAt = new Date("2026-11-13T10:00:00.000Z");
+      await sendJob({ now: sentAt })(job);
+      // The status route answers for another bridge: identity mismatch.
+      agent.bridgeId = randomUUID();
+      await pollOnce(bridge.id, { now: new Date(sentAt.getTime() + 30_000) });
+      expect(await operation(operationId)).toMatchObject({ state: "sent" });
+      await pollOnce(bridge.id, {
+        now: new Date(sentAt.getTime() + BRIDGE_AGENT_UPDATE_PICKUP_TIMEOUT_MS + 1_000),
+      });
+      expect((await operation(operationId)).state).toBe("pickup_timeout");
+    },
+  );
 });
