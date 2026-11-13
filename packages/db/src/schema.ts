@@ -18,6 +18,7 @@ import {
   varchar,
 } from "drizzle-orm/pg-core";
 import type {
+  BridgeAgentUpdateState,
   BridgeManagementStatus,
   BridgeRouteState,
   BridgeVerificationMethod,
@@ -329,6 +330,53 @@ export const vpnBridges = pgTable(
     check(
       "vpn_bridges_management_enrollment_complete",
       sql`(${table.managementApiUrl} is null and ${table.managementCredentialCiphertext} is null and ${table.managementCredentialNonce} is null and ${table.managementCredentialAuthTag} is null and ${table.managementCredentialKeyVersion} is null and ${table.managementEnrolledAt} is null) or (${table.managementApiUrl} is not null and ${table.managementCredentialCiphertext} is not null and ${table.managementCredentialNonce} is not null and ${table.managementCredentialAuthTag} is not null and ${table.managementCredentialKeyVersion} is not null and ${table.managementEnrolledAt} is not null)`,
+    ),
+  ],
+);
+
+// One bridge-agent update operation: the panel's persisted record of an update
+// intent, keyed by the stable operation id the agent and the host updater see.
+// At most one operation per bridge is outstanding (queued, sent, acknowledged
+// or running); the rest is history. Bounded codes only, never agent text.
+export const vpnBridgeAgentUpdates = pgTable(
+  "vpn_bridge_agent_updates",
+  {
+    id: uuid("id").primaryKey(),
+    // Deleting a bridge deletes its update history.
+    bridgeId: uuid("bridge_id")
+      .notNull()
+      .references(() => vpnBridges.id, { onDelete: "cascade" }),
+    imageRepository: text("image_repository").notNull(),
+    imageDigest: text("image_digest").notNull(),
+    imageVersion: text("image_version"),
+    fromVersion: text("from_version"),
+    state: text("state").$type<BridgeAgentUpdateState>().default("queued").notNull(),
+    // The agent's own last reported state name, for diagnostics.
+    agentState: text("agent_state"),
+    requestedAt: timestamp("requested_at", { withTimezone: true }).defaultNow().notNull(),
+    sentAt: timestamp("sent_at", { withTimezone: true }),
+    acknowledgedAt: timestamp("acknowledged_at", { withTimezone: true }),
+    lastCheckedAt: timestamp("last_checked_at", { withTimezone: true }),
+    // Observation, not a state: management contact lost since the host
+    // started the update; cleared when the agent answers again.
+    contactLostSince: timestamp("contact_lost_since", { withTimezone: true }),
+    errorCode: text("error_code"),
+    finishedAt: timestamp("finished_at", { withTimezone: true }),
+    ...timestamps,
+  },
+  (table) => [
+    // One outstanding operation per bridge.
+    uniqueIndex("vpn_bridge_agent_updates_outstanding_unique")
+      .on(table.bridgeId)
+      .where(sql`${table.state} in ('queued', 'sent', 'acknowledged', 'running')`),
+    index("vpn_bridge_agent_updates_bridge_idx").on(table.bridgeId, table.requestedAt),
+    check(
+      "vpn_bridge_agent_updates_state_valid",
+      sql`${table.state} in ('queued', 'sent', 'acknowledged', 'running', 'succeeded', 'rolled_back', 'rollback_failed', 'failed', 'unsupported', 'pickup_timeout')`,
+    ),
+    check(
+      "vpn_bridge_agent_updates_digest_valid",
+      sql`${table.imageDigest} ~ '^sha256:[0-9a-f]{64}$'`,
     ),
   ],
 );

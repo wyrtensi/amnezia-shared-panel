@@ -24,6 +24,11 @@ import {
   type PrepareBridgeRouteRequest,
   type PrepareBridgeRouteResult,
   type ReleaseBridgeRouteResult,
+  type BridgeAgentOfferedImage,
+  type BridgeAgentUpdateSummary,
+  type BridgeAgentUpdateView,
+  type RequestBridgeAgentUpdate,
+  type RequestBridgeAgentUpdateResult,
   type UpdateBridgeRequest,
 } from "@amnezia/contracts";
 import {
@@ -47,6 +52,7 @@ import {
   canRenderBridgeEndpoint,
   classifyKeyForBridge,
 } from "./bridgeEndpoint.js";
+import { BridgeAgentUpdates } from "./bridgeAgentUpdate.js";
 import { assertBridgeJobsEnabled } from "./bridgeConfig.js";
 import { storeEnrollment, verifyEnrollmentCandidate } from "./bridgeEnrollment.js";
 import {
@@ -245,6 +251,7 @@ const toBridge = (
   now: Date,
   staleMs: number,
   agentImage: string | null,
+  agentUpdate: BridgeAgentUpdateSummary | undefined,
 ): Bridge => ({
   id: row.id,
   name: row.name,
@@ -271,6 +278,7 @@ const toBridge = (
     lastErrorCode: row.lastErrorCode,
     lastPollAttemptAt: iso(row.lastPollAttemptAt),
   },
+  agentUpdate,
   routes,
   setupCommands: bridgeSetupCommands(row, agentImage),
   createdAt: row.createdAt.toISOString(),
@@ -297,7 +305,15 @@ const toBridge = (
  * row and the ingest always sees the endpoint revision it writes against.
  */
 export class PostgresBridgeRepository {
-  constructor(private readonly options: BridgeRepositoryOptions) {}
+  private readonly agentUpdates: BridgeAgentUpdates;
+
+  constructor(private readonly options: BridgeRepositoryOptions) {
+    this.agentUpdates = new BridgeAgentUpdates({
+      db: options.db,
+      jobsEnabled: options.jobsEnabled ?? false,
+      approvedRelease: () => this.approvedRelease(),
+    });
+  }
 
   private get db(): Database {
     return this.options.db;
@@ -424,7 +440,7 @@ export class PostgresBridgeRepository {
    * reference is not a digest of exactly that repository. Rows of any other
    * repository are never read, and a tag can never come out of here.
    */
-  private approvedAgentImage = async (): Promise<string | null> => {
+  private approvedRelease = async (): Promise<BridgeAgentOfferedImage | null> => {
     const repository = this.options.bridgeAgentImageRepository?.trim();
     if (!repository) return null;
     const [release] = await this.db
@@ -434,8 +450,17 @@ export class PostgresBridgeRepository {
       .limit(1);
     if (!release) return null;
     const image = `${release.repository}@${release.digest}`;
-    return isPublishableAgentImage(image, repository) ? image : null;
+    if (!isPublishableAgentImage(image, repository)) return null;
+    return {
+      image,
+      repository: release.repository,
+      version: release.version,
+      digest: release.digest,
+    };
   };
+
+  private approvedAgentImage = async (): Promise<string | null> =>
+    (await this.approvedRelease())?.image ?? null;
 
   private readBridge = async (bridgeId: string): Promise<Bridge> => {
     const [row] = await this.db
@@ -446,12 +471,14 @@ export class PostgresBridgeRepository {
     if (!row) throw bridgeNotFound();
     const now = new Date();
     const routes = await this.routeSummaries([row], now);
+    const summaries = await this.agentUpdates.summaries([row]);
     return toBridge(
       row,
       routes.get(row.id) ?? [],
       now,
       this.options.observationStaleMs,
       await this.approvedAgentImage(),
+      summaries.get(row.id),
     );
   };
 
@@ -463,10 +490,30 @@ export class PostgresBridgeRepository {
     const now = new Date();
     const routes = await this.routeSummaries(rows, now);
     const agentImage = await this.approvedAgentImage();
+    const summaries = await this.agentUpdates.summaries(rows);
     return rows.map((row) =>
-      toBridge(row, routes.get(row.id) ?? [], now, this.options.observationStaleMs, agentImage),
+      toBridge(
+        row,
+        routes.get(row.id) ?? [],
+        now,
+        this.options.observationStaleMs,
+        agentImage,
+        summaries.get(row.id),
+      ),
     );
   };
+
+  /** The preview, outstanding operation and history of a bridge's agent update. */
+  getAgentUpdate = (bridgeId: string): Promise<BridgeAgentUpdateView> =>
+    this.agentUpdates.view(bridgeId);
+
+  /** Request an agent update (idempotent per outstanding operation). */
+  requestAgentUpdate = (
+    actor: Actor,
+    bridgeId: string,
+    request: RequestBridgeAgentUpdate,
+  ): Promise<RequestBridgeAgentUpdateResult> =>
+    this.agentUpdates.request(actor, bridgeId, request);
 
   /**
    * The overview's Bridges block, from the same stored observations as the

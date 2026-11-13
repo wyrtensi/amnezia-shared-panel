@@ -2,6 +2,7 @@ import {
   BRIDGE_AGENT_REQUEST_TIMEOUT_MS,
   bridgeAgentPollPayloadSchema,
   isAllowedBridgeManagementUrl,
+  readBridgeAgentIdentity,
   readBridgeAgentStatus,
   type BridgeAgentPollOutcome,
 } from "@amnezia/contracts";
@@ -25,6 +26,8 @@ export type BridgePollTarget = {
   /** The decrypted credential; null when it cannot be decrypted. */
   apiKey: string | null;
   enrolledAt: Date;
+  /** The capabilities the agent last reported; null when never read. */
+  capabilities: readonly string[] | null;
 };
 
 export interface BridgePollRepository {
@@ -37,6 +40,12 @@ export interface BridgePollRepository {
   loadPollTarget: (bridgeId: string) => Promise<BridgePollTarget | null>;
   /** `applyBridgePollResult` in its own transaction. */
   recordPoll: (write: BridgePollWrite) => Promise<BridgePollApplied>;
+  /** Store the capabilities of a fresh `/v1/identity` read. */
+  recordCapabilities: (write: {
+    bridgeId: string;
+    enrolledAt: Date;
+    capabilities: string[];
+  }) => Promise<void>;
 }
 
 export type BridgePollArmerOptions = {
@@ -71,7 +80,7 @@ export const createBridgePollArmer = ({
 };
 
 export type BridgeAgentPollOptions = {
-  repository: Pick<BridgePollRepository, "loadPollTarget" | "recordPoll">;
+  repository: Pick<BridgePollRepository, "loadPollTarget" | "recordPoll" | "recordCapabilities">;
   jobs: Pick<WorkerRepository, "completeJob" | "failJob">;
   jobsEnabled: boolean;
   /** `VPN_BRIDGE_MANAGEMENT_HOSTS`. */
@@ -80,6 +89,11 @@ export type BridgeAgentPollOptions = {
   timeoutMs?: number;
   now?: () => Date;
   log?: (line: string) => void;
+  /**
+   * Follows the bridge's outstanding agent update after a stored poll
+   * (bridgeAgentUpdate.ts). Absent on a worker without update tracking.
+   */
+  trackUpdate?: (input: { target: BridgePollTarget; outcome: BridgeAgentPollOutcome }) => Promise<void>;
 };
 
 /**
@@ -96,6 +110,7 @@ export const createBridgeAgentPoll = ({
   timeoutMs = BRIDGE_AGENT_REQUEST_TIMEOUT_MS,
   now = () => new Date(),
   log = () => undefined,
+  trackUpdate,
 }: BridgeAgentPollOptions) =>
   async (job: OutboxJob): Promise<void> => {
     const parsed = bridgeAgentPollPayloadSchema.safeParse(job.payload);
@@ -138,6 +153,25 @@ export const createBridgeAgentPoll = ({
     });
     if (applied === "discarded") {
       log(`bridge ${bridgeId}: poll result discarded (re-enrolled or a newer poll was stored)`);
+    } else {
+      // Capabilities change when the agent is replaced (an update adds
+      // `update.v1`), so they are re-read after every successful poll.
+      if (outcome.kind === "ok" && target.apiKey !== null) {
+        const identity = await readBridgeAgentIdentity(bridgeId, {
+          baseUrl: target.apiUrl,
+          apiKey: target.apiKey,
+          fetchImpl,
+          timeoutMs,
+        });
+        if (identity.kind === "ok") {
+          await repository.recordCapabilities({
+            bridgeId,
+            enrolledAt: target.enrolledAt,
+            capabilities: identity.identity.capabilities,
+          });
+        }
+      }
+      await trackUpdate?.({ target, outcome });
     }
     await jobs.completeJob(job.id);
   };

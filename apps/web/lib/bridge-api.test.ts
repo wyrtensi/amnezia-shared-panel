@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   createBridge,
+  getAgentUpdate,
+  requestAgentUpdate,
   fetchTestConfig,
   prepareRoute,
   releaseRoute,
@@ -152,5 +154,19 @@ describe("fetchTestConfig", () => {
     expect(urls).toEqual([
       "/api/control/api/admin/vpn-bridge-routes/r1/test-config?keyId=k%201",
     ]);
+  });
+});
+
+describe("agent update requests", () => {
+  it("previews with a GET and requests exactly the given digest", async () => {
+    const a = recorder();
+    await getAgentUpdate(a.request, "b1");
+    expect(a.calls[0]?.path).toBe("/api/admin/vpn-bridges/b1/agent-update");
+    expect(a.calls[0]?.init).toBeUndefined();
+    const b = recorder();
+    await requestAgentUpdate(b.request, "b1", `sha256:${"a".repeat(64)}`);
+    expect(b.calls[0]?.path).toBe("/api/admin/vpn-bridges/b1/agent-update");
+    expect(b.calls[0]?.init?.method).toBe("POST");
+    expect(bodyOf(b.calls[0])).toEqual({ imageDigest: `sha256:${"a".repeat(64)}` });
   });
 });

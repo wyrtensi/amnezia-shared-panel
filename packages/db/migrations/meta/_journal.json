@@ -344,6 +344,13 @@
       "when": 1794598820955,
       "tag": "0048_bridge_agent_releases",
       "breakpoints": true
+    },
+    {
+      "idx": 49,
+      "version": "7",
+      "when": 1794600270654,
+      "tag": "0049_bridge_agent_updates",
+      "breakpoints": true
     }
   ]
 }

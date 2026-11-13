@@ -65,6 +65,7 @@ export class PostgresBridgePollRepository implements BridgePollRepository {
         authTag: vpnBridges.managementCredentialAuthTag,
         keyVersion: vpnBridges.managementCredentialKeyVersion,
         enrolledAt: vpnBridges.managementEnrolledAt,
+        capabilities: vpnBridges.agentCapabilities,
       })
       .from(vpnBridges)
       .where(and(eq(vpnBridges.id, bridgeId), isNotNull(vpnBridges.managementEnrolledAt)))
@@ -93,7 +94,31 @@ export class PostgresBridgePollRepository implements BridgePollRepository {
     } catch {
       apiKey = null;
     }
-    return { bridgeId: row.bridgeId, apiUrl: row.apiUrl, apiKey, enrolledAt: row.enrolledAt };
+    return {
+      bridgeId: row.bridgeId,
+      apiUrl: row.apiUrl,
+      apiKey,
+      enrolledAt: row.enrolledAt,
+      capabilities: row.capabilities,
+    };
+  };
+
+  recordCapabilities = async (write: {
+    bridgeId: string;
+    enrolledAt: Date;
+    capabilities: string[];
+  }): Promise<void> => {
+    // Only for the credential the identity was read with: a re-enrollment in
+    // the meantime means this answer may describe another agent.
+    await this.options.db
+      .update(vpnBridges)
+      .set({ agentCapabilities: write.capabilities })
+      .where(
+        and(
+          eq(vpnBridges.id, write.bridgeId),
+          eq(vpnBridges.managementEnrolledAt, write.enrolledAt),
+        ),
+      );
   };
 
   recordPoll = async (write: BridgePollWrite): Promise<BridgePollApplied> =>

@@ -25,10 +25,12 @@ const repositoryFor = (
     apiUrl: string;
     apiKey: string | null;
     enrolledAt: Date;
+    capabilities: string[] | null;
   } | null,
 ) => ({
   loadPollTarget: vi.fn((_bridgeId: string) => Promise.resolve(target)),
   recordPoll: vi.fn(() => Promise.resolve("written" as const)),
+  recordCapabilities: vi.fn(() => Promise.resolve()),
 });
 
 const job = (payload: Record<string, unknown>) => ({
@@ -61,6 +63,7 @@ describe("createBridgeAgentPoll", () => {
       apiUrl: "http://host.docker.internal:7605",
       apiKey: null,
       enrolledAt,
+      capabilities: null,
     });
     await poll(job({ bridgeId: BRIDGE_ID }));
     expect(fetchImpl).not.toHaveBeenCalled();
@@ -79,6 +82,7 @@ describe("createBridgeAgentPoll", () => {
       apiUrl: "http://host.docker.internal:7605",
       apiKey: "k".repeat(40),
       enrolledAt: new Date(),
+      capabilities: null,
     });
     await poll(job({ bridgeId: BRIDGE_ID }));
     expect(repository.recordPoll).toHaveBeenCalledWith(

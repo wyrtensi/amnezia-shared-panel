@@ -6,6 +6,7 @@ import { formatDateTime } from "@/lib/format";
 import { BridgeCardView } from "./bridges-tab";
 import { OverviewBridgesBlock } from "./overview-bridges";
 import { BridgeRouteFacts } from "./bridge-route-view";
+import { agentUpdateTone } from "@/lib/bridge-ui";
 
 const tFor =
   (lang: Lang) =>
@@ -181,6 +182,140 @@ describe("BridgeCardView", () => {
     expect(html).toContain("Нет свежих данных");
     expect(html).toContain("Маршрутов нет");
     expect(html).not.toContain("install-frps.sh");
+  });
+});
+
+describe("BridgeCardView agent update", () => {
+  const DIGEST = `sha256:${"a".repeat(64)}`;
+  const operation = {
+    operationId: "00000000-0000-4000-8000-0000000000c1",
+    state: "succeeded" as const,
+    requestedDigest: DIGEST,
+    requestedVersion: "0.2.0",
+    fromVersion: "0.1.0",
+    requestedAt: "2026-11-13T10:00:00.000Z",
+    sentAt: "2026-11-13T10:00:01.000Z",
+    acknowledgedAt: "2026-11-13T10:00:05.000Z",
+    lastCheckedAt: "2026-11-13T10:03:00.000Z",
+    contactLostSince: null,
+    errorCode: null,
+    result: { finishedAt: "2026-11-13T10:03:00.000Z", errorCode: null },
+  };
+  const enrolled = (agentUpdate: Bridge["agentUpdate"]): Bridge => ({
+    ...bridge,
+    managementStatus: "ok",
+    management: {
+      apiUrl: "http://host.docker.internal:17600",
+      enrolled: true,
+      enrolledAt: "2026-11-13T08:00:00.000Z",
+      agentVersion: "0.1.0",
+      agentApiVersion: 1,
+      agentCapabilities: ["status.v1", "update.v1"],
+      frpsVersion: "0.72.0",
+      frpsReachable: true,
+      lastErrorCode: null,
+      lastPollAttemptAt: "2026-11-13T09:05:00.000Z",
+    },
+    agentUpdate,
+  });
+  const offered = {
+    image: `ghcr.io/o/r/bridge-agent@${DIGEST}`,
+    repository: "ghcr.io/o/r/bridge-agent",
+    version: "0.2.0",
+    digest: DIGEST,
+  };
+  const renderWithUpdate = (value: Bridge, lang: Lang = "en") =>
+    renderToStaticMarkup(
+      <BridgeCardView
+        bridge={value}
+        t={tFor(lang)}
+        lang={lang}
+        onRename={() => undefined}
+        onDelete={() => undefined}
+        onUpdateAgent={() => undefined}
+      />,
+    );
+
+  it("shows installed version, the offered image and the last result", () => {
+    const html = renderWithUpdate(
+      enrolled({ updateSupported: true, offered, operation }),
+    );
+    expect(html).toContain("Agent update");
+    expect(html).toContain("Installed");
+    expect(html).toContain("0.2.0");
+    expect(html).toContain("updated");
+    expect(html).toContain(formatDateTime("2026-11-13T10:03:00.000Z", "en"));
+    expect(html).toContain("Update agent");
+  });
+
+  it("names a pickup timeout and tells the admin it is not retried", () => {
+    const html = renderWithUpdate(
+      enrolled({
+        updateSupported: true,
+        offered,
+        operation: {
+          ...operation,
+          state: "pickup_timeout",
+          errorCode: "UPDATE_NOT_ACKNOWLEDGED",
+        },
+      }),
+    );
+    expect(html).toContain("host did not acknowledge");
+    expect(html).toContain("not retried automatically");
+    expect(html).toContain("UPDATE_NOT_ACKNOWLEDGED");
+  });
+
+  it("shows lost contact as an observation on a running update, not a failure", () => {
+    const html = renderWithUpdate(
+      enrolled({
+        updateSupported: true,
+        offered,
+        operation: {
+          ...operation,
+          state: "running",
+          contactLostSince: "2026-11-13T10:01:00.000Z",
+          result: null,
+        },
+      }),
+    );
+    expect(html).toContain("running");
+    expect(html).toContain("Management contact lost since");
+    expect(html).not.toContain("failed");
+  });
+
+  it("separates a rollback from a failed rollback", () => {
+    for (const [state, label] of [
+      ["rolled_back", "rolled back"],
+      ["rollback_failed", "rollback failed"],
+    ] as const) {
+      const html = renderWithUpdate(
+        enrolled({
+          updateSupported: true,
+          offered,
+          operation: { ...operation, state, errorCode: "HEALTH_GATE_FAILED" },
+        }),
+      );
+      expect(html).toContain(label);
+      expect(html).toContain("HEALTH_GATE_FAILED");
+    }
+    expect(agentUpdateTone("rolled_back")).toBe("warning");
+    expect(agentUpdateTone("rollback_failed")).toBe("destructive");
+    expect(agentUpdateTone("pickup_timeout")).toBe("warning");
+    expect(agentUpdateTone("running")).toBe("outline");
+  });
+
+  it("says when nothing is offered or the agent cannot be updated, and hides the block when not enrolled", () => {
+    const none = renderWithUpdate(enrolled({ updateSupported: false, offered: null, operation: null }));
+    expect(none).toContain("no approved image");
+    expect(none).toContain("never requested");
+    expect(none).toContain("does not report update.v1");
+    expect(renderWithUpdate(bridge)).not.toContain("Agent update");
+  });
+
+  it("renders in Russian", () => {
+    const html = renderWithUpdate(enrolled({ updateSupported: true, offered, operation }), "ru");
+    expect(html).toContain("Обновление агента");
+    expect(html).toContain("Обновить агент");
   });
 });
 

@@ -12,7 +12,9 @@ import {
   resolveBridgeManagementHosts,
   resolveWorkerPeriodDefaults,
 } from "./config.js";
+import { createBridgeAgentUpdate, createBridgeUpdateTracker } from "./bridgeAgentUpdate.js";
 import { createBridgeAgentPoll, createBridgePollArmer } from "./bridgePoller.js";
+import { PostgresBridgeUpdateRepository } from "./bridgeUpdateRepository.js";
 import { PostgresBridgePollRepository } from "./bridgePollRepository.js";
 import {
   BRIDGE_AGENT_POLL_INTERVAL_MS,
@@ -266,11 +268,27 @@ const armBridgePolls = createBridgePollArmer({
   jobsEnabled: bridgeJobsEnabled,
   log: (line) => console.log(line),
 });
+const bridgeManagementHosts = resolveBridgeManagementHosts(process.env);
+// Bridge-agent updates: the `bridge_agent.update` job delivers the stored
+// intent once; the poll job above then follows the operation to its result.
+const bridgeUpdateRepository = new PostgresBridgeUpdateRepository({ db: database.db });
 const bridgeAgentPoll = createBridgeAgentPoll({
   repository: bridgePollRepository,
   jobs: repository,
   jobsEnabled: bridgeJobsEnabled,
-  managementHosts: resolveBridgeManagementHosts(process.env),
+  managementHosts: bridgeManagementHosts,
+  log: (line) => console.log(line),
+  trackUpdate: createBridgeUpdateTracker({
+    repository: bridgeUpdateRepository,
+    log: (line) => console.log(line),
+  }),
+});
+const bridgeAgentUpdate = createBridgeAgentUpdate({
+  repository: bridgeUpdateRepository,
+  targets: bridgePollRepository,
+  jobs: repository,
+  jobsEnabled: bridgeJobsEnabled,
+  managementHosts: bridgeManagementHosts,
   log: (line) => console.log(line),
 });
 
@@ -284,6 +302,7 @@ const processJob = createJobProcessor({
   panelPublicUrl: process.env.PANEL_PUBLIC_URL ?? null,
   bridgeCandidateCheck,
   bridgeAgentPoll,
+  bridgeAgentUpdate,
   // Without this, a throwing access.sync run is only ever recorded in
   // job_outbox.last_error: the runner turns the throw into retryJob/failJob
   // with no console output, so an operator watching `docker logs worker`

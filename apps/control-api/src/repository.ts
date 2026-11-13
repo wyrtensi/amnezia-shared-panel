@@ -4,6 +4,9 @@ import type {
   Bridge,
   CreateBridgeRequest,
   DeleteBridgeResult,
+  BridgeAgentUpdateView,
+  RequestBridgeAgentUpdate,
+  RequestBridgeAgentUpdateResult,
   InfrastructureItem,
   BridgeEligibility,
   NodeBridgeRoutes,
@@ -241,6 +244,14 @@ export interface ControlRepository {
     request: UpdateBridgeRequest,
   ) => Promise<Bridge>;
   deleteBridge: (actor: Actor, bridgeId: string) => Promise<DeleteBridgeResult>;
+  /** Preview, outstanding operation and history of the bridge-agent update. */
+  getBridgeAgentUpdate: (actor: Actor, bridgeId: string) => Promise<BridgeAgentUpdateView>;
+  /** Request a bridge-agent update; a repeat of the outstanding one returns it. */
+  requestBridgeAgentUpdate: (
+    actor: Actor,
+    bridgeId: string,
+    request: RequestBridgeAgentUpdate,
+  ) => Promise<RequestBridgeAgentUpdateResult>;
   getNodeBridgeRoutes: (actor: Actor, nodeId: string) => Promise<NodeBridgeRoutes>;
   /** Counts-only dry-run of the endpoint renderer over the node's stored configs. */
   getBridgeEligibility: (actor: Actor, nodeId: string) => Promise<BridgeEligibility>;

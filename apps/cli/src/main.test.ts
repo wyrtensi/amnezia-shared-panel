@@ -1450,6 +1450,108 @@ describe("bridge commands", () => {
     expect(sentBody(calls[0]!)).toMatchObject({ apiKey: "s".repeat(40) });
   });
 
+  describe("bridge-agent-update and bridge-agent-log", () => {
+    const DIGEST = `sha256:${"a".repeat(64)}`;
+    const OP = "55555555-5555-4555-8555-555555555555";
+    const operation = {
+      operationId: OP,
+      state: "queued",
+      requestedDigest: DIGEST,
+      requestedVersion: "0.2.0",
+      fromVersion: "0.1.0",
+      requestedAt: "2026-11-13T10:00:00.000Z",
+      sentAt: null,
+      acknowledgedAt: null,
+      lastCheckedAt: null,
+      contactLostSince: null,
+      errorCode: null,
+      result: null,
+    };
+    const view = {
+      bridgeId: BRIDGE,
+      enrolled: true,
+      installedVersion: "0.1.0",
+      updateSupported: true,
+      jobsEnabled: true,
+      offered: [
+        { image: `ghcr.io/example/amnezia/bridge-agent@${DIGEST}`, repository: "ghcr.io/example/amnezia/bridge-agent", version: "0.2.0", digest: DIGEST },
+      ],
+      operation: null,
+      history: [],
+    };
+
+    it("previews installed against offered without --confirm and changes nothing", async () => {
+      const calls = stubFetch([{ body: view }]);
+      const out = await run(["bridge-agent-update", BRIDGE]);
+      expect(out).toContain("0.1.0 installed");
+      expect(out).toContain("offered: 0.2.0");
+      expect(out).toContain("Nothing was changed");
+      expect(calls).toHaveLength(1);
+      expect(calls[0]?.init?.method ?? "GET").toBe("GET");
+    });
+
+    it("--confirm requests exactly the offered digest and says how to follow it", async () => {
+      const calls = stubFetch([{ body: view }, { status: 202, body: { created: true, operation } }]);
+      const out = await run(["bridge-agent-update", BRIDGE, "--confirm"]);
+      expect(calls[1]?.url).toContain(`/api/admin/vpn-bridges/${BRIDGE}/agent-update`);
+      expect(calls[1]?.init?.method).toBe("POST");
+      expect(sentBody(calls[1]!)).toEqual({ imageDigest: DIGEST });
+      expect(out).toContain("update to 0.2.0 requested");
+      expect(out).toContain(`bridge-agent-log ${BRIDGE}`);
+    });
+
+    it("a repeat reports the already outstanding operation", async () => {
+      stubFetch([{ body: view }, { body: { created: false, operation } }]);
+      expect(await run(["bridge-agent-update", BRIDGE, "--confirm"])).toContain("already outstanding");
+    });
+
+    it("surfaces a 409 with its hint, and refuses a bad id or flag without a request", async () => {
+      stubFetch([
+        { body: view },
+        { status: 409, body: { error: "BRIDGE_UPDATE_IN_PROGRESS", message: "busy" } },
+      ]);
+      await expect(run(["bridge-agent-update", BRIDGE, "--confirm"])).rejects.toThrow(
+        /BRIDGE_UPDATE_IN_PROGRESS: busy\n.*bridge-agent-log/,
+      );
+      const calls = stubFetch([{ body: view }]);
+      await expect(run(["bridge-agent-update", "frankfurt"])).rejects.toThrow(/must be a UUID/);
+      await expect(run(["bridge-agent-update", BRIDGE, "--image=x"])).rejects.toThrow(/Unknown flag/);
+      expect(calls).toHaveLength(0);
+    });
+
+    it("refuses --confirm when nothing is offered", async () => {
+      const calls = stubFetch([{ body: { ...view, offered: [] } }]);
+      await expect(run(["bridge-agent-update", BRIDGE, "--confirm"])).rejects.toThrow(/offers no bridge-agent image/);
+      expect(calls).toHaveLength(1);
+    });
+
+    it("bridge-agent-log names a pickup timeout and lost contact, and --json is the typed projection", async () => {
+      const timedOut = {
+        ...operation,
+        state: "pickup_timeout",
+        errorCode: "UPDATE_NOT_ACKNOWLEDGED",
+        result: { finishedAt: "2026-11-13T10:03:00.000Z", errorCode: "UPDATE_NOT_ACKNOWLEDGED" },
+      };
+      const lost = { ...operation, operationId: "66666666-6666-4666-8666-666666666666", state: "running", contactLostSince: "2026-11-13T09:00:00.000Z" };
+      stubFetch([{ body: { ...view, operation: timedOut, history: [lost] } }]);
+      const out = await run(["bridge-agent-log", BRIDGE]);
+      expect(out).toContain("pickup_timeout");
+      expect(out).toContain("never acknowledged");
+      expect(out).toContain("not retried automatically");
+      expect(out).toContain("management contact lost since 2026-11-13T09:00:00.000Z");
+
+      stubFetch([{ body: { ...view, operation: timedOut, history: [], extra: "dropped" } }]);
+      const parsed = JSON.parse(await run(["bridge-agent-log", BRIDGE, "--json"])) as Record<string, unknown>;
+      expect(parsed).not.toHaveProperty("extra");
+      expect(parsed.operation).toMatchObject({ state: "pickup_timeout", result: { errorCode: "UPDATE_NOT_ACKNOWLEDGED" } });
+    });
+
+    it("bridge-agent-log with no operation says so", async () => {
+      stubFetch([{ body: view }]);
+      expect(await run(["bridge-agent-log", BRIDGE])).toContain("no agent update was requested");
+    });
+  });
+
   it("bridge-add surfaces a duplicate address", async () => {
     stubFetch([{ status: 409, body: { error: "BRIDGE_IPV4_CONFLICT", message: "dup" } }]);
     await expect(

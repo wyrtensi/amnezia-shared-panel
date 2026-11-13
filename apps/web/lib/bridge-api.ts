@@ -2,11 +2,13 @@ import {
   BRIDGE_REGISTRATION_MARKER_HEADER,
   decodeRegistrationMarkerHeader,
   type Bridge,
+  type BridgeAgentUpdateView,
   type BridgeEligibility,
   type CreateBridgeRequest,
   type InfrastructureItem,
   type NodeBridgeRoutes,
   type PrepareBridgeRouteResult,
+  type RequestBridgeAgentUpdateResult,
   type ReleaseBridgeRouteResult,
   type VerifyBridgeRouteResult,
   type NodeEndpointAssignment,
@@ -41,6 +43,17 @@ export const renameBridge = (request: Requester, id: string, name: string) =>
 
 export const deleteBridge = (request: Requester, id: string) =>
   request<DeleteBridgeResult>(`/api/admin/vpn-bridges/${id}`, { method: "DELETE" });
+
+/** The preview: installed version, offered image, outstanding or last operation. */
+export const getAgentUpdate = (request: Requester, bridgeId: string) =>
+  request<BridgeAgentUpdateView>(`/api/admin/vpn-bridges/${bridgeId}/agent-update`);
+
+/** Request exactly the digest the preview offered; the API refuses any other. */
+export const requestAgentUpdate = (request: Requester, bridgeId: string, imageDigest: string) =>
+  request<RequestBridgeAgentUpdateResult>(
+    `/api/admin/vpn-bridges/${bridgeId}/agent-update`,
+    json("POST", { imageDigest }),
+  );
 
 export const getNodeRoutes = (request: Requester, nodeId: string) =>
   request<NodeBridgeRoutes>(`/api/admin/nodes/${nodeId}/vpn-bridge-routes`);

@@ -1,5 +1,6 @@
 import {
   BRIDGE_ERROR_CODES,
+  type BridgeAgentUpdateState,
   type BridgeRouteVerification,
 } from "@amnezia/contracts";
 import { ApiClientError } from "@/lib/api";
@@ -131,3 +132,25 @@ export const verificationLabelKey = (verification: BridgeRouteVerification): str
 /** When the evidence behind a verification was produced, if it has a time. */
 export const verificationTime = (verification: BridgeRouteVerification): string | null =>
   verification.kind === "awg_path" ? verification.checkedAt : verification.verifiedAt;
+
+/**
+ * Badge tone for an agent update operation. A rollback is a safe outcome that
+ * still needs attention (warning); a failed rollback is the one that does not
+ * leave a known-good agent (destructive). A pickup timeout is surfaced, never
+ * hidden, and is not a failure of the agent itself.
+ */
+export const agentUpdateTone = (state: BridgeAgentUpdateState): BadgeTone => {
+  switch (state) {
+    case "succeeded":
+      return "success";
+    case "rolled_back":
+    case "pickup_timeout":
+      return "warning";
+    case "rollback_failed":
+    case "failed":
+    case "unsupported":
+      return "destructive";
+    default:
+      return "outline";
+  }
+};

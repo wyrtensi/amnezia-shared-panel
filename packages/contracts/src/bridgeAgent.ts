@@ -151,6 +151,9 @@ export type BridgeAgentRequestOptions = {
   timeoutMs?: number;
   maxBytes?: number;
   fetchImpl?: typeof fetch;
+  /** Defaults to GET. A POST sends `body` as JSON. */
+  method?: "GET" | "POST";
+  body?: unknown;
 };
 
 const readCappedText = async (response: Response, maxBytes: number): Promise<string | null> => {
@@ -183,30 +186,37 @@ const readCappedText = async (response: Response, maxBytes: number): Promise<str
 };
 
 /**
- * GET one management path. Never throws for an agent problem: network
+ * One management request. Never throws for an agent problem: network
  * failures, timeouts, redirects and oversized or non-JSON bodies become a
  * bounded code, and nothing the agent sent ends up in an error message.
  */
 export const requestBridgeAgent = async (
-  path: "/v1/identity" | "/v1/status",
+  path: "/v1/identity" | "/v1/status" | "/v1/update" | `/v1/update?operationId=${string}`,
   {
     baseUrl,
     apiKey,
     timeoutMs = BRIDGE_AGENT_REQUEST_TIMEOUT_MS,
     maxBytes = BRIDGE_AGENT_MAX_RESPONSE_BYTES,
     fetchImpl = fetch,
+    method = "GET",
+    body,
   }: BridgeAgentRequestOptions,
 ): Promise<BridgeAgentHttpResult> => {
   const signal = AbortSignal.timeout(timeoutMs);
   let response: Response;
   try {
     response = await fetchImpl(`${baseUrl.replace(/\/+$/, "")}${path}`, {
-      method: "GET",
+      method,
       // A management endpoint never redirects; following one could carry the
       // bearer token to a destination the allowlist never approved.
       redirect: "error",
       signal,
-      headers: { accept: "application/json", authorization: `Bearer ${apiKey}` },
+      headers: {
+        accept: "application/json",
+        authorization: `Bearer ${apiKey}`,
+        ...(method === "POST" ? { "content-type": "application/json" } : {}),
+      },
+      ...(method === "POST" ? { body: JSON.stringify(body ?? {}) } : {}),
     });
   } catch {
     return { kind: "failed", code: signal.aborted ? "AGENT_TIMEOUT" : "AGENT_UNREACHABLE" };

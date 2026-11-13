@@ -9,6 +9,11 @@ import {
   normalizeBridgeManagementUrl,
   parseBridgeManagementHosts,
 } from "./bridgeAgent.js";
+import {
+  classifyBridgeAgentUpdateRead,
+  classifyBridgeAgentUpdateSend,
+} from "./bridgeAgentUpdate.js";
+import { bridgeAgentUpdateStateOf, requestBridgeAgentUpdateSchema } from "./bridgeUpdateModel.js";
 import { bridgeManagementApiUrlSchema, updateBridgeRequestSchema } from "./bridges.js";
 
 const BRIDGE_ID = "6f1d2c1e-7d0f-4a8e-9f0a-3c3d5e8b1a01";
@@ -286,5 +291,91 @@ describe("management destinations", () => {
 
   it("keys one poll row per bridge", () => {
     expect(bridgeAgentPollDeduplicationKey(BRIDGE_ID)).toBe(`bridge_agent.poll:${BRIDGE_ID}`);
+  });
+});
+
+describe("bridge-agent update contract", () => {
+  const operationId = "0b1c2d3e-4f50-4a6b-8c7d-9e0f1a2b3c4d";
+  const ok = (status: number, body: unknown) => ({ kind: "response" as const, status, body });
+
+  it("classifies the POST answer", () => {
+    const accepted = classifyBridgeAgentUpdateSend(
+      operationId,
+      ok(202, { operationId, state: "queued", updatedAt: "2026-11-13T10:00:00Z" }),
+    );
+    expect(accepted.kind).toBe("accepted");
+    expect(classifyBridgeAgentUpdateSend(operationId, ok(409, null))).toEqual({
+      kind: "rejected",
+      errorCode: "AGENT_UPDATE_CONFLICT",
+    });
+    expect(classifyBridgeAgentUpdateSend(operationId, ok(400, null))).toEqual({
+      kind: "rejected",
+      errorCode: "AGENT_UPDATE_REJECTED",
+    });
+    expect(classifyBridgeAgentUpdateSend(operationId, ok(404, null))).toEqual({
+      kind: "rejected",
+      errorCode: "AGENT_UPDATE_UNSUPPORTED",
+    });
+    expect(classifyBridgeAgentUpdateSend(operationId, ok(401, null))).toEqual({
+      kind: "rejected",
+      errorCode: "AGENT_UNAUTHORIZED",
+    });
+    // No usable answer is retryable: a replay of the same id is harmless.
+    expect(classifyBridgeAgentUpdateSend(operationId, ok(503, null)).kind).toBe("retry");
+    expect(
+      classifyBridgeAgentUpdateSend(operationId, { kind: "failed", code: "AGENT_TIMEOUT" }),
+    ).toEqual({ kind: "retry", errorCode: "AGENT_TIMEOUT" });
+    expect(classifyBridgeAgentUpdateSend(operationId, ok(202, { state: "queued" })).kind).toBe(
+      "retry",
+    );
+    // An answer for another operation is never accepted.
+    expect(
+      classifyBridgeAgentUpdateSend(
+        operationId,
+        ok(202, {
+          operationId: "1b1c2d3e-4f50-4a6b-8c7d-9e0f1a2b3c4d",
+          state: "queued",
+          updatedAt: "x",
+        }),
+      ).kind,
+    ).toBe("retry");
+  });
+
+  it("classifies the GET answer", () => {
+    expect(
+      classifyBridgeAgentUpdateRead(
+        operationId,
+        ok(200, { operationId, state: "rollback_failed", updatedAt: "x", errorCode: "ROLLBACK_UNVERIFIED" }),
+      ),
+    ).toMatchObject({ kind: "status", status: { state: "rollback_failed" } });
+    expect(classifyBridgeAgentUpdateRead(operationId, ok(404, null))).toEqual({
+      kind: "unknown_operation",
+    });
+    expect(
+      classifyBridgeAgentUpdateRead(
+        operationId,
+        ok(200, { operationId: "1b1c2d3e-4f50-4a6b-8c7d-9e0f1a2b3c4d", state: "queued", updatedAt: "x" }),
+      ),
+    ).toEqual({ kind: "mismatch" });
+    expect(classifyBridgeAgentUpdateRead(operationId, ok(401, null))).toEqual({
+      kind: "no_contact",
+      errorCode: "AGENT_UNAUTHORIZED",
+    });
+    expect(classifyBridgeAgentUpdateRead(operationId, ok(200, { state: "nope" }))).toEqual({
+      kind: "no_contact",
+      errorCode: "AGENT_MALFORMED_RESPONSE",
+    });
+  });
+
+  it("maps agent states onto panel states and never accepts a tag or short digest", () => {
+    expect(bridgeAgentUpdateStateOf("queued")).toBe("sent");
+    expect(bridgeAgentUpdateStateOf("picked_up")).toBe("acknowledged");
+    expect(bridgeAgentUpdateStateOf("health_check")).toBe("running");
+    expect(bridgeAgentUpdateStateOf("rollback_failed")).toBe("rollback_failed");
+    expect(requestBridgeAgentUpdateSchema.safeParse({ imageDigest: "latest" }).success).toBe(false);
+    expect(requestBridgeAgentUpdateSchema.safeParse({ imageDigest: "sha256:abc" }).success).toBe(false);
+    expect(
+      requestBridgeAgentUpdateSchema.safeParse({ imageDigest: `sha256:${"b".repeat(64)}` }).success,
+    ).toBe(true);
   });
 });

@@ -38,6 +38,9 @@ import type {
   UpdateNodeRequest,
   UpdateServiceCheckRequest,
   DeleteBridgeResult,
+  BridgeAgentUpdateView,
+  RequestBridgeAgentUpdate,
+  RequestBridgeAgentUpdateResult,
   InfrastructureItem,
   BridgeEligibility,
   NodeBridgeRoutes,
@@ -555,6 +558,14 @@ export class PostgresControlRepository implements ControlRepository {
     bridgeId: string,
     request: UpdateBridgeRequest,
   ): Promise<Bridge> => this.bridges.updateBridge(actor, bridgeId, request);
+  getBridgeAgentUpdate = (_actor: Actor, bridgeId: string): Promise<BridgeAgentUpdateView> =>
+    this.bridges.getAgentUpdate(bridgeId);
+  requestBridgeAgentUpdate = (
+    actor: Actor,
+    bridgeId: string,
+    request: RequestBridgeAgentUpdate,
+  ): Promise<RequestBridgeAgentUpdateResult> =>
+    this.bridges.requestAgentUpdate(actor, bridgeId, request);
   deleteBridge = (actor: Actor, bridgeId: string): Promise<DeleteBridgeResult> =>
     this.bridges.deleteBridge(actor, bridgeId);
   getBridgeEligibility = async (

@@ -227,6 +227,8 @@ const createRepository = (): ControlRepository => ({
   listInfrastructure: vi.fn(() => Promise.resolve([])),
   findBridgeRouteTarget: vi.fn(() => Promise.resolve(null)),
   verifyBridgeRoute: vi.fn(() => Promise.reject(new Error("not stubbed"))),
+  getBridgeAgentUpdate: vi.fn(() => Promise.reject(new Error("not stubbed"))),
+  requestBridgeAgentUpdate: vi.fn(() => Promise.reject(new Error("not stubbed"))),
 });
 
 const splitTunnelLink = encodeVpnPayload({

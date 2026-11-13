@@ -213,6 +213,8 @@ createNode: vi.fn(() => Promise.resolve({ id: "node-1" })),
       route: bridgeRouteFixture,
     }),
   ),
+  getBridgeAgentUpdate: vi.fn(() => Promise.reject(new Error("not stubbed"))),
+  requestBridgeAgentUpdate: vi.fn(() => Promise.reject(new Error("not stubbed"))),
 });
 
 describe("control API identity boundary", () => {
@@ -2153,6 +2155,12 @@ describe("bridge registry routes", () => {
       url: `/api/admin/vpn-bridge-routes/${routeId}/verify`,
       payload: { method: "probe" },
     },
+    { method: "GET" as const, url: `/api/admin/vpn-bridges/${bridgeFixture.id}/agent-update` },
+    {
+      method: "POST" as const,
+      url: `/api/admin/vpn-bridges/${bridgeFixture.id}/agent-update`,
+      payload: { imageDigest: `sha256:${"a".repeat(64)}` },
+    },
   ];
 
   const adminApp = async () => {
@@ -2187,6 +2195,8 @@ describe("bridge registry routes", () => {
       service.updateNode,
       service.getBridgeRouteTestConfig,
       service.verifyBridgeRoute,
+      service.getBridgeAgentUpdate,
+      service.requestBridgeAgentUpdate,
     ]) {
       expect(method).not.toHaveBeenCalled();
     }
@@ -2433,6 +2443,76 @@ describe("bridge registry routes", () => {
     });
     // Never the generic admin action handler.
     expect(service.adminAction).not.toHaveBeenCalled();
+    await app.close();
+  });
+
+  it("serves the agent-update preview and answers 202 for a new request, 200 for the repeat", async () => {
+    const { service, admin, app } = await adminApp();
+    const url = `/api/admin/vpn-bridges/${bridgeFixture.id}/agent-update`;
+    const headers = { "x-dev-user-email": admin.email };
+    const imageDigest = `sha256:${"a".repeat(64)}`;
+    const operation = {
+      operationId: "0b1c2d3e-4f50-4a6b-8c7d-9e0f1a2b3c4d",
+      state: "queued" as const,
+      requestedDigest: imageDigest as `sha256:${string}`,
+      requestedVersion: "0.2.0",
+      fromVersion: "0.1.0",
+      requestedAt: "2026-11-13T10:00:00.000Z",
+      sentAt: null,
+      acknowledgedAt: null,
+      lastCheckedAt: null,
+      contactLostSince: null,
+      errorCode: null,
+      result: null,
+    };
+    vi.mocked(service.getBridgeAgentUpdate).mockResolvedValueOnce({
+      bridgeId: bridgeFixture.id,
+      enrolled: true,
+      installedVersion: "0.1.0",
+      updateSupported: true,
+      jobsEnabled: true,
+      offered: [],
+      operation: null,
+      history: [],
+    });
+    const preview = await app.inject({ method: "GET", url, headers });
+    expect(preview.statusCode).toBe(200);
+    expect(preview.json()).toMatchObject({ installedVersion: "0.1.0", operation: null });
+    expect(service.getBridgeAgentUpdate).toHaveBeenCalledWith(admin, bridgeFixture.id);
+
+    vi.mocked(service.requestBridgeAgentUpdate).mockResolvedValueOnce({ created: true, operation });
+    const created = await app.inject({ method: "POST", url, headers, payload: { imageDigest } });
+    expect(created.statusCode).toBe(202);
+    expect(service.requestBridgeAgentUpdate).toHaveBeenLastCalledWith(admin, bridgeFixture.id, {
+      imageDigest,
+    });
+    vi.mocked(service.requestBridgeAgentUpdate).mockResolvedValueOnce({ created: false, operation });
+    const repeat = await app.inject({ method: "POST", url, headers, payload: { imageDigest } });
+    expect(repeat.statusCode).toBe(200);
+    expect(repeat.json()).toMatchObject({ created: false });
+    // Never the generic admin action handler.
+    expect(service.adminAction).not.toHaveBeenCalled();
+    await app.close();
+  });
+
+  it("rejects an update request that names a tag, a short digest or no digest", async () => {
+    const { service, admin, app } = await adminApp();
+    for (const payload of [
+      {},
+      { imageDigest: "latest" },
+      { imageDigest: "sha256:abc" },
+      { imageDigest: `sha256:${"A".repeat(64)}` },
+      { image: `ghcr.io/x/bridge-agent@sha256:${"a".repeat(64)}` },
+    ]) {
+      const response = await app.inject({
+        method: "POST",
+        url: `/api/admin/vpn-bridges/${bridgeFixture.id}/agent-update`,
+        headers: { "x-dev-user-email": admin.email },
+        payload,
+      });
+      expect(response.statusCode, JSON.stringify(payload)).toBe(400);
+    }
+    expect(service.requestBridgeAgentUpdate).not.toHaveBeenCalled();
     await app.close();
   });
 

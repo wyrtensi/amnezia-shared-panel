@@ -129,6 +129,91 @@ export type NodeRoutesView = {
   retiring: NodeRouteView[];
 };
 
+export type AgentUpdateOperationView = {
+  operationId: string;
+  state: string;
+  requestedDigest: string;
+  requestedVersion?: string | null;
+  fromVersion?: string | null;
+  requestedAt: string;
+  sentAt?: string | null;
+  acknowledgedAt?: string | null;
+  lastCheckedAt?: string | null;
+  contactLostSince?: string | null;
+  errorCode?: string | null;
+  result?: { finishedAt: string; errorCode: string | null } | null;
+};
+
+export type AgentUpdateView = {
+  bridgeId: string;
+  enrolled: boolean;
+  installedVersion: string | null;
+  updateSupported: boolean;
+  jobsEnabled: boolean;
+  offered: Array<{ image: string; repository: string; version: string; digest: string }>;
+  operation: AgentUpdateOperationView | null;
+  history: AgentUpdateOperationView[];
+};
+
+/** Explicit projection: the bounded operation fields, nothing else. */
+export function projectAgentUpdateOperation(
+  o: AgentUpdateOperationView | null | undefined,
+): Record<string, unknown> | null {
+  if (!o) return null;
+  return {
+    operationId: o.operationId,
+    state: o.state,
+    requestedDigest: o.requestedDigest,
+    requestedVersion: nullable(o.requestedVersion),
+    fromVersion: nullable(o.fromVersion),
+    requestedAt: o.requestedAt,
+    sentAt: nullable(o.sentAt),
+    acknowledgedAt: nullable(o.acknowledgedAt),
+    lastCheckedAt: nullable(o.lastCheckedAt),
+    contactLostSince: nullable(o.contactLostSince),
+    errorCode: nullable(o.errorCode),
+    result: o.result ? { finishedAt: o.result.finishedAt, errorCode: nullable(o.result.errorCode) } : null,
+  };
+}
+
+export function projectAgentUpdate(v: AgentUpdateView): Record<string, unknown> {
+  return {
+    bridgeId: v.bridgeId,
+    enrolled: v.enrolled,
+    installedVersion: nullable(v.installedVersion),
+    updateSupported: v.updateSupported,
+    jobsEnabled: v.jobsEnabled,
+    offered: v.offered.map((o) => ({
+      image: o.image,
+      repository: o.repository,
+      version: o.version,
+      digest: o.digest,
+    })),
+    operation: projectAgentUpdateOperation(v.operation),
+    history: v.history.map((o) => projectAgentUpdateOperation(o)),
+  };
+}
+
+/** One readable line per operation; lost contact and a timeout are named, not hidden. */
+export function describeAgentUpdateOperation(o: AgentUpdateOperationView): string[] {
+  const lines = [
+    `  ${o.operationId}  ${o.state}  ${show(o.fromVersion)} -> ${show(o.requestedVersion)}  requested ${o.requestedAt}`,
+  ];
+  if (o.state === "pickup_timeout") {
+    lines.push(
+      "    The host never acknowledged the request in time. It is not retried automatically: check the bridge host's updater (systemctl status amnezia-bridge-agent-update.path), then request again.",
+    );
+  }
+  if (o.contactLostSince) {
+    lines.push(
+      `    management contact lost since ${o.contactLostSince} (expected while the agent is replaced; waiting for the host's result)`,
+    );
+  }
+  if (o.errorCode) lines.push(`    code: ${o.errorCode}`);
+  if (o.result) lines.push(`    finished ${o.result.finishedAt}`);
+  return lines;
+}
+
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -307,7 +392,7 @@ const BRIDGE_ERROR_HINTS: Record<string, string> = {
   BRIDGE_JOBS_DISABLED:
     "Bridge jobs are disabled on this panel (VPN_BRIDGE_JOBS_ENABLED). Use --operator-verified --registration=<marker> instead.",
   BRIDGE_UNSUPPORTED_CAPABILITY:
-    "No probe with the bridge-measurement capability is configured. Test the route with bridge-route-test-config, then use --operator-verified --registration=<marker>. (For bridge-enroll: the agent must speak management API v1 with the status.v1 capability.)",
+    "No probe with the bridge-measurement capability is configured. Test the route with bridge-route-test-config, then use --operator-verified --registration=<marker>. (For bridge-enroll: the agent must speak management API v1 with the status.v1 capability. For bridge-agent-update: the installed agent does not report update.v1; update it on the host once.)",
   BRIDGE_MANAGEMENT_URL_NOT_ALLOWED:
     "The panel may only reach hosts listed in VPN_BRIDGE_MANAGEMENT_HOSTS (default host.docker.internal; host:port entries pin the port). Use the forwarded address from the bridge host setup.",
   BRIDGE_IDENTITY_MISMATCH:
@@ -316,6 +401,12 @@ const BRIDGE_ERROR_HINTS: Record<string, string> = {
     "The agent rejected the API key. Re-read the token file on the bridge host and pipe it in with --api-key-file=-.",
   BRIDGE_AGENT_UNREACHABLE:
     "The agent did not answer. Check that its compose service is running and the SSH forwarding to the bridge host is up.",
+  BRIDGE_UPDATE_IN_PROGRESS:
+    "Another update of this bridge's agent is outstanding. Follow it with bridge-agent-log <bridge-id>; a request for the same image returns it.",
+  BRIDGE_UPDATE_NOT_OFFERED:
+    "The panel offers no such image. Run bridge-agent-update <bridge-id> to see the approved image (BRIDGE_AGENT_IMAGE_REPOSITORY on the panel, resolved by the worker).",
+  BRIDGE_UPDATE_NOT_ENROLLED:
+    "The bridge has no enrolled management endpoint. Run bridge-enroll first.",
   BRIDGE_CHECK_PENDING:
     "A probe check for an older registration of this route is still queued or running. Wait until bridge-routes shows its result, then ask again.",
   BRIDGE_TEST_KEY_WRONG_NODE:
@@ -524,6 +615,79 @@ export async function cmdBridgeEnroll(
     `  agent ${show(summary.agentVersion)} api v${show(summary.agentApiVersion)}  capabilities: ${summary.agentCapabilities?.join(", ") || "—"}`,
   );
   console.log(`  frps ${describeFrps(m)}`);
+}
+
+/**
+ * `bridge-agent-update <bridge-id> [--confirm]`. Without --confirm it only
+ * shows the installed version, the approved image the panel offers and the
+ * outstanding or last operation. With --confirm it requests exactly the
+ * offered digest (never a tag, never an argument): a repeat of the
+ * outstanding request returns that operation.
+ */
+export async function cmdBridgeAgentUpdate(api: BridgeApi, args: string[]): Promise<void> {
+  const usage = "Usage: bridge-agent-update <bridge-id> [--confirm] [--json]";
+  assertStrictArgs(args, { positionals: 1, usage });
+  const id = requireUuid(positionals(args)[0], "bridge-id", usage);
+  const view = await api<AgentUpdateView>(`/api/admin/vpn-bridges/${id}/agent-update`);
+  const offered = view.offered[0];
+  if (!confirmed(args)) {
+    if (args.includes("--json")) return json(projectAgentUpdate(view));
+    const lines = [
+      `bridge ${id}: agent ${show(view.installedVersion)} installed`,
+      offered
+        ? `  offered: ${offered.version}  ${offered.image}`
+        : "  offered: none (BRIDGE_AGENT_IMAGE_REPOSITORY is not set or no release is resolved yet)",
+      view.updateSupported
+        ? "  The agent reports update.v1."
+        : "  The installed agent does not report update.v1; it cannot be updated from the panel.",
+    ];
+    if (!view.jobsEnabled) lines.push("  Bridge jobs are disabled (VPN_BRIDGE_JOBS_ENABLED): a request is refused.");
+    if (view.operation) {
+      lines.push("  operation:", ...describeAgentUpdateOperation(view.operation));
+    }
+    return preview(lines);
+  }
+  // A confirm without anything to install, or with an outstanding operation
+  // of another image, is answered by the API with its typed error.
+  if (!offered && !view.operation) {
+    throw new Error("The panel offers no bridge-agent image; run bridge-agent-update <bridge-id> without --confirm to see why");
+  }
+  const result = await api<{ created: boolean; operation: AgentUpdateOperationView }>(
+    `/api/admin/vpn-bridges/${id}/agent-update`,
+    { method: "POST", body: JSON.stringify({ imageDigest: (offered ?? { digest: view.operation?.requestedDigest }).digest }) },
+  );
+  if (args.includes("--json")) {
+    return json({ created: result.created, operation: projectAgentUpdateOperation(result.operation) });
+  }
+  console.log(
+    result.created
+      ? `bridge ${id}: update to ${show(result.operation.requestedVersion)} requested`
+      : `bridge ${id}: the same update is already outstanding`,
+  );
+  for (const line of describeAgentUpdateOperation(result.operation)) console.log(line);
+  console.log(`Follow it with: bridge-agent-log ${id}`);
+}
+
+/** `bridge-agent-log <bridge-id> [--json]`: the current or last update and the history. */
+export async function cmdBridgeAgentLog(api: BridgeApi, args: string[]): Promise<void> {
+  const usage = "Usage: bridge-agent-log <bridge-id> [--json]";
+  assertStrictArgs(args, { positionals: 1, usage });
+  const id = requireUuid(positionals(args)[0], "bridge-id", usage);
+  const view = await api<AgentUpdateView>(`/api/admin/vpn-bridges/${id}/agent-update`);
+  if (args.includes("--json")) return json(projectAgentUpdate(view));
+  console.log(`bridge ${id}: agent ${show(view.installedVersion)} installed`);
+  if (!view.operation) {
+    console.log("  no agent update was requested");
+    return;
+  }
+  console.log("  latest:");
+  for (const line of describeAgentUpdateOperation(view.operation)) console.log(line);
+  if (view.history.length > 0) {
+    console.log("  earlier:");
+    for (const operation of view.history) {
+      for (const line of describeAgentUpdateOperation(operation)) console.log(line);
+    }
+  }
 }
 
 export async function cmdBridgeDelete(api: BridgeApi, args: string[]): Promise<void> {
@@ -808,6 +972,8 @@ export const BRIDGE_COMMANDS: ReadonlyMap<
   ["bridges", cmdBridges],
   ["bridge-add", cmdBridgeAdd],
   ["bridge-enroll", cmdBridgeEnroll],
+  ["bridge-agent-update", cmdBridgeAgentUpdate],
+  ["bridge-agent-log", cmdBridgeAgentLog],
   ["bridge-delete", cmdBridgeDelete],
   ["bridge-routes", cmdBridgeRoutes],
   ["bridge-route-prepare", cmdBridgeRoutePrepare],
@@ -827,6 +993,11 @@ export const BRIDGE_USAGE_LINES = `  bridges [--json]                        Lis
                                           Connect the bridge-agent: verifies its bridge id and
                                           status capability, stores the key encrypted. The key
                                           comes from a 0600 file or stdin (-), never an argument
+  bridge-agent-update <bridge-id> [--confirm] [--json]
+                                          Show the installed bridge-agent version and the
+                                          approved image on offer; --confirm requests that
+                                          update (one outstanding operation per bridge)
+  bridge-agent-log <bridge-id> [--json]   The current or last agent update and its history
   bridge-delete <bridge-id> --confirm     Delete an empty bridge (BRIDGE_HAS_ROUTES otherwise)
   bridge-routes <node-id> [--json]        A node's endpoint: Direct or active route, revision,
                                           drafts, retiring ports, verification state

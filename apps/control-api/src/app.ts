@@ -28,6 +28,7 @@ import {
   BRIDGE_REGISTRATION_MARKER_HEADER,
   bridgeTestConfigQuerySchema,
   encodeRegistrationMarkerHeader,
+  requestBridgeAgentUpdateSchema,
   verifyBridgeRouteRequestSchema,
 } from "@amnezia/contracts";
 import { contentDispositionAttachment } from "./configFilename.js";
@@ -559,6 +560,24 @@ export const buildApp = async ({
     const admin = adminFor(request);
     const { id } = idParamsSchema.parse(request.params);
     return service.updateBridge(admin, id, updateBridgeRequestSchema.parse(request.body));
+  });
+  // Bridge-agent update. Static last segment, so neither route reaches the
+  // generic `:resource/:id/:action` handler below.
+  app.get("/api/admin/vpn-bridges/:id/agent-update", async (request) => {
+    const admin = adminFor(request);
+    const { id } = idParamsSchema.parse(request.params);
+    return service.getBridgeAgentUpdate(admin, id);
+  });
+  app.post("/api/admin/vpn-bridges/:id/agent-update", async (request, reply) => {
+    const admin = adminFor(request);
+    const { id } = idParamsSchema.parse(request.params);
+    const result = await service.requestBridgeAgentUpdate(
+      admin,
+      id,
+      requestBridgeAgentUpdateSchema.parse(request.body),
+    );
+    // 202: queued for delivery; 200: the outstanding operation, returned again.
+    return reply.code(result.created ? 202 : 200).send(result);
   });
   app.delete("/api/admin/vpn-bridges/:id", async (request) => {
     const admin = adminFor(request);

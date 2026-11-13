@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+import { bridgeAgentUpdateSummarySchema } from "./bridgeUpdateModel.js";
+
 /**
  * Optional AWG 3.1 node bridges: registry contracts.
  *
@@ -334,6 +336,7 @@ export const bridgeSchema = z.object({
   managementStatus: bridgeManagementStatusSchema,
   lastObservedAt: z.iso.datetime().nullable(),
   management: bridgeManagementSchema.optional(),
+  agentUpdate: bridgeAgentUpdateSummarySchema.optional(),
   routes: z.array(bridgeRouteSummarySchema),
   setupCommands: bridgeSetupCommandsSchema.optional(),
   createdAt: z.iso.datetime(),
@@ -522,6 +525,12 @@ export const BRIDGE_ERROR_CODES = [
   "BRIDGE_IDENTITY_MISMATCH",
   "BRIDGE_AGENT_UNAUTHORIZED",
   "BRIDGE_AGENT_UNREACHABLE",
+  // Agent update. 409: another operation is outstanding for the bridge, or
+  // the bridge has no enrolled management endpoint. 400: the requested digest
+  // is not one the panel offers.
+  "BRIDGE_UPDATE_IN_PROGRESS",
+  "BRIDGE_UPDATE_NOT_ENROLLED",
+  "BRIDGE_UPDATE_NOT_OFFERED",
 ] as const;
 export const bridgeErrorCodeSchema = z.enum(BRIDGE_ERROR_CODES);
 

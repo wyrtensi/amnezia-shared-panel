@@ -26,6 +26,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { CommandBlock } from "@/components/admin/command-block";
+import { BridgeAgentUpdateFacts, UpdateAgentDialog } from "@/components/admin/bridge-agent-update";
 import { useAdminData } from "@/components/admin/admin-data";
 import type { BridgeInfra } from "@/components/admin/use-bridge-infra";
 import { createBridge, deleteBridge, renameBridge } from "@/lib/bridge-api";
@@ -69,12 +70,14 @@ export function BridgeCardView({
   lang,
   onRename,
   onDelete,
+  onUpdateAgent,
 }: {
   bridge: Bridge;
   t: Translate;
   lang: Lang;
   onRename: () => void;
   onDelete: () => void;
+  onUpdateAgent?: () => void;
 }) {
   const free = Math.max(0, bridge.capacity - bridge.heldPorts);
   return (
@@ -123,6 +126,7 @@ export function BridgeCardView({
         </div>
 
         <BridgeManagementView bridge={bridge} t={t} lang={lang} />
+        <BridgeAgentUpdateFacts bridge={bridge} t={t} lang={lang} onUpdate={onUpdateAgent} />
 
         <dl className="grid grid-cols-2 gap-x-3 gap-y-1 text-xs">
           <dt className="text-muted-foreground">{t("bridge.controlPort")}</dt>
@@ -263,6 +267,7 @@ export function BridgesTab({ infra }: { infra: BridgeInfra }) {
   const [showAdd, setShowAdd] = React.useState(false);
   const [renaming, setRenaming] = React.useState<Bridge | null>(null);
   const [deleting, setDeleting] = React.useState<Bridge | null>(null);
+  const [updating, setUpdating] = React.useState<Bridge | null>(null);
 
   return (
     <div className="space-y-4">
@@ -308,6 +313,7 @@ export function BridgesTab({ infra }: { infra: BridgeInfra }) {
               lang={lang}
               onRename={() => setRenaming(bridge)}
               onDelete={() => setDeleting(bridge)}
+              onUpdateAgent={() => setUpdating(bridge)}
             />
           ))}
         </div>
@@ -322,6 +328,12 @@ export function BridgesTab({ infra }: { infra: BridgeInfra }) {
       <RenameBridgeDialog
         bridge={renaming}
         onClose={() => setRenaming(null)}
+        onDone={infra.reload}
+        request={request}
+      />
+      <UpdateAgentDialog
+        bridge={updating}
+        onClose={() => setUpdating(null)}
         onDone={infra.reload}
         request={request}
       />

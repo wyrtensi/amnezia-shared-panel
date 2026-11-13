@@ -458,6 +458,22 @@ that lane per poll, and several hung bridges add up. If provisioning slows down
 while a bridge shows `down`, fix or disable that bridge first.
 Bridge polling only runs while `VPN_BRIDGE_JOBS_ENABLED=true`.
 
+**Bridge-agent updates.** An update request (`bridge-agent-update --confirm`, or the
+Update agent button on the Bridges tab) stores one operation per bridge and queues a
+`bridge_agent.update` job. The job sends the intent to the agent once and ends; the
+bridge's next polls follow the operation (`GET /v1/update?operationId=`), so a poll now
+costs one more request while an update is outstanding, and every successful poll also
+re-reads `/v1/identity` to refresh the agent's capabilities. States:
+`queued, sent, acknowledged, running` (outstanding), `succeeded, rolled_back,
+rollback_failed, failed, unsupported` (the host's or the agent's verdict) and
+`pickup_timeout`. Management contact lost after the host started is an observation
+(`contactLostSince`), not a state: it clears when the agent answers again and only the host's
+matching terminal result ends the operation. `pickup_timeout` (no host acknowledgement within
+120 s; the constant `BRIDGE_AGENT_UPDATE_PICKUP_TIMEOUT_MS`, which Task 8b reuses) is shown on the
+card and in `bridge-agent-log` and is never retried automatically. If the host starts the update
+late, the next poll takes over the host's state. Check the host with
+`systemctl status amnezia-bridge-agent-update.path`, then request again.
+
 ---
 
 ## 8. Two habits that catch the rest
