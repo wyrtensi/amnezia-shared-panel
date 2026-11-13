@@ -7,7 +7,14 @@ import { createJobProcessor } from "./processor.js";
 import { PostgresWorkerRepository } from "./postgresRepository.js";
 import { runWorker } from "./runner.js";
 import { createMaintenanceRunner } from "./maintenance.js";
-import { resolveBridgeJobsEnabled, resolveWorkerPeriodDefaults } from "./config.js";
+import {
+  resolveBridgeJobsEnabled,
+  resolveBridgeManagementHosts,
+  resolveWorkerPeriodDefaults,
+} from "./config.js";
+import { createBridgeAgentPoll, createBridgePollArmer } from "./bridgePoller.js";
+import { PostgresBridgePollRepository } from "./bridgePollRepository.js";
+import { BRIDGE_AGENT_POLL_INTERVAL_MS } from "@amnezia/contracts";
 import { createBridgeCandidateCheck } from "./bridgeCandidateCheck.js";
 import { PostgresBridgeCandidateRepository } from "./bridgeCandidateRepository.js";
 import {
@@ -245,6 +252,24 @@ const bridgeCandidateCheck = createBridgeCandidateCheck({
   log: (line) => console.log(line),
 });
 
+// Bridge-agent polling: a 60 s timer arms one `bridge_agent.poll` row per
+// enrolled bridge (only while VPN_BRIDGE_JOBS_ENABLED is true) and the outbox
+// runner executes them, one at a time.
+const bridgeJobsEnabled = resolveBridgeJobsEnabled(process.env);
+const bridgePollRepository = new PostgresBridgePollRepository({ db: database.db, keyring });
+const armBridgePolls = createBridgePollArmer({
+  repository: bridgePollRepository,
+  jobsEnabled: bridgeJobsEnabled,
+  log: (line) => console.log(line),
+});
+const bridgeAgentPoll = createBridgeAgentPoll({
+  repository: bridgePollRepository,
+  jobs: repository,
+  jobsEnabled: bridgeJobsEnabled,
+  managementHosts: resolveBridgeManagementHosts(process.env),
+  log: (line) => console.log(line),
+});
+
 const processJob = createJobProcessor({
   repository,
   createNodeAgent: (node) => createNodeAgentClient(node),
@@ -254,6 +279,7 @@ const processJob = createJobProcessor({
   reachabilityWidget,
   panelPublicUrl: process.env.PANEL_PUBLIC_URL ?? null,
   bridgeCandidateCheck,
+  bridgeAgentPoll,
   // Without this, a throwing access.sync run is only ever recorded in
   // job_outbox.last_error: the runner turns the throw into retryJob/failJob
   // with no console output, so an operator watching `docker logs worker`
@@ -334,6 +360,12 @@ try {
     runPeriodicTask({
       task: checkReachability,
       intervalMs: 60_000,
+      signal: abortController.signal,
+      onError: reportBackgroundError,
+    }),
+    runPeriodicTask({
+      task: armBridgePolls,
+      intervalMs: BRIDGE_AGENT_POLL_INTERVAL_MS,
       signal: abortController.signal,
       onError: reportBackgroundError,
     }),

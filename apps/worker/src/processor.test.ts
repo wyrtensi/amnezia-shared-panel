@@ -1445,3 +1445,33 @@ describe("bridge route candidate check jobs", () => {
     expect(repository.failJob).toHaveBeenCalledWith(job.id, expect.stringContaining("not wired"));
   });
 });
+
+describe("bridge-agent poll jobs", () => {
+  const job = {
+    id: "job-bridge-poll",
+    type: "bridge_agent.poll",
+    attempts: 1,
+    payload: { bridgeId: "6f1d2c1e-7d0f-4a8e-9f0a-3c3d5e8b1a01" },
+  };
+
+  it("hands the job to the poller, which finishes it itself", async () => {
+    const repository = createRepository();
+    const bridgeAgentPoll = vi.fn(() => Promise.resolve());
+    const process = createJobProcessor({
+      repository,
+      createNodeAgent: () => createAgent(),
+      bridgeAgentPoll,
+    });
+    await process(job);
+    expect(bridgeAgentPoll).toHaveBeenCalledWith(job);
+    expect(repository.completeJob).not.toHaveBeenCalled();
+    expect(repository.loadKeyContext).not.toHaveBeenCalled();
+  });
+
+  it("fails the job on a worker without the poller", async () => {
+    const repository = createRepository();
+    const process = createJobProcessor({ repository, createNodeAgent: () => createAgent() });
+    await process(job);
+    expect(repository.failJob).toHaveBeenCalledWith(job.id, expect.stringContaining("not wired"));
+  });
+});

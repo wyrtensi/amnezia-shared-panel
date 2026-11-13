@@ -1,6 +1,7 @@
 import { z } from "zod";
 import {
   ACCESS_SYNC_JOB_TYPE,
+  BRIDGE_AGENT_POLL_JOB_TYPE,
   BRIDGE_ROUTE_CANDIDATE_CHECK_JOB_TYPE,
   QUOTA_REQUEST_NOTIFY_JOB_TYPE,
   REACHABILITY_NOTIFY_JOB_TYPE,
@@ -75,6 +76,11 @@ export type JobProcessorOptions = {
    * completes or fails its own job; a throw is retried by the runner.
    */
   bridgeCandidateCheck?: (job: OutboxJob) => Promise<void>;
+  /**
+   * The `bridge_agent.poll` handler (bridgePoller.ts). It completes or fails
+   * its own job; a throw is retried by the runner.
+   */
+  bridgeAgentPoll?: (job: OutboxJob) => Promise<void>;
   now?: () => Date;
 };
 
@@ -93,6 +99,7 @@ export const createJobProcessor = ({
   reachabilityWidget,
   panelPublicUrl = null,
   bridgeCandidateCheck,
+  bridgeAgentPoll,
   now = () => new Date(),
 }: JobProcessorOptions) => {
   const reconcileOrphan = async (
@@ -113,6 +120,14 @@ export const createJobProcessor = ({
         return;
       }
       await bridgeCandidateCheck(job);
+      return;
+    }
+    if (job.type === BRIDGE_AGENT_POLL_JOB_TYPE) {
+      if (!bridgeAgentPoll) {
+        await repository.failJob(job.id, "Bridge-agent polls are not wired on this worker");
+        return;
+      }
+      await bridgeAgentPoll(job);
       return;
     }
     if (job.type === QUOTA_REQUEST_NOTIFY_JOB_TYPE) {

@@ -22,6 +22,7 @@
 
 import {
   parseBridgeJobsEnabled,
+  parseBridgeManagementHosts,
   WORKER_PERIOD_FIELDS,
   type WorkerPeriodField,
 } from "@amnezia/contracts";
@@ -119,3 +120,12 @@ export type BridgeJobsGate =
  */
 export const bridgeJobsGate = (enabled: boolean): BridgeJobsGate =>
   enabled ? { ok: true } : { ok: false, code: "BRIDGE_JOBS_DISABLED" };
+
+/**
+ * `VPN_BRIDGE_MANAGEMENT_HOSTS` (default `host.docker.internal`): the hosts a
+ * bridge management URL may name. The Control API refuses any other at
+ * enrollment; the poller checks the stored URL again before it sends the
+ * credential anywhere.
+ */
+export const resolveBridgeManagementHosts = (env: NodeJS.ProcessEnv): readonly string[] =>
+  parseBridgeManagementHosts(env.VPN_BRIDGE_MANAGEMENT_HOSTS);
