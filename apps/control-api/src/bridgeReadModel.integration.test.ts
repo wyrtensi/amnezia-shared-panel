@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { eq, inArray } from "drizzle-orm";
@@ -8,6 +8,8 @@ import {
   applyBridgePollResult,
   auditEvents,
   createDatabase,
+  nodeReachabilityResults,
+  reachabilityProbe,
   encryptSecret,
   nodes,
   users,
@@ -310,12 +312,13 @@ describe("bridge admin read model (real PostgreSQL, fake agent)", () => {
       expect(routeA).toMatchObject({
         state: "active",
         registration: { status: "online", marker: M1 },
-        verification: { status: "valid", method: "operator" },
+        // No probe or AWG 3.1 result for the active route's node: unknown (R19).
+        verification: { kind: "awg_path", status: "unknown", checkedAt: null },
       });
       expect(routeB).toMatchObject({
         state: "draft",
         registration: { status: "online", marker: M2 },
-        verification: { status: "valid" },
+        verification: { kind: "candidate", status: "valid", method: "operator" },
       });
 
       // The same typed rows reach the infrastructure view.
@@ -335,7 +338,10 @@ describe("bridge admin read model (real PostgreSQL, fake agent)", () => {
         managementStatus: "ok",
         lastObservedAt: read.lastObservedAt,
         activeRoutes: 1,
-        verifiedActiveRoutes: 1,
+        verifiedActiveRoutes: 0,
+        awgPathOk: 0,
+        awgPathFailed: 0,
+        awgPathUnknown: 1,
       });
       expect(overview.bridges?.count).toBe(overview.bridges?.items.length);
       // Two seeded VPN nodes were added; the bridge itself added none.
@@ -350,12 +356,12 @@ describe("bridge admin read model (real PostgreSQL, fake agent)", () => {
       const afterStop = await summaryOf(bridge.id);
       expect(afterStop.routes.find((route) => route.id === a.route.id)).toMatchObject({
         registration: { status: "online", marker: M1 },
-        verification: { status: "valid" },
+        verification: { kind: "awg_path" },
       });
       expect(afterStop.routes.find((route) => route.id === b.route.id)).toMatchObject({
         registration: { status: "offline", marker: null },
         // The registration left, so the poller cleared its verification.
-        verification: { status: "none" },
+        verification: { kind: "candidate", status: "none" },
       });
 
       // Management lost: status down, the route keeps its assignment, and the
@@ -376,6 +382,86 @@ describe("bridge admin read model (real PostgreSQL, fake agent)", () => {
       const back = await summaryOf(bridge.id);
       expect(back.managementStatus).toBe("ok");
       expect(back.routes.map((route) => route.registration.status)).toEqual(["online", "online"]);
+    },
+  );
+
+  runDatabaseTest(
+    "an active route's AWG path is the node's AWG 3.1 reachability result, mapped to ok / failed / unknown",
+    async () => {
+      const bridge = await createBridge();
+      await enroll(bridge.id);
+      const a = await seedRoute("awg", bridge.id);
+      agent.proxies = [
+        { proxyId: bridgeFrpProxyName(a.route.id), remotePort: a.route.publicUdpPort, online: true, registrationMarker: M1 },
+      ];
+      await poll(bridge.id);
+      await operatorVerify(a.route.id, M1);
+      await activate(a.nodeId, a.route.id);
+
+      const credentials = encryptSecret("probe-api-key", keyring, 1);
+      await db().delete(reachabilityProbe);
+      await db().insert(reachabilityProbe).values({
+        label: "readmodel-probe",
+        apiBaseUrl: "http://probe-host.invalid:4002",
+        credentialsCiphertext: credentials.ciphertext,
+        credentialsNonce: credentials.nonce,
+        credentialsAuthTag: credentials.authTag,
+        credentialsKeyVersion: credentials.keyVersion,
+        controlUrl: "https://control.invalid/",
+        lastResultAt: new Date(),
+        enabledAt: new Date(Date.now() - 86_400_000),
+        timeZone: "Europe/Belgrade",
+      });
+      try {
+        const verificationOf = async () =>
+          (await summaryOf(bridge.id)).routes.find((route) => route.id === a.route.id)?.verification;
+        const overviewOf = async () =>
+          (
+            (await repository.getAdminOverview()) as {
+              bridges?: { items: Array<{ id: string; awgPathOk: number; awgPathFailed: number; awgPathUnknown: number }> };
+            }
+          ).bridges?.items.find((item) => item.id === bridge.id);
+        const checkedAt = new Date(Date.now() - 60_000);
+        const put = async (status: "ok" | "failed" | "error") => {
+          await db().delete(nodeReachabilityResults).where(eq(nodeReachabilityResults.nodeId, a.nodeId));
+          await db().insert(nodeReachabilityResults).values({
+            nodeId: a.nodeId,
+            protocol: "awg3",
+            status,
+            levels: {},
+            runId: randomUUID(),
+            checkedAt,
+            failingSince: status === "failed" ? checkedAt : null,
+          });
+        };
+
+        await put("ok");
+        expect(await verificationOf()).toEqual({ kind: "awg_path", status: "ok", checkedAt: checkedAt.toISOString() });
+        expect(await overviewOf()).toMatchObject({ awgPathOk: 1, awgPathFailed: 0, awgPathUnknown: 0 });
+        expect((await repository.getNodeBridgeRoutes(admin, a.nodeId)).activeRoute?.verification).toMatchObject({
+          kind: "awg_path",
+          status: "ok",
+        });
+
+        await put("failed");
+        expect(await verificationOf()).toMatchObject({ status: "failed" });
+        expect(await overviewOf()).toMatchObject({ awgPathOk: 0, awgPathFailed: 1, awgPathUnknown: 0 });
+
+        await put("error");
+        expect(await verificationOf()).toMatchObject({ status: "unknown" });
+
+        // A result from before the endpoint change is gone: nothing to read.
+        await db().delete(nodeReachabilityResults).where(eq(nodeReachabilityResults.nodeId, a.nodeId));
+        expect(await verificationOf()).toEqual({ kind: "awg_path", status: "unknown", checkedAt: null });
+
+        // A bridge that is not ok cannot vouch for the path, whatever the probe says.
+        await put("ok");
+        await db().update(vpnBridges).set({ lastObservedAt: new Date(Date.now() - 10 * MINUTE) }).where(eq(vpnBridges.id, bridge.id));
+        expect(await overviewOf()).toMatchObject({ awgPathOk: 0, awgPathFailed: 0, awgPathUnknown: 1 });
+      } finally {
+        await db().delete(nodeReachabilityResults).where(eq(nodeReachabilityResults.nodeId, a.nodeId));
+        await db().delete(reachabilityProbe);
+      }
     },
   );
 

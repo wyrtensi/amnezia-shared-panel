@@ -25,8 +25,12 @@
 # the CLI's stdin.
 #
 # Settings (environment, same names as scripts/add-node.env): TUNNEL_BIND
-# (default 172.17.0.1), TUNNEL_PORT_BASE (default 4105), PANEL_NODE_KEY (default
-# /root/.ssh/panel_nodes_key, used when --ssh-key is not given).
+# (an IPv4 literal, default 172.17.0.1; 0.0.0.0 is refused), TUNNEL_PORT_BASE
+# (default 4105), PANEL_NODE_KEY (default /root/.ssh/panel_nodes_key, used when
+# --ssh-key is not given). The printed enroll command also reads
+# PANEL_COMPOSE_DIR (default /opt/amnezia-panel/infra/prod),
+# PANEL_CONTROL_API_SERVICE (default control-api) and PANEL_CONTROL_API_URL
+# (default http://127.0.0.1:3001).
 #
 # Exit codes: 0 ok, 2 bad arguments, 40 host key scan failed or fingerprint
 # mismatch, 41 autossh missing, 42 the tunnel does not reach the agent.
@@ -40,6 +44,9 @@ PANEL_ETC="${AMNEZIA_PANEL_ETC:-/etc/amnezia-panel}"
 WAIT="${AMNEZIA_TUNNEL_WAIT:-30}"
 BIND="${TUNNEL_BIND:-172.17.0.1}"
 BASE="${TUNNEL_PORT_BASE:-4105}"
+COMPOSE_DIR="${PANEL_COMPOSE_DIR:-/opt/amnezia-panel/infra/prod}"
+CONTROL_SERVICE="${PANEL_CONTROL_API_SERVICE:-control-api}"
+CONTROL_URL="${PANEL_CONTROL_API_URL:-http://127.0.0.1:3001}"
 
 info() { printf '%s\n' "$*"; }
 plan() { printf 'PLAN: %s\n' "$*"; }
@@ -83,6 +90,9 @@ printf '%s' "$FINGERPRINT" | grep -Eq '^SHA256:[A-Za-z0-9+/]+$' ||
 printf '%s' "$SSH_USER" | grep -Eq '^[a-z_][a-z0-9_-]*$' || usage_error "--ssh-user is not a valid user name"
 case "$AGENT_PORT" in ''|*[!0-9]*) usage_error "--agent-port must be a TCP port" ;; esac
 [ "$AGENT_PORT" -ge 1 ] && [ "$AGENT_PORT" -le 65535 ] || usage_error "--agent-port must be a TCP port"
+printf '%s' "$BIND" | grep -Eq '^([0-9]{1,3}\.){3}[0-9]{1,3}$' ||
+  usage_error "TUNNEL_BIND must be an IPv4 literal (the Docker bridge gateway), got '$BIND'"
+[ "$BIND" != 0.0.0.0 ] || usage_error "TUNNEL_BIND must not be 0.0.0.0: the forward would be reachable from every interface"
 case "$BASE" in ''|*[!0-9]*) usage_error "TUNNEL_PORT_BASE must be a port number" ;; esac
 printf '%s' "$SSH_KEY" | grep -Eq '^/[A-Za-z0-9._/-]+$' || usage_error "--ssh-key must be an absolute path without spaces"
 
@@ -99,7 +109,9 @@ KNOWN_HOSTS="$PANEL_ETC/bridge-known-hosts/$BRIDGE_ID"
 # panel-tunnel-*.service forwards and nothing listens on.
 allocate_port() {
   if [ -f "$UNIT_FILE" ]; then
-    sed -n "s|.* -L ${BIND}:\([0-9][0-9]*\):.*|\1|p" "$UNIT_FILE" | head -n 1
+    # BIND is a validated IPv4 literal; its dots are escaped for the regex.
+    bind_re="$(printf '%s' "$BIND" | sed 's/\./\\./g')"
+    sed -n "s|.* -L ${bind_re}:\([0-9][0-9]*\):.*|\1|p" "$UNIT_FILE" | head -n 1
     return 0
   fi
   units_ports="$(grep -hoE -- '-L [0-9.]+:[0-9]+:' "$SYSTEMD_DIR"/panel-tunnel-*.service 2>/dev/null | cut -d: -f2 || true)"
@@ -147,6 +159,7 @@ ExecStart=/usr/bin/autossh -M 0 -N \\
   -o ServerAliveInterval=30 -o ServerAliveCountMax=3 \\
   -o ExitOnForwardFailure=yes \\
   -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$KNOWN_HOSTS \\
+  -o GlobalKnownHostsFile=/dev/null \\
   -o IdentitiesOnly=yes -i $SSH_KEY \\
   -L $BIND:$PORT:127.0.0.1:$AGENT_PORT $SSH_USER@$BRIDGE_HOST
 Restart=always
@@ -169,7 +182,8 @@ done
 
 info "tunnel $UNIT: $BIND:$PORT -> $BRIDGE_HOST:127.0.0.1:$AGENT_PORT (host key pinned)"
 info "management URL for the panel: http://host.docker.internal:$PORT"
-info "enroll it (the token goes from the bridge host to the CLI's stdin, never an argument):"
-info "  ssh -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$KNOWN_HOSTS -i $SSH_KEY \\"
-info "    $SSH_USER@$BRIDGE_HOST cat /etc/amnezia-bridge/agent/api-token | \\"
-info "    amnezia-panel bridge-enroll $BRIDGE_ID --api-url=http://host.docker.internal:$PORT --api-key-file=- --confirm"
+info "enroll it, from $COMPOSE_DIR on this host (the token goes from the bridge host into the CLI's stdin, never an argument):"
+info "  cd '$COMPOSE_DIR' && ssh -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$KNOWN_HOSTS \\"
+info "    -o GlobalKnownHostsFile=/dev/null -i $SSH_KEY $SSH_USER@$BRIDGE_HOST cat /etc/amnezia-bridge/agent/api-token | \\"
+info "    docker compose exec -T -e CONTROL_API_URL='$CONTROL_URL' '$CONTROL_SERVICE' \\"
+info "    node /app/apps/cli/dist/main.js bridge-enroll $BRIDGE_ID --api-url=http://host.docker.internal:$PORT --api-key-file=- --confirm"

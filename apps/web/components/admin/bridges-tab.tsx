@@ -34,6 +34,8 @@ import {
   nodeRouteEditorHref,
   poolCapacity,
   registrationTone,
+  verificationLabelKey,
+  verificationTime,
   verificationTone,
 } from "@/lib/bridge-ui";
 import { formatDateTime } from "@/lib/format";
@@ -159,16 +161,10 @@ export function BridgeCardView({
                   >
                     {t("bridge.route.frpc")}: {t(`bridge.obs.${route.registration.status}`)}
                   </Badge>
-                  <Badge
-                    variant={verificationTone(route.verification.status)}
-                    title={
-                      route.verification.verifiedAt
-                        ? formatDateTime(route.verification.verifiedAt, lang)
-                        : undefined
-                    }
-                  >
-                    {t("bridge.route.awg")}: {t(`bridge.ver.${route.verification.status}`)}
+                  <Badge variant={verificationTone(route.verification)}>
+                    {t("bridge.route.awg")}: {t(verificationLabelKey(route.verification))}
                   </Badge>
+                  <EvidenceTime at={verificationTime(route.verification)} lang={lang} />
                   <Link
                     href={nodeRouteEditorHref(route.nodeId)}
                     prefetch={false}
@@ -249,6 +245,12 @@ export function BridgeManagementView({
       ) : null}
     </dl>
   );
+}
+
+function EvidenceTime({ at, lang }: { at: string | null; lang: Lang }) {
+  return at ? (
+    <span className="text-muted-foreground">{formatDateTime(at, lang)}</span>
+  ) : null;
 }
 
 export function BridgesTab({ infra }: { infra: BridgeInfra }) {

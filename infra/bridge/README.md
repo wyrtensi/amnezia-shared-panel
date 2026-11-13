@@ -90,9 +90,18 @@ the management URL (`http://host.docker.internal:<port>`) and the enrollment
 command, which pipes the token from the bridge host into the CLI's stdin:
 
 ```sh
-ssh <bridge> cat /etc/amnezia-bridge/agent/api-token | \
-  amnezia-panel bridge-enroll <id> --api-url=http://host.docker.internal:<port> --api-key-file=- --confirm
+cd /opt/amnezia-panel/infra/prod && \
+ssh -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/etc/amnezia-panel/bridge-known-hosts/<id> \
+    -o GlobalKnownHostsFile=/dev/null -i <panel->bridge key> root@<bridge ip> \
+    cat /etc/amnezia-bridge/agent/api-token | \
+  docker compose exec -T -e CONTROL_API_URL=http://127.0.0.1:3001 control-api \
+    node /app/apps/cli/dist/main.js bridge-enroll <id> \
+    --api-url=http://host.docker.internal:<port> --api-key-file=- --confirm
 ```
+
+`-T` keeps the piped token on the CLI's stdin inside the container; the script
+prints this command with your values filled in. With a workstation CLI the
+equivalent is `... | amnezia-panel bridge-enroll ... --api-key-file=- --confirm`.
 
 The management URL must be allowed by `VPN_BRIDGE_MANAGEMENT_HOSTS`.
 

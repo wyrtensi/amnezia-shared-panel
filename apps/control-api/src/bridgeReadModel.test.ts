@@ -22,7 +22,7 @@ const bridge = (overrides: Partial<GuardBridge> = {}): GuardBridge => ({
 });
 const route = (overrides: Partial<GuardRoute> = {}): GuardRoute => ({
   id: "0b6f9a52-3c1d-4e7a-9b88-1f2a3c4d5e6f",
-  state: "active",
+  state: "draft",
   frpProxyName: "awg-route-0b6f9a52-3c1d-4e7a-9b88-1f2a3c4d5e6f",
   observedOnline: true,
   observedRegistrationMarker: M1,
@@ -82,6 +82,7 @@ describe("routeVerification", () => {
 
   it("is valid for a recent success bound to the marker observed now", () => {
     expect(verify(route())).toEqual({
+      kind: "candidate",
       status: "valid",
       method: "probe",
       verifiedAt: ago(60_000).toISOString(),
@@ -91,6 +92,7 @@ describe("routeVerification", () => {
 
   it("is none without a result", () => {
     expect(verify(route({ verificationResult: null, verificationMethod: null, verifiedAt: null }))).toEqual({
+      kind: "candidate",
       status: "none",
       method: null,
       verifiedAt: null,
@@ -109,15 +111,26 @@ describe("routeVerification", () => {
     expect(verify(route({ state: "draft", verifiedAt: ago(30 * 60_000 + 1) })).status).toBe("expired");
   });
 
-  it("keeps an active route's evidence valid past 30 minutes while the marker still matches", () => {
+  it("applies the 30-minute expiry to draft and retiring routes", () => {
     const old = { verifiedAt: ago(31 * 60_000) };
-    expect(verify(route({ state: "active", ...old })).status).toBe("valid");
-    expect(verify(route({ state: "active", ...old, observedRegistrationMarker: M2 })).status).toBe(
-      "marker_changed",
-    );
-    // A draft or retiring route gets no such grace: it has not been activated on that evidence.
     expect(verify(route({ state: "retiring", ...old })).status).toBe("expired");
     expect(verify(route({ state: "draft", ...old })).status).toBe("expired");
+  });
+
+  it("reads an active route's AWG path from the node's regular reachability, not from candidate verification (R19)", () => {
+    const active = route({ state: "active", verificationResult: null, verificationMethod: null, verifiedAt: null });
+    const registration = routeRegistration(active, bridge(), NOW, STALE_MS);
+    const checkedAt = ago(120_000);
+    expect(routeVerification(active, registration, NOW, { status: "ok", checkedAt })).toEqual({
+      kind: "awg_path",
+      status: "ok",
+      checkedAt: checkedAt.toISOString(),
+    });
+    expect(routeVerification(active, registration, NOW, { status: "failed", checkedAt }).status).toBe("failed");
+    // No evidence at all is unknown, and a 31-minute-old verification neither helps nor hurts.
+    expect(routeVerification(active, registration, NOW)).toEqual({ kind: "awg_path", status: "unknown", checkedAt: null });
+    const verifiedLongAgo = route({ state: "active", verifiedAt: ago(40 * 60_000) });
+    expect(routeVerification(verifiedLongAgo, registration, NOW, { status: "ok", checkedAt }).kind).toBe("awg_path");
   });
 
   it("reports a replaced registration as marker_changed", () => {
@@ -131,30 +144,47 @@ describe("routeVerification", () => {
 });
 
 describe("overviewBridgeOf", () => {
-  it("counts active routes and the ones with valid verification", () => {
-    const summary = (state: "active" | "draft", status: "valid" | "none") => ({
-      id: crypto.randomUUID(),
-      nodeId: crypto.randomUUID(),
-      nodeName: "n",
-      publicUdpPort: 41000,
-      state,
-      registration: { status: "online" as const, marker: M1, observedAt: null },
-      verification: { status, method: null, verifiedAt: null, error: null },
-    });
-    const result = overviewBridgeOf({
+  const summary = (state: "active" | "draft", status: "ok" | "failed" | "unknown") => ({
+    id: crypto.randomUUID(),
+    nodeId: crypto.randomUUID(),
+    nodeName: "n",
+    publicUdpPort: 41000,
+    state,
+    registration: { status: "online" as const, marker: M1, observedAt: null },
+    verification: { kind: "awg_path" as const, status, checkedAt: null },
+  });
+  const bridgeOf = (managementStatus: Bridge["managementStatus"]) =>
+    ({
       id: "b",
       name: "Frankfurt",
-      managementStatus: "stale",
+      managementStatus,
       lastObservedAt: null,
-      routes: [summary("active", "valid"), summary("active", "none"), summary("draft", "valid")],
-    } as unknown as Bridge);
-    expect(result).toEqual({
+      routes: [summary("active", "ok"), summary("active", "failed"), summary("active", "unknown"), summary("draft", "ok")],
+    }) as unknown as Bridge;
+
+  it("counts active routes by AWG path evidence", () => {
+    expect(overviewBridgeOf(bridgeOf("ok"))).toEqual({
       id: "b",
       name: "Frankfurt",
-      managementStatus: "stale",
+      managementStatus: "ok",
       lastObservedAt: null,
-      activeRoutes: 2,
+      activeRoutes: 3,
       verifiedActiveRoutes: 1,
+      awgPathOk: 1,
+      awgPathFailed: 1,
+      awgPathUnknown: 1,
     });
+  });
+
+  it("reads every active route as unknown while management is not ok", () => {
+    for (const status of ["stale", "down", "pending_enrollment"] as const) {
+      expect(overviewBridgeOf(bridgeOf(status))).toMatchObject({
+        activeRoutes: 3,
+        verifiedActiveRoutes: 0,
+        awgPathOk: 0,
+        awgPathFailed: 0,
+        awgPathUnknown: 3,
+      });
+    }
   });
 });

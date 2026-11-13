@@ -1,8 +1,6 @@
 import {
   BRIDGE_ERROR_CODES,
-  BRIDGE_OBSERVATION_STALE_MS_DEFAULT,
-  BRIDGE_VERIFICATION_VALIDITY_MS,
-  type NodeBridgeRoute,
+  type BridgeRouteVerification,
 } from "@amnezia/contracts";
 import { ApiClientError } from "@/lib/api";
 
@@ -83,88 +81,6 @@ export const describeBridgeError = (
   };
 };
 
-export type RouteObservation = {
-  /** `unknown` covers both "never observed" and "observation too old". */
-  status: "online" | "offline" | "unknown";
-  marker: string | null;
-  observedAt: string | null;
-};
-
-const ms = (iso: string | null): number | null => {
-  if (!iso) return null;
-  const value = Date.parse(iso);
-  return Number.isFinite(value) ? value : null;
-};
-
-/**
- * Display-only reading of the stored observation. It mirrors the API's
- * freshness rule closely enough to label a value Unknown rather than show a
- * stale "online"; the activation guard itself runs on the server.
- */
-export const routeObservation = (
-  route: NodeBridgeRoute,
-  now: number,
-  staleMs: number = BRIDGE_OBSERVATION_STALE_MS_DEFAULT,
-): RouteObservation => {
-  const unknown: RouteObservation = {
-    status: "unknown",
-    marker: null,
-    observedAt: route.observedAt,
-  };
-  const bridgeAt = ms(route.bridgeLastObservedAt);
-  const routeAt = ms(route.observedAt);
-  if (
-    route.bridgeManagementStatus !== "ok" ||
-    bridgeAt === null ||
-    routeAt === null ||
-    now - bridgeAt > staleMs ||
-    routeAt < bridgeAt ||
-    route.observedOnline === null
-  ) {
-    return unknown;
-  }
-  return {
-    status: route.observedOnline ? "online" : "offline",
-    marker: route.observedRegistrationMarker,
-    observedAt: route.observedAt,
-  };
-};
-
-export type VerificationView =
-  | { status: "none" }
-  | { status: "failed"; method: string | null; error: string | null; at: string | null }
-  | { status: "expired"; method: string | null; at: string | null }
-  | { status: "marker_changed"; method: string | null; at: string | null }
-  | { status: "valid"; method: string | null; at: string | null };
-
-/** The verification as the route editor describes it; the API decides what activates. */
-export const routeVerification = (
-  route: NodeBridgeRoute,
-  now: number,
-): VerificationView => {
-  if (route.verificationResult === null) return { status: "none" };
-  const at = route.verifiedAt;
-  if (route.verificationResult === "failure") {
-    return {
-      status: "failed",
-      method: route.verificationMethod,
-      error: route.verificationError,
-      at,
-    };
-  }
-  const verifiedMs = ms(at);
-  if (verifiedMs === null || now - verifiedMs > BRIDGE_VERIFICATION_VALIDITY_MS) {
-    return { status: "expired", method: route.verificationMethod, at };
-  }
-  if (
-    route.observedRegistrationMarker !== null &&
-    route.verifiedRegistrationMarker !== route.observedRegistrationMarker
-  ) {
-    return { status: "marker_changed", method: route.verificationMethod, at };
-  }
-  return { status: "valid", method: route.verificationMethod, at };
-};
-
 /**
  * Whether the bridge host still needs its one-time setup. A bridge that has
  * reported at least once, or that already carries an active or retiring
@@ -185,14 +101,33 @@ export const registrationTone = (
 ): BadgeTone =>
   status === "online" ? "success" : status === "offline" ? "destructive" : "outline";
 
-/** Badge tone for the AWG-path evidence, kept apart from management status. */
-export const verificationTone = (
-  status: "none" | "valid" | "unknown" | "marker_changed" | "expired" | "failed",
-): BadgeTone =>
-  status === "valid"
-    ? "success"
-    : status === "failed"
-      ? "destructive"
-      : status === "none"
-        ? "outline"
-        : "warning";
+/**
+ * Badge tone for the AWG-path evidence (candidate verification of a draft or
+ * retiring route, or the regular AWG 3.1 result of an active one), kept apart
+ * from management status. The values themselves come from the API.
+ */
+export const verificationTone = (verification: BridgeRouteVerification): BadgeTone => {
+  switch (verification.status) {
+    case "valid":
+    case "ok":
+      return "success";
+    case "failed":
+      return "destructive";
+    case "none":
+      return "outline";
+    case "unknown":
+      return verification.kind === "awg_path" ? "outline" : "warning";
+    default:
+      return "warning";
+  }
+};
+
+/** Message key for a verification: candidate states and AWG path states differ. */
+export const verificationLabelKey = (verification: BridgeRouteVerification): string =>
+  verification.kind === "awg_path"
+    ? `bridge.awg.${verification.status}`
+    : `bridge.ver.${verification.status}`;
+
+/** When the evidence behind a verification was produced, if it has a time. */
+export const verificationTime = (verification: BridgeRouteVerification): string | null =>
+  verification.kind === "awg_path" ? verification.checkedAt : verification.verifiedAt;

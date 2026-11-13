@@ -3,9 +3,6 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   BRIDGE_ERROR_CODES,
-  BRIDGE_OBSERVATION_STALE_MS_DEFAULT,
-  BRIDGE_VERIFICATION_VALIDITY_MS,
-  type NodeBridgeRoute,
 } from "@amnezia/contracts";
 import { ApiClientError } from "@/lib/api";
 import { messages } from "@/lib/i18n/messages";
@@ -17,8 +14,8 @@ import {
   parseNodesTab,
   poolCapacity,
   registrationTone,
-  routeObservation,
-  routeVerification,
+  verificationLabelKey,
+  verificationTime,
   verificationTone,
 } from "./bridge-ui";
 
@@ -27,31 +24,6 @@ const tEn = (key: string) => (messages.en as Record<string, string>)[key] ?? key
 const NOW = Date.parse("2026-11-13T12:00:00.000Z");
 const ago = (ms: number) => new Date(NOW - ms).toISOString();
 
-const route = (overrides: Partial<NodeBridgeRoute> = {}): NodeBridgeRoute => ({
-  id: "00000000-0000-4000-8000-000000000001",
-  nodeId: "00000000-0000-4000-8000-000000000002",
-  bridgeId: "00000000-0000-4000-8000-000000000003",
-  publicUdpPort: 41000,
-  state: "draft",
-  frpProxyName: "awg-route-x",
-  observedOnline: true,
-  observedRegistrationMarker: "m-1",
-  observedAt: ago(10_000),
-  verificationMethod: null,
-  verifiedRegistrationMarker: null,
-  verifiedAt: null,
-  verificationResult: null,
-  verificationError: null,
-  activatedAt: null,
-  retiringSince: null,
-  createdAt: ago(60_000),
-  bridgeName: "Bridge A",
-  bridgePublicIpv4: "198.51.100.10",
-  bridgeControlTcpPort: 7000,
-  bridgeManagementStatus: "ok",
-  bridgeLastObservedAt: ago(10_000),
-  ...overrides,
-});
 
 describe("navigation", () => {
   it("renames the nav entry in both locales", () => {
@@ -120,70 +92,6 @@ describe("describeBridgeError", () => {
     });
     expect(describeBridgeError(new Error("boom"), tEn).message).toBe("boom");
     expect(describeBridgeError("x", tEn).message).toBe(messages.en["bridge.err.generic"]);
-  });
-});
-
-describe("routeObservation", () => {
-  it("reads a fresh online observation", () => {
-    expect(routeObservation(route(), NOW)).toEqual({
-      status: "online",
-      marker: "m-1",
-      observedAt: ago(10_000),
-    });
-  });
-
-  it("shows offline only from a fresh observation", () => {
-    expect(routeObservation(route({ observedOnline: false }), NOW).status).toBe("offline");
-  });
-
-  it("is Unknown when the route was never observed", () => {
-    expect(routeObservation(route({ observedOnline: null, observedAt: null }), NOW).status).toBe(
-      "unknown",
-    );
-  });
-
-  it("is Unknown when the bridge report is older than the stale window", () => {
-    const old = ago(BRIDGE_OBSERVATION_STALE_MS_DEFAULT + 1_000);
-    const view = routeObservation(route({ bridgeLastObservedAt: old, observedAt: old }), NOW);
-    expect(view.status).toBe("unknown");
-    expect(view.marker).toBeNull();
-  });
-
-  it("is Unknown when the bridge is not ok or the route is not covered by the latest report", () => {
-    expect(routeObservation(route({ bridgeManagementStatus: "down" }), NOW).status).toBe("unknown");
-    expect(
-      routeObservation(route({ observedAt: ago(60_000), bridgeLastObservedAt: ago(10_000) }), NOW)
-        .status,
-    ).toBe("unknown");
-  });
-});
-
-describe("routeVerification", () => {
-  const verified = (extra: Partial<NodeBridgeRoute> = {}) =>
-    route({
-      verificationMethod: "operator",
-      verificationResult: "success",
-      verifiedAt: ago(60_000),
-      verifiedRegistrationMarker: "m-1",
-      ...extra,
-    });
-
-  it("distinguishes none, valid, failed, expired and a changed marker", () => {
-    expect(routeVerification(route(), NOW).status).toBe("none");
-    expect(routeVerification(verified(), NOW).status).toBe("valid");
-    expect(
-      routeVerification(
-        verified({ verificationResult: "failure", verificationError: "AWG_HANDSHAKE_FAILED" }),
-        NOW,
-      ),
-    ).toMatchObject({ status: "failed", error: "AWG_HANDSHAKE_FAILED" });
-    expect(
-      routeVerification(verified({ verifiedAt: ago(BRIDGE_VERIFICATION_VALIDITY_MS + 1_000) }), NOW)
-        .status,
-    ).toBe("expired");
-    expect(routeVerification(verified({ verifiedRegistrationMarker: "m-0" }), NOW).status).toBe(
-      "marker_changed",
-    );
   });
 });
 
@@ -267,12 +175,31 @@ describe("evidence tones", () => {
     expect(registrationTone("unknown")).toBe("outline");
   });
 
-  it("marks only valid AWG evidence green and only a failed check red", () => {
-    expect(verificationTone("valid")).toBe("success");
-    expect(verificationTone("failed")).toBe("destructive");
-    expect(verificationTone("none")).toBe("outline");
+  it("marks only working AWG evidence green and only a failed check red", () => {
+    const candidate = (status: "none" | "valid" | "unknown" | "marker_changed" | "expired" | "failed") =>
+      ({ kind: "candidate", status, method: null, verifiedAt: null, error: null }) as const;
+    const path = (status: "ok" | "failed" | "unknown") =>
+      ({ kind: "awg_path", status, checkedAt: null }) as const;
+    expect(verificationTone(candidate("valid"))).toBe("success");
+    expect(verificationTone(path("ok"))).toBe("success");
+    expect(verificationTone(candidate("failed"))).toBe("destructive");
+    expect(verificationTone(path("failed"))).toBe("destructive");
+    expect(verificationTone(candidate("none"))).toBe("outline");
+    // An active route with no recent measurement is neutral, not a warning.
+    expect(verificationTone(path("unknown"))).toBe("outline");
     for (const status of ["unknown", "expired", "marker_changed"] as const) {
-      expect(verificationTone(status)).toBe("warning");
+      expect(verificationTone(candidate(status))).toBe("warning");
     }
+  });
+
+  it("labels and times each kind from the API values", () => {
+    expect(verificationLabelKey({ kind: "awg_path", status: "ok", checkedAt: "t" })).toBe("bridge.awg.ok");
+    expect(
+      verificationLabelKey({ kind: "candidate", status: "expired", method: null, verifiedAt: null, error: null }),
+    ).toBe("bridge.ver.expired");
+    expect(verificationTime({ kind: "awg_path", status: "ok", checkedAt: "c" })).toBe("c");
+    expect(
+      verificationTime({ kind: "candidate", status: "valid", method: "probe", verifiedAt: "v", error: null }),
+    ).toBe("v");
   });
 });

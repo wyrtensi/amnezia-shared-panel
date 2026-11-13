@@ -56,17 +56,39 @@ export const routeRegistration = (
     : { status: "offline", marker: null, observedAt };
 };
 
+/**
+ * AWG-path evidence of an active route (ruling R19): the node's regular AWG
+ * 3.1 reachability result for its current endpoint revision, already reduced
+ * to ok / failed / unknown by the caller (`toUserReachability`).
+ */
+export type AwgPathEvidence = {
+  status: "ok" | "failed" | "unknown";
+  checkedAt: Date | null;
+};
+
+export const UNKNOWN_AWG_PATH: AwgPathEvidence = { status: "unknown", checkedAt: null };
+
+/**
+ * Verification as the admin screens show it. Candidate verification (30-minute
+ * window, bound to the observed marker) applies to draft and retiring routes
+ * only; an active route reads its node's regular AWG 3.1 reachability.
+ */
 export const routeVerification = (
   route: GuardRoute,
   registration: BridgeRouteRegistration,
   now: Date,
+  awgPath: AwgPathEvidence = UNKNOWN_AWG_PATH,
 ): BridgeRouteVerification => {
+  if (route.state === "active") {
+    return { kind: "awg_path", status: awgPath.status, checkedAt: iso(awgPath.checkedAt) };
+  }
   const base = {
+    kind: "candidate" as const,
     method: route.verificationMethod,
     verifiedAt: iso(route.verifiedAt),
   };
   if (route.verificationResult === null) {
-    return { status: "none", method: null, verifiedAt: null, error: null };
+    return { kind: "candidate", status: "none", method: null, verifiedAt: null, error: null };
   }
   if (route.verificationResult === "failure") {
     return {
@@ -77,15 +99,8 @@ export const routeVerification = (
     };
   }
   const verifiedAt = route.verifiedAt?.getTime();
-  if (verifiedAt === undefined) {
-    return { status: "expired", ...base, error: null };
-  }
-  // The 30-minute window gates activation. Nothing re-verifies an active
-  // route afterwards (checks target draft and retiring routes), so an active
-  // route's evidence stays valid for as long as it is bound to the
-  // registration observed online now; a changed marker still invalidates it.
   if (
-    route.state !== "active" &&
+    verifiedAt === undefined ||
     now.getTime() - verifiedAt > BRIDGE_VERIFICATION_VALIDITY_MS
   ) {
     return { status: "expired", ...base, error: null };
@@ -104,16 +119,30 @@ export const routeVerification = (
   };
 };
 
-/** Per-bridge counters for the overview Bridges block, from the computed bridge read model. */
+/**
+ * Per-bridge counters for the overview Bridges block, from the computed
+ * bridge read model. A bridge whose management status is not `ok` cannot
+ * vouch for anything, so all its active routes count as unknown.
+ */
 export const overviewBridgeOf = (bridge: Bridge): AdminOverviewBridge => {
   const active = bridge.routes.filter((route) => route.state === "active");
+  const managed = bridge.managementStatus === "ok";
+  const count = (status: "ok" | "failed" | "unknown"): number =>
+    active.filter((route) => {
+      const evidence =
+        managed && route.verification.kind === "awg_path" ? route.verification.status : "unknown";
+      return evidence === status;
+    }).length;
+  const awgPathOk = count("ok");
   return {
     id: bridge.id,
     name: bridge.name,
     managementStatus: bridge.managementStatus,
     lastObservedAt: bridge.lastObservedAt,
     activeRoutes: active.length,
-    verifiedActiveRoutes: active.filter((route) => route.verification.status === "valid")
-      .length,
+    verifiedActiveRoutes: awgPathOk,
+    awgPathOk,
+    awgPathFailed: count("failed"),
+    awgPathUnknown: count("unknown"),
   };
 };

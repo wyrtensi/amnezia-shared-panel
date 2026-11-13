@@ -2,6 +2,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import type { Bridge, NodeBridgeRoute } from "@amnezia/contracts";
 import { messages, type Lang } from "@/lib/i18n/messages";
+import { formatDateTime } from "@/lib/format";
 import { BridgeCardView } from "./bridges-tab";
 import { OverviewBridgesBlock } from "./overview-bridges";
 import { BridgeRouteFacts } from "./bridge-route-view";
@@ -24,8 +25,8 @@ const bridge: Bridge = {
   udpPortEnd: 41031,
   capacity: 32,
   heldPorts: 2,
-  managementStatus: "pending_enrollment",
-  lastObservedAt: null,
+  managementStatus: "stale",
+  lastObservedAt: "2026-11-13T09:00:00.000Z",
   routes: [
     {
       id: "r1",
@@ -33,8 +34,9 @@ const bridge: Bridge = {
       nodeName: "Node A",
       publicUdpPort: 41000,
       state: "active",
-      registration: { status: "online", marker: "m1", observedAt: "2026-11-13T10:00:00.000Z" },
-      verification: { status: "valid", method: "probe", verifiedAt: "2026-11-13T10:00:00.000Z", error: null },
+      // The bridge is stale, so the API reads its routes as unknown.
+      registration: { status: "unknown", marker: null, observedAt: "2026-11-13T09:00:00.000Z" },
+      verification: { kind: "awg_path", status: "unknown", checkedAt: null },
     },
     {
       id: "r2",
@@ -43,7 +45,7 @@ const bridge: Bridge = {
       publicUdpPort: 41001,
       state: "draft",
       registration: { status: "unknown", marker: null, observedAt: null },
-      verification: { status: "none", method: null, verifiedAt: null, error: null },
+      verification: { kind: "candidate", status: "none", method: null, verifiedAt: null, error: null },
     },
   ],
   setupCommands: {
@@ -74,7 +76,7 @@ describe("BridgeCardView", () => {
     expect(html).toContain("41000–41031/udp");
     expect(html).toContain("2 of 32 used");
     expect(html).toContain("30 free");
-    expect(html).toContain("Pending enrollment");
+    expect(html).toContain("No recent report");
     expect(html).toContain("Node A");
     expect(html).toContain(":41001");
     expect(html).toContain("Draft");
@@ -94,17 +96,47 @@ describe("BridgeCardView", () => {
     expect(html.match(/aria-label="Копировать: /g)).toHaveLength(2);
   });
 
-  it("shows each route's frpc registration and AWG path apart from management status", () => {
-    const html = render({ ...bridge, managementStatus: "stale" });
+  it("shows a stale bridge's routes as unknown, apart from management status", () => {
+    const html = render(bridge);
     expect(html).toContain("Not enrolled");
-    // Management is stale while route A still carries its own evidence.
     expect(html).toContain("No recent report");
-    expect(html).toContain("frpc: Online");
-    expect(html).toContain("AWG path: Verified");
-    // An unobserved route is Unknown, not offline, and not verified.
-    expect(html).toContain("frpc: Unknown");
+    // Both routes read Unknown: never offline, never verified.
+    expect(html.match(/frpc: Unknown/g)).toHaveLength(2);
+    expect(html).toContain("AWG path: No current data");
     expect(html).toContain("AWG path: Not verified");
     expect(html).not.toContain("frpc: Not registered");
+    expect(html).not.toContain("frpc: Online");
+  });
+
+  it("renders the API's evidence for a healthy bridge, with the evidence time visible", () => {
+    const html = render({
+      ...bridge,
+      managementStatus: "ok",
+      routes: [
+        {
+          ...bridge.routes[0]!,
+          registration: { status: "online", marker: "m1", observedAt: "2026-11-13T10:00:00.000Z" },
+          verification: { kind: "awg_path", status: "ok", checkedAt: "2026-11-13T10:05:00.000Z" },
+        },
+        {
+          ...bridge.routes[1]!,
+          registration: { status: "online", marker: "m2", observedAt: "2026-11-13T10:00:00.000Z" },
+          verification: {
+            kind: "candidate",
+            status: "expired",
+            method: "probe",
+            verifiedAt: "2026-11-13T08:00:00.000Z",
+            error: null,
+          },
+        },
+      ],
+    });
+    expect(html.match(/frpc: Online/g)).toHaveLength(2);
+    expect(html).toContain("AWG path: Working");
+    expect(html).toContain("AWG path: Expired, verify again");
+    // The times are rendered as text, not only in a title attribute.
+    expect(html).toContain(formatDateTime("2026-11-13T10:05:00.000Z", "en"));
+    expect(html).toContain(formatDateTime("2026-11-13T08:00:00.000Z", "en"));
   });
 
   it("shows agent and frps state of an enrolled bridge, never a credential", () => {
@@ -136,14 +168,13 @@ describe("BridgeCardView", () => {
 
   it("renders in Russian and without setup commands or routes", () => {
     const html = render({ ...bridge, routes: [], heldPorts: 0, setupCommands: undefined }, "ru");
-    expect(html).toContain("Ожидает подключения");
+    expect(html).toContain("Нет свежих данных");
     expect(html).toContain("Маршрутов нет");
     expect(html).not.toContain("install-frps.sh");
   });
 });
 
 describe("BridgeRouteFacts", () => {
-  const NOW = Date.parse("2026-11-13T12:00:00.000Z");
   const route = (overrides: Partial<NodeBridgeRoute> = {}): NodeBridgeRoute => ({
     id: "00000000-0000-4000-8000-000000000001",
     nodeId: NODE,
@@ -153,7 +184,7 @@ describe("BridgeRouteFacts", () => {
     frpProxyName: "awg-route-x",
     observedOnline: true,
     observedRegistrationMarker: "marker-1",
-    observedAt: new Date(NOW - 5_000).toISOString(),
+    observedAt: "2026-11-13T11:59:55.000Z",
     verificationMethod: null,
     verifiedRegistrationMarker: null,
     verifiedAt: null,
@@ -161,18 +192,20 @@ describe("BridgeRouteFacts", () => {
     verificationError: null,
     activatedAt: null,
     retiringSince: null,
-    createdAt: new Date(NOW - 60_000).toISOString(),
+    createdAt: "2026-11-13T11:59:00.000Z",
     bridgeName: "Amsterdam bridge",
     bridgePublicIpv4: "198.51.100.10",
     bridgeControlTcpPort: 7000,
     bridgeManagementStatus: "ok",
-    bridgeLastObservedAt: new Date(NOW - 5_000).toISOString(),
+    bridgeLastObservedAt: "2026-11-13T11:59:55.000Z",
+    registration: { status: "online", marker: "marker-1", observedAt: "2026-11-13T11:59:55.000Z" },
+    verification: { kind: "candidate", status: "none", method: null, verifiedAt: null, error: null },
     ...overrides,
   });
   const view = (value: NodeBridgeRoute) =>
-    renderToStaticMarkup(<BridgeRouteFacts route={value} t={tFor("en")} lang="en" now={NOW} />);
+    renderToStaticMarkup(<BridgeRouteFacts route={value} t={tFor("en")} lang="en" />);
 
-  it("shows the public entry, local target, marker and an online registration", () => {
+  it("shows the public entry, local target, marker and the API's online registration", () => {
     const html = view(route());
     expect(html).toContain("198.51.100.10:41001/udp");
     expect(html).toContain("127.0.0.1:51890/udp");
@@ -181,34 +214,50 @@ describe("BridgeRouteFacts", () => {
     expect(html).toContain("Not verified");
   });
 
-  it("shows a stale observation as Unknown, never as online", () => {
-    const old = new Date(NOW - 3_600_000).toISOString();
-    const html = view(route({ observedAt: old, bridgeLastObservedAt: old }));
+  it("shows an Unknown registration as Unknown, never as online, and hides the marker", () => {
+    const html = view(route({ registration: { status: "unknown", marker: null, observedAt: null } }));
     expect(html).not.toContain(">Online<");
     expect(html).toContain("Unknown");
     expect(html).not.toContain("marker-1");
   });
 
-  it("shows a failed verification with its code and a valid one as verified", () => {
+  it("shows a failed candidate verification with its code and a valid one as verified", () => {
     const failed = view(
       route({
-        verificationResult: "failure",
-        verificationError: "AWG_HANDSHAKE_FAILED",
-        verificationMethod: "probe",
-        verifiedAt: new Date(NOW - 1_000).toISOString(),
+        verification: {
+          kind: "candidate",
+          status: "failed",
+          method: "probe",
+          verifiedAt: "2026-11-13T11:59:59.000Z",
+          error: "AWG_HANDSHAKE_FAILED",
+        },
       }),
     );
     expect(failed).toContain("Failed");
     expect(failed).toContain("AWG_HANDSHAKE_FAILED");
     const ok = view(
       route({
-        verificationResult: "success",
-        verificationMethod: "operator",
-        verifiedRegistrationMarker: "marker-1",
-        verifiedAt: new Date(NOW - 1_000).toISOString(),
+        verification: {
+          kind: "candidate",
+          status: "valid",
+          method: "operator",
+          verifiedAt: "2026-11-13T11:59:59.000Z",
+          error: null,
+        },
       }),
     );
     expect(ok).toContain("Verified");
+  });
+
+  it("shows an active route's AWG path from the regular reachability result with its time", () => {
+    const html = view(
+      route({
+        state: "active",
+        verification: { kind: "awg_path", status: "failed", checkedAt: "2026-11-13T11:50:00.000Z" },
+      }),
+    );
+    expect(html).toContain("Failing");
+    expect(html).toContain(formatDateTime("2026-11-13T11:50:00.000Z", "en"));
   });
 
   it("labels retiring and active states", () => {
@@ -218,13 +267,16 @@ describe("BridgeRouteFacts", () => {
 });
 
 describe("OverviewBridgesBlock", () => {
-  const item = (overrides: Partial<{ id: string; name: string; managementStatus: Bridge["managementStatus"]; activeRoutes: number; verifiedActiveRoutes: number }> = {}) => ({
+  const item = (overrides: Partial<{ id: string; name: string; managementStatus: Bridge["managementStatus"]; activeRoutes: number; verifiedActiveRoutes: number; awgPathOk: number; awgPathFailed: number; awgPathUnknown: number }> = {}) => ({
     id: "00000000-0000-4000-8000-0000000000b1",
     name: "Amsterdam bridge",
     managementStatus: "ok" as const,
     lastObservedAt: null,
-    activeRoutes: 2,
+    activeRoutes: 3,
     verifiedActiveRoutes: 1,
+    awgPathOk: 1,
+    awgPathFailed: 1,
+    awgPathUnknown: 1,
     ...overrides,
   });
   const view = (bridges: Parameters<typeof OverviewBridgesBlock>[0]["bridges"], lang: Lang = "en") =>
@@ -241,20 +293,34 @@ describe("OverviewBridgesBlock", () => {
       count: 2,
       items: [
         item(),
-        item({ id: "00000000-0000-4000-8000-0000000000b2", name: "Berlin", managementStatus: "stale", activeRoutes: 0, verifiedActiveRoutes: 0 }),
+        item({ id: "00000000-0000-4000-8000-0000000000b2", name: "Berlin", managementStatus: "stale", activeRoutes: 0, verifiedActiveRoutes: 0, awgPathOk: 0, awgPathFailed: 0, awgPathUnknown: 0 }),
       ],
     });
     expect(html).toContain('href="/admin/nodes?tab=bridges"');
     expect(html).toContain("Amsterdam bridge");
     expect(html).toContain("Online");
-    expect(html).toContain("active routes: 2, AWG verified: 1");
+    expect(html).toContain("active routes: 3");
+    expect(html).toContain("AWG working: 1");
+    expect(html).toContain("AWG failing: 1");
+    expect(html).toContain("AWG unknown: 1");
     expect(html).toContain("No recent report");
     expect(html).toContain("no active routes");
+  });
+
+  it("shows unknown evidence distinctly and never as verified when management is not ok", () => {
+    const html = view({
+      count: 1,
+      items: [item({ managementStatus: "down", verifiedActiveRoutes: 0, awgPathOk: 0, awgPathFailed: 0, awgPathUnknown: 3 })],
+    });
+    expect(html).toContain("AWG unknown: 3");
+    expect(html).not.toContain("AWG working");
+    expect(html).not.toContain("AWG failing");
   });
 
   it("renders in Russian", () => {
     const html = view({ count: 1, items: [item()] }, "ru");
     expect(html).toContain("Мосты");
-    expect(html).toContain("активных маршрутов: 2, с проверенным AWG: 1");
+    expect(html).toContain("активных маршрутов: 3");
+    expect(html).toContain("AWG: нет данных: 1");
   });
 });

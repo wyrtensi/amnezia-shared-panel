@@ -1531,7 +1531,10 @@ const ru = {
   "bridge.mgmt.never":
     "—",
   "ov.bridgesTitle": "Мосты",
-  "ov.bridgesActive": "активных маршрутов: {active}, с проверенным AWG: {verified}",
+  "ov.bridgesActive": "активных маршрутов: {active}",
+  "ov.bridgesAwgOk": "AWG работает: {count}",
+  "ov.bridgesAwgFailed": "AWG не работает: {count}",
+  "ov.bridgesAwgUnknown": "AWG: нет данных: {count}",
   "ov.bridgesNoActive": "активных маршрутов нет",
   "ov.bridgesOpen": "Открыть мосты",
   "bridge.hostSetup":
@@ -1639,6 +1642,12 @@ const ru = {
   "bridge.ver.none":
     "Не проверен",
   "bridge.ver.unknown":
+    "Нет свежих данных",
+  "bridge.awg.ok":
+    "Работает",
+  "bridge.awg.failed":
+    "Не работает",
+  "bridge.awg.unknown":
     "Нет свежих данных",
   "bridge.route.frpc":
     "frpc",
@@ -3209,7 +3218,10 @@ const en = {
   "bridge.mgmt.never":
     "—",
   "ov.bridgesTitle": "Bridges",
-  "ov.bridgesActive": "active routes: {active}, AWG verified: {verified}",
+  "ov.bridgesActive": "active routes: {active}",
+  "ov.bridgesAwgOk": "AWG working: {count}",
+  "ov.bridgesAwgFailed": "AWG failing: {count}",
+  "ov.bridgesAwgUnknown": "AWG unknown: {count}",
   "ov.bridgesNoActive": "no active routes",
   "ov.bridgesOpen": "Open bridges",
   "bridge.hostSetup":
@@ -3318,6 +3330,12 @@ const en = {
     "Not verified",
   "bridge.ver.unknown":
     "No current evidence",
+  "bridge.awg.ok":
+    "Working",
+  "bridge.awg.failed":
+    "Failing",
+  "bridge.awg.unknown":
+    "No current data",
   "bridge.route.frpc":
     "frpc",
   "bridge.route.awg":

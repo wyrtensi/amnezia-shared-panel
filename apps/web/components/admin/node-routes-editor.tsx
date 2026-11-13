@@ -66,7 +66,6 @@ export function NodeRoutesEditor({ initialNodeId }: { initialNodeId: string | nu
   const [loading, setLoading] = React.useState(false);
   const [busy, setBusy] = React.useState<string | null>(null);
   const [notice, setNotice] = React.useState<Notice | null>(null);
-  const [now, setNow] = React.useState(() => Date.now());
 
   // The query param can arrive after the admin data does; follow it until the
   // operator picks a node by hand.
@@ -92,7 +91,6 @@ export function NodeRoutesEditor({ initialNodeId }: { initialNodeId: string | nu
             (key) => key.nodeId === id && key.protocol === "awg3" && key.state === "active",
           ),
         );
-        setNow(Date.now());
       } catch (cause) {
         setNotice({ tone: "danger", text: describeBridgeError(cause, t).message });
       } finally {
@@ -192,7 +190,6 @@ export function NodeRoutesEditor({ initialNodeId }: { initialNodeId: string | nu
           <>
             <CurrentAssignment
               routes={routes}
-              now={now}
               busy={busy}
               loading={loading}
               onDirect={() => void activate(null)}
@@ -218,7 +215,6 @@ export function NodeRoutesEditor({ initialNodeId }: { initialNodeId: string | nu
                 route={route}
                 bridge={bridges.find((bridge) => bridge.id === route.bridgeId) ?? null}
                 testKeys={testKeys}
-                now={now}
                 busy={busy}
                 request={request}
                 onRun={run}
@@ -231,7 +227,6 @@ export function NodeRoutesEditor({ initialNodeId }: { initialNodeId: string | nu
                 route={route}
                 bridge={bridges.find((bridge) => bridge.id === route.bridgeId) ?? null}
                 testKeys={testKeys}
-                now={now}
                 busy={busy}
                 request={request}
                 onRun={run}
@@ -247,14 +242,12 @@ export function NodeRoutesEditor({ initialNodeId }: { initialNodeId: string | nu
 
 function CurrentAssignment({
   routes,
-  now,
   busy,
   loading,
   onDirect,
   onRefresh,
 }: {
   routes: NodeBridgeRoutes;
-  now: number;
   busy: string | null;
   loading: boolean;
   onDirect: () => void;
@@ -287,7 +280,7 @@ function CurrentAssignment({
       </div>
       {active ? (
         <>
-          <BridgeRouteFacts route={active} t={t} lang={lang} now={now} />
+          <BridgeRouteFacts route={active} t={t} lang={lang} />
           <Button
             type="button"
             variant="outline"
@@ -404,7 +397,6 @@ function CandidateRoute({
   route,
   bridge,
   testKeys,
-  now,
   busy,
   request,
   onRun,
@@ -413,7 +405,6 @@ function CandidateRoute({
   route: NodeBridgeRoute;
   bridge: Bridge | null;
   testKeys: KeyView[];
-  now: number;
   busy: string | null;
   request: Requester;
   onRun: (name: string, action: () => Promise<string | void>) => Promise<void>;
@@ -456,7 +447,7 @@ function CandidateRoute({
       <h4 className="text-sm font-semibold">
         {retiring ? t("bridge.retiringRoute") : t("bridge.candidateRoute")}
       </h4>
-      <BridgeRouteFacts route={route} t={t} lang={lang} now={now} />
+      <BridgeRouteFacts route={route} t={t} lang={lang} />
 
       {route.setupCommands ? (
         <div className="space-y-2">

@@ -1243,7 +1243,7 @@ describe("bridge commands", () => {
         {
           ...bridge.routes[0],
           registration: { status: "online", marker: "m".repeat(32), observedAt: "2026-11-13T10:00:00.000Z" },
-          verification: { status: "valid", method: "probe", verifiedAt: "2026-11-13T09:59:00.000Z", error: null },
+          verification: { kind: "awg_path", status: "ok", checkedAt: "2026-11-13T09:59:00.000Z" },
         },
       ],
     };
@@ -1261,7 +1261,7 @@ describe("bridge commands", () => {
       routes: [
         {
           registration: { status: "online" },
-          verification: { status: "valid", method: "probe" },
+          verification: { kind: "awg_path", status: "ok", checkedAt: "2026-11-13T09:59:00.000Z" },
         },
       ],
     });
@@ -1471,6 +1471,32 @@ describe("bridge commands", () => {
     expect(out).toContain("drafts (1)");
     expect(out).toContain("online");
     expect(out).toContain("verified");
+  });
+
+  it("bridge-routes prints the API's registration and AWG path evidence", async () => {
+    stubFetch([
+      {
+        body: {
+          nodeId: NODE,
+          vpnEndpointRevision: 2,
+          activeRoute: {
+            id: ROUTE,
+            bridgeId: BRIDGE,
+            publicUdpPort: 41000,
+            state: "active",
+            bridgeName: "Frankfurt",
+            bridgePublicIpv4: "198.51.100.7",
+            registration: { status: "unknown", marker: null, observedAt: null },
+            verification: { kind: "awg_path", status: "failed", checkedAt: "2026-11-13T10:00:00.000Z" },
+          },
+          drafts: [],
+          retiring: [],
+        },
+      },
+    ]);
+    const out = await run(["bridge-routes", NODE]);
+    expect(out).toContain("unknown");
+    expect(out).toContain("awg path failed (checked 2026-11-13T10:00:00.000Z)");
   });
 
   it("bridge-route-prepare without --confirm reserves nothing", async () => {

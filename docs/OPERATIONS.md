@@ -445,9 +445,10 @@ allocates from the same pool as the node tunnels (same `-L` scan, same base), an
 pins the bridge's SSH host key instead of trusting the first one it sees. The
 panel's record for the bridge is `http://host.docker.internal:<port>`, so the
 same three checks above apply with the bridge unit name. Stopping a bridge tunnel
-makes the bridge read `down` (then `stale`) in the admin screens; active routes
-and the frps forwarding keep working, and the route evidence reads Unknown
-instead of a stale "online".
+makes the bridge read `down` at its next poll (a `down` bridge stays `down`; only a
+bridge last reported `ok` turns `stale`, once its observation is older than the
+stale window) in the admin screens; active routes and the frps forwarding keep
+working, and the route evidence reads Unknown instead of a stale "online".
 
 **Bridge polls share the worker's one outbox lane.** The worker runs one outbox
 job at a time, and the bridge-agent poll (`bridge_agent.poll`, one job per

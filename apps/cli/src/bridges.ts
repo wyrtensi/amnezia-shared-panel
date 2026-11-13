@@ -34,13 +34,31 @@ type BridgeRouteSummary = {
   publicUdpPort: number;
   state: RouteState;
   registration?: { status: string; marker?: string | null; observedAt?: string | null };
-  verification?: {
-    status: string;
-    method?: string | null;
-    verifiedAt?: string | null;
-    error?: string | null;
-  };
+  verification?: RouteVerificationView;
 };
+
+/** `candidate` (draft/retiring) or `awg_path` (active, the node's regular AWG 3.1 result). */
+type RouteVerificationView = {
+  kind?: string;
+  status: string;
+  method?: string | null;
+  verifiedAt?: string | null;
+  checkedAt?: string | null;
+  error?: string | null;
+};
+
+function projectVerification(v: RouteVerificationView | undefined): Record<string, unknown> {
+  if (v?.kind === "awg_path") {
+    return { kind: "awg_path", status: v.status, checkedAt: nullable(v.checkedAt) };
+  }
+  return {
+    kind: "candidate",
+    status: v?.status ?? "none",
+    method: nullable(v?.method),
+    verifiedAt: nullable(v?.verifiedAt),
+    error: nullable(v?.error),
+  };
+}
 
 export type SetupCommands = { install?: string; dryRun?: string; remove?: string };
 
@@ -87,6 +105,8 @@ export type NodeRouteView = {
   setupCommands?: SetupCommands | null;
   observedOnline?: boolean | null;
   observedAt?: string | null;
+  registration?: { status: string; marker?: string | null; observedAt?: string | null };
+  verification?: RouteVerificationView;
   verificationResult?: string | null;
   verificationMethod?: string | null;
   verificationError?: string | null;
@@ -178,12 +198,7 @@ export function projectBridge(b: BridgeView): Record<string, unknown> {
         marker: nullable(r.registration?.marker),
         observedAt: nullable(r.registration?.observedAt),
       },
-      verification: {
-        status: r.verification?.status ?? "none",
-        method: nullable(r.verification?.method),
-        verifiedAt: nullable(r.verification?.verifiedAt),
-        error: nullable(r.verification?.error),
-      },
+      verification: projectVerification(r.verification),
     })),
     ...(setup ? { setupCommands: setup } : {}),
   };
@@ -203,6 +218,12 @@ export function projectRoute(r: NodeRouteView): Record<string, unknown> {
     bridgeLastObservedAt: nullable(r.bridgeLastObservedAt),
     observedOnline: nullable(r.observedOnline),
     observedAt: nullable(r.observedAt),
+    registration: {
+      status: r.registration?.status ?? "unknown",
+      marker: nullable(r.registration?.marker),
+      observedAt: nullable(r.registration?.observedAt),
+    },
+    verification: projectVerification(r.verification),
     verificationMethod: nullable(r.verificationMethod),
     verificationResult: nullable(r.verificationResult),
     verificationError: nullable(r.verificationError),
@@ -305,14 +326,24 @@ const show = (value: string | number | null | undefined): string =>
 
 function describeRoute(route: NodeRouteView): string {
   const target = `${show(route.bridgePublicIpv4)}:${route.publicUdpPort}`;
+  // The API computes registration and verification (unknown when stale or
+  // uncovered); the stored-field fallback only serves an older API.
+  const verification = route.verification;
   const verified =
-    route.verificationResult === "success"
-      ? `verified ${show(route.verifiedAt)} (${show(route.verificationMethod)})`
-      : route.verificationResult
-        ? `verification ${route.verificationResult}${route.verificationError ? ` (${route.verificationError})` : ""}`
-        : "not verified";
-  const observed =
-    route.observedOnline === true
+    verification?.kind === "awg_path"
+      ? `awg path ${verification.status}${verification.checkedAt ? ` (checked ${verification.checkedAt})` : ""}`
+      : verification
+        ? `verification ${verification.status}${verification.verifiedAt ? ` ${verification.verifiedAt}` : ""}${verification.method ? ` (${verification.method})` : ""}${verification.error ? ` (${verification.error})` : ""}`
+        : route.verificationResult === "success"
+          ? `verified ${show(route.verifiedAt)} (${show(route.verificationMethod)})`
+          : route.verificationResult
+            ? `verification ${route.verificationResult}${route.verificationError ? ` (${route.verificationError})` : ""}`
+            : "not verified";
+  const observed = route.registration
+    ? route.registration.status === "offline"
+      ? "absent"
+      : route.registration.status
+    : route.observedOnline === true
       ? "online"
       : route.observedOnline === false
         ? "absent"

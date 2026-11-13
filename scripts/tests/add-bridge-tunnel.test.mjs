@@ -114,8 +114,15 @@ withHost("writes a supervised unit that forwards to the agent's loopback with th
   assert.match(known, /ssh-ed25519 AAAAC3Nza-scanned-key/);
   assert.match(await h.calls(), /systemctl enable --now panel-tunnel-bridge-3f1c2a40/);
   assert.match(r.stdout, /management URL for the panel: http:\/\/host\.docker\.internal:4105/);
-  assert.match(r.stdout, /bridge-enroll 3f1c2a40-.* --api-url=http:\/\/host\.docker\.internal:4105 --api-key-file=- --confirm/);
-  assert.match(r.stdout, /cat \/etc\/amnezia-bridge\/agent\/api-token \|/);
+  assert.match(unit, /GlobalKnownHostsFile=\/dev\/null/);
+  // The enroll command runs as printed: the token is piped into the CLI inside
+  // the control-api container (docker compose exec -T keeps stdin), pinned key,
+  // no inline credential.
+  assert.match(r.stdout, /cd '\/opt\/amnezia-panel\/infra\/prod' && ssh -o StrictHostKeyChecking=yes -o UserKnownHostsFile=.*bridge-known-hosts\/3f1c2a40/);
+  assert.match(r.stdout, /-o GlobalKnownHostsFile=\/dev\/null .* cat \/etc\/amnezia-bridge\/agent\/api-token \| \\/);
+  assert.match(r.stdout, /docker compose exec -T -e CONTROL_API_URL='http:\/\/127\.0\.0\.1:3001' 'control-api' \\/);
+  assert.match(r.stdout, /node \/app\/apps\/cli\/dist\/main\.js bridge-enroll 3f1c2a40-\S+ --api-url=http:\/\/host\.docker\.internal:4105 --api-key-file=- --confirm/);
+  assert.doesNotMatch(r.stdout, /amnezia-panel bridge-enroll/);
 });
 
 withHost("a host key that does not match the printed fingerprint writes nothing", async (h) => {
@@ -169,6 +176,23 @@ withHost("a dry run writes nothing and starts nothing", async (h) => {
   assert.match(r.stdout, /-L 172\.17\.0\.1:4105:127\.0\.0\.1:7600/);
   assert.deepEqual(await readdir(h.systemd), []);
   assert.equal(await h.calls(), "");
+});
+
+withHost("TUNNEL_BIND must be a concrete IPv4 literal, never 0.0.0.0, and an existing unit keeps its port", async (h) => {
+  for (const bind of ["0.0.0.0", "docker0", "172.17.0.x", "172.17.0.1;rm"]) {
+    const r = h.run(args, { TUNNEL_BIND: bind });
+    assert.equal(r.status, 2, bind);
+    assert.match(r.stderr, /TUNNEL_BIND/);
+  }
+  assert.deepEqual(await readdir(h.systemd), []);
+  // An existing unit keeps whatever port it forwards on (found with a pattern
+  // built from the escaped bind address).
+  assert.equal(h.run(args).status, 0);
+  const unitPath = join(h.systemd, `panel-tunnel-bridge-${BRIDGE}.service`);
+  const body = await readFile(unitPath, "utf8");
+  await writeFile(unitPath, body.replace("172.17.0.1:4105", "172.17.0.1:4999"));
+  assert.equal(h.run(args).status, 0);
+  assert.match(await h.unit(), /-L 172\.17\.0\.1:4999:/);
 });
 
 withHost("rejects malformed arguments", async (h) => {

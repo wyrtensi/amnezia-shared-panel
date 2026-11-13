@@ -208,13 +208,19 @@ export const bridgeRouteRegistrationSchema = z.object({
 });
 
 /**
- * The end-to-end AWG path evidence for one route, separate from management
- * reachability and from registration. `valid`: a successful verification
- * bound to the registration observed now (within 30 minutes for a draft or
- * retiring route; an active route keeps it while the marker matches, since
- * nothing re-verifies it after activation). `unknown`: a
- * recent success exists but no current online observation can vouch for it.
- * `marker_changed`: the registration was replaced after the verification.
+ * End-to-end AWG evidence for one route, separate from management
+ * reachability and from registration. Two kinds, by route state:
+ *
+ * - `candidate` (draft and retiring routes): the result of a candidate
+ *   verification. `valid`: a success within 30 minutes bound to the
+ *   registration observed now. `unknown`: a recent success exists but no
+ *   current online observation can vouch for it. `marker_changed`: the
+ *   registration was replaced after the verification. `expired`: older than 30
+ *   minutes.
+ * - `awg_path` (active routes, ruling R19): the node's regular AWG 3.1
+ *   reachability result for its current endpoint revision, mapped to
+ *   ok / failed / unknown (missing, stale, error and probe-incapable are all
+ *   unknown). `checkedAt` is when that result was measured.
  */
 export const BRIDGE_ROUTE_VERIFICATION_STATUSES = [
   "none",
@@ -227,13 +233,23 @@ export const BRIDGE_ROUTE_VERIFICATION_STATUSES = [
 export const bridgeRouteVerificationStatusSchema = z.enum(
   BRIDGE_ROUTE_VERIFICATION_STATUSES,
 );
-export const bridgeRouteVerificationSchema = z.object({
-  status: bridgeRouteVerificationStatusSchema,
-  method: bridgeVerificationMethodSchema.nullable(),
-  verifiedAt: z.iso.datetime().nullable(),
-  /** Bounded short code of a failed check; never free-form text. */
-  error: z.string().max(80).nullable(),
-});
+export const BRIDGE_AWG_PATH_STATUSES = ["ok", "failed", "unknown"] as const;
+export const bridgeAwgPathStatusSchema = z.enum(BRIDGE_AWG_PATH_STATUSES);
+export const bridgeRouteVerificationSchema = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("candidate"),
+    status: bridgeRouteVerificationStatusSchema,
+    method: bridgeVerificationMethodSchema.nullable(),
+    verifiedAt: z.iso.datetime().nullable(),
+    /** Bounded short code of a failed check; never free-form text. */
+    error: z.string().max(80).nullable(),
+  }),
+  z.object({
+    kind: z.literal("awg_path"),
+    status: bridgeAwgPathStatusSchema,
+    checkedAt: z.iso.datetime().nullable(),
+  }),
+]);
 
 export const bridgeRouteSummarySchema = z.object({
   id: z.uuid(),
@@ -319,8 +335,7 @@ export const bridgeSchema = z.object({
 /**
  * The Bridges block of `GET /api/admin/overview`, present only when at least
  * one bridge exists. VPN node counters elsewhere in the overview never
- * include bridges. `verifiedActiveRoutes` counts active routes whose
- * verification is `valid` (see `bridgeRouteVerificationSchema`).
+ * include bridges. `verifiedActiveRoutes` equals `awgPathOk`.
  */
 export const adminOverviewBridgeSchema = z.object({
   id: z.uuid(),
@@ -328,7 +343,12 @@ export const adminOverviewBridgeSchema = z.object({
   managementStatus: bridgeManagementStatusSchema,
   lastObservedAt: z.iso.datetime().nullable(),
   activeRoutes: z.int().min(0),
+  // Active routes by AWG path evidence (ruling R19). While the bridge's
+  // management status is not `ok` every active route counts as unknown.
   verifiedActiveRoutes: z.int().min(0),
+  awgPathOk: z.int().min(0),
+  awgPathFailed: z.int().min(0),
+  awgPathUnknown: z.int().min(0),
 });
 export const adminOverviewBridgesSchema = z.object({
   count: z.int().min(1),
@@ -347,6 +367,9 @@ export const nodeBridgeRouteSchema = bridgeRouteSchema.extend({
   bridgeControlTcpPort: portSchema,
   bridgeManagementStatus: bridgeManagementStatusSchema,
   bridgeLastObservedAt: z.iso.datetime().nullable(),
+  // Computed by the API, one definition for every screen.
+  registration: bridgeRouteRegistrationSchema,
+  verification: bridgeRouteVerificationSchema,
   setupCommands: routeSetupCommandsSchema.optional(),
 });
 

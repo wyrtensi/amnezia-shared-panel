@@ -5,8 +5,10 @@ import type { Lang } from "@/lib/i18n/messages";
 import {
   bridgeEntry,
   DEFAULT_LOCAL_TARGET,
-  routeObservation,
-  routeVerification,
+  registrationTone,
+  verificationLabelKey,
+  verificationTime,
+  verificationTone,
 } from "@/lib/bridge-ui";
 
 type Translate = (key: string, vars?: Record<string, string | number>) => string;
@@ -15,12 +17,6 @@ const STATE_VARIANT = {
   active: "success",
   draft: "outline",
   retiring: "warning",
-} as const;
-
-const OBSERVATION_VARIANT = {
-  online: "success",
-  offline: "destructive",
-  unknown: "outline",
 } as const;
 
 /**
@@ -32,15 +28,16 @@ export function BridgeRouteFacts({
   route,
   t,
   lang,
-  now,
 }: {
   route: NodeBridgeRoute;
   t: Translate;
   lang: Lang;
-  now: number;
 }) {
-  const observation = routeObservation(route, now);
-  const verification = routeVerification(route, now);
+  // Registration and verification are computed by the API (one definition for
+  // every screen); this view only labels them.
+  const observation = route.registration;
+  const verification = route.verification;
+  const evidenceAt = verificationTime(verification);
   const when = (iso: string | null) =>
     iso ? formatDateTime(iso, lang) : t("bridge.unknown");
 
@@ -59,7 +56,7 @@ export function BridgeRouteFacts({
         <dd className="break-all font-mono">{DEFAULT_LOCAL_TARGET}</dd>
         <dt className="text-muted-foreground">{t("bridge.registration")}</dt>
         <dd className="flex flex-wrap items-center gap-1.5">
-          <Badge variant={OBSERVATION_VARIANT[observation.status]}>
+          <Badge variant={registrationTone(observation.status)}>
             {t(`bridge.obs.${observation.status}`)}
           </Badge>
         </dd>
@@ -68,29 +65,23 @@ export function BridgeRouteFacts({
           {observation.marker ?? t("bridge.unknown")}
         </dd>
         <dt className="text-muted-foreground">{t("bridge.observedAt")}</dt>
-        <dd>{when(route.observedAt)}</dd>
+        <dd>{when(observation.observedAt)}</dd>
         <dt className="text-muted-foreground">{t("bridge.verification")}</dt>
         <dd className="space-y-0.5">
-          <Badge
-            variant={
-              verification.status === "valid"
-                ? "success"
-                : verification.status === "failed"
-                  ? "destructive"
-                  : verification.status === "none"
-                    ? "outline"
-                    : "warning"
-            }
-          >
-            {t(`bridge.ver.${verification.status}`)}
+          <Badge variant={verificationTone(verification)}>
+            {t(verificationLabelKey(verification))}
           </Badge>
-          {verification.status !== "none" && verification.at ? (
+          {evidenceAt ? (
             <span className="ml-1.5 text-muted-foreground">
-              {when(verification.at)}
-              {verification.method ? ` · ${t(`bridge.method.${verification.method}`)}` : ""}
+              {when(evidenceAt)}
+              {verification.kind === "candidate" && verification.method
+                ? ` · ${t(`bridge.method.${verification.method}`)}`
+                : ""}
             </span>
           ) : null}
-          {verification.status === "failed" && verification.error ? (
+          {verification.kind === "candidate" &&
+          verification.status === "failed" &&
+          verification.error ? (
             <span className="block font-mono text-destructive">{verification.error}</span>
           ) : null}
         </dd>

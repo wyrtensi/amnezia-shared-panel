@@ -12,6 +12,7 @@ import {
   type VerifyBridgeRouteResult,
   type Bridge,
   type BridgeEligibility,
+  toUserReachability,
   type AdminOverviewBridges,
   type BridgeRouteSummary,
   type CreateBridgeRequest,
@@ -29,6 +30,7 @@ import {
   decryptSecret,
   jobOutbox,
   nodes,
+  nodeReachabilityResults,
   reachabilityProbe,
   resetNodeEndpointEvidence,
   users,
@@ -50,7 +52,9 @@ import {
   checkReleaseGuard,
 } from "./bridgeGuards.js";
 import {
+  UNKNOWN_AWG_PATH,
   effectiveManagementStatus,
+  type AwgPathEvidence,
   overviewBridgeOf,
   routeRegistration,
   routeVerification,
@@ -189,38 +193,44 @@ const toNodeRoute = (
   bridge: BridgeRow,
   now: Date,
   staleMs: number,
-): NodeBridgeRoute => ({
-  id: route.id,
-  nodeId: route.nodeId,
-  bridgeId: route.bridgeId,
-  publicUdpPort: route.publicUdpPort,
-  state: route.state,
-  frpProxyName: route.frpProxyName,
-  observedOnline: route.observedOnline,
-  observedRegistrationMarker: route.observedRegistrationMarker,
-  observedAt: iso(route.observedAt),
-  verificationMethod: route.verificationMethod,
-  verifiedRegistrationMarker: route.verifiedRegistrationMarker,
-  verifiedAt: iso(route.verifiedAt),
-  verificationResult: route.verificationResult,
-  verificationError: route.verificationError,
-  activatedAt: iso(route.activatedAt),
-  retiringSince: iso(route.retiringSince),
-  createdAt: route.createdAt.toISOString(),
-  bridgeName: bridge.name,
-  bridgePublicIpv4: bridge.publicIpv4,
-  bridgeControlTcpPort: bridge.controlTcpPort,
-  // Computed like `Bridge.managementStatus`: a stored `ok` past the stale
-  // window reads `stale`.
-  bridgeManagementStatus: effectiveManagementStatus(bridge, now, staleMs),
-  bridgeLastObservedAt: iso(bridge.lastObservedAt),
-  setupCommands: routeSetupCommands({
+  awgPath: AwgPathEvidence,
+): NodeBridgeRoute => {
+  const registration = routeRegistration(route, bridge, now, staleMs);
+  return {
     id: route.id,
+    nodeId: route.nodeId,
+    bridgeId: route.bridgeId,
     publicUdpPort: route.publicUdpPort,
+    state: route.state,
+    frpProxyName: route.frpProxyName,
+    observedOnline: route.observedOnline,
+    observedRegistrationMarker: route.observedRegistrationMarker,
+    observedAt: iso(route.observedAt),
+    verificationMethod: route.verificationMethod,
+    verifiedRegistrationMarker: route.verifiedRegistrationMarker,
+    verifiedAt: iso(route.verifiedAt),
+    verificationResult: route.verificationResult,
+    verificationError: route.verificationError,
+    activatedAt: iso(route.activatedAt),
+    retiringSince: iso(route.retiringSince),
+    createdAt: route.createdAt.toISOString(),
+    bridgeName: bridge.name,
     bridgePublicIpv4: bridge.publicIpv4,
     bridgeControlTcpPort: bridge.controlTcpPort,
-  }),
-});
+    // Computed like `Bridge.managementStatus`: a stored `ok` past the stale
+    // window reads `stale`.
+    bridgeManagementStatus: effectiveManagementStatus(bridge, now, staleMs),
+    bridgeLastObservedAt: iso(bridge.lastObservedAt),
+    registration,
+    verification: routeVerification(route, registration, now, awgPath),
+    setupCommands: routeSetupCommands({
+      id: route.id,
+      publicUdpPort: route.publicUdpPort,
+      bridgePublicIpv4: bridge.publicIpv4,
+      bridgeControlTcpPort: bridge.controlTcpPort,
+    }),
+  };
+};
 
 const toBridge = (
   row: BridgeRow,
@@ -285,6 +295,70 @@ export class PostgresBridgeRepository {
     return this.options.db;
   }
 
+  /**
+   * The AWG path evidence of each node's active route (ruling R19): the node's
+   * AWG 3.1 reachability result, reduced like the user verdict
+   * (`toUserReachability`: missing, stale, errored, probe-disabled or mass
+   * failure all read unknown). The worker deletes that row when the node's
+   * endpoint changes, so a present row was measured for the current revision.
+   */
+  private loadAwgPaths = async (
+    executor: Database | BridgeTransaction,
+    nodeIds: readonly string[],
+  ): Promise<Map<string, AwgPathEvidence>> => {
+    const result = new Map<string, AwgPathEvidence>();
+    if (nodeIds.length === 0) return result;
+    const [[probe], rows] = await Promise.all([
+      executor
+        .select({
+          enabled: reachabilityProbe.enabled,
+          lastResultAt: reachabilityProbe.lastResultAt,
+          staleAfterSec: reachabilityProbe.staleAfterSec,
+          intervalSec: reachabilityProbe.intervalSec,
+          staleAlertedAt: reachabilityProbe.staleAlertedAt,
+          enabledAt: reachabilityProbe.enabledAt,
+          lastRunMass: reachabilityProbe.lastRunMass,
+        })
+        .from(reachabilityProbe)
+        .where(eq(reachabilityProbe.id, 1))
+        .limit(1),
+      executor
+        .select({
+          nodeId: nodes.id,
+          reachabilityEnabled: nodes.reachabilityEnabled,
+          status: nodeReachabilityResults.status,
+          failingSince: nodeReachabilityResults.failingSince,
+          checkedAt: nodeReachabilityResults.checkedAt,
+        })
+        .from(nodes)
+        .leftJoin(
+          nodeReachabilityResults,
+          and(
+            eq(nodeReachabilityResults.nodeId, nodes.id),
+            eq(nodeReachabilityResults.protocol, "awg3"),
+          ),
+        )
+        .where(inArray(nodes.id, [...new Set(nodeIds)])),
+    ]);
+    const now = new Date();
+    for (const row of rows) {
+      const verdict = toUserReachability({
+        probe: probe ?? null,
+        reachabilityEnabled: row.reachabilityEnabled,
+        state:
+          row.status !== null && row.checkedAt !== null
+            ? { status: row.status, failingSince: row.failingSince, checkedAt: row.checkedAt }
+            : null,
+        now,
+      });
+      result.set(row.nodeId, {
+        status: verdict.state === "blocked" ? "failed" : verdict.state,
+        checkedAt: row.checkedAt,
+      });
+    }
+    return result;
+  };
+
   /** Route summaries with their computed registration and verification, by bridge id. */
   private routeSummaries = async (
     bridgeRows: readonly BridgeRow[],
@@ -302,6 +376,10 @@ export class PostgresBridgeRepository {
       .innerJoin(nodes, eq(nodes.id, vpnBridgeRoutes.nodeId))
       .where(inArray(vpnBridgeRoutes.bridgeId, [...bridgesById.keys()]))
       .orderBy(asc(vpnBridgeRoutes.publicUdpPort));
+    const awgPaths = await this.loadAwgPaths(
+      this.db,
+      rows.filter(({ route }) => route.state === "active").map(({ route }) => route.nodeId),
+    );
     for (const { route, nodeName } of rows) {
       const bridge = bridgesById.get(route.bridgeId);
       if (!bridge) continue;
@@ -319,7 +397,12 @@ export class PostgresBridgeRepository {
         publicUdpPort: route.publicUdpPort,
         state: route.state,
         registration,
-        verification: routeVerification(route, registration, now),
+        verification: routeVerification(
+          route,
+          registration,
+          now,
+          awgPaths.get(route.nodeId) ?? UNKNOWN_AWG_PATH,
+        ),
       });
       byBridge.set(route.bridgeId, list);
     }
@@ -525,8 +608,19 @@ export class PostgresBridgeRepository {
       .innerJoin(vpnBridges, eq(vpnBridges.id, vpnBridgeRoutes.bridgeId))
       .where(where)
       .orderBy(asc(vpnBridgeRoutes.createdAt));
+    const awgPaths = await this.loadAwgPaths(
+      executor,
+      rows.filter(({ route }) => route.state === "active").map(({ route }) => route.nodeId),
+    );
+    const now = new Date();
     return rows.map(({ route, bridge }) =>
-      toNodeRoute(route, bridge, new Date(), this.options.observationStaleMs),
+      toNodeRoute(
+        route,
+        bridge,
+        now,
+        this.options.observationStaleMs,
+        awgPaths.get(route.nodeId) ?? UNKNOWN_AWG_PATH,
+      ),
     );
   };
 
@@ -541,7 +635,17 @@ export class PostgresBridgeRepository {
       .where(eq(vpnBridgeRoutes.id, routeId))
       .limit(1);
     if (!row) throw routeNotFound();
-    return toNodeRoute(row.route, row.bridge, new Date(), this.options.observationStaleMs);
+    const awgPaths = await this.loadAwgPaths(
+      executor,
+      row.route.state === "active" ? [row.route.nodeId] : [],
+    );
+    return toNodeRoute(
+      row.route,
+      row.bridge,
+      new Date(),
+      this.options.observationStaleMs,
+      awgPaths.get(row.route.nodeId) ?? UNKNOWN_AWG_PATH,
+    );
   };
 
   getNodeBridgeRoutes = async (

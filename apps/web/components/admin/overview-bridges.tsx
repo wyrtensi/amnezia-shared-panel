@@ -57,14 +57,28 @@ export function OverviewBridgesBlock({
                   {t(`bridge.status.${bridge.managementStatus}`)}
                 </Badge>
               </div>
-              <p className="text-xs text-muted-foreground">
-                {bridge.activeRoutes === 0
-                  ? t("ov.bridgesNoActive")
-                  : t("ov.bridgesActive", {
-                      active: bridge.activeRoutes,
-                      verified: bridge.verifiedActiveRoutes,
-                    })}
-              </p>
+              {bridge.activeRoutes === 0 ? (
+                <p className="text-xs text-muted-foreground">{t("ov.bridgesNoActive")}</p>
+              ) : (
+                <div className="flex flex-wrap items-center gap-1.5 text-xs">
+                  <span className="text-muted-foreground">
+                    {t("ov.bridgesActive", { active: bridge.activeRoutes })}
+                  </span>
+                  {bridge.awgPathOk > 0 ? (
+                    <Badge variant="success">{t("ov.bridgesAwgOk", { count: bridge.awgPathOk })}</Badge>
+                  ) : null}
+                  {bridge.awgPathFailed > 0 ? (
+                    <Badge variant="destructive">
+                      {t("ov.bridgesAwgFailed", { count: bridge.awgPathFailed })}
+                    </Badge>
+                  ) : null}
+                  {bridge.awgPathUnknown > 0 ? (
+                    <Badge variant="outline">
+                      {t("ov.bridgesAwgUnknown", { count: bridge.awgPathUnknown })}
+                    </Badge>
+                  ) : null}
+                </div>
+              )}
             </CardContent>
           </Card>
         ))}

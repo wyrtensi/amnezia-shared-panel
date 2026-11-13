@@ -89,6 +89,14 @@ const bridgeRouteFixture = {
   bridgeControlTcpPort: 7000,
   bridgeManagementStatus: "pending_enrollment" as const,
   bridgeLastObservedAt: null,
+  registration: { status: "unknown" as const, marker: null, observedAt: null },
+  verification: {
+    kind: "candidate" as const,
+    status: "none" as const,
+    method: null,
+    verifiedAt: null,
+    error: null,
+  },
 };
 
 const createRepository = (): ControlRepository => ({
