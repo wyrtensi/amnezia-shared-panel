@@ -279,9 +279,29 @@ export const vpnBridges = pgTable(
       .$type<BridgeManagementStatus>()
       .default("pending_enrollment")
       .notNull(),
-    // Last successful observation stored by the panel.
+    // Last successful observation stored by the panel: the panel-clock start
+    // of the last poll the agent answered for this bridge.
     lastObservedAt: timestamp("last_observed_at", { withTimezone: true }),
     lastPollAttemptAt: timestamp("last_poll_attempt_at", { withTimezone: true }),
+    // Enrollment: the bridge-agent's private management endpoint and its API
+    // credential, encrypted with the config keyring. All six are set together
+    // or all null (pending enrollment).
+    managementApiUrl: text("management_api_url"),
+    managementCredentialCiphertext: text("management_credential_ciphertext"),
+    managementCredentialNonce: text("management_credential_nonce"),
+    managementCredentialAuthTag: text("management_credential_auth_tag"),
+    managementCredentialKeyVersion: integer("management_credential_key_version"),
+    // When the current credential was stored. A poll that read the agent with
+    // an older credential compares this before it writes.
+    managementEnrolledAt: timestamp("management_enrolled_at", { withTimezone: true }),
+    // What the agent last reported about itself and its local frps.
+    agentVersion: text("agent_version"),
+    agentApiVersion: integer("agent_api_version"),
+    agentCapabilities: jsonb("agent_capabilities").$type<string[]>(),
+    frpsVersion: text("frps_version"),
+    frpsReachable: boolean("frps_reachable"),
+    // Bounded code of the last poll problem; never upstream text or secrets.
+    lastErrorCode: text("last_error_code"),
     ...timestamps,
   },
   (table) => [
@@ -305,6 +325,10 @@ export const vpnBridges = pgTable(
     check(
       "vpn_bridges_management_status_valid",
       sql`${table.managementStatus} in ('pending_enrollment', 'ok', 'down', 'stale', 'identity_mismatch', 'unsupported')`,
+    ),
+    check(
+      "vpn_bridges_management_enrollment_complete",
+      sql`(${table.managementApiUrl} is null and ${table.managementCredentialCiphertext} is null and ${table.managementCredentialNonce} is null and ${table.managementCredentialAuthTag} is null and ${table.managementCredentialKeyVersion} is null and ${table.managementEnrolledAt} is null) or (${table.managementApiUrl} is not null and ${table.managementCredentialCiphertext} is not null and ${table.managementCredentialNonce} is not null and ${table.managementCredentialAuthTag} is not null and ${table.managementCredentialKeyVersion} is not null and ${table.managementEnrolledAt} is not null)`,
     ),
   ],
 );

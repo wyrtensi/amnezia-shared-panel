@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, asc, desc, eq, inArray, sql, type SQL } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, or, sql, type SQL } from "drizzle-orm";
 import {
   BRIDGE_ROUTE_CANDIDATE_CHECK_JOB_TYPE,
   bridgeFrpProxyName,
@@ -43,7 +43,12 @@ import {
   classifyKeyForBridge,
 } from "./bridgeEndpoint.js";
 import { assertBridgeJobsEnabled } from "./bridgeConfig.js";
-import { checkActivationGuard, checkReleaseGuard } from "./bridgeGuards.js";
+import { storeEnrollment, verifyEnrollmentCandidate } from "./bridgeEnrollment.js";
+import {
+  checkActivationGuard,
+  checkReleaseGuard,
+  isBridgeObservationFresh,
+} from "./bridgeGuards.js";
 import { bridgeSetupCommands, routeSetupCommands } from "./bridgeSetupCommands.js";
 import { ApiError, type Actor } from "./service.js";
 
@@ -57,8 +62,17 @@ export type BridgeRepositoryOptions = {
   db: Database;
   /** `VPN_BRIDGE_OBSERVATION_STALE_MS`, see bridgeConfig.ts. */
   observationStaleMs: number;
-  /** Decrypts stored key artifacts for the eligibility dry-run. */
+  /**
+   * Decrypts stored key artifacts for the eligibility dry-run and encrypts
+   * the bridge-agent credential at enrollment (with `activeKeyVersion`).
+   */
   keyring: EncryptionKeyring;
+  activeKeyVersion: number;
+  /** `VPN_BRIDGE_MANAGEMENT_HOSTS`: hosts a management URL may name. */
+  managementHosts: readonly string[];
+  /** The HTTP client for bridge-agent calls at enrollment; tests inject one. */
+  bridgeAgentFetch?: typeof fetch;
+  bridgeAgentTimeoutMs?: number;
   /** `VPN_BRIDGE_JOBS_ENABLED`: whether probe candidate checks may be queued. */
   jobsEnabled?: boolean;
   /**
@@ -195,7 +209,26 @@ const toNodeRoute = (route: RouteRow, bridge: BridgeRow): NodeBridgeRoute => ({
   }),
 });
 
-const toBridge = (row: BridgeRow, routes: BridgeRouteSummary[]): Bridge => ({
+/**
+ * The management status as admins read it: a stored `ok` whose last
+ * observation is older than the stale window (or that has none yet) reads as
+ * `stale`. The poller never stores `stale`.
+ */
+const effectiveManagementStatus = (
+  row: BridgeRow,
+  now: Date,
+  staleMs: number,
+): BridgeRow["managementStatus"] =>
+  row.managementStatus === "ok" && !isBridgeObservationFresh(row, now, staleMs)
+    ? "stale"
+    : row.managementStatus;
+
+const toBridge = (
+  row: BridgeRow,
+  routes: BridgeRouteSummary[],
+  now: Date,
+  staleMs: number,
+): Bridge => ({
   id: row.id,
   name: row.name,
   publicIpv4: row.publicIpv4,
@@ -206,8 +239,21 @@ const toBridge = (row: BridgeRow, routes: BridgeRouteSummary[]): Bridge => ({
   // Every route row is a held reservation (draft, active or retiring);
   // releasing a route deletes it.
   heldPorts: routes.length,
-  managementStatus: row.managementStatus,
+  managementStatus: effectiveManagementStatus(row, now, staleMs),
   lastObservedAt: iso(row.lastObservedAt),
+  // Enrollment state and safe metadata; the credential is never read here.
+  management: {
+    apiUrl: row.managementApiUrl,
+    enrolled: row.managementEnrolledAt !== null,
+    enrolledAt: iso(row.managementEnrolledAt),
+    agentVersion: row.agentVersion,
+    agentApiVersion: row.agentApiVersion,
+    agentCapabilities: row.agentCapabilities,
+    frpsVersion: row.frpsVersion,
+    frpsReachable: row.frpsReachable,
+    lastErrorCode: row.lastErrorCode,
+    lastPollAttemptAt: iso(row.lastPollAttemptAt),
+  },
   routes,
   setupCommands: bridgeSetupCommands(row),
   createdAt: row.createdAt.toISOString(),
@@ -274,7 +320,7 @@ export class PostgresBridgeRepository {
       .limit(1);
     if (!row) throw bridgeNotFound();
     const routes = await this.routeSummaries([row.id]);
-    return toBridge(row, routes.get(row.id) ?? []);
+    return toBridge(row, routes.get(row.id) ?? [], new Date(), this.options.observationStaleMs);
   };
 
   listBridges = async (): Promise<Bridge[]> => {
@@ -283,7 +329,10 @@ export class PostgresBridgeRepository {
       .from(vpnBridges)
       .orderBy(asc(vpnBridges.name), asc(vpnBridges.createdAt));
     const routes = await this.routeSummaries(rows.map((row) => row.id));
-    return rows.map((row) => toBridge(row, routes.get(row.id) ?? []));
+    const now = new Date();
+    return rows.map((row) =>
+      toBridge(row, routes.get(row.id) ?? [], now, this.options.observationStaleMs),
+    );
   };
 
   createBridge = async (actor: Actor, request: CreateBridgeRequest): Promise<Bridge> => {
@@ -324,31 +373,79 @@ export class PostgresBridgeRepository {
     return this.readBridge(createdId);
   };
 
+  /**
+   * Rename and/or enroll a bridge. Enrollment (`managementApiUrl` with
+   * `apiKey`) first checks the candidate against the agent itself
+   * (`verifyEnrollmentCandidate`: allowed destination, this bridge's id,
+   * API version and status capability), outside any transaction; only then
+   * is it stored, replacing any previous enrollment, together with the first
+   * status read. A refused candidate changes nothing.
+   */
   updateBridge = async (
     actor: Actor,
     bridgeId: string,
     request: UpdateBridgeRequest,
   ): Promise<Bridge> => {
+    const enrollmentRequest =
+      request.managementApiUrl !== undefined && request.apiKey !== undefined
+        ? { managementApiUrl: request.managementApiUrl, apiKey: request.apiKey }
+        : null;
+    let enrollment: Awaited<ReturnType<typeof verifyEnrollmentCandidate>> | null = null;
+    if (enrollmentRequest) {
+      // 404 before contacting anything for an unknown id.
+      const [known] = await this.db
+        .select({ id: vpnBridges.id })
+        .from(vpnBridges)
+        .where(eq(vpnBridges.id, bridgeId))
+        .limit(1);
+      if (!known) throw bridgeNotFound();
+      enrollment = await verifyEnrollmentCandidate(
+        {
+          keyring: this.options.keyring,
+          activeKeyVersion: this.options.activeKeyVersion,
+          managementHosts: this.options.managementHosts,
+          fetchImpl: this.options.bridgeAgentFetch,
+          timeoutMs: this.options.bridgeAgentTimeoutMs,
+        },
+        bridgeId,
+        enrollmentRequest,
+      );
+    }
     await this.db.transaction(async (tx) => {
       const [current] = await tx
-        .select({ id: vpnBridges.id, name: vpnBridges.name })
+        .select({
+          id: vpnBridges.id,
+          name: vpnBridges.name,
+          enrolledAt: vpnBridges.managementEnrolledAt,
+        })
         .from(vpnBridges)
         .where(eq(vpnBridges.id, bridgeId))
         .for("update");
       if (!current) throw bridgeNotFound();
-      if (request.name === undefined || request.name === current.name) return;
-      await tx
-        .update(vpnBridges)
-        .set({ name: request.name, updatedAt: new Date() })
-        .where(eq(vpnBridges.id, bridgeId));
-      await tx.insert(auditEvents).values({
-        actorUserId: actor.id,
-        actorType: "user",
-        action: "vpn_bridge.renamed",
-        targetType: "vpn_bridge",
-        targetId: bridgeId,
-        metadata: { from: current.name, to: request.name },
-      });
+      if (request.name !== undefined && request.name !== current.name) {
+        await tx
+          .update(vpnBridges)
+          .set({ name: request.name, updatedAt: new Date() })
+          .where(eq(vpnBridges.id, bridgeId));
+        await tx.insert(auditEvents).values({
+          actorUserId: actor.id,
+          actorType: "user",
+          action: "vpn_bridge.renamed",
+          targetType: "vpn_bridge",
+          targetId: bridgeId,
+          metadata: { from: current.name, to: request.name },
+        });
+      }
+      if (enrollment) {
+        await storeEnrollment(
+          tx,
+          { keyring: this.options.keyring, activeKeyVersion: this.options.activeKeyVersion },
+          actor,
+          bridgeId,
+          current.enrolledAt !== null,
+          enrollment,
+        );
+      }
     });
     return this.readBridge(bridgeId);
   };
@@ -639,18 +736,23 @@ export class PostgresBridgeRepository {
   ): Promise<ReleaseBridgeRouteResult> =>
     this.db.transaction(async (tx) => {
       const [located] = await tx
-        .select({ nodeId: vpnBridgeRoutes.nodeId })
+        .select({ nodeId: vpnBridgeRoutes.nodeId, bridgeId: vpnBridgeRoutes.bridgeId })
         .from(vpnBridgeRoutes)
         .where(eq(vpnBridgeRoutes.id, routeId))
         .limit(1);
       if (!located) throw routeNotFound();
-      // Node first, then the route: the same order as activation, so release
-      // and activation on one node serialize instead of deadlocking.
+      // Node, then bridge, then the route: the same order as activation (and
+      // the poller's bridge -> route), so they serialize instead of
+      // deadlocking, and the guard reads a poll's committed result.
       await tx
         .select({ id: nodes.id })
         .from(nodes)
         .where(eq(nodes.id, located.nodeId))
         .for("no key update");
+      const bridge = (await this.lockBridgesShared(tx, [located.bridgeId])).get(
+        located.bridgeId,
+      );
+      if (!bridge) throw bridgeNotFound();
       const [route] = await tx
         .select()
         .from(vpnBridgeRoutes)
@@ -664,12 +766,6 @@ export class PostgresBridgeRepository {
           "BRIDGE_ROUTE_ACTIVE",
         );
       }
-      const [bridge] = await tx
-        .select()
-        .from(vpnBridges)
-        .where(eq(vpnBridges.id, route.bridgeId))
-        .limit(1);
-      if (!bridge) throw bridgeNotFound();
       const failure = checkReleaseGuard(
         route,
         bridge,
@@ -699,6 +795,22 @@ export class PostgresBridgeRepository {
         publicUdpPort: route.publicUdpPort,
       };
     });
+
+  /** Lock bridge rows `FOR SHARE` in id order and return them by id. */
+  private lockBridgesShared = async (
+    tx: BridgeTransaction,
+    bridgeIds: readonly string[],
+  ): Promise<Map<string, BridgeRow>> => {
+    const ids = [...new Set(bridgeIds)].sort();
+    if (ids.length === 0) return new Map();
+    const rows = await tx
+      .select()
+      .from(vpnBridges)
+      .where(inArray(vpnBridges.id, ids))
+      .orderBy(asc(vpnBridges.id))
+      .for("share");
+    return new Map(rows.map((row) => [row.id, row]));
+  };
 
   /**
    * Refuse to delete a node that still holds any bridge route. Runs before the
@@ -825,6 +937,29 @@ export class PostgresBridgeRepository {
       );
     }
 
+    // Bridge rows before route rows: the bridge-agent poller locks a bridge
+    // and then its routes, so taking a route here and a bridge after it could
+    // close a cycle with two polls and two activations across two bridges.
+    // A route never changes bridges and the node lock above keeps this
+    // node's set of routes fixed, so the ids read here are the ones locked
+    // below. `FOR SHARE` waits for an in-flight poll of the bridge to commit
+    // and then reads its result.
+    const involved = await tx
+      .select({ bridgeId: vpnBridgeRoutes.bridgeId })
+      .from(vpnBridgeRoutes)
+      .where(
+        and(
+          eq(vpnBridgeRoutes.nodeId, nodeId),
+          routeId === null
+            ? eq(vpnBridgeRoutes.state, "active")
+            : or(eq(vpnBridgeRoutes.state, "active"), eq(vpnBridgeRoutes.id, routeId)),
+        ),
+      );
+    const lockedBridges = await this.lockBridgesShared(
+      tx,
+      involved.map((row) => row.bridgeId),
+    );
+
     const [current] = await tx
       .select()
       .from(vpnBridgeRoutes)
@@ -853,11 +988,7 @@ export class PostgresBridgeRepository {
 
     const now = new Date();
     if (candidate) {
-      const [bridge] = await tx
-        .select()
-        .from(vpnBridges)
-        .where(eq(vpnBridges.id, candidate.bridgeId))
-        .limit(1);
+      const bridge = lockedBridges.get(candidate.bridgeId);
       if (!bridge) throw bridgeNotFound();
       const failure = checkActivationGuard(
         candidate,

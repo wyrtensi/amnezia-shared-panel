@@ -330,6 +330,13 @@
       "when": 1794592381122,
       "tag": "0046_ambitious_flatman",
       "breakpoints": true
+    },
+    {
+      "idx": 47,
+      "version": "7",
+      "when": 1794593841539,
+      "tag": "0047_bridge_enrollment",
+      "breakpoints": true
     }
   ]
 }

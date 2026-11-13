@@ -2215,6 +2215,49 @@ describe("bridge registry routes", () => {
     await app.close();
   });
 
+  it("passes an enrollment through and rejects a partial or malformed one", async () => {
+    const { service, admin, app } = await adminApp();
+    const url = `/api/admin/vpn-bridges/${bridgeFixture.id}`;
+    const headers = { "x-dev-user-email": admin.email };
+    const apiKey = "k".repeat(40);
+    const accepted = await app.inject({
+      method: "PATCH",
+      url,
+      headers,
+      payload: { managementApiUrl: "http://host.docker.internal:7605", apiKey },
+    });
+    expect(accepted.statusCode).toBe(200);
+    expect(service.updateBridge).toHaveBeenCalledWith(admin, bridgeFixture.id, {
+      managementApiUrl: "http://host.docker.internal:7605",
+      apiKey,
+    });
+    for (const payload of [
+      { apiKey },
+      { managementApiUrl: "http://host.docker.internal:7605" },
+      { managementApiUrl: "http://host.docker.internal:7605/v1", apiKey },
+      { managementApiUrl: "http://user:pw@host.docker.internal:7605", apiKey },
+      { managementApiUrl: "http://host.docker.internal:7605", apiKey: "short" },
+    ]) {
+      const response = await app.inject({ method: "PATCH", url, headers, payload });
+      expect(response.statusCode, JSON.stringify(payload)).toBe(400);
+      expect(response.json()).toMatchObject({ error: "VALIDATION_ERROR" });
+      expect(response.body).not.toContain(apiKey);
+    }
+    expect(service.updateBridge).toHaveBeenCalledTimes(1);
+    vi.mocked(service.updateBridge).mockRejectedValueOnce(
+      new ApiError(409, "The bridge-agent at this endpoint answers for another bridge", "BRIDGE_IDENTITY_MISMATCH"),
+    );
+    const refused = await app.inject({
+      method: "PATCH",
+      url,
+      headers,
+      payload: { managementApiUrl: "http://host.docker.internal:7605", apiKey },
+    });
+    expect(refused.statusCode).toBe(409);
+    expect(refused.json()).toMatchObject({ error: "BRIDGE_IDENTITY_MISMATCH" });
+    await app.close();
+  });
+
   it("answers 201 for a new reservation and 200 for the held one", async () => {
     const { service, admin, app } = await adminApp();
     const url = `/api/admin/nodes/${bridgeNodeId}/vpn-bridge-routes`;

@@ -13,15 +13,19 @@ import {
  * stored rows, so the Control API applies them inside the transaction that
  * holds the node and route locks, and unit tests can pin every branch.
  *
- * Observation contract (filled by the bridge-agent poller, Task 5): on every
- * successful poll the poller stamps the bridge's `lastObservedAt` and, in the
- * same write, every held route of that bridge with `observedAt` set to the
- * same poll time. `observedOnline` is true only when frps reported a
+ * Observation contract (written by `applyBridgePollResult` in
+ * packages/db/src/bridgeObservation.ts, for the worker's poller and the first
+ * read at enrollment): on every successful poll the bridge's `lastObservedAt`
+ * and, in the same write, every held route of that bridge's `observedAt` get
+ * the same poll time. `observedOnline` is true only when frps reported a
  * registration whose proxy name equals the route's `frpProxyName` AND whose
  * remote port equals the route's `publicUdpPort`; the marker of that
  * registration goes to `observedRegistrationMarker`. A route the poll did not
- * see gets `observedOnline = false` (or null) with the fresh `observedAt`.
- * The schema has no observed-name or observed-port column for that reason.
+ * see gets `observedOnline = false` with the fresh `observedAt`. The schema
+ * has no observed-name or observed-port column for that reason. A poll whose
+ * agent could not read frps advances only the bridge's `lastObservedAt`, so
+ * no route is covered by it and both guards read Unknown; a down, mismatched
+ * or unsupported agent leaves the status not `ok`, with the same effect.
  */
 
 export type GuardBridge = {

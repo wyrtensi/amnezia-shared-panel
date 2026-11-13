@@ -91,15 +91,63 @@ export const createBridgeRequestSchema = z
     message: "UDP port range end must not be below its start",
   });
 
-// Only the name is editable here. Enrollment fields (private management
-// endpoint and credentials) are added by the bridge-agent enrollment task by
-// extending this object; the host address and port pool never change in place,
-// because a replacement host is registered as a new bridge.
+/**
+ * The bridge-agent's private management endpoint as the panel reaches it:
+ * the panel-side end of the SSH forwarding to the agent's loopback listener,
+ * e.g. `http://host.docker.internal:7605`. Only an http(s) origin: no
+ * credentials, path, query or fragment. Which hosts are allowed is deployment
+ * configuration (`VPN_BRIDGE_MANAGEMENT_HOSTS`, see bridgeAgent.ts) and is
+ * checked by the Control API, not here.
+ */
+export const bridgeManagementApiUrlSchema = z
+  .url()
+  .max(2_048)
+  .superRefine((value, ctx) => {
+    const url = new URL(value);
+    if (url.protocol !== "http:" && url.protocol !== "https:") {
+      ctx.addIssue({ code: "custom", message: "Management API URL must use http or https" });
+    }
+    if (url.username || url.password) {
+      ctx.addIssue({ code: "custom", message: "Management API URL must not carry credentials" });
+    }
+    if ((url.pathname !== "/" && url.pathname !== "") || url.search || url.hash) {
+      ctx.addIssue({
+        code: "custom",
+        message: "Management API URL must be an origin only (no path, query or fragment)",
+      });
+    }
+  });
+
+/**
+ * The bridge-agent API credential (its bearer token). Printable ASCII
+ * without spaces: it travels as a header value, and a control character
+ * would make the HTTP client echo the whole value in its error.
+ */
+export const bridgeAgentApiKeySchema = z
+  .string()
+  .min(32)
+  .max(4_096)
+  .regex(/^[\x21-\x7e]+$/, "Must be printable ASCII without spaces");
+
+// The name, and enrollment: the private management endpoint together with
+// the agent's API credential. The credential travels only in this
+// authenticated write and is never returned. The host address and port pool
+// never change in place, because a replacement host is registered as a new
+// bridge.
 export const updateBridgeRequestSchema = z
   .object({
     name: bridgeNameSchema.optional(),
+    managementApiUrl: bridgeManagementApiUrlSchema.optional(),
+    apiKey: bridgeAgentApiKeySchema.optional(),
   })
-  .refine((value) => Object.keys(value).length > 0, "At least one field is required");
+  .refine((value) => Object.keys(value).length > 0, "At least one field is required")
+  .refine(
+    (value) => (value.managementApiUrl === undefined) === (value.apiKey === undefined),
+    {
+      path: ["apiKey"],
+      message: "Enrollment needs both managementApiUrl and apiKey",
+    },
+  );
 
 export const BRIDGE_MANAGEMENT_STATUSES = [
   "pending_enrollment",
@@ -177,6 +225,27 @@ export const routeSetupCommandsSchema = z.object({
 });
 export type RouteSetupCommands = z.infer<typeof routeSetupCommandsSchema>;
 
+/**
+ * Enrollment state and the bridge-agent's last reported metadata. Safe to
+ * show: the API credential is never part of it.
+ */
+export const bridgeManagementSchema = z.object({
+  /** The private management endpoint; null until enrolled. */
+  apiUrl: z.string().nullable(),
+  enrolled: z.boolean(),
+  enrolledAt: z.iso.datetime().nullable(),
+  agentVersion: z.string().nullable(),
+  agentApiVersion: z.int().nullable(),
+  agentCapabilities: z.array(z.string()).nullable(),
+  frpsVersion: z.string().nullable(),
+  /** Whether the agent could read its local frps; null until reported. */
+  frpsReachable: z.boolean().nullable(),
+  /** Bounded code of the last poll problem; never upstream text. */
+  lastErrorCode: z.string().max(80).nullable(),
+  lastPollAttemptAt: z.iso.datetime().nullable(),
+});
+export type BridgeManagement = z.infer<typeof bridgeManagementSchema>;
+
 export const bridgeSchema = z.object({
   id: z.uuid(),
   name: z.string(),
@@ -188,8 +257,11 @@ export const bridgeSchema = z.object({
   // routes hold.
   capacity: z.int().min(1),
   heldPorts: z.int().min(0),
+  // `stale` is computed on read: an `ok` bridge whose last observation is
+  // older than the stale window.
   managementStatus: bridgeManagementStatusSchema,
   lastObservedAt: z.iso.datetime().nullable(),
+  management: bridgeManagementSchema.optional(),
   routes: z.array(bridgeRouteSummarySchema),
   setupCommands: bridgeSetupCommandsSchema.optional(),
   createdAt: z.iso.datetime(),
@@ -344,6 +416,14 @@ export const BRIDGE_ERROR_CODES = [
   // 409: a probe check of the route for an older registration marker is
   // still queued or running; ask again once it has settled.
   "BRIDGE_CHECK_PENDING",
+  // Enrollment. 400: the management URL is not one of the deployment's
+  // allowed management destinations. 409: the agent answers for another
+  // bridge, or rejected the candidate credential. 502: the agent could not
+  // be reached through the management endpoint.
+  "BRIDGE_MANAGEMENT_URL_NOT_ALLOWED",
+  "BRIDGE_IDENTITY_MISMATCH",
+  "BRIDGE_AGENT_UNAUTHORIZED",
+  "BRIDGE_AGENT_UNREACHABLE",
 ] as const;
 export const bridgeErrorCodeSchema = z.enum(BRIDGE_ERROR_CODES);
 

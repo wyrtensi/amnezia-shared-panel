@@ -3,8 +3,22 @@ import { assertBridgeJobsEnabled, resolveBridgeConfig } from "./bridgeConfig.js"
 import { ApiError } from "./service.js";
 
 describe("resolveBridgeConfig", () => {
-  it("defaults to jobs disabled and a five-minute stale window", () => {
-    expect(resolveBridgeConfig({})).toEqual({ jobsEnabled: false, observationStaleMs: 300_000 });
+  it("defaults to jobs disabled, a five-minute stale window and the tunnel host", () => {
+    expect(resolveBridgeConfig({})).toEqual({
+      jobsEnabled: false,
+      observationStaleMs: 300_000,
+      managementHosts: ["host.docker.internal"],
+    });
+  });
+
+  it("reads the allowed management hosts and refuses malformed entries", () => {
+    expect(
+      resolveBridgeConfig({ VPN_BRIDGE_MANAGEMENT_HOSTS: " Host.Docker.Internal , 172.17.0.1 " })
+        .managementHosts,
+    ).toEqual(["host.docker.internal", "172.17.0.1"]);
+    expect(() =>
+      resolveBridgeConfig({ VPN_BRIDGE_MANAGEMENT_HOSTS: "http://evil.example" }),
+    ).toThrow(/VPN_BRIDGE_MANAGEMENT_HOSTS/);
   });
 
   it("enables jobs only for the exact value true", () => {

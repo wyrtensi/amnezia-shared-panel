@@ -2260,4 +2260,5 @@ export type ReachabilityNotifyPayload = z.infer<
 export const REACHABILITY_WIDGET_JOB_TYPE = "notify.reachability-widget";
 
 export * from "./bridges.js";
+export * from "./bridgeAgent.js";
 export * from "./ruleSources.js";

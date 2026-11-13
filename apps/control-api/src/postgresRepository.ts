@@ -51,6 +51,7 @@ import type {
   UpdateBridgeRequest,
 } from "@amnezia/contracts";
 import {
+  BRIDGE_MANAGEMENT_HOSTS_DEFAULT,
   BRIDGE_OBSERVATION_STALE_MS_DEFAULT,
   composeKeyDisplayName,
   CONFIG_REFRESH_STALE,
@@ -449,6 +450,14 @@ export type PostgresRepositoryOptions = {
   bridgeJobsEnabled?: boolean;
   /** Capability lookup for probe candidate checks; tests inject a stand-in. */
   probeSupportsBridgeMeasurement?: (probe: ProbeCapabilityInput, now: Date) => boolean;
+  /**
+   * `VPN_BRIDGE_MANAGEMENT_HOSTS`: hosts a bridge management URL may name.
+   * Defaults to `BRIDGE_MANAGEMENT_HOSTS_DEFAULT`.
+   */
+  bridgeManagementHosts?: readonly string[];
+  /** HTTP client for bridge-agent calls at enrollment; tests inject one. */
+  bridgeAgentFetch?: typeof fetch;
+  bridgeAgentTimeoutMs?: number;
 };
 
 const BIGINT_METRIC_FIELDS = [
@@ -524,10 +533,14 @@ export class PostgresControlRepository implements ControlRepository {
     this.bridges = new PostgresBridgeRepository({
       db: options.db,
       keyring: options.keyring,
+      activeKeyVersion: this.activeKeyVersion,
       observationStaleMs:
         options.bridgeObservationStaleMs ?? BRIDGE_OBSERVATION_STALE_MS_DEFAULT,
       jobsEnabled: options.bridgeJobsEnabled ?? false,
       probeSupportsBridgeMeasurement: options.probeSupportsBridgeMeasurement,
+      managementHosts: options.bridgeManagementHosts ?? BRIDGE_MANAGEMENT_HOSTS_DEFAULT,
+      bridgeAgentFetch: options.bridgeAgentFetch,
+      bridgeAgentTimeoutMs: options.bridgeAgentTimeoutMs,
     });
   }
 

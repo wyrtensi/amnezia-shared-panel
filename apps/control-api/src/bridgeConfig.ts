@@ -1,5 +1,6 @@
 import {
   parseBridgeJobsEnabled,
+  parseBridgeManagementHosts,
   parseBridgeObservationStaleMs,
 } from "@amnezia/contracts";
 import { ApiError } from "./service.js";
@@ -15,6 +16,12 @@ export type BridgeConfig = {
   jobsEnabled: boolean;
   /** `VPN_BRIDGE_OBSERVATION_STALE_MS` (default 300000, five minutes). */
   observationStaleMs: number;
+  /**
+   * `VPN_BRIDGE_MANAGEMENT_HOSTS` (default `host.docker.internal`): the hosts
+   * a bridge management URL may name, i.e. the panel side of the trusted
+   * management tunnels.
+   */
+  managementHosts: readonly string[];
 };
 
 export const resolveBridgeConfig = (env: NodeJS.ProcessEnv): BridgeConfig => ({
@@ -22,6 +29,7 @@ export const resolveBridgeConfig = (env: NodeJS.ProcessEnv): BridgeConfig => ({
   observationStaleMs: parseBridgeObservationStaleMs(
     env.VPN_BRIDGE_OBSERVATION_STALE_MS,
   ),
+  managementHosts: parseBridgeManagementHosts(env.VPN_BRIDGE_MANAGEMENT_HOSTS),
 });
 
 export const bridgeJobsDisabledError = (): ApiError =>
