@@ -302,6 +302,13 @@
       "when": 1794327501187,
       "tag": "0042_awg_client_profile",
       "breakpoints": true
+    },
+    {
+      "idx": 43,
+      "version": "7",
+      "when": 1794581334284,
+      "tag": "0043_bridge_registry",
+      "breakpoints": true
     }
   ]
 }

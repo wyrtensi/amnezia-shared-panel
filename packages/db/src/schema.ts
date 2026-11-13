@@ -18,6 +18,10 @@ import {
   varchar,
 } from "drizzle-orm/pg-core";
 import type {
+  BridgeManagementStatus,
+  BridgeRouteState,
+  BridgeVerificationMethod,
+  BridgeVerificationResult,
   CheckAssertion,
   CheckProbe,
   CustomRoutes,
@@ -243,11 +247,130 @@ export const nodes = pgTable(
     // change failed after the job that ran it is long gone.
     capacityLog: text("capacity_log").default("").notNull(),
     capacityAt: timestamp("capacity_at", { withTimezone: true }),
+    // Bumped whenever the node's client-facing endpoint assignment changes
+    // (Direct or a bridge route). Admin edits send the value they saw, so a
+    // stale edit is refused. 0 for every pre-existing node, which stays Direct.
+    // The active route itself is derived from `vpn_bridge_routes` (state
+    // 'active'); it is deliberately not duplicated on this row.
+    vpnEndpointRevision: integer("vpn_endpoint_revision").default(0).notNull(),
     ...timestamps,
   },
   (table) => [
     uniqueIndex("nodes_name_unique").on(table.name),
     check("nodes_max_peers_positive", sql`${table.maxPeers} > 0`),
+  ],
+);
+
+// A bridge: a public host running frps and bridge-agent that forwards a UDP
+// port range to VPN nodes. The public IPv4 is normalized by the contracts
+// before it gets here and is unique, so replacing a host means registering a
+// new bridge and reassigning its nodes.
+export const vpnBridges = pgTable(
+  "vpn_bridges",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    name: varchar("name", { length: 120 }).notNull(),
+    publicIpv4: text("public_ipv4").notNull(),
+    controlTcpPort: integer("control_tcp_port").default(7000).notNull(),
+    udpPortStart: integer("udp_port_start").default(41000).notNull(),
+    udpPortEnd: integer("udp_port_end").default(41031).notNull(),
+    // Summary of the last bridge-agent observations; written by the poller.
+    managementStatus: text("management_status")
+      .$type<BridgeManagementStatus>()
+      .default("pending_enrollment")
+      .notNull(),
+    // Last successful observation stored by the panel.
+    lastObservedAt: timestamp("last_observed_at", { withTimezone: true }),
+    lastPollAttemptAt: timestamp("last_poll_attempt_at", { withTimezone: true }),
+    ...timestamps,
+  },
+  (table) => [
+    uniqueIndex("vpn_bridges_public_ipv4_unique").on(table.publicIpv4),
+    check(
+      "vpn_bridges_control_tcp_port_range",
+      sql`${table.controlTcpPort} between 1 and 65535`,
+    ),
+    check(
+      "vpn_bridges_udp_port_start_range",
+      sql`${table.udpPortStart} between 1 and 65535`,
+    ),
+    check(
+      "vpn_bridges_udp_port_end_range",
+      sql`${table.udpPortEnd} between 1 and 65535`,
+    ),
+    check(
+      "vpn_bridges_udp_port_order",
+      sql`${table.udpPortStart} <= ${table.udpPortEnd}`,
+    ),
+    check(
+      "vpn_bridges_management_status_valid",
+      sql`${table.managementStatus} in ('pending_enrollment', 'ok', 'down', 'stale', 'identity_mismatch', 'unsupported')`,
+    ),
+  ],
+);
+
+// One held reservation of a bridge UDP port for a VPN node. A row exists only
+// while it is held (draft, active or retiring); releasing a route deletes it,
+// so the uniqueness constraints below cover exactly the held routes.
+export const vpnBridgeRoutes = pgTable(
+  "vpn_bridge_routes",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    nodeId: uuid("node_id")
+      .notNull()
+      .references(() => nodes.id, { onDelete: "restrict" }),
+    bridgeId: uuid("bridge_id")
+      .notNull()
+      .references(() => vpnBridges.id, { onDelete: "restrict" }),
+    publicUdpPort: integer("public_udp_port").notNull(),
+    state: text("state").$type<BridgeRouteState>().default("draft").notNull(),
+    // Always `awg-route-<route uuid>`; stored so observations can be matched.
+    frpProxyName: text("frp_proxy_name").notNull(),
+    observedOnline: boolean("observed_online"),
+    observedRegistrationMarker: text("observed_registration_marker"),
+    observedAt: timestamp("observed_at", { withTimezone: true }),
+    verificationMethod: text("verification_method").$type<BridgeVerificationMethod>(),
+    verifiedRegistrationMarker: text("verified_registration_marker"),
+    verifiedAt: timestamp("verified_at", { withTimezone: true }),
+    verificationResult: text("verification_result").$type<BridgeVerificationResult>(),
+    // Bounded short code; never free-form text or secrets.
+    verificationError: text("verification_error"),
+    activatedAt: timestamp("activated_at", { withTimezone: true }),
+    retiringSince: timestamp("retiring_since", { withTimezone: true }),
+    ...timestamps,
+  },
+  (table) => [
+    uniqueIndex("vpn_bridge_routes_bridge_port_unique").on(
+      table.bridgeId,
+      table.publicUdpPort,
+    ),
+    uniqueIndex("vpn_bridge_routes_node_bridge_unique").on(
+      table.nodeId,
+      table.bridgeId,
+    ),
+    // At most one active route per node.
+    uniqueIndex("vpn_bridge_routes_node_active_unique")
+      .on(table.nodeId)
+      .where(sql`${table.state} = 'active'`),
+    check(
+      "vpn_bridge_routes_state_valid",
+      sql`${table.state} in ('draft', 'active', 'retiring')`,
+    ),
+    // Membership in the bridge's UDP range needs the bridge row, so the
+    // Control API enforces it when reserving a port; only the port bounds are
+    // checked here.
+    check(
+      "vpn_bridge_routes_port_range",
+      sql`${table.publicUdpPort} between 1 and 65535`,
+    ),
+    check(
+      "vpn_bridge_routes_verification_method_valid",
+      sql`${table.verificationMethod} is null or ${table.verificationMethod} in ('probe', 'operator')`,
+    ),
+    check(
+      "vpn_bridge_routes_verification_result_valid",
+      sql`${table.verificationResult} is null or ${table.verificationResult} in ('success', 'failure')`,
+    ),
   ],
 );
 

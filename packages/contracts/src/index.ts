@@ -321,8 +321,22 @@ export const updateNodeRequestSchema = createNodeRequestSchema
     disabledCheckIds: z.array(z.uuid()).max(100).optional(),
     // Whether the external reachability probe tests this node.
     reachabilityEnabled: z.boolean().optional(),
+    // Bridge route assignment: a route id activates it, null selects Direct,
+    // omission preserves the current assignment. Changing it requires the
+    // revision the admin saw, so two admins cannot silently overwrite each other.
+    vpnBridgeRouteId: z.uuid().nullable().optional(),
+    expectedVpnEndpointRevision: z.int().min(0).optional(),
   })
-  .refine((value) => Object.keys(value).length > 0, "At least one field is required");
+  .refine((value) => Object.keys(value).length > 0, "At least one field is required")
+  .refine(
+    (value) =>
+      value.vpnBridgeRouteId === undefined ||
+      value.expectedVpnEndpointRevision !== undefined,
+    {
+      path: ["expectedVpnEndpointRevision"],
+      message: "expectedVpnEndpointRevision is required when vpnBridgeRouteId is set",
+    },
+  );
 
 /**
  * Whether a node runs a given check.
@@ -2231,4 +2245,5 @@ export type ReachabilityNotifyPayload = z.infer<
  */
 export const REACHABILITY_WIDGET_JOB_TYPE = "notify.reachability-widget";
 
+export * from "./bridges.js";
 export * from "./ruleSources.js";
