@@ -348,11 +348,11 @@ describe("parseBridgeAgentImageRepository", () => {
 
   it("refuses another shape or the node-agent repository, with a reason", () => {
     for (const value of ["ghcr.io/o/r/node-agent", "docker.io/o/bridge-agent", "ghcr.io/bridge-agent"]) {
-      expect(parseBridgeAgentImageRepository(value)).toMatchObject({ repository: undefined, error: expect.stringContaining("bridge-agent") });
+      expect(parseBridgeAgentImageRepository(value)).toMatchObject({ repository: undefined, error: expect.stringContaining("bridge-agent") as unknown });
     }
     expect(parseBridgeAgentImageRepository("ghcr.io/o/r/bridge-agent", "ghcr.io/o/r/bridge-agent")).toMatchObject({
       repository: undefined,
-      error: expect.stringContaining("differ from NODE_AGENT_UPDATE_REPO"),
+      error: expect.stringContaining("differ from NODE_AGENT_UPDATE_REPO") as unknown,
     });
   });
 });
