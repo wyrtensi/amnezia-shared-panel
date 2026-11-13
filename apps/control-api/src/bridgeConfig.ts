@@ -1,4 +1,5 @@
 import {
+  parseBridgeAgentImageRepository,
   parseBridgeJobsEnabled,
   parseBridgeManagementHosts,
   parseBridgeObservationStaleMs,
@@ -30,13 +31,22 @@ export type BridgeConfig = {
   agentImageRepository: string | undefined;
 };
 
+const agentImageRepositoryOf = (env: NodeJS.ProcessEnv): string | undefined => {
+  const parsed = parseBridgeAgentImageRepository(
+    env.BRIDGE_AGENT_IMAGE_REPOSITORY,
+    env.NODE_AGENT_UPDATE_REPO,
+  );
+  if (parsed.error) console.error(parsed.error);
+  return parsed.repository;
+};
+
 export const resolveBridgeConfig = (env: NodeJS.ProcessEnv): BridgeConfig => ({
   jobsEnabled: parseBridgeJobsEnabled(env.VPN_BRIDGE_JOBS_ENABLED),
   observationStaleMs: parseBridgeObservationStaleMs(
     env.VPN_BRIDGE_OBSERVATION_STALE_MS,
   ),
   managementHosts: parseBridgeManagementHosts(env.VPN_BRIDGE_MANAGEMENT_HOSTS),
-  agentImageRepository: env.BRIDGE_AGENT_IMAGE_REPOSITORY?.trim() || undefined,
+  agentImageRepository: agentImageRepositoryOf(env),
 });
 
 export const bridgeJobsDisabledError = (): ApiError =>

@@ -50,7 +50,14 @@ export const bridgeSetupCommands = (
     ["--control-port", bridge.controlTcpPort],
     ["--udp-start", bridge.udpPortStart],
     ["--udp-end", bridge.udpPortEnd],
-    ...(agentImage ? ([["--agent-image", agentImage]] as Array<[string, string]>) : []),
+    // The repository is passed too, so the installer enforces and the pin
+    // records the repository the panel approved, not one inferred from the image.
+    ...(agentImage
+      ? ([
+          ["--agent-image", agentImage],
+          ["--agent-repository", agentImage.slice(0, agentImage.indexOf("@"))],
+        ] as Array<[string, string]>)
+      : []),
   ];
   return {
     install: command(BRIDGE_SCRIPT, args),

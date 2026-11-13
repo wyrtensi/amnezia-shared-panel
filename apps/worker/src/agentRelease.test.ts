@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 
 import { pickLatestReleaseTag, resolveNodeAgentRelease } from "./agentRelease.js";
@@ -105,14 +106,50 @@ describe("resolveNodeAgentRelease", () => {
   });
 });
 
-// The bridge-agent resolver is the same implementation with a filter.
+// The bridge-agent resolver is the same implementation with a filter. The fake
+// registry is content-addressed with REAL sha256 digests, because the resolver
+// verifies every body against the digest that referenced it.
 const BRIDGE_REPO = "ghcr.io/owner/repo/bridge-agent";
 const LABEL = "io.amnezia.bridge-agent.api-version";
+const sha = (text: string) => `sha256:${createHash("sha256").update(text).digest("hex")}`;
 
-type Image = { labels?: Record<string, string>; digest?: string };
+type ImageSpec = {
+  labels?: Record<string, string>;
+  /** A plain manifest instead of an index. */
+  single?: boolean;
+  /** An index without a linux entry. */
+  noLinux?: boolean;
+};
+type Faults = {
+  /** URL fragment -> status returned instead of the body. */
+  status?: Record<string, number>;
+  /** URL fragment -> body served instead of the real bytes. */
+  tamper?: Record<string, string>;
+  /** The digest a tag's HEAD reports (a tag moved after it was listed). */
+  repush?: Record<string, string>;
+};
 
-/** A registry whose tags carry labels via index -> linux manifest -> config blob. */
-const bridgeRegistry = (images: Record<string, Image>) => {
+const bridgeRegistry = (images: Record<string, ImageSpec>, faults: Faults = {}) => {
+  const blobs = new Map<string, string>();
+  const topDigest: Record<string, string> = {};
+  const put = (body: unknown): string => {
+    const text = JSON.stringify(body);
+    const digest = sha(text);
+    blobs.set(digest, text);
+    return digest;
+  };
+  for (const [tag, spec] of Object.entries(images)) {
+    const config = put({ config: { Labels: spec.labels ?? null }, tag });
+    const manifest = put({ config: { digest: config } });
+    topDigest[tag] = spec.single
+      ? manifest
+      : put({
+          manifests: [
+            { digest: sha("attestation"), platform: { os: "unknown", architecture: "unknown" } },
+            ...(spec.noLinux ? [] : [{ digest: manifest, platform: { os: "linux", architecture: "amd64" } }]),
+          ],
+        });
+  }
   const calls: { url: string; method: string }[] = [];
   const impl = ((url: string, init?: RequestInit) => {
     const method = init?.method ?? "GET";
@@ -120,49 +157,54 @@ const bridgeRegistry = (images: Record<string, Image>) => {
     const json = (body: unknown) => Promise.resolve(new Response(JSON.stringify(body)));
     if (url.includes("/token")) return json({ token: "t" });
     if (url.includes("/tags/list")) return json({ tags: [...Object.keys(images), "sha-abcdef123456"] });
-    const manifest = /\/manifests\/(.+)$/.exec(url)?.[1] ?? "";
+    for (const [fragment, status] of Object.entries(faults.status ?? {})) {
+      if (url.includes(fragment) && method === "GET") return Promise.resolve(new Response(null, { status }));
+    }
+    const ref = /\/(?:manifests|blobs)\/(.+)$/.exec(url)?.[1] ?? "";
     if (method === "HEAD") {
-      const image = images[manifest];
+      const tag = ref;
+      const digest = topDigest[tag];
       return Promise.resolve(
         new Response(null, {
-          status: image ? 200 : 404,
-          headers: { "docker-content-digest": image?.digest ?? DIGEST },
+          status: digest ? 200 : 404,
+          headers: { "docker-content-digest": faults.repush?.[tag] ?? digest ?? "" },
         }),
       );
     }
-    if (manifest in images) {
-      return json({
-        manifests: [
-          { digest: "sha256:att", platform: { os: "unknown", architecture: "unknown" } },
-          { digest: `sha256:linux-${manifest}`, platform: { os: "linux", architecture: "amd64" } },
-        ],
-      });
+    for (const [fragment, body] of Object.entries(faults.tamper ?? {})) {
+      if (url.includes(fragment)) return Promise.resolve(new Response(body));
     }
-    if (manifest.startsWith("sha256:linux-")) return json({ config: { digest: `sha256:cfg-${manifest.slice(13)}` } });
-    const cfg = /\/blobs\/sha256:cfg-(.+)$/.exec(url)?.[1] ?? "";
-    return json({ config: { Labels: images[cfg]?.labels ?? null } });
+    const body = blobs.get(ref);
+    return Promise.resolve(body ? new Response(body) : new Response(null, { status: 404 }));
   }) as unknown as typeof fetch;
-  return { impl, calls };
+  return { impl, calls, topDigest, blobs };
 };
 
 describe("resolveBridgeAgentRelease", () => {
-  it("offers the newest release of the approved repository as repository@digest", async () => {
-    const { impl } = bridgeRegistry({
-      "0.1.0": { labels: { [LABEL]: "1" }, digest: `sha256:${"1".repeat(64)}` },
-      "0.2.0": { labels: { [LABEL]: "1" }, digest: `sha256:${"2".repeat(64)}` },
+  it("offers the newest release as repository@digest of exactly the inspected image", async () => {
+    const { impl, topDigest } = bridgeRegistry({
+      "0.1.0": { labels: { [LABEL]: "1" } },
+      "0.2.0": { labels: { [LABEL]: "1" } },
     });
     expect(await resolveBridgeAgentRelease(BRIDGE_REPO, impl)).toEqual({
       repository: BRIDGE_REPO,
       version: "0.2.0",
-      digest: `sha256:${"2".repeat(64)}`,
-      image: `${BRIDGE_REPO}@sha256:${"2".repeat(64)}`,
+      digest: topDigest["0.2.0"],
+      image: `${BRIDGE_REPO}@${topDigest["0.2.0"]}`,
     });
+  });
+
+  it("reads the label through a plain single manifest too", async () => {
+    const ok = bridgeRegistry({ "0.2.0": { single: true, labels: { [LABEL]: "1" } } });
+    expect((await resolveBridgeAgentRelease(BRIDGE_REPO, ok.impl))?.version).toBe("0.2.0");
+    const bad = bridgeRegistry({ "0.2.0": { single: true, labels: { [LABEL]: "2" } } });
+    expect(await resolveBridgeAgentRelease(BRIDGE_REPO, bad.impl)).toBe(null);
   });
 
   it("skips a newer release whose API version the panel does not support", async () => {
     const { impl } = bridgeRegistry({
-      "0.1.0": { labels: { [LABEL]: "1" }, digest: `sha256:${"1".repeat(64)}` },
-      "1.0.0": { labels: { [LABEL]: "2" }, digest: `sha256:${"2".repeat(64)}` },
+      "0.1.0": { labels: { [LABEL]: "1" } },
+      "1.0.0": { labels: { [LABEL]: "2" } },
     });
     expect((await resolveBridgeAgentRelease(BRIDGE_REPO, impl))?.version).toBe("0.1.0");
   });
@@ -172,13 +214,79 @@ describe("resolveBridgeAgentRelease", () => {
     expect(await resolveBridgeAgentRelease(BRIDGE_REPO, impl)).toBe(null);
   });
 
-  it("falls back to the minimum version when the image carries no label", async () => {
+  it("falls back to the minimum version only when the config was read and has no label", async () => {
     const { impl } = bridgeRegistry({ "0.3.0": {} });
     expect((await resolveBridgeAgentRelease(BRIDGE_REPO, impl))?.version).toBe("0.3.0");
     const old = bridgeRegistry({ "0.0.9": {} });
     expect(await resolveBridgeAgentRelease(BRIDGE_REPO, old.impl)).toBe(null);
-    // The below-minimum tag is never even inspected.
     expect(old.calls.some((call) => call.url.includes("/manifests/"))).toBe(false);
+  });
+
+  it("fails closed when the registry walk breaks: a newer api-v2 tag is never offered on version alone", async () => {
+    const images = {
+      "0.1.0": { labels: { [LABEL]: "1" } },
+      "1.0.0": { labels: { [LABEL]: "2" } },
+    };
+    const walk = bridgeRegistry(images);
+    const newest = walk.topDigest["1.0.0"]!;
+    const config = [...walk.blobs.keys()].find((d) => walk.blobs.get(d)?.includes('"tag":"1.0.0"'))!;
+    const linux = [...walk.blobs.keys()].find((d) => walk.blobs.get(d) === JSON.stringify({ config: { digest: config } }) )!;
+    for (const [what, fragment] of [["config blob", `/blobs/${config}`], ["linux manifest", `/manifests/${linux}`], ["index", `/manifests/${newest}`]] as const) {
+      for (const status of [404, 401]) {
+        const { impl } = bridgeRegistry(images, { status: { [fragment]: status } });
+        // The broken newest tag is skipped; the older verified one is offered, never the broken one.
+        const release = await resolveBridgeAgentRelease(BRIDGE_REPO, impl);
+        expect(release?.version, `${what} ${status}`).toBe("0.1.0");
+      }
+    }
+    // With nothing verifiable left, nothing is offered.
+    const only = bridgeRegistry({ "1.0.0": { labels: { [LABEL]: "2" } } });
+    const onlyConfig = [...only.blobs.keys()].find((d) => only.blobs.get(d)?.includes('"tag":"1.0.0"'))!;
+    const none = bridgeRegistry({ "1.0.0": { labels: { [LABEL]: "2" } } }, { status: { [`/blobs/${onlyConfig}`]: 401 } });
+    expect(await resolveBridgeAgentRelease(BRIDGE_REPO, none.impl)).toBe(null);
+  });
+
+  it("an index without a linux entry cannot be inspected and is not offered", async () => {
+    const { impl } = bridgeRegistry({ "0.2.0": { noLinux: true, labels: { [LABEL]: "1" } } });
+    expect(await resolveBridgeAgentRelease(BRIDGE_REPO, impl)).toBe(null);
+  });
+
+  it("skips a tag whose reported digest no longer resolves to the manifest (tag moved)", async () => {
+    const images = {
+      "0.1.0": { labels: { [LABEL]: "1" } },
+      "0.2.0": { labels: { [LABEL]: "1" } },
+    };
+    const { impl } = bridgeRegistry(images, { repush: { "0.2.0": sha("a re-pushed manifest") } });
+    expect((await resolveBridgeAgentRelease(BRIDGE_REPO, impl))?.version).toBe("0.1.0");
+  });
+
+  it("offers the digest it inspected, never the tag's current one", async () => {
+    const images = { "0.1.0": { labels: { [LABEL]: "1" } }, "0.2.0": { labels: { [LABEL]: "1" } } };
+    const probe = bridgeRegistry(images);
+    // The tag now reports the 0.1.0 image's digest: that image is inspected and
+    // offered, with the digest that was inspected.
+    const { impl } = bridgeRegistry(images, { repush: { "0.2.0": probe.topDigest["0.1.0"]! } });
+    expect((await resolveBridgeAgentRelease(BRIDGE_REPO, impl))?.digest).toBe(probe.topDigest["0.1.0"]);
+  });
+
+  it("refuses a body whose hash is not the digest that referenced it, at every step", async () => {
+    const images = { "0.2.0": { labels: { [LABEL]: "1" } } };
+    const probe = bridgeRegistry(images);
+    const top = probe.topDigest["0.2.0"]!;
+    const config = [...probe.blobs.keys()].find((d) => probe.blobs.get(d)?.includes('"tag"'))!;
+    for (const fragment of [`/manifests/${top}`, `/blobs/${config}`]) {
+      const { impl } = bridgeRegistry(images, { tamper: { [fragment]: JSON.stringify({ config: { Labels: { [LABEL]: "1" } } }) } });
+      expect(await resolveBridgeAgentRelease(BRIDGE_REPO, impl), fragment).toBe(null);
+    }
+  });
+
+  it("does not read a body over the byte limit", async () => {
+    const images = { "0.2.0": { labels: { [LABEL]: "1" } } };
+    const probe = bridgeRegistry(images);
+    const config = [...probe.blobs.keys()].find((d) => probe.blobs.get(d)?.includes('"tag"'))!;
+    const huge = JSON.stringify({ pad: "x".repeat(1_100_000) });
+    const { impl } = bridgeRegistry(images, { tamper: { [`/blobs/${config}`]: huge } });
+    expect(await resolveBridgeAgentRelease(BRIDGE_REPO, impl)).toBe(null);
   });
 
   it("only speaks to GHCR and never offers a manual-run sha tag", async () => {
@@ -186,10 +294,5 @@ describe("resolveBridgeAgentRelease", () => {
     expect(await resolveBridgeAgentRelease("docker.io/owner/bridge-agent", other.impl)).toBe(null);
     expect(other.calls).toEqual([]);
     expect(await resolveBridgeAgentRelease(BRIDGE_REPO, bridgeRegistry({}).impl)).toBe(null);
-  });
-
-  it("refuses a malformed digest like the node resolver", async () => {
-    const { impl } = bridgeRegistry({ "0.1.0": { labels: { [LABEL]: "1" }, digest: "sha256:short" } });
-    expect(await resolveBridgeAgentRelease(BRIDGE_REPO, impl)).toBe(null);
   });
 });

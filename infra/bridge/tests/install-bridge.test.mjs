@@ -354,12 +354,15 @@ withHost("the pin file records the approved repository and the running digest, o
   assert.equal((await stat(h.pinFile)).mode & 0o777, 0o600);
   assert.match(r.stdout, new RegExp(`pinned image:\\s+sha256:${DIGEST}`));
 
-  // A failed agent leaves an earlier pin untouched and writes none.
+  // A failed agent leaves an earlier, known-good pin untouched and writes none over it.
   const second = await fixture();
   try {
+    await mkdir(second.agentDir, { recursive: true });
+    const earlier = "BRIDGE_AGENT_IMAGE_REPOSITORY=ghcr.io/example/bridge-agent\nBRIDGE_AGENT_IMAGE=ghcr.io/example/bridge-agent@sha256:" + "b".repeat(64) + "\n";
+    await write(second.pinFile, earlier, 0o600);
     await second.flag("unhealthy");
     assert.equal(second.run(withImage).status, 64);
-    await assert.rejects(stat(second.pinFile));
+    assert.equal(await readFile(second.pinFile, "utf8"), earlier);
   } finally {
     await second.cleanup();
   }

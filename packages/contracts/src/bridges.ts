@@ -535,6 +535,36 @@ export const BRIDGE_AGENT_API_VERSION_LABEL = "io.amnezia.bridge-agent.api-versi
 export const BRIDGE_AGENT_SUPPORTED_API_VERSIONS: readonly number[] = [1];
 export const BRIDGE_AGENT_MIN_VERSION = "0.1.0";
 
+const BRIDGE_AGENT_REPOSITORY_PATTERN = /^ghcr\.io\/[A-Za-z0-9._/-]+\/bridge-agent$/;
+
+/**
+ * `BRIDGE_AGENT_IMAGE_REPOSITORY` as the approved bridge-agent repository: unset
+ * or empty means "none"; otherwise it must be `ghcr.io/<path>/bridge-agent` and
+ * must not be the node-agent repository (`NODE_AGENT_UPDATE_REPO`), so a
+ * node-agent digest can never be offered to a bridge host. A refused value
+ * returns `error` (for a clear log) and offers nothing.
+ */
+export const parseBridgeAgentImageRepository = (
+  raw: string | undefined,
+  nodeAgentRepository?: string,
+): { repository: string | undefined; error?: string } => {
+  const value = raw?.trim();
+  if (!value) return { repository: undefined };
+  if (!BRIDGE_AGENT_REPOSITORY_PATTERN.test(value)) {
+    return {
+      repository: undefined,
+      error: "BRIDGE_AGENT_IMAGE_REPOSITORY must look like ghcr.io/<owner>/<repo>/bridge-agent; no bridge-agent image will be offered",
+    };
+  }
+  if (value === nodeAgentRepository?.trim()) {
+    return {
+      repository: undefined,
+      error: "BRIDGE_AGENT_IMAGE_REPOSITORY must differ from NODE_AGENT_UPDATE_REPO; no bridge-agent image will be offered",
+    };
+  }
+  return { repository: value };
+};
+
 /**
  * How old the latest bridge-agent observation may be and still count as
  * current (ruling R8). Overridable with `VPN_BRIDGE_OBSERVATION_STALE_MS`.

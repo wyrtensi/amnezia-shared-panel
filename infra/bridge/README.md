@@ -46,9 +46,13 @@ compose plugin, systemd, curl, sha256sum) and refuses with exit 61 before it
 touches anything, then runs frps, pulls the digest, starts the service and, once
 `/healthz` answers, writes the **pin file** `/etc/amnezia-bridge/agent/image.pin`
 (mode 0600: `BRIDGE_AGENT_IMAGE_REPOSITORY` and `BRIDGE_AGENT_IMAGE`). The pin
-records the approved repository and the digest that is running; the bridge-agent
-updater (Task 6c) reads and rewrites it. `agent.env` keeps the same image for
-Compose.
+records the repository and the digest that was last verified running. Which file
+is authoritative: `agent.env` holds the image Compose RUNS; `image.pin` holds the
+last known-good one (the rollback target). The setup command passes
+`--agent-repository`, so the pin records the repository the panel approved. The
+bridge-agent updater (Task 6c) must take the approved repository and digest from
+the panel's request, never from the pin's repository line, and uses the pin only
+to restore the previous image.
 
 ## The bridge-agent image
 

@@ -63,6 +63,7 @@ describe("bridge setup command image (real PostgreSQL)", () => {
     if (bridgeIds.length > 0) await database.db.delete(vpnBridges).where(inArray(vpnBridges.id, bridgeIds));
     bridgeIds.length = 0;
     await database.db.delete(bridgeAgentReleases).where(inArray(bridgeAgentReleases.repository, [APPROVED, OTHER]));
+    await database.db.delete(nodeAgentReleases).where(inArray(nodeAgentReleases.repository, [APPROVED, OTHER]));
   });
 
   afterAll(async () => {
@@ -78,7 +79,7 @@ describe("bridge setup command image (real PostgreSQL)", () => {
     const bridge = await addBridge(repository);
     const image = `${APPROVED}@${digest("a")}`;
     expect(bridge.setupCommands?.agentImage).toBe(image);
-    expect(bridge.setupCommands?.install).toMatch(new RegExp(`--udp-end 41031 --agent-image ${image}$`));
+    expect(bridge.setupCommands?.install).toMatch(new RegExp(`--udp-end 41031 --agent-image ${image} --agent-repository ${APPROVED}$`));
     expect(bridge.setupCommands?.dryRun).toBe(`${bridge.setupCommands?.install} --dry-run`);
     const listed = (await repository.listBridges(admin)).find((item) => item.id === bridge.id);
     expect(listed?.setupCommands).toEqual(bridge.setupCommands);
@@ -95,6 +96,12 @@ describe("bridge setup command image (real PostgreSQL)", () => {
 
   runDatabaseTest("says none is available when unconfigured, unresolved, or resolved for another repository", async () => {
     await release(OTHER, digest("c"));
+    // A node-agent release row, even under the very repository name configured
+    // for bridges, is never read: only bridge_agent_releases is.
+    await database?.db
+      .insert(nodeAgentReleases)
+      .values({ repository: APPROVED, version: "9.9.9", digest: digest("d"), resolvedAt: new Date() })
+      .onConflictDoUpdate({ target: nodeAgentReleases.repository, set: { digest: digest("d") } });
     // Repository not configured: no image, even though rows exist.
     const unconfigured = await addBridge(repositoryFor(undefined));
     expect(unconfigured.setupCommands?.agentImage).toBeNull();
@@ -103,8 +110,7 @@ describe("bridge setup command image (real PostgreSQL)", () => {
     const unresolved = await repositoryFor(APPROVED).listBridges(admin);
     expect(unresolved.every((item) => item.setupCommands?.agentImage === null)).toBe(true);
     // A node-agent release never leaks into a bridge command.
-    const nodeRows = await database?.db.select().from(nodeAgentReleases);
-    expect(nodeRows?.some((row) => row.repository === OTHER)).toBe(false);
+    expect((await repositoryFor(APPROVED).listBridges(admin)).every((item) => item.setupCommands?.agentImage === null)).toBe(true);
   });
 
   runDatabaseTest("refuses a stored reference that is not a digest", async () => {

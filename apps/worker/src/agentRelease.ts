@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import { isPublishableAgentImage } from "@amnezia/contracts";
 
 /**
@@ -85,49 +87,103 @@ const MANIFEST_ACCEPT = [
 ].join(", ");
 
 type Manifest = {
-  manifests?: { digest?: unknown; platform?: { os?: unknown; architecture?: unknown } }[];
+  manifests?: { digest?: unknown; platform?: { os?: unknown } }[];
   config?: { digest?: unknown };
 };
 
+/** A manifest or config body larger than this is not read (they are a few KB). */
+const MAX_BODY_BYTES = 1_048_576;
+const DIGEST_FORMAT = /^sha256:[0-9a-f]{64}$/;
+
 /**
- * The value of image label `name`, or null when the image does not carry it or
- * the registry will not say. Follows an index to its linux manifest (the
- * attestation entries a buildx push adds have no linux platform) and reads the
- * config blob.
+ * What the image says about its API version. `walk_failed` means the registry
+ * did not give a verifiable answer: the caller must not treat that as "no
+ * label", or a broken walk would offer an image nobody inspected.
+ */
+type LabelResult =
+  | { status: "label"; value: string }
+  | { status: "no_label" }
+  | { status: "walk_failed" };
+
+/**
+ * Fetch `url` and return its parsed JSON only if the body is within the byte
+ * limit and its sha256 equals `expectedDigest`. A tag moved between steps, a
+ * registry that serves other bytes than it names, and an oversized body all
+ * come back as null.
+ */
+const fetchVerified = async (
+  request: (url: string, init?: RequestInit) => Promise<Response>,
+  url: string,
+  expectedDigest: string,
+  authorized: Record<string, string>,
+  accept?: string,
+): Promise<unknown> => {
+  if (!DIGEST_FORMAT.test(expectedDigest)) return null;
+  const response = await request(url, {
+    headers: { ...authorized, ...(accept ? { accept } : {}) },
+  });
+  if (!response.ok) return null;
+  const declared = Number(response.headers.get("content-length") ?? "0");
+  if (declared > MAX_BODY_BYTES) return null;
+  const bytes = new Uint8Array(await response.arrayBuffer());
+  if (bytes.byteLength > MAX_BODY_BYTES) return null;
+  const actual = `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+  if (actual !== expectedDigest) return null;
+  try {
+    return JSON.parse(new TextDecoder().decode(bytes)) as unknown;
+  } catch {
+    return null;
+  }
+};
+
+/**
+ * Read label `name` of the image whose top-level manifest digest is
+ * `imageDigest`, walking index -> linux manifest -> config blob by DIGEST and
+ * verifying each body against the digest that referenced it. The caller offers
+ * exactly `imageDigest`, so what was inspected is what gets installed.
  */
 const readLabel = async (
   request: (url: string, init?: RequestInit) => Promise<Response>,
   path: string,
   authorized: Record<string, string>,
-  reference: string,
+  imageDigest: string,
   name: string,
-): Promise<string | null> => {
-  const getJson = async (url: string, accept?: string): Promise<unknown> => {
-    const response = await request(url, {
-      headers: { ...authorized, ...(accept ? { accept } : {}) },
-    });
-    return response.ok ? ((await response.json()) as unknown) : null;
-  };
-  let manifest = (await getJson(
-    `${REGISTRY}/v2/${path}/manifests/${reference}`,
+): Promise<LabelResult> => {
+  const failed: LabelResult = { status: "walk_failed" };
+  let manifest = (await fetchVerified(
+    request,
+    `${REGISTRY}/v2/${path}/manifests/${imageDigest}`,
+    imageDigest,
+    authorized,
     MANIFEST_ACCEPT,
   )) as Manifest | null;
-  const linux = manifest?.manifests?.find(
-    (entry) => entry.platform?.os === "linux" && typeof entry.digest === "string",
-  );
-  if (linux) {
-    manifest = (await getJson(
-      `${REGISTRY}/v2/${path}/manifests/${String(linux.digest)}`,
+  if (!manifest) return failed;
+  if (Array.isArray(manifest.manifests)) {
+    const linux = manifest.manifests.find(
+      (entry) => entry.platform?.os === "linux" && typeof entry.digest === "string",
+    );
+    if (!linux) return failed;
+    const linuxDigest = String(linux.digest);
+    manifest = (await fetchVerified(
+      request,
+      `${REGISTRY}/v2/${path}/manifests/${linuxDigest}`,
+      linuxDigest,
+      authorized,
       MANIFEST_ACCEPT,
     )) as Manifest | null;
+    if (!manifest) return failed;
   }
-  const configDigest = manifest?.config?.digest;
-  if (typeof configDigest !== "string") return null;
-  const config = (await getJson(`${REGISTRY}/v2/${path}/blobs/${configDigest}`)) as {
-    config?: { Labels?: Record<string, unknown> | null };
-  } | null;
-  const value = config?.config?.Labels?.[name];
-  return typeof value === "string" ? value : null;
+  const configDigest = manifest.config?.digest;
+  if (typeof configDigest !== "string") return failed;
+  const config = (await fetchVerified(
+    request,
+    `${REGISTRY}/v2/${path}/blobs/${configDigest}`,
+    configDigest,
+    authorized,
+  )) as { config?: { Labels?: Record<string, unknown> | null } } | null;
+  if (!config) return failed;
+  const value = config.config?.Labels?.[name];
+  return typeof value === "string" ? { status: "label", value } : { status: "no_label" };
 };
 
 /**
@@ -172,36 +228,42 @@ export const resolveAgentRelease = async (
     .slice(0, filter.maxCandidates ?? 1);
 
   for (const version of candidates) {
-    if (filter.apiVersionLabel) {
-      const label = await readLabel(
-        request,
-        path,
-        authorized,
-        version,
-        filter.apiVersionLabel.name,
-      );
-      // A label that is present and unsupported rules the tag out; an absent
-      // one leaves the decision to the minimum version above.
-      if (label !== null && !filter.apiVersionLabel.supportedApiVersions.includes(Number(label))) {
-        continue;
-      }
-    }
-
-    // HEAD, not GET: the digest is a response header, and asking for the body
-    // would pull a manifest list for no reason.
+    // Resolve the digest FIRST, then inspect that digest: a tag re-pushed
+    // between steps can never make us offer bytes we did not look at.
+    // HEAD, not GET: the digest is a response header.
     const manifestResponse = await request(
       `${REGISTRY}/v2/${path}/manifests/${version}`,
       { method: "HEAD", headers: { ...authorized, accept: MANIFEST_ACCEPT } },
     );
-    if (!manifestResponse.ok) return null;
+    if (!manifestResponse.ok) {
+      if (!filter.apiVersionLabel) return null;
+      continue;
+    }
     const digest = manifestResponse.headers.get(DIGEST_HEADER);
-    if (!digest) return null;
+    if (!digest) {
+      if (!filter.apiVersionLabel) return null;
+      continue;
+    }
 
     const image = `${repository.trim()}@${digest}`;
     // The same check the node will make. Resolving to something a node would
     // refuse is a bug worth catching here, where it is one log line, rather than
     // on the node, where it is a failed update on a live host.
     if (!isPublishableAgentImage(image, repository.trim())) return null;
+
+    if (filter.apiVersionLabel) {
+      const result = await readLabel(request, path, authorized, digest, filter.apiVersionLabel.name);
+      // A broken walk and a present-but-unsupported label both rule the tag
+      // out; only a successfully read config WITHOUT the label falls back to
+      // the minimum version applied above.
+      if (result.status === "walk_failed") continue;
+      if (
+        result.status === "label" &&
+        !filter.apiVersionLabel.supportedApiVersions.includes(Number(result.value))
+      ) {
+        continue;
+      }
+    }
 
     return { repository: repository.trim(), version, digest, image };
   }

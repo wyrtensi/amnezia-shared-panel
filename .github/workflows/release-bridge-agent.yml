@@ -70,8 +70,8 @@ jobs:
           push: true
           platforms: linux/amd64
           tags: ghcr.io/${{ github.repository }}/bridge-agent:${{ steps.version.outputs.value }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=bridge-agent
+          cache-to: type=gha,mode=max,scope=bridge-agent
 
       - name: Report the pinned reference
         run: |

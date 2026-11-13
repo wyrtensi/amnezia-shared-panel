@@ -26,7 +26,7 @@ describe("bridge setup commands", () => {
       { id: BRIDGE_ID, controlTcpPort: 7000, udpPortStart: 41000, udpPortEnd: 41031 },
       image,
     );
-    const base = `sudo sh /opt/amnezia-bridge/install-bridge.sh --bridge-id ${BRIDGE_ID} --control-port 7000 --udp-start 41000 --udp-end 41031 --agent-image ${image}`;
+    const base = `sudo sh /opt/amnezia-bridge/install-bridge.sh --bridge-id ${BRIDGE_ID} --control-port 7000 --udp-start 41000 --udp-end 41031 --agent-image ${image} --agent-repository ghcr.io/owner/repo/bridge-agent`;
     expect(commands).toEqual({ install: base, dryRun: `${base} --dry-run`, agentImage: image });
   });
 

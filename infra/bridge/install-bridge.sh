@@ -22,7 +22,11 @@
 # run the agent is refused up front (exit 61) instead of ending up with frps
 # only. After the agent passes its health check the pin file
 # /etc/amnezia-bridge/agent/image.pin records the approved repository and the
-# digest that is running; the updater (Task 6c) reads and rewrites it.
+# digest that was last verified running. Which file is authoritative:
+# agent.env holds the image Compose RUNS; image.pin holds the last known-good
+# one (the rollback target). The updater (Task 6c) must take the approved
+# repository and digest from the panel's request, never from the pin's
+# repository line, and only use the pin to restore the previous image.
 #
 # The agent's API token is generated here once, on the host, in
 # /etc/amnezia-bridge/agent/api-token (mode 0600). It is never regenerated on a

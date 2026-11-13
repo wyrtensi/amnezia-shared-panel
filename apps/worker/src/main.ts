@@ -14,7 +14,10 @@ import {
 } from "./config.js";
 import { createBridgeAgentPoll, createBridgePollArmer } from "./bridgePoller.js";
 import { PostgresBridgePollRepository } from "./bridgePollRepository.js";
-import { BRIDGE_AGENT_POLL_INTERVAL_MS } from "@amnezia/contracts";
+import {
+  BRIDGE_AGENT_POLL_INTERVAL_MS,
+  parseBridgeAgentImageRepository,
+} from "@amnezia/contracts";
 import { createBridgeCandidateCheck } from "./bridgeCandidateCheck.js";
 import { PostgresBridgeCandidateRepository } from "./bridgeCandidateRepository.js";
 import {
@@ -341,7 +344,12 @@ const refreshNodeAgentRelease = async (): Promise<void> => {
 // repository (BRIDGE_AGENT_IMAGE_REPOSITORY), stored apart from the node-agent's.
 // Not a bridge job: it only reads the registry, so it is not behind
 // VPN_BRIDGE_JOBS_ENABLED. Off until the repository is configured.
-const bridgeAgentImageRepository = process.env.BRIDGE_AGENT_IMAGE_REPOSITORY?.trim();
+const parsedBridgeRepository = parseBridgeAgentImageRepository(
+  process.env.BRIDGE_AGENT_IMAGE_REPOSITORY,
+  process.env.NODE_AGENT_UPDATE_REPO,
+);
+if (parsedBridgeRepository.error) console.error(parsedBridgeRepository.error);
+const bridgeAgentImageRepository = parsedBridgeRepository.repository;
 const refreshBridgeAgentRelease = async (): Promise<void> => {
   if (!bridgeAgentImageRepository) return;
   const release = await resolveBridgeAgentRelease(bridgeAgentImageRepository);

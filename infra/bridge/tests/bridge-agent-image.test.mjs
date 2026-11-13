@@ -43,6 +43,8 @@ test("the release workflow publishes on its own tag, by digest, never as latest"
   assert.match(workflow, /tags: \["bridge-agent-v\*"\]/);
   assert.match(workflow, /workflow_dispatch:/);
   assert.match(workflow, /context: services\/bridge-agent/);
+  assert.match(workflow, /cache-from: type=gha,scope=bridge-agent/);
+  assert.match(workflow, /cache-to: type=gha,mode=max,scope=bridge-agent/);
   assert.match(workflow, /tags: ghcr\.io\/\$\{\{ github\.repository \}\}\/bridge-agent:\$\{\{ steps\.version\.outputs\.value \}\}/);
   assert.doesNotMatch(workflow, /:latest/);
   // The tag must name the package.json version, or the image misreports itself.

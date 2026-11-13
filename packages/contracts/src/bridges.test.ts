@@ -16,6 +16,7 @@ import {
   createBridgeRequestSchema,
   infrastructureItemSchema,
   parseBridgeJobsEnabled,
+  parseBridgeAgentImageRepository,
   parseBridgeObservationStaleMs,
   prepareBridgeRouteRequestSchema,
   publicIpv4Schema,
@@ -335,5 +336,23 @@ describe("candidate validation contracts", () => {
     const target = { targetId: "t", protocol: "awg3", config: "c" };
     expect(probeRunTargetSchema.parse({ ...target, expectedEgressIp: null }).expectedEgressIp).toBeNull();
     expect(probeRunTargetSchema.parse(target)).not.toHaveProperty("expectedEgressIp");
+  });
+});
+
+describe("parseBridgeAgentImageRepository", () => {
+  it("accepts ghcr.io/<path>/bridge-agent and treats empty as unset", () => {
+    expect(parseBridgeAgentImageRepository(" ghcr.io/o/r/bridge-agent ")).toEqual({ repository: "ghcr.io/o/r/bridge-agent" });
+    expect(parseBridgeAgentImageRepository(undefined)).toEqual({ repository: undefined });
+    expect(parseBridgeAgentImageRepository("  ")).toEqual({ repository: undefined });
+  });
+
+  it("refuses another shape or the node-agent repository, with a reason", () => {
+    for (const value of ["ghcr.io/o/r/node-agent", "docker.io/o/bridge-agent", "ghcr.io/bridge-agent"]) {
+      expect(parseBridgeAgentImageRepository(value)).toMatchObject({ repository: undefined, error: expect.stringContaining("bridge-agent") });
+    }
+    expect(parseBridgeAgentImageRepository("ghcr.io/o/r/bridge-agent", "ghcr.io/o/r/bridge-agent")).toMatchObject({
+      repository: undefined,
+      error: expect.stringContaining("differ from NODE_AGENT_UPDATE_REPO"),
+    });
   });
 });

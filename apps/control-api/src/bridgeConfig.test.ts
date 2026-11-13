@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { assertBridgeJobsEnabled, resolveBridgeConfig } from "./bridgeConfig.js";
 import { ApiError } from "./service.js";
 
@@ -10,6 +10,22 @@ describe("resolveBridgeConfig", () => {
       managementHosts: ["host.docker.internal"],
       agentImageRepository: undefined,
     });
+  });
+
+  it("refuses a bridge-agent repository that is malformed or equals the node-agent's, and logs why", () => {
+    const log = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    for (const value of ["docker.io/o/bridge-agent", "ghcr.io/o/r/node-agent", "ghcr.io/o/bridge-agent-x", "ghcr.io/bridge-agent"]) {
+      expect(resolveBridgeConfig({ BRIDGE_AGENT_IMAGE_REPOSITORY: value }).agentImageRepository, value).toBeUndefined();
+    }
+    expect(
+      resolveBridgeConfig({
+        BRIDGE_AGENT_IMAGE_REPOSITORY: "ghcr.io/o/r/bridge-agent",
+        NODE_AGENT_UPDATE_REPO: "ghcr.io/o/r/bridge-agent",
+      }).agentImageRepository,
+    ).toBeUndefined();
+    expect(log).toHaveBeenCalledWith(expect.stringContaining("must differ from NODE_AGENT_UPDATE_REPO"));
+    expect(log).toHaveBeenCalledWith(expect.stringContaining("ghcr.io/<owner>/<repo>/bridge-agent"));
+    log.mockRestore();
   });
 
   it("reads the approved bridge-agent repository, trimmed, empty meaning unset", () => {
