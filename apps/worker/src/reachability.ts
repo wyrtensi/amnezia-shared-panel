@@ -14,16 +14,64 @@ import {
  * and the queued messages in one transaction.
  */
 
+/** The node's active bridge route, which its AWG 3.1 path goes through. */
+export type BridgePath = {
+  bridgeName: string;
+  host: string;
+  port: number;
+};
+
 /** One (node, protocol) pair the panel asked the probe to test. */
 export type ReachabilityTarget = {
+  /** `reachabilityTargetId(nodeId, protocol, endpointRevision)`. */
   targetId: string;
   nodeId: string;
   nodeName: string;
   publicIp: string | null;
   protocol: ProtocolKind;
+  /** `nodes.vpn_endpoint_revision` the target was built for. */
+  endpointRevision: number;
+  /**
+   * The node's active bridge route, null on Direct. Node level: only the
+   * AWG 3.1 target is measured through it (`measuredViaBridge`), AWG 2 keeps
+   * the direct path.
+   */
+  bridgePath: BridgePath | null;
   /** Set when the panel could not send this target (no usable service key). */
   unavailableReason: string | null;
 };
+
+/**
+ * The probe's target id. The AWG 3.1 id carries the node's endpoint revision:
+ * a result measured through an endpoint the node no longer uses never
+ * matches a current target, so it is never taken for current evidence. AWG 2
+ * always uses the direct path, which an assignment never changes, so its id
+ * has no revision and its evidence survives a switch.
+ */
+export const reachabilityTargetId = (
+  nodeId: string,
+  protocol: ProtocolKind,
+  endpointRevision: number,
+): string => (protocol === "awg3" ? `${nodeId}:awg3:r${endpointRevision}` : `${nodeId}:${protocol}`);
+
+/**
+ * The identity a reported target id stands for, normalized to
+ * `reachabilityTargetId`. An AWG 3.1 id without a revision was dispatched by
+ * a worker that predates endpoint revisions, when every node was Direct at
+ * revision 0. Null for an id that is not a node target (a candidate check's).
+ */
+const normalizeTargetId = (targetId: string): { id: string; slot: string } | null => {
+  const [nodeId, protocol, revision, ...rest] = targetId.split(":");
+  if (!nodeId || !protocol || rest.length > 0) return null;
+  const slot = `${nodeId}:${protocol}`;
+  if (protocol !== "awg3") return revision === undefined ? { id: slot, slot } : null;
+  if (revision === undefined) return { id: `${slot}:r0`, slot };
+  return /^r\d+$/.test(revision) ? { id: `${slot}:${revision}`, slot } : null;
+};
+
+/** The target goes through the node's bridge: AWG 3.1 on a bridged node. */
+export const measuredViaBridge = (target: ReachabilityTarget): boolean =>
+  target.protocol === "awg3" && target.bridgePath !== null;
 
 export type NodeState = {
   status: ReachabilityStatus;
@@ -43,6 +91,11 @@ export type ProtocolOutcome = {
   levels: ProbeLevels | null;
   egressIp: string | null;
   detail: string | null;
+  /**
+   * Measured through an endpoint the node no longer uses. It counts as
+   * unknown in the node verdict and is never stored.
+   */
+  obsolete?: true;
 };
 
 export type Notice = { dedupKey: string; text: string };
@@ -61,6 +114,13 @@ const error = (target: ReachabilityTarget, detail: string): ProtocolOutcome => (
   levels: null,
   egressIp: null,
   detail: clip(detail),
+});
+
+export const OBSOLETE_DETAIL = "measured through a previous endpoint";
+
+const obsolete = (target: ReachabilityTarget): ProtocolOutcome => ({
+  ...error(target, OBSOLETE_DETAIL),
+  obsolete: true,
 });
 
 /**
@@ -130,8 +190,12 @@ export const alertClock = (date: Date, timeZone = "UTC"): string => {
 const yesNo = (level: ProbeLevel | undefined) =>
   level?.ok === true ? "да" : level?.ok === false ? "нет" : "—";
 
-type NodeLine = { nodeName: string; publicIp: string | null };
-const who = (node: NodeLine) => `${node.nodeName} (${node.publicIp ?? "?"})`;
+type NodeLine = { nodeName: string; publicIp: string | null; bridgePath?: BridgePath | null };
+/** The node and, when bridged, the bridge path its verdict is about. */
+const who = (node: NodeLine) =>
+  node.bridgePath
+    ? `${node.nodeName} (${node.publicIp ?? "?"}) через мост ${node.bridgePath.bridgeName} (${node.bridgePath.host}:${node.bridgePath.port})`
+    : `${node.nodeName} (${node.publicIp ?? "?"})`;
 
 export const formatDown = (
   node: NodeLine,
@@ -206,17 +270,39 @@ export type IngestOutput = {
  * together into one combined message as well.
  */
 export const ingestRun = (input: IngestInput): IngestOutput => {
-  const resultById = new Map(input.results.map((r) => [r.targetId, r]));
-  const byNode = new Map<string, { node: ReachabilityTarget; outcomes: ProtocolOutcome[] }>();
+  const resultById = new Map<string, ProbeTargetResult>();
+  const reportedSlots = new Set<string>();
+  for (const result of input.results) {
+    const identity = normalizeTargetId(result.targetId);
+    if (!identity) continue;
+    resultById.set(identity.id, result);
+    reportedSlots.add(identity.slot);
+  }
+  const byNode = new Map<
+    string,
+    { node: ReachabilityTarget; outcomes: ProtocolOutcome[]; badge: ProtocolOutcome[] }
+  >();
   for (const target of input.targets) {
-    const outcome = classifyTarget(target, resultById.get(target.targetId), input.controlOk);
-    const entry = byNode.get(target.nodeId) ?? { node: target, outcomes: [] };
+    const identity = normalizeTargetId(target.targetId);
+    const result = identity ? resultById.get(identity.id) : undefined;
+    // The probe reported this node and protocol, but for another endpoint
+    // revision: an assignment changed since the run was dispatched. That
+    // evidence is unknown now, whatever it says.
+    const outcome =
+      !result && identity && reportedSlots.has(identity.slot)
+        ? obsolete(target)
+        : classifyTarget(target, result, input.controlOk);
+    const entry = byNode.get(target.nodeId) ?? { node: target, outcomes: [], badge: [] };
     entry.outcomes.push(outcome);
+    // A bridged node is judged on its bridged AWG 3.1 path alone: an AWG 2
+    // that works directly must not hide a failed bridge. A Direct node is
+    // judged on every protocol it serves.
+    if (target.bridgePath === null || target.protocol === "awg3") entry.badge.push(outcome);
     byNode.set(target.nodeId, entry);
   }
-  const nodes = [...byNode.values()].sort((a, b) =>
-    a.node.nodeName.localeCompare(b.node.nodeName),
-  );
+  const nodes = [...byNode.values()]
+    .map(({ node, outcomes, badge }) => ({ node, outcomes: badge, stored: outcomes }))
+    .sort((a, b) => a.node.nodeName.localeCompare(b.node.nodeName));
 
   // Attempted = the probe measured at least one of its protocols.
   const attempted = nodes.filter((n) => n.outcomes.some((o) => o.levels !== null));
@@ -312,7 +398,7 @@ export const ingestRun = (input: IngestInput): IngestOutput => {
     });
   }
 
-  const outcomes = nodes.flatMap((n) => n.outcomes);
+  const outcomes = nodes.flatMap((n) => n.stored);
   return { outcomes, states, notices, massFailure };
 };
 

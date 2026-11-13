@@ -63,6 +63,7 @@ const context = (extra: Partial<CandidateContext> = {}): CandidateContext => ({
   nodeId: NODE_ID,
   state: "draft",
   retiringSince: null,
+  observedRegistrationMarker: "m-1",
   bridgePublicIpv4: "45.1.2.3",
   publicUdpPort: 41005,
   nodePublicIp: "192.0.2.10",
@@ -229,6 +230,27 @@ describe("bridge candidate check job", () => {
     expect(client.startRun).not.toHaveBeenCalled();
     expect(jobs.completeJob).toHaveBeenCalledWith("job-1");
   });
+
+  it.each([
+    ["a new registration", "m-2"],
+    ["no registration", null],
+  ] as const)(
+    "ends early with MARKER_CHANGED when the bridge now reports %s",
+    async (_label, observed) => {
+      const { handle, candidates, jobs, client } = setup({
+        context: context({ observedRegistrationMarker: observed }),
+      });
+      await handle(job());
+      expect(recorded(candidates)).toEqual(["MARKER_CHANGED"]);
+      // Bound to the marker it was queued for, never the new one.
+      expect(vi.mocked(candidates.recordCandidateResult).mock.calls[0]?.[0].registrationMarker).toBe(
+        "m-1",
+      );
+      expect(candidates.claimCandidateRun).not.toHaveBeenCalled();
+      expect(client.startRun).not.toHaveBeenCalled();
+      expect(jobs.completeJob).toHaveBeenCalledWith("job-1");
+    },
+  );
 
   it("checks a retiring route demoted before the request", async () => {
     const { handle, client } = setup({

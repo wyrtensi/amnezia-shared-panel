@@ -4,8 +4,10 @@ import { and, desc, eq, inArray, isNull, lt, notInArray, sql } from "drizzle-orm
 import {
   isProbeStale,
   nodeServedProtocols,
+  probeCapabilityInputOf,
   PROBE_STALE_GRACE_SEC,
   probeLevelsSchema,
+  probeSupportsBridgeMeasurement,
   REACHABILITY_NOTIFY_JOB_TYPE,
   REACHABILITY_WIDGET_JOB_TYPE,
   type ProbeLevels,
@@ -26,21 +28,31 @@ import {
   reachabilityProbe,
   SERVICE_ACCOUNT_EMAIL,
   users,
+  vpnBridgeRoutes,
+  vpnBridges,
   vpnKeys,
   type Database,
   type EncryptionKeyring,
 } from "@amnezia/db";
+import { inspectAwgVpnLink, renderAwgEndpointVpnLink } from "@amnezia/vpn-config";
 
 import type { CandidateOutcome, CandidateRun } from "./bridgeCandidateCheck.js";
 import {
   EMPTY_CANDIDATE_SLOT,
   writeCandidateVerification,
 } from "./bridgeCandidateRepository.js";
-import type { NodeState, Notice } from "./reachability.js";
+import {
+  measuredViaBridge,
+  reachabilityTargetId,
+  type NodeState,
+  type Notice,
+} from "./reachability.js";
 import type { WidgetNode } from "./reachabilityWidget.js";
 import type { ReachabilityWidgetStore, StoredWidget } from "./reachabilityWidgetSender.js";
 import type {
-  IngestWrite,
+  CandidateSettle,
+  IngestDecide,
+  IngestRun,
   ProbeRow,
   ReachabilityRepository,
   RunTarget,
@@ -72,6 +84,12 @@ const widgetRow = (trigger: string) => ({
 });
 
 const STATUS_RANK = { ok: 0, failed: 1, error: 2 } as const;
+
+/** Why a bridged AWG 3.1 target is not sent; it then reads as unknown. */
+export const BRIDGE_UNSUPPORTED_REASON =
+  "bridged path not measured: the probe lacks the bridge-measurement capability";
+export const BRIDGE_UNRENDERABLE_REASON =
+  "bridged path not measured: the service key is not an AWG 3.1 artifact the bridge endpoint applies to";
 
 export class PostgresReachabilityRepository
   implements ReachabilityRepository, ReachabilityWidgetStore
@@ -163,8 +181,8 @@ export class PostgresReachabilityRepository
     });
   };
 
-  loadStates = async (): Promise<Map<string, NodeState>> => {
-    const rows = await this.options.db.select().from(nodeReachabilityState);
+  private loadStates = async (db: Database | Tx): Promise<Map<string, NodeState>> => {
+    const rows = await db.select().from(nodeReachabilityState);
     return new Map(
       rows.map((row) => [
         row.nodeId,
@@ -198,7 +216,10 @@ export class PostgresReachabilityRepository
     });
   };
 
-  finishCandidateRun = async (run: CandidateRun, outcome: CandidateOutcome): Promise<boolean> =>
+  finishCandidateRun = async (
+    run: CandidateRun,
+    outcome: CandidateOutcome,
+  ): Promise<CandidateSettle> =>
     this.options.db.transaction(async (tx) => {
       // Claim it first, as `ingest` claims a regular run: only the tick that
       // frees the slot writes the result.
@@ -209,63 +230,89 @@ export class PostgresReachabilityRepository
           and(eq(reachabilityProbe.id, 1), eq(reachabilityProbe.candidateRunId, run.runId)),
         )
         .returning({ id: reachabilityProbe.id });
-      if (freed.length === 0) return false;
-      return writeCandidateVerification(tx, {
+      if (freed.length === 0) return "already-settled";
+      const written = await writeCandidateVerification(tx, {
         routeId: run.routeId,
         registrationMarker: run.registrationMarker,
         requestedAt: run.requestedAt,
         outcome,
       });
+      return written ? "written" : "discarded";
     });
 
-  ingest = async (write: IngestWrite): Promise<void> => {
-    await this.options.db.transaction(async (tx) => {
-      // Claim the run first: only the ingest that clears `current_run_id`
-      // writes anything, so an overlapping worker cannot count it twice.
-      const claimed = await tx
+  /**
+   * Ingest one finished run in one transaction:
+   *
+   * 1. Claim the run (`current_run_id` cleared by exactly one ingest), so an
+   *    overlapping worker cannot count it twice.
+   * 2. Lock the probed node rows `FOR SHARE`, in id order, and read the
+   *    targets as they are now, endpoint revision and active bridge route
+   *    included, in the same statement. An assignment change holds its node
+   *    row `FOR NO KEY UPDATE` from its revision bump through its evidence
+   *    reset (`resetNodeEndpointEvidence`), so it either committed before
+   *    this read or waits for this commit: the revision cannot change between
+   *    classification and the writes below. No reachability row is touched
+   *    before these locks (lock order: probe row, node rows, reachability
+   *    rows; an activation never touches the probe row).
+   * 3. Read the stored node states under the same locks and let `decide`
+   *    classify the run against them. A result for another endpoint revision
+   *    never matches a current target (`reachabilityTargetId`), so it is
+   *    unknown: not stored, not counted, never a notice.
+   * 4. Write results, states, history, notices and the widget refresh.
+   */
+  ingest = async (run: IngestRun, decide: IngestDecide): Promise<boolean> =>
+    this.options.db.transaction(async (tx) => {
+      const [claimed] = await tx
         .update(reachabilityProbe)
         .set({
           currentRunId: null,
-          lastIngestedRunId: write.runId,
-          lastResultAt: write.now,
+          lastIngestedRunId: run.runId,
+          lastResultAt: run.now,
           lastError: null,
           lastErrorAt: null,
-          staleAlertedAt: write.staleAlertedAt,
-          lastRunMass: write.mass,
           updatedAt: new Date(),
         })
-        .where(
-          and(eq(reachabilityProbe.id, 1), eq(reachabilityProbe.currentRunId, write.runId)),
-        )
-        .returning({ id: reachabilityProbe.id });
-      if (claimed.length === 0) return;
+        .where(and(eq(reachabilityProbe.id, 1), eq(reachabilityProbe.currentRunId, run.runId)))
+        .returning({
+          capabilities: reachabilityProbe.capabilities,
+          capabilitiesCheckedAt: reachabilityProbe.capabilitiesCheckedAt,
+          currentRunStartedAt: reachabilityProbe.currentRunStartedAt,
+        });
+      if (!claimed) return false;
 
-      const nodeIds = [...write.states.keys()];
-      // A node deleted since the run started is skipped, not an error.
-      const existing = new Set(
-        nodeIds.length === 0
-          ? []
-          : (
-              await tx
-                .select({ id: nodes.id })
-                .from(nodes)
-                .where(inArray(nodes.id, nodeIds))
-            ).map((row) => row.id),
+      // The capability as it stood when the run was dispatched: a bridged
+      // target that did go out is not discarded because the record aged
+      // since, and one that could not go out reads unknown.
+      const bridgeMeasurement = probeSupportsBridgeMeasurement(
+        probeCapabilityInputOf(claimed.capabilities, claimed.capabilitiesCheckedAt),
+        claimed.currentRunStartedAt ?? run.now,
       );
+      const targets = await this.loadTargets(tx, { lock: true, bridgeMeasurement });
+      const previous = await this.loadStates(tx);
+      const write = await decide({ targets, previous });
 
-      for (const nodeId of existing) {
+      await this.updateProbe({ staleAlertedAt: write.staleAlertedAt, lastRunMass: write.mass }, tx);
+
+      // Every node here is locked, so none can be deleted before the commit.
+      const nodeIds = new Set(targets.map((target) => target.nodeId));
+      for (const nodeId of nodeIds) {
         const outcomes = write.outcomes.filter((o) => o.nodeId === nodeId);
+        // Served protocols, obsolete ones included: a protocol the node no
+        // longer serves leaves no stale row behind, while an obsolete result
+        // simply is not written (the endpoint change already removed it).
         const protocols = outcomes.map((o) => o.protocol);
-        // A protocol the node no longer serves leaves no stale row behind.
         await tx
           .delete(nodeReachabilityResults)
           .where(
             and(
               eq(nodeReachabilityResults.nodeId, nodeId),
-              notInArray(nodeReachabilityResults.protocol, protocols),
+              protocols.length > 0
+                ? notInArray(nodeReachabilityResults.protocol, protocols)
+                : undefined,
             ),
           );
         for (const outcome of outcomes) {
+          if (outcome.obsolete) continue;
           const values = {
             nodeId,
             protocol: outcome.protocol,
@@ -273,8 +320,8 @@ export class PostgresReachabilityRepository
             levels: (outcome.levels ?? {}) as Record<string, unknown>,
             egressIp: outcome.egressIp,
             detail: outcome.detail,
-            runId: write.runId,
-            checkedAt: write.now,
+            runId: run.runId,
+            checkedAt: run.now,
           };
           await tx
             .insert(nodeReachabilityResults)
@@ -285,7 +332,8 @@ export class PostgresReachabilityRepository
             });
         }
 
-        const state = write.states.get(nodeId) as NodeState;
+        const state = write.states.get(nodeId);
+        if (!state) continue;
         const stateValues = {
           nodeId,
           status: state.status,
@@ -293,7 +341,7 @@ export class PostgresReachabilityRepository
           failingSince: state.failingSince,
           alertedAt: state.alertedAt,
           alertKind: state.alertKind,
-          checkedAt: write.now,
+          checkedAt: run.now,
           detail: state.detail,
         };
         await tx
@@ -302,27 +350,27 @@ export class PostgresReachabilityRepository
           .onConflictDoUpdate({ target: nodeReachabilityState.nodeId, set: stateValues });
         await tx.insert(nodeReachabilityHistory).values({
           nodeId,
-          runId: write.runId,
+          runId: run.runId,
           status: state.status,
           detail: state.detail,
-          checkedAt: write.now,
+          checkedAt: run.now,
         });
       }
 
       if (write.notices.length > 0) {
         await tx.insert(jobOutbox).values(outboxRows(write.notices)).onConflictDoNothing();
       }
-      await tx.insert(jobOutbox).values(widgetRow(`run:${write.runId}`)).onConflictDoNothing();
+      await tx.insert(jobOutbox).values(widgetRow(`run:${run.runId}`)).onConflictDoNothing();
       await tx
         .delete(nodeReachabilityHistory)
         .where(
           lt(
             nodeReachabilityHistory.checkedAt,
-            new Date(write.now.getTime() - HISTORY_RETENTION_MS),
+            new Date(run.now.getTime() - HISTORY_RETENTION_MS),
           ),
         );
+      return true;
     });
-  };
 
   /** Found by its flag, never by its address alone. */
   private serviceAccountId = async (db: Database | Tx): Promise<string | null> => {
@@ -335,13 +383,52 @@ export class PostgresReachabilityRepository
     return row?.id ?? null;
   };
 
-  listTargets = async (): Promise<RunTarget[]> => {
-    const db = this.options.db;
-    const nodeRows = await db
-      .select()
+  listTargets = async (options: { bridgeMeasurement: boolean }): Promise<RunTarget[]> =>
+    this.loadTargets(this.options.db, { lock: false, ...options });
+
+  /**
+   * The targets as the panel knows them now. The node row, its endpoint
+   * revision, its active bridge route and that bridge are read in ONE
+   * statement, so a config is never paired with the revision of another
+   * assignment (two reads could straddle an activation and label a Direct
+   * config with the bridged revision). With `lock`, the node rows are taken
+   * `FOR SHARE` in id order (see `ingest`).
+   *
+   * A bridged node's AWG 3.1 target carries the service-key artifact
+   * rendered with the bridge endpoint, the same renderer user exports use. It
+   * is not sent (unknown, never an alert) when the probe cannot measure a
+   * bridged path or the artifact is not one the endpoint applies to; the
+   * direct config is never sent under the bridged identity. AWG 2 keeps the
+   * direct path and its direct config.
+   */
+  private loadTargets = async (
+    db: Database | Tx,
+    options: { lock: boolean; bridgeMeasurement: boolean },
+  ): Promise<RunTarget[]> => {
+    const query = db
+      .select({
+        id: nodes.id,
+        name: nodes.name,
+        protocol: nodes.protocol,
+        capabilities: nodes.capabilities,
+        enabledProtocols: nodes.enabledProtocols,
+        publicIp: nodes.publicIp,
+        publicHost: nodes.publicHost,
+        endpointRevision: nodes.vpnEndpointRevision,
+        bridgeName: vpnBridges.name,
+        bridgeHost: vpnBridges.publicIpv4,
+        bridgePort: vpnBridgeRoutes.publicUdpPort,
+      })
       .from(nodes)
-      .where(eq(nodes.reachabilityEnabled, true))
-      .orderBy(nodes.name);
+      .leftJoin(
+        vpnBridgeRoutes,
+        and(eq(vpnBridgeRoutes.nodeId, nodes.id), eq(vpnBridgeRoutes.state, "active")),
+      )
+      .leftJoin(vpnBridges, eq(vpnBridges.id, vpnBridgeRoutes.bridgeId))
+      .where(eq(nodes.reachabilityEnabled, true));
+    const nodeRows = options.lock
+      ? await query.orderBy(nodes.id).for("share", { of: nodes })
+      : await query.orderBy(nodes.name);
     const ownerId = await this.serviceAccountId(db);
     const keys = ownerId
       ? await db
@@ -357,36 +444,63 @@ export class PostgresReachabilityRepository
         capabilities: node.capabilities,
         enabledProtocols: node.enabledProtocols,
       }).map((protocol): RunTarget => {
-        const key = keys.find((k) => k.nodeId === node.id && k.protocol === protocol);
-        let config: string | null = null;
-        let unavailableReason: string | null = null;
-        if (!key) unavailableReason = "no service key yet";
-        else if (key.state === "provisioning") unavailableReason = "service key is provisioning";
-        else if (key.state === "failed") {
-          unavailableReason = `service key failed: ${key.failureReason ?? "unknown"}`.slice(0, 300);
-        } else if (key.state !== "active" || key.configCiphertext === null) {
-          unavailableReason = `service key is ${key.state}`;
-        } else {
-          config = decryptSecret(
-            {
-              ciphertext: key.configCiphertext,
-              nonce: key.configNonce as string,
-              authTag: key.configAuthTag as string,
-              keyVersion: key.configKeyVersion as number,
-            },
-            this.options.keyring,
-          );
-        }
-        return {
-          targetId: `${node.id}:${protocol}`,
+        const target: RunTarget = {
+          targetId: reachabilityTargetId(node.id, protocol, node.endpointRevision),
           nodeId: node.id,
           nodeName: node.name,
           publicIp: node.publicIp ?? node.publicHost,
           protocol,
-          unavailableReason,
-          config,
+          endpointRevision: node.endpointRevision,
+          bridgePath:
+            node.bridgeName !== null && node.bridgeHost !== null && node.bridgePort !== null
+              ? { bridgeName: node.bridgeName, host: node.bridgeHost, port: node.bridgePort }
+              : null,
+          unavailableReason: null,
+          config: null,
+          // The node's origin exit IP. Unknown is sent as an explicit null
+          // only on a bridged path (reachabilityTask.ts), where the endpoint
+          // host is the bridge and no fallback comparison makes sense.
           expectedEgressIp: node.publicIp,
         };
+        const key = keys.find((k) => k.nodeId === node.id && k.protocol === protocol);
+        if (!key) return { ...target, unavailableReason: "no service key yet" };
+        if (key.state === "provisioning") {
+          return { ...target, unavailableReason: "service key is provisioning" };
+        }
+        if (key.state === "failed") {
+          return {
+            ...target,
+            unavailableReason: `service key failed: ${key.failureReason ?? "unknown"}`.slice(0, 300),
+          };
+        }
+        if (key.state !== "active" || key.configCiphertext === null) {
+          return { ...target, unavailableReason: `service key is ${key.state}` };
+        }
+        const via = measuredViaBridge(target) ? target.bridgePath : null;
+        if (via && !options.bridgeMeasurement) {
+          return { ...target, unavailableReason: BRIDGE_UNSUPPORTED_REASON };
+        }
+        const config = decryptSecret(
+          {
+            ciphertext: key.configCiphertext,
+            nonce: key.configNonce as string,
+            authTag: key.configAuthTag as string,
+            keyVersion: key.configKeyVersion as number,
+          },
+          this.options.keyring,
+        );
+        if (!via) return { ...target, config };
+        if (inspectAwgVpnLink(config).kind !== "awg31") {
+          return { ...target, unavailableReason: BRIDGE_UNRENDERABLE_REASON };
+        }
+        try {
+          return {
+            ...target,
+            config: renderAwgEndpointVpnLink(config, { host: via.host, port: via.port }),
+          };
+        } catch {
+          return { ...target, unavailableReason: BRIDGE_UNRENDERABLE_REASON };
+        }
       }),
     );
   };
@@ -556,13 +670,14 @@ export class PostgresReachabilityRepository
       .innerJoin(nodes, eq(nodes.id, nodeReachabilityState.nodeId))
       .where(eq(nodes.reachabilityEnabled, true));
     const nodeIds = stateRows.map((row) => row.nodeId);
-    const [resultRows, onlineRows, handshakeRows] =
+    const [resultRows, onlineRows, handshakeRows, bridgedRows] =
       nodeIds.length === 0
-        ? [[], [], []]
+        ? [[], [], [], []]
         : await Promise.all([
             db
               .select({
                 nodeId: nodeReachabilityResults.nodeId,
+                protocol: nodeReachabilityResults.protocol,
                 status: nodeReachabilityResults.status,
                 levels: nodeReachabilityResults.levels,
               })
@@ -592,12 +707,25 @@ export class PostgresReachabilityRepository
               .innerJoin(users, keyOwnerIsPerson(vpnKeys))
               .where(inArray(vpnKeys.nodeId, nodeIds))
               .groupBy(vpnKeys.nodeId),
+            // Nodes on a bridge: their verdict is the bridged AWG 3.1 path's.
+            db
+              .select({ nodeId: vpnBridgeRoutes.nodeId })
+              .from(vpnBridgeRoutes)
+              .where(
+                and(
+                  eq(vpnBridgeRoutes.state, "active"),
+                  inArray(vpnBridgeRoutes.nodeId, nodeIds),
+                ),
+              ),
           ]);
 
     // One protocol's levels per node: the one that worked, else one that was
-    // measured, else nothing.
+    // measured, else nothing. A bridged node shows its AWG 3.1 levels only,
+    // the ones its verdict comes from.
+    const bridged = new Set(bridgedRows.map((row) => row.nodeId));
     const best = new Map<string, { rank: number; levels: ProbeLevels | null }>();
     for (const row of resultRows) {
+      if (bridged.has(row.nodeId) && row.protocol !== "awg3") continue;
       const parsed = probeLevelsSchema.safeParse(row.levels);
       const levels = parsed.success ? parsed.data : null;
       const rank = STATUS_RANK[row.status] + (levels ? 0 : 10);

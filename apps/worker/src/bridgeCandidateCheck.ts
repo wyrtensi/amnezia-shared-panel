@@ -57,6 +57,8 @@ export type CandidateContext = {
   nodeId: string;
   state: "draft" | "active" | "retiring";
   retiringSince: Date | null;
+  /** The registration marker the bridge reports for the route now. */
+  observedRegistrationMarker: string | null;
   bridgePublicIpv4: string;
   publicUdpPort: number;
   /**
@@ -166,6 +168,16 @@ export const candidateRunOutcome = (
   return null;
 };
 
+/**
+ * A candidate claim past `CANDIDATE_RUN_TIMEOUT_MS`, judged on the panel
+ * clock alone: used when the probe cannot be asked (its API is down), so an
+ * outage cannot hold the probe slot forever. Null while within the timeout.
+ */
+export const candidateRunOverdue = (run: CandidateRun, at: Date): CandidateOutcome | null =>
+  at.getTime() - run.startedAt.getTime() > CANDIDATE_RUN_TIMEOUT_MS
+    ? { result: "failure", error: "PROBE_RUN_TIMEOUT", checkedAt: run.startedAt }
+    : null;
+
 export type BridgeCandidateCheckOptions = {
   candidates: BridgeCandidateRepository;
   loadProbe: () => Promise<ProbeRow | null>;
@@ -258,6 +270,13 @@ export const createBridgeCandidateCheck = ({
       // is left to verify for this request.
       log(`bridge candidate check ${payload.routeId}: route changed, skipped`);
       await jobs.completeJob(job.id);
+      return;
+    }
+    if (context.observedRegistrationMarker !== payload.registrationMarker) {
+      // The bridge reports another registration now (frpc reconnected): a
+      // result bound to the old marker could never pass activation, so the
+      // check ends here instead of occupying the probe.
+      await finish("MARKER_CHANGED");
       return;
     }
     if (context.serviceConfig === null) {

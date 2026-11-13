@@ -505,6 +505,9 @@ export const BRIDGE_CANDIDATE_CHECK_ERRORS = [
   "PROBE_RESULT_STALE",
   "PROBE_CONTROL_FAILED",
   "PROBE_TARGET_ERROR",
+  // The route's observed registration changed after the check was queued:
+  // the check was dropped before it took the probe.
+  "MARKER_CHANGED",
   "SERVICE_KEY_UNAVAILABLE",
   "SERVICE_KEY_NOT_AWG31",
   "AWG_HANDSHAKE_FAILED",

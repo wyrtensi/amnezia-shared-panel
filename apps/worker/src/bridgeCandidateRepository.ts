@@ -81,6 +81,7 @@ export class PostgresBridgeCandidateRepository implements BridgeCandidateReposit
         nodeId: vpnBridgeRoutes.nodeId,
         state: vpnBridgeRoutes.state,
         retiringSince: vpnBridgeRoutes.retiringSince,
+        observedRegistrationMarker: vpnBridgeRoutes.observedRegistrationMarker,
         publicUdpPort: vpnBridgeRoutes.publicUdpPort,
         bridgePublicIpv4: vpnBridges.publicIpv4,
         nodePublicIp: nodes.publicIp,

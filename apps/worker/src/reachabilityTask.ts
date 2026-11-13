@@ -2,18 +2,22 @@ import { randomUUID } from "node:crypto";
 
 import {
   probeCapabilitiesDue,
+  probeCapabilityInputOf,
+  probeSupportsBridgeMeasurement,
   type ProbeRunRequest,
   type ProbeRunState,
 } from "@amnezia/contracts";
 
 import {
   candidateRunOutcome,
+  candidateRunOverdue,
   type CandidateOutcome,
   type CandidateRun,
 } from "./bridgeCandidateCheck.js";
 import type { ProbeClient, ProbeClientOptions } from "./probeAgent.js";
 import {
   ingestRun,
+  measuredViaBridge,
   staleTransition,
   type NodeState,
   type Notice,
@@ -60,9 +64,17 @@ export type RunTarget = ReachabilityTarget & {
   expectedEgressIp: string | null;
 };
 
+export type IngestRun = { runId: string; now: Date };
+
+/** What an ingest classifies against, read under the node row locks. */
+export type IngestContext = {
+  /** The targets as they are now: endpoint revision and bridge route included. */
+  targets: ReachabilityTarget[];
+  previous: Map<string, NodeState>;
+};
+
 export type IngestWrite = {
-  runId: string;
-  now: Date;
+  /** Obsolete outcomes (`ProtocolOutcome.obsolete`) are not stored. */
   outcomes: ProtocolOutcome[];
   states: Map<string, NodeState>;
   notices: Notice[];
@@ -70,6 +82,15 @@ export type IngestWrite = {
   /** The run was a mass failure (shown on the status widget). */
   mass: boolean;
 };
+
+export type IngestDecide = (context: IngestContext) => IngestWrite | Promise<IngestWrite>;
+
+/**
+ * How a candidate settle ended: the result was stored on the route,
+ * discarded (the route changed or was verified since the request), or the
+ * slot had already been freed by another tick and nothing was written.
+ */
+export type CandidateSettle = "written" | "discarded" | "already-settled";
 
 export interface ReachabilityRepository {
   loadProbe: () => Promise<ProbeRow | null>;
@@ -87,20 +108,28 @@ export interface ReachabilityRepository {
   syncServiceKeys: (
     now: Date,
   ) => Promise<{ created: number; revoked: number; provisioning: number }>;
-  listTargets: () => Promise<RunTarget[]>;
+  /**
+   * The targets to dispatch. `bridgeMeasurement`: the probe can measure a
+   * bridged path; without it a bridged AWG 3.1 target is not sent.
+   */
+  listTargets: (options: { bridgeMeasurement: boolean }) => Promise<RunTarget[]>;
   markRunStarted: (runId: string, at: Date) => Promise<void>;
   /** Forget a run the probe will never report, so a new one can start. */
   abandonRun: (at: Date, reason: string) => Promise<void>;
-  loadStates: () => Promise<Map<string, NodeState>>;
-  /** Results, history, node states, outbox messages and the probe row, atomically. */
-  ingest: (write: IngestWrite) => Promise<void>;
+  /**
+   * Claim the run, lock the probed node rows, read the current targets and
+   * node states, classify with `decide`, and write results, history, node
+   * states, outbox messages and the probe row, atomically. False when another
+   * ingest claimed the run first (nothing written).
+   */
+  ingest: (run: IngestRun, decide: IngestDecide) => Promise<boolean>;
   setStaleAlert: (staleAlertedAt: Date | null, notices: Notice[]) => Promise<void>;
   /**
    * Free the probe from a candidate run and store its outcome on the route
    * only (see bridgeCandidateCheck.ts). Writes nothing to node status,
    * results, history or the outbox.
    */
-  finishCandidateRun: (run: CandidateRun, outcome: CandidateOutcome) => Promise<boolean>;
+  finishCandidateRun: (run: CandidateRun, outcome: CandidateOutcome) => Promise<CandidateSettle>;
 }
 
 /**
@@ -109,6 +138,13 @@ export interface ReachabilityRepository {
  * the next one forever.
  */
 export const ABANDON_RUN_MS = 6 * 60 * 60 * 1_000;
+
+/**
+ * After a failed capability check the probe is not asked again for this long:
+ * a probe that hangs would otherwise cost the request timeout on every tick.
+ * The stored record keeps aging meanwhile (bridged paths turn unknown).
+ */
+export const CAPABILITY_RETRY_BACKOFF_MS = 5 * 60 * 1_000;
 
 const message = (error: unknown) =>
   (error instanceof Error ? error.message : "unknown error").slice(0, 300);
@@ -133,6 +169,7 @@ export const createReachabilityTask = ({
   newRunId?: () => string;
   log?: (line: string) => void;
 }) => {
+  let capabilityRetryAt = 0;
   return async (): Promise<void> => {
     const probe = await repository.loadProbe();
     if (!probe || !probe.enabled) return;
@@ -155,17 +192,30 @@ export const createReachabilityTask = ({
       }
     };
 
+    const settleCandidate = async (run: CandidateRun, outcome: CandidateOutcome) => {
+      const settled = await repository.finishCandidateRun(run, outcome);
+      const verdict = outcome.error ? `${outcome.result} ${outcome.error}` : outcome.result;
+      log(
+        settled === "written"
+          ? `reachability: settled candidate run ${run.runId} (${verdict})`
+          : settled === "discarded"
+            ? `reachability: candidate run ${run.runId} for route ${run.routeId} settled (${verdict}) but its result was discarded (route changed or verified since the request)`
+            : `reachability: candidate run ${run.runId} was already settled by another tick`,
+      );
+    };
+
     // Refreshed on a bounded interval. A failure keeps the old record, which
     // ages out (probeSupportsBridgeMeasurement), so a probe that is down is
-    // unknown rather than legacy.
-    if (probeCapabilitiesDue(probe.capabilitiesCheckedAt, at)) {
+    // unknown rather than legacy; it is not asked again before the backoff.
+    let capabilityInput = probeCapabilityInputOf(probe.capabilities, probe.capabilitiesCheckedAt);
+    if (probeCapabilitiesDue(probe.capabilitiesCheckedAt, at) && at.getTime() >= capabilityRetryAt) {
       try {
         const reported = await client.capabilities();
-        await repository.recordProbeCapabilities(
-          reported === "legacy" ? [] : reported.capabilities,
-          at,
-        );
+        const capabilities = reported === "legacy" ? [] : reported.capabilities;
+        await repository.recordProbeCapabilities(capabilities, at);
+        capabilityInput = { capabilities, checkedAt: at };
       } catch (error) {
+        capabilityRetryAt = at.getTime() + CAPABILITY_RETRY_BACKOFF_MS;
         log(`reachability: capability check failed: ${message(error)}`);
       }
     }
@@ -176,26 +226,27 @@ export const createReachabilityTask = ({
     } catch (error) {
       await repository.recordProbeError(message(error), at);
       log(`reachability: ${message(error)}`);
+      // A candidate claim must not outlive its timeout because the probe is
+      // unreachable: judged on the panel clock alone, it is given up.
+      if (probe.candidateRun) {
+        const overdue = candidateRunOverdue(probe.candidateRun, at);
+        if (overdue) await settleCandidate(probe.candidateRun, overdue);
+      }
       await watchStale();
       return;
     }
 
     // A bridge route candidate check holds the probe: settle it when it is
     // done, and start nothing of our own until it is (its run and ours would
-    // share the node's service peer). Its result goes to the route only.
+    // share the node's service peer). Its result goes to the route only,
+    // never to node status, results, history or alerts.
     if (probe.candidateRun) {
       const outcome = candidateRunOutcome(probe.candidateRun, latest, at);
       if (outcome === null) {
         await watchStale();
         return;
       }
-      const written = await repository.finishCandidateRun(probe.candidateRun, outcome);
-      const verdict = outcome.error ? `${outcome.result} ${outcome.error}` : outcome.result;
-      log(
-        written
-          ? `reachability: settled candidate run ${probe.candidateRun.runId} (${verdict})`
-          : `reachability: candidate run ${probe.candidateRun.runId} for route ${probe.candidateRun.routeId} settled (${verdict}) but its result was discarded (route changed or verified since the request)`,
-      );
+      await settleCandidate(probe.candidateRun, outcome);
     }
 
     let currentRunId = probe.currentRunId;
@@ -205,31 +256,35 @@ export const createReachabilityTask = ({
       latest.runId === probe.currentRunId &&
       latest.runId !== probe.lastIngestedRunId
     ) {
-      const targets = await repository.listTargets();
-      const previous = await repository.loadStates();
-      const out = ingestRun({
-        runId: latest.runId,
-        now: at,
-        label: probe.label,
-        timeZone: probe.timeZone,
-        failThreshold: probe.failThreshold,
-        controlOk: latest.control.ok === true,
-        targets,
-        results: latest.results,
-        previous,
-      });
-      const stale = staleTransition({ ...staleInput, ingestedNow: true });
-      await repository.ingest({
-        runId: latest.runId,
-        now: at,
-        outcomes: out.outcomes,
-        states: out.states,
-        notices: [...out.notices, ...stale.notices],
-        staleAlertedAt: stale.staleAlertedAt,
-        mass: out.massFailure,
+      const finished = latest;
+      let notices = 0;
+      // Classified inside the ingest transaction, against targets and states
+      // read under the node row locks: an endpoint change cannot slip in
+      // between and leave an obsolete outcome or alert behind.
+      const ingested = await repository.ingest({ runId: finished.runId, now: at }, (context) => {
+        const out = ingestRun({
+          runId: finished.runId,
+          now: at,
+          label: probe.label,
+          timeZone: probe.timeZone,
+          failThreshold: probe.failThreshold,
+          controlOk: finished.control.ok === true,
+          targets: context.targets,
+          results: finished.results,
+          previous: context.previous,
+        });
+        const stale = staleTransition({ ...staleInput, ingestedNow: true });
+        notices = out.notices.length;
+        return {
+          outcomes: out.outcomes,
+          states: out.states,
+          notices: [...out.notices, ...stale.notices],
+          staleAlertedAt: stale.staleAlertedAt,
+          mass: out.massFailure,
+        };
       });
       currentRunId = null;
-      log(`reachability: ingested run ${latest.runId}, ${out.notices.length} notice(s)`);
+      if (ingested) log(`reachability: ingested run ${finished.runId}, ${notices} notice(s)`);
     } else {
       await watchStale();
     }
@@ -269,7 +324,10 @@ export const createReachabilityTask = ({
       return;
     }
 
-    const targets = await repository.listTargets();
+    // Read once for the whole run: a legacy probe drops an explicit null, so
+    // a bridged target is only sent to a probe that reports the capability.
+    const bridgeMeasurement = probeSupportsBridgeMeasurement(capabilityInput, at);
+    const targets = await repository.listTargets({ bridgeMeasurement });
     const runId = newRunId();
     const request: ProbeRunRequest = {
       runId,
@@ -281,7 +339,15 @@ export const createReachabilityTask = ({
           targetId: target.targetId,
           protocol: target.protocol,
           config: target.config as string,
-          ...(target.expectedEgressIp ? { expectedEgressIp: target.expectedEgressIp } : {}),
+          // Bridged: the endpoint host is the bridge, so the comparison
+          // target is the node's origin exit IP or, when unknown, an explicit
+          // null (report the observed egress uncompared). Direct: omitted
+          // when unknown keeps the probe's endpoint-host fallback.
+          ...(measuredViaBridge(target) && bridgeMeasurement
+            ? { expectedEgressIp: target.expectedEgressIp }
+            : target.expectedEgressIp
+              ? { expectedEgressIp: target.expectedEgressIp }
+              : {}),
         })),
     };
     try {

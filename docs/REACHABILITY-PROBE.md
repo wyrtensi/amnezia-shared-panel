@@ -70,10 +70,44 @@ answers 404 and also drops an explicit `null`, so the panel never sends one to
 it. The worker reads the endpoint at most every 10 minutes (on the reachability
 tick) into `reachability_probe.capabilities` / `capabilities_checked_at`: a 404
 stores an empty list (legacy), an unreachable probe or an error keeps the old
-record. The panel treats bridge measurement as supported only for a record
+record and is not asked again for 5 minutes. The panel treats bridge measurement as supported only for a record
 younger than 30 minutes that lists `bridge-measurement`; unknown, stale and
 legacy all mean unsupported, and Direct measurements are unaffected. Deploy
 the new probe image before relying on bridged measurements.
+
+### Bridged nodes
+
+A node with an active bridge route (optional AWG 3.1 node bridges) is measured
+on the path its users take:
+
+- **AWG 3.1** goes through the bridge: the worker renders the node's AWG 3.1
+  service-key artifact with the bridge's public IPv4 and the route's UDP port
+  (the same renderer as user exports) and sends it through the usual run.
+  `expectedEgressIp` is the node's origin exit IP (`nodes.public_ip`), or an
+  explicit `null` when unknown. Nothing is sent for that path to a probe
+  without the bridge-measurement capability, or when the service key is not an
+  AWG 3.1 artifact the endpoint applies to: the path is then unknown (`error`)
+  and never alerts. The direct config is never sent in its place.
+- **AWG 2** keeps the direct path and its own result.
+- The node verdict, alerts and widget row follow the **AWG 3.1 result alone**
+  (a working AWG 2 does not hide a failed bridge); the alert names the bridge
+  (`node (ip) через мост <bridge> (<ip>:<port>)`). In the cabinet an AWG 2 key
+  on a bridged node reads its own AWG 2 result. A Direct node keeps the
+  any-protocol rule above.
+- A failing bridge never changes the assignment: exports keep using the active
+  route until an administrator changes it.
+
+**Endpoint revision.** The AWG 3.1 target id is `<node>:awg3:r<revision>`
+(`nodes.vpn_endpoint_revision`); AWG 2 stays `<node>:awg2`. Changing the
+assignment (Direct or another bridge) bumps the revision and, in the same
+transaction under the node row lock, deletes the node's AWG 3.1 result and
+turns its verdict to unknown. An open incident is kept, so it ends with one
+recovery message; the failure streak restarts, so the old path's failures do
+not count towards an alert about the new one. The ingest claims the run, then
+locks the probed node rows `FOR SHARE` and classifies against the targets and
+verdicts read under that lock. A result measured for an earlier revision is
+unknown: it is not stored, not counted and never causes a message, while that
+run's AWG 2 result is kept.
 
 ### Bridge route candidate checks
 
@@ -93,9 +127,12 @@ use the operator-verified path (`docs/CLI.md`).
 The result is stamped with the time the run was claimed, and a run settled more
 than 15 minutes after that is recorded as `PROBE_RESULT_STALE` (or
 `PROBE_RUN_TIMEOUT` when unfinished), so late evidence never passes the
-30-minute activation window. A second request while a check of the route is
-queued or running returns that check; one for a changed registration answers
-`BRIDGE_CHECK_PENDING` until it settles.
+30-minute activation window. While the probe API is unreachable, a claim older
+than those 15 minutes is given up as `PROBE_RUN_TIMEOUT` on the panel clock, so
+an outage cannot hold the probe. A queued check whose route now reports another
+registration marker ends as `MARKER_CHANGED` without taking the probe. A second
+request while a check of the route is queued or running returns that check; one
+for a changed registration answers `BRIDGE_CHECK_PENDING` until it settles.
 
 A candidate check waits while a regular run holds the probe and gives up after
 about 14 minutes of retries (`PROBE_BUSY`). With a fleet run longer than
