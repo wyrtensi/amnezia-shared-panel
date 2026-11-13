@@ -233,6 +233,27 @@ export const nodeEndpointAssignmentSchema = z.object({
 });
 
 /**
+ * Dry-run of the endpoint renderer over a node's stored AWG3-issued configs
+ * (`GET /api/admin/nodes/:id/vpn-bridge-eligibility`). Counts only: no key
+ * ids and no artifact content. A bridge can be activated only while
+ * `unsupported` is 0.
+ */
+export const bridgeEligibilitySchema = z.object({
+  nodeId: z.uuid(),
+  /** Usable stored configs examined (keys issued as AWG3 or AWG2). */
+  total: z.int().min(0),
+  /** AWG3-issued keys whose artifact is 3.1 and renders to a bridge endpoint. */
+  awg31Eligible: z.int().min(0),
+  /** AWG3-issued keys whose artifact is the 2.0 fallback; they stay Direct. */
+  awg20Direct: z.int().min(0),
+  /** Keys issued as AWG2; they always stay Direct. */
+  awg2NativeDirect: z.int().min(0),
+  /** AWG3-issued keys that are unrecognized, ambiguous or unreadable. */
+  unsupported: z.int().min(0),
+});
+export type BridgeEligibility = z.infer<typeof bridgeEligibilitySchema>;
+
+/**
  * Shared admin view of managed infrastructure
  * (`GET /api/admin/infrastructure`). The `kind` discriminator keeps VPN-node
  * consumers scoped to VPN nodes while bridges live in the same list.

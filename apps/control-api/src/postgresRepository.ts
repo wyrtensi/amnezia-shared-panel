@@ -39,6 +39,7 @@ import type {
   UpdateServiceCheckRequest,
   DeleteBridgeResult,
   InfrastructureItem,
+  BridgeEligibility,
   NodeBridgeRoutes,
   NodeEndpointAssignment,
   PrepareBridgeRouteRequest,
@@ -134,6 +135,8 @@ import {
   routeRuleVersions,
   trafficRollups,
   users,
+  vpnBridgeRoutes,
+  vpnBridges,
   vpnKeys,
   type AccessSyncArmReason,
   type Database,
@@ -512,6 +515,7 @@ export class PostgresControlRepository implements ControlRepository {
     }
     this.bridges = new PostgresBridgeRepository({
       db: options.db,
+      keyring: options.keyring,
       observationStaleMs:
         options.bridgeObservationStaleMs ?? BRIDGE_OBSERVATION_STALE_MS_DEFAULT,
     });
@@ -527,6 +531,19 @@ export class PostgresControlRepository implements ControlRepository {
   ): Promise<Bridge> => this.bridges.updateBridge(actor, bridgeId, request);
   deleteBridge = (actor: Actor, bridgeId: string): Promise<DeleteBridgeResult> =>
     this.bridges.deleteBridge(actor, bridgeId);
+  getBridgeEligibility = async (
+    _actor: Actor,
+    nodeId: string,
+  ): Promise<BridgeEligibility> => {
+    const [node] = await this.options.db
+      .select({ id: nodes.id })
+      .from(nodes)
+      .where(eq(nodes.id, nodeId))
+      .limit(1);
+    if (!node) throw new ApiError(404, "Node not found", "NODE_NOT_FOUND");
+    return this.bridges.bridgeEligibility(nodeId);
+  };
+
   getNodeBridgeRoutes = (_actor: Actor, nodeId: string): Promise<NodeBridgeRoutes> =>
     this.bridges.getNodeBridgeRoutes(nodeId);
   prepareBridgeRoute = (
@@ -1857,11 +1874,23 @@ export class PostgresControlRepository implements ControlRepository {
         policy: portalPolicy,
         nodeName: nodes.name,
         nodePublicName: nodes.publicName,
+        bridgeHost: vpnBridges.publicIpv4,
+        bridgePort: vpnBridgeRoutes.publicUdpPort,
       })
       .from(vpnKeys)
       .innerJoin(users, eq(users.id, vpnKeys.ownerId))
       .innerJoin(nodes, eq(nodes.id, vpnKeys.nodeId))
       .leftJoin(portalPolicy, eq(portalPolicy.id, true))
+      // One statement reads the key and the node's active route, so an export
+      // sees one consistent assignment. At most one route per node is active.
+      .leftJoin(
+        vpnBridgeRoutes,
+        and(
+          eq(vpnBridgeRoutes.nodeId, vpnKeys.nodeId),
+          eq(vpnBridgeRoutes.state, "active"),
+        ),
+      )
+      .leftJoin(vpnBridges, eq(vpnBridges.id, vpnBridgeRoutes.bridgeId))
       .where(and(eq(vpnKeys.id, keyId), isNotNull(vpnKeys.configCiphertext)))
       .limit(1);
     const row = rows[0];
@@ -1905,6 +1934,11 @@ export class PostgresControlRepository implements ControlRepository {
       activeRule,
       customRoutes: row.user.customRoutes ?? null,
       state: row.key.state,
+      protocol: row.key.protocol,
+      bridgeEndpoint:
+        row.bridgeHost !== null && row.bridgePort !== null
+          ? { host: row.bridgeHost, port: row.bridgePort }
+          : null,
       awgClientProfile: row.key.awgClientProfile ?? null,
     };
   };

@@ -5,6 +5,7 @@ import type {
   CreateBridgeRequest,
   DeleteBridgeResult,
   InfrastructureItem,
+  BridgeEligibility,
   NodeBridgeRoutes,
   PrepareBridgeRouteRequest,
   PrepareBridgeRouteResult,
@@ -63,6 +64,13 @@ export type StoredKeyConfig = {
   activeRule: ActiveRule | null;
   customRoutes: CustomRoutes | null;
   state: KeyState;
+  /** The protocol the key was issued with; decides Direct versus bridge. */
+  protocol: "awg2" | "awg3";
+  /**
+   * The node's active bridge route as public host and UDP port, read in the
+   * same statement as the key; null while the node is Direct.
+   */
+  bridgeEndpoint: { host: string; port: number } | null;
   /** The saved AWG 3.1 client profile, unvalidated; null when none. */
   awgClientProfile: unknown;
 };
@@ -229,6 +237,8 @@ export interface ControlRepository {
   ) => Promise<Bridge>;
   deleteBridge: (actor: Actor, bridgeId: string) => Promise<DeleteBridgeResult>;
   getNodeBridgeRoutes: (actor: Actor, nodeId: string) => Promise<NodeBridgeRoutes>;
+  /** Counts-only dry-run of the endpoint renderer over the node's stored configs. */
+  getBridgeEligibility: (actor: Actor, nodeId: string) => Promise<BridgeEligibility>;
   prepareBridgeRoute: (
     actor: Actor,
     nodeId: string,

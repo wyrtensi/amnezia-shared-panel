@@ -26,6 +26,7 @@ import {
   inspectAwg31ClientConfig,
   setVpnDescription,
 } from "./vpnConfig.js";
+import { decideBridgeDelivery, renderBridgeEndpoint } from "./bridgeEndpoint.js";
 import { configFilename } from "./configFilename.js";
 import { buildQrFrameTexts } from "./qrFrames.js";
 import { renderKeyQr, type RenderedQr } from "./qrRender.js";
@@ -145,10 +146,22 @@ export const createDefaultControlApiService = ({
       assertDownloadAllowed(key.policy, format);
     }
 
-    const storedLink = withClientProfile(
-      decryptSecret(key.encrypted, keyring),
-      key.awgClientProfile,
+    // The saved artifact stays the direct source; export never rewrites it.
+    // The Direct/bridge decision inspects the artifact as saved (before the
+    // client profile), so it does not depend on the profile validator. An
+    // unsupported AWG3 artifact with an active bridge refuses here, before
+    // any route accounting below.
+    const savedLink = decryptSecret(key.encrypted, keyring);
+    const delivery = decideBridgeDelivery(
+      key.protocol,
+      savedLink,
+      key.bridgeEndpoint,
     );
+    const profiledLink = withClientProfile(savedLink, key.awgClientProfile);
+    const storedLink =
+      delivery.mode === "bridge"
+        ? renderBridgeEndpoint(profiledLink, delivery.endpoint)
+        : profiledLink;
     // Apply the active routing rules for non-full-tunnel profiles at export time.
     // AmneziaVPN clients cannot refresh routing on an imported config, so every
     // export carries the current rules and clears the "outdated" flag. On top of
@@ -416,6 +429,8 @@ export const createDefaultControlApiService = ({
   deleteBridge: (actor, bridgeId) => repository.deleteBridge(actor, bridgeId),
   getNodeBridgeRoutes: (actor, nodeId) =>
     repository.getNodeBridgeRoutes(actor, nodeId),
+  getBridgeEligibility: (actor, nodeId) =>
+    repository.getBridgeEligibility(actor, nodeId),
   prepareBridgeRoute: (actor, nodeId, request) =>
     repository.prepareBridgeRoute(actor, nodeId, request),
   releaseBridgeRoute: (actor, routeId) =>

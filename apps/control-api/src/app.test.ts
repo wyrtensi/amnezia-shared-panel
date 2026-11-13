@@ -158,6 +158,16 @@ createNode: vi.fn(() => Promise.resolve({ id: "node-1" })),
   deleteBridge: vi.fn(() =>
     Promise.resolve({ id: bridgeFixture.id, deleted: true as const }),
   ),
+  getBridgeEligibility: vi.fn(() =>
+    Promise.resolve({
+      nodeId: bridgeNodeId,
+      total: 0,
+      awg31Eligible: 0,
+      awg20Direct: 0,
+      awg2NativeDirect: 0,
+      unsupported: 0,
+    }),
+  ),
   getNodeBridgeRoutes: vi.fn(() =>
     Promise.resolve({
       nodeId: bridgeNodeId,
@@ -2081,6 +2091,10 @@ describe("bridge registry routes", () => {
     { method: "GET" as const, url: "/api/admin/infrastructure" },
     { method: "GET" as const, url: "/api/admin/vpn-bridges" },
     {
+      method: "GET" as const,
+      url: `/api/admin/nodes/${bridgeNodeId}/vpn-bridge-eligibility`,
+    },
+    {
       method: "POST" as const,
       url: "/api/admin/vpn-bridges",
       payload: { name: "Bridge", publicIpv4: "45.10.20.30" },
@@ -2134,6 +2148,7 @@ describe("bridge registry routes", () => {
       service.updateBridge,
       service.deleteBridge,
       service.getNodeBridgeRoutes,
+      service.getBridgeEligibility,
       service.prepareBridgeRoute,
       service.releaseBridgeRoute,
       service.updateNode,

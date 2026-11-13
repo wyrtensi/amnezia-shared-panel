@@ -6,9 +6,10 @@ import { encryptSecret } from "@amnezia/db";
 import type { Actor } from "./service.js";
 import { createDefaultControlApiService } from "./defaultService.js";
 import { decodeVpnLink, encodeVpnPayload } from "./vpnConfig.js";
-import type { ConfigRefreshSnapshot, ControlRepository } from "./repository.js";
+import type { ConfigRefreshSnapshot, ControlRepository, StoredKeyConfig } from "./repository.js";
 import { awg31Link, readCopies } from "./awg31.fixture.js";
 import { configRefreshToken } from "./awgClientProfile.js";
+import { renderKeyQr } from "./qrRender.js";
 import { ApiError } from "./service.js";
 
 const employee: Actor = {
@@ -112,6 +113,8 @@ const createRepository = (): ControlRepository => ({
       nameDisplay: { server: true, label: true, number: false },
       appliedRuleVersionId: null,
       state: "active" as const,
+      protocol: "awg3" as const,
+      bridgeEndpoint: null,
       awgClientProfile: null,
       activeRule: null,
       customRoutes: null,
@@ -181,6 +184,16 @@ const createRepository = (): ControlRepository => ({
   deleteBridge: vi.fn(() =>
     Promise.resolve({ id: bridgeFixture.id, deleted: true as const }),
   ),
+  getBridgeEligibility: vi.fn(() =>
+    Promise.resolve({
+      nodeId: bridgeNodeId,
+      total: 0,
+      awg31Eligible: 0,
+      awg20Direct: 0,
+      awg2NativeDirect: 0,
+      unsupported: 0,
+    }),
+  ),
   getNodeBridgeRoutes: vi.fn(() =>
     Promise.resolve({
       nodeId: bridgeNodeId,
@@ -233,6 +246,8 @@ const splitTunnelKey = () => ({
   nameDisplay: { server: true, label: true, number: false },
   appliedRuleVersionId: null,
   state: "active" as const,
+  protocol: "awg3" as const,
+  bridgeEndpoint: null,
   awgClientProfile: null,
   activeRule: null,
   customRoutes: null,
@@ -253,6 +268,8 @@ describe("default control service policy enforcement", () => {
       nameDisplay: { server: true, label: true, number: false },
       appliedRuleVersionId: null,
       state: "active" as const,
+      protocol: "awg3" as const,
+      bridgeEndpoint: null,
       awgClientProfile: null,
       activeRule: null,
       customRoutes: null,
@@ -305,6 +322,8 @@ describe("default control service policy enforcement", () => {
       nameDisplay: { server: true, label: true, number: false },
       appliedRuleVersionId: null,
       state: "active" as const,
+      protocol: "awg3" as const,
+      bridgeEndpoint: null,
       awgClientProfile: null,
       activeRule: null,
       customRoutes: null,
@@ -345,6 +364,8 @@ describe("default control service policy enforcement", () => {
       nameDisplay: { server: true, label: true, number: false },
       appliedRuleVersionId: null,
       state: "active" as const,
+      protocol: "awg3" as const,
+      bridgeEndpoint: null,
       awgClientProfile: null,
       activeRule: {
         versionId: "v1",
@@ -393,6 +414,8 @@ describe("default control service policy enforcement", () => {
       nameDisplay: { server: true, label: true, number: false },
       appliedRuleVersionId: null,
       state: "active" as const,
+      protocol: "awg3" as const,
+      bridgeEndpoint: null,
       awgClientProfile: null,
       activeRule: {
         versionId: "v1",
@@ -491,6 +514,8 @@ describe("default control service policy enforcement", () => {
         nameDisplay: { server: true, label: true, number: false },
         appliedRuleVersionId: null,
         state: "active" as const,
+        protocol: "awg3" as const,
+        bridgeEndpoint: null,
         awgClientProfile: null,
         activeRule: null,
         customRoutes: null,
@@ -540,6 +565,8 @@ describe("client-visible connection name", () => {
       nameDisplay: display,
       appliedRuleVersionId: null,
       state: "active" as const,
+      protocol: "awg3" as const,
+      bridgeEndpoint: null,
       awgClientProfile: null,
       activeRule: null,
       customRoutes: null,
@@ -591,6 +618,8 @@ describe("the two file shapes and what each one keeps", () => {
       nameDisplay: { server: true, label: true, number: false },
       appliedRuleVersionId: null,
       state: "active" as const,
+      protocol: "awg3" as const,
+      bridgeEndpoint: null,
       awgClientProfile: null,
       activeRule: null,
       customRoutes: null,
@@ -715,6 +744,8 @@ describe("simple-key QR rendering", () => {
       nameDisplay: { server: true, label: true, number: false },
       appliedRuleVersionId: null,
       state: "active" as const,
+      protocol: "awg3" as const,
+      bridgeEndpoint: null,
       awgClientProfile: null,
       activeRule: null,
       customRoutes: null,
@@ -762,6 +793,8 @@ describe("the AmneziaVPN series refuses a config nobody could scan", () => {
       nameDisplay: { server: true, label: true, number: false },
       appliedRuleVersionId: null,
       state: "active" as const,
+      protocol: "awg3" as const,
+      bridgeEndpoint: null,
       awgClientProfile: null,
       activeRule: null,
       customRoutes: null,
@@ -814,6 +847,8 @@ describe("the AmneziaWG QR refuses a config that will not fit", () => {
       nameDisplay: { server: true, label: true, number: false },
       appliedRuleVersionId: null,
       state: "active" as const,
+      protocol: "awg3" as const,
+      bridgeEndpoint: null,
       awgClientProfile: null,
       activeRule: null,
       customRoutes: null,
@@ -1046,5 +1081,193 @@ describe("export with a saved AWG 3.1 client profile", () => {
     expect(error).toBeInstanceOf(ApiError);
     expect((error as ApiError).code).toBe("CONFIG_PROFILE_INVALID");
     expect((error as ApiError).message).not.toContain("99");
+  });
+});
+
+describe("effective endpoint at config delivery (bridge or direct)", () => {
+  const bridgeA = { host: "45.10.20.30", port: 41000 };
+  const bridgeB = { host: "45.10.20.31", port: 41007 };
+  const link31 = awg31Link();
+  const profile = { version: 1, revision: 1, jc: 4, jmin: 45, jmax: 175, cpsOrder: 1 };
+  const feed = (cidrs: string[]) => ({ id: "rule-1", versionId: "ver-1", version: "v1", payload: { cidrs, domains: [] } });
+  const confLine = (conf: string, key: string) =>
+    new RegExp(`^${key} = (.*)$`, "m").exec(conf)?.[1];
+
+  const setup = (over: Record<string, unknown> = {}) => {
+    const repository = createRepository();
+    const key: StoredKeyConfig = {
+      ...splitTunnelKey(),
+      routeProfile: "full_tunnel" as const,
+      encrypted: encryptSecret(link31, keyring, 1),
+      ...over,
+    };
+    vi.mocked(repository.findKeyConfig).mockImplementation(() => Promise.resolve(key));
+    const service = createDefaultControlApiService({ repository, keyring });
+    const assign = (bridgeEndpoint: { host: string; port: number } | null) => {
+      key.bridgeEndpoint = bridgeEndpoint;
+    };
+    const get = async (format: "vpn" | "conf" | "qr-svg" | "qr-conf") =>
+      service.getKeyConfig(employee, "key-1", format, false);
+    return { repository, key, service, assign, get };
+  };
+
+  const endpointCopies = (vpn: string) => {
+    const copies = readCopies(vpn, decodeVpnLink);
+    return {
+      top: decodeVpnLink(vpn).hostName,
+      outerPort: copies.awg.port,
+      innerHost: copies.lastConfig.hostName,
+      innerPort: copies.lastConfig.port,
+      confEndpoint: copies.line("Endpoint"),
+    };
+  };
+  const stripEndpoint = (vpn: string) => {
+    const payload = decodeVpnLink(vpn);
+    const awg = payload.containers?.[0]?.awg ?? {};
+    const inner = JSON.parse(String(awg.last_config)) as Record<string, unknown>;
+    delete inner.hostName;
+    delete inner.port;
+    inner.config = String(inner.config).replace(/^Endpoint = .*$/m, "");
+    awg.last_config = JSON.stringify(inner);
+    delete awg.port;
+    delete payload.hostName;
+    return JSON.stringify(payload);
+  };
+
+  it("walks Direct -> Bridge A -> Bridge B -> Direct on one key, changing only the endpoint", async () => {
+    const { service, assign, get, key } = setup();
+    const savedCiphertext = key.encrypted.ciphertext;
+    const direct = String((await get("vpn")).body);
+    assign(bridgeA);
+    const onA = String((await get("vpn")).body);
+    assign(bridgeB);
+    const onB = String((await get("vpn")).body);
+    assign(null);
+    const back = String((await get("vpn")).body);
+
+    expect(endpointCopies(direct)).toEqual({
+      top: "vpn.example.test", outerPort: "443", innerHost: "vpn.example.test", innerPort: 443,
+      confEndpoint: "vpn.example.test:443",
+    });
+    expect(endpointCopies(onA)).toEqual({
+      top: "45.10.20.30", outerPort: "41000", innerHost: "45.10.20.30", innerPort: 41000,
+      confEndpoint: "45.10.20.30:41000",
+    });
+    expect(endpointCopies(onB)).toMatchObject({ top: "45.10.20.31", outerPort: "41007", innerPort: 41007 });
+    expect(back).toBe(direct);
+    // Everything except the endpoint is identical: credentials, tunnel IP, name, routes.
+    expect(stripEndpoint(onA)).toBe(stripEndpoint(direct));
+    expect(stripEndpoint(onB)).toBe(stripEndpoint(direct));
+    expect(readCopies(onA, decodeVpnLink).line("PrivateKey")).toBe("synthetic-client-private-key");
+    expect(decodeVpnLink(onA).description).toBe(decodeVpnLink(direct).description);
+    // Export never rewrites the saved ciphertext.
+    expect(key.encrypted.ciphertext).toBe(savedCiphertext);
+    expect(service).toBeDefined();
+  });
+
+  it("agrees across link, file and both QR formats within one export", async () => {
+    const { assign, get } = setup();
+    assign(bridgeA);
+    const vpn = String((await get("vpn")).body);
+    const conf = String((await get("conf")).body);
+    expect(confLine(conf, "Endpoint")).toBe("45.10.20.30:41000");
+    expect(readCopies(vpn, decodeVpnLink).line("Endpoint")).toBe("45.10.20.30:41000");
+    expect((await get("qr-svg")).body).toEqual((await renderKeyQr(vpn, "svg")).body);
+    expect((await get("qr-conf")).body).toEqual((await renderKeyQr(conf, "svg")).body);
+  });
+
+  it("applies Refresh config and the bridge together, and follows a change between them", async () => {
+    const { assign, get, key } = setup();
+    assign(bridgeA);
+    const plain = String((await get("vpn")).body);
+    // Refresh saves only the profile; the next download re-reads the assignment.
+    key.awgClientProfile = profile;
+    const refreshedOnA = String((await get("vpn")).body);
+    assign(bridgeB);
+    const refreshedOnB = String((await get("vpn")).body);
+    const copies = readCopies(refreshedOnA, decodeVpnLink);
+    expect([copies.awg.Jc, copies.line("Jc")]).toEqual(["4", "4"]);
+    expect(endpointCopies(refreshedOnA).confEndpoint).toBe("45.10.20.30:41000");
+    expect(endpointCopies(refreshedOnB).confEndpoint).toBe("45.10.20.31:41007");
+    expect(readCopies(plain, decodeVpnLink).awg.Jc).toBe("8");
+    expect(readCopies(refreshedOnB, decodeVpnLink).line("Jc")).toBe("4");
+  });
+
+  it("keeps native AWG 2 keys and AWG3 keys with a 2.0 artifact Direct, even if the artifact is odd", async () => {
+    const odd = encryptSecret("vpn://not-decodable", keyring, 1);
+    const native = setup({ protocol: "awg2" as const, encrypted: odd });
+    native.assign(bridgeA);
+    expect((await native.get("vpn")).body).toBe("vpn://not-decodable");
+    const fallback20 = setup({ encrypted: encryptSecret(awg31Link({ protocolVersion: "2" }), keyring, 1) });
+    fallback20.assign(bridgeA);
+    expect(endpointCopies(String((await fallback20.get("vpn")).body)).confEndpoint).toBe("vpn.example.test:443");
+  });
+
+  it.each([
+    ["unrecognized", "vpn://not-decodable"],
+    ["unmarked", awg31Link({ protocolVersion: null })],
+    ["ambiguous", awg31Link({ conf: (c) => `${c}Endpoint = other.example.test:1\n` })],
+  ])("refuses an %s AWG3 artifact with an active bridge before any route accounting", async (_name, artifact) => {
+    const { repository, assign, get, key } = setup({
+      routeProfile: "ru_blacklist" as const,
+      activeRule: feed(["10.0.0.0/8"]),
+      encrypted: encryptSecret(artifact, keyring, 1),
+    });
+    assign(bridgeA);
+    const error = await get("vpn").catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(ApiError);
+    expect(error).toMatchObject({ statusCode: 409, code: "BRIDGE_CONFIG_UNSUPPORTED" });
+    expect((error as ApiError).message).not.toMatch(/synthetic|example\.test|vpn:\/\//);
+    expect(repository.markKeyRuleVersion).not.toHaveBeenCalled();
+    expect(repository.appendAudit).not.toHaveBeenCalled();
+    // Without an active route nothing needs inspecting: the same key stays served.
+    assign(null);
+    key.routeProfile = "full_tunnel";
+    expect((await get("vpn")).body).toBeTruthy();
+  });
+
+  it("projects ru_blacklist with globals and user routes onto the bridge, and a full-tunnel fallback keeps it", async () => {
+    const cidrs = Array.from({ length: 1500 }, (_, i) => `10.${i >> 8}.${i & 255}.0/24`);
+    const { repository, assign, get } = setup({
+      routeProfile: "ru_blacklist" as const,
+      activeRule: feed(cidrs),
+      customRoutes: { ru_blacklist: { cidrs: ["203.0.113.0/24"], domains: [] } },
+    });
+    vi.mocked(repository.getGlobalRoutes).mockResolvedValue({
+      ru_blacklist: {
+        add: { cidrs: ["198.51.100.0/24"], domains: [] },
+        exclude: { cidrs: ["10.0.0.0/24"], domains: [] },
+      },
+    });
+    assign(bridgeA);
+    const vpn = String((await get("vpn")).body);
+    const copies = readCopies(vpn, decodeVpnLink);
+    expect(copies.line("Endpoint")).toBe("45.10.20.30:41000");
+    const allowed = copies.line("AllowedIPs") ?? "";
+    expect(allowed).toContain("203.0.113.0/24");
+    expect(allowed).toContain("198.51.100.0/24");
+    expect(allowed).not.toContain("10.0.0.0/24,");
+    expect(allowed.split(",").length).toBeGreaterThan(1400);
+    expect(String((await get("conf")).body)).toContain("Endpoint = 45.10.20.30:41000");
+    expect(repository.markKeyRuleVersion).toHaveBeenCalledWith("key-1", "ver-1");
+    // The QR limit still refuses the long config, bridge or not.
+    expect(await get("qr-svg").catch((e: unknown) => (e as ApiError).code)).toBe("QR_TOO_LARGE");
+
+    // No routes to apply: the key ships as the full tunnel it is, bridge kept.
+    const empty = setup({ routeProfile: "ru_blacklist" as const, activeRule: null });
+    empty.assign(bridgeB);
+    const fallback = String((await empty.get("vpn")).body);
+    expect(readCopies(fallback, decodeVpnLink).line("Endpoint")).toBe("45.10.20.31:41007");
+    expect(readCopies(fallback, decodeVpnLink).line("AllowedIPs")).toBe("0.0.0.0/0, ::/0");
+  });
+
+  it("still enforces policy and ownership before touching the artifact", async () => {
+    const { assign, repository } = setup({ policy: { ...defaultPortalPolicy, allowConfigRedownload: false } });
+    assign(bridgeA);
+    const service = createDefaultControlApiService({ repository, keyring });
+    await expect(service.getKeyConfig(employee, "key-1", "vpn", false)).rejects.toMatchObject({ code: "POLICY_DENIED" });
+    const other = setup({ ownerId: "someone-else" });
+    other.assign(bridgeA);
+    await expect(other.get("vpn")).rejects.toMatchObject({ code: "KEY_NOT_FOUND" });
   });
 });

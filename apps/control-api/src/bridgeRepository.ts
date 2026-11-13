@@ -4,6 +4,7 @@ import {
   bridgeFrpProxyName,
   nodeServedProtocols,
   type Bridge,
+  type BridgeEligibility,
   type BridgeRouteSummary,
   type CreateBridgeRequest,
   type DeleteBridgeResult,
@@ -17,13 +18,22 @@ import {
 } from "@amnezia/contracts";
 import {
   auditEvents,
+  decryptSecret,
   nodeReachabilityResults,
   nodeReachabilityState,
   nodes,
+  users,
   vpnBridgeRoutes,
   vpnBridges,
+  vpnKeys,
   type Database,
+  type EncryptionKeyring,
 } from "@amnezia/db";
+import {
+  bridgeConfigUnsupported,
+  canRenderBridgeEndpoint,
+  classifyKeyForBridge,
+} from "./bridgeEndpoint.js";
 import { checkActivationGuard, checkReleaseGuard } from "./bridgeGuards.js";
 import { ApiError, type Actor } from "./service.js";
 
@@ -37,6 +47,8 @@ export type BridgeRepositoryOptions = {
   db: Database;
   /** `VPN_BRIDGE_OBSERVATION_STALE_MS`, see bridgeConfig.ts. */
   observationStaleMs: number;
+  /** Decrypts stored key artifacts for the eligibility dry-run. */
+  keyring: EncryptionKeyring;
 };
 
 /** Per-node endpoint state for the shared infrastructure view. */
@@ -682,6 +694,78 @@ export class PostgresBridgeRepository {
    * node's AWG 3.1 reachability evidence is reset and the audit event is
    * written; any failure, including the audit insert, rolls all of it back.
    */
+  /**
+   * Dry-run the endpoint renderer over the node's usable stored configs and
+   * return counts only. Usable: a saved artifact, an owner that is not the
+   * probe service account, and a key not revoked or failed. Only AWG3-issued
+   * keys are inspected; AWG2-issued keys always stay Direct.
+   */
+  bridgeEligibility = async (
+    nodeId: string,
+    tx: Pick<Database, "select"> = this.db,
+  ): Promise<BridgeEligibility> => {
+    const rows = await tx
+      .select({
+        protocol: vpnKeys.protocol,
+        ciphertext: vpnKeys.configCiphertext,
+        nonce: vpnKeys.configNonce,
+        authTag: vpnKeys.configAuthTag,
+        keyVersion: vpnKeys.configKeyVersion,
+      })
+      .from(vpnKeys)
+      .innerJoin(users, eq(users.id, vpnKeys.ownerId))
+      .where(
+        and(
+          eq(vpnKeys.nodeId, nodeId),
+          eq(users.serviceAccount, false),
+          inArray(vpnKeys.state, ["provisioning", "active", "disabled", "revoking"]),
+          sql`${vpnKeys.configCiphertext} is not null`,
+        ),
+      );
+    const result: BridgeEligibility = {
+      nodeId,
+      total: 0,
+      awg31Eligible: 0,
+      awg20Direct: 0,
+      awg2NativeDirect: 0,
+      unsupported: 0,
+    };
+    for (const row of rows) {
+      result.total += 1;
+      if (row.protocol === "awg2") {
+        result.awg2NativeDirect += 1;
+        continue;
+      }
+      let link: string | null = null;
+      if (
+        row.ciphertext &&
+        row.nonce &&
+        row.authTag &&
+        row.keyVersion !== null
+      ) {
+        try {
+          link = decryptSecret(
+            {
+              ciphertext: row.ciphertext,
+              nonce: row.nonce,
+              authTag: row.authTag,
+              keyVersion: row.keyVersion,
+            },
+            this.options.keyring,
+          );
+        } catch {
+          link = null;
+        }
+      }
+      const cls = classifyKeyForBridge("awg3", link);
+      if (cls === "awg20") result.awg20Direct += 1;
+      else if (cls === "awg31" && link !== null && canRenderBridgeEndpoint(link)) {
+        result.awg31Eligible += 1;
+      } else result.unsupported += 1;
+    }
+    return result;
+  };
+
   changeNodeEndpoint = async (
     tx: BridgeTransaction,
     actor: Actor,
@@ -744,6 +828,13 @@ export class PostgresBridgeRepository {
         this.options.observationStaleMs,
       );
       if (failure) throw new ApiError(409, failure.message, failure.code);
+      // Eligibility is checked on every activation, not only the first: new
+      // keys can appear between activations, and an unsupported stored
+      // artifact would fail at download time. It runs inside this
+      // transaction, after the node row lock, so the keys it sees are the
+      // ones the new assignment will serve.
+      const eligibility = await this.bridgeEligibility(nodeId, tx);
+      if (eligibility.unsupported > 0) throw bridgeConfigUnsupported();
     }
 
     // Demote first: the one-active-route-per-node index is checked per

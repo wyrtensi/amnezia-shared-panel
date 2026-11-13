@@ -566,6 +566,11 @@ export const buildApp = async ({
     const { id } = idParamsSchema.parse(request.params);
     return service.getNodeBridgeRoutes(admin, id);
   });
+  app.get("/api/admin/nodes/:id/vpn-bridge-eligibility", async (request) => {
+    const admin = adminFor(request);
+    const { id } = idParamsSchema.parse(request.params);
+    return service.getBridgeEligibility(admin, id);
+  });
   // A static last segment, so this never reaches the generic
   // `:resource/:id/:action` handler below.
   app.post("/api/admin/nodes/:id/vpn-bridge-routes", async (request, reply) => {

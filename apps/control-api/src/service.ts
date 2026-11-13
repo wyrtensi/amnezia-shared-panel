@@ -3,6 +3,7 @@ import type {
   CreateBridgeRequest,
   DeleteBridgeResult,
   InfrastructureItem,
+  BridgeEligibility,
   NodeBridgeRoutes,
   PrepareBridgeRouteRequest,
   PrepareBridgeRouteResult,
@@ -314,6 +315,8 @@ export interface ControlApiService {
   deleteBridge: (actor: Actor, bridgeId: string) => Promise<DeleteBridgeResult>;
   /** The node's endpoint assignment: active route or Direct, drafts, retiring. */
   getNodeBridgeRoutes: (actor: Actor, nodeId: string) => Promise<NodeBridgeRoutes>;
+  /** Counts-only dry-run of the endpoint renderer over the node's stored configs. */
+  getBridgeEligibility: (actor: Actor, nodeId: string) => Promise<BridgeEligibility>;
   /** Reserve a bridge UDP port for the node (idempotent per node and bridge). */
   prepareBridgeRoute: (
     actor: Actor,

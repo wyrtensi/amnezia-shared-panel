@@ -2,6 +2,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { and, eq, inArray, or } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
+  bridgeEligibilitySchema,
   bridgeFrpProxyName,
   infrastructureItemSchema,
   nodeBridgeRoutesSchema,
@@ -20,6 +21,10 @@ import {
   vpnBridges,
   vpnKeys,
 } from "@amnezia/db";
+
+import { createDefaultControlApiService } from "./defaultService.js";
+import { awg31Link, readCopies } from "./awg31.fixture.js";
+import { decodeVpnLink } from "./vpnConfig.js";
 import { PostgresControlRepository } from "./postgresRepository.js";
 import type { Actor } from "./service.js";
 
@@ -1016,5 +1021,147 @@ describe("bridge registry (real PostgreSQL)", () => {
     // Bridges never show up in the VPN node lists.
     const adminNodes = (await repository.adminList(admin, "nodes")) as Array<{ id: string }>;
     expect(adminNodes.some((row) => row.id === bridge.id)).toBe(false);
+  });
+
+  describe("effective endpoint at delivery and eligibility", () => {
+    const seedKey = async (
+      nodeId: string,
+      artifact: string | null,
+      options: { protocol?: "awg2" | "awg3"; state?: "active" | "revoked" } = {},
+    ): Promise<string> => {
+      const secret = artifact === null ? null : encryptSecret(artifact, keyring, 1);
+      const [row] = await db()
+        .insert(vpnKeys)
+        .values({
+          ownerId: admin.id,
+          nodeId,
+          nodeLabel: `bridge_${runTag}_${randomBytes(3).toString("hex")}`,
+          protocol: options.protocol ?? "awg3",
+          routeProfile: "full_tunnel",
+          state: options.state ?? "active",
+          ...(secret
+            ? {
+                configCiphertext: secret.ciphertext,
+                configNonce: secret.nonce,
+                configAuthTag: secret.authTag,
+                configKeyVersion: secret.keyVersion,
+              }
+            : {}),
+        })
+        .returning({ id: vpnKeys.id });
+      if (!row) throw new Error("Failed to seed key");
+      return row.id;
+    };
+
+    const endpointOf = async (keyId: string): Promise<string | undefined> => {
+      const service = createDefaultControlApiService({ repository, keyring });
+      const vpn = String((await service.getKeyConfig(admin, keyId, "vpn", false)).body);
+      return readCopies(vpn, decodeVpnLink).line("Endpoint") ?? undefined;
+    };
+
+    const prepared = async (nodeId: string, name: string) => {
+      const bridge = await createBridge({ name });
+      const { route } = await repository.prepareBridgeRoute(admin, nodeId, { bridgeId: bridge.id });
+      await makeActivatable(bridge.id, route.id);
+      return { bridge, route };
+    };
+
+    runDatabaseTest("walks Direct, Bridge A, Bridge B, Direct for an existing key and a new key", async () => {
+      const nodeId = await seedNode("delivery");
+      const keyId = await seedKey(nodeId, awg31Link());
+      const [before] = await db().select().from(vpnKeys).where(eq(vpnKeys.id, keyId));
+      const a = await prepared(nodeId, "A");
+      const b = await prepared(nodeId, "B");
+
+      expect(await endpointOf(keyId)).toBe("vpn.example.test:443");
+      await activate(nodeId, a.route.id, 0);
+      expect(await endpointOf(keyId)).toBe(`${a.bridge.publicIpv4}:${a.route.publicUdpPort}`);
+      // A key issued after the activation reads the same assignment.
+      const fresh = await seedKey(nodeId, awg31Link());
+      expect(await endpointOf(fresh)).toBe(`${a.bridge.publicIpv4}:${a.route.publicUdpPort}`);
+      await makeActivatable(b.bridge.id, b.route.id);
+      await activate(nodeId, b.route.id, 1);
+      expect(await endpointOf(keyId)).toBe(`${b.bridge.publicIpv4}:${b.route.publicUdpPort}`);
+      await activate(nodeId, null, 2);
+      expect(await endpointOf(keyId)).toBe("vpn.example.test:443");
+      expect(await endpointOf(fresh)).toBe("vpn.example.test:443");
+
+      const [after] = await db().select().from(vpnKeys).where(eq(vpnKeys.id, keyId));
+      expect(after?.configCiphertext).toBe(before?.configCiphertext);
+      expect(after?.nodeId).toBe(nodeId);
+    });
+
+    runDatabaseTest("refuses an unsupported AWG3 artifact on an active bridge and serves native AWG 2 and 2.0 Direct", async () => {
+      const nodeId = await seedNode("unsupported-delivery");
+      const unmarked = await seedKey(nodeId, awg31Link({ protocolVersion: null }));
+      const native = await seedKey(nodeId, awg31Link({ protocolVersion: null }), { protocol: "awg2" });
+      const fallback = await seedKey(nodeId, awg31Link({ protocolVersion: "2" }));
+      const ok = await seedKey(nodeId, awg31Link());
+      // Activation itself refuses while the unmarked key is usable; revoke it to activate.
+      const a = await prepared(nodeId, "A");
+      await db().update(vpnKeys).set({ state: "revoked" }).where(eq(vpnKeys.id, unmarked));
+      await activate(nodeId, a.route.id, 0);
+      await db().update(vpnKeys).set({ state: "active" }).where(eq(vpnKeys.id, unmarked));
+
+      const service = createDefaultControlApiService({ repository, keyring });
+      expect(await failureOf(service.getKeyConfig(admin, unmarked, "vpn", false))).toMatchObject({
+        statusCode: 409,
+        code: "BRIDGE_CONFIG_UNSUPPORTED",
+      });
+      expect(await endpointOf(native)).toBe("vpn.example.test:443");
+      expect(await endpointOf(fallback)).toBe("vpn.example.test:443");
+      expect(await endpointOf(ok)).toBe(`${a.bridge.publicIpv4}:${a.route.publicUdpPort}`);
+    });
+
+    runDatabaseTest("the eligibility dry-run returns counts only", async () => {
+      const nodeId = await seedNode("eligibility");
+      await seedKey(nodeId, awg31Link());
+      await seedKey(nodeId, awg31Link());
+      await seedKey(nodeId, awg31Link({ protocolVersion: "2" }));
+      await seedKey(nodeId, awg31Link({ protocolVersion: null }), { protocol: "awg2" });
+      await seedKey(nodeId, awg31Link({ protocolVersion: null }));
+      // Not usable: revoked, or without a saved config.
+      await seedKey(nodeId, awg31Link({ protocolVersion: null }), { state: "revoked" });
+      await seedKey(nodeId, null);
+      const result = await repository.getBridgeEligibility(admin, nodeId);
+      expect(bridgeEligibilitySchema.parse(result)).toEqual({
+        nodeId,
+        total: 5,
+        awg31Eligible: 2,
+        awg20Direct: 1,
+        awg2NativeDirect: 1,
+        unsupported: 1,
+      });
+      expect(JSON.stringify(result)).not.toMatch(/synthetic|vpn:\/\//);
+      expect(
+        await failureOf(repository.getBridgeEligibility(admin, randomUUID())),
+      ).toMatchObject({ statusCode: 404, code: "NODE_NOT_FOUND" });
+    });
+
+    runDatabaseTest("activation is refused while any usable AWG3 artifact is unsupported", async () => {
+      const nodeId = await seedNode("activation-gate");
+      await seedKey(nodeId, awg31Link());
+      const bad = await seedKey(nodeId, awg31Link({ protocolVersion: null }));
+      const a = await prepared(nodeId, "A");
+      const failure = await failureOf(activate(nodeId, a.route.id, 0));
+      expect(failure).toMatchObject({ statusCode: 409, code: "BRIDGE_CONFIG_UNSUPPORTED" });
+      expect(failure?.message).not.toMatch(/synthetic|vpn:\/\//);
+      expect(await revisionOf(nodeId)).toBe(0);
+      expect((await routeRow(a.route.id))?.state).toBe("draft");
+      // Direct is never gated.
+      expect((await activate(nodeId, null, 0)).vpnEndpoint.changed).toBe(false);
+
+      await db().update(vpnKeys).set({ state: "revoked" }).where(eq(vpnKeys.id, bad));
+      expect((await activate(nodeId, a.route.id, 0)).vpnEndpoint.changed).toBe(true);
+      // Checked on every activation, not only the first: a later bad key blocks B.
+      await seedKey(nodeId, awg31Link({ protocolVersion: null }));
+      const b = await prepared(nodeId, "B");
+      expect(await failureOf(activate(nodeId, b.route.id, 1))).toMatchObject({
+        code: "BRIDGE_CONFIG_UNSUPPORTED",
+      });
+      expect((await routeRow(a.route.id))?.state).toBe("active");
+      // Returning to Direct stays possible.
+      expect((await activate(nodeId, null, 1)).vpnEndpoint.changed).toBe(true);
+    });
   });
 });
