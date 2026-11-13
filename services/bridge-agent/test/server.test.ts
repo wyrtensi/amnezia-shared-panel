@@ -181,6 +181,20 @@ describe("GET /v1/status", () => {
   });
 });
 
+describe("bytes the host updater's health gate matches", () => {
+  // infra/bridge/bridge-agent-update.sh has no JSON parser on the host and
+  // greps these exact fragments; a serializer change must keep them.
+  it("identity and status carry the fragments verbatim", async () => {
+    const base = await boot(online);
+    expect(await (await get(base, "/v1/identity")).text()).toContain(`"bridgeId":"${BRIDGE_ID}"`);
+    const statusText = await (await get(base, "/v1/status")).text();
+    expect(statusText).toContain(`"bridgeId":"${BRIDGE_ID}"`);
+    expect(statusText).toContain('"frps":{"reachable":true,');
+    const down = await boot({ "/api/serverinfo": { status: 500 }, "/api/proxy/udp": { status: 500 } });
+    expect(await (await get(down, "/v1/status")).text()).toContain('"frps":{"reachable":false,');
+  });
+});
+
 describe("routing", () => {
   it("405 for a non-GET on a known path, 404 for an unknown path", async () => {
     const base = await boot(online);

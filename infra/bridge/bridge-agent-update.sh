@@ -67,7 +67,7 @@ UUID_RE='^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
 DIGEST_RE='^sha256:[0-9a-f]{64}$'
 REPO_RE='^[A-Za-z0-9][A-Za-z0-9._/:-]{0,254}$'
 # Date#toISOString(), as the panel sends it and the agent validated it.
-TIME_RE='^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]{1,3})?Z$'
+TIME_RE='^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]{1,9})?Z$'
 
 # The operation being worked on; set once a request or the journal is parsed.
 OP_ID=""
@@ -81,6 +81,21 @@ GATE_CODE=""
 
 log() { printf 'bridge-agent-update: %s\n' "$*"; }
 
+# Whole-string match (a grep would accept a value whose first line matches).
+matches() { [[ $1 =~ $2 ]]; }
+
+# Writes stdin to a fresh temp file next to <dest> and renames it into place
+# with <mode>. Fails (and leaves <dest> untouched) if any step fails, so a full
+# disk never renames an empty file over a good one.
+atomic_write() {
+  local dest="$1" mode="$2" tmp
+  tmp="$(mktemp "$(dirname -- "$dest")/.$(basename -- "$dest").XXXXXX")" || return 1
+  if ! cat >"$tmp" || ! chmod "$mode" "$tmp" || ! mv -f "$tmp" "$dest"; then
+    rm -f -- "$tmp"
+    return 1
+  fi
+}
+
 now_ms() { date -u +%s%3N; }
 iso_now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 
@@ -90,7 +105,7 @@ iso_now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 # intent fields are written only when they passed validation, the state is one
 # of the agent's states and the error code is one of this script's fixed codes.
 write_result() {
-  local state="$1" code="${2:-}" tmp body
+  local state="$1" code="${2:-}" body
   body="{\"operationId\":\"${OP_ID}\""
   [ -z "$OP_REPO" ] || body="${body},\"imageRepository\":\"${OP_REPO}\""
   [ -z "$OP_DIGEST" ] || body="${body},\"imageDigest\":\"${OP_DIGEST}\""
@@ -101,10 +116,10 @@ write_result() {
   # mktemp + rename: never a half-written result, never written through a
   # planted name (results/ is read-only to the agent, but the pattern is the
   # same as for every file the agent reads).
-  tmp="$(mktemp "${RESULTS_DIR}/.result.XXXXXX")" || { log "cannot write the result of ${OP_ID}"; return 1; }
-  printf '%s\n' "$body" >"$tmp"
-  chmod 0644 "$tmp"
-  mv -f "$tmp" "${RESULTS_DIR}/${OP_ID}.json"
+  if ! printf '%s\n' "$body" | atomic_write "${RESULTS_DIR}/${OP_ID}.json" 0644; then
+    log "operation ${OP_ID}: cannot write the result ${state}"
+    return 1
+  fi
   log "operation ${OP_ID}: ${state}${code:+ (${code})}"
 }
 
@@ -124,8 +139,7 @@ is_terminal() {
 # KEY=VALUE lines of already validated values. Read back with sed, never
 # sourced, and validated again on recovery.
 write_journal() {
-  local phase="$1" tmp
-  tmp="$(mktemp "${STATE_DIR}/.journal.XXXXXX")" || return 1
+  local phase="$1"
   {
     printf 'OPERATION_ID=%s\n' "$OP_ID"
     printf 'PHASE=%s\n' "$phase"
@@ -133,18 +147,22 @@ write_journal() {
     printf 'DIGEST=%s\n' "$OP_DIGEST"
     printf 'NOT_AFTER=%s\n' "$OP_NOT_AFTER"
     printf 'PREVIOUS=%s\n' "$PREVIOUS"
-  } >"$tmp"
-  chmod 0600 "$tmp"
-  mv -f "$tmp" "$JOURNAL"
+  } | atomic_write "$JOURNAL" 0600
 }
 
 journal_value() { sed -n "s/^$1=//p" "$JOURNAL" | head -n 1; }
 
 # Order matters for recovery: the terminal result first, then the journal, then
 # the request. A crash in between is cleaned up by the next run without acting.
+# If the terminal result cannot be written, the journal and the request stay
+# and the run stops: the next start retries instead of leaving an operation the
+# agent reports as running forever.
 finish() {
   local state="$1" code="${2:-}"
-  write_result "$state" "$code"
+  if ! write_result "$state" "$code"; then
+    log "operation ${OP_ID}: cannot record ${state}; keeping the journal and the request for the next run"
+    exit 1
+  fi
   rm -f "$JOURNAL" "$PIN_BACKUP"
   rm -f -- "${REQUESTS_DIR}/${OP_ID}.json"
 }
@@ -156,38 +174,28 @@ env_value() { sed -n "s/^$1=//p" "$2" 2>/dev/null | tail -n 1; }
 # agent.env is rewritten whole and renamed: a truncated file fails
 # ${BRIDGE_AGENT_IMAGE:?} in compose and takes the agent down at the next start.
 write_env_image() {
-  local value="$1" tmp
-  tmp="$(mktemp "${AGENT_DIR}/.agent.env.XXXXXX")" || return 1
-  awk -v value="$value" '
+  local value="$1" content
+  content="$(awk -v value="$value" '
     /^BRIDGE_AGENT_IMAGE=/ && !seen { print "BRIDGE_AGENT_IMAGE=" value; seen = 1; next }
     { print }
     END { if (!seen) print "BRIDGE_AGENT_IMAGE=" value }
-  ' "$ENV_FILE" >"$tmp" || { rm -f "$tmp"; return 1; }
-  chmod 0600 "$tmp"
-  mv -f "$tmp" "$ENV_FILE"
+  ' "$ENV_FILE")" || return 1
+  printf '%s\n' "$content" | atomic_write "$ENV_FILE" 0600
 }
 
 # Written only after the health gate passed: the last known-good image.
 write_pin() {
-  local tmp
-  tmp="$(mktemp "${AGENT_DIR}/.image.pin.XXXXXX")" || return 1
   {
     printf '# Written by bridge-agent-update.sh: the approved repository and the digest the agent runs.\n'
     printf 'BRIDGE_AGENT_IMAGE_REPOSITORY=%s\n' "$OP_REPO"
     printf 'BRIDGE_AGENT_IMAGE=%s\n' "$CANDIDATE"
-  } >"$tmp"
-  chmod 0600 "$tmp"
-  mv -f "$tmp" "$PIN_FILE"
+  } | atomic_write "$PIN_FILE" 0600
 }
 
 restore_pin() {
   [ -f "$PIN_BACKUP" ] || return 0
   cmp -s "$PIN_BACKUP" "$PIN_FILE" 2>/dev/null && return 0
-  local tmp
-  tmp="$(mktemp "${AGENT_DIR}/.image.pin.XXXXXX")" || return 1
-  cat "$PIN_BACKUP" >"$tmp"
-  chmod 0600 "$tmp"
-  mv -f "$tmp" "$PIN_FILE"
+  atomic_write "$PIN_FILE" 0600 <"$PIN_BACKUP"
 }
 
 # --- docker -------------------------------------------------------------------
@@ -295,14 +303,14 @@ rollback() {
 apply() {
   local current os_arch
   write_journal picked_up || { finish failed UPDATER_STATE_UNWRITABLE; return; }
-  write_result picked_up
+  write_result picked_up || { finish failed UPDATER_STATE_UNWRITABLE; return; }
 
   [ -f "$ENV_FILE" ] || { finish failed AGENT_ENV_MISSING; return; }
   [ -f "$COMPOSE_FILE" ] || { finish failed COMPOSE_FILE_MISSING; return; }
   [ -r "$TOKEN_FILE" ] || { finish failed AGENT_TOKEN_UNREADABLE; return; }
   # Without a known-good pin there is nothing verified to roll back to.
   PREVIOUS="$(env_value BRIDGE_AGENT_IMAGE "$PIN_FILE")"
-  if ! printf '%s' "${PREVIOUS#*@}" | grep -Eq "$DIGEST_RE" || [ "${PREVIOUS%@*}" = "$PREVIOUS" ]; then
+  if ! matches "${PREVIOUS#*@}" "$DIGEST_RE" || ! matches "${PREVIOUS%@*}" "$REPO_RE" || [ "${PREVIOUS%@*}" = "$PREVIOUS" ]; then
     PREVIOUS=""
     finish failed NO_KNOWN_GOOD_PIN
     return
@@ -326,7 +334,7 @@ apply() {
   fi
 
   write_journal staging || { finish failed UPDATER_STATE_UNWRITABLE; return; }
-  write_result staging
+  write_result staging || { finish failed UPDATER_STATE_UNWRITABLE; return; }
   # Pulled by digest; the previous image stays (nothing here removes an image).
   if ! docker pull --platform linux/amd64 "$CANDIDATE"; then
     finish failed PULL_FAILED
@@ -378,14 +386,12 @@ recover() {
   OP_DIGEST="$(journal_value DIGEST)"
   OP_NOT_AFTER="$(journal_value NOT_AFTER)"
   PREVIOUS="$(journal_value PREVIOUS)"
-  if ! printf '%s' "$OP_ID" | grep -Eq "$UUID_RE" ||
-     ! printf '%s' "$OP_REPO" | grep -Eq "$REPO_RE" ||
-     ! printf '%s' "$OP_DIGEST" | grep -Eq "$DIGEST_RE"; then
+  if ! matches "$OP_ID" "$UUID_RE" || ! matches "$OP_REPO" "$REPO_RE" || ! matches "$OP_DIGEST" "$DIGEST_RE"; then
     log "the journal is unreadable; removed it (nothing was applied from it)"
     rm -f "$JOURNAL" "$PIN_BACKUP"
     return
   fi
-  printf '%s' "$OP_NOT_AFTER" | grep -Eq "$TIME_RE" || OP_NOT_AFTER=""
+  matches "$OP_NOT_AFTER" "$TIME_RE" || OP_NOT_AFTER=""
   CANDIDATE="${OP_REPO}@${OP_DIGEST}"
   state="$(result_state "$OP_ID")"
   if is_terminal "$state"; then
@@ -398,7 +404,7 @@ recover() {
     claimed|picked_up|staging|no_op)
       finish failed UPDATE_INTERRUPTED ;;
     replacing|health_check|committing)
-      if ! printf '%s' "${PREVIOUS#*@}" | grep -Eq "$DIGEST_RE"; then
+      if ! matches "${PREVIOUS#*@}" "$DIGEST_RE"; then
         finish rollback_failed ROLLBACK_TARGET_UNKNOWN
         return
       fi
@@ -409,7 +415,7 @@ recover() {
         rollback UPDATE_INTERRUPTED
       fi ;;
     rolling_back)
-      if ! printf '%s' "${PREVIOUS#*@}" | grep -Eq "$DIGEST_RE"; then
+      if ! matches "${PREVIOUS#*@}" "$DIGEST_RE"; then
         finish rollback_failed ROLLBACK_TARGET_UNKNOWN
         return
       fi
@@ -429,7 +435,7 @@ finish_cleanup() {
 # A refused file under an operation id the host never saw gets a terminal
 # result, so the agent does not keep reporting it as queued.
 refuse_unread() {
-  printf '%s' "$1" | grep -Eq "$UUID_RE" || return 0
+  matches "$1" "$UUID_RE" || return 0
   [ ! -e "${RESULTS_DIR}/$1.json" ] || return 0
   OP_ID="$1"
   write_result failed REQUEST_NOT_REGULAR_FILE
@@ -469,7 +475,7 @@ process_request() {
   body="$(head -c 4096 <&8)"
   exec 8<&-
 
-  if ! printf '%s' "$id" | grep -Eq "$UUID_RE"; then
+  if ! matches "$id" "$UUID_RE"; then
     log "refusing ${name}: not an operation id"
     rm -f -- "$path"
     return
@@ -498,9 +504,9 @@ process_request() {
   repo="$(json_field "$body" imageRepository)"
   digest="$(json_field "$body" imageDigest)"
   not_after="$(json_field "$body" notAfter)"
-  printf '%s' "$repo" | grep -Eq "$REPO_RE" && OP_REPO="$repo"
-  printf '%s' "$digest" | grep -Eq "$DIGEST_RE" && OP_DIGEST="$digest"
-  printf '%s' "$not_after" | grep -Eq "$TIME_RE" && OP_NOT_AFTER="$not_after"
+  matches "$repo" "$REPO_RE" && OP_REPO="$repo"
+  matches "$digest" "$DIGEST_RE" && OP_DIGEST="$digest"
+  matches "$not_after" "$TIME_RE" && OP_NOT_AFTER="$not_after"
   if [ "$body_id" != "$OP_ID" ]; then
     OP_REPO="" OP_DIGEST="" OP_NOT_AFTER=""
     finish failed OPERATION_MISMATCH
@@ -529,15 +535,22 @@ process_request() {
   CANDIDATE="${OP_REPO}@${OP_DIGEST}"
 
   # First clock read: an intent already past its deadline is never claimed.
-  if [ "$(now_ms)" -ge "$deadline" ]; then
+  # Both reads fail closed: a clock that cannot be read counts as "too late".
+  if ! [ "$(now_ms)" -lt "$deadline" ] 2>/dev/null; then
     finish expired
     return
   fi
   # Claim, then read the clock again. Until the claim exists the agent may
   # answer "expired" for this request; after it, the agent reports this file.
+  # Without a written claim nothing starts: the request stays, and the agent
+  # keeps judging it by the clock.
   write_journal claimed || { finish failed UPDATER_STATE_UNWRITABLE; return; }
-  write_result queued
-  if [ "$(now_ms)" -ge "$deadline" ]; then
+  if ! write_result queued; then
+    log "operation ${OP_ID}: the claim could not be written; not started"
+    rm -f "$JOURNAL"
+    exit 1
+  fi
+  if ! [ "$(now_ms)" -lt "$deadline" ] 2>/dev/null; then
     finish expired
     return
   fi

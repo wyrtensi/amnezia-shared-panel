@@ -81,6 +81,7 @@ case "$1" in
     printf 'up %s\\n' "$image" >>"$FAKE/ups"
     if listed "$image" "\${FAKE_UP_FAILS:-}"; then exit 1; fi
     if [ -n "\${FAKE_UP_SLEEP:-}" ]; then echo started >"$FAKE/marker"; sleep "$FAKE_UP_SLEEP"; fi
+    [ -z "\${FAKE_LOCK_DIR_ON_UP:-}" ] || chmod 0500 "$FAKE_LOCK_DIR_ON_UP"
     grep -qxF "$image" "$FAKE/images" 2>/dev/null || echo "$image" >>"$FAKE/images"
     echo "$image" >"$FAKE/running"
     exit 0 ;;
@@ -430,6 +431,7 @@ withHost("a symlinked request is refused without being read", async (h) => {
   assert.equal(await exists(h.requestPath()), false);
   assert.equal(await exists(secret), true, "the link target is never touched");
   assert.deepEqual(await h.lines("docker.log"), []);
+  await assertInvariants(h, run);
 });
 
 withHost("a planted FIFO or directory is removed without blocking the updater", async (h) => {
@@ -439,6 +441,7 @@ withHost("a planted FIFO or directory is removed without blocking the updater", 
   assert.equal(run.status, 0, `${run.error ?? ""}${run.stderr}`);
   assert.deepEqual(await readdir(join(h.spool, "requests")), []);
   assert.deepEqual(await h.lines("docker.log"), []);
+  await assertInvariants(h, run);
 });
 
 withHost("junk names are drained, the agent's temp files are left alone", async (h) => {
@@ -448,6 +451,17 @@ withHost("junk names are drained, the agent's temp files are left alone", async 
   assert.equal(run.status, 0);
   assert.deepEqual(await readdir(join(h.spool, "requests")), [`.${OP}.abcdef.tmp`]);
   assert.deepEqual(await readdir(join(h.spool, "results")), []);
+  await assertInvariants(h, run);
+});
+
+withHost("a file name that only starts with an operation id is junk, not that operation", async (h) => {
+  await writeFile(join(h.spool, "requests", `${OP}\nx.json`), JSON.stringify({ operationId: OP }));
+  const run = h.run();
+  assert.equal(run.status, 0);
+  assert.deepEqual(await readdir(join(h.spool, "requests")), []);
+  assert.deepEqual(await readdir(join(h.spool, "results")), [], "no result under a forged name");
+  assert.deepEqual(await h.lines("docker.log"), []);
+  await assertInvariants(h, run);
 });
 
 // -------------------------------------------------------------- deadline ----
@@ -491,6 +505,7 @@ withHost("a replayed request for a finished operation is removed and never appli
   assert.deepEqual(await h.lines("docker.log"), []);
   assert.deepEqual(await h.lines("ups"), [`up ${NEW_IMAGE}`]);
   assert.equal(await exists(h.requestPath()), false);
+  await assertInvariants(h, run);
 });
 
 withHost("a claimed operation without a journal is closed, never started", async (h) => {
@@ -662,6 +677,7 @@ withHost("a journal left after a terminal result is only cleaned up", async (h) 
   assert.equal(await readFile(join(h.spool, "results", `${OP}.json`), "utf8"), finished);
   assert.equal(await exists(h.journal), false);
   assert.deepEqual(await h.lines("docker.log"), []);
+  await assertInvariants(h, run);
 });
 
 withHost("an unreadable journal is dropped without acting on it", async (h) => {
@@ -671,6 +687,7 @@ withHost("an unreadable journal is dropped without acting on it", async (h) => {
   assert.match(run.stdout, /journal is unreadable/);
   assert.equal(await exists(h.journal), false);
   assert.deepEqual(await h.lines("docker.log"), []);
+  await assertInvariants(h, run);
 });
 
 // ------------------------------------------------------------ concurrency ----
@@ -692,4 +709,65 @@ withHost("concurrent runs are serialised; the busy run leaves the request for th
   assert.equal(await firstDone, 0);
   assert.equal((await h.result()).state, "succeeded");
   assert.deepEqual(await h.lines("ups"), [`up ${NEW_IMAGE}`], "applied once");
+  await assertInvariants(h, second);
+});
+
+// -------------------------------------------------- unwritable results ----
+
+const asNonRoot = { skip: !canExecute ? "needs Linux bash + flock" : process.getuid?.() === 0 ? "root ignores directory modes" : false };
+
+test("without a written claim nothing starts and the request stays", asNonRoot, async () => {
+  const h = await fixture();
+  try {
+    await h.request();
+    await chmod(join(h.spool, "results"), 0o500);
+    const run = h.run();
+    await chmod(join(h.spool, "results"), 0o755);
+    assert.notEqual(run.status, 0, "the unit sees the failure");
+    assert.match(run.stdout, /the claim could not be written; not started/);
+    assert.deepEqual(await h.lines("docker.log"), [], "never started");
+    assert.equal(await exists(h.requestPath()), true, "the agent keeps judging it by its clock");
+    assert.equal(await exists(h.journal), false);
+    assert.deepEqual(await readdir(join(h.spool, "results")), []);
+    await assertInvariants(h, run);
+  } finally {
+    await chmod(join(h.spool, "results"), 0o755).catch(() => {});
+    await h.cleanup();
+  }
+});
+
+test("a terminal result that cannot be written keeps the journal and the request; the next run finishes", asNonRoot, async () => {
+  const h = await fixture();
+  try {
+    await h.request();
+    const results = join(h.spool, "results");
+    const first = h.run({ FAKE_LOCK_DIR_ON_UP: results });
+    await chmod(results, 0o755);
+    assert.notEqual(first.status, 0);
+    assert.match(first.stdout, /cannot record succeeded; keeping the journal and the request/);
+    assert.equal(await exists(h.journal), true);
+    assert.equal(await exists(h.requestPath()), true);
+    assert.notEqual((await h.result()).state, "succeeded", "never reported before it is recorded");
+
+    const second = h.run();
+    assert.equal(second.status, 0, second.stderr);
+    assert.match(second.stdout, /recovering an interrupted run \(phase committing\)/);
+    assert.equal((await h.result()).state, "succeeded");
+    assert.deepEqual(await h.lines("ups"), [`up ${NEW_IMAGE}`], "the candidate is started once");
+    assert.equal(await exists(h.journal), false);
+    assert.equal(await exists(h.requestPath()), false);
+    await assertInvariants(h, second);
+  } finally {
+    await chmod(join(h.spool, "results"), 0o755).catch(() => {});
+    await h.cleanup();
+  }
+});
+
+withHost("an unreadable clock never starts an operation", async (h) => {
+  await h.request();
+  await writeFile(join(h.fake, "clock"), "not-a-number\n");
+  const run = h.run();
+  assert.equal((await h.result()).state, "expired");
+  assert.deepEqual(await h.lines("docker.log"), []);
+  await assertInvariants(h, run);
 });

@@ -202,6 +202,13 @@ describe("POST /v1/update", () => {
     expect(await (await post(base, intent())).json()).toMatchObject({ state: "expired" });
   });
 
+  it("accepts any UTC ISO time the panel's contract allows (fractions up to nanoseconds)", async () => {
+    const base = await boot();
+    const res = await post(base, intent({ notAfter: "2026-11-13T12:02:00.123456789Z" }));
+    expect(res.status).toBe(202);
+    expect((await json(await post(base, intent({ notAfter: "2026-11-13T12:02:00.123Z" })))).state).toBe("queued");
+  });
+
   it("logs a bounded clock-skew note when notAfter is far from local time", async () => {
     const base = await boot();
     await post(base, intent({ notAfter: "2026-11-13T13:00:00.000Z" }));

@@ -47,8 +47,11 @@ export const isTerminalUpdateState = (state: UpdateAgentState): boolean => TERMI
 
 export const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const DIGEST = /^sha256:[0-9a-f]{64}$/;
-/** `Date#toISOString()` shape, which is what the panel sends and the host updater re-validates. */
-const ISO_UTC = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,3})?Z$/;
+/**
+ * UTC ISO time (`z.iso.datetime()` without offsets). The panel sends
+ * `Date#toISOString()`; the host updater accepts the same shape.
+ */
+const ISO_UTC = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,9})?Z$/;
 /** A bare repository name (no tag, no digest); same character set as install-bridge.sh. */
 export const REPOSITORY = /^[A-Za-z0-9][A-Za-z0-9._/:-]{0,254}$/;
 const ERROR_CODE = /^[A-Z][A-Z0-9_]{0,63}$/;
