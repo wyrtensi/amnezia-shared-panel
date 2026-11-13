@@ -12,8 +12,10 @@
  * returns it.
  */
 
+import { statSync } from "node:fs";
 import { lstat, writeFile } from "node:fs/promises";
 
+import { resolveSecret } from "./apiKey.js";
 import { flagOf, positionals } from "./args.js";
 
 export type BridgeApi = <T>(path: string, init?: RequestInit) => Promise<T>;
@@ -31,6 +33,13 @@ type BridgeRouteSummary = {
   nodeName?: string;
   publicUdpPort: number;
   state: RouteState;
+  registration?: { status: string; marker?: string | null; observedAt?: string | null };
+  verification?: {
+    status: string;
+    method?: string | null;
+    verifiedAt?: string | null;
+    error?: string | null;
+  };
 };
 
 export type SetupCommands = { install?: string; dryRun?: string; remove?: string };
@@ -46,8 +55,23 @@ export type BridgeView = {
   heldPorts: number;
   managementStatus: string;
   lastObservedAt: string | null;
+  management?: BridgeManagementView | null;
   routes: BridgeRouteSummary[];
   setupCommands?: SetupCommands | null;
+};
+
+/** Enrollment state and the agent's last report; the API never sends the credential. */
+export type BridgeManagementView = {
+  apiUrl?: string | null;
+  enrolled?: boolean;
+  enrolledAt?: string | null;
+  agentVersion?: string | null;
+  agentApiVersion?: number | null;
+  agentCapabilities?: string[] | null;
+  frpsVersion?: string | null;
+  frpsReachable?: boolean | null;
+  lastErrorCode?: string | null;
+  lastPollAttemptAt?: string | null;
 };
 
 export type NodeRouteView = {
@@ -113,6 +137,21 @@ function projectSetup(value: unknown): SetupCommands | undefined {
 
 const nullable = <T>(value: T | null | undefined): T | null => value ?? null;
 
+/** The agent's enrollment and last report. The management URL is an internal address and is left out. */
+function projectManagement(m: BridgeManagementView | null | undefined): Record<string, unknown> {
+  return {
+    enrolled: m?.enrolled ?? false,
+    enrolledAt: nullable(m?.enrolledAt),
+    agentVersion: nullable(m?.agentVersion),
+    agentApiVersion: nullable(m?.agentApiVersion),
+    agentCapabilities: nullable(m?.agentCapabilities),
+    frpsVersion: nullable(m?.frpsVersion),
+    frpsReachable: nullable(m?.frpsReachable),
+    lastErrorCode: nullable(m?.lastErrorCode),
+    lastPollAttemptAt: nullable(m?.lastPollAttemptAt),
+  };
+}
+
 /** Explicit projection: only typed non-secret fields reach --json output. */
 export function projectBridge(b: BridgeView): Record<string, unknown> {
   const setup = projectSetup(b.setupCommands);
@@ -127,12 +166,24 @@ export function projectBridge(b: BridgeView): Record<string, unknown> {
     heldPorts: b.heldPorts,
     managementStatus: b.managementStatus,
     lastObservedAt: nullable(b.lastObservedAt),
+    management: projectManagement(b.management),
     routes: b.routes.map((r) => ({
       id: r.id,
       nodeId: r.nodeId,
       nodeName: nullable(r.nodeName),
       publicUdpPort: r.publicUdpPort,
       state: r.state,
+      registration: {
+        status: r.registration?.status ?? "unknown",
+        marker: nullable(r.registration?.marker),
+        observedAt: nullable(r.registration?.observedAt),
+      },
+      verification: {
+        status: r.verification?.status ?? "none",
+        method: nullable(r.verification?.method),
+        verifiedAt: nullable(r.verification?.verifiedAt),
+        error: nullable(r.verification?.error),
+      },
     })),
     ...(setup ? { setupCommands: setup } : {}),
   };
@@ -227,7 +278,15 @@ const BRIDGE_ERROR_HINTS: Record<string, string> = {
   BRIDGE_JOBS_DISABLED:
     "Bridge jobs are disabled on this panel (VPN_BRIDGE_JOBS_ENABLED). Use --operator-verified --registration=<marker> instead.",
   BRIDGE_UNSUPPORTED_CAPABILITY:
-    "No probe with the bridge-measurement capability is configured. Test the route with bridge-route-test-config, then use --operator-verified --registration=<marker>.",
+    "No probe with the bridge-measurement capability is configured. Test the route with bridge-route-test-config, then use --operator-verified --registration=<marker>. (For bridge-enroll: the agent must speak management API v1 with the status.v1 capability.)",
+  BRIDGE_MANAGEMENT_URL_NOT_ALLOWED:
+    "The panel may only reach hosts listed in VPN_BRIDGE_MANAGEMENT_HOSTS (default host.docker.internal; host:port entries pin the port). Use the forwarded address from the bridge host setup.",
+  BRIDGE_IDENTITY_MISMATCH:
+    "The agent at that address reports a different bridge id. Check the SSH forwarding port and the bridge id passed to the installer.",
+  BRIDGE_AGENT_UNAUTHORIZED:
+    "The agent rejected the API key. Re-read the token file on the bridge host and pipe it in with --api-key-file=-.",
+  BRIDGE_AGENT_UNREACHABLE:
+    "The agent did not answer. Check that its compose service is running and the SSH forwarding to the bridge host is up.",
   BRIDGE_CHECK_PENDING:
     "A probe check for an older registration of this route is still queued or running. Wait until bridge-routes shows its result, then ask again.",
   BRIDGE_TEST_KEY_WRONG_NODE:
@@ -276,14 +335,21 @@ export function renderNodeRoutes(view: NodeRoutesView): string[] {
   return lines;
 }
 
+function describeFrps(m: BridgeManagementView | null | undefined): string {
+  if (!m || m.frpsReachable === null || m.frpsReachable === undefined) return "—";
+  return m.frpsReachable ? show(m.frpsVersion) : "unreachable";
+}
+
 function renderBridgeTable(bridges: BridgeView[]): string[] {
   if (bridges.length === 0) return ["(no bridges)"];
-  const header = ["id", "name", "ipv4", "mgmt", "ports", "routes", "observed"];
+  const header = ["id", "name", "ipv4", "mgmt", "agent", "frps", "ports", "routes", "observed"];
   const rows = bridges.map((bridge) => [
     bridge.id,
     bridge.name,
     bridge.publicIpv4,
     bridge.managementStatus,
+    show(bridge.management?.agentVersion),
+    describeFrps(bridge.management),
     `${bridge.heldPorts}/${bridge.capacity}`,
     String(bridge.routes.length),
     show(bridge.lastObservedAt),
@@ -350,6 +416,70 @@ export async function cmdBridgeAdd(api: BridgeApi, args: string[]): Promise<void
   });
   if (args.includes("--json")) return json(projectBridge(bridge));
   printBridge(bridge);
+}
+
+/** Seams for tests: how the key is read and how its permissions are inspected. */
+export type EnrollDeps = {
+  readFile?: (path: string) => string;
+  /** Permission bits of a key file; undefined skips the check (stdin, non-POSIX hosts). */
+  fileMode?: (path: string) => number | undefined;
+};
+
+const defaultFileMode = (path: string): number | undefined =>
+  process.platform === "win32" ? undefined : statSync(path).mode & 0o777;
+
+export async function cmdBridgeEnroll(
+  api: BridgeApi,
+  args: string[],
+  _raw?: BridgeRawApi,
+  deps: EnrollDeps = {},
+): Promise<void> {
+  const usage =
+    "Usage: bridge-enroll <bridge-id> --api-url=<http://host.docker.internal:PORT> --api-key-file=<path|-> --confirm";
+  assertStrictArgs(args, { positionals: 1, valueFlags: ["api-url", "api-key-file"], usage });
+  const id = requireUuid(positionals(args)[0], "bridge-id", usage);
+  const managementApiUrl = flagOf(args, "api-url");
+  const keyFile = flagOf(args, "api-key-file");
+  if (!managementApiUrl || !keyFile) throw new Error(usage);
+  if (!confirmed(args)) {
+    // Nothing is read here: a preview must not consume stdin or touch the key.
+    return preview([
+      `Would enroll bridge ${id} with management API ${managementApiUrl}, reading the key from ${keyFile === "-" ? "stdin" : keyFile}.`,
+      "The panel checks the agent's bridge id and status capability before it stores the key encrypted.",
+    ]);
+  }
+  if (keyFile !== "-") {
+    const mode = (deps.fileMode ?? defaultFileMode)(keyFile);
+    if (mode !== undefined && (mode & 0o077) !== 0) {
+      throw new Error(
+        `API key file ${keyFile} is accessible by group or others (mode ${mode.toString(8)}); run chmod 600 on it or pipe it with --api-key-file=-`,
+      );
+    }
+  }
+  const apiKey = resolveSecret(args, "api-key", deps.readFile);
+  if (!apiKey) throw new Error(usage);
+  const bridge = await api<BridgeView>(`/api/admin/vpn-bridges/${id}`, {
+    method: "PATCH",
+    body: JSON.stringify({ managementApiUrl, apiKey }),
+  });
+  // Identity and capabilities only: no URL, no key, no setup commands.
+  const m = bridge.management;
+  const summary = {
+    id: bridge.id,
+    name: bridge.name,
+    managementStatus: bridge.managementStatus,
+    agentVersion: nullable(m?.agentVersion),
+    agentApiVersion: nullable(m?.agentApiVersion),
+    agentCapabilities: nullable(m?.agentCapabilities),
+    frpsVersion: nullable(m?.frpsVersion),
+    frpsReachable: nullable(m?.frpsReachable),
+  };
+  if (args.includes("--json")) return json(summary);
+  console.log(`bridge ${summary.name} (${summary.id}) enrolled: management ${summary.managementStatus}`);
+  console.log(
+    `  agent ${show(summary.agentVersion)} api v${show(summary.agentApiVersion)}  capabilities: ${summary.agentCapabilities?.join(", ") || "—"}`,
+  );
+  console.log(`  frps ${describeFrps(m)}`);
 }
 
 export async function cmdBridgeDelete(api: BridgeApi, args: string[]): Promise<void> {
@@ -630,8 +760,10 @@ export async function cmdBridgeRouteVerify(api: BridgeApi, args: string[]): Prom
 export const BRIDGE_COMMANDS: ReadonlyMap<
   string,
   (api: BridgeApi, args: string[], raw?: BridgeRawApi) => Promise<void>
-> = new Map([  ["bridges", cmdBridges],
+> = new Map([
+  ["bridges", cmdBridges],
   ["bridge-add", cmdBridgeAdd],
+  ["bridge-enroll", cmdBridgeEnroll],
   ["bridge-delete", cmdBridgeDelete],
   ["bridge-routes", cmdBridgeRoutes],
   ["bridge-route-prepare", cmdBridgeRoutePrepare],
@@ -647,6 +779,10 @@ export const BRIDGE_USAGE_LINES = `  bridges [--json]                        Lis
   bridge-add --name= --ipv4= [--control-port=7000] [--udp-start=41000]
              [--udp-end=41031] --confirm  Register a bridge (metadata only; nothing is
                                           installed on the host)
+  bridge-enroll <bridge-id> --api-url=<url> --api-key-file=<path|-> --confirm
+                                          Connect the bridge-agent: verifies its bridge id and
+                                          status capability, stores the key encrypted. The key
+                                          comes from a 0600 file or stdin (-), never an argument
   bridge-delete <bridge-id> --confirm     Delete an empty bridge (BRIDGE_HAS_ROUTES otherwise)
   bridge-routes <node-id> [--json]        A node's endpoint: Direct or active route, revision,
                                           drafts, retiring ports, verification state

@@ -33,6 +33,8 @@ import {
   describeBridgeError,
   nodeRouteEditorHref,
   poolCapacity,
+  registrationTone,
+  verificationTone,
 } from "@/lib/bridge-ui";
 import { formatDateTime } from "@/lib/format";
 import { useT } from "@/lib/i18n/provider";
@@ -118,6 +120,8 @@ export function BridgeCardView({
           </span>
         </div>
 
+        <BridgeManagementView bridge={bridge} t={t} lang={lang} />
+
         <dl className="grid grid-cols-2 gap-x-3 gap-y-1 text-xs">
           <dt className="text-muted-foreground">{t("bridge.controlPort")}</dt>
           <dd className="font-mono">{bridge.controlTcpPort}/tcp</dd>
@@ -146,6 +150,24 @@ export function BridgeCardView({
                   <span className="font-mono">:{route.publicUdpPort}</span>
                   <Badge variant={ROUTE_STATE_VARIANT[route.state]}>
                     {t(`bridge.state.${route.state}`)}
+                  </Badge>
+                  {/* Registration (frps) and the end-to-end AWG path are
+                      separate evidence from management reachability above. */}
+                  <Badge
+                    variant={registrationTone(route.registration.status)}
+                    title={t("bridge.route.frpc")}
+                  >
+                    {t("bridge.route.frpc")}: {t(`bridge.obs.${route.registration.status}`)}
+                  </Badge>
+                  <Badge
+                    variant={verificationTone(route.verification.status)}
+                    title={
+                      route.verification.verifiedAt
+                        ? formatDateTime(route.verification.verifiedAt, lang)
+                        : undefined
+                    }
+                  >
+                    {t("bridge.route.awg")}: {t(`bridge.ver.${route.verification.status}`)}
                   </Badge>
                   <Link
                     href={nodeRouteEditorHref(route.nodeId)}
@@ -180,6 +202,52 @@ export function BridgeCardView({
         ) : null}
       </CardContent>
     </Card>
+  );
+}
+
+/**
+ * The bridge-agent's side of the card: version, frps and the last poll.
+ * Presentational and free of secrets: the enrollment credential is never part
+ * of the bridge payload.
+ */
+export function BridgeManagementView({
+  bridge,
+  t,
+  lang,
+}: {
+  bridge: Bridge;
+  t: Translate;
+  lang: Lang;
+}) {
+  const management = bridge.management;
+  if (!management || !management.enrolled) {
+    return <p className="text-xs text-muted-foreground">{t("bridge.mgmt.notEnrolled")}</p>;
+  }
+  const when = (iso: string | null) =>
+    iso ? formatDateTime(iso, lang) : t("bridge.mgmt.never");
+  const frps =
+    management.frpsReachable === null
+      ? t("bridge.mgmt.frpsUnknown")
+      : management.frpsReachable
+        ? t("bridge.mgmt.frpsReachable", { version: management.frpsVersion ?? "frps" })
+        : t("bridge.mgmt.frpsUnreachable");
+  return (
+    <dl className="grid grid-cols-2 gap-x-3 gap-y-1 text-xs">
+      <dt className="text-muted-foreground">{t("bridge.mgmt.agent")}</dt>
+      <dd className="font-mono">{management.agentVersion ?? t("bridge.unknown")}</dd>
+      <dt className="text-muted-foreground">{t("bridge.mgmt.frps")}</dt>
+      <dd>{frps}</dd>
+      <dt className="text-muted-foreground">{t("bridge.mgmt.lastOk")}</dt>
+      <dd>{when(bridge.lastObservedAt)}</dd>
+      <dt className="text-muted-foreground">{t("bridge.mgmt.lastPoll")}</dt>
+      <dd>{when(management.lastPollAttemptAt)}</dd>
+      {management.lastErrorCode ? (
+        <>
+          <dt className="text-muted-foreground">{t("bridge.mgmt.problem")}</dt>
+          <dd className="break-all font-mono text-destructive">{management.lastErrorCode}</dd>
+        </>
+      ) : null}
+    </dl>
   );
 }
 

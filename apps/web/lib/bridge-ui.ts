@@ -176,3 +176,23 @@ export const bridgeNeedsHostSetup = (bridge: {
 }): boolean =>
   bridge.lastObservedAt === null &&
   bridge.routes.every((route) => route.state === "draft");
+
+export type BadgeTone = "success" | "outline" | "warning" | "destructive";
+
+/** Badge tone for a route's registration; Unknown is neutral, never a failure. */
+export const registrationTone = (
+  status: "online" | "offline" | "unknown",
+): BadgeTone =>
+  status === "online" ? "success" : status === "offline" ? "destructive" : "outline";
+
+/** Badge tone for the AWG-path evidence, kept apart from management status. */
+export const verificationTone = (
+  status: "none" | "valid" | "unknown" | "marker_changed" | "expired" | "failed",
+): BadgeTone =>
+  status === "valid"
+    ? "success"
+    : status === "failed"
+      ? "destructive"
+      : status === "none"
+        ? "outline"
+        : "warning";

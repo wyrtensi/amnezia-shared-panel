@@ -366,6 +366,50 @@ describe("bridge-agent poller (real PostgreSQL, fake bridge-agent over HTTP)", (
   );
 
   runDatabaseTest(
+    "two registered routes on one bridge: stopping one frpc changes only that route, a lost management channel leaves both rows alone, and the restarted agent reports both again",
+    async () => {
+      const bridge = await seedBridge();
+      const a = await seedRoute(bridge.id, (await seedNode()).id, 41000);
+      const b = await seedRoute(bridge.id, (await seedNode()).id, 41001);
+      const entry = (id: string, port: number, marker: string): Proxy => ({
+        proxyId: bridgeFrpProxyName(id),
+        remotePort: port,
+        online: true,
+        registrationMarker: marker,
+      });
+      agent.proxies = [entry(a, 41000, M1), entry(b, 41001, M2)];
+      await runPoll(bridge.id, { now: new Date(Date.now() - 3_000) });
+      expect(await route(a)).toMatchObject({ observedOnline: true, observedRegistrationMarker: M1 });
+      expect(await route(b)).toMatchObject({ observedOnline: true, observedRegistrationMarker: M2 });
+
+      // frpc of route B stops: frps lists it offline, route A is untouched.
+      agent.proxies = [
+        entry(a, 41000, M1),
+        { proxyId: bridgeFrpProxyName(b), remotePort: null, online: false, registrationMarker: M2 },
+      ];
+      await runPoll(bridge.id, { now: new Date(Date.now() - 2_000) });
+      expect(await route(a)).toMatchObject({ observedOnline: true, observedRegistrationMarker: M1 });
+      expect(await route(b)).toMatchObject({ observedOnline: false, observedRegistrationMarker: null });
+
+      // The management tunnel stops (the agent never answers): status down,
+      // route rows keep what the last good poll wrote.
+      const beforeDown = [await route(a), await route(b)];
+      agent.mode = "hang";
+      await runPoll(bridge.id, { now: new Date(Date.now() - 1_000), timeoutMs: 200 });
+      expect((await bridgeRow(bridge.id)).managementStatus).toBe("down");
+      expect([await route(a), await route(b)]).toEqual(beforeDown);
+
+      // The agent restarts and frpc B is back: both routes are reported again.
+      agent.mode = "normal";
+      agent.proxies = [entry(a, 41000, M1), entry(b, 41001, M2)];
+      await runPoll(bridge.id);
+      expect((await bridgeRow(bridge.id)).managementStatus).toBe("ok");
+      expect(await route(a)).toMatchObject({ observedOnline: true, observedRegistrationMarker: M1 });
+      expect(await route(b)).toMatchObject({ observedOnline: true, observedRegistrationMarker: M2 });
+    },
+  );
+
+  runDatabaseTest(
     "a foreign proxy on port 0 or an unreadable entry never makes the bridge unsupported",
     async () => {
       const node = await seedNode();

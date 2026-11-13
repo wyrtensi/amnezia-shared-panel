@@ -1510,6 +1510,30 @@ const ru = {
     "Активен",
   "bridge.state.retiring":
     "Выводится",
+  "bridge.mgmt.agent":
+    "Агент моста",
+  "bridge.mgmt.notEnrolled":
+    "Не подключён: подключите агент командой bridge-enroll",
+  "bridge.mgmt.frps":
+    "frps",
+  "bridge.mgmt.frpsReachable":
+    "{version}, отвечает",
+  "bridge.mgmt.frpsUnreachable":
+    "агент не видит frps",
+  "bridge.mgmt.frpsUnknown":
+    "нет данных",
+  "bridge.mgmt.lastPoll":
+    "Последний опрос",
+  "bridge.mgmt.lastOk":
+    "Последний успешный опрос",
+  "bridge.mgmt.problem":
+    "Последняя проблема",
+  "bridge.mgmt.never":
+    "—",
+  "ov.bridgesTitle": "Мосты",
+  "ov.bridgesActive": "активных маршрутов: {active}, с проверенным AWG: {verified}",
+  "ov.bridgesNoActive": "активных маршрутов нет",
+  "ov.bridgesOpen": "Открыть мосты",
   "bridge.hostSetup":
     "Установка на хосте моста",
   "bridge.hostSetupHint":
@@ -1614,6 +1638,12 @@ const ru = {
     "Неизвестно",
   "bridge.ver.none":
     "Не проверен",
+  "bridge.ver.unknown":
+    "Нет свежих данных",
+  "bridge.route.frpc":
+    "frpc",
+  "bridge.route.awg":
+    "AWG-путь",
   "bridge.ver.valid":
     "Проверен",
   "bridge.ver.failed":
@@ -1706,6 +1736,14 @@ const ru = {
     "Мост с таким IPv4 уже есть.",
   "bridge.err.BRIDGE_UNSUPPORTED_CAPABILITY":
     "Пробник недоступен: используйте проверку оператором или тестовый конфиг.",
+  "bridge.err.BRIDGE_MANAGEMENT_URL_NOT_ALLOWED":
+    "Этот адрес управления не входит в разрешённые для панели.",
+  "bridge.err.BRIDGE_IDENTITY_MISMATCH":
+    "Агент отвечает от имени другого моста.",
+  "bridge.err.BRIDGE_AGENT_UNAUTHORIZED":
+    "Агент моста не принял ключ API.",
+  "bridge.err.BRIDGE_AGENT_UNREACHABLE":
+    "Агент моста не ответил по адресу управления.",
   "bridge.err.BRIDGE_JOBS_DISABLED":
     "Фоновые проверки мостов отключены в этой панели.",
   "bridge.err.BRIDGE_CONFIG_UNSUPPORTED":
@@ -3150,6 +3188,30 @@ const en = {
     "Active",
   "bridge.state.retiring":
     "Retiring",
+  "bridge.mgmt.agent":
+    "Bridge agent",
+  "bridge.mgmt.notEnrolled":
+    "Not enrolled: connect the agent with bridge-enroll",
+  "bridge.mgmt.frps":
+    "frps",
+  "bridge.mgmt.frpsReachable":
+    "{version}, reachable",
+  "bridge.mgmt.frpsUnreachable":
+    "agent cannot reach frps",
+  "bridge.mgmt.frpsUnknown":
+    "no data",
+  "bridge.mgmt.lastPoll":
+    "Last poll attempt",
+  "bridge.mgmt.lastOk":
+    "Last successful poll",
+  "bridge.mgmt.problem":
+    "Last problem",
+  "bridge.mgmt.never":
+    "—",
+  "ov.bridgesTitle": "Bridges",
+  "ov.bridgesActive": "active routes: {active}, AWG verified: {verified}",
+  "ov.bridgesNoActive": "no active routes",
+  "ov.bridgesOpen": "Open bridges",
   "bridge.hostSetup":
     "Bridge host setup",
   "bridge.hostSetupHint":
@@ -3254,6 +3316,12 @@ const en = {
     "Unknown",
   "bridge.ver.none":
     "Not verified",
+  "bridge.ver.unknown":
+    "No current evidence",
+  "bridge.route.frpc":
+    "frpc",
+  "bridge.route.awg":
+    "AWG path",
   "bridge.ver.valid":
     "Verified",
   "bridge.ver.failed":
@@ -3346,6 +3414,14 @@ const en = {
     "A bridge with this IPv4 address already exists.",
   "bridge.err.BRIDGE_UNSUPPORTED_CAPABILITY":
     "Probe unavailable: use operator verification or the test config.",
+  "bridge.err.BRIDGE_MANAGEMENT_URL_NOT_ALLOWED":
+    "That management address is not one the panel may reach.",
+  "bridge.err.BRIDGE_IDENTITY_MISMATCH":
+    "The agent answers for a different bridge.",
+  "bridge.err.BRIDGE_AGENT_UNAUTHORIZED":
+    "The bridge agent rejected the API key.",
+  "bridge.err.BRIDGE_AGENT_UNREACHABLE":
+    "The bridge agent did not answer at the management address.",
   "bridge.err.BRIDGE_JOBS_DISABLED":
     "Bridge background checks are disabled on this panel.",
   "bridge.err.BRIDGE_CONFIG_UNSUPPORTED":

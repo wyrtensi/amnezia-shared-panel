@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import type { Bridge, NodeBridgeRoute } from "@amnezia/contracts";
 import { messages, type Lang } from "@/lib/i18n/messages";
 import { BridgeCardView } from "./bridges-tab";
+import { OverviewBridgesBlock } from "./overview-bridges";
 import { BridgeRouteFacts } from "./bridge-route-view";
 
 const tFor =
@@ -26,8 +27,24 @@ const bridge: Bridge = {
   managementStatus: "pending_enrollment",
   lastObservedAt: null,
   routes: [
-    { id: "r1", nodeId: NODE, nodeName: "Node A", publicUdpPort: 41000, state: "active" },
-    { id: "r2", nodeId: NODE, nodeName: "Node B", publicUdpPort: 41001, state: "draft" },
+    {
+      id: "r1",
+      nodeId: NODE,
+      nodeName: "Node A",
+      publicUdpPort: 41000,
+      state: "active",
+      registration: { status: "online", marker: "m1", observedAt: "2026-11-13T10:00:00.000Z" },
+      verification: { status: "valid", method: "probe", verifiedAt: "2026-11-13T10:00:00.000Z", error: null },
+    },
+    {
+      id: "r2",
+      nodeId: NODE,
+      nodeName: "Node B",
+      publicUdpPort: 41001,
+      state: "draft",
+      registration: { status: "unknown", marker: null, observedAt: null },
+      verification: { status: "none", method: null, verifiedAt: null, error: null },
+    },
   ],
   setupCommands: {
     install: "sudo sh /opt/amnezia-bridge/install-frps.sh --bridge-id x",
@@ -75,6 +92,46 @@ describe("BridgeCardView", () => {
     // CommandBlock reads the language from context, which is Russian without
     // a provider (the app's first-paint default).
     expect(html.match(/aria-label="Копировать: /g)).toHaveLength(2);
+  });
+
+  it("shows each route's frpc registration and AWG path apart from management status", () => {
+    const html = render({ ...bridge, managementStatus: "stale" });
+    expect(html).toContain("Not enrolled");
+    // Management is stale while route A still carries its own evidence.
+    expect(html).toContain("No recent report");
+    expect(html).toContain("frpc: Online");
+    expect(html).toContain("AWG path: Verified");
+    // An unobserved route is Unknown, not offline, and not verified.
+    expect(html).toContain("frpc: Unknown");
+    expect(html).toContain("AWG path: Not verified");
+    expect(html).not.toContain("frpc: Not registered");
+  });
+
+  it("shows agent and frps state of an enrolled bridge, never a credential", () => {
+    const html = render({
+      ...bridge,
+      managementStatus: "down",
+      lastObservedAt: "2026-11-13T09:00:00.000Z",
+      management: {
+        apiUrl: "http://host.docker.internal:17600",
+        enrolled: true,
+        enrolledAt: "2026-11-13T08:00:00.000Z",
+        agentVersion: "0.1.0",
+        agentApiVersion: 1,
+        agentCapabilities: ["status.v1"],
+        frpsVersion: "0.72.0",
+        frpsReachable: true,
+        lastErrorCode: "AGENT_TIMEOUT",
+        lastPollAttemptAt: "2026-11-13T09:05:00.000Z",
+      },
+    });
+    expect(html).toContain("0.1.0");
+    expect(html).toContain("0.72.0, reachable");
+    expect(html).toContain("AGENT_TIMEOUT");
+    expect(html).toContain("Last successful poll");
+    expect(html).toContain("Last poll attempt");
+    expect(html).not.toContain("Not enrolled");
+    expect(html).toContain("Unreachable");
   });
 
   it("renders in Russian and without setup commands or routes", () => {
@@ -157,5 +214,47 @@ describe("BridgeRouteFacts", () => {
   it("labels retiring and active states", () => {
     expect(view(route({ state: "retiring" }))).toContain("Retiring");
     expect(view(route({ state: "active" }))).toContain("Active");
+  });
+});
+
+describe("OverviewBridgesBlock", () => {
+  const item = (overrides: Partial<{ id: string; name: string; managementStatus: Bridge["managementStatus"]; activeRoutes: number; verifiedActiveRoutes: number }> = {}) => ({
+    id: "00000000-0000-4000-8000-0000000000b1",
+    name: "Amsterdam bridge",
+    managementStatus: "ok" as const,
+    lastObservedAt: null,
+    activeRoutes: 2,
+    verifiedActiveRoutes: 1,
+    ...overrides,
+  });
+  const view = (bridges: Parameters<typeof OverviewBridgesBlock>[0]["bridges"], lang: Lang = "en") =>
+    renderToStaticMarkup(<OverviewBridgesBlock bridges={bridges} t={tFor(lang)} />);
+
+  it("renders nothing without bridges", () => {
+    expect(view(undefined)).toBe("");
+    expect(view(null)).toBe("");
+    expect(view({ count: 0, items: [] })).toBe("");
+  });
+
+  it("links to the Bridges tab and shows management and verified counts apart", () => {
+    const html = view({
+      count: 2,
+      items: [
+        item(),
+        item({ id: "00000000-0000-4000-8000-0000000000b2", name: "Berlin", managementStatus: "stale", activeRoutes: 0, verifiedActiveRoutes: 0 }),
+      ],
+    });
+    expect(html).toContain('href="/admin/nodes?tab=bridges"');
+    expect(html).toContain("Amsterdam bridge");
+    expect(html).toContain("Online");
+    expect(html).toContain("active routes: 2, AWG verified: 1");
+    expect(html).toContain("No recent report");
+    expect(html).toContain("no active routes");
+  });
+
+  it("renders in Russian", () => {
+    const html = view({ count: 1, items: [item()] }, "ru");
+    expect(html).toContain("Мосты");
+    expect(html).toContain("активных маршрутов: 2, с проверенным AWG: 1");
   });
 });

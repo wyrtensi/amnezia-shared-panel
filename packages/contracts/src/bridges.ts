@@ -192,12 +192,57 @@ export const bridgeRouteSchema = z.object({
   createdAt: z.iso.datetime(),
 });
 
+/**
+ * What the bridge-agent's latest poll says about one route's frpc
+ * registration. `unknown` covers never observed, a bridge that is not `ok`,
+ * an observation older than the stale window, and a poll that did not cover
+ * this route. It is never rendered as offline.
+ */
+export const BRIDGE_REGISTRATION_STATUSES = ["online", "offline", "unknown"] as const;
+export const bridgeRegistrationStatusSchema = z.enum(BRIDGE_REGISTRATION_STATUSES);
+export const bridgeRouteRegistrationSchema = z.object({
+  status: bridgeRegistrationStatusSchema,
+  /** The observed registration marker; only while `online`. */
+  marker: z.string().nullable(),
+  observedAt: z.iso.datetime().nullable(),
+});
+
+/**
+ * The end-to-end AWG path evidence for one route, separate from management
+ * reachability and from registration. `valid`: a successful verification
+ * bound to the registration observed now (within 30 minutes for a draft or
+ * retiring route; an active route keeps it while the marker matches, since
+ * nothing re-verifies it after activation). `unknown`: a
+ * recent success exists but no current online observation can vouch for it.
+ * `marker_changed`: the registration was replaced after the verification.
+ */
+export const BRIDGE_ROUTE_VERIFICATION_STATUSES = [
+  "none",
+  "valid",
+  "unknown",
+  "marker_changed",
+  "expired",
+  "failed",
+] as const;
+export const bridgeRouteVerificationStatusSchema = z.enum(
+  BRIDGE_ROUTE_VERIFICATION_STATUSES,
+);
+export const bridgeRouteVerificationSchema = z.object({
+  status: bridgeRouteVerificationStatusSchema,
+  method: bridgeVerificationMethodSchema.nullable(),
+  verifiedAt: z.iso.datetime().nullable(),
+  /** Bounded short code of a failed check; never free-form text. */
+  error: z.string().max(80).nullable(),
+});
+
 export const bridgeRouteSummarySchema = z.object({
   id: z.uuid(),
   nodeId: z.uuid(),
   nodeName: z.string(),
   publicUdpPort: portSchema,
   state: bridgeRouteStateSchema,
+  registration: bridgeRouteRegistrationSchema,
+  verification: bridgeRouteVerificationSchema,
 });
 
 /**
@@ -266,6 +311,25 @@ export const bridgeSchema = z.object({
   setupCommands: bridgeSetupCommandsSchema.optional(),
   createdAt: z.iso.datetime(),
   updatedAt: z.iso.datetime(),
+});
+
+/**
+ * The Bridges block of `GET /api/admin/overview`, present only when at least
+ * one bridge exists. VPN node counters elsewhere in the overview never
+ * include bridges. `verifiedActiveRoutes` counts active routes whose
+ * verification is `valid` (see `bridgeRouteVerificationSchema`).
+ */
+export const adminOverviewBridgeSchema = z.object({
+  id: z.uuid(),
+  name: z.string(),
+  managementStatus: bridgeManagementStatusSchema,
+  lastObservedAt: z.iso.datetime().nullable(),
+  activeRoutes: z.int().min(0),
+  verifiedActiveRoutes: z.int().min(0),
+});
+export const adminOverviewBridgesSchema = z.object({
+  count: z.int().min(1),
+  items: z.array(adminOverviewBridgeSchema),
 });
 
 export const prepareBridgeRouteRequestSchema = z.object({
@@ -667,6 +731,10 @@ export type BridgeVerificationMethod = z.infer<typeof bridgeVerificationMethodSc
 export type BridgeVerificationResult = z.infer<typeof bridgeVerificationResultSchema>;
 export type BridgeRoute = z.infer<typeof bridgeRouteSchema>;
 export type BridgeRouteSummary = z.infer<typeof bridgeRouteSummarySchema>;
+export type BridgeRouteRegistration = z.infer<typeof bridgeRouteRegistrationSchema>;
+export type BridgeRouteVerification = z.infer<typeof bridgeRouteVerificationSchema>;
+export type AdminOverviewBridge = z.infer<typeof adminOverviewBridgeSchema>;
+export type AdminOverviewBridges = z.infer<typeof adminOverviewBridgesSchema>;
 export type Bridge = z.infer<typeof bridgeSchema>;
 export type PrepareBridgeRouteRequest = z.infer<typeof prepareBridgeRouteRequestSchema>;
 export type InfrastructureItem = z.infer<typeof infrastructureItemSchema>;

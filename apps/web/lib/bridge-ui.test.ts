@@ -16,8 +16,10 @@ import {
   nodesTabHref,
   parseNodesTab,
   poolCapacity,
+  registrationTone,
   routeObservation,
   routeVerification,
+  verificationTone,
 } from "./bridge-ui";
 
 const tEn = (key: string) => (messages.en as Record<string, string>)[key] ?? key;
@@ -254,6 +256,23 @@ describe("bridge message keys", () => {
     for (const key of dynamic) {
       expect((messages.en as Record<string, string>)[key], `en ${key}`).toBeTruthy();
       expect((messages.ru as Record<string, string>)[key], `ru ${key}`).toBeTruthy();
+    }
+  });
+});
+
+describe("evidence tones", () => {
+  it("never paints an unknown registration as a failure", () => {
+    expect(registrationTone("online")).toBe("success");
+    expect(registrationTone("offline")).toBe("destructive");
+    expect(registrationTone("unknown")).toBe("outline");
+  });
+
+  it("marks only valid AWG evidence green and only a failed check red", () => {
+    expect(verificationTone("valid")).toBe("success");
+    expect(verificationTone("failed")).toBe("destructive");
+    expect(verificationTone("none")).toBe("outline");
+    for (const status of ["unknown", "expired", "marker_changed"] as const) {
+      expect(verificationTone(status)).toBe("warning");
     }
   });
 });

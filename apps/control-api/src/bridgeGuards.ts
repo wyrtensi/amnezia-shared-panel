@@ -44,6 +44,8 @@ export type GuardRoute = {
   verifiedRegistrationMarker: string | null;
   verifiedAt: Date | null;
   verificationResult: BridgeVerificationResult | null;
+  /** Bounded failure code; read model only, no guard looks at it. */
+  verificationError?: string | null;
 };
 
 export type GuardFailure = {
@@ -70,7 +72,7 @@ export const isBridgeObservationFresh = (
  * The poller stamps every held route with the poll time, so a route stamped
  * before the bridge's last observation was not covered by it.
  */
-const isRouteCoveredByLatestPoll = (route: GuardRoute, bridge: GuardBridge): boolean =>
+export const isRouteCoveredByLatestPoll = (route: GuardRoute, bridge: GuardBridge): boolean =>
   route.observedAt !== null &&
   bridge.lastObservedAt !== null &&
   route.observedAt.getTime() >= bridge.lastObservedAt.getTime();

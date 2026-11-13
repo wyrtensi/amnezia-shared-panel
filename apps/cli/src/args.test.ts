@@ -760,6 +760,10 @@ describe("bridge argument helpers", () => {
       "BRIDGE_TEST_KEY_WRONG_NODE",
       "BRIDGE_TEST_KEY_UNSUITABLE",
       "BRIDGE_CHECK_PENDING",
+      "BRIDGE_MANAGEMENT_URL_NOT_ALLOWED",
+      "BRIDGE_IDENTITY_MISMATCH",
+      "BRIDGE_AGENT_UNAUTHORIZED",
+      "BRIDGE_AGENT_UNREACHABLE",
     ]) {
       expect(bridgeErrorHint(code)).toBeTruthy();
     }

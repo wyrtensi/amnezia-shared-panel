@@ -12,6 +12,7 @@ import {
   type VerifyBridgeRouteResult,
   type Bridge,
   type BridgeEligibility,
+  type AdminOverviewBridges,
   type BridgeRouteSummary,
   type CreateBridgeRequest,
   type DeleteBridgeResult,
@@ -47,8 +48,13 @@ import { storeEnrollment, verifyEnrollmentCandidate } from "./bridgeEnrollment.j
 import {
   checkActivationGuard,
   checkReleaseGuard,
-  isBridgeObservationFresh,
 } from "./bridgeGuards.js";
+import {
+  effectiveManagementStatus,
+  overviewBridgeOf,
+  routeRegistration,
+  routeVerification,
+} from "./bridgeReadModel.js";
 import { bridgeSetupCommands, routeSetupCommands } from "./bridgeSetupCommands.js";
 import { ApiError, type Actor } from "./service.js";
 
@@ -178,7 +184,12 @@ export const mapBridgeConstraintError = (error: unknown): unknown => {
   return error;
 };
 
-const toNodeRoute = (route: RouteRow, bridge: BridgeRow): NodeBridgeRoute => ({
+const toNodeRoute = (
+  route: RouteRow,
+  bridge: BridgeRow,
+  now: Date,
+  staleMs: number,
+): NodeBridgeRoute => ({
   id: route.id,
   nodeId: route.nodeId,
   bridgeId: route.bridgeId,
@@ -199,7 +210,9 @@ const toNodeRoute = (route: RouteRow, bridge: BridgeRow): NodeBridgeRoute => ({
   bridgeName: bridge.name,
   bridgePublicIpv4: bridge.publicIpv4,
   bridgeControlTcpPort: bridge.controlTcpPort,
-  bridgeManagementStatus: bridge.managementStatus,
+  // Computed like `Bridge.managementStatus`: a stored `ok` past the stale
+  // window reads `stale`.
+  bridgeManagementStatus: effectiveManagementStatus(bridge, now, staleMs),
   bridgeLastObservedAt: iso(bridge.lastObservedAt),
   setupCommands: routeSetupCommands({
     id: route.id,
@@ -208,20 +221,6 @@ const toNodeRoute = (route: RouteRow, bridge: BridgeRow): NodeBridgeRoute => ({
     bridgeControlTcpPort: bridge.controlTcpPort,
   }),
 });
-
-/**
- * The management status as admins read it: a stored `ok` whose last
- * observation is older than the stale window (or that has none yet) reads as
- * `stale`. The poller never stores `stale`.
- */
-const effectiveManagementStatus = (
-  row: BridgeRow,
-  now: Date,
-  staleMs: number,
-): BridgeRow["managementStatus"] =>
-  row.managementStatus === "ok" && !isBridgeObservationFresh(row, now, staleMs)
-    ? "stale"
-    : row.managementStatus;
 
 const toBridge = (
   row: BridgeRow,
@@ -286,28 +285,43 @@ export class PostgresBridgeRepository {
     return this.options.db;
   }
 
+  /** Route summaries with their computed registration and verification, by bridge id. */
   private routeSummaries = async (
-    bridgeIds: readonly string[],
+    bridgeRows: readonly BridgeRow[],
+    now: Date,
   ): Promise<Map<string, BridgeRouteSummary[]>> => {
     const byBridge = new Map<string, BridgeRouteSummary[]>();
-    if (bridgeIds.length === 0) return byBridge;
+    if (bridgeRows.length === 0) return byBridge;
+    const bridgesById = new Map(bridgeRows.map((row) => [row.id, row]));
     const rows = await this.db
       .select({
-        id: vpnBridgeRoutes.id,
-        bridgeId: vpnBridgeRoutes.bridgeId,
-        nodeId: vpnBridgeRoutes.nodeId,
+        route: vpnBridgeRoutes,
         nodeName: nodes.name,
-        publicUdpPort: vpnBridgeRoutes.publicUdpPort,
-        state: vpnBridgeRoutes.state,
       })
       .from(vpnBridgeRoutes)
       .innerJoin(nodes, eq(nodes.id, vpnBridgeRoutes.nodeId))
-      .where(inArray(vpnBridgeRoutes.bridgeId, [...bridgeIds]))
+      .where(inArray(vpnBridgeRoutes.bridgeId, [...bridgesById.keys()]))
       .orderBy(asc(vpnBridgeRoutes.publicUdpPort));
-    for (const { bridgeId, ...summary } of rows) {
-      const list = byBridge.get(bridgeId) ?? [];
-      list.push(summary);
-      byBridge.set(bridgeId, list);
+    for (const { route, nodeName } of rows) {
+      const bridge = bridgesById.get(route.bridgeId);
+      if (!bridge) continue;
+      const registration = routeRegistration(
+        route,
+        bridge,
+        now,
+        this.options.observationStaleMs,
+      );
+      const list = byBridge.get(route.bridgeId) ?? [];
+      list.push({
+        id: route.id,
+        nodeId: route.nodeId,
+        nodeName,
+        publicUdpPort: route.publicUdpPort,
+        state: route.state,
+        registration,
+        verification: routeVerification(route, registration, now),
+      });
+      byBridge.set(route.bridgeId, list);
     }
     return byBridge;
   };
@@ -319,8 +333,9 @@ export class PostgresBridgeRepository {
       .where(eq(vpnBridges.id, bridgeId))
       .limit(1);
     if (!row) throw bridgeNotFound();
-    const routes = await this.routeSummaries([row.id]);
-    return toBridge(row, routes.get(row.id) ?? [], new Date(), this.options.observationStaleMs);
+    const now = new Date();
+    const routes = await this.routeSummaries([row], now);
+    return toBridge(row, routes.get(row.id) ?? [], now, this.options.observationStaleMs);
   };
 
   listBridges = async (): Promise<Bridge[]> => {
@@ -328,11 +343,22 @@ export class PostgresBridgeRepository {
       .select()
       .from(vpnBridges)
       .orderBy(asc(vpnBridges.name), asc(vpnBridges.createdAt));
-    const routes = await this.routeSummaries(rows.map((row) => row.id));
     const now = new Date();
+    const routes = await this.routeSummaries(rows, now);
     return rows.map((row) =>
       toBridge(row, routes.get(row.id) ?? [], now, this.options.observationStaleMs),
     );
+  };
+
+  /**
+   * The overview's Bridges block, from the same stored observations as the
+   * bridge list. Undefined when no bridge exists, so the overview stays
+   * unchanged for panels without bridges.
+   */
+  overviewBridges = async (): Promise<AdminOverviewBridges | undefined> => {
+    const bridges = await this.listBridges();
+    if (bridges.length === 0) return undefined;
+    return { count: bridges.length, items: bridges.map(overviewBridgeOf) };
   };
 
   createBridge = async (actor: Actor, request: CreateBridgeRequest): Promise<Bridge> => {
@@ -499,7 +525,9 @@ export class PostgresBridgeRepository {
       .innerJoin(vpnBridges, eq(vpnBridges.id, vpnBridgeRoutes.bridgeId))
       .where(where)
       .orderBy(asc(vpnBridgeRoutes.createdAt));
-    return rows.map(({ route, bridge }) => toNodeRoute(route, bridge));
+    return rows.map(({ route, bridge }) =>
+      toNodeRoute(route, bridge, new Date(), this.options.observationStaleMs),
+    );
   };
 
   private loadNodeRoute = async (
@@ -513,7 +541,7 @@ export class PostgresBridgeRepository {
       .where(eq(vpnBridgeRoutes.id, routeId))
       .limit(1);
     if (!row) throw routeNotFound();
-    return toNodeRoute(row.route, row.bridge);
+    return toNodeRoute(row.route, row.bridge, new Date(), this.options.observationStaleMs);
   };
 
   getNodeBridgeRoutes = async (

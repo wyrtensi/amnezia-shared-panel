@@ -2655,6 +2655,7 @@ export class PostgresControlRepository implements ControlRepository {
       usersByStatus,
       nodeRows,
       peerAgg,
+      bridgesSummary,
     ] = await Promise.all([
       db
         .select({ value: count() })
@@ -2695,6 +2696,9 @@ export class PostgresControlRepository implements ControlRepository {
         .from(peerCurrent)
         .innerJoin(vpnKeys, eq(vpnKeys.id, peerCurrent.keyId))
         .innerJoin(users, keyOwnerIsPerson(vpnKeys)),
+      // Bridges are not VPN nodes: they get their own block and never count
+      // toward the node counters below.
+      this.bridges.overviewBridges(),
     ]);
 
     const tally = (rows: Array<{ key: string; value: number }>) =>
@@ -2730,6 +2734,7 @@ export class PostgresControlRepository implements ControlRepository {
         healthy: nodeRows.filter((node) => node.enabled && !node.lastError)
           .length,
       },
+      ...(bridgesSummary ? { bridges: bridgesSummary } : {}),
     };
   };
 

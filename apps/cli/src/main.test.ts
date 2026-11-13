@@ -1,7 +1,8 @@
-import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { cmdBridgeEnroll } from "./bridges.js";
 import { dispatch } from "./main.js";
 
 /**
@@ -1223,9 +1224,66 @@ describe("bridge commands", () => {
     expect(out).toContain("1/32");
   });
 
-  it("bridges --json prints the typed list", async () => {
-    stubFetch([{ body: [bridge] }]);
-    expect(JSON.parse(await run(["bridges", "--json"]))).toEqual([bridge]);
+  it("bridges --json prints the typed list with agent state and per-route evidence", async () => {
+    const full = {
+      ...bridge,
+      management: {
+        apiUrl: "http://host.docker.internal:17600",
+        enrolled: true,
+        enrolledAt: "2026-11-13T09:00:00.000Z",
+        agentVersion: "0.1.0",
+        agentApiVersion: 1,
+        agentCapabilities: ["status.v1"],
+        frpsVersion: "0.72.0",
+        frpsReachable: true,
+        lastErrorCode: null,
+        lastPollAttemptAt: "2026-11-13T10:00:00.000Z",
+      },
+      routes: [
+        {
+          ...bridge.routes[0],
+          registration: { status: "online", marker: "m".repeat(32), observedAt: "2026-11-13T10:00:00.000Z" },
+          verification: { status: "valid", method: "probe", verifiedAt: "2026-11-13T09:59:00.000Z", error: null },
+        },
+      ],
+    };
+    stubFetch([{ body: [full] }]);
+    const [out] = JSON.parse(await run(["bridges", "--json"])) as Array<Record<string, unknown>>;
+    expect(out).toMatchObject({
+      managementStatus: "ok",
+      management: {
+        enrolled: true,
+        agentVersion: "0.1.0",
+        agentCapabilities: ["status.v1"],
+        frpsVersion: "0.72.0",
+        frpsReachable: true,
+      },
+      routes: [
+        {
+          registration: { status: "online" },
+          verification: { status: "valid", method: "probe" },
+        },
+      ],
+    });
+    // The management URL is an internal address and stays out of the output.
+    expect(JSON.stringify(out)).not.toContain("host.docker.internal");
+  });
+
+  it("bridges (table) shows agent version and frps state", async () => {
+    stubFetch([
+      {
+        body: [
+          {
+            ...bridge,
+            management: { enrolled: true, agentVersion: "0.1.0", frpsVersion: "0.72.0", frpsReachable: true },
+          },
+        ],
+      },
+    ]);
+    const out = await run(["bridges"]);
+    expect(out).toMatch(/agent\s+frps/);
+    expect(out).toContain("0.1.0");
+    expect(out).toContain("0.72.0");
   });
 
   it("bridge-add without --confirm submits nothing", async () => {
@@ -1248,6 +1306,128 @@ describe("bridge commands", () => {
     expect(out).toContain("run-this");
     stubFetch([{ status: 201, body: bridge }]);
     expect(await run(["bridge-add", "--name=F", "--ipv4=198.51.100.7", "--confirm"])).not.toContain("setup commands");
+  });
+
+  describe("bridge-enroll", () => {
+    const KEY = "k".repeat(40);
+    const URL_ARG = "--api-url=http://host.docker.internal:17600";
+    const enrolled = {
+      ...bridge,
+      management: {
+        apiUrl: "http://host.docker.internal:17600",
+        enrolled: true,
+        agentVersion: "0.1.0",
+        agentApiVersion: 1,
+        agentCapabilities: ["status.v1"],
+        frpsVersion: "0.72.0",
+        frpsReachable: true,
+      },
+      setupCommands: { install: "do-not-print-me" },
+    };
+    let keyDir: string;
+    beforeEach(async () => {
+      keyDir = await mkdtemp(join(tmpdir(), "bridge-enroll-"));
+    });
+    afterEach(async () => {
+      await rm(keyDir, { recursive: true, force: true });
+    });
+    const keyFile = async (mode: number): Promise<string> => {
+      const path = join(keyDir, "agent.token");
+      await writeFile(path, `${KEY}\n`, { mode });
+      await chmod(path, mode);
+      return path;
+    };
+
+    it("without --confirm sends nothing and does not read the key", async () => {
+      const calls = stubFetch([{ body: enrolled }]);
+      const out = await run(["bridge-enroll", BRIDGE, URL_ARG, `--api-key-file=${join(keyDir, "missing")}`]);
+      expect(out).toContain("Nothing was changed");
+      expect(calls).toHaveLength(0);
+    });
+
+    it("reads the key from a 0600 file, PATCHes it, and prints identity and capabilities only", async () => {
+      const calls = stubFetch([{ body: enrolled }]);
+      const path = await keyFile(0o600);
+      const out = await run(["bridge-enroll", BRIDGE, URL_ARG, `--api-key-file=${path}`, "--confirm"]);
+      expect(calls).toHaveLength(1);
+      expect(calls[0]!.url).toContain(`/api/admin/vpn-bridges/${BRIDGE}`);
+      expect(calls[0]!.init?.method).toBe("PATCH");
+      expect(sentBody(calls[0]!)).toEqual({
+        managementApiUrl: "http://host.docker.internal:17600",
+        apiKey: KEY,
+      });
+      expect(out).toContain("Frankfurt");
+      expect(out).toContain("status.v1");
+      expect(out).toContain("0.72.0");
+      expect(out).not.toContain(KEY);
+      expect(out).not.toContain("host.docker.internal");
+      expect(out).not.toContain("do-not-print-me");
+    });
+
+    it("--json carries the same fields and no URL, key or commands", async () => {
+      stubFetch([{ body: enrolled }]);
+      const path = await keyFile(0o600);
+      const out = await run(["bridge-enroll", BRIDGE, URL_ARG, `--api-key-file=${path}`, "--confirm", "--json"]);
+      expect(JSON.parse(out)).toEqual({
+        id: BRIDGE,
+        name: "Frankfurt",
+        managementStatus: "ok",
+        agentVersion: "0.1.0",
+        agentApiVersion: 1,
+        agentCapabilities: ["status.v1"],
+        frpsVersion: "0.72.0",
+        frpsReachable: true,
+      });
+    });
+
+    it("refuses a key file that group or others can read, before any request", async () => {
+      const calls = stubFetch([{ body: enrolled }]);
+      const path = await keyFile(0o644);
+      await expect(
+        run(["bridge-enroll", BRIDGE, URL_ARG, `--api-key-file=${path}`, "--confirm"]),
+      ).rejects.toThrow(/accessible by group or others/);
+      expect(calls).toHaveLength(0);
+    });
+
+    it("refuses an inline key, a non-UUID id and a missing key flag", async () => {
+      const calls = stubFetch([{ body: enrolled }]);
+      await expect(
+        run(["bridge-enroll", BRIDGE, URL_ARG, `--api-key=${KEY}`, "--confirm"]),
+      ).rejects.toThrow(/Unknown flag/);
+      await expect(
+        run(["bridge-enroll", "frankfurt", URL_ARG, "--api-key-file=-", "--confirm"]),
+      ).rejects.toThrow(/must be a UUID/);
+      await expect(run(["bridge-enroll", BRIDGE, URL_ARG, "--confirm"])).rejects.toThrow(/Usage: bridge-enroll/);
+      expect(calls).toHaveLength(0);
+    });
+
+    it("surfaces an identity mismatch with a hint", async () => {
+      stubFetch([{ status: 409, body: { error: "BRIDGE_IDENTITY_MISMATCH", message: "other bridge" } }]);
+      const path = await keyFile(0o600);
+      await expect(
+        run(["bridge-enroll", BRIDGE, URL_ARG, `--api-key-file=${path}`, "--confirm"]),
+      ).rejects.toThrow(/BRIDGE_IDENTITY_MISMATCH: other bridge\n.*bridge id/);
+    });
+  });
+
+  it("bridge-enroll reads the key from stdin for -", async () => {
+    const calls: Array<{ init?: RequestInit }> = [];
+    const api = ((_path: string, init?: RequestInit) => {
+      calls.push({ init });
+      return Promise.resolve({ id: BRIDGE, name: "Frankfurt", managementStatus: "ok" });
+    }) as Parameters<typeof cmdBridgeEnroll>[0];
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    try {
+      await cmdBridgeEnroll(
+        api,
+        [BRIDGE, "--api-url=http://host.docker.internal:17600", "--api-key-file=-", "--confirm"],
+        undefined,
+        { readFile: (path) => (path === "-" ? `${"s".repeat(40)}\n` : "wrong") },
+      );
+    } finally {
+      logSpy.mockRestore();
+    }
+    expect(sentBody(calls[0]!)).toMatchObject({ apiKey: "s".repeat(40) });
   });
 
   it("bridge-add surfaces a duplicate address", async () => {
