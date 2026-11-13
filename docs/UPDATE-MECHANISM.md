@@ -71,6 +71,73 @@ docker compose -f infra/prod/compose.yaml up -d control-api
 Diagnostics: `systemctl status panel-updater.path` and
 `journalctl -u panel-updater.service -n 50`.
 
+## Updater units start through `/bin/bash` (and how to repair hosts installed earlier)
+
+All three host updaters (`panel-updater.service`, `amnezia-node-agent-update.service`,
+`amnezia-bridge-agent-update.service`) run `ExecStart=/bin/bash <absolute script>`.
+An older unit that executed the script directly fails with `status=203/EXEC` as
+soon as the checkout has the script at mode `0644` (git tracks it as `100644`); the
+level-triggered `.path` unit then re-fires, ends in `unit-start-limit-hit`, and the
+panel keeps showing the request as pending. The installers now check `/bin/bash`, a
+readable script and `bash -n` before touching the host, and refuse to install when a
+drop-in (`<unit>.service.d/*.conf`) or another unit file overrides `ExecStart`
+(they name the unit, and ask systemd for the effective command after the reload).
+
+Hosts installed before this change need the installed unit repaired. Do **not**
+re-run the installer to do it (that would re-render template defaults); use
+`scripts/repair-updater-units.sh`. It is self-contained, reads the units installed on
+the host, and rewrites only the `ExecStart=` line, so custom checkout paths, spool,
+lock directory and the approved image repository stay as they are.
+
+### Per-host procedure
+
+Run from the panel checkout, once per host (every panel host and every managed VPN
+host, including co-located panel/node hosts such as Caminia; a co-located host has
+both a panel and a node updater and the tool judges each one independently):
+
+```bash
+# 1. Inventory, changes nothing, no root needed
+ssh root@<host> 'bash -s -- --dry-run' < scripts/repair-updater-units.sh
+#    (--json for a machine-readable table)
+
+# 2. Repair idle units
+ssh root@<host> 'bash -s' < scripts/repair-updater-units.sh
+```
+
+Per unit the report records the effective `ExecStart`, enablement and state of the
+watcher (`.path`), whether an operation is running, and whether a request is
+pending (id, age, status). Outcomes:
+
+| Outcome | Meaning | What to do |
+| --- | --- | --- |
+| `repaired` / `would-repair` | Idle unit: `systemd-analyze verify`, install, `daemon-reload`, clear the failed state (`reset-failed` of service and watcher), watcher back to its previous enablement (enabled: started and `waiting`; disabled: stays disabled and stopped). No update is triggered. | Nothing; confirm in the second run. |
+| `current` | Already `/bin/bash`, watcher healthy. A second run is always this. | Nothing. |
+| `deferred-running` | An operation is running (service active or lock held). Nothing is changed. | Run the tool again when it has finished. |
+| `deferred-pending` | A request is queued (or, for bridges, an interrupted run's journal exists). The watcher is left exactly as it is, because rearming a level-triggered path unit would start that request. The report names the request id, age and status. | Decide explicitly: resume it (start the service, or fix and re-run the tool when the request has been consumed) or cancel it (remove the request file through the normal update path), then run the tool again. The tool never deletes requests, results or journals. |
+| `not-installed` | The opt-in updater was never set up on this host. Its disabled status is preserved. | Normal enablement step shown in the note (`install-updater.sh` / `install-agent-updater.sh` / `install-bridge.sh`). |
+| `blocked` | An `ExecStart` override, a missing or unreadable script, a Bash syntax error, an unrecognized `ExecStart`, or a partial install. Nothing is changed. | Fix the cause named in the note, run again. |
+| `failed` | `systemd-analyze verify` rejected the corrected unit (nothing changed), the reload or the effective command check failed, or the watcher did not come back to `waiting`. | Read the note and `journalctl -u <unit>`. |
+
+Exit status: `0` nothing left to do, `2` at least one unit deferred, `3` at least
+one blocked or failed, `1` usage.
+
+A watcher stuck in `unit-start-limit-hit` on an idle host is recovered by the same
+run (reset-failed plus start). By hand: `systemctl reset-failed <unit>.service
+<unit>.path && systemctl start <unit>.path`. Do that only when no request is
+pending: a retained request starts immediately when the watcher is rearmed.
+
+### Fleet outcome table (fill in per host)
+
+| Host | Updater | Outcome (verified / intentionally disabled / deferred / unreachable) | Request id, age, status (if deferred) | Date, operator |
+| --- | --- | --- | --- | --- |
+| | panel / node-agent / bridge-agent | | | |
+
+`verified` = a repair run reported `repaired` or `current` and a second `--dry-run`
+reports `current`; `intentionally disabled` = `not-installed`, or an installed
+updater whose watcher is deliberately disabled; `deferred` = running or pending,
+revisit; `unreachable` = SSH failed, revisit. The fleet-wide application of this
+procedure is an explicit operator step and is not part of a code change.
+
 ## Design choice: host systemd worker, not a docker.sock sidecar
 
 An earlier draft proposed a sidecar container with `/var/run/docker.sock`. The
