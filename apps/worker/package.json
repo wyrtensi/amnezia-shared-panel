@@ -8,13 +8,14 @@
     "dev": "tsx watch src/main.ts",
     "lint": "eslint src",
     "start": "node dist/main.js",
-    "pretest": "pnpm --filter @amnezia/contracts build && pnpm --filter @amnezia/db build",
+    "pretest": "pnpm --filter @amnezia/contracts build && pnpm --filter @amnezia/vpn-config build && pnpm --filter @amnezia/db build",
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json"
   },
   "dependencies": {
     "@amnezia/contracts": "workspace:*",
     "@amnezia/db": "workspace:*",
+    "@amnezia/vpn-config": "workspace:*",
     "drizzle-orm": "0.45.4",
     "zod": "4.6.7"
   },

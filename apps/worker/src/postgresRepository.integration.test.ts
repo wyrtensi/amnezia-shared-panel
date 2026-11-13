@@ -4,6 +4,7 @@ import {
   ACCESS_SYNC_DEDUPLICATION_KEY,
   RULES_REFRESH_DEDUPLICATION_KEY,
   type KeyState,
+  type ProbeTargetResult,
 } from "@amnezia/contracts";
 import {
   createDatabase,
@@ -25,6 +26,8 @@ import {
   routeRuleVersions,
   trafficRollups,
   users,
+  vpnBridgeRoutes,
+  vpnBridges,
   vpnKeys,
 } from "@amnezia/db";
 import { and, eq, inArray, sql } from "drizzle-orm";
@@ -33,11 +36,12 @@ import {
   REARM_STUCK_REVOKES_LIMIT,
 } from "./postgresRepository.js";
 
-import { ingestRun } from "./reachability.js";
+import { ingestRun, type Notice, type ReachabilityTarget } from "./reachability.js";
 import {
   PostgresReachabilityRepository,
   SERVICE_ACCOUNT_EMAIL,
 } from "./reachabilityRepository.js";
+import type { IngestDecide } from "./reachabilityTask.js";
 
 const databaseUrl = process.env.TEST_DATABASE_URL;
 const runDatabaseTest = databaseUrl ? it : it.skip;
@@ -2154,6 +2158,9 @@ describe("PostgresReachabilityRepository", () => {
     await database.db.delete(reachabilityProbe);
     await database.db.delete(auditEvents);
     await database.db.delete(jobOutbox);
+    // Routes and bridges reference nodes with RESTRICT.
+    await database.db.delete(vpnBridgeRoutes);
+    await database.db.delete(vpnBridges);
     await database.db.delete(vpnKeys);
     await database.db.delete(nodes);
     await database.db.delete(users);
@@ -2271,7 +2278,9 @@ describe("PostgresReachabilityRepository", () => {
     if (!database || !repository) return;
     await seedNode("node-a");
     await seedNode("node-b");
-    expect((await repository.listTargets()).map((t) => t.unavailableReason)).toEqual([
+    expect(
+      (await repository.listTargets({ bridgeMeasurement: false })).map((t) => t.unavailableReason),
+    ).toEqual([
       "no service key yet",
       "no service key yet",
     ]);
@@ -2289,7 +2298,7 @@ describe("PostgresReachabilityRepository", () => {
       })
       .where(eq(vpnKeys.id, keys[0]?.id ?? ""));
 
-    const targets = await repository.listTargets();
+    const targets = await repository.listTargets({ bridgeMeasurement: false });
     const active = targets.find((t) => t.config !== null);
     expect(active?.config).toBe("vpn://config");
     expect(active?.expectedEgressIp).toBe("192.0.2.10");
@@ -2313,6 +2322,34 @@ describe("PostgresReachabilityRepository", () => {
     });
   };
 
+  /** A `decide` that classifies the given results against what the ingest read. */
+  const decideWith =
+    (
+      runId: string,
+      now: Date,
+      results: (targets: readonly ReachabilityTarget[]) => ProbeTargetResult[] = () => [],
+      extra: { notices?: Notice[]; mass?: boolean } = {},
+    ): IngestDecide =>
+    ({ targets, previous }) => {
+      const out = ingestRun({
+        runId,
+        now,
+        label: "Testland",
+        failThreshold: 1,
+        controlOk: true,
+        targets,
+        results: results(targets),
+        previous,
+      });
+      return {
+        outcomes: out.outcomes,
+        states: out.states,
+        notices: extra.notices ?? out.notices,
+        staleAlertedAt: null,
+        mass: extra.mass ?? out.massFailure,
+      };
+    };
+
   runDatabaseTest("ingest writes everything at once, once per run", async () => {
     if (!database || !repository) return;
     const a = await seedNode("node-a");
@@ -2328,44 +2365,18 @@ describe("PostgresReachabilityRepository", () => {
       controlUrl: "https://example.com/",
       currentRunId: runId,
     });
-    const target = {
-      targetId: `${a.id}:awg3`,
-      nodeId: a.id,
-      nodeName: "node-a",
-      publicIp: "192.0.2.10",
-      protocol: "awg3" as const,
-      unavailableReason: null,
-    };
     const now = new Date();
-    const out = ingestRun({
-      runId,
-      now,
-      label: "Testland",
-      failThreshold: 1,
-      controlOk: true,
-      targets: [target],
-      results: [],
-      previous: new Map(),
-    });
-    // Reuse the computed shape, but make it an incident so a notice is queued.
+    // Make it an incident so a notice is queued.
     const notice = { dedupKey: `notify.reachability:down:${a.id}:x`, text: "down" };
-    const write = {
-      runId,
-      now,
-      outcomes: out.outcomes,
-      states: out.states,
-      notices: [notice],
-      staleAlertedAt: null,
-      mass: false,
-    };
-    await repository.ingest(write);
+    const decide = decideWith(runId, now, () => [], { notices: [notice] });
+    await expect(repository.ingest({ runId, now }, decide)).resolves.toBe(true);
     // The same run again (an overlapping worker) and a run never started: no-ops.
-    await repository.ingest(write);
-    await repository.ingest({ ...write, runId: randomUUID() });
+    await expect(repository.ingest({ runId, now }, decide)).resolves.toBe(false);
+    await expect(repository.ingest({ runId: randomUUID(), now }, decide)).resolves.toBe(false);
 
     const results = await database.db.select().from(nodeReachabilityResults);
     expect(results).toHaveLength(1);
-    expect(results[0]).toMatchObject({ status: "error", detail: "probe returned no result" });
+    expect(results[0]).toMatchObject({ status: "error", detail: "no service key yet" });
     const [state] = await database.db.select().from(nodeReachabilityState);
     expect(state?.status).toBe("error");
     expect(await database.db.select().from(nodeReachabilityHistory)).toHaveLength(1);
@@ -2382,41 +2393,94 @@ describe("PostgresReachabilityRepository", () => {
     expect(probe?.timeZone).toBe("UTC");
   });
 
-  runDatabaseTest("ingest skips a node deleted since the run started", async () => {
+  runDatabaseTest("ingest keeps a protocol's failing-since across failed runs and clears it on recovery", async () => {
+    if (!database || !repository) return;
+    const a = await seedNode("node-a");
+    await seedProbe(null);
+    const base = new Date("2026-11-13T10:00:00Z");
+    const at = (minutes: number) => new Date(base.getTime() + minutes * 60_000);
+    const ingestOne = async (status: "failed" | "ok" | "error", now: Date) => {
+      const runId = randomUUID();
+      await database?.db
+        .update(reachabilityProbe)
+        .set({ currentRunId: runId })
+        .where(eq(reachabilityProbe.id, 1));
+      const decide: IngestDecide = ({ targets, previous }) => {
+        const out = ingestRun({
+          runId,
+          now,
+          label: "Testland",
+          failThreshold: 1,
+          controlOk: true,
+          targets,
+          results: [],
+          previous,
+        });
+        return {
+          outcomes: [
+            { nodeId: a.id, protocol: "awg2", status, levels: null, egressIp: null, detail: null },
+          ],
+          states: out.states,
+          notices: [],
+          staleAlertedAt: null,
+          mass: false,
+        };
+      };
+      await expect(repository?.ingest({ runId, now }, decide)).resolves.toBe(true);
+      const [row] = await database?.db
+        .select()
+        .from(nodeReachabilityResults)
+        .where(eq(nodeReachabilityResults.nodeId, a.id)) ?? [];
+      return row?.failingSince ?? null;
+    };
+
+    expect(await ingestOne("failed", at(0))).toEqual(at(0));
+    expect(await ingestOne("failed", at(5))).toEqual(at(0));
+    expect(await ingestOne("ok", at(10))).toBeNull();
+    expect(await ingestOne("failed", at(15))).toEqual(at(15));
+    // An error run keeps the streak start, and the next failure continues it.
+    expect(await ingestOne("error", at(20))).toEqual(at(15));
+    expect(await ingestOne("failed", at(25))).toEqual(at(15));
+    expect(await ingestOne("error", at(30))).toEqual(at(15));
+    expect(await ingestOne("ok", at(35))).toBeNull();
+    expect(await ingestOne("error", at(40))).toBeNull();
+  });
+
+  runDatabaseTest("ingest writes only the nodes it read, not one deleted since the run started", async () => {
     if (!database || !repository) return;
     const runId = randomUUID();
     await seedProbe(runId);
-    const out = ingestRun({
-      runId,
-      now: new Date(),
-      label: "Testland",
-      failThreshold: 2,
-      controlOk: true,
-      targets: [
-        {
-          targetId: "gone:awg3",
-          nodeId: randomUUID(),
-          nodeName: "node-gone",
-          publicIp: null,
-          protocol: "awg3",
-          unavailableReason: null,
-        },
-      ],
-      results: [],
-      previous: new Map(),
-    });
+    const now = new Date();
+    const ghost = randomUUID();
     await expect(
-      repository.ingest({
-        runId,
-        now: new Date(),
-        outcomes: out.outcomes,
-        states: out.states,
-        notices: [],
-        staleAlertedAt: null,
-        mass: false,
+      repository.ingest({ runId, now }, (context) => {
+        expect(context.targets).toEqual([]);
+        return {
+          outcomes: [
+            { nodeId: ghost, protocol: "awg3", status: "ok", levels: null, egressIp: null, detail: null },
+          ],
+          states: new Map([
+            [
+              ghost,
+              {
+                status: "ok" as const,
+                consecutiveFailures: 0,
+                failingSince: null,
+                alertedAt: null,
+                alertKind: null,
+                checkedAt: now,
+                detail: null,
+              },
+            ],
+          ]),
+          notices: [],
+          staleAlertedAt: null,
+          mass: false,
+        };
       }),
-    ).resolves.toBeUndefined();
+    ).resolves.toBe(true);
     expect(await database.db.select().from(nodeReachabilityState)).toHaveLength(0);
+    expect(await database.db.select().from(nodeReachabilityResults)).toHaveLength(0);
   });
 
   runDatabaseTest("ingest prunes history older than 30 days", async () => {
@@ -2430,20 +2494,14 @@ describe("PostgresReachabilityRepository", () => {
     });
     const runId = randomUUID();
     await seedProbe(runId);
-    await repository.ingest({
-      runId,
-      now: new Date(),
-      outcomes: [],
-      states: new Map(),
-      notices: [],
-      staleAlertedAt: null,
-      mass: false,
-    });
+    const now = new Date();
+    await repository.ingest({ runId, now }, decideWith(runId, now));
     const left = await database.db
       .select()
       .from(nodeReachabilityHistory)
       .where(and(eq(nodeReachabilityHistory.nodeId, a.id)));
-    expect(left).toHaveLength(0);
+    // Only this run's row is left.
+    expect(left.map((row) => row.runId)).toEqual([runId]);
   });
 
   runDatabaseTest(
@@ -2451,7 +2509,7 @@ describe("PostgresReachabilityRepository", () => {
     async () => {
       if (!database || !repository) return;
       const a = await seedNode("node-a");
-      const b = await seedNode("node-b");
+      await seedNode("node-b");
       await seedNode("node-off", { reachabilityEnabled: false });
       const runId = randomUUID();
       await seedProbe(runId);
@@ -2491,6 +2549,18 @@ describe("PostgresReachabilityRepository", () => {
           routeProfile: "full_tunnel",
         })
         .returning();
+      // Usable probe keys, so the run measures both nodes.
+      const config = encryptSecret("vpn://config", keyring, 1);
+      await database.db
+        .update(vpnKeys)
+        .set({
+          state: "active",
+          configCiphertext: config.ciphertext,
+          configNonce: config.nonce,
+          configAuthTag: config.authTag,
+          configKeyVersion: config.keyVersion,
+        })
+        .where(inArray(vpnKeys.id, (await serviceKeys()).map((key) => key.id)));
       const [probeKey] = await serviceKeys();
       await database.db.insert(peerCurrent).values([
         { keyId: personKey?.id ?? "", online: true, latestHandshakeAt: new Date("2026-11-10T13:00:00Z") },
@@ -2499,14 +2569,6 @@ describe("PostgresReachabilityRepository", () => {
       ]);
 
       const level = (ok: boolean) => ({ ok, detail: null, latencyMs: ok ? 40 : null });
-      const targets = [a, b].map((node) => ({
-        targetId: `${node.id}:awg3`,
-        nodeId: node.id,
-        nodeName: node.name,
-        publicIp: "192.0.2.10",
-        protocol: "awg3" as const,
-        unavailableReason: null,
-      }));
       const result = (targetId: string, ok: boolean) => ({
         targetId,
         protocol: "awg3",
@@ -2517,27 +2579,14 @@ describe("PostgresReachabilityRepository", () => {
         levels: { ping: level(ok), tcp: level(ok), handshake: level(ok), http: level(ok) },
       });
       const now = new Date("2026-11-10T14:05:00Z");
-      const out = ingestRun({
+      const decide = decideWith(
         runId,
         now,
-        label: "Testland",
-        failThreshold: 2,
-        controlOk: true,
-        targets,
-        results: [result(targets[0]?.targetId ?? "", true), result(targets[1]?.targetId ?? "", false)],
-        previous: new Map(),
-      });
-      const write = {
-        runId,
-        now,
-        outcomes: out.outcomes,
-        states: out.states,
-        notices: [],
-        staleAlertedAt: null,
-        mass: true,
-      };
-      await repository.ingest(write);
-      await repository.ingest(write);
+        (targets) => targets.map((target) => result(target.targetId, target.nodeId === a.id)),
+        { notices: [], mass: true },
+      );
+      await repository.ingest({ runId, now }, decide);
+      await repository.ingest({ runId, now }, decide);
 
       const refreshes = await database.db
         .select()

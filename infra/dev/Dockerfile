@@ -11,6 +11,7 @@ COPY apps/worker/package.json apps/worker/package.json
 COPY apps/web/package.json apps/web/package.json
 COPY packages/contracts/package.json packages/contracts/package.json
 COPY packages/db/package.json packages/db/package.json
+COPY packages/vpn-config/package.json packages/vpn-config/package.json
 RUN pnpm install --frozen-lockfile
 
 COPY apps apps

@@ -1,6 +1,22 @@
 import type {
   AccessSyncStatus,
   AdminReachabilityView,
+  Bridge,
+  CreateBridgeRequest,
+  DeleteBridgeResult,
+  BridgeAgentUpdateView,
+  BridgeRollbackPreflight,
+  RequestBridgeAgentUpdate,
+  RequestBridgeAgentUpdateResult,
+  InfrastructureItem,
+  BridgeEligibility,
+  NodeBridgeRoutes,
+  PrepareBridgeRouteRequest,
+  PrepareBridgeRouteResult,
+  ReleaseBridgeRouteResult,
+  UpdateBridgeRequest,
+  VerifyBridgeRouteRequest,
+  VerifyBridgeRouteResult,
   CreateNodeRequest,
   CreateServiceCheckRequest,
   CreateKeyRequest,
@@ -30,6 +46,7 @@ import type {
   ReachabilityProbeView,
 } from "./service.js";
 import type { AwgClientProfileV1 } from "./awgClientProfile.js";
+import type { BridgeRouteTarget } from "./bridgeRepository.js";
 import type { RulePayload } from "./vpnConfig.js";
 
 export type ActiveRule = {
@@ -41,6 +58,8 @@ export type ActiveRule = {
 export type StoredKeyConfig = {
   id: string;
   ownerId: string;
+  /** The VPN node that issued the key. */
+  nodeId: string;
   deviceLabel: string | null;
   // Per-owner key number and the node's user-facing name. Which of them end up
   // in the client-visible connection name is decided by `nameDisplay`.
@@ -54,6 +73,13 @@ export type StoredKeyConfig = {
   activeRule: ActiveRule | null;
   customRoutes: CustomRoutes | null;
   state: KeyState;
+  /** The protocol the key was issued with; decides Direct versus bridge. */
+  protocol: "awg2" | "awg3";
+  /**
+   * The node's active bridge route as public host and UDP port, read in the
+   * same statement as the key; null while the node is Direct.
+   */
+  bridgeEndpoint: { host: string; port: number } | null;
   /** The saved AWG 3.1 client profile, unvalidated; null when none. */
   awgClientProfile: unknown;
 };
@@ -209,4 +235,45 @@ export interface ControlRepository {
     payload: unknown,
   ) => Promise<unknown>;
   appendAudit: (event: AuditInput) => Promise<void>;
+  // Bridge registry (optional AWG 3.1 node bridges). Admin-only; the node's
+  // active route changes through `updateNode` with `vpnBridgeRouteId`.
+  listBridges: (actor: Actor) => Promise<Bridge[]>;
+  createBridge: (actor: Actor, request: CreateBridgeRequest) => Promise<Bridge>;
+  updateBridge: (
+    actor: Actor,
+    bridgeId: string,
+    request: UpdateBridgeRequest,
+  ) => Promise<Bridge>;
+  deleteBridge: (actor: Actor, bridgeId: string) => Promise<DeleteBridgeResult>;
+  /** Preview, outstanding operation and history of the bridge-agent update. */
+  getBridgeAgentUpdate: (actor: Actor, bridgeId: string) => Promise<BridgeAgentUpdateView>;
+  /** Read-only checks before rolling back to a release that predates bridges. */
+  getBridgeRollbackPreflight: (actor: Actor) => Promise<BridgeRollbackPreflight>;
+  /** Request a bridge-agent update; a repeat of the outstanding one returns it. */
+  requestBridgeAgentUpdate: (
+    actor: Actor,
+    bridgeId: string,
+    request: RequestBridgeAgentUpdate,
+  ) => Promise<RequestBridgeAgentUpdateResult>;
+  getNodeBridgeRoutes: (actor: Actor, nodeId: string) => Promise<NodeBridgeRoutes>;
+  /** Counts-only dry-run of the endpoint renderer over the node's stored configs. */
+  getBridgeEligibility: (actor: Actor, nodeId: string) => Promise<BridgeEligibility>;
+  prepareBridgeRoute: (
+    actor: Actor,
+    nodeId: string,
+    request: PrepareBridgeRouteRequest,
+  ) => Promise<PrepareBridgeRouteResult>;
+  releaseBridgeRoute: (
+    actor: Actor,
+    routeId: string,
+  ) => Promise<ReleaseBridgeRouteResult>;
+  listInfrastructure: (actor: Actor) => Promise<InfrastructureItem[]>;
+  /** A held route with its bridge's public address; null when unknown. */
+  findBridgeRouteTarget: (routeId: string) => Promise<BridgeRouteTarget | null>;
+  /** Record operator verification or queue a probe candidate check. */
+  verifyBridgeRoute: (
+    actor: Actor,
+    routeId: string,
+    request: VerifyBridgeRouteRequest,
+  ) => Promise<VerifyBridgeRouteResult>;
 }

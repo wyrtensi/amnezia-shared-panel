@@ -1,0 +1,834 @@
+import { z } from "zod";
+
+import { bridgeAgentUpdateSummarySchema } from "./bridgeUpdateModel.js";
+
+/**
+ * Optional AWG 3.1 node bridges: registry contracts.
+ *
+ * A bridge is a public host running `frps` plus `bridge-agent`. Routes tie one
+ * VPN node to one bridge UDP port. This file holds the typed shapes shared by
+ * the Control API, CLI and web client; persistence lives in `@amnezia/db`.
+ */
+
+const IPV4_DOTTED_QUAD = /^(?:0|[1-9]\d{0,2})(?:\.(?:0|[1-9]\d{0,2})){3}$/;
+
+// Special-purpose IPv4 ranges that are never a valid public bridge address.
+// Each entry is [first address, prefix length].
+const NONPUBLIC_IPV4_RANGES: ReadonlyArray<
+  readonly [string, number, string]
+> = [
+  ["0.0.0.0", 8, "this network"],
+  ["10.0.0.0", 8, "private"],
+  ["100.64.0.0", 10, "shared address space"],
+  ["127.0.0.0", 8, "loopback"],
+  ["169.254.0.0", 16, "link-local"],
+  ["172.16.0.0", 12, "private"],
+  ["192.0.0.0", 24, "IETF protocol assignments"],
+  ["192.0.2.0", 24, "documentation"],
+  ["192.168.0.0", 16, "private"],
+  ["198.18.0.0", 15, "benchmarking"],
+  ["198.51.100.0", 24, "documentation"],
+  ["203.0.113.0", 24, "documentation"],
+  ["224.0.0.0", 4, "multicast"],
+  ["240.0.0.0", 4, "reserved"],
+];
+
+const ipv4ToInt = (octets: readonly number[]): number =>
+  ((octets[0]! << 24) | (octets[1]! << 16) | (octets[2]! << 8) | octets[3]!) >>> 0;
+
+export type PublicIpv4Classification =
+  | { ok: true; address: string }
+  | { ok: false; reason: string };
+
+/**
+ * Classify a candidate bridge address.
+ *
+ * Only a strict dotted quad is accepted. Octets with leading zeros (such as
+ * `010.1.1.1`) are rejected rather than normalized: some parsers read them as
+ * octal, so accepting them would let one string mean two different hosts.
+ * Hostnames, URIs, `ip:port`, IPv6 and whitespace-padded input are rejected.
+ * The input is not trimmed here; callers that want trimming do it first.
+ */
+export const classifyPublicIpv4 = (input: string): PublicIpv4Classification => {
+  if (!IPV4_DOTTED_QUAD.test(input)) {
+    return { ok: false, reason: "Must be a plain dotted-quad IPv4 address" };
+  }
+  const octets = input.split(".").map(Number);
+  if (octets.some((octet) => octet > 255)) {
+    return { ok: false, reason: "Octet out of range" };
+  }
+  const value = ipv4ToInt(octets);
+  for (const [base, prefix, label] of NONPUBLIC_IPV4_RANGES) {
+    const baseValue = ipv4ToInt(base.split(".").map(Number));
+    const mask = (0xffffffff << (32 - prefix)) >>> 0;
+    if (((value & mask) >>> 0) === ((baseValue & mask) >>> 0)) {
+      return { ok: false, reason: `Not a public address (${label})` };
+    }
+  }
+  return { ok: true, address: input };
+};
+
+export const publicIpv4Schema = z.string().superRefine((value, ctx) => {
+  const result = classifyPublicIpv4(value);
+  if (!result.ok) ctx.addIssue({ code: "custom", message: result.reason });
+});
+
+export const BRIDGE_DEFAULT_CONTROL_TCP_PORT = 7000;
+export const BRIDGE_DEFAULT_UDP_PORT_START = 41000;
+export const BRIDGE_DEFAULT_UDP_PORT_END = 41031;
+
+const portSchema = z.int().min(1).max(65_535);
+const bridgeNameSchema = z.string().trim().min(1).max(120);
+
+export const createBridgeRequestSchema = z
+  .object({
+    name: bridgeNameSchema,
+    publicIpv4: publicIpv4Schema,
+    controlTcpPort: portSchema.default(BRIDGE_DEFAULT_CONTROL_TCP_PORT),
+    udpPortStart: portSchema.default(BRIDGE_DEFAULT_UDP_PORT_START),
+    udpPortEnd: portSchema.default(BRIDGE_DEFAULT_UDP_PORT_END),
+  })
+  .refine((value) => value.udpPortStart <= value.udpPortEnd, {
+    path: ["udpPortEnd"],
+    message: "UDP port range end must not be below its start",
+  });
+
+/**
+ * The bridge-agent's private management endpoint as the panel reaches it:
+ * the panel-side end of the SSH forwarding to the agent's loopback listener,
+ * e.g. `http://host.docker.internal:7605`. Only an http(s) origin: no
+ * credentials, path, query or fragment. Which hosts are allowed is deployment
+ * configuration (`VPN_BRIDGE_MANAGEMENT_HOSTS`, see bridgeAgent.ts) and is
+ * checked by the Control API, not here.
+ */
+export const bridgeManagementApiUrlSchema = z
+  .url()
+  .max(2_048)
+  .superRefine((value, ctx) => {
+    const url = new URL(value);
+    if (url.protocol !== "http:" && url.protocol !== "https:") {
+      ctx.addIssue({ code: "custom", message: "Management API URL must use http or https" });
+    }
+    if (url.username || url.password) {
+      ctx.addIssue({ code: "custom", message: "Management API URL must not carry credentials" });
+    }
+    if ((url.pathname !== "/" && url.pathname !== "") || url.search || url.hash) {
+      ctx.addIssue({
+        code: "custom",
+        message: "Management API URL must be an origin only (no path, query or fragment)",
+      });
+    }
+  });
+
+/**
+ * The bridge-agent API credential (its bearer token). Printable ASCII
+ * without spaces: it travels as a header value, and a control character
+ * would make the HTTP client echo the whole value in its error.
+ */
+export const bridgeAgentApiKeySchema = z
+  .string()
+  .min(32)
+  .max(4_096)
+  .regex(/^[\x21-\x7e]+$/, "Must be printable ASCII without spaces");
+
+// The name, and enrollment: the private management endpoint together with
+// the agent's API credential. The credential travels only in this
+// authenticated write and is never returned. The host address and port pool
+// never change in place, because a replacement host is registered as a new
+// bridge.
+export const updateBridgeRequestSchema = z
+  .object({
+    name: bridgeNameSchema.optional(),
+    managementApiUrl: bridgeManagementApiUrlSchema.optional(),
+    apiKey: bridgeAgentApiKeySchema.optional(),
+  })
+  .refine((value) => Object.keys(value).length > 0, "At least one field is required")
+  .refine(
+    (value) => (value.managementApiUrl === undefined) === (value.apiKey === undefined),
+    {
+      path: ["apiKey"],
+      message: "Enrollment needs both managementApiUrl and apiKey",
+    },
+  );
+
+export const BRIDGE_MANAGEMENT_STATUSES = [
+  "pending_enrollment",
+  "ok",
+  "down",
+  "stale",
+  "identity_mismatch",
+  "unsupported",
+] as const;
+export const bridgeManagementStatusSchema = z.enum(BRIDGE_MANAGEMENT_STATUSES);
+
+export const BRIDGE_ROUTE_STATES = ["draft", "active", "retiring"] as const;
+export const bridgeRouteStateSchema = z.enum(BRIDGE_ROUTE_STATES);
+
+export const BRIDGE_VERIFICATION_METHODS = ["probe", "operator"] as const;
+export const bridgeVerificationMethodSchema = z.enum(BRIDGE_VERIFICATION_METHODS);
+
+export const BRIDGE_VERIFICATION_RESULTS = ["success", "failure"] as const;
+export const bridgeVerificationResultSchema = z.enum(BRIDGE_VERIFICATION_RESULTS);
+
+/** The frps proxy name for a route; derived from the route id, never typed. */
+export const bridgeFrpProxyName = (routeId: string): string => `awg-route-${routeId}`;
+
+export const bridgeRouteSchema = z.object({
+  id: z.uuid(),
+  nodeId: z.uuid(),
+  bridgeId: z.uuid(),
+  publicUdpPort: portSchema,
+  state: bridgeRouteStateSchema,
+  frpProxyName: z.string(),
+  observedOnline: z.boolean().nullable(),
+  observedRegistrationMarker: z.string().nullable(),
+  observedAt: z.iso.datetime().nullable(),
+  verificationMethod: bridgeVerificationMethodSchema.nullable(),
+  verifiedRegistrationMarker: z.string().nullable(),
+  verifiedAt: z.iso.datetime().nullable(),
+  verificationResult: bridgeVerificationResultSchema.nullable(),
+  // Bounded short code; never free-form text and never a secret.
+  verificationError: z.string().max(80).nullable(),
+  activatedAt: z.iso.datetime().nullable(),
+  retiringSince: z.iso.datetime().nullable(),
+  createdAt: z.iso.datetime(),
+});
+
+/**
+ * What the bridge-agent's latest poll says about one route's frpc
+ * registration. `unknown` covers never observed, a bridge that is not `ok`,
+ * an observation older than the stale window, and a poll that did not cover
+ * this route. It is never rendered as offline.
+ */
+export const BRIDGE_REGISTRATION_STATUSES = ["online", "offline", "unknown"] as const;
+export const bridgeRegistrationStatusSchema = z.enum(BRIDGE_REGISTRATION_STATUSES);
+export const bridgeRouteRegistrationSchema = z.object({
+  status: bridgeRegistrationStatusSchema,
+  /** The observed registration marker; only while `online`. */
+  marker: z.string().nullable(),
+  observedAt: z.iso.datetime().nullable(),
+});
+
+/**
+ * End-to-end AWG evidence for one route, separate from management
+ * reachability and from registration. Two kinds, by route state:
+ *
+ * - `candidate` (draft and retiring routes): the result of a candidate
+ *   verification. `valid`: a success within 30 minutes bound to the
+ *   registration observed now. `unknown`: a recent success exists but no
+ *   current online observation can vouch for it. `marker_changed`: the
+ *   registration was replaced after the verification. `expired`: older than 30
+ *   minutes.
+ * - `awg_path` (active routes, ruling R19): the node's regular AWG 3.1
+ *   reachability result for its current endpoint revision, mapped to
+ *   ok / failed / unknown (missing, stale, error and probe-incapable are all
+ *   unknown). `checkedAt` is when that result was measured.
+ */
+export const BRIDGE_ROUTE_VERIFICATION_STATUSES = [
+  "none",
+  "valid",
+  "unknown",
+  "marker_changed",
+  "expired",
+  "failed",
+] as const;
+export const bridgeRouteVerificationStatusSchema = z.enum(
+  BRIDGE_ROUTE_VERIFICATION_STATUSES,
+);
+export const BRIDGE_AWG_PATH_STATUSES = ["ok", "failed", "unknown"] as const;
+export const bridgeAwgPathStatusSchema = z.enum(BRIDGE_AWG_PATH_STATUSES);
+export const bridgeRouteVerificationSchema = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("candidate"),
+    status: bridgeRouteVerificationStatusSchema,
+    method: bridgeVerificationMethodSchema.nullable(),
+    verifiedAt: z.iso.datetime().nullable(),
+    /** Bounded short code of a failed check; never free-form text. */
+    error: z.string().max(80).nullable(),
+  }),
+  z.object({
+    kind: z.literal("awg_path"),
+    status: bridgeAwgPathStatusSchema,
+    checkedAt: z.iso.datetime().nullable(),
+  }),
+]);
+
+export const bridgeRouteSummarySchema = z.object({
+  id: z.uuid(),
+  nodeId: z.uuid(),
+  nodeName: z.string(),
+  publicUdpPort: portSchema,
+  state: bridgeRouteStateSchema,
+  registration: bridgeRouteRegistrationSchema,
+  verification: bridgeRouteVerificationSchema,
+});
+
+/**
+ * Host commands for the bridge installer (`/opt/amnezia-bridge/install-bridge.sh` on the bridge host).
+ * It installs the frps and, when `--agent-image <name@sha256:digest>` is
+ * appended, the bridge-agent too (without it the script exits 60 after the
+ * frps step). Built from the bridge id, control port and UDP range only; no
+ * secrets.
+ */
+export const bridgeSetupCommandsSchema = z.object({
+  install: z.string(),
+  dryRun: z.string(),
+  /**
+   * The `<approved repository>@sha256:<digest>` already appended to both
+   * commands as `--agent-image`, resolved by the panel from the approved
+   * bridge-agent repository. Null when none is available (repository not
+   * configured, not yet resolved, or no compatible release): the commands then
+   * install frps only and the installer exits 60.
+   */
+  agentImage: z.string().nullable().optional(),
+});
+export type BridgeSetupCommands = z.infer<typeof bridgeSetupCommandsSchema>;
+
+/**
+ * Host commands for the node route installer (`/opt/amnezia-panel-node/scripts/install-frpc.sh` on the node host).
+ * Built from the route id, the bridge IPv4, the control port and the public
+ * port only; the script detects the local AWG target itself. Its optional
+ * `--local-udp-port <udp>` / `--local-ip <ipv4>` overrides are not generated:
+ * append them to `install` when detection asks for them. `remove`
+ * retires the route's frpc unit and config.
+ */
+export const routeSetupCommandsSchema = z.object({
+  install: z.string(),
+  dryRun: z.string(),
+  remove: z.string(),
+});
+export type RouteSetupCommands = z.infer<typeof routeSetupCommandsSchema>;
+
+/**
+ * Enrollment state and the bridge-agent's last reported metadata. Safe to
+ * show: the API credential is never part of it.
+ */
+export const bridgeManagementSchema = z.object({
+  /** The private management endpoint; null until enrolled. */
+  apiUrl: z.string().nullable(),
+  enrolled: z.boolean(),
+  enrolledAt: z.iso.datetime().nullable(),
+  agentVersion: z.string().nullable(),
+  agentApiVersion: z.int().nullable(),
+  agentCapabilities: z.array(z.string()).nullable(),
+  frpsVersion: z.string().nullable(),
+  /** Whether the agent could read its local frps; null until reported. */
+  frpsReachable: z.boolean().nullable(),
+  /** Bounded code of the last poll problem; never upstream text. */
+  lastErrorCode: z.string().max(80).nullable(),
+  lastPollAttemptAt: z.iso.datetime().nullable(),
+});
+export type BridgeManagement = z.infer<typeof bridgeManagementSchema>;
+
+export const bridgeSchema = z.object({
+  id: z.uuid(),
+  name: z.string(),
+  publicIpv4: z.string(),
+  controlTcpPort: portSchema,
+  udpPortStart: portSchema,
+  udpPortEnd: portSchema,
+  // Size of the UDP pool and how many of its ports draft, active and retiring
+  // routes hold.
+  capacity: z.int().min(1),
+  heldPorts: z.int().min(0),
+  // `stale` is computed on read: an `ok` bridge whose last observation is
+  // older than the stale window.
+  managementStatus: bridgeManagementStatusSchema,
+  lastObservedAt: z.iso.datetime().nullable(),
+  management: bridgeManagementSchema.optional(),
+  agentUpdate: bridgeAgentUpdateSummarySchema.optional(),
+  routes: z.array(bridgeRouteSummarySchema),
+  setupCommands: bridgeSetupCommandsSchema.optional(),
+  createdAt: z.iso.datetime(),
+  updatedAt: z.iso.datetime(),
+});
+
+/**
+ * The Bridges block of `GET /api/admin/overview`, present only when at least
+ * one bridge exists. VPN node counters elsewhere in the overview never
+ * include bridges. `verifiedActiveRoutes` equals `awgPathOk`.
+ */
+export const adminOverviewBridgeSchema = z.object({
+  id: z.uuid(),
+  name: z.string(),
+  managementStatus: bridgeManagementStatusSchema,
+  lastObservedAt: z.iso.datetime().nullable(),
+  activeRoutes: z.int().min(0),
+  // Active routes by AWG path evidence (ruling R19). While the bridge's
+  // management status is not `ok` every active route counts as unknown.
+  verifiedActiveRoutes: z.int().min(0),
+  awgPathOk: z.int().min(0),
+  awgPathFailed: z.int().min(0),
+  awgPathUnknown: z.int().min(0),
+});
+export const adminOverviewBridgesSchema = z.object({
+  count: z.int().min(1),
+  items: z.array(adminOverviewBridgeSchema),
+});
+
+export const prepareBridgeRouteRequestSchema = z.object({
+  bridgeId: z.uuid(),
+  publicUdpPort: portSchema.optional(),
+});
+
+/** A route as the node's route editor shows it: plus its bridge's public settings. */
+export const nodeBridgeRouteSchema = bridgeRouteSchema.extend({
+  bridgeName: z.string(),
+  bridgePublicIpv4: z.string(),
+  bridgeControlTcpPort: portSchema,
+  bridgeManagementStatus: bridgeManagementStatusSchema,
+  bridgeLastObservedAt: z.iso.datetime().nullable(),
+  // Computed by the API, one definition for every screen.
+  registration: bridgeRouteRegistrationSchema,
+  verification: bridgeRouteVerificationSchema,
+  setupCommands: routeSetupCommandsSchema.optional(),
+});
+
+/**
+ * `GET /api/admin/nodes/:id/vpn-bridge-routes`: the node's endpoint
+ * assignment. `activeRoute` null means Direct.
+ */
+export const nodeBridgeRoutesSchema = z.object({
+  nodeId: z.uuid(),
+  vpnEndpointRevision: z.int().min(0),
+  activeRoute: nodeBridgeRouteSchema.nullable(),
+  drafts: z.array(nodeBridgeRouteSchema),
+  retiring: z.array(nodeBridgeRouteSchema),
+});
+
+/**
+ * `POST /api/admin/nodes/:id/vpn-bridge-routes`. `created` is false when the
+ * pairing already held a route and that route was returned instead (HTTP 200
+ * rather than 201).
+ */
+export const prepareBridgeRouteResultSchema = z.object({
+  created: z.boolean(),
+  route: nodeBridgeRouteSchema,
+});
+
+/** `DELETE /api/admin/vpn-bridge-routes/:id?confirmed=true`. */
+export const releaseBridgeRouteResultSchema = z.object({
+  id: z.uuid(),
+  released: z.literal(true),
+  nodeId: z.uuid(),
+  bridgeId: z.uuid(),
+  publicUdpPort: portSchema,
+});
+
+/** `DELETE /api/admin/vpn-bridges/:id`. */
+export const deleteBridgeResultSchema = z.object({
+  id: z.uuid(),
+  deleted: z.literal(true),
+});
+
+/**
+ * The endpoint assignment a node PATCH with `vpnBridgeRouteId` returns, under
+ * `vpnEndpoint`. `changed` is false for a no-op (the requested route is
+ * already active, or Direct was requested for a node already on Direct).
+ */
+export const nodeEndpointAssignmentSchema = z.object({
+  changed: z.boolean(),
+  vpnEndpointRevision: z.int().min(0),
+  activeRoute: nodeBridgeRouteSchema.nullable(),
+});
+
+/**
+ * Dry-run of the endpoint renderer over a node's stored AWG3-issued configs
+ * (`GET /api/admin/nodes/:id/vpn-bridge-eligibility`). Counts, plus the ids
+ * of the unsupported keys (admin-only, ids only): no artifact content. A bridge can be activated only while
+ * `unsupported` is 0.
+ */
+export const bridgeEligibilitySchema = z.object({
+  nodeId: z.uuid(),
+  /** Usable stored configs examined (keys issued as AWG3 or AWG2). */
+  total: z.int().min(0),
+  /** AWG3-issued keys whose artifact is 3.1 and renders to a bridge endpoint. */
+  awg31Eligible: z.int().min(0),
+  /** AWG3-issued keys whose artifact is the 2.0 fallback; they stay Direct. */
+  awg20Direct: z.int().min(0),
+  /** Keys issued as AWG2; they always stay Direct. */
+  awg2NativeDirect: z.int().min(0),
+  /** AWG3-issued keys that are unrecognized, ambiguous or unreadable. */
+  unsupported: z.int().min(0),
+  /** Ids of the unsupported keys, so an admin can find them. No content. */
+  unsupportedKeyIds: z.array(z.uuid()),
+});
+export type BridgeEligibility = z.infer<typeof bridgeEligibilitySchema>;
+
+/**
+ * Shared admin view of managed infrastructure
+ * (`GET /api/admin/infrastructure`). The `kind` discriminator keeps VPN-node
+ * consumers scoped to VPN nodes while bridges live in the same list.
+ */
+export const infrastructureVpnItemSchema = z.object({
+  kind: z.literal("vpn"),
+  id: z.uuid(),
+  name: z.string(),
+  enabled: z.boolean(),
+  // Summary fields of the admin nodes list. Optional so a minimal row (and
+  // the pre-1b shape) still parses; the Control API always sends them.
+  publicName: z.string().nullable().optional(),
+  protocol: z.enum(["awg2", "awg3"]).optional(),
+  enabledProtocols: z.array(z.enum(["awg2", "awg3"])).nullable().optional(),
+  maxPeers: z.int().min(0).optional(),
+  peerCount: z.int().min(0).optional(),
+  publicHost: z.string().nullable().optional(),
+  publicIp: z.string().nullable().optional(),
+  agentVersion: z.string().nullable().optional(),
+  lastHealthAt: z.iso.datetime().nullable().optional(),
+  lastError: z.string().nullable().optional(),
+  // The active bridge route, or null when the node is reached directly.
+  activeRoute: bridgeRouteSchema.nullable(),
+  vpnEndpointRevision: z.int().min(0),
+});
+
+export const infrastructureBridgeItemSchema = bridgeSchema.extend({
+  kind: z.literal("bridge"),
+});
+
+export const infrastructureItemSchema = z.discriminatedUnion("kind", [
+  infrastructureVpnItemSchema,
+  infrastructureBridgeItemSchema,
+]);
+
+export const BRIDGE_ERROR_CODES = [
+  "BRIDGE_POOL_EXHAUSTED",
+  "BRIDGE_PORT_TAKEN",
+  "BRIDGE_PORT_OUT_OF_RANGE",
+  "BRIDGE_ROUTE_ACTIVE",
+  "BRIDGE_ROUTE_UNVERIFIED",
+  "BRIDGE_OBSERVATION_STALE",
+  "BRIDGE_REVISION_CONFLICT",
+  "BRIDGE_ROUTE_PAIR_CONFLICT",
+  "BRIDGE_HAS_ROUTES",
+  "NODE_HAS_BRIDGE_ROUTES",
+  "BRIDGE_IPV4_CONFLICT",
+  "BRIDGE_UNSUPPORTED_CAPABILITY",
+  "BRIDGE_JOBS_DISABLED",
+  "BRIDGE_CONFIG_UNSUPPORTED",
+  // 404s: an unknown bridge id, or a route id that does not exist (or does not
+  // belong to the node named in the path).
+  "BRIDGE_NOT_FOUND",
+  "BRIDGE_ROUTE_NOT_FOUND",
+  // 409: route preparation for a node that does not serve AWG 3.1.
+  "BRIDGE_NODE_NOT_AWG31",
+  // Test-config preview: 403 for a key on another VPN node, 409 for a key
+  // that is not an active AWG 3.1 key.
+  "BRIDGE_TEST_KEY_WRONG_NODE",
+  "BRIDGE_TEST_KEY_UNSUITABLE",
+  // 409: a probe check of the route for an older registration marker is
+  // still queued or running; ask again once it has settled.
+  "BRIDGE_CHECK_PENDING",
+  // Enrollment. 400: the management URL is not one of the deployment's
+  // allowed management destinations. 409: the agent answers for another
+  // bridge, or rejected the candidate credential. 502: the agent could not
+  // be reached through the management endpoint.
+  "BRIDGE_MANAGEMENT_URL_NOT_ALLOWED",
+  "BRIDGE_IDENTITY_MISMATCH",
+  "BRIDGE_AGENT_UNAUTHORIZED",
+  "BRIDGE_AGENT_UNREACHABLE",
+  // Agent update. 409: another operation is outstanding for the bridge, or
+  // the bridge has no enrolled management endpoint. 400: the requested digest
+  // is not one the panel offers.
+  "BRIDGE_UPDATE_IN_PROGRESS",
+  "BRIDGE_UPDATE_NOT_ENROLLED",
+  "BRIDGE_UPDATE_NOT_OFFERED",
+] as const;
+export const bridgeErrorCodeSchema = z.enum(BRIDGE_ERROR_CODES);
+
+/**
+ * Bridge-agent releases the panel offers (Task 6a). The image carries its
+ * API version as this OCI label; a release whose label is outside
+ * `BRIDGE_AGENT_SUPPORTED_API_VERSIONS` is never offered. A release without the
+ * label falls back to `BRIDGE_AGENT_MIN_VERSION` on its semver tag.
+ */
+export const BRIDGE_AGENT_API_VERSION_LABEL = "io.amnezia.bridge-agent.api-version";
+export const BRIDGE_AGENT_SUPPORTED_API_VERSIONS: readonly number[] = [1];
+export const BRIDGE_AGENT_MIN_VERSION = "0.1.0";
+
+const BRIDGE_AGENT_REPOSITORY_PATTERN = /^ghcr\.io\/[A-Za-z0-9._/-]+\/bridge-agent$/;
+
+/**
+ * `BRIDGE_AGENT_IMAGE_REPOSITORY` as the approved bridge-agent repository: unset
+ * or empty means "none"; otherwise it must be `ghcr.io/<path>/bridge-agent` and
+ * must not be the node-agent repository (`NODE_AGENT_UPDATE_REPO`), so a
+ * node-agent digest can never be offered to a bridge host. A refused value
+ * returns `error` (for a clear log) and offers nothing.
+ */
+export const parseBridgeAgentImageRepository = (
+  raw: string | undefined,
+  nodeAgentRepository?: string,
+): { repository: string | undefined; error?: string } => {
+  const value = raw?.trim();
+  if (!value) return { repository: undefined };
+  if (!BRIDGE_AGENT_REPOSITORY_PATTERN.test(value)) {
+    return {
+      repository: undefined,
+      error: "BRIDGE_AGENT_IMAGE_REPOSITORY must look like ghcr.io/<owner>/<repo>/bridge-agent; no bridge-agent image will be offered",
+    };
+  }
+  if (value === nodeAgentRepository?.trim()) {
+    return {
+      repository: undefined,
+      error: "BRIDGE_AGENT_IMAGE_REPOSITORY must differ from NODE_AGENT_UPDATE_REPO; no bridge-agent image will be offered",
+    };
+  }
+  return { repository: value };
+};
+
+/**
+ * How old the latest bridge-agent observation may be and still count as
+ * current (ruling R8). Overridable with `VPN_BRIDGE_OBSERVATION_STALE_MS`.
+ */
+export const BRIDGE_OBSERVATION_STALE_MS_DEFAULT = 300_000;
+
+/** How long a successful route verification stays valid for activation. */
+export const BRIDGE_VERIFICATION_VALIDITY_MS = 30 * 60 * 1_000;
+
+/**
+ * `VPN_BRIDGE_JOBS_ENABLED` (ruling R6): whether bridge-related jobs may be
+ * queued. Only the exact string "true" enables them, the same convention as
+ * `ACCESS_SYNC_ENABLED`, so an unset, empty or mistyped value keeps the safe
+ * default (disabled) during migrations and mixed-version deployments.
+ */
+export const parseBridgeJobsEnabled = (raw: string | undefined): boolean =>
+  raw?.trim() === "true";
+
+/**
+ * `VPN_BRIDGE_OBSERVATION_STALE_MS`: a positive integer of milliseconds, or
+ * the default when unset or empty. Anything else is a configuration error.
+ */
+export const parseBridgeObservationStaleMs = (raw: string | undefined): number => {
+  const value = raw?.trim();
+  if (!value) return BRIDGE_OBSERVATION_STALE_MS_DEFAULT;
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    throw new Error("VPN_BRIDGE_OBSERVATION_STALE_MS must be a positive integer");
+  }
+  return parsed;
+};
+
+// --- Candidate validation: test-config preview and verification ------------
+
+/**
+ * The frps registration marker the bridge-agent reports for a route (an
+ * opaque string derived from the frps client ID and its last start time). A
+ * verification is bound to the marker that was tested; a changed marker
+ * means a different registration and needs fresh verification.
+ */
+export const bridgeRegistrationMarkerSchema = z
+  .string()
+  .min(1)
+  .max(200)
+  .refine(
+    (value) => ![...value].some((char) => char.charCodeAt(0) < 0x20 || char.charCodeAt(0) === 0x7f),
+    "Must not contain control characters",
+  );
+
+/**
+ * `GET /api/admin/vpn-bridge-routes/:id/test-config?keyId=…` answers with the
+ * `.vpn` file as the body and the route's current observed registration
+ * marker in this header, percent-encoded (`encodeURIComponent`). The header
+ * is absent while no registration has been observed.
+ */
+export const BRIDGE_REGISTRATION_MARKER_HEADER = "x-bridge-registration-marker";
+
+export const encodeRegistrationMarkerHeader = (marker: string): string =>
+  encodeURIComponent(marker);
+
+/** The marker from the header value, or null when absent or undecodable. */
+export const decodeRegistrationMarkerHeader = (
+  value: string | null | undefined,
+): string | null => {
+  if (value === null || value === undefined || value === "") return null;
+  try {
+    const decoded = decodeURIComponent(value);
+    return bridgeRegistrationMarkerSchema.safeParse(decoded).success ? decoded : null;
+  } catch {
+    return null;
+  }
+};
+
+export const bridgeTestConfigQuerySchema = z.object({ keyId: z.uuid() });
+
+/**
+ * `POST /api/admin/vpn-bridge-routes/:id/verify`.
+ * - `probe`: queue an external probe check of the draft endpoint (needs
+ *   `VPN_BRIDGE_JOBS_ENABLED` and a probe with the bridge-measurement
+ *   capability).
+ * - `operator`: the administrator attests a real AWG handshake and HTTP
+ *   through the tunnel from a client network, for the registration marker
+ *   they tested (from the test-config preview).
+ */
+export const verifyBridgeRouteRequestSchema = z.discriminatedUnion("method", [
+  z.object({ method: z.literal("probe") }).strict(),
+  z
+    .object({
+      method: z.literal("operator"),
+      registrationMarker: bridgeRegistrationMarkerSchema,
+      confirmHandshakeAndHttp: z.literal(true),
+    })
+    .strict(),
+]);
+export type VerifyBridgeRouteRequest = z.infer<typeof verifyBridgeRouteRequestSchema>;
+
+/**
+ * 202 for `probe`. `status`:
+ * - `queued`: a new check was queued (`queued` true);
+ * - `pending`: a check of the route for the same marker was already queued,
+ *   and that job is returned;
+ * - `running`: a check of the route for the same marker already has its run
+ *   on the probe (`runId`); `jobId` is the job that started it, null when
+ *   that job row is gone.
+ * A check for a different (older) marker answers 409 `BRIDGE_CHECK_PENDING`
+ * instead. 200 for `operator`: the route with its recorded verification.
+ */
+export const verifyBridgeRouteResultSchema = z.discriminatedUnion("method", [
+  z.object({
+    method: z.literal("probe"),
+    routeId: z.uuid(),
+    jobId: z.uuid().nullable(),
+    queued: z.boolean(),
+    status: z.enum(["queued", "pending", "running"]),
+    runId: z.uuid().nullable(),
+    registrationMarker: bridgeRegistrationMarkerSchema,
+  }),
+  z.object({
+    method: z.literal("operator"),
+    routeId: z.uuid(),
+    route: nodeBridgeRouteSchema,
+  }),
+]);
+export type VerifyBridgeRouteResult = z.infer<typeof verifyBridgeRouteResultSchema>;
+
+/** Outbox job type of a queued probe candidate check. */
+export const BRIDGE_ROUTE_CANDIDATE_CHECK_JOB_TYPE = "bridge_route_candidate_check";
+
+/**
+ * The job payload: IDs and the registration marker observed when the check
+ * was queued, which the result is bound to. Never a config or a key id.
+ */
+export const bridgeRouteCandidateCheckPayloadSchema = z.object({
+  routeId: z.uuid(),
+  nodeId: z.uuid(),
+  registrationMarker: bridgeRegistrationMarkerSchema,
+  requestedAt: z.iso.datetime(),
+});
+export type BridgeRouteCandidateCheckPayload = z.infer<
+  typeof bridgeRouteCandidateCheckPayloadSchema
+>;
+
+/**
+ * The bounded codes a probe candidate check stores in `verificationError`.
+ * Never the probe's free-form detail.
+ */
+export const BRIDGE_CANDIDATE_CHECK_ERRORS = [
+  "BRIDGE_JOBS_DISABLED",
+  "BRIDGE_UNSUPPORTED_CAPABILITY",
+  "PROBE_UNAVAILABLE",
+  "PROBE_BUSY",
+  "PROBE_START_FAILED",
+  "PROBE_RUN_LOST",
+  "PROBE_RUN_TIMEOUT",
+  // The run finished, but was settled too long after it started to count.
+  "PROBE_RESULT_STALE",
+  "PROBE_CONTROL_FAILED",
+  "PROBE_TARGET_ERROR",
+  // The route's observed registration changed after the check was queued:
+  // the check was dropped before it took the probe.
+  "MARKER_CHANGED",
+  "SERVICE_KEY_UNAVAILABLE",
+  "SERVICE_KEY_NOT_AWG31",
+  "AWG_HANDSHAKE_FAILED",
+  "HTTP_THROUGH_TUNNEL_FAILED",
+] as const;
+export type BridgeCandidateCheckError = (typeof BRIDGE_CANDIDATE_CHECK_ERRORS)[number];
+
+/** The probe capability that makes bridged measurements meaningful. */
+export const BRIDGE_MEASUREMENT_CAPABILITY = "bridge-measurement";
+
+/**
+ * A stored capability record older than this does not count: the worker
+ * refreshes it far more often (`PROBE_CAPABILITY_REFRESH_MS`), so an old one
+ * means the probe has not been reachable and the answer is unknown.
+ */
+export const PROBE_CAPABILITY_MAX_AGE_MS = 30 * 60 * 1_000;
+/** How often the worker re-reads the probe's capabilities. */
+export const PROBE_CAPABILITY_REFRESH_MS = 10 * 60 * 1_000;
+
+/**
+ * What the panel knows about the probe's capabilities. `capabilities` is
+ * null when unknown; an empty list is a probe that answered and has none (a
+ * legacy probe whose capability endpoint is 404).
+ */
+export type ProbeCapabilityInput = {
+  readonly capabilities: readonly string[] | null;
+  /** When the list was read from the probe; null/absent means unknown. */
+  readonly checkedAt?: Date | null;
+};
+
+/**
+ * Whether the configured probe can measure a bridged path (explicit
+ * `expectedEgressIp: null`, handshake and HTTP reported apart from ping and
+ * SSH). The single capability lookup for candidate checks and bridged
+ * reachability: true only for a fresh record that contains
+ * "bridge-measurement". Unknown, stale, legacy and empty are all false.
+ */
+export const probeSupportsBridgeMeasurement = (
+  probe: ProbeCapabilityInput,
+  now: Date = new Date(),
+): boolean => {
+  if (probe.capabilities?.includes(BRIDGE_MEASUREMENT_CAPABILITY) !== true) return false;
+  const checkedAt = probe.checkedAt;
+  if (!checkedAt) return false;
+  const age = now.getTime() - checkedAt.getTime();
+  return age <= PROBE_CAPABILITY_MAX_AGE_MS;
+};
+
+/** Whether the stored capability record is due for a refresh. */
+export const probeCapabilitiesDue = (
+  checkedAt: Date | null | undefined,
+  now: Date,
+): boolean => !checkedAt || now.getTime() - checkedAt.getTime() >= PROBE_CAPABILITY_REFRESH_MS;
+
+/**
+ * The capability input from the stored `reachability_probe.capabilities` and
+ * `capabilities_checked_at` columns (jsonb list, null until the worker has
+ * read the probe's capability endpoint). The one place both the Control API
+ * and the worker read it. Anything but an array of strings reads as unknown.
+ */
+export const probeCapabilityInputOf = (
+  stored: unknown,
+  checkedAt: Date | null = null,
+): ProbeCapabilityInput => ({
+  capabilities:
+    Array.isArray(stored) && stored.every((item) => typeof item === "string")
+      ? stored
+      : null,
+  checkedAt,
+});
+
+export type CreateBridgeRequest = z.infer<typeof createBridgeRequestSchema>;
+export type UpdateBridgeRequest = z.infer<typeof updateBridgeRequestSchema>;
+export type BridgeManagementStatus = z.infer<typeof bridgeManagementStatusSchema>;
+export type BridgeRouteState = z.infer<typeof bridgeRouteStateSchema>;
+export type BridgeVerificationMethod = z.infer<typeof bridgeVerificationMethodSchema>;
+export type BridgeVerificationResult = z.infer<typeof bridgeVerificationResultSchema>;
+export type BridgeRoute = z.infer<typeof bridgeRouteSchema>;
+export type BridgeRouteSummary = z.infer<typeof bridgeRouteSummarySchema>;
+export type BridgeRouteRegistration = z.infer<typeof bridgeRouteRegistrationSchema>;
+export type BridgeRouteVerification = z.infer<typeof bridgeRouteVerificationSchema>;
+export type AdminOverviewBridge = z.infer<typeof adminOverviewBridgeSchema>;
+export type AdminOverviewBridges = z.infer<typeof adminOverviewBridgesSchema>;
+export type Bridge = z.infer<typeof bridgeSchema>;
+export type PrepareBridgeRouteRequest = z.infer<typeof prepareBridgeRouteRequestSchema>;
+export type InfrastructureItem = z.infer<typeof infrastructureItemSchema>;
+export type BridgeErrorCode = z.infer<typeof bridgeErrorCodeSchema>;
+export type NodeBridgeRoute = z.infer<typeof nodeBridgeRouteSchema>;
+export type NodeBridgeRoutes = z.infer<typeof nodeBridgeRoutesSchema>;
+export type PrepareBridgeRouteResult = z.infer<typeof prepareBridgeRouteResultSchema>;
+export type ReleaseBridgeRouteResult = z.infer<typeof releaseBridgeRouteResultSchema>;
+export type DeleteBridgeResult = z.infer<typeof deleteBridgeResultSchema>;
+export type NodeEndpointAssignment = z.infer<typeof nodeEndpointAssignmentSchema>;
+export type InfrastructureVpnItem = z.infer<typeof infrastructureVpnItemSchema>;
+export type InfrastructureBridgeItem = z.infer<typeof infrastructureBridgeItemSchema>;

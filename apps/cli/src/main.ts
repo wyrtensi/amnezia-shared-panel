@@ -111,6 +111,11 @@ import {
   type CliVersionInfo,
 } from "./clientReleases.js";
 import { resolveApiKey, resolveSecret } from "./apiKey.js";
+import {
+  BRIDGE_COMMANDS,
+  BRIDGE_USAGE_LINES,
+  bridgeErrorHint,
+} from "./bridges.js";
 import type { AdminReachabilityView } from "@amnezia/contracts";
 import {
   buildProbeUpsert,
@@ -177,6 +182,8 @@ function describeApiError(status: number, statusText: string, body: string): str
     return `HTTP ${status} ${statusText} — ${body.slice(0, 400)}`;
   }
   const head = `${code ?? `HTTP ${status}`}: ${detail ?? statusText}`;
+  const hint = bridgeErrorHint(code);
+  if (hint) return `${head}\n${hint}`;
   return code === "QR_TOO_LARGE"
     ? `${head}\nThis key's route profile carries too many routes to fit a scannable code. Use --format=conf.`
     : head;
@@ -2693,6 +2700,7 @@ Nodes:
                                           a time on purpose; there is no fleet variant
   node-agent-log <id>                     Show the node's last agent update and its log
 
+${BRIDGE_USAGE_LINES}
   node-metrics [--json]                   Host metrics per node, with the panel's own warnings
   checks                                  List service checks and what each asserts
   check-results [<id>]                    Per-node verdicts (ok / failed / error)
@@ -3317,6 +3325,8 @@ async function cmdNodeChecks(args: string[]): Promise<void> {
  */
 export async function dispatch(argv: string[]): Promise<void> {
   const [command, ...args] = argv;
+  const bridgeCommand = command ? BRIDGE_COMMANDS.get(command) : undefined;
+  if (bridgeCommand) return bridgeCommand(api, args, apiRaw);
   switch (command) {
     case "overview":
       return cmdOverview(args);

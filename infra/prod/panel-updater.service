@@ -10,6 +10,8 @@ Environment=PANEL_REPO_DIR=/opt/amnezia-panel
 Environment=UPDATE_SPOOL_HOST_DIR=/var/lib/amnezia-panel/update
 # Root-owned lock directory, outside the container-writable spool (created by the script).
 Environment=PANEL_UPDATER_LOCK_DIR=/run/amnezia-panel
-ExecStart=/opt/amnezia-panel/infra/prod/panel-updater.sh
+# An explicit interpreter: the unit does not depend on the script's mode bits
+# (a 0644 checkout otherwise ends in status=203/EXEC and a start-limit-hit watcher).
+ExecStart=/bin/bash /opt/amnezia-panel/infra/prod/panel-updater.sh
 # update.sh backs up the DB, pulls the image and restarts — give it room.
 TimeoutStartSec=1800

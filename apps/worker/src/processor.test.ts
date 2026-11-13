@@ -37,6 +37,7 @@ const createRepository = (): WorkerRepository => ({
   completeNodeAgentUpdate: vi.fn(() => Promise.resolve()),
   completeNodeCapacityChange: vi.fn(() => Promise.resolve()),
   saveNodeAgentRelease: vi.fn(() => Promise.resolve()),
+  saveBridgeAgentRelease: vi.fn(() => Promise.resolve()),
   completeProvision: vi.fn(() => Promise.resolve()),
   completeLifecycle: vi.fn(() => Promise.resolve()),
   completeJob: vi.fn(() => Promise.resolve()),
@@ -1413,5 +1414,97 @@ describe("reachability widget job", () => {
     await expect(process(job)).rejects.toThrow("HTTP 502");
     expect(repository.completeJob).not.toHaveBeenCalled();
     expect(log).toHaveBeenCalledWith(expect.stringContaining("notify.reachability-widget"));
+  });
+});
+
+describe("bridge route candidate check jobs", () => {
+  const job = {
+    id: "job-candidate",
+    type: "bridge_route_candidate_check",
+    attempts: 1,
+    payload: {},
+  };
+
+  it("hands the job to the candidate check, which finishes it itself", async () => {
+    const repository = createRepository();
+    const bridgeCandidateCheck = vi.fn(() => Promise.resolve());
+    const process = createJobProcessor({
+      repository,
+      createNodeAgent: () => createAgent(),
+      bridgeCandidateCheck,
+    });
+    await process(job);
+    expect(bridgeCandidateCheck).toHaveBeenCalledWith(job);
+    expect(repository.completeJob).not.toHaveBeenCalled();
+    expect(repository.loadKeyContext).not.toHaveBeenCalled();
+  });
+
+  it("fails the job on a worker without the handler", async () => {
+    const repository = createRepository();
+    const process = createJobProcessor({ repository, createNodeAgent: () => createAgent() });
+    await process(job);
+    expect(repository.failJob).toHaveBeenCalledWith(job.id, expect.stringContaining("not wired"));
+  });
+});
+
+describe("bridge-agent poll jobs", () => {
+  const job = {
+    id: "job-bridge-poll",
+    type: "bridge_agent.poll",
+    attempts: 1,
+    payload: { bridgeId: "6f1d2c1e-7d0f-4a8e-9f0a-3c3d5e8b1a01" },
+  };
+
+  it("hands the job to the poller, which finishes it itself", async () => {
+    const repository = createRepository();
+    const bridgeAgentPoll = vi.fn(() => Promise.resolve());
+    const process = createJobProcessor({
+      repository,
+      createNodeAgent: () => createAgent(),
+      bridgeAgentPoll,
+    });
+    await process(job);
+    expect(bridgeAgentPoll).toHaveBeenCalledWith(job);
+    expect(repository.completeJob).not.toHaveBeenCalled();
+    expect(repository.loadKeyContext).not.toHaveBeenCalled();
+  });
+
+  it("fails the job on a worker without the poller", async () => {
+    const repository = createRepository();
+    const process = createJobProcessor({ repository, createNodeAgent: () => createAgent() });
+    await process(job);
+    expect(repository.failJob).toHaveBeenCalledWith(job.id, expect.stringContaining("not wired"));
+  });
+});
+
+describe("bridge-agent update jobs", () => {
+  const job = {
+    id: "job-bridge-update",
+    type: "bridge_agent.update",
+    attempts: 1,
+    payload: {
+      bridgeId: "6f1d2c1e-7d0f-4a8e-9f0a-3c3d5e8b1a01",
+      operationId: "0b1c2d3e-4f50-4a6b-8c7d-9e0f1a2b3c4d",
+    },
+  };
+
+  it("hands the job to the update handler, which finishes it itself", async () => {
+    const repository = createRepository();
+    const bridgeAgentUpdate = vi.fn(() => Promise.resolve());
+    const process = createJobProcessor({
+      repository,
+      createNodeAgent: () => createAgent(),
+      bridgeAgentUpdate,
+    });
+    await process(job);
+    expect(bridgeAgentUpdate).toHaveBeenCalledWith(job);
+    expect(repository.completeJob).not.toHaveBeenCalled();
+  });
+
+  it("fails the job on a worker without the update handler", async () => {
+    const repository = createRepository();
+    const process = createJobProcessor({ repository, createNodeAgent: () => createAgent() });
+    await process(job);
+    expect(repository.failJob).toHaveBeenCalledWith(job.id, expect.stringContaining("not wired"));
   });
 });

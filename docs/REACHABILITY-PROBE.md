@@ -54,6 +54,91 @@ next to `peerCount`.
 A key a node refused (a node that is gone, for example) is not retried more
 often than once a day; that node reads `unknown` meanwhile.
 
+### Request fields and capabilities
+
+Per target, `expectedEgressIp` is a string (compared with the observed egress
+address; a difference is a note, not a failure), an explicit `null` (a bridged
+path with no known origin exit IP: the observed address is reported in
+`egressIp` and never compared), or omitted (the endpoint host is the
+comparison, as before). The result shape is the same in all three cases; an
+original Direct request replays unchanged. Handshake and HTTP decide
+availability; ping and tcp stay diagnostic.
+
+`GET /capabilities` (same `x-api-key` as the other routes) answers
+`{ "apiVersion": 1, "capabilities": ["bridge-measurement"] }`. A legacy probe
+answers 404 and also drops an explicit `null`, so the panel never sends one to
+it. The worker reads the endpoint at most every 10 minutes (on the reachability
+tick) into `reachability_probe.capabilities` / `capabilities_checked_at`: a 404
+stores an empty list (legacy), an unreachable probe or an error keeps the old
+record and is not asked again for 5 minutes. The panel treats bridge measurement as supported only for a record
+younger than 30 minutes that lists `bridge-measurement`; unknown, stale and
+legacy all mean unsupported, and Direct measurements are unaffected. Deploy
+the new probe image before relying on bridged measurements.
+
+### Bridged nodes
+
+A node with an active bridge route (optional AWG 3.1 node bridges) is measured
+on the path its users take:
+
+- **AWG 3.1** goes through the bridge: the worker renders the node's AWG 3.1
+  service-key artifact with the bridge's public IPv4 and the route's UDP port
+  (the same renderer as user exports) and sends it through the usual run.
+  `expectedEgressIp` is the node's origin exit IP (`nodes.public_ip`), or an
+  explicit `null` when unknown. Nothing is sent for that path to a probe
+  without the bridge-measurement capability, or when the service key is not an
+  AWG 3.1 artifact the endpoint applies to: the path is then unknown (`error`)
+  and never alerts. The direct config is never sent in its place.
+- **AWG 2** keeps the direct path and its own result.
+- The node verdict, alerts and widget row follow the **AWG 3.1 result alone**
+  (a working AWG 2 does not hide a failed bridge); the alert names the bridge
+  (`node (ip) через мост <bridge> (<ip>:<port>)`). In the cabinet an AWG 2 key
+  on a bridged node reads its own AWG 2 result. A Direct node keeps the
+  any-protocol rule above.
+- A failing bridge never changes the assignment: exports keep using the active
+  route until an administrator changes it.
+
+**Endpoint revision.** The AWG 3.1 target id is `<node>:awg3:r<revision>`
+(`nodes.vpn_endpoint_revision`); AWG 2 stays `<node>:awg2`. Changing the
+assignment (Direct or another bridge) bumps the revision and, in the same
+transaction under the node row lock, deletes the node's AWG 3.1 result and
+turns its verdict to unknown. An open incident is kept, so it ends with one
+recovery message; the failure streak restarts, so the old path's failures do
+not count towards an alert about the new one. The ingest claims the run, then
+locks the probed node rows `FOR SHARE` and classifies against the targets and
+verdicts read under that lock. A result measured for an earlier revision is
+unknown: it is not stored, not counted and never causes a message, while that
+run's AWG 2 result is kept.
+
+### Bridge route candidate checks
+
+`bridge-route-verify <route-id> --confirm` (optional AWG 3.1 node bridges)
+queues a one-target run: the node's AWG 3.1 service key with the draft bridge
+endpoint written in. The probe runs one run at a time and both runs use the
+same service peer, so a candidate run starts only while no regular run is in
+flight or waiting to be ingested, and the regular run waits while a candidate
+holds the probe. Handshake and HTTP through the tunnel decide; ping and TCP are
+diagnostic only. The result is stored on the route, never in node status,
+history, alerts or the widget. It needs `VPN_BRIDGE_JOBS_ENABLED=true` and a
+probe that reports the bridge-measurement capability (stored in
+`reachability_probe.capabilities`; unknown, stale or legacy counts as
+unsupported); until then
+use the operator-verified path (`docs/CLI.md`).
+
+The result is stamped with the time the run was claimed, and a run settled more
+than 15 minutes after that is recorded as `PROBE_RESULT_STALE` (or
+`PROBE_RUN_TIMEOUT` when unfinished), so late evidence never passes the
+30-minute activation window. While the probe API is unreachable, a claim older
+than those 15 minutes is given up as `PROBE_RUN_TIMEOUT` on the panel clock, so
+an outage cannot hold the probe. A queued check whose route now reports another
+registration marker ends as `MARKER_CHANGED` without taking the probe. A second
+request while a check of the route is queued or running returns that check; one
+for a changed registration answers `BRIDGE_CHECK_PENDING` until it settles.
+
+A candidate check waits while a regular run holds the probe and gives up after
+about 14 minutes of retries (`PROBE_BUSY`). With a fleet run longer than
+`intervalSec` the probe is almost never free, so candidate checks can starve:
+raise `intervalSec`, or use operator verification.
+
 ## Statuses and alerts
 
 | Status | Means |
@@ -115,6 +200,14 @@ on their own keys, through `GET /api/nodes` (`reachability`) and
 - `unknown` (grey) for no probe, a disabled or stale probe, a node without
   checks or without a verdict, an `error` verdict, and a run that failed
   everywhere.
+
+A server badge is the node verdict (a bridged node's follows its AWG 3.1
+result). A **key card** reads the result of its own protocol on its node, on
+every node: a missing result, an `error` one or a stale one is `unknown`, and
+`blocked` carries that protocol's own failing-since
+(`node_reachability_results.failing_since`, kept by the worker across failed
+runs and cleared on recovery). An AWG 3.1 key is therefore not shown healthy
+because AWG 2 works.
 
 Nothing else leaves: no levels, details, label, host or time zone.
 

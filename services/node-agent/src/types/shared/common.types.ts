@@ -48,6 +48,8 @@ export interface IAppConfig {
   // means nothing on the host is watching for one.
   NODE_AGENT_UPDATE_REPO?: string;
   NODE_AGENT_UPDATE_SPOOL?: string;
+  // Seconds a queued update may sit before it is reported unacknowledged.
+  NODE_AGENT_UPDATE_ACK_DEADLINE_SECONDS?: number;
   NODE_AGENT_CAPACITY_SPOOL?: string;
 }
 

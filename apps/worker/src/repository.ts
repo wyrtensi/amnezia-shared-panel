@@ -165,6 +165,13 @@ export interface WorkerRepository {
     digest: string;
     resolvedAt: Date;
   }) => Promise<void>;
+  /** Store the bridge-agent release the panel offers bridge hosts, keyed by repository. */
+  saveBridgeAgentRelease: (release: {
+    repository: string;
+    version: string;
+    digest: string;
+    resolvedAt: Date;
+  }) => Promise<void>;
   completeProvision: (result: {
     jobId: string;
     keyId: string;

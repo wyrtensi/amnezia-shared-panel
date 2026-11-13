@@ -21,6 +21,8 @@
  */
 
 import {
+  parseBridgeJobsEnabled,
+  parseBridgeManagementHosts,
   WORKER_PERIOD_FIELDS,
   type WorkerPeriodField,
 } from "@amnezia/contracts";
@@ -97,3 +99,33 @@ export const resolveWorkerPeriodDefaults = (
       WORKER_PERIOD_FIELDS.completedJobRetentionDays.fallback,
   };
 };
+
+/**
+ * `VPN_BRIDGE_JOBS_ENABLED` (default false): whether this worker may queue
+ * bridge-related jobs (bridge-agent polling, candidate probe verification,
+ * bridge-agent updates). Same parser as the Control API, so both read one
+ * value the same way.
+ */
+export const resolveBridgeJobsEnabled = (env: NodeJS.ProcessEnv): boolean =>
+  parseBridgeJobsEnabled(env.VPN_BRIDGE_JOBS_ENABLED);
+
+export type BridgeJobsGate =
+  | { ok: true }
+  | { ok: false; code: "BRIDGE_JOBS_DISABLED" };
+
+/**
+ * Check before queuing any bridge-related job. A closed gate returns the typed
+ * `BRIDGE_JOBS_DISABLED` refusal for the caller to log or record, instead of
+ * a job a pre-bridge worker would claim and mark complete without running.
+ */
+export const bridgeJobsGate = (enabled: boolean): BridgeJobsGate =>
+  enabled ? { ok: true } : { ok: false, code: "BRIDGE_JOBS_DISABLED" };
+
+/**
+ * `VPN_BRIDGE_MANAGEMENT_HOSTS` (default `host.docker.internal`): the hosts a
+ * bridge management URL may name. The Control API refuses any other at
+ * enrollment; the poller checks the stored URL again before it sends the
+ * credential anywhere.
+ */
+export const resolveBridgeManagementHosts = (env: NodeJS.ProcessEnv): readonly string[] =>
+  parseBridgeManagementHosts(env.VPN_BRIDGE_MANAGEMENT_HOSTS);

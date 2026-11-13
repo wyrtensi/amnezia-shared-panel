@@ -27,8 +27,18 @@ export type RunTarget = {
   protocol: string;
   /** A `vpn://` link or raw conf text. Grants VPN access: never echoed or logged. */
   config: string;
-  expectedEgressIp?: string;
+  /**
+   * A string is compared with the observed egress address; `null` is an
+   * explicit "no known origin exit IP" (a bridged path): the observed address
+   * is reported and not compared; omitted keeps the endpoint-host fallback.
+   */
+  expectedEgressIp?: string | null;
 };
+
+/** Capability names the probe reports on GET /capabilities. */
+export const PROBE_CAPABILITIES = ["bridge-measurement"] as const;
+export const PROBE_API_VERSION = 1;
+
 
 export type RunRequest = {
   runId: string;

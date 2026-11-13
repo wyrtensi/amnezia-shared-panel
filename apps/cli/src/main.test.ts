@@ -1,4 +1,8 @@
+import { chmod, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { cmdBridgeEnroll } from "./bridges.js";
 import { dispatch } from "./main.js";
 
 /**
@@ -1180,5 +1184,933 @@ describe("reachability probe commands", () => {
     for (const command of ["probe ", "probe-set", "probe-delete", "probe-run", "probe-results", "node-probe"]) {
       expect(out).toContain(command);
     }
+  });
+});
+
+const sentBody = (call: { init?: RequestInit }): unknown =>
+  JSON.parse(call.init?.body as string);
+
+describe("bridge commands", () => {
+  const NODE = "22222222-2222-4222-8222-222222222222";
+  const BRIDGE = "33333333-3333-4333-8333-333333333333";
+  const ROUTE = "44444444-4444-4444-8444-444444444444";
+  const bridge = {
+    id: BRIDGE,
+    name: "Frankfurt",
+    publicIpv4: "198.51.100.7",
+    controlTcpPort: 7000,
+    udpPortStart: 41000,
+    udpPortEnd: 41031,
+    capacity: 32,
+    heldPorts: 1,
+    managementStatus: "ok",
+    lastObservedAt: "2026-11-13T10:00:00.000Z",
+    routes: [{ id: ROUTE, nodeId: NODE, nodeName: "N1", publicUdpPort: 41000, state: "draft" }],
+  };
+
+  beforeEach(() => {
+    process.env.PANEL_ADMIN_EMAIL = "cli-test@example.com";
+  });
+  afterEach(() => {
+    delete process.env.PANEL_ADMIN_EMAIL;
+    vi.unstubAllGlobals();
+    process.exitCode = undefined;
+  });
+
+  it("bridges lists held/total ports and route counts", async () => {
+    stubFetch([{ body: [bridge] }]);
+    const out = await run(["bridges"]);
+    expect(out).toContain("Frankfurt");
+    expect(out).toContain("1/32");
+  });
+
+  it("bridges --json prints the typed list with agent state and per-route evidence", async () => {
+    const full = {
+      ...bridge,
+      management: {
+        apiUrl: "http://host.docker.internal:17600",
+        enrolled: true,
+        enrolledAt: "2026-11-13T09:00:00.000Z",
+        agentVersion: "0.1.0",
+        agentApiVersion: 1,
+        agentCapabilities: ["status.v1"],
+        frpsVersion: "0.72.0",
+        frpsReachable: true,
+        lastErrorCode: null,
+        lastPollAttemptAt: "2026-11-13T10:00:00.000Z",
+      },
+      routes: [
+        {
+          ...bridge.routes[0],
+          registration: { status: "online", marker: "m".repeat(32), observedAt: "2026-11-13T10:00:00.000Z" },
+          verification: { kind: "awg_path", status: "ok", checkedAt: "2026-11-13T09:59:00.000Z" },
+        },
+      ],
+    };
+    stubFetch([{ body: [full] }]);
+    const [out] = JSON.parse(await run(["bridges", "--json"])) as Array<Record<string, unknown>>;
+    expect(out).toMatchObject({
+      managementStatus: "ok",
+      management: {
+        enrolled: true,
+        agentVersion: "0.1.0",
+        agentCapabilities: ["status.v1"],
+        frpsVersion: "0.72.0",
+        frpsReachable: true,
+      },
+      routes: [
+        {
+          registration: { status: "online" },
+          verification: { kind: "awg_path", status: "ok", checkedAt: "2026-11-13T09:59:00.000Z" },
+        },
+      ],
+    });
+    // The management URL is an internal address and stays out of the output.
+    expect(JSON.stringify(out)).not.toContain("host.docker.internal");
+  });
+
+  it("bridges (table) shows agent version and frps state", async () => {
+    stubFetch([
+      {
+        body: [
+          {
+            ...bridge,
+            management: { enrolled: true, agentVersion: "0.1.0", frpsVersion: "0.72.0", frpsReachable: true },
+          },
+        ],
+      },
+    ]);
+    const out = await run(["bridges"]);
+    expect(out).toMatch(/agent\s+frps/);
+    expect(out).toContain("0.1.0");
+    expect(out).toContain("0.72.0");
+  });
+
+  it("bridge-add without --confirm submits nothing", async () => {
+    const calls = stubFetch([{ body: bridge }]);
+    const out = await run(["bridge-add", "--name=Frankfurt", "--ipv4=198.51.100.7"]);
+    expect(calls).toHaveLength(0);
+    expect(out).toContain("Nothing was changed");
+  });
+
+  it("bridge-add prints the approved agent image, or says none is available", async () => {
+    const image = `ghcr.io/o/r/bridge-agent@sha256:${"a".repeat(64)}`;
+    const withImage = {
+      install: `sudo sh install-bridge.sh --agent-image ${image}`,
+      dryRun: `sudo sh install-bridge.sh --agent-image ${image} --dry-run`,
+      agentImage: image,
+    };
+    stubFetch([{ status: 201, body: { ...bridge, setupCommands: withImage } }]);
+    const has = await run(["bridge-add", "--name=B", "--ipv4=198.51.100.7", "--confirm"]);
+    expect(has).toContain(`install: ${withImage.install}`);
+    expect(has).toContain(`carry the approved bridge-agent image (${image})`);
+    expect(has).not.toContain("exit 60");
+
+    stubFetch([{ status: 201, body: { ...bridge, setupCommands: { install: "i", dryRun: "d", agentImage: null } } }]);
+    const none = await run(["bridge-add", "--name=B", "--ipv4=198.51.100.7", "--confirm"]);
+    expect(none).toContain("No approved bridge-agent image is available");
+    expect(none).toContain("BRIDGE_AGENT_IMAGE_REPOSITORY");
+    expect(none).toContain("exit 60");
+  });
+
+  it("bridge-add --confirm posts the body and prints setupCommands only if returned", async () => {
+    const calls = stubFetch([{ status: 201, body: { ...bridge, setupCommands: { install: "run-this" } } }]);
+    const out = await run([
+      "bridge-add", "--name=Frankfurt", "--ipv4=198.51.100.7", "--udp-start=42000", "--confirm",
+    ]);
+    expect(calls[0]!.url).toContain("/api/admin/vpn-bridges");
+    expect(calls[0]!.init?.method).toBe("POST");
+    expect(sentBody(calls[0]!)).toEqual({
+      name: "Frankfurt", publicIpv4: "198.51.100.7", udpPortStart: 42000,
+    });
+    expect(out).toContain("run-this");
+    stubFetch([{ status: 201, body: bridge }]);
+    expect(await run(["bridge-add", "--name=F", "--ipv4=198.51.100.7", "--confirm"])).not.toContain("setup commands");
+  });
+
+  describe("bridge-enroll", () => {
+    const KEY = "k".repeat(40);
+    const URL_ARG = "--api-url=http://host.docker.internal:17600";
+    const enrolled = {
+      ...bridge,
+      management: {
+        apiUrl: "http://host.docker.internal:17600",
+        enrolled: true,
+        agentVersion: "0.1.0",
+        agentApiVersion: 1,
+        agentCapabilities: ["status.v1"],
+        frpsVersion: "0.72.0",
+        frpsReachable: true,
+      },
+      setupCommands: { install: "do-not-print-me" },
+    };
+    let keyDir: string;
+    beforeEach(async () => {
+      keyDir = await mkdtemp(join(tmpdir(), "bridge-enroll-"));
+    });
+    afterEach(async () => {
+      await rm(keyDir, { recursive: true, force: true });
+    });
+    const keyFile = async (mode: number): Promise<string> => {
+      const path = join(keyDir, "agent.token");
+      await writeFile(path, `${KEY}\n`, { mode });
+      await chmod(path, mode);
+      return path;
+    };
+
+    it("without --confirm sends nothing and does not read the key", async () => {
+      const calls = stubFetch([{ body: enrolled }]);
+      const out = await run(["bridge-enroll", BRIDGE, URL_ARG, `--api-key-file=${join(keyDir, "missing")}`]);
+      expect(out).toContain("Nothing was changed");
+      expect(calls).toHaveLength(0);
+    });
+
+    it("reads the key from a 0600 file, PATCHes it, and prints identity and capabilities only", async () => {
+      const calls = stubFetch([{ body: enrolled }]);
+      const path = await keyFile(0o600);
+      const out = await run(["bridge-enroll", BRIDGE, URL_ARG, `--api-key-file=${path}`, "--confirm"]);
+      expect(calls).toHaveLength(1);
+      expect(calls[0]!.url).toContain(`/api/admin/vpn-bridges/${BRIDGE}`);
+      expect(calls[0]!.init?.method).toBe("PATCH");
+      expect(sentBody(calls[0]!)).toEqual({
+        managementApiUrl: "http://host.docker.internal:17600",
+        apiKey: KEY,
+      });
+      expect(out).toContain("Frankfurt");
+      expect(out).toContain("status.v1");
+      expect(out).toContain("0.72.0");
+      expect(out).not.toContain(KEY);
+      expect(out).not.toContain("host.docker.internal");
+      expect(out).not.toContain("do-not-print-me");
+    });
+
+    it("--json carries the same fields and no URL, key or commands", async () => {
+      stubFetch([{ body: enrolled }]);
+      const path = await keyFile(0o600);
+      const out = await run(["bridge-enroll", BRIDGE, URL_ARG, `--api-key-file=${path}`, "--confirm", "--json"]);
+      expect(JSON.parse(out)).toEqual({
+        id: BRIDGE,
+        name: "Frankfurt",
+        managementStatus: "ok",
+        agentVersion: "0.1.0",
+        agentApiVersion: 1,
+        agentCapabilities: ["status.v1"],
+        frpsVersion: "0.72.0",
+        frpsReachable: true,
+      });
+    });
+
+    it("refuses a key file that group or others can read, before any request", async () => {
+      const calls = stubFetch([{ body: enrolled }]);
+      const path = await keyFile(0o644);
+      await expect(
+        run(["bridge-enroll", BRIDGE, URL_ARG, `--api-key-file=${path}`, "--confirm"]),
+      ).rejects.toThrow(/accessible by group or others/);
+      expect(calls).toHaveLength(0);
+    });
+
+    it("refuses an inline key, a non-UUID id and a missing key flag", async () => {
+      const calls = stubFetch([{ body: enrolled }]);
+      await expect(
+        run(["bridge-enroll", BRIDGE, URL_ARG, `--api-key=${KEY}`, "--confirm"]),
+      ).rejects.toThrow(/Unknown flag/);
+      await expect(
+        run(["bridge-enroll", "frankfurt", URL_ARG, "--api-key-file=-", "--confirm"]),
+      ).rejects.toThrow(/must be a UUID/);
+      await expect(run(["bridge-enroll", BRIDGE, URL_ARG, "--confirm"])).rejects.toThrow(/Usage: bridge-enroll/);
+      expect(calls).toHaveLength(0);
+    });
+
+    it("surfaces an identity mismatch with a hint", async () => {
+      stubFetch([{ status: 409, body: { error: "BRIDGE_IDENTITY_MISMATCH", message: "other bridge" } }]);
+      const path = await keyFile(0o600);
+      await expect(
+        run(["bridge-enroll", BRIDGE, URL_ARG, `--api-key-file=${path}`, "--confirm"]),
+      ).rejects.toThrow(/BRIDGE_IDENTITY_MISMATCH: other bridge\n.*bridge id/);
+    });
+  });
+
+  it("bridge-enroll reads the key from stdin for -", async () => {
+    const calls: Array<{ init?: RequestInit }> = [];
+    const api = ((_path: string, init?: RequestInit) => {
+      calls.push({ init });
+      return Promise.resolve({ id: BRIDGE, name: "Frankfurt", managementStatus: "ok" });
+    }) as Parameters<typeof cmdBridgeEnroll>[0];
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    try {
+      await cmdBridgeEnroll(
+        api,
+        [BRIDGE, "--api-url=http://host.docker.internal:17600", "--api-key-file=-", "--confirm"],
+        undefined,
+        { readFile: (path) => (path === "-" ? `${"s".repeat(40)}\n` : "wrong") },
+      );
+    } finally {
+      logSpy.mockRestore();
+    }
+    expect(sentBody(calls[0]!)).toMatchObject({ apiKey: "s".repeat(40) });
+  });
+
+  describe("bridge-agent-update and bridge-agent-log", () => {
+    const DIGEST = `sha256:${"a".repeat(64)}`;
+    const OP = "55555555-5555-4555-8555-555555555555";
+    const operation = {
+      operationId: OP,
+      state: "queued",
+      requestedDigest: DIGEST,
+      requestedVersion: "0.2.0",
+      fromVersion: "0.1.0",
+      requestedAt: "2026-11-13T10:00:00.000Z",
+      sentAt: null,
+      acknowledgedAt: null,
+      lastCheckedAt: null,
+      notAfter: "2026-11-13T10:02:00.000Z",
+      acknowledgementOverdueSince: null,
+      contactLostSince: null,
+      errorCode: null,
+      result: null,
+    };
+    const view = {
+      bridgeId: BRIDGE,
+      enrolled: true,
+      installedVersion: "0.1.0",
+      updateSupported: true,
+      jobsEnabled: true,
+      offered: [
+        { image: `ghcr.io/example/amnezia/bridge-agent@${DIGEST}`, repository: "ghcr.io/example/amnezia/bridge-agent", version: "0.2.0", digest: DIGEST },
+      ],
+      operation: null,
+      history: [],
+    };
+
+    it("previews installed against offered without --confirm and changes nothing", async () => {
+      const calls = stubFetch([{ body: view }]);
+      const out = await run(["bridge-agent-update", BRIDGE]);
+      expect(out).toContain("0.1.0 installed");
+      expect(out).toContain("offered: 0.2.0");
+      expect(out).toContain("Nothing was changed");
+      expect(calls).toHaveLength(1);
+      expect(calls[0]?.init?.method ?? "GET").toBe("GET");
+    });
+
+    it("--confirm requests exactly the offered digest and says how to follow it", async () => {
+      const calls = stubFetch([{ body: view }, { status: 202, body: { created: true, operation } }]);
+      const out = await run(["bridge-agent-update", BRIDGE, "--confirm"]);
+      expect(calls[1]?.url).toContain(`/api/admin/vpn-bridges/${BRIDGE}/agent-update`);
+      expect(calls[1]?.init?.method).toBe("POST");
+      expect(sentBody(calls[1]!)).toEqual({ imageDigest: DIGEST });
+      expect(out).toContain(`Requesting ghcr.io/example/amnezia/bridge-agent@${DIGEST}`);
+      expect(out).toContain("update to 0.2.0 requested");
+      expect(out).toContain(`bridge-agent-log ${BRIDGE}`);
+    });
+
+    it("a repeat reports the already outstanding operation", async () => {
+      stubFetch([{ body: view }, { body: { created: false, operation } }]);
+      expect(await run(["bridge-agent-update", BRIDGE, "--confirm"])).toContain("already outstanding");
+    });
+
+    it("surfaces a 409 with its hint, and refuses a bad id or flag without a request", async () => {
+      stubFetch([
+        { body: view },
+        { status: 409, body: { error: "BRIDGE_UPDATE_IN_PROGRESS", message: "busy" } },
+      ]);
+      await expect(run(["bridge-agent-update", BRIDGE, "--confirm"])).rejects.toThrow(
+        /BRIDGE_UPDATE_IN_PROGRESS: busy\n.*bridge-agent-log/,
+      );
+      const calls = stubFetch([{ body: view }]);
+      await expect(run(["bridge-agent-update", "frankfurt"])).rejects.toThrow(/must be a UUID/);
+      await expect(run(["bridge-agent-update", BRIDGE, "--image=x"])).rejects.toThrow(/Unknown flag/);
+      expect(calls).toHaveLength(0);
+    });
+
+    it("refuses --confirm when nothing is offered", async () => {
+      const calls = stubFetch([{ body: { ...view, offered: [] } }]);
+      await expect(run(["bridge-agent-update", BRIDGE, "--confirm"])).rejects.toThrow(/nothing to request/);
+      expect(calls).toHaveLength(1);
+    });
+
+    it("bridge-agent-log names a pickup timeout and lost contact, and --json is the typed projection", async () => {
+      const timedOut = {
+        ...operation,
+        state: "pickup_timeout",
+        errorCode: "UPDATE_NOT_ACKNOWLEDGED",
+        result: { finishedAt: "2026-11-13T10:03:00.000Z", errorCode: "UPDATE_NOT_ACKNOWLEDGED" },
+      };
+      const lost = { ...operation, operationId: "66666666-6666-4666-8666-666666666666", state: "running", contactLostSince: "2026-11-13T09:00:00.000Z" };
+      stubFetch([{ body: { ...view, operation: timedOut, history: [lost] } }]);
+      const out = await run(["bridge-agent-log", BRIDGE]);
+      expect(out).toContain("pickup_timeout");
+      expect(out).toContain("confirmed the request expired");
+      expect(out).toContain("not retried automatically");
+      expect(out).toContain("management contact lost since 2026-11-13T09:00:00.000Z");
+
+      stubFetch([{ body: { ...view, operation: timedOut, history: [], extra: "dropped" } }]);
+      const parsed = JSON.parse(await run(["bridge-agent-log", BRIDGE, "--json"])) as Record<string, unknown>;
+      expect(parsed).not.toHaveProperty("extra");
+      expect(parsed.operation).toMatchObject({ state: "pickup_timeout", result: { errorCode: "UPDATE_NOT_ACKNOWLEDGED" } });
+    });
+
+    it("never falls back to an outstanding operation's digest when nothing is offered, and names an overdue acknowledgement", async () => {
+      const running = { ...operation, state: "sent", acknowledgementOverdueSince: "2026-11-13T10:05:00.000Z" };
+      const calls = stubFetch([{ body: { ...view, offered: [], operation: running } }]);
+      await expect(run(["bridge-agent-update", BRIDGE, "--confirm"])).rejects.toThrow(/nothing to request/);
+      expect(calls).toHaveLength(1);
+      stubFetch([{ body: { ...view, operation: running } }]);
+      expect(await run(["bridge-agent-log", BRIDGE])).toContain("acknowledgement overdue since 2026-11-13T10:05:00.000Z");
+    });
+
+    it("words lost contact by state", async () => {
+      stubFetch([{ body: { ...view, operation: { ...operation, state: "sent", contactLostSince: "2026-11-13T10:01:00.000Z" } } }]);
+      expect(await run(["bridge-agent-log", BRIDGE])).toContain("before the host acknowledged the request");
+      stubFetch([{ body: { ...view, operation: { ...operation, state: "running", contactLostSince: "2026-11-13T10:01:00.000Z" } } }]);
+      expect(await run(["bridge-agent-log", BRIDGE])).toContain("expected while the agent is replaced");
+    });
+
+    it("bridge-agent-log with no operation says so", async () => {
+      stubFetch([{ body: view }]);
+      expect(await run(["bridge-agent-log", BRIDGE])).toContain("no agent update was requested");
+    });
+  });
+
+  describe("bridge-rollback-preflight", () => {
+    const NODE = "66666666-6666-4666-8666-666666666666";
+    const blocked = {
+      activeAssignments: { count: 1, nodeIds: [NODE] },
+      outstandingAgentUpdates: { count: 0, bridgeIds: [] },
+      pendingJobs: { count: 2, byType: { "bridge_agent.poll": 2 } },
+      jobsEnabled: true,
+      readyForPreBridgeRollback: false,
+      blockingReasons: ["BRIDGE_JOBS_ENABLED", "ACTIVE_ASSIGNMENTS", "PENDING_BRIDGE_JOBS"],
+    };
+
+    it("prints what blocks the rollback and calls only the read endpoint", async () => {
+      const calls = stubFetch([{ body: blocked }]);
+      const out = await run(["bridge-rollback-preflight"]);
+      expect(out).toContain(`active bridge assignments: 1 (nodes ${NODE}`);
+      expect(out).toContain("pending bridge jobs: 2 (bridge_agent.poll 2)");
+      expect(out).toContain("VPN_BRIDGE_JOBS_ENABLED: true (set it to false first");
+      expect(out).toContain("ready for pre-bridge rollback: NO");
+      expect(calls).toHaveLength(1);
+      expect(calls[0]?.url).toContain("/api/admin/vpn-bridges/rollback-preflight");
+      expect(calls[0]?.init?.method ?? "GET").toBe("GET");
+    });
+
+    it("gate on with zero counts is not ready and names the gate as the reason", async () => {
+      stubFetch([
+        {
+          body: {
+            activeAssignments: { count: 0, nodeIds: [] },
+            outstandingAgentUpdates: { count: 0, bridgeIds: [] },
+            pendingJobs: { count: 0, byType: {} },
+            jobsEnabled: true,
+            readyForPreBridgeRollback: false,
+            blockingReasons: ["BRIDGE_JOBS_ENABLED"],
+          },
+        },
+      ]);
+      const out = await run(["bridge-rollback-preflight"]);
+      expect(out).toContain("ready for pre-bridge rollback: NO");
+      expect(out).toContain("blocked by: BRIDGE_JOBS_ENABLED");
+      expect(out).not.toContain("ready for pre-bridge rollback: yes");
+    });
+
+    it("says yes when nothing is left, and --json is the typed body", async () => {
+      const ready = {
+        activeAssignments: { count: 0, nodeIds: [] },
+        outstandingAgentUpdates: { count: 0, bridgeIds: [] },
+        pendingJobs: { count: 0, byType: {} },
+        jobsEnabled: false,
+        readyForPreBridgeRollback: true,
+        blockingReasons: [],
+      };
+      stubFetch([{ body: ready }]);
+      expect(await run(["bridge-rollback-preflight"])).toContain("ready for pre-bridge rollback: yes");
+      stubFetch([{ body: ready }]);
+      expect(JSON.parse(await run(["bridge-rollback-preflight", "--json"]))).toEqual(ready);
+    });
+
+    it("rejects a stray argument without calling the API", async () => {
+      const calls = stubFetch([{ body: blocked }]);
+      await expect(run(["bridge-rollback-preflight", "extra"])).rejects.toThrow();
+      expect(calls).toHaveLength(0);
+    });
+  });
+
+  it("bridge-add surfaces a duplicate address", async () => {
+    stubFetch([{ status: 409, body: { error: "BRIDGE_IPV4_CONFLICT", message: "dup" } }]);
+    await expect(
+      run(["bridge-add", "--name=F", "--ipv4=198.51.100.7", "--confirm"]),
+    ).rejects.toThrow(/BRIDGE_IPV4_CONFLICT: dup/);
+  });
+
+  it("bridge-delete rejects a non-UUID without calling the API", async () => {
+    const calls = stubFetch([{ body: {} }]);
+    await expect(run(["bridge-delete", "frankfurt", "--confirm"])).rejects.toThrow(/must be a UUID/);
+    expect(calls).toHaveLength(0);
+  });
+
+  it("bridge-delete without --confirm deletes nothing; with it, surfaces BRIDGE_HAS_ROUTES", async () => {
+    const calls = stubFetch([{ status: 409, body: { error: "BRIDGE_HAS_ROUTES", message: "has routes" } }]);
+    expect(await run(["bridge-delete", BRIDGE])).toContain("Nothing was changed");
+    expect(calls).toHaveLength(0);
+    await expect(run(["bridge-delete", BRIDGE, "--confirm"])).rejects.toThrow(
+      /BRIDGE_HAS_ROUTES: has routes\n.*bridge-route-release/,
+    );
+    expect(calls[0]!.init?.method).toBe("DELETE");
+  });
+
+  it("bridge-routes prints Direct, revision, drafts and retiring", async () => {
+    stubFetch([
+      {
+        body: {
+          nodeId: NODE,
+          vpnEndpointRevision: 4,
+          activeRoute: null,
+          drafts: [{ id: ROUTE, bridgeId: BRIDGE, publicUdpPort: 41000, state: "draft", bridgeName: "Frankfurt", bridgePublicIpv4: "198.51.100.7", frpProxyName: `awg-route-${ROUTE}`, observedOnline: true, verificationResult: "success", verifiedAt: "t", verificationMethod: "probe" }],
+          retiring: [],
+        },
+      },
+    ]);
+    const out = await run(["bridge-routes", NODE]);
+    expect(out).toContain("revision 4");
+    expect(out).toContain("Direct");
+    expect(out).toContain("drafts (1)");
+    expect(out).toContain("online");
+    expect(out).toContain("verified");
+  });
+
+  it("bridge-routes prints the API's registration and AWG path evidence", async () => {
+    stubFetch([
+      {
+        body: {
+          nodeId: NODE,
+          vpnEndpointRevision: 2,
+          activeRoute: {
+            id: ROUTE,
+            bridgeId: BRIDGE,
+            publicUdpPort: 41000,
+            state: "active",
+            bridgeName: "Frankfurt",
+            bridgePublicIpv4: "198.51.100.7",
+            registration: { status: "unknown", marker: null, observedAt: null },
+            verification: { kind: "awg_path", status: "failed", checkedAt: "2026-11-13T10:00:00.000Z" },
+          },
+          drafts: [],
+          retiring: [],
+        },
+      },
+    ]);
+    const out = await run(["bridge-routes", NODE]);
+    expect(out).toContain("unknown");
+    expect(out).toContain("awg path failed (checked 2026-11-13T10:00:00.000Z)");
+  });
+
+  it("bridge-route-prepare without --confirm reserves nothing", async () => {
+    const calls = stubFetch([{ body: {} }]);
+    expect(await run(["bridge-route-prepare", NODE, BRIDGE])).toContain("Nothing was changed");
+    expect(calls).toHaveLength(0);
+  });
+
+  it("bridge-route-prepare --confirm posts the pairing and prints the reservation", async () => {
+    const calls = stubFetch([
+      { status: 201, body: { created: true, route: { id: ROUTE, bridgeId: BRIDGE, publicUdpPort: 41005, state: "draft", bridgePublicIpv4: "198.51.100.7", bridgeName: "Frankfurt", frpProxyName: `awg-route-${ROUTE}` } } },
+    ]);
+    const out = await run(["bridge-route-prepare", NODE, BRIDGE, "--port=41005", "--confirm"]);
+    expect(calls[0]!.url).toContain(`/api/admin/nodes/${NODE}/vpn-bridge-routes`);
+    expect(sentBody(calls[0]!)).toEqual({ bridgeId: BRIDGE, publicUdpPort: 41005 });
+    expect(out).toContain("198.51.100.7");
+    expect(out).toContain("41005");
+    expect(out).toContain(`awg-route-${ROUTE}`);
+  });
+
+  it("bridge-route-prepare prints the route setup commands and keeps them in --json", async () => {
+    const setupCommands = { install: "sudo sh install-frpc.sh --route-id r", dryRun: "sudo sh install-frpc.sh --route-id r --dry-run", remove: "sudo sh install-frpc.sh --route-id r --remove" };
+    const route = { id: ROUTE, bridgeId: BRIDGE, publicUdpPort: 41005, state: "draft", frpProxyName: `awg-route-${ROUTE}`, setupCommands };
+    stubFetch([{ status: 201, body: { created: true, route } }]);
+    const out = await run(["bridge-route-prepare", NODE, BRIDGE, "--confirm"]);
+    expect(out).toContain(`install: ${setupCommands.install}`);
+    expect(out).toContain(`dryRun: ${setupCommands.dryRun}`);
+    expect(out).toContain(`remove: ${setupCommands.remove}`);
+    stubFetch([{ status: 201, body: { created: true, route } }]);
+    const json = JSON.parse(await run(["bridge-route-prepare", NODE, BRIDGE, "--confirm", "--json"])) as { route: { setupCommands: unknown } };
+    expect(json.route.setupCommands).toEqual(setupCommands);
+  });
+
+  it("bridge-route-prepare surfaces BRIDGE_NODE_NOT_AWG31", async () => {
+    stubFetch([{ status: 409, body: { error: "BRIDGE_NODE_NOT_AWG31", message: "no awg3" } }]);
+    await expect(run(["bridge-route-prepare", NODE, BRIDGE, "--confirm"])).rejects.toThrow(/BRIDGE_NODE_NOT_AWG31/);
+  });
+
+  it("bridge-route-activate without --confirm reads but never PATCHes", async () => {
+    const calls = stubFetch([{ body: [bridge] }]);
+    expect(await run(["bridge-route-activate", ROUTE])).toContain("Nothing was changed");
+    expect(calls.every((c) => (c.init?.method ?? "GET") === "GET")).toBe(true);
+  });
+
+  it("bridge-route-activate finds the node, reads the revision and PATCHes with it", async () => {
+    const calls = stubFetch([
+      { body: [bridge] },
+      { body: { nodeId: NODE, vpnEndpointRevision: 7, activeRoute: null, drafts: [], retiring: [] } },
+      { body: { id: NODE, vpnEndpoint: { changed: true, vpnEndpointRevision: 8, activeRoute: null } } },
+    ]);
+    const out = await run(["bridge-route-activate", ROUTE, "--confirm"]);
+    expect(calls[1]!.url).toContain(`/api/admin/nodes/${NODE}/vpn-bridge-routes`);
+    expect(calls[2]!.url).toContain(`/api/admin/nodes/${NODE}`);
+    expect(calls[2]!.init?.method).toBe("PATCH");
+    expect(sentBody(calls[2]!)).toEqual({
+      vpnBridgeRouteId: ROUTE,
+      expectedVpnEndpointRevision: 7,
+    });
+    expect(out).toContain("revision 8");
+  });
+
+  it("bridge-route-activate fails clearly for an unknown route and on a stale revision", async () => {
+    stubFetch([{ body: [{ ...bridge, routes: [] }] }]);
+    await expect(run(["bridge-route-activate", ROUTE, "--confirm"])).rejects.toThrow(/BRIDGE_ROUTE_NOT_FOUND/);
+    stubFetch([
+      { body: [bridge] },
+      { body: { nodeId: NODE, vpnEndpointRevision: 7, activeRoute: null, drafts: [], retiring: [] } },
+      { status: 409, body: { error: "BRIDGE_REVISION_CONFLICT", message: "stale" } },
+    ]);
+    await expect(run(["bridge-route-activate", ROUTE, "--confirm"])).rejects.toThrow(
+      /BRIDGE_REVISION_CONFLICT: stale\n.*bridge-routes/,
+    );
+  });
+
+  it("bridge-route-direct sends a null route with the current revision, only with --confirm", async () => {
+    const calls = stubFetch([{ body: {} }]);
+    expect(await run(["bridge-route-direct", NODE])).toContain("Nothing was changed");
+    expect(calls).toHaveLength(0);
+    const sent = stubFetch([
+      { body: { nodeId: NODE, vpnEndpointRevision: 2, activeRoute: null, drafts: [], retiring: [] } },
+      { body: { id: NODE, vpnEndpoint: { changed: false, vpnEndpointRevision: 2, activeRoute: null } } },
+    ]);
+    const out = await run(["bridge-route-direct", NODE, "--confirm"]);
+    expect(sentBody(sent[1]!)).toEqual({
+      vpnBridgeRouteId: null,
+      expectedVpnEndpointRevision: 2,
+    });
+    expect(out).toContain("no change");
+  });
+
+  it("bridge-route-release needs --confirm and surfaces active / stale conflicts", async () => {
+    const calls = stubFetch([{ body: {} }]);
+    expect(await run(["bridge-route-release", ROUTE])).toContain("Nothing was changed");
+    expect(calls).toHaveLength(0);
+    const sent = stubFetch([{ body: { id: ROUTE, released: true, nodeId: NODE, bridgeId: BRIDGE, publicUdpPort: 41000 } }]);
+    expect(await run(["bridge-route-release", ROUTE, "--confirm"])).toContain("released");
+    expect(sent[0]!.url).toContain(`/api/admin/vpn-bridge-routes/${ROUTE}?confirmed=true`);
+    expect(sent[0]!.init?.method).toBe("DELETE");
+    for (const code of ["BRIDGE_ROUTE_ACTIVE", "BRIDGE_OBSERVATION_STALE"]) {
+      stubFetch([{ status: 409, body: { error: code, message: "no" } }]);
+      await expect(run(["bridge-route-release", ROUTE, "--confirm"])).rejects.toThrow(new RegExp(code));
+    }
+  });
+
+  it("prototype names are unknown commands, not dispatched", async () => {
+    const err = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    try {
+      for (const name of ["constructor", "toString", "valueOf", "hasOwnProperty"]) {
+        process.exitCode = undefined;
+        await dispatch([name]);
+        expect(process.exitCode).toBe(1);
+      }
+      expect(err).toHaveBeenCalledWith(expect.stringContaining("Unknown command: constructor"));
+    } finally {
+      err.mockRestore();
+      log.mockRestore();
+    }
+  });
+
+  it("rejects space-separated value flags and surplus operands with no request", async () => {
+    const calls = stubFetch([{ body: {} }]);
+    await expect(
+      run(["bridge-route-prepare", NODE, BRIDGE, "--port", "41005", "--confirm"]),
+    ).rejects.toThrow(/--port=<value>/);
+    await expect(
+      run(["bridge-add", "--name=F", "--ipv4=198.51.100.7", "--udp-start", "42000", "--confirm"]),
+    ).rejects.toThrow(/--udp-start=<value>/);
+    await expect(
+      run(["bridge-add", "--name=F", "--ipv4=198.51.100.7", "--control-port", "7000", "--confirm"]),
+    ).rejects.toThrow(/--control-port=<value>/);
+    await expect(run(["bridge-delete", BRIDGE, "extra", "--confirm"])).rejects.toThrow(/Unexpected argument/);
+    await expect(run(["bridge-route-release", ROUTE, BRIDGE, "--confirm"])).rejects.toThrow(/Unexpected argument/);
+    await expect(run(["bridges", "extra"])).rejects.toThrow(/Unexpected argument/);
+    expect(calls).toHaveLength(0);
+  });
+
+  it("rejects non-UUID targets for every command with no request", async () => {
+    const calls = stubFetch([{ body: {} }]);
+    for (const argv of [
+      ["bridge-routes", "n1"],
+      ["bridge-route-prepare", "n1", BRIDGE, "--confirm"],
+      ["bridge-route-prepare", NODE, "b1", "--confirm"],
+      ["bridge-route-activate", "r1", "--confirm"],
+      ["bridge-route-direct", "n1", "--confirm"],
+      ["bridge-route-release", "r1", "--confirm"],
+    ]) {
+      await expect(run(argv)).rejects.toThrow(/must be a UUID/);
+    }
+    expect(calls).toHaveLength(0);
+  });
+
+  it("--json is projected to typed fields", async () => {
+    const leaky = { ...bridge, secretToken: "s3cr3t", setupCommands: { install: "i", dryRun: "d", remove: "r", token: "t" } };
+    stubFetch([{ body: [leaky] }]);
+    const out = await run(["bridges", "--json"]);
+    expect(out).not.toContain("s3cr3t");
+    expect(out).not.toContain('"token"');
+    expect((JSON.parse(out) as Array<{ setupCommands: unknown }>)[0]!.setupCommands).toEqual({ install: "i", dryRun: "d", remove: "r" });
+    stubFetch([{ body: { nodeId: NODE, vpnEndpointRevision: 1, internal: "x", activeRoute: null, drafts: [{ id: ROUTE, bridgeId: BRIDGE, publicUdpPort: 1, state: "draft", observedRegistrationMarker: "m" }], retiring: [] } }]);
+    const routes = await run(["bridge-routes", NODE, "--json"]);
+    expect(routes).not.toContain("internal");
+    expect(routes).not.toContain("observedRegistrationMarker");
+  });
+});
+
+describe("bridge candidate validation commands", () => {
+  const ROUTE = "44444444-4444-4444-8444-444444444444";
+  const KEY = "55555555-5555-4555-8555-555555555555";
+  let dir: string;
+
+  /** A fetch stub that also serves raw bodies and response headers. */
+  const stubRaw = (
+    responses: Array<{ status?: number; body: string; headers?: Record<string, string> }>,
+  ): Array<{ url: string; init?: RequestInit }> => {
+    const calls: Array<{ url: string; init?: RequestInit }> = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string | URL, init?: RequestInit) => {
+        const index = calls.length;
+        calls.push({ url: String(url), init });
+        const response = responses[Math.min(index, responses.length - 1)]!;
+        const status = response.status ?? 200;
+        return Promise.resolve({
+          ok: status >= 200 && status < 300,
+          status,
+          statusText: "",
+          headers: new Headers(response.headers ?? {}),
+          text: () => Promise.resolve(response.body),
+          arrayBuffer: () => Promise.resolve(new TextEncoder().encode(response.body).buffer),
+        } as unknown as Response);
+      }),
+    );
+    return calls;
+  };
+
+  const runWithStderr = async (argv: string[]) => {
+    const errors: string[] = [];
+    const errorSpy = vi.spyOn(console, "error").mockImplementation((...parts: unknown[]) => {
+      errors.push(parts.map(String).join(" "));
+    });
+    try {
+      return { out: await run(argv), err: errors.join("\n") };
+    } finally {
+      errorSpy.mockRestore();
+    }
+  };
+
+  beforeEach(async () => {
+    process.env.PANEL_ADMIN_EMAIL = "cli-test@example.com";
+    dir = await mkdtemp(join(tmpdir(), "bridge-test-config-"));
+  });
+  afterEach(async () => {
+    delete process.env.PANEL_ADMIN_EMAIL;
+    vi.unstubAllGlobals();
+    process.exitCode = undefined;
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it("bridge-route-test-config saves a new 0600 file and prints the marker, never the config", async () => {
+    const out = join(dir, "test.vpn");
+    const calls = stubRaw([
+      {
+        body: "vpn://secret-config",
+        headers: { "x-bridge-registration-marker": "client-1%2006-13%2010%3A20%3A30" },
+      },
+    ]);
+    const { out: printed } = await runWithStderr([
+      "bridge-route-test-config",
+      ROUTE,
+      `--key=${KEY}`,
+      `--out=${out}`,
+    ]);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.url).toContain(`/api/admin/vpn-bridge-routes/${ROUTE}/test-config?keyId=${KEY}`);
+    expect(calls[0]!.init?.method ?? "GET").toBe("GET");
+    expect(await readFile(out, "utf8")).toBe("vpn://secret-config");
+    expect((await stat(out)).mode & 0o777).toBe(0o600);
+    expect(printed).not.toContain("secret-config");
+    expect(printed).toContain("registration marker: client-1 06-13 10:20:30");
+    expect(printed).toContain(
+      `bridge-route-verify ${ROUTE} --operator-verified --registration='client-1 06-13 10:20:30' --confirm`,
+    );
+  });
+
+  it("bridge-route-test-config warns when no registration was observed", async () => {
+    stubRaw([{ body: "vpn://secret-config" }]);
+    const { out: printed, err } = await runWithStderr([
+      "bridge-route-test-config",
+      ROUTE,
+      `--key=${KEY}`,
+      `--out=${join(dir, "test.vpn")}`,
+    ]);
+    expect(printed).not.toContain("registration marker:");
+    expect(err).toContain("no frps registration has been observed");
+  });
+
+  it("bridge-route-test-config refuses to overwrite an existing file and sends nothing", async () => {
+    const out = join(dir, "existing.vpn");
+    await writeFile(out, "keep me");
+    const calls = stubRaw([{ body: "vpn://secret-config" }]);
+    await expect(
+      run(["bridge-route-test-config", ROUTE, `--key=${KEY}`, `--out=${out}`]),
+    ).rejects.toThrow(/Refusing to overwrite/);
+    expect(calls).toHaveLength(0);
+    expect(await readFile(out, "utf8")).toBe("keep me");
+  });
+
+  it("bridge-route-test-config leaves no file behind when the API refuses", async () => {
+    const out = join(dir, "refused.vpn");
+    stubRaw([
+      {
+        status: 403,
+        body: JSON.stringify({ error: "BRIDGE_TEST_KEY_WRONG_NODE", message: "wrong node" }),
+      },
+    ]);
+    await expect(
+      run(["bridge-route-test-config", ROUTE, `--key=${KEY}`, `--out=${out}`]),
+    ).rejects.toThrow(/BRIDGE_TEST_KEY_WRONG_NODE: wrong node\n.*route's VPN node/);
+    await expect(stat(out)).rejects.toThrow();
+  });
+
+  it("bridge-route-test-config validates its arguments before any request", async () => {
+    const calls = stubRaw([{ body: "" }]);
+    const out = `--out=${join(dir, "x.vpn")}`;
+    await expect(run(["bridge-route-test-config", "r1", `--key=${KEY}`, out])).rejects.toThrow(/must be a UUID/);
+    await expect(run(["bridge-route-test-config", ROUTE, "--key=k1", out])).rejects.toThrow(/must be a UUID/);
+    await expect(run(["bridge-route-test-config", ROUTE, `--key=${KEY}`])).rejects.toThrow(/Usage/);
+    await expect(run(["bridge-route-test-config", ROUTE, "--key", KEY, out])).rejects.toThrow(/--key=<value>/);
+    expect(calls).toHaveLength(0);
+  });
+
+  it("bridge-route-verify without --confirm submits nothing", async () => {
+    const calls = stubRaw([{ body: "{}" }]);
+    expect(await run(["bridge-route-verify", ROUTE])).toContain("Nothing was changed");
+    expect(
+      await run(["bridge-route-verify", ROUTE, "--operator-verified", "--registration=m-1"]),
+    ).toContain("Nothing was changed");
+    expect(calls).toHaveLength(0);
+  });
+
+  it("bridge-route-verify --confirm queues the probe check", async () => {
+    const calls = stubRaw([
+      {
+        status: 202,
+        body: JSON.stringify({
+          method: "probe",
+          routeId: ROUTE,
+          jobId: "66666666-6666-4666-8666-666666666666",
+          queued: true,
+          status: "queued",
+          runId: null,
+          registrationMarker: "m-1",
+        }),
+      },
+    ]);
+    const out = await run(["bridge-route-verify", ROUTE, "--confirm"]);
+    expect(calls[0]!.url).toContain(`/api/admin/vpn-bridge-routes/${ROUTE}/verify`);
+    expect(calls[0]!.init?.method).toBe("POST");
+    expect(sentBody(calls[0]!)).toEqual({ method: "probe" });
+    expect(out).toContain("probe check queued (job 66666666-6666-4666-8666-666666666666) for registration m-1");
+  });
+
+  it("bridge-route-verify reports a check whose run is still out", async () => {
+    stubRaw([
+      {
+        status: 202,
+        body: JSON.stringify({
+          method: "probe",
+          routeId: ROUTE,
+          jobId: null,
+          queued: false,
+          status: "running",
+          runId: "77777777-7777-4777-8777-777777777777",
+          registrationMarker: "m-1",
+        }),
+      },
+    ]);
+    expect(await run(["bridge-route-verify", ROUTE, "--confirm"])).toContain(
+      "probe check already running (run 77777777-7777-4777-8777-777777777777) for registration m-1",
+    );
+    stubRaw([
+      {
+        status: 409,
+        body: JSON.stringify({ error: "BRIDGE_CHECK_PENDING", message: "older check pending" }),
+      },
+    ]);
+    await expect(run(["bridge-route-verify", ROUTE, "--confirm"])).rejects.toThrow(
+      /BRIDGE_CHECK_PENDING: older check pending\n.*ask again/,
+    );
+  });
+
+  it("bridge-route-verify --operator-verified sends the tested marker and the attestation", async () => {
+    const calls = stubRaw([
+      {
+        body: JSON.stringify({
+          method: "operator",
+          routeId: ROUTE,
+          route: {
+            id: ROUTE,
+            bridgeId: "33333333-3333-4333-8333-333333333333",
+            publicUdpPort: 41000,
+            state: "draft",
+            verificationResult: "success",
+            verificationMethod: "operator",
+            verifiedAt: "2026-11-13T10:00:00.000Z",
+          },
+        }),
+      },
+    ]);
+    const out = await run([
+      "bridge-route-verify",
+      ROUTE,
+      "--operator-verified",
+      "--registration=client-1 06-13",
+      "--confirm",
+    ]);
+    expect(sentBody(calls[0]!)).toEqual({
+      method: "operator",
+      registrationMarker: "client-1 06-13",
+      confirmHandshakeAndHttp: true,
+    });
+    expect(out).toContain("verified 2026-11-13T10:00:00.000Z (operator)");
+  });
+
+  it("bridge-route-verify rejects incomplete operator evidence without a request", async () => {
+    const calls = stubRaw([{ body: "{}" }]);
+    await expect(run(["bridge-route-verify", ROUTE, "--operator-verified", "--confirm"])).rejects.toThrow(
+      /needs --registration/,
+    );
+    await expect(run(["bridge-route-verify", ROUTE, "--registration=m-1", "--confirm"])).rejects.toThrow(
+      /only used with --operator-verified/,
+    );
+    await expect(
+      run(["bridge-route-verify", ROUTE, "--operator-verified", "--registration", "m-1", "--confirm"]),
+    ).rejects.toThrow(/--registration=<value>/);
+    await expect(run(["bridge-route-verify", "r1", "--confirm"])).rejects.toThrow(/must be a UUID/);
+    expect(calls).toHaveLength(0);
+  });
+
+  it("bridge-route-verify explains an unavailable probe", async () => {
+    stubRaw([
+      {
+        status: 409,
+        body: JSON.stringify({ error: "BRIDGE_UNSUPPORTED_CAPABILITY", message: "no capable probe" }),
+      },
+    ]);
+    await expect(run(["bridge-route-verify", ROUTE, "--confirm"])).rejects.toThrow(
+      /BRIDGE_UNSUPPORTED_CAPABILITY: no capable probe\n.*--operator-verified/,
+    );
   });
 });

@@ -134,6 +134,14 @@ export type AgentUpdateStatus = {
   log: string;
   updatedAt: string | null;
   message: string | null;
+  // Additive. Whether the host updater took the request: `pending` (queued,
+  // inside the deadline), `acknowledged` (trigger consumed or result written),
+  // `unacknowledged` (still queued past the deadline; never retried). Same
+  // vocabulary and `UPDATE_NOT_ACKNOWLEDGED` code as the panel and bridge-agent
+  // updates. null when there is no unresolved request.
+  acknowledgement: "pending" | "acknowledged" | "unacknowledged" | null;
+  requestAgeSeconds: number | null;
+  diagnosticHint: "UPDATE_NOT_ACKNOWLEDGED" | null;
 };
 
 // The lifecycle of an in-panel capacity change. Same shape and same reasoning as

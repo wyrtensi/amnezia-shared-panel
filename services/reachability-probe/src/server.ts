@@ -2,7 +2,7 @@ import { createHash, timingSafeEqual } from "node:crypto";
 import { createServer as createHttpServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 
 import { MIN_API_KEY_LENGTH } from "./env.js";
-import { notAttempted, type RunRequest, type RunState, type RunTarget } from "./types.js";
+import { notAttempted, PROBE_API_VERSION, PROBE_CAPABILITIES, type RunRequest, type RunState, type RunTarget } from "./types.js";
 
 export type Runner = (req: RunRequest, onProgress: (state: RunState) => void) => Promise<RunState>;
 
@@ -87,7 +87,10 @@ export const parseRunRequest = (body: unknown): RunRequest => {
       throw new HttpError(400, `${at}.config is larger than ${MAX_CONFIG_BYTES} bytes`);
     }
     const target: RunTarget = { targetId: raw.targetId, protocol: raw.protocol, config: raw.config };
-    if (raw.expectedEgressIp !== undefined && raw.expectedEgressIp !== null) {
+    if (raw.expectedEgressIp === null) {
+      // Explicit null is kept: it is not the same as omitted (see RunTarget).
+      target.expectedEgressIp = null;
+    } else if (raw.expectedEgressIp !== undefined) {
       const expected = raw.expectedEgressIp;
       if (typeof expected !== "string" || expected.length > MAX_EXPECTED_IP_LENGTH) {
         throw new HttpError(400, `${at}.expectedEgressIp must be a string of at most 64 chars`);
@@ -184,6 +187,11 @@ export const createServer = (options: ServerOptions): Server => {
     }
     if (!keyMatches(expectedKey, req.headers["x-api-key"])) {
       send(res, 401, { error: "unauthorized" });
+      return;
+    }
+    if (path === "/capabilities") {
+      if (req.method !== "GET") throw new HttpError(405, "method not allowed");
+      send(res, 200, { apiVersion: PROBE_API_VERSION, capabilities: [...PROBE_CAPABILITIES] });
       return;
     }
     if (path === "/runs") {

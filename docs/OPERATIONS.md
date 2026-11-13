@@ -298,7 +298,7 @@ own set instead of the node's, with nothing written to `awg0.conf`:
   owner-only, needs config redownload in the policy, and is audited as
   `vpn_key.config_profile_refreshed` with the revision only. No node call, no
   outbox job, same peer and address: the old connection keeps working until
-  the owner imports the new config.
+  the owner imports the new config. The dialog says so, and that previously imported files keep their old endpoint (a bridge activation or return to Direct reaches a client only through a refreshed, re-imported file).
 
 The `H1`-`H4`, `S1`-`S4`, header protection and trailers stay the node's: those
 the server does check, and a key with a changed `H1` gets no handshake.
@@ -434,6 +434,66 @@ directly; the tunnel carries only the panel's management calls. A dropped tunnel
 is a management outage, not a service outage — which is also why it can go
 unnoticed, so a node showing `fetch failed` deserves the same attention as one
 that is genuinely down.
+
+### Bridge management tunnels
+
+A bridge host's bridge-agent is reached the same way: one `autossh` unit per
+bridge on the panel host, named `panel-tunnel-bridge-<bridge-id>.service`,
+forwarding a local port to the agent's `127.0.0.1:7600`. It is created by
+`scripts/add-bridge-tunnel.sh` (see [`infra/bridge/README.md`](../infra/bridge/README.md)),
+allocates from the same pool as the node tunnels (same `-L` scan, same base), and
+pins the bridge's SSH host key instead of trusting the first one it sees. The
+panel's record for the bridge is `http://host.docker.internal:<port>`, so the
+same three checks above apply with the bridge unit name. Stopping a bridge tunnel
+makes the bridge read `down` at its next poll (a `down` bridge stays `down`; only a
+bridge last reported `ok` turns `stale`, once its observation is older than the
+stale window) in the admin screens; active routes and the frps forwarding keep
+working, and the route evidence reads Unknown instead of a stale "online".
+
+**Bridge polls share the worker's one outbox lane.** The worker runs one outbox
+job at a time, and the bridge-agent poll (`bridge_agent.poll`, one job per
+enrolled bridge, armed every 60 s) is one of those jobs, next to key
+provisioning. Each poll has a 5 s deadline, so a hung agent costs up to 5 s of
+that lane per poll, and several hung bridges add up. If provisioning slows down
+while a bridge shows `down`, fix or disable that bridge first.
+Bridge polling only runs while `VPN_BRIDGE_JOBS_ENABLED=true`.
+
+**Bridge-agent updates.** An update request (`bridge-agent-update --confirm`, or the
+Update agent button on the Bridges tab) stores one operation per bridge and queues a
+`bridge_agent.update` job. The job sends the intent (with `notAfter`, the panel's pickup
+deadline, request time + 120 s) to the agent once and ends; the bridge's next polls follow the
+operation (`GET /v1/update?operationId=`), so a poll costs one more request while an update is
+outstanding. The agent's capabilities (`/v1/identity`) are re-read when unknown, older than
+10 minutes, or while an update is outstanding; a failed read is logged with a bounded code.
+States: `queued, sent, acknowledged, running` (outstanding), `succeeded, rolled_back,
+rollback_failed, failed, pickup_timeout` (terminal). An operation holds the bridge's slot until a
+reachable agent confirms its fate: a terminal result, `expired` (recorded as `pickup_timeout`), or
+that it does not know the operation (`failed UPDATE_UNKNOWN_TO_AGENT`). Observations never free
+the slot or trigger a retry: `contactLostSince` (no usable answer, at any stage, including before
+pickup: the host may be replacing the agent) and `acknowledgementOverdueSince` (the agent
+answers but still reports the request unstarted past `notAfter`). A delivery whose POST got no
+usable answer is asked about, and re-sent only if the agent confirms it never saw it. A queued
+operation whose POST was never attempted and whose job is gone closes as
+`failed UPDATE_NEVER_SENT`. If an overdue request needs help, check
+`systemctl status amnezia-bridge-agent-update.path` on the bridge host; once the agent reports
+`expired` the operation ends and you can request again.
+On the bridge host the agent only records the intent in `/var/lib/amnezia-bridge/update/requests`;
+the systemd updater (`bridge-agent-update.sh`, installed by `install-bridge.sh`) re-validates it,
+pulls the digest, recreates only the `bridge-agent` service with `--no-deps` (frps is never
+touched), and accepts it only after the digest, bridge identity and an authenticated status with
+frps reachable check out; otherwise it restores the pinned image and checks that too
+(`rolled_back` / `rollback_failed`). Results carry fixed codes; details are in
+`journalctl -u amnezia-bridge-agent-update.service`. See `infra/bridge/README.md`
+("bridge-agent updates").
+
+*A bridge that stays unreachable while its update slot is held.* The slot is deliberately not
+freed on silence, because the host may still apply the update. Restore contact: check the
+`panel-tunnel-bridge-<id>` unit and the bridge host's `bridge-agent` container, and if the agent
+cannot be brought back, reinstall it with `install-bridge.sh` (same bridge id, same image from the
+pin file) or re-enroll it (`bridge-enroll`). As soon as an agent answers, the next poll reads the
+operation: the real state, or a 404 (`failed UPDATE_UNKNOWN_TO_AGENT`), or `expired`, ends the
+operation and frees the slot. A request is never closed by the panel on its own once its POST was
+attempted; one past `notAfter` that was never sent closes as `failed UPDATE_NEVER_SENT`.
 
 ---
 

@@ -43,7 +43,7 @@ const ru = {
   // Admin navigation / shell
   "nav.overview": "Обзор",
   "nav.users": "Пользователи",
-  "nav.nodes": "VPN-ноды",
+  "nav.nodes": "Ноды и мосты",
   "nav.policy": "Политики",
   "nav.rules": "Маршрутизация",
   "nav.audit": "Журнал",
@@ -83,6 +83,11 @@ const ru = {
   "update.disabled": "Механизм обновления не установлен на сервере",
   "update.disabledHint":
     "Установите хост-воркер один раз: sudo bash infra/prod/install-updater.sh",
+  "update.unacknowledged":
+    "Запрос на обновление в очереди уже {age} (срок подтверждения {deadline} с): хост его не принял. Запрос остаётся в очереди и сам не повторяется.",
+  "update.unacknowledgedHint":
+    "Проверьте на хосте: systemctl status panel-updater.path panel-updater.service, затем scripts/repair-updater-units.sh --dry-run (ничего не меняет, показывает состояние юнитов и очереди). Исправлять нужно на хосте; панель запрос не повторяет.",
+  "update.ageUnknown": "неизвестное время",
 
   // Route profiles (shared)
   "route.full_tunnel": "Весь трафик",
@@ -378,6 +383,8 @@ const ru = {
   "config.title": "Ключ: {label}",
   "config.refreshedHint":
     "Это обновлённый конфиг. Импортируйте его и удалите прежнее подключение в приложении — до замены оно продолжает работать.",
+  "config.refreshedImportHint":
+    "Сервер и адрес входа записываются в файл при импорте. Ранее импортированные файлы продолжают использовать прежний адрес и не изменятся сами: чтобы заменить их, импортируйте этот файл.",
   "config.desc":
     "Вставьте ссылку в AmneziaVPN («Подключиться по ссылке») или отсканируйте QR-код камерой телефона.",
   // A file-only profile has neither the link nor the QR the line above names.
@@ -1426,6 +1433,392 @@ const ru = {
   "periods.completedJobRetentionDays": "Хранение завершённых задач",
   "periods.completedJobRetentionDaysHint":
     "Сколько дней хранится завершённая запись в очереди задач, прежде чем будет удалена. Задачи со статусом «ошибка», «ожидание» или «в обработке» это окно не трогает, как и служебные строки rules.refresh и access.sync.",
+
+  // Bridges
+  "bridge.tabNodes":
+    "Ноды",
+  "bridge.tabBridges":
+    "Мосты",
+  "bridge.title":
+    "Мосты",
+  "bridge.intro":
+    "Мост — публичный хост, который пересылает UDP-трафик VPN-ноды: клиенты подключаются к адресу моста, а не ноды.",
+  "bridge.add":
+    "Добавить мост",
+  "bridge.addDesc":
+    "Зарегистрируйте хост моста по публичному IPv4. Команды установки появятся на его карточке.",
+  "bridge.added":
+    "Мост добавлен",
+  "bridge.empty":
+    "Мостов пока нет",
+  "bridge.emptyHint":
+    "Добавьте мост, чтобы направить ноду через публичный хост.",
+  "bridge.loadFailed":
+    "Не удалось загрузить данные мостов",
+  "bridge.loading":
+    "Загружаем…",
+  "bridge.rename":
+    "Переименовать",
+  "bridge.renamed":
+    "Мост переименован",
+  "bridge.delete":
+    "Удалить",
+  "bridge.deleted":
+    "Мост удалён",
+  "bridge.deleteTitle":
+    "Удалить мост «{name}»?",
+  "bridge.deleteDesc":
+    "Регистрация будет удалена. Мост с маршрутами удалить нельзя: сначала освободите их.",
+  "bridge.publicIpv4":
+    "Публичный IPv4",
+  "bridge.advanced":
+    "Дополнительные настройки",
+  "bridge.controlPort":
+    "Управляющий TCP-порт",
+  "bridge.udpStart":
+    "Начало UDP-пула",
+  "bridge.udpEnd":
+    "Конец UDP-пула",
+  "bridge.udpRange":
+    "UDP-пул",
+  "bridge.routesFit":
+    "В этот пул помещается маршрутов: {count} (по одному UDP-порту).",
+  "bridge.ports":
+    "Порты",
+  "bridge.portsUsed":
+    "занято {used} из {total} · свободно {free}",
+  "bridge.status.ok":
+    "На связи",
+  "bridge.status.pending_enrollment":
+    "Ожидает подключения",
+  "bridge.status.down":
+    "Недоступен",
+  "bridge.status.stale":
+    "Нет свежих данных",
+  "bridge.status.identity_mismatch":
+    "Не совпала идентичность",
+  "bridge.status.unsupported":
+    "Не поддерживается",
+  "bridge.lastObserved":
+    "Последний отчёт: {at}",
+  "bridge.neverObserved":
+    "Отчётов ещё не было",
+  "bridge.routes":
+    "Маршруты",
+  "bridge.noRoutes":
+    "Маршрутов нет",
+  "bridge.routePolicy":
+    "Настройка маршрута",
+  "bridge.state.draft":
+    "Черновик",
+  "bridge.state.active":
+    "Активен",
+  "bridge.state.retiring":
+    "Выводится",
+  "bridge.mgmt.agent":
+    "Агент моста",
+  "bridge.mgmt.notEnrolled":
+    "Не подключён: подключите агент командой bridge-enroll",
+  "bridge.mgmt.frps":
+    "frps",
+  "bridge.mgmt.frpsReachable":
+    "{version}, отвечает",
+  "bridge.mgmt.frpsUnreachable":
+    "агент не видит frps",
+  "bridge.mgmt.frpsUnknown":
+    "нет данных",
+  "bridge.mgmt.lastPoll":
+    "Последний опрос",
+  "bridge.mgmt.lastOk":
+    "Последний успешный опрос",
+  "bridge.mgmt.problem":
+    "Последняя проблема",
+  "bridge.mgmt.never":
+    "—",
+  "bridge.upd.title": "Обновление агента",
+  "bridge.upd.installed": "Установлено",
+  "bridge.upd.offered": "Предлагается",
+  "bridge.upd.none": "нет утверждённого образа",
+  "bridge.upd.last": "Последнее обновление",
+  "bridge.upd.never": "не запрашивалось",
+  "bridge.upd.button": "Обновить агент",
+  "bridge.upd.unsupported": "Установленный агент не сообщает update.v1: обновите его один раз вручную на хосте.",
+  "bridge.upd.state.queued": "в очереди",
+  "bridge.upd.state.sent": "отправлено агенту",
+  "bridge.upd.state.acknowledged": "принято хостом",
+  "bridge.upd.state.running": "выполняется",
+  "bridge.upd.state.succeeded": "обновлено",
+  "bridge.upd.state.rolled_back": "откат выполнен",
+  "bridge.upd.state.rollback_failed": "откат не удался",
+  "bridge.upd.state.failed": "не удалось",
+  "bridge.upd.state.pickup_timeout": "истекло, не начато",
+  "bridge.upd.contactLost": "Управление недоступно с {at}: это ожидаемо при замене агента, ждём результат хоста.",
+  "bridge.upd.contactLostBeforePickup": "Управление недоступно с {at}, до подтверждения хостом. Неизвестно, начал ли хост обновление, поэтому запрос остаётся активным: проверьте агент и SSH-проброс. Он завершится, когда агент ответит.",
+  "bridge.upd.pickupTimeout": "Агент подтвердил, что запрос истёк до того, как хост его начал, поэтому он не будет применён. Повтор не выполняется автоматически: проверьте на хосте моста systemctl status amnezia-bridge-agent-update.path и запросите обновление снова.",
+  "bridge.upd.ackOverdue": "Подтверждение просрочено с {at}: агент отвечает, но хост не начал обновление. Запрос остаётся активным, пока агент не подтвердит, что он истёк; проверьте systemctl status amnezia-bridge-agent-update.path на хосте моста.",
+  "bridge.upd.code": "Код",
+  "bridge.upd.finished": "Завершено {at}",
+  "bridge.upd.dialogTitle": "Обновить агент на мосту {name}",
+  "bridge.upd.dialogDesc": "Заменяется только агент моста. frps и пробросы UDP продолжают работать. Обновление выполняет systemd-апдейтер на хосте моста: он сам проверит репозиторий и дайджест и откатит агент, если новый не пройдёт проверку.",
+  "bridge.upd.loading": "Загружаем сведения об обновлении…",
+  "bridge.upd.image": "Образ",
+  "bridge.upd.alreadyOutstanding": "Обновление уже выполняется: повторный запрос вернёт его же.",
+  "bridge.upd.noOffer": "Панель не предлагает образ: задайте BRIDGE_AGENT_IMAGE_REPOSITORY и дождитесь релиза bridge-agent.",
+  "bridge.upd.confirm": "Запросить обновление",
+  "bridge.upd.jobsDisabled": "Фоновые задачи мостов отключены (VPN_BRIDGE_JOBS_ENABLED): запрос обновления будет отклонён.",
+  "bridge.upd.requested": "Обновление запрошено",
+  "bridge.upd.replayed": "Это же обновление уже выполняется",
+  "ov.bridgesTitle": "Мосты",
+  "ov.bridgesActive": "активных маршрутов: {active}",
+  "ov.bridgesAwgOk": "AWG работает: {count}",
+  "ov.bridgesAwgFailed": "AWG не работает: {count}",
+  "ov.bridgesAwgUnknown": "AWG: нет данных: {count}",
+  "ov.bridgesNoActive": "активных маршрутов нет",
+  "ov.bridgesOpen": "Открыть мосты",
+  "bridge.hostSetup":
+    "Установка на хосте моста",
+  "bridge.hostSetupHint":
+    "Выполняйте на хосте моста от root. Сначала пробный запуск. Утверждённого образа агента моста пока нет: без --agent-image <образ@sha256:…> (закреплённый по дайджесту) ставится только frps и скрипт завершается с кодом 60. Задайте BRIDGE_AGENT_IMAGE_REPOSITORY на панели и опубликуйте релиз bridge-agent, чтобы команда содержала образ.",
+  "bridge.hostSetupHintImage":
+    "Выполняйте на хосте моста от root. Сначала пробный запуск. Команда уже содержит утверждённый образ агента моста: {image}.",
+  "bridge.dryRunCommand":
+    "Пробный запуск",
+  "bridge.installCommand":
+    "Установка",
+  "bridge.removeCommand":
+    "Удаление",
+  "bridge.copy":
+    "Копировать",
+  "bridge.copied":
+    "Скопировано",
+  "bridge.copyFailed":
+    "Не удалось скопировать в буфер обмена",
+  "bridge.nodeRoute":
+    "Маршрут",
+  "bridge.nodeRouteEdit":
+    "Изменить маршрут",
+  "bridge.direct":
+    "Напрямую",
+  "bridge.routesTitle":
+    "Маршруты нод",
+  "bridge.routesHint":
+    "Выберите, как доступна нода: напрямую или через мост. Новый маршрут сначала готовится, настраивается на хостах, проверяется и только потом активируется.",
+  "bridge.awg31Only":
+    "Мост применяется только к настоящим конфигам AWG 3.1. Ключи AWG 2 и откат AWG 3-сервиса на 2.0 остаются прямыми.",
+  "bridge.selectNode":
+    "VPN-нода",
+  "bridge.selectNodePlaceholder":
+    "Выберите ноду",
+  "bridge.pickNode":
+    "Выберите ноду, чтобы увидеть её маршрут.",
+  "bridge.current":
+    "Текущий маршрут",
+  "bridge.revision":
+    "ревизия {revision}",
+  "bridge.refresh":
+    "Обновить",
+  "bridge.useDirect":
+    "Вернуть напрямую",
+  "bridge.directHint":
+    "Клиенты подключаются к ноде напрямую.",
+  "bridge.eligibility":
+    "Пригодность конфигов",
+  "bridge.eligibilityHint":
+    "Пробный прогон по сохранённым конфигам ноды. Маршрут можно активировать, только пока нет неподдерживаемых конфигов.",
+  "bridge.elig.awg31":
+    "Ключей AWG 3.1, которые пойдут через мост: {count}",
+  "bridge.elig.awg20":
+    "Ключей AWG 3 на откате 2.0 (остаются прямыми): {count}",
+  "bridge.elig.awg2":
+    "Ключей AWG 2 (остаются прямыми): {count}",
+  "bridge.elig.unsupported":
+    "Неподдерживаемых конфигов: {count}",
+  "bridge.elig.unsupportedIds":
+    "ID неподдерживаемых ключей: {ids}",
+  "bridge.elig.blocked":
+    "Активация будет отклонена, пока неподдерживаемые конфиги не отозваны или не обновлены.",
+  "bridge.prepareTitle":
+    "Подготовить маршрут через мост",
+  "bridge.prepare":
+    "Подготовить маршрут через мост",
+  "bridge.noBridgesYet":
+    "Сначала добавьте мост на вкладке «Мосты».",
+  "bridge.chooseBridge":
+    "Мост",
+  "bridge.chooseBridgePlaceholder":
+    "Выберите мост",
+  "bridge.freePorts":
+    "свободно {free}",
+  "bridge.portOverride":
+    "UDP-порт (необязательно)",
+  "bridge.portAuto":
+    "Автоматически",
+  "bridge.prepared":
+    "Маршрут подготовлен",
+  "bridge.preparedExisting":
+    "Для этой пары уже есть маршрут, показываем его",
+  "bridge.candidateRoute":
+    "Новый маршрут",
+  "bridge.retiringRoute":
+    "Выводимый маршрут",
+  "bridge.publicEntry":
+    "Публичный вход",
+  "bridge.localTarget":
+    "Локальная цель",
+  "bridge.registration":
+    "Регистрация",
+  "bridge.marker":
+    "Маркер регистрации",
+  "bridge.observedAt":
+    "Замечено",
+  "bridge.verification":
+    "Проверка",
+  "bridge.unknown":
+    "Неизвестно",
+  "bridge.obs.online":
+    "На связи",
+  "bridge.obs.offline":
+    "Не зарегистрирован",
+  "bridge.obs.unknown":
+    "Неизвестно",
+  "bridge.ver.none":
+    "Не проверен",
+  "bridge.ver.unknown":
+    "Нет свежих данных",
+  "bridge.awg.ok":
+    "Работает",
+  "bridge.awg.failed":
+    "Не работает",
+  "bridge.awg.unknown":
+    "Нет свежих данных",
+  "bridge.route.frpc":
+    "frpc",
+  "bridge.route.awg":
+    "AWG-путь",
+  "bridge.ver.valid":
+    "Проверен",
+  "bridge.ver.failed":
+    "Не прошёл",
+  "bridge.ver.expired":
+    "Истекла, проверьте снова",
+  "bridge.ver.marker_changed":
+    "Нода переподключилась, проверьте снова",
+  "bridge.method.probe":
+    "пробник",
+  "bridge.method.operator":
+    "оператор",
+  "bridge.nodeSetup":
+    "Установка на хосте ноды (от root на VPN-ноде)",
+  "bridge.hostSetupFirst":
+    "Установка на хосте моста (один раз на мост, от root на хосте моста)",
+  "bridge.hostSetupDone":
+    "Хост моста уже настроен; нужен только шаг для ноды выше.",
+  "bridge.verifyProbe":
+    "Проверить пробником",
+  "bridge.probe.queued":
+    "Проверка пробником поставлена в очередь",
+  "bridge.probe.pending":
+    "Проверка пробником уже в очереди",
+  "bridge.probe.running":
+    "Проверка пробником выполняется",
+  "bridge.testConfig":
+    "Тестовый конфиг",
+  "bridge.testConfigNoKey":
+    "Создайте свой ключ AWG 3.1 на этой ноде, чтобы скачать тестовый конфиг.",
+  "bridge.testKey":
+    "Тестовый ключ",
+  "bridge.testDownload":
+    "Скачать тестовый конфиг",
+  "bridge.testDownloaded":
+    "Тестовый конфиг скачан; маркер подставлен ниже",
+  "bridge.testDownloadedNoMarker":
+    "Тестовый конфиг скачан; маркер регистрации пока не замечен",
+  "bridge.operatorVerify":
+    "Проверка оператором",
+  "bridge.operatorConfirm":
+    "Я подключился с тестовым конфигом, увидел AWG-рукопожатие и открыл страницу через туннель.",
+  "bridge.operatorSubmit":
+    "Записать проверку",
+  "bridge.operatorRecorded":
+    "Проверка записана",
+  "bridge.activate":
+    "Активировать",
+  "bridge.activated":
+    "Маршрут активирован",
+  "bridge.switchedDirect":
+    "Нода переведена на прямое подключение",
+  "bridge.unchanged":
+    "Менять нечего",
+  "bridge.cancelDraft":
+    "Отменить маршрут",
+  "bridge.releaseRetiring":
+    "Освободить маршрут",
+  "bridge.releaseTitle":
+    "Освободить этот маршрут?",
+  "bridge.releaseDesc":
+    "Порт моста {entry} освободится. Сначала выполните команду удаления на ноде, затем подтвердите.",
+  "bridge.releaseConfirm":
+    "Освободить",
+  "bridge.released":
+    "Маршрут освобождён",
+  "bridge.err.generic":
+    "Запрос не выполнен",
+  "bridge.err.BRIDGE_POOL_EXHAUSTED":
+    "На этом мосту не осталось свободных UDP-портов.",
+  "bridge.err.BRIDGE_PORT_TAKEN":
+    "Этот UDP-порт уже занят другим маршрутом.",
+  "bridge.err.BRIDGE_PORT_OUT_OF_RANGE":
+    "Порт вне UDP-пула моста.",
+  "bridge.err.BRIDGE_ROUTE_ACTIVE":
+    "Маршрут активен: его нельзя менять или освобождать.",
+  "bridge.err.BRIDGE_ROUTE_UNVERIFIED":
+    "Маршрут не проверен для текущей регистрации. Проверьте его снова и активируйте.",
+  "bridge.err.BRIDGE_OBSERVATION_STALE":
+    "У моста нет свежего отчёта по этому маршруту. Убедитесь, что установка на ноде выполнена и мост на связи, затем обновите.",
+  "bridge.err.BRIDGE_REVISION_CONFLICT":
+    "Маршрут ноды изменили в другом месте. Страница обновлена: проверьте и повторите.",
+  "bridge.err.BRIDGE_ROUTE_PAIR_CONFLICT":
+    "У этой ноды и моста уже есть маршрут на другом порту.",
+  "bridge.err.BRIDGE_HAS_ROUTES":
+    "За мостом ещё числятся маршруты. Сначала освободите их.",
+  "bridge.err.NODE_HAS_BRIDGE_ROUTES":
+    "За нодой ещё числятся маршруты через мост. Сначала освободите их.",
+  "bridge.err.BRIDGE_IPV4_CONFLICT":
+    "Мост с таким IPv4 уже есть.",
+  "bridge.err.BRIDGE_UNSUPPORTED_CAPABILITY":
+    "Не поддерживается: пробник недоступен (используйте проверку оператором или тестовый конфиг) либо установленный агент моста не сообщает нужную возможность.",
+  "bridge.err.BRIDGE_MANAGEMENT_URL_NOT_ALLOWED":
+    "Этот адрес управления не входит в разрешённые для панели.",
+  "bridge.err.BRIDGE_IDENTITY_MISMATCH":
+    "Агент отвечает от имени другого моста.",
+  "bridge.err.BRIDGE_AGENT_UNAUTHORIZED":
+    "Агент моста не принял ключ API.",
+  "bridge.err.BRIDGE_AGENT_UNREACHABLE":
+    "Агент моста не ответил по адресу управления.",
+  "bridge.err.BRIDGE_UPDATE_IN_PROGRESS":
+    "Для этого моста уже выполняется другое обновление агента.",
+  "bridge.err.BRIDGE_UPDATE_NOT_ENROLLED":
+    "Агент моста не подключён: сначала выполните bridge-enroll.",
+  "bridge.err.BRIDGE_UPDATE_NOT_OFFERED":
+    "Панель не предлагает этот образ. Обновите страницу.",
+  "bridge.err.BRIDGE_JOBS_DISABLED":
+    "Фоновые проверки мостов отключены в этой панели.",
+  "bridge.err.BRIDGE_CONFIG_UNSUPPORTED":
+    "Часть сохранённых конфигов нельзя перенести на мост. Отзовите или обновите их и повторите.",
+  "bridge.err.BRIDGE_NOT_FOUND":
+    "Моста больше нет.",
+  "bridge.err.BRIDGE_ROUTE_NOT_FOUND":
+    "Маршрута больше нет.",
+  "bridge.err.BRIDGE_NODE_NOT_AWG31":
+    "Эта нода не обслуживает AWG 3.1, мост для неё недоступен.",
+  "bridge.err.BRIDGE_TEST_KEY_WRONG_NODE":
+    "Этот ключ принадлежит другой ноде.",
+  "bridge.err.BRIDGE_TEST_KEY_UNSUITABLE":
+    "Тестовый ключ должен быть активным ключом AWG 3.1.",
+  "bridge.err.BRIDGE_CHECK_PENDING":
+    "Проверка пробником для прежней регистрации ещё идёт. Повторите, когда она завершится.",
+  "bridge.err.CONFIRMATION_REQUIRED":
+    "Нужно подтверждение.",
 } as const;
 
 const en = {
@@ -1460,7 +1853,7 @@ const en = {
   // Admin navigation / shell
   "nav.overview": "Overview",
   "nav.users": "Users",
-  "nav.nodes": "VPN nodes",
+  "nav.nodes": "Nodes and bridges",
   "nav.policy": "Policies",
   "nav.rules": "Routing",
   "nav.audit": "Audit log",
@@ -1500,6 +1893,11 @@ const en = {
   "update.disabled": "The update mechanism is not installed on the host",
   "update.disabledHint":
     "Install the host worker once: sudo bash infra/prod/install-updater.sh",
+  "update.unacknowledged":
+    "The update request has been queued for {age} (acknowledgement deadline {deadline} s): the host has not picked it up. The request stays queued and is never retried automatically.",
+  "update.unacknowledgedHint":
+    "Check on the host: systemctl status panel-updater.path panel-updater.service, then scripts/repair-updater-units.sh --dry-run (changes nothing, shows the unit and queue state). Recovery is on the host; the panel does not retry the request.",
+  "update.ageUnknown": "an unknown time",
 
   // Route profiles (shared)
   "route.full_tunnel": "All traffic",
@@ -1767,6 +2165,8 @@ const en = {
   "config.title": "Key: {label}",
   "config.refreshedHint":
     "This is the refreshed config. Import it and remove the previous connection in the app; until then the old one keeps working.",
+  "config.refreshedImportHint":
+    "The server address is stored in the file when you import it. Files you imported earlier keep their old endpoint and do not change by themselves; import this file to replace them.",
   "config.desc":
     "Paste the link into AmneziaVPN (“Connect by link”) or scan the QR code with your phone camera.",
   "config.descFileOnly": "Download the file and open it in AmneziaVPN.",
@@ -2768,6 +3168,392 @@ const en = {
   "periods.completedJobRetentionDays": "Completed-job retention",
   "periods.completedJobRetentionDaysHint":
     "How many days a completed job-queue row is kept before it is deleted. A failed, pending or processing row is never touched by this window, and neither are the rules.refresh / access.sync status rows.",
+
+  // Bridges
+  "bridge.tabNodes":
+    "Nodes",
+  "bridge.tabBridges":
+    "Bridges",
+  "bridge.title":
+    "Bridges",
+  "bridge.intro":
+    "A bridge is a public host that forwards a VPN node's UDP traffic, so clients connect to the bridge address instead of the node.",
+  "bridge.add":
+    "Add bridge",
+  "bridge.addDesc":
+    "Register the bridge host by its public IPv4 address. Host setup commands appear on its card.",
+  "bridge.added":
+    "Bridge added",
+  "bridge.empty":
+    "No bridges yet",
+  "bridge.emptyHint":
+    "Add a bridge to route a node through a public host.",
+  "bridge.loadFailed":
+    "Could not load bridge data",
+  "bridge.loading":
+    "Loading…",
+  "bridge.rename":
+    "Rename",
+  "bridge.renamed":
+    "Bridge renamed",
+  "bridge.delete":
+    "Delete",
+  "bridge.deleted":
+    "Bridge deleted",
+  "bridge.deleteTitle":
+    "Delete bridge “{name}”?",
+  "bridge.deleteDesc":
+    "The registration is removed. A bridge that still holds routes cannot be deleted: release them first.",
+  "bridge.publicIpv4":
+    "Public IPv4",
+  "bridge.advanced":
+    "Advanced settings",
+  "bridge.controlPort":
+    "Control TCP port",
+  "bridge.udpStart":
+    "UDP pool start",
+  "bridge.udpEnd":
+    "UDP pool end",
+  "bridge.udpRange":
+    "UDP pool",
+  "bridge.routesFit":
+    "This pool fits {count} route(s), one UDP port each.",
+  "bridge.ports":
+    "Ports",
+  "bridge.portsUsed":
+    "{used} of {total} used · {free} free",
+  "bridge.status.ok":
+    "Online",
+  "bridge.status.pending_enrollment":
+    "Pending enrollment",
+  "bridge.status.down":
+    "Unreachable",
+  "bridge.status.stale":
+    "No recent report",
+  "bridge.status.identity_mismatch":
+    "Identity mismatch",
+  "bridge.status.unsupported":
+    "Unsupported",
+  "bridge.lastObserved":
+    "Last report {at}",
+  "bridge.neverObserved":
+    "No report yet",
+  "bridge.routes":
+    "Routes",
+  "bridge.noRoutes":
+    "No routes",
+  "bridge.routePolicy":
+    "Route policy",
+  "bridge.state.draft":
+    "Draft",
+  "bridge.state.active":
+    "Active",
+  "bridge.state.retiring":
+    "Retiring",
+  "bridge.mgmt.agent":
+    "Bridge agent",
+  "bridge.mgmt.notEnrolled":
+    "Not enrolled: connect the agent with bridge-enroll",
+  "bridge.mgmt.frps":
+    "frps",
+  "bridge.mgmt.frpsReachable":
+    "{version}, reachable",
+  "bridge.mgmt.frpsUnreachable":
+    "agent cannot reach frps",
+  "bridge.mgmt.frpsUnknown":
+    "no data",
+  "bridge.mgmt.lastPoll":
+    "Last poll attempt",
+  "bridge.mgmt.lastOk":
+    "Last successful poll",
+  "bridge.mgmt.problem":
+    "Last problem",
+  "bridge.mgmt.never":
+    "—",
+  "bridge.upd.title": "Agent update",
+  "bridge.upd.installed": "Installed",
+  "bridge.upd.offered": "Offered",
+  "bridge.upd.none": "no approved image",
+  "bridge.upd.last": "Last update",
+  "bridge.upd.never": "never requested",
+  "bridge.upd.button": "Update agent",
+  "bridge.upd.unsupported": "The installed agent does not report update.v1: update it once by hand on the host.",
+  "bridge.upd.state.queued": "queued",
+  "bridge.upd.state.sent": "sent to the agent",
+  "bridge.upd.state.acknowledged": "picked up by the host",
+  "bridge.upd.state.running": "running",
+  "bridge.upd.state.succeeded": "updated",
+  "bridge.upd.state.rolled_back": "rolled back",
+  "bridge.upd.state.rollback_failed": "rollback failed",
+  "bridge.upd.state.failed": "failed",
+  "bridge.upd.state.pickup_timeout": "expired, not started",
+  "bridge.upd.contactLost": "Management contact lost since {at}: expected while the agent is replaced, waiting for the host's result.",
+  "bridge.upd.contactLostBeforePickup": "Management contact lost since {at}, before the host acknowledged the request. The panel cannot tell whether the host started it, so the request stays outstanding: check the agent and the SSH forwarding. It ends when the agent answers.",
+  "bridge.upd.pickupTimeout": "The agent confirmed the request expired before the host started it, so it will not be applied. It is not retried automatically: check systemctl status amnezia-bridge-agent-update.path on the bridge host, then request the update again.",
+  "bridge.upd.ackOverdue": "Acknowledgement overdue since {at}: the agent answers but the host has not started the update. The request stays outstanding until the agent confirms it expired; check systemctl status amnezia-bridge-agent-update.path on the bridge host.",
+  "bridge.upd.code": "Code",
+  "bridge.upd.finished": "Finished {at}",
+  "bridge.upd.dialogTitle": "Update the agent on {name}",
+  "bridge.upd.dialogDesc": "Only the bridge agent is replaced. frps and the UDP forwards keep running. The systemd updater on the bridge host does the work: it validates the repository and digest itself and rolls the agent back if the new one fails its health check.",
+  "bridge.upd.loading": "Loading update details…",
+  "bridge.upd.image": "Image",
+  "bridge.upd.alreadyOutstanding": "An update is already outstanding: asking again returns it.",
+  "bridge.upd.noOffer": "The panel offers no image: set BRIDGE_AGENT_IMAGE_REPOSITORY and wait for a bridge-agent release.",
+  "bridge.upd.confirm": "Request update",
+  "bridge.upd.jobsDisabled": "Bridge jobs are disabled (VPN_BRIDGE_JOBS_ENABLED): an update request will be refused.",
+  "bridge.upd.requested": "Update requested",
+  "bridge.upd.replayed": "That update is already outstanding",
+  "ov.bridgesTitle": "Bridges",
+  "ov.bridgesActive": "active routes: {active}",
+  "ov.bridgesAwgOk": "AWG working: {count}",
+  "ov.bridgesAwgFailed": "AWG failing: {count}",
+  "ov.bridgesAwgUnknown": "AWG unknown: {count}",
+  "ov.bridgesNoActive": "no active routes",
+  "ov.bridgesOpen": "Open bridges",
+  "bridge.hostSetup":
+    "Bridge host setup",
+  "bridge.hostSetupHint":
+    "Run on the bridge host, as root. Run the dry run first. No approved bridge-agent image is available yet: without --agent-image <image@sha256:…> (pinned by digest) only frps is installed and the script exits 60. Set BRIDGE_AGENT_IMAGE_REPOSITORY on the panel and publish a bridge-agent release to have it in the command.",
+  "bridge.hostSetupHintImage":
+    "Run on the bridge host, as root. Run the dry run first. The command already carries the approved bridge-agent image: {image}.",
+  "bridge.dryRunCommand":
+    "Dry run",
+  "bridge.installCommand":
+    "Install",
+  "bridge.removeCommand":
+    "Remove",
+  "bridge.copy":
+    "Copy",
+  "bridge.copied":
+    "Copied",
+  "bridge.copyFailed":
+    "Could not copy to the clipboard",
+  "bridge.nodeRoute":
+    "Route",
+  "bridge.nodeRouteEdit":
+    "Edit route",
+  "bridge.direct":
+    "Direct",
+  "bridge.routesTitle":
+    "Node routes",
+  "bridge.routesHint":
+    "Choose whether a node is reached directly or through a bridge. A new route is prepared, set up on the hosts, verified and only then activated.",
+  "bridge.awg31Only":
+    "A bridge applies to genuine AWG 3.1 configs only. AWG 2 keys and the AWG 3 service's 2.0 fallback stay direct.",
+  "bridge.selectNode":
+    "VPN node",
+  "bridge.selectNodePlaceholder":
+    "Select a node",
+  "bridge.pickNode":
+    "Select a node to see its route.",
+  "bridge.current":
+    "Current route",
+  "bridge.revision":
+    "revision {revision}",
+  "bridge.refresh":
+    "Refresh",
+  "bridge.useDirect":
+    "Switch to Direct",
+  "bridge.directHint":
+    "Clients connect to the node directly.",
+  "bridge.eligibility":
+    "Config eligibility",
+  "bridge.eligibilityHint":
+    "A dry run over this node's stored configs. A route can be activated only while no config is unsupported.",
+  "bridge.elig.awg31":
+    "AWG 3.1 keys that will use the bridge: {count}",
+  "bridge.elig.awg20":
+    "AWG 3 keys on the 2.0 fallback (stay direct): {count}",
+  "bridge.elig.awg2":
+    "AWG 2 keys (stay direct): {count}",
+  "bridge.elig.unsupported":
+    "Unsupported configs: {count}",
+  "bridge.elig.unsupportedIds":
+    "Unsupported key ids: {ids}",
+  "bridge.elig.blocked":
+    "Activation will be refused until the unsupported configs are revoked or refreshed.",
+  "bridge.prepareTitle":
+    "Prepare bridge route",
+  "bridge.prepare":
+    "Prepare bridge route",
+  "bridge.noBridgesYet":
+    "Add a bridge on the Bridges tab first.",
+  "bridge.chooseBridge":
+    "Bridge",
+  "bridge.chooseBridgePlaceholder":
+    "Choose a bridge",
+  "bridge.freePorts":
+    "{free} free",
+  "bridge.portOverride":
+    "UDP port (optional)",
+  "bridge.portAuto":
+    "Automatic",
+  "bridge.prepared":
+    "Route prepared",
+  "bridge.preparedExisting":
+    "This pairing already holds a route; showing it",
+  "bridge.candidateRoute":
+    "Candidate route",
+  "bridge.retiringRoute":
+    "Retiring route",
+  "bridge.publicEntry":
+    "Public entry",
+  "bridge.localTarget":
+    "Local target",
+  "bridge.registration":
+    "Registration",
+  "bridge.marker":
+    "Registration marker",
+  "bridge.observedAt":
+    "Observed at",
+  "bridge.verification":
+    "Verification",
+  "bridge.unknown":
+    "Unknown",
+  "bridge.obs.online":
+    "Online",
+  "bridge.obs.offline":
+    "Not registered",
+  "bridge.obs.unknown":
+    "Unknown",
+  "bridge.ver.none":
+    "Not verified",
+  "bridge.ver.unknown":
+    "No current evidence",
+  "bridge.awg.ok":
+    "Working",
+  "bridge.awg.failed":
+    "Failing",
+  "bridge.awg.unknown":
+    "No current data",
+  "bridge.route.frpc":
+    "frpc",
+  "bridge.route.awg":
+    "AWG path",
+  "bridge.ver.valid":
+    "Verified",
+  "bridge.ver.failed":
+    "Failed",
+  "bridge.ver.expired":
+    "Expired, verify again",
+  "bridge.ver.marker_changed":
+    "Node reconnected, verify again",
+  "bridge.method.probe":
+    "probe",
+  "bridge.method.operator":
+    "operator",
+  "bridge.nodeSetup":
+    "Node host setup (run as root on the VPN node)",
+  "bridge.hostSetupFirst":
+    "Bridge host setup (once per bridge, as root on the bridge host)",
+  "bridge.hostSetupDone":
+    "The bridge host is already set up; only the node step above is needed.",
+  "bridge.verifyProbe":
+    "Verify with probe",
+  "bridge.probe.queued":
+    "Probe check queued",
+  "bridge.probe.pending":
+    "A probe check is already queued",
+  "bridge.probe.running":
+    "A probe check is running",
+  "bridge.testConfig":
+    "Test config",
+  "bridge.testConfigNoKey":
+    "Create an AWG 3.1 key of your own on this node to download a test config.",
+  "bridge.testKey":
+    "Test key",
+  "bridge.testDownload":
+    "Download test config",
+  "bridge.testDownloaded":
+    "Test config downloaded; the marker was filled in below",
+  "bridge.testDownloadedNoMarker":
+    "Test config downloaded; no registration marker is observed yet",
+  "bridge.operatorVerify":
+    "Operator verification",
+  "bridge.operatorConfirm":
+    "I connected with the test config, saw an AWG handshake and loaded a page through the tunnel.",
+  "bridge.operatorSubmit":
+    "Record verification",
+  "bridge.operatorRecorded":
+    "Verification recorded",
+  "bridge.activate":
+    "Activate",
+  "bridge.activated":
+    "Route activated",
+  "bridge.switchedDirect":
+    "Node switched to Direct",
+  "bridge.unchanged":
+    "Nothing to change",
+  "bridge.cancelDraft":
+    "Cancel route",
+  "bridge.releaseRetiring":
+    "Release route",
+  "bridge.releaseTitle":
+    "Release this route?",
+  "bridge.releaseDesc":
+    "The bridge port {entry} is freed. Run the remove command on the node first, then confirm.",
+  "bridge.releaseConfirm":
+    "Release",
+  "bridge.released":
+    "Route released",
+  "bridge.err.generic":
+    "The request failed",
+  "bridge.err.BRIDGE_POOL_EXHAUSTED":
+    "No free UDP port is left on this bridge.",
+  "bridge.err.BRIDGE_PORT_TAKEN":
+    "That UDP port is already held by another route.",
+  "bridge.err.BRIDGE_PORT_OUT_OF_RANGE":
+    "That port is outside the bridge's UDP pool.",
+  "bridge.err.BRIDGE_ROUTE_ACTIVE":
+    "This route is active and cannot be changed or released.",
+  "bridge.err.BRIDGE_ROUTE_UNVERIFIED":
+    "The route is not verified for its current registration. Verify it again, then activate.",
+  "bridge.err.BRIDGE_OBSERVATION_STALE":
+    "The bridge has no fresh report for this route. Check that the node setup ran and the bridge is online, then refresh.",
+  "bridge.err.BRIDGE_REVISION_CONFLICT":
+    "The node's route changed elsewhere. The page was refreshed; check it and try again.",
+  "bridge.err.BRIDGE_ROUTE_PAIR_CONFLICT":
+    "This node and bridge already hold a route on a different port.",
+  "bridge.err.BRIDGE_HAS_ROUTES":
+    "The bridge still holds routes. Release them first.",
+  "bridge.err.NODE_HAS_BRIDGE_ROUTES":
+    "The node still holds bridge routes. Release them first.",
+  "bridge.err.BRIDGE_IPV4_CONFLICT":
+    "A bridge with this IPv4 address already exists.",
+  "bridge.err.BRIDGE_UNSUPPORTED_CAPABILITY":
+    "Not supported: the probe is unavailable (use operator verification or the test config) or the installed bridge agent does not report the needed capability.",
+  "bridge.err.BRIDGE_MANAGEMENT_URL_NOT_ALLOWED":
+    "That management address is not one the panel may reach.",
+  "bridge.err.BRIDGE_IDENTITY_MISMATCH":
+    "The agent answers for a different bridge.",
+  "bridge.err.BRIDGE_AGENT_UNAUTHORIZED":
+    "The bridge agent rejected the API key.",
+  "bridge.err.BRIDGE_AGENT_UNREACHABLE":
+    "The bridge agent did not answer at the management address.",
+  "bridge.err.BRIDGE_UPDATE_IN_PROGRESS":
+    "Another agent update is already outstanding for this bridge.",
+  "bridge.err.BRIDGE_UPDATE_NOT_ENROLLED":
+    "The bridge agent is not enrolled: run bridge-enroll first.",
+  "bridge.err.BRIDGE_UPDATE_NOT_OFFERED":
+    "The panel does not offer that image. Reload the page.",
+  "bridge.err.BRIDGE_JOBS_DISABLED":
+    "Bridge background checks are disabled on this panel.",
+  "bridge.err.BRIDGE_CONFIG_UNSUPPORTED":
+    "Some stored configs cannot be moved to a bridge. Revoke or refresh them, then try again.",
+  "bridge.err.BRIDGE_NOT_FOUND":
+    "The bridge no longer exists.",
+  "bridge.err.BRIDGE_ROUTE_NOT_FOUND":
+    "The route no longer exists.",
+  "bridge.err.BRIDGE_NODE_NOT_AWG31":
+    "This node does not serve AWG 3.1, so it cannot use a bridge.",
+  "bridge.err.BRIDGE_TEST_KEY_WRONG_NODE":
+    "That key belongs to another node.",
+  "bridge.err.BRIDGE_TEST_KEY_UNSUITABLE":
+    "The test key must be an active AWG 3.1 key.",
+  "bridge.err.BRIDGE_CHECK_PENDING":
+    "A probe check for an earlier registration is still running. Try again when it finishes.",
+  "bridge.err.CONFIRMATION_REQUIRED":
+    "Confirmation is required.",
 } satisfies Record<keyof typeof ru, string>;
 
 export const messages = { ru, en } as const;

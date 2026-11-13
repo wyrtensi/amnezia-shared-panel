@@ -18,6 +18,11 @@ import {
   varchar,
 } from "drizzle-orm/pg-core";
 import type {
+  BridgeAgentUpdateState,
+  BridgeManagementStatus,
+  BridgeRouteState,
+  BridgeVerificationMethod,
+  BridgeVerificationResult,
   CheckAssertion,
   CheckProbe,
   CustomRoutes,
@@ -243,11 +248,220 @@ export const nodes = pgTable(
     // change failed after the job that ran it is long gone.
     capacityLog: text("capacity_log").default("").notNull(),
     capacityAt: timestamp("capacity_at", { withTimezone: true }),
+    // Bumped whenever the node's client-facing endpoint assignment changes
+    // (Direct or a bridge route). Admin edits send the value they saw, so a
+    // stale edit is refused. 0 for every pre-existing node, which stays Direct.
+    // The active route itself is derived from `vpn_bridge_routes` (state
+    // 'active'); it is deliberately not duplicated on this row.
+    vpnEndpointRevision: integer("vpn_endpoint_revision").default(0).notNull(),
     ...timestamps,
   },
   (table) => [
     uniqueIndex("nodes_name_unique").on(table.name),
     check("nodes_max_peers_positive", sql`${table.maxPeers} > 0`),
+  ],
+);
+
+// A bridge: a public host running frps and bridge-agent that forwards a UDP
+// port range to VPN nodes. The public IPv4 is normalized by the contracts
+// before it gets here and is unique, so replacing a host means registering a
+// new bridge and reassigning its nodes.
+export const vpnBridges = pgTable(
+  "vpn_bridges",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    name: varchar("name", { length: 120 }).notNull(),
+    publicIpv4: text("public_ipv4").notNull(),
+    controlTcpPort: integer("control_tcp_port").default(7000).notNull(),
+    udpPortStart: integer("udp_port_start").default(41000).notNull(),
+    udpPortEnd: integer("udp_port_end").default(41031).notNull(),
+    // Summary of the last bridge-agent observations; written by the poller.
+    managementStatus: text("management_status")
+      .$type<BridgeManagementStatus>()
+      .default("pending_enrollment")
+      .notNull(),
+    // Last successful observation stored by the panel: the panel-clock start
+    // of the last poll the agent answered for this bridge.
+    lastObservedAt: timestamp("last_observed_at", { withTimezone: true }),
+    lastPollAttemptAt: timestamp("last_poll_attempt_at", { withTimezone: true }),
+    // Enrollment: the bridge-agent's private management endpoint and its API
+    // credential, encrypted with the config keyring. All six are set together
+    // or all null (pending enrollment).
+    managementApiUrl: text("management_api_url"),
+    managementCredentialCiphertext: text("management_credential_ciphertext"),
+    managementCredentialNonce: text("management_credential_nonce"),
+    managementCredentialAuthTag: text("management_credential_auth_tag"),
+    managementCredentialKeyVersion: integer("management_credential_key_version"),
+    // When the current credential was stored. A poll that read the agent with
+    // an older credential compares this before it writes.
+    managementEnrolledAt: timestamp("management_enrolled_at", { withTimezone: true }),
+    // What the agent last reported about itself and its local frps.
+    agentVersion: text("agent_version"),
+    agentApiVersion: integer("agent_api_version"),
+    agentCapabilities: jsonb("agent_capabilities").$type<string[]>(),
+    // When `agent_capabilities` was last read from the agent's /v1/identity.
+    agentCapabilitiesCheckedAt: timestamp("agent_capabilities_checked_at", {
+      withTimezone: true,
+    }),
+    frpsVersion: text("frps_version"),
+    frpsReachable: boolean("frps_reachable"),
+    // Bounded code of the last poll problem; never upstream text or secrets.
+    lastErrorCode: text("last_error_code"),
+    ...timestamps,
+  },
+  (table) => [
+    uniqueIndex("vpn_bridges_public_ipv4_unique").on(table.publicIpv4),
+    check(
+      "vpn_bridges_control_tcp_port_range",
+      sql`${table.controlTcpPort} between 1 and 65535`,
+    ),
+    check(
+      "vpn_bridges_udp_port_start_range",
+      sql`${table.udpPortStart} between 1 and 65535`,
+    ),
+    check(
+      "vpn_bridges_udp_port_end_range",
+      sql`${table.udpPortEnd} between 1 and 65535`,
+    ),
+    check(
+      "vpn_bridges_udp_port_order",
+      sql`${table.udpPortStart} <= ${table.udpPortEnd}`,
+    ),
+    check(
+      "vpn_bridges_management_status_valid",
+      sql`${table.managementStatus} in ('pending_enrollment', 'ok', 'down', 'stale', 'identity_mismatch', 'unsupported')`,
+    ),
+    check(
+      "vpn_bridges_management_enrollment_complete",
+      sql`(${table.managementApiUrl} is null and ${table.managementCredentialCiphertext} is null and ${table.managementCredentialNonce} is null and ${table.managementCredentialAuthTag} is null and ${table.managementCredentialKeyVersion} is null and ${table.managementEnrolledAt} is null) or (${table.managementApiUrl} is not null and ${table.managementCredentialCiphertext} is not null and ${table.managementCredentialNonce} is not null and ${table.managementCredentialAuthTag} is not null and ${table.managementCredentialKeyVersion} is not null and ${table.managementEnrolledAt} is not null)`,
+    ),
+  ],
+);
+
+// One bridge-agent update operation: the panel's persisted record of an update
+// intent, keyed by the stable operation id the agent and the host updater see.
+// At most one operation per bridge is outstanding (queued, sent, acknowledged
+// or running); the rest is history. Bounded codes only, never agent text.
+export const vpnBridgeAgentUpdates = pgTable(
+  "vpn_bridge_agent_updates",
+  {
+    id: uuid("id").primaryKey(),
+    // Deleting a bridge deletes its update history.
+    bridgeId: uuid("bridge_id")
+      .notNull()
+      .references(() => vpnBridges.id, { onDelete: "cascade" }),
+    imageRepository: text("image_repository").notNull(),
+    imageDigest: text("image_digest").notNull(),
+    imageVersion: text("image_version"),
+    fromVersion: text("from_version"),
+    state: text("state").$type<BridgeAgentUpdateState>().default("queued").notNull(),
+    // The agent's own last reported state name, for diagnostics.
+    agentState: text("agent_state"),
+    requestedAt: timestamp("requested_at", { withTimezone: true }).defaultNow().notNull(),
+    // The panel's pickup deadline sent with the intent (requested_at + 120 s).
+    notAfter: timestamp("not_after", { withTimezone: true }).notNull(),
+    // Set once a POST was attempted, also when it got no usable answer: from
+    // then on only the agent can say whether the intent arrived.
+    sendAttemptedAt: timestamp("send_attempted_at", { withTimezone: true }),
+    sentAt: timestamp("sent_at", { withTimezone: true }),
+    acknowledgedAt: timestamp("acknowledged_at", { withTimezone: true }),
+    lastCheckedAt: timestamp("last_checked_at", { withTimezone: true }),
+    // Observation, not a state: the management endpoint gave no usable answer
+    // (before pickup, or while the host replaces the agent) since this time;
+    // cleared when the agent answers again.
+    contactLostSince: timestamp("contact_lost_since", { withTimezone: true }),
+    // Observation: a reachable agent still reports the intent unstarted past
+    // not_after. The operation stays outstanding.
+    acknowledgementOverdueSince: timestamp("acknowledgement_overdue_since", {
+      withTimezone: true,
+    }),
+    errorCode: text("error_code"),
+    finishedAt: timestamp("finished_at", { withTimezone: true }),
+    ...timestamps,
+  },
+  (table) => [
+    // One outstanding operation per bridge.
+    uniqueIndex("vpn_bridge_agent_updates_outstanding_unique")
+      .on(table.bridgeId)
+      .where(sql`${table.state} in ('queued', 'sent', 'acknowledged', 'running')`),
+    index("vpn_bridge_agent_updates_bridge_idx").on(table.bridgeId, table.requestedAt),
+    check(
+      "vpn_bridge_agent_updates_state_valid",
+      sql`${table.state} in ('queued', 'sent', 'acknowledged', 'running', 'succeeded', 'rolled_back', 'rollback_failed', 'failed', 'pickup_timeout')`,
+    ),
+    check(
+      "vpn_bridge_agent_updates_not_after_after_request",
+      sql`${table.notAfter} > ${table.requestedAt}`,
+    ),
+    check(
+      "vpn_bridge_agent_updates_digest_valid",
+      sql`${table.imageDigest} ~ '^sha256:[0-9a-f]{64}$'`,
+    ),
+  ],
+);
+
+// One held reservation of a bridge UDP port for a VPN node. A row exists only
+// while it is held (draft, active or retiring); releasing a route deletes it,
+// so the uniqueness constraints below cover exactly the held routes.
+export const vpnBridgeRoutes = pgTable(
+  "vpn_bridge_routes",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    nodeId: uuid("node_id")
+      .notNull()
+      .references(() => nodes.id, { onDelete: "restrict" }),
+    bridgeId: uuid("bridge_id")
+      .notNull()
+      .references(() => vpnBridges.id, { onDelete: "restrict" }),
+    publicUdpPort: integer("public_udp_port").notNull(),
+    state: text("state").$type<BridgeRouteState>().default("draft").notNull(),
+    // Always `awg-route-<route uuid>`; stored so observations can be matched.
+    frpProxyName: text("frp_proxy_name").notNull(),
+    observedOnline: boolean("observed_online"),
+    observedRegistrationMarker: text("observed_registration_marker"),
+    observedAt: timestamp("observed_at", { withTimezone: true }),
+    verificationMethod: text("verification_method").$type<BridgeVerificationMethod>(),
+    verifiedRegistrationMarker: text("verified_registration_marker"),
+    verifiedAt: timestamp("verified_at", { withTimezone: true }),
+    verificationResult: text("verification_result").$type<BridgeVerificationResult>(),
+    // Bounded short code; never free-form text or secrets.
+    verificationError: text("verification_error"),
+    activatedAt: timestamp("activated_at", { withTimezone: true }),
+    retiringSince: timestamp("retiring_since", { withTimezone: true }),
+    ...timestamps,
+  },
+  (table) => [
+    uniqueIndex("vpn_bridge_routes_bridge_port_unique").on(
+      table.bridgeId,
+      table.publicUdpPort,
+    ),
+    uniqueIndex("vpn_bridge_routes_node_bridge_unique").on(
+      table.nodeId,
+      table.bridgeId,
+    ),
+    // At most one active route per node.
+    uniqueIndex("vpn_bridge_routes_node_active_unique")
+      .on(table.nodeId)
+      .where(sql`${table.state} = 'active'`),
+    check(
+      "vpn_bridge_routes_state_valid",
+      sql`${table.state} in ('draft', 'active', 'retiring')`,
+    ),
+    // Membership in the bridge's UDP range needs the bridge row, so the
+    // Control API enforces it when reserving a port; only the port bounds are
+    // checked here.
+    check(
+      "vpn_bridge_routes_port_range",
+      sql`${table.publicUdpPort} between 1 and 65535`,
+    ),
+    check(
+      "vpn_bridge_routes_verification_method_valid",
+      sql`${table.verificationMethod} is null or ${table.verificationMethod} in ('probe', 'operator')`,
+    ),
+    check(
+      "vpn_bridge_routes_verification_result_valid",
+      sql`${table.verificationResult} is null or ${table.verificationResult} in ('success', 'failure')`,
+    ),
   ],
 );
 
@@ -258,6 +472,16 @@ export const nodes = pgTable(
 // node is configured to trust; `resolvedAt` is what lets a reader decide the
 // answer is too old to offer.
 export const nodeAgentReleases = pgTable("node_agent_releases", {
+  repository: text("repository").primaryKey(),
+  version: varchar("version", { length: 64 }).notNull(),
+  digest: varchar("digest", { length: 80 }).notNull(),
+  resolvedAt: timestamp("resolved_at", { withTimezone: true }).notNull(),
+});
+
+// The bridge-agent image the panel offers bridge hosts: same shape and rules as
+// `node_agent_releases`, kept apart because the two repositories are approved
+// separately and a bridge must never be offered a node-agent digest.
+export const bridgeAgentReleases = pgTable("bridge_agent_releases", {
   repository: text("repository").primaryKey(),
   version: varchar("version", { length: 64 }).notNull(),
   digest: varchar("digest", { length: 80 }).notNull(),
@@ -666,10 +890,31 @@ export const reachabilityProbe = pgTable(
     widgetVersion: varchar("widget_version", { length: 64 }),
     widgetUpdatedAt: timestamp("widget_updated_at", { withTimezone: true }),
     widgetLastError: varchar("widget_last_error", { length: 300 }),
+    // A bridge route candidate check holding the probe (optional AWG 3.1 node
+    // bridges). The probe runs one run at a time, so this slot and
+    // `current_run_id` are never both taken by a new run: a candidate run is
+    // claimed only while both are empty, and the regular run waits while a
+    // candidate holds the probe. Its result goes to the route only, never to
+    // node status, history or alerts.
+    candidateRunId: uuid("candidate_run_id"),
+    candidateRouteId: uuid("candidate_route_id"),
+    // The observed frps registration marker the check was queued for.
+    candidateRegistrationMarker: text("candidate_registration_marker"),
+    candidateRequestedAt: timestamp("candidate_requested_at", { withTimezone: true }),
+    candidateRunStartedAt: timestamp("candidate_run_started_at", { withTimezone: true }),
+    // The probe's reported capabilities (a list of names such as
+    // "bridge-measurement") and when they were read; null means unknown, which
+    // counts as unsupported. Read through `probeCapabilityInputOf`.
+    capabilities: jsonb("capabilities").$type<string[]>(),
+    capabilitiesCheckedAt: timestamp("capabilities_checked_at", { withTimezone: true }),
     ...timestamps,
   },
   (table) => [
     check("reachability_probe_singleton", sql`${table.id} = 1`),
+    check(
+      "reachability_probe_candidate_complete",
+      sql`(${table.candidateRunId} is null and ${table.candidateRouteId} is null and ${table.candidateRegistrationMarker} is null and ${table.candidateRequestedAt} is null and ${table.candidateRunStartedAt} is null) or (${table.candidateRunId} is not null and ${table.candidateRouteId} is not null and ${table.candidateRegistrationMarker} is not null and ${table.candidateRequestedAt} is not null and ${table.candidateRunStartedAt} is not null)`,
+    ),
     check(
       "reachability_probe_interval_range",
       sql`${table.intervalSec} >= 300 AND ${table.intervalSec} <= 86400`,
@@ -699,6 +944,8 @@ export const nodeReachabilityResults = pgTable(
     detail: varchar("detail", { length: 300 }),
     runId: uuid("run_id").notNull(),
     checkedAt: timestamp("checked_at", { withTimezone: true }).notNull(),
+    // When this protocol's current run of consecutive failed results began.
+    failingSince: timestamp("failing_since", { withTimezone: true }),
   },
   (table) => [primaryKey({ columns: [table.nodeId, table.protocol] })],
 );

@@ -15,6 +15,8 @@ import {
 } from "drizzle-orm";
 import type {
   AccessSyncStatus,
+  Bridge,
+  CreateBridgeRequest,
   CreateNodeRequest,
   CreateServiceCheckRequest,
   CreateKeyRequest,
@@ -35,8 +37,26 @@ import type {
   RulesRefreshStatus,
   UpdateNodeRequest,
   UpdateServiceCheckRequest,
+  DeleteBridgeResult,
+  BridgeAgentUpdateView,
+  BridgeRollbackPreflight,
+  RequestBridgeAgentUpdate,
+  RequestBridgeAgentUpdateResult,
+  InfrastructureItem,
+  BridgeEligibility,
+  NodeBridgeRoutes,
+  NodeEndpointAssignment,
+  PrepareBridgeRouteRequest,
+  PrepareBridgeRouteResult,
+  ReleaseBridgeRouteResult,
+  ProbeCapabilityInput,
+  VerifyBridgeRouteRequest,
+  VerifyBridgeRouteResult,
+  UpdateBridgeRequest,
 } from "@amnezia/contracts";
 import {
+  BRIDGE_MANAGEMENT_HOSTS_DEFAULT,
+  BRIDGE_OBSERVATION_STALE_MS_DEFAULT,
   composeKeyDisplayName,
   CONFIG_REFRESH_STALE,
   CONFIG_REFRESH_UNAVAILABLE,
@@ -123,6 +143,8 @@ import {
   routeRuleVersions,
   trafficRollups,
   users,
+  vpnBridgeRoutes,
+  vpnBridges,
   vpnKeys,
   type AccessSyncArmReason,
   type Database,
@@ -159,6 +181,11 @@ import {
 import { orderNodesForUsers } from "./nodeOrder.js";
 import { checkRecommendedPrefix, dedupeNodeIds } from "./policyNodeLists.js";
 import { toRulesRefreshStatus } from "./rulesRefresh.js";
+import {
+  mapBridgeConstraintError,
+  PostgresBridgeRepository,
+  type BridgeRouteTarget,
+} from "./bridgeRepository.js";
 import {
   nodeReachabilityHistory,
   nodeReachabilityResults,
@@ -417,6 +444,26 @@ export type PostgresRepositoryOptions = {
   // allowed; then only pre-created users (added by an admin) or bootstrap admins
   // may log in directly.
   allowedEmailDomains?: ReadonlySet<string>;
+  /**
+   * How old a bridge-agent observation may be and still be current
+   * (`VPN_BRIDGE_OBSERVATION_STALE_MS`, see bridgeConfig.ts). Defaults to
+   * five minutes.
+   */
+  bridgeObservationStaleMs?: number;
+  /** `BRIDGE_AGENT_IMAGE_REPOSITORY`: the approved bridge-agent repository. */
+  bridgeAgentImageRepository?: string;
+  /** `VPN_BRIDGE_JOBS_ENABLED`; defaults to false (bridge jobs not queued). */
+  bridgeJobsEnabled?: boolean;
+  /** Capability lookup for probe candidate checks; tests inject a stand-in. */
+  probeSupportsBridgeMeasurement?: (probe: ProbeCapabilityInput, now: Date) => boolean;
+  /**
+   * `VPN_BRIDGE_MANAGEMENT_HOSTS`: hosts a bridge management URL may name.
+   * Defaults to `BRIDGE_MANAGEMENT_HOSTS_DEFAULT`.
+   */
+  bridgeManagementHosts?: readonly string[];
+  /** HTTP client for bridge-agent calls at enrollment; tests inject one. */
+  bridgeAgentFetch?: typeof fetch;
+  bridgeAgentTimeoutMs?: number;
 };
 
 const BIGINT_METRIC_FIELDS = [
@@ -478,6 +525,9 @@ const duplicateCheckName = (error: unknown): unknown =>
 
 export class PostgresControlRepository implements ControlRepository {
   private readonly activeKeyVersion: number;
+  // The bridge registry lives in its own module; this class delegates to it
+  // and calls into it from the node update and delete transactions.
+  private readonly bridges: PostgresBridgeRepository;
 
   constructor(private readonly options: PostgresRepositoryOptions) {
     this.activeKeyVersion =
@@ -486,7 +536,109 @@ export class PostgresControlRepository implements ControlRepository {
     if (!options.keyring[this.activeKeyVersion]) {
       throw new Error("The active encryption key version is not in the keyring");
     }
+    this.bridges = new PostgresBridgeRepository({
+      db: options.db,
+      keyring: options.keyring,
+      activeKeyVersion: this.activeKeyVersion,
+      observationStaleMs:
+        options.bridgeObservationStaleMs ?? BRIDGE_OBSERVATION_STALE_MS_DEFAULT,
+      bridgeAgentImageRepository: options.bridgeAgentImageRepository,
+      jobsEnabled: options.bridgeJobsEnabled ?? false,
+      probeSupportsBridgeMeasurement: options.probeSupportsBridgeMeasurement,
+      managementHosts: options.bridgeManagementHosts ?? BRIDGE_MANAGEMENT_HOSTS_DEFAULT,
+      bridgeAgentFetch: options.bridgeAgentFetch,
+      bridgeAgentTimeoutMs: options.bridgeAgentTimeoutMs,
+    });
   }
+
+  listBridges = (_actor: Actor): Promise<Bridge[]> => this.bridges.listBridges();
+  createBridge = (actor: Actor, request: CreateBridgeRequest): Promise<Bridge> =>
+    this.bridges.createBridge(actor, request);
+  updateBridge = (
+    actor: Actor,
+    bridgeId: string,
+    request: UpdateBridgeRequest,
+  ): Promise<Bridge> => this.bridges.updateBridge(actor, bridgeId, request);
+  getBridgeAgentUpdate = (_actor: Actor, bridgeId: string): Promise<BridgeAgentUpdateView> =>
+    this.bridges.getAgentUpdate(bridgeId);
+  getBridgeRollbackPreflight = (_actor: Actor): Promise<BridgeRollbackPreflight> =>
+    this.bridges.getRollbackPreflight();
+  requestBridgeAgentUpdate = (
+    actor: Actor,
+    bridgeId: string,
+    request: RequestBridgeAgentUpdate,
+  ): Promise<RequestBridgeAgentUpdateResult> =>
+    this.bridges.requestAgentUpdate(actor, bridgeId, request);
+  deleteBridge = (actor: Actor, bridgeId: string): Promise<DeleteBridgeResult> =>
+    this.bridges.deleteBridge(actor, bridgeId);
+  getBridgeEligibility = async (
+    _actor: Actor,
+    nodeId: string,
+  ): Promise<BridgeEligibility> => {
+    const [node] = await this.options.db
+      .select({ id: nodes.id })
+      .from(nodes)
+      .where(eq(nodes.id, nodeId))
+      .limit(1);
+    if (!node) throw new ApiError(404, "Node not found", "NODE_NOT_FOUND");
+    return this.bridges.bridgeEligibility(nodeId);
+  };
+
+  getNodeBridgeRoutes = (_actor: Actor, nodeId: string): Promise<NodeBridgeRoutes> =>
+    this.bridges.getNodeBridgeRoutes(nodeId);
+  prepareBridgeRoute = (
+    actor: Actor,
+    nodeId: string,
+    request: PrepareBridgeRouteRequest,
+  ): Promise<PrepareBridgeRouteResult> =>
+    this.bridges.prepareRoute(actor, nodeId, request);
+  releaseBridgeRoute = (
+    actor: Actor,
+    routeId: string,
+  ): Promise<ReleaseBridgeRouteResult> => this.bridges.releaseRoute(actor, routeId);
+  findBridgeRouteTarget = (routeId: string): Promise<BridgeRouteTarget | null> =>
+    this.bridges.findRouteTarget(routeId);
+  verifyBridgeRoute = (
+    actor: Actor,
+    routeId: string,
+    request: VerifyBridgeRouteRequest,
+  ): Promise<VerifyBridgeRouteResult> => this.bridges.verifyRoute(actor, routeId, request);
+
+  /**
+   * `GET /api/admin/infrastructure`: VPN nodes (the admin nodes list's summary
+   * fields plus their endpoint assignment) followed by bridges. VPN-node
+   * consumers keep reading their own endpoints; this view only adds `kind`.
+   */
+  listInfrastructure = async (_actor: Actor): Promise<InfrastructureItem[]> => {
+    const [nodeRows, endpoints, bridgeRows] = await Promise.all([
+      this.listAdminNodes(),
+      this.bridges.nodeEndpointSummaries(),
+      this.bridges.listBridges(),
+    ]);
+    const vpnItems: InfrastructureItem[] = nodeRows.map((row) => ({
+      kind: "vpn" as const,
+      id: row.id,
+      name: row.name,
+      enabled: row.enabled,
+      publicName: row.publicName,
+      protocol: row.protocol,
+      enabledProtocols: row.enabledProtocols,
+      maxPeers: row.maxPeers,
+      peerCount: row.peerCount,
+      publicHost: row.publicHost,
+      publicIp: row.publicIp,
+      agentVersion: row.agentVersion,
+      lastHealthAt: row.lastHealthAt ? row.lastHealthAt.toISOString() : null,
+      lastError: row.lastError,
+      activeRoute: endpoints.get(row.id)?.activeRoute ?? null,
+      vpnEndpointRevision: endpoints.get(row.id)?.vpnEndpointRevision ?? 0,
+    }));
+    const bridgeItems: InfrastructureItem[] = bridgeRows.map((bridge) => ({
+      kind: "bridge" as const,
+      ...bridge,
+    }));
+    return [...vpnItems, ...bridgeItems];
+  };
 
   resolveIdentity = async (claim: IdentityClaim): Promise<Actor> => {
     const email = normalizeEmail(claim.email);
@@ -824,22 +976,9 @@ export class PostgresControlRepository implements ControlRepository {
     nodeIds: readonly string[],
   ): Promise<Map<string, UserNodeReachability>> => {
     if (nodeIds.length === 0) return new Map();
-    const db = this.options.db;
-    const [probeRows, stateRows] = await Promise.all([
-      db
-        .select({
-          enabled: reachabilityProbe.enabled,
-          lastResultAt: reachabilityProbe.lastResultAt,
-          staleAfterSec: reachabilityProbe.staleAfterSec,
-          intervalSec: reachabilityProbe.intervalSec,
-          staleAlertedAt: reachabilityProbe.staleAlertedAt,
-          enabledAt: reachabilityProbe.enabledAt,
-          lastRunMass: reachabilityProbe.lastRunMass,
-        })
-        .from(reachabilityProbe)
-        .where(eq(reachabilityProbe.id, 1))
-        .limit(1),
-      db
+    const [probe, stateRows] = await Promise.all([
+      this.loadUserReachabilityProbe(),
+      this.options.db
         .select({
           nodeId: nodes.id,
           reachabilityEnabled: nodes.reachabilityEnabled,
@@ -851,7 +990,6 @@ export class PostgresControlRepository implements ControlRepository {
         .leftJoin(nodeReachabilityState, eq(nodeReachabilityState.nodeId, nodes.id))
         .where(inArray(nodes.id, [...nodeIds])),
     ]);
-    const probe = probeRows[0] ?? null;
     const now = new Date();
     return new Map(
       stateRows.map((row) => [
@@ -867,6 +1005,69 @@ export class PostgresControlRepository implements ControlRepository {
         }),
       ]),
     );
+  };
+
+  /** The probe columns `toUserReachability` reads, or null without a probe. */
+  private loadUserReachabilityProbe = async () => {
+    const [probe] = await this.options.db
+      .select({
+        enabled: reachabilityProbe.enabled,
+        lastResultAt: reachabilityProbe.lastResultAt,
+        staleAfterSec: reachabilityProbe.staleAfterSec,
+        intervalSec: reachabilityProbe.intervalSec,
+        staleAlertedAt: reachabilityProbe.staleAlertedAt,
+        enabledAt: reachabilityProbe.enabledAt,
+        lastRunMass: reachabilityProbe.lastRunMass,
+      })
+      .from(reachabilityProbe)
+      .where(eq(reachabilityProbe.id, 1))
+      .limit(1);
+    return probe ?? null;
+  };
+
+  /**
+   * The verdict for a key card: the result of the key's OWN protocol on its
+   * node, on every node (Direct or bridged). A missing row reads unknown, so
+   * an AWG 3.1 card is not painted green by a working AWG 2 path (or the
+   * other way round). The server badge stays the node verdict.
+   */
+  private loadKeyReachability = async (
+    nodeIds: readonly string[],
+  ): Promise<(nodeId: string, protocol: ProtocolKind) => UserNodeReachability> => {
+    if (nodeIds.length === 0) return () => UNKNOWN_USER_REACHABILITY;
+    const [probe, rows] = await Promise.all([
+      this.loadUserReachabilityProbe(),
+      this.options.db
+        .select({
+          nodeId: nodeReachabilityResults.nodeId,
+          protocol: nodeReachabilityResults.protocol,
+          reachabilityEnabled: nodes.reachabilityEnabled,
+          status: nodeReachabilityResults.status,
+          checkedAt: nodeReachabilityResults.checkedAt,
+          failingSince: nodeReachabilityResults.failingSince,
+        })
+        .from(nodeReachabilityResults)
+        .innerJoin(nodes, eq(nodes.id, nodeReachabilityResults.nodeId))
+        .where(inArray(nodeReachabilityResults.nodeId, [...nodeIds])),
+    ]);
+    const now = new Date();
+    const byKey = new Map(
+      rows.map((row) => [
+        `${row.nodeId}:${row.protocol}`,
+        toUserReachability({
+          probe,
+          reachabilityEnabled: row.reachabilityEnabled,
+          state: {
+            status: row.status,
+            failingSince: row.failingSince,
+            checkedAt: row.checkedAt,
+          },
+          now,
+        }),
+      ]),
+    );
+    return (nodeId, protocol) =>
+      byKey.get(`${nodeId}:${protocol}`) ?? UNKNOWN_USER_REACHABILITY;
   };
 
   listNodes = async (actor: Actor): Promise<unknown[]> => {
@@ -1148,103 +1349,164 @@ export class PostgresControlRepository implements ControlRepository {
     actor: Actor,
     nodeId: string,
     request: UpdateNodeRequest,
-  ): Promise<unknown> =>
-    this.options.db.transaction(async (tx) => {
+  ): Promise<unknown> => {
+    const { vpnBridgeRouteId, expectedVpnEndpointRevision, ...nodeFields } = request;
+    // Route assignment fields alone (or only the revision, which the contract
+    // lets through without a route id) are not a node-settings edit: no
+    // `node.updated` row and no `updatedAt` bump for them. A PATCH with no
+    // route fields takes exactly the path it always did.
+    const editsNode =
+      Object.keys(nodeFields).length > 0 ||
+      (vpnBridgeRouteId === undefined && expectedVpnEndpointRevision === undefined);
+    return this.options.db.transaction(async (tx) => {
+      // NO KEY UPDATE serializes node edits and route changes on this node
+      // without blocking foreign-key inserts that reference it; see the lock
+      // note in bridgeRepository.ts.
       const [current] = await tx
         .select({ id: nodes.id })
         .from(nodes)
         .where(eq(nodes.id, nodeId))
-        .for("update");
+        .for("no key update");
       if (!current) throw new ApiError(404, "Node not found", "NODE_NOT_FOUND");
 
-      const changes: Partial<typeof nodes.$inferInsert> = {
-        updatedAt: new Date(),
-      };
-      if (request.name !== undefined) changes.name = request.name;
-      // Empty string clears the public name (users fall back to the admin name).
-      if (request.publicName !== undefined) {
-        changes.publicName = request.publicName || null;
+      const updated = editsNode
+        ? await this.updateNodeSettings(tx, actor, nodeId, nodeFields)
+        : undefined;
+      if (vpnBridgeRouteId === undefined) {
+        if (updated) return updated;
+        // Only `expectedVpnEndpointRevision`: nothing to change. Report the
+        // current assignment so the caller sees what it would have compared.
+        const routes = await this.bridges.getNodeBridgeRoutes(nodeId, tx);
+        return {
+          id: nodeId,
+          vpnEndpoint: {
+            changed: false,
+            vpnEndpointRevision: routes.vpnEndpointRevision,
+            activeRoute: routes.activeRoute,
+          } satisfies NodeEndpointAssignment,
+        };
       }
-      if (request.apiBaseUrl !== undefined) {
-        changes.apiBaseUrl = request.apiBaseUrl.replace(/\/$/, "");
-      }
-      if (request.enabled !== undefined) changes.enabled = request.enabled;
-      if (request.protocol !== undefined) changes.protocol = request.protocol;
-      if (request.enabledProtocols !== undefined) {
-        changes.enabledProtocols = request.enabledProtocols ?? null;
-      }
-      if (request.maxPeers !== undefined) changes.maxPeers = request.maxPeers;
-      // Which service checks this node runs. Missed when the fields were added
-      // to the contract: the patch is built field by field here, so a field the
-      // schema accepts and this block does not know is silently dropped - the
-      // API answers 200 for a change that never happened, and the CLI says
-      // "updated". A silent no-op is worse than a rejection.
-      if (request.checksEnabled !== undefined) {
-        changes.checksEnabled = request.checksEnabled;
-      }
-      if (request.disabledCheckIds !== undefined) {
-        changes.disabledCheckIds = request.disabledCheckIds;
-      }
-      if (request.reachabilityEnabled !== undefined) {
-        changes.reachabilityEnabled = request.reachabilityEnabled;
-      }
-      if (request.capabilities !== undefined) {
-        changes.capabilities = request.capabilities;
-      }
-      if (request.apiKey !== undefined) {
-        const credentials = encryptSecret(
-          request.apiKey,
-          this.options.keyring,
-          this.activeKeyVersion,
-        );
-        changes.credentialsCiphertext = credentials.ciphertext;
-        changes.credentialsNonce = credentials.nonce;
-        changes.credentialsAuthTag = credentials.authTag;
-        changes.credentialsKeyVersion = credentials.keyVersion;
-      }
-      if (request.publicIp === null) {
-        // Both together, always: `public_ip_resolved_at` answers "when did the
-        // panel learn this address", so leaving a timestamp behind for an
-        // address that is gone would be a stamp on nothing. The worker resolves
-        // again on the next tick, because it looks up exactly when it holds no
-        // IP for the node.
-        changes.publicIp = null;
-        changes.publicIpResolvedAt = null;
-      }
-
-      const [updated] = await tx
-        .update(nodes)
-        .set(changes)
-        .where(eq(nodes.id, nodeId))
-        .returning({
-          id: nodes.id,
-          name: nodes.name,
-          publicName: nodes.publicName,
-          apiBaseUrl: nodes.apiBaseUrl,
-          enabled: nodes.enabled,
-          protocol: nodes.protocol,
-          maxPeers: nodes.maxPeers,
-          capabilities: nodes.capabilities,
-          checksEnabled: nodes.checksEnabled,
-          disabledCheckIds: nodes.disabledCheckIds,
-          reachabilityEnabled: nodes.reachabilityEnabled,
-          updatedAt: nodes.updatedAt,
-        });
-      await tx.insert(auditEvents).values({
-        actorUserId: actor.id,
-        actorType: "user",
-        action: "node.updated",
-        targetType: "node",
-        targetId: nodeId,
-        metadata: { fields: Object.keys(request) },
-      });
-      return updated;
+      // The contract requires the revision whenever a route id is present.
+      const vpnEndpoint = await this.bridges.changeNodeEndpoint(
+        tx,
+        actor,
+        nodeId,
+        vpnBridgeRouteId,
+        expectedVpnEndpointRevision ?? -1,
+      );
+      return { ...(updated ?? { id: nodeId }), vpnEndpoint };
     });
+  };
+
+  /** The node-settings part of a node PATCH, inside its transaction. */
+  private updateNodeSettings = async (
+    tx: DbTransaction,
+    actor: Actor,
+    nodeId: string,
+    request: Omit<UpdateNodeRequest, "vpnBridgeRouteId" | "expectedVpnEndpointRevision">,
+  ) => {
+    const changes: Partial<typeof nodes.$inferInsert> = {
+      updatedAt: new Date(),
+    };
+    if (request.name !== undefined) changes.name = request.name;
+    // Empty string clears the public name (users fall back to the admin name).
+    if (request.publicName !== undefined) {
+      changes.publicName = request.publicName || null;
+    }
+    if (request.apiBaseUrl !== undefined) {
+      changes.apiBaseUrl = request.apiBaseUrl.replace(/\/$/, "");
+    }
+    if (request.enabled !== undefined) changes.enabled = request.enabled;
+    if (request.protocol !== undefined) changes.protocol = request.protocol;
+    if (request.enabledProtocols !== undefined) {
+      changes.enabledProtocols = request.enabledProtocols ?? null;
+    }
+    if (request.maxPeers !== undefined) changes.maxPeers = request.maxPeers;
+    // Which service checks this node runs. Missed when the fields were added
+    // to the contract: the patch is built field by field here, so a field the
+    // schema accepts and this block does not know is silently dropped - the
+    // API answers 200 for a change that never happened, and the CLI says
+    // "updated". A silent no-op is worse than a rejection.
+    if (request.checksEnabled !== undefined) {
+      changes.checksEnabled = request.checksEnabled;
+    }
+    if (request.disabledCheckIds !== undefined) {
+      changes.disabledCheckIds = request.disabledCheckIds;
+    }
+    if (request.reachabilityEnabled !== undefined) {
+      changes.reachabilityEnabled = request.reachabilityEnabled;
+    }
+    if (request.capabilities !== undefined) {
+      changes.capabilities = request.capabilities;
+    }
+    if (request.apiKey !== undefined) {
+      const credentials = encryptSecret(
+        request.apiKey,
+        this.options.keyring,
+        this.activeKeyVersion,
+      );
+      changes.credentialsCiphertext = credentials.ciphertext;
+      changes.credentialsNonce = credentials.nonce;
+      changes.credentialsAuthTag = credentials.authTag;
+      changes.credentialsKeyVersion = credentials.keyVersion;
+    }
+    if (request.publicIp === null) {
+      // Both together, always: `public_ip_resolved_at` answers "when did the
+      // panel learn this address", so leaving a timestamp behind for an
+      // address that is gone would be a stamp on nothing. The worker resolves
+      // again on the next tick, because it looks up exactly when it holds no
+      // IP for the node.
+      changes.publicIp = null;
+      changes.publicIpResolvedAt = null;
+    }
+
+    const [updated] = await tx
+      .update(nodes)
+      .set(changes)
+      .where(eq(nodes.id, nodeId))
+      .returning({
+        id: nodes.id,
+        name: nodes.name,
+        publicName: nodes.publicName,
+        apiBaseUrl: nodes.apiBaseUrl,
+        enabled: nodes.enabled,
+        protocol: nodes.protocol,
+        maxPeers: nodes.maxPeers,
+        capabilities: nodes.capabilities,
+        checksEnabled: nodes.checksEnabled,
+        disabledCheckIds: nodes.disabledCheckIds,
+        reachabilityEnabled: nodes.reachabilityEnabled,
+        updatedAt: nodes.updatedAt,
+      });
+    await tx.insert(auditEvents).values({
+      actorUserId: actor.id,
+      actorType: "user",
+      action: "node.updated",
+      targetType: "node",
+      targetId: nodeId,
+      metadata: { fields: Object.keys(request) },
+    });
+    return updated;
+  };
 
   deleteNode = async (
     actor: Actor,
     nodeId: string,
     options: DeleteNodeOptions = { deleteKeys: false },
+  ): Promise<unknown> => {
+    try {
+      return await this.deleteNodeInTransaction(actor, nodeId, options);
+    } catch (error) {
+      // A route inserted after the check below is caught by the RESTRICT
+      // foreign key; report it with the same code.
+      throw mapBridgeConstraintError(error);
+    }
+  };
+
+  private deleteNodeInTransaction = async (
+    actor: Actor,
+    nodeId: string,
+    options: DeleteNodeOptions,
   ): Promise<unknown> =>
     this.options.db.transaction(async (tx) => {
       const [existing] = await tx
@@ -1253,6 +1515,10 @@ export class PostgresControlRepository implements ControlRepository {
         .where(eq(nodes.id, nodeId))
         .limit(1);
       if (!existing) throw new ApiError(404, "Node not found", "NODE_NOT_FOUND");
+
+      // Bridge routes first, before anything below touches keys or jobs:
+      // `deleteKeys` does not override this guard.
+      await this.bridges.assertNodeHasNoRoutes(tx, nodeId);
 
       // vpn_keys.node_id is ON DELETE RESTRICT, so the node's keys have to go
       // first. That is destructive and irreversible, so it never happens by
@@ -1405,7 +1671,7 @@ export class PostgresControlRepository implements ControlRepository {
     // Read per key's own node, not from `/api/nodes`: a key outlives the
     // permission to create keys on its server.
     const reachability = policy.showNodeStatus
-      ? await this.loadUserReachability([...new Set(rows.map(({ key }) => key.nodeId))])
+      ? await this.loadKeyReachability([...new Set(rows.map(({ key }) => key.nodeId))])
       : null;
     return rows.map(({ key, node, current }) =>
       toKeyView({
@@ -1415,9 +1681,7 @@ export class PostgresControlRepository implements ControlRepository {
         current,
         policy,
         activeByProfile,
-        nodeReachability: reachability
-          ? (reachability.get(key.nodeId) ?? UNKNOWN_USER_REACHABILITY)
-          : undefined,
+        nodeReachability: reachability ? reachability(key.nodeId, key.protocol) : undefined,
       }),
     );
   };
@@ -1704,11 +1968,23 @@ export class PostgresControlRepository implements ControlRepository {
         policy: portalPolicy,
         nodeName: nodes.name,
         nodePublicName: nodes.publicName,
+        bridgeHost: vpnBridges.publicIpv4,
+        bridgePort: vpnBridgeRoutes.publicUdpPort,
       })
       .from(vpnKeys)
       .innerJoin(users, eq(users.id, vpnKeys.ownerId))
       .innerJoin(nodes, eq(nodes.id, vpnKeys.nodeId))
       .leftJoin(portalPolicy, eq(portalPolicy.id, true))
+      // One statement reads the key and the node's active route, so an export
+      // sees one consistent assignment. At most one route per node is active.
+      .leftJoin(
+        vpnBridgeRoutes,
+        and(
+          eq(vpnBridgeRoutes.nodeId, vpnKeys.nodeId),
+          eq(vpnBridgeRoutes.state, "active"),
+        ),
+      )
+      .leftJoin(vpnBridges, eq(vpnBridges.id, vpnBridgeRoutes.bridgeId))
       .where(and(eq(vpnKeys.id, keyId), isNotNull(vpnKeys.configCiphertext)))
       .limit(1);
     const row = rows[0];
@@ -1729,6 +2005,7 @@ export class PostgresControlRepository implements ControlRepository {
     return {
       id: row.key.id,
       ownerId: row.key.ownerId,
+      nodeId: row.key.nodeId,
       deviceLabel: row.key.deviceLabel,
       keyNumber: row.key.keyNumber,
       nodeDisplayName: row.nodePublicName ?? row.nodeName,
@@ -1752,6 +2029,11 @@ export class PostgresControlRepository implements ControlRepository {
       activeRule,
       customRoutes: row.user.customRoutes ?? null,
       state: row.key.state,
+      protocol: row.key.protocol,
+      bridgeEndpoint:
+        row.bridgeHost !== null && row.bridgePort !== null
+          ? { host: row.bridgeHost, port: row.bridgePort }
+          : null,
       awgClientProfile: row.key.awgClientProfile ?? null,
     };
   };
@@ -2390,6 +2672,7 @@ export class PostgresControlRepository implements ControlRepository {
       usersByStatus,
       nodeRows,
       peerAgg,
+      bridgesSummary,
     ] = await Promise.all([
       db
         .select({ value: count() })
@@ -2430,6 +2713,9 @@ export class PostgresControlRepository implements ControlRepository {
         .from(peerCurrent)
         .innerJoin(vpnKeys, eq(vpnKeys.id, peerCurrent.keyId))
         .innerJoin(users, keyOwnerIsPerson(vpnKeys)),
+      // Bridges are not VPN nodes: they get their own block and never count
+      // toward the node counters below.
+      this.bridges.overviewBridges(),
     ]);
 
     const tally = (rows: Array<{ key: string; value: number }>) =>
@@ -2465,7 +2751,181 @@ export class PostgresControlRepository implements ControlRepository {
         healthy: nodeRows.filter((node) => node.enabled && !node.lastError)
           .length,
       },
+      ...(bridgesSummary ? { bridges: bridgesSummary } : {}),
     };
+  };
+
+  /** The admin nodes list (`GET /api/admin/nodes`), also read by the infrastructure view. */
+  private listAdminNodes = async () => {
+    const nodeRows = await this.options.db
+      .select({
+        id: nodes.id,
+        name: nodes.name,
+        publicName: nodes.publicName,
+        apiBaseUrl: nodes.apiBaseUrl,
+        enabled: nodes.enabled,
+        protocol: nodes.protocol,
+        enabledProtocols: nodes.enabledProtocols,
+        maxPeers: nodes.maxPeers,
+        checksEnabled: nodes.checksEnabled,
+        disabledCheckIds: nodes.disabledCheckIds,
+        reachabilityEnabled: nodes.reachabilityEnabled,
+        capabilities: nodes.capabilities,
+        // Where clients reach the node, as reported by its agent and
+        // resolved by the worker; null until the first poll of an agent
+        // that reports it. Admins get the full pair plus the diagnostic
+        // timestamp — users get at most the collapsed string in listNodes.
+        publicHost: nodes.publicHost,
+        publicIp: nodes.publicIp,
+        publicIpResolvedAt: nodes.publicIpResolvedAt,
+        lastHealthAt: nodes.lastHealthAt,
+        lastSyncAt: nodes.lastSyncAt,
+        lastError: nodes.lastError,
+        // What the agent reported it is, cached by the telemetry poll.
+        // Null means "not known" — never polled yet, or an agent older than
+        // 1.1.14, which does not report the field.
+        agentVersion: nodes.agentVersion,
+        // The node's own view of its last agent update, mirrored by the
+        // telemetry poll. The log is what explains a failure without anyone
+        // opening an SSH session.
+        agentUpdateState: nodes.agentUpdateState,
+        agentUpdateImage: nodes.agentUpdateImage,
+        agentUpdateMessage: nodes.agentUpdateMessage,
+        agentUpdateLog: nodes.agentUpdateLog,
+        agentUpdateAt: nodes.agentUpdateAt,
+        // Same again for the last capacity change: the state drives the
+        // card's control, and the log is why a change failed.
+        capacityState: nodes.capacityState,
+        capacityRequestedPeers: nodes.capacityRequestedPeers,
+        capacityMessage: nodes.capacityMessage,
+        capacityLog: nodes.capacityLog,
+        capacityAt: nodes.capacityAt,
+        createdAt: nodes.createdAt,
+        updatedAt: nodes.updatedAt,
+      })
+      .from(nodes)
+      .orderBy(nodes.name);
+    // peerCount includes the probe's keys -- each one occupies a real peer
+    // slot on the node -- and probeKeyCount says how many of them there
+    // are, so the two can be told apart. Same state set for both, so
+    // probeKeyCount is always a subset of peerCount.
+    const slotRows = await this.options.db
+      .select({
+        nodeId: vpnKeys.nodeId,
+        value: count(),
+        // A raw fragment gets no type parser; cast in SQL and coerce below.
+        probe: sql<unknown>`(count(*) filter (where ${users.serviceAccount}))::int`,
+      })
+      .from(vpnKeys)
+      .innerJoin(users, eq(users.id, vpnKeys.ownerId))
+      .where(inArray(vpnKeys.state, quotaStates))
+      .groupBy(vpnKeys.nodeId);
+    const peerCounts = new Map(
+      slotRows.map((row) => [row.nodeId, row.value]),
+    );
+    const probeKeyCounts = new Map(
+      slotRows.map((row) => [row.nodeId, Number(row.probe)]),
+    );
+    // Per-node traffic for Today / 7 days / Month (across all users) so each
+    // server row shows all three inline.
+    const nodeTraffic = new Map(
+      (await this.nodeTrafficPeriods({})).map((row) => [row.nodeId, row]),
+    );
+    const emptyPair = { receivedBytes: "0", sentBytes: "0" };
+    // The release the panel currently offers, resolved by the worker. There
+    // is at most one repository configured, so the newest row is it. Absent
+    // means "cannot resolve the current image" and the button stays off -
+    // never a fall back to a tag, which is the mutable reference the node's
+    // preflight refuses.
+    const [release] = await this.options.db
+      .select()
+      .from(nodeAgentReleases)
+      .orderBy(desc(nodeAgentReleases.resolvedAt))
+      .limit(1);
+    // Host metrics as of the last poll, and the newest peer handshake on
+    // each node. The handshake is the ONLY honest reachability signal the
+    // panel has: it cannot probe a node's public endpoint (AWG answers no
+    // unauthenticated UDP, and the worker container has no CAP_NET_RAW), so
+    // a real user's connection succeeding is the evidence. It can only
+    // under-report, never over-report.
+    const [metricsRows, handshakeRows] = await Promise.all([
+      this.options.db.select().from(nodeMetricsCurrent),
+      this.options.db
+        .select({
+          nodeId: vpnKeys.nodeId,
+          // Typed as unknown on purpose: a raw fragment gets no type parser, and
+          // claiming Date here is what produced a 500 on every admin
+          // node listing with a peer. `toDate` below is the only place
+          // that decides what this value is.
+          latestHandshakeAt: sql<unknown>`max(${peerCurrent.latestHandshakeAt})`,
+        })
+        .from(peerCurrent)
+        .innerJoin(vpnKeys, eq(vpnKeys.id, peerCurrent.keyId))
+        // The probe's own handshakes would make every node it reaches look
+        // reachable to people; only a person's connection is evidence here.
+        .innerJoin(users, keyOwnerIsPerson(vpnKeys))
+        .groupBy(vpnKeys.nodeId),
+    ]);
+    // Byte counters leave as decimal STRINGS, the way every other byte
+    // counter in this API does. They are `bigint` in the column and drizzle
+    // hands back a JS BigInt, which JSON.stringify refuses outright - a 500
+    // on the whole admin nodes page, which is what shipped in v0.9.6. The
+    // web and CLI types already declared these as strings; only the
+    // repository disagreed, and `adminList` returns `unknown` so nothing
+    // typed the gap.
+    const metricsByNode = new Map(
+      metricsRows.map((row) => [row.nodeId, toMetricsPayload(row)]),
+    );
+    // Coerced, not trusted. `max(...)` goes through a raw `sql` fragment, so
+    // drizzle applies no type parser and postgres-js hands back a STRING -
+    // declaring the column as Date made it look like one and .getTime()
+    // threw on every admin node listing that had a peer. The integration
+    // test missed it because its node had no peers, so the only branch that
+    // could throw was the one never taken.
+    const toDate = (value: unknown): Date | null => {
+      if (value instanceof Date) return value;
+      if (typeof value !== "string" && typeof value !== "number") return null;
+      const parsed = new Date(value);
+      return Number.isNaN(parsed.getTime()) ? null : parsed;
+    };
+    const handshakeByNode = new Map(
+      handshakeRows.map((row) => [row.nodeId, toDate(row.latestHandshakeAt)]),
+    );
+    const availableAgent = release
+      ? {
+          repository: release.repository,
+          version: release.version,
+          image: `${release.repository}@${release.digest}`,
+          resolvedAt: release.resolvedAt,
+        }
+      : null;
+    const now = Date.now();
+    return nodeRows.map((row) => ({
+      ...row,
+      availableAgent,
+      metrics: metricsByNode.get(row.id) ?? null,
+      endpoint: {
+        // Stated as "last handshake N minutes ago", never as a probe result.
+        // ONLINE_THRESHOLD_SECONDS is 180 in the node-agent's own contract.
+        status: (() => {
+          const last = handshakeByNode.get(row.id) ?? null;
+          if (last === null) return "unknown";
+          return now - last.getTime() <= 180_000 ? "reachable" : "stale";
+        })(),
+        lastHandshakeAt: handshakeByNode.get(row.id) ?? null,
+      },
+      peerCount: peerCounts.get(row.id) ?? 0,
+      probeKeyCount: probeKeyCounts.get(row.id) ?? 0,
+      traffic: {
+        today: nodeTraffic.get(row.id)?.today ?? emptyPair,
+        week: nodeTraffic.get(row.id)?.week ?? emptyPair,
+        month: nodeTraffic.get(row.id)?.month ?? emptyPair,
+      },
+      supportedProtocols: deriveSupportedProtocols(
+        row.protocol,
+        row.capabilities,
+      ),
+    }));
   };
 
   adminList = async (_actor: Actor, resource: string): Promise<unknown> => {
@@ -2541,177 +3001,8 @@ export class PostgresControlRepository implements ControlRepository {
               : null,
         }));
       }
-      case "nodes": {
-        const nodeRows = await this.options.db
-          .select({
-            id: nodes.id,
-            name: nodes.name,
-            publicName: nodes.publicName,
-            apiBaseUrl: nodes.apiBaseUrl,
-            enabled: nodes.enabled,
-            protocol: nodes.protocol,
-            enabledProtocols: nodes.enabledProtocols,
-            maxPeers: nodes.maxPeers,
-            checksEnabled: nodes.checksEnabled,
-            disabledCheckIds: nodes.disabledCheckIds,
-            reachabilityEnabled: nodes.reachabilityEnabled,
-            capabilities: nodes.capabilities,
-            // Where clients reach the node, as reported by its agent and
-            // resolved by the worker; null until the first poll of an agent
-            // that reports it. Admins get the full pair plus the diagnostic
-            // timestamp — users get at most the collapsed string in listNodes.
-            publicHost: nodes.publicHost,
-            publicIp: nodes.publicIp,
-            publicIpResolvedAt: nodes.publicIpResolvedAt,
-            lastHealthAt: nodes.lastHealthAt,
-            lastSyncAt: nodes.lastSyncAt,
-            lastError: nodes.lastError,
-            // What the agent reported it is, cached by the telemetry poll.
-            // Null means "not known" — never polled yet, or an agent older than
-            // 1.1.14, which does not report the field.
-            agentVersion: nodes.agentVersion,
-            // The node's own view of its last agent update, mirrored by the
-            // telemetry poll. The log is what explains a failure without anyone
-            // opening an SSH session.
-            agentUpdateState: nodes.agentUpdateState,
-            agentUpdateImage: nodes.agentUpdateImage,
-            agentUpdateMessage: nodes.agentUpdateMessage,
-            agentUpdateLog: nodes.agentUpdateLog,
-            agentUpdateAt: nodes.agentUpdateAt,
-            // Same again for the last capacity change: the state drives the
-            // card's control, and the log is why a change failed.
-            capacityState: nodes.capacityState,
-            capacityRequestedPeers: nodes.capacityRequestedPeers,
-            capacityMessage: nodes.capacityMessage,
-            capacityLog: nodes.capacityLog,
-            capacityAt: nodes.capacityAt,
-            createdAt: nodes.createdAt,
-            updatedAt: nodes.updatedAt,
-          })
-          .from(nodes)
-          .orderBy(nodes.name);
-        // peerCount includes the probe's keys -- each one occupies a real peer
-        // slot on the node -- and probeKeyCount says how many of them there
-        // are, so the two can be told apart. Same state set for both, so
-        // probeKeyCount is always a subset of peerCount.
-        const slotRows = await this.options.db
-          .select({
-            nodeId: vpnKeys.nodeId,
-            value: count(),
-            // A raw fragment gets no type parser; cast in SQL and coerce below.
-            probe: sql<unknown>`(count(*) filter (where ${users.serviceAccount}))::int`,
-          })
-          .from(vpnKeys)
-          .innerJoin(users, eq(users.id, vpnKeys.ownerId))
-          .where(inArray(vpnKeys.state, quotaStates))
-          .groupBy(vpnKeys.nodeId);
-        const peerCounts = new Map(
-          slotRows.map((row) => [row.nodeId, row.value]),
-        );
-        const probeKeyCounts = new Map(
-          slotRows.map((row) => [row.nodeId, Number(row.probe)]),
-        );
-        // Per-node traffic for Today / 7 days / Month (across all users) so each
-        // server row shows all three inline.
-        const nodeTraffic = new Map(
-          (await this.nodeTrafficPeriods({})).map((row) => [row.nodeId, row]),
-        );
-        const emptyPair = { receivedBytes: "0", sentBytes: "0" };
-        // The release the panel currently offers, resolved by the worker. There
-        // is at most one repository configured, so the newest row is it. Absent
-        // means "cannot resolve the current image" and the button stays off -
-        // never a fall back to a tag, which is the mutable reference the node's
-        // preflight refuses.
-        const [release] = await this.options.db
-          .select()
-          .from(nodeAgentReleases)
-          .orderBy(desc(nodeAgentReleases.resolvedAt))
-          .limit(1);
-        // Host metrics as of the last poll, and the newest peer handshake on
-        // each node. The handshake is the ONLY honest reachability signal the
-        // panel has: it cannot probe a node's public endpoint (AWG answers no
-        // unauthenticated UDP, and the worker container has no CAP_NET_RAW), so
-        // a real user's connection succeeding is the evidence. It can only
-        // under-report, never over-report.
-        const [metricsRows, handshakeRows] = await Promise.all([
-          this.options.db.select().from(nodeMetricsCurrent),
-          this.options.db
-            .select({
-              nodeId: vpnKeys.nodeId,
-              // Typed as unknown on purpose: a raw fragment gets no type parser, and
-              // claiming Date here is what produced a 500 on every admin
-              // node listing with a peer. `toDate` below is the only place
-              // that decides what this value is.
-              latestHandshakeAt: sql<unknown>`max(${peerCurrent.latestHandshakeAt})`,
-            })
-            .from(peerCurrent)
-            .innerJoin(vpnKeys, eq(vpnKeys.id, peerCurrent.keyId))
-            // The probe's own handshakes would make every node it reaches look
-            // reachable to people; only a person's connection is evidence here.
-            .innerJoin(users, keyOwnerIsPerson(vpnKeys))
-            .groupBy(vpnKeys.nodeId),
-        ]);
-        // Byte counters leave as decimal STRINGS, the way every other byte
-        // counter in this API does. They are `bigint` in the column and drizzle
-        // hands back a JS BigInt, which JSON.stringify refuses outright - a 500
-        // on the whole admin nodes page, which is what shipped in v0.9.6. The
-        // web and CLI types already declared these as strings; only the
-        // repository disagreed, and `adminList` returns `unknown` so nothing
-        // typed the gap.
-        const metricsByNode = new Map(
-          metricsRows.map((row) => [row.nodeId, toMetricsPayload(row)]),
-        );
-        // Coerced, not trusted. `max(...)` goes through a raw `sql` fragment, so
-        // drizzle applies no type parser and postgres-js hands back a STRING -
-        // declaring the column as Date made it look like one and .getTime()
-        // threw on every admin node listing that had a peer. The integration
-        // test missed it because its node had no peers, so the only branch that
-        // could throw was the one never taken.
-        const toDate = (value: unknown): Date | null => {
-          if (value instanceof Date) return value;
-          if (typeof value !== "string" && typeof value !== "number") return null;
-          const parsed = new Date(value);
-          return Number.isNaN(parsed.getTime()) ? null : parsed;
-        };
-        const handshakeByNode = new Map(
-          handshakeRows.map((row) => [row.nodeId, toDate(row.latestHandshakeAt)]),
-        );
-        const availableAgent = release
-          ? {
-              repository: release.repository,
-              version: release.version,
-              image: `${release.repository}@${release.digest}`,
-              resolvedAt: release.resolvedAt,
-            }
-          : null;
-        const now = Date.now();
-        return nodeRows.map((row) => ({
-          ...row,
-          availableAgent,
-          metrics: metricsByNode.get(row.id) ?? null,
-          endpoint: {
-            // Stated as "last handshake N minutes ago", never as a probe result.
-            // ONLINE_THRESHOLD_SECONDS is 180 in the node-agent's own contract.
-            status: (() => {
-              const last = handshakeByNode.get(row.id) ?? null;
-              if (last === null) return "unknown";
-              return now - last.getTime() <= 180_000 ? "reachable" : "stale";
-            })(),
-            lastHandshakeAt: handshakeByNode.get(row.id) ?? null,
-          },
-          peerCount: peerCounts.get(row.id) ?? 0,
-          probeKeyCount: probeKeyCounts.get(row.id) ?? 0,
-          traffic: {
-            today: nodeTraffic.get(row.id)?.today ?? emptyPair,
-            week: nodeTraffic.get(row.id)?.week ?? emptyPair,
-            month: nodeTraffic.get(row.id)?.month ?? emptyPair,
-          },
-          supportedProtocols: deriveSupportedProtocols(
-            row.protocol,
-            row.capabilities,
-          ),
-        }));
-      }
+      case "nodes":
+        return this.listAdminNodes();
       case "quota-requests": {
         const rows = await this.options.db
           .select({ request: quotaRequests, nodeName: nodes.name })

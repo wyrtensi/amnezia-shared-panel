@@ -80,6 +80,26 @@ jobs:
       - run: npm test
       - run: npm run build
 
+  bridge-agent:
+    name: Bridge agent (typecheck, test, build)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: services/bridge-agent
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - run: npm ci
+      - run: npm test
+      - run: npm run build
+      # The release workflow builds this same Dockerfile on a tag; build it
+      # here (no push) so a broken image is found on the branch, not at release.
+      - name: Build the image
+        working-directory: .
+        run: docker build services/bridge-agent --tag bridge-agent:ci
+
   infra:
     name: Infra and rollout script tests
     runs-on: ubuntu-latest
@@ -88,4 +108,11 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: 24
-      - run: node --test infra/node/tests/*.mjs infra/prod/tests/*.mjs scripts/tests/*.mjs
+      - name: ShellCheck bridge scripts (installers, bridge-agent updater) and the frpc installer
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq shellcheck
+          shellcheck -s sh infra/bridge/install-bridge.sh infra/bridge/install-frps.sh infra/node/scripts/install-frpc.sh scripts/add-bridge-tunnel.sh
+          shellcheck -s bash infra/bridge/bridge-agent-update.sh
+          shellcheck -s bash scripts/repair-updater-units.sh infra/prod/install-updater.sh infra/node/scripts/install-agent-updater.sh
+      - run: node --test infra/node/tests/*.mjs infra/bridge/tests/*.mjs infra/prod/tests/*.mjs scripts/tests/*.mjs

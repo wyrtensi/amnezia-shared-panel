@@ -1,4 +1,20 @@
 import type {
+  Bridge,
+  CreateBridgeRequest,
+  DeleteBridgeResult,
+  BridgeAgentUpdateView,
+  BridgeRollbackPreflight,
+  RequestBridgeAgentUpdate,
+  RequestBridgeAgentUpdateResult,
+  InfrastructureItem,
+  BridgeEligibility,
+  NodeBridgeRoutes,
+  PrepareBridgeRouteRequest,
+  PrepareBridgeRouteResult,
+  ReleaseBridgeRouteResult,
+  UpdateBridgeRequest,
+  VerifyBridgeRouteRequest,
+  VerifyBridgeRouteResult,
   ConfigRefreshResult,
   ConfigRefreshStatus,
   AccessSyncStatus,
@@ -291,7 +307,71 @@ export interface ControlApiService {
     action: string,
     payload: unknown,
   ) => Promise<unknown>;
+  /** Bridges with capacity, held ports and route summaries. */
+  listBridges: (actor: Actor) => Promise<Bridge[]>;
+  /** Register a bridge; it starts pending enrollment. */
+  createBridge: (actor: Actor, request: CreateBridgeRequest) => Promise<Bridge>;
+  /** Rename a bridge. Host, address and ports are never edited in place. */
+  updateBridge: (
+    actor: Actor,
+    bridgeId: string,
+    request: UpdateBridgeRequest,
+  ) => Promise<Bridge>;
+  /** Delete a bridge that holds no draft, active or retiring route. */
+  deleteBridge: (actor: Actor, bridgeId: string) => Promise<DeleteBridgeResult>;
+  /** Preview, outstanding operation and history of the bridge-agent update. */
+  getBridgeAgentUpdate: (actor: Actor, bridgeId: string) => Promise<BridgeAgentUpdateView>;
+  /** Read-only checks before rolling back to a release that predates bridges. */
+  getBridgeRollbackPreflight: (actor: Actor) => Promise<BridgeRollbackPreflight>;
+  /** Request a bridge-agent update; a repeat of the outstanding one returns it. */
+  requestBridgeAgentUpdate: (
+    actor: Actor,
+    bridgeId: string,
+    request: RequestBridgeAgentUpdate,
+  ) => Promise<RequestBridgeAgentUpdateResult>;
+  /** The node's endpoint assignment: active route or Direct, drafts, retiring. */
+  getNodeBridgeRoutes: (actor: Actor, nodeId: string) => Promise<NodeBridgeRoutes>;
+  /** Counts-only dry-run of the endpoint renderer over the node's stored configs. */
+  getBridgeEligibility: (actor: Actor, nodeId: string) => Promise<BridgeEligibility>;
+  /** Reserve a bridge UDP port for the node (idempotent per node and bridge). */
+  prepareBridgeRoute: (
+    actor: Actor,
+    nodeId: string,
+    request: PrepareBridgeRouteRequest,
+  ) => Promise<PrepareBridgeRouteResult>;
+  /** Release a draft or retiring route once the bridge confirms it is gone. */
+  releaseBridgeRoute: (
+    actor: Actor,
+    routeId: string,
+  ) => Promise<ReleaseBridgeRouteResult>;
+  /** VPN nodes and bridges as one typed `kind` union. */
+  listInfrastructure: (actor: Actor) => Promise<InfrastructureItem[]>;
+  /**
+   * A private `.vpn` preview of the caller's own active AWG 3.1 key on the
+   * route's node, rendered with that draft route's endpoint. Leaves the
+   * active assignment, the profile revision and ordinary delivery accounting
+   * untouched.
+   */
+  getBridgeRouteTestConfig: (
+    actor: Actor,
+    routeId: string,
+    keyId: string,
+  ) => Promise<BridgeTestConfigResult>;
+  /** Operator verification, or queue a probe candidate check. */
+  verifyBridgeRoute: (
+    actor: Actor,
+    routeId: string,
+    request: VerifyBridgeRouteRequest,
+  ) => Promise<VerifyBridgeRouteResult>;
 }
+
+export type BridgeTestConfigResult = {
+  contentType: string;
+  body: string;
+  filename: string;
+  /** The route's observed frps registration marker, or null when none. */
+  registrationMarker: string | null;
+};
 
 export class ApiError extends Error {
   constructor(

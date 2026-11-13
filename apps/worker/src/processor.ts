@@ -1,6 +1,9 @@
 import { z } from "zod";
 import {
   ACCESS_SYNC_JOB_TYPE,
+  BRIDGE_AGENT_POLL_JOB_TYPE,
+  BRIDGE_AGENT_UPDATE_JOB_TYPE,
+  BRIDGE_ROUTE_CANDIDATE_CHECK_JOB_TYPE,
   QUOTA_REQUEST_NOTIFY_JOB_TYPE,
   REACHABILITY_NOTIFY_JOB_TYPE,
   REACHABILITY_WIDGET_JOB_TYPE,
@@ -69,6 +72,18 @@ export type JobProcessorOptions = {
   reachabilityWidget?: Pick<ReachabilityWidget, "refresh">;
   /** PANEL_PUBLIC_URL, for the link in a notification. */
   panelPublicUrl?: string | null;
+  /**
+   * The `bridge_route_candidate_check` handler (bridgeCandidateCheck.ts). It
+   * completes or fails its own job; a throw is retried by the runner.
+   */
+  bridgeCandidateCheck?: (job: OutboxJob) => Promise<void>;
+  /**
+   * The `bridge_agent.poll` handler (bridgePoller.ts). It completes or fails
+   * its own job; a throw is retried by the runner.
+   */
+  bridgeAgentPoll?: (job: OutboxJob) => Promise<void>;
+  /** The `bridge_agent.update` handler (bridgeAgentUpdate.ts); same contract. */
+  bridgeAgentUpdate?: (job: OutboxJob) => Promise<void>;
   now?: () => Date;
 };
 
@@ -86,6 +101,9 @@ export const createJobProcessor = ({
   notifier,
   reachabilityWidget,
   panelPublicUrl = null,
+  bridgeCandidateCheck,
+  bridgeAgentPoll,
+  bridgeAgentUpdate,
   now = () => new Date(),
 }: JobProcessorOptions) => {
   const reconcileOrphan = async (
@@ -100,6 +118,30 @@ export const createJobProcessor = ({
   };
 
   return async (job: OutboxJob): Promise<void> => {
+    if (job.type === BRIDGE_ROUTE_CANDIDATE_CHECK_JOB_TYPE) {
+      if (!bridgeCandidateCheck) {
+        await repository.failJob(job.id, "Bridge candidate checks are not wired on this worker");
+        return;
+      }
+      await bridgeCandidateCheck(job);
+      return;
+    }
+    if (job.type === BRIDGE_AGENT_POLL_JOB_TYPE) {
+      if (!bridgeAgentPoll) {
+        await repository.failJob(job.id, "Bridge-agent polls are not wired on this worker");
+        return;
+      }
+      await bridgeAgentPoll(job);
+      return;
+    }
+    if (job.type === BRIDGE_AGENT_UPDATE_JOB_TYPE) {
+      if (!bridgeAgentUpdate) {
+        await repository.failJob(job.id, "Bridge-agent updates are not wired on this worker");
+        return;
+      }
+      await bridgeAgentUpdate(job);
+      return;
+    }
     if (job.type === QUOTA_REQUEST_NOTIFY_JOB_TYPE) {
       // System-generated, unlike the two operator-triggered jobs below: with
       // no chat configured there is nobody to tell, and that is not a failure.
