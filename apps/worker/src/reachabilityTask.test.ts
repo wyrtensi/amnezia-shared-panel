@@ -32,6 +32,7 @@ const probeRow = (extra: Partial<ProbeRow> = {}): ProbeRow => ({
   staleAlertedAt: null,
   enabledAt: hoursAgo(48),
   timeZone: "UTC",
+  candidateRun: null,
   ...extra,
 });
 
@@ -83,6 +84,7 @@ const fakeRepository = (probe: ProbeRow | null): ReachabilityRepository => ({
   loadStates: vi.fn(() => Promise.resolve(new Map())),
   ingest: vi.fn(() => Promise.resolve(undefined)),
   setStaleAlert: vi.fn(() => Promise.resolve(undefined)),
+  finishCandidateRun: vi.fn(() => Promise.resolve(undefined)),
 });
 
 const fakeClient = (latest: ProbeRunState | null | Error = null): ProbeClient => ({
@@ -310,5 +312,125 @@ describe("reachability task", () => {
     vi.mocked(repository.syncServiceKeys).mockRejectedValue(new Error("db busy"));
     await tick(repository, client);
     expect(client.startRun).toHaveBeenCalledTimes(1);
+  });
+
+  describe("with a bridge candidate check holding the probe", () => {
+    const candidate = (startedAt = minutesAgo(1)) => ({
+      runId: "run-candidate",
+      routeId: "route-1",
+      registrationMarker: "m-1",
+      requestedAt: minutesAgo(3),
+      startedAt,
+    });
+    const candidateRun = (
+      levels: Partial<Record<"handshake" | "http", typeof level>> = {},
+      finishedAt: string | null = minutesAgo(0.5).toISOString(),
+    ): ProbeRunState => ({
+      runId: "run-candidate",
+      startedAt: minutesAgo(1).toISOString(),
+      finishedAt,
+      control: level,
+      results: [
+        {
+          targetId: "bridge-route:route-1",
+          protocol: "awg3",
+          status: "done",
+          detail: null,
+          endpointHost: "45.1.2.3",
+          egressIp: "192.0.2.10",
+          levels: {
+            ping: { ok: false, detail: "no reply", latencyMs: null },
+            tcp: { ok: false, detail: "refused", latencyMs: null },
+            handshake: levels.handshake ?? level,
+            http: levels.http ?? level,
+          },
+        },
+      ],
+    });
+
+    it("waits for an unfinished candidate run and starts nothing", async () => {
+      const client = fakeClient(candidateRun({}, null));
+      // A regular run would be due by the interval.
+      const repository = fakeRepository(
+        probeRow({ currentRunStartedAt: hoursAgo(2), candidateRun: candidate() }),
+      );
+      await tick(repository, client);
+      expect(repository.finishCandidateRun).not.toHaveBeenCalled();
+      expect(repository.ingest).not.toHaveBeenCalled();
+      expect(repository.syncServiceKeys).not.toHaveBeenCalled();
+      expect(client.startRun).not.toHaveBeenCalled();
+    });
+
+    it("settles a finished candidate run on the route only, then resumes regular runs", async () => {
+      const client = fakeClient(candidateRun());
+      const repository = fakeRepository(
+        probeRow({ currentRunStartedAt: hoursAgo(2), candidateRun: candidate() }),
+      );
+      await tick(repository, client);
+      // Ping and TCP failed, handshake and HTTP passed: a bridge verdict is
+      // the tunnel, not the diagnostics.
+      expect(repository.finishCandidateRun).toHaveBeenCalledWith(candidate(), {
+        result: "success",
+        error: null,
+        checkedAt: minutesAgo(0.5),
+      });
+      // Never fed to node state, alerts or the widget.
+      expect(repository.ingest).not.toHaveBeenCalled();
+      expect(repository.setStaleAlert).not.toHaveBeenCalled();
+      // The probe is free again, so the due regular run starts.
+      expect(client.startRun).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(client.startRun).mock.calls[0]?.[0].runId).toBe("run-new");
+    });
+
+    it.each([
+      ["handshake", "AWG_HANDSHAKE_FAILED"],
+      ["http", "HTTP_THROUGH_TUNNEL_FAILED"],
+    ] as const)("records a failed %s as %s", async (failed, code) => {
+      const client = fakeClient(
+        candidateRun({ [failed]: { ok: false, detail: "timeout", latencyMs: null } }),
+      );
+      const repository = fakeRepository(probeRow({ candidateRun: candidate() }));
+      await tick(repository, client);
+      expect(repository.finishCandidateRun).toHaveBeenCalledWith(
+        candidate(),
+        expect.objectContaining({ result: "failure", error: code }),
+      );
+      expect(repository.ingest).not.toHaveBeenCalled();
+    });
+
+    it("gives up a candidate run the probe lost, after a grace period", async () => {
+      const fresh = fakeRepository(probeRow({ candidateRun: candidate(minutesAgo(1)) }));
+      await tick(fresh, fakeClient(finished("run-other")));
+      expect(fresh.finishCandidateRun).not.toHaveBeenCalled();
+
+      const lost = fakeRepository(probeRow({ candidateRun: candidate(minutesAgo(5)) }));
+      await tick(lost, fakeClient(finished("run-other")));
+      expect(lost.finishCandidateRun).toHaveBeenCalledWith(
+        candidate(minutesAgo(5)),
+        { result: "failure", error: "PROBE_RUN_LOST", checkedAt: NOW },
+      );
+      expect(lost.ingest).not.toHaveBeenCalled();
+    });
+
+    it("gives up an unfinished candidate run after its timeout", async () => {
+      const repository = fakeRepository(probeRow({ candidateRun: candidate(minutesAgo(20)) }));
+      await tick(repository, fakeClient(candidateRun({}, null)));
+      expect(repository.finishCandidateRun).toHaveBeenCalledWith(
+        candidate(minutesAgo(20)),
+        { result: "failure", error: "PROBE_RUN_TIMEOUT", checkedAt: NOW },
+      );
+    });
+
+    it("does not record a probe error when a candidate took the probe mid-tick", async () => {
+      const client = fakeClient();
+      vi.mocked(client.startRun).mockResolvedValue("busy");
+      const repository = fakeRepository(probeRow({ currentRunStartedAt: hoursAgo(2) }));
+      vi.mocked(repository.loadProbe)
+        .mockResolvedValueOnce(probeRow({ currentRunStartedAt: hoursAgo(2) }))
+        .mockResolvedValueOnce(probeRow({ candidateRun: candidate() }));
+      await tick(repository, client);
+      expect(repository.recordProbeError).not.toHaveBeenCalled();
+      expect(repository.markRunStarted).not.toHaveBeenCalled();
+    });
   });
 });

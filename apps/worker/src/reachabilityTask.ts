@@ -2,6 +2,11 @@ import { randomUUID } from "node:crypto";
 
 import type { ProbeRunRequest, ProbeRunState } from "@amnezia/contracts";
 
+import {
+  candidateRunOutcome,
+  type CandidateOutcome,
+  type CandidateRun,
+} from "./bridgeCandidateCheck.js";
 import type { ProbeClient, ProbeClientOptions } from "./probeAgent.js";
 import {
   ingestRun,
@@ -34,6 +39,8 @@ export type ProbeRow = {
   enabledAt: Date;
   /** IANA zone for the times in alert texts. */
   timeZone: string;
+  /** A bridge route candidate check holding the probe, if any. */
+  candidateRun: CandidateRun | null;
 };
 
 /** A target as the panel knows it now, with its decrypted config when usable. */
@@ -72,6 +79,12 @@ export interface ReachabilityRepository {
   /** Results, history, node states, outbox messages and the probe row, atomically. */
   ingest: (write: IngestWrite) => Promise<void>;
   setStaleAlert: (staleAlertedAt: Date | null, notices: Notice[]) => Promise<void>;
+  /**
+   * Free the probe from a candidate run and store its outcome on the route
+   * only (see bridgeCandidateCheck.ts). Writes nothing to node status,
+   * results, history or the outbox.
+   */
+  finishCandidateRun: (run: CandidateRun, outcome: CandidateOutcome) => Promise<void>;
 }
 
 /**
@@ -134,6 +147,19 @@ export const createReachabilityTask = ({
       log(`reachability: ${message(error)}`);
       await watchStale();
       return;
+    }
+
+    // A bridge route candidate check holds the probe: settle it when it is
+    // done, and start nothing of our own until it is (its run and ours would
+    // share the node's service peer). Its result goes to the route only.
+    if (probe.candidateRun) {
+      const outcome = candidateRunOutcome(probe.candidateRun, latest, at);
+      if (outcome === null) {
+        await watchStale();
+        return;
+      }
+      await repository.finishCandidateRun(probe.candidateRun, outcome);
+      log(`reachability: settled candidate run ${probe.candidateRun.runId} (${outcome.result})`);
     }
 
     let currentRunId = probe.currentRunId;
@@ -225,6 +251,12 @@ export const createReachabilityTask = ({
     try {
       const started = await client.startRun(request);
       if (started === "busy") {
+        // A bridge candidate check may have taken the probe since this tick
+        // read it; that run is the panel's own and is settled next tick.
+        if ((await repository.loadProbe())?.candidateRun) {
+          log("reachability: probe busy with a bridge candidate check, waiting");
+          return;
+        }
         await repository.recordProbeError("probe is busy with a run the panel did not start", at);
         return;
       }

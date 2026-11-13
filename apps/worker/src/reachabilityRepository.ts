@@ -31,6 +31,11 @@ import {
   type EncryptionKeyring,
 } from "@amnezia/db";
 
+import type { CandidateOutcome, CandidateRun } from "./bridgeCandidateCheck.js";
+import {
+  EMPTY_CANDIDATE_SLOT,
+  writeCandidateVerification,
+} from "./bridgeCandidateRepository.js";
 import type { NodeState, Notice } from "./reachability.js";
 import type { WidgetNode } from "./reachabilityWidget.js";
 import type { ReachabilityWidgetStore, StoredWidget } from "./reachabilityWidgetSender.js";
@@ -108,6 +113,20 @@ export class PostgresReachabilityRepository
       staleAlertedAt: row.staleAlertedAt,
       enabledAt: row.enabledAt,
       timeZone: row.timeZone,
+      candidateRun:
+        row.candidateRunId !== null &&
+        row.candidateRouteId !== null &&
+        row.candidateRegistrationMarker !== null &&
+        row.candidateRequestedAt !== null &&
+        row.candidateRunStartedAt !== null
+          ? {
+              runId: row.candidateRunId,
+              routeId: row.candidateRouteId,
+              registrationMarker: row.candidateRegistrationMarker,
+              requestedAt: row.candidateRequestedAt,
+              startedAt: row.candidateRunStartedAt,
+            }
+          : null,
     };
   };
 
@@ -170,6 +189,27 @@ export class PostgresReachabilityRepository
           .values(widgetRow(`stale:${staleAlertedAt.toISOString()}`))
           .onConflictDoNothing();
       }
+    });
+  };
+
+  finishCandidateRun = async (run: CandidateRun, outcome: CandidateOutcome): Promise<void> => {
+    await this.options.db.transaction(async (tx) => {
+      // Claim it first, as `ingest` claims a regular run: only the tick that
+      // frees the slot writes the result.
+      const freed = await tx
+        .update(reachabilityProbe)
+        .set({ ...EMPTY_CANDIDATE_SLOT, updatedAt: new Date() })
+        .where(
+          and(eq(reachabilityProbe.id, 1), eq(reachabilityProbe.candidateRunId, run.runId)),
+        )
+        .returning({ id: reachabilityProbe.id });
+      if (freed.length === 0) return;
+      await writeCandidateVerification(tx, {
+        routeId: run.routeId,
+        registrationMarker: run.registrationMarker,
+        requestedAt: run.requestedAt,
+        outcome,
+      });
     });
   };
 

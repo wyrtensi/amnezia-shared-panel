@@ -7,7 +7,9 @@ import { createJobProcessor } from "./processor.js";
 import { PostgresWorkerRepository } from "./postgresRepository.js";
 import { runWorker } from "./runner.js";
 import { createMaintenanceRunner } from "./maintenance.js";
-import { resolveWorkerPeriodDefaults } from "./config.js";
+import { resolveBridgeJobsEnabled, resolveWorkerPeriodDefaults } from "./config.js";
+import { createBridgeCandidateCheck } from "./bridgeCandidateCheck.js";
+import { PostgresBridgeCandidateRepository } from "./bridgeCandidateRepository.js";
 import {
   createWorkerPeriods,
   readWorkerPeriodOverrides,
@@ -231,6 +233,18 @@ const reachabilityWidget = telegramConfig
     })
   : undefined;
 
+// Probe candidate checks of bridge routes. `VPN_BRIDGE_JOBS_ENABLED` is read
+// here too: a job queued under an open gate and picked up by a worker with
+// the gate closed records BRIDGE_JOBS_DISABLED on the route instead of running.
+const bridgeCandidateCheck = createBridgeCandidateCheck({
+  candidates: new PostgresBridgeCandidateRepository({ db: database.db, keyring }),
+  loadProbe: () => reachabilityRepository.loadProbe(),
+  jobs: repository,
+  createProbeClient,
+  jobsEnabled: resolveBridgeJobsEnabled(process.env),
+  log: (line) => console.log(line),
+});
+
 const processJob = createJobProcessor({
   repository,
   createNodeAgent: (node) => createNodeAgentClient(node),
@@ -239,6 +253,7 @@ const processJob = createJobProcessor({
   notifier: telegramConfig ? createTelegramNotifier(telegramConfig) : undefined,
   reachabilityWidget,
   panelPublicUrl: process.env.PANEL_PUBLIC_URL ?? null,
+  bridgeCandidateCheck,
   // Without this, a throwing access.sync run is only ever recorded in
   // job_outbox.last_error: the runner turns the throw into retryJob/failJob
   // with no console output, so an operator watching `docker logs worker`

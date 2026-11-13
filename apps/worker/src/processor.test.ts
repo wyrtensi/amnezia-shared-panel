@@ -1415,3 +1415,33 @@ describe("reachability widget job", () => {
     expect(log).toHaveBeenCalledWith(expect.stringContaining("notify.reachability-widget"));
   });
 });
+
+describe("bridge route candidate check jobs", () => {
+  const job = {
+    id: "job-candidate",
+    type: "bridge_route_candidate_check",
+    attempts: 1,
+    payload: {},
+  };
+
+  it("hands the job to the candidate check, which finishes it itself", async () => {
+    const repository = createRepository();
+    const bridgeCandidateCheck = vi.fn(() => Promise.resolve());
+    const process = createJobProcessor({
+      repository,
+      createNodeAgent: () => createAgent(),
+      bridgeCandidateCheck,
+    });
+    await process(job);
+    expect(bridgeCandidateCheck).toHaveBeenCalledWith(job);
+    expect(repository.completeJob).not.toHaveBeenCalled();
+    expect(repository.loadKeyContext).not.toHaveBeenCalled();
+  });
+
+  it("fails the job on a worker without the handler", async () => {
+    const repository = createRepository();
+    const process = createJobProcessor({ repository, createNodeAgent: () => createAgent() });
+    await process(job);
+    expect(repository.failJob).toHaveBeenCalledWith(job.id, expect.stringContaining("not wired"));
+  });
+});
