@@ -105,5 +105,6 @@ test("an override only systemd can see stops the install before the watcher is a
   const r = install(f);
   assert.equal(r.status, 1);
   assert.match(r.stdout, /amnezia-node-agent-update\.service: effective ExecStart is not/);
+  assert.match(r.stdout, /already written .* reloaded, but the watcher was NOT enabled/);
   assert.ok(!(await calls(f)).includes("enable"));
 });

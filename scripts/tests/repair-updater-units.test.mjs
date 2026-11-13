@@ -48,6 +48,7 @@ echo "systemctl $*" >>"$STATE/calls"
 cmd="$1"; shift
 case "$cmd" in
   show)
+    [ ! -f "$STATE/show-fails" ] || exit 1
     prop="$2"; unit="$4"
     case "$prop" in
       ExecStart)
@@ -65,7 +66,9 @@ case "$cmd" in
   start)
     [ ! -f "$STATE/start-fails" ] || exit 1
     echo active >"$STATE/active-$1" ;;
-  daemon-reload) ;;
+  daemon-reload)
+    # A request that arrives while the tool is between verify and rearm.
+    [ ! -f "$STATE/inject" ] || { cp "$STATE/inject-body" "$(cat "$STATE/inject")"; } ;;
   *) echo "unexpected systemctl $cmd" >>"$STATE/unexpected"; exit 0 ;;
 esac
 `;
@@ -88,6 +91,8 @@ const fixture = async () => {
     PATH: `${f.bin}:${process.env.PATH}`,
     STATE: f.state,
     UNIT_DIR: f.unitDir,
+    // The same lookup the installers use, redirected into the fixture.
+    AMNEZIA_UNIT_SEARCH_DIRS: `${f.unitDir} ${join(root, "run-units")}`,
   };
   return f;
 };
@@ -99,7 +104,7 @@ const fixture = async () => {
 const install = async (f, name, { legacy = true, dirs = "default", enabled = "enabled", active = "active" } = {}) => {
   const u = UPDATERS[name];
   const home = join(f.root, dirs, name);
-  const script = join(home, "updater.sh");
+  const script = join(home, u.script.split("/").pop());
   const lock = join(home, "lock");
   const spool = join(home, "spool");
   await mkdir(join(spool, "requests"), { recursive: true });
@@ -427,4 +432,120 @@ test("refuses to change anything without root, but a dry run does not need it", 
   await install(f, "panel");
   assert.equal(run(f).status, 1);
   assert.equal(run(f, "--dry-run").status, 0);
+});
+
+const unitFile = (f, base) => join(f.unitDir, `${base}.service`);
+const editUnit = async (f, base, fn) => writeFile(unitFile(f, base), fn(await readFile(unitFile(f, base), "utf8")));
+
+test("a request that appears before rearming defers the watcher but keeps the repaired unit", executing, async () => {
+  const f = await fixture();
+  const p = await install(f, "panel", { active: "failed" });
+  await writeFile(join(f.state, "active-panel-updater.service"), "failed");
+  await writeFile(join(f.state, "inject"), join(p.spool, "request.json"));
+  await writeFile(join(f.state, "inject-body"), '{"id":"late-1"}\n');
+  const r = runJson(f);
+  assert.equal(r.status, 2);
+  const rec = unit(r.report, "panel");
+  assert.equal(rec.outcome, "deferred-pending");
+  assert.equal(rec.requestId, "late-1");
+  assert.match(await readFile(unitFile(f, "panel-updater"), "utf8"), /^ExecStart=\/bin\/bash /m, "unit stays repaired");
+  const log = await calls(f);
+  assert.ok(!log.some((l) => /^systemctl (start|reset-failed)/.test(l)), log.join("|"));
+  assert.equal(await readFile(join(p.spool, "request.json"), "utf8"), '{"id":"late-1"}\n');
+});
+
+test("an operation that starts before rearming defers the watcher", executing, async () => {
+  const f = await fixture();
+  const p = await install(f, "panel", { active: "failed" });
+  try {
+    // The first check passes (no lock yet); the lock is taken during daemon-reload.
+    await writeFile(
+      join(f.bin, "systemctl"),
+      (await readFile(join(f.bin, "systemctl"), "utf8")).replace(
+        "daemon-reload)",
+        `daemon-reload)\n    nohup flock "${p.lock}" sleep 30 >/dev/null 2>&1 &\n    sleep 0.4`,
+      ),
+    );
+    const r = runJson(f);
+    assert.equal(unit(r.report, "panel").outcome, "deferred-running");
+    assert.ok(!(await calls(f)).some((l) => /^systemctl (start|reset-failed)/.test(l)));
+  } finally {
+    spawnSync("pkill", ["-f", `flock ${p.lock} sleep 30`]);
+  }
+});
+
+test("an ExecStart target other than the expected script is blocked", executing, async () => {
+  const f = await fixture();
+  const p = await install(f, "panel");
+  await editUnit(f, "panel-updater", (t) => t.replace(/^ExecStart=.*$/m, `ExecStart=${p.home}/other.sh`));
+  const rec = unit(runJson(f).report, "panel");
+  assert.equal(rec.outcome, "blocked");
+  assert.match(rec.note, /not the expected 'panel-updater\.sh'/);
+  assert.deepEqual(mutating(await calls(f)), []);
+});
+
+test("more than one ExecStart line is blocked", executing, async () => {
+  const f = await fixture();
+  const p = await install(f, "panel");
+  await editUnit(f, "panel-updater", (t) => `${t}\nExecStart=${p.script}\n`);
+  const rec = unit(runJson(f).report, "panel");
+  assert.equal(rec.outcome, "blocked");
+  assert.match(rec.note, /2 ExecStart lines/);
+});
+
+for (const prefix of ["-", "@", "+", "!"]) {
+  test(`an ExecStart with the '${prefix}' prefix is blocked`, executing, async () => {
+    const f = await fixture();
+    const p = await install(f, "panel");
+    await editUnit(f, "panel-updater", (t) => t.replace(/^ExecStart=/m, `ExecStart=${prefix}`));
+    await writeFile(join(f.state, "override-panel-updater.service"), `${prefix}${p.script}`);
+    const rec = unit(runJson(f).report, "panel");
+    assert.equal(rec.outcome, "blocked");
+    assert.match(rec.note, /prefix/);
+    assert.deepEqual(mutating(await calls(f)), []);
+  });
+}
+
+test("a continued ExecStart is blocked", executing, async () => {
+  const f = await fixture();
+  const p = await install(f, "panel");
+  await editUnit(f, "panel-updater", (t) => t.replace(/^ExecStart=.*$/m, `ExecStart=${p.script} \\\n  --flag`));
+  await writeFile(join(f.state, "override-panel-updater.service"), `${p.script} --flag`);
+  const rec = unit(runJson(f).report, "panel");
+  assert.equal(rec.outcome, "blocked");
+  assert.match(rec.note, /continued/);
+});
+
+test("a script path with whitespace is blocked", executing, async () => {
+  const f = await fixture();
+  await install(f, "panel", { dirs: "with space" });
+  const rec = unit(runJson(f).report, "panel");
+  assert.equal(rec.outcome, "blocked");
+  assert.match(rec.note, /whitespace/);
+});
+
+test("an ExecStart drop-in in a runtime unit directory is found without asking systemd", executing, async () => {
+  const f = await fixture();
+  await install(f, "node");
+  const dropin = join(f.root, "run-units", "amnezia-node-agent-update.service.d");
+  await mkdir(dropin, { recursive: true });
+  await writeFile(join(dropin, "x.conf"), "[Service]\nExecStart=/usr/local/bin/mine.sh\n");
+  const rec = unit(runJson(f).report, "node");
+  assert.equal(rec.outcome, "blocked");
+  assert.match(rec.note, /run-units.*x\.conf/);
+  assert.deepEqual(mutating(await calls(f)), []);
+});
+
+test("an unreadable effective ExecStart is blocked, not assumed from the file", executing, async () => {
+  const f = await fixture();
+  await install(f, "panel", { active: "failed" });
+  await writeFile(join(f.state, "show-fails"), "");
+  const before = await readFile(unitFile(f, "panel-updater"), "utf8");
+  const r = runJson(f);
+  assert.equal(r.status, 3);
+  const rec = unit(r.report, "panel");
+  assert.equal(rec.outcome, "blocked");
+  assert.match(rec.note, /effective ExecStart/);
+  assert.equal(await readFile(unitFile(f, "panel-updater"), "utf8"), before);
+  assert.deepEqual(mutating(await calls(f)), []);
 });

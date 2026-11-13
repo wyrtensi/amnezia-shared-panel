@@ -105,5 +105,6 @@ test("an override systemd reports but the installer cannot see is caught before 
   const r = install(f);
   assert.equal(r.status, 1);
   assert.match(r.stdout, /panel-updater\.service: effective ExecStart is not '\/bin\/bash /);
+  assert.match(r.stdout, /already written .* reloaded, but the watcher was NOT enabled/);
   assert.ok(!(await calls(f)).includes("enable"), "watcher not enabled");
 });

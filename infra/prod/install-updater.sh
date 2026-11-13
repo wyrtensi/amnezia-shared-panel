@@ -49,7 +49,7 @@ verify_effective_execstart() {
   effective="$(systemctl show -p ExecStart --value "$unit" 2>/dev/null || true)"
   case "$effective" in
     *"argv[]=/bin/bash ${script} ;"*) ;;
-    *) echo "!! ${unit}: effective ExecStart is not '/bin/bash ${script}' (${effective:-unreadable}); a drop-in or another unit file overrides it"; exit 1 ;;
+    *) echo "!! ${unit}: effective ExecStart is not '/bin/bash ${script}' (${effective:-unreadable}); a drop-in or another unit file overrides it. The unit files were already written to ${UNIT_DIR} and systemd was reloaded, but the watcher was NOT enabled"; exit 1 ;;
   esac
 }
 

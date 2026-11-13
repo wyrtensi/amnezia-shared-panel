@@ -40,16 +40,19 @@
 set -uo pipefail
 
 UNIT_DIR="/etc/systemd/system"
+# Same lookup as the installers: an ExecStart drop-in in any of these replaces ours.
+UNIT_SEARCH_DIRS="${AMNEZIA_UNIT_SEARCH_DIRS:-}"
 DRY_RUN=0
 JSON=0
 
 # One row per updater: label | unit base name (<base>.service + <base>.path) |
-# Environment= variable naming the lock directory | enablement step when the
-# updater is not installed. Add a row here to cover another updater.
+# Environment= variable naming the lock directory | expected script file name
+# (any other ExecStart target is blocked, never rewritten) | enablement step when
+# the updater is not installed. Add a row here to cover another updater.
 UPDATERS=(
-  "panel|panel-updater|PANEL_UPDATER_LOCK_DIR|sudo bash infra/prod/install-updater.sh (from the panel checkout)"
-  "node-agent|amnezia-node-agent-update|NODE_UPDATER_LOCK_DIR|sudo NODE_AGENT_UPDATE_REPO=<repo> bash scripts/install-agent-updater.sh (see docs/AGENT-HOST-SETUP.md)"
-  "bridge-agent|amnezia-bridge-agent-update|BRIDGE_UPDATER_LOCK_DIR|re-run infra/bridge/install-bridge.sh with the pinned agent image (see infra/bridge/README.md)"
+  "panel|panel-updater|PANEL_UPDATER_LOCK_DIR|panel-updater.sh|sudo bash infra/prod/install-updater.sh (from the panel checkout)"
+  "node-agent|amnezia-node-agent-update|NODE_UPDATER_LOCK_DIR|agent-update.sh|sudo NODE_AGENT_UPDATE_REPO=<repo> bash scripts/install-agent-updater.sh (see docs/AGENT-HOST-SETUP.md)"
+  "bridge-agent|amnezia-bridge-agent-update|BRIDGE_UPDATER_LOCK_DIR|bridge-agent-update.sh|re-run infra/bridge/install-bridge.sh with the pinned agent image (see infra/bridge/README.md)"
 )
 
 die() { echo "repair-updater-units: $*" >&2; exit 1; }
@@ -64,6 +67,8 @@ while [ $# -gt 0 ]; do
   esac
   shift
 done
+
+[ -n "$UNIT_SEARCH_DIRS" ] || UNIT_SEARCH_DIRS="$UNIT_DIR /run/systemd/system /usr/lib/systemd/system"
 
 if [ "$DRY_RUN" -eq 0 ] && [ "$(id -u)" -ne 0 ]; then
   die "run as root (or use --dry-run to only read state)"
@@ -82,8 +87,8 @@ jstr() {
 # Extract the value of a `Key=` line from an installed unit file.
 unit_value() { sed -n "s/^$2=//p" "$1" | head -n 1; }
 
-# Effective ExecStart command line (what systemd will run), falling back to the
-# unit file when systemd cannot answer.
+# Effective ExecStart command line (what systemd will run); fails when systemd
+# does not answer.
 effective_exec() {
   local out
   out="$(systemctl show -p ExecStart --value "$1.service" 2>/dev/null || true)"
@@ -91,9 +96,11 @@ effective_exec() {
     *"argv[]="*)
       out="${out#*argv\[\]=}"
       printf '%s' "${out%% ;*}"
-      return ;;
+      return 0 ;;
   esac
-  unit_value "$UNIT_DIR/$1.service" ExecStart
+  # No fallback to the unit file: when systemd cannot say what it runs, the
+  # caller must not assume the file is what is effective.
+  return 1
 }
 
 human_age() {
@@ -160,12 +167,29 @@ lock_held() {
 
 # Drop-in files that set ExecStart replace the command we are about to fix.
 dropin_overrides() {
-  local conf
-  for conf in "$UNIT_DIR/$1.service.d/"*.conf; do
-    [ -f "$conf" ] || continue
-    grep -Eq '^[[:space:]]*ExecStart[[:space:]]*=' "$conf" && { printf '%s' "$conf"; return 0; }
+  local dir conf
+  for dir in $UNIT_SEARCH_DIRS; do
+    for conf in "$dir/$1.service.d/"*.conf; do
+      [ -f "$conf" ] || continue
+      grep -Eq '^[[:space:]]*ExecStart[[:space:]]*=' "$conf" && { printf '%s' "$conf"; return 0; }
+    done
   done
   return 1
+}
+
+# Sets I_RUNNING, I_PENDING and the request fields from the live host state.
+# Called at inventory time and again right before the watcher is rearmed.
+busy_check() {
+  local base="$1" path_file="$2" lockdir="$3" svc_state
+  I_RUNNING=no; I_PENDING=no; I_REQ_ID="-"; I_REQ_AGE="-"; I_REQ_STATUS="-"
+  svc_state="$(systemctl is-active "$base.service" 2>/dev/null || true)"
+  case "$svc_state" in active|activating|deactivating|reloading) I_RUNNING=yes ;; esac
+  lock_held "$lockdir" && I_RUNNING=yes
+  if find_pending "$path_file"; then
+    I_PENDING=yes
+    describe_request "$PEND_PATH"
+    I_REQ_ID="$REQ_ID"; I_REQ_AGE="$REQ_AGE"; I_REQ_STATUS="$REQ_STATUS"
+  fi
 }
 
 add_record() {
@@ -179,9 +203,9 @@ add_record() {
 }
 
 process_unit() {
-  local label="$1" base="$2" lockenv="$3" hint="$4"
+  local label="$1" base="$2" lockenv="$3" expected="$4" hint="$5"
   local svc_file="$UNIT_DIR/$base.service" path_file="$UNIT_DIR/$base.path"
-  local file_exec dropin script lockdir rewrite=0 failed=0 tmpdir candidate want_active
+  local file_exec raw_exec exec_lines dropin script lockdir rewrite=0 failed=0 tmpdir candidate want_active
 
   I_BASE="$base"; I_EXEC="-"; I_ENABLED="-"; I_WATCHER="-"; I_RUNNING="no"
   I_PENDING="no"; I_REQ_ID="-"; I_REQ_AGE="-"; I_REQ_STATUS="-"
@@ -197,37 +221,61 @@ process_unit() {
 
   I_ENABLED="$(systemctl is-enabled "$base.path" 2>/dev/null || true)"; [ -n "$I_ENABLED" ] || I_ENABLED=unknown
   I_WATCHER="$(systemctl is-active "$base.path" 2>/dev/null || true)"; [ -n "$I_WATCHER" ] || I_WATCHER=unknown
-  file_exec="$(unit_value "$svc_file" ExecStart)"
-  I_EXEC="$(effective_exec "$base")"
-  [ -n "$I_EXEC" ] || I_EXEC="-"
 
   local svc_state
   svc_state="$(systemctl is-active "$base.service" 2>/dev/null || true)"
   lockdir="$(unit_value "$svc_file" "Environment=$lockenv")"
   lockdir="${lockdir%\"}"; lockdir="${lockdir#\"}"
-  case "$svc_state" in active|activating|deactivating|reloading) I_RUNNING=yes ;; esac
-  lock_held "$lockdir" && I_RUNNING=yes
-
-  if find_pending "$path_file"; then
-    I_PENDING=yes
-    describe_request "$PEND_PATH"
-    I_REQ_ID="$REQ_ID"; I_REQ_AGE="$REQ_AGE"; I_REQ_STATUS="$REQ_STATUS"
-  fi
+  busy_check "$base" "$path_file" "$lockdir"
 
   [ "$svc_state" = failed ] && failed=1
   [ "$I_WATCHER" = failed ] && failed=1
 
-  if dropin="$(dropin_overrides "$base")" || [ "$I_EXEC" != "$file_exec" ]; then
-    add_record "$label" blocked "ExecStart is overridden (${dropin:-effective differs from $svc_file}); remove the override, then run this tool again"
+  if dropin="$(dropin_overrides "$base")"; then
+    add_record "$label" blocked "ExecStart is overridden by drop-in $dropin; remove the override, then run this tool again"
+    return
+  fi
+  if ! I_EXEC="$(effective_exec "$base")" || [ -z "$I_EXEC" ]; then
+    I_EXEC="-"
+    add_record "$label" blocked "systemd did not report an effective ExecStart; cannot rule out an override, fix systemctl access and run again"
+    return
+  fi
+
+  # Exactly one plain ExecStart line, no prefix, no continuation.
+  exec_lines="$(grep -Ec '^[[:space:]]*ExecStart[[:space:]]*=' "$svc_file")"
+  if [ "$exec_lines" -ne 1 ]; then
+    add_record "$label" blocked "$svc_file has $exec_lines ExecStart lines, expected exactly one; fix by hand"
+    return
+  fi
+  raw_exec="$(grep -E '^[[:space:]]*ExecStart[[:space:]]*=' "$svc_file")"
+  case "$raw_exec" in
+    ExecStart=*) ;;
+    *) add_record "$label" blocked "unrecognized ExecStart line '$raw_exec'; fix by hand"; return ;;
+  esac
+  file_exec="${raw_exec#ExecStart=}"
+  case "$file_exec" in
+    [-@+!:]*) add_record "$label" blocked "ExecStart '$file_exec' carries a systemd prefix; fix by hand"; return ;;
+  esac
+  case "$raw_exec" in
+    *\\) add_record "$label" blocked "ExecStart is continued over several lines; fix by hand"; return ;;
+  esac
+  if [ "$I_EXEC" != "$file_exec" ]; then
+    add_record "$label" blocked "effective ExecStart '$I_EXEC' differs from $svc_file; remove the override, then run this tool again"
     return
   fi
 
   case "$file_exec" in
     "/bin/bash "/*) script="${file_exec#/bin/bash }" ;;
-    /*) script="$file_exec"; rewrite=1
-        case "$script" in *[[:space:]]*) add_record "$label" blocked "unrecognized ExecStart '$file_exec'; fix by hand"; return ;; esac ;;
+    /*) script="$file_exec"; rewrite=1 ;;
     *) add_record "$label" blocked "unrecognized ExecStart '$file_exec'; fix by hand"; return ;;
   esac
+  case "$script" in
+    *[[:space:]]*) add_record "$label" blocked "script path '$script' contains whitespace; fix by hand"; return ;;
+  esac
+  if [ "${script##*/}" != "$expected" ]; then
+    add_record "$label" blocked "ExecStart script '$script' is not the expected '$expected'; fix by hand"
+    return
+  fi
 
   if [ "$rewrite" -eq 0 ] && [ "$failed" -eq 0 ]; then
     add_record "$label" current "already starts through /bin/bash; nothing to do"
@@ -247,6 +295,20 @@ process_unit() {
     add_record "$label" deferred-pending "request $I_REQ_ID ($I_REQ_STATUS, age $I_REQ_AGE) is pending and the watcher is left as is; resume or cancel it explicitly, then run this tool again"
     return
   fi
+
+  # Local helper: re-run the busy check and record a deferral when it now holds.
+  recheck_busy_defer() {
+    busy_check "$base" "$path_file" "$lockdir"
+    if [ "$I_RUNNING" = yes ]; then
+      add_record "$label" deferred-running "unit repaired, but an operation started meanwhile; the watcher was left untouched. Run this tool again when it has finished"
+      return 0
+    fi
+    if [ "$I_PENDING" = yes ]; then
+      add_record "$label" deferred-pending "unit repaired, but request $I_REQ_ID ($I_REQ_STATUS, age $I_REQ_AGE) appeared meanwhile; the watcher was left untouched. Resume or cancel it explicitly, then run this tool again"
+      return 0
+    fi
+    return 1
+  }
 
   want_active=0
   case "$I_ENABLED" in enabled|enabled-runtime) want_active=1 ;; esac
@@ -286,6 +348,11 @@ process_unit() {
     fi
   fi
 
+  # The host can change while the unit is verified, installed and reloaded: look
+  # again before anything is rearmed. The unit stays repaired; the watcher stays
+  # exactly as it is.
+  if recheck_busy_defer; then return; fi
+
   # Clear the old failed state (203/EXEC, unit-start-limit-hit) of both units.
   [ "$svc_state" = failed ] && systemctl reset-failed "$base.service" >/dev/null 2>&1
   [ "$I_WATCHER" = failed ] && systemctl reset-failed "$base.path" >/dev/null 2>&1
@@ -293,6 +360,7 @@ process_unit() {
   # Back to the previous enablement. A disabled updater is never enabled here.
   if [ "$want_active" -eq 1 ]; then
     if [ "$(systemctl is-active "$base.path" 2>/dev/null || true)" != active ]; then
+      if recheck_busy_defer; then return; fi
       systemctl start "$base.path" >/dev/null 2>&1 ||
         { add_record "$label" failed "could not start $base.path"; return; }
     fi
@@ -307,8 +375,8 @@ process_unit() {
 }
 
 for row in "${UPDATERS[@]}"; do
-  IFS='|' read -r r_label r_base r_lock r_hint <<<"$row"
-  process_unit "$r_label" "$r_base" "$r_lock" "$r_hint"
+  IFS='|' read -r r_label r_base r_lock r_script r_hint <<<"$row"
+  process_unit "$r_label" "$r_base" "$r_lock" "$r_script" "$r_hint"
 done
 
 HOST="$(hostname 2>/dev/null || echo unknown)"

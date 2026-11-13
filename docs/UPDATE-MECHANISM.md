@@ -87,7 +87,9 @@ Hosts installed before this change need the installed unit repaired. Do **not**
 re-run the installer to do it (that would re-render template defaults); use
 `scripts/repair-updater-units.sh`. It is self-contained, reads the units installed on
 the host, and rewrites only the `ExecStart=` line, so custom checkout paths, spool,
-lock directory and the approved image repository stay as they are.
+lock directory and the approved image repository stay as they are. Re-running an
+installer while a request is pending re-arms the watcher and fires that request, so
+use the repair tool for repairs, not the installer.
 
 ### Per-host procedure
 
@@ -113,9 +115,9 @@ pending (id, age, status). Outcomes:
 | `repaired` / `would-repair` | Idle unit: `systemd-analyze verify`, install, `daemon-reload`, clear the failed state (`reset-failed` of service and watcher), watcher back to its previous enablement (enabled: started and `waiting`; disabled: stays disabled and stopped). No update is triggered. | Nothing; confirm in the second run. |
 | `current` | Already `/bin/bash`, watcher healthy. A second run is always this. | Nothing. |
 | `deferred-running` | An operation is running (service active or lock held). Nothing is changed. | Run the tool again when it has finished. |
-| `deferred-pending` | A request is queued (or, for bridges, an interrupted run's journal exists). The watcher is left exactly as it is, because rearming a level-triggered path unit would start that request. The report names the request id, age and status. | Decide explicitly: resume it (start the service, or fix and re-run the tool when the request has been consumed) or cancel it (remove the request file through the normal update path), then run the tool again. The tool never deletes requests, results or journals. |
+| `deferred-pending` | A request is queued (or, for bridges, an interrupted run's journal exists), found either at inventory time or just before rearming (then the unit is already repaired and only the watcher is left untouched). The watcher stays exactly as it is, because rearming a level-triggered path unit would start that request. The report names the request id, age and status. | Decide explicitly. To resume: confirm the request is still wanted (age, status; a bridge `picked_up` or a journal means a run was interrupted), start the service once by hand (`systemctl start <unit>.service`) or let the watcher fire it, wait for the result, then run the tool again. To cancel: remove the request file from the spool (for a bridge also check the journal and results first) and run the tool again. The tool never deletes requests, results or journals. |
 | `not-installed` | The opt-in updater was never set up on this host. Its disabled status is preserved. | Normal enablement step shown in the note (`install-updater.sh` / `install-agent-updater.sh` / `install-bridge.sh`). |
-| `blocked` | An `ExecStart` override, a missing or unreadable script, a Bash syntax error, an unrecognized `ExecStart`, or a partial install. Nothing is changed. | Fix the cause named in the note, run again. |
+| `blocked` | An `ExecStart` override (drop-in under `/etc`, `/run`, `/usr/lib` `systemd/system/<unit>.service.d`, or systemd not reporting an effective command), more than one `ExecStart` line, a `-`/`@`/`+`/`!` prefix or a continued line, a script other than the expected `panel-updater.sh` / `agent-update.sh` / `bridge-agent-update.sh`, whitespace in the script path, a missing or unreadable script, a Bash syntax error, or a partial install. Nothing is changed. | Fix the cause named in the note, run again. |
 | `failed` | `systemd-analyze verify` rejected the corrected unit (nothing changed), the reload or the effective command check failed, or the watcher did not come back to `waiting`. | Read the note and `journalctl -u <unit>`. |
 
 Exit status: `0` nothing left to do, `2` at least one unit deferred, `3` at least
