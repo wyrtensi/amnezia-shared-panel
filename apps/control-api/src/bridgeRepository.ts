@@ -174,6 +174,13 @@ const toBridge = (row: BridgeRow, routes: BridgeRouteSummary[]): Bridge => ({
  * rows. Route mutation is serialized per VPN node by its node row lock; port
  * allocation is serialized per bridge by the bridge row lock, with the unique
  * (bridge, port) index as the final guard.
+ *
+ * The node row is locked `FOR NO KEY UPDATE`, not `FOR UPDATE`: it still
+ * serializes every route mutation and node edit on that node, but it does not
+ * block the key-share locks that foreign-key inserts referencing the node take
+ * (reachability history, keys, telemetry). With `FOR UPDATE`, an activation
+ * that resets the node's reachability rows deadlocks against a worker ingest
+ * that has upserted those rows and then inserts a history row.
  */
 export class PostgresBridgeRepository {
   constructor(private readonly options: BridgeRepositoryOptions) {}
@@ -336,8 +343,9 @@ export class PostgresBridgeRepository {
 
   private routesWithBridges = async (
     where: SQL,
+    executor: Database | BridgeTransaction = this.db,
   ): Promise<NodeBridgeRoute[]> => {
-    const rows = await this.db
+    const rows = await executor
       .select({ route: vpnBridgeRoutes, bridge: vpnBridges })
       .from(vpnBridgeRoutes)
       .innerJoin(vpnBridges, eq(vpnBridges.id, vpnBridgeRoutes.bridgeId))
@@ -360,14 +368,17 @@ export class PostgresBridgeRepository {
     return toNodeRoute(row.route, row.bridge);
   };
 
-  getNodeBridgeRoutes = async (nodeId: string): Promise<NodeBridgeRoutes> => {
-    const [node] = await this.db
+  getNodeBridgeRoutes = async (
+    nodeId: string,
+    executor: Database | BridgeTransaction = this.db,
+  ): Promise<NodeBridgeRoutes> => {
+    const [node] = await executor
       .select({ id: nodes.id, revision: nodes.vpnEndpointRevision })
       .from(nodes)
       .where(eq(nodes.id, nodeId))
       .limit(1);
     if (!node) throw nodeNotFound();
-    const routes = await this.routesWithBridges(eq(vpnBridgeRoutes.nodeId, nodeId));
+    const routes = await this.routesWithBridges(eq(vpnBridgeRoutes.nodeId, nodeId), executor);
     return {
       nodeId,
       vpnEndpointRevision: node.revision,
@@ -420,7 +431,7 @@ export class PostgresBridgeRepository {
           .select({ id: nodes.id })
           .from(nodes)
           .where(eq(nodes.id, nodeId))
-          .for("update");
+          .for("no key update");
         if (!node) throw nodeNotFound();
         const [bridge] = await tx
           .select()
@@ -572,7 +583,7 @@ export class PostgresBridgeRepository {
         .select({ id: nodes.id })
         .from(nodes)
         .where(eq(nodes.id, located.nodeId))
-        .for("update");
+        .for("no key update");
       const [route] = await tx
         .select()
         .from(vpnBridgeRoutes)
@@ -644,7 +655,7 @@ export class PostgresBridgeRepository {
   /**
    * Change the node's active endpoint inside the caller's transaction: a route
    * id activates that route, null selects Direct. The caller must already
-   * hold the node row lock (`FOR UPDATE`).
+   * hold the node row lock (`FOR NO KEY UPDATE`).
    *
    * Order of checks: endpoint revision -> route ownership and state ->
    * observation -> verification. A request for the state the node is already
@@ -665,7 +676,7 @@ export class PostgresBridgeRepository {
       .select({ id: nodes.id, revision: nodes.vpnEndpointRevision })
       .from(nodes)
       .where(eq(nodes.id, nodeId))
-      .for("update");
+      .for("no key update");
     if (!node) throw nodeNotFound();
     if (node.revision !== expectedRevision) {
       throw new ApiError(

@@ -1246,11 +1246,14 @@ export class PostgresControlRepository implements ControlRepository {
       Object.keys(nodeFields).length > 0 ||
       (vpnBridgeRouteId === undefined && expectedVpnEndpointRevision === undefined);
     return this.options.db.transaction(async (tx) => {
+      // NO KEY UPDATE serializes node edits and route changes on this node
+      // without blocking foreign-key inserts that reference it; see the lock
+      // note in bridgeRepository.ts.
       const [current] = await tx
         .select({ id: nodes.id })
         .from(nodes)
         .where(eq(nodes.id, nodeId))
-        .for("update");
+        .for("no key update");
       if (!current) throw new ApiError(404, "Node not found", "NODE_NOT_FOUND");
 
       const updated = editsNode
@@ -1260,7 +1263,7 @@ export class PostgresControlRepository implements ControlRepository {
         if (updated) return updated;
         // Only `expectedVpnEndpointRevision`: nothing to change. Report the
         // current assignment so the caller sees what it would have compared.
-        const routes = await this.bridges.getNodeBridgeRoutes(nodeId);
+        const routes = await this.bridges.getNodeBridgeRoutes(nodeId, tx);
         return {
           id: nodeId,
           vpnEndpoint: {

@@ -11,6 +11,7 @@ import {
   auditEvents,
   createDatabase,
   encryptSecret,
+  nodeReachabilityHistory,
   nodeReachabilityResults,
   nodeReachabilityState,
   nodes,
@@ -580,8 +581,21 @@ describe("bridge registry (real PostgreSQL)", () => {
     // audit_events.actor_user_id references users: an actor without a row
     // makes the audit insert fail for real, as the last write of the change.
     const ghost: Actor = { ...admin, id: randomUUID() };
-    const failure = await failureOf(activate(nodeId, route.id, 0, ghost));
-    expect(failure).not.toBeNull();
+    let failure: unknown = null;
+    try {
+      await activate(nodeId, route.id, 0, ghost);
+    } catch (error) {
+      failure = error;
+    }
+    // Prove the audit insert is what failed, not an earlier guard.
+    let cause = failure as { code?: string; constraint_name?: string; cause?: unknown } | null;
+    for (let depth = 0; cause && cause.code !== "23503" && depth < 4; depth += 1) {
+      cause = cause.cause as typeof cause;
+    }
+    expect(cause).toMatchObject({
+      code: "23503",
+      constraint_name: "audit_events_actor_user_id_users_id_fk",
+    });
     expect(await revisionOf(nodeId)).toBe(0);
     const row = await routeRow(route.id);
     expect(row?.state).toBe("draft");
@@ -592,6 +606,43 @@ describe("bridge registry (real PostgreSQL)", () => {
         .from(nodeReachabilityResults)
         .where(eq(nodeReachabilityResults.nodeId, nodeId)),
     ).toHaveLength(1);
+  });
+
+  runDatabaseTest("activation does not deadlock with an overlapping reachability ingest", async () => {
+    const bridge = await createBridge();
+    const nodeId = await seedNode("ingest-overlap");
+    const { route } = await repository.prepareBridgeRoute(admin, nodeId, { bridgeId: bridge.id });
+    await makeActivatable(bridge.id, route.id);
+    const runId = randomUUID();
+    const result = { nodeId, protocol: "awg3" as const, status: "ok" as const, levels: {}, runId };
+    await db().insert(nodeReachabilityResults).values({ ...result, checkedAt: new Date() });
+    let activation: Promise<unknown> | null = null;
+    // The worker's ingest order: upsert the node's existing per-protocol
+    // result (a row lock, no foreign-key check), then insert a history row,
+    // whose foreign key key-shares the node row. Activation holds the node
+    // row and waits for the result row in between.
+    await db().transaction(async (ingest) => {
+      await ingest
+        .insert(nodeReachabilityResults)
+        .values({ ...result, checkedAt: new Date() })
+        .onConflictDoUpdate({
+          target: [nodeReachabilityResults.nodeId, nodeReachabilityResults.protocol],
+          set: { checkedAt: new Date() },
+        });
+      activation = activate(nodeId, route.id, 0);
+      // Let the activation take the node lock and block on the result row.
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      await ingest
+        .insert(nodeReachabilityHistory)
+        .values({ nodeId, runId, status: "ok", checkedAt: new Date() });
+    });
+    await expect(activation).resolves.toMatchObject({
+      vpnEndpoint: { changed: true, vpnEndpointRevision: 1 },
+    });
+    // The activation ran after the ingest and reset its evidence.
+    expect(
+      await db().select().from(nodeReachabilityResults).where(eq(nodeReachabilityResults.nodeId, nodeId)),
+    ).toHaveLength(0);
   });
 
   runDatabaseTest("an unrelated node PATCH leaves the revision and routes alone", async () => {
