@@ -478,6 +478,15 @@ operation whose POST was never attempted and whose job is gone closes as
 `systemctl status amnezia-bridge-agent-update.path` on the bridge host; once the agent reports
 `expired` the operation ends and you can request again.
 
+*A bridge that stays unreachable while its update slot is held.* The slot is deliberately not
+freed on silence, because the host may still apply the update. Restore contact: check the
+`panel-tunnel-bridge-<id>` unit and the bridge host's `bridge-agent` container, and if the agent
+cannot be brought back, reinstall it with `install-bridge.sh` (same bridge id, same image from the
+pin file) or re-enroll it (`bridge-enroll`). As soon as an agent answers, the next poll reads the
+operation: the real state, or a 404 (`failed UPDATE_UNKNOWN_TO_AGENT`), or `expired`, ends the
+operation and frees the slot. A request is never closed by the panel on its own once its POST was
+attempted; one past `notAfter` that was never sent closes as `failed UPDATE_NEVER_SENT`.
+
 ---
 
 ## 8. Two habits that catch the rest

@@ -124,6 +124,7 @@ export const BRIDGE_AGENT_UPDATE_ERRORS = [
   "BRIDGE_JOBS_DISABLED",
   "AGENT_UPDATE_UNSUPPORTED",
   "UPDATE_UNKNOWN_TO_AGENT",
+  "AGENT_UNEXPECTED_STATE",
   "UPDATE_NEVER_SENT",
   "AGENT_UPDATE_REJECTED",
   "AGENT_UPDATE_CONFLICT",
@@ -183,8 +184,9 @@ export const bridgeAgentUpdateOperationSchema = z.object({
    */
   acknowledgementOverdueSince: z.iso.datetime().nullable(),
   /**
-   * Set while the management endpoint has been unreachable since the host
-   * started the update: an observation, not a terminal state.
+   * Set while the management endpoint gives no usable answer (before the
+   * host's pickup, or while it replaces the agent): an observation, not a
+   * terminal state and never a verdict.
    */
   contactLostSince: z.iso.datetime().nullable(),
   /** The last bounded code seen for the operation, also while it is outstanding. */

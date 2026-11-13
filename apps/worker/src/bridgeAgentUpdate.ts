@@ -135,6 +135,14 @@ export const nextChange = (
   at: Date,
 ): BridgeUpdateChange | null => {
   if (read.kind === "status") {
+    // `expired` is only true of an intent the host never started.
+    if (
+      read.status.state === "expired" &&
+      operation.state !== "queued" &&
+      operation.state !== "sent"
+    ) {
+      return { errorCode: "AGENT_UNEXPECTED_STATE", lastCheckedAt: at, contactLostSince: null };
+    }
     const next = bridgeAgentUpdateStateOf(read.status.state);
     // The agent never moves an operation back; a stale answer changes nothing
     // but proves contact.
@@ -144,7 +152,7 @@ export const nextChange = (
     return reportedChange(operation, read.status.state, read.status.errorCode, at);
   }
   if (read.kind === "unknown_operation") {
-    return operation.state === "queued" ? null : finished("failed", "UPDATE_UNKNOWN_TO_AGENT", at);
+    return finished("failed", "UPDATE_UNKNOWN_TO_AGENT", at);
   }
   if (read.kind === "mismatch") {
     return { errorCode: "AGENT_OPERATION_MISMATCH", lastCheckedAt: at };
@@ -205,6 +213,11 @@ export const createBridgeAgentUpdate = ({
       await jobs.completeJob(job.id);
     };
     if (!bridgeJobsGate(jobsEnabled).ok) return end("BRIDGE_JOBS_DISABLED");
+    // A first delivery past the pickup deadline is never sent: the agent would
+    // only refuse it, and a stale intent must not reach a host at all.
+    if (!operation.sendAttemptedAt && at.getTime() >= operation.notAfter.getTime()) {
+      return end("UPDATE_NEVER_SENT");
+    }
     const target = await targets.loadPollTarget(bridgeId);
     if (!target) return end("AGENT_CREDENTIAL_UNREADABLE");
     if (!isAllowedBridgeManagementUrl(target.apiUrl, managementHosts)) {
@@ -216,6 +229,9 @@ export const createBridgeAgentUpdate = ({
     if (!target.capabilities?.includes(BRIDGE_AGENT_UPDATE_CAPABILITY)) {
       return end("AGENT_UPDATE_UNSUPPORTED");
     }
+    // Committed before the POST: from here on only the agent can say whether
+    // the intent arrived, so nothing may close the operation on its own.
+    await repository.recordChange(operationId, { sendAttemptedAt: at });
     const sent = await sendBridgeAgentUpdate(requestOf(operation), {
       baseUrl: target.apiUrl,
       apiKey: target.apiKey,
@@ -279,8 +295,15 @@ export const createBridgeUpdateTracker = ({
     }
     const at = now();
     let change: BridgeUpdateChange | null;
-    if (read.kind === "unknown_operation" && operation.state === "queued" && options) {
-      // The earlier POST did not arrive: send the same intent again.
+    if (
+      read.kind === "unknown_operation" &&
+      operation.state === "queued" &&
+      options &&
+      at.getTime() < operation.notAfter.getTime()
+    ) {
+      // The earlier POST did not arrive and the intent is still in date: send
+      // the same intent again. Past `notAfter` it is never re-sent; the agent
+      // confirmed it does not know it, which ends it (nextChange).
       change = deliveryChange(operation, await sendBridgeAgentUpdate(requestOf(operation), options), at);
     } else {
       change = nextChange(operation, read, at);

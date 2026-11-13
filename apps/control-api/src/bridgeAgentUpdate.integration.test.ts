@@ -319,6 +319,7 @@ describe("bridge-agent update requests (real PostgreSQL)", () => {
         bridgeId: bridge.id,
         imageRepository: APPROVED,
         imageDigest: digest("a"),
+        notAfter: new Date(Date.now() + 120_000),
       };
       await db().insert(vpnBridgeAgentUpdates).values({ id: randomUUID(), ...base, state: "running" });
       await expect(

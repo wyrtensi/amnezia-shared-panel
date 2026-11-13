@@ -359,15 +359,16 @@ export const vpnBridgeAgentUpdates = pgTable(
     agentState: text("agent_state"),
     requestedAt: timestamp("requested_at", { withTimezone: true }).defaultNow().notNull(),
     // The panel's pickup deadline sent with the intent (requested_at + 120 s).
-    notAfter: timestamp("not_after", { withTimezone: true }).defaultNow().notNull(),
+    notAfter: timestamp("not_after", { withTimezone: true }).notNull(),
     // Set once a POST was attempted, also when it got no usable answer: from
     // then on only the agent can say whether the intent arrived.
     sendAttemptedAt: timestamp("send_attempted_at", { withTimezone: true }),
     sentAt: timestamp("sent_at", { withTimezone: true }),
     acknowledgedAt: timestamp("acknowledged_at", { withTimezone: true }),
     lastCheckedAt: timestamp("last_checked_at", { withTimezone: true }),
-    // Observation, not a state: management contact lost since the host
-    // started the update; cleared when the agent answers again.
+    // Observation, not a state: the management endpoint gave no usable answer
+    // (before pickup, or while the host replaces the agent) since this time;
+    // cleared when the agent answers again.
     contactLostSince: timestamp("contact_lost_since", { withTimezone: true }),
     // Observation: a reachable agent still reports the intent unstarted past
     // not_after. The operation stays outstanding.
@@ -387,6 +388,10 @@ export const vpnBridgeAgentUpdates = pgTable(
     check(
       "vpn_bridge_agent_updates_state_valid",
       sql`${table.state} in ('queued', 'sent', 'acknowledged', 'running', 'succeeded', 'rolled_back', 'rollback_failed', 'failed', 'pickup_timeout')`,
+    ),
+    check(
+      "vpn_bridge_agent_updates_not_after_after_request",
+      sql`${table.notAfter} > ${table.requestedAt}`,
     ),
     check(
       "vpn_bridge_agent_updates_digest_valid",

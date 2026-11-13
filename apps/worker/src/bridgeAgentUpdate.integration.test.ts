@@ -42,6 +42,8 @@ type FakeAgent = {
   /** Reported state per operation id (set by POST, driven by the test). */
   ops: Map<string, BridgeAgentUpdateAgentState>;
   errorCodes: Map<string, string>;
+  /** notAfter (epoch ms) the agent saw per operation. */
+  notAfter: Map<string, number>;
   /** Answer GET /v1/update for another operation id. */
   answerForOther: boolean;
   posts: Array<{
@@ -66,6 +68,7 @@ describe("bridge-agent update (real PostgreSQL, fake bridge-agent over HTTP)", (
     offline: false,
     ops: new Map(),
     errorCodes: new Map(),
+    notAfter: new Map(),
     answerForOther: false,
     posts: [],
   };
@@ -84,10 +87,21 @@ describe("bridge-agent update (real PostgreSQL, fake bridge-agent over HTTP)", (
   };
   const updateStatus = (operationId: string) => ({
     operationId: agent.answerForOther ? randomUUID() : operationId,
-    state: agent.ops.get(operationId),
+    state: stateOf(operationId),
     updatedAt: new Date().toISOString(),
     ...(agent.errorCodes.has(operationId) ? { errorCode: agent.errorCodes.get(operationId) } : {}),
   });
+
+  /** The agent never starts an intent after its notAfter: it reads as expired. */
+  const stateOf = (operationId: string): BridgeAgentUpdateAgentState | undefined => {
+    const state = agent.ops.get(operationId);
+    const notAfter = agent.notAfter.get(operationId);
+    if (state === "queued" && notAfter !== undefined && Date.now() >= notAfter) {
+      agent.ops.set(operationId, "expired");
+      return "expired";
+    }
+    return state;
+  };
 
   beforeAll(async () => {
     server = createServer((req, res) => {
@@ -137,7 +151,10 @@ describe("bridge-agent update (real PostgreSQL, fake bridge-agent over HTTP)", (
             return;
           }
           const known = agent.ops.has(body.operationId);
-          if (!known) agent.ops.set(body.operationId, "queued");
+          if (!known) {
+            agent.ops.set(body.operationId, "queued");
+            agent.notAfter.set(body.operationId, Date.parse(body.notAfter));
+          }
           if (agent.post === "store-then-drop") {
             req.socket.destroy();
             return;
@@ -172,6 +189,7 @@ describe("bridge-agent update (real PostgreSQL, fake bridge-agent over HTTP)", (
     agent.offline = false;
     agent.ops.clear();
     agent.errorCodes.clear();
+    agent.notAfter.clear();
     agent.answerForOther = false;
     agent.posts.length = 0;
     if (!database) return;
@@ -227,7 +245,11 @@ describe("bridge-agent update (real PostgreSQL, fake bridge-agent over HTTP)", (
   /** A queued operation and its outbox row, as the Control API stores them. */
   const queueOperation = async (
     bridgeId: string,
-    options: { requestedAt?: Date; state?: typeof vpnBridgeAgentUpdates.$inferInsert.state } = {},
+    options: {
+      requestedAt?: Date;
+      notAfter?: Date;
+      state?: typeof vpnBridgeAgentUpdates.$inferInsert.state;
+    } = {},
   ) => {
     const operationId = randomUUID();
     await db()
@@ -240,7 +262,8 @@ describe("bridge-agent update (real PostgreSQL, fake bridge-agent over HTTP)", (
         imageVersion: "0.2.0",
         fromVersion: "0.1.0",
         requestedAt: options.requestedAt ?? new Date(),
-        notAfter: new Date((options.requestedAt ?? new Date()).getTime() + 120_000),
+        notAfter:
+          options.notAfter ?? new Date((options.requestedAt ?? new Date()).getTime() + 120_000),
         state: options.state ?? "queued",
       });
     const [job] = await db()
@@ -511,6 +534,7 @@ describe("bridge-agent update (real PostgreSQL, fake bridge-agent over HTTP)", (
           bridgeId: bridge.id,
           imageRepository: REPOSITORY,
           imageDigest: DIGEST,
+          notAfter: new Date(Date.now() + 120_000),
         }),
       ).rejects.toThrow();
       // Nothing is sent again.
@@ -532,6 +556,7 @@ describe("bridge-agent update (real PostgreSQL, fake bridge-agent over HTTP)", (
         bridgeId: bridge.id,
         imageRepository: REPOSITORY,
         imageDigest: DIGEST,
+        notAfter: new Date(Date.now() + 120_000),
       });
     },
   );
@@ -625,6 +650,70 @@ describe("bridge-agent update (real PostgreSQL, fake bridge-agent over HTTP)", (
       expect((await operation(attempted.operationId)).state).toBe("queued");
     },
   );
+
+  runDatabaseTest("a first delivery past notAfter is never sent", async () => {
+    const bridge = await seedBridge();
+    const requestedAt = new Date("2026-11-13T10:00:00.000Z");
+    const { operationId, job } = await queueOperation(bridge.id, { requestedAt });
+    // The job ran late (a backed-up lane): its clock is past the deadline.
+    await sendJob({ now: new Date(requestedAt.getTime() + 121_000) })(job);
+    expect(agent.posts).toHaveLength(0);
+    const row = await operation(operationId);
+    expect(row).toMatchObject({ state: "failed", errorCode: "UPDATE_NEVER_SENT", sendAttemptedAt: null });
+    expect(await jobStatus(job.id)).toBe("completed");
+  });
+
+  runDatabaseTest("the attempt is committed before the POST goes out", async () => {
+    const bridge = await seedBridge();
+    const { operationId, job } = await queueOperation(bridge.id);
+    let seenDuringPost: Date | null | undefined;
+    const fetchImpl: typeof fetch = async () => {
+      seenDuringPost = (await operation(operationId)).sendAttemptedAt;
+      throw new Error("network down");
+    };
+    await createBridgeAgentUpdate({
+      repository: updateRepository,
+      targets: pollRepository,
+      jobs: workerRepository,
+      jobsEnabled: true,
+      managementHosts: ["127.0.0.1"],
+      fetchImpl,
+    })(job);
+    expect(seenDuringPost).toBeInstanceOf(Date);
+    expect(await operation(operationId)).toMatchObject({ state: "queued", errorCode: "AGENT_UNREACHABLE" });
+  });
+
+  runDatabaseTest("a POST that reaches the agent after notAfter is refused as expired, which frees the slot", async () => {
+    const bridge = await seedBridge();
+    const notAfter = new Date(Date.now() + 300);
+    const { operationId, job } = await queueOperation(bridge.id, { notAfter });
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    // The job's own clock is early, the agent's is not.
+    await sendJob({ now: new Date(notAfter.getTime() - 100) })(job);
+    expect(agent.posts).toHaveLength(1);
+    expect(await operation(operationId)).toMatchObject({
+      state: "pickup_timeout",
+      agentState: "expired",
+      errorCode: "UPDATE_NOT_ACKNOWLEDGED",
+    });
+  });
+
+  runDatabaseTest("a 404 past notAfter is not answered with a re-send", async () => {
+    const bridge = await seedBridge();
+    const requestedAt = new Date("2026-11-13T10:00:00.000Z");
+    const { operationId } = await queueOperation(bridge.id, { requestedAt });
+    await db()
+      .update(vpnBridgeAgentUpdates)
+      .set({ sendAttemptedAt: requestedAt })
+      .where(eq(vpnBridgeAgentUpdates.id, operationId));
+    // The agent never saw it; the poll runs after the deadline.
+    await pollOnce(bridge.id, { now: new Date(requestedAt.getTime() + 300_000) });
+    expect(agent.posts).toHaveLength(0);
+    expect(await operation(operationId)).toMatchObject({
+      state: "failed",
+      errorCode: "UPDATE_UNKNOWN_TO_AGENT",
+    });
+  });
 
   runDatabaseTest("a poll re-reads capabilities when stale or while an update is outstanding, not otherwise", async () => {
     const bridge = await seedBridge(["status.v1"]);

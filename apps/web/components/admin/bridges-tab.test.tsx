@@ -286,6 +286,21 @@ describe("BridgeCardView agent update", () => {
     expect(html).not.toContain("failed");
   });
 
+  it("words lost contact differently before pickup and during replacement", () => {
+    const lost = (state: "sent" | "running") =>
+      renderWithUpdate(
+        enrolled({
+          updateSupported: true,
+          offered,
+          operation: { ...operation, state, contactLostSince: "2026-11-13T10:01:00.000Z", result: null },
+        }),
+      );
+    expect(lost("running")).toContain("expected while the agent is replaced");
+    const before = lost("sent");
+    expect(before).toContain("before the host acknowledged the request");
+    expect(before).not.toContain("expected while the agent is replaced");
+  });
+
   it("shows an overdue acknowledgement as an observation on a still outstanding request", () => {
     const html = renderWithUpdate(
       enrolled({

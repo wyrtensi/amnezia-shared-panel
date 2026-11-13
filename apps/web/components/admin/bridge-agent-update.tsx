@@ -100,7 +100,12 @@ function OperationNotes({
     <div className="space-y-1 text-xs text-muted-foreground">
       {operation.contactLostSince ? (
         <p>
-          {t("bridge.upd.contactLost", { at: formatDateTime(operation.contactLostSince, lang) })}
+          {t(
+            operation.state === "acknowledged" || operation.state === "running"
+              ? "bridge.upd.contactLost"
+              : "bridge.upd.contactLostBeforePickup",
+            { at: formatDateTime(operation.contactLostSince, lang) },
+          )}
         </p>
       ) : null}
       {operation.acknowledgementOverdueSince ? (

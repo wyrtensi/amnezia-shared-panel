@@ -1558,6 +1558,13 @@ describe("bridge commands", () => {
       expect(await run(["bridge-agent-log", BRIDGE])).toContain("acknowledgement overdue since 2026-11-13T10:05:00.000Z");
     });
 
+    it("words lost contact by state", async () => {
+      stubFetch([{ body: { ...view, operation: { ...operation, state: "sent", contactLostSince: "2026-11-13T10:01:00.000Z" } } }]);
+      expect(await run(["bridge-agent-log", BRIDGE])).toContain("before the host acknowledged the request");
+      stubFetch([{ body: { ...view, operation: { ...operation, state: "running", contactLostSince: "2026-11-13T10:01:00.000Z" } } }]);
+      expect(await run(["bridge-agent-log", BRIDGE])).toContain("expected while the agent is replaced");
+    });
+
     it("bridge-agent-log with no operation says so", async () => {
       stubFetch([{ body: view }]);
       expect(await run(["bridge-agent-log", BRIDGE])).toContain("no agent update was requested");

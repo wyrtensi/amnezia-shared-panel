@@ -81,6 +81,18 @@ describe("bridge-agent update transitions", () => {
     }
   });
 
+  it("expired is only believed for an unstarted intent", () => {
+    for (const state of ["acknowledged", "running"] as const) {
+      const change = nextChange(operation(state), status("expired"), at(130));
+      expect(change).toMatchObject({ errorCode: "AGENT_UNEXPECTED_STATE" });
+      expect(change?.state).toBeUndefined();
+      expect(change?.finishedAt).toBeUndefined();
+    }
+    expect(nextChange(operation("queued"), status("expired"), at(130))).toMatchObject({
+      state: "pickup_timeout",
+    });
+  });
+
   it("pickup_timeout only comes from the agent confirming expired, and finishes the operation", () => {
     expect(nextChange(operation("sent"), status("expired"), at(130))).toMatchObject({
       state: "pickup_timeout",
@@ -119,7 +131,12 @@ describe("bridge-agent update transitions", () => {
         errorCode: "UPDATE_UNKNOWN_TO_AGENT",
       });
     }
-    expect(nextChange(operation("queued"), { kind: "unknown_operation" }, at(50))).toBeNull();
+    // A queued one is re-sent only while in date (decided by the tracker);
+    // past notAfter the agent's 404 ends it.
+    expect(nextChange(operation("queued"), { kind: "unknown_operation" }, at(150))).toMatchObject({
+      state: "failed",
+      errorCode: "UPDATE_UNKNOWN_TO_AGENT",
+    });
   });
 
   it("an answer for another operation changes nothing but the observed code", () => {

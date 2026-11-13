@@ -214,8 +214,11 @@ export function describeAgentUpdateOperation(o: AgentUpdateOperationView): strin
     );
   }
   if (o.contactLostSince) {
+    const started = o.state === "acknowledged" || o.state === "running";
     lines.push(
-      `    management contact lost since ${o.contactLostSince} (expected while the agent is replaced; waiting for the host's result)`,
+      started
+        ? `    management contact lost since ${o.contactLostSince} (expected while the agent is replaced; waiting for the host's result)`
+        : `    management contact lost since ${o.contactLostSince}, before the host acknowledged the request. The panel cannot tell whether the host started it, so the request stays outstanding; check that the agent and the SSH forwarding are up. It ends when the agent answers.`,
     );
   }
   if (o.errorCode) lines.push(`    code: ${o.errorCode}`);
