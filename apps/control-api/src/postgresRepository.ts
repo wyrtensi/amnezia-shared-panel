@@ -996,62 +996,48 @@ export class PostgresControlRepository implements ControlRepository {
   };
 
   /**
-   * The verdict for a key card: the protocol-appropriate result. On a node
-   * with an active bridge route the node verdict follows the bridged AWG 3.1
-   * path (the worker computes it from that result alone), while AWG 2 keeps
-   * the direct path, so an AWG 2 key there reads its own per-protocol result
-   * (no failing-since: a per-protocol result does not carry one). Everywhere
-   * else a key reads its node's verdict, as before.
+   * The verdict for a key card: the result of the key's OWN protocol on its
+   * node, on every node (Direct or bridged). A missing row reads unknown, so
+   * an AWG 3.1 card is not painted green by a working AWG 2 path (or the
+   * other way round). The server badge stays the node verdict.
    */
   private loadKeyReachability = async (
     nodeIds: readonly string[],
   ): Promise<(nodeId: string, protocol: ProtocolKind) => UserNodeReachability> => {
     if (nodeIds.length === 0) return () => UNKNOWN_USER_REACHABILITY;
-    const [byNode, probe, bridgedRows] = await Promise.all([
-      this.loadUserReachability(nodeIds),
+    const [probe, rows] = await Promise.all([
       this.loadUserReachabilityProbe(),
       this.options.db
         .select({
-          nodeId: vpnBridgeRoutes.nodeId,
+          nodeId: nodeReachabilityResults.nodeId,
+          protocol: nodeReachabilityResults.protocol,
           reachabilityEnabled: nodes.reachabilityEnabled,
           status: nodeReachabilityResults.status,
           checkedAt: nodeReachabilityResults.checkedAt,
+          failingSince: nodeReachabilityResults.failingSince,
         })
-        .from(vpnBridgeRoutes)
-        .innerJoin(nodes, eq(nodes.id, vpnBridgeRoutes.nodeId))
-        .leftJoin(
-          nodeReachabilityResults,
-          and(
-            eq(nodeReachabilityResults.nodeId, vpnBridgeRoutes.nodeId),
-            eq(nodeReachabilityResults.protocol, "awg2"),
-          ),
-        )
-        .where(
-          and(
-            eq(vpnBridgeRoutes.state, "active"),
-            inArray(vpnBridgeRoutes.nodeId, [...nodeIds]),
-          ),
-        ),
+        .from(nodeReachabilityResults)
+        .innerJoin(nodes, eq(nodes.id, nodeReachabilityResults.nodeId))
+        .where(inArray(nodeReachabilityResults.nodeId, [...nodeIds])),
     ]);
     const now = new Date();
-    const directAwg2 = new Map(
-      bridgedRows.map((row) => [
-        row.nodeId,
+    const byKey = new Map(
+      rows.map((row) => [
+        `${row.nodeId}:${row.protocol}`,
         toUserReachability({
           probe,
           reachabilityEnabled: row.reachabilityEnabled,
-          state:
-            row.status !== null && row.checkedAt !== null
-              ? { status: row.status, failingSince: null, checkedAt: row.checkedAt }
-              : null,
+          state: {
+            status: row.status,
+            failingSince: row.failingSince,
+            checkedAt: row.checkedAt,
+          },
           now,
         }),
       ]),
     );
     return (nodeId, protocol) =>
-      (protocol === "awg2" ? directAwg2.get(nodeId) : undefined) ??
-      byNode.get(nodeId) ??
-      UNKNOWN_USER_REACHABILITY;
+      byKey.get(`${nodeId}:${protocol}`) ?? UNKNOWN_USER_REACHABILITY;
   };
 
   listNodes = async (actor: Actor): Promise<unknown[]> => {

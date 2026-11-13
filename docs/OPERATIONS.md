@@ -298,7 +298,7 @@ own set instead of the node's, with nothing written to `awg0.conf`:
   owner-only, needs config redownload in the policy, and is audited as
   `vpn_key.config_profile_refreshed` with the revision only. No node call, no
   outbox job, same peer and address: the old connection keeps working until
-  the owner imports the new config.
+  the owner imports the new config. The dialog says so, and that previously imported files keep their old endpoint (a bridge activation or return to Direct reaches a client only through a refreshed, re-imported file).
 
 The `H1`-`H4`, `S1`-`S4`, header protection and trailers stay the node's: those
 the server does check, and a key with a changed `H1` gets no handshake.

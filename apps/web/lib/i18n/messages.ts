@@ -378,6 +378,8 @@ const ru = {
   "config.title": "Ключ: {label}",
   "config.refreshedHint":
     "Это обновлённый конфиг. Импортируйте его и удалите прежнее подключение в приложении — до замены оно продолжает работать.",
+  "config.refreshedImportHint":
+    "Сервер и адрес входа записываются в файл при импорте. Ранее импортированные файлы продолжают использовать прежний адрес и не изменятся сами: чтобы заменить их, импортируйте этот файл.",
   "config.desc":
     "Вставьте ссылку в AmneziaVPN («Подключиться по ссылке») или отсканируйте QR-код камерой телефона.",
   // A file-only profile has neither the link nor the QR the line above names.
@@ -2063,6 +2065,8 @@ const en = {
   "config.title": "Key: {label}",
   "config.refreshedHint":
     "This is the refreshed config. Import it and remove the previous connection in the app; until then the old one keeps working.",
+  "config.refreshedImportHint":
+    "The server address is stored in the file when you import it. Files you imported earlier keep their old endpoint and do not change by themselves; import this file to replace them.",
   "config.desc":
     "Paste the link into AmneziaVPN (“Connect by link”) or scan the QR code with your phone camera.",
   "config.descFileOnly": "Download the file and open it in AmneziaVPN.",

@@ -3053,6 +3053,15 @@ describe("PostgresControlRepository node status surfaces", () => {
         failingSince,
         checkedAt: new Date(),
       });
+      await database.db.insert(nodeReachabilityResults).values({
+        nodeId,
+        protocol: "awg3",
+        status: "failed",
+        levels: {},
+        runId: randomUUID(),
+        failingSince,
+        checkedAt: new Date(),
+      });
       // No node offered for new keys, yet the key stays on its server.
       await database.db.insert(portalPolicy).values({ allowedNodeIds: [] });
       const [key] = await database.db
@@ -3077,11 +3086,14 @@ describe("PostgresControlRepository node status surfaces", () => {
       } finally {
         if (key) await database.db.delete(vpnKeys).where(eq(vpnKeys.id, key.id));
         await database.db.delete(portalPolicy);
+        await database.db
+          .delete(nodeReachabilityResults)
+          .where(eq(nodeReachabilityResults.nodeId, nodeId));
       }
     });
 
     runDatabaseTest(
-      "on a bridged node, an AWG 2 key reads its direct result and an AWG 3.1 key the node verdict",
+      "each key card reads its own protocol's result, with its failing-since, on a bridged and on a Direct node",
       async () => {
         if (!database) return;
         await seedProbe();
@@ -3094,7 +3106,7 @@ describe("PostgresControlRepository node status surfaces", () => {
           checkedAt,
         });
         await database.db.insert(nodeReachabilityResults).values([
-          { nodeId, protocol: "awg3", status: "failed", levels: {}, runId: randomUUID(), checkedAt },
+          { nodeId, protocol: "awg3", status: "failed", levels: {}, runId: randomUUID(), failingSince, checkedAt },
           { nodeId, protocol: "awg2", status: "ok", levels: {}, runId: randomUUID(), checkedAt },
         ]);
         const [bridge] = await database.db
@@ -3129,13 +3141,29 @@ describe("PostgresControlRepository node status surfaces", () => {
           .returning();
         try {
           const views = await subject().listKeys(actor);
-          const viewOf = (protocol: string) =>
-            views.find((row) => keys.some((key) => key.id === row.id && key.protocol === protocol));
+          const viewOfIn = (list: typeof views, protocol: string) =>
+            list.find((row) => keys.some((key) => key.id === row.id && key.protocol === protocol));
+          const viewOf = (protocol: string) => viewOfIn(views, protocol);
           expect(viewOf("awg3")?.nodeReachability).toEqual({
             state: "blocked",
             since: failingSince.toISOString(),
           });
           expect(viewOf("awg2")?.nodeReachability).toEqual({ state: "ok", since: null });
+
+          // A failing AWG 2 path carries its own failing-since.
+          const awg2Since = new Date(failingSince.getTime() + 60_000);
+          await database.db
+            .update(nodeReachabilityResults)
+            .set({ status: "failed", failingSince: awg2Since })
+            .where(
+              and(
+                eq(nodeReachabilityResults.nodeId, nodeId),
+                eq(nodeReachabilityResults.protocol, "awg2"),
+              ),
+            );
+          expect(
+            viewOfIn(await subject().listKeys(actor), "awg2")?.nodeReachability,
+          ).toEqual({ state: "blocked", since: awg2Since.toISOString() });
 
           // Without its own result, the AWG 2 card is unknown, not the node's.
           await database.db
@@ -3146,21 +3174,44 @@ describe("PostgresControlRepository node status surfaces", () => {
                 eq(nodeReachabilityResults.protocol, "awg2"),
               ),
             );
-          const again = await subject().listKeys(actor);
           expect(
-            again.find((row) => row.id === keys.find((key) => key.protocol === "awg2")?.id)
-              ?.nodeReachability,
+            viewOfIn(await subject().listKeys(actor), "awg2")?.nodeReachability,
           ).toEqual({ state: "unknown", since: null });
 
-          // Back on Direct, both cards read the node verdict again.
+          // An error result (the probe could not measure) is unknown too.
+          await database.db.insert(nodeReachabilityResults).values({
+            nodeId,
+            protocol: "awg2",
+            status: "error",
+            levels: {},
+            runId: randomUUID(),
+            checkedAt,
+          });
+          expect(
+            viewOfIn(await subject().listKeys(actor), "awg2")?.nodeReachability,
+          ).toEqual({ state: "unknown", since: null });
+
+          // Back on Direct each card still reads its own protocol: AWG 3.1
+          // blocked while AWG 2 works, even though the node verdict is failed.
+          await database.db
+            .update(nodeReachabilityResults)
+            .set({ status: "ok", failingSince: null })
+            .where(
+              and(
+                eq(nodeReachabilityResults.nodeId, nodeId),
+                eq(nodeReachabilityResults.protocol, "awg2"),
+              ),
+            );
           await database.db.delete(vpnBridgeRoutes).where(eq(vpnBridgeRoutes.id, routeId));
           const direct = await subject().listKeys(actor);
-          for (const key of keys) {
-            expect(direct.find((row) => row.id === key.id)?.nodeReachability).toEqual({
-              state: "blocked",
-              since: failingSince.toISOString(),
-            });
-          }
+          expect(viewOfIn(direct, "awg3")?.nodeReachability).toEqual({
+            state: "blocked",
+            since: failingSince.toISOString(),
+          });
+          expect(viewOfIn(direct, "awg2")?.nodeReachability).toEqual({
+            state: "ok",
+            since: null,
+          });
         } finally {
           await database.db.delete(vpnKeys).where(inArray(vpnKeys.id, keys.map((key) => key.id)));
           await database.db.delete(vpnBridgeRoutes).where(eq(vpnBridgeRoutes.id, routeId));

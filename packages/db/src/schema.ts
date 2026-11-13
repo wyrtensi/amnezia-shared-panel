@@ -843,6 +843,8 @@ export const nodeReachabilityResults = pgTable(
     detail: varchar("detail", { length: 300 }),
     runId: uuid("run_id").notNull(),
     checkedAt: timestamp("checked_at", { withTimezone: true }).notNull(),
+    // When this protocol's current run of consecutive failed results began.
+    failingSince: timestamp("failing_since", { withTimezone: true }),
   },
   (table) => [primaryKey({ columns: [table.nodeId, table.protocol] })],
 );

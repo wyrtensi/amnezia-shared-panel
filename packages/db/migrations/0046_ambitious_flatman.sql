@@ -1,0 +1,1 @@
+ALTER TABLE "node_reachability_results" ADD COLUMN "failing_since" timestamp with time zone;

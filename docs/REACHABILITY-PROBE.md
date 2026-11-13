@@ -201,6 +201,14 @@ on their own keys, through `GET /api/nodes` (`reachability`) and
   checks or without a verdict, an `error` verdict, and a run that failed
   everywhere.
 
+A server badge is the node verdict (a bridged node's follows its AWG 3.1
+result). A **key card** reads the result of its own protocol on its node, on
+every node: a missing result, an `error` one or a stale one is `unknown`, and
+`blocked` carries that protocol's own failing-since
+(`node_reachability_results.failing_since`, kept by the worker across failed
+runs and cleared on recovery). An AWG 3.1 key is therefore not shown healthy
+because AWG 2 works.
+
 Nothing else leaves: no levels, details, label, host or time zone.
 
 ## Install

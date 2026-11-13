@@ -2393,6 +2393,53 @@ describe("PostgresReachabilityRepository", () => {
     expect(probe?.timeZone).toBe("UTC");
   });
 
+  runDatabaseTest("ingest keeps a protocol's failing-since across failed runs and clears it on recovery", async () => {
+    if (!database || !repository) return;
+    const a = await seedNode("node-a");
+    await seedProbe(null);
+    const base = new Date("2026-11-13T10:00:00Z");
+    const at = (minutes: number) => new Date(base.getTime() + minutes * 60_000);
+    const ingestOne = async (status: "failed" | "ok", now: Date) => {
+      const runId = randomUUID();
+      await database?.db
+        .update(reachabilityProbe)
+        .set({ currentRunId: runId })
+        .where(eq(reachabilityProbe.id, 1));
+      const decide: IngestDecide = ({ targets, previous }) => {
+        const out = ingestRun({
+          runId,
+          now,
+          label: "Testland",
+          failThreshold: 1,
+          controlOk: true,
+          targets,
+          results: [],
+          previous,
+        });
+        return {
+          outcomes: [
+            { nodeId: a.id, protocol: "awg2", status, levels: null, egressIp: null, detail: null },
+          ],
+          states: out.states,
+          notices: [],
+          staleAlertedAt: null,
+          mass: false,
+        };
+      };
+      await expect(repository?.ingest({ runId, now }, decide)).resolves.toBe(true);
+      const [row] = await database?.db
+        .select()
+        .from(nodeReachabilityResults)
+        .where(eq(nodeReachabilityResults.nodeId, a.id)) ?? [];
+      return row?.failingSince ?? null;
+    };
+
+    expect(await ingestOne("failed", at(0))).toEqual(at(0));
+    expect(await ingestOne("failed", at(5))).toEqual(at(0));
+    expect(await ingestOne("ok", at(10))).toBeNull();
+    expect(await ingestOne("failed", at(15))).toEqual(at(15));
+  });
+
   runDatabaseTest("ingest writes only the nodes it read, not one deleted since the run started", async () => {
     if (!database || !repository) return;
     const runId = randomUUID();

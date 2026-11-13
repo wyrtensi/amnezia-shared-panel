@@ -325,10 +325,23 @@ export class PostgresReachabilityRepository
           };
           await tx
             .insert(nodeReachabilityResults)
-            .values(values)
+            .values({
+              ...values,
+              failingSince: outcome.status === "failed" ? run.now : null,
+            })
             .onConflictDoUpdate({
               target: [nodeReachabilityResults.nodeId, nodeReachabilityResults.protocol],
-              set: values,
+              // A failure streak keeps its start (an older row without one
+              // falls back to its own check time); a non-failed result clears it.
+              set: {
+                ...values,
+                failingSince:
+                  outcome.status === "failed"
+                    ? sql`case when ${nodeReachabilityResults.status} = 'failed'
+                        then coalesce(${nodeReachabilityResults.failingSince}, ${nodeReachabilityResults.checkedAt})
+                        else excluded.checked_at end`
+                    : null,
+              },
             });
         }
 

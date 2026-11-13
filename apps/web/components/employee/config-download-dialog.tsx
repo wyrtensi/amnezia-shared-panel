@@ -443,9 +443,14 @@ export function ConfigDownloadDialog({
         </DialogHeader>
 
         {target?.revision !== undefined ? (
-          <p className="rounded-lg border border-primary/40 bg-primary/5 px-3 py-2 text-sm">
-            {t("config.refreshedHint")}
-          </p>
+          <div className="space-y-1 rounded-lg border border-primary/40 bg-primary/5 px-3 py-2 text-sm">
+            <p>{t("config.refreshedHint")}</p>
+            {/* The server address inside a file is fixed when it is imported:
+                a refresh is how a changed route reaches the client. */}
+            <p className="text-xs text-muted-foreground">
+              {t("config.refreshedImportHint")}
+            </p>
+          </div>
         ) : null}
 
         {loading ? (
