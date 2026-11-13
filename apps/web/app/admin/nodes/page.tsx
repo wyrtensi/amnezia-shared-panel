@@ -18,7 +18,17 @@ import {
   Trash2,
   TriangleAlert,
 } from "lucide-react";
+import Link from "next/link";
+import { Suspense } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { toast } from "sonner";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { BridgesTab } from "@/components/admin/bridges-tab";
+import {
+  useBridgeInfra,
+  type NodeRouteLabel,
+} from "@/components/admin/use-bridge-infra";
+import { nodeRouteEditorHref, nodesTabHref, parseNodesTab } from "@/lib/bridge-ui";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -90,7 +100,21 @@ type DeleteNodeResult = {
 };
 
 export default function AdminNodesPage() {
+  // `useSearchParams` needs a Suspense boundary for the static prerender.
+  return (
+    <Suspense fallback={null}>
+      <AdminNodesView />
+    </Suspense>
+  );
+}
+
+function AdminNodesView() {
   const { nodes, keys, loading, reload, action, request } = useAdminData();
+  const router = useRouter();
+  const tab = parseNodesTab(useSearchParams().get("tab"));
+  // One infrastructure fetch feeds the node cards' current route and the
+  // Bridges tab, so the two never disagree.
+  const infra = useBridgeInfra();
   // One fetch for the whole page: the card below lists checks by check, the
   // node cards show the same results by node. Two fetches could disagree.
   const serviceChecks = useServiceChecks();
@@ -194,12 +218,30 @@ export default function AdminNodesPage() {
             })}
           </p>
         </div>
-        <Button onClick={() => setShowCreate(true)}>
-          <Plus className="h-4 w-4" /> {t("nodes.addNode")}
-        </Button>
+        {tab === "nodes" ? (
+          <Button onClick={() => setShowCreate(true)}>
+            <Plus className="h-4 w-4" /> {t("nodes.addNode")}
+          </Button>
+        ) : null}
       </div>
 
-      {loading && nodes.length === 0 ? (
+      {/* The tab lives in the URL (`?tab=bridges`) so it can be linked to and
+          survives a reload; Nodes is the default and keeps the bare path. */}
+      <Tabs
+        value={tab}
+        onValueChange={(next) =>
+          router.replace(nodesTabHref(parseNodesTab(next)), { scroll: false })
+        }
+      >
+        <TabsList>
+          <TabsTrigger value="nodes">{t("bridge.tabNodes")}</TabsTrigger>
+          <TabsTrigger value="bridges">{t("bridge.tabBridges")}</TabsTrigger>
+        </TabsList>
+      </Tabs>
+
+      {tab === "bridges" ? <BridgesTab infra={infra} /> : null}
+
+      {tab === "bridges" ? null : loading && nodes.length === 0 ? (
         <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
           {[0, 1].map((index) => (
             <Skeleton key={index} className="h-56 rounded-xl" />
@@ -233,6 +275,7 @@ export default function AdminNodesPage() {
               onDelete={() => setDeleteTarget(node)}
               onUpdateAgent={() => setUpdateAgentNode(node)}
               onSetCapacity={() => setCapacityNode(node)}
+              route={infra.routeByNode.get(node.id) ?? null}
               checkResults={serviceChecks.byNode.get(node.id) ?? []}
               checksConfigured={serviceChecks.checks.length > 0}
               onSetChecks={(patch) => void setNodeChecks(node, patch)}
@@ -244,14 +287,16 @@ export default function AdminNodesPage() {
       {/* Under the fleet rather than on its own page: a check is a statement
           about what works FROM these servers, and reading it beside them is
           what makes a red chip actionable. */}
-      <ServiceChecksCard state={serviceChecks} />
+      {tab === "bridges" ? null : <ServiceChecksCard state={serviceChecks} />}
 
       {/* Beside the service checks: those look out FROM the nodes, this one
           looks AT them from outside, the way a user's client does. */}
-      <ReachabilityCard
-        state={reachability}
-        onSetNodeEnabled={setNodeReachability}
-      />
+      {tab === "bridges" ? null : (
+        <ReachabilityCard
+          state={reachability}
+          onSetNodeEnabled={setNodeReachability}
+        />
+      )}
 
       <CreateNodeDialog
         open={showCreate}
@@ -297,11 +342,14 @@ function NodeCard({
   onDelete,
   onUpdateAgent,
   onSetCapacity,
+  route,
   checkResults,
   checksConfigured,
   onSetChecks,
 }: {
   node: AdminNode;
+  /** The bridge route this node is reached through; null means Direct. */
+  route: NodeRouteLabel | null;
   keyStats: NodeKeyStats;
   /** This node's verdict for each service check. Empty until it has run one. */
   checkResults: Array<{
@@ -387,6 +435,23 @@ function NodeCard({
               {node.enabled ? t("nodes.toggleOffTip") : t("nodes.toggleOnTip")}
             </TooltipContent>
           </Tooltip>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
+          <span className="text-muted-foreground">{t("bridge.nodeRoute")}</span>
+          <Badge variant={route ? "default" : "outline"} className="font-mono">
+            {route ? route.entry : t("bridge.direct")}
+          </Badge>
+          {route ? (
+            <span className="truncate text-muted-foreground">{route.bridgeName}</span>
+          ) : null}
+          <Link
+            href={nodeRouteEditorHref(node.id)}
+            prefetch={false}
+            className="ml-auto text-primary underline-offset-2 hover:underline"
+          >
+            {t("bridge.nodeRouteEdit")}
+          </Link>
         </div>
 
         {/* What this node IS - where the panel talks to it and what it can

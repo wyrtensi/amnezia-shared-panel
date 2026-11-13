@@ -1,4 +1,5 @@
 import type { NextRequest } from "next/server";
+import { BRIDGE_REGISTRATION_MARKER_HEADER } from "@amnezia/contracts";
 import { SESSION_COOKIE } from "@/lib/session";
 import {
   buildControlTarget,
@@ -60,7 +61,13 @@ const proxy = async (request: NextRequest, context: { params: Promise<{ path: st
   // this makes the document case inert.
   const csp = relayedContentSecurityPolicy(upstreamContentType);
   if (csp) outgoingHeaders.set("content-security-policy", csp);
-  for (const name of ["content-disposition", "cache-control"]) {
+  // The registration marker travels with a bridge test config (see
+  // `fetchTestConfig`); it is an opaque, percent-encoded label, not a secret.
+  for (const name of [
+    "content-disposition",
+    "cache-control",
+    BRIDGE_REGISTRATION_MARKER_HEADER,
+  ]) {
     const value = response.headers.get(name);
     if (value) outgoingHeaders.set(name, value);
   }
