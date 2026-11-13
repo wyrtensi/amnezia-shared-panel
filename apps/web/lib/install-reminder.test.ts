@@ -18,7 +18,7 @@ const user = (
 const key = (keyNumber: number | null): KeyView => ({
   id: "11111111-1111-1111-1111-111111111111",
   nodeId: "22222222-2222-2222-2222-222222222222",
-  nodeName: "amster4",
+  nodeName: "Server name 2",
   state: "provisioning",
   protocol: "awg3",
   deviceType: "android",

@@ -17,23 +17,23 @@ describe("ServerStatusList", () => {
   const html = renderToStaticMarkup(
     <ServerStatusList
       nodes={[
-        node("amster4", {
+        node("Server name 2", {
           recommended: true,
           reachability: { state: "ok", since: null },
         }),
-        node("london2", {
+        node("Server name 5", {
           reachability: {
             state: "blocked",
             since: "2026-11-12T09:11:00.000Z",
           },
         }),
-        node("kz2", { reachability: { state: "unknown", since: null } }),
+        node("Server name 4", { reachability: { state: "unknown", since: null } }),
       ]}
     />,
   );
 
   it("puts a blocked server first", () => {
-    expect(html.indexOf("london2")).toBeLessThan(html.indexOf("amster4"));
+    expect(html.indexOf("Server name 5")).toBeLessThan(html.indexOf("Server name 2"));
   });
 
   it("leaves the browser-zone time out of the server render", () => {

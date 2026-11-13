@@ -43,7 +43,7 @@ const row = (overrides: Partial<KeyRow> = {}): KeyRow => ({
   ...overrides,
 });
 
-const NODE = { name: "ams-internal-04", publicName: "amster4" };
+const NODE = { name: "Internal server name 2", publicName: "Server name 2" };
 
 const view = (actor: Actor, overrides: Partial<KeyRow> = {}) =>
   toKeyView({
@@ -160,23 +160,23 @@ describe("owner-facing key projection", () => {
  */
 describe("server name on the owner-facing key payload", () => {
   it("carries the server's public name", () => {
-    expect(view(owner).nodeName).toBe("amster4");
+    expect(view(owner).nodeName).toBe("Server name 2");
   });
 
   it("never sends the internal admin name when a public name is set", () => {
-    expect(JSON.stringify(view(owner))).not.toContain("ams-internal-04");
+    expect(JSON.stringify(view(owner))).not.toContain("Internal server name 2");
   });
 
   it("falls back to the node name when there is no public name", () => {
     const payload = toKeyView({
       actor: owner,
       key: row(),
-      node: { name: "london2", publicName: null },
+      node: { name: "Server name 5", publicName: null },
       current: null,
       policy: defaultPortalPolicy,
       activeByProfile: new Map(),
     });
-    expect(payload.nodeName).toBe("london2");
+    expect(payload.nodeName).toBe("Server name 5");
   });
 });
 
