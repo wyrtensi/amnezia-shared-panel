@@ -42,17 +42,18 @@ with the image. The agent step runs after, and never rolls back or restarts, a
 working frps.
 
 With an image the installer first checks the host prerequisites (docker, the
-compose plugin, systemd, curl, sha256sum) and refuses with exit 61 before it
-touches anything, then runs frps, pulls the digest, starts the service and, once
+compose plugin, systemd and systemctl, curl, sha256sum, and bash and flock for the
+updater) and refuses with exit 61 before it touches anything, then runs frps,
+creates the update spool, pulls the digest, starts the service and, once
 `/healthz` answers, writes the **pin file** `/etc/amnezia-bridge/agent/image.pin`
 (mode 0600: `BRIDGE_AGENT_IMAGE_REPOSITORY` and `BRIDGE_AGENT_IMAGE`). The pin
 records the repository and the digest that was last verified running. Which file
 is authoritative: `agent.env` holds the image Compose RUNS; `image.pin` holds the
 last known-good one (the rollback target). The setup command passes
 `--agent-repository`, so the pin records the repository the panel approved. The
-bridge-agent updater (Task 6c) must take the approved repository and digest from
-the panel's request, never from the pin's repository line, and uses the pin only
-to restore the previous image.
+bridge-agent updater takes the approved repository from its own unit and the
+digest from the panel's request, never from the pin's repository line, and uses the pin only
+to restore the previous image (see "bridge-agent updates" below).
 
 ## The bridge-agent image
 
@@ -97,14 +98,81 @@ The fixed parts are interface requirements for the image:
   `/etc/amnezia-bridge/frp/dashboard.env`. The image must ship `package.json`
   next to `dist/` (the agent reads its version from it).
 - Environment from the env file: `BRIDGE_ID`, `BRIDGE_APPLIED_CONTROL_PORT`,
-  `BRIDGE_APPLIED_UDP_START`, `BRIDGE_APPLIED_UDP_END`, plus the fixed token and
-  dashboard paths and `BRIDGE_FRPS_URL=http://127.0.0.1:7500`.
+  `BRIDGE_APPLIED_UDP_START`, `BRIDGE_APPLIED_UDP_END`,
+  `BRIDGE_AGENT_IMAGE_REPOSITORY` (the approved repository: `--agent-repository`,
+  else the image's own), plus the fixed token and dashboard paths,
+  `BRIDGE_FRPS_URL=http://127.0.0.1:7500` and the update spool path.
+- The only read-write mount is the update spool's `requests/` directory; its
+  `results/` directory is mounted read-only. No Docker socket.
 
 `/etc/amnezia-bridge/agent/api-token` (mode 0600) is generated on the host the
 first time and never again; its value is never printed or passed as an argument.
 `agent.env` holds no secret. When the agent listens on `127.0.0.1:<port>` and
 `GET /healthz` answers, the installer prints only the bridge id, the listener,
 the token file path and the host's ed25519 SSH fingerprint.
+
+## bridge-agent updates (host updater)
+
+The panel's **Update agent** (Bridges tab) and `bridge-agent-update --confirm`
+reach the agent's `POST /v1/update`; the agent never touches Docker. The host's
+systemd updater does the replacement:
+
+| Piece | Where | Owner |
+| --- | --- | --- |
+| Request spool | `/var/lib/amnezia-bridge/update/requests/<operation id>.json` | written by the agent (its one read-write mount), read and removed by the updater |
+| Results | `/var/lib/amnezia-bridge/update/results/<operation id>.json` | written by the updater, read-only to the agent (so a replaced agent still answers `GET /v1/update`) |
+| Journal | `/var/lib/amnezia-bridge/updater/journal` (+ the previous pin) | updater only, root, never mounted |
+| Lock | `/run/amnezia-bridge-updater` (flock on the directory) | updater only |
+| Units | `amnezia-bridge-agent-update.path` / `.service` (`ExecStart=/bin/bash /opt/amnezia-bridge/bridge-agent-update.sh`) | installed and enabled by `install-bridge.sh` after the pin exists |
+
+`amnezia-bridge-agent-update.path` starts the service while a `*.json` request
+or a journal exists. `bridge-agent-update.sh`, under the lock:
+
+1. Re-validates the request independently: the file name and body name the same
+   operation id, the repository equals the unit's `BRIDGE_AGENT_UPDATE_REPO`
+   (never the pin's repository line), the digest is a full `sha256`, `notAfter`
+   is a valid time. A refused request ends `failed` with a fixed code.
+2. Reads the clock; past `notAfter` the intent ends `expired` and is never
+   claimed. Otherwise it **claims** it (result `queued`, journal), reads the
+   clock again, and only then starts (`picked_up`). The agent reports a result
+   verbatim and judges only an unclaimed request by the clock, so an `expired`
+   answer is never followed by a start. An operation id that has any result is
+   never applied again (replays are removed).
+3. `staging`: needs a known-good pin (`image.pin`) to roll back to, then
+   `docker pull --platform linux/amd64 <repo>@<digest>`. No image is ever removed.
+4. `replacing`: rewrites `BRIDGE_AGENT_IMAGE` in `agent.env` (whole file, renamed)
+   and runs `docker compose --project-name amnezia-bridge-agent ... up --detach
+   --no-deps --no-build bridge-agent`. frps (a host service) is never touched.
+5. `health_check`: the container `amnezia-bridge-agent` runs exactly the
+   requested reference and image id, `/v1/identity` names the enrolled bridge id
+   (from `agent.env`), and an authenticated `/v1/status` answers for it with
+   `frps.reachable=true` (30 attempts, 2 s apart). The token is passed to curl on
+   stdin, never as an argument.
+6. Pass: the pin moves to the candidate, result `succeeded`. Fail: `agent.env` and
+   the pin are restored to the previous known-good image, the agent is recreated
+   the same way and checked the same way: `rolled_back` (error code = why the
+   candidate failed) or, if the previous image fails too, `rollback_failed`.
+   A request for the digest that already runs recreates nothing and succeeds only
+   if the checks pass (else `failed CURRENT_AGENT_UNHEALTHY`).
+
+An interrupted run (crash, reboot, the unit's 900 s timeout) leaves the journal and
+the request, so the unit starts again: before the replacement the operation ends
+`failed UPDATE_INTERRUPTED`; after it the running agent is checked and either
+accepted or rolled back. Nothing is applied twice.
+
+Error codes in results are fixed (`DIGEST_INVALID`, `REPOSITORY_NOT_APPROVED`,
+`OPERATION_MISMATCH`, `NOT_AFTER_INVALID`, `UPDATER_NOT_CONFIGURED`,
+`NO_KNOWN_GOOD_PIN`, `PULL_FAILED`, `IMAGE_PLATFORM_MISMATCH`,
+`CANDIDATE_START_FAILED`, `HEALTH_IMAGE_MISMATCH`, `HEALTH_AGENT_UNREACHABLE`,
+`HEALTH_IDENTITY_MISMATCH`, `HEALTH_STATUS_FAILED`, `HEALTH_FRPS_UNREACHABLE`,
+`ROLLBACK_START_FAILED`, `ROLLBACK_VERIFICATION_FAILED`, `UPDATE_INTERRUPTED`,
+...); details, including docker output, are only in
+`journalctl -u amnezia-bridge-agent-update.service`.
+
+Check on the host: `systemctl status amnezia-bridge-agent-update.path`,
+`ls /var/lib/amnezia-bridge/update/requests`, `cat /var/lib/amnezia-bridge/update/results/<id>.json`.
+Re-running `install-bridge.sh` reinstalls the image given on its command line: after
+an update, pass the image from `image.pin`.
 
 ## Management tunnel and enrollment
 
@@ -152,6 +220,34 @@ route's clients still pass traffic; restart the bridge-agent
 public management-port checks (TCP 7600 and 7500 must not be reachable from the
 internet; TCP 7000 only from trusted node addresses) separate from the user UDP probe.
 
+**bridge-agent update and rollback with real traffic** (not automated; the
+updater is tested with stubs and was exercised against real Docker with a local
+registry and a fake frps dashboard only). With two node routes active on one
+bridge and an AWG client connected through each:
+
+- [ ] Before: record `systemctl show amnezia-frps -p MainPID -p ActiveEnterTimestamp`
+      and both routes' registration markers (`bridges --json`).
+- [ ] Keep traffic running through both routes (for example `ping -i 0.2` through
+      the tunnel, or a long download) for the whole procedure.
+- [ ] Upgrade to a new approved digest from the panel. Expect the operation to
+      pass `acknowledged`/`running` (contact may be lost while the agent is
+      replaced) and end `succeeded`; `docker inspect amnezia-bridge-agent` shows the
+      new digest; `image.pin` and `agent.env` carry it.
+- [ ] Request a deliberately bad candidate (an approved-repository digest whose
+      container does not answer, prepared for the lab only). Expect `rolled_back`
+      with a `HEALTH_*` code, the previous digest running, `image.pin` unchanged.
+- [ ] Optional (the automated tests cover it): a failed rollback needs the
+      previous image to fail too without touching frps, for example remove it
+      locally (`docker image rm <previous>`) and block registry egress while the bad
+      candidate is checked. Expect `rollback_failed ROLLBACK_START_FAILED`, then
+      reinstall the pinned image with `install-bridge.sh`.
+- [ ] After each step: frps `MainPID` and `ActiveEnterTimestamp` unchanged, both
+      registration markers unchanged, no traffic gap on either route beyond the
+      agent's own management contact.
+- [ ] Interrupt an update during `replacing` (`systemctl kill -s KILL
+      amnezia-bridge-agent-update.service`): the unit starts again from the journal
+      and ends `rolled_back UPDATE_INTERRUPTED` or `succeeded`, never applies twice.
+
 ## What it does
 
 - Pins frp v0.72.0 (linux amd64 or arm64), downloads it from the official
@@ -192,9 +288,12 @@ basic auth against `http://127.0.0.1:7500/api/serverinfo` and
 0 success or no-op, 2 bad arguments, 11 protected file missing or unsafe,
 12 download or checksum failure, 13 `frps verify` rejected the config,
 20 conflict with the existing install, 21 a needed local port is already bound,
-50 frps did not start or listen. `install-bridge.sh` adds 60 (no agent image: frps installed, agent not), 61 (docker or compose missing), 62 (token or env file unsafe), 63 (pull or compose start failed), 64 (agent not listening on loopback or `/healthz` failing). The node-side helper
+50 frps did not start or listen. `install-bridge.sh` adds 60 (no agent image: frps installed, agent not), 61 (a host prerequisite missing: docker, compose, systemd/systemctl, curl, sha256sum, bash, flock, or the updater files), 62 (token or env file unsafe), 63 (pull or compose start failed), 64 (agent not listening on loopback or `/healthz` failing), 65 (the updater units could not be installed or enabled; the agent runs). The node-side helper
 `infra/node/scripts/install-frpc.sh` documents its own codes in its header.
 
 ## Tests
 
-`node --test infra/bridge/tests/*.mjs scripts/tests/add-bridge-tunnel.test.mjs` (PATH stubs, no real frp binary or Docker runs).
+`node --test infra/bridge/tests/*.mjs scripts/tests/add-bridge-tunnel.test.mjs` (PATH stubs, no real frp binary, Docker or systemd runs).
+`bridge-agent-update.test.mjs` drives the real updater with stub `docker`, `curl`,
+`systemctl` and `date`; `bridge-agent-update-contract.test.mjs` pins the agent's
+update states to the panel's contract and the updater's codes and fields.

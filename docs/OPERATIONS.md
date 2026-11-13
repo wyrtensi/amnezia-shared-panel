@@ -477,6 +477,14 @@ operation whose POST was never attempted and whose job is gone closes as
 `failed UPDATE_NEVER_SENT`. If an overdue request needs help, check
 `systemctl status amnezia-bridge-agent-update.path` on the bridge host; once the agent reports
 `expired` the operation ends and you can request again.
+On the bridge host the agent only records the intent in `/var/lib/amnezia-bridge/update/requests`;
+the systemd updater (`bridge-agent-update.sh`, installed by `install-bridge.sh`) re-validates it,
+pulls the digest, recreates only the `bridge-agent` service with `--no-deps` (frps is never
+touched), and accepts it only after the digest, bridge identity and an authenticated status with
+frps reachable check out; otherwise it restores the pinned image and checks that too
+(`rolled_back` / `rollback_failed`). Results carry fixed codes; details are in
+`journalctl -u amnezia-bridge-agent-update.service`. See `infra/bridge/README.md`
+("bridge-agent updates").
 
 *A bridge that stays unreachable while its update slot is held.* The slot is deliberately not
 freed on silence, because the host may still apply the update. Restore contact: check the

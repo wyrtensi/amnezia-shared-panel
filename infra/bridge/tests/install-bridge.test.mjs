@@ -28,6 +28,8 @@ const fixture = async () => {
   const bridgeEtc = join(etc, "amnezia-bridge");
   const state = join(root, "state");
   const systemd = join(root, "run-systemd");
+  const unitDir = join(root, "etc-systemd-system");
+  const varDir = join(root, "var");
   for (const dir of [bin, join(bridgeEtc, "frp"), join(etc, "ssh"), state, systemd]) {
     await mkdir(dir, { recursive: true });
   }
@@ -76,6 +78,15 @@ echo '{"ok":true}'
 `,
     0o755,
   );
+  // Never the host's real systemd: every systemctl call is recorded and answered here.
+  await write(
+    join(bin, "systemctl"),
+    `#!/bin/sh
+echo "systemctl $*" >>"$STATE/calls"
+[ ! -f "$STATE/systemctl-fails" ]
+`,
+    0o755,
+  );
   await write(join(bin, "ssh-keygen"), `#!/bin/sh\necho "256 SHA256:abcdefHostKeyFingerprint root@host (ED25519)"\n`, 0o755);
 
   const env = {
@@ -86,6 +97,8 @@ echo '{"ok":true}'
     AMNEZIA_FRPS_INSTALLER: join(root, "frps-installer.sh"),
     AMNEZIA_ALLOW_NONROOT: "1",
     AMNEZIA_SYSTEMD_DIR: systemd,
+    AMNEZIA_UNIT_DIR: unitDir,
+    AMNEZIA_VAR: varDir,
     BRIDGE_AGENT_IMAGE_REPOSITORY: "",
     AMNEZIA_LISTEN_WAIT: "2",
     BRIDGE_AGENT_IMAGE: "",
@@ -94,7 +107,9 @@ echo '{"ok":true}'
     spawnSync("sh", [scriptPath, ...a], { env: { ...env, ...extraEnv }, encoding: "utf8" });
   const agentDir = join(bridgeEtc, "agent");
   return {
-    root, etc, state, bin, systemd, agentDir, run,
+    root, etc, state, bin, systemd, unitDir, varDir, agentDir, run,
+    spool: join(varDir, "lib", "amnezia-bridge", "update"),
+    updaterState: join(varDir, "lib", "amnezia-bridge", "updater"),
     pinFile: join(agentDir, "image.pin"),
     token: join(agentDir, "api-token"),
     envFile: join(agentDir, "agent.env"),
@@ -294,17 +309,17 @@ withHost("host prerequisites are checked before anything is installed, each with
   // docker, curl and sha256sum: a PATH that holds only the tools the script needs up to that point
   const tools = join(h.root, "tools");
   await mkdir(tools);
-  for (const name of ["grep", "id", "dirname", "sed", "awk", "cat", "wc", "mktemp", "mkdir", "chmod", "mv", "rm", "stat", "tr", "head", "sleep"]) {
+  for (const name of ["grep", "id", "dirname", "sed", "awk", "cat", "wc", "mktemp", "mkdir", "chmod", "mv", "rm", "stat", "tr", "head", "sleep", "bash", "flock"]) {
     const found = spawnSync("sh", ["-c", `command -v ${name}`], { encoding: "utf8" }).stdout.trim();
     if (found) await symlink(found, join(tools, name));
   }
   const bare = (extra) => spawnSync("/bin/sh", [scriptPath, ...withImage], {
-    env: { PATH: `${tools}${extra}`, STATE: h.state, AMNEZIA_ETC: h.etc, AMNEZIA_FRPS_INSTALLER: join(h.root, "frps-installer.sh"), AMNEZIA_ALLOW_NONROOT: "1", AMNEZIA_SYSTEMD_DIR: h.systemd },
+    env: { PATH: `${tools}${extra}`, STATE: h.state, AMNEZIA_ETC: h.etc, AMNEZIA_FRPS_INSTALLER: join(h.root, "frps-installer.sh"), AMNEZIA_ALLOW_NONROOT: "1", AMNEZIA_SYSTEMD_DIR: h.systemd, AMNEZIA_UNIT_DIR: h.unitDir, AMNEZIA_VAR: h.varDir },
     encoding: "utf8",
   });
   const none = bare("");
   assert.equal(none.status, 61, output(none));
-  assert.match(none.stderr, /missing host prerequisites for the bridge-agent: docker curl sha256sum/);
+  assert.match(none.stderr, /missing host prerequisites for the bridge-agent: docker curl sha256sum systemctl \(/);
   // Nothing was installed: frps never ran, no agent directory.
   assert.doesNotMatch(await h.calls(), /frps/);
   await assert.rejects(stat(h.agentDir));
@@ -372,4 +387,85 @@ withHost("a dry run plans the pin file without writing it", async (h) => {
   const r = h.run([...withImage, "--dry-run"]);
   assert.match(r.stdout, /PLAN: write the pin file .*image\.pin .*repository ghcr\.io\/example\/bridge-agent/);
   await assert.rejects(stat(h.pinFile));
+});
+
+withHost("installs the update spool and the updater units with an explicit /bin/bash and the approved repository", async (h) => {
+  const approved = "ghcr.io/example/bridge-agent";
+  const r = h.run([...withImage, "--agent-repository", approved]);
+  assert.equal(r.status, 0, output(r));
+
+  // Spool: requests/ for the agent to write, results/ for it to read; root-only updater state.
+  assert.equal((await stat(join(h.spool, "requests"))).mode & 0o777, 0o700);
+  assert.equal((await stat(join(h.spool, "results"))).mode & 0o777, 0o755);
+  assert.equal((await stat(h.updaterState)).mode & 0o777, 0o700);
+
+  const envFile = await readFile(h.envFile, "utf8");
+  assert.match(envFile, new RegExp(`^BRIDGE_AGENT_IMAGE_REPOSITORY=${approved}$`, "m"));
+  assert.match(envFile, new RegExp(`^BRIDGE_UPDATE_SPOOL=${h.spool}$`, "m"));
+
+  const here = fileURLToPath(new URL("..", import.meta.url)).replace(/\/$/, "");
+  const service = await readFile(join(h.unitDir, "amnezia-bridge-agent-update.service"), "utf8");
+  assert.match(service, new RegExp(`^ExecStart=/bin/bash ${here}/bridge-agent-update\\.sh$`, "m"));
+  assert.match(service, new RegExp(`^Environment=BRIDGE_AGENT_UPDATE_REPO=${approved}$`, "m"));
+  assert.match(service, new RegExp(`^Environment=AMNEZIA_BRIDGE_DIR=${here}$`, "m"));
+  assert.match(service, new RegExp(`^Environment=AMNEZIA_BRIDGE_ETC=${join(h.etc, "amnezia-bridge")}$`, "m"));
+  assert.match(service, new RegExp(`^Environment=BRIDGE_UPDATE_SPOOL_DIR=${h.spool}$`, "m"));
+  assert.match(service, new RegExp(`^Environment=BRIDGE_UPDATER_STATE_DIR=${h.updaterState}$`, "m"));
+  const path = await readFile(join(h.unitDir, "amnezia-bridge-agent-update.path"), "utf8");
+  assert.match(path, new RegExp(`^PathExistsGlob=${h.spool}/requests/\\*\\.json$`, "m"));
+  assert.match(path, new RegExp(`^PathExists=${h.updaterState}/journal$`, "m"));
+
+  const calls = await h.calls();
+  assert.match(calls, /systemctl daemon-reload\nsystemctl enable --now amnezia-bridge-agent-update\.path\n/);
+  // The watcher is armed only after the pin exists (a rollback target), and frps is never touched.
+  assert.ok(calls.indexOf("docker compose --project-name amnezia-bridge-agent") < calls.indexOf("systemctl daemon-reload"));
+  assert.doesNotMatch(calls, /systemctl .*frps/);
+  assert.match(r.stdout, /updates:\s+amnezia-bridge-agent-update\.path watches/);
+});
+
+withHost("without --agent-repository the approved repository is the image's own", async (h) => {
+  assert.equal(h.run(withImage).status, 0);
+  assert.match(await readFile(h.envFile, "utf8"), /^BRIDGE_AGENT_IMAGE_REPOSITORY=ghcr\.io\/example\/bridge-agent$/m);
+  const service = await readFile(join(h.unitDir, "amnezia-bridge-agent-update.service"), "utf8");
+  assert.match(service, /^Environment=BRIDGE_AGENT_UPDATE_REPO=ghcr\.io\/example\/bridge-agent$/m);
+});
+
+withHost("the updater is not armed for an agent that failed its health check", async (h) => {
+  await h.flag("unhealthy");
+  assert.equal(h.run(withImage).status, 64);
+  await assert.rejects(stat(join(h.unitDir, "amnezia-bridge-agent-update.path")));
+  assert.doesNotMatch(await h.calls(), /systemctl/);
+});
+
+withHost("a failing systemctl is exit 65 and keeps the verified pin", async (h) => {
+  await h.flag("systemctl-fails");
+  const r = h.run(withImage);
+  assert.equal(r.status, 65, output(r));
+  assert.match(r.stderr, /the agent runs, but the panel cannot update it/);
+  assert.match(await readFile(h.pinFile, "utf8"), new RegExp(`^BRIDGE_AGENT_IMAGE=${IMAGE}$`, "m"));
+});
+
+withHost("a dry run plans the spool and the units and creates neither", async (h) => {
+  const r = h.run([...withImage, "--dry-run"]);
+  assert.equal(r.status, 0, output(r));
+  assert.match(r.stdout, /PLAN: create the update spool .*update \(requests\/ 0700/);
+  assert.match(r.stdout, /PLAN: install .*amnezia-bridge-agent-update\.\{path,service\} \(ExecStart=\/bin\/bash .*bridge-agent-update\.sh/);
+  await assert.rejects(stat(h.spool));
+  await assert.rejects(stat(h.unitDir));
+  assert.doesNotMatch(await h.calls(), /systemctl/);
+});
+
+withHost("the agent gets exactly one read-write mount (the request spool) and no Docker socket", async () => {
+  const compose = await readFile(composePath, "utf8");
+  const mounts = compose.match(/^\s+- \$\{[A-Z_]+[^\n]*:\/[^\n]*$/gm) ?? [];
+  assert.equal(mounts.length, 4, mounts.join("\n"));
+  const writable = mounts.filter((line) => !line.endsWith(":ro"));
+  assert.deepEqual(
+    writable.map((line) => line.trim()),
+    ["- ${BRIDGE_UPDATE_SPOOL:-/var/lib/amnezia-bridge/update}/requests:/var/lib/amnezia-bridge/update/requests"],
+  );
+  assert.match(compose, /\/results:\/var\/lib\/amnezia-bridge\/update\/results:ro$/m);
+  assert.doesNotMatch(compose, /docker\.sock/);
+  assert.match(compose, /BRIDGE_AGENT_IMAGE_REPOSITORY: \$\{BRIDGE_AGENT_IMAGE_REPOSITORY:-\}/);
+  assert.match(compose, /BRIDGE_UPDATE_SPOOL_DIR: \/var\/lib\/amnezia-bridge\/update$/m);
 });

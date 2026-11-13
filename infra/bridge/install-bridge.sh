@@ -17,16 +17,25 @@
 # ghcr.io/<path>/bridge-agent. Without an image the frps is still installed, the
 # output says "bridge-agent NOT installed" and the script exits 60.
 #
-# Host prerequisites for the agent (docker, the compose plugin, systemd, curl,
-# sha256sum) are checked before anything is installed, so a host that cannot
-# run the agent is refused up front (exit 61) instead of ending up with frps
-# only. After the agent passes its health check the pin file
+# Host prerequisites for the agent (docker, the compose plugin, systemd and
+# systemctl, curl, sha256sum, bash and flock for the updater) are checked before
+# anything is installed, so a host that cannot run the agent is refused up front
+# (exit 61) instead of ending up with frps only. After the agent passes its health check the pin file
 # /etc/amnezia-bridge/agent/image.pin records the approved repository and the
 # digest that was last verified running. Which file is authoritative:
 # agent.env holds the image Compose RUNS; image.pin holds the last known-good
-# one (the rollback target). The updater (Task 6c) must take the approved
-# repository and digest from the panel's request, never from the pin's
-# repository line, and only use the pin to restore the previous image.
+# one (the rollback target). The updater (bridge-agent-update.sh) takes the
+# approved repository from its own unit and the digest from the panel's
+# request, never from the pin's repository line, and uses the pin only to
+# restore the previous image.
+#
+# Panel-driven agent updates: the installer creates the update spool
+# /var/lib/amnezia-bridge/update (requests/ read-write for the agent, results/
+# read-only to it), the root-only updater state /var/lib/amnezia-bridge/updater,
+# and installs amnezia-bridge-agent-update.{path,service} (ExecStart=/bin/bash
+# <this directory>/bridge-agent-update.sh) with the approved repository: the
+# --agent-repository value, else the repository of --agent-image. The units are
+# installed and the watcher enabled after the pin file is written.
 #
 # The agent's API token is generated here once, on the host, in
 # /etc/amnezia-bridge/agent/api-token (mode 0600). It is never regenerated on a
@@ -44,10 +53,12 @@
 #   62  the token or env file is unsafe or cannot be written
 #   63  pulling the image or starting the compose service failed
 #   64  the agent does not listen on 127.0.0.1:<port> or /healthz fails
+#   65  installing or enabling the updater units failed (the agent runs, but
+#       the panel cannot update it)
 #
 # Test seams (not for operators): AMNEZIA_ETC, AMNEZIA_FRPS_INSTALLER,
 # AMNEZIA_ALLOW_NONROOT, AMNEZIA_LISTEN_WAIT, AMNEZIA_SSH_HOST_KEY,
-# AMNEZIA_SYSTEMD_DIR.
+# AMNEZIA_SYSTEMD_DIR, AMNEZIA_VAR, AMNEZIA_UNIT_DIR.
 set -eu
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -64,6 +75,12 @@ DASH_ENV_FILE="$BRIDGE_ETC/frp/dashboard.env"
 COMPOSE_FILE="$HERE/compose.yaml"
 PROJECT=amnezia-bridge-agent
 HOST_KEY_PUB="${AMNEZIA_SSH_HOST_KEY:-$ETC/ssh/ssh_host_ed25519_key.pub}"
+VAR="${AMNEZIA_VAR:-/var}"
+UNIT_DIR="${AMNEZIA_UNIT_DIR:-/etc/systemd/system}"
+SPOOL_DIR="$VAR/lib/amnezia-bridge/update"
+UPDATER_STATE_DIR="$VAR/lib/amnezia-bridge/updater"
+UPDATER_SCRIPT="$HERE/bridge-agent-update.sh"
+UPDATER_UNIT=amnezia-bridge-agent-update
 
 info() { printf '%s\n' "$*"; }
 plan() { printf 'PLAN: %s\n' "$*"; }
@@ -122,6 +139,8 @@ if [ -n "$AGENT_IMAGE" ]; then
   printf '%s' "$AGENT_IMAGE" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9._/:-]*@sha256:[0-9a-f]{64}$' ||
     usage_error "--agent-image must be pinned by digest (name@sha256:<64 hex>); tags are refused"
   IMAGE_REPO="${AGENT_IMAGE%@*}"
+  # The repository the agent and the host updater accept update requests for.
+  APPROVED_REPO="${AGENT_REPOSITORY:-$IMAGE_REPO}"
   if [ -n "$AGENT_REPOSITORY" ]; then
     [ "$IMAGE_REPO" = "$AGENT_REPOSITORY" ] ||
       usage_error "--agent-image is not from the approved bridge-agent repository $AGENT_REPOSITORY"
@@ -141,13 +160,16 @@ fi
 # (that path installs frps only and exits 60).
 if [ -n "$AGENT_IMAGE" ]; then
   missing=""
-  for tool in docker curl sha256sum; do
+  for tool in docker curl sha256sum systemctl bash flock; do
     command -v "$tool" >/dev/null 2>&1 || missing="$missing $tool"
   done
   if command -v docker >/dev/null 2>&1 && ! docker compose version >/dev/null 2>&1; then
     missing="$missing docker-compose-plugin"
   fi
   [ -d "$SYSTEMD_DIR" ] || missing="$missing systemd"
+  for file in "$UPDATER_SCRIPT" "$HERE/systemd/$UPDATER_UNIT.service" "$HERE/systemd/$UPDATER_UNIT.path"; do
+    [ -r "$file" ] || missing="$missing $file"
+  done
   [ -z "$missing" ] ||
     die 61 E_PREREQ "missing host prerequisites for the bridge-agent:$missing (nothing was installed)"
 fi
@@ -195,6 +217,8 @@ BRIDGE_APPLIED_CONTROL_PORT=$CONTROL_PORT
 BRIDGE_APPLIED_UDP_START=$UDP_START
 BRIDGE_APPLIED_UDP_END=$UDP_END
 BRIDGE_AGENT_PORT=$AGENT_PORT
+BRIDGE_AGENT_IMAGE_REPOSITORY=$APPROVED_REPO
+BRIDGE_UPDATE_SPOOL=$SPOOL_DIR
 ENV_EOF
 }
 
@@ -212,7 +236,9 @@ if [ "$DRY_RUN" -eq 1 ]; then
   plan "write $ENV_FILE (mode 0600): image $AGENT_IMAGE, ports, bridge id"
   plan "docker compose pull and up -d the $PROJECT project (network_mode host, listens on 127.0.0.1:$AGENT_PORT)"
   plan "confirm the listener on 127.0.0.1:$AGENT_PORT and GET /healthz"
+  plan "create the update spool $SPOOL_DIR (requests/ 0700 for the agent, results/ 0755 read-only to it) and $UPDATER_STATE_DIR (0700)"
   plan "write the pin file $PIN_FILE (mode 0600): repository $IMAGE_REPO, digest ${AGENT_IMAGE#*@}"
+  plan "install $UNIT_DIR/$UPDATER_UNIT.{path,service} (ExecStart=/bin/bash $UPDATER_SCRIPT, approved repository $APPROVED_REPO) and enable the watcher"
   info "dry run: nothing was written, pulled or started"
   exit 0
 fi
@@ -232,6 +258,14 @@ if [ ! -f "$TOKEN_FILE" ]; then
 fi
 check_token_file
 [ -f "$DASH_ENV_FILE" ] || die 62 E_FILE "missing $DASH_ENV_FILE (install-frps.sh creates it)"
+
+# The spool exists before the container starts, so Docker does not create the
+# bind-mount sources with its own defaults. The container runs as uid 0 without
+# capabilities, so root-owned directories are what it can use: requests/ to
+# write, results/ to read (mounted read-only).
+mkdir -p "$SPOOL_DIR/requests" "$SPOOL_DIR/results" "$UPDATER_STATE_DIR"
+chmod 0755 "$SPOOL_DIR" "$SPOOL_DIR/results"
+chmod 0700 "$SPOOL_DIR/requests" "$UPDATER_STATE_DIR"
 
 TMP_ENV="$(mktemp "$AGENT_DIR/.agent.env.XXXXXX")"
 trap 'rm -f -- "$TMP_ENV"' EXIT
@@ -275,6 +309,23 @@ trap 'rm -f -- "$TMP_ENV" "$TMP_PIN"' EXIT
 chmod 0600 "$TMP_PIN"
 mv -f "$TMP_PIN" "$PIN_FILE"
 
+# The host updater behind the panel's "Update agent": installed once a verified
+# pin exists, so it always has a rollback target.
+render_unit() {
+  sed -e "s#/opt/amnezia-bridge#$HERE#g" \
+    -e "s#/etc/amnezia-bridge#$BRIDGE_ETC#g" \
+    -e "s#/var/lib/amnezia-bridge#$VAR/lib/amnezia-bridge#g" \
+    -e "s#^Environment=BRIDGE_AGENT_UPDATE_REPO=\$#Environment=BRIDGE_AGENT_UPDATE_REPO=$APPROVED_REPO#" \
+    "$HERE/systemd/$1" >"$UNIT_DIR/$1.tmp" && mv -f "$UNIT_DIR/$1.tmp" "$UNIT_DIR/$1"
+}
+bash -n "$UPDATER_SCRIPT" 2>/dev/null ||
+  die 65 E_UPDATER "$UPDATER_SCRIPT is not a valid bash script; the agent runs, but the panel cannot update it"
+mkdir -p "$UNIT_DIR"
+{ render_unit "$UPDATER_UNIT.service" && render_unit "$UPDATER_UNIT.path"; } ||
+  die 65 E_UPDATER "cannot write the updater units to $UNIT_DIR; the agent runs, but the panel cannot update it"
+{ systemctl daemon-reload && systemctl enable --now "$UPDATER_UNIT.path"; } >/dev/null 2>&1 ||
+  die 65 E_UPDATER "enabling $UPDATER_UNIT.path failed; the agent runs, but the panel cannot update it (inspect: systemctl status $UPDATER_UNIT.path)"
+
 fingerprint=""
 if [ -f "$HOST_KEY_PUB" ]; then
   fingerprint="$(ssh-keygen -lf "$HOST_KEY_PUB" 2>/dev/null | awk '{print $2}' || true)"
@@ -284,6 +335,7 @@ info "  bridge id:           $BRIDGE_ID"
 info "  pinned image:        ${AGENT_IMAGE#*@} ($PIN_FILE)"
 info "  management listener: 127.0.0.1:$AGENT_PORT (loopback only)"
 info "  API token file:      $TOKEN_FILE (mode 0600; the value is not printed)"
+info "  updates:             $UPDATER_UNIT.path watches $SPOOL_DIR/requests (approved repository $APPROVED_REPO)"
 info "  SSH host key (ed25519): ${fingerprint:-unknown; read it with ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub}"
 info "next: from the panel host run scripts/add-bridge-tunnel.sh with this bridge id and host key fingerprint,"
 info "      then enroll the agent with the CLI command it prints (see infra/bridge/README.md)."

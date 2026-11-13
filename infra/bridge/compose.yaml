@@ -13,7 +13,12 @@
 #   and root-owned, so the container reads both as root. Everything else is
 #   dropped: no capabilities, read-only root filesystem, no new privileges.
 # - image comes from BRIDGE_AGENT_IMAGE, a reference pinned by digest
-#   (name@sha256:<64 hex>); install-bridge.sh refuses a tag.
+#   (name@sha256:<64 hex>); install-bridge.sh refuses a tag. The host updater
+#   (bridge-agent-update.sh) changes only that line and recreates only this
+#   service with --no-deps.
+# - updates: the only read-write mount is the update spool's requests/
+#   directory, where the agent records an intent; results/ (written by the
+#   host updater) is read-only. No Docker socket: the host updater owns Docker.
 services:
   bridge-agent:
     image: ${BRIDGE_AGENT_IMAGE:?set BRIDGE_AGENT_IMAGE to a digest-pinned image}
@@ -36,6 +41,10 @@ services:
       BRIDGE_AGENT_API_TOKEN_FILE: /etc/amnezia-bridge/agent/api-token
       BRIDGE_FRPS_DASHBOARD_ENV_FILE: /etc/amnezia-bridge/frp/dashboard.env
       BRIDGE_FRPS_URL: http://127.0.0.1:7500
+      BRIDGE_AGENT_IMAGE_REPOSITORY: ${BRIDGE_AGENT_IMAGE_REPOSITORY:-}
+      BRIDGE_UPDATE_SPOOL_DIR: /var/lib/amnezia-bridge/update
     volumes:
       - ${BRIDGE_ETC:?}/agent/api-token:/etc/amnezia-bridge/agent/api-token:ro
       - ${BRIDGE_ETC:?}/frp/dashboard.env:/etc/amnezia-bridge/frp/dashboard.env:ro
+      - ${BRIDGE_UPDATE_SPOOL:-/var/lib/amnezia-bridge/update}/requests:/var/lib/amnezia-bridge/update/requests
+      - ${BRIDGE_UPDATE_SPOOL:-/var/lib/amnezia-bridge/update}/results:/var/lib/amnezia-bridge/update/results:ro
