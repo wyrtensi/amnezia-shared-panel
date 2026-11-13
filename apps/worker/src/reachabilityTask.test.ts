@@ -369,10 +369,11 @@ describe("reachability task", () => {
       await tick(repository, client);
       // Ping and TCP failed, handshake and HTTP passed: a bridge verdict is
       // the tunnel, not the diagnostics.
+      // Stamped with panel time, not the probe's `finishedAt`.
       expect(repository.finishCandidateRun).toHaveBeenCalledWith(candidate(), {
         result: "success",
         error: null,
-        checkedAt: minutesAgo(0.5),
+        checkedAt: NOW,
       });
       // Never fed to node state, alerts or the widget.
       expect(repository.ingest).not.toHaveBeenCalled();

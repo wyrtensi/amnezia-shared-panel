@@ -317,7 +317,8 @@ describe("bridge candidate check end to end (real PostgreSQL)", () => {
     expect((await routeRow(routeId))?.verificationResult).toBeNull();
 
     // Finished: the tick settles it on the route.
-    const finished = probe.finish();
+    probe.finish();
+    const settledFrom = Date.now();
     await tickWith(probe.client);
     const route = await routeRow(routeId);
     expect(route).toMatchObject({
@@ -330,7 +331,9 @@ describe("bridge candidate check end to end (real PostgreSQL)", () => {
     // Exactly what the activation guard reads: same marker as observed,
     // fresh, successful.
     expect(route?.verifiedRegistrationMarker).toBe(route?.observedRegistrationMarker);
-    expect(route?.verifiedAt?.toISOString()).toBe(finished.finishedAt);
+    // Panel time of the settling tick, not the probe host's clock.
+    expect(route?.verifiedAt?.getTime()).toBeGreaterThanOrEqual(settledFrom - 1_000);
+    expect(route?.verifiedAt?.getTime()).toBeLessThanOrEqual(Date.now() + 1_000);
     const after = await probeRow();
     expect(after?.candidateRunId).toBeNull();
     expect(after?.lastIngestedRunId).toBeNull();
@@ -416,6 +419,34 @@ describe("bridge candidate check end to end (real PostgreSQL)", () => {
       state: "retiring",
       verificationMethod: null,
       verificationResult: null,
+    });
+    expect((await probeRow())?.candidateRunId).toBeNull();
+    await db().update(reachabilityProbe).set({ currentRunId: null });
+  });
+
+  runDatabaseTest("a late result does not replace a verification recorded after the request", async () => {
+    const { nodeId, routeId } = await seedRoute();
+    await seedProbe();
+    const probe = fakeProbe();
+    await handlerFor(probe.client)(await queueJob(routeId, nodeId, new Date(Date.now() - 60_000)));
+    // The operator verified manually while the probe run was out.
+    const operatorAt = new Date();
+    await db()
+      .update(vpnBridgeRoutes)
+      .set({
+        verificationMethod: "operator",
+        verifiedRegistrationMarker: "m-1",
+        verifiedAt: operatorAt,
+        verificationResult: "success",
+      })
+      .where(eq(vpnBridgeRoutes.id, routeId));
+    probe.finish({ ok: false, detail: "no handshake", latencyMs: null });
+    await tickWith(probe.client);
+    expect(await routeRow(routeId)).toMatchObject({
+      verificationMethod: "operator",
+      verificationResult: "success",
+      verificationError: null,
+      verifiedAt: operatorAt,
     });
     expect((await probeRow())?.candidateRunId).toBeNull();
     await db().update(reachabilityProbe).set({ currentRunId: null });

@@ -105,7 +105,7 @@ export const probeCapabilityInput = (_probe: ProbeRow): ProbeCapabilityInput => 
 });
 
 /**
- * The verdict of a finished candidate run. A bridged path is judged on the
+ * The verdict of a finished candidate run, settled at `at`. A bridged path is judged on the
  * real AWG handshake and HTTP through the tunnel; ping and TCP against the
  * bridge's UDP port say nothing about it. A failed control fetch means the
  * probe itself could not be trusted, which is not a pass either.
@@ -115,8 +115,9 @@ export const classifyCandidateRun = (
   routeId: string,
   at: Date,
 ): CandidateOutcome => {
-  const finished = run.finishedAt ? new Date(run.finishedAt) : at;
-  const checkedAt = Number.isNaN(finished.getTime()) ? at : finished;
+  // Panel time, as regular ingest stamps it: the 30-minute activation window
+  // must not depend on the probe host's clock.
+  const checkedAt = at;
   const failure = (error: BridgeCandidateCheckError): CandidateOutcome => ({
     result: "failure",
     error,

@@ -23,9 +23,11 @@ type Tx = Parameters<Parameters<Database["transaction"]>[0]>[0];
 
 /**
  * Store a candidate check result on its route. Only a draft or retiring
- * route takes it, and only one that was not demoted after the check was
- * requested: a demotion cleared its verification (ruling R11), and a result
- * of a check queued before that must not bring it back.
+ * route takes it, only one that was not demoted after the check was
+ * requested (a demotion cleared its verification, ruling R11, and a result
+ * of a check queued before that must not bring it back), and only when no
+ * newer verification was recorded since the request (an operator
+ * verification made while this check waited for the probe stays).
  */
 export const writeCandidateVerification = async (
   executor: Database | Tx,
@@ -48,6 +50,10 @@ export const writeCandidateVerification = async (
         or(
           isNull(vpnBridgeRoutes.retiringSince),
           lte(vpnBridgeRoutes.retiringSince, write.requestedAt),
+        ),
+        or(
+          isNull(vpnBridgeRoutes.verifiedAt),
+          lte(vpnBridgeRoutes.verifiedAt, write.requestedAt),
         ),
       ),
     );
