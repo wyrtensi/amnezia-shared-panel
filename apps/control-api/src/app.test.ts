@@ -173,6 +173,7 @@ createNode: vi.fn(() => Promise.resolve({ id: "node-1" })),
       pendingJobs: { count: 0, byType: {} },
       jobsEnabled: false,
       readyForPreBridgeRollback: true,
+      blockingReasons: [],
     }),
   ),
   getBridgeEligibility: vi.fn(() =>
@@ -2465,6 +2466,7 @@ describe("bridge registry routes", () => {
       pendingJobs: { count: 2, byType: { "bridge_agent.poll": 2 } },
       jobsEnabled: true,
       readyForPreBridgeRollback: false,
+      blockingReasons: ["BRIDGE_JOBS_ENABLED" as const, "ACTIVE_ASSIGNMENTS" as const, "PENDING_BRIDGE_JOBS" as const],
     };
     vi.mocked(service.getBridgeRollbackPreflight).mockResolvedValueOnce(preflight);
     const response = await app.inject({

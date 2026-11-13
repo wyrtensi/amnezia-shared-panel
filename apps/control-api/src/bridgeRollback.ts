@@ -4,6 +4,7 @@ import {
   BRIDGE_AGENT_UPDATE_JOB_TYPE,
   BRIDGE_AGENT_UPDATE_OUTSTANDING_STATES,
   BRIDGE_ROUTE_CANDIDATE_CHECK_JOB_TYPE,
+  type BridgeRollbackBlockingReason,
   type BridgeRollbackPreflight,
 } from "@amnezia/contracts";
 import { jobOutbox, vpnBridgeAgentUpdates, vpnBridgeRoutes, type Database } from "@amnezia/db";
@@ -13,6 +14,21 @@ const BRIDGE_JOB_TYPES = [
   BRIDGE_AGENT_UPDATE_JOB_TYPE,
   BRIDGE_ROUTE_CANDIDATE_CHECK_JOB_TYPE,
 ];
+
+/** The verdict from the counts; pure so every combination is unit-tested. */
+export const bridgeRollbackVerdict = (input: {
+  jobsEnabled: boolean;
+  activeAssignments: number;
+  outstandingAgentUpdates: number;
+  pendingJobs: number;
+}): Pick<BridgeRollbackPreflight, "readyForPreBridgeRollback" | "blockingReasons"> => {
+  const blockingReasons: BridgeRollbackBlockingReason[] = [];
+  if (input.jobsEnabled) blockingReasons.push("BRIDGE_JOBS_ENABLED");
+  if (input.activeAssignments > 0) blockingReasons.push("ACTIVE_ASSIGNMENTS");
+  if (input.outstandingAgentUpdates > 0) blockingReasons.push("OUTSTANDING_AGENT_UPDATES");
+  if (input.pendingJobs > 0) blockingReasons.push("PENDING_BRIDGE_JOBS");
+  return { readyForPreBridgeRollback: blockingReasons.length === 0, blockingReasons };
+};
 
 /**
  * The rollback preflight: reads only, so it is safe to run at any time and as
@@ -51,7 +67,11 @@ export const readBridgeRollbackPreflight = async (
     outstandingAgentUpdates: { count: bridgeIds.length, bridgeIds },
     pendingJobs: { count: jobs.length, byType },
     jobsEnabled,
-    readyForPreBridgeRollback:
-      nodeIds.length === 0 && bridgeIds.length === 0 && jobs.length === 0,
+    ...bridgeRollbackVerdict({
+      jobsEnabled,
+      activeAssignments: nodeIds.length,
+      outstandingAgentUpdates: bridgeIds.length,
+      pendingJobs: jobs.length,
+    }),
   };
 };

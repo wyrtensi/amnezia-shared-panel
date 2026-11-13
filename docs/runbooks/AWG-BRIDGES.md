@@ -152,14 +152,18 @@ rows, retired reservations and host forwarding remain for already-imported confi
    `amnezia-panel bridge-rollback-preflight` (`--json`; API
    `GET /api/admin/vpn-bridges/rollback-preflight`). It lists nodes with an active
    bridge assignment, outstanding bridge-agent updates, bridge jobs still pending
-   or processing in the outbox, the gate state and `readyForPreBridgeRollback`.
-2. Set `VPN_BRIDGE_JOBS_ENABLED=false` and recreate `control-api` and `worker`, so
-   no new bridge job is queued. Wait for pending jobs to drain; follow outstanding
+   or processing in the outbox, the gate state, `readyForPreBridgeRollback` and
+   `blockingReasons`.
+2. Set `VPN_BRIDGE_JOBS_ENABLED=false` and recreate `control-api` **and** `worker`:
+   each process reads its own copy of the variable, and the preflight reports only
+   the control-api's. Jobs are the candidate probe check, the bridge-agent poll and
+   the bridge-agent update; activation, Direct and release are not jobs and keep
+   working with the gate off. No new bridge job is queued. Wait for pending jobs to drain; follow outstanding
    updates in `bridge-agent-log` until terminal.
 3. Put every listed node back to Direct (`bridge-route-direct`) **while the
    bridge-aware panel is still running**. Keep the retiring routes and the frpc/frps
    mappings: configs users already imported depend on them.
-4. Repeat the preflight until it says `ready ... yes`.
+4. Repeat the preflight until it says `ready ... yes` (`blockingReasons` empty). Ready needs the gate off, no active assignment, no outstanding update and no pending or processing bridge job; failed jobs do not block.
 5. Take a database backup, then set `PANEL_IMAGE` in `infra/prod/.env` to the
    verified pinned pre-bridge image (by digest) and recreate the stack; the old
    migrator ignores the newer migrations it does not know.

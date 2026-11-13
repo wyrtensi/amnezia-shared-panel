@@ -1,5 +1,13 @@
 import { z } from "zod";
 
+export const BRIDGE_ROLLBACK_BLOCKING_REASONS = [
+  "BRIDGE_JOBS_ENABLED",
+  "ACTIVE_ASSIGNMENTS",
+  "OUTSTANDING_AGENT_UPDATES",
+  "PENDING_BRIDGE_JOBS",
+] as const;
+export type BridgeRollbackBlockingReason = (typeof BRIDGE_ROLLBACK_BLOCKING_REASONS)[number];
+
 /**
  * `GET /api/admin/vpn-bridges/rollback-preflight`: what must be true before the
  * panel is rolled back to a release that predates bridges. Read-only and
@@ -24,9 +32,14 @@ export const bridgeRollbackPreflightSchema = z.object({
     count: z.number().int().nonnegative(),
     byType: z.record(z.string(), z.number().int().positive()),
   }),
-  /** `VPN_BRIDGE_JOBS_ENABLED`; it must be off before rollback so no new job is queued. */
+  /** `VPN_BRIDGE_JOBS_ENABLED` as the control-api reads it (the worker has its own copy). */
   jobsEnabled: z.boolean(),
-  /** True when no active assignment, outstanding update or pending job remains. */
+  /**
+   * True only when the gate is off and no active assignment, outstanding
+   * update or pending bridge job remains. Failed jobs do not count.
+   */
   readyForPreBridgeRollback: z.boolean(),
+  /** Why it is not ready: bounded codes, empty exactly when ready. */
+  blockingReasons: z.array(z.enum(BRIDGE_ROLLBACK_BLOCKING_REASONS)),
 });
 export type BridgeRollbackPreflight = z.infer<typeof bridgeRollbackPreflightSchema>;

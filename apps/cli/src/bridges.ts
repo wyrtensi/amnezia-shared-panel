@@ -712,6 +712,7 @@ type RollbackPreflightView = {
   pendingJobs: { count: number; byType: Record<string, number> };
   jobsEnabled: boolean;
   readyForPreBridgeRollback: boolean;
+  blockingReasons?: string[];
 };
 
 /** `bridge-rollback-preflight [--json]`: read-only; the exit code stays 0 either way. */
@@ -743,6 +744,9 @@ export async function cmdBridgeRollbackPreflight(api: BridgeApi, args: string[])
       ? "ready for pre-bridge rollback: yes"
       : "ready for pre-bridge rollback: NO",
   );
+  if (!view.readyForPreBridgeRollback && view.blockingReasons?.length) {
+    console.log(`blocked by: ${view.blockingReasons.join(", ")}`);
+  }
 }
 
 export async function cmdBridgeDelete(api: BridgeApi, args: string[]): Promise<void> {

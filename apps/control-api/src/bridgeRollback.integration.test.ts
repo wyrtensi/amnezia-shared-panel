@@ -188,6 +188,7 @@ describe("bridge rollback preflight (real PostgreSQL)", () => {
     );
     expect(result.pendingJobs.byType["node.agent-update"]).toBeUndefined();
     expect(result.readyForPreBridgeRollback).toBe(false);
+    expect(result.blockingReasons).toEqual(expect.arrayContaining(["BRIDGE_JOBS_ENABLED", "ACTIVE_ASSIGNMENTS", "PENDING_BRIDGE_JOBS"]));
   });
 
   runDatabaseTest("an outstanding bridge-agent update blocks until it is terminal", async () => {

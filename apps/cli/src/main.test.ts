@@ -1579,6 +1579,7 @@ describe("bridge commands", () => {
       pendingJobs: { count: 2, byType: { "bridge_agent.poll": 2 } },
       jobsEnabled: true,
       readyForPreBridgeRollback: false,
+      blockingReasons: ["BRIDGE_JOBS_ENABLED", "ACTIVE_ASSIGNMENTS", "PENDING_BRIDGE_JOBS"],
     };
 
     it("prints what blocks the rollback and calls only the read endpoint", async () => {
@@ -1593,6 +1594,25 @@ describe("bridge commands", () => {
       expect(calls[0]?.init?.method ?? "GET").toBe("GET");
     });
 
+    it("gate on with zero counts is not ready and names the gate as the reason", async () => {
+      stubFetch([
+        {
+          body: {
+            activeAssignments: { count: 0, nodeIds: [] },
+            outstandingAgentUpdates: { count: 0, bridgeIds: [] },
+            pendingJobs: { count: 0, byType: {} },
+            jobsEnabled: true,
+            readyForPreBridgeRollback: false,
+            blockingReasons: ["BRIDGE_JOBS_ENABLED"],
+          },
+        },
+      ]);
+      const out = await run(["bridge-rollback-preflight"]);
+      expect(out).toContain("ready for pre-bridge rollback: NO");
+      expect(out).toContain("blocked by: BRIDGE_JOBS_ENABLED");
+      expect(out).not.toContain("ready for pre-bridge rollback: yes");
+    });
+
     it("says yes when nothing is left, and --json is the typed body", async () => {
       const ready = {
         activeAssignments: { count: 0, nodeIds: [] },
@@ -1600,6 +1620,7 @@ describe("bridge commands", () => {
         pendingJobs: { count: 0, byType: {} },
         jobsEnabled: false,
         readyForPreBridgeRollback: true,
+        blockingReasons: [],
       };
       stubFetch([{ body: ready }]);
       expect(await run(["bridge-rollback-preflight"])).toContain("ready for pre-bridge rollback: yes");
