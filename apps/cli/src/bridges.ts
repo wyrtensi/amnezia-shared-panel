@@ -53,6 +53,7 @@ export type NodeRouteView = {
   bridgePublicIpv4?: string;
   bridgeManagementStatus?: string;
   bridgeLastObservedAt?: string | null;
+  setupCommands?: SetupCommands | null;
   observedOnline?: boolean | null;
   observedAt?: string | null;
   verificationResult?: string | null;
@@ -130,6 +131,7 @@ export function projectBridge(b: BridgeView): Record<string, unknown> {
 }
 
 export function projectRoute(r: NodeRouteView): Record<string, unknown> {
+  const setup = projectSetup(r.setupCommands);
   return {
     id: r.id,
     bridgeId: r.bridgeId,
@@ -147,6 +149,7 @@ export function projectRoute(r: NodeRouteView): Record<string, unknown> {
     verifiedAt: nullable(r.verifiedAt),
     activatedAt: nullable(r.activatedAt),
     retiringSince: nullable(r.retiringSince),
+    ...(setup ? { setupCommands: setup } : {}),
   };
 }
 
@@ -379,6 +382,11 @@ export async function cmdBridgeRoutePrepare(api: BridgeApi, args: string[]): Pro
   console.log(`  public udp port ${route.publicUdpPort}`);
   console.log(`  proxy name ${show(route.frpProxyName)}`);
   console.log(`  state ${route.state}`);
+  const setup = projectSetup(route.setupCommands);
+  if (setup) {
+    console.log("setup commands (run them on the node host yourself; the helper detects the local AWG port):");
+    for (const key of SETUP_KEYS) if (setup[key]) console.log(`  ${key}: ${setup[key]}`);
+  }
 }
 
 /**

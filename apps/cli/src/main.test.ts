@@ -1308,6 +1308,19 @@ describe("bridge commands", () => {
     expect(out).toContain(`awg-route-${ROUTE}`);
   });
 
+  it("bridge-route-prepare prints the route setup commands and keeps them in --json", async () => {
+    const setupCommands = { install: "sudo sh install-frpc.sh --route-id r", dryRun: "sudo sh install-frpc.sh --route-id r --dry-run", remove: "sudo sh install-frpc.sh --route-id r --remove" };
+    const route = { id: ROUTE, bridgeId: BRIDGE, publicUdpPort: 41005, state: "draft", frpProxyName: `awg-route-${ROUTE}`, setupCommands };
+    stubFetch([{ status: 201, body: { created: true, route } }]);
+    const out = await run(["bridge-route-prepare", NODE, BRIDGE, "--confirm"]);
+    expect(out).toContain(`install: ${setupCommands.install}`);
+    expect(out).toContain(`dryRun: ${setupCommands.dryRun}`);
+    expect(out).toContain(`remove: ${setupCommands.remove}`);
+    stubFetch([{ status: 201, body: { created: true, route } }]);
+    const json = JSON.parse(await run(["bridge-route-prepare", NODE, BRIDGE, "--confirm", "--json"])) as { route: { setupCommands: unknown } };
+    expect(json.route.setupCommands).toEqual(setupCommands);
+  });
+
   it("bridge-route-prepare surfaces BRIDGE_NODE_NOT_AWG31", async () => {
     stubFetch([{ status: 409, body: { error: "BRIDGE_NODE_NOT_AWG31", message: "no awg3" } }]);
     await expect(run(["bridge-route-prepare", NODE, BRIDGE, "--confirm"])).rejects.toThrow(/BRIDGE_NODE_NOT_AWG31/);

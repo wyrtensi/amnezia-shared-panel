@@ -152,6 +152,30 @@ export const bridgeRouteSummarySchema = z.object({
   state: bridgeRouteStateSchema,
 });
 
+/**
+ * Host commands for the bridge installer (`infra/bridge/install-frps.sh`).
+ * Built from the bridge id, control port and UDP range only; no secrets.
+ */
+export const bridgeSetupCommandsSchema = z.object({
+  install: z.string(),
+  dryRun: z.string(),
+});
+export type BridgeSetupCommands = z.infer<typeof bridgeSetupCommandsSchema>;
+
+/**
+ * Host commands for the node route installer (`infra/node/scripts/install-frpc.sh`).
+ * Built from the route id, the bridge IPv4, the control port and the public
+ * port only; the script detects the local AWG target itself (its optional
+ * `--local-udp-port` / `--local-ip` overrides are not generated). `remove`
+ * retires the route's frpc unit and config.
+ */
+export const routeSetupCommandsSchema = z.object({
+  install: z.string(),
+  dryRun: z.string(),
+  remove: z.string(),
+});
+export type RouteSetupCommands = z.infer<typeof routeSetupCommandsSchema>;
+
 export const bridgeSchema = z.object({
   id: z.uuid(),
   name: z.string(),
@@ -166,6 +190,7 @@ export const bridgeSchema = z.object({
   managementStatus: bridgeManagementStatusSchema,
   lastObservedAt: z.iso.datetime().nullable(),
   routes: z.array(bridgeRouteSummarySchema),
+  setupCommands: bridgeSetupCommandsSchema.optional(),
   createdAt: z.iso.datetime(),
   updatedAt: z.iso.datetime(),
 });
@@ -182,6 +207,7 @@ export const nodeBridgeRouteSchema = bridgeRouteSchema.extend({
   bridgeControlTcpPort: portSchema,
   bridgeManagementStatus: bridgeManagementStatusSchema,
   bridgeLastObservedAt: z.iso.datetime().nullable(),
+  setupCommands: routeSetupCommandsSchema.optional(),
 });
 
 /**

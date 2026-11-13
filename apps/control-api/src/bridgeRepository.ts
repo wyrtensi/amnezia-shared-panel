@@ -35,6 +35,7 @@ import {
   classifyKeyForBridge,
 } from "./bridgeEndpoint.js";
 import { checkActivationGuard, checkReleaseGuard } from "./bridgeGuards.js";
+import { bridgeSetupCommands, routeSetupCommands } from "./bridgeSetupCommands.js";
 import { ApiError, type Actor } from "./service.js";
 
 // The transaction handle drizzle passes to `db.transaction(async (tx) => ...)`.
@@ -159,6 +160,12 @@ const toNodeRoute = (route: RouteRow, bridge: BridgeRow): NodeBridgeRoute => ({
   bridgeControlTcpPort: bridge.controlTcpPort,
   bridgeManagementStatus: bridge.managementStatus,
   bridgeLastObservedAt: iso(bridge.lastObservedAt),
+  setupCommands: routeSetupCommands({
+    id: route.id,
+    publicUdpPort: route.publicUdpPort,
+    bridgePublicIpv4: bridge.publicIpv4,
+    bridgeControlTcpPort: bridge.controlTcpPort,
+  }),
 });
 
 const toBridge = (row: BridgeRow, routes: BridgeRouteSummary[]): Bridge => ({
@@ -175,6 +182,7 @@ const toBridge = (row: BridgeRow, routes: BridgeRouteSummary[]): Bridge => ({
   managementStatus: row.managementStatus,
   lastObservedAt: iso(row.lastObservedAt),
   routes,
+  setupCommands: bridgeSetupCommands(row),
   createdAt: row.createdAt.toISOString(),
   updatedAt: row.updatedAt.toISOString(),
 });

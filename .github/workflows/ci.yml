@@ -88,4 +88,4 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: 24
-      - run: node --test infra/node/tests/*.mjs infra/prod/tests/*.mjs scripts/tests/*.mjs
+      - run: node --test infra/node/tests/*.mjs infra/bridge/tests/*.mjs infra/prod/tests/*.mjs scripts/tests/*.mjs
