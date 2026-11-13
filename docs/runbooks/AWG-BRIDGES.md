@@ -7,8 +7,8 @@ assignments are managed in the panel (Policies -> Node routes, and the Bridges
 tab) and through the same API from the CLI (`docs/CLI.md`, `bridge-*` commands).
 
 Scope: only genuine AWG 3.1 artifacts follow a bridge. Native AWG 2 and an AWG3
-service's 2.0 fallback stay Direct. A bridge-agent needs AmneziaVPN client
-5.0.1.5 or newer for AWG 3.1 configs.
+service's 2.0 fallback stay Direct. AWG 3.1 configs need AmneziaVPN client
+5.0.1.5 or newer.
 
 Example values below use the documentation range (`203.0.113.10`, node
 `198.51.100.20`). Never paste tokens, keys or QR payloads into tickets or logs.
@@ -25,7 +25,7 @@ Settings on the panel (`infra/prod/.env`, documented in `infra/prod/.env.example
 
 | Variable | Meaning |
 | --- | --- |
-| `VPN_BRIDGE_JOBS_ENABLED` | Gate for **queuing** bridge jobs (agent polling, probe route checks, agent updates). Default `false`; a gated request fails with `BRIDGE_JOBS_DISABLED`. Registry, reservation, activation and exports are not jobs and are never gated |
+| `VPN_BRIDGE_JOBS_ENABLED` | Gate for **queuing** bridge jobs (agent polling, probe route checks, agent updates). Default `false`; a gated request fails with `BRIDGE_JOBS_DISABLED`. Registry, reservation, activation and exports are not jobs and are never gated, but bridge observations come only from the polling job: with the gate off the observations go stale, so **only Direct keeps working**; activation and release refuse with `BRIDGE_OBSERVATION_STALE`, and outstanding agent updates never reach a terminal state (the update tracker runs inside the poll job) |
 | `VPN_BRIDGE_OBSERVATION_STALE_MS` | Age after which the last bridge-agent observation counts as stale (default 300000). Stale means Unknown: activation and release refuse |
 | `VPN_BRIDGE_MANAGEMENT_HOSTS` | Hosts a bridge's management URL may name (default `host.docker.internal`) |
 | `BRIDGE_AGENT_IMAGE_REPOSITORY` | Approved bridge-agent image repository; only its resolved digest is ever offered |
@@ -99,8 +99,9 @@ Never run a pre-bridge worker with the gate on.
      import it in an AmneziaVPN client, confirm a handshake and a page load, then
      `amnezia-panel bridge-route-verify <route-id> --operator-verified --registration=<marker> --confirm`.
 6. Activate within 30 minutes of the verification, against a fresh observation:
-   `amnezia-panel bridge-route-activate <route-id> --confirm`. The old endpoint
-   path (Direct or the previous route) becomes **retiring** and keeps forwarding.
+   `amnezia-panel bridge-route-activate <route-id> --confirm`. A previous
+   route becomes **retiring** and keeps forwarding; Direct is not a route and
+   does not become retiring.
 7. Users get the new endpoint on their next download or **Refresh config**; files
    already imported keep the endpoint they were exported with.
 
@@ -122,7 +123,11 @@ imported. A node's endpoint revision changes on every switch; a stale revision i
    registration: `amnezia-panel bridge-route-release <route-id> --confirm`
    (`BRIDGE_OBSERVATION_STALE` while the bridge state is unknown keeps it; a
    canceled draft is released the same way).
-4. A bridge is deleted only when it holds no draft, active or retiring route:
+4. Lost bridge host (cannot be reached, no observation will ever arrive): stand up
+   any host with bridge-agent and frps using the **same `BRIDGE_ID`**, enroll it,
+   and let one poll observe the routes absent; then release them. A future audited
+   abandon / forced-release action is a follow-up and is not implemented.
+5. A bridge is deleted only when it holds no draft, active or retiring route:
    `amnezia-panel bridge-delete <bridge-id> --confirm`. Removing a node needs its
    routes released first.
 
@@ -154,20 +159,23 @@ rows, retired reservations and host forwarding remain for already-imported confi
    bridge assignment, outstanding bridge-agent updates, bridge jobs still pending
    or processing in the outbox, the gate state, `readyForPreBridgeRollback` and
    `blockingReasons`.
-2. Set `VPN_BRIDGE_JOBS_ENABLED=false` and recreate `control-api` **and** `worker`:
+2. **Drain with the gate still ON.** Follow outstanding bridge-agent updates in
+   `bridge-agent-log` until terminal: the update tracker runs inside the poll job,
+   so they never finish once the gate is off. Queue no new update.
+3. Set `VPN_BRIDGE_JOBS_ENABLED=false` and recreate `control-api` **and** `worker`:
    each process reads its own copy of the variable, and the preflight reports only
    the control-api's. Jobs are the candidate probe check, the bridge-agent poll and
-   the bridge-agent update; activation, Direct and release are not jobs and keep
-   working with the gate off. No new bridge job is queued. Wait for pending jobs to drain; follow outstanding
-   updates in `bridge-agent-log` until terminal.
-3. Put every listed node back to Direct (`bridge-route-direct`) **while the
+   the bridge-agent update. With the gate off only Direct works: observations go
+   stale, so activation and release refuse. No new bridge job is queued; wait for
+   pending jobs to drain.
+4. Put every listed node back to Direct (`bridge-route-direct`) **while the
    bridge-aware panel is still running**. Keep the retiring routes and the frpc/frps
    mappings: configs users already imported depend on them.
-4. Repeat the preflight until it says `ready ... yes` (`blockingReasons` empty). Ready needs the gate off, no active assignment, no outstanding update and no pending or processing bridge job; failed jobs do not block.
-5. Take a database backup, then set `PANEL_IMAGE` in `infra/prod/.env` to the
+5. Run the preflight again until it says `ready ... yes` (`blockingReasons` empty). Ready needs the gate off, no active assignment, no outstanding update and no pending or processing bridge job; failed jobs do not block.
+6. Take a database backup, then set `PANEL_IMAGE` in `infra/prod/.env` to the
    verified pinned pre-bridge image (by digest) and recreate the stack; the old
    migrator ignores the newer migrations it does not know.
-6. To return to the bridge build, set the candidate image back; the saved bridge
+7. To return to the bridge build, set the candidate image back; the saved bridge
    state is still in the database. Re-enable the gate last (section 1, step 5).
 
 A recovery build that must keep active assignments needs the bridge-aware exporter

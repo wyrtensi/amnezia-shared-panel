@@ -74,11 +74,17 @@ describe("requestBridgeAgent against a local HTTP server", () => {
     });
   });
 
-  it("maps a 401 without reading the body as data", async () => {
+  it("keeps only a bounded error code from a non-2xx body", async () => {
     handler = json(401, { error: { code: "UNAUTHORIZED" } });
     expect(await requestBridgeAgent("/v1/status", { baseUrl, apiKey: TOKEN })).toEqual({
       kind: "response",
       status: 401,
+      body: { error: { code: "UNAUTHORIZED" } },
+    });
+    handler = json(404, { error: { code: "free text with spaces", message: "secret" } });
+    expect(await requestBridgeAgent("/v1/status", { baseUrl, apiKey: TOKEN })).toEqual({
+      kind: "response",
+      status: 404,
       body: null,
     });
   });

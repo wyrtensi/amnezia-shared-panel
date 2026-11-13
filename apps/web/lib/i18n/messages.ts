@@ -1633,6 +1633,8 @@ const ru = {
     "Ключей AWG 2 (остаются прямыми): {count}",
   "bridge.elig.unsupported":
     "Неподдерживаемых конфигов: {count}",
+  "bridge.elig.unsupportedIds":
+    "ID неподдерживаемых ключей: {ids}",
   "bridge.elig.blocked":
     "Активация будет отклонена, пока неподдерживаемые конфиги не отозваны или не обновлены.",
   "bridge.prepareTitle":
@@ -3366,6 +3368,8 @@ const en = {
     "AWG 2 keys (stay direct): {count}",
   "bridge.elig.unsupported":
     "Unsupported configs: {count}",
+  "bridge.elig.unsupportedIds":
+    "Unsupported key ids: {ids}",
   "bridge.elig.blocked":
     "Activation will be refused until the unsupported configs are revoked or refreshed.",
   "bridge.prepareTitle":

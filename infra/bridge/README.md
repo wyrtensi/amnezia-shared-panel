@@ -145,7 +145,8 @@ or a journal exists. `bridge-agent-update.sh`, under the lock:
    --no-deps --no-build bridge-agent`. frps (a host service) is never touched.
 5. `health_check`: the container `amnezia-bridge-agent` runs exactly the
    requested reference and image id, `/v1/identity` names the enrolled bridge id
-   (from `agent.env`), and an authenticated `/v1/status` answers for it with
+   (from `agent.env`) and, when the previous agent advertised it, lists the
+   `update.v1` capability (a candidate without it is rolled back), and an authenticated `/v1/status` answers for it with
    `frps.reachable=true` (30 attempts, 2 s apart). The token is passed to curl on
    stdin, never as an argument.
 6. Pass: the pin moves to the candidate, result `succeeded`. Fail: `agent.env` and
@@ -164,7 +165,7 @@ Error codes in results are fixed (`DIGEST_INVALID`, `REPOSITORY_NOT_APPROVED`,
 `OPERATION_MISMATCH`, `NOT_AFTER_INVALID`, `UPDATER_NOT_CONFIGURED`,
 `NO_KNOWN_GOOD_PIN`, `PULL_FAILED`, `IMAGE_PLATFORM_MISMATCH`,
 `CANDIDATE_START_FAILED`, `HEALTH_IMAGE_MISMATCH`, `HEALTH_AGENT_UNREACHABLE`,
-`HEALTH_IDENTITY_MISMATCH`, `HEALTH_STATUS_FAILED`, `HEALTH_FRPS_UNREACHABLE`,
+`HEALTH_IDENTITY_MISMATCH`, `HEALTH_CAPABILITY_MISSING`, `HEALTH_STATUS_FAILED`, `HEALTH_FRPS_UNREACHABLE`,
 `ROLLBACK_START_FAILED`, `ROLLBACK_VERIFICATION_FAILED`, `UPDATE_INTERRUPTED`,
 ...); details, including docker output, are only in
 `journalctl -u amnezia-bridge-agent-update.service`.
@@ -173,6 +174,10 @@ Check on the host: `systemctl status amnezia-bridge-agent-update.path`,
 `ls /var/lib/amnezia-bridge/update/requests`, `cat /var/lib/amnezia-bridge/update/results/<id>.json`.
 Re-running `install-bridge.sh` reinstalls the image given on its command line: after
 an update, pass the image from `image.pin`.
+
+If systemd reports a start-limit-hit for the updater (repeated failing starts),
+clear it with `systemctl reset-failed amnezia-bridge-agent-update.service amnezia-bridge-agent-update.path`
+and re-check the path unit.
 
 ## Management tunnel and enrollment
 

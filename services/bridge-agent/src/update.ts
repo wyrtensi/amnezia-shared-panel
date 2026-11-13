@@ -165,7 +165,10 @@ const lookup = (spool: UpdateSpool, operationId: string, now: Date): Known | und
   if (result) return { intent: result, status: resultStatus(result) };
   const request = readRequest(spool, operationId);
   if (request) return { intent: request, status: pendingStatus(request, now) };
-  return undefined;
+  // The host writes the result before it removes the request, so a request
+  // that vanished between the two reads has a result by now: read it once more.
+  const late = readResult(spool, operationId);
+  return late ? { intent: late, status: resultStatus(late) } : undefined;
 };
 
 /** `GET /v1/update?operationId=`: undefined means positively no record of it. */

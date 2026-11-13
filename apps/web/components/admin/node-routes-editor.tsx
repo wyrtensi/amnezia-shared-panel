@@ -317,6 +317,11 @@ function EligibilityView({ eligibility }: { eligibility: BridgeEligibility }) {
       {eligibility.unsupported > 0 ? (
         <p className="text-xs text-destructive">{t("bridge.elig.blocked")}</p>
       ) : null}
+      {eligibility.unsupportedKeyIds.length > 0 ? (
+        <p className="break-all font-mono text-xs text-muted-foreground">
+          {t("bridge.elig.unsupportedIds", { ids: eligibility.unsupportedKeyIds.join(", ") })}
+        </p>
+      ) : null}
     </section>
   );
 }

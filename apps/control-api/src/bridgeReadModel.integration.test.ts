@@ -454,10 +454,12 @@ describe("bridge admin read model (real PostgreSQL, fake agent)", () => {
         await db().delete(nodeReachabilityResults).where(eq(nodeReachabilityResults.nodeId, a.nodeId));
         expect(await verificationOf()).toEqual({ kind: "awg_path", status: "unknown", checkedAt: null });
 
-        // A bridge that is not ok cannot vouch for the path, whatever the probe says.
+        // The AWG path comes from the external probe: a stale bridge agent does not hide it.
         await put("ok");
         await db().update(vpnBridges).set({ lastObservedAt: new Date(Date.now() - 10 * MINUTE) }).where(eq(vpnBridges.id, bridge.id));
-        expect(await overviewOf()).toMatchObject({ awgPathOk: 0, awgPathFailed: 0, awgPathUnknown: 1 });
+        expect(await overviewOf()).toMatchObject({ awgPathOk: 1, awgPathFailed: 0, awgPathUnknown: 0 });
+        await put("failed");
+        expect(await overviewOf()).toMatchObject({ awgPathOk: 0, awgPathFailed: 1, awgPathUnknown: 0 });
       } finally {
         await db().delete(nodeReachabilityResults).where(eq(nodeReachabilityResults.nodeId, a.nodeId));
         await db().delete(reachabilityProbe);

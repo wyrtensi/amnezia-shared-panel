@@ -121,16 +121,15 @@ export const routeVerification = (
 
 /**
  * Per-bridge counters for the overview Bridges block, from the computed
- * bridge read model. A bridge whose management status is not `ok` cannot
- * vouch for anything, so all its active routes count as unknown.
+ * bridge read model. The AWG path of an active route comes from the external
+ * probe, independent of the agent, so it is counted even while management is
+ * not `ok` (registration is what the agent cannot vouch for then).
  */
 export const overviewBridgeOf = (bridge: Bridge): AdminOverviewBridge => {
   const active = bridge.routes.filter((route) => route.state === "active");
-  const managed = bridge.managementStatus === "ok";
   const count = (status: "ok" | "failed" | "unknown"): number =>
     active.filter((route) => {
-      const evidence =
-        managed && route.verification.kind === "awg_path" ? route.verification.status : "unknown";
+      const evidence = route.verification.kind === "awg_path" ? route.verification.status : "unknown";
       return evidence === status;
     }).length;
   const awgPathOk = count("ok");

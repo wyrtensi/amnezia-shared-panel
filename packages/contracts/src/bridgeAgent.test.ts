@@ -350,6 +350,15 @@ describe("bridge-agent update contract", () => {
       ),
     ).toMatchObject({ kind: "status", status: { state: "rollback_failed" } });
     expect(classifyBridgeAgentUpdateRead(operationId, ok(404, null))).toEqual({
+      kind: "no_contact",
+      errorCode: "AGENT_HTTP_ERROR",
+    });
+    expect(
+      classifyBridgeAgentUpdateRead(operationId, ok(404, { error: { code: "NOT_FOUND" } })),
+    ).toEqual({ kind: "no_contact", errorCode: "AGENT_HTTP_ERROR" });
+    expect(
+      classifyBridgeAgentUpdateRead(operationId, ok(404, { error: { code: "UNKNOWN_OPERATION" } })),
+    ).toEqual({
       kind: "unknown_operation",
     });
     expect(

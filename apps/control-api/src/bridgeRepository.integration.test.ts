@@ -1173,13 +1173,13 @@ describe("bridge registry (real PostgreSQL)", () => {
       expect(await endpointOf(ok)).toBe(`${a.bridge.publicIpv4}:${a.route.publicUdpPort}`);
     });
 
-    runDatabaseTest("the eligibility dry-run returns counts only", async () => {
+    runDatabaseTest("the eligibility dry-run returns counts and unsupported key ids only", async () => {
       const nodeId = await seedNode("eligibility");
       await seedKey(nodeId, awg31Link());
       await seedKey(nodeId, awg31Link());
       await seedKey(nodeId, awg31Link({ protocolVersion: "2" }));
       await seedKey(nodeId, awg31Link({ protocolVersion: null }), { protocol: "awg2" });
-      await seedKey(nodeId, awg31Link({ protocolVersion: null }));
+      const unsupportedId = await seedKey(nodeId, awg31Link({ protocolVersion: null }));
       // Not usable: revoked, or without a saved config.
       await seedKey(nodeId, awg31Link({ protocolVersion: null }), { state: "revoked" });
       await seedKey(nodeId, null);
@@ -1191,6 +1191,7 @@ describe("bridge registry (real PostgreSQL)", () => {
         awg20Direct: 1,
         awg2NativeDirect: 1,
         unsupported: 1,
+        unsupportedKeyIds: [unsupportedId],
       });
       expect(JSON.stringify(result)).not.toMatch(/synthetic|vpn:\/\//);
       expect(

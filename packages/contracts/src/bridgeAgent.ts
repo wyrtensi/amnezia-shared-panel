@@ -186,6 +186,20 @@ const readCappedText = async (response: Response, maxBytes: number): Promise<str
 };
 
 /**
+ * A non-2xx body is reduced to `{ error: { code } }` with a short upper-case
+ * code, or null. No free text from the agent is ever kept or logged.
+ */
+const readErrorBody = (text: string): { error: { code: string } } | null => {
+  if (text.length > 4096) return null;
+  try {
+    const code = (JSON.parse(text) as { error?: { code?: unknown } } | null)?.error?.code;
+    return typeof code === "string" && /^[A-Z][A-Z0-9_]{0,63}$/.test(code) ? { error: { code } } : null;
+  } catch {
+    return null;
+  }
+};
+
+/**
  * One management request. Never throws for an agent problem: network
  * failures, timeouts, redirects and oversized or non-JSON bodies become a
  * bounded code, and nothing the agent sent ends up in an error message.
@@ -228,7 +242,7 @@ export const requestBridgeAgent = async (
     return { kind: "failed", code: signal.aborted ? "AGENT_TIMEOUT" : "AGENT_UNREACHABLE" };
   }
   if (text === null) return { kind: "failed", code: "AGENT_MALFORMED_RESPONSE" };
-  if (!response.ok) return { kind: "response", status: response.status, body: null };
+  if (!response.ok) return { kind: "response", status: response.status, body: readErrorBody(text) };
   try {
     return { kind: "response", status: response.status, body: JSON.parse(text) as unknown };
   } catch {

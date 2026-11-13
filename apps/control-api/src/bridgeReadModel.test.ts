@@ -176,14 +176,14 @@ describe("overviewBridgeOf", () => {
     });
   });
 
-  it("reads every active route as unknown while management is not ok", () => {
+  it("keeps the probe's AWG path evidence while management is not ok", () => {
     for (const status of ["stale", "down", "pending_enrollment"] as const) {
       expect(overviewBridgeOf(bridgeOf(status))).toMatchObject({
         activeRoutes: 3,
-        verifiedActiveRoutes: 0,
-        awgPathOk: 0,
-        awgPathFailed: 0,
-        awgPathUnknown: 3,
+        verifiedActiveRoutes: 1,
+        awgPathOk: 1,
+        awgPathFailed: 1,
+        awgPathUnknown: 1,
       });
     }
   });

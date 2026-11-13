@@ -223,10 +223,13 @@ agent_get() {
 # Passes only when (1) the agent container runs exactly <image>: its configured
 # reference is the requested repo@digest and its image id is the id of that
 # reference here, (2) /v1/identity names the enrolled bridge, and (3) an
-# authenticated /v1/status answers for it with frps reachable. jq is not a host
-# prerequisite; the agent's compact JSON is matched with fixed patterns.
+# authenticated /v1/status answers for it with frps reachable. With a second
+# argument "update" the identity must also advertise update.v1: the agent that
+# received the request has it, so a candidate without it could never be updated
+# again from the panel and is rolled back. jq is not a host prerequisite; the
+# agent's compact JSON is matched with fixed patterns.
 health_gate() {
-  local image="$1" want_id running identity status attempt=0 bridge_id
+  local image="$1" need="${2:-}" want_id running identity status attempt=0 bridge_id
   bridge_id="$(env_value BRIDGE_ID "$ENV_FILE")"
   GATE_CODE="HEALTH_IMAGE_MISMATCH"
   want_id="$(docker image inspect --format '{{.Id}}' "$image" 2>/dev/null)"
@@ -245,6 +248,10 @@ health_gate() {
     fi
     if [ -z "$bridge_id" ] || ! printf '%s' "$identity" | grep -Fq "\"bridgeId\":\"${bridge_id}\""; then
       GATE_CODE="HEALTH_IDENTITY_MISMATCH"
+      continue
+    fi
+    if [ "$need" = "update" ] && ! printf '%s' "$identity" | grep -Fq '"update.v1"'; then
+      GATE_CODE="HEALTH_CAPABILITY_MISSING"
       continue
     fi
     status="$(agent_get /v1/status)"
@@ -325,7 +332,7 @@ apply() {
     # Nothing to replace. Success still means the checks pass for this image.
     write_journal no_op || true
     write_result health_check
-    if health_gate "$CANDIDATE"; then
+    if health_gate "$CANDIDATE" update; then
       commit_no_op
     else
       finish failed "CURRENT_AGENT_UNHEALTHY"
@@ -359,7 +366,7 @@ apply() {
 
   write_journal health_check || true
   write_result health_check
-  if ! health_gate "$CANDIDATE"; then
+  if ! health_gate "$CANDIDATE" update; then
     rollback "$GATE_CODE"
     return
   fi
@@ -409,7 +416,7 @@ recover() {
         return
       fi
       write_result health_check
-      if health_gate "$CANDIDATE"; then
+      if health_gate "$CANDIDATE" update; then
         commit
       else
         rollback UPDATE_INTERRUPTED

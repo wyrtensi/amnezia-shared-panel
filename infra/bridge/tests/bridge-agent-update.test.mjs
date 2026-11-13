@@ -103,7 +103,10 @@ if listed "$image" "\${FAKE_FRPS_DOWN:-}"; then reachable=false; fi
 bridge="$FAKE_BRIDGE"
 if listed "$image" "\${FAKE_WRONG_IDENTITY:-}"; then bridge="9e8d7c6b-5a49-4382-9170-6f5e4d3c2b1a"; fi
 case "\${!#}" in
-  */v1/identity) printf '{"bridgeId":"%s","agentVersion":"0.2.0","apiVersion":1,"capabilities":["status.v1","update.v1"]}' "$bridge" ;;
+  */v1/identity)
+    caps='"status.v1","update.v1"'
+    if listed "$image" "\${FAKE_NO_UPDATE_CAP:-}"; then caps='"status.v1"'; fi
+    printf '{"bridgeId":"%s","agentVersion":"0.2.0","apiVersion":1,"capabilities":[%s]}' "$bridge" "$caps" ;;
   */v1/status) printf '{"bridgeId":"%s","agentVersion":"0.2.0","apiVersion":1,"observedAt":"t","frps":{"reachable":%s,"version":"0.72.0"},"applied":{},"proxies":[],"errors":[]}' "$bridge" "$reachable" ;;
   *) exit 22 ;;
 esac
@@ -546,6 +549,7 @@ withHost("a candidate that never answers is rolled back, and the rollback is ver
 for (const [name, extra, code] of [
   ["reports frps unreachable", { FAKE_FRPS_DOWN: NEW_HEX }, "HEALTH_FRPS_UNREACHABLE"],
   ["answers for another bridge", { FAKE_WRONG_IDENTITY: NEW_HEX }, "HEALTH_IDENTITY_MISMATCH"],
+  ["lacks update.v1", { FAKE_NO_UPDATE_CAP: NEW_HEX }, "HEALTH_CAPABILITY_MISSING"],
   ["does not start", { FAKE_UP_FAILS: NEW_HEX }, "CANDIDATE_START_FAILED"],
 ]) {
   withHost(`a candidate that ${name} is rolled back (${code})`, async (h) => {

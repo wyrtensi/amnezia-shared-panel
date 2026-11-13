@@ -165,7 +165,7 @@ describe("bridge-agent update (real PostgreSQL, fake bridge-agent over HTTP)", (
       }
       if (url.pathname === "/v1/update" && req.method === "GET") {
         const operationId = url.searchParams.get("operationId") ?? "";
-        if (!agent.ops.has(operationId)) json(res, 404, { error: { code: "NOT_FOUND" } });
+        if (!agent.ops.has(operationId)) json(res, 404, { error: { code: "UNKNOWN_OPERATION" } });
         else json(res, 200, updateStatus(operationId));
         return;
       }

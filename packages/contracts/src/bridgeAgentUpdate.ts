@@ -117,7 +117,12 @@ export const classifyBridgeAgentUpdateRead = (
   if (result.kind === "failed") return { kind: "no_contact", errorCode: result.code };
   const { status } = result;
   if (status === 401 || status === 403) return { kind: "no_contact", errorCode: "AGENT_UNAUTHORIZED" };
-  if (status === 404) return { kind: "unknown_operation" };
+  if (status === 404) {
+    const code = (result.body as { error?: { code?: unknown } } | null)?.error?.code;
+    return code === "UNKNOWN_OPERATION"
+      ? { kind: "unknown_operation" }
+      : { kind: "no_contact", errorCode: "AGENT_HTTP_ERROR" };
+  }
   if (status < 200 || status >= 300) return { kind: "no_contact", errorCode: "AGENT_HTTP_ERROR" };
   const parsed = bridgeAgentUpdateStatusSchema.safeParse(result.body);
   if (!parsed.success) return { kind: "no_contact", errorCode: "AGENT_MALFORMED_RESPONSE" };

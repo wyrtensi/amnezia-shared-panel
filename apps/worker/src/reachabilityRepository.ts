@@ -331,16 +331,20 @@ export class PostgresReachabilityRepository
             })
             .onConflictDoUpdate({
               target: [nodeReachabilityResults.nodeId, nodeReachabilityResults.protocol],
-              // A failure streak keeps its start (an older row without one
-              // falls back to its own check time); a non-failed result clears it.
+              // A failure streak keeps its start across an `error` run (an
+              // older failed row without one falls back to its own check
+              // time); only an `ok` result clears it, like the node state.
               set: {
                 ...values,
                 failingSince:
                   outcome.status === "failed"
-                    ? sql`case when ${nodeReachabilityResults.status} = 'failed'
-                        then coalesce(${nodeReachabilityResults.failingSince}, ${nodeReachabilityResults.checkedAt})
-                        else excluded.checked_at end`
-                    : null,
+                    ? sql`coalesce(${nodeReachabilityResults.failingSince},
+                        case when ${nodeReachabilityResults.status} = 'failed'
+                          then ${nodeReachabilityResults.checkedAt}
+                          else excluded.checked_at end)`
+                    : outcome.status === "error"
+                      ? sql`${nodeReachabilityResults.failingSince}`
+                      : null,
               },
             });
         }

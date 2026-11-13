@@ -434,8 +434,8 @@ export const nodeEndpointAssignmentSchema = z.object({
 
 /**
  * Dry-run of the endpoint renderer over a node's stored AWG3-issued configs
- * (`GET /api/admin/nodes/:id/vpn-bridge-eligibility`). Counts only: no key
- * ids and no artifact content. A bridge can be activated only while
+ * (`GET /api/admin/nodes/:id/vpn-bridge-eligibility`). Counts, plus the ids
+ * of the unsupported keys (admin-only, ids only): no artifact content. A bridge can be activated only while
  * `unsupported` is 0.
  */
 export const bridgeEligibilitySchema = z.object({
@@ -450,6 +450,8 @@ export const bridgeEligibilitySchema = z.object({
   awg2NativeDirect: z.int().min(0),
   /** AWG3-issued keys that are unrecognized, ambiguous or unreadable. */
   unsupported: z.int().min(0),
+  /** Ids of the unsupported keys, so an admin can find them. No content. */
+  unsupportedKeyIds: z.array(z.uuid()),
 });
 export type BridgeEligibility = z.infer<typeof bridgeEligibilitySchema>;
 

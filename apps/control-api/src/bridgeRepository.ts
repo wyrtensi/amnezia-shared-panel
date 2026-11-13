@@ -1052,19 +1052,6 @@ export class PostgresBridgeRepository {
   };
 
   /**
-   * Change the node's active endpoint inside the caller's transaction: a route
-   * id activates that route, null selects Direct. The caller must already
-   * hold the node row lock (`FOR NO KEY UPDATE`).
-   *
-   * Order of checks: endpoint revision -> route ownership and state ->
-   * observation -> verification. A request for the state the node is already
-   * in changes nothing (no revision bump, no audit, no reachability reset).
-   * Otherwise, in this one transaction: the previous active route becomes
-   * retiring (its verification cleared), the candidate becomes active, the revision increments, the
-   * node's AWG 3.1 reachability evidence is reset and the audit event is
-   * written; any failure, including the audit insert, rolls all of it back.
-   */
-  /**
    * Dry-run the endpoint renderer over the node's usable stored configs and
    * return counts only. Usable: a saved artifact, an owner that is not the
    * probe service account, and a key not revoked or failed. Only AWG3-issued
@@ -1076,6 +1063,7 @@ export class PostgresBridgeRepository {
   ): Promise<BridgeEligibility> => {
     const rows = await tx
       .select({
+        id: vpnKeys.id,
         protocol: vpnKeys.protocol,
         ciphertext: vpnKeys.configCiphertext,
         nonce: vpnKeys.configNonce,
@@ -1099,6 +1087,7 @@ export class PostgresBridgeRepository {
       awg20Direct: 0,
       awg2NativeDirect: 0,
       unsupported: 0,
+      unsupportedKeyIds: [],
     };
     for (const row of rows) {
       result.total += 1;
@@ -1131,11 +1120,27 @@ export class PostgresBridgeRepository {
       if (cls === "awg20") result.awg20Direct += 1;
       else if (cls === "awg31" && link !== null && canRenderBridgeEndpoint(link)) {
         result.awg31Eligible += 1;
-      } else result.unsupported += 1;
+      } else {
+        result.unsupported += 1;
+        result.unsupportedKeyIds.push(row.id);
+      }
     }
     return result;
   };
 
+  /**
+   * Change the node's active endpoint inside the caller's transaction: a route
+   * id activates that route, null selects Direct. The caller must already
+   * hold the node row lock (`FOR NO KEY UPDATE`).
+   *
+   * Order of checks: endpoint revision -> route ownership and state ->
+   * observation -> verification. A request for the state the node is already
+   * in changes nothing (no revision bump, no audit, no reachability reset).
+   * Otherwise, in this one transaction: the previous active route becomes
+   * retiring (its verification cleared), the candidate becomes active, the revision increments, the
+   * node's AWG 3.1 reachability evidence is reset and the audit event is
+   * written; any failure, including the audit insert, rolls all of it back.
+   */
   changeNodeEndpoint = async (
     tx: BridgeTransaction,
     actor: Actor,

@@ -201,6 +201,7 @@ const createRepository = (): ControlRepository => ({
       awg20Direct: 0,
       awg2NativeDirect: 0,
       unsupported: 0,
+      unsupportedKeyIds: [],
     }),
   ),
   getNodeBridgeRoutes: vi.fn(() =>

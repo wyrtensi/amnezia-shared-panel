@@ -2399,7 +2399,7 @@ describe("PostgresReachabilityRepository", () => {
     await seedProbe(null);
     const base = new Date("2026-11-13T10:00:00Z");
     const at = (minutes: number) => new Date(base.getTime() + minutes * 60_000);
-    const ingestOne = async (status: "failed" | "ok", now: Date) => {
+    const ingestOne = async (status: "failed" | "ok" | "error", now: Date) => {
       const runId = randomUUID();
       await database?.db
         .update(reachabilityProbe)
@@ -2438,6 +2438,12 @@ describe("PostgresReachabilityRepository", () => {
     expect(await ingestOne("failed", at(5))).toEqual(at(0));
     expect(await ingestOne("ok", at(10))).toBeNull();
     expect(await ingestOne("failed", at(15))).toEqual(at(15));
+    // An error run keeps the streak start, and the next failure continues it.
+    expect(await ingestOne("error", at(20))).toEqual(at(15));
+    expect(await ingestOne("failed", at(25))).toEqual(at(15));
+    expect(await ingestOne("error", at(30))).toEqual(at(15));
+    expect(await ingestOne("ok", at(35))).toBeNull();
+    expect(await ingestOne("error", at(40))).toBeNull();
   });
 
   runDatabaseTest("ingest writes only the nodes it read, not one deleted since the run started", async () => {
