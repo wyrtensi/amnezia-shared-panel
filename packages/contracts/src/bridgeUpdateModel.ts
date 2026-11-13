@@ -7,11 +7,13 @@ import { z } from "zod";
  */
 
 /**
- * Acknowledgement deadline. A request the agent accepted (`sent`), or one the
- * worker could not deliver (`queued`), that no host pickup acknowledged within
- * this long after it was requested (or sent) becomes `pickup_timeout`. Task 8b
- * reuses this deadline and the `pickup_timeout` name for the acknowledgement
- * deadline of the panel's own updater.
+ * Acknowledgement deadline: `notAfter = requestedAt + this`. It travels in the
+ * request, and the agent and the host updater refuse to start an intent after
+ * it. A reachable agent that still reports `queued` past it keeps the
+ * operation outstanding with the observation `acknowledgementOverdueSince`
+ * (never freed, never retried). `pickup_timeout` is recorded only when the
+ * agent confirms the intent `expired` unstarted. Task 8b reuses this deadline
+ * and these names for the panel's own updater.
  */
 export const BRIDGE_AGENT_UPDATE_PICKUP_TIMEOUT_MS = 120_000;
 
@@ -25,11 +27,13 @@ export const bridgeAgentImageDigestSchema = z
  * `queued` (stored, not yet delivered) -> `sent` (the agent accepted it, no
  * host pickup yet) -> `acknowledged` (the host updater picked it up) ->
  * `running` (staging, replacing or health gate) -> one terminal outcome.
- * `unsupported` (the agent lacks `update.v1`) and `pickup_timeout` (see
- * `BRIDGE_AGENT_UPDATE_PICKUP_TIMEOUT_MS`) are also terminal for the panel:
- * nothing is retried automatically, and the administrator may request again.
- * Lost management contact is not a state but an observation
- * (`contactLostSince`) on an operation that stays outstanding.
+ * `pickup_timeout` is terminal and means the agent confirmed the intent
+ * `expired` without the host having started it, so applying it later is
+ * impossible; it is never retried automatically and the administrator may
+ * request again. An operation holds its slot until a reachable agent confirms
+ * a terminal state, `expired`, or that it does not know the operation. Lost
+ * management contact and an overdue acknowledgement are observations
+ * (`contactLostSince`, `acknowledgementOverdueSince`), not states.
  */
 export const BRIDGE_AGENT_UPDATE_STATES = [
   "queued",
@@ -40,7 +44,6 @@ export const BRIDGE_AGENT_UPDATE_STATES = [
   "rolled_back",
   "rollback_failed",
   "failed",
-  "unsupported",
   "pickup_timeout",
 ] as const;
 export type BridgeAgentUpdateState = (typeof BRIDGE_AGENT_UPDATE_STATES)[number];
@@ -68,6 +71,8 @@ export const BRIDGE_AGENT_UPDATE_AGENT_STATES = [
   "rolled_back",
   "rollback_failed",
   "failed",
+  // The agent will never start the intent: `notAfter` passed unstarted.
+  "expired",
 ] as const;
 export type BridgeAgentUpdateAgentState = (typeof BRIDGE_AGENT_UPDATE_AGENT_STATES)[number];
 
@@ -89,6 +94,8 @@ export const bridgeAgentUpdateStateOf = (
     case "rollback_failed":
     case "failed":
       return agentState;
+    case "expired":
+      return "pickup_timeout";
   }
 };
 
@@ -116,6 +123,8 @@ export const bridgeAgentUpdateProgress = (state: BridgeAgentUpdateState): number
 export const BRIDGE_AGENT_UPDATE_ERRORS = [
   "BRIDGE_JOBS_DISABLED",
   "AGENT_UPDATE_UNSUPPORTED",
+  "UPDATE_UNKNOWN_TO_AGENT",
+  "UPDATE_NEVER_SENT",
   "AGENT_UPDATE_REJECTED",
   "AGENT_UPDATE_CONFLICT",
   "AGENT_OPERATION_MISMATCH",
@@ -166,6 +175,13 @@ export const bridgeAgentUpdateOperationSchema = z.object({
   sentAt: z.iso.datetime().nullable(),
   acknowledgedAt: z.iso.datetime().nullable(),
   lastCheckedAt: z.iso.datetime().nullable(),
+  /** The panel's pickup deadline sent with the intent. */
+  notAfter: z.iso.datetime(),
+  /**
+   * Observation: a reachable agent still reports the request unstarted past
+   * `notAfter`. The operation stays outstanding; it is never retried.
+   */
+  acknowledgementOverdueSince: z.iso.datetime().nullable(),
   /**
    * Set while the management endpoint has been unreachable since the host
    * started the update: an observation, not a terminal state.

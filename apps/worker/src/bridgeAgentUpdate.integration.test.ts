@@ -36,7 +36,7 @@ type FakeAgent = {
   bridgeId: string;
   capabilities: string[];
   /** What POST /v1/update does: accept, refuse with a status or drop the connection. */
-  post: "accept" | "conflict" | "drop";
+  post: "accept" | "conflict" | "drop" | "store-then-drop";
   /** The whole agent is down (connections dropped). */
   offline: boolean;
   /** Reported state per operation id (set by POST, driven by the test). */
@@ -44,7 +44,12 @@ type FakeAgent = {
   errorCodes: Map<string, string>;
   /** Answer GET /v1/update for another operation id. */
   answerForOther: boolean;
-  posts: Array<{ operationId: string; imageRepository: string; imageDigest: string }>;
+  posts: Array<{
+    operationId: string;
+    imageRepository: string;
+    imageDigest: string;
+    notAfter: string;
+  }>;
 };
 
 describe("bridge-agent update (real PostgreSQL, fake bridge-agent over HTTP)", () => {
@@ -133,6 +138,10 @@ describe("bridge-agent update (real PostgreSQL, fake bridge-agent over HTTP)", (
           }
           const known = agent.ops.has(body.operationId);
           if (!known) agent.ops.set(body.operationId, "queued");
+          if (agent.post === "store-then-drop") {
+            req.socket.destroy();
+            return;
+          }
           json(res, known ? 200 : 202, updateStatus(body.operationId));
         });
         return;
@@ -231,6 +240,7 @@ describe("bridge-agent update (real PostgreSQL, fake bridge-agent over HTTP)", (
         imageVersion: "0.2.0",
         fromVersion: "0.1.0",
         requestedAt: options.requestedAt ?? new Date(),
+        notAfter: new Date((options.requestedAt ?? new Date()).getTime() + 120_000),
         state: options.state ?? "queued",
       });
     const [job] = await db()
@@ -291,6 +301,7 @@ describe("bridge-agent update (real PostgreSQL, fake bridge-agent over HTTP)", (
         managementHosts: ["127.0.0.1"],
         timeoutMs: 2_000,
         now,
+        isUpdateOutstanding: async (id) => (await updateRepository.loadOutstanding(id)) !== null,
         trackUpdate: createBridgeUpdateTracker({
           repository: updateRepository,
           timeoutMs: 2_000,
@@ -309,7 +320,12 @@ describe("bridge-agent update (real PostgreSQL, fake bridge-agent over HTTP)", (
       const { operationId, job } = await queueOperation(bridge.id);
       await sendJob()(job);
       expect(agent.posts).toEqual([
-        { operationId, imageRepository: REPOSITORY, imageDigest: DIGEST },
+        {
+          operationId,
+          imageRepository: REPOSITORY,
+          imageDigest: DIGEST,
+          notAfter: (await operation(operationId)).notAfter.toISOString(),
+        },
       ]);
       const sent = await operation(operationId);
       expect(sent).toMatchObject({ state: "sent", agentState: "queued", errorCode: null });
@@ -329,7 +345,7 @@ describe("bridge-agent update (real PostgreSQL, fake bridge-agent over HTTP)", (
     await sendJob()(job);
     expect(agent.posts).toHaveLength(0);
     expect(await operation(operationId)).toMatchObject({
-      state: "unsupported",
+      state: "failed",
       errorCode: "AGENT_UPDATE_UNSUPPORTED",
     });
     expect(await jobStatus(job.id)).toBe("completed");
@@ -357,35 +373,55 @@ describe("bridge-agent update (real PostgreSQL, fake bridge-agent over HTTP)", (
   });
 
   runDatabaseTest(
-    "an unreachable agent is retried with the same operation id, then surfaced as pickup_timeout, never retried again",
+    "an unreachable agent is never a verdict: the delivery stays queued, observed as lost contact, and is not timed out",
     async () => {
       const bridge = await seedBridge();
       agent.post = "drop";
       const requestedAt = new Date("2026-11-13T10:00:00.000Z");
       const { operationId, job } = await queueOperation(bridge.id, { requestedAt });
-
-      // Inside the window: the job throws so the runner retries it; the
-      // operation stays queued with the observed code.
-      await expect(
-        sendJob({ now: new Date(requestedAt.getTime() + 10_000) })(job),
-      ).rejects.toThrow(/not delivered/);
-      expect(await operation(operationId)).toMatchObject({
-        state: "queued",
-        errorCode: "AGENT_UNREACHABLE",
-      });
-
-      // Past the window: no more retries, the request is surfaced.
-      await sendJob({
-        now: new Date(requestedAt.getTime() + BRIDGE_AGENT_UPDATE_PICKUP_TIMEOUT_MS + 1),
-      })(job);
-      expect(await operation(operationId)).toMatchObject({
-        state: "pickup_timeout",
-        errorCode: "UPDATE_NOT_ACKNOWLEDGED",
-      });
+      await sendJob({ now: new Date(requestedAt.getTime() + 10_000) })(job);
+      const first = await operation(operationId);
+      expect(first).toMatchObject({ state: "queued", errorCode: "AGENT_UNREACHABLE" });
+      expect(first.sendAttemptedAt).not.toBeNull();
+      expect(first.contactLostSince).not.toBeNull();
+      expect(first.finishedAt).toBeNull();
       expect(await jobStatus(job.id)).toBe("completed");
-      agent.post = "accept";
-      await sendJob()(job);
+
+      // Far past notAfter and still no contact: still outstanding, never retried blindly.
+      agent.offline = true;
+      await pollOnce(bridge.id, { now: new Date(requestedAt.getTime() + 3_600_000) });
+      const later = await operation(operationId);
+      expect(later).toMatchObject({ state: "queued", finishedAt: null });
+      expect(later.contactLostSince?.getTime()).toBe(first.contactLostSince?.getTime());
+      // The dropped POST never reached the agent, and nothing was sent blindly.
       expect(agent.posts).toHaveLength(0);
+    },
+  );
+
+  runDatabaseTest(
+    "a POST the agent stored but never answered is recognized by the tracker; one it never saw is sent again",
+    async () => {
+      const stored = await seedBridge();
+      agent.post = "store-then-drop";
+      const a = await queueOperation(stored.id);
+      await sendJob()(a.job);
+      expect((await operation(a.operationId)).state).toBe("queued");
+      agent.post = "accept";
+      await pollOnce(stored.id, { now: new Date(Date.now() + 5_000) });
+      // The agent has it (queued): the intent is not sent a second time.
+      expect(await operation(a.operationId)).toMatchObject({ state: "sent", contactLostSince: null });
+      expect(agent.posts).toHaveLength(1);
+
+      const lost = await seedBridge();
+      agent.post = "drop";
+      const b = await queueOperation(lost.id);
+      await sendJob()(b.job);
+      agent.post = "accept";
+      await pollOnce(lost.id, { now: new Date(Date.now() + 5_000) });
+      // 404 from the agent: the earlier POST never arrived, so it is sent again.
+      // The first POST was dropped before the agent saw it: now it arrives, once.
+      expect(agent.posts.filter((post) => post.operationId === b.operationId)).toHaveLength(1);
+      expect(await operation(b.operationId)).toMatchObject({ state: "sent", contactLostSince: null });
     },
   );
 
@@ -456,116 +492,162 @@ describe("bridge-agent update (real PostgreSQL, fake bridge-agent over HTTP)", (
   });
 
   runDatabaseTest(
-    "a request the host never picked up becomes pickup_timeout (and is not retried); a late pickup still shows",
+    "a reachable agent that still says queued past notAfter keeps the slot and shows an overdue acknowledgement; only expired ends it",
     async () => {
       const bridge = await seedBridge();
       const { operationId, job } = await queueOperation(bridge.id);
-      const sentAt = new Date("2026-11-13T10:00:00.000Z");
-      await sendJob({ now: sentAt })(job);
+      const t0 = new Date();
+      await sendJob({ now: t0 })(job);
+      const late = new Date(t0.getTime() + BRIDGE_AGENT_UPDATE_PICKUP_TIMEOUT_MS + 10_000);
 
-      // Inside the deadline the agent still says queued: nothing changes.
-      await pollOnce(bridge.id, { now: new Date(sentAt.getTime() + 60_000) });
-      expect((await operation(operationId)).state).toBe("sent");
-
-      const late = new Date(sentAt.getTime() + BRIDGE_AGENT_UPDATE_PICKUP_TIMEOUT_MS + 1_000);
       await pollOnce(bridge.id, { now: late });
-      const timedOut = await operation(operationId);
-      expect(timedOut).toMatchObject({
+      const overdue = await operation(operationId);
+      expect(overdue).toMatchObject({ state: "sent", finishedAt: null });
+      expect(overdue.acknowledgementOverdueSince?.getTime()).toBe(late.getTime());
+      // The slot is still held: a second outstanding operation is refused by PostgreSQL.
+      await expect(
+        db().insert(vpnBridgeAgentUpdates).values({
+          id: randomUUID(),
+          bridgeId: bridge.id,
+          imageRepository: REPOSITORY,
+          imageDigest: DIGEST,
+        }),
+      ).rejects.toThrow();
+      // Nothing is sent again.
+      expect(agent.posts).toHaveLength(1);
+
+      // The agent confirms the intent expired unstarted: terminal, slot freed.
+      agent.ops.set(operationId, "expired");
+      await pollOnce(bridge.id, { now: new Date(late.getTime() + 60_000) });
+      const done = await operation(operationId);
+      expect(done).toMatchObject({
         state: "pickup_timeout",
         errorCode: "UPDATE_NOT_ACKNOWLEDGED",
+        agentState: "expired",
+        acknowledgementOverdueSince: null,
       });
-      expect(timedOut.finishedAt).not.toBeNull();
-      // Polling again never sends the intent again.
-      await pollOnce(bridge.id, { now: new Date(late.getTime() + 60_000) });
-      expect(agent.posts).toHaveLength(1);
-      expect((await operation(operationId)).state).toBe("pickup_timeout");
-
-      // The host did start after all: the confirmed state is taken over.
-      agent.ops.set(operationId, "staging");
-      await pollOnce(bridge.id, { now: new Date(late.getTime() + 120_000) });
-      const resumed = await operation(operationId);
-      expect(resumed).toMatchObject({ state: "running", errorCode: null, finishedAt: null });
-      expect(resumed.acknowledgedAt).not.toBeNull();
+      expect(done.finishedAt).not.toBeNull();
+      await db().insert(vpnBridgeAgentUpdates).values({
+        id: randomUUID(),
+        bridgeId: bridge.id,
+        imageRepository: REPOSITORY,
+        imageDigest: DIGEST,
+      });
     },
   );
 
   runDatabaseTest(
-    "lost contact before any pickup is a pickup_timeout after the deadline, not contact_lost",
+    "a fast pickup and replacement with the agent down across polls is lost contact, then the matching result",
     async () => {
       const bridge = await seedBridge();
       const { operationId, job } = await queueOperation(bridge.id);
-      const sentAt = new Date("2026-11-13T10:00:00.000Z");
-      await sendJob({ now: sentAt })(job);
+      const t0 = new Date();
+      await sendJob({ now: t0 })(job);
+      // The host picked it up and replaced the agent between two polls: the
+      // panel never saw picked_up, and the agent stays down past notAfter.
+      agent.ops.set(operationId, "replacing");
       agent.offline = true;
-      await pollOnce(bridge.id, { now: new Date(sentAt.getTime() + 30_000) });
-      const early = await operation(operationId);
-      expect(early).toMatchObject({ state: "sent", errorCode: "AGENT_UNREACHABLE" });
-      expect(early.contactLostSince).toBeNull();
-      await pollOnce(bridge.id, {
-        now: new Date(sentAt.getTime() + BRIDGE_AGENT_UPDATE_PICKUP_TIMEOUT_MS + 1_000),
-      });
-      expect((await operation(operationId)).state).toBe("pickup_timeout");
+      const down1 = new Date(t0.getTime() + BRIDGE_AGENT_UPDATE_PICKUP_TIMEOUT_MS + 30_000);
+      await pollOnce(bridge.id, { now: down1 });
+      await pollOnce(bridge.id, { now: new Date(down1.getTime() + 600_000) });
+      const lost = await operation(operationId);
+      expect(lost).toMatchObject({ state: "sent", finishedAt: null, errorCode: "AGENT_UNREACHABLE" });
+      expect(lost.contactLostSince?.getTime()).toBe(down1.getTime());
+
+      agent.offline = false;
+      agent.ops.set(operationId, "succeeded");
+      await pollOnce(bridge.id, { now: new Date(down1.getTime() + 700_000) });
+      const done = await operation(operationId);
+      expect(done).toMatchObject({ state: "succeeded", contactLostSince: null, errorCode: null });
+      expect(done.acknowledgedAt).not.toBeNull();
     },
   );
 
-  runDatabaseTest("an answer for another operation id is never trusted", async () => {
+  runDatabaseTest("an agent that confirms it does not know the operation ends it, distinctly", async () => {
     const bridge = await seedBridge();
     const { operationId, job } = await queueOperation(bridge.id);
     await sendJob()(job);
-    agent.answerForOther = true;
-    agent.ops.set(operationId, "succeeded");
-    await pollOnce(bridge.id);
+    agent.ops.delete(operationId);
+    await pollOnce(bridge.id, { now: new Date(Date.now() + 5_000) });
     expect(await operation(operationId)).toMatchObject({
-      state: "sent",
-      errorCode: "AGENT_OPERATION_MISMATCH",
+      state: "failed",
+      errorCode: "UPDATE_UNKNOWN_TO_AGENT",
     });
   });
 
-  runDatabaseTest("every successful poll refreshes the stored agent capabilities", async () => {
+  runDatabaseTest(
+    "an answer for another operation id is never trusted",
+    async () => {
+      const bridge = await seedBridge();
+      const { operationId, job } = await queueOperation(bridge.id);
+      await sendJob()(job);
+      agent.answerForOther = true;
+      agent.ops.set(operationId, "succeeded");
+      await pollOnce(bridge.id);
+      expect(await operation(operationId)).toMatchObject({
+        state: "sent",
+        errorCode: "AGENT_OPERATION_MISMATCH",
+      });
+    },
+  );
+
+  runDatabaseTest(
+    "a queued operation whose delivery job is gone is closed only if its POST was never attempted",
+    async () => {
+      const bridge = await seedBridge();
+      const requestedAt = new Date("2026-11-13T10:00:00.000Z");
+      const never = await queueOperation(bridge.id, { requestedAt });
+      const late = new Date(requestedAt.getTime() + BRIDGE_AGENT_UPDATE_PICKUP_TIMEOUT_MS + 1_000);
+
+      // The job is still pending: the send path owns it.
+      await db().update(jobOutbox).set({ status: "pending" }).where(eq(jobOutbox.id, never.job.id));
+      await pollOnce(bridge.id, { now: late });
+      expect((await operation(never.operationId)).state).toBe("queued");
+
+      await db().update(jobOutbox).set({ status: "failed" }).where(eq(jobOutbox.id, never.job.id));
+      await pollOnce(bridge.id, { now: new Date(late.getTime() + 60_000) });
+      expect(await operation(never.operationId)).toMatchObject({
+        state: "failed",
+        errorCode: "UPDATE_NEVER_SENT",
+      });
+      expect(agent.posts).toHaveLength(0);
+
+      // A POST was attempted (no answer): only the agent can say; never closed here.
+      const other = await seedBridge();
+      const attempted = await queueOperation(other.id, { requestedAt });
+      await db()
+        .update(vpnBridgeAgentUpdates)
+        .set({ sendAttemptedAt: requestedAt })
+        .where(eq(vpnBridgeAgentUpdates.id, attempted.operationId));
+      await db().update(jobOutbox).set({ status: "failed" }).where(eq(jobOutbox.id, attempted.job.id));
+      agent.offline = true;
+      await pollOnce(other.id, { now: new Date(late.getTime() + 3_600_000) });
+      expect((await operation(attempted.operationId)).state).toBe("queued");
+    },
+  );
+
+  runDatabaseTest("a poll re-reads capabilities when stale or while an update is outstanding, not otherwise", async () => {
     const bridge = await seedBridge(["status.v1"]);
     await pollOnce(bridge.id);
     const [row] = await db().select().from(vpnBridges).where(eq(vpnBridges.id, bridge.id));
     expect(row?.agentCapabilities).toEqual(["status.v1", "update.v1"]);
+    expect(row?.agentCapabilitiesCheckedAt).not.toBeNull();
+
+    // Fresh and nothing outstanding: the agent's capability list is not asked again.
+    await db()
+      .update(vpnBridges)
+      .set({ agentCapabilities: ["status.v1"], agentCapabilitiesCheckedAt: new Date() })
+      .where(eq(vpnBridges.id, bridge.id));
+    await pollOnce(bridge.id, { now: new Date(Date.now() + 5_000) });
+    expect(
+      (await db().select().from(vpnBridges).where(eq(vpnBridges.id, bridge.id)))[0]?.agentCapabilities,
+    ).toEqual(["status.v1"]);
+
+    // An outstanding update forces the re-read.
+    await queueOperation(bridge.id, { state: "sent" });
+    await pollOnce(bridge.id, { now: new Date(Date.now() + 10_000) });
+    expect(
+      (await db().select().from(vpnBridges).where(eq(vpnBridges.id, bridge.id)))[0]?.agentCapabilities,
+    ).toEqual(["status.v1", "update.v1"]);
   });
-  runDatabaseTest(
-    "a queued operation whose delivery job is gone does not hold the slot past the deadline",
-    async () => {
-      const bridge = await seedBridge();
-      const requestedAt = new Date("2026-11-13T10:00:00.000Z");
-      const { operationId, job } = await queueOperation(bridge.id, { requestedAt });
-      const late = new Date(requestedAt.getTime() + BRIDGE_AGENT_UPDATE_PICKUP_TIMEOUT_MS + 1_000);
-
-      // The job is still pending (its retry backoff): the send path owns it.
-      await db().update(jobOutbox).set({ status: "pending" }).where(eq(jobOutbox.id, job.id));
-      await pollOnce(bridge.id, { now: late });
-      expect((await operation(operationId)).state).toBe("queued");
-
-      // The job ended without moving the operation (failJob, a catch-all
-      // completeJob of an older worker): nothing else would ever close it.
-      await db().update(jobOutbox).set({ status: "failed" }).where(eq(jobOutbox.id, job.id));
-      await pollOnce(bridge.id, { now: new Date(late.getTime() + 60_000) });
-      expect(await operation(operationId)).toMatchObject({
-        state: "pickup_timeout",
-        errorCode: "UPDATE_NOT_ACKNOWLEDGED",
-      });
-    },
-  );
-
-  runDatabaseTest(
-    "an agent that answers as unsupported still lets the acknowledgement deadline fire",
-    async () => {
-      const bridge = await seedBridge();
-      const { operationId, job } = await queueOperation(bridge.id);
-      const sentAt = new Date("2026-11-13T10:00:00.000Z");
-      await sendJob({ now: sentAt })(job);
-      // The status route answers for another bridge: identity mismatch.
-      agent.bridgeId = randomUUID();
-      await pollOnce(bridge.id, { now: new Date(sentAt.getTime() + 30_000) });
-      expect(await operation(operationId)).toMatchObject({ state: "sent" });
-      await pollOnce(bridge.id, {
-        now: new Date(sentAt.getTime() + BRIDGE_AGENT_UPDATE_PICKUP_TIMEOUT_MS + 1_000),
-      });
-      expect((await operation(operationId)).state).toBe("pickup_timeout");
-    },
-  );
 });

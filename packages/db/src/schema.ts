@@ -299,6 +299,10 @@ export const vpnBridges = pgTable(
     agentVersion: text("agent_version"),
     agentApiVersion: integer("agent_api_version"),
     agentCapabilities: jsonb("agent_capabilities").$type<string[]>(),
+    // When `agent_capabilities` was last read from the agent's /v1/identity.
+    agentCapabilitiesCheckedAt: timestamp("agent_capabilities_checked_at", {
+      withTimezone: true,
+    }),
     frpsVersion: text("frps_version"),
     frpsReachable: boolean("frps_reachable"),
     // Bounded code of the last poll problem; never upstream text or secrets.
@@ -354,12 +358,22 @@ export const vpnBridgeAgentUpdates = pgTable(
     // The agent's own last reported state name, for diagnostics.
     agentState: text("agent_state"),
     requestedAt: timestamp("requested_at", { withTimezone: true }).defaultNow().notNull(),
+    // The panel's pickup deadline sent with the intent (requested_at + 120 s).
+    notAfter: timestamp("not_after", { withTimezone: true }).defaultNow().notNull(),
+    // Set once a POST was attempted, also when it got no usable answer: from
+    // then on only the agent can say whether the intent arrived.
+    sendAttemptedAt: timestamp("send_attempted_at", { withTimezone: true }),
     sentAt: timestamp("sent_at", { withTimezone: true }),
     acknowledgedAt: timestamp("acknowledged_at", { withTimezone: true }),
     lastCheckedAt: timestamp("last_checked_at", { withTimezone: true }),
     // Observation, not a state: management contact lost since the host
     // started the update; cleared when the agent answers again.
     contactLostSince: timestamp("contact_lost_since", { withTimezone: true }),
+    // Observation: a reachable agent still reports the intent unstarted past
+    // not_after. The operation stays outstanding.
+    acknowledgementOverdueSince: timestamp("acknowledgement_overdue_since", {
+      withTimezone: true,
+    }),
     errorCode: text("error_code"),
     finishedAt: timestamp("finished_at", { withTimezone: true }),
     ...timestamps,
@@ -372,7 +386,7 @@ export const vpnBridgeAgentUpdates = pgTable(
     index("vpn_bridge_agent_updates_bridge_idx").on(table.bridgeId, table.requestedAt),
     check(
       "vpn_bridge_agent_updates_state_valid",
-      sql`${table.state} in ('queued', 'sent', 'acknowledged', 'running', 'succeeded', 'rolled_back', 'rollback_failed', 'failed', 'unsupported', 'pickup_timeout')`,
+      sql`${table.state} in ('queued', 'sent', 'acknowledged', 'running', 'succeeded', 'rolled_back', 'rollback_failed', 'failed', 'pickup_timeout')`,
     ),
     check(
       "vpn_bridge_agent_updates_digest_valid",

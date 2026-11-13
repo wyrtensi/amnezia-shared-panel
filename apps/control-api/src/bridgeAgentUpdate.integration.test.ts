@@ -242,7 +242,11 @@ describe("bridge-agent update requests (real PostgreSQL)", () => {
         fromVersion: "0.1.0",
         result: null,
         contactLostSince: null,
+        acknowledgementOverdueSince: null,
       });
+      expect(
+        Date.parse(result.operation.notAfter) - Date.parse(result.operation.requestedAt),
+      ).toBe(120_000);
       const operationId = result.operation.operationId;
       const [job] = await jobsOf([operationId]);
       expect(job).toMatchObject({

@@ -39,6 +39,12 @@ export const bridgeAgentUpdateRequestSchema = z.object({
   operationId: z.uuid(),
   imageRepository: z.string().min(1).max(255),
   imageDigest: bridgeAgentImageDigestSchema,
+  /**
+   * The panel's pickup deadline (ISO). The agent and the host updater refuse
+   * to start the intent after it; a never-started operation then reads
+   * `expired`.
+   */
+  notAfter: z.iso.datetime(),
 });
 export type BridgeAgentUpdateRequest = z.infer<typeof bridgeAgentUpdateRequestSchema>;
 

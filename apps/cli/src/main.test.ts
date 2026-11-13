@@ -1463,6 +1463,8 @@ describe("bridge commands", () => {
       sentAt: null,
       acknowledgedAt: null,
       lastCheckedAt: null,
+      notAfter: "2026-11-13T10:02:00.000Z",
+      acknowledgementOverdueSince: null,
       contactLostSince: null,
       errorCode: null,
       result: null,
@@ -1496,6 +1498,7 @@ describe("bridge commands", () => {
       expect(calls[1]?.url).toContain(`/api/admin/vpn-bridges/${BRIDGE}/agent-update`);
       expect(calls[1]?.init?.method).toBe("POST");
       expect(sentBody(calls[1]!)).toEqual({ imageDigest: DIGEST });
+      expect(out).toContain(`Requesting ghcr.io/example/amnezia/bridge-agent@${DIGEST}`);
       expect(out).toContain("update to 0.2.0 requested");
       expect(out).toContain(`bridge-agent-log ${BRIDGE}`);
     });
@@ -1521,7 +1524,7 @@ describe("bridge commands", () => {
 
     it("refuses --confirm when nothing is offered", async () => {
       const calls = stubFetch([{ body: { ...view, offered: [] } }]);
-      await expect(run(["bridge-agent-update", BRIDGE, "--confirm"])).rejects.toThrow(/offers no bridge-agent image/);
+      await expect(run(["bridge-agent-update", BRIDGE, "--confirm"])).rejects.toThrow(/nothing to request/);
       expect(calls).toHaveLength(1);
     });
 
@@ -1536,7 +1539,7 @@ describe("bridge commands", () => {
       stubFetch([{ body: { ...view, operation: timedOut, history: [lost] } }]);
       const out = await run(["bridge-agent-log", BRIDGE]);
       expect(out).toContain("pickup_timeout");
-      expect(out).toContain("never acknowledged");
+      expect(out).toContain("confirmed the request expired");
       expect(out).toContain("not retried automatically");
       expect(out).toContain("management contact lost since 2026-11-13T09:00:00.000Z");
 
@@ -1544,6 +1547,15 @@ describe("bridge commands", () => {
       const parsed = JSON.parse(await run(["bridge-agent-log", BRIDGE, "--json"])) as Record<string, unknown>;
       expect(parsed).not.toHaveProperty("extra");
       expect(parsed.operation).toMatchObject({ state: "pickup_timeout", result: { errorCode: "UPDATE_NOT_ACKNOWLEDGED" } });
+    });
+
+    it("never falls back to an outstanding operation's digest when nothing is offered, and names an overdue acknowledgement", async () => {
+      const running = { ...operation, state: "sent", acknowledgementOverdueSince: "2026-11-13T10:05:00.000Z" };
+      const calls = stubFetch([{ body: { ...view, offered: [], operation: running } }]);
+      await expect(run(["bridge-agent-update", BRIDGE, "--confirm"])).rejects.toThrow(/nothing to request/);
+      expect(calls).toHaveLength(1);
+      stubFetch([{ body: { ...view, operation: running } }]);
+      expect(await run(["bridge-agent-log", BRIDGE])).toContain("acknowledgement overdue since 2026-11-13T10:05:00.000Z");
     });
 
     it("bridge-agent-log with no operation says so", async () => {

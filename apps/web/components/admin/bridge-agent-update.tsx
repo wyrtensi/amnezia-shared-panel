@@ -56,7 +56,7 @@ export function BridgeAgentUpdateFacts({
             type="button"
             size="sm"
             variant="outline"
-            disabled={!offered && !operation}
+            disabled={!offered}
             onClick={onUpdate}
           >
             {t("bridge.upd.button")}
@@ -101,6 +101,13 @@ function OperationNotes({
       {operation.contactLostSince ? (
         <p>
           {t("bridge.upd.contactLost", { at: formatDateTime(operation.contactLostSince, lang) })}
+        </p>
+      ) : null}
+      {operation.acknowledgementOverdueSince ? (
+        <p>
+          {t("bridge.upd.ackOverdue", {
+            at: formatDateTime(operation.acknowledgementOverdueSince, lang),
+          })}
         </p>
       ) : null}
       {operation.state === "pickup_timeout" ? <p>{t("bridge.upd.pickupTimeout")}</p> : null}
@@ -155,7 +162,8 @@ export function UpdateAgentDialog({
 
   const offered = view?.offered[0] ?? null;
   const outstanding = view?.operation ? isBridgeAgentUpdateOutstanding(view.operation.state) : false;
-  const digest = offered?.digest ?? (outstanding ? (view?.operation?.requestedDigest ?? null) : null);
+  // Only the currently offered approved digest is ever requested.
+  const digest = offered?.digest ?? null;
 
   const submit = async () => {
     if (!bridge || !digest) return;
@@ -222,7 +230,7 @@ export function UpdateAgentDialog({
           <Button type="button" variant="outline" onClick={onClose}>
             {t("common.cancel")}
           </Button>
-          <Button type="button" disabled={busy || !view || !digest || !view.jobsEnabled} onClick={() => void submit()}>
+          <Button type="button" disabled={busy || !view || !digest || !view.jobsEnabled || !view.updateSupported} onClick={() => void submit()}>
             {t("bridge.upd.confirm")}
           </Button>
         </DialogFooter>

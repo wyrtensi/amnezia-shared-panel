@@ -2461,6 +2461,8 @@ describe("bridge registry routes", () => {
       sentAt: null,
       acknowledgedAt: null,
       lastCheckedAt: null,
+      notAfter: "2026-11-13T10:02:00.000Z",
+      acknowledgementOverdueSince: null,
       contactLostSince: null,
       errorCode: null,
       result: null,

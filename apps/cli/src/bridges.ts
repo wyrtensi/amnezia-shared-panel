@@ -139,6 +139,8 @@ export type AgentUpdateOperationView = {
   sentAt?: string | null;
   acknowledgedAt?: string | null;
   lastCheckedAt?: string | null;
+  notAfter?: string | null;
+  acknowledgementOverdueSince?: string | null;
   contactLostSince?: string | null;
   errorCode?: string | null;
   result?: { finishedAt: string; errorCode: string | null } | null;
@@ -170,6 +172,8 @@ export function projectAgentUpdateOperation(
     sentAt: nullable(o.sentAt),
     acknowledgedAt: nullable(o.acknowledgedAt),
     lastCheckedAt: nullable(o.lastCheckedAt),
+    notAfter: nullable(o.notAfter),
+    acknowledgementOverdueSince: nullable(o.acknowledgementOverdueSince),
     contactLostSince: nullable(o.contactLostSince),
     errorCode: nullable(o.errorCode),
     result: o.result ? { finishedAt: o.result.finishedAt, errorCode: nullable(o.result.errorCode) } : null,
@@ -201,7 +205,12 @@ export function describeAgentUpdateOperation(o: AgentUpdateOperationView): strin
   ];
   if (o.state === "pickup_timeout") {
     lines.push(
-      "    The host never acknowledged the request in time. It is not retried automatically: check the bridge host's updater (systemctl status amnezia-bridge-agent-update.path), then request again.",
+      "    The agent confirmed the request expired before the host started it, so it will not be applied. It is not retried automatically: check the bridge host's updater (systemctl status amnezia-bridge-agent-update.path), then request again.",
+    );
+  }
+  if (o.acknowledgementOverdueSince) {
+    lines.push(
+      `    acknowledgement overdue since ${o.acknowledgementOverdueSince}: the agent is reachable but the host has not started the update. The request stays outstanding until the agent confirms it expired; check systemctl status amnezia-bridge-agent-update.path on the bridge host.`,
     );
   }
   if (o.contactLostSince) {
@@ -647,14 +656,18 @@ export async function cmdBridgeAgentUpdate(api: BridgeApi, args: string[]): Prom
     }
     return preview(lines);
   }
-  // A confirm without anything to install, or with an outstanding operation
-  // of another image, is answered by the API with its typed error.
-  if (!offered && !view.operation) {
-    throw new Error("The panel offers no bridge-agent image; run bridge-agent-update <bridge-id> without --confirm to see why");
+  // Only the currently offered approved digest is ever requested. An
+  // outstanding operation of the same image is returned by the API; of another
+  // image it is its typed 409.
+  if (!offered) {
+    throw new Error(
+      "The panel offers no approved bridge-agent image, so there is nothing to request; run bridge-agent-update <bridge-id> without --confirm to see why",
+    );
   }
+  if (!args.includes("--json")) console.log(`Requesting ${offered.image}`);
   const result = await api<{ created: boolean; operation: AgentUpdateOperationView }>(
     `/api/admin/vpn-bridges/${id}/agent-update`,
-    { method: "POST", body: JSON.stringify({ imageDigest: (offered ?? { digest: view.operation?.requestedDigest }).digest }) },
+    { method: "POST", body: JSON.stringify({ imageDigest: offered.digest }) },
   );
   if (args.includes("--json")) {
     return json({ created: result.created, operation: projectAgentUpdateOperation(result.operation) });

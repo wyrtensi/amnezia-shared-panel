@@ -26,6 +26,7 @@ const repositoryFor = (
     apiKey: string | null;
     enrolledAt: Date;
     capabilities: string[] | null;
+    capabilitiesCheckedAt: Date | null;
   } | null,
 ) => ({
   loadPollTarget: vi.fn((_bridgeId: string) => Promise.resolve(target)),
@@ -64,6 +65,7 @@ describe("createBridgeAgentPoll", () => {
       apiKey: null,
       enrolledAt,
       capabilities: null,
+      capabilitiesCheckedAt: null,
     });
     await poll(job({ bridgeId: BRIDGE_ID }));
     expect(fetchImpl).not.toHaveBeenCalled();
@@ -83,6 +85,7 @@ describe("createBridgeAgentPoll", () => {
       apiKey: "k".repeat(40),
       enrolledAt: new Date(),
       capabilities: null,
+      capabilitiesCheckedAt: null,
     });
     await poll(job({ bridgeId: BRIDGE_ID }));
     expect(repository.recordPoll).toHaveBeenCalledWith(

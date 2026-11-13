@@ -460,19 +460,23 @@ Bridge polling only runs while `VPN_BRIDGE_JOBS_ENABLED=true`.
 
 **Bridge-agent updates.** An update request (`bridge-agent-update --confirm`, or the
 Update agent button on the Bridges tab) stores one operation per bridge and queues a
-`bridge_agent.update` job. The job sends the intent to the agent once and ends; the
-bridge's next polls follow the operation (`GET /v1/update?operationId=`), so a poll now
-costs one more request while an update is outstanding, and every successful poll also
-re-reads `/v1/identity` to refresh the agent's capabilities. States:
-`queued, sent, acknowledged, running` (outstanding), `succeeded, rolled_back,
-rollback_failed, failed, unsupported` (the host's or the agent's verdict) and
-`pickup_timeout`. Management contact lost after the host started is an observation
-(`contactLostSince`), not a state: it clears when the agent answers again and only the host's
-matching terminal result ends the operation. `pickup_timeout` (no host acknowledgement within
-120 s; the constant `BRIDGE_AGENT_UPDATE_PICKUP_TIMEOUT_MS`) is shown on the
-card and in `bridge-agent-log` and is never retried automatically. If the host starts the update
-late, the next poll takes over the host's state. Check the host with
-`systemctl status amnezia-bridge-agent-update.path`, then request again.
+`bridge_agent.update` job. The job sends the intent (with `notAfter`, the panel's pickup
+deadline, request time + 120 s) to the agent once and ends; the bridge's next polls follow the
+operation (`GET /v1/update?operationId=`), so a poll costs one more request while an update is
+outstanding. The agent's capabilities (`/v1/identity`) are re-read when unknown, older than
+10 minutes, or while an update is outstanding; a failed read is logged with a bounded code.
+States: `queued, sent, acknowledged, running` (outstanding), `succeeded, rolled_back,
+rollback_failed, failed, pickup_timeout` (terminal). An operation holds the bridge's slot until a
+reachable agent confirms its fate: a terminal result, `expired` (recorded as `pickup_timeout`), or
+that it does not know the operation (`failed UPDATE_UNKNOWN_TO_AGENT`). Observations never free
+the slot or trigger a retry: `contactLostSince` (no usable answer, at any stage, including before
+pickup: the host may be replacing the agent) and `acknowledgementOverdueSince` (the agent
+answers but still reports the request unstarted past `notAfter`). A delivery whose POST got no
+usable answer is asked about, and re-sent only if the agent confirms it never saw it. A queued
+operation whose POST was never attempted and whose job is gone closes as
+`failed UPDATE_NEVER_SENT`. If an overdue request needs help, check
+`systemctl status amnezia-bridge-agent-update.path` on the bridge host; once the agent reports
+`expired` the operation ends and you can request again.
 
 ---
 

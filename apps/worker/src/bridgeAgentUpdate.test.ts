@@ -1,13 +1,16 @@
 import { describe, expect, it } from "vitest";
 
-import type { BridgeAgentUpdateReadOutcome, BridgeAgentUpdateState } from "@amnezia/contracts";
+import type {
+  BridgeAgentUpdateReadOutcome,
+  BridgeAgentUpdateSendOutcome,
+  BridgeAgentUpdateState,
+} from "@amnezia/contracts";
 
-import { nextChange } from "./bridgeAgentUpdate.js";
+import { deliveryChange, nextChange } from "./bridgeAgentUpdate.js";
 import type { BridgeUpdateOperation } from "./bridgeUpdateRepository.js";
 
 const T0 = new Date("2026-11-13T10:00:00.000Z");
 const at = (seconds: number) => new Date(T0.getTime() + seconds * 1_000);
-const DEADLINE = 120_000;
 const OP = "0b1c2d3e-4f50-4a6b-8c7d-9e0f1a2b3c4d";
 
 const operation = (
@@ -20,107 +23,143 @@ const operation = (
   imageDigest: `sha256:${"a".repeat(64)}`,
   state,
   requestedAt: T0,
+  notAfter: at(120),
+  sendAttemptedAt: T0,
   sentAt: T0,
   acknowledgedAt: null,
   contactLostSince: null,
+  acknowledgementOverdueSince: null,
   ...extra,
 });
 
-const status = (
-  state: Extract<BridgeAgentUpdateReadOutcome, { kind: "status" }>["status"]["state"],
-  errorCode?: string,
-): BridgeAgentUpdateReadOutcome => ({
+type AgentState = Extract<BridgeAgentUpdateReadOutcome, { kind: "status" }>["status"]["state"];
+const status = (state: AgentState, errorCode?: string): BridgeAgentUpdateReadOutcome => ({
   kind: "status",
   status: { operationId: OP, state, updatedAt: T0.toISOString(), ...(errorCode ? { errorCode } : {}) },
 });
+const noContact: BridgeAgentUpdateReadOutcome = { kind: "no_contact", errorCode: "AGENT_UNREACHABLE" };
 
 describe("bridge-agent update transitions", () => {
   it("maps the agent's states onto the panel's", () => {
-    expect(nextChange(operation("sent"), status("picked_up"), at(10), DEADLINE)).toMatchObject({
+    expect(nextChange(operation("sent"), status("picked_up"), at(10))).toMatchObject({
       state: "acknowledged",
       acknowledgedAt: at(10),
       finishedAt: null,
     });
     for (const agentState of ["staging", "replacing", "health_check"] as const) {
-      expect(nextChange(operation("acknowledged"), status(agentState), at(20), DEADLINE)).toMatchObject({
+      expect(nextChange(operation("acknowledged"), status(agentState), at(20))).toMatchObject({
         state: "running",
         agentState,
       });
     }
-    expect(nextChange(operation("running"), status("rolled_back", "HEALTH_GATE_FAILED"), at(30), DEADLINE)).toMatchObject({
-      state: "rolled_back",
-      errorCode: "HEALTH_GATE_FAILED",
-      finishedAt: at(30),
-    });
+    expect(
+      nextChange(operation("running"), status("rolled_back", "HEALTH_GATE_FAILED"), at(30)),
+    ).toMatchObject({ state: "rolled_back", errorCode: "HEALTH_GATE_FAILED", finishedAt: at(30) });
   });
 
   it("never moves an operation backwards", () => {
-    expect(nextChange(operation("running"), status("picked_up"), at(10), DEADLINE)).toEqual({
+    expect(nextChange(operation("running"), status("picked_up"), at(10))).toEqual({
       lastCheckedAt: at(10),
+      contactLostSince: null,
     });
   });
 
   it("clears the lost-contact observation when the agent answers", () => {
     const lost = operation("running", { contactLostSince: at(5) });
-    expect(nextChange(lost, status("health_check"), at(40), DEADLINE)).toMatchObject({
-      contactLostSince: null,
-    });
+    expect(nextChange(lost, status("health_check"), at(40))).toMatchObject({ contactLostSince: null });
   });
 
-  it("lost contact after the host started is an observation that keeps its first time", () => {
-    const noContact: BridgeAgentUpdateReadOutcome = { kind: "no_contact", errorCode: "AGENT_UNREACHABLE" };
-    expect(nextChange(operation("running"), noContact, at(500), DEADLINE)).toMatchObject({
-      contactLostSince: at(500),
-    });
-    expect(
-      nextChange(operation("running", { contactLostSince: at(100) }), noContact, at(600), DEADLINE),
-    ).toMatchObject({ contactLostSince: at(100) });
-    // No state change: only the host's own terminal result ends it.
-    expect(nextChange(operation("running"), noContact, at(9_000), DEADLINE)?.state).toBeUndefined();
+  it("no answer is only an observation, in every outstanding state, and keeps its first time", () => {
+    for (const state of ["queued", "sent", "acknowledged", "running"] as const) {
+      const first = nextChange(operation(state), noContact, at(9_000));
+      expect(first).toMatchObject({ contactLostSince: at(9_000), errorCode: "AGENT_UNREACHABLE" });
+      expect(first?.state).toBeUndefined();
+      expect(first?.finishedAt).toBeUndefined();
+      expect(
+        nextChange(operation(state, { contactLostSince: at(100) }), noContact, at(9_500)),
+      ).toMatchObject({ contactLostSince: at(100) });
+    }
   });
 
-  it("lost contact before any pickup is not contact_lost and times out after the deadline", () => {
-    const noContact: BridgeAgentUpdateReadOutcome = { kind: "no_contact", errorCode: "AGENT_TIMEOUT" };
-    const early = nextChange(operation("sent"), noContact, at(60), DEADLINE);
-    expect(early).toEqual({ errorCode: "AGENT_TIMEOUT", lastCheckedAt: at(60) });
-    expect(nextChange(operation("sent"), noContact, at(121), DEADLINE)).toMatchObject({
+  it("pickup_timeout only comes from the agent confirming expired, and finishes the operation", () => {
+    expect(nextChange(operation("sent"), status("expired"), at(130))).toMatchObject({
       state: "pickup_timeout",
+      agentState: "expired",
       errorCode: "UPDATE_NOT_ACKNOWLEDGED",
+      finishedAt: at(130),
     });
   });
 
-  it("the deadline runs from the send time, from the request time while undelivered", () => {
-    const queuedAgent = status("queued");
-    expect(
-      nextChange(operation("sent", { sentAt: at(100) }), queuedAgent, at(200), DEADLINE),
-    ).toMatchObject({ state: "sent" });
-    expect(
-      nextChange(operation("sent", { sentAt: at(100) }), queuedAgent, at(221), DEADLINE),
-    ).toMatchObject({ state: "pickup_timeout" });
-  });
-
-  it("a running operation never times out as unacknowledged", () => {
-    expect(
-      nextChange(operation("running"), { kind: "unknown_operation" }, at(9_000), DEADLINE),
-    ).toEqual({ errorCode: "AGENT_OPERATION_UNKNOWN", lastCheckedAt: at(9_000) });
-  });
-
-  it("a pickup_timeout operation only moves on a report that the host started", () => {
-    const late = operation("pickup_timeout");
-    expect(nextChange(late, status("queued"), at(500), DEADLINE)).toBeNull();
-    expect(nextChange(late, { kind: "no_contact", errorCode: "AGENT_UNREACHABLE" }, at(500), DEADLINE)).toBeNull();
-    expect(nextChange(late, { kind: "unknown_operation" }, at(500), DEADLINE)).toBeNull();
-    expect(nextChange(late, status("replacing"), at(500), DEADLINE)).toMatchObject({
-      state: "running",
+  it("a reachable agent that still says queued past notAfter keeps the operation outstanding and flags it overdue", () => {
+    expect(nextChange(operation("sent"), status("queued"), at(60))).toMatchObject({
+      state: "sent",
+      acknowledgementOverdueSince: null,
       finishedAt: null,
-      acknowledgedAt: at(500),
     });
+    const overdue = nextChange(operation("sent"), status("queued"), at(130));
+    expect(overdue).toMatchObject({
+      state: "sent",
+      acknowledgementOverdueSince: at(130),
+      finishedAt: null,
+    });
+    // The first overdue time is kept; a later pickup clears the observation.
+    expect(
+      nextChange(operation("sent", { acknowledgementOverdueSince: at(130) }), status("queued"), at(200))
+        ?.acknowledgementOverdueSince,
+    ).toEqual(at(130));
+    expect(
+      nextChange(operation("sent", { acknowledgementOverdueSince: at(130) }), status("picked_up"), at(210)),
+    ).toMatchObject({ state: "acknowledged", acknowledgementOverdueSince: null });
+  });
+
+  it("an operation the agent does not know is failed, except a queued one, which is re-sent", () => {
+    for (const state of ["sent", "acknowledged", "running"] as const) {
+      expect(nextChange(operation(state), { kind: "unknown_operation" }, at(50))).toMatchObject({
+        state: "failed",
+        errorCode: "UPDATE_UNKNOWN_TO_AGENT",
+      });
+    }
+    expect(nextChange(operation("queued"), { kind: "unknown_operation" }, at(50))).toBeNull();
   });
 
   it("an answer for another operation changes nothing but the observed code", () => {
-    expect(nextChange(operation("sent"), { kind: "mismatch" }, at(10), DEADLINE)).toEqual({
+    expect(nextChange(operation("sent"), { kind: "mismatch" }, at(10))).toEqual({
       errorCode: "AGENT_OPERATION_MISMATCH",
       lastCheckedAt: at(10),
     });
+  });
+});
+
+describe("bridge-agent update delivery", () => {
+  const queued = operation("queued", { sendAttemptedAt: null, sentAt: null });
+  const accepted = (state: AgentState): BridgeAgentUpdateSendOutcome => ({
+    kind: "accepted",
+    status: { operationId: OP, state, updatedAt: "x" },
+  });
+
+  it("an accepted POST moves the operation to sent; an expired answer ends it as pickup_timeout", () => {
+    expect(deliveryChange(queued, accepted("queued"), at(5))).toMatchObject({
+      state: "sent",
+      sentAt: at(5),
+      sendAttemptedAt: at(5),
+    });
+    expect(deliveryChange(queued, accepted("expired"), at(500))).toMatchObject({
+      state: "pickup_timeout",
+      finishedAt: at(500),
+    });
+  });
+
+  it("a refusal fails the operation; an ambiguous answer only records an attempt and lost contact", () => {
+    expect(
+      deliveryChange(queued, { kind: "rejected", errorCode: "AGENT_UPDATE_UNSUPPORTED" }, at(5)),
+    ).toMatchObject({ state: "failed", errorCode: "AGENT_UPDATE_UNSUPPORTED" });
+    const ambiguous = deliveryChange(queued, { kind: "retry", errorCode: "AGENT_TIMEOUT" }, at(9_000));
+    expect(ambiguous).toMatchObject({
+      sendAttemptedAt: at(9_000),
+      contactLostSince: at(9_000),
+      errorCode: "AGENT_TIMEOUT",
+    });
+    expect(ambiguous.state).toBeUndefined();
+    expect(ambiguous.finishedAt).toBeUndefined();
   });
 });

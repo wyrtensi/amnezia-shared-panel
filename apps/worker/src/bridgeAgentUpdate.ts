@@ -2,7 +2,6 @@ import {
   BRIDGE_AGENT_REQUEST_TIMEOUT_MS,
   BRIDGE_AGENT_UPDATE_CAPABILITY,
   BRIDGE_AGENT_UPDATE_ERRORS,
-  BRIDGE_AGENT_UPDATE_PICKUP_TIMEOUT_MS,
   bridgeAgentUpdatePayloadSchema,
   bridgeAgentUpdateProgress,
   bridgeAgentUpdateStateOf,
@@ -13,6 +12,8 @@ import {
   type BridgeAgentPollOutcome,
   type BridgeAgentUpdateError,
   type BridgeAgentUpdateReadOutcome,
+  type BridgeAgentUpdateRequest,
+  type BridgeAgentUpdateSendOutcome,
   type BridgeAgentUpdateState,
 } from "@amnezia/contracts";
 
@@ -29,27 +30,132 @@ import type { OutboxJob, WorkerRepository } from "./repository.js";
  * Bridge-agent updates in the worker, in two parts.
  *
  * The `bridge_agent.update` job (`createBridgeAgentUpdate`) delivers the
- * stored intent to the agent's `POST /v1/update` exactly as the stored
- * operation says and ends; it never waits for the host. Delivery is safe to
- * repeat because the agent answers a replayed operation id with its known
- * state (at-most-once apply).
+ * stored intent to the agent's `POST /v1/update` once and ends; it never
+ * waits for the host. The intent carries `notAfter`, the panel's pickup
+ * deadline: the agent and host updater never start it afterwards. Replaying
+ * the same operation id is harmless (at-most-once apply).
  *
- * The poller then follows the operation (`createBridgeUpdateTracker`, called
- * by the bridge poll job): `GET /v1/update?operationId=` moves it
- * `sent -> acknowledged -> running -> terminal`. Management contact lost
- * after the host started is an observation (`contactLostSince`), not a
- * terminal state; only the host's matching terminal result ends it. A request
- * the host never picked up within `BRIDGE_AGENT_UPDATE_PICKUP_TIMEOUT_MS`
- * becomes `pickup_timeout`: surfaced, never retried automatically.
+ * The poller then follows the operation (`createBridgeUpdateTracker`):
+ * `GET /v1/update?operationId=` moves it `sent -> acknowledged -> running ->
+ * terminal`, and re-sends a delivery that got no usable answer.
+ *
+ * An operation holds the bridge's slot until a REACHABLE agent confirms it: a
+ * terminal state, `expired` (-> `pickup_timeout`) or an unknown operation
+ * (-> `failed UPDATE_UNKNOWN_TO_AGENT`). Unreachable agents only produce the
+ * observation `contactLostSince`; a reachable agent that still says `queued`
+ * past `notAfter` produces `acknowledgementOverdueSince`. Neither frees the
+ * slot or retries anything: a host that may still apply the update must never
+ * be raced by a second request.
  */
-
-/** How long a `pickup_timeout` operation is still followed for a late pickup. */
-export const BRIDGE_AGENT_UPDATE_LATE_WINDOW_MS = 24 * 60 * 60 * 1_000;
 
 const knownError = (code: string): BridgeAgentUpdateError =>
   (BRIDGE_AGENT_UPDATE_ERRORS as readonly string[]).includes(code)
     ? (code as BridgeAgentUpdateError)
     : "AGENT_UNREACHABLE";
+
+const finished = (
+  state: BridgeAgentUpdateState,
+  errorCode: string | null,
+  at: Date,
+): BridgeUpdateChange => ({ state, errorCode, finishedAt: at, lastCheckedAt: at });
+
+const requestOf = (operation: BridgeUpdateOperation): BridgeAgentUpdateRequest => ({
+  operationId: operation.id,
+  imageRepository: operation.imageRepository,
+  imageDigest: operation.imageDigest,
+  notAfter: operation.notAfter.toISOString(),
+});
+
+/**
+ * The transition a state the agent reported implies. Shared by the POST
+ * answer and the GET answer. `pickup_timeout` only ever comes from the agent
+ * confirming `expired`.
+ */
+const reportedChange = (
+  operation: BridgeUpdateOperation,
+  agentState: Parameters<typeof bridgeAgentUpdateStateOf>[0],
+  errorCode: string | undefined,
+  at: Date,
+): BridgeUpdateChange => {
+  const next = bridgeAgentUpdateStateOf(agentState);
+  const started =
+    bridgeAgentUpdateProgress(next) >= bridgeAgentUpdateProgress("acknowledged");
+  const change: BridgeUpdateChange = {
+    state: next,
+    agentState,
+    lastCheckedAt: at,
+    contactLostSince: null,
+    errorCode: errorCode ?? (next === "pickup_timeout" ? "UPDATE_NOT_ACKNOWLEDGED" : null),
+    finishedAt: isBridgeAgentUpdateOutstanding(next) ? null : at,
+    acknowledgementOverdueSince:
+      next === "sent" && at.getTime() >= operation.notAfter.getTime()
+        ? (operation.acknowledgementOverdueSince ?? at)
+        : null,
+  };
+  if (bridgeAgentUpdateProgress(next) >= bridgeAgentUpdateProgress("sent") && !operation.sentAt) {
+    change.sentAt = at;
+  }
+  if (started && !operation.acknowledgedAt) change.acknowledgedAt = at;
+  return change;
+};
+
+/** The change one POST answer implies. Pure. */
+export const deliveryChange = (
+  operation: BridgeUpdateOperation,
+  sent: BridgeAgentUpdateSendOutcome,
+  at: Date,
+): BridgeUpdateChange => {
+  if (sent.kind === "accepted") {
+    return {
+      ...reportedChange(operation, sent.status.state, sent.status.errorCode, at),
+      sendAttemptedAt: at,
+    };
+  }
+  if (sent.kind === "rejected") {
+    return { ...finished("failed", sent.errorCode, at), sendAttemptedAt: at };
+  }
+  // No usable answer: the agent may or may not have the intent. Stay
+  // outstanding and let the tracker ask the agent; never time out here.
+  return {
+    sendAttemptedAt: at,
+    lastCheckedAt: at,
+    errorCode: sent.errorCode,
+    contactLostSince: operation.contactLostSince ?? at,
+  };
+};
+
+/**
+ * The transition one GET answer implies, or null for none. Pure: every branch
+ * of the state machine is unit-tested here. A `queued` operation whose agent
+ * does not know it is re-sent by the tracker, not decided here.
+ */
+export const nextChange = (
+  operation: BridgeUpdateOperation,
+  read: BridgeAgentUpdateReadOutcome,
+  at: Date,
+): BridgeUpdateChange | null => {
+  if (read.kind === "status") {
+    const next = bridgeAgentUpdateStateOf(read.status.state);
+    // The agent never moves an operation back; a stale answer changes nothing
+    // but proves contact.
+    if (bridgeAgentUpdateProgress(next) < bridgeAgentUpdateProgress(operation.state)) {
+      return { lastCheckedAt: at, contactLostSince: null };
+    }
+    return reportedChange(operation, read.status.state, read.status.errorCode, at);
+  }
+  if (read.kind === "unknown_operation") {
+    return operation.state === "queued" ? null : finished("failed", "UPDATE_UNKNOWN_TO_AGENT", at);
+  }
+  if (read.kind === "mismatch") {
+    return { errorCode: "AGENT_OPERATION_MISMATCH", lastCheckedAt: at };
+  }
+  // No usable answer: an observation, never a verdict.
+  return {
+    errorCode: read.errorCode,
+    lastCheckedAt: at,
+    contactLostSince: operation.contactLostSince ?? at,
+  };
+};
 
 export type BridgeAgentUpdateJobOptions = {
   repository: Pick<BridgeUpdateRepository, "loadOperation" | "recordChange">;
@@ -60,22 +166,14 @@ export type BridgeAgentUpdateJobOptions = {
   managementHosts: readonly string[];
   fetchImpl?: typeof fetch;
   timeoutMs?: number;
-  pickupTimeoutMs?: number;
   now?: () => Date;
-  log?: (line: string) => void;
 };
-
-const finished = (
-  state: BridgeAgentUpdateState,
-  errorCode: string | null,
-  at: Date,
-): BridgeUpdateChange => ({ state, errorCode, finishedAt: at, lastCheckedAt: at });
 
 /**
  * The `bridge_agent.update` job handler. An agent problem is never a job
- * failure: it is recorded on the operation. Only an unreachable agent inside
- * the acknowledgement window throws, so the outbox runner retries the same
- * operation id with its own backoff.
+ * failure: it is recorded on the operation. Before the POST is attempted the
+ * operation can still be failed safely (nothing reached the agent); after it,
+ * only the agent's answers decide.
  */
 export const createBridgeAgentUpdate = ({
   repository,
@@ -85,9 +183,7 @@ export const createBridgeAgentUpdate = ({
   managementHosts,
   fetchImpl,
   timeoutMs = BRIDGE_AGENT_REQUEST_TIMEOUT_MS,
-  pickupTimeoutMs = BRIDGE_AGENT_UPDATE_PICKUP_TIMEOUT_MS,
   now = () => new Date(),
-  log = () => undefined,
 }: BridgeAgentUpdateJobOptions) =>
   async (job: OutboxJob): Promise<void> => {
     const parsed = bridgeAgentUpdatePayloadSchema.safeParse(job.payload);
@@ -103,84 +199,40 @@ export const createBridgeAgentUpdate = ({
       return;
     }
     const at = now();
-    const end = async (state: BridgeAgentUpdateState, code: string): Promise<void> => {
-      await repository.recordChange(operationId, finished(state, code, at));
+    // Nothing has been sent yet, so each of these ends the operation safely.
+    const end = async (code: string): Promise<void> => {
+      await repository.recordChange(operationId, finished("failed", code, at));
       await jobs.completeJob(job.id);
     };
-    // Queued while the gate was open, picked up by a worker that has it closed.
-    if (!bridgeJobsGate(jobsEnabled).ok) {
-      await end("failed", "BRIDGE_JOBS_DISABLED");
-      return;
-    }
+    if (!bridgeJobsGate(jobsEnabled).ok) return end("BRIDGE_JOBS_DISABLED");
     const target = await targets.loadPollTarget(bridgeId);
-    if (!target) {
-      await end("failed", "AGENT_CREDENTIAL_UNREADABLE");
-      return;
-    }
+    if (!target) return end("AGENT_CREDENTIAL_UNREADABLE");
     if (!isAllowedBridgeManagementUrl(target.apiUrl, managementHosts)) {
-      await end("failed", "AGENT_URL_NOT_ALLOWED");
-      return;
+      return end("AGENT_URL_NOT_ALLOWED");
     }
-    if (target.apiKey === null) {
-      await end("failed", "AGENT_CREDENTIAL_UNREADABLE");
-      return;
-    }
-    // Capabilities are refreshed by every successful poll; an agent that does
-    // not report `update.v1` is never sent an update intent.
+    if (target.apiKey === null) return end("AGENT_CREDENTIAL_UNREADABLE");
+    // Capabilities are refreshed by polls; an agent that does not report
+    // `update.v1` is never sent an update intent.
     if (!target.capabilities?.includes(BRIDGE_AGENT_UPDATE_CAPABILITY)) {
-      await end("unsupported", "AGENT_UPDATE_UNSUPPORTED");
-      return;
+      return end("AGENT_UPDATE_UNSUPPORTED");
     }
-    const sent = await sendBridgeAgentUpdate(
-      {
-        operationId,
-        imageRepository: operation.imageRepository,
-        imageDigest: operation.imageDigest,
-      },
-      { baseUrl: target.apiUrl, apiKey: target.apiKey, fetchImpl, timeoutMs },
-    );
-    if (sent.kind === "accepted") {
-      const next = bridgeAgentUpdateStateOf(sent.status.state);
-      const change: BridgeUpdateChange = {
-        state: next,
-        agentState: sent.status.state,
-        sentAt: at,
-        lastCheckedAt: at,
-        errorCode: sent.status.errorCode ?? null,
-      };
-      if (bridgeAgentUpdateProgress(next) >= bridgeAgentUpdateProgress("acknowledged")) {
-        change.acknowledgedAt = at;
-      }
-      if (!isBridgeAgentUpdateOutstanding(next)) change.finishedAt = at;
-      await repository.recordChange(operationId, change);
-      await jobs.completeJob(job.id);
-      return;
-    }
-    if (sent.kind === "rejected") {
-      await end(sent.errorCode === "AGENT_UPDATE_UNSUPPORTED" ? "unsupported" : "failed", sent.errorCode);
-      return;
-    }
-    // No usable answer. Within the window the same operation id is sent
-    // again (a replay is harmless); past it the request counts as never
-    // acknowledged and is surfaced, not retried.
-    if (at.getTime() - operation.requestedAt.getTime() >= pickupTimeoutMs) {
-      log(`bridge ${bridgeId}: update ${operationId} could not be delivered in time (${sent.errorCode})`);
-      await end("pickup_timeout", "UPDATE_NOT_ACKNOWLEDGED");
-      return;
-    }
-    await repository.recordChange(operationId, { errorCode: sent.errorCode, lastCheckedAt: at });
-    throw new Error(`bridge-agent update not delivered: ${sent.errorCode}`);
+    const sent = await sendBridgeAgentUpdate(requestOf(operation), {
+      baseUrl: target.apiUrl,
+      apiKey: target.apiKey,
+      fetchImpl,
+      timeoutMs,
+    });
+    await repository.recordChange(operationId, deliveryChange(operation, sent, at));
+    await jobs.completeJob(job.id);
   };
 
 export type BridgeUpdateTrackerOptions = {
   repository: Pick<
     BridgeUpdateRepository,
-    "loadTracked" | "recordChange" | "expireOrphanedQueued"
+    "loadOutstanding" | "recordChange" | "expireNeverSent"
   >;
   fetchImpl?: typeof fetch;
   timeoutMs?: number;
-  pickupTimeoutMs?: number;
-  lateWindowMs?: number;
   now?: () => Date;
   log?: (line: string) => void;
 };
@@ -193,106 +245,49 @@ export type BridgeUpdateTrackerInput = {
 
 /**
  * Follow a bridge's outstanding update during its poll. A bridge whose status
- * read did not succeed (down, unsupported, wrong identity) is not asked again:
- * the answer is "no contact", so the acknowledgement deadline still runs, and
- * such an agent is never trusted with an operation.
+ * read did not succeed (down, unsupported, wrong identity) is not asked
+ * again: the answer is "no contact" (an observation), and such an agent is
+ * never trusted with an operation.
  */
 export const createBridgeUpdateTracker = ({
   repository,
   fetchImpl,
   timeoutMs = BRIDGE_AGENT_REQUEST_TIMEOUT_MS,
-  pickupTimeoutMs = BRIDGE_AGENT_UPDATE_PICKUP_TIMEOUT_MS,
-  lateWindowMs = BRIDGE_AGENT_UPDATE_LATE_WINDOW_MS,
   now = () => new Date(),
   log = () => undefined,
 }: BridgeUpdateTrackerOptions) =>
   async ({ target, outcome }: BridgeUpdateTrackerInput): Promise<void> => {
-    // An operation whose delivery job is gone would hold the slot forever.
-    await repository.expireOrphanedQueued(target.bridgeId, now(), pickupTimeoutMs);
-    const operation = await repository.loadTracked(target.bridgeId, now(), lateWindowMs);
-    if (!operation) return;
+    // An operation whose delivery job is gone and whose POST never happened
+    // would hold the slot forever; the agent never saw it, so it can close.
+    await repository.expireNeverSent(target.bridgeId, now());
+    const operation = await repository.loadOutstanding(target.bridgeId);
+    // `queued` without an attempted POST belongs to the delivery job.
+    if (!operation || (operation.state === "queued" && !operation.sendAttemptedAt)) return;
+    const options =
+      outcome.kind === "ok" && target.apiKey !== null
+        ? { baseUrl: target.apiUrl, apiKey: target.apiKey, fetchImpl, timeoutMs }
+        : null;
     let read: BridgeAgentUpdateReadOutcome;
-    if (outcome.kind !== "ok" || target.apiKey === null) {
-      // Anything but a good status read is "no contact" for the operation, so
-      // the acknowledgement deadline still runs for an unreadable agent.
+    if (!options) {
       read = {
         kind: "no_contact",
         errorCode:
           outcome.kind === "ok" ? "AGENT_CREDENTIAL_UNREADABLE" : knownError(outcome.errorCode),
       };
     } else {
-      read = await readBridgeAgentUpdate(operation.id, {
-        baseUrl: target.apiUrl,
-        apiKey: target.apiKey,
-        fetchImpl,
-        timeoutMs,
-      });
+      read = await readBridgeAgentUpdate(operation.id, options);
     }
-    const checkedAt = now();
-    const next = nextChange(operation, read, checkedAt, pickupTimeoutMs);
-    if (!next) return;
-    const applied = await repository.recordChange(operation.id, next, {
-      fromPickupTimeout: operation.state === "pickup_timeout",
-    });
-    if (applied && next.state && next.state !== operation.state) {
-      log(`bridge ${target.bridgeId}: update ${operation.id} is now ${next.state}`);
+    const at = now();
+    let change: BridgeUpdateChange | null;
+    if (read.kind === "unknown_operation" && operation.state === "queued" && options) {
+      // The earlier POST did not arrive: send the same intent again.
+      change = deliveryChange(operation, await sendBridgeAgentUpdate(requestOf(operation), options), at);
+    } else {
+      change = nextChange(operation, read, at);
+    }
+    if (!change) return;
+    const applied = await repository.recordChange(operation.id, change);
+    if (applied && change.state && change.state !== operation.state) {
+      log(`bridge ${target.bridgeId}: update ${operation.id} is now ${change.state}`);
     }
   };
-
-/**
- * The transition one read implies, or null for none. Pure: every branch of
- * the state machine is unit-tested here.
- */
-export const nextChange = (
-  operation: BridgeUpdateOperation,
-  read: BridgeAgentUpdateReadOutcome,
-  at: Date,
-  pickupTimeoutMs: number,
-): BridgeUpdateChange | null => {
-  // Already timed out: only a later report that the host did start counts.
-  const late = operation.state === "pickup_timeout";
-  const unacknowledged = operation.state === "sent";
-  const deadlinePassed =
-    at.getTime() - (operation.sentAt ?? operation.requestedAt).getTime() >= pickupTimeoutMs;
-  const timeout = (): BridgeUpdateChange =>
-    finished("pickup_timeout", "UPDATE_NOT_ACKNOWLEDGED", at);
-
-  if (read.kind === "status") {
-    const next = bridgeAgentUpdateStateOf(read.status.state);
-    const ahead = bridgeAgentUpdateProgress(next) >= bridgeAgentUpdateProgress("acknowledged");
-    if (late) {
-      if (!ahead) return null;
-    } else if (bridgeAgentUpdateProgress(next) < bridgeAgentUpdateProgress(operation.state)) {
-      // The agent never moves an operation back; a stale answer changes nothing.
-      return { lastCheckedAt: at };
-    } else if (next === "sent" && unacknowledged && deadlinePassed) {
-      return timeout();
-    }
-    const change: BridgeUpdateChange = {
-      state: next,
-      agentState: read.status.state,
-      lastCheckedAt: at,
-      contactLostSince: null,
-      errorCode: read.status.errorCode ?? null,
-      finishedAt: isBridgeAgentUpdateOutstanding(next) ? null : at,
-    };
-    if (ahead && !operation.acknowledgedAt) change.acknowledgedAt = at;
-    return change;
-  }
-  if (late) return null;
-  if (unacknowledged && deadlinePassed) return timeout();
-  if (read.kind === "mismatch") {
-    return { errorCode: "AGENT_OPERATION_MISMATCH", lastCheckedAt: at };
-  }
-  if (read.kind === "unknown_operation") {
-    return { errorCode: "AGENT_OPERATION_UNKNOWN", lastCheckedAt: at };
-  }
-  // No contact. Once the host has started, losing the agent is expected during
-  // replacement: an observation that ends when the agent answers again.
-  const started = operation.state === "acknowledged" || operation.state === "running";
-  return {
-    errorCode: read.errorCode,
-    lastCheckedAt: at,
-    ...(started ? { contactLostSince: operation.contactLostSince ?? at } : {}),
-  };
-};

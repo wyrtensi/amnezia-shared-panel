@@ -351,6 +351,13 @@
       "when": 1794600270654,
       "tag": "0049_bridge_agent_updates",
       "breakpoints": true
+    },
+    {
+      "idx": 50,
+      "version": "7",
+      "when": 1794601954637,
+      "tag": "0050_bridge_agent_update_deadline",
+      "breakpoints": true
     }
   ]
 }

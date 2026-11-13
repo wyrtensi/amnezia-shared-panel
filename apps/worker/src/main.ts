@@ -278,6 +278,8 @@ const bridgeAgentPoll = createBridgeAgentPoll({
   jobsEnabled: bridgeJobsEnabled,
   managementHosts: bridgeManagementHosts,
   log: (line) => console.log(line),
+  isUpdateOutstanding: async (bridgeId) =>
+    (await bridgeUpdateRepository.loadOutstanding(bridgeId)) !== null,
   trackUpdate: createBridgeUpdateTracker({
     repository: bridgeUpdateRepository,
     log: (line) => console.log(line),
@@ -289,7 +291,6 @@ const bridgeAgentUpdate = createBridgeAgentUpdate({
   jobs: repository,
   jobsEnabled: bridgeJobsEnabled,
   managementHosts: bridgeManagementHosts,
-  log: (line) => console.log(line),
 });
 
 const processJob = createJobProcessor({

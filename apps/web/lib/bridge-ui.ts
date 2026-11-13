@@ -148,7 +148,6 @@ export const agentUpdateTone = (state: BridgeAgentUpdateState): BadgeTone => {
       return "warning";
     case "rollback_failed":
     case "failed":
-    case "unsupported":
       return "destructive";
     default:
       return "outline";

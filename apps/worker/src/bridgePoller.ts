@@ -28,7 +28,12 @@ export type BridgePollTarget = {
   enrolledAt: Date;
   /** The capabilities the agent last reported; null when never read. */
   capabilities: readonly string[] | null;
+  /** When they were last read from `/v1/identity`; null when never. */
+  capabilitiesCheckedAt: Date | null;
 };
+
+/** Stored capabilities older than this are re-read from `/v1/identity`. */
+export const BRIDGE_CAPABILITIES_MAX_AGE_MS = 10 * 60_000;
 
 export interface BridgePollRepository {
   /**
@@ -45,6 +50,7 @@ export interface BridgePollRepository {
     bridgeId: string;
     enrolledAt: Date;
     capabilities: string[];
+    checkedAt: Date;
   }) => Promise<void>;
 }
 
@@ -93,6 +99,7 @@ export type BridgeAgentPollOptions = {
    * Follows the bridge's outstanding agent update after a stored poll
    * (bridgeAgentUpdate.ts). Absent on a worker without update tracking.
    */
+  isUpdateOutstanding?: (bridgeId: string) => Promise<boolean>;
   trackUpdate?: (input: { target: BridgePollTarget; outcome: BridgeAgentPollOutcome }) => Promise<void>;
 };
 
@@ -111,6 +118,7 @@ export const createBridgeAgentPoll = ({
   now = () => new Date(),
   log = () => undefined,
   trackUpdate,
+  isUpdateOutstanding,
 }: BridgeAgentPollOptions) =>
   async (job: OutboxJob): Promise<void> => {
     const parsed = bridgeAgentPollPayloadSchema.safeParse(job.payload);
@@ -154,9 +162,16 @@ export const createBridgeAgentPoll = ({
     if (applied === "discarded") {
       log(`bridge ${bridgeId}: poll result discarded (re-enrolled or a newer poll was stored)`);
     } else {
-      // Capabilities change when the agent is replaced (an update adds
-      // `update.v1`), so they are re-read after every successful poll.
-      if (outcome.kind === "ok" && target.apiKey !== null) {
+      // Capabilities change only when the agent is replaced (an update adds
+      // `update.v1`): re-read them when unknown, older than ten minutes or
+      // while an update is outstanding, not on every poll.
+      const stale =
+        !target.capabilities ||
+        !target.capabilitiesCheckedAt ||
+        startedAt.getTime() - target.capabilitiesCheckedAt.getTime() >=
+          BRIDGE_CAPABILITIES_MAX_AGE_MS ||
+        ((await isUpdateOutstanding?.(bridgeId)) ?? false);
+      if (stale && outcome.kind === "ok" && target.apiKey !== null) {
         const identity = await readBridgeAgentIdentity(bridgeId, {
           baseUrl: target.apiUrl,
           apiKey: target.apiKey,
@@ -168,7 +183,10 @@ export const createBridgeAgentPoll = ({
             bridgeId,
             enrolledAt: target.enrolledAt,
             capabilities: identity.identity.capabilities,
+            checkedAt: startedAt,
           });
+        } else {
+          log(`bridge ${bridgeId}: identity refresh failed (${identity.kind})`);
         }
       }
       await trackUpdate?.({ target, outcome });

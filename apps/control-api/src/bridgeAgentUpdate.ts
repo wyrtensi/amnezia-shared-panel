@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { and, desc, eq, inArray } from "drizzle-orm";
 import {
   BRIDGE_AGENT_UPDATE_CAPABILITY,
+  BRIDGE_AGENT_UPDATE_PICKUP_TIMEOUT_MS,
   BRIDGE_AGENT_UPDATE_JOB_TYPE,
   BRIDGE_AGENT_UPDATE_OUTSTANDING_STATES,
   bridgeAgentUpdateDeduplicationKey,
@@ -43,6 +44,8 @@ export const toAgentUpdateOperation = (row: UpdateRow): BridgeAgentUpdateOperati
   sentAt: iso(row.sentAt),
   acknowledgedAt: iso(row.acknowledgedAt),
   lastCheckedAt: iso(row.lastCheckedAt),
+  notAfter: row.notAfter.toISOString(),
+  acknowledgementOverdueSince: iso(row.acknowledgementOverdueSince),
   contactLostSince: iso(row.contactLostSince),
   errorCode: row.errorCode,
   result: row.finishedAt
@@ -211,6 +214,7 @@ export class BridgeAgentUpdates {
         );
       }
       const operationId = randomUUID();
+      const requestedAt = new Date();
       const [row] = await tx
         .insert(vpnBridgeAgentUpdates)
         .values({
@@ -220,6 +224,10 @@ export class BridgeAgentUpdates {
           imageDigest: offered.digest,
           imageVersion: offered.version,
           fromVersion: bridge.agentVersion,
+          requestedAt,
+          // The pickup deadline travels with the intent: past it the agent
+          // never starts the operation, so the panel can safely give up.
+          notAfter: new Date(requestedAt.getTime() + BRIDGE_AGENT_UPDATE_PICKUP_TIMEOUT_MS),
         })
         .returning();
       if (!row) throw new Error("Bridge agent update insert returned no row");

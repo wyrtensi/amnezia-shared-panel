@@ -66,6 +66,7 @@ export class PostgresBridgePollRepository implements BridgePollRepository {
         keyVersion: vpnBridges.managementCredentialKeyVersion,
         enrolledAt: vpnBridges.managementEnrolledAt,
         capabilities: vpnBridges.agentCapabilities,
+        capabilitiesCheckedAt: vpnBridges.agentCapabilitiesCheckedAt,
       })
       .from(vpnBridges)
       .where(and(eq(vpnBridges.id, bridgeId), isNotNull(vpnBridges.managementEnrolledAt)))
@@ -100,6 +101,7 @@ export class PostgresBridgePollRepository implements BridgePollRepository {
       apiKey,
       enrolledAt: row.enrolledAt,
       capabilities: row.capabilities,
+      capabilitiesCheckedAt: row.capabilitiesCheckedAt,
     };
   };
 
@@ -107,12 +109,16 @@ export class PostgresBridgePollRepository implements BridgePollRepository {
     bridgeId: string;
     enrolledAt: Date;
     capabilities: string[];
+    checkedAt: Date;
   }): Promise<void> => {
     // Only for the credential the identity was read with: a re-enrollment in
     // the meantime means this answer may describe another agent.
     await this.options.db
       .update(vpnBridges)
-      .set({ agentCapabilities: write.capabilities })
+      .set({
+        agentCapabilities: write.capabilities,
+        agentCapabilitiesCheckedAt: write.checkedAt,
+      })
       .where(
         and(
           eq(vpnBridges.id, write.bridgeId),

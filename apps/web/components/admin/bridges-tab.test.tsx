@@ -197,6 +197,8 @@ describe("BridgeCardView agent update", () => {
     sentAt: "2026-11-13T10:00:01.000Z",
     acknowledgedAt: "2026-11-13T10:00:05.000Z",
     lastCheckedAt: "2026-11-13T10:03:00.000Z",
+    notAfter: "2026-11-13T10:02:00.000Z",
+    acknowledgementOverdueSince: null,
     contactLostSince: null,
     errorCode: null,
     result: { finishedAt: "2026-11-13T10:03:00.000Z", errorCode: null },
@@ -260,7 +262,8 @@ describe("BridgeCardView agent update", () => {
         },
       }),
     );
-    expect(html).toContain("host did not acknowledge");
+    expect(html).toContain("expired, not started");
+    expect(html).toContain("will not be applied");
     expect(html).toContain("not retried automatically");
     expect(html).toContain("UPDATE_NOT_ACKNOWLEDGED");
   });
@@ -281,6 +284,24 @@ describe("BridgeCardView agent update", () => {
     expect(html).toContain("running");
     expect(html).toContain("Management contact lost since");
     expect(html).not.toContain("failed");
+  });
+
+  it("shows an overdue acknowledgement as an observation on a still outstanding request", () => {
+    const html = renderWithUpdate(
+      enrolled({
+        updateSupported: true,
+        offered,
+        operation: {
+          ...operation,
+          state: "sent",
+          acknowledgementOverdueSince: "2026-11-13T10:05:00.000Z",
+          result: null,
+        },
+      }),
+    );
+    expect(html).toContain("sent to the agent");
+    expect(html).toContain("Acknowledgement overdue since");
+    expect(html).toContain("stays outstanding");
   });
 
   it("separates a rollback from a failed rollback", () => {

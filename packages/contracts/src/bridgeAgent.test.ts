@@ -10,6 +10,7 @@ import {
   parseBridgeManagementHosts,
 } from "./bridgeAgent.js";
 import {
+  bridgeAgentUpdateRequestSchema,
   classifyBridgeAgentUpdateRead,
   classifyBridgeAgentUpdateSend,
 } from "./bridgeAgentUpdate.js";
@@ -372,6 +373,23 @@ describe("bridge-agent update contract", () => {
     expect(bridgeAgentUpdateStateOf("picked_up")).toBe("acknowledged");
     expect(bridgeAgentUpdateStateOf("health_check")).toBe("running");
     expect(bridgeAgentUpdateStateOf("rollback_failed")).toBe("rollback_failed");
+    // The agent confirming an unstarted intent expired is the only way to pickup_timeout.
+    expect(bridgeAgentUpdateStateOf("expired")).toBe("pickup_timeout");
+    expect(
+      bridgeAgentUpdateRequestSchema.safeParse({
+        operationId: "0b1c2d3e-4f50-4a6b-8c7d-9e0f1a2b3c4d",
+        imageRepository: "ghcr.io/o/r/bridge-agent",
+        imageDigest: `sha256:${"b".repeat(64)}`,
+      }).success,
+    ).toBe(false);
+    expect(
+      bridgeAgentUpdateRequestSchema.safeParse({
+        operationId: "0b1c2d3e-4f50-4a6b-8c7d-9e0f1a2b3c4d",
+        imageRepository: "ghcr.io/o/r/bridge-agent",
+        imageDigest: `sha256:${"b".repeat(64)}`,
+        notAfter: "2026-11-13T10:02:00.000Z",
+      }).success,
+    ).toBe(true);
     expect(requestBridgeAgentUpdateSchema.safeParse({ imageDigest: "latest" }).success).toBe(false);
     expect(requestBridgeAgentUpdateSchema.safeParse({ imageDigest: "sha256:abc" }).success).toBe(false);
     expect(
