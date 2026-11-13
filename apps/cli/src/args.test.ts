@@ -1,10 +1,22 @@
 import { describe, it, expect } from "vitest";
-import { bridgeErrorHint, intFlag, requireUuid, renderNodeRoutes, assertStrictArgs, projectBridge } from "./bridges.js";
+import {
+  bridgeErrorHint,
+  intFlag,
+  requireUuid,
+  renderNodeRoutes,
+  assertStrictArgs,
+  projectBridge,
+  projectRoute,
+  registrationMarkerOf,
+  REGISTRATION_MARKER_HEADER,
+} from "./bridges.js";
 // A DEV dependency only, and only here: the CLI ships as a dependency-free
 // `dist/main.js`, so `args.ts` re-states the period table rather than importing
 // it. Comparing the two tables in a test is what keeps that copy honest without
 // putting the package into the shipped bundle.
 import {
+  BRIDGE_REGISTRATION_MARKER_HEADER,
+  encodeRegistrationMarkerHeader,
   WORKER_PERIOD_FIELDS as CONTRACT_PERIOD_FIELDS,
   WORKER_PERIOD_FIELD_NAMES as CONTRACT_PERIOD_FIELD_NAMES,
   normalizeAccessDomain,
@@ -743,6 +755,10 @@ describe("bridge argument helpers", () => {
       "BRIDGE_NODE_NOT_AWG31",
       "BRIDGE_NOT_FOUND",
       "BRIDGE_ROUTE_NOT_FOUND",
+      "BRIDGE_JOBS_DISABLED",
+      "BRIDGE_UNSUPPORTED_CAPABILITY",
+      "BRIDGE_TEST_KEY_WRONG_NODE",
+      "BRIDGE_TEST_KEY_UNSUITABLE",
     ]) {
       expect(bridgeErrorHint(code)).toBeTruthy();
     }
@@ -786,5 +802,43 @@ describe("bridge strict args and projection", () => {
     } as never);
     expect(out).not.toHaveProperty("extra");
     expect(out.setupCommands).toEqual({ install: "a", dryRun: "b", remove: "c" });
+  });
+});
+
+describe("bridge candidate validation helpers", () => {
+  it("reads the marker header the way the Control API writes it", () => {
+    // The CLI ships without @amnezia/contracts, so it restates the header.
+    expect(REGISTRATION_MARKER_HEADER).toBe(BRIDGE_REGISTRATION_MARKER_HEADER);
+    const marker = "client-1 06-13 10:20:30";
+    const headers = new Headers({
+      [BRIDGE_REGISTRATION_MARKER_HEADER]: encodeRegistrationMarkerHeader(marker),
+    });
+    expect(registrationMarkerOf(headers)).toBe(marker);
+    expect(registrationMarkerOf(new Headers())).toBeNull();
+    expect(registrationMarkerOf(new Headers({ [REGISTRATION_MARKER_HEADER]: "%E0%A4%A" }))).toBeNull();
+  });
+
+  it("shows a failed check's code in the route status and keeps the marker out of --json", () => {
+    const route = {
+      id: "r",
+      bridgeId: "b",
+      publicUdpPort: 41000,
+      state: "draft" as const,
+      verificationResult: "failure",
+      verificationError: "AWG_HANDSHAKE_FAILED",
+      verificationMethod: "probe",
+      observedRegistrationMarker: "m-1",
+    };
+    const lines = renderNodeRoutes({
+      nodeId: "n",
+      vpnEndpointRevision: 0,
+      activeRoute: null,
+      drafts: [route],
+      retiring: [],
+    });
+    expect(lines.join("\n")).toContain("verification failure (AWG_HANDSHAKE_FAILED)");
+    const projected = projectRoute(route);
+    expect(projected.verificationError).toBe("AWG_HANDSHAKE_FAILED");
+    expect(projected).not.toHaveProperty("observedRegistrationMarker");
   });
 });

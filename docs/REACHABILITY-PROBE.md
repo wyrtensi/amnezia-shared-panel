@@ -54,6 +54,19 @@ next to `peerCount`.
 A key a node refused (a node that is gone, for example) is not retried more
 often than once a day; that node reads `unknown` meanwhile.
 
+### Bridge route candidate checks
+
+`bridge-route-verify <route-id> --confirm` (optional AWG 3.1 node bridges)
+queues a one-target run: the node's AWG 3.1 service key with the draft bridge
+endpoint written in. The probe runs one run at a time and both runs use the
+same service peer, so a candidate run starts only while no regular run is in
+flight or waiting to be ingested, and the regular run waits while a candidate
+holds the probe. Handshake and HTTP through the tunnel decide; ping and TCP are
+diagnostic only. The result is stored on the route, never in node status,
+history, alerts or the widget. It needs `VPN_BRIDGE_JOBS_ENABLED=true` and a
+probe that reports the bridge-measurement capability; until then use the
+operator-verified path (`docs/CLI.md`).
+
 ## Statuses and alerts
 
 | Status | Means |

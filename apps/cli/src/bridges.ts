@@ -12,9 +12,16 @@
  * returns it.
  */
 
+import { lstat, writeFile } from "node:fs/promises";
+
 import { flagOf, positionals } from "./args.js";
 
 export type BridgeApi = <T>(path: string, init?: RequestInit) => Promise<T>;
+/** A GET whose body is not JSON (a `.vpn` file), with its response headers. */
+export type BridgeRawApi = (path: string) => Promise<{ body: Buffer; headers: Headers }>;
+
+/** Same name and encoding as `BRIDGE_REGISTRATION_MARKER_HEADER` in @amnezia/contracts. */
+export const REGISTRATION_MARKER_HEADER = "x-bridge-registration-marker";
 
 type RouteState = "draft" | "active" | "retiring";
 
@@ -58,6 +65,7 @@ export type NodeRouteView = {
   observedAt?: string | null;
   verificationResult?: string | null;
   verificationMethod?: string | null;
+  verificationError?: string | null;
   verifiedAt?: string | null;
   activatedAt?: string | null;
   retiringSince?: string | null;
@@ -146,6 +154,7 @@ export function projectRoute(r: NodeRouteView): Record<string, unknown> {
     observedAt: nullable(r.observedAt),
     verificationMethod: nullable(r.verificationMethod),
     verificationResult: nullable(r.verificationResult),
+    verificationError: nullable(r.verificationError),
     verifiedAt: nullable(r.verifiedAt),
     activatedAt: nullable(r.activatedAt),
     retiringSince: nullable(r.retiringSince),
@@ -215,7 +224,14 @@ const BRIDGE_ERROR_HINTS: Record<string, string> = {
   BRIDGE_PORT_TAKEN: "That UDP port is already held on this bridge.",
   BRIDGE_POOL_EXHAUSTED: "The bridge has no free UDP port left in its range.",
   NODE_HAS_BRIDGE_ROUTES: "The node still holds bridge routes; release them first.",
-  BRIDGE_JOBS_DISABLED: "Bridge jobs are disabled on this panel (VPN_BRIDGE_JOBS_ENABLED).",
+  BRIDGE_JOBS_DISABLED:
+    "Bridge jobs are disabled on this panel (VPN_BRIDGE_JOBS_ENABLED). Use --operator-verified --registration=<marker> instead.",
+  BRIDGE_UNSUPPORTED_CAPABILITY:
+    "No probe with the bridge-measurement capability is configured. Test the route with bridge-route-test-config, then use --operator-verified --registration=<marker>.",
+  BRIDGE_TEST_KEY_WRONG_NODE:
+    "The test key must be one of your own keys on the route's VPN node.",
+  BRIDGE_TEST_KEY_UNSUITABLE:
+    "The test key must be one of your own active AWG 3.1 keys (not AWG 2 and not the 2.0 fallback).",
 };
 
 /** One readable line appended to the API error for a known bridge error code. */
@@ -232,7 +248,7 @@ function describeRoute(route: NodeRouteView): string {
     route.verificationResult === "success"
       ? `verified ${show(route.verifiedAt)} (${show(route.verificationMethod)})`
       : route.verificationResult
-        ? `verification ${route.verificationResult}`
+        ? `verification ${route.verificationResult}${route.verificationError ? ` (${route.verificationError})` : ""}`
         : "not verified";
   const observed =
     route.observedOnline === true
@@ -480,10 +496,124 @@ export async function cmdBridgeRouteRelease(api: BridgeApi, args: string[]): Pro
   console.log(`route ${routeId} released (udp port ${result.publicUdpPort} is free again)`);
 }
 
+/** Read the marker header the way the API writes it; null when absent or unreadable. */
+export function registrationMarkerOf(headers: Headers): string | null {
+  const raw = headers.get(REGISTRATION_MARKER_HEADER);
+  if (!raw) return null;
+  try {
+    return decodeURIComponent(raw);
+  } catch {
+    return null;
+  }
+}
+
+const shellQuote = (value: string): string =>
+  /^[\w@%+=:,./-]+$/.test(value) ? value : `'${value.replace(/'/g, "'\\''")}'`;
+
+export async function cmdBridgeRouteTestConfig(
+  _api: BridgeApi,
+  args: string[],
+  raw?: BridgeRawApi,
+): Promise<void> {
+  const usage = "Usage: bridge-route-test-config <route-id> --key=<key-id> --out=<path>";
+  assertStrictArgs(args, { positionals: 1, valueFlags: ["key", "out"], usage });
+  const routeId = requireUuid(positionals(args)[0], "route-id", usage);
+  const keyId = requireUuid(flagOf(args, "key"), "--key", usage);
+  const out = flagOf(args, "out");
+  if (!out) throw new Error(usage);
+  if (!raw) throw new Error("bridge-route-test-config needs the raw download path");
+  // Fail before the request when the file is already there; the exclusive
+  // create below is the real guard against a file appearing meanwhile.
+  const existing = await lstat(out).catch(() => null);
+  if (existing) throw new Error(`Refusing to overwrite ${out}; choose a new --out path`);
+  const { body, headers } = await raw(
+    `/api/admin/vpn-bridge-routes/${routeId}/test-config?keyId=${encodeURIComponent(keyId)}`,
+  );
+  try {
+    // The file grants VPN access: owner-only, created fresh, never printed.
+    await writeFile(out, body, { flag: "wx", mode: 0o600 });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+      throw new Error(`Refusing to overwrite ${out}; choose a new --out path`, { cause: error });
+    }
+    throw error;
+  }
+  console.log(`${out} (${body.length} bytes, mode 0600): test config with the draft endpoint of route ${routeId}`);
+  const marker = registrationMarkerOf(headers);
+  if (marker) {
+    console.log(`registration marker: ${marker}`);
+    console.log(
+      `After a real AWG handshake and HTTP check from a client network: bridge-route-verify ${routeId} --operator-verified --registration=${shellQuote(marker)} --confirm`,
+    );
+  } else {
+    console.error(
+      "warning: no frps registration has been observed for this route yet, so there is no marker to verify against; activation needs a fresh observation.",
+    );
+  }
+}
+
+type VerifyResult =
+  | { method: "probe"; routeId: string; jobId: string; queued: boolean; registrationMarker: string }
+  | { method: "operator"; routeId: string; route: NodeRouteView };
+
+export async function cmdBridgeRouteVerify(api: BridgeApi, args: string[]): Promise<void> {
+  const usage =
+    "Usage: bridge-route-verify <route-id> [--operator-verified --registration=<marker>] --confirm";
+  assertStrictArgs(args, {
+    positionals: 1,
+    valueFlags: ["registration"],
+    boolFlags: ["operator-verified"],
+    usage,
+  });
+  const routeId = requireUuid(positionals(args)[0], "route-id", usage);
+  const operator = args.includes("--operator-verified");
+  const registration = flagOf(args, "registration");
+  if (operator && !registration) {
+    throw new Error(`--operator-verified needs --registration=<marker> (printed by bridge-route-test-config)\n${usage}`);
+  }
+  if (!operator && registration !== undefined) {
+    throw new Error(`--registration is only used with --operator-verified\n${usage}`);
+  }
+  if (!confirmed(args)) {
+    return preview([
+      operator
+        ? `Would record that you saw a real AWG handshake and HTTP through route ${routeId} for registration ${registration ?? ""}.`
+        : `Would queue an external probe check of route ${routeId} for its currently observed registration.`,
+    ]);
+  }
+  const body = operator
+    ? { method: "operator", registrationMarker: registration, confirmHandshakeAndHttp: true }
+    : { method: "probe" };
+  const result = await api<VerifyResult>(`/api/admin/vpn-bridge-routes/${routeId}/verify`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+  if (result.method === "probe") {
+    if (args.includes("--json")) {
+      return json({
+        method: result.method,
+        routeId: result.routeId,
+        jobId: result.jobId,
+        queued: result.queued,
+        registrationMarker: result.registrationMarker,
+      });
+    }
+    console.log(
+      `${result.queued ? "probe check queued" : "probe check already pending"} (job ${result.jobId}) for registration ${result.registrationMarker}`,
+    );
+    console.log("The result appears in bridge-routes <node-id> once the probe run finishes.");
+    return;
+  }
+  if (args.includes("--json")) {
+    return json({ method: result.method, routeId: result.routeId, route: projectRoute(result.route) });
+  }
+  console.log(`route ${result.routeId} verified by operator: ${describeRoute(result.route)}`);
+}
+
 /** Dispatch table; main.ts routes every `bridge*` command through it. */
 export const BRIDGE_COMMANDS: ReadonlyMap<
   string,
-  (api: BridgeApi, args: string[]) => Promise<void>
+  (api: BridgeApi, args: string[], raw?: BridgeRawApi) => Promise<void>
 > = new Map([  ["bridges", cmdBridges],
   ["bridge-add", cmdBridgeAdd],
   ["bridge-delete", cmdBridgeDelete],
@@ -492,6 +622,8 @@ export const BRIDGE_COMMANDS: ReadonlyMap<
   ["bridge-route-activate", cmdBridgeRouteActivate],
   ["bridge-route-direct", cmdBridgeRouteDirect],
   ["bridge-route-release", cmdBridgeRouteRelease],
+  ["bridge-route-test-config", cmdBridgeRouteTestConfig],
+  ["bridge-route-verify", cmdBridgeRouteVerify],
 ]);
 
 export const BRIDGE_USAGE_LINES = `  bridges [--json]                        List AWG 3.1 bridges: management state, ports
@@ -510,4 +642,14 @@ export const BRIDGE_USAGE_LINES = `  bridges [--json]                        Lis
   bridge-route-direct <node-id> --confirm Switch a node back to Direct
   bridge-route-release <route-id> --confirm
                                           Free a non-active route's port
+  bridge-route-test-config <route-id> --key=<key-id> --out=<path>
+                                          Download your own AWG 3.1 key on the route's node
+                                          with the draft endpoint to a new 0600 file; prints
+                                          the registration marker (never overwrites)
+  bridge-route-verify <route-id> --confirm
+                                          Queue an external probe check of a draft or
+                                          retiring route
+  bridge-route-verify <route-id> --operator-verified --registration=<marker> --confirm
+                                          Record that you saw a real AWG handshake and HTTP
+                                          through the route for that registration
 `;

@@ -1,3 +1,6 @@
+import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { dispatch } from "./main.js";
 
@@ -1451,5 +1454,221 @@ describe("bridge commands", () => {
     const routes = await run(["bridge-routes", NODE, "--json"]);
     expect(routes).not.toContain("internal");
     expect(routes).not.toContain("observedRegistrationMarker");
+  });
+});
+
+describe("bridge candidate validation commands", () => {
+  const ROUTE = "44444444-4444-4444-8444-444444444444";
+  const KEY = "55555555-5555-4555-8555-555555555555";
+  let dir: string;
+
+  /** A fetch stub that also serves raw bodies and response headers. */
+  const stubRaw = (
+    responses: Array<{ status?: number; body: string; headers?: Record<string, string> }>,
+  ): Array<{ url: string; init?: RequestInit }> => {
+    const calls: Array<{ url: string; init?: RequestInit }> = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string | URL, init?: RequestInit) => {
+        const index = calls.length;
+        calls.push({ url: String(url), init });
+        const response = responses[Math.min(index, responses.length - 1)]!;
+        const status = response.status ?? 200;
+        return Promise.resolve({
+          ok: status >= 200 && status < 300,
+          status,
+          statusText: "",
+          headers: new Headers(response.headers ?? {}),
+          text: () => Promise.resolve(response.body),
+          arrayBuffer: () => Promise.resolve(new TextEncoder().encode(response.body).buffer),
+        } as unknown as Response);
+      }),
+    );
+    return calls;
+  };
+
+  const runWithStderr = async (argv: string[]) => {
+    const errors: string[] = [];
+    const errorSpy = vi.spyOn(console, "error").mockImplementation((...parts: unknown[]) => {
+      errors.push(parts.map(String).join(" "));
+    });
+    try {
+      return { out: await run(argv), err: errors.join("\n") };
+    } finally {
+      errorSpy.mockRestore();
+    }
+  };
+
+  beforeEach(async () => {
+    process.env.PANEL_ADMIN_EMAIL = "cli-test@example.com";
+    dir = await mkdtemp(join(tmpdir(), "bridge-test-config-"));
+  });
+  afterEach(async () => {
+    delete process.env.PANEL_ADMIN_EMAIL;
+    vi.unstubAllGlobals();
+    process.exitCode = undefined;
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it("bridge-route-test-config saves a new 0600 file and prints the marker, never the config", async () => {
+    const out = join(dir, "test.vpn");
+    const calls = stubRaw([
+      {
+        body: "vpn://secret-config",
+        headers: { "x-bridge-registration-marker": "client-1%2006-13%2010%3A20%3A30" },
+      },
+    ]);
+    const { out: printed } = await runWithStderr([
+      "bridge-route-test-config",
+      ROUTE,
+      `--key=${KEY}`,
+      `--out=${out}`,
+    ]);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.url).toContain(`/api/admin/vpn-bridge-routes/${ROUTE}/test-config?keyId=${KEY}`);
+    expect(calls[0]!.init?.method ?? "GET").toBe("GET");
+    expect(await readFile(out, "utf8")).toBe("vpn://secret-config");
+    expect((await stat(out)).mode & 0o777).toBe(0o600);
+    expect(printed).not.toContain("secret-config");
+    expect(printed).toContain("registration marker: client-1 06-13 10:20:30");
+    expect(printed).toContain(
+      `bridge-route-verify ${ROUTE} --operator-verified --registration='client-1 06-13 10:20:30' --confirm`,
+    );
+  });
+
+  it("bridge-route-test-config warns when no registration was observed", async () => {
+    stubRaw([{ body: "vpn://secret-config" }]);
+    const { out: printed, err } = await runWithStderr([
+      "bridge-route-test-config",
+      ROUTE,
+      `--key=${KEY}`,
+      `--out=${join(dir, "test.vpn")}`,
+    ]);
+    expect(printed).not.toContain("registration marker:");
+    expect(err).toContain("no frps registration has been observed");
+  });
+
+  it("bridge-route-test-config refuses to overwrite an existing file and sends nothing", async () => {
+    const out = join(dir, "existing.vpn");
+    await writeFile(out, "keep me");
+    const calls = stubRaw([{ body: "vpn://secret-config" }]);
+    await expect(
+      run(["bridge-route-test-config", ROUTE, `--key=${KEY}`, `--out=${out}`]),
+    ).rejects.toThrow(/Refusing to overwrite/);
+    expect(calls).toHaveLength(0);
+    expect(await readFile(out, "utf8")).toBe("keep me");
+  });
+
+  it("bridge-route-test-config leaves no file behind when the API refuses", async () => {
+    const out = join(dir, "refused.vpn");
+    stubRaw([
+      {
+        status: 403,
+        body: JSON.stringify({ error: "BRIDGE_TEST_KEY_WRONG_NODE", message: "wrong node" }),
+      },
+    ]);
+    await expect(
+      run(["bridge-route-test-config", ROUTE, `--key=${KEY}`, `--out=${out}`]),
+    ).rejects.toThrow(/BRIDGE_TEST_KEY_WRONG_NODE: wrong node\n.*route's VPN node/);
+    await expect(stat(out)).rejects.toThrow();
+  });
+
+  it("bridge-route-test-config validates its arguments before any request", async () => {
+    const calls = stubRaw([{ body: "" }]);
+    const out = `--out=${join(dir, "x.vpn")}`;
+    await expect(run(["bridge-route-test-config", "r1", `--key=${KEY}`, out])).rejects.toThrow(/must be a UUID/);
+    await expect(run(["bridge-route-test-config", ROUTE, "--key=k1", out])).rejects.toThrow(/must be a UUID/);
+    await expect(run(["bridge-route-test-config", ROUTE, `--key=${KEY}`])).rejects.toThrow(/Usage/);
+    await expect(run(["bridge-route-test-config", ROUTE, "--key", KEY, out])).rejects.toThrow(/--key=<value>/);
+    expect(calls).toHaveLength(0);
+  });
+
+  it("bridge-route-verify without --confirm submits nothing", async () => {
+    const calls = stubRaw([{ body: "{}" }]);
+    expect(await run(["bridge-route-verify", ROUTE])).toContain("Nothing was changed");
+    expect(
+      await run(["bridge-route-verify", ROUTE, "--operator-verified", "--registration=m-1"]),
+    ).toContain("Nothing was changed");
+    expect(calls).toHaveLength(0);
+  });
+
+  it("bridge-route-verify --confirm queues the probe check", async () => {
+    const calls = stubRaw([
+      {
+        status: 202,
+        body: JSON.stringify({
+          method: "probe",
+          routeId: ROUTE,
+          jobId: "66666666-6666-4666-8666-666666666666",
+          queued: true,
+          registrationMarker: "m-1",
+        }),
+      },
+    ]);
+    const out = await run(["bridge-route-verify", ROUTE, "--confirm"]);
+    expect(calls[0]!.url).toContain(`/api/admin/vpn-bridge-routes/${ROUTE}/verify`);
+    expect(calls[0]!.init?.method).toBe("POST");
+    expect(sentBody(calls[0]!)).toEqual({ method: "probe" });
+    expect(out).toContain("probe check queued (job 66666666-6666-4666-8666-666666666666) for registration m-1");
+  });
+
+  it("bridge-route-verify --operator-verified sends the tested marker and the attestation", async () => {
+    const calls = stubRaw([
+      {
+        body: JSON.stringify({
+          method: "operator",
+          routeId: ROUTE,
+          route: {
+            id: ROUTE,
+            bridgeId: "33333333-3333-4333-8333-333333333333",
+            publicUdpPort: 41000,
+            state: "draft",
+            verificationResult: "success",
+            verificationMethod: "operator",
+            verifiedAt: "2026-11-13T10:00:00.000Z",
+          },
+        }),
+      },
+    ]);
+    const out = await run([
+      "bridge-route-verify",
+      ROUTE,
+      "--operator-verified",
+      "--registration=client-1 06-13",
+      "--confirm",
+    ]);
+    expect(sentBody(calls[0]!)).toEqual({
+      method: "operator",
+      registrationMarker: "client-1 06-13",
+      confirmHandshakeAndHttp: true,
+    });
+    expect(out).toContain("verified 2026-11-13T10:00:00.000Z (operator)");
+  });
+
+  it("bridge-route-verify rejects incomplete operator evidence without a request", async () => {
+    const calls = stubRaw([{ body: "{}" }]);
+    await expect(run(["bridge-route-verify", ROUTE, "--operator-verified", "--confirm"])).rejects.toThrow(
+      /needs --registration/,
+    );
+    await expect(run(["bridge-route-verify", ROUTE, "--registration=m-1", "--confirm"])).rejects.toThrow(
+      /only used with --operator-verified/,
+    );
+    await expect(
+      run(["bridge-route-verify", ROUTE, "--operator-verified", "--registration", "m-1", "--confirm"]),
+    ).rejects.toThrow(/--registration=<value>/);
+    await expect(run(["bridge-route-verify", "r1", "--confirm"])).rejects.toThrow(/must be a UUID/);
+    expect(calls).toHaveLength(0);
+  });
+
+  it("bridge-route-verify explains an unavailable probe", async () => {
+    stubRaw([
+      {
+        status: 409,
+        body: JSON.stringify({ error: "BRIDGE_UNSUPPORTED_CAPABILITY", message: "no capable probe" }),
+      },
+    ]);
+    await expect(run(["bridge-route-verify", ROUTE, "--confirm"])).rejects.toThrow(
+      /BRIDGE_UNSUPPORTED_CAPABILITY: no capable probe\n.*--operator-verified/,
+    );
   });
 });
