@@ -175,6 +175,63 @@ export const prepareBridgeRouteRequestSchema = z.object({
   publicUdpPort: portSchema.optional(),
 });
 
+/** A route as the node's route editor shows it: plus its bridge's public settings. */
+export const nodeBridgeRouteSchema = bridgeRouteSchema.extend({
+  bridgeName: z.string(),
+  bridgePublicIpv4: z.string(),
+  bridgeControlTcpPort: portSchema,
+  bridgeManagementStatus: bridgeManagementStatusSchema,
+  bridgeLastObservedAt: z.iso.datetime().nullable(),
+});
+
+/**
+ * `GET /api/admin/nodes/:id/vpn-bridge-routes`: the node's endpoint
+ * assignment. `activeRoute` null means Direct.
+ */
+export const nodeBridgeRoutesSchema = z.object({
+  nodeId: z.uuid(),
+  vpnEndpointRevision: z.int().min(0),
+  activeRoute: nodeBridgeRouteSchema.nullable(),
+  drafts: z.array(nodeBridgeRouteSchema),
+  retiring: z.array(nodeBridgeRouteSchema),
+});
+
+/**
+ * `POST /api/admin/nodes/:id/vpn-bridge-routes`. `created` is false when the
+ * pairing already held a route and that route was returned instead (HTTP 200
+ * rather than 201).
+ */
+export const prepareBridgeRouteResultSchema = z.object({
+  created: z.boolean(),
+  route: nodeBridgeRouteSchema,
+});
+
+/** `DELETE /api/admin/vpn-bridge-routes/:id?confirmed=true`. */
+export const releaseBridgeRouteResultSchema = z.object({
+  id: z.uuid(),
+  released: z.literal(true),
+  nodeId: z.uuid(),
+  bridgeId: z.uuid(),
+  publicUdpPort: portSchema,
+});
+
+/** `DELETE /api/admin/vpn-bridges/:id`. */
+export const deleteBridgeResultSchema = z.object({
+  id: z.uuid(),
+  deleted: z.literal(true),
+});
+
+/**
+ * The endpoint assignment a node PATCH with `vpnBridgeRouteId` returns, under
+ * `vpnEndpoint`. `changed` is false for a no-op (the requested route is
+ * already active, or Direct was requested for a node already on Direct).
+ */
+export const nodeEndpointAssignmentSchema = z.object({
+  changed: z.boolean(),
+  vpnEndpointRevision: z.int().min(0),
+  activeRoute: nodeBridgeRouteSchema.nullable(),
+});
+
 /**
  * Shared admin view of managed infrastructure
  * (`GET /api/admin/infrastructure`). The `kind` discriminator keeps VPN-node
@@ -185,6 +242,18 @@ export const infrastructureVpnItemSchema = z.object({
   id: z.uuid(),
   name: z.string(),
   enabled: z.boolean(),
+  // Summary fields of the admin nodes list. Optional so a minimal row (and
+  // the pre-1b shape) still parses; the Control API always sends them.
+  publicName: z.string().nullable().optional(),
+  protocol: z.enum(["awg2", "awg3"]).optional(),
+  enabledProtocols: z.array(z.enum(["awg2", "awg3"])).nullable().optional(),
+  maxPeers: z.int().min(0).optional(),
+  peerCount: z.int().min(0).optional(),
+  publicHost: z.string().nullable().optional(),
+  publicIp: z.string().nullable().optional(),
+  agentVersion: z.string().nullable().optional(),
+  lastHealthAt: z.iso.datetime().nullable().optional(),
+  lastError: z.string().nullable().optional(),
   // The active bridge route, or null when the node is reached directly.
   activeRoute: bridgeRouteSchema.nullable(),
   vpnEndpointRevision: z.int().min(0),
@@ -214,8 +283,44 @@ export const BRIDGE_ERROR_CODES = [
   "BRIDGE_UNSUPPORTED_CAPABILITY",
   "BRIDGE_JOBS_DISABLED",
   "BRIDGE_CONFIG_UNSUPPORTED",
+  // 404s: an unknown bridge id, or a route id that does not exist (or does not
+  // belong to the node named in the path).
+  "BRIDGE_NOT_FOUND",
+  "BRIDGE_ROUTE_NOT_FOUND",
 ] as const;
 export const bridgeErrorCodeSchema = z.enum(BRIDGE_ERROR_CODES);
+
+/**
+ * How old the latest bridge-agent observation may be and still count as
+ * current (ruling R8). Overridable with `VPN_BRIDGE_OBSERVATION_STALE_MS`.
+ */
+export const BRIDGE_OBSERVATION_STALE_MS_DEFAULT = 300_000;
+
+/** How long a successful route verification stays valid for activation. */
+export const BRIDGE_VERIFICATION_VALIDITY_MS = 30 * 60 * 1_000;
+
+/**
+ * `VPN_BRIDGE_JOBS_ENABLED` (ruling R6): whether bridge-related jobs may be
+ * queued. Only the exact string "true" enables them, the same convention as
+ * `ACCESS_SYNC_ENABLED`, so an unset, empty or mistyped value keeps the safe
+ * default (disabled) during migrations and mixed-version deployments.
+ */
+export const parseBridgeJobsEnabled = (raw: string | undefined): boolean =>
+  raw?.trim() === "true";
+
+/**
+ * `VPN_BRIDGE_OBSERVATION_STALE_MS`: a positive integer of milliseconds, or
+ * the default when unset or empty. Anything else is a configuration error.
+ */
+export const parseBridgeObservationStaleMs = (raw: string | undefined): number => {
+  const value = raw?.trim();
+  if (!value) return BRIDGE_OBSERVATION_STALE_MS_DEFAULT;
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    throw new Error("VPN_BRIDGE_OBSERVATION_STALE_MS must be a positive integer");
+  }
+  return parsed;
+};
 
 export type CreateBridgeRequest = z.infer<typeof createBridgeRequestSchema>;
 export type UpdateBridgeRequest = z.infer<typeof updateBridgeRequestSchema>;
@@ -229,3 +334,11 @@ export type Bridge = z.infer<typeof bridgeSchema>;
 export type PrepareBridgeRouteRequest = z.infer<typeof prepareBridgeRouteRequestSchema>;
 export type InfrastructureItem = z.infer<typeof infrastructureItemSchema>;
 export type BridgeErrorCode = z.infer<typeof bridgeErrorCodeSchema>;
+export type NodeBridgeRoute = z.infer<typeof nodeBridgeRouteSchema>;
+export type NodeBridgeRoutes = z.infer<typeof nodeBridgeRoutesSchema>;
+export type PrepareBridgeRouteResult = z.infer<typeof prepareBridgeRouteResultSchema>;
+export type ReleaseBridgeRouteResult = z.infer<typeof releaseBridgeRouteResultSchema>;
+export type DeleteBridgeResult = z.infer<typeof deleteBridgeResultSchema>;
+export type NodeEndpointAssignment = z.infer<typeof nodeEndpointAssignmentSchema>;
+export type InfrastructureVpnItem = z.infer<typeof infrastructureVpnItemSchema>;
+export type InfrastructureBridgeItem = z.infer<typeof infrastructureBridgeItemSchema>;

@@ -409,4 +409,16 @@ export const createDefaultControlApiService = ({
     repository.listReachabilityHistory(actor, query),
   adminAction: (actor, resource, targetId, action, payload) =>
     repository.adminAction(actor, resource, targetId, action, payload),
+  listBridges: (actor) => repository.listBridges(actor),
+  createBridge: (actor, request) => repository.createBridge(actor, request),
+  updateBridge: (actor, bridgeId, request) =>
+    repository.updateBridge(actor, bridgeId, request),
+  deleteBridge: (actor, bridgeId) => repository.deleteBridge(actor, bridgeId),
+  getNodeBridgeRoutes: (actor, nodeId) =>
+    repository.getNodeBridgeRoutes(actor, nodeId),
+  prepareBridgeRoute: (actor, nodeId, request) =>
+    repository.prepareBridgeRoute(actor, nodeId, request),
+  releaseBridgeRoute: (actor, routeId) =>
+    repository.releaseBridgeRoute(actor, routeId),
+  listInfrastructure: (actor) => repository.listInfrastructure(actor),
 });

@@ -1,4 +1,13 @@
 import type {
+  Bridge,
+  CreateBridgeRequest,
+  DeleteBridgeResult,
+  InfrastructureItem,
+  NodeBridgeRoutes,
+  PrepareBridgeRouteRequest,
+  PrepareBridgeRouteResult,
+  ReleaseBridgeRouteResult,
+  UpdateBridgeRequest,
   ConfigRefreshResult,
   ConfigRefreshStatus,
   AccessSyncStatus,
@@ -291,6 +300,33 @@ export interface ControlApiService {
     action: string,
     payload: unknown,
   ) => Promise<unknown>;
+  /** Bridges with capacity, held ports and route summaries. */
+  listBridges: (actor: Actor) => Promise<Bridge[]>;
+  /** Register a bridge; it starts pending enrollment. */
+  createBridge: (actor: Actor, request: CreateBridgeRequest) => Promise<Bridge>;
+  /** Rename a bridge. Host, address and ports are never edited in place. */
+  updateBridge: (
+    actor: Actor,
+    bridgeId: string,
+    request: UpdateBridgeRequest,
+  ) => Promise<Bridge>;
+  /** Delete a bridge that holds no draft, active or retiring route. */
+  deleteBridge: (actor: Actor, bridgeId: string) => Promise<DeleteBridgeResult>;
+  /** The node's endpoint assignment: active route or Direct, drafts, retiring. */
+  getNodeBridgeRoutes: (actor: Actor, nodeId: string) => Promise<NodeBridgeRoutes>;
+  /** Reserve a bridge UDP port for the node (idempotent per node and bridge). */
+  prepareBridgeRoute: (
+    actor: Actor,
+    nodeId: string,
+    request: PrepareBridgeRouteRequest,
+  ) => Promise<PrepareBridgeRouteResult>;
+  /** Release a draft or retiring route once the bridge confirms it is gone. */
+  releaseBridgeRoute: (
+    actor: Actor,
+    routeId: string,
+  ) => Promise<ReleaseBridgeRouteResult>;
+  /** VPN nodes and bridges as one typed `kind` union. */
+  listInfrastructure: (actor: Actor) => Promise<InfrastructureItem[]>;
 }
 
 export class ApiError extends Error {

@@ -22,6 +22,9 @@ import {
   updateCustomRoutesRequestSchema,
   updateNodeRequestSchema,
   upsertReachabilityProbeRequestSchema,
+  createBridgeRequestSchema,
+  updateBridgeRequestSchema,
+  prepareBridgeRouteRequestSchema,
 } from "@amnezia/contracts";
 import { contentDispositionAttachment } from "./configFilename.js";
 import {
@@ -530,6 +533,67 @@ export const buildApp = async ({
     return service.deleteNode(adminFor(request), id, {
       deleteKeys: deleteKeys === "true",
     });
+  });
+  // Bridge registry (optional AWG 3.1 node bridges). All admin-only. The
+  // node's active route changes through PATCH /api/admin/nodes/:id with
+  // `vpnBridgeRouteId` and `expectedVpnEndpointRevision`.
+  app.get("/api/admin/infrastructure", async (request) =>
+    service.listInfrastructure(adminFor(request)),
+  );
+  app.get("/api/admin/vpn-bridges", async (request) =>
+    service.listBridges(adminFor(request)),
+  );
+  app.post("/api/admin/vpn-bridges", async (request, reply) => {
+    const admin = adminFor(request);
+    const result = await service.createBridge(
+      admin,
+      createBridgeRequestSchema.parse(request.body),
+    );
+    return reply.code(201).send(result);
+  });
+  app.patch("/api/admin/vpn-bridges/:id", async (request) => {
+    const admin = adminFor(request);
+    const { id } = idParamsSchema.parse(request.params);
+    return service.updateBridge(admin, id, updateBridgeRequestSchema.parse(request.body));
+  });
+  app.delete("/api/admin/vpn-bridges/:id", async (request) => {
+    const admin = adminFor(request);
+    const { id } = idParamsSchema.parse(request.params);
+    return service.deleteBridge(admin, id);
+  });
+  app.get("/api/admin/nodes/:id/vpn-bridge-routes", async (request) => {
+    const admin = adminFor(request);
+    const { id } = idParamsSchema.parse(request.params);
+    return service.getNodeBridgeRoutes(admin, id);
+  });
+  // A static last segment, so this never reaches the generic
+  // `:resource/:id/:action` handler below.
+  app.post("/api/admin/nodes/:id/vpn-bridge-routes", async (request, reply) => {
+    const admin = adminFor(request);
+    const { id } = idParamsSchema.parse(request.params);
+    const result = await service.prepareBridgeRoute(
+      admin,
+      id,
+      prepareBridgeRouteRequestSchema.parse(request.body),
+    );
+    // 201 for a new reservation, 200 when the pairing's held route came back.
+    return reply.code(result.created ? 201 : 200).send(result);
+  });
+  app.delete("/api/admin/vpn-bridge-routes/:id", async (request) => {
+    const admin = adminFor(request);
+    const { id } = idParamsSchema.parse(request.params);
+    // In the query for the same reason as the node delete's `deleteKeys`.
+    const { confirmed } = z
+      .object({ confirmed: z.enum(["true", "false"]).optional() })
+      .parse(request.query ?? {});
+    if (confirmed !== "true") {
+      throw new ApiError(
+        400,
+        "Releasing a route frees its public port; repeat with confirmed=true",
+        "CONFIRMATION_REQUIRED",
+      );
+    }
+    return service.releaseBridgeRoute(admin, id);
   });
   for (const resource of [
     "users",

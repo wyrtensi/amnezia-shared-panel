@@ -4,6 +4,8 @@ import {
   classifyPublicIpv4,
   createBridgeRequestSchema,
   infrastructureItemSchema,
+  parseBridgeJobsEnabled,
+  parseBridgeObservationStaleMs,
   prepareBridgeRouteRequestSchema,
   publicIpv4Schema,
   updateBridgeRequestSchema,
@@ -215,5 +217,23 @@ describe("infrastructureItemSchema", () => {
 describe("bridgeFrpProxyName", () => {
   it("derives the proxy name from the route id", () => {
     expect(bridgeFrpProxyName("abc")).toBe("awg-route-abc");
+  });
+});
+
+describe("bridge environment parsers", () => {
+  it("enables bridge jobs only for the exact value true", () => {
+    expect(parseBridgeJobsEnabled(undefined)).toBe(false);
+    expect(parseBridgeJobsEnabled("")).toBe(false);
+    expect(parseBridgeJobsEnabled("yes")).toBe(false);
+    expect(parseBridgeJobsEnabled("true")).toBe(true);
+    expect(parseBridgeJobsEnabled(" true ")).toBe(true);
+  });
+
+  it("defaults the stale window to five minutes and refuses non-positive values", () => {
+    expect(parseBridgeObservationStaleMs(undefined)).toBe(300_000);
+    expect(parseBridgeObservationStaleMs("")).toBe(300_000);
+    expect(parseBridgeObservationStaleMs("1000")).toBe(1_000);
+    expect(() => parseBridgeObservationStaleMs("0")).toThrow();
+    expect(() => parseBridgeObservationStaleMs("abc")).toThrow();
   });
 });

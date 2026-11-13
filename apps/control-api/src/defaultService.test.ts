@@ -49,6 +49,47 @@ const reachabilityProbeView = {
   widgetLastError: null,
 };
 
+const bridgeNodeId = "9b2f6c1e-1c2d-4e3f-8a9b-0c1d2e3f4a5b";
+const bridgeFixture = {
+  id: "6f1c2d3e-4a5b-4c6d-8e7f-0a1b2c3d4e5f",
+  name: "Bridge A",
+  publicIpv4: "45.10.20.30",
+  controlTcpPort: 7000,
+  udpPortStart: 41000,
+  udpPortEnd: 41031,
+  capacity: 32,
+  heldPorts: 0,
+  managementStatus: "pending_enrollment" as const,
+  lastObservedAt: null,
+  routes: [],
+  createdAt: "2026-11-13T00:00:00.000Z",
+  updatedAt: "2026-11-13T00:00:00.000Z",
+};
+const bridgeRouteFixture = {
+  id: "0d9e8f7a-6b5c-4d3e-9f2a-1b0c9d8e7f6a",
+  nodeId: bridgeNodeId,
+  bridgeId: bridgeFixture.id,
+  publicUdpPort: 41000,
+  state: "draft" as const,
+  frpProxyName: "awg-route-0d9e8f7a-6b5c-4d3e-9f2a-1b0c9d8e7f6a",
+  observedOnline: null,
+  observedRegistrationMarker: null,
+  observedAt: null,
+  verificationMethod: null,
+  verifiedRegistrationMarker: null,
+  verifiedAt: null,
+  verificationResult: null,
+  verificationError: null,
+  activatedAt: null,
+  retiringSince: null,
+  createdAt: "2026-11-13T00:00:00.000Z",
+  bridgeName: "Bridge A",
+  bridgePublicIpv4: "45.10.20.30",
+  bridgeControlTcpPort: 7000,
+  bridgeManagementStatus: "pending_enrollment" as const,
+  bridgeLastObservedAt: null,
+};
+
 const createRepository = (): ControlRepository => ({
   resolveIdentity: vi.fn(() => Promise.resolve(employee)),
   getMe: vi.fn(() => Promise.resolve({ keyLimit: 5, keyCount: 1 })),
@@ -134,6 +175,34 @@ const createRepository = (): ControlRepository => ({
   runReachabilityNow: vi.fn(() => Promise.resolve(reachabilityProbeView)),
   listReachabilityHistory: vi.fn(() => Promise.resolve([])),
   appendAudit: vi.fn(() => Promise.resolve()),
+  listBridges: vi.fn(() => Promise.resolve([])),
+  createBridge: vi.fn(() => Promise.resolve(bridgeFixture)),
+  updateBridge: vi.fn(() => Promise.resolve(bridgeFixture)),
+  deleteBridge: vi.fn(() =>
+    Promise.resolve({ id: bridgeFixture.id, deleted: true as const }),
+  ),
+  getNodeBridgeRoutes: vi.fn(() =>
+    Promise.resolve({
+      nodeId: bridgeNodeId,
+      vpnEndpointRevision: 0,
+      activeRoute: null,
+      drafts: [],
+      retiring: [],
+    }),
+  ),
+  prepareBridgeRoute: vi.fn(() =>
+    Promise.resolve({ created: true, route: bridgeRouteFixture }),
+  ),
+  releaseBridgeRoute: vi.fn(() =>
+    Promise.resolve({
+      id: bridgeRouteFixture.id,
+      released: true as const,
+      nodeId: bridgeNodeId,
+      bridgeId: bridgeFixture.id,
+      publicUdpPort: 41000,
+    }),
+  ),
+  listInfrastructure: vi.fn(() => Promise.resolve([])),
 });
 
 const splitTunnelLink = encodeVpnPayload({

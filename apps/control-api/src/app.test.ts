@@ -34,6 +34,47 @@ const reachabilityProbeView = {
   widgetLastError: null,
 };
 
+const bridgeNodeId = "9b2f6c1e-1c2d-4e3f-8a9b-0c1d2e3f4a5b";
+const bridgeFixture = {
+  id: "6f1c2d3e-4a5b-4c6d-8e7f-0a1b2c3d4e5f",
+  name: "Bridge A",
+  publicIpv4: "45.10.20.30",
+  controlTcpPort: 7000,
+  udpPortStart: 41000,
+  udpPortEnd: 41031,
+  capacity: 32,
+  heldPorts: 0,
+  managementStatus: "pending_enrollment" as const,
+  lastObservedAt: null,
+  routes: [],
+  createdAt: "2026-11-13T00:00:00.000Z",
+  updatedAt: "2026-11-13T00:00:00.000Z",
+};
+const bridgeRouteFixture = {
+  id: "0d9e8f7a-6b5c-4d3e-9f2a-1b0c9d8e7f6a",
+  nodeId: bridgeNodeId,
+  bridgeId: bridgeFixture.id,
+  publicUdpPort: 41000,
+  state: "draft" as const,
+  frpProxyName: "awg-route-0d9e8f7a-6b5c-4d3e-9f2a-1b0c9d8e7f6a",
+  observedOnline: null,
+  observedRegistrationMarker: null,
+  observedAt: null,
+  verificationMethod: null,
+  verifiedRegistrationMarker: null,
+  verifiedAt: null,
+  verificationResult: null,
+  verificationError: null,
+  activatedAt: null,
+  retiringSince: null,
+  createdAt: "2026-11-13T00:00:00.000Z",
+  bridgeName: "Bridge A",
+  bridgePublicIpv4: "45.10.20.30",
+  bridgeControlTcpPort: 7000,
+  bridgeManagementStatus: "pending_enrollment" as const,
+  bridgeLastObservedAt: null,
+};
+
 const createService = (): ControlApiService => ({
   resolveIdentity: vi.fn(() => Promise.resolve(user)),
   getMe: vi.fn(() =>
@@ -111,6 +152,34 @@ createNode: vi.fn(() => Promise.resolve({ id: "node-1" })),
   deleteReachabilityProbe: vi.fn(() => Promise.resolve()),
   runReachabilityNow: vi.fn(() => Promise.resolve(reachabilityProbeView)),
   listReachabilityHistory: vi.fn(() => Promise.resolve([])),
+  listBridges: vi.fn(() => Promise.resolve([])),
+  createBridge: vi.fn(() => Promise.resolve(bridgeFixture)),
+  updateBridge: vi.fn(() => Promise.resolve(bridgeFixture)),
+  deleteBridge: vi.fn(() =>
+    Promise.resolve({ id: bridgeFixture.id, deleted: true as const }),
+  ),
+  getNodeBridgeRoutes: vi.fn(() =>
+    Promise.resolve({
+      nodeId: bridgeNodeId,
+      vpnEndpointRevision: 0,
+      activeRoute: null,
+      drafts: [],
+      retiring: [],
+    }),
+  ),
+  prepareBridgeRoute: vi.fn(() =>
+    Promise.resolve({ created: true, route: bridgeRouteFixture }),
+  ),
+  releaseBridgeRoute: vi.fn(() =>
+    Promise.resolve({
+      id: bridgeRouteFixture.id,
+      released: true as const,
+      nodeId: bridgeNodeId,
+      bridgeId: bridgeFixture.id,
+      publicUdpPort: 41000,
+    }),
+  ),
+  listInfrastructure: vi.fn(() => Promise.resolve([])),
 });
 
 describe("control API identity boundary", () => {
@@ -2002,6 +2071,198 @@ describe("config refresh routes", () => {
     });
     expect(response.statusCode).toBe(409);
     expect(response.json()).toMatchObject({ error: CONFIG_REFRESH_STALE });
+    await app.close();
+  });
+});
+
+describe("bridge registry routes", () => {
+  const routeId = bridgeRouteFixture.id;
+  const bridgeEndpoints = [
+    { method: "GET" as const, url: "/api/admin/infrastructure" },
+    { method: "GET" as const, url: "/api/admin/vpn-bridges" },
+    {
+      method: "POST" as const,
+      url: "/api/admin/vpn-bridges",
+      payload: { name: "Bridge", publicIpv4: "45.10.20.30" },
+    },
+    {
+      method: "PATCH" as const,
+      url: `/api/admin/vpn-bridges/${bridgeFixture.id}`,
+      payload: { name: "Renamed" },
+    },
+    { method: "DELETE" as const, url: `/api/admin/vpn-bridges/${bridgeFixture.id}` },
+    { method: "GET" as const, url: `/api/admin/nodes/${bridgeNodeId}/vpn-bridge-routes` },
+    {
+      method: "POST" as const,
+      url: `/api/admin/nodes/${bridgeNodeId}/vpn-bridge-routes`,
+      payload: { bridgeId: bridgeFixture.id },
+    },
+    {
+      method: "DELETE" as const,
+      url: `/api/admin/vpn-bridge-routes/${routeId}?confirmed=true`,
+    },
+    {
+      method: "PATCH" as const,
+      url: `/api/admin/nodes/${bridgeNodeId}`,
+      payload: { vpnBridgeRouteId: routeId, expectedVpnEndpointRevision: 0 },
+    },
+  ];
+
+  const adminApp = async () => {
+    const service = createService();
+    const admin = { ...user, role: "admin" as const };
+    vi.mocked(service.resolveIdentity).mockResolvedValue(admin);
+    const app = await buildApp({ service, environment: "development", allowDevIdentity: true });
+    return { service, admin, app };
+  };
+
+  it("refuses every bridge endpoint to a non-admin with 403", async () => {
+    const service = createService();
+    const app = await buildApp({ service, environment: "development", allowDevIdentity: true });
+    for (const request of bridgeEndpoints) {
+      const response = await app.inject({
+        ...request,
+        headers: { "x-dev-user-email": user.email },
+      });
+      expect(response.statusCode, `${request.method} ${request.url}`).toBe(403);
+      expect(response.json()).toMatchObject({ error: "FORBIDDEN" });
+    }
+    for (const method of [
+      service.listInfrastructure,
+      service.listBridges,
+      service.createBridge,
+      service.updateBridge,
+      service.deleteBridge,
+      service.getNodeBridgeRoutes,
+      service.prepareBridgeRoute,
+      service.releaseBridgeRoute,
+      service.updateNode,
+    ]) {
+      expect(method).not.toHaveBeenCalled();
+    }
+    await app.close();
+  });
+
+  it("registers a bridge with defaults and rejects a non-canonical address", async () => {
+    const { service, admin, app } = await adminApp();
+    const created = await app.inject({
+      method: "POST",
+      url: "/api/admin/vpn-bridges",
+      headers: { "x-dev-user-email": admin.email },
+      payload: { name: "  Bridge A  ", publicIpv4: "45.10.20.30" },
+    });
+    expect(created.statusCode).toBe(201);
+    expect(service.createBridge).toHaveBeenCalledWith(admin, {
+      name: "Bridge A",
+      publicIpv4: "45.10.20.30",
+      controlTcpPort: 7000,
+      udpPortStart: 41000,
+      udpPortEnd: 41031,
+    });
+    for (const publicIpv4 of ["045.10.20.30", " 45.10.20.30", "10.0.0.1", "45.10.20.30:7000"]) {
+      const response = await app.inject({
+        method: "POST",
+        url: "/api/admin/vpn-bridges",
+        headers: { "x-dev-user-email": admin.email },
+        payload: { name: "Bridge", publicIpv4 },
+      });
+      expect(response.statusCode, publicIpv4).toBe(400);
+      expect(response.json()).toMatchObject({ error: "VALIDATION_ERROR" });
+    }
+    expect(service.createBridge).toHaveBeenCalledTimes(1);
+    await app.close();
+  });
+
+  it("answers 201 for a new reservation and 200 for the held one", async () => {
+    const { service, admin, app } = await adminApp();
+    const url = `/api/admin/nodes/${bridgeNodeId}/vpn-bridge-routes`;
+    const headers = { "x-dev-user-email": admin.email };
+    const first = await app.inject({
+      method: "POST",
+      url,
+      headers,
+      payload: { bridgeId: bridgeFixture.id, publicUdpPort: 41000 },
+    });
+    expect(first.statusCode).toBe(201);
+    expect(service.prepareBridgeRoute).toHaveBeenCalledWith(admin, bridgeNodeId, {
+      bridgeId: bridgeFixture.id,
+      publicUdpPort: 41000,
+    });
+    vi.mocked(service.prepareBridgeRoute).mockResolvedValueOnce({
+      created: false,
+      route: bridgeRouteFixture,
+    });
+    const again = await app.inject({
+      method: "POST",
+      url,
+      headers,
+      payload: { bridgeId: bridgeFixture.id },
+    });
+    expect(again.statusCode).toBe(200);
+    expect(again.json()).toMatchObject({ created: false, route: { id: bridgeRouteFixture.id } });
+    // A static last segment: never the generic admin action handler.
+    expect(service.adminAction).not.toHaveBeenCalled();
+    await app.close();
+  });
+
+  it("requires confirmed=true to release a route", async () => {
+    const { service, admin, app } = await adminApp();
+    for (const suffix of ["", "?confirmed=false"]) {
+      const response = await app.inject({
+        method: "DELETE",
+        url: `/api/admin/vpn-bridge-routes/${routeId}${suffix}`,
+        headers: { "x-dev-user-email": admin.email },
+      });
+      expect(response.statusCode).toBe(400);
+      expect(response.json()).toMatchObject({ error: "CONFIRMATION_REQUIRED" });
+    }
+    expect(service.releaseBridgeRoute).not.toHaveBeenCalled();
+    const confirmed = await app.inject({
+      method: "DELETE",
+      url: `/api/admin/vpn-bridge-routes/${routeId}?confirmed=true`,
+      headers: { "x-dev-user-email": admin.email },
+    });
+    expect(confirmed.statusCode).toBe(200);
+    expect(service.releaseBridgeRoute).toHaveBeenCalledWith(admin, routeId);
+    await app.close();
+  });
+
+  it("maps a bridge ApiError to its status and stable code", async () => {
+    const { service, admin, app } = await adminApp();
+    vi.mocked(service.releaseBridgeRoute).mockRejectedValueOnce(
+      new ApiError(409, "stale", "BRIDGE_OBSERVATION_STALE"),
+    );
+    const response = await app.inject({
+      method: "DELETE",
+      url: `/api/admin/vpn-bridge-routes/${routeId}?confirmed=true`,
+      headers: { "x-dev-user-email": admin.email },
+    });
+    expect(response.statusCode).toBe(409);
+    expect(response.json()).toEqual({ error: "BRIDGE_OBSERVATION_STALE", message: "stale" });
+    await app.close();
+  });
+
+  it("requires the revision when a node PATCH names a route", async () => {
+    const { service, admin, app } = await adminApp();
+    const response = await app.inject({
+      method: "PATCH",
+      url: `/api/admin/nodes/${bridgeNodeId}`,
+      headers: { "x-dev-user-email": admin.email },
+      payload: { vpnBridgeRouteId: null },
+    });
+    expect(response.statusCode).toBe(400);
+    expect(service.updateNode).not.toHaveBeenCalled();
+    const ok = await app.inject({
+      method: "PATCH",
+      url: `/api/admin/nodes/${bridgeNodeId}`,
+      headers: { "x-dev-user-email": admin.email },
+      payload: { vpnBridgeRouteId: null, expectedVpnEndpointRevision: 4 },
+    });
+    expect(ok.statusCode).toBe(200);
+    expect(service.updateNode).toHaveBeenCalledWith(admin, bridgeNodeId, {
+      vpnBridgeRouteId: null,
+      expectedVpnEndpointRevision: 4,
+    });
     await app.close();
   });
 });

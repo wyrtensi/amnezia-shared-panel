@@ -1,6 +1,15 @@
 import type {
   AccessSyncStatus,
   AdminReachabilityView,
+  Bridge,
+  CreateBridgeRequest,
+  DeleteBridgeResult,
+  InfrastructureItem,
+  NodeBridgeRoutes,
+  PrepareBridgeRouteRequest,
+  PrepareBridgeRouteResult,
+  ReleaseBridgeRouteResult,
+  UpdateBridgeRequest,
   CreateNodeRequest,
   CreateServiceCheckRequest,
   CreateKeyRequest,
@@ -209,4 +218,25 @@ export interface ControlRepository {
     payload: unknown,
   ) => Promise<unknown>;
   appendAudit: (event: AuditInput) => Promise<void>;
+  // Bridge registry (optional AWG 3.1 node bridges). Admin-only; the node's
+  // active route changes through `updateNode` with `vpnBridgeRouteId`.
+  listBridges: (actor: Actor) => Promise<Bridge[]>;
+  createBridge: (actor: Actor, request: CreateBridgeRequest) => Promise<Bridge>;
+  updateBridge: (
+    actor: Actor,
+    bridgeId: string,
+    request: UpdateBridgeRequest,
+  ) => Promise<Bridge>;
+  deleteBridge: (actor: Actor, bridgeId: string) => Promise<DeleteBridgeResult>;
+  getNodeBridgeRoutes: (actor: Actor, nodeId: string) => Promise<NodeBridgeRoutes>;
+  prepareBridgeRoute: (
+    actor: Actor,
+    nodeId: string,
+    request: PrepareBridgeRouteRequest,
+  ) => Promise<PrepareBridgeRouteResult>;
+  releaseBridgeRoute: (
+    actor: Actor,
+    routeId: string,
+  ) => Promise<ReleaseBridgeRouteResult>;
+  listInfrastructure: (actor: Actor) => Promise<InfrastructureItem[]>;
 }
