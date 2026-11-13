@@ -230,6 +230,9 @@ process_unit() {
 
   [ "$svc_state" = failed ] && failed=1
   [ "$I_WATCHER" = failed ] && failed=1
+  # An enabled watcher that is not active (waiting) was never rearmed, e.g. after
+  # an earlier deferral or a reset-failed: starting it is part of the repair.
+  case "$I_ENABLED" in enabled|enabled-runtime) [ "$I_WATCHER" = active ] || failed=1 ;; esac
 
   if dropin="$(dropin_overrides "$base")"; then
     add_record "$label" blocked "ExecStart is overridden by drop-in $dropin; remove the override, then run this tool again"
@@ -298,16 +301,22 @@ process_unit() {
 
   # Local helper: re-run the busy check and record a deferral when it now holds.
   recheck_busy_defer() {
+    local stage="$1" now_state follow
     busy_check "$base" "$path_file" "$lockdir"
+    [ "$I_RUNNING" = yes ] || [ "$I_PENDING" = yes ] || return 1
+    now_state="$(systemctl is-active "$base.path" 2>/dev/null || true)"
+    I_WATCHER="${now_state:-unknown}"
+    if [ "$stage" = before-reset ]; then
+      follow="the watcher was not touched and is still '$I_WATCHER'; nothing was reset; once it is dealt with, run this tool again, or by hand: systemctl reset-failed $base.service $base.path && systemctl start $base.path"
+    else
+      follow="the failed state was already cleared and the watcher is '$I_WATCHER', NOT started; once it is dealt with, run this tool again, or by hand: systemctl start $base.path"
+    fi
     if [ "$I_RUNNING" = yes ]; then
-      add_record "$label" deferred-running "unit repaired, but an operation started meanwhile; the watcher was left untouched. Run this tool again when it has finished"
-      return 0
+      add_record "$label" deferred-running "unit repaired, but an operation started meanwhile; $follow"
+    else
+      add_record "$label" deferred-pending "unit repaired, but request $I_REQ_ID ($I_REQ_STATUS, age $I_REQ_AGE) appeared meanwhile; resume or cancel it explicitly, then: $follow"
     fi
-    if [ "$I_PENDING" = yes ]; then
-      add_record "$label" deferred-pending "unit repaired, but request $I_REQ_ID ($I_REQ_STATUS, age $I_REQ_AGE) appeared meanwhile; the watcher was left untouched. Resume or cancel it explicitly, then run this tool again"
-      return 0
-    fi
-    return 1
+    return 0
   }
 
   want_active=0
@@ -351,7 +360,7 @@ process_unit() {
   # The host can change while the unit is verified, installed and reloaded: look
   # again before anything is rearmed. The unit stays repaired; the watcher stays
   # exactly as it is.
-  if recheck_busy_defer; then return; fi
+  if recheck_busy_defer before-reset; then return; fi
 
   # Clear the old failed state (203/EXEC, unit-start-limit-hit) of both units.
   [ "$svc_state" = failed ] && systemctl reset-failed "$base.service" >/dev/null 2>&1
@@ -360,7 +369,7 @@ process_unit() {
   # Back to the previous enablement. A disabled updater is never enabled here.
   if [ "$want_active" -eq 1 ]; then
     if [ "$(systemctl is-active "$base.path" 2>/dev/null || true)" != active ]; then
-      if recheck_busy_defer; then return; fi
+      if recheck_busy_defer after-reset; then return; fi
       systemctl start "$base.path" >/dev/null 2>&1 ||
         { add_record "$label" failed "could not start $base.path"; return; }
     fi

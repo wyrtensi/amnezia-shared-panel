@@ -62,7 +62,9 @@ case "$cmd" in
     v="$(cat "$STATE/enabled-$1" 2>/dev/null || echo disabled)"; echo "$v"; [ "$v" = enabled ] ;;
   is-active)
     v="$(cat "$STATE/active-$1" 2>/dev/null || echo inactive)"; echo "$v"; [ "$v" = active ] ;;
-  reset-failed) echo inactive >"$STATE/active-$1" ;;
+  reset-failed)
+    echo inactive >"$STATE/active-$1"
+    [ ! -f "$STATE/inject-on-reset" ] || cp "$STATE/inject-body" "$(cat "$STATE/inject-on-reset")" ;;
   start)
     [ ! -f "$STATE/start-fails" ] || exit 1
     echo active >"$STATE/active-$1" ;;
@@ -547,5 +549,59 @@ test("an unreadable effective ExecStart is blocked, not assumed from the file", 
   assert.equal(rec.outcome, "blocked");
   assert.match(rec.note, /effective ExecStart/);
   assert.equal(await readFile(unitFile(f, "panel-updater"), "utf8"), before);
+  assert.deepEqual(mutating(await calls(f)), []);
+});
+
+test("a request appearing after reset-failed defers the start, says so, and a later run rearms the watcher", executing, async () => {
+  const f = await fixture();
+  const p = await install(f, "panel", { active: "failed" });
+  await writeFile(join(f.state, "inject-on-reset"), join(p.spool, "request.json"));
+  await writeFile(join(f.state, "inject-body"), '{"id":"late-2"}\n');
+  const r = runJson(f);
+  const rec = unit(r.report, "panel");
+  assert.equal(r.status, 2);
+  assert.equal(rec.outcome, "deferred-pending");
+  assert.equal(rec.requestId, "late-2");
+  assert.match(rec.note, /failed state was already cleared/);
+  assert.match(rec.note, /NOT started/);
+  assert.match(rec.note, /systemctl start panel-updater\.path/);
+  assert.doesNotMatch(rec.note, /untouched/);
+  assert.equal(rec.watcher, "inactive");
+  assert.ok(!(await calls(f)).some((l) => l.startsWith("systemctl start")));
+
+  // The operator resolves the request; the next run completes the rearm.
+  await spawnSync("rm", ["-f", join(p.spool, "request.json"), join(f.state, "inject-on-reset")]);
+  const again = runJson(f);
+  assert.equal(unit(again.report, "panel").outcome, "repaired");
+  assert.equal(unit(again.report, "panel").watcher, "waiting");
+  assert.ok((await calls(f)).includes("systemctl start panel-updater.path"));
+});
+
+test("the deferral before reset-failed gives the exact manual follow-up", executing, async () => {
+  const f = await fixture();
+  const p = await install(f, "panel", { active: "failed" });
+  await writeFile(join(f.state, "inject"), join(p.spool, "request.json"));
+  await writeFile(join(f.state, "inject-body"), '{"id":"late-3"}\n');
+  const rec = unit(runJson(f).report, "panel");
+  assert.match(rec.note, /nothing was reset/);
+  assert.match(rec.note, /systemctl reset-failed panel-updater\.service panel-updater\.path && systemctl start panel-updater\.path/);
+});
+
+test("an enabled but inactive watcher on a current unit is started", executing, async () => {
+  const f = await fixture();
+  await install(f, "panel", { legacy: false, active: "inactive" });
+  const before = await readFile(unitFile(f, "panel-updater"), "utf8");
+  const r = runJson(f);
+  assert.equal(unit(r.report, "panel").outcome, "repaired");
+  assert.equal(unit(r.report, "panel").watcher, "waiting");
+  assert.equal(await readFile(unitFile(f, "panel-updater"), "utf8"), before);
+  assert.ok((await calls(f)).includes("systemctl start panel-updater.path"));
+});
+
+test("a disabled inactive watcher on a current unit stays untouched", executing, async () => {
+  const f = await fixture();
+  await install(f, "panel", { legacy: false, enabled: "disabled", active: "inactive" });
+  const r = runJson(f);
+  assert.equal(unit(r.report, "panel").outcome, "current");
   assert.deepEqual(mutating(await calls(f)), []);
 });

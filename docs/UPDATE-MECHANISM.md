@@ -123,6 +123,8 @@ pending (id, age, status). Outcomes:
 Exit status: `0` nothing left to do, `2` at least one unit deferred, `3` at least
 one blocked or failed, `1` usage.
 
+An enabled watcher that is not active (also after a deferral that happened between
+reset-failed and start) is started by the next run; a disabled one is never touched.
 A watcher stuck in `unit-start-limit-hit` on an idle host is recovered by the same
 run (reset-failed plus start). By hand: `systemctl reset-failed <unit>.service
 <unit>.path && systemctl start <unit>.path`. Do that only when no request is
