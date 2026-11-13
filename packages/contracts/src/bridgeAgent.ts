@@ -51,6 +51,9 @@ export const BRIDGE_AGENT_POLL_ERRORS = [
   "AGENT_CREDENTIAL_UNREADABLE",
   // frps reports a route's proxy name on a different public port.
   "ROUTE_PORT_MISMATCH",
+  // The agent sent proxy entries the panel could not read; they were
+  // dropped (and a route named by one is left unobserved).
+  "PROXY_ENTRY_INVALID",
 ] as const;
 export type BridgeAgentPollError = (typeof BRIDGE_AGENT_POLL_ERRORS)[number];
 
@@ -67,8 +70,9 @@ export type BridgeAgentIdentity = z.infer<typeof bridgeAgentIdentitySchema>;
 
 export const bridgeAgentProxySchema = z.object({
   proxyId: z.string().min(1).max(200),
-  // Null once frps no longer holds the proxy config (offline).
-  remotePort: z.int().min(1).max(65_535).nullable(),
+  // Null once frps no longer holds the proxy config (offline). frps reports
+  // 0..65535; 0 never equals a route's port, so such a proxy is never online.
+  remotePort: z.int().min(0).max(65_535).nullable(),
   online: z.boolean(),
   registrationMarker: bridgeRegistrationMarkerSchema.nullable(),
 });
@@ -90,7 +94,9 @@ export const bridgeAgentStatusSchema = z.object({
     udpPortStart: z.int(),
     udpPortEnd: z.int(),
   }),
-  proxies: z.array(bridgeAgentProxySchema).max(4_096),
+  // Read per entry (`readProxies`): one unreadable entry, typically a
+  // foreign or misconfigured proxy, must not make the whole status unusable.
+  proxies: z.array(z.unknown()).max(4_096),
   errors: z
     .array(z.object({ code: bridgeAgentErrorCodeSchema, message: z.string().max(500) }))
     .max(32),
@@ -111,7 +117,13 @@ export type BridgeAgentPollOutcome =
       frpsReachable: boolean;
       frpsVersion: string | null;
       proxies: readonly BridgeAgentProxy[];
-      /** First error the agent reported, if any. */
+      /**
+       * Proxy names of entries that were reported but could not be read.
+       * A route with one of these names is left unobserved (Unknown), never
+       * marked offline.
+       */
+      unreadableProxyIds: readonly string[];
+      /** `PROXY_ENTRY_INVALID` when entries were dropped, else the agent's first error. */
       errorCode: string | null;
     }
   | { kind: "down"; errorCode: BridgeAgentPollError }
@@ -214,6 +226,35 @@ export const requestBridgeAgent = async (
   }
 };
 
+/**
+ * Parse the proxy list entry by entry: readable entries are kept, unreadable
+ * ones dropped. The name of a dropped entry is kept when it is a readable
+ * string, so the route it may belong to stays Unknown instead of offline.
+ */
+const readProxies = (
+  entries: readonly unknown[],
+): { proxies: BridgeAgentProxy[]; unreadableProxyIds: string[]; dropped: number } => {
+  const proxies: BridgeAgentProxy[] = [];
+  const unreadableProxyIds: string[] = [];
+  let dropped = 0;
+  for (const entry of entries) {
+    const parsed = bridgeAgentProxySchema.safeParse(entry);
+    if (parsed.success) {
+      proxies.push(parsed.data);
+      continue;
+    }
+    dropped += 1;
+    const name =
+      typeof entry === "object" && entry !== null
+        ? (entry as { proxyId?: unknown }).proxyId
+        : undefined;
+    if (typeof name === "string" && name.length > 0 && name.length <= 200) {
+      unreadableProxyIds.push(name);
+    }
+  }
+  return { proxies, unreadableProxyIds, dropped };
+};
+
 const reportedApiVersion = (body: unknown): number | null => {
   if (typeof body !== "object" || body === null) return null;
   const value = (body as { apiVersion?: unknown }).apiVersion;
@@ -287,6 +328,9 @@ export const classifyBridgeAgentStatus = (
   if (status.bridgeId !== expectedBridgeId) {
     return { kind: "identity_mismatch", errorCode: "AGENT_IDENTITY_MISMATCH" };
   }
+  const read = status.frps.reachable
+    ? readProxies(status.proxies)
+    : { proxies: [], unreadableProxyIds: [], dropped: 0 };
   return {
     kind: "ok",
     agentVersion: status.agentVersion,
@@ -295,8 +339,9 @@ export const classifyBridgeAgentStatus = (
     frpsVersion: status.frps.version,
     // An unreachable frps reports an empty list that means "unknown"; it is
     // dropped here so no caller can mistake it for "every route is gone".
-    proxies: status.frps.reachable ? status.proxies : [],
-    errorCode: status.errors[0]?.code ?? null,
+    proxies: read.proxies,
+    unreadableProxyIds: read.unreadableProxyIds,
+    errorCode: read.dropped > 0 ? "PROXY_ENTRY_INVALID" : (status.errors[0]?.code ?? null),
   };
 };
 
@@ -368,25 +413,68 @@ export const BRIDGE_MANAGEMENT_HOSTS_DEFAULT: readonly string[] = ["host.docker.
 const normalizeHost = (host: string): string =>
   host.trim().toLowerCase().replace(/^\[(.*)\]$/, "$1");
 
+/** One allowed destination: a host, optionally pinned to one port. */
+type ManagementDestination = { host: string; port: number | null };
+
 /**
- * `VPN_BRIDGE_MANAGEMENT_HOSTS`: a comma-separated list of host names or IP
- * literals (no scheme or port). Unset or empty means the default.
+ * `host`, `host:port`, `[ipv6]` or `[ipv6]:port`; a bare IPv6 literal (two or
+ * more colons, no brackets) is a host without a port. Null when malformed.
  */
-export const parseBridgeManagementHosts = (raw: string | undefined): readonly string[] => {
-  const hosts = (raw ?? "")
-    .split(",")
-    .map(normalizeHost)
-    .filter(Boolean);
-  if (hosts.length === 0) return BRIDGE_MANAGEMENT_HOSTS_DEFAULT;
-  for (const host of hosts) {
-    if (!/^[a-z0-9.:_-]+$/.test(host)) {
-      throw new Error("VPN_BRIDGE_MANAGEMENT_HOSTS must list host names or IP literals");
-    }
+const parseDestination = (raw: string): ManagementDestination | null => {
+  const entry = raw.trim().toLowerCase();
+  let host: string;
+  let portText: string | null = null;
+  const bracketed = /^\[([^\]]+)\](?::(\d+))?$/.exec(entry);
+  if (bracketed) {
+    host = bracketed[1]!;
+    portText = bracketed[2] ?? null;
+  } else if (entry.split(":").length === 2) {
+    [host, portText] = entry.split(":") as [string, string];
+  } else {
+    host = entry;
   }
-  return hosts;
+  if (!host || !/^[a-z0-9.:_-]+$/.test(host)) return null;
+  if (portText === null) return { host, port: null };
+  if (!/^\d{1,5}$/.test(portText)) return null;
+  const port = Number(portText);
+  return port >= 1 && port <= 65_535 ? { host, port } : null;
 };
 
-/** Whether a management URL names one of the allowed hosts. */
+const formatDestination = ({ host, port }: ManagementDestination): string => {
+  const shown = host.includes(":") ? `[${host}]` : host;
+  return port === null ? host : `${shown}:${port}`;
+};
+
+/**
+ * `VPN_BRIDGE_MANAGEMENT_HOSTS`: a comma-separated list of allowed
+ * destinations, each a host name or IP literal with an optional port
+ * (`host.docker.internal`, `host.docker.internal:7605`, `[::1]:7605`); no
+ * scheme. An entry with a port allows only that port. Unset or empty means
+ * the default. Returned normalized (lower case, IPv6 brackets only with a
+ * port).
+ */
+export const parseBridgeManagementHosts = (raw: string | undefined): readonly string[] => {
+  const entries = (raw ?? "")
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+  if (entries.length === 0) return BRIDGE_MANAGEMENT_HOSTS_DEFAULT;
+  return entries.map((entry) => {
+    const destination = parseDestination(entry);
+    if (!destination) {
+      throw new Error(
+        "VPN_BRIDGE_MANAGEMENT_HOSTS must list host names or IP literals, each with an optional :port",
+      );
+    }
+    return formatDestination(destination);
+  });
+};
+
+/**
+ * Whether a management URL names one of the allowed destinations: its host
+ * matches, and for an entry with a port, its port (the scheme's default when
+ * the URL names none) matches too.
+ */
 export const isAllowedBridgeManagementUrl = (
   value: string,
   allowedHosts: readonly string[],
@@ -398,7 +486,16 @@ export const isAllowedBridgeManagementUrl = (
     return false;
   }
   if (url.protocol !== "http:" && url.protocol !== "https:") return false;
-  return allowedHosts.includes(normalizeHost(url.hostname));
+  const host = normalizeHost(url.hostname);
+  const port = url.port ? Number(url.port) : url.protocol === "https:" ? 443 : 80;
+  return allowedHosts.some((entry) => {
+    const destination = parseDestination(entry);
+    return (
+      destination !== null &&
+      destination.host === host &&
+      (destination.port === null || destination.port === port)
+    );
+  });
 };
 
 /** The stored form of a management URL: its origin. */

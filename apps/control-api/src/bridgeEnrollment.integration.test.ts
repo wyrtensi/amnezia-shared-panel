@@ -437,9 +437,33 @@ describe("bridge enrollment and bridge-agent observations (real PostgreSQL, fake
       ).toMatchObject({ statusCode: 404, code: "BRIDGE_NOT_FOUND" });
       expect(agent.requests).toHaveLength(0);
 
+      // An allowlist entry with a port admits only that port.
+      const agentPort = Number(new URL(agentUrl).port);
+      const pinned = (port: number) =>
+        new PostgresControlRepository({
+          db: db(),
+          keyring,
+          bridgeManagementHosts: [`127.0.0.1:${port}`],
+        });
+      agent.reset();
+      agent.bridgeId = bridge.id;
+      expect(
+        await failureOf(
+          pinned(agentPort + 1).updateBridge(admin, bridge.id, {
+            managementApiUrl: agentUrl,
+            apiKey: TOKEN,
+          }),
+        ),
+      ).toMatchObject({ statusCode: 400, code: "BRIDGE_MANAGEMENT_URL_NOT_ALLOWED" });
+      expect(agent.requests).toHaveLength(0);
+      expect(enrollmentColumns(await bridgeRow(bridge.id))).toEqual(enrollmentColumns(enrolled));
+
       // A good replacement is stored and audited as one.
       agent.bridgeId = bridge.id;
-      await enroll(bridge.id);
+      await pinned(agentPort).updateBridge(admin, bridge.id, {
+        managementApiUrl: agentUrl,
+        apiKey: TOKEN,
+      });
       const replaced = await bridgeRow(bridge.id);
       expect(replaced.managementEnrolledAt!.getTime()).toBeGreaterThan(
         enrolled.managementEnrolledAt!.getTime(),
@@ -643,6 +667,11 @@ describe("bridge enrollment and bridge-agent observations (real PostgreSQL, fake
         expect(await failureOf(repository.releaseBridgeRoute(admin, route.id))).toMatchObject({
           code: "BRIDGE_OBSERVATION_STALE",
         });
+        // frps keeps an offline proxy listed until it restarts (ruling R18):
+        // listed offline under this name counts as the registration gone.
+        agent.proxies = [
+          { proxyId: bridgeFrpProxyName(route.id), remotePort: null, online: false, registrationMarker: M1 },
+        ];
         await poll(bridge.id);
         await expect(repository.releaseBridgeRoute(admin, route.id)).resolves.toMatchObject({
           released: true,

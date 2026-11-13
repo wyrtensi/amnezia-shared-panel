@@ -42,7 +42,51 @@ describe("classifyBridgeAgentStatus", () => {
       proxies: [
         { proxyId: "awg-route-a", remotePort: 41000, online: true, registrationMarker: MARKER },
       ],
+      unreadableProxyIds: [],
       errorCode: null,
+    });
+  });
+
+  it("keeps a foreign proxy on remote port 0 (frps reports 0..65535)", () => {
+    const outcome = classifyBridgeAgentStatus(
+      BRIDGE_ID,
+      ok(
+        status({
+          proxies: [
+            { proxyId: "awg-route-a", remotePort: 41000, online: true, registrationMarker: MARKER },
+            { proxyId: "foreign", remotePort: 0, online: true, registrationMarker: null },
+          ],
+        }),
+      ),
+    );
+    expect(outcome).toMatchObject({ kind: "ok", unreadableProxyIds: [], errorCode: null });
+    expect(outcome.kind === "ok" && outcome.proxies.map((proxy) => proxy.proxyId)).toEqual([
+      "awg-route-a",
+      "foreign",
+    ]);
+  });
+
+  it("drops unreadable proxy entries one by one instead of rejecting the status", () => {
+    const outcome = classifyBridgeAgentStatus(
+      BRIDGE_ID,
+      ok(
+        status({
+          proxies: [
+            { proxyId: "awg-route-a", remotePort: 41000, online: true, registrationMarker: MARKER },
+            // A route's own entry with an unusable marker: its name is kept.
+            { proxyId: "awg-route-b", remotePort: 41001, online: true, registrationMarker: "a\nb" },
+            { proxyId: "foreign", remotePort: 70_000, online: true, registrationMarker: null },
+            "not an object",
+            { remotePort: 41002 },
+          ],
+        }),
+      ),
+    );
+    expect(outcome).toMatchObject({
+      kind: "ok",
+      proxies: [{ proxyId: "awg-route-a" }],
+      unreadableProxyIds: ["awg-route-b", "foreign"],
+      errorCode: "PROXY_ENTRY_INVALID",
     });
   });
 
@@ -87,7 +131,8 @@ describe("classifyBridgeAgentStatus", () => {
     expect(
       classifyBridgeAgentStatus(BRIDGE_ID, { kind: "response", status: 404, body: null }),
     ).toMatchObject({ kind: "unsupported", errorCode: "AGENT_API_UNSUPPORTED" });
-    // A marker with a control character never reaches storage.
+    // A marker with a control character never reaches storage: the entry
+    // is dropped and its name reported as unreadable.
     expect(
       classifyBridgeAgentStatus(
         BRIDGE_ID,
@@ -99,7 +144,7 @@ describe("classifyBridgeAgentStatus", () => {
           }),
         ),
       ),
-    ).toMatchObject({ kind: "unsupported" });
+    ).toMatchObject({ kind: "ok", proxies: [], unreadableProxyIds: ["awg-route-a"] });
   });
 
   it("classifies no answer, a rejected credential and server errors as down", () => {
@@ -161,6 +206,24 @@ describe("management destinations", () => {
     expect(() => parseBridgeManagementHosts("a.example/path")).toThrow(
       /VPN_BRIDGE_MANAGEMENT_HOSTS/,
     );
+    expect(
+      parseBridgeManagementHosts("Host.Docker.Internal:7605, [::1]:7606, ::1"),
+    ).toEqual(["host.docker.internal:7605", "[::1]:7606", "::1"]);
+    for (const bad of ["a.example:0", "a.example:65536", "a.example:x", "[::1]:", "http://a.example"]) {
+      expect(() => parseBridgeManagementHosts(bad), bad).toThrow(/VPN_BRIDGE_MANAGEMENT_HOSTS/);
+    }
+  });
+
+  it("pins an entry with a port to that port", () => {
+    const hosts = parseBridgeManagementHosts("host.docker.internal:7605,[::1]:7606");
+    expect(isAllowedBridgeManagementUrl("http://host.docker.internal:7605", hosts)).toBe(true);
+    expect(isAllowedBridgeManagementUrl("http://host.docker.internal:7606", hosts)).toBe(false);
+    // No port in the URL is the scheme's default, which is not 7605.
+    expect(isAllowedBridgeManagementUrl("http://host.docker.internal", hosts)).toBe(false);
+    expect(isAllowedBridgeManagementUrl("http://[::1]:7606", hosts)).toBe(true);
+    expect(isAllowedBridgeManagementUrl("http://[::1]:7605", hosts)).toBe(false);
+    expect(isAllowedBridgeManagementUrl("http://a.example", ["a.example:80"])).toBe(true);
+    expect(isAllowedBridgeManagementUrl("https://a.example", ["a.example:443"])).toBe(true);
   });
 
   it("allows only the listed hosts", () => {

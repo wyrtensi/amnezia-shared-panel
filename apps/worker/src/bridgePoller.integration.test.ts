@@ -51,7 +51,8 @@ type FakeAgent = {
   bridgeId: string;
   apiVersion: number;
   frpsReachable: boolean;
-  proxies: Proxy[];
+  // Loose on purpose: some tests send entries the panel cannot read.
+  proxies: Array<Proxy | Record<string, unknown>>;
   mode: "normal" | "hang";
   requests: number;
 };
@@ -365,6 +366,46 @@ describe("bridge-agent poller (real PostgreSQL, fake bridge-agent over HTTP)", (
   );
 
   runDatabaseTest(
+    "a foreign proxy on port 0 or an unreadable entry never makes the bridge unsupported",
+    async () => {
+      const node = await seedNode();
+      const bridge = await seedBridge();
+      const online = await seedRoute(bridge.id, node.id, 41000);
+      const node2 = await seedNode();
+      const garbled = await seedRoute(bridge.id, node2.id, 41001, {
+        observedOnline: true,
+        observedRegistrationMarker: M1,
+        observedAt: new Date(Date.now() - 120_000),
+      });
+      const garbledBefore = await route(garbled);
+      agent.proxies = [
+        { proxyId: bridgeFrpProxyName(online), remotePort: 41000, online: true, registrationMarker: M1 },
+        // frps reports 0..65535; a misconfigured foreign proxy on 0.
+        { proxyId: "foreign-misconfigured", remotePort: 0, online: true, registrationMarker: null },
+        // The route's own entry, unreadable (marker with a control character).
+        { proxyId: bridgeFrpProxyName(garbled), remotePort: 41001, online: true, registrationMarker: "a\u0000b" },
+        // An entry without a name.
+        { remotePort: 41005, online: true },
+      ];
+      const pollTime = new Date(Date.now() - 1_000);
+
+      await runPoll(bridge.id, { now: pollTime });
+
+      const stored = await bridgeRow(bridge.id);
+      expect(stored).toMatchObject({ managementStatus: "ok", lastErrorCode: "PROXY_ENTRY_INVALID" });
+      expect(stored.lastObservedAt?.getTime()).toBe(pollTime.getTime());
+      expect(await route(online)).toMatchObject({
+        observedOnline: true,
+        observedRegistrationMarker: M1,
+      });
+      // Left exactly as it was: not covered by this poll, so Unknown, never offline.
+      const garbledAfter = await route(garbled);
+      expect(garbledAfter).toEqual(garbledBefore);
+      expect(garbledAfter.observedAt!.getTime()).toBeLessThan(pollTime.getTime());
+    },
+  );
+
+  runDatabaseTest(
     "a changed marker clears a verification bound to another marker and keeps one bound to it",
     async () => {
       const node = await seedNode();
@@ -536,6 +577,7 @@ describe("bridge-agent poller (real PostgreSQL, fake bridge-agent over HTTP)", (
         proxies: [
           { proxyId: bridgeFrpProxyName(id), remotePort: 41000, online: true, registrationMarker: M1 },
         ],
+        unreadableProxyIds: [],
         errorCode: null,
       };
       const newer = new Date();

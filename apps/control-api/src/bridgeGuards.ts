@@ -134,6 +134,13 @@ export const checkActivationGuard = (
  * (`ok` and within the stale window), the route was covered by that latest
  * poll (`observedAt >= lastObservedAt`) and that poll did not report the
  * route's proxy name and port online (`observedOnline` is not true).
+ * "Forwarding registration gone" (ruling R18) is about this route's name ON
+ * this route's port: a proxy frps still lists as offline, or the name
+ * registered on another port, both count as gone for releasing this port.
+ * frps keeps offline proxies listed until it restarts, so requiring the
+ * name to vanish from the list would block a release indefinitely. A route
+ * whose own entry the agent sent but the panel could not read is not
+ * stamped by that poll, so it stays Unknown here.
  * Anything else is Unknown and keeps the reservation:
  * BRIDGE_OBSERVATION_STALE. One exception, for a draft on a never-enrolled
  * bridge, is described inside.

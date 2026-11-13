@@ -56,7 +56,10 @@ const CLEARED_VERIFICATION = {
  *   sets `lastErrorCode = ROUTE_PORT_MISMATCH`. When the stored marker
  *   changes, a verification bound to another marker is cleared (a reconnect
  *   is a different registration); one bound to the new marker stays (an
- *   operator verification recorded before the first observation).
+ *   operator verification recorded before the first observation). A route
+ *   whose own proxy entry was reported but unreadable is not touched (Unknown,
+ *   never offline); unreadable foreign entries are simply dropped
+ *   (`lastErrorCode = PROXY_ENTRY_INVALID` unless a port mismatch is found).
  * - `ok` with frps unreachable: the bridge summary and `lastObservedAt`
  *   only. The (empty) proxy list proves nothing, so no route is touched;
  *   their `observedAt` now predates the bridge's latest poll, which the
@@ -129,8 +132,13 @@ export const applyBridgePollResult = async (
     .orderBy(asc(vpnBridgeRoutes.id))
     .for("update");
   const byName = new Map(outcome.proxies.map((proxy) => [proxy.proxyId, proxy]));
+  const unreadable = new Set(outcome.unreadableProxyIds);
   let portMismatch = false;
   for (const route of routes) {
+    // The agent reported an entry under this route's name that could not be
+    // read: this poll says nothing about the route. Left as it was, its
+    // `observedAt` predates the bridge's latest poll, so it reads Unknown.
+    if (unreadable.has(route.frpProxyName)) continue;
     const proxy = byName.get(route.frpProxyName);
     if (proxy && proxy.remotePort !== null && proxy.remotePort !== route.publicUdpPort) {
       portMismatch = true;

@@ -16,6 +16,10 @@ describe("resolveBridgeConfig", () => {
       resolveBridgeConfig({ VPN_BRIDGE_MANAGEMENT_HOSTS: " Host.Docker.Internal , 172.17.0.1 " })
         .managementHosts,
     ).toEqual(["host.docker.internal", "172.17.0.1"]);
+    expect(
+      resolveBridgeConfig({ VPN_BRIDGE_MANAGEMENT_HOSTS: "host.docker.internal:7605" })
+        .managementHosts,
+    ).toEqual(["host.docker.internal:7605"]);
     expect(() =>
       resolveBridgeConfig({ VPN_BRIDGE_MANAGEMENT_HOSTS: "http://evil.example" }),
     ).toThrow(/VPN_BRIDGE_MANAGEMENT_HOSTS/);
