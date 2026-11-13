@@ -40,6 +40,8 @@ import {
   routeRuleVersions,
   trafficRollups,
   users,
+  vpnBridgeRoutes,
+  vpnBridges,
   vpnKeys,
 } from "@amnezia/db";
 import { PostgresControlRepository } from "./postgresRepository.js";
@@ -3077,6 +3079,98 @@ describe("PostgresControlRepository node status surfaces", () => {
         await database.db.delete(portalPolicy);
       }
     });
+
+    runDatabaseTest(
+      "on a bridged node, an AWG 2 key reads its direct result and an AWG 3.1 key the node verdict",
+      async () => {
+        if (!database) return;
+        await seedProbe();
+        const checkedAt = new Date();
+        // The worker's verdict for a bridged node follows the AWG 3.1 path.
+        await database.db.insert(nodeReachabilityState).values({
+          nodeId,
+          status: "failed",
+          failingSince,
+          checkedAt,
+        });
+        await database.db.insert(nodeReachabilityResults).values([
+          { nodeId, protocol: "awg3", status: "failed", levels: {}, runId: randomUUID(), checkedAt },
+          { nodeId, protocol: "awg2", status: "ok", levels: {}, runId: randomUUID(), checkedAt },
+        ]);
+        const [bridge] = await database.db
+          .insert(vpnBridges)
+          .values({
+            name: `key-card-${randomBytes(3).toString("hex")}`,
+            publicIpv4: `47.${randomBytes(1)[0]}.${randomBytes(1)[0]}.9`,
+          })
+          .returning();
+        if (!bridge) throw new Error("Failed to seed bridge");
+        const routeId = randomUUID();
+        await database.db.insert(vpnBridgeRoutes).values({
+          id: routeId,
+          nodeId,
+          bridgeId: bridge.id,
+          publicUdpPort: 41000,
+          state: "active",
+          frpProxyName: `awg-route-${routeId}`,
+        });
+        const keys = await database.db
+          .insert(vpnKeys)
+          .values(
+            (["awg3", "awg2"] as const).map((protocol) => ({
+              ownerId: actor.id,
+              nodeId,
+              nodeLabel: `ap_bridged_${protocol}_${randomBytes(4).toString("hex")}`,
+              protocol,
+              routeProfile: "full_tunnel" as const,
+              state: "active" as const,
+            })),
+          )
+          .returning();
+        try {
+          const views = await subject().listKeys(actor);
+          const viewOf = (protocol: string) =>
+            views.find((row) => keys.some((key) => key.id === row.id && key.protocol === protocol));
+          expect(viewOf("awg3")?.nodeReachability).toEqual({
+            state: "blocked",
+            since: failingSince.toISOString(),
+          });
+          expect(viewOf("awg2")?.nodeReachability).toEqual({ state: "ok", since: null });
+
+          // Without its own result, the AWG 2 card is unknown, not the node's.
+          await database.db
+            .delete(nodeReachabilityResults)
+            .where(
+              and(
+                eq(nodeReachabilityResults.nodeId, nodeId),
+                eq(nodeReachabilityResults.protocol, "awg2"),
+              ),
+            );
+          const again = await subject().listKeys(actor);
+          expect(
+            again.find((row) => row.id === keys.find((key) => key.protocol === "awg2")?.id)
+              ?.nodeReachability,
+          ).toEqual({ state: "unknown", since: null });
+
+          // Back on Direct, both cards read the node verdict again.
+          await database.db.delete(vpnBridgeRoutes).where(eq(vpnBridgeRoutes.id, routeId));
+          const direct = await subject().listKeys(actor);
+          for (const key of keys) {
+            expect(direct.find((row) => row.id === key.id)?.nodeReachability).toEqual({
+              state: "blocked",
+              since: failingSince.toISOString(),
+            });
+          }
+        } finally {
+          await database.db.delete(vpnKeys).where(inArray(vpnKeys.id, keys.map((key) => key.id)));
+          await database.db.delete(vpnBridgeRoutes).where(eq(vpnBridgeRoutes.id, routeId));
+          await database.db.delete(vpnBridges).where(eq(vpnBridges.id, bridge.id));
+          await database.db
+            .delete(nodeReachabilityResults)
+            .where(eq(nodeReachabilityResults.nodeId, nodeId));
+        }
+      },
+    );
 
     runDatabaseTest("omits the verdict when the policy hides node status", async () => {
       if (!database) return;

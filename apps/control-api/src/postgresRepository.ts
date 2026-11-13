@@ -946,22 +946,9 @@ export class PostgresControlRepository implements ControlRepository {
     nodeIds: readonly string[],
   ): Promise<Map<string, UserNodeReachability>> => {
     if (nodeIds.length === 0) return new Map();
-    const db = this.options.db;
-    const [probeRows, stateRows] = await Promise.all([
-      db
-        .select({
-          enabled: reachabilityProbe.enabled,
-          lastResultAt: reachabilityProbe.lastResultAt,
-          staleAfterSec: reachabilityProbe.staleAfterSec,
-          intervalSec: reachabilityProbe.intervalSec,
-          staleAlertedAt: reachabilityProbe.staleAlertedAt,
-          enabledAt: reachabilityProbe.enabledAt,
-          lastRunMass: reachabilityProbe.lastRunMass,
-        })
-        .from(reachabilityProbe)
-        .where(eq(reachabilityProbe.id, 1))
-        .limit(1),
-      db
+    const [probe, stateRows] = await Promise.all([
+      this.loadUserReachabilityProbe(),
+      this.options.db
         .select({
           nodeId: nodes.id,
           reachabilityEnabled: nodes.reachabilityEnabled,
@@ -973,7 +960,6 @@ export class PostgresControlRepository implements ControlRepository {
         .leftJoin(nodeReachabilityState, eq(nodeReachabilityState.nodeId, nodes.id))
         .where(inArray(nodes.id, [...nodeIds])),
     ]);
-    const probe = probeRows[0] ?? null;
     const now = new Date();
     return new Map(
       stateRows.map((row) => [
@@ -989,6 +975,83 @@ export class PostgresControlRepository implements ControlRepository {
         }),
       ]),
     );
+  };
+
+  /** The probe columns `toUserReachability` reads, or null without a probe. */
+  private loadUserReachabilityProbe = async () => {
+    const [probe] = await this.options.db
+      .select({
+        enabled: reachabilityProbe.enabled,
+        lastResultAt: reachabilityProbe.lastResultAt,
+        staleAfterSec: reachabilityProbe.staleAfterSec,
+        intervalSec: reachabilityProbe.intervalSec,
+        staleAlertedAt: reachabilityProbe.staleAlertedAt,
+        enabledAt: reachabilityProbe.enabledAt,
+        lastRunMass: reachabilityProbe.lastRunMass,
+      })
+      .from(reachabilityProbe)
+      .where(eq(reachabilityProbe.id, 1))
+      .limit(1);
+    return probe ?? null;
+  };
+
+  /**
+   * The verdict for a key card: the protocol-appropriate result. On a node
+   * with an active bridge route the node verdict follows the bridged AWG 3.1
+   * path (the worker computes it from that result alone), while AWG 2 keeps
+   * the direct path, so an AWG 2 key there reads its own per-protocol result
+   * (no failing-since: a per-protocol result does not carry one). Everywhere
+   * else a key reads its node's verdict, as before.
+   */
+  private loadKeyReachability = async (
+    nodeIds: readonly string[],
+  ): Promise<(nodeId: string, protocol: ProtocolKind) => UserNodeReachability> => {
+    if (nodeIds.length === 0) return () => UNKNOWN_USER_REACHABILITY;
+    const [byNode, probe, bridgedRows] = await Promise.all([
+      this.loadUserReachability(nodeIds),
+      this.loadUserReachabilityProbe(),
+      this.options.db
+        .select({
+          nodeId: vpnBridgeRoutes.nodeId,
+          reachabilityEnabled: nodes.reachabilityEnabled,
+          status: nodeReachabilityResults.status,
+          checkedAt: nodeReachabilityResults.checkedAt,
+        })
+        .from(vpnBridgeRoutes)
+        .innerJoin(nodes, eq(nodes.id, vpnBridgeRoutes.nodeId))
+        .leftJoin(
+          nodeReachabilityResults,
+          and(
+            eq(nodeReachabilityResults.nodeId, vpnBridgeRoutes.nodeId),
+            eq(nodeReachabilityResults.protocol, "awg2"),
+          ),
+        )
+        .where(
+          and(
+            eq(vpnBridgeRoutes.state, "active"),
+            inArray(vpnBridgeRoutes.nodeId, [...nodeIds]),
+          ),
+        ),
+    ]);
+    const now = new Date();
+    const directAwg2 = new Map(
+      bridgedRows.map((row) => [
+        row.nodeId,
+        toUserReachability({
+          probe,
+          reachabilityEnabled: row.reachabilityEnabled,
+          state:
+            row.status !== null && row.checkedAt !== null
+              ? { status: row.status, failingSince: null, checkedAt: row.checkedAt }
+              : null,
+          now,
+        }),
+      ]),
+    );
+    return (nodeId, protocol) =>
+      (protocol === "awg2" ? directAwg2.get(nodeId) : undefined) ??
+      byNode.get(nodeId) ??
+      UNKNOWN_USER_REACHABILITY;
   };
 
   listNodes = async (actor: Actor): Promise<unknown[]> => {
@@ -1592,7 +1655,7 @@ export class PostgresControlRepository implements ControlRepository {
     // Read per key's own node, not from `/api/nodes`: a key outlives the
     // permission to create keys on its server.
     const reachability = policy.showNodeStatus
-      ? await this.loadUserReachability([...new Set(rows.map(({ key }) => key.nodeId))])
+      ? await this.loadKeyReachability([...new Set(rows.map(({ key }) => key.nodeId))])
       : null;
     return rows.map(({ key, node, current }) =>
       toKeyView({
@@ -1602,9 +1665,7 @@ export class PostgresControlRepository implements ControlRepository {
         current,
         policy,
         activeByProfile,
-        nodeReachability: reachability
-          ? (reachability.get(key.nodeId) ?? UNKNOWN_USER_REACHABILITY)
-          : undefined,
+        nodeReachability: reachability ? reachability(key.nodeId, key.protocol) : undefined,
       }),
     );
   };

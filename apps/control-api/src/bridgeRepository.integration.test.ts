@@ -1,5 +1,5 @@
 import { randomBytes, randomUUID } from "node:crypto";
-import { and, eq, inArray, or } from "drizzle-orm";
+import { and, eq, inArray, or, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   bridgeEligibilitySchema,
@@ -12,6 +12,7 @@ import {
   auditEvents,
   createDatabase,
   encryptSecret,
+  ENDPOINT_CHANGED_DETAIL,
   nodeReachabilityHistory,
   nodeReachabilityResults,
   nodeReachabilityState,
@@ -58,6 +59,23 @@ describe("bridge registry (real PostgreSQL)", () => {
   const db = () => {
     if (!database) throw new Error("No database");
     return database.db;
+  };
+
+  /**
+   * Resolves once another session of this database waits for a row lock: the
+   * suites run one file at a time, so that session is the one the test just
+   * started. Polled instead of slept, so the test does not depend on timing.
+   */
+  const waitForLockWait = async () => {
+    for (let attempt = 0; attempt < 200; attempt += 1) {
+      const rows = await db().execute<{ waiting: number }>(
+        sql`select count(*)::int as waiting from pg_stat_activity
+            where datname = current_database() and wait_event_type = 'Lock'`,
+      );
+      if ((rows[0]?.waiting ?? 0) > 0) return;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    throw new Error("No session started waiting for a lock");
   };
 
   // Unique, public, per-run addresses (45.0.0.0/8 is ordinary unicast).
@@ -436,9 +454,16 @@ describe("bridge registry (real PostgreSQL)", () => {
       { nodeId, protocol: "awg3", status: "failed", levels: {}, runId, checkedAt: now },
       { nodeId, protocol: "awg2", status: "ok", levels: {}, runId, checkedAt: now },
     ]);
-    await db()
-      .insert(nodeReachabilityState)
-      .values({ nodeId, status: "failed", consecutiveFailures: 3, checkedAt: now });
+    const alertedAt = new Date(now.getTime() - 60_000);
+    await db().insert(nodeReachabilityState).values({
+      nodeId,
+      status: "failed",
+      consecutiveFailures: 3,
+      failingSince: new Date(now.getTime() - 3_600_000),
+      alertedAt,
+      alertKind: "node",
+      checkedAt: now,
+    });
 
     const toBridge = await activate(nodeId, route.id, 0);
     expect(toBridge.vpnEndpoint).toMatchObject({
@@ -454,9 +479,21 @@ describe("bridge registry (real PostgreSQL)", () => {
       .from(nodeReachabilityResults)
       .where(eq(nodeReachabilityResults.nodeId, nodeId));
     expect(results.map((row) => row.protocol)).toEqual(["awg2"]);
-    expect(
-      await db().select().from(nodeReachabilityState).where(eq(nodeReachabilityState.nodeId, nodeId)),
-    ).toHaveLength(0);
+    // The verdict reads unknown until a run through the new endpoint; the
+    // open incident stays (one recovery message later, never a second alert)
+    // and the old path's failure streak restarts.
+    const [state] = await db()
+      .select()
+      .from(nodeReachabilityState)
+      .where(eq(nodeReachabilityState.nodeId, nodeId));
+    expect(state).toMatchObject({
+      status: "error",
+      consecutiveFailures: 0,
+      failingSince: null,
+      alertedAt,
+      alertKind: "node",
+      detail: ENDPOINT_CHANGED_DETAIL,
+    });
     const [audit] = await db()
       .select()
       .from(auditEvents)
@@ -651,11 +688,19 @@ describe("bridge registry (real PostgreSQL)", () => {
     const result = { nodeId, protocol: "awg3" as const, status: "ok" as const, levels: {}, runId };
     await db().insert(nodeReachabilityResults).values({ ...result, checkedAt: new Date() });
     let activation: Promise<unknown> | null = null;
-    // The worker's ingest order: upsert the node's existing per-protocol
-    // result (a row lock, no foreign-key check), then insert a history row,
-    // whose foreign key key-shares the node row. Activation holds the node
-    // row and waits for the result row in between.
+    // The worker's ingest order: take the node rows FOR SHARE (reading the
+    // endpoint revision), then upsert the per-protocol result and insert a
+    // history row, whose foreign key key-shares the node row. Activation
+    // waits on the node row and never holds a reachability row the ingest
+    // needs.
     await db().transaction(async (ingest) => {
+      await ingest
+        .select({ revision: nodes.vpnEndpointRevision })
+        .from(nodes)
+        .where(eq(nodes.id, nodeId))
+        .for("share");
+      activation = activate(nodeId, route.id, 0);
+      await waitForLockWait();
       await ingest
         .insert(nodeReachabilityResults)
         .values({ ...result, checkedAt: new Date() })
@@ -663,9 +708,6 @@ describe("bridge registry (real PostgreSQL)", () => {
           target: [nodeReachabilityResults.nodeId, nodeReachabilityResults.protocol],
           set: { checkedAt: new Date() },
         });
-      activation = activate(nodeId, route.id, 0);
-      // Let the activation take the node lock and block on the result row.
-      await new Promise((resolve) => setTimeout(resolve, 300));
       await ingest
         .insert(nodeReachabilityHistory)
         .values({ nodeId, runId, status: "ok", checkedAt: new Date() });

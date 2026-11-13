@@ -27,10 +27,9 @@ import {
   auditEvents,
   decryptSecret,
   jobOutbox,
-  nodeReachabilityResults,
-  nodeReachabilityState,
   nodes,
   reachabilityProbe,
+  resetNodeEndpointEvidence,
   users,
   vpnBridgeRoutes,
   vpnBridges,
@@ -229,7 +228,10 @@ const toBridge = (row: BridgeRow, routes: BridgeRouteSummary[]): Bridge => ({
  * block the key-share locks that foreign-key inserts referencing the node take
  * (reachability history, keys, telemetry). With `FOR UPDATE`, an activation
  * that resets the node's reachability rows deadlocks against a worker ingest
- * that has upserted those rows and then inserts a history row.
+ * that has upserted those rows and then inserts a history row. The worker's
+ * ingest now takes the node rows `FOR SHARE` before it writes any
+ * reachability row, so an activation and an ingest serialize on the node
+ * row and the ingest always sees the endpoint revision it writes against.
  */
 export class PostgresBridgeRepository {
   constructor(private readonly options: BridgeRepositoryOptions) {}
@@ -904,22 +906,10 @@ export class PostgresBridgeRepository {
       .set({ vpnEndpointRevision: revision, updatedAt: now })
       .where(eq(nodes.id, nodeId));
 
-    // Minimal reachability invalidation (Task 4b replaces it with the
-    // revision-aware version): the evidence was gathered through the previous
-    // endpoint, so it no longer describes the node. Delete the node's AWG 3.1
-    // per-protocol result and its aggregate state row; missing evidence reads
-    // as Unknown everywhere (`toUserReachability`, the admin view), and the
-    // worker starts the node's failure count afresh on its next run. The AWG 2
-    // result stays: AWG 2 keeps the direct path. History rows are kept.
-    await tx
-      .delete(nodeReachabilityResults)
-      .where(
-        and(
-          eq(nodeReachabilityResults.nodeId, nodeId),
-          eq(nodeReachabilityResults.protocol, "awg3"),
-        ),
-      );
-    await tx.delete(nodeReachabilityState).where(eq(nodeReachabilityState.nodeId, nodeId));
+    // The evidence gathered through the previous endpoint no longer describes
+    // the node (`resetNodeEndpointEvidence`). Same transaction, under the node
+    // lock taken above, which the worker's ingest also takes before it writes.
+    await resetNodeEndpointEvidence(tx, nodeId, now);
 
     await tx.insert(auditEvents).values({
       actorUserId: actor.id,

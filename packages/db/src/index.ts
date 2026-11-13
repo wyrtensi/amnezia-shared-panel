@@ -17,6 +17,7 @@ import type { Database } from "./client.js";
 import { jobOutbox, users, vpnKeys } from "./schema.js";
 
 export * from "./client.js";
+export * from "./reachabilityEvidence.js";
 export * from "./schema.js";
 
 export type EncryptionKeyring = Readonly<Record<number, Buffer>>;
