@@ -448,6 +448,7 @@ export const createDefaultControlApiService = ({
     repository.updateBridge(actor, bridgeId, request),
   deleteBridge: (actor, bridgeId) => repository.deleteBridge(actor, bridgeId),
   getBridgeAgentUpdate: (actor, bridgeId) => repository.getBridgeAgentUpdate(actor, bridgeId),
+  getBridgeRollbackPreflight: (actor) => repository.getBridgeRollbackPreflight(actor),
   requestBridgeAgentUpdate: (actor, bridgeId, request) =>
     repository.requestBridgeAgentUpdate(actor, bridgeId, request),
   getNodeBridgeRoutes: (actor, nodeId) =>

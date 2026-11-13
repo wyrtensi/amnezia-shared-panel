@@ -1571,6 +1571,49 @@ describe("bridge commands", () => {
     });
   });
 
+  describe("bridge-rollback-preflight", () => {
+    const NODE = "66666666-6666-4666-8666-666666666666";
+    const blocked = {
+      activeAssignments: { count: 1, nodeIds: [NODE] },
+      outstandingAgentUpdates: { count: 0, bridgeIds: [] },
+      pendingJobs: { count: 2, byType: { "bridge_agent.poll": 2 } },
+      jobsEnabled: true,
+      readyForPreBridgeRollback: false,
+    };
+
+    it("prints what blocks the rollback and calls only the read endpoint", async () => {
+      const calls = stubFetch([{ body: blocked }]);
+      const out = await run(["bridge-rollback-preflight"]);
+      expect(out).toContain(`active bridge assignments: 1 (nodes ${NODE}`);
+      expect(out).toContain("pending bridge jobs: 2 (bridge_agent.poll 2)");
+      expect(out).toContain("VPN_BRIDGE_JOBS_ENABLED: true (set it to false first");
+      expect(out).toContain("ready for pre-bridge rollback: NO");
+      expect(calls).toHaveLength(1);
+      expect(calls[0]?.url).toContain("/api/admin/vpn-bridges/rollback-preflight");
+      expect(calls[0]?.init?.method ?? "GET").toBe("GET");
+    });
+
+    it("says yes when nothing is left, and --json is the typed body", async () => {
+      const ready = {
+        activeAssignments: { count: 0, nodeIds: [] },
+        outstandingAgentUpdates: { count: 0, bridgeIds: [] },
+        pendingJobs: { count: 0, byType: {} },
+        jobsEnabled: false,
+        readyForPreBridgeRollback: true,
+      };
+      stubFetch([{ body: ready }]);
+      expect(await run(["bridge-rollback-preflight"])).toContain("ready for pre-bridge rollback: yes");
+      stubFetch([{ body: ready }]);
+      expect(JSON.parse(await run(["bridge-rollback-preflight", "--json"]))).toEqual(ready);
+    });
+
+    it("rejects a stray argument without calling the API", async () => {
+      const calls = stubFetch([{ body: blocked }]);
+      await expect(run(["bridge-rollback-preflight", "extra"])).rejects.toThrow();
+      expect(calls).toHaveLength(0);
+    });
+  });
+
   it("bridge-add surfaces a duplicate address", async () => {
     stubFetch([{ status: 409, body: { error: "BRIDGE_IPV4_CONFLICT", message: "dup" } }]);
     await expect(

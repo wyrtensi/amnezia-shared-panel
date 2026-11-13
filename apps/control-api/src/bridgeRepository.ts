@@ -27,6 +27,7 @@ import {
   type BridgeAgentOfferedImage,
   type BridgeAgentUpdateSummary,
   type BridgeAgentUpdateView,
+  type BridgeRollbackPreflight,
   type RequestBridgeAgentUpdate,
   type RequestBridgeAgentUpdateResult,
   type UpdateBridgeRequest,
@@ -52,6 +53,7 @@ import {
   canRenderBridgeEndpoint,
   classifyKeyForBridge,
 } from "./bridgeEndpoint.js";
+import { readBridgeRollbackPreflight } from "./bridgeRollback.js";
 import { BridgeAgentUpdates } from "./bridgeAgentUpdate.js";
 import { assertBridgeJobsEnabled } from "./bridgeConfig.js";
 import { storeEnrollment, verifyEnrollmentCandidate } from "./bridgeEnrollment.js";
@@ -506,6 +508,10 @@ export class PostgresBridgeRepository {
   /** The preview, outstanding operation and history of a bridge's agent update. */
   getAgentUpdate = (bridgeId: string): Promise<BridgeAgentUpdateView> =>
     this.agentUpdates.view(bridgeId);
+
+  /** What must hold before rolling back to a release that predates bridges. */
+  getRollbackPreflight = (): Promise<BridgeRollbackPreflight> =>
+    readBridgeRollbackPreflight(this.db, this.options.jobsEnabled ?? false);
 
   /** Request an agent update (idempotent per outstanding operation). */
   requestAgentUpdate = (

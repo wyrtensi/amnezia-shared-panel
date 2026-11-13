@@ -39,6 +39,7 @@ import type {
   UpdateServiceCheckRequest,
   DeleteBridgeResult,
   BridgeAgentUpdateView,
+  BridgeRollbackPreflight,
   RequestBridgeAgentUpdate,
   RequestBridgeAgentUpdateResult,
   InfrastructureItem,
@@ -560,6 +561,8 @@ export class PostgresControlRepository implements ControlRepository {
   ): Promise<Bridge> => this.bridges.updateBridge(actor, bridgeId, request);
   getBridgeAgentUpdate = (_actor: Actor, bridgeId: string): Promise<BridgeAgentUpdateView> =>
     this.bridges.getAgentUpdate(bridgeId);
+  getBridgeRollbackPreflight = (_actor: Actor): Promise<BridgeRollbackPreflight> =>
+    this.bridges.getRollbackPreflight();
   requestBridgeAgentUpdate = (
     actor: Actor,
     bridgeId: string,

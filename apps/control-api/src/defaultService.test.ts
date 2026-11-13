@@ -228,6 +228,7 @@ const createRepository = (): ControlRepository => ({
   findBridgeRouteTarget: vi.fn(() => Promise.resolve(null)),
   verifyBridgeRoute: vi.fn(() => Promise.reject(new Error("not stubbed"))),
   getBridgeAgentUpdate: vi.fn(() => Promise.reject(new Error("not stubbed"))),
+  getBridgeRollbackPreflight: vi.fn(() => Promise.reject(new Error("not stubbed"))),
   requestBridgeAgentUpdate: vi.fn(() => Promise.reject(new Error("not stubbed"))),
 });
 

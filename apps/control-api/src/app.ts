@@ -567,6 +567,9 @@ export const buildApp = async ({
   });
   // Bridge-agent update. Static last segment, so neither route reaches the
   // generic `:resource/:id/:action` handler below.
+  app.get("/api/admin/vpn-bridges/rollback-preflight", async (request) =>
+    service.getBridgeRollbackPreflight(adminFor(request)),
+  );
   app.get("/api/admin/vpn-bridges/:id/agent-update", async (request) => {
     const admin = adminFor(request);
     const { id } = idParamsSchema.parse(request.params);

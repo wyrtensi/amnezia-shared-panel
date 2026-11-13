@@ -3,6 +3,7 @@ import type {
   CreateBridgeRequest,
   DeleteBridgeResult,
   BridgeAgentUpdateView,
+  BridgeRollbackPreflight,
   RequestBridgeAgentUpdate,
   RequestBridgeAgentUpdateResult,
   InfrastructureItem,
@@ -320,6 +321,8 @@ export interface ControlApiService {
   deleteBridge: (actor: Actor, bridgeId: string) => Promise<DeleteBridgeResult>;
   /** Preview, outstanding operation and history of the bridge-agent update. */
   getBridgeAgentUpdate: (actor: Actor, bridgeId: string) => Promise<BridgeAgentUpdateView>;
+  /** Read-only checks before rolling back to a release that predates bridges. */
+  getBridgeRollbackPreflight: (actor: Actor) => Promise<BridgeRollbackPreflight>;
   /** Request a bridge-agent update; a repeat of the outstanding one returns it. */
   requestBridgeAgentUpdate: (
     actor: Actor,

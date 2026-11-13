@@ -706,6 +706,45 @@ export async function cmdBridgeAgentLog(api: BridgeApi, args: string[]): Promise
   }
 }
 
+type RollbackPreflightView = {
+  activeAssignments: { count: number; nodeIds: string[] };
+  outstandingAgentUpdates: { count: number; bridgeIds: string[] };
+  pendingJobs: { count: number; byType: Record<string, number> };
+  jobsEnabled: boolean;
+  readyForPreBridgeRollback: boolean;
+};
+
+/** `bridge-rollback-preflight [--json]`: read-only; the exit code stays 0 either way. */
+export async function cmdBridgeRollbackPreflight(api: BridgeApi, args: string[]): Promise<void> {
+  const usage = "Usage: bridge-rollback-preflight [--json]";
+  assertStrictArgs(args, { positionals: 0, usage });
+  const view = await api<RollbackPreflightView>("/api/admin/vpn-bridges/rollback-preflight");
+  if (args.includes("--json")) return json(view);
+  const { activeAssignments, outstandingAgentUpdates, pendingJobs } = view;
+  console.log(
+    `active bridge assignments: ${activeAssignments.count}` +
+      (activeAssignments.count > 0 ? ` (nodes ${activeAssignments.nodeIds.join(", ")}; switch each to Direct)` : ""),
+  );
+  console.log(
+    `outstanding bridge-agent updates: ${outstandingAgentUpdates.count}` +
+      (outstandingAgentUpdates.count > 0
+        ? ` (bridges ${outstandingAgentUpdates.bridgeIds.join(", ")}; wait for a terminal state, see bridge-agent-log)`
+        : ""),
+  );
+  const types = Object.entries(pendingJobs.byType)
+    .map(([type, count]) => `${type} ${count}`)
+    .join(", ");
+  console.log(`pending bridge jobs: ${pendingJobs.count}${types ? ` (${types})` : ""}`);
+  console.log(
+    `VPN_BRIDGE_JOBS_ENABLED: ${view.jobsEnabled ? "true (set it to false first, then recheck)" : "false"}`,
+  );
+  console.log(
+    view.readyForPreBridgeRollback
+      ? "ready for pre-bridge rollback: yes"
+      : "ready for pre-bridge rollback: NO",
+  );
+}
+
 export async function cmdBridgeDelete(api: BridgeApi, args: string[]): Promise<void> {
   const usage = "Usage: bridge-delete <bridge-id> --confirm";
   assertStrictArgs(args, { positionals: 1, usage });
@@ -990,6 +1029,7 @@ export const BRIDGE_COMMANDS: ReadonlyMap<
   ["bridge-enroll", cmdBridgeEnroll],
   ["bridge-agent-update", cmdBridgeAgentUpdate],
   ["bridge-agent-log", cmdBridgeAgentLog],
+  ["bridge-rollback-preflight", cmdBridgeRollbackPreflight],
   ["bridge-delete", cmdBridgeDelete],
   ["bridge-routes", cmdBridgeRoutes],
   ["bridge-route-prepare", cmdBridgeRoutePrepare],
@@ -1014,6 +1054,8 @@ export const BRIDGE_USAGE_LINES = `  bridges [--json]                        Lis
                                           approved image on offer; --confirm requests that
                                           update (one outstanding operation per bridge)
   bridge-agent-log <bridge-id> [--json]   The current or last agent update and its history
+  bridge-rollback-preflight [--json]      Before rolling back to a pre-bridge release: active
+                                          assignments, outstanding agent updates, pending jobs
   bridge-delete <bridge-id> --confirm     Delete an empty bridge (BRIDGE_HAS_ROUTES otherwise)
   bridge-routes <node-id> [--json]        A node's endpoint: Direct or active route, revision,
                                           drafts, retiring ports, verification state

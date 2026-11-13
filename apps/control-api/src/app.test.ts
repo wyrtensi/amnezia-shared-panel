@@ -166,6 +166,15 @@ createNode: vi.fn(() => Promise.resolve({ id: "node-1" })),
   deleteBridge: vi.fn(() =>
     Promise.resolve({ id: bridgeFixture.id, deleted: true as const }),
   ),
+  getBridgeRollbackPreflight: vi.fn(() =>
+    Promise.resolve({
+      activeAssignments: { count: 0, nodeIds: [] },
+      outstandingAgentUpdates: { count: 0, bridgeIds: [] },
+      pendingJobs: { count: 0, byType: {} },
+      jobsEnabled: false,
+      readyForPreBridgeRollback: true,
+    }),
+  ),
   getBridgeEligibility: vi.fn(() =>
     Promise.resolve({
       nodeId: bridgeNodeId,
@@ -2156,6 +2165,7 @@ describe("bridge registry routes", () => {
       payload: { method: "probe" },
     },
     { method: "GET" as const, url: `/api/admin/vpn-bridges/${bridgeFixture.id}/agent-update` },
+    { method: "GET" as const, url: "/api/admin/vpn-bridges/rollback-preflight" },
     {
       method: "POST" as const,
       url: `/api/admin/vpn-bridges/${bridgeFixture.id}/agent-update`,
@@ -2196,6 +2206,7 @@ describe("bridge registry routes", () => {
       service.getBridgeRouteTestConfig,
       service.verifyBridgeRoute,
       service.getBridgeAgentUpdate,
+      service.getBridgeRollbackPreflight,
       service.requestBridgeAgentUpdate,
     ]) {
       expect(method).not.toHaveBeenCalled();
@@ -2443,6 +2454,27 @@ describe("bridge registry routes", () => {
     });
     // Never the generic admin action handler.
     expect(service.adminAction).not.toHaveBeenCalled();
+    await app.close();
+  });
+
+  it("serves the rollback preflight to an admin, ahead of the :id routes", async () => {
+    const { service, admin, app } = await adminApp();
+    const preflight = {
+      activeAssignments: { count: 1, nodeIds: ["0b1c2d3e-4f50-4a6b-8c7d-9e0f1a2b3c4d"] },
+      outstandingAgentUpdates: { count: 0, bridgeIds: [] },
+      pendingJobs: { count: 2, byType: { "bridge_agent.poll": 2 } },
+      jobsEnabled: true,
+      readyForPreBridgeRollback: false,
+    };
+    vi.mocked(service.getBridgeRollbackPreflight).mockResolvedValueOnce(preflight);
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/admin/vpn-bridges/rollback-preflight",
+      headers: { "x-dev-user-email": admin.email },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual(preflight);
+    expect(service.getBridgeAgentUpdate).not.toHaveBeenCalled();
     await app.close();
   });
 

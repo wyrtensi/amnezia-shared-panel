@@ -2263,4 +2263,5 @@ export * from "./bridges.js";
 export * from "./bridgeAgent.js";
 export * from "./bridgeAgentUpdate.js";
 export * from "./bridgeUpdateModel.js";
+export * from "./bridgeRollback.js";
 export * from "./ruleSources.js";
