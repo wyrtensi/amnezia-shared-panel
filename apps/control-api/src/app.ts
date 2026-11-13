@@ -25,6 +25,10 @@ import {
   createBridgeRequestSchema,
   updateBridgeRequestSchema,
   prepareBridgeRouteRequestSchema,
+  BRIDGE_REGISTRATION_MARKER_HEADER,
+  bridgeTestConfigQuerySchema,
+  encodeRegistrationMarkerHeader,
+  verifyBridgeRouteRequestSchema,
 } from "@amnezia/contracts";
 import { contentDispositionAttachment } from "./configFilename.js";
 import {
@@ -599,6 +603,39 @@ export const buildApp = async ({
       );
     }
     return service.releaseBridgeRoute(admin, id);
+  });
+  // Candidate validation. Static last segments, so neither reaches the
+  // generic `:resource/:id/:action` handler below.
+  app.get("/api/admin/vpn-bridge-routes/:id/test-config", async (request, reply) => {
+    const admin = adminFor(request);
+    const { id } = idParamsSchema.parse(request.params);
+    const { keyId } = bridgeTestConfigQuerySchema.parse(request.query ?? {});
+    const result = await service.getBridgeRouteTestConfig(admin, id, keyId);
+    // A config grants VPN access: never cached, by anyone.
+    reply.header("cache-control", "no-store, private");
+    reply.header("pragma", "no-cache");
+    reply.header("x-content-type-options", "nosniff");
+    reply.header("content-disposition", contentDispositionAttachment(result.filename));
+    // Absent while no frps registration has been observed for the route.
+    if (result.registrationMarker !== null) {
+      reply.header(
+        BRIDGE_REGISTRATION_MARKER_HEADER,
+        encodeRegistrationMarkerHeader(result.registrationMarker),
+      );
+    }
+    reply.type(result.contentType);
+    return reply.send(result.body);
+  });
+  app.post("/api/admin/vpn-bridge-routes/:id/verify", async (request, reply) => {
+    const admin = adminFor(request);
+    const { id } = idParamsSchema.parse(request.params);
+    const result = await service.verifyBridgeRoute(
+      admin,
+      id,
+      verifyBridgeRouteRequestSchema.parse(request.body),
+    );
+    // 202: a probe check is only queued; 200: operator verification is recorded.
+    return reply.code(result.method === "probe" ? 202 : 200).send(result);
   });
   for (const resource of [
     "users",

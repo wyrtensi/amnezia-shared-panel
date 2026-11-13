@@ -104,6 +104,7 @@ const createRepository = (): ControlRepository => ({
     Promise.resolve({
       id: "key-1",
       ownerId: employee.id,
+      nodeId: "node-1",
       deviceLabel: "phone",
       encrypted,
       policy: defaultPortalPolicy,
@@ -216,6 +217,8 @@ const createRepository = (): ControlRepository => ({
     }),
   ),
   listInfrastructure: vi.fn(() => Promise.resolve([])),
+  findBridgeRouteTarget: vi.fn(() => Promise.resolve(null)),
+  verifyBridgeRoute: vi.fn(() => Promise.reject(new Error("not stubbed"))),
 });
 
 const splitTunnelLink = encodeVpnPayload({
@@ -237,6 +240,7 @@ const splitTunnelLink = encodeVpnPayload({
 const splitTunnelKey = () => ({
   id: "key-1",
   ownerId: employee.id,
+  nodeId: "node-1",
   deviceLabel: "phone",
   encrypted: encryptSecret(splitTunnelLink, keyring, 1),
   policy: defaultPortalPolicy,
@@ -259,6 +263,7 @@ describe("default control service policy enforcement", () => {
     vi.mocked(repository.findKeyConfig).mockResolvedValue({
       id: "key-1",
       ownerId: employee.id,
+      nodeId: "node-1",
       deviceLabel: null,
       encrypted,
       policy: { ...defaultPortalPolicy, allowQrDownload: false },
@@ -313,6 +318,7 @@ describe("default control service policy enforcement", () => {
     vi.mocked(repository.findKeyConfig).mockResolvedValue({
       id: "key-1",
       ownerId: "user-2",
+      nodeId: "node-1",
       deviceLabel: null,
       encrypted,
       policy: defaultPortalPolicy,
@@ -355,6 +361,7 @@ describe("default control service policy enforcement", () => {
     vi.mocked(repository.findKeyConfig).mockResolvedValue({
       id: "key-1",
       ownerId: employee.id,
+      nodeId: "node-1",
       deviceLabel: "phone",
       encrypted: encryptSecret(link, keyring, 1),
       policy: defaultPortalPolicy,
@@ -405,6 +412,7 @@ describe("default control service policy enforcement", () => {
     vi.mocked(repository.findKeyConfig).mockResolvedValue({
       id: "key-1",
       ownerId: employee.id,
+      nodeId: "node-1",
       deviceLabel: "phone",
       encrypted: encryptSecret(link, keyring, 1),
       policy: defaultPortalPolicy,
@@ -505,6 +513,7 @@ describe("default control service policy enforcement", () => {
       vi.mocked(repository.findKeyConfig).mockResolvedValue({
         id: "key-1",
         ownerId: employee.id,
+        nodeId: "node-1",
         deviceLabel: null,
         encrypted,
         policy: { ...defaultPortalPolicy, allowQrDownload: false },
@@ -548,6 +557,7 @@ describe("client-visible connection name", () => {
     vi.mocked(repository.findKeyConfig).mockResolvedValue({
       id: "key-1",
       ownerId: employee.id,
+      nodeId: "node-1",
       deviceLabel: "Main laptop",
       encrypted: encryptSecret(
         encodeVpnPayload({
@@ -595,6 +605,7 @@ describe("the two file shapes and what each one keeps", () => {
     vi.mocked(repository.findKeyConfig).mockResolvedValue({
       id: "key-1",
       ownerId: employee.id,
+      nodeId: "node-1",
       deviceLabel: "phone",
       encrypted: encryptSecret(
         encodeVpnPayload({
@@ -735,6 +746,7 @@ describe("simple-key QR rendering", () => {
     vi.mocked(repository.findKeyConfig).mockResolvedValue({
       id: "key-1",
       ownerId: employee.id,
+      nodeId: "node-1",
       deviceLabel: "phone",
       encrypted: encryptSecret(link, keyring, 1),
       policy: defaultPortalPolicy,
@@ -784,6 +796,7 @@ describe("the AmneziaVPN series refuses a config nobody could scan", () => {
     vi.mocked(repository.findKeyConfig).mockResolvedValue({
       id: "key-1",
       ownerId: employee.id,
+      nodeId: "node-1",
       deviceLabel: "phone",
       encrypted: huge,
       policy: defaultPortalPolicy,
@@ -838,6 +851,7 @@ describe("the AmneziaWG QR refuses a config that will not fit", () => {
     vi.mocked(repository.findKeyConfig).mockResolvedValue({
       id: "key-1",
       ownerId: employee.id,
+      nodeId: "node-1",
       deviceLabel: "phone",
       encrypted: encryptSecret(link, keyring, 1),
       policy: defaultPortalPolicy,

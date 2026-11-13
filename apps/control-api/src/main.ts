@@ -75,7 +75,7 @@ export const startServer = async () => {
   const allowedEmailDomains = csvSet(process.env.AUTH_ALLOWED_DOMAINS);
   // Read once at boot so a malformed value stops the server instead of
   // surfacing on the first bridge request. `jobsEnabled` gates bridge job
-  // queuing (assertBridgeJobsEnabled); nothing queues bridge jobs yet.
+  // queuing (assertBridgeJobsEnabled), such as probe candidate checks.
   const bridgeConfig = resolveBridgeConfig(process.env);
   const repository = new PostgresControlRepository({
     db: database.db,
@@ -84,6 +84,7 @@ export const startServer = async () => {
     bootstrapAdminEmails,
     allowedEmailDomains,
     bridgeObservationStaleMs: bridgeConfig.observationStaleMs,
+    bridgeJobsEnabled: bridgeConfig.jobsEnabled,
   });
   const service = createDefaultControlApiService({ repository, keyring });
   // Identity methods, tried in order: Cloudflare Access JWT (edge login) then the

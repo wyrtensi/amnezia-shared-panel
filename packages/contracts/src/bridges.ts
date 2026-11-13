@@ -337,6 +337,10 @@ export const BRIDGE_ERROR_CODES = [
   "BRIDGE_ROUTE_NOT_FOUND",
   // 409: route preparation for a node that does not serve AWG 3.1.
   "BRIDGE_NODE_NOT_AWG31",
+  // Test-config preview: 403 for a key on another VPN node, 409 for a key
+  // that is not an active AWG 3.1 key.
+  "BRIDGE_TEST_KEY_WRONG_NODE",
+  "BRIDGE_TEST_KEY_UNSUITABLE",
 ] as const;
 export const bridgeErrorCodeSchema = z.enum(BRIDGE_ERROR_CODES);
 
@@ -371,6 +375,148 @@ export const parseBridgeObservationStaleMs = (raw: string | undefined): number =
   }
   return parsed;
 };
+
+// --- Candidate validation: test-config preview and verification ------------
+
+/**
+ * The frps registration marker the bridge-agent reports for a route (an
+ * opaque string derived from the frps client ID and its last start time). A
+ * verification is bound to the marker that was tested; a changed marker
+ * means a different registration and needs fresh verification.
+ */
+export const bridgeRegistrationMarkerSchema = z
+  .string()
+  .min(1)
+  .max(200)
+  .refine(
+    (value) => ![...value].some((char) => char.charCodeAt(0) < 0x20 || char.charCodeAt(0) === 0x7f),
+    "Must not contain control characters",
+  );
+
+/**
+ * `GET /api/admin/vpn-bridge-routes/:id/test-config?keyId=…` answers with the
+ * `.vpn` file as the body and the route's current observed registration
+ * marker in this header, percent-encoded (`encodeURIComponent`). The header
+ * is absent while no registration has been observed.
+ */
+export const BRIDGE_REGISTRATION_MARKER_HEADER = "x-bridge-registration-marker";
+
+export const encodeRegistrationMarkerHeader = (marker: string): string =>
+  encodeURIComponent(marker);
+
+/** The marker from the header value, or null when absent or undecodable. */
+export const decodeRegistrationMarkerHeader = (
+  value: string | null | undefined,
+): string | null => {
+  if (value === null || value === undefined || value === "") return null;
+  try {
+    const decoded = decodeURIComponent(value);
+    return bridgeRegistrationMarkerSchema.safeParse(decoded).success ? decoded : null;
+  } catch {
+    return null;
+  }
+};
+
+export const bridgeTestConfigQuerySchema = z.object({ keyId: z.uuid() });
+
+/**
+ * `POST /api/admin/vpn-bridge-routes/:id/verify`.
+ * - `probe`: queue an external probe check of the draft endpoint (needs
+ *   `VPN_BRIDGE_JOBS_ENABLED` and a probe with the bridge-measurement
+ *   capability).
+ * - `operator`: the administrator attests a real AWG handshake and HTTP
+ *   through the tunnel from a client network, for the registration marker
+ *   they tested (from the test-config preview).
+ */
+export const verifyBridgeRouteRequestSchema = z.discriminatedUnion("method", [
+  z.object({ method: z.literal("probe") }).strict(),
+  z
+    .object({
+      method: z.literal("operator"),
+      registrationMarker: bridgeRegistrationMarkerSchema,
+      confirmHandshakeAndHttp: z.literal(true),
+    })
+    .strict(),
+]);
+export type VerifyBridgeRouteRequest = z.infer<typeof verifyBridgeRouteRequestSchema>;
+
+/**
+ * 202 for `probe`: the check is queued (`queued` false when a check of this
+ * route was already pending and that job is returned). 200 for `operator`:
+ * the route with its recorded verification.
+ */
+export const verifyBridgeRouteResultSchema = z.discriminatedUnion("method", [
+  z.object({
+    method: z.literal("probe"),
+    routeId: z.uuid(),
+    jobId: z.uuid(),
+    queued: z.boolean(),
+    registrationMarker: bridgeRegistrationMarkerSchema,
+  }),
+  z.object({
+    method: z.literal("operator"),
+    routeId: z.uuid(),
+    route: nodeBridgeRouteSchema,
+  }),
+]);
+export type VerifyBridgeRouteResult = z.infer<typeof verifyBridgeRouteResultSchema>;
+
+/** Outbox job type of a queued probe candidate check. */
+export const BRIDGE_ROUTE_CANDIDATE_CHECK_JOB_TYPE = "bridge_route_candidate_check";
+
+/**
+ * The job payload: IDs and the registration marker observed when the check
+ * was queued, which the result is bound to. Never a config or a key id.
+ */
+export const bridgeRouteCandidateCheckPayloadSchema = z.object({
+  routeId: z.uuid(),
+  nodeId: z.uuid(),
+  registrationMarker: bridgeRegistrationMarkerSchema,
+  requestedAt: z.iso.datetime(),
+});
+export type BridgeRouteCandidateCheckPayload = z.infer<
+  typeof bridgeRouteCandidateCheckPayloadSchema
+>;
+
+/**
+ * The bounded codes a probe candidate check stores in `verificationError`.
+ * Never the probe's free-form detail.
+ */
+export const BRIDGE_CANDIDATE_CHECK_ERRORS = [
+  "BRIDGE_JOBS_DISABLED",
+  "BRIDGE_UNSUPPORTED_CAPABILITY",
+  "PROBE_UNAVAILABLE",
+  "PROBE_BUSY",
+  "PROBE_START_FAILED",
+  "PROBE_RUN_LOST",
+  "PROBE_RUN_TIMEOUT",
+  "PROBE_CONTROL_FAILED",
+  "PROBE_TARGET_ERROR",
+  "SERVICE_KEY_UNAVAILABLE",
+  "SERVICE_KEY_NOT_AWG31",
+  "AWG_HANDSHAKE_FAILED",
+  "HTTP_THROUGH_TUNNEL_FAILED",
+] as const;
+export type BridgeCandidateCheckError = (typeof BRIDGE_CANDIDATE_CHECK_ERRORS)[number];
+
+/** The probe capability that makes bridged measurements meaningful. */
+export const BRIDGE_MEASUREMENT_CAPABILITY = "bridge-measurement";
+
+/** What the panel knows about the probe's capabilities; null when unknown. */
+export type ProbeCapabilityInput = {
+  readonly capabilities: readonly string[] | null;
+};
+
+/**
+ * Whether the configured probe can measure a bridged path (explicit
+ * `expectedEgressIp: null`, handshake and HTTP reported apart from ping and
+ * SSH). The single capability lookup for candidate checks: Task 4a supplies
+ * the probe's typed capability response; until then nothing reports
+ * capabilities, so this is false and `verify {method: "probe"}` answers
+ * `BRIDGE_UNSUPPORTED_CAPABILITY` (unknown counts as unsupported).
+ */
+export const probeSupportsBridgeMeasurement = (probe: ProbeCapabilityInput): boolean =>
+  probe.capabilities?.includes(BRIDGE_MEASUREMENT_CAPABILITY) === true;
 
 export type CreateBridgeRequest = z.infer<typeof createBridgeRequestSchema>;
 export type UpdateBridgeRequest = z.infer<typeof updateBridgeRequestSchema>;

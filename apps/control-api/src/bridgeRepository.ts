@@ -1,8 +1,14 @@
 import { randomUUID } from "node:crypto";
 import { and, asc, eq, inArray, sql, type SQL } from "drizzle-orm";
 import {
+  BRIDGE_ROUTE_CANDIDATE_CHECK_JOB_TYPE,
   bridgeFrpProxyName,
   nodeServedProtocols,
+  probeSupportsBridgeMeasurement,
+  type BridgeRouteCandidateCheckPayload,
+  type ProbeCapabilityInput,
+  type VerifyBridgeRouteRequest,
+  type VerifyBridgeRouteResult,
   type Bridge,
   type BridgeEligibility,
   type BridgeRouteSummary,
@@ -19,9 +25,11 @@ import {
 import {
   auditEvents,
   decryptSecret,
+  jobOutbox,
   nodeReachabilityResults,
   nodeReachabilityState,
   nodes,
+  reachabilityProbe,
   users,
   vpnBridgeRoutes,
   vpnBridges,
@@ -34,6 +42,7 @@ import {
   canRenderBridgeEndpoint,
   classifyKeyForBridge,
 } from "./bridgeEndpoint.js";
+import { assertBridgeJobsEnabled } from "./bridgeConfig.js";
 import { checkActivationGuard, checkReleaseGuard } from "./bridgeGuards.js";
 import { bridgeSetupCommands, routeSetupCommands } from "./bridgeSetupCommands.js";
 import { ApiError, type Actor } from "./service.js";
@@ -50,7 +59,34 @@ export type BridgeRepositoryOptions = {
   observationStaleMs: number;
   /** Decrypts stored key artifacts for the eligibility dry-run. */
   keyring: EncryptionKeyring;
+  /** `VPN_BRIDGE_JOBS_ENABLED`: whether probe candidate checks may be queued. */
+  jobsEnabled?: boolean;
+  /**
+   * The capability lookup for probe candidate checks. Defaults to the shared
+   * `probeSupportsBridgeMeasurement`; tests inject a stand-in.
+   */
+  probeSupportsBridgeMeasurement?: (probe: ProbeCapabilityInput) => boolean;
 };
+
+/** A held route as the test-config preview needs it. */
+export type BridgeRouteTarget = {
+  id: string;
+  nodeId: string;
+  bridgeId: string;
+  state: RouteRow["state"];
+  publicUdpPort: number;
+  bridgePublicIpv4: string;
+  observedRegistrationMarker: string | null;
+};
+
+/**
+ * What the panel knows about the probe's capabilities. Nothing is stored yet
+ * (Task 4a adds the probe's typed capability response), so this is unknown,
+ * which counts as unsupported.
+ */
+const probeCapabilityInput = (
+  _probe: Pick<typeof reachabilityProbe.$inferSelect, "id">,
+): ProbeCapabilityInput => ({ capabilities: null });
 
 /** Per-node endpoint state for the shared infrastructure view. */
 export type NodeEndpointSummary = {
@@ -914,5 +950,222 @@ export class PostgresBridgeRepository {
       vpnEndpointRevision: revision,
       activeRoute: candidate ? await this.loadNodeRoute(tx, candidate.id) : null,
     };
+  };
+
+  /** The route and its bridge's public address for the test-config preview. */
+  findRouteTarget = async (routeId: string): Promise<BridgeRouteTarget | null> => {
+    const [row] = await this.db
+      .select({
+        id: vpnBridgeRoutes.id,
+        nodeId: vpnBridgeRoutes.nodeId,
+        bridgeId: vpnBridgeRoutes.bridgeId,
+        state: vpnBridgeRoutes.state,
+        publicUdpPort: vpnBridgeRoutes.publicUdpPort,
+        bridgePublicIpv4: vpnBridges.publicIpv4,
+        observedRegistrationMarker: vpnBridgeRoutes.observedRegistrationMarker,
+      })
+      .from(vpnBridgeRoutes)
+      .innerJoin(vpnBridges, eq(vpnBridges.id, vpnBridgeRoutes.bridgeId))
+      .where(eq(vpnBridgeRoutes.id, routeId))
+      .limit(1);
+    return row ?? null;
+  };
+
+  /**
+   * Lock a route for a verification change: its node row first, then the
+   * route (the lock order every route mutation uses). Only a draft or
+   * retiring route is verified; the active one already serves.
+   */
+  private lockCandidateRoute = async (
+    tx: BridgeTransaction,
+    routeId: string,
+  ): Promise<RouteRow> => {
+    const [located] = await tx
+      .select({ nodeId: vpnBridgeRoutes.nodeId })
+      .from(vpnBridgeRoutes)
+      .where(eq(vpnBridgeRoutes.id, routeId))
+      .limit(1);
+    if (!located) throw routeNotFound();
+    await tx
+      .select({ id: nodes.id })
+      .from(nodes)
+      .where(eq(nodes.id, located.nodeId))
+      .for("no key update");
+    const [route] = await tx
+      .select()
+      .from(vpnBridgeRoutes)
+      .where(eq(vpnBridgeRoutes.id, routeId))
+      .for("update");
+    if (!route) throw routeNotFound();
+    if (route.state === "active") {
+      throw new ApiError(
+        409,
+        "The route is already the node's active endpoint; only a draft or retiring route is verified",
+        "BRIDGE_ROUTE_ACTIVE",
+      );
+    }
+    return route;
+  };
+
+  /**
+   * Verify a draft or retiring route.
+   *
+   * `operator`: record the administrator's attestation of a real AWG
+   * handshake and HTTP through the tunnel, bound to the registration marker
+   * they tested. When a registration has been observed the marker must be
+   * that one; otherwise it is stored as given and compared at activation.
+   *
+   * `probe`: queue a `bridge_route_candidate_check` job bound to the
+   * currently observed marker. Gated by `VPN_BRIDGE_JOBS_ENABLED` and the
+   * probe's bridge-measurement capability. A check already pending for the
+   * route is returned instead of queuing a second one. Nothing about the
+   * route changes until the worker records the result.
+   */
+  verifyRoute = async (
+    actor: Actor,
+    routeId: string,
+    request: VerifyBridgeRouteRequest,
+  ): Promise<VerifyBridgeRouteResult> => {
+    if (request.method === "operator") {
+      await this.db.transaction(async (tx) => {
+        const route = await this.lockCandidateRoute(tx, routeId);
+        if (
+          route.observedRegistrationMarker !== null &&
+          route.observedRegistrationMarker !== request.registrationMarker
+        ) {
+          throw new ApiError(
+            409,
+            "The tested registration marker is not the one the bridge reports now; download a fresh test config and test again",
+            "BRIDGE_OBSERVATION_STALE",
+          );
+        }
+        const now = new Date();
+        await tx
+          .update(vpnBridgeRoutes)
+          .set({
+            verificationMethod: "operator",
+            verifiedRegistrationMarker: request.registrationMarker,
+            verifiedAt: now,
+            verificationResult: "success",
+            verificationError: null,
+            updatedAt: now,
+          })
+          .where(eq(vpnBridgeRoutes.id, routeId));
+        await tx.insert(auditEvents).values({
+          actorUserId: actor.id,
+          actorType: "user",
+          action: "vpn_bridge_route.verified",
+          targetType: "vpn_bridge_route",
+          targetId: routeId,
+          metadata: {
+            nodeId: route.nodeId,
+            bridgeId: route.bridgeId,
+            method: "operator",
+            registrationMarker: request.registrationMarker,
+          },
+        });
+      });
+      return {
+        method: "operator",
+        routeId,
+        route: await this.loadNodeRoute(this.db, routeId),
+      };
+    }
+
+    // Gate first: with job submission off nothing below matters.
+    assertBridgeJobsEnabled({ jobsEnabled: this.options.jobsEnabled ?? false });
+    const [probe] = await this.db
+      .select({ id: reachabilityProbe.id, enabled: reachabilityProbe.enabled })
+      .from(reachabilityProbe)
+      .where(eq(reachabilityProbe.id, 1))
+      .limit(1);
+    if (!probe || !probe.enabled) {
+      throw new ApiError(
+        409,
+        "No enabled external probe is configured; use operator verification",
+        "BRIDGE_UNSUPPORTED_CAPABILITY",
+      );
+    }
+    const supports =
+      this.options.probeSupportsBridgeMeasurement ?? probeSupportsBridgeMeasurement;
+    if (!supports(probeCapabilityInput(probe))) {
+      throw new ApiError(
+        409,
+        "The configured probe does not report the bridge-measurement capability; use operator verification",
+        "BRIDGE_UNSUPPORTED_CAPABILITY",
+      );
+    }
+
+    return this.db.transaction(async (tx) => {
+      const route = await this.lockCandidateRoute(tx, routeId);
+      if (route.observedRegistrationMarker === null) {
+        throw new ApiError(
+          409,
+          "No frps registration has been observed for this route yet; a probe check needs one to bind to",
+          "BRIDGE_OBSERVATION_STALE",
+        );
+      }
+      const marker = route.observedRegistrationMarker;
+      // Serialized by the route lock above, so two requests cannot both
+      // miss each other's pending job.
+      const [pending] = await tx
+        .select({ id: jobOutbox.id, payload: jobOutbox.payload })
+        .from(jobOutbox)
+        .where(
+          and(
+            eq(jobOutbox.type, BRIDGE_ROUTE_CANDIDATE_CHECK_JOB_TYPE),
+            inArray(jobOutbox.status, ["pending", "processing"]),
+            sql`${jobOutbox.payload} ->> 'routeId' = ${routeId}`,
+          ),
+        )
+        .limit(1);
+      if (pending) {
+        const pendingMarker = pending.payload.registrationMarker;
+        return {
+          method: "probe" as const,
+          routeId,
+          jobId: pending.id,
+          queued: false,
+          registrationMarker: typeof pendingMarker === "string" ? pendingMarker : marker,
+        };
+      }
+      const payload: BridgeRouteCandidateCheckPayload = {
+        routeId,
+        nodeId: route.nodeId,
+        registrationMarker: marker,
+        requestedAt: new Date().toISOString(),
+      };
+      const [job] = await tx
+        .insert(jobOutbox)
+        .values({
+          type: BRIDGE_ROUTE_CANDIDATE_CHECK_JOB_TYPE,
+          // Completed rows keep their key, so every request gets its own.
+          deduplicationKey: `${BRIDGE_ROUTE_CANDIDATE_CHECK_JOB_TYPE}:${routeId}:${randomUUID()}`,
+          payload,
+        })
+        .returning({ id: jobOutbox.id });
+      if (!job) throw new Error("Candidate check job insert returned no row");
+      await tx.insert(auditEvents).values({
+        actorUserId: actor.id,
+        actorType: "user",
+        action: "vpn_bridge_route.verification_requested",
+        targetType: "vpn_bridge_route",
+        targetId: routeId,
+        metadata: {
+          nodeId: route.nodeId,
+          bridgeId: route.bridgeId,
+          method: "probe",
+          registrationMarker: marker,
+          jobId: job.id,
+        },
+      });
+      return {
+        method: "probe" as const,
+        routeId,
+        jobId: job.id,
+        queued: true,
+        registrationMarker: marker,
+      };
+    });
   };
 }

@@ -190,6 +190,21 @@ createNode: vi.fn(() => Promise.resolve({ id: "node-1" })),
     }),
   ),
   listInfrastructure: vi.fn(() => Promise.resolve([])),
+  getBridgeRouteTestConfig: vi.fn(() =>
+    Promise.resolve({
+      contentType: "text/plain; charset=utf-8",
+      body: "vpn://test-config",
+      filename: "Node A.vpn",
+      registrationMarker: null as string | null,
+    }),
+  ),
+  verifyBridgeRoute: vi.fn(() =>
+    Promise.resolve({
+      method: "operator" as const,
+      routeId: bridgeRouteFixture.id,
+      route: bridgeRouteFixture,
+    }),
+  ),
 });
 
 describe("control API identity boundary", () => {
@@ -2087,6 +2102,7 @@ describe("config refresh routes", () => {
 
 describe("bridge registry routes", () => {
   const routeId = bridgeRouteFixture.id;
+  const keyId = "6f1c2b9e-1d2a-4c3b-9e8f-0a1b2c3d4e5f";
   const bridgeEndpoints = [
     { method: "GET" as const, url: "/api/admin/infrastructure" },
     { method: "GET" as const, url: "/api/admin/vpn-bridges" },
@@ -2120,6 +2136,15 @@ describe("bridge registry routes", () => {
       url: `/api/admin/nodes/${bridgeNodeId}`,
       payload: { vpnBridgeRouteId: routeId, expectedVpnEndpointRevision: 0 },
     },
+    {
+      method: "GET" as const,
+      url: `/api/admin/vpn-bridge-routes/${routeId}/test-config?keyId=${keyId}`,
+    },
+    {
+      method: "POST" as const,
+      url: `/api/admin/vpn-bridge-routes/${routeId}/verify`,
+      payload: { method: "probe" },
+    },
   ];
 
   const adminApp = async () => {
@@ -2152,6 +2177,8 @@ describe("bridge registry routes", () => {
       service.prepareBridgeRoute,
       service.releaseBridgeRoute,
       service.updateNode,
+      service.getBridgeRouteTestConfig,
+      service.verifyBridgeRoute,
     ]) {
       expect(method).not.toHaveBeenCalled();
     }
@@ -2278,6 +2305,107 @@ describe("bridge registry routes", () => {
       vpnBridgeRouteId: null,
       expectedVpnEndpointRevision: 4,
     });
+    await app.close();
+  });
+
+  it("serves the test config as a private attachment with the encoded marker", async () => {
+    const { service, admin, app } = await adminApp();
+    vi.mocked(service.getBridgeRouteTestConfig).mockResolvedValueOnce({
+      contentType: "text/plain; charset=utf-8",
+      body: "vpn://test-config",
+      filename: "Node A.vpn",
+      registrationMarker: "client-1 06-13 10:20:30",
+    });
+    const response = await app.inject({
+      method: "GET",
+      url: `/api/admin/vpn-bridge-routes/${routeId}/test-config?keyId=${keyId}`,
+      headers: { "x-dev-user-email": admin.email },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.body).toBe("vpn://test-config");
+    expect(response.headers["cache-control"]).toBe("no-store, private");
+    expect(response.headers["content-disposition"]).toMatch(/^attachment;/);
+    expect(response.headers["x-bridge-registration-marker"]).toBe(
+      "client-1%2006-13%2010%3A20%3A30",
+    );
+    expect(service.getBridgeRouteTestConfig).toHaveBeenCalledWith(admin, routeId, keyId);
+
+    // No observed registration: no marker header at all.
+    const unobserved = await app.inject({
+      method: "GET",
+      url: `/api/admin/vpn-bridge-routes/${routeId}/test-config?keyId=${keyId}`,
+      headers: { "x-dev-user-email": admin.email },
+    });
+    expect(unobserved.statusCode).toBe(200);
+    expect(unobserved.headers["x-bridge-registration-marker"]).toBeUndefined();
+
+    for (const query of ["", "?keyId=not-a-uuid"]) {
+      const bad = await app.inject({
+        method: "GET",
+        url: `/api/admin/vpn-bridge-routes/${routeId}/test-config${query}`,
+        headers: { "x-dev-user-email": admin.email },
+      });
+      expect(bad.statusCode, query).toBe(400);
+    }
+    expect(service.getBridgeRouteTestConfig).toHaveBeenCalledTimes(2);
+    await app.close();
+  });
+
+  it("answers 202 for a queued probe check and 200 for operator verification", async () => {
+    const { service, admin, app } = await adminApp();
+    const url = `/api/admin/vpn-bridge-routes/${routeId}/verify`;
+    const headers = { "x-dev-user-email": admin.email };
+    vi.mocked(service.verifyBridgeRoute).mockResolvedValueOnce({
+      method: "probe",
+      routeId,
+      jobId: "5b0c3b3e-3a4f-4f5e-9d6a-7b8c9d0e1f2a",
+      queued: true,
+      registrationMarker: "m-1",
+    });
+    const probe = await app.inject({ method: "POST", url, headers, payload: { method: "probe" } });
+    expect(probe.statusCode).toBe(202);
+    expect(probe.json()).toMatchObject({ method: "probe", queued: true });
+
+    const operator = await app.inject({
+      method: "POST",
+      url,
+      headers,
+      payload: { method: "operator", registrationMarker: "m-1", confirmHandshakeAndHttp: true },
+    });
+    expect(operator.statusCode).toBe(200);
+    expect(service.verifyBridgeRoute).toHaveBeenLastCalledWith(admin, routeId, {
+      method: "operator",
+      registrationMarker: "m-1",
+      confirmHandshakeAndHttp: true,
+    });
+    // Never the generic admin action handler.
+    expect(service.adminAction).not.toHaveBeenCalled();
+    await app.close();
+  });
+
+  it("rejects an operator verification without explicit confirmation or marker", async () => {
+    const { service, admin, app } = await adminApp();
+    const url = `/api/admin/vpn-bridge-routes/${routeId}/verify`;
+    for (const payload of [
+      { method: "operator", registrationMarker: "m-1" },
+      { method: "operator", registrationMarker: "m-1", confirmHandshakeAndHttp: false },
+      { method: "operator", confirmHandshakeAndHttp: true },
+      { method: "operator", registrationMarker: "", confirmHandshakeAndHttp: true },
+      { method: "operator", registrationMarker: "m\n1", confirmHandshakeAndHttp: true },
+      { method: "probe", registrationMarker: "m-1" },
+      { method: "manual" },
+      {},
+    ]) {
+      const response = await app.inject({
+        method: "POST",
+        url,
+        headers: { "x-dev-user-email": admin.email },
+        payload,
+      });
+      expect(response.statusCode, JSON.stringify(payload)).toBe(400);
+      expect(response.json()).toMatchObject({ error: "VALIDATION_ERROR" });
+    }
+    expect(service.verifyBridgeRoute).not.toHaveBeenCalled();
     await app.close();
   });
 });

@@ -45,6 +45,9 @@ import type {
   PrepareBridgeRouteRequest,
   PrepareBridgeRouteResult,
   ReleaseBridgeRouteResult,
+  ProbeCapabilityInput,
+  VerifyBridgeRouteRequest,
+  VerifyBridgeRouteResult,
   UpdateBridgeRequest,
 } from "@amnezia/contracts";
 import {
@@ -176,6 +179,7 @@ import { toRulesRefreshStatus } from "./rulesRefresh.js";
 import {
   mapBridgeConstraintError,
   PostgresBridgeRepository,
+  type BridgeRouteTarget,
 } from "./bridgeRepository.js";
 import {
   nodeReachabilityHistory,
@@ -441,6 +445,10 @@ export type PostgresRepositoryOptions = {
    * five minutes.
    */
   bridgeObservationStaleMs?: number;
+  /** `VPN_BRIDGE_JOBS_ENABLED`; defaults to false (bridge jobs not queued). */
+  bridgeJobsEnabled?: boolean;
+  /** Capability lookup for probe candidate checks; tests inject a stand-in. */
+  probeSupportsBridgeMeasurement?: (probe: ProbeCapabilityInput) => boolean;
 };
 
 const BIGINT_METRIC_FIELDS = [
@@ -518,6 +526,8 @@ export class PostgresControlRepository implements ControlRepository {
       keyring: options.keyring,
       observationStaleMs:
         options.bridgeObservationStaleMs ?? BRIDGE_OBSERVATION_STALE_MS_DEFAULT,
+      jobsEnabled: options.bridgeJobsEnabled ?? false,
+      probeSupportsBridgeMeasurement: options.probeSupportsBridgeMeasurement,
     });
   }
 
@@ -556,6 +566,13 @@ export class PostgresControlRepository implements ControlRepository {
     actor: Actor,
     routeId: string,
   ): Promise<ReleaseBridgeRouteResult> => this.bridges.releaseRoute(actor, routeId);
+  findBridgeRouteTarget = (routeId: string): Promise<BridgeRouteTarget | null> =>
+    this.bridges.findRouteTarget(routeId);
+  verifyBridgeRoute = (
+    actor: Actor,
+    routeId: string,
+    request: VerifyBridgeRouteRequest,
+  ): Promise<VerifyBridgeRouteResult> => this.bridges.verifyRoute(actor, routeId, request);
 
   /**
    * `GET /api/admin/infrastructure`: VPN nodes (the admin nodes list's summary
@@ -1911,6 +1928,7 @@ export class PostgresControlRepository implements ControlRepository {
     return {
       id: row.key.id,
       ownerId: row.key.ownerId,
+      nodeId: row.key.nodeId,
       deviceLabel: row.key.deviceLabel,
       keyNumber: row.key.keyNumber,
       nodeDisplayName: row.nodePublicName ?? row.nodeName,

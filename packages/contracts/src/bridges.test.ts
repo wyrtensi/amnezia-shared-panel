@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
   bridgeFrpProxyName,
+  bridgeRouteCandidateCheckPayloadSchema,
+  decodeRegistrationMarkerHeader,
+  encodeRegistrationMarkerHeader,
+  probeSupportsBridgeMeasurement,
+  verifyBridgeRouteRequestSchema,
   classifyPublicIpv4,
   createBridgeRequestSchema,
   infrastructureItemSchema,
@@ -235,5 +240,59 @@ describe("bridge environment parsers", () => {
     expect(parseBridgeObservationStaleMs("1000")).toBe(1_000);
     expect(() => parseBridgeObservationStaleMs("0")).toThrow();
     expect(() => parseBridgeObservationStaleMs("abc")).toThrow();
+  });
+});
+
+describe("candidate validation contracts", () => {
+  it("accepts a probe request or a confirmed operator attestation only", () => {
+    expect(verifyBridgeRouteRequestSchema.safeParse({ method: "probe" }).success).toBe(true);
+    expect(
+      verifyBridgeRouteRequestSchema.safeParse({
+        method: "operator",
+        registrationMarker: "client-1 06-13 10:20:30",
+        confirmHandshakeAndHttp: true,
+      }).success,
+    ).toBe(true);
+    for (const bad of [
+      { method: "operator", registrationMarker: "m-1" },
+      { method: "operator", registrationMarker: "m-1", confirmHandshakeAndHttp: false },
+      { method: "operator", registrationMarker: "", confirmHandshakeAndHttp: true },
+      { method: "operator", registrationMarker: "a".repeat(201), confirmHandshakeAndHttp: true },
+      { method: "operator", registrationMarker: "m\r\n1", confirmHandshakeAndHttp: true },
+      { method: "probe", extra: 1 },
+      { method: "manual" },
+    ]) {
+      expect(verifyBridgeRouteRequestSchema.safeParse(bad).success, JSON.stringify(bad)).toBe(false);
+    }
+  });
+
+  it("round-trips a marker through the header encoding", () => {
+    const marker = "client-1 06-13 10:20:30 ü";
+    const header = encodeRegistrationMarkerHeader(marker);
+    expect(header).toMatch(/^[\x21-\x7e]+$/);
+    expect(decodeRegistrationMarkerHeader(header)).toBe(marker);
+    expect(decodeRegistrationMarkerHeader(undefined)).toBeNull();
+    expect(decodeRegistrationMarkerHeader("")).toBeNull();
+    expect(decodeRegistrationMarkerHeader("%E0%A4%A")).toBeNull();
+    expect(decodeRegistrationMarkerHeader("%0A")).toBeNull();
+  });
+
+  it("keeps the candidate check payload to IDs and the marker", () => {
+    const payload = {
+      routeId: "0d9e8f7a-6b5c-4d3e-9f2a-1b0c9d8e7f6a",
+      nodeId: "6f1c2b9e-1d2a-4c3b-9e8f-0a1b2c3d4e5f",
+      registrationMarker: "m-1",
+      requestedAt: "2026-11-13T00:00:00.000Z",
+    };
+    expect(bridgeRouteCandidateCheckPayloadSchema.parse(payload)).toEqual(payload);
+    expect(
+      bridgeRouteCandidateCheckPayloadSchema.safeParse({ ...payload, registrationMarker: null }).success,
+    ).toBe(false);
+  });
+
+  it("treats an unknown probe capability as unsupported", () => {
+    expect(probeSupportsBridgeMeasurement({ capabilities: null })).toBe(false);
+    expect(probeSupportsBridgeMeasurement({ capabilities: [] })).toBe(false);
+    expect(probeSupportsBridgeMeasurement({ capabilities: ["bridge-measurement"] })).toBe(true);
   });
 });

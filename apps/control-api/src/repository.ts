@@ -11,6 +11,8 @@ import type {
   PrepareBridgeRouteResult,
   ReleaseBridgeRouteResult,
   UpdateBridgeRequest,
+  VerifyBridgeRouteRequest,
+  VerifyBridgeRouteResult,
   CreateNodeRequest,
   CreateServiceCheckRequest,
   CreateKeyRequest,
@@ -40,6 +42,7 @@ import type {
   ReachabilityProbeView,
 } from "./service.js";
 import type { AwgClientProfileV1 } from "./awgClientProfile.js";
+import type { BridgeRouteTarget } from "./bridgeRepository.js";
 import type { RulePayload } from "./vpnConfig.js";
 
 export type ActiveRule = {
@@ -51,6 +54,8 @@ export type ActiveRule = {
 export type StoredKeyConfig = {
   id: string;
   ownerId: string;
+  /** The VPN node that issued the key. */
+  nodeId: string;
   deviceLabel: string | null;
   // Per-owner key number and the node's user-facing name. Which of them end up
   // in the client-visible connection name is decided by `nameDisplay`.
@@ -249,4 +254,12 @@ export interface ControlRepository {
     routeId: string,
   ) => Promise<ReleaseBridgeRouteResult>;
   listInfrastructure: (actor: Actor) => Promise<InfrastructureItem[]>;
+  /** A held route with its bridge's public address; null when unknown. */
+  findBridgeRouteTarget: (routeId: string) => Promise<BridgeRouteTarget | null>;
+  /** Record operator verification or queue a probe candidate check. */
+  verifyBridgeRoute: (
+    actor: Actor,
+    routeId: string,
+    request: VerifyBridgeRouteRequest,
+  ) => Promise<VerifyBridgeRouteResult>;
 }

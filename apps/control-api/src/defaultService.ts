@@ -11,7 +11,7 @@ import {
   profileRevision,
   selectAwgClientProfile,
 } from "./awgClientProfile.js";
-import type { ControlRepository } from "./repository.js";
+import type { ControlRepository, StoredKeyConfig } from "./repository.js";
 import { mergeRoutePayload } from "./routeMerge.js";
 import {
   ApiError,
@@ -26,6 +26,7 @@ import {
   inspectAwg31ClientConfig,
   setVpnDescription,
 } from "./vpnConfig.js";
+import { inspectAwgVpnLink, type AwgEndpoint } from "@amnezia/vpn-config";
 import { decideBridgeDelivery, renderBridgeEndpoint } from "./bridgeEndpoint.js";
 import { configFilename } from "./configFilename.js";
 import { buildQrFrameTexts } from "./qrFrames.js";
@@ -103,6 +104,57 @@ const withClientProfile = (base: string, profile: unknown): string => {
   }
 };
 
+/**
+ * The link a download serves, built from the key's decrypted saved artifact:
+ * the saved client profile, then the endpoint (`endpoint` null keeps the
+ * artifact's own), then the route profile's current rules, then the
+ * connection name. Reads only; it marks nothing as delivered.
+ */
+const composeExport = async (
+  repository: ControlRepository,
+  key: StoredKeyConfig,
+  savedLink: string,
+  endpoint: AwgEndpoint | null,
+): Promise<{ vpnLink: string; displayName: string }> => {
+  const profiledLink = withClientProfile(savedLink, key.awgClientProfile);
+  const storedLink =
+    endpoint === null ? profiledLink : renderBridgeEndpoint(profiledLink, endpoint);
+  // Apply the active routing rules for non-full-tunnel profiles at export time.
+  // AmneziaVPN clients cannot refresh routing on an imported config, so every
+  // export carries the current rules and clears the "outdated" flag. On top of
+  // the base feed we apply the admin's global exclusions, then the admin's
+  // global additions, then the owner's own custom routes (which therefore
+  // re-add anything the admin excluded). All of it applies even when no base
+  // feed is active yet.
+  const splitProfile =
+    key.routeProfile === "full_tunnel" ? null : key.routeProfile;
+  const globalRoutes = splitProfile
+    ? await repository.getGlobalRoutes()
+    : null;
+  const mergedPayload = mergeRoutePayload({
+    base: key.activeRule?.payload ?? { cidrs: [], domains: [] },
+    global: splitProfile ? globalRoutes?.[splitProfile] : null,
+    userExtra: splitProfile ? key.customRoutes?.[splitProfile] : null,
+  });
+  // Addresses only: a merged payload with nothing to put in AllowedIPs has
+  // no way to narrow the tunnel, so the key ships as the full tunnel it is.
+  const hasRoutes = mergedPayload.cidrs.length > 0;
+  const routedLink =
+    key.routeProfile !== "full_tunnel" && hasRoutes
+      ? applyRouteProfileToVpnLink(storedLink, key.routeProfile, mergedPayload)
+      : storedLink;
+  // Label the connection in the client with the parts this key was created
+  // with, so a user with several keys can tell their servers apart.
+  const displayName = composeKeyDisplayName({
+    serverName: key.nodeDisplayName,
+    label: key.deviceLabel,
+    keyNumber: key.keyNumber,
+    display: key.nameDisplay,
+  });
+  const vpnLink = setVpnDescription(routedLink, displayName);
+  return { vpnLink, displayName };
+};
+
 const unavailable = () =>
   new ApiError(409, "This key cannot refresh its config", CONFIG_REFRESH_UNAVAILABLE);
 
@@ -157,44 +209,12 @@ export const createDefaultControlApiService = ({
       savedLink,
       key.bridgeEndpoint,
     );
-    const profiledLink = withClientProfile(savedLink, key.awgClientProfile);
-    const storedLink =
-      delivery.mode === "bridge"
-        ? renderBridgeEndpoint(profiledLink, delivery.endpoint)
-        : profiledLink;
-    // Apply the active routing rules for non-full-tunnel profiles at export time.
-    // AmneziaVPN clients cannot refresh routing on an imported config, so every
-    // export carries the current rules and clears the "outdated" flag. On top of
-    // the base feed we apply the admin's global exclusions, then the admin's
-    // global additions, then the owner's own custom routes (which therefore
-    // re-add anything the admin excluded). All of it applies even when no base
-    // feed is active yet.
-    const splitProfile =
-      key.routeProfile === "full_tunnel" ? null : key.routeProfile;
-    const globalRoutes = splitProfile
-      ? await repository.getGlobalRoutes()
-      : null;
-    const mergedPayload = mergeRoutePayload({
-      base: key.activeRule?.payload ?? { cidrs: [], domains: [] },
-      global: splitProfile ? globalRoutes?.[splitProfile] : null,
-      userExtra: splitProfile ? key.customRoutes?.[splitProfile] : null,
-    });
-    // Addresses only: a merged payload with nothing to put in AllowedIPs has
-    // no way to narrow the tunnel, so the key ships as the full tunnel it is.
-    const hasRoutes = mergedPayload.cidrs.length > 0;
-    const routedLink =
-      key.routeProfile !== "full_tunnel" && hasRoutes
-        ? applyRouteProfileToVpnLink(storedLink, key.routeProfile, mergedPayload)
-        : storedLink;
-    // Label the connection in the client with the parts this key was created
-    // with, so a user with several keys can tell their servers apart.
-    const displayName = composeKeyDisplayName({
-      serverName: key.nodeDisplayName,
-      label: key.deviceLabel,
-      keyNumber: key.keyNumber,
-      display: key.nameDisplay,
-    });
-    const vpnLink = setVpnDescription(routedLink, displayName);
+    const { vpnLink, displayName } = await composeExport(
+      repository,
+      key,
+      savedLink,
+      delivery.mode === "bridge" ? delivery.endpoint : null,
+    );
     // Only the OWNER downloading their own config marks the rules as applied.
     // An admin peeking at someone's private config must not clear the owner's
     // "rules outdated" indicator (they didn't reinstall anything).
@@ -436,4 +456,72 @@ export const createDefaultControlApiService = ({
   releaseBridgeRoute: (actor, routeId) =>
     repository.releaseBridgeRoute(actor, routeId),
   listInfrastructure: (actor) => repository.listInfrastructure(actor),
+  getBridgeRouteTestConfig: async (actor, routeId, keyId) => {
+    const route = await repository.findBridgeRouteTarget(routeId);
+    if (!route) {
+      throw new ApiError(404, "Bridge route not found", "BRIDGE_ROUTE_NOT_FOUND");
+    }
+    if (route.state === "active") {
+      throw new ApiError(
+        409,
+        "The route is already the node's active endpoint; a normal download serves it",
+        "BRIDGE_ROUTE_ACTIVE",
+      );
+    }
+    const key = await repository.findKeyConfig(keyId);
+    // The administrator's own key only: there is no admin-view path here, so
+    // another owner's key reads as unknown.
+    if (!key || key.ownerId !== actor.id) {
+      throw new ApiError(404, "Key not found", "KEY_NOT_FOUND");
+    }
+    if (key.nodeId !== route.nodeId) {
+      throw new ApiError(
+        403,
+        "The test key must be on the route's VPN node",
+        "BRIDGE_TEST_KEY_WRONG_NODE",
+      );
+    }
+    if (key.state !== "active") {
+      throw new ApiError(
+        409,
+        "The test key must be active",
+        "BRIDGE_TEST_KEY_UNSUITABLE",
+      );
+    }
+    // The normal redownload policy, as for the owner's own `.vpn` download.
+    assertDownloadAllowed(key.policy, "vpn");
+    const savedLink = decryptSecret(key.encrypted, keyring);
+    // A bridge carries the AWG 3.1 listener only: the saved artifact itself
+    // must be 3.1 (not AWG 2, not the 2.0 fallback, not unmarked).
+    if (key.protocol !== "awg3" || inspectAwgVpnLink(savedLink).kind !== "awg31") {
+      throw new ApiError(
+        409,
+        "The test key must be an AWG 3.1 key",
+        "BRIDGE_TEST_KEY_UNSUITABLE",
+      );
+    }
+    const { vpnLink, displayName } = await composeExport(repository, key, savedLink, {
+      host: route.bridgePublicIpv4,
+      port: route.publicUdpPort,
+    });
+    // Deliberately no `markKeyRuleVersion`: a preview is not a delivery, so
+    // the key's "rules outdated" state and the active assignment stay as
+    // they are. IDs only in the audit event.
+    await repository.appendAudit({
+      actorUserId: actor.id,
+      actorType: "user",
+      action: "vpn_bridge_route.test_config_issued",
+      targetType: "vpn_bridge_route",
+      targetId: route.id,
+      metadata: { keyId: key.id, nodeId: route.nodeId, bridgeId: route.bridgeId },
+    });
+    return {
+      contentType: "text/plain; charset=utf-8",
+      body: vpnLink,
+      filename: configFilename(displayName, "vpn"),
+      registrationMarker: route.observedRegistrationMarker,
+    };
+  },
+  verifyBridgeRoute: (actor, routeId, request) =>
+    repository.verifyBridgeRoute(actor, routeId, request),
 });

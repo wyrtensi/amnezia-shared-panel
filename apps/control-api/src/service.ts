@@ -9,6 +9,8 @@ import type {
   PrepareBridgeRouteResult,
   ReleaseBridgeRouteResult,
   UpdateBridgeRequest,
+  VerifyBridgeRouteRequest,
+  VerifyBridgeRouteResult,
   ConfigRefreshResult,
   ConfigRefreshStatus,
   AccessSyncStatus,
@@ -330,7 +332,32 @@ export interface ControlApiService {
   ) => Promise<ReleaseBridgeRouteResult>;
   /** VPN nodes and bridges as one typed `kind` union. */
   listInfrastructure: (actor: Actor) => Promise<InfrastructureItem[]>;
+  /**
+   * A private `.vpn` preview of the caller's own active AWG 3.1 key on the
+   * route's node, rendered with that draft route's endpoint. Leaves the
+   * active assignment, the profile revision and ordinary delivery accounting
+   * untouched.
+   */
+  getBridgeRouteTestConfig: (
+    actor: Actor,
+    routeId: string,
+    keyId: string,
+  ) => Promise<BridgeTestConfigResult>;
+  /** Operator verification, or queue a probe candidate check. */
+  verifyBridgeRoute: (
+    actor: Actor,
+    routeId: string,
+    request: VerifyBridgeRouteRequest,
+  ) => Promise<VerifyBridgeRouteResult>;
 }
+
+export type BridgeTestConfigResult = {
+  contentType: string;
+  body: string;
+  filename: string;
+  /** The route's observed frps registration marker, or null when none. */
+  registrationMarker: string | null;
+};
 
 export class ApiError extends Error {
   constructor(

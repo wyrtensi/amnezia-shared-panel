@@ -789,10 +789,26 @@ export const reachabilityProbe = pgTable(
     widgetVersion: varchar("widget_version", { length: 64 }),
     widgetUpdatedAt: timestamp("widget_updated_at", { withTimezone: true }),
     widgetLastError: varchar("widget_last_error", { length: 300 }),
+    // A bridge route candidate check holding the probe (optional AWG 3.1 node
+    // bridges). The probe runs one run at a time, so this slot and
+    // `current_run_id` are never both taken by a new run: a candidate run is
+    // claimed only while both are empty, and the regular run waits while a
+    // candidate holds the probe. Its result goes to the route only, never to
+    // node status, history or alerts.
+    candidateRunId: uuid("candidate_run_id"),
+    candidateRouteId: uuid("candidate_route_id"),
+    // The observed frps registration marker the check was queued for.
+    candidateRegistrationMarker: text("candidate_registration_marker"),
+    candidateRequestedAt: timestamp("candidate_requested_at", { withTimezone: true }),
+    candidateRunStartedAt: timestamp("candidate_run_started_at", { withTimezone: true }),
     ...timestamps,
   },
   (table) => [
     check("reachability_probe_singleton", sql`${table.id} = 1`),
+    check(
+      "reachability_probe_candidate_complete",
+      sql`(${table.candidateRunId} is null and ${table.candidateRouteId} is null and ${table.candidateRegistrationMarker} is null and ${table.candidateRequestedAt} is null and ${table.candidateRunStartedAt} is null) or (${table.candidateRunId} is not null and ${table.candidateRouteId} is not null and ${table.candidateRegistrationMarker} is not null and ${table.candidateRequestedAt} is not null and ${table.candidateRunStartedAt} is not null)`,
+    ),
     check(
       "reachability_probe_interval_range",
       sql`${table.intervalSec} >= 300 AND ${table.intervalSec} <= 86400`,
