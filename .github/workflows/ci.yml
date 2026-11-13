@@ -94,6 +94,11 @@ jobs:
       - run: npm ci
       - run: npm test
       - run: npm run build
+      # The release workflow builds this same Dockerfile on a tag; build it
+      # here (no push) so a broken image is found on the branch, not at release.
+      - name: Build the image
+        working-directory: .
+        run: docker build services/bridge-agent --tag bridge-agent:ci
 
   infra:
     name: Infra and rollout script tests

@@ -271,6 +271,14 @@ export const bridgeRouteSummarySchema = z.object({
 export const bridgeSetupCommandsSchema = z.object({
   install: z.string(),
   dryRun: z.string(),
+  /**
+   * The `<approved repository>@sha256:<digest>` already appended to both
+   * commands as `--agent-image`, resolved by the panel from the approved
+   * bridge-agent repository. Null when none is available (repository not
+   * configured, not yet resolved, or no compatible release): the commands then
+   * install frps only and the installer exits 60.
+   */
+  agentImage: z.string().nullable().optional(),
 });
 export type BridgeSetupCommands = z.infer<typeof bridgeSetupCommandsSchema>;
 
@@ -516,6 +524,16 @@ export const BRIDGE_ERROR_CODES = [
   "BRIDGE_AGENT_UNREACHABLE",
 ] as const;
 export const bridgeErrorCodeSchema = z.enum(BRIDGE_ERROR_CODES);
+
+/**
+ * Bridge-agent releases the panel offers (Task 6a). The image carries its
+ * API version as this OCI label; a release whose label is outside
+ * `BRIDGE_AGENT_SUPPORTED_API_VERSIONS` is never offered. A release without the
+ * label falls back to `BRIDGE_AGENT_MIN_VERSION` on its semver tag.
+ */
+export const BRIDGE_AGENT_API_VERSION_LABEL = "io.amnezia.bridge-agent.api-version";
+export const BRIDGE_AGENT_SUPPORTED_API_VERSIONS: readonly number[] = [1];
+export const BRIDGE_AGENT_MIN_VERSION = "0.1.0";
 
 /**
  * How old the latest bridge-agent observation may be and still count as

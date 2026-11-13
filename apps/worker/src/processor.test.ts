@@ -37,6 +37,7 @@ const createRepository = (): WorkerRepository => ({
   completeNodeAgentUpdate: vi.fn(() => Promise.resolve()),
   completeNodeCapacityChange: vi.fn(() => Promise.resolve()),
   saveNodeAgentRelease: vi.fn(() => Promise.resolve()),
+  saveBridgeAgentRelease: vi.fn(() => Promise.resolve()),
   completeProvision: vi.fn(() => Promise.resolve()),
   completeLifecycle: vi.fn(() => Promise.resolve()),
   completeJob: vi.fn(() => Promise.resolve()),

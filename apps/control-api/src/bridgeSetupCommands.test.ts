@@ -15,8 +15,19 @@ describe("bridge setup commands", () => {
     expect(commands).toEqual({
       install: `sudo sh /opt/amnezia-bridge/install-bridge.sh --bridge-id ${BRIDGE_ID} --control-port 7000 --udp-start 41000 --udp-end 41031`,
       dryRun: `sudo sh /opt/amnezia-bridge/install-bridge.sh --bridge-id ${BRIDGE_ID} --control-port 7000 --udp-start 41000 --udp-end 41031 --dry-run`,
+      agentImage: null,
     });
     expect(commands).not.toHaveProperty("remove");
+  });
+
+  it("appends the digest-pinned agent image to both commands, before --dry-run", () => {
+    const image = `ghcr.io/owner/repo/bridge-agent@sha256:${"a".repeat(64)}`;
+    const commands = bridgeSetupCommands(
+      { id: BRIDGE_ID, controlTcpPort: 7000, udpPortStart: 41000, udpPortEnd: 41031 },
+      image,
+    );
+    const base = `sudo sh /opt/amnezia-bridge/install-bridge.sh --bridge-id ${BRIDGE_ID} --control-port 7000 --udp-start 41000 --udp-end 41031 --agent-image ${image}`;
+    expect(commands).toEqual({ install: base, dryRun: `${base} --dry-run`, agentImage: image });
   });
 
   it("builds the frpc commands without local overrides and a remove that needs only the route id", () => {

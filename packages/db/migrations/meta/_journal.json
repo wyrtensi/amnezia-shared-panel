@@ -337,6 +337,13 @@
       "when": 1794593841539,
       "tag": "0047_bridge_enrollment",
       "breakpoints": true
+    },
+    {
+      "idx": 48,
+      "version": "7",
+      "when": 1794598820955,
+      "tag": "0048_bridge_agent_releases",
+      "breakpoints": true
     }
   ]
 }

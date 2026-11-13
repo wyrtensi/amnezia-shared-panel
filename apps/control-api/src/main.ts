@@ -86,6 +86,7 @@ export const startServer = async () => {
     bridgeObservationStaleMs: bridgeConfig.observationStaleMs,
     bridgeJobsEnabled: bridgeConfig.jobsEnabled,
     bridgeManagementHosts: bridgeConfig.managementHosts,
+    bridgeAgentImageRepository: bridgeConfig.agentImageRepository,
   });
   const service = createDefaultControlApiService({ repository, keyring });
   // Identity methods, tried in order: Cloudflare Access JWT (edge login) then the

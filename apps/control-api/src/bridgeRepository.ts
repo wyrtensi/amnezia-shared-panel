@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { and, asc, desc, eq, inArray, or, sql, type SQL } from "drizzle-orm";
 import {
+  isPublishableAgentImage,
   BRIDGE_ROUTE_CANDIDATE_CHECK_JOB_TYPE,
   bridgeFrpProxyName,
   nodeServedProtocols,
@@ -26,6 +27,7 @@ import {
   type UpdateBridgeRequest,
 } from "@amnezia/contracts";
 import {
+  bridgeAgentReleases,
   auditEvents,
   decryptSecret,
   jobOutbox,
@@ -83,6 +85,11 @@ export type BridgeRepositoryOptions = {
   /** The HTTP client for bridge-agent calls at enrollment; tests inject one. */
   bridgeAgentFetch?: typeof fetch;
   bridgeAgentTimeoutMs?: number;
+  /**
+   * `BRIDGE_AGENT_IMAGE_REPOSITORY`: the approved bridge-agent repository. Only
+   * its resolved release is ever put in a setup command; unset means none.
+   */
+  bridgeAgentImageRepository?: string;
   /** `VPN_BRIDGE_JOBS_ENABLED`: whether probe candidate checks may be queued. */
   jobsEnabled?: boolean;
   /**
@@ -237,6 +244,7 @@ const toBridge = (
   routes: BridgeRouteSummary[],
   now: Date,
   staleMs: number,
+  agentImage: string | null,
 ): Bridge => ({
   id: row.id,
   name: row.name,
@@ -264,7 +272,7 @@ const toBridge = (
     lastPollAttemptAt: iso(row.lastPollAttemptAt),
   },
   routes,
-  setupCommands: bridgeSetupCommands(row),
+  setupCommands: bridgeSetupCommands(row, agentImage),
   createdAt: row.createdAt.toISOString(),
   updatedAt: row.updatedAt.toISOString(),
 });
@@ -409,6 +417,26 @@ export class PostgresBridgeRepository {
     return byBridge;
   };
 
+  /**
+   * The newest compatible bridge-agent image the worker resolved from the
+   * approved repository, as `repository@sha256:<digest>`; null when the
+   * repository is not configured, nothing was resolved, or the stored
+   * reference is not a digest of exactly that repository. Rows of any other
+   * repository are never read, and a tag can never come out of here.
+   */
+  private approvedAgentImage = async (): Promise<string | null> => {
+    const repository = this.options.bridgeAgentImageRepository?.trim();
+    if (!repository) return null;
+    const [release] = await this.db
+      .select()
+      .from(bridgeAgentReleases)
+      .where(eq(bridgeAgentReleases.repository, repository))
+      .limit(1);
+    if (!release) return null;
+    const image = `${release.repository}@${release.digest}`;
+    return isPublishableAgentImage(image, repository) ? image : null;
+  };
+
   private readBridge = async (bridgeId: string): Promise<Bridge> => {
     const [row] = await this.db
       .select()
@@ -418,7 +446,13 @@ export class PostgresBridgeRepository {
     if (!row) throw bridgeNotFound();
     const now = new Date();
     const routes = await this.routeSummaries([row], now);
-    return toBridge(row, routes.get(row.id) ?? [], now, this.options.observationStaleMs);
+    return toBridge(
+      row,
+      routes.get(row.id) ?? [],
+      now,
+      this.options.observationStaleMs,
+      await this.approvedAgentImage(),
+    );
   };
 
   listBridges = async (): Promise<Bridge[]> => {
@@ -428,8 +462,9 @@ export class PostgresBridgeRepository {
       .orderBy(asc(vpnBridges.name), asc(vpnBridges.createdAt));
     const now = new Date();
     const routes = await this.routeSummaries(rows, now);
+    const agentImage = await this.approvedAgentImage();
     return rows.map((row) =>
-      toBridge(row, routes.get(row.id) ?? [], now, this.options.observationStaleMs),
+      toBridge(row, routes.get(row.id) ?? [], now, this.options.observationStaleMs, agentImage),
     );
   };
 

@@ -8,7 +8,16 @@ describe("resolveBridgeConfig", () => {
       jobsEnabled: false,
       observationStaleMs: 300_000,
       managementHosts: ["host.docker.internal"],
+      agentImageRepository: undefined,
     });
+  });
+
+  it("reads the approved bridge-agent repository, trimmed, empty meaning unset", () => {
+    expect(
+      resolveBridgeConfig({ BRIDGE_AGENT_IMAGE_REPOSITORY: " ghcr.io/o/r/bridge-agent " })
+        .agentImageRepository,
+    ).toBe("ghcr.io/o/r/bridge-agent");
+    expect(resolveBridgeConfig({ BRIDGE_AGENT_IMAGE_REPOSITORY: "  " }).agentImageRepository).toBeUndefined();
   });
 
   it("reads the allowed management hosts and refuses malformed entries", () => {

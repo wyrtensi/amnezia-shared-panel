@@ -28,12 +28,43 @@ sudo sh /opt/amnezia-bridge/install-bridge.sh --bridge-id <id> --control-port 70
   --agent-image <name@sha256:digest> [--dry-run]
 ```
 
-The image is the bridge-agent image published with the release (Task 6a builds
-it); pass it with `--agent-image` or `BRIDGE_AGENT_IMAGE`. It must be pinned by
-digest: a tag is refused (exit 2). Without an image the frps is installed, the
+The panel's setup command already carries `--agent-image <repo>@sha256:<digest>`:
+the Control API puts the newest compatible image of the approved bridge-agent
+repository there (`BRIDGE_AGENT_IMAGE_REPOSITORY` on the panel; its worker
+resolves the tag to a digest). When none is available the command has no
+`--agent-image` and the UI and `bridge-add` say so; you can also pass the image
+by hand with `--agent-image` or `BRIDGE_AGENT_IMAGE`. The image must be pinned by
+digest (a tag is refused, exit 2) and come from the approved repository: exactly
+`--agent-repository` / `BRIDGE_AGENT_IMAGE_REPOSITORY` when given, else any
+`ghcr.io/<path>/bridge-agent`. Without an image the frps is installed, the
 output says `bridge-agent NOT installed` and the script exits 60: run it again
 with the image. The agent step runs after, and never rolls back or restarts, a
 working frps.
+
+With an image the installer first checks the host prerequisites (docker, the
+compose plugin, systemd, curl, sha256sum) and refuses with exit 61 before it
+touches anything, then runs frps, pulls the digest, starts the service and, once
+`/healthz` answers, writes the **pin file** `/etc/amnezia-bridge/agent/image.pin`
+(mode 0600: `BRIDGE_AGENT_IMAGE_REPOSITORY` and `BRIDGE_AGENT_IMAGE`). The pin
+records the approved repository and the digest that is running; the bridge-agent
+updater (Task 6c) reads and rewrites it. `agent.env` keeps the same image for
+Compose.
+
+## The bridge-agent image
+
+`services/bridge-agent/Dockerfile` builds it (multi-stage, pinned bases, `dist`
+plus `package.json`, healthcheck on the unauthenticated `/healthz`; non-root by
+default and run as root by `compose.yaml`, see below). It carries the label
+`io.amnezia.bridge-agent.api-version`, which the panel checks against the API
+versions it supports. Its version is the `services/bridge-agent/package.json`
+version, released independently of the panel and the node-agent: push the tag
+`bridge-agent-vX.Y.Z` (it must equal that version; the workflow refuses a
+mismatch) and `.github/workflows/release-bridge-agent.yml` builds and pushes
+`ghcr.io/<owner>/<repo>/bridge-agent:X.Y.Z` (no `latest`, tags only, no GitHub
+Release). Set `BRIDGE_AGENT_IMAGE_REPOSITORY=ghcr.io/<owner>/<repo>/bridge-agent`
+in `infra/prod/.env`; the worker offers the newest tag at or above 0.1.0 whose
+API version label is supported (an image without the label is judged by the
+version alone).
 
 Run `--dry-run` first: it reads the real listeners and unit state, prints
 `PLAN:` lines and the firewall rules, and changes nothing. A repeat with the

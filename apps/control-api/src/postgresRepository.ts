@@ -446,6 +446,8 @@ export type PostgresRepositoryOptions = {
    * five minutes.
    */
   bridgeObservationStaleMs?: number;
+  /** `BRIDGE_AGENT_IMAGE_REPOSITORY`: the approved bridge-agent repository. */
+  bridgeAgentImageRepository?: string;
   /** `VPN_BRIDGE_JOBS_ENABLED`; defaults to false (bridge jobs not queued). */
   bridgeJobsEnabled?: boolean;
   /** Capability lookup for probe candidate checks; tests inject a stand-in. */
@@ -536,6 +538,7 @@ export class PostgresControlRepository implements ControlRepository {
       activeKeyVersion: this.activeKeyVersion,
       observationStaleMs:
         options.bridgeObservationStaleMs ?? BRIDGE_OBSERVATION_STALE_MS_DEFAULT,
+      bridgeAgentImageRepository: options.bridgeAgentImageRepository,
       jobsEnabled: options.bridgeJobsEnabled ?? false,
       probeSupportsBridgeMeasurement: options.probeSupportsBridgeMeasurement,
       managementHosts: options.bridgeManagementHosts ?? BRIDGE_MANAGEMENT_HOSTS_DEFAULT,

@@ -60,7 +60,13 @@ function projectVerification(v: RouteVerificationView | undefined): Record<strin
   };
 }
 
-export type SetupCommands = { install?: string; dryRun?: string; remove?: string };
+export type SetupCommands = {
+  install?: string;
+  dryRun?: string;
+  remove?: string;
+  /** The digest-pinned image already in the bridge commands; null when none is available. */
+  agentImage?: string | null;
+};
 
 export type BridgeView = {
   id: string;
@@ -152,6 +158,8 @@ function projectSetup(value: unknown): SetupCommands | undefined {
     const item = (value as Record<string, unknown>)[key];
     if (typeof item === "string") out[key] = item;
   }
+  const image = (value as Record<string, unknown>).agentImage;
+  if (typeof image === "string" || image === null) out.agentImage = image;
   return Object.keys(out).length > 0 ? out : undefined;
 }
 
@@ -399,7 +407,11 @@ function printBridge(bridge: BridgeView): void {
   if (setup) {
     console.log("setup commands (run them on the bridge host yourself; copy infra/bridge/ to /opt/amnezia-bridge/ first):");
     for (const key of SETUP_KEYS) if (setup[key]) console.log(`  ${key}: ${setup[key]}`);
-    console.log("  Append --agent-image <name@sha256:digest> to install the bridge-agent too; without it only frps is installed (exit 60).");
+    console.log(
+      setup.agentImage
+        ? `  The commands carry the approved bridge-agent image (${setup.agentImage}).`
+        : "  No approved bridge-agent image is available (set BRIDGE_AGENT_IMAGE_REPOSITORY on the panel and publish a bridge-agent release). Without --agent-image <name@sha256:digest> only frps is installed (exit 60).",
+    );
   }
 }
 

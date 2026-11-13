@@ -35,16 +35,27 @@ export type BridgeSetupInput = {
   udpPortEnd: number;
 };
 
-export const bridgeSetupCommands = (bridge: BridgeSetupInput): BridgeSetupCommands => {
+/**
+ * `agentImage` is the digest-pinned `<approved repository>@sha256:<digest>`
+ * the panel resolved (null when none is available); with it the installer also
+ * installs the bridge-agent, without it the installer exits 60 after frps. The
+ * reference is public registry metadata, not a secret.
+ */
+export const bridgeSetupCommands = (
+  bridge: BridgeSetupInput,
+  agentImage: string | null = null,
+): BridgeSetupCommands => {
   const args: Array<[string, string | number]> = [
     ["--bridge-id", bridge.id],
     ["--control-port", bridge.controlTcpPort],
     ["--udp-start", bridge.udpPortStart],
     ["--udp-end", bridge.udpPortEnd],
+    ...(agentImage ? ([["--agent-image", agentImage]] as Array<[string, string]>) : []),
   ];
   return {
     install: command(BRIDGE_SCRIPT, args),
     dryRun: command(BRIDGE_SCRIPT, args, ["--dry-run"]),
+    agentImage,
   };
 };
 

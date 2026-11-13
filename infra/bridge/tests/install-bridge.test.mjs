@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -27,7 +27,8 @@ const fixture = async () => {
   const etc = join(root, "etc");
   const bridgeEtc = join(etc, "amnezia-bridge");
   const state = join(root, "state");
-  for (const dir of [bin, join(bridgeEtc, "frp"), join(etc, "ssh"), state]) {
+  const systemd = join(root, "run-systemd");
+  for (const dir of [bin, join(bridgeEtc, "frp"), join(etc, "ssh"), state, systemd]) {
     await mkdir(dir, { recursive: true });
   }
   await write(join(bridgeEtc, "frp", "dashboard.env"), "FRPS_DASHBOARD_USER=u\nFRPS_DASHBOARD_PASSWORD=p\n", 0o600);
@@ -84,6 +85,8 @@ echo '{"ok":true}'
     AMNEZIA_ETC: etc,
     AMNEZIA_FRPS_INSTALLER: join(root, "frps-installer.sh"),
     AMNEZIA_ALLOW_NONROOT: "1",
+    AMNEZIA_SYSTEMD_DIR: systemd,
+    BRIDGE_AGENT_IMAGE_REPOSITORY: "",
     AMNEZIA_LISTEN_WAIT: "2",
     BRIDGE_AGENT_IMAGE: "",
   };
@@ -91,7 +94,8 @@ echo '{"ok":true}'
     spawnSync("sh", [scriptPath, ...a], { env: { ...env, ...extraEnv }, encoding: "utf8" });
   const agentDir = join(bridgeEtc, "agent");
   return {
-    root, etc, state, agentDir, run,
+    root, etc, state, bin, systemd, agentDir, run,
+    pinFile: join(agentDir, "image.pin"),
     token: join(agentDir, "api-token"),
     envFile: join(agentDir, "agent.env"),
     calls: () => readFile(join(state, "calls"), "utf8").catch(() => ""),
@@ -116,7 +120,7 @@ withHost("installs frps first, then the agent, and prints only safe enrollment m
   const r = h.run(withImage);
   assert.equal(r.status, 0, output(r));
   const calls = await h.calls();
-  assert.ok(calls.indexOf("frps --bridge-id") < calls.indexOf("docker compose"), "frps runs before the agent");
+  assert.ok(calls.indexOf("frps --bridge-id") < calls.indexOf("docker compose --project-name"), "frps runs before the agent");
   assert.match(calls, new RegExp(`frps --bridge-id ${BRIDGE} --control-port 7000 --udp-start 41000 --udp-end 41031\\n`));
   assert.match(calls, /docker compose --project-name amnezia-bridge-agent --env-file .*agent\.env -f .*compose\.yaml up -d/);
 
@@ -165,7 +169,7 @@ withHost("a dry run plans both parts and generates, pulls, writes and starts not
   assert.match(r.stdout, /PLAN: docker compose pull and up -d/);
   const calls = await h.calls();
   assert.match(calls, /frps .* --dry-run/);
-  assert.doesNotMatch(calls, /docker/);
+  assert.doesNotMatch(calls, /compose .*(pull|up)/);
   await assert.rejects(stat(h.agentDir));
 });
 
@@ -209,7 +213,7 @@ withHost("a failing frps step stops before the agent and keeps its exit code", a
   await writeFile(join(h.state, "frps-rc"), "21");
   const r = h.run(withImage);
   assert.equal(r.status, 21);
-  assert.doesNotMatch(await h.calls(), /docker/);
+  assert.doesNotMatch(await h.calls(), /compose .*(pull|up)/);
   await assert.rejects(stat(h.agentDir));
 });
 
@@ -270,4 +274,99 @@ withHost("rejects bad arguments before running anything", async (h) => {
   }
   assert.equal(await h.calls(), "");
   assert.deepEqual(await readdir(h.etc), ["amnezia-bridge", "ssh"]);
+});
+
+withHost("host prerequisites are checked before anything is installed, each with exit 61 and the missing name", async (h) => {
+  // compose plugin
+  await h.flag("no-compose");
+  const noCompose = h.run(withImage);
+  assert.equal(noCompose.status, 61, output(noCompose));
+  assert.match(noCompose.stderr, /docker-compose-plugin/);
+  await rm(join(h.state, "no-compose"));
+
+  // systemd
+  await rm(h.systemd, { recursive: true });
+  const noSystemd = h.run(withImage);
+  assert.equal(noSystemd.status, 61, output(noSystemd));
+  assert.match(noSystemd.stderr, /missing host prerequisites.*systemd/);
+  await mkdir(h.systemd);
+
+  // docker, curl and sha256sum: a PATH that holds only the tools the script needs up to that point
+  const tools = join(h.root, "tools");
+  await mkdir(tools);
+  for (const name of ["grep", "id", "dirname", "sed", "awk", "cat", "wc", "mktemp", "mkdir", "chmod", "mv", "rm", "stat", "tr", "head", "sleep"]) {
+    const found = spawnSync("sh", ["-c", `command -v ${name}`], { encoding: "utf8" }).stdout.trim();
+    if (found) await symlink(found, join(tools, name));
+  }
+  const bare = (extra) => spawnSync("/bin/sh", [scriptPath, ...withImage], {
+    env: { PATH: `${tools}${extra}`, STATE: h.state, AMNEZIA_ETC: h.etc, AMNEZIA_FRPS_INSTALLER: join(h.root, "frps-installer.sh"), AMNEZIA_ALLOW_NONROOT: "1", AMNEZIA_SYSTEMD_DIR: h.systemd },
+    encoding: "utf8",
+  });
+  const none = bare("");
+  assert.equal(none.status, 61, output(none));
+  assert.match(none.stderr, /missing host prerequisites for the bridge-agent: docker curl sha256sum/);
+  // Nothing was installed: frps never ran, no agent directory.
+  assert.doesNotMatch(await h.calls(), /frps/);
+  await assert.rejects(stat(h.agentDir));
+
+  // docker and curl present (the stubs), sha256sum still missing
+  const partial = bare(`:${h.bin}`);
+  assert.equal(partial.status, 61, output(partial));
+  assert.match(partial.stderr, /: sha256sum \(/);
+
+  // a dry run refuses the same way
+  const dry = h.run([...withImage, "--dry-run"], { AMNEZIA_SYSTEMD_DIR: join(h.root, "absent") });
+  assert.equal(dry.status, 61, output(dry));
+});
+
+withHost("without an image no agent prerequisite is required (frps-only path)", async (h) => {
+  await h.flag("no-compose");
+  const r = h.run(args);
+  assert.equal(r.status, 60, output(r));
+});
+
+withHost("the image must come from the approved bridge-agent repository", async (h) => {
+  const digest = `@sha256:${DIGEST}`;
+  // Default rule: ghcr.io/<path>/bridge-agent only.
+  for (const image of [`ghcr.io/example/node-agent${digest}`, `docker.io/example/bridge-agent${digest}`, `ghcr.io/example/bridge-agent-evil${digest}`, `evil.example/ghcr.io/x/bridge-agent${digest}`]) {
+    const r = h.run([...args, "--agent-image", image]);
+    assert.equal(r.status, 2, image);
+    assert.match(r.stderr, /bridge-agent repository/);
+  }
+  // A configured repository is an exact match.
+  const approved = "ghcr.io/stas/panel/bridge-agent";
+  const other = h.run([...args, "--agent-image", IMAGE, "--agent-repository", approved]);
+  assert.equal(other.status, 2);
+  assert.match(other.stderr, /not from the approved bridge-agent repository ghcr\.io\/stas\/panel\/bridge-agent/);
+  const viaEnv = h.run([...args, "--agent-image", IMAGE], { BRIDGE_AGENT_IMAGE_REPOSITORY: approved });
+  assert.equal(viaEnv.status, 2);
+  assert.equal(await h.calls(), "", "refused before frps ran");
+  const ok = h.run([...args, "--agent-image", `${approved}${digest}`, "--agent-repository", approved]);
+  assert.equal(ok.status, 0, output(ok));
+});
+
+withHost("the pin file records the approved repository and the running digest, only after the agent is healthy", async (h) => {
+  const r = h.run(withImage);
+  assert.equal(r.status, 0, output(r));
+  const pin = await readFile(h.pinFile, "utf8");
+  assert.match(pin, /^BRIDGE_AGENT_IMAGE_REPOSITORY=ghcr\.io\/example\/bridge-agent$/m);
+  assert.match(pin, new RegExp(`^BRIDGE_AGENT_IMAGE=${IMAGE}$`, "m"));
+  assert.equal((await stat(h.pinFile)).mode & 0o777, 0o600);
+  assert.match(r.stdout, new RegExp(`pinned image:\\s+sha256:${DIGEST}`));
+
+  // A failed agent leaves an earlier pin untouched and writes none.
+  const second = await fixture();
+  try {
+    await second.flag("unhealthy");
+    assert.equal(second.run(withImage).status, 64);
+    await assert.rejects(stat(second.pinFile));
+  } finally {
+    await second.cleanup();
+  }
+});
+
+withHost("a dry run plans the pin file without writing it", async (h) => {
+  const r = h.run([...withImage, "--dry-run"]);
+  assert.match(r.stdout, /PLAN: write the pin file .*image\.pin .*repository ghcr\.io\/example\/bridge-agent/);
+  await assert.rejects(stat(h.pinFile));
 });

@@ -2,8 +2,8 @@
 # Install a whole bridge host: the frps (install-frps.sh) and the bridge-agent.
 #
 #   install-bridge.sh --bridge-id <uuid> --control-port <tcp> --udp-start <first>
-#       --udp-end <last> [--agent-image <name@sha256:digest>] [--agent-port 7600]
-#       [--dry-run]
+#       --udp-end <last> [--agent-image <name@sha256:digest>]
+#       [--agent-repository <name>] [--agent-port 7600] [--dry-run]
 #
 # It runs install-frps.sh first, with the same arguments, and then installs the
 # bridge-agent as the Docker Compose service in compose.yaml next to this
@@ -11,9 +11,18 @@
 # the agent only reads from frps, so a working bridge keeps forwarding.
 #
 # The agent image comes from --agent-image or BRIDGE_AGENT_IMAGE and must be
-# pinned by digest (name@sha256:<64 hex>); a tag is refused. Without an image
-# the frps is still installed, the output says "bridge-agent NOT installed" and
-# the script exits 60.
+# pinned by digest (name@sha256:<64 hex>); a tag is refused. It must also come
+# from the approved bridge-agent repository: the one given by --agent-repository
+# or BRIDGE_AGENT_IMAGE_REPOSITORY (exact match), else any
+# ghcr.io/<path>/bridge-agent. Without an image the frps is still installed, the
+# output says "bridge-agent NOT installed" and the script exits 60.
+#
+# Host prerequisites for the agent (docker, the compose plugin, systemd, curl,
+# sha256sum) are checked before anything is installed, so a host that cannot
+# run the agent is refused up front (exit 61) instead of ending up with frps
+# only. After the agent passes its health check the pin file
+# /etc/amnezia-bridge/agent/image.pin records the approved repository and the
+# digest that is running; the updater (Task 6c) reads and rewrites it.
 #
 # The agent's API token is generated here once, on the host, in
 # /etc/amnezia-bridge/agent/api-token (mode 0600). It is never regenerated on a
@@ -26,13 +35,15 @@
 # Exit codes: those of install-frps.sh (frps step), plus
 #    2  invalid arguments (including an image that is not digest-pinned)
 #   60  no agent image was given; the frps was installed, the agent was not
-#   61  docker or the compose plugin is missing
+#   61  a host prerequisite for the agent is missing (docker, compose plugin,
+#       systemd, curl, sha256sum)
 #   62  the token or env file is unsafe or cannot be written
 #   63  pulling the image or starting the compose service failed
 #   64  the agent does not listen on 127.0.0.1:<port> or /healthz fails
 #
 # Test seams (not for operators): AMNEZIA_ETC, AMNEZIA_FRPS_INSTALLER,
-# AMNEZIA_ALLOW_NONROOT, AMNEZIA_LISTEN_WAIT, AMNEZIA_SSH_HOST_KEY.
+# AMNEZIA_ALLOW_NONROOT, AMNEZIA_LISTEN_WAIT, AMNEZIA_SSH_HOST_KEY,
+# AMNEZIA_SYSTEMD_DIR.
 set -eu
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -43,6 +54,8 @@ BRIDGE_ETC="$ETC/amnezia-bridge"
 AGENT_DIR="$BRIDGE_ETC/agent"
 TOKEN_FILE="$AGENT_DIR/api-token"
 ENV_FILE="$AGENT_DIR/agent.env"
+PIN_FILE="$AGENT_DIR/image.pin"
+SYSTEMD_DIR="${AMNEZIA_SYSTEMD_DIR:-/run/systemd/system}"
 DASH_ENV_FILE="$BRIDGE_ETC/frp/dashboard.env"
 COMPOSE_FILE="$HERE/compose.yaml"
 PROJECT=amnezia-bridge-agent
@@ -65,6 +78,7 @@ UDP_START=""
 UDP_END=""
 AGENT_PORT=7600
 AGENT_IMAGE="${BRIDGE_AGENT_IMAGE:-}"
+AGENT_REPOSITORY="${BRIDGE_AGENT_IMAGE_REPOSITORY:-}"
 DRY_RUN=0
 
 need_value() { [ "$#" -ge 2 ] || usage_error "$1 needs a value"; }
@@ -75,6 +89,7 @@ while [ "$#" -gt 0 ]; do
     --udp-start) need_value "$@"; UDP_START="$2"; shift 2 ;;
     --udp-end) need_value "$@"; UDP_END="$2"; shift 2 ;;
     --agent-image) need_value "$@"; AGENT_IMAGE="$2"; shift 2 ;;
+    --agent-repository) need_value "$@"; AGENT_REPOSITORY="$2"; shift 2 ;;
     --agent-port) need_value "$@"; AGENT_PORT="$2"; shift 2 ;;
     --dry-run) DRY_RUN=1; shift ;;
     *) usage_error "unknown argument: $1" ;;
@@ -102,10 +117,35 @@ is_port "$AGENT_PORT" || usage_error "--agent-port must be a TCP port (1-65535)"
 if [ -n "$AGENT_IMAGE" ]; then
   printf '%s' "$AGENT_IMAGE" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9._/:-]*@sha256:[0-9a-f]{64}$' ||
     usage_error "--agent-image must be pinned by digest (name@sha256:<64 hex>); tags are refused"
+  IMAGE_REPO="${AGENT_IMAGE%@*}"
+  if [ -n "$AGENT_REPOSITORY" ]; then
+    [ "$IMAGE_REPO" = "$AGENT_REPOSITORY" ] ||
+      usage_error "--agent-image is not from the approved bridge-agent repository $AGENT_REPOSITORY"
+  else
+    printf '%s' "$IMAGE_REPO" | grep -Eq '^ghcr\.io/[A-Za-z0-9._/-]+/bridge-agent$' ||
+      usage_error "--agent-image must come from a ghcr.io/<owner>/<repo>/bridge-agent repository (or set --agent-repository)"
+  fi
 fi
 
 if [ "$DRY_RUN" -eq 0 ] && [ "${AMNEZIA_ALLOW_NONROOT:-0}" != 1 ] && [ "$(id -u)" -ne 0 ]; then
   die 2 E_USAGE "run as root (or use --dry-run to only read state)"
+fi
+
+# ---- 0. host prerequisites of the agent -----------------------------------
+# Checked before frps is touched: a bridge that can never run the agent should
+# be refused now, not left half-installed. Not needed when no image was given
+# (that path installs frps only and exits 60).
+if [ -n "$AGENT_IMAGE" ]; then
+  missing=""
+  for tool in docker curl sha256sum; do
+    command -v "$tool" >/dev/null 2>&1 || missing="$missing $tool"
+  done
+  if command -v docker >/dev/null 2>&1 && ! docker compose version >/dev/null 2>&1; then
+    missing="$missing docker-compose-plugin"
+  fi
+  [ -d "$SYSTEMD_DIR" ] || missing="$missing systemd"
+  [ -z "$missing" ] ||
+    die 61 E_PREREQ "missing host prerequisites for the bridge-agent:$missing (nothing was installed)"
 fi
 
 # ---- 1. frps (unchanged interface) ----------------------------------------
@@ -168,13 +208,10 @@ if [ "$DRY_RUN" -eq 1 ]; then
   plan "write $ENV_FILE (mode 0600): image $AGENT_IMAGE, ports, bridge id"
   plan "docker compose pull and up -d the $PROJECT project (network_mode host, listens on 127.0.0.1:$AGENT_PORT)"
   plan "confirm the listener on 127.0.0.1:$AGENT_PORT and GET /healthz"
+  plan "write the pin file $PIN_FILE (mode 0600): repository $IMAGE_REPO, digest ${AGENT_IMAGE#*@}"
   info "dry run: nothing was written, pulled or started"
   exit 0
 fi
-
-have_compose() { command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; }
-have_compose ||
-  die 61 E_DOCKER "docker with the compose plugin is required for the bridge-agent; frps was installed and is unaffected"
 
 mkdir -p "$AGENT_DIR"
 chmod 0700 "$AGENT_DIR"
@@ -222,12 +259,25 @@ while :; do
   waited=$((waited + 1))
 done
 
+# The pin the updater trusts: written only once this exact digest is running
+# and answering, from the already validated reference.
+TMP_PIN="$(mktemp "$AGENT_DIR/.image.pin.XXXXXX")"
+trap 'rm -f -- "$TMP_ENV" "$TMP_PIN"' EXIT
+{
+  printf '# Written by install-bridge.sh: the approved repository and the digest the agent runs.\n'
+  printf 'BRIDGE_AGENT_IMAGE_REPOSITORY=%s\n' "$IMAGE_REPO"
+  printf 'BRIDGE_AGENT_IMAGE=%s\n' "$AGENT_IMAGE"
+} >"$TMP_PIN"
+chmod 0600 "$TMP_PIN"
+mv -f "$TMP_PIN" "$PIN_FILE"
+
 fingerprint=""
 if [ -f "$HOST_KEY_PUB" ]; then
   fingerprint="$(ssh-keygen -lf "$HOST_KEY_PUB" 2>/dev/null | awk '{print $2}' || true)"
 fi
 info "bridge-agent running for bridge $BRIDGE_ID"
 info "  bridge id:           $BRIDGE_ID"
+info "  pinned image:        ${AGENT_IMAGE#*@} ($PIN_FILE)"
 info "  management listener: 127.0.0.1:$AGENT_PORT (loopback only)"
 info "  API token file:      $TOKEN_FILE (mode 0600; the value is not printed)"
 info "  SSH host key (ed25519): ${fingerprint:-unknown; read it with ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub}"

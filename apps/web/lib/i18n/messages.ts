@@ -1540,7 +1540,9 @@ const ru = {
   "bridge.hostSetup":
     "Установка на хосте моста",
   "bridge.hostSetupHint":
-    "Выполняйте на хосте моста от root. Сначала пробный запуск. Чтобы установить и агент моста, добавьте --agent-image <образ@sha256:…> (закреплённый по дайджесту); без него ставится только frps и скрипт завершается с кодом 60.",
+    "Выполняйте на хосте моста от root. Сначала пробный запуск. Утверждённого образа агента моста пока нет: без --agent-image <образ@sha256:…> (закреплённый по дайджесту) ставится только frps и скрипт завершается с кодом 60. Задайте BRIDGE_AGENT_IMAGE_REPOSITORY на панели и опубликуйте релиз bridge-agent, чтобы команда содержала образ.",
+  "bridge.hostSetupHintImage":
+    "Выполняйте на хосте моста от root. Сначала пробный запуск. Команда уже содержит утверждённый образ агента моста: {image}.",
   "bridge.dryRunCommand":
     "Пробный запуск",
   "bridge.installCommand":
@@ -3227,7 +3229,9 @@ const en = {
   "bridge.hostSetup":
     "Bridge host setup",
   "bridge.hostSetupHint":
-    "Run on the bridge host, as root. Run the dry run first. To install the bridge agent too, append --agent-image <image@sha256:…> (pinned by digest); without it only frps is installed and the script exits 60.",
+    "Run on the bridge host, as root. Run the dry run first. No approved bridge-agent image is available yet: without --agent-image <image@sha256:…> (pinned by digest) only frps is installed and the script exits 60. Set BRIDGE_AGENT_IMAGE_REPOSITORY on the panel and publish a bridge-agent release to have it in the command.",
+  "bridge.hostSetupHintImage":
+    "Run on the bridge host, as root. Run the dry run first. The command already carries the approved bridge-agent image: {image}.",
   "bridge.dryRunCommand":
     "Dry run",
   "bridge.installCommand":

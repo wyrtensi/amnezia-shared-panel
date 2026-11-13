@@ -27,6 +27,7 @@ import {
   type RuleProfile,
 } from "./rules.js";
 import { resolveNodeAgentRelease } from "./agentRelease.js";
+import { resolveBridgeAgentRelease } from "./bridgeAgentRelease.js";
 import { runPeriodicTask } from "./scheduler.js";
 import { createTelemetryPoller } from "./telemetry.js";
 import {
@@ -336,6 +337,28 @@ const refreshNodeAgentRelease = async (): Promise<void> => {
   });
 };
 
+// The bridge-agent image offered to bridge hosts, from its own approved
+// repository (BRIDGE_AGENT_IMAGE_REPOSITORY), stored apart from the node-agent's.
+// Not a bridge job: it only reads the registry, so it is not behind
+// VPN_BRIDGE_JOBS_ENABLED. Off until the repository is configured.
+const bridgeAgentImageRepository = process.env.BRIDGE_AGENT_IMAGE_REPOSITORY?.trim();
+const refreshBridgeAgentRelease = async (): Promise<void> => {
+  if (!bridgeAgentImageRepository) return;
+  const release = await resolveBridgeAgentRelease(bridgeAgentImageRepository);
+  if (!release) {
+    console.warn(
+      `Could not resolve a compatible bridge-agent release for ${bridgeAgentImageRepository}`,
+    );
+    return;
+  }
+  await repository.saveBridgeAgentRelease({
+    repository: release.repository,
+    version: release.version,
+    digest: release.digest,
+    resolvedAt: new Date(),
+  });
+};
+
 // External reachability probe. Off until an operator registers a probe;
 // the task checks for one every tick, so registering needs no restart.
 const checkReachability = createReachabilityTask({
@@ -377,6 +400,12 @@ try {
     }),
     runPeriodicTask({
       task: refreshNodeAgentRelease,
+      intervalMs: () => periods.intervalMs("agentReleaseRefreshSec"),
+      signal: abortController.signal,
+      onError: reportBackgroundError,
+    }),
+    runPeriodicTask({
+      task: refreshBridgeAgentRelease,
       intervalMs: () => periods.intervalMs("agentReleaseRefreshSec"),
       signal: abortController.signal,
       onError: reportBackgroundError,

@@ -411,6 +411,16 @@ export const nodeAgentReleases = pgTable("node_agent_releases", {
   resolvedAt: timestamp("resolved_at", { withTimezone: true }).notNull(),
 });
 
+// The bridge-agent image the panel offers bridge hosts: same shape and rules as
+// `node_agent_releases`, kept apart because the two repositories are approved
+// separately and a bridge must never be offered a node-agent digest.
+export const bridgeAgentReleases = pgTable("bridge_agent_releases", {
+  repository: text("repository").primaryKey(),
+  version: varchar("version", { length: 64 }).notNull(),
+  digest: varchar("digest", { length: 80 }).notNull(),
+  resolvedAt: timestamp("resolved_at", { withTimezone: true }).notNull(),
+});
+
 export const routeRuleVersions = pgTable(
   "route_rule_versions",
   {

@@ -1293,6 +1293,26 @@ describe("bridge commands", () => {
     expect(out).toContain("Nothing was changed");
   });
 
+  it("bridge-add prints the approved agent image, or says none is available", async () => {
+    const image = `ghcr.io/o/r/bridge-agent@sha256:${"a".repeat(64)}`;
+    const withImage = {
+      install: `sudo sh install-bridge.sh --agent-image ${image}`,
+      dryRun: `sudo sh install-bridge.sh --agent-image ${image} --dry-run`,
+      agentImage: image,
+    };
+    stubFetch([{ status: 201, body: { ...bridge, setupCommands: withImage } }]);
+    const has = await run(["bridge-add", "--name=B", "--ipv4=198.51.100.7", "--confirm"]);
+    expect(has).toContain(`install: ${withImage.install}`);
+    expect(has).toContain(`carry the approved bridge-agent image (${image})`);
+    expect(has).not.toContain("exit 60");
+
+    stubFetch([{ status: 201, body: { ...bridge, setupCommands: { install: "i", dryRun: "d", agentImage: null } } }]);
+    const none = await run(["bridge-add", "--name=B", "--ipv4=198.51.100.7", "--confirm"]);
+    expect(none).toContain("No approved bridge-agent image is available");
+    expect(none).toContain("BRIDGE_AGENT_IMAGE_REPOSITORY");
+    expect(none).toContain("exit 60");
+  });
+
   it("bridge-add --confirm posts the body and prints setupCommands only if returned", async () => {
     const calls = stubFetch([{ status: 201, body: { ...bridge, setupCommands: { install: "run-this" } } }]);
     const out = await run([

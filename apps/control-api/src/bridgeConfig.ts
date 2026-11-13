@@ -22,6 +22,12 @@ export type BridgeConfig = {
    * management tunnels.
    */
   managementHosts: readonly string[];
+  /**
+   * `BRIDGE_AGENT_IMAGE_REPOSITORY`: the approved bridge-agent image
+   * repository (`ghcr.io/<owner>/<repo>/bridge-agent`), separate from the
+   * node-agent's. Undefined disables offering an image in setup commands.
+   */
+  agentImageRepository: string | undefined;
 };
 
 export const resolveBridgeConfig = (env: NodeJS.ProcessEnv): BridgeConfig => ({
@@ -30,6 +36,7 @@ export const resolveBridgeConfig = (env: NodeJS.ProcessEnv): BridgeConfig => ({
     env.VPN_BRIDGE_OBSERVATION_STALE_MS,
   ),
   managementHosts: parseBridgeManagementHosts(env.VPN_BRIDGE_MANAGEMENT_HOSTS),
+  agentImageRepository: env.BRIDGE_AGENT_IMAGE_REPOSITORY?.trim() || undefined,
 });
 
 export const bridgeJobsDisabledError = (): ApiError =>

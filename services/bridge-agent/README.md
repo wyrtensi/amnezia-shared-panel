@@ -63,3 +63,14 @@ npm ci
 npm test        # typecheck + vitest
 npm run build
 ```
+
+## Image and release
+
+`Dockerfile` builds the image (`docker build services/bridge-agent`): multi-stage,
+digest-pinned bases, `dist/` plus `package.json` (the agent reads its version from
+it), non-root by default, label `io.amnezia.bridge-agent.api-version` equal to
+`BRIDGE_API_VERSION`, healthcheck on the unauthenticated `GET /healthz`. The host
+runs it through `infra/bridge/compose.yaml` as uid 0 with every capability
+dropped. The version is this package's `version`; a release is the tag
+`bridge-agent-vX.Y.Z` (equal to it), built and pushed to GHCR by
+`.github/workflows/release-bridge-agent.yml`. See `infra/bridge/README.md`.

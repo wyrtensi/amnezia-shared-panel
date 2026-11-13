@@ -184,7 +184,11 @@ export function BridgeCardView({
               {t("bridge.hostSetup")}
             </summary>
             <div className="mt-2 space-y-2">
-              <p className="text-xs text-muted-foreground">{t("bridge.hostSetupHint")}</p>
+              <p className="text-xs text-muted-foreground">
+                {bridge.setupCommands.agentImage
+                  ? t("bridge.hostSetupHintImage", { image: bridge.setupCommands.agentImage })
+                  : t("bridge.hostSetupHint")}
+              </p>
               <CommandBlock
                 label={t("bridge.dryRunCommand")}
                 command={bridge.setupCommands.dryRun}

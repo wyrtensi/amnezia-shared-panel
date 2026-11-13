@@ -166,6 +166,16 @@ describe("BridgeCardView", () => {
     expect(html).toContain("Unreachable");
   });
 
+  it("says whether the setup command carries an approved agent image", () => {
+    const image = `ghcr.io/o/r/bridge-agent@sha256:${"a".repeat(64)}`;
+    const none = render({ ...bridge, setupCommands: { ...bridge.setupCommands!, agentImage: null } });
+    expect(none).toContain("No approved bridge-agent image is available yet");
+    const has = render({ ...bridge, setupCommands: { ...bridge.setupCommands!, agentImage: image } });
+    expect(has).toContain("already carries the approved bridge-agent image");
+    expect(has).toContain(image);
+    expect(has).not.toContain("No approved bridge-agent image");
+  });
+
   it("renders in Russian and without setup commands or routes", () => {
     const html = render({ ...bridge, routes: [], heldPorts: 0, setupCommands: undefined }, "ru");
     expect(html).toContain("Нет свежих данных");
