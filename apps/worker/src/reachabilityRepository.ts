@@ -245,15 +245,15 @@ export class PostgresReachabilityRepository
    *
    * 1. Claim the run (`current_run_id` cleared by exactly one ingest), so an
    *    overlapping worker cannot count it twice.
-   * 2. Lock the probed node rows `FOR SHARE`, in id order, and read the
+   * 2. Lock the probed node rows `FOR SHARE`, in id order, then read the
    *    targets as they are now, endpoint revision and active bridge route
-   *    included, in the same statement. An assignment change holds its node
-   *    row `FOR NO KEY UPDATE` from its revision bump through its evidence
-   *    reset (`resetNodeEndpointEvidence`), so it either committed before
-   *    this read or waits for this commit: the revision cannot change between
-   *    classification and the writes below. No reachability row is touched
-   *    before these locks (lock order: probe row, node rows, reachability
-   *    rows; an activation never touches the probe row).
+   *    included (`loadTargets`). An assignment change holds its node row
+   *    `FOR NO KEY UPDATE` from its revision bump through its evidence reset
+   *    (`resetNodeEndpointEvidence`), so it either committed before the
+   *    targets are read or waits for this commit: the assignment cannot
+   *    change between classification and the writes below. No reachability
+   *    row is touched before these locks (lock order: probe row, node rows,
+   *    reachability rows; an activation never touches the probe row).
    * 3. Read the stored node states under the same locks and let `decide`
    *    classify the run against them. A result for another endpoint revision
    *    never matches a current target (`reachabilityTargetId`), so it is
@@ -390,9 +390,17 @@ export class PostgresReachabilityRepository
    * The targets as the panel knows them now. The node row, its endpoint
    * revision, its active bridge route and that bridge are read in ONE
    * statement, so a config is never paired with the revision of another
-   * assignment (two reads could straddle an activation and label a Direct
-   * config with the bridged revision). With `lock`, the node rows are taken
-   * `FOR SHARE` in id order (see `ingest`).
+   * assignment (unlocked, two reads could straddle an activation and label a
+   * Direct config with the bridged revision).
+   *
+   * With `lock` (see `ingest`), the node rows are first taken `FOR SHARE` in
+   * id order by a statement of their own, and the join runs after it. A
+   * single locking join is not enough: when it waits for an activation, READ
+   * COMMITTED re-reads only the locked node row after that commit, while the
+   * joined route and bridge rows stay as they were when the statement began,
+   * so it would pair the new revision with the old route. Once the node rows
+   * are locked nothing they key can change, and the join's fresh snapshot
+   * sees the committed assignment.
    *
    * A bridged node's AWG 3.1 target carries the service-key artifact
    * rendered with the bridge endpoint, the same renderer user exports use. It
@@ -405,7 +413,19 @@ export class PostgresReachabilityRepository
     db: Database | Tx,
     options: { lock: boolean; bridgeMeasurement: boolean },
   ): Promise<RunTarget[]> => {
-    const query = db
+    let lockedIds: string[] | null = null;
+    if (options.lock) {
+      lockedIds = (
+        await db
+          .select({ id: nodes.id })
+          .from(nodes)
+          .where(eq(nodes.reachabilityEnabled, true))
+          .orderBy(nodes.id)
+          .for("share")
+      ).map((row) => row.id);
+      if (lockedIds.length === 0) return [];
+    }
+    const nodeRows = await db
       .select({
         id: nodes.id,
         name: nodes.name,
@@ -425,10 +445,12 @@ export class PostgresReachabilityRepository
         and(eq(vpnBridgeRoutes.nodeId, nodes.id), eq(vpnBridgeRoutes.state, "active")),
       )
       .leftJoin(vpnBridges, eq(vpnBridges.id, vpnBridgeRoutes.bridgeId))
-      .where(eq(nodes.reachabilityEnabled, true));
-    const nodeRows = options.lock
-      ? await query.orderBy(nodes.id).for("share", { of: nodes })
-      : await query.orderBy(nodes.name);
+      .where(
+        lockedIds === null
+          ? eq(nodes.reachabilityEnabled, true)
+          : inArray(nodes.id, lockedIds),
+      )
+      .orderBy(nodes.name);
     const ownerId = await this.serviceAccountId(db);
     const keys = ownerId
       ? await db

@@ -616,6 +616,60 @@ describe("reachability of bridged nodes (real PostgreSQL)", () => {
   );
 
   runDatabaseTest(
+    "a Direct -> bridge change committed while the ingest waits judges the node by its new bridged path",
+    async () => {
+      const node = await seedNode();
+      const bridge = await seedBridge(`Bridge ${runTag}`);
+      const route = await seedRoute(node.id, bridge.id, "draft");
+      await seedProbe();
+      // Direct was blocked for AWG 3.1 and an incident is open.
+      const alertedAt = new Date(Date.now() - 3_600_000);
+      await db().insert(nodeReachabilityState).values({
+        nodeId: node.id,
+        status: "failed",
+        consecutiveFailures: 3,
+        failingSince: alertedAt,
+        alertedAt,
+        alertKind: "node",
+        checkedAt: alertedAt,
+      });
+      // The Direct run: AWG 2 works, which under the Direct rule would close
+      // the incident. After the switch the verdict is the bridged path's.
+      const probe = harness((target) => ({
+        handshake: target.protocol === "awg2",
+        http: target.protocol === "awg2",
+      }));
+      await probe.tick();
+
+      const held = deferred();
+      const lockTaken = deferred();
+      const change = db().transaction(async (tx) => {
+        await switchEndpoint(tx, node.id, route);
+        lockTaken.resolve();
+        await held.promise;
+      });
+      await lockTaken.promise;
+      const ingest = probe.tick();
+      try {
+        await waitForLockWait();
+      } finally {
+        held.resolve();
+        await change;
+        await ingest;
+      }
+
+      expect(await stateOf(node.id)).toMatchObject({
+        status: "error",
+        alertedAt,
+        alertKind: "node",
+      });
+      expect(await alerts()).toEqual([]);
+      expect((await resultsOf(node.id)).has("awg3")).toBe(false);
+      expect((await resultsOf(node.id)).get("awg2")).toMatchObject({ status: "ok" });
+    },
+  );
+
+  runDatabaseTest(
     "an endpoint change that starts while the ingest holds the node lock waits, then resets what was ingested",
     async () => {
       const node = await seedNode();
