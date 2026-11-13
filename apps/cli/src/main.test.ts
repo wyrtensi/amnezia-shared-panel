@@ -1182,3 +1182,200 @@ describe("reachability probe commands", () => {
     }
   });
 });
+
+const sentBody = (call: { init?: RequestInit }): unknown =>
+  JSON.parse(call.init?.body as string);
+
+describe("bridge commands", () => {
+  const NODE = "22222222-2222-4222-8222-222222222222";
+  const BRIDGE = "33333333-3333-4333-8333-333333333333";
+  const ROUTE = "44444444-4444-4444-8444-444444444444";
+  const bridge = {
+    id: BRIDGE,
+    name: "Frankfurt",
+    publicIpv4: "198.51.100.7",
+    controlTcpPort: 7000,
+    udpPortStart: 41000,
+    udpPortEnd: 41031,
+    capacity: 32,
+    heldPorts: 1,
+    managementStatus: "ok",
+    lastObservedAt: "2026-11-13T10:00:00.000Z",
+    routes: [{ id: ROUTE, nodeId: NODE, nodeName: "N1", publicUdpPort: 41000, state: "draft" }],
+  };
+
+  beforeEach(() => {
+    process.env.PANEL_ADMIN_EMAIL = "cli-test@example.com";
+  });
+  afterEach(() => {
+    delete process.env.PANEL_ADMIN_EMAIL;
+    vi.unstubAllGlobals();
+    process.exitCode = undefined;
+  });
+
+  it("bridges lists held/total ports and route counts", async () => {
+    stubFetch([{ body: [bridge] }]);
+    const out = await run(["bridges"]);
+    expect(out).toContain("Frankfurt");
+    expect(out).toContain("1/32");
+  });
+
+  it("bridges --json prints the typed list", async () => {
+    stubFetch([{ body: [bridge] }]);
+    expect(JSON.parse(await run(["bridges", "--json"]))).toEqual([bridge]);
+  });
+
+  it("bridge-add without --confirm submits nothing", async () => {
+    const calls = stubFetch([{ body: bridge }]);
+    const out = await run(["bridge-add", "--name=Frankfurt", "--ipv4=198.51.100.7"]);
+    expect(calls).toHaveLength(0);
+    expect(out).toContain("Nothing was changed");
+  });
+
+  it("bridge-add --confirm posts the body and prints setupCommands only if returned", async () => {
+    const calls = stubFetch([{ status: 201, body: { ...bridge, setupCommands: ["run-this"] } }]);
+    const out = await run([
+      "bridge-add", "--name=Frankfurt", "--ipv4=198.51.100.7", "--udp-start=42000", "--confirm",
+    ]);
+    expect(calls[0]!.url).toContain("/api/admin/vpn-bridges");
+    expect(calls[0]!.init?.method).toBe("POST");
+    expect(sentBody(calls[0]!)).toEqual({
+      name: "Frankfurt", publicIpv4: "198.51.100.7", udpPortStart: 42000,
+    });
+    expect(out).toContain("run-this");
+    stubFetch([{ status: 201, body: bridge }]);
+    expect(await run(["bridge-add", "--name=F", "--ipv4=198.51.100.7", "--confirm"])).not.toContain("setup commands");
+  });
+
+  it("bridge-add surfaces a duplicate address", async () => {
+    stubFetch([{ status: 409, body: { error: "BRIDGE_IPV4_CONFLICT", message: "dup" } }]);
+    await expect(
+      run(["bridge-add", "--name=F", "--ipv4=198.51.100.7", "--confirm"]),
+    ).rejects.toThrow(/BRIDGE_IPV4_CONFLICT: dup/);
+  });
+
+  it("bridge-delete rejects a non-UUID without calling the API", async () => {
+    const calls = stubFetch([{ body: {} }]);
+    await expect(run(["bridge-delete", "frankfurt", "--confirm"])).rejects.toThrow(/must be a UUID/);
+    expect(calls).toHaveLength(0);
+  });
+
+  it("bridge-delete without --confirm deletes nothing; with it, surfaces BRIDGE_HAS_ROUTES", async () => {
+    const calls = stubFetch([{ status: 409, body: { error: "BRIDGE_HAS_ROUTES", message: "has routes" } }]);
+    expect(await run(["bridge-delete", BRIDGE])).toContain("Nothing was changed");
+    expect(calls).toHaveLength(0);
+    await expect(run(["bridge-delete", BRIDGE, "--confirm"])).rejects.toThrow(
+      /BRIDGE_HAS_ROUTES: has routes\n.*bridge-route-release/,
+    );
+    expect(calls[0]!.init?.method).toBe("DELETE");
+  });
+
+  it("bridge-routes prints Direct, revision, drafts and retiring", async () => {
+    stubFetch([
+      {
+        body: {
+          nodeId: NODE,
+          vpnEndpointRevision: 4,
+          activeRoute: null,
+          drafts: [{ id: ROUTE, bridgeId: BRIDGE, publicUdpPort: 41000, state: "draft", bridgeName: "Frankfurt", bridgePublicIpv4: "198.51.100.7", frpProxyName: `awg-route-${ROUTE}`, observedOnline: true, verificationResult: "success", verifiedAt: "t", verificationMethod: "probe" }],
+          retiring: [],
+        },
+      },
+    ]);
+    const out = await run(["bridge-routes", NODE]);
+    expect(out).toContain("revision 4");
+    expect(out).toContain("Direct");
+    expect(out).toContain("drafts (1)");
+    expect(out).toContain("online");
+    expect(out).toContain("verified");
+  });
+
+  it("bridge-route-prepare without --confirm reserves nothing", async () => {
+    const calls = stubFetch([{ body: {} }]);
+    expect(await run(["bridge-route-prepare", NODE, BRIDGE])).toContain("Nothing was changed");
+    expect(calls).toHaveLength(0);
+  });
+
+  it("bridge-route-prepare --confirm posts the pairing and prints the reservation", async () => {
+    const calls = stubFetch([
+      { status: 201, body: { created: true, route: { id: ROUTE, bridgeId: BRIDGE, publicUdpPort: 41005, state: "draft", bridgePublicIpv4: "198.51.100.7", bridgeName: "Frankfurt", frpProxyName: `awg-route-${ROUTE}` } } },
+    ]);
+    const out = await run(["bridge-route-prepare", NODE, BRIDGE, "--port=41005", "--confirm"]);
+    expect(calls[0]!.url).toContain(`/api/admin/nodes/${NODE}/vpn-bridge-routes`);
+    expect(sentBody(calls[0]!)).toEqual({ bridgeId: BRIDGE, publicUdpPort: 41005 });
+    expect(out).toContain("198.51.100.7");
+    expect(out).toContain("41005");
+    expect(out).toContain(`awg-route-${ROUTE}`);
+  });
+
+  it("bridge-route-prepare surfaces BRIDGE_NODE_NOT_AWG31", async () => {
+    stubFetch([{ status: 409, body: { error: "BRIDGE_NODE_NOT_AWG31", message: "no awg3" } }]);
+    await expect(run(["bridge-route-prepare", NODE, BRIDGE, "--confirm"])).rejects.toThrow(/BRIDGE_NODE_NOT_AWG31/);
+  });
+
+  it("bridge-route-activate without --confirm reads but never PATCHes", async () => {
+    const calls = stubFetch([{ body: [bridge] }]);
+    expect(await run(["bridge-route-activate", ROUTE])).toContain("Nothing was changed");
+    expect(calls.every((c) => (c.init?.method ?? "GET") === "GET")).toBe(true);
+  });
+
+  it("bridge-route-activate finds the node, reads the revision and PATCHes with it", async () => {
+    const calls = stubFetch([
+      { body: [bridge] },
+      { body: { nodeId: NODE, vpnEndpointRevision: 7, activeRoute: null, drafts: [], retiring: [] } },
+      { body: { id: NODE, vpnEndpoint: { changed: true, vpnEndpointRevision: 8, activeRoute: null } } },
+    ]);
+    const out = await run(["bridge-route-activate", ROUTE, "--confirm"]);
+    expect(calls[1]!.url).toContain(`/api/admin/nodes/${NODE}/vpn-bridge-routes`);
+    expect(calls[2]!.url).toContain(`/api/admin/nodes/${NODE}`);
+    expect(calls[2]!.init?.method).toBe("PATCH");
+    expect(sentBody(calls[2]!)).toEqual({
+      vpnBridgeRouteId: ROUTE,
+      expectedVpnEndpointRevision: 7,
+    });
+    expect(out).toContain("revision 8");
+  });
+
+  it("bridge-route-activate fails clearly for an unknown route and on a stale revision", async () => {
+    stubFetch([{ body: [{ ...bridge, routes: [] }] }]);
+    await expect(run(["bridge-route-activate", ROUTE, "--confirm"])).rejects.toThrow(/BRIDGE_ROUTE_NOT_FOUND/);
+    stubFetch([
+      { body: [bridge] },
+      { body: { nodeId: NODE, vpnEndpointRevision: 7, activeRoute: null, drafts: [], retiring: [] } },
+      { status: 409, body: { error: "BRIDGE_REVISION_CONFLICT", message: "stale" } },
+    ]);
+    await expect(run(["bridge-route-activate", ROUTE, "--confirm"])).rejects.toThrow(
+      /BRIDGE_REVISION_CONFLICT: stale\n.*bridge-routes/,
+    );
+  });
+
+  it("bridge-route-direct sends a null route with the current revision, only with --confirm", async () => {
+    const calls = stubFetch([{ body: {} }]);
+    expect(await run(["bridge-route-direct", NODE])).toContain("Nothing was changed");
+    expect(calls).toHaveLength(0);
+    const sent = stubFetch([
+      { body: { nodeId: NODE, vpnEndpointRevision: 2, activeRoute: null, drafts: [], retiring: [] } },
+      { body: { id: NODE, vpnEndpoint: { changed: false, vpnEndpointRevision: 2, activeRoute: null } } },
+    ]);
+    const out = await run(["bridge-route-direct", NODE, "--confirm"]);
+    expect(sentBody(sent[1]!)).toEqual({
+      vpnBridgeRouteId: null,
+      expectedVpnEndpointRevision: 2,
+    });
+    expect(out).toContain("no change");
+  });
+
+  it("bridge-route-release needs --confirm and surfaces active / stale conflicts", async () => {
+    const calls = stubFetch([{ body: {} }]);
+    expect(await run(["bridge-route-release", ROUTE])).toContain("Nothing was changed");
+    expect(calls).toHaveLength(0);
+    const sent = stubFetch([{ body: { id: ROUTE, released: true, nodeId: NODE, bridgeId: BRIDGE, publicUdpPort: 41000 } }]);
+    expect(await run(["bridge-route-release", ROUTE, "--confirm"])).toContain("released");
+    expect(sent[0]!.url).toContain(`/api/admin/vpn-bridge-routes/${ROUTE}?confirmed=true`);
+    expect(sent[0]!.init?.method).toBe("DELETE");
+    for (const code of ["BRIDGE_ROUTE_ACTIVE", "BRIDGE_OBSERVATION_STALE"]) {
+      stubFetch([{ status: 409, body: { error: code, message: "no" } }]);
+      await expect(run(["bridge-route-release", ROUTE, "--confirm"])).rejects.toThrow(new RegExp(code));
+    }
+  });
+});

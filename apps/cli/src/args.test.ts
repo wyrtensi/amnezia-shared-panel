@@ -717,3 +717,46 @@ describe("rule source names", () => {
     }
   });
 });
+
+import { bridgeErrorHint, intFlag, requireUuid, renderNodeRoutes } from "./bridges.js";
+
+describe("bridge argument helpers", () => {
+  const id = "11111111-1111-4111-8111-111111111111";
+  it("requireUuid accepts UUIDs and rejects names and empties", () => {
+    expect(requireUuid(id, "x", "usage")).toBe(id);
+    expect(() => requireUuid("my-bridge", "bridge-id", "usage")).toThrow(/must be a UUID/);
+    expect(() => requireUuid(undefined, "bridge-id", "Usage: foo")).toThrow("Usage: foo");
+  });
+  it("intFlag parses whole numbers and rejects junk", () => {
+    expect(intFlag(["--port=41001"], "port")).toBe(41001);
+    expect(intFlag([], "port")).toBeUndefined();
+    expect(() => intFlag(["--port=4e3"], "port")).toThrow(/whole number/);
+    expect(() => intFlag(["--port="], "port")).toThrow(/whole number/);
+  });
+  it("names a hint for every conflict the commands surface", () => {
+    for (const code of [
+      "BRIDGE_HAS_ROUTES",
+      "BRIDGE_ROUTE_ACTIVE",
+      "BRIDGE_OBSERVATION_STALE",
+      "BRIDGE_REVISION_CONFLICT",
+      "BRIDGE_ROUTE_UNVERIFIED",
+      "BRIDGE_NODE_NOT_AWG31",
+      "BRIDGE_NOT_FOUND",
+      "BRIDGE_ROUTE_NOT_FOUND",
+    ]) {
+      expect(bridgeErrorHint(code)).toBeTruthy();
+    }
+    expect(bridgeErrorHint("SOMETHING_ELSE")).toBeUndefined();
+  });
+  it("renders Direct when no route is active", () => {
+    const lines = renderNodeRoutes({
+      nodeId: id,
+      vpnEndpointRevision: 3,
+      activeRoute: null,
+      drafts: [],
+      retiring: [],
+    });
+    expect(lines[0]).toContain("revision 3");
+    expect(lines[1]).toContain("Direct");
+  });
+});

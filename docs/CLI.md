@@ -251,6 +251,19 @@ via `CONTROL_API_URL` plus one of, in priority order:
 | `panel-update [--status] [--json]` | Trigger the in-panel update (backup → pull → migrate → restart), or show its status. `--status` prints a readable line — the pending request, and whether the last host run finished `ok` or `FAILED` with its reason; `--status --json` returns the raw status object unchanged |
 | `client-releases --refresh` | Discard the cached release snapshot and resolve it again now (admin only). The panel otherwise re-checks every 6 hours after a success, and every 15 minutes after a failure — use this after restoring egress on a host that was serving the offline fallback |
 
+**Bridges** (every write command takes UUIDs only and, without `--confirm`, prints the intended change and sends nothing):
+
+| Command | Result |
+| --- | --- |
+| `bridges [--json]` | List AWG 3.1 bridges with management state, ports held/total and route count. `--json` is the typed API list (no secrets) |
+| `bridge-add --name= --ipv4= [--control-port=7000] [--udp-start=41000] [--udp-end=41031] --confirm` | Register bridge metadata and print it (plus `setupCommands` if the API returns them). Nothing is installed on the host and the CLI never uses SSH. Without `--confirm` it only prints the intended change. `BRIDGE_IPV4_CONFLICT` on a duplicate address |
+| `bridge-delete <bridge-id> --confirm` | Delete a bridge. Refused with `BRIDGE_HAS_ROUTES` while any draft, active or retiring route exists |
+| `bridge-routes <node-id> [--json]` | A node's endpoint: Direct or the active route, endpoint revision, drafts, retiring routes, observed state and verification |
+| `bridge-route-prepare <node-id> <bridge-id> [--port=<udp>] --confirm` | Reserve a bridge UDP port for a node (first free port, or `--port`). Prints the bridge IP, public UDP port and proxy name. Refused with `BRIDGE_NODE_NOT_AWG31` on a node without AWG 3.1 |
+| `bridge-route-activate <route-id> --confirm` | Switch the route's node onto it. The CLI finds the node from the bridge list, reads the node's current endpoint revision and sends it with the change; `BRIDGE_REVISION_CONFLICT` means someone changed it meanwhile. Needs a fresh bridge observation (`BRIDGE_OBSERVATION_STALE`) and a verification under 30 minutes old (`BRIDGE_ROUTE_UNVERIFIED`) |
+| `bridge-route-direct <node-id> --confirm` | Switch a node back to Direct (no-op when it already is) |
+| `bridge-route-release <route-id> --confirm` | Free a route's port. Refused with `BRIDGE_ROUTE_ACTIVE` or `BRIDGE_OBSERVATION_STALE` |
+
 **Two config files, and only one of them keeps the key's name.** A key's
 connection name — node, device label, `#N`, composed at creation — travels in the
 `vpn://` payload's `description`. Every shape built from that payload carries it:

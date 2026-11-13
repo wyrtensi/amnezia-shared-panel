@@ -1,0 +1,396 @@
+/**
+ * Admin commands for optional AWG 3.1 node bridges and node routes.
+ *
+ * Everything goes through the Control API; the CLI never touches a bridge host
+ * or a node over SSH. The commands take the API caller as a parameter so this
+ * module does not import main.ts (which imports it). To add another bridge
+ * command: write a `cmdBridge...` function here, add it to `BRIDGE_COMMANDS`,
+ * and describe it in `BRIDGE_USAGE_LINES` and docs/CLI.md.
+ *
+ * Output carries typed non-secret fields only. Bridge responses never include
+ * tokens; a `setupCommands` field is printed verbatim only when the API
+ * returns it.
+ */
+
+import { flagOf, positionals } from "./args.js";
+
+export type BridgeApi = <T>(path: string, init?: RequestInit) => Promise<T>;
+
+type RouteState = "draft" | "active" | "retiring";
+
+type BridgeRouteSummary = {
+  id: string;
+  nodeId: string;
+  nodeName?: string;
+  publicUdpPort: number;
+  state: RouteState;
+};
+
+export type BridgeView = {
+  id: string;
+  name: string;
+  publicIpv4: string;
+  controlTcpPort: number;
+  udpPortStart: number;
+  udpPortEnd: number;
+  capacity: number;
+  heldPorts: number;
+  managementStatus: string;
+  lastObservedAt: string | null;
+  routes: BridgeRouteSummary[];
+  setupCommands?: unknown;
+};
+
+export type NodeRouteView = {
+  id: string;
+  bridgeId: string;
+  publicUdpPort: number;
+  frpProxyName?: string | null;
+  state: RouteState;
+  bridgeName?: string;
+  bridgePublicIpv4?: string;
+  bridgeManagementStatus?: string;
+  bridgeLastObservedAt?: string | null;
+  observedOnline?: boolean | null;
+  observedAt?: string | null;
+  verificationResult?: string | null;
+  verificationMethod?: string | null;
+  verifiedAt?: string | null;
+  activatedAt?: string | null;
+  retiringSince?: string | null;
+};
+
+export type NodeRoutesView = {
+  nodeId: string;
+  vpnEndpointRevision: number;
+  activeRoute: NodeRouteView | null;
+  drafts: NodeRouteView[];
+  retiring: NodeRouteView[];
+};
+
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** Write targets are UUIDs only: names are not unique and typos must not guess. */
+export function requireUuid(value: string | undefined, what: string, usage: string): string {
+  if (!value) throw new Error(usage);
+  if (!UUID_RE.test(value)) {
+    throw new Error(`${what} must be a UUID, got "${value}"\n${usage}`);
+  }
+  return value;
+}
+
+/** Parse an integer flag, or undefined when absent. Rejects junk instead of sending NaN. */
+export function intFlag(args: string[], name: string): number | undefined {
+  const raw = flagOf(args, name);
+  if (raw === undefined) return undefined;
+  if (!/^\d+$/.test(raw)) throw new Error(`--${name} must be a whole number, got "${raw}"`);
+  return Number(raw);
+}
+
+const BRIDGE_ERROR_HINTS: Record<string, string> = {
+  BRIDGE_HAS_ROUTES:
+    "The bridge still holds routes (draft, active or retiring). Release them with bridge-route-release first.",
+  BRIDGE_ROUTE_ACTIVE:
+    "That route is the node's active endpoint. Switch the node to another route or Direct first (bridge-route-direct).",
+  BRIDGE_OBSERVATION_STALE:
+    "The bridge has no fresh observation proving the state of this route. Wait for the bridge agent to report, then retry.",
+  BRIDGE_REVISION_CONFLICT:
+    "The node's endpoint changed since it was read. Re-run bridge-routes to see the current revision and try again.",
+  BRIDGE_ROUTE_UNVERIFIED:
+    "The route has no successful verification within the last 30 minutes for the observed registration. Verify it first.",
+  BRIDGE_NODE_NOT_AWG31:
+    "Only nodes serving AWG 3.1 can use a bridge route.",
+  BRIDGE_NOT_FOUND: "No bridge with that id.",
+  BRIDGE_ROUTE_NOT_FOUND: "No such route (for activation: it must belong to that node).",
+  BRIDGE_IPV4_CONFLICT: "A bridge with that public IPv4 is already registered.",
+  BRIDGE_ROUTE_PAIR_CONFLICT:
+    "That node already holds a route on this bridge with a different port. Omit --port to reuse it.",
+  BRIDGE_PORT_OUT_OF_RANGE: "The port is outside the bridge's UDP range.",
+  BRIDGE_PORT_TAKEN: "That UDP port is already held on this bridge.",
+  BRIDGE_POOL_EXHAUSTED: "The bridge has no free UDP port left in its range.",
+  NODE_HAS_BRIDGE_ROUTES: "The node still holds bridge routes; release them first.",
+  BRIDGE_JOBS_DISABLED: "Bridge jobs are disabled on this panel (VPN_BRIDGE_JOBS_ENABLED).",
+};
+
+/** One readable line appended to the API error for a known bridge error code. */
+export function bridgeErrorHint(code: string | undefined): string | undefined {
+  return code ? BRIDGE_ERROR_HINTS[code] : undefined;
+}
+
+const show = (value: string | number | null | undefined): string =>
+  value === null || value === undefined || value === "" ? "—" : String(value);
+
+function describeRoute(route: NodeRouteView): string {
+  const target = `${show(route.bridgePublicIpv4)}:${route.publicUdpPort}`;
+  const verified =
+    route.verificationResult === "success"
+      ? `verified ${show(route.verifiedAt)} (${show(route.verificationMethod)})`
+      : route.verificationResult
+        ? `verification ${route.verificationResult}`
+        : "not verified";
+  const observed =
+    route.observedOnline === true
+      ? "online"
+      : route.observedOnline === false
+        ? "absent"
+        : "unobserved";
+  return `${route.id}  ${route.state}  ${show(route.bridgeName)} ${target}  proxy=${show(route.frpProxyName)}  ${observed}  ${verified}`;
+}
+
+/** Pure renderer for `bridge-routes`, kept separate so it is testable. */
+export function renderNodeRoutes(view: NodeRoutesView): string[] {
+  const lines = [
+    `node ${view.nodeId}  endpoint revision ${view.vpnEndpointRevision}`,
+    view.activeRoute
+      ? `active: ${describeRoute(view.activeRoute)}`
+      : "active: Direct (no bridge route)",
+  ];
+  lines.push(`drafts (${view.drafts.length}):`);
+  for (const route of view.drafts) lines.push(`  ${describeRoute(route)}`);
+  lines.push(`retiring (${view.retiring.length}):`);
+  for (const route of view.retiring) lines.push(`  ${describeRoute(route)}`);
+  return lines;
+}
+
+function renderBridgeTable(bridges: BridgeView[]): string[] {
+  if (bridges.length === 0) return ["(no bridges)"];
+  const header = ["id", "name", "ipv4", "mgmt", "ports", "routes", "observed"];
+  const rows = bridges.map((bridge) => [
+    bridge.id,
+    bridge.name,
+    bridge.publicIpv4,
+    bridge.managementStatus,
+    `${bridge.heldPorts}/${bridge.capacity}`,
+    String(bridge.routes.length),
+    show(bridge.lastObservedAt),
+  ]);
+  const widths = header.map((h, i) => Math.max(h.length, ...rows.map((r) => r[i]!.length)));
+  const fmt = (cells: string[]) => cells.map((c, i) => c.padEnd(widths[i]!)).join("  ").trimEnd();
+  return [fmt(header), ...rows.map(fmt)];
+}
+
+function printBridge(bridge: BridgeView): void {
+  console.log(`bridge: ${bridge.name} (${bridge.id})`);
+  console.log(
+    `  ${bridge.publicIpv4}  control tcp ${bridge.controlTcpPort}  udp ${bridge.udpPortStart}-${bridge.udpPortEnd}  status ${bridge.managementStatus}`,
+  );
+  if (bridge.setupCommands !== undefined && bridge.setupCommands !== null) {
+    console.log("setup commands (run them on the bridge host yourself):");
+    const commands = bridge.setupCommands;
+    if (Array.isArray(commands)) {
+      for (const command of commands) console.log(`  ${String(command)}`);
+    } else if (typeof commands === "string") {
+      console.log(commands);
+    } else {
+      console.log(JSON.stringify(commands, null, 2));
+    }
+  }
+}
+
+const json = (value: unknown) => console.log(JSON.stringify(value, null, 2));
+const confirmed = (args: string[]) => args.includes("--confirm");
+
+function preview(lines: string[]): void {
+  for (const line of lines) console.log(line);
+  console.log("Nothing was changed. Re-run with --confirm to apply it.");
+}
+
+export async function cmdBridges(api: BridgeApi, args: string[]): Promise<void> {
+  const bridges = await api<BridgeView[]>("/api/admin/vpn-bridges");
+  if (args.includes("--json")) return json(bridges);
+  for (const line of renderBridgeTable(bridges)) console.log(line);
+}
+
+export async function cmdBridgeAdd(api: BridgeApi, args: string[]): Promise<void> {
+  const usage =
+    "Usage: bridge-add --name=<name> --ipv4=<public ipv4> [--control-port=7000] [--udp-start=41000] [--udp-end=41031] --confirm";
+  const name = flagOf(args, "name");
+  const publicIpv4 = flagOf(args, "ipv4");
+  if (!name || !publicIpv4) throw new Error(usage);
+  const body: Record<string, unknown> = { name, publicIpv4 };
+  const controlPort = intFlag(args, "control-port");
+  const udpStart = intFlag(args, "udp-start");
+  const udpEnd = intFlag(args, "udp-end");
+  if (controlPort !== undefined) body.controlTcpPort = controlPort;
+  if (udpStart !== undefined) body.udpPortStart = udpStart;
+  if (udpEnd !== undefined) body.udpPortEnd = udpEnd;
+  if (!confirmed(args)) {
+    return preview([
+      `Would register bridge "${name}" at ${publicIpv4}` +
+        (controlPort !== undefined ? ` control tcp ${controlPort}` : "") +
+        (udpStart !== undefined || udpEnd !== undefined
+          ? ` udp ${udpStart ?? "default"}-${udpEnd ?? "default"}`
+          : "") +
+        " (metadata only; nothing is installed on the host).",
+    ]);
+  }
+  const bridge = await api<BridgeView>("/api/admin/vpn-bridges", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+  if (args.includes("--json")) return json(bridge);
+  printBridge(bridge);
+}
+
+export async function cmdBridgeDelete(api: BridgeApi, args: string[]): Promise<void> {
+  const usage = "Usage: bridge-delete <bridge-id> --confirm";
+  const id = requireUuid(positionals(args)[0], "bridge-id", usage);
+  if (!confirmed(args)) {
+    return preview([`Would delete bridge ${id} (refused by the API while it holds routes).`]);
+  }
+  await api(`/api/admin/vpn-bridges/${id}`, { method: "DELETE" });
+  console.log(`bridge ${id} deleted`);
+}
+
+export async function cmdBridgeRoutes(api: BridgeApi, args: string[]): Promise<void> {
+  const usage = "Usage: bridge-routes <node-id> [--json]";
+  const nodeId = requireUuid(positionals(args)[0], "node-id", usage);
+  const view = await api<NodeRoutesView>(`/api/admin/nodes/${nodeId}/vpn-bridge-routes`);
+  if (args.includes("--json")) return json(view);
+  for (const line of renderNodeRoutes(view)) console.log(line);
+}
+
+export async function cmdBridgeRoutePrepare(api: BridgeApi, args: string[]): Promise<void> {
+  const usage = "Usage: bridge-route-prepare <node-id> <bridge-id> [--port=<udp port>] --confirm";
+  const [rawNode, rawBridge] = positionals(args);
+  const nodeId = requireUuid(rawNode, "node-id", usage);
+  const bridgeId = requireUuid(rawBridge, "bridge-id", usage);
+  const port = intFlag(args, "port");
+  if (!confirmed(args)) {
+    return preview([
+      `Would reserve a bridge UDP port (${port !== undefined ? `requested ${port}` : "first free"}) on bridge ${bridgeId} for node ${nodeId}.`,
+    ]);
+  }
+  const body: Record<string, unknown> = { bridgeId };
+  if (port !== undefined) body.publicUdpPort = port;
+  const result = await api<{ created: boolean; route: NodeRouteView }>(
+    `/api/admin/nodes/${nodeId}/vpn-bridge-routes`,
+    { method: "POST", body: JSON.stringify(body) },
+  );
+  if (args.includes("--json")) return json(result);
+  const { route } = result;
+  console.log(result.created ? "route reserved:" : "route already held (unchanged):");
+  console.log(`  id ${route.id}`);
+  console.log(`  bridge ${show(route.bridgePublicIpv4)} (${show(route.bridgeName)})`);
+  console.log(`  public udp port ${route.publicUdpPort}`);
+  console.log(`  proxy name ${show(route.frpProxyName)}`);
+  console.log(`  state ${route.state}`);
+}
+
+/**
+ * Find the node a route belongs to using only the bridge list, which carries
+ * `nodeId` for each route. No node scan and no extra endpoint.
+ */
+async function findRouteNode(
+  api: BridgeApi,
+  routeId: string,
+): Promise<{ nodeId: string; nodeName?: string; publicUdpPort: number; state: RouteState }> {
+  const bridges = await api<BridgeView[]>("/api/admin/vpn-bridges");
+  for (const bridge of bridges) {
+    const route = bridge.routes.find((candidate) => candidate.id === routeId);
+    if (route) return route;
+  }
+  throw new Error(`BRIDGE_ROUTE_NOT_FOUND: no route ${routeId}`);
+}
+
+async function patchEndpoint(
+  api: BridgeApi,
+  nodeId: string,
+  routeId: string | null,
+): Promise<{ vpnEndpoint?: { changed: boolean; vpnEndpointRevision: number } }> {
+  const current = await api<NodeRoutesView>(`/api/admin/nodes/${nodeId}/vpn-bridge-routes`);
+  return api(`/api/admin/nodes/${nodeId}`, {
+    method: "PATCH",
+    body: JSON.stringify({
+      vpnBridgeRouteId: routeId,
+      expectedVpnEndpointRevision: current.vpnEndpointRevision,
+    }),
+  });
+}
+
+function printEndpointResult(
+  result: { vpnEndpoint?: { changed: boolean; vpnEndpointRevision: number } },
+  target: string,
+): void {
+  const endpoint = result.vpnEndpoint;
+  if (!endpoint) {
+    console.log(`node endpoint set to ${target}`);
+  } else if (endpoint.changed) {
+    console.log(`node endpoint is now ${target} (revision ${endpoint.vpnEndpointRevision})`);
+  } else {
+    console.log(`node endpoint already ${target}; no change (revision ${endpoint.vpnEndpointRevision})`);
+  }
+}
+
+export async function cmdBridgeRouteActivate(api: BridgeApi, args: string[]): Promise<void> {
+  const usage = "Usage: bridge-route-activate <route-id> --confirm";
+  const routeId = requireUuid(positionals(args)[0], "route-id", usage);
+  const route = await findRouteNode(api, routeId);
+  if (!confirmed(args)) {
+    return preview([
+      `Would switch node ${route.nodeId}${route.nodeName ? ` (${route.nodeName})` : ""} to route ${routeId} (public udp port ${route.publicUdpPort}).`,
+      "The API refuses it without a fresh observation and a recent verification of the route.",
+    ]);
+  }
+  const result = await patchEndpoint(api, route.nodeId, routeId);
+  printEndpointResult(result, `route ${routeId}`);
+}
+
+export async function cmdBridgeRouteDirect(api: BridgeApi, args: string[]): Promise<void> {
+  const usage = "Usage: bridge-route-direct <node-id> --confirm";
+  const nodeId = requireUuid(positionals(args)[0], "node-id", usage);
+  if (!confirmed(args)) {
+    return preview([`Would switch node ${nodeId} back to Direct (no bridge route).`]);
+  }
+  const result = await patchEndpoint(api, nodeId, null);
+  printEndpointResult(result, "Direct");
+}
+
+export async function cmdBridgeRouteRelease(api: BridgeApi, args: string[]): Promise<void> {
+  const usage = "Usage: bridge-route-release <route-id> --confirm";
+  const routeId = requireUuid(positionals(args)[0], "route-id", usage);
+  if (!confirmed(args)) {
+    return preview([
+      `Would release route ${routeId} and free its bridge UDP port (refused while it is the node's active endpoint).`,
+    ]);
+  }
+  const result = await api<{ publicUdpPort: number; nodeId: string; bridgeId: string }>(
+    `/api/admin/vpn-bridge-routes/${routeId}?confirmed=true`,
+    { method: "DELETE" },
+  );
+  console.log(`route ${routeId} released (udp port ${result.publicUdpPort} is free again)`);
+}
+
+/** Dispatch table; main.ts routes every `bridge*` command through it. */
+export const BRIDGE_COMMANDS: Record<
+  string,
+  (api: BridgeApi, args: string[]) => Promise<void>
+> = {
+  bridges: cmdBridges,
+  "bridge-add": cmdBridgeAdd,
+  "bridge-delete": cmdBridgeDelete,
+  "bridge-routes": cmdBridgeRoutes,
+  "bridge-route-prepare": cmdBridgeRoutePrepare,
+  "bridge-route-activate": cmdBridgeRouteActivate,
+  "bridge-route-direct": cmdBridgeRouteDirect,
+  "bridge-route-release": cmdBridgeRouteRelease,
+};
+
+export const BRIDGE_USAGE_LINES = `  bridges [--json]                        List AWG 3.1 bridges: management state, ports
+                                          held/total, route count
+  bridge-add --name= --ipv4= [--control-port=7000] [--udp-start=41000]
+             [--udp-end=41031] --confirm  Register a bridge (metadata only; nothing is
+                                          installed on the host)
+  bridge-delete <bridge-id> --confirm     Delete an empty bridge (BRIDGE_HAS_ROUTES otherwise)
+  bridge-routes <node-id> [--json]        A node's endpoint: Direct or active route, revision,
+                                          drafts, retiring ports, verification state
+  bridge-route-prepare <node-id> <bridge-id> [--port=<udp>] --confirm
+                                          Reserve a bridge UDP port for a node
+  bridge-route-activate <route-id> --confirm
+                                          Switch the route's node onto it (needs a fresh
+                                          observation and a verification < 30 min old)
+  bridge-route-direct <node-id> --confirm Switch a node back to Direct
+  bridge-route-release <route-id> --confirm
+                                          Free a non-active route's port
+`;
