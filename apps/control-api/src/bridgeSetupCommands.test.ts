@@ -13,8 +13,8 @@ describe("bridge setup commands", () => {
       udpPortEnd: 41031,
     });
     expect(commands).toEqual({
-      install: `sudo sh infra/bridge/install-frps.sh --bridge-id ${BRIDGE_ID} --control-port 7000 --udp-start 41000 --udp-end 41031`,
-      dryRun: `sudo sh infra/bridge/install-frps.sh --bridge-id ${BRIDGE_ID} --control-port 7000 --udp-start 41000 --udp-end 41031 --dry-run`,
+      install: `sudo sh /opt/amnezia-bridge/install-frps.sh --bridge-id ${BRIDGE_ID} --control-port 7000 --udp-start 41000 --udp-end 41031`,
+      dryRun: `sudo sh /opt/amnezia-bridge/install-frps.sh --bridge-id ${BRIDGE_ID} --control-port 7000 --udp-start 41000 --udp-end 41031 --dry-run`,
     });
     expect(commands).not.toHaveProperty("remove");
   });
@@ -26,11 +26,11 @@ describe("bridge setup commands", () => {
       bridgePublicIpv4: "198.51.100.7",
       bridgeControlTcpPort: 7000,
     });
-    const base = `sudo sh infra/node/scripts/install-frpc.sh --route-id ${ROUTE_ID} --bridge-ip 198.51.100.7 --control-port 7000 --public-port 41005`;
+    const base = `sudo sh /opt/amnezia-panel-node/scripts/install-frpc.sh --route-id ${ROUTE_ID} --bridge-ip 198.51.100.7 --control-port 7000 --public-port 41005`;
     expect(commands).toEqual({
       install: base,
       dryRun: `${base} --dry-run`,
-      remove: `sudo sh infra/node/scripts/install-frpc.sh --route-id ${ROUTE_ID} --remove`,
+      remove: `sudo sh /opt/amnezia-panel-node/scripts/install-frpc.sh --route-id ${ROUTE_ID} --remove`,
     });
     for (const text of Object.values(commands)) {
       expect(text).not.toMatch(/--local-(ip|udp-port)|token|password|secret|\.crt|\.key/i);

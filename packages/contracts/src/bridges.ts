@@ -153,7 +153,7 @@ export const bridgeRouteSummarySchema = z.object({
 });
 
 /**
- * Host commands for the bridge installer (`infra/bridge/install-frps.sh`).
+ * Host commands for the bridge installer (`/opt/amnezia-bridge/install-frps.sh` on the bridge host).
  * Built from the bridge id, control port and UDP range only; no secrets.
  */
 export const bridgeSetupCommandsSchema = z.object({
@@ -163,10 +163,11 @@ export const bridgeSetupCommandsSchema = z.object({
 export type BridgeSetupCommands = z.infer<typeof bridgeSetupCommandsSchema>;
 
 /**
- * Host commands for the node route installer (`infra/node/scripts/install-frpc.sh`).
+ * Host commands for the node route installer (`/opt/amnezia-panel-node/scripts/install-frpc.sh` on the node host).
  * Built from the route id, the bridge IPv4, the control port and the public
- * port only; the script detects the local AWG target itself (its optional
- * `--local-udp-port` / `--local-ip` overrides are not generated). `remove`
+ * port only; the script detects the local AWG target itself. Its optional
+ * `--local-udp-port <udp>` / `--local-ip <ipv4>` overrides are not generated:
+ * append them to `install` when detection asks for them. `remove`
  * retires the route's frpc unit and config.
  */
 export const routeSetupCommandsSchema = z.object({

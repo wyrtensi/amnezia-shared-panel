@@ -255,6 +255,44 @@ withHost("repeating the same setup succeeds without a new route or restart", asy
   assert.deepEqual((await readdir(join(h.etc, "amnezia-node", "frpc"))).sort(), [`${ROUTE}.toml`]);
 });
 
+withHost("a same-input repeat is a no-op even when the control path is down", async (h) => {
+  assert.equal(h.run(...baseArgs).status, 0);
+  await h.flag("nc-fails");
+  await h.flag("verify-rc", "1");
+  await rm(join(h.prefix, "0.72.0", "frpc"));
+  const before = await h.calls();
+  const r = h.run(...baseArgs);
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /no change/);
+  assert.doesNotMatch((await h.calls()).slice(before.length), /systemctl (enable|restart|stop|disable)/);
+});
+
+withHost("a non-root style dry run does not need file ownership", async (h) => {
+  const r = h.run(...baseArgs, "--dry-run");
+  assert.equal(r.status, 0, r.stderr);
+});
+
+withHost("verify output is shown on exit 13 and an inactive unit is not restarted by rollback", async (h) => {
+  assert.equal(h.run(...baseArgs).status, 0);
+  const conf = `${await h.readConf()}# operator note\n`;
+  await writeFile(h.conf(), conf);
+  await rm(join(h.sc, `active.amnezia-frpc@${ROUTE}.service`));
+  await h.flag("verify-rc", "1");
+  const bad = h.run(...baseArgs);
+  assert.equal(bad.status, 13);
+  assert.match(bad.stderr, /frpc verify rejected/);
+  // Registration fails after the config swap: the old config returns, no restart.
+  await rm(join(h.state, "verify-rc"));
+  await h.flag("verify-rc", "0");
+  await h.flag("journal", "[awg] start error: port not allowed\n");
+  const before = await h.calls();
+  const r = h.run(...baseArgs);
+  assert.equal(r.status, 42);
+  assert.equal(await h.readConf(), conf);
+  const added = (await h.calls()).slice(before.length);
+  assert.doesNotMatch(added, /systemctl restart/);
+});
+
 withHost("a conflicting existing config stops with the conflicting field", async (h) => {
   assert.equal(h.run(...baseArgs).status, 0);
   const before = await h.readConf();

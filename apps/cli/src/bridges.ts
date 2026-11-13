@@ -282,7 +282,7 @@ function printBridge(bridge: BridgeView): void {
   );
   const setup = projectSetup(bridge.setupCommands);
   if (setup) {
-    console.log("setup commands (run them on the bridge host yourself):");
+    console.log("setup commands (run them on the bridge host yourself; copy infra/bridge/ to /opt/amnezia-bridge/ first):");
     for (const key of SETUP_KEYS) if (setup[key]) console.log(`  ${key}: ${setup[key]}`);
   }
 }
@@ -384,8 +384,10 @@ export async function cmdBridgeRoutePrepare(api: BridgeApi, args: string[]): Pro
   console.log(`  state ${route.state}`);
   const setup = projectSetup(route.setupCommands);
   if (setup) {
-    console.log("setup commands (run them on the node host yourself; the helper detects the local AWG port):");
+    console.log("setup commands (run them on the node host yourself):");
     for (const key of SETUP_KEYS) if (setup[key]) console.log(`  ${key}: ${setup[key]}`);
+    console.log("  The helper detects the local AWG port. If it asks, append --local-udp-port <udp> and/or --local-ip <ipv4> to install.");
+    console.log("  An existing node gets install-frpc.sh by re-running scripts/add-node.sh (it re-syncs infra/node).");
   }
 }
 

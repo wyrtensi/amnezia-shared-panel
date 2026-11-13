@@ -37,12 +37,13 @@
 # Pool exhaustion is reported by the panel API (BRIDGE_POOL_EXHAUSTED).
 #
 # Test seams (not for operators): AMNEZIA_ETC, AMNEZIA_SYSTEMD_DIR,
-# AMNEZIA_FRP_PREFIX, AMNEZIA_ALLOW_NONROOT.
+# AMNEZIA_FRP_PREFIX, AMNEZIA_ALLOW_NONROOT, AMNEZIA_LISTEN_WAIT.
 set -eu
 
 ETC="${AMNEZIA_ETC:-/etc}"
 SYSTEMD_DIR="${AMNEZIA_SYSTEMD_DIR:-/etc/systemd/system}"
 FRP_PREFIX="${AMNEZIA_FRP_PREFIX:-/opt/amnezia-frp}"
+LISTEN_WAIT="${AMNEZIA_LISTEN_WAIT:-15}"
 FRP_DIR="$ETC/amnezia-bridge/frp"
 TOKEN_FILE="$FRP_DIR/token"
 CERT_FILE="$FRP_DIR/server.crt"
@@ -54,7 +55,7 @@ UNIT=amnezia-frps.service
 UNIT_FILE="$SYSTEMD_DIR/$UNIT"
 DASH_PORT=7500
 
-# BEGIN frp-pin (keep identical in infra/bridge/install-frps.sh)
+# BEGIN frp-pin (identical in infra/bridge/install-frps.sh and infra/node/scripts/install-frpc.sh)
 FRP_VERSION=0.72.0
 FRP_RELEASE_URL="https://github.com/fatedier/frp/releases/download/v${FRP_VERSION}"
 # SHA-256 from the official frp_sha256_checksums.txt of release v0.72.0.
@@ -62,6 +63,14 @@ FRP_SHA256_AMD64=daf719b32ca2778770bb92955e231a07414d754378b9af328aa264286247980
 FRP_SHA256_ARM64=02180b857480302fd934e9ddbd50fe2f73229f99062f88756abc6de9df5e95cf
 # END frp-pin
 FRPS_BIN="$FRP_PREFIX/$FRP_VERSION/frps"
+
+TMP_CONF_RENDER=""
+TMP_UNIT_RENDER=""
+TMP_CONF=""
+BACKUP=""
+cleanup() { rm -f -- "$TMP_CONF_RENDER" "$TMP_UNIT_RENDER" "$TMP_CONF" "$BACKUP"; }
+trap cleanup EXIT
+trap 'cleanup; exit 130' INT TERM
 
 info() { printf '%s\n' "$*"; }
 plan() { printf 'PLAN: %s\n' "$*"; }
@@ -122,7 +131,9 @@ check_secret_file() {
     400|600) ;;
     *) die 11 E_FILE "$1 has mode $mode, expected 0600" ;;
   esac
-  [ "$(stat -c %u "$1")" = "$(id -u)" ] || die 11 E_FILE "$1 must be owned by the user running this script"
+  # A non-root dry run only reads state, so it may not own root's files.
+  [ "$DRY_RUN" -eq 1 ] || [ "$(stat -c %u "$1")" = "$(id -u)" ] ||
+    die 11 E_FILE "$1 must be owned by the user running this script (root)"
 }
 check_public_file() {
   [ -f "$1" ] || die 11 E_FILE "missing file $1 (the frps certificate)"
@@ -132,6 +143,8 @@ check_public_file() {
 check_secret_file "$TOKEN_FILE"
 check_secret_file "$KEY_FILE"
 check_public_file "$CERT_FILE"
+# An existing credentials file is sourced for `frps verify`: trust it only if protected.
+[ ! -f "$DASH_ENV_FILE" ] || check_secret_file "$DASH_ENV_FILE"
 
 # ---- state -----------------------------------------------------------------
 unit_active() { systemctl is-active --quiet "$1" 2>/dev/null; }
@@ -221,7 +234,6 @@ UNIT_EOF
 
 TMP_CONF_RENDER="$(mktemp)"
 TMP_UNIT_RENDER="$(mktemp)"
-trap 'rm -f "$TMP_CONF_RENDER" "$TMP_UNIT_RENDER"' EXIT INT TERM
 render_config >"$TMP_CONF_RENDER"
 unit_body >"$TMP_UNIT_RENDER"
 
@@ -238,14 +250,26 @@ print_firewall() {
 }
 
 if [ "$DRY_RUN" -eq 1 ]; then
-  [ -x "$FRPS_BIN" ] && [ "$("$FRPS_BIN" --version 2>/dev/null)" = "$FRP_VERSION" ] &&
-    plan "frps $FRP_VERSION already installed at $FRPS_BIN" ||
+  if [ -x "$FRPS_BIN" ] && [ "$("$FRPS_BIN" --version 2>/dev/null)" = "$FRP_VERSION" ]; then
+    plan "frps $FRP_VERSION already installed at $FRPS_BIN"
+  else
     plan "download frp v$FRP_VERSION, verify its pinned SHA-256 and install $FRPS_BIN"
-  [ -f "$DASH_ENV_FILE" ] && plan "keep dashboard credentials $DASH_ENV_FILE" ||
+  fi
+  if [ -f "$DASH_ENV_FILE" ]; then
+    plan "keep dashboard credentials $DASH_ENV_FILE"
+  else
     plan "generate dashboard credentials in $DASH_ENV_FILE (mode 0600)"
-  [ "$conf_same" -eq 1 ] && plan "config $CONF is current" ||
+  fi
+  if [ "$conf_same" -eq 1 ]; then
+    plan "config $CONF is current"
+  else
     plan "write $CONF (frps verify before the atomic move): control tcp $CONTROL_PORT, allowPorts $UDP_START-$UDP_END, dashboard 127.0.0.1:$DASH_PORT"
-  [ "$unit_same" -eq 1 ] && plan "unit $UNIT_FILE is current" || plan "write $UNIT_FILE"
+  fi
+  if [ "$unit_same" -eq 1 ]; then
+    plan "unit $UNIT_FILE is current"
+  else
+    plan "write $UNIT_FILE"
+  fi
   if [ "$active" -eq 1 ] && [ "$conf_same" -eq 1 ]; then
     plan "no change: $UNIT is already active"
   else
@@ -256,7 +280,7 @@ if [ "$DRY_RUN" -eq 1 ]; then
   exit 0
 fi
 
-# BEGIN frp-fetch (keep identical in infra/bridge/install-frps.sh)
+# BEGIN frp-fetch (identical in infra/bridge/install-frps.sh and infra/node/scripts/install-frpc.sh)
 ensure_binary() {
   name="$1"
   dest="$FRP_PREFIX/$FRP_VERSION/$name"
@@ -302,12 +326,12 @@ if [ ! -f "$DASH_ENV_FILE" ]; then
 fi
 
 TMP_CONF="$(mktemp "$FRP_DIR/.frps.XXXXXX")"
-trap 'rm -f "$TMP_CONF_RENDER" "$TMP_UNIT_RENDER" "$TMP_CONF"' EXIT INT TERM
 cp "$TMP_CONF_RENDER" "$TMP_CONF"
 chmod 0644 "$TMP_CONF"
 # The config references the dashboard credentials as environment templates.
-if ! (set -a; . "$DASH_ENV_FILE"; set +a; "$FRPS_BIN" verify -c "$TMP_CONF") >/dev/null 2>&1; then
-  die 13 E_CONFIG_INVALID "frps verify rejected the generated config; the previous config and unit are untouched"
+# shellcheck source=/dev/null
+if ! verify_out="$( (set -a; . "$DASH_ENV_FILE"; set +a; "$FRPS_BIN" verify -c "$TMP_CONF") 2>&1)"; then
+  die 13 E_CONFIG_INVALID "frps verify rejected the generated config (previous config and unit untouched): $verify_out"
 fi
 
 if [ "$conf_same" -eq 1 ] && [ "$unit_same" -eq 1 ] && [ "$active" -eq 1 ] && [ "$enabled" -eq 1 ]; then
@@ -318,12 +342,10 @@ fi
 
 had_conf=0
 [ -f "$CONF" ] && had_conf=1
-BACKUP=""
 if [ "$had_conf" -eq 1 ]; then
   BACKUP="$(mktemp "$FRP_DIR/.frps.backup.XXXXXX")"
   cp -p "$CONF" "$BACKUP"
 fi
-trap 'rm -f "$TMP_CONF_RENDER" "$TMP_UNIT_RENDER" "$TMP_CONF" "$BACKUP"' EXIT INT TERM
 
 if [ "$unit_same" -eq 0 ]; then
   mkdir -p "$SYSTEMD_DIR"
@@ -340,7 +362,13 @@ systemctl daemon-reload
 rollback() {
   if [ "$had_conf" -eq 1 ]; then
     mv -f "$BACKUP" "$CONF"
-    systemctl restart "$UNIT" >/dev/null 2>&1 || true
+    if [ "$active" -eq 1 ]; then
+      systemctl restart "$UNIT" >/dev/null 2>&1 || true
+    elif [ "$enabled" -eq 1 ]; then
+      systemctl stop "$UNIT" >/dev/null 2>&1 || true
+    else
+      systemctl disable --now "$UNIT" >/dev/null 2>&1 || true
+    fi
   else
     systemctl disable --now "$UNIT" >/dev/null 2>&1 || true
     rm -f "$CONF" "$BRIDGE_ID_FILE"
@@ -353,12 +381,29 @@ else
   systemctl enable --now "$UNIT" >/dev/null 2>&1 || { rollback; die 50 E_START "systemctl enable --now $UNIT failed; change rolled back"; }
 fi
 
-unit_active "$UNIT" || { rollback; die 50 E_START "$UNIT is not active after start"; }
-after="$(ss -H -ltn 2>/dev/null || true)"
-printf '%s\n' "$after" | awk '{n=split($4,a,":"); print a[n]}' | grep -qx "$CONTROL_PORT" ||
-  { rollback; die 50 E_START "frps is active but nothing listens on tcp $CONTROL_PORT"; }
-printf '%s\n' "$after" | awk '$4 == "127.0.0.1:'"$DASH_PORT"'" {found=1} END {exit !found}' ||
-  { rollback; die 50 E_START "frps dashboard is not listening on 127.0.0.1:$DASH_PORT"; }
+# frps needs a moment to bind: poll for the active unit and both listeners
+# before deciding the start failed.
+waited=0
+while :; do
+  after="$(ss -H -ltn 2>/dev/null || true)"
+  problem=""
+  unit_active "$UNIT" || problem="$UNIT is not active after start"
+  if [ -z "$problem" ]; then
+    printf '%s\n' "$after" | awk '{n=split($4,a,":"); print a[n]}' | grep -qx "$CONTROL_PORT" ||
+      problem="frps is active but nothing listens on tcp $CONTROL_PORT"
+  fi
+  if [ -z "$problem" ]; then
+    printf '%s\n' "$after" | awk -v want="127.0.0.1:$DASH_PORT" '$4 == want {found=1} END {exit !found}' ||
+      problem="frps dashboard is not listening on 127.0.0.1:$DASH_PORT"
+  fi
+  [ -n "$problem" ] || break
+  if [ "$waited" -ge "$LISTEN_WAIT" ]; then
+    rollback
+    die 50 E_START "$problem (waited ${LISTEN_WAIT}s)"
+  fi
+  sleep 1
+  waited=$((waited + 1))
+done
 info "frps running for bridge $BRIDGE_ID: control tcp $CONTROL_PORT, pool udp $UDP_START-$UDP_END"
 info "dashboard API: 127.0.0.1:$DASH_PORT, credentials in $DASH_ENV_FILE"
 print_firewall

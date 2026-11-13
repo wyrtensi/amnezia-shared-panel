@@ -4,14 +4,35 @@
 The panel prints the exact command (and a `--dry-run` variant) when you add a
 bridge: `bridge-add` in the CLI, `setupCommands` in the API.
 
+## Install location
+
+The bridge has no deployer. Copy this directory to the host once (and again
+after updates; the tests directory is not needed):
+
 ```sh
-sudo sh infra/bridge/install-frps.sh --bridge-id <id> --control-port 7000 --udp-start 41000 --udp-end 41031 [--dry-run]
+rsync -a --exclude tests infra/bridge/ root@<bridge-host>:/opt/amnezia-bridge/
+# or: scp -r infra/bridge root@<bridge-host>:/opt/amnezia-bridge
+```
+
+Nodes need nothing extra: `scripts/add-node.sh` copies `infra/node`
+(including `scripts/install-frpc.sh`) to `/opt/amnezia-panel-node/`; re-run it
+to sync an existing node.
+
+## Run
+
+```sh
+sudo sh /opt/amnezia-bridge/install-frps.sh --bridge-id <id> --control-port 7000 --udp-start 41000 --udp-end 41031 [--dry-run]
 ```
 
 Run `--dry-run` first: it reads the real listeners and unit state, prints
 `PLAN:` lines and the firewall rules, and changes nothing. A repeat with the
 same inputs is a no-op; a different bridge id, control port or pool on a host
 that already has a config stops with the conflicting field (exit 20).
+
+On the node side, `install-frpc.sh` normally needs no overrides. If Docker
+publishes the AWG port on a specific IPv4 address, append
+`--local-ip <that address>`; `--local-udp-port <udp>` must equal the observed
+host port. Both are checked against `docker port amnezia-awg3`.
 
 ## What it does
 

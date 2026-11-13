@@ -69,7 +69,9 @@ esac
 case "$*" in
   *-ltn*)
     cat "$STATE/ss-tcp-extra"
-    if [ -f "$STATE/../systemctl/active.amnezia-frps.service" ] && [ ! -f "$STATE/no-listen" ]; then
+    n=$(($(cat "$STATE/ss-count" 2>/dev/null || echo 0) + 1)); echo "$n" >"$STATE/ss-count"
+    after="$(cat "$STATE/listen-after" 2>/dev/null || echo 0)"
+    if [ -f "$STATE/../systemctl/active.amnezia-frps.service" ] && [ ! -f "$STATE/no-listen" ] && [ "$n" -ge "$after" ]; then
       echo "LISTEN 0 4096 0.0.0.0:$(cat "$STATE/control-port") 0.0.0.0:*"
       echo "LISTEN 0 4096 127.0.0.1:7500 0.0.0.0:*"
     fi ;;
@@ -113,6 +115,7 @@ esac
     AMNEZIA_SYSTEMD_DIR: systemd,
     AMNEZIA_FRP_PREFIX: prefix,
     AMNEZIA_ALLOW_NONROOT: "1",
+    AMNEZIA_LISTEN_WAIT: "3",
   };
   const run = (...a) => spawnSync("sh", [scriptPath, ...a], { env, encoding: "utf8" });
   return {
@@ -284,6 +287,42 @@ withHost("a failed start of a new install is rolled back", async (h) => {
   assert.equal(silent.status, 50);
   assert.match(silent.stderr, /nothing listens on tcp 7000/);
   await assert.rejects(stat(h.conf));
+});
+
+withHost("a listener that appears on a later poll is not a failure", async (h) => {
+  // Calls: 1 = pre-start listing, 2 = first poll (nothing yet), 3 = second poll.
+  await h.flag("listen-after", "3");
+  const r = h.run(...args);
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(await h.calls(), /systemctl enable --now amnezia-frps\.service/);
+  assert.doesNotMatch(await h.calls(), /systemctl disable/);
+});
+
+withHost("verify output is shown on exit 13", async (h) => {
+  await h.flag("verify-rc", "1");
+  const r = h.run(...args);
+  assert.equal(r.status, 13);
+  assert.match(r.stderr, /frps verify rejected/);
+});
+
+withHost("an unprotected existing dashboard.env is not sourced", async (h) => {
+  await write(join(h.frp, "dashboard.env"), "FRPS_DASHBOARD_USER=a\nFRPS_DASHBOARD_PASSWORD=b\n", 0o644);
+  const r = h.run(...args);
+  assert.equal(r.status, 11);
+  assert.match(r.stderr, /dashboard\.env has mode 644/);
+});
+
+withHost("rollback does not restart a unit that was inactive before", async (h) => {
+  assert.equal(h.run(...args).status, 0);
+  await rm(join(h.sc, "active.amnezia-frps.service"));
+  await writeFile(h.conf, `${await h.readConf()}# operator note\n`);
+  await h.flag("no-listen");
+  const before = await h.calls();
+  const r = h.run(...args);
+  assert.equal(r.status, 50);
+  const added = (await h.calls()).slice(before.length);
+  assert.doesNotMatch(added, /systemctl restart/);
+  assert.match(added, /systemctl stop amnezia-frps\.service/);
 });
 
 test("both installers pin the same frp release with the official digests", executing, async () => {

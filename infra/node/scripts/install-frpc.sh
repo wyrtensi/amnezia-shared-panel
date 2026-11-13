@@ -62,13 +62,21 @@ TEMPLATE_UNIT="$SYSTEMD_DIR/amnezia-frpc@.service"
 AWG_CONTAINER=amnezia-awg3
 AWG_CONTAINER_PORT=51890
 
-# BEGIN frp-pin (keep identical in infra/bridge/install-frps.sh)
+# BEGIN frp-pin (identical in infra/bridge/install-frps.sh and infra/node/scripts/install-frpc.sh)
 FRP_VERSION=0.72.0
 FRP_RELEASE_URL="https://github.com/fatedier/frp/releases/download/v${FRP_VERSION}"
 # SHA-256 from the official frp_sha256_checksums.txt of release v0.72.0.
 FRP_SHA256_AMD64=daf719b32ca2778770bb92955e231a07414d754378b9af328aa2642862479804
 FRP_SHA256_ARM64=02180b857480302fd934e9ddbd50fe2f73229f99062f88756abc6de9df5e95cf
 # END frp-pin
+
+TMP_CONF_RENDER=""
+TMP_TEMPLATE_RENDER=""
+TMP_CONF=""
+BACKUP=""
+cleanup() { rm -f -- "$TMP_CONF_RENDER" "$TMP_TEMPLATE_RENDER" "$TMP_CONF" "$BACKUP"; }
+trap cleanup EXIT
+trap 'cleanup; exit 130' INT TERM
 
 info() { printf '%s\n' "$*"; }
 plan() { printf 'PLAN: %s\n' "$*"; }
@@ -187,7 +195,9 @@ check_secret_file() {
     400|600) ;;
     *) die 11 E_FILE "$1 has mode $mode, expected 0600" ;;
   esac
-  [ "$(stat -c %u "$1")" = "$(id -u)" ] || die 11 E_FILE "$1 must be owned by the user running this script"
+  # A non-root dry run only reads state, so it may not own root's files.
+  [ "$DRY_RUN" -eq 1 ] || [ "$(stat -c %u "$1")" = "$(id -u)" ] ||
+    die 11 E_FILE "$1 must be owned by the user running this script (root)"
 }
 check_public_file() {
   [ -f "$1" ] || die 11 E_FILE "missing file $1 (the bridge CA certificate)"
@@ -225,8 +235,9 @@ OBSERVED
   fi
   bind_ip="${v4_binding%:*}"
   bind_port="${v4_binding##*:}"
-  is_ipv4 "$bind_ip" && is_port "$bind_port" ||
+  if ! is_ipv4 "$bind_ip" || ! is_port "$bind_port"; then
     die 31 E_AMBIGUOUS "cannot parse publication '$v4_binding'"
+  fi
 
   health="$(docker inspect --format '{{.State.Status}} {{.State.Health.Status}}' "$AWG_CONTAINER" 2>/dev/null || true)"
   [ "$health" = "running healthy" ] ||
@@ -305,7 +316,6 @@ check_conflicts() {
 check_conflicts
 
 TMP_CONF_RENDER="$(mktemp)"
-trap 'rm -f "$TMP_CONF_RENDER"' EXIT INT TERM
 render_config >"$TMP_CONF_RENDER"
 
 template_body() {
@@ -329,7 +339,6 @@ WantedBy=multi-user.target
 UNIT_EOF
 }
 TMP_TEMPLATE_RENDER="$(mktemp)"
-trap 'rm -f "$TMP_CONF_RENDER" "$TMP_TEMPLATE_RENDER"' EXIT INT TERM
 template_body >"$TMP_TEMPLATE_RENDER"
 
 binary_ok() { [ -x "$FRPC_BIN" ] && [ "$("$FRPC_BIN" --version 2>/dev/null)" = "$FRP_VERSION" ]; }
@@ -343,14 +352,20 @@ enabled=0
 unit_enabled "$UNIT" && enabled=1
 
 if [ "$DRY_RUN" -eq 1 ]; then
-  existing="$(ls "$CONF_DIR" 2>/dev/null | sed -n 's/\.toml$//p' | tr '\n' ' ')"
+  existing="$(find "$CONF_DIR" -maxdepth 1 -name '*.toml' 2>/dev/null | sed -n 's|.*/\(.*\)\.toml$|\1|p' | tr '\n' ' ')"
   info "existing frpc routes on this host: ${existing:-none}"
   listed="$(systemctl list-units --all --plain --no-legend 'amnezia-frpc@*' 2>/dev/null | awk '{print $1}' | tr '\n' ' ' || true)"
   info "existing frpc units: ${listed:-none}"
-  binary_ok && plan "frpc $FRP_VERSION already installed at $FRPC_BIN" ||
+  if binary_ok; then
+    plan "frpc $FRP_VERSION already installed at $FRPC_BIN"
+  else
     plan "download frp v$FRP_VERSION, verify its pinned SHA-256 and install $FRPC_BIN"
-  [ "$template_same" -eq 1 ] && plan "template unit $TEMPLATE_UNIT is current" ||
+  fi
+  if [ "$template_same" -eq 1 ]; then
+    plan "template unit $TEMPLATE_UNIT is current"
+  else
     plan "write template unit $TEMPLATE_UNIT"
+  fi
   if [ "$conf_same" -eq 1 ]; then
     plan "config $CONF is current"
   else
@@ -367,7 +382,13 @@ if [ "$DRY_RUN" -eq 1 ]; then
 fi
 
 # ---- install ---------------------------------------------------------------
-# BEGIN frp-fetch (keep identical in infra/bridge/install-frps.sh)
+# A same-input repeat changes nothing and must not depend on the network.
+if [ "$conf_same" -eq 1 ] && [ "$template_same" -eq 1 ] && [ "$active" -eq 1 ] && [ "$enabled" -eq 1 ]; then
+  info "route $ROUTE_ID already configured and running: no change"
+  exit 0
+fi
+
+# BEGIN frp-fetch (identical in infra/bridge/install-frps.sh and infra/node/scripts/install-frpc.sh)
 ensure_binary() {
   name="$1"
   dest="$FRP_PREFIX/$FRP_VERSION/$name"
@@ -408,25 +429,17 @@ ensure_binary frpc
 
 mkdir -p "$CONF_DIR"
 TMP_CONF="$(mktemp "$CONF_DIR/.$ROUTE_ID.XXXXXX")"
-trap 'rm -f "$TMP_CONF_RENDER" "$TMP_TEMPLATE_RENDER" "$TMP_CONF"' EXIT INT TERM
 cp "$TMP_CONF_RENDER" "$TMP_CONF"
 chmod 0644 "$TMP_CONF"
-"$FRPC_BIN" verify -c "$TMP_CONF" >/dev/null 2>&1 ||
-  die 13 E_CONFIG_INVALID "frpc verify rejected the generated config; the previous config and unit are untouched"
+verify_out="$("$FRPC_BIN" verify -c "$TMP_CONF" 2>&1)" ||
+  die 13 E_CONFIG_INVALID "frpc verify rejected the generated config (previous config and unit untouched): $verify_out"
 
-if [ "$conf_same" -eq 1 ] && [ "$template_same" -eq 1 ] && [ "$active" -eq 1 ] && [ "$enabled" -eq 1 ]; then
-  info "route $ROUTE_ID already configured and running: no change"
-  exit 0
-fi
-
-BACKUP=""
 had_conf=0
 [ -f "$CONF" ] && had_conf=1
 if [ "$had_conf" -eq 1 ]; then
   BACKUP="$(mktemp "$CONF_DIR/.$ROUTE_ID.backup.XXXXXX")"
   cp -p "$CONF" "$BACKUP"
 fi
-trap 'rm -f "$TMP_CONF_RENDER" "$TMP_TEMPLATE_RENDER" "$TMP_CONF" "$BACKUP"' EXIT INT TERM
 
 if [ "$template_same" -eq 0 ]; then
   mkdir -p "$SYSTEMD_DIR"
@@ -442,7 +455,13 @@ started_at="$(date '+%Y-%m-%d %H:%M:%S')"
 rollback() {
   if [ "$had_conf" -eq 1 ]; then
     mv -f "$BACKUP" "$CONF"
-    systemctl restart "$UNIT" >/dev/null 2>&1 || true
+    if [ "$active" -eq 1 ]; then
+      systemctl restart "$UNIT" >/dev/null 2>&1 || true
+    elif [ "$enabled" -eq 1 ]; then
+      systemctl stop "$UNIT" >/dev/null 2>&1 || true
+    else
+      systemctl disable --now "$UNIT" >/dev/null 2>&1 || true
+    fi
   else
     systemctl disable --now "$UNIT" >/dev/null 2>&1 || true
     rm -f "$CONF"
@@ -462,7 +481,7 @@ while :; do
   log="$(journalctl -u "$UNIT" --since "$started_at" --no-pager -o cat 2>/dev/null | tail -n 60 || true)"
   case "$log" in
     *"start proxy success"*) break ;;
-    *"token"*"doesn't match"*|*"authorization failed"*|*"authentication failed"*|*x509*|*"tls: "*)
+    *"token"*"doesn't match"*|*"authentication failed"*|*x509*|*"tls: "*)
       rollback
       die 41 E_AUTH_TLS "frp authentication or TLS verification failed; check the token file, the bridge CA and that the frps certificate has SAN $BRIDGE_IP"
       ;;

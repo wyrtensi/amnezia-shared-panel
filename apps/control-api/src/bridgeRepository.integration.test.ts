@@ -310,16 +310,16 @@ describe("bridge registry (real PostgreSQL)", () => {
   runDatabaseTest("bridge and route read models carry secret-free setup commands", async () => {
     const bridge = await createBridge();
     expect(bridge.setupCommands?.install).toBe(
-      `sudo sh infra/bridge/install-frps.sh --bridge-id ${bridge.id} --control-port ${bridge.controlTcpPort} --udp-start ${bridge.udpPortStart} --udp-end ${bridge.udpPortEnd}`,
+      `sudo sh /opt/amnezia-bridge/install-frps.sh --bridge-id ${bridge.id} --control-port ${bridge.controlTcpPort} --udp-start ${bridge.udpPortStart} --udp-end ${bridge.udpPortEnd}`,
     );
     expect(bridge.setupCommands?.dryRun).toBe(`${bridge.setupCommands?.install} --dry-run`);
     const nodeId = await seedNode("setup-commands");
     const { route } = await repository.prepareBridgeRoute(admin, nodeId, { bridgeId: bridge.id });
     expect(route.setupCommands?.install).toBe(
-      `sudo sh infra/node/scripts/install-frpc.sh --route-id ${route.id} --bridge-ip ${bridge.publicIpv4} --control-port ${bridge.controlTcpPort} --public-port ${route.publicUdpPort}`,
+      `sudo sh /opt/amnezia-panel-node/scripts/install-frpc.sh --route-id ${route.id} --bridge-ip ${bridge.publicIpv4} --control-port ${bridge.controlTcpPort} --public-port ${route.publicUdpPort}`,
     );
     expect(route.setupCommands?.remove).toBe(
-      `sudo sh infra/node/scripts/install-frpc.sh --route-id ${route.id} --remove`,
+      `sudo sh /opt/amnezia-panel-node/scripts/install-frpc.sh --route-id ${route.id} --remove`,
     );
     const listed = await repository.getNodeBridgeRoutes(admin, nodeId);
     expect(listed.drafts[0]?.setupCommands).toEqual(route.setupCommands);
