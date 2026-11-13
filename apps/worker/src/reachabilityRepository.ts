@@ -113,6 +113,7 @@ export class PostgresReachabilityRepository
       staleAlertedAt: row.staleAlertedAt,
       enabledAt: row.enabledAt,
       timeZone: row.timeZone,
+      capabilities: row.capabilities ?? null,
       candidateRun:
         row.candidateRunId !== null &&
         row.candidateRouteId !== null &&
@@ -192,8 +193,8 @@ export class PostgresReachabilityRepository
     });
   };
 
-  finishCandidateRun = async (run: CandidateRun, outcome: CandidateOutcome): Promise<void> => {
-    await this.options.db.transaction(async (tx) => {
+  finishCandidateRun = async (run: CandidateRun, outcome: CandidateOutcome): Promise<boolean> =>
+    this.options.db.transaction(async (tx) => {
       // Claim it first, as `ingest` claims a regular run: only the tick that
       // frees the slot writes the result.
       const freed = await tx
@@ -203,15 +204,14 @@ export class PostgresReachabilityRepository
           and(eq(reachabilityProbe.id, 1), eq(reachabilityProbe.candidateRunId, run.runId)),
         )
         .returning({ id: reachabilityProbe.id });
-      if (freed.length === 0) return;
-      await writeCandidateVerification(tx, {
+      if (freed.length === 0) return false;
+      return writeCandidateVerification(tx, {
         routeId: run.routeId,
         registrationMarker: run.registrationMarker,
         requestedAt: run.requestedAt,
         outcome,
       });
     });
-  };
 
   ingest = async (write: IngestWrite): Promise<void> => {
     await this.options.db.transaction(async (tx) => {

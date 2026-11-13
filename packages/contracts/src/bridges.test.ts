@@ -4,6 +4,7 @@ import {
   bridgeRouteCandidateCheckPayloadSchema,
   decodeRegistrationMarkerHeader,
   encodeRegistrationMarkerHeader,
+  probeCapabilityInputOf,
   probeSupportsBridgeMeasurement,
   verifyBridgeRouteRequestSchema,
   classifyPublicIpv4,
@@ -294,5 +295,14 @@ describe("candidate validation contracts", () => {
     expect(probeSupportsBridgeMeasurement({ capabilities: null })).toBe(false);
     expect(probeSupportsBridgeMeasurement({ capabilities: [] })).toBe(false);
     expect(probeSupportsBridgeMeasurement({ capabilities: ["bridge-measurement"] })).toBe(true);
+  });
+
+  it("reads the stored capability column as unknown unless it is a string list", () => {
+    expect(probeCapabilityInputOf(null)).toEqual({ capabilities: null });
+    expect(probeCapabilityInputOf({ bridge: true })).toEqual({ capabilities: null });
+    expect(probeCapabilityInputOf(["bridge-measurement", 1])).toEqual({ capabilities: null });
+    expect(
+      probeSupportsBridgeMeasurement(probeCapabilityInputOf(["bridge-measurement"])),
+    ).toBe(true);
   });
 });

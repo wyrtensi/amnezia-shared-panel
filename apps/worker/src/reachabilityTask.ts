@@ -39,6 +39,11 @@ export type ProbeRow = {
   enabledAt: Date;
   /** IANA zone for the times in alert texts. */
   timeZone: string;
+  /**
+   * The probe's stored capability list (`reachability_probe.capabilities`),
+   * null when unknown. Read through `probeCapabilityInputOf`.
+   */
+  capabilities: unknown;
   /** A bridge route candidate check holding the probe, if any. */
   candidateRun: CandidateRun | null;
 };
@@ -84,7 +89,7 @@ export interface ReachabilityRepository {
    * only (see bridgeCandidateCheck.ts). Writes nothing to node status,
    * results, history or the outbox.
    */
-  finishCandidateRun: (run: CandidateRun, outcome: CandidateOutcome) => Promise<void>;
+  finishCandidateRun: (run: CandidateRun, outcome: CandidateOutcome) => Promise<boolean>;
 }
 
 /**
@@ -158,8 +163,13 @@ export const createReachabilityTask = ({
         await watchStale();
         return;
       }
-      await repository.finishCandidateRun(probe.candidateRun, outcome);
-      log(`reachability: settled candidate run ${probe.candidateRun.runId} (${outcome.result})`);
+      const written = await repository.finishCandidateRun(probe.candidateRun, outcome);
+      const verdict = outcome.error ? `${outcome.result} ${outcome.error}` : outcome.result;
+      log(
+        written
+          ? `reachability: settled candidate run ${probe.candidateRun.runId} (${verdict})`
+          : `reachability: candidate run ${probe.candidateRun.runId} for route ${probe.candidateRun.routeId} settled (${verdict}) but its result was discarded (route changed or verified since the request)`,
+      );
     }
 
     let currentRunId = probe.currentRunId;

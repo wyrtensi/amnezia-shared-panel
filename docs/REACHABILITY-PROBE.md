@@ -64,8 +64,21 @@ flight or waiting to be ingested, and the regular run waits while a candidate
 holds the probe. Handshake and HTTP through the tunnel decide; ping and TCP are
 diagnostic only. The result is stored on the route, never in node status,
 history, alerts or the widget. It needs `VPN_BRIDGE_JOBS_ENABLED=true` and a
-probe that reports the bridge-measurement capability; until then use the
-operator-verified path (`docs/CLI.md`).
+probe that reports the bridge-measurement capability (stored in
+`reachability_probe.capabilities`; unknown counts as unsupported); until then
+use the operator-verified path (`docs/CLI.md`).
+
+The result is stamped with the time the run was claimed, and a run settled more
+than 15 minutes after that is recorded as `PROBE_RESULT_STALE` (or
+`PROBE_RUN_TIMEOUT` when unfinished), so late evidence never passes the
+30-minute activation window. A second request while a check of the route is
+queued or running returns that check; one for a changed registration answers
+`BRIDGE_CHECK_PENDING` until it settles.
+
+A candidate check waits while a regular run holds the probe and gives up after
+about 14 minutes of retries (`PROBE_BUSY`). With a fleet run longer than
+`intervalSec` the probe is almost never free, so candidate checks can starve:
+raise `intervalSec`, or use operator verification.
 
 ## Statuses and alerts
 

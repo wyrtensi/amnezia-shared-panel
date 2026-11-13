@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 
 import {
   bridgeRouteCandidateCheckPayloadSchema,
+  probeCapabilityInputOf,
   probeSupportsBridgeMeasurement,
   type BridgeCandidateCheckError,
   type ProbeCapabilityInput,
@@ -79,10 +80,11 @@ export interface BridgeCandidateRepository {
   releaseCandidateRun: (runId: string) => Promise<void>;
   /**
    * Store a result on the route, only while the route is still a draft or
-   * retiring and was not demoted after the check was requested (a demotion
-   * clears verification, ruling R11, and a late result must not restore it).
+   * retiring, was not demoted after the check was requested (a demotion
+   * clears verification, ruling R11, and a late result must not restore it)
+   * and holds no verification recorded after the request. True when written.
    */
-  recordCandidateResult: (write: CandidateResultWrite) => Promise<void>;
+  recordCandidateResult: (write: CandidateResultWrite) => Promise<boolean>;
 }
 
 /** The probe's target id of a candidate run; never a node target id. */
@@ -90,41 +92,40 @@ export const candidateTargetId = (routeId: string): string => `bridge-route:${ro
 
 /** A run the probe no longer reports is given up after this long. */
 export const CANDIDATE_LOST_GRACE_MS = 2 * 60 * 1_000;
-/** A one-target run that is still unfinished after this long is given up. */
+/**
+ * A one-target run not settled this long after its claim is given up: still
+ * unfinished (`PROBE_RUN_TIMEOUT`) or finished but settled too late to count
+ * (`PROBE_RESULT_STALE`).
+ */
 export const CANDIDATE_RUN_TIMEOUT_MS = 15 * 60 * 1_000;
 /** Same as the outbox runner's default: the last attempt records the failure. */
 export const CANDIDATE_MAX_ATTEMPTS = 10;
 
 /**
- * What the panel knows about the probe's capabilities. Nothing reports them
- * yet (Task 4a adds the probe's typed capability response), so this is
- * unknown, which `probeSupportsBridgeMeasurement` treats as unsupported.
- */
-export const probeCapabilityInput = (_probe: ProbeRow): ProbeCapabilityInput => ({
-  capabilities: null,
-});
-
-/**
- * The verdict of a finished candidate run, settled at `at`. A bridged path is judged on the
+ * The verdict of a finished candidate run. A bridged path is judged on the
  * real AWG handshake and HTTP through the tunnel; ping and TCP against the
  * bridge's UDP port say nothing about it. A failed control fetch means the
  * probe itself could not be trusted, which is not a pass either.
+ *
+ * `checkedAt` is the panel-clock time the run was claimed, which is never
+ * later than the measurement: neither a late settle (worker down, probe
+ * unreachable for a while) nor the probe host's clock can make the evidence
+ * look fresher than it is for the 30-minute activation window.
  */
 export const classifyCandidateRun = (
-  run: ProbeRunState,
-  routeId: string,
-  at: Date,
+  latest: ProbeRunState,
+  run: Pick<CandidateRun, "routeId" | "startedAt">,
 ): CandidateOutcome => {
-  // Panel time, as regular ingest stamps it: the 30-minute activation window
-  // must not depend on the probe host's clock.
-  const checkedAt = at;
+  const checkedAt = run.startedAt;
   const failure = (error: BridgeCandidateCheckError): CandidateOutcome => ({
     result: "failure",
     error,
     checkedAt,
   });
-  if (run.control.ok !== true) return failure("PROBE_CONTROL_FAILED");
-  const result = run.results.find((entry) => entry.targetId === candidateTargetId(routeId));
+  if (latest.control.ok !== true) return failure("PROBE_CONTROL_FAILED");
+  const result = latest.results.find(
+    (entry) => entry.targetId === candidateTargetId(run.routeId),
+  );
   if (!result || result.status !== "done") return failure("PROBE_TARGET_ERROR");
   if (result.levels.handshake.ok !== true) return failure("AWG_HANDSHAKE_FAILED");
   if (result.levels.http.ok !== true) return failure("HTTP_THROUGH_TUNNEL_FAILED");
@@ -134,7 +135,9 @@ export const classifyCandidateRun = (
 /**
  * What the reachability tick does with a candidate run holding the probe:
  * settle it with its verdict, give it up when lost or overdue, or keep
- * waiting (`null`).
+ * waiting (`null`). The timeout applies before the verdict: a run settled
+ * more than `CANDIDATE_RUN_TIMEOUT_MS` after its claim is a failure
+ * (`PROBE_RESULT_STALE` when it did finish), never a success.
  */
 export const candidateRunOutcome = (
   run: CandidateRun,
@@ -142,18 +145,21 @@ export const candidateRunOutcome = (
   at: Date,
 ): CandidateOutcome | null => {
   const age = at.getTime() - run.startedAt.getTime();
+  const failure = (error: BridgeCandidateCheckError): CandidateOutcome => ({
+    result: "failure",
+    error,
+    checkedAt: run.startedAt,
+  });
   if (latest && latest.runId === run.runId) {
-    if (latest.finishedAt !== null) return classifyCandidateRun(latest, run.routeId, at);
     if (age > CANDIDATE_RUN_TIMEOUT_MS) {
-      return { result: "failure", error: "PROBE_RUN_TIMEOUT", checkedAt: at };
+      return failure(latest.finishedAt !== null ? "PROBE_RESULT_STALE" : "PROBE_RUN_TIMEOUT");
     }
+    if (latest.finishedAt !== null) return classifyCandidateRun(latest, run);
     return null;
   }
   // The probe keeps runs in memory, so a restart loses ours. A claim made a
   // moment ago by another worker may simply not have reached the probe yet.
-  if (age > CANDIDATE_LOST_GRACE_MS) {
-    return { result: "failure", error: "PROBE_RUN_LOST", checkedAt: at };
-  }
+  if (age > CANDIDATE_LOST_GRACE_MS) return failure("PROBE_RUN_LOST");
   return null;
 };
 
@@ -195,13 +201,17 @@ export const createBridgeCandidateCheck = ({
     const payload = parsed.data;
     const requestedAt = new Date(payload.requestedAt);
     const finish = async (error: BridgeCandidateCheckError) => {
-      await candidates.recordCandidateResult({
+      const written = await candidates.recordCandidateResult({
         routeId: payload.routeId,
         registrationMarker: payload.registrationMarker,
         requestedAt,
         outcome: { result: "failure", error, checkedAt: now() },
       });
-      log(`bridge candidate check ${payload.routeId}: ${error}`);
+      log(
+        written
+          ? `bridge candidate check ${payload.routeId}: ${error}`
+          : `bridge candidate check ${payload.routeId}: ${error} discarded (route changed or verified since the request)`,
+      );
       await jobs.completeJob(job.id);
     };
     // The probe is taken: try again later, and record the reason on the
@@ -224,7 +234,7 @@ export const createBridgeCandidateCheck = ({
       await finish("PROBE_UNAVAILABLE");
       return;
     }
-    if (!supportsBridgeMeasurement(probeCapabilityInput(probe))) {
+    if (!supportsBridgeMeasurement(probeCapabilityInputOf(probe.capabilities))) {
       await finish("BRIDGE_UNSUPPORTED_CAPABILITY");
       return;
     }

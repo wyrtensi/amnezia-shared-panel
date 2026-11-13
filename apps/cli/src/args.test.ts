@@ -759,6 +759,7 @@ describe("bridge argument helpers", () => {
       "BRIDGE_UNSUPPORTED_CAPABILITY",
       "BRIDGE_TEST_KEY_WRONG_NODE",
       "BRIDGE_TEST_KEY_UNSUITABLE",
+      "BRIDGE_CHECK_PENDING",
     ]) {
       expect(bridgeErrorHint(code)).toBeTruthy();
     }

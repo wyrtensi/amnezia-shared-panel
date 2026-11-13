@@ -1601,6 +1601,8 @@ describe("bridge candidate validation commands", () => {
           routeId: ROUTE,
           jobId: "66666666-6666-4666-8666-666666666666",
           queued: true,
+          status: "queued",
+          runId: null,
           registrationMarker: "m-1",
         }),
       },
@@ -1610,6 +1612,35 @@ describe("bridge candidate validation commands", () => {
     expect(calls[0]!.init?.method).toBe("POST");
     expect(sentBody(calls[0]!)).toEqual({ method: "probe" });
     expect(out).toContain("probe check queued (job 66666666-6666-4666-8666-666666666666) for registration m-1");
+  });
+
+  it("bridge-route-verify reports a check whose run is still out", async () => {
+    stubRaw([
+      {
+        status: 202,
+        body: JSON.stringify({
+          method: "probe",
+          routeId: ROUTE,
+          jobId: null,
+          queued: false,
+          status: "running",
+          runId: "77777777-7777-4777-8777-777777777777",
+          registrationMarker: "m-1",
+        }),
+      },
+    ]);
+    expect(await run(["bridge-route-verify", ROUTE, "--confirm"])).toContain(
+      "probe check already running (run 77777777-7777-4777-8777-777777777777) for registration m-1",
+    );
+    stubRaw([
+      {
+        status: 409,
+        body: JSON.stringify({ error: "BRIDGE_CHECK_PENDING", message: "older check pending" }),
+      },
+    ]);
+    await expect(run(["bridge-route-verify", ROUTE, "--confirm"])).rejects.toThrow(
+      /BRIDGE_CHECK_PENDING: older check pending\n.*ask again/,
+    );
   });
 
   it("bridge-route-verify --operator-verified sends the tested marker and the attestation", async () => {

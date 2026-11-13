@@ -32,6 +32,7 @@ const probeRow = (extra: Partial<ProbeRow> = {}): ProbeRow => ({
   staleAlertedAt: null,
   enabledAt: hoursAgo(48),
   timeZone: "UTC",
+  capabilities: null,
   candidateRun: null,
   ...extra,
 });
@@ -84,7 +85,7 @@ const fakeRepository = (probe: ProbeRow | null): ReachabilityRepository => ({
   loadStates: vi.fn(() => Promise.resolve(new Map())),
   ingest: vi.fn(() => Promise.resolve(undefined)),
   setStaleAlert: vi.fn(() => Promise.resolve(undefined)),
-  finishCandidateRun: vi.fn(() => Promise.resolve(undefined)),
+  finishCandidateRun: vi.fn(() => Promise.resolve(true)),
 });
 
 const fakeClient = (latest: ProbeRunState | null | Error = null): ProbeClient => ({
@@ -369,11 +370,12 @@ describe("reachability task", () => {
       await tick(repository, client);
       // Ping and TCP failed, handshake and HTTP passed: a bridge verdict is
       // the tunnel, not the diagnostics.
-      // Stamped with panel time, not the probe's `finishedAt`.
+      // Stamped with the panel-clock claim time, never later than the
+      // measurement and never the probe's own clock.
       expect(repository.finishCandidateRun).toHaveBeenCalledWith(candidate(), {
         result: "success",
         error: null,
-        checkedAt: NOW,
+        checkedAt: minutesAgo(1),
       });
       // Never fed to node state, alerts or the widget.
       expect(repository.ingest).not.toHaveBeenCalled();
@@ -408,7 +410,7 @@ describe("reachability task", () => {
       await tick(lost, fakeClient(finished("run-other")));
       expect(lost.finishCandidateRun).toHaveBeenCalledWith(
         candidate(minutesAgo(5)),
-        { result: "failure", error: "PROBE_RUN_LOST", checkedAt: NOW },
+        { result: "failure", error: "PROBE_RUN_LOST", checkedAt: minutesAgo(5) },
       );
       expect(lost.ingest).not.toHaveBeenCalled();
     });
@@ -418,8 +420,34 @@ describe("reachability task", () => {
       await tick(repository, fakeClient(candidateRun({}, null)));
       expect(repository.finishCandidateRun).toHaveBeenCalledWith(
         candidate(minutesAgo(20)),
-        { result: "failure", error: "PROBE_RUN_TIMEOUT", checkedAt: NOW },
+        { result: "failure", error: "PROBE_RUN_TIMEOUT", checkedAt: minutesAgo(20) },
       );
+    });
+
+    it("settles a finished run that is settled too late as a stale failure, never a success", async () => {
+      // Hours later: the worker was down, or the probe was unreachable.
+      const repository = fakeRepository(probeRow({ candidateRun: candidate(hoursAgo(3)) }));
+      await tick(repository, fakeClient(candidateRun()));
+      expect(repository.finishCandidateRun).toHaveBeenCalledWith(candidate(hoursAgo(3)), {
+        result: "failure",
+        error: "PROBE_RESULT_STALE",
+        checkedAt: hoursAgo(3),
+      });
+    });
+
+    it("logs when a settled result is discarded", async () => {
+      const repository = fakeRepository(probeRow({ candidateRun: candidate() }));
+      vi.mocked(repository.finishCandidateRun).mockResolvedValue(false);
+      const log = vi.fn();
+      await createReachabilityTask({
+        repository,
+        createProbeClient: () => fakeClient(candidateRun()),
+        now: () => NOW,
+        newRunId: () => "run-new",
+        log,
+      })();
+      expect(log).toHaveBeenCalledWith(expect.stringContaining("discarded"));
+      expect(log).toHaveBeenCalledWith(expect.stringContaining("route-1"));
     });
 
     it("does not record a probe error when a candidate took the probe mid-tick", async () => {

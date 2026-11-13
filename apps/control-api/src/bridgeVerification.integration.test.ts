@@ -213,10 +213,17 @@ describe("bridge candidate validation (real PostgreSQL)", () => {
     probeCreated = true;
   };
 
-  const seedAdmin = async (label: string): Promise<Actor> => {
+  const seedAdmin = async (
+    label: string,
+    policyOverride?: { allowConfigRedownload: boolean },
+  ): Promise<Actor> => {
     const [user] = await db()
       .insert(users)
-      .values({ email: `verify-${label}-${runTag}@example.com`, role: "admin" })
+      .values({
+        email: `verify-${label}-${runTag}@example.com`,
+        role: "admin",
+        ...(policyOverride ? { policyOverride } : {}),
+      })
       .returning();
     if (!user) throw new Error("Failed to seed admin");
     createdUserIds.push(user.id);
@@ -483,12 +490,17 @@ describe("bridge candidate validation (real PostgreSQL)", () => {
       const again = verifyBridgeRouteResultSchema.parse(
         await capableRepository.verifyBridgeRoute(admin, route.id, { method: "probe" }),
       );
-      expect(again).toMatchObject({ queued: false, jobId: first.method === "probe" ? first.jobId : "" });
+      expect(again).toMatchObject({
+        queued: false,
+        status: "pending",
+        jobId: first.method === "probe" ? first.jobId : "",
+      });
       expect(await candidateJobs(route.id)).toHaveLength(1);
       // Queuing changes nothing on the route.
       expect((await routeRow(route.id))?.verificationResult).toBeNull();
 
-      // Once that job finished, a new request queues a new job.
+      // Once that job finished and its run settled, a new request queues a
+      // new job.
       await db().update(jobOutbox).set({ status: "completed" }).where(eq(jobOutbox.id, jobs[0]!.id));
       const third = verifyBridgeRouteResultSchema.parse(
         await capableRepository.verifyBridgeRoute(admin, route.id, { method: "probe" }),
@@ -509,6 +521,79 @@ describe("bridge candidate validation (real PostgreSQL)", () => {
       expect(Object.keys(audits[0]?.metadata ?? {}).sort()).toEqual(
         ["bridgeId", "jobId", "method", "nodeId", "registrationMarker"],
       );
+    });
+
+    runDatabaseTest("a check whose run is still out answers the next request instead of a dropped duplicate", async () => {
+      const nodeId = await seedNode("inflight");
+      const { bridge, route } = await draftRoute(nodeId);
+      await seedProbe();
+      await observe(bridge.id, route.id, "m-1");
+      const first = verifyBridgeRouteResultSchema.parse(
+        await capableRepository.verifyBridgeRoute(admin, route.id, { method: "probe" }),
+      );
+      // The worker claimed the probe, started the run and completed the job.
+      const runId = randomUUID();
+      await db()
+        .update(reachabilityProbe)
+        .set({
+          candidateRunId: runId,
+          candidateRouteId: route.id,
+          candidateRegistrationMarker: "m-1",
+          candidateRequestedAt: new Date(),
+          candidateRunStartedAt: new Date(),
+        });
+      await db()
+        .update(jobOutbox)
+        .set({ status: "completed" })
+        .where(eq(jobOutbox.id, first.method === "probe" ? (first.jobId ?? "") : ""));
+
+      const second = verifyBridgeRouteResultSchema.parse(
+        await capableRepository.verifyBridgeRoute(admin, route.id, { method: "probe" }),
+      );
+      expect(second).toMatchObject({
+        method: "probe",
+        queued: false,
+        status: "running",
+        runId,
+        jobId: first.method === "probe" ? first.jobId : "",
+        registrationMarker: "m-1",
+      });
+      // No second job that would wait behind the run and lose its result.
+      expect(await candidateJobs(route.id)).toHaveLength(1);
+
+      // frpc reconnected meanwhile: the running check is for the old
+      // registration and does not answer a request for the new one.
+      await observe(bridge.id, route.id, "m-2");
+      expect(
+        await failureOf(capableRepository.verifyBridgeRoute(admin, route.id, { method: "probe" })),
+      ).toMatchObject({ statusCode: 409, code: "BRIDGE_CHECK_PENDING" });
+      expect(await candidateJobs(route.id)).toHaveLength(1);
+
+      // Once the run settled, the new registration gets its own check.
+      await db().update(reachabilityProbe).set({
+        candidateRunId: null,
+        candidateRouteId: null,
+        candidateRegistrationMarker: null,
+        candidateRequestedAt: null,
+        candidateRunStartedAt: null,
+      });
+      const third = verifyBridgeRouteResultSchema.parse(
+        await capableRepository.verifyBridgeRoute(admin, route.id, { method: "probe" }),
+      );
+      expect(third).toMatchObject({ status: "queued", queued: true, registrationMarker: "m-2" });
+    });
+
+    runDatabaseTest("a queued check for an older marker is reported, not reused", async () => {
+      const nodeId = await seedNode("stalepending");
+      const { bridge, route } = await draftRoute(nodeId);
+      await seedProbe();
+      await observe(bridge.id, route.id, "m-1");
+      await capableRepository.verifyBridgeRoute(admin, route.id, { method: "probe" });
+      await observe(bridge.id, route.id, "m-2");
+      expect(
+        await failureOf(capableRepository.verifyBridgeRoute(admin, route.id, { method: "probe" })),
+      ).toMatchObject({ statusCode: 409, code: "BRIDGE_CHECK_PENDING" });
+      expect(await candidateJobs(route.id)).toHaveLength(1);
     });
   });
 
@@ -571,6 +656,27 @@ describe("bridge candidate validation (real PostgreSQL)", () => {
           ),
         );
       expect(audit?.metadata).toEqual({ keyId, nodeId, bridgeId: bridge.id });
+    });
+
+    runDatabaseTest("follows the normal redownload policy", async () => {
+      const restricted = await seedAdmin("nodownload", { allowConfigRedownload: false });
+      const service = createDefaultControlApiService({ repository, keyring });
+      const nodeId = await seedNode("policy");
+      const keyId = await seedKey(nodeId, awg31Link(), { owner: restricted });
+      const { route } = await draftRoute(nodeId);
+      expect(
+        await failureOf(service.getBridgeRouteTestConfig(restricted, route.id, keyId)),
+      ).toMatchObject({ statusCode: 403, code: "POLICY_DENIED" });
+      const audits = await db()
+        .select()
+        .from(auditEvents)
+        .where(
+          and(
+            eq(auditEvents.action, "vpn_bridge_route.test_config_issued"),
+            eq(auditEvents.targetId, route.id),
+          ),
+        );
+      expect(audits).toHaveLength(0);
     });
 
     runDatabaseTest("returns a null marker when no registration was observed", async () => {

@@ -228,6 +228,8 @@ const BRIDGE_ERROR_HINTS: Record<string, string> = {
     "Bridge jobs are disabled on this panel (VPN_BRIDGE_JOBS_ENABLED). Use --operator-verified --registration=<marker> instead.",
   BRIDGE_UNSUPPORTED_CAPABILITY:
     "No probe with the bridge-measurement capability is configured. Test the route with bridge-route-test-config, then use --operator-verified --registration=<marker>.",
+  BRIDGE_CHECK_PENDING:
+    "A probe check for an older registration of this route is still queued or running. Wait until bridge-routes shows its result, then ask again.",
   BRIDGE_TEST_KEY_WRONG_NODE:
     "The test key must be one of your own keys on the route's VPN node.",
   BRIDGE_TEST_KEY_UNSUITABLE:
@@ -553,7 +555,15 @@ export async function cmdBridgeRouteTestConfig(
 }
 
 type VerifyResult =
-  | { method: "probe"; routeId: string; jobId: string; queued: boolean; registrationMarker: string }
+  | {
+      method: "probe";
+      routeId: string;
+      jobId: string | null;
+      queued: boolean;
+      status?: "queued" | "pending" | "running";
+      runId?: string | null;
+      registrationMarker: string;
+    }
   | { method: "operator"; routeId: string; route: NodeRouteView };
 
 export async function cmdBridgeRouteVerify(api: BridgeApi, args: string[]): Promise<void> {
@@ -593,14 +603,20 @@ export async function cmdBridgeRouteVerify(api: BridgeApi, args: string[]): Prom
       return json({
         method: result.method,
         routeId: result.routeId,
-        jobId: result.jobId,
+        jobId: result.jobId ?? null,
         queued: result.queued,
+        status: result.status ?? (result.queued ? "queued" : "pending"),
+        runId: result.runId ?? null,
         registrationMarker: result.registrationMarker,
       });
     }
-    console.log(
-      `${result.queued ? "probe check queued" : "probe check already pending"} (job ${result.jobId}) for registration ${result.registrationMarker}`,
-    );
+    const state =
+      result.status === "running"
+        ? `probe check already running (run ${result.runId ?? "?"})`
+        : result.queued
+          ? `probe check queued (job ${result.jobId ?? "?"})`
+          : `probe check already pending (job ${result.jobId ?? "?"})`;
+    console.log(`${state} for registration ${result.registrationMarker}`);
     console.log("The result appears in bridge-routes <node-id> once the probe run finishes.");
     return;
   }

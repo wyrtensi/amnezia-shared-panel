@@ -318,7 +318,6 @@ describe("bridge candidate check end to end (real PostgreSQL)", () => {
 
     // Finished: the tick settles it on the route.
     probe.finish();
-    const settledFrom = Date.now();
     await tickWith(probe.client);
     const route = await routeRow(routeId);
     expect(route).toMatchObject({
@@ -331,9 +330,8 @@ describe("bridge candidate check end to end (real PostgreSQL)", () => {
     // Exactly what the activation guard reads: same marker as observed,
     // fresh, successful.
     expect(route?.verifiedRegistrationMarker).toBe(route?.observedRegistrationMarker);
-    // Panel time of the settling tick, not the probe host's clock.
-    expect(route?.verifiedAt?.getTime()).toBeGreaterThanOrEqual(settledFrom - 1_000);
-    expect(route?.verifiedAt?.getTime()).toBeLessThanOrEqual(Date.now() + 1_000);
+    // The panel-clock claim time: never later than the measurement.
+    expect(route?.verifiedAt).toEqual(held?.candidateRunStartedAt);
     const after = await probeRow();
     expect(after?.candidateRunId).toBeNull();
     expect(after?.lastIngestedRunId).toBeNull();
@@ -448,6 +446,34 @@ describe("bridge candidate check end to end (real PostgreSQL)", () => {
       verificationError: null,
       verifiedAt: operatorAt,
     });
+    expect((await probeRow())?.candidateRunId).toBeNull();
+    await db().update(reachabilityProbe).set({ currentRunId: null });
+  });
+
+  runDatabaseTest("a finished run settled long after its claim cannot pass activation", async () => {
+    const { nodeId, routeId } = await seedRoute();
+    await seedProbe();
+    const probe = fakeProbe();
+    await handlerFor(probe.client)(await queueJob(routeId, nodeId, new Date(Date.now() - 4 * 3_600_000)));
+    // The run finished, but the worker only gets to settle it hours later.
+    const claimedAt = new Date(Date.now() - 3 * 3_600_000);
+    await db().update(reachabilityProbe).set({ candidateRunStartedAt: claimedAt });
+    probe.finish();
+    await tickWith(probe.client);
+    const route = await routeRow(routeId);
+    expect(route).toMatchObject({
+      verificationMethod: "probe",
+      verificationResult: "failure",
+      verificationError: "PROBE_RESULT_STALE",
+      verifiedAt: claimedAt,
+    });
+    // The activation guard needs a successful verification under 30 minutes
+    // old for the observed marker; this route has neither.
+    const fresh =
+      route?.verificationResult === "success" &&
+      route.verifiedAt !== null &&
+      Date.now() - route.verifiedAt.getTime() <= 30 * 60_000;
+    expect(fresh).toBe(false);
     expect((await probeRow())?.candidateRunId).toBeNull();
     await db().update(reachabilityProbe).set({ currentRunId: null });
   });

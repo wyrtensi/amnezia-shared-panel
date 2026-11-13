@@ -1,9 +1,10 @@
 import { randomUUID } from "node:crypto";
-import { and, asc, eq, inArray, sql, type SQL } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, sql, type SQL } from "drizzle-orm";
 import {
   BRIDGE_ROUTE_CANDIDATE_CHECK_JOB_TYPE,
   bridgeFrpProxyName,
   nodeServedProtocols,
+  probeCapabilityInputOf,
   probeSupportsBridgeMeasurement,
   type BridgeRouteCandidateCheckPayload,
   type ProbeCapabilityInput,
@@ -78,15 +79,6 @@ export type BridgeRouteTarget = {
   bridgePublicIpv4: string;
   observedRegistrationMarker: string | null;
 };
-
-/**
- * What the panel knows about the probe's capabilities. Nothing is stored yet
- * (Task 4a adds the probe's typed capability response), so this is unknown,
- * which counts as unsupported.
- */
-const probeCapabilityInput = (
-  _probe: Pick<typeof reachabilityProbe.$inferSelect, "id">,
-): ProbeCapabilityInput => ({ capabilities: null });
 
 /** Per-node endpoint state for the shared infrastructure view. */
 export type NodeEndpointSummary = {
@@ -1075,7 +1067,11 @@ export class PostgresBridgeRepository {
     // Gate first: with job submission off nothing below matters.
     assertBridgeJobsEnabled({ jobsEnabled: this.options.jobsEnabled ?? false });
     const [probe] = await this.db
-      .select({ id: reachabilityProbe.id, enabled: reachabilityProbe.enabled })
+      .select({
+        id: reachabilityProbe.id,
+        enabled: reachabilityProbe.enabled,
+        capabilities: reachabilityProbe.capabilities,
+      })
       .from(reachabilityProbe)
       .where(eq(reachabilityProbe.id, 1))
       .limit(1);
@@ -1088,7 +1084,7 @@ export class PostgresBridgeRepository {
     }
     const supports =
       this.options.probeSupportsBridgeMeasurement ?? probeSupportsBridgeMeasurement;
-    if (!supports(probeCapabilityInput(probe))) {
+    if (!supports(probeCapabilityInputOf(probe.capabilities))) {
       throw new ApiError(
         409,
         "The configured probe does not report the bridge-measurement capability; use operator verification",
@@ -1106,8 +1102,16 @@ export class PostgresBridgeRepository {
         );
       }
       const marker = route.observedRegistrationMarker;
+      const stalePending = (pendingMarker: string) =>
+        new ApiError(
+          409,
+          `A probe check of this route for an older registration (${pendingMarker}) is still pending; ask again once it has settled`,
+          "BRIDGE_CHECK_PENDING",
+        );
       // Serialized by the route lock above, so two requests cannot both
-      // miss each other's pending job.
+      // miss each other's pending job. Jobs are read before the probe slot:
+      // the worker claims the slot before it completes the job, so a check
+      // is always seen in one of the two.
       const [pending] = await tx
         .select({ id: jobOutbox.id, payload: jobOutbox.payload })
         .from(jobOutbox)
@@ -1120,13 +1124,56 @@ export class PostgresBridgeRepository {
         )
         .limit(1);
       if (pending) {
-        const pendingMarker = pending.payload.registrationMarker;
+        const pendingMarker =
+          typeof pending.payload.registrationMarker === "string"
+            ? pending.payload.registrationMarker
+            : null;
+        // A check bound to another registration does not answer this
+        // request; queuing beside it would let its later result shadow ours.
+        if (pendingMarker !== marker) throw stalePending(pendingMarker ?? "unknown");
         return {
           method: "probe" as const,
           routeId,
           jobId: pending.id,
           queued: false,
-          registrationMarker: typeof pendingMarker === "string" ? pendingMarker : marker,
+          status: "pending" as const,
+          runId: null,
+          registrationMarker: marker,
+        };
+      }
+      // The job that started a run is already completed; the run itself
+      // still holds the probe until the reachability tick settles it.
+      const [inFlight] = await tx
+        .select({
+          runId: reachabilityProbe.candidateRunId,
+          marker: reachabilityProbe.candidateRegistrationMarker,
+        })
+        .from(reachabilityProbe)
+        .where(
+          and(eq(reachabilityProbe.id, 1), eq(reachabilityProbe.candidateRouteId, routeId)),
+        )
+        .limit(1);
+      if (inFlight?.runId) {
+        if (inFlight.marker !== marker) throw stalePending(inFlight.marker ?? "unknown");
+        const [started] = await tx
+          .select({ id: jobOutbox.id })
+          .from(jobOutbox)
+          .where(
+            and(
+              eq(jobOutbox.type, BRIDGE_ROUTE_CANDIDATE_CHECK_JOB_TYPE),
+              sql`${jobOutbox.payload} ->> 'routeId' = ${routeId}`,
+            ),
+          )
+          .orderBy(desc(jobOutbox.createdAt))
+          .limit(1);
+        return {
+          method: "probe" as const,
+          routeId,
+          jobId: started?.id ?? null,
+          queued: false,
+          status: "running" as const,
+          runId: inFlight.runId,
+          registrationMarker: marker,
         };
       }
       const payload: BridgeRouteCandidateCheckPayload = {
@@ -1164,6 +1211,8 @@ export class PostgresBridgeRepository {
         routeId,
         jobId: job.id,
         queued: true,
+        status: "queued" as const,
+        runId: null,
         registrationMarker: marker,
       };
     });

@@ -2360,6 +2360,8 @@ describe("bridge registry routes", () => {
       routeId,
       jobId: "5b0c3b3e-3a4f-4f5e-9d6a-7b8c9d0e1f2a",
       queued: true,
+      status: "queued",
+      runId: null,
       registrationMarker: "m-1",
     });
     const probe = await app.inject({ method: "POST", url, headers, payload: { method: "probe" } });

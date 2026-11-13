@@ -801,6 +801,11 @@ export const reachabilityProbe = pgTable(
     candidateRegistrationMarker: text("candidate_registration_marker"),
     candidateRequestedAt: timestamp("candidate_requested_at", { withTimezone: true }),
     candidateRunStartedAt: timestamp("candidate_run_started_at", { withTimezone: true }),
+    // The probe's reported capabilities (a list of names such as
+    // "bridge-measurement") and when they were read; null means unknown, which
+    // counts as unsupported. Read through `probeCapabilityInputOf`.
+    capabilities: jsonb("capabilities").$type<string[]>(),
+    capabilitiesCheckedAt: timestamp("capabilities_checked_at", { withTimezone: true }),
     ...timestamps,
   },
   (table) => [

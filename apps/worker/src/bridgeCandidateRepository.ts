@@ -32,8 +32,8 @@ type Tx = Parameters<Parameters<Database["transaction"]>[0]>[0];
 export const writeCandidateVerification = async (
   executor: Database | Tx,
   write: CandidateResultWrite,
-): Promise<void> => {
-  await executor
+): Promise<boolean> => {
+  const written = await executor
     .update(vpnBridgeRoutes)
     .set({
       verificationMethod: "probe",
@@ -56,7 +56,9 @@ export const writeCandidateVerification = async (
           lte(vpnBridgeRoutes.verifiedAt, write.requestedAt),
         ),
       ),
-    );
+    )
+    .returning({ id: vpnBridgeRoutes.id });
+  return written.length > 0;
 };
 
 /** The candidate slot columns, empty. */
@@ -155,7 +157,6 @@ export class PostgresBridgeCandidateRepository implements BridgeCandidateReposit
       .where(and(eq(reachabilityProbe.id, 1), eq(reachabilityProbe.candidateRunId, runId)));
   };
 
-  recordCandidateResult = async (write: CandidateResultWrite): Promise<void> => {
-    await writeCandidateVerification(this.options.db, write);
-  };
+  recordCandidateResult = async (write: CandidateResultWrite): Promise<boolean> =>
+    writeCandidateVerification(this.options.db, write);
 }

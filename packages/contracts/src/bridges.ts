@@ -341,6 +341,9 @@ export const BRIDGE_ERROR_CODES = [
   // that is not an active AWG 3.1 key.
   "BRIDGE_TEST_KEY_WRONG_NODE",
   "BRIDGE_TEST_KEY_UNSUITABLE",
+  // 409: a probe check of the route for an older registration marker is
+  // still queued or running; ask again once it has settled.
+  "BRIDGE_CHECK_PENDING",
 ] as const;
 export const bridgeErrorCodeSchema = z.enum(BRIDGE_ERROR_CODES);
 
@@ -441,16 +444,24 @@ export const verifyBridgeRouteRequestSchema = z.discriminatedUnion("method", [
 export type VerifyBridgeRouteRequest = z.infer<typeof verifyBridgeRouteRequestSchema>;
 
 /**
- * 202 for `probe`: the check is queued (`queued` false when a check of this
- * route was already pending and that job is returned). 200 for `operator`:
- * the route with its recorded verification.
+ * 202 for `probe`. `status`:
+ * - `queued`: a new check was queued (`queued` true);
+ * - `pending`: a check of the route for the same marker was already queued,
+ *   and that job is returned;
+ * - `running`: a check of the route for the same marker already has its run
+ *   on the probe (`runId`); `jobId` is the job that started it, null when
+ *   that job row is gone.
+ * A check for a different (older) marker answers 409 `BRIDGE_CHECK_PENDING`
+ * instead. 200 for `operator`: the route with its recorded verification.
  */
 export const verifyBridgeRouteResultSchema = z.discriminatedUnion("method", [
   z.object({
     method: z.literal("probe"),
     routeId: z.uuid(),
-    jobId: z.uuid(),
+    jobId: z.uuid().nullable(),
     queued: z.boolean(),
+    status: z.enum(["queued", "pending", "running"]),
+    runId: z.uuid().nullable(),
     registrationMarker: bridgeRegistrationMarkerSchema,
   }),
   z.object({
@@ -490,6 +501,8 @@ export const BRIDGE_CANDIDATE_CHECK_ERRORS = [
   "PROBE_START_FAILED",
   "PROBE_RUN_LOST",
   "PROBE_RUN_TIMEOUT",
+  // The run finished, but was settled too long after it started to count.
+  "PROBE_RESULT_STALE",
   "PROBE_CONTROL_FAILED",
   "PROBE_TARGET_ERROR",
   "SERVICE_KEY_UNAVAILABLE",
@@ -517,6 +530,20 @@ export type ProbeCapabilityInput = {
  */
 export const probeSupportsBridgeMeasurement = (probe: ProbeCapabilityInput): boolean =>
   probe.capabilities?.includes(BRIDGE_MEASUREMENT_CAPABILITY) === true;
+
+/**
+ * The capability input from the stored `reachability_probe.capabilities`
+ * column (jsonb, null until the probe's capability response is cached).
+ * The one place both the Control API and the worker read it: Task 4a writes
+ * the column from the probe's typed capability endpoint and nothing else
+ * changes. Anything but an array of strings reads as unknown.
+ */
+export const probeCapabilityInputOf = (stored: unknown): ProbeCapabilityInput => ({
+  capabilities:
+    Array.isArray(stored) && stored.every((item) => typeof item === "string")
+      ? stored
+      : null,
+});
 
 export type CreateBridgeRequest = z.infer<typeof createBridgeRequestSchema>;
 export type UpdateBridgeRequest = z.infer<typeof updateBridgeRequestSchema>;

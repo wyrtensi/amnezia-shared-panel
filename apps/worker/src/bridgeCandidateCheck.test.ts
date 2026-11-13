@@ -52,6 +52,7 @@ const probe = (extra: Partial<ProbeRow> = {}): ProbeRow => ({
   staleAlertedAt: null,
   enabledAt: NOW,
   timeZone: "UTC",
+  capabilities: null,
   candidateRun: null,
   ...extra,
 });
@@ -84,7 +85,7 @@ const setup = (
     ),
     claimCandidateRun: vi.fn(() => Promise.resolve(options.claimed ?? true)),
     releaseCandidateRun: vi.fn(() => Promise.resolve(undefined)),
-    recordCandidateResult: vi.fn(() => Promise.resolve(undefined)),
+    recordCandidateResult: vi.fn(() => Promise.resolve(true)),
   };
   const jobs = {
     completeJob: vi.fn(() => Promise.resolve(undefined)),
@@ -139,6 +140,18 @@ describe("bridge candidate check job", () => {
     expect(inspected).toMatchObject({ kind: "awg31", endpoint: { host: "45.1.2.3", port: 41005 } });
     expect(candidates.recordCandidateResult).not.toHaveBeenCalled();
     expect(jobs.completeJob).toHaveBeenCalledWith("job-1");
+  });
+
+  it("reads the capability from the stored probe column through the shared lookup", async () => {
+    const reported = setup({
+      supports: false,
+      probe: probe({ capabilities: ["bridge-measurement"] }),
+    });
+    await reported.handle(job());
+    expect(reported.client.startRun).toHaveBeenCalledTimes(1);
+    const unknown = setup({ supports: false, probe: probe({ capabilities: null }) });
+    await unknown.handle(job());
+    expect(recorded(unknown.candidates)).toEqual(["BRIDGE_UNSUPPORTED_CAPABILITY"]);
   });
 
   it("omits the egress comparison target when the node's origin IP is unknown", async () => {
