@@ -246,8 +246,11 @@ export const bridgeRouteSummarySchema = z.object({
 });
 
 /**
- * Host commands for the bridge installer (`/opt/amnezia-bridge/install-frps.sh` on the bridge host).
- * Built from the bridge id, control port and UDP range only; no secrets.
+ * Host commands for the bridge installer (`/opt/amnezia-bridge/install-bridge.sh` on the bridge host).
+ * It installs the frps and, when `--agent-image <name@sha256:digest>` is
+ * appended, the bridge-agent too (without it the script exits 60 after the
+ * frps step). Built from the bridge id, control port and UDP range only; no
+ * secrets.
  */
 export const bridgeSetupCommandsSchema = z.object({
   install: z.string(),

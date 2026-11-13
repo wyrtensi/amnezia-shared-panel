@@ -1,0 +1,41 @@
+# bridge-agent service of an AWG 3.1 node bridge. Run it through
+# install-bridge.sh, which writes the env file this file reads:
+#
+#   docker compose --project-name amnezia-bridge-agent \
+#     --env-file /etc/amnezia-bridge/agent/agent.env -f /opt/amnezia-bridge/compose.yaml up -d
+#
+# Why the shape is fixed:
+# - network_mode: host. The agent listens on 127.0.0.1 only, and the panel's SSH
+#   forwarding reaches it there; a bridge network would hide a loopback
+#   listener from the host. No ports: are published.
+# - user 0:0. The agent refuses token and dashboard-credential files that group
+#   or others can read, and install-frps.sh insists dashboard.env stays 0600
+#   and root-owned, so the container reads both as root. Everything else is
+#   dropped: no capabilities, read-only root filesystem, no new privileges.
+# - image comes from BRIDGE_AGENT_IMAGE, a reference pinned by digest
+#   (name@sha256:<64 hex>); install-bridge.sh refuses a tag.
+services:
+  bridge-agent:
+    image: ${BRIDGE_AGENT_IMAGE:?set BRIDGE_AGENT_IMAGE to a digest-pinned image}
+    container_name: amnezia-bridge-agent
+    restart: unless-stopped
+    network_mode: host
+    user: "0:0"
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pull_policy: missing
+    environment:
+      BRIDGE_ID: ${BRIDGE_ID:?}
+      BRIDGE_APPLIED_CONTROL_PORT: ${BRIDGE_APPLIED_CONTROL_PORT:?}
+      BRIDGE_APPLIED_UDP_START: ${BRIDGE_APPLIED_UDP_START:?}
+      BRIDGE_APPLIED_UDP_END: ${BRIDGE_APPLIED_UDP_END:?}
+      BRIDGE_AGENT_LISTEN: 127.0.0.1:${BRIDGE_AGENT_PORT:-7600}
+      BRIDGE_AGENT_API_TOKEN_FILE: /etc/amnezia-bridge/agent/api-token
+      BRIDGE_FRPS_DASHBOARD_ENV_FILE: /etc/amnezia-bridge/frp/dashboard.env
+      BRIDGE_FRPS_URL: http://127.0.0.1:7500
+    volumes:
+      - ${BRIDGE_ETC:?}/agent/api-token:/etc/amnezia-bridge/agent/api-token:ro
+      - ${BRIDGE_ETC:?}/frp/dashboard.env:/etc/amnezia-bridge/frp/dashboard.env:ro

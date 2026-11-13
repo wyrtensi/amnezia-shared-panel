@@ -1537,7 +1537,7 @@ const ru = {
   "bridge.hostSetup":
     "Установка на хосте моста",
   "bridge.hostSetupHint":
-    "Выполняйте на хосте моста от root. Сначала пробный запуск.",
+    "Выполняйте на хосте моста от root. Сначала пробный запуск. Чтобы установить и агент моста, добавьте --agent-image <образ@sha256:…> (закреплённый по дайджесту); без него ставится только frps и скрипт завершается с кодом 60.",
   "bridge.dryRunCommand":
     "Пробный запуск",
   "bridge.installCommand":
@@ -3215,7 +3215,7 @@ const en = {
   "bridge.hostSetup":
     "Bridge host setup",
   "bridge.hostSetupHint":
-    "Run on the bridge host, as root. Run the dry run first.",
+    "Run on the bridge host, as root. Run the dry run first. To install the bridge agent too, append --agent-image <image@sha256:…> (pinned by digest); without it only frps is installed and the script exits 60.",
   "bridge.dryRunCommand":
     "Dry run",
   "bridge.installCommand":

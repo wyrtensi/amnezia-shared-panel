@@ -368,6 +368,7 @@ function printBridge(bridge: BridgeView): void {
   if (setup) {
     console.log("setup commands (run them on the bridge host yourself; copy infra/bridge/ to /opt/amnezia-bridge/ first):");
     for (const key of SETUP_KEYS) if (setup[key]) console.log(`  ${key}: ${setup[key]}`);
+    console.log("  Append --agent-image <name@sha256:digest> to install the bridge-agent too; without it only frps is installed (exit 60).");
   }
 }
 

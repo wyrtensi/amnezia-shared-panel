@@ -328,7 +328,7 @@ describe("bridge registry (real PostgreSQL)", () => {
   runDatabaseTest("bridge and route read models carry secret-free setup commands", async () => {
     const bridge = await createBridge();
     expect(bridge.setupCommands?.install).toBe(
-      `sudo sh /opt/amnezia-bridge/install-frps.sh --bridge-id ${bridge.id} --control-port ${bridge.controlTcpPort} --udp-start ${bridge.udpPortStart} --udp-end ${bridge.udpPortEnd}`,
+      `sudo sh /opt/amnezia-bridge/install-bridge.sh --bridge-id ${bridge.id} --control-port ${bridge.controlTcpPort} --udp-start ${bridge.udpPortStart} --udp-end ${bridge.udpPortEnd}`,
     );
     expect(bridge.setupCommands?.dryRun).toBe(`${bridge.setupCommands?.install} --dry-run`);
     const nodeId = await seedNode("setup-commands");

@@ -13,8 +13,8 @@ describe("bridge setup commands", () => {
       udpPortEnd: 41031,
     });
     expect(commands).toEqual({
-      install: `sudo sh /opt/amnezia-bridge/install-frps.sh --bridge-id ${BRIDGE_ID} --control-port 7000 --udp-start 41000 --udp-end 41031`,
-      dryRun: `sudo sh /opt/amnezia-bridge/install-frps.sh --bridge-id ${BRIDGE_ID} --control-port 7000 --udp-start 41000 --udp-end 41031 --dry-run`,
+      install: `sudo sh /opt/amnezia-bridge/install-bridge.sh --bridge-id ${BRIDGE_ID} --control-port 7000 --udp-start 41000 --udp-end 41031`,
+      dryRun: `sudo sh /opt/amnezia-bridge/install-bridge.sh --bridge-id ${BRIDGE_ID} --control-port 7000 --udp-start 41000 --udp-end 41031 --dry-run`,
     });
     expect(commands).not.toHaveProperty("remove");
   });

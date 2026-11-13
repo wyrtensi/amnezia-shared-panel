@@ -47,7 +47,7 @@ before routing, constant-time compare).
 | `BRIDGE_AGENT_API_TOKEN_FILE` | required | file with the management bearer token (>= 32 chars, mode 0600); distinct from the frp token and the dashboard credential |
 | `BRIDGE_AGENT_LISTEN` | `127.0.0.1:7600` | `host:port`; the host must be a loopback IP literal, otherwise startup fails |
 | `BRIDGE_FRPS_URL` | `http://127.0.0.1:7500` | frps dashboard; http, loopback only |
-| `BRIDGE_FRPS_DASHBOARD_ENV_FILE` | `/etc/amnezia-bridge/frp/dashboard.env` | `FRPS_DASHBOARD_USER` / `FRPS_DASHBOARD_PASSWORD` written by `install-frps.sh` (mode 0600) |
+| `BRIDGE_FRPS_DASHBOARD_ENV_FILE` | `/etc/amnezia-bridge/frp/dashboard.env` | `FRPS_DASHBOARD_USER` / `FRPS_DASHBOARD_PASSWORD` written by `install-frps.sh` (mode 0600). The compose service that runs this image is `infra/bridge/compose.yaml`, started by `infra/bridge/install-bridge.sh` |
 | `BRIDGE_APPLIED_CONTROL_PORT`, `BRIDGE_APPLIED_UDP_START`, `BRIDGE_APPLIED_UDP_END` | required | what the installer applied (reported as-is, not read from frps) |
 | `BRIDGE_FRPS_TIMEOUT_MS` | `3000` | per-request upstream timeout |
 | `BRIDGE_FRPS_MAX_BYTES` | `1048576` | upstream response size cap |

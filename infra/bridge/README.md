@@ -1,8 +1,11 @@
 # Bridge host (frps)
 
-`install-frps.sh` installs the single frp server of an AWG 3.1 node bridge.
-The panel prints the exact command (and a `--dry-run` variant) when you add a
-bridge: `bridge-add` in the CLI, `setupCommands` in the API.
+`install-bridge.sh` sets up a whole AWG 3.1 node bridge host: it runs
+`install-frps.sh` (the single frp server) and then installs the bridge-agent as
+the Docker Compose service in `compose.yaml`. The panel prints the exact command
+(and a `--dry-run` variant) when you add a bridge: `bridge-add` in the CLI,
+`setupCommands` in the API. `install-frps.sh` keeps its own interface and can
+still be run alone.
 
 ## Install location
 
@@ -21,8 +24,16 @@ to sync an existing node.
 ## Run
 
 ```sh
-sudo sh /opt/amnezia-bridge/install-frps.sh --bridge-id <id> --control-port 7000 --udp-start 41000 --udp-end 41031 [--dry-run]
+sudo sh /opt/amnezia-bridge/install-bridge.sh --bridge-id <id> --control-port 7000 --udp-start 41000 --udp-end 41031 \
+  --agent-image <name@sha256:digest> [--dry-run]
 ```
+
+The image is the bridge-agent image published with the release (Task 6a builds
+it); pass it with `--agent-image` or `BRIDGE_AGENT_IMAGE`. It must be pinned by
+digest: a tag is refused (exit 2). Without an image the frps is installed, the
+output says `bridge-agent NOT installed` and the script exits 60: run it again
+with the image. The agent step runs after, and never rolls back or restarts, a
+working frps.
 
 Run `--dry-run` first: it reads the real listeners and unit state, prints
 `PLAN:` lines and the firewall rules, and changes nothing. A repeat with the
@@ -33,6 +44,69 @@ On the node side, `install-frpc.sh` normally needs no overrides. If Docker
 publishes the AWG port on a specific IPv4 address, append
 `--local-ip <that address>`; `--local-udp-port <udp>` must equal the observed
 host port. Both are checked against `docker port amnezia-awg3`.
+
+## The bridge-agent service
+
+`compose.yaml` runs one service (`amnezia-bridge-agent`) with
+`docker compose --project-name amnezia-bridge-agent --env-file /etc/amnezia-bridge/agent/agent.env -f /opt/amnezia-bridge/compose.yaml`.
+The fixed parts are interface requirements for the image:
+
+- `network_mode: host`, no published ports: the agent listens on
+  `127.0.0.1:7600` only (`BRIDGE_AGENT_LISTEN`), which only a host-network
+  container exposes to the host's SSH forwarding.
+- It runs as uid 0 with all capabilities dropped, a read-only root filesystem and
+  `no-new-privileges`: the agent refuses token and dashboard-credential files that
+  group or others can read, and `install-frps.sh` requires `dashboard.env` to stay
+  `0600` and root-owned, so the container must read both as root.
+- Mounted read-only: `/etc/amnezia-bridge/agent/api-token` and
+  `/etc/amnezia-bridge/frp/dashboard.env`. The image must ship `package.json`
+  next to `dist/` (the agent reads its version from it).
+- Environment from the env file: `BRIDGE_ID`, `BRIDGE_APPLIED_CONTROL_PORT`,
+  `BRIDGE_APPLIED_UDP_START`, `BRIDGE_APPLIED_UDP_END`, plus the fixed token and
+  dashboard paths and `BRIDGE_FRPS_URL=http://127.0.0.1:7500`.
+
+`/etc/amnezia-bridge/agent/api-token` (mode 0600) is generated on the host the
+first time and never again; its value is never printed or passed as an argument.
+`agent.env` holds no secret. When the agent listens on `127.0.0.1:<port>` and
+`GET /healthz` answers, the installer prints only the bridge id, the listener,
+the token file path and the host's ed25519 SSH fingerprint.
+
+## Management tunnel and enrollment
+
+The panel reaches the agent over a supervised SSH forward on the panel host, the
+same pattern as the node tunnels (`docs/NODE-CONNECT.md`). On the **panel host**:
+
+```sh
+sudo sh scripts/add-bridge-tunnel.sh --bridge-id <id> --bridge-host <bridge ipv4> \
+  --host-key-fingerprint SHA256:<printed by the installer> [--ssh-key <panel->bridge key>] [--dry-run]
+```
+
+It scans the bridge's ed25519 host key, requires the fingerprint to match what the
+installer printed, writes a dedicated known_hosts file and an autossh unit
+`panel-tunnel-bridge-<id>` with `StrictHostKeyChecking=yes`, allocating the local
+port from the same pool as the node tunnels, then checks the agent's `/healthz`
+through it. The panel host's key must be authorized for the bridge host. It prints
+the management URL (`http://host.docker.internal:<port>`) and the enrollment
+command, which pipes the token from the bridge host into the CLI's stdin:
+
+```sh
+ssh <bridge> cat /etc/amnezia-bridge/agent/api-token | \
+  amnezia-panel bridge-enroll <id> --api-url=http://host.docker.internal:<port> --api-key-file=- --confirm
+```
+
+The management URL must be allowed by `VPN_BRIDGE_MANAGEMENT_HOSTS`.
+
+## Lab verification (real hosts)
+
+Automated tests cover the scripts with stubs and the agent, poller and read model
+with fakes. Before the first production bridge, run once on real hosts: two node
+routes registered on one bridge (two `install-frpc.sh` units); stop one frpc and
+check only that route's registration changes in `bridges --json`; stop the
+management tunnel unit and check the bridge turns `down`/`stale` while the active
+route's clients still pass traffic; restart the bridge-agent
+(`docker restart amnezia-bridge-agent`) and check both routes report again. Keep
+public management-port checks (TCP 7600 and 7500 must not be reachable from the
+internet; TCP 7000 only from trusted node addresses) separate from the user UDP probe.
 
 ## What it does
 
@@ -74,9 +148,9 @@ basic auth against `http://127.0.0.1:7500/api/serverinfo` and
 0 success or no-op, 2 bad arguments, 11 protected file missing or unsafe,
 12 download or checksum failure, 13 `frps verify` rejected the config,
 20 conflict with the existing install, 21 a needed local port is already bound,
-50 frps did not start or listen. The node-side helper
+50 frps did not start or listen. `install-bridge.sh` adds 60 (no agent image: frps installed, agent not), 61 (docker or compose missing), 62 (token or env file unsafe), 63 (pull or compose start failed), 64 (agent not listening on loopback or `/healthz` failing). The node-side helper
 `infra/node/scripts/install-frpc.sh` documents its own codes in its header.
 
 ## Tests
 
-`node --test infra/bridge/tests/*.mjs` (PATH stubs, no real frp binary runs).
+`node --test infra/bridge/tests/*.mjs scripts/tests/add-bridge-tunnel.test.mjs` (PATH stubs, no real frp binary or Docker runs).

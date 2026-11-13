@@ -22,7 +22,7 @@ export const shellQuote = (value: string | number): string => {
 // scripts/add-node.sh (re-run it to sync a new script to an existing node); the
 // bridge has no deployer, so infra/bridge/ is copied to /opt/amnezia-bridge/ by
 // hand (see infra/bridge/README.md).
-const FRPS_SCRIPT = "/opt/amnezia-bridge/install-frps.sh";
+const BRIDGE_SCRIPT = "/opt/amnezia-bridge/install-bridge.sh";
 const FRPC_SCRIPT = "/opt/amnezia-panel-node/scripts/install-frpc.sh";
 
 const command = (script: string, args: ReadonlyArray<[string, string | number]>, extra: string[] = []) =>
@@ -43,8 +43,8 @@ export const bridgeSetupCommands = (bridge: BridgeSetupInput): BridgeSetupComman
     ["--udp-end", bridge.udpPortEnd],
   ];
   return {
-    install: command(FRPS_SCRIPT, args),
-    dryRun: command(FRPS_SCRIPT, args, ["--dry-run"]),
+    install: command(BRIDGE_SCRIPT, args),
+    dryRun: command(BRIDGE_SCRIPT, args, ["--dry-run"]),
   };
 };
 

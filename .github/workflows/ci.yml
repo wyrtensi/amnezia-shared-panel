@@ -107,5 +107,5 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq shellcheck
-          shellcheck -s sh infra/bridge/*.sh infra/node/scripts/install-frpc.sh
+          shellcheck -s sh infra/bridge/*.sh infra/node/scripts/install-frpc.sh scripts/add-bridge-tunnel.sh
       - run: node --test infra/node/tests/*.mjs infra/bridge/tests/*.mjs infra/prod/tests/*.mjs scripts/tests/*.mjs
