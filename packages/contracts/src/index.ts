@@ -1965,8 +1965,22 @@ export const probeRunTargetSchema = z.object({
   protocol: z.string().min(1).max(20),
   /** A `vpn://` link or a raw client config. Grants VPN access: never log it. */
   config: z.string().min(1).max(16_384),
-  expectedEgressIp: z.string().max(64).optional(),
+  /**
+   * A string is compared with the observed egress address; explicit `null`
+   * (a bridged path with no known origin exit IP) reports it uncompared and
+   * needs a probe with the `bridge-measurement` capability; omitted keeps the
+   * endpoint-host fallback. A legacy probe drops a `null`, so it is only sent
+   * to a probe that reports the capability.
+   */
+  expectedEgressIp: z.string().max(64).nullable().optional(),
 });
+
+/** GET /capabilities of the probe; a legacy probe answers 404. */
+export const probeCapabilitiesResponseSchema = z.object({
+  apiVersion: z.number().int().min(1),
+  capabilities: z.array(z.string().min(1).max(64)).max(50),
+});
+export type ProbeCapabilitiesResponse = z.infer<typeof probeCapabilitiesResponseSchema>;
 
 export const probeRunRequestSchema = z.object({
   runId: z.string().min(1).max(100),

@@ -119,6 +119,65 @@ const waitFor = async (check: () => Promise<boolean>) => {
   throw new Error("condition not met");
 };
 
+describe("expectedEgressIp parsing", () => {
+  it("keeps explicit null, a string and an omitted field apart", async () => {
+    const { runner, seen, finish } = controlledRunner();
+    const { call } = await start(runner);
+    const base = validRun();
+    const target = base.targets[0] as RunRequest["targets"][number];
+    const { expectedEgressIp: _omitted, ...withoutField } = target;
+    const res = await call("POST", "/runs", {
+      body: {
+        ...base,
+        targets: [
+          { ...target, targetId: "str" },
+          { ...target, targetId: "null", expectedEgressIp: null },
+          { ...withoutField, targetId: "omitted" },
+        ],
+      },
+    });
+    expect(res.status).toBe(202);
+    await waitFor(async () => seen.length === 1);
+    const targets = seen[0]?.targets ?? [];
+    expect(targets[0]?.expectedEgressIp).toBe("192.0.2.10");
+    expect(targets[1]).toHaveProperty("expectedEgressIp", null);
+    expect(targets[2]).not.toHaveProperty("expectedEgressIp");
+    finish();
+  });
+
+  it("rejects a non-string, non-null value", async () => {
+    const { call } = await start(controlledRunner().runner);
+    const base = validRun();
+    const target = base.targets[0] as RunRequest["targets"][number];
+    const res = await call("POST", "/runs", {
+      body: { ...base, targets: [{ ...target, expectedEgressIp: 5 }] },
+    });
+    expect(res.status).toBe(400);
+  });
+});
+
+describe("capabilities", () => {
+  it("needs the key", async () => {
+    const { call } = await start(controlledRunner().runner);
+    expect((await call("GET", "/capabilities", { key: null })).status).toBe(401);
+    expect((await call("GET", "/capabilities", { key: "x".repeat(40) })).status).toBe(401);
+  });
+
+  it("reports the API version and bridge-measurement", async () => {
+    const { call } = await start(controlledRunner().runner);
+    const res = await call("GET", "/capabilities");
+    expect(res).toMatchObject({
+      status: 200,
+      json: { apiVersion: 1, capabilities: ["bridge-measurement"] },
+    });
+  });
+
+  it("is read-only", async () => {
+    const { call } = await start(controlledRunner().runner);
+    expect((await call("POST", "/capabilities", { body: {} })).status).toBe(405);
+  });
+});
+
 describe("auth", () => {
   it("/healthz answers without a key", async () => {
     const { call } = await start(controlledRunner().runner);

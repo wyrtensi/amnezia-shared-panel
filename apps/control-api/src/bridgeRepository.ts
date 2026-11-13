@@ -66,7 +66,7 @@ export type BridgeRepositoryOptions = {
    * The capability lookup for probe candidate checks. Defaults to the shared
    * `probeSupportsBridgeMeasurement`; tests inject a stand-in.
    */
-  probeSupportsBridgeMeasurement?: (probe: ProbeCapabilityInput) => boolean;
+  probeSupportsBridgeMeasurement?: (probe: ProbeCapabilityInput, now: Date) => boolean;
 };
 
 /** A held route as the test-config preview needs it. */
@@ -1071,6 +1071,7 @@ export class PostgresBridgeRepository {
         id: reachabilityProbe.id,
         enabled: reachabilityProbe.enabled,
         capabilities: reachabilityProbe.capabilities,
+        capabilitiesCheckedAt: reachabilityProbe.capabilitiesCheckedAt,
       })
       .from(reachabilityProbe)
       .where(eq(reachabilityProbe.id, 1))
@@ -1084,7 +1085,7 @@ export class PostgresBridgeRepository {
     }
     const supports =
       this.options.probeSupportsBridgeMeasurement ?? probeSupportsBridgeMeasurement;
-    if (!supports(probeCapabilityInputOf(probe.capabilities))) {
+    if (!supports(probeCapabilityInputOf(probe.capabilities, probe.capabilitiesCheckedAt), new Date())) {
       throw new ApiError(
         409,
         "The configured probe does not report the bridge-measurement capability; use operator verification",

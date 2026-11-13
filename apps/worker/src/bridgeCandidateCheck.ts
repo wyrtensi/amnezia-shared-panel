@@ -59,7 +59,10 @@ export type CandidateContext = {
   retiringSince: Date | null;
   bridgePublicIpv4: string;
   publicUdpPort: number;
-  /** The node's origin exit IP, compared with the observed egress when known. */
+  /**
+   * The node's origin exit IP, compared with the observed egress when known;
+   * unknown is sent as an explicit null (the capability is already required).
+   */
   nodePublicIp: string | null;
   /** The node's active AWG 3 service-key artifact, decrypted; null when none. */
   serviceConfig: string | null;
@@ -171,7 +174,7 @@ export type BridgeCandidateCheckOptions = {
   /** `VPN_BRIDGE_JOBS_ENABLED` as this worker reads it. */
   jobsEnabled: boolean;
   /** Capability lookup; defaults to the shared one. Tests force it. */
-  supportsBridgeMeasurement?: (probe: ProbeCapabilityInput) => boolean;
+  supportsBridgeMeasurement?: (probe: ProbeCapabilityInput, now: Date) => boolean;
   now?: () => Date;
   newRunId?: () => string;
   maxAttempts?: number;
@@ -234,7 +237,12 @@ export const createBridgeCandidateCheck = ({
       await finish("PROBE_UNAVAILABLE");
       return;
     }
-    if (!supportsBridgeMeasurement(probeCapabilityInputOf(probe.capabilities))) {
+    if (
+      !supportsBridgeMeasurement(
+        probeCapabilityInputOf(probe.capabilities, probe.capabilitiesCheckedAt),
+        now(),
+      )
+    ) {
       await finish("BRIDGE_UNSUPPORTED_CAPABILITY");
       return;
     }
@@ -296,7 +304,7 @@ export const createBridgeCandidateCheck = ({
           protocol: "awg3",
           // Grants VPN access: sent, never logged.
           config,
-          ...(context.nodePublicIp ? { expectedEgressIp: context.nodePublicIp } : {}),
+          expectedEgressIp: context.nodePublicIp,
         },
       ],
     };

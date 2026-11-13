@@ -4,6 +4,11 @@ import {
   bridgeRouteCandidateCheckPayloadSchema,
   decodeRegistrationMarkerHeader,
   encodeRegistrationMarkerHeader,
+  PROBE_CAPABILITY_MAX_AGE_MS,
+  PROBE_CAPABILITY_REFRESH_MS,
+  probeCapabilitiesDue,
+  probeCapabilitiesResponseSchema,
+  probeRunTargetSchema,
   probeCapabilityInputOf,
   probeSupportsBridgeMeasurement,
   verifyBridgeRouteRequestSchema,
@@ -291,18 +296,44 @@ describe("candidate validation contracts", () => {
     ).toBe(false);
   });
 
-  it("treats an unknown probe capability as unsupported", () => {
-    expect(probeSupportsBridgeMeasurement({ capabilities: null })).toBe(false);
-    expect(probeSupportsBridgeMeasurement({ capabilities: [] })).toBe(false);
-    expect(probeSupportsBridgeMeasurement({ capabilities: ["bridge-measurement"] })).toBe(true);
+  it("supports bridge measurement only for a fresh record that lists it", () => {
+    const now = new Date("2026-11-13T12:00:00Z");
+    const fresh = new Date(now.getTime() - 60_000);
+    const stale = new Date(now.getTime() - PROBE_CAPABILITY_MAX_AGE_MS - 1);
+    const list = ["bridge-measurement"];
+    expect(probeSupportsBridgeMeasurement({ capabilities: null, checkedAt: fresh }, now)).toBe(false);
+    expect(probeSupportsBridgeMeasurement({ capabilities: [], checkedAt: fresh }, now)).toBe(false);
+    expect(probeSupportsBridgeMeasurement({ capabilities: ["other"], checkedAt: fresh }, now)).toBe(false);
+    expect(probeSupportsBridgeMeasurement({ capabilities: list }, now)).toBe(false);
+    expect(probeSupportsBridgeMeasurement({ capabilities: list, checkedAt: null }, now)).toBe(false);
+    expect(probeSupportsBridgeMeasurement({ capabilities: list, checkedAt: stale }, now)).toBe(false);
+    expect(probeSupportsBridgeMeasurement({ capabilities: list, checkedAt: fresh }, now)).toBe(true);
+  });
+
+  it("knows when the capability record is due for a refresh", () => {
+    const now = new Date("2026-11-13T12:00:00Z");
+    expect(probeCapabilitiesDue(null, now)).toBe(true);
+    expect(probeCapabilitiesDue(new Date(now.getTime() - PROBE_CAPABILITY_REFRESH_MS), now)).toBe(true);
+    expect(probeCapabilitiesDue(new Date(now.getTime() - 1_000), now)).toBe(false);
   });
 
   it("reads the stored capability column as unknown unless it is a string list", () => {
-    expect(probeCapabilityInputOf(null)).toEqual({ capabilities: null });
-    expect(probeCapabilityInputOf({ bridge: true })).toEqual({ capabilities: null });
-    expect(probeCapabilityInputOf(["bridge-measurement", 1])).toEqual({ capabilities: null });
+    expect(probeCapabilityInputOf(null)).toEqual({ capabilities: null, checkedAt: null });
+    expect(probeCapabilityInputOf({ bridge: true })).toEqual({ capabilities: null, checkedAt: null });
+    expect(probeCapabilityInputOf(["bridge-measurement", 1]).capabilities).toBeNull();
+    const checkedAt = new Date();
     expect(
-      probeSupportsBridgeMeasurement(probeCapabilityInputOf(["bridge-measurement"])),
+      probeSupportsBridgeMeasurement(probeCapabilityInputOf(["bridge-measurement"], checkedAt)),
     ).toBe(true);
+  });
+
+  it("parses the probe capability response and a nullable egress target", () => {
+    expect(
+      probeCapabilitiesResponseSchema.parse({ apiVersion: 1, capabilities: ["bridge-measurement"] }),
+    ).toEqual({ apiVersion: 1, capabilities: ["bridge-measurement"] });
+    expect(probeCapabilitiesResponseSchema.safeParse({ capabilities: [] }).success).toBe(false);
+    const target = { targetId: "t", protocol: "awg3", config: "c" };
+    expect(probeRunTargetSchema.parse({ ...target, expectedEgressIp: null }).expectedEgressIp).toBeNull();
+    expect(probeRunTargetSchema.parse(target)).not.toHaveProperty("expectedEgressIp");
   });
 });

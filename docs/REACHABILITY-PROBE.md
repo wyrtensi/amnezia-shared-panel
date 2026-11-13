@@ -54,6 +54,27 @@ next to `peerCount`.
 A key a node refused (a node that is gone, for example) is not retried more
 often than once a day; that node reads `unknown` meanwhile.
 
+### Request fields and capabilities
+
+Per target, `expectedEgressIp` is a string (compared with the observed egress
+address; a difference is a note, not a failure), an explicit `null` (a bridged
+path with no known origin exit IP: the observed address is reported in
+`egressIp` and never compared), or omitted (the endpoint host is the
+comparison, as before). The result shape is the same in all three cases; an
+original Direct request replays unchanged. Handshake and HTTP decide
+availability; ping and tcp stay diagnostic.
+
+`GET /capabilities` (same `x-api-key` as the other routes) answers
+`{ "apiVersion": 1, "capabilities": ["bridge-measurement"] }`. A legacy probe
+answers 404 and also drops an explicit `null`, so the panel never sends one to
+it. The worker reads the endpoint at most every 10 minutes (on the reachability
+tick) into `reachability_probe.capabilities` / `capabilities_checked_at`: a 404
+stores an empty list (legacy), an unreachable probe or an error keeps the old
+record. The panel treats bridge measurement as supported only for a record
+younger than 30 minutes that lists `bridge-measurement`; unknown, stale and
+legacy all mean unsupported, and Direct measurements are unaffected. Deploy
+the new probe image before relying on bridged measurements.
+
 ### Bridge route candidate checks
 
 `bridge-route-verify <route-id> --confirm` (optional AWG 3.1 node bridges)
@@ -65,7 +86,8 @@ holds the probe. Handshake and HTTP through the tunnel decide; ping and TCP are
 diagnostic only. The result is stored on the route, never in node status,
 history, alerts or the widget. It needs `VPN_BRIDGE_JOBS_ENABLED=true` and a
 probe that reports the bridge-measurement capability (stored in
-`reachability_probe.capabilities`; unknown counts as unsupported); until then
+`reachability_probe.capabilities`; unknown, stale or legacy counts as
+unsupported); until then
 use the operator-verified path (`docs/CLI.md`).
 
 The result is stamped with the time the run was claimed, and a run settled more

@@ -33,6 +33,7 @@ const probeRow = (extra: Partial<ProbeRow> = {}): ProbeRow => ({
   enabledAt: hoursAgo(48),
   timeZone: "UTC",
   capabilities: null,
+  capabilitiesCheckedAt: hoursAgo(0.01),
   candidateRun: null,
   ...extra,
 });
@@ -78,6 +79,7 @@ const finished = (runId: string): ProbeRunState => ({
 const fakeRepository = (probe: ProbeRow | null): ReachabilityRepository => ({
   loadProbe: vi.fn(() => Promise.resolve(probe)),
   recordProbeError: vi.fn(() => Promise.resolve(undefined)),
+  recordProbeCapabilities: vi.fn(() => Promise.resolve(undefined)),
   syncServiceKeys: vi.fn(() => Promise.resolve(({ created: 0, revoked: 0, provisioning: 0 }))),
   listTargets: vi.fn(() => Promise.resolve([targetA, targetB])),
   markRunStarted: vi.fn(() => Promise.resolve(undefined)),
@@ -89,6 +91,9 @@ const fakeRepository = (probe: ProbeRow | null): ReachabilityRepository => ({
 });
 
 const fakeClient = (latest: ProbeRunState | null | Error = null): ProbeClient => ({
+  capabilities: vi.fn(() =>
+    Promise.resolve({ apiVersion: 1, capabilities: ["bridge-measurement"] }),
+  ),
   latestRun: vi.fn(() =>
     latest instanceof Error ? Promise.reject(latest) : Promise.resolve(latest),
   ),
@@ -264,6 +269,42 @@ describe("reachability task", () => {
     await tick(repository, client);
     expect(repository.recordProbeError).toHaveBeenCalledWith("fetch failed", NOW);
     expect(repository.ingest).not.toHaveBeenCalled();
+  });
+
+  describe("probe capabilities", () => {
+    it("stores the reported capabilities when the record is due", async () => {
+      const client = fakeClient();
+      const repository = fakeRepository(probeRow({ capabilitiesCheckedAt: null }));
+      await tick(repository, client);
+      expect(repository.recordProbeCapabilities).toHaveBeenCalledWith(["bridge-measurement"], NOW);
+    });
+
+    it("stores an explicit empty list for a legacy probe", async () => {
+      const client = fakeClient();
+      vi.mocked(client.capabilities).mockResolvedValue("legacy");
+      const repository = fakeRepository(probeRow({ capabilitiesCheckedAt: hoursAgo(1) }));
+      await tick(repository, client);
+      expect(repository.recordProbeCapabilities).toHaveBeenCalledWith([], NOW);
+    });
+
+    it("does not ask again while the record is fresh", async () => {
+      const client = fakeClient();
+      const repository = fakeRepository(probeRow({ capabilitiesCheckedAt: minutesAgo(2) }));
+      await tick(repository, client);
+      expect(client.capabilities).not.toHaveBeenCalled();
+      expect(repository.recordProbeCapabilities).not.toHaveBeenCalled();
+    });
+
+    it("keeps the old record when the check fails and still runs the tick", async () => {
+      const client = fakeClient();
+      vi.mocked(client.capabilities).mockRejectedValue(new Error("fetch failed"));
+      const repository = fakeRepository(
+        probeRow({ capabilitiesCheckedAt: null, currentRunStartedAt: hoursAgo(1.1) }),
+      );
+      await tick(repository, client);
+      expect(repository.recordProbeCapabilities).not.toHaveBeenCalled();
+      expect(client.startRun).toHaveBeenCalledTimes(1);
+    });
   });
 
   it("records a malformed reply", async () => {

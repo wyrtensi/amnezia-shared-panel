@@ -1,6 +1,10 @@
 import { randomUUID } from "node:crypto";
 
-import type { ProbeRunRequest, ProbeRunState } from "@amnezia/contracts";
+import {
+  probeCapabilitiesDue,
+  type ProbeRunRequest,
+  type ProbeRunState,
+} from "@amnezia/contracts";
 
 import {
   candidateRunOutcome,
@@ -44,6 +48,8 @@ export type ProbeRow = {
    * null when unknown. Read through `probeCapabilityInputOf`.
    */
   capabilities: unknown;
+  /** When `capabilities` was read from the probe; null before the first read. */
+  capabilitiesCheckedAt: Date | null;
   /** A bridge route candidate check holding the probe, if any. */
   candidateRun: CandidateRun | null;
 };
@@ -69,6 +75,11 @@ export interface ReachabilityRepository {
   loadProbe: () => Promise<ProbeRow | null>;
   /** Why the last contact with the probe failed. Never carries a secret. */
   recordProbeError: (message: string, at: Date) => Promise<void>;
+  /**
+   * Store the probe's capability names and when they were read. An empty list
+   * is a legacy probe (no capability endpoint): it answered, and has none.
+   */
+  recordProbeCapabilities: (capabilities: string[], at: Date) => Promise<void>;
   /**
    * Ensure one live service key per (node, protocol) wanted; revoke the rest.
    * `provisioning` counts the wanted keys created moments ago and not ready.
@@ -143,6 +154,21 @@ export const createReachabilityTask = ({
         await repository.setStaleAlert(stale.staleAlertedAt, stale.notices);
       }
     };
+
+    // Refreshed on a bounded interval. A failure keeps the old record, which
+    // ages out (probeSupportsBridgeMeasurement), so a probe that is down is
+    // unknown rather than legacy.
+    if (probeCapabilitiesDue(probe.capabilitiesCheckedAt, at)) {
+      try {
+        const reported = await client.capabilities();
+        await repository.recordProbeCapabilities(
+          reported === "legacy" ? [] : reported.capabilities,
+          at,
+        );
+      } catch (error) {
+        log(`reachability: capability check failed: ${message(error)}`);
+      }
+    }
 
     let latest: ProbeRunState | null;
     try {

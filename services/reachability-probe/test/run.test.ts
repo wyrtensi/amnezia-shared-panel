@@ -190,6 +190,88 @@ describe("runAll", () => {
     expect(state.results[0]?.egressIp).toBe("198.51.100.9");
   });
 
+  it("explicit null reports the observed egress without comparing it", async () => {
+    const { deps } = setup({ egressBody: "198.51.100.9" });
+    const state = await runAll(
+      request([
+        {
+          targetId: "bridged",
+          protocol: "amneziawg3",
+          config: conf("10.90.0.7", "192.0.2.10:51890"),
+          expectedEgressIp: null,
+        },
+      ]),
+      deps,
+    );
+    // The observed address differs from the endpoint, and no note is made of it.
+    expect(state.results[0]?.status).toBe("done");
+    expect(state.results[0]?.levels.handshake.ok).toBe(true);
+    expect(state.results[0]?.levels.http).toMatchObject({ ok: true, detail: null });
+    expect(state.results[0]?.egressIp).toBe("198.51.100.9");
+  });
+
+  it("explicit null still fails http when the answer is not an address", async () => {
+    const { deps } = setup({ egressBody: "<html>blocked</html>" });
+    const state = await runAll(
+      request([
+        {
+          targetId: "bridged",
+          protocol: "amneziawg3",
+          config: conf("10.90.0.7", "192.0.2.10:51890"),
+          expectedEgressIp: null,
+        },
+      ]),
+      deps,
+    );
+    expect(state.results[0]?.levels.http).toMatchObject({ ok: false, detail: "egress response is not an IP" });
+    expect(state.results[0]?.egressIp).toBeNull();
+  });
+
+  it("a string that differs from the observed egress is a note, not a failure", async () => {
+    const { deps } = setup({ egressBody: "198.51.100.9" });
+    const state = await runAll(
+      request([
+        {
+          targetId: "node-a",
+          protocol: "amneziawg3",
+          config: conf("10.90.0.7", "192.0.2.10:51890"),
+          expectedEgressIp: "203.0.113.5",
+        },
+      ]),
+      deps,
+    );
+    expect(state.results[0]?.levels.http).toMatchObject({
+      ok: true,
+      detail: "egress 198.51.100.9 differs from 203.0.113.5",
+    });
+  });
+
+  it("replays an original Direct request (no egress field) with the unchanged result shape", async () => {
+    const { deps } = setup({ egressBody: "192.0.2.10" });
+    const state = await runAll(
+      request([{ targetId: "node-a", protocol: "amneziawg3", config: conf("10.90.0.7", "192.0.2.10:51890") }]),
+      deps,
+    );
+    expect(Object.keys(state).sort()).toEqual(["control", "finishedAt", "results", "runId", "startedAt"]);
+    expect(Object.keys(state.results[0] ?? {}).sort()).toEqual([
+      "detail",
+      "egressIp",
+      "endpointHost",
+      "levels",
+      "protocol",
+      "status",
+      "targetId",
+    ]);
+    expect(Object.keys(state.results[0]?.levels ?? {}).sort()).toEqual(["handshake", "http", "ping", "tcp"]);
+    expect(state.results[0]).toMatchObject({
+      status: "done",
+      detail: null,
+      endpointHost: "192.0.2.10",
+      egressIp: "192.0.2.10",
+      levels: { handshake: { ok: true }, http: { ok: true, detail: null } },
+    });
+  });
+
   it("http level fails without echoing a body that is not an IP", async () => {
     const { deps } = setup({ egressBody: "<html>blocked page</html>" });
     const state = await runAll(

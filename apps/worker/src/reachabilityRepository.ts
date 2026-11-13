@@ -114,6 +114,7 @@ export class PostgresReachabilityRepository
       enabledAt: row.enabledAt,
       timeZone: row.timeZone,
       capabilities: row.capabilities ?? null,
+      capabilitiesCheckedAt: row.capabilitiesCheckedAt,
       candidateRun:
         row.candidateRunId !== null &&
         row.candidateRouteId !== null &&
@@ -139,6 +140,10 @@ export class PostgresReachabilityRepository
 
   recordProbeError = async (message: string, at: Date): Promise<void> => {
     await this.updateProbe({ lastError: message.slice(0, 300), lastErrorAt: at });
+  };
+
+  recordProbeCapabilities = async (capabilities: string[], at: Date): Promise<void> => {
+    await this.updateProbe({ capabilities, capabilitiesCheckedAt: at });
   };
 
   markRunStarted = async (runId: string, at: Date): Promise<void> => {

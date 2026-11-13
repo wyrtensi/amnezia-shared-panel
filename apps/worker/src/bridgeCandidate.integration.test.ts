@@ -238,6 +238,9 @@ describe("bridge candidate check end to end (real PostgreSQL)", () => {
         return Promise.resolve({ runId: request.runId });
       }),
       latestRun: vi.fn(() => Promise.resolve(latest)),
+      capabilities: vi.fn(() =>
+        Promise.resolve({ apiVersion: 1, capabilities: ["bridge-measurement"] }),
+      ),
     };
     const finish = (handshake = level, http = level) => {
       if (!latest) throw new Error("No run");
@@ -286,6 +289,54 @@ describe("bridge candidate check end to end (real PostgreSQL)", () => {
     const [row] = await db().select().from(vpnBridgeRoutes).where(eq(vpnBridgeRoutes.id, routeId));
     return row;
   };
+
+  runDatabaseTest("populates the stored probe capabilities from the probe, legacy included", async () => {
+    await seedProbe();
+    const legacy = fakeProbe();
+    vi.mocked(legacy.client.capabilities).mockResolvedValue("legacy");
+    await tickWith(legacy.client);
+    const first = await probeRow();
+    expect(first?.capabilities).toEqual([]);
+    expect(first?.capabilitiesCheckedAt).toBeInstanceOf(Date);
+    // Fresh: the next tick does not ask again.
+    await tickWith(legacy.client);
+    expect(legacy.client.capabilities).toHaveBeenCalledTimes(1);
+
+    await db()
+      .update(reachabilityProbe)
+      .set({ capabilitiesCheckedAt: new Date(Date.now() - 60 * 60_000) });
+    const upgraded = fakeProbe();
+    await tickWith(upgraded.client);
+    const second = await probeRow();
+    expect(second?.capabilities).toEqual(["bridge-measurement"]);
+    expect(second?.capabilitiesCheckedAt?.getTime()).toBeGreaterThan(
+      Date.now() - 60_000,
+    );
+
+    // A failed refresh keeps the record and the tick goes on.
+    await db()
+      .update(reachabilityProbe)
+      .set({ capabilitiesCheckedAt: new Date(Date.now() - 60 * 60_000) });
+    const down = fakeProbe();
+    vi.mocked(down.client.capabilities).mockRejectedValue(new Error("fetch failed"));
+    await tickWith(down.client);
+    expect((await probeRow())?.capabilities).toEqual(["bridge-measurement"]);
+
+    // The job uses the stored record through the shared lookup (no injection).
+    const { nodeId, routeId } = await seedRoute();
+    await db()
+      .update(reachabilityProbe)
+      .set({ capabilitiesCheckedAt: new Date() });
+    const probe = fakeProbe();
+    await createBridgeCandidateCheck({
+      candidates,
+      loadProbe: () => reachability.loadProbe(),
+      jobs: worker,
+      createProbeClient: () => probe.client,
+      jobsEnabled: true,
+    })(await queueJob(routeId, nodeId));
+    expect(probe.runs).toHaveLength(1);
+  });
 
   runDatabaseTest("verifies a draft through the probe and feeds only the route", async () => {
     const { nodeId, bridge, routeId } = await seedRoute();

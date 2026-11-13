@@ -448,7 +448,7 @@ export type PostgresRepositoryOptions = {
   /** `VPN_BRIDGE_JOBS_ENABLED`; defaults to false (bridge jobs not queued). */
   bridgeJobsEnabled?: boolean;
   /** Capability lookup for probe candidate checks; tests inject a stand-in. */
-  probeSupportsBridgeMeasurement?: (probe: ProbeCapabilityInput) => boolean;
+  probeSupportsBridgeMeasurement?: (probe: ProbeCapabilityInput, now: Date) => boolean;
 };
 
 const BIGINT_METRIC_FIELDS = [

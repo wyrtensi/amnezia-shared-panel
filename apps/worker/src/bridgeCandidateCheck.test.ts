@@ -53,6 +53,7 @@ const probe = (extra: Partial<ProbeRow> = {}): ProbeRow => ({
   enabledAt: NOW,
   timeZone: "UTC",
   capabilities: null,
+  capabilitiesCheckedAt: null,
   candidateRun: null,
   ...extra,
 });
@@ -93,6 +94,7 @@ const setup = (
   };
   const client: ProbeClient = {
     latestRun: vi.fn(() => Promise.resolve(null)),
+    capabilities: vi.fn(() => Promise.resolve("legacy" as const)),
     startRun: vi.fn(
       options.start ??
         ((request: ProbeRunRequest) => Promise.resolve({ runId: request.runId })),
@@ -145,20 +147,39 @@ describe("bridge candidate check job", () => {
   it("reads the capability from the stored probe column through the shared lookup", async () => {
     const reported = setup({
       supports: false,
-      probe: probe({ capabilities: ["bridge-measurement"] }),
+      probe: probe({
+        capabilities: ["bridge-measurement"],
+        capabilitiesCheckedAt: new Date(NOW.getTime() - 60_000),
+      }),
     });
     await reported.handle(job());
     expect(reported.client.startRun).toHaveBeenCalledTimes(1);
+    const stale = setup({
+      supports: false,
+      probe: probe({
+        capabilities: ["bridge-measurement"],
+        capabilitiesCheckedAt: new Date(NOW.getTime() - 3 * 3_600_000),
+      }),
+    });
+    await stale.handle(job());
+    expect(recorded(stale.candidates)).toEqual(["BRIDGE_UNSUPPORTED_CAPABILITY"]);
+    const legacy = setup({
+      supports: false,
+      probe: probe({ capabilities: [], capabilitiesCheckedAt: new Date(NOW.getTime() - 60_000) }),
+    });
+    await legacy.handle(job());
+    expect(recorded(legacy.candidates)).toEqual(["BRIDGE_UNSUPPORTED_CAPABILITY"]);
     const unknown = setup({ supports: false, probe: probe({ capabilities: null }) });
     await unknown.handle(job());
     expect(recorded(unknown.candidates)).toEqual(["BRIDGE_UNSUPPORTED_CAPABILITY"]);
   });
 
-  it("omits the egress comparison target when the node's origin IP is unknown", async () => {
+  it("sends an explicit null egress when the node's origin IP is unknown", async () => {
     const { handle, client } = setup({ context: context({ nodePublicIp: null }) });
     await handle(job());
-    expect(vi.mocked(client.startRun).mock.calls[0]?.[0].targets[0]).not.toHaveProperty(
+    expect(vi.mocked(client.startRun).mock.calls[0]?.[0].targets[0]).toHaveProperty(
       "expectedEgressIp",
+      null,
     );
   });
 

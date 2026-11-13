@@ -462,6 +462,30 @@ describe("bridge candidate validation (real PostgreSQL)", () => {
         code: "BRIDGE_UNSUPPORTED_CAPABILITY",
       });
       expect(await candidateJobs(route.id)).toHaveLength(0);
+
+      // The stored record decides (default lookup): legacy, stale and
+      // unknown are unsupported, a fresh one with the capability is accepted.
+      const store = (capabilities: string[] | null, checkedAt: Date | null) =>
+        db()
+          .update(reachabilityProbe)
+          .set({ capabilities, capabilitiesCheckedAt: checkedAt })
+          .where(eq(reachabilityProbe.id, 1));
+      const minutesAgo = (minutes: number) => new Date(Date.now() - minutes * 60_000);
+      await store([], minutesAgo(1));
+      expect(await failureOf(gatedRepository.verifyBridgeRoute(admin, route.id, probe))).toMatchObject({
+        code: "BRIDGE_UNSUPPORTED_CAPABILITY",
+      });
+      await store(["bridge-measurement"], minutesAgo(120));
+      expect(await failureOf(gatedRepository.verifyBridgeRoute(admin, route.id, probe))).toMatchObject({
+        code: "BRIDGE_UNSUPPORTED_CAPABILITY",
+      });
+      expect(await candidateJobs(route.id)).toHaveLength(0);
+      await store(["bridge-measurement"], minutesAgo(1));
+      expect(await gatedRepository.verifyBridgeRoute(admin, route.id, probe)).toMatchObject({
+        method: "probe",
+        queued: true,
+      });
+      expect(await candidateJobs(route.id)).toHaveLength(1);
     });
 
     runDatabaseTest("queues one candidate check bound to the observed marker", async () => {

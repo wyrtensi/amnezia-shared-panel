@@ -515,34 +515,65 @@ export type BridgeCandidateCheckError = (typeof BRIDGE_CANDIDATE_CHECK_ERRORS)[n
 /** The probe capability that makes bridged measurements meaningful. */
 export const BRIDGE_MEASUREMENT_CAPABILITY = "bridge-measurement";
 
-/** What the panel knows about the probe's capabilities; null when unknown. */
+/**
+ * A stored capability record older than this does not count: the worker
+ * refreshes it far more often (`PROBE_CAPABILITY_REFRESH_MS`), so an old one
+ * means the probe has not been reachable and the answer is unknown.
+ */
+export const PROBE_CAPABILITY_MAX_AGE_MS = 30 * 60 * 1_000;
+/** How often the worker re-reads the probe's capabilities. */
+export const PROBE_CAPABILITY_REFRESH_MS = 10 * 60 * 1_000;
+
+/**
+ * What the panel knows about the probe's capabilities. `capabilities` is
+ * null when unknown; an empty list is a probe that answered and has none (a
+ * legacy probe whose capability endpoint is 404).
+ */
 export type ProbeCapabilityInput = {
   readonly capabilities: readonly string[] | null;
+  /** When the list was read from the probe; null/absent means unknown. */
+  readonly checkedAt?: Date | null;
 };
 
 /**
  * Whether the configured probe can measure a bridged path (explicit
  * `expectedEgressIp: null`, handshake and HTTP reported apart from ping and
- * SSH). The single capability lookup for candidate checks: Task 4a supplies
- * the probe's typed capability response; until then nothing reports
- * capabilities, so this is false and `verify {method: "probe"}` answers
- * `BRIDGE_UNSUPPORTED_CAPABILITY` (unknown counts as unsupported).
+ * SSH). The single capability lookup for candidate checks and bridged
+ * reachability: true only for a fresh record that contains
+ * "bridge-measurement". Unknown, stale, legacy and empty are all false.
  */
-export const probeSupportsBridgeMeasurement = (probe: ProbeCapabilityInput): boolean =>
-  probe.capabilities?.includes(BRIDGE_MEASUREMENT_CAPABILITY) === true;
+export const probeSupportsBridgeMeasurement = (
+  probe: ProbeCapabilityInput,
+  now: Date = new Date(),
+): boolean => {
+  if (probe.capabilities?.includes(BRIDGE_MEASUREMENT_CAPABILITY) !== true) return false;
+  const checkedAt = probe.checkedAt;
+  if (!checkedAt) return false;
+  const age = now.getTime() - checkedAt.getTime();
+  return age <= PROBE_CAPABILITY_MAX_AGE_MS;
+};
+
+/** Whether the stored capability record is due for a refresh. */
+export const probeCapabilitiesDue = (
+  checkedAt: Date | null | undefined,
+  now: Date,
+): boolean => !checkedAt || now.getTime() - checkedAt.getTime() >= PROBE_CAPABILITY_REFRESH_MS;
 
 /**
- * The capability input from the stored `reachability_probe.capabilities`
- * column (jsonb, null until the probe's capability response is cached).
- * The one place both the Control API and the worker read it: Task 4a writes
- * the column from the probe's typed capability endpoint and nothing else
- * changes. Anything but an array of strings reads as unknown.
+ * The capability input from the stored `reachability_probe.capabilities` and
+ * `capabilities_checked_at` columns (jsonb list, null until the worker has
+ * read the probe's capability endpoint). The one place both the Control API
+ * and the worker read it. Anything but an array of strings reads as unknown.
  */
-export const probeCapabilityInputOf = (stored: unknown): ProbeCapabilityInput => ({
+export const probeCapabilityInputOf = (
+  stored: unknown,
+  checkedAt: Date | null = null,
+): ProbeCapabilityInput => ({
   capabilities:
     Array.isArray(stored) && stored.every((item) => typeof item === "string")
       ? stored
       : null,
+  checkedAt,
 });
 
 export type CreateBridgeRequest = z.infer<typeof createBridgeRequestSchema>;
