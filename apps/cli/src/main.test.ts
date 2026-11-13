@@ -1233,7 +1233,7 @@ describe("bridge commands", () => {
   });
 
   it("bridge-add --confirm posts the body and prints setupCommands only if returned", async () => {
-    const calls = stubFetch([{ status: 201, body: { ...bridge, setupCommands: ["run-this"] } }]);
+    const calls = stubFetch([{ status: 201, body: { ...bridge, setupCommands: { install: "run-this" } } }]);
     const out = await run([
       "bridge-add", "--name=Frankfurt", "--ipv4=198.51.100.7", "--udp-start=42000", "--confirm",
     ]);
@@ -1377,5 +1377,66 @@ describe("bridge commands", () => {
       stubFetch([{ status: 409, body: { error: code, message: "no" } }]);
       await expect(run(["bridge-route-release", ROUTE, "--confirm"])).rejects.toThrow(new RegExp(code));
     }
+  });
+
+  it("prototype names are unknown commands, not dispatched", async () => {
+    const err = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    try {
+      for (const name of ["constructor", "toString", "valueOf", "hasOwnProperty"]) {
+        process.exitCode = undefined;
+        await dispatch([name]);
+        expect(process.exitCode).toBe(1);
+      }
+      expect(err).toHaveBeenCalledWith(expect.stringContaining("Unknown command: constructor"));
+    } finally {
+      err.mockRestore();
+      log.mockRestore();
+    }
+  });
+
+  it("rejects space-separated value flags and surplus operands with no request", async () => {
+    const calls = stubFetch([{ body: {} }]);
+    await expect(
+      run(["bridge-route-prepare", NODE, BRIDGE, "--port", "41005", "--confirm"]),
+    ).rejects.toThrow(/--port=<value>/);
+    await expect(
+      run(["bridge-add", "--name=F", "--ipv4=198.51.100.7", "--udp-start", "42000", "--confirm"]),
+    ).rejects.toThrow(/--udp-start=<value>/);
+    await expect(
+      run(["bridge-add", "--name=F", "--ipv4=198.51.100.7", "--control-port", "7000", "--confirm"]),
+    ).rejects.toThrow(/--control-port=<value>/);
+    await expect(run(["bridge-delete", BRIDGE, "extra", "--confirm"])).rejects.toThrow(/Unexpected argument/);
+    await expect(run(["bridge-route-release", ROUTE, BRIDGE, "--confirm"])).rejects.toThrow(/Unexpected argument/);
+    await expect(run(["bridges", "extra"])).rejects.toThrow(/Unexpected argument/);
+    expect(calls).toHaveLength(0);
+  });
+
+  it("rejects non-UUID targets for every command with no request", async () => {
+    const calls = stubFetch([{ body: {} }]);
+    for (const argv of [
+      ["bridge-routes", "n1"],
+      ["bridge-route-prepare", "n1", BRIDGE, "--confirm"],
+      ["bridge-route-prepare", NODE, "b1", "--confirm"],
+      ["bridge-route-activate", "r1", "--confirm"],
+      ["bridge-route-direct", "n1", "--confirm"],
+      ["bridge-route-release", "r1", "--confirm"],
+    ]) {
+      await expect(run(argv)).rejects.toThrow(/must be a UUID/);
+    }
+    expect(calls).toHaveLength(0);
+  });
+
+  it("--json is projected to typed fields", async () => {
+    const leaky = { ...bridge, secretToken: "s3cr3t", setupCommands: { install: "i", dryRun: "d", remove: "r", token: "t" } };
+    stubFetch([{ body: [leaky] }]);
+    const out = await run(["bridges", "--json"]);
+    expect(out).not.toContain("s3cr3t");
+    expect(out).not.toContain('"token"');
+    expect((JSON.parse(out) as Array<{ setupCommands: unknown }>)[0]!.setupCommands).toEqual({ install: "i", dryRun: "d", remove: "r" });
+    stubFetch([{ body: { nodeId: NODE, vpnEndpointRevision: 1, internal: "x", activeRoute: null, drafts: [{ id: ROUTE, bridgeId: BRIDGE, publicUdpPort: 1, state: "draft", observedRegistrationMarker: "m" }], retiring: [] } }]);
+    const routes = await run(["bridge-routes", NODE, "--json"]);
+    expect(routes).not.toContain("internal");
+    expect(routes).not.toContain("observedRegistrationMarker");
   });
 });

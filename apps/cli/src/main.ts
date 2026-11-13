@@ -3325,7 +3325,7 @@ async function cmdNodeChecks(args: string[]): Promise<void> {
  */
 export async function dispatch(argv: string[]): Promise<void> {
   const [command, ...args] = argv;
-  const bridgeCommand = command ? BRIDGE_COMMANDS[command] : undefined;
+  const bridgeCommand = command ? BRIDGE_COMMANDS.get(command) : undefined;
   if (bridgeCommand) return bridgeCommand(api, args);
   switch (command) {
     case "overview":

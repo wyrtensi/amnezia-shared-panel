@@ -26,6 +26,8 @@ type BridgeRouteSummary = {
   state: RouteState;
 };
 
+export type SetupCommands = { install?: string; dryRun?: string; remove?: string };
+
 export type BridgeView = {
   id: string;
   name: string;
@@ -38,7 +40,7 @@ export type BridgeView = {
   managementStatus: string;
   lastObservedAt: string | null;
   routes: BridgeRouteSummary[];
-  setupCommands?: unknown;
+  setupCommands?: SetupCommands | null;
 };
 
 export type NodeRouteView = {
@@ -88,6 +90,105 @@ export function intFlag(args: string[], name: string): number | undefined {
   return Number(raw);
 }
 
+const SETUP_KEYS = ["install", "dryRun", "remove"] as const;
+
+function projectSetup(value: unknown): SetupCommands | undefined {
+  if (typeof value !== "object" || value === null) return undefined;
+  const out: SetupCommands = {};
+  for (const key of SETUP_KEYS) {
+    const item = (value as Record<string, unknown>)[key];
+    if (typeof item === "string") out[key] = item;
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+const nullable = <T>(value: T | null | undefined): T | null => value ?? null;
+
+/** Explicit projection: only typed non-secret fields reach --json output. */
+export function projectBridge(b: BridgeView): Record<string, unknown> {
+  const setup = projectSetup(b.setupCommands);
+  return {
+    id: b.id,
+    name: b.name,
+    publicIpv4: b.publicIpv4,
+    controlTcpPort: b.controlTcpPort,
+    udpPortStart: b.udpPortStart,
+    udpPortEnd: b.udpPortEnd,
+    capacity: b.capacity,
+    heldPorts: b.heldPorts,
+    managementStatus: b.managementStatus,
+    lastObservedAt: nullable(b.lastObservedAt),
+    routes: b.routes.map((r) => ({
+      id: r.id,
+      nodeId: r.nodeId,
+      nodeName: nullable(r.nodeName),
+      publicUdpPort: r.publicUdpPort,
+      state: r.state,
+    })),
+    ...(setup ? { setupCommands: setup } : {}),
+  };
+}
+
+export function projectRoute(r: NodeRouteView): Record<string, unknown> {
+  return {
+    id: r.id,
+    bridgeId: r.bridgeId,
+    publicUdpPort: r.publicUdpPort,
+    frpProxyName: nullable(r.frpProxyName),
+    state: r.state,
+    bridgeName: nullable(r.bridgeName),
+    bridgePublicIpv4: nullable(r.bridgePublicIpv4),
+    bridgeManagementStatus: nullable(r.bridgeManagementStatus),
+    bridgeLastObservedAt: nullable(r.bridgeLastObservedAt),
+    observedOnline: nullable(r.observedOnline),
+    observedAt: nullable(r.observedAt),
+    verificationMethod: nullable(r.verificationMethod),
+    verificationResult: nullable(r.verificationResult),
+    verifiedAt: nullable(r.verifiedAt),
+    activatedAt: nullable(r.activatedAt),
+    retiringSince: nullable(r.retiringSince),
+  };
+}
+
+export function projectNodeRoutes(v: NodeRoutesView): Record<string, unknown> {
+  return {
+    nodeId: v.nodeId,
+    vpnEndpointRevision: v.vpnEndpointRevision,
+    activeRoute: v.activeRoute ? projectRoute(v.activeRoute) : null,
+    drafts: v.drafts.map(projectRoute),
+    retiring: v.retiring.map(projectRoute),
+  };
+}
+
+/**
+ * Reject what the parser would otherwise drop silently: a known value flag
+ * written `--port 41005` (no `=`), unknown flags, and surplus positionals.
+ */
+export function assertStrictArgs(
+  args: string[],
+  opts: { positionals: number; valueFlags?: string[]; boolFlags?: string[]; usage: string },
+): void {
+  const valueFlags = opts.valueFlags ?? [];
+  const boolFlags = ["confirm", "json", ...(opts.boolFlags ?? [])];
+  for (const arg of args) {
+    if (!arg.startsWith("--")) continue;
+    const name = arg.slice(2).split("=")[0]!;
+    if (valueFlags.includes(name)) {
+      if (!arg.includes("=")) {
+        throw new Error(`--${name} needs a value written as --${name}=<value>\n${opts.usage}`);
+      }
+    } else if (boolFlags.includes(name)) {
+      if (arg.includes("=")) throw new Error(`--${name} takes no value\n${opts.usage}`);
+    } else {
+      throw new Error(`Unknown flag ${arg}\n${opts.usage}`);
+    }
+  }
+  const extra = positionals(args);
+  if (extra.length > opts.positionals) {
+    throw new Error(`Unexpected argument "${extra[opts.positionals]}"\n${opts.usage}`);
+  }
+}
+
 const BRIDGE_ERROR_HINTS: Record<string, string> = {
   BRIDGE_HAS_ROUTES:
     "The bridge still holds routes (draft, active or retiring). Release them with bridge-route-release first.",
@@ -102,7 +203,8 @@ const BRIDGE_ERROR_HINTS: Record<string, string> = {
   BRIDGE_NODE_NOT_AWG31:
     "Only nodes serving AWG 3.1 can use a bridge route.",
   BRIDGE_NOT_FOUND: "No bridge with that id.",
-  BRIDGE_ROUTE_NOT_FOUND: "No such route (for activation: it must belong to that node).",
+  BRIDGE_ROUTE_NOT_FOUND:
+    "No route with that id. Use bridge-routes <node-id> to list a node's routes; activation needs a route id from the bridge registry.",
   BRIDGE_IPV4_CONFLICT: "A bridge with that public IPv4 is already registered.",
   BRIDGE_ROUTE_PAIR_CONFLICT:
     "That node already holds a route on this bridge with a different port. Omit --port to reuse it.",
@@ -175,16 +277,10 @@ function printBridge(bridge: BridgeView): void {
   console.log(
     `  ${bridge.publicIpv4}  control tcp ${bridge.controlTcpPort}  udp ${bridge.udpPortStart}-${bridge.udpPortEnd}  status ${bridge.managementStatus}`,
   );
-  if (bridge.setupCommands !== undefined && bridge.setupCommands !== null) {
+  const setup = projectSetup(bridge.setupCommands);
+  if (setup) {
     console.log("setup commands (run them on the bridge host yourself):");
-    const commands = bridge.setupCommands;
-    if (Array.isArray(commands)) {
-      for (const command of commands) console.log(`  ${String(command)}`);
-    } else if (typeof commands === "string") {
-      console.log(commands);
-    } else {
-      console.log(JSON.stringify(commands, null, 2));
-    }
+    for (const key of SETUP_KEYS) if (setup[key]) console.log(`  ${key}: ${setup[key]}`);
   }
 }
 
@@ -197,14 +293,16 @@ function preview(lines: string[]): void {
 }
 
 export async function cmdBridges(api: BridgeApi, args: string[]): Promise<void> {
+  assertStrictArgs(args, { positionals: 0, usage: "Usage: bridges [--json]" });
   const bridges = await api<BridgeView[]>("/api/admin/vpn-bridges");
-  if (args.includes("--json")) return json(bridges);
+  if (args.includes("--json")) return json(bridges.map(projectBridge));
   for (const line of renderBridgeTable(bridges)) console.log(line);
 }
 
 export async function cmdBridgeAdd(api: BridgeApi, args: string[]): Promise<void> {
   const usage =
     "Usage: bridge-add --name=<name> --ipv4=<public ipv4> [--control-port=7000] [--udp-start=41000] [--udp-end=41031] --confirm";
+  assertStrictArgs(args, { positionals: 0, valueFlags: ["name", "ipv4", "control-port", "udp-start", "udp-end"], usage });
   const name = flagOf(args, "name");
   const publicIpv4 = flagOf(args, "ipv4");
   if (!name || !publicIpv4) throw new Error(usage);
@@ -229,12 +327,13 @@ export async function cmdBridgeAdd(api: BridgeApi, args: string[]): Promise<void
     method: "POST",
     body: JSON.stringify(body),
   });
-  if (args.includes("--json")) return json(bridge);
+  if (args.includes("--json")) return json(projectBridge(bridge));
   printBridge(bridge);
 }
 
 export async function cmdBridgeDelete(api: BridgeApi, args: string[]): Promise<void> {
   const usage = "Usage: bridge-delete <bridge-id> --confirm";
+  assertStrictArgs(args, { positionals: 1, usage });
   const id = requireUuid(positionals(args)[0], "bridge-id", usage);
   if (!confirmed(args)) {
     return preview([`Would delete bridge ${id} (refused by the API while it holds routes).`]);
@@ -245,14 +344,16 @@ export async function cmdBridgeDelete(api: BridgeApi, args: string[]): Promise<v
 
 export async function cmdBridgeRoutes(api: BridgeApi, args: string[]): Promise<void> {
   const usage = "Usage: bridge-routes <node-id> [--json]";
+  assertStrictArgs(args, { positionals: 1, usage });
   const nodeId = requireUuid(positionals(args)[0], "node-id", usage);
   const view = await api<NodeRoutesView>(`/api/admin/nodes/${nodeId}/vpn-bridge-routes`);
-  if (args.includes("--json")) return json(view);
+  if (args.includes("--json")) return json(projectNodeRoutes(view));
   for (const line of renderNodeRoutes(view)) console.log(line);
 }
 
 export async function cmdBridgeRoutePrepare(api: BridgeApi, args: string[]): Promise<void> {
   const usage = "Usage: bridge-route-prepare <node-id> <bridge-id> [--port=<udp port>] --confirm";
+  assertStrictArgs(args, { positionals: 2, valueFlags: ["port"], usage });
   const [rawNode, rawBridge] = positionals(args);
   const nodeId = requireUuid(rawNode, "node-id", usage);
   const bridgeId = requireUuid(rawBridge, "bridge-id", usage);
@@ -268,7 +369,9 @@ export async function cmdBridgeRoutePrepare(api: BridgeApi, args: string[]): Pro
     `/api/admin/nodes/${nodeId}/vpn-bridge-routes`,
     { method: "POST", body: JSON.stringify(body) },
   );
-  if (args.includes("--json")) return json(result);
+  if (args.includes("--json")) {
+    return json({ created: result.created, route: projectRoute(result.route) });
+  }
   const { route } = result;
   console.log(result.created ? "route reserved:" : "route already held (unchanged):");
   console.log(`  id ${route.id}`);
@@ -291,7 +394,9 @@ async function findRouteNode(
     const route = bridge.routes.find((candidate) => candidate.id === routeId);
     if (route) return route;
   }
-  throw new Error(`BRIDGE_ROUTE_NOT_FOUND: no route ${routeId}`);
+  throw new Error(
+    `BRIDGE_ROUTE_NOT_FOUND: no route ${routeId} in the bridge registry\n${BRIDGE_ERROR_HINTS.BRIDGE_ROUTE_NOT_FOUND}`,
+  );
 }
 
 async function patchEndpoint(
@@ -325,6 +430,7 @@ function printEndpointResult(
 
 export async function cmdBridgeRouteActivate(api: BridgeApi, args: string[]): Promise<void> {
   const usage = "Usage: bridge-route-activate <route-id> --confirm";
+  assertStrictArgs(args, { positionals: 1, usage });
   const routeId = requireUuid(positionals(args)[0], "route-id", usage);
   const route = await findRouteNode(api, routeId);
   if (!confirmed(args)) {
@@ -339,6 +445,7 @@ export async function cmdBridgeRouteActivate(api: BridgeApi, args: string[]): Pr
 
 export async function cmdBridgeRouteDirect(api: BridgeApi, args: string[]): Promise<void> {
   const usage = "Usage: bridge-route-direct <node-id> --confirm";
+  assertStrictArgs(args, { positionals: 1, usage });
   const nodeId = requireUuid(positionals(args)[0], "node-id", usage);
   if (!confirmed(args)) {
     return preview([`Would switch node ${nodeId} back to Direct (no bridge route).`]);
@@ -349,6 +456,7 @@ export async function cmdBridgeRouteDirect(api: BridgeApi, args: string[]): Prom
 
 export async function cmdBridgeRouteRelease(api: BridgeApi, args: string[]): Promise<void> {
   const usage = "Usage: bridge-route-release <route-id> --confirm";
+  assertStrictArgs(args, { positionals: 1, usage });
   const routeId = requireUuid(positionals(args)[0], "route-id", usage);
   if (!confirmed(args)) {
     return preview([
@@ -363,19 +471,18 @@ export async function cmdBridgeRouteRelease(api: BridgeApi, args: string[]): Pro
 }
 
 /** Dispatch table; main.ts routes every `bridge*` command through it. */
-export const BRIDGE_COMMANDS: Record<
+export const BRIDGE_COMMANDS: ReadonlyMap<
   string,
   (api: BridgeApi, args: string[]) => Promise<void>
-> = {
-  bridges: cmdBridges,
-  "bridge-add": cmdBridgeAdd,
-  "bridge-delete": cmdBridgeDelete,
-  "bridge-routes": cmdBridgeRoutes,
-  "bridge-route-prepare": cmdBridgeRoutePrepare,
-  "bridge-route-activate": cmdBridgeRouteActivate,
-  "bridge-route-direct": cmdBridgeRouteDirect,
-  "bridge-route-release": cmdBridgeRouteRelease,
-};
+> = new Map([  ["bridges", cmdBridges],
+  ["bridge-add", cmdBridgeAdd],
+  ["bridge-delete", cmdBridgeDelete],
+  ["bridge-routes", cmdBridgeRoutes],
+  ["bridge-route-prepare", cmdBridgeRoutePrepare],
+  ["bridge-route-activate", cmdBridgeRouteActivate],
+  ["bridge-route-direct", cmdBridgeRouteDirect],
+  ["bridge-route-release", cmdBridgeRouteRelease],
+]);
 
 export const BRIDGE_USAGE_LINES = `  bridges [--json]                        List AWG 3.1 bridges: management state, ports
                                           held/total, route count

@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { bridgeErrorHint, intFlag, requireUuid, renderNodeRoutes, assertStrictArgs, projectBridge } from "./bridges.js";
 // A DEV dependency only, and only here: the CLI ships as a dependency-free
 // `dist/main.js`, so `args.ts` re-states the period table rather than importing
 // it. Comparing the two tables in a test is what keeps that copy honest without
@@ -718,7 +719,6 @@ describe("rule source names", () => {
   });
 });
 
-import { bridgeErrorHint, intFlag, requireUuid, renderNodeRoutes } from "./bridges.js";
 
 describe("bridge argument helpers", () => {
   const id = "11111111-1111-4111-8111-111111111111";
@@ -758,5 +758,33 @@ describe("bridge argument helpers", () => {
     });
     expect(lines[0]).toContain("revision 3");
     expect(lines[1]).toContain("Direct");
+  });
+});
+
+describe("bridge strict args and projection", () => {
+  const usage = "Usage: x";
+  it("rejects a value flag without =", () => {
+    expect(() =>
+      assertStrictArgs(["--port", "41005"], { positionals: 0, valueFlags: ["port"], usage }),
+    ).toThrow(/--port=<value>/);
+  });
+  it("rejects surplus positionals and unknown flags", () => {
+    expect(() => assertStrictArgs(["a", "b"], { positionals: 1, usage })).toThrow(/Unexpected argument "b"/);
+    expect(() => assertStrictArgs(["--bogus"], { positionals: 0, usage })).toThrow(/Unknown flag/);
+  });
+  it("accepts valid input", () => {
+    expect(() =>
+      assertStrictArgs(["id", "--port=1", "--confirm"], { positionals: 1, valueFlags: ["port"], usage }),
+    ).not.toThrow();
+  });
+  it("projects bridges and keeps only typed setupCommands strings", () => {
+    const out = projectBridge({
+      id: "i", name: "n", publicIpv4: "1.1.1.1", controlTcpPort: 1, udpPortStart: 1, udpPortEnd: 2,
+      capacity: 2, heldPorts: 0, managementStatus: "ok", lastObservedAt: null, routes: [],
+      setupCommands: { install: "a", dryRun: "b", remove: "c", token: "SECRET" } as never,
+      extra: "x",
+    } as never);
+    expect(out).not.toHaveProperty("extra");
+    expect(out.setupCommands).toEqual({ install: "a", dryRun: "b", remove: "c" });
   });
 });
