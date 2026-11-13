@@ -94,7 +94,7 @@ use the repair tool for repairs, not the installer.
 ### Per-host procedure
 
 Run from the panel checkout, once per host (every panel host and every managed VPN
-host, including co-located panel/node hosts such as Caminia; a co-located host has
+host, including co-located panel/node hosts; a co-located host has
 both a panel and a node updater and the tool judges each one independently):
 
 ```bash
