@@ -1,0 +1,109 @@
+openapi: 3.0.3
+info:
+  title: Bridge agent management API
+  version: "1"
+  description: >
+    Loopback-only management API of an AWG node bridge. Reads the local frps
+    v0.72.0 dashboard API (GET /api/serverinfo, GET /api/proxy/udp) and reports
+    only the fields below. The update operations arrive with capability update.v1.
+servers:
+  - url: http://127.0.0.1:7600
+security:
+  - bearer: []
+paths:
+  /healthz:
+    get:
+      summary: Container healthcheck (no authentication, no data)
+      security: []
+      responses:
+        "200":
+          description: The process is serving
+          content:
+            application/json:
+              schema: { type: object, required: [ok], properties: { ok: { type: boolean, enum: [true] } } }
+  /v1/identity:
+    get:
+      summary: Stable bridge identity and capabilities
+      responses:
+        "200":
+          description: Identity
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Identity" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /v1/status:
+    get:
+      summary: One observation of frps. Answers 200 even when frps is down; see frps.reachable and errors.
+      responses:
+        "200":
+          description: Status
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Status" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+components:
+  securitySchemes:
+    bearer: { type: http, scheme: bearer }
+  responses:
+    Unauthorized:
+      description: Missing or wrong bearer token
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [error]
+            properties:
+              error: { type: object, required: [code], properties: { code: { type: string, enum: [UNAUTHORIZED] } } }
+  schemas:
+    Identity:
+      type: object
+      required: [bridgeId, agentVersion, apiVersion, capabilities]
+      properties:
+        bridgeId: { type: string, format: uuid }
+        agentVersion: { type: string }
+        apiVersion: { type: integer, enum: [1] }
+        capabilities: { type: array, items: { type: string }, example: ["status.v1"] }
+    Status:
+      type: object
+      required: [bridgeId, agentVersion, apiVersion, observedAt, frps, applied, proxies, errors]
+      properties:
+        bridgeId: { type: string, format: uuid }
+        agentVersion: { type: string }
+        apiVersion: { type: integer, enum: [1] }
+        observedAt: { type: string, format: date-time }
+        frps:
+          type: object
+          required: [reachable, version]
+          description: reachable is true only when both frps reads succeeded; otherwise proxies is empty and proves nothing.
+          properties:
+            reachable: { type: boolean }
+            version: { type: string, nullable: true }
+        applied:
+          type: object
+          required: [controlTcpPort, udpPortStart, udpPortEnd]
+          properties:
+            controlTcpPort: { type: integer }
+            udpPortStart: { type: integer }
+            udpPortEnd: { type: integer }
+        proxies:
+          type: array
+          items:
+            type: object
+            required: [proxyId, remotePort, online, registrationMarker]
+            properties:
+              proxyId: { type: string, description: "frp proxy name, awg-route-<route uuid>" }
+              remotePort: { type: integer, nullable: true, description: "null once frps no longer holds the proxy (offline)" }
+              online: { type: boolean }
+              registrationMarker:
+                type: string
+                nullable: true
+                pattern: "^[0-9a-f]{32}$"
+        errors:
+          type: array
+          maxItems: 8
+          items:
+            type: object
+            required: [code, message]
+            properties:
+              code: { type: string, enum: [FRPS_UNREACHABLE, FRPS_AUTH_FAILED, FRPS_TIMEOUT, FRPS_HTTP_ERROR, FRPS_MALFORMED_RESPONSE] }
+              message: { type: string }

@@ -1,0 +1,1 @@
+{"version":"0.72.0","bindPort":17000,"vhostHTTPPort":0,"vhostHTTPSPort":0,"tcpmuxHTTPConnectPort":0,"kcpBindPort":0,"quicBindPort":0,"subdomainHost":"","maxPoolCount":5,"maxPortsPerClient":0,"heartbeatTimeout":-1,"allowPortsStr":"41000-41031","totalTrafficIn":0,"totalTrafficOut":0,"curConns":0,"clientCounts":1,"proxyTypeCount":{"tcp":1,"udp":1}}
