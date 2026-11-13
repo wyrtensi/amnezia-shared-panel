@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { bridgeFrpProxyName, readBridgeAgentStatus } from "@amnezia/contracts";
 import {
@@ -648,6 +648,73 @@ describe("bridge enrollment and bridge-agent observations (real PostgreSQL, fake
           released: true,
           publicUdpPort: route.publicUdpPort,
         });
+      },
+    );
+
+    runDatabaseTest(
+      "activation and release wait for an in-flight poll of the bridge and judge its result",
+      async () => {
+        const waitForLockWait = async () => {
+          for (let attempt = 0; attempt < 200; attempt += 1) {
+            const rows = await db().execute<{ waiting: number }>(
+              sql`select count(*)::int as waiting from pg_stat_activity
+                  where datname = current_database() and wait_event_type = 'Lock'`,
+            );
+            if ((rows[0]?.waiting ?? 0) > 0) return;
+            await new Promise((resolve) => setTimeout(resolve, 25));
+          }
+          throw new Error("No session started waiting for a lock");
+        };
+        /** A poll that stored `down` and has not committed yet. */
+        const holdDownPoll = async (bridgeId: string) => {
+          const { managementEnrolledAt } = await bridgeRow(bridgeId);
+          let commit!: () => void;
+          let written!: () => void;
+          const committed = new Promise<void>((resolve) => (commit = resolve));
+          const applied = new Promise<void>((resolve) => (written = resolve));
+          const transaction = db().transaction(async (tx) => {
+            await applyBridgePollResult(tx, {
+              bridgeId,
+              enrolledAt: managementEnrolledAt!,
+              startedAt: new Date(),
+              outcome: { kind: "down", errorCode: "AGENT_TIMEOUT" },
+            });
+            written();
+            await committed;
+          });
+          await applied;
+          return async () => {
+            commit();
+            await transaction;
+          };
+        };
+
+        // Activation of a verified draft whose bridge is being polled.
+        const nodeId = await seedNode("race");
+        const bridge = await createBridge();
+        await enroll(bridge.id);
+        const { route } = await repository.prepareBridgeRoute(admin, nodeId, {
+          bridgeId: bridge.id,
+        });
+        reportOnline(route.id, route.publicUdpPort, M1);
+        await poll(bridge.id);
+        await operatorVerify(route.id, M1);
+        const finishPoll = await holdDownPoll(bridge.id);
+        const activation = failureOf(activate(nodeId, route.id));
+        await waitForLockWait();
+        await finishPoll();
+        expect(await activation).toMatchObject({ code: "BRIDGE_OBSERVATION_STALE" });
+        expect((await routeRow(route.id)).state).toBe("draft");
+
+        // Release of a draft whose forwarding the last poll saw absent.
+        agent.proxies = [];
+        await poll(bridge.id);
+        const finishSecond = await holdDownPoll(bridge.id);
+        const release = failureOf(repository.releaseBridgeRoute(admin, route.id));
+        await waitForLockWait();
+        await finishSecond();
+        expect(await release).toMatchObject({ code: "BRIDGE_OBSERVATION_STALE" });
+        expect((await routeRow(route.id)).state).toBe("draft");
       },
     );
 
