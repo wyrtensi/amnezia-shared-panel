@@ -131,7 +131,8 @@ export const checkActivationGuard = (
  * poll (`observedAt >= lastObservedAt`) and that poll did not report the
  * route's proxy name and port online (`observedOnline` is not true).
  * Anything else is Unknown and keeps the reservation:
- * BRIDGE_OBSERVATION_STALE.
+ * BRIDGE_OBSERVATION_STALE. One exception, for a draft on a never-enrolled
+ * bridge, is described inside.
  */
 export const checkReleaseGuard = (
   route: GuardRoute,
@@ -139,6 +140,19 @@ export const checkReleaseGuard = (
   now: Date,
   staleMs: number,
 ): GuardFailure | null => {
+  // Exception (ruling R9): a DRAFT on a bridge that was never enrolled
+  // (`pending_enrollment` and no observation ever stored) may be released on
+  // the operator's confirmation alone. Before enrollment there is no
+  // observation source at all, so the fresh-absent rule could never be met,
+  // and the bridge could never be deleted either (a held route blocks it). A
+  // retiring route has carried user traffic and keeps the full rule.
+  if (
+    route.state === "draft" &&
+    bridge.managementStatus === "pending_enrollment" &&
+    bridge.lastObservedAt === null
+  ) {
+    return null;
+  }
   if (
     !isBridgeObservationFresh(bridge, now, staleMs) ||
     !isRouteCoveredByLatestPoll(route, bridge)

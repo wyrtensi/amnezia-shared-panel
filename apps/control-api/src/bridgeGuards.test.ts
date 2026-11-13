@@ -118,4 +118,22 @@ describe("checkReleaseGuard", () => {
       "BRIDGE_OBSERVATION_STALE",
     );
   });
+
+  it("releases a draft on a never-enrolled bridge without an observation", () => {
+    const pending = bridge({ managementStatus: "pending_enrollment", lastObservedAt: null });
+    const unobserved = route({ observedOnline: null, observedAt: null });
+    expect(codeOf(unobserved, pending)).toBeNull();
+    // Retiring keeps the full rule.
+    expect(codeOf({ ...unobserved, state: "retiring" }, pending)).toBe(
+      "BRIDGE_OBSERVATION_STALE",
+    );
+    // Once observed (enrolled at some point), the exception no longer applies.
+    expect(
+      codeOf(unobserved, bridge({ managementStatus: "pending_enrollment", lastObservedAt: ago(1) })),
+    ).toBe("BRIDGE_OBSERVATION_STALE");
+    // Enrolled but stale.
+    expect(
+      codeOf(unobserved, bridge({ managementStatus: "stale", lastObservedAt: ago(STALE_MS + 1) })),
+    ).toBe("BRIDGE_OBSERVATION_STALE");
+  });
 });

@@ -287,6 +287,8 @@ export const BRIDGE_ERROR_CODES = [
   // belong to the node named in the path).
   "BRIDGE_NOT_FOUND",
   "BRIDGE_ROUTE_NOT_FOUND",
+  // 409: route preparation for a node that does not serve AWG 3.1.
+  "BRIDGE_NODE_NOT_AWG31",
 ] as const;
 export const bridgeErrorCodeSchema = z.enum(BRIDGE_ERROR_CODES);
 

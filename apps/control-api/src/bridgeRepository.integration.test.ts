@@ -62,7 +62,14 @@ describe("bridge registry (real PostgreSQL)", () => {
     return `45.${(seed >> 8) & 0xff}.${seed & 0xff}.${ipCounter}`;
   };
 
-  const seedNode = async (label: string): Promise<string> => {
+  const seedNode = async (
+    label: string,
+    served: {
+      protocol?: "awg2" | "awg3";
+      capabilities?: Record<string, boolean>;
+      enabledProtocols?: Array<"awg2" | "awg3"> | null;
+    } = {},
+  ): Promise<string> => {
     const credentials = encryptSecret("api-key", keyring, 1);
     const labelSecret = encryptSecret(randomBytes(32).toString("base64"), keyring, 1);
     const [node] = await db()
@@ -70,6 +77,10 @@ describe("bridge registry (real PostgreSQL)", () => {
       .values({
         name: `bridge-${runTag}-${label}-${randomBytes(2).toString("hex")}`,
         apiBaseUrl: "http://127.0.0.1:4001",
+        // Bridges carry AWG 3.1 only, so test nodes serve it unless told not to.
+        protocol: served.protocol ?? "awg3",
+        capabilities: served.capabilities ?? {},
+        enabledProtocols: served.enabledProtocols ?? null,
         credentialsCiphertext: credentials.ciphertext,
         credentialsNonce: credentials.nonce,
         credentialsAuthTag: credentials.authTag,
@@ -700,6 +711,79 @@ describe("bridge registry (real PostgreSQL)", () => {
     expect(listed?.heldPorts).toBe(2);
   });
 
+  runDatabaseTest("preparation is refused for a node that does not serve AWG 3.1", async () => {
+    const bridge = await createBridge();
+    const awg2Only = await seedNode("awg2-only", { protocol: "awg2" });
+    const awg3Disabled = await seedNode("awg3-disabled", {
+      protocol: "awg3",
+      capabilities: { awg2: true, awg3: true },
+      enabledProtocols: ["awg2"],
+    });
+    const awg3Reported = await seedNode("awg3-reported", {
+      protocol: "awg2",
+      capabilities: { awg2: true, awg3: true },
+    });
+    for (const nodeId of [awg2Only, awg3Disabled]) {
+      expect(
+        await failureOf(repository.prepareBridgeRoute(admin, nodeId, { bridgeId: bridge.id })),
+      ).toMatchObject({ statusCode: 409, code: "BRIDGE_NODE_NOT_AWG31" });
+    }
+    const ok = await repository.prepareBridgeRoute(admin, awg3Reported, { bridgeId: bridge.id });
+    expect(ok.created).toBe(true);
+    const held = await db()
+      .select()
+      .from(vpnBridgeRoutes)
+      .where(eq(vpnBridgeRoutes.bridgeId, bridge.id));
+    expect(held).toHaveLength(1);
+  });
+
+  runDatabaseTest("A -> Direct -> A needs a fresh verification", async () => {
+    const bridge = await createBridge();
+    const nodeId = await seedNode("demotion-clears");
+    const { route } = await repository.prepareBridgeRoute(admin, nodeId, { bridgeId: bridge.id });
+    await makeActivatable(bridge.id, route.id);
+    await activate(nodeId, route.id, 0);
+    await activate(nodeId, null, 1);
+    const retired = await routeRow(route.id);
+    expect(retired).toMatchObject({
+      state: "retiring",
+      verificationMethod: null,
+      verifiedRegistrationMarker: null,
+      verifiedAt: null,
+      verificationResult: null,
+      verificationError: null,
+    });
+    // Same registration still online and fresh: only the verification is missing.
+    await observe(bridge.id, route.id, { online: true, marker: "m-1" });
+    expect(await failureOf(activate(nodeId, route.id, 2))).toMatchObject({
+      statusCode: 409,
+      code: "BRIDGE_ROUTE_UNVERIFIED",
+    });
+    expect(await revisionOf(nodeId)).toBe(2);
+    await verify(route.id, { marker: "m-1" });
+    const result = await activate(nodeId, route.id, 2);
+    expect(result.vpnEndpoint).toMatchObject({ changed: true, vpnEndpointRevision: 3 });
+  });
+
+  runDatabaseTest("switching A -> B clears A's verification", async () => {
+    const bridgeA = await createBridge({ name: "A" });
+    const bridgeB = await createBridge({ name: "B" });
+    const nodeId = await seedNode("a-to-b-clears");
+    const { route: a } = await repository.prepareBridgeRoute(admin, nodeId, { bridgeId: bridgeA.id });
+    const { route: b } = await repository.prepareBridgeRoute(admin, nodeId, { bridgeId: bridgeB.id });
+    await makeActivatable(bridgeA.id, a.id);
+    await activate(nodeId, a.id, 0);
+    await makeActivatable(bridgeB.id, b.id, "m-b");
+    await activate(nodeId, b.id, 1);
+    expect(await routeRow(a.id)).toMatchObject({
+      state: "retiring",
+      verifiedAt: null,
+      verificationResult: null,
+    });
+    // The newly active route keeps its own verification.
+    expect((await routeRow(b.id))?.verificationResult).toBe("success");
+  });
+
   runDatabaseTest("a retiring route is reactivated only after re-verification", async () => {
     const bridge = await createBridge();
     const nodeId = await seedNode("reactivate");
@@ -808,7 +892,11 @@ describe("bridge registry (real PostgreSQL)", () => {
 
     runDatabaseTest("a stale or unobserved bridge keeps the reservation", async () => {
       const { bridge, route } = await prepared();
-      // Never observed.
+      // Enrolled (status ok) but with no observation of the route yet.
+      await db()
+        .update(vpnBridges)
+        .set({ managementStatus: "ok", lastObservedAt: new Date() })
+        .where(eq(vpnBridges.id, bridge.id));
       expect(await failureOf(repository.releaseBridgeRoute(admin, route.id))).toMatchObject({
         statusCode: 409,
         code: "BRIDGE_OBSERVATION_STALE",
@@ -855,6 +943,53 @@ describe("bridge registry (real PostgreSQL)", () => {
         statusCode: 404,
         code: "BRIDGE_ROUTE_NOT_FOUND",
       });
+    });
+
+    runDatabaseTest("a draft on a never-enrolled bridge is released on confirmation", async () => {
+      const { bridge, nodeId, route } = await prepared();
+      const [row] = await db().select().from(vpnBridges).where(eq(vpnBridges.id, bridge.id));
+      expect(row).toMatchObject({ managementStatus: "pending_enrollment", lastObservedAt: null });
+      expect(await repository.releaseBridgeRoute(admin, route.id)).toMatchObject({
+        id: route.id,
+        released: true,
+        nodeId,
+      });
+      // And the pending bridge can now be deleted.
+      expect(await repository.deleteBridge(admin, bridge.id)).toEqual({
+        id: bridge.id,
+        deleted: true,
+      });
+    });
+
+    runDatabaseTest("a retiring route on a pending bridge is refused", async () => {
+      const { bridge, nodeId, route } = await prepared();
+      await makeActivatable(bridge.id, route.id);
+      await activate(nodeId, route.id, 0);
+      await activate(nodeId, null, 1);
+      // Back to a never-observed pending state: the draft exception must not apply.
+      await db()
+        .update(vpnBridges)
+        .set({ managementStatus: "pending_enrollment", lastObservedAt: null })
+        .where(eq(vpnBridges.id, bridge.id));
+      expect((await routeRow(route.id))?.state).toBe("retiring");
+      expect(await failureOf(repository.releaseBridgeRoute(admin, route.id))).toMatchObject({
+        statusCode: 409,
+        code: "BRIDGE_OBSERVATION_STALE",
+      });
+    });
+
+    runDatabaseTest("a draft on an enrolled but stale bridge is refused", async () => {
+      const { bridge, route } = await prepared();
+      await observe(bridge.id, route.id, {
+        online: false,
+        at: new Date(Date.now() - 10 * MINUTE),
+        status: "stale",
+      });
+      expect(await failureOf(repository.releaseBridgeRoute(admin, route.id))).toMatchObject({
+        statusCode: 409,
+        code: "BRIDGE_OBSERVATION_STALE",
+      });
+      expect(await routeRow(route.id)).toBeDefined();
     });
 
     runDatabaseTest("a retiring route with a null observation flag is released", async () => {

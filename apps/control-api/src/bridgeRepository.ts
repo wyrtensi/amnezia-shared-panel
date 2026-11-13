@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { and, asc, eq, inArray, sql, type SQL } from "drizzle-orm";
 import {
   bridgeFrpProxyName,
+  nodeServedProtocols,
   type Bridge,
   type BridgeRouteSummary,
   type CreateBridgeRequest,
@@ -428,11 +429,27 @@ export class PostgresBridgeRepository {
         // Only VPN nodes hold routes: a bridge lives in its own table and can
         // never be named here.
         const [node] = await tx
-          .select({ id: nodes.id })
+          .select({
+            id: nodes.id,
+            protocol: nodes.protocol,
+            capabilities: nodes.capabilities,
+            enabledProtocols: nodes.enabledProtocols,
+          })
           .from(nodes)
           .where(eq(nodes.id, nodeId))
           .for("no key update");
         if (!node) throw nodeNotFound();
+        // A bridge only carries the node's AWG 3.1 listener. Same rule the
+        // panel uses to decide whether a node offers awg3 keys: reported
+        // capabilities (or the primary protocol) narrowed by the admin's
+        // enabled subset.
+        if (!nodeServedProtocols(node).includes("awg3")) {
+          throw new ApiError(
+            409,
+            "This node does not serve AWG 3.1, so it cannot be reached through a bridge",
+            "BRIDGE_NODE_NOT_AWG31",
+          );
+        }
         const [bridge] = await tx
           .select()
           .from(vpnBridges)
@@ -661,7 +678,7 @@ export class PostgresBridgeRepository {
    * observation -> verification. A request for the state the node is already
    * in changes nothing (no revision bump, no audit, no reachability reset).
    * Otherwise, in this one transaction: the previous active route becomes
-   * retiring, the candidate becomes active, the revision increments, the
+   * retiring (its verification cleared), the candidate becomes active, the revision increments, the
    * node's AWG 3.1 reachability evidence is reset and the audit event is
    * written; any failure, including the audit insert, rolls all of it back.
    */
@@ -731,10 +748,21 @@ export class PostgresBridgeRepository {
 
     // Demote first: the one-active-route-per-node index is checked per
     // statement, so promoting first would collide with the current route.
+    // A retiring route loses its verification (ruling R11): reactivating it
+    // later needs a fresh verification of its then-current registration.
     if (current) {
       await tx
         .update(vpnBridgeRoutes)
-        .set({ state: "retiring", retiringSince: now, updatedAt: now })
+        .set({
+          state: "retiring",
+          retiringSince: now,
+          verificationMethod: null,
+          verifiedRegistrationMarker: null,
+          verifiedAt: null,
+          verificationResult: null,
+          verificationError: null,
+          updatedAt: now,
+        })
         .where(eq(vpnBridgeRoutes.id, current.id));
     }
     if (candidate) {
