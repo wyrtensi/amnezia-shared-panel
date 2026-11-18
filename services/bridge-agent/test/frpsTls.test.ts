@@ -3,20 +3,22 @@ import { once } from "node:events";
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { X509Certificate } from "node:crypto";
 import { createServer } from "node:tls";
 import { afterAll, beforeAll, expect, it } from "vitest";
 
-import { createFrpsTlsSampler } from "../src/frpsTls.js";
+import { createFrpsTlsSampler, createFrpsTlsSamplerForOwner } from "../src/frpsTls.js";
 
 const BRIDGE_IP = "203.0.113.10";
+const FIXTURE_UID = process.getuid?.() ?? 0;
 let root: string;
 let ca: Buffer;
 let otherCa: Buffer;
 let key: Buffer;
 let leaf: Buffer;
 let expired: Buffer;
+const trustDirectories = new Set<string>();
 
 beforeAll(async () => {
   root = await mkdtemp(join(tmpdir(), "bridge-tls-"));
@@ -45,16 +47,28 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+  await Promise.all([...trustDirectories].map((dir) => chmod(dir, 0o700)));
   if (root) await rm(root, { recursive: true, force: true });
 });
 
+async function restrictTrustDirectory(dir: string) {
+  trustDirectories.add(dir);
+  await chmod(dir, 0o555);
+}
+
 async function writeTrustFile(path: string, content: string | Buffer) {
-  // Node reports DOS read-only attributes as the write mode on Windows.
-  await chmod(path, 0o644).catch((error: NodeJS.ErrnoException) => {
-    if (error.code !== "ENOENT") throw error;
-  });
-  await writeFile(path, content);
-  await chmod(path, 0o444);
+  const directory = dirname(path);
+  await chmod(directory, 0o700);
+  try {
+    // Node reports DOS read-only attributes as the write mode on Windows.
+    await chmod(path, 0o644).catch((error: NodeJS.ErrnoException) => {
+      if (error.code !== "ENOENT") throw error;
+    });
+    await writeFile(path, content);
+    await chmod(path, 0o444);
+  } finally {
+    await restrictTrustDirectory(directory);
+  }
 }
 
 async function withPeer(cert: Buffer, fn: (port: number) => Promise<void>) {
@@ -70,13 +84,13 @@ async function withPeer(cert: Buffer, fn: (port: number) => Promise<void>) {
 
 it("checks the live peer with pinned IPv4 and CA, reports expiry and compares the published fingerprint", async () => {
   const trust = await mkdtemp(join(root, "trust-"));
-  await chmod(trust, 0o555);
+  await restrictTrustDirectory(trust);
   const fingerprint = new X509Certificate(leaf).fingerprint256.replaceAll(":", "").toLowerCase();
   await writeTrustFile(join(trust, "public-ip"), BRIDGE_IP);
   await writeTrustFile(join(trust, "ca.crt"), ca);
 
   await withPeer(leaf, async (port) => {
-    const sample = createFrpsTlsSampler(trust, port);
+    const sample = createFrpsTlsSamplerForOwner(trust, port, FIXTURE_UID);
     const verified = {
       state: "verified",
       expiresAt: new X509Certificate(leaf).validToDate.toISOString(),
@@ -98,20 +112,34 @@ it("checks the live peer with pinned IPv4 and CA, reports expiry and compares th
 
   await writeTrustFile(join(trust, "ca.crt"), ca);
   await withPeer(expired, async (port) => {
-    expect(await createFrpsTlsSampler(trust, port)()).toEqual({ state: "failed", reason: "expired" });
+    expect(await createFrpsTlsSamplerForOwner(trust, port, FIXTURE_UID)()).toEqual({
+      state: "failed", reason: "expired",
+    });
   });
 });
 
 it("reports legacy hosts separately from unsafe or incomplete configuration", async () => {
   const trust = join(root, "absent");
-  const sample = createFrpsTlsSampler(trust, 7000);
+  const sample = createFrpsTlsSamplerForOwner(trust, 7000, FIXTURE_UID);
   expect(await sample()).toEqual({ state: "unconfigured" });
   await mkdir(trust, { mode: 0o755 });
-  await chmod(trust, 0o555);
+  await restrictTrustDirectory(trust);
   expect(await sample()).toEqual({ state: "unconfigured" });
   await writeTrustFile(join(trust, "public-ip"), BRIDGE_IP);
   expect(await sample()).toEqual({ state: "failed", reason: "config" });
   await writeTrustFile(join(trust, "ca.crt"), ca);
   await chmod(join(trust, "ca.crt"), 0o666);
   expect(await sample()).toEqual({ state: "failed", reason: "config" });
+});
+
+it("rejects a trust directory with the wrong owner and keeps the production owner at UID 0", async () => {
+  const trust = await mkdtemp(join(root, "owner-"));
+  await restrictTrustDirectory(trust);
+  const otherUid = FIXTURE_UID === 0 ? 1 : 0;
+  expect(await createFrpsTlsSamplerForOwner(trust, 7000, otherUid)()).toEqual({
+    state: "failed", reason: "config",
+  });
+  expect(await createFrpsTlsSampler(trust, 7000)()).toEqual(
+    FIXTURE_UID === 0 ? { state: "unconfigured" } : { state: "failed", reason: "config" },
+  );
 });

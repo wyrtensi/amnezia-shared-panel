@@ -13,9 +13,10 @@ const HANDSHAKE_TIMEOUT_MS = 1_500;
 
 const codeOf = (error: unknown): unknown => (error as NodeJS.ErrnoException | undefined)?.code;
 
-const trustedMode = (uid: number, mode: number) => uid === 0 && (mode & 0o022) === 0;
+const trustedMode = (uid: number, mode: number, ownerUid: number) =>
+  uid === ownerUid && (mode & 0o022) === 0;
 
-const readTrusted = async (dir: string, name: string, limit: number): Promise<string | null> => {
+const readTrusted = async (dir: string, name: string, limit: number, ownerUid: number): Promise<string | null> => {
   const file = await open(join(dir, name), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
     .catch((error: unknown) => {
       if (codeOf(error) === "ENOENT") return null;
@@ -24,7 +25,7 @@ const readTrusted = async (dir: string, name: string, limit: number): Promise<st
   if (file === null) return null;
   try {
     const stat = await file.stat();
-    if (!stat.isFile() || !trustedMode(stat.uid, stat.mode) || stat.size > limit) {
+    if (!stat.isFile() || !trustedMode(stat.uid, stat.mode, ownerUid) || stat.size > limit) {
       throw new Error("unsafe FRP trust file");
     }
     return (await file.readFile("utf8")).trim();
@@ -92,19 +93,19 @@ const samplePeer = (port: number, ip: string, ca: string, deployed: string | nul
     socket.once("close", () => finish(failed("handshake")));
   });
 
-export const createFrpsTlsSampler = (dir: string, port: number) => async (): Promise<FrpsTlsStatus> => {
+export const createFrpsTlsSamplerForOwner = (dir: string, port: number, ownerUid: number) => async (): Promise<FrpsTlsStatus> => {
   try {
     const trust = await lstat(dir).catch((error: unknown) => {
       if (codeOf(error) === "ENOENT") return null;
       throw error;
     });
     if (trust === null) return { state: "unconfigured" };
-    if (!trust.isDirectory() || !trustedMode(trust.uid, trust.mode)) return failed("config");
+    if (!trust.isDirectory() || !trustedMode(trust.uid, trust.mode, ownerUid)) return failed("config");
 
     const [ca, ip, deployed] = await Promise.all([
-      readTrusted(dir, "ca.crt", 64 * 1024),
-      readTrusted(dir, "public-ip", 64),
-      readTrusted(dir, "deployed-sha256", 128),
+      readTrusted(dir, "ca.crt", 64 * 1024, ownerUid),
+      readTrusted(dir, "public-ip", 64, ownerUid),
+      readTrusted(dir, "deployed-sha256", 128, ownerUid),
     ]);
     if (ca === null && ip === null && deployed === null) return { state: "unconfigured" };
     if (!ca?.includes("-----BEGIN CERTIFICATE-----") || !ip || !isIPv4(ip) ||
@@ -114,3 +115,6 @@ export const createFrpsTlsSampler = (dir: string, port: number) => async (): Pro
     return failed("config");
   }
 };
+
+export const createFrpsTlsSampler = (dir: string, port: number) =>
+  createFrpsTlsSamplerForOwner(dir, port, 0);
