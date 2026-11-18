@@ -47,10 +47,10 @@ describe("createBridgePanelDnsChecker", () => {
   });
 
   it("reports active when a candidate domain resolves to the bridge IPv4 and answers HTTPS", async () => {
-    const lookupIpv4 = vi.fn(async (host: string) =>
-      host === "me.example.test" ? ["203.0.113.10"] : ["198.51.100.20"],
+    const lookupIpv4 = vi.fn((host: string) =>
+      Promise.resolve(host === "me.example.test" ? ["203.0.113.10"] : ["198.51.100.20"]),
     );
-    const probeHttps = vi.fn(async () => true);
+    const probeHttps = vi.fn(() => Promise.resolve(true));
     const check = createBridgePanelDnsChecker({
       env: { PANEL_PUBLIC_URL: "https://link.example.test" },
       lookupIpv4,
@@ -69,8 +69,9 @@ describe("createBridgePanelDnsChecker", () => {
   it("reports https_unreachable when DNS points at the bridge IPv4 but HTTPS forwarding fails", async () => {
     const check = createBridgePanelDnsChecker({
       env: { PANEL_PUBLIC_URL: "https://link.example.test" },
-      lookupIpv4: async (host) => (host === "me.example.test" ? ["203.0.113.10"] : []),
-      probeHttps: async () => false,
+      lookupIpv4: (host) =>
+        Promise.resolve(host === "me.example.test" ? ["203.0.113.10"] : []),
+      probeHttps: () => Promise.resolve(false),
       now: () => new Date("2026-11-19T00:00:00.000Z"),
     });
 
@@ -82,10 +83,10 @@ describe("createBridgePanelDnsChecker", () => {
   });
 
   it("reports unconfigured when no candidate domain resolves to the bridge IPv4", async () => {
-    const probeHttps = vi.fn(async () => true);
+    const probeHttps = vi.fn(() => Promise.resolve(true));
     const check = createBridgePanelDnsChecker({
       env: { PANEL_PUBLIC_URL: "https://link.example.test" },
-      lookupIpv4: async () => ["198.51.100.20"],
+      lookupIpv4: () => Promise.resolve(["198.51.100.20"]),
       probeHttps,
       now: () => new Date("2026-11-19T00:00:00.000Z"),
     });
