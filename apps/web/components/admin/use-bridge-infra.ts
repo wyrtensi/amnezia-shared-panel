@@ -7,6 +7,7 @@ import { listInfrastructure } from "@/lib/bridge-api";
 import { bridgeEntry } from "@/lib/bridge-ui";
 
 export type NodeRouteLabel = {
+  bridgeId: string;
   bridgeName: string;
   entry: string;
 };
@@ -20,7 +21,7 @@ export type BridgeInfra = {
   reload: () => Promise<void>;
 };
 
-/** One `GET /api/admin/infrastructure` for both the Nodes and Bridges tabs. */
+/** One infrastructure response supplies both sections and their route links. */
 export function useBridgeInfra(): BridgeInfra {
   const { request } = useAdminData();
   const [items, setItems] = React.useState<InfrastructureItem[]>([]);
@@ -51,6 +52,7 @@ export function useBridgeInfra(): BridgeInfra {
       const bridge = byId.get(item.activeRoute.bridgeId);
       if (!bridge) continue;
       routeByNode.set(item.id, {
+        bridgeId: bridge.id,
         bridgeName: bridge.name,
         entry: bridgeEntry(bridge.publicIpv4, item.activeRoute.publicUdpPort),
       });

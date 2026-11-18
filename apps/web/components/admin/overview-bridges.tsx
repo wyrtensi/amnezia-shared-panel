@@ -4,7 +4,7 @@ import type { AdminOverviewBridges } from "@amnezia/contracts";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
-import { nodesTabHref } from "@/lib/bridge-ui";
+import { bridgeSectionHref } from "@/lib/bridge-ui";
 
 type Translate = (key: string, vars?: Record<string, string | number>) => string;
 
@@ -42,7 +42,7 @@ export function OverviewBridgesBlock({
           </span>
         </h2>
         <Button asChild variant="ghost" size="sm">
-          <Link href={nodesTabHref("bridges")} prefetch={false}>
+          <Link href={bridgeSectionHref} prefetch={false}>
             {t("ov.bridgesOpen")} <ArrowRight className="h-4 w-4" />
           </Link>
         </Button>

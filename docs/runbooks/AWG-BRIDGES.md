@@ -1,10 +1,11 @@
 # Runbook: AWG 3.1 node bridges
 
 An optional bridge is a public host that forwards UDP to one or more AWG 3.1
-nodes: users import a config whose endpoint is the bridge, the AWG peer and exit
-stay on the node. A node is either **Direct** or assigned to one bridge route;
-assignments are managed in the panel (Policies -> Node routes, and the Bridges
-tab) and through the same API from the CLI (`docs/CLI.md`, `bridge-*` commands).
+nodes. Users import a config with the bridge endpoint while the AWG peer and
+exit stay on the node. In **Nodes and bridges**, both sections are visible on
+the same page and route links take you to the corresponding cards. Manage
+assignments in **Policies → Node routes** or through the `bridge-*` commands
+in [the CLI](../CLI.md).
 
 Scope: only genuine AWG 3.1 artifacts follow a bridge. Native AWG 2 and an AWG3
 service's 2.0 fallback stay Direct. AWG 3.1 configs need AmneziaVPN client

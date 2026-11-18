@@ -13,9 +13,11 @@ import { useT } from "@/lib/i18n/provider";
 export function CommandBlock({
   label,
   command,
+  hideLabel = false,
 }: {
   label: string;
   command: string;
+  hideLabel?: boolean;
 }) {
   const { t } = useT();
   const [copied, setCopied] = React.useState(false);
@@ -32,7 +34,7 @@ export function CommandBlock({
 
   return (
     <div className="space-y-1">
-      <p className="text-xs font-medium text-muted-foreground">{label}</p>
+      {!hideLabel && <p className="text-xs font-medium text-muted-foreground">{label}</p>}
       <div className="flex items-start gap-2">
         <code className="min-w-0 flex-1 whitespace-pre-wrap break-all rounded bg-muted px-2 py-1.5 text-xs">
           {command}

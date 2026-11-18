@@ -8,10 +8,11 @@ import { ApiClientError } from "@/lib/api";
 import { messages } from "@/lib/i18n/messages";
 import {
   bridgeNeedsHostSetup,
+  bridgeCardAnchor,
+  bridgeSectionHref,
   describeBridgeError,
+  nodeCardAnchor,
   nodeRouteEditorHref,
-  nodesTabHref,
-  parseNodesTab,
   poolCapacity,
   registrationTone,
   verificationLabelKey,
@@ -31,17 +32,10 @@ describe("navigation", () => {
     expect(messages.ru["nav.nodes"]).toBe("Ноды и мосты");
   });
 
-  it("keeps /admin/nodes for Nodes and uses ?tab=bridges for Bridges", () => {
-    expect(nodesTabHref("nodes")).toBe("/admin/nodes");
-    expect(nodesTabHref("bridges")).toBe("/admin/nodes?tab=bridges");
-  });
-
-  it("selects the Bridges tab from the deep link and defaults to Nodes", () => {
-    expect(parseNodesTab("bridges")).toBe("bridges");
-    expect(parseNodesTab(null)).toBe("nodes");
-    expect(parseNodesTab(undefined)).toBe("nodes");
-    expect(parseNodesTab("anything")).toBe("nodes");
-    expect(parseNodesTab(new URLSearchParams("tab=bridges").get("tab"))).toBe("bridges");
+  it("links to the Bridges section and gives nodes and bridges distinct anchors", () => {
+    expect(bridgeSectionHref).toBe("/admin/nodes#bridges");
+    expect(nodeCardAnchor("test")).toBe("node-test");
+    expect(bridgeCardAnchor("test")).toBe("bridge-test");
   });
 
   it("links a node to its route editor", () => {

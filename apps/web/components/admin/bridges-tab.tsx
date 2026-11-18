@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import Link from "next/link";
-import { ArrowDownUp, Cable, Cpu, Pencil, Plus, Trash2 } from "lucide-react";
+import { ArrowDownUp, Cable, Cpu, Gauge, Pencil, Plus, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import {
   BRIDGE_DEFAULT_CONTROL_TCP_PORT,
@@ -43,7 +43,10 @@ import { useAdminData } from "@/components/admin/admin-data";
 import type { BridgeInfra } from "@/components/admin/use-bridge-infra";
 import { createBridge, deleteBridge, renameBridge } from "@/lib/bridge-api";
 import {
+  BRIDGES_ANCHOR,
+  bridgeCardAnchor,
   describeBridgeError,
+  nodeCardAnchor,
   nodeRouteEditorHref,
   poolCapacity,
   registrationTone,
@@ -52,6 +55,7 @@ import {
   verificationTone,
 } from "@/lib/bridge-ui";
 import { formatDateTime } from "@/lib/format";
+import { cn } from "@/lib/utils";
 import { useT } from "@/lib/i18n/provider";
 import type { Lang } from "@/lib/i18n/messages";
 
@@ -93,11 +97,22 @@ export function BridgeCardView({
 }) {
   const free = Math.max(0, bridge.capacity - bridge.heldPorts);
   return (
-    <Card>
+    <Card id={bridgeCardAnchor(bridge.id)} tabIndex={-1} className="scroll-mt-4">
       <CardContent className="space-y-3 p-4">
         <div className="flex items-start justify-between gap-2">
-          <div className="min-w-0">
-            <p className="truncate font-medium leading-tight">{bridge.name}</p>
+          <div className="flex min-w-0 items-start gap-2.5">
+            <span className={cn(
+              "flex size-9 shrink-0 items-center justify-center rounded-lg",
+              bridge.managementStatus === "ok" ? "bg-success/15 text-success" : "bg-muted text-muted-foreground",
+            )}>
+              <Cable aria-hidden className="size-5" />
+            </span>
+            <div className="min-w-0 space-y-1">
+              <p className="break-words font-medium leading-tight">{bridge.name}</p>
+              <Badge variant={STATUS_VARIANT[bridge.managementStatus]}>
+                {t(`bridge.status.${bridge.managementStatus}`)}
+              </Badge>
+            </div>
           </div>
           <div className="flex shrink-0 items-center gap-1">
             <Button
@@ -121,23 +136,13 @@ export function BridgeCardView({
           </div>
         </div>
 
-        <div className="space-y-1">
-          <CommandBlock label={t("bridge.panelDnsIpv4")} command={bridge.publicIpv4} />
-          <p className="text-xs text-muted-foreground">{t("bridge.panelDnsIpv4Hint")}</p>
-        </div>
-
-        <div className="flex flex-wrap items-center gap-1.5">
-          <Badge variant={STATUS_VARIANT[bridge.managementStatus]}>
-            {t(`bridge.status.${bridge.managementStatus}`)}
-          </Badge>
-          <span className="text-xs text-muted-foreground">
+        <p className="text-xs text-muted-foreground">
             {bridge.lastObservedAt
               ? t("bridge.lastObserved", {
                   at: formatDateTime(bridge.lastObservedAt, lang),
                 })
               : t("bridge.neverObserved")}
-          </span>
-        </div>
+        </p>
 
         <BridgeManagementView bridge={bridge} t={t} lang={lang} />
         <BridgeAgentUpdateFacts bridge={bridge} t={t} lang={lang} onUpdate={onUpdateAgent} />
@@ -149,10 +154,12 @@ export function BridgeCardView({
           <dd className="font-mono">
             {bridge.udpPortStart}–{bridge.udpPortEnd}/udp
           </dd>
-          <dt className="text-muted-foreground">{t("bridge.ports")}</dt>
-          <dd>{t("bridge.portsUsed", { used: bridge.heldPorts, total: bridge.capacity, free })}</dd>
         </dl>
-        <MetricMeter meter={metricBar(barFraction(bridge.heldPorts, bridge.capacity))} />
+        <div className="space-y-1.5">
+          <NodeCardSection icon={Gauge}>{t("bridge.ports")}</NodeCardSection>
+          <p className="text-xs tabular-nums">{t("bridge.portsUsed", { used: bridge.heldPorts, total: bridge.capacity, free })}</p>
+          <MetricMeter meter={metricBar(barFraction(bridge.heldPorts, bridge.capacity))} />
+        </div>
         <BridgeMetricsView bridge={bridge} t={t} lang={lang} />
 
         <div className="space-y-1">
@@ -168,7 +175,12 @@ export function BridgeCardView({
                   key={route.id}
                   className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-md bg-muted/50 px-2 py-1 text-xs"
                 >
-                  <span className="min-w-0 truncate font-medium">{route.nodeName}</span>
+                  <a
+                    href={`#${nodeCardAnchor(route.nodeId)}`}
+                    className="min-w-0 break-words font-medium text-primary underline-offset-2 hover:underline"
+                  >
+                    {route.nodeName}
+                  </a>
                   <span className="font-mono">:{route.publicUdpPort}</span>
                   <Badge variant={ROUTE_STATE_VARIANT[route.state]}>
                     {t(`bridge.state.${route.state}`)}
@@ -198,6 +210,14 @@ export function BridgeCardView({
             </ul>
           )}
         </div>
+
+        <details className="rounded-md border px-2 py-1.5">
+          <summary className="cursor-pointer text-xs font-medium">{t("bridge.panelDnsIpv4")}</summary>
+          <div className="mt-2 space-y-1.5">
+            <CommandBlock label={t("bridge.panelDnsIpv4")} command={bridge.publicIpv4} hideLabel />
+            <p className="text-xs text-muted-foreground">{t("bridge.panelDnsIpv4Hint")}</p>
+          </div>
+        </details>
 
         {bridge.setupCommands ? (
           <details className="rounded-md border px-2 py-1.5">
@@ -278,10 +298,10 @@ function BridgeMetricsView({ bridge, t, lang }: { bridge: Bridge; t: Translate; 
       {traffic ? (
         <>
           <NodeCardSection icon={ArrowDownUp}>{t("bridge.metrics.trafficToday")}</NodeCardSection>
-          <div className="flex flex-wrap gap-x-3 gap-y-1 text-xs tabular-nums">
-            <span><span className="text-muted-foreground">{t("bridge.metrics.trafficIn")}</span> {metricBytes(traffic.inBytes, lang)}</span>
-            <span><span className="text-muted-foreground">{t("bridge.metrics.trafficOut")}</span> {metricBytes(traffic.outBytes, lang)}</span>
-          </div>
+          <MetricGrid rows={[
+            [t("bridge.metrics.trafficIn"), metricBytes(traffic.inBytes, lang), undefined, null],
+            [t("bridge.metrics.trafficOut"), metricBytes(traffic.outBytes, lang), undefined, null],
+          ]} />
         </>
       ) : null}
     </div>
@@ -359,7 +379,7 @@ function EvidenceTime({ at, lang }: { at: string | null; lang: Lang }) {
   ) : null;
 }
 
-export function BridgesTab({ infra }: { infra: BridgeInfra }) {
+export function BridgesSection({ infra }: { infra: BridgeInfra }) {
   const { t, lang } = useT();
   const { request } = useAdminData();
   const [showAdd, setShowAdd] = React.useState(false);
@@ -368,17 +388,11 @@ export function BridgesTab({ infra }: { infra: BridgeInfra }) {
   const [updating, setUpdating] = React.useState<Bridge | null>(null);
 
   return (
-    <div className="space-y-4">
+    <section id={BRIDGES_ANCHOR} aria-labelledby="bridges-title" tabIndex={-1} className="@container min-w-0 scroll-mt-4 space-y-3">
       <div className="flex flex-wrap items-center gap-2">
-        <div className="mr-auto">
-          <h3 className="flex items-center gap-2 text-base font-semibold">
-            <Cable className="h-4 w-4 text-primary" />
-            {t("bridge.title")}
-          </h3>
-          <p className="text-sm text-muted-foreground">{t("bridge.intro")}</p>
-        </div>
-        <Button onClick={() => setShowAdd(true)}>
-          <Plus className="h-4 w-4" /> {t("bridge.add")}
+        <h3 id="bridges-title" className="mr-auto text-base font-semibold">{t("bridge.title")}</h3>
+        <Button size="sm" onClick={() => setShowAdd(true)}>
+          <Plus /> {t("bridge.add")}
         </Button>
       </div>
 
@@ -387,22 +401,16 @@ export function BridgesTab({ infra }: { infra: BridgeInfra }) {
       ) : null}
 
       {infra.loading && infra.bridges.length === 0 ? (
-        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-          {[0, 1].map((index) => (
-            <Skeleton key={index} className="h-56 rounded-xl" />
-          ))}
-        </div>
+        <Skeleton className="h-56 rounded-xl" />
       ) : infra.bridges.length === 0 ? (
-        <Card className="border-dashed">
-          <CardContent className="flex flex-col items-center gap-2 py-10 text-center">
-            <h3 className="text-base font-semibold">{t("bridge.empty")}</h3>
-            <p className="max-w-sm text-sm text-muted-foreground">
-              {t("bridge.emptyHint")}
-            </p>
+        !infra.failed && <Card className="border-dashed">
+          <CardContent className="space-y-1 p-4 text-sm">
+            <p className="font-medium">{t("bridge.empty")}</p>
+            <p className="text-muted-foreground">{t("bridge.emptyHint")}</p>
           </CardContent>
         </Card>
       ) : (
-        <div className="grid items-start gap-3 sm:grid-cols-2 xl:grid-cols-3">
+        <div className="grid items-start gap-3 @min-[40rem]:grid-cols-2">
           {infra.bridges.map((bridge) => (
             <BridgeCardView
               key={bridge.id}
@@ -441,7 +449,7 @@ export function BridgesTab({ infra }: { infra: BridgeInfra }) {
         onDone={infra.reload}
         request={request}
       />
-    </div>
+    </section>
   );
 }
 

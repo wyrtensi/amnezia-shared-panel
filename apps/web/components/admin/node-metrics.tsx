@@ -176,14 +176,13 @@ const BAR_TONE_CLASS: Record<MetricBarTone, string> = {
 export type MetricRow = [string, string, boolean | undefined, MetricBar | null, string?];
 
 export function MetricMeter({ meter }: { meter: MetricBar | null }) {
+  if (!meter) return null;
   return (
-    <div className="mt-1 h-1 overflow-hidden rounded-full bg-border/60" aria-hidden>
-      {meter && (
-        <div
-          className={cn("h-full rounded-full", BAR_TONE_CLASS[meter.tone])}
-          style={{ width: `${Math.max(meter.fraction * 100, meter.fraction > 0 ? 2 : 0)}%` }}
-        />
-      )}
+    <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-well shadow-[var(--inset-shadow)]" aria-hidden>
+      <div
+        className={cn("h-full rounded-full", BAR_TONE_CLASS[meter.tone])}
+        style={{ width: `${Math.max(meter.fraction * 100, meter.fraction > 0 ? 2 : 0)}%` }}
+      />
     </div>
   );
 }
@@ -241,7 +240,7 @@ export function NodeMetrics({
       t("nodes.metrics.ram"),
       // Used / total, like the Swap and Disk rows, with what is still free
       // spelled out — that is the number the warning above is keyed on.
-      `${bytes(memoryUsedBytes(metrics.memTotalBytes, metrics.memAvailableBytes), lang)} / ${bytes(metrics.memTotalBytes, lang)} · ${bytes(metrics.memAvailableBytes, lang)} ${t("nodes.metrics.free")}`,
+      `${bytes(memUsed, lang)} / ${bytes(metrics.memTotalBytes, lang)} · ${bytes(metrics.memAvailableBytes, lang)} ${t("nodes.metrics.free")}`,
       memLow,
       bar(barFraction(memUsed === null ? null : Number(memUsed), Number(metrics.memTotalBytes)), memLow),
     ],
@@ -311,43 +310,27 @@ export function NodeMetrics({
 }
 
 export function MetricGrid({ rows }: { rows: MetricRow[] }) {
-  // Label above value, not beside it. A node card is a third of a column wide,
-  // which leaves a side-by-side row about 90px for "142.0 MB / 960.0 MB" - so
-  // the figure wrapped under its own label, or the label collapsed to "M.".
-  // Stacked, the figure gets the whole cell and every label stays a word.
-  //
-  // The column count is a container query, not a viewport one: this grid sits
-  // inside a card in a 1-, 2- or 3-up grid, so the viewport says nothing about
-  // how much room it actually has.
   return (
     <div className="@container">
-      <dl className="grid grid-cols-2 gap-1.5 text-xs @lg:grid-cols-3">
-        {/* Each figure sits in its own recess, the way the facts on a key card
-            do. Twelve label/value pairs in a three-column grid with nothing
-            between them read as one field of text, and the eye has to count
-            columns to work out which number belongs to which label. */}
+      <dl className="grid grid-cols-1 gap-1.5 text-xs @min-[14rem]:grid-cols-2 @min-[27rem]:grid-cols-3">
         {rows.map(([label, value, warn, meter, hover]) => (
           <div
             key={label}
-            className="min-w-0 rounded-md border border-border/60 bg-well px-2 py-1 shadow-[var(--inset-shadow)]"
+            className="flex min-w-0 flex-col rounded-md border border-border/60 bg-well px-2 py-1.5 shadow-[var(--inset-shadow)]"
           >
-            <dt className="truncate text-[11px] leading-tight text-muted-foreground">
+            <dt className="break-words text-[11px] leading-tight text-muted-foreground">
               {label}
             </dt>
             <dd
               className={cn(
-                "truncate leading-tight tabular-nums",
+                "break-words font-medium leading-snug tabular-nums",
                 warn && "font-medium text-destructive",
               )}
-              // The cell is narrow by design; hovering still gives the figure
-              // in full rather than making the operator widen the window.
               title={hover ?? value}
             >
               {value}
             </dd>
-            {/* Always rendered, empty when there is no figure, so every cell
-                in a row keeps the same height. */}
-            <MetricMeter meter={meter} />
+            {meter && <div className="mt-auto"><MetricMeter meter={meter} /></div>}
           </div>
         ))}
       </dl>

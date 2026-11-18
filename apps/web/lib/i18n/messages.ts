@@ -1436,14 +1436,14 @@ const ru = {
     "Сколько дней хранится завершённая запись в очереди задач, прежде чем будет удалена. Задачи со статусом «ошибка», «ожидание» или «в обработке» это окно не трогает, как и служебные строки rules.refresh и access.sync.",
 
   // Bridges
-  "bridge.tabNodes":
+  "nodes.section":
     "Ноды",
-  "bridge.tabBridges":
-    "Мосты",
   "bridge.title":
     "Мосты",
-  "bridge.intro":
-    "Мост — публичный хост, который пересылает UDP-трафик VPN-ноды: клиенты подключаются к адресу моста, а не ноды.",
+  "bridge.summary":
+    "{total} всего · {online} на связи",
+  "bridge.routeUnknown":
+    "Данные недоступны",
   "bridge.add":
     "Добавить мост",
   "bridge.addDesc":
@@ -1664,7 +1664,7 @@ const ru = {
   "bridge.prepare":
     "Подготовить маршрут через мост",
   "bridge.noBridgesYet":
-    "Сначала добавьте мост на вкладке «Мосты».",
+    "Сначала добавьте мост в разделе «Мосты».",
   "bridge.chooseBridge":
     "Мост",
   "bridge.chooseBridgePlaceholder":
@@ -3213,14 +3213,14 @@ const en = {
     "How many days a completed job-queue row is kept before it is deleted. A failed, pending or processing row is never touched by this window, and neither are the rules.refresh / access.sync status rows.",
 
   // Bridges
-  "bridge.tabNodes":
+  "nodes.section":
     "Nodes",
-  "bridge.tabBridges":
-    "Bridges",
   "bridge.title":
     "Bridges",
-  "bridge.intro":
-    "A bridge is a public host that forwards a VPN node's UDP traffic, so clients connect to the bridge address instead of the node.",
+  "bridge.summary":
+    "{total} total · {online} online",
+  "bridge.routeUnknown":
+    "Data unavailable",
   "bridge.add":
     "Add bridge",
   "bridge.addDesc":
@@ -3441,7 +3441,7 @@ const en = {
   "bridge.prepare":
     "Prepare bridge route",
   "bridge.noBridgesYet":
-    "Add a bridge on the Bridges tab first.",
+    "Add a bridge in the Bridges section first.",
   "bridge.chooseBridge":
     "Bridge",
   "bridge.chooseBridgePlaceholder":

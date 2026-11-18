@@ -129,6 +129,7 @@ describe("BridgeCardView", () => {
   it("links every route to its policy editor", () => {
     const html = render(bridge);
     expect(html.match(/href="\/admin\/policy\?node=[^"]+#node-routes"/g)).toHaveLength(2);
+    expect(html).toContain(`href="#node-${NODE}"`);
   });
 
   it("offers the install and dry-run commands with copy buttons", () => {
@@ -514,7 +515,7 @@ describe("OverviewBridgesBlock", () => {
     expect(view({ count: 0, items: [] })).toBe("");
   });
 
-  it("links to the Bridges tab and shows management and verified counts apart", () => {
+  it("links to the Bridges section and shows management and verified counts apart", () => {
     const html = view({
       count: 2,
       items: [
@@ -522,7 +523,7 @@ describe("OverviewBridgesBlock", () => {
         item({ id: "00000000-0000-4000-8000-0000000000b2", name: "Berlin", managementStatus: "stale", activeRoutes: 0, verifiedActiveRoutes: 0, awgPathOk: 0, awgPathFailed: 0, awgPathUnknown: 0 }),
       ],
     });
-    expect(html).toContain('href="/admin/nodes?tab=bridges"');
+    expect(html).toContain('href="/admin/nodes#bridges"');
     expect(html).toContain("Amsterdam bridge");
     expect(html).toContain("Online");
     expect(html).toContain("active routes: 3");

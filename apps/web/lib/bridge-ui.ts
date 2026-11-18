@@ -12,14 +12,12 @@ import { ApiClientError } from "@/lib/api";
  * every guard. These helpers only choose labels, links and message keys.
  */
 
-export type NodesTab = "nodes" | "bridges";
-
-export const parseNodesTab = (raw: string | null | undefined): NodesTab =>
-  raw === "bridges" ? "bridges" : "nodes";
-
 export const NODES_PATH = "/admin/nodes";
-export const nodesTabHref = (tab: NodesTab): string =>
-  tab === "bridges" ? `${NODES_PATH}?tab=bridges` : NODES_PATH;
+export const VPN_NODES_ANCHOR = "vpn-nodes";
+export const BRIDGES_ANCHOR = "bridges";
+export const bridgeSectionHref = `${NODES_PATH}#${BRIDGES_ANCHOR}`;
+export const nodeCardAnchor = (nodeId: string): string => `node-${nodeId}`;
+export const bridgeCardAnchor = (bridgeId: string): string => `bridge-${bridgeId}`;
 
 export const NODE_ROUTES_ANCHOR = "node-routes";
 

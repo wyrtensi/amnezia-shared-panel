@@ -3,8 +3,10 @@
 import * as React from "react";
 import {
   Activity,
+  ArrowDown,
   ArrowUpDown,
   Boxes,
+  Cable,
   Cpu,
   Download,
   Gauge,
@@ -20,15 +22,20 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import { Suspense } from "react";
-import { useRouter, useSearchParams } from "next/navigation";
+import { useSearchParams } from "next/navigation";
 import { toast } from "sonner";
-import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { BridgesTab } from "@/components/admin/bridges-tab";
+import { BridgesSection } from "@/components/admin/bridges-tab";
 import {
   useBridgeInfra,
   type NodeRouteLabel,
 } from "@/components/admin/use-bridge-infra";
-import { nodeRouteEditorHref, nodesTabHref, parseNodesTab } from "@/lib/bridge-ui";
+import {
+  BRIDGES_ANCHOR,
+  VPN_NODES_ANCHOR,
+  bridgeCardAnchor,
+  nodeCardAnchor,
+  nodeRouteEditorHref,
+} from "@/lib/bridge-ui";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -59,7 +66,7 @@ import {
 import { formatDateTime } from "@/lib/format";
 import { InlineTraffic } from "@/components/inline-traffic";
 import { NodeCardSection } from "@/components/admin/node-card-section";
-import { NodeMetrics } from "@/components/admin/node-metrics";
+import { MetricMeter, NodeMetrics } from "@/components/admin/node-metrics";
 import { NodePublicAddress } from "@/components/admin/node-public-address";
 import { ServiceChecksCard } from "@/components/admin/service-checks-card";
 import { useServiceChecks } from "@/components/admin/use-service-checks";
@@ -110,10 +117,7 @@ export default function AdminNodesPage() {
 
 function AdminNodesView() {
   const { nodes, keys, loading, reload, action, request } = useAdminData();
-  const router = useRouter();
-  const tab = parseNodesTab(useSearchParams().get("tab"));
-  // One infrastructure fetch feeds the node cards' current route and the
-  // Bridges tab, so the two never disagree.
+  const legacyBridgeLink = useSearchParams().get("tab") === "bridges";
   const infra = useBridgeInfra();
   // One fetch for the whole page: the card below lists checks by check, the
   // node cards show the same results by node. Two fetches could disagree.
@@ -127,6 +131,12 @@ function AdminNodesView() {
     null,
   );
   const [capacityNode, setCapacityNode] = React.useState<AdminNode | null>(null);
+
+  React.useEffect(() => {
+    if (legacyBridgeLink && !window.location.hash) {
+      document.getElementById(BRIDGES_ANCHOR)?.focus();
+    }
+  }, [legacyBridgeLink]);
 
   // Count keys per node in EVERY state, not just the active ones: revoked keys
   // still reference the node and still block (or get destroyed by) a deletion.
@@ -203,100 +213,83 @@ function AdminNodesView() {
   };
 
   return (
-    <div className="space-y-4">
-      <div className="flex flex-wrap items-center gap-2">
-        <div className="mr-auto">
-          <h2 className="flex items-center gap-2 text-lg font-semibold">
-            <Server className="h-5 w-5 text-primary" />
-            {t("nav.nodes")}
-            <Hint>{t("nodes.titleHint")}</Hint>
-          </h2>
-          <p className="text-sm text-muted-foreground">
-            {t("nodes.summary", {
-              total: nodes.length,
-              enabled: nodes.filter((node) => node.enabled).length,
-            })}
-          </p>
-        </div>
-        {tab === "nodes" ? (
-          <Button onClick={() => setShowCreate(true)}>
-            <Plus className="h-4 w-4" /> {t("nodes.addNode")}
-          </Button>
-        ) : null}
+    <div className="@container space-y-4">
+      <h2 className="flex items-center gap-2 text-lg font-semibold">
+        {t("nav.nodes")}
+        <Hint>{t("nodes.titleHint")}</Hint>
+      </h2>
+
+      <nav aria-label={t("nav.nodes")} className="grid grid-cols-2 gap-2">
+        <SectionLink anchor={VPN_NODES_ANCHOR} icon={Server} label={t("nodes.section")}>
+          {loading && nodes.length === 0
+            ? t("bridge.loading")
+            : t("nodes.summary", {
+                total: nodes.length,
+                enabled: nodes.filter((node) => node.enabled).length,
+              })}
+        </SectionLink>
+        <SectionLink anchor={BRIDGES_ANCHOR} icon={Cable} label={t("bridge.title")}>
+          {infra.failed
+            ? t("bridge.routeUnknown")
+            : infra.loading
+              ? t("bridge.loading")
+              : t("bridge.summary", {
+                  total: infra.bridges.length,
+                  online: infra.bridges.filter((bridge) => bridge.managementStatus === "ok").length,
+                })}
+        </SectionLink>
+      </nav>
+
+      <div className="grid items-start gap-5 @min-[58rem]:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
+        <section id={VPN_NODES_ANCHOR} aria-labelledby="vpn-nodes-title" tabIndex={-1} className="@container min-w-0 scroll-mt-4 space-y-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <h3 id="vpn-nodes-title" className="text-base font-semibold">{t("nodes.section")}</h3>
+            <Button size="sm" onClick={() => setShowCreate(true)}>
+              <Plus /> {t("nodes.addNode")}
+            </Button>
+          </div>
+          {loading && nodes.length === 0 ? (
+            <div className="grid gap-3 @min-[40rem]:grid-cols-2">
+              {[0, 1].map((index) => (
+                <Skeleton key={index} className="h-56 rounded-xl" />
+              ))}
+            </div>
+          ) : nodes.length === 0 ? (
+            <Card className="border-dashed">
+              <CardContent className="space-y-1 p-4 text-sm">
+                <p className="font-medium">{t("nodes.empty")}</p>
+                <p className="text-muted-foreground">{t("nodes.emptyHint")}</p>
+              </CardContent>
+            </Card>
+          ) : (
+            <div className="grid items-start gap-3 @min-[40rem]:grid-cols-2 @min-[66rem]:grid-cols-3">
+              {nodes.map((node) => (
+                <NodeCard
+                  key={node.id}
+                  node={node}
+                  keyStats={statsFor(node.id)}
+                  onToggle={(enabled) => void toggleEnabled(node, enabled)}
+                  onReconcile={() => void action("nodes", node.id, "reconcile")}
+                  onEdit={() => setEditNode(node)}
+                  onDelete={() => setDeleteTarget(node)}
+                  onUpdateAgent={() => setUpdateAgentNode(node)}
+                  onSetCapacity={() => setCapacityNode(node)}
+                  route={infra.loading || infra.failed ? undefined : infra.routeByNode.get(node.id) ?? null}
+                  routeLoadFailed={infra.failed}
+                  checkResults={serviceChecks.byNode.get(node.id) ?? []}
+                  checksConfigured={serviceChecks.checks.length > 0}
+                  onSetChecks={(patch) => void setNodeChecks(node, patch)}
+                />
+              ))}
+            </div>
+          )}
+        </section>
+
+        <BridgesSection infra={infra} />
       </div>
 
-      {/* The tab lives in the URL (`?tab=bridges`) so it can be linked to and
-          survives a reload; Nodes is the default and keeps the bare path. */}
-      <Tabs
-        value={tab}
-        onValueChange={(next) =>
-          router.replace(nodesTabHref(parseNodesTab(next)), { scroll: false })
-        }
-      >
-        <TabsList>
-          <TabsTrigger value="nodes">{t("bridge.tabNodes")}</TabsTrigger>
-          <TabsTrigger value="bridges">{t("bridge.tabBridges")}</TabsTrigger>
-        </TabsList>
-      </Tabs>
-
-      {tab === "bridges" ? <BridgesTab infra={infra} /> : null}
-
-      {tab === "bridges" ? null : loading && nodes.length === 0 ? (
-        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-          {[0, 1].map((index) => (
-            <Skeleton key={index} className="h-56 rounded-xl" />
-          ))}
-        </div>
-      ) : nodes.length === 0 ? (
-        <Card className="border-dashed">
-          <CardContent className="flex flex-col items-center gap-2 py-12 text-center">
-            <div className="flex size-12 items-center justify-center rounded-2xl bg-muted text-muted-foreground">
-              <Server className="h-6 w-6" />
-            </div>
-            <h3 className="text-base font-semibold">{t("nodes.empty")}</h3>
-            <p className="max-w-sm text-sm text-muted-foreground">
-              {t("nodes.emptyHint")}
-            </p>
-            <Button className="mt-2" onClick={() => setShowCreate(true)}>
-              <Plus className="h-4 w-4" /> {t("nodes.addNode")}
-            </Button>
-          </CardContent>
-        </Card>
-      ) : (
-        <div className="grid items-start gap-3 sm:grid-cols-2 xl:grid-cols-3">
-          {nodes.map((node) => (
-            <NodeCard
-              key={node.id}
-              node={node}
-              keyStats={statsFor(node.id)}
-              onToggle={(enabled) => void toggleEnabled(node, enabled)}
-              onReconcile={() => void action("nodes", node.id, "reconcile")}
-              onEdit={() => setEditNode(node)}
-              onDelete={() => setDeleteTarget(node)}
-              onUpdateAgent={() => setUpdateAgentNode(node)}
-              onSetCapacity={() => setCapacityNode(node)}
-              route={infra.routeByNode.get(node.id) ?? null}
-              checkResults={serviceChecks.byNode.get(node.id) ?? []}
-              checksConfigured={serviceChecks.checks.length > 0}
-              onSetChecks={(patch) => void setNodeChecks(node, patch)}
-            />
-          ))}
-        </div>
-      )}
-
-      {/* Under the fleet rather than on its own page: a check is a statement
-          about what works FROM these servers, and reading it beside them is
-          what makes a red chip actionable. */}
-      {tab === "bridges" ? null : <ServiceChecksCard state={serviceChecks} />}
-
-      {/* Beside the service checks: those look out FROM the nodes, this one
-          looks AT them from outside, the way a user's client does. */}
-      {tab === "bridges" ? null : (
-        <ReachabilityCard
-          state={reachability}
-          onSetNodeEnabled={setNodeReachability}
-        />
-      )}
+      <ServiceChecksCard state={serviceChecks} />
+      <ReachabilityCard state={reachability} onSetNodeEnabled={setNodeReachability} />
 
       <CreateNodeDialog
         open={showCreate}
@@ -333,6 +326,32 @@ function AdminNodesView() {
   );
 }
 
+function SectionLink({
+  anchor,
+  icon: Icon,
+  label,
+  children,
+}: {
+  anchor: string;
+  icon: typeof Server;
+  label: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <a
+      href={`#${anchor}`}
+      className="flex min-w-0 items-start gap-2 rounded-lg border bg-card px-2.5 py-2 text-card-foreground hover:bg-accent focus-visible:outline-2 focus-visible:outline-ring sm:px-3"
+    >
+      <Icon aria-hidden className="mt-0.5 size-4 shrink-0 text-primary" />
+      <span className="min-w-0 flex-1">
+        <span className="block text-sm font-medium">{label}</span>
+        <span className="block text-xs text-muted-foreground">{children}</span>
+      </span>
+      <ArrowDown aria-hidden className="hidden size-3.5 shrink-0 text-muted-foreground sm:block" />
+    </a>
+  );
+}
+
 function NodeCard({
   node,
   keyStats,
@@ -343,13 +362,15 @@ function NodeCard({
   onUpdateAgent,
   onSetCapacity,
   route,
+  routeLoadFailed,
   checkResults,
   checksConfigured,
   onSetChecks,
 }: {
   node: AdminNode;
-  /** The bridge route this node is reached through; null means Direct. */
-  route: NodeRouteLabel | null;
+  /** Undefined before a successful lookup, null for Direct. */
+  route: NodeRouteLabel | null | undefined;
+  routeLoadFailed: boolean;
   keyStats: NodeKeyStats;
   /** This node's verdict for each service check. Empty until it has run one. */
   checkResults: Array<{
@@ -387,7 +408,7 @@ function NodeCard({
     .map(([key]) => CAPABILITY_LABEL[key] ?? key);
 
   return (
-    <Card className={cn("overflow-hidden", !node.enabled && "opacity-80")}>
+    <Card id={nodeCardAnchor(node.id)} tabIndex={-1} className={cn("scroll-mt-4 overflow-hidden", !node.enabled && "opacity-80")}>
       <CardContent className="flex flex-col gap-3 p-4">
         <div className="flex items-start justify-between gap-2">
           <div className="flex min-w-0 items-center gap-2.5">
@@ -440,10 +461,17 @@ function NodeCard({
         <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
           <span className="text-muted-foreground">{t("bridge.nodeRoute")}</span>
           <Badge variant={route ? "default" : "outline"} className="font-mono">
-            {route ? route.entry : t("bridge.direct")}
+            {route === undefined
+              ? t(routeLoadFailed ? "bridge.routeUnknown" : "bridge.loading")
+              : route?.entry ?? t("bridge.direct")}
           </Badge>
           {route ? (
-            <span className="truncate text-muted-foreground">{route.bridgeName}</span>
+            <a
+              href={`#${bridgeCardAnchor(route.bridgeId)}`}
+              className="min-w-0 break-words text-primary underline-offset-2 hover:underline"
+            >
+              {route.bridgeName}
+            </a>
           ) : null}
           <Link
             href={nodeRouteEditorHref(node.id)}
@@ -496,24 +524,10 @@ function NodeCard({
           >
             {t("nodes.capacity")}
           </NodeCardSection>
-          {/* A groove rather than a grey strip, and a fill that cannot vanish:
-              at 5 peers of 500 the bar is 1 % wide, which rounded to nothing on
-              screen and read as "no capacity used" instead of "barely any". */}
-          <div className="h-2 overflow-hidden rounded-full bg-well shadow-[var(--inset-shadow)]">
-            <div
-              className={cn(
-                "h-full rounded-full transition-all",
-              // Anything above zero keeps a visible sliver.
-              fill > 0 && "min-w-[0.5rem]",
-                fill >= 90
-                  ? "bg-destructive"
-                  : fill >= 70
-                    ? "bg-warning"
-                    : "bg-success",
-              )}
-              style={{ width: `${fill}%` }}
-            />
-          </div>
+          <MetricMeter meter={{
+            fraction: fill / 100,
+            tone: fill >= 90 ? "bad" : fill >= 70 ? "warn" : "ok",
+          }} />
         </div>
 
         <div className="space-y-1.5">
