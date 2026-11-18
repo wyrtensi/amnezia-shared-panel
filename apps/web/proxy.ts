@@ -169,7 +169,7 @@ export const createProxy = (options: ProxyOptions = {}) =>
       return NextResponse.next();
     }
     return NextResponse.redirect(
-      new URL("/login", publicBaseUrl(request.nextUrl.origin)),
+      new URL("/login", publicBaseUrl(request.nextUrl.origin, request.headers)),
     );
   };
 

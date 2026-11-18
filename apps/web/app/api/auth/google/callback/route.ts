@@ -3,15 +3,24 @@ import { exchangeCodeForIdentity, googleConfig } from "@/lib/google-oauth";
 import {
   SESSION_COOKIE,
   STATE_COOKIE,
+  decodeOAuthReturnOrigin,
+  domainScopedCookieOptions,
   publicBaseUrl,
   sessionCookieOptions,
+  sharedParentDomain,
   signSession,
 } from "@/lib/session";
 
 export async function GET(request: NextRequest) {
   const cfg = googleConfig();
   const url = request.nextUrl;
-  const base = publicBaseUrl(url.origin);
+  const defaultBase = publicBaseUrl(url.origin, request.headers);
+  const state = url.searchParams.get("state");
+  const expectedState = request.cookies.get(STATE_COOKIE)?.value;
+  const base =
+    state && expectedState && state === expectedState
+      ? decodeOAuthReturnOrigin(state, defaultBase)
+      : defaultBase;
   const loginUrl = new URL("/login", base);
   if (!cfg) {
     return NextResponse.json(
@@ -21,8 +30,6 @@ export async function GET(request: NextRequest) {
   }
 
   const code = url.searchParams.get("code");
-  const state = url.searchParams.get("state");
-  const expectedState = request.cookies.get(STATE_COOKIE)?.value;
   if (!code || !state || !expectedState || state !== expectedState) {
     loginUrl.searchParams.set("error", "state");
     return NextResponse.redirect(loginUrl);
@@ -64,7 +71,15 @@ export async function GET(request: NextRequest) {
   }
 
   const res = NextResponse.redirect(new URL("/", base));
-  res.cookies.set(SESSION_COOKIE, token, sessionCookieOptions);
+  res.cookies.set(
+    SESSION_COOKIE,
+    token,
+    domainScopedCookieOptions(sessionCookieOptions),
+  );
+  const parent = sharedParentDomain();
+  if (parent) {
+    res.cookies.set(STATE_COOKIE, "", { path: "/", domain: parent, maxAge: 0 });
+  }
   res.cookies.delete(STATE_COOKIE);
   return res;
 }

@@ -381,6 +381,20 @@ export const bridgeMetricsSchema = z.object({
 });
 export type BridgeMetrics = z.infer<typeof bridgeMetricsSchema>;
 
+export const BRIDGE_PANEL_DNS_STATES = [
+  "active",
+  "https_unreachable",
+  "unconfigured",
+] as const;
+export const bridgePanelDnsStateSchema = z.enum(BRIDGE_PANEL_DNS_STATES);
+export const bridgePanelDnsStatusSchema = z.object({
+  state: bridgePanelDnsStateSchema,
+  hostname: z.string().nullable(),
+  checkedAt: z.iso.datetime().nullable(),
+});
+export type BridgePanelDnsState = z.infer<typeof bridgePanelDnsStateSchema>;
+export type BridgePanelDnsStatus = z.infer<typeof bridgePanelDnsStatusSchema>;
+
 export const bridgeSchema = z.object({
   id: z.uuid(),
   name: z.string(),
@@ -398,6 +412,7 @@ export const bridgeSchema = z.object({
   lastObservedAt: z.iso.datetime().nullable(),
   management: bridgeManagementSchema.optional(),
   metrics: bridgeMetricsSchema.optional(),
+  panelDns: bridgePanelDnsStatusSchema.optional(),
   agentUpdate: bridgeAgentUpdateSummarySchema.optional(),
   routes: z.array(bridgeRouteSummarySchema),
   setupCommands: bridgeSetupCommandsSchema.optional(),

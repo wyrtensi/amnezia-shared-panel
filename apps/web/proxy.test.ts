@@ -154,6 +154,36 @@ describe("proxy — Cloudflare Access assertion", () => {
 
     expect(redirectsToLogin(response)).toBe(true);
   });
+
+  it("redirects an unauthenticated request on a sibling bridge subdomain to /login on that same subdomain", async () => {
+    vi.stubEnv("PANEL_PUBLIC_URL", "https://link.panel.example.test");
+    const proxy = createProxy({ jwks });
+    const req = new NextRequest("http://127.0.0.1:3000/admin/nodes", {
+      headers: {
+        host: "me.panel.example.test",
+        "x-forwarded-host": "me.panel.example.test",
+      },
+    });
+
+    const response = await proxy(req);
+
+    expect(response.headers.get("location")).toBe("https://me.panel.example.test/login");
+  });
+
+  it("ignores an untrusted foreign host header and redirects to PANEL_PUBLIC_URL", async () => {
+    vi.stubEnv("PANEL_PUBLIC_URL", "https://link.panel.example.test");
+    const proxy = createProxy({ jwks });
+    const req = new NextRequest("http://127.0.0.1:3000/admin/nodes", {
+      headers: {
+        host: "evil.example.org",
+        "x-forwarded-host": "evil.example.org",
+      },
+    });
+
+    const response = await proxy(req);
+
+    expect(response.headers.get("location")).toBe("https://link.panel.example.test/login");
+  });
 });
 
 // `createResilientJwks` is the module-scope cache `resolveJwks` builds on top

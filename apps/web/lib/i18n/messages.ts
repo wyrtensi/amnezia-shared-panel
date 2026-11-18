@@ -1476,6 +1476,16 @@ const ru = {
     "IP для DNS панели",
   "bridge.panelDnsIpv4Hint":
     "Укажите этот IPv4 в A-записи домена панели после настройки проброса HTTPS на мосту.",
+  "bridge.panelDns.state.active":
+    "DNS активен",
+  "bridge.panelDns.state.https_unreachable":
+    "HTTPS не отвечает",
+  "bridge.panelDns.state.unconfigured":
+    "DNS не активен",
+  "bridge.panelDns.activeHint":
+    "Домен {hostname} указывает на этот мост и открывает панель по HTTPS.",
+  "bridge.panelDns.unreachableHint":
+    "A-запись {hostname} указывает на этот мост, но HTTPS на порту 443 не отвечает.",
   "bridge.advanced":
     "Дополнительные настройки",
   "bridge.controlPort":
@@ -3253,6 +3263,16 @@ const en = {
     "IP for panel DNS",
   "bridge.panelDnsIpv4Hint":
     "Use this IPv4 in the panel domain’s A record after setting up HTTPS forwarding on the bridge.",
+  "bridge.panelDns.state.active":
+    "DNS active",
+  "bridge.panelDns.state.https_unreachable":
+    "HTTPS unreachable",
+  "bridge.panelDns.state.unconfigured":
+    "DNS inactive",
+  "bridge.panelDns.activeHint":
+    "Domain {hostname} resolves to this bridge and serves the panel over HTTPS.",
+  "bridge.panelDns.unreachableHint":
+    "A record for {hostname} points to this bridge, but HTTPS on port 443 is not responding.",
   "bridge.advanced":
     "Advanced settings",
   "bridge.controlPort":

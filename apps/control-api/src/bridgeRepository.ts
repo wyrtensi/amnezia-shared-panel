@@ -28,6 +28,7 @@ import {
   type BridgeAgentOfferedImage,
   type BridgeAgentUpdateSummary,
   type BridgeAgentUpdateView,
+  type BridgePanelDnsStatus,
   type BridgeRollbackPreflight,
   type RequestBridgeAgentUpdate,
   type RequestBridgeAgentUpdateResult,
@@ -57,6 +58,7 @@ import {
 import { readBridgeRollbackPreflight } from "./bridgeRollback.js";
 import { BridgeAgentUpdates } from "./bridgeAgentUpdate.js";
 import { assertBridgeJobsEnabled } from "./bridgeConfig.js";
+import { createBridgePanelDnsChecker } from "./bridgePanelDns.js";
 import { storeEnrollment, verifyEnrollmentCandidate } from "./bridgeEnrollment.js";
 import {
   checkActivationGuard,
@@ -106,6 +108,8 @@ export type BridgeRepositoryOptions = {
    * `probeSupportsBridgeMeasurement`; tests inject a stand-in.
    */
   probeSupportsBridgeMeasurement?: (probe: ProbeCapabilityInput, now: Date) => boolean;
+  /** Checks whether a panel DNS domain resolves to a bridge IPv4 and answers HTTPS. */
+  checkPanelDns?: (publicIpv4: string) => Promise<BridgePanelDnsStatus | undefined>;
 };
 
 /** A held route as the test-config preview needs it. */
@@ -256,6 +260,7 @@ const toBridge = (
   staleMs: number,
   agentImage: string | null,
   agentUpdate: BridgeAgentUpdateSummary | undefined,
+  panelDns?: BridgePanelDnsStatus,
 ): Bridge => ({
   id: row.id,
   name: row.name,
@@ -272,6 +277,7 @@ const toBridge = (
   metrics: effectiveManagementStatus(row, now, staleMs) === "ok" && row.metrics
     ? row.metrics
     : undefined,
+  ...(panelDns ? { panelDns } : {}),
   // Enrollment state and safe metadata; the credential is never read here.
   management: {
     apiUrl: row.managementApiUrl,
@@ -313,6 +319,7 @@ const toBridge = (
  */
 export class PostgresBridgeRepository {
   private readonly agentUpdates: BridgeAgentUpdates;
+  private readonly checkPanelDns: (publicIpv4: string) => Promise<BridgePanelDnsStatus | undefined>;
 
   constructor(private readonly options: BridgeRepositoryOptions) {
     this.agentUpdates = new BridgeAgentUpdates({
@@ -320,6 +327,7 @@ export class PostgresBridgeRepository {
       jobsEnabled: options.jobsEnabled ?? false,
       approvedRelease: () => this.approvedRelease(),
     });
+    this.checkPanelDns = options.checkPanelDns ?? createBridgePanelDnsChecker();
   }
 
   private get db(): Database {
@@ -482,15 +490,20 @@ export class PostgresBridgeRepository {
       .limit(1);
     if (!row) throw bridgeNotFound();
     const now = new Date();
-    const routes = await this.routeSummaries([row], now);
-    const summaries = await this.agentUpdates.summaries([row]);
+    const [routes, summaries, agentImage, panelDns] = await Promise.all([
+      this.routeSummaries([row], now),
+      this.agentUpdates.summaries([row]),
+      this.approvedAgentImage(),
+      this.checkPanelDns(row.publicIpv4),
+    ]);
     return toBridge(
       row,
       routes.get(row.id) ?? [],
       now,
       this.options.observationStaleMs,
-      await this.approvedAgentImage(),
+      agentImage,
       summaries.get(row.id),
+      panelDns,
     );
   };
 
@@ -500,10 +513,13 @@ export class PostgresBridgeRepository {
       .from(vpnBridges)
       .orderBy(asc(vpnBridges.name), asc(vpnBridges.createdAt));
     const now = new Date();
-    const routes = await this.routeSummaries(rows, now);
-    const agentImage = await this.approvedAgentImage();
-    const summaries = await this.agentUpdates.summaries(rows);
-    return rows.map((row) =>
+    const [routes, agentImage, summaries, dnsStatuses] = await Promise.all([
+      this.routeSummaries(rows, now),
+      this.approvedAgentImage(),
+      this.agentUpdates.summaries(rows),
+      Promise.all(rows.map((row) => this.checkPanelDns(row.publicIpv4))),
+    ]);
+    return rows.map((row, index) =>
       toBridge(
         row,
         routes.get(row.id) ?? [],
@@ -511,6 +527,7 @@ export class PostgresBridgeRepository {
         this.options.observationStaleMs,
         agentImage,
         summaries.get(row.id),
+        dnsStatuses[index],
       ),
     );
   };
