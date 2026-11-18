@@ -109,7 +109,10 @@ export type BridgeRepositoryOptions = {
    */
   probeSupportsBridgeMeasurement?: (probe: ProbeCapabilityInput, now: Date) => boolean;
   /** Checks whether a panel DNS domain resolves to a bridge IPv4 and answers HTTPS. */
-  checkPanelDns?: (publicIpv4: string) => Promise<BridgePanelDnsStatus | undefined>;
+  checkPanelDns?: (
+    publicIpv4: string,
+    configuredHostname?: string | null,
+  ) => Promise<BridgePanelDnsStatus | undefined>;
 };
 
 /** A held route as the test-config preview needs it. */
@@ -265,6 +268,7 @@ const toBridge = (
   id: row.id,
   name: row.name,
   publicIpv4: row.publicIpv4,
+  ...(row.panelDnsHostname ? { panelDnsHostname: row.panelDnsHostname } : {}),
   controlTcpPort: row.controlTcpPort,
   udpPortStart: row.udpPortStart,
   udpPortEnd: row.udpPortEnd,
@@ -319,7 +323,10 @@ const toBridge = (
  */
 export class PostgresBridgeRepository {
   private readonly agentUpdates: BridgeAgentUpdates;
-  private readonly checkPanelDns: (publicIpv4: string) => Promise<BridgePanelDnsStatus | undefined>;
+  private readonly checkPanelDns: (
+    publicIpv4: string,
+    configuredHostname?: string | null,
+  ) => Promise<BridgePanelDnsStatus | undefined>;
 
   constructor(private readonly options: BridgeRepositoryOptions) {
     this.agentUpdates = new BridgeAgentUpdates({
@@ -494,7 +501,7 @@ export class PostgresBridgeRepository {
       this.routeSummaries([row], now),
       this.agentUpdates.summaries([row]),
       this.approvedAgentImage(),
-      this.checkPanelDns(row.publicIpv4),
+      this.checkPanelDns(row.publicIpv4, row.panelDnsHostname),
     ]);
     return toBridge(
       row,
@@ -517,7 +524,7 @@ export class PostgresBridgeRepository {
       this.routeSummaries(rows, now),
       this.approvedAgentImage(),
       this.agentUpdates.summaries(rows),
-      Promise.all(rows.map((row) => this.checkPanelDns(row.publicIpv4))),
+      Promise.all(rows.map((row) => this.checkPanelDns(row.publicIpv4, row.panelDnsHostname))),
     ]);
     return rows.map((row, index) =>
       toBridge(
@@ -571,6 +578,7 @@ export class PostgresBridgeRepository {
             controlTcpPort: request.controlTcpPort,
             udpPortStart: request.udpPortStart,
             udpPortEnd: request.udpPortEnd,
+            panelDnsHostname: request.panelDnsHostname ?? null,
             managementStatus: "pending_enrollment",
           })
           .returning();
@@ -587,6 +595,7 @@ export class PostgresBridgeRepository {
             controlTcpPort: created.controlTcpPort,
             udpPortStart: created.udpPortStart,
             udpPortEnd: created.udpPortEnd,
+            ...(created.panelDnsHostname ? { panelDnsHostname: created.panelDnsHostname } : {}),
           },
         });
         return created.id;
@@ -640,6 +649,7 @@ export class PostgresBridgeRepository {
         .select({
           id: vpnBridges.id,
           name: vpnBridges.name,
+          panelDnsHostname: vpnBridges.panelDnsHostname,
           enrolledAt: vpnBridges.managementEnrolledAt,
         })
         .from(vpnBridges)
@@ -658,6 +668,26 @@ export class PostgresBridgeRepository {
           targetType: "vpn_bridge",
           targetId: bridgeId,
           metadata: { from: current.name, to: request.name },
+        });
+      }
+      if (
+        request.panelDnsHostname !== undefined &&
+        request.panelDnsHostname !== current.panelDnsHostname
+      ) {
+        await tx
+          .update(vpnBridges)
+          .set({ panelDnsHostname: request.panelDnsHostname, updatedAt: new Date() })
+          .where(eq(vpnBridges.id, bridgeId));
+        await tx.insert(auditEvents).values({
+          actorUserId: actor.id,
+          actorType: "user",
+          action: "vpn_bridge.panel_dns_updated",
+          targetType: "vpn_bridge",
+          targetId: bridgeId,
+          metadata: {
+            from: current.panelDnsHostname ?? null,
+            to: request.panelDnsHostname,
+          },
         });
       }
       if (enrollment) {

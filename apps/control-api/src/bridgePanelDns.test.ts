@@ -32,7 +32,7 @@ describe("candidatePanelHostnames", () => {
 });
 
 describe("createBridgePanelDnsChecker", () => {
-  it("returns undefined without network calls when no panel domain is configured", async () => {
+  it("returns undefined without network calls when neither per-bridge nor global panel domain is configured", async () => {
     const lookupIpv4 = vi.fn();
     const probeHttps = vi.fn();
     const check = createBridgePanelDnsChecker({
@@ -41,9 +41,40 @@ describe("createBridgePanelDnsChecker", () => {
       probeHttps,
     });
 
-    await expect(check("203.0.113.10")).resolves.toBeUndefined();
+    await expect(check("203.0.113.10", null)).resolves.toBeUndefined();
     expect(lookupIpv4).not.toHaveBeenCalled();
     expect(probeHttps).not.toHaveBeenCalled();
+  });
+
+  it("checks a bridge's own configured panelDnsHostname independently per bridge", async () => {
+    const lookupIpv4 = vi.fn((host: string) => {
+      if (host === "bridge-a.example.test") return Promise.resolve(["203.0.113.10"]);
+      if (host === "bridge-b.example.test") return Promise.resolve(["198.51.100.20"]);
+      return Promise.resolve([]);
+    });
+    const probeHttps = vi.fn(() => Promise.resolve(true));
+    const check = createBridgePanelDnsChecker({
+      env: {},
+      lookupIpv4,
+      probeHttps,
+      now: () => new Date("2026-11-19T00:00:00.000Z"),
+    });
+
+    await expect(check("203.0.113.10", "bridge-a.example.test")).resolves.toEqual({
+      state: "active",
+      hostname: "bridge-a.example.test",
+      checkedAt: "2026-11-19T00:00:00.000Z",
+    });
+    await expect(check("198.51.100.20", "bridge-b.example.test")).resolves.toEqual({
+      state: "active",
+      hostname: "bridge-b.example.test",
+      checkedAt: "2026-11-19T00:00:00.000Z",
+    });
+    await expect(check("203.0.113.10", "bridge-b.example.test")).resolves.toEqual({
+      state: "dns_mismatch",
+      hostname: "bridge-b.example.test",
+      checkedAt: "2026-11-19T00:00:00.000Z",
+    });
   });
 
   it("reports active when a candidate domain resolves to the bridge IPv4 and answers HTTPS", async () => {

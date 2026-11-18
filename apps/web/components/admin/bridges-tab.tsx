@@ -79,6 +79,7 @@ const ROUTE_STATE_VARIANT = {
 const PANEL_DNS_VARIANT = {
   active: "success",
   https_unreachable: "destructive",
+  dns_mismatch: "warning",
   unconfigured: "outline",
 } as const;
 
@@ -261,11 +262,11 @@ export function BridgeCardView({
 function BridgePanelDnsDetails({ bridge, t }: { bridge: Bridge; t: Translate }) {
   const panelDns = bridge.panelDns;
   const state = panelDns?.state ?? "unconfigured";
-  const hostname = panelDns?.hostname ?? null;
+  const hostname = panelDns?.hostname ?? bridge.panelDnsHostname ?? null;
   return (
     <details
       className="rounded-md border px-2 py-1.5"
-      open={state === "https_unreachable"}
+      open={state === "https_unreachable" || state === "dns_mismatch"}
     >
       <summary className="flex cursor-pointer flex-wrap items-center justify-between gap-2 text-xs font-medium">
         <span>{t("bridge.panelDnsIpv4")}</span>
@@ -287,6 +288,11 @@ function BridgePanelDnsDetails({ bridge, t }: { bridge: Bridge; t: Translate }) 
         {hostname && state === "https_unreachable" ? (
           <Callout tone="danger" className="text-xs">
             {t("bridge.panelDns.unreachableHint", { hostname })}
+          </Callout>
+        ) : null}
+        {hostname && state === "dns_mismatch" ? (
+          <Callout tone="warning" className="text-xs">
+            {t("bridge.panelDns.mismatchHint", { hostname })}
           </Callout>
         ) : null}
         <CommandBlock label={t("bridge.panelDnsIpv4")} command={bridge.publicIpv4} hideLabel />
@@ -527,6 +533,7 @@ function AddBridgeDialog({
   const { t } = useT();
   const [name, setName] = React.useState("");
   const [ip, setIp] = React.useState("");
+  const [panelDomain, setPanelDomain] = React.useState("");
   const [controlPort, setControlPort] = React.useState(
     String(BRIDGE_DEFAULT_CONTROL_TCP_PORT),
   );
@@ -539,6 +546,7 @@ function AddBridgeDialog({
     if (!open) return;
     setName("");
     setIp("");
+    setPanelDomain("");
     setControlPort(String(BRIDGE_DEFAULT_CONTROL_TCP_PORT));
     setUdpStart(String(BRIDGE_DEFAULT_UDP_PORT_START));
     setUdpEnd(String(BRIDGE_DEFAULT_UDP_PORT_END));
@@ -552,12 +560,14 @@ function AddBridgeDialog({
     setBusy(true);
     setError(null);
     try {
+      const trimmedDomain = panelDomain.trim();
       await createBridge(request, {
         name: name.trim(),
         publicIpv4: ip.trim(),
         controlTcpPort: Number(controlPort),
         udpPortStart: Number(udpStart),
         udpPortEnd: Number(udpEnd),
+        ...(trimmedDomain ? { panelDnsHostname: trimmedDomain } : {}),
       });
       toast.success(t("bridge.added"));
       onClose();
@@ -597,6 +607,17 @@ function AddBridgeDialog({
               placeholder="198.51.100.10"
               value={ip}
               onChange={(event) => setIp(event.target.value)}
+            />
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="bridge-panel-domain">{t("bridge.panelDnsHostname")}</Label>
+            <Input
+              id="bridge-panel-domain"
+              maxLength={253}
+              autoComplete="off"
+              placeholder={t("bridge.panelDnsHostnamePlaceholder")}
+              value={panelDomain}
+              onChange={(event) => setPanelDomain(event.target.value)}
             />
           </div>
           <details className="rounded-md border px-2 py-1.5">
@@ -672,11 +693,13 @@ function RenameBridgeDialog({
 }: DialogDeps & { bridge: Bridge | null }) {
   const { t } = useT();
   const [name, setName] = React.useState("");
+  const [panelDomain, setPanelDomain] = React.useState("");
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
 
   React.useEffect(() => {
     setName(bridge?.name ?? "");
+    setPanelDomain(bridge?.panelDnsHostname ?? bridge?.panelDns?.hostname ?? "");
     setError(null);
   }, [bridge]);
 
@@ -686,7 +709,13 @@ function RenameBridgeDialog({
     setBusy(true);
     setError(null);
     try {
-      await renameBridge(request, bridge.id, name.trim());
+      const trimmedDomain = panelDomain.trim();
+      await renameBridge(
+        request,
+        bridge.id,
+        name.trim(),
+        trimmedDomain ? trimmedDomain : null,
+      );
       toast.success(t("bridge.renamed"));
       onClose();
       await onDone();
@@ -704,13 +733,28 @@ function RenameBridgeDialog({
           <DialogTitle>{t("bridge.rename")}</DialogTitle>
         </DialogHeader>
         <form onSubmit={(event) => void submit(event)} className="space-y-3">
-          <Input
-            aria-label={t("common.name")}
-            required
-            maxLength={120}
-            value={name}
-            onChange={(event) => setName(event.target.value)}
-          />
+          <div className="space-y-1.5">
+            <Label htmlFor="bridge-edit-name">{t("common.name")}</Label>
+            <Input
+              id="bridge-edit-name"
+              aria-label={t("common.name")}
+              required
+              maxLength={120}
+              value={name}
+              onChange={(event) => setName(event.target.value)}
+            />
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="bridge-edit-domain">{t("bridge.panelDnsHostname")}</Label>
+            <Input
+              id="bridge-edit-domain"
+              maxLength={253}
+              autoComplete="off"
+              placeholder={t("bridge.panelDnsHostnamePlaceholder")}
+              value={panelDomain}
+              onChange={(event) => setPanelDomain(event.target.value)}
+            />
+          </div>
           {error ? (
             <Callout tone="danger" className="text-xs">
               {error}

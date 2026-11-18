@@ -1,0 +1,1 @@
+ALTER TABLE "vpn_bridges" ADD COLUMN IF NOT EXISTS "panel_dns_hostname" text;

@@ -38,12 +38,8 @@ const normalizeHostname = (raw: string): string | null => {
 };
 
 /**
- * Candidate panel hostnames derived from deployment configuration.
- *
- * Includes explicit entries from `PANEL_BRIDGE_DOMAINS` (comma-separated
- * hostnames or URLs), the hostname of `PANEL_PUBLIC_URL`, and — when
- * `PANEL_PUBLIC_URL` is a subdomain such as `link.<domain>` — the sibling
- * bridge doors `me.<domain>`, `panel.<domain>` and `bridge.<domain>`.
+ * Fallback candidate panel hostnames derived from deployment configuration
+ * when a bridge does not yet have its own `panelDnsHostname` stored.
  */
 export const candidatePanelHostnames = (
   env: Record<string, string | undefined> = process.env,
@@ -138,9 +134,29 @@ export const createBridgePanelDnsChecker = (options: BridgePanelDnsOptions = {})
   const cache = new Map<string, { status: BridgePanelDnsStatus; expiresAt: number }>();
   const inFlight = new Map<string, Promise<BridgePanelDnsStatus>>();
 
-  const evaluate = async (publicIpv4: string): Promise<BridgePanelDnsStatus> => {
-    const candidates = candidatePanelHostnames(env);
+  const evaluate = async (
+    publicIpv4: string,
+    configuredHostname: string | null,
+  ): Promise<BridgePanelDnsStatus> => {
     const checkedAt = now().toISOString();
+    if (configuredHostname) {
+      const addresses = await lookup(configuredHostname);
+      if (!addresses.includes(publicIpv4)) {
+        return {
+          state: "dns_mismatch",
+          hostname: configuredHostname,
+          checkedAt: now().toISOString(),
+        };
+      }
+      const httpsOk = await probe(publicIpv4, configuredHostname);
+      return {
+        state: httpsOk ? "active" : "https_unreachable",
+        hostname: configuredHostname,
+        checkedAt: now().toISOString(),
+      };
+    }
+
+    const candidates = candidatePanelHostnames(env);
     if (candidates.length === 0) {
       return { state: "unconfigured", hostname: null, checkedAt: null };
     }
@@ -162,23 +178,29 @@ export const createBridgePanelDnsChecker = (options: BridgePanelDnsOptions = {})
     };
   };
 
-  return async (publicIpv4: string): Promise<BridgePanelDnsStatus | undefined> => {
+  return async (
+    publicIpv4: string,
+    configuredHostname?: string | null,
+  ): Promise<BridgePanelDnsStatus | undefined> => {
+    const normalized = configuredHostname ? normalizeHostname(configuredHostname) : null;
     const candidates = candidatePanelHostnames(env);
-    if (candidates.length === 0) return undefined;
+    if (!normalized && candidates.length === 0) return undefined;
+
+    const cacheKey = `${publicIpv4}:${normalized ?? ""}`;
     const timestamp = now().getTime();
-    const cached = cache.get(publicIpv4);
+    const cached = cache.get(cacheKey);
     if (cached && cached.expiresAt > timestamp) {
       return cached.status;
     }
-    let pending = inFlight.get(publicIpv4);
+    let pending = inFlight.get(cacheKey);
     if (!pending) {
-      pending = evaluate(publicIpv4).finally(() => {
-        inFlight.delete(publicIpv4);
+      pending = evaluate(publicIpv4, normalized).finally(() => {
+        inFlight.delete(cacheKey);
       });
-      inFlight.set(publicIpv4, pending);
+      inFlight.set(cacheKey, pending);
     }
     const status = await pending;
-    cache.set(publicIpv4, { status, expiresAt: now().getTime() + cacheTtlMs });
+    cache.set(cacheKey, { status, expiresAt: now().getTime() + cacheTtlMs });
     return status;
   };
 };

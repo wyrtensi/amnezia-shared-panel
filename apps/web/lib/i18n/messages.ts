@@ -1480,12 +1480,20 @@ const ru = {
     "DNS активен",
   "bridge.panelDns.state.https_unreachable":
     "HTTPS не отвечает",
+  "bridge.panelDns.state.dns_mismatch":
+    "DNS не на мосту",
   "bridge.panelDns.state.unconfigured":
     "DNS не активен",
   "bridge.panelDns.activeHint":
     "Домен {hostname} указывает на этот мост и открывает панель по HTTPS.",
   "bridge.panelDns.unreachableHint":
     "A-запись {hostname} указывает на этот мост, но HTTPS на порту 443 не отвечает.",
+  "bridge.panelDns.mismatchHint":
+    "A-запись домена {hostname} пока не указывает на IP этого моста.",
+  "bridge.panelDnsHostname":
+    "Домен панели на этом мосту (необязательно)",
+  "bridge.panelDnsHostnamePlaceholder":
+    "bridge.example.com",
   "bridge.advanced":
     "Дополнительные настройки",
   "bridge.controlPort":
@@ -3267,12 +3275,20 @@ const en = {
     "DNS active",
   "bridge.panelDns.state.https_unreachable":
     "HTTPS unreachable",
+  "bridge.panelDns.state.dns_mismatch":
+    "DNS mismatch",
   "bridge.panelDns.state.unconfigured":
     "DNS inactive",
   "bridge.panelDns.activeHint":
     "Domain {hostname} resolves to this bridge and serves the panel over HTTPS.",
   "bridge.panelDns.unreachableHint":
     "A record for {hostname} points to this bridge, but HTTPS on port 443 is not responding.",
+  "bridge.panelDns.mismatchHint":
+    "A record for {hostname} does not resolve to this bridge’s IPv4.",
+  "bridge.panelDnsHostname":
+    "Panel domain on this bridge (optional)",
+  "bridge.panelDnsHostnamePlaceholder":
+    "bridge.example.com",
   "bridge.advanced":
     "Advanced settings",
   "bridge.controlPort":

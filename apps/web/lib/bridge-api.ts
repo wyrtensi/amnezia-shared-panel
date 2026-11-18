@@ -38,8 +38,19 @@ export const listBridges = (request: Requester) =>
 export const createBridge = (request: Requester, body: CreateBridgeRequest) =>
   request<Bridge>("/api/admin/vpn-bridges", json("POST", body));
 
-export const renameBridge = (request: Requester, id: string, name: string) =>
-  request<Bridge>(`/api/admin/vpn-bridges/${id}`, json("PATCH", { name }));
+export const renameBridge = (
+  request: Requester,
+  id: string,
+  name: string,
+  panelDnsHostname?: string | null,
+) =>
+  request<Bridge>(
+    `/api/admin/vpn-bridges/${id}`,
+    json(
+      "PATCH",
+      panelDnsHostname === undefined ? { name } : { name, panelDnsHostname },
+    ),
+  );
 
 export const deleteBridge = (request: Requester, id: string) =>
   request<DeleteBridgeResult>(`/api/admin/vpn-bridges/${id}`, { method: "DELETE" });
