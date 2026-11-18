@@ -268,11 +268,11 @@ bridge and an AWG client connected through each:
 
 | File | Mode | Content |
 | --- | --- | --- |
-| `/etc/amnezia-bridge/frp/token` | 0600 | the shared bridge token (also copied to each trusted node as `/etc/amnezia-node/frp/token`) |
+| `/etc/amnezia-bridge/frp/token` | 0600 | the shared bridge token (copied to each trusted node as `/etc/amnezia-node/frp/<bridge-id>/token`) |
 | `/etc/amnezia-bridge/frp/server.key` | 0600 | frps TLS private key |
 | `/etc/amnezia-bridge/frp/server.crt` | 0644 | frps certificate signed by the bridge CA, with the bridge IPv4 as a SAN |
 
-The bridge CA certificate goes to each node as `/etc/amnezia-node/frp/ca.crt`
+The bridge CA certificate goes to each node as `/etc/amnezia-node/frp/<bridge-id>/ca.crt`
 (0644); frpc verifies the frps certificate against it. Secrets never appear in
 command arguments, configs or script output.
 
@@ -281,6 +281,11 @@ The installer creates `/etc/amnezia-bridge/frp/dashboard.env` once (mode 0600,
 its unit environment file, and the bridge-agent uses the same credentials with
 basic auth against `http://127.0.0.1:7500/api/serverinfo` and
 `/api/proxy/udp`.
+
+The bridge card shows the last fresh CPU, free RAM and filesystem sample from
+the bridge agent. Disk usage describes the filesystem holding the agent token
+mount. The FRP counters cover the current day as reported by frps and reset
+when frps restarts.
 
 ## Firewall (the script prints these, it changes none)
 

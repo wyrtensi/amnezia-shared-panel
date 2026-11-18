@@ -1487,6 +1487,11 @@ const ru = {
     "Порты",
   "bridge.portsUsed":
     "занято {used} из {total} · свободно {free}",
+  "bridge.metrics.freeMemory": "Свободная память",
+  "bridge.metrics.unavailable": "Нет свежих метрик хоста",
+  "bridge.metrics.trafficToday": "Трафик FRP сегодня",
+  "bridge.metrics.trafficIn": "Входящий",
+  "bridge.metrics.trafficOut": "Исходящий",
   "bridge.status.ok":
     "На связи",
   "bridge.status.pending_enrollment":
@@ -1649,6 +1654,8 @@ const ru = {
     "Выберите мост",
   "bridge.freePorts":
     "свободно {free}",
+  "bridge.prepareOptions":
+    "Настройки порта",
   "bridge.portOverride":
     "UDP-порт (необязательно)",
   "bridge.portAuto":
@@ -1709,6 +1716,8 @@ const ru = {
     "оператор",
   "bridge.nodeSetup":
     "Установка на хосте ноды (от root на VPN-ноде)",
+  "bridge.nodeSetupCredentials":
+    "Используйте install-frpc.sh из текущей версии панели. Поместите файлы token и ca.crt этого моста в каталог",
   "bridge.hostSetupFirst":
     "Установка на хосте моста (один раз на мост, от root на хосте моста)",
   "bridge.draftRegistrationRequired":
@@ -1719,10 +1728,8 @@ const ru = {
     "Обновить статус регистрации",
   "bridge.routeDetails":
     "Детали маршрута",
-  "bridge.operatorVerifyHint":
-    "Подключитесь с тестовым конфигом из клиентской сети и запишите результат проверки.",
-  "bridge.activationNeedsVerification":
-    "Завершите проверку для текущей регистрации, чтобы активировать маршрут.",
+  "bridge.verificationTools":
+    "Инструменты проверки",
   "bridge.verifyProbe":
     "Проверить пробником",
   "bridge.probe.queued":
@@ -1740,19 +1747,21 @@ const ru = {
   "bridge.testKeyIsolationHint":
     "Используйте отдельный тестовый ключ или перед проверкой отключите другое подключение с этим ключом.",
   "bridge.testDownloaded":
-    "Тестовый конфиг скачан; маркер подставлен ниже",
+    "Тестовый конфиг скачан, маркер регистрации сохранён",
   "bridge.testDownloadedNoMarker":
     "В тестовом конфиге нет маркера регистрации.",
   "bridge.testRegistrationChanged":
-    "Для тестового конфига нет актуального маркера регистрации. Скачайте конфиг заново и повторите проверку.",
-  "bridge.operatorVerify":
-    "Проверка оператором",
+    "Скачанный конфиг относится к другой регистрации или был скачан без маркера. Скачайте его заново и повторите проверку или укажите маркер независимой проверки.",
   "bridge.operatorConfirm":
-    "Я подключился с тестовым конфигом, увидел AWG-рукопожатие и открыл страницу через туннель.",
-  "bridge.operatorSubmit":
-    "Записать проверку",
-  "bridge.operatorRecorded":
-    "Проверка записана",
+    "Соединение через этот маршрут проверено",
+  "bridge.operatorConfirmHint":
+    "Подтвердите, если через этот маршрут прошло AWG-рукопожатие и открылась веб-страница.",
+  "bridge.operatorMarkerHint":
+    "Если проверяли соединение отдельно, укажите маркер регистрации, которую проверили.",
+  "bridge.operatorMarkerMismatch":
+    "Укажите маркер текущей регистрации в инструментах проверки.",
+  "bridge.confirmAndActivate":
+    "Подтвердить и активировать",
   "bridge.activate":
     "Активировать",
   "bridge.activated":
@@ -1800,9 +1809,9 @@ const ru = {
   "bridge.err.BRIDGE_UNSUPPORTED_CAPABILITY":
     "Установленная версия агента моста не поддерживает эту операцию.",
   "bridge.err.BRIDGE_PROBE_UNAVAILABLE":
-    "Внешний пробник не включён. Проверьте маршрут с помощью тестового конфига и запишите результат.",
+    "Внешний пробник не включён. При необходимости используйте тестовый конфиг для ручной проверки.",
   "bridge.err.BRIDGE_PROBE_CAPABILITY_MISSING":
-    "Внешний пробник не поддерживает проверку маршрутов через мост. Проверьте маршрут с помощью тестового конфига и запишите результат.",
+    "Внешний пробник не поддерживает проверку маршрутов через мост. При необходимости используйте тестовый конфиг для ручной проверки.",
   "bridge.err.BRIDGE_MANAGEMENT_URL_NOT_ALLOWED":
     "Этот адрес управления не входит в разрешённые для панели.",
   "bridge.err.BRIDGE_IDENTITY_MISMATCH":
@@ -3238,6 +3247,11 @@ const en = {
     "Ports",
   "bridge.portsUsed":
     "{used} of {total} used · {free} free",
+  "bridge.metrics.freeMemory": "Free memory",
+  "bridge.metrics.unavailable": "No recent metrics for this host",
+  "bridge.metrics.trafficToday": "FRP traffic today",
+  "bridge.metrics.trafficIn": "Incoming",
+  "bridge.metrics.trafficOut": "Outgoing",
   "bridge.status.ok":
     "Online",
   "bridge.status.pending_enrollment":
@@ -3400,6 +3414,8 @@ const en = {
     "Choose a bridge",
   "bridge.freePorts":
     "{free} free",
+  "bridge.prepareOptions":
+    "Port settings",
   "bridge.portOverride":
     "UDP port (optional)",
   "bridge.portAuto":
@@ -3460,6 +3476,8 @@ const en = {
     "operator",
   "bridge.nodeSetup":
     "Node host setup (run as root on the VPN node)",
+  "bridge.nodeSetupCredentials":
+    "Use install-frpc.sh from the current panel release. Place this bridge's token and ca.crt files in",
   "bridge.hostSetupFirst":
     "Bridge host setup (once per bridge, as root on the bridge host)",
   "bridge.draftRegistrationRequired":
@@ -3470,10 +3488,8 @@ const en = {
     "Refresh registration status",
   "bridge.routeDetails":
     "Route details",
-  "bridge.operatorVerifyHint":
-    "Connect with the test config from a client network, then record the result.",
-  "bridge.activationNeedsVerification":
-    "Complete verification for the current registration to activate the route.",
+  "bridge.verificationTools":
+    "Verification tools",
   "bridge.verifyProbe":
     "Verify with probe",
   "bridge.probe.queued":
@@ -3491,19 +3507,21 @@ const en = {
   "bridge.testKeyIsolationHint":
     "Use a separate test key, or disconnect any other profile using this key before connecting.",
   "bridge.testDownloaded":
-    "Test config downloaded; the marker was filled in below",
+    "Test config downloaded and registration marker saved",
   "bridge.testDownloadedNoMarker":
     "The test config was downloaded without a registration marker.",
   "bridge.testRegistrationChanged":
-    "The test config has no current registration marker. Download it again and repeat the test.",
-  "bridge.operatorVerify":
-    "Operator verification",
+    "The downloaded config is from a different registration or has no marker. Download it again and repeat the test, or enter the marker from an independent check.",
   "bridge.operatorConfirm":
-    "I connected with the test config, saw an AWG handshake and loaded a page through the tunnel.",
-  "bridge.operatorSubmit":
-    "Record verification",
-  "bridge.operatorRecorded":
-    "Verification recorded",
+    "I verified the connection through this route",
+  "bridge.operatorConfirmHint":
+    "Confirm after seeing an AWG handshake and loading a web page through this route.",
+  "bridge.operatorMarkerHint":
+    "If you checked the connection separately, enter the marker for the registration you tested.",
+  "bridge.operatorMarkerMismatch":
+    "Enter the current registration marker in Verification tools.",
+  "bridge.confirmAndActivate":
+    "Confirm and activate",
   "bridge.activate":
     "Activate",
   "bridge.activated":
@@ -3551,9 +3569,9 @@ const en = {
   "bridge.err.BRIDGE_UNSUPPORTED_CAPABILITY":
     "The installed bridge agent does not support this operation.",
   "bridge.err.BRIDGE_PROBE_UNAVAILABLE":
-    "No external probe is enabled. Verify the route with a test config and record the result.",
+    "No external probe is enabled. You can use a test config for a manual check.",
   "bridge.err.BRIDGE_PROBE_CAPABILITY_MISSING":
-    "The external probe does not support bridge route checks. Verify the route with a test config and record the result.",
+    "The external probe does not support bridge route checks. You can use a test config for a manual check.",
   "bridge.err.BRIDGE_MANAGEMENT_URL_NOT_ALLOWED":
     "That management address is not one the panel may reach.",
   "bridge.err.BRIDGE_IDENTITY_MISMATCH":

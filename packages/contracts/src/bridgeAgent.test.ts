@@ -38,6 +38,20 @@ const status = (overrides: Record<string, unknown> = {}) => ({
 const ok = (body: unknown) => ({ kind: "response" as const, status: 200, body });
 
 describe("classifyBridgeAgentStatus", () => {
+  it("keeps valid telemetry without making optional telemetry part of route health", () => {
+    const trafficToday = { inBytes: 0, outBytes: 1_024 };
+    const hostMetrics = { cpuUsedPercent: 12, memoryFreeBytes: 1_024, memoryTotalBytes: 2_048 };
+    expect(classifyBridgeAgentStatus(BRIDGE_ID, ok(status({ trafficToday, hostMetrics })))).toMatchObject({
+      kind: "ok",
+      trafficToday,
+      hostMetrics,
+    });
+    expect(classifyBridgeAgentStatus(BRIDGE_ID, ok(status({ trafficToday: { inBytes: -1 }, hostMetrics })))).toMatchObject({
+      kind: "ok",
+      hostMetrics,
+    });
+  });
+
   it("accepts a v1 status for the expected bridge", () => {
     expect(classifyBridgeAgentStatus(BRIDGE_ID, ok(status()))).toEqual({
       kind: "ok",

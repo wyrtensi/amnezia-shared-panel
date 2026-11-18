@@ -44,6 +44,7 @@ const agent = {
   capabilities: ["status.v1"],
   statusFails: false,
   frpsReachable: true,
+  trafficToday: undefined as { inBytes: number; outBytes: number } | undefined,
   proxies: [] as Proxy[],
   requests: [] as Array<{ path: string; authorization: string | undefined }>,
   reset() {
@@ -52,6 +53,7 @@ const agent = {
     this.capabilities = ["status.v1"];
     this.statusFails = false;
     this.frpsReachable = true;
+    this.trafficToday = undefined;
     this.proxies = [];
     this.requests = [];
   },
@@ -110,6 +112,7 @@ describe("bridge admin read model (real PostgreSQL, fake agent)", () => {
             apiVersion: 1,
             observedAt: new Date().toISOString(),
             frps: { reachable: agent.frpsReachable, version: agent.frpsReachable ? "0.72.0" : null },
+            trafficToday: agent.trafficToday,
             applied: { controlTcpPort: 7000, udpPortStart: 41000, udpPortEnd: 41031 },
             proxies: agent.frpsReachable ? agent.proxies : [],
             errors: agent.frpsReachable
@@ -284,6 +287,23 @@ describe("bridge admin read model (real PostgreSQL, fake agent)", () => {
     if (!bridge) throw new Error("bridge missing");
     return bridge;
   };
+
+  runDatabaseTest("serves the latest bridge telemetry without treating old data as fresh", async () => {
+    const bridge = await createBridge();
+    await enroll(bridge.id);
+    expect((await summaryOf(bridge.id)).metrics?.trafficToday).toBeUndefined();
+
+    agent.trafficToday = { inBytes: 0, outBytes: 4_096 };
+    await poll(bridge.id);
+    expect((await summaryOf(bridge.id)).metrics?.trafficToday).toEqual(agent.trafficToday);
+
+    await db().update(vpnBridges)
+      .set({ lastObservedAt: new Date(Date.now() - 60 * MINUTE) })
+      .where(eq(vpnBridges.id, bridge.id));
+    const stale = await summaryOf(bridge.id);
+    expect(stale.managementStatus).toBe("stale");
+    expect(stale.metrics).toBeUndefined();
+  });
 
   runDatabaseTest(
     "two routes on one bridge are observed independently; the overview and node counters stay separate",

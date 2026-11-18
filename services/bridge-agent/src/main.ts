@@ -1,4 +1,5 @@
 import { loadConfig } from "./config.js";
+import { createHostMetricsSampler } from "./hostMetrics.js";
 import { createServer } from "./server.js";
 import { readAgentVersion } from "./types.js";
 
@@ -25,6 +26,7 @@ const main = (): void => {
       applied: config.applied,
       frps: config.frps,
       update: config.update,
+      sampleHostMetrics: createHostMetricsSampler(config.tokenFile),
     },
     log,
   });

@@ -155,6 +155,22 @@ components:
           properties:
             reachable: { type: boolean }
             version: { type: string, nullable: true }
+        hostMetrics:
+          type: object
+          required: [cpuUsedPercent, memoryFreeBytes, memoryTotalBytes, diskAvailableBytes, diskUsedPercent]
+          properties:
+            cpuUsedPercent: { type: number, minimum: 0, maximum: 100, nullable: true }
+            memoryFreeBytes: { type: integer, minimum: 0 }
+            memoryTotalBytes: { type: integer, minimum: 1 }
+            diskAvailableBytes: { type: integer, minimum: 0, nullable: true }
+            diskUsedPercent: { type: number, minimum: 0, maximum: 100, nullable: true }
+        trafficToday:
+          type: object
+          description: Bytes recorded by this FRP process for its current day. Resets on FRP restart.
+          required: [inBytes, outBytes]
+          properties:
+            inBytes: { type: integer, minimum: 0 }
+            outBytes: { type: integer, minimum: 0 }
         applied:
           type: object
           required: [controlTcpPort, udpPortStart, udpPortEnd]

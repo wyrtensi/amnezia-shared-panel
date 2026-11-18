@@ -20,7 +20,7 @@ export const METRIC_WARNINGS = {
   pidsFraction: 0.8,
 } as const;
 
-const bytes = (value: string | number | null | undefined, lang: Lang): string => {
+export const metricBytes = (value: string | number | null | undefined, lang: Lang): string => {
   if (value === null || value === undefined) return "—";
   const parts = formatBytesParts(String(value), lang);
   return parts ? `${parts.value} ${parts.unit}` : "—";
@@ -100,8 +100,10 @@ export const barTone = (fraction: number, forceBad = false): MetricBarTone => {
   return "ok";
 };
 
-const bar = (fraction: number | null, forceBad = false): MetricBar | null =>
+export const metricBar = (fraction: number | null, forceBad = false): MetricBar | null =>
   fraction === null ? null : { fraction, tone: barTone(fraction, forceBad) };
+const bar = metricBar;
+const bytes = metricBytes;
 
 type Translate = (key: MessageKey, vars?: Record<string, string | number>) => string;
 
@@ -171,6 +173,21 @@ const BAR_TONE_CLASS: Record<MetricBarTone, string> = {
   bad: "bg-destructive",
 };
 
+export type MetricRow = [string, string, boolean | undefined, MetricBar | null, string?];
+
+export function MetricMeter({ meter }: { meter: MetricBar | null }) {
+  return (
+    <div className="mt-1 h-1 overflow-hidden rounded-full bg-border/60" aria-hidden>
+      {meter && (
+        <div
+          className={cn("h-full rounded-full", BAR_TONE_CLASS[meter.tone])}
+          style={{ width: `${Math.max(meter.fraction * 100, meter.fraction > 0 ? 2 : 0)}%` }}
+        />
+      )}
+    </div>
+  );
+}
+
 /** A dash, never a zero. A zero here reads as a measurement. */
 export function NodeMetrics({
   metrics,
@@ -219,8 +236,7 @@ export function NodeMetrics({
 
   // The optional fifth element is the hover text, for a cell whose detail does
   // not fit in it; every other cell hovers its own figure in full.
-  type Row = [string, string, boolean | undefined, MetricBar | null, string?];
-  const rows: Row[] = [
+  const rows: MetricRow[] = [
     [
       t("nodes.metrics.ram"),
       // Used / total, like the Swap and Disk rows, with what is still free
@@ -274,7 +290,7 @@ export function NodeMetrics({
             metrics.awg2Up === false,
             stateBar(metrics.awg2Up),
           ],
-        ] as Row[])),
+        ] as MetricRow[])),
     [
       t("nodes.metrics.agentLatency"),
       metrics.agentLatencyMs === null ? "—" : `${metrics.agentLatencyMs} ms`,
@@ -291,6 +307,10 @@ export function NodeMetrics({
     ],
   ];
 
+  return <MetricGrid rows={rows} />;
+}
+
+export function MetricGrid({ rows }: { rows: MetricRow[] }) {
   // Label above value, not beside it. A node card is a third of a column wide,
   // which leaves a side-by-side row about 90px for "142.0 MB / 960.0 MB" - so
   // the figure wrapped under its own label, or the label collapsed to "M.".
@@ -327,17 +347,7 @@ export function NodeMetrics({
             </dd>
             {/* Always rendered, empty when there is no figure, so every cell
                 in a row keeps the same height. */}
-            <div
-              className="mt-1 h-1 overflow-hidden rounded-full bg-border/60"
-              aria-hidden
-            >
-              {meter && (
-                <div
-                  className={cn("h-full rounded-full", BAR_TONE_CLASS[meter.tone])}
-                  style={{ width: `${Math.max(meter.fraction * 100, meter.fraction > 0 ? 2 : 0)}%` }}
-                />
-              )}
-            </div>
+            <MetricMeter meter={meter} />
           </div>
         ))}
       </dl>

@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { defaultKeyNameDisplay, type NodeBridgeRoute } from "@amnezia/contracts";
 import { messages } from "@/lib/i18n/messages";
 import type { KeyView } from "@/lib/types";
-import { CandidateRoute } from "./node-routes-editor";
+import { CandidateRoute, operatorRegistration, saveRouteAssignment } from "./node-routes-editor";
 
 const observedAt = "2026-11-18T12:00:00.000Z";
 const route: NodeBridgeRoute = {
@@ -35,6 +35,8 @@ const route: NodeBridgeRoute = {
 };
 
 const copy = messages.ru;
+const confirmLabel = "Соединение через этот маршрут проверено";
+const activateLabel = "Подтвердить и активировать";
 function render(overrides: Partial<NodeBridgeRoute> = {}, testKeys: KeyView[] = []) {
   return renderToStaticMarkup(
     <CandidateRoute
@@ -59,20 +61,29 @@ describe("CandidateRoute", () => {
   ] as const)("leads with setup when $status has no current registration marker", (registration) => {
     const html = render({ registration });
     expect(html).toContain(route.setupCommands?.dryRun);
+    expect(html).toContain(`/etc/amnezia-node/frp/${route.bridgeId}/`);
     expect(html.indexOf(copy["bridge.nodeSetup"])).toBeLessThan(html.indexOf("<details"));
     expect(html).not.toContain(copy["bridge.verifyProbe"]);
-    expect(html).not.toContain(copy["bridge.operatorSubmit"]);
+    expect(html).not.toContain(confirmLabel);
+    expect(html).not.toContain(activateLabel);
     expect(html).not.toContain(copy["bridge.activate"]);
     expect(html).toContain(copy["bridge.cancelDraft"]);
   });
 
-  it("offers the probe and manual check online and waits for valid evidence before activation", () => {
+  it("offers explicit confirmation before activation and keeps test tools collapsed", () => {
     const html = render();
-    expect(html).toContain(copy["bridge.verifyProbe"]);
-    expect(html).toContain(copy["bridge.testConfigNoKey"]);
-    expect(html).toContain(copy["bridge.operatorSubmit"]);
-    expect(html).toMatch(new RegExp('<button[^>]*disabled=""[^>]*>' + copy["bridge.activate"] + "</button>"));
+    const details = html.match(/<details[^>]*>[\s\S]*?<\/details>/)?.[0];
+    expect(html).toContain(confirmLabel);
+    expect(html).toMatch(new RegExp('<button[^>]*disabled=""[^>]*>' + activateLabel + "</button>"));
+    expect(html.indexOf(confirmLabel)).toBeLessThan(html.indexOf("<details"));
+    expect(details).toBeDefined();
+    expect(details?.split(">")[0]).not.toContain(" open");
+    expect(details).toContain(copy["bridge.verifyProbe"]);
+    expect(details).toContain(copy["bridge.testConfigNoKey"]);
+    expect(details).toContain(copy["bridge.marker"]);
+  });
 
+  it("activates already verified routes without a second confirmation", () => {
     const verified = render({
       verification: { kind: "candidate", status: "valid", method: "operator", verifiedAt: observedAt, error: null },
     });
@@ -105,5 +116,72 @@ describe("CandidateRoute", () => {
       registration: { status: "offline", marker: null, observedAt },
     });
     expect(html).toContain(copy["bridge.releaseRetiring"]);
+  });
+});
+
+describe("saveRouteAssignment", () => {
+  const verifyPath = `/api/admin/vpn-bridge-routes/${route.id}/verify`;
+  const nodePath = `/api/admin/nodes/${route.nodeId}`;
+
+  it("awaits operator evidence before activating with the previously loaded revision", async () => {
+    const verification = Promise.withResolvers<void>();
+    const request = vi.fn()
+      .mockReturnValueOnce(verification.promise)
+      .mockResolvedValueOnce({ vpnEndpoint: { changed: true } });
+
+    const assignment = saveRouteAssignment(request, route.nodeId, route.id, 17, "test-marker");
+    expect(request).toHaveBeenCalledExactlyOnceWith(verifyPath, {
+      method: "POST",
+      body: JSON.stringify({
+        method: "operator",
+        registrationMarker: "test-marker",
+        confirmHandshakeAndHttp: true,
+      }),
+    });
+
+    verification.resolve();
+    await assignment;
+    expect(request).toHaveBeenNthCalledWith(2, nodePath, {
+      method: "PATCH",
+      body: JSON.stringify({ vpnBridgeRouteId: route.id, expectedVpnEndpointRevision: 17 }),
+    });
+  });
+
+  it("keeps the assignment when the API rejects verification", async () => {
+    const error = new Error("Registration changed");
+    const request = vi.fn().mockRejectedValueOnce(error);
+    await expect(saveRouteAssignment(request, route.nodeId, route.id, 17, "old-marker")).rejects.toBe(error);
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(request).not.toHaveBeenCalledWith(nodePath, expect.anything());
+  });
+
+  it("activates an already verified route without recording operator evidence", async () => {
+    const request = vi.fn().mockResolvedValueOnce({ vpnEndpoint: { changed: true } });
+    await saveRouteAssignment(request, route.nodeId, route.id, 17);
+    expect(request).toHaveBeenCalledExactlyOnceWith(nodePath, {
+      method: "PATCH",
+      body: JSON.stringify({ vpnBridgeRouteId: route.id, expectedVpnEndpointRevision: 17 }),
+    });
+  });
+});
+
+describe("operatorRegistration", () => {
+  it("uses the current registration if the operator has no downloaded test", () => {
+    expect(operatorRegistration(route.registration, undefined, null)).toMatchObject({
+      marker: "test-marker",
+      markerMatches: true,
+    });
+  });
+
+  it.each(["old-marker", null])("keeps an outdated download (%s) separate from fresh evidence", (downloadedMarker) => {
+    expect(operatorRegistration(route.registration, downloadedMarker, null)).toMatchObject({
+      marker: downloadedMarker ?? "",
+      markerMatches: false,
+      testNeedsRefresh: true,
+    });
+    expect(operatorRegistration(route.registration, downloadedMarker, "test-marker")).toMatchObject({
+      marker: "test-marker",
+      markerMatches: true,
+    });
   });
 });

@@ -240,6 +240,7 @@ const toNodeRoute = (
     verification: routeVerification(route, registration, now, awgPath),
     setupCommands: routeSetupCommands({
       id: route.id,
+      bridgeId: bridge.id,
       publicUdpPort: route.publicUdpPort,
       bridgePublicIpv4: bridge.publicIpv4,
       bridgeControlTcpPort: bridge.controlTcpPort,
@@ -267,6 +268,9 @@ const toBridge = (
   heldPorts: routes.length,
   managementStatus: effectiveManagementStatus(row, now, staleMs),
   lastObservedAt: iso(row.lastObservedAt),
+  metrics: effectiveManagementStatus(row, now, staleMs) === "ok" && row.metrics
+    ? row.metrics
+    : undefined,
   // Enrollment state and safe metadata; the credential is never read here.
   management: {
     apiUrl: row.managementApiUrl,

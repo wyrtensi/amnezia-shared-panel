@@ -166,6 +166,26 @@ withHost("a remapped host port becomes the local port", async (h) => {
   assert.match(r.stdout, /127\.0\.0\.1:52000/);
 });
 
+withHost("different bridges on the same node keep independent credentials", async (h) => {
+  const first = "3f1c2a40-7b6d-4d2e-8a11-0c9e5b7d1a22";
+  const second = "dde64f96-6474-4e54-9f5c-da38ba17761e";
+  for (const bridge of [first, second]) {
+    const directory = join(h.etc, "amnezia-node", "frp", bridge);
+    await mkdir(directory);
+    await write(join(directory, "token"), `${TOKEN_VALUE}${bridge}\n`, 0o600);
+    await write(join(directory, "ca.crt"), "CA\n", 0o644);
+  }
+  const a = h.run(...baseArgs, "--bridge-id", first);
+  assert.equal(a.status, 0, a.stderr);
+  const b = h.run(...baseArgs, "--route-id", OTHER_ROUTE, "--bridge-ip", "198.51.100.2", "--bridge-id", second);
+  assert.equal(b.status, 0, b.stderr);
+  assert.ok((await h.readConf()).includes(`/frp/${first}/token`));
+  assert.ok((await h.readConf(OTHER_ROUTE)).includes(`/frp/${second}/ca.crt`));
+  const missing = h.run(...baseArgs, "--bridge-id", "20e66868-b34c-4c79-bc73-bffaedd3aa32", "--dry-run");
+  assert.equal(missing.status, 11, missing.stderr);
+  assert.equal(h.run(...baseArgs, "--bridge-id", "../other", "--dry-run").status, 2);
+});
+
 withHost("a loopback publication uses that loopback address", async (h) => {
   await h.flag("docker-port", "51890/udp -> 127.0.0.1:51890\n");
   const r = h.run(...baseArgs);

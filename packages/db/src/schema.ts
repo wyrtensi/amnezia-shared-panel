@@ -20,6 +20,7 @@ import {
 import type {
   BridgeAgentUpdateState,
   BridgeManagementStatus,
+  BridgeMetrics,
   BridgeRouteState,
   BridgeVerificationMethod,
   BridgeVerificationResult,
@@ -305,6 +306,7 @@ export const vpnBridges = pgTable(
     }),
     frpsVersion: text("frps_version"),
     frpsReachable: boolean("frps_reachable"),
+    metrics: jsonb("metrics").$type<BridgeMetrics>(),
     // Bounded code of the last poll problem; never upstream text or secrets.
     lastErrorCode: text("last_error_code"),
     ...timestamps,

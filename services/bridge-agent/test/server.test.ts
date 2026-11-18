@@ -117,6 +117,7 @@ describe("GET /v1/status", () => {
       apiVersion: 1,
       observedAt: "2026-11-13T12:00:00.000Z",
       frps: { reachable: true, version: "0.72.0" },
+      trafficToday: { inBytes: 0, outBytes: 0 },
       applied: { controlTcpPort: 7000, udpPortStart: 41000, udpPortEnd: 41031 },
       proxies: [{ proxyId: ROUTE, remotePort: 41000, online: true, registrationMarker: body.proxies[0]?.registrationMarker }],
       errors: [],

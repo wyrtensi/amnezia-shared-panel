@@ -85,11 +85,14 @@ Never run a pre-bridge worker with the gate on.
    some cannot.
 2. Reserve a port: `amnezia-panel bridge-route-prepare <node-id> <bridge-id> --confirm`
    (optionally `--port=<udp>`). It prints the node-host commands.
-3. Place the bridge token (0600) and bridge CA (`ca.crt`, 0644) on the node host as
-   `/etc/amnezia-node/frp/token` and `ca.crt` through a trusted channel. Run the
-   printed `install-frpc.sh ... --dry-run`, then the real command. The helper
-   detects the local AWG publication; add `--local-ip` or `--local-udp-port` only
-   when it asks. Existing nodes get the script by re-running `scripts/add-node.sh`.
+3. On an already provisioned node, copy `infra/node/scripts/install-frpc.sh`
+   from the panel's source revision to `/opt/amnezia-panel-node/scripts/install-frpc.sh`.
+   Place the bridge token (0600) and bridge CA (`ca.crt`, 0644) in
+   `/etc/amnezia-node/frp/<bridge-id>/` through a trusted channel. Run the printed
+   `install-frpc.sh ... --dry-run`, then the real command. The helper detects
+   the local AWG publication; add `--local-ip` or `--local-udp-port` only when it asks.
+   Existing FRP services keep their original credential paths. Keep the legacy
+   files in place while those services use them.
 4. Wait for the bridge-agent's next observation: `amnezia-panel bridges --json`
    shows the route `registration: online` with a registration marker.
 5. Verify with real AWG traffic, one of:
@@ -102,6 +105,9 @@ Never run a pre-bridge worker with the gate on.
    `amnezia-panel bridge-route-activate <route-id> --confirm`. A previous
    route becomes **retiring** and keeps forwarding; Direct is not a route and
    does not become retiring.
+   In the panel, if you already verified a handshake and a page load through this
+   registration, select the confirmation and activate in one step. The test
+   download and remote probe are optional tools in the route editor.
 7. Users get the new endpoint on their next download or **Refresh config**; files
    already imported keep the endpoint they were exported with.
 

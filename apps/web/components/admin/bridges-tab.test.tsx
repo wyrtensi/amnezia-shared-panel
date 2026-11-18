@@ -69,6 +69,31 @@ const render = (value: Bridge, lang: Lang = "en") =>
   );
 
 describe("BridgeCardView", () => {
+  it("shows fresh bridge metrics and distinguishes zero traffic from a missing sample", () => {
+    const current: Bridge = {
+      ...bridge,
+      managementStatus: "ok",
+      metrics: {
+        host: {
+          cpuUsedPercent: 12,
+          memoryFreeBytes: 1_024,
+          memoryTotalBytes: 2_048,
+          diskAvailableBytes: 2_048,
+          diskUsedPercent: 85,
+        },
+        trafficToday: { inBytes: 0, outBytes: 2_048 },
+        agentLatencyMs: 7,
+      },
+    };
+    expect(render(current)).toContain("Host metrics");
+    expect(render(current)).toContain("12%");
+    expect(render(current)).toContain("7 ms");
+    expect(render(current)).toContain("0 B");
+    expect(render(current)).toContain("2 KB");
+    expect(render({ ...current, metrics: undefined })).toContain("No recent metrics");
+    expect(render({ ...current, managementStatus: "stale" })).not.toContain("7 ms");
+  });
+
   it("shows address, ports, used vs free, status and each route", () => {
     const html = render(bridge);
     expect(html).toContain("Amsterdam bridge");

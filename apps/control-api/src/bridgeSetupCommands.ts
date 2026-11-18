@@ -68,6 +68,7 @@ export const bridgeSetupCommands = (
 
 export type RouteSetupInput = {
   id: string;
+  bridgeId: string;
   publicUdpPort: number;
   bridgePublicIpv4: string;
   bridgeControlTcpPort: number;
@@ -76,6 +77,7 @@ export type RouteSetupInput = {
 export const routeSetupCommands = (route: RouteSetupInput): RouteSetupCommands => {
   const args: Array<[string, string | number]> = [
     ["--route-id", route.id],
+    ["--bridge-id", route.bridgeId],
     ["--bridge-ip", route.bridgePublicIpv4],
     ["--control-port", route.bridgeControlTcpPort],
     ["--public-port", route.publicUdpPort],

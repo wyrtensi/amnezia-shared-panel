@@ -28,7 +28,11 @@ export type FrpsClientOptions = {
  * GetProxyInfoResp, ProxyStatsInfo, UDPOutConf). Only the fields the agent
  * reports are listed; zod strips the rest, so nothing else can leak through.
  */
-const serverInfoSchema = z.object({ version: z.string().min(1).max(64) });
+const serverInfoSchema = z.object({
+  version: z.string().min(1).max(64),
+  totalTrafficIn: z.int().nonnegative().optional().catch(undefined),
+  totalTrafficOut: z.int().nonnegative().optional().catch(undefined),
+});
 
 const proxySchema = z.object({
   name: z.string().min(1).max(200),
@@ -112,8 +116,8 @@ const parse = <T>(schema: z.ZodType<T>, body: unknown): T => {
   return result.data;
 };
 
-export const fetchServerVersion = async (options: FrpsClientOptions): Promise<string> =>
-  parse(serverInfoSchema, await get(options, "/api/serverinfo")).version;
+export const fetchServerInfo = async (options: FrpsClientOptions) =>
+  parse(serverInfoSchema, await get(options, "/api/serverinfo"));
 
 export const fetchUdpProxies = async (options: FrpsClientOptions): Promise<ProxyStatus[]> => {
   const { proxies } = parse(proxyListSchema, await get(options, "/api/proxy/udp"));

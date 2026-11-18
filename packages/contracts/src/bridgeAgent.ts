@@ -1,6 +1,11 @@
 import { z } from "zod";
 
-import { bridgeRegistrationMarkerSchema } from "./bridges.js";
+import {
+  bridgeHostMetricsSchema,
+  bridgeRegistrationMarkerSchema,
+  bridgeTrafficTodaySchema,
+  type BridgeMetrics,
+} from "./bridges.js";
 
 /**
  * The panel's side of the bridge-agent management API
@@ -94,6 +99,8 @@ export const bridgeAgentStatusSchema = z.object({
     udpPortStart: z.int(),
     udpPortEnd: z.int(),
   }),
+  hostMetrics: bridgeHostMetricsSchema.optional().catch(undefined),
+  trafficToday: bridgeTrafficTodaySchema.optional().catch(undefined),
   // Read per entry (`readProxies`): one unreadable entry, typically a
   // foreign or misconfigured proxy, must not make the whole status unusable.
   proxies: z.array(z.unknown()).max(4_096),
@@ -116,6 +123,9 @@ export type BridgeAgentPollOutcome =
       agentApiVersion: number;
       frpsReachable: boolean;
       frpsVersion: string | null;
+      hostMetrics?: BridgeMetrics["host"];
+      trafficToday?: BridgeMetrics["trafficToday"];
+      agentLatencyMs?: number;
       proxies: readonly BridgeAgentProxy[];
       /**
        * Proxy names of entries that were reported but could not be read.
@@ -361,6 +371,8 @@ export const classifyBridgeAgentStatus = (
     agentApiVersion: status.apiVersion,
     frpsReachable: status.frps.reachable,
     frpsVersion: status.frps.version,
+    ...(status.hostMetrics ? { hostMetrics: status.hostMetrics } : {}),
+    ...(status.trafficToday ? { trafficToday: status.trafficToday } : {}),
     // An unreachable frps reports an empty list that means "unknown"; it is
     // dropped here so no caller can mistake it for "every route is gone".
     proxies: read.proxies,

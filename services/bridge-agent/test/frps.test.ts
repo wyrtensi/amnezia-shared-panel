@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 
-import { fetchServerVersion, fetchUdpProxies, FrpsError, registrationMarker, type FrpsClientOptions } from "../src/frps.js";
+import { fetchServerInfo, fetchUdpProxies, FrpsError, registrationMarker, type FrpsClientOptions } from "../src/frps.js";
 import { fixture, startFakeFrps } from "./fakeFrps.js";
 
 const ROUTE = "awg-route-0b6f9a52-3c1d-4e7a-9b88-1f2a3c4d5e6f";
@@ -38,7 +38,7 @@ const code = async (promise: Promise<unknown>): Promise<string> => {
 describe("frps v0.72.0 responses (real captures)", () => {
   it("parses the version", async () => {
     const opts = await start({ "/api/serverinfo": { body: fixture("serverinfo-online.json") } });
-    expect(await fetchServerVersion(opts)).toBe("0.72.0");
+    expect(await fetchServerInfo(opts)).toMatchObject({ version: "0.72.0", totalTrafficIn: 0, totalTrafficOut: 0 });
   });
 
   it("parses an online UDP proxy: name, port, status, marker", async () => {
@@ -83,7 +83,7 @@ describe("frps v0.72.0 responses (real captures)", () => {
   it("sends basic auth with the dashboard credentials", async () => {
     const fake = await startFakeFrps({ "/api/serverinfo": { body: fixture("serverinfo-online.json") } });
     close = fake.close;
-    await fetchServerVersion(options(fake.baseUrl));
+    await fetchServerInfo(options(fake.baseUrl));
     expect(fake.seenAuth).toEqual([`Basic ${Buffer.from("fx:fxpass").toString("base64")}`]);
   });
 });
@@ -110,24 +110,24 @@ describe("registration marker", () => {
 describe("upstream failures", () => {
   it("401 -> FRPS_AUTH_FAILED", async () => {
     const opts = await start({ "/api/serverinfo": { body: "{}" } });
-    expect(await code(fetchServerVersion({ ...opts, password: "wrong" }))).toBe("FRPS_AUTH_FAILED");
+    expect(await code(fetchServerInfo({ ...opts, password: "wrong" }))).toBe("FRPS_AUTH_FAILED");
   });
 
   it("other non-2xx -> FRPS_HTTP_ERROR", async () => {
     const opts = await start({ "/api/serverinfo": { status: 500, body: "boom" } });
-    expect(await code(fetchServerVersion(opts))).toBe("FRPS_HTTP_ERROR");
+    expect(await code(fetchServerInfo(opts))).toBe("FRPS_HTTP_ERROR");
   });
 
   it("no answer -> FRPS_TIMEOUT", async () => {
     const opts = await start({ "/api/serverinfo": { hang: true } }, { timeoutMs: 150 });
-    expect(await code(fetchServerVersion(opts))).toBe("FRPS_TIMEOUT");
+    expect(await code(fetchServerInfo(opts))).toBe("FRPS_TIMEOUT");
   });
 
   it("nothing listening -> FRPS_UNREACHABLE", async () => {
     const fake = await startFakeFrps({});
     const base = fake.baseUrl;
     await fake.close();
-    expect(await code(fetchServerVersion(options(base)))).toBe("FRPS_UNREACHABLE");
+    expect(await code(fetchServerInfo(options(base)))).toBe("FRPS_UNREACHABLE");
   });
 
   it.each([
@@ -143,7 +143,7 @@ describe("upstream failures", () => {
 
   it("serverinfo without a version -> FRPS_MALFORMED_RESPONSE", async () => {
     const opts = await start({ "/api/serverinfo": { body: '{"bindPort": 7000}' } });
-    expect(await code(fetchServerVersion(opts))).toBe("FRPS_MALFORMED_RESPONSE");
+    expect(await code(fetchServerInfo(opts))).toBe("FRPS_MALFORMED_RESPONSE");
   });
 
   it("an oversized body is rejected as malformed", async () => {

@@ -33,11 +33,12 @@ describe("bridge setup commands", () => {
   it("builds the frpc commands without local overrides and a remove that needs only the route id", () => {
     const commands = routeSetupCommands({
       id: ROUTE_ID,
+      bridgeId: BRIDGE_ID,
       publicUdpPort: 41005,
       bridgePublicIpv4: "198.51.100.7",
       bridgeControlTcpPort: 7000,
     });
-    const base = `sudo sh /opt/amnezia-panel-node/scripts/install-frpc.sh --route-id ${ROUTE_ID} --bridge-ip 198.51.100.7 --control-port 7000 --public-port 41005`;
+    const base = `sudo sh /opt/amnezia-panel-node/scripts/install-frpc.sh --route-id ${ROUTE_ID} --bridge-id ${BRIDGE_ID} --bridge-ip 198.51.100.7 --control-port 7000 --public-port 41005`;
     expect(commands).toEqual({
       install: base,
       dryRun: `${base} --dry-run`,
@@ -61,6 +62,7 @@ describe("bridge setup commands", () => {
   it("quotes hostile values instead of letting them reach the shell", () => {
     const commands = routeSetupCommands({
       id: ROUTE_ID,
+      bridgeId: BRIDGE_ID,
       publicUdpPort: 41005,
       bridgePublicIpv4: "1.2.3.4; curl evil",
       bridgeControlTcpPort: 7000,

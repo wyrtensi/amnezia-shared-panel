@@ -2,7 +2,8 @@
 # Install (or remove) one frpc route on an AWG node host.
 #
 #   install-frpc.sh --route-id <uuid> --bridge-ip <ipv4> --control-port <tcp>
-#       --public-port <udp> [--local-udp-port <udp>] [--local-ip <ipv4>] [--dry-run]
+#       --public-port <udp> [--bridge-id <uuid>] [--local-udp-port <udp>]
+#       [--local-ip <ipv4>] [--dry-run]
 #   install-frpc.sh --remove --route-id <uuid> [--dry-run]
 #
 # One frpc process per route: unit amnezia-frpc@<route-id>.service from the
@@ -14,8 +15,9 @@
 # Secrets stay out of arguments and out of the config: the shared bridge token
 # and the bridge CA come from protected files that the operator places through a
 # trusted channel before running this script:
-#   /etc/amnezia-node/frp/token    mode 0600, owned by the running user (root)
-#   /etc/amnezia-node/frp/ca.crt   mode 0644 (not group/world writable)
+#   /etc/amnezia-node/frp/<bridge-id>/token    mode 0600, owned by root
+#   /etc/amnezia-node/frp/<bridge-id>/ca.crt   mode 0644 (not group/world writable)
+# Without --bridge-id, use the legacy single-bridge directory /etc/amnezia-node/frp.
 # The bridge's frps certificate must carry the bridge IP as a SAN: frpc verifies
 # it against ca.crt with serverName = <bridge-ip>.
 #
@@ -55,8 +57,6 @@ SYSTEMD_DIR="${AMNEZIA_SYSTEMD_DIR:-/etc/systemd/system}"
 FRP_PREFIX="${AMNEZIA_FRP_PREFIX:-/opt/amnezia-frp}"
 REGISTER_WAIT="${AMNEZIA_REGISTER_WAIT:-20}"
 SECRET_DIR="$ETC/amnezia-node/frp"
-TOKEN_FILE="$SECRET_DIR/token"
-CA_FILE="$SECRET_DIR/ca.crt"
 CONF_DIR="$ETC/amnezia-node/frpc"
 TEMPLATE_UNIT="$SYSTEMD_DIR/amnezia-frpc@.service"
 AWG_CONTAINER=amnezia-awg3
@@ -90,6 +90,7 @@ die() {
 usage_error() { die 2 E_USAGE "$*"; }
 
 ROUTE_ID=""
+BRIDGE_ID=""
 BRIDGE_IP=""
 CONTROL_PORT=""
 PUBLIC_PORT=""
@@ -102,6 +103,7 @@ need_value() { [ "$#" -ge 2 ] || usage_error "$1 needs a value"; }
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --route-id) need_value "$@"; ROUTE_ID="$2"; shift 2 ;;
+    --bridge-id) need_value "$@"; BRIDGE_ID="$2"; [ -n "$BRIDGE_ID" ] || usage_error "--bridge-id needs a UUID"; shift 2 ;;
     --bridge-ip) need_value "$@"; BRIDGE_IP="$2"; shift 2 ;;
     --control-port) need_value "$@"; CONTROL_PORT="$2"; shift 2 ;;
     --public-port) need_value "$@"; PUBLIC_PORT="$2"; shift 2 ;;
@@ -140,15 +142,21 @@ is_ipv4() {
 
 is_uuid "$ROUTE_ID" || usage_error "--route-id must be a lowercase UUID"
 if [ "$REMOVE" -eq 0 ]; then
+  if [ -n "$BRIDGE_ID" ]; then
+    is_uuid "$BRIDGE_ID" || usage_error "--bridge-id must be a lowercase UUID"
+    SECRET_DIR="$SECRET_DIR/$BRIDGE_ID"
+  fi
   is_ipv4 "$BRIDGE_IP" || usage_error "--bridge-ip must be an IPv4 address"
   is_port "$CONTROL_PORT" || usage_error "--control-port must be a TCP port (1-65535)"
   is_port "$PUBLIC_PORT" || usage_error "--public-port must be a UDP port (1-65535)"
   [ -z "$LOCAL_UDP_PORT" ] || is_port "$LOCAL_UDP_PORT" || usage_error "--local-udp-port must be a UDP port (1-65535)"
   [ -z "$LOCAL_IP" ] || is_ipv4 "$LOCAL_IP" || usage_error "--local-ip must be an IPv4 address"
 else
-  [ -z "$BRIDGE_IP$CONTROL_PORT$PUBLIC_PORT$LOCAL_UDP_PORT$LOCAL_IP" ] ||
+  [ -z "$BRIDGE_ID$BRIDGE_IP$CONTROL_PORT$PUBLIC_PORT$LOCAL_UDP_PORT$LOCAL_IP" ] ||
     usage_error "--remove takes only --route-id and --dry-run"
 fi
+TOKEN_FILE="$SECRET_DIR/token"
+CA_FILE="$SECRET_DIR/ca.crt"
 
 UNIT="amnezia-frpc@${ROUTE_ID}.service"
 CONF="$CONF_DIR/$ROUTE_ID.toml"
@@ -176,7 +184,7 @@ if [ "$REMOVE" -eq 1 ]; then
   if [ "$DRY_RUN" -eq 1 ]; then
     plan "stop and disable $UNIT (active=$active enabled=$enabled)"
     plan "remove $CONF (present=$have_conf)"
-    plan "keep the shared template, the frpc binary, $TOKEN_FILE and $CA_FILE"
+    plan "keep the shared template, the frpc binary and credentials under $SECRET_DIR"
     exit 0
   fi
   systemctl stop "$UNIT" 2>/dev/null || true

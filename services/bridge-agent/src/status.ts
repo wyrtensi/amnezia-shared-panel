@@ -1,10 +1,11 @@
-import { fetchServerVersion, fetchUdpProxies, FrpsError, type FrpsClientOptions } from "./frps.js";
+import { fetchServerInfo, fetchUdpProxies, FrpsError, type FrpsClientOptions } from "./frps.js";
 import {
   BRIDGE_API_VERSION,
   MAX_ERRORS,
   STATUS_CAPABILITY,
   UPDATE_CAPABILITY,
   type AppliedPorts,
+  type HostMetrics,
   type IdentityResponse,
   type StatusError,
   type StatusResponse,
@@ -19,6 +20,7 @@ export type AgentContext = {
   /** Present when updates are configured. */
   update?: { approvedRepository: string; spool: UpdateSpool } | null;
   now?: () => Date;
+  sampleHostMetrics?: () => Promise<HostMetrics>;
 };
 
 export const identity = (ctx: AgentContext): IdentityResponse => ({
@@ -40,10 +42,21 @@ const toError = (endpoint: string, error: unknown): StatusError =>
  * otherwise `proxies` is empty and says nothing about any registration.
  */
 export const status = async (ctx: AgentContext): Promise<StatusResponse> => {
-  const [version, proxies] = await Promise.allSettled([fetchServerVersion(ctx.frps), fetchUdpProxies(ctx.frps)]);
+  const [server, proxies, host] = await Promise.allSettled([
+    fetchServerInfo(ctx.frps),
+    fetchUdpProxies(ctx.frps),
+    ctx.sampleHostMetrics?.(),
+  ]);
   const errors: StatusError[] = [];
-  if (version.status === "rejected") errors.push(toError("serverinfo", version.reason));
+  if (server.status === "rejected") errors.push(toError("serverinfo", server.reason));
   if (proxies.status === "rejected") errors.push(toError("proxy/udp", proxies.reason));
+  const info = server.status === "fulfilled" ? server.value : null;
+  const reachable = info !== null && proxies.status === "fulfilled";
+  // Despite their name, the FRP dashboard totals are TodayCount() values.
+  const trafficToday =
+    info?.totalTrafficIn !== undefined && info.totalTrafficOut !== undefined
+      ? { inBytes: info.totalTrafficIn, outBytes: info.totalTrafficOut }
+      : undefined;
 
   return {
     bridgeId: ctx.bridgeId,
@@ -51,11 +64,13 @@ export const status = async (ctx: AgentContext): Promise<StatusResponse> => {
     apiVersion: BRIDGE_API_VERSION,
     observedAt: (ctx.now?.() ?? new Date()).toISOString(),
     frps: {
-      reachable: version.status === "fulfilled" && proxies.status === "fulfilled",
-      version: version.status === "fulfilled" ? version.value : null,
+      reachable,
+      version: info?.version ?? null,
     },
+    ...(trafficToday ? { trafficToday } : {}),
+    ...(host.status === "fulfilled" && host.value ? { hostMetrics: host.value } : {}),
     applied: { ...ctx.applied },
-    proxies: proxies.status === "fulfilled" && version.status === "fulfilled" ? proxies.value : [],
+    proxies: info && proxies.status === "fulfilled" ? proxies.value : [],
     errors: errors.slice(0, MAX_ERRORS),
   };
 };

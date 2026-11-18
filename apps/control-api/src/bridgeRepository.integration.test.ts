@@ -334,7 +334,7 @@ describe("bridge registry (real PostgreSQL)", () => {
     const nodeId = await seedNode("setup-commands");
     const { route } = await repository.prepareBridgeRoute(admin, nodeId, { bridgeId: bridge.id });
     expect(route.setupCommands?.install).toBe(
-      `sudo sh /opt/amnezia-panel-node/scripts/install-frpc.sh --route-id ${route.id} --bridge-ip ${bridge.publicIpv4} --control-port ${bridge.controlTcpPort} --public-port ${route.publicUdpPort}`,
+      `sudo sh /opt/amnezia-panel-node/scripts/install-frpc.sh --route-id ${route.id} --bridge-id ${bridge.id} --bridge-ip ${bridge.publicIpv4} --control-port ${bridge.controlTcpPort} --public-port ${route.publicUdpPort}`,
     );
     expect(route.setupCommands?.remove).toBe(
       `sudo sh /opt/amnezia-panel-node/scripts/install-frpc.sh --route-id ${route.id} --remove`,

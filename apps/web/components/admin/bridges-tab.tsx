@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import Link from "next/link";
-import { Cable, Pencil, Plus, Trash2 } from "lucide-react";
+import { ArrowDownUp, Cable, Cpu, Pencil, Plus, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import {
   BRIDGE_DEFAULT_CONTROL_TCP_PORT,
@@ -26,6 +26,16 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { CommandBlock } from "@/components/admin/command-block";
+import { NodeCardSection } from "@/components/admin/node-card-section";
+import {
+  barFraction,
+  METRIC_BAR_SCALES,
+  MetricGrid,
+  MetricMeter,
+  metricBar,
+  metricBytes,
+  type MetricRow,
+} from "@/components/admin/node-metrics";
 import { BridgeAgentUpdateFacts, UpdateAgentDialog } from "@/components/admin/bridge-agent-update";
 import { useAdminData } from "@/components/admin/admin-data";
 import type { BridgeInfra } from "@/components/admin/use-bridge-infra";
@@ -138,6 +148,8 @@ export function BridgeCardView({
           <dt className="text-muted-foreground">{t("bridge.ports")}</dt>
           <dd>{t("bridge.portsUsed", { used: bridge.heldPorts, total: bridge.capacity, free })}</dd>
         </dl>
+        <MetricMeter meter={metricBar(barFraction(bridge.heldPorts, bridge.capacity))} />
+        <BridgeMetricsView bridge={bridge} t={t} lang={lang} />
 
         <div className="space-y-1">
           <p className="text-xs font-medium text-muted-foreground">
@@ -214,6 +226,62 @@ export function BridgeCardView({
  * Presentational and free of secrets: the enrollment credential is never part
  * of the bridge payload.
  */
+function BridgeMetricsView({ bridge, t, lang }: { bridge: Bridge; t: Translate; lang: Lang }) {
+  const metrics = bridge.managementStatus === "ok" ? bridge.metrics : undefined;
+  const host = metrics?.host;
+  const traffic = metrics?.trafficToday;
+  const latency = metrics?.agentLatencyMs;
+  const rows: MetricRow[] = [];
+  if (host) {
+    rows.push(
+      [
+        t("nodes.metrics.cpu"),
+        host.cpuUsedPercent === null ? "—" : `${host.cpuUsedPercent}%`,
+        undefined,
+        metricBar(barFraction(host.cpuUsedPercent, 100)),
+      ],
+      [
+        t("bridge.metrics.freeMemory"),
+        `${metricBytes(host.memoryFreeBytes, lang)} / ${metricBytes(host.memoryTotalBytes, lang)}`,
+        undefined,
+        null,
+      ],
+      [
+        t("nodes.metrics.disk"),
+        host.diskUsedPercent == null
+          ? "—"
+          : `${host.diskUsedPercent}% (${metricBytes(host.diskAvailableBytes, lang)} ${t("nodes.metrics.free")})`,
+        undefined,
+        metricBar(barFraction(host.diskUsedPercent, 100)),
+      ],
+    );
+  }
+  if (latency !== undefined) {
+    rows.push([
+      t("nodes.metrics.agentLatency"),
+      `${latency} ms`,
+      undefined,
+      metricBar(barFraction(latency, METRIC_BAR_SCALES.agentLatencyMs)),
+    ]);
+  }
+  return (
+    <div className="space-y-2 border-t pt-2">
+      <NodeCardSection icon={Cpu}>{t("nodes.metrics.title")}</NodeCardSection>
+      {rows.length > 0 ? <MetricGrid rows={rows} /> : null}
+      {!host ? <p className="text-xs text-muted-foreground">{t("bridge.metrics.unavailable")}</p> : null}
+      {traffic ? (
+        <>
+          <NodeCardSection icon={ArrowDownUp}>{t("bridge.metrics.trafficToday")}</NodeCardSection>
+          <div className="flex flex-wrap gap-x-3 gap-y-1 text-xs tabular-nums">
+            <span><span className="text-muted-foreground">{t("bridge.metrics.trafficIn")}</span> {metricBytes(traffic.inBytes, lang)}</span>
+            <span><span className="text-muted-foreground">{t("bridge.metrics.trafficOut")}</span> {metricBytes(traffic.outBytes, lang)}</span>
+          </div>
+        </>
+      ) : null}
+    </div>
+  );
+}
+
 export function BridgeManagementView({
   bridge,
   t,

@@ -19,6 +19,7 @@ export type Config = {
   bridgeId: string;
   listen: { host: string; port: number };
   apiToken: string;
+  tokenFile: string;
   frps: {
     baseUrl: string;
     user: string;
@@ -180,6 +181,7 @@ export const loadConfig = (env: NodeJS.ProcessEnv): Config => {
     bridgeId,
     listen,
     apiToken,
+    tokenFile,
     frps: {
       baseUrl,
       ...credentials,

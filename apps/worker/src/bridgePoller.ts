@@ -146,12 +146,16 @@ export const createBridgeAgentPoll = ({
     } else if (target.apiKey === null) {
       outcome = { kind: "down", errorCode: "AGENT_CREDENTIAL_UNREADABLE" };
     } else {
+      const readingStartedAt = performance.now();
       outcome = await readBridgeAgentStatus(bridgeId, {
         baseUrl: target.apiUrl,
         apiKey: target.apiKey,
         fetchImpl,
         timeoutMs,
       });
+      if (outcome.kind === "ok") {
+        outcome.agentLatencyMs = Math.round(performance.now() - readingStartedAt);
+      }
     }
     const applied = await repository.recordPoll({
       bridgeId,

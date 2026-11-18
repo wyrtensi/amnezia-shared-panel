@@ -320,6 +320,24 @@ export const bridgeManagementSchema = z.object({
 });
 export type BridgeManagement = z.infer<typeof bridgeManagementSchema>;
 
+export const bridgeHostMetricsSchema = z.object({
+  cpuUsedPercent: z.number().min(0).max(100).nullable(),
+  memoryFreeBytes: z.int().nonnegative(),
+  memoryTotalBytes: z.int().positive(),
+  diskAvailableBytes: z.int().nonnegative().nullable().optional(),
+  diskUsedPercent: z.number().min(0).max(100).nullable().optional(),
+});
+export const bridgeTrafficTodaySchema = z.object({
+  inBytes: z.int().nonnegative(),
+  outBytes: z.int().nonnegative(),
+});
+export const bridgeMetricsSchema = z.object({
+  host: bridgeHostMetricsSchema.optional(),
+  trafficToday: bridgeTrafficTodaySchema.optional(),
+  agentLatencyMs: z.int().nonnegative().optional(),
+});
+export type BridgeMetrics = z.infer<typeof bridgeMetricsSchema>;
+
 export const bridgeSchema = z.object({
   id: z.uuid(),
   name: z.string(),
@@ -336,6 +354,7 @@ export const bridgeSchema = z.object({
   managementStatus: bridgeManagementStatusSchema,
   lastObservedAt: z.iso.datetime().nullable(),
   management: bridgeManagementSchema.optional(),
+  metrics: bridgeMetricsSchema.optional(),
   agentUpdate: bridgeAgentUpdateSummarySchema.optional(),
   routes: z.array(bridgeRouteSummarySchema),
   setupCommands: bridgeSetupCommandsSchema.optional(),

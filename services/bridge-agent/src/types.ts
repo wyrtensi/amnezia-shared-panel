@@ -42,12 +42,22 @@ export type IdentityResponse = {
   capabilities: string[];
 };
 
+export type HostMetrics = {
+  cpuUsedPercent: number | null;
+  memoryFreeBytes: number;
+  memoryTotalBytes: number;
+  diskAvailableBytes: number | null;
+  diskUsedPercent: number | null;
+};
+
 export type StatusResponse = {
   bridgeId: string;
   agentVersion: string;
   apiVersion: number;
   observedAt: string;
   frps: { reachable: boolean; version: string | null };
+  trafficToday?: { inBytes: number; outBytes: number };
+  hostMetrics?: HostMetrics;
   applied: AppliedPorts;
   proxies: ProxyStatus[];
   errors: StatusError[];
