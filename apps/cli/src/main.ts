@@ -31,7 +31,7 @@ import {
   cliInstallVideoEmbed,
   describeVideoTarget,
 } from "./installVideo.js";
-import { buildRequestHeaders } from "./http.js";
+import { buildRequestHeaders, ControlApiResponseError } from "./http.js";
 import { authHeaders } from "./identity.js";
 import {
   KEY_LIMIT_MODES,
@@ -141,7 +141,7 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
   });
   const body = await res.text();
   if (!res.ok) {
-    throw new Error(describeApiError(res.status, res.statusText, body));
+    throw responseError(res.status, res.statusText, body);
   }
   return (body ? JSON.parse(body) : undefined) as T;
 }
@@ -159,12 +159,12 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
  * it stands in for `message` here, the same fallback the web admin's own
  * apiRequest uses for the same response shape.
  */
-function describeApiError(status: number, statusText: string, body: string): string {
+function responseError(status: number, statusText: string, body: string): ControlApiResponseError {
   let parsed: unknown;
   try {
     parsed = JSON.parse(body) as unknown;
   } catch {
-    return `HTTP ${status} ${statusText} — ${body.slice(0, 400)}`;
+    return new ControlApiResponseError(`HTTP ${status} ${statusText} — ${body.slice(0, 400)}`, status);
   }
   const { error, message, issues } = (parsed ?? {}) as {
     error?: unknown;
@@ -180,14 +180,14 @@ function describeApiError(status: number, statusText: string, body: string): str
         ? firstIssue
         : undefined;
   if (!code && !detail) {
-    return `HTTP ${status} ${statusText} — ${body.slice(0, 400)}`;
+    return new ControlApiResponseError(`HTTP ${status} ${statusText} — ${body.slice(0, 400)}`, status);
   }
   const head = `${code ?? `HTTP ${status}`}: ${detail ?? statusText}`;
   const hint = bridgeErrorHint(code);
-  if (hint) return `${head}\n${hint}`;
-  return code === "QR_TOO_LARGE"
+  const detailWithHint = hint ? `${head}\n${hint}` : code === "QR_TOO_LARGE"
     ? `${head}\nThis key's route profile carries too many routes to fit a scannable code. Use --format=conf.`
     : head;
+  return new ControlApiResponseError(detailWithHint, status, code);
 }
 
 /**
@@ -203,9 +203,7 @@ async function apiRaw(
   });
   const body = Buffer.from(await res.arrayBuffer());
   if (!res.ok) {
-    throw new Error(
-      describeApiError(res.status, res.statusText, body.toString("utf8")),
-    );
+    throw responseError(res.status, res.statusText, body.toString("utf8"));
   }
   return { body, headers: res.headers };
 }

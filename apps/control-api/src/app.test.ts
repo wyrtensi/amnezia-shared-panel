@@ -1883,8 +1883,20 @@ describe("reachability probe routes", () => {
     });
     expect(response.statusCode).toBe(200);
     expect(response.json()).toEqual(reachabilityProbeView);
-    expect(service.runReachabilityNow).toHaveBeenCalledWith(actor);
+    expect(service.runReachabilityNow).toHaveBeenCalledWith(actor, false);
     expect(service.adminAction).not.toHaveBeenCalled();
+    await app.close();
+  });
+
+  it("passes a fresh-run requirement to the reachability service", async () => {
+    const { service, actor, app } = await appFor("admin");
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/admin/reachability/run?requireNew=true",
+      headers: { "x-dev-user-email": actor.email },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(service.runReachabilityNow).toHaveBeenCalledWith(actor, true);
     await app.close();
   });
 

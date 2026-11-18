@@ -21,6 +21,7 @@ import {
   noticeKindSchema,
   updateCustomRoutesRequestSchema,
   updateNodeRequestSchema,
+  reachabilityRunQuerySchema,
   upsertReachabilityProbeRequestSchema,
   createBridgeRequestSchema,
   updateBridgeRequestSchema,
@@ -508,10 +509,11 @@ export const buildApp = async ({
     await service.deleteReachabilityProbe(adminFor(request));
     return reply.code(204).send();
   });
-  // Same convention as a service check's run: 200 with the moved marker.
-  app.post("/api/admin/reachability/run", async (request) =>
-    service.runReachabilityNow(adminFor(request)),
-  );
+  app.post("/api/admin/reachability/run", async (request) => {
+    const admin = adminFor(request);
+    const { requireNew } = reachabilityRunQuerySchema.parse(request.query ?? {});
+    return service.runReachabilityNow(admin, requireNew === "true");
+  });
   app.get("/api/admin/reachability/history", async (request) => {
     const admin = adminFor(request);
     const query = reachabilityHistoryQuerySchema.parse(request.query ?? {});

@@ -6594,6 +6594,43 @@ describe("PostgresControlRepository reachability probe", () => {
     expect(row?.runRequestedAt?.toISOString()).toBe(view.runRequestedAt);
   });
 
+  runDatabaseTest("concurrent run requests keep the pending run ID", async () => {
+    if (!database) return;
+    await create();
+    const repository = subject();
+    const [first, second] = await Promise.all([
+      repository.runReachabilityNow(admin),
+      repository.runReachabilityNow(admin),
+    ]);
+
+    expect(first.requestedRunId).toBeDefined();
+    expect(second.requestedRunId).toBe(first.requestedRunId);
+    expect(second.runRequestedAt).toBe(first.runRequestedAt);
+    expect((await probeRow())?.requestedRunId).toBe(first.requestedRunId);
+  });
+
+  runDatabaseTest("a fresh run waits for the pending slot and survives later requests", async () => {
+    if (!database) return;
+    await create();
+    const repository = subject();
+    const pending = await repository.runReachabilityNow(admin);
+
+    expect(await failureOf(repository.runReachabilityNow(admin, true))).toMatchObject({
+      statusCode: 409,
+      code: "PROBE_RUN_PENDING",
+    });
+    expect((await probeRow())?.requestedRunId).toBe(pending.requestedRunId);
+
+    await database.db.update(reachabilityProbe).set({
+      currentRunId: pending.requestedRunId,
+      requestedRunId: null,
+    });
+    const fresh = await repository.runReachabilityNow(admin, true);
+    expect(fresh.requestedRunId).toBeDefined();
+    expect(fresh.requestedRunId).not.toBe(pending.requestedRunId);
+    expect((await repository.runReachabilityNow(admin)).requestedRunId).toBe(fresh.requestedRunId);
+  });
+
   runDatabaseTest("delete removes the probe and keeps results", async () => {
     if (!database) return;
     expect(

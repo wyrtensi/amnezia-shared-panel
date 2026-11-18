@@ -439,7 +439,7 @@ export const createDefaultControlApiService = ({
   upsertReachabilityProbe: (actor, request) =>
     repository.upsertReachabilityProbe(actor, request),
   deleteReachabilityProbe: (actor) => repository.deleteReachabilityProbe(actor),
-  runReachabilityNow: (actor) => repository.runReachabilityNow(actor),
+  runReachabilityNow: (actor, requireNew) => repository.runReachabilityNow(actor, requireNew),
   listReachabilityHistory: (actor, query) =>
     repository.listReachabilityHistory(actor, query),
   adminAction: (actor, resource, targetId, action, payload) =>

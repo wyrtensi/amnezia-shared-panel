@@ -2062,6 +2062,10 @@ export const adminReachabilityNodeSchema = z.object({
   protocols: z.array(adminReachabilityProtocolSchema),
 });
 
+export const reachabilityRunQuerySchema = z.object({
+  requireNew: z.enum(["true", "false"]).optional(),
+});
+
 export const adminReachabilityProbeSchema = z.object({
   label: z.string(),
   apiBaseUrl: z.string(),

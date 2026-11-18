@@ -1,6 +1,7 @@
 import { Readable } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
 import { runBridgeTlsGate } from "./bridgeTlsGate.js";
+import { ControlApiResponseError } from "./http.js";
 
 const BRIDGE = "a0000000-0000-4000-8000-000000000001";
 const ROUTE = "a0000000-0000-4000-8000-000000000002";
@@ -35,7 +36,10 @@ const baseline = JSON.stringify({
 
 const run = (responses: readonly unknown[], args: string[], snapshot = baseline) => {
   const api = vi.fn<(path: string, init?: RequestInit) => Promise<unknown>>();
-  for (const response of responses) api.mockResolvedValueOnce(response);
+  for (const response of responses) {
+    if (response instanceof Error) api.mockRejectedValueOnce(response);
+    else api.mockResolvedValueOnce(response);
+  }
   const output = vi.fn<(line: string) => void>();
   const returned = runBridgeTlsGate([BRIDGE, ...args], {
     api,
@@ -52,10 +56,28 @@ describe("bridge TLS rotation traffic gate", () => {
     await returned;
     expect(api.mock.calls.map(([path, init]) => [path, init?.method])).toEqual([
       [`/api/admin/vpn-bridges/${BRIDGE}/rotation-evidence`, undefined],
-      ["/api/admin/reachability/run", "POST"],
+      ["/api/admin/reachability/run?requireNew=true", "POST"],
       [`/api/admin/vpn-bridges/${BRIDGE}/rotation-evidence`, undefined],
     ]);
     expect(output).toHaveBeenCalledExactlyOnceWith(baseline);
+  });
+
+  it("waits for the occupied slot and verifies only its own fresh run", async () => {
+    const pending = new ControlApiResponseError("Queued", 409, "PROBE_RUN_PENDING");
+    const { api, returned } = run(
+      [evidence(), pending, evidence(), { requestedRunId: NEW }, evidence(OLD), evidence(NEW)],
+      ["verify", SINCE],
+    );
+    await returned;
+    expect(api.mock.calls.map(([, init]) => init?.method))
+      .toEqual([undefined, "POST", undefined, "POST", undefined, undefined]);
+  });
+
+  it("fails on a conflict unrelated to the pending probe run", async () => {
+    const conflict = new ControlApiResponseError("Other conflict", 409, "OTHER_CONFLICT");
+    const { api, returned } = run([evidence(), conflict], ["baseline"]);
+    await expect(returned).rejects.toBe(conflict);
+    expect(api).toHaveBeenCalledTimes(2);
   });
 
   it("disregards an older run even when it was ingested after restart and looks healthy", async () => {

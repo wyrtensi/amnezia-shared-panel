@@ -224,7 +224,7 @@ export interface ControlRepository {
     request: UpsertReachabilityProbeRequest,
   ) => Promise<ReachabilityProbeView>;
   deleteReachabilityProbe: (actor: Actor) => Promise<void>;
-  runReachabilityNow: (actor: Actor) => Promise<ReachabilityProbeView>;
+  runReachabilityNow: (actor: Actor, requireNew?: boolean) => Promise<ReachabilityProbeView>;
   listReachabilityHistory: (
     actor: Actor,
     query: ReachabilityHistoryQuery,

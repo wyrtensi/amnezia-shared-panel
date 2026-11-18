@@ -2,6 +2,7 @@ import { addAbortSignal, type Readable } from "node:stream";
 import { setTimeout } from "node:timers/promises";
 
 import type { BridgeRotationEvidence } from "@amnezia/contracts";
+import { ControlApiResponseError } from "./http.js";
 
 const USAGE = "Usage: bridge-tls-gate <bridge-id> <baseline|verify> [<since-UTC>] [--timeout-sec=180]";
 const MAX_BASELINE_BYTES = 64 * 1024;
@@ -149,16 +150,32 @@ export async function runBridgeTlsGate(args: string[], {
       await pollEvidence();
     }
     const registrations = new Map(routes.map(({ id, registration }) => [id, registration.marker]));
-    const reply = await api("/api/admin/reachability/run", { method: "POST", signal });
+    const pollRegistration = async () => {
+      const evidence = await pollEvidence();
+      const changed = routes.find(({ id, registration }) =>
+        registration?.status !== "online" || registration.marker !== registrations.get(id));
+      if (changed) throw new Error(`FRP registration changed during the probe run for route ${changed.id}`);
+      return evidence;
+    };
+
+    let reply: unknown;
+    for (;;) {
+      try {
+        reply = await api("/api/admin/reachability/run?requireNew=true", { method: "POST", signal });
+        break;
+      } catch (error) {
+        if (!(error instanceof ControlApiResponseError) ||
+          error.status !== 409 || error.code !== "PROBE_RUN_PENDING") throw error;
+        await sleep(signal);
+        await pollRegistration();
+      }
+    }
     if (!isRecord(reply) || !isUuid(reply.requestedRunId)) {
       throw new Error("The Control API cannot identify the newly requested probe run");
     }
 
     for (;;) {
-      const evidence = await pollEvidence();
-      const changed = routes.find(({ id, registration }) =>
-        registration?.status !== "online" || registration.marker !== registrations.get(id));
-      if (changed) throw new Error(`FRP registration changed during the probe run for route ${changed.id}`);
+      const evidence = await pollRegistration();
       if (evidence.latestRunId === reply.requestedRunId) {
         validateTraffic(routes, prior);
         if (routes.every((route) => isRegistered(route, since))) break;

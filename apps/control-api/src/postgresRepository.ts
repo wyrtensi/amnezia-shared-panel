@@ -3650,16 +3650,29 @@ export class PostgresControlRepository implements ControlRepository {
       });
     });
 
-  runReachabilityNow = async (actor: Actor): Promise<ReachabilityProbeView> =>
+  runReachabilityNow = async (actor: Actor, requireNew = false): Promise<ReachabilityProbeView> =>
     this.options.db.transaction(async (tx) => {
-      // A marker, not an execution: the worker starts a run on its next tick.
+      // Serialize callers with each other and the worker clearing the pending slot.
       const now = new Date();
-      const [updated] = await tx
-        .update(reachabilityProbe)
-        .set({ runRequestedAt: now, requestedRunId: randomUUID(), updatedAt: now })
+      const [probe] = await tx
+        .select()
+        .from(reachabilityProbe)
         .where(eq(reachabilityProbe.id, 1))
-        .returning();
-      if (!updated) {
+        .for("update");
+      if (!probe) {
+        throw new ApiError(404, "No reachability probe is configured", "PROBE_NOT_FOUND");
+      }
+      if (requireNew && probe.requestedRunId !== null) {
+        throw new ApiError(409, "A reachability run is already queued", "PROBE_RUN_PENDING");
+      }
+      const [queued] = probe.requestedRunId !== null
+        ? [probe]
+        : await tx
+            .update(reachabilityProbe)
+            .set({ runRequestedAt: now, requestedRunId: randomUUID(), updatedAt: now })
+            .where(eq(reachabilityProbe.id, 1))
+            .returning();
+      if (!queued) {
         throw new ApiError(404, "No reachability probe is configured", "PROBE_NOT_FOUND");
       }
       await tx.insert(auditEvents).values({
@@ -3668,9 +3681,9 @@ export class PostgresControlRepository implements ControlRepository {
         action: "admin.reachability.run",
         targetType: "reachability_probe",
         targetId: null,
-        metadata: { requestedRunId: updated.requestedRunId },
+        metadata: { requestedRunId: queued.requestedRunId },
       });
-      return this.toReachabilityProbeView(updated, now);
+      return this.toReachabilityProbeView(queued, now);
     });
 
   listReachabilityHistory = async (

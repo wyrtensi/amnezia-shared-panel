@@ -297,7 +297,7 @@ export interface ControlApiService {
    * Ask for a run on the worker's next tick. Like `runServiceCheckNow` it moves
    * a marker: the worker is the only one that talks to the probe.
    */
-  runReachabilityNow: (actor: Actor) => Promise<ReachabilityProbeView>;
+  runReachabilityNow: (actor: Actor, requireNew?: boolean) => Promise<ReachabilityProbeView>;
   listReachabilityHistory: (
     actor: Actor,
     query: ReachabilityHistoryQuery,
