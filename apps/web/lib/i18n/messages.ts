@@ -1711,8 +1711,18 @@ const ru = {
     "Установка на хосте ноды (от root на VPN-ноде)",
   "bridge.hostSetupFirst":
     "Установка на хосте моста (один раз на мост, от root на хосте моста)",
-  "bridge.hostSetupDone":
-    "Хост моста уже настроен; нужен только шаг для ноды выше.",
+  "bridge.draftRegistrationRequired":
+    "Установите или запустите frpc на VPN-ноде. Дайте мосту время увидеть регистрацию и обновите статус. После свежей регистрации можно проверить и активировать маршрут.",
+  "bridge.retiringRegistrationRequired":
+    "Для повторной активации нужна свежая регистрация. После удаления frpc на VPN-ноде обновите статус перед освобождением маршрута.",
+  "bridge.refreshRegistration":
+    "Обновить статус регистрации",
+  "bridge.routeDetails":
+    "Детали маршрута",
+  "bridge.operatorVerifyHint":
+    "Подключитесь с тестовым конфигом из клиентской сети и запишите результат проверки.",
+  "bridge.activationNeedsVerification":
+    "Завершите проверку для текущей регистрации, чтобы активировать маршрут.",
   "bridge.verifyProbe":
     "Проверить пробником",
   "bridge.probe.queued":
@@ -1721,18 +1731,20 @@ const ru = {
     "Проверка пробником уже в очереди",
   "bridge.probe.running":
     "Проверка пробником выполняется",
-  "bridge.testConfig":
-    "Тестовый конфиг",
   "bridge.testConfigNoKey":
     "Создайте свой ключ AWG 3.1 на этой ноде, чтобы скачать тестовый конфиг.",
   "bridge.testKey":
     "Тестовый ключ",
   "bridge.testDownload":
     "Скачать тестовый конфиг",
+  "bridge.testKeyIsolationHint":
+    "Используйте отдельный тестовый ключ или перед проверкой отключите другое подключение с этим ключом.",
   "bridge.testDownloaded":
     "Тестовый конфиг скачан; маркер подставлен ниже",
   "bridge.testDownloadedNoMarker":
-    "Тестовый конфиг скачан; маркер регистрации пока не замечен",
+    "В тестовом конфиге нет маркера регистрации.",
+  "bridge.testRegistrationChanged":
+    "Для тестового конфига нет актуального маркера регистрации. Скачайте конфиг заново и повторите проверку.",
   "bridge.operatorVerify":
     "Проверка оператором",
   "bridge.operatorConfirm":
@@ -1786,7 +1798,11 @@ const ru = {
   "bridge.err.BRIDGE_IPV4_CONFLICT":
     "Мост с таким IPv4 уже есть.",
   "bridge.err.BRIDGE_UNSUPPORTED_CAPABILITY":
-    "Не поддерживается: пробник недоступен (используйте проверку оператором или тестовый конфиг) либо установленный агент моста не сообщает нужную возможность.",
+    "Установленная версия агента моста не поддерживает эту операцию.",
+  "bridge.err.BRIDGE_PROBE_UNAVAILABLE":
+    "Внешний пробник не включён. Проверьте маршрут с помощью тестового конфига и запишите результат.",
+  "bridge.err.BRIDGE_PROBE_CAPABILITY_MISSING":
+    "Внешний пробник не поддерживает проверку маршрутов через мост. Проверьте маршрут с помощью тестового конфига и запишите результат.",
   "bridge.err.BRIDGE_MANAGEMENT_URL_NOT_ALLOWED":
     "Этот адрес управления не входит в разрешённые для панели.",
   "bridge.err.BRIDGE_IDENTITY_MISMATCH":
@@ -3446,8 +3462,18 @@ const en = {
     "Node host setup (run as root on the VPN node)",
   "bridge.hostSetupFirst":
     "Bridge host setup (once per bridge, as root on the bridge host)",
-  "bridge.hostSetupDone":
-    "The bridge host is already set up; only the node step above is needed.",
+  "bridge.draftRegistrationRequired":
+    "Install or start frpc on the VPN node. Give the bridge time to observe the registration, then refresh. Verify and activate the route once the registration is current.",
+  "bridge.retiringRegistrationRequired":
+    "Reactivation requires a current registration. After removing frpc from the VPN node, refresh the status before releasing the route.",
+  "bridge.refreshRegistration":
+    "Refresh registration status",
+  "bridge.routeDetails":
+    "Route details",
+  "bridge.operatorVerifyHint":
+    "Connect with the test config from a client network, then record the result.",
+  "bridge.activationNeedsVerification":
+    "Complete verification for the current registration to activate the route.",
   "bridge.verifyProbe":
     "Verify with probe",
   "bridge.probe.queued":
@@ -3456,18 +3482,20 @@ const en = {
     "A probe check is already queued",
   "bridge.probe.running":
     "A probe check is running",
-  "bridge.testConfig":
-    "Test config",
   "bridge.testConfigNoKey":
     "Create an AWG 3.1 key of your own on this node to download a test config.",
   "bridge.testKey":
     "Test key",
   "bridge.testDownload":
     "Download test config",
+  "bridge.testKeyIsolationHint":
+    "Use a separate test key, or disconnect any other profile using this key before connecting.",
   "bridge.testDownloaded":
     "Test config downloaded; the marker was filled in below",
   "bridge.testDownloadedNoMarker":
-    "Test config downloaded; no registration marker is observed yet",
+    "The test config was downloaded without a registration marker.",
+  "bridge.testRegistrationChanged":
+    "The test config has no current registration marker. Download it again and repeat the test.",
   "bridge.operatorVerify":
     "Operator verification",
   "bridge.operatorConfirm":
@@ -3521,7 +3549,11 @@ const en = {
   "bridge.err.BRIDGE_IPV4_CONFLICT":
     "A bridge with this IPv4 address already exists.",
   "bridge.err.BRIDGE_UNSUPPORTED_CAPABILITY":
-    "Not supported: the probe is unavailable (use operator verification or the test config) or the installed bridge agent does not report the needed capability.",
+    "The installed bridge agent does not support this operation.",
+  "bridge.err.BRIDGE_PROBE_UNAVAILABLE":
+    "No external probe is enabled. Verify the route with a test config and record the result.",
+  "bridge.err.BRIDGE_PROBE_CAPABILITY_MISSING":
+    "The external probe does not support bridge route checks. Verify the route with a test config and record the result.",
   "bridge.err.BRIDGE_MANAGEMENT_URL_NOT_ALLOWED":
     "That management address is not one the panel may reach.",
   "bridge.err.BRIDGE_IDENTITY_MISMATCH":

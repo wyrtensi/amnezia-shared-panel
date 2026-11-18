@@ -449,17 +449,17 @@ describe("bridge candidate validation (real PostgreSQL)", () => {
       await db().delete(reachabilityProbe);
       const probe = { method: "probe" as const };
       expect(await failureOf(capableRepository.verifyBridgeRoute(admin, route.id, probe))).toMatchObject({
-        code: "BRIDGE_UNSUPPORTED_CAPABILITY",
+        code: "BRIDGE_PROBE_UNAVAILABLE",
       });
       await seedProbe(false);
       expect(await failureOf(capableRepository.verifyBridgeRoute(admin, route.id, probe))).toMatchObject({
-        code: "BRIDGE_UNSUPPORTED_CAPABILITY",
+        code: "BRIDGE_PROBE_UNAVAILABLE",
       });
       // An enabled probe whose capability is unknown (the default lookup).
       await seedProbe(true);
       expect(await failureOf(gatedRepository.verifyBridgeRoute(admin, route.id, probe))).toMatchObject({
         statusCode: 409,
-        code: "BRIDGE_UNSUPPORTED_CAPABILITY",
+        code: "BRIDGE_PROBE_CAPABILITY_MISSING",
       });
       expect(await candidateJobs(route.id)).toHaveLength(0);
 
@@ -473,11 +473,11 @@ describe("bridge candidate validation (real PostgreSQL)", () => {
       const minutesAgo = (minutes: number) => new Date(Date.now() - minutes * 60_000);
       await store([], minutesAgo(1));
       expect(await failureOf(gatedRepository.verifyBridgeRoute(admin, route.id, probe))).toMatchObject({
-        code: "BRIDGE_UNSUPPORTED_CAPABILITY",
+        code: "BRIDGE_PROBE_CAPABILITY_MISSING",
       });
       await store(["bridge-measurement"], minutesAgo(120));
       expect(await failureOf(gatedRepository.verifyBridgeRoute(admin, route.id, probe))).toMatchObject({
-        code: "BRIDGE_UNSUPPORTED_CAPABILITY",
+        code: "BRIDGE_PROBE_CAPABILITY_MISSING",
       });
       expect(await candidateJobs(route.id)).toHaveLength(0);
       await store(["bridge-measurement"], minutesAgo(1));

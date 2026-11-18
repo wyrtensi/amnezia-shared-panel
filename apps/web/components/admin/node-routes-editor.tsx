@@ -15,6 +15,13 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Callout, Hint } from "@/components/ui/hint";
 import {
   Dialog,
@@ -43,9 +50,20 @@ import {
   bridgeEntry,
   bridgeNeedsHostSetup,
   describeBridgeError,
+  registrationTone,
+  verificationLabelKey,
+  verificationTone,
 } from "@/lib/bridge-ui";
+import { ApiClientError } from "@/lib/api";
 import { useT } from "@/lib/i18n/provider";
 import type { KeyView } from "@/lib/types";
+
+const NO_NODE = "none";
+
+type ProbeUnavailableCode =
+  | "BRIDGE_PROBE_UNAVAILABLE"
+  | "BRIDGE_PROBE_CAPABILITY_MISSING"
+  | "BRIDGE_JOBS_DISABLED";
 
 type Notice = { tone: "danger" | "success" | "warning"; text: string };
 
@@ -156,19 +174,22 @@ export function NodeRoutesEditor({ initialNodeId }: { initialNodeId: string | nu
 
         <div className="space-y-1.5">
           <Label htmlFor="route-node">{t("bridge.selectNode")}</Label>
-          <select
-            id="route-node"
-            className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm sm:max-w-sm"
+          <Select
             value={nodeId ?? ""}
-            onChange={(event) => setNodeId(event.target.value || null)}
+            onValueChange={(value) => setNodeId(value === NO_NODE ? null : value)}
           >
-            <option value="">{t("bridge.selectNodePlaceholder")}</option>
-            {nodes.map((node) => (
-              <option key={node.id} value={node.id}>
-                {node.name}
-              </option>
-            ))}
-          </select>
+            <SelectTrigger id="route-node" className="sm:max-w-sm">
+              <SelectValue placeholder={t("bridge.selectNodePlaceholder")} />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value={NO_NODE}>{t("bridge.selectNodePlaceholder")}</SelectItem>
+              {nodes.map((node) => (
+                <SelectItem key={node.id} value={node.id}>
+                  {node.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         </div>
 
         {notice ? (
@@ -196,6 +217,21 @@ export function NodeRoutesEditor({ initialNodeId }: { initialNodeId: string | nu
               onRefresh={() => nodeId && void load(nodeId)}
             />
 
+            {routes.drafts.map((route) => (
+              <CandidateRoute
+                key={route.id}
+                route={route}
+                bridge={bridges.find((bridge) => bridge.id === route.bridgeId) ?? null}
+                testKeys={testKeys}
+                busy={busy}
+                loading={loading}
+                onRefresh={() => void load(nodeId)}
+                request={request}
+                onRun={run}
+                onActivate={() => void activate(route.id)}
+              />
+            ))}
+
             {eligibility ? <EligibilityView eligibility={eligibility} /> : null}
 
             <PrepareForm
@@ -209,18 +245,6 @@ export function NodeRoutesEditor({ initialNodeId }: { initialNodeId: string | nu
               }
             />
 
-            {routes.drafts.map((route) => (
-              <CandidateRoute
-                key={route.id}
-                route={route}
-                bridge={bridges.find((bridge) => bridge.id === route.bridgeId) ?? null}
-                testKeys={testKeys}
-                busy={busy}
-                request={request}
-                onRun={run}
-                onActivate={() => void activate(route.id)}
-              />
-            ))}
             {routes.retiring.map((route) => (
               <CandidateRoute
                 key={route.id}
@@ -228,6 +252,8 @@ export function NodeRoutesEditor({ initialNodeId }: { initialNodeId: string | nu
                 bridge={bridges.find((bridge) => bridge.id === route.bridgeId) ?? null}
                 testKeys={testKeys}
                 busy={busy}
+                loading={loading}
+                onRefresh={() => void load(nodeId)}
                 request={request}
                 onRun={run}
                 onActivate={() => void activate(route.id)}
@@ -301,12 +327,10 @@ function CurrentAssignment({
 function EligibilityView({ eligibility }: { eligibility: BridgeEligibility }) {
   const { t } = useT();
   return (
-    <section className="space-y-1.5 rounded-lg border p-3">
-      <h4 className="flex items-center gap-1.5 text-sm font-semibold">
-        {t("bridge.eligibility")}
-        <Hint>{t("bridge.eligibilityHint")}</Hint>
-      </h4>
-      <ul className="grid gap-x-4 gap-y-0.5 text-xs sm:grid-cols-2">
+    <details className="rounded-lg border px-3 py-2" open={eligibility.unsupported > 0}>
+      <summary className="cursor-pointer text-sm font-medium">{t("bridge.eligibility")}</summary>
+      <p className="mt-2 text-xs text-muted-foreground">{t("bridge.eligibilityHint")}</p>
+      <ul className="mt-1.5 grid gap-x-4 gap-y-0.5 text-xs sm:grid-cols-2">
         <li>{t("bridge.elig.awg31", { count: eligibility.awg31Eligible })}</li>
         <li>{t("bridge.elig.awg20", { count: eligibility.awg20Direct })}</li>
         <li>{t("bridge.elig.awg2", { count: eligibility.awg2NativeDirect })}</li>
@@ -322,7 +346,7 @@ function EligibilityView({ eligibility }: { eligibility: BridgeEligibility }) {
           {t("bridge.elig.unsupportedIds", { ids: eligibility.unsupportedKeyIds.join(", ") })}
         </p>
       ) : null}
-    </section>
+    </details>
   );
 }
 
@@ -359,23 +383,21 @@ function PrepareForm({
         <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_10rem_auto] sm:items-end">
           <div className="space-y-1.5">
             <Label htmlFor="route-bridge">{t("bridge.chooseBridge")}</Label>
-            <select
-              id="route-bridge"
-              required
-              className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm"
-              value={bridgeId}
-              onChange={(event) => setBridgeId(event.target.value)}
-            >
-              <option value="">{t("bridge.chooseBridgePlaceholder")}</option>
-              {bridges.map((bridge) => (
-                <option key={bridge.id} value={bridge.id}>
-                  {bridge.name} · {bridge.publicIpv4} ·{" "}
-                  {t("bridge.freePorts", {
-                    free: Math.max(0, bridge.capacity - bridge.heldPorts),
-                  })}
-                </option>
-              ))}
-            </select>
+            <Select value={bridgeId} onValueChange={setBridgeId} required>
+              <SelectTrigger id="route-bridge">
+                <SelectValue placeholder={t("bridge.chooseBridgePlaceholder")} />
+              </SelectTrigger>
+              <SelectContent>
+                {bridges.map((bridge) => (
+                  <SelectItem key={bridge.id} value={bridge.id}>
+                    {bridge.name} · {bridge.publicIpv4} ·{" "}
+                    {t("bridge.freePorts", {
+                      free: Math.max(0, bridge.capacity - bridge.heldPorts),
+                    })}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </div>
           <div className="space-y-1.5">
             <Label htmlFor="route-port">{t("bridge.portOverride")}</Label>
@@ -398,41 +420,45 @@ function PrepareForm({
   );
 }
 
-function CandidateRoute({
+export function CandidateRoute({
   route,
   bridge,
   testKeys,
   busy,
+  loading,
   request,
   onRun,
   onActivate,
+  onRefresh,
 }: {
   route: NodeBridgeRoute;
   bridge: Bridge | null;
   testKeys: KeyView[];
   busy: string | null;
+  loading: boolean;
   request: Requester;
   onRun: (name: string, action: () => Promise<string | void>) => Promise<void>;
   onActivate: () => void;
+  onRefresh: () => void;
 }) {
   const { t, lang } = useT();
-  const [marker, setMarker] = React.useState("");
-  const [confirmed, setConfirmed] = React.useState(false);
-  const [keyId, setKeyId] = React.useState("");
+  const [downloadedMarker, setDownloadedMarker] = React.useState<string | null>();
+  const [markerInput, setMarkerInput] = React.useState<string | null>(null);
+  const [confirmedMarker, setConfirmedMarker] = React.useState<string | null>(null);
+  const [selectedKeyId, setSelectedKeyId] = React.useState("");
   const [releasing, setReleasing] = React.useState(false);
-  const disabled = busy !== null;
+  const [probeUnavailable, setProbeUnavailable] = React.useState<ProbeUnavailableCode | null>(null);
+  const disabled = busy !== null || loading;
   const retiring = route.state === "retiring";
-
-  // Offer the marker the bridge reported, so attesting what was observed takes
-  // no retyping; a marker taken from the test config overrides it below.
-  React.useEffect(() => {
-    if (!marker && route.observedRegistrationMarker) {
-      setMarker(route.observedRegistrationMarker);
-    }
-  }, [route.observedRegistrationMarker, marker]);
-  React.useEffect(() => {
-    if (!keyId && testKeys[0]) setKeyId(testKeys[0].id);
-  }, [testKeys, keyId]);
+  const { registration, verification } = route;
+  const registered = registration.status === "online" && Boolean(registration.marker);
+  const verified = verification.kind === "candidate" && verification.status === "valid";
+  const defaultMarker = downloadedMarker === undefined ? registration.marker : downloadedMarker;
+  const marker = markerInput ?? defaultMarker ?? "";
+  const testNeedsRefresh = downloadedMarker !== undefined && downloadedMarker !== registration.marker;
+  const confirmed = confirmedMarker === marker;
+  const canRecord = confirmed && !testNeedsRefresh && marker.trim() !== "";
+  const keyId = testKeys.find((key) => key.id === selectedKeyId)?.id ?? testKeys[0]?.id ?? "";
 
   const downloadTest = () =>
     onRun(`test-${route.id}`, async () => {
@@ -443,148 +469,215 @@ function CandidateRoute({
       link.download = config.filename;
       link.click();
       URL.revokeObjectURL(url);
-      if (config.marker) setMarker(config.marker);
+      setDownloadedMarker(config.marker);
+      setMarkerInput(null);
+      setConfirmedMarker(null);
       return config.marker ? t("bridge.testDownloaded") : t("bridge.testDownloadedNoMarker");
     });
 
+  const verifyWithProbe = () =>
+    onRun(`probe-${route.id}`, async () => {
+      setProbeUnavailable(null);
+      try {
+        const result = await verifyRouteByProbe(request, route.id);
+        if (result.method === "probe") return t(`bridge.probe.${result.status}`);
+      } catch (cause) {
+        if (
+          cause instanceof ApiClientError &&
+          (cause.code === "BRIDGE_PROBE_UNAVAILABLE" ||
+            cause.code === "BRIDGE_PROBE_CAPABILITY_MISSING" ||
+            cause.code === "BRIDGE_JOBS_DISABLED")
+        ) {
+          setProbeUnavailable(cause.code);
+          return;
+        }
+        throw cause;
+      }
+    });
+
+  const setupNeeded = !retiring && !registered;
+  const nodeSetup = route.setupCommands ? (
+    <div className="space-y-2">
+      <p className="text-xs font-medium">{t("bridge.nodeSetup")}</p>
+      <CommandBlock label={t("bridge.dryRunCommand")} command={route.setupCommands.dryRun} />
+      <CommandBlock label={t("bridge.installCommand")} command={route.setupCommands.install} />
+    </div>
+  ) : null;
+  const bridgeSetup = bridge && bridgeNeedsHostSetup(bridge) ? bridge.setupCommands : null;
+
   return (
     <section className="space-y-3 rounded-lg border p-3">
-      <h4 className="text-sm font-semibold">
-        {retiring ? t("bridge.retiringRoute") : t("bridge.candidateRoute")}
-      </h4>
-      <BridgeRouteFacts route={route} t={t} lang={lang} />
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+        <h4 className="text-sm font-semibold">
+          {retiring ? t("bridge.retiringRoute") : t("bridge.candidateRoute")}
+        </h4>
+        <span className="text-xs text-muted-foreground">{route.bridgeName}</span>
+        <span className="break-all font-mono text-xs">
+          {bridgeEntry(route.bridgePublicIpv4, route.publicUdpPort)}/udp
+        </span>
+        <Badge variant={registrationTone(registration.status)}>
+          {t(`bridge.obs.${registration.status}`)}
+        </Badge>
+        {registered ? (
+          <Badge variant={verificationTone(verification)}>{t(verificationLabelKey(verification))}</Badge>
+        ) : null}
+      </div>
 
-      {route.setupCommands ? (
+      {!registered ? (
         <div className="space-y-2">
-          <p className="text-xs font-medium">{t("bridge.nodeSetup")}</p>
-          <CommandBlock
-            label={t("bridge.dryRunCommand")}
-            command={route.setupCommands.dryRun}
-          />
-          <CommandBlock
-            label={t("bridge.installCommand")}
-            command={route.setupCommands.install}
-          />
-        </div>
-      ) : null}
-
-      {bridge && bridgeNeedsHostSetup(bridge) && bridge.setupCommands ? (
-        <div className="space-y-2">
-          <p className="text-xs font-medium">{t("bridge.hostSetupFirst")}</p>
-          <CommandBlock
-            label={t("bridge.dryRunCommand")}
-            command={bridge.setupCommands.dryRun}
-          />
-          <CommandBlock
-            label={t("bridge.installCommand")}
-            command={bridge.setupCommands.install}
-          />
+          <p className="text-sm text-muted-foreground">
+            {t(retiring ? "bridge.retiringRegistrationRequired" : "bridge.draftRegistrationRequired")}
+          </p>
+          {setupNeeded && bridgeSetup ? (
+            <div className="space-y-2">
+              <p className="text-xs font-medium">{t("bridge.hostSetupFirst")}</p>
+              <CommandBlock label={t("bridge.dryRunCommand")} command={bridgeSetup.dryRun} />
+              <CommandBlock label={t("bridge.installCommand")} command={bridgeSetup.install} />
+            </div>
+          ) : null}
+          {setupNeeded ? nodeSetup : null}
+          <Button type="button" variant="outline" size="sm" disabled={disabled} onClick={onRefresh}>
+            <RefreshCw className="h-4 w-4" /> {t("bridge.refreshRegistration")}
+          </Button>
         </div>
       ) : (
-        <p className="text-xs text-muted-foreground">{t("bridge.hostSetupDone")}</p>
-      )}
-
-      <div className="flex flex-wrap items-center gap-2">
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          disabled={disabled}
-          onClick={() =>
-            void onRun(`probe-${route.id}`, async () => {
-              const result = await verifyRouteByProbe(request, route.id);
-              if (result.method !== "probe") return;
-              return t(`bridge.probe.${result.status}`);
-            })
-          }
-        >
-          {t("bridge.verifyProbe")}
-        </Button>
-      </div>
-
-      <div className="space-y-2 rounded-md bg-muted/40 p-2">
-        <p className="text-xs font-medium">{t("bridge.testConfig")}</p>
-        {testKeys.length === 0 ? (
-          <p className="text-xs text-muted-foreground">{t("bridge.testConfigNoKey")}</p>
-        ) : (
-          <div className="flex flex-wrap items-center gap-2">
-            <select
-              aria-label={t("bridge.testKey")}
-              className="flex h-9 min-w-0 rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm"
-              value={keyId}
-              onChange={(event) => setKeyId(event.target.value)}
-            >
-              {testKeys.map((key) => (
-                <option key={key.id} value={key.id}>
-                  {key.deviceLabel || key.deviceType} · {key.id.slice(0, 8)}
-                </option>
-              ))}
-            </select>
+        <>
+          <form
+            className="space-y-2 rounded-md bg-muted/40 p-2"
+            onSubmit={(event) => {
+              event.preventDefault();
+              if (disabled || !canRecord) return;
+              void onRun(`operator-${route.id}`, async () => {
+                await verifyRouteByOperator(request, route.id, marker.trim());
+                setConfirmedMarker(null);
+                return t("bridge.operatorRecorded");
+              });
+            }}
+          >
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <p className="text-sm font-medium">{t("bridge.operatorVerify")}</p>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                disabled={disabled}
+                onClick={() => void verifyWithProbe()}
+              >
+                {t("bridge.verifyProbe")}
+              </Button>
+            </div>
+            {probeUnavailable ? (
+              <p role="status" className="text-xs text-muted-foreground">
+                {t(`bridge.err.${probeUnavailable}`)}
+              </p>
+            ) : null}
+            {!probeUnavailable || probeUnavailable === "BRIDGE_JOBS_DISABLED" ? (
+              <p className="text-xs text-muted-foreground">{t("bridge.operatorVerifyHint")}</p>
+            ) : null}
+            {testKeys.length === 0 ? (
+              <p className="text-xs text-muted-foreground">{t("bridge.testConfigNoKey")}</p>
+            ) : (
+              <div className="flex flex-wrap items-center gap-2">
+                <Select value={keyId} onValueChange={setSelectedKeyId} disabled={disabled}>
+                  <SelectTrigger aria-label={t("bridge.testKey")} className="min-w-0 sm:w-auto">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {testKeys.map((key) => (
+                      <SelectItem key={key.id} value={key.id}>
+                        {key.deviceLabel || key.deviceType} · {key.id.slice(0, 8)}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  disabled={disabled || !keyId}
+                  onClick={() => void downloadTest()}
+                >
+                  <Download className="h-4 w-4" /> {t("bridge.testDownload")}
+                </Button>
+                <p className="basis-full text-xs text-muted-foreground">{t("bridge.testKeyIsolationHint")}</p>
+              </div>
+            )}
+            {testNeedsRefresh ? (
+              <p role="status" className="text-xs text-muted-foreground">
+                {t("bridge.testRegistrationChanged")}
+              </p>
+            ) : null}
+            <div className="space-y-1.5">
+              <Label htmlFor={`marker-${route.id}`}>{t("bridge.marker")}</Label>
+              <Input
+                id={`marker-${route.id}`}
+                className="font-mono"
+                autoComplete="off"
+                value={marker}
+                onChange={(event) => {
+                  setMarkerInput(event.target.value);
+                  setConfirmedMarker(null);
+                }}
+              />
+            </div>
+            <label className="flex items-start gap-2 text-xs">
+              <Checkbox
+                checked={confirmed}
+                disabled={disabled || testNeedsRefresh}
+                onChange={(event) => setConfirmedMarker(event.target.checked ? marker : null)}
+              />
+              <span>{t("bridge.operatorConfirm")}</span>
+            </label>
             <Button
-              type="button"
+              type="submit"
               variant="outline"
               size="sm"
-              disabled={disabled || !keyId}
-              onClick={() => void downloadTest()}
+              disabled={disabled || !canRecord}
             >
-              <Download className="h-4 w-4" /> {t("bridge.testDownload")}
+              {t("bridge.operatorSubmit")}
             </Button>
+          </form>
+          <div className="flex flex-wrap items-center gap-2">
+            <Button type="button" disabled={disabled || !verified} onClick={onActivate}>
+              {t("bridge.activate")}
+            </Button>
+            {!verified ? (
+              <p className="text-xs text-muted-foreground">{t("bridge.activationNeedsVerification")}</p>
+            ) : null}
           </div>
-        )}
-      </div>
+        </>
+      )}
 
-      <form
-        className="space-y-2 rounded-md bg-muted/40 p-2"
-        onSubmit={(event) => {
-          event.preventDefault();
-          void onRun(`operator-${route.id}`, async () => {
-            await verifyRouteByOperator(request, route.id, marker.trim());
-            setConfirmed(false);
-            return t("bridge.operatorRecorded");
-          });
-        }}
-      >
-        <p className="text-xs font-medium">{t("bridge.operatorVerify")}</p>
-        <div className="space-y-1.5">
-          <Label htmlFor={`marker-${route.id}`}>{t("bridge.marker")}</Label>
-          <Input
-            id={`marker-${route.id}`}
-            className="font-mono"
-            autoComplete="off"
-            value={marker}
-            onChange={(event) => setMarker(event.target.value)}
-          />
+      <details className="rounded-md border px-2 py-1.5">
+        <summary className="cursor-pointer text-xs font-medium">{t("bridge.routeDetails")}</summary>
+        <div className="mt-2 space-y-2">
+          <BridgeRouteFacts route={route} t={t} lang={lang} />
+          {!setupNeeded ? nodeSetup : null}
+          {!retiring ? (
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              disabled={disabled}
+              onClick={() => setReleasing(true)}
+            >
+              {t("bridge.cancelDraft")}
+            </Button>
+          ) : null}
         </div>
-        <label className="flex items-start gap-2 text-xs">
-          <Checkbox
-            checked={confirmed}
-            onChange={(event) => setConfirmed(event.target.checked)}
-          />
-          <span>{t("bridge.operatorConfirm")}</span>
-        </label>
-        <Button
-          type="submit"
-          variant="outline"
-          size="sm"
-          disabled={disabled || !confirmed || marker.trim() === ""}
-        >
-          {t("bridge.operatorSubmit")}
-        </Button>
-      </form>
+      </details>
 
-      <div className="flex flex-wrap items-center gap-2">
-        <Button type="button" disabled={disabled} onClick={onActivate}>
-          {t("bridge.activate")}
-        </Button>
+      {retiring ? (
         <Button
           type="button"
           variant="outline"
+          size="sm"
           disabled={disabled}
           onClick={() => setReleasing(true)}
         >
-          {retiring ? t("bridge.releaseRetiring") : t("bridge.cancelDraft")}
+          {t("bridge.releaseRetiring")}
         </Button>
-      </div>
+      ) : null}
 
       <Dialog open={releasing} onOpenChange={setReleasing}>
         <DialogContent className="sm:max-w-lg">

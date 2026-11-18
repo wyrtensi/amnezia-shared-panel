@@ -76,13 +76,22 @@ describe("describeBridgeError", () => {
     expect(taken.refetch).toBe(false);
   });
 
-  it("explains an unavailable probe as an alternative, not a failure", () => {
+  it.each([
+    ["BRIDGE_PROBE_UNAVAILABLE", "No external probe is enabled"],
+    ["BRIDGE_PROBE_CAPABILITY_MISSING", "The external probe does not support bridge route checks"],
+  ])("explains %s and points to operator verification", (code, reason) => {
+    const result = describeBridgeError(new ApiClientError(409, code, "raw"), tEn);
+    expect(result.message).toContain(reason);
+    expect(result.message).toContain("test config");
+    expect(result.refetch).toBe(false);
+  });
+
+  it("describes an unsupported bridge agent operation independently of the probe", () => {
     const result = describeBridgeError(
       new ApiClientError(409, "BRIDGE_UNSUPPORTED_CAPABILITY", "raw"),
       tEn,
     );
-    expect(result.message).toContain("operator verification");
-    expect(result.message).toContain("test config");
+    expect(result.message).toContain("installed bridge agent");
   });
 
   it("keeps the API's own message for unknown codes and plain errors", () => {

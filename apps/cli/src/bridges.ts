@@ -405,6 +405,10 @@ const BRIDGE_ERROR_HINTS: Record<string, string> = {
     "Bridge jobs are disabled on this panel (VPN_BRIDGE_JOBS_ENABLED), so no probe check and no agent update can be queued. For a route, use --operator-verified --registration=<marker> instead.",
   BRIDGE_UNSUPPORTED_CAPABILITY:
     "No probe with the bridge-measurement capability is configured. Test the route with bridge-route-test-config, then use --operator-verified --registration=<marker>. (For bridge-enroll: the agent must speak management API v1 with the status.v1 capability. For bridge-agent-update: the installed agent does not report update.v1; update it on the host once.)",
+  BRIDGE_PROBE_UNAVAILABLE:
+    "No external probe is enabled. Test the route with bridge-route-test-config, then use --operator-verified --registration=<marker>.",
+  BRIDGE_PROBE_CAPABILITY_MISSING:
+    "The external probe has not reported bridge-measurement. Update or check the probe, or use bridge-route-test-config and --operator-verified --registration=<marker>.",
   BRIDGE_MANAGEMENT_URL_NOT_ALLOWED:
     "The panel may only reach hosts listed in VPN_BRIDGE_MANAGEMENT_HOSTS (default host.docker.internal; host:port entries pin the port). Use the forwarded address from the bridge host setup.",
   BRIDGE_IDENTITY_MISMATCH:

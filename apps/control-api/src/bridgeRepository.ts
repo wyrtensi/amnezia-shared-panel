@@ -1426,7 +1426,7 @@ export class PostgresBridgeRepository {
       throw new ApiError(
         409,
         "No enabled external probe is configured; use operator verification",
-        "BRIDGE_UNSUPPORTED_CAPABILITY",
+        "BRIDGE_PROBE_UNAVAILABLE",
       );
     }
     const supports =
@@ -1435,7 +1435,7 @@ export class PostgresBridgeRepository {
       throw new ApiError(
         409,
         "The configured probe does not report the bridge-measurement capability; use operator verification",
-        "BRIDGE_UNSUPPORTED_CAPABILITY",
+        "BRIDGE_PROBE_CAPABILITY_MISSING",
       );
     }
 
