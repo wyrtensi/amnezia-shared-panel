@@ -1,1 +1,0 @@
-ALTER TABLE "reachability_probe" ADD COLUMN "widget_sent_at" timestamp with time zone;
