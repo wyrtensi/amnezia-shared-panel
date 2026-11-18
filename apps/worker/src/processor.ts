@@ -7,6 +7,7 @@ import {
   RULES_REFRESH_JOB_TYPE,
   quotaRequestNotifyPayloadSchema,
   reachabilityNotifyPayloadSchema,
+  reachabilityWidgetPayloadSchema,
 } from "@amnezia/contracts";
 import { formatQuotaRequestMessage, type TelegramNotifier } from "./telegram.js";
 import type { AccessSyncOutcome } from "./accessReconcile.js";
@@ -151,13 +152,16 @@ export const createJobProcessor = ({
       return;
     }
     if (job.type === REACHABILITY_WIDGET_JOB_TYPE) {
-      // No payload: the widget is drawn from the state as it is now.
+      // The widget is drawn from the state as it is now; the payload only
+      // says whether a node alert came with it. A row from before the flag,
+      // or a malformed one, refreshes as a plain run.
       if (!reachabilityWidget) {
         await repository.completeJob(job.id);
         return;
       }
+      const parsed = reachabilityWidgetPayloadSchema.safeParse(job.payload);
       try {
-        await reachabilityWidget.refresh();
+        await reachabilityWidget.refresh({ notice: parsed.success && parsed.data.notice === true });
       } catch (error) {
         const reason = error instanceof Error ? error.message : "unknown error";
         log(`notify.reachability-widget: ${reason}`);

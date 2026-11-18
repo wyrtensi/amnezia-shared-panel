@@ -99,8 +99,11 @@ with the bot, so `TELEGRAM_CHAT_ID` must be a person's id for the widget to work
 - A yellow banner when the newest run failed everywhere (the combined-alert
   rule); "нет данных" with dimmed rows when the probe is stale.
 - A deleted widget message, another chat, a new label or a new widget template
-  sends a fresh widget and unpins the old one. `probe` shows the widget's last
-  update or error (`tg widget:`).
+  sends a fresh widget and unpins the old one. So does a run that sends a node
+  unavailable/back alert while the widget was sent more than a day ago (or
+  before its send time was recorded): the new widget lands below the alert.
+  Runs without an alert keep editing the old one, however old. `probe` shows
+  the widget's last update or error (`tg widget:`).
 
 ### In the user cabinet
 
