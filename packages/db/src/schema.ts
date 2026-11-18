@@ -307,6 +307,9 @@ export const vpnBridges = pgTable(
     frpsVersion: text("frps_version"),
     frpsReachable: boolean("frps_reachable"),
     metrics: jsonb("metrics").$type<BridgeMetrics>(),
+    // Optional panel DNS hostname assigned to this bridge (e.g. a per-bridge
+    // subdomain whose A record points at publicIpv4 and forwards HTTPS to the panel).
+    panelDnsHostname: text("panel_dns_hostname"),
     // Bounded code of the last poll problem; never upstream text or secrets.
     lastErrorCode: text("last_error_code"),
     ...timestamps,

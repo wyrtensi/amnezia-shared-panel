@@ -80,6 +80,20 @@ export const BRIDGE_DEFAULT_UDP_PORT_END = 41031;
 const portSchema = z.int().min(1).max(65_535);
 const bridgeNameSchema = z.string().trim().min(1).max(120);
 
+const PANEL_DNS_HOSTNAME_RE =
+  /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/;
+
+export const bridgePanelDnsHostnameSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(253)
+  .transform((value) => value.toLowerCase())
+  .refine(
+    (value) => PANEL_DNS_HOSTNAME_RE.test(value) && !IPV4_DOTTED_QUAD.test(value),
+    "Must be a valid DNS hostname (e.g. panel.example.com)",
+  );
+
 export const createBridgeRequestSchema = z
   .object({
     name: bridgeNameSchema,
@@ -87,6 +101,7 @@ export const createBridgeRequestSchema = z
     controlTcpPort: portSchema.default(BRIDGE_DEFAULT_CONTROL_TCP_PORT),
     udpPortStart: portSchema.default(BRIDGE_DEFAULT_UDP_PORT_START),
     udpPortEnd: portSchema.default(BRIDGE_DEFAULT_UDP_PORT_END),
+    panelDnsHostname: bridgePanelDnsHostnameSchema.nullable().optional(),
   })
   .refine((value) => value.udpPortStart <= value.udpPortEnd, {
     path: ["udpPortEnd"],
@@ -139,6 +154,7 @@ export const bridgeAgentApiKeySchema = z
 export const updateBridgeRequestSchema = z
   .object({
     name: bridgeNameSchema.optional(),
+    panelDnsHostname: bridgePanelDnsHostnameSchema.nullable().optional(),
     managementApiUrl: bridgeManagementApiUrlSchema.optional(),
     apiKey: bridgeAgentApiKeySchema.optional(),
   })
@@ -381,10 +397,26 @@ export const bridgeMetricsSchema = z.object({
 });
 export type BridgeMetrics = z.infer<typeof bridgeMetricsSchema>;
 
+export const BRIDGE_PANEL_DNS_STATES = [
+  "active",
+  "https_unreachable",
+  "dns_mismatch",
+  "unconfigured",
+] as const;
+export const bridgePanelDnsStateSchema = z.enum(BRIDGE_PANEL_DNS_STATES);
+export const bridgePanelDnsStatusSchema = z.object({
+  state: bridgePanelDnsStateSchema,
+  hostname: z.string().nullable(),
+  checkedAt: z.iso.datetime().nullable(),
+});
+export type BridgePanelDnsState = z.infer<typeof bridgePanelDnsStateSchema>;
+export type BridgePanelDnsStatus = z.infer<typeof bridgePanelDnsStatusSchema>;
+
 export const bridgeSchema = z.object({
   id: z.uuid(),
   name: z.string(),
   publicIpv4: z.string(),
+  panelDnsHostname: z.string().nullable().optional(),
   controlTcpPort: portSchema,
   udpPortStart: portSchema,
   udpPortEnd: portSchema,
@@ -398,6 +430,7 @@ export const bridgeSchema = z.object({
   lastObservedAt: z.iso.datetime().nullable(),
   management: bridgeManagementSchema.optional(),
   metrics: bridgeMetricsSchema.optional(),
+  panelDns: bridgePanelDnsStatusSchema.optional(),
   agentUpdate: bridgeAgentUpdateSummarySchema.optional(),
   routes: z.array(bridgeRouteSummarySchema),
   setupCommands: bridgeSetupCommandsSchema.optional(),

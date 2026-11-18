@@ -121,9 +121,35 @@ describe("BridgeCardView", () => {
   it("offers the registered IPv4 as the panel DNS target after HTTPS forwarding is set up", () => {
     const html = render({ ...bridge, publicIpv4: "203.0.113.25" });
     expect(html).toContain("IP for panel DNS");
+    expect(html).toContain("DNS inactive");
     expect(html).toContain("203.0.113.25</code>");
     expect(html).toContain('aria-label="Копировать: IP for panel DNS"');
     expect(html).toContain("after setting up HTTPS forwarding on the bridge");
+  });
+
+  it("shows active and unreachable panel DNS states with the matched hostname", () => {
+    const active = render({
+      ...bridge,
+      panelDns: {
+        state: "active",
+        hostname: "me.example.test",
+        checkedAt: "2026-11-19T00:00:00.000Z",
+      },
+    });
+    expect(active).toContain("DNS active");
+    expect(active).toContain("me.example.test");
+    expect(active).toContain("serves the panel over HTTPS");
+
+    const unreachable = render({
+      ...bridge,
+      panelDns: {
+        state: "https_unreachable",
+        hostname: "me.example.test",
+        checkedAt: "2026-11-19T00:00:00.000Z",
+      },
+    });
+    expect(unreachable).toContain("HTTPS unreachable");
+    expect(unreachable).toContain("HTTPS on port 443 is not responding");
   });
 
   it("links every route to its policy editor", () => {

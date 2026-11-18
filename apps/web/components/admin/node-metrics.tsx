@@ -178,9 +178,13 @@ export type MetricRow = [string, string, boolean | undefined, MetricBar | null, 
 export function MetricMeter({ meter }: { meter: MetricBar | null }) {
   if (!meter) return null;
   return (
-    <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-well shadow-[var(--inset-shadow)]" aria-hidden>
+    <div className="h-2 overflow-hidden rounded-full bg-well shadow-[var(--inset-shadow)]" aria-hidden>
       <div
-        className={cn("h-full rounded-full", BAR_TONE_CLASS[meter.tone])}
+        className={cn(
+          "h-full rounded-full transition-all",
+          meter.fraction > 0 && "min-w-[0.5rem]",
+          BAR_TONE_CLASS[meter.tone],
+        )}
         style={{ width: `${Math.max(meter.fraction * 100, meter.fraction > 0 ? 2 : 0)}%` }}
       />
     </div>
@@ -310,27 +314,40 @@ export function NodeMetrics({
 }
 
 export function MetricGrid({ rows }: { rows: MetricRow[] }) {
+  const showTracks = rows.some(([, , , meter]) => meter !== null);
   return (
     <div className="@container">
-      <dl className="grid grid-cols-1 gap-1.5 text-xs @min-[14rem]:grid-cols-2 @min-[27rem]:grid-cols-3">
+      <dl className="grid grid-cols-2 gap-1.5 text-xs @lg:grid-cols-3">
         {rows.map(([label, value, warn, meter, hover]) => (
           <div
             key={label}
-            className="flex min-w-0 flex-col rounded-md border border-border/60 bg-well px-2 py-1.5 shadow-[var(--inset-shadow)]"
+            className="min-w-0 rounded-md border border-border/60 bg-well px-2 py-1 shadow-[var(--inset-shadow)]"
           >
-            <dt className="break-words text-[11px] leading-tight text-muted-foreground">
+            <dt className="truncate text-[11px] leading-tight text-muted-foreground">
               {label}
             </dt>
             <dd
               className={cn(
-                "break-words font-medium leading-snug tabular-nums",
+                "truncate leading-tight tabular-nums",
                 warn && "font-medium text-destructive",
               )}
               title={hover ?? value}
             >
               {value}
             </dd>
-            {meter && <div className="mt-auto"><MetricMeter meter={meter} /></div>}
+            {showTracks ? (
+              <div
+                className="mt-1 h-1 overflow-hidden rounded-full bg-border/60"
+                aria-hidden
+              >
+                {meter && (
+                  <div
+                    className={cn("h-full rounded-full", BAR_TONE_CLASS[meter.tone])}
+                    style={{ width: `${Math.max(meter.fraction * 100, meter.fraction > 0 ? 2 : 0)}%` }}
+                  />
+                )}
+              </div>
+            ) : null}
           </div>
         ))}
       </dl>

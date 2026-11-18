@@ -76,6 +76,13 @@ const ROUTE_STATE_VARIANT = {
   retiring: "warning",
 } as const;
 
+const PANEL_DNS_VARIANT = {
+  active: "success",
+  https_unreachable: "destructive",
+  dns_mismatch: "warning",
+  unconfigured: "outline",
+} as const;
+
 /**
  * One bridge. Presentational: the container owns requests, so the card can be
  * rendered with any translator and any data.
@@ -147,17 +154,29 @@ export function BridgeCardView({
         <BridgeManagementView bridge={bridge} t={t} lang={lang} />
         <BridgeAgentUpdateFacts bridge={bridge} t={t} lang={lang} onUpdate={onUpdateAgent} />
 
-        <dl className="grid grid-cols-2 gap-x-3 gap-y-1 text-xs">
-          <dt className="text-muted-foreground">{t("bridge.controlPort")}</dt>
-          <dd className="font-mono">{bridge.controlTcpPort}/tcp</dd>
-          <dt className="text-muted-foreground">{t("bridge.udpRange")}</dt>
-          <dd className="font-mono">
-            {bridge.udpPortStart}–{bridge.udpPortEnd}/udp
-          </dd>
+        <dl className="space-y-1.5 text-xs text-muted-foreground">
+          <div className="flex items-baseline justify-between gap-3 rounded-md border border-border/60 bg-well px-2 py-1 shadow-[var(--inset-shadow)]">
+            <dt>{t("bridge.controlPort")}</dt>
+            <dd className="truncate text-right font-mono text-foreground">{bridge.controlTcpPort}/tcp</dd>
+          </div>
+          <div className="flex items-baseline justify-between gap-3 rounded-md border border-border/60 bg-well px-2 py-1 shadow-[var(--inset-shadow)]">
+            <dt>{t("bridge.udpRange")}</dt>
+            <dd className="truncate text-right font-mono text-foreground">
+              {bridge.udpPortStart}–{bridge.udpPortEnd}/udp
+            </dd>
+          </div>
         </dl>
         <div className="space-y-1.5">
-          <NodeCardSection icon={Gauge}>{t("bridge.ports")}</NodeCardSection>
-          <p className="text-xs tabular-nums">{t("bridge.portsUsed", { used: bridge.heldPorts, total: bridge.capacity, free })}</p>
+          <NodeCardSection
+            icon={Gauge}
+            action={
+              <span className="tabular text-xs font-medium">
+                {t("bridge.portsUsed", { used: bridge.heldPorts, total: bridge.capacity, free })}
+              </span>
+            }
+          >
+            {t("bridge.ports")}
+          </NodeCardSection>
           <MetricMeter meter={metricBar(barFraction(bridge.heldPorts, bridge.capacity))} />
         </div>
         <BridgeMetricsView bridge={bridge} t={t} lang={lang} />
@@ -211,13 +230,7 @@ export function BridgeCardView({
           )}
         </div>
 
-        <details className="rounded-md border px-2 py-1.5">
-          <summary className="cursor-pointer text-xs font-medium">{t("bridge.panelDnsIpv4")}</summary>
-          <div className="mt-2 space-y-1.5">
-            <CommandBlock label={t("bridge.panelDnsIpv4")} command={bridge.publicIpv4} hideLabel />
-            <p className="text-xs text-muted-foreground">{t("bridge.panelDnsIpv4Hint")}</p>
-          </div>
-        </details>
+        <BridgePanelDnsDetails bridge={bridge} t={t} />
 
         {bridge.setupCommands ? (
           <details className="rounded-md border px-2 py-1.5">
@@ -246,6 +259,49 @@ export function BridgeCardView({
   );
 }
 
+function BridgePanelDnsDetails({ bridge, t }: { bridge: Bridge; t: Translate }) {
+  const panelDns = bridge.panelDns;
+  const state = panelDns?.state ?? "unconfigured";
+  const hostname = panelDns?.hostname ?? bridge.panelDnsHostname ?? null;
+  return (
+    <details
+      className="rounded-md border px-2 py-1.5"
+      open={state === "https_unreachable" || state === "dns_mismatch"}
+    >
+      <summary className="flex cursor-pointer flex-wrap items-center justify-between gap-2 text-xs font-medium">
+        <span>{t("bridge.panelDnsIpv4")}</span>
+        <span className="flex items-center gap-1.5">
+          {hostname ? (
+            <span className="font-mono text-muted-foreground">{hostname}</span>
+          ) : null}
+          <Badge variant={PANEL_DNS_VARIANT[state]}>
+            {t(`bridge.panelDns.state.${state}`)}
+          </Badge>
+        </span>
+      </summary>
+      <div className="mt-2 space-y-1.5">
+        {hostname && state === "active" ? (
+          <p className="text-xs text-success">
+            {t("bridge.panelDns.activeHint", { hostname })}
+          </p>
+        ) : null}
+        {hostname && state === "https_unreachable" ? (
+          <Callout tone="danger" className="text-xs">
+            {t("bridge.panelDns.unreachableHint", { hostname })}
+          </Callout>
+        ) : null}
+        {hostname && state === "dns_mismatch" ? (
+          <Callout tone="warning" className="text-xs">
+            {t("bridge.panelDns.mismatchHint", { hostname })}
+          </Callout>
+        ) : null}
+        <CommandBlock label={t("bridge.panelDnsIpv4")} command={bridge.publicIpv4} hideLabel />
+        <p className="text-xs text-muted-foreground">{t("bridge.panelDnsIpv4Hint")}</p>
+      </div>
+    </details>
+  );
+}
+
 /**
  * The bridge-agent's side of the card: version, frps and the last poll.
  * Presentational and free of secrets: the enrollment credential is never part
@@ -258,6 +314,7 @@ function BridgeMetricsView({ bridge, t, lang }: { bridge: Bridge; t: Translate; 
   const latency = metrics?.agentLatencyMs;
   const rows: MetricRow[] = [];
   if (host) {
+    const memUsed = Math.max(0, host.memoryTotalBytes - host.memoryFreeBytes);
     rows.push(
       [
         t("nodes.metrics.cpu"),
@@ -269,7 +326,7 @@ function BridgeMetricsView({ bridge, t, lang }: { bridge: Bridge; t: Translate; 
         t("bridge.metrics.freeMemory"),
         `${metricBytes(host.memoryFreeBytes, lang)} / ${metricBytes(host.memoryTotalBytes, lang)}`,
         undefined,
-        null,
+        metricBar(barFraction(memUsed, host.memoryTotalBytes)),
       ],
       [
         t("nodes.metrics.disk"),
@@ -354,20 +411,28 @@ export function BridgeManagementView({
         ? t("bridge.mgmt.frpsReachable", { version: management.frpsVersion ?? "frps" })
         : t("bridge.mgmt.frpsUnreachable");
   return (
-    <dl className="grid grid-cols-2 gap-x-3 gap-y-1 text-xs">
-      <dt className="text-muted-foreground">{t("bridge.mgmt.agent")}</dt>
-      <dd className="font-mono">{management.agentVersion ?? t("bridge.unknown")}</dd>
-      <dt className="text-muted-foreground">{t("bridge.mgmt.frps")}</dt>
-      <dd>{frps}</dd>
-      <dt className="text-muted-foreground">{t("bridge.mgmt.lastOk")}</dt>
-      <dd>{when(bridge.lastObservedAt)}</dd>
-      <dt className="text-muted-foreground">{t("bridge.mgmt.lastPoll")}</dt>
-      <dd>{when(management.lastPollAttemptAt)}</dd>
+    <dl className="space-y-1.5 text-xs text-muted-foreground">
+      <div className="flex items-baseline justify-between gap-3 rounded-md border border-border/60 bg-well px-2 py-1 shadow-[var(--inset-shadow)]">
+        <dt>{t("bridge.mgmt.agent")}</dt>
+        <dd className="truncate text-right font-mono text-foreground">{management.agentVersion ?? t("bridge.unknown")}</dd>
+      </div>
+      <div className="flex items-baseline justify-between gap-3 rounded-md border border-border/60 bg-well px-2 py-1 shadow-[var(--inset-shadow)]">
+        <dt>{t("bridge.mgmt.frps")}</dt>
+        <dd className="truncate text-right text-foreground">{frps}</dd>
+      </div>
+      <div className="flex items-baseline justify-between gap-3 rounded-md border border-border/60 bg-well px-2 py-1 shadow-[var(--inset-shadow)]">
+        <dt>{t("bridge.mgmt.lastOk")}</dt>
+        <dd className="truncate text-right text-foreground">{when(bridge.lastObservedAt)}</dd>
+      </div>
+      <div className="flex items-baseline justify-between gap-3 rounded-md border border-border/60 bg-well px-2 py-1 shadow-[var(--inset-shadow)]">
+        <dt>{t("bridge.mgmt.lastPoll")}</dt>
+        <dd className="truncate text-right text-foreground">{when(management.lastPollAttemptAt)}</dd>
+      </div>
       {management.lastErrorCode ? (
-        <>
-          <dt className="text-muted-foreground">{t("bridge.mgmt.problem")}</dt>
-          <dd className="break-all font-mono text-destructive">{management.lastErrorCode}</dd>
-        </>
+        <div className="flex items-baseline justify-between gap-3 rounded-md border border-border/60 bg-well px-2 py-1 shadow-[var(--inset-shadow)]">
+          <dt>{t("bridge.mgmt.problem")}</dt>
+          <dd className="break-all text-right font-mono text-destructive">{management.lastErrorCode}</dd>
+        </div>
       ) : null}
     </dl>
   );
@@ -388,7 +453,7 @@ export function BridgesSection({ infra }: { infra: BridgeInfra }) {
   const [updating, setUpdating] = React.useState<Bridge | null>(null);
 
   return (
-    <section id={BRIDGES_ANCHOR} aria-labelledby="bridges-title" tabIndex={-1} className="@container min-w-0 scroll-mt-4 space-y-3">
+    <section id={BRIDGES_ANCHOR} aria-labelledby="bridges-title" tabIndex={-1} className="min-w-0 scroll-mt-4 space-y-3">
       <div className="flex flex-wrap items-center gap-2">
         <h3 id="bridges-title" className="mr-auto text-base font-semibold">{t("bridge.title")}</h3>
         <Button size="sm" onClick={() => setShowAdd(true)}>
@@ -410,7 +475,7 @@ export function BridgesSection({ infra }: { infra: BridgeInfra }) {
           </CardContent>
         </Card>
       ) : (
-        <div className="grid items-start gap-3 @min-[40rem]:grid-cols-2">
+        <div className="grid items-start gap-3 sm:grid-cols-2 xl:grid-cols-3">
           {infra.bridges.map((bridge) => (
             <BridgeCardView
               key={bridge.id}
@@ -468,6 +533,7 @@ function AddBridgeDialog({
   const { t } = useT();
   const [name, setName] = React.useState("");
   const [ip, setIp] = React.useState("");
+  const [panelDomain, setPanelDomain] = React.useState("");
   const [controlPort, setControlPort] = React.useState(
     String(BRIDGE_DEFAULT_CONTROL_TCP_PORT),
   );
@@ -480,6 +546,7 @@ function AddBridgeDialog({
     if (!open) return;
     setName("");
     setIp("");
+    setPanelDomain("");
     setControlPort(String(BRIDGE_DEFAULT_CONTROL_TCP_PORT));
     setUdpStart(String(BRIDGE_DEFAULT_UDP_PORT_START));
     setUdpEnd(String(BRIDGE_DEFAULT_UDP_PORT_END));
@@ -493,12 +560,14 @@ function AddBridgeDialog({
     setBusy(true);
     setError(null);
     try {
+      const trimmedDomain = panelDomain.trim();
       await createBridge(request, {
         name: name.trim(),
         publicIpv4: ip.trim(),
         controlTcpPort: Number(controlPort),
         udpPortStart: Number(udpStart),
         udpPortEnd: Number(udpEnd),
+        ...(trimmedDomain ? { panelDnsHostname: trimmedDomain } : {}),
       });
       toast.success(t("bridge.added"));
       onClose();
@@ -538,6 +607,17 @@ function AddBridgeDialog({
               placeholder="198.51.100.10"
               value={ip}
               onChange={(event) => setIp(event.target.value)}
+            />
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="bridge-panel-domain">{t("bridge.panelDnsHostname")}</Label>
+            <Input
+              id="bridge-panel-domain"
+              maxLength={253}
+              autoComplete="off"
+              placeholder={t("bridge.panelDnsHostnamePlaceholder")}
+              value={panelDomain}
+              onChange={(event) => setPanelDomain(event.target.value)}
             />
           </div>
           <details className="rounded-md border px-2 py-1.5">
@@ -613,11 +693,13 @@ function RenameBridgeDialog({
 }: DialogDeps & { bridge: Bridge | null }) {
   const { t } = useT();
   const [name, setName] = React.useState("");
+  const [panelDomain, setPanelDomain] = React.useState("");
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
 
   React.useEffect(() => {
     setName(bridge?.name ?? "");
+    setPanelDomain(bridge?.panelDnsHostname ?? bridge?.panelDns?.hostname ?? "");
     setError(null);
   }, [bridge]);
 
@@ -627,7 +709,13 @@ function RenameBridgeDialog({
     setBusy(true);
     setError(null);
     try {
-      await renameBridge(request, bridge.id, name.trim());
+      const trimmedDomain = panelDomain.trim();
+      await renameBridge(
+        request,
+        bridge.id,
+        name.trim(),
+        trimmedDomain ? trimmedDomain : null,
+      );
       toast.success(t("bridge.renamed"));
       onClose();
       await onDone();
@@ -645,13 +733,28 @@ function RenameBridgeDialog({
           <DialogTitle>{t("bridge.rename")}</DialogTitle>
         </DialogHeader>
         <form onSubmit={(event) => void submit(event)} className="space-y-3">
-          <Input
-            aria-label={t("common.name")}
-            required
-            maxLength={120}
-            value={name}
-            onChange={(event) => setName(event.target.value)}
-          />
+          <div className="space-y-1.5">
+            <Label htmlFor="bridge-edit-name">{t("common.name")}</Label>
+            <Input
+              id="bridge-edit-name"
+              aria-label={t("common.name")}
+              required
+              maxLength={120}
+              value={name}
+              onChange={(event) => setName(event.target.value)}
+            />
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="bridge-edit-domain">{t("bridge.panelDnsHostname")}</Label>
+            <Input
+              id="bridge-edit-domain"
+              maxLength={253}
+              autoComplete="off"
+              placeholder={t("bridge.panelDnsHostnamePlaceholder")}
+              value={panelDomain}
+              onChange={(event) => setPanelDomain(event.target.value)}
+            />
+          </div>
           {error ? (
             <Callout tone="danger" className="text-xs">
               {error}

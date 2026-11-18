@@ -63,21 +63,27 @@ export function BridgeAgentUpdateFacts({
           </Button>
         ) : null}
       </div>
-      <dl className="grid grid-cols-2 gap-x-3 gap-y-1 text-xs">
-        <dt className="text-muted-foreground">{t("bridge.upd.installed")}</dt>
-        <dd className="font-mono">{bridge.management.agentVersion ?? t("bridge.unknown")}</dd>
-        <dt className="text-muted-foreground">{t("bridge.upd.offered")}</dt>
-        <dd className="font-mono">{offered ? offered.version : t("bridge.upd.none")}</dd>
-        <dt className="text-muted-foreground">{t("bridge.upd.last")}</dt>
-        <dd>
-          {operation ? (
-            <Badge variant={agentUpdateTone(operation.state)}>
-              {t(`bridge.upd.state.${operation.state}`)}
-            </Badge>
-          ) : (
-            t("bridge.upd.never")
-          )}
-        </dd>
+      <dl className="space-y-1 text-xs">
+        <div className="flex items-baseline justify-between gap-3">
+          <dt className="text-muted-foreground">{t("bridge.upd.installed")}</dt>
+          <dd className="font-mono">{bridge.management.agentVersion ?? t("bridge.unknown")}</dd>
+        </div>
+        <div className="flex items-baseline justify-between gap-3">
+          <dt className="text-muted-foreground">{t("bridge.upd.offered")}</dt>
+          <dd className="font-mono">{offered ? offered.version : t("bridge.upd.none")}</dd>
+        </div>
+        <div className="flex items-baseline justify-between gap-3">
+          <dt className="text-muted-foreground">{t("bridge.upd.last")}</dt>
+          <dd className="text-right">
+            {operation ? (
+              <Badge variant={agentUpdateTone(operation.state)}>
+                {t(`bridge.upd.state.${operation.state}`)}
+              </Badge>
+            ) : (
+              t("bridge.upd.never")
+            )}
+          </dd>
+        </div>
       </dl>
       {operation ? <OperationNotes operation={operation} t={t} lang={lang} /> : null}
       {summary && !summary.updateSupported ? (

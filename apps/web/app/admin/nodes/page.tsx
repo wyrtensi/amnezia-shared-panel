@@ -240,8 +240,8 @@ function AdminNodesView() {
         </SectionLink>
       </nav>
 
-      <div className="grid items-start gap-5 @min-[58rem]:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
-        <section id={VPN_NODES_ANCHOR} aria-labelledby="vpn-nodes-title" tabIndex={-1} className="@container min-w-0 scroll-mt-4 space-y-3">
+      <div className="space-y-6">
+        <section id={VPN_NODES_ANCHOR} aria-labelledby="vpn-nodes-title" tabIndex={-1} className="min-w-0 scroll-mt-4 space-y-3">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <h3 id="vpn-nodes-title" className="text-base font-semibold">{t("nodes.section")}</h3>
             <Button size="sm" onClick={() => setShowCreate(true)}>
@@ -249,7 +249,7 @@ function AdminNodesView() {
             </Button>
           </div>
           {loading && nodes.length === 0 ? (
-            <div className="grid gap-3 @min-[40rem]:grid-cols-2">
+            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
               {[0, 1].map((index) => (
                 <Skeleton key={index} className="h-56 rounded-xl" />
               ))}
@@ -262,7 +262,7 @@ function AdminNodesView() {
               </CardContent>
             </Card>
           ) : (
-            <div className="grid items-start gap-3 @min-[40rem]:grid-cols-2 @min-[66rem]:grid-cols-3">
+            <div className="grid items-start gap-3 sm:grid-cols-2 xl:grid-cols-3">
               {nodes.map((node) => (
                 <NodeCard
                   key={node.id}
@@ -458,7 +458,7 @@ function NodeCard({
           </Tooltip>
         </div>
 
-        <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-md border border-border/60 bg-well px-2.5 py-1.5 text-xs shadow-[var(--inset-shadow)]">
           <span className="text-muted-foreground">{t("bridge.nodeRoute")}</span>
           <Badge variant={route ? "default" : "outline"} className="font-mono">
             {route === undefined
@@ -468,7 +468,7 @@ function NodeCard({
           {route ? (
             <a
               href={`#${bridgeCardAnchor(route.bridgeId)}`}
-              className="min-w-0 break-words text-primary underline-offset-2 hover:underline"
+              className="min-w-0 truncate text-primary underline-offset-2 hover:underline"
             >
               {route.bridgeName}
             </a>

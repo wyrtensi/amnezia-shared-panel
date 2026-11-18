@@ -14,7 +14,7 @@
 
 import { statSync } from "node:fs";
 import { lstat, writeFile } from "node:fs/promises";
-import type { BridgeFrpsTlsStatus } from "@amnezia/contracts";
+import type { BridgeFrpsTlsStatus, BridgePanelDnsStatus } from "@amnezia/contracts";
 
 import { resolveSecret } from "./apiKey.js";
 import { flagOf, positionals } from "./args.js";
@@ -89,6 +89,7 @@ export type BridgeView = {
   lastObservedAt: string | null;
   management?: BridgeManagementView | null;
   metrics?: { frpsTls?: BridgeFrpsTlsStatus };
+  panelDns?: BridgePanelDnsStatus;
   routes: BridgeRouteSummary[];
   setupCommands?: SetupCommands | null;
 };
@@ -326,6 +327,7 @@ export function projectBridge(b: BridgeView): Record<string, unknown> {
     lastObservedAt: nullable(b.lastObservedAt),
     management: projectManagement(b.management),
     ...(frpsTls ? { frpsTls } : {}),
+    ...(b.panelDns ? { panelDns: b.panelDns } : {}),
     routes: b.routes.map((r) => ({
       id: r.id,
       nodeId: r.nodeId,

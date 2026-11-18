@@ -393,6 +393,13 @@
       "when": 1795027059220,
       "tag": "0054_reconcile_reachability_widget_sent_at",
       "breakpoints": true
+    },
+    {
+      "idx": 56,
+      "version": "7",
+      "when": 1795037685019,
+      "tag": "0056_bridge_panel_dns_hostname",
+      "breakpoints": true
     }
   ]
 }
