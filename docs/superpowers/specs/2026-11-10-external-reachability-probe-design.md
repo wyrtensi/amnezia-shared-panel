@@ -244,20 +244,23 @@ notification in `apps/worker/src/telegram.ts`, with the label interpolated.
 ### Telegram status widget
 
 One Bot API widget message (`sendWidget`) in the same chat as the alerts
-(`TELEGRAM_CHAT_ID`), pinned silently when it is sent. After that the bot only
-changes its data (`editMessageWidgetData`); alerts stay separate messages. The
+(`TELEGRAM_CHAT_ID`), pinned silently when it is sent. After that the bot
+changes its data (`editMessageWidgetData`) and sends a new one only in the
+cases under **Stored**; alerts stay separate messages. The
 bot only sends: the widget has no buttons and makes no requests.
 
-- **Trigger.** A `notify.reachability-widget` outbox row with an empty payload,
-  queued in the ingest transaction (`…:run:<runId>`) and when the stale alert
-  opens (`…:stale:<stale opened at ISO>`). The processor builds the data from
+- **Trigger.** A `notify.reachability-widget` outbox row, queued in the ingest
+  transaction (`…:run:<runId>`) and when the stale alert opens
+  (`…:stale:<stale opened at ISO>`). Its payload is `{ notice: true }` when the
+  same run queued a node alert, else empty. The processor builds the data from
   the current database state when it runs, so a retried old row never writes
   older data over newer.
 - **Stored** on `reachability_probe`: `widget_message_id`, `widget_chat_id`,
-  `widget_version` (a hash of the HTML and caption), `widget_updated_at`,
-  `widget_last_error`. A missing message ("message with widget to edit not
-  found"), another chat or another version sends a new widget, pins it and
-  unpins the old one (best effort). "message is not modified" is a success. A
+  `widget_version` (a hash of the HTML and caption), `widget_sent_at` (set only
+  when a message is sent), `widget_updated_at`, `widget_last_error`. A missing
+  message ("message with widget to edit not found"), another chat, another
+  version, or a `notice` row while `widget_sent_at` is more than 24 h old or
+  null sends a new widget, pins it and unpins the old one (best effort). "message is not modified" is a success. A
   pin failure is logged and never resends.
 - **Content.** Heading "VPN из {label}: N из M" (N = nodes with status ok,
   M = nodes shown). One row per node with checks on and a state: dot coloured

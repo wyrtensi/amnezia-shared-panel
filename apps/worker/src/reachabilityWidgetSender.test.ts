@@ -5,6 +5,7 @@ import {
   createReachabilityWidget,
   type ReachabilityWidgetStore,
   type StoredWidget,
+  WIDGET_RESEND_AFTER_MS,
 } from "./reachabilityWidgetSender.js";
 import { TelegramApiError, type TelegramBotApi } from "./telegram.js";
 
@@ -19,6 +20,10 @@ const input: WidgetInput = {
   nodes: [],
 };
 const CURRENT = widgetVersion(widgetCaption("Testland"));
+const NOW = new Date("2026-11-18T12:00:00Z");
+const now = () => NOW;
+const FRESH = new Date("2026-11-18T06:00:00Z");
+const OLD = new Date("2026-11-17T11:59:00Z");
 
 type Call = { method: string; body: Record<string, unknown> };
 
@@ -59,19 +64,19 @@ describe("reachability widget", () => {
   it("sends, stores, then pins the first widget silently", async () => {
     const { api, calls } = fakeApi();
     const { store, saved, results } = fakeStore(null);
-    await createReachabilityWidget({ api, chatId: "chat", store }).refresh();
+    await createReachabilityWidget({ api, chatId: "chat", store, now }).refresh();
     expect(calls.map((c) => c.method)).toEqual(["sendWidget", "pinChatMessage"]);
     expect(calls[0]?.body).toMatchObject({ chat_id: "chat", caption: "VPN из Testland" });
     expect(typeof calls[0]?.body.html).toBe("string");
     expect(JSON.parse(calls[0]?.body.chat_data as string)).toMatchObject({ v: 4, l: "Testland" });
     expect(calls[1]?.body).toEqual({ chat_id: "chat", message_id: 500, disable_notification: true });
-    expect(saved).toEqual([{ messageId: 500, chatId: "chat", version: CURRENT }]);
+    expect(saved).toEqual([{ messageId: 500, chatId: "chat", version: CURRENT, sentAt: NOW }]);
     expect(results).toEqual([null]);
   });
 
   it("only edits the data of the current widget", async () => {
     const { api, calls } = fakeApi();
-    const { store, saved } = fakeStore({ messageId: 9, chatId: "chat", version: CURRENT });
+    const { store, saved } = fakeStore({ messageId: 9, chatId: "chat", version: CURRENT, sentAt: FRESH });
     await createReachabilityWidget({ api, chatId: "chat", store }).refresh();
     expect(calls.map((c) => c.method)).toEqual(["editMessageWidgetData"]);
     expect(calls[0]?.body).toMatchObject({ chat_id: "chat", message_id: 9 });
@@ -82,7 +87,7 @@ describe("reachability widget", () => {
     const { api, calls } = fakeApi({
       editMessageWidgetData: [refusal("editMessageWidgetData", "message is not modified")],
     });
-    const { store, results } = fakeStore({ messageId: 9, chatId: "chat", version: CURRENT });
+    const { store, results } = fakeStore({ messageId: 9, chatId: "chat", version: CURRENT, sentAt: FRESH });
     await createReachabilityWidget({ api, chatId: "chat", store }).refresh();
     expect(calls).toHaveLength(1);
     expect(results).toEqual([null]);
@@ -94,7 +99,7 @@ describe("reachability widget", () => {
         refusal("editMessageWidgetData", "message with widget to edit not found"),
       ],
     });
-    const { store, saved } = fakeStore({ messageId: 9, chatId: "chat", version: CURRENT });
+    const { store, saved } = fakeStore({ messageId: 9, chatId: "chat", version: CURRENT, sentAt: FRESH });
     await createReachabilityWidget({ api, chatId: "chat", store }).refresh();
     expect(calls.map((c) => c.method)).toEqual([
       "editMessageWidgetData",
@@ -108,8 +113,8 @@ describe("reachability widget", () => {
 
   it("sends a new widget for a new template or another chat, without editing", async () => {
     for (const widget of [
-      { messageId: 9, chatId: "chat", version: "old-version" },
-      { messageId: 9, chatId: "other-chat", version: CURRENT },
+      { messageId: 9, chatId: "chat", version: "old-version", sentAt: FRESH },
+      { messageId: 9, chatId: "other-chat", version: CURRENT, sentAt: FRESH },
     ]) {
       const { api, calls } = fakeApi();
       const { store } = fakeStore(widget);
@@ -134,11 +139,63 @@ describe("reachability widget", () => {
 
   it("records and rethrows any other refusal, so the job retries", async () => {
     const { api } = fakeApi({ editMessageWidgetData: [refusal("editMessageWidgetData", "chat not found")] });
-    const { store, results } = fakeStore({ messageId: 9, chatId: "chat", version: CURRENT });
+    const { store, results } = fakeStore({ messageId: 9, chatId: "chat", version: CURRENT, sentAt: FRESH });
     await expect(createReachabilityWidget({ api, chatId: "chat", store }).refresh()).rejects.toThrow(
       "chat not found",
     );
     expect(results[0]).toContain("chat not found");
+  });
+
+  describe("after a node alert", () => {
+    const stored = (sentAt: Date | null): StoredWidget => ({
+      messageId: 9,
+      chatId: "chat",
+      version: CURRENT,
+      sentAt,
+    });
+
+    it("sends a new widget when the current one is older than a day", async () => {
+      const { api, calls } = fakeApi();
+      const { store, saved } = fakeStore(stored(OLD));
+      await createReachabilityWidget({ api, chatId: "chat", store, now }).refresh({ notice: true });
+      expect(calls.map((c) => c.method)).toEqual(["sendWidget", "pinChatMessage", "unpinChatMessage"]);
+      expect(calls[2]?.body).toEqual({ chat_id: "chat", message_id: 9 });
+      expect(saved).toEqual([{ messageId: 500, chatId: "chat", version: CURRENT, sentAt: NOW }]);
+    });
+
+    it("treats a widget without a send time as old", async () => {
+      const { api, calls } = fakeApi();
+      const { store } = fakeStore(stored(null));
+      await createReachabilityWidget({ api, chatId: "chat", store, now }).refresh({ notice: true });
+      expect(calls[0]?.method).toBe("sendWidget");
+    });
+
+    it("only edits a widget sent within the day", async () => {
+      const { api, calls } = fakeApi();
+      const { store, saved } = fakeStore(stored(FRESH));
+      await createReachabilityWidget({ api, chatId: "chat", store, now }).refresh({ notice: true });
+      expect(calls.map((c) => c.method)).toEqual(["editMessageWidgetData"]);
+      expect(saved).toEqual([]);
+    });
+
+    it("edits at exactly one day", async () => {
+      const { api, calls } = fakeApi();
+      const { store } = fakeStore(stored(new Date(NOW.getTime() - WIDGET_RESEND_AFTER_MS)));
+      await createReachabilityWidget({ api, chatId: "chat", store, now }).refresh({ notice: true });
+      expect(calls.map((c) => c.method)).toEqual(["editMessageWidgetData"]);
+    });
+  });
+
+  it("only edits an old widget when no alert came with the run", async () => {
+    for (const sentAt of [OLD, null]) {
+      const { api, calls } = fakeApi();
+      const { store, saved } = fakeStore({ messageId: 9, chatId: "chat", version: CURRENT, sentAt });
+      const widget = createReachabilityWidget({ api, chatId: "chat", store, now });
+      await widget.refresh();
+      await widget.refresh({ notice: false });
+      expect(calls.map((c) => c.method)).toEqual(["editMessageWidgetData", "editMessageWidgetData"]);
+      expect(saved).toEqual([]);
+    }
   });
 
   it("does nothing without an enabled probe", async () => {
