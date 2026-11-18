@@ -78,6 +78,20 @@ describe("database schema", () => {
     expect(columns.showNodeAddress.notNull).toBe(true);
     expect(columns.showNodeAddress.default).toBe(false);
   });
+
+  it("keeps user bridge routing off by default and keys inheriting policy", () => {
+    const policyCols = getTableColumns(portalPolicy);
+    expect(policyCols.useBridge.name).toBe("use_bridge");
+    expect(policyCols.useBridge.notNull).toBe(true);
+    expect(policyCols.useBridge.default).toBe(false);
+
+    const keyCols = getTableColumns(vpnKeys);
+    expect(keyCols.bridgeMode.name).toBe("bridge_mode");
+    expect(keyCols.bridgeMode.notNull).toBe(true);
+    expect(keyCols.bridgeMode.default).toBe("inherit");
+    expect(keyCols.vpnBridgeRouteId.name).toBe("vpn_bridge_route_id");
+    expect(keyCols.vpnBridgeRouteId.notNull).toBe(false);
+  });
 });
 
 // The DB enum used to be a hand-kept second copy of the contract's list. That

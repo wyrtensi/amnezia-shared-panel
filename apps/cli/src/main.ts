@@ -117,7 +117,7 @@ import {
   BRIDGE_USAGE_LINES,
   bridgeErrorHint,
 } from "./bridges.js";
-import type { AdminReachabilityView } from "@amnezia/contracts";
+import type { AdminReachabilityView, KeyBridgeInfo } from "@amnezia/contracts";
 import {
   buildProbeUpsert,
   probeSummaryLines,
@@ -261,6 +261,7 @@ type AdminKey = {
   deviceLabel: string;
   /** Operator-only note; served on /api/admin/keys and nowhere else. */
   internalName?: string | null;
+  bridge?: KeyBridgeInfo;
   deviceType?: string;
   routeProfile: string;
   online?: boolean;
@@ -529,6 +530,11 @@ async function cmdKeys(args: string[]): Promise<void> {
         owner: emailById.get(key.ownerId) ?? key.ownerId.slice(0, 8),
         state: key.state,
         proto: key.protocol,
+        bridge: key.bridge?.effective
+          ? `${key.bridge.effective.bridgeName} (${key.bridge.effective.publicIpv4}:${key.bridge.effective.publicUdpPort})`
+          : key.bridge?.mode === "direct"
+            ? "direct (pinned)"
+            : "—",
         online: key.online ? "yes" : "no",
         traffic: key.traffic
           ? bytes(
@@ -548,6 +554,7 @@ async function cmdKeys(args: string[]): Promise<void> {
         "owner",
         "state",
         "proto",
+        "bridge",
         "online",
         "traffic",
       ],
@@ -1427,6 +1434,7 @@ async function cmdCfDomains(args: string[]): Promise<void> {
 const POLICY_BOOL_FIELDS = [
   "allowKeyCreation",
   "allowNodeSelection",
+  "useBridge",
   "allowRouteProfileSelection",
   "allowCustomRoutes",
   "allowConfigRedownload",
@@ -2153,7 +2161,7 @@ async function cmdUserRoutes(args: string[]): Promise<void> {
 async function cmdUserCreateKey(args: string[]): Promise<void> {
   const pos = positionals(args);
   const usage =
-    `Usage: user-create-key <id|email> --node=<uuid> [--device=<label>] [--protocol=awg3|awg2] [--route=full_tunnel|ru_blacklist] [${deviceTypeUsage()}] [--name-server=true|false] [--name-label=true|false] [--name-number=true|false]\n  --device-type=ios with a --route other than full_tunnel is warned about: route profiles do not filter on iPhone or iPad.\n  A --route other than full_tunnel produces a file-only key: its vpn:// text is too long for a QR code or a clipboard paste, so hand it over with key-config --format=vpn --save.`;
+    `Usage: user-create-key <id|email> --node=<uuid> [--device=<label>] [--protocol=awg3|awg2] [--route=full_tunnel|ru_blacklist] [--bridge=inherit|direct|route] [--bridge-route=<route-uuid>] [${deviceTypeUsage()}] [--name-server=true|false] [--name-label=true|false] [--name-number=true|false]\n  --device-type=ios with a --route other than full_tunnel is warned about: route profiles do not filter on iPhone or iPad.\n  A --route other than full_tunnel produces a file-only key: its vpn:// text is too long for a QR code or a clipboard paste, so hand it over with key-config --format=vpn --save.`;
   const id = await resolveUserId(pos[0], usage);
   const nodeId = flagOf(args, "node");
   if (!nodeId) throw new Error(usage);
@@ -2176,6 +2184,10 @@ async function cmdUserCreateKey(args: string[]): Promise<void> {
   if (device) body.deviceLabel = device;
   const route = flagOf(args, "route");
   if (route) body.routeProfile = route;
+  const bridgeRoute = flagOf(args, "bridge-route");
+  const bridge = flagOf(args, "bridge") ?? (bridgeRoute ? "route" : undefined);
+  if (bridge) body.bridgeMode = bridge;
+  if (bridgeRoute) body.vpnBridgeRouteId = bridgeRoute;
   const deviceType = flagOf(args, "device-type");
   if (deviceType) body.deviceType = parseDeviceType(deviceType);
   // A warning, not a refusal — see the plan's D9. The create-key wizard used
@@ -2824,7 +2836,7 @@ Write:
                                           as one line (--json = the raw status object)
 
 policy-set fields:
-  Booleans (true/false): allowKeyCreation, allowNodeSelection,
+  Booleans (true/false): allowKeyCreation, allowNodeSelection, useBridge,
     allowRouteProfileSelection, allowCustomRoutes, allowConfigRedownload,
     allowQrDownload, allowConfDownload, allowSelfRevoke,
     autoPurgeOffboardedUsers, showPublicKey, showLastUsed, showTraffic,

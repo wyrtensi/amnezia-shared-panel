@@ -1,3 +1,4 @@
+import type { KeyBridgeInfo, KeyBridgeMode } from "@amnezia/contracts";
 import {
   AwgEndpointRenderError,
   inspectAwgVpnLink,
@@ -5,6 +6,54 @@ import {
   type AwgEndpoint,
 } from "@amnezia/vpn-config";
 import { ApiError } from "./service.js";
+
+/** One held bridge route resolved with its bridge's public metadata. */
+export type KeyBridgeRouteRecord = {
+  routeId: string;
+  bridgeId: string;
+  bridgeName: string;
+  publicIpv4: string;
+  publicUdpPort: number;
+};
+
+/**
+ * Single source of truth for how a key routes through bridges. Used by config
+ * export (`findKeyConfig`) and by the admin key projections (`adminList`,
+ * `listKeys` for admins) so the admin badge and exported endpoint never drift.
+ */
+export const resolveKeyBridgeInfo = ({
+  protocol,
+  bridgeMode,
+  pinnedRouteId,
+  pinnedRoute,
+  activeRoute,
+  useBridge,
+}: {
+  protocol: "awg2" | "awg3";
+  bridgeMode: KeyBridgeMode;
+  pinnedRouteId: string | null;
+  pinnedRoute: KeyBridgeRouteRecord | null;
+  activeRoute: KeyBridgeRouteRecord | null;
+  useBridge: boolean;
+}): KeyBridgeInfo => {
+  const mode: KeyBridgeMode = bridgeMode;
+  const routeId = mode === "route" ? pinnedRouteId : null;
+  if (protocol !== "awg3" || mode === "direct") {
+    return { mode, routeId, effective: null };
+  }
+  if (mode === "route") {
+    return {
+      mode,
+      routeId,
+      effective: pinnedRoute ? { ...pinnedRoute, source: "key" } : null,
+    };
+  }
+  return {
+    mode,
+    routeId,
+    effective: useBridge && activeRoute ? { ...activeRoute, source: "policy" } : null,
+  };
+};
 
 /** Documentation address (RFC 5737) used for trial renders only. */
 const TRIAL_ENDPOINT: AwgEndpoint = { host: "192.0.2.1", port: 41000 };

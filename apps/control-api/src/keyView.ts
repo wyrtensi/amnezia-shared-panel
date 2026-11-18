@@ -1,4 +1,9 @@
-import type { PortalPolicy, RouteProfile, UserNodeReachability } from "@amnezia/contracts";
+import type {
+  KeyBridgeInfo,
+  PortalPolicy,
+  RouteProfile,
+  UserNodeReachability,
+} from "@amnezia/contracts";
 import type { Actor, KeyView } from "./service.js";
 
 /**
@@ -71,6 +76,19 @@ export const internalNameFor = (
     : {};
 
 /**
+ * Same server-side gate as `internalNameFor`: bridge host/route metadata is
+ * operational information shown only to an administrator viewing their own key.
+ */
+export const bridgeInfoFor = (
+  actor: Pick<Actor, "id" | "role">,
+  key: Pick<KeyRow, "ownerId">,
+  bridge: KeyBridgeInfo | undefined,
+): { bridge?: KeyBridgeInfo } =>
+  actor.role === "admin" && key.ownerId === actor.id && bridge
+    ? { bridge }
+    : {};
+
+/**
  * The owner-facing view of one key, as `/api/keys` returns it.
  *
  * Extracted from `listKeys` so the projection — and above all the gate on the
@@ -84,6 +102,7 @@ export const toKeyView = ({
   policy,
   activeByProfile,
   nodeReachability,
+  bridge,
 }: {
   actor: Pick<Actor, "id" | "role">;
   key: KeyRow;
@@ -93,6 +112,8 @@ export const toKeyView = ({
   activeByProfile: Map<string, string>;
   /** The key's server verdict; undefined when the policy hides node status. */
   nodeReachability?: UserNodeReachability;
+  /** Admin-only bridge routing summary; omitted for regular users. */
+  bridge?: KeyBridgeInfo;
 }): KeyView => ({
   id: key.id,
   ownerId: key.ownerId,
@@ -110,6 +131,7 @@ export const toKeyView = ({
   deviceLabel: key.deviceLabel,
   keyNumber: key.keyNumber,
   ...internalNameFor(actor, key),
+  ...bridgeInfoFor(actor, key, bridge),
   nameDisplay: {
     server: key.nameShowNode,
     label: key.nameShowLabel,
