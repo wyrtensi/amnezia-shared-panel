@@ -35,8 +35,8 @@ const NOT_MODIFIED = /message is not modified/i;
 
 /**
  * After a node alert, a widget older than this is sent again rather than
- * edited: a fresh message lands below the alert, and an old widget once
- * stopped drawing about a week after it was sent (cause unknown).
+ * edited, so it stays near the newest messages; an old widget once stopped
+ * drawing about a week after it was sent (cause unknown).
  */
 export const WIDGET_RESEND_AFTER_MS = 24 * 60 * 60 * 1_000;
 

@@ -81,8 +81,8 @@ Telegram, through the same chat as the quota-request notification
 
 The same bot keeps **one** widget message (Bot API `sendWidget`) in the same
 chat, pinned silently when it is sent. After each ingested run, and when the
-probe goes stale, the worker only changes its data (`editMessageWidgetData`); no
-new messages. Production Telegram shows widgets only in the **private chat**
+probe goes stale, the worker changes its data (`editMessageWidgetData`); it
+sends a new message only in the cases listed below. Production Telegram shows widgets only in the **private chat**
 with the bot, so `TELEGRAM_CHAT_ID` must be a person's id for the widget to work.
 
 - Heading "VPN из {label}: N из M"; one row per node with checks on: ssh / vpn /
@@ -101,7 +101,7 @@ with the bot, so `TELEGRAM_CHAT_ID` must be a person's id for the widget to work
 - A deleted widget message, another chat, a new label or a new widget template
   sends a fresh widget and unpins the old one. So does a run that sends a node
   unavailable/back alert while the widget was sent more than a day ago (or
-  before its send time was recorded): the new widget lands below the alert.
+  before its send time was recorded), so it stays near the newest messages.
   Runs without an alert keep editing the old one, however old. `probe` shows
   the widget's last update or error (`tg widget:`).
 

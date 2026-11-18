@@ -244,8 +244,9 @@ notification in `apps/worker/src/telegram.ts`, with the label interpolated.
 ### Telegram status widget
 
 One Bot API widget message (`sendWidget`) in the same chat as the alerts
-(`TELEGRAM_CHAT_ID`), pinned silently when it is sent. After that the bot only
-changes its data (`editMessageWidgetData`); alerts stay separate messages. The
+(`TELEGRAM_CHAT_ID`), pinned silently when it is sent. After that the bot
+changes its data (`editMessageWidgetData`) and sends a new one only in the
+cases under **Stored**; alerts stay separate messages. The
 bot only sends: the widget has no buttons and makes no requests.
 
 - **Trigger.** A `notify.reachability-widget` outbox row, queued in the ingest
