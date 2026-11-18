@@ -152,4 +152,3 @@ export const readBridgeAgentUpdate = async (
       method: "GET",
     }),
   );
-

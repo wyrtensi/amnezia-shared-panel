@@ -258,7 +258,9 @@ exec 9>>"$FRP_DIR/.tls-lock"
 trusted "$FRP_DIR/.tls-lock" private || fail "unsafe FRP lock"
 flock -n 9 || fail "another FRP operation holds the lock"
 if [[ -e "$STATE" || -L "$STATE" ]]; then
-  trusted "$STATE" dir && [[ "$(stat -c %a -- "$STATE")" == 700 ]] || fail "unsafe TLS state directory"
+  if ! trusted "$STATE" dir || [[ "$(stat -c %a -- "$STATE")" != 700 ]]; then
+    fail "unsafe TLS state directory"
+  fi
 fi
 if [[ "$mode" == boot ]]; then
   if [[ -e "$TXN" || -L "$TXN" ]]; then
@@ -284,8 +286,10 @@ in_window() {
 }
 if [[ "$mode" == rotate ]]; then
   window="${BRIDGE_TLS_WINDOW_UTC:-}"
-  [[ "$window" =~ ^([01][0-9]|2[0-3]):[0-5][0-9]-([01][0-9]|2[0-3]):[0-5][0-9]$ ]] &&
-    [[ "${window%-*}" < "${window#*-}" ]] || fail "BRIDGE_TLS_WINDOW_UTC must be HH:MM-HH:MM within the same UTC day"
+  if [[ ! "$window" =~ ^([01][0-9]|2[0-3]):[0-5][0-9]-([01][0-9]|2[0-3]):[0-5][0-9]$ ]] ||
+    [[ ! "${window%-*}" < "${window#*-}" ]]; then
+    fail "BRIDGE_TLS_WINDOW_UTC must be HH:MM-HH:MM within the same UTC day"
+  fi
   in_window || exit 0
   if [[ -f "$STATE/last-attempt" && "$(<"$STATE/last-attempt")" == "$(date -u +%F)" ]]; then exit 0; fi
 fi
@@ -305,8 +309,10 @@ now="$(date -u +%s)"
 if [[ "$mode" == rotate ]] && (( expires - now > RENEW_BEFORE )); then exit 0; fi
 expected="$(fingerprint "$live_cert" 2>/dev/null)"
 unit_active "$BOOT_GUARD" || fail "enable and start the FRP TLS boot restore guard before rotating"
-[[ "$expected" =~ ^[0-9a-f]{64}$ ]] && unit_active "$UNIT" &&
-  [[ "$(live_fingerprint)" == "$expected" ]] || fail "active frps does not present the expected current certificate"
+if [[ ! "$expected" =~ ^[0-9a-f]{64}$ ]] || ! unit_active "$UNIT" ||
+  [[ "$(live_fingerprint)" != "$expected" ]]; then
+  fail "active frps does not present the expected current certificate"
+fi
 
 if [[ ! -d "$STATE" ]]; then mkdir -m 0700 -- "$STATE"; fi
 candidate="$(mktemp -d "$STATE/pair.XXXXXXXX")"

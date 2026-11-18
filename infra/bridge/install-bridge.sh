@@ -199,8 +199,9 @@ file_mode() { stat -c %a "$1"; }
 check_frp_trust_dir() {
   [ ! -L "$FRP_TRUST_DIR" ] || die 62 E_FILE "$FRP_TRUST_DIR must not be a symlink"
   [ -e "$FRP_TRUST_DIR" ] || return 0
-  [ -d "$FRP_TRUST_DIR" ] && [ "$(stat -c %u "$FRP_TRUST_DIR")" = "$(id -u)" ] ||
+  if [ ! -d "$FRP_TRUST_DIR" ] || [ "$(stat -c %u "$FRP_TRUST_DIR")" != "$(id -u)" ]; then
     die 62 E_FILE "$FRP_TRUST_DIR must be a root-owned directory"
+  fi
   mode="$(file_mode "$FRP_TRUST_DIR")"
   [ "$((0$mode & 022))" -eq 0 ] || die 62 E_FILE "$FRP_TRUST_DIR is group/world writable"
 }

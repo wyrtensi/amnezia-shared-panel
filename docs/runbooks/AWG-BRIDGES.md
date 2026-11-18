@@ -205,7 +205,9 @@ and worker; never run the pre-bridge application with an active assignment.
 | `bridges` management `stale` / `down` | no fresh observation | Check the tunnel unit `panel-tunnel-bridge-<id>`, the agent container and the gate; activation and release refuse meanwhile |
 | API | `BRIDGE_ROUTE_UNVERIFIED` | No success within 30 minutes bound to the current registration; verify again |
 | API | `BRIDGE_REVISION_CONFLICT` | Someone changed the node's endpoint; read and retry |
-| API | `BRIDGE_UNSUPPORTED_CAPABILITY` | Probe lacks `bridge-measurement` (use operator verification), or the agent lacks `status.v1` / `update.v1` |
+| API | `BRIDGE_PROBE_UNAVAILABLE` | Configure and enable the probe or verify with a test config and operator attestation |
+| API | `BRIDGE_PROBE_CAPABILITY_MISSING` | Upgrade the probe to a version that reports `bridge-measurement` or use operator verification |
+| API | `BRIDGE_UNSUPPORTED_CAPABILITY` | The agent lacks the required `status.v1` or `update.v1` capability |
 | API | `BRIDGE_JOBS_DISABLED` | The gate is off; intended during deployment and rollback |
 | Probe result | `AWG_HANDSHAKE_FAILED` or no AWG handshake | The failing hop is unknown from the panel: a failed path check. Check registration, firewall UDP pool, node AWG listener; the active assignment never changes without activation |
 

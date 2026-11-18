@@ -527,9 +527,9 @@ withHost("a claimed operation without a journal is closed, never started", async
 
 // -------------------------------------------------------------- rollback ----
 
-withHost("a candidate that never answers is rolled back, and the rollback is verified", async (h) => {
+withHost("a candidate that never answers rolls back to a healthy agent without update.v1", async (h) => {
   await h.request();
-  const run = h.run({ FAKE_BROKEN: NEW_HEX });
+  const run = h.run({ FAKE_BROKEN: NEW_HEX, FAKE_NO_UPDATE_CAP: OLD_HEX });
   assert.equal(run.status, 0, run.stderr);
   const result = await h.result();
   assert.equal(result.state, "rolled_back");

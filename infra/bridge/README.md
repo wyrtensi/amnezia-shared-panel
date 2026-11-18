@@ -145,14 +145,14 @@ or a journal exists. `bridge-agent-update.sh`, under the lock:
    --no-deps --no-build bridge-agent`. frps (a host service) is never touched.
 5. `health_check`: the container `amnezia-bridge-agent` runs exactly the
    requested reference and image id, `/v1/identity` names the enrolled bridge id
-   (from `agent.env`) and, when the previous agent advertised it, lists the
-   `update.v1` capability (a candidate without it is rolled back), and an authenticated `/v1/status` answers for it with
+   (from `agent.env`) and lists the `update.v1` capability, and an authenticated `/v1/status` answers for it with
    `frps.reachable=true` (30 attempts, 2 s apart). The token is passed to curl on
    stdin, never as an argument.
 6. Pass: the pin moves to the candidate, result `succeeded`. Fail: `agent.env` and
    the pin are restored to the previous known-good image, the agent is recreated
-   the same way and checked the same way: `rolled_back` (error code = why the
-   candidate failed) or, if the previous image fails too, `rollback_failed`.
+   the same way. Rollback verifies the image, identity and FRP health even if the
+   previous image lacks `update.v1`. The result is `rolled_back` with the
+   candidate failure code or `rollback_failed` if verification fails.
    A request for the digest that already runs recreates nothing and succeeds only
    if the checks pass (else `failed CURRENT_AGENT_UNHEALTHY`).
 

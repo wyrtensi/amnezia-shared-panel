@@ -27,14 +27,18 @@ case "$remote" in
 esac
 case "$remote" in ?*@?*) ;; *) invalid 'BRIDGE_TLS_GATE_REMOTE must include the SSH user' ;; esac
 case "$port" in ''|*[!0-9]*) invalid 'invalid SSH port' ;; esac
-[ "${#port}" -le 5 ] && [ "$port" -ge 1 ] && [ "$port" -le 65535 ] || invalid 'invalid SSH port'
+if [ "${#port}" -gt 5 ] || [ "$port" -lt 1 ] || [ "$port" -gt 65535 ]; then
+  invalid 'invalid SSH port'
+fi
 for file in "$identity" "$known_hosts"; do
   case "$file" in
     /*[[:space:]]*|*'"'*) invalid 'SSH file paths cannot contain whitespace or quotes' ;;
     /*) ;;
     *) invalid 'SSH file paths must be absolute' ;;
   esac
-  [ -f "$file" ] && [ -r "$file" ] || invalid 'SSH identity and pinned known_hosts must be readable files'
+  if [ ! -f "$file" ] || [ ! -r "$file" ]; then
+    invalid 'SSH identity and pinned known_hosts must be readable files'
+  fi
 done
 
 exec ssh -F /dev/null -T -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none \

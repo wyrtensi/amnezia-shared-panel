@@ -89,7 +89,9 @@ printf '%s' "$FINGERPRINT" | grep -Eq '^SHA256:[A-Za-z0-9+/]+$' ||
   usage_error "--host-key-fingerprint must look like SHA256:... (the installer prints it)"
 printf '%s' "$SSH_USER" | grep -Eq '^[a-z_][a-z0-9_-]*$' || usage_error "--ssh-user is not a valid user name"
 case "$AGENT_PORT" in ''|*[!0-9]*) usage_error "--agent-port must be a TCP port" ;; esac
-[ "$AGENT_PORT" -ge 1 ] && [ "$AGENT_PORT" -le 65535 ] || usage_error "--agent-port must be a TCP port"
+if ! [ "$AGENT_PORT" -ge 1 ] || ! [ "$AGENT_PORT" -le 65535 ]; then
+  usage_error "--agent-port must be a TCP port"
+fi
 printf '%s' "$BIND" | grep -Eq '^([0-9]{1,3}\.){3}[0-9]{1,3}$' ||
   usage_error "TUNNEL_BIND must be an IPv4 literal (the Docker bridge gateway), got '$BIND'"
 [ "$BIND" != 0.0.0.0 ] || usage_error "TUNNEL_BIND must not be 0.0.0.0: the forward would be reachable from every interface"

@@ -145,8 +145,9 @@ is_ipv4() {
 }
 
 if [ "$CHECK_TLS" -eq 1 ]; then
-  [ "$REMOVE" -eq 0 ] && [ "$DRY_RUN" -eq 0 ] && [ -z "$ROUTE_ID$PUBLIC_PORT$LOCAL_UDP_PORT$LOCAL_IP" ] ||
+  if [ "$REMOVE" -ne 0 ] || [ "$DRY_RUN" -ne 0 ] || [ -n "$ROUTE_ID$PUBLIC_PORT$LOCAL_UDP_PORT$LOCAL_IP" ]; then
     usage_error "--check-tls takes only --bridge-ip, --control-port and optional --bridge-id"
+  fi
 else
   is_uuid "$ROUTE_ID" || usage_error "--route-id must be a lowercase UUID"
 fi

@@ -28,11 +28,15 @@ esac
 
 for file in "$current_cert" "$current_key" "$ca_file"; do
   case "$file" in /*) ;; *) fail 2 'issuer file paths must be absolute' ;; esac
-  [ -f "$file" ] && [ -r "$file" ] || fail 2 'current pair and issuer trust bundle must be readable files'
+  if [ ! -f "$file" ] || [ ! -r "$file" ]; then
+    fail 2 'current pair and issuer trust bundle must be readable files'
+  fi
 done
 for file in "$candidate_cert" "$candidate_key"; do
   case "$file" in /*) ;; *) fail 2 'issuer file paths must be absolute' ;; esac
-  [ ! -e "$file" ] && [ ! -L "$file" ] || fail 2 'candidate paths must not already exist'
+  if [ -e "$file" ] || [ -L "$file" ]; then
+    fail 2 'candidate paths must not already exist'
+  fi
 done
 
 cert_path="$(realpath -m -- "$candidate_cert")" || fail 2 'invalid certificate output path'

@@ -168,8 +168,9 @@ cert_file_path() {
   printf '%s' "$pair" | grep -Eq '^pair\.[A-Za-z0-9]{8}$' ||
     die 11 E_FILE "unexpected certificate generation"
   for dir in "$rotation" "$rotation/$pair"; do
-    [ -d "$dir" ] && [ ! -L "$dir" ] && [ "$(file_mode "$dir")" = 700 ] ||
+    if [ ! -d "$dir" ] || [ -L "$dir" ] || [ "$(file_mode "$dir")" != 700 ]; then
       die 11 E_FILE "unsafe certificate generation directory"
+    fi
     [ "$DRY_RUN" -eq 1 ] || [ "$(stat -c %u -- "$dir")" = "$(id -u)" ] ||
       die 11 E_FILE "certificate generation directory must be owned by root"
   done
