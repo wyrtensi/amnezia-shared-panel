@@ -250,12 +250,20 @@ the literal word `off` reports the feature as on when the daemon has it off.
 
 ## 5. Writing a value into a generated config
 
-`awg3-geometry.sh` runs **once**, at first initialization, and never again —
-rerolling the geometry would invalidate every key already issued from that node.
-So `AWG3_DISABLE_COOKIES` and `AWG3_TUNNEL_MTU` in `compose.yaml` are read on
-the very first start and ignored afterwards. Changing one on a node that is
-already carrying users means editing `awg0.conf` by hand, and that edit has one
-hard rule.
+`awg3-geometry.sh` runs **once**, at first initialization. Rerolling the
+geometry would invalidate keys already issued from that node.
+`AWG3_DISABLE_COOKIES` seeds the saved config on first start. Changing that
+setting on an existing node requires an edit to `awg0.conf`.
+
+`AWG3_TUNNEL_MTU` defaults to **1280** and sets the live AWG 3.1 interface
+on every start. It also supplies the sizing input on first initialization.
+The container must be recreated to pick up changes to the Compose environment.
+Keep the existing state mount when changing MTU. Existing AWG credentials
+remain valid. The Control API includes MTU 1280 in AWG 3.1 exports for both
+new and existing keys. Clients with an older imported config must re-import an
+updated export or change the MTU in the app for the client-side value to change.
+
+When editing `awg0.conf`, place interface directives inside `[Interface]`.
 
 **It has to land inside `[Interface]`.** The file is one `[Interface]` block
 followed by a growing list of `[Peer]` blocks: the node-agent appends

@@ -1185,6 +1185,11 @@ describe("effective endpoint at config delivery (bridge or direct)", () => {
     expect(stripEndpoint(onA)).toBe(stripEndpoint(direct));
     expect(stripEndpoint(onB)).toBe(stripEndpoint(direct));
     expect(readCopies(onA, decodeVpnLink).line("PrivateKey")).toBe("synthetic-client-private-key");
+    for (const link of [direct, onA, onB, back]) {
+      const copies = readCopies(link, decodeVpnLink);
+      expect(copies.lastConfig.mtu).toBe("1280");
+      expect(copies.line("MTU")).toBe("1280");
+    }
     expect(decodeVpnLink(onA).description).toBe(decodeVpnLink(direct).description);
     // Export never rewrites the saved ciphertext.
     expect(key.encrypted.ciphertext).toBe(savedCiphertext);
@@ -1197,6 +1202,7 @@ describe("effective endpoint at config delivery (bridge or direct)", () => {
     const vpn = String((await get("vpn")).body);
     const conf = String((await get("conf")).body);
     expect(confLine(conf, "Endpoint")).toBe("45.10.20.30:41000");
+    expect(confLine(conf, "MTU")).toBe("1280");
     expect(readCopies(vpn, decodeVpnLink).line("Endpoint")).toBe("45.10.20.30:41000");
     expect((await get("qr-svg")).body).toEqual((await renderKeyQr(vpn, "svg")).body);
     expect((await get("qr-conf")).body).toEqual((await renderKeyQr(conf, "svg")).body);

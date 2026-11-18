@@ -28,7 +28,7 @@ test("configures and removes the AWG3 interface on its own subnet and port", asy
   // were two once - interface 1420, budget computed for 1376 - which put up to
   // 1525 bytes on a 1500-byte path.
   assert.match(script, /ip link set mtu "\$IFACE_MTU" up dev awg0/);
-  assert.match(script, /IFACE_MTU="\$\{AWG3_TUNNEL_MTU:-1420\}"/);
+  assert.match(script, /IFACE_MTU="\$\{AWG3_TUNNEL_MTU:-1280\}"/);
   assert.match(script, /GEOMETRY_SCRIPT" "\$IFACE_MTU"/);
   assert.match(script, /iptables -t nat -A POSTROUTING -s 10\.90\.0\.0\/22 -o eth0 -j MASQUERADE/);
   assert.match(script, /iptables -t nat -D POSTROUTING -s 10\.90\.0\.0\/22 -o eth0 -j MASQUERADE/);

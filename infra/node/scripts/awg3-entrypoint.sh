@@ -17,7 +17,7 @@ GEOMETRY_SCRIPT=/usr/local/libexec/awg3-geometry.sh
 # of the MTU budget. They were two numbers once - the interface was set to 1420
 # while the budget was computed for 1376 - and the result was transport packets
 # of up to 1525 bytes on a 1500-byte path.
-IFACE_MTU="${AWG3_TUNNEL_MTU:-1420}"
+IFACE_MTU="${AWG3_TUNNEL_MTU:-1280}"
 
 umask 077
 mkdir -p "$STATE_DIR"

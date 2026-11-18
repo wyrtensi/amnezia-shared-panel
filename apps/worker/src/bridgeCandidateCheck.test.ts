@@ -4,7 +4,7 @@ import {
   BRIDGE_ROUTE_CANDIDATE_CHECK_JOB_TYPE,
   type ProbeRunRequest,
 } from "@amnezia/contracts";
-import { inspectAwgVpnLink } from "@amnezia/vpn-config";
+import { decodeVpnLink, inspectAwgVpnLink } from "@amnezia/vpn-config";
 
 import { awgServiceLink } from "./awgArtifact.fixture.js";
 import {
@@ -141,6 +141,10 @@ describe("bridge candidate check job", () => {
     });
     const inspected = inspectAwgVpnLink(target?.config ?? "");
     expect(inspected).toMatchObject({ kind: "awg31", endpoint: { host: "45.1.2.3", port: 41005 } });
+    const artifact = decodeVpnLink(target?.config ?? "");
+    const lastConfig: unknown = JSON.parse(artifact.containers?.[0]?.awg?.last_config ?? "{}");
+    expect(lastConfig).toHaveProperty("mtu", "1280");
+    expect(lastConfig).toHaveProperty("config", expect.stringMatching(/^MTU = 1280$/m));
     expect(candidates.recordCandidateResult).not.toHaveBeenCalled();
     expect(jobs.completeJob).toHaveBeenCalledWith("job-1");
   });

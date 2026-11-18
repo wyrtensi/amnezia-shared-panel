@@ -26,7 +26,7 @@ import {
   inspectAwg31ClientConfig,
   setVpnDescription,
 } from "./vpnConfig.js";
-import { inspectAwgVpnLink, type AwgEndpoint } from "@amnezia/vpn-config";
+import { inspectAwgVpnLink, withAwg31TunnelMtu, type AwgEndpoint } from "@amnezia/vpn-config";
 import { decideBridgeDelivery, renderBridgeEndpoint } from "./bridgeEndpoint.js";
 import { configFilename } from "./configFilename.js";
 import { buildQrFrameTexts } from "./qrFrames.js";
@@ -116,7 +116,8 @@ const composeExport = async (
   savedLink: string,
   endpoint: AwgEndpoint | null,
 ): Promise<{ vpnLink: string; displayName: string }> => {
-  const profiledLink = withClientProfile(savedLink, key.awgClientProfile);
+  const clientLink = withClientProfile(savedLink, key.awgClientProfile);
+  const profiledLink = key.protocol === "awg3" ? withAwg31TunnelMtu(clientLink) : clientLink;
   const storedLink =
     endpoint === null ? profiledLink : renderBridgeEndpoint(profiledLink, endpoint);
   // Apply the active routing rules for non-full-tunnel profiles at export time.

@@ -34,7 +34,7 @@ import {
   type Database,
   type EncryptionKeyring,
 } from "@amnezia/db";
-import { inspectAwgVpnLink, renderAwgEndpointVpnLink } from "@amnezia/vpn-config";
+import { inspectAwgVpnLink, renderAwgEndpointVpnLink, withAwg31TunnelMtu } from "@amnezia/vpn-config";
 
 import type { CandidateOutcome, CandidateRun } from "./bridgeCandidateCheck.js";
 import {
@@ -519,7 +519,7 @@ export class PostgresReachabilityRepository
         if (via && !options.bridgeMeasurement) {
           return { ...target, unavailableReason: BRIDGE_UNSUPPORTED_REASON };
         }
-        const config = decryptSecret(
+        const savedConfig = decryptSecret(
           {
             ciphertext: key.configCiphertext,
             nonce: key.configNonce as string,
@@ -528,6 +528,7 @@ export class PostgresReachabilityRepository
           },
           this.options.keyring,
         );
+        const config = protocol === "awg3" ? withAwg31TunnelMtu(savedConfig) : savedConfig;
         if (!via) return { ...target, config };
         if (inspectAwgVpnLink(config).kind !== "awg31") {
           return { ...target, unavailableReason: BRIDGE_UNRENDERABLE_REASON };

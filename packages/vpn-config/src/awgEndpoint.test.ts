@@ -7,6 +7,7 @@ import {
   inspectAwgVpnLink,
   renderAwgEndpoint,
   renderAwgEndpointVpnLink,
+  withAwg31TunnelMtu,
 } from "./awgEndpoint.js";
 import { buildArtifact, buildLink, readEndpointCopies } from "./fixtures.js";
 
@@ -24,6 +25,28 @@ describe("codec", () => {
   it("rejects malformed links", () => {
     expect(() => decodeVpnLink("http://x")).toThrow("vpn://");
     expect(() => decodeVpnLink("vpn://AA")).toThrow("too short");
+  });
+});
+
+describe("withAwg31TunnelMtu", () => {
+  it("updates an explicit legacy MTU in both representations, retaining CRLF and peer data", () => {
+    const original = buildLink({
+      conf: (conf) => conf.replace("[Interface]", "[Interface]\nMTU = 1420").replace(/\n/g, "\r\n"),
+    });
+    const updated = withAwg31TunnelMtu(original);
+    const before = lastConfigOf(decodeVpnLink(original));
+    const after = lastConfigOf(decodeVpnLink(updated));
+    expect(after).toEqual({
+      ...before,
+      mtu: "1280",
+      config: String(before.config).replace("MTU = 1420", "MTU = 1280"),
+    });
+    expect(withAwg31TunnelMtu(updated)).toBe(updated);
+  });
+
+  it.each(["2", null])("keeps artifacts with legacy marker %s byte-for-byte", (protocolVersion) => {
+    const link = buildLink({ protocolVersion });
+    expect(withAwg31TunnelMtu(link)).toBe(link);
   });
 });
 

@@ -9,7 +9,7 @@ import {
   type ProbeRunRequest,
   type ProbeRunState,
 } from "@amnezia/contracts";
-import { inspectAwgVpnLink, renderAwgEndpointVpnLink } from "@amnezia/vpn-config";
+import { inspectAwgVpnLink, renderAwgEndpointVpnLink, withAwg31TunnelMtu } from "@amnezia/vpn-config";
 
 import { bridgeJobsGate } from "./config.js";
 import type { ProbeClient, ProbeClientOptions } from "./probeAgent.js";
@@ -289,7 +289,7 @@ export const createBridgeCandidateCheck = ({
     }
     let config: string;
     try {
-      config = renderAwgEndpointVpnLink(context.serviceConfig, {
+      config = renderAwgEndpointVpnLink(withAwg31TunnelMtu(context.serviceConfig), {
         host: context.bridgePublicIpv4,
         port: context.publicUdpPort,
       });

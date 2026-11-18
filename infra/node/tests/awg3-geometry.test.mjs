@@ -15,8 +15,8 @@ const executing = {
 };
 
 /** One generated parameter block, as a key -> value map. */
-const generate = (mtu = "1376") => {
-  const result = spawnSync("sh", [scriptPath, mtu], { encoding: "utf8" });
+const generate = (mtu) => {
+  const result = spawnSync("sh", mtu === undefined ? [scriptPath] : [scriptPath, mtu], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
   const params = {};
   for (const line of result.stdout.split("\n")) {
@@ -67,7 +67,7 @@ test("keeps S1..S4 above the header-protection nonce floor", executing, () => {
 
 test("fits S4 inside the MTU budget it is given", executing, () => {
   // S4 is the only S that costs payload: S4 + 32 + tunnelMTU + 28 <= pathMTU.
-  for (const mtu of ["1376", "1420"]) {
+  for (const mtu of ["1280", "1376", "1420"]) {
     for (let i = 0; i < 10; i += 1) {
       const { params } = generate(mtu);
       assert.ok(
@@ -418,15 +418,12 @@ esac`,
 
   // The interface MTU and the S4 budget must be the same number.
   const s4 = Number(/^S4 = (\d+)$/m.exec(config)?.[1]);
-  const mtu = Number(
-    /ip link set mtu "?\$?\{?(\d+)/.exec(script)?.[1] ?? "1420",
-  );
+  const mtu = Number(/IFACE_MTU="\$\{AWG3_TUNNEL_MTU:-(\d+)\}"/.exec(script)?.[1]);
   assert.ok(s4 >= 12, `S4=${s4}`);
   assert.ok(
-    s4 + 32 + 1420 + 28 <= 1500,
+    s4 + 32 + mtu + 28 <= 1500,
     `S4=${s4} overflows the interface MTU budget`,
   );
-  void mtu;
 });
 
 test("the entrypoint carries no variable the generator now owns", async () => {
@@ -460,7 +457,7 @@ test("compose and the entrypoint agree on the interface MTU", async () => {
   const fromCompose = /AWG3_TUNNEL_MTU: \$\{AWG3_TUNNEL_MTU:-(\d+)\}/.exec(compose)?.[1];
   const fromEntrypoint = /IFACE_MTU="\$\{AWG3_TUNNEL_MTU:-(\d+)\}"/.exec(entrypoint)?.[1];
 
-  assert.ok(fromCompose, "compose must define the MTU default");
+  assert.equal(fromCompose, "1280");
   assert.ok(fromEntrypoint, "the entrypoint must define the MTU default");
   assert.equal(fromCompose, fromEntrypoint);
 

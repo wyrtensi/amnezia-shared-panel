@@ -16,7 +16,7 @@
 # the ones nothing enforces are the reason this script asserts at the end.
 set -eu
 
-MTU="${1:-1376}"
+MTU="${1:-1280}"
 case "$MTU" in
   ''|*[!0-9]*) echo "usage: awg3-geometry.sh <tunnel-mtu>" >&2; exit 2 ;;
 esac
