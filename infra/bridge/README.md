@@ -287,6 +287,87 @@ certificate at startup. When changing CAs, distribute a bundle with both CAs to
 the nodes before switching the server certificate, then remove the old CA after
 verification.
 
+## Certificate monitoring and automatic rotation
+
+For monitoring, create the root-owned directory `/etc/amnezia-bridge/frp-trust`
+with mode 0755. Place the public CA bundle in `ca.crt` and the bridge's registered
+IPv4 in `public-ip`, both root-owned and mode 0644. Update the agent with the
+matching Compose file so it can read the public trust directory. The bridge card
+reports the certificate served on the FRP control listener independently of the
+dashboard. The same check works with certificates issued manually.
+
+To enable rotation, provision these components once:
+
+1. **Issuer.** Set up a dedicated [Smallstep CA](https://smallstep.com/docs/step-ca/getting-started/)
+   with an [intermediate under the existing root](https://smallstep.com/docs/tutorials/intermediate-ca-new-ca/).
+   Keep the root signing key offline and restrict issuance to the bridge IPs
+   you administer. Enroll the bridge's first leaf with its exact IPv4 SAN and
+   both `serverAuth` and `clientAuth`. For an existing bridge, generate the new
+   leaf key and CSR on the bridge, sign the CSR on the trusted issuer host, and
+   return the certificate chain. Apply the pair with `--apply-pending` below.
+   Subsequent rotations use `step ca rekey` over mTLS. Install the Smallstep CLI
+   on the bridge. Set the CA leaf lifetime longer than the renewal threshold,
+   and the threshold longer than the interval between maintenance windows.
+2. **Verifier.** Put the current `amnezia-panel` CLI on a trusted host with its
+   normal Control API admin credentials and a working bridge-capable probe.
+   Create a dedicated SSH identity for the bridge, pin the verifier's host key,
+   and restrict the public key on the verifier to the following forced command.
+   The account needs the CLI on its trusted `PATH`. The bridge holds its SSH
+   identity, while Control API credentials stay on the verifier.
+
+   ```text
+   restrict,command="/bin/sh /opt/amnezia-bridge/frps-tls-gate-command.sh <bridge-id>" <bridge-verifier-public-key>
+   ```
+
+   Put the private SSH identity at `/etc/amnezia-bridge/frp-verify/id_ed25519`
+   and the verified host key at `/etc/amnezia-bridge/frp-verify/known_hosts`.
+   Probe checks run before and after restart on the currently active routes.
+   If a registration changes during the probe run, verification fails.
+   A retiring route can still serve old exports, so automatic rotation waits
+   until those routes have been retired. Stagger maintenance windows across
+   bridges sharing a probe.
+3. **Timer.** Install OpenSSL 3 and the OpenSSH client on the bridge. Copy the
+   rotation scripts and systemd units from this directory to
+   `/opt/amnezia-bridge` and `/etc/systemd/system` respectively. Install
+   `frps-tls-issue.sh` and `frps-tls-gate-ssh.sh` executable and root-owned. Create
+   `/etc/amnezia-bridge/frp-tls-rotate.env` as root with mode 0600 and fill in the
+   values for this bridge. For example:
+
+   ```dotenv
+   FRPS_TLS_CA_URL=https://issuer.example.invalid:9000
+   BRIDGE_TLS_GATE=/opt/amnezia-bridge/frps-tls-gate-ssh.sh
+   BRIDGE_TLS_GATE_REMOTE=frp-verify@verifier.example.invalid
+   BRIDGE_TLS_RENEW_BEFORE_SEC=1209600
+   BRIDGE_TLS_WINDOW_UTC=03:00-03:30
+   ```
+
+   Run `sudo systemctl daemon-reload` and enable the boot guard with
+   `sudo systemctl enable --now amnezia-frps-tls-boot-restore.service`. It selects
+   the previous certificate before frps starts if a reboot interrupted rotation.
+   After confirming the maintenance window, enable the schedule with
+   `sudo systemctl enable --now amnezia-frps-tls-rotate.timer`. Each rotation
+   stops frps briefly and verifies the new live certificate and a newly
+   requested AWG run before committing. If checks fail, it restores the
+   previous pair and checks recovery. Monitor
+   `journalctl -u amnezia-frps-tls-rotate.service` for issuance, verification, and
+   rollback results.
+
+To apply a pre-issued pair, place its chain and key in the root-only
+`/etc/amnezia-bridge/frp/.tls-pending` directory as `server.crt` and `server.key`
+(key mode 0600). Enable the boot guard and run the rotation script with
+`--apply-pending` and the same settings in the maintenance window:
+
+```sh
+sudo systemd-run --wait --collect \
+  --property=EnvironmentFile=/etc/amnezia-bridge/frp-tls-rotate.env \
+  /bin/bash /opt/amnezia-bridge/frps-tls-rotate.sh --apply-pending
+```
+
+Use `--recover` with the same settings to recover an interrupted transaction.
+The same verification and rollback gates apply. If the previous certificate
+has already expired, recover it through an operator maintenance window before
+enabling automatic rotation.
+
 The installer creates `/etc/amnezia-bridge/frp/dashboard.env` once (mode 0600,
 `FRPS_DASHBOARD_USER` and `FRPS_DASHBOARD_PASSWORD`, random). frps reads it as
 its unit environment file, and the bridge-agent uses the same credentials with

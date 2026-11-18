@@ -124,6 +124,7 @@ export class PostgresReachabilityRepository
       failThreshold: row.failThreshold,
       staleAfterSec: row.staleAfterSec,
       runRequestedAt: row.runRequestedAt,
+      requestedRunId: row.requestedRunId,
       currentRunId: row.currentRunId,
       currentRunStartedAt: row.currentRunStartedAt,
       lastResultAt: row.lastResultAt,
@@ -169,7 +170,12 @@ export class PostgresReachabilityRepository
     // flight with one the probe refused.
     await this.options.db
       .update(reachabilityProbe)
-      .set({ currentRunId: runId, currentRunStartedAt: at, updatedAt: new Date() })
+      .set({
+        currentRunId: runId,
+        currentRunStartedAt: at,
+        requestedRunId: sql`case when ${reachabilityProbe.requestedRunId} = ${runId} then null else ${reachabilityProbe.requestedRunId} end`,
+        updatedAt: new Date(),
+      })
       .where(and(eq(reachabilityProbe.id, 1), isNull(reachabilityProbe.currentRunId)));
   };
 

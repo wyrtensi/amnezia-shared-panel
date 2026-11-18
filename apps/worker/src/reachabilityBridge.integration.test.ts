@@ -670,6 +670,22 @@ describe("reachability of bridged nodes (real PostgreSQL)", () => {
   );
 
   runDatabaseTest(
+    "starting a probe consumes only the matching pending request, preserving a newer request",
+    async () => {
+      await seedProbe();
+      const started = randomUUID();
+      const queued = randomUUID();
+      const now = new Date();
+      await db().update(reachabilityProbe).set({ requestedRunId: queued, runRequestedAt: now });
+      await repository.markRunStarted(started, now);
+      expect(await repository.loadProbe()).toMatchObject({ currentRunId: started, requestedRunId: queued });
+      await repository.abandonRun(now, "test reset before starting the queued request");
+      await repository.markRunStarted(queued, now);
+      expect(await repository.loadProbe()).toMatchObject({ currentRunId: queued, requestedRunId: null });
+    },
+  );
+
+  runDatabaseTest(
     "an endpoint change that starts while the ingest holds the node lock waits, then resets what was ingested",
     async () => {
       const node = await seedNode();

@@ -51,6 +51,7 @@ type FakeAgent = {
   bridgeId: string;
   apiVersion: number;
   frpsReachable: boolean;
+  frpsTls?: { state: "failed"; reason: "expired" };
   // Loose on purpose: some tests send entries the panel cannot read.
   proxies: Array<Proxy | Record<string, unknown>>;
   mode: "normal" | "hang";
@@ -98,6 +99,7 @@ describe("bridge-agent poller (real PostgreSQL, fake bridge-agent over HTTP)", (
           apiVersion: agent.apiVersion,
           observedAt: new Date().toISOString(),
           frps: { reachable: agent.frpsReachable, version: agent.frpsReachable ? "0.72.0" : null },
+          frpsTls: agent.frpsTls,
           applied: { controlTcpPort: 7000, udpPortStart: 41000, udpPortEnd: 41031 },
           proxies: agent.frpsReachable ? agent.proxies : [],
           errors: agent.frpsReachable
@@ -120,6 +122,7 @@ describe("bridge-agent poller (real PostgreSQL, fake bridge-agent over HTTP)", (
   afterEach(async () => {
     agent.apiVersion = 1;
     agent.frpsReachable = true;
+    delete agent.frpsTls;
     agent.proxies = [];
     agent.mode = "normal";
     agent.requests = 0;
@@ -364,6 +367,22 @@ describe("bridge-agent poller (real PostgreSQL, fake bridge-agent over HTTP)", (
       expect((await bridgeRow(bridge.id)).lastErrorCode).toBeNull();
     },
   );
+
+  runDatabaseTest("keeps TLS warnings separate from dashboard health and clears absent TLS evidence", async () => {
+    const bridge = await seedBridge();
+    const id = await seedRoute(bridge.id, (await seedNode()).id, 41000);
+    agent.proxies = [{ proxyId: bridgeFrpProxyName(id), remotePort: 41000, online: true, registrationMarker: M1 }];
+    agent.frpsTls = { state: "failed", reason: "expired" };
+    await runPoll(bridge.id);
+    expect(await bridgeRow(bridge.id)).toMatchObject({
+      managementStatus: "ok", frpsReachable: true, metrics: { frpsTls: agent.frpsTls },
+    });
+    expect(await route(id)).toMatchObject({ observedOnline: true, observedRegistrationMarker: M1 });
+
+    delete agent.frpsTls;
+    await runPoll(bridge.id);
+    expect((await bridgeRow(bridge.id)).metrics).not.toHaveProperty("frpsTls");
+  });
 
   runDatabaseTest(
     "two registered routes on one bridge: stopping one frpc changes only that route, a lost management channel leaves both rows alone, and the restarted agent reports both again",

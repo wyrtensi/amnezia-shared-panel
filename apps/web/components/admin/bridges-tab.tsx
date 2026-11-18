@@ -9,6 +9,7 @@ import {
   BRIDGE_DEFAULT_UDP_PORT_END,
   BRIDGE_DEFAULT_UDP_PORT_START,
   type Bridge,
+  type BridgeFrpsTlsStatus,
 } from "@amnezia/contracts";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -268,6 +269,7 @@ function BridgeMetricsView({ bridge, t, lang }: { bridge: Bridge; t: Translate; 
   }
   return (
     <div className="space-y-2 border-t pt-2">
+      {metrics?.frpsTls ? <BridgeTlsView status={metrics.frpsTls} t={t} lang={lang} /> : null}
       <NodeCardSection icon={Cpu}>{t("nodes.metrics.title")}</NodeCardSection>
       {rows.length > 0 ? <MetricGrid rows={rows} /> : null}
       {!host ? <p className="text-xs text-muted-foreground">{t("bridge.metrics.unavailable")}</p> : null}
@@ -279,6 +281,30 @@ function BridgeMetricsView({ bridge, t, lang }: { bridge: Bridge; t: Translate; 
             <span><span className="text-muted-foreground">{t("bridge.metrics.trafficOut")}</span> {metricBytes(traffic.outBytes, lang)}</span>
           </div>
         </>
+      ) : null}
+    </div>
+  );
+}
+
+function BridgeTlsView({ status, t, lang }: {
+  status: BridgeFrpsTlsStatus;
+  t: Translate;
+  lang: Lang;
+}) {
+  if (status.state === "unconfigured") {
+    return <p className="text-xs text-muted-foreground">{t("bridge.tls.unconfigured")}</p>;
+  }
+  if (status.state === "failed") {
+    return <Callout tone="danger" className="text-xs">{t(`bridge.tls.${status.reason}`)}</Callout>;
+  }
+  return (
+    <div className="space-y-1 text-xs">
+      <p>{t("bridge.tls.expiresAt", { date: formatDateTime(status.expiresAt, lang) })}</p>
+      {status.expiresSoon || status.matchesDeployed === false ? (
+        <Callout tone="warning" className="text-xs">
+          {status.expiresSoon ? <p>{t("bridge.tls.expiresSoon")}</p> : null}
+          {status.matchesDeployed === false ? <p>{t("bridge.tls.mismatch")}</p> : null}
+        </Callout>
       ) : null}
     </div>
   );

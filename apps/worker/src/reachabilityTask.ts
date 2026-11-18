@@ -37,6 +37,7 @@ export type ProbeRow = {
   failThreshold: number;
   staleAfterSec: number;
   runRequestedAt: Date | null;
+  requestedRunId?: string | null;
   currentRunId: string | null;
   /** When the newest run was started; kept after it is ingested. */
   currentRunStartedAt: Date | null;
@@ -313,6 +314,7 @@ export const createReachabilityTask = ({
 
     const lastStart = probe.currentRunStartedAt;
     const due =
+      probe.requestedRunId != null ||
       lastStart === null ||
       at.getTime() - lastStart.getTime() >= probe.intervalSec * 1_000 ||
       (probe.runRequestedAt !== null && probe.runRequestedAt > lastStart);
@@ -328,7 +330,7 @@ export const createReachabilityTask = ({
     // a bridged target is only sent to a probe that reports the capability.
     const bridgeMeasurement = probeSupportsBridgeMeasurement(capabilityInput, at);
     const targets = await repository.listTargets({ bridgeMeasurement });
-    const runId = newRunId();
+    const runId = probe.requestedRunId ?? newRunId();
     const request: ProbeRunRequest = {
       runId,
       control: { url: probe.controlUrl },

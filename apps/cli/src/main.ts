@@ -16,6 +16,7 @@
 import { writeFile } from "node:fs/promises";
 import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
+import { runBridgeTlsGate } from "./bridgeTlsGate.js";
 
 import {
   AUDIT_CATEGORIES,
@@ -2721,6 +2722,7 @@ ${BRIDGE_USAGE_LINES}
                                           (--time-zone: IANA zone for alert and widget times)
   probe-delete [--confirm]                Forget the probe and revoke its service keys
   probe-run                               Ask for a run now (results within a few minutes)
+  bridge-tls-gate <bridge-id> <baseline|verify> [<since-UTC>]  Check route traffic around TLS rotation
   probe-results [<node>] [--json]         Per node and protocol: ping, tcp, handshake, http
   node-probe <node> [--on|--off]          Whether the probe tests this node
     Assertion flags (repeatable; all must hold):
@@ -3453,6 +3455,8 @@ export async function dispatch(argv: string[]): Promise<void> {
       return cmdProbeDelete(args);
     case "probe-run":
       return cmdProbeRun();
+    case "bridge-tls-gate":
+      return runBridgeTlsGate(args, { api });
     case "probe-results":
       return cmdProbeResults(args);
     case "node-probe":

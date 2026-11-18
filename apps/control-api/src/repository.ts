@@ -2,6 +2,7 @@ import type {
   AccessSyncStatus,
   AdminReachabilityView,
   Bridge,
+  BridgeRotationEvidence,
   CreateBridgeRequest,
   DeleteBridgeResult,
   BridgeAgentUpdateView,
@@ -217,6 +218,7 @@ export interface ControlRepository {
   ) => Promise<unknown>;
   runServiceCheckNow: (actor: Actor, checkId: string) => Promise<unknown>;
   getReachability: (actor: Actor) => Promise<AdminReachabilityView>;
+  getBridgeRotationEvidence: (actor: Actor, bridgeId: string) => Promise<BridgeRotationEvidence>;
   upsertReachabilityProbe: (
     actor: Actor,
     request: UpsertReachabilityProbeRequest,

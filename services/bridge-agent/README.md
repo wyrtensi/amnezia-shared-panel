@@ -27,6 +27,10 @@ before routing, constant-time compare).
     with `frps.reachable=false`.
   - `frps.reachable` is true only when both frps reads succeeded; otherwise
     `proxies` is `[]` and proves nothing about any registration (treat as unknown).
+  - `frpsTls` reports a separate cold TLS connection to the control port. It
+    verifies the configured bridge IPv4 and CA from the read-only `frp-trust`
+    mount. It reports the verified leaf expiry and fingerprint, a bounded
+    failure reason, or `unconfigured` if no trust files have been installed.
   - `proxyId` is the frp proxy name (`awg-route-<route uuid>`); only UDP proxies.
     `remotePort` is `null` for an offline proxy (frps drops its config).
   - `registrationMarker` = first 32 hex chars of `sha256(clientID + "\n" + lastStartTime)`;
@@ -84,6 +88,8 @@ if the token or credentials file is readable by group or others. The service
 reads `package.json` next to `dist/` for `agentVersion`, so ship it in the image.
 
 ## Development
+
+The TLS tests generate disposable certificates using OpenSSL 3.
 
 ```sh
 npm ci

@@ -808,6 +808,17 @@ describe("bridge strict args and projection", () => {
     expect(out).not.toHaveProperty("extra");
     expect(out.setupCommands).toEqual({ install: "a", dryRun: "b", remove: "c" });
   });
+
+  it("projects fresh bridge TLS evidence without unrecognized response fields", () => {
+    const current = {
+      id: "i", name: "n", publicIpv4: "203.0.113.10", controlTcpPort: 7000, udpPortStart: 41000, udpPortEnd: 41031,
+      capacity: 32, heldPorts: 0, managementStatus: "ok", lastObservedAt: null, routes: [],
+      metrics: { frpsTls: { state: "failed", reason: "expired", rawError: "raw diagnostic" } },
+    } as const;
+    const fresh = { ...current, routes: [] };
+    expect(projectBridge(fresh).frpsTls).toEqual({ state: "failed", reason: "expired" });
+    expect(projectBridge({ ...fresh, managementStatus: "stale" })).not.toHaveProperty("frpsTls");
+  });
 });
 
 describe("bridge candidate validation helpers", () => {

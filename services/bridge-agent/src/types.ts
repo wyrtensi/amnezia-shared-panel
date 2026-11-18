@@ -50,12 +50,22 @@ export type HostMetrics = {
   diskUsedPercent: number | null;
 };
 
+export const FRPS_TLS_FAILURES = [
+  "config", "expired", "not_yet_valid", "wrong_ip", "untrusted", "unreachable", "handshake",
+] as const;
+export type FrpsTlsFailure = (typeof FRPS_TLS_FAILURES)[number];
+export type FrpsTlsStatus =
+  | { state: "unconfigured" }
+  | { state: "failed"; reason: FrpsTlsFailure }
+  | { state: "verified"; expiresAt: string; expiresSoon: boolean; fingerprintSha256: string; matchesDeployed: boolean | null };
+
 export type StatusResponse = {
   bridgeId: string;
   agentVersion: string;
   apiVersion: number;
   observedAt: string;
   frps: { reachable: boolean; version: string | null };
+  frpsTls?: FrpsTlsStatus;
   trafficToday?: { inBytes: number; outBytes: number };
   hostMetrics?: HostMetrics;
   applied: AppliedPorts;

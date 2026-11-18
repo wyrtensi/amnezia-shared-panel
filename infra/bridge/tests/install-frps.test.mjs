@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, readdir, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -182,6 +182,24 @@ withHost("a dry run reports the plan and firewall rules and writes nothing", asy
   assert.doesNotMatch(await h.calls(), /systemctl (enable|restart|daemon-reload|disable)/);
 });
 
+withHost("a reinstall recognizes only the managed TLS pair and refuses an interrupted rotation", async (h) => {
+  assert.equal(h.run(...args).status, 0);
+  const rotation = join(h.frp, ".tls-rotation");
+  const pair = join(rotation, "pair.A1B2C3D4");
+  await mkdir(rotation, { mode: 0o700 });
+  await mkdir(pair, { mode: 0o700 });
+  await symlink("pair.A1B2C3D4", join(rotation, "current"));
+  for (const name of ["server.crt", "server.key"]) {
+    await rename(join(h.frp, name), join(pair, name));
+    await symlink(".tls-rotation/current/" + name, join(h.frp, name));
+  }
+  assert.equal(h.run(...args).status, 0);
+  await mkdir(join(rotation, "transaction"), { mode: 0o700 });
+  const pending = h.run(...args);
+  assert.equal(pending.status, 20, pending.stderr);
+  assert.match(pending.stderr, /TLS rotation/);
+});
+
 withHost("a repeat with the same inputs is a no-op that keeps the credentials", async (h) => {
   assert.equal(h.run(...args).status, 0);
   const credentials = await readFile(join(h.frp, "dashboard.env"), "utf8");
@@ -267,10 +285,11 @@ withHost("a failed frps verify keeps the previous config and unit", async (h) =>
   await writeFile(h.conf, old);
   await h.flag("verify-rc", "1");
   const before = await h.calls();
+  const filesBefore = (await readdir(h.frp)).sort();
   const r = h.run(...args);
   assert.equal(r.status, 13);
   assert.equal(await h.readConf(), old);
-  assert.deepEqual((await readdir(h.frp)).sort(), ["bridge-id", "dashboard.env", "frps.toml", "server.crt", "server.key", "token"]);
+  assert.deepEqual((await readdir(h.frp)).sort(), filesBefore);
   assert.doesNotMatch((await h.calls()).slice(before.length), /systemctl (enable|restart|disable)/);
 });
 

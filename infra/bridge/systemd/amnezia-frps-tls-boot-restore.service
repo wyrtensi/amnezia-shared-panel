@@ -1,0 +1,19 @@
+[Unit]
+Description=Restore the last verified frps TLS pair before startup
+Before=amnezia-frps.service
+
+[Service]
+Type=oneshot
+# Remain active on a clean boot too. A live rotation starts frps explicitly.
+RemainAfterExit=yes
+ExecStart=/bin/bash /opt/amnezia-bridge/frps-tls-rotate.sh --restore-pair
+TimeoutStartSec=60
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/etc/amnezia-bridge/frp /etc/amnezia-bridge/frp-trust
+UMask=0077
+
+[Install]
+RequiredBy=amnezia-frps.service

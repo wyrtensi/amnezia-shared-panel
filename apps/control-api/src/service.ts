@@ -1,5 +1,6 @@
 import type {
   Bridge,
+  BridgeRotationEvidence,
   CreateBridgeRequest,
   DeleteBridgeResult,
   BridgeAgentUpdateView,
@@ -281,6 +282,7 @@ export interface ControlApiService {
   runServiceCheckNow: (actor: Actor, checkId: string) => Promise<unknown>;
   /** Probe settings and health plus every node's state and per-protocol results. */
   getReachability: (actor: Actor) => Promise<AdminReachabilityView>;
+  getBridgeRotationEvidence: (actor: Actor, bridgeId: string) => Promise<BridgeRotationEvidence>;
   /**
    * Create or replace the probe's settings. The API key is required on create
    * and kept when omitted on update; it is never returned.

@@ -69,6 +69,16 @@ const render = (value: Bridge, lang: Lang = "en") =>
   );
 
 describe("BridgeCardView", () => {
+  it("warns about a rejected TLS certificate independently of a reachable dashboard", () => {
+    const current: Bridge = {
+      ...bridge,
+      managementStatus: "ok",
+      metrics: { frpsTls: { state: "failed", reason: "expired" } },
+    };
+    expect(render(current)).toContain("Certificate expired");
+    expect(render({ ...current, managementStatus: "stale" })).not.toContain("Certificate expired");
+  });
+
   it("shows fresh bridge metrics and distinguishes zero traffic from a missing sample", () => {
     const current: Bridge = {
       ...bridge,

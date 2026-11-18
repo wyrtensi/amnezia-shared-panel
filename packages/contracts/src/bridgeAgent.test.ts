@@ -38,6 +38,16 @@ const status = (overrides: Record<string, unknown> = {}) => ({
 const ok = (body: unknown) => ({ kind: "response" as const, status: 200, body });
 
 describe("classifyBridgeAgentStatus", () => {
+  it("keeps the TLS failure independent of healthy dashboard and registration", () => {
+    const frpsTls = { state: "failed", reason: "expired" };
+    expect(classifyBridgeAgentStatus(BRIDGE_ID, ok(status({ frpsTls })))).toMatchObject({
+      kind: "ok", frpsReachable: true, frpsTls,
+      proxies: [{ proxyId: "awg-route-a", online: true }],
+    });
+    expect(classifyBridgeAgentStatus(BRIDGE_ID, ok(status({ frpsTls: { state: "failed", reason: "unbounded text" } }))))
+      .not.toHaveProperty("frpsTls");
+  });
+
   it("keeps valid telemetry without making optional telemetry part of route health", () => {
     const trafficToday = { inBytes: 0, outBytes: 1_024 };
     const hostMetrics = { cpuUsedPercent: 12, memoryFreeBytes: 1_024, memoryTotalBytes: 2_048 };

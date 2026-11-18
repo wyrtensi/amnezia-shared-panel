@@ -2077,6 +2077,8 @@ export const adminReachabilityProbeSchema = z.object({
   stale: z.boolean(),
   runInFlight: z.boolean(),
   runRequestedAt: z.iso.datetime().nullable(),
+  /** ID of the pending manual run. Optional for compatibility with older APIs. */
+  requestedRunId: z.uuid().optional(),
   timeZone: z.string(),
   /** The Telegram status widget: when its data last went out, and why not. */
   widgetUpdatedAt: z.iso.datetime().nullable(),

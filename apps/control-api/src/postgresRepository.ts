@@ -16,6 +16,7 @@ import {
 import type {
   AccessSyncStatus,
   Bridge,
+  BridgeRotationEvidence,
   CreateBridgeRequest,
   CreateNodeRequest,
   CreateServiceCheckRequest,
@@ -111,7 +112,9 @@ import type { PollBoundSampleField } from "@amnezia/contracts";
 import {
   isProbeStale,
   nodeServedProtocols,
+  probeCapabilityInputOf,
   probeLevelsSchema,
+  probeSupportsBridgeMeasurement,
   REACHABILITY_DEFAULTS,
   type AdminReachabilityView,
   type UpsertReachabilityProbeRequest,
@@ -186,6 +189,7 @@ import {
   PostgresBridgeRepository,
   type BridgeRouteTarget,
 } from "./bridgeRepository.js";
+import { routeRegistration } from "./bridgeReadModel.js";
 import {
   nodeReachabilityHistory,
   nodeReachabilityResults,
@@ -3327,6 +3331,7 @@ export class PostgresControlRepository implements ControlRepository {
     }),
     runInFlight: row.currentRunId !== null,
     runRequestedAt: row.runRequestedAt?.toISOString() ?? null,
+    ...(row.requestedRunId === null ? {} : { requestedRunId: row.requestedRunId }),
     timeZone: row.timeZone,
     widgetUpdatedAt: row.widgetUpdatedAt?.toISOString() ?? null,
     widgetLastError: row.widgetLastError,
@@ -3420,6 +3425,74 @@ export class PostgresControlRepository implements ControlRepository {
             };
           }),
         };
+      }),
+    };
+  };
+
+  getBridgeRotationEvidence = async (_actor: Actor, bridgeId: string): Promise<BridgeRotationEvidence> => {
+    // A single statement ties registrations, the active endpoint revision, and
+    // probe evidence to the same database snapshot. Older results cannot be
+    // carried into the latest run, even for a currently registered route.
+    const rows = await this.options.db
+      .select({
+        bridge: {
+          managementStatus: vpnBridges.managementStatus,
+          lastObservedAt: vpnBridges.lastObservedAt,
+        },
+        route: vpnBridgeRoutes,
+        endpointRevision: nodes.vpnEndpointRevision,
+        reachabilityEnabled: nodes.reachabilityEnabled,
+        probeEnabled: reachabilityProbe.enabled,
+        probeCapabilities: reachabilityProbe.capabilities,
+        capabilitiesCheckedAt: reachabilityProbe.capabilitiesCheckedAt,
+        lastIngestedRunId: reachabilityProbe.lastIngestedRunId,
+        resultLevels: nodeReachabilityResults.levels,
+        resultStatus: nodeReachabilityResults.status,
+      })
+      .from(vpnBridges)
+      .leftJoin(vpnBridgeRoutes, and(
+        eq(vpnBridgeRoutes.bridgeId, vpnBridges.id),
+        inArray(vpnBridgeRoutes.state, ["active", "retiring"]),
+      ))
+      .leftJoin(nodes, eq(nodes.id, vpnBridgeRoutes.nodeId))
+      .leftJoin(reachabilityProbe, eq(reachabilityProbe.id, 1))
+      .leftJoin(nodeReachabilityResults, and(
+        eq(nodeReachabilityResults.nodeId, vpnBridgeRoutes.nodeId),
+        eq(nodeReachabilityResults.protocol, "awg3"),
+        eq(nodeReachabilityResults.runId, reachabilityProbe.lastIngestedRunId),
+      ))
+      .where(eq(vpnBridges.id, bridgeId))
+      .orderBy(vpnBridgeRoutes.id)
+      .limit(501);
+    const first = rows[0];
+    if (!first) throw new ApiError(404, "Bridge not found", "BRIDGE_NOT_FOUND");
+    if (rows.length > 500) throw new ApiError(409, "Too many routes for a single rotation check", "BRIDGE_ROTATION_LIMIT");
+    const now = new Date();
+    const staleMs = this.options.bridgeObservationStaleMs ?? BRIDGE_OBSERVATION_STALE_MS_DEFAULT;
+    const supports = this.options.probeSupportsBridgeMeasurement ?? probeSupportsBridgeMeasurement;
+    return {
+      bridgeId,
+      latestRunId: first.lastIngestedRunId,
+      probeReady: first.probeEnabled === true && supports(
+        probeCapabilityInputOf(first.probeCapabilities, first.capabilitiesCheckedAt),
+        now,
+      ),
+      routes: rows.flatMap(({ bridge, route, endpointRevision, reachabilityEnabled, resultLevels, resultStatus }) => {
+        if (route === null || endpointRevision === null) return [];
+        const levels = reachabilityEnabled ? probeLevelsSchema.safeParse(resultLevels).data : undefined;
+        return [{
+          id: route.id,
+          nodeId: route.nodeId,
+          state: route.state,
+          publicUdpPort: route.publicUdpPort,
+          vpnEndpointRevision: endpointRevision,
+          registration: routeRegistration(route, bridge, now, staleMs),
+          result: levels ? {
+            handshake: levels.handshake.ok === true,
+            http: resultStatus === "ok" && levels.http.ok === true,
+            download: levels.download?.ok ?? null,
+          } : null,
+        }];
       }),
     };
   };
@@ -3583,7 +3656,7 @@ export class PostgresControlRepository implements ControlRepository {
       const now = new Date();
       const [updated] = await tx
         .update(reachabilityProbe)
-        .set({ runRequestedAt: now, updatedAt: now })
+        .set({ runRequestedAt: now, requestedRunId: randomUUID(), updatedAt: now })
         .where(eq(reachabilityProbe.id, 1))
         .returning();
       if (!updated) {
@@ -3595,7 +3668,7 @@ export class PostgresControlRepository implements ControlRepository {
         action: "admin.reachability.run",
         targetType: "reachability_probe",
         targetId: null,
-        metadata: {},
+        metadata: { requestedRunId: updated.requestedRunId },
       });
       return this.toReachabilityProbeView(updated, now);
     });

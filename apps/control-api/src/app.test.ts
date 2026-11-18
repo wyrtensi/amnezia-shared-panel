@@ -156,6 +156,9 @@ createNode: vi.fn(() => Promise.resolve({ id: "node-1" })),
   runServiceCheckNow: vi.fn(() => Promise.resolve({ id: "check-1" })),
   resetServiceCheckResults: vi.fn(() => Promise.resolve({ cleared: 3 })),
   getReachability: vi.fn(() => Promise.resolve({ probe: null, nodes: [] })),
+  getBridgeRotationEvidence: vi.fn<ControlApiService["getBridgeRotationEvidence"]>((_actor, bridgeId) =>
+    Promise.resolve({ bridgeId, probeReady: false, latestRunId: null, routes: [] }),
+  ),
   upsertReachabilityProbe: vi.fn(() => Promise.resolve(reachabilityProbeView)),
   deleteReachabilityProbe: vi.fn(() => Promise.resolve()),
   runReachabilityNow: vi.fn(() => Promise.resolve(reachabilityProbeView)),
@@ -2340,6 +2343,19 @@ describe("bridge registry routes", () => {
     });
     expect(confirmed.statusCode).toBe(200);
     expect(service.releaseBridgeRoute).toHaveBeenCalledWith(admin, routeId);
+    await app.close();
+  });
+
+  it("serves bridge rotation evidence only to an administrator", async () => {
+    const { service, admin, app } = await adminApp();
+    const url = `/api/admin/vpn-bridges/${bridgeFixture.id}/rotation-evidence`;
+    const denied = await app.inject({ method: "GET", url });
+    expect(denied.statusCode).toBe(401);
+    expect(service.getBridgeRotationEvidence).not.toHaveBeenCalled();
+    const response = await app.inject({ method: "GET", url, headers: { "x-dev-user-email": admin.email } });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ bridgeId: bridgeFixture.id, routes: [] });
+    expect(service.getBridgeRotationEvidence).toHaveBeenCalledWith(admin, bridgeFixture.id);
     await app.close();
   });
 

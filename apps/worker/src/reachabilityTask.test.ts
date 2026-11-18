@@ -232,6 +232,18 @@ describe("reachability task", () => {
     expect(client.startRun).toHaveBeenCalledTimes(1);
   });
 
+  it("uses the pending manual run ID so callers can exclude all earlier runs", async () => {
+    const client = fakeClient();
+    const repository = fakeRepository(probeRow({
+      currentRunStartedAt: minutesAgo(1),
+      runRequestedAt: minutesAgo(1),
+      requestedRunId: "requested-run",
+    }));
+    await tick(repository, client);
+    expect(client.startRun).toHaveBeenCalledWith(expect.objectContaining({ runId: "requested-run" }));
+    expect(repository.markRunStarted).toHaveBeenCalledWith("requested-run", NOW);
+  });
+
   it("starts the first run of a new probe", async () => {
     const client = fakeClient();
     await tick(fakeRepository(probeRow({ currentRunStartedAt: null, lastResultAt: null })), client);

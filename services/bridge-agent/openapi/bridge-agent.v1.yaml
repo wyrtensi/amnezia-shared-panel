@@ -155,6 +155,26 @@ components:
           properties:
             reachable: { type: boolean }
             version: { type: string, nullable: true }
+        frpsTls:
+          description: Fresh loopback handshake against the bridge IPv4 and pinned CA, independent of dashboard health.
+          oneOf:
+            - type: object
+              required: [state]
+              properties:
+                state: { type: string, enum: [unconfigured] }
+            - type: object
+              required: [state, reason]
+              properties:
+                state: { type: string, enum: [failed] }
+                reason: { type: string, enum: [config, expired, not_yet_valid, wrong_ip, untrusted, unreachable, handshake] }
+            - type: object
+              required: [state, expiresAt, expiresSoon, fingerprintSha256, matchesDeployed]
+              properties:
+                state: { type: string, enum: [verified] }
+                expiresAt: { type: string, format: date-time }
+                expiresSoon: { type: boolean, description: The leaf expires within 30 days. }
+                fingerprintSha256: { type: string, pattern: "^[a-f0-9]{64}$" }
+                matchesDeployed: { type: boolean, nullable: true, description: Null when no host fingerprint has been published. }
         hostMetrics:
           type: object
           required: [cpuUsedPercent, memoryFreeBytes, memoryTotalBytes, diskAvailableBytes, diskUsedPercent]

@@ -14,6 +14,7 @@
 
 import { statSync } from "node:fs";
 import { lstat, writeFile } from "node:fs/promises";
+import type { BridgeFrpsTlsStatus } from "@amnezia/contracts";
 
 import { resolveSecret } from "./apiKey.js";
 import { flagOf, positionals } from "./args.js";
@@ -87,6 +88,7 @@ export type BridgeView = {
   managementStatus: string;
   lastObservedAt: string | null;
   management?: BridgeManagementView | null;
+  metrics?: { frpsTls?: BridgeFrpsTlsStatus };
   routes: BridgeRouteSummary[];
   setupCommands?: SetupCommands | null;
 };
@@ -284,9 +286,33 @@ function projectManagement(m: BridgeManagementView | null | undefined): Record<s
   };
 }
 
+// The CLI ships without runtime dependencies. Select only known public fields.
+function currentFrpsTls(bridge: BridgeView): BridgeFrpsTlsStatus | undefined {
+  if (bridge.managementStatus !== "ok") return undefined;
+  const status = bridge.metrics?.frpsTls;
+  if (status?.state === "unconfigured") return { state: "unconfigured" };
+  if (status?.state === "failed") {
+    const reasons = ["config", "expired", "not_yet_valid", "wrong_ip", "untrusted", "unreachable", "handshake"];
+    return reasons.includes(status.reason) ? { state: "failed", reason: status.reason } : undefined;
+  }
+  if (status?.state !== "verified" ||
+    typeof status.expiresAt !== "string" || !Number.isFinite(Date.parse(status.expiresAt)) ||
+    typeof status.fingerprintSha256 !== "string" || !/^[a-f0-9]{64}$/.test(status.fingerprintSha256) ||
+    typeof status.expiresSoon !== "boolean" ||
+    (status.matchesDeployed !== null && typeof status.matchesDeployed !== "boolean")) return undefined;
+  return {
+    state: "verified",
+    expiresAt: new Date(status.expiresAt).toISOString(),
+    fingerprintSha256: status.fingerprintSha256,
+    expiresSoon: status.expiresSoon,
+    matchesDeployed: status.matchesDeployed,
+  };
+}
+
 /** Explicit projection: only typed non-secret fields reach --json output. */
 export function projectBridge(b: BridgeView): Record<string, unknown> {
   const setup = projectSetup(b.setupCommands);
+  const frpsTls = currentFrpsTls(b);
   return {
     id: b.id,
     name: b.name,
@@ -299,6 +325,7 @@ export function projectBridge(b: BridgeView): Record<string, unknown> {
     managementStatus: b.managementStatus,
     lastObservedAt: nullable(b.lastObservedAt),
     management: projectManagement(b.management),
+    ...(frpsTls ? { frpsTls } : {}),
     routes: b.routes.map((r) => ({
       id: r.id,
       nodeId: r.nodeId,
@@ -494,9 +521,18 @@ function describeFrps(m: BridgeManagementView | null | undefined): string {
   return m.frpsReachable ? show(m.frpsVersion) : "unreachable";
 }
 
+function describeFrpsTls(bridge: BridgeView): string {
+  const status = currentFrpsTls(bridge);
+  if (!status) return "—";
+  if (status.state === "unconfigured") return "unconfigured";
+  if (status.state === "failed") return status.reason;
+  if (status.matchesDeployed === false) return "fingerprint mismatch";
+  return status.expiresSoon ? `expires ${status.expiresAt.slice(0, 10)}` : "verified";
+}
+
 function renderBridgeTable(bridges: BridgeView[]): string[] {
   if (bridges.length === 0) return ["(no bridges)"];
-  const header = ["id", "name", "ipv4", "mgmt", "agent", "frps", "ports", "routes", "observed"];
+  const header = ["id", "name", "ipv4", "mgmt", "agent", "frps", "tls", "ports", "routes", "observed"];
   const rows = bridges.map((bridge) => [
     bridge.id,
     bridge.name,
@@ -504,6 +540,7 @@ function renderBridgeTable(bridges: BridgeView[]): string[] {
     bridge.managementStatus,
     show(bridge.management?.agentVersion),
     describeFrps(bridge.management),
+    describeFrpsTls(bridge),
     `${bridge.heldPorts}/${bridge.capacity}`,
     String(bridge.routes.length),
     show(bridge.lastObservedAt),

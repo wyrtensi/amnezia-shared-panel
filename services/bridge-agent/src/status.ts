@@ -5,6 +5,7 @@ import {
   STATUS_CAPABILITY,
   UPDATE_CAPABILITY,
   type AppliedPorts,
+  type FrpsTlsStatus,
   type HostMetrics,
   type IdentityResponse,
   type StatusError,
@@ -21,6 +22,7 @@ export type AgentContext = {
   update?: { approvedRepository: string; spool: UpdateSpool } | null;
   now?: () => Date;
   sampleHostMetrics?: () => Promise<HostMetrics>;
+  sampleFrpsTls?: () => Promise<FrpsTlsStatus>;
 };
 
 export const identity = (ctx: AgentContext): IdentityResponse => ({
@@ -42,10 +44,11 @@ const toError = (endpoint: string, error: unknown): StatusError =>
  * otherwise `proxies` is empty and says nothing about any registration.
  */
 export const status = async (ctx: AgentContext): Promise<StatusResponse> => {
-  const [server, proxies, host] = await Promise.allSettled([
+  const [server, proxies, host, tls] = await Promise.allSettled([
     fetchServerInfo(ctx.frps),
     fetchUdpProxies(ctx.frps),
     ctx.sampleHostMetrics?.(),
+    ctx.sampleFrpsTls?.(),
   ]);
   const errors: StatusError[] = [];
   if (server.status === "rejected") errors.push(toError("serverinfo", server.reason));
@@ -69,6 +72,7 @@ export const status = async (ctx: AgentContext): Promise<StatusResponse> => {
     },
     ...(trafficToday ? { trafficToday } : {}),
     ...(host.status === "fulfilled" && host.value ? { hostMetrics: host.value } : {}),
+    ...(tls.status === "fulfilled" && tls.value ? { frpsTls: tls.value } : {}),
     applied: { ...ctx.applied },
     proxies: info && proxies.status === "fulfilled" ? proxies.value : [],
     errors: errors.slice(0, MAX_ERRORS),

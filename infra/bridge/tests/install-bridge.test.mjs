@@ -173,7 +173,16 @@ withHost("the compose service is loopback-only, root-readable, locked down and d
   assert.match(compose, /BRIDGE_AGENT_LISTEN: 127\.0\.0\.1:/);
   assert.match(compose, /api-token:\/etc\/amnezia-bridge\/agent\/api-token:ro/);
   assert.match(compose, /dashboard\.env:\/etc\/amnezia-bridge\/frp\/dashboard\.env:ro/);
+  assert.match(compose, /frp-trust:\/etc\/amnezia-bridge\/frp-trust:ro/);
   assert.doesNotMatch(compose, /BRIDGE_AGENT_API_TOKEN=/);
+});
+
+withHost("a linked TLS trust directory is refused before starting the agent", async (h) => {
+  await symlink(join(h.agentDir, "..", "frp"), join(h.agentDir, "..", "frp-trust"));
+  const r = h.run(withImage);
+  assert.equal(r.status, 62, output(r));
+  assert.match(output(r), /frp-trust must not be a symlink/);
+  assert.doesNotMatch(await h.calls(), /compose .*(pull|up)/);
 });
 
 withHost("a dry run plans both parts and generates, pulls, writes and starts nothing", async (h) => {
@@ -396,6 +405,7 @@ withHost("installs the update spool and the updater units with an explicit /bin/
 
   // Spool: requests/ for the agent to write, results/ for it to read; root-only updater state.
   assert.equal((await stat(join(h.spool, "requests"))).mode & 0o777, 0o700);
+  assert.equal((await stat(join(h.agentDir, "..", "frp-trust"))).mode & 0o777, 0o755);
   assert.equal((await stat(join(h.spool, "results"))).mode & 0o777, 0o755);
   assert.equal((await stat(h.updaterState)).mode & 0o777, 0o700);
 
@@ -458,7 +468,7 @@ withHost("a dry run plans the spool and the units and creates neither", async (h
 withHost("the agent gets exactly one read-write mount (the request spool) and no Docker socket", async () => {
   const compose = await readFile(composePath, "utf8");
   const mounts = compose.match(/^\s+- \$\{[A-Z_]+[^\n]*:\/[^\n]*$/gm) ?? [];
-  assert.equal(mounts.length, 4, mounts.join("\n"));
+  assert.equal(mounts.length, 5, mounts.join("\n"));
   const writable = mounts.filter((line) => !line.endsWith(":ro"));
   assert.deepEqual(
     writable.map((line) => line.trim()),

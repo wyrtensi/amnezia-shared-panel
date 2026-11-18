@@ -552,6 +552,11 @@ export const buildApp = async ({
   app.get("/api/admin/vpn-bridges", async (request) =>
     service.listBridges(adminFor(request)),
   );
+  app.get("/api/admin/vpn-bridges/:id/rotation-evidence", async (request) => {
+    const admin = adminFor(request);
+    const { id } = idParamsSchema.parse(request.params);
+    return service.getBridgeRotationEvidence(admin, id);
+  });
   app.post("/api/admin/vpn-bridges", async (request, reply) => {
     const admin = adminFor(request);
     const result = await service.createBridge(

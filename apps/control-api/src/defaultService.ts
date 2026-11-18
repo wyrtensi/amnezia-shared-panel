@@ -435,6 +435,7 @@ export const createDefaultControlApiService = ({
   runServiceCheckNow: (actor, checkId) =>
     repository.runServiceCheckNow(actor, checkId),
   getReachability: (actor) => repository.getReachability(actor),
+  getBridgeRotationEvidence: (actor, bridgeId) => repository.getBridgeRotationEvidence(actor, bridgeId),
   upsertReachabilityProbe: (actor, request) =>
     repository.upsertReachabilityProbe(actor, request),
   deleteReachabilityProbe: (actor) => repository.deleteReachabilityProbe(actor),

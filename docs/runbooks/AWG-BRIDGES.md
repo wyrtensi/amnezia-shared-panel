@@ -94,6 +94,8 @@ Never run a pre-bridge worker with the gate on.
    To check the certificate on a fresh connection without changing the route,
    run the printed `checkTls` command. It checks the bridge CA and IP SAN and
    prints the expiry of the certificate served by frps.
+   For monitoring and opt-in rotation across all routes on a bridge, follow
+   the [certificate rotation setup](../../infra/bridge/README.md#certificate-monitoring-and-automatic-rotation).
    Existing FRP services keep their original credential paths. Keep the legacy
    files in place while those services use them.
 4. Wait for the bridge-agent's next observation: `amnezia-panel bridges --json`

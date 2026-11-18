@@ -1,0 +1,11 @@
+[Unit]
+Description=Check Amnezia frps TLS renewal and recover interrupted rotation
+
+[Timer]
+OnBootSec=2min
+OnUnitInactiveSec=5min
+AccuracySec=30s
+Unit=amnezia-frps-tls-rotate.service
+
+[Install]
+WantedBy=timers.target

@@ -72,6 +72,7 @@ ENV_FILE="$AGENT_DIR/agent.env"
 PIN_FILE="$AGENT_DIR/image.pin"
 SYSTEMD_DIR="${AMNEZIA_SYSTEMD_DIR:-/run/systemd/system}"
 DASH_ENV_FILE="$BRIDGE_ETC/frp/dashboard.env"
+FRP_TRUST_DIR="$BRIDGE_ETC/frp-trust"
 COMPOSE_FILE="$HERE/compose.yaml"
 PROJECT=amnezia-bridge-agent
 HOST_KEY_PUB="${AMNEZIA_SSH_HOST_KEY:-$ETC/ssh/ssh_host_ed25519_key.pub}"
@@ -195,6 +196,15 @@ if [ -z "$AGENT_IMAGE" ]; then
 fi
 
 file_mode() { stat -c %a "$1"; }
+check_frp_trust_dir() {
+  [ ! -L "$FRP_TRUST_DIR" ] || die 62 E_FILE "$FRP_TRUST_DIR must not be a symlink"
+  [ -e "$FRP_TRUST_DIR" ] || return 0
+  [ -d "$FRP_TRUST_DIR" ] && [ "$(stat -c %u "$FRP_TRUST_DIR")" = "$(id -u)" ] ||
+    die 62 E_FILE "$FRP_TRUST_DIR must be a root-owned directory"
+  mode="$(file_mode "$FRP_TRUST_DIR")"
+  [ "$((0$mode & 022))" -eq 0 ] || die 62 E_FILE "$FRP_TRUST_DIR is group/world writable"
+}
+
 check_token_file() {
   mode="$(file_mode "$TOKEN_FILE")"
   case "$mode" in
@@ -226,6 +236,7 @@ compose() {
   docker compose --project-name "$PROJECT" --env-file "$ENV_FILE" -f "$COMPOSE_FILE" "$@"
 }
 
+check_frp_trust_dir
 if [ "$DRY_RUN" -eq 1 ]; then
   if [ -f "$TOKEN_FILE" ]; then
     check_token_file
@@ -236,6 +247,7 @@ if [ "$DRY_RUN" -eq 1 ]; then
   plan "write $ENV_FILE (mode 0600): image $AGENT_IMAGE, ports, bridge id"
   plan "docker compose pull and up -d the $PROJECT project (network_mode host, listens on 127.0.0.1:$AGENT_PORT)"
   plan "confirm the listener on 127.0.0.1:$AGENT_PORT and GET /healthz"
+  plan "prepare $FRP_TRUST_DIR for public certificate metadata (read-only to the agent)"
   plan "create the update spool $SPOOL_DIR (requests/ 0700 for the agent, results/ 0755 read-only to it) and $UPDATER_STATE_DIR (0700)"
   plan "write the pin file $PIN_FILE (mode 0600): repository $IMAGE_REPO, digest ${AGENT_IMAGE#*@}"
   plan "install $UNIT_DIR/$UPDATER_UNIT.{path,service} (ExecStart=/bin/bash $UPDATER_SCRIPT, approved repository $APPROVED_REPO) and enable the watcher"
@@ -245,6 +257,9 @@ fi
 
 mkdir -p "$AGENT_DIR"
 chmod 0700 "$AGENT_DIR"
+if [ ! -d "$FRP_TRUST_DIR" ]; then
+  mkdir -m 0755 "$FRP_TRUST_DIR"
+fi
 if [ ! -f "$TOKEN_FILE" ]; then
   # Alphanumeric only, so the file is safe to read from a shell or a pipe.
   token="$(LC_ALL=C tr -dc 'A-Za-z0-9' </dev/urandom | head -c 48 || true)"

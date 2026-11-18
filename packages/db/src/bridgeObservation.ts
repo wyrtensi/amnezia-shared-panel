@@ -118,6 +118,7 @@ export const applyBridgePollResult = async (
       host: outcome.hostMetrics,
       trafficToday: outcome.trafficToday,
       agentLatencyMs: outcome.agentLatencyMs,
+      frpsTls: outcome.frpsTls,
     },
     lastObservedAt: startedAt,
     lastPollAttemptAt: startedAt,

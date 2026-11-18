@@ -141,8 +141,45 @@ check_public_file() {
   [ "$((0$mode & 022))" -eq 0 ] || die 11 E_FILE "$1 has mode $mode, expected 0644"
 }
 check_secret_file "$TOKEN_FILE"
-check_secret_file "$KEY_FILE"
-check_public_file "$CERT_FILE"
+# Serialize changes to the frps service with the optional TLS rotator.
+if [ "$DRY_RUN" -eq 0 ]; then
+  tls_lock="$FRP_DIR/.tls-lock"
+  [ ! -L "$tls_lock" ] || die 11 E_FILE "unsafe TLS rotation lock"
+  if [ -e "$tls_lock" ]; then check_secret_file "$tls_lock"; fi
+  old_umask="$(umask)"
+  umask 077
+  exec 9>>"$tls_lock"
+  umask "$old_umask"
+  flock -n 9 || die 20 E_CONFLICT "another FRP operation holds the TLS rotation lock"
+fi
+rotation="$FRP_DIR/.tls-rotation"
+if [ -e "$rotation/transaction" ] || [ -L "$rotation/transaction" ]; then
+  die 20 E_CONFLICT "recover the interrupted TLS rotation before changing frps"
+fi
+
+cert_file_path() {
+  pem_path="$1"
+  if [ ! -L "$pem_path" ]; then printf '%s\n' "$pem_path"; return; fi
+  name="${pem_path##*/}"
+  [ "$(readlink -- "$pem_path")" = ".tls-rotation/current/$name" ] ||
+    die 11 E_FILE "unexpected certificate symlink"
+  pair="$(readlink -- "$rotation/current")" ||
+    die 11 E_FILE "missing managed certificate generation"
+  printf '%s' "$pair" | grep -Eq '^pair\.[A-Za-z0-9]{8}$' ||
+    die 11 E_FILE "unexpected certificate generation"
+  for dir in "$rotation" "$rotation/$pair"; do
+    [ -d "$dir" ] && [ ! -L "$dir" ] && [ "$(file_mode "$dir")" = 700 ] ||
+      die 11 E_FILE "unsafe certificate generation directory"
+    [ "$DRY_RUN" -eq 1 ] || [ "$(stat -c %u -- "$dir")" = "$(id -u)" ] ||
+      die 11 E_FILE "certificate generation directory must be owned by root"
+  done
+  [ ! -L "$rotation/$pair/$name" ] || die 11 E_FILE "unexpected certificate generation symlink"
+  printf '%s\n' "$rotation/$pair/$name"
+}
+checked_key="$(cert_file_path "$KEY_FILE")"
+checked_cert="$(cert_file_path "$CERT_FILE")"
+check_secret_file "$checked_key"
+check_public_file "$checked_cert"
 # An existing credentials file is sourced for `frps verify`: trust it only if protected.
 [ ! -f "$DASH_ENV_FILE" ] || check_secret_file "$DASH_ENV_FILE"
 

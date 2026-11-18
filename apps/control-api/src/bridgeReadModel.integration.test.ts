@@ -45,6 +45,7 @@ const agent = {
   statusFails: false,
   frpsReachable: true,
   trafficToday: undefined as { inBytes: number; outBytes: number } | undefined,
+  frpsTls: undefined as { state: "failed"; reason: "expired" } | undefined,
   proxies: [] as Proxy[],
   requests: [] as Array<{ path: string; authorization: string | undefined }>,
   reset() {
@@ -54,6 +55,7 @@ const agent = {
     this.statusFails = false;
     this.frpsReachable = true;
     this.trafficToday = undefined;
+    this.frpsTls = undefined;
     this.proxies = [];
     this.requests = [];
   },
@@ -113,6 +115,7 @@ describe("bridge admin read model (real PostgreSQL, fake agent)", () => {
             observedAt: new Date().toISOString(),
             frps: { reachable: agent.frpsReachable, version: agent.frpsReachable ? "0.72.0" : null },
             trafficToday: agent.trafficToday,
+            frpsTls: agent.frpsTls,
             applied: { controlTcpPort: 7000, udpPortStart: 41000, udpPortEnd: 41031 },
             proxies: agent.frpsReachable ? agent.proxies : [],
             errors: agent.frpsReachable
@@ -292,10 +295,15 @@ describe("bridge admin read model (real PostgreSQL, fake agent)", () => {
     const bridge = await createBridge();
     await enroll(bridge.id);
     expect((await summaryOf(bridge.id)).metrics?.trafficToday).toBeUndefined();
+    expect((await summaryOf(bridge.id)).metrics?.frpsTls).toBeUndefined();
 
     agent.trafficToday = { inBytes: 0, outBytes: 4_096 };
+    agent.frpsTls = { state: "failed", reason: "expired" };
     await poll(bridge.id);
-    expect((await summaryOf(bridge.id)).metrics?.trafficToday).toEqual(agent.trafficToday);
+    expect(await summaryOf(bridge.id)).toMatchObject({
+      management: { frpsReachable: true },
+      metrics: { trafficToday: agent.trafficToday, frpsTls: agent.frpsTls },
+    });
 
     await db().update(vpnBridges)
       .set({ lastObservedAt: new Date(Date.now() - 60 * MINUTE) })
@@ -488,6 +496,68 @@ describe("bridge admin read model (real PostgreSQL, fake agent)", () => {
         expect(await overviewOf()).toMatchObject({ awgPathOk: 0, awgPathFailed: 1, awgPathUnknown: 0 });
       } finally {
         await db().delete(nodeReachabilityResults).where(eq(nodeReachabilityResults.nodeId, a.nodeId));
+        await db().delete(reachabilityProbe);
+      }
+    },
+  );
+
+  runDatabaseTest(
+    "binds rotation evidence to the exact ingested run and reports an unmeasurable retiring route",
+    async () => {
+      const bridge = await createBridge();
+      await enroll(bridge.id);
+      const active = await seedRoute("rotation-active", bridge.id);
+      const retiring = await seedRoute("rotation-retiring", bridge.id);
+      agent.proxies = [active.route, retiring.route].map((route) => ({
+        proxyId: bridgeFrpProxyName(route.id), remotePort: route.publicUdpPort,
+        online: true, registrationMarker: M1,
+      }));
+      await poll(bridge.id);
+      for (const { route, nodeId } of [active, retiring]) {
+        await operatorVerify(route.id, M1);
+        await activate(nodeId, route.id);
+      }
+      await activate(retiring.nodeId, null);
+
+      const credentials = encryptSecret("test-probe-key", keyring, 1);
+      await db().delete(reachabilityProbe);
+      await db().insert(reachabilityProbe).values({
+        label: "rotation-test-probe",
+        apiBaseUrl: "http://probe.invalid:4002",
+        credentialsCiphertext: credentials.ciphertext,
+        credentialsNonce: credentials.nonce,
+        credentialsAuthTag: credentials.authTag,
+        credentialsKeyVersion: credentials.keyVersion,
+        controlUrl: "https://control.invalid/",
+        capabilities: ["bridge-measurement"],
+        capabilitiesCheckedAt: new Date(),
+      });
+      try {
+        const requested = await repository.runReachabilityNow(admin);
+        expect(requested.requestedRunId).toMatch(/^[0-9a-f-]{36}$/);
+        const runId = requested.requestedRunId!;
+        await db().update(reachabilityProbe).set({ lastIngestedRunId: runId, lastResultAt: new Date() });
+        const level = { ok: true, detail: null, latencyMs: null };
+        await db().insert(nodeReachabilityResults).values({
+          nodeId: active.nodeId, protocol: "awg3", status: "ok",
+          levels: { ping: level, tcp: level, handshake: level, http: level, download: level },
+          runId: randomUUID(), checkedAt: new Date(),
+        });
+        const read = () => repository.getBridgeRotationEvidence(admin, bridge.id);
+        const old = await read();
+        expect(old).toMatchObject({ bridgeId: bridge.id, probeReady: true, latestRunId: runId });
+        expect(old.routes).toEqual(expect.arrayContaining([
+          expect.objectContaining({ id: active.route.id, state: "active", result: null }),
+          expect.objectContaining({ id: retiring.route.id, state: "retiring", result: null }),
+        ]));
+        await db().update(nodeReachabilityResults).set({ runId }).where(eq(nodeReachabilityResults.nodeId, active.nodeId));
+        const current = (await read()).routes.find(({ id }) => id === active.route.id);
+        expect(current).toMatchObject({
+          vpnEndpointRevision: await revisionOf(active.nodeId),
+          registration: { marker: M1, status: "online" },
+          result: { handshake: true, http: true, download: true },
+        });
+      } finally {
         await db().delete(reachabilityProbe);
       }
     },

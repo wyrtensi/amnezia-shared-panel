@@ -264,6 +264,30 @@ export const bridgeRouteSummarySchema = z.object({
   verification: bridgeRouteVerificationSchema,
 });
 
+const bridgeRotationRouteSchema = z.object({
+  id: z.uuid(),
+  nodeId: z.uuid(),
+  publicUdpPort: portSchema,
+  vpnEndpointRevision: z.int().nonnegative(),
+});
+
+/** One snapshot of the current routes and the latest regular probe evidence. */
+export const bridgeRotationEvidenceSchema = z.object({
+  bridgeId: z.uuid(),
+  probeReady: z.boolean(),
+  latestRunId: z.uuid().nullable(),
+  routes: z.array(bridgeRotationRouteSchema.extend({
+    state: bridgeRouteStateSchema,
+    registration: bridgeRouteRegistrationSchema,
+    result: z.object({
+      handshake: z.boolean(),
+      http: z.boolean(),
+      download: z.boolean().nullable(),
+    }).nullable(),
+  })).max(500),
+});
+export type BridgeRotationEvidence = z.infer<typeof bridgeRotationEvidenceSchema>;
+
 /**
  * Host commands for the bridge installer (`/opt/amnezia-bridge/install-bridge.sh` on the bridge host).
  * It installs the frps and, when `--agent-image <name@sha256:digest>` is
@@ -334,10 +358,26 @@ export const bridgeTrafficTodaySchema = z.object({
   inBytes: z.int().nonnegative(),
   outBytes: z.int().nonnegative(),
 });
+export const bridgeFrpsTlsStatusSchema = z.discriminatedUnion("state", [
+  z.object({ state: z.literal("unconfigured") }),
+  z.object({
+    state: z.literal("failed"),
+    reason: z.enum(["config", "expired", "not_yet_valid", "wrong_ip", "untrusted", "unreachable", "handshake"]),
+  }),
+  z.object({
+    state: z.literal("verified"),
+    expiresAt: z.iso.datetime(),
+    expiresSoon: z.boolean(),
+    fingerprintSha256: z.string().regex(/^[a-f0-9]{64}$/),
+    matchesDeployed: z.boolean().nullable(),
+  }),
+]);
+export type BridgeFrpsTlsStatus = z.infer<typeof bridgeFrpsTlsStatusSchema>;
 export const bridgeMetricsSchema = z.object({
   host: bridgeHostMetricsSchema.optional(),
   trafficToday: bridgeTrafficTodaySchema.optional(),
   agentLatencyMs: z.int().nonnegative().optional(),
+  frpsTls: bridgeFrpsTlsStatusSchema.optional(),
 });
 export type BridgeMetrics = z.infer<typeof bridgeMetricsSchema>;
 

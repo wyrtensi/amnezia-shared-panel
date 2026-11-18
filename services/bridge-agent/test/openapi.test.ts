@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
-import { ERROR_CODES, MAX_ERRORS } from "../src/types.js";
+import { ERROR_CODES, FRPS_TLS_FAILURES, MAX_ERRORS } from "../src/types.js";
 import { UPDATE_AGENT_STATES } from "../src/update.js";
 
 const yaml = readFileSync(new URL("../openapi/bridge-agent.v1.yaml", import.meta.url), "utf8");
@@ -20,5 +20,10 @@ describe("openapi/bridge-agent.v1.yaml", () => {
     const line = /code: \{ type: string, enum: \[(FRPS_[^\]]+)\] \}/.exec(yaml)?.[1] ?? "";
     expect(line.split(", ")).toEqual([...ERROR_CODES]);
     expect(yaml).toContain(`maxItems: ${MAX_ERRORS}`);
+  });
+
+  it("lists the same bounded TLS failure reasons as the code", () => {
+    const line = /reason: \{ type: string, enum: \[(config, expired[^\]]+)\] \}/.exec(yaml)?.[1] ?? "";
+    expect(line.split(", ")).toEqual([...FRPS_TLS_FAILURES]);
   });
 });

@@ -113,6 +113,8 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq shellcheck
           shellcheck -s sh infra/bridge/install-bridge.sh infra/bridge/install-frps.sh infra/node/scripts/install-frpc.sh scripts/add-bridge-tunnel.sh
+          shellcheck -s sh infra/bridge/frps-tls-issue.sh infra/bridge/frps-tls-gate-ssh.sh infra/bridge/frps-tls-gate-command.sh
           shellcheck -s bash infra/bridge/bridge-agent-update.sh
+          shellcheck -s bash infra/bridge/frps-tls-rotate.sh
           shellcheck -s bash scripts/repair-updater-units.sh infra/prod/install-updater.sh infra/node/scripts/install-agent-updater.sh
       - run: node --test infra/node/tests/*.mjs infra/bridge/tests/*.mjs infra/prod/tests/*.mjs scripts/tests/*.mjs

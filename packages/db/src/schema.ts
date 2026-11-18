@@ -870,6 +870,7 @@ export const reachabilityProbe = pgTable(
     failThreshold: integer("fail_threshold").default(2).notNull(),
     staleAfterSec: integer("stale_after_sec").default(10800).notNull(),
     runRequestedAt: timestamp("run_requested_at", { withTimezone: true }),
+    requestedRunId: uuid("requested_run_id"),
     currentRunId: uuid("current_run_id"),
     currentRunStartedAt: timestamp("current_run_started_at", { withTimezone: true }),
     lastResultAt: timestamp("last_result_at", { withTimezone: true }),

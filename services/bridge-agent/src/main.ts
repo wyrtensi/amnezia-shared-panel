@@ -1,4 +1,5 @@
 import { loadConfig } from "./config.js";
+import { createFrpsTlsSampler, FRPS_TRUST_DIRECTORY } from "./frpsTls.js";
 import { createHostMetricsSampler } from "./hostMetrics.js";
 import { createServer } from "./server.js";
 import { readAgentVersion } from "./types.js";
@@ -27,6 +28,7 @@ const main = (): void => {
       frps: config.frps,
       update: config.update,
       sampleHostMetrics: createHostMetricsSampler(config.tokenFile),
+      sampleFrpsTls: createFrpsTlsSampler(FRPS_TRUST_DIRECTORY, config.applied.controlTcpPort),
     },
     log,
   });

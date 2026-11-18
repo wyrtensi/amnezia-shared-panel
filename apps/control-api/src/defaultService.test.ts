@@ -182,6 +182,9 @@ const createRepository = (): ControlRepository => ({
   runServiceCheckNow: vi.fn(() => Promise.resolve({ id: "check-1" })),
   resetServiceCheckResults: vi.fn(() => Promise.resolve({ cleared: 3 })),
   getReachability: vi.fn(() => Promise.resolve({ probe: null, nodes: [] })),
+  getBridgeRotationEvidence: vi.fn<ControlRepository["getBridgeRotationEvidence"]>((_actor, bridgeId) =>
+    Promise.resolve({ bridgeId, probeReady: false, latestRunId: null, routes: [] }),
+  ),
   upsertReachabilityProbe: vi.fn(() => Promise.resolve(reachabilityProbeView)),
   deleteReachabilityProbe: vi.fn(() => Promise.resolve()),
   runReachabilityNow: vi.fn(() => Promise.resolve(reachabilityProbeView)),
