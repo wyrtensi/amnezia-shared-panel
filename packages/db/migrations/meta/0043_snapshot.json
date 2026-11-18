@@ -1,6 +1,6 @@
 {
   "id": "03249f5a-d5c8-45f4-b84a-435484229227",
-  "prevId": "29b48a21-460e-4f07-9a32-e5099323bb7a",
+  "prevId": "11555d76-edbb-429c-b343-775363483838",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -2429,6 +2429,12 @@
         },
         "widget_updated_at": {
           "name": "widget_updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "widget_sent_at": {
+          "name": "widget_sent_at",
           "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": false

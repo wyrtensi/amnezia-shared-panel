@@ -2386,6 +2386,14 @@ describe("PostgresReachabilityRepository", () => {
       .where(eq(jobOutbox.type, "notify.reachability"));
     expect(jobs).toHaveLength(1);
     expect(jobs[0]?.payload).toEqual({ text: "down" });
+    // The widget refresh of a run with an alert says so.
+    const widgetJobs = await database.db
+      .select()
+      .from(jobOutbox)
+      .where(eq(jobOutbox.type, "notify.reachability-widget"));
+    expect(widgetJobs.map((job) => [job.deduplicationKey, job.payload])).toEqual([
+      [`notify.reachability-widget:run:${runId}`, { notice: true }],
+    ]);
     const probe = await repository.loadProbe();
     expect(probe?.currentRunId).toBeNull();
     expect(probe?.lastResultAt).not.toBeNull();
@@ -2592,8 +2600,8 @@ describe("PostgresReachabilityRepository", () => {
         .select()
         .from(jobOutbox)
         .where(eq(jobOutbox.type, "notify.reachability-widget"));
-      expect(refreshes.map((job) => job.deduplicationKey)).toEqual([
-        `notify.reachability-widget:run:${runId}`,
+      expect(refreshes.map((job) => [job.deduplicationKey, job.payload])).toEqual([
+        [`notify.reachability-widget:run:${runId}`, {}],
       ]);
 
       const snapshot = await repository.loadWidgetSnapshot(now);
@@ -2614,12 +2622,16 @@ describe("PostgresReachabilityRepository", () => {
       expect(byName.get("node-a")?.lastPersonHandshakeAt).toEqual(new Date("2026-11-10T13:30:00Z"));
       expect(byName.get("node-b")?.lastPersonHandshakeAt).toBeNull();
 
-      await repository.saveWidget({ messageId: 77, chatId: "chat", version: "v1" }, now);
-      await repository.recordWidgetResult(now, "boom");
-      const again = await repository.loadWidgetSnapshot(now);
-      expect(again?.widget).toEqual({ messageId: 77, chatId: "chat", version: "v1" });
+      await repository.saveWidget({ messageId: 77, chatId: "chat", version: "v1", sentAt: now });
+      // An edit later moves the update time, never the send time.
+      const edited = new Date("2026-11-10T15:05:00Z");
+      await repository.recordWidgetResult(edited, null);
+      await repository.recordWidgetResult(edited, "boom");
+      const again = await repository.loadWidgetSnapshot(edited);
+      expect(again?.widget).toEqual({ messageId: 77, chatId: "chat", version: "v1", sentAt: now });
       const [row] = await database.db.select().from(reachabilityProbe);
       expect(row?.widgetLastError).toBe("boom");
+      expect(row?.widgetUpdatedAt).toEqual(edited);
 
       // Going stale queues one more refresh, once.
       const staleAt = new Date("2026-11-10T20:00:00Z");

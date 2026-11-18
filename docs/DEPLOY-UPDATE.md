@@ -151,6 +151,13 @@ select column_name from information_schema.columns
   where table_name = 'nodes' and column_name = 'capacity_state';
 ```
 
+One such case is known: `0042a_reachability_widget_sent_at` (adds
+`reachability_probe.widget_sent_at`) was slotted in before `0043` after the
+bridge migrations `0043`–`0051` already existed. A database that ran those
+before `0042a` was added (a dev or test database migrated from this branch)
+skips it; production got `0042a` first, in v0.14.0. Its SQL is
+`ADD COLUMN IF NOT EXISTS`, so applying it by hand is safe.
+
 If a migration the count implies should be applied is missing, do not deploy
 past it yet: apply that migration's SQL by hand first (from
 `packages/db/migrations/`), confirm the column now exists, and only then

@@ -2254,10 +2254,19 @@ export type ReachabilityNotifyPayload = z.infer<
 >;
 
 /**
- * Refresh the Telegram status widget. No payload: the processor builds the
- * data from the current state, so a retried old row cannot write old data.
+ * Refresh the Telegram status widget. The payload carries no data: the
+ * processor builds it from the current state, so a retried old row cannot
+ * write old data. `notice` marks a run that also sent a node alert; then a
+ * widget older than a day is sent again instead of edited.
  */
 export const REACHABILITY_WIDGET_JOB_TYPE = "notify.reachability-widget";
+
+export const reachabilityWidgetPayloadSchema = z.object({
+  notice: z.boolean().optional(),
+});
+export type ReachabilityWidgetPayload = z.infer<
+  typeof reachabilityWidgetPayloadSchema
+>;
 
 export * from "./bridges.js";
 export * from "./bridgeAgent.js";

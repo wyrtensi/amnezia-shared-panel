@@ -889,6 +889,9 @@ export const reachabilityProbe = pgTable(
     widgetChatId: text("widget_chat_id"),
     widgetVersion: varchar("widget_version", { length: 64 }),
     widgetUpdatedAt: timestamp("widget_updated_at", { withTimezone: true }),
+    // When the current widget message was sent; edits leave it alone. Null
+    // for a widget sent before this was recorded, which counts as old.
+    widgetSentAt: timestamp("widget_sent_at", { withTimezone: true }),
     widgetLastError: varchar("widget_last_error", { length: 300 }),
     // A bridge route candidate check holding the probe (optional AWG 3.1 node
     // bridges). The probe runs one run at a time, so this slot and

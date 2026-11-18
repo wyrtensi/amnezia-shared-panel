@@ -1,0 +1,1 @@
+ALTER TABLE "reachability_probe" ADD COLUMN IF NOT EXISTS "widget_sent_at" timestamp with time zone;
