@@ -1366,13 +1366,14 @@ describe("bridge registry (real PostgreSQL)", () => {
         }
 
         // 6. Releasing draft route B reverts the pinned key back to inherit.
+        const observedNow = new Date();
         await db()
           .update(vpnBridgeRoutes)
-          .set({ observedOnline: false, observedAt: new Date() })
+          .set({ observedOnline: false, observedAt: observedNow })
           .where(eq(vpnBridgeRoutes.id, b.route.id));
         await db()
           .update(vpnBridges)
-          .set({ managementStatus: "ok", lastObservedAt: new Date() })
+          .set({ managementStatus: "ok", lastObservedAt: observedNow })
           .where(eq(vpnBridges.id, b.bridge.id));
         await repository.releaseBridgeRoute(admin, b.route.id);
         const [reverted] = await db()

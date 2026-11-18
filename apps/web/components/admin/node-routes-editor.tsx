@@ -121,6 +121,8 @@ export function NodeRoutesEditor({ initialNodeId }: { initialNodeId: string | nu
   const { t } = useT();
   const { nodes, policy, request, reload: reloadAdmin } = useAdminData();
   const [expandedNodeId, setExpandedNodeId] = React.useState<string | null>(initialNodeId);
+  const expandedNodeIdRef = React.useRef<string | null>(initialNodeId);
+  const detailRequestSeqRef = React.useRef(0);
   const [vpnItems, setVpnItems] = React.useState<InfrastructureVpnItem[]>([]);
   const [bridges, setBridges] = React.useState<InfrastructureBridgeItem[]>([]);
   const [infraLoading, setInfraLoading] = React.useState(false);
@@ -132,10 +134,15 @@ export function NodeRoutesEditor({ initialNodeId }: { initialNodeId: string | nu
   const [busy, setBusy] = React.useState<string | null>(null);
   const [notice, setNotice] = React.useState<Notice | null>(null);
 
+  const selectExpandedNode = React.useCallback((nextId: string | null) => {
+    expandedNodeIdRef.current = nextId;
+    setExpandedNodeId(nextId);
+  }, []);
+
   // Follow `?node=<id>` when arriving from `/admin/nodes`.
   React.useEffect(() => {
-    if (initialNodeId) setExpandedNodeId(initialNodeId);
-  }, [initialNodeId]);
+    if (initialNodeId) selectExpandedNode(initialNodeId);
+  }, [initialNodeId, selectExpandedNode]);
 
   const loadOverview = React.useCallback(async () => {
     setInfraLoading(true);
@@ -162,6 +169,7 @@ export function NodeRoutesEditor({ initialNodeId }: { initialNodeId: string | nu
 
   const loadDetails = React.useCallback(
     async (id: string) => {
+      const seq = ++detailRequestSeqRef.current;
       setDetailLoading(true);
       try {
         const [nextRoutes, nextEligibility, keys] = await Promise.all([
@@ -169,6 +177,7 @@ export function NodeRoutesEditor({ initialNodeId }: { initialNodeId: string | nu
           getEligibility(request, id),
           request<KeyView[]>("/api/keys"),
         ]);
+        if (seq !== detailRequestSeqRef.current) return;
         setRoutes(nextRoutes);
         setEligibility(nextEligibility);
         setTestKeys(
@@ -177,28 +186,30 @@ export function NodeRoutesEditor({ initialNodeId }: { initialNodeId: string | nu
           ),
         );
       } catch (cause) {
+        if (seq !== detailRequestSeqRef.current) return;
         setNotice({ tone: "danger", text: describeBridgeError(cause, t).message });
       } finally {
-        setDetailLoading(false);
+        if (seq === detailRequestSeqRef.current) setDetailLoading(false);
       }
     },
     [request, t],
   );
 
   React.useEffect(() => {
+    detailRequestSeqRef.current += 1;
     setRoutes(null);
     setEligibility(null);
     if (expandedNodeId) void loadDetails(expandedNodeId);
   }, [expandedNodeId, loadDetails]);
 
   const refreshAll = React.useCallback(
-    async (detailNodeId: string | null = expandedNodeId) => {
+    async (detailNodeId: string | null = expandedNodeIdRef.current) => {
       await Promise.all([
         loadOverview(),
         detailNodeId ? loadDetails(detailNodeId) : Promise.resolve(),
       ]);
     },
-    [expandedNodeId, loadOverview, loadDetails],
+    [loadOverview, loadDetails],
   );
 
   const runForNode = async (
@@ -215,13 +226,13 @@ export function NodeRoutesEditor({ initialNodeId }: { initialNodeId: string | nu
         setNotice({ tone: "success", text: done });
         toast.success(done);
       }
-      await refreshAll(targetNodeId === expandedNodeId ? targetNodeId : expandedNodeId);
+      await refreshAll(expandedNodeIdRef.current ?? targetNodeId);
     } catch (cause) {
       const described = describeBridgeError(cause, t);
       setNotice({ tone: "danger", text: described.message });
       toast.error(described.message);
       if (described.refetch || refetchOnError) {
-        await refreshAll(expandedNodeId);
+        await refreshAll(expandedNodeIdRef.current);
       }
     } finally {
       setBusy(null);
@@ -317,16 +328,15 @@ export function NodeRoutesEditor({ initialNodeId }: { initialNodeId: string | nu
       }
       // Route exists (draft or retiring) but needs setup or verification:
       // expand the server's inline panel right beneath it.
-      setExpandedNodeId(server.id);
+      selectExpandedNode(server.id);
       setNotice({ tone: "info", text: t("bridge.needsVerifyHint") });
       return;
     }
     // No route exists yet for (server, bridge): prepare it automatically and
     // open the server's inline panel with setup commands & verification tools.
-    setExpandedNodeId(server.id);
+    selectExpandedNode(server.id);
     void runForNode(server.id, `prepare-${server.id}`, async () => {
       const result = await prepareRoute(request, server.id, bridgeId);
-      await loadDetails(server.id);
       return result.created ? t("bridge.prepared") : t("bridge.preparedExisting");
     });
   };
@@ -507,7 +517,7 @@ export function NodeRoutesEditor({ initialNodeId }: { initialNodeId: string | nu
                             : t("bridge.expandDetails")
                         }
                         onClick={() =>
-                          setExpandedNodeId(expanded ? null : server.id)
+                          selectExpandedNode(expanded ? null : server.id)
                         }
                       >
                         <ChevronDown

@@ -396,7 +396,7 @@ export default function AdminUsersPage() {
     return () => {
       active = false;
     };
-  }, [request]);
+  }, [request, keyUser]);
 
   const keysByOwner = React.useMemo(() => {
     const map = new Map<string, AdminKey[]>();
@@ -2108,7 +2108,9 @@ function AdminKeyRow({
               <span className="truncate text-sm font-medium">
                 {keyView.deviceLabel || deviceTypeLabel(t, keyView.deviceType)}
               </span>
-              <KeyBridgeBadge bridge={keyView.bridge} />
+              {keyView.state !== "revoked" && keyView.state !== "revoking" ? (
+                <KeyBridgeBadge bridge={keyView.bridge} />
+              ) : null}
               {keyView.rulesOutdated ? (
                 <Tooltip>
                   <TooltipTrigger asChild>
