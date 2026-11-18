@@ -118,6 +118,14 @@ describe("BridgeCardView", () => {
     expect(html).toContain("Draft");
   });
 
+  it("offers the registered IPv4 as the panel DNS target after HTTPS forwarding is set up", () => {
+    const html = render({ ...bridge, publicIpv4: "203.0.113.25" });
+    expect(html).toContain("IP for panel DNS");
+    expect(html).toContain("203.0.113.25</code>");
+    expect(html).toContain('aria-label="Копировать: IP for panel DNS"');
+    expect(html).toContain("after setting up HTTPS forwarding on the bridge");
+  });
+
   it("links every route to its policy editor", () => {
     const html = render(bridge);
     expect(html.match(/href="\/admin\/policy\?node=[^"]+#node-routes"/g)).toHaveLength(2);
@@ -129,7 +137,8 @@ describe("BridgeCardView", () => {
     expect(html).toContain("install-frps.sh --bridge-id x</code>");
     // CommandBlock reads the language from context, which is Russian without
     // a provider (the app's first-paint default).
-    expect(html.match(/aria-label="Копировать: /g)).toHaveLength(2);
+    expect(html).toContain('aria-label="Копировать: Dry run"');
+    expect(html).toContain('aria-label="Копировать: Install"');
   });
 
   it("shows a stale bridge's routes as unknown, apart from management status", () => {

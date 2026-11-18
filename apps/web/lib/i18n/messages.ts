@@ -1472,6 +1472,10 @@ const ru = {
     "Регистрация будет удалена. Мост с маршрутами удалить нельзя: сначала освободите их.",
   "bridge.publicIpv4":
     "Публичный IPv4",
+  "bridge.panelDnsIpv4":
+    "IP для DNS панели",
+  "bridge.panelDnsIpv4Hint":
+    "Укажите этот IPv4 в A-записи домена панели после настройки проброса HTTPS на мосту.",
   "bridge.advanced":
     "Дополнительные настройки",
   "bridge.controlPort":
@@ -3245,6 +3249,10 @@ const en = {
     "The registration is removed. A bridge that still holds routes cannot be deleted: release them first.",
   "bridge.publicIpv4":
     "Public IPv4",
+  "bridge.panelDnsIpv4":
+    "IP for panel DNS",
+  "bridge.panelDnsIpv4Hint":
+    "Use this IPv4 in the panel domain’s A record after setting up HTTPS forwarding on the bridge.",
   "bridge.advanced":
     "Advanced settings",
   "bridge.controlPort":

@@ -98,9 +98,6 @@ export function BridgeCardView({
         <div className="flex items-start justify-between gap-2">
           <div className="min-w-0">
             <p className="truncate font-medium leading-tight">{bridge.name}</p>
-            <p className="truncate font-mono text-xs text-muted-foreground">
-              {bridge.publicIpv4}
-            </p>
           </div>
           <div className="flex shrink-0 items-center gap-1">
             <Button
@@ -122,6 +119,11 @@ export function BridgeCardView({
               <Trash2 className="h-4 w-4" />
             </Button>
           </div>
+        </div>
+
+        <div className="space-y-1">
+          <CommandBlock label={t("bridge.panelDnsIpv4")} command={bridge.publicIpv4} />
+          <p className="text-xs text-muted-foreground">{t("bridge.panelDnsIpv4Hint")}</p>
         </div>
 
         <div className="flex flex-wrap items-center gap-1.5">
