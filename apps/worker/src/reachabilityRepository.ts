@@ -11,6 +11,7 @@ import {
   REACHABILITY_NOTIFY_JOB_TYPE,
   REACHABILITY_WIDGET_JOB_TYPE,
   type ProbeLevels,
+  type ReachabilityWidgetPayload,
   revokeJobDedupKey,
   type ProtocolKind,
 } from "@amnezia/contracts";
@@ -76,11 +77,14 @@ const outboxRows = (notices: readonly Notice[]) =>
     payload: { text: notice.text },
   }));
 
-/** A widget refresh; completed rows keep their key, so each trigger is unique. */
-const widgetRow = (trigger: string) => ({
+/**
+ * A widget refresh; completed rows keep their key, so each trigger is unique.
+ * `notice` marks a run that also queued a node alert.
+ */
+const widgetRow = (trigger: string, notice = false) => ({
   type: REACHABILITY_WIDGET_JOB_TYPE,
   deduplicationKey: `${REACHABILITY_WIDGET_JOB_TYPE}:${trigger}`,
-  payload: {},
+  payload: (notice ? { notice: true } : {}) satisfies ReachabilityWidgetPayload,
 });
 
 const STATUS_RANK = { ok: 0, failed: 1, error: 2 } as const;
@@ -383,7 +387,10 @@ export class PostgresReachabilityRepository
       if (write.notices.length > 0) {
         await tx.insert(jobOutbox).values(outboxRows(write.notices)).onConflictDoNothing();
       }
-      await tx.insert(jobOutbox).values(widgetRow(`run:${run.runId}`)).onConflictDoNothing();
+      await tx
+        .insert(jobOutbox)
+        .values(widgetRow(`run:${run.runId}`, write.notices.length > 0))
+        .onConflictDoNothing();
       await tx
         .delete(nodeReachabilityHistory)
         .where(
@@ -802,6 +809,7 @@ export class PostgresReachabilityRepository
             messageId: probe.widgetMessageId,
             chatId: probe.widgetChatId,
             version: probe.widgetVersion,
+            sentAt: probe.widgetSentAt,
           }
         : null;
     return {
@@ -829,12 +837,13 @@ export class PostgresReachabilityRepository
     };
   };
 
-  saveWidget = async (widget: StoredWidget, at: Date): Promise<void> => {
+  saveWidget = async (widget: StoredWidget & { sentAt: Date }): Promise<void> => {
     await this.updateProbe({
       widgetMessageId: widget.messageId,
       widgetChatId: widget.chatId,
       widgetVersion: widget.version,
-      widgetUpdatedAt: at,
+      widgetSentAt: widget.sentAt,
+      widgetUpdatedAt: widget.sentAt,
     });
   };
 

@@ -1392,7 +1392,21 @@ describe("reachability widget job", () => {
     });
     await process(job);
     expect(refresh).toHaveBeenCalledTimes(1);
+    expect(refresh).toHaveBeenCalledWith({ notice: false });
     expect(repository.completeJob).toHaveBeenCalledWith(job.id);
+  });
+
+  it("passes on that a node alert came with the run", async () => {
+    const repository = createRepository();
+    const refresh = vi.fn(() => Promise.resolve());
+    const process = createJobProcessor({
+      repository,
+      createNodeAgent: () => createAgent(),
+      reachabilityWidget: { refresh },
+    });
+    await process({ ...job, payload: { notice: true } });
+    await process({ ...job, payload: { notice: "yes" } });
+    expect(refresh.mock.calls).toEqual([[{ notice: true }], [{ notice: false }]]);
   });
 
   it("completes quietly without Telegram", async () => {

@@ -8,16 +8,24 @@ import {
 import { REACHABILITY_WIDGET_HTML } from "./reachabilityWidgetHtml.js";
 import { TelegramApiError, type TelegramBotApi } from "./telegram.js";
 
-/** The widget message the panel sent last, as stored. */
-export type StoredWidget = { messageId: number; chatId: string; version: string };
+/**
+ * The widget message the panel sent last, as stored. `sentAt` is null for a
+ * widget sent before the send time was recorded.
+ */
+export type StoredWidget = {
+  messageId: number;
+  chatId: string;
+  version: string;
+  sentAt: Date | null;
+};
 
 export interface ReachabilityWidgetStore {
   /** The current state to draw, or null when there is no enabled probe. */
   loadWidgetSnapshot: (
     now: Date,
   ) => Promise<{ input: WidgetInput; widget: StoredWidget | null } | null>;
-  /** A new widget message was sent. */
-  saveWidget: (widget: StoredWidget, at: Date) => Promise<void>;
+  /** A new widget message was sent at `widget.sentAt`. */
+  saveWidget: (widget: StoredWidget & { sentAt: Date }) => Promise<void>;
   /** The outcome of a refresh; `error` is null on success. Never a secret. */
   recordWidgetResult: (at: Date, error: string | null) => Promise<void>;
 }
@@ -25,13 +33,27 @@ export interface ReachabilityWidgetStore {
 const NOT_FOUND = /message with widget to edit not found|message to edit not found/i;
 const NOT_MODIFIED = /message is not modified/i;
 
+/**
+ * After a node alert, a widget older than this is sent again rather than
+ * edited, so it stays near the newest messages; an old widget once stopped
+ * drawing about a week after it was sent (cause unknown).
+ */
+export const WIDGET_RESEND_AFTER_MS = 24 * 60 * 60 * 1_000;
+
+/** What queued the refresh. */
+export type WidgetRefreshReason = {
+  /** The same run sent a node unavailable/back alert. */
+  notice?: boolean;
+};
+
 const isRefusal = (error: unknown, pattern: RegExp) =>
   error instanceof TelegramApiError && pattern.test(error.description);
 
 /**
  * Keep one status widget in the chat. The first refresh sends and pins it;
- * later ones only change its data. A deleted message, another chat or a new
- * HTML/caption sends a fresh one, pins it and unpins the old.
+ * later ones only change its data. A deleted message, another chat, a new
+ * HTML/caption, or a node alert while the widget is older than a day sends a
+ * fresh one, pins it and unpins the old.
  */
 export const createReachabilityWidget = ({
   api,
@@ -54,7 +76,7 @@ export const createReachabilityWidget = ({
     }
   };
 
-  const refresh = async (): Promise<void> => {
+  const refresh = async (reason: WidgetRefreshReason = {}): Promise<void> => {
     const at = now();
     const snapshot = await store.loadWidgetSnapshot(at);
     if (!snapshot) return;
@@ -62,9 +84,13 @@ export const createReachabilityWidget = ({
     const caption = widgetCaption(snapshot.input.label);
     const version = widgetVersion(caption);
     const previous = snapshot.widget;
+    const outdated =
+      reason.notice === true &&
+      previous !== null &&
+      (previous.sentAt === null || at.getTime() - previous.sentAt.getTime() > WIDGET_RESEND_AFTER_MS);
 
     try {
-      if (previous && previous.chatId === chatId && previous.version === version) {
+      if (previous && previous.chatId === chatId && previous.version === version && !outdated) {
         try {
           await api.call<boolean>("editMessageWidgetData", {
             chat_id: chatId,
@@ -91,7 +117,7 @@ export const createReachabilityWidget = ({
       });
       // Stored before anything else can fail: a retry must edit this message,
       // not send a second one.
-      await store.saveWidget({ messageId: sent.message_id, chatId, version }, at);
+      await store.saveWidget({ messageId: sent.message_id, chatId, version, sentAt: at });
       await store.recordWidgetResult(at, null);
       await bestEffort("pin", () =>
         api.call("pinChatMessage", {
