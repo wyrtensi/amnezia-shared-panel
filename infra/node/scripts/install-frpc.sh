@@ -5,6 +5,8 @@
 #       --public-port <udp> [--bridge-id <uuid>] [--local-udp-port <udp>]
 #       [--local-ip <ipv4>] [--dry-run]
 #   install-frpc.sh --remove --route-id <uuid> [--dry-run]
+#   install-frpc.sh --check-tls --bridge-ip <ipv4> --control-port <tcp>
+#       [--bridge-id <uuid>]
 #
 # One frpc process per route: unit amnezia-frpc@<route-id>.service from the
 # shared template amnezia-frpc@.service, config <etc>/amnezia-node/frpc/<route-id>.toml.
@@ -98,6 +100,7 @@ LOCAL_UDP_PORT=""
 LOCAL_IP=""
 DRY_RUN=0
 REMOVE=0
+CHECK_TLS=0
 
 need_value() { [ "$#" -ge 2 ] || usage_error "$1 needs a value"; }
 while [ "$#" -gt 0 ]; do
@@ -111,6 +114,7 @@ while [ "$#" -gt 0 ]; do
     --local-ip) need_value "$@"; LOCAL_IP="$2"; shift 2 ;;
     --dry-run) DRY_RUN=1; shift ;;
     --remove) REMOVE=1; shift ;;
+    --check-tls) CHECK_TLS=1; shift ;;
     *) usage_error "unknown argument: $1" ;;
   esac
 done
@@ -140,7 +144,12 @@ is_ipv4() {
   done
 }
 
-is_uuid "$ROUTE_ID" || usage_error "--route-id must be a lowercase UUID"
+if [ "$CHECK_TLS" -eq 1 ]; then
+  [ "$REMOVE" -eq 0 ] && [ "$DRY_RUN" -eq 0 ] && [ -z "$ROUTE_ID$PUBLIC_PORT$LOCAL_UDP_PORT$LOCAL_IP" ] ||
+    usage_error "--check-tls takes only --bridge-ip, --control-port and optional --bridge-id"
+else
+  is_uuid "$ROUTE_ID" || usage_error "--route-id must be a lowercase UUID"
+fi
 if [ "$REMOVE" -eq 0 ]; then
   if [ -n "$BRIDGE_ID" ]; then
     is_uuid "$BRIDGE_ID" || usage_error "--bridge-id must be a lowercase UUID"
@@ -148,9 +157,11 @@ if [ "$REMOVE" -eq 0 ]; then
   fi
   is_ipv4 "$BRIDGE_IP" || usage_error "--bridge-ip must be an IPv4 address"
   is_port "$CONTROL_PORT" || usage_error "--control-port must be a TCP port (1-65535)"
-  is_port "$PUBLIC_PORT" || usage_error "--public-port must be a UDP port (1-65535)"
-  [ -z "$LOCAL_UDP_PORT" ] || is_port "$LOCAL_UDP_PORT" || usage_error "--local-udp-port must be a UDP port (1-65535)"
-  [ -z "$LOCAL_IP" ] || is_ipv4 "$LOCAL_IP" || usage_error "--local-ip must be an IPv4 address"
+  if [ "$CHECK_TLS" -eq 0 ]; then
+    is_port "$PUBLIC_PORT" || usage_error "--public-port must be a UDP port (1-65535)"
+    [ -z "$LOCAL_UDP_PORT" ] || is_port "$LOCAL_UDP_PORT" || usage_error "--local-udp-port must be a UDP port (1-65535)"
+    [ -z "$LOCAL_IP" ] || is_ipv4 "$LOCAL_IP" || usage_error "--local-ip must be an IPv4 address"
+  fi
 else
   [ -z "$BRIDGE_ID$BRIDGE_IP$CONTROL_PORT$PUBLIC_PORT$LOCAL_UDP_PORT$LOCAL_IP" ] ||
     usage_error "--remove takes only --route-id and --dry-run"
@@ -162,12 +173,13 @@ UNIT="amnezia-frpc@${ROUTE_ID}.service"
 CONF="$CONF_DIR/$ROUTE_ID.toml"
 FRPC_BIN="$FRP_PREFIX/$FRP_VERSION/frpc"
 
-if [ "$DRY_RUN" -eq 0 ] && [ "${AMNEZIA_ALLOW_NONROOT:-0}" != 1 ] && [ "$(id -u)" -ne 0 ]; then
+if [ "$DRY_RUN" -eq 0 ] && [ "$CHECK_TLS" -eq 0 ] && [ "${AMNEZIA_ALLOW_NONROOT:-0}" != 1 ] && [ "$(id -u)" -ne 0 ]; then
   die 2 E_USAGE "run as root (or use --dry-run to only read state)"
 fi
 
 unit_active() { systemctl is-active --quiet "$1" 2>/dev/null; }
 unit_enabled() { systemctl is-enabled --quiet "$1" 2>/dev/null; }
+unit_invocation() { systemctl show --property=InvocationID --value "$1"; }
 
 # ---- removal ---------------------------------------------------------------
 if [ "$REMOVE" -eq 1 ]; then
@@ -212,6 +224,26 @@ check_public_file() {
   mode="$(file_mode "$1")"
   [ "$((0$mode & 022))" -eq 0 ] || die 11 E_FILE "$1 has mode $mode, expected 0644"
 }
+
+if [ "$CHECK_TLS" -eq 1 ]; then
+  check_public_file "$CA_FILE"
+  if ! command -v timeout >/dev/null 2>&1 || ! openssl s_client -help 2>&1 | grep -q -- '-verifyCAfile'; then
+    die 2 E_TLS_CHECK "--check-tls requires OpenSSL 3 or newer and timeout on the node"
+  fi
+  # Use a separate verification store containing only the route's CA, like frpc.
+  peer="$(timeout -k 1s 5s openssl s_client -connect "$BRIDGE_IP:$CONTROL_PORT" \
+    -verifyCAfile "$CA_FILE" -verify_ip "$BRIDGE_IP" -verify_return_error \
+    -showcerts -no_ign_eof </dev/null 2>/dev/null)" ||
+    die 41 E_TLS_CHECK "fresh TLS handshake failed; check connectivity, the bridge CA, the IP SAN and certificate validity"
+  expiry="$(printf '%s\n' "$peer" | openssl x509 -noout -enddate 2>/dev/null)" ||
+    die 41 E_TLS_CHECK "could not read the frps certificate expiry"
+  info "Fresh frps TLS verified. Certificate expires ${expiry#notAfter=}."
+  if ! printf '%s\n' "$peer" | openssl x509 -noout -checkend 2592000 >/dev/null 2>&1; then
+    printf 'WARNING: frps certificate expires in less than 30 days.\n' >&2
+  fi
+  exit 0
+fi
+
 check_secret_file "$TOKEN_FILE"
 check_public_file "$CA_FILE"
 
@@ -458,7 +490,6 @@ if [ "$template_same" -eq 0 ]; then
 fi
 mv -f "$TMP_CONF" "$CONF"
 systemctl daemon-reload
-started_at="$(date '+%Y-%m-%d %H:%M:%S')"
 
 rollback() {
   if [ "$had_conf" -eq 1 ]; then
@@ -483,28 +514,31 @@ else
   systemctl enable --now "$UNIT" >/dev/null 2>&1 || { rollback; die 50 E_START "systemctl enable --now $UNIT failed; change rolled back"; }
 fi
 
-# Read frpc's own log until it either registers the proxy or says why not.
+# Limit registration evidence to the current runtime cycle of frpc.
 waited=0
 while :; do
-  log="$(journalctl -u "$UNIT" --since "$started_at" --no-pager -o cat 2>/dev/null | tail -n 60 || true)"
-  case "$log" in
-    *"start proxy success"*) break ;;
-    *"token"*"doesn't match"*|*"authentication failed"*|*x509*|*"tls: "*)
-      rollback
-      die 41 E_AUTH_TLS "frp authentication or TLS verification failed; check the token file, the bridge CA and that the frps certificate has SAN $BRIDGE_IP"
-      ;;
-    *"port already used"*|*"port not allowed"*|*"start error"*)
-      rollback
-      die 42 E_UDP_REGISTRATION "frps refused UDP registration of port $PUBLIC_PORT (port not allowed or already used on the bridge)"
-      ;;
-    *"connection refused"*|*"i/o timeout"*|*"no route to host"*)
-      rollback
-      die 40 E_CONTROL_UNREACHABLE "frpc cannot reach $BRIDGE_IP:$CONTROL_PORT"
-      ;;
-  esac
+  if invocation="$(unit_invocation "$UNIT" 2>/dev/null)" && [ -n "$invocation" ] &&
+    log="$(journalctl -u "$UNIT" "_SYSTEMD_INVOCATION_ID=$invocation" -n 60 --no-pager -o cat 2>/dev/null)" &&
+    [ "$invocation" = "$(unit_invocation "$UNIT" 2>/dev/null)" ]; then
+    case "$log" in
+      *"start proxy success"*) break ;;
+      *"token"*"doesn't match"*|*"authentication failed"*|*x509*|*"tls: "*)
+        rollback
+        die 41 E_AUTH_TLS "frp authentication or TLS verification failed; check the token file and run --check-tls from this node"
+        ;;
+      *"port already used"*|*"port not allowed"*|*"start error"*)
+        rollback
+        die 42 E_UDP_REGISTRATION "frps refused UDP registration of port $PUBLIC_PORT (port not allowed or already used on the bridge)"
+        ;;
+      *"connection refused"*|*"i/o timeout"*|*"no route to host"*)
+        rollback
+        die 40 E_CONTROL_UNREACHABLE "frpc cannot reach $BRIDGE_IP:$CONTROL_PORT"
+        ;;
+    esac
+  fi
   if [ "$waited" -ge "$REGISTER_WAIT" ]; then
     rollback
-    die 50 E_START "frpc did not register the proxy within ${REGISTER_WAIT}s"
+    die 50 E_START "no registration in the current frpc invocation within ${REGISTER_WAIT}s; check the service journal"
   fi
   sleep 1
   waited=$((waited + 1))

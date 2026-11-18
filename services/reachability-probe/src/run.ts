@@ -21,6 +21,7 @@ import {
 export type RunDeps = {
   exec: Exec;
   httpGet: HttpGet;
+  download?: (localAddress: string) => Promise<LevelResult>;
   ping: (host: string) => Promise<LevelResult>;
   tcpBanner: (host: string) => Promise<LevelResult>;
   /** Where stripped configs are written (a tmpfs in the container). */
@@ -169,6 +170,7 @@ const runTarget = async (
       const egress = await checkEgress(egressUrl, cfg.address, expected, deps);
       result.levels.http = egress.level;
       result.egressIp = egress.egressIp;
+      if (deps.download) result.levels.download = await deps.download(cfg.address);
     }
     return result;
   } catch (error) {
@@ -222,6 +224,7 @@ export const runAll = async (
       log(
         `run ${req.runId}: ${target.targetId}/${target.protocol} ${result.status}` +
           ` handshake=${String(levels.handshake.ok)} http=${String(levels.http.ok)}` +
+          (levels.download ? ` download=${String(levels.download.ok)}` : "") +
           (result.detail ? ` (${result.detail})` : ""),
       );
     }

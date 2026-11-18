@@ -250,6 +250,7 @@ export const bridgeRouteVerificationSchema = z.discriminatedUnion("kind", [
     kind: z.literal("awg_path"),
     status: bridgeAwgPathStatusSchema,
     checkedAt: z.iso.datetime().nullable(),
+    downloadOk: z.boolean().optional(),
   }),
 ]);
 
@@ -290,11 +291,13 @@ export type BridgeSetupCommands = z.infer<typeof bridgeSetupCommandsSchema>;
  * port only; the script detects the local AWG target itself. Its optional
  * `--local-udp-port <udp>` / `--local-ip <ipv4>` overrides are not generated:
  * append them to `install` when detection asks for them. `remove`
- * retires the route's frpc unit and config.
+ * retires the route's frpc unit and config. `checkTls` opens a fresh TLS
+ * connection to the bridge using the node's installed CA certificate.
  */
 export const routeSetupCommandsSchema = z.object({
   install: z.string(),
   dryRun: z.string(),
+  checkTls: z.string().optional(),
   remove: z.string(),
 });
 export type RouteSetupCommands = z.infer<typeof routeSetupCommandsSchema>;

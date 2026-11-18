@@ -37,6 +37,7 @@ import {
   type MetricRow,
 } from "@/components/admin/node-metrics";
 import { BridgeAgentUpdateFacts, UpdateAgentDialog } from "@/components/admin/bridge-agent-update";
+import { BridgeDownloadBadge } from "@/components/admin/bridge-route-view";
 import { useAdminData } from "@/components/admin/admin-data";
 import type { BridgeInfra } from "@/components/admin/use-bridge-infra";
 import { createBridge, deleteBridge, renameBridge } from "@/lib/bridge-api";
@@ -180,6 +181,7 @@ export function BridgeCardView({
                   <Badge variant={verificationTone(route.verification)}>
                     {t("bridge.route.awg")}: {t(verificationLabelKey(route.verification))}
                   </Badge>
+                  <BridgeDownloadBadge verification={route.verification} t={t} />
                   <EvidenceTime at={verificationTime(route.verification)} lang={lang} />
                   <Link
                     href={nodeRouteEditorHref(route.nodeId)}

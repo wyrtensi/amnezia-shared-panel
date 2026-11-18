@@ -44,12 +44,18 @@ type RouteVerificationView = {
   method?: string | null;
   verifiedAt?: string | null;
   checkedAt?: string | null;
+  downloadOk?: boolean;
   error?: string | null;
 };
 
 function projectVerification(v: RouteVerificationView | undefined): Record<string, unknown> {
   if (v?.kind === "awg_path") {
-    return { kind: "awg_path", status: v.status, checkedAt: nullable(v.checkedAt) };
+    return {
+      kind: "awg_path",
+      status: v.status,
+      checkedAt: nullable(v.checkedAt),
+      ...(v.downloadOk !== undefined ? { downloadOk: v.downloadOk } : {}),
+    };
   }
   return {
     kind: "candidate",
@@ -63,6 +69,7 @@ function projectVerification(v: RouteVerificationView | undefined): Record<strin
 export type SetupCommands = {
   install?: string;
   dryRun?: string;
+  checkTls?: string;
   remove?: string;
   /** The digest-pinned image already in the bridge commands; null when none is available. */
   agentImage?: string | null;
@@ -246,7 +253,7 @@ export function intFlag(args: string[], name: string): number | undefined {
   return Number(raw);
 }
 
-const SETUP_KEYS = ["install", "dryRun", "remove"] as const;
+const SETUP_KEYS = ["install", "dryRun", "checkTls", "remove"] as const;
 
 function projectSetup(value: unknown): SetupCommands | undefined {
   if (typeof value !== "object" || value === null) return undefined;
@@ -446,7 +453,8 @@ function describeRoute(route: NodeRouteView): string {
   const verification = route.verification;
   const verified =
     verification?.kind === "awg_path"
-      ? `awg path ${verification.status}${verification.checkedAt ? ` (checked ${verification.checkedAt})` : ""}`
+      ? `awg path ${verification.status}${verification.checkedAt ? ` (checked ${verification.checkedAt})` : ""}` +
+        (verification.downloadOk !== undefined ? `, HTTPS download ${verification.downloadOk ? "ok" : "fail"}` : "")
       : verification
         ? `verification ${verification.status}${verification.verifiedAt ? ` ${verification.verifiedAt}` : ""}${verification.method ? ` (${verification.method})` : ""}${verification.error ? ` (${verification.error})` : ""}`
         : route.verificationResult === "success"

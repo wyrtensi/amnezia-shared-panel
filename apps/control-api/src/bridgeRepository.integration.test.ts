@@ -336,6 +336,9 @@ describe("bridge registry (real PostgreSQL)", () => {
     expect(route.setupCommands?.install).toBe(
       `sudo sh /opt/amnezia-panel-node/scripts/install-frpc.sh --route-id ${route.id} --bridge-id ${bridge.id} --bridge-ip ${bridge.publicIpv4} --control-port ${bridge.controlTcpPort} --public-port ${route.publicUdpPort}`,
     );
+    expect(route.setupCommands?.checkTls).toBe(
+      `sudo sh /opt/amnezia-panel-node/scripts/install-frpc.sh --bridge-id ${bridge.id} --bridge-ip ${bridge.publicIpv4} --control-port ${bridge.controlTcpPort} --check-tls`,
+    );
     expect(route.setupCommands?.remove).toBe(
       `sudo sh /opt/amnezia-panel-node/scripts/install-frpc.sh --route-id ${route.id} --remove`,
     );

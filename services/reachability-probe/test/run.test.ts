@@ -105,6 +105,21 @@ describe("runAll", () => {
       },
     });
     expect(httpGet).toHaveBeenCalledWith("https://control.example.test/", expect.not.objectContaining({ localAddress: expect.anything() }));
+    expect(state.results[0]?.levels).not.toHaveProperty("download");
+  });
+
+  it("reports an optional transfer with the AWG source even when the IP service fails", async () => {
+    const download = vi.fn(async (_address: string) => OK);
+    const { deps } = setup({ download, egressBody: "invalid egress response" });
+    const state = await runAll(
+      request([{ targetId: "node-a", protocol: "amneziawg3", config: conf("10.90.0.7", "192.0.2.10:51890") }]),
+      deps,
+    );
+    expect(download).toHaveBeenCalledExactlyOnceWith("10.90.0.7");
+    expect(state.results[0]).toMatchObject({
+      status: "done",
+      levels: { handshake: { ok: true }, http: { ok: false }, download: OK },
+    });
   });
 
   it("control failure skips every target", async () => {

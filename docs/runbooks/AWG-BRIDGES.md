@@ -91,6 +91,9 @@ Never run a pre-bridge worker with the gate on.
    `/etc/amnezia-node/frp/<bridge-id>/` through a trusted channel. Run the printed
    `install-frpc.sh ... --dry-run`, then the real command. The helper detects
    the local AWG publication; add `--local-ip` or `--local-udp-port` only when it asks.
+   To check the certificate on a fresh connection without changing the route,
+   run the printed `checkTls` command. It checks the bridge CA and IP SAN and
+   prints the expiry of the certificate served by frps.
    Existing FRP services keep their original credential paths. Keep the legacy
    files in place while those services use them.
 4. Wait for the bridge-agent's next observation: `amnezia-panel bridges --json`

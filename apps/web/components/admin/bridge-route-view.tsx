@@ -1,4 +1,4 @@
-import type { NodeBridgeRoute } from "@amnezia/contracts";
+import type { BridgeRouteVerification, NodeBridgeRoute } from "@amnezia/contracts";
 import { Badge } from "@/components/ui/badge";
 import { formatDateTime } from "@/lib/format";
 import type { Lang } from "@/lib/i18n/messages";
@@ -18,6 +18,21 @@ const STATE_VARIANT = {
   draft: "outline",
   retiring: "warning",
 } as const;
+
+export function BridgeDownloadBadge({
+  verification,
+  t,
+}: {
+  verification: BridgeRouteVerification;
+  t: Translate;
+}) {
+  if (verification.kind !== "awg_path" || verification.downloadOk === undefined) return null;
+  return (
+    <Badge variant={verification.downloadOk ? "success" : "warning"}>
+      {t("reachability.download")}: {t(verification.downloadOk ? "reachability.level.ok" : "reachability.level.fail")}
+    </Badge>
+  );
+}
 
 /**
  * The facts about one route the operator needs while preparing it: public
@@ -71,6 +86,7 @@ export function BridgeRouteFacts({
           <Badge variant={verificationTone(verification)}>
             {t(verificationLabelKey(verification))}
           </Badge>
+          <BridgeDownloadBadge verification={verification} t={t} />
           {evidenceAt ? (
             <span className="ml-1.5 text-muted-foreground">
               {when(evidenceAt)}

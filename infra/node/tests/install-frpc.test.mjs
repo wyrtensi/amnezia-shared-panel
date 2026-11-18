@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -11,6 +11,7 @@ const executing = { skip: process.platform === "linux" ? false : "needs a POSIX 
 
 const ROUTE = "0b6f9a52-3c1d-4e7a-9b88-1f2a3c4d5e6f";
 const OTHER_ROUTE = "7c1e2d3f-4a5b-4c6d-8e9f-a0b1c2d3e4f5";
+const INVOCATION = "b7d4149418364b0f8dce9d8cc1519403";
 const TOKEN_VALUE = "super-secret-token-value-123456";
 const baseArgs = [
   "--route-id", ROUTE,
@@ -70,6 +71,7 @@ case "$cmd" in
   restart) [ ! -f "$STATE/start-fails" ] || exit 1; touch "$SC/active.$args" ;;
   stop) rm -f "$SC/active.$args" ;;
   disable) rm -f "$SC/enabled.$args"; case "$*" in *--now*) rm -f "$SC/active.$args" ;; esac ;;
+  show) [ -f "$SC/active.$args" ] && echo '${INVOCATION}' ;;
   list-units) ;;
   daemon-reload) ;;
   *) echo "unexpected systemctl $cmd" >&2; exit 99 ;;
@@ -77,7 +79,13 @@ esac
 `,
     0o755,
   );
-  await write(join(bin, "journalctl"), `#!/bin/sh\ncat "$STATE/journal"\n`, 0o755);
+  await write(join(bin, "journalctl"), `#!/bin/sh
+case "$*" in
+  *'_SYSTEMD_INVOCATION_ID=${INVOCATION}'*) ;;
+  *) [ ! -f "$STATE/previous-journal" ] || cat "$STATE/previous-journal" ;;
+esac
+cat "$STATE/journal"
+`, 0o755);
   await write(join(bin, "nc"), `#!/bin/sh\n[ ! -f "$STATE/nc-fails" ]\n`, 0o755);
   await write(
     join(bin, "curl"),
@@ -129,6 +137,69 @@ const withHost = (name, fn) =>
       await host.cleanup();
     }
   });
+
+const tlsArgs = ["--check-tls", "--bridge-ip", "203.0.113.10", "--control-port", "7000"];
+
+withHost("TLS check uses the chosen bridge CA without reading a token or starting a service", async (h) => {
+  const credentials = join(h.etc, "amnezia-node", "frp");
+  await unlink(join(credentials, "token"));
+  const ca = join(credentials, OTHER_ROUTE, "ca.crt");
+  await mkdir(join(credentials, OTHER_ROUTE));
+  await write(ca, "CA\n", 0o644);
+  await write(join(h.root, "bin", "openssl"), `#!/bin/sh
+printf 'openssl %s\\n' "$*" >>"$STATE/calls"
+case "$1" in
+  s_client)
+    if [ "$2" = -help ]; then echo '-verifyCAfile'; exit 0; fi
+    [ ! -f "$STATE/tls-fails" ] || { echo 'private detail' >&2; exit 1; }
+    echo peer-cert ;;
+  x509)
+    [ "$(cat)" = peer-cert ] || exit 1
+    case "$*" in *-enddate*) echo 'notAfter=Nov 18 00:00:00 2027 GMT' ;; *) [ ! -f "$STATE/tls-expiring" ] ;; esac ;;
+  *) exit 99 ;;
+esac
+`, 0o755);
+
+  const accepted = h.run(...tlsArgs, "--bridge-id", OTHER_ROUTE);
+  assert.equal(accepted.status, 0, accepted.stderr);
+  assert.match(accepted.stdout, /Nov 18 00:00:00 2027 GMT/);
+  const calls = await h.calls();
+  assert.ok(calls.includes(`-verifyCAfile ${ca}`));
+  assert.match(calls, /-verify_ip 203\.0\.113\.10/);
+  assert.match(calls, /-verify_return_error/);
+  assert.doesNotMatch(calls, /systemctl|docker/);
+
+  await h.flag("tls-expiring");
+  const expiring = h.run(...tlsArgs, "--bridge-id", OTHER_ROUTE);
+  assert.equal(expiring.status, 0, expiring.stderr);
+  assert.match(expiring.stderr, /less than 30 days/);
+
+  await h.flag("tls-fails");
+  const rejected = h.run(...tlsArgs, "--bridge-id", OTHER_ROUTE);
+  assert.equal(rejected.status, 41, rejected.stderr);
+  assert.match(rejected.stderr, /ERROR\[E_TLS_CHECK\]/);
+  assert.doesNotMatch(rejected.stdout + rejected.stderr, /peer-cert|private detail/);
+});
+
+withHost("TLS check rejects mutation and dry-run flags and requires a readable CA", async (h) => {
+  for (const flag of ["--dry-run", "--remove"]) {
+    const result = h.run(...tlsArgs, flag);
+    assert.equal(result.status, 2, result.stderr);
+    assert.match(result.stderr, /--check-tls/);
+  }
+  await unlink(join(h.etc, "amnezia-node", "frp", "ca.crt"));
+  const missing = h.run(...tlsArgs);
+  assert.equal(missing.status, 11, missing.stderr);
+  assert.match(missing.stderr, /ca\.crt/);
+});
+
+withHost("registration from a previous invocation cannot hide a current TLS failure", async (h) => {
+  await h.flag("previous-journal", "[awg] start proxy success\n");
+  await h.flag("journal", "x509: certificate has expired\n");
+  const result = h.run(...baseArgs);
+  assert.equal(result.status, 41, result.stderr + result.stdout);
+  await assert.rejects(h.readConf(), { code: "ENOENT" });
+});
 
 withHost("wildcard publication installs a secret-free per-route config and unit", async (h) => {
   const r = h.run(...baseArgs);

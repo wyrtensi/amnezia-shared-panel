@@ -1,3 +1,4 @@
+import { downloadLevel, parseDownloadFixture } from "./download.js";
 import { DEFAULT_API_KEY_FILE, loadApiKey, parseListen } from "./env.js";
 import { execFileExec } from "./exec.js";
 import { httpGet, pingLevel, tcpBannerLevel } from "./levels.js";
@@ -11,9 +12,11 @@ const log = (line: string): void => {
 const main = (): void => {
   let apiKey: string;
   let listen: { host: string; port: number };
+  let fixture: ReturnType<typeof parseDownloadFixture>;
   try {
     apiKey = loadApiKey(process.env.PROBE_API_KEY_FILE?.trim() || DEFAULT_API_KEY_FILE);
     listen = parseListen(process.env.PROBE_LISTEN);
+    fixture = parseDownloadFixture(process.env);
   } catch (error) {
     process.stderr.write(`reachability-probe: ${error instanceof Error ? error.message : "bad settings"}\n`);
     process.exit(1);
@@ -22,6 +25,7 @@ const main = (): void => {
   const deps: RunDeps = {
     exec: execFileExec,
     httpGet,
+    download: fixture ? (address) => downloadLevel(fixture, address) : undefined,
     ping: (host) => pingLevel(execFileExec, host),
     tcpBanner: (host) => tcpBannerLevel(host),
     tmpDir: process.env.PROBE_TMP_DIR?.trim() || "/tmp",

@@ -42,6 +42,7 @@ describe("bridge setup commands", () => {
     expect(commands).toEqual({
       install: base,
       dryRun: `${base} --dry-run`,
+      checkTls: `sudo sh /opt/amnezia-panel-node/scripts/install-frpc.sh --bridge-id ${BRIDGE_ID} --bridge-ip 198.51.100.7 --control-port 7000 --check-tls`,
       remove: `sudo sh /opt/amnezia-panel-node/scripts/install-frpc.sh --route-id ${ROUTE_ID} --remove`,
     });
     for (const text of Object.values(commands)) {

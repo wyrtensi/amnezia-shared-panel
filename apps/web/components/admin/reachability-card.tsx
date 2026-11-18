@@ -59,7 +59,7 @@ export const levelMark = (
 };
 
 /** Level names as an operator reads them; the tcp level knocks on port 22. */
-const LEVEL_LABEL: Record<ProbeLevelName, string> = {
+const LEVEL_LABEL: Record<Exclude<ProbeLevelName, "download">, string> = {
   ping: "ping",
   tcp: "tcp/22",
   handshake: "handshake",
@@ -111,6 +111,7 @@ function ProtocolLine({
       <ul className="flex flex-wrap gap-x-3 gap-y-0.5 font-mono text-[11px]">
         {PROBE_LEVELS.map((name) => {
           const level = result.levels?.[name];
+          if (name === "download" && !level) return null;
           const mark = levelMark(level);
           return (
             <li
@@ -119,7 +120,9 @@ function ProtocolLine({
               data-mark={mark}
               title={level?.detail ?? undefined}
             >
-              <span className="text-muted-foreground">{LEVEL_LABEL[name]}</span>{" "}
+              <span className="text-muted-foreground">
+                {name === "download" ? t("reachability.download") : LEVEL_LABEL[name]}
+              </span>{" "}
               <span className={MARK_CLASS[mark]}>
                 {t(`reachability.level.${mark}`)}
               </span>
@@ -130,6 +133,9 @@ function ProtocolLine({
           );
         })}
       </ul>
+      {result.levels?.download?.ok === false && result.levels.download.detail ? (
+        <p className="break-words text-muted-foreground">{result.levels.download.detail}</p>
+      ) : null}
       {result.egressIp || result.detail ? (
         <div className="flex flex-wrap gap-x-3 text-muted-foreground">
           {result.egressIp ? (

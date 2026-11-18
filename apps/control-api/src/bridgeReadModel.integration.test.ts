@@ -442,13 +442,17 @@ describe("bridge admin read model (real PostgreSQL, fake agent)", () => {
             }
           ).bridges?.items.find((item) => item.id === bridge.id);
         const checkedAt = new Date(Date.now() - 60_000);
-        const put = async (status: "ok" | "failed" | "error") => {
+        const put = async (status: "ok" | "failed" | "error", downloadOk?: boolean) => {
           await db().delete(nodeReachabilityResults).where(eq(nodeReachabilityResults.nodeId, a.nodeId));
+          const level = { ok: true, detail: null, latencyMs: null };
           await db().insert(nodeReachabilityResults).values({
             nodeId: a.nodeId,
             protocol: "awg3",
             status,
-            levels: {},
+            levels: downloadOk === undefined ? {} : {
+              ping: level, tcp: level, handshake: level, http: level,
+              download: { ...level, ok: downloadOk },
+            },
             runId: randomUUID(),
             checkedAt,
             failingSince: status === "failed" ? checkedAt : null,
@@ -457,6 +461,8 @@ describe("bridge admin read model (real PostgreSQL, fake agent)", () => {
 
         await put("ok");
         expect(await verificationOf()).toEqual({ kind: "awg_path", status: "ok", checkedAt: checkedAt.toISOString() });
+        await put("ok", false);
+        expect(await verificationOf()).toMatchObject({ status: "ok", downloadOk: false });
         expect(await overviewOf()).toMatchObject({ awgPathOk: 1, awgPathFailed: 0, awgPathUnknown: 0 });
         expect((await repository.getNodeBridgeRoutes(admin, a.nodeId)).activeRoute?.verification).toMatchObject({
           kind: "awg_path",

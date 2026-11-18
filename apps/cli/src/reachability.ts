@@ -38,7 +38,7 @@ export const reachabilityRows = (
       };
       if (node.protocols.length === 0) {
         return [
-          { ...base, protocol: "—", ping: "—", tcp: "—", handshake: "—", http: "—", egress: "—", detail: node.detail ?? "—" },
+          { ...base, protocol: "—", ping: "—", tcp: "—", handshake: "—", http: "—", download: "—", egress: "—", detail: node.detail ?? "—" },
         ];
       }
       return node.protocols.map((protocol) => ({
@@ -48,8 +48,10 @@ export const reachabilityRows = (
         tcp: levelMark(protocol.levels?.tcp),
         handshake: levelMark(protocol.levels?.handshake),
         http: levelMark(protocol.levels?.http),
+        download: levelMark(protocol.levels?.download),
         egress: protocol.egressIp ?? "—",
-        detail: protocol.detail ?? "—",
+        detail: [protocol.detail, protocol.levels?.download?.ok === false && protocol.levels.download.detail]
+          .filter(Boolean).join(", ") || "—",
       }));
     });
 
@@ -61,6 +63,7 @@ export const REACHABILITY_COLUMNS = [
   "tcp",
   "handshake",
   "http",
+  "download",
   "egress",
   "failing since",
   "detail",

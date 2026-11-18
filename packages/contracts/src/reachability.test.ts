@@ -7,6 +7,7 @@ import {
   toUserReachability,
   userNodeReachabilitySchema,
   nodeServedProtocols,
+  probeLevelsSchema,
   probeRunRequestSchema,
   probeRunStateSchema,
   reachabilityNotifyPayloadSchema,
@@ -106,6 +107,13 @@ describe("probe wire format", () => {
         targets: Array.from({ length: 501 }, () => target),
       }).success,
     ).toBe(false);
+  });
+
+  it("keeps an optional full download result in the admin and probe contract", () => {
+    const base = { ping: level, tcp: level, handshake: level, http: level };
+    const download = { ok: false, detail: "download size differs", latencyMs: null };
+    expect(probeLevelsSchema.parse(base)).not.toHaveProperty("download");
+    expect(probeLevelsSchema.parse({ ...base, download })).toEqual({ ...base, download });
   });
 });
 

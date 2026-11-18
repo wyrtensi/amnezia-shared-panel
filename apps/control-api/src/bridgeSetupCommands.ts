@@ -75,16 +75,20 @@ export type RouteSetupInput = {
 };
 
 export const routeSetupCommands = (route: RouteSetupInput): RouteSetupCommands => {
-  const args: Array<[string, string | number]> = [
-    ["--route-id", route.id],
+  const bridgeArgs: Array<[string, string | number]> = [
     ["--bridge-id", route.bridgeId],
     ["--bridge-ip", route.bridgePublicIpv4],
     ["--control-port", route.bridgeControlTcpPort],
+  ];
+  const args: Array<[string, string | number]> = [
+    ["--route-id", route.id],
+    ...bridgeArgs,
     ["--public-port", route.publicUdpPort],
   ];
   return {
     install: command(FRPC_SCRIPT, args),
     dryRun: command(FRPC_SCRIPT, args, ["--dry-run"]),
+    checkTls: command(FRPC_SCRIPT, bridgeArgs, ["--check-tls"]),
     remove: command(FRPC_SCRIPT, [["--route-id", route.id]], ["--remove"]),
   };
 };

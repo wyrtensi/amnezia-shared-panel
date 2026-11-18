@@ -276,6 +276,17 @@ The bridge CA certificate goes to each node as `/etc/amnezia-node/frp/<bridge-id
 (0644); frpc verifies the frps certificate against it. Secrets never appear in
 command arguments, configs or script output.
 
+The operator issues the server certificate with the bridge CA before installing
+frps. Keep the CA private key off the bridge and nodes. The route's **Check bridge
+TLS certificate** command uses OpenSSL 3 and the installed CA on the node to verify
+the certificate currently served by frps. It checks the chain and bridge IP,
+prints the expiry, and warns within 30 days of expiry without changing services.
+When renewing with the same CA, replace the server certificate and key, restart
+frps in a maintenance window, then verify from a trusted node. frps loads the
+certificate at startup. When changing CAs, distribute a bundle with both CAs to
+the nodes before switching the server certificate, then remove the old CA after
+verification.
+
 The installer creates `/etc/amnezia-bridge/frp/dashboard.env` once (mode 0600,
 `FRPS_DASHBOARD_USER` and `FRPS_DASHBOARD_PASSWORD`, random). frps reads it as
 its unit environment file, and the bridge-agent uses the same credentials with

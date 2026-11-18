@@ -37,6 +37,31 @@ One tunnel at a time; teardown always runs.
 5. After the first run, compare the host's `ip route`, `ip rule` and
    `/etc/resolv.conf` with the capture: they must be identical.
 
+## Optional HTTPS download check
+
+Serve an immutable, uncompressed static file up to 256 KiB on an
+operator-controlled HTTPS endpoint reachable through the VPN. The probe uses
+normal certificate and hostname validation. Serve it directly with HTTP 200
+and no redirect. Set these variables in the probe host's `.env`:
+
+| Variable | Value |
+|---|---|
+| `PROBE_DOWNLOAD_URL` | The file's HTTPS URL, without credentials, a query or a fragment |
+| `PROBE_DOWNLOAD_BYTES` | Exact file size in bytes (`wc -c < file`) |
+| `PROBE_DOWNLOAD_SHA256` | The 64-digit hexadecimal digest (`sha256sum file`) |
+
+After a handshake, the probe sends one request for the file from the AWG
+source address. It streams and verifies the full body before passing, with a
+10-second deadline per target. The existing IP egress check runs separately.
+The fixture's availability, DNS and certificate can also cause a failure.
+
+The admin reachability view and `probe-results` show the download outcome
+with failure details. The active bridge route shows its latest current
+outcome alongside the AWG and FRP states. Download results are informational
+and do not affect activation, the reachability verdict or alerts. Leave all
+three variables empty to omit the measurement. Old probe results omit it
+as well. The probe never uses a default endpoint for the download.
+
 ## API
 
 All but `/healthz` require `x-api-key`.
@@ -48,6 +73,8 @@ All but `/healthz` require `x-api-key`.
 | GET | `/runs/latest` | `{runId, startedAt, finishedAt \| null, control, results[]}` or `404` before the first run |
 
 Responses and logs never contain the configs: they grant VPN access.
+Each target may include `levels.download` with the same `{ok, detail, latencyMs}`
+shape as the existing levels. It is absent when no download was attempted.
 
 ## Test
 

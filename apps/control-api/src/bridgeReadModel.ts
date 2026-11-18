@@ -64,6 +64,7 @@ export const routeRegistration = (
 export type AwgPathEvidence = {
   status: "ok" | "failed" | "unknown";
   checkedAt: Date | null;
+  downloadOk?: boolean;
 };
 
 export const UNKNOWN_AWG_PATH: AwgPathEvidence = { status: "unknown", checkedAt: null };
@@ -80,7 +81,7 @@ export const routeVerification = (
   awgPath: AwgPathEvidence = UNKNOWN_AWG_PATH,
 ): BridgeRouteVerification => {
   if (route.state === "active") {
-    return { kind: "awg_path", status: awgPath.status, checkedAt: iso(awgPath.checkedAt) };
+    return { ...awgPath, kind: "awg_path", checkedAt: iso(awgPath.checkedAt) };
   }
   const base = {
     kind: "candidate" as const,

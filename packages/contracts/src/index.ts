@@ -1928,7 +1928,7 @@ export const probeLevelSchema = z.object({
 });
 export type ProbeLevel = z.infer<typeof probeLevelSchema>;
 
-export const PROBE_LEVELS = ["ping", "tcp", "handshake", "http"] as const;
+export const PROBE_LEVELS = ["ping", "tcp", "handshake", "http", "download"] as const;
 export type ProbeLevelName = (typeof PROBE_LEVELS)[number];
 
 export const probeLevelsSchema = z.object({
@@ -1936,6 +1936,7 @@ export const probeLevelsSchema = z.object({
   tcp: probeLevelSchema,
   handshake: probeLevelSchema,
   http: probeLevelSchema,
+  download: probeLevelSchema.optional(),
 });
 export type ProbeLevels = z.infer<typeof probeLevelsSchema>;
 

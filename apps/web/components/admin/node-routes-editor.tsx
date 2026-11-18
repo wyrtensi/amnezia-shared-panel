@@ -551,6 +551,9 @@ export function CandidateRoute({
       </p>
       <CommandBlock label={t("bridge.dryRunCommand")} command={route.setupCommands.dryRun} />
       <CommandBlock label={t("bridge.installCommand")} command={route.setupCommands.install} />
+      {route.setupCommands.checkTls ? (
+        <CommandBlock label={t("bridge.checkTlsCommand")} command={route.setupCommands.checkTls} />
+      ) : null}
     </div>
   ) : null;
   const bridgeSetup = bridge && bridgeNeedsHostSetup(bridge) ? bridge.setupCommands : null;

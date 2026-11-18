@@ -165,6 +165,30 @@ describe("ReachabilityBody", () => {
     expect(html).toContain('data-level="tcp" data-mark="ok"');
     expect(html).toContain('data-level="handshake" data-mark="fail"');
     expect(html).toContain('data-level="http" data-mark="none"');
+    expect(html).not.toContain('data-level="download"');
+  });
+
+  it("shows the optional HTTPS download failure independently of short requests", () => {
+    const html = render({
+      probe: PROBE,
+      nodes: [node({
+        protocols: [{
+          protocol: "awg3",
+          status: "ok",
+          levels: {
+            ping: level(true), tcp: level(true), handshake: level(true), http: level(true),
+            download: { ...level(false), detail: "incomplete download" },
+          },
+          egressIp: "192.0.2.77",
+          detail: null,
+          checkedAt: "2026-11-10T08:00:00.000Z",
+          keyState: "active",
+        }],
+      })],
+    });
+    expect(html).toContain('data-level="http" data-mark="ok"');
+    expect(html).toContain('data-level="download" data-mark="fail"');
+    expect(html).toContain("incomplete download");
   });
 
   it("points at the CLI when no probe is set up", () => {

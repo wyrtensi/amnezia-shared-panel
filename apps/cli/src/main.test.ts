@@ -1723,12 +1723,18 @@ describe("bridge commands", () => {
   });
 
   it("bridge-route-prepare prints the route setup commands and keeps them in --json", async () => {
-    const setupCommands = { install: "sudo sh install-frpc.sh --route-id r", dryRun: "sudo sh install-frpc.sh --route-id r --dry-run", remove: "sudo sh install-frpc.sh --route-id r --remove" };
+    const setupCommands = {
+      install: "sudo sh install-frpc.sh --route-id r",
+      dryRun: "sudo sh install-frpc.sh --route-id r --dry-run",
+      checkTls: "sudo sh install-frpc.sh --bridge-id b --bridge-ip 198.51.100.7 --control-port 7000 --check-tls",
+      remove: "sudo sh install-frpc.sh --route-id r --remove",
+    };
     const route = { id: ROUTE, bridgeId: BRIDGE, publicUdpPort: 41005, state: "draft", frpProxyName: `awg-route-${ROUTE}`, setupCommands };
     stubFetch([{ status: 201, body: { created: true, route } }]);
     const out = await run(["bridge-route-prepare", NODE, BRIDGE, "--confirm"]);
     expect(out).toContain(`install: ${setupCommands.install}`);
     expect(out).toContain(`dryRun: ${setupCommands.dryRun}`);
+    expect(out).toContain(`checkTls: ${setupCommands.checkTls}`);
     expect(out).toContain(`remove: ${setupCommands.remove}`);
     stubFetch([{ status: 201, body: { created: true, route } }]);
     const json = JSON.parse(await run(["bridge-route-prepare", NODE, BRIDGE, "--confirm", "--json"])) as { route: { setupCommands: unknown } };

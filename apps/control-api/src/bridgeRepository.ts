@@ -6,6 +6,7 @@ import {
   bridgeFrpProxyName,
   nodeServedProtocols,
   probeCapabilityInputOf,
+  probeLevelsSchema,
   probeSupportsBridgeMeasurement,
   type BridgeRouteCandidateCheckPayload,
   type ProbeCapabilityInput,
@@ -357,6 +358,7 @@ export class PostgresBridgeRepository {
           nodeId: nodes.id,
           reachabilityEnabled: nodes.reachabilityEnabled,
           status: nodeReachabilityResults.status,
+          levels: nodeReachabilityResults.levels,
           failingSince: nodeReachabilityResults.failingSince,
           checkedAt: nodeReachabilityResults.checkedAt,
         })
@@ -381,9 +383,13 @@ export class PostgresBridgeRepository {
             : null,
         now,
       });
+      const downloadOk = verdict.state === "unknown"
+        ? undefined
+        : probeLevelsSchema.safeParse(row.levels).data?.download?.ok;
       result.set(row.nodeId, {
         status: verdict.state === "blocked" ? "failed" : verdict.state,
         checkedAt: row.checkedAt,
+        ...(typeof downloadOk === "boolean" ? { downloadOk } : {}),
       });
     }
     return result;

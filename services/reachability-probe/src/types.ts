@@ -9,6 +9,7 @@ export type TargetLevels = {
   tcp: LevelResult;
   handshake: LevelResult;
   http: LevelResult;
+  download?: LevelResult;
 };
 
 export type TargetResult = {

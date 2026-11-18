@@ -982,6 +982,7 @@ const ru = {
   "reachability.level.ok": "ок",
   "reachability.level.fail": "сбой",
   "reachability.level.none": "—",
+  "reachability.download": "Загрузка по HTTPS",
   "reachability.egress": "выход {ip}",
   "reachability.keyState": "служебный ключ: {state}",
   "reachability.noProtocols": "Результатов по протоколам пока нет.",
@@ -1588,6 +1589,7 @@ const ru = {
     "Выполняйте на хосте моста от root. Сначала пробный запуск. Команда уже содержит утверждённый образ агента моста: {image}.",
   "bridge.dryRunCommand":
     "Пробный запуск",
+  "bridge.checkTlsCommand": "Проверить TLS-сертификат моста",
   "bridge.installCommand":
     "Установка",
   "bridge.removeCommand":
@@ -2753,6 +2755,7 @@ const en = {
   "reachability.level.ok": "ok",
   "reachability.level.fail": "fail",
   "reachability.level.none": "—",
+  "reachability.download": "HTTPS download",
   "reachability.egress": "egress {ip}",
   "reachability.keyState": "service key: {state}",
   "reachability.noProtocols": "No per-protocol results yet.",
@@ -3348,6 +3351,7 @@ const en = {
     "Run on the bridge host, as root. Run the dry run first. The command already carries the approved bridge-agent image: {image}.",
   "bridge.dryRunCommand":
     "Dry run",
+  "bridge.checkTlsCommand": "Check bridge TLS certificate",
   "bridge.installCommand":
     "Install",
   "bridge.removeCommand":

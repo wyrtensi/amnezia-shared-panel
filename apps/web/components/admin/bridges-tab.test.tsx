@@ -142,7 +142,7 @@ describe("BridgeCardView", () => {
         {
           ...bridge.routes[0]!,
           registration: { status: "online", marker: "m1", observedAt: "2026-11-13T10:00:00.000Z" },
-          verification: { kind: "awg_path", status: "ok", checkedAt: "2026-11-13T10:05:00.000Z" },
+          verification: { kind: "awg_path", status: "ok", checkedAt: "2026-11-13T10:05:00.000Z", downloadOk: false },
         },
         {
           ...bridge.routes[1]!,
@@ -159,6 +159,7 @@ describe("BridgeCardView", () => {
     });
     expect(html.match(/frpc: Online/g)).toHaveLength(2);
     expect(html).toContain("AWG path: Working");
+    expect(html).toContain("HTTPS download: fail");
     expect(html).toContain("AWG path: Expired, verify again");
     // The times are rendered as text, not only in a title attribute.
     expect(html).toContain(formatDateTime("2026-11-13T10:05:00.000Z", "en"));

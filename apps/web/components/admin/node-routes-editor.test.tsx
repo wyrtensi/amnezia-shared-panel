@@ -31,7 +31,7 @@ const route: NodeBridgeRoute = {
   bridgeLastObservedAt: observedAt,
   registration: { status: "online", marker: "test-marker", observedAt },
   verification: { kind: "candidate", status: "none", method: null, verifiedAt: null, error: null },
-  setupCommands: { dryRun: "setup --dry-run", install: "setup", remove: "remove" },
+  setupCommands: { dryRun: "setup --dry-run", install: "setup", checkTls: "setup --check-tls", remove: "remove" },
 };
 
 const copy = messages.ru;
@@ -61,6 +61,7 @@ describe("CandidateRoute", () => {
   ] as const)("leads with setup when $status has no current registration marker", (registration) => {
     const html = render({ registration });
     expect(html).toContain(route.setupCommands?.dryRun);
+    expect(html).toContain(route.setupCommands?.checkTls);
     expect(html).toContain(`/etc/amnezia-node/frp/${route.bridgeId}/`);
     expect(html.indexOf(copy["bridge.nodeSetup"])).toBeLessThan(html.indexOf("<details"));
     expect(html).not.toContain(copy["bridge.verifyProbe"]);

@@ -45,6 +45,9 @@ services:
       NODE_OPTIONS: --max-old-space-size=${PROBE_MAX_OLD_SPACE_MB:-128}
       PROBE_LISTEN: 0.0.0.0:4002
       PROBE_API_KEY_FILE: /run/secrets/probe_api_key
+      PROBE_DOWNLOAD_URL: ${PROBE_DOWNLOAD_URL:-}
+      PROBE_DOWNLOAD_BYTES: ${PROBE_DOWNLOAD_BYTES:-}
+      PROBE_DOWNLOAD_SHA256: ${PROBE_DOWNLOAD_SHA256:-}
     secrets:
       - probe_api_key
     logging:
