@@ -208,6 +208,9 @@ importers:
       '@amnezia/db':
         specifier: workspace:*
         version: link:../../packages/db
+      '@amnezia/vpn-config':
+        specifier: workspace:*
+        version: link:../../packages/vpn-config
       '@fastify/helmet':
         specifier: 13.2.0
         version: 13.2.0
@@ -321,6 +324,9 @@ importers:
       '@amnezia/db':
         specifier: workspace:*
         version: link:../../packages/db
+      '@amnezia/vpn-config':
+        specifier: workspace:*
+        version: link:../../packages/vpn-config
       drizzle-orm:
         specifier: 0.45.4
         version: 0.45.4(postgres@4.1.0)
@@ -356,6 +362,8 @@ importers:
       tsx:
         specifier: 4.23.15
         version: 4.23.15
+
+  packages/vpn-config: {}
 
 packages:
 

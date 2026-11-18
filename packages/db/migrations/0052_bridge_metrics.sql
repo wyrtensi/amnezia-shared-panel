@@ -1,0 +1,1 @@
+ALTER TABLE "vpn_bridges" ADD COLUMN "metrics" jsonb;

@@ -1,6 +1,10 @@
 import { WORKER_PERIOD_FIELDS } from "@amnezia/contracts";
 import { describe, expect, it } from "vitest";
-import { resolveWorkerPeriodDefaults } from "./config.js";
+import {
+  bridgeJobsGate,
+  resolveBridgeJobsEnabled,
+  resolveWorkerPeriodDefaults,
+} from "./config.js";
 
 describe("resolveWorkerPeriodDefaults", () => {
   it("uses the documented defaults on an empty environment", () => {
@@ -114,5 +118,19 @@ describe("resolveWorkerPeriodDefaults", () => {
         NODE_METRICS_SAMPLE_SEC: "5",
       }),
     ).toMatchObject({ telemetryPollSec: 5, nodeMetricsSampleSec: 5 });
+  });
+});
+
+describe("bridge job gate", () => {
+  it("is closed unless VPN_BRIDGE_JOBS_ENABLED is exactly true", () => {
+    expect(resolveBridgeJobsEnabled({})).toBe(false);
+    expect(resolveBridgeJobsEnabled({ VPN_BRIDGE_JOBS_ENABLED: "false" })).toBe(false);
+    expect(resolveBridgeJobsEnabled({ VPN_BRIDGE_JOBS_ENABLED: "1" })).toBe(false);
+    expect(resolveBridgeJobsEnabled({ VPN_BRIDGE_JOBS_ENABLED: "true" })).toBe(true);
+  });
+
+  it("returns the typed refusal while closed", () => {
+    expect(bridgeJobsGate(false)).toEqual({ ok: false, code: "BRIDGE_JOBS_DISABLED" });
+    expect(bridgeJobsGate(true)).toEqual({ ok: true });
   });
 });

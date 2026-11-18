@@ -38,6 +38,14 @@ describe("key status badge", () => {
     expect(html).toContain("shrink-0");
   });
 
+  it("an unknown verdict is not a failure", () => {
+    const unknown = { state: "unknown" as const, since: null };
+    expect(keyBadgeState("active", unknown)).toBe("active");
+    expect(keyBadgeState("active", { state: "ok", since: null })).toBe("active");
+    expect(badge("active", unknown as never)).toContain(">Активен<");
+    expect(badge("active", unknown as never)).not.toContain("Блок");
+  });
+
   it("leaves other states alone on a blocked server", () => {
     expect(badge("provisioning", blocked)).not.toContain("Блок");
     expect(badge("failed", blocked)).not.toContain("Блок");

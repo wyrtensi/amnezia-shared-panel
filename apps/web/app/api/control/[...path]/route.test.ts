@@ -13,6 +13,7 @@ const stubFetch = (upstream: {
   contentType?: string | null;
   // null for a null-body status: Node refuses `new Response("", {status: 204})`.
   body?: string | null;
+  extraHeaders?: Record<string, string>;
 }) => {
   calls = [];
   vi.stubGlobal(
@@ -25,6 +26,9 @@ const stubFetch = (upstream: {
       });
       const headers = new Headers();
       if (upstream.contentType) headers.set("content-type", upstream.contentType);
+      for (const [name, value] of Object.entries(upstream.extraHeaders ?? {})) {
+        headers.set(name, value);
+      }
       const body = upstream.body === undefined ? "{}" : upstream.body;
       return Promise.resolve(new Response(body, { status: upstream.status ?? 200, headers }));
     }),
@@ -159,5 +163,23 @@ describe("/api/control/[...path] — config refresh", () => {
       ["GET", `${CONTROL_API_URL}/api/keys/key-1/config-refresh`],
       ["POST", `${CONTROL_API_URL}/api/keys/key-1/config-refresh`],
     ]);
+  });
+});
+
+describe("/api/control/[...path] — bridge test config", () => {
+  it("relays the registration marker header next to the disposition", async () => {
+    stubFetch({
+      contentType: "text/plain; charset=utf-8",
+      body: "vpn://x",
+      extraHeaders: {
+        "x-bridge-registration-marker": "run%2042",
+        "content-disposition": 'attachment; filename="t.vpn"',
+      },
+    });
+    const response = await invoke(GET, ["api", "admin", "vpn-bridge-routes", "r1", "test-config"], {
+      search: "?keyId=k1",
+    });
+    expect(response.headers.get("x-bridge-registration-marker")).toBe("run%2042");
+    expect(response.headers.get("content-disposition")).toBe('attachment; filename="t.vpn"');
   });
 });

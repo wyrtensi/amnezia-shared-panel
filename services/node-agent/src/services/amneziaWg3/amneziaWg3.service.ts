@@ -26,6 +26,7 @@ export class AmneziaWg3Service extends AmneziaWgServiceBase {
   // AmneziaWG 3.1 client config template
   private static readonly CLIENT_TEMPLATE =
     `[Interface]\n` +
+    `$MTU_LINE` +
     `Address = $CLIENT_ADDRESS/32\n` +
     `DNS = $PRIMARY_DNS, $SECONDARY_DNS\n` +
     `PrivateKey = $CLIENT_PRIVATE_KEY\n` +
@@ -153,12 +154,15 @@ export class AmneziaWg3Service extends AmneziaWgServiceBase {
     const keepAlive = isV3
       ? AppContract.AmneziaWG3.DEFAULTS.KEEPALIVE_V3
       : AppContract.AmneziaWG3.DEFAULTS.KEEPALIVE;
-    const mtu = AppContract.AmneziaWG3.DEFAULTS.MTU;
+    const mtu = isV3 ? AppContract.AmneziaWG3.DEFAULTS.MTU : AppContract.AmneziaWG2.DEFAULTS.MTU;
 
     const primaryDns = AppContract.DNS.PRIMARY;
     const secondaryDns = AppContract.DNS.SECONDARY;
 
     let configText = AmneziaWg3Service.CLIENT_TEMPLATE.replace(
+      "$MTU_LINE",
+      isV3 ? `MTU = ${mtu}\n` : "",
+    ).replace(
       /\$CLIENT_ADDRESS/g,
       assignedIp,
     )

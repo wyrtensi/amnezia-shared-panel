@@ -126,6 +126,7 @@ services:
       # request file here; the host panel-updater.path unit runs update.sh. The
       # feature is inert unless the matching host volume is mounted below.
       UPDATE_SPOOL_DIR: /var/run/panel-update
+      UPDATE_ACK_DEADLINE_SECONDS: ${UPDATE_ACK_DEADLINE_SECONDS:-120}
     # Loopback + uncommon host port (control-api is internal; exposed only for
     # local debugging / the co-located CLI).
     ports:

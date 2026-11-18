@@ -68,7 +68,7 @@ export const AppContract = {
 
     // Значения по умолчанию
     DEFAULTS: {
-      MTU: "1376",
+      MTU: "1280",
       KEEPALIVE: "25",
       // В AmneziaWG 3.1 PersistentKeepalive задается диапазоном
       KEEPALIVE_V3: "25-35",

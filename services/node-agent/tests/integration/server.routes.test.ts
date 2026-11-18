@@ -1,4 +1,11 @@
+import { mkdtemp, rm, writeFile } from "fs/promises";
+import { tmpdir } from "os";
+import { join } from "path";
+import { asValue } from "awilix";
 import { afterEach, describe, expect, it, vi } from "vitest";
+
+import { di } from "@/config/DIContainer";
+import { AgentUpdateService } from "@/services/server/agentUpdate.service";
 
 import { Protocol } from "@/types/shared";
 import { AppFastifyInstance } from "@/types/shared";
@@ -265,5 +272,42 @@ describe("server load route", () => {
       perCorePercent: null,
       windowSec: null,
     });
+  });
+});
+
+describe("GET /server/update acknowledgement fields", () => {
+  // Fastify drops response properties the schema does not declare, so the
+  // service test alone cannot prove the fields reach the wire.
+  it("returns acknowledgement, requestAgeSeconds and diagnosticHint", async () => {
+    const spool = await mkdtemp(join(tmpdir(), "agent-update-route-"));
+    try {
+      const repository = "ghcr.io/owner/repo/node-agent";
+      const image = `${repository}@sha256:${"a".repeat(64)}`;
+      const old = new Date(Date.now() - 600_000).toISOString();
+      const body = JSON.stringify({ id: "late", image, requestedAt: old });
+      await writeFile(join(spool, "pending.json"), body);
+      await writeFile(join(spool, "request.json"), body);
+      app = await createServerTestApp({});
+      di.container.register({
+        [AgentUpdateService.key]: asValue(
+          new AgentUpdateService({ repository, spoolDir: spool, ackDeadlineSeconds: 120 }),
+        ),
+      });
+
+      const response = await app.inject({
+        method: "GET",
+        url: "/server/update",
+        headers: AUTH_HEADERS,
+      });
+
+      expect(response.statusCode).toBe(200);
+      const json = response.json();
+      expect(json.state).toBe("requested");
+      expect(json.acknowledgement).toBe("unacknowledged");
+      expect(json.diagnosticHint).toBe("UPDATE_NOT_ACKNOWLEDGED");
+      expect(json.requestAgeSeconds).toBeGreaterThanOrEqual(600);
+    } finally {
+      await rm(spool, { recursive: true, force: true });
+    }
   });
 });

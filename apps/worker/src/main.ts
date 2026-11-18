@@ -7,7 +7,21 @@ import { createJobProcessor } from "./processor.js";
 import { PostgresWorkerRepository } from "./postgresRepository.js";
 import { runWorker } from "./runner.js";
 import { createMaintenanceRunner } from "./maintenance.js";
-import { resolveWorkerPeriodDefaults } from "./config.js";
+import {
+  resolveBridgeJobsEnabled,
+  resolveBridgeManagementHosts,
+  resolveWorkerPeriodDefaults,
+} from "./config.js";
+import { createBridgeAgentUpdate, createBridgeUpdateTracker } from "./bridgeAgentUpdate.js";
+import { createBridgeAgentPoll, createBridgePollArmer } from "./bridgePoller.js";
+import { PostgresBridgeUpdateRepository } from "./bridgeUpdateRepository.js";
+import { PostgresBridgePollRepository } from "./bridgePollRepository.js";
+import {
+  BRIDGE_AGENT_POLL_INTERVAL_MS,
+  parseBridgeAgentImageRepository,
+} from "@amnezia/contracts";
+import { createBridgeCandidateCheck } from "./bridgeCandidateCheck.js";
+import { PostgresBridgeCandidateRepository } from "./bridgeCandidateRepository.js";
 import {
   createWorkerPeriods,
   readWorkerPeriodOverrides,
@@ -18,6 +32,7 @@ import {
   type RuleProfile,
 } from "./rules.js";
 import { resolveNodeAgentRelease } from "./agentRelease.js";
+import { resolveBridgeAgentRelease } from "./bridgeAgentRelease.js";
 import { runPeriodicTask } from "./scheduler.js";
 import { createTelemetryPoller } from "./telemetry.js";
 import {
@@ -231,6 +246,53 @@ const reachabilityWidget = telegramConfig
     })
   : undefined;
 
+// Probe candidate checks of bridge routes. `VPN_BRIDGE_JOBS_ENABLED` is read
+// here too: a job queued under an open gate and picked up by a worker with
+// the gate closed records BRIDGE_JOBS_DISABLED on the route instead of running.
+const bridgeCandidateCheck = createBridgeCandidateCheck({
+  candidates: new PostgresBridgeCandidateRepository({ db: database.db, keyring }),
+  loadProbe: () => reachabilityRepository.loadProbe(),
+  jobs: repository,
+  createProbeClient,
+  jobsEnabled: resolveBridgeJobsEnabled(process.env),
+  log: (line) => console.log(line),
+});
+
+// Bridge-agent polling: a 60 s timer arms one `bridge_agent.poll` row per
+// enrolled bridge (only while VPN_BRIDGE_JOBS_ENABLED is true) and the outbox
+// runner executes them, one at a time.
+const bridgeJobsEnabled = resolveBridgeJobsEnabled(process.env);
+const bridgePollRepository = new PostgresBridgePollRepository({ db: database.db, keyring });
+const armBridgePolls = createBridgePollArmer({
+  repository: bridgePollRepository,
+  jobsEnabled: bridgeJobsEnabled,
+  log: (line) => console.log(line),
+});
+const bridgeManagementHosts = resolveBridgeManagementHosts(process.env);
+// Bridge-agent updates: the `bridge_agent.update` job delivers the stored
+// intent once; the poll job above then follows the operation to its result.
+const bridgeUpdateRepository = new PostgresBridgeUpdateRepository({ db: database.db });
+const bridgeAgentPoll = createBridgeAgentPoll({
+  repository: bridgePollRepository,
+  jobs: repository,
+  jobsEnabled: bridgeJobsEnabled,
+  managementHosts: bridgeManagementHosts,
+  log: (line) => console.log(line),
+  isUpdateOutstanding: async (bridgeId) =>
+    (await bridgeUpdateRepository.loadOutstanding(bridgeId)) !== null,
+  trackUpdate: createBridgeUpdateTracker({
+    repository: bridgeUpdateRepository,
+    log: (line) => console.log(line),
+  }),
+});
+const bridgeAgentUpdate = createBridgeAgentUpdate({
+  repository: bridgeUpdateRepository,
+  targets: bridgePollRepository,
+  jobs: repository,
+  jobsEnabled: bridgeJobsEnabled,
+  managementHosts: bridgeManagementHosts,
+});
+
 const processJob = createJobProcessor({
   repository,
   createNodeAgent: (node) => createNodeAgentClient(node),
@@ -239,6 +301,9 @@ const processJob = createJobProcessor({
   notifier: telegramConfig ? createTelegramNotifier(telegramConfig) : undefined,
   reachabilityWidget,
   panelPublicUrl: process.env.PANEL_PUBLIC_URL ?? null,
+  bridgeCandidateCheck,
+  bridgeAgentPoll,
+  bridgeAgentUpdate,
   // Without this, a throwing access.sync run is only ever recorded in
   // job_outbox.last_error: the runner turns the throw into retryJob/failJob
   // with no console output, so an operator watching `docker logs worker`
@@ -295,6 +360,33 @@ const refreshNodeAgentRelease = async (): Promise<void> => {
   });
 };
 
+// The bridge-agent image offered to bridge hosts, from its own approved
+// repository (BRIDGE_AGENT_IMAGE_REPOSITORY), stored apart from the node-agent's.
+// Not a bridge job: it only reads the registry, so it is not behind
+// VPN_BRIDGE_JOBS_ENABLED. Off until the repository is configured.
+const parsedBridgeRepository = parseBridgeAgentImageRepository(
+  process.env.BRIDGE_AGENT_IMAGE_REPOSITORY,
+  process.env.NODE_AGENT_UPDATE_REPO,
+);
+if (parsedBridgeRepository.error) console.error(parsedBridgeRepository.error);
+const bridgeAgentImageRepository = parsedBridgeRepository.repository;
+const refreshBridgeAgentRelease = async (): Promise<void> => {
+  if (!bridgeAgentImageRepository) return;
+  const release = await resolveBridgeAgentRelease(bridgeAgentImageRepository);
+  if (!release) {
+    console.warn(
+      `Could not resolve a compatible bridge-agent release for ${bridgeAgentImageRepository}`,
+    );
+    return;
+  }
+  await repository.saveBridgeAgentRelease({
+    repository: release.repository,
+    version: release.version,
+    digest: release.digest,
+    resolvedAt: new Date(),
+  });
+};
+
 // External reachability probe. Off until an operator registers a probe;
 // the task checks for one every tick, so registering needs no restart.
 const checkReachability = createReachabilityTask({
@@ -323,6 +415,12 @@ try {
       onError: reportBackgroundError,
     }),
     runPeriodicTask({
+      task: armBridgePolls,
+      intervalMs: BRIDGE_AGENT_POLL_INTERVAL_MS,
+      signal: abortController.signal,
+      onError: reportBackgroundError,
+    }),
+    runPeriodicTask({
       task: runMaintenance,
       intervalMs: () => periods.intervalMs("maintenanceIntervalSec"),
       signal: abortController.signal,
@@ -330,6 +428,12 @@ try {
     }),
     runPeriodicTask({
       task: refreshNodeAgentRelease,
+      intervalMs: () => periods.intervalMs("agentReleaseRefreshSec"),
+      signal: abortController.signal,
+      onError: reportBackgroundError,
+    }),
+    runPeriodicTask({
+      task: refreshBridgeAgentRelease,
       intervalMs: () => periods.intervalMs("agentReleaseRefreshSec"),
       signal: abortController.signal,
       onError: reportBackgroundError,

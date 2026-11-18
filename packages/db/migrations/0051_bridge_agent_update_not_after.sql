@@ -1,0 +1,2 @@
+ALTER TABLE "vpn_bridge_agent_updates" ALTER COLUMN "not_after" DROP DEFAULT;--> statement-breakpoint
+ALTER TABLE "vpn_bridge_agent_updates" ADD CONSTRAINT "vpn_bridge_agent_updates_not_after_after_request" CHECK ("vpn_bridge_agent_updates"."not_after" > "vpn_bridge_agent_updates"."requested_at");

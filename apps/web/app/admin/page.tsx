@@ -46,6 +46,7 @@ import {
 } from "@/components/inline-traffic";
 import { useAdminData, type AdminNode } from "@/components/admin/admin-data";
 import { effectiveKeyLimitMode } from "@/lib/key-quota";
+import { nodesHealthyValue } from "@/lib/overview-nodes";
 import { PanelUpdateCard } from "@/components/admin/panel-update-card";
 import { NodeCardSection } from "@/components/admin/node-card-section";
 import {
@@ -53,6 +54,7 @@ import {
   type NodeCheckResult,
 } from "@/components/admin/node-check-chips";
 import { NodeMetrics } from "@/components/admin/node-metrics";
+import { OverviewBridgesBlock } from "@/components/admin/overview-bridges";
 import { NodePublicAddress } from "@/components/admin/node-public-address";
 import { useServiceChecks } from "@/components/admin/use-service-checks";
 import { useT } from "@/lib/i18n/provider";
@@ -245,9 +247,7 @@ export default function AdminOverviewPage() {
     },
     {
       label: t("ov.nodesHealthy"),
-      value: overview?.nodes
-        ? `${overview.nodes.healthy}/${overview.nodes.total}`
-        : `${nodes.length}`,
+      value: nodesHealthyValue(overview, nodes.length),
       icon: Server,
       tone: "chart-4",
       attention: false,
@@ -348,6 +348,8 @@ export default function AdminOverviewPage() {
           </div>
         )}
       </div>
+
+      <OverviewBridgesBlock bridges={overview?.bridges} t={t} />
 
       <TrafficSummary
         endpoint="/api/admin/traffic"

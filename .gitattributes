@@ -24,4 +24,4 @@ scripts/** text eol=lf
 
 # Treat lockfiles and generated artifacts as such in diffs.
 pnpm-lock.yaml linguist-generated=true
-services/node-agent/openapi/openapi.json linguist-generated=true
+services/node-agent/openapi/openapi.json text eol=lf linguist-generated=true

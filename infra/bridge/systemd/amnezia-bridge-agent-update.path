@@ -1,0 +1,16 @@
+[Unit]
+Description=Watch for bridge-agent update requests from the panel
+
+[Path]
+# Level-triggered, like the node-agent updater's path unit. The service runs
+# while a request exists (the agent writes <operation id>.json; its temp files
+# end in .tmp and never match) and while the journal of an interrupted run
+# exists, so a crash, a reboot or the service's timeout is recovered on the next
+# start. The updater removes every request it has finished or refused, which
+# re-arms the unit; an unprocessable file left behind would re-fire it forever.
+PathExistsGlob=/var/lib/amnezia-bridge/update/requests/*.json
+PathExists=/var/lib/amnezia-bridge/updater/journal
+Unit=amnezia-bridge-agent-update.service
+
+[Install]
+WantedBy=multi-user.target

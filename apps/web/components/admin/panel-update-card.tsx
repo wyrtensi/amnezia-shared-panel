@@ -3,6 +3,7 @@
 import * as React from "react";
 import { toast } from "sonner";
 import {
+  AlertTriangle,
   CheckCircle2,
   Download,
   Loader2,
@@ -43,7 +44,70 @@ type UpdateStatus = {
     ok: boolean;
     message: string;
   } | null;
+  // Additive fields; an older control-api omits them and the card then behaves
+  // as before (a pending request reads as running).
+  acknowledgement?: "pending" | "acknowledged" | "unacknowledged" | null;
+  requestAgeSeconds?: number | null;
+  acknowledgementDeadlineSeconds?: number;
+  diagnosticHint?: "UPDATE_NOT_ACKNOWLEDGED" | null;
+  running?: { id: string; startedAt: string } | null;
 };
+
+/** Compact age such as "45 s", "7 min", "3 h" (RU: "45 с", "7 мин", "3 ч"). */
+export function formatRequestAge(seconds: number, lang: string): string {
+  const ru = lang === "ru";
+  if (seconds < 60) return `${seconds} ${ru ? "с" : "s"}`;
+  if (seconds < 3600) {
+    return `${Math.floor(seconds / 60)} ${ru ? "мин" : "min"}`;
+  }
+  return `${Math.floor(seconds / 3600)} ${ru ? "ч" : "h"}`;
+}
+
+/**
+ * The progress line under the version: a request nobody acknowledged is a
+ * warning with its age and the next diagnostic step, never a spinner; a request
+ * the host started (or one with no acknowledgement field from an older API)
+ * keeps the running state.
+ */
+export function PanelUpdateProgress({
+  status,
+  t,
+  lang,
+}: {
+  status: UpdateStatus;
+  t: (key: string, vars?: Record<string, string | number>) => string;
+  lang: string;
+}) {
+  if (status.pending && status.diagnosticHint === "UPDATE_NOT_ACKNOWLEDGED") {
+    const age =
+      status.requestAgeSeconds == null
+        ? t("update.ageUnknown")
+        : formatRequestAge(status.requestAgeSeconds, lang);
+    return (
+      <div className="space-y-1" role="alert">
+        <p className="flex items-center gap-1.5 text-sm text-warning">
+          <AlertTriangle className="h-3.5 w-3.5" />
+          {t("update.unacknowledged", {
+            age,
+            deadline: status.acknowledgementDeadlineSeconds ?? 120,
+          })}
+        </p>
+        <p className="text-xs text-muted-foreground">
+          {t("update.unacknowledgedHint")}
+        </p>
+      </div>
+    );
+  }
+  if (status.pending || status.running) {
+    return (
+      <p className="flex items-center gap-1.5 text-sm text-chart-2">
+        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+        {t("update.running")}
+      </p>
+    );
+  }
+  return null;
+}
 
 /**
  * Admin "Update panel" card (GET/POST /api/admin/update). The button drops a
@@ -72,7 +136,7 @@ export function PanelUpdateCard() {
   }, [load]);
 
   // Poll while an update is pending (through transient errors during restart).
-  const pending = Boolean(status?.pending);
+  const pending = Boolean(status?.pending || status?.running);
   React.useEffect(() => {
     if (!pending) return;
     wasPending.current = true;
@@ -82,7 +146,13 @@ export function PanelUpdateCard() {
 
   // Toast once when a pending update resolves into a result.
   React.useEffect(() => {
-    if (wasPending.current && status && !status.pending && status.lastResult) {
+    if (
+      wasPending.current &&
+      status &&
+      !status.pending &&
+      !status.running &&
+      status.lastResult
+    ) {
       wasPending.current = false;
       if (status.lastResult.ok) toast.success(t("update.lastOk"));
       else toast.error(t("update.lastFail"));
@@ -114,7 +184,10 @@ export function PanelUpdateCard() {
   // with its own sha as the version (scripts/deploy.sh).
   const shortCommit = version.commit?.slice(0, 7) ?? null;
   const showCommit = shortCommit !== null && versionLabel(version) !== shortCommit;
-  const running = Boolean(status.pending);
+  const running = Boolean(status.pending || status.running);
+  const unacknowledged =
+    Boolean(status.pending) &&
+    status.diagnosticHint === "UPDATE_NOT_ACKNOWLEDGED";
 
   return (
     <Card>
@@ -145,10 +218,7 @@ export function PanelUpdateCard() {
             ) : null}
           </p>
           {running ? (
-            <p className="flex items-center gap-1.5 text-sm text-chart-2">
-              <Loader2 className="h-3.5 w-3.5 animate-spin" />
-              {t("update.running")}
-            </p>
+            <PanelUpdateProgress status={status} t={t} lang={lang} />
           ) : status.lastResult ? (
             <p
               className={cn(
@@ -171,7 +241,7 @@ export function PanelUpdateCard() {
               {t("update.disabled")}.{" "}
               <span className="font-mono">{t("update.disabledHint")}</span>
             </p>
-          ) : running ? (
+          ) : running && !unacknowledged ? (
             <p className="text-xs text-muted-foreground">
               {t("update.runningHint")}
             </p>
@@ -182,7 +252,7 @@ export function PanelUpdateCard() {
           disabled={!status.enabled || running}
           className="shrink-0"
         >
-          {running ? (
+          {running && !unacknowledged ? (
             <Loader2 className="h-4 w-4 animate-spin" />
           ) : (
             <Download className="h-4 w-4" />

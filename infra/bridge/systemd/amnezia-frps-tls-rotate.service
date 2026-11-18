@@ -1,0 +1,20 @@
+[Unit]
+Description=Renew and verify the Amnezia frps TLS certificate
+Wants=network-online.target
+Requires=amnezia-frps-tls-boot-restore.service
+After=network-online.target amnezia-frps-tls-boot-restore.service
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/amnezia-bridge/frp-tls-rotate.env
+ExecStart=/bin/bash /opt/amnezia-bridge/frps-tls-rotate.sh
+# If the transaction was interrupted, restore the previous pair immediately.
+ExecStopPost=/bin/bash /opt/amnezia-bridge/frps-tls-rotate.sh --recover
+TimeoutStartSec=1600
+TimeoutStopSec=620
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/etc/amnezia-bridge/frp /etc/amnezia-bridge/frp-trust
+UMask=0077

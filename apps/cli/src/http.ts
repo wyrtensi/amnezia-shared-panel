@@ -3,6 +3,16 @@
  * unit-tested (`main.ts` runs `main()` on import).
  */
 
+export class ControlApiResponseError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly code?: string,
+  ) {
+    super(message);
+  }
+}
+
 /**
  * Build the headers for one request. A JSON content-type is declared ONLY when
  * the request actually carries a body: Fastify rejects a bodyless request that

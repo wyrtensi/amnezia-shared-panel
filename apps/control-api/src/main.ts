@@ -1,5 +1,6 @@
 import { createDatabase, type EncryptionKeyring } from "@amnezia/db";
 import { buildApp, type IdentityAdapter } from "./app.js";
+import { resolveBridgeConfig } from "./bridgeConfig.js";
 import { createCloudflareAccessAdapter } from "./cloudflareAccess.js";
 import {
   chainIdentityAdapters,
@@ -72,12 +73,20 @@ export const startServer = async () => {
     );
   const bootstrapAdminEmails = csvSet(process.env.BOOTSTRAP_ADMIN_EMAILS);
   const allowedEmailDomains = csvSet(process.env.AUTH_ALLOWED_DOMAINS);
+  // Read once at boot so a malformed value stops the server instead of
+  // surfacing on the first bridge request. `jobsEnabled` gates bridge job
+  // queuing (assertBridgeJobsEnabled), such as probe candidate checks.
+  const bridgeConfig = resolveBridgeConfig(process.env);
   const repository = new PostgresControlRepository({
     db: database.db,
     keyring,
     activeKeyVersion,
     bootstrapAdminEmails,
     allowedEmailDomains,
+    bridgeObservationStaleMs: bridgeConfig.observationStaleMs,
+    bridgeJobsEnabled: bridgeConfig.jobsEnabled,
+    bridgeManagementHosts: bridgeConfig.managementHosts,
+    bridgeAgentImageRepository: bridgeConfig.agentImageRepository,
   });
   const service = createDefaultControlApiService({ repository, keyring });
   // Identity methods, tried in order: Cloudflare Access JWT (edge login) then the

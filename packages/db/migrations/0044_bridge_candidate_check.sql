@@ -1,0 +1,6 @@
+ALTER TABLE "reachability_probe" ADD COLUMN "candidate_run_id" uuid;--> statement-breakpoint
+ALTER TABLE "reachability_probe" ADD COLUMN "candidate_route_id" uuid;--> statement-breakpoint
+ALTER TABLE "reachability_probe" ADD COLUMN "candidate_registration_marker" text;--> statement-breakpoint
+ALTER TABLE "reachability_probe" ADD COLUMN "candidate_requested_at" timestamp with time zone;--> statement-breakpoint
+ALTER TABLE "reachability_probe" ADD COLUMN "candidate_run_started_at" timestamp with time zone;--> statement-breakpoint
+ALTER TABLE "reachability_probe" ADD CONSTRAINT "reachability_probe_candidate_complete" CHECK (("reachability_probe"."candidate_run_id" is null and "reachability_probe"."candidate_route_id" is null and "reachability_probe"."candidate_registration_marker" is null and "reachability_probe"."candidate_requested_at" is null and "reachability_probe"."candidate_run_started_at" is null) or ("reachability_probe"."candidate_run_id" is not null and "reachability_probe"."candidate_route_id" is not null and "reachability_probe"."candidate_registration_marker" is not null and "reachability_probe"."candidate_requested_at" is not null and "reachability_probe"."candidate_run_started_at" is not null));

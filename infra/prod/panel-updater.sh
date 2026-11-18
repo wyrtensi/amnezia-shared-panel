@@ -105,6 +105,22 @@ exec 8<&-
 ID="$(printf '%s' "$BODY" | sed -n 's/.*"id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n1)"
 [ -n "$ID" ] || ID="unknown"
 
+# Tell the panel the host picked this request up (matched by id), BEFORE the
+# request is consumed: the panel reads "request gone, started marker, no result
+# for that id" as a confirmed running update, and "request still there past the
+# acknowledgement deadline" as a host that never picked it up. Best effort - a
+# marker that cannot be written must never block the update itself.
+write_started() {
+  local tmp
+  case "$ID" in *[!A-Za-z0-9-]*|"") return 0 ;; esac
+  [ "$(stat -c %d "$RESULT_STAGING_DIR")" = "$(stat -c %d "$SPOOL_DIR")" ] || return 0
+  tmp="$(mktemp "${RESULT_STAGING_DIR}/started.XXXXXX")" || return 0
+  printf '{"id":"%s","startedAt":"%s"}\n' "$ID" "$(date -u -Iseconds)" >"$tmp"
+  chmod 0644 "$tmp"
+  mv -f "$tmp" "${SPOOL_DIR}/started.json" || rm -f "$tmp"
+}
+write_started
+
 # Consume the request up front — a failure must not loop the path unit.
 rm -f "$REQUEST"
 

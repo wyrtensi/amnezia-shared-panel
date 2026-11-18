@@ -9,7 +9,10 @@ import {
   formatStale,
   ingestRun,
   nodeStatus,
+  OBSOLETE_DETAIL,
+  reachabilityTargetId,
   staleTransition,
+  type BridgePath,
   type NodeState,
   type ReachabilityTarget,
 } from "./reachability.js";
@@ -24,11 +27,13 @@ const target = (
   protocol: "awg3" | "awg2" = "awg3",
   extra: Partial<ReachabilityTarget> = {},
 ): ReachabilityTarget => ({
-  targetId: `${name}:${protocol}`,
+  targetId: reachabilityTargetId(name, protocol, extra.endpointRevision ?? 0),
   nodeId: `id-${name}`,
   nodeName: name,
   publicIp: name === "node-a" ? "192.0.2.10" : "192.0.2.11",
   protocol,
+  endpointRevision: 0,
+  bridgePath: null,
   unavailableReason: null,
   ...extra,
 });
@@ -451,5 +456,119 @@ describe("alert times", () => {
       ingestedNow: false,
     });
     expect(stale.notices[0]?.text).toContain("с 2026-01-01 02:00 Europe/Belgrade");
+  });
+});
+
+describe("ingestRun: endpoint revisions and bridged nodes", () => {
+  const bridge: BridgePath = { bridgeName: "Bridge-1", host: "203.0.113.50", port: 41000 };
+  // node-a after a Direct -> bridge switch: revision 1, AWG 3.1 via the bridge.
+  const A3 = target("node-a", "awg3", { endpointRevision: 1, bridgePath: bridge });
+  const A2 = target("node-a", "awg2", { endpointRevision: 1, bridgePath: bridge });
+  // The same targets as dispatched before the switch (revision 0, Direct).
+  const oldA3 = target("node-a", "awg3");
+
+  it("a result for an earlier endpoint revision is unknown: not stored, not counted, no alert", () => {
+    const { notices, states } = simulate([
+      { targets: [A3, B], results: [down(oldA3), up(B)] },
+      { targets: [A3, B], results: [down(oldA3), up(B)] },
+    ]);
+    expect(notices).toEqual([]);
+    expect(states[1]?.get("id-node-a")).toMatchObject({
+      status: "error",
+      consecutiveFailures: 0,
+      alertedAt: null,
+    });
+    const out = ingestRun({
+      runId: "r",
+      now: new Date(),
+      label: LABEL,
+      failThreshold: 1,
+      controlOk: true,
+      targets: [A3],
+      results: [down(oldA3)],
+      previous: new Map(),
+    });
+    expect(out.outcomes).toEqual([
+      expect.objectContaining({ protocol: "awg3", status: "error", detail: OBSOLETE_DETAIL, obsolete: true }),
+    ]);
+    expect(out.notices).toEqual([]);
+  });
+
+  it("an obsolete AWG 3.1 result keeps a failed AWG 2 on a Direct node unknown, not failed", () => {
+    // node-a went bridge -> Direct (revision 2) while a revision-1 run was out.
+    const direct3 = target("node-a", "awg3", { endpointRevision: 2 });
+    const direct2 = target("node-a", "awg2", { endpointRevision: 2 });
+    const bridged3 = target("node-a", "awg3", { endpointRevision: 1, bridgePath: bridge });
+    const { notices, states } = simulate([
+      { targets: [direct3, direct2, B], results: [down(bridged3), down(direct2), up(B)] },
+      { targets: [direct3, direct2, B], results: [down(bridged3), down(direct2), up(B)] },
+    ]);
+    expect(notices).toEqual([]);
+    expect(states[1]?.get("id-node-a")).toMatchObject({ status: "error", consecutiveFailures: 0 });
+  });
+
+  it("keeps the direct AWG 2 evidence of a run whose AWG 3.1 result is obsolete", () => {
+    const out = ingestRun({
+      runId: "r",
+      now: new Date(),
+      label: LABEL,
+      failThreshold: 2,
+      controlOk: true,
+      targets: [A3, A2],
+      // AWG 2 has no revision in its id: the switch did not change its path.
+      results: [down(oldA3), up(A2)],
+      previous: new Map(),
+    });
+    const stored = out.outcomes.filter((o) => !o.obsolete);
+    expect(stored).toEqual([expect.objectContaining({ protocol: "awg2", status: "ok" })]);
+  });
+
+  it("judges a bridged node on its AWG 3.1 path alone and names the bridge in the alert", () => {
+    const { notices, states } = simulate([
+      { targets: [A3, A2, B], results: [down(A3), up(A2), up(B)] },
+      { targets: [A3, A2, B], results: [down(A3), up(A2), up(B)] },
+      { targets: [A3, A2, B], results: [up(A3), up(A2), up(B)] },
+    ]);
+    expect(states[1]?.get("id-node-a")?.status).toBe("failed");
+    expect(notices.map((n) => [n.run, n.text.split("\n")[0]])).toEqual([
+      [1, "node-a (192.0.2.10) через мост Bridge-1 (203.0.113.50:41000) недоступен из Testland"],
+      [2, "node-a (192.0.2.10) через мост Bridge-1 (203.0.113.50:41000) снова доступен из Testland"],
+    ]);
+  });
+
+  it("a working bridge keeps a bridged node ok when its direct AWG 2 fails", () => {
+    const { notices, states } = simulate([
+      { targets: [A3, A2, B], results: [up(A3), down(A2), up(B)] },
+      { targets: [A3, A2, B], results: [up(A3), down(A2), up(B)] },
+    ]);
+    expect(notices).toEqual([]);
+    expect(states[1]?.get("id-node-a")?.status).toBe("ok");
+  });
+
+  it("a bridged AWG 3.1 path the probe could not measure is unknown and never alerts", () => {
+    const unmeasured = { ...A3, unavailableReason: "bridged path not measured" };
+    const { notices, states } = simulate([
+      { targets: [unmeasured, A2, B], results: [up(A2), up(B)] },
+      { targets: [unmeasured, A2, B], results: [up(A2), up(B)] },
+    ]);
+    expect(notices).toEqual([]);
+    // Not ok on the strength of AWG 2: the bridged path is unknown.
+    expect(states[1]?.get("id-node-a")?.status).toBe("error");
+  });
+
+  it("an AWG 3.1 id without a revision (a pre-revision worker's run) matches revision 0", () => {
+    const legacy = { ...up(oldA3), targetId: "node-a:awg3" };
+    const out = ingestRun({
+      runId: "r",
+      now: new Date(),
+      label: LABEL,
+      failThreshold: 2,
+      controlOk: true,
+      targets: [oldA3],
+      results: [legacy],
+      previous: new Map(),
+    });
+    expect(out.outcomes).toEqual([expect.objectContaining({ status: "ok" })]);
+    expect(oldA3.targetId).toBe("node-a:awg3:r0");
   });
 });

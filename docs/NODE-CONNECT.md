@@ -428,6 +428,12 @@ You should see JSON listing the `amnezia-awg2` / `amnezia-awg3` containers.
 
 ---
 
+> **Bridges use the same pattern.** A bridge's management agent is reached
+> through a supervised tunnel of exactly this shape
+> (`panel-tunnel-bridge-<bridge-id>`, same port pool), created by
+> `scripts/add-bridge-tunnel.sh` with the bridge's SSH host key pinned. See
+> [`infra/bridge/README.md`](../infra/bridge/README.md).
+
 ## 3. Registering the node in the panel
 
 Once the agent is reachable, register the node so the worker starts provisioning

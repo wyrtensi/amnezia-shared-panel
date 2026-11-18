@@ -1,4 +1,5 @@
 import {
+  probeCapabilitiesResponseSchema,
   probeRunStateSchema,
   type ProbeRunRequest,
   type ProbeRunState,
@@ -10,6 +11,12 @@ export type ProbeClient = {
   startRun: (request: ProbeRunRequest) => Promise<{ runId: string } | "busy">;
   /** The newest run, finished or not; null before the probe's first run. */
   latestRun: () => Promise<ProbeRunState | null>;
+  /**
+   * The probe's capability names. `"legacy"` when the probe has no capability
+   * endpoint (404): it measures Direct paths only. Other failures throw, so a
+   * probe that is merely down is not mistaken for a legacy one.
+   */
+  capabilities: () => Promise<{ apiVersion: number; capabilities: string[] } | "legacy">;
 };
 
 export type ProbeClientOptions = {
@@ -69,6 +76,16 @@ export const createProbeClient = ({
       }
       const parsed = probeRunStateSchema.safeParse(await response.json());
       if (!parsed.success) throw new Error("Probe returned a malformed run");
+      return parsed.data;
+    },
+    capabilities: async () => {
+      const response = await call("/capabilities");
+      if (response.status === 404) return "legacy";
+      if (!response.ok) {
+        throw new Error(`Probe capability request failed with status ${response.status}`);
+      }
+      const parsed = probeCapabilitiesResponseSchema.safeParse(await response.json());
+      if (!parsed.success) throw new Error("Probe returned a malformed capability response");
       return parsed.data;
     },
   };

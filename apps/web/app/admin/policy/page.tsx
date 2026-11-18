@@ -1,6 +1,7 @@
 "use client";
 
 import * as React from "react";
+import { useSearchParams } from "next/navigation";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -20,6 +21,8 @@ import {
   useAdminData,
   type GlobalPortalPolicy,
 } from "@/components/admin/admin-data";
+import { NodeRoutesEditor } from "@/components/admin/node-routes-editor";
+import { NODE_ROUTES_ANCHOR } from "@/lib/bridge-ui";
 import { useT } from "@/lib/i18n/provider";
 
 const PERMISSIONS: Array<[keyof GlobalPortalPolicy, string]> = [
@@ -47,6 +50,33 @@ const TELEMETRY: Array<[keyof GlobalPortalPolicy, string]> = [
 ];
 
 export default function AdminPolicyPage() {
+  return (
+    <div className="space-y-6">
+      <GlobalPolicyForm />
+      {/* `useSearchParams` needs a Suspense boundary for the static prerender. */}
+      <React.Suspense fallback={null}>
+        <NodeRoutesSection />
+      </React.Suspense>
+    </div>
+  );
+}
+
+/** Per-node route editor; `?node=<id>#node-routes` preselects a node. */
+function NodeRoutesSection() {
+  const nodeId = useSearchParams().get("node");
+  const { loading } = useAdminData();
+
+  // The browser's own hash scroll runs before this card exists (it renders
+  // after the admin data loads), so repeat it once the page is ready.
+  React.useEffect(() => {
+    if (loading || window.location.hash !== `#${NODE_ROUTES_ANCHOR}`) return;
+    document.getElementById(NODE_ROUTES_ANCHOR)?.scrollIntoView({ block: "start" });
+  }, [loading]);
+
+  return <NodeRoutesEditor initialNodeId={nodeId} />;
+}
+
+function GlobalPolicyForm() {
   const { policy, nodes, action } = useAdminData();
   const { t } = useT();
   const [form, setForm] = React.useState<GlobalPortalPolicy>(policy);

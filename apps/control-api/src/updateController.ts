@@ -37,6 +37,28 @@ export type UpdateResultFile = {
   message: string;
 };
 
+/** Written by the host worker the moment it takes a request (matched by id). */
+export type UpdateStartedFile = {
+  id: string;
+  startedAt: string;
+};
+
+/**
+ * Whether the host worker has taken the request:
+ * - `pending`: queued, still inside the acknowledgement deadline
+ * - `acknowledged`: the host started it, or its result is already there
+ * - `unacknowledged`: queued past the deadline with no host-start and no result
+ *   for that request id. Informational only: the request stays in the spool and
+ *   is never re-queued or retried by the panel.
+ */
+export type UpdateAcknowledgement = "pending" | "acknowledged" | "unacknowledged";
+
+/** Same code the bridge-agent update view uses for an overdue acknowledgement. */
+export const UPDATE_NOT_ACKNOWLEDGED = "UPDATE_NOT_ACKNOWLEDGED";
+
+/** Default acknowledgement deadline; mirrors the bridge-agent pickup window. */
+export const UPDATE_ACKNOWLEDGEMENT_DEADLINE_SECONDS = 120;
+
 export type UpdateStatus = {
   /**
    * Whether the button can work: the spool is configured AND writable by this
@@ -49,6 +71,19 @@ export type UpdateStatus = {
   pending: UpdateRequestFile | null;
   /** The most recent finished run reported by the host worker, or null. */
   lastResult: UpdateResultFile | null;
+  /**
+   * Additive (older clients ignore these). `acknowledgement` describes the
+   * pending request, or the confirmed running one; null when neither exists.
+   */
+  acknowledgement: UpdateAcknowledgement | null;
+  /** Seconds since the pending request was queued; null without one. */
+  requestAgeSeconds: number | null;
+  /** The deadline in force, so a client can show "x of y seconds". */
+  acknowledgementDeadlineSeconds: number;
+  /** `UPDATE_NOT_ACKNOWLEDGED` while a request is unacknowledged, else null. */
+  diagnosticHint: typeof UPDATE_NOT_ACKNOWLEDGED | null;
+  /** A host-started update with no result yet (the request file is consumed). */
+  running: UpdateStartedFile | null;
 };
 
 export type UpdateRequestResult = {
@@ -64,6 +99,7 @@ export interface UpdateController {
 
 const REQUEST_FILE = "request.json";
 const RESULT_FILE = "result.json";
+const STARTED_FILE = "started.json";
 
 const readJsonIfPresent = async <T>(path: string): Promise<T | null> => {
   try {
@@ -93,10 +129,26 @@ const notConfigured = () =>
     "UPDATE_NOT_CONFIGURED",
   );
 
+/** Parses `UPDATE_ACK_DEADLINE_SECONDS`; anything not a positive number is the default. */
+export const parseAcknowledgementDeadlineSeconds = (
+  raw: string | undefined,
+): number => {
+  const value = Number(raw?.trim());
+  return Number.isFinite(value) && value > 0
+    ? value
+    : UPDATE_ACKNOWLEDGEMENT_DEADLINE_SECONDS;
+};
+
 export function createUpdateController(options: {
   spoolDir?: string | null;
   version: VersionInfo;
+  acknowledgementDeadlineSeconds?: number;
+  now?: () => number;
 }): UpdateController {
+  const deadlineSeconds =
+    options.acknowledgementDeadlineSeconds ??
+    UPDATE_ACKNOWLEDGEMENT_DEADLINE_SECONDS;
+  const now = options.now ?? Date.now;
   const spoolDir = options.spoolDir?.trim() || null;
   const requestPath = spoolDir ? join(spoolDir, REQUEST_FILE) : null;
   const resultPath = spoolDir ? join(spoolDir, RESULT_FILE) : null;
@@ -113,13 +165,58 @@ export function createUpdateController(options: {
         version: options.version,
         pending: null,
         lastResult: null,
+        acknowledgement: null,
+        requestAgeSeconds: null,
+        acknowledgementDeadlineSeconds: deadlineSeconds,
+        diagnosticHint: null,
+        running: null,
       };
     }
-    const [pending, lastResult] = await Promise.all([
+    const [pending, lastResult, started] = await Promise.all([
       readJsonIfPresent<UpdateRequestFile>(requestPath),
       readJsonIfPresent<UpdateResultFile>(resultPath),
+      readJsonIfPresent<UpdateStartedFile>(join(spoolDir, STARTED_FILE)),
     ]);
-    return { enabled: true, version: options.version, pending, lastResult };
+    // Records are matched by request id: a stale started/result file from an
+    // earlier run never acknowledges a newer request.
+    const startedId = typeof started?.id === "string" ? started.id : null;
+    const running =
+      startedId && startedId !== lastResult?.id && !pending
+        ? { id: startedId, startedAt: String(started?.startedAt ?? "") }
+        : null;
+    let acknowledgement: UpdateAcknowledgement | null = running
+      ? "acknowledged"
+      : null;
+    let requestAgeSeconds: number | null = null;
+    if (pending) {
+      const requestedMs = Date.parse(pending.requestedAt);
+      requestAgeSeconds = Number.isFinite(requestedMs)
+        ? Math.max(0, Math.floor((now() - requestedMs) / 1000))
+        : null;
+      if (startedId === pending.id || lastResult?.id === pending.id) {
+        acknowledgement = "acknowledged";
+      } else if (
+        // An undatable request cannot be shown to be fresh: fail closed.
+        requestAgeSeconds === null ||
+        requestAgeSeconds >= deadlineSeconds
+      ) {
+        acknowledgement = "unacknowledged";
+      } else {
+        acknowledgement = "pending";
+      }
+    }
+    return {
+      enabled: true,
+      version: options.version,
+      pending,
+      lastResult,
+      acknowledgement,
+      requestAgeSeconds,
+      acknowledgementDeadlineSeconds: deadlineSeconds,
+      diagnosticHint:
+        acknowledgement === "unacknowledged" ? UPDATE_NOT_ACKNOWLEDGED : null,
+      running,
+    };
   };
 
   const request = async (requestedBy: string): Promise<UpdateRequestResult> => {

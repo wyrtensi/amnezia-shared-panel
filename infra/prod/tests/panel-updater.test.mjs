@@ -159,3 +159,45 @@ test("a symlink planted at result.json is replaced, not written through", execut
   assert.equal((await lstat(victim)).mode & 0o777, 0o600, "the link target must not be chmodded");
   assert.ok((await lstat(join(f.spool, "result.json"))).isFile(), "result.json is a regular file again");
 });
+
+test("the host writes a started marker with the request id before the request is consumed", executing, async (t) => {
+  // update.sh records what the spool looked like while it was running.
+  const f = await fixture(
+    '#!/usr/bin/env bash\ncp "$UPDATE_SPOOL_HOST_DIR/started.json" "$MARKER" 2>/dev/null\n[ -e "$UPDATE_SPOOL_HOST_DIR/request.json" ] && echo present >> "$MARKER.req"\necho updated\n',
+  );
+  t.after(f.cleanup);
+  await writeFile(join(f.spool, "request.json"), '{"id":"req-start-1","requestedAt":"x","requestedBy":"y"}\n');
+
+  const result = f.run();
+
+  assert.equal(result.status, 0, result.stderr);
+  const marker = JSON.parse(await readFile(f.env.MARKER, "utf8"));
+  assert.equal(marker.id, "req-start-1");
+  assert.match(marker.startedAt, /^\d{4}-\d\d-\d\dT/);
+  assert.equal(await exists(`${f.env.MARKER}.req`), false, "the request is already consumed while update.sh runs");
+  assert.ok((await lstat(join(f.spool, "started.json"))).isFile());
+});
+
+test("a request held back by the lock gets no started marker", executing, async (t) => {
+  const f = await fixture('#!/usr/bin/env bash\necho started > "$MARKER"\nsleep 3\necho updated\n');
+  t.after(f.cleanup);
+  await writeFile(join(f.spool, "request.json"), '{"id":"first"}\n');
+  const first = spawn("bash", [scriptPath], { env: f.env });
+  const firstDone = new Promise((resolve) => first.on("close", resolve));
+  for (let i = 0; i < 100 && !(await exists(f.env.MARKER)); i += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  await writeFile(join(f.spool, "request.json"), '{"id":"second"}\n');
+  f.run();
+  const marker = JSON.parse(await readFile(join(f.spool, "started.json"), "utf8"));
+  assert.equal(marker.id, "first", "only the run that holds the lock acknowledges");
+  await firstDone;
+});
+
+test("an unsafe request id is never written into the started marker", executing, async (t) => {
+  const f = await fixture("#!/usr/bin/env bash\necho updated\n");
+  t.after(f.cleanup);
+  await writeFile(join(f.spool, "request.json"), '{"id":"a\\\\b c"}\n');
+  f.run();
+  assert.equal(await exists(join(f.spool, "started.json")), false);
+});

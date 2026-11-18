@@ -162,6 +162,30 @@ describe("download dialog after a config refresh", () => {
     }
   });
 
+  it("tells the user old imported files keep their endpoint, in both languages, above the file-only box too", () => {
+    expect(dialogSource).toMatch(
+      /target\?\.revision !== undefined \? \([\s\S]{0,400}config\.refreshedImportHint/,
+    );
+    // The hint block sits before the link/file-only branch, so a file-only
+    // profile (ru_blacklist) shows it as well and still gets no link or QR.
+    expect(dialogSource.indexOf("config.refreshedImportHint")).toBeLessThan(
+      dialogSource.indexOf("config.fileOnlyTitle"),
+    );
+    for (const lang of ["ru", "en"] as const) {
+      const text = messages[lang]["config.refreshedImportHint"];
+      expect(text.length).toBeGreaterThan(20);
+    }
+    expect(messages.ru["config.refreshedImportHint"]).toMatch(/импорт/i);
+    expect(messages.en["config.refreshedImportHint"]).toMatch(/import/i);
+    // No Direct/Bridge choice is offered.
+    expect(dialogSource).not.toMatch(/bridge/i);
+  });
+
+  it("stays file-only for a blocked-only profile", () => {
+    const delivery = keyDelivery("ru_blacklist");
+    expect(delivery.linkUsable).toBe(false);
+  });
+
   it("does not promise a link or a QR above a file-only dialog", () => {
     expect(dialogSource).toContain(
       't(delivery.linkUsable ? "config.desc" : "config.descFileOnly")',

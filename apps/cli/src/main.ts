@@ -16,6 +16,7 @@
 import { writeFile } from "node:fs/promises";
 import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
+import { runBridgeTlsGate } from "./bridgeTlsGate.js";
 
 import {
   AUDIT_CATEGORIES,
@@ -30,7 +31,7 @@ import {
   cliInstallVideoEmbed,
   describeVideoTarget,
 } from "./installVideo.js";
-import { buildRequestHeaders } from "./http.js";
+import { buildRequestHeaders, ControlApiResponseError } from "./http.js";
 import { authHeaders } from "./identity.js";
 import {
   KEY_LIMIT_MODES,
@@ -111,6 +112,11 @@ import {
   type CliVersionInfo,
 } from "./clientReleases.js";
 import { resolveApiKey, resolveSecret } from "./apiKey.js";
+import {
+  BRIDGE_COMMANDS,
+  BRIDGE_USAGE_LINES,
+  bridgeErrorHint,
+} from "./bridges.js";
 import type { AdminReachabilityView } from "@amnezia/contracts";
 import {
   buildProbeUpsert,
@@ -135,7 +141,7 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
   });
   const body = await res.text();
   if (!res.ok) {
-    throw new Error(describeApiError(res.status, res.statusText, body));
+    throw responseError(res.status, res.statusText, body);
   }
   return (body ? JSON.parse(body) : undefined) as T;
 }
@@ -153,12 +159,12 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
  * it stands in for `message` here, the same fallback the web admin's own
  * apiRequest uses for the same response shape.
  */
-function describeApiError(status: number, statusText: string, body: string): string {
+function responseError(status: number, statusText: string, body: string): ControlApiResponseError {
   let parsed: unknown;
   try {
     parsed = JSON.parse(body) as unknown;
   } catch {
-    return `HTTP ${status} ${statusText} — ${body.slice(0, 400)}`;
+    return new ControlApiResponseError(`HTTP ${status} ${statusText} — ${body.slice(0, 400)}`, status);
   }
   const { error, message, issues } = (parsed ?? {}) as {
     error?: unknown;
@@ -174,12 +180,14 @@ function describeApiError(status: number, statusText: string, body: string): str
         ? firstIssue
         : undefined;
   if (!code && !detail) {
-    return `HTTP ${status} ${statusText} — ${body.slice(0, 400)}`;
+    return new ControlApiResponseError(`HTTP ${status} ${statusText} — ${body.slice(0, 400)}`, status);
   }
   const head = `${code ?? `HTTP ${status}`}: ${detail ?? statusText}`;
-  return code === "QR_TOO_LARGE"
+  const hint = bridgeErrorHint(code);
+  const detailWithHint = hint ? `${head}\n${hint}` : code === "QR_TOO_LARGE"
     ? `${head}\nThis key's route profile carries too many routes to fit a scannable code. Use --format=conf.`
     : head;
+  return new ControlApiResponseError(detailWithHint, status, code);
 }
 
 /**
@@ -195,9 +203,7 @@ async function apiRaw(
   });
   const body = Buffer.from(await res.arrayBuffer());
   if (!res.ok) {
-    throw new Error(
-      describeApiError(res.status, res.statusText, body.toString("utf8")),
-    );
+    throw responseError(res.status, res.statusText, body.toString("utf8"));
   }
   return { body, headers: res.headers };
 }
@@ -2693,6 +2699,7 @@ Nodes:
                                           a time on purpose; there is no fleet variant
   node-agent-log <id>                     Show the node's last agent update and its log
 
+${BRIDGE_USAGE_LINES}
   node-metrics [--json]                   Host metrics per node, with the panel's own warnings
   checks                                  List service checks and what each asserts
   check-results [<id>]                    Per-node verdicts (ok / failed / error)
@@ -2713,6 +2720,7 @@ Nodes:
                                           (--time-zone: IANA zone for alert and widget times)
   probe-delete [--confirm]                Forget the probe and revoke its service keys
   probe-run                               Ask for a run now (results within a few minutes)
+  bridge-tls-gate <bridge-id> <baseline|verify> [<since-UTC>]  Check route traffic around TLS rotation
   probe-results [<node>] [--json]         Per node and protocol: ping, tcp, handshake, http
   node-probe <node> [--on|--off]          Whether the probe tests this node
     Assertion flags (repeatable; all must hold):
@@ -3317,6 +3325,8 @@ async function cmdNodeChecks(args: string[]): Promise<void> {
  */
 export async function dispatch(argv: string[]): Promise<void> {
   const [command, ...args] = argv;
+  const bridgeCommand = command ? BRIDGE_COMMANDS.get(command) : undefined;
+  if (bridgeCommand) return bridgeCommand(api, args, apiRaw);
   switch (command) {
     case "overview":
       return cmdOverview(args);
@@ -3443,6 +3453,8 @@ export async function dispatch(argv: string[]): Promise<void> {
       return cmdProbeDelete(args);
     case "probe-run":
       return cmdProbeRun();
+    case "bridge-tls-gate":
+      return runBridgeTlsGate(args, { api });
     case "probe-results":
       return cmdProbeResults(args);
     case "node-probe":

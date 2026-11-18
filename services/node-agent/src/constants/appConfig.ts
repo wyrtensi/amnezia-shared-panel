@@ -141,6 +141,9 @@ const appConfig: IAppConfig = {
   NODE_AGENT_UPDATE_REPO: process.env.NODE_AGENT_UPDATE_REPO?.trim() || undefined,
   NODE_AGENT_UPDATE_SPOOL:
     process.env.NODE_AGENT_UPDATE_SPOOL?.trim() || undefined,
+  NODE_AGENT_UPDATE_ACK_DEADLINE_SECONDS: toInt(
+    process.env.NODE_AGENT_UPDATE_ACK_DEADLINE_SECONDS,
+  ),
   // Deliberately a different directory from the update spool: an update in
   // flight must not block a capacity change, and neither may read the other's
   // result as its own.

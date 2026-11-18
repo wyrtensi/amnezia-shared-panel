@@ -5,7 +5,11 @@ import { toast } from "sonner";
 import { apiRequest } from "@/lib/api";
 import { useT } from "@/lib/i18n/provider";
 import { WORKER_PERIOD_FIELD_NAMES } from "@amnezia/contracts";
-import type { GlobalRoutes, WorkerPeriodField } from "@amnezia/contracts";
+import type {
+  AdminOverviewBridges,
+  GlobalRoutes,
+  WorkerPeriodField,
+} from "@amnezia/contracts";
 import type {
   AdminNodeMetrics,
   KeyLimitMode,
@@ -39,6 +43,8 @@ export type Overview = {
   keysByProtocol?: Record<string, number>;
   keysByProfile?: Record<string, number>;
   nodes?: { total: number; enabled: number; healthy: number };
+  /** Present only when at least one bridge exists; never part of `nodes`. */
+  bridges?: AdminOverviewBridges;
 };
 
 export type AdminUser = {

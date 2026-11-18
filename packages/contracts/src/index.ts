@@ -321,8 +321,22 @@ export const updateNodeRequestSchema = createNodeRequestSchema
     disabledCheckIds: z.array(z.uuid()).max(100).optional(),
     // Whether the external reachability probe tests this node.
     reachabilityEnabled: z.boolean().optional(),
+    // Bridge route assignment: a route id activates it, null selects Direct,
+    // omission preserves the current assignment. Changing it requires the
+    // revision the admin saw, so two admins cannot silently overwrite each other.
+    vpnBridgeRouteId: z.uuid().nullable().optional(),
+    expectedVpnEndpointRevision: z.int().min(0).optional(),
   })
-  .refine((value) => Object.keys(value).length > 0, "At least one field is required");
+  .refine((value) => Object.keys(value).length > 0, "At least one field is required")
+  .refine(
+    (value) =>
+      value.vpnBridgeRouteId === undefined ||
+      value.expectedVpnEndpointRevision !== undefined,
+    {
+      path: ["expectedVpnEndpointRevision"],
+      message: "expectedVpnEndpointRevision is required when vpnBridgeRouteId is set",
+    },
+  );
 
 /**
  * Whether a node runs a given check.
@@ -1914,7 +1928,7 @@ export const probeLevelSchema = z.object({
 });
 export type ProbeLevel = z.infer<typeof probeLevelSchema>;
 
-export const PROBE_LEVELS = ["ping", "tcp", "handshake", "http"] as const;
+export const PROBE_LEVELS = ["ping", "tcp", "handshake", "http", "download"] as const;
 export type ProbeLevelName = (typeof PROBE_LEVELS)[number];
 
 export const probeLevelsSchema = z.object({
@@ -1922,6 +1936,7 @@ export const probeLevelsSchema = z.object({
   tcp: probeLevelSchema,
   handshake: probeLevelSchema,
   http: probeLevelSchema,
+  download: probeLevelSchema.optional(),
 });
 export type ProbeLevels = z.infer<typeof probeLevelsSchema>;
 
@@ -1951,8 +1966,22 @@ export const probeRunTargetSchema = z.object({
   protocol: z.string().min(1).max(20),
   /** A `vpn://` link or a raw client config. Grants VPN access: never log it. */
   config: z.string().min(1).max(16_384),
-  expectedEgressIp: z.string().max(64).optional(),
+  /**
+   * A string is compared with the observed egress address; explicit `null`
+   * (a bridged path with no known origin exit IP) reports it uncompared and
+   * needs a probe with the `bridge-measurement` capability; omitted keeps the
+   * endpoint-host fallback. A legacy probe drops a `null`, so it is only sent
+   * to a probe that reports the capability.
+   */
+  expectedEgressIp: z.string().max(64).nullable().optional(),
 });
+
+/** GET /capabilities of the probe; a legacy probe answers 404. */
+export const probeCapabilitiesResponseSchema = z.object({
+  apiVersion: z.number().int().min(1),
+  capabilities: z.array(z.string().min(1).max(64)).max(50),
+});
+export type ProbeCapabilitiesResponse = z.infer<typeof probeCapabilitiesResponseSchema>;
 
 export const probeRunRequestSchema = z.object({
   runId: z.string().min(1).max(100),
@@ -2033,6 +2062,10 @@ export const adminReachabilityNodeSchema = z.object({
   protocols: z.array(adminReachabilityProtocolSchema),
 });
 
+export const reachabilityRunQuerySchema = z.object({
+  requireNew: z.enum(["true", "false"]).optional(),
+});
+
 export const adminReachabilityProbeSchema = z.object({
   label: z.string(),
   apiBaseUrl: z.string(),
@@ -2048,6 +2081,8 @@ export const adminReachabilityProbeSchema = z.object({
   stale: z.boolean(),
   runInFlight: z.boolean(),
   runRequestedAt: z.iso.datetime().nullable(),
+  /** ID of the pending manual run. Optional for compatibility with older APIs. */
+  requestedRunId: z.uuid().optional(),
   timeZone: z.string(),
   /** The Telegram status widget: when its data last went out, and why not. */
   widgetUpdatedAt: z.iso.datetime().nullable(),
@@ -2240,4 +2275,9 @@ export type ReachabilityWidgetPayload = z.infer<
   typeof reachabilityWidgetPayloadSchema
 >;
 
+export * from "./bridges.js";
+export * from "./bridgeAgent.js";
+export * from "./bridgeAgentUpdate.js";
+export * from "./bridgeUpdateModel.js";
+export * from "./bridgeRollback.js";
 export * from "./ruleSources.js";

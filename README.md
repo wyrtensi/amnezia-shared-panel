@@ -15,6 +15,7 @@ policy, and telemetry across one or more nodes — behind a login you control.
 [![License: MIT](https://img.shields.io/badge/license-MIT-cc7328)](LICENSE)
 [![AmneziaWG 3.1](https://img.shields.io/badge/AmneziaWG-3.1-17917d)](#protocol)
 [![Next.js](https://img.shields.io/badge/Next.js-000?logo=nextdotjs&logoColor=white)](https://nextjs.org)
+[![AWG bridge](https://img.shields.io/badge/AWG%20bridge-runbook-17917d)](docs/runbooks/AWG-BRIDGES.md)
 
 </div>
 
@@ -63,6 +64,11 @@ What that buys an operator, concretely:
 - **Fleet visibility.** Host metrics, agent version, peer counts and traffic per
   node and per key, with a one-command agent update that swaps only the agent
   container and never restarts a tunnel.
+- **Optional AWG bridge.** A public bridge host can forward UDP to several AWG 3.1
+  nodes, one port per node; which nodes use it is set in the panel (Direct or a
+  bridge, switchable back at any time) and applies to the next config a user
+  downloads. Native AWG 2 stays direct. See the
+  [AWG bridge runbook](docs/runbooks/AWG-BRIDGES.md).
 - **Offboarding that finishes.** Disabling an account revokes its keys on the
   nodes, and the panel refuses to delete a row while a peer might still exist —
   so a departed teammate leaves no peer behind.
@@ -258,6 +264,8 @@ worker after a one-time `sudo bash infra/prod/install-updater.sh`.
   — the tunnel + Google login, and the Access app / allowlist / two-way sync.
 - [`docs/DEPLOY-UPDATE.md`](docs/DEPLOY-UPDATE.md) · [`docs/UPDATE-MECHANISM.md`](docs/UPDATE-MECHANISM.md)
   — updating the stack from git, and the in-panel Update button internals.
+- [`docs/runbooks/AWG-BRIDGES.md`](docs/runbooks/AWG-BRIDGES.md) — optional AWG 3.1
+  bridges: add, validate, assign, switch back, retire, rollback preflight.
 
 ## License
 

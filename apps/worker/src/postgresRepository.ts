@@ -32,6 +32,7 @@ import {
   auditEvents,
   jobOutbox,
   nodeAgentReleases,
+  bridgeAgentReleases,
   nodeMetricsCurrent,
   nodeMetricsSamples,
   nodeServiceCheckResults,
@@ -478,6 +479,25 @@ export class PostgresWorkerRepository
       .values(release)
       .onConflictDoUpdate({
         target: nodeAgentReleases.repository,
+        set: {
+          version: release.version,
+          digest: release.digest,
+          resolvedAt: release.resolvedAt,
+        },
+      });
+  };
+
+  saveBridgeAgentRelease = async (release: {
+    repository: string;
+    version: string;
+    digest: string;
+    resolvedAt: Date;
+  }): Promise<void> => {
+    await this.options.db
+      .insert(bridgeAgentReleases)
+      .values(release)
+      .onConflictDoUpdate({
+        target: bridgeAgentReleases.repository,
         set: {
           version: release.version,
           digest: release.digest,

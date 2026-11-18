@@ -21,6 +21,7 @@ import {
 export type RunDeps = {
   exec: Exec;
   httpGet: HttpGet;
+  download?: (localAddress: string) => Promise<LevelResult>;
   ping: (host: string) => Promise<LevelResult>;
   tcpBanner: (host: string) => Promise<LevelResult>;
   /** Where stripped configs are written (a tmpfs in the container). */
@@ -68,7 +69,7 @@ const checkControl = async (url: string, deps: RunDeps): Promise<LevelResult> =>
 const checkEgress = async (
   url: string,
   localAddress: string,
-  expected: string,
+  expected: string | null,
   deps: RunDeps,
 ): Promise<{ level: LevelResult; egressIp: string | null }> => {
   const started = deps.now().getTime();
@@ -86,7 +87,9 @@ const checkEgress = async (
     // and table 200 sends that address nowhere but the tunnel. A node may leave
     // through another address of its own, so a different IP is a note, not a
     // failure.
-    if (egressIp !== expected) {
+    // `expected` is null for a bridged path with no known origin exit IP:
+    // the observed address is reported and not compared.
+    if (expected !== null && egressIp !== expected) {
       return {
         level: { ok: true, detail: `egress ${egressIp} differs from ${expected}`, latencyMs },
         egressIp,
@@ -156,12 +159,18 @@ const runTarget = async (
     result.levels.handshake = await tunnel.waitHandshake(deps.handshakeTimeoutMs ?? 15_000);
     if (result.levels.handshake.ok) {
       // The panel's known public IP; a value that is not an address falls
-      // back to the endpoint, as when none was sent.
+      // back to the endpoint, as when none was sent. Explicit null compares
+      // nothing.
       const expected =
-        target.expectedEgressIp && isIP(target.expectedEgressIp) ? target.expectedEgressIp : endpointIp;
+        target.expectedEgressIp === null
+          ? null
+          : target.expectedEgressIp && isIP(target.expectedEgressIp)
+            ? target.expectedEgressIp
+            : endpointIp;
       const egress = await checkEgress(egressUrl, cfg.address, expected, deps);
       result.levels.http = egress.level;
       result.egressIp = egress.egressIp;
+      if (deps.download) result.levels.download = await deps.download(cfg.address);
     }
     return result;
   } catch (error) {
@@ -215,6 +224,7 @@ export const runAll = async (
       log(
         `run ${req.runId}: ${target.targetId}/${target.protocol} ${result.status}` +
           ` handshake=${String(levels.handshake.ok)} http=${String(levels.http.ok)}` +
+          (levels.download ? ` download=${String(levels.download.ok)}` : "") +
           (result.detail ? ` (${result.detail})` : ""),
       );
     }

@@ -1,0 +1,22 @@
+[Unit]
+Description=Amnezia bridge-agent updater (replaces only the bridge-agent image on request)
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+# install-bridge.sh rewrites these to this host's actual directories and the
+# approved bridge-agent repository.
+Environment=AMNEZIA_BRIDGE_DIR=/opt/amnezia-bridge
+Environment=AMNEZIA_BRIDGE_ETC=/etc/amnezia-bridge
+Environment=BRIDGE_UPDATE_SPOOL_DIR=/var/lib/amnezia-bridge/update
+Environment=BRIDGE_UPDATER_STATE_DIR=/var/lib/amnezia-bridge/updater
+# Root-owned lock directory outside the agent-writable spool, created by the
+# script itself (not RuntimeDirectory=, which is recreated around every run).
+Environment=BRIDGE_UPDATER_LOCK_DIR=/run/amnezia-bridge-updater
+Environment=BRIDGE_AGENT_UPDATE_REPO=
+# An explicit interpreter: the unit does not depend on the script's mode bits.
+ExecStart=/bin/bash /opt/amnezia-bridge/bridge-agent-update.sh
+# A pull on a small VPS is the slow part; a health gate takes up to 60s while
+# the agent answers (30 attempts, 2s apart, 3s per request), rollback adds one more.
+TimeoutStartSec=900

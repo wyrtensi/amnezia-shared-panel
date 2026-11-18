@@ -1,0 +1,86 @@
+name: Release bridge-agent image
+
+# Build the bridge-agent image on GitHub and push it to GHCR so a bridge host
+# PULLS a pinned digest instead of building anything. The panel resolves the
+# newest compatible tag of ghcr.io/<owner>/<repo>/bridge-agent to its digest and
+# puts `--agent-image <repo>@<digest>` in the generated bridge setup command.
+#
+# Separate workflow, separate tag, like node-agent: services/bridge-agent is
+# versioned on its own (its package.json, not the panel's release tags) and
+# lives outside the pnpm workspace, so hanging it off `v*` would publish a
+# version number that is not the agent's. Tags only, no GitHub Releases.
+on:
+  push:
+    tags: ["bridge-agent-v*"]
+  workflow_dispatch:
+
+concurrency:
+  group: release-bridge-agent-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  image:
+    name: Build & push bridge-agent (GHCR)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # The agent reports the version of its package.json, so a tag that names
+      # another version would publish an image that lies about itself. Refuse it.
+      # On a manual run there is no tag to read: fall back to the short sha -
+      # still immutable, never "latest" (and never offered by the panel, which
+      # only offers X.Y.Z tags).
+      - name: Image tag
+        id: version
+        run: |
+          ref="${GITHUB_REF_NAME}"
+          case "$ref" in
+            bridge-agent-v*)
+              version="${ref#bridge-agent-v}"
+              package="$(node -p "require('./services/bridge-agent/package.json').version")"
+              if [ "$version" != "$package" ]; then
+                echo "tag $ref does not match services/bridge-agent/package.json version $package" >&2
+                exit 1
+              fi
+              ;;
+            *) version="sha-${GITHUB_SHA::12}" ;;
+          esac
+          echo "value=$version" >> "$GITHUB_OUTPUT"
+
+      # Deliberately NO `latest` tag: a bridge pins its agent by digest and the
+      # installer refuses a tag.
+      - name: Build & push
+        id: build
+        uses: docker/build-push-action@v7
+        with:
+          context: services/bridge-agent
+          file: services/bridge-agent/Dockerfile
+          push: true
+          platforms: linux/amd64
+          tags: ghcr.io/${{ github.repository }}/bridge-agent:${{ steps.version.outputs.value }}
+          cache-from: type=gha,scope=bridge-agent
+          cache-to: type=gha,mode=max,scope=bridge-agent
+
+      - name: Report the pinned reference
+        run: |
+          {
+            echo "## bridge-agent image published"
+            echo
+            echo "The panel offers it once its worker resolves \`BRIDGE_AGENT_IMAGE_REPOSITORY=ghcr.io/${{ github.repository }}/bridge-agent\`. The pinned reference:"
+            echo
+            echo '```'
+            echo "ghcr.io/${{ github.repository }}/bridge-agent@${{ steps.build.outputs.digest }}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

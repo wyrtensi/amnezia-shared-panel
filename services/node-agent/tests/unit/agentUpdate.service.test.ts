@@ -142,6 +142,63 @@ describe("AgentUpdateService", () => {
     expect(await svc.getStatus()).toMatchObject({ state: "running", image: IMAGE });
   });
 
+  it("reports a queued request as pending, then unacknowledged past the deadline, without retrying", async () => {
+    const svc = new AgentUpdateService({
+      repository: REPO,
+      spoolDir: spool,
+      ackDeadlineSeconds: 120,
+    });
+    await svc.requestUpdate(IMAGE);
+    const fresh = await svc.getStatus();
+    expect(fresh).toMatchObject({
+      state: "requested",
+      acknowledgement: "pending",
+      diagnosticHint: null,
+    });
+
+    const old = new Date(Date.now() - 300_000).toISOString();
+    const body = JSON.stringify({ id: "old-id", image: IMAGE, requestedAt: old });
+    await writeFile(join(spool, "pending.json"), body);
+    await writeFile(join(spool, "request.json"), body);
+    const late = await svc.getStatus();
+    expect(late.state).toBe("requested");
+    expect(late.acknowledgement).toBe("unacknowledged");
+    expect(late.diagnosticHint).toBe("UPDATE_NOT_ACKNOWLEDGED");
+    expect(late.requestAgeSeconds).toBeGreaterThanOrEqual(300);
+    // The trigger is untouched: nothing was re-queued.
+    expect((await readJson("request.json")).id).toBe("old-id");
+  });
+
+  it("acknowledges a request once the host consumed the trigger", async () => {
+    const svc = service();
+    await svc.requestUpdate(IMAGE);
+    await rm(join(spool, "request.json"));
+    expect(await svc.getStatus()).toMatchObject({
+      state: "running",
+      acknowledgement: "acknowledged",
+      diagnosticHint: null,
+    });
+  });
+
+  it("old-host timeline: consumed request, no marker, no result stays acknowledged and running", async () => {
+    const svc = new AgentUpdateService({
+      repository: REPO,
+      spoolDir: spool,
+      ackDeadlineSeconds: 120,
+    });
+    const old = new Date(Date.now() - 600_000).toISOString();
+    await writeFile(
+      join(spool, "pending.json"),
+      JSON.stringify({ id: "old-host", image: IMAGE, requestedAt: old }),
+    );
+    // No request.json (consumed), no started marker, no result.json.
+    expect(await svc.getStatus()).toMatchObject({
+      state: "running",
+      acknowledgement: "acknowledged",
+      diagnosticHint: null,
+    });
+  });
+
   it("gives up on an update the host updater never answered", async () => {
     // Well past UPDATE_DEADLINE_MS, no request.json (the updater consumed it)
     // and no result.json (it never wrote one back) - the realistic shape of a

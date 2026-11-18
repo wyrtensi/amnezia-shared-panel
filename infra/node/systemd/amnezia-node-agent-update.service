@@ -14,6 +14,8 @@ Environment=NODE_UPDATE_SPOOL_DIR=/var/lib/amnezia-node/update
 # it around every run and let two overlapping runs lock different inodes).
 Environment=NODE_UPDATER_LOCK_DIR=/run/amnezia-node
 Environment=NODE_AGENT_UPDATE_REPO=
-ExecStart=/opt/amnezia-node/scripts/agent-update.sh
+# An explicit interpreter: the unit does not depend on the script's mode bits
+# (a 0644 checkout otherwise ends in status=203/EXEC and a start-limit-hit watcher).
+ExecStart=/bin/bash /opt/amnezia-node/scripts/agent-update.sh
 # A pull on a small VPS is the slow part; the health gate adds up to 90s.
 TimeoutStartSec=900

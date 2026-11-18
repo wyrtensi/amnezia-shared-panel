@@ -467,7 +467,10 @@ describe("AmneziaWg3Service AmneziaWG 3.1 parameters", () => {
 
     const lastConfig = JSON.parse(awgContainer.last_config) as {
       config: string;
+      mtu: string;
     };
+    expect(lastConfig.mtu).toBe("1280");
+    expect(lastConfig.config).toMatch(/^MTU = 1280$/m);
     // 3.1 parameters are carried into the client [Interface]
     expect(lastConfig.config).toContain("HeaderProtectionKey = ");
     expect(lastConfig.config).toContain("RandomTrailers = on");
@@ -497,7 +500,9 @@ describe("AmneziaWg3Service AmneziaWG 3.1 parameters", () => {
 
     const lastConfig = JSON.parse(awgContainer.last_config) as {
       config: string;
+      mtu: string;
     };
+    expect(lastConfig.mtu).toBe("1376");
     // No 3.1 parameters are emitted for a 2.0 server
     expect(lastConfig.config).not.toContain("HeaderProtectionKey");
     expect(lastConfig.config).not.toContain("RandomTrailers");
