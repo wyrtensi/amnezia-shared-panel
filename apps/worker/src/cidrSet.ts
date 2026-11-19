@@ -3,6 +3,7 @@ export {
   BOGON_V4_CIDRS,
   BOGON_V6_CIDRS,
   STEAM_CACHE_V4_CIDRS,
+  STEAM_CACHE_V6_CIDRS,
   complementCidrs,
   countCidrOverlap,
   expandExclusionsSafely,

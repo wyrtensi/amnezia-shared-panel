@@ -514,15 +514,16 @@ and safe binary-trie supernetting, in this order:
   non-`2000::/3` IPv6, and optional direct shields for Apple (`17.0.0.0/8`) and
   Valve AS32590 primary SteamCache download servers (`RULE_DIRECT_APPLE`,
   `RULE_DIRECT_STEAM_CACHE`, both `true` by default):
-  - `RULE_COMPACTION_MODE=blocked_only` *(default for built-in feeds)*: caps
-    extra non-RU IPv4 space at `RULE_COLLATERAL_CAP` (`0.005` = +0.5 %), yielding
-    **~780 routes** (~762 IPv4 + ~18 IPv6) — 6× smaller than the legacy 4,669-
-    route list (~11 % of Android Binder, 4× below iOS's ~3,100-route cliff in
-    `amnezia-client#3207`) while keeping Apple, Steam, and Microsoft direct.
-  - `RULE_COMPACTION_MODE=compact_world`: expands Russian exclusions around
-    protected services and emits the complement `0.0.0.0/0 \ expanded_RU`
-    (**~1,177 routes**, ~85 % of non-RU IPv4 routed via VPN, 0 % RU/LAN/Apple/
-    SteamCache, 100 % Akamai Steam Store/Community via VPN).
+  - `RULE_COMPACTION_MODE=compact_world` *(default for built-in feeds, E-Core)*:
+    expands Russian exclusions around protected services and emits the complement
+    `0.0.0.0/0 \ expanded_RU` (**~1,250 routes**, ~85 % of non-RU IPv4 routed via
+    VPN, 0 % RU/LAN/Apple/Valve AS32590 SteamCache IPv4+IPv6, 100 % Akamai/Fastly
+    Steam Store & Community via VPN — ~2.5× below iOS's ~3,100-route cliff in
+    `amnezia-client#3207` and ~18 % of Android Binder).
+  - `RULE_COMPACTION_MODE=blocked_only`: caps extra non-RU IPv4 space at
+    `RULE_COLLATERAL_CAP` (`0.005` = +0.5 %), yielding **~780 routes** (~762 IPv4 +
+    ~18 IPv6) for minimal VPS bandwidth while keeping Apple, Steam, and Microsoft
+    direct.
   - `RULE_COMPACTION_MODE=lossless` *(default for custom `RULE_FEEDS`)*: exact
     subtraction and lossless compaction only.
   Any version violating zero RU/bogon overlap, extras coverage, or the compact

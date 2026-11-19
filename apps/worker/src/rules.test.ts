@@ -19,6 +19,7 @@ import {
   APPLE_DIRECT_V4_CIDRS,
   BOGON_V4_CIDRS,
   STEAM_CACHE_V4_CIDRS,
+  STEAM_CACHE_V6_CIDRS,
   countCidrOverlap,
 } from "./cidrSet.js";
 
@@ -615,12 +616,12 @@ describe("resolveRuleFeeds", () => {
     expect(included.some((s) => s.url.includes("/Subnets/IPv4/meta.lst"))).toBe(true);
     expect(included.some((s) => s.url.includes("/Subnets/IPv6/meta.lst"))).toBe(true);
     expect(included.some((s) => s.url.includes("/Subnets/IPv6/cloudflare.lst"))).toBe(true);
-    expect(feed?.compaction?.mode).toBe("blocked_only");
+    expect(feed?.compaction?.mode).toBe("compact_world");
   });
 
   it("validates RULE_COMPACTION_MODE, RULE_COLLATERAL_CAP and direct shield flags", () => {
     expect(resolveRuleCompactionOptions({}, false)).toEqual({
-      mode: "blocked_only",
+      mode: "compact_world",
       collateralCap: DEFAULT_COLLATERAL_CAP,
       directApple: true,
       directSteamCache: true,
@@ -630,7 +631,7 @@ describe("resolveRuleFeeds", () => {
     expect(
       resolveRuleCompactionOptions(
         {
-          RULE_COMPACTION_MODE: "compact_world",
+          RULE_COMPACTION_MODE: "blocked_only",
           RULE_COLLATERAL_CAP: "0.01",
           RULE_DIRECT_APPLE: "false",
           RULE_DIRECT_STEAM_CACHE: "false",
@@ -638,7 +639,7 @@ describe("resolveRuleFeeds", () => {
         false,
       ),
     ).toMatchObject({
-      mode: "compact_world",
+      mode: "blocked_only",
       collateralCap: 0.01,
       directApple: false,
       directSteamCache: false,
@@ -853,6 +854,7 @@ describe("compactRoutes compaction modes", () => {
     expect(countCidrOverlap(result.payload.cidrs, BOGON_V4_CIDRS)[4]).toBe(0n);
     expect(countCidrOverlap(result.payload.cidrs, APPLE_DIRECT_V4_CIDRS)[4]).toBe(0n);
     expect(countCidrOverlap(result.payload.cidrs, STEAM_CACHE_V4_CIDRS)[4]).toBe(0n);
+    expect(countCidrOverlap(result.payload.cidrs, STEAM_CACHE_V6_CIDRS)[6]).toBe(0n);
     // Akamai (Steam Store / Community) and Meta stay routed through the tunnel.
     expect(countCidrOverlap(result.payload.cidrs, ["23.220.114.106/32"])[4]).toBe(1n);
     expect(countCidrOverlap(result.payload.cidrs, ["157.240.0.0/16"])[4]).toBe(65536n);

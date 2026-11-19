@@ -6,6 +6,7 @@ import {
   BOGON_V4_CIDRS,
   BOGON_V6_CIDRS,
   STEAM_CACHE_V4_CIDRS,
+  STEAM_CACHE_V6_CIDRS,
   complementCidrs,
   countCidrOverlap,
   expandExclusionsSafely,
@@ -402,8 +403,9 @@ const ITDOG_IPV6_SUBNETS: RuleSource[] = ITDOG_IPV6_NAMES.map((name) => ({
  *   - minus Russian IPv4 and IPv6 space from ipdeny.com;
  *   - plus `RULE_EXTRAS` (Google/YouTube dual-stack, Anthropic, Wardogs).
  *
- * Compacted by default with `blocked_only` RU-safe supernetting (~780 routes
- * total, 0% RU, 0% RFC1918/LAN, Apple & Valve SteamCache direct).
+ * Compacted by default with `compact_world` (E-Core: ~1,250 routes total,
+ * ~85% of non-RU IPv4 through VPN including Akamai/Fastly Steam Store,
+ * 0% RU, 0% RFC1918/LAN, Apple & Valve AS32590 SteamCache direct).
  */
 export const DEFAULT_RULE_FEEDS: RuleFeedSources[] = [
   {
@@ -474,7 +476,7 @@ export const resolveRuleCompactionOptions = (
     ? (modeRaw as RuleCompactionMode)
     : hasCustomFeeds
       ? "lossless"
-      : "blocked_only";
+      : "compact_world";
   if (!RULE_COMPACTION_MODES.includes(mode)) {
     throw new Error(
       `RULE_COMPACTION_MODE must be one of ${RULE_COMPACTION_MODES.join(", ")}, got "${modeRaw}"`,
@@ -648,7 +650,7 @@ export const compactRoutes = (
   }
   if (compaction?.directSteamCache !== false) {
     directShieldNames.push("steam-cache");
-    directShieldCidrs.push(...STEAM_CACHE_V4_CIDRS);
+    directShieldCidrs.push(...STEAM_CACHE_V4_CIDRS, ...STEAM_CACHE_V6_CIDRS);
   }
 
   const bogons = [...BOGON_V4_CIDRS, ...BOGON_V6_CIDRS];
@@ -704,15 +706,20 @@ export const compactRoutes = (
       ...splitCidrsByFamily(effectiveDirectShields)[4],
     ];
     const worldV4 = complementCidrs(shieldV4, 4);
+    const shieldV6 = [
+      ...expandedByFamily[6],
+      ...splitCidrsByFamily(effectiveBogons)[6],
+      ...splitCidrsByFamily(effectiveDirectShields)[6],
+    ];
     const worldV6 =
       expandedByFamily[6].length > 0
-        ? complementCidrs(
-            [...expandedByFamily[6], ...splitCidrsByFamily(effectiveBogons)[6]],
-            6,
-          )
+        ? complementCidrs(shieldV6, 6)
         : supernetCidrsSafely(
             splitCidrsByFamily(protectedCore)[6],
-            splitCidrsByFamily(effectiveBogons)[6],
+            [
+              ...splitCidrsByFamily(effectiveBogons)[6],
+              ...splitCidrsByFamily(effectiveDirectShields)[6],
+            ],
           ).cidrs;
     finalCidrs = [...worldV4, ...worldV6].sort();
 

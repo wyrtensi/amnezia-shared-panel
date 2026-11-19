@@ -58,10 +58,11 @@ export const APPLE_DIRECT_V4_CIDRS: readonly string[] = ["17.0.0.0/8"];
 
 /**
  * Valve AS32590 IPv4 prefixes hosting primary SteamCache download servers
- * (`cache*.steamcontent.com`). Steam Store and Community (`store.steampowered.com`,
- * `steamcommunity.com`) are served via Akamai rather than AS32590, so excluding
- * these prefixes sends heavy primary SteamCache game downloads direct while
- * leaving store/community routing independent.
+ * (`cache*.steamcontent.com`). Steam Store, Community, Login, and Checkout
+ * (`store.steampowered.com`, `steamcommunity.com`, `api.steampowered.com`)
+ * are served via Akamai + Fastly rather than AS32590, so excluding these
+ * prefixes sends heavy primary SteamCache game downloads direct while keeping
+ * store/community/checkout routed through the VPN in `compact_world` (E-Core).
  */
 export const STEAM_CACHE_V4_CIDRS: readonly string[] = [
   "45.121.184.0/22",
@@ -71,8 +72,17 @@ export const STEAM_CACHE_V4_CIDRS: readonly string[] = [
   "155.133.224.0/19",
   "162.254.192.0/21",
   "185.25.180.0/22",
+  "192.69.96.0/22",
   "205.196.6.0/24",
   "208.64.200.0/22",
+  "208.78.164.0/22",
+];
+
+/** Valve AS32590 IPv6 allocations (covering all 33 RIPEstat announced /48s). */
+export const STEAM_CACHE_V6_CIDRS: readonly string[] = [
+  "2404:3fc0::/32",
+  "2602:801:f000::/44",
+  "2a01:bc80::/32",
 ];
 
 const parseIpv4 = (address: string): bigint =>
