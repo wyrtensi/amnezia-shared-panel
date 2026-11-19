@@ -890,6 +890,7 @@ async function cmdNodes(args: string[]): Promise<void> {
         // "which nodes are still behind" without an SSH session per host; a
         // dash is an agent too old to report it, which is itself the answer.
         agent: node.agentVersion ?? "—",
+        "ipv6-stub": node.ipv6RejectStub?.state ?? "—",
         health: node.lastError ? "ERROR" : "ok",
       })),
       [
@@ -902,6 +903,7 @@ async function cmdNodes(args: string[]): Promise<void> {
         "peers",
         "address",
         "agent",
+        "ipv6-stub",
         "health",
       ],
     ),
@@ -2001,10 +2003,17 @@ async function cmdNodeIpv6Stub(args: string[]): Promise<void> {
     return;
   }
 
-  if (enabledRaw !== "true" && enabledRaw !== "false") {
+  if (
+    enabledRaw !== undefined &&
+    enabledRaw !== "true" &&
+    enabledRaw !== "false"
+  ) {
     throw new Error("--enabled must be true or false");
   }
-  const enabled = enabledRaw === "true";
+  const enabled =
+    enabledRaw !== undefined
+      ? enabledRaw === "true"
+      : Boolean(node.ipv6RejectStub?.enabled);
   const body = prefix ? { enabled, prefix } : { enabled };
   const result = await api<{
     id: string;

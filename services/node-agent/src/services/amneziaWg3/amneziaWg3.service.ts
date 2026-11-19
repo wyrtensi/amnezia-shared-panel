@@ -167,18 +167,24 @@ export class AmneziaWg3Service extends AmneziaWgServiceBase {
     if (!serverIpv6) return false;
 
     const iface = AppContract.AmneziaWG3.INTERFACE;
-    const [addrResult, routeResult] = await Promise.all([
+    const [addrResult, routeGetResult, routeShowResult] = await Promise.all([
       this.connection.run(`ip -6 -o addr show dev ${iface} 2>/dev/null || true`),
       this.connection.run(
         `ip -6 route get ${IPV6_REJECT_PROBE_TARGET} 2>&1 || true`,
       ),
+      this.connection.run("ip -6 route show 2000::/3 2>/dev/null || true"),
     ]);
 
     const escaped = serverIpv6.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     const hasServerAddr = new RegExp(`(?:^|\\s)${escaped}/64(?:\\s|$)`).test(
       addrResult.stdout,
     );
-    const hasProhibitRoute = /\bprohibit\b/i.test(routeResult.stdout);
+    // Check both live route resolution (`route get`) and the FIB entry (`route
+    // show 2000::/3`) so kernels/iproute2 builds that return EACCES without
+    // echoing "prohibit" on `route get` still confirm the active prohibit rule.
+    const hasProhibitRoute =
+      /\bprohibit\b/i.test(routeGetResult.stdout) ||
+      /\bprohibit\b/i.test(routeShowResult.stdout);
     return hasServerAddr && hasProhibitRoute;
   }
 

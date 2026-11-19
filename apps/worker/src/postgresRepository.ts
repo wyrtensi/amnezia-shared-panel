@@ -19,6 +19,7 @@ import {
 } from "drizzle-orm";
 import {
   ACCESS_SYNC_DEDUPLICATION_KEY,
+  NODE_IPV6_REJECT_STUB_JOB_TYPE,
   RULES_REFRESH_DEDUPLICATION_KEY,
   revokeJobDedupKey,
   type NodeIpv6RejectStubState,
@@ -1204,6 +1205,25 @@ export class PostgresWorkerRepository
       // stops reporting a host has not moved.
       const hostChanged =
         snapshot.publicHost !== null && snapshot.publicHost !== node.publicHost;
+      // Only defer mirroring IPv6 reject stub telemetry while an outbox job for
+      // this node is genuinely still pending/processing. If a job permanently
+      // failed (`status = 'failed'`), telemetry reconciles the real node state
+      // instead of leaving the UI switch stuck at "pending".
+      const hasPendingIpv6StubJob =
+        node.ipv6RejectStubState === "pending" &&
+        (
+          await tx
+            .select({ id: jobOutbox.id })
+            .from(jobOutbox)
+            .where(
+              and(
+                eq(jobOutbox.type, NODE_IPV6_REJECT_STUB_JOB_TYPE),
+                inArray(jobOutbox.status, ["pending", "processing"]),
+                sql`${jobOutbox.payload}->>'nodeId' = ${snapshot.nodeId}`,
+              ),
+            )
+            .limit(1)
+        ).length > 0;
       await tx
         .update(nodes)
         .set({
@@ -1296,7 +1316,7 @@ export class PostgresWorkerRepository
                 }),
           // Mirror observed IPv6 reject stub status unless a toggle job is in
           // flight (`pending`), so stale telemetry cannot overwrite a pending change.
-          ...(node.ipv6RejectStubState === "pending"
+          ...(hasPendingIpv6StubJob
             ? {}
             : snapshot.server.ipv6RejectStub === undefined
               ? {
