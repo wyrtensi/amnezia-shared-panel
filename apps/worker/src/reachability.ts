@@ -51,6 +51,8 @@ export type ReachabilityTarget = {
   /** Set when the panel could not send this target (no usable service key). */
   unavailableReason: string | null;
   directEndpoint?: DirectEndpoint;
+  /** Public endpoint IDs whose effective policy routes through this bridged target. */
+  bridgedEndpointIds?: readonly string[];
 };
 
 /**
@@ -320,7 +322,7 @@ export const ingestRun = (input: IngestInput): IngestOutput => {
     const identity = normalizeTargetId(target.targetId);
     const result = resultById.get(identity?.id ?? target.targetId);
     const endpoint = target.directEndpoint;
-    if (endpoint && target.protocol === "awg3" && !measuredViaBridge(target)) {
+    if (endpoint && target.protocol === "awg3" && target.bridgePath === null && !target.diagnostic) {
       // No result also covers targets that had to wait for a free slot in
       // the run. Leave their saved observation and its original time alone.
       if (matchesDirectEndpoint(result, endpoint.address)) {
@@ -344,6 +346,18 @@ export const ingestRun = (input: IngestInput): IngestOutput => {
       !result && identity && reportedSlots.has(identity.slot)
         ? obsolete(target)
         : classifyTarget(target, result, input.controlOk);
+    if (!outcome.obsolete && measuredViaBridge(target) && target.bridgedEndpointIds?.length) {
+      for (const endpointId of target.bridgedEndpointIds) {
+        endpointOutcomes.push({
+          endpointId,
+          status: outcome.status,
+          levels: outcome.levels,
+          detail: outcome.detail,
+          reusesNodeTarget: true,
+          isBridged: true,
+        });
+      }
+    }
     const entry = byNode.get(target.nodeId) ?? { node: target, outcomes: [], badge: [] };
     entry.outcomes.push(outcome);
     // A bridged node is judged on its bridged AWG 3.1 path alone: an AWG 2

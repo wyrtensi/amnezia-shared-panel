@@ -3417,6 +3417,129 @@ describe("PostgresControlRepository node status surfaces", () => {
         await database.db.delete(portalPolicy);
       }
     });
+
+    runDatabaseTest(
+      "listNodes resolves per-endpoint reachability by bridge policy and omits synthetic bridgeReachability",
+      async () => {
+        if (!database) return;
+        await seedProbe();
+        await database.db
+          .update(nodes)
+          .set({ protocol: "awg3", capabilities: { awg3: true, awg2: true } })
+          .where(eq(nodes.id, nodeId));
+        await database.db.insert(portalPolicy).values({ useBridge: true, showNodeStatus: true });
+        const checkedAt = new Date();
+        await database.db.insert(nodeReachabilityState).values({
+          nodeId,
+          status: "ok",
+          checkedAt,
+        });
+        const [bridge] = await database.db
+          .insert(vpnBridges)
+          .values({
+            name: `ep-policy-${randomBytes(3).toString("hex")}`,
+            publicIpv4: `47.${randomBytes(1)[0]}.${randomBytes(1)[0]}.19`,
+          })
+          .returning();
+        if (!bridge) throw new Error("Failed to seed bridge");
+        const routeId = randomUUID();
+        await database.db.insert(vpnBridgeRoutes).values({
+          id: routeId,
+          nodeId,
+          bridgeId: bridge.id,
+          publicUdpPort: 41000,
+          state: "active",
+          frpProxyName: `awg-route-${routeId}`,
+        });
+        const endpoints = await database.db
+          .insert(nodeVpnEndpoints)
+          .values([
+            {
+              nodeId,
+              ordinal: 1,
+              name: "Bridged-Address",
+              address: "198.51.100.11",
+              enabled: true,
+              reachabilityEnabled: true,
+              bridgeMode: "bridge",
+              probeStatus: "ok",
+              probeCheckedAt: checkedAt,
+            },
+            {
+              nodeId,
+              ordinal: 2,
+              name: "Direct-Address",
+              address: "198.51.100.12",
+              enabled: true,
+              reachabilityEnabled: true,
+              bridgeMode: "direct",
+              probeStatus: "failed",
+              probeCheckedAt: checkedAt,
+              probeFailingSince: failingSince,
+            },
+            {
+              nodeId,
+              ordinal: 3,
+              name: "Inherit-Address",
+              address: "198.51.100.13",
+              enabled: true,
+              reachabilityEnabled: true,
+              bridgeMode: "inherit",
+              probeStatus: "ok",
+              probeCheckedAt: checkedAt,
+            },
+          ])
+          .returning();
+        try {
+          const rows = (await subject().listNodes(actor)) as Array<{
+            id: string;
+            bridgeReachability?: unknown;
+            publicEndpoints?: Array<{
+              name: string;
+              reachability?: { state: string; since: string | null };
+            }>;
+          }>;
+          const node = rows.find((item) => item.id === nodeId);
+          expect(node).toBeDefined();
+          expect("bridgeReachability" in (node ?? {})).toBe(false);
+          expect(node?.publicEndpoints?.map((ep) => [ep.name, ep.reachability])).toEqual([
+            ["Bridged-Address", { state: "ok", since: null }],
+            ["Direct-Address", { state: "blocked", since: failingSince.toISOString() }],
+            ["Inherit-Address", { state: "ok", since: null }],
+          ]);
+
+          // When the user explicitly declines the bridge, the inherited
+          // endpoint has no direct measurement yet -> unknown, while direct
+          // and forced-bridge endpoints keep their own policy verdicts.
+          await database.db
+            .update(users)
+            .set({ policyOverride: { useBridge: false } })
+            .where(eq(users.id, actor.id));
+          const optedOutRows = (await subject().listNodes(actor)) as typeof rows;
+          const optedOutNode = optedOutRows.find((item) => item.id === nodeId);
+          expect(optedOutNode?.publicEndpoints?.map((ep) => [ep.name, ep.reachability])).toEqual([
+            ["Bridged-Address", { state: "ok", since: null }],
+            ["Direct-Address", { state: "blocked", since: failingSince.toISOString() }],
+            ["Inherit-Address", { state: "unknown", since: null }],
+          ]);
+        } finally {
+          await database.db
+            .update(nodes)
+            .set({ protocol: "awg2", capabilities: {} })
+            .where(eq(nodes.id, nodeId));
+          await database.db
+            .update(users)
+            .set({ policyOverride: null })
+            .where(eq(users.id, actor.id));
+          await database.db.delete(portalPolicy);
+          await database.db
+            .delete(nodeVpnEndpoints)
+            .where(inArray(nodeVpnEndpoints.id, endpoints.map((ep) => ep.id)));
+          await database.db.delete(vpnBridgeRoutes).where(eq(vpnBridgeRoutes.id, routeId));
+          await database.db.delete(vpnBridges).where(eq(vpnBridges.id, bridge.id));
+        }
+      },
+    );
   });
 
   runDatabaseTest("gives an admin the metrics row and the handshake signal", async () => {

@@ -1095,13 +1095,12 @@ export class PostgresControlRepository implements ControlRepository {
         .orderBy(nodeVpnEndpoints.ordinal),
     ]);
     const now = new Date();
-    for (const { endpoint, checksEnabled, activeRoute } of rows) {
+    for (const { endpoint, checksEnabled } of rows) {
       const checkedAt = endpoint.probeCheckedAt;
       const canUseProbe =
         checksEnabled &&
         endpoint.enabled &&
-        endpoint.reachabilityEnabled &&
-        (activeRoute === null || probe?.probeDirectWhenBridged === true);
+        endpoint.reachabilityEnabled;
       const hasCurrentSample = probe?.enabled && checkedAt && checkedAt >= probe.enabledAt &&
         !isProbeStale({
           now,
@@ -1367,19 +1366,38 @@ export class PostgresControlRepository implements ControlRepository {
         ) {
           return [];
         }
+        const globalUseBridge = policyRow[0]?.useBridge ?? false;
+        const hasActiveBridge = activeBridgeRouteId !== null;
+        const nodeReachability = reachability?.get(row.id) ?? UNKNOWN_USER_REACHABILITY;
         const endpoints = visibleEndpoints.map(
-          ({ id, ordinal, name, publicAddress, reachability }) => ({
-            id,
-            ordinal,
-            name,
-            ...(policy.showNodeAddress ? { publicAddress } : {}),
-            ...(recommendedEndpointIds.size > 0
-              ? { recommended: recommendedEndpointIds.has(id) }
-              : recommended.has(row.id)
-                ? { recommended: true }
-                : {}),
-            ...(policy.showNodeStatus ? { reachability } : {}),
-          }),
+          ({ id, ordinal, name, publicAddress, bridgeMode, reachability: endpointReachability }) => {
+            const usesBridgeForUser =
+              hasActiveBridge &&
+              (bridgeMode === "bridge" || (bridgeMode === "inherit" && policy.useBridge));
+            const usesBridgeGlobally =
+              hasActiveBridge &&
+              (bridgeMode === "bridge" || (bridgeMode === "inherit" && globalUseBridge));
+            const storedReachability = endpointReachability ?? UNKNOWN_USER_REACHABILITY;
+            const effectiveReachability = usesBridgeForUser
+              ? usesBridgeGlobally && storedReachability.state !== "unknown"
+                ? storedReachability
+                : nodeReachability
+              : usesBridgeGlobally
+                ? UNKNOWN_USER_REACHABILITY
+                : storedReachability;
+            return {
+              id,
+              ordinal,
+              name,
+              ...(policy.showNodeAddress ? { publicAddress } : {}),
+              ...(recommendedEndpointIds.size > 0
+                ? { recommended: recommendedEndpointIds.has(id) }
+                : recommended.has(row.id)
+                  ? { recommended: true }
+                  : {}),
+              ...(policy.showNodeStatus ? { reachability: effectiveReachability } : {}),
+            };
+          },
         );
         const nodeRecommended =
           recommendedEndpointIds.size > 0
@@ -1393,10 +1411,6 @@ export class PostgresControlRepository implements ControlRepository {
             name: endpoints[0]?.name ?? publicName ?? row.name,
             ...(selectableProtocols.includes("awg3") && endpoints.length > 0
               ? { publicEndpoints: endpoints } : {}),
-            ...(reachability && policy.useBridge && activeBridgeRouteId &&
-              selectableProtocols.includes("awg3") && endpoints.length > 0
-              ? { bridgeReachability: reachability.get(row.id) ?? UNKNOWN_USER_REACHABILITY }
-              : {}),
             recommended: nodeRecommended,
             // Spread conditionally rather than assigning `undefined`: there is no
             // "unknown address" state on the user side, so the key must be truly

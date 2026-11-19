@@ -37,6 +37,7 @@ import {
   nodeVpnEndpoints,
   nodes,
   peerCurrent,
+  portalPolicy,
   reachabilityProbe,
   SERVICE_ACCOUNT_EMAIL,
   users,
@@ -94,6 +95,7 @@ const directNodeTargets = (
   { host, port }: AwgEndpoint,
   keyId: string,
   mayReuseLegacy: boolean,
+  allowReuseNodeTarget = true,
 ): RunTarget[] => {
   let nodeTarget: RunTarget = target;
   const additional: RunTarget[] = [];
@@ -101,6 +103,7 @@ const directNodeTargets = (
   for (const endpoint of endpoints) {
     if (!isIpv4Literal(endpoint.address)) continue;
     const reusesNodeTarget =
+      allowReuseNodeTarget &&
       host === endpoint.address &&
       (diagnostic === true || (mayReuseLegacy && endpoint.ordinal === 1 && endpoint.revision === 0));
     const directEndpoint = {
@@ -131,7 +134,7 @@ const directNodeTargets = (
       expectedEgressIp: isIpLiteral(target.expectedEgressIp ?? "") ? target.expectedEgressIp : null,
     });
   }
-  return [nodeTarget, ...additional];
+  return allowReuseNodeTarget ? [nodeTarget, ...additional] : additional;
 };
 
 const outboxRows = (notices: readonly Notice[]) =>
@@ -412,7 +415,12 @@ export class PostgresReachabilityRepository
 
       await this.updateProbe({ staleAlertedAt: write.staleAlertedAt, lastRunMass: write.mass }, tx);
 
-      const endpointIds = new Set(targets.flatMap(({ directEndpoint }) => directEndpoint ? [directEndpoint.id] : []));
+      const endpointIds = new Set(
+        targets.flatMap((target) => [
+          ...(target.directEndpoint ? [target.directEndpoint.id] : []),
+          ...(target.bridgedEndpointIds ?? []),
+        ]),
+      );
       const endpointNotices: Notice[] = [];
       if (write.endpointOutcomes.length > 0) {
         const relevantIds = write.endpointOutcomes
@@ -440,9 +448,9 @@ export class PostgresReachabilityRepository
                 alertedAt: prior.probeAlertedAt,
               }
             : EMPTY_BRIDGE_INCIDENT;
-          // Track per-IP incident state for direct (non-bridged) endpoints.
-          // Diagnostic direct checks on bridged nodes record status/levels only
-          // without paging on already-bypassed direct IPs.
+          // Track per-IP incident alerts for direct (non-bridged) endpoints.
+          // Bridged endpoints share the node-level bridge alert, so record their
+          // failure streak and failingSince for status display without paging again.
           const trackIncident =
             prior?.enabled === true &&
             prior.reachabilityEnabled &&
@@ -450,26 +458,28 @@ export class PostgresReachabilityRepository
             !write.mass;
           const { state, notice } = trackIncident
             ? advanceBridgeIncident(previous, endpoint.status, run.now, claimed.failThreshold)
-            : endpoint.isBridged
-              ? { state: EMPTY_BRIDGE_INCIDENT, notice: null }
-              : {
-                  state: {
-                    consecutiveFailures:
-                      endpoint.status === "ok"
-                        ? 0
-                        : endpoint.status === "failed"
-                          ? previous.consecutiveFailures + 1
-                          : previous.consecutiveFailures,
-                    failingSince:
-                      endpoint.status === "ok"
-                        ? null
-                        : endpoint.status === "failed"
-                          ? previous.failingSince ?? run.now
-                          : previous.failingSince,
-                    alertedAt: endpoint.status === "ok" ? null : previous.alertedAt,
-                  },
-                  notice: null,
-                };
+            : {
+                state: {
+                  consecutiveFailures:
+                    endpoint.status === "ok"
+                      ? 0
+                      : endpoint.status === "failed"
+                        ? previous.consecutiveFailures + 1
+                        : previous.consecutiveFailures,
+                  failingSince:
+                    endpoint.status === "ok"
+                      ? null
+                      : endpoint.status === "failed"
+                        ? previous.failingSince ?? run.now
+                        : previous.failingSince,
+                  alertedAt: endpoint.isBridged
+                    ? null
+                    : endpoint.status === "ok"
+                      ? null
+                      : previous.alertedAt,
+                },
+                notice: null,
+              };
           await tx
             .update(nodeVpnEndpoints)
             .set({
@@ -802,6 +812,11 @@ export class PostgresReachabilityRepository
       )
       .orderBy(nodes.name);
     if (nodeRows.length === 0) return [];
+    const [policyRow] = await db
+      .select({ useBridge: portalPolicy.useBridge })
+      .from(portalPolicy)
+      .limit(1);
+    const globalUseBridge = policyRow?.useBridge ?? false;
     const endpoints = await db
       .select()
       .from(nodeVpnEndpoints)
@@ -870,7 +885,8 @@ export class PostgresReachabilityRepository
           return [{ ...target, unavailableReason: `service key is ${key.state}` }];
         }
         const via = measuredViaBridge(target) ? target.bridgePath : null;
-        if (via && !options.bridgeMeasurement && !options.probeDirectWhenBridged) {
+        const endpoints = endpointsByNode.get(node.id) ?? [];
+        if (via && endpoints.length === 0 && !options.bridgeMeasurement && !options.probeDirectWhenBridged) {
           return [{ ...target, unavailableReason: BRIDGE_UNSUPPORTED_REASON }];
         }
         const savedConfig = decryptSecret(
@@ -883,16 +899,92 @@ export class PostgresReachabilityRepository
           this.options.keyring,
         );
         const config = protocol === "awg3" ? withAwg31TunnelMtu(savedConfig) : savedConfig;
-        const endpoints = endpointsByNode.get(node.id) ?? [];
         if (!via && (protocol !== "awg3" || endpoints.length === 0)) return [{ ...target, config }];
         const inspection = inspectAwgVpnLink(config);
+        const mayReuseLegacy = options.runStartedAt === undefined || key.updatedAt < options.runStartedAt;
         if (!via) {
-          // A reeissued service key can have a different port even when the
+          // A reissued service key can have a different port even when the
           // legacy target ID and destination IP are the same.
-          const mayReuseLegacy = options.runStartedAt === undefined || key.updatedAt < options.runStartedAt;
           return inspection.kind === "awg31"
             ? directNodeTargets({ ...target, config }, endpoints, inspection.endpoint, key.id, mayReuseLegacy)
             : [{ ...target, config }];
+        }
+        // When public endpoints are configured on a bridged node, probe each
+        // endpoint according to its effective bridge policy: bridged endpoints
+        // share the node's bridged measurement, while direct endpoints are
+        // probed directly at their own IPv4 address.
+        if (endpoints.length > 0) {
+          const bridgedEndpoints = endpoints.filter(
+            (ep) => ep.bridgeMode === "bridge" || (ep.bridgeMode === "inherit" && globalUseBridge),
+          );
+          const directEndpoints = endpoints.filter(
+            (ep) => ep.bridgeMode === "direct" || (ep.bridgeMode === "inherit" && !globalUseBridge),
+          );
+          if (bridgedEndpoints.length === 0) {
+            return inspection.kind === "awg31"
+              ? directNodeTargets(
+                  { ...target, bridgePath: null, config },
+                  directEndpoints,
+                  inspection.endpoint,
+                  key.id,
+                  mayReuseLegacy,
+                  true,
+                )
+              : [{ ...target, bridgePath: null, config }];
+          }
+          const bridgedEndpointIds = bridgedEndpoints.map((ep) => ep.id);
+          const directTargets =
+            directEndpoints.length > 0 && inspection.kind === "awg31"
+              ? directNodeTargets(
+                  { ...target, bridgePath: null, config },
+                  directEndpoints,
+                  inspection.endpoint,
+                  key.id,
+                  false,
+                  false,
+                )
+              : [];
+          const diagnostics =
+            options.probeDirectWhenBridged && inspection.kind === "awg31"
+              ? directNodeTargets(
+                  { ...target, targetId: `${node.id}:awg3:direct`, diagnostic: true, config },
+                  bridgedEndpoints,
+                  inspection.endpoint,
+                  key.id,
+                  false,
+                )
+              : [];
+          if (!options.bridgeMeasurement) {
+            return [
+              { ...target, bridgedEndpointIds, unavailableReason: BRIDGE_UNSUPPORTED_REASON },
+              ...directTargets,
+              ...diagnostics,
+            ];
+          }
+          if (inspection.kind !== "awg31") {
+            return [
+              { ...target, bridgedEndpointIds, unavailableReason: BRIDGE_UNRENDERABLE_REASON },
+              ...directTargets,
+              ...diagnostics,
+            ];
+          }
+          try {
+            return [
+              {
+                ...target,
+                bridgedEndpointIds,
+                config: renderAwgEndpointVpnLink(config, { host: via.host, port: via.port }),
+              },
+              ...directTargets,
+              ...diagnostics,
+            ];
+          } catch {
+            return [
+              { ...target, bridgedEndpointIds, unavailableReason: BRIDGE_UNRENDERABLE_REASON },
+              ...directTargets,
+              ...diagnostics,
+            ];
+          }
         }
         const diagnostics = options.probeDirectWhenBridged && inspection.kind === "awg31"
           ? directNodeTargets(

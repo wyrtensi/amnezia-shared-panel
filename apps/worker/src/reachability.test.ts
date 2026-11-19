@@ -600,4 +600,69 @@ describe("ingestRun: endpoint revisions and bridged nodes", () => {
     expect(out.outcomes).toEqual([expect.objectContaining({ status: "ok" })]);
     expect(oldA3.targetId).toBe("node-a:awg3:r0");
   });
+
+  it("propagates bridged verdicts to bridgedEndpointIds and keeps direct endpoints independent", () => {
+    const bridged = {
+      ...A3,
+      bridgedEndpointIds: ["ep-bridged-1", "ep-bridged-2"],
+    };
+    const direct = {
+      ...target("node-a", "awg3", { endpointRevision: 1 }),
+      targetId: "id-node-a:awg3:r1:direct:ep-direct",
+      bridgePath: null,
+      directEndpoint: {
+        id: "ep-direct",
+        address: "198.51.100.20",
+        name: "Direct-IP",
+        checkedAt: null,
+        reusesNodeTarget: false,
+      },
+    };
+    const diagnostic = {
+      ...A3,
+      targetId: "id-node-a:awg3:r1:direct:diag",
+      diagnostic: true as const,
+      directEndpoint: {
+        id: "ep-bridged-1",
+        address: "192.0.2.10",
+        name: "Bridged-IP",
+        checkedAt: null,
+        reusesNodeTarget: false,
+      },
+    };
+    const out = ingestRun({
+      runId: "r-mixed",
+      now: new Date(),
+      label: LABEL,
+      failThreshold: 2,
+      controlOk: true,
+      targets: [bridged, direct, diagnostic],
+      results: [
+        up(bridged),
+        { ...down(direct), endpointHost: "198.51.100.20" },
+        { ...down(diagnostic), endpointHost: "192.0.2.10" },
+      ],
+      previous: new Map(),
+    });
+    expect(out.endpointOutcomes).toEqual([
+      expect.objectContaining({
+        endpointId: "ep-bridged-1",
+        status: "ok",
+        isBridged: true,
+        reusesNodeTarget: true,
+      }),
+      expect.objectContaining({
+        endpointId: "ep-bridged-2",
+        status: "ok",
+        isBridged: true,
+        reusesNodeTarget: true,
+      }),
+      expect.objectContaining({
+        endpointId: "ep-direct",
+        status: "failed",
+        isBridged: false,
+        reusesNodeTarget: false,
+      }),
+    ]);
+  });
 });

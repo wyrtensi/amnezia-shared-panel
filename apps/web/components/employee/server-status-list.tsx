@@ -22,23 +22,13 @@ const DOT: Record<UserNodeReachability["state"], { className: string; labelKey: 
  */
 export function ServerStatusList({ nodes }: { nodes: readonly NodeView[] }) {
   const { t } = useT();
-  const addresses = nodes.flatMap<ServerStatusEntry>(
-    (node) => {
-      if (!node.publicEndpoints?.length) return [node];
-      const direct = node.publicEndpoints.map((endpoint) => ({
-        ...endpoint,
-        recommended: endpoint.recommended ?? node.recommended,
-      }));
-      return [
-        ...direct,
-        ...(node.bridgeReachability ? [{
-          id: `${node.id}:bridge`,
-          name: t("emp.serverViaBridge", { name: node.name }),
-          reachability: node.bridgeReachability,
-        }] : []),
-      ];
-    },
-  );
+  const addresses = nodes.flatMap<ServerStatusEntry>((node) => {
+    if (!node.publicEndpoints?.length) return [node];
+    return node.publicEndpoints.map((endpoint) => ({
+      ...endpoint,
+      recommended: endpoint.recommended ?? node.recommended,
+    }));
+  });
   return <ServerStatusRows entries={blockedFirst(addresses)} label={t("emp.servers")} />;
 }
 
