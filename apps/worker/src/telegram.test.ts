@@ -31,6 +31,12 @@ describe("resolveTelegramConfig", () => {
         TELEGRAM_CHAT_ID: " 42 ",
       }),
     ).toEqual({ token: TOKEN, chatId: "42" });
+    expect(
+      resolveTelegramConfig({
+        TELEGRAM_BOT_TOKEN: TOKEN,
+        TELEGRAM_CHAT_ID: " 42 , 99 , 42 ",
+      }),
+    ).toEqual({ token: TOKEN, chatId: "42", chatIds: ["42", "99"] });
   });
 });
 
@@ -123,6 +129,30 @@ describe("createTelegramNotifier", () => {
     expect(error).toBeInstanceOf(Error);
     expect(String(error)).not.toContain(TOKEN);
     expect(String(error)).not.toContain("secret-token-value");
+  });
+
+  it("posts to every chat when TELEGRAM_CHAT_ID lists multiple comma-separated ids", async () => {
+    const fetchMock = vi.fn(() =>
+      Promise.resolve(new Response(JSON.stringify({ ok: true }), { status: 200 })),
+    );
+    const notifier = createTelegramNotifier({
+      token: TOKEN,
+      chatId: "42",
+      chatIds: ["42", "99"],
+      fetch: fetchMock,
+    });
+
+    await notifier.send("alert");
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const firstBody = JSON.parse(
+      (fetchMock.mock.calls[0] as unknown as [string, RequestInit])[1].body as string,
+    ) as Record<string, unknown>;
+    const secondBody = JSON.parse(
+      (fetchMock.mock.calls[1] as unknown as [string, RequestInit])[1].body as string,
+    ) as Record<string, unknown>;
+    expect(firstBody.chat_id).toBe("42");
+    expect(secondBody.chat_id).toBe("99");
   });
 });
 
