@@ -30,6 +30,7 @@ import {
   notServiceAccount,
   purgeOneOffboardedUser,
   auditEvents,
+  globalRouteOverrides,
   jobOutbox,
   nodeAgentReleases,
   bridgeAgentReleases,
@@ -1634,6 +1635,21 @@ export class PostgresWorkerRepository
     return row
       ? { version: row.version, etag: row.etag, pinned: row.pinnedAt !== null }
       : null;
+  };
+
+  getGlobalRouteOverrides = async (
+    profile: RuleProfile,
+  ): Promise<{ addCidrs: string[]; excludeCidrs: string[] }> => {
+    const [row] = await this.options.db
+      .select({ payload: globalRouteOverrides.payload })
+      .from(globalRouteOverrides)
+      .where(eq(globalRouteOverrides.id, true))
+      .limit(1);
+    const entry = row?.payload?.[profile];
+    return {
+      addCidrs: entry?.add?.cidrs ?? [],
+      excludeCidrs: entry?.exclude?.cidrs ?? [],
+    };
   };
 
   storeQuarantinedRule = async (input: StoredRuleInput): Promise<void> => {

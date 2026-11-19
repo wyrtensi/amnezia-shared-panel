@@ -11,6 +11,7 @@ import {
   countCidrOverlap,
   expandExclusionsSafely,
   measureCidrSpace,
+  normalizeCidrOrIp,
   splitCidrsByFamily,
   subtractCidrs,
   supernetCidrsSafely,
@@ -62,20 +63,47 @@ export type RuleCompactionOptions = {
 };
 
 /**
- * One feed source. An `exclude` source is not part of the list: its CIDRs are
- * taken OUT of what the other sources supply (its domains are ignored), so a
- * coarse feed can be trimmed by a list of address space that must stay direct.
+ * One feed source.
+ *
+ * - Default (`exclude`/`exactExclude`/`forceInclude` all falsy): included in the
+ *   base feed before RU GeoIP subtraction.
+ * - `exclude`: GeoIP exclusion feed (e.g. ipdeny RU). Subtracted from the base
+ *   feed and expanded safely in `compact_world` mode. Must yield at least one
+ *   valid CIDR.
+ * - `exactExclude`: operator-supplied extra exclusion URL (`RULE_EXTRA_EXCLUDE_URLS`).
+ *   Applied as an exact direct shield (never expanded into surrounding `/8`s).
+ * - `forceInclude`: operator-supplied extra include URL (`RULE_EXTRA_INCLUDE_URLS`).
+ *   Protected from RU expansion and allowed to override built-in direct shields
+ *   (e.g. surgical Steam CM `/32`s inside Valve AS32590).
  */
 export type RuleSource = {
   url: string;
   format: RuleFeedFormat;
   exclude?: boolean;
+  exactExclude?: boolean;
+  forceInclude?: boolean;
   /**
    * Optional upper bound on IPv4 prefix length (0..32) kept from this source
    * (e.g. `24` keeps every `/0`–`/24` subnet while skipping scattered single-IP
    * `/25`–`/32` entries). IPv6 prefixes are not affected.
    */
   maxIpv4PrefixLength?: number;
+};
+
+export type AdminRouteOverrides = {
+  addCidrs: string[];
+  excludeCidrs: string[];
+};
+
+export type RouteCompactionOverrides = {
+  /** Exact direct shields from `RULE_EXTRA_EXCLUDE_URLS` (never expanded). */
+  extraExcluded?: string[];
+  /** Explicit includes from `RULE_EXTRA_INCLUDE_URLS` (beat built-in shields). */
+  extraIncluded?: string[];
+  /** Admin exclusions from `global_route_overrides` (beat feeds/extras/URLs). */
+  adminExcluded?: string[];
+  /** Admin additions from `global_route_overrides` (beat all exclusions). */
+  adminIncluded?: string[];
 };
 
 export type ValidRulePayload = {
@@ -97,6 +125,14 @@ export type ValidRulePayload = {
     excludedPrefixes?: number;
     /** Names of the hand-picked extras merged into this version. */
     extras?: string[];
+    /** Count of extra-include URL CIDRs baked into this version. */
+    extraIncludedCidrs?: number;
+    /** Count of extra-exclude URL CIDRs baked into this version. */
+    extraExcludedCidrs?: number;
+    /** Count of admin `global_route_overrides` additions baked in. */
+    adminAddedCidrs?: number;
+    /** Count of admin `global_route_overrides` exclusions baked in. */
+    adminExcludedCidrs?: number;
   };
 };
 
@@ -315,6 +351,11 @@ export interface RuleRepository {
     /** True when an admin pinned the active version by hand. */
     pinned: boolean;
   } | null>;
+  /**
+   * Optional panel-managed global additions/exclusions (`global_route_overrides`)
+   * baked into compacted rule snapshots on every periodic/manual refresh.
+   */
+  getGlobalRouteOverrides?: (profile: RuleProfile) => Promise<AdminRouteOverrides>;
   storeQuarantinedRule: (input: StoredRuleInput) => Promise<void>;
   /**
    * Record a version that fetched and validated cleanly but must not go live,
@@ -504,6 +545,45 @@ export const resolveRuleCompactionOptions = (
   };
 };
 
+const parseExtraFeedUrls = (
+  raw: string | undefined,
+  envName: string,
+): string[] => {
+  const trimmed = raw?.trim();
+  if (!trimmed) return [];
+  const seen = new Set<string>();
+  const urls: string[] = [];
+  for (const token of trimmed.split(/[\s,]+/)) {
+    if (!token) continue;
+    let parsed: URL;
+    try {
+      parsed = new URL(token);
+    } catch {
+      throw new Error(`${envName} has an invalid URL: ${token}`);
+    }
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      throw new Error(`${envName} must use http(s) URLs: ${token}`);
+    }
+    const normalized = parsed.toString();
+    if (!seen.has(normalized)) {
+      seen.add(normalized);
+      urls.push(normalized);
+    }
+  }
+  return urls;
+};
+
+const normalizeValidCidrs = (entries: readonly string[]): string[] => {
+  const out: string[] = [];
+  for (const raw of entries) {
+    const trimmed = raw.trim();
+    if (!trimmed) continue;
+    const normalized = normalizeCidrOrIp(trimmed);
+    if (isCidr(normalized)) out.push(normalized);
+  }
+  return out;
+};
+
 /**
  * Resolve the feeds to fetch from the environment, in priority order:
  *
@@ -511,6 +591,10 @@ export const resolveRuleCompactionOptions = (
  *   2. `DEFAULT_RULE_FEEDS` — only when the operator configured nothing, so a
  *      fresh install fetches the built-in blacklist feeds without any
  *      configuration at all.
+ *
+ * Optional `RULE_EXTRA_INCLUDE_URLS` and `RULE_EXTRA_EXCLUDE_URLS` append
+ * `cidr-lines` sources onto every resolved feed without replacing the defaults
+ * or resetting `RULE_COMPACTION_MODE`.
  */
 export const resolveRuleFeeds = (
   env: Record<string, string | undefined>,
@@ -575,11 +659,32 @@ export const resolveRuleFeeds = (
     }
   }
 
+  const extraIncludeSources: RuleSource[] = parseExtraFeedUrls(
+    env.RULE_EXTRA_INCLUDE_URLS,
+    "RULE_EXTRA_INCLUDE_URLS",
+  ).map((url) => ({
+    url,
+    format: "cidr-lines",
+    forceInclude: true,
+  }));
+  const extraExcludeSources: RuleSource[] = parseExtraFeedUrls(
+    env.RULE_EXTRA_EXCLUDE_URLS,
+    "RULE_EXTRA_EXCLUDE_URLS",
+  ).map((url) => ({
+    url,
+    format: "cidr-lines",
+    exactExclude: true,
+  }));
+
   const compaction = resolveRuleCompactionOptions(env, configured);
   const resolved = configured ? feeds : DEFAULT_RULE_FEEDS;
   return resolved.map((feed) => ({
     profile: feed.profile,
-    sources: feed.sources.map((source) => ({ ...source })),
+    sources: [
+      ...feed.sources.map((source) => ({ ...source })),
+      ...extraExcludeSources.map((source) => ({ ...source })),
+      ...extraIncludeSources.map((source) => ({ ...source })),
+    ],
     extras: (feed.extras ?? []).map((extra) => ({ ...extra, cidrs: [...extra.cidrs] })),
     compaction: { ...compaction },
     pocApproved: isProfileApproved(feed.profile),
@@ -601,19 +706,25 @@ export const compactRoutes = (
   excluded: string[],
   extras: string[] = [],
   compaction?: RuleCompactionOptions,
+  overrides?: RouteCompactionOverrides,
 ): ValidRulePayload | InvalidRulePayload => {
   if (!validation.ok) return validation;
+  const extraExcluded = normalizeValidCidrs(overrides?.extraExcluded ?? []);
+  const extraIncluded = normalizeValidCidrs(overrides?.extraIncluded ?? []);
+  const adminExcluded = normalizeValidCidrs(overrides?.adminExcluded ?? []);
+  const adminIncluded = normalizeValidCidrs(overrides?.adminIncluded ?? []);
+
   const { cidrs: trimmed, touched, removedShare } = subtractCidrs(
     validation.payload.cidrs,
     excluded,
   );
-  const losslessCidrs =
-    extras.length > 0 ? subtractCidrs([...trimmed, ...extras], []).cidrs : trimmed;
   if (Math.max(removedShare[4], removedShare[6]) > MAX_EXCLUDED_SHARE) {
+    const lossless =
+      extras.length > 0 ? subtractCidrs([...trimmed, ...extras], []).cidrs : trimmed;
     return {
       ok: false,
       payload: {
-        cidrs: [...losslessCidrs].sort(),
+        cidrs: [...lossless].sort(),
         domains: validation.payload.domains,
       },
       report: {
@@ -625,6 +736,90 @@ export const compactRoutes = (
   }
 
   const mode: RuleCompactionMode = compaction?.mode ?? "lossless";
+
+  // Layer precedence across all compaction modes:
+  //   1. Base feed minus RU GeoIP `excluded`
+  //   2. + built-in `extras`
+  //   3. - built-in direct shields (Apple, Valve AS32590) and `extraExcluded`
+  //   4. + `extraIncluded` (`RULE_EXTRA_INCLUDE_URLS`, can override built-in shields)
+  //   5. - `adminExcluded` (`global_route_overrides.exclude`)
+  //   6. + `adminIncluded` (`global_route_overrides.add`, highest worker precedence)
+  const builtInDirectShields: string[] = [];
+  const directShieldNames: string[] = [];
+  if (mode !== "lossless" && compaction?.directApple !== false) {
+    directShieldNames.push("apple");
+    builtInDirectShields.push(...APPLE_DIRECT_V4_CIDRS);
+  }
+  if (mode !== "lossless" && compaction?.directSteamCache !== false) {
+    directShieldNames.push("steam-cache");
+    builtInDirectShields.push(...STEAM_CACHE_V4_CIDRS, ...STEAM_CACHE_V6_CIDRS);
+  }
+  if (extraExcluded.length > 0) {
+    directShieldNames.push("extra-exclude-urls");
+  }
+  if (adminExcluded.length > 0) {
+    directShieldNames.push("admin-global-exclude");
+  }
+
+  const builtInExtrasAfterExcludes =
+    extraExcluded.length > 0 || adminExcluded.length > 0
+      ? subtractCidrs(extras, [...extraExcluded, ...adminExcluded]).cidrs
+      : extras;
+  const urlIncludesAfterAdminExclude =
+    adminExcluded.length > 0
+      ? subtractCidrs(extraIncluded, adminExcluded).cidrs
+      : extraIncluded;
+  const effectiveExtrasRaw = [
+    ...builtInExtrasAfterExcludes,
+    ...urlIncludesAfterAdminExclude,
+    ...adminIncluded,
+  ];
+  const effectiveExtras =
+    effectiveExtrasRaw.length > 0
+      ? subtractCidrs(effectiveExtrasRaw, []).cidrs
+      : [];
+
+  const shieldsAfterHigherIncludes = [
+    ...(builtInDirectShields.length > 0
+      ? subtractCidrs(builtInDirectShields, effectiveExtras).cidrs
+      : []),
+    ...(extraExcluded.length > 0
+      ? subtractCidrs(extraExcluded, [
+          ...urlIncludesAfterAdminExclude,
+          ...adminIncluded,
+        ]).cidrs
+      : []),
+    ...(adminExcluded.length > 0
+      ? subtractCidrs(adminExcluded, adminIncluded).cidrs
+      : []),
+  ];
+  const effectiveDirectShields =
+    shieldsAfterHigherIncludes.length > 0
+      ? subtractCidrs(shieldsAfterHigherIncludes, []).cidrs
+      : [];
+
+  const withoutShields =
+    effectiveDirectShields.length > 0
+      ? subtractCidrs(trimmed, effectiveDirectShields).cidrs
+      : trimmed;
+  const losslessCidrs =
+    effectiveExtras.length > 0
+      ? subtractCidrs([...withoutShields, ...effectiveExtras], []).cidrs
+      : withoutShields;
+
+  const overrideReportCounts = {
+    ...(extraIncluded.length > 0
+      ? { extraIncludedCidrs: extraIncluded.length }
+      : {}),
+    ...(extraExcluded.length > 0
+      ? { extraExcludedCidrs: extraExcluded.length }
+      : {}),
+    ...(adminIncluded.length > 0 ? { adminAddedCidrs: adminIncluded.length } : {}),
+    ...(adminExcluded.length > 0
+      ? { adminExcludedCidrs: adminExcluded.length }
+      : {}),
+  };
+
   if (mode === "lossless") {
     const sorted = [...losslessCidrs].sort();
     const byFamily = splitCidrsByFamily(sorted);
@@ -637,33 +832,27 @@ export const compactRoutes = (
         ipv4Count: byFamily[4].length,
         ipv6Count: byFamily[6].length,
         ...(compaction ? { compactionMode: "lossless" as const } : {}),
+        ...(directShieldNames.length > 0
+          ? { directShields: directShieldNames }
+          : {}),
         ...(touched > 0 ? { excludedPrefixes: touched } : {}),
+        ...overrideReportCounts,
       },
     };
   }
 
-  const directShieldNames: string[] = [];
-  const directShieldCidrs: string[] = [];
-  if (compaction?.directApple !== false) {
-    directShieldNames.push("apple");
-    directShieldCidrs.push(...APPLE_DIRECT_V4_CIDRS);
-  }
-  if (compaction?.directSteamCache !== false) {
-    directShieldNames.push("steam-cache");
-    directShieldCidrs.push(...STEAM_CACHE_V4_CIDRS, ...STEAM_CACHE_V6_CIDRS);
-  }
-
   const bogons = [...BOGON_V4_CIDRS, ...BOGON_V6_CIDRS];
-  // Hand-picked extras are deliberate inclusions; keep forbidden shields clear
-  // of them while still protecting RU space, LAN/bogons, and direct shields.
+  // Hand-picked extras and explicit operator additions are deliberate
+  // inclusions; keep forbidden shields clear of them while still protecting RU
+  // space, LAN/bogons, and direct shields.
   const effectiveExcluded =
-    extras.length > 0 ? subtractCidrs(excluded, extras).cidrs : excluded;
+    effectiveExtras.length > 0
+      ? subtractCidrs(excluded, effectiveExtras).cidrs
+      : excluded;
   const effectiveBogons =
-    extras.length > 0 ? subtractCidrs(bogons, extras).cidrs : bogons;
-  const effectiveDirectShields =
-    extras.length > 0
-      ? subtractCidrs(directShieldCidrs, extras).cidrs
-      : directShieldCidrs;
+    effectiveExtras.length > 0
+      ? subtractCidrs(bogons, effectiveExtras).cidrs
+      : bogons;
   const forbidden = [
     ...effectiveExcluded,
     ...effectiveBogons,
@@ -695,7 +884,7 @@ export const compactRoutes = (
     const protectedCore = subtractCidrs(losslessCidrs, forbidden).cidrs;
     // Cap RU expansion at /8 (IPv4) and /8 (IPv6) so a sparse protected list
     // can never let one Russian prefix swallow half of the address space while
-    // still letting IPv6 Regional Registry /12 blocks compact cleanly (~77 v6).
+    // still letting IPv6 Regional Registry /12 blocks compact cleanly.
     const expanded = expandExclusionsSafely(effectiveExcluded, protectedCore, {
       minCollapsePrefix: { 4: 8, 6: 8 },
     });
@@ -757,8 +946,20 @@ export const compactRoutes = (
       report: { invalidEntries: [], reason: "bogon_overlap_violation" },
     };
   }
-  if (extras.length > 0) {
-    const missed = measureCidrSpace(subtractCidrs(extras, finalCidrs).cidrs);
+  if (effectiveDirectShields.length > 0) {
+    const shieldOverlap = countCidrOverlap(finalCidrs, effectiveDirectShields);
+    if (shieldOverlap[4] > 0n || shieldOverlap[6] > 0n) {
+      return {
+        ok: false,
+        payload: { cidrs: finalCidrs, domains: validation.payload.domains },
+        report: { invalidEntries: [], reason: "direct_shield_overlap_violation" },
+      };
+    }
+  }
+  if (effectiveExtras.length > 0) {
+    const missed = measureCidrSpace(
+      subtractCidrs(effectiveExtras, finalCidrs).cidrs,
+    );
     if (missed[4] > 0n || missed[6] > 0n) {
       return {
         ok: false,
@@ -797,6 +998,7 @@ export const compactRoutes = (
       bogonOverlap: 0,
       directShields: directShieldNames,
       ...(touched > 0 ? { excludedPrefixes: touched } : {}),
+      ...overrideReportCounts,
     },
   };
 };
@@ -831,6 +1033,8 @@ export const createRuleFetcher = ({
 
   const parsed: RulePayload[] = [];
   const excluded: string[] = [];
+  const extraExcluded: string[] = [];
+  const extraIncluded: string[] = [];
   let firstEtag: string | null = null;
   for (const source of sources) {
     const response = await fetchImpl(source.url, {
@@ -850,6 +1054,22 @@ export const createRuleFetcher = ({
             domains: rawPayload.domains,
           }
         : rawPayload;
+    if (source.exactExclude) {
+      const cidrs = normalizeValidCidrs(payload.cidrs);
+      if (payload.cidrs.length > 0 && cidrs.length === 0) {
+        throw new Error(`Rule extra-exclude source ${source.url} has no valid CIDRs`);
+      }
+      extraExcluded.push(...cidrs);
+      continue;
+    }
+    if (source.forceInclude) {
+      const cidrs = normalizeValidCidrs(payload.cidrs);
+      if (payload.cidrs.length > 0 && cidrs.length === 0) {
+        throw new Error(`Rule extra-include source ${source.url} has no valid CIDRs`);
+      }
+      extraIncluded.push(...cidrs);
+      continue;
+    }
     if (!source.exclude) {
       parsed.push(payload);
       continue;
@@ -864,12 +1084,23 @@ export const createRuleFetcher = ({
     excluded.push(...cidrs);
   }
 
+  const adminOverrides =
+    (await repository.getGlobalRouteOverrides?.(profile)) ?? {
+      addCidrs: [],
+      excludeCidrs: [],
+    };
   const extraCidrs = extras.flatMap((extra) => extra.cidrs);
   const compacted = compactRoutes(
     validateRuleObject(mergeRulePayloads(parsed)),
     excluded,
     extraCidrs,
     compaction,
+    {
+      extraExcluded,
+      extraIncluded,
+      adminExcluded: adminOverrides.excludeCidrs,
+      adminIncluded: adminOverrides.addCidrs,
+    },
   );
   const validation =
     compacted.ok && extras.length > 0

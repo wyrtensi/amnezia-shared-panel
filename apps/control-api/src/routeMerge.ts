@@ -1,5 +1,8 @@
 import type { GlobalRouteProfile } from "@amnezia/contracts";
-import { subtractCidrsPreservingUntouched } from "@amnezia/vpn-config";
+import {
+  subtractCidrs,
+  subtractCidrsPreservingUntouched,
+} from "@amnezia/vpn-config";
 import type { RulePayload, TunnelRoutes } from "./vpnConfig.js";
 
 export type RouteExtras = {
@@ -39,7 +42,17 @@ export const mergeRoutePayload = (input: {
 
   const cidrs = new Set(afterExclude);
 
-  for (const cidr of input.global?.add.cidrs ?? []) cidrs.add(cidr);
+  const globalAdds = input.global?.add.cidrs ?? [];
+  if (globalAdds.length > 0) {
+    // Only append admin additions not already covered by `afterExclude`. Once
+    // the worker bakes `global_route_overrides` into a compacted snapshot, this
+    // avoids re-appending redundant sub-prefixes on top of enclosing supernets.
+    const missingAdds =
+      afterExclude.length > 0
+        ? subtractCidrs(globalAdds, afterExclude).cidrs
+        : globalAdds;
+    for (const cidr of missingAdds) cidrs.add(cidr);
+  }
   for (const cidr of input.userExtra?.cidrs ?? []) cidrs.add(cidr);
 
   return { cidrs: [...cidrs] };

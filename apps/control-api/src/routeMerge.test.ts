@@ -72,11 +72,12 @@ describe("mergeRoutePayload", () => {
   it("de-duplicates entries shared by the feed, the admin and the user", () => {
     const merged = mergeRoutePayload({
       base,
-      global: profile({ add: { cidrs: ["10.0.0.0/8"] } }),
+      global: profile({ add: { cidrs: ["10.0.0.0/8", "10.1.2.0/24"] } }),
       userExtra: { cidrs: ["10.0.0.0/8", "198.51.100.0/24"] },
     });
 
     expect(merged.cidrs.filter((cidr) => cidr === "10.0.0.0/8")).toHaveLength(1);
+    expect(merged.cidrs).not.toContain("10.1.2.0/24");
     expect(merged.cidrs).toContain("198.51.100.0/24");
   });
 

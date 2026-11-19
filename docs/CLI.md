@@ -588,14 +588,23 @@ A `HEAD` probe reads no body, so a body assertion against one is refused rather
 than left to fail silently in the direction that reads as "blocked".
 
 `global-routes` / `global-routes-set` edit an admin-wide layer applied to every
-split-tunnel export, on top of the profile's active feed:
+split-tunnel profile:
 
-1. the active feed payload's addresses;
-2. **minus** the admin exclusions (CIDR-aware: punches exact holes out of any
-   enclosing supernet while keeping unrelated prefixes verbatim);
-3. **plus** the admin additions;
-4. **plus** the owner's own custom routes — applied last on purpose, so a user
-   who lists an excluded entry in `user-routes` opts back into it.
+1. Writing `global-routes-set` (or saving in Administration → Rules) immediately
+   re-arms the worker's `rules.refresh` job so the worker bakes the exclusions
+   (as exact un-expanded direct shields) and additions (as highest-precedence
+   inclusions) into a freshly compacted `route_rule_versions` snapshot — bumping
+   the active version so existing keys flag `rulesOutdated`.
+2. At export time (`routeMerge.ts`), the same precedence still applies directly
+   on top of the active feed payload (instant fallback before the worker tick
+   finishes, without duplicating additions already covered by the compacted
+   snapshot):
+   - the active feed payload's addresses;
+   - **minus** the admin exclusions (CIDR-aware: punches exact holes out of any
+     enclosing supernet while keeping unrelated prefixes verbatim);
+   - **plus** the admin additions not already covered;
+   - **plus** the owner's own custom routes — applied last on purpose, so a user
+     who lists an excluded entry in `user-routes` opts back into it.
 
 ```sh
 amnezia-panel global-routes

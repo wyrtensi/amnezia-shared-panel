@@ -3721,6 +3721,45 @@ export class PostgresControlRepository implements ControlRepository {
     await armAccessSyncRow(tx, reason);
   };
 
+  /**
+   * Arm the singleton `rules.refresh` outbox row so the worker fetches and
+   * recompacts route rules on its next poll. Returns the updated row when it
+   * was newly armed, or undefined when a refresh is already pending/processing.
+   */
+  private armRulesRefresh = async (
+    tx: DbTransaction,
+    requestedAt: Date,
+  ) => {
+    const [armed] = await tx
+      .insert(jobOutbox)
+      .values({
+        type: RULES_REFRESH_JOB_TYPE,
+        deduplicationKey: RULES_REFRESH_DEDUPLICATION_KEY,
+        payload: { requestedAt: requestedAt.toISOString() },
+        availableAt: requestedAt,
+      })
+      // The deduplication key is UNIQUE and survives a completed run, so a
+      // second ask reuses that row. `setWhere` re-arms only a finished run:
+      // while one is pending or processing the write is a no-op and cannot
+      // queue a second fetch.
+      .onConflictDoUpdate({
+        target: jobOutbox.deduplicationKey,
+        set: {
+          status: "pending",
+          payload: { requestedAt: requestedAt.toISOString() },
+          availableAt: requestedAt,
+          attempts: 0,
+          lockedAt: null,
+          completedAt: null,
+          lastError: null,
+          updatedAt: requestedAt,
+        },
+        setWhere: inArray(jobOutbox.status, ["completed", "failed"]),
+      })
+      .returning();
+    return armed;
+  };
+
   adminAction = async (
     actor: Actor,
     resource: string,
@@ -4652,6 +4691,10 @@ export class PostgresControlRepository implements ControlRepository {
           // Counts only — the entries themselves stay out of the audit log.
           metadata: globalRouteCounts(routes),
         });
+        // Re-arm the singleton `rules.refresh` job so the worker bakes the
+        // updated admin additions/exclusions into a compacted rule snapshot
+        // and bumps `route_rule_versions` (flagging keys as `rulesOutdated`).
+        await this.armRulesRefresh(tx, new Date());
         return updated?.payload ?? routes;
       });
     } else if (resource === "nodes" && action === "reconcile") {
@@ -4874,34 +4917,7 @@ export class PostgresControlRepository implements ControlRepository {
       // fetch/validate/quarantine logic belong to the worker. This only
       // enqueues the job the periodic timer already runs.
       return this.options.db.transaction(async (tx) => {
-        const requestedAt = new Date();
-        const [armed] = await tx
-          .insert(jobOutbox)
-          .values({
-            type: RULES_REFRESH_JOB_TYPE,
-            deduplicationKey: RULES_REFRESH_DEDUPLICATION_KEY,
-            payload: { requestedAt: requestedAt.toISOString() },
-            availableAt: requestedAt,
-          })
-          // The deduplication key is UNIQUE and survives a completed run, so a
-          // second ask reuses that row. `setWhere` re-arms only a finished run:
-          // while one is pending or processing the click is a no-op and cannot
-          // queue a second fetch.
-          .onConflictDoUpdate({
-            target: jobOutbox.deduplicationKey,
-            set: {
-              status: "pending",
-              payload: { requestedAt: requestedAt.toISOString() },
-              availableAt: requestedAt,
-              attempts: 0,
-              lockedAt: null,
-              completedAt: null,
-              lastError: null,
-              updatedAt: requestedAt,
-            },
-            setWhere: inArray(jobOutbox.status, ["completed", "failed"]),
-          })
-          .returning();
+        const armed = await this.armRulesRefresh(tx, new Date());
         const row =
           armed ??
           (

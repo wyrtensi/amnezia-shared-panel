@@ -526,10 +526,71 @@ and safe binary-trie supernetting, in this order:
     direct.
   - `RULE_COMPACTION_MODE=lossless` *(default for custom `RULE_FEEDS`)*: exact
     subtraction and lossless compaction only.
-  Any version violating zero RU/bogon overlap, extras coverage, or the compact
-  ceiling (`2800` routes) is quarantined automatically. Admin `global-routes`
-  exclusions use real CIDR subtraction (`subtractCidrs`) at export time, so
-  excluding a `/24` or bare IP cleanly punches a hole out of any supernet.
+  Any version violating zero RU/bogon/direct-shield overlap, extras coverage, or
+  the compact ceiling (`2800` routes) is quarantined automatically.
+- **Panel `global_route_overrides` + extra URL feeds on every refresh:**
+  - Every periodic or manual rule fetch reads the panel's
+    `global_route_overrides` (`global-routes-set` / Administration → Rules) from
+    PostgreSQL and bakes admin exclusions (as exact un-expanded shields) and
+    admin additions (as highest-precedence inclusions) straight into the
+    compacted `route_rule_versions` snapshot. Editing `global_route_overrides`
+    automatically re-arms `rules.refresh` so keys flag `rulesOutdated`, while
+    export-time `routeMerge.ts` continues to apply real CIDR subtraction as an
+    immediate fallback without duplicating sub-prefixes already covered by the
+    snapshot.
+  - Optional `RULE_EXTRA_INCLUDE_URLS` and `RULE_EXTRA_EXCLUDE_URLS` append
+    external `cidr-lines` URLs on top of the built-in defaults without wiping
+    `DEFAULT_RULE_FEEDS` or resetting `RULE_COMPACTION_MODE`:
+    - `RULE_EXTRA_EXCLUDE_URLS` acts as exact un-expanded direct shields (never
+      expanded to `/8`).
+    - `RULE_EXTRA_INCLUDE_URLS` acts as forced inclusions (protected from RU
+      expansion and able to punch back into built-in shields such as Valve
+      AS32590).
+
+#### Steam split-routing options (Direct game downloads vs VPN Store/Client)
+
+Empirical checks against Valve's live directory APIs
+(`IContentServerDirectoryService/GetServersForSteamPipe/v1/` and
+`ISteamDirectory/GetCMListForConnect/v1/`) show three distinct traffic classes:
+
+- **Store, Community, Login, Checkout, Web API** (`store.steampowered.com`,
+  `steamcommunity.com`, `checkout.steampowered.com`, `api.steampowered.com`,
+  `*.steamstatic.com`): served 100 % via **Akamai** and **Fastly**
+  (`199.232.211.52`, `199.232.215.52`) — routed 100 % through VPN in E-Core
+  (`compact_world`), both in browsers and inside the Steam desktop client.
+- **Primary SteamPipe game downloads (`SteamCache`, `cache*.steamcontent.com`)**:
+  248 hosts across 24 `/24` subnets, 100 % inside **Valve AS32590**. In EU/RU
+  cells (`fra2`, `ams1`, `waw2`, `sto1`, `sto2`, `vie1`, `par1`) Valve
+  `SteamCache` carries `weighted_load = 47..118`, while 3rd-party overflow CDNs
+  (`steampipe.akamaized.net`, `fastly.cdn.steampipe.steamcontent.com`, etc.)
+  carry `130`, so ~90 %+ of real game downloads hit AS32590 first.
+- **Steam Client Connection Managers (`cmp*.steamserver.net`, login/friends/chat)**:
+  ~76 unique IPv4 addresses across 24 `/24`s inside **Valve AS32590**. Critically,
+  exact IP overlap between the 76 CM IPs and the 248 `SteamCache` IPs is **0**,
+  even though 20 of 24 `/24`s are shared.
+
+Available strategies:
+
+1. **Option 1 — Full AS32590 direct shield (shipped default in E-Core):**
+   `RULE_DIRECT_STEAM_CACHE=true` excludes all 11 IPv4 + 3 IPv6 Valve AS32590
+   allocations. Primary downloads go direct (~90 %+ volume), Store/Community/
+   Checkout/API go via VPN, and Steam CM goes direct (~1,250 routes total).
+2. **Option 2 — Surgical AS32590 split (Steam CM via VPN + `SteamCache` direct):**
+   Because CM IPs have **zero exact IP overlap** with `SteamCache` IPs, an
+   operator who also wants Steam client login/friends/chat routed through VPN can
+   publish the ~76 `/32` endpoints from Valve's unauthenticated
+   `ISteamDirectory/GetCMListForConnect/v1/?cellid=0&format=json` daily as a
+   `cidr-lines` list (with last-known-good caching on transient API errors) and
+   point `RULE_EXTRA_INCLUDE_URLS` at it — or later add a built-in worker source
+   doing the same fetch. `forceInclude` punches only those ~76 CM `/32`s back
+   into the VPN while keeping all 248 Valve `SteamCache` download servers direct
+   (~+45–76 routes, ~1,310 total, still well below mobile ceilings).
+3. **Option 3 — L7 / domain routing (outside WireGuard `AllowedIPs`):**
+   `fastly.cdn.steampipe.steamcontent.com` shares exact Anycast IPs
+   (`199.232.211.52`, `199.232.215.52`) with `shared.fastly.steamstatic.com` and
+   `avatars.fastly.steamstatic.com`. Separating rare `w=130` Akamai/Fastly
+   overflow downloads from Store assets is therefore impossible at L3 and
+   requires domain-level split tunneling (`*.steamcontent.com` direct).
 
 Feeds grow, so that number is not assumed to hold. `MAX_TUNNEL_ROUTES` (6800) is
 the budget the profile is held to. It sits close to the edge on purpose —
