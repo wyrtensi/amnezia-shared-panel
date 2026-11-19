@@ -23,6 +23,7 @@ import {
   createDatabase,
   decryptSecret,
   encryptSecret,
+  identities,
   jobOutbox,
   LIVE_KEY_STATES,
   nodeAgentReleases,
@@ -75,6 +76,75 @@ const failureOf = async (
     return error as { statusCode?: number; code?: string; message?: string };
   }
 };
+
+describe("PostgresControlRepository concurrent identity resolution", () => {
+  const database = databaseUrl ? createDatabase(databaseUrl) : null;
+  const keyring = { 1: randomBytes(32) };
+  const emails: string[] = [];
+
+  afterAll(async () => {
+    if (!database) return;
+    if (emails.length > 0) await database.db.delete(users).where(inArray(users.email, emails));
+    await database.client.end();
+  });
+
+  runDatabaseTest.each([
+    { scenario: "the same login", secondProvider: "google", sameSubject: true, sameEmail: true },
+    { scenario: "different providers with the same email", secondProvider: "cloudflare-access", sameSubject: false, sameEmail: true },
+    { scenario: "the same provider identity with different emails", secondProvider: "google", sameSubject: true, sameEmail: false },
+  ])("resolves concurrent requests for $scenario to one account", async ({
+    secondProvider, sameSubject, sameEmail,
+  }) => {
+    if (!database) return;
+    const firstEmail = `identity-${randomUUID()}@example.test`;
+    const secondEmail = sameEmail ? firstEmail : `identity-${randomUUID()}@example.test`;
+    emails.push(firstEmail, secondEmail);
+    const subject = randomUUID();
+    const repository = new PostgresControlRepository({
+      db: database.db,
+      keyring,
+      allowedEmailDomains: new Set(["example.test"]),
+    });
+    const claims = [
+      { provider: "google", subject, email: firstEmail },
+      {
+        provider: secondProvider,
+        subject: sameSubject ? subject : randomUUID(),
+        email: secondEmail.toUpperCase(),
+      },
+    ];
+
+    const { pending, waiters } = await database.db.transaction(async (tx) => {
+      // Both requests can read while the lock holds. Release it only after both
+      // need to write, so the test exercises a real concurrent first login.
+      await tx.execute(sql`lock table ${users} in share mode`);
+      const pending = Promise.allSettled(claims.map((claim) => repository.resolveIdentity(claim)));
+      let waiters = 0;
+      for (let attempt = 0; attempt < 100; attempt += 1) {
+        const [row] = await database.db.execute<{ waiting: number }>(sql`
+          select count(*)::int as waiting from pg_stat_activity
+          where datname = current_database() and wait_event_type = 'Lock'
+        `);
+        waiters = row?.waiting ?? 0;
+        if (waiters >= claims.length) break;
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      return { pending, waiters };
+    });
+
+    const results = await pending;
+    expect(waiters).toBeGreaterThanOrEqual(claims.length);
+    expect(results.map((result) => result.status)).toEqual(["fulfilled", "fulfilled"]);
+    const actorIds = results.flatMap((result) => result.status === "fulfilled" ? [result.value.id] : []);
+    const accounts = await database.db.select({ id: users.id }).from(users)
+      .where(inArray(users.email, [firstEmail, secondEmail]));
+    expect(accounts).toHaveLength(1);
+    expect(actorIds).toEqual([accounts[0]?.id, accounts[0]?.id]);
+    const links = await database.db.select({ userId: identities.userId }).from(identities)
+      .where(inArray(identities.userId, actorIds));
+    expect(links).toHaveLength(sameSubject ? 1 : 2);
+  });
+});
 
 describe("PostgresControlRepository quota race", () => {
   const database = databaseUrl ? createDatabase(databaseUrl) : null;

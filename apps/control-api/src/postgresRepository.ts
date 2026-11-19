@@ -678,7 +678,7 @@ export class PostgresControlRepository implements ControlRepository {
     if (email === SERVICE_ACCOUNT_EMAIL) {
       throw new ApiError(403, "User is disabled", "USER_DISABLED");
     }
-    return this.options.db.transaction(async (tx) => {
+    const resolve = () => this.options.db.transaction(async (tx) => {
       const existingIdentity = await tx
         .select({ user: users })
         .from(identities)
@@ -792,6 +792,20 @@ export class PostgresControlRepository implements ControlRepository {
       });
       return toActor(user);
     });
+
+    for (let retries = 0; ; retries += 1) {
+      try {
+        return await resolve();
+      } catch (error) {
+        // A concurrent first login can claim the email or the provider identity.
+        // Retry the full transaction so a tentative user rolls back and the
+        // next attempt reads the committed account or identity.
+        const collision =
+          isUniqueViolation(error, "users_email_unique") ||
+          isUniqueViolation(error, "identities_provider_subject_unique");
+        if (!collision || retries === 2) throw error;
+      }
+    }
   };
 
   getMe = async (actor: Actor): Promise<Record<string, unknown>> => {
