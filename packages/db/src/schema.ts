@@ -29,6 +29,7 @@ import type {
   CustomRoutes,
   GlobalRoutes,
   InstallGuideVideos,
+  KeyBridgeMode,
   NodeAgentUpdateState,
   NodeCapacityState,
   NodeKeyLimits,
@@ -581,6 +582,19 @@ export const vpnKeys = pgTable(
     // applied over the encrypted node-issued config at export. Metadata only,
     // never a config body. Null: the node's own parameters are exported.
     awgClientProfile: jsonb("awg_client_profile").$type<Record<string, unknown>>(),
+    // Admin-only per-key bridge routing override:
+    // - `inherit` (default): follow the owner's effective `policy.useBridge`
+    //   and the node's active bridge route;
+    // - `direct`: always export the node's Direct endpoint;
+    // - `route`: export through the pinned `vpnBridgeRouteId` route.
+    bridgeMode: text("bridge_mode")
+      .$type<KeyBridgeMode>()
+      .default("inherit")
+      .notNull(),
+    vpnBridgeRouteId: uuid("vpn_bridge_route_id").references(
+      () => vpnBridgeRoutes.id,
+      { onDelete: "set null" },
+    ),
     lastUsedAt: timestamp("last_used_at", { withTimezone: true }),
     revokedAt: timestamp("revoked_at", { withTimezone: true }),
     failureReason: text("failure_reason"),
@@ -597,6 +611,14 @@ export const vpnKeys = pgTable(
     check(
       "vpn_keys_config_envelope_complete",
       sql`(${table.configCiphertext} is null and ${table.configNonce} is null and ${table.configAuthTag} is null and ${table.configKeyVersion} is null) or (${table.configCiphertext} is not null and ${table.configNonce} is not null and ${table.configAuthTag} is not null and ${table.configKeyVersion} is not null)`,
+    ),
+    check(
+      "vpn_keys_bridge_mode_valid",
+      sql`${table.bridgeMode} in ('inherit', 'direct', 'route')`,
+    ),
+    check(
+      "vpn_keys_bridge_route_consistency",
+      sql`${table.bridgeMode} = 'route' or ${table.vpnBridgeRouteId} is null`,
     ),
   ],
 );
@@ -1004,6 +1026,10 @@ export const portalPolicy = pgTable(
     keyLimitMode: keyLimitModeEnum("key_limit_mode").default("per_node").notNull(),
     allowKeyCreation: boolean("allow_key_creation").default(true).notNull(),
     allowNodeSelection: boolean("allow_node_selection").default(true).notNull(),
+    // Whether users inherit their node's active AWG 3.1 bridge route on config
+    // export. Default OFF so users connect directly until an administrator turns
+    // bridge routing on globally, per user (via policyOverride), or per key.
+    useBridge: boolean("use_bridge").default(false).notNull(),
     allowedProtocols: jsonb("allowed_protocols")
       .$type<ProtocolKind[]>()
       .default(["awg3"])

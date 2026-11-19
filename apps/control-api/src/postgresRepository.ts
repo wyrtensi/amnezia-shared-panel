@@ -13,6 +13,7 @@ import {
   sql,
   sum,
 } from "drizzle-orm";
+import { alias } from "drizzle-orm/pg-core";
 import type {
   AccessSyncStatus,
   Bridge,
@@ -25,6 +26,7 @@ import type {
   CustomRoutes,
   DeleteNodeOptions,
   GlobalRoutes,
+  KeyBridgeMode,
   KeyLimitMode,
   KeyState,
   NoticeAcks,
@@ -170,6 +172,10 @@ import type {
 } from "./repository.js";
 import { ApiError, type Actor, type IdentityClaim, type KeyView } from "./service.js";
 import { toKeyView } from "./keyView.js";
+import {
+  resolveKeyBridgeInfo,
+  type KeyBridgeRouteRecord,
+} from "./bridgeEndpoint.js";
 import { diffRulePayloads } from "./ruleDiff.js";
 import {
   hasRoomForKey,
@@ -359,6 +365,7 @@ const toPolicy = (row: PortalPolicyRow | undefined): PortalPolicy =>
     ? {
         allowKeyCreation: row.allowKeyCreation,
         allowNodeSelection: row.allowNodeSelection,
+        useBridge: row.useBridge,
         allowedProtocols:
           row.allowedProtocols && row.allowedProtocols.length > 0
             ? row.allowedProtocols
@@ -1677,6 +1684,15 @@ export class PostgresControlRepository implements ControlRepository {
     const reachability = policy.showNodeStatus
       ? await this.loadKeyReachability([...new Set(rows.map(({ key }) => key.nodeId))])
       : null;
+    const bridgeRoutes =
+      actor.role === "admin"
+        ? await this.loadKeyBridgeRoutes(
+            rows.map(({ key }) => key.nodeId),
+            rows
+              .map(({ key }) => key.vpnBridgeRouteId)
+              .filter((id): id is string => id !== null),
+          )
+        : null;
     return rows.map(({ key, node, current }) =>
       toKeyView({
         actor,
@@ -1686,14 +1702,100 @@ export class PostgresControlRepository implements ControlRepository {
         policy,
         activeByProfile,
         nodeReachability: reachability ? reachability(key.nodeId, key.protocol) : undefined,
+        bridge: bridgeRoutes
+          ? resolveKeyBridgeInfo({
+              protocol: key.protocol,
+              bridgeMode: key.bridgeMode,
+              pinnedRouteId: key.vpnBridgeRouteId,
+              pinnedRoute: key.vpnBridgeRouteId
+                ? (bridgeRoutes.byRouteId.get(key.vpnBridgeRouteId) ?? null)
+                : null,
+              activeRoute: bridgeRoutes.activeByNode.get(key.nodeId) ?? null,
+              useBridge: policy.useBridge,
+            })
+          : undefined,
       }),
     );
+  };
+
+  private loadKeyBridgeRoutes = async (
+    nodeIds: readonly string[],
+    pinnedRouteIds: readonly string[],
+  ): Promise<{
+    activeByNode: Map<string, KeyBridgeRouteRecord>;
+    byRouteId: Map<string, KeyBridgeRouteRecord>;
+  }> => {
+    const uniqueNodes = [...new Set(nodeIds)];
+    const uniqueRoutes = [...new Set(pinnedRouteIds)];
+    const activeByNode = new Map<string, KeyBridgeRouteRecord>();
+    const byRouteId = new Map<string, KeyBridgeRouteRecord>();
+    if (uniqueNodes.length === 0 && uniqueRoutes.length === 0) {
+      return { activeByNode, byRouteId };
+    }
+    const conditions = [];
+    if (uniqueNodes.length > 0) {
+      conditions.push(
+        and(
+          inArray(vpnBridgeRoutes.nodeId, uniqueNodes),
+          eq(vpnBridgeRoutes.state, "active"),
+        ),
+      );
+    }
+    if (uniqueRoutes.length > 0) {
+      conditions.push(inArray(vpnBridgeRoutes.id, uniqueRoutes));
+    }
+    const rows = await this.options.db
+      .select({
+        routeId: vpnBridgeRoutes.id,
+        nodeId: vpnBridgeRoutes.nodeId,
+        state: vpnBridgeRoutes.state,
+        bridgeId: vpnBridges.id,
+        bridgeName: vpnBridges.name,
+        publicIpv4: vpnBridges.publicIpv4,
+        publicUdpPort: vpnBridgeRoutes.publicUdpPort,
+      })
+      .from(vpnBridgeRoutes)
+      .innerJoin(vpnBridges, eq(vpnBridges.id, vpnBridgeRoutes.bridgeId))
+      .where(conditions.length === 1 ? conditions[0] : or(...conditions));
+    for (const row of rows) {
+      const record: KeyBridgeRouteRecord = {
+        routeId: row.routeId,
+        bridgeId: row.bridgeId,
+        bridgeName: row.bridgeName,
+        publicIpv4: row.publicIpv4,
+        publicUdpPort: row.publicUdpPort,
+      };
+      byRouteId.set(row.routeId, record);
+      if (row.state === "active") activeByNode.set(row.nodeId, record);
+    }
+    return { activeByNode, byRouteId };
   };
 
   createProvisioningKey = async (
     actor: Actor,
     request: CreateKeyRequest,
+    options?: { allowBridgeSelection?: boolean },
   ): Promise<{ id: string; state: KeyState }> => {
+    const allowBridgeSelection =
+      options?.allowBridgeSelection ?? actor.role === "admin";
+    if (
+      !allowBridgeSelection &&
+      (request.bridgeMode !== undefined || request.vpnBridgeRouteId !== undefined)
+    ) {
+      throw new ApiError(
+        403,
+        "Only administrators can choose bridge routing for a key",
+        "POLICY_DENIED",
+      );
+    }
+    const bridgeMode: KeyBridgeMode = request.bridgeMode ?? "inherit";
+    if (bridgeMode === "route" && request.protocol !== "awg3") {
+      throw new ApiError(
+        409,
+        "Only AWG 3.1 keys can be routed through a bridge",
+        "BRIDGE_KEY_NOT_AWG3",
+      );
+    }
     const keyId = randomUUID();
     for (let attempt = 0; attempt < 10; attempt += 1) {
       try {
@@ -1892,6 +1994,40 @@ export class PostgresControlRepository implements ControlRepository {
           }
           throw new ApiError(409, "Node is unavailable", "NODE_UNAVAILABLE");
         }
+        let vpnBridgeRouteId: string | null = null;
+        if (bridgeMode === "route") {
+          const requestedRouteId = request.vpnBridgeRouteId;
+          if (!requestedRouteId) {
+            throw new ApiError(
+              400,
+              "A bridge route is required when bridgeMode is 'route'",
+              "VALIDATION_ERROR",
+            );
+          }
+          const [pinnedRoute] = await tx
+            .select({
+              id: vpnBridgeRoutes.id,
+              nodeId: vpnBridgeRoutes.nodeId,
+            })
+            .from(vpnBridgeRoutes)
+            .where(eq(vpnBridgeRoutes.id, requestedRouteId))
+            .limit(1);
+          if (!pinnedRoute) {
+            throw new ApiError(
+              404,
+              "Bridge route not found",
+              "BRIDGE_ROUTE_NOT_FOUND",
+            );
+          }
+          if (pinnedRoute.nodeId !== selectedNode.id) {
+            throw new ApiError(
+              409,
+              "Selected bridge route belongs to a different node",
+              "BRIDGE_ROUTE_WRONG_NODE",
+            );
+          }
+          vpnBridgeRouteId = pinnedRoute.id;
+        }
         const labelSecret = decryptSecret(
           {
             ciphertext: selectedNode.labelSecretCiphertext,
@@ -1933,6 +2069,8 @@ export class PostgresControlRepository implements ControlRepository {
           // once the node's artifact turns out to be 3.1; a 2.0 one ignores it.
           awgClientProfile:
             request.protocol === "awg3" ? selectAwgClientProfile(1) : null,
+          bridgeMode,
+          vpnBridgeRouteId,
         });
         await tx.insert(jobOutbox).values({
           type: "vpn-key.provision",
@@ -1950,6 +2088,8 @@ export class PostgresControlRepository implements ControlRepository {
             protocol: request.protocol,
             routeProfile: request.routeProfile,
             nameDisplay: request.nameDisplay,
+            bridgeMode,
+            vpnBridgeRouteId,
           },
         });
             return { id: keyId, state: "provisioning" as const };
@@ -1965,6 +2105,8 @@ export class PostgresControlRepository implements ControlRepository {
   };
 
   findKeyConfig = async (keyId: string): Promise<StoredKeyConfig | null> => {
+    const pinnedRoute = alias(vpnBridgeRoutes, "pinned_bridge_route");
+    const pinnedBridge = alias(vpnBridges, "pinned_bridge");
     const rows = await this.options.db
       .select({
         key: vpnKeys,
@@ -1972,15 +2114,23 @@ export class PostgresControlRepository implements ControlRepository {
         policy: portalPolicy,
         nodeName: nodes.name,
         nodePublicName: nodes.publicName,
-        bridgeHost: vpnBridges.publicIpv4,
-        bridgePort: vpnBridgeRoutes.publicUdpPort,
+        activeRouteId: vpnBridgeRoutes.id,
+        activeBridgeId: vpnBridges.id,
+        activeBridgeName: vpnBridges.name,
+        activeBridgeHost: vpnBridges.publicIpv4,
+        activeBridgePort: vpnBridgeRoutes.publicUdpPort,
+        pinnedRouteId: pinnedRoute.id,
+        pinnedBridgeId: pinnedBridge.id,
+        pinnedBridgeName: pinnedBridge.name,
+        pinnedBridgeHost: pinnedBridge.publicIpv4,
+        pinnedBridgePort: pinnedRoute.publicUdpPort,
       })
       .from(vpnKeys)
       .innerJoin(users, eq(users.id, vpnKeys.ownerId))
       .innerJoin(nodes, eq(nodes.id, vpnKeys.nodeId))
       .leftJoin(portalPolicy, eq(portalPolicy.id, true))
-      // One statement reads the key and the node's active route, so an export
-      // sees one consistent assignment. At most one route per node is active.
+      // One statement reads the key, any pinned route and the node's active
+      // route, so an export sees one consistent assignment.
       .leftJoin(
         vpnBridgeRoutes,
         and(
@@ -1989,6 +2139,8 @@ export class PostgresControlRepository implements ControlRepository {
         ),
       )
       .leftJoin(vpnBridges, eq(vpnBridges.id, vpnBridgeRoutes.bridgeId))
+      .leftJoin(pinnedRoute, eq(pinnedRoute.id, vpnKeys.vpnBridgeRouteId))
+      .leftJoin(pinnedBridge, eq(pinnedBridge.id, pinnedRoute.bridgeId))
       .where(and(eq(vpnKeys.id, keyId), isNotNull(vpnKeys.configCiphertext)))
       .limit(1);
     const row = rows[0];
@@ -2006,6 +2158,46 @@ export class PostgresControlRepository implements ControlRepository {
       row.key.routeProfile === "full_tunnel"
         ? null
         : await this.findActiveRule(row.key.routeProfile);
+    const resolvedPolicy = resolvePortalPolicy(
+      toPolicy(row.policy ?? undefined),
+      row.user.policyOverride,
+    );
+    const activeRouteRecord: KeyBridgeRouteRecord | null =
+      row.activeRouteId !== null &&
+      row.activeBridgeId !== null &&
+      row.activeBridgeName !== null &&
+      row.activeBridgeHost !== null &&
+      row.activeBridgePort !== null
+        ? {
+            routeId: row.activeRouteId,
+            bridgeId: row.activeBridgeId,
+            bridgeName: row.activeBridgeName,
+            publicIpv4: row.activeBridgeHost,
+            publicUdpPort: row.activeBridgePort,
+          }
+        : null;
+    const pinnedRouteRecord: KeyBridgeRouteRecord | null =
+      row.pinnedRouteId !== null &&
+      row.pinnedBridgeId !== null &&
+      row.pinnedBridgeName !== null &&
+      row.pinnedBridgeHost !== null &&
+      row.pinnedBridgePort !== null
+        ? {
+            routeId: row.pinnedRouteId,
+            bridgeId: row.pinnedBridgeId,
+            bridgeName: row.pinnedBridgeName,
+            publicIpv4: row.pinnedBridgeHost,
+            publicUdpPort: row.pinnedBridgePort,
+          }
+        : null;
+    const bridgeInfo = resolveKeyBridgeInfo({
+      protocol: row.key.protocol,
+      bridgeMode: row.key.bridgeMode,
+      pinnedRouteId: row.key.vpnBridgeRouteId,
+      pinnedRoute: pinnedRouteRecord,
+      activeRoute: activeRouteRecord,
+      useBridge: resolvedPolicy.useBridge,
+    });
     return {
       id: row.key.id,
       ownerId: row.key.ownerId,
@@ -2024,20 +2216,19 @@ export class PostgresControlRepository implements ControlRepository {
         authTag: row.key.configAuthTag,
         keyVersion: row.key.configKeyVersion,
       },
-      policy: resolvePortalPolicy(
-        toPolicy(row.policy ?? undefined),
-        row.user.policyOverride,
-      ),
+      policy: resolvedPolicy,
       routeProfile: row.key.routeProfile,
       appliedRuleVersionId: row.key.routeRuleVersionId,
       activeRule,
       customRoutes: row.user.customRoutes ?? null,
       state: row.key.state,
       protocol: row.key.protocol,
-      bridgeEndpoint:
-        row.bridgeHost !== null && row.bridgePort !== null
-          ? { host: row.bridgeHost, port: row.bridgePort }
-          : null,
+      bridgeEndpoint: bridgeInfo.effective
+        ? {
+            host: bridgeInfo.effective.publicIpv4,
+            port: bridgeInfo.effective.publicUdpPort,
+          }
+        : null,
       awgClientProfile: row.key.awgClientProfile ?? null,
     };
   };
@@ -2944,39 +3135,52 @@ export class PostgresControlRepository implements ControlRepository {
           .where(notServiceAccount)
           .orderBy(users.email);
       case "keys": {
-        const rows = await this.options.db
-          .select({
-            id: vpnKeys.id,
-            ownerId: vpnKeys.ownerId,
-            nodeId: vpnKeys.nodeId,
-            publicKey: vpnKeys.publicKey,
-            protocol: vpnKeys.protocol,
-            state: vpnKeys.state,
-            deviceType: vpnKeys.deviceType,
-            deviceLabel: vpnKeys.deviceLabel,
-            // Operator-only. This is the ONE projection that carries it: the
-            // owner-facing `listKeys` and `findKeyConfig` both list their
-            // columns explicitly and must keep leaving it out.
-            internalName: vpnKeys.internalName,
-            keyNumber: vpnKeys.keyNumber,
-            nameShowNode: vpnKeys.nameShowNode,
-            nameShowLabel: vpnKeys.nameShowLabel,
-            nameShowNumber: vpnKeys.nameShowNumber,
-            routeProfile: vpnKeys.routeProfile,
-            routeRuleVersionId: vpnKeys.routeRuleVersionId,
-            lastUsedAt: vpnKeys.lastUsedAt,
-            revokedAt: vpnKeys.revokedAt,
-            failureReason: vpnKeys.failureReason,
-            createdAt: vpnKeys.createdAt,
-            updatedAt: vpnKeys.updatedAt,
-            online: peerCurrent.online,
-            receivedBytes: peerCurrent.receivedBytes,
-            sentBytes: peerCurrent.sentBytes,
-          })
-          .from(vpnKeys)
-          .innerJoin(users, keyOwnerIsPerson(vpnKeys))
-          .leftJoin(peerCurrent, eq(peerCurrent.keyId, vpnKeys.id))
-          .orderBy(desc(vpnKeys.createdAt));
+        const [globalPolicyRow, rows] = await Promise.all([
+          this.options.db.select().from(portalPolicy).limit(1),
+          this.options.db
+            .select({
+              id: vpnKeys.id,
+              ownerId: vpnKeys.ownerId,
+              nodeId: vpnKeys.nodeId,
+              publicKey: vpnKeys.publicKey,
+              protocol: vpnKeys.protocol,
+              state: vpnKeys.state,
+              deviceType: vpnKeys.deviceType,
+              deviceLabel: vpnKeys.deviceLabel,
+              // Operator-only. This is the ONE projection that carries it: the
+              // owner-facing `listKeys` and `findKeyConfig` both list their
+              // columns explicitly and must keep leaving it out.
+              internalName: vpnKeys.internalName,
+              keyNumber: vpnKeys.keyNumber,
+              nameShowNode: vpnKeys.nameShowNode,
+              nameShowLabel: vpnKeys.nameShowLabel,
+              nameShowNumber: vpnKeys.nameShowNumber,
+              routeProfile: vpnKeys.routeProfile,
+              routeRuleVersionId: vpnKeys.routeRuleVersionId,
+              bridgeMode: vpnKeys.bridgeMode,
+              vpnBridgeRouteId: vpnKeys.vpnBridgeRouteId,
+              ownerPolicyOverride: users.policyOverride,
+              lastUsedAt: vpnKeys.lastUsedAt,
+              revokedAt: vpnKeys.revokedAt,
+              failureReason: vpnKeys.failureReason,
+              createdAt: vpnKeys.createdAt,
+              updatedAt: vpnKeys.updatedAt,
+              online: peerCurrent.online,
+              receivedBytes: peerCurrent.receivedBytes,
+              sentBytes: peerCurrent.sentBytes,
+            })
+            .from(vpnKeys)
+            .innerJoin(users, keyOwnerIsPerson(vpnKeys))
+            .leftJoin(peerCurrent, eq(peerCurrent.keyId, vpnKeys.id))
+            .orderBy(desc(vpnKeys.createdAt)),
+        ]);
+        const basePolicy = toPolicy(globalPolicyRow[0]);
+        const bridgeRoutes = await this.loadKeyBridgeRoutes(
+          rows.map((row) => row.nodeId),
+          rows
+            .map((row) => row.vpnBridgeRouteId)
+            .filter((id): id is string => id !== null),
+        );
         return rows.map(
           ({
             receivedBytes,
@@ -2985,25 +3189,42 @@ export class PostgresControlRepository implements ControlRepository {
             nameShowNode,
             nameShowLabel,
             nameShowNumber,
+            bridgeMode,
+            vpnBridgeRouteId,
+            ownerPolicyOverride,
             ...row
-          }) => ({
-          ...row,
-          // Same shape the owner-facing key list uses, so both views can feed
-          // `composeKeyDisplayName` directly.
-          nameDisplay: {
-            server: nameShowNode,
-            label: nameShowLabel,
-            number: nameShowNumber,
+          }) => {
+            const ownerPolicy = resolvePortalPolicy(basePolicy, ownerPolicyOverride);
+            return {
+              ...row,
+              // Same shape the owner-facing key list uses, so both views can feed
+              // `composeKeyDisplayName` directly.
+              nameDisplay: {
+                server: nameShowNode,
+                label: nameShowLabel,
+                number: nameShowNumber,
+              },
+              bridge: resolveKeyBridgeInfo({
+                protocol: row.protocol,
+                bridgeMode,
+                pinnedRouteId: vpnBridgeRouteId,
+                pinnedRoute: vpnBridgeRouteId
+                  ? (bridgeRoutes.byRouteId.get(vpnBridgeRouteId) ?? null)
+                  : null,
+                activeRoute: bridgeRoutes.activeByNode.get(row.nodeId) ?? null,
+                useBridge: ownerPolicy.useBridge,
+              }),
+              online: online ?? false,
+              traffic:
+                receivedBytes !== null && sentBytes !== null
+                  ? {
+                      receivedBytes: receivedBytes.toString(),
+                      sentBytes: sentBytes.toString(),
+                    }
+                  : null,
+            };
           },
-          online: online ?? false,
-          traffic:
-            receivedBytes !== null && sentBytes !== null
-              ? {
-                  receivedBytes: receivedBytes.toString(),
-                  sentBytes: sentBytes.toString(),
-                }
-              : null,
-        }));
+        );
       }
       case "nodes":
         return this.listAdminNodes();
@@ -4337,14 +4558,21 @@ export class PostgresControlRepository implements ControlRepository {
         await this.options.db.select().from(users).where(eq(users.id, targetId)).limit(1)
       )[0];
       if (!target) throw new ApiError(404, "User not found", "USER_NOT_FOUND");
-      result = await this.createProvisioningKey(toActor(target), createKeyRequestSchema.parse(payload));
+      const parsed = createKeyRequestSchema.parse(payload);
+      result = await this.createProvisioningKey(toActor(target), parsed, {
+        allowBridgeSelection: true,
+      });
       await this.appendAudit({
         actorUserId: actor.id,
         actorType: "user",
         action: "admin.users.create-key",
         targetType: "user",
         targetId,
-        metadata: { keyId: (result as { id: string }).id },
+        metadata: {
+          keyId: (result as { id: string }).id,
+          bridgeMode: parsed.bridgeMode ?? "inherit",
+          vpnBridgeRouteId: parsed.vpnBridgeRouteId ?? null,
+        },
       });
       return result;
     } else if (

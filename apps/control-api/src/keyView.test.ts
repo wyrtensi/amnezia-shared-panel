@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { defaultPortalPolicy } from "@amnezia/contracts";
-import { internalNameFor, toKeyView, type KeyRow } from "./keyView.js";
+import { defaultPortalPolicy, type KeyBridgeInfo } from "@amnezia/contracts";
+import { bridgeInfoFor, internalNameFor, toKeyView, type KeyRow } from "./keyView.js";
 import type { Actor } from "./service.js";
 
 // Distinctive enough that searching a whole serialized response for it is a
@@ -107,6 +107,47 @@ describe("internal name on the owner-facing key payload", () => {
     expect(internalNameFor(owner, key)).toEqual({});
     expect(internalNameFor(adminOwner, key)).toEqual({ internalName: NOTE });
     expect(internalNameFor(otherAdmin, key)).toEqual({});
+  });
+
+  it("exposes bridge routing metadata only to an admin viewing their own key", () => {
+    const bridge: KeyBridgeInfo = {
+      mode: "route",
+      routeId: "55555555-5555-4555-8555-555555555555",
+      effective: {
+        routeId: "55555555-5555-4555-8555-555555555555",
+        bridgeId: "66666666-6666-4666-8666-666666666666",
+        bridgeName: "bridge-edge",
+        publicIpv4: "198.51.100.10",
+        publicUdpPort: 41000,
+        source: "key",
+      },
+    };
+    expect(bridgeInfoFor(owner, { ownerId: OWNER_ID }, bridge)).toEqual({});
+    expect(bridgeInfoFor(otherAdmin, { ownerId: OWNER_ID }, bridge)).toEqual({});
+    expect(bridgeInfoFor(adminOwner, { ownerId: OWNER_ID }, bridge)).toEqual({ bridge });
+
+    const userPayload = toKeyView({
+      actor: owner,
+      key: row(),
+      node: NODE,
+      current: null,
+      policy: defaultPortalPolicy,
+      activeByProfile: new Map(),
+      bridge,
+    });
+    expect(Object.hasOwn(userPayload, "bridge")).toBe(false);
+    expect(JSON.stringify(userPayload)).not.toContain("198.51.100.10");
+
+    const adminPayload = toKeyView({
+      actor: adminOwner,
+      key: row(),
+      node: NODE,
+      current: null,
+      policy: defaultPortalPolicy,
+      activeByProfile: new Map(),
+      bridge,
+    });
+    expect(adminPayload.bridge).toEqual(bridge);
   });
 });
 

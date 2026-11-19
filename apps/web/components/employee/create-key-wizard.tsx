@@ -28,9 +28,14 @@ import {
   defaultKeyNameDisplay,
   DEVICE_TYPE_ORDER,
   MIN_AWG3_CLIENT_VERSION,
+  type Bridge,
   type DeviceType,
+  type KeyBridgeMode,
   type KeyNameDisplay,
 } from "@amnezia/contracts";
+import { KeyBridgeSelect } from "@/components/admin/key-bridge-select";
+import { apiRequest } from "@/lib/api";
+import { listBridges } from "@/lib/bridge-api";
 import { routeProfileChoice } from "@/lib/route-profile-choice";
 import { isNodeFull, isPoolExhausted } from "@/lib/key-quota";
 import { useT } from "@/lib/i18n/provider";
@@ -77,6 +82,8 @@ export type CreateKeyPayload = {
   protocol: ProtocolKind;
   routeProfile: RouteProfile;
   nameDisplay: KeyNameDisplay;
+  bridgeMode?: KeyBridgeMode;
+  vpnBridgeRouteId?: string | null;
 };
 
 export function CreateKeyWizard({
@@ -109,8 +116,29 @@ export function CreateKeyWizard({
   const [nameDisplay, setNameDisplay] = React.useState<KeyNameDisplay>(() => ({
     ...defaultKeyNameDisplay,
   }));
+  const [bridges, setBridges] = React.useState<Bridge[]>([]);
+  const [bridgeMode, setBridgeMode] = React.useState<KeyBridgeMode>("inherit");
+  const [bridgeRouteId, setBridgeRouteId] = React.useState("");
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState("");
+
+  // Admin-only: load available bridges when the wizard opens so admins can
+  // pick Direct or a specific bridge route. Regular users never call this.
+  const isAdmin = me.role === "admin";
+  React.useEffect(() => {
+    if (!open || !isAdmin) return;
+    let active = true;
+    listBridges(apiRequest)
+      .then((list) => {
+        if (active) setBridges(list);
+      })
+      .catch(() => {
+        if (active) setBridges([]);
+      });
+    return () => {
+      active = false;
+    };
+  }, [open, isAdmin]);
 
   // Reset the form only when the wizard OPENS (open false→true) — not on every
   // `nodes`/`existingNames` change, or a background refresh (e.g. the
@@ -126,6 +154,8 @@ export function CreateKeyWizard({
       setProtocol(preferredProtocol(nodeSelectableProtocols(nodes[0])));
       setRouteProfile("full_tunnel");
       setNameDisplay({ ...defaultKeyNameDisplay });
+      setBridgeMode("inherit");
+      setBridgeRouteId("");
       setError("");
     } else if (!open) {
       wasOpen.current = false;
@@ -265,12 +295,26 @@ export function CreateKeyWizard({
     };
   });
 
+  const handleBridgeChange = React.useCallback(
+    (next: { bridgeMode: KeyBridgeMode; routeId: string }) => {
+      setBridgeMode(next.bridgeMode);
+      setBridgeRouteId(next.routeId);
+    },
+    [],
+  );
+
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
     if (!selectedNode) return;
     setBusy(true);
     setError("");
     try {
+      const bridgePayload: Partial<CreateKeyPayload> =
+        isAdmin && protocol === "awg3" && bridgeMode !== "inherit"
+          ? bridgeMode === "route"
+            ? { bridgeMode: "route", vpnBridgeRouteId: bridgeRouteId }
+            : { bridgeMode: "direct" }
+          : {};
       await onCreate({
         nodeId: selectedNode.id,
         deviceType,
@@ -278,6 +322,7 @@ export function CreateKeyWizard({
         protocol,
         routeProfile,
         nameDisplay,
+        ...bridgePayload,
       });
       onOpenChange(false);
     } catch (cause) {
@@ -465,6 +510,19 @@ export function CreateKeyWizard({
             ) : null}
           </div>
 
+          {isAdmin ? (
+            <KeyBridgeSelect
+              nodeId={selectedNode?.id ?? ""}
+              protocol={protocol}
+              bridges={bridges}
+              policyUseBridge={Boolean(me.policy.useBridge)}
+              bridgeMode={bridgeMode}
+              routeId={bridgeRouteId}
+              onChange={handleBridgeChange}
+              idPrefix="wizard-bridge"
+            />
+          ) : null}
+
           {error ? (
             <p className="text-sm text-destructive" role="alert">
               {error}
@@ -479,7 +537,15 @@ export function CreateKeyWizard({
             >
               {t("common.cancel")}
             </Button>
-            <Button type="submit" disabled={busy || !selectedNode || selectedFull}>
+            <Button
+              type="submit"
+              disabled={
+                busy ||
+                !selectedNode ||
+                selectedFull ||
+                (isAdmin && protocol === "awg3" && bridgeMode === "route" && !bridgeRouteId)
+              }
+            >
               {busy ? t("wizard.creating") : t("wizard.create")}
             </Button>
           </DialogFooter>

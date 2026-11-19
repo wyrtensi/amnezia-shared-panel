@@ -1,5 +1,6 @@
 import type {
   InstallGuideVideos,
+  KeyBridgeInfo,
   KeyNameDisplay,
   UserNodeReachability,
 } from "@amnezia/contracts";
@@ -15,6 +16,7 @@ export type KeyLimitMode = "per_node" | "global";
 export type PortalPolicy = {
   allowKeyCreation?: boolean;
   allowNodeSelection?: boolean;
+  useBridge?: boolean;
   allowRouteProfileSelection?: boolean;
   allowCustomRoutes?: boolean;
   allowConfigRedownload?: boolean;
@@ -235,6 +237,8 @@ export type KeyView = {
    * in it — the note is not sent and then hidden, it is not sent.
    */
   internalName?: string | null;
+  /** Admin-only bridge routing summary; absent for regular users. */
+  bridge?: KeyBridgeInfo;
   // Which parts the client-visible connection name is composed of. Always
   // present -- the server attaches it to every key, never just some -- so
   // `composeKeyDisplayName` can reproduce the same name a rename would
