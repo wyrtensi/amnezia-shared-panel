@@ -94,8 +94,9 @@ export function NodeOrderList({
           const isRecommended = index < count;
           const rowStyle = [
             // The rows sit ON the list's recess, so they take the card colour
-            // rather than being transparent over it.
-            "flex items-center gap-2 rounded-lg border bg-card p-2 text-sm transition-colors",
+            // rather than being transparent over it. Wrap trailing controls
+            // onto a second line on narrow phones so the label stays readable.
+            "flex flex-wrap items-center justify-between gap-2 rounded-lg border bg-card p-2 text-sm transition-colors sm:flex-nowrap",
             isRecommended ? "border-primary bg-primary/10" : "",
             over === id && dragging !== id ? "border-dashed border-primary" : "",
             dragging === id ? "opacity-50" : "",
@@ -125,69 +126,76 @@ export function NodeOrderList({
               }}
               onDragEnd={endDrag}
             >
-              <span
-                className="shrink-0 cursor-grab text-muted-foreground active:cursor-grabbing"
-                aria-hidden="true"
-              >
-                <GripVertical className="size-4" />
-              </span>
-              <span className="w-6 shrink-0 text-xs text-muted-foreground">
-                {index + 1}
-              </span>
-              <Checkbox
-                checked={isRecommended}
-                aria-label={`${t("policy.recommendToggle")}: ${node.name}`}
-                // The row moves, the other rows keep their state: ticking
-                // raises this one into the recommended block, unticking drops
-                // it just under it. Both stay a prefix by construction.
-                onChange={(event) =>
-                  onChange(
-                    event.target.checked
-                      ? recommendNode(ordered, count, id)
-                      : unrecommendNode(ordered, count, id),
-                  )
-                }
-              />
-              <span className="min-w-0 flex-1 truncate">
-                <span className="font-medium">{node.name}</span>
-                {node.address ? (
-                  <code className="ml-2 font-mono text-xs text-muted-foreground">
-                    {node.address}
-                  </code>
+              <div className="flex min-w-0 flex-1 items-center gap-2">
+                <span
+                  className="shrink-0 cursor-grab text-muted-foreground active:cursor-grabbing"
+                  aria-hidden="true"
+                >
+                  <GripVertical className="size-4" />
+                </span>
+                <span className="w-5 shrink-0 text-xs text-muted-foreground">
+                  {index + 1}
+                </span>
+                <Checkbox
+                  checked={isRecommended}
+                  className="shrink-0"
+                  aria-label={`${t("policy.recommendToggle")}: ${node.name}`}
+                  // The row moves, the other rows keep their state: ticking
+                  // raises this one into the recommended block, unticking drops
+                  // it just under it. Both stay a prefix by construction.
+                  onChange={(event) =>
+                    onChange(
+                      event.target.checked
+                        ? recommendNode(ordered, count, id)
+                        : unrecommendNode(ordered, count, id),
+                    )
+                  }
+                />
+                <div className="flex min-w-0 flex-1 flex-wrap items-baseline gap-x-2 gap-y-0.5">
+                  <span className="truncate font-medium">{node.name}</span>
+                  {node.address ? (
+                    <code className="break-all font-mono text-xs text-muted-foreground">
+                      {node.address}
+                    </code>
+                  ) : null}
+                  {node.enabled === false ? (
+                    <span className="text-xs text-muted-foreground">
+                      ({t("nodes.endpointDisabled").toLowerCase()})
+                    </span>
+                  ) : null}
+                </div>
+              </div>
+              <div className="flex w-full shrink-0 items-center justify-end gap-1.5 sm:w-auto">
+                {isRecommended ? (
+                  <Badge variant="success" className="mr-auto shrink-0 sm:mr-0">
+                    {t("wizard.recommended")}
+                  </Badge>
                 ) : null}
-                {node.enabled === false ? (
-                  <span className="ml-1.5 text-xs text-muted-foreground">
-                    ({t("nodes.endpointDisabled").toLowerCase()})
-                  </span>
-                ) : null}
-              </span>
-              {isRecommended ? (
-                <Badge variant="success" className="shrink-0">
-                  {t("wizard.recommended")}
-                </Badge>
-              ) : null}
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon"
-                aria-label={`${t("policy.moveUp")}: ${node.name}`}
-                disabled={index === 0}
-                // The count stays a count: moving a row across the boundary
-                // changes WHICH servers are recommended, visibly, right away.
-                onClick={() => emit(moveNodeInOrder(ordered, id, -1), count)}
-              >
-                <ChevronUp className="size-4" />
-              </Button>
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon"
-                aria-label={`${t("policy.moveDown")}: ${node.name}`}
-                disabled={index === ordered.length - 1}
-                onClick={() => emit(moveNodeInOrder(ordered, id, 1), count)}
-              >
-                <ChevronDown className="size-4" />
-              </Button>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  className="size-8 shrink-0"
+                  aria-label={`${t("policy.moveUp")}: ${node.name}`}
+                  disabled={index === 0}
+                  // The count stays a count: moving a row across the boundary
+                  // changes WHICH servers are recommended, visibly, right away.
+                  onClick={() => emit(moveNodeInOrder(ordered, id, -1), count)}
+                >
+                  <ChevronUp className="size-4" />
+                </Button>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  className="size-8 shrink-0"
+                  aria-label={`${t("policy.moveDown")}: ${node.name}`}
+                  disabled={index === ordered.length - 1}
+                  onClick={() => emit(moveNodeInOrder(ordered, id, 1), count)}
+                >
+                  <ChevronDown className="size-4" />
+                </Button>
+              </div>
             </li>
           );
         })}
