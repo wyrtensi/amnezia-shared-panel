@@ -30,7 +30,7 @@ export const isVisibleToOwner = (state: string): boolean =>
  * Mirrors the server. Every owner download of a config marks the key as
  * carrying the active rule version (`markKeyRuleVersion`), so `rulesOutdated`
  * is false on the next `/api/keys`. Call it for a real fetch only (a copy, a
- * file): opening the config dialog fetches nothing on a file-only profile, and
+ * file): opening the config dialog fetches nothing on a split profile, and
  * clearing the flag there hid the callout until the dialog closed and the list
  * reloaded it straight back. The dashboard only reloads that list while something is
  * provisioning, so without this the callout stayed on the card after the very

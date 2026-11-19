@@ -27,6 +27,7 @@ import type {
   CheckAssertion,
   CheckProbe,
   CustomRoutes,
+  EndpointBridgeMode,
   GlobalRoutes,
   InstallGuideVideos,
   KeyBridgeMode,
@@ -577,6 +578,7 @@ export const nodeVpnEndpoints = pgTable(
     enabled: boolean("enabled").default(true).notNull(),
     reachabilityEnabled: boolean("reachability_enabled").default(true).notNull(),
     revision: integer("revision").default(0).notNull(),
+    bridgeMode: text("bridge_mode").$type<EndpointBridgeMode>().default("inherit").notNull(),
     probeStatus: serviceCheckStatusEnum("probe_status"),
     probeLevels: jsonb("probe_levels").$type<Record<string, unknown>>(),
     probeCheckedAt: timestamp("probe_checked_at", { withTimezone: true }),
@@ -589,6 +591,7 @@ export const nodeVpnEndpoints = pgTable(
     uniqueIndex("node_vpn_endpoints_ordinal_unique").on(table.nodeId, table.ordinal),
     uniqueIndex("node_vpn_endpoints_address_unique").on(table.nodeId, table.address),
     check("node_vpn_endpoints_ordinal_positive", sql`${table.ordinal} > 0`),
+    check("node_vpn_endpoints_bridge_mode_valid", sql`${table.bridgeMode} in ('inherit', 'direct', 'bridge')`),
   ],
 );
 

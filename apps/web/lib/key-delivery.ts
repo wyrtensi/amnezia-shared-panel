@@ -1,42 +1,50 @@
-export type KeyDelivery = {
-  /**
-   * Whether the `vpn://` link is usable as a link — shown as text, copied to
-   * the clipboard, encoded as a QR. False means the key exists only as a file.
-   */
-  linkUsable: boolean;
-  /**
-   * i18n key explaining why only a file works. Null when the link is usable.
-   */
-  reasonKey: string | null;
+import { VPN_CLIPBOARD_MAX_CHARS } from "@amnezia/contracts";
+
+type KeyDelivery = {
+  clipboard: "inline" | "on-demand" | "unavailable";
+  qrUsable: boolean;
 };
 
-/**
- * Decide how a key of this route profile can be handed to a user.
- *
- * A split-tunnel profile inlines its whole rule set into the link, so the
- * `vpn://` payload runs from tens of thousands of characters into the
- * millions (`ru_blacklist` measured at 1 787 465). Two ceilings sit below
- * that, and both were reached in production rather than reasoned about:
- *
- *   - a QR symbol holds ~2 900 bytes at any error-correction level, which is
- *     why the QR was withdrawn for these profiles first;
- *   - the clipboard hand-off truncates it too — the copied key arrives at the
- *     client cut short, and an import of a cut key fails without saying why.
- *
- * The file downloads (`.vpn`, `.conf`) are the only shapes that survive, so
- * for these profiles the panel offers the file alone rather than three routes
- * of which two are broken.
- *
- * Extracted from the components so the rule lives in one testable place —
- * `apps/web` has no browser test runner, and the same decision is made by the
- * key card, the download dialog and the create-key wizard.
- */
 export function keyDelivery(routeProfile: string): KeyDelivery {
-  // Anything but the full tunnel carries a feed, and carrying a feed is what
-  // makes the link too long. An unknown profile is a new feed-based one, not a
-  // second full tunnel, so it defaults to the file.
   if (routeProfile === "full_tunnel") {
-    return { linkUsable: true, reasonKey: null };
+    return { clipboard: "inline", qrUsable: true };
   }
-  return { linkUsable: false, reasonKey: "config.fileOnlyWhy" };
+  if (routeProfile === "ru_blacklist") {
+    return { clipboard: "on-demand", qrUsable: false };
+  }
+  return { clipboard: "unavailable", qrUsable: false };
+}
+
+export async function copyVpnLink(href: string): Promise<boolean> {
+  const clipboard = navigator.clipboard;
+  const pendingLink = fetch(`${href}&clipboard=true`).then(async (res) => {
+    if (res.status === 422) {
+      const body = (await res.json()) as { error?: string };
+      if (body.error === "KEY_CLIPBOARD_TOO_LONG") return null;
+    }
+    if (!res.ok) throw new Error(`Config export failed (${res.status})`);
+    const link = (await res.text()).trim();
+    return link.length > VPN_CLIPBOARD_MAX_CHARS ? null : link;
+  });
+
+  if (typeof ClipboardItem !== "undefined" && typeof clipboard?.write === "function") {
+    // Start writing during the click to preserve user activation in WebKit.
+    // A rejected ClipboardItem leaves the previous clipboard contents intact.
+    const data = pendingLink.then((link) => {
+      if (link === null) throw new Error("VPN key exceeds the clipboard import limit");
+      return new Blob([link], { type: "text/plain" });
+    });
+    const write = async () => clipboard.write([new ClipboardItem({ "text/plain": data })]);
+    const [link, item, written] = await Promise.allSettled([pendingLink, data, write()]);
+    if (link.status === "rejected") throw link.reason;
+    if (link.value === null) return false;
+    if (item.status === "rejected") throw item.reason;
+    if (written.status === "rejected") throw written.reason;
+    return true;
+  }
+
+  const link = await pendingLink;
+  if (link === null) return false;
+  await clipboard.writeText(link);
+  return true;
 }

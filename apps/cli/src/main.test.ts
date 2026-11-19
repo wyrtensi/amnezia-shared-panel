@@ -1276,6 +1276,24 @@ describe("reachability probe commands", () => {
     expect(JSON.parse(calls[1]?.init?.body as string)).toEqual({ reachabilityEnabled: false });
   });
 
+  it("patches an individual VPN address's choice to use the node bridge", async () => {
+    const calls = stubFetch([{ body: {} }]);
+    await run([
+      "node-update",
+      "11111111-1111-4111-8111-111111111111",
+      "--endpoint-id=44444444-4444-4444-8444-444444444444",
+      "--endpoint-bridge-mode=bridge",
+    ]);
+    expect(calls[0]?.init?.method).toBe("PATCH");
+    expect(JSON.parse(calls[0]?.init?.body as string)).toEqual({
+      publicEndpoint: {
+        action: "update",
+        id: "44444444-4444-4444-8444-444444444444",
+        bridgeMode: "bridge",
+      },
+    });
+  });
+
   it("node-probe --off patches the node", async () => {
     const calls = stubFetch([
       { body: [{ id: "11111111-1111-4111-8111-111111111111", name: "node-a" }] },

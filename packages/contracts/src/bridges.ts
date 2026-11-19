@@ -194,8 +194,8 @@ export const bridgeRouteStateSchema = z.enum(BRIDGE_ROUTE_STATES);
 
 /**
  * Per-key bridge routing mode:
- * - `inherit`: follow the owner's effective `policy.useBridge` and the node's
- *   active bridge route (default for every regular user key).
+ * - `inherit`: follow the address setting, then the owner's effective
+ *   `policy.useBridge`, using the node's active bridge route.
  * - `direct`: always serve this key's Direct node endpoint, even when the owner
  *   has bridge routing enabled in policy.
  * - `route`: pin this key to the specific bridge route in `vpnBridgeRouteId`
@@ -218,7 +218,7 @@ export const keyBridgeInfoSchema = z.object({
       bridgeName: z.string(),
       publicIpv4: z.string(),
       publicUdpPort: portSchema,
-      source: z.enum(["key", "policy"]),
+      source: z.enum(["key", "endpoint", "policy"]),
     })
     .nullable(),
 });

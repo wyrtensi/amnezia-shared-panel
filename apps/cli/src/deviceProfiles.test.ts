@@ -94,11 +94,9 @@ describe("routeDeliveryNotice", () => {
     expect(notice).toContain("--format=vpn");
   });
 
-  // The two hand-offs the panel withdrew are the two this line has to name,
-  // or an operator reads it as being about the QR alone and pastes the key.
-  it("names both the QR and the clipboard as the things that truncate", () => {
+  it("explains the clipboard limit separately from QR availability", () => {
     const notice = routeDeliveryNotice("ru_blacklist") ?? "";
     expect(notice).toMatch(/QR/);
-    expect(notice).toMatch(/clipboard|paste/);
+    expect(notice).toMatch(/paste.*32,767/);
   });
 });

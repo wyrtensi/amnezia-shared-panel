@@ -1305,6 +1305,23 @@ describe("effective endpoint at config delivery (bridge or direct)", () => {
     expect(readCopies(fallback, decodeVpnLink).line("AllowedIPs")).toBe("0.0.0.0/0, ::/0");
   });
 
+  it("refuses an oversized clipboard export before recording the new rules as applied", async () => {
+    const cidrs = Array.from({ length: 6_700 }, (_, i) => `10.${i >> 8}.${i & 255}.0/24`);
+    const { get, repository } = setup({
+      routeProfile: "ru_blacklist",
+      activeRule: feed(cidrs),
+    });
+    const service = createDefaultControlApiService({ repository, keyring });
+
+    const result = await service.getKeyConfig(employee, "key-1", "vpn", false, true)
+      .then(() => null, (error: unknown) => error);
+    expect(result).toMatchObject({ statusCode: 422, code: "KEY_CLIPBOARD_TOO_LONG" });
+    expect(repository.markKeyRuleVersion).not.toHaveBeenCalled();
+
+    expect(String((await get("vpn")).body).length).toBeGreaterThan(32_767);
+    expect(repository.markKeyRuleVersion).toHaveBeenCalledWith("key-1", "ver-1");
+  });
+
   it("still enforces policy and ownership before touching the artifact", async () => {
     const { assign, repository } = setup({ policy: { ...defaultPortalPolicy, allowConfigRedownload: false } });
     assign(bridgeA);

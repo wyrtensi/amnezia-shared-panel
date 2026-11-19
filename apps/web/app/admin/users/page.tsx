@@ -3211,7 +3211,6 @@ function CreateKeyDialog({
             nodeId={nodeId}
             protocol={protocol}
             bridges={bridges}
-            policyUseBridge={userUseBridge}
             bridgeMode={bridgeMode}
             routeId={bridgeRouteId}
             onChange={handleBridgeChange}

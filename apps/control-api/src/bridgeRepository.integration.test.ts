@@ -8,6 +8,8 @@ import {
   infrastructureItemSchema,
   nodeBridgeRoutesSchema,
   prepareBridgeRouteResultSchema,
+  type AdminNodeEndpoint,
+  type KeyBridgeInfo,
 } from "@amnezia/contracts";
 import {
   auditEvents,
@@ -1266,7 +1268,7 @@ describe("bridge registry (real PostgreSQL)", () => {
     const seedKey = async (
       nodeId: string,
       artifact: string | null,
-      options: { protocol?: "awg2" | "awg3"; state?: "active" | "revoked" } = {},
+      options: { protocol?: "awg2" | "awg3"; state?: "active" | "revoked"; endpointId?: string } = {},
     ): Promise<string> => {
       const secret = artifact === null ? null : encryptSecret(artifact, keyring, 1);
       const [row] = await db()
@@ -1274,6 +1276,7 @@ describe("bridge registry (real PostgreSQL)", () => {
         .values({
           ownerId: admin.id,
           nodeId,
+          endpointId: options.endpointId,
           nodeLabel: `bridge_${runTag}_${randomBytes(3).toString("hex")}`,
           protocol: options.protocol ?? "awg3",
           routeProfile: "full_tunnel",
@@ -1304,6 +1307,65 @@ describe("bridge registry (real PostgreSQL)", () => {
       await makeActivatable(bridge.id, route.id);
       return { bridge, route };
     };
+
+    runDatabaseTest("applies independent bridge modes to addresses on the same active node route", async () => {
+      const nodeId = await seedNode("per-address-route");
+      const [primary, secondary] = await db().insert(nodeVpnEndpoints).values([
+        { nodeId, ordinal: 1, name: "Primary", address: "192.0.2.20" },
+        { nodeId, ordinal: 2, name: "Secondary", address: "192.0.2.21" },
+      ]).returning();
+      if (!primary || !secondary) throw new Error("Failed to seed VPN addresses");
+      const legacy = await seedKey(nodeId, awg31Link());
+      const explicit = await seedKey(nodeId, awg31Link(), { endpointId: secondary.id });
+      const { bridge, route } = await prepared(nodeId, "Address bridge");
+      await activate(nodeId, route.id, 0);
+
+      await repository.updateNode(admin, nodeId, {
+        publicEndpoint: { action: "update", id: primary.id, bridgeMode: "bridge" },
+      });
+      await repository.updateNode(admin, nodeId, {
+        publicEndpoint: { action: "update", id: secondary.id, bridgeMode: "direct" },
+      });
+      expect(await endpointOf(legacy)).toBe(`${bridge.publicIpv4}:${route.publicUdpPort}`);
+      expect(await endpointOf(explicit)).toBe("192.0.2.21:443");
+      const adminKeys = await repository.adminList(admin, "keys") as {
+        id: string;
+        bridge: KeyBridgeInfo;
+      }[];
+      for (const keys of [await repository.listKeys(admin), adminKeys]) {
+        expect(keys.find((key) => key.id === legacy)?.bridge?.effective).toMatchObject({
+          routeId: route.id,
+          source: "endpoint",
+        });
+        expect(keys.find((key) => key.id === explicit)?.bridge?.effective).toBeNull();
+      }
+      const adminNodes = await repository.adminList(admin, "nodes") as {
+        id: string;
+        publicEndpoints: AdminNodeEndpoint[];
+      }[];
+      const adminAddresses = adminNodes.find((node) => node.id === nodeId)?.publicEndpoints ?? [];
+      expect(adminAddresses.map(({ id, bridgeMode }) => ({ id, bridgeMode }))).toEqual([
+        { id: primary.id, bridgeMode: "bridge" },
+        { id: secondary.id, bridgeMode: "direct" },
+      ]);
+      const userNodes = await repository.listNodes(admin) as {
+        id: string;
+        publicEndpoints?: { id: string }[];
+      }[];
+      const userAddresses = userNodes.find((node) => node.id === nodeId)?.publicEndpoints ?? [];
+      expect(userAddresses.map(({ id }) => id)).toEqual([primary.id, secondary.id]);
+      expect(userAddresses.every((address) => !Object.hasOwn(address, "bridgeMode"))).toBe(true);
+      const events = await db().select().from(auditEvents)
+        .where(and(eq(auditEvents.targetId, nodeId), eq(auditEvents.action, "node.endpoint_updated")));
+      expect(events.map((event) => event.metadata)).toEqual(expect.arrayContaining([
+        expect.objectContaining({ endpointId: primary.id, bridgeMode: "bridge" }),
+        expect.objectContaining({ endpointId: secondary.id, bridgeMode: "direct" }),
+      ]));
+      expect((await repository.getNodeBridgeRoutes(admin, nodeId)).activeRoute?.id).toBe(route.id);
+
+      await activate(nodeId, null, 1);
+      expect(await endpointOf(legacy)).toBe("vpn.example.test:443");
+    });
 
     runDatabaseTest("walks Direct, Bridge A, Bridge B, Direct for an existing key and a new key", async () => {
       const nodeId = await seedNode("delivery");

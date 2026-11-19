@@ -27,7 +27,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 import { configUrl } from "@/lib/api";
-import { keyDelivery } from "@/lib/key-delivery";
+import { copyVpnLink, keyDelivery } from "@/lib/key-delivery";
 import { cn } from "@/lib/utils";
 import { useT } from "@/lib/i18n/provider";
 import type { MessageKey } from "@/lib/i18n/messages";
@@ -206,14 +206,13 @@ export function ConfigDownloadDialog({
   me: Me | null;
 }) {
   const { t } = useT();
-  // Decided in one place for the card, this dialog and the wizard — see
-  // lib/key-delivery.ts. A file-only profile shows no link field, no Copy and
-  // no QR, so nothing here needs the link text at all.
   const delivery = keyDelivery(target?.routeProfile ?? "full_tunnel");
+  const showQr = delivery.qrUsable && me?.policy.allowQrDownload === true;
   const [vpnLink, setVpnLink] = React.useState<string | null>(null);
   const [loading, setLoading] = React.useState(false);
   const [failed, setFailed] = React.useState(false);
   const [copied, setCopied] = React.useState(false);
+  const [copying, setCopying] = React.useState(false);
   const [qrZoom, setQrZoom] = React.useState(QR_MAX_ZOOM);
   const [zoomed, setZoomed] = React.useState(false);
   const [qrFor, setQrFor] = React.useState<QrAudience>(QR_DEFAULT_AUDIENCE);
@@ -237,10 +236,7 @@ export function ConfigDownloadDialog({
     setFramesError(false);
     setFrameIndex(0);
     setFrameMode(QR_DEFAULT_FRAME_MODE);
-    // Nothing displays the link on a file-only profile, and the payload runs
-    // past a megabyte on the shipped feeds — fetching it to throw it away
-    // would be the most expensive thing this dialog does.
-    if (!delivery.linkUsable) {
+    if (delivery.clipboard !== "inline") {
       setLoading(false);
       return;
     }
@@ -260,7 +256,7 @@ export function ConfigDownloadDialog({
     return () => {
       active = false;
     };
-  }, [target, delivery.linkUsable]);
+  }, [target, delivery.clipboard]);
 
   // The frame series is fetched only when the user actually asks for an in-app
   // code, because it is several rendered SVGs. Both app tabs share one fetch —
@@ -269,13 +265,8 @@ export function ConfigDownloadDialog({
   // back to an app tab or pressing retry tries again. `frameAttempt` is in the
   // dependency list solely as the retry trigger.
   //
-  // `delivery.linkUsable` gates it as well, and not only to save the request:
-  // on a file-only profile no QR is rendered at all, but the default audience
-  // is still the in-app one, so opening the dialog fired a `qr-frames` fetch
-  // that the control-api answers 422 QR_TOO_LARGE to — after building the
-  // frames for a payload past a megabyte. Seen in production on v0.9.44.
   React.useEffect(() => {
-    if (!target || !delivery.linkUsable || !usesFrames(qrFor) || frames) {
+    if (!target || !showQr || !usesFrames(qrFor) || frames) {
       return;
     }
     let active = true;
@@ -295,7 +286,7 @@ export function ConfigDownloadDialog({
     return () => {
       active = false;
     };
-  }, [target, delivery.linkUsable, qrFor, frames, frameAttempt]);
+  }, [target, showQr, qrFor, frames, frameAttempt]);
 
   // Only the animated mode ticks. A single-frame series is a still picture in
   // either mode, so nothing animates and no mode switch is rendered for it.
@@ -417,14 +408,25 @@ export function ConfigDownloadDialog({
   ) : null;
 
   const copy = async () => {
-    if (!vpnLink) return;
+    if (!target || copying) return;
+    setCopying(true);
     try {
-      await navigator.clipboard.writeText(vpnLink);
+      if (delivery.clipboard === "on-demand") {
+        if (!(await copyVpnLink(configUrl(target.id, "vpn", target.revision)))) {
+          toast.error(t("config.copyTooLong"));
+          return;
+        }
+      } else {
+        if (!vpnLink) return;
+        await navigator.clipboard.writeText(vpnLink);
+      }
       setCopied(true);
       toast.success(t("config.keyCopied"));
       setTimeout(() => setCopied(false), 2500);
     } catch {
       toast.error(t("config.copyFailed"));
+    } finally {
+      setCopying(false);
     }
   };
 
@@ -438,7 +440,13 @@ export function ConfigDownloadDialog({
         <DialogHeader>
           <DialogTitle>{t("config.title", { label: target?.deviceLabel ?? "" })}</DialogTitle>
           <DialogDescription>
-            {t(delivery.linkUsable ? "config.desc" : "config.descFileOnly")}
+            {t(
+              delivery.clipboard === "inline"
+                ? "config.desc"
+                : delivery.clipboard === "on-demand"
+                  ? "config.descSplit"
+                  : "config.descFileOnly",
+            )}
           </DialogDescription>
         </DialogHeader>
 
@@ -460,26 +468,31 @@ export function ConfigDownloadDialog({
           </div>
         ) : failed ? (
           <p className="text-sm text-destructive">{t("config.loadFailed")}</p>
-        ) : vpnLink || !delivery.linkUsable ? (
+        ) : target && (vpnLink || delivery.clipboard !== "inline") ? (
           <div className="space-y-4">
-            {delivery.linkUsable && vpnLink ? (
+            {delivery.clipboard !== "unavailable" ? (
             <div className="space-y-1.5">
-              <Label>{t("config.connectionKey")}</Label>
+              {delivery.clipboard === "inline" && vpnLink ? <Label>{t("config.connectionKey")}</Label> : null}
               <div className="flex gap-2">
-                <Input
-                  readOnly
-                  value={vpnLink}
-                  className="font-mono text-xs"
-                  onClick={(event) =>
-                    (event.target as HTMLInputElement).select()
-                  }
-                />
+                {delivery.clipboard === "inline" && vpnLink ? (
+                  <Input
+                    readOnly
+                    value={vpnLink}
+                    className="font-mono text-xs"
+                    onClick={(event) =>
+                      (event.target as HTMLInputElement).select()
+                    }
+                  />
+                ) : null}
                 <Button
                   type="button"
-                  variant={copied ? "secondary" : "default"}
+                  variant={copied || delivery.clipboard === "on-demand" ? "secondary" : "default"}
+                  disabled={copying}
                   onClick={() => void copy()}
                 >
-                  {copied ? (
+                  {copying ? (
+                    t("keyCard.copying")
+                  ) : copied ? (
                     <>
                       <Check className="h-4 w-4" /> {t("config.done")}
                     </>
@@ -492,21 +505,10 @@ export function ConfigDownloadDialog({
               </div>
             </div>
             ) : (
-              // One box replaces both the key field and the QR, because both
-              // fail for the same reason and two boxes saying it read as two
-              // separate faults. Measured on the shipped feeds: ru_blacklist is
-              // a 1 787 465-character link, against a QR ceiling of ~2 900
-              // bytes at any error-correction level — and the clipboard
-              // hand-off truncates it as well, which is what put the key on
-              // this list beside the code. The file below is the whole route,
-              // so the copy points at it rather than only refusing.
               <div className="rounded-xl border border-dashed bg-muted/40 p-4 text-center">
                 <Download className="mx-auto mb-2 h-8 w-8 text-muted-foreground" />
                 <p className="text-sm font-medium">
                   {t("config.fileOnlyTitle")}
-                </p>
-                <p className="mt-1 text-xs text-muted-foreground">
-                  {t("config.fileOnlyWhy")}
                 </p>
                 <p className="mt-1 text-xs text-muted-foreground">
                   {t("config.fileOnlyBody")}
@@ -514,7 +516,7 @@ export function ConfigDownloadDialog({
               </div>
             )}
 
-            {me?.policy.allowQrDownload && delivery.linkUsable ? (
+            {showQr ? (
               <div className="space-y-2">
                 <div className="flex items-center justify-between gap-3">
                   <Label htmlFor="qr-zoom">{t("config.qr")}</Label>
@@ -704,10 +706,7 @@ export function ConfigDownloadDialog({
             {target ? (
               // The `.vpn` file is the same `vpn://` payload shown above as
               // text and as a QR code on a full-tunnel key, so it needs no
-              // extra policy gate beyond reaching this dialog at all. On a
-              // file-only profile it is not merely the leading route, it is
-              // the only one. It leads because it is the only shape that
-              // survives import:
+              // extra policy gate beyond reaching this dialog at all.
               // AmneziaVPN's client sniffs a file's content, not its
               // extension, so `.vpn` imports through the same "File with
               // connection settings" flow and keeps the connection name the

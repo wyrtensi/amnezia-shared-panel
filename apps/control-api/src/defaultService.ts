@@ -4,6 +4,7 @@ import type { PortalPolicy } from "@amnezia/contracts";
 import {
   composeKeyDisplayName,
   CONFIG_REFRESH_UNAVAILABLE,
+  VPN_CLIPBOARD_MAX_CHARS,
 } from "@amnezia/contracts";
 import {
   awgClientProfileV1Schema,
@@ -228,6 +229,7 @@ export const createDefaultControlApiService = ({
     keyId,
     format,
     adminConfirmed,
+    clipboard,
   ): Promise<ConfigResult> => {
     const key = await repository.findKeyConfig(keyId);
     if (!key || (actor.role !== "admin" && key.ownerId !== actor.id)) {
@@ -263,6 +265,13 @@ export const createDefaultControlApiService = ({
       delivery.mode === "bridge" ? delivery.endpoint : selectDirectAddress(savedLink, key.directAddress),
       format,
     );
+    if (clipboard && vpnLink.length > VPN_CLIPBOARD_MAX_CHARS) {
+      throw new ApiError(
+        422,
+        "This key is too long to paste. Download the .vpn file instead.",
+        "KEY_CLIPBOARD_TOO_LONG",
+      );
+    }
     // Only the OWNER downloading their own config marks the rules as applied.
     // An admin peeking at someone's private config must not clear the owner's
     // "rules outdated" indicator (they didn't reinstall anything).

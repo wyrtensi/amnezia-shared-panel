@@ -2185,12 +2185,13 @@ async function cmdNodeUpdate(args: string[]): Promise<void> {
   const endpointName = flagOf(args, "endpoint-name");
   const endpointEnabled = flagOf(args, "endpoint-enabled");
   const endpointReachability = flagOf(args, "endpoint-reachability");
+  const endpointBridgeMode = flagOf(args, "endpoint-bridge-mode");
   if (endpointIp !== undefined && endpointId !== undefined) {
     throw new Error("Choose --endpoint-ip to add an address or --endpoint-id to edit one");
   }
   if (endpointIp !== undefined) {
-    if (endpointEnabled !== undefined || endpointReachability !== undefined) {
-      throw new Error("--endpoint-enabled and --endpoint-reachability need --endpoint-id");
+    if (endpointEnabled !== undefined || endpointReachability !== undefined || endpointBridgeMode !== undefined) {
+      throw new Error("--endpoint-enabled, --endpoint-reachability and --endpoint-bridge-mode need --endpoint-id");
     }
     body.publicEndpoint = { action: "add", address: endpointIp, name: endpointName };
   } else if (endpointId !== undefined) {
@@ -2203,11 +2204,15 @@ async function cmdNodeUpdate(args: string[]): Promise<void> {
         endpointReachability === undefined
           ? undefined
           : parseBoolFlag("endpoint-reachability", endpointReachability),
+      bridgeMode: endpointBridgeMode === undefined
+        ? undefined
+        : parseEnumFlag("endpoint-bridge-mode", endpointBridgeMode, ["inherit", "direct", "bridge"]),
     };
   } else if (
     endpointName !== undefined ||
     endpointEnabled !== undefined ||
-    endpointReachability !== undefined
+    endpointReachability !== undefined ||
+    endpointBridgeMode !== undefined
   ) {
     throw new Error("Address settings require --endpoint-id or --endpoint-ip");
   }
@@ -2512,7 +2517,7 @@ async function cmdUserRoutes(args: string[]): Promise<void> {
 async function cmdUserCreateKey(args: string[]): Promise<void> {
   const pos = positionals(args);
   const usage =
-    `Usage: user-create-key <id|email> --node=<uuid> [--device=<label>] [--protocol=awg3|awg2] [--route=full_tunnel|ru_blacklist] [--bridge=inherit|direct|route] [--bridge-route=<route-uuid>] [${deviceTypeUsage()}] [--name-server=true|false] [--name-label=true|false] [--name-number=true|false]\n  --device-type=ios with a --route other than full_tunnel is warned about: route profiles do not filter on iPhone or iPad.\n  A --route other than full_tunnel produces a file-only key: its vpn:// text is too long for a QR code or a clipboard paste, so hand it over with key-config --format=vpn --save.`;
+    `Usage: user-create-key <id|email> --node=<uuid> [--device=<label>] [--protocol=awg3|awg2] [--route=full_tunnel|ru_blacklist] [--bridge=inherit|direct|route] [--bridge-route=<route-uuid>] [${deviceTypeUsage()}] [--name-server=true|false] [--name-label=true|false] [--name-number=true|false]\n  --device-type=ios with a --route other than full_tunnel is warned about: route profiles do not filter on iPhone or iPad.\n  The panel shows no QR code for ru_blacklist (Outside Runet). Use key-config --format=vpn --save to export a file.`;
   const id = await resolveUserId(pos[0], usage);
   const nodeId = flagOf(args, "node");
   if (!nodeId) throw new Error(usage);
@@ -3248,7 +3253,8 @@ Nodes:
   node-update <id> --clear-public-ip      Forget the resolved public IP so the
                                           worker looks it up again next tick
   node-update <id> --endpoint-ip=<ipv4> [--endpoint-name=<name>]
-  node-update <id> --endpoint-id=<uuid> [--endpoint-name=<name>] [--endpoint-enabled=true|false] [--endpoint-reachability=true|false]
+  node-update <id> --endpoint-id=<uuid> [--endpoint-name=<name>] [--endpoint-enabled=true|false]
+            [--endpoint-reachability=true|false] [--endpoint-bridge-mode=inherit|direct|bridge]
   node-remove <id>                        Delete a node (refused while it has keys)
   node-remove <id> --with-keys            Delete a node AND every key ever issued
              --confirm=<node name>        on it. Irreversible; the name must match

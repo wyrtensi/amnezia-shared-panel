@@ -92,7 +92,7 @@ const ru = {
 
   // Route profiles (shared)
   "route.full_tunnel": "Весь трафик",
-  "route.ru_blacklist": "Только заблокированные",
+  "route.ru_blacklist": "В обход Рунета",
 
   // Protocols (shared)
   "protocol.awg2": "AWG 2.0",
@@ -167,7 +167,7 @@ const ru = {
   "routes.staleDomainsClear": "Убрать из списка",
   "routes.removeAria": "Удалить {value}",
   "routes.bl.desc":
-    "Только заблокированные: через VPN идут лишь заблокированные сайты. Добавленные адреса тоже пойдут через VPN.",
+    "В профиле «В обход Рунета» через VPN идут зарубежные сайты и сервисы из списка. Добавленные адреса тоже пойдут через VPN.",
   "emp.keyCreated": "Ключ создан",
   "emp.rotateConfirm":
     "Перевыпустить ключ с актуальными правилами? Старый конфиг перестанет работать — на устройстве нужно будет вставить новый ключ.",
@@ -199,15 +199,9 @@ const ru = {
 
   // Key card
   "keyCard.rulesUpdatedTitle": "Правила маршрутизации обновились",
-  "keyCard.redownload": "Скачать заново",
-  // {profile} is the key's own route profile. Nothing has broken — the key
-  // keeps working on the rules it was issued with — so the download is
-  // offered, not demanded. The config is assembled at download time, so a
-  // fresh download is the whole fix; a reissue is not needed and would kill
-  // the config on every other device. Replacing the old connection matters:
-  // left in place, it keeps routing by the old rules.
+  "keyCard.redownload": "Получить обновлённый ключ",
   "keyCard.rulesUpdatedBody":
-    "Этот ключ работает по профилю «{profile}» — для него появились новые правила. Чтобы они заработали, скачайте ключ заново и замените им старое подключение в приложении. Перевыпускать ключ не нужно.",
+    "Для профиля «{profile}» появились новые правила. Скопируйте обновлённый ключ или скачайте файл .vpn и замените старое подключение в приложении.",
   "keyCard.created": "Создан: ",
   "keyCard.lastSeen": "Активность",
   "keyCard.traffic": "Трафик: ",
@@ -245,11 +239,9 @@ const ru = {
   "keyCard.copyFail": "Не вышло",
   "keyCard.copyToast": "Ключ скопирован — вставьте его в AmneziaVPN",
   "keyCard.copyErrToast": "Не удалось скопировать ключ",
-  // Stands where QR and Copy would be on a file-only profile: the row must say
-  // why two buttons are missing, not just quietly lose them.
   "keyCard.fileOnly": "Только файлом",
   "keyCard.fileOnlyWhy":
-    "Ключ этого профиля слишком длинный: в QR-код он не помещается, а при копировании обрезается. Скачайте .vpn и откройте файл в клиенте.",
+    "Скачайте .vpn и откройте файл в AmneziaVPN.",
 
   // Create-key wizard
   "wizard.proto.awg3.label": "AmneziaWG 3.1",
@@ -258,9 +250,9 @@ const ru = {
   "wizard.proto.awg2.desc": "Совместимость со старыми клиентами",
   "wizard.route.full_tunnel.desc": "Всё соединение идёт через VPN",
   "wizard.route.easySetup": "Лёгкая настройка",
-  "wizard.route.hardSetup": "Сложная настройка",
+  "wizard.route.noQr": "Отсутствует QR-код",
   "wizard.route.ru_blacklist.desc":
-    "Через VPN идут лишь сайты из списка. Нужного вам сайта в нём может не оказаться — тогда он не откроется. Ключ передаётся только файлом: скопировать его или снять QR-кодом не получится — см. инструкцию.",
+    "Через VPN идут только зарубежные сайты и сервисы. Ключ необходимо периодически обновлять и вставлять заново, чтобы список зарубежных источников оставался свежим.",
   "wizard.recommended": "Рекомендуется",
   "wizard.awg3Hint": "Требуется AmneziaVPN {version}+",
   "wizard.rulesNotActive": "Правила ещё не активированы",
@@ -325,9 +317,9 @@ const ru = {
   "keyHelp.routingBody":
     "Самый надёжный вариант. Если у вас что-то не работает — выбирайте его.",
   "keyHelp.profilesIntro":
-    "Остальной профиль сделан для удобства и менее надёжен, чем «Весь трафик». Читайте внимательно:",
+    "В профиле «В обход Рунета» список адресов хранится в ключе.",
   "keyHelp.blacklistBody":
-    "Профиль со списком определённых сайтов. Список большой, но в нём могут быть не все нужные вам заблокированные ресурсы, и они не откроются через VPN. Настройка сложнее: список целиком лежит внутри ключа, поэтому ни QR-кода, ни копирования здесь нет — ключ забирается только файлом .vpn и открывается в клиенте.",
+    "Через VPN идут только зарубежные сайты и сервисы из списка. Периодически обновляйте ключ и заново добавляйте его в AmneziaVPN, чтобы получить свежий список. Скопируйте ключ и вставьте его в приложение или откройте скачанный файл .vpn. QR-кода для этого профиля нет.",
   "keyHelp.troubleTitle": "Если есть проблемы в работе",
   "keyHelp.troubleBody":
     "Смените сервер или переключите маршрутизацию на «Весь трафик». Если у вас мобильный интернет, переход на Wi-Fi часто решает проблемы с доступом.",
@@ -385,14 +377,15 @@ const ru = {
   // Config download dialog
   "config.keyCopied": "Ключ скопирован",
   "config.copyFailed": "Не удалось скопировать",
+  "config.copyTooLong": "Ключ слишком длинный для вставки в AmneziaVPN. Скачайте файл .vpn и откройте его в приложении.",
   "config.title": "Ключ: {label}",
   "config.refreshedHint":
     "Это обновлённый конфиг. Импортируйте его и удалите прежнее подключение в приложении — до замены оно продолжает работать.",
   "config.refreshedImportHint":
-    "Сервер и адрес входа записываются в файл при импорте. Ранее импортированные файлы продолжают использовать прежний адрес и не изменятся сами: чтобы заменить их, импортируйте этот файл.",
+    "Ранее импортированное подключение продолжает использовать прежний адрес. Импортируйте обновлённый ключ, чтобы заменить его.",
   "config.desc":
     "Вставьте ссылку в AmneziaVPN («Подключиться по ссылке») или отсканируйте QR-код камерой телефона.",
-  // A file-only profile has neither the link nor the QR the line above names.
+  "config.descSplit": "Скопируйте ключ и вставьте его в AmneziaVPN («Подключиться по ссылке») или скачайте файл .vpn и откройте его в приложении.",
   "config.descFileOnly": "Скачайте файл и откройте его в AmneziaVPN.",
   "config.loadFailed": "Не удалось загрузить ключ.",
   "config.connectionKey": "Ключ подключения (vpn://)",
@@ -440,10 +433,8 @@ const ru = {
   "config.qrFramesFailed": "Не удалось загрузить код для приложения",
   "config.qrFramesRetry": "Попробовать снова",
   "config.fileOnlyTitle": "Этот профиль работает только через файл",
-  "config.fileOnlyWhy":
-    "В этом профиле тысячи маршрутов, и ключ занимает от 60 тысяч символов. В QR-код помещается около 2900, а при копировании такой ключ обрезается — клиент принимает обрезок и молча не подключается.",
   "config.fileOnlyBody":
-    "Скачайте файл ниже и откройте его в клиенте (Добавить → Из файла). Работа ключа на таких профилях не гарантируется.",
+    "Откройте файл в AmneziaVPN (Добавить → Из файла).",
   "config.otherFormat": "Другой формат файла",
   "config.fileShapesHint":
     "Файл .conf нужен для awg-quick на Linux и роутеров с AmneziaWG. В приложении он тоже откроется, но подключение всё равно будет называться «Server 1».",
@@ -549,7 +540,7 @@ const ru = {
   "install.fileBody":
     "Кнопка «.vpn» сохраняет ключ файлом. Откройте его в приложении — подключение появится со своим названием.",
   "install.fileSplitBest":
-    "Удобно для длинных ключей профиля «Только заблокированные»: файл достаточно открыть один раз.",
+    "Если ключ профиля «В обход Рунета» слишком длинный для вставки, скачайте и откройте файл .vpn.",
   "install.fileHow":
     "Обычный WireGuard этот файл не откроет — нужен AmneziaVPN.",
   "install.fileConfFallback":
@@ -882,7 +873,7 @@ const ru = {
   "users.keyForDesc": "Протокол выбирается автоматически: {protocol}",
   "users.nodeDisabledSuffix": " (выключена)",
   "users.routeHintAdmin":
-    "Профиль вшивается в ключ. Для «заблокированных» нужны активные списки маршрутизации.",
+    "Профиль вшивается в ключ. Для профиля «В обход Рунета» нужен активный список маршрутов.",
   "users.keyCreatedHint":
     "Ключ создаётся на сервере — устройство подключится сразу после импорта конфигурации.",
   "users.accessDomainsTitle": "Домены Cloudflare Access",
@@ -1210,9 +1201,9 @@ const ru = {
   "gpolicy.allowNodeSelectionHint":
     "Пользователь может выбирать, на каком сервере (ноде) создать ключ.",
   "gpolicy.useBridgeHint":
-    "Если включено, пользователи получают конфиги через активный мост выбранной ноды. По умолчанию выключено — можно включить глобально или точечно в политиках пользователя.",
+    "Задаёт маршрут по умолчанию для адресов, которые следуют политике. Если включено, конфиги используют активный мост выбранной ноды.",
   "gpolicy.allowRouteProfileSelectionHint":
-    "Пользователь может выбирать профиль маршрутизации: весь трафик или только заблокированные сайты.",
+    "Пользователь может выбирать между профилями «Весь трафик» и «В обход Рунета».",
   "gpolicy.allowCustomRoutesHint":
     "Пользователь может добавлять свои домены и IP в список профиля.",
   "gpolicy.allowConfigRedownloadHint":
@@ -1940,7 +1931,13 @@ const ru = {
   "bridge.err.CONFIRMATION_REQUIRED":
     "Нужно подтверждение.",
   "bridge.serverListHint":
-    "Выберите мост напротив сервера, чтобы быстро переключить маршрут, или откройте настройки для проверки и установки.",
+    "Настройте мост для ноды, затем выберите, какие IP будут использовать его при выдаче конфигов.",
+  "bridge.addressMode": "Маршрут IP-адреса",
+  "bridge.addressInherit": "По политике",
+  "bridge.addressDirect": "Напрямую",
+  "bridge.addressViaBridge": "Через мост",
+  "bridge.addressNoActiveRoute": "У ноды нет активного моста. Сейчас используется прямое подключение.",
+  "bridge.addressModeSaved": "Маршрут IP-адреса сохранён.",
   "bridge.noNodes": "VPN-серверы пока не добавлены.",
   "bridge.expandDetails": "Настройка маршрута",
   "bridge.collapseDetails": "Скрыть настройку",
@@ -1955,14 +1952,13 @@ const ru = {
   "keyBridge.badgeDirectPinned": "Напрямую",
   "keyBridge.badgeUserEnabled": "Мост",
   "keyBridge.tipKey": "Через мост {name} ({entry}) · закреплено за ключом",
-  "keyBridge.tipPolicy": "Через мост {name} ({entry}) · по политике пользователя",
+  "keyBridge.tipPolicy": "Через мост {name} ({entry}) · по настройкам маршрутизации",
   "keyBridge.tipDirectPinned":
     "Закреплено напрямую (в обход политики моста пользователя)",
   "keyBridge.label": "Маршрут через мост",
   "keyBridge.hint":
     "Только для администраторов. Позволяет явно отправить ключ через конкретный мост или напрямую, независимо от политики пользователя.",
-  "keyBridge.inheritDirect": "По политике (сейчас: Напрямую)",
-  "keyBridge.inheritBridge": "По политике (сейчас: {name})",
+  "keyBridge.inherit": "По настройкам маршрутизации",
   "keyBridge.direct": "Напрямую (без моста)",
   "keyBridge.route": "Через мост",
   "keyBridge.selectBridge": "Мост",
@@ -2056,7 +2052,7 @@ const en = {
 
   // Route profiles (shared)
   "route.full_tunnel": "All traffic",
-  "route.ru_blacklist": "Blocked only",
+  "route.ru_blacklist": "Outside Runet",
 
   // Protocols (shared)
   "protocol.awg2": "AWG 2.0",
@@ -2129,7 +2125,7 @@ const en = {
   "routes.staleDomainsClear": "Remove from the list",
   "routes.removeAria": "Remove {value}",
   "routes.bl.desc":
-    "Blocked only: only blocked sites go through the VPN. The addresses you add also go through the VPN.",
+    "With Outside Runet, foreign sites and services on the list go through the VPN. The addresses you add also go through the VPN.",
   "emp.keyCreated": "Key created",
   "emp.rotateConfirm":
     "Reissue the key with the current rules? The old config will stop working — you will need to paste the new key on the device.",
@@ -2159,9 +2155,9 @@ const en = {
 
   // Key card
   "keyCard.rulesUpdatedTitle": "Routing rules have changed",
-  "keyCard.redownload": "Download again",
+  "keyCard.redownload": "Get updated key",
   "keyCard.rulesUpdatedBody":
-    "This key uses the “{profile}” profile, and there are new rules for it. To use them, download the key again and replace the old connection in the app with it. There is no need to reissue the key.",
+    "New rules are available for the “{profile}” profile. Copy the updated key or download the .vpn file and replace the old connection in the app.",
   "keyCard.created": "Created: ",
   "keyCard.lastSeen": "Last seen",
   "keyCard.traffic": "Traffic: ",
@@ -2196,7 +2192,7 @@ const en = {
   "keyCard.copyErrToast": "Failed to copy the key",
   "keyCard.fileOnly": "File only",
   "keyCard.fileOnlyWhy":
-    "This profile's key is too long: it does not fit a QR code, and copying truncates it. Download the .vpn file and open it in your client.",
+    "Download the .vpn file and open it in AmneziaVPN.",
 
   // Create-key wizard
   "wizard.proto.awg3.label": "AmneziaWG 3.1",
@@ -2205,9 +2201,9 @@ const en = {
   "wizard.proto.awg2.desc": "Compatibility with older clients",
   "wizard.route.full_tunnel.desc": "All traffic goes through the VPN",
   "wizard.route.easySetup": "Easy setup",
-  "wizard.route.hardSetup": "Involved setup",
+  "wizard.route.noQr": "No QR code",
   "wizard.route.ru_blacklist.desc":
-    "Only sites on the list go through the VPN. The site you need may not be on it — and then it will not open. The key is handed over as a file only: copying it or scanning a QR code will not work — see the guide.",
+    "Only foreign sites and services go through the VPN. Refresh and paste the key again periodically to keep the list of foreign destinations up to date.",
   "wizard.recommended": "Recommended",
   "wizard.awg3Hint": "Requires AmneziaVPN {version}+",
   "wizard.rulesNotActive": "Rules not activated yet",
@@ -2271,9 +2267,9 @@ const en = {
   "keyHelp.routingBody":
     "The dependable one. If something is not working for you, pick this.",
   "keyHelp.profilesIntro":
-    "The other profile exists for convenience and is less dependable than “All traffic”. Read it carefully:",
+    "The Outside Runet profile stores its address list in the key.",
   "keyHelp.blacklistBody":
-    "A profile with a list of certain sites. The list is large, but it may not hold every blocked resource you need, and those will not open through the VPN. Setup is more involved: the whole list sits inside the key, so there is no QR code and no copying here — the key is taken as a .vpn file and opened in the client.",
+    "Only foreign sites and services on the list go through the VPN. Periodically refresh the key and add it again in AmneziaVPN to get the latest list. Copy and paste the key into the app or open the downloaded .vpn file. This profile has no QR code.",
   "keyHelp.troubleTitle": "If something is not working",
   "keyHelp.troubleBody":
     "Change the server, or switch the routing to “All traffic”. If you are on mobile data, moving to Wi-Fi often fixes access problems.",
@@ -2321,13 +2317,15 @@ const en = {
   // Config download dialog
   "config.keyCopied": "Key copied",
   "config.copyFailed": "Failed to copy",
+  "config.copyTooLong": "This key is too long to paste into AmneziaVPN. Download the .vpn file and open it in the app.",
   "config.title": "Key: {label}",
   "config.refreshedHint":
     "This is the refreshed config. Import it and remove the previous connection in the app; until then the old one keeps working.",
   "config.refreshedImportHint":
-    "The server address is stored in the file when you import it. Files you imported earlier keep their old endpoint and do not change by themselves; import this file to replace them.",
+    "Your previous connection keeps using its old endpoint. Import the refreshed key to replace it.",
   "config.desc":
     "Paste the link into AmneziaVPN (“Connect by link”) or scan the QR code with your phone camera.",
+  "config.descSplit": "Copy the key and paste it into AmneziaVPN (“Connect by link”), or download the .vpn file and open it in the app.",
   "config.descFileOnly": "Download the file and open it in AmneziaVPN.",
   "config.loadFailed": "Failed to load the key.",
   "config.connectionKey": "Connection key (vpn://)",
@@ -2375,10 +2373,8 @@ const en = {
   "config.qrFramesFailed": "Could not load the code for the app",
   "config.qrFramesRetry": "Try again",
   "config.fileOnlyTitle": "This profile works through a file only",
-  "config.fileOnlyWhy":
-    "This profile carries thousands of routes and the key runs to 60 000 characters and more. A QR code holds about 2 900, and copying a key that long truncates it — the client takes the fragment and silently fails to connect.",
   "config.fileOnlyBody":
-    "Download the file below and open it in your client (Add → From file). Key operation on such profiles is not guaranteed.",
+    "Open the file in AmneziaVPN (Add → From file).",
   "config.otherFormat": "Another file format",
   "config.fileShapesHint":
     "The .conf file is for awg-quick on Linux and AmneziaWG router firmware. The app opens it too, but the connection still arrives called \"Server 1\".",
@@ -2472,7 +2468,7 @@ const en = {
   "install.fileBody":
     "The “.vpn” button saves the key as a file. Open it in the app — the connection arrives under its own name.",
   "install.fileSplitBest":
-    "Handy for the long keys from the “Blocked only” profile: the file only has to be opened once.",
+    "If an Outside Runet key is too long to paste, download and open its .vpn file.",
   "install.fileHow":
     "The plain WireGuard app will not open this file — it has to be AmneziaVPN.",
   "install.fileConfFallback":
@@ -2786,7 +2782,7 @@ const en = {
   "users.keyForDesc": "Protocol is selected automatically: {protocol}",
   "users.nodeDisabledSuffix": " (disabled)",
   "users.routeHintAdmin":
-    "The profile is embedded in the key. “Blocked” requires active routing lists.",
+    "The profile is embedded in the key. Outside Runet requires an active route list.",
   "users.keyCreatedHint":
     "The key is created on the server — the device connects right after importing the configuration.",
   "users.accessDomainsTitle": "Cloudflare Access domains",
@@ -3108,9 +3104,9 @@ const en = {
   "gpolicy.allowNodeSelectionHint":
     "The user can choose which server (node) a key is created on.",
   "gpolicy.useBridgeHint":
-    "When enabled, users receive configs routed through the node's active bridge. Off by default — enable globally or per user in User Policies.",
+    "Sets the default for addresses that follow policy. When enabled, configs use the selected node's active bridge.",
   "gpolicy.allowRouteProfileSelectionHint":
-    "The user can choose a routing profile: all traffic, or blocked-sites-only.",
+    "The user can choose between the All traffic and Outside Runet profiles.",
   "gpolicy.allowCustomRoutesHint":
     "The user can add their own domains and IPs to their profile's list.",
   "gpolicy.allowConfigRedownloadHint":
@@ -3829,7 +3825,13 @@ const en = {
   "bridge.err.CONFIRMATION_REQUIRED":
     "Confirmation is required.",
   "bridge.serverListHint":
-    "Pick a bridge next to any server to switch or prepare its route, or expand the row to verify and manage setup.",
+    "Configure the bridge for the node, then choose which IP addresses use it in exported configs.",
+  "bridge.addressMode": "IP address routing",
+  "bridge.addressInherit": "Follow policy",
+  "bridge.addressDirect": "Direct",
+  "bridge.addressViaBridge": "Via bridge",
+  "bridge.addressNoActiveRoute": "The node has no active bridge. Configs currently use a direct connection.",
+  "bridge.addressModeSaved": "IP address routing saved.",
   "bridge.noNodes": "No VPN servers have been added yet.",
   "bridge.expandDetails": "Configure route",
   "bridge.collapseDetails": "Hide details",
@@ -3844,14 +3846,13 @@ const en = {
   "keyBridge.badgeDirectPinned": "Direct",
   "keyBridge.badgeUserEnabled": "Bridge",
   "keyBridge.tipKey": "Via bridge {name} ({entry}) · pinned to key",
-  "keyBridge.tipPolicy": "Via bridge {name} ({entry}) · via user policy",
+  "keyBridge.tipPolicy": "Via bridge {name} ({entry}) · follows routing settings",
   "keyBridge.tipDirectPinned":
     "Pinned to Direct (overrides user bridge policy)",
   "keyBridge.label": "Bridge routing",
   "keyBridge.hint":
     "Admins only. Route this key through a specific bridge or force Direct regardless of the user's policy.",
-  "keyBridge.inheritDirect": "Follow policy (currently: Direct)",
-  "keyBridge.inheritBridge": "Follow policy (currently: {name})",
+  "keyBridge.inherit": "Follow routing settings",
   "keyBridge.direct": "Direct (no bridge)",
   "keyBridge.route": "Via bridge",
   "keyBridge.selectBridge": "Bridge",

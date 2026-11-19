@@ -1,40 +1,93 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { messages } from "./i18n/messages";
-import { keyDelivery } from "./key-delivery";
+import { copyVpnLink, keyDelivery } from "./key-delivery";
 
 describe("keyDelivery", () => {
-  it("hands the full tunnel over as a link", () => {
+  it("keeps the link field and QR for the full tunnel", () => {
     expect(keyDelivery("full_tunnel")).toEqual({
-      linkUsable: true,
-      reasonKey: null,
+      clipboard: "inline",
+      qrUsable: true,
     });
   });
 
-  it("makes the blocked-only profile a file-only key", () => {
+  it("allows on-demand copying without QR for the split profile", () => {
     expect(keyDelivery("ru_blacklist")).toEqual({
-      linkUsable: false,
-      reasonKey: "config.fileOnlyWhy",
+      clipboard: "on-demand",
+      qrUsable: false,
     });
   });
 
-  // A profile this build has never heard of still carries a rule feed — that
-  // is the only reason a profile other than the full tunnel exists — so the
-  // safe default is the file, not a link that silently arrives truncated.
   it("treats an unknown profile as file-only", () => {
-    expect(keyDelivery("something_new").linkUsable).toBe(false);
+    expect(keyDelivery("something_new")).toEqual({
+      clipboard: "unavailable",
+      qrUsable: false,
+    });
+  });
+});
+
+describe("copyVpnLink", () => {
+  afterEach(() => vi.unstubAllGlobals());
+  const href = "/test-config?format=vpn";
+
+  it.each([14_022, 32_767])("copies the complete %i-character split key", async (length) => {
+    const link = `vpn://${"x".repeat(length - 6)}`;
+    const writeText = vi.fn<(text: string) => Promise<void>>().mockResolvedValue(undefined);
+    vi.stubGlobal("navigator", { clipboard: { writeText } });
+    const fetchConfig = vi.fn().mockResolvedValue(new Response(`${link}\n`));
+    vi.stubGlobal("fetch", fetchConfig);
+
+    await expect(copyVpnLink(href)).resolves.toBe(true);
+    expect(fetchConfig).toHaveBeenCalledExactlyOnceWith(`${href}&clipboard=true`);
+    expect(writeText).toHaveBeenCalledExactlyOnceWith(link);
   });
 
-  it("only ever returns reason keys that exist in both languages", () => {
-    const keys = new Set<string>();
-    for (const profile of ["full_tunnel", "ru_blacklist", "something_new"]) {
-      const { reasonKey } = keyDelivery(profile);
-      if (reasonKey) keys.add(reasonKey);
+  it("leaves the clipboard untouched when a split key would be truncated", async () => {
+    const writeText = vi.fn<(text: string) => Promise<void>>().mockResolvedValue(undefined);
+    vi.stubGlobal("navigator", { clipboard: { writeText } });
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(`vpn://${"x".repeat(32_762)}`)));
+
+    await expect(copyVpnLink(href)).resolves.toBe(false);
+    expect(writeText).not.toHaveBeenCalled();
+  });
+
+  it("recognizes the API clipboard limit without writing to the clipboard", async () => {
+    const writeText = vi.fn<(text: string) => Promise<void>>().mockResolvedValue(undefined);
+    vi.stubGlobal("navigator", { clipboard: { writeText } });
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({
+      error: "KEY_CLIPBOARD_TOO_LONG",
+      message: "Download the .vpn file",
+    }, { status: 422 })));
+
+    await expect(copyVpnLink(href)).resolves.toBe(false);
+    expect(writeText).not.toHaveBeenCalled();
+  });
+
+  it("surfaces an export error without writing credentials", async () => {
+    const writeText = vi.fn<(text: string) => Promise<void>>().mockResolvedValue(undefined);
+    vi.stubGlobal("navigator", { clipboard: { writeText } });
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(null, { status: 403 })));
+
+    await expect(copyVpnLink(href)).rejects.toThrow();
+    expect(writeText).not.toHaveBeenCalled();
+  });
+
+  it("starts the clipboard write during the click while the link is still loading", async () => {
+    const link = "vpn://synthetic";
+    let respond!: (response: Response) => void;
+    vi.stubGlobal("fetch", () => new Promise<Response>((resolve) => { respond = resolve; }));
+    class TestClipboardItem {
+      constructor(readonly data: { "text/plain": Promise<Blob> }) {}
     }
-    expect(keys.size).toBeGreaterThan(0);
-    for (const key of keys) {
-      expect(messages.ru, key).toHaveProperty(key);
-      expect(messages.en, key).toHaveProperty(key);
-    }
+    vi.stubGlobal("ClipboardItem", TestClipboardItem);
+    const write = vi.fn(async ([item]: [TestClipboardItem]) => {
+      const blob = await item.data["text/plain"];
+      expect(await blob.text()).toBe(link);
+    });
+    vi.stubGlobal("navigator", { clipboard: { write } });
+
+    const copying = copyVpnLink(href);
+    expect(write).toHaveBeenCalledTimes(1);
+    respond(new Response(link));
+    await expect(copying).resolves.toBe(true);
   });
 });

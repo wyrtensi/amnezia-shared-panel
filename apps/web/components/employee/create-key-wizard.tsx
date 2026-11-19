@@ -285,17 +285,11 @@ export function CreateKeyWizard({
       value: profile,
       label: t(`route.${profile}`),
       description: t(`wizard.route.${profile}.desc`),
-      // The badge names the cost of choosing, not the maturity of the code.
-      // "In testing" told the reader nothing they could act on; what actually
-      // separates the two is the work waiting on the other side — the full
-      // tunnel is a link or a QR and it connects, while a feed-based profile
-      // hands over a file the user has to import by hand (see
-      // lib/key-delivery.ts) and then read the guide for.
       badge:
         profile === "full_tunnel" ? (
           <Badge variant="success">{t("wizard.route.easySetup")}</Badge>
         ) : (
-          <Badge variant="warning">{t("wizard.route.hardSetup")}</Badge>
+          <Badge variant="warning">{t("wizard.route.noQr")}</Badge>
         ),
       disabled,
       // OptionCards renders this as the native title on hover AND as visible
@@ -535,7 +529,6 @@ export function CreateKeyWizard({
               nodeId={selectedNode?.id ?? ""}
               protocol={protocol}
               bridges={bridges}
-              policyUseBridge={Boolean(me.policy.useBridge)}
               bridgeMode={bridgeMode}
               routeId={bridgeRouteId}
               onChange={handleBridgeChange}

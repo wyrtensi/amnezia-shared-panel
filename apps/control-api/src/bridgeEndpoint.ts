@@ -1,4 +1,4 @@
-import type { KeyBridgeInfo, KeyBridgeMode } from "@amnezia/contracts";
+import type { EndpointBridgeMode, KeyBridgeInfo, KeyBridgeMode } from "@amnezia/contracts";
 import {
   AwgEndpointRenderError,
   inspectAwgVpnLink,
@@ -28,6 +28,7 @@ export const resolveKeyBridgeInfo = ({
   pinnedRoute,
   activeRoute,
   useBridge,
+  endpointBridgeMode = "inherit",
 }: {
   protocol: "awg2" | "awg3";
   bridgeMode: KeyBridgeMode;
@@ -35,6 +36,7 @@ export const resolveKeyBridgeInfo = ({
   pinnedRoute: KeyBridgeRouteRecord | null;
   activeRoute: KeyBridgeRouteRecord | null;
   useBridge: boolean;
+  endpointBridgeMode?: EndpointBridgeMode;
 }): KeyBridgeInfo => {
   const mode: KeyBridgeMode = bridgeMode;
   const routeId = mode === "route" ? pinnedRouteId : null;
@@ -48,10 +50,13 @@ export const resolveKeyBridgeInfo = ({
       effective: pinnedRoute ? { ...pinnedRoute, source: "key" } : null,
     };
   }
+  const useActiveRoute = endpointBridgeMode === "inherit" ? useBridge : endpointBridgeMode === "bridge";
   return {
     mode,
     routeId,
-    effective: useBridge && activeRoute ? { ...activeRoute, source: "policy" } : null,
+    effective: useActiveRoute && activeRoute
+      ? { ...activeRoute, source: endpointBridgeMode === "bridge" ? "endpoint" : "policy" }
+      : null,
   };
 };
 

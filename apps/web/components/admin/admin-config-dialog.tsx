@@ -21,7 +21,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { configUrl } from "@/lib/api";
-import { keyDelivery } from "@/lib/key-delivery";
+import { copyVpnLink, keyDelivery } from "@/lib/key-delivery";
 import { useT } from "@/lib/i18n/provider";
 
 export type AdminConfigTarget = {
@@ -38,13 +38,12 @@ export function AdminConfigDialog({
   onClose: () => void;
 }) {
   const { t } = useT();
-  // The same rule the employee card and dialog follow — see lib/key-delivery.ts.
-  // An admin handing a truncated key to a user is the worst version of this
-  // bug: the user cannot tell that what they were sent was already broken.
   const delivery = keyDelivery(target?.routeProfile ?? "full_tunnel");
+  const vpnHref = target ? `${configUrl(target.id, "vpn")}&adminConfirmed=true` : null;
   const [confirmed, setConfirmed] = React.useState(false);
   const [vpnLink, setVpnLink] = React.useState<string | null>(null);
   const [copied, setCopied] = React.useState(false);
+  const [copying, setCopying] = React.useState(false);
 
   React.useEffect(() => {
     setConfirmed(false);
@@ -54,17 +53,13 @@ export function AdminConfigDialog({
 
   const confirm = async (next: boolean) => {
     setConfirmed(next);
-    if (!next || !target) {
+    if (!next || !vpnHref) {
       setVpnLink(null);
       return;
     }
-    // Nothing renders the link for a file-only profile, and the payload runs
-    // past a megabyte, so it is not fetched at all.
-    if (!delivery.linkUsable) return;
+    if (delivery.clipboard !== "inline") return;
     try {
-      const res = await fetch(
-        `${configUrl(target.id, "vpn")}&adminConfirmed=true`,
-      );
+      const res = await fetch(vpnHref);
       if (!res.ok) throw new Error("failed");
       setVpnLink((await res.text()).trim());
     } catch {
@@ -74,11 +69,26 @@ export function AdminConfigDialog({
   };
 
   const copy = async () => {
-    if (!vpnLink) return;
-    await navigator.clipboard.writeText(vpnLink);
-    setCopied(true);
-    toast.success(t("acfg.copied"));
-    setTimeout(() => setCopied(false), 2500);
+    if (!vpnHref || !confirmed || copying) return;
+    setCopying(true);
+    try {
+      if (delivery.clipboard === "on-demand") {
+        if (!(await copyVpnLink(vpnHref))) {
+          toast.error(t("config.copyTooLong"));
+          return;
+        }
+      } else {
+        if (!vpnLink) return;
+        await navigator.clipboard.writeText(vpnLink);
+      }
+      setCopied(true);
+      toast.success(t("acfg.copied"));
+      setTimeout(() => setCopied(false), 2500);
+    } catch {
+      toast.error(t("config.copyFailed"));
+    } finally {
+      setCopying(false);
+    }
   };
 
   return (
@@ -99,26 +109,36 @@ export function AdminConfigDialog({
           <Switch checked={confirmed} onCheckedChange={(v) => void confirm(v)} />
         </label>
 
-        {confirmed && target && (vpnLink || !delivery.linkUsable) ? (
+        {confirmed && target && vpnHref && (vpnLink || delivery.clipboard !== "inline") ? (
           <div className="space-y-4">
-            {delivery.linkUsable && vpnLink ? (
+            {delivery.clipboard !== "unavailable" ? (
             <div className="space-y-1.5">
-              <Label>{t("config.connectionKey")}</Label>
+              {delivery.clipboard === "inline" && vpnLink ? <Label>{t("config.connectionKey")}</Label> : null}
               <div className="flex gap-2">
-                <Input
-                  readOnly
-                  value={vpnLink}
-                  className="font-mono text-xs"
-                  onClick={(event) =>
-                    (event.target as HTMLInputElement).select()
-                  }
-                />
-                <Button variant="secondary" onClick={() => void copy()}>
+                {delivery.clipboard === "inline" && vpnLink ? (
+                  <Input
+                    readOnly
+                    value={vpnLink}
+                    className="font-mono text-xs"
+                    onClick={(event) =>
+                      (event.target as HTMLInputElement).select()
+                    }
+                  />
+                ) : null}
+                <Button
+                  variant="secondary"
+                  disabled={copying}
+                  aria-label={t(copied ? "config.done" : "config.copy")}
+                  onClick={() => void copy()}
+                >
                   {copied ? (
                     <Check className="h-4 w-4" />
                   ) : (
                     <Copy className="h-4 w-4" />
                   )}
+                  {delivery.clipboard === "on-demand"
+                    ? t(copying ? "keyCard.copying" : copied ? "config.done" : "config.copy")
+                    : null}
                 </Button>
               </div>
             </div>
@@ -127,9 +147,6 @@ export function AdminConfigDialog({
                 <Download className="mx-auto mb-2 h-8 w-8 text-muted-foreground" />
                 <p className="text-sm font-medium">
                   {t("config.fileOnlyTitle")}
-                </p>
-                <p className="mt-1 text-xs text-muted-foreground">
-                  {t("config.fileOnlyWhy")}
                 </p>
                 <p className="mt-1 text-xs text-muted-foreground">
                   {t("config.fileOnlyBody")}
@@ -152,7 +169,7 @@ export function AdminConfigDialog({
             <div className="space-y-2">
               <Button asChild className="w-full">
                 <a
-                  href={`${configUrl(target.id, "vpn")}&adminConfirmed=true`}
+                  href={vpnHref}
                   download
                 >
                   <Download className="h-4 w-4" /> {t("common.downloadVpnFile")}

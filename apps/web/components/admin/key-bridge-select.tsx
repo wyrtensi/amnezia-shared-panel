@@ -56,14 +56,13 @@ export function bridgeOptionsForNode(
 }
 
 /**
- * Admin-only bridge selector used when creating a key: inherit user policy,
+ * Admin-only bridge selector used when creating a key: inherit routing settings,
  * force Direct, or pin a specific bridge route configured on the target node.
  */
 export function KeyBridgeSelect({
   nodeId,
   protocol,
   bridges,
-  policyUseBridge,
   bridgeMode,
   routeId,
   onChange,
@@ -72,7 +71,6 @@ export function KeyBridgeSelect({
   nodeId: string;
   protocol: string;
   bridges: readonly Bridge[];
-  policyUseBridge: boolean;
   bridgeMode: KeyBridgeMode;
   routeId: string;
   onChange: (next: { bridgeMode: KeyBridgeMode; routeId: string }) => void;
@@ -101,11 +99,6 @@ export function KeyBridgeSelect({
   }, [bridgeMode, routeId, options, activeOption, onChange]);
 
   if (protocol !== "awg3") return null;
-
-  const inheritLabel =
-    policyUseBridge && activeOption
-      ? t("keyBridge.inheritBridge", { name: activeOption.bridgeName })
-      : t("keyBridge.inheritDirect");
 
   const stateLabel = (state: NodeBridgeOption["state"]) =>
     state === "active"
@@ -139,7 +132,7 @@ export function KeyBridgeSelect({
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="inherit">{inheritLabel}</SelectItem>
+            <SelectItem value="inherit">{t("keyBridge.inherit")}</SelectItem>
             <SelectItem value="direct">{t("keyBridge.direct")}</SelectItem>
             <SelectItem value="route" disabled={options.length === 0}>
               {t("keyBridge.route")}
