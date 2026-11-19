@@ -14,7 +14,12 @@
 
 import { statSync } from "node:fs";
 import { lstat, writeFile } from "node:fs/promises";
-import type { BridgeFrpsTlsStatus, BridgePanelDnsStatus } from "@amnezia/contracts";
+import type {
+  BridgeEligibility,
+  BridgeFrpsTlsStatus,
+  BridgePanelDnsStatus,
+  InfrastructureItem,
+} from "@amnezia/contracts";
 
 import { resolveSecret } from "./apiKey.js";
 import { flagOf, positionals } from "./args.js";
@@ -616,6 +621,114 @@ export async function cmdBridgeAdd(api: BridgeApi, args: string[]): Promise<void
   printBridge(bridge);
 }
 
+export async function cmdBridgeUpdate(api: BridgeApi, args: string[]): Promise<void> {
+  const usage =
+    "Usage: bridge-update <bridge-id> [--name=<name>] [--panel-dns=<hostname|none>] [--reachability=on|off] [--json]";
+  assertStrictArgs(args, {
+    positionals: 1,
+    valueFlags: ["name", "panel-dns", "reachability"],
+    usage,
+  });
+  const id = requireUuid(positionals(args)[0], "bridge-id", usage);
+  const body: Record<string, unknown> = {};
+  const rawName = flagOf(args, "name");
+  if (rawName !== undefined) {
+    const trimmed = rawName.trim();
+    if (!trimmed) throw new Error(`--name must not be empty\n${usage}`);
+    body.name = trimmed;
+  }
+  const rawPanelDns = flagOf(args, "panel-dns");
+  if (rawPanelDns !== undefined) {
+    const trimmed = rawPanelDns.trim();
+    body.panelDnsHostname =
+      trimmed === "" || trimmed === "none" || trimmed === "null" ? null : trimmed;
+  }
+  const rawReachability = flagOf(args, "reachability");
+  if (rawReachability !== undefined) {
+    const norm = rawReachability.trim().toLowerCase();
+    if (norm === "on" || norm === "true") body.reachabilityEnabled = true;
+    else if (norm === "off" || norm === "false") body.reachabilityEnabled = false;
+    else {
+      throw new Error(
+        `--reachability expects on/true or off/false, got "${rawReachability}"\n${usage}`,
+      );
+    }
+  }
+  if (Object.keys(body).length === 0) throw new Error(usage);
+  const bridge = await api<BridgeView>(`/api/admin/vpn-bridges/${id}`, {
+    method: "PATCH",
+    body: JSON.stringify(body),
+  });
+  if (args.includes("--json")) return json(projectBridge(bridge));
+  console.log(`bridge ${bridge.name} (${bridge.id}) updated: ${Object.keys(body).join(", ")}`);
+  if (bridge.panelDns) {
+    console.log(`  panel DNS: ${bridge.panelDns.hostname ?? "—"} (${bridge.panelDns.state})`);
+  }
+}
+
+export async function cmdBridgeEligibility(api: BridgeApi, args: string[]): Promise<void> {
+  const usage = "Usage: bridge-eligibility <node-id> [--json]";
+  assertStrictArgs(args, { positionals: 1, usage });
+  const nodeId = requireUuid(positionals(args)[0], "node-id", usage);
+  const view = await api<BridgeEligibility>(
+    `/api/admin/nodes/${nodeId}/vpn-bridge-eligibility`,
+  );
+  if (args.includes("--json")) return json(view);
+  console.log(`node ${view.nodeId}: bridge eligibility`);
+  console.log(`  total:            ${view.total}`);
+  console.log(`  awg31 eligible:   ${view.awg31Eligible}`);
+  console.log(`  awg20 direct:     ${view.awg20Direct}`);
+  console.log(`  awg2 native:      ${view.awg2NativeDirect}`);
+  console.log(`  unsupported:      ${view.unsupported}`);
+  if (view.unsupportedKeyIds.length > 0) {
+    console.log(`  unsupported keys: ${view.unsupportedKeyIds.join(", ")}`);
+  }
+}
+
+export async function cmdInfrastructure(api: BridgeApi, args: string[]): Promise<void> {
+  const usage = "Usage: infrastructure [--json]";
+  assertStrictArgs(args, { positionals: 0, usage });
+  const items = await api<InfrastructureItem[]>("/api/admin/infrastructure");
+  if (args.includes("--json")) {
+    return json(
+      items.map((item) =>
+        item.kind === "bridge"
+          ? { kind: "bridge", ...projectBridge(item as unknown as BridgeView) }
+          : item,
+      ),
+    );
+  }
+  if (items.length === 0) {
+    console.log("(no infrastructure)");
+    return;
+  }
+  const header = ["kind", "id", "name", "state", "detail"];
+  const rows = items.map((item) =>
+    item.kind === "vpn"
+      ? [
+          "vpn",
+          item.id,
+          item.name,
+          item.lastError ? "error" : item.enabled ? "enabled" : "disabled",
+          `${item.protocol ?? "—"} peers ${item.peerCount ?? 0}/${item.maxPeers ?? "—"}` +
+            (item.activeRoute ? ` via :${item.activeRoute.publicUdpPort}` : " direct"),
+        ]
+      : [
+          "bridge",
+          item.id,
+          item.name,
+          item.managementStatus,
+          `${item.publicIpv4} ports ${item.heldPorts}/${item.capacity}`,
+        ],
+  );
+  const widths = header.map((h, i) =>
+    Math.max(h.length, ...rows.map((r) => r[i]!.length)),
+  );
+  const fmt = (cells: string[]) =>
+    cells.map((c, i) => c.padEnd(widths[i]!)).join("  ").trimEnd();
+  for (const line of [fmt(header), ...rows.map(fmt)]) console.log(line);
+}
+
 /** Seams for tests: how the key is read and how its permissions are inspected. */
 export type EnrollDeps = {
   readFile?: (path: string) => string;
@@ -1079,9 +1192,12 @@ export const BRIDGE_COMMANDS: ReadonlyMap<
   string,
   (api: BridgeApi, args: string[], raw?: BridgeRawApi) => Promise<void>
 > = new Map([
+  ["infrastructure", cmdInfrastructure],
   ["bridges", cmdBridges],
   ["bridge-add", cmdBridgeAdd],
+  ["bridge-update", cmdBridgeUpdate],
   ["bridge-enroll", cmdBridgeEnroll],
+  ["bridge-eligibility", cmdBridgeEligibility],
   ["bridge-agent-update", cmdBridgeAgentUpdate],
   ["bridge-agent-log", cmdBridgeAgentLog],
   ["bridge-rollback-preflight", cmdBridgeRollbackPreflight],
@@ -1095,15 +1211,21 @@ export const BRIDGE_COMMANDS: ReadonlyMap<
   ["bridge-route-verify", cmdBridgeRouteVerify],
 ]);
 
-export const BRIDGE_USAGE_LINES = `  bridges [--json]                        List AWG 3.1 bridges: management state, ports
+export const BRIDGE_USAGE_LINES = `  infrastructure [--json]                 List VPN nodes and AWG 3.1 bridges together
+  bridges [--json]                        List AWG 3.1 bridges: management state, ports
                                           held/total, route count
   bridge-add --name= --ipv4= [--control-port=7000] [--udp-start=41000]
              [--udp-end=41031] --confirm  Register a bridge (metadata only; nothing is
                                           installed on the host)
+  bridge-update <bridge-id> [--name=<name>] [--panel-dns=<host|none>]
+                [--reachability=on|off]   Rename a bridge, configure panelDnsHostname, or
+                                          toggle reachability alerts
   bridge-enroll <bridge-id> --api-url=<url> --api-key-file=<path|-> --confirm
                                           Connect the bridge-agent: verifies its bridge id and
                                           status capability, stores the key encrypted. The key
                                           comes from a 0600 file or stdin (-), never an argument
+  bridge-eligibility <node-id> [--json]   Count how many stored keys on a node are AWG 3.1
+                                          bridge-eligible vs Direct-only or unsupported
   bridge-agent-update <bridge-id> [--confirm] [--json]
                                           Show the installed bridge-agent version and the
                                           approved image on offer; --confirm requests that
