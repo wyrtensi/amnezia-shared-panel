@@ -2,6 +2,7 @@ import type { RouteProfile } from "@amnezia/contracts";
 import {
   decodeVpnLink,
   encodeVpnPayload,
+  normalizeCidrOrIp,
   type AmneziaContainerAwg,
   type AmneziaPayload,
 } from "@amnezia/vpn-config";
@@ -141,7 +142,7 @@ export const applyRouteProfileToVpnLink = (
     typeof payload.dns2 === "string" ? payload.dns2 : "1.0.0.1",
   ].filter(Boolean);
 
-  const dnsCidrs = dnsServers.map((ip) => (ip.includes("/") ? ip : `${ip}/32`));
+  const dnsCidrs = dnsServers.map((ip) => normalizeCidrOrIp(ip));
 
   // ru_blacklist lists what belongs in the tunnel, so its CIDRs are AllowedIPs
   // as they stand, and the DNS servers have to be named or they would not be

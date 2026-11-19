@@ -27,4 +27,35 @@ export const RULE_EXTRAS: RuleExtra[] = [
     name: "wardogs",
     cidrs: ["54.115.0.0/16", "85.236.96.0/21", "85.236.104.0/23"],
   },
+  {
+    // Google / YouTube (AS15169) core IPv4 & IPv6 blocks. itdoginfo/allow-domains
+    // publishes provider subnets for Cloudflare/Meta/etc. but not a Subnets/
+    // file for YouTube/Google; carrying these explicitly ensures YouTube,
+    // Gemini, and Google Web/API stay routed even when dropping noisy /32 tails.
+    name: "google-youtube",
+    cidrs: [
+      "64.233.160.0/19",
+      "74.125.0.0/16",
+      "108.177.0.0/17",
+      "142.250.0.0/15",
+      "172.217.0.0/16",
+      "172.253.0.0/16",
+      "173.194.0.0/16",
+      "192.178.0.0/15",
+      "209.85.128.0/17",
+      "216.58.192.0/19",
+      "216.239.32.0/19",
+      "2404:6800::/32",
+      "2607:f8b0::/32",
+      "2800:3f0::/32",
+      "2a00:1450::/32",
+      "2c0f:fb50::/32",
+    ],
+  },
+  {
+    // Anthropic / Claude API & web ingress (AS399358). Not covered by
+    // itdoginfo's Cloudflare/provider lists.
+    name: "anthropic",
+    cidrs: ["160.79.104.0/23"],
+  },
 ];

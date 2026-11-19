@@ -212,10 +212,29 @@ function ProfileSection({
                   <SourceNames sources={ruleSources(rule.sourceUrl)} />
                 </TableCell>
                 <TableCell className="text-sm text-muted-foreground">
-                  {t("rules.cidrDomains", {
-                    cidr: rule.cidrCount ?? 0,
-                    domains: rule.domainCount ?? 0,
-                  })}
+                  <div>
+                    {t("rules.cidrDomains", {
+                      cidr: rule.cidrCount ?? 0,
+                      domains: rule.domainCount ?? 0,
+                    })}
+                  </div>
+                  {rule.validationReport &&
+                  (typeof rule.validationReport.ipv4Count === "number" ||
+                    typeof rule.validationReport.compactionMode === "string") ? (
+                    <div className="text-xs text-muted-foreground/80">
+                      {[
+                        typeof rule.validationReport.ipv4Count === "number"
+                          ? `${rule.validationReport.ipv4Count} v4`
+                          : null,
+                        typeof rule.validationReport.ipv6Count === "number"
+                          ? `${rule.validationReport.ipv6Count} v6`
+                          : null,
+                        rule.validationReport.compactionMode ?? null,
+                      ]
+                        .filter(Boolean)
+                        .join(" · ")}
+                    </div>
+                  ) : null}
                 </TableCell>
                 <TableCell>
                   <div className="flex flex-wrap items-center gap-1.5">
