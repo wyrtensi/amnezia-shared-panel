@@ -17,6 +17,8 @@ import {
   getServerCapacitySchema,
   RequestServerCapacityType,
   requestServerCapacitySchema,
+  SetServerIpv6RejectStubType,
+  setServerIpv6RejectStubSchema,
 } from "@/schemas";
 import {
   getServerHandler,
@@ -28,6 +30,7 @@ import {
   requestServerUpdateHandler,
   getServerCapacityHandler,
   requestServerCapacityHandler,
+  setServerIpv6RejectStubHandler,
 } from "@/handlers/server";
 import { authPreHandler } from "@/middleware/auth";
 import { defineController } from "@/helpers/registerControllers";
@@ -133,4 +136,16 @@ export const requestServerCapacityController =
     schema: requestServerCapacitySchema,
     preHandler: authPreHandler(),
     handler: requestServerCapacityHandler,
+  });
+
+/**
+ * Configure the AWG 3.1 IPv6 active-reject stub
+ */
+export const setServerIpv6RejectStubController =
+  defineController<SetServerIpv6RejectStubType>({
+    url: "/server/ipv6-reject-stub",
+    method: "PUT",
+    schema: setServerIpv6RejectStubSchema,
+    preHandler: authPreHandler(),
+    handler: setServerIpv6RejectStubHandler,
   });

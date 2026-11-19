@@ -2281,3 +2281,4 @@ export * from "./bridgeAgentUpdate.js";
 export * from "./bridgeUpdateModel.js";
 export * from "./bridgeRollback.js";
 export * from "./ruleSources.js";
+export * from "./ipv6RejectStub.js";

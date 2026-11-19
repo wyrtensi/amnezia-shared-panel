@@ -554,6 +554,38 @@ rollout finished.
 
 ---
 
+## Per-node AWG 3.1 IPv6 active-reject stub (ULA + `prohibit 2000::/3`)
+
+On IPv4-only AWG 3.1 nodes, full-tunnel configs include `AllowedIPs = 0.0.0.0/0, ::/0`
+so clients do not leak IPv6 outside the tunnel, while the tunnel itself has no IPv6
+address — which can cause 10–30 second IPv6 stalls (Happy Eyeballs / QUIC blackhole)
+on mobile Wi-Fi networks that advertise global IPv6.
+
+Each AWG 3.1 node card in `/admin/nodes` (and `amnezia-panel node-ipv6-stub <id>`)
+provides a per-node **IPv6 Reject (ULA)** switch backed by `PUT /api/admin/nodes/:id/ipv6-reject-stub`:
+
+- **Dedicated subnet:** defaults to `fd6b:7c2e:4a91:9f::/64` (separate from the
+  future full-IPv6 NAT66 subnet `fd6b:7c2e:4a91:90::/64`, so enabling it now does
+  not collide with a future dual-stack migration). Peer ULAs are derived
+  deterministically from each peer's AWG 3.1 IPv4 lease (`10.90.0.N` → `::N/128`).
+- **Prerequisite:** the node must run the updated `node-agent` and an `amnezia-awg3`
+  container started with the `net.ipv6.conf.{all,default}.disable_ipv6=0` and
+  `net.ipv6.conf.all.forwarding=1` sysctls in `infra/node/compose.yaml`. Existing
+  containers without those sysctls report `unsupported` (`ipv6_forwarding_disabled`)
+  and remain untouched until the operator recreates `awg3`.
+- **Smooth transitions (zero IPv4 drop):**
+  - **OFF → ON:** installs `<prefix>::1/64` on `awg0` and `ip -6 route replace prohibit 2000::/3`,
+    updates active peers in `awg0.conf` via `awg syncconf`, and persists `/opt/amnezia/awg/ipv6-reject-stub.env`
+    (mode `0600`, restored fail-safely on container restart). Existing IPv4-only keys keep working
+    untouched; iOS/Android `vpn://` and all `.conf`/`qr-conf` exports immediately project the peer ULA,
+    while desktop `vpn://` stays strictly IPv4-only.
+  - **ON → OFF:** reverts active peers in `awg0.conf` back to `<v4>/32` via `awg syncconf`,
+    deletes `prohibit 2000::/3` and `<prefix>::1/64`, and writes `ENABLED=0`. Already-imported
+    mobile keys continue working over IPv4 without urgent key reissue; all subsequent exports
+    return clean IPv4-only configs.
+
+---
+
 ## Related documents
 
 - [`INSTALL.md`](./INSTALL.md) — the install map, for a person or an agent.

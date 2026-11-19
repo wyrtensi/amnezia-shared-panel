@@ -2119,4 +2119,46 @@ describe("bridge candidate validation commands", () => {
       /BRIDGE_UNSUPPORTED_CAPABILITY: no capable probe\n.*--operator-verified/,
     );
   });
+
+  it("node-ipv6-stub inspects and toggles the per-node IPv6 active-reject stub", async () => {
+    const nodeId = "11111111-1111-4111-8111-111111111111";
+    stubFetch([
+      {
+        body: [
+          {
+            id: nodeId,
+            name: "Frankfurt",
+            ipv6RejectStub: {
+              enabled: true,
+              prefix: "fd6b:7c2e:4a91:9f::/64",
+              state: "active",
+              reason: null,
+              observedAt: "2026-11-19T06:00:00.000Z",
+            },
+          },
+        ],
+      },
+    ]);
+    const statusOut = await run(["node-ipv6-stub", nodeId]);
+    expect(statusOut).toContain("state:    active");
+    expect(statusOut).toContain("fd6b:7c2e:4a91:9f::/64");
+
+    const calls = stubFetch([
+      { body: [{ id: nodeId, name: "Frankfurt" }] },
+      {
+        body: {
+          id: nodeId,
+          enabled: false,
+          prefix: "fd6b:7c2e:4a91:9f::/64",
+          state: "pending",
+          queued: true,
+        },
+      },
+    ]);
+    const toggleOut = await run(["node-ipv6-stub", nodeId, "--enabled=false"]);
+    expect(toggleOut).toContain("disabling");
+    expect(calls[1]!.url).toContain(`/api/admin/nodes/${nodeId}/ipv6-reject-stub`);
+    expect(calls[1]!.init?.method).toBe("PUT");
+    expect(sentBody(calls[1]!)).toEqual({ enabled: false });
+  });
 });

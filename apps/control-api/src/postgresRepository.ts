@@ -54,6 +54,7 @@ import type {
   VerifyBridgeRouteRequest,
   VerifyBridgeRouteResult,
   UpdateBridgeRequest,
+  UpdateNodeIpv6RejectStubRequest,
 } from "@amnezia/contracts";
 import {
   BRIDGE_MANAGEMENT_HOSTS_DEFAULT,
@@ -89,6 +90,7 @@ import {
   isPublishableAgentImage,
   nodeAgentUpdateActionSchema,
   nodeCapacityActionSchema,
+  NODE_IPV6_REJECT_STUB_JOB_TYPE,
   nodeOrderSchema,
   normalizeAccessDomain,
   PROTOCOL_KINDS,
@@ -1493,6 +1495,75 @@ export class PostgresControlRepository implements ControlRepository {
     return updated;
   };
 
+  setNodeIpv6RejectStub = async (
+    actor: Actor,
+    nodeId: string,
+    request: UpdateNodeIpv6RejectStubRequest,
+  ): Promise<unknown> =>
+    this.options.db.transaction(async (tx) => {
+      const [node] = await tx
+        .select({
+          id: nodes.id,
+          protocol: nodes.protocol,
+          capabilities: nodes.capabilities,
+          ipv6RejectStubEnabled: nodes.ipv6RejectStubEnabled,
+          ipv6RejectStubPrefix: nodes.ipv6RejectStubPrefix,
+        })
+        .from(nodes)
+        .where(eq(nodes.id, nodeId))
+        .limit(1);
+      if (!node) throw new ApiError(404, "Node not found", "NODE_NOT_FOUND");
+      const supported = deriveSupportedProtocols(
+        node.protocol,
+        node.capabilities,
+      );
+      if (request.enabled && !supported.includes("awg3")) {
+        throw new ApiError(
+          409,
+          "IPv6 active-reject stub requires AmneziaWG 3.1 on this node",
+          "IPV6_REJECT_STUB_UNSUPPORTED",
+        );
+      }
+      const nextPrefix = request.prefix ?? node.ipv6RejectStubPrefix;
+      const now = new Date();
+      await tx
+        .update(nodes)
+        .set({
+          ipv6RejectStubEnabled: request.enabled,
+          ipv6RejectStubPrefix: nextPrefix,
+          ipv6RejectStubState: "pending",
+          ipv6RejectStubReason: null,
+          updatedAt: now,
+        })
+        .where(eq(nodes.id, nodeId));
+      await tx.insert(jobOutbox).values({
+        type: NODE_IPV6_REJECT_STUB_JOB_TYPE,
+        deduplicationKey: `${NODE_IPV6_REJECT_STUB_JOB_TYPE}:${nodeId}:${randomUUID()}`,
+        payload: { nodeId, enabled: request.enabled, prefix: nextPrefix },
+      });
+      await tx.insert(auditEvents).values({
+        actorUserId: actor.id,
+        actorType: "user",
+        action: "admin.nodes.set-ipv6-reject-stub",
+        targetType: "node",
+        targetId: nodeId,
+        metadata: {
+          enabled: request.enabled,
+          previousEnabled: node.ipv6RejectStubEnabled,
+          prefix: nextPrefix,
+          previousPrefix: node.ipv6RejectStubPrefix,
+        },
+        createdAt: now,
+      });
+      return {
+        id: nodeId,
+        enabled: request.enabled,
+        prefix: nextPrefix,
+        state: "pending" as const,
+        queued: true,
+      };
+    });
+
   deleteNode = async (
     actor: Actor,
     nodeId: string,
@@ -1972,6 +2043,9 @@ export class PostgresControlRepository implements ControlRepository {
         policy: portalPolicy,
         nodeName: nodes.name,
         nodePublicName: nodes.publicName,
+        nodeIpv6RejectStubEnabled: nodes.ipv6RejectStubEnabled,
+        nodeIpv6RejectStubState: nodes.ipv6RejectStubState,
+        nodeIpv6RejectStubPrefix: nodes.ipv6RejectStubPrefix,
         bridgeHost: vpnBridges.publicIpv4,
         bridgePort: vpnBridgeRoutes.publicUdpPort,
       })
@@ -2039,6 +2113,12 @@ export class PostgresControlRepository implements ControlRepository {
           ? { host: row.bridgeHost, port: row.bridgePort }
           : null,
       awgClientProfile: row.key.awgClientProfile ?? null,
+      deviceType: row.key.deviceType,
+      nodeIpv6RejectStub: {
+        enabled: row.nodeIpv6RejectStubEnabled,
+        state: row.nodeIpv6RejectStubState,
+        prefix: row.nodeIpv6RejectStubPrefix,
+      },
     };
   };
 
@@ -2804,6 +2884,11 @@ export class PostgresControlRepository implements ControlRepository {
         capacityMessage: nodes.capacityMessage,
         capacityLog: nodes.capacityLog,
         capacityAt: nodes.capacityAt,
+        ipv6RejectStubEnabled: nodes.ipv6RejectStubEnabled,
+        ipv6RejectStubPrefix: nodes.ipv6RejectStubPrefix,
+        ipv6RejectStubState: nodes.ipv6RejectStubState,
+        ipv6RejectStubReason: nodes.ipv6RejectStubReason,
+        ipv6RejectStubObservedAt: nodes.ipv6RejectStubObservedAt,
         createdAt: nodes.createdAt,
         updatedAt: nodes.updatedAt,
       })
@@ -2929,6 +3014,15 @@ export class PostgresControlRepository implements ControlRepository {
         row.protocol,
         row.capabilities,
       ),
+      ipv6RejectStub: {
+        enabled: row.ipv6RejectStubEnabled,
+        prefix: row.ipv6RejectStubPrefix,
+        state: row.ipv6RejectStubState,
+        reason: row.ipv6RejectStubReason,
+        observedAt: row.ipv6RejectStubObservedAt
+          ? row.ipv6RejectStubObservedAt.toISOString()
+          : null,
+      },
     }));
   };
 

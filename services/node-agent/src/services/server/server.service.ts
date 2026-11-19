@@ -1,6 +1,7 @@
 import os from "os";
 import {
   AwgInterfaceState,
+  Ipv6RejectStubStatus,
   ServerLoadPayload,
   ServerBackupPayload,
   ServerStatusPayload,
@@ -78,6 +79,10 @@ export class ServerService {
       ),
     ].sort((a, b) => a - b);
 
+    const ipv6RejectStub = protocols.includes(Protocol.AMNEZIAWG3)
+      ? await this.getIpv6RejectStubStatusSafe()
+      : null;
+
     return {
       id: appConfig.SERVER_ID || "",
       region: appConfig.SERVER_REGION || "",
@@ -95,7 +100,35 @@ export class ServerService {
         probeKinds: SUPPORTED_PROBE_KINDS,
         assertionTypes: SUPPORTED_ASSERTION_TYPES,
       },
+      ipv6RejectStub,
     };
+  }
+
+  private async getIpv6RejectStubStatusSafe(): Promise<Ipv6RejectStubStatus | null> {
+    try {
+      return await this.amneziaWg3Service.getIpv6RejectStubStatus();
+    } catch (error) {
+      appLogger.warn(
+        `Failed to read AWG 3.1 IPv6 reject stub status: ${error}`,
+      );
+      return null;
+    }
+  }
+
+  /**
+   * Toggle the AWG 3.1 IPv6 active-reject stub on this node.
+   */
+  async setIpv6RejectStub(options: {
+    enabled: boolean;
+    prefix?: string;
+  }): Promise<Ipv6RejectStubStatus> {
+    const protocols = await resolveEnabledProtocols();
+    if (!protocols.includes(Protocol.AMNEZIAWG3)) {
+      throw new APIError(ClientErrorCode.CONFLICT, {
+        msg: "services.server.IPV6_STUB_UNSUPPORTED",
+      });
+    }
+    return this.amneziaWg3Service.setIpv6RejectStub(options);
   }
 
   /**

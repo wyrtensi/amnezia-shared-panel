@@ -70,6 +70,12 @@ services:
     sysctls:
       net.ipv4.conf.all.src_valid_mark: "1"
       net.ipv4.ip_forward: "1"
+      # Allow the optional per-node IPv6 active-reject stub (ULA + `prohibit
+      # 2000::/3`) to answer IPv6 packets on awg0 with ICMPv6 Administratively
+      # Prohibited without recreating the container or requiring host IPv6.
+      net.ipv6.conf.all.disable_ipv6: "0"
+      net.ipv6.conf.default.disable_ipv6: "0"
+      net.ipv6.conf.all.forwarding: "1"
     ports:
       - "51890:51890/udp"
     volumes:

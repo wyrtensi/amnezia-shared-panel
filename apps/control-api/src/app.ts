@@ -20,6 +20,7 @@ import {
   renameKeyRequestSchema,
   noticeKindSchema,
   updateCustomRoutesRequestSchema,
+  updateNodeIpv6RejectStubRequestSchema,
   updateNodeRequestSchema,
   reachabilityRunQuerySchema,
   upsertReachabilityProbeRequestSchema,
@@ -532,6 +533,14 @@ export const buildApp = async ({
       adminFor(request),
       id,
       updateNodeRequestSchema.parse(request.body),
+    );
+  });
+  app.put("/api/admin/nodes/:id/ipv6-reject-stub", async (request) => {
+    const { id } = idParamsSchema.parse(request.params);
+    return service.setNodeIpv6RejectStub(
+      adminFor(request),
+      id,
+      updateNodeIpv6RejectStubRequestSchema.parse(request.body),
     );
   });
   app.delete("/api/admin/nodes/:id", async (request) => {

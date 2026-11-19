@@ -131,6 +131,14 @@ export type AdminNode = {
   capacityMessage?: string | null;
   capacityLog?: string;
   capacityAt?: string | null;
+  /** Per-node AWG 3.1 IPv6 active-reject stub (ULA + prohibit 2000::/3). */
+  ipv6RejectStub?: {
+    enabled: boolean;
+    prefix: string;
+    state: "off" | "pending" | "active" | "unsupported" | "error";
+    reason: string | null;
+    observedAt: string | null;
+  };
   /** The release the panel offers; null when it could not be resolved, which
    *  is what disables the update button rather than falling back to a tag. */
   availableAgent?: {

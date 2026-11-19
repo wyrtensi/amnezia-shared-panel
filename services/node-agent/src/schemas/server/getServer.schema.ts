@@ -90,6 +90,36 @@ export const getServerSchema = {
             },
           },
         },
+        ipv6RejectStub: {
+          type: "object",
+          nullable: true,
+          description:
+            "Observed status of the optional AWG 3.1 IPv6 active-reject stub (ULA + prohibit 2000::/3). Null when amneziawg3 is disabled or unreachable.",
+          required: ["supported", "enabled", "active", "prefix", "reason"],
+          properties: {
+            supported: {
+              type: "boolean",
+              example: true,
+            },
+            enabled: {
+              type: "boolean",
+              example: false,
+            },
+            active: {
+              type: "boolean",
+              example: false,
+            },
+            prefix: {
+              type: "string",
+              example: "fd6b:7c2e:4a91:9f::/64",
+            },
+            reason: {
+              type: "string",
+              nullable: true,
+              example: null,
+            },
+          },
+        },
       },
     },
     401: SwaggerContract.ClientErrorResponseFactory(401),

@@ -4,6 +4,8 @@ import {
   BRIDGE_AGENT_POLL_JOB_TYPE,
   BRIDGE_AGENT_UPDATE_JOB_TYPE,
   BRIDGE_ROUTE_CANDIDATE_CHECK_JOB_TYPE,
+  DEFAULT_IPV6_REJECT_STUB_PREFIX,
+  NODE_IPV6_REJECT_STUB_JOB_TYPE,
   QUOTA_REQUEST_NOTIFY_JOB_TYPE,
   REACHABILITY_NOTIFY_JOB_TYPE,
   REACHABILITY_WIDGET_JOB_TYPE,
@@ -11,6 +13,7 @@ import {
   quotaRequestNotifyPayloadSchema,
   reachabilityNotifyPayloadSchema,
   reachabilityWidgetPayloadSchema,
+  type NodeIpv6RejectStubState,
 } from "@amnezia/contracts";
 import { formatQuotaRequestMessage, type TelegramNotifier } from "./telegram.js";
 import type { AccessSyncOutcome } from "./accessReconcile.js";
@@ -35,6 +38,10 @@ const nodeAgentUpdatePayloadSchema = nodeJobPayloadSchema.extend({
 // re-validates it, and set-capacity.sh validates it a third time.
 const nodeCapacityPayloadSchema = nodeJobPayloadSchema.extend({
   maxPeers: z.number().int().min(1).max(500),
+});
+const nodeIpv6RejectStubPayloadSchema = nodeJobPayloadSchema.extend({
+  enabled: z.boolean(),
+  prefix: z.string().min(1).max(64).optional(),
 });
 
 export type JobProcessorOptions = {
@@ -429,6 +436,56 @@ export const createJobProcessor = ({
         nodeId,
         maxPeers,
         requestedAt: now(),
+      });
+      return;
+    }
+    if (job.type === NODE_IPV6_REJECT_STUB_JOB_TYPE) {
+      const { nodeId, enabled, prefix } = nodeIpv6RejectStubPayloadSchema.parse(
+        job.payload,
+      );
+      const context = await repository.loadNodeReconcileContext(nodeId);
+      if (!context) {
+        await repository.failJob(
+          job.id,
+          "Node IPv6 reject stub target not found",
+        );
+        return;
+      }
+      const outcome = await createNodeAgent(context.node).setIpv6RejectStub({
+        enabled,
+        prefix,
+      });
+      const observedAt = now();
+      if (!outcome.ok) {
+        await repository.completeNodeIpv6RejectStub({
+          jobId: job.id,
+          nodeId,
+          enabled: false,
+          prefix: prefix ?? DEFAULT_IPV6_REJECT_STUB_PREFIX,
+          state: "unsupported",
+          reason: outcome.code,
+          observedAt,
+        });
+        return;
+      }
+      const { status } = outcome;
+      const state: NodeIpv6RejectStubState = !status.supported
+        ? status.enabled
+          ? "unsupported"
+          : "off"
+        : status.enabled && status.active
+          ? "active"
+          : !status.enabled && !status.active
+            ? "off"
+            : "error";
+      await repository.completeNodeIpv6RejectStub({
+        jobId: job.id,
+        nodeId,
+        enabled: status.enabled,
+        prefix: status.prefix,
+        state,
+        reason: status.reason,
+        observedAt,
       });
       return;
     }

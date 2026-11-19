@@ -77,9 +77,21 @@ export abstract class AmneziaWgServiceBase {
   ): ClientArtifacts;
 
   /**
+   * Format the AllowedIPs value for an active peer. Subclasses (AWG 3.1) can
+   * append a derived ULA /128 when the per-node IPv6 reject stub is enabled.
+   */
+  protected async formatActivePeerAllowedIps(
+    assignedIpv4: string,
+    serverConfig: string,
+  ): Promise<string> {
+    void serverConfig;
+    return `${assignedIpv4}/32`;
+  }
+
+  /**
    * Serialize mutating operations so parallel writes never clobber each other.
    */
-  private enqueueMutation<T>(operation: () => Promise<T>): Promise<T> {
+  protected enqueueMutation<T>(operation: () => Promise<T>): Promise<T> {
     const result = this.mutationTail.then(operation, operation);
     this.mutationTail = result.then(
       () => undefined,
@@ -369,16 +381,38 @@ export abstract class AmneziaWgServiceBase {
 `)
     ).stdout.trim();
 
-    // Read the server config
+    // Read the server config and current clients table
     const config = await this.connection.readWgConfig();
+    const table = await this.connection.readClientsTable();
 
     const serverCidr = config.match(
       /^\s*Address\s*=\s*([0-9]+(?:\.[0-9]+){3}\/\d+)\s*$/im,
     )?.[1];
-    const usedPeerCidrs = Array.from(
-      config.matchAll(/^\s*AllowedIPs\s*=\s*([^\n]+)$/gim),
-      (match) => match[1]?.trim() ?? "",
+    const configuredPeerIds = new Set(
+      Array.from(
+        config.matchAll(/^\s*PublicKey\s*=\s*([^\s]+)\s*$/gim),
+        (match) => match[1],
+      ),
     );
+    const usedPeerCidrs = [
+      ...Array.from(
+        config.matchAll(/^\s*AllowedIPs\s*=\s*([^\n]+)$/gim),
+        (match) => match[1]?.trim() ?? "",
+      ).flatMap((line) =>
+        line
+          .split(",")
+          .map((token) => token.trim())
+          .filter(Boolean),
+      ),
+      ...table
+        .filter((entry) => {
+          const entryId = (entry?.clientId || entry?.publicKey || "").trim();
+          return entryId.length > 0 && configuredPeerIds.has(entryId);
+        })
+        .map((entry) => entry?.userData?.allowedIp?.trim())
+        .filter((ip): ip is string => Boolean(ip))
+        .map((ip) => (ip.includes("/") ? ip : `${ip}/32`)),
+    ];
     const assignedIp = serverCidr
       ? allocatePeerIp(serverCidr, usedPeerCidrs)
       : null;
@@ -398,19 +432,16 @@ export abstract class AmneziaWgServiceBase {
 
     // Add the peer to the config
     const peerPskLine = `PresharedKey = ${psk}\n`;
-    const peerSection = `\n[Peer]\nPublicKey = ${clientId}\n${peerPskLine}AllowedIPs = ${assignedIp}/32\n`;
+    const peerAllowedIps = await this.formatActivePeerAllowedIps(
+      assignedIp,
+      config,
+    );
+    const peerSection = `\n[Peer]\nPublicKey = ${clientId}\n${peerPskLine}AllowedIPs = ${peerAllowedIps}\n`;
 
     // Assemble the new config
     const newConfig =
       (config.endsWith("\n") ? config : config + "\n") + peerSection;
 
-    const table = await this.connection.readClientsTable();
-    const configuredPeerIds = new Set(
-      Array.from(
-        config.matchAll(/^\s*PublicKey\s*=\s*([^\s]+)\s*$/gim),
-        (match) => match[1],
-      ),
-    );
     const existingManagedPeer = table.find((entry) => {
       const entryId = (entry?.clientId || entry?.publicKey || "").trim();
       return (
@@ -603,14 +634,15 @@ export abstract class AmneziaWgServiceBase {
             : PeerStatus.Active
           : null);
 
+      const bareAllowedIp = userData.allowedIp
+        ? userData.allowedIp.split(",")[0].trim().split("/")[0].trim()
+        : "";
       const targetAllowedIps =
         targetStatus === PeerStatus.Disabled
           ? "0.0.0.0/32"
           : targetStatus === PeerStatus.Active
-            ? userData.allowedIp
-              ? userData.allowedIp.includes("/")
-                ? userData.allowedIp
-                : `${userData.allowedIp}/32`
+            ? bareAllowedIp
+              ? await this.formatActivePeerAllowedIps(bareAllowedIp, config)
               : null
             : null;
 

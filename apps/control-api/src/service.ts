@@ -40,6 +40,7 @@ import type {
   RulesRefreshStatus,
   UserStatus,
   UpdateNodeRequest,
+  UpdateNodeIpv6RejectStubRequest,
   UpdateServiceCheckRequest,
   UpsertReachabilityProbeRequest,
 } from "@amnezia/contracts";
@@ -247,6 +248,11 @@ export interface ControlApiService {
     actor: Actor,
     nodeId: string,
     request: UpdateNodeRequest,
+  ) => Promise<unknown>;
+  setNodeIpv6RejectStub: (
+    actor: Actor,
+    nodeId: string,
+    request: UpdateNodeIpv6RejectStubRequest,
   ) => Promise<unknown>;
   deleteNode: (
     actor: Actor,

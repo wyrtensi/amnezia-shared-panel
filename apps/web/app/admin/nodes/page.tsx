@@ -212,6 +212,25 @@ function AdminNodesView() {
     }
   };
 
+  const toggleIpv6Stub = async (node: AdminNode, enabled: boolean) => {
+    try {
+      await request(`/api/admin/nodes/${node.id}/ipv6-reject-stub`, {
+        method: "PUT",
+        body: JSON.stringify({ enabled }),
+      });
+      toast.success(
+        enabled
+          ? t("nodes.ipv6Stub.enabledToast")
+          : t("nodes.ipv6Stub.disabledToast"),
+      );
+      await reload();
+    } catch (cause) {
+      toast.error(
+        cause instanceof Error ? cause.message : t("nodes.changeFailed"),
+      );
+    }
+  };
+
   return (
     <div className="@container space-y-4">
       <h2 className="flex items-center gap-2 text-lg font-semibold">
@@ -279,6 +298,7 @@ function AdminNodesView() {
                   checkResults={serviceChecks.byNode.get(node.id) ?? []}
                   checksConfigured={serviceChecks.checks.length > 0}
                   onSetChecks={(patch) => void setNodeChecks(node, patch)}
+                  onToggleIpv6Stub={(enabled) => void toggleIpv6Stub(node, enabled)}
                 />
               ))}
             </div>
@@ -366,6 +386,7 @@ function NodeCard({
   checkResults,
   checksConfigured,
   onSetChecks,
+  onToggleIpv6Stub,
 }: {
   node: AdminNode;
   /** Undefined before a successful lookup, null for Direct. */
@@ -385,6 +406,7 @@ function NodeCard({
     checksEnabled?: boolean;
     disabledCheckIds?: string[];
   }) => void;
+  onToggleIpv6Stub: (enabled: boolean) => void;
   onToggle: (enabled: boolean) => void;
   onReconcile: () => void;
   onEdit: () => void;
@@ -596,6 +618,13 @@ function NodeCard({
           <NodeCardSection icon={Cpu}>{t("nodes.metrics.title")}</NodeCardSection>
           <NodeMetrics metrics={node.metrics} endpoint={node.endpoint} />
         </div>
+
+        {supported.includes("awg3") ? (
+          <NodeIpv6StubSection
+            stub={node.ipv6RejectStub}
+            onToggle={onToggleIpv6Stub}
+          />
+        ) : null}
 
         {checksConfigured ? (
           <div className="space-y-1.5 border-t pt-3">
@@ -980,6 +1009,75 @@ function EditNodeDialog({
  * The verbatim image, the verbatim message and the log therefore live in the
  * disclosure below, which is the one place in this block allowed to be long.
  */
+const IPV6_STUB_REASON_KEYS = {
+  ipv6_forwarding_disabled: "nodes.ipv6Stub.reason.ipv6_forwarding_disabled",
+  agent_unsupported: "nodes.ipv6Stub.reason.agent_unsupported",
+  awg3_unavailable: "nodes.ipv6Stub.reason.awg3_unavailable",
+  stub_route_missing: "nodes.ipv6Stub.reason.stub_route_missing",
+  stub_route_present: "nodes.ipv6Stub.reason.stub_route_present",
+} as const;
+
+function NodeIpv6StubSection({
+  stub,
+  onToggle,
+}: {
+  stub: AdminNode["ipv6RejectStub"];
+  onToggle: (enabled: boolean) => void;
+}) {
+  const { t } = useT();
+  const state = stub?.state ?? "off";
+  const enabled = stub?.enabled ?? false;
+  const prefix = stub?.prefix ?? "fd6b:7c2e:4a91:9f::/64";
+  const reason = stub?.reason ?? null;
+  const reasonText = reason
+    ? reason in IPV6_STUB_REASON_KEYS
+      ? t(IPV6_STUB_REASON_KEYS[reason as keyof typeof IPV6_STUB_REASON_KEYS])
+      : reason
+    : null;
+  const badgeVariant =
+    state === "active"
+      ? "success"
+      : state === "pending"
+        ? "secondary"
+        : state === "unsupported"
+          ? "warning"
+          : state === "error"
+            ? "destructive"
+            : "outline";
+  const switchDisabled =
+    state === "pending" || (state === "unsupported" && !enabled);
+
+  return (
+    <div className="space-y-1.5 border-t pt-3">
+      <NodeCardSection
+        icon={Globe}
+        action={
+          <Switch
+            checked={enabled}
+            disabled={switchDisabled}
+            onCheckedChange={onToggle}
+            aria-label={t("nodes.ipv6Stub.toggleAria")}
+          />
+        }
+      >
+        <span className="inline-flex items-center gap-1">
+          {t("nodes.ipv6Stub.title")}
+          <Hint>{t("nodes.ipv6Stub.hint")}</Hint>
+        </span>
+      </NodeCardSection>
+      <div className="flex flex-wrap items-center gap-1.5 text-xs">
+        <Badge variant={badgeVariant}>{t(`nodes.ipv6Stub.state.${state}`)}</Badge>
+        <code className="truncate rounded bg-muted px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground">
+          {prefix}
+        </code>
+      </div>
+      {reasonText ? (
+        <p className="text-xs text-muted-foreground">{reasonText}</p>
+      ) : null}
+    </div>
+  );
+}
+
 function NodeAgentUpdateStatus({ node }: { node: AdminNode }) {
   const { t, lang } = useT();
   const state = node.agentUpdateState ?? "idle";

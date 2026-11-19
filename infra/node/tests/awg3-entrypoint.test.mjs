@@ -66,3 +66,25 @@ test("exposes the AWG3 container on UDP 51890 in the node stack", async () => {
   // variable, which is also what activates its compose profile.
   assert.match(compose, /PROTOCOLS_ENABLED: \$\{PROTOCOLS_ENABLED:-amneziawg3\}/);
 });
+
+test("restores and cleans up the optional IPv6 reject stub without risking IPv4 startup", async () => {
+  const script = await readFile(entrypointUrl, "utf8");
+  const compose = await readFile(composeUrl, "utf8");
+
+  // IPv6 sysctls are enabled only on awg3, not awg2.
+  const awg2Section = compose.slice(compose.indexOf("  awg2:"), compose.indexOf("  awg3:"));
+  const awg3Section = compose.slice(compose.indexOf("  awg3:"), compose.indexOf("  node-agent:"));
+  assert.doesNotMatch(awg2Section, /net\.ipv6\./);
+  assert.match(awg3Section, /net\.ipv6\.conf\.all\.disable_ipv6: "0"/);
+  assert.match(awg3Section, /net\.ipv6\.conf\.default\.disable_ipv6: "0"/);
+  assert.match(awg3Section, /net\.ipv6\.conf\.all\.forwarding: "1"/);
+
+  // Entrypoint parses ipv6-reject-stub.env via strict allowlist (never source/eval),
+  // applies ULA + prohibit route fail-safely after IPv4, and cleans prohibit on teardown.
+  assert.match(script, /IPV6_STUB_ENV_FILE="\$STATE_DIR\/ipv6-reject-stub\.env"/);
+  assert.match(script, /ip -6 address replace "\$\{stub_server_ipv6\}\/64" dev awg0 nodad/);
+  assert.match(script, /ip -6 route replace prohibit 2000::\/3/);
+  assert.match(script, /ip -6 route del prohibit 2000::\/3/);
+  assert.match(script, /apply_ipv6_reject_stub \|\| echo "Warning:/);
+  assert.doesNotMatch(script, /(?:^|\s)(?:\.|source|eval)\s+.*IPV6_STUB_ENV_FILE/m);
+});

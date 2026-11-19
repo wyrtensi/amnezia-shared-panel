@@ -79,6 +79,17 @@ const serverSchema = z.object({
       assertionTypes: z.array(z.string()),
     })
     .optional(),
+  // Optional AWG 3.1 IPv6 active-reject stub status (`prohibit 2000::/3`).
+  // Absent on agents that predate the feature; null when AWG 3.1 is disabled.
+  ipv6RejectStub: z
+    .object({
+      supported: z.boolean(),
+      enabled: z.boolean(),
+      active: z.boolean(),
+      prefix: z.string(),
+      reason: z.string().nullable(),
+    })
+    .nullish(),
 });
 const nullableMetricSchema = z.number().nonnegative().nullable();
 const percentSchema = z.number().min(0).max(100);
@@ -195,6 +206,13 @@ const capacityAcceptedSchema = z.object({
   id: z.string(),
   maxPeers: z.number().int(),
 });
+const ipv6RejectStubStatusSchema = z.object({
+  supported: z.boolean(),
+  enabled: z.boolean(),
+  active: z.boolean(),
+  prefix: z.string(),
+  reason: z.string().nullable(),
+});
 
 export type NodeClientRecord = z.infer<typeof clientRecordSchema>;
 export type CreatedNodeClient = z.infer<typeof createResponseSchema>["client"];
@@ -203,6 +221,10 @@ export type NodeServer = z.infer<typeof serverSchema>;
 export type NodeServerLoad = z.infer<typeof serverLoadSchema>;
 export type NodeAgentUpdateStatus = z.infer<typeof agentUpdateStatusSchema>;
 export type NodeCapacityStatus = z.infer<typeof capacityStatusSchema>;
+export type NodeIpv6RejectStubStatus = z.infer<typeof ipv6RejectStubStatusSchema>;
+export type SetNodeIpv6RejectStubOutcome =
+  | { ok: true; status: NodeIpv6RejectStubStatus }
+  | { ok: false; code: "agent_unsupported" | "ipv6_forwarding_disabled" };
 
 /**
  * One check's verdict as the node reports it.
@@ -244,6 +266,10 @@ export interface NodeAgent {
   // feature. That is not an error: it is the answer.
   getCapacity: () => Promise<NodeCapacityStatus | null>;
   requestCapacity: (maxPeers: number) => Promise<{ id: string; maxPeers: number }>;
+  setIpv6RejectStub: (options: {
+    enabled: boolean;
+    prefix?: string;
+  }) => Promise<SetNodeIpv6RejectStubOutcome>;
   listClients: () => Promise<NodeClientRecord[]>;
   createClient: (
     label: string,
@@ -349,6 +375,23 @@ export const createNodeAgentClient = ({
           body: JSON.stringify({ maxPeers }),
         }),
       ),
+    setIpv6RejectStub: async ({ enabled, prefix }) => {
+      try {
+        const payload = await request("/server/ipv6-reject-stub", {
+          method: "PUT",
+          body: JSON.stringify(prefix ? { enabled, prefix } : { enabled }),
+        });
+        return { ok: true, status: ipv6RejectStubStatusSchema.parse(payload) };
+      } catch (error) {
+        if (error instanceof Error && /status 404/.test(error.message)) {
+          return { ok: false, code: "agent_unsupported" };
+        }
+        if (error instanceof Error && /status 409/.test(error.message)) {
+          return { ok: false, code: "ipv6_forwarding_disabled" };
+        }
+        throw error;
+      }
+    },
     listClients: async () => {
       const items: NodeClientRecord[] = [];
       let skip = 0;

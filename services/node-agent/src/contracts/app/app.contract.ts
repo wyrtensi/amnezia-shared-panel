@@ -64,6 +64,7 @@ export const AppContract = {
       WG_CONF: "/opt/amnezia/awg/awg0.conf",
       SERVER_PUBLIC_KEY: "/opt/amnezia/awg/wireguard_server_public_key.key",
       WG_PSK: "/opt/amnezia/awg/wireguard_psk.key",
+      IPV6_REJECT_STUB_ENV: "/opt/amnezia/awg/ipv6-reject-stub.env",
     } as const,
 
     // Значения по умолчанию

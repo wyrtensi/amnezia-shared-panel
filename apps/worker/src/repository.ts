@@ -1,4 +1,8 @@
-import type { KeyState, ProtocolKind } from "@amnezia/contracts";
+import type {
+  KeyState,
+  NodeIpv6RejectStubState,
+  ProtocolKind,
+} from "@amnezia/contracts";
 import type { AccessSyncArmReason } from "@amnezia/db";
 import type { PeerObservation } from "./telemetry.js";
 
@@ -76,6 +80,16 @@ export type NodeCapacityRequested = {
   nodeId: string;
   maxPeers: number;
   requestedAt: Date;
+};
+
+export type NodeIpv6RejectStubApplied = {
+  jobId: string;
+  nodeId: string;
+  enabled: boolean;
+  prefix: string;
+  state: NodeIpv6RejectStubState;
+  reason: string | null;
+  observedAt: Date;
 };
 
 export type AccessReconcileResult = {
@@ -157,6 +171,9 @@ export interface WorkerRepository {
   ) => Promise<void>;
   completeNodeCapacityChange: (
     result: NodeCapacityRequested,
+  ) => Promise<void>;
+  completeNodeIpv6RejectStub: (
+    result: NodeIpv6RejectStubApplied,
   ) => Promise<void>;
   /** Store the release the panel currently offers nodes, keyed by repository. */
   saveNodeAgentRelease: (release: {

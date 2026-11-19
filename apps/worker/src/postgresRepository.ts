@@ -21,6 +21,7 @@ import {
   ACCESS_SYNC_DEDUPLICATION_KEY,
   RULES_REFRESH_DEDUPLICATION_KEY,
   revokeJobDedupKey,
+  type NodeIpv6RejectStubState,
 } from "@amnezia/contracts";
 import {
   armAccessSyncRow,
@@ -54,6 +55,7 @@ import type {
   OutboxJob,
   NodeAgentUpdateRequested,
   NodeCapacityRequested,
+  NodeIpv6RejectStubApplied,
   NodeReconcileContext,
   NodeReconcileResult,
   WorkerKeyContext,
@@ -463,6 +465,48 @@ export class PostgresWorkerRepository
           lockedAt: null,
           lastError: null,
           updatedAt: result.requestedAt,
+        })
+        .where(eq(jobOutbox.id, result.jobId));
+    });
+  };
+
+  completeNodeIpv6RejectStub = async (
+    result: NodeIpv6RejectStubApplied,
+  ): Promise<void> => {
+    await this.options.db.transaction(async (tx) => {
+      await tx
+        .update(nodes)
+        .set({
+          ipv6RejectStubEnabled: result.enabled,
+          ipv6RejectStubPrefix: result.prefix,
+          ipv6RejectStubState: result.state,
+          ipv6RejectStubReason: result.reason,
+          ipv6RejectStubObservedAt: result.observedAt,
+          updatedAt: result.observedAt,
+        })
+        .where(eq(nodes.id, result.nodeId));
+      await tx.insert(auditEvents).values({
+        actorType: "system",
+        action: "node.ipv6-reject-stub.applied",
+        targetType: "node",
+        targetId: result.nodeId,
+        metadata: {
+          jobId: result.jobId,
+          enabled: result.enabled,
+          prefix: result.prefix,
+          state: result.state,
+          reason: result.reason,
+        },
+        createdAt: result.observedAt,
+      });
+      await tx
+        .update(jobOutbox)
+        .set({
+          status: "completed",
+          completedAt: result.observedAt,
+          lockedAt: null,
+          lastError: null,
+          updatedAt: result.observedAt,
         })
         .where(eq(jobOutbox.id, result.jobId));
     });
@@ -1250,6 +1294,40 @@ export class PostgresWorkerRepository
                     ? new Date(snapshot.capacity.updatedAt)
                     : null,
                 }),
+          // Mirror observed IPv6 reject stub status unless a toggle job is in
+          // flight (`pending`), so stale telemetry cannot overwrite a pending change.
+          ...(node.ipv6RejectStubState === "pending"
+            ? {}
+            : snapshot.server.ipv6RejectStub === undefined
+              ? {
+                  ipv6RejectStubState: "unsupported" as const,
+                  ipv6RejectStubReason: "agent_unsupported",
+                  ipv6RejectStubObservedAt: snapshot.observedAt,
+                }
+              : snapshot.server.ipv6RejectStub === null
+                ? {
+                    ipv6RejectStubState: "unsupported" as const,
+                    ipv6RejectStubReason: "awg3_unavailable",
+                    ipv6RejectStubObservedAt: snapshot.observedAt,
+                  }
+                : (() => {
+                    const stub = snapshot.server.ipv6RejectStub;
+                    const observedState: NodeIpv6RejectStubState =
+                      !stub.supported
+                        ? "unsupported"
+                        : stub.enabled && stub.active
+                          ? "active"
+                          : !stub.enabled && !stub.active
+                            ? "off"
+                            : "error";
+                    return {
+                      ipv6RejectStubEnabled: stub.enabled,
+                      ipv6RejectStubPrefix: stub.prefix,
+                      ipv6RejectStubState: observedState,
+                      ipv6RejectStubReason: stub.reason,
+                      ipv6RejectStubObservedAt: snapshot.observedAt,
+                    };
+                  })()),
           lastHealthAt: snapshot.observedAt,
           lastSyncAt: snapshot.observedAt,
           lastError: null,

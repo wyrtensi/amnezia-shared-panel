@@ -31,6 +31,7 @@ import type {
   InstallGuideVideos,
   NodeAgentUpdateState,
   NodeCapacityState,
+  NodeIpv6RejectStubState,
   NodeKeyLimits,
   PortalPolicyOverride,
   ProtocolKind,
@@ -255,6 +256,24 @@ export const nodes = pgTable(
     // The active route itself is derived from `vpn_bridge_routes` (state
     // 'active'); it is deliberately not duplicated on this row.
     vpnEndpointRevision: integer("vpn_endpoint_revision").default(0).notNull(),
+    // Per-node opt-in AWG 3.1 IPv6 active-reject stub (dedicated ULA /64 +
+    // kernel `prohibit 2000::/3`). Desired toggle + prefix live here; worker
+    // applies via `node.set-ipv6-reject-stub` and mirrors observed state from
+    // `GET /server`. Turning it off reverts peers cleanly back to IPv4-only.
+    ipv6RejectStubEnabled: boolean("ipv6_reject_stub_enabled")
+      .default(false)
+      .notNull(),
+    ipv6RejectStubPrefix: text("ipv6_reject_stub_prefix")
+      .default("fd6b:7c2e:4a91:9f::/64")
+      .notNull(),
+    ipv6RejectStubState: text("ipv6_reject_stub_state")
+      .$type<NodeIpv6RejectStubState>()
+      .default("off")
+      .notNull(),
+    ipv6RejectStubReason: text("ipv6_reject_stub_reason"),
+    ipv6RejectStubObservedAt: timestamp("ipv6_reject_stub_observed_at", {
+      withTimezone: true,
+    }),
     ...timestamps,
   },
   (table) => [

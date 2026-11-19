@@ -24,15 +24,18 @@ import type {
   CreateUserRequest,
   CustomRoutes,
   DeleteNodeOptions,
+  DeviceType,
   GlobalRoutes,
   KeyNameDisplay,
   KeyState,
+  NodeIpv6RejectStubState,
   NoticeAcks,
   NoticeKind,
   PortalPolicy,
   QuotaRequest,
   RouteProfile,
   RulesRefreshStatus,
+  UpdateNodeIpv6RejectStubRequest,
   UpdateNodeRequest,
   UpdateServiceCheckRequest,
   UpsertReachabilityProbeRequest,
@@ -83,6 +86,14 @@ export type StoredKeyConfig = {
   bridgeEndpoint: { host: string; port: number } | null;
   /** The saved AWG 3.1 client profile, unvalidated; null when none. */
   awgClientProfile: unknown;
+  /** Key target platform; used to project mobile-safe IPv6 reject stub ULA. */
+  deviceType?: DeviceType;
+  /** Observed/desired IPv6 active-reject stub status on the key's node. */
+  nodeIpv6RejectStub?: {
+    enabled: boolean;
+    state: NodeIpv6RejectStubState;
+    prefix: string;
+  } | null;
 };
 
 /** The locked row a config refresh draws its new profile for. */
@@ -195,6 +206,11 @@ export interface ControlRepository {
     actor: Actor,
     nodeId: string,
     request: UpdateNodeRequest,
+  ) => Promise<unknown>;
+  setNodeIpv6RejectStub: (
+    actor: Actor,
+    nodeId: string,
+    request: UpdateNodeIpv6RejectStubRequest,
   ) => Promise<unknown>;
   deleteNode: (
     actor: Actor,

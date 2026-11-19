@@ -70,6 +70,15 @@ describe("database schema", () => {
     expect(columns.publicIp.notNull).toBe(false);
     expect(columns.publicIpResolvedAt.name).toBe("public_ip_resolved_at");
     expect(columns.publicIpResolvedAt.notNull).toBe(false);
+    expect(columns.ipv6RejectStubEnabled.name).toBe("ipv6_reject_stub_enabled");
+    expect(columns.ipv6RejectStubEnabled.notNull).toBe(true);
+    expect(columns.ipv6RejectStubEnabled.default).toBe(false);
+    expect(columns.ipv6RejectStubPrefix.name).toBe("ipv6_reject_stub_prefix");
+    expect(columns.ipv6RejectStubPrefix.default).toBe("fd6b:7c2e:4a91:9f::/64");
+    expect(columns.ipv6RejectStubState.name).toBe("ipv6_reject_stub_state");
+    expect(columns.ipv6RejectStubState.default).toBe("off");
+    expect(columns.ipv6RejectStubReason.notNull).toBe(false);
+    expect(columns.ipv6RejectStubObservedAt.notNull).toBe(false);
   });
 
   it("hides the node address from users until the policy turns it on", () => {
