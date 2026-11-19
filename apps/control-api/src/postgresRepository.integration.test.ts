@@ -6311,6 +6311,8 @@ describe("PostgresControlRepository reachability probe", () => {
       runInFlight: false,
       runRequestedAt: null,
       timeZone: "UTC",
+      probeDirectWhenBridged: false,
+      stealthMode: true,
       widgetUpdatedAt: null,
       widgetLastError: null,
     });
@@ -6464,6 +6466,9 @@ describe("PostgresControlRepository reachability probe", () => {
         consecutiveFailures: 0,
         incidentOpen: false,
         detail: null,
+        directStatus: null,
+        directCheckedAt: null,
+        directDetail: null,
         protocols: [
           {
             protocol: "awg3",

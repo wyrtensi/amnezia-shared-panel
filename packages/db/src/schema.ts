@@ -293,6 +293,7 @@ export const vpnBridges = pgTable(
     id: uuid("id").defaultRandom().primaryKey(),
     name: varchar("name", { length: 120 }).notNull(),
     publicIpv4: text("public_ipv4").notNull(),
+    reachabilityEnabled: boolean("reachability_enabled").default(true).notNull(),
     controlTcpPort: integer("control_tcp_port").default(7000).notNull(),
     udpPortStart: integer("udp_port_start").default(41000).notNull(),
     udpPortEnd: integer("udp_port_end").default(41031).notNull(),
@@ -445,6 +446,9 @@ export const vpnBridgeRoutes = pgTable(
     observedOnline: boolean("observed_online"),
     observedRegistrationMarker: text("observed_registration_marker"),
     observedAt: timestamp("observed_at", { withTimezone: true }),
+    alertConsecutiveFailures: integer("alert_consecutive_failures").default(0).notNull(),
+    alertFailingSince: timestamp("alert_failing_since", { withTimezone: true }),
+    alertedAt: timestamp("alerted_at", { withTimezone: true }),
     verificationMethod: text("verification_method").$type<BridgeVerificationMethod>(),
     verifiedRegistrationMarker: text("verified_registration_marker"),
     verifiedAt: timestamp("verified_at", { withTimezone: true }),
@@ -913,6 +917,8 @@ export const reachabilityProbe = pgTable(
     intervalSec: integer("interval_sec").default(3600).notNull(),
     failThreshold: integer("fail_threshold").default(2).notNull(),
     staleAfterSec: integer("stale_after_sec").default(10800).notNull(),
+    probeDirectWhenBridged: boolean("probe_direct_when_bridged").default(false).notNull(),
+    stealthMode: boolean("stealth_mode").default(true).notNull(),
     runRequestedAt: timestamp("run_requested_at", { withTimezone: true }),
     requestedRunId: uuid("requested_run_id"),
     currentRunId: uuid("current_run_id"),
@@ -1013,6 +1019,27 @@ export const nodeReachabilityState = pgTable("node_reachability_state", {
   alertKind: reachabilityAlertKindEnum("alert_kind"),
   checkedAt: timestamp("checked_at", { withTimezone: true }).notNull(),
   detail: varchar("detail", { length: 300 }),
+  directStatus: serviceCheckStatusEnum("direct_status"),
+  directCheckedAt: timestamp("direct_checked_at", { withTimezone: true }),
+  directDetail: varchar("direct_detail", { length: 300 }),
+});
+
+export const bridgeReachabilityState = pgTable("bridge_reachability_state", {
+  bridgeId: uuid("bridge_id")
+    .primaryKey()
+    .references(() => vpnBridges.id, { onDelete: "cascade" }),
+  mgmtStatus: serviceCheckStatusEnum("mgmt_status"),
+  mgmtConsecutiveFailures: integer("mgmt_consecutive_failures").default(0).notNull(),
+  mgmtFailingSince: timestamp("mgmt_failing_since", { withTimezone: true }),
+  mgmtAlertedAt: timestamp("mgmt_alerted_at", { withTimezone: true }),
+  mgmtAlertDetail: varchar("mgmt_alert_detail", { length: 300 }),
+  probeStatus: serviceCheckStatusEnum("probe_status"),
+  probeLevels: jsonb("probe_levels"),
+  probeCheckedAt: timestamp("probe_checked_at", { withTimezone: true }),
+  probeConsecutiveFailures: integer("probe_consecutive_failures").default(0).notNull(),
+  probeFailingSince: timestamp("probe_failing_since", { withTimezone: true }),
+  probeAlertedAt: timestamp("probe_alerted_at", { withTimezone: true }),
+  probeDetail: varchar("probe_detail", { length: 300 }),
 });
 
 /** One row per node per ingested run, pruned by the maintenance task. */

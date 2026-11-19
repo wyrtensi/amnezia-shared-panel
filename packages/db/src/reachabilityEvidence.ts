@@ -48,6 +48,9 @@ export const resetNodeEndpointEvidence = async (
       failingSince: null,
       checkedAt: now,
       detail: ENDPOINT_CHANGED_DETAIL,
+      directStatus: null,
+      directCheckedAt: null,
+      directDetail: null,
     })
     .where(eq(nodeReachabilityState.nodeId, nodeId));
 };

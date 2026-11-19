@@ -18,6 +18,7 @@ import { jobOutbox, users, vpnKeys } from "./schema.js";
 
 export * from "./client.js";
 export * from "./bridgeObservation.js";
+export * from "./bridgeIncidents.js";
 export * from "./reachabilityEvidence.js";
 export * from "./schema.js";
 

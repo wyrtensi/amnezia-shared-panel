@@ -136,6 +136,13 @@ describe("httpGet", () => {
     expect(result.body).toHaveLength(4096);
   });
 
+  it("connects to the pinned address while preserving the HTTP host", async () => {
+    const port = await listen(createHttpServer((req, res) => res.end(req.headers.host)));
+    await expect(httpGet(`http://panel.example.invalid:${port}/`, {
+      connectHost: "127.0.0.1", timeoutMs: 2000,
+    })).resolves.toEqual({ status: 200, body: `panel.example.invalid:${port}` });
+  });
+
   it("rejects when the server does not answer in time", async () => {
     const port = await listen(createHttpServer(() => {}));
     await expect(httpGet(`http://127.0.0.1:${port}/`, { timeoutMs: 150 })).rejects.toThrow(/timeout/);

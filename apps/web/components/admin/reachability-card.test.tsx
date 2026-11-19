@@ -197,6 +197,41 @@ describe("ReachabilityBody", () => {
     expect(html).toContain("probe-set");
   });
 
+  it("separates the external bridge probe, agent state and frpc observations", () => {
+    const html = render({ probe: null, nodes: [], bridges: [{
+      bridgeId: "00000000-0000-4000-8000-00000000000b",
+      bridgeName: "bridge-a",
+      publicIpv4: "192.0.2.20",
+      panelDnsHostname: "panel.example.test",
+      reachabilityEnabled: false,
+      managementStatus: "ok",
+      frpsReachable: true,
+      mgmtIncidentOpen: false,
+      mgmtFailingSince: null,
+      mgmtDetail: null,
+      probeStatus: "failed",
+      probeLevels: { ping: level(true), tcp: level(true), https: level(false) },
+      probeCheckedAt: "2026-11-10T08:00:00.000Z",
+      probeFailingSince: "2026-11-09T22:00:00.000Z",
+      probeConsecutiveFailures: 2,
+      probeIncidentOpen: true,
+      probeDetail: "HTTPS failed",
+      activeRoutes: [{
+        routeId: "00000000-0000-4000-8000-00000000000c",
+        nodeId: "00000000-0000-4000-8000-00000000000a",
+        nodeName: "node-a", publicUdpPort: 41000, state: "active", observedOnline: true,
+        incidentOpen: false, failingSince: null,
+      }],
+    }] });
+    expect(html).toContain("External probe");
+    expect(html).toContain("Bridge agent");
+    expect(html).toContain("frpc");
+    expect(html).toContain("node-a:41000");
+    expect(html).toContain('data-level="https" data-mark="fail"');
+    expect(html).toContain('aria-label="Reachability alerts for bridge-a"');
+    expect(html).toContain('aria-checked="false"');
+  });
+
   it("marks a stale probe, its last error and a run in flight", () => {
     const html = render({
       probe: {

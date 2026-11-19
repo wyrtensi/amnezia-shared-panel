@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   bridgeFrpProxyName,
+  bridgePanelDnsHostnameSchema,
   bridgeRouteCandidateCheckPayloadSchema,
   decodeRegistrationMarkerHeader,
   encodeRegistrationMarkerHeader,
@@ -47,6 +48,16 @@ const nonpublic = [
   "240.0.0.1",
   "255.255.255.255",
 ];
+
+describe("bridgePanelDnsHostnameSchema", () => {
+  it.each(["1.2", "0x7f.1", "0177.1", "panel.123", "127.0.0.1"])("rejects numeric URL host %s", (host) => {
+    expect(bridgePanelDnsHostnameSchema.safeParse(host).success).toBe(false);
+  });
+
+  it("normalizes a DNS name", () => {
+    expect(bridgePanelDnsHostnameSchema.parse(" Panel.Example.COM ")).toBe("panel.example.com");
+  });
+});
 
 describe("classifyPublicIpv4", () => {
   it.each(nonpublic)("rejects %s", (ip) => {

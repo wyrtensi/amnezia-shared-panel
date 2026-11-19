@@ -5,9 +5,11 @@ import { Play, TriangleAlert } from "lucide-react";
 import { toast } from "sonner";
 import {
   PROBE_LEVELS,
+  type AdminReachabilityBridge,
   type ProbeLevel,
   type ProbeLevelName,
   type ReachabilityStatus,
+  type UpsertReachabilityProbeRequest,
 } from "@amnezia/contracts";
 
 import { Badge } from "@/components/ui/badge";
@@ -59,11 +61,12 @@ export const levelMark = (
 };
 
 /** Level names as an operator reads them; the tcp level knocks on port 22. */
-const LEVEL_LABEL: Record<Exclude<ProbeLevelName, "download">, string> = {
+const LEVEL_LABEL: Record<Exclude<ProbeLevelName, "download"> | "https", string> = {
   ping: "ping",
   tcp: "tcp/22",
   handshake: "handshake",
   http: "http",
+  https: "https",
 };
 
 const MARK_CLASS: Record<ReturnType<typeof levelMark>, string> = {
@@ -81,6 +84,25 @@ function StatusBadge({
 }) {
   const badge = reachabilityStatusBadge(status);
   return <Badge variant={badge.variant}>{t(badge.labelKey)}</Badge>;
+}
+
+function LevelLine({ name, level, t }: {
+  name: ProbeLevelName | "https";
+  level: ProbeLevel | undefined;
+  t: Translate;
+}) {
+  const mark = levelMark(level);
+  return (
+    <li data-level={name} data-mark={mark} title={level?.detail ?? undefined}>
+      <span className="text-muted-foreground">
+        {name === "download" ? t("reachability.download") : LEVEL_LABEL[name]}
+      </span>{" "}
+      <span className={MARK_CLASS[mark]}>{t(`reachability.level.${mark}`)}</span>
+      {mark === "ok" && level?.latencyMs != null ? (
+        <span className="text-muted-foreground"> {level.latencyMs}ms</span>
+      ) : null}
+    </li>
+  );
 }
 
 function ProtocolLine({
@@ -112,25 +134,7 @@ function ProtocolLine({
         {PROBE_LEVELS.map((name) => {
           const level = result.levels?.[name];
           if (name === "download" && !level) return null;
-          const mark = levelMark(level);
-          return (
-            <li
-              key={name}
-              data-level={name}
-              data-mark={mark}
-              title={level?.detail ?? undefined}
-            >
-              <span className="text-muted-foreground">
-                {name === "download" ? t("reachability.download") : LEVEL_LABEL[name]}
-              </span>{" "}
-              <span className={MARK_CLASS[mark]}>
-                {t(`reachability.level.${mark}`)}
-              </span>
-              {mark === "ok" && level?.latencyMs != null ? (
-                <span className="text-muted-foreground"> {level.latencyMs}ms</span>
-              ) : null}
-            </li>
-          );
+          return <LevelLine key={name} name={name} level={level} t={t} />;
         })}
       </ul>
       {result.levels?.download?.ok === false && result.levels.download.detail ? (
@@ -209,6 +213,14 @@ function NodeRow({
               {node.detail}
             </p>
           ) : null}
+          {node.directStatus ? (
+            <div className="flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
+              <span>{t("reachability.direct")}</span>
+              <StatusBadge status={node.directStatus} t={t} />
+              {node.directCheckedAt ? <span>{formatDateTime(node.directCheckedAt, lang)}</span> : null}
+              {node.directDetail ? <span className="break-words">{node.directDetail}</span> : null}
+            </div>
+          ) : null}
         </div>
         <Switch
           checked={node.reachabilityEnabled}
@@ -237,6 +249,83 @@ function NodeRow({
   );
 }
 
+const BRIDGE_HOST_LEVELS = ["ping", "tcp", "https"] as const;
+const PROBE_MODES = [
+  ["probeDirectWhenBridged", "reachability.directMode"],
+  ["stealthMode", "reachability.stealthMode"],
+] as const;
+type ProbeMode = (typeof PROBE_MODES)[number][0];
+
+function BridgeRow({ bridge, t, lang, busy, onToggle }: {
+  bridge: AdminReachabilityBridge;
+  t: Translate;
+  lang: Lang;
+  busy: boolean;
+  onToggle: (enabled: boolean) => void;
+}) {
+  const { probeLevels } = bridge;
+  const frpsStatus = bridge.frpsReachable === null ? null : bridge.frpsReachable ? "ok" : "failed";
+  return (
+    <div className="space-y-2 border-t pt-3 text-xs">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex flex-wrap items-baseline gap-x-2">
+          <span className="text-sm font-medium">{bridge.bridgeName}</span>
+          <span className="font-mono text-muted-foreground">{bridge.publicIpv4}</span>
+        </div>
+        <div className="flex items-center gap-2">
+          <span className="text-muted-foreground">{t("reachability.bridgeAlerts")}</span>
+          <Switch
+            checked={bridge.reachabilityEnabled}
+            disabled={busy}
+            aria-label={t("reachability.bridgeSwitchAria", { name: bridge.bridgeName })}
+            onCheckedChange={onToggle}
+          />
+        </div>
+      </div>
+      <div className="space-y-1 text-muted-foreground">
+        <div className="flex flex-wrap items-center gap-1.5">
+          <span>{t("reachability.externalProbe")}</span>
+          <StatusBadge status={bridge.probeStatus} t={t} />
+          {bridge.probeIncidentOpen ? <Badge variant="destructive">{t("reachability.incident")}</Badge> : null}
+          {bridge.probeCheckedAt ? <span>{formatDateTime(bridge.probeCheckedAt, lang)}</span> : null}
+        </div>
+        {bridge.probeDetail ? <p className="break-words">{bridge.probeDetail}</p> : null}
+        {probeLevels ? (
+          <ul className="flex flex-wrap gap-x-3 gap-y-0.5 font-mono text-[11px]">
+            {BRIDGE_HOST_LEVELS.map((name) => probeLevels[name] ? (
+              <LevelLine key={name} name={name} level={probeLevels[name]} t={t} />
+            ) : null)}
+          </ul>
+        ) : null}
+      </div>
+      <div className="space-y-1 text-muted-foreground">
+        <div className="flex flex-wrap items-center gap-1.5">
+          <span>{t("reachability.bridgeAgent")}</span>
+          <Badge variant="outline">{t(`bridge.status.${bridge.managementStatus}`)}</Badge>
+          <span>frps</span>
+          <StatusBadge status={frpsStatus} t={t} />
+          {bridge.mgmtIncidentOpen ? <Badge variant="destructive">{t("reachability.incident")}</Badge> : null}
+        </div>
+        {bridge.mgmtDetail ? <p className="break-words">{bridge.mgmtDetail}</p> : null}
+      </div>
+      {bridge.activeRoutes.length > 0 ? (
+        <div className="space-y-1">
+          <p className="text-muted-foreground">{t("reachability.routeObservation")}</p>
+          <ul className="space-y-1 text-muted-foreground">
+            {bridge.activeRoutes.map((route) => (
+              <li key={route.routeId} className="flex flex-wrap items-center gap-1.5">
+                <span>{route.nodeName}:{route.publicUdpPort}</span>
+                <StatusBadge status={route.observedOnline === null ? null : route.observedOnline ? "ok" : "failed"} t={t} />
+                {route.incidentOpen ? <Badge variant="destructive">{t("reachability.incident")}</Badge> : null}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 /**
  * The card's content, with no hooks of its own.
  *
@@ -251,17 +340,23 @@ export function ReachabilityBody({
   busy,
   onRun,
   onToggleNode,
+  onToggleBridge,
+  onToggleMode,
+  bridgeToggleBusy,
 }: {
   view: AdminReachabilityView | null;
   failed: boolean;
   t: Translate;
   lang: Lang;
-  /** "run", a node id, or null: what is waiting on the API right now. */
   busy: string | null;
+  bridgeToggleBusy?: boolean;
   onRun: () => void;
   onToggleNode: (nodeId: string, enabled: boolean) => void;
+  onToggleBridge?: (bridgeId: string, enabled: boolean) => void;
+  onToggleMode?: (field: ProbeMode, enabled: boolean) => void;
 }) {
   const probe = view?.probe ?? null;
+  const bridges = view?.bridges ?? [];
 
   return (
     <Card>
@@ -275,7 +370,7 @@ export function ReachabilityBody({
           <Button
             variant="ghost"
             size="sm"
-            disabled={busy === "run"}
+            disabled={busy !== null}
             onClick={onRun}
           >
             <Play className="h-4 w-4" /> {t("reachability.run")}
@@ -314,6 +409,17 @@ export function ReachabilityBody({
                 <Badge variant="outline">{t("reachability.runRequested")}</Badge>
               ) : null}
             </div>
+            {PROBE_MODES.map(([field, label]) => typeof probe[field] === "boolean" ? (
+              <div key={field} className="flex items-center justify-between gap-2 text-xs">
+                <span>{t(label)}</span>
+                <Switch
+                  checked={probe[field]}
+                  disabled={busy !== null || !onToggleMode}
+                  aria-label={t(label)}
+                  onCheckedChange={(enabled) => onToggleMode?.(field, enabled)}
+                />
+              </div>
+            ) : null)}
             {probe.lastError ? (
               <Callout tone="warning" className="break-words text-xs">
                 {t("reachability.lastError", {
@@ -333,11 +439,26 @@ export function ReachabilityBody({
                 node={node}
                 t={t}
                 lang={lang}
-                busy={busy === node.nodeId}
+                busy={busy !== null}
                 onToggle={(enabled) => onToggleNode(node.nodeId, enabled)}
               />
             ))}
           </>
+        ) : null}
+        {bridges.length > 0 ? (
+          <div className="space-y-2 border-t pt-3">
+            <h4 className="text-sm font-medium">{t("reachability.bridges")}</h4>
+            {bridges.map((bridge) => (
+              <BridgeRow
+                key={bridge.bridgeId}
+                bridge={bridge}
+                t={t}
+                lang={lang}
+                busy={!!bridgeToggleBusy || !onToggleBridge}
+                onToggle={(enabled) => onToggleBridge?.(bridge.bridgeId, enabled)}
+              />
+            ))}
+          </div>
         ) : null}
       </CardContent>
     </Card>
@@ -347,6 +468,8 @@ export function ReachabilityBody({
 export function ReachabilityCard({
   state,
   onSetNodeEnabled,
+  bridgeToggleBusy,
+  onSetBridgeEnabled,
 }: {
   state: ReachabilityState;
   /**
@@ -354,6 +477,8 @@ export function ReachabilityCard({
    * the page so the node cards and this card cannot disagree after a toggle.
    */
   onSetNodeEnabled: (nodeId: string, enabled: boolean) => Promise<void>;
+  bridgeToggleBusy: boolean;
+  onSetBridgeEnabled: (bridgeId: string, enabled: boolean) => Promise<void>;
 }) {
   const { t, lang } = useT();
   const { view, loading, failed, reload } = state;
@@ -379,12 +504,23 @@ export function ReachabilityCard({
       t={t}
       lang={lang}
       busy={busy}
+      bridgeToggleBusy={bridgeToggleBusy}
       onRun={() => {
         void act("run", async () => {
           await apiRequest("/api/admin/reachability/run", { method: "POST" });
           // Not "ran it": the worker hands the run to the probe on its next
           // tick, and the results land only once the probe has finished.
           toast.success(t("reachability.runQueued"));
+          await reload();
+        });
+      }}
+      onToggleBridge={(bridgeId, enabled) => void onSetBridgeEnabled(bridgeId, enabled)}
+      onToggleMode={(field, enabled) => {
+        if (!view?.probe) return;
+        const { label, apiBaseUrl, controlUrl } = view.probe;
+        const body: UpsertReachabilityProbeRequest = { label, apiBaseUrl, controlUrl, [field]: enabled };
+        void act(field, async () => {
+          await apiRequest("/api/admin/reachability/probe", { method: "PUT", body: JSON.stringify(body) });
           await reload();
         });
       }}

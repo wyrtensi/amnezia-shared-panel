@@ -16,6 +16,7 @@ import {
 
 /** The node's active bridge route, which its AWG 3.1 path goes through. */
 export type BridgePath = {
+  bridgeId?: string;
   bridgeName: string;
   host: string;
   port: number;
@@ -37,6 +38,8 @@ export type ReachabilityTarget = {
    * the direct path.
    */
   bridgePath: BridgePath | null;
+  /** An opt-in direct path which never changes the regular node verdict. */
+  diagnostic?: true;
   /** Set when the panel could not send this target (no usable service key). */
   unavailableReason: string | null;
 };
@@ -71,7 +74,7 @@ const normalizeTargetId = (targetId: string): { id: string; slot: string } | nul
 
 /** The target goes through the node's bridge: AWG 3.1 on a bridged node. */
 export const measuredViaBridge = (target: ReachabilityTarget): boolean =>
-  target.protocol === "awg3" && target.bridgePath !== null;
+  target.protocol === "awg3" && target.bridgePath !== null && !target.diagnostic;
 
 export type NodeState = {
   status: ReachabilityStatus;
@@ -283,6 +286,7 @@ export const ingestRun = (input: IngestInput): IngestOutput => {
     { node: ReachabilityTarget; outcomes: ProtocolOutcome[]; badge: ProtocolOutcome[] }
   >();
   for (const target of input.targets) {
+    if (target.diagnostic) continue;
     const identity = normalizeTargetId(target.targetId);
     const result = identity ? resultById.get(identity.id) : undefined;
     // The probe reported this node and protocol, but for another endpoint
