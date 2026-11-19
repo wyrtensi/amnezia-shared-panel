@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import type { ProbeRunRequest, ProbeRunState } from "@amnezia/contracts";
+import { probeCapabilityInputOf, type ProbeRunRequest, type ProbeRunState } from "@amnezia/contracts";
 
 import type { ProbeClient } from "./probeAgent.js";
 import {
@@ -34,6 +34,8 @@ const probeRow = (extra: Partial<ProbeRow> = {}): ProbeRow => ({
   staleAlertedAt: null,
   enabledAt: hoursAgo(48),
   timeZone: "UTC",
+  probeDirectWhenBridged: false,
+  stealthMode: false,
   capabilities: null,
   capabilitiesCheckedAt: hoursAgo(0.01),
   candidateRun: null,
@@ -80,18 +82,26 @@ const finished = (runId: string): ProbeRunState => ({
   ],
 });
 
-const fakeRepository = (probe: ProbeRow | null): ReachabilityRepository => ({
-  loadProbe: vi.fn(() => Promise.resolve(probe)),
-  recordProbeError: vi.fn(() => Promise.resolve(undefined)),
-  recordProbeCapabilities: vi.fn(() => Promise.resolve(undefined)),
-  syncServiceKeys: vi.fn(() => Promise.resolve(({ created: 0, revoked: 0, provisioning: 0 }))),
-  listTargets: vi.fn(() => Promise.resolve([targetA, targetB])),
-  markRunStarted: vi.fn(() => Promise.resolve(undefined)),
-  abandonRun: vi.fn(() => Promise.resolve(undefined)),
-  ingest: vi.fn(() => Promise.resolve(true)),
-  setStaleAlert: vi.fn(() => Promise.resolve(undefined)),
-  finishCandidateRun: vi.fn(() => Promise.resolve("written" as const)),
-});
+const fakeRepository = (probe: ProbeRow | null): ReachabilityRepository => {
+  const repository: ReachabilityRepository = {
+    loadProbe: vi.fn(() => Promise.resolve(probe)),
+    recordProbeError: vi.fn(() => Promise.resolve(undefined)),
+    recordProbeCapabilities: vi.fn(() => Promise.resolve(undefined)),
+    syncServiceKeys: vi.fn(() => Promise.resolve(({ created: 0, revoked: 0, provisioning: 0 }))),
+    listTargets: vi.fn(() => Promise.resolve([targetA, targetB])),
+    listBridgeTargets: vi.fn(() => Promise.resolve([])),
+    markRunStarted: vi.fn(() => Promise.resolve(undefined)),
+    withDispatchLock: (expected, dispatch) => dispatch({
+      ...repository,
+      capabilities: probeCapabilityInputOf(expected.capabilities, expected.capabilitiesCheckedAt),
+    }),
+    abandonRun: vi.fn(() => Promise.resolve(undefined)),
+    ingest: vi.fn(() => Promise.resolve(true)),
+    setStaleAlert: vi.fn(() => Promise.resolve(undefined)),
+    finishCandidateRun: vi.fn(() => Promise.resolve("written" as const)),
+  };
+  return repository;
+};
 
 /** What the tick's ingest decided, classified against the given context. */
 const decided = async (
@@ -408,9 +418,16 @@ describe("reachability task", () => {
           config: "vpn://bridged-a",
           expectedEgressIp: null,
         },
-        // AWG 2 keeps the direct path: unknown origin keeps the fallback.
-        { targetId: "id-node-a:awg2", protocol: "awg2", config: "vpn://direct-a2" },
       ]);
+    });
+
+    it("sends direct targets for a bridged node only by explicit opt-in", async () => {
+      const client = fakeClient();
+      const repository = fakeRepository(probeRow({ ...due, ...capable, probeDirectWhenBridged: true }));
+      vi.mocked(repository.listTargets).mockResolvedValue([bridgedA, directAwg2]);
+      await tick(repository, client);
+      expect(vi.mocked(client.startRun).mock.calls[0]?.[0].targets.map(({ targetId }) => targetId))
+        .toEqual([bridgedA.targetId, directAwg2.targetId]);
     });
 
     it("compares a bridged path with the node's origin exit IP when known", async () => {
@@ -434,12 +451,10 @@ describe("reachability task", () => {
       // A stale record is refreshed first; make that refresh fail.
       vi.mocked(client.capabilities).mockRejectedValue(new Error("down"));
       const repository = fakeRepository(probeRow({ ...due, ...record }));
-      // Even if a bridged target came back with a config, no null is sent.
-      vi.mocked(repository.listTargets).mockResolvedValue([bridgedA]);
+      vi.mocked(repository.listTargets).mockResolvedValue([bridgedA, directAwg2]);
       await tick(repository, client);
       expect(repository.listTargets).toHaveBeenCalledWith({ bridgeMeasurement: false });
-      const sent = vi.mocked(client.startRun).mock.calls[0]?.[0].targets[0];
-      expect(sent && "expectedEgressIp" in sent).toBe(false);
+      expect(vi.mocked(client.startRun).mock.calls[0]?.[0].targets).toEqual([]);
     });
 
     it("uses a capability refreshed in the same tick", async () => {

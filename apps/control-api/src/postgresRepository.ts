@@ -3648,13 +3648,15 @@ export class PostgresControlRepository implements ControlRepository {
     runRequestedAt: row.runRequestedAt?.toISOString() ?? null,
     ...(row.requestedRunId === null ? {} : { requestedRunId: row.requestedRunId }),
     timeZone: row.timeZone,
+    probeDirectWhenBridged: row.probeDirectWhenBridged,
+    stealthMode: row.stealthMode,
     widgetUpdatedAt: row.widgetUpdatedAt?.toISOString() ?? null,
     widgetLastError: row.widgetLastError,
   });
 
   getReachability = async (_actor: Actor): Promise<AdminReachabilityView> => {
     const db = this.options.db;
-    const [probeRows, nodeRows, resultRows, keyRows] = await Promise.all([
+    const [probeRows, nodeRows, resultRows, keyRows, bridges] = await Promise.all([
       db.select().from(reachabilityProbe).where(eq(reachabilityProbe.id, 1)),
       // Every registered node, a disabled one included: the probe keeps
       // testing it so that its recovery is noticed.
@@ -3693,6 +3695,7 @@ export class PostgresControlRepository implements ControlRepository {
           desc(vpnKeys.createdAt),
           desc(vpnKeys.id),
         ),
+      this.bridges.listReachability(),
     ]);
     const now = new Date();
     const probe = probeRows[0];
@@ -3706,6 +3709,7 @@ export class PostgresControlRepository implements ControlRepository {
     );
     return {
       probe: probe ? this.toReachabilityProbeView(probe, now) : null,
+      bridges,
       nodes: nodeRows.map((node) => {
         // Every protocol the node serves to anyone, without user policy: the
         // shared rule the worker keeps a probe key by.
@@ -3721,6 +3725,9 @@ export class PostgresControlRepository implements ControlRepository {
           consecutiveFailures: node.state?.consecutiveFailures ?? 0,
           incidentOpen: (node.state?.alertedAt ?? null) !== null,
           detail: node.state?.detail ?? null,
+          directStatus: probe?.probeDirectWhenBridged ? node.state?.directStatus ?? null : null,
+          directCheckedAt: probe?.probeDirectWhenBridged ? node.state?.directCheckedAt?.toISOString() ?? null : null,
+          directDetail: probe?.probeDirectWhenBridged ? node.state?.directDetail ?? null : null,
           protocols: served.map((protocol) => {
             const result = results.get(slot(node.id, protocol));
             return {
@@ -3846,6 +3853,8 @@ export class PostgresControlRepository implements ControlRepository {
         ? {}
         : { staleAfterSec: request.staleAfterSec }),
       ...(request.timeZone === undefined ? {} : { timeZone: request.timeZone }),
+      ...(request.probeDirectWhenBridged === undefined ? {} : { probeDirectWhenBridged: request.probeDirectWhenBridged }),
+      ...(request.stealthMode === undefined ? {} : { stealthMode: request.stealthMode }),
     };
     return this.options.db.transaction(async (tx) => {
       const [current] = await tx
@@ -3895,6 +3904,8 @@ export class PostgresControlRepository implements ControlRepository {
             failThreshold: REACHABILITY_DEFAULTS.failThreshold,
             staleAfterSec: REACHABILITY_DEFAULTS.staleAfterSec,
             timeZone: REACHABILITY_DEFAULTS.timeZone,
+            probeDirectWhenBridged: REACHABILITY_DEFAULTS.probeDirectWhenBridged,
+            stealthMode: REACHABILITY_DEFAULTS.stealthMode,
             ...settings,
             ...credentialColumns,
           })

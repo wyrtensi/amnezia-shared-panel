@@ -1936,6 +1936,8 @@ export const REACHABILITY_DEFAULTS = {
   failThreshold: 2,
   staleAfterSec: 10800,
   timeZone: "UTC",
+  probeDirectWhenBridged: false,
+  stealthMode: true,
 } as const;
 
 export const reachabilityStatusSchema = serviceCheckStatusSchema;
@@ -1973,12 +1975,36 @@ export const probeTargetResultSchema = z.object({
 });
 export type ProbeTargetResult = z.infer<typeof probeTargetResultSchema>;
 
+export const bridgeProbeLevelsSchema = z.object({
+  ping: probeLevelSchema,
+  tcp: probeLevelSchema,
+  https: probeLevelSchema.optional(),
+});
+export type BridgeProbeLevels = z.infer<typeof bridgeProbeLevelsSchema>;
+
+export const probeBridgeRunTargetSchema = z.object({
+  targetId: z.string().min(1).max(200),
+  host: z.string().min(1).max(255),
+  httpsHostname: z.string().min(1).max(253).optional(),
+});
+export type ProbeBridgeRunTarget = z.infer<typeof probeBridgeRunTargetSchema>;
+
+export const probeBridgeTargetResultSchema = z.object({
+  targetId: z.string().min(1).max(200),
+  host: z.string().max(255),
+  status: z.enum(["done", "error"]),
+  detail: z.string().max(500).nullable(),
+  levels: bridgeProbeLevelsSchema,
+});
+export type ProbeBridgeTargetResult = z.infer<typeof probeBridgeTargetResultSchema>;
+
 export const probeRunStateSchema = z.object({
   runId: z.string().min(1).max(100),
   startedAt: z.iso.datetime(),
   finishedAt: z.iso.datetime().nullable(),
   control: probeLevelSchema,
   results: z.array(probeTargetResultSchema).max(2_000),
+  bridgeResults: z.array(probeBridgeTargetResultSchema).max(500).optional(),
 });
 export type ProbeRunState = z.infer<typeof probeRunStateSchema>;
 
@@ -2009,6 +2035,10 @@ export const probeRunRequestSchema = z.object({
   control: z.object({ url: z.url() }),
   egress: z.object({ url: z.url() }),
   targets: z.array(probeRunTargetSchema).max(500),
+  /** Optional standalone bridge host targets (requires `bridge-host-check` capability). */
+  bridgeTargets: z.array(probeBridgeRunTargetSchema).max(200).optional(),
+  /** Optional TSPU-stealth execution mode (requires `stealth-probe` capability). */
+  stealth: z.boolean().optional(),
 });
 export type ProbeRunRequest = z.infer<typeof probeRunRequestSchema>;
 
@@ -2054,6 +2084,16 @@ export const upsertReachabilityProbeRequestSchema = z.object({
   failThreshold: z.int().min(1).max(10).optional(),
   staleAfterSec: z.int().min(600).max(604_800).optional(),
   timeZone: timeZoneSchema.optional(),
+  /**
+   * When false (default), nodes with an active bridge route are probed only
+   * through the bridge — zero direct external probes hit the node's origin IP.
+   */
+  probeDirectWhenBridged: z.boolean().optional(),
+  /**
+   * When true (default), shuffle targets, vary the scheduled run interval,
+   * and enable quieter pacing on compatible probes.
+   */
+  stealthMode: z.boolean().optional(),
 });
 export type UpsertReachabilityProbeRequest = z.infer<
   typeof upsertReachabilityProbeRequestSchema
@@ -2080,7 +2120,50 @@ export const adminReachabilityNodeSchema = z.object({
   consecutiveFailures: z.int(),
   incidentOpen: z.boolean(),
   detail: z.string().nullable(),
+  /** Optional diagnostic direct-path check when `probeDirectWhenBridged` is enabled. */
+  directStatus: reachabilityStatusSchema.nullable().optional(),
+  directCheckedAt: z.iso.datetime().nullable().optional(),
+  directDetail: z.string().nullable().optional(),
   protocols: z.array(adminReachabilityProtocolSchema),
+});
+
+export const adminReachabilityBridgeRouteSchema = z.object({
+  routeId: z.uuid(),
+  nodeId: z.uuid(),
+  nodeName: z.string(),
+  publicUdpPort: z.int(),
+  state: z.enum(["draft", "active", "retiring"]),
+  observedOnline: z.boolean().nullable(),
+  incidentOpen: z.boolean(),
+  failingSince: z.iso.datetime().nullable(),
+});
+
+export const adminReachabilityBridgeSchema = z.object({
+  bridgeId: z.uuid(),
+  bridgeName: z.string(),
+  publicIpv4: z.string(),
+  panelDnsHostname: z.string().nullable(),
+  reachabilityEnabled: z.boolean(),
+  managementStatus: z.enum([
+    "pending_enrollment",
+    "ok",
+    "down",
+    "stale",
+    "identity_mismatch",
+    "unsupported",
+  ]),
+  frpsReachable: z.boolean().nullable(),
+  mgmtIncidentOpen: z.boolean(),
+  mgmtFailingSince: z.iso.datetime().nullable(),
+  mgmtDetail: z.string().nullable(),
+  probeStatus: reachabilityStatusSchema.nullable(),
+  probeLevels: bridgeProbeLevelsSchema.nullable(),
+  probeCheckedAt: z.iso.datetime().nullable(),
+  probeFailingSince: z.iso.datetime().nullable(),
+  probeConsecutiveFailures: z.int(),
+  probeIncidentOpen: z.boolean(),
+  probeDetail: z.string().nullable(),
+  activeRoutes: z.array(adminReachabilityBridgeRouteSchema),
 });
 
 export const reachabilityRunQuerySchema = z.object({
@@ -2105,6 +2188,10 @@ export const adminReachabilityProbeSchema = z.object({
   /** ID of the pending manual run. Optional for compatibility with older APIs. */
   requestedRunId: z.uuid().optional(),
   timeZone: z.string(),
+  /** Suppress direct probes to bridged nodes unless explicitly enabled (default false). */
+  probeDirectWhenBridged: z.boolean().optional(),
+  /** TSPU-stealth probing mode (default true). */
+  stealthMode: z.boolean().optional(),
   /** The Telegram status widget: when its data last went out, and why not. */
   widgetUpdatedAt: z.iso.datetime().nullable(),
   widgetLastError: z.string().nullable(),
@@ -2113,9 +2200,12 @@ export const adminReachabilityProbeSchema = z.object({
 export const adminReachabilityViewSchema = z.object({
   probe: adminReachabilityProbeSchema.nullable(),
   nodes: z.array(adminReachabilityNodeSchema),
+  bridges: z.array(adminReachabilityBridgeSchema).optional(),
 });
 export type AdminReachabilityView = z.infer<typeof adminReachabilityViewSchema>;
 export type AdminReachabilityNode = z.infer<typeof adminReachabilityNodeSchema>;
+export type AdminReachabilityBridge = z.infer<typeof adminReachabilityBridgeSchema>;
+export type AdminReachabilityBridgeRoute = z.infer<typeof adminReachabilityBridgeRouteSchema>;
 
 /** Slack on top of one period before a silent probe counts as stale. */
 export const PROBE_STALE_GRACE_SEC = 1_800;

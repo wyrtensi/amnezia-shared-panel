@@ -52,6 +52,8 @@ const probe = (extra: Partial<ProbeRow> = {}): ProbeRow => ({
   staleAlertedAt: null,
   enabledAt: NOW,
   timeZone: "UTC",
+  probeDirectWhenBridged: false,
+  stealthMode: true,
   capabilities: null,
   capabilitiesCheckedAt: null,
   candidateRun: null,
