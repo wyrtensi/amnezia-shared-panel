@@ -225,7 +225,7 @@ describe("people column", () => {
   });
 });
 
-describe("numbers in chat_data", () => {
+describe("numbers in the widget data", () => {
   // Telegram read `[...,0,2663]` as one decimal and drew 0.2663 under "онл.":
   // two bare numbers side by side in an array must never be sent.
   it("never puts two bare numbers next to each other", () => {

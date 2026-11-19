@@ -336,7 +336,8 @@ the panel role still decides admin capability.
 **Quota requests reach admins only on the overview page** unless the worker can
 message a Telegram chat. Set `TELEGRAM_BOT_TOKEN` (from @BotFather) and
 `TELEGRAM_CHAT_ID` (the numeric id of the person or group, who must have started
-the bot) in `infra/prod/.env` and recreate the worker; each new request then
+the bot; several ids may be listed, comma-separated) in `infra/prod/.env` and
+recreate the worker; each new request then
 arrives as a message with who asks, the limit, the server and a link to the
 admin page (`PANEL_PUBLIC_URL`). Requests made before that are not sent. A failed
 send is retried by the outbox and logged by the worker; the token never reaches

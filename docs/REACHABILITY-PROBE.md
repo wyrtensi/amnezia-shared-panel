@@ -172,8 +172,8 @@ raise `intervalSec`, or use operator verification.
 
 Telegram, through the same chat as the quota-request notification
 (`TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, which accepts a single numeric chat
-id or comma-separated numeric chat ids for text alerts while pinning the status
-widget in the first chat), plain text:
+id or comma-separated numeric chat ids; every chat gets the alerts and the
+status widget), plain text:
 
 - **one** "unavailable" message per node per incident, after `fail-threshold`
   consecutive failed runs (default 2); nothing more while it stays down;
@@ -189,11 +189,16 @@ widget in the first chat), plain text:
 
 ### Status widget
 
-The same bot keeps **one** widget message (Bot API `sendWidget`) in the same
-chat, pinned silently when it is sent. After each ingested run, and when the
-probe goes stale, the worker changes its data (`editMessageWidgetData`); it
-sends a new message only in the cases listed below. Production Telegram shows widgets only in the **private chat**
-with the bot, so `TELEGRAM_CHAT_ID` must be a person's id for the widget to work.
+The same bot keeps **one shared** widget (Bot API `sendWidget` with
+`is_shared`) and shows it in every chat of `TELEGRAM_CHAT_ID`: the first chat
+gets it from `sendWidget`, the others the same widget from `sendSharedWidget`.
+Each copy is pinned silently when it is sent. After each ingested run, and when
+the probe goes stale, the worker changes the data of every copy at once
+(`editSharedWidgetData`, the widget's `public_data`); an open copy picks the
+change up within the shared widget's refresh period (30 s by default). It sends
+new messages only in the cases listed below. Production Telegram shows widgets
+only in the **private chat** with the bot, so every id in `TELEGRAM_CHAT_ID`
+must be a person's id (who has started the bot) for the widget to work there.
 
 - Heading "VPN из {label}: N из M"; one row per node with checks on: ssh / vpn /
   internet ✓ ✕ or "-" (not run), devices online now (the
@@ -208,12 +213,18 @@ with the bot, so `TELEGRAM_CHAT_ID` must be a person's id for the widget to work
 - Footer: last check and the expected next one, in the probe's `--time-zone`.
 - A yellow banner when the newest run failed everywhere (the combined-alert
   rule); "нет данных" with dimmed rows when the probe is stale.
-- A deleted widget message, another chat, a new label or a new widget template
-  sends a fresh widget and unpins the old one. So does a run that sends a node
-  unavailable/back alert while the widget was sent more than a day ago (or
-  before its send time was recorded), so it stays near the newest messages.
-  Runs without an alert keep editing the old one, however old. `probe` shows
-  the widget's last update or error (`tg widget:`).
+- A new label or a new widget template sends a new shared widget to every
+  chat and unpins the old copies. So does taking a chat off `TELEGRAM_CHAT_ID`:
+  the old widget is no longer edited, so the copy left in that chat stops
+  changing. A chat added to the list gets a copy of the current widget. A run
+  that sends a node unavailable/back alert sends a new copy to each chat whose
+  copy is more than a day old (or has no recorded send time), so it
+  stays near the newest messages; runs without an alert never resend.
+- Telegram does not report a copy someone deleted (the shared widget outlives
+  its messages): that chat gets a new copy on the next rule above.
+- A chat that refuses (for example, the person never started the bot) does not
+  hold up the others; it is tried again on the next refresh and shows in the
+  error. `probe` shows the widget's last update or error (`tg widget:`).
 
 ### In the user cabinet
 

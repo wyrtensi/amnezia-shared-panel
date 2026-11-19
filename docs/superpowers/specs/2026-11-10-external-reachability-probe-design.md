@@ -243,10 +243,12 @@ notification in `apps/worker/src/telegram.ts`, with the label interpolated.
 
 ### Telegram status widget
 
-One Bot API widget message (`sendWidget`) in the same chat as the alerts
-(`TELEGRAM_CHAT_ID`), pinned silently when it is sent. After that the bot
-changes its data (`editMessageWidgetData`) and sends a new one only in the
-cases under **Stored**; alerts stay separate messages. The
+One shared Bot API widget (`sendWidget` with `is_shared`, then
+`sendSharedWidget` for the other chats) in every chat the alerts go to
+(`TELEGRAM_CHAT_ID`), each copy pinned silently when it is sent. After that the
+bot changes the data of every copy with one call (`editSharedWidgetData`) and
+sends new copies only in the cases under **Stored**; alerts stay separate
+messages. (Changed 2026-11-20 from one widget in the first chat only.) The
 bot only sends: the widget has no buttons and makes no requests.
 
 - **Trigger.** A `notify.reachability-widget` outbox row, queued in the ingest
@@ -255,13 +257,20 @@ bot only sends: the widget has no buttons and makes no requests.
   same run queued a node alert, else empty. The processor builds the data from
   the current database state when it runs, so a retried old row never writes
   older data over newer.
-- **Stored** on `reachability_probe`: `widget_message_id`, `widget_chat_id`,
-  `widget_version` (a hash of the HTML and caption), `widget_sent_at` (set only
-  when a message is sent), `widget_updated_at`, `widget_last_error`. A missing
-  message ("message with widget to edit not found"), another chat, another
-  version, or a `notice` row while `widget_sent_at` is more than 24 h old or
-  null sends a new widget, pins it and unpins the old one (best effort). "message is not modified" is a success. A
-  pin failure is logged and never resends.
+- **Stored** on `reachability_probe`: `widget_shared_id`, `widget_version` (a
+  hash of the HTML and caption), `widget_updated_at`, `widget_last_error`; one
+  row per chat in `reachability_widget_messages` (`chat_id`, `message_id`, the
+  `widget_id` it shows, `sent_at`, set only when a copy is sent). Another
+  version, a chat taken off the list (its copy must stop changing) or a shared
+  widget Telegram no longer knows sends a new shared widget; a chat without a
+  copy of the current one, or a `notice` row while its `sent_at` is more than
+  24 h old or null, gets a new copy. Each new copy is pinned and the chat's old
+  one unpinned (best effort). "message is not modified" is a success. A pin
+  failure is logged and never resends. A chat refusing (4xx other than 429) is
+  recorded and retried on the next refresh without holding up the others.
+  `widget_message_id`, `widget_chat_id` and `widget_sent_at` are the
+  pre-sharing single message, copied into the table by migration 0063 and no
+  longer written.
 - **Content.** Heading "VPN из {label}: N из M" (N = nodes with status ok,
   M = nodes shown). One row per node with checks on and a state: dot coloured
   by the handshake level (green ok, red failed, grey not measured), ssh/vpn/inet
@@ -288,7 +297,7 @@ bot only sends: the widget has no buttons and makes no requests.
   Clock times are formatted by the worker; the widget does no zone math. The
   alert texts use the same zone and name it after the time
   ("2026-01-01 11:00 Europe/Berlin"; "… UTC" by default).
-- **Limits.** `chat_data` is compact JSON built to fit 1024 bytes: names are
+- **Limits.** `public_data` is compact JSON built to fit 1024 bytes: names are
   cut by bytes, then shorter, then trailing ok rows are dropped and counted as
   "… ещё N". HTML stays under 4096 bytes after zlib level 9.
 

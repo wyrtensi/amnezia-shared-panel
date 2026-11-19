@@ -236,11 +236,12 @@ console.log(
 // External reachability probe storage, shared by its task and the widget.
 const reachabilityRepository = new PostgresReachabilityRepository({ db: database.db, keyring });
 
-// The Telegram status widget lives in the same chat as the notifications.
+// The Telegram status widget goes to every chat the notifications go to, as
+// one shared widget.
 const reachabilityWidget = telegramConfig
   ? createReachabilityWidget({
       api: createTelegramBotApi({ token: telegramConfig.token }),
-      chatId: telegramConfig.chatId,
+      chatIds: telegramConfig.chatIds ?? [telegramConfig.chatId],
       store: reachabilityRepository,
       log: (line) => console.log(line),
     })

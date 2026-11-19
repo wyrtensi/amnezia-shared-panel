@@ -24,6 +24,7 @@ import {
   peerSamples,
   portalPolicy,
   reachabilityProbe,
+  reachabilityWidgetMessages,
   routeRuleVersions,
   trafficRollups,
   users,
@@ -2223,6 +2224,7 @@ describe("PostgresReachabilityRepository", () => {
   const clean = async () => {
     if (!database) return;
     await database.db.delete(reachabilityProbe);
+    await database.db.delete(reachabilityWidgetMessages);
     await database.db.delete(auditEvents);
     await database.db.delete(jobOutbox);
     // Routes and bridges reference nodes with RESTRICT.
@@ -2675,7 +2677,7 @@ describe("PostgresReachabilityRepository", () => {
       ]);
 
       const snapshot = await repository.loadWidgetSnapshot(now);
-      expect(snapshot?.widget).toBeNull();
+      expect(snapshot?.widget).toEqual({ sharedId: null, version: null, messages: [] });
       expect(snapshot?.input).toMatchObject({
         label: "Testland",
         timeZone: "Europe/Belgrade",
@@ -2692,16 +2694,40 @@ describe("PostgresReachabilityRepository", () => {
       expect(byName.get("node-a")?.lastPersonHandshakeAt).toEqual(new Date("2026-11-10T13:30:00Z"));
       expect(byName.get("node-b")?.lastPersonHandshakeAt).toBeNull();
 
-      await repository.saveWidget({ messageId: 77, chatId: "chat", version: "v1", sentAt: now });
-      // An edit later moves the update time, never the send time.
+      await repository.saveSharedWidget(
+        { sharedId: "shared-1", version: "v1" },
+        { chatId: "chat-b", messageId: 77, widgetId: "shared-1", sentAt: now },
+      );
+      await repository.saveWidgetMessage({ chatId: "chat-a", messageId: 78, widgetId: "shared-1", sentAt: now });
+      // An edit later moves the update time, never a send time.
       const edited = new Date("2026-11-10T15:05:00Z");
       await repository.recordWidgetResult(edited, null);
       await repository.recordWidgetResult(edited, "boom");
       const again = await repository.loadWidgetSnapshot(edited);
-      expect(again?.widget).toEqual({ messageId: 77, chatId: "chat", version: "v1", sentAt: now });
+      expect(again?.widget).toEqual({
+        sharedId: "shared-1",
+        version: "v1",
+        messages: [
+          { chatId: "chat-a", messageId: 78, widgetId: "shared-1", sentAt: now },
+          { chatId: "chat-b", messageId: 77, widgetId: "shared-1", sentAt: now },
+        ],
+      });
       const [row] = await database.db.select().from(reachabilityProbe);
       expect(row?.widgetLastError).toBe("boom");
       expect(row?.widgetUpdatedAt).toEqual(edited);
+
+      // A new copy in a chat replaces its row; a removed chat loses it.
+      const resent = new Date("2026-11-10T15:10:00Z");
+      await repository.saveSharedWidget(
+        { sharedId: "shared-2", version: "v2" },
+        { chatId: "chat-a", messageId: 90, widgetId: "shared-2", sentAt: resent },
+      );
+      await repository.deleteWidgetMessage("chat-b");
+      expect((await repository.loadWidgetSnapshot(resent))?.widget).toEqual({
+        sharedId: "shared-2",
+        version: "v2",
+        messages: [{ chatId: "chat-a", messageId: 90, widgetId: "shared-2", sentAt: resent }],
+      });
 
       // Going stale queues one more refresh, once.
       const staleAt = new Date("2026-11-10T20:00:00Z");

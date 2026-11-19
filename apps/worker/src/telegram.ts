@@ -11,9 +11,12 @@ import type { QuotaRequestNotifyPayload } from "@amnezia/contracts";
 
 export type TelegramConfig = {
   token: string;
-  /** Primary chat id (used for the single pinned status widget). */
+  /** The first chat id. */
   chatId: string;
-  /** All recipient chat ids when TELEGRAM_CHAT_ID lists more than one (comma-separated). */
+  /**
+   * All recipient chat ids when TELEGRAM_CHAT_ID lists more than one
+   * (comma-separated). Alerts and the shared status widget go to each.
+   */
   chatIds?: string[];
 };
 

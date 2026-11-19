@@ -11,7 +11,7 @@ import {
 import { REACHABILITY_WIDGET_HTML } from "./reachabilityWidgetHtml.js";
 
 /**
- * The Telegram status widget: what goes into its `chat_data`. Pure. The HTML
+ * The Telegram status widget: what goes into its `public_data`. Pure. The HTML
  * (reachabilityWidgetHtml.ts) only draws this data; every decision about
  * order, colour inputs and clock times is made here.
  *

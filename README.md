@@ -84,7 +84,8 @@ What that buys an operator, concretely:
   and per-bridge verdicts with independent alert switches, and optional Telegram
   bot integration (`TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID`) delivers quota-request
   alerts, node/IP/bridge outage & recovery alerts (one message per incident), and
-  a live pinned Telegram status widget (`sendWidget`). See
+  a live pinned Telegram status widget, one shared widget in every listed chat
+  (`sendWidget` with `is_shared`). See
   [docs/REACHABILITY-PROBE.md](docs/REACHABILITY-PROBE.md).
 - **Fleet visibility.** Host metrics, agent version, peer counts and traffic per
   node and per key, with a one-command agent update that swaps only the agent

@@ -1,6 +1,9 @@
 /**
- * The Telegram status widget's HTML (Bot API `sendWidget`). It only draws the
- * `chat_data` built by reachabilityWidget.ts; see the wire format there.
+ * The Telegram status widget's HTML (Bot API `sendWidget`, sent as a shared
+ * widget). It only draws the `public_data` built by reachabilityWidget.ts; see
+ * the wire format there. Every copy of the shared widget shows the same data,
+ * so the widget watches it: an open copy polls it at the shared widget's
+ * refresh period instead of waiting for a reload.
  *
  * Runs in Telegram's QuickJS sandbox: no network, generic fonts only, theme
  * colours from `--tg-theme-*`. Node names go in through `textContent`. Limits
@@ -50,7 +53,7 @@ function E(t,c,x){var e=document.createElement(t);if(c)e.className=c;if(x!=null)
 function M(v,st){return E('td',st?'':v=='1'?'ok':v=='0'?'no':'na',v=='1'?'\\u2713':v=='0'?'\\u2715':'-')}
 ${PEOPLE_CELL_JS}
 function R(){
-var d=null;try{d=JSON.parse(W&&W.chatData)}catch(e){}
+var d=null;try{d=JSON.parse(W&&W.publicData)}catch(e){}
 var h=$('h'),b=$('b'),r=$('r'),f=$('f'),t=$('t');
 b.textContent='';r.textContent='';
 if(!d||d.v!==4){h.textContent='Нет данных';t.style.display='none';f.textContent='';return}
@@ -73,7 +76,7 @@ r.appendChild(tr)});
 if(d.x){var x=E('tr'),c=E('td','na','\\u2026 ещё '+d.x);c.colSpan=6;x.appendChild(c);r.appendChild(x)}
 f.textContent=st?'Ждём следующую проверку':'Проверка '+d.ct+(d.nt?' \\u00b7 следующая ~'+d.nt:'');
 }
-if(W)W.onEvent('chatDataChanged',R);
+if(W){W.onEvent('publicDataChanged',R);if(W.watchPublicData)W.watchPublicData()}
 setInterval(R,60000);
 R();
 </script>`;

@@ -39,6 +39,7 @@ import {
   peerCurrent,
   portalPolicy,
   reachabilityProbe,
+  reachabilityWidgetMessages,
   SERVICE_ACCOUNT_EMAIL,
   users,
   vpnBridgeRoutes,
@@ -65,7 +66,11 @@ import {
   type ReachabilityTarget,
 } from "./reachability.js";
 import type { WidgetNode } from "./reachabilityWidget.js";
-import type { ReachabilityWidgetStore, StoredWidget } from "./reachabilityWidgetSender.js";
+import type {
+  ReachabilityWidgetStore,
+  SentWidgetMessage,
+  StoredWidget,
+} from "./reachabilityWidgetSender.js";
 import type {
   CandidateSettle,
   IngestDecide,
@@ -1313,15 +1318,20 @@ export class PostgresReachabilityRepository
         lastPersonHandshakeAt: lastHandshake.get(row.nodeId) ?? null,
       }];
     });
-    const widget: StoredWidget | null =
-      probe.widgetMessageId !== null && probe.widgetChatId !== null && probe.widgetVersion !== null
-        ? {
-            messageId: probe.widgetMessageId,
-            chatId: probe.widgetChatId,
-            version: probe.widgetVersion,
-            sentAt: probe.widgetSentAt,
-          }
-        : null;
+    const messageRows = await db
+      .select()
+      .from(reachabilityWidgetMessages)
+      .orderBy(asc(reachabilityWidgetMessages.chatId));
+    const widget: StoredWidget = {
+      sharedId: probe.widgetSharedId,
+      version: probe.widgetSharedId === null ? null : probe.widgetVersion,
+      messages: messageRows.map((row) => ({
+        chatId: row.chatId,
+        messageId: row.messageId,
+        widgetId: row.widgetId,
+        sentAt: row.sentAt,
+      })),
+    };
     return {
       input: {
         label: probe.label,
@@ -1347,14 +1357,39 @@ export class PostgresReachabilityRepository
     };
   };
 
-  saveWidget = async (widget: StoredWidget & { sentAt: Date }): Promise<void> => {
-    await this.updateProbe({
-      widgetMessageId: widget.messageId,
-      widgetChatId: widget.chatId,
-      widgetVersion: widget.version,
-      widgetSentAt: widget.sentAt,
-      widgetUpdatedAt: widget.sentAt,
+  saveSharedWidget = async (
+    shared: { sharedId: string; version: string },
+    message: SentWidgetMessage,
+  ): Promise<void> => {
+    await this.options.db.transaction(async (tx) => {
+      await this.updateProbe(
+        { widgetSharedId: shared.sharedId, widgetVersion: shared.version, widgetUpdatedAt: message.sentAt },
+        tx,
+      );
+      await this.upsertWidgetMessage(message, tx);
     });
+  };
+
+  saveWidgetMessage = async (message: SentWidgetMessage): Promise<void> => {
+    await this.upsertWidgetMessage(message);
+  };
+
+  deleteWidgetMessage = async (chatId: string): Promise<void> => {
+    await this.options.db
+      .delete(reachabilityWidgetMessages)
+      .where(eq(reachabilityWidgetMessages.chatId, chatId));
+  };
+
+  private upsertWidgetMessage = (message: SentWidgetMessage, db: Database | Tx = this.options.db) => {
+    const values = {
+      messageId: message.messageId,
+      widgetId: message.widgetId,
+      sentAt: message.sentAt,
+    };
+    return db
+      .insert(reachabilityWidgetMessages)
+      .values({ chatId: message.chatId, ...values })
+      .onConflictDoUpdate({ target: reachabilityWidgetMessages.chatId, set: values });
   };
 
   recordWidgetResult = async (at: Date, error: string | null): Promise<void> => {

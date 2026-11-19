@@ -431,3 +431,24 @@ describe("0037_notice_counters", () => {
     expect(sql).not.toContain('SET "update_notice_acks" =');
   });
 });
+
+describe("0063_shared_reachability_widget", () => {
+  const sql = readFileSync(
+    fileURLToPath(new URL("../migrations/0063_shared_reachability_widget.sql", import.meta.url)),
+    "utf8",
+  );
+
+  it("adds the shared widget id nullable, so a panel without one sends a new widget", () => {
+    expect(sql).toContain('ADD COLUMN "widget_shared_id" text;');
+  });
+
+  it("carries the widget sent before sharing across as a copy to replace", () => {
+    // Without the row the next refresh could not unpin the old message.
+    expect(sql).toContain('INSERT INTO "reachability_widget_messages"');
+    expect(sql).toContain('SELECT "widget_chat_id", "widget_message_id", NULL, "widget_sent_at"');
+  });
+
+  it("keeps the old columns, so an older image still starts", () => {
+    expect(sql).not.toMatch(/DROP COLUMN/i);
+  });
+});

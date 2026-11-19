@@ -966,14 +966,19 @@ export const reachabilityProbe = pgTable(
     // The newest ingested run failed everywhere in the shape that points at
     // the probe itself (the combined-alert rule).
     lastRunMass: boolean("last_run_mass").default(false).notNull(),
-    // The one Telegram status widget message: where it was sent and which
-    // HTML and caption it carries (a sent widget's HTML cannot change).
+    // Deprecated: the single widget message from before the widget was
+    // shared. Migration 0063 copied it into `reachability_widget_messages`;
+    // nothing writes these any more. Kept so an older image still starts.
     widgetMessageId: bigint("widget_message_id", { mode: "number" }),
     widgetChatId: text("widget_chat_id"),
+    // The shared Telegram status widget every chat shows (Bot API
+    // `sendWidget` with `is_shared`), and which HTML and caption it carries
+    // (a sent widget's HTML cannot change). Its copies per chat are in
+    // `reachability_widget_messages`.
+    widgetSharedId: text("widget_shared_id"),
     widgetVersion: varchar("widget_version", { length: 64 }),
     widgetUpdatedAt: timestamp("widget_updated_at", { withTimezone: true }),
-    // When the current widget message was sent; edits leave it alone. Null
-    // for a widget sent before this was recorded, which counts as old.
+    // Deprecated with `widget_message_id`; the send time is per copy now.
     widgetSentAt: timestamp("widget_sent_at", { withTimezone: true }),
     widgetLastError: varchar("widget_last_error", { length: 300 }),
     // A bridge route candidate check holding the probe (optional AWG 3.1 node
@@ -1015,6 +1020,21 @@ export const reachabilityProbe = pgTable(
     ),
   ],
 );
+
+/**
+ * The status widget's copy in each chat that gets it: the message to pin,
+ * unpin or replace. One row per chat.
+ */
+export const reachabilityWidgetMessages = pgTable("reachability_widget_messages", {
+  chatId: text("chat_id").primaryKey(),
+  messageId: bigint("message_id", { mode: "number" }).notNull(),
+  // The shared widget this copy shows; null for a message sent before the
+  // widget was shared, which is replaced on the next refresh.
+  widgetId: text("widget_id"),
+  // When this copy was sent; edits leave it alone. Null when unknown, which
+  // counts as old.
+  sentAt: timestamp("sent_at", { withTimezone: true }),
+});
 
 /** The newest result per (node, protocol). */
 export const nodeReachabilityResults = pgTable(
