@@ -2120,3 +2120,115 @@ describe("bridge candidate validation commands", () => {
     );
   });
 });
+
+describe("per-user bridge policy CLI (users bridge column and user-bridge)", () => {
+  const USER_ID = "11111111-1111-4111-8111-111111111111";
+
+  beforeEach(() => {
+    process.env.PANEL_ADMIN_EMAIL = "cli-test@example.com";
+  });
+  afterEach(() => {
+    delete process.env.PANEL_ADMIN_EMAIL;
+    vi.unstubAllGlobals();
+  });
+
+  it("shows each user's effective bridge routing with * on per-user overrides", async () => {
+    stubFetch([
+      {
+        body: [
+          {
+            id: USER_ID,
+            email: "ann@company.tld",
+            displayName: "Ann",
+            role: "user",
+            status: "active",
+            keyLimitOverride: null,
+            policyOverride: { useBridge: true },
+          },
+          {
+            id: "22222222-2222-4222-8222-222222222222",
+            email: "bob@company.tld",
+            displayName: "Bob",
+            role: "user",
+            status: "active",
+            keyLimitOverride: null,
+            policyOverride: null,
+          },
+        ],
+      },
+      { body: [{ keyLimitMode: "per_node", defaultKeyLimit: 5, useBridge: false }] },
+    ]);
+
+    const out = await run(["users"]);
+    expect(out).toMatch(/bridge/);
+    expect(out).toMatch(/ann@company\.tld.*\bon\*/);
+    expect(out).toMatch(/bob@company\.tld.*\boff\b/);
+    expect(out).not.toMatch(/bob@company\.tld.*\boff\*/);
+  });
+
+  it("user-bridge merges useBridge into policyOverride without wiping unrelated keys", async () => {
+    const calls = stubFetch([
+      {
+        body: [
+          {
+            id: USER_ID,
+            email: "ann@company.tld",
+            displayName: "Ann",
+            role: "user",
+            status: "active",
+            keyLimitOverride: null,
+            policyOverride: {
+              allowedNodeIds: ["aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"],
+              keyLimitMode: "global",
+            },
+          },
+        ],
+      },
+      { body: { id: USER_ID } },
+    ]);
+
+    const out = await run(["user-bridge", "ann@company.tld", "true"]);
+    expect(out).toContain("user ann@company.tld: useBridge → on");
+    expect(calls).toHaveLength(2);
+    expect(calls[1]!.url).toContain(`/api/admin/users/${USER_ID}/set-policy`);
+    expect(sentBody(calls[1]!)).toEqual({
+      allowedNodeIds: ["aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"],
+      keyLimitMode: "global",
+      useBridge: true,
+    });
+  });
+
+  it("user-bridge inherit deletes only useBridge and keeps other overrides", async () => {
+    const calls = stubFetch([
+      {
+        body: [
+          {
+            id: USER_ID,
+            email: "ann@company.tld",
+            displayName: "Ann",
+            role: "user",
+            status: "active",
+            keyLimitOverride: null,
+            policyOverride: {
+              keyLimitMode: "global",
+              useBridge: false,
+            },
+          },
+        ],
+      },
+      { body: { id: USER_ID } },
+    ]);
+
+    const out = await run(["user-bridge", USER_ID, "inherit"]);
+    expect(out).toContain(`user ${USER_ID}: useBridge → inherit`);
+    expect(sentBody(calls[1]!)).toEqual({ keyLimitMode: "global" });
+  });
+
+  it("user-bridge rejects invalid values without making an API request", async () => {
+    const calls = stubFetch([{ body: [] }]);
+    await expect(run(["user-bridge", "ann@company.tld", "maybe"])).rejects.toThrow(
+      /expected true, false, on, off, or inherit/,
+    );
+    expect(calls).toHaveLength(0);
+  });
+});

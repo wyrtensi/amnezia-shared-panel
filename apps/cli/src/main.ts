@@ -117,7 +117,7 @@ import {
   BRIDGE_USAGE_LINES,
   bridgeErrorHint,
 } from "./bridges.js";
-import type { AdminReachabilityView } from "@amnezia/contracts";
+import type { AdminReachabilityView, KeyBridgeInfo } from "@amnezia/contracts";
 import {
   buildProbeUpsert,
   probeSummaryLines,
@@ -250,6 +250,9 @@ type AdminUser = {
     allowedNodeIds?: string[] | null;
     // Absent = this user inherits the panel-wide key-limit mode.
     keyLimitMode?: string | null;
+    // Absent = this user inherits the panel-wide `useBridge` setting.
+    useBridge?: boolean;
+    [key: string]: unknown;
   } | null;
 };
 type AdminKey = {
@@ -261,6 +264,7 @@ type AdminKey = {
   deviceLabel: string;
   /** Operator-only note; served on /api/admin/keys and nowhere else. */
   internalName?: string | null;
+  bridge?: KeyBridgeInfo;
   deviceType?: string;
   routeProfile: string;
   online?: boolean;
@@ -430,6 +434,18 @@ function describeUserMode(
   return `${effectiveKeyLimitMode(globalMode, own)}${own ? "*" : ""}`;
 }
 
+/**
+ * Effective bridge-routing cell for a user (`on`/`off`), with `*` marking an
+ * explicit per-user `useBridge` override rather than the panel-wide default.
+ */
+function describeUserBridge(user: AdminUser, globalUseBridge: boolean): string {
+  const own = user.policyOverride?.useBridge;
+  if (typeof own === "boolean") {
+    return `${own ? "on" : "off"}*`;
+  }
+  return globalUseBridge ? "on" : "off";
+}
+
 async function cmdUsers(args: string[]): Promise<void> {
   const [users, policyRows] = await Promise.all([
     api<AdminUser[]>("/api/admin/users"),
@@ -447,6 +463,7 @@ async function cmdUsers(args: string[]): Promise<void> {
   );
   if (wantsJson(args)) return json(shown);
   const { globalMode } = policyLimitContext(policyRows);
+  const globalUseBridge = Boolean(policyRows[0]?.useBridge);
   console.log(
     table(
       shown.map((user) => ({
@@ -455,10 +472,11 @@ async function cmdUsers(args: string[]): Promise<void> {
         status: user.status,
         limit: user.keyLimitOverride?.toString() ?? "default",
         mode: describeUserMode(user, globalMode),
+        bridge: describeUserBridge(user, globalUseBridge),
         // Counts only; `user-limit --node-limits=` shows and sets the detail.
         nodes: describeUserNodes(user),
       })),
-      ["email", "role", "status", "limit", "mode", "nodes"],
+      ["email", "role", "status", "limit", "mode", "bridge", "nodes"],
     ),
   );
 }
@@ -529,6 +547,11 @@ async function cmdKeys(args: string[]): Promise<void> {
         owner: emailById.get(key.ownerId) ?? key.ownerId.slice(0, 8),
         state: key.state,
         proto: key.protocol,
+        bridge: key.bridge?.effective
+          ? `${key.bridge.effective.bridgeName} (${key.bridge.effective.publicIpv4}:${key.bridge.effective.publicUdpPort})`
+          : key.bridge?.mode === "direct"
+            ? "direct (pinned)"
+            : "—",
         online: key.online ? "yes" : "no",
         traffic: key.traffic
           ? bytes(
@@ -548,6 +571,7 @@ async function cmdKeys(args: string[]): Promise<void> {
         "owner",
         "state",
         "proto",
+        "bridge",
         "online",
         "traffic",
       ],
@@ -1427,6 +1451,7 @@ async function cmdCfDomains(args: string[]): Promise<void> {
 const POLICY_BOOL_FIELDS = [
   "allowKeyCreation",
   "allowNodeSelection",
+  "useBridge",
   "allowRouteProfileSelection",
   "allowCustomRoutes",
   "allowConfigRedownload",
@@ -2107,6 +2132,46 @@ async function cmdUserNodes(args: string[]): Promise<void> {
 }
 
 /**
+ * Set or clear a single user's `useBridge` policy override without disturbing
+ * unrelated override keys (`allowedNodeIds`, `keyLimitMode`, notice flags, ...).
+ */
+async function cmdUserBridge(args: string[]): Promise<void> {
+  const pos = positionals(args);
+  const usage = "Usage: user-bridge <id|email> <true|false|inherit>";
+  const ref = pos[0];
+  const raw = pos[1];
+  if (!ref || raw === undefined) throw new Error(usage);
+  const normalized = raw.trim().toLowerCase();
+  let nextValue: boolean | null;
+  if (normalized === "true" || normalized === "on") {
+    nextValue = true;
+  } else if (normalized === "false" || normalized === "off") {
+    nextValue = false;
+  } else if (normalized === "inherit" || normalized === "default") {
+    nextValue = null;
+  } else {
+    throw new Error(
+      `user-bridge: expected true, false, on, off, or inherit, got "${raw}"`,
+    );
+  }
+  const users = await api<AdminUser[]>("/api/admin/users");
+  const match = UUID_RE.test(ref)
+    ? users.find((user) => user.id === ref)
+    : users.find((user) => user.email.toLowerCase() === ref.toLowerCase());
+  if (!match) throw new Error(`No user matching "${ref}"`);
+  const merged: Record<string, unknown> = { ...(match.policyOverride ?? {}) };
+  if (nextValue === null) {
+    delete merged.useBridge;
+  } else {
+    merged.useBridge = nextValue;
+  }
+  await userAction(match.id, "set-policy", merged);
+  console.log(
+    `user ${ref}: useBridge → ${nextValue === null ? "inherit" : nextValue ? "on" : "off"}`,
+  );
+}
+
+/**
  * Why the domain flags are refused rather than dropped.
  *
  * A route profile becomes a WireGuard AllowedIPs list, and AllowedIPs takes
@@ -2153,7 +2218,7 @@ async function cmdUserRoutes(args: string[]): Promise<void> {
 async function cmdUserCreateKey(args: string[]): Promise<void> {
   const pos = positionals(args);
   const usage =
-    `Usage: user-create-key <id|email> --node=<uuid> [--device=<label>] [--protocol=awg3|awg2] [--route=full_tunnel|ru_blacklist] [${deviceTypeUsage()}] [--name-server=true|false] [--name-label=true|false] [--name-number=true|false]\n  --device-type=ios with a --route other than full_tunnel is warned about: route profiles do not filter on iPhone or iPad.\n  A --route other than full_tunnel produces a file-only key: its vpn:// text is too long for a QR code or a clipboard paste, so hand it over with key-config --format=vpn --save.`;
+    `Usage: user-create-key <id|email> --node=<uuid> [--device=<label>] [--protocol=awg3|awg2] [--route=full_tunnel|ru_blacklist] [--bridge=inherit|direct|route] [--bridge-route=<route-uuid>] [${deviceTypeUsage()}] [--name-server=true|false] [--name-label=true|false] [--name-number=true|false]\n  --device-type=ios with a --route other than full_tunnel is warned about: route profiles do not filter on iPhone or iPad.\n  A --route other than full_tunnel produces a file-only key: its vpn:// text is too long for a QR code or a clipboard paste, so hand it over with key-config --format=vpn --save.`;
   const id = await resolveUserId(pos[0], usage);
   const nodeId = flagOf(args, "node");
   if (!nodeId) throw new Error(usage);
@@ -2176,6 +2241,10 @@ async function cmdUserCreateKey(args: string[]): Promise<void> {
   if (device) body.deviceLabel = device;
   const route = flagOf(args, "route");
   if (route) body.routeProfile = route;
+  const bridgeRoute = flagOf(args, "bridge-route");
+  const bridge = flagOf(args, "bridge") ?? (bridgeRoute ? "route" : undefined);
+  if (bridge) body.bridgeMode = bridge;
+  if (bridgeRoute) body.vpnBridgeRouteId = bridgeRoute;
   const deviceType = flagOf(args, "device-type");
   if (deviceType) body.deviceType = parseDeviceType(deviceType);
   // A warning, not a refusal — see the plan's D9. The create-key wizard used
@@ -2673,6 +2742,11 @@ Users (accept a user id OR email):
   user-nodes <id|email> <all|none|uuid,…>  Per-user node availability (all=every node; overrides global).
                                          REPLACES the whole per-user policy override; use
                                          user-limit --allowed-nodes to change only availability.
+  user-bridge <id|email> <true|false|inherit>
+                                         Override whether this user's AWG 3.1 keys inherit a
+                                         node's active bridge route (on/off/inherit). Merges
+                                         only useBridge into policyOverride so other overrides
+                                         stay intact.
   user-routes <id|email> [--bl-cidrs=]  Replace a user's custom routes.
                                          Addresses only — --bl-domains is refused: a site
                                          name in a route rule never reaches the client. For
@@ -2680,12 +2754,15 @@ Users (accept a user id OR email):
                                          AmneziaVPN app's own site-based split tunnelling
                                          (Settings -> Connection).
   user-create-key <id|email> --node=<uuid> [--device=] [--protocol=awg3] [--route=full_tunnel]
+                  [--bridge=inherit|direct|route] [--bridge-route=<route-uuid>]
                   [${deviceTypeUsage()}]
                   [--name-server=true|false] [--name-label=true|false] [--name-number=true|false]
-                                         Create a key for a user. --device-type names the
-                                         platform (ios covers iPhone and iPad). The --name-*
-                                         flags pick which parts the VPN client shows as the
-                                         connection name (default: server + label, no number)
+                                         Create a key for a user. --bridge overrides AWG 3.1
+                                         bridge routing for this key (inherit=policy, direct,
+                                         or route pinned to --bridge-route=<uuid>). --device-type
+                                         names the platform (ios covers iPhone and iPad). The
+                                         --name-* flags pick which parts the VPN client shows as
+                                         the connection name (default: server + label, no number)
   quota-approve <request-id> [note]      Approve a quota request. In per_node mode the limit
                                         lands on the request's own target (one server, or all
                                         servers); in global mode it always raises the shared
@@ -2840,12 +2917,15 @@ Write:
                                           as one line (--json = the raw status object)
 
 policy-set fields:
-  Booleans (true/false): allowKeyCreation, allowNodeSelection,
+  Booleans (true/false): allowKeyCreation, allowNodeSelection, useBridge,
     allowRouteProfileSelection, allowCustomRoutes, allowConfigRedownload,
     allowQrDownload, allowConfDownload, allowSelfRevoke,
     autoPurgeOffboardedUsers, showPublicKey, showLastUsed, showTraffic,
     showNodeAddress, showNodeStatus, showInstallReminder, showUpdateNotice
     showNodeStatus=false hides the service-check chips from ordinary users
+    useBridge=true routes users' AWG 3.1 keys through a node's active bridge
+    route by default (off by default; override per user with user-bridge or per
+    key with user-create-key --bridge=).
     showNodeAddress=true also shows ordinary users the address of each node
     they may use (off by default; admins always see it on the node card).
     showInstallReminder=false stops the panel telling a regular user, after
@@ -3386,6 +3466,8 @@ export async function dispatch(argv: string[]): Promise<void> {
       return cmdUserDelete(args);
     case "user-nodes":
       return cmdUserNodes(args);
+    case "user-bridge":
+      return cmdUserBridge(args);
     case "user-routes":
       return cmdUserRoutes(args);
     case "user-create-key":

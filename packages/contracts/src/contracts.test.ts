@@ -89,6 +89,38 @@ describe("createKeyRequestSchema", () => {
     });
   });
 
+  it("validates admin-only bridge routing fields consistently", () => {
+    const nodeId = "2c65d1c2-e077-4d14-bba2-03e67ecba9fe";
+    const routeId = "88888888-8888-4888-8888-888888888888";
+
+    expect(
+      createKeyRequestSchema.parse({ nodeId, bridgeMode: "direct" }),
+    ).toMatchObject({ bridgeMode: "direct" });
+    expect(
+      createKeyRequestSchema.parse({
+        nodeId,
+        bridgeMode: "route",
+        vpnBridgeRouteId: routeId,
+      }),
+    ).toMatchObject({ bridgeMode: "route", vpnBridgeRouteId: routeId });
+
+    // `route` requires a route id; `direct` / `inherit` / omitted refuse one.
+    expect(
+      createKeyRequestSchema.safeParse({ nodeId, bridgeMode: "route" }).success,
+    ).toBe(false);
+    expect(
+      createKeyRequestSchema.safeParse({
+        nodeId,
+        bridgeMode: "direct",
+        vpnBridgeRouteId: routeId,
+      }).success,
+    ).toBe(false);
+    expect(
+      createKeyRequestSchema.safeParse({ nodeId, vpnBridgeRouteId: routeId })
+        .success,
+    ).toBe(false);
+  });
+
   it("rejects an empty device label instead of storing meaningless metadata", () => {
     const result = createKeyRequestSchema.safeParse({
       nodeId: "2c65d1c2-e077-4d14-bba2-03e67ecba9fe",
@@ -209,6 +241,7 @@ describe("portalPolicySchema", () => {
     expect(portalPolicySchema.parse({})).toEqual({
       allowKeyCreation: true,
       allowNodeSelection: true,
+      useBridge: false,
       allowedProtocols: ["awg3"],
       allowRouteProfileSelection: true,
       allowCustomRoutes: true,

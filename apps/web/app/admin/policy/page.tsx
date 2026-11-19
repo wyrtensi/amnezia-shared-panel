@@ -28,6 +28,7 @@ import { useT } from "@/lib/i18n/provider";
 const PERMISSIONS: Array<[keyof GlobalPortalPolicy, string]> = [
   ["allowKeyCreation", "gpolicy.allowKeyCreation"],
   ["allowNodeSelection", "gpolicy.allowNodeSelection"],
+  ["useBridge", "gpolicy.useBridge"],
   ["allowRouteProfileSelection", "gpolicy.allowRouteProfileSelection"],
   ["allowCustomRoutes", "gpolicy.allowCustomRoutes"],
   ["allowConfigRedownload", "gpolicy.allowConfigRedownload"],
@@ -50,15 +51,7 @@ const TELEMETRY: Array<[keyof GlobalPortalPolicy, string]> = [
 ];
 
 export default function AdminPolicyPage() {
-  return (
-    <div className="space-y-6">
-      <GlobalPolicyForm />
-      {/* `useSearchParams` needs a Suspense boundary for the static prerender. */}
-      <React.Suspense fallback={null}>
-        <NodeRoutesSection />
-      </React.Suspense>
-    </div>
-  );
+  return <GlobalPolicyForm />;
 }
 
 /** Per-node route editor; `?node=<id>#node-routes` preselects a node. */
@@ -97,12 +90,13 @@ function GlobalPolicyForm() {
   };
 
   return (
-    <form onSubmit={(event) => void submit(event)}>
-      <Card>
-        <CardHeader>
-          <CardTitle>{t("policy.title")}</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-6">
+    <div className="space-y-6">
+      <form onSubmit={(event) => void submit(event)}>
+        <Card>
+          <CardHeader>
+            <CardTitle>{t("policy.title")}</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-6">
           <div className="grid gap-4 sm:grid-cols-2">
             <div className="space-y-1.5">
               <Label htmlFor="default-limit" className="flex items-center gap-1.5">
@@ -207,8 +201,27 @@ function GlobalPolicyForm() {
             />
           </div>
 
-          <Separator />
+          <div className="border-t pt-4">
+            <Button type="submit" disabled={busy} className="w-full sm:w-auto">
+              {busy ? t("common.saving") : t("policy.saveGlobal")}
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
+    </form>
 
+    {/* Node routes live directly beneath Server order, in their own card so
+        their route actions never nest inside the global-policy form. */}
+    <React.Suspense fallback={null}>
+      <NodeRoutesSection />
+    </React.Suspense>
+
+    <form onSubmit={(event) => void submit(event)}>
+      <Card>
+        <CardHeader>
+          <CardTitle>{t("policy.permissionsCardTitle")}</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-6">
           <div className="space-y-3">
             <h3 className="text-sm font-semibold">{t("policy.employeePerms")}</h3>
             <div className="grid gap-2 sm:grid-cols-2">
@@ -369,6 +382,7 @@ function GlobalPolicyForm() {
         </CardContent>
       </Card>
     </form>
+    </div>
   );
 }
 

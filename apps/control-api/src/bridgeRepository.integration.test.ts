@@ -210,7 +210,11 @@ describe("bridge registry (real PostgreSQL)", () => {
     repository = new PostgresControlRepository({ db: database.db, keyring });
     const [user] = await database.db
       .insert(users)
-      .values({ email: `bridge-admin-${runTag}@example.com`, role: "admin" })
+      .values({
+        email: `bridge-admin-${runTag}@example.com`,
+        role: "admin",
+        policyOverride: { useBridge: true },
+      })
       .returning();
     if (!user) throw new Error("Failed to seed admin");
     createdUserIds.push(user.id);
@@ -1227,5 +1231,157 @@ describe("bridge registry (real PostgreSQL)", () => {
       // Returning to Direct stays possible.
       expect((await activate(nodeId, null, 1)).vpnEndpoint.changed).toBe(true);
     });
+
+    runDatabaseTest(
+      "keeps regular users Direct by default, respects per-user useBridge and admin per-key pins",
+      async () => {
+        const nodeId = await seedNode("per-user-and-key");
+        const [regularRow] = await db()
+          .insert(users)
+          .values({
+            email: `bridge-member-${runTag}@example.com`,
+            role: "user",
+          })
+          .returning();
+        if (!regularRow) throw new Error("Failed to seed regular user");
+        createdUserIds.push(regularRow.id);
+        const regular: Actor = {
+          id: regularRow.id,
+          email: regularRow.email,
+          displayName: null,
+          role: "user",
+          status: "active",
+        };
+
+        const a = await prepared(nodeId, "PolicyA");
+        const b = await prepared(nodeId, "PinnedB");
+        await activate(nodeId, a.route.id, 0);
+
+        const service = createDefaultControlApiService({ repository, keyring });
+        const exportEndpoint = async (actor: Actor, keyId: string) => {
+          const vpn = String((await service.getKeyConfig(actor, keyId, "vpn", false)).body);
+          return readCopies(vpn, decodeVpnLink).line("Endpoint") ?? undefined;
+        };
+
+        const seedOwnedKey = async (
+          ownerId: string,
+          extra: { bridgeMode?: "inherit" | "direct" | "route"; vpnBridgeRouteId?: string | null } = {},
+        ) => {
+          const secret = encryptSecret(awg31Link(), keyring, 1);
+          const [row] = await db()
+            .insert(vpnKeys)
+            .values({
+              ownerId,
+              nodeId,
+              nodeLabel: `ap_opt_${runTag}_${randomBytes(3).toString("hex")}`,
+              protocol: "awg3",
+              routeProfile: "full_tunnel",
+              state: "active",
+              configCiphertext: secret.ciphertext,
+              configNonce: secret.nonce,
+              configAuthTag: secret.authTag,
+              configKeyVersion: secret.keyVersion,
+              ...extra,
+            })
+            .returning({ id: vpnKeys.id });
+          if (!row) throw new Error("Failed to seed key");
+          return row.id;
+        };
+
+        // 1. Default policy has useBridge = false: regular user stays Direct even with an active route.
+        const inheritKeyId = await seedOwnedKey(regular.id);
+        expect(await exportEndpoint(regular, inheritKeyId)).toBe("vpn.example.test:443");
+
+        // 2. Non-admin cannot pass bridgeMode when creating a key.
+        expect(
+          await failureOf(
+            repository.createProvisioningKey(
+              regular,
+              {
+                nodeId,
+                protocol: "awg3",
+                deviceType: "unspecified",
+                routeProfile: "full_tunnel",
+                nameDisplay: { server: true, label: true, number: false },
+                bridgeMode: "direct",
+              },
+              { allowBridgeSelection: false },
+            ),
+          ),
+        ).toMatchObject({ statusCode: 403, code: "POLICY_DENIED" });
+
+        // 3. Admin creates a key pinned to route B for the regular user: goes through B even while useBridge = false.
+        const createdPinned = (await repository.adminAction(admin, "users", regular.id, "create-key", {
+          nodeId,
+          protocol: "awg3",
+          bridgeMode: "route",
+          vpnBridgeRouteId: b.route.id,
+        })) as { id: string };
+        const pinnedSecret = encryptSecret(awg31Link(), keyring, 1);
+        await db()
+          .update(vpnKeys)
+          .set({
+            state: "active",
+            configCiphertext: pinnedSecret.ciphertext,
+            configNonce: pinnedSecret.nonce,
+            configAuthTag: pinnedSecret.authTag,
+            configKeyVersion: pinnedSecret.keyVersion,
+          })
+          .where(eq(vpnKeys.id, createdPinned.id));
+        expect(await exportEndpoint(regular, createdPinned.id)).toBe(
+          `${b.bridge.publicIpv4}:${b.route.publicUdpPort}`,
+        );
+
+        // 4. Turning on per-user policyOverride.useBridge switches the inherit key to active route A,
+        //    while an explicitly Direct key stays Direct.
+        await repository.adminAction(admin, "users", regular.id, "set-policy", {
+          useBridge: true,
+        });
+        expect(await exportEndpoint(regular, inheritKeyId)).toBe(
+          `${a.bridge.publicIpv4}:${a.route.publicUdpPort}`,
+        );
+        const directKeyId = await seedOwnedKey(regular.id, { bridgeMode: "direct" });
+        expect(await exportEndpoint(regular, directKeyId)).toBe("vpn.example.test:443");
+
+        // 5. Admin keys list reports effective bridge info for each key, while regular listKeys omits it.
+        const adminKeys = (await repository.adminList(admin, "keys")) as Array<{
+          id: string;
+          bridge?: { mode: string; effective: { bridgeName: string; source: string } | null };
+        }>;
+        expect(adminKeys.find((item) => item.id === inheritKeyId)?.bridge).toMatchObject({
+          mode: "inherit",
+          effective: { bridgeName: a.bridge.name, source: "policy" },
+        });
+        expect(adminKeys.find((item) => item.id === createdPinned.id)?.bridge).toMatchObject({
+          mode: "route",
+          effective: { bridgeName: b.bridge.name, source: "key" },
+        });
+        expect(adminKeys.find((item) => item.id === directKeyId)?.bridge).toMatchObject({
+          mode: "direct",
+          effective: null,
+        });
+        const memberKeys = await repository.listKeys(regular);
+        for (const item of memberKeys) {
+          expect(Object.hasOwn(item, "bridge")).toBe(false);
+        }
+
+        // 6. Releasing draft route B reverts the pinned key back to inherit.
+        const observedNow = new Date();
+        await db()
+          .update(vpnBridgeRoutes)
+          .set({ observedOnline: false, observedAt: observedNow })
+          .where(eq(vpnBridgeRoutes.id, b.route.id));
+        await db()
+          .update(vpnBridges)
+          .set({ managementStatus: "ok", lastObservedAt: observedNow })
+          .where(eq(vpnBridges.id, b.bridge.id));
+        await repository.releaseBridgeRoute(admin, b.route.id);
+        const [reverted] = await db()
+          .select({ bridgeMode: vpnKeys.bridgeMode, vpnBridgeRouteId: vpnKeys.vpnBridgeRouteId })
+          .from(vpnKeys)
+          .where(eq(vpnKeys.id, createdPinned.id));
+        expect(reverted).toEqual({ bridgeMode: "inherit", vpnBridgeRouteId: null });
+      },
+    );
   });
 });

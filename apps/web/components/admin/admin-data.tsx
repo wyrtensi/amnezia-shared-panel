@@ -8,6 +8,7 @@ import { WORKER_PERIOD_FIELD_NAMES } from "@amnezia/contracts";
 import type {
   AdminOverviewBridges,
   GlobalRoutes,
+  KeyBridgeInfo,
   WorkerPeriodField,
 } from "@amnezia/contracts";
 import type {
@@ -156,6 +157,7 @@ export type AdminKey = {
    * `/api/admin/keys` and nowhere else, and it is never part of a config.
    */
   internalName?: string | null;
+  bridge?: KeyBridgeInfo;
   keyNumber?: number | null;
   routeProfile: string;
   routeRuleVersionId: string | null;
@@ -210,6 +212,7 @@ export type AuditEvent = {
 export type GlobalPortalPolicy = {
   allowKeyCreation: boolean;
   allowNodeSelection: boolean;
+  useBridge: boolean;
   allowedProtocols: ProtocolKind[];
   allowedNodeIds: string[] | null;
   // Global-only lists: the hand-made server order, and the recommended prefix
@@ -267,6 +270,7 @@ export type GlobalPortalPolicy = {
 const DEFAULT_POLICY: GlobalPortalPolicy = {
   allowKeyCreation: true,
   allowNodeSelection: true,
+  useBridge: false,
   allowedProtocols: ["awg3"],
   allowedNodeIds: null,
   recommendedNodeIds: [],
