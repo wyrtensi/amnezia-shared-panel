@@ -556,10 +556,38 @@ export const routeRuleVersions = pgTable(
   ],
 );
 
+export const serviceCheckStatusEnum = pgEnum("service_check_status", [
+  "ok",
+  "failed",
+  "error",
+]);
+
+export const nodeVpnEndpoints = pgTable(
+  "node_vpn_endpoints",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    nodeId: uuid("node_id").notNull().references(() => nodes.id, { onDelete: "cascade" }),
+    ordinal: integer("ordinal").notNull(),
+    address: text("address").notNull(),
+    name: varchar("name", { length: 120 }).notNull(),
+    enabled: boolean("enabled").default(true).notNull(),
+    revision: integer("revision").default(0).notNull(),
+    probeStatus: serviceCheckStatusEnum("probe_status"),
+    probeCheckedAt: timestamp("probe_checked_at", { withTimezone: true }),
+    probeDetail: varchar("probe_detail", { length: 300 }),
+  },
+  (table) => [
+    uniqueIndex("node_vpn_endpoints_ordinal_unique").on(table.nodeId, table.ordinal),
+    uniqueIndex("node_vpn_endpoints_address_unique").on(table.nodeId, table.address),
+    check("node_vpn_endpoints_ordinal_positive", sql`${table.ordinal} > 0`),
+  ],
+);
+
 export const vpnKeys = pgTable(
   "vpn_keys",
   {
     id: uuid("id").defaultRandom().primaryKey(),
+    endpointId: uuid("endpoint_id").references(() => nodeVpnEndpoints.id, { onDelete: "set null" }),
     ownerId: uuid("owner_id")
       .notNull()
       .references(() => users.id, { onDelete: "restrict" }),
@@ -731,12 +759,6 @@ export const trafficRollups = pgTable(
     index("traffic_rollups_period_bucket_idx").on(table.period, table.bucketStart),
   ],
 );
-
-export const serviceCheckStatusEnum = pgEnum("service_check_status", [
-  "ok",
-  "failed",
-  "error",
-]);
 
 /**
  * The latest host metrics a node's agent reported: one row per node, replaced on

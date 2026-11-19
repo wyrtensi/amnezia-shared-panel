@@ -325,6 +325,27 @@ See [`AGENT-HOST-SETUP.md`](./AGENT-HOST-SETUP.md) for building the image.
 
 ---
 
+### Multiple public IPv4 addresses on one VPN node
+
+The node's agent address remains its default. To offer additional public IPv4
+listeners for AWG 3.1, first configure and verify that each address reaches the
+same UDP listener. In **Nodes and bridges**, open the node's **Connection
+addresses** section and add each address. Adding an address in the panel does
+not configure the host or create another node-agent.
+
+The panel assigns stable numbers and initializes names from the internal node
+name. An existing primary display name is preserved during migration. Address
+names and the internal node name can be edited independently. Addresses share
+the physical node's quota, capacity and peers. A key's selected direct address
+is retained on download and rotation. If bridge policy applies to the key, the
+bridge still takes precedence. Disabling a secondary address hides it from new
+key issuance and preserves profiles that already selected it.
+
+External probe results are shown per address that the probe actually tested.
+Direct addresses can show an unknown verdict while an active bridge is being
+probed. Agent health, service checks from the node and host metrics describe
+the shared server.
+
 ## 2. Reaching the node from the panel
 
 The node-agent is bound to loopback on the server, so the control plane reaches

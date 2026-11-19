@@ -217,6 +217,17 @@ function NodeRow({
           onCheckedChange={onToggle}
         />
       </div>
+      {node.publicEndpoints?.length ? (
+        <ul className="space-y-1">
+          {node.publicEndpoints.map((endpoint) => (
+            <li key={endpoint.id} className="flex flex-wrap items-center justify-between gap-1 rounded-md bg-well px-2 py-1 text-xs">
+              <span>{endpoint.name} <code className="text-muted-foreground">{endpoint.publicAddress}</code></span>
+              {endpoint.enabled ? <StatusBadge status={endpoint.probeStatus} t={t} />
+                : <Badge variant="outline">{t("reachability.excluded")}</Badge>}
+            </li>
+          ))}
+        </ul>
+      ) : null}
       {node.protocols.length === 0 ? (
         <p className={cn("text-xs text-muted-foreground", dim)}>
           {t("reachability.noProtocols")}

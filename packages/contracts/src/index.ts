@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { keyBridgeModeSchema } from "./bridges.js";
+import { keyBridgeModeSchema, publicIpv4Schema } from "./bridges.js";
 
 export const protocolKindSchema = z.enum(["awg2", "awg3"]);
 export const keyStateSchema = z.enum([
@@ -236,6 +236,7 @@ export const composeKeyDisplayName = (input: {
 export const createKeyRequestSchema = z
   .object({
     nodeId: z.uuid(),
+    endpointId: z.uuid().optional(),
     protocol: protocolKindSchema.default("awg3"),
     deviceType: deviceTypeSchema.default("unspecified"),
     deviceLabel: z.string().trim().min(1).max(80).optional(),
@@ -256,7 +257,11 @@ export const createKeyRequestSchema = z
       message:
         "vpnBridgeRouteId is required when bridgeMode is 'route' and must be omitted otherwise",
     },
-  );
+  )
+  .refine((value) => !value.endpointId || value.protocol === "awg3", {
+    path: ["endpointId"],
+    message: "Address selection requires AWG 3.1",
+  });
 
 /**
  * Deleting a node also deletes every key ever issued on it, so the destructive
@@ -304,10 +309,36 @@ export const createNodeRequestSchema = z.object({
   capabilities: z.record(z.string().min(1).max(80), z.boolean()).default({}),
 });
 
+const nodeEndpointNameSchema = z.string().trim().min(1).max(120);
+
+export const nodeEndpointDefaultName = (name: string, ordinal: number): string => {
+  const suffix = `-${ordinal}`;
+  const base = name.slice(0, 120 - suffix.length);
+  return `${base.toWellFormed()}${suffix}`;
+};
+
+export const nodePublicEndpointMutationSchema = z.discriminatedUnion("action", [
+  z.object({
+    action: z.literal("add"),
+    address: publicIpv4Schema,
+    name: nodeEndpointNameSchema.optional(),
+  }).strict(),
+  z.object({
+    action: z.literal("update"),
+    id: z.uuid(),
+    name: nodeEndpointNameSchema.optional(),
+    enabled: z.boolean().optional(),
+  }).strict().refine((fields) => fields.name !== undefined || fields.enabled !== undefined, {
+    message: "An endpoint name or availability setting is required",
+  }),
+]);
+export type NodePublicEndpointMutation = z.infer<typeof nodePublicEndpointMutationSchema>;
+
 export const updateNodeRequestSchema = createNodeRequestSchema
   .omit({ apiKey: true })
   .partial()
   .extend({
+    publicEndpoint: nodePublicEndpointMutationSchema.optional(),
     apiKey: z.string().min(32).max(4_096).optional(),
     // Redeclared without their create-time defaults: `.partial()` keeps a
     // `.default()`, so a patch naming one unrelated field would otherwise
@@ -2004,11 +2035,13 @@ export const probeCapabilitiesResponseSchema = z.object({
 });
 export type ProbeCapabilitiesResponse = z.infer<typeof probeCapabilitiesResponseSchema>;
 
+export const PROBE_RUN_MAX_TARGETS = 500;
+
 export const probeRunRequestSchema = z.object({
   runId: z.string().min(1).max(100),
   control: z.object({ url: z.url() }),
   egress: z.object({ url: z.url() }),
-  targets: z.array(probeRunTargetSchema).max(500),
+  targets: z.array(probeRunTargetSchema).max(PROBE_RUN_MAX_TARGETS),
 });
 export type ProbeRunRequest = z.infer<typeof probeRunRequestSchema>;
 
@@ -2072,6 +2105,7 @@ export const adminReachabilityProtocolSchema = z.object({
 export const adminReachabilityNodeSchema = z.object({
   nodeId: z.uuid(),
   nodeName: z.string(),
+  publicEndpoints: z.lazy(() => z.array(adminNodeEndpointSchema)).optional(),
   nodeEnabled: z.boolean(),
   reachabilityEnabled: z.boolean(),
   status: reachabilityStatusSchema.nullable(),
@@ -2186,6 +2220,24 @@ export const userNodeReachabilitySchema = z.object({
   since: z.iso.datetime().nullable(),
 });
 export type UserNodeReachability = z.infer<typeof userNodeReachabilitySchema>;
+
+export const userNodeEndpointSchema = z.object({
+  id: z.uuid(),
+  ordinal: z.int().positive(),
+  name: nodeEndpointNameSchema,
+  publicAddress: z.ipv4().optional(),
+  reachability: userNodeReachabilitySchema.optional(),
+});
+export type UserNodeEndpoint = z.infer<typeof userNodeEndpointSchema>;
+
+export const adminNodeEndpointSchema = userNodeEndpointSchema.extend({
+  publicAddress: z.ipv4(),
+  enabled: z.boolean(),
+  probeStatus: reachabilityStatusSchema.nullable(),
+  probeCheckedAt: z.iso.datetime().nullable(),
+  probeDetail: z.string().nullable(),
+});
+export type AdminNodeEndpoint = z.infer<typeof adminNodeEndpointSchema>;
 
 export const UNKNOWN_USER_REACHABILITY: UserNodeReachability = Object.freeze({
   state: "unknown",

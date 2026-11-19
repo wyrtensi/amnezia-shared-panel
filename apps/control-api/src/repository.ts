@@ -69,6 +69,7 @@ export type StoredKeyConfig = {
   // in the client-visible connection name is decided by `nameDisplay`.
   keyNumber: number | null;
   nodeDisplayName: string;
+  directAddress?: string;
   nameDisplay: KeyNameDisplay;
   encrypted: EncryptedSecret;
   policy: PortalPolicy;

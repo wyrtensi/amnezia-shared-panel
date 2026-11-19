@@ -1,12 +1,15 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { and, desc, eq, inArray, isNull, lt, notInArray, sql } from "drizzle-orm";
 
 import {
+  isIpLiteral,
+  isIpv4Literal,
   isProbeStale,
   nodeServedProtocols,
   probeCapabilityInputOf,
   PROBE_STALE_GRACE_SEC,
   probeLevelsSchema,
+  probeRunTargetSchema,
   probeSupportsBridgeMeasurement,
   REACHABILITY_NOTIFY_JOB_TYPE,
   REACHABILITY_WIDGET_JOB_TYPE,
@@ -24,6 +27,7 @@ import {
   nodeReachabilityHistory,
   nodeReachabilityResults,
   nodeReachabilityState,
+  nodeVpnEndpoints,
   nodes,
   peerCurrent,
   reachabilityProbe,
@@ -69,6 +73,54 @@ const LIVE_KEY_STATES = ["provisioning", "active", "disabled"] as const;
 const PROVISIONING_WAIT_MS = 10 * 60 * 1_000;
 
 type Tx = Parameters<Parameters<Database["transaction"]>[0]>[0];
+type PublicEndpoint = typeof nodeVpnEndpoints.$inferSelect;
+
+const directNodeTargets = (
+  target: RunTarget & { config: string },
+  endpoints: readonly PublicEndpoint[],
+  keyId: string,
+  mayReuse: boolean,
+): RunTarget[] => {
+  if (target.protocol !== "awg3" || target.bridgePath !== null || endpoints.length === 0) {
+    return [target];
+  }
+  const inspection = inspectAwgVpnLink(target.config);
+  if (inspection.kind !== "awg31") return [target];
+  const { host, port } = inspection.endpoint;
+  let nodeTarget: RunTarget = target;
+  const additional: RunTarget[] = [];
+  for (const endpoint of endpoints) {
+    if (!isIpv4Literal(endpoint.address)) continue;
+    const reusesNodeTarget =
+      mayReuse && endpoint.ordinal === 1 && endpoint.revision === 0 && host === endpoint.address;
+    const directEndpoint = {
+      id: endpoint.id,
+      address: endpoint.address,
+      checkedAt: endpoint.probeCheckedAt,
+      reusesNodeTarget,
+    };
+    if (reusesNodeTarget) {
+      nodeTarget = { ...target, directEndpoint };
+      continue;
+    }
+    const config = renderAwgEndpointVpnLink(target.config, { host: endpoint.address, port });
+    if (!probeRunTargetSchema.shape.config.safeParse(config).success) continue;
+    // Fence old replies without putting addresses, labels or key material in
+    // the probe's logged target IDs. The prefix already carries the node's
+    // bridge assignment revision.
+    const identity = createHash("sha256")
+      .update(JSON.stringify([endpoint.id, endpoint.revision, endpoint.address, port, keyId]))
+      .digest("hex");
+    additional.push({
+      ...target,
+      config,
+      directEndpoint,
+      targetId: `${target.targetId}:direct:${identity}`,
+      expectedEgressIp: isIpLiteral(target.expectedEgressIp ?? "") ? target.expectedEgressIp : null,
+    });
+  }
+  return [nodeTarget, ...additional];
+};
 
 const outboxRows = (notices: readonly Notice[]) =>
   notices.map((notice) => ({
@@ -297,11 +349,28 @@ export class PostgresReachabilityRepository
         probeCapabilityInputOf(claimed.capabilities, claimed.capabilitiesCheckedAt),
         claimed.currentRunStartedAt ?? run.now,
       );
-      const targets = await this.loadTargets(tx, { lock: true, bridgeMeasurement });
+      const targets = await this.loadTargets(tx, {
+        lock: true,
+        bridgeMeasurement,
+        runStartedAt: claimed.currentRunStartedAt ?? run.now,
+      });
       const previous = await this.loadStates(tx);
       const write = await decide({ targets, previous });
 
       await this.updateProbe({ staleAlertedAt: write.staleAlertedAt, lastRunMass: write.mass }, tx);
+
+      const endpointIds = new Set(targets.flatMap(({ directEndpoint }) => directEndpoint ? [directEndpoint.id] : []));
+      for (const endpoint of write.endpointOutcomes) {
+        if (!endpointIds.has(endpoint.endpointId)) continue;
+        await tx
+          .update(nodeVpnEndpoints)
+          .set({
+            probeStatus: endpoint.status,
+            probeCheckedAt: run.now,
+            probeDetail: endpoint.detail,
+          })
+          .where(eq(nodeVpnEndpoints.id, endpoint.endpointId));
+      }
 
       // Every node here is locked, so none can be deleted before the commit.
       const nodeIds = new Set(targets.map((target) => target.nodeId));
@@ -414,14 +483,17 @@ export class PostgresReachabilityRepository
   };
 
   listTargets = async (options: { bridgeMeasurement: boolean }): Promise<RunTarget[]> =>
-    this.loadTargets(this.options.db, { lock: false, ...options });
+    this.options.db.transaction(
+      (tx) => this.loadTargets(tx, { lock: false, ...options }),
+      { isolationLevel: "repeatable read", accessMode: "read only" },
+    );
 
   /**
    * The targets as the panel knows them now. The node row, its endpoint
    * revision, its active bridge route and that bridge are read in ONE
    * statement, so a config is never paired with the revision of another
-   * assignment (unlocked, two reads could straddle an activation and label a
-   * Direct config with the bridged revision).
+   * assignment. Dispatch uses a read-only snapshot for the address list and
+   * service keys, too.
    *
    * With `lock` (see `ingest`), the node rows are first taken `FOR SHARE` in
    * id order by a statement of their own, and the join runs after it. A
@@ -440,8 +512,8 @@ export class PostgresReachabilityRepository
    * direct path and its direct config.
    */
   private loadTargets = async (
-    db: Database | Tx,
-    options: { lock: boolean; bridgeMeasurement: boolean },
+    db: Tx,
+    options: { lock: boolean; bridgeMeasurement: boolean; runStartedAt?: Date },
   ): Promise<RunTarget[]> => {
     let lockedIds: string[] | null = null;
     if (options.lock) {
@@ -481,6 +553,21 @@ export class PostgresReachabilityRepository
           : inArray(nodes.id, lockedIds),
       )
       .orderBy(nodes.name);
+    if (nodeRows.length === 0) return [];
+    const endpoints = await db
+      .select()
+      .from(nodeVpnEndpoints)
+      .where(and(
+        inArray(nodeVpnEndpoints.nodeId, nodeRows.map((node) => node.id)),
+        eq(nodeVpnEndpoints.enabled, true),
+      ))
+      .orderBy(nodeVpnEndpoints.ordinal);
+    const endpointsByNode = new Map<string, PublicEndpoint[]>();
+    for (const endpoint of endpoints) {
+      const list = endpointsByNode.get(endpoint.nodeId) ?? [];
+      list.push(endpoint);
+      endpointsByNode.set(endpoint.nodeId, list);
+    }
     const ownerId = await this.serviceAccountId(db);
     const keys = ownerId
       ? await db
@@ -495,7 +582,7 @@ export class PostgresReachabilityRepository
         protocol: node.protocol,
         capabilities: node.capabilities,
         enabledProtocols: node.enabledProtocols,
-      }).map((protocol): RunTarget => {
+      }).flatMap((protocol): RunTarget | RunTarget[] => {
         const target: RunTarget = {
           targetId: reachabilityTargetId(node.id, protocol, node.endpointRevision),
           nodeId: node.id,
@@ -542,7 +629,16 @@ export class PostgresReachabilityRepository
           this.options.keyring,
         );
         const config = protocol === "awg3" ? withAwg31TunnelMtu(savedConfig) : savedConfig;
-        if (!via) return { ...target, config };
+        if (!via) {
+          return directNodeTargets(
+            { ...target, config },
+            endpointsByNode.get(node.id) ?? [],
+            key.id,
+            // A reeissued service key can have a different port even when
+            // the legacy target ID and destination IP are the same.
+            options.runStartedAt === undefined || key.updatedAt < options.runStartedAt,
+          );
+        }
         if (inspectAwgVpnLink(config).kind !== "awg31") {
           return { ...target, unavailableReason: BRIDGE_UNRENDERABLE_REASON };
         }

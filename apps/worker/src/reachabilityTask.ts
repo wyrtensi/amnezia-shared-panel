@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import {
   probeCapabilitiesDue,
   probeCapabilityInputOf,
+  PROBE_RUN_MAX_TARGETS,
   probeSupportsBridgeMeasurement,
   type ProbeRunRequest,
   type ProbeRunState,
@@ -19,6 +20,7 @@ import {
   ingestRun,
   measuredViaBridge,
   staleTransition,
+  type DirectEndpointOutcome,
   type NodeState,
   type Notice,
   type ProtocolOutcome,
@@ -77,6 +79,7 @@ export type IngestContext = {
 export type IngestWrite = {
   /** Obsolete outcomes (`ProtocolOutcome.obsolete`) are not stored. */
   outcomes: ProtocolOutcome[];
+  endpointOutcomes: DirectEndpointOutcome[];
   states: Map<string, NodeState>;
   notices: Notice[];
   staleAlertedAt: Date | null;
@@ -278,6 +281,7 @@ export const createReachabilityTask = ({
         notices = out.notices.length;
         return {
           outcomes: out.outcomes,
+          endpointOutcomes: out.endpointOutcomes,
           states: out.states,
           notices: [...out.notices, ...stale.notices],
           staleAlertedAt: stale.staleAlertedAt,
@@ -329,28 +333,41 @@ export const createReachabilityTask = ({
     // Read once for the whole run: a legacy probe drops an explicit null, so
     // a bridged target is only sent to a probe that reports the capability.
     const bridgeMeasurement = probeSupportsBridgeMeasurement(capabilityInput, at);
-    const targets = await repository.listTargets({ bridgeMeasurement });
+    const available = (await repository.listTargets({ bridgeMeasurement })).filter(
+      (target): target is RunTarget & { config: string } => target.config !== null,
+    );
+    const nodeTargets = available.filter((target) => target.directEndpoint?.reusesNodeTarget !== false);
+    const endpointTargets = available
+      .filter((target) => target.directEndpoint?.reusesNodeTarget === false)
+      .sort(
+        (a, b) =>
+          (a.directEndpoint?.checkedAt?.getTime() ?? Number.MIN_SAFE_INTEGER) -
+          (b.directEndpoint?.checkedAt?.getTime() ?? Number.MIN_SAFE_INTEGER),
+      );
+    const targets = [...nodeTargets, ...endpointTargets].slice(0, PROBE_RUN_MAX_TARGETS);
+    if (targets.length < available.length) {
+      log(`reachability: deferred ${available.length - targets.length} target(s) at the probe run limit`);
+    }
     const runId = probe.requestedRunId ?? newRunId();
     const request: ProbeRunRequest = {
       runId,
       control: { url: probe.controlUrl },
       egress: { url: probe.egressUrl },
-      targets: targets
-        .filter((target) => target.config !== null)
-        .map((target) => ({
+      targets: targets.map((target) => {
+        // Bridges and extra direct addresses can differ from the node's
+        // exit IP. Explicit null asks a capable probe to report egress
+        // without comparing it to the destination.
+        const reportUncompared = bridgeMeasurement && (
+          measuredViaBridge(target) || target.directEndpoint?.reusesNodeTarget === false
+        );
+        const { expectedEgressIp } = target;
+        return {
           targetId: target.targetId,
           protocol: target.protocol,
-          config: target.config as string,
-          // Bridged: the endpoint host is the bridge, so the comparison
-          // target is the node's origin exit IP or, when unknown, an explicit
-          // null (report the observed egress uncompared). Direct: omitted
-          // when unknown keeps the probe's endpoint-host fallback.
-          ...(measuredViaBridge(target) && bridgeMeasurement
-            ? { expectedEgressIp: target.expectedEgressIp }
-            : target.expectedEgressIp
-              ? { expectedEgressIp: target.expectedEgressIp }
-              : {}),
-        })),
+          config: target.config,
+          ...(expectedEgressIp || reportUncompared ? { expectedEgressIp } : {}),
+        };
+      }),
     };
     try {
       const started = await client.startRun(request);

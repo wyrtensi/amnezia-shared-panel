@@ -16,6 +16,7 @@ import {
   nodeReachabilityHistory,
   nodeReachabilityResults,
   nodeReachabilityState,
+  nodeVpnEndpoints,
   nodes,
   users,
   vpnBridgeRoutes,
@@ -268,6 +269,70 @@ describe("bridge registry (real PostgreSQL)", () => {
       drafts: [],
       retiring: [],
     });
+  });
+
+  runDatabaseTest("lists separately named IPs and exports the selected listener on one node", async () => {
+    const nodeId = await seedNode("many-listeners");
+    const differentNodeId = await seedNode("other-listener");
+    const primary = nextIpv4();
+    const secondary = nextIpv4();
+    const third = nextIpv4();
+    await db().update(nodes).set({ name: "Internal", publicIp: primary }).where(eq(nodes.id, nodeId));
+    await repository.updateNode(admin, nodeId, { publicEndpoint: { action: "add", address: secondary } });
+    await repository.updateNode(admin, nodeId, { publicEndpoint: { action: "add", address: third } });
+    const endpoints = await db().select().from(nodeVpnEndpoints)
+      .where(eq(nodeVpnEndpoints.nodeId, nodeId)).orderBy(nodeVpnEndpoints.ordinal);
+    expect(endpoints.map(({ ordinal, name, address }) => ({ ordinal, name, address }))).toEqual([
+      { ordinal: 1, name: "Internal-1", address: primary },
+      { ordinal: 2, name: "Internal-2", address: secondary },
+      { ordinal: 3, name: "Internal-3", address: third },
+    ]);
+    const endpointId = endpoints[1]!.id;
+    await repository.updateNode(admin, nodeId, {
+      name: "Renamed internally",
+      publicEndpoint: { action: "update", id: endpointId, name: "Second link" },
+    });
+    const listed = (await repository.listNodes(admin)).find(
+      (item) => (item as { id: string }).id === nodeId,
+    );
+    expect(listed).toMatchObject({
+      name: "Internal-1",
+      publicEndpoints: [
+        { name: "Internal-1" }, { name: "Second link" }, { name: "Internal-3" },
+      ],
+    });
+    expect(JSON.stringify(listed)).not.toContain(secondary);
+    const create = {
+      endpointId,
+      protocol: "awg3",
+      deviceType: "unspecified",
+      routeProfile: "full_tunnel",
+      nameDisplay: { server: true, label: false, number: false },
+    } as const;
+    expect(await failureOf(repository.createProvisioningKey(admin, {
+      nodeId: differentNodeId,
+      ...create,
+    }))).toMatchObject({ code: "NODE_ENDPOINT_UNAVAILABLE" });
+    const { id } = await repository.createProvisioningKey(admin, { nodeId, ...create });
+    const encrypted = encryptSecret(awg31Link(), keyring, 1);
+    await db().update(vpnKeys).set({
+      state: "active",
+      configCiphertext: encrypted.ciphertext,
+      configNonce: encrypted.nonce,
+      configAuthTag: encrypted.authTag,
+      configKeyVersion: encrypted.keyVersion,
+    }).where(eq(vpnKeys.id, id));
+    const service = createDefaultControlApiService({ repository, keyring });
+    const exported = String((await service.getKeyConfig(admin, id, "vpn", false)).body);
+    expect(readCopies(exported, decodeVpnLink).line("Endpoint")).toBe(`${secondary}:443`);
+    expect(await repository.listKeys(admin)).toContainEqual(expect.objectContaining({ id, nodeName: "Second link" }));
+    await repository.updateNode(admin, nodeId, {
+      publicEndpoint: { action: "update", id: endpointId, enabled: false },
+    });
+    expect(await failureOf(repository.createProvisioningKey(admin, { nodeId, ...create })))
+      .toMatchObject({ code: "NODE_ENDPOINT_UNAVAILABLE" });
+    const redownload = String((await service.getKeyConfig(admin, id, "vpn", false)).body);
+    expect(readCopies(redownload, decodeVpnLink).line("Endpoint")).toBe(`${secondary}:443`);
   });
 
   runDatabaseTest("registers a bridge with normalized settings and refuses a duplicate IPv4", async () => {

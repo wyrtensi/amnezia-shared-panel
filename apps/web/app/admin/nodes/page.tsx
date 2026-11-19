@@ -66,6 +66,8 @@ import {
 import { formatDateTime } from "@/lib/format";
 import { InlineTraffic } from "@/components/inline-traffic";
 import { NodeCardSection } from "@/components/admin/node-card-section";
+import { NodePublicEndpoints } from "@/components/admin/node-public-endpoints";
+import type { NodePublicEndpointMutation } from "@amnezia/contracts";
 import { MetricMeter, NodeMetrics } from "@/components/admin/node-metrics";
 import { NodePublicAddress } from "@/components/admin/node-public-address";
 import { ServiceChecksCard } from "@/components/admin/service-checks-card";
@@ -299,6 +301,13 @@ function AdminNodesView() {
                   checksConfigured={serviceChecks.checks.length > 0}
                   onSetChecks={(patch) => void setNodeChecks(node, patch)}
                   onToggleIpv6Stub={(enabled) => void toggleIpv6Stub(node, enabled)}
+                  onSavePublicEndpoint={async (publicEndpoint) => {
+                    await request(`/api/admin/nodes/${node.id}`, {
+                      method: "PATCH",
+                      body: JSON.stringify({ publicEndpoint }),
+                    });
+                    await reload();
+                  }}
                 />
               ))}
             </div>
@@ -387,6 +396,7 @@ function NodeCard({
   checksConfigured,
   onSetChecks,
   onToggleIpv6Stub,
+  onSavePublicEndpoint,
 }: {
   node: AdminNode;
   /** Undefined before a successful lookup, null for Direct. */
@@ -407,6 +417,7 @@ function NodeCard({
     disabledCheckIds?: string[];
   }) => void;
   onToggleIpv6Stub: (enabled: boolean) => void;
+  onSavePublicEndpoint: (change: NodePublicEndpointMutation) => Promise<void>;
   onToggle: (enabled: boolean) => void;
   onReconcile: () => void;
   onEdit: () => void;
@@ -448,7 +459,7 @@ function NodeCard({
             </span>
             <div className="min-w-0">
               <p className="truncate font-medium leading-tight">{node.name}</p>
-              {node.publicName ? (
+              {node.publicName && !node.publicEndpoints?.length ? (
                 <p className="truncate text-xs text-muted-foreground">
                   {t("nodes.seenAs", { name: node.publicName })}
                 </p>
@@ -534,6 +545,9 @@ function NodeCard({
           ))}
           </div>
         </div>
+
+        <NodePublicEndpoints endpoints={node.publicEndpoints ?? []}
+          canAdd={supported.includes("awg3")} onSave={onSavePublicEndpoint} />
 
         <div className="space-y-1.5">
           <NodeCardSection
@@ -809,7 +823,6 @@ function NodeCard({
 
 type NodeFormState = {
   name: string;
-  publicName: string;
   apiBaseUrl: string;
   apiKey: string;
   enabledProtocols: ProtocolKind[];
@@ -844,7 +857,6 @@ function CreateNodeDialog({
         method: "POST",
         body: JSON.stringify({
           name: form.name,
-          publicName: form.publicName || undefined,
           apiBaseUrl: form.apiBaseUrl,
           apiKey: form.apiKey,
           protocol: preferredProtocol(form.enabledProtocols),
@@ -910,7 +922,6 @@ function EditNodeDialog({
     if (node)
       setForm({
         name: node.name,
-        publicName: node.publicName ?? "",
         apiBaseUrl: node.apiBaseUrl,
         apiKey: "",
         enabledProtocols: node.enabledProtocols?.length
@@ -928,7 +939,6 @@ function EditNodeDialog({
     try {
       const payload: Record<string, unknown> = {
         name: form.name,
-        publicName: form.publicName,
         apiBaseUrl: form.apiBaseUrl,
         protocol: preferredProtocol(form.enabledProtocols),
         enabledProtocols: form.enabledProtocols,
@@ -1507,7 +1517,6 @@ function DeleteNodeDialog({
 function blankNode(): NodeFormState {
   return {
     name: "",
-    publicName: "",
     apiBaseUrl: "",
     apiKey: "",
     enabledProtocols: ["awg3"],
@@ -1536,16 +1545,6 @@ function NodeFields({
           maxLength={120}
           value={form.name}
           onChange={(event) => setForm({ ...form, name: event.target.value })}
-        />
-      </Field>
-      <Field label={t("nodes.publicName")} hint={t("nodes.publicNameHint")}>
-        <Input
-          maxLength={120}
-          placeholder={form.name || t("nodes.publicNamePlaceholder")}
-          value={form.publicName}
-          onChange={(event) =>
-            setForm({ ...form, publicName: event.target.value })
-          }
         />
       </Field>
       <Field label={t("nodes.agentAddr")} hint={t("nodes.agentHint")}>
