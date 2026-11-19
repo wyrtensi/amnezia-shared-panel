@@ -197,6 +197,109 @@ describe("ReachabilityBody", () => {
     expect(html).toContain("probe-set");
   });
 
+  it("separates the external bridge probe, agent state and frpc observations", () => {
+    const html = render({ probe: null, nodes: [], bridges: [{
+      bridgeId: "00000000-0000-4000-8000-00000000000b",
+      bridgeName: "bridge-a",
+      publicIpv4: "192.0.2.20",
+      panelDnsHostname: "panel.example.test",
+      reachabilityEnabled: false,
+      managementStatus: "ok",
+      frpsReachable: true,
+      mgmtIncidentOpen: false,
+      mgmtFailingSince: null,
+      mgmtDetail: null,
+      probeStatus: "failed",
+      probeLevels: { ping: level(true), tcp: level(true), https: level(false) },
+      probeCheckedAt: "2026-11-10T08:00:00.000Z",
+      probeFailingSince: "2026-11-09T22:00:00.000Z",
+      probeConsecutiveFailures: 2,
+      probeIncidentOpen: true,
+      probeDetail: "HTTPS failed",
+      activeRoutes: [{
+        routeId: "00000000-0000-4000-8000-00000000000c",
+        nodeId: "00000000-0000-4000-8000-00000000000a",
+        nodeName: "node-a", publicUdpPort: 41000, state: "active", observedOnline: true,
+        incidentOpen: false, failingSince: null,
+      }],
+    }] });
+    expect(html).toContain("External probe");
+    expect(html).toContain("Bridge agent");
+    expect(html).toContain("frpc");
+    expect(html).toContain("node-a:41000");
+    expect(html).toContain('data-level="https" data-mark="fail"');
+    expect(html).toContain('aria-label="Reachability alerts for bridge-a"');
+    expect(html).toContain('aria-checked="false"');
+  });
+
+  it("renders per-endpoint probe levels, incident badge, and reachability switch", () => {
+    const html = renderToStaticMarkup(
+      <ReachabilityBody
+        view={{
+          probe: PROBE,
+          nodes: [
+            node({
+              publicEndpoints: [
+                {
+                  id: "00000000-0000-4000-8000-000000000011",
+                  ordinal: 1,
+                  name: "Edge-1",
+                  publicAddress: "192.0.2.10",
+                  enabled: true,
+                  reachabilityEnabled: true,
+                  probeStatus: "failed",
+                  probeLevels: {
+                    ping: level(true),
+                    tcp: level(false),
+                    handshake: level(false),
+                    http: level(null),
+                  },
+                  probeCheckedAt: "2026-11-10T08:00:00.000Z",
+                  probeFailingSince: "2026-11-09T22:00:00.000Z",
+                  probeConsecutiveFailures: 2,
+                  incidentOpen: true,
+                  probeDetail: "no handshake",
+                  reachability: { state: "blocked", since: "2026-11-09T22:00:00.000Z" },
+                },
+                {
+                  id: "00000000-0000-4000-8000-000000000012",
+                  ordinal: 2,
+                  name: "Edge-2",
+                  publicAddress: "192.0.2.20",
+                  enabled: true,
+                  reachabilityEnabled: false,
+                  probeStatus: null,
+                  probeLevels: null,
+                  probeCheckedAt: null,
+                  probeFailingSince: null,
+                  probeConsecutiveFailures: 0,
+                  incidentOpen: false,
+                  probeDetail: null,
+                  reachability: { state: "unknown", since: null },
+                },
+              ],
+            }),
+          ],
+        }}
+        failed={false}
+        t={t}
+        lang="en"
+        busy={null}
+        onRun={() => undefined}
+        onToggleNode={() => undefined}
+        onToggleEndpoint={() => undefined}
+      />,
+    );
+    expect(html).toContain("Edge-1");
+    expect(html).toContain("192.0.2.10");
+    expect(html).toContain('data-level="ping" data-mark="ok"');
+    expect(html).toContain('data-level="handshake" data-mark="fail"');
+    expect(html).toContain(en("reachability.incident"));
+    expect(html).toContain('aria-label="Test address Edge-1 from the probe"');
+    expect(html).toContain('aria-label="Test address Edge-2 from the probe"');
+    expect(html).toContain(en("reachability.excluded"));
+  });
+
   it("marks a stale probe, its last error and a run in flight", () => {
     const html = render({
       probe: {

@@ -31,6 +31,7 @@ LOG_PUBLIC="${SPOOL_DIR}/update.log"
 ENV_FILE="${NODE_DIR}/.env"
 COMPOSE_FILE="${NODE_DIR}/compose.yaml"
 AGENT_CONTAINER="${NODE_AGENT_CONTAINER:-amnezia-node-agent}"
+AWG3_CONTAINER="${NODE_AWG3_CONTAINER:-amnezia-awg3}"
 AGENT_SERVICE=node-agent
 # Where the published image carries the deployment files it expects. An image
 # built before this feature ships none, which is a supported case.
@@ -229,6 +230,91 @@ fi
 EFFECTIVE_COMPOSE="$COMPOSE_FILE"
 [ "$apply_compose" -eq 0 ] || EFFECTIVE_COMPOSE="$NEW_COMPOSE"
 
+# Reconcile helper scripts that the image ships under deploy/scripts/.
+# Uses the same provenance rule as compose.yaml (never overwrite local edits),
+# plus a read-only allowlist of historical stock SHA-256 digests so the very
+# first update from an older image (that did not ship scripts/) can still move
+# untouched stock files forward cleanly.
+sha256_file() {
+  sha256sum "$1" 2>/dev/null | awk '{print $1}'
+}
+
+is_known_stock_script() {
+  local rel="$1" hash="$2"
+  case "${rel}:${hash}" in
+    # Historical stock infra/node/scripts/awg3-entrypoint.sh versions prior to shipped scripts
+    scripts/awg3-entrypoint.sh:704cfbf85bb8a5f04acfcff9a0c11aa6f83e3855fb52e213a51b0f2b78a711b5|\
+    scripts/awg3-entrypoint.sh:83a5b62b4267ea188f382d2ebf1ddac89f58452b9281221d287552c37b4046d0|\
+    scripts/awg3-entrypoint.sh:59afca8a08d991dc7ab85d0e6cfc22f546a3957a6541946532a4f9f67c1bbd87|\
+    scripts/awg3-entrypoint.sh:138202ead59cc331982bb784770cc848cb4598f56702d94342f456ca51a4784d|\
+    scripts/awg3-entrypoint.sh:371743667b21f75fa82ebd7f266f17f905445d8be1cdc02e2a590969e0eab014)
+      return 0 ;;
+    # Historical stock infra/node/scripts/agent-update.sh prior to shipped scripts
+    scripts/agent-update.sh:edad515a20ad2b470965181003857b7a7c4aa8aa8a1a864c3732263e79afadb7)
+      return 0 ;;
+  esac
+  return 1
+}
+
+MANAGED_SCRIPTS=(scripts/awg3-entrypoint.sh scripts/agent-update.sh)
+APPLY_SCRIPTS=()
+for rel in "${MANAGED_SCRIPTS[@]}"; do
+  dest="${NODE_DIR}/${rel}"
+  [ -f "$dest" ] || continue
+  safe_key="${rel//\//_}"
+  new_file="${SCRATCH}/new-${safe_key}"
+  old_file="${SCRATCH}/old-${safe_key}"
+  new_s=0
+  old_s=0
+  extract_from_image "$IMAGE" "$rel" "$new_file" && new_s=1
+  [ -z "$CURRENT_IMAGE" ] || { extract_from_image "$CURRENT_IMAGE" "$rel" "$old_file" && old_s=1; }
+  if [ "$new_s" -eq 1 ] && ! cmp -s "$new_file" "$dest"; then
+    # Refuse a syntactically broken updater script before touching the host copy.
+    if [ "$rel" = "scripts/agent-update.sh" ] && ! /bin/bash -n "$new_file" >>"$LOG" 2>&1; then
+      log "WARNING: shipped ${rel} failed bash syntax check; leaving local copy untouched"
+      continue
+    fi
+    if { [ "$old_s" -eq 1 ] && cmp -s "$old_file" "$dest"; } || { [ "$old_s" -eq 0 ] && is_known_stock_script "$rel" "$(sha256_file "$dest")"; }; then
+      APPLY_SCRIPTS+=("$rel")
+      log "the node's ${rel} is unmodified; applying the one shipped by the new image"
+    else
+      log "WARNING: ${rel} has local differences from the stock version; leaving it untouched:"
+      diff -u "$dest" "$new_file" >>"$LOG" 2>&1 || true
+    fi
+  fi
+done
+
+# Apply IPv6 forwarding sysctls live inside the running AWG 3.1 container's
+# network namespace whenever compose.yaml enables them. Containers created
+# before the IPv6 active-reject stub release still have net.ipv6.conf.all.forwarding=0
+# and read-only /proc/sys inside the container; setting them via nsenter from
+# the host enables the stub with zero tunnel downtime and no AWG restart.
+ensure_awg3_ipv6_forwarding() {
+  grep -Eq 'net\.ipv6\.conf\.all\.forwarding[[:space:]]*:[[:space:]]*"?1"?' "$EFFECTIVE_COMPOSE" || return 0
+  if ! command -v nsenter >/dev/null 2>&1 || ! command -v sysctl >/dev/null 2>&1; then
+    log "WARNING: nsenter or sysctl not found on host; skipping live IPv6 forwarding sysctl check for ${AWG3_CONTAINER}"
+    return 0
+  fi
+  local pid current
+  pid="$(docker inspect --format '{{if .State.Running}}{{.State.Pid}}{{end}}' "$AWG3_CONTAINER" 2>/dev/null || true)"
+  case "$pid" in
+    ''|*[!0-9]*|0|1) return 0 ;;
+  esac
+  [ -e "/proc/${pid}/ns/net" ] || return 0
+  current="$(nsenter --net="/proc/${pid}/ns/net" -- sysctl -n net.ipv6.conf.all.forwarding 2>/dev/null || true)"
+  if [ "$current" = "1" ]; then
+    return 0
+  fi
+  if nsenter --net="/proc/${pid}/ns/net" -- sysctl -w \
+      net.ipv6.conf.all.disable_ipv6=0 \
+      net.ipv6.conf.default.disable_ipv6=0 \
+      net.ipv6.conf.all.forwarding=1 >>"$LOG" 2>&1; then
+    log "applied live IPv6 forwarding sysctls in ${AWG3_CONTAINER} netns (no AWG restart)"
+  else
+    log "WARNING: could not apply live IPv6 forwarding sysctls in ${AWG3_CONTAINER} netns; recreate ${AWG3_CONTAINER} manually to enable IPv6 reject stub"
+  fi
+}
+
 # A compose file declares its own required keys as ${KEY:?...}. Anything named
 # that way and missing from .env is site-specific by definition - the updater
 # cannot invent a value, so it says so instead of starting a container that
@@ -261,6 +347,10 @@ ENV_BACKUP="${SCRATCH}/env.backup"
 COMPOSE_BACKUP="${SCRATCH}/compose.backup"
 cp "$ENV_FILE" "$ENV_BACKUP"
 cp "$COMPOSE_FILE" "$COMPOSE_BACKUP"
+for rel in ${APPLY_SCRIPTS[@]+"${APPLY_SCRIPTS[@]}"}; do
+  safe_key="${rel//\//_}"
+  cp -p "${NODE_DIR}/${rel}" "${SCRATCH}/backup-${safe_key}"
+done
 
 write_env_image() {
   local value="$1" env_tmp
@@ -303,12 +393,29 @@ rollback() {
   cp -f "$ENV_BACKUP" "$ENV_FILE"
   chmod 600 "$ENV_FILE"
   cp -f "$COMPOSE_BACKUP" "$COMPOSE_FILE"
+  for rel in ${APPLY_SCRIPTS[@]+"${APPLY_SCRIPTS[@]}"}; do
+    safe_key="${rel//\//_}"
+    if [ -f "${SCRATCH}/backup-${safe_key}" ]; then
+      cp -pf "${SCRATCH}/backup-${safe_key}" "${NODE_DIR}/${rel}"
+    fi
+  done
   agent_up || log "WARNING: the rollback could not recreate the agent"
 }
 
 if [ "$apply_compose" -eq 1 ]; then
   cp -f "$NEW_COMPOSE" "$COMPOSE_FILE"
 fi
+for rel in ${APPLY_SCRIPTS[@]+"${APPLY_SCRIPTS[@]}"}; do
+  safe_key="${rel//\//_}"
+  dest="${NODE_DIR}/${rel}"
+  script_tmp="$(mktemp "${dest}.XXXXXX")" || fail_out "could not stage ${rel}"
+  cat "${SCRATCH}/new-${safe_key}" >"$script_tmp" || { rm -f "$script_tmp"; fail_out "could not write ${rel}"; }
+  chmod 0755 "$script_tmp"
+  mv -f "$script_tmp" "$dest"
+done
+# Enable IPv6 forwarding sysctls live before bringing up the new agent so its
+# first /server report already reflects ipv6RejectStub.supported = true.
+ensure_awg3_ipv6_forwarding
 write_env_image "$IMAGE" || fail_out "could not rewrite ${ENV_FILE}"
 
 if ! agent_up; then

@@ -87,6 +87,10 @@ to delete a node and every key issued on it), `node-reconcile`,
 
 For every flag and error code see [`docs/CLI.md`](../../docs/CLI.md).
 
+**Reachability:** `probe-results --bridges --json` lists bridge results, and
+`bridge-probe <bridge-id> --on|--off` controls bridge alerts. See the
+[reachability runbook](../../docs/REACHABILITY-PROBE.md).
+
 ### Registering a node
 
 ```bash

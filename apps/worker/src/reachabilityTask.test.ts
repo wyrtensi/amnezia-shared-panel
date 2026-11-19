@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import type { ProbeRunRequest, ProbeRunState } from "@amnezia/contracts";
+import { probeCapabilityInputOf, type ProbeRunRequest, type ProbeRunState } from "@amnezia/contracts";
 
 import type { ProbeClient } from "./probeAgent.js";
 import {
@@ -34,6 +34,8 @@ const probeRow = (extra: Partial<ProbeRow> = {}): ProbeRow => ({
   staleAlertedAt: null,
   enabledAt: hoursAgo(48),
   timeZone: "UTC",
+  probeDirectWhenBridged: false,
+  stealthMode: false,
   capabilities: null,
   capabilitiesCheckedAt: hoursAgo(0.01),
   candidateRun: null,
@@ -61,6 +63,17 @@ const targetB: RunTarget = {
   config: null,
 };
 
+const directEndpointTarget = (suffix: string, checkedAt: Date | null = null): RunTarget => ({
+  ...targetA,
+  targetId: `id-node-a:awg3:r0:endpoint-${suffix}:r0:192.0.2.20:51820`,
+  directEndpoint: {
+    id: `endpoint-${suffix}`,
+    address: "192.0.2.20",
+    checkedAt,
+    reusesNodeTarget: false,
+  },
+});
+
 const level = { ok: true, detail: null, latencyMs: 5 };
 const finished = (runId: string): ProbeRunState => ({
   runId,
@@ -80,18 +93,26 @@ const finished = (runId: string): ProbeRunState => ({
   ],
 });
 
-const fakeRepository = (probe: ProbeRow | null): ReachabilityRepository => ({
-  loadProbe: vi.fn(() => Promise.resolve(probe)),
-  recordProbeError: vi.fn(() => Promise.resolve(undefined)),
-  recordProbeCapabilities: vi.fn(() => Promise.resolve(undefined)),
-  syncServiceKeys: vi.fn(() => Promise.resolve(({ created: 0, revoked: 0, provisioning: 0 }))),
-  listTargets: vi.fn(() => Promise.resolve([targetA, targetB])),
-  markRunStarted: vi.fn(() => Promise.resolve(undefined)),
-  abandonRun: vi.fn(() => Promise.resolve(undefined)),
-  ingest: vi.fn(() => Promise.resolve(true)),
-  setStaleAlert: vi.fn(() => Promise.resolve(undefined)),
-  finishCandidateRun: vi.fn(() => Promise.resolve("written" as const)),
-});
+const fakeRepository = (probe: ProbeRow | null): ReachabilityRepository => {
+  const repository: ReachabilityRepository = {
+    loadProbe: vi.fn(() => Promise.resolve(probe)),
+    recordProbeError: vi.fn(() => Promise.resolve(undefined)),
+    recordProbeCapabilities: vi.fn(() => Promise.resolve(undefined)),
+    syncServiceKeys: vi.fn(() => Promise.resolve(({ created: 0, revoked: 0, provisioning: 0 }))),
+    listTargets: vi.fn(() => Promise.resolve([targetA, targetB])),
+    listBridgeTargets: vi.fn(() => Promise.resolve([])),
+    markRunStarted: vi.fn(() => Promise.resolve(undefined)),
+    withDispatchLock: (expected, dispatch) => dispatch({
+      ...repository,
+      capabilities: probeCapabilityInputOf(expected.capabilities, expected.capabilitiesCheckedAt),
+    }),
+    abandonRun: vi.fn(() => Promise.resolve(undefined)),
+    ingest: vi.fn(() => Promise.resolve(true)),
+    setStaleAlert: vi.fn(() => Promise.resolve(undefined)),
+    finishCandidateRun: vi.fn(() => Promise.resolve("written" as const)),
+  };
+  return repository;
+};
 
 /** What the tick's ingest decided, classified against the given context. */
 const decided = async (
@@ -169,6 +190,65 @@ describe("reachability task", () => {
     expect(write.notices).toEqual([]);
   });
 
+  it("stores each direct verdict without changing the legacy node verdict", async () => {
+    const repository = fakeRepository(probeRow({ currentRunId: "run-1" }));
+    const primary: RunTarget = {
+      ...targetA,
+      directEndpoint: {
+        id: "endpoint-primary",
+        address: "192.0.2.10",
+        checkedAt: null,
+        reusesNodeTarget: true,
+      },
+    };
+    const backup = directEndpointTarget("backup");
+    const run = finished("run-1");
+    const result = run.results[0]!;
+    run.results.push({
+      ...result,
+      targetId: backup.targetId,
+      endpointHost: "192.0.2.20",
+      egressIp: null,
+      levels: { ...result.levels, handshake: { ...level, ok: false } },
+    });
+    await tick(repository, fakeClient(run));
+
+    const { write } = await decided(repository, [primary, backup]);
+    expect(write.outcomes).toHaveLength(1);
+    expect(write.states.get("id-node-a")?.status).toBe("ok");
+    expect(write.endpointOutcomes).toEqual([
+      {
+        endpointId: "endpoint-primary",
+        status: "ok",
+        levels: result.levels,
+        detail: null,
+        reusesNodeTarget: true,
+        isBridged: false,
+      },
+      {
+        endpointId: "endpoint-backup",
+        status: "failed",
+        levels: { ...result.levels, handshake: { ...level, ok: false } },
+        detail: "no handshake",
+        reusesNodeTarget: false,
+        isBridged: false,
+      },
+    ]);
+  });
+
+  it("leaves endpoint evidence untouched when only another address or revision was measured", async () => {
+    const repository = fakeRepository(probeRow({ currentRunId: "run-1" }));
+    const endpoint = directEndpointTarget("backup");
+    const run = finished("run-1");
+    const result = run.results[0]!;
+    run.results.push({ ...result, targetId: endpoint.targetId });
+    await tick(repository, fakeClient(run));
+
+    expect((await decided(repository, [targetA, endpoint])).write.endpointOutcomes).toEqual([]);
+    const current = { ...endpoint, targetId: endpoint.targetId.replace(":r0:192.", ":r2:192.") };
+    expect((await decided(repository, [targetA, current])).write.endpointOutcomes).toEqual([]);
+  });
+
   it("does not ingest a run already ingested", async () => {
     const repository = fakeRepository(
       probeRow({ currentRunId: "run-1", lastIngestedRunId: "run-1" }),
@@ -213,6 +293,20 @@ describe("reachability task", () => {
       ],
     });
     expect(repository.markRunStarted).toHaveBeenCalledWith("run-new", NOW);
+  });
+
+  it("keeps normal targets and fits the least recently checked extra endpoints in a full run", async () => {
+    const client = fakeClient();
+    const repository = fakeRepository(probeRow({ currentRunStartedAt: hoursAgo(1.1) }));
+    const normal = Array.from({ length: 499 }, (_, i) => ({ ...targetA, targetId: `node-${i}:awg3:r0` }));
+    const recent = directEndpointTarget("recent", NOW);
+    const unmeasured = directEndpointTarget("unmeasured");
+    vi.mocked(repository.listTargets).mockResolvedValue([recent, ...normal, unmeasured]);
+
+    await tick(repository, client);
+
+    const ids = vi.mocked(client.startRun).mock.calls[0]?.[0].targets.map((target) => target.targetId);
+    expect(ids).toEqual([...normal.map((target) => target.targetId), unmeasured.targetId]);
   });
 
   it("does not start before the interval", async () => {
@@ -408,9 +502,16 @@ describe("reachability task", () => {
           config: "vpn://bridged-a",
           expectedEgressIp: null,
         },
-        // AWG 2 keeps the direct path: unknown origin keeps the fallback.
-        { targetId: "id-node-a:awg2", protocol: "awg2", config: "vpn://direct-a2" },
       ]);
+    });
+
+    it("sends direct targets for a bridged node only by explicit opt-in", async () => {
+      const client = fakeClient();
+      const repository = fakeRepository(probeRow({ ...due, ...capable, probeDirectWhenBridged: true }));
+      vi.mocked(repository.listTargets).mockResolvedValue([bridgedA, directAwg2]);
+      await tick(repository, client);
+      expect(vi.mocked(client.startRun).mock.calls[0]?.[0].targets.map(({ targetId }) => targetId))
+        .toEqual([bridgedA.targetId, directAwg2.targetId]);
     });
 
     it("compares a bridged path with the node's origin exit IP when known", async () => {
@@ -434,12 +535,10 @@ describe("reachability task", () => {
       // A stale record is refreshed first; make that refresh fail.
       vi.mocked(client.capabilities).mockRejectedValue(new Error("down"));
       const repository = fakeRepository(probeRow({ ...due, ...record }));
-      // Even if a bridged target came back with a config, no null is sent.
-      vi.mocked(repository.listTargets).mockResolvedValue([bridgedA]);
+      vi.mocked(repository.listTargets).mockResolvedValue([bridgedA, directAwg2]);
       await tick(repository, client);
       expect(repository.listTargets).toHaveBeenCalledWith({ bridgeMeasurement: false });
-      const sent = vi.mocked(client.startRun).mock.calls[0]?.[0].targets[0];
-      expect(sent && "expectedEgressIp" in sent).toBe(false);
+      expect(vi.mocked(client.startRun).mock.calls[0]?.[0].targets).toEqual([]);
     });
 
     it("uses a capability refreshed in the same tick", async () => {

@@ -117,9 +117,11 @@ import {
   BRIDGE_USAGE_LINES,
   bridgeErrorHint,
 } from "./bridges.js";
-import type { AdminReachabilityView, KeyBridgeInfo } from "@amnezia/contracts";
+import type { AdminNodeEndpoint, AdminReachabilityView, KeyBridgeInfo } from "@amnezia/contracts";
 import {
+  bridgeReachabilityLines,
   buildProbeUpsert,
+  endpointReachabilityLines,
   probeSummaryLines,
   REACHABILITY_COLUMNS,
   reachabilityLabel,
@@ -259,6 +261,7 @@ type AdminKey = {
   id: string;
   ownerId: string;
   nodeId: string;
+  endpointName?: string | null;
   state: string;
   protocol: string;
   deviceLabel: string;
@@ -276,6 +279,7 @@ type AdminKey = {
 type AdminNode = {
   id: string;
   name: string;
+  publicEndpoints?: AdminNodeEndpoint[];
   /** Whether this node takes part in service checks at all. */
   checksEnabled?: boolean;
   /** Checks this node skips, by id. */
@@ -554,6 +558,7 @@ async function cmdKeys(args: string[]): Promise<void> {
         owner: emailById.get(key.ownerId) ?? key.ownerId.slice(0, 8),
         state: key.state,
         proto: key.protocol,
+        address: key.endpointName ?? "—",
         bridge: key.bridge?.effective
           ? `${key.bridge.effective.bridgeName} (${key.bridge.effective.publicIpv4}:${key.bridge.effective.publicUdpPort})`
           : key.bridge?.mode === "direct"
@@ -578,6 +583,7 @@ async function cmdKeys(args: string[]): Promise<void> {
         "owner",
         "state",
         "proto",
+        ...(shown.some((key) => key.endpointName) ? ["address"] : []),
         "bridge",
         "online",
         "traffic",
@@ -884,6 +890,21 @@ async function cmdNodes(args: string[]): Promise<void> {
     );
     return;
   }
+  if (args.includes("--endpoints")) {
+    console.log(table(nodes.flatMap((node) =>
+      (node.publicEndpoints ?? []).map((address) => ({
+        node: node.name,
+        name: address.name,
+        address: address.publicAddress,
+        id: address.id,
+        status: address.enabled ? (address.reachability?.state ?? "unknown") : "disabled",
+        probe: address.reachabilityEnabled === false
+          ? "off"
+          : `${address.probeStatus ?? "—"}${address.incidentOpen ? " (incident)" : ""}`,
+      })),
+    ), ["node", "name", "address", "id", "status", "probe"]));
+    return;
+  }
   // The list users actually see: the admin's stored order first, then the
   // nodes nobody has placed, by name. `#` is the position a user sees and `-`
   // marks a node that has never been placed - which is worth noticing, since
@@ -1021,6 +1042,10 @@ async function cmdUserLimit(args: string[]): Promise<void> {
   if (allowedNodesFlag !== undefined) {
     body.allowedNodeIds = parseNodeSpec(allowedNodesFlag);
   }
+  const allowedEndpointsFlag = flagOf(args, "allowed-endpoints");
+  if (allowedEndpointsFlag !== undefined) {
+    body.allowedEndpointIds = parseNodeSpec(allowedEndpointsFlag);
+  }
   // How this user's number is counted. Null is meaningful here (it clears the
   // per-user override), so the flag's presence — not its value — decides
   // whether the field is sent at all.
@@ -1042,6 +1067,12 @@ async function cmdUserLimit(args: string[]): Promise<void> {
     const shown =
       allowed === null ? "all" : allowed.length ? allowed.join(",") : "none";
     console.log(`  node availability → ${shown}`);
+  }
+  if (allowedEndpointsFlag !== undefined) {
+    const allowed = body.allowedEndpointIds as string[] | null;
+    const shown =
+      allowed === null ? "all" : allowed.length ? allowed.join(",") : "none";
+    console.log(`  endpoint availability → ${shown}`);
   }
   if (modeFlag !== undefined) {
     console.log(`  key limit mode → ${modeFlag}`);
@@ -1645,7 +1676,12 @@ async function cmdPolicySet(args: string[]): Promise<void> {
   // comma-separated id list; "none" clears one. Passing both in one call is
   // how you reorder past a recommended set that would no longer be the top of
   // the list - the API validates them together.
-  for (const field of ["nodeOrder", "recommendedNodeIds"] as const) {
+  for (const field of [
+    "nodeOrder",
+    "recommendedNodeIds",
+    "endpointOrder",
+    "recommendedEndpointIds",
+  ] as const) {
     const value = flag(field);
     if (value !== undefined) body[field] = parsePolicyNodeList(value);
   }
@@ -1698,6 +1734,16 @@ async function cmdPolicySet(args: string[]): Promise<void> {
       nodeIds === "null"
         ? null
         : nodeIds
+            .split(",")
+            .map((value) => value.trim())
+            .filter(Boolean);
+  }
+  const endpointIds = flag("allowedEndpointIds");
+  if (endpointIds !== undefined) {
+    body.allowedEndpointIds =
+      endpointIds === "null"
+        ? null
+        : endpointIds
             .split(",")
             .map((value) => value.trim())
             .filter(Boolean);
@@ -2127,6 +2173,37 @@ async function cmdNodeUpdate(args: string[]): Promise<void> {
   // under it. If one ever does while keeping the same DNS name, this is the
   // recovery: clear the stored IP and the next telemetry tick resolves again.
   if (args.includes("--clear-public-ip")) body.publicIp = null;
+  const endpointIp = flagOf(args, "endpoint-ip");
+  const endpointId = flagOf(args, "endpoint-id");
+  const endpointName = flagOf(args, "endpoint-name");
+  const endpointEnabled = flagOf(args, "endpoint-enabled");
+  const endpointReachability = flagOf(args, "endpoint-reachability");
+  if (endpointIp !== undefined && endpointId !== undefined) {
+    throw new Error("Choose --endpoint-ip to add an address or --endpoint-id to edit one");
+  }
+  if (endpointIp !== undefined) {
+    if (endpointEnabled !== undefined || endpointReachability !== undefined) {
+      throw new Error("--endpoint-enabled and --endpoint-reachability need --endpoint-id");
+    }
+    body.publicEndpoint = { action: "add", address: endpointIp, name: endpointName };
+  } else if (endpointId !== undefined) {
+    body.publicEndpoint = {
+      action: "update",
+      id: endpointId,
+      name: endpointName,
+      enabled: endpointEnabled === undefined ? undefined : parseBoolFlag("endpoint-enabled", endpointEnabled),
+      reachabilityEnabled:
+        endpointReachability === undefined
+          ? undefined
+          : parseBoolFlag("endpoint-reachability", endpointReachability),
+    };
+  } else if (
+    endpointName !== undefined ||
+    endpointEnabled !== undefined ||
+    endpointReachability !== undefined
+  ) {
+    throw new Error("Address settings require --endpoint-id or --endpoint-ip");
+  }
   if (Object.keys(body).length === 0) {
     throw new Error("Usage: node-update <id> --<field>=<value> …");
   }
@@ -2294,6 +2371,8 @@ async function cmdUserCreateKey(args: string[]): Promise<void> {
   const nodeId = flagOf(args, "node");
   if (!nodeId) throw new Error(usage);
   const body: Record<string, unknown> = { nodeId };
+  const endpointId = flagOf(args, "endpoint");
+  if (endpointId !== undefined) body.endpointId = endpointId;
   // Which parts the AmneziaVPN client shows as the connection name. Omitted
   // flags keep the API defaults (server + label, no number).
   const nameDisplay: Record<string, boolean> = {};
@@ -2753,12 +2832,13 @@ Read:
              [--all]      never), the keys they hold, the ones too young to count, and
                           how long the oldest has been stale. Only users with at least
                           one by default; --all lists everyone
-  nodes [--hosts]          List nodes (with protocols, capacity and the public
-                          address clients connect to: "name (ip)" once the panel
+  nodes [--hosts|--endpoints]  List nodes and their default connection address:
+                          "name (ip)" once the panel
                           has resolved a DNS name, "name (unresolved)" when it
                           never could, "—" when the node-agent does not report
                           one. --json also carries publicIpResolvedAt.
                           --hosts instead shows how the PANEL reaches each agent
+                          --endpoints lists each public address, name and verdict
                           (apiBaseUrl) classified ip / docker-local / dns
   keys-purge-revoked [<id|email>] [--confirm]
                            Delete revoked keys' rows (all users, or one)
@@ -2824,7 +2904,7 @@ Users (accept a user id OR email):
                                          rules by site name use a full_tunnel key and the
                                          AmneziaVPN app's own site-based split tunnelling
                                          (Settings -> Connection).
-  user-create-key <id|email> --node=<uuid> [--device=] [--protocol=awg3] [--route=full_tunnel]
+  user-create-key <id|email> --node=<uuid> [--endpoint=<uuid>] [--device=] [--protocol=awg3] [--route=full_tunnel]
                   [--bridge=inherit|direct|route] [--bridge-route=<route-uuid>]
                   [${deviceTypeUsage()}]
                   [--name-server=true|false] [--name-label=true|false] [--name-number=true|false]
@@ -2848,6 +2928,8 @@ Nodes:
                                           enabled=true|false, enabled-protocols)
   node-update <id> --clear-public-ip      Forget the resolved public IP so the
                                           worker looks it up again next tick
+  node-update <id> --endpoint-ip=<ipv4> [--endpoint-name=<name>]
+  node-update <id> --endpoint-id=<uuid> [--endpoint-name=<name>] [--endpoint-enabled=true|false] [--endpoint-reachability=true|false]
   node-remove <id>                        Delete a node (refused while it has keys)
   node-remove <id> --with-keys            Delete a node AND every key ever issued
              --confirm=<node name>        on it. Irreversible; the name must match
@@ -2883,12 +2965,15 @@ ${BRIDGE_USAGE_LINES}
   probe-set --label= --api-url= --api-key-file=<path|-> --control-url=
             [--egress-url=] [--interval-sec=3600] [--fail-threshold=2]
             [--stale-after-sec=10800] [--time-zone=UTC] [--enabled=on|off]
+            [--probe-direct-when-bridged=on|off] [--stealth=on|off]
                                           Register the probe, or change only the fields you name
                                           (--time-zone: IANA zone for alert and widget times)
   probe-delete [--confirm]                Forget the probe and revoke its service keys
   probe-run                               Ask for a run now (results within a few minutes)
   bridge-tls-gate <bridge-id> <baseline|verify> [<since-UTC>]  Check route traffic around TLS rotation
-  probe-results [<node>] [--json]         Per node and protocol: ping, tcp, handshake, http
+  bridge-probe <bridge-id> [--on|--off]    Show or change bridge alerts
+  probe-results [<node>] [--json]         Node tests and bridge observations (JSON: nodes)
+  probe-results --bridges [--json]        Bridge tests and observations only
   node-probe <node> [--on|--off]          Whether the probe tests this node
     Assertion flags (repeatable; all must hold):
 ${assertionUsageLines().join("\n")}
@@ -3025,8 +3110,11 @@ policy-set fields:
     limit is counted; a user can be moved off it with user-limit --mode=
   dailyRetentionDays=<int 1..36500 | null>
   allowedProtocols=awg3[,awg2]            allowedNodeIds=<uuid,…|null>
+  allowedEndpointIds=<uuid,…|null>        (per-IP availability; null = all)
   nodeOrder=<uuid,…|none>                 (the order users see; the rest follow)
   recommendedNodeIds=<uuid,…|none>        (badge only; must be the top of nodeOrder)
+  endpointOrder=<uuid,…|none>             (per-IP server order; the rest follow)
+  recommendedEndpointIds=<uuid,…|none>    (per-IP badge; must be top of endpointOrder)
   cfAccessAccountId / cfAccessAppId / cfAccessPolicyId=<id|null>
   cfApiToken=<token>   (write-only, encrypted)
   video-desktop / video-android / video-ios=<url|none>
@@ -3361,6 +3449,8 @@ async function cmdProbeSet(args: string[]): Promise<void> {
       staleAfterSec: flagOf(args, "stale-after-sec"),
       timeZone: flagOf(args, "time-zone"),
       enabled: flagOf(args, "enabled"),
+      probeDirectWhenBridged: flagOf(args, "probe-direct-when-bridged"),
+      stealthMode: flagOf(args, "stealth"),
     },
     view.probe,
   );
@@ -3393,20 +3483,56 @@ async function cmdProbeRun(): Promise<void> {
 }
 
 async function cmdProbeResults(args: string[]): Promise<void> {
-  const nodeFilter = args.find((arg) => !arg.startsWith("--"));
+  const [nodeFilter] = positionals(args);
+  const bridgesOnly = args.includes("--bridges");
+  if (nodeFilter && bridgesOnly) throw new Error("A node filter cannot be combined with --bridges");
   const view = await loadReachability();
-  if (nodeFilter && !view.nodes.some((n) => n.nodeId === nodeFilter || n.nodeName === nodeFilter)) {
+  const nodes = nodeFilter
+    ? view.nodes.filter((node) => node.nodeId === nodeFilter || node.nodeName === nodeFilter)
+    : view.nodes;
+  const bridges = view.bridges ?? [];
+  if (nodeFilter && nodes.length === 0) {
     throw new Error(`No node with id or name ${nodeFilter}`);
   }
-  if (wantsJson(args)) {
-    return json(
-      nodeFilter
-        ? view.nodes.filter((n) => n.nodeId === nodeFilter || n.nodeName === nodeFilter)
-        : view.nodes,
-    );
+  if (wantsJson(args)) return json(bridgesOnly ? bridges : nodes);
+  if (!bridgesOnly) {
+    if (!view.probe) console.log("No reachability probe is registered.");
+    console.log(table(reachabilityRows(view, nodeFilter), REACHABILITY_COLUMNS));
+    for (const node of nodes) {
+      for (const line of endpointReachabilityLines(node)) console.log(line);
+      if (!node.directStatus) continue;
+      const when = node.directCheckedAt ? ` at ${node.directCheckedAt}` : "";
+      const detail = node.directDetail ? ` (${node.directDetail})` : "";
+      console.log(`${node.nodeName} direct path: ${reachabilityLabel(node.directStatus)}${when}${detail}`);
+    }
   }
-  if (!view.probe) console.log("No reachability probe is registered.");
-  console.log(table(reachabilityRows(view, nodeFilter), REACHABILITY_COLUMNS));
+  if (!nodeFilter) {
+    if (bridgesOnly && bridges.length === 0) console.log("No bridge reachability data is available.");
+    for (const bridge of bridges) for (const line of bridgeReachabilityLines(bridge)) console.log(line);
+  }
+}
+
+async function cmdBridgeProbe(args: string[]): Promise<void> {
+  const [id, extra] = positionals(args);
+  if (!id || extra || args.some((arg) => arg.startsWith("--") && arg !== "--on" && arg !== "--off")) {
+    throw new Error("Usage: bridge-probe <bridge-id> [--on|--off]");
+  }
+  if (!UUID_RE.test(id)) throw new Error("Bridge id must be a UUID");
+  const on = args.includes("--on");
+  const off = args.includes("--off");
+  if (on && off) throw new Error("Use either --on or --off");
+  if (!on && !off) {
+    const view = await loadReachability();
+    const bridge = (view.bridges ?? []).find((item) => item.bridgeId === id);
+    if (!bridge) throw new Error(`No bridge with id ${id}`);
+    console.log(`bridge ${bridge.bridgeName}: reachability alerts ${bridge.reachabilityEnabled ? "on" : "off"}`);
+    return;
+  }
+  await api(`/api/admin/vpn-bridges/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    body: JSON.stringify({ reachabilityEnabled: on }),
+  });
+  console.log(`bridge ${id}: reachability alerts ${on ? "on" : "off"}`);
 }
 
 async function cmdNodeProbe(args: string[]): Promise<void> {
@@ -3631,6 +3757,8 @@ export async function dispatch(argv: string[]): Promise<void> {
       return runBridgeTlsGate(args, { api });
     case "probe-results":
       return cmdProbeResults(args);
+    case "bridge-probe":
+      return cmdBridgeProbe(args);
     case "node-probe":
       return cmdNodeProbe(args);
     case "rules":

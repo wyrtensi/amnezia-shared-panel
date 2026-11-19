@@ -19,6 +19,8 @@ import {
 } from "drizzle-orm";
 import {
   ACCESS_SYNC_DEDUPLICATION_KEY,
+  isIpv4Literal,
+  nodeEndpointDefaultName,
   NODE_IPV6_REJECT_STUB_JOB_TYPE,
   RULES_REFRESH_DEDUPLICATION_KEY,
   revokeJobDedupKey,
@@ -40,6 +42,7 @@ import {
   nodeMetricsSamples,
   nodeServiceCheckResults,
   nodeServiceChecks,
+  nodeVpnEndpoints,
   nodes,
   peerCurrent,
   peerSamples,
@@ -133,6 +136,52 @@ export type PostgresWorkerRepositoryOptions = {
 
 // The transaction handle drizzle passes to `db.transaction(async (tx) => ...)`.
 type DbTransaction = Parameters<Parameters<Database["transaction"]>[0]>[0];
+
+/** The caller holds the node row lock shared by telemetry and endpoint edits. */
+const syncResolvedPrimaryEndpoint = async (
+  tx: DbTransaction,
+  node: Pick<typeof nodes.$inferSelect, "id" | "name" | "publicName">,
+  address: string,
+): Promise<void> => {
+  const endpoints = await tx
+    .select({ id: nodeVpnEndpoints.id, ordinal: nodeVpnEndpoints.ordinal, address: nodeVpnEndpoints.address })
+    .from(nodeVpnEndpoints)
+    .where(eq(nodeVpnEndpoints.nodeId, node.id))
+    .orderBy(desc(nodeVpnEndpoints.ordinal));
+  const primary = endpoints.find((endpoint) => endpoint.ordinal === 1);
+  if (primary?.address === address) return;
+
+  const matching = endpoints.find((endpoint) => endpoint.address === address);
+  const resetEvidence = {
+    revision: sql`${nodeVpnEndpoints.revision} + 1`,
+    probeStatus: null,
+    probeCheckedAt: null,
+    probeDetail: null,
+  };
+  if (matching) {
+    if (primary) {
+      // Free ordinal 1 before promoting the existing address. Both writes
+      // commit together, and keys referencing either endpoint keep its ID.
+      await tx.update(nodeVpnEndpoints)
+        .set({ ordinal: (endpoints[0]?.ordinal ?? 1) + 1, ...resetEvidence })
+        .where(eq(nodeVpnEndpoints.id, primary.id));
+    }
+    await tx.update(nodeVpnEndpoints)
+      .set({ ordinal: 1, enabled: true, ...resetEvidence })
+      .where(eq(nodeVpnEndpoints.id, matching.id));
+  } else if (primary) {
+    await tx.update(nodeVpnEndpoints)
+      .set({ address, ...resetEvidence })
+      .where(eq(nodeVpnEndpoints.id, primary.id));
+  } else {
+    await tx.insert(nodeVpnEndpoints).values({
+      nodeId: node.id,
+      ordinal: 1,
+      address,
+      name: node.publicName || nodeEndpointDefaultName(node.name, 1),
+    });
+  }
+};
 
 // Caps one `rearmStuckRevokes` sweep's blast radius -- see the `.limit()` call
 // in that method. Named and exported so the integration test that proves the
@@ -1194,7 +1243,7 @@ export class PostgresWorkerRepository
       )) * 1_000;
     await this.options.db.transaction(async (tx) => {
       const node = (
-        await tx.select().from(nodes).where(eq(nodes.id, snapshot.nodeId)).limit(1)
+        await tx.select().from(nodes).where(eq(nodes.id, snapshot.nodeId)).limit(1).for("no key update")
       )[0];
       if (!node) return;
       const supportedProtocols = protocolsFromAgent(snapshot.server.protocols);
@@ -1355,6 +1404,10 @@ export class PostgresWorkerRepository
           updatedAt: snapshot.observedAt,
         })
         .where(eq(nodes.id, snapshot.nodeId));
+
+      if (supportedProtocols.includes("awg3") && snapshot.publicIp && isIpv4Literal(snapshot.publicIp)) {
+        await syncResolvedPrimaryEndpoint(tx, node, snapshot.publicIp);
+      }
 
       // Host metrics: one current row per node, replaced every tick, plus a
       // downsampled history row. They are written inside the same transaction

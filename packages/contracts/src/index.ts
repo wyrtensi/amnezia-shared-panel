@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { keyBridgeModeSchema } from "./bridges.js";
+import { keyBridgeModeSchema, publicIpv4Schema } from "./bridges.js";
 
 export const protocolKindSchema = z.enum(["awg2", "awg3"]);
 export const keyStateSchema = z.enum([
@@ -236,6 +236,7 @@ export const composeKeyDisplayName = (input: {
 export const createKeyRequestSchema = z
   .object({
     nodeId: z.uuid(),
+    endpointId: z.uuid().optional(),
     protocol: protocolKindSchema.default("awg3"),
     deviceType: deviceTypeSchema.default("unspecified"),
     deviceLabel: z.string().trim().min(1).max(80).optional(),
@@ -256,7 +257,11 @@ export const createKeyRequestSchema = z
       message:
         "vpnBridgeRouteId is required when bridgeMode is 'route' and must be omitted otherwise",
     },
-  );
+  )
+  .refine((value) => !value.endpointId || value.protocol === "awg3", {
+    path: ["endpointId"],
+    message: "Address selection requires AWG 3.1",
+  });
 
 /**
  * Deleting a node also deletes every key ever issued on it, so the destructive
@@ -304,10 +309,43 @@ export const createNodeRequestSchema = z.object({
   capabilities: z.record(z.string().min(1).max(80), z.boolean()).default({}),
 });
 
+const nodeEndpointNameSchema = z.string().trim().min(1).max(120);
+
+export const nodeEndpointDefaultName = (name: string, ordinal: number): string => {
+  const suffix = `-${ordinal}`;
+  const base = name.slice(0, 120 - suffix.length);
+  return `${base.toWellFormed()}${suffix}`;
+};
+
+export const nodePublicEndpointMutationSchema = z.discriminatedUnion("action", [
+  z.object({
+    action: z.literal("add"),
+    address: publicIpv4Schema,
+    name: nodeEndpointNameSchema.optional(),
+  }).strict(),
+  z.object({
+    action: z.literal("update"),
+    id: z.uuid(),
+    name: nodeEndpointNameSchema.optional(),
+    enabled: z.boolean().optional(),
+    reachabilityEnabled: z.boolean().optional(),
+  }).strict().refine(
+    (fields) =>
+      fields.name !== undefined ||
+      fields.enabled !== undefined ||
+      fields.reachabilityEnabled !== undefined,
+    {
+      message: "An endpoint name, availability, or reachability setting is required",
+    },
+  ),
+]);
+export type NodePublicEndpointMutation = z.infer<typeof nodePublicEndpointMutationSchema>;
+
 export const updateNodeRequestSchema = createNodeRequestSchema
   .omit({ apiKey: true })
   .partial()
   .extend({
+    publicEndpoint: nodePublicEndpointMutationSchema.optional(),
     apiKey: z.string().min(32).max(4_096).optional(),
     // Redeclared without their create-time defaults: `.partial()` keeps a
     // `.default()`, so a patch naming one unrelated field would otherwise
@@ -506,6 +544,10 @@ export const portalPolicySchema = z.object({
   // Nodes users may create keys on; null = all. Per-user override in
   // policyOverride.allowedNodeIds.
   allowedNodeIds: z.array(z.uuid()).nullish(),
+  // Individual public IPv4 endpoints users may create keys on; null = all
+  // enabled endpoints on allowed nodes. Per-user override in
+  // policyOverride.allowedEndpointIds.
+  allowedEndpointIds: z.array(z.uuid()).nullish(),
   // Whether the key limit is counted per server or as one shared pool.
   keyLimitMode: keyLimitModeSchema.default("per_node"),
   allowRouteProfileSelection: z.boolean().default(true),
@@ -1230,6 +1272,7 @@ export type NodeKeyLimits = z.infer<typeof nodeKeyLimitsSchema>;
 export const setUserLimitRequestSchema = z.object({
   keyLimitOverride: z.int().min(0).max(1_000).nullable(),
   allowedNodeIds: z.array(z.uuid()).nullish(),
+  allowedEndpointIds: z.array(z.uuid()).nullish(),
   nodeKeyLimits: nodeKeyLimitsSchema.nullish(),
   keyLimitMode: keyLimitModeSchema.nullish(),
 });
@@ -1936,6 +1979,8 @@ export const REACHABILITY_DEFAULTS = {
   failThreshold: 2,
   staleAfterSec: 10800,
   timeZone: "UTC",
+  probeDirectWhenBridged: false,
+  stealthMode: true,
 } as const;
 
 export const reachabilityStatusSchema = serviceCheckStatusSchema;
@@ -1973,12 +2018,36 @@ export const probeTargetResultSchema = z.object({
 });
 export type ProbeTargetResult = z.infer<typeof probeTargetResultSchema>;
 
+export const bridgeProbeLevelsSchema = z.object({
+  ping: probeLevelSchema,
+  tcp: probeLevelSchema,
+  https: probeLevelSchema.optional(),
+});
+export type BridgeProbeLevels = z.infer<typeof bridgeProbeLevelsSchema>;
+
+export const probeBridgeRunTargetSchema = z.object({
+  targetId: z.string().min(1).max(200),
+  host: z.string().min(1).max(255),
+  httpsHostname: z.string().min(1).max(253).optional(),
+});
+export type ProbeBridgeRunTarget = z.infer<typeof probeBridgeRunTargetSchema>;
+
+export const probeBridgeTargetResultSchema = z.object({
+  targetId: z.string().min(1).max(200),
+  host: z.string().max(255),
+  status: z.enum(["done", "error"]),
+  detail: z.string().max(500).nullable(),
+  levels: bridgeProbeLevelsSchema,
+});
+export type ProbeBridgeTargetResult = z.infer<typeof probeBridgeTargetResultSchema>;
+
 export const probeRunStateSchema = z.object({
   runId: z.string().min(1).max(100),
   startedAt: z.iso.datetime(),
   finishedAt: z.iso.datetime().nullable(),
   control: probeLevelSchema,
   results: z.array(probeTargetResultSchema).max(2_000),
+  bridgeResults: z.array(probeBridgeTargetResultSchema).max(500).optional(),
 });
 export type ProbeRunState = z.infer<typeof probeRunStateSchema>;
 
@@ -2004,11 +2073,17 @@ export const probeCapabilitiesResponseSchema = z.object({
 });
 export type ProbeCapabilitiesResponse = z.infer<typeof probeCapabilitiesResponseSchema>;
 
+export const PROBE_RUN_MAX_TARGETS = 500;
+
 export const probeRunRequestSchema = z.object({
   runId: z.string().min(1).max(100),
   control: z.object({ url: z.url() }),
   egress: z.object({ url: z.url() }),
-  targets: z.array(probeRunTargetSchema).max(500),
+  targets: z.array(probeRunTargetSchema).max(PROBE_RUN_MAX_TARGETS),
+  /** Optional standalone bridge host targets (requires `bridge-host-check` capability). */
+  bridgeTargets: z.array(probeBridgeRunTargetSchema).max(200).optional(),
+  /** Optional paced execution mode (requires `stealth-probe` capability). */
+  stealth: z.boolean().optional(),
 });
 export type ProbeRunRequest = z.infer<typeof probeRunRequestSchema>;
 
@@ -2054,6 +2129,16 @@ export const upsertReachabilityProbeRequestSchema = z.object({
   failThreshold: z.int().min(1).max(10).optional(),
   staleAfterSec: z.int().min(600).max(604_800).optional(),
   timeZone: timeZoneSchema.optional(),
+  /**
+   * When false (default), nodes with an active bridge route are probed only
+   * through the bridge — zero direct external probes hit the node's origin IP.
+   */
+  probeDirectWhenBridged: z.boolean().optional(),
+  /**
+   * When true (default), shuffle targets, vary the scheduled run interval,
+   * and enable quieter pacing on compatible probes.
+   */
+  stealthMode: z.boolean().optional(),
 });
 export type UpsertReachabilityProbeRequest = z.infer<
   typeof upsertReachabilityProbeRequestSchema
@@ -2072,6 +2157,7 @@ export const adminReachabilityProtocolSchema = z.object({
 export const adminReachabilityNodeSchema = z.object({
   nodeId: z.uuid(),
   nodeName: z.string(),
+  publicEndpoints: z.lazy(() => z.array(adminNodeEndpointSchema)).optional(),
   nodeEnabled: z.boolean(),
   reachabilityEnabled: z.boolean(),
   status: reachabilityStatusSchema.nullable(),
@@ -2080,7 +2166,50 @@ export const adminReachabilityNodeSchema = z.object({
   consecutiveFailures: z.int(),
   incidentOpen: z.boolean(),
   detail: z.string().nullable(),
+  /** Optional diagnostic direct-path check when `probeDirectWhenBridged` is enabled. */
+  directStatus: reachabilityStatusSchema.nullable().optional(),
+  directCheckedAt: z.iso.datetime().nullable().optional(),
+  directDetail: z.string().nullable().optional(),
   protocols: z.array(adminReachabilityProtocolSchema),
+});
+
+export const adminReachabilityBridgeRouteSchema = z.object({
+  routeId: z.uuid(),
+  nodeId: z.uuid(),
+  nodeName: z.string(),
+  publicUdpPort: z.int(),
+  state: z.enum(["draft", "active", "retiring"]),
+  observedOnline: z.boolean().nullable(),
+  incidentOpen: z.boolean(),
+  failingSince: z.iso.datetime().nullable(),
+});
+
+export const adminReachabilityBridgeSchema = z.object({
+  bridgeId: z.uuid(),
+  bridgeName: z.string(),
+  publicIpv4: z.string(),
+  panelDnsHostname: z.string().nullable(),
+  reachabilityEnabled: z.boolean(),
+  managementStatus: z.enum([
+    "pending_enrollment",
+    "ok",
+    "down",
+    "stale",
+    "identity_mismatch",
+    "unsupported",
+  ]),
+  frpsReachable: z.boolean().nullable(),
+  mgmtIncidentOpen: z.boolean(),
+  mgmtFailingSince: z.iso.datetime().nullable(),
+  mgmtDetail: z.string().nullable(),
+  probeStatus: reachabilityStatusSchema.nullable(),
+  probeLevels: bridgeProbeLevelsSchema.nullable(),
+  probeCheckedAt: z.iso.datetime().nullable(),
+  probeFailingSince: z.iso.datetime().nullable(),
+  probeConsecutiveFailures: z.int(),
+  probeIncidentOpen: z.boolean(),
+  probeDetail: z.string().nullable(),
+  activeRoutes: z.array(adminReachabilityBridgeRouteSchema),
 });
 
 export const reachabilityRunQuerySchema = z.object({
@@ -2105,6 +2234,10 @@ export const adminReachabilityProbeSchema = z.object({
   /** ID of the pending manual run. Optional for compatibility with older APIs. */
   requestedRunId: z.uuid().optional(),
   timeZone: z.string(),
+  /** Suppress direct probes to bridged nodes unless explicitly enabled (default false). */
+  probeDirectWhenBridged: z.boolean().optional(),
+  /** TSPU-stealth probing mode (default true). */
+  stealthMode: z.boolean().optional(),
   /** The Telegram status widget: when its data last went out, and why not. */
   widgetUpdatedAt: z.iso.datetime().nullable(),
   widgetLastError: z.string().nullable(),
@@ -2113,9 +2246,12 @@ export const adminReachabilityProbeSchema = z.object({
 export const adminReachabilityViewSchema = z.object({
   probe: adminReachabilityProbeSchema.nullable(),
   nodes: z.array(adminReachabilityNodeSchema),
+  bridges: z.array(adminReachabilityBridgeSchema).optional(),
 });
 export type AdminReachabilityView = z.infer<typeof adminReachabilityViewSchema>;
 export type AdminReachabilityNode = z.infer<typeof adminReachabilityNodeSchema>;
+export type AdminReachabilityBridge = z.infer<typeof adminReachabilityBridgeSchema>;
+export type AdminReachabilityBridgeRoute = z.infer<typeof adminReachabilityBridgeRouteSchema>;
 
 /** Slack on top of one period before a silent probe counts as stale. */
 export const PROBE_STALE_GRACE_SEC = 1_800;
@@ -2186,6 +2322,30 @@ export const userNodeReachabilitySchema = z.object({
   since: z.iso.datetime().nullable(),
 });
 export type UserNodeReachability = z.infer<typeof userNodeReachabilitySchema>;
+
+export const userNodeEndpointSchema = z.object({
+  id: z.uuid(),
+  ordinal: z.int().positive(),
+  name: nodeEndpointNameSchema,
+  publicAddress: z.ipv4().optional(),
+  recommended: z.boolean().optional(),
+  reachability: userNodeReachabilitySchema.optional(),
+});
+export type UserNodeEndpoint = z.infer<typeof userNodeEndpointSchema>;
+
+export const adminNodeEndpointSchema = userNodeEndpointSchema.extend({
+  publicAddress: z.ipv4(),
+  enabled: z.boolean(),
+  reachabilityEnabled: z.boolean().optional(),
+  probeStatus: reachabilityStatusSchema.nullable(),
+  probeLevels: probeLevelsSchema.nullable().optional(),
+  probeCheckedAt: z.iso.datetime().nullable(),
+  probeFailingSince: z.iso.datetime().nullable().optional(),
+  probeConsecutiveFailures: z.int().optional(),
+  incidentOpen: z.boolean().optional(),
+  probeDetail: z.string().nullable(),
+});
+export type AdminNodeEndpoint = z.infer<typeof adminNodeEndpointSchema>;
 
 export const UNKNOWN_USER_REACHABILITY: UserNodeReachability = Object.freeze({
   state: "unknown",

@@ -414,6 +414,27 @@
       "when": 1795100000000,
       "tag": "0058_node_ipv6_reject_stub",
       "breakpoints": true
+    },
+    {
+      "idx": 59,
+      "version": "7",
+      "when": 1795100000001,
+      "tag": "0059_bridge_reachability_alerts",
+      "breakpoints": true
+    },
+    {
+      "idx": 60,
+      "version": "7",
+      "when": 1795300000000,
+      "tag": "0060_node_vpn_endpoints",
+      "breakpoints": true
+    },
+    {
+      "idx": 61,
+      "version": "7",
+      "when": 1795400000000,
+      "tag": "0061_endpoint_policy_and_reachability",
+      "breakpoints": true
     }
   ]
 }

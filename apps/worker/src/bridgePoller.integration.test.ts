@@ -1,13 +1,14 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
-import { eq, inArray, ne } from "drizzle-orm";
+import { eq, inArray, like, ne, or } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 
 import {
   BRIDGE_AGENT_POLL_JOB_TYPE,
   bridgeAgentPollDeduplicationKey,
   bridgeFrpProxyName,
+  REACHABILITY_NOTIFY_JOB_TYPE,
 } from "@amnezia/contracts";
 import {
   createDatabase,
@@ -130,12 +131,13 @@ describe("bridge-agent poller (real PostgreSQL, fake bridge-agent over HTTP)", (
     if (createdBridgeIds.length > 0) {
       await database.db
         .delete(jobOutbox)
-        .where(
+        .where(or(
           inArray(
             jobOutbox.deduplicationKey,
             createdBridgeIds.map((id) => bridgeAgentPollDeduplicationKey(id)),
           ),
-        );
+          ...createdBridgeIds.map((id) => like(jobOutbox.deduplicationKey, `notify.reachability:bridge-%:${id}:%`)),
+        ));
       await database.db
         .delete(vpnBridgeRoutes)
         .where(inArray(vpnBridgeRoutes.bridgeId, createdBridgeIds));
@@ -263,6 +265,57 @@ describe("bridge-agent poller (real PostgreSQL, fake bridge-agent over HTTP)", (
     const [after] = await db().select().from(jobOutbox).where(eq(jobOutbox.id, job.id));
     return after;
   };
+
+  runDatabaseTest("queues one FRP management outage and one recovery after consecutive observations", async () => {
+    const bridge = await seedBridge();
+    const baseline = Date.now();
+    const countAlerts = async () => (await db().select().from(jobOutbox)
+      .where(eq(jobOutbox.type, REACHABILITY_NOTIFY_JOB_TYPE)))
+      .filter((row) => row.deduplicationKey.includes(bridge.id)).length;
+    agent.frpsReachable = false;
+    await runPoll(bridge.id, { now: new Date(baseline) });
+    await runPoll(bridge.id, { now: new Date(baseline + 60_000) });
+    expect(await countAlerts()).toBe(0);
+    await runPoll(bridge.id, { now: new Date(baseline + 120_000) });
+    await runPoll(bridge.id, { now: new Date(baseline + 180_000) });
+    expect(await countAlerts()).toBe(1);
+    agent.frpsReachable = true;
+    await runPoll(bridge.id, { now: new Date(baseline + 240_000) });
+    await runPoll(bridge.id, { now: new Date(baseline + 300_000) });
+    expect(await countAlerts()).toBe(2);
+  });
+
+  runDatabaseTest("tracks a missing active FRP registration independently of management", async () => {
+    const bridge = await seedBridge();
+    const node = await seedNode();
+    const id = await seedRoute(bridge.id, node.id, 41000, { state: "active" });
+    const draftNode = await seedNode();
+    const draft = await seedRoute(bridge.id, draftNode.id, 41001);
+    const baseline = Date.now();
+    const atMinute = (n: number) => runPoll(bridge.id, { now: new Date(baseline + n * 60_000) });
+    await atMinute(0);
+    await atMinute(1);
+    agent.frpsReachable = false;
+    await atMinute(2);
+    expect(await route(id)).toMatchObject({ observedOnline: false, alertConsecutiveFailures: 0 });
+    agent.frpsReachable = true;
+    for (let n = 3; n <= 6; n += 1) await atMinute(n);
+    expect(await route(id)).toMatchObject({ observedOnline: false, alertConsecutiveFailures: 3 });
+    expect((await route(id)).alertedAt).toEqual(new Date(baseline + 300_000));
+    expect(await route(draft)).toMatchObject({ alertConsecutiveFailures: 0, alertedAt: null });
+    agent.proxies = [{ proxyId: bridgeFrpProxyName(id), remotePort: 41000, online: true, registrationMarker: M1 }];
+    await atMinute(7);
+    expect(await route(id)).toMatchObject({ observedOnline: true, alertConsecutiveFailures: 0, alertedAt: null });
+    await db().update(vpnBridges).set({ reachabilityEnabled: false }).where(eq(vpnBridges.id, bridge.id));
+    agent.proxies = [];
+    for (let n = 8; n <= 10; n += 1) await atMinute(n);
+    expect(await route(id)).toMatchObject({ observedOnline: false, alertConsecutiveFailures: 0, alertedAt: null });
+    const notices = (await db().select().from(jobOutbox)
+      .where(eq(jobOutbox.type, REACHABILITY_NOTIFY_JOB_TYPE)))
+      .filter((row) => row.deduplicationKey.includes(bridge.id));
+    expect(notices.map((row) => row.deduplicationKey.split(":").at(-1)).sort()).toEqual(["down", "up"]);
+    expect(notices.every((row) => row.deduplicationKey.includes(id))).toBe(true);
+  });
 
   runDatabaseTest("arms one row per enrolled bridge, only while the gate is open", async () => {
     const enrolled = await seedBridge();

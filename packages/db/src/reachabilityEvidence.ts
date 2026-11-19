@@ -1,7 +1,7 @@
 import { and, eq } from "drizzle-orm";
 
 import type { Database } from "./client.js";
-import { nodeReachabilityResults, nodeReachabilityState } from "./schema.js";
+import { nodeReachabilityResults, nodeReachabilityState, nodeVpnEndpoints } from "./schema.js";
 
 type DbTransaction = Parameters<Parameters<Database["transaction"]>[0]>[0];
 
@@ -18,6 +18,8 @@ export const ENDPOINT_CHANGED_DETAIL =
  *
  * - The AWG 3.1 result is deleted: it was measured through the previous
  *   endpoint. Missing evidence reads as unknown everywhere.
+ * - Direct address evidence is cleared with the assignment change, so
+ *   returning from a bridge cannot revive a result from the old direct path.
  * - The AWG 2 result is kept: AWG 2 always uses the direct path.
  * - The node verdict becomes `error` (unknown to users, never "blocked")
  *   until a run through the new endpoint is ingested. An open incident
@@ -41,6 +43,17 @@ export const resetNodeEndpointEvidence = async (
       ),
     );
   await executor
+    .update(nodeVpnEndpoints)
+    .set({
+      probeStatus: null,
+      probeLevels: null,
+      probeCheckedAt: null,
+      probeConsecutiveFailures: 0,
+      probeFailingSince: null,
+      probeDetail: null,
+    })
+    .where(eq(nodeVpnEndpoints.nodeId, nodeId));
+  await executor
     .update(nodeReachabilityState)
     .set({
       status: "error",
@@ -48,6 +61,9 @@ export const resetNodeEndpointEvidence = async (
       failingSince: null,
       checkedAt: now,
       detail: ENDPOINT_CHANGED_DETAIL,
+      directStatus: null,
+      directCheckedAt: null,
+      directDetail: null,
     })
     .where(eq(nodeReachabilityState.nodeId, nodeId));
 };

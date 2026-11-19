@@ -23,6 +23,14 @@ import {
 } from "@/components/admin/admin-data";
 import { NodeRoutesEditor } from "@/components/admin/node-routes-editor";
 import { NODE_ROUTES_ANCHOR } from "@/lib/bridge-ui";
+import {
+  deriveAllowedNodeIds,
+  deriveNodeOrderFromTargets,
+  expandPolicyTargets,
+  initialAllowedTargetIds,
+  initialEndpointOrder,
+  initialRecommendedEndpointIds,
+} from "@/lib/policy-endpoints";
 import { useT } from "@/lib/i18n/provider";
 
 const PERMISSIONS: Array<[keyof GlobalPortalPolicy, string]> = [
@@ -75,6 +83,44 @@ function GlobalPolicyForm() {
   const [form, setForm] = React.useState<GlobalPortalPolicy>(policy);
   const [cfToken, setCfToken] = React.useState("");
   const [busy, setBusy] = React.useState(false);
+
+  const policyTargets = React.useMemo(
+    () => expandPolicyTargets(nodes),
+    [nodes],
+  );
+  const allowedTargets = React.useMemo(
+    () =>
+      initialAllowedTargetIds(
+        policyTargets,
+        form.allowedEndpointIds,
+        form.allowedNodeIds,
+      ),
+    [policyTargets, form.allowedEndpointIds, form.allowedNodeIds],
+  );
+  const orderedTargets = React.useMemo(
+    () =>
+      initialEndpointOrder(
+        policyTargets,
+        form.endpointOrder ?? [],
+        form.nodeOrder ?? [],
+      ),
+    [policyTargets, form.endpointOrder, form.nodeOrder],
+  );
+  const recommendedTargets = React.useMemo(
+    () =>
+      initialRecommendedEndpointIds(
+        policyTargets,
+        form.endpointOrder ?? [],
+        form.recommendedEndpointIds ?? [],
+        form.recommendedNodeIds ?? [],
+      ),
+    [
+      policyTargets,
+      form.endpointOrder,
+      form.recommendedEndpointIds,
+      form.recommendedNodeIds,
+    ],
+  );
 
   React.useEffect(() => setForm(policy), [policy]);
 
@@ -177,9 +223,15 @@ function GlobalPolicyForm() {
               <Hint>{t("policy.availableNodesHint")}</Hint>
             </h3>
             <NodeSelect
-              nodes={nodes}
-              value={form.allowedNodeIds ?? null}
-              onChange={(next) => setForm({ ...form, allowedNodeIds: next })}
+              nodes={policyTargets}
+              value={allowedTargets}
+              onChange={(next) =>
+                setForm({
+                  ...form,
+                  allowedEndpointIds: next,
+                  allowedNodeIds: deriveAllowedNodeIds(policyTargets, next),
+                })
+              }
             />
           </div>
 
@@ -191,13 +243,25 @@ function GlobalPolicyForm() {
               <Hint>{t("policy.nodeOrderHint")}</Hint>
             </h3>
             <NodeOrderList
-              nodes={nodes}
-              order={form.nodeOrder ?? []}
-              recommended={form.recommendedNodeIds ?? []}
-              // Both fields move together: the recommended set is always the
-              // prefix of the order the editor just produced, so the payload
-              // can never be rejected by the API's prefix check.
-              onChange={(next) => setForm({ ...form, ...next })}
+              nodes={policyTargets}
+              order={orderedTargets}
+              recommended={recommendedTargets}
+              // Both per-endpoint and derived per-node lists move together so
+              // the API's prefix invariant holds for both levels.
+              onChange={(next) => {
+                const derived = deriveNodeOrderFromTargets(
+                  policyTargets,
+                  next.nodeOrder,
+                  next.recommendedNodeIds,
+                );
+                setForm({
+                  ...form,
+                  endpointOrder: next.nodeOrder,
+                  recommendedEndpointIds: next.recommendedNodeIds,
+                  nodeOrder: derived.nodeOrder,
+                  recommendedNodeIds: derived.recommendedNodeIds,
+                });
+              }}
             />
           </div>
 

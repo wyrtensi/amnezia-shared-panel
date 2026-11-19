@@ -80,6 +80,38 @@ const levelsNull = {
 };
 
 describe("runAll", () => {
+  it("skips diagnostics on healthy stealth handshakes and checks bridge HTTPS through its address", async () => {
+    const { deps, ping, tcpBanner, httpGet } = setup();
+    const state = await runAll({ ...request([{ targetId: "node", protocol: "awg3", config: conf("10.90.0.7", "192.0.2.10:51890") }]), stealth: true, bridgeTargets: [{ targetId: "bridge", host: "192.0.2.20", httpsHostname: "panel.example.test" }] }, deps);
+    expect(state.results[0]?.levels.ping.ok).toBeNull();
+    expect(ping).not.toHaveBeenCalled();
+    expect(tcpBanner).not.toHaveBeenCalled();
+    expect(httpGet).toHaveBeenCalledWith("https://panel.example.test/login", { timeoutMs: 10000, connectHost: "192.0.2.20" });
+    expect(state.bridgeResults?.[0]?.levels.https?.ok).toBe(true);
+  });
+
+  it("retains failed bridge HTTPS even when the host answers ping and TCP", async () => {
+    const { deps, ping, tcpBanner, httpGet } = setup();
+    httpGet.mockImplementation(async (url) => ({ status: url.includes("/login") ? 503 : 200, body: "" }));
+    const state = await runAll({
+      ...request([]),
+      bridgeTargets: [{ targetId: "bridge", host: "192.0.2.20", httpsHostname: "panel.example.test" }],
+    }, deps);
+    expect(state.bridgeResults?.[0]?.levels).toMatchObject({
+      https: { ok: false, detail: "HTTP 503" }, ping: { ok: true }, tcp: { ok: true },
+    });
+    expect(ping).toHaveBeenCalledWith("192.0.2.20");
+    expect(tcpBanner).toHaveBeenCalledWith("192.0.2.20");
+  });
+
+  it("runs diagnostics after a failed stealth handshake", async () => {
+    const { deps, ping, tcpBanner } = setup({ respond: (call) => isHandshakePoll(call) ? { stdout: "cHVibGlj\t0\n" } : {} });
+    const state = await runAll({ ...request([{ targetId: "node", protocol: "awg3", config: conf("10.90.0.7", "192.0.2.10:51890") }]), stealth: true }, deps);
+    expect(state.results[0]?.levels.handshake.ok).toBe(false);
+    expect(ping).toHaveBeenCalledOnce();
+    expect(tcpBanner).toHaveBeenCalledOnce();
+  });
+
   it("runs every level for a healthy target", async () => {
     const { deps, httpGet } = setup();
     const state = await runAll(

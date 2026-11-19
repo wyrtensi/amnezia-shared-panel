@@ -8,6 +8,7 @@ import {
   applyBridgePollResult,
   decryptSecret,
   jobOutbox,
+  reachabilityProbe,
   vpnBridges,
   type BridgePollApplied,
   type BridgePollWrite,
@@ -128,5 +129,9 @@ export class PostgresBridgePollRepository implements BridgePollRepository {
   };
 
   recordPoll = async (write: BridgePollWrite): Promise<BridgePollApplied> =>
-    this.options.db.transaction((tx) => applyBridgePollResult(tx, write));
+    this.options.db.transaction(async (tx) => {
+      const [probe] = await tx.select({ timeZone: reachabilityProbe.timeZone })
+        .from(reachabilityProbe).where(eq(reachabilityProbe.id, 1));
+      return applyBridgePollResult(tx, { ...write, timeZone: probe?.timeZone });
+    });
 }

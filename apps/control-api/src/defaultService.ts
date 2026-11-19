@@ -36,6 +36,7 @@ import {
   type AwgEndpoint,
 } from "@amnezia/vpn-config";
 import { decideBridgeDelivery, renderBridgeEndpoint } from "./bridgeEndpoint.js";
+import { selectDirectAddress } from "./nodeEndpoint.js";
 import { configFilename } from "./configFilename.js";
 import { buildQrFrameTexts } from "./qrFrames.js";
 import { renderKeyQr, type RenderedQr } from "./qrRender.js";
@@ -259,7 +260,7 @@ export const createDefaultControlApiService = ({
       repository,
       key,
       savedLink,
-      delivery.mode === "bridge" ? delivery.endpoint : null,
+      delivery.mode === "bridge" ? delivery.endpoint : selectDirectAddress(savedLink, key.directAddress),
       format,
     );
     // Only the OWNER downloading their own config marks the rules as applied.

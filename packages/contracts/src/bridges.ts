@@ -83,6 +83,17 @@ const bridgeNameSchema = z.string().trim().min(1).max(120);
 const PANEL_DNS_HOSTNAME_RE =
   /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/;
 
+const isPanelDnsHostname = (value: string): boolean => {
+  if (!PANEL_DNS_HOSTNAME_RE.test(value) || IPV4_DOTTED_QUAD.test(value)) return false;
+  try {
+    // HTTP clients parse numeric labels as IPv4, including abbreviated and
+    // base-prefixed forms. A DNS hostname retains its normalized spelling.
+    return new URL(`https://${value}`).hostname === value;
+  } catch {
+    return false;
+  }
+};
+
 export const bridgePanelDnsHostnameSchema = z
   .string()
   .trim()
@@ -90,7 +101,7 @@ export const bridgePanelDnsHostnameSchema = z
   .max(253)
   .transform((value) => value.toLowerCase())
   .refine(
-    (value) => PANEL_DNS_HOSTNAME_RE.test(value) && !IPV4_DOTTED_QUAD.test(value),
+    isPanelDnsHostname,
     "Must be a valid DNS hostname (e.g. panel.example.com)",
   );
 
@@ -155,6 +166,7 @@ export const updateBridgeRequestSchema = z
   .object({
     name: bridgeNameSchema.optional(),
     panelDnsHostname: bridgePanelDnsHostnameSchema.nullable().optional(),
+    reachabilityEnabled: z.boolean().optional(),
     managementApiUrl: bridgeManagementApiUrlSchema.optional(),
     apiKey: bridgeAgentApiKeySchema.optional(),
   })
@@ -443,11 +455,22 @@ export const bridgePanelDnsStatusSchema = z.object({
 export type BridgePanelDnsState = z.infer<typeof bridgePanelDnsStateSchema>;
 export type BridgePanelDnsStatus = z.infer<typeof bridgePanelDnsStatusSchema>;
 
+export const bridgeAlertStateSchema = z.object({
+  incidentOpen: z.boolean(),
+  mgmtIncidentOpen: z.boolean(),
+  probeIncidentOpen: z.boolean(),
+  failingSince: z.iso.datetime().nullable(),
+  detail: z.string().nullable(),
+});
+export type BridgeAlertState = z.infer<typeof bridgeAlertStateSchema>;
+
 export const bridgeSchema = z.object({
   id: z.uuid(),
   name: z.string(),
   publicIpv4: z.string(),
   panelDnsHostname: z.string().nullable().optional(),
+  reachabilityEnabled: z.boolean().optional(),
+  alertState: bridgeAlertStateSchema.optional(),
   controlTcpPort: portSchema,
   udpPortStart: portSchema,
   udpPortEnd: portSchema,
@@ -878,6 +901,10 @@ export type BridgeCandidateCheckError = (typeof BRIDGE_CANDIDATE_CHECK_ERRORS)[n
 
 /** The probe capability that makes bridged measurements meaningful. */
 export const BRIDGE_MEASUREMENT_CAPABILITY = "bridge-measurement";
+/** The probe capability that checks bridge hosts (HTTPS panelDns, ping, tcp/22). */
+export const BRIDGE_HOST_CHECK_CAPABILITY = "bridge-host-check";
+/** The probe capability that supports TSPU-stealth mode (no pre-AWG ping/tcp burst, pacing). */
+export const STEALTH_PROBE_CAPABILITY = "stealth-probe";
 
 /**
  * A stored capability record older than this does not count: the worker
@@ -899,6 +926,19 @@ export type ProbeCapabilityInput = {
   readonly checkedAt?: Date | null;
 };
 
+/** True only for a fresh capability record that includes `capability`. */
+export const probeHasCapability = (
+  probe: ProbeCapabilityInput,
+  capability: string,
+  now: Date = new Date(),
+): boolean => {
+  if (probe.capabilities?.includes(capability) !== true) return false;
+  const checkedAt = probe.checkedAt;
+  if (!checkedAt) return false;
+  const age = now.getTime() - checkedAt.getTime();
+  return age <= PROBE_CAPABILITY_MAX_AGE_MS;
+};
+
 /**
  * Whether the configured probe can measure a bridged path (explicit
  * `expectedEgressIp: null`, handshake and HTTP reported apart from ping and
@@ -909,13 +949,19 @@ export type ProbeCapabilityInput = {
 export const probeSupportsBridgeMeasurement = (
   probe: ProbeCapabilityInput,
   now: Date = new Date(),
-): boolean => {
-  if (probe.capabilities?.includes(BRIDGE_MEASUREMENT_CAPABILITY) !== true) return false;
-  const checkedAt = probe.checkedAt;
-  if (!checkedAt) return false;
-  const age = now.getTime() - checkedAt.getTime();
-  return age <= PROBE_CAPABILITY_MAX_AGE_MS;
-};
+): boolean => probeHasCapability(probe, BRIDGE_MEASUREMENT_CAPABILITY, now);
+
+/** Whether the configured probe can run standalone bridge host checks (`bridgeTargets`). */
+export const probeSupportsBridgeHostCheck = (
+  probe: ProbeCapabilityInput,
+  now: Date = new Date(),
+): boolean => probeHasCapability(probe, BRIDGE_HOST_CHECK_CAPABILITY, now);
+
+/** Whether the configured probe supports TSPU-stealth runs (`stealth: true`). */
+export const probeSupportsStealthProbe = (
+  probe: ProbeCapabilityInput,
+  now: Date = new Date(),
+): boolean => probeHasCapability(probe, STEALTH_PROBE_CAPABILITY, now);
 
 /** Whether the stored capability record is due for a refresh. */
 export const probeCapabilitiesDue = (

@@ -2,6 +2,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { and, eq, inArray, or, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
+  adminReachabilityViewSchema,
   bridgeEligibilitySchema,
   bridgeFrpProxyName,
   infrastructureItemSchema,
@@ -10,12 +11,14 @@ import {
 } from "@amnezia/contracts";
 import {
   auditEvents,
+  bridgeReachabilityState,
   createDatabase,
   encryptSecret,
   ENDPOINT_CHANGED_DETAIL,
   nodeReachabilityHistory,
   nodeReachabilityResults,
   nodeReachabilityState,
+  nodeVpnEndpoints,
   nodes,
   users,
   vpnBridgeRoutes,
@@ -268,6 +271,143 @@ describe("bridge registry (real PostgreSQL)", () => {
       drafts: [],
       retiring: [],
     });
+  });
+
+  runDatabaseTest("lists separately named IPs and exports the selected listener on one node", async () => {
+    const nodeId = await seedNode("many-listeners");
+    const differentNodeId = await seedNode("other-listener");
+    const primary = nextIpv4();
+    const secondary = nextIpv4();
+    const third = nextIpv4();
+    await db().update(nodes).set({ name: "Internal", publicIp: primary }).where(eq(nodes.id, nodeId));
+    await repository.updateNode(admin, nodeId, { publicEndpoint: { action: "add", address: secondary } });
+    await repository.updateNode(admin, nodeId, { publicEndpoint: { action: "add", address: third } });
+    const endpoints = await db().select().from(nodeVpnEndpoints)
+      .where(eq(nodeVpnEndpoints.nodeId, nodeId)).orderBy(nodeVpnEndpoints.ordinal);
+    expect(endpoints.map(({ ordinal, name, address }) => ({ ordinal, name, address }))).toEqual([
+      { ordinal: 1, name: "Internal-1", address: primary },
+      { ordinal: 2, name: "Internal-2", address: secondary },
+      { ordinal: 3, name: "Internal-3", address: third },
+    ]);
+    const endpointId = endpoints[1]!.id;
+    await repository.updateNode(admin, nodeId, {
+      name: "Renamed internally",
+      publicEndpoint: { action: "update", id: endpointId, name: "Second link" },
+    });
+    const listed = (await repository.listNodes(admin)).find(
+      (item) => (item as { id: string }).id === nodeId,
+    );
+    expect(listed).toMatchObject({
+      name: "Internal-1",
+      publicEndpoints: [
+        { name: "Internal-1" }, { name: "Second link" }, { name: "Internal-3" },
+      ],
+    });
+    expect(JSON.stringify(listed)).not.toContain(secondary);
+    const create = {
+      endpointId,
+      protocol: "awg3",
+      deviceType: "unspecified",
+      routeProfile: "full_tunnel",
+      nameDisplay: { server: true, label: false, number: false },
+    } as const;
+    expect(await failureOf(repository.createProvisioningKey(admin, {
+      nodeId: differentNodeId,
+      ...create,
+    }))).toMatchObject({ code: "NODE_ENDPOINT_UNAVAILABLE" });
+    const { id } = await repository.createProvisioningKey(admin, { nodeId, ...create });
+    const encrypted = encryptSecret(awg31Link(), keyring, 1);
+    await db().update(vpnKeys).set({
+      state: "active",
+      configCiphertext: encrypted.ciphertext,
+      configNonce: encrypted.nonce,
+      configAuthTag: encrypted.authTag,
+      configKeyVersion: encrypted.keyVersion,
+    }).where(eq(vpnKeys.id, id));
+    const service = createDefaultControlApiService({ repository, keyring });
+    const exported = String((await service.getKeyConfig(admin, id, "vpn", false)).body);
+    expect(readCopies(exported, decodeVpnLink).line("Endpoint")).toBe(`${secondary}:443`);
+    expect(await repository.listKeys(admin)).toContainEqual(expect.objectContaining({ id, nodeName: "Second link" }));
+    await repository.updateNode(admin, nodeId, {
+      publicEndpoint: { action: "update", id: endpointId, enabled: false },
+    });
+    expect(await failureOf(repository.createProvisioningKey(admin, { nodeId, ...create })))
+      .toMatchObject({ code: "NODE_ENDPOINT_UNAVAILABLE" });
+    const redownload = String((await service.getKeyConfig(admin, id, "vpn", false)).body);
+    expect(readCopies(redownload, decodeVpnLink).line("Endpoint")).toBe(`${secondary}:443`);
+  });
+
+  runDatabaseTest("supports disabling primary IP when backup exists, per-IP reachability toggle, and per-IP policy order/availability", async () => {
+    const nodeId = await seedNode("policy-endpoints");
+    const primary = nextIpv4();
+    const secondary = nextIpv4();
+    await db().update(nodes).set({ name: "Edge", publicIp: primary }).where(eq(nodes.id, nodeId));
+    await repository.updateNode(admin, nodeId, {
+      publicEndpoint: { action: "add", address: secondary, name: "Edge Backup" },
+    });
+    const endpoints = await db().select().from(nodeVpnEndpoints)
+      .where(eq(nodeVpnEndpoints.nodeId, nodeId)).orderBy(nodeVpnEndpoints.ordinal);
+    const [ep1, ep2] = endpoints;
+    expect(ep1).toBeDefined();
+    expect(ep2).toBeDefined();
+
+    // Toggling reachability off on ep2 persists and clears open incident state.
+    await db().update(nodeVpnEndpoints).set({
+      probeConsecutiveFailures: 3,
+      probeFailingSince: new Date(),
+      probeAlertedAt: new Date(),
+    }).where(eq(nodeVpnEndpoints.id, ep2!.id));
+    await repository.updateNode(admin, nodeId, {
+      publicEndpoint: { action: "update", id: ep2!.id, reachabilityEnabled: false },
+    });
+    const [updatedEp2] = await db().select().from(nodeVpnEndpoints).where(eq(nodeVpnEndpoints.id, ep2!.id));
+    expect(updatedEp2?.reachabilityEnabled).toBe(false);
+    expect(updatedEp2?.probeAlertedAt).toBeNull();
+    expect(updatedEp2?.probeConsecutiveFailures).toBe(0);
+
+    // Primary (ordinal 1) can be disabled while ep2 is enabled, but disabling
+    // the sole remaining enabled IP is rejected with LAST_ENABLED_ENDPOINT_REQUIRED.
+    await repository.updateNode(admin, nodeId, {
+      publicEndpoint: { action: "update", id: ep1!.id, enabled: false },
+    });
+    expect(await failureOf(repository.updateNode(admin, nodeId, {
+      publicEndpoint: { action: "update", id: ep2!.id, enabled: false },
+    }))).toMatchObject({ statusCode: 409, code: "LAST_ENABLED_ENDPOINT_REQUIRED" });
+    await repository.updateNode(admin, nodeId, {
+      publicEndpoint: { action: "update", id: ep1!.id, enabled: true },
+    });
+
+    // Global per-IP order, recommendation, and allowlist control user visibility.
+    try {
+      await repository.adminAction(admin, "portal-policy", "global", "update", {
+        endpointOrder: [ep2!.id, ep1!.id],
+        recommendedEndpointIds: [ep2!.id],
+        allowedEndpointIds: [ep2!.id],
+      });
+      const listed = (await repository.listNodes(admin)).find(
+        (item) => (item as { id: string }).id === nodeId,
+      ) as { name: string; recommended?: boolean; publicEndpoints?: Array<{ id: string; name: string; recommended?: boolean }> } | undefined;
+      expect(listed?.name).toBe("Edge Backup");
+      expect(listed?.recommended).toBe(true);
+      expect(listed?.publicEndpoints).toEqual([
+        expect.objectContaining({ id: ep2!.id, name: "Edge Backup", recommended: true }),
+      ]);
+      // Disallowed primary IP cannot be explicitly chosen when creating a key.
+      expect(await failureOf(repository.createProvisioningKey(admin, {
+        nodeId,
+        endpointId: ep1!.id,
+        protocol: "awg3",
+        deviceType: "unspecified",
+        routeProfile: "full_tunnel",
+        nameDisplay: { server: true, label: false, number: false },
+      }))).toMatchObject({ statusCode: 403, code: "NODE_NOT_ALLOWED" });
+    } finally {
+      await repository.adminAction(admin, "portal-policy", "global", "update", {
+        endpointOrder: [],
+        recommendedEndpointIds: [],
+        allowedEndpointIds: null,
+      });
+    }
   });
 
   runDatabaseTest("registers a bridge with normalized settings and refuses a duplicate IPv4", async () => {
@@ -546,6 +686,38 @@ describe("bridge registry (real PostgreSQL)", () => {
     expect(result.vpnEndpoint).toMatchObject({ changed: true, vpnEndpointRevision: 2 });
     expect((await routeRow(a.id))?.state).toBe("retiring");
     expect((await routeRow(b.id))?.state).toBe("active");
+  });
+
+  runDatabaseTest("exposes and clears bridge incidents when monitoring is disabled", async () => {
+    const bridge = await createBridge();
+    const now = new Date();
+    await db().insert(bridgeReachabilityState).values({
+      bridgeId: bridge.id,
+      mgmtStatus: "failed",
+      mgmtConsecutiveFailures: 3,
+      mgmtFailingSince: now,
+      mgmtAlertedAt: now,
+      mgmtAlertDetail: "FRPS_UNREACHABLE",
+      probeStatus: "ok",
+      probeCheckedAt: now,
+    });
+    const read = async () => {
+      const view = adminReachabilityViewSchema.parse(await repository.getReachability(admin));
+      return view.bridges?.find((entry) => entry.bridgeId === bridge.id);
+    };
+    expect(await read()).toMatchObject({
+      reachabilityEnabled: true, mgmtIncidentOpen: true, probeStatus: "ok", probeIncidentOpen: false,
+    });
+    expect(await repository.updateBridge(admin, bridge.id, { reachabilityEnabled: false })).toMatchObject({
+      reachabilityEnabled: false, alertState: { incidentOpen: false },
+    });
+    expect(await read()).toMatchObject({
+      reachabilityEnabled: false, mgmtIncidentOpen: false, mgmtFailingSince: null, probeStatus: "ok",
+    });
+    const entries = await db().select().from(auditEvents).where(eq(auditEvents.targetId, bridge.id));
+    expect(entries).toContainEqual(expect.objectContaining({
+      action: "vpn_bridge.reachability_updated", metadata: { enabled: false },
+    }));
   });
 
   runDatabaseTest("a stale revision is refused with BRIDGE_REVISION_CONFLICT", async () => {

@@ -154,6 +154,18 @@ between those is the operator's call, not a cleanup's.
 
 ### Bootstrap & admin CLI
 
+Use `nodes --endpoints` to list the public IPv4 listeners and their independent
+reachability. Add one with
+`node-update <node-id> --endpoint-ip=<ipv4> [--endpoint-name=<name>]`.
+Rename, disable for new keys (including the primary IP when another IP is enabled),
+or toggle external reachability checks/alerts on an individual IP with
+`node-update <node-id> --endpoint-id=<address-id> [--endpoint-name=<name>] [--endpoint-enabled=true|false] [--endpoint-reachability=true|false]`.
+Configure per-IP server order and availability via
+`policy-set --endpointOrder=<uuid,…|none> --recommendedEndpointIds=<uuid,…|none> --allowedEndpointIds=<uuid,…|null>`
+and per-user IP availability via `user-limit <user> <limit> --allowed-endpoints=<uuid,…|all|none>`.
+Select an IP for an AWG 3.1 key with
+`user-create-key <user> --node=<node-id> --endpoint=<address-id>`.
+
 The **first admin** is provisioned by env, not a command: the first login by any
 address in `BOOTSTRAP_ADMIN_EMAILS` becomes `admin`.
 

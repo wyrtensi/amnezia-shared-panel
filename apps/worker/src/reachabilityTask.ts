@@ -1,9 +1,15 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomInt, randomUUID } from "node:crypto";
 
 import {
   probeCapabilitiesDue,
   probeCapabilityInputOf,
+  PROBE_RUN_MAX_TARGETS,
   probeSupportsBridgeMeasurement,
+  probeSupportsBridgeHostCheck,
+  probeSupportsStealthProbe,
+  type ProbeBridgeRunTarget,
+  type ProbeBridgeTargetResult,
+  type ProbeCapabilityInput,
   type ProbeRunRequest,
   type ProbeRunState,
 } from "@amnezia/contracts";
@@ -16,9 +22,12 @@ import {
 } from "./bridgeCandidateCheck.js";
 import type { ProbeClient, ProbeClientOptions } from "./probeAgent.js";
 import {
+  classifyTarget,
   ingestRun,
+  matchesDirectEndpoint,
   measuredViaBridge,
   staleTransition,
+  type DirectEndpointOutcome,
   type NodeState,
   type Notice,
   type ProtocolOutcome,
@@ -48,6 +57,8 @@ export type ProbeRow = {
   enabledAt: Date;
   /** IANA zone for the times in alert texts. */
   timeZone: string;
+  probeDirectWhenBridged: boolean;
+  stealthMode: boolean;
   /**
    * The probe's stored capability list (`reachability_probe.capabilities`),
    * null when unknown. Read through `probeCapabilityInputOf`.
@@ -65,7 +76,7 @@ export type RunTarget = ReachabilityTarget & {
   expectedEgressIp: string | null;
 };
 
-export type IngestRun = { runId: string; now: Date };
+export type IngestRun = { runId: string; now: Date; bridgeResults?: ProbeBridgeTargetResult[] };
 
 /** What an ingest classifies against, read under the node row locks. */
 export type IngestContext = {
@@ -77,11 +88,13 @@ export type IngestContext = {
 export type IngestWrite = {
   /** Obsolete outcomes (`ProtocolOutcome.obsolete`) are not stored. */
   outcomes: ProtocolOutcome[];
+  endpointOutcomes: DirectEndpointOutcome[];
   states: Map<string, NodeState>;
   notices: Notice[];
   staleAlertedAt: Date | null;
   /** The run was a mass failure (shown on the status widget). */
   mass: boolean;
+  direct?: ReadonlyMap<string, ProtocolOutcome>;
 };
 
 export type IngestDecide = (context: IngestContext) => IngestWrite | Promise<IngestWrite>;
@@ -93,7 +106,17 @@ export type IngestDecide = (context: IngestContext) => IngestWrite | Promise<Ing
  */
 export type CandidateSettle = "written" | "discarded" | "already-settled";
 
-export interface ReachabilityRepository {
+export interface ProbeDispatchScope {
+  /** The probe capability record read under the dispatch lock. */
+  capabilities: ProbeCapabilityInput;
+  listTargets: (options: { bridgeMeasurement: boolean; probeDirectWhenBridged?: boolean }) => Promise<RunTarget[]>;
+  listBridgeTargets: (bridgesWithAwg: readonly string[]) => Promise<ProbeBridgeRunTarget[]>;
+  markRunStarted: (runId: string, at: Date) => Promise<void>;
+}
+
+export type ProbeDispatchResult = "busy" | { targetCount: number };
+
+export interface ReachabilityRepository extends Omit<ProbeDispatchScope, "capabilities"> {
   loadProbe: () => Promise<ProbeRow | null>;
   /** Why the last contact with the probe failed. Never carries a secret. */
   recordProbeError: (message: string, at: Date) => Promise<void>;
@@ -110,11 +133,13 @@ export interface ReachabilityRepository {
     now: Date,
   ) => Promise<{ created: number; revoked: number; provisioning: number }>;
   /**
-   * The targets to dispatch. `bridgeMeasurement`: the probe can measure a
-   * bridged path; without it a bridged AWG 3.1 target is not sent.
+   * Serialize a bounded submission against settings and endpoint changes.
+   * Skip this tick if the probe settings changed or another run took the slot.
    */
-  listTargets: (options: { bridgeMeasurement: boolean }) => Promise<RunTarget[]>;
-  markRunStarted: (runId: string, at: Date) => Promise<void>;
+  withDispatchLock: (
+    probe: ProbeRow,
+    dispatch: (scope: ProbeDispatchScope) => Promise<ProbeDispatchResult>,
+  ) => Promise<ProbeDispatchResult | "changed">;
   /** Forget a run the probe will never report, so a new one can start. */
   abandonRun: (at: Date, reason: string) => Promise<void>;
   /**
@@ -149,6 +174,26 @@ export const CAPABILITY_RETRY_BACKOFF_MS = 5 * 60 * 1_000;
 
 const message = (error: unknown) =>
   (error instanceof Error ? error.message : "unknown error").slice(0, 300);
+
+const scheduledIntervalMs = (probe: ProbeRow, lastStart: Date): number => {
+  const intervalMs = probe.intervalSec * 1_000;
+  if (!probe.stealthMode) return intervalMs;
+  const sample = createHash("sha256")
+    .update(probe.lastIngestedRunId ?? lastStart.toISOString())
+    .digest().readUInt32BE() / 0xffff_ffff;
+  const jitter = Math.floor((sample * 2 - 1) * intervalMs * 0.15);
+  const maxDelay = Math.max(0, probe.staleAfterSec * 1_000 - intervalMs);
+  return intervalMs + Math.min(jitter, maxDelay);
+};
+
+const shuffled = <T>(items: readonly T[]): T[] => {
+  const result = [...items];
+  for (let i = result.length - 1; i > 0; i -= 1) {
+    const j = randomInt(i + 1);
+    [result[i], result[j]] = [result[j] as T, result[i] as T];
+  }
+  return result;
+};
 
 /**
  * One tick of the reachability task: ingest a finished run, keep the stale
@@ -262,7 +307,15 @@ export const createReachabilityTask = ({
       // Classified inside the ingest transaction, against targets and states
       // read under the node row locks: an endpoint change cannot slip in
       // between and leave an obsolete outcome or alert behind.
-      const ingested = await repository.ingest({ runId: finished.runId, now: at }, (context) => {
+      const ingested = await repository.ingest({
+        runId: finished.runId,
+        now: at,
+        ...(finished.bridgeResults ? {
+          bridgeResults: finished.bridgeResults.map((result) => finished.control.ok === true
+            ? result
+            : { ...result, status: "error", detail: "control target failed" }),
+        } : {}),
+      }, (context) => {
         const out = ingestRun({
           runId: finished.runId,
           now: at,
@@ -275,13 +328,23 @@ export const createReachabilityTask = ({
           previous: context.previous,
         });
         const stale = staleTransition({ ...staleInput, ingestedNow: true });
+        const results = new Map(finished.results.map((result) => [result.targetId, result]));
+        const direct = new Map(context.targets.flatMap((target) => {
+          const result = results.get(target.targetId);
+          return target.diagnostic && result?.protocol === target.protocol &&
+            (!target.directEndpoint || matchesDirectEndpoint(result, target.directEndpoint.address))
+            ? [[target.nodeId, classifyTarget(target, result, finished.control.ok === true)] as const]
+            : [];
+        }));
         notices = out.notices.length;
         return {
           outcomes: out.outcomes,
+          endpointOutcomes: out.endpointOutcomes,
           states: out.states,
           notices: [...out.notices, ...stale.notices],
           staleAlertedAt: stale.staleAlertedAt,
           mass: out.massFailure,
+          ...(direct.size > 0 ? { direct } : {}),
         };
       });
       currentRunId = null;
@@ -316,7 +379,7 @@ export const createReachabilityTask = ({
     const due =
       probe.requestedRunId != null ||
       lastStart === null ||
-      at.getTime() - lastStart.getTime() >= probe.intervalSec * 1_000 ||
+      at.getTime() - lastStart.getTime() >= scheduledIntervalMs(probe, lastStart) ||
       (probe.runRequestedAt !== null && probe.runRequestedAt > lastStart);
     if (!due) return;
     if (provisioning > 0) {
@@ -326,34 +389,71 @@ export const createReachabilityTask = ({
       return;
     }
 
-    // Read once for the whole run: a legacy probe drops an explicit null, so
-    // a bridged target is only sent to a probe that reports the capability.
-    const bridgeMeasurement = probeSupportsBridgeMeasurement(capabilityInput, at);
-    const targets = await repository.listTargets({ bridgeMeasurement });
     const runId = probe.requestedRunId ?? newRunId();
-    const request: ProbeRunRequest = {
-      runId,
-      control: { url: probe.controlUrl },
-      egress: { url: probe.egressUrl },
-      targets: targets
-        .filter((target) => target.config !== null)
-        .map((target) => ({
-          targetId: target.targetId,
-          protocol: target.protocol,
-          config: target.config as string,
-          // Bridged: the endpoint host is the bridge, so the comparison
-          // target is the node's origin exit IP or, when unknown, an explicit
-          // null (report the observed egress uncompared). Direct: omitted
-          // when unknown keeps the probe's endpoint-host fallback.
-          ...(measuredViaBridge(target) && bridgeMeasurement
-            ? { expectedEgressIp: target.expectedEgressIp }
-            : target.expectedEgressIp
-              ? { expectedEgressIp: target.expectedEgressIp }
-              : {}),
-        })),
-    };
     try {
-      const started = await client.startRun(request);
+      const started = await repository.withDispatchLock({
+        ...probe,
+        capabilities: capabilityInput.capabilities,
+        capabilitiesCheckedAt: capabilityInput.checkedAt ?? null,
+      }, async (scope) => {
+        const dispatchAt = now();
+        // A legacy probe drops an explicit null, so a bridged target is only
+        // sent to a probe that reports the capability.
+        const bridgeMeasurement = probeSupportsBridgeMeasurement(scope.capabilities, dispatchAt);
+        const available = await scope.listTargets({
+          bridgeMeasurement,
+          ...(probe.probeDirectWhenBridged ? { probeDirectWhenBridged: true } : {}),
+        });
+        const sendable = available.filter((target): target is RunTarget & { config: string } =>
+          target.config !== null &&
+          (target.bridgePath === null ||
+            (measuredViaBridge(target) ? bridgeMeasurement : probe.probeDirectWhenBridged === true)),
+        );
+        const nodeTargets = sendable.filter((target) =>
+          !target.diagnostic && target.directEndpoint?.reusesNodeTarget !== false,
+        );
+        const diagnostics = sendable.filter((target) => target.diagnostic);
+        const endpointTargets = sendable
+          .filter((target) => target.directEndpoint?.reusesNodeTarget === false)
+          .sort((a, b) =>
+            (a.directEndpoint?.checkedAt?.getTime() ?? Number.MIN_SAFE_INTEGER) -
+            (b.directEndpoint?.checkedAt?.getTime() ?? Number.MIN_SAFE_INTEGER),
+          );
+        const targets = [...nodeTargets, ...diagnostics, ...endpointTargets].slice(0, PROBE_RUN_MAX_TARGETS);
+        if (targets.length < sendable.length) {
+          log(`reachability: deferred ${sendable.length - targets.length} target(s) at the probe run limit`);
+        }
+        const bridgeTargets = probeSupportsBridgeHostCheck(scope.capabilities, dispatchAt)
+          ? await scope.listBridgeTargets(targets.flatMap((target) =>
+              measuredViaBridge(target) && target.bridgePath?.bridgeId ? [target.bridgePath.bridgeId] : [],
+            ))
+          : [];
+        const request: ProbeRunRequest = {
+          runId,
+          control: { url: probe.controlUrl },
+          egress: { url: probe.egressUrl },
+          ...(bridgeTargets.length > 0 ? { bridgeTargets } : {}),
+          ...(probe.stealthMode && probeSupportsStealthProbe(scope.capabilities, dispatchAt) ? { stealth: true } : {}),
+          targets: (probe.stealthMode ? shuffled(targets) : targets).map((target) => {
+            // The egress address can differ from a bridge or an additional
+            // direct destination. A capable probe can report egress alone.
+            const reportUncompared = bridgeMeasurement && (
+              measuredViaBridge(target) || target.directEndpoint !== undefined
+            );
+            const { expectedEgressIp } = target;
+            return {
+              targetId: target.targetId,
+              protocol: target.protocol,
+              config: target.config,
+              ...(expectedEgressIp || reportUncompared ? { expectedEgressIp } : {}),
+            };
+          }),
+        };
+        if (await client.startRun(request) === "busy") return "busy";
+        await scope.markRunStarted(runId, dispatchAt);
+        return { targetCount: request.targets.length };
+      });
+      if (started === "changed") return;
       if (started === "busy") {
         // A bridge candidate check may have taken the probe since this tick
         // read it; that run is the panel's own and is settled next tick.
@@ -364,8 +464,7 @@ export const createReachabilityTask = ({
         await repository.recordProbeError("probe is busy with a run the panel did not start", at);
         return;
       }
-      await repository.markRunStarted(runId, at);
-      log(`reachability: started run ${runId} with ${request.targets.length} target(s)`);
+      log(`reachability: started run ${runId} with ${started.targetCount} target(s)`);
     } catch (error) {
       await repository.recordProbeError(message(error), at);
       log(`reachability: ${message(error)}`);

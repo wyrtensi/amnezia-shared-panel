@@ -8,6 +8,7 @@ import {
   gte,
   inArray,
   isNotNull,
+  isNull,
   ne,
   or,
   sql,
@@ -16,6 +17,7 @@ import {
 import { alias } from "drizzle-orm/pg-core";
 import type {
   AccessSyncStatus,
+  AdminNodeEndpoint,
   Bridge,
   BridgeRotationEvidence,
   CreateBridgeRequest,
@@ -49,6 +51,7 @@ import type {
   BridgeEligibility,
   NodeBridgeRoutes,
   NodeEndpointAssignment,
+  NodePublicEndpointMutation,
   PrepareBridgeRouteRequest,
   PrepareBridgeRouteResult,
   ReleaseBridgeRouteResult,
@@ -68,7 +71,9 @@ import {
   NOTICE_KINDS,
   resetNoticesRequestSchema,
   nodeRunsCheck,
+  nodeEndpointDefaultName,
   isPurgeableKeyState,
+  isIpv4Literal,
   REVOCABLE_KEY_STATES,
   revokeJobDedupKey,
   toUserCheckState,
@@ -140,6 +145,7 @@ import {
   nodeServiceCheckResults,
   nodeServiceChecks,
   nodes,
+  nodeVpnEndpoints,
   notServiceAccount,
   SERVICE_ACCOUNT_EMAIL,
   peerCurrent,
@@ -291,6 +297,8 @@ const adminPolicyUpdateSchema = portalPolicySchema.partial().extend({
   // portalPolicySchema is what stops them being overridable per user.
   recommendedNodeIds: recommendedNodeIdsSchema.optional(),
   nodeOrder: nodeOrderSchema.optional(),
+  recommendedEndpointIds: recommendedNodeIdsSchema.optional(),
+  endpointOrder: nodeOrderSchema.optional(),
   // Every background period the worker runs on, global-only for the same
   // reason: how often the panel talks to a node is a property of the
   // deployment, not of whoever is looking at it. Each is nullable — null hands
@@ -312,6 +320,14 @@ type PortalPolicyRow = typeof portalPolicy.$inferSelect;
 // Mirrors the private type of the same name in @amnezia/db's armAccessSyncRow,
 // which is structurally, not nominally, matched against it.
 type DbTransaction = Parameters<Parameters<Database["transaction"]>[0]>[0];
+
+const keyEndpointJoin = and(
+  eq(nodeVpnEndpoints.nodeId, vpnKeys.nodeId),
+  or(
+    eq(nodeVpnEndpoints.id, vpnKeys.endpointId),
+    and(isNull(vpnKeys.endpointId), eq(nodeVpnEndpoints.ordinal, 1)),
+  ),
+);
 
 /**
  * The portal-policy fields that configure the Cloudflare Access two-way sync.
@@ -373,6 +389,7 @@ const toPolicy = (row: PortalPolicyRow | undefined): PortalPolicy =>
             ? row.allowedProtocols
             : DEFAULT_ALLOWED_PROTOCOLS,
         allowedNodeIds: row.allowedNodeIds ?? null,
+        allowedEndpointIds: row.allowedEndpointIds ?? null,
         // Whether a key limit is per server or one shared pool. This list is
         // explicit, so a column missing from it never reaches
         // resolvePortalPolicy and the feature would silently read as its
@@ -1021,8 +1038,8 @@ export class PostgresControlRepository implements ControlRepository {
   };
 
   /** The probe columns `toUserReachability` reads, or null without a probe. */
-  private loadUserReachabilityProbe = async () => {
-    const [probe] = await this.options.db
+  private loadUserReachabilityProbe = async (db: Database | DbTransaction = this.options.db) => {
+    const [probe] = await db
       .select({
         enabled: reachabilityProbe.enabled,
         lastResultAt: reachabilityProbe.lastResultAt,
@@ -1031,11 +1048,89 @@ export class PostgresControlRepository implements ControlRepository {
         staleAlertedAt: reachabilityProbe.staleAlertedAt,
         enabledAt: reachabilityProbe.enabledAt,
         lastRunMass: reachabilityProbe.lastRunMass,
+        probeDirectWhenBridged: reachabilityProbe.probeDirectWhenBridged,
       })
       .from(reachabilityProbe)
       .where(eq(reachabilityProbe.id, 1))
       .limit(1);
     return probe ?? null;
+  };
+
+  private loadNodePublicEndpoints = async (
+    nodeIds: readonly string[],
+    db: Database | DbTransaction = this.options.db,
+  ): Promise<Map<string, AdminNodeEndpoint[]>> => {
+    const result = new Map<string, AdminNodeEndpoint[]>();
+    if (nodeIds.length === 0) return result;
+    const [probe, rows] = await Promise.all([
+      this.loadUserReachabilityProbe(db),
+      db
+        .select({
+          endpoint: nodeVpnEndpoints,
+          checksEnabled: nodes.reachabilityEnabled,
+          activeRoute: vpnBridgeRoutes.id,
+        })
+        .from(nodeVpnEndpoints)
+        .innerJoin(nodes, eq(nodes.id, nodeVpnEndpoints.nodeId))
+        .leftJoin(vpnBridgeRoutes, and(
+          eq(vpnBridgeRoutes.nodeId, nodeVpnEndpoints.nodeId),
+          eq(vpnBridgeRoutes.state, "active"),
+        ))
+        .where(inArray(nodeVpnEndpoints.nodeId, [...nodeIds]))
+        .orderBy(nodeVpnEndpoints.ordinal),
+    ]);
+    const now = new Date();
+    for (const { endpoint, checksEnabled, activeRoute } of rows) {
+      const checkedAt = endpoint.probeCheckedAt;
+      const canUseProbe =
+        checksEnabled &&
+        endpoint.enabled &&
+        endpoint.reachabilityEnabled &&
+        (activeRoute === null || probe?.probeDirectWhenBridged === true);
+      const hasCurrentSample = probe?.enabled && checkedAt && checkedAt >= probe.enabledAt &&
+        !isProbeStale({
+          now,
+          staleAfterSec: probe.staleAfterSec,
+          intervalSec: probe.intervalSec,
+          lastResultAt: checkedAt,
+          since: checkedAt,
+        });
+      const state = canUseProbe && hasCurrentSample && endpoint.probeStatus && checkedAt
+        ? {
+            status: endpoint.probeStatus,
+            checkedAt,
+            failingSince: endpoint.probeFailingSince ?? null,
+          }
+        : null;
+      const reachability = toUserReachability({
+        probe: probe && state?.status === "ok" ? { ...probe, lastRunMass: false } : probe,
+        reachabilityEnabled: canUseProbe,
+        state,
+        now,
+      });
+      const parsedLevels = endpoint.probeLevels
+        ? (probeLevelsSchema.safeParse(endpoint.probeLevels).data ?? null)
+        : null;
+      const list = result.get(endpoint.nodeId) ?? [];
+      list.push({
+        id: endpoint.id,
+        ordinal: endpoint.ordinal,
+        name: endpoint.name,
+        publicAddress: endpoint.address,
+        enabled: endpoint.enabled,
+        reachabilityEnabled: endpoint.reachabilityEnabled,
+        reachability,
+        probeStatus: state?.status ?? null,
+        probeLevels: state ? parsedLevels : null,
+        probeCheckedAt: state?.checkedAt.toISOString() ?? null,
+        probeFailingSince: state && endpoint.probeFailingSince ? endpoint.probeFailingSince.toISOString() : null,
+        probeConsecutiveFailures: endpoint.probeConsecutiveFailures,
+        incidentOpen: endpoint.probeAlertedAt !== null,
+        probeDetail: state ? endpoint.probeDetail : null,
+      });
+      result.set(endpoint.nodeId, list);
+    }
+    return result;
   };
 
   /**
@@ -1046,26 +1141,34 @@ export class PostgresControlRepository implements ControlRepository {
    */
   private loadKeyReachability = async (
     nodeIds: readonly string[],
+    db: Database | DbTransaction = this.options.db,
   ): Promise<(nodeId: string, protocol: ProtocolKind) => UserNodeReachability> => {
     if (nodeIds.length === 0) return () => UNKNOWN_USER_REACHABILITY;
     const [probe, rows] = await Promise.all([
-      this.loadUserReachabilityProbe(),
-      this.options.db
+      this.loadUserReachabilityProbe(db),
+      db
         .select({
           nodeId: nodeReachabilityResults.nodeId,
           protocol: nodeReachabilityResults.protocol,
           reachabilityEnabled: nodes.reachabilityEnabled,
+          activeBridgeRouteId: vpnBridgeRoutes.id,
           status: nodeReachabilityResults.status,
           checkedAt: nodeReachabilityResults.checkedAt,
           failingSince: nodeReachabilityResults.failingSince,
         })
         .from(nodeReachabilityResults)
         .innerJoin(nodes, eq(nodes.id, nodeReachabilityResults.nodeId))
+        .leftJoin(vpnBridgeRoutes, and(
+          eq(vpnBridgeRoutes.nodeId, nodes.id),
+          eq(vpnBridgeRoutes.state, "active"),
+        ))
         .where(inArray(nodeReachabilityResults.nodeId, [...nodeIds])),
     ]);
     const now = new Date();
     const byKey = new Map(
-      rows.map((row) => [
+      rows.filter((row) =>
+        row.protocol !== "awg2" || row.activeBridgeRouteId === null || probe?.probeDirectWhenBridged,
+      ).map((row) => [
         `${row.nodeId}:${row.protocol}`,
         toUserReachability({
           probe,
@@ -1099,8 +1202,13 @@ export class PostgresControlRepository implements ControlRepository {
           publicIp: nodes.publicIp,
           checksEnabled: nodes.checksEnabled,
           disabledCheckIds: nodes.disabledCheckIds,
+          activeBridgeRouteId: vpnBridgeRoutes.id,
         })
         .from(nodes)
+        .leftJoin(vpnBridgeRoutes, and(
+          eq(vpnBridgeRoutes.nodeId, nodes.id),
+          eq(vpnBridgeRoutes.state, "active"),
+        ))
         .where(eq(nodes.enabled, true)),
       this.options.db.select().from(portalPolicy).limit(1),
       this.options.db
@@ -1168,6 +1276,16 @@ export class PostgresControlRepository implements ControlRepository {
       }
     }
     const nodeOrder = policyRow[0]?.nodeOrder ?? [];
+    const endpointOrder = policyRow[0]?.endpointOrder ?? [];
+    const recommendedEndpointIds = new Set(policyRow[0]?.recommendedEndpointIds ?? []);
+    const endpointRank = new Map<string, number>();
+    endpointOrder.forEach((id, index) => {
+      if (!endpointRank.has(id)) endpointRank.set(id, index);
+    });
+    const allowedEndpoints =
+      policy.allowedEndpointIds !== null && policy.allowedEndpointIds !== undefined
+        ? new Set(policy.allowedEndpointIds)
+        : null;
     // A null/absent allowedNodeIds means "all nodes"; a list restricts to it.
     // The SELECT above has no ORDER BY and the worker rewrites node rows on
     // every telemetry poll, so the order is fixed here, on the name the user
@@ -1175,81 +1293,150 @@ export class PostgresControlRepository implements ControlRepository {
     const available = rows.filter((row) => isNodeAvailable(policy.allowedNodeIds, row.id));
     // Behind the same flag as the service checks: both tell a user whether a
     // server works for them right now.
-    const reachability = policy.showNodeStatus
-      ? await this.loadUserReachability(available.map((row) => row.id))
-      : null;
-    return orderNodesForUsers(
-      available
-        .map(
-          ({
-            capabilities,
-            enabledProtocols,
-            publicName,
-            publicHost,
-            publicIp,
-            checksEnabled,
-            disabledCheckIds,
-            ...row
-          }) => {
-            const supportedProtocols = deriveSupportedProtocols(
-              row.protocol,
-              capabilities,
-            );
-            // One address, and only behind the policy flag: the resolved IPv4 when
-            // the panel has one, else the host the node reported. The host/IP pair
-            // and the resolution timestamp are operator diagnostics and stay on the
-            // admin side, so publicHost/publicIp are destructured OUT of `...row`
-            // above — leaving them in would hand every user the raw pair
-            // regardless of the flag.
-            const publicAddress = policy.showNodeAddress
-              ? (publicIp ?? publicHost)
-              : null;
-            return {
-              ...row,
-              // Users see the public name; the internal admin name never leaves here.
-              name: publicName ?? row.name,
-              recommended: recommended.has(row.id),
-              // Spread conditionally rather than assigning `undefined`: there is no
-              // "unknown address" state on the user side, so the key must be truly
-              // absent — a user cannot fix a node's DNS, and a null would only
-              // invite the UI to render an empty line.
-              ...(publicAddress === null ? {} : { publicAddress }),
-              supportedProtocols,
-              selectableProtocols: computeSelectableProtocols(
-                supportedProtocols,
-                enabledProtocols,
-                policy.allowedProtocols,
-              ),
-              // The external probe's verdict, as three words and a time
-              // (`toUserReachability`). It is the one node state word a user
-              // gets, and it is deliberately not the panel's own health view
-              // (enabled/lastError/lastHealthAt): it answers "does the VPN
-              // work from outside", which a healthy node can fail.
-              ...(reachability
-                ? { reachability: reachability.get(row.id) ?? UNKNOWN_USER_REACHABILITY }
+    const availableIds = available.map((row) => row.id);
+    const [reachability, publicEndpoints] = await Promise.all([
+      policy.showNodeStatus ? this.loadUserReachability(availableIds) : null,
+      this.loadNodePublicEndpoints(availableIds),
+    ]);
+    const userNodes = available.flatMap(
+      ({
+        capabilities,
+        enabledProtocols,
+        publicName,
+        publicHost,
+        publicIp,
+        checksEnabled,
+        disabledCheckIds,
+        activeBridgeRouteId,
+        ...row
+      }) => {
+        const supportedProtocols = deriveSupportedProtocols(
+          row.protocol,
+          capabilities,
+        );
+        const selectableProtocols = computeSelectableProtocols(
+          supportedProtocols, enabledProtocols, policy.allowedProtocols,
+        );
+        // One address, and only behind the policy flag: the resolved IPv4 when
+        // the panel has one, else the host the node reported. The host/IP pair
+        // and the resolution timestamp are operator diagnostics and stay on the
+        // admin side, so publicHost/publicIp are destructured OUT of `...row`
+        // above — leaving them in would hand every user the raw pair
+        // regardless of the flag.
+        const publicAddress = policy.showNodeAddress
+          ? (publicIp ?? publicHost)
+          : null;
+        const allEndpoints = publicEndpoints.get(row.id) ?? [];
+        const visibleEndpoints = allEndpoints
+          .filter(
+            (endpoint) =>
+              endpoint.enabled &&
+              (allowedEndpoints === null || allowedEndpoints.has(endpoint.id)),
+          )
+          .sort((a, b) => {
+            const ra = endpointRank.get(a.id) ?? Number.MAX_SAFE_INTEGER;
+            const rb = endpointRank.get(b.id) ?? Number.MAX_SAFE_INTEGER;
+            return ra - rb || a.ordinal - b.ordinal;
+          });
+        // If this node defines public endpoints and none are enabled & allowed
+        // for this user, hide the node unless the node itself was explicitly
+        // allowed via fallback node ID when it has no endpoints.
+        if (
+          (allEndpoints.length === 0 &&
+            allowedEndpoints !== null &&
+            !allowedEndpoints.has(row.id)) ||
+          (selectableProtocols.includes("awg3") &&
+            allEndpoints.length > 0 &&
+            visibleEndpoints.length === 0)
+        ) {
+          return [];
+        }
+        const endpoints = visibleEndpoints.map(
+          ({ id, ordinal, name, publicAddress, reachability }) => ({
+            id,
+            ordinal,
+            name,
+            ...(policy.showNodeAddress ? { publicAddress } : {}),
+            ...(recommendedEndpointIds.size > 0
+              ? { recommended: recommendedEndpointIds.has(id) }
+              : recommended.has(row.id)
+                ? { recommended: true }
                 : {}),
-              // Only checks this node actually runs. A chip for one it has
-              // been taken out of would show a user a verdict that will never
-              // change again - worse than showing nothing, because it looks
-              // live. Destructured above so the two flags cannot leak into the
-              // user payload with the rest of the row.
-              ...(policy.showNodeStatus
-                ? {
-                    status: {
-                      checks: (checksByNode.get(row.id) ?? []).filter((chip) =>
-                        nodeRunsCheck(
-                          { checksEnabled, disabledCheckIds },
-                          chip.checkId,
-                        ),
-                      ).map(({ name, state }) => ({ name, state })),
-                    },
-                  }
-                : {}),
-            };
+            ...(policy.showNodeStatus ? { reachability } : {}),
+          }),
+        );
+        const nodeRecommended =
+          recommendedEndpointIds.size > 0
+            ? endpoints.some((endpoint) => endpoint.recommended) ||
+              recommendedEndpointIds.has(row.id)
+            : recommended.has(row.id);
+        return [
+          {
+            ...row,
+            // Users see the public name; the internal admin name never leaves here.
+            name: endpoints[0]?.name ?? publicName ?? row.name,
+            ...(selectableProtocols.includes("awg3") && endpoints.length > 0
+              ? { publicEndpoints: endpoints } : {}),
+            ...(reachability && policy.useBridge && activeBridgeRouteId &&
+              selectableProtocols.includes("awg3") && endpoints.length > 0
+              ? { bridgeReachability: reachability.get(row.id) ?? UNKNOWN_USER_REACHABILITY }
+              : {}),
+            recommended: nodeRecommended,
+            // Spread conditionally rather than assigning `undefined`: there is no
+            // "unknown address" state on the user side, so the key must be truly
+            // absent — a user cannot fix a node's DNS, and a null would only
+            // invite the UI to render an empty line.
+            ...(publicAddress === null ? {} : { publicAddress }),
+            supportedProtocols,
+            selectableProtocols,
+            // The external probe's verdict, as three words and a time
+            // (`toUserReachability`). It is the one node state word a user
+            // gets, and it is deliberately not the panel's own health view
+            // (enabled/lastError/lastHealthAt): it answers "does the VPN
+            // work from outside", which a healthy node can fail.
+            ...(reachability
+              ? { reachability: reachability.get(row.id) ?? UNKNOWN_USER_REACHABILITY }
+              : {}),
+            // Only checks this node actually runs. A chip for one it has
+            // been taken out of would show a user a verdict that will never
+            // change again - worse than showing nothing, because it looks
+            // live. Destructured above so the two flags cannot leak into the
+            // user payload with the rest of the row.
+            ...(policy.showNodeStatus
+              ? {
+                  status: {
+                    checks: (checksByNode.get(row.id) ?? []).filter((chip) =>
+                      nodeRunsCheck(
+                        { checksEnabled, disabledCheckIds },
+                        chip.checkId,
+                      ),
+                    ).map(({ name, state }) => ({ name, state })),
+                  },
+                }
+              : {}),
           },
-        ),
-      nodeOrder,
+        ];
+      },
     );
+    const derivedNodeOrder =
+      endpointOrder.length > 0
+        ? [
+            ...new Set([
+              ...endpointOrder
+                .map((id) => {
+                  const owner = userNodes.find(
+                    (node) =>
+                      node.id === id ||
+                      node.publicEndpoints?.some((ep) => ep.id === id),
+                  );
+                  return owner?.id;
+                })
+                .filter((id): id is string => Boolean(id)),
+              ...nodeOrder,
+            ]),
+          ]
+        : nodeOrder;
+    return orderNodesForUsers(userNodes, derivedNodeOrder);
   };
 
   createUser = async (
@@ -1363,14 +1550,14 @@ export class PostgresControlRepository implements ControlRepository {
     nodeId: string,
     request: UpdateNodeRequest,
   ): Promise<unknown> => {
-    const { vpnBridgeRouteId, expectedVpnEndpointRevision, ...nodeFields } = request;
+    const { vpnBridgeRouteId, expectedVpnEndpointRevision, publicEndpoint, ...nodeFields } = request;
     // Route assignment fields alone (or only the revision, which the contract
     // lets through without a route id) are not a node-settings edit: no
     // `node.updated` row and no `updatedAt` bump for them. A PATCH with no
     // route fields takes exactly the path it always did.
     const editsNode =
       Object.keys(nodeFields).length > 0 ||
-      (vpnBridgeRouteId === undefined && expectedVpnEndpointRevision === undefined);
+      (vpnBridgeRouteId === undefined && expectedVpnEndpointRevision === undefined && publicEndpoint === undefined);
     return this.options.db.transaction(async (tx) => {
       // NO KEY UPDATE serializes node edits and route changes on this node
       // without blocking foreign-key inserts that reference it; see the lock
@@ -1385,7 +1572,11 @@ export class PostgresControlRepository implements ControlRepository {
       const updated = editsNode
         ? await this.updateNodeSettings(tx, actor, nodeId, nodeFields)
         : undefined;
+      const changedEndpoint = publicEndpoint
+        ? await this.changeNodePublicEndpoint(tx, actor, nodeId, publicEndpoint)
+        : undefined;
       if (vpnBridgeRouteId === undefined) {
+        if (changedEndpoint) return { ...(updated ?? { id: nodeId }), publicEndpoint: changedEndpoint };
         if (updated) return updated;
         // Only `expectedVpnEndpointRevision`: nothing to change. Report the
         // current assignment so the caller sees what it would have compared.
@@ -1407,8 +1598,120 @@ export class PostgresControlRepository implements ControlRepository {
         vpnBridgeRouteId,
         expectedVpnEndpointRevision ?? -1,
       );
-      return { ...(updated ?? { id: nodeId }), vpnEndpoint };
+      return {
+        ...(updated ?? { id: nodeId }),
+        vpnEndpoint,
+        ...(changedEndpoint ? { publicEndpoint: changedEndpoint } : {}),
+      };
     });
+  };
+
+  private changeNodePublicEndpoint = async (
+    tx: DbTransaction,
+    actor: Actor,
+    nodeId: string,
+    request: NodePublicEndpointMutation,
+  ) => {
+    let row: typeof nodeVpnEndpoints.$inferSelect | undefined;
+    if (request.action === "add") {
+      const [node] = await tx.select({
+        name: nodes.name,
+        publicName: nodes.publicName,
+        publicIp: nodes.publicIp,
+        protocol: nodes.protocol,
+        capabilities: nodes.capabilities,
+      }).from(nodes).where(eq(nodes.id, nodeId));
+      if (!node) throw new ApiError(404, "Node not found", "NODE_NOT_FOUND");
+      if (!deriveSupportedProtocols(node.protocol, node.capabilities).includes("awg3")) {
+        throw new ApiError(409, "Additional addresses require AWG 3.1", "NODE_ENDPOINT_NOT_AWG3");
+      }
+      if (node.publicIp && isIpv4Literal(node.publicIp)) {
+        await tx.insert(nodeVpnEndpoints).values({
+          nodeId,
+          ordinal: 1,
+          address: node.publicIp,
+          name: node.publicName || nodeEndpointDefaultName(node.name, 1),
+        }).onConflictDoNothing();
+      }
+      const existing = await tx.select({
+        address: nodeVpnEndpoints.address,
+        ordinal: nodeVpnEndpoints.ordinal,
+      }).from(nodeVpnEndpoints).where(eq(nodeVpnEndpoints.nodeId, nodeId))
+        .orderBy(desc(nodeVpnEndpoints.ordinal));
+      if (existing.some((endpoint) => endpoint.address === request.address)) {
+        throw new ApiError(409, "Address already exists on this node", "NODE_ENDPOINT_EXISTS");
+      }
+      const ordinal = (existing[0]?.ordinal ?? 1) + 1;
+      [row] = await tx.insert(nodeVpnEndpoints).values({
+        nodeId,
+        ordinal,
+        address: request.address,
+        name: request.name ?? nodeEndpointDefaultName(node.publicName || node.name, ordinal),
+      }).returning();
+    } else {
+      const match = and(eq(nodeVpnEndpoints.nodeId, nodeId), eq(nodeVpnEndpoints.id, request.id));
+      const [current] = await tx.select().from(nodeVpnEndpoints).where(match);
+      if (!current) throw new ApiError(404, "Address not found on this node", "NODE_ENDPOINT_NOT_FOUND");
+      if (request.enabled === false && current.enabled) {
+        const siblings = await tx
+          .select({ id: nodeVpnEndpoints.id })
+          .from(nodeVpnEndpoints)
+          .where(
+            and(
+              eq(nodeVpnEndpoints.nodeId, nodeId),
+              eq(nodeVpnEndpoints.enabled, true),
+            ),
+          );
+        if (siblings.filter((item) => item.id !== current.id).length === 0) {
+          throw new ApiError(
+            409,
+            "At least one public address must remain enabled on this node",
+            "LAST_ENABLED_ENDPOINT_REQUIRED",
+          );
+        }
+      }
+      const changeEnabled = request.enabled !== undefined && current.enabled !== request.enabled;
+      const changeReachability =
+        request.reachabilityEnabled !== undefined &&
+        current.reachabilityEnabled !== request.reachabilityEnabled;
+      const resetEvidence = changeEnabled || (changeReachability && request.reachabilityEnabled === false);
+      [row] = await tx.update(nodeVpnEndpoints).set({
+        name: request.name ?? current.name,
+        ...(changeEnabled ? { enabled: request.enabled, revision: current.revision + 1 } : {}),
+        ...(changeReachability ? { reachabilityEnabled: request.reachabilityEnabled } : {}),
+        ...(resetEvidence ? {
+          probeStatus: null,
+          probeLevels: null,
+          probeCheckedAt: null,
+          probeConsecutiveFailures: 0,
+          probeFailingSince: null,
+          probeAlertedAt: null,
+          probeDetail: null,
+        } : {}),
+      }).where(match).returning();
+    }
+    if (!row) throw new Error("Node address write returned no row");
+    await tx.insert(auditEvents).values({
+      actorUserId: actor.id,
+      actorType: "user",
+      action: request.action === "add" ? "node.endpoint_added" : "node.endpoint_updated",
+      targetType: "node",
+      targetId: nodeId,
+      metadata: {
+        endpointId: row.id,
+        ordinal: row.ordinal,
+        enabled: row.enabled,
+        reachabilityEnabled: row.reachabilityEnabled,
+      },
+    });
+    return {
+      id: row.id,
+      ordinal: row.ordinal,
+      name: row.name,
+      publicAddress: row.address,
+      enabled: row.enabled,
+      reachabilityEnabled: row.reachabilityEnabled,
+    };
   };
 
   /** The node-settings part of a node PATCH, inside its transaction. */
@@ -1491,6 +1794,18 @@ export class PostgresControlRepository implements ControlRepository {
         reachabilityEnabled: nodes.reachabilityEnabled,
         updatedAt: nodes.updatedAt,
       });
+    // Older clients edit the node's public name. Treat it as a rename of
+    // the primary address once that address has its own record.
+    if (updated && request.publicName !== undefined) {
+      await tx.update(nodeVpnEndpoints)
+        .set({ name: request.publicName || nodeEndpointDefaultName(updated.name, 1) })
+        .where(and(eq(nodeVpnEndpoints.nodeId, nodeId), eq(nodeVpnEndpoints.ordinal, 1)));
+    }
+    if (request.reachabilityEnabled === false) {
+      await tx.update(nodeVpnEndpoints)
+        .set({ probeStatus: null, probeCheckedAt: null, probeDetail: null })
+        .where(eq(nodeVpnEndpoints.nodeId, nodeId));
+    }
     await tx.insert(auditEvents).values({
       actorUserId: actor.id,
       actorType: "user",
@@ -1662,10 +1977,22 @@ export class PostgresControlRepository implements ControlRepository {
       // this node from them. A stale id is harmless at read time, but it shows
       // a phantom row in the admin's order editor and makes the stored order
       // describe a fleet that no longer exists. Same transaction as the delete.
+      const nodeEndpointIds = new Set(
+        (
+          await tx
+            .select({ id: nodeVpnEndpoints.id })
+            .from(nodeVpnEndpoints)
+            .where(eq(nodeVpnEndpoints.nodeId, nodeId))
+        ).map((item) => item.id),
+      );
+      const removedIds = new Set([nodeId, ...nodeEndpointIds]);
       const [policyRow] = await tx
         .select({
           recommendedNodeIds: portalPolicy.recommendedNodeIds,
           nodeOrder: portalPolicy.nodeOrder,
+          allowedEndpointIds: portalPolicy.allowedEndpointIds,
+          endpointOrder: portalPolicy.endpointOrder,
+          recommendedEndpointIds: portalPolicy.recommendedEndpointIds,
         })
         .from(portalPolicy)
         .limit(1);
@@ -1674,19 +2001,28 @@ export class PostgresControlRepository implements ControlRepository {
       if (policyRow) {
         scrubbedFromRecommended = policyRow.recommendedNodeIds.includes(nodeId);
         scrubbedFromOrder = policyRow.nodeOrder.includes(nodeId);
-        if (scrubbedFromRecommended || scrubbedFromOrder) {
+        const scrubbedFromEndpointOrder = policyRow.endpointOrder.some((id) => removedIds.has(id));
+        const scrubbedFromEndpointRec = policyRow.recommendedEndpointIds.some((id) => removedIds.has(id));
+        const scrubbedFromAllowedEndpoints = (policyRow.allowedEndpointIds ?? []).some((id) => removedIds.has(id));
+        if (
+          scrubbedFromRecommended ||
+          scrubbedFromOrder ||
+          scrubbedFromEndpointOrder ||
+          scrubbedFromEndpointRec ||
+          scrubbedFromAllowedEndpoints
+        ) {
           await tx
             .update(portalPolicy)
             .set({
               recommendedNodeIds: policyRow.recommendedNodeIds.filter(
                 (id) => id !== nodeId,
               ),
-              // Removing an element shifts the rest up by one, which is exactly
-              // right: positions are relative, so the surviving order is kept.
-              // Filtering the same id out of both lists also preserves the
-              // "recommended must be a prefix of the order" invariant, so this
-              // path needs no reconciliation of its own.
               nodeOrder: policyRow.nodeOrder.filter((id) => id !== nodeId),
+              endpointOrder: policyRow.endpointOrder.filter((id) => !removedIds.has(id)),
+              recommendedEndpointIds: policyRow.recommendedEndpointIds.filter((id) => !removedIds.has(id)),
+              ...(policyRow.allowedEndpointIds !== null
+                ? { allowedEndpointIds: policyRow.allowedEndpointIds.filter((id) => !removedIds.has(id)) }
+                : {}),
               updatedAt: new Date(),
             })
             .where(eq(portalPolicy.id, true));
@@ -1720,60 +2056,61 @@ export class PostgresControlRepository implements ControlRepository {
       };
     });
 
-  listKeys = async (actor: Actor): Promise<KeyView[]> => {
-    const rows = await this.options.db
-      .select({
-        key: vpnKeys,
-        current: peerCurrent,
-        node: { name: nodes.name, publicName: nodes.publicName },
-      })
-      .from(vpnKeys)
-      // Inner join: `vpn_keys.node_id` is NOT NULL with ON DELETE RESTRICT, so
-      // every key has its node row, enabled or not.
-      .innerJoin(nodes, eq(nodes.id, vpnKeys.nodeId))
-      .leftJoin(peerCurrent, eq(peerCurrent.keyId, vpnKeys.id))
-      .where(eq(vpnKeys.ownerId, actor.id))
-      .orderBy(desc(vpnKeys.createdAt));
-    const me = await this.getMe(actor);
-    const policy = me.policy as PortalPolicy;
-    const activeByProfile = new Map(
-      (
-        await this.options.db
-          .select({
-            profile: routeRuleVersions.profile,
-            id: routeRuleVersions.id,
-          })
-          .from(routeRuleVersions)
-          .where(eq(routeRuleVersions.status, "active"))
-      ).map((row) => [row.profile, row.id]),
-    );
-    // The projection lives in keyView.ts as a pure function: it is what decides
-    // whether the operator-only note leaves the server at all, and that
-    // decision has to be assertable without a database.
-    // Read per key's own node, not from `/api/nodes`: a key outlives the
-    // permission to create keys on its server.
-    const reachability = policy.showNodeStatus
-      ? await this.loadKeyReachability([...new Set(rows.map(({ key }) => key.nodeId))])
-      : null;
-    const bridgeRoutes =
-      actor.role === "admin"
-        ? await this.loadKeyBridgeRoutes(
-            rows.map(({ key }) => key.nodeId),
-            rows
-              .map(({ key }) => key.vpnBridgeRouteId)
-              .filter((id): id is string => id !== null),
-          )
-        : null;
-    return rows.map(({ key, node, current }) =>
-      toKeyView({
-        actor,
-        key,
-        node,
-        current,
-        policy,
-        activeByProfile,
-        nodeReachability: reachability ? reachability(key.nodeId, key.protocol) : undefined,
-        bridge: bridgeRoutes
+  listKeys = async (actor: Actor): Promise<KeyView[]> =>
+    this.options.db.transaction(async (tx) => {
+      const rows = await tx
+        .select({
+          key: vpnKeys,
+          current: peerCurrent,
+          node: { name: nodes.name, publicName: nodes.publicName },
+        })
+        .from(vpnKeys)
+        // Inner join: `vpn_keys.node_id` is NOT NULL with ON DELETE RESTRICT, so
+        // every key has its node row, enabled or not.
+        .innerJoin(nodes, eq(nodes.id, vpnKeys.nodeId))
+        .leftJoin(peerCurrent, eq(peerCurrent.keyId, vpnKeys.id))
+        .where(eq(vpnKeys.ownerId, actor.id))
+        .orderBy(desc(vpnKeys.createdAt));
+      const [[globalPolicy], [owner]] = await Promise.all([
+        tx.select().from(portalPolicy).limit(1),
+        tx.select({ policyOverride: users.policyOverride }).from(users).where(eq(users.id, actor.id)),
+      ]);
+      const policy = resolvePortalPolicy(toPolicy(globalPolicy), owner?.policyOverride);
+      const activeByProfile = new Map(
+        (
+          await tx
+            .select({
+              profile: routeRuleVersions.profile,
+              id: routeRuleVersions.id,
+            })
+            .from(routeRuleVersions)
+            .where(eq(routeRuleVersions.status, "active"))
+        ).map((row) => [row.profile, row.id]),
+      );
+      // The projection lives in keyView.ts as a pure function: it is what decides
+      // whether the operator-only note leaves the server at all, and that
+      // decision has to be assertable without a database.
+      // Read per key's own node, not from `/api/nodes`: a key outlives the
+      // permission to create keys on its server.
+      const keyNodeIds = [...new Set(rows.map(({ key }) => key.nodeId))];
+      const [reachability, publicEndpoints] = await Promise.all([
+        policy.showNodeStatus ? this.loadKeyReachability(keyNodeIds, tx) : null,
+        this.loadNodePublicEndpoints(keyNodeIds, tx),
+      ]);
+      const bridgeRoutes =
+        actor.role === "admin" || policy.showNodeStatus
+          ? await this.loadKeyBridgeRoutes(
+              rows.map(({ key }) => key.nodeId),
+              rows
+                .map(({ key }) => key.vpnBridgeRouteId)
+                .filter((id): id is string => id !== null),
+              tx,
+            )
+          : null;
+      return rows.map(({ key, node, current }) => {
+        const endpoint = (publicEndpoints.get(key.nodeId) ?? []).find((item) =>
+          key.endpointId ? item.id === key.endpointId : item.ordinal === 1);
+        const bridge = bridgeRoutes
           ? resolveKeyBridgeInfo({
               protocol: key.protocol,
               bridgeMode: key.bridgeMode,
@@ -1784,14 +2121,33 @@ export class PostgresControlRepository implements ControlRepository {
               activeRoute: bridgeRoutes.activeByNode.get(key.nodeId) ?? null,
               useBridge: policy.useBridge,
             })
-          : undefined,
-      }),
-    );
-  };
+          : undefined;
+        const usesCurrentBridge = bridge?.effective &&
+          bridge.effective.routeId === bridgeRoutes?.activeByNode.get(key.nodeId)?.routeId;
+        const pathReachability = bridge?.effective
+          ? (usesCurrentBridge ? reachability?.(key.nodeId, key.protocol) : UNKNOWN_USER_REACHABILITY)
+          : key.protocol === "awg3" && key.endpointId && endpoint
+            ? endpoint.reachability
+            : key.protocol === "awg3" && bridgeRoutes?.activeByNode.has(key.nodeId)
+              ? UNKNOWN_USER_REACHABILITY
+            : reachability?.(key.nodeId, key.protocol);
+        return toKeyView({
+          actor,
+          key,
+          node: endpoint ? { ...node, publicName: endpoint.name } : node,
+          current,
+          policy,
+          activeByProfile,
+          nodeReachability: reachability ? pathReachability : undefined,
+          bridge,
+        });
+      });
+    }, { isolationLevel: "repeatable read", accessMode: "read only" });
 
   private loadKeyBridgeRoutes = async (
     nodeIds: readonly string[],
     pinnedRouteIds: readonly string[],
+    db: Database | DbTransaction = this.options.db,
   ): Promise<{
     activeByNode: Map<string, KeyBridgeRouteRecord>;
     byRouteId: Map<string, KeyBridgeRouteRecord>;
@@ -1815,7 +2171,7 @@ export class PostgresControlRepository implements ControlRepository {
     if (uniqueRoutes.length > 0) {
       conditions.push(inArray(vpnBridgeRoutes.id, uniqueRoutes));
     }
-    const rows = await this.options.db
+    const rows = await db
       .select({
         routeId: vpnBridgeRoutes.id,
         nodeId: vpnBridgeRoutes.nodeId,
@@ -1968,15 +2324,66 @@ export class PostgresControlRepository implements ControlRepository {
         // memory, and never changes WHICH rows are locked. recommendedNodeIds
         // is deliberately not consulted: a badge does not promote a node here
         // any more than it does in listNodes.
+        const allowedEndpointSet =
+          policy.allowedEndpointIds !== null && policy.allowedEndpointIds !== undefined
+            ? new Set(policy.allowedEndpointIds)
+            : null;
+        const endpointOrder = globalPolicy?.endpointOrder ?? [];
+        const endpointRank = new Map<string, number>();
+        endpointOrder.forEach((id, index) => {
+          if (!endpointRank.has(id)) endpointRank.set(id, index);
+        });
+        const candidateEndpointRows =
+          candidateNodes.length > 0 && request.protocol === "awg3"
+            ? await tx
+                .select({
+                  id: nodeVpnEndpoints.id,
+                  nodeId: nodeVpnEndpoints.nodeId,
+                  ordinal: nodeVpnEndpoints.ordinal,
+                  enabled: nodeVpnEndpoints.enabled,
+                })
+                .from(nodeVpnEndpoints)
+                .where(
+                  inArray(
+                    nodeVpnEndpoints.nodeId,
+                    candidateNodes.map((node) => node.id),
+                  ),
+                )
+            : [];
+        const candidateEndpointsByNode = new Map<
+          string,
+          Array<{ id: string; ordinal: number; enabled: boolean }>
+        >();
+        for (const ep of candidateEndpointRows) {
+          const list = candidateEndpointsByNode.get(ep.nodeId) ?? [];
+          list.push(ep);
+          candidateEndpointsByNode.set(ep.nodeId, list);
+        }
+        const derivedOrder =
+          endpointOrder.length > 0
+            ? [
+                ...new Set([
+                  ...endpointOrder
+                    .map((id) => {
+                      const owner = candidateNodes.find(
+                        (node) =>
+                          node.id === id ||
+                          (candidateEndpointsByNode.get(node.id) ?? []).some(
+                            (ep) => ep.id === id,
+                          ),
+                      );
+                      return owner?.id;
+                    })
+                    .filter((id): id is string => Boolean(id)),
+                  ...(globalPolicy?.nodeOrder ?? []),
+                ]),
+              ]
+            : (globalPolicy?.nodeOrder ?? []);
         const orderedCandidates = orderNodesForUsers(
           candidateNodes,
-          globalPolicy?.nodeOrder ?? [],
+          derivedOrder,
         );
         let selectedNode: (typeof candidateNodes)[number] | undefined;
-        // Track why candidates were rejected, so the error is accurate. All
-        // constraints (availability, protocol, per-user quota, capacity) are
-        // evaluated INSIDE the loop so the search can fall through to another
-        // node that satisfies them — never rejected after picking the first.
         let userQuotaBlocked = false;
         let nodeCapacityBlocked = false;
         let protocolBlocked = false;
@@ -1984,6 +2391,22 @@ export class PostgresControlRepository implements ControlRepository {
         for (const candidate of orderedCandidates) {
           // Node availability (global default or per-user override).
           if (!isNodeAvailable(policy.allowedNodeIds, candidate.id)) {
+            availabilityBlocked = true;
+            continue;
+          }
+          const candidateEndpoints = candidateEndpointsByNode.get(candidate.id) ?? [];
+          if (
+            (candidateEndpoints.length === 0 &&
+              allowedEndpointSet !== null &&
+              !allowedEndpointSet.has(candidate.id)) ||
+            (request.protocol === "awg3" &&
+              candidateEndpoints.length > 0 &&
+              !candidateEndpoints.some(
+                (ep) =>
+                  ep.enabled &&
+                  (allowedEndpointSet === null || allowedEndpointSet.has(ep.id)),
+              ))
+          ) {
             availabilityBlocked = true;
             continue;
           }
@@ -2065,6 +2488,45 @@ export class PostgresControlRepository implements ControlRepository {
           }
           throw new ApiError(409, "Node is unavailable", "NODE_UNAVAILABLE");
         }
+        let endpointId: string | null = null;
+        if (request.endpointId) {
+          if (!policy.allowNodeSelection) {
+            throw new ApiError(403, "Address selection is disabled", "POLICY_DENIED");
+          }
+          const [endpoint] = await tx.select({ id: nodeVpnEndpoints.id })
+            .from(nodeVpnEndpoints)
+            .where(and(
+              eq(nodeVpnEndpoints.id, request.endpointId),
+              eq(nodeVpnEndpoints.nodeId, selectedNode.id),
+              eq(nodeVpnEndpoints.enabled, true),
+            ));
+          if (!endpoint) {
+            throw new ApiError(409, "Selected address is unavailable on this node", "NODE_ENDPOINT_UNAVAILABLE");
+          }
+          if (allowedEndpointSet !== null && !allowedEndpointSet.has(endpoint.id)) {
+            throw new ApiError(403, "Selected address is not permitted", "NODE_NOT_ALLOWED");
+          }
+          endpointId = endpoint.id;
+        } else if (request.protocol === "awg3") {
+          const nodeEndpoints = candidateEndpointsByNode.get(selectedNode.id) ?? [];
+          if (nodeEndpoints.length > 0) {
+            const eligible = nodeEndpoints
+              .filter(
+                (ep) =>
+                  ep.enabled &&
+                  (allowedEndpointSet === null || allowedEndpointSet.has(ep.id)),
+              )
+              .sort((a, b) => {
+                const ra = endpointRank.get(a.id) ?? Number.MAX_SAFE_INTEGER;
+                const rb = endpointRank.get(b.id) ?? Number.MAX_SAFE_INTEGER;
+                return ra - rb || a.ordinal - b.ordinal;
+              });
+            const preferred = eligible[0];
+            if (preferred && preferred.ordinal !== 1) {
+              endpointId = preferred.id;
+            }
+          }
+        }
         let vpnBridgeRouteId: string | null = null;
         if (bridgeMode === "route") {
           const requestedRouteId = request.vpnBridgeRouteId;
@@ -2125,6 +2587,7 @@ export class PostgresControlRepository implements ControlRepository {
           id: keyId,
           ownerId: actor.id,
           nodeId: selectedNode.id,
+          endpointId,
           nodeLabel,
           protocol: request.protocol,
           state: "provisioning",
@@ -2156,6 +2619,7 @@ export class PostgresControlRepository implements ControlRepository {
           targetId: keyId,
           metadata: {
             nodeId: selectedNode.id,
+            ...(endpointId ? { endpointId } : {}),
             protocol: request.protocol,
             routeProfile: request.routeProfile,
             nameDisplay: request.nameDisplay,
@@ -2185,6 +2649,8 @@ export class PostgresControlRepository implements ControlRepository {
         policy: portalPolicy,
         nodeName: nodes.name,
         nodePublicName: nodes.publicName,
+        endpointName: nodeVpnEndpoints.name,
+        endpointAddress: nodeVpnEndpoints.address,
         nodeIpv6RejectStubEnabled: nodes.ipv6RejectStubEnabled,
         nodeIpv6RejectStubState: nodes.ipv6RejectStubState,
         nodeIpv6RejectStubPrefix: nodes.ipv6RejectStubPrefix,
@@ -2202,6 +2668,7 @@ export class PostgresControlRepository implements ControlRepository {
       .from(vpnKeys)
       .innerJoin(users, eq(users.id, vpnKeys.ownerId))
       .innerJoin(nodes, eq(nodes.id, vpnKeys.nodeId))
+      .leftJoin(nodeVpnEndpoints, keyEndpointJoin)
       .leftJoin(portalPolicy, eq(portalPolicy.id, true))
       // One statement reads the key, any pinned route and the node's active
       // route, so an export sees one consistent assignment.
@@ -2278,7 +2745,8 @@ export class PostgresControlRepository implements ControlRepository {
       nodeId: row.key.nodeId,
       deviceLabel: row.key.deviceLabel,
       keyNumber: row.key.keyNumber,
-      nodeDisplayName: row.nodePublicName ?? row.nodeName,
+      nodeDisplayName: row.endpointName ?? row.nodePublicName ?? row.nodeName,
+      ...(row.key.endpointId && row.endpointAddress ? { directAddress: row.endpointAddress } : {}),
       nameDisplay: {
         server: row.key.nameShowNode,
         label: row.key.nameShowLabel,
@@ -3128,7 +3596,7 @@ export class PostgresControlRepository implements ControlRepository {
     // unauthenticated UDP, and the worker container has no CAP_NET_RAW), so
     // a real user's connection succeeding is the evidence. It can only
     // under-report, never over-report.
-    const [metricsRows, handshakeRows] = await Promise.all([
+    const [metricsRows, handshakeRows, publicEndpoints] = await Promise.all([
       this.options.db.select().from(nodeMetricsCurrent),
       this.options.db
         .select({
@@ -3145,6 +3613,7 @@ export class PostgresControlRepository implements ControlRepository {
         // reachable to people; only a person's connection is evidence here.
         .innerJoin(users, keyOwnerIsPerson(vpnKeys))
         .groupBy(vpnKeys.nodeId),
+      this.loadNodePublicEndpoints(nodeRows.map((row) => row.id)),
     ]);
     // Byte counters leave as decimal STRINGS, the way every other byte
     // counter in this API does. They are `bigint` in the column and drizzle
@@ -3182,6 +3651,7 @@ export class PostgresControlRepository implements ControlRepository {
     const now = Date.now();
     return nodeRows.map((row) => ({
       ...row,
+      publicEndpoints: publicEndpoints.get(row.id) ?? [],
       availableAgent,
       metrics: metricsByNode.get(row.id) ?? null,
       endpoint: {
@@ -3236,6 +3706,8 @@ export class PostgresControlRepository implements ControlRepository {
               id: vpnKeys.id,
               ownerId: vpnKeys.ownerId,
               nodeId: vpnKeys.nodeId,
+              endpointId: vpnKeys.endpointId,
+              endpointName: nodeVpnEndpoints.name,
               publicKey: vpnKeys.publicKey,
               protocol: vpnKeys.protocol,
               state: vpnKeys.state,
@@ -3265,6 +3737,7 @@ export class PostgresControlRepository implements ControlRepository {
             })
             .from(vpnKeys)
             .innerJoin(users, keyOwnerIsPerson(vpnKeys))
+            .leftJoin(nodeVpnEndpoints, keyEndpointJoin)
             .leftJoin(peerCurrent, eq(peerCurrent.keyId, vpnKeys.id))
             .orderBy(desc(vpnKeys.createdAt)),
         ]);
@@ -3384,6 +3857,14 @@ export class PostgresControlRepository implements ControlRepository {
               ...policyRow.nodeOrder,
             ]),
           ];
+          const referencedEndpoints = [
+            ...new Set([
+              ...policyRow.recommendedEndpointIds,
+              ...policyRow.endpointOrder,
+              ...(policyRow.allowedEndpointIds ?? []),
+            ]),
+          ];
+          let nextRow = policyRow;
           if (referenced.length > 0) {
             const known = new Set(
               (
@@ -3394,18 +3875,40 @@ export class PostgresControlRepository implements ControlRepository {
               ).map((row) => row.id),
             );
             if (known.size !== referenced.length) {
-              return [
-                stripPolicySecrets({
-                  ...policyRow,
-                  recommendedNodeIds: policyRow.recommendedNodeIds.filter(
-                    (id) => known.has(id),
-                  ),
-                  nodeOrder: policyRow.nodeOrder.filter((id) => known.has(id)),
-                }),
-              ];
+              nextRow = {
+                ...nextRow,
+                recommendedNodeIds: nextRow.recommendedNodeIds.filter((id) => known.has(id)),
+                nodeOrder: nextRow.nodeOrder.filter((id) => known.has(id)),
+              };
             }
           }
-          return [stripPolicySecrets(policyRow)];
+          if (referencedEndpoints.length > 0) {
+            const [knownNodes, knownEndpoints] = await Promise.all([
+              this.options.db
+                .select({ id: nodes.id })
+                .from(nodes)
+                .where(inArray(nodes.id, referencedEndpoints)),
+              this.options.db
+                .select({ id: nodeVpnEndpoints.id })
+                .from(nodeVpnEndpoints)
+                .where(inArray(nodeVpnEndpoints.id, referencedEndpoints)),
+            ]);
+            const knownTargets = new Set([
+              ...knownNodes.map((row) => row.id),
+              ...knownEndpoints.map((row) => row.id),
+            ]);
+            if (knownTargets.size !== referencedEndpoints.length) {
+              nextRow = {
+                ...nextRow,
+                recommendedEndpointIds: nextRow.recommendedEndpointIds.filter((id) => knownTargets.has(id)),
+                endpointOrder: nextRow.endpointOrder.filter((id) => knownTargets.has(id)),
+                ...(nextRow.allowedEndpointIds !== null
+                  ? { allowedEndpointIds: nextRow.allowedEndpointIds.filter((id) => knownTargets.has(id)) }
+                  : {}),
+              };
+            }
+          }
+          return [stripPolicySecrets(nextRow)];
         }
         // Fresh install with no row yet: report exactly the contract defaults so
         // the UI cannot show a setting the API would apply differently.
@@ -3414,8 +3917,11 @@ export class PostgresControlRepository implements ControlRepository {
             id: true,
             ...defaultPortalPolicy,
             allowedNodeIds: defaultPortalPolicy.allowedNodeIds ?? null,
+            allowedEndpointIds: defaultPortalPolicy.allowedEndpointIds ?? null,
             recommendedNodeIds: [] as string[],
             nodeOrder: [] as string[],
+            recommendedEndpointIds: [] as string[],
+            endpointOrder: [] as string[],
             defaultKeyLimit: 5,
             dailyRetentionDays: 730,
             cfAccessAccountId: null,
@@ -3648,13 +4154,15 @@ export class PostgresControlRepository implements ControlRepository {
     runRequestedAt: row.runRequestedAt?.toISOString() ?? null,
     ...(row.requestedRunId === null ? {} : { requestedRunId: row.requestedRunId }),
     timeZone: row.timeZone,
+    probeDirectWhenBridged: row.probeDirectWhenBridged,
+    stealthMode: row.stealthMode,
     widgetUpdatedAt: row.widgetUpdatedAt?.toISOString() ?? null,
     widgetLastError: row.widgetLastError,
   });
 
   getReachability = async (_actor: Actor): Promise<AdminReachabilityView> => {
     const db = this.options.db;
-    const [probeRows, nodeRows, resultRows, keyRows] = await Promise.all([
+    const [probeRows, nodeRows, resultRows, keyRows, bridges] = await Promise.all([
       db.select().from(reachabilityProbe).where(eq(reachabilityProbe.id, 1)),
       // Every registered node, a disabled one included: the probe keeps
       // testing it so that its recovery is noticed.
@@ -3693,9 +4201,11 @@ export class PostgresControlRepository implements ControlRepository {
           desc(vpnKeys.createdAt),
           desc(vpnKeys.id),
         ),
+      this.bridges.listReachability(),
     ]);
     const now = new Date();
     const probe = probeRows[0];
+    const publicEndpoints = await this.loadNodePublicEndpoints(nodeRows.map((node) => node.id));
     const slot = (nodeId: string, protocol: ProtocolKind): string =>
       `${nodeId}:${protocol}`;
     const results = new Map(
@@ -3706,13 +4216,26 @@ export class PostgresControlRepository implements ControlRepository {
     );
     return {
       probe: probe ? this.toReachabilityProbeView(probe, now) : null,
+      bridges,
       nodes: nodeRows.map((node) => {
         // Every protocol the node serves to anyone, without user policy: the
         // shared rule the worker keeps a probe key by.
         const served = nodeServedProtocols(node);
+        const endpoints = publicEndpoints.get(node.id);
+        const directCheckedAt = node.state?.directCheckedAt ?? null;
+        const hasCurrentDirectResult = probe?.enabled && probe.probeDirectWhenBridged &&
+          probe.staleAlertedAt === null && node.reachabilityEnabled && directCheckedAt &&
+          directCheckedAt >= probe.enabledAt && !isProbeStale({
+            now,
+            lastResultAt: directCheckedAt,
+            staleAfterSec: probe.staleAfterSec,
+            intervalSec: probe.intervalSec,
+            since: directCheckedAt,
+          });
         return {
           nodeId: node.id,
           nodeName: node.name,
+          ...(endpoints?.length ? { publicEndpoints: endpoints } : {}),
           nodeEnabled: node.enabled,
           reachabilityEnabled: node.reachabilityEnabled,
           status: node.state?.status ?? null,
@@ -3721,6 +4244,9 @@ export class PostgresControlRepository implements ControlRepository {
           consecutiveFailures: node.state?.consecutiveFailures ?? 0,
           incidentOpen: (node.state?.alertedAt ?? null) !== null,
           detail: node.state?.detail ?? null,
+          directStatus: hasCurrentDirectResult ? node.state?.directStatus ?? null : null,
+          directCheckedAt: hasCurrentDirectResult ? directCheckedAt.toISOString() : null,
+          directDetail: hasCurrentDirectResult ? node.state?.directDetail ?? null : null,
           protocols: served.map((protocol) => {
             const result = results.get(slot(node.id, protocol));
             return {
@@ -3846,6 +4372,8 @@ export class PostgresControlRepository implements ControlRepository {
         ? {}
         : { staleAfterSec: request.staleAfterSec }),
       ...(request.timeZone === undefined ? {} : { timeZone: request.timeZone }),
+      ...(request.probeDirectWhenBridged === undefined ? {} : { probeDirectWhenBridged: request.probeDirectWhenBridged }),
+      ...(request.stealthMode === undefined ? {} : { stealthMode: request.stealthMode }),
     };
     return this.options.db.transaction(async (tx) => {
       const [current] = await tx
@@ -3895,6 +4423,8 @@ export class PostgresControlRepository implements ControlRepository {
             failThreshold: REACHABILITY_DEFAULTS.failThreshold,
             staleAfterSec: REACHABILITY_DEFAULTS.staleAfterSec,
             timeZone: REACHABILITY_DEFAULTS.timeZone,
+            probeDirectWhenBridged: REACHABILITY_DEFAULTS.probeDirectWhenBridged,
+            stealthMode: REACHABILITY_DEFAULTS.stealthMode,
             ...settings,
             ...credentialColumns,
           })
@@ -4394,6 +4924,26 @@ export class PostgresControlRepository implements ControlRepository {
             throw new ApiError(400, "Unknown node id", "NODE_NOT_FOUND");
           }
         }
+        const referencedEndpointIds = [...new Set(parsed.allowedEndpointIds ?? [])];
+        if (referencedEndpointIds.length > 0) {
+          const [knownNodes, knownEndpoints] = await Promise.all([
+            tx
+              .select({ id: nodes.id })
+              .from(nodes)
+              .where(inArray(nodes.id, referencedEndpointIds)),
+            tx
+              .select({ id: nodeVpnEndpoints.id })
+              .from(nodeVpnEndpoints)
+              .where(inArray(nodeVpnEndpoints.id, referencedEndpointIds)),
+          ]);
+          const knownTargetIds = new Set([
+            ...knownNodes.map((row) => row.id),
+            ...knownEndpoints.map((row) => row.id),
+          ]);
+          if (knownTargetIds.size !== referencedEndpointIds.length) {
+            throw new ApiError(400, "Unknown endpoint id", "NODE_ENDPOINT_NOT_FOUND");
+          }
+        }
         const changes: Partial<typeof users.$inferInsert> = {
           keyLimitOverride: parsed.keyLimitOverride,
           updatedAt: new Date(),
@@ -4408,6 +4958,7 @@ export class PostgresControlRepository implements ControlRepository {
         }
         if (
           parsed.allowedNodeIds !== undefined ||
+          parsed.allowedEndpointIds !== undefined ||
           parsed.keyLimitMode !== undefined
         ) {
           // Merge into the existing per-user policy override instead of
@@ -4418,6 +4969,12 @@ export class PostgresControlRepository implements ControlRepository {
             delete merged.allowedNodeIds;
             if (parsed.allowedNodeIds !== null) {
               merged.allowedNodeIds = parsed.allowedNodeIds;
+            }
+          }
+          if (parsed.allowedEndpointIds !== undefined) {
+            delete merged.allowedEndpointIds;
+            if (parsed.allowedEndpointIds !== null) {
+              merged.allowedEndpointIds = parsed.allowedEndpointIds;
             }
           }
           if (parsed.keyLimitMode !== undefined) {
@@ -4441,6 +4998,7 @@ export class PostgresControlRepository implements ControlRepository {
           });
         if (!updated) throw new ApiError(404, "User not found", "USER_NOT_FOUND");
         const allowedNodeIds = updated.policyOverride?.allowedNodeIds ?? null;
+        const allowedEndpointIds = updated.policyOverride?.allowedEndpointIds ?? null;
         // Null means "inherit the global mode", which is what an absent
         // override key means everywhere else in this codebase.
         const keyLimitMode = updated.policyOverride?.keyLimitMode ?? null;
@@ -4455,6 +5013,8 @@ export class PostgresControlRepository implements ControlRepository {
             keyLimitOverride: updated.keyLimitOverride,
             nodeKeyLimitCount: Object.keys(updated.nodeKeyLimits ?? {}).length,
             allowedNodeCount: allowedNodeIds === null ? null : allowedNodeIds.length,
+            allowedEndpointCount:
+              allowedEndpointIds === null ? null : allowedEndpointIds.length,
             keyLimitMode,
           },
         });
@@ -4463,6 +5023,7 @@ export class PostgresControlRepository implements ControlRepository {
           keyLimitOverride: updated.keyLimitOverride,
           nodeKeyLimits: updated.nodeKeyLimits ?? null,
           allowedNodeIds,
+          allowedEndpointIds,
           keyLimitMode,
         };
       });
@@ -4818,7 +5379,14 @@ export class PostgresControlRepository implements ControlRepository {
       const provided = Object.fromEntries(
         Object.entries(parsed).filter(([field]) => named.has(field)),
       ) as typeof parsed;
-      const { cfApiToken, recommendedNodeIds, nodeOrder, ...rest } = provided;
+      const {
+        cfApiToken,
+        recommendedNodeIds,
+        nodeOrder,
+        recommendedEndpointIds,
+        endpointOrder,
+        ...rest
+      } = provided;
       const changes: Partial<typeof portalPolicy.$inferInsert> = { ...rest };
       if (cfApiToken) {
         const encrypted = encryptSecret(
@@ -4840,6 +5408,21 @@ export class PostgresControlRepository implements ControlRepository {
           : dedupeNodeIds(recommendedNodeIds);
       const order =
         nodeOrder === undefined ? undefined : dedupeNodeIds(nodeOrder);
+      const recommendedEndpoints =
+        recommendedEndpointIds === undefined
+          ? undefined
+          : dedupeNodeIds(recommendedEndpointIds);
+      const epOrder =
+        endpointOrder === undefined ? undefined : dedupeNodeIds(endpointOrder);
+      const allowedEndpoints =
+        named.has("allowedEndpointIds")
+          ? provided.allowedEndpointIds === null || provided.allowedEndpointIds === undefined
+            ? null
+            : dedupeNodeIds(provided.allowedEndpointIds)
+          : undefined;
+      if (allowedEndpoints !== undefined) {
+        changes.allowedEndpointIds = allowedEndpoints;
+      }
       // The sync connects to Cloudflare with these fields; nothing else about
       // the policy is visible to it, so only naming one of them re-arms it.
       const touchesAccessConfig = CF_ACCESS_CONFIG_FIELDS.some((field) =>
@@ -4875,6 +5458,32 @@ export class PostgresControlRepository implements ControlRepository {
             .where(inArray(nodes.id, referenced));
           if (known.length !== referenced.length) {
             throw new ApiError(400, "Unknown node id", "NODE_NOT_FOUND");
+          }
+        }
+        const referencedEndpoints = [
+          ...new Set([
+            ...(recommendedEndpoints ?? []),
+            ...(epOrder ?? []),
+            ...(allowedEndpoints ?? []),
+          ]),
+        ];
+        if (referencedEndpoints.length > 0) {
+          const [knownNodes, knownEndpoints] = await Promise.all([
+            tx
+              .select({ id: nodes.id })
+              .from(nodes)
+              .where(inArray(nodes.id, referencedEndpoints)),
+            tx
+              .select({ id: nodeVpnEndpoints.id })
+              .from(nodeVpnEndpoints)
+              .where(inArray(nodeVpnEndpoints.id, referencedEndpoints)),
+          ]);
+          const knownTargets = new Set([
+            ...knownNodes.map((row) => row.id),
+            ...knownEndpoints.map((row) => row.id),
+          ]);
+          if (knownTargets.size !== referencedEndpoints.length) {
+            throw new ApiError(400, "Unknown endpoint id", "NODE_ENDPOINT_NOT_FOUND");
           }
         }
         // A sample period below the telemetry poll period is not a faster
@@ -4957,6 +5566,35 @@ export class PostgresControlRepository implements ControlRepository {
           // still describes the change honestly as a nodeOrder edit.
           if (recommended !== undefined || check.canonical.length > 0) {
             changes.recommendedNodeIds = check.canonical;
+          }
+        }
+        if (epOrder) changes.endpointOrder = epOrder;
+        if (recommendedEndpoints !== undefined || epOrder !== undefined) {
+          const [stored] = await tx
+            .select({
+              recommendedEndpointIds: portalPolicy.recommendedEndpointIds,
+              endpointOrder: portalPolicy.endpointOrder,
+            })
+            .from(portalPolicy)
+            .limit(1);
+          const effectiveRecommended =
+            recommendedEndpoints ?? stored?.recommendedEndpointIds ?? [];
+          const effectiveOrder = epOrder ?? stored?.endpointOrder ?? [];
+          const check = checkRecommendedPrefix(
+            effectiveRecommended,
+            effectiveOrder,
+          );
+          if (!check.ok) {
+            throw new ApiError(
+              400,
+              check.reason === "unpositioned"
+                ? `Endpoint ${check.nodeId} cannot be recommended: it has no place in the server order. Only servers at the top of the order can be recommended.`
+                : `Endpoint ${check.nodeId} cannot be recommended: it is at position ${check.position} of the server order, behind servers that are not recommended. Only servers at the top of the order can be recommended.`,
+              "RECOMMENDED_NOT_PREFIX",
+            );
+          }
+          if (recommendedEndpoints !== undefined || check.canonical.length > 0) {
+            changes.recommendedEndpointIds = check.canonical;
           }
         }
         const [updated] = await tx

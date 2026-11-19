@@ -38,7 +38,12 @@ export function NodeOrderList({
   recommended,
   onChange,
 }: {
-  nodes: Array<{ id: string; name: string }>;
+  nodes: Array<{
+    id: string;
+    name: string;
+    address?: string | null;
+    enabled?: boolean;
+  }>;
   order: string[];
   recommended: string[];
   onChange: (next: {
@@ -143,7 +148,19 @@ export function NodeOrderList({
                   )
                 }
               />
-              <span className="min-w-0 flex-1 truncate">{node.name}</span>
+              <span className="min-w-0 flex-1 truncate">
+                <span className="font-medium">{node.name}</span>
+                {node.address ? (
+                  <code className="ml-2 font-mono text-xs text-muted-foreground">
+                    {node.address}
+                  </code>
+                ) : null}
+                {node.enabled === false ? (
+                  <span className="ml-1.5 text-xs text-muted-foreground">
+                    ({t("nodes.endpointDisabled").toLowerCase()})
+                  </span>
+                ) : null}
+              </span>
               {isRecommended ? (
                 <Badge variant="success" className="shrink-0">
                   {t("wizard.recommended")}

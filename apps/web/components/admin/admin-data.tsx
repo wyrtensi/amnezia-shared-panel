@@ -6,6 +6,7 @@ import { apiRequest } from "@/lib/api";
 import { useT } from "@/lib/i18n/provider";
 import { WORKER_PERIOD_FIELD_NAMES } from "@amnezia/contracts";
 import type {
+  AdminNodeEndpoint,
   AdminOverviewBridges,
   GlobalRoutes,
   KeyBridgeInfo,
@@ -86,6 +87,7 @@ export type QuotaRequest = {
 export type AdminNode = {
   id: string;
   name: string;
+  publicEndpoints?: AdminNodeEndpoint[];
   publicName?: string | null;
   apiBaseUrl: string;
   enabled: boolean;
@@ -156,6 +158,8 @@ export type AdminKey = {
   id: string;
   ownerId: string;
   nodeId: string;
+  endpointId?: string | null;
+  endpointName?: string | null;
   protocol: string;
   state: string;
   deviceType: string;
@@ -223,10 +227,13 @@ export type GlobalPortalPolicy = {
   useBridge: boolean;
   allowedProtocols: ProtocolKind[];
   allowedNodeIds: string[] | null;
+  allowedEndpointIds: string[] | null;
   // Global-only lists: the hand-made server order, and the recommended prefix
   // of it. Never part of a per-user override.
   recommendedNodeIds: string[];
   nodeOrder: string[];
+  recommendedEndpointIds: string[];
+  endpointOrder: string[];
   allowRouteProfileSelection: boolean;
   allowCustomRoutes: boolean;
   allowConfigRedownload: boolean;
@@ -281,8 +288,11 @@ const DEFAULT_POLICY: GlobalPortalPolicy = {
   useBridge: false,
   allowedProtocols: ["awg3"],
   allowedNodeIds: null,
+  allowedEndpointIds: null,
   recommendedNodeIds: [],
   nodeOrder: [],
+  recommendedEndpointIds: [],
+  endpointOrder: [],
   allowRouteProfileSelection: true,
   allowCustomRoutes: true,
   allowConfigRedownload: true,

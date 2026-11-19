@@ -37,15 +37,29 @@ export type RunTarget = {
 };
 
 /** Capability names the probe reports on GET /capabilities. */
-export const PROBE_CAPABILITIES = ["bridge-measurement"] as const;
+export const PROBE_CAPABILITIES = ["bridge-measurement", "bridge-host-check", "stealth-probe"] as const;
 export const PROBE_API_VERSION = 1;
+export type BridgeRunTarget = {
+  targetId: string;
+  host: string;
+  httpsHostname?: string;
+};
 
+export type BridgeResult = {
+  targetId: string;
+  host: string;
+  status: "done" | "error";
+  detail: string | null;
+  levels: { ping: LevelResult; tcp: LevelResult; https?: LevelResult };
+};
 
 export type RunRequest = {
   runId: string;
   control: { url: string };
   egress: { url: string };
   targets: RunTarget[];
+  bridgeTargets?: BridgeRunTarget[];
+  stealth?: boolean;
 };
 
 export type RunState = {
@@ -54,6 +68,7 @@ export type RunState = {
   finishedAt: string | null;
   control: LevelResult;
   results: TargetResult[];
+  bridgeResults?: BridgeResult[];
 };
 
 export const notAttempted = (): LevelResult => ({ ok: null, detail: null, latencyMs: null });
