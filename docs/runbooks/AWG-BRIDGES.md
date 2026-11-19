@@ -3,13 +3,31 @@
 An optional bridge is a public host that forwards UDP to one or more AWG 3.1
 nodes. Users import a config with the bridge endpoint while the AWG peer and
 exit stay on the node. In **Nodes and bridges**, both sections are visible on
-the same page and route links take you to the corresponding cards. Manage
-assignments in **Policies → Node routes** or through the `bridge-*` commands
-in [the CLI](../CLI.md).
+the same page (with optional per-bridge `panelDnsHostname` / `panelDns`
+resolution checks verifying whether a dedicated panel DNS host resolves to the
+bridge's IPv4) and route links take you to the corresponding cards. Manage
+assignments and the server list under **Policies → Node routes** (nested under
+**Server order**) or through the `bridge-*` and `user-bridge` commands in
+[the CLI](../CLI.md).
 
 Scope: only genuine AWG 3.1 artifacts follow a bridge. Native AWG 2 and an AWG3
 service's 2.0 fallback stay Direct. AWG 3.1 configs need AmneziaVPN client
 5.0.1.5 or newer.
+
+**Opt-in bridge routing (`useBridge`) and per-key overrides:**
+
+- **Global & per-user policy (`useBridge`):** defaults to **`false`** globally
+  so activating a route on a node does not silently move direct users onto a
+  bridge. Enable it globally in **Policies → Node routes**
+  (`amnezia-panel policy-set --useBridge=true`) or per user on the **Users**
+  page (`amnezia-panel user-bridge <id|email> <true|false|inherit>`).
+- **Admin-only per-key routing:** when an administrator creates an AWG 3.1 key
+  (`user-create-key --bridge=inherit|direct|route [--bridge-route=<uuid>]` or
+  the admin UI), the key can inherit the user/global policy, stay forced
+  **Direct**, or be pinned to a specific active or retiring bridge route on that
+  node. Admin key tables and `amnezia-panel keys` show the effective bridge
+  routing per key. Releasing a retiring route automatically resets any keys
+  pinned to that route back to `inherit`.
 
 Example values below use the documentation range (`203.0.113.10`, node
 `198.51.100.20`). Never paste tokens, keys or QR payloads into tickets or logs.
@@ -114,8 +132,10 @@ Never run a pre-bridge worker with the gate on.
    In the panel, if you already verified a handshake and a page load through this
    registration, select the confirmation and activate in one step. The test
    download and remote probe are optional tools in the route editor.
-7. Users get the new endpoint on their next download or **Refresh config**; files
-   already imported keep the endpoint they were exported with.
+7. Users whose effective `useBridge` policy is enabled (global or per-user
+   override) — as well as keys pinned to that route — get the new endpoint on
+   their next download or **Refresh config**; direct-only users and files
+   already imported keep their existing endpoint.
 
 ## 4. Switch back to Direct
 

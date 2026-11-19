@@ -483,9 +483,12 @@ Binder transaction (`IpcMessenger` → `Messenger.send`), and Binder allows abou
 that; past it the client logs `Sending a message to the VpnService messenger
 failed: data parcel size N bytes`, drops the message, and the profile simply
 never connects — no error, no retry, no traffic. That is why the `ru_blacklist`
-feed must stay aggregated: Re:filter's `ipsum.lst` carries ~27k CIDRs and
-produced a 2.7 MB parcel that never connected on Android, which is why the
-default source is now iplist (~3.6k prefixes covering the same services).
+feed must stay aggregated: Re:filter's raw `ipsum.lst` carries ~27k CIDRs and
+produced a 2.7 MB parcel that never connected on Android, while iOS
+NetworkExtension hits its own ~3,100-route cliff (`amnezia-client#3207`). The
+built-in pipeline therefore caps `ipsum.lst` at `/24`, merges `itdoginfo`
+IPv4/IPv6 feeds and `RULE_EXTRAS`, subtracts Russian space, and runs RU-safe
+compaction down to ~1,250 routes (`compact_world` E-Core default).
 
 The built-in feed combines blocked-subnet feeds with Russian/bogon exclusions
 and safe binary-trie supernetting, in this order:
@@ -614,11 +617,13 @@ the only reading anyone gets, and a degraded key looks exactly like a
 full-tunnel key that was asked for.
 
 Feeds work **out of the box**: with no feed configuration at all the worker uses
-the built-in iplist / Re:filter sources, so a fresh install fetches real rules
-without an operator pasting anything. The worker env
-(`apps/worker/.env.example`) only overrides that:
+the built-in Re:filter (`/24`-capped) + `itdoginfo` IPv4/IPv6 + `ipdeny` RU
+exclusion + `RULE_EXTRAS` E-Core pipeline (`compact_world`), so a fresh install
+fetches real rules without an operator pasting anything. The worker env
+(`apps/worker/.env.example`, also surfaced in `infra/prod/.env.example`) only
+overrides or extends that:
 
-- `RULE_FEEDS` — JSON array of `{ profile, sources:[{ url, format, exclude? }] }`,
+- `RULE_FEEDS` — JSON array of `{ profile, sources:[{ url, format, exclude?, maxIpv4PrefixLength? }] }`,
   formats `json` | `cidr-lines` | `domain-lines` (multiple sources per profile
   are merged and de-duplicated). A source with `"exclude": true` is subtracted
   instead of merged: its CIDRs come out of the list, its domains are ignored,
@@ -635,20 +640,37 @@ without an operator pasting anything. The worker env
   `xn--p1ai`); raw Unicode, wildcards (`*.`), and leading dots are dropped as
   invalid. A feed with more than 15 % invalid entries is quarantined whole, so
   a wrong URL or format fails safe rather than shipping garbage.
+- `RULE_EXTRA_INCLUDE_URLS` / `RULE_EXTRA_EXCLUDE_URLS` — comma- or
+  whitespace-separated `http(s)` `cidr-lines` URLs layered on top of the
+  resolved feeds (including built-in defaults) on every refresh without dropping
+  `DEFAULT_RULE_FEEDS` or resetting `RULE_COMPACTION_MODE`. Include URLs are
+  forced inclusions (protected from RU expansion and able to punch back into
+  built-in direct shields such as Valve AS32590); exclude URLs are exact
+  un-expanded direct shields.
+- `RULE_COMPACTION_MODE` (`compact_world` | `blocked_only` | `lossless`),
+  `RULE_COLLATERAL_CAP` (`0.005`), `RULE_DIRECT_APPLE` (`true`), and
+  `RULE_DIRECT_STEAM_CACHE` (`true`) — tune how `ru_blacklist` is compacted and
+  which direct shields are applied (defaults described above).
 - **Gates default open.** The fetcher activates fetched versions by default; set
   `RU_BLACKLIST_POC_APPROVED=false` to hold the profile's auto-fetched versions
   quarantined for operator review (`!== "false"` is treated as approved).
-  Fetchers run every 6 h.
+  Fetchers run on the `ruleFetchIntervalSec` schedule (default 6 h, editable in
+  Administration → Policies → Background periods).
 - **No bundled starter list.** Rule versions come from the feeds or from an
   explicit operator upload (`POST /api/admin/rules/global/import` with a
   `profile`, `version` and at least one entry). There is nothing to fall back on,
   so a misconfigured feed leaves a profile unavailable instead of silently
   serving a stub list.
-- **Global route overrides** (`global_route_overrides`, admin-wide) are layered on
-  the active feed at export time: feed − admin exclusions + admin additions +
-  the owner's own custom routes. Excluding a domain also excludes its
-  subdomains; the user's own routes are applied last and can therefore re-add an
-  excluded entry. Edit them from the admin UI or with
+- **Global route overrides** (`global_route_overrides`, admin-wide, addresses
+  and CIDRs only — site names are refused) are baked directly into each newly
+  compacted `route_rule_versions` snapshot by the worker (admin exclusions as
+  exact un-expanded direct shields, admin additions as highest-precedence
+  inclusions). Saving overrides automatically re-arms `rules.refresh` so keys
+  flag `rulesOutdated`, while export-time `routeMerge.ts` continues to apply
+  exact CIDR subtraction and addition (`feed − admin exclusions + admin
+  additions + the owner's own custom routes`, with the user's own routes applied
+  last so they can re-add an excluded prefix) as an immediate fallback before
+  the refresh completes. Edit them from the admin UI or with
   `amnezia-panel global-routes-set` (see [`CLI.md`](./CLI.md)).
 
 See `infra/dev/ROUTE-PROFILES-POC.md` for the per-profile validation checklist

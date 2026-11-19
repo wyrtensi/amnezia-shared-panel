@@ -2,7 +2,7 @@
 
 Two things live here, and nothing else.
 
-**A map.** `docs/` holds thirteen other files and their titles overlap; at 3am you
+**A map.** `docs/` holds more than a dozen files and their titles overlap; at 3am you
 should not have to open four of them to find out which one owns your job. §1 is
 that index. If your job is in it, follow the link and stop reading this file.
 
@@ -47,6 +47,10 @@ this tree where it is allowed to live.
 | Find the command for anything | [`CLI.md`](./CLI.md) |
 | Work out what a key's state means | [`KEY-STATES.md`](./KEY-STATES.md) |
 | Add or calibrate a service check | [`SERVICE-CHECKS.md`](./SERVICE-CHECKS.md) and [`runbooks/service-check-calibration.md`](./runbooks/service-check-calibration.md) |
+| Configure split-tunneling (`ru_blacklist` E-Core), `global_route_overrides`, `RULE_EXTRA_*` feeds, or Steam split-routing | [`AGENT-HOST-SETUP.md`](./AGENT-HOST-SETUP.md#route-profiles-and-rule-feeds) |
+| Toggle the per-node AWG 3.1 IPv6 active-reject ULA stub (`fd6b:7c2e:4a91:9f::/64`) | [**Per-node AWG 3.1 IPv6 active-reject stub**](#per-node-awg-31-ipv6-active-reject-stub-ula--prohibit-20003) below, [`CLI.md`](./CLI.md) (`node-ipv6-stub`), and [`IPV6-DESIGN.md`](./IPV6-DESIGN.md) |
+| Deploy, verify, activate, or roll back optional AWG 3.1 node bridges | [`runbooks/AWG-BRIDGES.md`](./runbooks/AWG-BRIDGES.md) and [`infra/bridge/README.md`](../infra/bridge/README.md) |
+| Set up external reachability probing and Telegram alerts / status widget | [`REACHABILITY-PROBE.md`](./REACHABILITY-PROBE.md) |
 
 ---
 
@@ -602,4 +606,10 @@ provides a per-node **IPv6 Reject (ULA)** switch backed by `PUT /api/admin/nodes
   host, with measured numbers.
 - [`DEPLOY-UPDATE.md`](./DEPLOY-UPDATE.md) · [`UPDATE-MECHANISM.md`](./UPDATE-MECHANISM.md)
   — updating the panel, and the Update button's host worker.
+- [`REACHABILITY-PROBE.md`](./REACHABILITY-PROBE.md) — external reachability
+  probe, Telegram alerts, and pinned status widget.
+- [`runbooks/AWG-BRIDGES.md`](./runbooks/AWG-BRIDGES.md) — optional AWG 3.1
+  node bridges, `useBridge` opt-in policy, and rollback preflight.
+- [`IPV6-DESIGN.md`](./IPV6-DESIGN.md) — shipped IPv6 hygiene (E-Core dual-stack
+  routes + active-reject stub) and future full NAT66 / IPv6 endpoint draft.
 - [`CLI.md`](./CLI.md) — every command, panel and node.
