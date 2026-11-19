@@ -400,7 +400,7 @@ describe("bridge registry (real PostgreSQL)", () => {
         deviceType: "unspecified",
         routeProfile: "full_tunnel",
         nameDisplay: { server: true, label: false, number: false },
-      }))).toMatchObject({ code: "NODE_ENDPOINT_UNAVAILABLE" });
+      }))).toMatchObject({ statusCode: 403, code: "NODE_NOT_ALLOWED" });
     } finally {
       await repository.adminAction(admin, "portal-policy", "global", "update", {
         endpointOrder: [],
