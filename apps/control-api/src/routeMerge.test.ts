@@ -14,13 +14,37 @@ describe("mergeRoutePayload", () => {
     expect(mergeRoutePayload({ base })).toEqual({ cidrs: base.cidrs });
   });
 
-  it("drops excluded CIDRs by exact match only", () => {
+  it("subtracts excluded CIDRs by exact match and punches holes out of enclosing supernets", () => {
     const merged = mergeRoutePayload({
       base,
       global: profile({ exclude: { cidrs: ["10.0.0.0/8"] } }),
     });
 
     expect(merged.cidrs).toEqual(["192.0.2.0/24"]);
+
+    // Excluding a /25 inside a /24 supernet leaves the remaining half cleanly.
+    const punched = mergeRoutePayload({
+      base: { cidrs: ["198.51.100.0/24"], domains: [] },
+      global: profile({ exclude: { cidrs: ["198.51.100.0/25"] } }),
+    });
+    expect(punched.cidrs).toEqual(["198.51.100.128/25"]);
+
+    // Bare IP exclusions (stored as host literals without /32) punch a /32 hole.
+    const bareExcluded = mergeRoutePayload({
+      base: { cidrs: ["198.51.100.0/30"], domains: [] },
+      global: profile({ exclude: { cidrs: ["198.51.100.0"] } }),
+    });
+    expect(bareExcluded.cidrs).toEqual([
+      "198.51.100.1/32",
+      "198.51.100.2/31",
+    ]);
+
+    // IPv6 exclusions punch holes out of enclosing IPv6 supernets too.
+    const punchedV6 = mergeRoutePayload({
+      base: { cidrs: ["2001:db8::/32"], domains: [] },
+      global: profile({ exclude: { cidrs: ["2001:db8:8000::/33"] } }),
+    });
+    expect(punchedV6.cidrs).toEqual(["2001:db8::/33"]);
   });
 
   it("applies the admin additions after the exclusions", () => {

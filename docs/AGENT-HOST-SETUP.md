@@ -487,58 +487,48 @@ feed must stay aggregated: Re:filter's `ipsum.lst` carries ~27k CIDRs and
 produced a 2.7 MB parcel that never connected on Android, which is why the
 default source is now iplist (~3.6k prefixes covering the same services).
 
-The built-in feed is iplist plus two corrections, and the order they apply in
-matters:
+The built-in feed combines blocked-subnet feeds with Russian/bogon exclusions
+and safe binary-trie supernetting, in this order:
 
-- **itdoginfo provider ranges are added.** iplist knows only the sites in its own
-  catalogue, so a foreign site on a Hetzner, DigitalOcean or OVH address it has
-  never seen went direct and hit the block. `itdoginfo/allow-domains`
-  publishes, weekly, the whole ranges of the hosting providers and services
-  blocked or throttled in Russia (Cloudflare, CloudFront, DigitalOcean, Hetzner,
-  OVH, Meta, Twitter, Discord, Telegram, Google Meet, Roblox).
-- **Russian address space is taken out** (an `exclude` source, ipdeny's RU
-  zone). iplist aggregates down to /7 and /8, and those blocks swallowed ~1.4M
-  Russian addresses — Yandex Cloud, Selectel and TimeWeb neighbours of a
-  blocked site, whole MTS and Beeline subscriber pools. Russian services refuse
-  a foreign address more and more, so anything hosted there broke under this
-  profile. The cost: a blocked resource hosted inside Russia is not tunnelled.
-  An exclusion that would remove more than 10 % of the included address space
-  quarantines the version (`exclusion_too_broad`), and one that answers with no
-  CIDRs at all fails the fetch, so a broken mirror cannot quietly send the list
-  outside the tunnel.
-- **IPv6 is routed too** (since v0.9.64): iplist's IPv6 list (~800 prefixes)
-  joins the include sources and ipdeny's Russian IPv6 zone the exclusions. The
-  nodes have no IPv6, so these routes do not carry traffic: they are a
-  blackhole for the listed services, and the client falls back to IPv4, which
-  goes through the tunnel. Before this, a client whose ISP hands out IPv6
-  reached those services over IPv6 directly, past the tunnel and into the
-  block. Per platform: Android, which blocked all IPv6 for VPN'd apps while the
-  tunnel carried no IPv6 route, now blocks only the listed prefixes and lets
-  other IPv6 go direct; on desktop the listed prefixes leave with the client's
-  ULA address and time out, so a browser falls back to IPv4 within its usual
-  race; iOS installs the IPv6 routes as well, which adds ~800 to the route
-  count on the platform with the large-route-list client bug
-  (amnezia-client#3207). Roll back by pinning the last version without IPv6:
-  `amnezia-panel rules-activate <id>` (or the admin rules page), and
-  `rules-follow ru_blacklist` to resume. To drop IPv6 permanently, set
-  `RULE_FEEDS` to the defaults minus the two IPv6 sources.
-- **Hand-picked extras** (`apps/worker/src/ruleExtras.ts`, `RULE_EXTRAS`) cover
-  services no community feed carries, one named entry per service with a note
-  on where its ranges came from (first entry: `wardogs`, the game's AWS match
-  servers and Unity relays). They join the list after the Russian exclusion, so
-  GeoIP never cuts a range someone added on purpose, and the version names each
-  one as `extra://<name>` next to the feeds (`amnezia-panel rules`, the admin
-  rules page). They ride along with the built-in feeds only: a host with its
-  own `RULE_FEEDS` gets none. To add one, append an entry with whole provider
-  prefixes rather than the few addresses a capture happened to see — the tests
-  in `ruleExtras.test.ts` refuse a malformed prefix. Like any feed change, the
-  new version flags keys as outdated, and a key's routing changes only when its
-  owner downloads or regenerates it.
-- **The result is compacted** to the fewest prefixes covering exactly the same
-  addresses: feeds overlap and sit side by side, and every prefix is a route
-  the client has to carry. Measured on 2026-10-04: 3,757 routes for iplist +
-  itdoginfo − RU, against 3,521 for iplist alone and 4,537 uncompacted. With
-  IPv6 added (2026-10-10): 4,587, of them 3,777 IPv4 and 810 IPv6.
+- **Re:filter `ipsum.lst` capped at `/24`** (`maxIpv4PrefixLength: 24`) keeps
+  every blocked `/0`–`/24` subnet (~99.7% of `ipsum.lst`'s IP volume) while
+  dropping ~9,700 isolated single-host `/25`–`/32` entries that previously blew
+  up mobile route tables.
+- **`itdoginfo/allow-domains` IPv4 (11 lists) and IPv6 (10 lists)** cover the
+  whole ranges of hosting providers and services blocked or throttled in Russia
+  (Cloudflare, CloudFront, DigitalOcean, Hetzner, OVH, Meta, Twitter, Discord,
+  Telegram, Google Meet, plus Roblox IPv4). Including the IPv6 lists closes dual-
+  stack Wi-Fi leaks (such as Meta/Instagram's 42 IPv6 prefixes) without relying
+  on `iplist.opencck.org`.
+- **Russian address space is taken out** (`exclude: true`, ipdeny's RU IPv4 and
+  IPv6 zones) so Russian banks, clouds and telecoms stay direct. An exclusion
+  that would remove more than 10 % of the included address space quarantines the
+  version (`exclusion_too_broad`), and an empty exclusion fails the fetch.
+- **Hand-picked extras** (`apps/worker/src/ruleExtras.ts`, `RULE_EXTRAS`) add
+  services missing from provider subnet feeds (`google-youtube` dual-stack,
+  `anthropic`, `wardogs`). They join after the Russian exclusion and are
+  verified 100 % covered by post-compaction checks.
+- **RU-safe & LAN-safe binary-trie supernetting** (`packages/vpn-config/src/cidrSet.ts`)
+  collapses nearby prefixes across clean gaps under strict invariants: **0**
+  overlap with `ipdeny` RU, **0** overlap with RFC 1918 / CGNAT / bogons /
+  non-`2000::/3` IPv6, and optional direct shields for Apple (`17.0.0.0/8`) and
+  Valve AS32590 primary SteamCache download servers (`RULE_DIRECT_APPLE`,
+  `RULE_DIRECT_STEAM_CACHE`, both `true` by default):
+  - `RULE_COMPACTION_MODE=blocked_only` *(default for built-in feeds)*: caps
+    extra non-RU IPv4 space at `RULE_COLLATERAL_CAP` (`0.005` = +0.5 %), yielding
+    **~780 routes** (~762 IPv4 + ~18 IPv6) — 6× smaller than the legacy 4,669-
+    route list (~11 % of Android Binder, 4× below iOS's ~3,100-route cliff in
+    `amnezia-client#3207`) while keeping Apple, Steam, and Microsoft direct.
+  - `RULE_COMPACTION_MODE=compact_world`: expands Russian exclusions around
+    protected services and emits the complement `0.0.0.0/0 \ expanded_RU`
+    (**~1,177 routes**, ~85 % of non-RU IPv4 routed via VPN, 0 % RU/LAN/Apple/
+    SteamCache, 100 % Akamai Steam Store/Community via VPN).
+  - `RULE_COMPACTION_MODE=lossless` *(default for custom `RULE_FEEDS`)*: exact
+    subtraction and lossless compaction only.
+  Any version violating zero RU/bogon overlap, extras coverage, or the compact
+  ceiling (`2800` routes) is quarantined automatically. Admin `global-routes`
+  exclusions use real CIDR subtraction (`subtractCidrs`) at export time, so
+  excluding a `/24` or bare IP cleanly punches a hole out of any supernet.
 
 Feeds grow, so that number is not assumed to hold. `MAX_TUNNEL_ROUTES` (6800) is
 the budget the profile is held to. It sits close to the edge on purpose —

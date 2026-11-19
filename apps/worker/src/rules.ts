@@ -1,7 +1,19 @@
 import { createHash } from "node:crypto";
 import { isIP } from "node:net";
 import { z } from "zod";
-import { subtractCidrs } from "./cidrSet.js";
+import {
+  APPLE_DIRECT_V4_CIDRS,
+  BOGON_V4_CIDRS,
+  BOGON_V6_CIDRS,
+  STEAM_CACHE_V4_CIDRS,
+  complementCidrs,
+  countCidrOverlap,
+  expandExclusionsSafely,
+  measureCidrSpace,
+  splitCidrsByFamily,
+  subtractCidrs,
+  supernetCidrsSafely,
+} from "./cidrSet.js";
 import { RULE_EXTRAS, type RuleExtra } from "./ruleExtras.js";
 
 const MAX_SOURCE_BYTES = 10 * 1024 * 1024;
@@ -16,6 +28,13 @@ const MAX_EXCLUDED_SHARE = 0.1;
 // Community lists (Re:filter etc.) always carry a little noise, so drop the bad
 // entries rather than quarantining a 100k-entry feed over a few stragglers.
 const MAX_INVALID_RATIO = 0.15;
+// Hard ceiling for compacted split profiles. Kept well under iOS's ~3,100-route
+// NEPacketTunnelProvider failure cliff (amnezia-client#3207) and less than half
+// of Android's ~6,800-route Binder limit.
+export const MAX_COMPACT_ROUTES = 2800;
+export const DEFAULT_COLLATERAL_CAP = 0.005;
+const MAX_COLLATERAL_CAP = 0.25;
+
 // TLD may be alphabetic OR a punycode IDN label (e.g. `.рф` → `xn--p1ai`).
 const domainPattern =
   /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+(?:[a-z]{2,63}|xn--[a-z0-9-]{2,59})$/;
@@ -24,12 +43,39 @@ export type RulePayload = { cidrs: string[]; domains: string[] };
 export type RuleValidationReport = Record<string, unknown>;
 export type RuleProfile = "ru_blacklist";
 export type RuleFeedFormat = "json" | "cidr-lines" | "domain-lines";
+export type RuleCompactionMode = "blocked_only" | "compact_world" | "lossless";
+
+export type RuleCompactionOptions = {
+  mode: RuleCompactionMode;
+  /**
+   * Maximum share (0..0.25) of non-forbidden public IPv4 space that gap-filling
+   * supernetting may add in `blocked_only` mode.
+   */
+  collateralCap: number;
+  /** Keep Apple's 17.0.0.0/8 direct so iOS updates / iCloud stay off the VPS. */
+  directApple: boolean;
+  /** Keep Valve AS32590 primary SteamCache download servers direct. */
+  directSteamCache: boolean;
+  /** Maximum compacted routes allowed before the version is quarantined. */
+  maxCompactRoutes?: number;
+};
+
 /**
  * One feed source. An `exclude` source is not part of the list: its CIDRs are
  * taken OUT of what the other sources supply (its domains are ignored), so a
  * coarse feed can be trimmed by a list of address space that must stay direct.
  */
-export type RuleSource = { url: string; format: RuleFeedFormat; exclude?: boolean };
+export type RuleSource = {
+  url: string;
+  format: RuleFeedFormat;
+  exclude?: boolean;
+  /**
+   * Optional upper bound on IPv4 prefix length (0..32) kept from this source
+   * (e.g. `24` keeps every `/0`–`/24` subnet while skipping scattered single-IP
+   * `/25`–`/32` entries). IPv6 prefixes are not affected.
+   */
+  maxIpv4PrefixLength?: number;
+};
 
 export type ValidRulePayload = {
   ok: true;
@@ -37,6 +83,14 @@ export type ValidRulePayload = {
   report: {
     cidrCount: number;
     domainCount: number;
+    ipv4Count?: number;
+    ipv6Count?: number;
+    losslessCidrCount?: number;
+    compactionMode?: RuleCompactionMode;
+    collateralNonRuShare?: number;
+    ruOverlap?: number;
+    bogonOverlap?: number;
+    directShields?: string[];
     droppedInvalid?: number;
     /** Included prefixes an `exclude` source cut into or removed. */
     excludedPrefixes?: number;
@@ -48,7 +102,13 @@ export type ValidRulePayload = {
 export type InvalidRulePayload = {
   ok: false;
   payload: RulePayload;
-  report: { invalidEntries: string[]; reason?: string; excludedShare?: number };
+  report: {
+    invalidEntries: string[];
+    reason?: string;
+    excludedShare?: number;
+    cidrCount?: number;
+    maxCompactRoutes?: number;
+  };
 };
 
 const inputSchema = z.object({
@@ -108,6 +168,21 @@ const isCidr = (value: string): boolean => {
     (version === 4 && prefix <= 32) || (version === 6 && prefix <= 128)
   );
 };
+
+const filterIpv4PrefixLength = (
+  cidrs: string[],
+  maxIpv4PrefixLength: number,
+): string[] =>
+  cidrs.filter((entry) => {
+    const [address, prefixRaw, extra] = entry.split("/");
+    if (!address || !prefixRaw || extra !== undefined || !/^\d{1,3}$/.test(prefixRaw)) {
+      return true;
+    }
+    if (isIP(address) !== 4) return true;
+    const prefix = Number(prefixRaw);
+    if (prefix > 32) return true;
+    return prefix <= maxIpv4PrefixLength;
+  });
 
 /**
  * Parse a single feed source into a raw rule payload based on its format.
@@ -254,6 +329,8 @@ export type RuleFeed = {
   sources: RuleSource[];
   /** Hand-picked ranges added after the exclusions; see `RULE_EXTRAS`. */
   extras?: RuleExtra[];
+  /** Compaction strategy applied after exclusion subtraction. */
+  compaction?: RuleCompactionOptions;
   pocApproved: boolean;
 };
 
@@ -272,13 +349,13 @@ export type RuleFeedSources = {
 };
 
 /**
- * itdoginfo/allow-domains publishes, weekly, the address space of the hosting
- * providers and services that are blocked or throttled in Russia as a whole.
- * iplist only knows the sites in its own catalogue, so a foreign site on a
- * Hetzner, DigitalOcean or OVH address it has never heard of went direct and
- * hit the block. Whole provider ranges close that gap for ~470 prefixes.
+ * itdoginfo/allow-domains publishes, weekly, the IPv4 and IPv6 address space of
+ * the hosting providers and services that are blocked or throttled in Russia as
+ * a whole. Including both families closes IPv6 leaks on dual-stack Wi-Fi
+ * (particularly Meta/Instagram's 42 IPv6 prefixes) while keeping route counts
+ * compact after RU-safe supernetting.
  */
-const ITDOG_SUBNETS = [
+const ITDOG_IPV4_NAMES = [
   "cloudflare",
   "cloudfront",
   "digitalocean",
@@ -290,61 +367,64 @@ const ITDOG_SUBNETS = [
   "telegram",
   "google_meet",
   "roblox",
-].map(
-  (name): RuleSource => ({
-    url: `https://raw.githubusercontent.com/itdoginfo/allow-domains/main/Subnets/IPv4/${name}.lst`,
-    format: "cidr-lines",
-  }),
-);
+] as const;
+
+const ITDOG_IPV6_NAMES = [
+  "cloudflare",
+  "cloudfront",
+  "digitalocean",
+  "hetzner",
+  "ovh",
+  "meta",
+  "twitter",
+  "discord",
+  "telegram",
+  "google_meet",
+] as const;
+
+const ITDOG_IPV4_SUBNETS: RuleSource[] = ITDOG_IPV4_NAMES.map((name) => ({
+  url: `https://raw.githubusercontent.com/itdoginfo/allow-domains/main/Subnets/IPv4/${name}.lst`,
+  format: "cidr-lines",
+}));
+
+const ITDOG_IPV6_SUBNETS: RuleSource[] = ITDOG_IPV6_NAMES.map((name) => ({
+  url: `https://raw.githubusercontent.com/itdoginfo/allow-domains/main/Subnets/IPv6/${name}.lst`,
+  format: "cidr-lines",
+}));
 
 /**
- * The sources every deployment gets out of the box, so a fresh install has a
- * working route profile without an operator pasting JSON: iplist, the
- * itdoginfo provider ranges and Re:filter domains for the blacklist, minus
- * Russian address space, plus the hand-picked `RULE_EXTRAS`. `RULE_FEEDS`
- * overrides this list entirely, extras included; `RULE_FEEDS=[]` opts out of
- * feeds.
+ * The sources every deployment gets out of the box:
+ *   - Re:filter `ipsum.lst` filtered to `/0`–`/24` subnets (covers 99.7%+ of
+ *     its IP volume without the ~9,700 isolated `/32` tail that blew up mobile
+ *     route tables);
+ *   - itdoginfo IPv4 (11 lists) and IPv6 (10 lists) provider & service ranges;
+ *   - Re:filter `domains_all.lst` (metadata only; WG routes on CIDRs);
+ *   - minus Russian IPv4 and IPv6 space from ipdeny.com;
+ *   - plus `RULE_EXTRAS` (Google/YouTube dual-stack, Anthropic, Wardogs).
+ *
+ * Compacted by default with `blocked_only` RU-safe supernetting (~780 routes
+ * total, 0% RU, 0% RFC1918/LAN, Apple & Valve SteamCache direct).
  */
 export const DEFAULT_RULE_FEEDS: RuleFeedSources[] = [
   {
     profile: "ru_blacklist",
     sources: [
-      // iplist rather than Re:filter's ipsum.lst: ipsum carries ~27k CIDRs,
-      // and a config that large does not survive the trip to Android's VPN
-      // service — the Messenger parcel lands around 2.7 MB against a 1 MB
-      // Binder limit, so the profile never connects at all. iplist covers the
-      // same services in ~3.6k aggregated prefixes.
       {
-        url: "https://iplist.opencck.org/?format=text&data=cidr4",
+        url: "https://github.com/1andrevich/Re-filter-lists/releases/latest/download/ipsum.lst",
         format: "cidr-lines",
+        maxIpv4PrefixLength: 24,
       },
-      // The same catalogue's IPv6 half. Without it a client whose ISP hands out
-      // IPv6 reached YouTube, Instagram or Cloudflare over IPv6 directly, past
-      // the tunnel and into the block. The nodes carry no IPv6, so these routes
-      // are a blackhole for the listed services: the client gives up on IPv6
-      // and falls back to IPv4, which the IPv4 half sends through the tunnel.
-      // Roll back by pinning the last version without IPv6 (`rules-activate`).
-      {
-        url: "https://iplist.opencck.org/?format=text&data=cidr6",
-        format: "cidr-lines",
-      },
-      ...ITDOG_SUBNETS,
+      ...ITDOG_IPV4_SUBNETS,
+      ...ITDOG_IPV6_SUBNETS,
       {
         url: "https://github.com/1andrevich/Re-filter-lists/releases/latest/download/domains_all.lst",
         format: "domain-lines",
       },
-      // iplist aggregates down to /7 and /8, and those blocks swallow ~1.4M
-      // Russian addresses: Yandex Cloud, Selectel and TimeWeb neighbours of a
-      // blocked site, and whole MTS and Beeline subscriber pools. Russian
-      // services increasingly refuse a foreign address, so anything hosted
-      // there broke under this profile. Russian space stays direct; the cost
-      // is that a blocked resource hosted inside Russia is not tunnelled.
       {
         url: "https://www.ipdeny.com/ipblocks/data/aggregated/ru-aggregated.zone",
         format: "cidr-lines",
         exclude: true,
       },
-      // Russian IPv6, for the same reason: iplist's IPv6 list carries Yandex.
       {
         url: "https://www.ipdeny.com/ipv6/ipaddresses/aggregated/ru-aggregated.zone",
         format: "cidr-lines",
@@ -356,6 +436,11 @@ export const DEFAULT_RULE_FEEDS: RuleFeedSources[] = [
 ];
 
 const RULE_FEED_FORMATS: RuleFeedFormat[] = ["json", "cidr-lines", "domain-lines"];
+const RULE_COMPACTION_MODES: RuleCompactionMode[] = [
+  "blocked_only",
+  "compact_world",
+  "lossless",
+];
 
 /**
  * A profile this worker no longer supports but operators may still have in
@@ -364,6 +449,59 @@ const RULE_FEED_FORMATS: RuleFeedFormat[] = ["json", "cidr-lines", "domain-lines
  */
 const REMOVED_RULE_PROFILE = "ru_whitelist";
 
+const parseBooleanEnv = (
+  env: Record<string, string | undefined>,
+  name: string,
+  defaultValue: boolean,
+): boolean => {
+  const raw = env[name]?.trim().toLowerCase();
+  if (!raw) return defaultValue;
+  if (raw === "true") return true;
+  if (raw === "false") return false;
+  throw new Error(`${name} must be "true" or "false", got "${env[name]}"`);
+};
+
+/**
+ * Resolve and validate the compaction settings from environment variables.
+ * Throws loudly on typos so a broken setting cannot silently change routing.
+ */
+export const resolveRuleCompactionOptions = (
+  env: Record<string, string | undefined>,
+  hasCustomFeeds = false,
+): RuleCompactionOptions => {
+  const modeRaw = env.RULE_COMPACTION_MODE?.trim();
+  const mode: RuleCompactionMode = modeRaw
+    ? (modeRaw as RuleCompactionMode)
+    : hasCustomFeeds
+      ? "lossless"
+      : "blocked_only";
+  if (!RULE_COMPACTION_MODES.includes(mode)) {
+    throw new Error(
+      `RULE_COMPACTION_MODE must be one of ${RULE_COMPACTION_MODES.join(", ")}, got "${modeRaw}"`,
+    );
+  }
+
+  const capRaw = env.RULE_COLLATERAL_CAP?.trim();
+  let collateralCap = DEFAULT_COLLATERAL_CAP;
+  if (capRaw) {
+    const parsed = Number(capRaw);
+    if (!Number.isFinite(parsed) || parsed < 0 || parsed > MAX_COLLATERAL_CAP) {
+      throw new Error(
+        `RULE_COLLATERAL_CAP must be a number in [0, ${MAX_COLLATERAL_CAP}], got "${capRaw}"`,
+      );
+    }
+    collateralCap = parsed;
+  }
+
+  return {
+    mode,
+    collateralCap,
+    directApple: parseBooleanEnv(env, "RULE_DIRECT_APPLE", true),
+    directSteamCache: parseBooleanEnv(env, "RULE_DIRECT_STEAM_CACHE", true),
+    maxCompactRoutes: MAX_COMPACT_ROUTES,
+  };
+};
+
 /**
  * Resolve the feeds to fetch from the environment, in priority order:
  *
@@ -371,17 +509,6 @@ const REMOVED_RULE_PROFILE = "ru_whitelist";
  *   2. `DEFAULT_RULE_FEEDS` — only when the operator configured nothing, so a
  *      fresh install fetches the built-in blacklist feeds without any
  *      configuration at all.
- *
- * `RULE_FEEDS=[]` is a deliberate "no feeds": it counts as configuration, so it
- * opts out of the defaults instead of being treated as an absent value. A
- * malformed `RULE_FEEDS` throws rather than falling back — a typo in the
- * operator's own configuration must be visible, not silently replaced.
- *
- * The one exception is `REMOVED_RULE_PROFILE`, which is skipped with a warning
- * rather than refused: it was valid configuration before the profile was
- * removed, and a host still carrying it must survive the upgrade. Skipping it
- * still counts as configuration, so a `RULE_FEEDS` that named only that
- * profile ends up with no feeds rather than quietly gaining the defaults.
  */
 export const resolveRuleFeeds = (
   env: Record<string, string | undefined>,
@@ -402,12 +529,6 @@ export const resolveRuleFeeds = (
     if (!Array.isArray(parsed)) throw new Error("RULE_FEEDS must be an array");
     for (const entry of parsed as Array<Record<string, unknown>>) {
       const profile = entry.profile;
-      // `ru_whitelist` was a real profile until it was removed. Hosts upgrading
-      // across that removal still carry it in their own RULE_FEEDS, and
-      // throwing here would crash-loop the worker on a configuration that was
-      // valid when it was written - taking rule updates, reconcile and every
-      // queued job down with it. Skip it loudly instead; a genuinely unknown
-      // profile is still a typo worth refusing to start on.
       if (profile === REMOVED_RULE_PROFILE) {
         console.warn(
           `RULE_FEEDS still lists the removed "${REMOVED_RULE_PROFILE}" profile; ignoring that entry. Drop it from RULE_FEEDS to silence this.`,
@@ -417,10 +538,8 @@ export const resolveRuleFeeds = (
       if (profile !== "ru_blacklist") {
         throw new Error(`RULE_FEEDS has an invalid profile: ${String(profile)}`);
       }
-      // A malformed `exclude` is refused, not filtered out with the other bad
-      // sources: dropping it would ship the list with the address space it
-      // was meant to keep direct, and nothing would say so.
-      const badExclude = (entry.sources as RuleSource[] | undefined)?.find(
+      const rawSources = entry.sources as Array<Record<string, unknown>> | undefined;
+      const badExclude = rawSources?.find(
         (source) =>
           source?.exclude !== undefined && typeof source.exclude !== "boolean",
       );
@@ -429,12 +548,24 @@ export const resolveRuleFeeds = (
           `RULE_FEEDS entry for ${profile} has a non-boolean "exclude" on ${String(badExclude.url)}`,
         );
       }
-      const sources = (entry.sources as RuleSource[] | undefined)?.filter(
+      const badMaxPrefix = rawSources?.find(
+        (source) =>
+          source?.maxIpv4PrefixLength !== undefined &&
+          (typeof source.maxIpv4PrefixLength !== "number" ||
+            !Number.isInteger(source.maxIpv4PrefixLength) ||
+            source.maxIpv4PrefixLength < 0 ||
+            source.maxIpv4PrefixLength > 32),
+      );
+      if (badMaxPrefix) {
+        throw new Error(
+          `RULE_FEEDS entry for ${profile} has an invalid "maxIpv4PrefixLength" on ${String(badMaxPrefix.url)}`,
+        );
+      }
+      const sources = (rawSources as RuleSource[] | undefined)?.filter(
         (source) =>
           typeof source?.url === "string" &&
           RULE_FEED_FORMATS.includes(source?.format),
       );
-      // Exclusions alone describe nothing to route.
       if (!sources?.some((source) => !source.exclude)) {
         throw new Error(`RULE_FEEDS entry for ${profile} has no valid sources`);
       }
@@ -442,48 +573,47 @@ export const resolveRuleFeeds = (
     }
   }
 
+  const compaction = resolveRuleCompactionOptions(env, configured);
   const resolved = configured ? feeds : DEFAULT_RULE_FEEDS;
-  // Copy the sources: the defaults are a module-level constant, and handing out
-  // the same array would let any caller's mutation corrupt every later call.
   return resolved.map((feed) => ({
     profile: feed.profile,
     sources: feed.sources.map((source) => ({ ...source })),
     extras: (feed.extras ?? []).map((extra) => ({ ...extra, cidrs: [...extra.cidrs] })),
+    compaction: { ...compaction },
     pocApproved: isProfileApproved(feed.profile),
   }));
 };
 
 /**
- * Shape a validated payload's CIDRs into the list that gets published: the
- * `exclude` sources' address space taken out, and the rest compacted to the
- * fewest prefixes that cover it (see `subtractCidrs` for why every route
- * counts).
+ * Shape a validated payload's CIDRs into the list that gets published:
  *
- * Runs after validation so the invalid-entry ratio is judged on what the feeds
- * actually sent, not on a list an exclusion has already thinned. An invalid
- * payload passes through untouched: it is quarantined either way.
- *
- * `extras` join after the exclusion: a range someone added by hand is a
- * deliberate choice that a GeoIP list must not cut into. They do not count
- * toward the excluded share, which measures what the feeds lost.
+ *   1. Subtract `exclude` sources (Russian GeoIP) and reject if the exclusion
+ *      removes more than 10% of the included address space (`exclusion_too_broad`).
+ *   2. Merge hand-picked `extras` after exclusion.
+ *   3. Apply the configured compaction mode (`blocked_only`, `compact_world`,
+ *      or `lossless`), enforcing hard zero-overlap invariants against RU space
+ *      and RFC1918/LAN/bogons plus the compact route ceiling.
  */
 export const compactRoutes = (
   validation: ValidRulePayload | InvalidRulePayload,
   excluded: string[],
   extras: string[] = [],
+  compaction?: RuleCompactionOptions,
 ): ValidRulePayload | InvalidRulePayload => {
   if (!validation.ok) return validation;
   const { cidrs: trimmed, touched, removedShare } = subtractCidrs(
     validation.payload.cidrs,
     excluded,
   );
-  const cidrs =
+  const losslessCidrs =
     extras.length > 0 ? subtractCidrs([...trimmed, ...extras], []).cidrs : trimmed;
-  const payload = { cidrs: [...cidrs].sort(), domains: validation.payload.domains };
   if (Math.max(removedShare[4], removedShare[6]) > MAX_EXCLUDED_SHARE) {
     return {
       ok: false,
-      payload,
+      payload: {
+        cidrs: [...losslessCidrs].sort(),
+        domains: validation.payload.domains,
+      },
       report: {
         invalidEntries: [],
         reason: "exclusion_too_broad",
@@ -491,12 +621,174 @@ export const compactRoutes = (
       },
     };
   }
+
+  const mode: RuleCompactionMode = compaction?.mode ?? "lossless";
+  if (mode === "lossless") {
+    const sorted = [...losslessCidrs].sort();
+    const byFamily = splitCidrsByFamily(sorted);
+    return {
+      ok: true,
+      payload: { cidrs: sorted, domains: validation.payload.domains },
+      report: {
+        ...validation.report,
+        cidrCount: sorted.length,
+        ipv4Count: byFamily[4].length,
+        ipv6Count: byFamily[6].length,
+        ...(compaction ? { compactionMode: "lossless" as const } : {}),
+        ...(touched > 0 ? { excludedPrefixes: touched } : {}),
+      },
+    };
+  }
+
+  const directShieldNames: string[] = [];
+  const directShieldCidrs: string[] = [];
+  if (compaction?.directApple !== false) {
+    directShieldNames.push("apple");
+    directShieldCidrs.push(...APPLE_DIRECT_V4_CIDRS);
+  }
+  if (compaction?.directSteamCache !== false) {
+    directShieldNames.push("steam-cache");
+    directShieldCidrs.push(...STEAM_CACHE_V4_CIDRS);
+  }
+
+  const bogons = [...BOGON_V4_CIDRS, ...BOGON_V6_CIDRS];
+  // Hand-picked extras are deliberate inclusions; keep forbidden shields clear
+  // of them while still protecting RU space, LAN/bogons, and direct shields.
+  const effectiveExcluded =
+    extras.length > 0 ? subtractCidrs(excluded, extras).cidrs : excluded;
+  const effectiveBogons =
+    extras.length > 0 ? subtractCidrs(bogons, extras).cidrs : bogons;
+  const effectiveDirectShields =
+    extras.length > 0
+      ? subtractCidrs(directShieldCidrs, extras).cidrs
+      : directShieldCidrs;
+  const forbidden = [
+    ...effectiveExcluded,
+    ...effectiveBogons,
+    ...effectiveDirectShields,
+  ];
+
+  let finalCidrs: string[];
+  let collateralNonRuShare: number;
+
+  if (mode === "blocked_only") {
+    const result = supernetCidrsSafely(losslessCidrs, forbidden, {
+      maxExtraShare: { 4: compaction?.collateralCap ?? DEFAULT_COLLATERAL_CAP },
+    });
+    finalCidrs = [...result.cidrs].sort();
+    collateralNonRuShare = result.collateralShare[4];
+  } else {
+    // `compact_world` requires an exclusion feed (e.g. Russian GeoIP), otherwise
+    // taking the complement would turn the profile into an unintended full tunnel.
+    if (effectiveExcluded.length === 0) {
+      return {
+        ok: false,
+        payload: { cidrs: [], domains: validation.payload.domains },
+        report: {
+          invalidEntries: [],
+          reason: "compact_world_requires_exclusions",
+        },
+      };
+    }
+    const protectedCore = subtractCidrs(losslessCidrs, forbidden).cidrs;
+    // Cap RU expansion at /8 (IPv4) and /8 (IPv6) so a sparse protected list
+    // can never let one Russian prefix swallow half of the address space while
+    // still letting IPv6 Regional Registry /12 blocks compact cleanly (~77 v6).
+    const expanded = expandExclusionsSafely(effectiveExcluded, protectedCore, {
+      minCollapsePrefix: { 4: 8, 6: 8 },
+    });
+    const expandedByFamily = splitCidrsByFamily(expanded.cidrs);
+    const shieldV4 = [
+      ...expandedByFamily[4],
+      ...splitCidrsByFamily(effectiveBogons)[4],
+      ...splitCidrsByFamily(effectiveDirectShields)[4],
+    ];
+    const worldV4 = complementCidrs(shieldV4, 4);
+    const worldV6 =
+      expandedByFamily[6].length > 0
+        ? complementCidrs(
+            [...expandedByFamily[6], ...splitCidrsByFamily(effectiveBogons)[6]],
+            6,
+          )
+        : supernetCidrsSafely(
+            splitCidrsByFamily(protectedCore)[6],
+            splitCidrsByFamily(effectiveBogons)[6],
+          ).cidrs;
+    finalCidrs = [...worldV4, ...worldV6].sort();
+
+    const nonRuPubV4 = measureCidrSpace(
+      complementCidrs(
+        [...splitCidrsByFamily(effectiveExcluded)[4], ...BOGON_V4_CIDRS],
+        4,
+      ),
+    )[4];
+    const routedV4 = measureCidrSpace(worldV4)[4];
+    const baseV4 = measureCidrSpace(
+      splitCidrsByFamily(protectedCore)[4],
+    )[4];
+    const extraV4 = routedV4 > baseV4 ? routedV4 - baseV4 : 0n;
+    collateralNonRuShare =
+      nonRuPubV4 === 0n
+        ? 0
+        : Number((extraV4 * 100_000n) / nonRuPubV4) / 100_000;
+  }
+
+  // Hard post-compaction safety invariants: quarantine if any invariant fails.
+  const ruOverlap = countCidrOverlap(finalCidrs, effectiveExcluded);
+  if (ruOverlap[4] > 0n || ruOverlap[6] > 0n) {
+    return {
+      ok: false,
+      payload: { cidrs: finalCidrs, domains: validation.payload.domains },
+      report: { invalidEntries: [], reason: "ru_overlap_violation" },
+    };
+  }
+  const bogonOverlap = countCidrOverlap(finalCidrs, effectiveBogons);
+  if (bogonOverlap[4] > 0n || bogonOverlap[6] > 0n) {
+    return {
+      ok: false,
+      payload: { cidrs: finalCidrs, domains: validation.payload.domains },
+      report: { invalidEntries: [], reason: "bogon_overlap_violation" },
+    };
+  }
+  if (extras.length > 0) {
+    const missed = measureCidrSpace(subtractCidrs(extras, finalCidrs).cidrs);
+    if (missed[4] > 0n || missed[6] > 0n) {
+      return {
+        ok: false,
+        payload: { cidrs: finalCidrs, domains: validation.payload.domains },
+        report: { invalidEntries: [], reason: "core_coverage_violation" },
+      };
+    }
+  }
+  const maxCompactRoutes = compaction?.maxCompactRoutes ?? MAX_COMPACT_ROUTES;
+  if (finalCidrs.length > maxCompactRoutes) {
+    return {
+      ok: false,
+      payload: { cidrs: finalCidrs, domains: validation.payload.domains },
+      report: {
+        invalidEntries: [],
+        reason: "route_budget_exceeded",
+        cidrCount: finalCidrs.length,
+        maxCompactRoutes,
+      },
+    };
+  }
+
+  const byFamily = splitCidrsByFamily(finalCidrs);
   return {
     ok: true,
-    payload,
+    payload: { cidrs: finalCidrs, domains: validation.payload.domains },
     report: {
       ...validation.report,
-      cidrCount: payload.cidrs.length,
+      cidrCount: finalCidrs.length,
+      ipv4Count: byFamily[4].length,
+      ipv6Count: byFamily[6].length,
+      losslessCidrCount: losslessCidrs.length,
+      compactionMode: mode,
+      collateralNonRuShare,
+      ruOverlap: 0,
+      bogonOverlap: 0,
+      directShields: directShieldNames,
       ...(touched > 0 ? { excludedPrefixes: touched } : {}),
     },
   };
@@ -518,7 +810,7 @@ export const createRuleFetcher = ({
   fetchImpl = fetch,
   now = () => new Date(),
 }: RuleFetcherOptions) => async (): Promise<void> => {
-  const { profile, sources, extras = [], pocApproved } = feed;
+  const { profile, sources, extras = [], compaction, pocApproved } = feed;
   const lastKnownGood = await repository.getLastKnownGoodRule(profile);
 
   // Extras live in code, so a bad prefix is a bug, not feed noise: refuse the
@@ -530,9 +822,6 @@ export const createRuleFetcher = ({
     }
   }
 
-  // Fetch and parse every source, merging them into one payload. The version
-  // is a stable checksum of the merged, canonical payload so unchanged feeds
-  // are skipped even across multiple sources.
   const parsed: RulePayload[] = [];
   const excluded: string[] = [];
   let firstEtag: string | null = null;
@@ -546,7 +835,14 @@ export const createRuleFetcher = ({
       );
     }
     firstEtag ??= response.headers.get("etag");
-    const payload = parseRuleSource(await readBoundedResponse(response), source.format);
+    const rawPayload = parseRuleSource(await readBoundedResponse(response), source.format);
+    const payload: RulePayload =
+      source.maxIpv4PrefixLength !== undefined
+        ? {
+            cidrs: filterIpv4PrefixLength(rawPayload.cidrs, source.maxIpv4PrefixLength),
+            domains: rawPayload.domains,
+          }
+        : rawPayload;
     if (!source.exclude) {
       parsed.push(payload);
       continue;
@@ -566,6 +862,7 @@ export const createRuleFetcher = ({
     validateRuleObject(mergeRulePayloads(parsed)),
     excluded,
     extraCidrs,
+    compaction,
   );
   const validation =
     compacted.ok && extras.length > 0
@@ -603,10 +900,6 @@ export const createRuleFetcher = ({
     });
     return;
   }
-  // An admin pinned this profile to a version of their choosing. Keep
-  // fetching, keep recording what the feed now says, but do not publish it:
-  // the panel shows the newer version next to the pinned one and the admin
-  // decides. Idempotent across ticks — the insert conflicts on the second.
   if (lastKnownGood?.pinned) {
     await repository.storeUnpublishedRule({
       ...baseInput,

@@ -2,14 +2,25 @@ import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import { RULE_EXTRAS } from "./ruleExtras.js";
 import {
+  compactRoutes,
   createRuleFetcher,
+  DEFAULT_COLLATERAL_CAP,
   DEFAULT_RULE_FEEDS,
+  MAX_COMPACT_ROUTES,
   mergeRulePayloads,
   parseRuleSource,
+  resolveRuleCompactionOptions,
   resolveRuleFeeds,
+  validateRuleObject,
   validateRulePayload,
   type RuleRepository,
 } from "./rules.js";
+import {
+  APPLE_DIRECT_V4_CIDRS,
+  BOGON_V4_CIDRS,
+  STEAM_CACHE_V4_CIDRS,
+  countCidrOverlap,
+} from "./cidrSet.js";
 
 const stableChecksum = (payload: {
   cidrs: string[];
@@ -556,6 +567,13 @@ describe("resolveRuleFeeds", () => {
         profile: "ru_blacklist",
         sources: [{ url: "https://example.com/a.lst", format: "cidr-lines" }],
         extras: [],
+        compaction: {
+          mode: "lossless",
+          collateralCap: DEFAULT_COLLATERAL_CAP,
+          directApple: true,
+          directSteamCache: true,
+          maxCompactRoutes: MAX_COMPACT_ROUTES,
+        },
         pocApproved: true,
       },
     ]);
@@ -589,13 +607,70 @@ describe("resolveRuleFeeds", () => {
     ]);
   });
 
-  it("routes the blocked catalogue over IPv6 as well as IPv4", () => {
-    // Without the IPv6 half a client with an IPv6 ISP reached the listed
-    // services directly over IPv6, past the tunnel and into the block.
+  it("routes blocked providers over both IPv4 and IPv6 with /24 cap on ipsum.lst", () => {
     const [feed] = resolveRuleFeeds({}, approveAll);
-    const urls = feed?.sources.filter((source) => !source.exclude).map((s) => s.url);
-    expect(urls).toContain("https://iplist.opencck.org/?format=text&data=cidr4");
-    expect(urls).toContain("https://iplist.opencck.org/?format=text&data=cidr6");
+    const included = feed?.sources.filter((source) => !source.exclude) ?? [];
+    const ipsum = included.find((s) => s.url.endsWith("/ipsum.lst"));
+    expect(ipsum?.maxIpv4PrefixLength).toBe(24);
+    expect(included.some((s) => s.url.includes("/Subnets/IPv4/meta.lst"))).toBe(true);
+    expect(included.some((s) => s.url.includes("/Subnets/IPv6/meta.lst"))).toBe(true);
+    expect(included.some((s) => s.url.includes("/Subnets/IPv6/cloudflare.lst"))).toBe(true);
+    expect(feed?.compaction?.mode).toBe("blocked_only");
+  });
+
+  it("validates RULE_COMPACTION_MODE, RULE_COLLATERAL_CAP and direct shield flags", () => {
+    expect(resolveRuleCompactionOptions({}, false)).toEqual({
+      mode: "blocked_only",
+      collateralCap: DEFAULT_COLLATERAL_CAP,
+      directApple: true,
+      directSteamCache: true,
+      maxCompactRoutes: MAX_COMPACT_ROUTES,
+    });
+    expect(resolveRuleCompactionOptions({}, true).mode).toBe("lossless");
+    expect(
+      resolveRuleCompactionOptions(
+        {
+          RULE_COMPACTION_MODE: "compact_world",
+          RULE_COLLATERAL_CAP: "0.01",
+          RULE_DIRECT_APPLE: "false",
+          RULE_DIRECT_STEAM_CACHE: "false",
+        },
+        false,
+      ),
+    ).toMatchObject({
+      mode: "compact_world",
+      collateralCap: 0.01,
+      directApple: false,
+      directSteamCache: false,
+    });
+    expect(() =>
+      resolveRuleCompactionOptions({ RULE_COMPACTION_MODE: "unknown" }, false),
+    ).toThrow("RULE_COMPACTION_MODE");
+    expect(() =>
+      resolveRuleCompactionOptions({ RULE_COLLATERAL_CAP: "0.9" }, false),
+    ).toThrow("RULE_COLLATERAL_CAP");
+    expect(() =>
+      resolveRuleCompactionOptions({ RULE_DIRECT_APPLE: "yes" }, false),
+    ).toThrow("RULE_DIRECT_APPLE");
+    expect(() =>
+      resolveRuleFeeds(
+        {
+          RULE_FEEDS: JSON.stringify([
+            {
+              profile: "ru_blacklist",
+              sources: [
+                {
+                  url: "https://example.com/a.lst",
+                  format: "cidr-lines",
+                  maxIpv4PrefixLength: 64,
+                },
+              ],
+            },
+          ]),
+        },
+        approveAll,
+      ),
+    ).toThrow("maxIpv4PrefixLength");
   });
 
   it("accepts an exclude source in RULE_FEEDS but not a feed of exclusions alone", () => {
@@ -681,5 +756,138 @@ describe("resolveRuleFeeds", () => {
 
     expect(RULE_EXTRAS).toEqual(expected);
     expect(resolveRuleFeeds({}, approveAll)[0]?.extras).toEqual(expected);
+  });
+});
+
+describe("compactRoutes compaction modes", () => {
+  it("applies maxIpv4PrefixLength when ingesting cidr-lines while keeping IPv6 intact", async () => {
+    const repository: RuleRepository = {
+      getLastKnownGoodRule: vi.fn(() => Promise.resolve(null)),
+      storeQuarantinedRule: vi.fn(() => Promise.resolve()),
+      storeUnpublishedRule: vi.fn(() => Promise.resolve()),
+      activateRuleVersion: vi.fn(() => Promise.resolve()),
+    };
+    const fetchImpl = vi.fn<typeof fetch>(() =>
+      Promise.resolve(
+        new Response(
+          "104.16.0.0/24\n104.16.5.7/32\n104.16.6.0/25\n2a03:2880::/48\n",
+        ),
+      ),
+    );
+    await createRuleFetcher({
+      repository,
+      feed: {
+        profile: "ru_blacklist",
+        sources: [
+          {
+            url: "https://feed.example/ipsum.lst",
+            format: "cidr-lines",
+            maxIpv4PrefixLength: 24,
+          },
+        ],
+        pocApproved: true,
+      },
+      fetchImpl,
+    })();
+
+    const activated = vi.mocked(repository.activateRuleVersion).mock.calls[0]?.[0];
+    expect(activated?.payload.cidrs).toEqual(["104.16.0.0/24", "2a03:2880::/48"]);
+  });
+
+  it("compacts blocked_only safely without overlapping RU, bogons, Apple, or SteamCache", () => {
+    const validation = validateRuleObject({
+      cidrs: [
+        "104.16.0.0/24",
+        "104.16.2.0/24",
+        "17.0.0.0/24",
+        "155.133.248.0/24",
+        "192.168.1.0/24",
+        "2a03:2880::/36",
+        "2a03:2880:f000::/36",
+      ],
+      domains: [],
+    });
+    const ru = ["5.255.255.0/24", "2a02:6b8::/32"];
+    const result = compactRoutes(validation, ru, ["160.79.104.0/23"], {
+      mode: "blocked_only",
+      collateralCap: 0.005,
+      directApple: true,
+      directSteamCache: true,
+      maxCompactRoutes: 2800,
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.payload.cidrs).toContain("104.16.0.0/22");
+    expect(result.payload.cidrs).toContain("160.79.104.0/23");
+    expect(result.payload.cidrs).toContain("2a03:2880::/32");
+    expect(countCidrOverlap(result.payload.cidrs, ru)).toEqual({ 4: 0n, 6: 0n });
+    expect(countCidrOverlap(result.payload.cidrs, BOGON_V4_CIDRS)[4]).toBe(0n);
+    expect(countCidrOverlap(result.payload.cidrs, APPLE_DIRECT_V4_CIDRS)[4]).toBe(0n);
+    expect(countCidrOverlap(result.payload.cidrs, STEAM_CACHE_V4_CIDRS)[4]).toBe(0n);
+    expect(result.report).toMatchObject({
+      compactionMode: "blocked_only",
+      ruOverlap: 0,
+      bogonOverlap: 0,
+      directShields: ["apple", "steam-cache"],
+    });
+  });
+
+  it("builds compact_world complement keeping RU, bogons, Apple, and SteamCache direct", () => {
+    const validation = validateRuleObject({
+      cidrs: ["157.240.0.0/16", "2a03:2880::/32"],
+      domains: [],
+    });
+    const ru = ["5.255.255.0/24", "77.88.55.0/24", "2a02:6b8::/32"];
+    const result = compactRoutes(validation, ru, ["160.79.104.0/23"], {
+      mode: "compact_world",
+      collateralCap: 0.005,
+      directApple: true,
+      directSteamCache: true,
+      maxCompactRoutes: 2800,
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(countCidrOverlap(result.payload.cidrs, ru)).toEqual({ 4: 0n, 6: 0n });
+    expect(countCidrOverlap(result.payload.cidrs, BOGON_V4_CIDRS)[4]).toBe(0n);
+    expect(countCidrOverlap(result.payload.cidrs, APPLE_DIRECT_V4_CIDRS)[4]).toBe(0n);
+    expect(countCidrOverlap(result.payload.cidrs, STEAM_CACHE_V4_CIDRS)[4]).toBe(0n);
+    // Akamai (Steam Store / Community) and Meta stay routed through the tunnel.
+    expect(countCidrOverlap(result.payload.cidrs, ["23.220.114.106/32"])[4]).toBe(1n);
+    expect(countCidrOverlap(result.payload.cidrs, ["157.240.0.0/16"])[4]).toBe(65536n);
+    expect(result.report.compactionMode).toBe("compact_world");
+  });
+
+  it("quarantines compact_world when no exclusions are supplied", () => {
+    const validation = validateRuleObject({ cidrs: ["157.240.0.0/16"], domains: [] });
+    const result = compactRoutes(validation, [], [], {
+      mode: "compact_world",
+      collateralCap: 0.005,
+      directApple: true,
+      directSteamCache: true,
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.report.reason).toBe("compact_world_requires_exclusions");
+    }
+  });
+
+  it("quarantines a compacted version when it exceeds maxCompactRoutes", () => {
+    const validation = validateRuleObject({
+      cidrs: ["104.16.0.0/24", "157.240.0.0/24", "142.250.0.0/24"],
+      domains: [],
+    });
+    const result = compactRoutes(validation, ["5.255.255.0/24"], [], {
+      mode: "blocked_only",
+      collateralCap: 0,
+      directApple: true,
+      directSteamCache: true,
+      maxCompactRoutes: 2,
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.report.reason).toBe("route_budget_exceeded");
+    }
   });
 });

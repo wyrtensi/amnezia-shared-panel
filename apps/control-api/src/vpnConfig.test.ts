@@ -146,6 +146,30 @@ describe("vpn config extraction and split tunneling", () => {
     expect(conf).not.toContain("0.0.0.0/0");
   });
 
+  it("appends /128 for IPv6 DNS servers and /32 for IPv4 DNS servers", () => {
+    const originalConfig =
+      "[Interface]\nPrivateKey = x\n\n[Peer]\nAllowedIPs = 0.0.0.0/0, ::/0\n";
+    const vpnLink = encode({
+      dns1: "1.1.1.1",
+      dns2: "2606:4700:4700::1111",
+      containers: [
+        {
+          container: "amnezia-awg",
+          awg: { last_config: JSON.stringify({ config: originalConfig }) },
+        },
+      ],
+    });
+
+    const modified = applyRouteProfileToVpnLink(vpnLink, "ru_blacklist", {
+      cidrs: ["198.51.100.0/24"],
+    });
+
+    const conf = extractConfFromVpnLink(modified);
+    expect(conf).toContain(
+      "AllowedIPs = 198.51.100.0/24, 1.1.1.1/32, 2606:4700:4700::1111/128",
+    );
+  });
+
   it("keeps the full tunnel when a profile payload carries no CIDRs", () => {
     // A feed that failed to fetch has nothing AllowedIPs can express.
     // Applying such a payload would leave the peer routing its DNS servers and

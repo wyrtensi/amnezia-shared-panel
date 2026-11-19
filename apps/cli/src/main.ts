@@ -2386,6 +2386,12 @@ type RuleVersionView = {
   status: string;
   cidrCount: number;
   domainCount: number;
+  validationReport?: {
+    ipv4Count?: number;
+    ipv6Count?: number;
+    compactionMode?: string;
+    reason?: string;
+  } | null;
   publishedAt: string | null;
   pinnedAt: string | null;
   createdAt: string;
@@ -2456,8 +2462,18 @@ async function cmdRules(args: string[]): Promise<void> {
       const marks = [row.status, row.pinnedAt ? "pinned" : null]
         .filter(Boolean)
         .join(", ");
+      const reportParts = [
+        typeof row.validationReport?.ipv4Count === "number"
+          ? `${row.validationReport.ipv4Count} v4`
+          : null,
+        typeof row.validationReport?.ipv6Count === "number"
+          ? `${row.validationReport.ipv6Count} v6`
+          : null,
+        row.validationReport?.compactionMode ?? null,
+      ].filter(Boolean);
+      const breakdown = reportParts.length > 0 ? ` (${reportParts.join(", ")})` : "";
       console.log(
-        `  ${row.version.slice(0, 20)}  ${marks.padEnd(20)} cidr ${row.cidrCount}, domains ${row.domainCount}`,
+        `  ${row.version.slice(0, 20)}  ${marks.padEnd(20)} cidr ${row.cidrCount}${breakdown}, domains ${row.domainCount}`,
       );
       console.log(
         `    id ${row.id}  from ${ruleSourceCell(row.sourceUrl)}  fetched ${row.createdAt}  published ${row.publishedAt ?? "-"}`,

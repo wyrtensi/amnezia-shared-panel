@@ -1,4 +1,5 @@
 import type { GlobalRouteProfile } from "@amnezia/contracts";
+import { subtractCidrsPreservingUntouched } from "@amnezia/vpn-config";
 import type { RulePayload, TunnelRoutes } from "./vpnConfig.js";
 
 export type RouteExtras = {
@@ -9,7 +10,9 @@ export type RouteExtras = {
  * Build the address list actually exported for a key, in this order:
  *
  *   1. the active feed payload's CIDRs for the profile;
- *   2. minus the admin's global exclusions (exact match);
+ *   2. minus the admin's global exclusions (real CIDR subtraction, so an
+ *      excluded `/24` or bare IP punches a hole out of an enclosing supernet
+ *      while leaving untouched prefixes verbatim);
  *   3. plus the admin's global additions;
  *   4. plus the owner's own custom routes.
  *
@@ -27,11 +30,14 @@ export const mergeRoutePayload = (input: {
   global?: GlobalRouteProfile | null;
   userExtra?: RouteExtras;
 }): TunnelRoutes => {
-  const excludedCidrs = new Set(input.global?.exclude.cidrs ?? []);
+  const excludedRaw = input.global?.exclude.cidrs ?? [];
 
-  const cidrs = new Set(
-    input.base.cidrs.filter((cidr) => !excludedCidrs.has(cidr)),
-  );
+  const afterExclude =
+    excludedRaw.length === 0
+      ? input.base.cidrs
+      : subtractCidrsPreservingUntouched(input.base.cidrs, excludedRaw);
+
+  const cidrs = new Set(afterExclude);
 
   for (const cidr of input.global?.add.cidrs ?? []) cidrs.add(cidr);
   for (const cidr of input.userExtra?.cidrs ?? []) cidrs.add(cidr);
