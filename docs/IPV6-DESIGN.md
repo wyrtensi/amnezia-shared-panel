@@ -1,182 +1,329 @@
-# IPv6 on nodes and in the panel — possible implementation
+# IPv6 in the panel and AWG 3.1 nodes — possible implementation plan
 
-Status: **design draft, not approved for implementation.** Written on
-2026-10-10 as a possible implementation. Nothing below is built; nodes and the
-panel are IPv4-only today.
+Status: **plan for a possible implementation as of 10.10.2026; not a shipped feature**.
+This document records a proposed implementation, its compatibility requirements
+and implementation order as of that date. It does not authorize a production
+rollout.
 
-Related:
+## Scope and delivery
 
-- [PR #140](https://github.com/wyrtensi/amnezia-shared-panel/pull/140), shipped
-  in v0.9.64: adds iplist's IPv6 list (minus Russian IPv6 from ipdeny) to the
-  built-in `ru_blacklist` feed. On today's IPv4-only nodes those routes are a
-  blackhole that forces clients onto IPv4 through the tunnel; with Part A
-  below they would carry traffic. Parked at first, then merged after a
-  Windows user with ISP IPv6 was found reaching YouTube over IPv6 past the
-  tunnel. Measured 2026-10-10: 4,587 routes (3,777 IPv4 + 810 IPv6). Rollback
-  in [`DEPLOY-UPDATE.md`](./DEPLOY-UPDATE.md).
-- The 2026-09-03 decision to keep node addresses IPv4-only, which Part B would
-  supersede.
+If implemented, complete both parts before a release or production code deployment:
 
-## Goal
+- **A: IPv6 inside the tunnel.** A qualified client uses an assigned IPv6
+  address through an AWG 3.1 node with verified IPv6 egress. Keep the existing
+  IPv4 endpoint, keys, IPv4 addresses, MTU and protocol geometry.
+- **B: IPv6 endpoint transport.** A client reaches a new or fully empty node
+  using an IPv6 literal. This requires separate client compatibility,
+  explicit opt-in, external IPv6 connectivity and a verified MTU budget.
 
-Two independent parts, in this order:
+Part A does not require Part B to be enabled on a node. IPv6 remains optional
+for every node and client; adding the feature must not require the whole
+fleet to acquire IPv6. Keep AWG 2.0 and existing legacy IPv4 peers working.
+New protocol features target AWG 3.1.
 
-- **A. IPv6 inside the tunnel.** A client gets an IPv6 address in the VPN and
-  its IPv6 traffic leaves through the node. The IPv6 routes from #140 then
-  carry traffic instead of being a blackhole.
-- **B. IPv6 node endpoint.** A client reaches the node over IPv6 (IPv6-only or
-  CGNAT'd IPv4 networks).
+Do not publish intermediate panel or agent releases or deploy production code
+until A, B, Control API, worker, node-agent, infrastructure, CLI, UI and the
+release gates below are complete. Host OS IPv6 configuration is a separate
+operation and does not prove that VPN IPv6 works. Test in an isolated Linux
+lab. A production container restart needs separate operator approval;
+never turn an IPv6 operation into an automatic VPN restart.
 
-## Hard constraint
+## Why IPv6 must not be added to every configuration
 
-**IPv4-only nodes must not change.** Without the opt-in flag a node runs the
-same compose files, entrypoint, NAT rules and client configs, byte for byte.
-A failure in the IPv6 setup must never take the IPv4 path down with it.
+Treat three independent fields separately:
 
-## Decisions taken (operator, 2026-10-10)
+- `Address` assigns an address inside the tunnel.
+- Client-side `AllowedIPs` selects traffic to route through the tunnel.
+- `Endpoint` selects the outer network transport used to reach the node.
 
-| Question | Decision |
+Adding a usable-looking IPv6 `Address` without working node egress can change
+address selection and leave requests waiting on a broken IPv6 path.
+An IPv6-only `Endpoint` can prevent the entire VPN from connecting on an
+IPv4-only client network. Unsupported parsers can also reject dual addresses.
+Do not promise that every OS or application will fall back to IPv4 promptly.
+
+| Node and client situation | Required behavior |
 |---|---|
-| Order | Both parts, A first |
-| Addressing in the tunnel | ULA + NAT66, mirroring today's `10.90.0.0/22` + MASQUERADE. A provider's /64 typically cannot be routed to the host by the operator, and per-client public addresses are not wanted |
-| Which clients get IPv6 | Phones (AmneziaVPN Android/iOS) and every `.conf` (AmneziaWG apps on any OS). Desktop AmneziaVPN stays IPv4 (see below) |
-| How a node opts in | Explicitly at deploy time, in the node `.env`, with a preflight check that the host has working IPv6. The node reports the state to the panel |
-| Existing keys on a node that opts in | Get IPv6 server-side immediately; devices pick it up on their next config download. No reissue |
-| Protocol | AWG 3.1 only (AGENTS.md: no new awg2-only capabilities; awg2 and legacy v1 stay IPv4) |
+| IPv6 is not requested, including on a node without IPv6 | Keep the existing IPv4 configuration and node eligibility. No IPv6 prerequisites or additional probes. |
+| Host has IPv6 but the feature was not enabled | Keep IPv4 behavior. Detecting a host address must not enable the feature. |
+| Node has verified IPv6 egress; client network is IPv4-only | Part A can carry inner IPv6 over the unchanged IPv4 endpoint on a qualified client. Native IPv6 at the client ISP is not required for this transport. |
+| Node is ready but the client or backend is unqualified | Keep its compatible IPv4 export. A file extension does not prove client compatibility. |
+| IPv6 observation is missing, stale, failed or from an old agent | Do not add an unconfirmed IPv6 address to a fresh export. Keep the existing IPv4 path operational. |
+| Node uses an IPv6-only endpoint; client network has no IPv6 | The VPN cannot connect through that endpoint. Require explicit transport opt-in; do not offer it to legacy/default requests. Removing an inner IPv6 address cannot fix outer reachability. |
 
-## Client compatibility (AmneziaVPN 5.0.3.0, read from source)
+Changing a fresh export does not change a configuration already imported into
+a device. During an IPv6 outage, an existing dual-stack configuration may
+still encounter IPv6 failures or delays. Preserve its IPv4 peer and routing;
+do not claim immediate client fallback.
 
-| Client | Where the tunnel address comes from | IPv6 from our config |
-|---|---|---|
-| AmneziaVPN Android | `client_ip`, split on commas (`client/android/.../Wireguard.kt:79`) | yes |
-| AmneziaVPN iOS | `client_ip` written verbatim into `Address =` (`client/platforms/ios/WGConfig.swift:146`) | yes |
-| AmneziaVPN Windows/macOS/Linux | `client_ip` becomes `deviceIpv4Address`; `deviceIpv6Address` is hardcoded to `fd58:baa6:dead::1` for every client (`client/mozilla/localsocketcontroller.cpp:140-151`) | **no**: a deliberate placeholder so the OS falls back to IPv4. A comma in `client_ip` would likely break IPv4 too |
-| AmneziaWG apps (all OS, `.conf`) | `Address =` line, standard wg-quick | yes |
+Keep existing IPv4 DNS defaults. DNS over IPv4 can return AAAA records;
+IPv6-only resolvers are not required for Part A.
 
-Consequence: a desktop AmneziaVPN key must never get an IPv6 value in
-`client_ip`. The panel decides per key from `device_type` (user-declared):
-`android` and `ios` get IPv6 in the `vpn://` link; `windows`, `macos`, `linux`
-and `unspecified` do not. Every `.conf` export carries both addresses.
+## Existing full-tunnel contract
 
-Also relevant: amnezia-client#3207 (iOS NetworkExtension pauses the tunnel with
-~3,100+ routes). Real IPv6 does not change the route count; #140 does.
+Every full-tunnel export retains both default routes:
 
-## Part A — design
+```ini
+AllowedIPs = 0.0.0.0/0, ::/0
+```
 
-### Node (agent + infra)
+The equivalent JSON `allowed_ips` retains both entries. The existing `::/0`
+is not evidence that the node offers IPv6 egress. Preserve it on opt-out,
+failure and rollback; removing it can create a new path outside the tunnel.
 
-- **Flag:** `AWG3_IPV6=on` in the node `.env`. Absent or `off` = today's
-  behaviour.
-- **Compose:** a separate `infra/node/compose.ipv6.yaml` adds a user-defined
-  network with `enable_ipv6: true` (ULA subnet for the container side) and the
-  sysctls `net.ipv6.conf.all.forwarding=1`, `net.ipv6.conf.all.disable_ipv6=0`
-  to `awg3`. `deploy.sh` adds `-f compose.ipv6.yaml` only when the flag is on.
-  Docker publishes and masquerades the container's IPv6 out of the host
-  (Docker ≥ 27 with `ip6tables` enabled — to verify per host).
-- **Entrypoint (`awg3-entrypoint.sh`):**
-  - with the flag, a second line `Address = fd90::1/64` (prefix to be fixed
-    in the plan; one fixed ULA per protocol is enough because it is NATed);
-  - the exact-match guard on `Address = 10.90.0.1/22` stays; the IPv6 line
-    is checked separately, so an IPv4-only conf is untouched;
-  - one-time migration: an existing conf gets the IPv6 line appended when the
-    flag is first turned on;
-  - `ip -6 address add fd90::1/64 dev awg0`, `ip6tables` FORWARD +
-    `-t nat POSTROUTING -s fd90::/64 -j MASQUERADE`, mirrored in cleanup;
-  - if any IPv6 step fails: log loudly, continue with IPv4 only, and report
-    `ipv6: false`.
-  - the awg image must ship `ip6tables`.
-- **Agent (`amneziaWgServiceBase.ts`, `allocatePeerIp.ts`):**
-  - an IPv6 allocator next to the IPv4 one (sequential within the /64);
-  - the server-CIDR read keeps matching the IPv4 `Address` line and reads the
-    IPv6 line separately;
-  - **split the peer `AllowedIPs` line on commas** before counting used
-    addresses (today a dual-stack line would be treated as free and
-    reallocated);
-  - peer `AllowedIPs = 10.90.x.y/32, fd90::n/128`; `userData.allowedIpv6`
-    stored next to `allowedIp`;
-  - disable/enable keep the `0.0.0.0/32` sentinel and restore both addresses
-    from `userData` (today recovery keeps only the first entry);
-  - backfill at agent start / on flag-on: every existing peer without
-    `allowedIpv6` gets one;
-  - `vpn://` payload: `client_ip` stays IPv4; a new field
-    `client_ipv6` carries the IPv6 address (ignored by the official client,
-    consumed by the panel); `.conf` text gets `Address = v4/32, v6/128`;
-  - `GET /server` reports `ipv6: true|false` (optional field, so older agents
-    still parse; OpenAPI regenerated).
-- **DNS:** keep `1.1.1.1`/`1.0.0.1`; IPv6 resolvers are not required (DNS over
-  IPv4 resolves AAAA fine).
+Full tunnel must not acquire blacklist, global, custom or DNS-only routes in
+place of its defaults. Preserve private/public keys, PSK, HeaderProtectionKey,
+IPv4 lease, peer identity, expiry and enabled state. Part A preserves the
+existing endpoint, MTU and AWG geometry.
 
-### Panel
+Previously imported IPv4 configurations must keep connecting after backfill
+without key reissue or mandatory reimport. A compatible device receives its
+new IPv6 address through a later export/import. Do not mass-rewrite encrypted
+base configurations or generate replacement keys.
 
-- Worker persists `capabilities.ipv6` from `GET /server` (jsonb, no
-  migration); control-api exposes it on the node DTO; admin nodes page, CLI
-  `nodes` and docs show it.
-- Export (`getKeyConfig` / `vpnConfig.ts`): for `android`/`ios` keys on a node
-  with `ipv6`, rewrite `client_ip` to `v4, v6` from `client_ipv6`; otherwise
-  leave it. `.conf` already carries both.
-- `applyRouteProfileToVpnLink`: DNS entries get `/128` when they are IPv6
-  (today hardcoded `/32`).
-- Docs: `docs/AGENT-HOST-SETUP.md` (if #140 is merged first, its "nodes have
-  no IPv6, routes are a blackhole" paragraph becomes per-node), `docs/NODE-CONNECT.md`,
-  `docs/DEPLOY-UPDATE.md`, `infra/node/README.md`.
+Client application split-tunnel and kill-switch settings can alter local
+routing. Record these settings in acceptance tests; panel defaults alone do
+not prove the actual OS routes or leak behavior.
 
-### Tests
+For split profiles, preserve existing IPv6 CIDRs, exclusions and additions.
+DNS host routes use IPv4 `/32` or IPv6 `/128` after validation. Preserve route
+budgets and the existing empty/oversized-feed fallback to both default routes.
 
-- Snapshot tests: with the flag off, compose, entrypoint and generated
-  configs are identical to today's.
-- Allocator: IPv6 pool, exhaustion, dual-stack `AllowedIPs` parsing.
-- Agent: create, disable, enable, expire, backfill keep both addresses.
-- Panel: export matrix by `device_type` × node `ipv6`; DNS `/128`.
-- Live: a node with host IPv6, Android via adb, Windows with the AmneziaWG
-  app; then confirm an IPv4-only node is unchanged.
+## Per-node opt-in, readiness and API
 
-## Part B — design (second stage)
+Planned defaults are `AWG3_IPV6=off` and a separate
+`AWG3_IPV6_CONTROL=off`. Absence is off; reject other flag values.
+Ordinary registration, key provisioning, updates, capacity, backup, metrics,
+health and server selection must work on IPv4-only nodes.
+Check IPv6 prerequisites only when explicitly enabling the feature. A missing
+IPv6 route then fails that operation while the ordinary IPv4 node remains usable.
 
-- `SERVER_PUBLIC_HOST` may be an IPv6 literal; the endpoint is written
-  `[addr]:port` by a shared helper in the three services; `hostName` stays
-  bare.
-- `preflight.sh`: drop the `*:*` rejection for valid IPv6 literals, keep
-  rejecting junk; fix the "DNS name" advisory glob. `add-node.sh`: bracket SSH
-  targets and the tunnel unit for an IPv6 `--host`.
-- UDP port published on IPv6 (via the same `compose.ipv6.yaml`).
-- Panel: `nodePublicAddressSchema.publicIp` accepts IPv6; `resolvePublicIp`
-  returns an IPv6 literal as-is; DNS names stay A-only (no AAAA preference
-  change); CLI `nodeAddress.ts` drops the IPv4-only shape check.
-- Tests that pin today's IPv4-only behaviour change deliberately:
-  `preflight.test.mjs:75-103`, `publicAddress.test.ts:32-55`,
-  `contracts.test.ts:389-416`.
+Distinguish `unsupported`, `off`, `pending`, `applying`, `backfilling`,
+`ready`, `degraded`, `failed` and `restart_required`.
+An old agent is unsupported for this feature, not globally unhealthy.
+An IPv6-only failure must not exclude a working IPv4 node from ordinary use.
 
-## Host prerequisites
+All mutations start in typed, admin-authorized Control API endpoints:
 
-A provider allocating an IPv6 prefix is not enough: the host needs a global
-IPv6 address and default route configured in the OS (netplan), working
-outbound IPv6 (`ping -6`), a Docker version with IPv6 networks and
-`ip6tables`, and an `ip6tables` INPUT policy that matches the IPv4 one so
-exposure does not change. Preflight checks these before the flag is honoured.
+- `GET /api/admin/nodes/:nodeId/ipv6`: desired and observed state.
+- `PUT /api/admin/nodes/:nodeId/ipv6`: request a desired generation.
+- `POST /api/admin/nodes/:nodeId/ipv6/reconcile`: reconcile that generation.
 
-## Open questions for the plan
+These are planned contracts, not currently available commands. Persist desired
+state, durable operations, idempotency, audit and outbox in one transaction.
+The worker applies requests through the agent. UI and CLI use this API;
+neither writes node state directly. Reusing an idempotency key with a different
+request is a conflict. Reject conflicting operations and stale observations.
 
-1. The exact ULA prefix (`fd90::/64` is a placeholder).
-2. Docker version and daemon settings on each host that opts in.
-3. Whether the backfill runs at agent start or only on an explicit call.
-4. Whether `device_type = unspecified` should default to IPv4 (proposed) or
-   ask the user.
+Separate `networkReady`, `peersReady`, `tunnelReady` and
+`endpointConfigured`. Tunnel readiness requires the requested generation,
+enabled state, network readiness and peer readiness. A locally configured
+endpoint does not prove that clients can reach it.
 
-## Code map (from the 2026-10-10 exploration)
+Only feature-enabled or in-flight nodes receive an independent lightweight
+snapshot poll. Planned poll interval is 60 seconds, freshness limit 120
+seconds, deadline 5 seconds and concurrency 4, with one request per node.
+Use receipt time and validated probe age rather than trusting agent clocks.
+Refresh a peer lease only from its actual matching report. Fence replies by
+generation, poll revision and runtime instance.
 
-- Agent: `services/node-agent/src/helpers/allocatePeerIp.ts`;
-  `services/amneziaWgShared/amneziaWgServiceBase.ts` (server CIDR regex
-  ~375, `AllowedIPs` collection ~378-381, peer write ~401, `userData` ~430,
-  disable/enable/recovery ~583-615 and ~703-719, payload ~476-529);
-  `amneziaWg3/amneziaWg3.service.ts` (template 27-62, endpoint 170-175);
-  `services/server/server.service.ts:62-93`, `schemas/server/getServer.schema.ts`.
-- Infra: `infra/node/compose.yaml` (awg3 sysctls, ports),
-  `infra/node/scripts/awg3-entrypoint.sh` (conf heredoc, Address guard,
-  `ip -4 address add`, iptables, cleanup), `preflight.sh:69-96`,
-  `scripts/add-node.sh`.
-- Panel: `apps/worker/src/nodeAgent.ts:64-80`,
-  `apps/worker/src/postgresRepository.ts:1140-1190`,
-  `apps/worker/src/publicAddress.ts`, `packages/contracts/src/index.ts:331-365`,
-  `apps/control-api/src/vpnConfig.ts:163-176`,
-  `apps/control-api/src/postgresRepository.ts:166-179`,
-  `apps/cli/src/nodeAddress.ts`.
+## Address lifecycle and safe application
+
+Use a project ULA tunnel `/64` and a distinct ULA Docker bridge `/64`, with
+NAT66 from tunnel to container uplink and IPv6 NAT from container to host.
+Prefixes must be canonical, nonoverlapping and validated against relevant
+host and Docker networks. A provider prefix is not a tunnel allocation.
+
+Allocate per-peer `/128` leases using 128-bit `BigInt` arithmetic and a first
+free gap; do not scan an entire `/64` or convert an address to `Number`.
+Parse every comma-separated peer `AllowedIPs` entry. Reserve server/network
+addresses and leases of existing, disabled and expired peers.
+
+Backfill is an explicit, idempotent generation operation. Preserve all
+identities and IPv4 leases. Disabled or expired runtime peers retain the
+existing disabled sentinel; metadata reserves both addresses for later
+enablement. Feature-off retains leases, and re-enable reuses them.
+Changing an occupied tunnel prefix needs a separate migration.
+
+Serialize lifecycle mutations, backfill, coherent snapshots and backups
+through the same queue and host lock. Corrupt or unexpectedly missing peer
+state is an error with zero writes, not an empty pool. Use a durable journal
+to recover interrupted multi-file changes without rerolling identities.
+
+Keep mutable effective settings in versioned, validated runtime state.
+Use a strict parser, not shell `source` or `eval`. Block incompatible agent
+downgrades while IPv6 state or reservations remain, including after off.
+Declare new metadata in actual backup/import HTTP schemas. Use a queued,
+non-disruptive private backup; existing backup procedures that stop VPN
+containers are unsuitable for live IPv6 changes.
+
+## Supported node networking
+
+The initial opt-in baseline is rootful Linux Docker Engine 28.1 or newer
+(host API at least 1.49) and Compose 2.36 or newer, with TUN and systemd on
+the currently supported Linux/amd64 installer path. Other distributions,
+architectures, Docker Desktop, rootless Docker and other init systems need
+separate qualification. Existing opt-out installations keep their prior
+requirements.
+
+Add a separate IPv6-only bridge. Preserve the original IPv4 network, gateway,
+interface and NAT path; validate actual per-family routes instead of inferring
+them from Compose ordering. All installer, updater, capacity and maintenance
+entry points must share the same manifest/environment selection.
+
+On a previously enabled node, feature-off retains provisioned network
+attachments and control mounts until separately approved maintenance.
+Removing an overlay must not silently recreate the VPN container.
+
+A supported host applier changes only managed network state. It applies the
+IPv6 address, checks DAD, routes and scoped forwarding/NAT rules, then the
+agent persists assignments in its mutation queue. `awg syncconf` does not
+apply interface addresses, MTU, routes or firewall rules.
+
+Handle IPv6 errors after successful IPv4 initialization. Cleanup removes
+only the IPv6 changes owned by the operation. Never remove the working
+interface, flush global firewall rules, reset IPv4 or exit the container
+because IPv6 failed. Permit necessary ICMPv6/PMTUD without opening peer-to-peer
+or control-network access. Do not publish the node-agent port on IPv6.
+
+If the supported bridge/NAT/client path is unavailable, report the blocker.
+Do not substitute monkey-patching or optimistic readiness.
+
+## Client qualification and endpoint transport
+
+AWG 3.1 requires official AmneziaVPN 5.0.1.5 or newer, but that version floor
+does not establish IPv6 compatibility. Record the actual app build, OS,
+architecture, backend, import format and AWG engine version.
+
+The source review of official 5.0.3.0 identifies these export rules:
+
+| Client path | Planned behavior |
+|---|---|
+| Official Android | Candidate for Part A and adapted Part B; qualify the actual VPN/QR import path. |
+| Official iOS/iPadOS | Candidate for Part A and adapted Part B VPN/QR. Raw `.conf` import is a separate path; do not enable Part B there without independent proof. |
+| Official Windows/Linux/macOS service backend | Keep IPv4/full tunnel. Do not insert comma-separated addresses or promise assigned tunnel IPv6 or an IPv6 endpoint. |
+| macOS Network Extension build | Separate explicit profile and signed-build qualification; an OS label does not select it. |
+| Standalone AWG 3.1 clients/tools | Qualify each concrete parser, engine and `.conf`/QR path. Stock WireGuard or AWG 2.x is not a substitute. |
+
+In particular, importing a `.conf` into the same official desktop service
+backend does not bypass its controller. See the
+[official desktop controller](https://github.com/amnezia-vpn/amnezia-client/blob/5.0.3.0/client/mozilla/localsocketcontroller.cpp),
+[Android adapter](https://github.com/amnezia-vpn/amnezia-client/blob/5.0.3.0/client/android/wireguard/src/main/kotlin/org/amnezia/vpn/protocol/wireguard/Wireguard.kt)
+and [iOS adapter](https://github.com/amnezia-vpn/amnezia-client/blob/5.0.3.0/client/platforms/ios/WGConfig.swift).
+Source support is a candidate for device testing, not a passed E2E result.
+
+Planned client profiles are `auto`, `amnezia_vpn`, `amnezia_macos_ne` and
+`awg31_conf`. Default to conservative existing behavior. Persist
+`clientProfile` and `allowIpv6Endpoint` with key intent; the latter defaults
+to false. An export profile override changes only the download candidate,
+not the bound node, key or transport.
+
+Exclude IPv6-only endpoint nodes from legacy automatic selection unless the
+client explicitly opts in and the profile/format and transport are qualified.
+Repeat checks in both API and worker before any peer write, including forced
+node selection and retries. Do not infer client ISP connectivity from its OS.
+Do not move existing peers or invent an IPv4 endpoint fallback.
+
+Part B initially supports only a new or completely empty node. Check all
+protocols, disabled reservations and pending provisioning jobs under a durable
+provisioning barrier: a shared public-host setting can affect legacy services.
+Reject endpoint/MTU changes on populated nodes pending a separate migration.
+Bootstrap disabled, verify runtime state, then enable provisioning through
+the API.
+
+Keep canonical endpoint hosts bare. A `.conf` endpoint uses
+`[2001:db8::10]:51890` (documentation address only). Final native payloads
+require client-specific host formatting; test the whole import and native
+serialization path to avoid missing or doubled brackets.
+
+For Part B, validate outer IPv6 overhead, AWG padding/junk/handshake budgets,
+path MTU and the minimum IPv6 tunnel MTU of 1280. Read back actual interface
+MTU and emit it consistently in JSON and `.conf` before creating peers.
+Do not change Part A's existing MTU or geometry. On stale status or
+feature-off, retain a previously verified Part B endpoint and MTU; an inner
+address fallback must not reset the outer transport.
+
+## Library and runtime requirements
+
+Use declared dependencies and current lockfiles, with clean builds in the
+pinned panel Node 24 and agent Node 22 images. Local installed packages or
+TypeScript declarations do not prove runtime compatibility.
+
+Zod syntax validation and `ipaddr.js` parsing need explicit family, zone,
+mapped-address, ULA, canonical prefix and overlap checks. Use strings for
+128-bit addresses on the HTTP/JSON wire; raw `BigInt` is not JSON serializable.
+Declare new fields in Zod and every Fastify request/response/backup schema:
+validation and serialization can otherwise silently drop metadata.
+Verify real HTTP roundtrips, PostgreSQL transactions and idempotency fences.
+
+Preserve the Qt-compatible length/zlib/base64url encoding, nested JSON,
+protocol markers and all AWG 3.1 fields in VPN links. Test QR capacity and
+scanning with synthetic configurations. Record client/server engine pairs;
+server-only packet-budget fixes do not update client binaries.
+
+## Implementation order and release gates
+
+| Step | Deliverable |
+|---|---|
+| 0 | Confirm the supported baseline and use only synthetic fixtures. |
+| 1 | Pin full-tunnel, existing-key and IPv4-only regression contracts before changing behavior. |
+| 2 | Typed desired/observed state, client intent, DB migrations, authorization, idempotency, audit and outbox. |
+| 3 | Opt-in infrastructure, shared Compose selection, supported applier and failure isolation. |
+| 4 | Dual-family parser, allocator and disabled/expired reservations. |
+| 5 | Serialized agent lifecycle, explicit backfill, recovery, coherent snapshots and backup contracts. |
+| 6 | Agent artifacts that preserve identities, routing and actual verified transport MTU. |
+| 7 | Worker application, freshness, generation fencing and mixed-fleet provisioning guards. |
+| 8 | Conditional Control API export enrichment and client/format compatibility. |
+| 9 | Part B empty-node bootstrap, endpoint formatting and transport/MTU validation. |
+| 10 | API-backed CLI/UI, operational docs and lab E2E acceptance. |
+| 11 | Complete release gate, followed by a separately authorized production rollout. |
+
+Required evidence before release:
+
+- A mixed fleet in one panel: host without IPv6, dual-stack host with opt-out,
+  ready node, old agent and degraded node. Ordinary IPv4 operations continue;
+  optional IPv6 failures do not become global health failures.
+- A full-tunnel configuration imported before backfill keeps IPv4 handshakes
+  and traffic after backfill, feature-off and failure injection. Both default
+  routes remain in every export format.
+- Qualified clients on Windows, macOS, Linux, Android and iOS/iPadOS receive
+  only their supported exports. Verify actual imports, OS routes, DNS, IPv4
+  and IPv6 HTTP, reconnect, roaming, rekey and both traffic directions.
+- Part A over an IPv4-only client network; Part B excluded from default and
+  incompatible requests, with explicit opt-in required. Verify that an
+  IPv4-only network is never described as a working Part B path. Also test
+  ISP IPv6 and actual leak behavior with client settings recorded.
+- Host, container and peer IPv6 egress, both NAT hops, DAD, PMTUD, firewall
+  isolation and actual interface/transport MTU. Configuration lines or a
+  zero installer exit code alone are insufficient.
+- Faults: no IPv6 route, missing tools, partial rules, broken NAT, interrupted
+  backfill, corrupt state, delayed snapshots and offline nodes. IPv4 state
+  and leases remain intact; errors and readiness remain truthful.
+- Linux shell/Compose and pinned image checks, real PostgreSQL integration,
+  API roundtrips and client/server engine tests. A Windows skip or a library
+  smoke check does not satisfy these gates.
+
+Keep these tests pending until their actual environment has run them.
+Complete source review and documentation do not mean the feature is ready.
+
+## Public documentation and operational data
+
+Public docs, code, fixtures, PRs and releases contain no live server names,
+host addresses, provider prefixes, SSH details, account names, private
+workstation paths or deployment-specific facts. Use RFC 5737/RFC 3849 examples
+and clearly identified project ULA defaults where examples are needed.
+
+Keep credentials, VPN configurations, QR payloads and backups out of logs and
+public documentation. Store deployment records privately outside the
+repository. Never force-add private planning or operational files.
+
+Related operational documentation:
+
+- [Node connection and rollout](NODE-CONNECT.md).
+- [Host setup](AGENT-HOST-SETUP.md).
+- [Deployment and updates](DEPLOY-UPDATE.md).
+- [Panel and node CLI](CLI.md).
+
+These runbooks describe current operations; update their IPv6 procedures
+when implementation is complete, without presenting planned endpoints as
+available today.
