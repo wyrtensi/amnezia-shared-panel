@@ -87,9 +87,14 @@ to delete a node and every key issued on it), `node-reconcile`,
 
 For every flag and error code see [`docs/CLI.md`](../../docs/CLI.md).
 
-**Reachability:** `probe-results --bridges --json` lists bridge results, and
-`bridge-probe <bridge-id> --on|--off` controls bridge alerts. See the
-[reachability runbook](../../docs/REACHABILITY-PROBE.md).
+**Reachability & multi-IP:** `nodes --endpoints` lists per-IP listeners and their
+probe state; `node-update <id> --endpoint-id=<uuid> [--endpoint-enabled=true|false] [--endpoint-reachability=true|false]`
+manages individual IP availability and probe alerts; `policy-set` accepts
+`--allowedEndpointIds`, `--endpointOrder`, and `--recommendedEndpointIds`
+(and `user-limit --allowed-endpoints=` sets per-user IP availability);
+`probe-results` prints per-node, per-IP, and bridge verdicts (`--bridges --json`
+for bridges only), and `bridge-probe <bridge-id> --on|--off` controls bridge
+alerts. See the [reachability runbook](../../docs/REACHABILITY-PROBE.md).
 
 ### Registering a node
 

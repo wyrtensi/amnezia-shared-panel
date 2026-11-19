@@ -62,16 +62,27 @@ What that buys an operator, concretely:
   `prohibit 2000::/3`, ICMPv6 Administratively Prohibited) so dual-stack iOS/Android
   clients and `.conf` exports fall back to IPv4 immediately via Happy Eyeballs
   instead of stalling on silent IPv6 blackholes — toggled cleanly on or off
-  without dropping IPv4 sessions or touching desktop `vpn://` exports.
+  without dropping IPv4 sessions or touching desktop `vpn://` exports. Starting
+  with `node-agent` `1.1.22`, the host updater (`scripts/agent-update.sh`) also
+  enables the required IPv6 forwarding sysctls live inside `amnezia-awg3`'s
+  network namespace via `nsenter` with zero AWG restart.
+- **Multiple public IPv4 addresses per AWG 3.1 node.** One AWG 3.1 node can
+  expose multiple independently named IPv4 endpoints (`node_vpn_endpoints`)
+  sharing the same peer store, with per-IP server order (`endpointOrder`),
+  per-IP global and per-user availability (`allowedEndpointIds`), independent
+  enable/disable switches (including disabling the primary IP while a backup IP
+  remains active), and per-IP reachability checks & alerts.
 - **Service checks.** Named checks — a status code, a marker in the body, where a
   redirect lands — run from every node on a schedule, so "is this reachable from
   that country" is a row in the panel rather than an experiment.
 - **External reachability probe & Telegram integration.** A small container on a
   machine in the network you care about brings up a real AWG tunnel to every node
-  each hour; `/admin/nodes` shows the verdict per node and protocol, and optional
-  Telegram bot integration (`TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID`) delivers
-  quota-request alerts, reachability outage/recovery alerts (one message per
-  incident), and a live pinned Telegram status widget (`sendWidget`). See
+  and public IPv4 listener (plus bridge hosts, FRP registrations, and bridge
+  management health) each hour; `/admin/nodes` shows per-node, per-IP, per-protocol,
+  and per-bridge verdicts with independent alert switches, and optional Telegram
+  bot integration (`TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID`) delivers quota-request
+  alerts, node/IP/bridge outage & recovery alerts (one message per incident), and
+  a live pinned Telegram status widget (`sendWidget`). See
   [docs/REACHABILITY-PROBE.md](docs/REACHABILITY-PROBE.md).
 - **Fleet visibility.** Host metrics, agent version, peer counts and traffic per
   node and per key, with a one-command agent update that swaps only the agent

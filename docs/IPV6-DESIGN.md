@@ -4,15 +4,16 @@ Status: **Part A (full NAT66 IPv6 inside the tunnel) and Part B (IPv6 node
 endpoints) remain unbuilt design drafts** (written 2026-10-10, not approved for
 implementation yet).
 
-What **already shipped** as interim dual-stack hygiene (through `v0.15.2` /
-`node-agent 1.1.21`):
+What **already shipped** as interim dual-stack hygiene (through `v0.15.4` /
+`node-agent 1.1.22`):
 
 - **Dual-stack E-Core `ru_blacklist` routes & IPv6 DNS `/128`:** the default
   `ru_blacklist` feed merges `itdoginfo` IPv6 subnets minus `ipdeny` RU IPv6,
   compacts them cleanly, and `packages/vpn-config` / `apps/control-api`
   normalizes bare IPv6 DNS entries to `/128`.
 - **Per-node toggleable AWG 3.1 IPv6 active-reject ULA stub** (shipped in
-  `v0.15.2` + `node-agent 1.1.21`, see
+  `v0.15.2` + `node-agent 1.1.21`, with zero-downtime live `nsenter` sysctl
+  auto-enablement in `node-agent 1.1.22` / `agent-update.sh`, see
   [`OPERATIONS.md`](./OPERATIONS.md#per-node-awg-31-ipv6-active-reject-stub-ula--prohibit-20003)):
   assigns each peer a deterministic ULA from `fd6b:7c2e:4a91:9f::/64` and
   installs `ip -6 route replace prohibit 2000::/3` inside `amnezia-awg3` so
