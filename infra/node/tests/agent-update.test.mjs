@@ -115,8 +115,11 @@ case "$1" in
     exit 0 ;;
   rm) exit 0 ;;
   inspect)
-    # inspect --format '{{...Health...}}' amnezia-node-agent
-    echo "\${FAKE_HEALTH:-healthy}"
+    # inspect --format '{{...Pid...}}' amnezia-awg3 or health check for agent
+    case "$*" in
+      *State.Pid*) echo "\${FAKE_AWG3_PID:-}" ;;
+      *) echo "\${FAKE_HEALTH:-healthy}" ;;
+    esac
     exit 0 ;;
   compose)
     [ -z "\${FAKE_COMPOSE_FAILS:-}" ] || exit 1
@@ -225,6 +228,16 @@ test("the reference is re-validated from the spool, not trusted", async () => {
 
   assert.match(script, /NODE_AGENT_UPDATE_REPO/);
   assert.match(script, /sha256:\[0-9a-f\]\{64\}/, "only a full lowercase digest is accepted");
+});
+
+test("IPv6 forwarding sysctls are applied live via nsenter without restarting awg3", async () => {
+  const script = await readFile(scriptUrl, "utf8");
+
+  assert.match(script, /ensure_awg3_ipv6_forwarding/);
+  assert.match(script, /nsenter --net="\/proc\/\$\{pid\}\/ns\/net" -- sysctl -w/);
+  assert.match(script, /net\.ipv6\.conf\.all\.forwarding=1/);
+  assert.match(script, /scripts\/awg3-entrypoint\.sh/);
+  assert.match(script, /scripts\/agent-update\.sh/);
 });
 
 // ------------------------------------------------------------- executing ----
@@ -537,4 +550,74 @@ test("a locally edited node compose stops the update and reports it", executing,
   assert.equal((await f.dockerCalls()).some((c) => c.includes(" up ")), false);
   const log = await readFile(join(f.spool, "update.log"), "utf8");
   assert.match(log, /shared host/, "the log the panel shows carries the diff");
+});
+
+test("untouched awg3-entrypoint.sh is upgraded and live IPv6 sysctls are applied via nsenter", executing, async (t) => {
+  const composeWithIpv6 = [
+    "services:",
+    "  awg3:",
+    "    sysctls:",
+    '      net.ipv6.conf.all.forwarding: "1"',
+    "  node-agent:",
+    "    image: ${NODE_AGENT_IMAGE}",
+    "",
+  ].join("\n");
+  const entryV1 = "#!/bin/sh\necho old-entrypoint\n";
+  const entryV2 = "#!/bin/sh\necho new-entrypoint\n";
+  const f = await fixture({
+    compose: COMPOSE_V1,
+    shipped: {
+      [OLD_DIGEST]: {
+        "compose.yaml": COMPOSE_V1,
+        "awg3-entrypoint.sh": entryV1,
+      },
+      [NEW_DIGEST]: {
+        "compose.yaml": composeWithIpv6,
+        "awg3-entrypoint.sh": entryV2,
+      },
+    },
+  });
+  t.after(f.cleanup);
+
+  await mkdir(join(f.nodeDir, "scripts"), { recursive: true });
+  await writeFile(join(f.nodeDir, "scripts", "awg3-entrypoint.sh"), entryV1, { mode: 0o755 });
+
+  // Fake nsenter + sysctl on PATH; point FAKE_AWG3_PID at our own PID so
+  // /proc/$pid/ns/net exists on Linux.
+  const nsenterLog = join(f.root, "nsenter.log");
+  await writeFile(
+    join(f.root, "bin", "nsenter"),
+    `#!/usr/bin/env bash
+printf '%s\\n' "$*" >>"${nsenterLog}"
+case "$*" in
+  *"sysctl -n net.ipv6.conf.all.forwarding"*) echo 0 ;;
+  *"sysctl -w"*) exit 0 ;;
+esac
+exit 0
+`,
+    { mode: 0o755 },
+  );
+  await writeFile(join(f.root, "bin", "sysctl"), "#!/usr/bin/env bash\nexit 0\n", { mode: 0o755 });
+
+  await f.request({ id: "req-ipv6", image: NEW_IMAGE });
+  const run = f.run({ FAKE_AWG3_PID: String(process.pid) });
+
+  assert.equal(run.status, 0, run.stderr + run.stdout);
+  assert.equal((await f.result()).ok, true);
+  assert.equal(await f.composeFile(), composeWithIpv6);
+  assert.equal(
+    await readFile(join(f.nodeDir, "scripts", "awg3-entrypoint.sh"), "utf8"),
+    entryV2,
+    "untouched awg3-entrypoint.sh is reconciled from the new image",
+  );
+  const calls = (await readFile(nsenterLog, "utf8")).split("\n").filter(Boolean);
+  assert.ok(
+    calls.some((line) => line.includes("net.ipv6.conf.all.forwarding=1")),
+    `expected live sysctl write via nsenter, got:\n${calls.join("\n")}`,
+  );
+  // AWG3 must NEVER be recreated by agent-update.sh
+  assert.equal(
+    (await f.dockerCalls()).some((line) => line.includes("compose") && line.includes("awg3")),
+    false,
+  );
 });

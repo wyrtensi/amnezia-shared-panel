@@ -217,8 +217,22 @@ describe("reachability task", () => {
     expect(write.outcomes).toHaveLength(1);
     expect(write.states.get("id-node-a")?.status).toBe("ok");
     expect(write.endpointOutcomes).toEqual([
-      { endpointId: "endpoint-primary", status: "ok", detail: null },
-      { endpointId: "endpoint-backup", status: "failed", detail: "no handshake" },
+      {
+        endpointId: "endpoint-primary",
+        status: "ok",
+        levels: result.levels,
+        detail: null,
+        reusesNodeTarget: true,
+        isBridged: false,
+      },
+      {
+        endpointId: "endpoint-backup",
+        status: "failed",
+        levels: { ...result.levels, handshake: { ...level, ok: false } },
+        detail: "no handshake",
+        reusesNodeTarget: false,
+        isBridged: false,
+      },
     ]);
   });
 

@@ -328,9 +328,16 @@ export const nodePublicEndpointMutationSchema = z.discriminatedUnion("action", [
     id: z.uuid(),
     name: nodeEndpointNameSchema.optional(),
     enabled: z.boolean().optional(),
-  }).strict().refine((fields) => fields.name !== undefined || fields.enabled !== undefined, {
-    message: "An endpoint name or availability setting is required",
-  }),
+    reachabilityEnabled: z.boolean().optional(),
+  }).strict().refine(
+    (fields) =>
+      fields.name !== undefined ||
+      fields.enabled !== undefined ||
+      fields.reachabilityEnabled !== undefined,
+    {
+      message: "An endpoint name, availability, or reachability setting is required",
+    },
+  ),
 ]);
 export type NodePublicEndpointMutation = z.infer<typeof nodePublicEndpointMutationSchema>;
 
@@ -537,6 +544,10 @@ export const portalPolicySchema = z.object({
   // Nodes users may create keys on; null = all. Per-user override in
   // policyOverride.allowedNodeIds.
   allowedNodeIds: z.array(z.uuid()).nullish(),
+  // Individual public IPv4 endpoints users may create keys on; null = all
+  // enabled endpoints on allowed nodes. Per-user override in
+  // policyOverride.allowedEndpointIds.
+  allowedEndpointIds: z.array(z.uuid()).nullish(),
   // Whether the key limit is counted per server or as one shared pool.
   keyLimitMode: keyLimitModeSchema.default("per_node"),
   allowRouteProfileSelection: z.boolean().default(true),
@@ -1261,6 +1272,7 @@ export type NodeKeyLimits = z.infer<typeof nodeKeyLimitsSchema>;
 export const setUserLimitRequestSchema = z.object({
   keyLimitOverride: z.int().min(0).max(1_000).nullable(),
   allowedNodeIds: z.array(z.uuid()).nullish(),
+  allowedEndpointIds: z.array(z.uuid()).nullish(),
   nodeKeyLimits: nodeKeyLimitsSchema.nullish(),
   keyLimitMode: keyLimitModeSchema.nullish(),
 });
@@ -2316,6 +2328,7 @@ export const userNodeEndpointSchema = z.object({
   ordinal: z.int().positive(),
   name: nodeEndpointNameSchema,
   publicAddress: z.ipv4().optional(),
+  recommended: z.boolean().optional(),
   reachability: userNodeReachabilitySchema.optional(),
 });
 export type UserNodeEndpoint = z.infer<typeof userNodeEndpointSchema>;
@@ -2323,8 +2336,13 @@ export type UserNodeEndpoint = z.infer<typeof userNodeEndpointSchema>;
 export const adminNodeEndpointSchema = userNodeEndpointSchema.extend({
   publicAddress: z.ipv4(),
   enabled: z.boolean(),
+  reachabilityEnabled: z.boolean().optional(),
   probeStatus: reachabilityStatusSchema.nullable(),
+  probeLevels: probeLevelsSchema.nullable().optional(),
   probeCheckedAt: z.iso.datetime().nullable(),
+  probeFailingSince: z.iso.datetime().nullable().optional(),
+  probeConsecutiveFailures: z.int().optional(),
+  incidentOpen: z.boolean().optional(),
   probeDetail: z.string().nullable(),
 });
 export type AdminNodeEndpoint = z.infer<typeof adminNodeEndpointSchema>;

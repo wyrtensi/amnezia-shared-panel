@@ -88,6 +88,12 @@ import { KeyBridgeBadge } from "@/components/key-bridge-badge";
 import { KeyBridgeSelect } from "@/components/admin/key-bridge-select";
 import { AGENT_DEFAULT_ENDPOINT, NodeEndpointSelect } from "@/components/node-endpoint-select";
 import { listBridges } from "@/lib/bridge-api";
+import {
+  deriveAllowedNodeIds,
+  expandPolicyTargets,
+  initialAllowedTargetIds,
+  initialEndpointOrder,
+} from "@/lib/policy-endpoints";
 import type { KeyLimitMode, ProtocolKind } from "@/lib/types";
 import { effectiveKeyLimitMode, isNodeFull } from "@/lib/key-quota";
 import { trafficTotal } from "@/lib/format";
@@ -181,6 +187,13 @@ function modeOverrideOf(user: AdminUser): KeyLimitMode | null {
  */
 function explicitNodeIdsOf(user: AdminUser): string[] | null {
   const raw: unknown = user.policyOverride?.allowedNodeIds;
+  return Array.isArray(raw)
+    ? raw.filter((id): id is string => typeof id === "string")
+    : null;
+}
+
+function explicitEndpointIdsOf(user: AdminUser): string[] | null {
+  const raw: unknown = user.policyOverride?.allowedEndpointIds;
   return Array.isArray(raw)
     ? raw.filter((id): id is string => typeof id === "string")
     : null;
@@ -1781,7 +1794,17 @@ function UserDetail({
   // carry their own limit, and the explicit server list when there is one.
   // Built as a single string so the same text can truncate and go into `title`.
   const modeOverride = modeOverrideOf(user);
+  const explicitEndpoints = explicitEndpointIdsOf(user);
   const explicitNodes = explicitNodeIdsOf(user);
+  const targetName = (id: string) => {
+    for (const node of nodes) {
+      if (node.id === id) return node.name;
+      const endpoint = node.publicEndpoints?.find((item) => item.id === id);
+      if (endpoint) return endpoint.name;
+    }
+    return id;
+  };
+  const explicitTargets = explicitEndpoints ?? explicitNodes;
   const limitSummary =
     `${t("users.limitNode")} ` +
     `${user.keyLimitOverride !== null ? user.keyLimitOverride : t("users.default")}` +
@@ -1791,10 +1814,10 @@ function UserDetail({
         ? ` · ${t("users.limitModePerNodeShort")}`
         : "") +
     (perNodeLimits > 0 ? ` (${perNodeLimits})` : "") +
-    (explicitNodes !== null
+    (explicitTargets !== null
       ? ` · ${
-          explicitNodes.length > 0
-            ? explicitNodes.map(nodeName).join(", ")
+          explicitTargets.length > 0
+            ? explicitTargets.map(targetName).join(", ")
             : t("users.limitNoneWord")
         }`
       : "");
@@ -2426,16 +2449,17 @@ function parseLimitField(raw: string): number | null | undefined {
 type LimitPayload = {
   keyLimitOverride: number | null;
   allowedNodeIds: string[] | null;
+  allowedEndpointIds: string[] | null;
   nodeKeyLimits: Record<string, number> | null;
   /** null clears the per-user override, i.e. inherit the global mode. */
   keyLimitMode: KeyLimitMode | null;
 };
 
 /**
- * Servers and quotas of a single user: the default limit, which servers the
- * user may use, and a per-server limit. Node availability has three states —
- * "all servers" (sent as `allowedNodeIds: null`, so the global list applies
- * again), an explicit list, and an empty list (no server at all).
+ * Servers and quotas of a single user: the default limit, which servers/IPs the
+ * user may use, and a per-server limit. Availability has three states —
+ * "all servers" (sent as `null`, so the global list applies again), an explicit
+ * per-IP list, and an empty list (no server at all).
  */
 function LimitDialog({
   user,
@@ -2458,18 +2482,33 @@ function LimitDialog({
   // "" = inherit the global mode; otherwise an explicit per-user mode.
   const [mode, setMode] = React.useState<"" | KeyLimitMode>("");
 
+  const policyTargets = React.useMemo(
+    () => expandPolicyTargets(nodes),
+    [nodes],
+  );
+  const targetIdsByNode = React.useMemo(() => {
+    const map = new Map<string, string[]>();
+    for (const target of policyTargets) {
+      const list = map.get(target.nodeId) ?? [];
+      list.push(target.id);
+      map.set(target.nodeId, list);
+    }
+    return map;
+  }, [policyTargets]);
+
   React.useEffect(() => {
     setValue(
       user?.keyLimitOverride != null ? String(user.keyLimitOverride) : "",
     );
-    // The per-user node list lives in policyOverride.allowedNodeIds; missing or
-    // null there means the global list applies.
-    const override = user?.policyOverride?.allowedNodeIds as
-      | string[]
-      | null
-      | undefined;
-    setAllNodes(!Array.isArray(override));
-    setAllowed(Array.isArray(override) ? [...override] : []);
+    const epOverride = user ? explicitEndpointIdsOf(user) : null;
+    const nodeOverride = user ? explicitNodeIdsOf(user) : null;
+    const initial = initialAllowedTargetIds(
+      policyTargets,
+      epOverride,
+      nodeOverride,
+    );
+    setAllNodes(initial === null);
+    setAllowed(initial ?? []);
     setNodeLimits(
       Object.fromEntries(
         Object.entries(user?.nodeKeyLimits ?? {}).map(([nodeId, limit]) => [
@@ -2479,9 +2518,17 @@ function LimitDialog({
       ),
     );
     setMode(user ? (modeOverrideOf(user) ?? "") : "");
-  }, [user]);
+  }, [user, policyTargets]);
 
-  const globalNodeIds = globalPolicy.allowedNodeIds;
+  const globalTargetIds = React.useMemo(
+    () =>
+      initialAllowedTargetIds(
+        policyTargets,
+        globalPolicy.allowedEndpointIds,
+        globalPolicy.allowedNodeIds,
+      ),
+    [policyTargets, globalPolicy.allowedEndpointIds, globalPolicy.allowedNodeIds],
+  );
   // Placeholder of the per-server inputs: what a server without its own limit
   // ends up using, recomputed live from the default field above.
   const parsedDefault = parseLimitField(value);
@@ -2501,19 +2548,36 @@ function LimitDialog({
       ? t("users.limitModeGlobal")
       : t("users.limitModePerNode");
 
-  const isAvailable = (nodeId: string) =>
+  const isTargetAvailable = (targetId: string) =>
     allNodes
-      ? globalNodeIds === null || globalNodeIds.includes(nodeId)
-      : allowed.includes(nodeId);
+      ? globalTargetIds === null || globalTargetIds.includes(targetId)
+      : allowed.includes(targetId);
 
-  const toggleNode = (nodeId: string, checked: boolean) =>
+  const isNodeChecked = (nodeId: string) => {
+    const ids = targetIdsByNode.get(nodeId) ?? [nodeId];
+    return ids.some((id) => isTargetAvailable(id));
+  };
+
+  const toggleTarget = (targetId: string, checked: boolean) =>
     setAllowed((current) =>
       checked
-        ? current.includes(nodeId)
+        ? current.includes(targetId)
           ? current
-          : [...current, nodeId]
-        : current.filter((id) => id !== nodeId),
+          : [...current, targetId]
+        : current.filter((id) => id !== targetId),
     );
+
+  const toggleNode = (nodeId: string, checked: boolean) => {
+    const ids = targetIdsByNode.get(nodeId) ?? [nodeId];
+    setAllowed((current) => {
+      const set = new Set(current);
+      for (const id of ids) {
+        if (checked) set.add(id);
+        else set.delete(id);
+      }
+      return [...set];
+    });
+  };
 
   const valid =
     parsedDefault !== undefined &&
@@ -2599,24 +2663,25 @@ function LimitDialog({
                   // so turning the switch off does not silently revoke access.
                   if (!checked && allowed.length === 0) {
                     setAllowed(
-                      nodes
-                        .map((node) => node.id)
+                      policyTargets
+                        .map((target) => target.id)
                         .filter(
                           (id) =>
-                            globalNodeIds === null || globalNodeIds.includes(id),
+                            globalTargetIds === null ||
+                            globalTargetIds.includes(id),
                         ),
                     );
                   }
                 }}
               />
             </label>
-            {allNodes && globalNodeIds !== null ? (
+            {allNodes && globalTargetIds !== null ? (
               <FieldHint className="mt-2">
                 {t("users.limitGlobalNodes", {
                   nodes:
-                    nodes
-                      .filter((node) => globalNodeIds.includes(node.id))
-                      .map((node) => node.name)
+                    policyTargets
+                      .filter((target) => globalTargetIds.includes(target.id))
+                      .map((target) => target.name)
                       .join(", ") || t("users.limitNoneWord"),
                 })}
               </FieldHint>
@@ -2642,49 +2707,88 @@ function LimitDialog({
               <FieldHint>{t("nodeSelect.noNodes")}</FieldHint>
             ) : (
               <div className="max-h-64 space-y-1.5 overflow-y-auto pr-1">
-                {nodes.map((node) => (
-                  <div
-                    key={node.id}
-                    className="flex items-center gap-2.5 rounded-lg border p-2"
-                  >
-                    <Checkbox
-                      id={`limit-node-${node.id}`}
-                      checked={isAvailable(node.id)}
-                      disabled={allNodes}
-                      onChange={(event) =>
-                        toggleNode(node.id, event.target.checked)
-                      }
-                    />
-                    <Label
-                      htmlFor={`limit-node-${node.id}`}
-                      className={cn(
-                        "min-w-0 flex-1 cursor-pointer truncate font-normal",
-                        allNodes && "cursor-default",
-                      )}
+                {nodes.map((node) => {
+                  const endpoints = node.publicEndpoints ?? [];
+                  return (
+                    <div
+                      key={node.id}
+                      className="space-y-1.5 rounded-lg border p-2"
                     >
-                      {node.name}
-                      {node.enabled ? "" : t("users.nodeDisabledSuffix")}
-                    </Label>
-                    <Input
-                      type="number"
-                      min={0}
-                      max={1000}
-                      aria-label={t("users.limitPerNodeAria", {
-                        node: node.name,
-                      })}
-                      disabled={effectiveMode === "global"}
-                      placeholder={String(fallbackLimit)}
-                      className="h-8 w-20 shrink-0"
-                      value={nodeLimits[node.id] ?? ""}
-                      onChange={(event) =>
-                        setNodeLimits((current) => ({
-                          ...current,
-                          [node.id]: event.target.value,
-                        }))
-                      }
-                    />
-                  </div>
-                ))}
+                      <div className="flex items-center gap-2.5">
+                        <Checkbox
+                          id={`limit-node-${node.id}`}
+                          checked={isNodeChecked(node.id)}
+                          disabled={allNodes}
+                          onChange={(event) =>
+                            toggleNode(node.id, event.target.checked)
+                          }
+                        />
+                        <Label
+                          htmlFor={`limit-node-${node.id}`}
+                          className={cn(
+                            "min-w-0 flex-1 cursor-pointer truncate font-normal",
+                            allNodes && "cursor-default",
+                          )}
+                        >
+                          {node.name}
+                          {node.enabled ? "" : t("users.nodeDisabledSuffix")}
+                        </Label>
+                        <Input
+                          type="number"
+                          min={0}
+                          max={1000}
+                          aria-label={t("users.limitPerNodeAria", {
+                            node: node.name,
+                          })}
+                          disabled={effectiveMode === "global"}
+                          placeholder={String(fallbackLimit)}
+                          className="h-8 w-20 shrink-0"
+                          value={nodeLimits[node.id] ?? ""}
+                          onChange={(event) =>
+                            setNodeLimits((current) => ({
+                              ...current,
+                              [node.id]: event.target.value,
+                            }))
+                          }
+                        />
+                      </div>
+                      {endpoints.length > 0 ? (
+                        <div className="space-y-1 border-t border-border/50 pt-1.5 pl-6">
+                          {endpoints.map((ep) => (
+                            <label
+                              key={ep.id}
+                              className={cn(
+                                "flex items-center gap-2 text-xs",
+                                !allNodes && "cursor-pointer",
+                                !ep.enabled && "opacity-60",
+                              )}
+                            >
+                              <Checkbox
+                                id={`limit-endpoint-${ep.id}`}
+                                checked={isTargetAvailable(ep.id)}
+                                disabled={allNodes}
+                                onChange={(event) =>
+                                  toggleTarget(ep.id, event.target.checked)
+                                }
+                              />
+                              <span className="truncate font-medium">
+                                {ep.name}
+                              </span>
+                              <code className="font-mono text-[11px] text-muted-foreground">
+                                {ep.publicAddress}
+                              </code>
+                              {!ep.enabled ? (
+                                <span className="text-[11px] text-muted-foreground">
+                                  ({t("nodes.endpointDisabled").toLowerCase()})
+                                </span>
+                              ) : null}
+                            </label>
+                          ))}
+                        </div>
+                      ) : null}
+                    </div>
+                  );
+                })}
               </div>
             )}
             {noneSelected ? (
@@ -2702,20 +2806,28 @@ function LimitDialog({
             disabled={!valid}
             onClick={() => {
               void (async () => {
-                const known = new Set(nodes.map((node) => node.id));
+                const knownNodes = new Set(nodes.map((node) => node.id));
+                const knownTargets = new Set(
+                  policyTargets.map((target) => target.id),
+                );
                 const limits: Record<string, number> = {};
                 for (const [nodeId, raw] of Object.entries(nodeLimits)) {
                   // Drop entries for nodes that no longer exist: the API
                   // rejects unknown ids with NODE_NOT_FOUND.
-                  if (!known.has(nodeId)) continue;
+                  if (!knownNodes.has(nodeId)) continue;
                   const parsed = parseLimitField(raw);
                   if (typeof parsed === "number") limits[nodeId] = parsed;
                 }
+                const nextEndpointIds = allNodes
+                  ? null
+                  : allowed.filter((id) => knownTargets.has(id));
                 const ok = await onSave({
                   keyLimitOverride: parsedDefault ?? null,
-                  allowedNodeIds: allNodes
-                    ? null
-                    : allowed.filter((id) => known.has(id)),
+                  allowedEndpointIds: nextEndpointIds,
+                  allowedNodeIds: deriveAllowedNodeIds(
+                    policyTargets,
+                    nextEndpointIds,
+                  ),
                   nodeKeyLimits:
                     Object.keys(limits).length > 0 ? limits : null,
                   // The select shows "inherit" exactly when there is no
@@ -2988,9 +3100,22 @@ function CreateKeyDialog({
   }, [user, nodes]);
   const node = nodes.find((item) => item.id === nodeId);
   const protocol = pickProtocol(node);
-  const endpoints = (node?.publicEndpoints ?? []).filter((item) => item.enabled);
-  const allowsSelection = user?.policyOverride?.allowNodeSelection ?? globalPolicy.allowNodeSelection;
-  const canPickEndpoint = protocol === "awg3" && endpoints.some((item) => item.ordinal > 1) && allowsSelection !== false;
+  const endpointRank = React.useMemo(() => {
+    const order = initialEndpointOrder(
+      expandPolicyTargets(nodes),
+      globalPolicy.endpointOrder ?? [],
+      globalPolicy.nodeOrder ?? [],
+    );
+    return new Map(order.map((id, idx) => [id, idx]));
+  }, [nodes, globalPolicy.endpointOrder, globalPolicy.nodeOrder]);
+  const endpoints = (node?.publicEndpoints ?? [])
+    .filter((item) => item.enabled)
+    .sort((a, b) => {
+      const ra = endpointRank.get(a.id) ?? Number.MAX_SAFE_INTEGER;
+      const rb = endpointRank.get(b.id) ?? Number.MAX_SAFE_INTEGER;
+      return ra - rb || a.ordinal - b.ordinal;
+    });
+  const canPickEndpoint = protocol === "awg3" && endpoints.length > 1;
   const endpoint = canPickEndpoint
     ? endpoints.find((item) => item.id === endpointId)
     : undefined;
@@ -3002,7 +3127,7 @@ function CreateKeyDialog({
   const nextKeyNumber =
     userKeys.reduce((max, key) => Math.max(max, key.keyNumber ?? 0), 0) + 1;
   const previewName = composeKeyDisplayName({
-    serverName: endpoint?.name ?? endpoints.find((item) => item.ordinal === 1)?.name ??
+    serverName: endpoint?.name ?? endpoints[0]?.name ??
       (node?.publicName?.trim() || node?.name || ""),
     label: deviceLabel.trim(),
     keyNumber: nextKeyNumber,

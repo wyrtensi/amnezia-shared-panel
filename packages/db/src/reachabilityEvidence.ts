@@ -44,7 +44,14 @@ export const resetNodeEndpointEvidence = async (
     );
   await executor
     .update(nodeVpnEndpoints)
-    .set({ probeStatus: null, probeCheckedAt: null, probeDetail: null })
+    .set({
+      probeStatus: null,
+      probeLevels: null,
+      probeCheckedAt: null,
+      probeConsecutiveFailures: 0,
+      probeFailingSince: null,
+      probeDetail: null,
+    })
     .where(eq(nodeVpnEndpoints.nodeId, nodeId));
   await executor
     .update(nodeReachabilityState)

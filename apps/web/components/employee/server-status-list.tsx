@@ -26,7 +26,10 @@ export function ServerStatusList({ nodes }: { nodes: readonly NodeView[] }) {
   const addresses = nodes.flatMap<Pick<NodeView, "id" | "name" | "recommended" | "reachability" | "publicAddress">>(
     (node) => {
       if (!node.publicEndpoints?.length) return [node];
-      const direct = node.publicEndpoints.map((endpoint) => ({ ...endpoint, recommended: node.recommended }));
+      const direct = node.publicEndpoints.map((endpoint) => ({
+        ...endpoint,
+        recommended: endpoint.recommended ?? node.recommended,
+      }));
       return [
         ...direct,
         ...(node.bridgeReachability ? [{

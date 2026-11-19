@@ -227,10 +227,13 @@ export type GlobalPortalPolicy = {
   useBridge: boolean;
   allowedProtocols: ProtocolKind[];
   allowedNodeIds: string[] | null;
+  allowedEndpointIds: string[] | null;
   // Global-only lists: the hand-made server order, and the recommended prefix
   // of it. Never part of a per-user override.
   recommendedNodeIds: string[];
   nodeOrder: string[];
+  recommendedEndpointIds: string[];
+  endpointOrder: string[];
   allowRouteProfileSelection: boolean;
   allowCustomRoutes: boolean;
   allowConfigRedownload: boolean;
@@ -285,8 +288,11 @@ const DEFAULT_POLICY: GlobalPortalPolicy = {
   useBridge: false,
   allowedProtocols: ["awg3"],
   allowedNodeIds: null,
+  allowedEndpointIds: null,
   recommendedNodeIds: [],
   nodeOrder: [],
+  recommendedEndpointIds: [],
+  endpointOrder: [],
   allowRouteProfileSelection: true,
   allowCustomRoutes: true,
   allowConfigRedownload: true,

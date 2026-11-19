@@ -1,4 +1,9 @@
-import type { AdminReachabilityBridge, AdminReachabilityView, ProbeLevel } from "@amnezia/contracts";
+import type {
+  AdminReachabilityBridge,
+  AdminReachabilityNode,
+  AdminReachabilityView,
+  ProbeLevel,
+} from "@amnezia/contracts";
 
 /** ok / fail / — for a level that passed, failed, or was not attempted. */
 export const levelMark = (level: ProbeLevel | null | undefined): string =>
@@ -68,6 +73,26 @@ export const REACHABILITY_COLUMNS = [
   "failing since",
   "detail",
 ];
+
+export const endpointReachabilityLines = (node: AdminReachabilityNode): string[] => {
+  const endpoints = node.publicEndpoints ?? [];
+  if (endpoints.length === 0) return [];
+  const lines: string[] = [];
+  for (const ep of endpoints) {
+    const state = !ep.enabled
+      ? "disabled"
+      : !ep.reachabilityEnabled
+        ? `${reachabilityLabel(ep.probeStatus)} (alerts off)`
+        : `${reachabilityLabel(ep.probeStatus)}${ep.incidentOpen ? " (incident)" : ""}`;
+    const levels = ep.probeLevels
+      ? ` [ping:${levelMark(ep.probeLevels.ping)} tcp:${levelMark(ep.probeLevels.tcp)} hs:${levelMark(ep.probeLevels.handshake)} http:${levelMark(ep.probeLevels.http)}]`
+      : "";
+    const since = ep.probeFailingSince ? ` since ${ep.probeFailingSince}` : "";
+    const detail = ep.probeDetail ? ` (${ep.probeDetail})` : "";
+    lines.push(`  endpoint ${ep.name} (${ep.publicAddress}): ${state}${levels}${since}${detail}`);
+  }
+  return lines;
+};
 
 export const bridgeReachabilityLines = (bridge: AdminReachabilityBridge): string[] => {
   const frps = bridge.frpsReachable === null ? "unknown" : bridge.frpsReachable ? "reachable" : "unreachable";

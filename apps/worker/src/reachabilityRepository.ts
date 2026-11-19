@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { isIPv4 } from "node:net";
-import { and, desc, eq, inArray, isNull, lt, notInArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, lt, notInArray, sql } from "drizzle-orm";
 
 import {
   bridgePanelDnsHostnameSchema,
@@ -17,6 +17,7 @@ import {
   REACHABILITY_WIDGET_JOB_TYPE,
   type ProbeBridgeRunTarget,
   type ProbeLevels,
+  type ReachabilityStatus,
   type ReachabilityWidgetPayload,
   revokeJobDedupKey,
   type ProtocolKind,
@@ -105,6 +106,7 @@ const directNodeTargets = (
     const directEndpoint = {
       id: endpoint.id,
       address: endpoint.address,
+      name: endpoint.name,
       checkedAt: endpoint.probeCheckedAt,
       reusesNodeTarget,
     };
@@ -411,16 +413,92 @@ export class PostgresReachabilityRepository
       await this.updateProbe({ staleAlertedAt: write.staleAlertedAt, lastRunMass: write.mass }, tx);
 
       const endpointIds = new Set(targets.flatMap(({ directEndpoint }) => directEndpoint ? [directEndpoint.id] : []));
-      for (const endpoint of write.endpointOutcomes) {
-        if (!endpointIds.has(endpoint.endpointId)) continue;
-        await tx
-          .update(nodeVpnEndpoints)
-          .set({
-            probeStatus: endpoint.status,
-            probeCheckedAt: run.now,
-            probeDetail: endpoint.detail,
-          })
-          .where(eq(nodeVpnEndpoints.id, endpoint.endpointId));
+      const endpointNotices: Notice[] = [];
+      if (write.endpointOutcomes.length > 0) {
+        const relevantIds = write.endpointOutcomes
+          .map((item) => item.endpointId)
+          .filter((id) => endpointIds.has(id));
+        const priorEndpoints = relevantIds.length > 0
+          ? new Map(
+              (
+                await tx
+                  .select()
+                  .from(nodeVpnEndpoints)
+                  .where(inArray(nodeVpnEndpoints.id, relevantIds))
+              ).map((row) => [row.id, row]),
+            )
+          : new Map<string, PublicEndpoint>();
+        const yesNo = (level: { ok: boolean | null } | undefined) =>
+          level?.ok === true ? "да" : level?.ok === false ? "нет" : "—";
+        for (const endpoint of write.endpointOutcomes) {
+          if (!endpointIds.has(endpoint.endpointId)) continue;
+          const prior = priorEndpoints.get(endpoint.endpointId);
+          const previous = prior
+            ? {
+                consecutiveFailures: prior.probeConsecutiveFailures,
+                failingSince: prior.probeFailingSince,
+                alertedAt: prior.probeAlertedAt,
+              }
+            : EMPTY_BRIDGE_INCIDENT;
+          // Track per-IP incident state for direct (non-bridged) endpoints.
+          // Diagnostic direct checks on bridged nodes record status/levels only
+          // without paging on already-bypassed direct IPs.
+          const trackIncident =
+            prior?.enabled === true &&
+            prior.reachabilityEnabled &&
+            !endpoint.isBridged &&
+            !write.mass;
+          const { state, notice } = trackIncident
+            ? advanceBridgeIncident(previous, endpoint.status, run.now, claimed.failThreshold)
+            : endpoint.isBridged
+              ? { state: EMPTY_BRIDGE_INCIDENT, notice: null }
+              : {
+                  state: {
+                    consecutiveFailures:
+                      endpoint.status === "ok"
+                        ? 0
+                        : endpoint.status === "failed"
+                          ? previous.consecutiveFailures + 1
+                          : previous.consecutiveFailures,
+                    failingSince:
+                      endpoint.status === "ok"
+                        ? null
+                        : endpoint.status === "failed"
+                          ? previous.failingSince ?? run.now
+                          : previous.failingSince,
+                    alertedAt: endpoint.status === "ok" ? null : previous.alertedAt,
+                  },
+                  notice: null,
+                };
+          await tx
+            .update(nodeVpnEndpoints)
+            .set({
+              probeStatus: endpoint.status,
+              probeLevels: endpoint.levels ?? null,
+              probeCheckedAt: run.now,
+              probeConsecutiveFailures: state.consecutiveFailures,
+              probeFailingSince: state.failingSince,
+              probeAlertedAt: state.alertedAt,
+              probeDetail: endpoint.detail,
+            })
+            .where(eq(nodeVpnEndpoints.id, endpoint.endpointId));
+          // Avoid duplicating the primary node alert when an endpoint reused
+          // the primary node target; send dedicated per-IP alerts for every
+          // separately probed address (e.g. secondary IPv4 listeners).
+          if (notice && !endpoint.reusesNodeTarget && prior) {
+            const openedAt = previous.alertedAt ?? run.now;
+            const title = `Адрес ${prior.name} (${prior.address})`;
+            endpointNotices.push({
+              dedupKey: `${REACHABILITY_NOTIFY_JOB_TYPE}:endpoint-probe:${prior.id}:${openedAt.getTime()}:${notice}`,
+              text:
+                notice === "down"
+                  ? `${title} недоступен из ${claimed.label}\n` +
+                    `handshake: ${yesNo(endpoint.levels?.handshake)}, tcp/22: ${yesNo(endpoint.levels?.tcp)}, ping: ${yesNo(endpoint.levels?.ping)}\n` +
+                    `с ${alertClock(state.failingSince ?? run.now, claimed.timeZone)}`
+                  : `${title} снова доступен из ${claimed.label}`,
+            });
+          }
+        }
       }
 
       // Every node here is locked, so none can be deleted before the commit.
@@ -511,7 +589,7 @@ export class PostgresReachabilityRepository
       }
 
       const bridgeNotices = await this.writeBridgeProbeStates(tx, run, targets, write.outcomes, claimed);
-      const notices = [...write.notices, ...bridgeNotices];
+      const notices = [...write.notices, ...endpointNotices, ...bridgeNotices];
       if (notices.length > 0) {
         await tx.insert(jobOutbox).values(outboxRows(notices)).onConflictDoNothing();
       }
@@ -730,6 +808,7 @@ export class PostgresReachabilityRepository
       .where(and(
         inArray(nodeVpnEndpoints.nodeId, nodeRows.map((node) => node.id)),
         eq(nodeVpnEndpoints.enabled, true),
+        eq(nodeVpnEndpoints.reachabilityEnabled, true),
       ))
       .orderBy(nodeVpnEndpoints.ordinal);
     const endpointsByNode = new Map<string, PublicEndpoint[]>();
@@ -1004,9 +1083,9 @@ export class PostgresReachabilityRepository
       .innerJoin(nodes, eq(nodes.id, nodeReachabilityState.nodeId))
       .where(eq(nodes.reachabilityEnabled, true));
     const nodeIds = stateRows.map((row) => row.nodeId);
-    const [resultRows, onlineRows, handshakeRows, bridgedRows] =
+    const [resultRows, onlineRows, handshakeRows, bridgedRows, endpointRows] =
       nodeIds.length === 0
-        ? [[], [], [], []]
+        ? [[], [], [], [], []]
         : await Promise.all([
             db
               .select({
@@ -1021,26 +1100,28 @@ export class PostgresReachabilityRepository
             db
               .select({
                 nodeId: vpnKeys.nodeId,
+                endpointId: vpnKeys.endpointId,
                 online: sql<number>`count(*) filter (where ${peerCurrent.online})`,
               })
               .from(peerCurrent)
               .innerJoin(vpnKeys, eq(vpnKeys.id, peerCurrent.keyId))
               .innerJoin(users, keyOwnerIsPerson(vpnKeys))
               .where(inArray(vpnKeys.nodeId, nodeIds))
-              .groupBy(vpnKeys.nodeId),
+              .groupBy(vpnKeys.nodeId, vpnKeys.endpointId),
             // A person's newest handshake on the node, as on the admin node
             // card. Revoked keys count: a node everyone was moved off keeps
             // saying when people last used it instead of going blank.
             db
               .select({
                 nodeId: vpnKeys.nodeId,
+                endpointId: vpnKeys.endpointId,
                 at: sql<unknown>`max(${peerCurrent.latestHandshakeAt})`,
               })
               .from(peerCurrent)
               .innerJoin(vpnKeys, eq(vpnKeys.id, peerCurrent.keyId))
               .innerJoin(users, keyOwnerIsPerson(vpnKeys))
               .where(inArray(vpnKeys.nodeId, nodeIds))
-              .groupBy(vpnKeys.nodeId),
+              .groupBy(vpnKeys.nodeId, vpnKeys.endpointId),
             // Nodes on a bridge: their verdict is the bridged AWG 3.1 path's.
             db
               .select({ nodeId: vpnBridgeRoutes.nodeId })
@@ -1051,6 +1132,11 @@ export class PostgresReachabilityRepository
                   inArray(vpnBridgeRoutes.nodeId, nodeIds),
                 ),
               ),
+            db
+              .select()
+              .from(nodeVpnEndpoints)
+              .where(inArray(nodeVpnEndpoints.nodeId, nodeIds))
+              .orderBy(asc(nodeVpnEndpoints.ordinal), asc(nodeVpnEndpoints.address), asc(nodeVpnEndpoints.id)),
           ]);
 
     // One protocol's levels per node: the one that worked, else one that was
@@ -1066,7 +1152,14 @@ export class PostgresReachabilityRepository
       const current = best.get(row.nodeId);
       if (!current || rank < current.rank) best.set(row.nodeId, { rank, levels });
     }
-    const online = new Map(onlineRows.map((row) => [row.nodeId, Number(row.online)]));
+    const online = new Map<string, number>();
+    const onlineByEndpoint = new Map<string, number>();
+    for (const row of onlineRows) {
+      const count = Number(row.online);
+      online.set(row.nodeId, (online.get(row.nodeId) ?? 0) + count);
+      const key = `${row.nodeId}:${row.endpointId ?? "primary"}`;
+      onlineByEndpoint.set(key, (onlineByEndpoint.get(key) ?? 0) + count);
+    }
     // A raw `max(...)` gets no type parser: postgres-js may hand back a string.
     const toDate = (value: unknown): Date | null => {
       if (value instanceof Date) return value;
@@ -1074,16 +1167,60 @@ export class PostgresReachabilityRepository
       const parsed = new Date(value);
       return Number.isNaN(parsed.getTime()) ? null : parsed;
     };
-    const lastHandshake = new Map(handshakeRows.map((row) => [row.nodeId, toDate(row.at)]));
+    const laterDate = (a: Date | null | undefined, b: Date | null): Date | null => {
+      if (!a) return b;
+      if (!b) return a;
+      return a.getTime() >= b.getTime() ? a : b;
+    };
+    const lastHandshake = new Map<string, Date | null>();
+    const lastHandshakeByEndpoint = new Map<string, Date | null>();
+    for (const row of handshakeRows) {
+      const at = toDate(row.at);
+      lastHandshake.set(row.nodeId, laterDate(lastHandshake.get(row.nodeId), at));
+      const key = `${row.nodeId}:${row.endpointId ?? "primary"}`;
+      lastHandshakeByEndpoint.set(key, laterDate(lastHandshakeByEndpoint.get(key), at));
+    }
+    const endpointsByNode = new Map<string, typeof endpointRows>();
+    for (const ep of endpointRows) {
+      const list = endpointsByNode.get(ep.nodeId) ?? [];
+      list.push(ep);
+      endpointsByNode.set(ep.nodeId, list);
+    }
 
-    const widgetNodes: WidgetNode[] = stateRows.map((row) => ({
-      name: row.name,
-      status: row.status,
-      levels: best.get(row.nodeId)?.levels ?? null,
-      failingSince: row.failingSince,
-      online: online.get(row.nodeId) ?? 0,
-      lastPersonHandshakeAt: lastHandshake.get(row.nodeId) ?? null,
-    }));
+    const widgetNodes: WidgetNode[] = stateRows.flatMap((row): WidgetNode[] => {
+      const nodeEndpoints = endpointsByNode.get(row.nodeId) ?? [];
+      const probed = nodeEndpoints.filter(
+        (ep) => ep.enabled && ep.reachabilityEnabled && ep.probeStatus !== null,
+      );
+      if (!bridged.has(row.nodeId) && nodeEndpoints.length >= 2 && probed.length > 0) {
+        return probed.map((ep) => {
+          const parsed = probeLevelsSchema.safeParse(ep.probeLevels);
+          const epOnline =
+            (onlineByEndpoint.get(`${row.nodeId}:${ep.id}`) ?? 0) +
+            (ep.ordinal === 1 ? (onlineByEndpoint.get(`${row.nodeId}:primary`) ?? 0) : 0);
+          const epHandshake = laterDate(
+            lastHandshakeByEndpoint.get(`${row.nodeId}:${ep.id}`),
+            ep.ordinal === 1 ? (lastHandshakeByEndpoint.get(`${row.nodeId}:primary`) ?? null) : null,
+          );
+          return {
+            name: ep.name,
+            status: ep.probeStatus as ReachabilityStatus,
+            levels: parsed.success ? parsed.data : (ep.ordinal === 1 ? (best.get(row.nodeId)?.levels ?? null) : null),
+            failingSince: ep.probeFailingSince,
+            online: epOnline,
+            lastPersonHandshakeAt: epHandshake,
+          };
+        });
+      }
+      return [{
+        name: row.name,
+        status: row.status,
+        levels: best.get(row.nodeId)?.levels ?? null,
+        failingSince: row.failingSince,
+        online: online.get(row.nodeId) ?? 0,
+        lastPersonHandshakeAt: lastHandshake.get(row.nodeId) ?? null,
+      }];
+    });
     const widget: StoredWidget | null =
       probe.widgetMessageId !== null && probe.widgetChatId !== null && probe.widgetVersion !== null
         ? {

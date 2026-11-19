@@ -200,6 +200,24 @@ function AdminNodesView() {
     await Promise.all([reload(), reachability.reload()]);
   };
 
+  const setEndpointReachability = async (
+    nodeId: string,
+    endpointId: string,
+    enabled: boolean,
+  ) => {
+    await request(`/api/admin/nodes/${nodeId}`, {
+      method: "PATCH",
+      body: JSON.stringify({
+        publicEndpoint: {
+          action: "update",
+          id: endpointId,
+          reachabilityEnabled: enabled,
+        },
+      }),
+    });
+    await Promise.all([reload(), reachability.reload()]);
+  };
+
   const setBridgeReachability = async (bridgeId: string, enabled: boolean) => {
     setBridgeReachabilityBusy(true);
     try {
@@ -322,7 +340,7 @@ function AdminNodesView() {
                       method: "PATCH",
                       body: JSON.stringify({ publicEndpoint }),
                     });
-                    await reload();
+                    await Promise.all([reload(), reachability.reload()]);
                   }}
                 />
               ))}
@@ -341,6 +359,7 @@ function AdminNodesView() {
       <ReachabilityCard
         state={reachability}
         onSetNodeEnabled={setNodeReachability}
+        onSetEndpointEnabled={setEndpointReachability}
         bridgeToggleBusy={bridgeReachabilityBusy}
         onSetBridgeEnabled={setBridgeReachability}
       />
