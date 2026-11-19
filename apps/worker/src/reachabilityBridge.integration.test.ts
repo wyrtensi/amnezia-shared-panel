@@ -18,6 +18,7 @@ import {
   nodeReachabilityState,
   nodeVpnEndpoints,
   nodes,
+  portalPolicy,
   reachabilityProbe,
   resetNodeEndpointEvidence,
   SERVICE_ACCOUNT_EMAIL,
@@ -109,6 +110,7 @@ describe("reachability of bridged nodes (real PostgreSQL)", () => {
       // Results, state and history cascade with the node.
       await database.db.delete(nodes).where(inArray(nodes.id, createdNodeIds));
     }
+    await database.db.delete(portalPolicy);
     createdNodeIds.length = 0;
     createdBridgeIds.length = 0;
   });
@@ -237,6 +239,11 @@ describe("reachability of bridged nodes (real PostgreSQL)", () => {
       .set({ vpnEndpointRevision: node.revision + 1 })
       .where(eq(nodes.id, nodeId));
     await resetNodeEndpointEvidence(tx, nodeId, now);
+  };
+
+  const seedPortalPolicy = async (useBridge: boolean) => {
+    await db().delete(portalPolicy);
+    await db().insert(portalPolicy).values({ useBridge });
   };
 
   const seedProbe = async (
@@ -437,6 +444,7 @@ describe("reachability of bridged nodes (real PostgreSQL)", () => {
 
   runDatabaseTest("bridge activation clears direct evidence and checks only the bridged AWG 3.1 path", async () => {
     await seedProbe();
+    await seedPortalPolicy(true);
     const node = await seedNode({ awg3Link: awgServiceLink({ host: "192.0.2.10" }) });
     await seedDirectEndpoints(node.id);
     const probe = harness(() => ({ handshake: true, http: true }));
@@ -456,12 +464,67 @@ describe("reachability of bridged nodes (real PostgreSQL)", () => {
       { host: bridge.publicIpv4, port: 41000 },
     ]);
     await probe.tick();
-    expect(await directEndpointsOf(node.id)).toMatchObject([
-      { probeStatus: null, probeCheckedAt: null, probeDetail: null },
-      { probeStatus: null, probeCheckedAt: null, probeDetail: null },
-      { probeStatus: null, probeCheckedAt: null, probeDetail: null },
+    expect((await directEndpointsOf(node.id)).map((endpoint) => endpoint.probeStatus)).toEqual([
+      "ok", "ok", null,
     ]);
     expect((await resultsOf(node.id)).get("awg3")?.status).toBe("ok");
+  });
+
+  runDatabaseTest("probes bridged and direct endpoints on the same node according to bridgeMode and portal policy", async () => {
+    await seedProbe();
+    await seedPortalPolicy(false);
+    const node = await seedNode({ awg3Link: awgServiceLink({ host: "192.0.2.10", port: 51234 }) });
+    await db().insert(nodeVpnEndpoints).values([
+      {
+        nodeId: node.id,
+        ordinal: 1,
+        name: "Bridged-EP",
+        address: "192.0.2.10",
+        enabled: true,
+        reachabilityEnabled: true,
+        bridgeMode: "bridge",
+      },
+      {
+        nodeId: node.id,
+        ordinal: 2,
+        name: "Direct-EP",
+        address: "192.0.2.20",
+        enabled: true,
+        reachabilityEnabled: true,
+        bridgeMode: "direct",
+      },
+      {
+        nodeId: node.id,
+        ordinal: 3,
+        name: "Inherit-EP",
+        address: "192.0.2.30",
+        enabled: true,
+        reachabilityEnabled: true,
+        bridgeMode: "inherit",
+      },
+    ]);
+    const bridge = await seedBridge(`Mixed ${runTag}`);
+    await seedRoute(node.id, bridge.id, "active");
+    const probe = harness((target) => {
+      const host = inspectAwgVpnLink(target.config).endpoint?.host;
+      const ok = host === bridge.publicIpv4 || host === "192.0.2.30";
+      return { handshake: ok, http: ok };
+    });
+
+    await probe.tick();
+    const awg31 = probe.sent[0]?.targets.filter((target) => target.protocol === "awg3");
+    expect(new Set(awg31?.map((target) => inspectAwgVpnLink(target.config).endpoint))).toEqual(new Set([
+      { host: bridge.publicIpv4, port: 41000 },
+      { host: "192.0.2.20", port: 51234 },
+      { host: "192.0.2.30", port: 51234 },
+    ]));
+
+    await probe.tick();
+    expect((await directEndpointsOf(node.id)).map((endpoint) => [endpoint.name, endpoint.probeStatus])).toEqual([
+      ["Bridged-EP", "ok"],
+      ["Direct-EP", "failed"],
+      ["Inherit-EP", "ok"],
+    ]);
   });
 
   /** Resolves once another session waits for a row lock (files run one at a time). */
@@ -570,6 +633,7 @@ describe("reachability of bridged nodes (real PostgreSQL)", () => {
   });
 
   runDatabaseTest("measures opted-in bridged nodes' direct addresses independently", async () => {
+    await seedPortalPolicy(true);
     const node = await seedNode({ awg3Link: awgServiceLink({ host: "192.0.2.10", port: 51234 }) });
     await seedDirectEndpoints(node.id);
     const bridge = await seedBridge(`Bridge ${runTag}`);
@@ -596,7 +660,7 @@ describe("reachability of bridged nodes (real PostgreSQL)", () => {
 
     expect(await stateOf(node.id)).toMatchObject({ status: "failed", directStatus: "failed" });
     expect((await directEndpointsOf(node.id)).map((endpoint) => endpoint.probeStatus)).toEqual([
-      "failed", "ok", null,
+      "failed", "failed", null,
     ]);
   });
 

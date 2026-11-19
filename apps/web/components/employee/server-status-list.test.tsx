@@ -71,4 +71,24 @@ describe("ServerStatusList", () => {
     expect(addresses.match(/<code/g)).toHaveLength(1);
     expect(addresses).toContain("192.0.2.22");
   });
+
+  it("renders each endpoint directly without adding a duplicate 'via bridge' row", () => {
+    const multi = renderToStaticMarkup(
+      <ServerStatusList
+        nodes={[
+          node("Edge", {
+            bridgeReachability: { state: "ok", since: null },
+            publicEndpoints: [
+              { id: "ep-1", ordinal: 1, name: "Edge-1", recommended: true, reachability: { state: "ok", since: null } },
+              { id: "ep-2", ordinal: 2, name: "Edge-2", recommended: false, reachability: { state: "unknown", since: null } },
+            ],
+          }),
+        ]}
+      />,
+    );
+    expect(multi).toContain("Edge-1");
+    expect(multi).toContain("Edge-2");
+    expect(multi).not.toContain("через мост");
+    expect(multi).not.toContain("via bridge");
+  });
 });
