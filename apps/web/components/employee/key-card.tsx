@@ -34,6 +34,7 @@ import {
   InternalNameChip,
   KeyInternalNameDialog,
 } from "@/components/key-internal-name-dialog";
+import { KeyBridgeBadge } from "@/components/key-bridge-badge";
 import { KeyRenameDialog } from "@/components/employee/key-rename-dialog";
 import { configUrl } from "@/lib/api";
 import { formatDate } from "@/lib/format";
@@ -259,6 +260,7 @@ export function KeyCard({
                 {t(ROUTE_DESC[keyView.routeProfile] ?? keyView.routeProfile)}
               </TooltipContent>
             </Tooltip>
+            {isAdmin ? <KeyBridgeBadge bridge={keyView.bridge} /> : null}
           </div>
 
           {/* The operator-only note, on the administrator's own key. Same framed

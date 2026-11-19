@@ -215,14 +215,14 @@ describe("bridge candidate validation (real PostgreSQL)", () => {
 
   const seedAdmin = async (
     label: string,
-    policyOverride?: { allowConfigRedownload: boolean },
+    policyOverride?: { allowConfigRedownload?: boolean; useBridge?: boolean },
   ): Promise<Actor> => {
     const [user] = await db()
       .insert(users)
       .values({
         email: `verify-${label}-${runTag}@example.com`,
         role: "admin",
-        ...(policyOverride ? { policyOverride } : {}),
+        policyOverride: { useBridge: true, ...policyOverride },
       })
       .returning();
     if (!user) throw new Error("Failed to seed admin");

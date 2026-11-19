@@ -673,6 +673,7 @@ const ru = {
   "users.deact.access_removed": "доступ Cloudflare отозван",
   "upolicy.allowKeyCreation": "Создание ключей",
   "upolicy.allowNodeSelection": "Выбор ноды",
+  "upolicy.useBridge": "Использовать мост",
   "upolicy.allowRouteProfileSelection": "Выбор маршрутизации",
   "upolicy.allowCustomRoutes": "Свои маршруты",
   "upolicy.allowConfigRedownload": "Повторная загрузка",
@@ -1159,6 +1160,7 @@ const ru = {
   // Admin policy
   "gpolicy.allowKeyCreation": "Создание ключей",
   "gpolicy.allowNodeSelection": "Выбор VPN-ноды",
+  "gpolicy.useBridge": "Использовать мост для пользователей",
   "gpolicy.allowRouteProfileSelection": "Выбор профиля маршрутизации",
   "gpolicy.allowCustomRoutes": "Пользовательские маршруты",
   "gpolicy.allowConfigRedownload": "Повторная загрузка конфигураций",
@@ -1176,6 +1178,8 @@ const ru = {
     "Пользователь может сам создавать новые ключи для своих устройств.",
   "gpolicy.allowNodeSelectionHint":
     "Пользователь может выбирать, на каком сервере (ноде) создать ключ.",
+  "gpolicy.useBridgeHint":
+    "Если включено, пользователи получают конфиги через активный мост выбранной ноды. По умолчанию выключено — можно включить глобально или точечно в политиках пользователя.",
   "gpolicy.allowRouteProfileSelectionHint":
     "Пользователь может выбирать профиль маршрутизации: весь трафик или только заблокированные сайты.",
   "gpolicy.allowCustomRoutesHint":
@@ -1892,6 +1896,10 @@ const ru = {
     "Маршрута больше нет.",
   "bridge.err.BRIDGE_NODE_NOT_AWG31":
     "Эта нода не обслуживает AWG 3.1, мост для неё недоступен.",
+  "bridge.err.BRIDGE_KEY_NOT_AWG3":
+    "Через мост можно направлять только ключи AWG 3.1.",
+  "bridge.err.BRIDGE_ROUTE_WRONG_NODE":
+    "Выбранный маршрут моста принадлежит другой ноде.",
   "bridge.err.BRIDGE_TEST_KEY_WRONG_NODE":
     "Этот ключ принадлежит другой ноде.",
   "bridge.err.BRIDGE_TEST_KEY_UNSUITABLE":
@@ -1900,6 +1908,40 @@ const ru = {
     "Проверка пробником для прежней регистрации ещё идёт. Повторите, когда она завершится.",
   "bridge.err.CONFIRMATION_REQUIRED":
     "Нужно подтверждение.",
+  "bridge.serverListHint":
+    "Выберите мост напротив сервера, чтобы быстро переключить маршрут, или откройте настройки для проверки и установки.",
+  "bridge.noNodes": "VPN-серверы пока не добавлены.",
+  "bridge.expandDetails": "Настройка маршрута",
+  "bridge.collapseDetails": "Скрыть настройку",
+  "bridge.dropdownDirect": "Напрямую (Direct)",
+  "bridge.dropdownBridgeActive": "{name} · :{port} (активен)",
+  "bridge.dropdownBridgeReady": "{name} · :{port} (готов)",
+  "bridge.dropdownBridgeDraft": "{name} · :{port} (черновик)",
+  "bridge.dropdownBridgeRetiring": "{name} · :{port} (выводится)",
+  "bridge.dropdownBridgePrepare": "{name} · подготовить (свободно {free})",
+  "bridge.needsVerifyHint":
+    "Маршрут ещё не проверен — раскройте детали ниже, чтобы выполнить установку или подтвердить соединение.",
+  "keyBridge.badgeDirectPinned": "Напрямую",
+  "keyBridge.badgeUserEnabled": "Мост",
+  "keyBridge.tipKey": "Через мост {name} ({entry}) · закреплено за ключом",
+  "keyBridge.tipPolicy": "Через мост {name} ({entry}) · по политике пользователя",
+  "keyBridge.tipDirectPinned":
+    "Закреплено напрямую (в обход политики моста пользователя)",
+  "keyBridge.label": "Маршрут через мост",
+  "keyBridge.hint":
+    "Только для администраторов. Позволяет явно отправить ключ через конкретный мост или напрямую, независимо от политики пользователя.",
+  "keyBridge.inheritDirect": "По политике (сейчас: Напрямую)",
+  "keyBridge.inheritBridge": "По политике (сейчас: {name})",
+  "keyBridge.direct": "Напрямую (без моста)",
+  "keyBridge.route": "Через мост",
+  "keyBridge.selectBridge": "Мост",
+  "keyBridge.selectBridgePlaceholder": "Выберите мост",
+  "keyBridge.noRoutesOnNode":
+    "Для этой ноды пока нет подготовленных маршрутов через мосты.",
+  "keyBridge.routeActive": "активен",
+  "keyBridge.routeDraft": "черновик",
+  "keyBridge.routeRetiring": "выводится",
+  "policy.permissionsCardTitle": "Права, отображение и интеграции",
 } as const;
 
 const en = {
@@ -2516,6 +2558,7 @@ const en = {
   "users.deact.access_removed": "Cloudflare access revoked",
   "upolicy.allowKeyCreation": "Key creation",
   "upolicy.allowNodeSelection": "Node selection",
+  "upolicy.useBridge": "Use bridge",
   "upolicy.allowRouteProfileSelection": "Routing selection",
   "upolicy.allowCustomRoutes": "Custom routes",
   "upolicy.allowConfigRedownload": "Re-download",
@@ -2984,6 +3027,7 @@ const en = {
   // Admin policy
   "gpolicy.allowKeyCreation": "Key creation",
   "gpolicy.allowNodeSelection": "VPN node selection",
+  "gpolicy.useBridge": "Use bridge for users",
   "gpolicy.allowRouteProfileSelection": "Routing profile selection",
   "gpolicy.allowCustomRoutes": "User custom routes",
   "gpolicy.allowConfigRedownload": "Configuration re-download",
@@ -3001,6 +3045,8 @@ const en = {
     "The user can create new keys for their own devices.",
   "gpolicy.allowNodeSelectionHint":
     "The user can choose which server (node) a key is created on.",
+  "gpolicy.useBridgeHint":
+    "When enabled, users receive configs routed through the node's active bridge. Off by default — enable globally or per user in User Policies.",
   "gpolicy.allowRouteProfileSelectionHint":
     "The user can choose a routing profile: all traffic, or blocked-sites-only.",
   "gpolicy.allowCustomRoutesHint":
@@ -3708,6 +3754,10 @@ const en = {
     "The route no longer exists.",
   "bridge.err.BRIDGE_NODE_NOT_AWG31":
     "This node does not serve AWG 3.1, so it cannot use a bridge.",
+  "bridge.err.BRIDGE_KEY_NOT_AWG3":
+    "Only AWG 3.1 keys can be routed through a bridge.",
+  "bridge.err.BRIDGE_ROUTE_WRONG_NODE":
+    "The selected bridge route belongs to a different node.",
   "bridge.err.BRIDGE_TEST_KEY_WRONG_NODE":
     "That key belongs to another node.",
   "bridge.err.BRIDGE_TEST_KEY_UNSUITABLE":
@@ -3716,6 +3766,40 @@ const en = {
     "A probe check for an earlier registration is still running. Try again when it finishes.",
   "bridge.err.CONFIRMATION_REQUIRED":
     "Confirmation is required.",
+  "bridge.serverListHint":
+    "Pick a bridge next to any server to switch or prepare its route, or expand the row to verify and manage setup.",
+  "bridge.noNodes": "No VPN servers have been added yet.",
+  "bridge.expandDetails": "Configure route",
+  "bridge.collapseDetails": "Hide details",
+  "bridge.dropdownDirect": "Direct (no bridge)",
+  "bridge.dropdownBridgeActive": "{name} · :{port} (active)",
+  "bridge.dropdownBridgeReady": "{name} · :{port} (ready)",
+  "bridge.dropdownBridgeDraft": "{name} · :{port} (draft)",
+  "bridge.dropdownBridgeRetiring": "{name} · :{port} (retiring)",
+  "bridge.dropdownBridgePrepare": "{name} · prepare ({free} free)",
+  "bridge.needsVerifyHint":
+    "This route is not verified yet — use the details below to complete setup or confirm connectivity.",
+  "keyBridge.badgeDirectPinned": "Direct",
+  "keyBridge.badgeUserEnabled": "Bridge",
+  "keyBridge.tipKey": "Via bridge {name} ({entry}) · pinned to key",
+  "keyBridge.tipPolicy": "Via bridge {name} ({entry}) · via user policy",
+  "keyBridge.tipDirectPinned":
+    "Pinned to Direct (overrides user bridge policy)",
+  "keyBridge.label": "Bridge routing",
+  "keyBridge.hint":
+    "Admins only. Route this key through a specific bridge or force Direct regardless of the user's policy.",
+  "keyBridge.inheritDirect": "Follow policy (currently: Direct)",
+  "keyBridge.inheritBridge": "Follow policy (currently: {name})",
+  "keyBridge.direct": "Direct (no bridge)",
+  "keyBridge.route": "Via bridge",
+  "keyBridge.selectBridge": "Bridge",
+  "keyBridge.selectBridgePlaceholder": "Select a bridge",
+  "keyBridge.noRoutesOnNode":
+    "No bridge routes are prepared for this server yet.",
+  "keyBridge.routeActive": "active",
+  "keyBridge.routeDraft": "draft",
+  "keyBridge.routeRetiring": "retiring",
+  "policy.permissionsCardTitle": "Permissions, display & integrations",
 } satisfies Record<keyof typeof ru, string>;
 
 export const messages = { ru, en } as const;

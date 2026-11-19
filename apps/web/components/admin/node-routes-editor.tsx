@@ -1,11 +1,21 @@
 "use client";
 
 import * as React from "react";
-import { Cable, Download, RefreshCw, TriangleAlert } from "lucide-react";
+import {
+  Cable,
+  ChevronDown,
+  Download,
+  RefreshCw,
+  Server,
+  TriangleAlert,
+} from "lucide-react";
 import { toast } from "sonner";
 import type {
   Bridge,
   BridgeEligibility,
+  BridgeRouteSummary,
+  InfrastructureBridgeItem,
+  InfrastructureVpnItem,
   NodeBridgeRoute,
   NodeBridgeRoutes,
 } from "@amnezia/contracts";
@@ -38,7 +48,7 @@ import {
   fetchTestConfig,
   getEligibility,
   getNodeRoutes,
-  listBridges,
+  listInfrastructure,
   prepareRoute,
   releaseRoute,
   setNodeEndpoint,
@@ -55,17 +65,19 @@ import {
   verificationTone,
 } from "@/lib/bridge-ui";
 import { ApiClientError } from "@/lib/api";
+import { cn } from "@/lib/utils";
 import { useT } from "@/lib/i18n/provider";
 import type { KeyView } from "@/lib/types";
 
-const NO_NODE = "none";
+const DIRECT_VALUE = "direct";
+const bridgeOptionValue = (bridgeId: string): string => `bridge:${bridgeId}`;
 
 type ProbeUnavailableCode =
   | "BRIDGE_PROBE_UNAVAILABLE"
   | "BRIDGE_PROBE_CAPABILITY_MISSING"
   | "BRIDGE_JOBS_DISABLED";
 
-type Notice = { tone: "danger" | "success" | "warning"; text: string };
+type Notice = { tone: "danger" | "success" | "warning" | "info"; text: string };
 
 export async function saveRouteAssignment(
   request: Requester,
@@ -81,41 +93,92 @@ export async function saveRouteAssignment(
 }
 
 /**
- * Per-node route editor: Direct or a bridge route, drafts and retiring routes.
- * Every state change goes through the Control API, which owns the rules; this
- * component loads the assignment, sends the revision it loaded, and shows the
- * API's error codes as readable messages.
+ * Sorts VPN servers in the admin's `nodeOrder` (mirroring `NodeOrderList`),
+ * with unordered servers trailing alphabetically by name.
+ */
+function orderVpnItems(
+  items: readonly InfrastructureVpnItem[],
+  nodeOrder: readonly string[],
+): InfrastructureVpnItem[] {
+  const rank = new Map(nodeOrder.map((id, idx) => [id, idx]));
+  return [...items].sort((a, b) => {
+    const ra = rank.get(a.id);
+    const rb = rank.get(b.id);
+    if (ra !== undefined && rb !== undefined) return ra - rb;
+    if (ra !== undefined) return -1;
+    if (rb !== undefined) return 1;
+    return a.name.localeCompare(b.name);
+  });
+}
+
+/**
+ * Per-node route editor: lists every VPN server with a bridge dropdown right
+ * across from it (modeled after `NodeOrderList` / `NodeSelect`), plus an inline
+ * expandable panel per server for route preparation, verification, eligibility
+ * and retiring-route cleanup.
  */
 export function NodeRoutesEditor({ initialNodeId }: { initialNodeId: string | null }) {
   const { t } = useT();
-  const { nodes, request, reload: reloadAdmin } = useAdminData();
-  const [nodeId, setNodeId] = React.useState<string | null>(initialNodeId);
+  const { nodes, policy, request, reload: reloadAdmin } = useAdminData();
+  const [expandedNodeId, setExpandedNodeId] = React.useState<string | null>(initialNodeId);
+  const expandedNodeIdRef = React.useRef<string | null>(initialNodeId);
+  const detailRequestSeqRef = React.useRef(0);
+  const [vpnItems, setVpnItems] = React.useState<InfrastructureVpnItem[]>([]);
+  const [bridges, setBridges] = React.useState<InfrastructureBridgeItem[]>([]);
+  const [infraLoading, setInfraLoading] = React.useState(false);
+
   const [routes, setRoutes] = React.useState<NodeBridgeRoutes | null>(null);
-  const [bridges, setBridges] = React.useState<Bridge[]>([]);
   const [eligibility, setEligibility] = React.useState<BridgeEligibility | null>(null);
   const [testKeys, setTestKeys] = React.useState<KeyView[]>([]);
-  const [loading, setLoading] = React.useState(false);
+  const [detailLoading, setDetailLoading] = React.useState(false);
   const [busy, setBusy] = React.useState<string | null>(null);
   const [notice, setNotice] = React.useState<Notice | null>(null);
 
-  // The query param can arrive after the admin data does; follow it until the
-  // operator picks a node by hand.
-  React.useEffect(() => {
-    if (initialNodeId) setNodeId(initialNodeId);
-  }, [initialNodeId]);
+  const selectExpandedNode = React.useCallback((nextId: string | null) => {
+    expandedNodeIdRef.current = nextId;
+    setExpandedNodeId(nextId);
+  }, []);
 
-  const load = React.useCallback(
+  // Follow `?node=<id>` when arriving from `/admin/nodes`.
+  React.useEffect(() => {
+    if (initialNodeId) selectExpandedNode(initialNodeId);
+  }, [initialNodeId, selectExpandedNode]);
+
+  const loadOverview = React.useCallback(async () => {
+    setInfraLoading(true);
+    try {
+      const items = await listInfrastructure(request);
+      setVpnItems(
+        items.filter((item): item is InfrastructureVpnItem => item.kind === "vpn"),
+      );
+      setBridges(
+        items.filter(
+          (item): item is InfrastructureBridgeItem => item.kind === "bridge",
+        ),
+      );
+    } catch (cause) {
+      setNotice({ tone: "danger", text: describeBridgeError(cause, t).message });
+    } finally {
+      setInfraLoading(false);
+    }
+  }, [request, t]);
+
+  React.useEffect(() => {
+    void loadOverview();
+  }, [loadOverview]);
+
+  const loadDetails = React.useCallback(
     async (id: string) => {
-      setLoading(true);
+      const seq = ++detailRequestSeqRef.current;
+      setDetailLoading(true);
       try {
-        const [nextRoutes, nextBridges, nextEligibility, keys] = await Promise.all([
+        const [nextRoutes, nextEligibility, keys] = await Promise.all([
           getNodeRoutes(request, id),
-          listBridges(request),
           getEligibility(request, id),
           request<KeyView[]>("/api/keys"),
         ]);
+        if (seq !== detailRequestSeqRef.current) return;
         setRoutes(nextRoutes);
-        setBridges(nextBridges);
         setEligibility(nextEligibility);
         setTestKeys(
           keys.filter(
@@ -123,27 +186,38 @@ export function NodeRoutesEditor({ initialNodeId }: { initialNodeId: string | nu
           ),
         );
       } catch (cause) {
+        if (seq !== detailRequestSeqRef.current) return;
         setNotice({ tone: "danger", text: describeBridgeError(cause, t).message });
       } finally {
-        setLoading(false);
+        if (seq === detailRequestSeqRef.current) setDetailLoading(false);
       }
     },
     [request, t],
   );
 
   React.useEffect(() => {
+    detailRequestSeqRef.current += 1;
     setRoutes(null);
     setEligibility(null);
-    setNotice(null);
-    if (nodeId) void load(nodeId);
-  }, [nodeId, load]);
+    if (expandedNodeId) void loadDetails(expandedNodeId);
+  }, [expandedNodeId, loadDetails]);
 
-  const run = async (
+  const refreshAll = React.useCallback(
+    async (detailNodeId: string | null = expandedNodeIdRef.current) => {
+      await Promise.all([
+        loadOverview(),
+        detailNodeId ? loadDetails(detailNodeId) : Promise.resolve(),
+      ]);
+    },
+    [loadOverview, loadDetails],
+  );
+
+  const runForNode = async (
+    targetNodeId: string,
     name: string,
     action: () => Promise<string | void>,
     refetchOnError = false,
   ) => {
-    if (!nodeId) return;
     setBusy(name);
     setNotice(null);
     try {
@@ -152,25 +226,36 @@ export function NodeRoutesEditor({ initialNodeId }: { initialNodeId: string | nu
         setNotice({ tone: "success", text: done });
         toast.success(done);
       }
-      await load(nodeId);
+      await refreshAll(expandedNodeIdRef.current ?? targetNodeId);
     } catch (cause) {
       const described = describeBridgeError(cause, t);
       setNotice({ tone: "danger", text: described.message });
       toast.error(described.message);
-      if (described.refetch || refetchOnError) await load(nodeId);
+      if (described.refetch || refetchOnError) {
+        await refreshAll(expandedNodeIdRef.current);
+      }
     } finally {
       setBusy(null);
     }
   };
 
-  const revision = routes?.vpnEndpointRevision ?? 0;
-
-  const activate = (routeId: string | null, registrationMarker?: string) => {
-    if (!nodeId) return;
-    return run(
-      routeId ?? "direct",
+  const activate = (
+    targetNodeId: string,
+    routeId: string | null,
+    targetRevision: number,
+    registrationMarker?: string,
+  ) =>
+    runForNode(
+      targetNodeId,
+      `${targetNodeId}-${routeId ?? "direct"}`,
       async () => {
-        const result = await saveRouteAssignment(request, nodeId, routeId, revision, registrationMarker);
+        const result = await saveRouteAssignment(
+          request,
+          targetNodeId,
+          routeId,
+          targetRevision,
+          registrationMarker,
+        );
         await reloadAdmin();
         if (!result.vpnEndpoint.changed) return t("bridge.unchanged");
         return t(routeId ? "bridge.activated" : "bridge.switchedDirect");
@@ -178,40 +263,109 @@ export function NodeRoutesEditor({ initialNodeId }: { initialNodeId: string | nu
       // Verification may already be recorded when activation fails.
       registrationMarker !== undefined,
     );
+
+  // Merge infrastructure VPN items with admin node list so servers show even
+  // while infrastructure loads for the first time.
+  const orderedServers = React.useMemo(() => {
+    if (vpnItems.length > 0) {
+      return orderVpnItems(vpnItems, policy.nodeOrder ?? []);
+    }
+    return orderVpnItems(
+      nodes.map((node) => ({
+        kind: "vpn" as const,
+        id: node.id,
+        name: node.name,
+        publicName: node.publicName ?? null,
+        enabled: node.enabled,
+        activeRoute: null,
+        vpnEndpointRevision: 0,
+      })),
+      policy.nodeOrder ?? [],
+    );
+  }, [vpnItems, nodes, policy.nodeOrder]);
+
+  const routeByNodeAndBridge = React.useMemo(() => {
+    const map = new Map<string, { bridge: InfrastructureBridgeItem; route: BridgeRouteSummary }>();
+    for (const bridge of bridges) {
+      for (const route of bridge.routes) {
+        map.set(`${route.nodeId}:${bridge.id}`, { bridge, route });
+      }
+    }
+    return map;
+  }, [bridges]);
+
+  const nonActiveCountsByNode = React.useMemo(() => {
+    const map = new Map<string, { drafts: number; retiring: number }>();
+    for (const bridge of bridges) {
+      for (const route of bridge.routes) {
+        if (route.state === "active") continue;
+        const entry = map.get(route.nodeId) ?? { drafts: 0, retiring: 0 };
+        if (route.state === "draft") entry.drafts += 1;
+        else entry.retiring += 1;
+        map.set(route.nodeId, entry);
+      }
+    }
+    return map;
+  }, [bridges]);
+
+  const handleQuickSelect = (server: InfrastructureVpnItem, nextValue: string) => {
+    if (nextValue === DIRECT_VALUE) {
+      if (!server.activeRoute) return;
+      void activate(server.id, null, server.vpnEndpointRevision);
+      return;
+    }
+    if (!nextValue.startsWith("bridge:")) return;
+    const bridgeId = nextValue.slice("bridge:".length);
+    const existing = routeByNodeAndBridge.get(`${server.id}:${bridgeId}`);
+    if (existing) {
+      if (existing.route.state === "active") return;
+      const isVerified =
+        existing.route.verification.kind === "candidate" &&
+        existing.route.verification.status === "valid";
+      if (isVerified) {
+        void activate(server.id, existing.route.id, server.vpnEndpointRevision);
+        return;
+      }
+      // Route exists (draft or retiring) but needs setup or verification:
+      // expand the server's inline panel right beneath it.
+      selectExpandedNode(server.id);
+      setNotice({ tone: "info", text: t("bridge.needsVerifyHint") });
+      return;
+    }
+    // No route exists yet for (server, bridge): prepare it automatically and
+    // open the server's inline panel with setup commands & verification tools.
+    selectExpandedNode(server.id);
+    void runForNode(server.id, `prepare-${server.id}`, async () => {
+      const result = await prepareRoute(request, server.id, bridgeId);
+      return result.created ? t("bridge.prepared") : t("bridge.preparedExisting");
+    });
   };
 
   return (
     <Card id="node-routes">
       <CardHeader>
-        <CardTitle className="flex items-center gap-2">
-          <Cable className="h-4 w-4 text-primary" />
-          {t("bridge.routesTitle")}
-          <Hint>{t("bridge.routesHint")}</Hint>
-        </CardTitle>
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <CardTitle className="flex items-center gap-2">
+            <Cable className="h-4 w-4 text-primary" />
+            {t("bridge.routesTitle")}
+            <Hint>{t("bridge.routesHint")}</Hint>
+          </CardTitle>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            disabled={infraLoading || detailLoading || busy !== null}
+            onClick={() => void refreshAll(expandedNodeId)}
+          >
+            <RefreshCw className={cn("h-4 w-4", infraLoading && "animate-spin")} />
+            {t("bridge.refresh")}
+          </Button>
+        </div>
       </CardHeader>
       <CardContent className="space-y-4">
-        <Callout tone="info">{t("bridge.awg31Only")}</Callout>
-
-        <div className="space-y-1.5">
-          <Label htmlFor="route-node">{t("bridge.selectNode")}</Label>
-          <Select
-            value={nodeId ?? ""}
-            disabled={busy !== null}
-            onValueChange={(value) => setNodeId(value === NO_NODE ? null : value)}
-          >
-            <SelectTrigger id="route-node" className="sm:max-w-sm">
-              <SelectValue placeholder={t("bridge.selectNodePlaceholder")} />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value={NO_NODE}>{t("bridge.selectNodePlaceholder")}</SelectItem>
-              {nodes.map((node) => (
-                <SelectItem key={node.id} value={node.id}>
-                  {node.name}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
+        <p className="text-xs text-muted-foreground">
+          {t("bridge.serverListHint")} {t("bridge.awg31Only")}
+        </p>
 
         {notice ? (
           <Callout
@@ -222,65 +376,269 @@ export function NodeRoutesEditor({ initialNodeId }: { initialNodeId: string | nu
           </Callout>
         ) : null}
 
-        {!nodeId ? (
-          <p className="text-sm text-muted-foreground">{t("bridge.pickNode")}</p>
-        ) : !routes ? (
-          <p className="text-sm text-muted-foreground">
-            {loading ? t("bridge.loading") : t("bridge.loadFailed")}
-          </p>
+        {orderedServers.length === 0 ? (
+          <p className="text-sm text-muted-foreground">{t("bridge.noNodes")}</p>
         ) : (
-          <>
-            <CurrentAssignment
-              routes={routes}
-              busy={busy}
-              loading={loading}
-              onDirect={() => void activate(null)}
-              onRefresh={() => nodeId && void load(nodeId)}
-            />
+          <ol className="space-y-1.5 rounded-lg border border-border/60 bg-well p-1.5 shadow-[var(--inset-shadow)]">
+            {orderedServers.map((server) => {
+              const activeBridge = server.activeRoute
+                ? bridges.find((bridge) => bridge.id === server.activeRoute?.bridgeId) ?? null
+                : null;
+              const currentSelectValue = server.activeRoute
+                ? bridgeOptionValue(server.activeRoute.bridgeId)
+                : DIRECT_VALUE;
+              const expanded = expandedNodeId === server.id;
+              const pending = nonActiveCountsByNode.get(server.id);
+              const detailRoutes =
+                expanded && routes?.nodeId === server.id ? routes : null;
+              const detailEligibility =
+                expanded && eligibility?.nodeId === server.id ? eligibility : null;
 
-            {routes.drafts.map((route) => (
-              <CandidateRoute
-                key={route.id}
-                route={route}
-                bridge={bridges.find((bridge) => bridge.id === route.bridgeId) ?? null}
-                testKeys={testKeys}
-                busy={busy}
-                loading={loading}
-                onRefresh={() => void load(nodeId)}
-                request={request}
-                onRun={run}
-                onActivate={(marker) => void activate(route.id, marker)}
-              />
-            ))}
+              return (
+                <li
+                  key={server.id}
+                  className={cn(
+                    "rounded-md border bg-card shadow-xs transition-colors",
+                    expanded ? "border-primary/40" : "border-border/70",
+                  )}
+                >
+                  <div className="flex flex-wrap items-center justify-between gap-2.5 px-3 py-2">
+                    <div className="flex min-w-0 flex-1 items-center gap-2">
+                      <span className="flex size-7 shrink-0 items-center justify-center rounded-md bg-[image:var(--tile-gradient-soft)] text-primary/80 ring-1 ring-primary/10">
+                        <Server className="size-3.5" />
+                      </span>
+                      <div className="min-w-0">
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <span className="truncate text-sm font-medium">
+                            {server.name}
+                          </span>
+                          {server.publicName && server.publicName !== server.name ? (
+                            <span className="truncate text-xs text-muted-foreground">
+                              ({server.publicName})
+                            </span>
+                          ) : null}
+                          {server.activeRoute && activeBridge ? (
+                            <Badge variant="success" className="font-mono text-[11px]">
+                              {bridgeEntry(
+                                activeBridge.publicIpv4,
+                                server.activeRoute.publicUdpPort,
+                              )}
+                            </Badge>
+                          ) : (
+                            <Badge variant="outline" className="text-[11px]">
+                              {t("bridge.direct")}
+                            </Badge>
+                          )}
+                          {pending && pending.drafts > 0 ? (
+                            <Badge variant="warning" className="text-[11px]">
+                              {t("keyBridge.routeDraft")}
+                            </Badge>
+                          ) : null}
+                          {pending && pending.retiring > 0 ? (
+                            <Badge variant="outline" className="text-[11px]">
+                              {t("keyBridge.routeRetiring")}
+                            </Badge>
+                          ) : null}
+                        </div>
+                      </div>
+                    </div>
 
-            {eligibility ? <EligibilityView eligibility={eligibility} /> : null}
+                    <div className="flex w-full items-center gap-1.5 sm:w-auto">
+                      <Select
+                        value={currentSelectValue}
+                        disabled={busy !== null || infraLoading}
+                        onValueChange={(value) => handleQuickSelect(server, value)}
+                      >
+                        <SelectTrigger
+                          aria-label={`${server.name} — ${t("bridge.routesTitle")}`}
+                          className="h-8 min-w-0 flex-1 sm:w-64"
+                        >
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value={DIRECT_VALUE}>
+                            {t("bridge.dropdownDirect")}
+                          </SelectItem>
+                          {bridges.map((bridge) => {
+                            const existing = routeByNodeAndBridge.get(
+                              `${server.id}:${bridge.id}`,
+                            )?.route;
+                            const label = !existing
+                              ? t("bridge.dropdownBridgePrepare", {
+                                  name: bridge.name,
+                                  free: Math.max(0, bridge.capacity - bridge.heldPorts),
+                                })
+                              : existing.state === "active"
+                                ? t("bridge.dropdownBridgeActive", {
+                                    name: bridge.name,
+                                    port: existing.publicUdpPort,
+                                  })
+                                : existing.verification.kind === "candidate" &&
+                                    existing.verification.status === "valid"
+                                  ? t("bridge.dropdownBridgeReady", {
+                                      name: bridge.name,
+                                      port: existing.publicUdpPort,
+                                    })
+                                  : existing.state === "draft"
+                                    ? t("bridge.dropdownBridgeDraft", {
+                                        name: bridge.name,
+                                        port: existing.publicUdpPort,
+                                      })
+                                    : t("bridge.dropdownBridgeRetiring", {
+                                        name: bridge.name,
+                                        port: existing.publicUdpPort,
+                                      });
+                            return (
+                              <SelectItem
+                                key={bridge.id}
+                                value={bridgeOptionValue(bridge.id)}
+                              >
+                                {label}
+                              </SelectItem>
+                            );
+                          })}
+                        </SelectContent>
+                      </Select>
 
-            <PrepareForm
-              bridges={bridges}
-              busy={busy === "prepare"}
-              onPrepare={(bridgeId, port) =>
-                void run("prepare", async () => {
-                  const result = await prepareRoute(request, nodeId, bridgeId, port);
-                  return result.created ? t("bridge.prepared") : t("bridge.preparedExisting");
-                })
-              }
-            />
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        className="size-8 shrink-0"
+                        aria-expanded={expanded}
+                        aria-label={
+                          expanded
+                            ? t("bridge.collapseDetails")
+                            : t("bridge.expandDetails")
+                        }
+                        title={
+                          expanded
+                            ? t("bridge.collapseDetails")
+                            : t("bridge.expandDetails")
+                        }
+                        onClick={() =>
+                          selectExpandedNode(expanded ? null : server.id)
+                        }
+                      >
+                        <ChevronDown
+                          className={cn(
+                            "h-4 w-4 text-muted-foreground transition-transform",
+                            expanded && "rotate-180 text-foreground",
+                          )}
+                        />
+                      </Button>
+                    </div>
+                  </div>
 
-            {routes.retiring.map((route) => (
-              <CandidateRoute
-                key={route.id}
-                route={route}
-                bridge={bridges.find((bridge) => bridge.id === route.bridgeId) ?? null}
-                testKeys={testKeys}
-                busy={busy}
-                loading={loading}
-                onRefresh={() => void load(nodeId)}
-                request={request}
-                onRun={run}
-                onActivate={(marker) => void activate(route.id, marker)}
-              />
-            ))}
-          </>
+                  {expanded ? (
+                    <div className="space-y-3 border-t border-border/60 bg-well/40 p-3">
+                      {!detailRoutes ? (
+                        <p className="text-sm text-muted-foreground">
+                          {detailLoading ? t("bridge.loading") : t("bridge.loadFailed")}
+                        </p>
+                      ) : (
+                        <>
+                          <CurrentAssignment
+                            routes={detailRoutes}
+                            busy={busy}
+                            loading={detailLoading}
+                            onDirect={() =>
+                              void activate(
+                                server.id,
+                                null,
+                                detailRoutes.vpnEndpointRevision,
+                              )
+                            }
+                            onRefresh={() => void refreshAll(server.id)}
+                          />
+
+                          {detailRoutes.drafts.map((route) => (
+                            <CandidateRoute
+                              key={route.id}
+                              route={route}
+                              bridge={
+                                bridges.find((bridge) => bridge.id === route.bridgeId) ??
+                                null
+                              }
+                              testKeys={testKeys}
+                              busy={busy}
+                              loading={detailLoading}
+                              onRefresh={() => void refreshAll(server.id)}
+                              request={request}
+                              onRun={(name, action) =>
+                                runForNode(server.id, name, action)
+                              }
+                              onActivate={(marker) =>
+                                void activate(
+                                  server.id,
+                                  route.id,
+                                  detailRoutes.vpnEndpointRevision,
+                                  marker,
+                                )
+                              }
+                            />
+                          ))}
+
+                          {detailEligibility ? (
+                            <EligibilityView eligibility={detailEligibility} />
+                          ) : null}
+
+                          <PrepareForm
+                            bridges={bridges}
+                            busy={busy === `prepare-${server.id}`}
+                            onPrepare={(bridgeId, port) =>
+                              void runForNode(
+                                server.id,
+                                `prepare-${server.id}`,
+                                async () => {
+                                  const result = await prepareRoute(
+                                    request,
+                                    server.id,
+                                    bridgeId,
+                                    port,
+                                  );
+                                  return result.created
+                                    ? t("bridge.prepared")
+                                    : t("bridge.preparedExisting");
+                                },
+                              )
+                            }
+                          />
+
+                          {detailRoutes.retiring.map((route) => (
+                            <CandidateRoute
+                              key={route.id}
+                              route={route}
+                              bridge={
+                                bridges.find((bridge) => bridge.id === route.bridgeId) ??
+                                null
+                              }
+                              testKeys={testKeys}
+                              busy={busy}
+                              loading={detailLoading}
+                              onRefresh={() => void refreshAll(server.id)}
+                              request={request}
+                              onRun={(name, action) =>
+                                runForNode(server.id, name, action)
+                              }
+                              onActivate={(marker) =>
+                                void activate(
+                                  server.id,
+                                  route.id,
+                                  detailRoutes.vpnEndpointRevision,
+                                  marker,
+                                )
+                              }
+                            />
+                          ))}
+                        </>
+                      )}
+                    </div>
+                  ) : null}
+                </li>
+              );
+            })}
+          </ol>
         )}
       </CardContent>
     </Card>
@@ -303,7 +661,7 @@ function CurrentAssignment({
   const { t, lang } = useT();
   const active = routes.activeRoute;
   return (
-    <section className="space-y-2 rounded-lg border p-3">
+    <section className="space-y-2 rounded-lg border bg-card p-3">
       <div className="flex flex-wrap items-center gap-2">
         <h4 className="text-sm font-semibold">{t("bridge.current")}</h4>
         <Badge variant={active ? "success" : "outline"}>
@@ -348,7 +706,7 @@ function CurrentAssignment({
 function EligibilityView({ eligibility }: { eligibility: BridgeEligibility }) {
   const { t } = useT();
   return (
-    <details className="rounded-lg border px-3 py-2" open={eligibility.unsupported > 0}>
+    <details className="rounded-lg border bg-card px-3 py-2" open={eligibility.unsupported > 0}>
       <summary className="cursor-pointer text-sm font-medium">{t("bridge.eligibility")}</summary>
       <p className="mt-2 text-xs text-muted-foreground">{t("bridge.eligibilityHint")}</p>
       <ul className="mt-1.5 grid gap-x-4 gap-y-0.5 text-xs sm:grid-cols-2">
@@ -394,7 +752,7 @@ function PrepareForm({
   return (
     <form
       onSubmit={submit}
-      className="space-y-2 rounded-lg border p-3"
+      className="space-y-2 rounded-lg border bg-card p-3"
       aria-label={t("bridge.prepareTitle")}
     >
       <h4 className="text-sm font-semibold">{t("bridge.prepareTitle")}</h4>
@@ -559,7 +917,7 @@ export function CandidateRoute({
   const bridgeSetup = bridge && bridgeNeedsHostSetup(bridge) ? bridge.setupCommands : null;
 
   return (
-    <section className="space-y-3 rounded-lg border p-3">
+    <section className="space-y-3 rounded-lg border bg-card p-3">
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
         <h4 className="text-sm font-semibold">
           {retiring ? t("bridge.retiringRoute") : t("bridge.candidateRoute")}

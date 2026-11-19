@@ -7,6 +7,7 @@ import {
   ArrowDownUp,
   ArrowUpDown,
   AtSign,
+  Cable,
   Check,
   ChevronDown,
   Download,
@@ -71,6 +72,8 @@ import {
   isRevocableKeyState,
   normalizeAccessDomain,
   UPDATE_NOTICE_SHOWINGS,
+  type Bridge,
+  type KeyBridgeMode,
   type KeyNameDisplay,
 } from "@amnezia/contracts";
 import { ProtocolSelect } from "@/components/protocol-select";
@@ -81,6 +84,9 @@ import {
   InternalNameChip,
   KeyInternalNameDialog,
 } from "@/components/key-internal-name-dialog";
+import { KeyBridgeBadge } from "@/components/key-bridge-badge";
+import { KeyBridgeSelect } from "@/components/admin/key-bridge-select";
+import { listBridges } from "@/lib/bridge-api";
 import type { KeyLimitMode, ProtocolKind } from "@/lib/types";
 import { effectiveKeyLimitMode, isNodeFull } from "@/lib/key-quota";
 import { trafficTotal } from "@/lib/format";
@@ -131,6 +137,7 @@ const NAME_DISPLAY_PARTS = ["server", "label", "number"] as const;
 const POLICY_LABELS: Array<[string, string]> = [
   ["allowKeyCreation", "upolicy.allowKeyCreation"],
   ["allowNodeSelection", "upolicy.allowNodeSelection"],
+  ["useBridge", "upolicy.useBridge"],
   ["allowRouteProfileSelection", "upolicy.allowRouteProfileSelection"],
   ["allowCustomRoutes", "upolicy.allowCustomRoutes"],
   ["allowConfigRedownload", "upolicy.allowConfigRedownload"],
@@ -375,6 +382,21 @@ export default function AdminUsersPage() {
   } | null>(null);
   const [configTarget, setConfigTarget] =
     React.useState<AdminConfigTarget | null>(null);
+  const [bridges, setBridges] = React.useState<Bridge[]>([]);
+
+  React.useEffect(() => {
+    let active = true;
+    listBridges(request)
+      .then((list) => {
+        if (active) setBridges(list);
+      })
+      .catch(() => {
+        if (active) setBridges([]);
+      });
+    return () => {
+      active = false;
+    };
+  }, [request, keyUser]);
 
   const keysByOwner = React.useMemo(() => {
     const map = new Map<string, AdminKey[]>();
@@ -680,6 +702,7 @@ export default function AdminUsersPage() {
             user={selected}
             keys={keysByOwner.get(selected.id) ?? []}
             nodes={nodes}
+            globalPolicy={policy}
             onSetRole={(role) => {
               const label =
                 role === "admin"
@@ -775,6 +798,7 @@ export default function AdminUsersPage() {
       <CreateKeyDialog
         user={keyUser}
         nodes={nodes}
+        bridges={bridges}
         globalPolicy={policy}
         userKeys={keyUser ? (keysByOwner.get(keyUser.id) ?? []) : []}
         onClose={() => setKeyUser(null)}
@@ -1685,6 +1709,7 @@ function UserDetail({
   user,
   keys,
   nodes,
+  globalPolicy,
   now,
   onSetRole,
   onReinstate,
@@ -1702,6 +1727,7 @@ function UserDetail({
   user: AdminUser;
   keys: AdminKey[];
   nodes: AdminNode[];
+  globalPolicy: GlobalPortalPolicy;
   now: number;
   onSetRole: (role: string) => void;
   onReinstate: () => void;
@@ -1739,6 +1765,9 @@ function UserDetail({
     isPurgeableKeyState(key.state),
   ).length;
   const disabled = user.status !== "active";
+  const effectiveUseBridge = Boolean(
+    user.policyOverride?.useBridge ?? globalPolicy.useBridge,
+  );
   const nodeName = (id: string) =>
     nodes.find((node) => node.id === id)?.name ?? id;
   const overrides = user.policyOverride
@@ -1790,6 +1819,15 @@ function UserDetail({
               <Badge variant={disabled ? "secondary" : "success"}>
                 {disabled ? t("status.disabled") : t("status.active")}
               </Badge>
+              {effectiveUseBridge ? (
+                <Badge
+                  variant="secondary"
+                  className="gap-1 border border-primary/30 bg-primary/10 text-primary"
+                >
+                  <Cable className="size-3" />
+                  {t("keyBridge.badgeUserEnabled")}
+                </Badge>
+              ) : null}
               {disabled && user.deactivationReason ? (
                 <Badge
                   variant={
@@ -2066,10 +2104,13 @@ function AdminKeyRow({
             title={keyView.online ? t("users.online") : t("users.offline")}
           />
           <div className="min-w-0 flex-1">
-            <div className="flex items-center gap-1.5">
+            <div className="flex flex-wrap items-center gap-1.5">
               <span className="truncate text-sm font-medium">
                 {keyView.deviceLabel || deviceTypeLabel(t, keyView.deviceType)}
               </span>
+              {keyView.state !== "revoked" && keyView.state !== "revoking" ? (
+                <KeyBridgeBadge bridge={keyView.bridge} />
+              ) : null}
               {keyView.rulesOutdated ? (
                 <Tooltip>
                   <TooltipTrigger asChild>
@@ -2842,6 +2883,7 @@ const QUOTA_STATES = ["provisioning", "active", "disabled"];
 function CreateKeyDialog({
   user,
   nodes,
+  bridges,
   globalPolicy,
   userKeys,
   onClose,
@@ -2849,6 +2891,7 @@ function CreateKeyDialog({
 }: {
   user: AdminUser | null;
   nodes: AdminNode[];
+  bridges: Bridge[];
   /** Global policy: the fallback limit and the key limit mode. */
   globalPolicy: GlobalPortalPolicy;
   /** The target user's existing keys — used to estimate the next key number. */
@@ -2861,6 +2904,8 @@ function CreateKeyDialog({
     routeProfile: string;
     protocol: string;
     nameDisplay: KeyNameDisplay;
+    bridgeMode?: KeyBridgeMode;
+    vpnBridgeRouteId?: string | null;
   }) => Promise<boolean>;
 }) {
   const { t } = useT();
@@ -2870,6 +2915,15 @@ function CreateKeyDialog({
   const [nameDisplay, setNameDisplay] = React.useState<KeyNameDisplay>(() => ({
     ...defaultKeyNameDisplay,
   }));
+  const [bridgeMode, setBridgeMode] = React.useState<KeyBridgeMode>("inherit");
+  const [bridgeRouteId, setBridgeRouteId] = React.useState("");
+  const handleBridgeChange = React.useCallback(
+    (next: { bridgeMode: KeyBridgeMode; routeId: string }) => {
+      setBridgeMode(next.bridgeMode);
+      setBridgeRouteId(next.routeId);
+    },
+    [],
+  );
   // Quota of the target user per server. In per-node mode each server has its
   // own limit, so a full one is excluded on its own; in global mode one shared
   // pool decides, so a full pool closes every server at once (S2).
@@ -2925,9 +2979,14 @@ function CreateKeyDialog({
     setDeviceLabel("");
     setRouteProfile("full_tunnel");
     setNameDisplay({ ...defaultKeyNameDisplay });
+    setBridgeMode("inherit");
+    setBridgeRouteId("");
   }, [user, nodes]);
   const node = nodes.find((item) => item.id === nodeId);
   const protocol = pickProtocol(node);
+  const userUseBridge = Boolean(
+    user?.policyOverride?.useBridge ?? globalPolicy.useBridge,
+  );
 
   // Estimated only: the control API assigns the real number on provisioning.
   const nextKeyNumber =
@@ -3003,6 +3062,16 @@ function CreateKeyDialog({
               </SelectContent>
             </Select>
           </div>
+          <KeyBridgeSelect
+            nodeId={nodeId}
+            protocol={protocol}
+            bridges={bridges}
+            policyUseBridge={userUseBridge}
+            bridgeMode={bridgeMode}
+            routeId={bridgeRouteId}
+            onChange={handleBridgeChange}
+            idPrefix="admin-user-key-bridge"
+          />
           <div className="space-y-1.5">
             <Label htmlFor="user-key-label">{t("common.name")}</Label>
             <Input
@@ -3053,9 +3122,21 @@ function CreateKeyDialog({
             {t("common.cancel")}
           </Button>
           <Button
-            disabled={!nodeId}
+            disabled={
+              !nodeId ||
+              (protocol === "awg3" && bridgeMode === "route" && !bridgeRouteId)
+            }
             onClick={() => {
               void (async () => {
+                const bridgePayload: {
+                  bridgeMode?: KeyBridgeMode;
+                  vpnBridgeRouteId?: string | null;
+                } =
+                  protocol === "awg3" && bridgeMode !== "inherit"
+                    ? bridgeMode === "route"
+                      ? { bridgeMode: "route", vpnBridgeRouteId: bridgeRouteId }
+                      : { bridgeMode: "direct" }
+                    : {};
                 if (
                   await onSave({
                     nodeId,
@@ -3066,6 +3147,7 @@ function CreateKeyDialog({
                     routeProfile,
                     protocol,
                     nameDisplay,
+                    ...bridgePayload,
                   })
                 )
                   onClose();

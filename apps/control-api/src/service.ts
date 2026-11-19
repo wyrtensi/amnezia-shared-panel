@@ -28,6 +28,7 @@ import type {
   CustomRoutes,
   DeleteNodeOptions,
   DeviceType,
+  KeyBridgeInfo,
   KeyNameDisplay,
   KeyState,
   NoticeAcks,
@@ -88,6 +89,13 @@ export type KeyView = {
    * real person's name in.
    */
   internalName?: string | null;
+  /**
+   * Admin-only bridge routing summary for this key. Present ONLY when the
+   * caller is an administrator viewing their own key (or via `/api/admin/keys`);
+   * omitted completely for regular users so bridge infrastructure metadata never
+   * leaves the server to non-admins.
+   */
+  bridge?: KeyBridgeInfo;
   // Which parts the client-visible connection name is composed of. Feed it to
   // `composeKeyDisplayName` together with the node's public name.
   nameDisplay: KeyNameDisplay;

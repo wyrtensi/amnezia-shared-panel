@@ -1050,6 +1050,13 @@ export class PostgresBridgeRepository {
         this.options.observationStaleMs,
       );
       if (failure) throw new ApiError(409, failure.message, failure.code);
+      // Any key explicitly pinned to this route falls back to inheriting the
+      // user/node policy rather than keeping `bridge_mode = 'route'` with a
+      // nulled route id.
+      await tx
+        .update(vpnKeys)
+        .set({ bridgeMode: "inherit", vpnBridgeRouteId: null, updatedAt: new Date() })
+        .where(eq(vpnKeys.vpnBridgeRouteId, routeId));
       await tx.delete(vpnBridgeRoutes).where(eq(vpnBridgeRoutes.id, routeId));
       await tx.insert(auditEvents).values({
         actorUserId: actor.id,

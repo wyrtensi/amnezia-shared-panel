@@ -413,6 +413,10 @@ export function EmployeeDashboard({
         deviceLabel: payload.deviceLabel || undefined,
         routeProfile: payload.routeProfile,
         nameDisplay: payload.nameDisplay,
+        ...(payload.bridgeMode ? { bridgeMode: payload.bridgeMode } : {}),
+        ...(payload.vpnBridgeRouteId
+          ? { vpnBridgeRouteId: payload.vpnBridgeRouteId }
+          : {}),
       }),
     });
     toast.success(t("emp.keyCreated"));

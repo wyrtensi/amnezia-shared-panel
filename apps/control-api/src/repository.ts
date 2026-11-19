@@ -137,6 +137,7 @@ export interface ControlRepository {
   createProvisioningKey: (
     actor: Actor,
     request: CreateKeyRequest,
+    options?: { allowBridgeSelection?: boolean },
   ) => Promise<{ id: string; state: KeyState }>;
   findKeyConfig: (keyId: string) => Promise<StoredKeyConfig | null>;
   /**

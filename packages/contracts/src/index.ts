@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { keyBridgeModeSchema } from "./bridges.js";
 
 export const protocolKindSchema = z.enum(["awg2", "awg3"]);
 export const keyStateSchema = z.enum([
@@ -232,14 +233,30 @@ export const composeKeyDisplayName = (input: {
   return serverName || label || number || "VPN";
 };
 
-export const createKeyRequestSchema = z.object({
-  nodeId: z.uuid(),
-  protocol: protocolKindSchema.default("awg3"),
-  deviceType: deviceTypeSchema.default("unspecified"),
-  deviceLabel: z.string().trim().min(1).max(80).optional(),
-  routeProfile: routeProfileSchema.default("full_tunnel"),
-  nameDisplay: keyNameDisplaySchema.default(newKeyNameDisplay),
-});
+export const createKeyRequestSchema = z
+  .object({
+    nodeId: z.uuid(),
+    protocol: protocolKindSchema.default("awg3"),
+    deviceType: deviceTypeSchema.default("unspecified"),
+    deviceLabel: z.string().trim().min(1).max(80).optional(),
+    routeProfile: routeProfileSchema.default("full_tunnel"),
+    nameDisplay: keyNameDisplaySchema.default(newKeyNameDisplay),
+    // Admin-only per-key bridge override. Regular callers omit both (defaults
+    // to `inherit`); non-admins sending either are refused by the Control API.
+    bridgeMode: keyBridgeModeSchema.optional(),
+    vpnBridgeRouteId: z.uuid().nullable().optional(),
+  })
+  .refine(
+    (value) =>
+      value.bridgeMode === "route"
+        ? Boolean(value.vpnBridgeRouteId)
+        : value.vpnBridgeRouteId === undefined || value.vpnBridgeRouteId === null,
+    {
+      path: ["vpnBridgeRouteId"],
+      message:
+        "vpnBridgeRouteId is required when bridgeMode is 'route' and must be omitted otherwise",
+    },
+  );
 
 /**
  * Deleting a node also deletes every key ever issued on it, so the destructive
@@ -478,6 +495,10 @@ export type KeyLimitMode = z.infer<typeof keyLimitModeSchema>;
 export const portalPolicySchema = z.object({
   allowKeyCreation: z.boolean().default(true),
   allowNodeSelection: z.boolean().default(true),
+  // Whether users inherit their node's active AWG 3.1 bridge route on config
+  // export. Default OFF so users connect directly until an administrator turns
+  // bridge routing on globally, per user (via policyOverride), or per key.
+  useBridge: z.boolean().default(false),
   // Protocols users are offered when creating a key (org-wide default; a
   // per-user override in policyOverride replaces this list). AWG 3.1 only by
   // default — awg2 stays available to switch back on per node/user/globally.

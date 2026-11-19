@@ -180,6 +180,37 @@ export const bridgeManagementStatusSchema = z.enum(BRIDGE_MANAGEMENT_STATUSES);
 export const BRIDGE_ROUTE_STATES = ["draft", "active", "retiring"] as const;
 export const bridgeRouteStateSchema = z.enum(BRIDGE_ROUTE_STATES);
 
+/**
+ * Per-key bridge routing mode:
+ * - `inherit`: follow the owner's effective `policy.useBridge` and the node's
+ *   active bridge route (default for every regular user key).
+ * - `direct`: always serve this key's Direct node endpoint, even when the owner
+ *   has bridge routing enabled in policy.
+ * - `route`: pin this key to the specific bridge route in `vpnBridgeRouteId`
+ *   (admin-only at key creation).
+ */
+export const KEY_BRIDGE_MODES = ["inherit", "direct", "route"] as const;
+export const keyBridgeModeSchema = z.enum(KEY_BRIDGE_MODES);
+
+/**
+ * Admin-only summary of how a key routes through bridges at export time.
+ * Never sent to regular users on `/api/keys`.
+ */
+export const keyBridgeInfoSchema = z.object({
+  mode: keyBridgeModeSchema,
+  routeId: z.uuid().nullable(),
+  effective: z
+    .object({
+      routeId: z.uuid(),
+      bridgeId: z.uuid(),
+      bridgeName: z.string(),
+      publicIpv4: z.string(),
+      publicUdpPort: portSchema,
+      source: z.enum(["key", "policy"]),
+    })
+    .nullable(),
+});
+
 export const BRIDGE_VERIFICATION_METHODS = ["probe", "operator"] as const;
 export const bridgeVerificationMethodSchema = z.enum(BRIDGE_VERIFICATION_METHODS);
 
@@ -609,6 +640,10 @@ export const BRIDGE_ERROR_CODES = [
   "BRIDGE_ROUTE_NOT_FOUND",
   // 409: route preparation for a node that does not serve AWG 3.1.
   "BRIDGE_NODE_NOT_AWG31",
+  // 409: admin pinned a non-AWG3 key to a bridge route, or named a route on a
+  // different node than the key.
+  "BRIDGE_KEY_NOT_AWG3",
+  "BRIDGE_ROUTE_WRONG_NODE",
   // Test-config preview: 403 for a key on another VPN node, 409 for a key
   // that is not an active AWG 3.1 key.
   "BRIDGE_TEST_KEY_WRONG_NODE",
@@ -909,6 +944,8 @@ export type CreateBridgeRequest = z.infer<typeof createBridgeRequestSchema>;
 export type UpdateBridgeRequest = z.infer<typeof updateBridgeRequestSchema>;
 export type BridgeManagementStatus = z.infer<typeof bridgeManagementStatusSchema>;
 export type BridgeRouteState = z.infer<typeof bridgeRouteStateSchema>;
+export type KeyBridgeMode = z.infer<typeof keyBridgeModeSchema>;
+export type KeyBridgeInfo = z.infer<typeof keyBridgeInfoSchema>;
 export type BridgeVerificationMethod = z.infer<typeof bridgeVerificationMethodSchema>;
 export type BridgeVerificationResult = z.infer<typeof bridgeVerificationResultSchema>;
 export type BridgeRoute = z.infer<typeof bridgeRouteSchema>;

@@ -219,7 +219,9 @@ export const createDefaultControlApiService = ({
   listNodes: (actor) => repository.listNodes(actor),
   listKeys: (actor) => repository.listKeys(actor),
   requestKey: (actor, request) =>
-    repository.createProvisioningKey(actor, request),
+    repository.createProvisioningKey(actor, request, {
+      allowBridgeSelection: actor.role === "admin",
+    }),
   getKeyConfig: async (
     actor,
     keyId,

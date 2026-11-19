@@ -154,7 +154,11 @@ describe("bridge enrollment and bridge-agent observations (real PostgreSQL, fake
     const seedUser = async (label: string, role: "admin" | "user"): Promise<Actor> => {
       const [user] = await db()
         .insert(users)
-        .values({ email: `enroll-${label}-${runTag}@example.com`, role })
+        .values({
+          email: `enroll-${label}-${runTag}@example.com`,
+          role,
+          ...(role === "admin" ? { policyOverride: { useBridge: true } } : {}),
+        })
         .returning();
       if (!user) throw new Error("Failed to seed user");
       createdUserIds.push(user.id);
