@@ -13,7 +13,7 @@
  *   CONTROL_API_URL (default http://127.0.0.1:3001)
  */
 
-import { writeFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { runBridgeTlsGate } from "./bridgeTlsGate.js";
@@ -117,7 +117,14 @@ import {
   BRIDGE_USAGE_LINES,
   bridgeErrorHint,
 } from "./bridges.js";
-import type { AdminNodeEndpoint, AdminReachabilityView, KeyBridgeInfo } from "@amnezia/contracts";
+import type {
+  AdminNodeEndpoint,
+  AdminReachabilityView,
+  ConfigRefreshResult,
+  ConfigRefreshStatus,
+  KeyBridgeInfo,
+  RulesRefreshStatus,
+} from "@amnezia/contracts";
 import {
   bridgeReachabilityLines,
   buildProbeUpsert,
@@ -2262,14 +2269,36 @@ async function cmdNodeRemove(args: string[]): Promise<void> {
   );
 }
 
+const USER_POLICY_BOOL_FIELDS = POLICY_BOOL_FIELDS.filter(
+  (field) => field !== "autoPurgeOffboardedUsers",
+);
+
+async function resolveAdminUser(
+  ref: string | undefined,
+  usage: string,
+): Promise<AdminUser> {
+  if (!ref) throw new Error(usage);
+  const users = await api<AdminUser[]>("/api/admin/users");
+  const match = UUID_RE.test(ref)
+    ? users.find((user) => user.id === ref)
+    : users.find((user) => user.email.toLowerCase() === ref.toLowerCase());
+  if (!match) throw new Error(`No user matching "${ref}"`);
+  return match;
+}
+
 async function cmdUserNodes(args: string[]): Promise<void> {
   const pos = positionals(args);
   const usage = "Usage: user-nodes <id|email> <all|none|uuid,uuid,…>";
-  const id = await resolveUserId(pos[0], usage);
-  if (pos[1] === undefined) throw new Error(usage);
-  // set-policy REPLACES the user's per-user policy override with this object.
+  if (!pos[0] || pos[1] === undefined) throw new Error(usage);
+  const match = await resolveAdminUser(pos[0], usage);
   const allowedNodeIds = parseNodeSpec(pos[1]);
-  await userAction(id, "set-policy", { allowedNodeIds });
+  const merged: Record<string, unknown> = { ...(match.policyOverride ?? {}) };
+  if (allowedNodeIds === null) {
+    delete merged.allowedNodeIds;
+  } else {
+    merged.allowedNodeIds = allowedNodeIds;
+  }
+  await userAction(match.id, "set-policy", merged);
   const shown =
     allowedNodeIds === null
       ? "all"
@@ -2277,6 +2306,123 @@ async function cmdUserNodes(args: string[]): Promise<void> {
         ? allowedNodeIds.join(",")
         : "none";
   console.log(`user ${pos[0]}: node availability → ${shown}`);
+}
+
+async function cmdUserPolicy(args: string[]): Promise<void> {
+  const usage = "Usage: user-policy <id|email> [--json]";
+  const ref = positionals(args)[0];
+  const [match, policyRows] = await Promise.all([
+    resolveAdminUser(ref, usage),
+    api<Array<Record<string, unknown>>>("/api/admin/portal-policy"),
+  ]);
+  const globalPolicy = policyRows[0] ?? {};
+  const override = match.policyOverride ?? null;
+  if (wantsJson(args)) {
+    return json({ userId: match.id, email: match.email, policyOverride: override });
+  }
+  const entries = override ? Object.entries(override) : [];
+  if (entries.length === 0) {
+    console.log(`user ${match.email}: (inherits global policy)`);
+    return;
+  }
+  console.log(`user ${match.email} (${match.id}) overrides:`);
+  for (const [key, value] of entries) {
+    const inherited =
+      key in globalPolicy ? ` (global: ${formatPolicyValue(key, globalPolicy[key])})` : "";
+    console.log(`  ${key.padEnd(28)} ${formatPolicyValue(key, value)}${inherited}`);
+  }
+}
+
+const KNOWN_USER_POLICY_FLAGS = new Set<string>([
+  ...USER_POLICY_BOOL_FIELDS,
+  "allowedProtocols",
+  "allowedNodeIds",
+  "allowedEndpointIds",
+  "keyLimitMode",
+]);
+
+function parseTriStateBool(name: string, raw: string): boolean | null {
+  const normalized = raw.trim().toLowerCase();
+  if (normalized === "true" || normalized === "on") return true;
+  if (normalized === "false" || normalized === "off") return false;
+  if (normalized === "inherit" || normalized === "default") return null;
+  throw new Error(`--${name} expects true, false, on, off, or inherit, got "${raw}"`);
+}
+
+function parseUserNodeSpecOverride(
+  name: string,
+  raw: string,
+): { clear: true } | { clear: false; value: string[] | null } {
+  const trimmed = raw.trim().toLowerCase();
+  if (trimmed === "inherit" || trimmed === "default") return { clear: true };
+  if (trimmed === "all" || trimmed === "null") return { clear: false, value: null };
+  return { clear: false, value: parseNodeSpec(raw) };
+}
+
+/**
+ * Merge partial per-user policy overrides into `policyOverride` without
+ * wiping unrelated keys (`allowedNodeIds`, `useBridge`, `keyLimitMode`, ...).
+ */
+async function cmdUserPolicySet(args: string[]): Promise<void> {
+  const usage =
+    "Usage: user-policy-set <id|email> --<field>=<value|inherit> …  (run `help` for fields)";
+  const pos = positionals(args);
+  const ref = pos[0];
+  if (!ref || pos.length > 1) throw new Error(usage);
+  const valueFlags: Array<[string, string]> = [];
+  for (const arg of args) {
+    if (!arg.startsWith("--")) continue;
+    if (arg === "--json") continue;
+    const eqIdx = arg.indexOf("=");
+    if (eqIdx === -1) throw new Error(`Flag "${arg}" must be written as --<field>=<value>`);
+    const name = arg.slice(2, eqIdx);
+    if (!KNOWN_USER_POLICY_FLAGS.has(name)) {
+      throw new Error(`Unknown user-policy-set field "--${name}"`);
+    }
+    valueFlags.push([name, arg.slice(eqIdx + 1)]);
+  }
+  if (valueFlags.length === 0) throw new Error(usage);
+
+  const updates: Record<string, { clear: true } | { clear: false; value: unknown }> = {};
+  const userBoolSet = new Set<string>(USER_POLICY_BOOL_FIELDS);
+  for (const [name, raw] of valueFlags) {
+    if (userBoolSet.has(name)) {
+      const parsed = parseTriStateBool(name, raw);
+      updates[name] = parsed === null ? { clear: true } : { clear: false, value: parsed };
+    } else if (name === "allowedProtocols") {
+      const norm = raw.trim().toLowerCase();
+      if (norm === "inherit" || norm === "default") {
+        updates.allowedProtocols = { clear: true };
+      } else {
+        const list = raw.split(",").map((v) => v.trim()).filter(Boolean);
+        if (list.length === 0 || list.some((p) => p !== "awg2" && p !== "awg3")) {
+          throw new Error(`--allowedProtocols expects awg3[,awg2] or inherit, got "${raw}"`);
+        }
+        updates.allowedProtocols = { clear: false, value: list };
+      }
+    } else if (name === "allowedNodeIds" || name === "allowedEndpointIds") {
+      updates[name] = parseUserNodeSpecOverride(name, raw);
+    } else if (name === "keyLimitMode") {
+      const mode = parseKeyLimitMode(raw);
+      updates.keyLimitMode = mode === null ? { clear: true } : { clear: false, value: mode };
+    }
+  }
+
+  const match = await resolveAdminUser(ref, usage);
+  const merged: Record<string, unknown> = { ...(match.policyOverride ?? {}) };
+  const summary: string[] = [];
+  for (const [field, change] of Object.entries(updates)) {
+    if (change.clear) {
+      delete merged[field];
+      summary.push(`${field}→inherit`);
+    } else {
+      merged[field] = change.value;
+      summary.push(`${field}→${formatPolicyValue(field, change.value)}`);
+    }
+  }
+  await userAction(match.id, "set-policy", merged);
+  if (wantsJson(args)) return json({ userId: match.id, policyOverride: merged });
+  console.log(`user ${match.email}: policy updated (${summary.join(", ")})`);
 }
 
 /**
@@ -2511,6 +2657,48 @@ async function cmdKeyRename(args: string[]): Promise<void> {
       ? `key ${id}: renamed and re-issuing (state: ${result.state}) -- the current config will stop working; download a new one once it is active again`
       : `key ${id}: renamed (state: ${result.state}) -- this label is not part of the connection name the client shows, so no re-issue was needed`,
   );
+}
+
+async function cmdKeyRotate(args: string[]): Promise<void> {
+  const usage = "Usage: key-rotate <key-id> [--json]";
+  const id = positionals(args)[0];
+  if (!id) throw new Error(usage);
+  const result = await api<{ id: string; state: string }>(`/api/keys/${id}/rotate`, {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+  if (wantsJson(args)) return json(result);
+  console.log(
+    `key ${result.id}: rotation queued (state: ${result.state}) -- download the new config once active`,
+  );
+}
+
+async function cmdKeyConfigRefresh(args: string[]): Promise<void> {
+  const usage = "Usage: key-config-refresh <key-id> [--status] [--json]";
+  const id = positionals(args)[0];
+  if (!id) throw new Error(usage);
+  const status = await api<ConfigRefreshStatus>(`/api/keys/${id}/config-refresh`);
+  if (args.includes("--status")) {
+    const safeStatus = status.eligible
+      ? { eligible: true, revision: status.revision }
+      : { eligible: false };
+    if (wantsJson(args)) return json(safeStatus);
+    console.log(
+      safeStatus.eligible
+        ? `key ${id}: eligible=yes (revision ${safeStatus.revision})`
+        : `key ${id}: eligible=no`,
+    );
+    return;
+  }
+  if (!status.eligible) {
+    throw new Error(`Key ${id} is not eligible for AWG 3.1 config refresh`);
+  }
+  const result = await api<ConfigRefreshResult>(`/api/keys/${id}/config-refresh`, {
+    method: "POST",
+    body: JSON.stringify({ refreshToken: status.refreshToken }),
+  });
+  if (wantsJson(args)) return json(result);
+  console.log(`key ${id}: config refreshed (revision ${result.revision})`);
 }
 
 /** Parse a `--flag=true|false` value, rejecting anything else. */
@@ -2758,6 +2946,130 @@ async function cmdRulesFollow(args: string[]): Promise<void> {
   console.log("version the worker fetches will be published.");
 }
 
+async function cmdRulesRefresh(args: string[]): Promise<void> {
+  const profile = flagOf(args, "profile") ?? "ru_blacklist";
+  if (profile !== "ru_blacklist") {
+    throw new Error(`Unknown rule profile "${profile}" (expected ru_blacklist)`);
+  }
+  const status = args.includes("--status")
+    ? await api<RulesRefreshStatus>("/api/admin/rules/refresh")
+    : await api<RulesRefreshStatus>(`/api/admin/rules/${encodeURIComponent(profile)}/refresh`, {
+        method: "POST",
+        body: JSON.stringify({}),
+      });
+  if (wantsJson(args)) return json(status);
+  const parts = [`rules refresh (${profile}): ${status.status}`];
+  if (status.queuedAt) parts.push(`queued=${status.queuedAt}`);
+  if (status.completedAt) parts.push(`completed=${status.completedAt}`);
+  console.log(parts.join("  "));
+  if (status.lastError) console.log(`  last error: ${status.lastError}`);
+}
+
+type RuleVersionDetailView = RuleVersionView & {
+  payload?: { cidrs?: string[]; domains?: string[] } | null;
+};
+
+async function cmdRulesShow(args: string[]): Promise<void> {
+  const usage = "Usage: rules-show <version-id> [--json]";
+  const id = positionals(args)[0];
+  if (!id) throw new Error(usage);
+  const rule = await api<RuleVersionDetailView>(`/api/admin/rules/${id}`);
+  if (wantsJson(args)) return json(rule);
+  console.log(`rule version ${rule.version} (${rule.id})`);
+  console.log(`  profile:    ${rule.profile}`);
+  console.log(`  status:     ${rule.status}${rule.pinnedAt ? ` (pinned ${rule.pinnedAt})` : ""}`);
+  console.log(`  published:  ${rule.publishedAt ?? "—"}`);
+  console.log(`  sourceUrl:  ${rule.sourceUrl ?? "—"}`);
+  console.log(`  counts:     ${rule.cidrCount} cidrs, ${rule.domainCount} domains`);
+  if (rule.validationReport) {
+    const r = rule.validationReport;
+    console.log(
+      `  report:     v4=${r.ipv4Count ?? "—"} v6=${r.ipv6Count ?? "—"} mode=${r.compactionMode ?? "—"}${r.reason ? ` (${r.reason})` : ""}`,
+    );
+  }
+  const cidrs = rule.payload?.cidrs ?? [];
+  const domains = rule.payload?.domains ?? [];
+  if (cidrs.length > 0) {
+    console.log(`  cidrs sample (${Math.min(20, cidrs.length)} of ${cidrs.length}): ${cidrs.slice(0, 20).join(", ")}`);
+  }
+  if (domains.length > 0) {
+    console.log(`  domains sample (${Math.min(20, domains.length)} of ${domains.length}): ${domains.slice(0, 20).join(", ")}`);
+  }
+}
+
+type RuleDiffView = {
+  base: { id: string; version: string };
+  next: { id: string; version: string };
+  diff: {
+    cidrs: { added: string[]; removed: string[]; addedCount: number; removedCount: number };
+    domains: { added: string[]; removed: string[]; addedCount: number; removedCount: number };
+  };
+};
+
+async function cmdRulesDiff(args: string[]): Promise<void> {
+  const usage = "Usage: rules-diff <base-id> <next-id> [--json]";
+  const [baseId, nextId] = positionals(args);
+  if (!baseId || !nextId) throw new Error(usage);
+  const result = await api<RuleDiffView>(`/api/admin/rules/${baseId}/diff/${nextId}`);
+  if (wantsJson(args)) return json(result);
+  console.log(`rules diff: ${result.base.version} (${result.base.id}) -> ${result.next.version} (${result.next.id})`);
+  console.log(`  cidrs:   +${result.diff.cidrs.addedCount} / -${result.diff.cidrs.removedCount}`);
+  for (const c of result.diff.cidrs.added) console.log(`    + ${c}`);
+  for (const c of result.diff.cidrs.removed) console.log(`    - ${c}`);
+  console.log(`  domains: +${result.diff.domains.addedCount} / -${result.diff.domains.removedCount}`);
+  for (const d of result.diff.domains.added) console.log(`    + ${d}`);
+  for (const d of result.diff.domains.removed) console.log(`    - ${d}`);
+}
+
+async function cmdRulesImport(args: string[]): Promise<void> {
+  const usage =
+    "Usage: rules-import --version=<name> [--profile=ru_blacklist] [--cidrs=<csv>] [--cidrs-file=<path>] [--domains=<csv>] [--source-url=<url>] [--activate=true|false] [--json]";
+  const version = flagOf(args, "version")?.trim();
+  if (!version) throw new Error(usage);
+  const profile = flagOf(args, "profile") ?? "ru_blacklist";
+  if (profile !== "ru_blacklist") {
+    throw new Error(`Unknown rule profile "${profile}" (expected ru_blacklist)`);
+  }
+  const activateRaw = flagOf(args, "activate");
+  const activate = activateRaw === undefined ? true : parseBoolFlag("activate", activateRaw);
+  const sourceUrl = flagOf(args, "source-url");
+  const cidrsFlag = flagOf(args, "cidrs");
+  const cidrsFile = flagOf(args, "cidrs-file");
+  const domainsFlag = flagOf(args, "domains");
+
+  const cidrs: string[] = [];
+  if (cidrsFlag !== undefined) cidrs.push(...csvList(cidrsFlag));
+  if (cidrsFile !== undefined) {
+    const raw = await readFile(cidrsFile, "utf8");
+    for (const line of raw.split(/\r?\n/)) {
+      const cleaned = line.split("#")[0]?.trim() ?? "";
+      if (cleaned) cidrs.push(cleaned);
+    }
+  }
+  const domains = domainsFlag !== undefined ? csvList(domainsFlag) : [];
+  if (cidrs.length + domains.length === 0) {
+    throw new Error(`An imported rule version must contain at least one CIDR or domain\n${usage}`);
+  }
+  const saved = await api<RuleVersionView>(
+    `/api/admin/rules/${encodeURIComponent(profile)}/import`,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        profile,
+        version,
+        cidrs,
+        domains,
+        activate,
+        ...(sourceUrl ? { sourceUrl } : {}),
+      }),
+    },
+  );
+  if (wantsJson(args)) return json(saved);
+  console.log(
+    `imported ${saved.profile} version ${saved.version} (${saved.id}): status=${saved.status}, cidrs=${saved.cidrCount}, domains=${saved.domainCount}`,
+  );
+}
+
 async function cmdVersion(args: string[]): Promise<void> {
   const info = await api<CliVersionInfo>("/api/admin/version");
   if (wantsJson(args)) return json(info);
@@ -2890,9 +3202,16 @@ Users (accept a user id OR email):
                                          with user-disable). Irreversible; refused
                                          otherwise. Without --confirm, prints what
                                          it would do and deletes nothing
-  user-nodes <id|email> <all|none|uuid,…>  Per-user node availability (all=every node; overrides global).
-                                         REPLACES the whole per-user policy override; use
-                                         user-limit --allowed-nodes to change only availability.
+  user-policy <id|email> [--json]        Show one user's per-user policyOverride fields
+  user-policy-set <id|email> --<field>=<value|inherit> …
+                                         Merge partial per-user policy overrides without
+                                         wiping unrelated overrides; supports all policy-set
+                                         booleans (except autoPurgeOffboardedUsers),
+                                         allowedProtocols, allowedNodeIds,
+                                         allowedEndpointIds, and keyLimitMode
+  user-nodes <id|email> <all|none|uuid,…>  Per-user node availability (all=every node; overrides
+                                         global). Merges only allowedNodeIds into
+                                         policyOverride so other overrides stay intact.
   user-bridge <id|email> <true|false|inherit>
                                          Override whether this user's AWG 3.1 keys inherit a
                                          node's active bridge route (on/off/inherit). Merges
@@ -2974,6 +3293,8 @@ ${BRIDGE_USAGE_LINES}
   bridge-probe <bridge-id> [--on|--off]    Show or change bridge alerts
   probe-results [<node>] [--json]         Node tests and bridge observations (JSON: nodes)
   probe-results --bridges [--json]        Bridge tests and observations only
+  probe-history <node> [--limit=50] [--json]
+                                          Recent external reachability history for one node
   node-probe <node> [--on|--off]          Whether the probe tests this node
     Assertion flags (repeatable; all must hold):
 ${assertionUsageLines().join("\n")}
@@ -3030,6 +3351,19 @@ Write:
                                           is not part of that name, or text that composes
                                           to the same name, is a plain update with no
                                           re-issue
+  key-rotate <id> [--json]                Queue a wireguard keypair rotation for your key
+  key-config-refresh <id> [--status] [--json]
+                                          Check eligibility (--status, no refreshToken
+                                          printed) or refresh an eligible AWG 3.1 config
+  rules-refresh [--profile=ru_blacklist] [--status] [--json]
+                                          Trigger a rule feed fetch now, or inspect the
+                                          last refresh status (--status)
+  rules-show <version-id> [--json]        Inspect one rule version's metadata, validation
+                                          report, and CIDR/domain sample
+  rules-diff <base-id> <next-id> [--json] Diff CIDRs and domains between two rule versions
+  rules-import --version=<name> [--profile=ru_blacklist] [--cidrs=<csv>] [--cidrs-file=<path>]
+               [--domains=<csv>] [--source-url=<url>] [--activate=true|false] [--json]
+                                          Import a custom rule version (activated by default)
   rules-activate <version-id>             Publish one fetched rule version, including
                                           rolling back to a superseded one. Also PINS
                                           the profile to it: the worker keeps fetching
@@ -3512,6 +3846,41 @@ async function cmdProbeResults(args: string[]): Promise<void> {
   }
 }
 
+async function cmdProbeHistory(args: string[]): Promise<void> {
+  const usage = "Usage: probe-history <node-id|name> [--limit=50] [--json]";
+  const nodeRef = positionals(args)[0];
+  if (!nodeRef) throw new Error(usage);
+  const limitRaw = flagOf(args, "limit");
+  let limit = 50;
+  if (limitRaw !== undefined) {
+    const parsed = Number(limitRaw);
+    if (!Number.isInteger(parsed) || parsed < 1 || parsed > 200) {
+      throw new Error(`--limit must be an integer 1..200, got "${limitRaw}"`);
+    }
+    limit = parsed;
+  }
+  const node = await findAdminNode(nodeRef);
+  const rows = await api<Array<{ runId: string; status: string; detail: string | null; checkedAt: string }>>(
+    `/api/admin/reachability/history?nodeId=${encodeURIComponent(node.id)}&limit=${limit}`,
+  );
+  if (wantsJson(args)) return json(rows);
+  if (rows.length === 0) {
+    console.log(`node ${node.name}: no reachability history recorded`);
+    return;
+  }
+  console.log(
+    table(
+      rows.map((entry) => ({
+        checkedAt: entry.checkedAt,
+        status: reachabilityLabel(entry.status),
+        detail: entry.detail ?? "—",
+        runId: entry.runId,
+      })),
+      ["checkedAt", "status", "detail", "runId"],
+    ),
+  );
+}
+
 async function cmdBridgeProbe(args: string[]): Promise<void> {
   const [id, extra] = positionals(args);
   if (!id || extra || args.some((arg) => arg.startsWith("--") && arg !== "--on" && arg !== "--off")) {
@@ -3664,6 +4033,10 @@ export async function dispatch(argv: string[]): Promise<void> {
       return cmdUserEnable(args);
     case "user-delete":
       return cmdUserDelete(args);
+    case "user-policy":
+      return cmdUserPolicy(args);
+    case "user-policy-set":
+      return cmdUserPolicySet(args);
     case "user-nodes":
       return cmdUserNodes(args);
     case "user-bridge":
@@ -3711,6 +4084,10 @@ export async function dispatch(argv: string[]): Promise<void> {
       return cmdKeyConfig(args);
     case "key-rename":
       return cmdKeyRename(args);
+    case "key-rotate":
+      return cmdKeyRotate(args);
+    case "key-config-refresh":
+      return cmdKeyConfigRefresh(args);
     case "cf-token":
       return cmdCfToken(args);
     case "cf-config":
@@ -3757,12 +4134,22 @@ export async function dispatch(argv: string[]): Promise<void> {
       return runBridgeTlsGate(args, { api });
     case "probe-results":
       return cmdProbeResults(args);
+    case "probe-history":
+      return cmdProbeHistory(args);
     case "bridge-probe":
       return cmdBridgeProbe(args);
     case "node-probe":
       return cmdNodeProbe(args);
     case "rules":
       return cmdRules(args);
+    case "rules-refresh":
+      return cmdRulesRefresh(args);
+    case "rules-show":
+      return cmdRulesShow(args);
+    case "rules-diff":
+      return cmdRulesDiff(args);
+    case "rules-import":
+      return cmdRulesImport(args);
     case "rules-activate":
       return cmdRulesActivate(args);
     case "rules-follow":

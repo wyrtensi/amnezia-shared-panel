@@ -2383,3 +2383,497 @@ describe("per-user bridge policy CLI (users bridge column and user-bridge)", () 
     expect(calls).toHaveLength(0);
   });
 });
+
+describe("complete Control API CLI parity", () => {
+  const USER_ID = "11111111-1111-4111-8111-111111111111";
+  const NODE_ID = "22222222-2222-4222-8222-222222222222";
+  const ENDPOINT_ID = "33333333-3333-4333-8333-333333333333";
+  const BRIDGE_ID = "44444444-4444-4444-8444-444444444444";
+  const KEY_ID = "55555555-5555-4555-8555-555555555555";
+  const RULE_ID_A = "66666666-6666-4666-8666-666666666666";
+  const RULE_ID_B = "77777777-7777-4777-8777-777777777777";
+
+  beforeEach(() => {
+    process.env.PANEL_ADMIN_EMAIL = "cli-test@example.com";
+  });
+  afterEach(() => {
+    delete process.env.PANEL_ADMIN_EMAIL;
+    vi.unstubAllGlobals();
+  });
+
+  function makeBridgeFixture(overrides: Record<string, unknown> = {}) {
+    return {
+      id: BRIDGE_ID,
+      name: "Edge Bridge",
+      publicIpv4: "198.51.100.10",
+      controlPort: 7000,
+      udpPortStart: 41000,
+      udpPortEnd: 41031,
+      managementStatus: "healthy",
+      capabilities: ["status.v1"],
+      frpsVersion: "0.61.0",
+      agentVersion: "1.0.0",
+      heldPorts: 1,
+      capacity: 32,
+      lastPolledAt: "2026-11-19T12:00:00.000Z",
+      lastError: null,
+      reachabilityEnabled: false,
+      panelDns: { hostname: null, state: "unconfigured" },
+      routes: [],
+      ...overrides,
+    };
+  }
+
+  it("bridge-update sends PATCH with valid flags, formats output and supports --json", async () => {
+    const updated = makeBridgeFixture({
+      name: "Edge Two",
+      reachabilityEnabled: false,
+      panelDns: { hostname: null, state: "unconfigured" },
+    });
+    const calls = stubFetch([{ body: updated }, { body: updated }]);
+
+    const out = await run([
+      "bridge-update",
+      BRIDGE_ID,
+      "--name=Edge Two",
+      "--panel-dns=none",
+      "--reachability=off",
+    ]);
+    expect(calls[0]!.url).toContain(`/api/admin/vpn-bridges/${BRIDGE_ID}`);
+    expect(calls[0]!.init?.method).toBe("PATCH");
+    expect(sentBody(calls[0]!)).toEqual({
+      name: "Edge Two",
+      panelDnsHostname: null,
+      reachabilityEnabled: false,
+    });
+    expect(out).toContain(`bridge Edge Two (${BRIDGE_ID}) updated: name, panelDnsHostname, reachabilityEnabled`);
+    expect(out).toContain("panel DNS: — (unconfigured)");
+
+    const jsonOut = await run(["bridge-update", BRIDGE_ID, "--name=Edge Two", "--json"]);
+    expect(JSON.parse(jsonOut)).toMatchObject({ id: BRIDGE_ID, name: "Edge Two" });
+  });
+
+  it("bridge-update rejects invalid UUID, empty body, bad reachability, or unknown flags before fetch", async () => {
+    const calls = stubFetch([{ body: {} }]);
+    await expect(run(["bridge-update", "not-a-uuid", "--name=x"])).rejects.toThrow(/UUID/i);
+    await expect(run(["bridge-update", BRIDGE_ID])).rejects.toThrow(/Usage: bridge-update/);
+    await expect(
+      run(["bridge-update", BRIDGE_ID, "--reachability=maybe"]),
+    ).rejects.toThrow(/expects on\/true or off\/false/);
+    await expect(
+      run(["bridge-update", BRIDGE_ID, "--unknown=1"]),
+    ).rejects.toThrow(/unknown flag/i);
+    expect(calls).toHaveLength(0);
+  });
+
+  it("bridge-eligibility formats node counts and unsupported keys and supports --json", async () => {
+    const eligibility = {
+      nodeId: NODE_ID,
+      total: 5,
+      awg31Eligible: 3,
+      awg20Direct: 1,
+      awg2NativeDirect: 0,
+      unsupported: 1,
+      unsupportedKeyIds: [KEY_ID],
+    };
+    const calls = stubFetch([{ body: eligibility }, { body: eligibility }]);
+
+    const out = await run(["bridge-eligibility", NODE_ID]);
+    expect(calls[0]!.url).toContain(`/api/admin/nodes/${NODE_ID}/vpn-bridge-eligibility`);
+    expect(out).toContain("awg31 eligible:   3");
+    expect(out).toContain("awg20 direct:     1");
+    expect(out).toContain(`unsupported keys: ${KEY_ID}`);
+
+    const jsonOut = await run(["bridge-eligibility", NODE_ID, "--json"]);
+    expect(JSON.parse(jsonOut)).toEqual(eligibility);
+  });
+
+  it("infrastructure prints both vpn nodes and bridges in table and --json modes", async () => {
+    const items = [
+      {
+        kind: "vpn",
+        id: NODE_ID,
+        name: "Amsterdam",
+        enabled: true,
+        lastError: null,
+        protocol: "awg3",
+        peerCount: 4,
+        maxPeers: 50,
+        activeRoute: { publicUdpPort: 41002 },
+      },
+      {
+        kind: "bridge",
+        ...makeBridgeFixture(),
+      },
+    ];
+    const calls = stubFetch([{ body: items }, { body: items }]);
+
+    const out = await run(["infrastructure"]);
+    expect(calls[0]!.url).toContain("/api/admin/infrastructure");
+    expect(out).toContain("vpn");
+    expect(out).toContain("Amsterdam");
+    expect(out).toContain("via :41002");
+    expect(out).toContain("bridge");
+    expect(out).toContain("198.51.100.10 ports 1/32");
+
+    const jsonOut = await run(["infrastructure", "--json"]);
+    const parsed = JSON.parse(jsonOut) as Array<Record<string, unknown>>;
+    expect(parsed).toHaveLength(2);
+    expect(parsed[0]!.kind).toBe("vpn");
+    expect(parsed[1]!.kind).toBe("bridge");
+  });
+
+  it("rules-refresh handles POST refresh, --status GET, --json, and profile validation", async () => {
+    const queued = {
+      status: "pending",
+      queuedAt: "2026-11-19T12:00:00.000Z",
+      completedAt: null,
+      lastError: null,
+    };
+    const done = {
+      status: "succeeded",
+      queuedAt: "2026-11-19T11:55:00.000Z",
+      completedAt: "2026-11-19T11:56:00.000Z",
+      lastError: null,
+    };
+    const calls = stubFetch([{ body: queued }, { body: done }, { body: done }]);
+
+    const triggerOut = await run(["rules-refresh"]);
+    expect(calls[0]!.url).toContain("/api/admin/rules/ru_blacklist/refresh");
+    expect(calls[0]!.init?.method).toBe("POST");
+    expect(triggerOut).toContain("rules refresh (ru_blacklist): pending");
+
+    const statusOut = await run(["rules-refresh", "--status"]);
+    expect(calls[1]!.url).toContain("/api/admin/rules/refresh");
+    expect(calls[1]!.init?.method).toBeUndefined();
+    expect(statusOut).toContain("succeeded");
+
+    const jsonOut = await run(["rules-refresh", "--status", "--json"]);
+    expect(JSON.parse(jsonOut)).toEqual(done);
+
+    await expect(run(["rules-refresh", "--profile=other"])).rejects.toThrow(
+      /Unknown rule profile/,
+    );
+  });
+
+  it("rules-show and rules-diff inspect rule versions and deltas", async () => {
+    const versionDetail = {
+      id: RULE_ID_A,
+      profile: "ru_blacklist",
+      version: "2026-11-19.1",
+      status: "active",
+      pinnedAt: null,
+      publishedAt: "2026-11-19T12:00:00.000Z",
+      sourceUrl: "https://rules.example.test/list.txt",
+      cidrCount: 2,
+      domainCount: 1,
+      validationReport: { ipv4Count: 2, ipv6Count: 0, compactionMode: "exact" },
+      payload: { cidrs: ["198.51.100.0/24", "203.0.113.0/24"], domains: ["example.test"] },
+    };
+    const diffResp = {
+      base: { id: RULE_ID_A, version: "v1" },
+      next: { id: RULE_ID_B, version: "v2" },
+      diff: {
+        cidrs: { added: ["203.0.113.0/24"], removed: ["198.51.100.0/24"], addedCount: 1, removedCount: 1 },
+        domains: { added: [], removed: [], addedCount: 0, removedCount: 0 },
+      },
+    };
+    const calls = stubFetch([
+      { body: versionDetail },
+      { body: versionDetail },
+      { body: diffResp },
+      { body: diffResp },
+    ]);
+
+    const showOut = await run(["rules-show", RULE_ID_A]);
+    expect(calls[0]!.url).toContain(`/api/admin/rules/${RULE_ID_A}`);
+    expect(showOut).toContain(`rule version 2026-11-19.1 (${RULE_ID_A})`);
+    expect(showOut).toContain("cidrs sample (2 of 2): 198.51.100.0/24, 203.0.113.0/24");
+
+    const showJson = await run(["rules-show", RULE_ID_A, "--json"]);
+    expect(JSON.parse(showJson)).toEqual(versionDetail);
+
+    const diffOut = await run(["rules-diff", RULE_ID_A, RULE_ID_B]);
+    expect(calls[2]!.url).toContain(`/api/admin/rules/${RULE_ID_A}/diff/${RULE_ID_B}`);
+    expect(diffOut).toContain("cidrs:   +1 / -1");
+    expect(diffOut).toContain("+ 203.0.113.0/24");
+    expect(diffOut).toContain("- 198.51.100.0/24");
+
+    const diffJson = await run(["rules-diff", RULE_ID_A, RULE_ID_B, "--json"]);
+    expect(JSON.parse(diffJson)).toEqual(diffResp);
+  });
+
+  it("rules-import merges --cidrs and --cidrs-file and rejects empty imports", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "amnezia-rules-test-"));
+    try {
+      const file = join(dir, "cidrs.txt");
+      await writeFile(file, "# comment\n198.51.100.0/24\n\n203.0.113.0/24 # inline\n", "utf8");
+      const saved = {
+        id: RULE_ID_B,
+        profile: "ru_blacklist",
+        version: "manual-1",
+        status: "superseded",
+        cidrCount: 3,
+        domainCount: 1,
+      };
+      const calls = stubFetch([{ body: saved }]);
+
+      const out = await run([
+        "rules-import",
+        "--version=manual-1",
+        "--cidrs=192.0.2.0/24",
+        `--cidrs-file=${file}`,
+        "--domains=blocked.example.test",
+        "--source-url=https://rules.example.test/manual",
+        "--activate=false",
+      ]);
+      expect(calls[0]!.url).toContain("/api/admin/rules/ru_blacklist/import");
+      expect(calls[0]!.init?.method).toBe("POST");
+      expect(sentBody(calls[0]!)).toEqual({
+        profile: "ru_blacklist",
+        version: "manual-1",
+        cidrs: ["192.0.2.0/24", "198.51.100.0/24", "203.0.113.0/24"],
+        domains: ["blocked.example.test"],
+        activate: false,
+        sourceUrl: "https://rules.example.test/manual",
+      });
+      expect(out).toContain(`imported ru_blacklist version manual-1 (${RULE_ID_B})`);
+
+      await expect(run(["rules-import", "--version=empty"])).rejects.toThrow(
+        /at least one CIDR or domain/,
+      );
+      expect(calls).toHaveLength(1);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("user-policy displays inherit message when empty and formatted overrides otherwise", async () => {
+    const calls = stubFetch([
+      {
+        body: [
+          {
+            id: USER_ID,
+            email: "ann@example.test",
+            displayName: "Ann",
+            role: "user",
+            status: "active",
+            keyLimitOverride: null,
+            policyOverride: null,
+          },
+        ],
+      },
+      { body: [{ useBridge: false }] },
+      {
+        body: [
+          {
+            id: USER_ID,
+            email: "ann@example.test",
+            displayName: "Ann",
+            role: "user",
+            status: "active",
+            keyLimitOverride: null,
+            policyOverride: { useBridge: true, keyLimitMode: "global" },
+          },
+        ],
+      },
+      { body: [{ useBridge: false, keyLimitMode: "per_node" }] },
+    ]);
+
+    const inheritOut = await run(["user-policy", "ann@example.test"]);
+    expect(inheritOut).toContain("user ann@example.test: (inherits global policy)");
+
+    const overrideOut = await run(["user-policy", USER_ID]);
+    expect(overrideOut).toContain(`user ann@example.test (${USER_ID}) overrides:`);
+    expect(overrideOut).toContain("useBridge");
+    expect(overrideOut).toContain("(global: false)");
+    expect(calls).toHaveLength(4);
+  });
+
+  it("user-policy-set merges overrides cleanly, clears with inherit, and rejects unknown flags", async () => {
+    const userRow = {
+      id: USER_ID,
+      email: "ann@example.test",
+      displayName: "Ann",
+      role: "user",
+      status: "active",
+      keyLimitOverride: null,
+      policyOverride: {
+        useBridge: true,
+        allowedNodeIds: [NODE_ID],
+      },
+    };
+    const calls = stubFetch([{ body: [userRow] }, { body: { id: USER_ID } }]);
+
+    const out = await run([
+      "user-policy-set",
+      "ann@example.test",
+      "--allowCustomRoutes=false",
+      "--allowedProtocols=awg3",
+      `--allowedEndpointIds=${ENDPOINT_ID}`,
+      "--keyLimitMode=global",
+      "--useBridge=inherit",
+    ]);
+    expect(calls[1]!.url).toContain(`/api/admin/users/${USER_ID}/set-policy`);
+    expect(sentBody(calls[1]!)).toEqual({
+      allowedNodeIds: [NODE_ID],
+      allowCustomRoutes: false,
+      allowedProtocols: ["awg3"],
+      allowedEndpointIds: [ENDPOINT_ID],
+      keyLimitMode: "global",
+    });
+    expect(out).toContain("user ann@example.test: policy updated");
+
+    await expect(
+      run(["user-policy-set", USER_ID, "--autoPurgeOffboardedUsers=true"]),
+    ).rejects.toThrow(/Unknown user-policy-set field/);
+    await expect(
+      run(["user-policy-set", USER_ID, "--nope=1"]),
+    ).rejects.toThrow(/Unknown user-policy-set field/);
+    expect(calls).toHaveLength(2);
+  });
+
+  it("user-nodes merges allowedNodeIds into policyOverride without wiping useBridge", async () => {
+    const calls = stubFetch([
+      {
+        body: [
+          {
+            id: USER_ID,
+            email: "ann@example.test",
+            displayName: "Ann",
+            role: "user",
+            status: "active",
+            keyLimitOverride: null,
+            policyOverride: { useBridge: true, keyLimitMode: "global" },
+          },
+        ],
+      },
+      { body: { id: USER_ID } },
+      {
+        body: [
+          {
+            id: USER_ID,
+            email: "ann@example.test",
+            displayName: "Ann",
+            role: "user",
+            status: "active",
+            keyLimitOverride: null,
+            policyOverride: {
+              useBridge: true,
+              keyLimitMode: "global",
+              allowedNodeIds: [NODE_ID],
+            },
+          },
+        ],
+      },
+      { body: { id: USER_ID } },
+    ]);
+
+    await run(["user-nodes", "ann@example.test", NODE_ID]);
+    expect(sentBody(calls[1]!)).toEqual({
+      useBridge: true,
+      keyLimitMode: "global",
+      allowedNodeIds: [NODE_ID],
+    });
+
+    await run(["user-nodes", USER_ID, "all"]);
+    expect(sentBody(calls[3]!)).toEqual({
+      useBridge: true,
+      keyLimitMode: "global",
+    });
+  });
+
+  it("probe-history resolves node by name, validates --limit, and prints table or JSON", async () => {
+    const history = [
+      {
+        runId: "88888888-8888-4888-8888-888888888888",
+        status: "ok",
+        detail: "200 OK",
+        checkedAt: "2026-11-19T12:00:00.000Z",
+      },
+    ];
+    const calls = stubFetch([
+      { body: [{ id: NODE_ID, name: "Amsterdam" }] },
+      { body: history },
+      { body: [{ id: NODE_ID, name: "Amsterdam" }] },
+      { body: history },
+    ]);
+
+    const out = await run(["probe-history", "Amsterdam", "--limit=25"]);
+    expect(calls[1]!.url).toContain(
+      `/api/admin/reachability/history?nodeId=${NODE_ID}&limit=25`,
+    );
+    expect(out).toContain("200 OK");
+
+    const jsonOut = await run(["probe-history", "Amsterdam", "--json"]);
+    expect(JSON.parse(jsonOut)).toEqual(history);
+
+    await expect(run(["probe-history", "Amsterdam", "--limit=0"])).rejects.toThrow(
+      /--limit must be an integer 1..200/,
+    );
+    await expect(run(["probe-history", "Amsterdam", "--limit=201"])).rejects.toThrow(
+      /--limit must be an integer 1..200/,
+    );
+  });
+
+  it("key-rotate posts /api/keys/:id/rotate and supports --json", async () => {
+    const rotated = { id: KEY_ID, state: "provisioning" };
+    const calls = stubFetch([{ body: rotated }, { body: rotated }]);
+
+    const out = await run(["key-rotate", KEY_ID]);
+    expect(calls[0]!.url).toContain(`/api/keys/${KEY_ID}/rotate`);
+    expect(calls[0]!.init?.method).toBe("POST");
+    expect(out).toContain(`key ${KEY_ID}: rotation queued (state: provisioning)`);
+
+    const jsonOut = await run(["key-rotate", KEY_ID, "--json"]);
+    expect(JSON.parse(jsonOut)).toEqual(rotated);
+  });
+
+  it("key-config-refresh --status hides refreshToken, refreshes when eligible, and refuses when ineligible", async () => {
+    const secretToken = "secret-refresh-token-do-not-print";
+    const calls = stubFetch([
+      { body: { eligible: true, revision: 4, refreshToken: secretToken } },
+      { body: { eligible: true, revision: 4, refreshToken: secretToken } },
+      { body: { eligible: true, revision: 4, refreshToken: secretToken } },
+      { body: { revision: 4, delivery: "ok" } },
+      { body: { eligible: false } },
+    ]);
+
+    const statusOut = await run(["key-config-refresh", KEY_ID, "--status"]);
+    expect(statusOut).toBe(`key ${KEY_ID}: eligible=yes (revision 4)`);
+    expect(statusOut).not.toContain(secretToken);
+
+    const statusJson = await run(["key-config-refresh", KEY_ID, "--status", "--json"]);
+    expect(JSON.parse(statusJson)).toEqual({ eligible: true, revision: 4 });
+    expect(statusJson).not.toContain(secretToken);
+
+    const refreshOut = await run(["key-config-refresh", KEY_ID]);
+    expect(calls[3]!.url).toContain(`/api/keys/${KEY_ID}/config-refresh`);
+    expect(calls[3]!.init?.method).toBe("POST");
+    expect(sentBody(calls[3]!)).toEqual({ refreshToken: secretToken });
+    expect(refreshOut).toContain(`key ${KEY_ID}: config refreshed (revision 4)`);
+
+    await expect(run(["key-config-refresh", KEY_ID])).rejects.toThrow(/not eligible/);
+    expect(calls).toHaveLength(5);
+  });
+
+  it("help output lists all newly added CLI parity commands", async () => {
+    const out = await run(["help"]);
+    for (const cmd of [
+      "bridge-update",
+      "bridge-eligibility",
+      "infrastructure",
+      "rules-refresh",
+      "rules-show",
+      "rules-diff",
+      "rules-import",
+      "user-policy",
+      "user-policy-set",
+      "probe-history",
+      "key-rotate",
+      "key-config-refresh",
+    ]) {
+      expect(out).toContain(cmd);
+    }
+  });
+});

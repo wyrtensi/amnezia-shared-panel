@@ -54,16 +54,17 @@ CONTROL_API_URL=http://127.0.0.1:3001 PANEL_ADMIN_EMAIL=admin@example.com \
 `policy-set` / `node-add` field lists. The map below is for finding the right
 command name:
 
-**Read** (add `--json` for raw JSON): `overview`, `users`, `keys`, `stale-keys`,
-`nodes`, `node-metrics`, `audit [--limit=N]`, `quota [--all]`, `policy`,
-`periods`, `global-routes`, `rules`, `checks`, `check-results`, `probe`,
-`probe-results`, `bridges`, `bridge-routes`, `bridge-rollback-preflight`,
-`client-releases`, `version`, `traffic [--days=N]`.
+**Read** (add `--json` for raw JSON): `overview`, `users`, `user-policy`, `keys`,
+`stale-keys`, `nodes`, `infrastructure`, `node-metrics`, `audit [--limit=N]`,
+`quota [--all]`, `policy`, `periods`, `global-routes`, `rules`, `rules-show`,
+`rules-diff`, `checks`, `check-results`, `probe`, `probe-results`,
+`probe-history`, `bridges`, `bridge-eligibility`, `bridge-routes`,
+`bridge-rollback-preflight`, `client-releases`, `version`, `traffic [--days=N]`.
 
 **Users** (accept a user id **or** email): `user-create`, `user-role`,
-`user-limit`, `user-disable`, `user-enable`, `user-delete`, `user-nodes`,
-`user-bridge`, `user-routes`, `user-notices-reset`, `user-create-key`,
-`offboarded-purge`, `quota-approve`, `quota-reject`.
+`user-limit`, `user-policy`, `user-policy-set`, `user-disable`, `user-enable`,
+`user-delete`, `user-nodes`, `user-bridge`, `user-routes`, `user-notices-reset`,
+`user-create-key`, `offboarded-purge`, `quota-approve`, `quota-reject`.
 
 **Nodes:** `node-add`, `node-update`, `node-remove` (`--with-keys --confirm=`
 to delete a node and every key issued on it), `node-reconcile`,
@@ -71,19 +72,22 @@ to delete a node and every key issued on it), `node-reconcile`,
 `node-checks`, `node-probe`.
 
 **Keys & split-tunnel rules:** `key-config`, `key-rename`, `key-internal-name`,
-`key-revoke`, `key-disable`, `key-enable`, `key-purge`, `keys-purge-revoked`,
-`stale-keys-revoke`, `global-routes-set`, `rules-activate`, `rules-follow`.
+`key-rotate`, `key-config-refresh`, `key-revoke`, `key-disable`, `key-enable`,
+`key-purge`, `keys-purge-revoked`, `stale-keys-revoke`, `global-routes-set`,
+`rules-refresh`, `rules-show`, `rules-diff`, `rules-import`, `rules-activate`,
+`rules-follow`.
 
-**Bridges (AWG 3.1):** `bridges`, `bridge-add`, `bridge-enroll`,
-`bridge-agent-update`, `bridge-agent-log`, `bridge-rollback-preflight`,
-`bridge-delete`, `bridge-routes`, `bridge-route-prepare`, `bridge-route-verify`,
+**Bridges (AWG 3.1):** `infrastructure`, `bridges`, `bridge-add`,
+`bridge-update`, `bridge-enroll`, `bridge-eligibility`, `bridge-agent-update`,
+`bridge-agent-log`, `bridge-rollback-preflight`, `bridge-delete`,
+`bridge-routes`, `bridge-route-prepare`, `bridge-route-verify`,
 `bridge-route-activate`, `bridge-route-direct`, `bridge-route-release`,
-`bridge-route-test-config`, `bridge-tls-gate`.
+`bridge-route-test-config`, `bridge-probe`, `bridge-tls-gate`.
 
 **Checks, probe, policy & Cloudflare:** `check-create`, `check-set`,
 `check-delete`, `check-run`, `check-reset`, `probe-set`, `probe-delete`,
-`probe-run`, `policy-set`, `cf-config`, `cf-token`, `cf-sync`, `cf-domains`,
-`panel-update`.
+`probe-run`, `probe-history`, `bridge-probe`, `policy-set`, `cf-config`,
+`cf-token`, `cf-sync`, `cf-domains`, `panel-update`.
 
 For every flag and error code see [`docs/CLI.md`](../../docs/CLI.md).
 
