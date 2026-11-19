@@ -147,6 +147,15 @@ const createService = (): ControlApiService => ({
     createUser: vi.fn(() => Promise.resolve({ id: "user-x" })),
 createNode: vi.fn(() => Promise.resolve({ id: "node-1" })),
   updateNode: vi.fn(() => Promise.resolve({ id: "node-1" })),
+  setNodeIpv6RejectStub: vi.fn(() =>
+    Promise.resolve({
+      id: "node-1",
+      enabled: true,
+      prefix: "fd6b:7c2e:4a91:9f::/64",
+      state: "pending",
+      queued: true,
+    }),
+  ),
   deleteNode: vi.fn(() => Promise.resolve({ id: "node-1", deleted: true })),
   adminList: vi.fn(() => Promise.resolve([])),
   adminAction: vi.fn(() => Promise.resolve({ ok: true })),
@@ -2604,6 +2613,47 @@ describe("bridge registry routes", () => {
       expect(response.json()).toMatchObject({ error: "VALIDATION_ERROR" });
     }
     expect(service.verifyBridgeRoute).not.toHaveBeenCalled();
+    await app.close();
+  });
+
+  it("toggles per-node IPv6 reject stub via PUT /api/admin/nodes/:id/ipv6-reject-stub with admin auth and ULA validation", async () => {
+    const { service, admin, app } = await adminApp();
+    const targetNodeId = "00000000-0000-4000-8000-000000000001";
+    const url = `/api/admin/nodes/${targetNodeId}/ipv6-reject-stub`;
+
+    const ok = await app.inject({
+      method: "PUT",
+      url,
+      headers: { "x-dev-user-email": admin.email },
+      payload: { enabled: true, prefix: "FD6B:7C2E:4A91:009F::/64" },
+    });
+    expect(ok.statusCode).toBe(200);
+    expect(service.setNodeIpv6RejectStub).toHaveBeenCalledWith(
+      admin,
+      targetNodeId,
+      {
+        enabled: true,
+        prefix: "fd6b:7c2e:4a91:9f::/64",
+      },
+    );
+
+    const invalid = await app.inject({
+      method: "PUT",
+      url,
+      headers: { "x-dev-user-email": admin.email },
+      payload: { enabled: true, prefix: "2001:db8::/64" },
+    });
+    expect(invalid.statusCode).toBe(400);
+
+    vi.mocked(service.resolveIdentity).mockResolvedValueOnce(user);
+    const forbidden = await app.inject({
+      method: "PUT",
+      url,
+      headers: { "x-dev-user-email": user.email },
+      payload: { enabled: true },
+    });
+    expect(forbidden.statusCode).toBe(403);
+
     await app.close();
   });
 });

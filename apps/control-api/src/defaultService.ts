@@ -26,7 +26,15 @@ import {
   inspectAwg31ClientConfig,
   setVpnDescription,
 } from "./vpnConfig.js";
-import { inspectAwgVpnLink, withAwg31TunnelMtu, type AwgEndpoint } from "@amnezia/vpn-config";
+import {
+  DEFAULT_AWG3_SERVER_IPV4_CIDR,
+  deriveStubPeerIpv6,
+  inspectAwgVpnLink,
+  readBaseClientIpv4,
+  withAwg31TunnelMtu,
+  withIpv6RejectStubAddress,
+  type AwgEndpoint,
+} from "@amnezia/vpn-config";
 import { decideBridgeDelivery, renderBridgeEndpoint } from "./bridgeEndpoint.js";
 import { configFilename } from "./configFilename.js";
 import { buildQrFrameTexts } from "./qrFrames.js";
@@ -104,6 +112,39 @@ const withClientProfile = (base: string, profile: unknown): string => {
   }
 };
 
+const applyIpv6RejectStub = (
+  key: StoredKeyConfig,
+  link: string,
+  format: ConfigFormat,
+): string => {
+  if (
+    key.protocol !== "awg3" ||
+    !key.nodeIpv6RejectStub?.enabled ||
+    key.nodeIpv6RejectStub.state !== "active"
+  ) {
+    return link;
+  }
+  const isConfFormat = format === "conf" || format === "qr-conf";
+  const isMobileVpn = key.deviceType === "ios" || key.deviceType === "android";
+  // Official desktop AmneziaVPN clients break on comma-separated client_ip, so
+  // vpn:// and QR exports only inject the stub ULA on iOS and Android.
+  // Standalone .conf / qr-conf supports dual-stack Address on every OS.
+  if (!isConfFormat && !isMobileVpn) {
+    return link;
+  }
+  const baseIpv4 = readBaseClientIpv4(link);
+  if (!baseIpv4) return link;
+  const peerIpv6 = deriveStubPeerIpv6(
+    baseIpv4,
+    DEFAULT_AWG3_SERVER_IPV4_CIDR,
+    key.nodeIpv6RejectStub.prefix,
+  );
+  if (!peerIpv6) return link;
+  return withIpv6RejectStubAddress(link, peerIpv6, {
+    includeClientIp: !isConfFormat,
+  });
+};
+
 /**
  * The link a download serves, built from the key's decrypted saved artifact:
  * the saved client profile, then the endpoint (`endpoint` null keeps the
@@ -115,9 +156,11 @@ const composeExport = async (
   key: StoredKeyConfig,
   savedLink: string,
   endpoint: AwgEndpoint | null,
+  format: ConfigFormat = "vpn",
 ): Promise<{ vpnLink: string; displayName: string }> => {
   const clientLink = withClientProfile(savedLink, key.awgClientProfile);
-  const profiledLink = key.protocol === "awg3" ? withAwg31TunnelMtu(clientLink) : clientLink;
+  const mtuLink = key.protocol === "awg3" ? withAwg31TunnelMtu(clientLink) : clientLink;
+  const profiledLink = applyIpv6RejectStub(key, mtuLink, format);
   const storedLink =
     endpoint === null ? profiledLink : renderBridgeEndpoint(profiledLink, endpoint);
   // Apply the active routing rules for non-full-tunnel profiles at export time.
@@ -217,6 +260,7 @@ export const createDefaultControlApiService = ({
       key,
       savedLink,
       delivery.mode === "bridge" ? delivery.endpoint : null,
+      format,
     );
     // Only the OWNER downloading their own config marks the rules as applied.
     // An admin peeking at someone's private config must not clear the owner's
@@ -423,6 +467,8 @@ export const createDefaultControlApiService = ({
   createNode: (actor, request) => repository.createNode(actor, request),
   updateNode: (actor, nodeId, request) =>
     repository.updateNode(actor, nodeId, request),
+  setNodeIpv6RejectStub: (actor, nodeId, request) =>
+    repository.setNodeIpv6RejectStub(actor, nodeId, request),
   deleteNode: (actor, nodeId, options) =>
     repository.deleteNode(actor, nodeId, options),
   adminList: (actor, resource) => repository.adminList(actor, resource),

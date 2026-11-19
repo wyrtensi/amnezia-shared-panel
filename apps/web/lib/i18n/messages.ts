@@ -933,6 +933,27 @@ const ru = {
   "nodes.checks.title": "Сервисы с этой ноды",
   "nodes.checks.none":
     "Эта нода ещё не отвечала по проверкам. Обычная причина — агент старее 1.1.5, он такого запроса не понимает.",
+  "nodes.ipv6Stub.title": "IPv6 Reject (ULA)",
+  "nodes.ipv6Stub.hint":
+    "Выделенная ULA-подсеть и активный ICMPv6 Administratively Prohibited вместо тихого blackhole для AWG 3.1. Убирает зависания IPv6 на iOS/Android и .conf, не затрагивая десктопные vpn:// и не разрывая IPv4 при включении или выключении.",
+  "nodes.ipv6Stub.toggleAria": "Переключить IPv6 Reject (ULA) на этой ноде",
+  "nodes.ipv6Stub.enabledToast": "Включение IPv6 Reject (ULA) поставлено в очередь",
+  "nodes.ipv6Stub.disabledToast": "Отключение IPv6 Reject (ULA) поставлено в очередь",
+  "nodes.ipv6Stub.state.off": "Выкл",
+  "nodes.ipv6Stub.state.pending": "Применяется…",
+  "nodes.ipv6Stub.state.active": "Активно",
+  "nodes.ipv6Stub.state.unsupported": "Не поддерживается",
+  "nodes.ipv6Stub.state.error": "Ошибка",
+  "nodes.ipv6Stub.reason.ipv6_forwarding_disabled":
+    "Контейнер AWG 3.1 запущен без IPv6 forwarding sysctls (обновите compose.yaml на ноде)",
+  "nodes.ipv6Stub.reason.agent_unsupported":
+    "Агент ноды не поддерживает этот режим — обновите node-agent",
+  "nodes.ipv6Stub.reason.awg3_unavailable":
+    "Контейнер AWG 3.1 недоступен на этой ноде",
+  "nodes.ipv6Stub.reason.stub_route_missing":
+    "Маршрут prohibit 2000::/3 отсутствует в контейнере — переключите тумблер для повторного применения",
+  "nodes.ipv6Stub.reason.stub_route_present":
+    "Маршрут prohibit 2000::/3 ещё активен в контейнере — переключите тумблер для очистки",
  "checks.title": "Проверки сервисов",
   "checks.cliHint":
     "Набор правил открытый, поэтому проверки создаются и правятся из CLI: check-create, check-set. Здесь — включить, запустить, изменить период и посмотреть, что отвечают ноды.",
@@ -2781,6 +2802,27 @@ const en = {
   "nodes.checks.title": "Services from this node",
   "nodes.checks.none":
     "This node has not answered any check yet. The usual cause is an agent older than 1.1.5, which does not serve the request.",
+  "nodes.ipv6Stub.title": "IPv6 Reject (ULA)",
+  "nodes.ipv6Stub.hint":
+    "Dedicated ULA subnet with active ICMPv6 Administratively Prohibited instead of silent blackhole for AWG 3.1. Fixes IPv6 stalls on iOS/Android and .conf without affecting desktop vpn:// or dropping IPv4 sessions on toggle.",
+  "nodes.ipv6Stub.toggleAria": "Toggle IPv6 Reject (ULA) on this node",
+  "nodes.ipv6Stub.enabledToast": "Enabling IPv6 Reject (ULA) queued",
+  "nodes.ipv6Stub.disabledToast": "Disabling IPv6 Reject (ULA) queued",
+  "nodes.ipv6Stub.state.off": "Off",
+  "nodes.ipv6Stub.state.pending": "Applying…",
+  "nodes.ipv6Stub.state.active": "Active",
+  "nodes.ipv6Stub.state.unsupported": "Unsupported",
+  "nodes.ipv6Stub.state.error": "Error",
+  "nodes.ipv6Stub.reason.ipv6_forwarding_disabled":
+    "AWG 3.1 container lacks IPv6 forwarding sysctls (update compose.yaml on the node)",
+  "nodes.ipv6Stub.reason.agent_unsupported":
+    "Node-agent predates this feature — update node-agent",
+  "nodes.ipv6Stub.reason.awg3_unavailable":
+    "AWG 3.1 container is unavailable on this node",
+  "nodes.ipv6Stub.reason.stub_route_missing":
+    "prohibit 2000::/3 route is missing in the container — toggle to reapply",
+  "nodes.ipv6Stub.reason.stub_route_present":
+    "prohibit 2000::/3 route is still present in the container — toggle to clear",
  "checks.title": "Service checks",
   "checks.cliHint":
     "The rule set is open, so checks are created and edited from the CLI: check-create, check-set. Here you can enable, run, change the period, and read what the nodes say.",

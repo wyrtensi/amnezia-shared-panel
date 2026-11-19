@@ -173,6 +173,15 @@ const createRepository = (): ControlRepository => ({
   createUser: vi.fn(() => Promise.resolve({ id: "user-x" })),
   createNode: vi.fn(() => Promise.resolve({ id: "node-1" })),
   updateNode: vi.fn(() => Promise.resolve({ id: "node-1" })),
+  setNodeIpv6RejectStub: vi.fn(() =>
+    Promise.resolve({
+      id: "node-1",
+      enabled: true,
+      prefix: "fd6b:7c2e:4a91:9f::/64",
+      state: "pending",
+      queued: true,
+    }),
+  ),
   deleteNode: vi.fn(() => Promise.resolve({ id: "node-1", deleted: true })),
   adminList: vi.fn(() => Promise.resolve([])),
   adminAction: vi.fn(() => Promise.resolve({ ok: true })),
@@ -1304,5 +1313,112 @@ describe("effective endpoint at config delivery (bridge or direct)", () => {
     const other = setup({ ownerId: "someone-else" });
     other.assign(bridgeA);
     await expect(other.get("vpn")).rejects.toMatchObject({ code: "KEY_NOT_FOUND" });
+  });
+});
+
+describe("per-node IPv6 active-reject stub export projection", () => {
+  const buildAwg3Key = (overrides: Record<string, unknown> = {}) => {
+    const base = awg31Link();
+    // Rewrite the synthetic link's 10.8.1.7 IP into the AWG 3.1 subnet 10.90.0.7
+    const payload = decodeVpnLink(base);
+    const awg = payload.containers?.[0]?.awg as Record<string, unknown>;
+    const last = JSON.parse(String(awg.last_config)) as Record<string, unknown>;
+    last.client_ip = "10.90.0.7";
+    last.config = String(last.config).replace("10.8.1.7/32", "10.90.0.7/32");
+    awg.last_config = JSON.stringify(last, null, 2);
+    const awg3SubnetLink = encodeVpnPayload(payload);
+    return {
+      id: "key-stub-1",
+      ownerId: employee.id,
+      nodeId: "node-1",
+      deviceLabel: "Phone",
+      keyNumber: 1,
+      nodeDisplayName: "Node 1",
+      nameDisplay: { server: true, label: true, number: false },
+      encrypted: encryptSecret(awg3SubnetLink, keyring, 1),
+      policy: defaultPortalPolicy,
+      routeProfile: "full_tunnel" as const,
+      appliedRuleVersionId: null,
+      activeRule: null,
+      customRoutes: null,
+      state: "active" as const,
+      protocol: "awg3" as const,
+      bridgeEndpoint: null,
+      awgClientProfile: null,
+      deviceType: "ios" as const,
+      nodeIpv6RejectStub: {
+        enabled: true,
+        state: "active" as const,
+        prefix: "fd6b:7c2e:4a91:9f::/64",
+      },
+      ...overrides,
+    };
+  };
+
+  it("injects stub ULA into vpn:// for iOS and Android, but keeps desktop vpn:// strictly IPv4-only", async () => {
+    const repository = createRepository();
+    const service = createDefaultControlApiService({ repository, keyring });
+
+    for (const mobile of ["ios", "android"] as const) {
+      vi.mocked(repository.findKeyConfig).mockResolvedValue(
+        buildAwg3Key({ deviceType: mobile }),
+      );
+      const vpn = String(
+        (await service.getKeyConfig(employee, "key-stub-1", "vpn", false)).body,
+      );
+      const copies = readCopies(vpn, decodeVpnLink);
+      expect(copies.lastConfig.client_ip).toBe("10.90.0.7, fd6b:7c2e:4a91:9f::7");
+      expect(copies.line("Address")).toBe(
+        "10.90.0.7/32, fd6b:7c2e:4a91:9f::7/128",
+      );
+    }
+
+    for (const desktop of ["windows", "macos", "linux", "unspecified"] as const) {
+      vi.mocked(repository.findKeyConfig).mockResolvedValue(
+        buildAwg3Key({ deviceType: desktop }),
+      );
+      const vpn = String(
+        (await service.getKeyConfig(employee, "key-stub-1", "vpn", false)).body,
+      );
+      const copies = readCopies(vpn, decodeVpnLink);
+      expect(copies.lastConfig.client_ip).toBe("10.90.0.7");
+      expect(copies.line("Address")).toBe("10.90.0.7/32");
+
+      // Standalone .conf still receives dual-stack Address on every OS.
+      const conf = String(
+        (await service.getKeyConfig(employee, "key-stub-1", "conf", false)).body,
+      );
+      expect(conf).toContain("Address = 10.90.0.7/32, fd6b:7c2e:4a91:9f::7/128");
+    }
+  });
+
+  it("reverts immediately to IPv4-only export when stub is off or not active, and never touches AWG 2.0", async () => {
+    const repository = createRepository();
+    const service = createDefaultControlApiService({ repository, keyring });
+
+    for (const stub of [
+      { enabled: false, state: "off" as const, prefix: "fd6b:7c2e:4a91:9f::/64" },
+      { enabled: true, state: "pending" as const, prefix: "fd6b:7c2e:4a91:9f::/64" },
+      { enabled: true, state: "unsupported" as const, prefix: "fd6b:7c2e:4a91:9f::/64" },
+    ]) {
+      vi.mocked(repository.findKeyConfig).mockResolvedValue(
+        buildAwg3Key({ deviceType: "ios", nodeIpv6RejectStub: stub }),
+      );
+      const vpn = String(
+        (await service.getKeyConfig(employee, "key-stub-1", "vpn", false)).body,
+      );
+      const copies = readCopies(vpn, decodeVpnLink);
+      expect(copies.lastConfig.client_ip).toBe("10.90.0.7");
+      expect(copies.line("Address")).toBe("10.90.0.7/32");
+    }
+
+    vi.mocked(repository.findKeyConfig).mockResolvedValue(
+      buildAwg3Key({ deviceType: "ios", protocol: "awg2" as const }),
+    );
+    const awg2Conf = String(
+      (await service.getKeyConfig(employee, "key-stub-1", "conf", false)).body,
+    );
+    expect(awg2Conf).toContain("Address = 10.90.0.7/32");
+    expect(awg2Conf).not.toContain("fd6b:7c2e:4a91:9f");
   });
 });

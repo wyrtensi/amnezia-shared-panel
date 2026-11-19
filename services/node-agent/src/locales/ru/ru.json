@@ -113,7 +113,9 @@
       "CAPACITY_UNAVAILABLE": "Изменение ёмкости не настроено на этом сервере",
       "CAPACITY_INVALID": "maxPeers должен быть целым числом от 1 до 500",
       "CAPACITY_IN_FLIGHT": "Изменение ёмкости уже выполняется на этом сервере",
-      "UPDATE_IN_FLIGHT": "Обновление агента уже выполняется на этом сервере"
+      "UPDATE_IN_FLIGHT": "Обновление агента уже выполняется на этом сервере",
+      "IPV6_STUB_INVALID_PREFIX": "Префикс IPv6 reject stub должен быть каноническим ULA /64 в fd00::/8",
+      "IPV6_STUB_UNSUPPORTED": "IPv6 reject stub не поддерживается в этом контейнере AWG 3.1 (требуются IPv6 sysctls)"
     }
   },
   "system": {

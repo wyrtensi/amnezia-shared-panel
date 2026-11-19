@@ -1,13 +1,26 @@
-import { Protocol } from "@/types/shared";
+import { ClientErrorCode, Protocol } from "@/types/shared";
 import { AwgVersion } from "@/types/amnezia";
 import { AppContract } from "@/contracts/app";
 import { IAmneziaConnection } from "@/types/amnezia";
+import { Ipv6RejectStubStatus } from "@/types/server";
+import { APIError } from "@/utils/APIError";
 import {
   parseAwgParams,
   resolveAwgVersion,
   dropEmptyConfigLines,
   AWG_SPECIAL_JUNK_KEYS,
 } from "@/helpers/awgConfig";
+import {
+  DEFAULT_IPV6_REJECT_STUB_PREFIX,
+  IPV6_REJECT_PROBE_TARGET,
+  deriveStubPeerIpv6,
+  deriveStubServerIpv6,
+  extractServerIpv4Cidr,
+  formatIpv6RejectStubEnv,
+  normalizeUla64Prefix,
+  parseIpv6RejectStubEnv,
+  rewriteAwg3PeersForIpv6RejectStub,
+} from "@/helpers/ipv6RejectStub";
 import {
   AmneziaWgPaths,
   ClientArtifacts,
@@ -118,6 +131,237 @@ export class AmneziaWg3Service extends AmneziaWgServiceBase {
 
   protected get transport(): string {
     return AppContract.AmneziaWG3.DEFAULTS.TRANSPORT;
+  }
+
+  protected override async formatActivePeerAllowedIps(
+    assignedIpv4: string,
+    serverConfig: string,
+  ): Promise<string> {
+    const raw = await this.connection.readFile(
+      AppContract.AmneziaWG3.PATHS.IPV6_REJECT_STUB_ENV,
+    );
+    const persisted = parseIpv6RejectStubEnv(raw);
+    if (!persisted.enabled) {
+      return `${assignedIpv4}/32`;
+    }
+
+    const prefix = persisted.prefix ?? DEFAULT_IPV6_REJECT_STUB_PREFIX;
+    const serverCidr = extractServerIpv4Cidr(serverConfig);
+    const peerIpv6 = deriveStubPeerIpv6(assignedIpv4, serverCidr, prefix);
+    return peerIpv6
+      ? `${assignedIpv4}/32, ${peerIpv6}/128`
+      : `${assignedIpv4}/32`;
+  }
+
+  private async readIpv6SysctlSupport(): Promise<boolean> {
+    const iface = AppContract.AmneziaWG3.INTERFACE;
+    const [forwardingRaw, disableRaw] = await Promise.all([
+      this.connection.readFile("/proc/sys/net/ipv6/conf/all/forwarding"),
+      this.connection.readFile(`/proc/sys/net/ipv6/conf/${iface}/disable_ipv6`),
+    ]);
+    return forwardingRaw.trim() === "1" && disableRaw.trim() === "0";
+  }
+
+  private async hasLiveIpv6RejectStub(prefix: string): Promise<boolean> {
+    const serverIpv6 = deriveStubServerIpv6(prefix);
+    if (!serverIpv6) return false;
+
+    const iface = AppContract.AmneziaWG3.INTERFACE;
+    const [addrResult, routeGetResult, routeShowResult] = await Promise.all([
+      this.connection.run(`ip -6 -o addr show dev ${iface} 2>/dev/null || true`),
+      this.connection.run(
+        `ip -6 route get ${IPV6_REJECT_PROBE_TARGET} 2>&1 || true`,
+      ),
+      this.connection.run("ip -6 route show 2000::/3 2>/dev/null || true"),
+    ]);
+
+    const escaped = serverIpv6.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const hasServerAddr = new RegExp(`(?:^|\\s)${escaped}/64(?:\\s|$)`).test(
+      addrResult.stdout,
+    );
+    // Check both live route resolution (`route get`) and the FIB entry (`route
+    // show 2000::/3`) so kernels/iproute2 builds that return EACCES without
+    // echoing "prohibit" on `route get` still confirm the active prohibit rule.
+    const hasProhibitRoute =
+      /\bprohibit\b/i.test(routeGetResult.stdout) ||
+      /\bprohibit\b/i.test(routeShowResult.stdout);
+    return hasServerAddr && hasProhibitRoute;
+  }
+
+  /**
+   * Read persisted and live kernel status of the AWG 3.1 IPv6 active-reject stub.
+   */
+  async getIpv6RejectStubStatus(): Promise<Ipv6RejectStubStatus> {
+    const rawEnv = await this.connection.readFile(
+      AppContract.AmneziaWG3.PATHS.IPV6_REJECT_STUB_ENV,
+    );
+    const persisted = parseIpv6RejectStubEnv(rawEnv);
+    const prefix = persisted.prefix ?? DEFAULT_IPV6_REJECT_STUB_PREFIX;
+    const supported = await this.readIpv6SysctlSupport();
+
+    if (!supported) {
+      return {
+        supported: false,
+        enabled: persisted.enabled,
+        active: false,
+        prefix,
+        reason: "ipv6_forwarding_disabled",
+      };
+    }
+
+    const active = await this.hasLiveIpv6RejectStub(prefix);
+    const reason =
+      persisted.enabled && !active
+        ? "stub_route_missing"
+        : !persisted.enabled && active
+          ? "stub_route_present"
+          : null;
+
+    return {
+      supported: true,
+      enabled: persisted.enabled,
+      active,
+      prefix,
+      reason,
+    };
+  }
+
+  /**
+   * Enable or disable the AWG 3.1 IPv6 active-reject stub live without dropping
+   * IPv4 sessions. Serialized with peer mutations to prevent config races.
+   */
+  async setIpv6RejectStub(options: {
+    enabled: boolean;
+    prefix?: string;
+  }): Promise<Ipv6RejectStubStatus> {
+    return this.enqueueMutation(() => this.setIpv6RejectStubUnlocked(options));
+  }
+
+  private async setIpv6RejectStubUnlocked(options: {
+    enabled: boolean;
+    prefix?: string;
+  }): Promise<Ipv6RejectStubStatus> {
+    const rawEnv = await this.connection.readFile(
+      AppContract.AmneziaWG3.PATHS.IPV6_REJECT_STUB_ENV,
+    );
+    const previous = parseIpv6RejectStubEnv(rawEnv);
+    const normalizedPrefix =
+      options.prefix !== undefined
+        ? normalizeUla64Prefix(options.prefix)
+        : (previous.prefix ?? DEFAULT_IPV6_REJECT_STUB_PREFIX);
+
+    if (!normalizedPrefix) {
+      throw new APIError(ClientErrorCode.BAD_REQUEST, {
+        msg: "services.server.IPV6_STUB_INVALID_PREFIX",
+      });
+    }
+
+    const iface = AppContract.AmneziaWG3.INTERFACE;
+    const serverIpv6 = deriveStubServerIpv6(normalizedPrefix);
+    if (!serverIpv6) {
+      throw new APIError(ClientErrorCode.BAD_REQUEST, {
+        msg: "services.server.IPV6_STUB_INVALID_PREFIX",
+      });
+    }
+
+    if (options.enabled) {
+      const supported = await this.readIpv6SysctlSupport();
+      if (!supported) {
+        throw new APIError(ClientErrorCode.CONFLICT, {
+          msg: "services.server.IPV6_STUB_UNSUPPORTED",
+        });
+      }
+
+      if (previous.prefix && previous.prefix !== normalizedPrefix) {
+        const prevServerIpv6 = deriveStubServerIpv6(previous.prefix);
+        if (prevServerIpv6) {
+          await this.connection.run(
+            `ip -6 address del ${prevServerIpv6}/64 dev ${iface} 2>/dev/null || true`,
+          );
+        }
+      }
+
+      await this.connection.run(
+        `ip -6 address replace ${serverIpv6}/64 dev ${iface} nodad`,
+      );
+      await this.connection.run("ip -6 route replace prohibit 2000::/3");
+
+      const live = await this.hasLiveIpv6RejectStub(normalizedPrefix);
+      if (!live) {
+        await this.connection.run(
+          "ip -6 route del prohibit 2000::/3 2>/dev/null || true",
+        );
+        await this.connection.run(
+          `ip -6 address del ${serverIpv6}/64 dev ${iface} 2>/dev/null || true`,
+        );
+        throw new Error(
+          "Kernel did not confirm active IPv6 prohibit route on awg0",
+        );
+      }
+
+      const wgConfig = await this.connection.readWgConfig();
+      const rewritten = rewriteAwg3PeersForIpv6RejectStub(wgConfig, {
+        enabled: true,
+        prefix: normalizedPrefix,
+      });
+      if (rewritten.changed) {
+        await this.connection.writeWgConfig(rewritten.config);
+        await this.connection.syncWgConfig();
+      }
+
+      await this.connection.writeFile(
+        AppContract.AmneziaWG3.PATHS.IPV6_REJECT_STUB_ENV,
+        formatIpv6RejectStubEnv(true, normalizedPrefix),
+      );
+
+      return {
+        supported: true,
+        enabled: true,
+        active: true,
+        prefix: normalizedPrefix,
+        reason: null,
+      };
+    }
+
+    // Disabling: revert peer AllowedIPs back to IPv4-only first, then clean up
+    // the kernel prohibit route and server ULA address without disrupting IPv4.
+    const wgConfig = await this.connection.readWgConfig();
+    const rewritten = rewriteAwg3PeersForIpv6RejectStub(wgConfig, {
+      enabled: false,
+      prefix: normalizedPrefix,
+    });
+    if (rewritten.changed) {
+      await this.connection.writeWgConfig(rewritten.config);
+      await this.connection.syncWgConfig();
+    }
+
+    await this.connection.run(
+      "ip -6 route del prohibit 2000::/3 2>/dev/null || true",
+    );
+    const serverAddresses = new Set<string>([serverIpv6]);
+    if (previous.prefix) {
+      const prevServerIpv6 = deriveStubServerIpv6(previous.prefix);
+      if (prevServerIpv6) serverAddresses.add(prevServerIpv6);
+    }
+    for (const addr of serverAddresses) {
+      await this.connection.run(
+        `ip -6 address del ${addr}/64 dev ${iface} 2>/dev/null || true`,
+      );
+    }
+
+    await this.connection.writeFile(
+      AppContract.AmneziaWG3.PATHS.IPV6_REJECT_STUB_ENV,
+      formatIpv6RejectStubEnv(false, normalizedPrefix),
+    );
+
+    const supported = await this.readIpv6SysctlSupport();
+    return {
+      supported,
+      enabled: false,
+      active: false,
+      prefix: normalizedPrefix,
+      reason: supported ? null : "ipv6_forwarding_disabled",
+    };
   }
 
   /**

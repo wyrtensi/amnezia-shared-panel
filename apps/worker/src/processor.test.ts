@@ -36,6 +36,7 @@ const createRepository = (): WorkerRepository => ({
   completeNodeReconcile: vi.fn(() => Promise.resolve()),
   completeNodeAgentUpdate: vi.fn(() => Promise.resolve()),
   completeNodeCapacityChange: vi.fn(() => Promise.resolve()),
+  completeNodeIpv6RejectStub: vi.fn(() => Promise.resolve()),
   saveNodeAgentRelease: vi.fn(() => Promise.resolve()),
   saveBridgeAgentRelease: vi.fn(() => Promise.resolve()),
   completeProvision: vi.fn(() => Promise.resolve()),
@@ -50,6 +51,19 @@ const createAgent = (): NodeAgent => ({
   getCapacity: vi.fn(() => Promise.resolve(null)),
   requestCapacity: vi.fn((maxPeers: number) =>
     Promise.resolve({ id: "capacity-request", maxPeers }),
+  ),
+  setIpv6RejectStub: vi.fn(
+    ({ enabled, prefix }: { enabled: boolean; prefix?: string }) =>
+      Promise.resolve({
+        ok: true as const,
+        status: {
+          supported: true,
+          enabled,
+          active: enabled,
+          prefix: prefix ?? "fd6b:7c2e:4a91:9f::/64",
+          reason: null,
+        },
+      }),
   ),
   runChecks: vi.fn(() => Promise.resolve(null)),
   requestAgentUpdate: vi.fn((image: string) =>
@@ -1045,6 +1059,66 @@ describe("manual route-feed refresh job", () => {
       "capacity-2",
       "Node capacity target not found",
     );
+  });
+
+  it("applies node.set-ipv6-reject-stub and records active/off/unsupported outcomes cleanly", async () => {
+    const repository = createRepository();
+    const agent = createAgent();
+    vi.mocked(repository.loadNodeReconcileContext).mockResolvedValue({
+      node: keyContext.node,
+      keys: [],
+    });
+    const now = new Date("2026-11-19T06:00:00.000Z");
+    const processJob = createJobProcessor({
+      repository,
+      createNodeAgent: () => agent,
+      now: () => now,
+    });
+
+    await processJob({
+      id: "ipv6-1",
+      type: "node.set-ipv6-reject-stub",
+      attempts: 1,
+      payload: {
+        nodeId: "node-1",
+        enabled: true,
+        prefix: "fd6b:7c2e:4a91:9f::/64",
+      },
+    });
+
+    expect(agent.setIpv6RejectStub).toHaveBeenCalledWith({
+      enabled: true,
+      prefix: "fd6b:7c2e:4a91:9f::/64",
+    });
+    expect(repository.completeNodeIpv6RejectStub).toHaveBeenCalledWith({
+      jobId: "ipv6-1",
+      nodeId: "node-1",
+      enabled: true,
+      prefix: "fd6b:7c2e:4a91:9f::/64",
+      state: "active",
+      reason: null,
+      observedAt: now,
+    });
+
+    vi.mocked(agent.setIpv6RejectStub).mockResolvedValueOnce({
+      ok: false,
+      code: "ipv6_forwarding_disabled",
+    });
+    await processJob({
+      id: "ipv6-2",
+      type: "node.set-ipv6-reject-stub",
+      attempts: 1,
+      payload: { nodeId: "node-1", enabled: true },
+    });
+    expect(repository.completeNodeIpv6RejectStub).toHaveBeenLastCalledWith({
+      jobId: "ipv6-2",
+      nodeId: "node-1",
+      enabled: false,
+      prefix: "fd6b:7c2e:4a91:9f::/64",
+      state: "unsupported",
+      reason: "ipv6_forwarding_disabled",
+      observedAt: now,
+    });
   });
 
   it("fails an update aimed at a node that is gone", async () => {

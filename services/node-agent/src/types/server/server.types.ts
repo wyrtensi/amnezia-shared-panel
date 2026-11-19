@@ -95,6 +95,15 @@ export type ServerBackupPayload = {
   xray?: XrayBackupData;
 };
 
+/** Live and persisted status of the AWG 3.1 IPv6 active-reject stub. */
+export type Ipv6RejectStubStatus = {
+  supported: boolean;
+  enabled: boolean;
+  active: boolean;
+  prefix: string;
+  reason: string | null;
+};
+
 export type ServerStatusPayload = {
   id: string;
   region: string;
@@ -116,6 +125,9 @@ export type ServerStatusPayload = {
     probeKinds: string[];
     assertionTypes: string[];
   };
+  // Status of the optional per-node AWG 3.1 IPv6 active-reject stub (`prohibit 2000::/3`).
+  // Null when amneziawg3 is not enabled or unreachable on this node.
+  ipv6RejectStub: Ipv6RejectStubStatus | null;
 };
 
 // The lifecycle of an in-panel agent update, derived from the spool rather than

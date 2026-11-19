@@ -318,6 +318,13 @@ type AdminNode = {
   capacityMessage?: string | null;
   capacityLog?: string;
   capacityAt?: string | null;
+  ipv6RejectStub?: {
+    enabled: boolean;
+    prefix: string;
+    state: string;
+    reason: string | null;
+    observedAt: string | null;
+  };
   availableAgent?: {
     repository: string;
     version: string;
@@ -907,6 +914,7 @@ async function cmdNodes(args: string[]): Promise<void> {
         // "which nodes are still behind" without an SSH session per host; a
         // dash is an agent too old to report it, which is itself the answer.
         agent: node.agentVersion ?? "—",
+        "ipv6-stub": node.ipv6RejectStub?.state ?? "—",
         health: node.lastError ? "ERROR" : "ok",
       })),
       [
@@ -919,6 +927,7 @@ async function cmdNodes(args: string[]): Promise<void> {
         "peers",
         "address",
         "agent",
+        "ipv6-stub",
         "health",
       ],
     ),
@@ -1988,6 +1997,68 @@ async function cmdNodeCapacity(args: string[]): Promise<void> {
   console.log("Follow it with: node-capacity " + node.id);
 }
 
+async function cmdNodeIpv6Stub(args: string[]): Promise<void> {
+  const id = args.find((arg) => !arg.startsWith("--"));
+  if (!id) {
+    throw new Error(
+      "Usage: node-ipv6-stub <id> [--enabled=true|false] [--prefix=<ula/64>]",
+    );
+  }
+  const node = await findAdminNode(id);
+  const enabledRaw = flagOf(args, "enabled");
+  const prefix = flagOf(args, "prefix");
+
+  if (enabledRaw === undefined && prefix === undefined) {
+    const stub = node.ipv6RejectStub ?? {
+      enabled: false,
+      prefix: "fd6b:7c2e:4a91:9f::/64",
+      state: "off",
+      reason: null,
+      observedAt: null,
+    };
+    if (wantsJson(args)) {
+      return json(stub);
+    }
+    console.log(`node ${node.name} (${node.id})`);
+    console.log(`  enabled:  ${stub.enabled ? "yes" : "no"}`);
+    console.log(`  state:    ${stub.state}`);
+    console.log(`  prefix:   ${stub.prefix}`);
+    if (stub.reason) console.log(`  reason:   ${stub.reason}`);
+    console.log(`  observed: ${stub.observedAt ?? "—"}`);
+    return;
+  }
+
+  if (
+    enabledRaw !== undefined &&
+    enabledRaw !== "true" &&
+    enabledRaw !== "false"
+  ) {
+    throw new Error("--enabled must be true or false");
+  }
+  const enabled =
+    enabledRaw !== undefined
+      ? enabledRaw === "true"
+      : Boolean(node.ipv6RejectStub?.enabled);
+  const body = prefix ? { enabled, prefix } : { enabled };
+  const result = await api<{
+    id: string;
+    enabled: boolean;
+    prefix: string;
+    state: string;
+    queued: boolean;
+  }>(`/api/admin/nodes/${node.id}/ipv6-reject-stub`, {
+    method: "PUT",
+    body: JSON.stringify(body),
+  });
+  if (wantsJson(args)) {
+    return json(result);
+  }
+  console.log(
+    `node ${node.name}: IPv6 active-reject stub ${result.enabled ? "enabling" : "disabling"} (${result.prefix}) queued`,
+  );
+  console.log("Follow it with: node-ipv6-stub " + node.id);
+}
+
 async function cmdNodeAdd(args: string[]): Promise<void> {
   const name = flagOf(args, "name");
   const apiBaseUrl = flagOf(args, "api-url");
@@ -2786,6 +2857,9 @@ Nodes:
                        [--confirm]         Recreates only the node-agent, so no
                                            tunnel drops. Needs the host-side
                                            applier installed on that node.
+  node-ipv6-stub <id>                     Show or toggle a node's AWG 3.1 IPv6
+                 [--enabled=true|false]   active-reject stub (ULA + prohibit
+                 [--prefix=<ula/64>]      2000::/3). Live switch; IPv4 stays up.
   node-agent-update <id> [--image=<ref>]  Replace a node's agent with the published
                     [--confirm]           image. Without --confirm it prints what would
                                           be installed and changes nothing. One node at
@@ -3491,6 +3565,8 @@ export async function dispatch(argv: string[]): Promise<void> {
       return cmdNodeReconcile(args);
     case "node-capacity":
       return cmdNodeCapacity(args);
+    case "node-ipv6-stub":
+      return cmdNodeIpv6Stub(args);
     case "node-agent-update":
       return cmdNodeAgentUpdate(args);
     case "node-agent-log":

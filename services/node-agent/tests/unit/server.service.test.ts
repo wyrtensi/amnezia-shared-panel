@@ -165,7 +165,24 @@ describe("ServerService", () => {
         probeKinds: SUPPORTED_PROBE_KINDS,
         assertionTypes: SUPPORTED_ASSERTION_TYPES,
       },
+      ipv6RejectStub: {
+        supported: false,
+        enabled: false,
+        active: false,
+        prefix: "fd6b:7c2e:4a91:9f::/64",
+        reason: "ipv6_forwarding_disabled",
+      },
     });
+  });
+
+  it("omits ipv6RejectStub and rejects toggling when amneziawg3 is disabled", async () => {
+    appConfig.PROTOCOLS_ENABLED = [Protocol.AMNEZIAWG2];
+    const { service } = createSubject();
+    const status = await service.getServerStatus();
+    expect(status.ipv6RejectStub).toBeNull();
+    await expect(
+      service.setIpv6RejectStub({ enabled: true }),
+    ).rejects.toMatchObject({ statusCode: 409 });
   });
 
   it("advertises only what its registries implement", async () => {

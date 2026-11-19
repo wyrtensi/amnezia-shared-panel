@@ -10,6 +10,7 @@ PRIVATE_KEY_FILE="$STATE_DIR/wireguard_server_private_key.key"
 PUBLIC_KEY_FILE="$STATE_DIR/wireguard_server_public_key.key"
 PSK_FILE="$STATE_DIR/wireguard_psk.key"
 CLIENTS_FILE="$STATE_DIR/clientsTable"
+IPV6_STUB_ENV_FILE="$STATE_DIR/ipv6-reject-stub.env"
 INIT_MARKER="$STATE_DIR/.initializing"
 RUNTIME_CONFIG_FILE=/tmp/awg0.runtime.conf
 GEOMETRY_SCRIPT=/usr/local/libexec/awg3-geometry.sh
@@ -154,11 +155,38 @@ cleanup_interface() {
   iptables -D FORWARD -i awg0 -j ACCEPT >/dev/null 2>&1 || true
   iptables -D FORWARD -o awg0 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT >/dev/null 2>&1 || true
   iptables -t nat -D POSTROUTING -s 10.90.0.0/22 -o eth0 -j MASQUERADE >/dev/null 2>&1 || true
+  ip -6 route del prohibit 2000::/3 >/dev/null 2>&1 || true
   ip link delete dev awg0 >/dev/null 2>&1 || true
   rm -f \
     "$RUNTIME_CONFIG_FILE" \
     /var/run/amneziawg/awg0.sock \
     /var/run/wireguard/awg0.sock
+}
+
+apply_ipv6_reject_stub() {
+  [ -f "$IPV6_STUB_ENV_FILE" ] || return 0
+  stub_enabled=""
+  stub_server_ipv6=""
+  while IFS='=' read -r raw_key raw_val || [ -n "$raw_key" ]; do
+    raw_val="$(printf '%s' "$raw_val" | tr -d '\r')"
+    case "$raw_key" in
+      ENABLED) stub_enabled="$raw_val" ;;
+      SERVER_IPV6) stub_server_ipv6="$raw_val" ;;
+    esac
+  done <"$IPV6_STUB_ENV_FILE"
+
+  [ "$stub_enabled" = "1" ] || return 0
+  if ! printf '%s' "$stub_server_ipv6" | grep -Eq '^fd[0-9a-f]{2}:[0-9a-f:]*:1$'; then
+    echo "Warning: ignoring invalid SERVER_IPV6 in $IPV6_STUB_ENV_FILE" >&2
+    return 1
+  fi
+  if [ "$(cat /proc/sys/net/ipv6/conf/all/forwarding 2>/dev/null || printf '0')" != "1" ] || \
+     [ "$(cat /proc/sys/net/ipv6/conf/awg0/disable_ipv6 2>/dev/null || printf '1')" != "0" ]; then
+    echo "Warning: IPv6 forwarding is disabled in awg3; skipping IPv6 reject stub restore" >&2
+    return 1
+  fi
+  ip -6 address replace "${stub_server_ipv6}/64" dev awg0 nodad || return 1
+  ip -6 route replace prohibit 2000::/3 || return 1
 }
 
 trap cleanup_interface EXIT
@@ -175,6 +203,7 @@ ip link set mtu "$IFACE_MTU" up dev awg0
 iptables -A FORWARD -i awg0 -j ACCEPT
 iptables -A FORWARD -o awg0 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
 iptables -t nat -A POSTROUTING -s 10.90.0.0/22 -o eth0 -j MASQUERADE
+apply_ipv6_reject_stub || echo "Warning: IPv6 reject stub restore failed; continuing with IPv4" >&2
 
 stopping=0
 stop_service() {
