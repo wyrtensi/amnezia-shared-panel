@@ -475,8 +475,8 @@ function PeriodInput({
   const spec = WORKER_PERIOD_FIELDS[field];
   const unit = spec.unit === "day" ? t("periods.unitDays") : t("periods.unitSec");
   return (
-    <div className="space-y-1.5">
-      <Label htmlFor={`period-${field}`} className="flex items-center gap-1.5">
+    <div className="min-w-0 space-y-1.5">
+      <Label htmlFor={`period-${field}`} className="flex flex-wrap items-center gap-1.5">
         {t(`periods.${field}`)}
         <Hint>{t(`periods.${field}Hint`)}</Hint>
       </Label>
@@ -523,11 +523,11 @@ function PolicyToggle({
   // toggling the switch.
   return (
     <div className="flex items-center justify-between gap-3 rounded-lg border bg-well shadow-[var(--inset-shadow)] p-2.5 text-sm">
-      <span className="flex items-center gap-1.5">
+      <span className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5">
         {label}
         {hint ? <Hint>{hint}</Hint> : null}
       </span>
-      <Switch checked={checked} onCheckedChange={onChange} />
+      <Switch className="shrink-0" checked={checked} onCheckedChange={onChange} />
     </div>
   );
 }

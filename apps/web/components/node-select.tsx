@@ -34,9 +34,10 @@ export function NodeSelect({
   return (
     <div className="space-y-2">
       <label className="flex items-center justify-between gap-3 rounded-lg border bg-well shadow-[var(--inset-shadow)] p-2.5 text-sm">
-        <span>{t("nodeSelect.allNodes")}</span>
+        <span className="min-w-0">{t("nodeSelect.allNodes")}</span>
         <Switch
           checked={all}
+          className="shrink-0"
           onCheckedChange={(checked) =>
             onChange(checked ? null : nodes.map((node) => node.id))
           }
@@ -56,7 +57,7 @@ export function NodeSelect({
                   aria-pressed={active}
                   onClick={() => toggle(node.id)}
                   className={cn(
-                    "inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-medium transition-colors",
+                    "inline-flex max-w-full flex-wrap items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-left text-xs font-medium transition-colors",
                     active
                       ? "border-primary bg-primary/10 text-primary"
                       : "border-border text-muted-foreground hover:bg-accent",
@@ -75,7 +76,7 @@ export function NodeSelect({
                   </span>
                   <span>{node.name}</span>
                   {node.address ? (
-                    <code className="font-mono text-[11px] font-normal opacity-75">
+                    <code className="break-all font-mono text-[11px] font-normal opacity-75">
                       {node.address}
                     </code>
                   ) : null}

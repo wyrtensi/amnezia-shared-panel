@@ -451,7 +451,7 @@ export function NodeRoutesEditor({ initialNodeId }: { initialNodeId: string | nu
                       >
                         <SelectTrigger
                           aria-label={`${server.name} — ${t("bridge.routesTitle")}`}
-                          className="h-8 min-w-0 flex-1 sm:w-64"
+                          className="h-8 min-w-0 flex-1 overflow-hidden [&>span]:min-w-0 [&>span]:truncate sm:w-64"
                         >
                           <SelectValue />
                         </SelectTrigger>
