@@ -31,10 +31,10 @@
 
 - This project targets **AmneziaWG 3.1** as its primary protocol. New nodes and
   new keys must default to AWG 3.1; build new protocol features against 3.1 only.
-- AmneziaWG 2.0 (`awg2`) is retained solely for backward compatibility with
-  already-deployed nodes and existing peers during the transition. Do not remove
-  the awg2 code paths (existing peers, including the operator's own connection on
-  the current node, depend on them), but do not add new 2.0-only capabilities.
+- AmneziaWG 2.0 (`awg2`) is deprecated and no longer a long-term support
+  requirement. Keep its existing compatibility paths until a separate retirement
+  change verifies active peers and migration impact. Target AWG 3.1 for new
+  capabilities.
 - AWG 3.1 configs require the official AmneziaVPN client 5.0.1.5 or newer.
 
 ## Server and Node Management
