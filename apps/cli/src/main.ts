@@ -119,6 +119,7 @@ import {
 } from "./bridges.js";
 import type { AdminNodeEndpoint, AdminReachabilityView, KeyBridgeInfo } from "@amnezia/contracts";
 import {
+  bridgeReachabilityLines,
   buildProbeUpsert,
   probeSummaryLines,
   REACHABILITY_COLUMNS,
@@ -2924,12 +2925,15 @@ ${BRIDGE_USAGE_LINES}
   probe-set --label= --api-url= --api-key-file=<path|-> --control-url=
             [--egress-url=] [--interval-sec=3600] [--fail-threshold=2]
             [--stale-after-sec=10800] [--time-zone=UTC] [--enabled=on|off]
+            [--probe-direct-when-bridged=on|off] [--stealth=on|off]
                                           Register the probe, or change only the fields you name
                                           (--time-zone: IANA zone for alert and widget times)
   probe-delete [--confirm]                Forget the probe and revoke its service keys
   probe-run                               Ask for a run now (results within a few minutes)
   bridge-tls-gate <bridge-id> <baseline|verify> [<since-UTC>]  Check route traffic around TLS rotation
-  probe-results [<node>] [--json]         Per node and protocol: ping, tcp, handshake, http
+  bridge-probe <bridge-id> [--on|--off]    Show or change bridge alerts
+  probe-results [<node>] [--json]         Node tests and bridge observations (JSON: nodes)
+  probe-results --bridges [--json]        Bridge tests and observations only
   node-probe <node> [--on|--off]          Whether the probe tests this node
     Assertion flags (repeatable; all must hold):
 ${assertionUsageLines().join("\n")}
@@ -3402,6 +3406,8 @@ async function cmdProbeSet(args: string[]): Promise<void> {
       staleAfterSec: flagOf(args, "stale-after-sec"),
       timeZone: flagOf(args, "time-zone"),
       enabled: flagOf(args, "enabled"),
+      probeDirectWhenBridged: flagOf(args, "probe-direct-when-bridged"),
+      stealthMode: flagOf(args, "stealth"),
     },
     view.probe,
   );
@@ -3434,20 +3440,55 @@ async function cmdProbeRun(): Promise<void> {
 }
 
 async function cmdProbeResults(args: string[]): Promise<void> {
-  const nodeFilter = args.find((arg) => !arg.startsWith("--"));
+  const [nodeFilter] = positionals(args);
+  const bridgesOnly = args.includes("--bridges");
+  if (nodeFilter && bridgesOnly) throw new Error("A node filter cannot be combined with --bridges");
   const view = await loadReachability();
-  if (nodeFilter && !view.nodes.some((n) => n.nodeId === nodeFilter || n.nodeName === nodeFilter)) {
+  const nodes = nodeFilter
+    ? view.nodes.filter((node) => node.nodeId === nodeFilter || node.nodeName === nodeFilter)
+    : view.nodes;
+  const bridges = view.bridges ?? [];
+  if (nodeFilter && nodes.length === 0) {
     throw new Error(`No node with id or name ${nodeFilter}`);
   }
-  if (wantsJson(args)) {
-    return json(
-      nodeFilter
-        ? view.nodes.filter((n) => n.nodeId === nodeFilter || n.nodeName === nodeFilter)
-        : view.nodes,
-    );
+  if (wantsJson(args)) return json(bridgesOnly ? bridges : nodes);
+  if (!bridgesOnly) {
+    if (!view.probe) console.log("No reachability probe is registered.");
+    console.log(table(reachabilityRows(view, nodeFilter), REACHABILITY_COLUMNS));
+    for (const node of nodes) {
+      if (!node.directStatus) continue;
+      const when = node.directCheckedAt ? ` at ${node.directCheckedAt}` : "";
+      const detail = node.directDetail ? ` (${node.directDetail})` : "";
+      console.log(`${node.nodeName} direct path: ${reachabilityLabel(node.directStatus)}${when}${detail}`);
+    }
   }
-  if (!view.probe) console.log("No reachability probe is registered.");
-  console.log(table(reachabilityRows(view, nodeFilter), REACHABILITY_COLUMNS));
+  if (!nodeFilter) {
+    if (bridgesOnly && bridges.length === 0) console.log("No bridge reachability data is available.");
+    for (const bridge of bridges) for (const line of bridgeReachabilityLines(bridge)) console.log(line);
+  }
+}
+
+async function cmdBridgeProbe(args: string[]): Promise<void> {
+  const [id, extra] = positionals(args);
+  if (!id || extra || args.some((arg) => arg.startsWith("--") && arg !== "--on" && arg !== "--off")) {
+    throw new Error("Usage: bridge-probe <bridge-id> [--on|--off]");
+  }
+  if (!UUID_RE.test(id)) throw new Error("Bridge id must be a UUID");
+  const on = args.includes("--on");
+  const off = args.includes("--off");
+  if (on && off) throw new Error("Use either --on or --off");
+  if (!on && !off) {
+    const view = await loadReachability();
+    const bridge = (view.bridges ?? []).find((item) => item.bridgeId === id);
+    if (!bridge) throw new Error(`No bridge with id ${id}`);
+    console.log(`bridge ${bridge.bridgeName}: reachability alerts ${bridge.reachabilityEnabled ? "on" : "off"}`);
+    return;
+  }
+  await api(`/api/admin/vpn-bridges/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    body: JSON.stringify({ reachabilityEnabled: on }),
+  });
+  console.log(`bridge ${id}: reachability alerts ${on ? "on" : "off"}`);
 }
 
 async function cmdNodeProbe(args: string[]): Promise<void> {
@@ -3672,6 +3713,8 @@ export async function dispatch(argv: string[]): Promise<void> {
       return runBridgeTlsGate(args, { api });
     case "probe-results":
       return cmdProbeResults(args);
+    case "bridge-probe":
+      return cmdBridgeProbe(args);
     case "node-probe":
       return cmdNodeProbe(args);
     case "rules":

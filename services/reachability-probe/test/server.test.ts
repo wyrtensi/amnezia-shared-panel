@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { loadApiKey, parseListen } from "../src/env.js";
-import { createServer, type Runner } from "../src/server.js";
+import { createServer, parseRunRequest, type Runner } from "../src/server.js";
 import type { RunRequest, RunState } from "../src/types.js";
 
 const API_KEY = "k".repeat(40);
@@ -156,6 +156,21 @@ describe("expectedEgressIp parsing", () => {
   });
 });
 
+describe("bridge target validation", () => {
+  it("accepts a bridge IP and DNS TLS hostname", () => {
+    expect(parseRunRequest({ ...validRun(), bridgeTargets: [{ targetId: "bridge", host: "192.0.2.20", httpsHostname: "panel.example.test" }], stealth: true }).bridgeTargets).toHaveLength(1);
+  });
+  it.each(["-option", "example.test/path", "example.test:443", "example.test\nheader", ""])("rejects invalid host %s", (host) => {
+    expect(() => parseRunRequest({ ...validRun(), bridgeTargets: [{ targetId: "bridge", host }] })).toThrow();
+    expect(() => parseRunRequest({ ...validRun(), bridgeTargets: [{ targetId: "bridge", host: "192.0.2.20", httpsHostname: host }] })).toThrow();
+  });
+  it.each(["127.0.0.1", "0x7f.1", "127.1", "panel"])("rejects non-DNS TLS hostname %s", (httpsHostname) => {
+    expect(() => parseRunRequest({
+      ...validRun(), bridgeTargets: [{ targetId: "bridge", host: "192.0.2.20", httpsHostname }],
+    })).toThrow("httpsHostname is invalid");
+  });
+});
+
 describe("capabilities", () => {
   it("needs the key", async () => {
     const { call } = await start(controlledRunner().runner);
@@ -168,7 +183,7 @@ describe("capabilities", () => {
     const res = await call("GET", "/capabilities");
     expect(res).toMatchObject({
       status: 200,
-      json: { apiVersion: 1, capabilities: ["bridge-measurement"] },
+      json: { apiVersion: 1, capabilities: ["bridge-measurement", "bridge-host-check", "stealth-probe"] },
     });
   });
 

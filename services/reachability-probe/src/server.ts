@@ -1,8 +1,12 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import { createServer as createHttpServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import { isIP } from "node:net";
 
 import { MIN_API_KEY_LENGTH } from "./env.js";
-import { notAttempted, PROBE_API_VERSION, PROBE_CAPABILITIES, type RunRequest, type RunState, type RunTarget } from "./types.js";
+import {
+  notAttempted, PROBE_API_VERSION, PROBE_CAPABILITIES,
+  type BridgeRunTarget, type RunRequest, type RunState, type RunTarget,
+} from "./types.js";
 
 export type Runner = (req: RunRequest, onProgress: (state: RunState) => void) => Promise<RunState>;
 
@@ -15,6 +19,7 @@ export type ServerOptions = {
 };
 
 export const MAX_TARGETS = 500;
+const MAX_BRIDGE_TARGETS = 200;
 export const MAX_CONFIG_BYTES = 16 * 1024;
 // Field limits match probeRunRequestSchema in @amnezia/contracts.
 const MAX_RUN_ID_LENGTH = 100;
@@ -22,6 +27,7 @@ const MAX_TARGET_ID_LENGTH = 200;
 const MAX_PROTOCOL_LENGTH = 20;
 const MAX_EXPECTED_IP_LENGTH = 64;
 const MAX_URL_LENGTH = 2048;
+const DNS_LABEL = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i;
 /** 500 configs at the limit plus JSON overhead. */
 const MAX_BODY_BYTES = 9 * 1024 * 1024;
 
@@ -45,6 +51,16 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 
 const boundedString = (value: unknown, max: number): value is string =>
   typeof value === "string" && value.length > 0 && value.length <= max;
+
+const validHostname = (value: unknown): value is string =>
+  boundedString(value, 253) && value.split(".").every((label) => DNS_LABEL.test(label));
+
+const validTlsHostname = (value: unknown): value is string => {
+  if (!validHostname(value) || !value.includes(".")) return false;
+  // URL would turn abbreviated and base-prefixed IPs into numeric hosts.
+  const parsed = URL.parse(`https://${value}`);
+  return parsed !== null && !isIP(parsed.hostname);
+};
 
 const httpUrl = (value: unknown, field: string): string => {
   const url = isRecord(value) ? value.url : undefined;
@@ -99,7 +115,30 @@ export const parseRunRequest = (body: unknown): RunRequest => {
     }
     return target;
   });
-  return { runId: body.runId, control: { url: control }, egress: { url: egress }, targets };
+  const run: RunRequest = { runId: body.runId, control: { url: control }, egress: { url: egress }, targets };
+  if (body.stealth !== undefined) {
+    if (typeof body.stealth !== "boolean") throw new HttpError(400, "stealth must be a boolean");
+    run.stealth = body.stealth;
+  }
+  if (body.bridgeTargets !== undefined) {
+    if (!Array.isArray(body.bridgeTargets) || body.bridgeTargets.length > MAX_BRIDGE_TARGETS) {
+      throw new HttpError(400, `bridgeTargets must be an array of at most ${MAX_BRIDGE_TARGETS} targets`);
+    }
+    run.bridgeTargets = body.bridgeTargets.map((raw: unknown, index): BridgeRunTarget => {
+      const at = `bridgeTargets[${index}]`;
+      if (!isRecord(raw)) throw new HttpError(400, `${at} must be an object`);
+      const { targetId, host, httpsHostname } = raw;
+      if (!boundedString(targetId, MAX_TARGET_ID_LENGTH)) throw new HttpError(400, `${at}.targetId is required`);
+      if (typeof host !== "string" || (!isIP(host) && !validHostname(host))) {
+        throw new HttpError(400, `${at}.host is invalid`);
+      }
+      if (httpsHostname !== undefined && !validTlsHostname(httpsHostname)) {
+        throw new HttpError(400, `${at}.httpsHostname is invalid`);
+      }
+      return { targetId, host, ...(httpsHostname !== undefined ? { httpsHostname } : {}) };
+    });
+  }
+  return run;
 };
 
 const readBody = (req: IncomingMessage): Promise<string> =>

@@ -4,6 +4,7 @@ import {
   isPublishableAgentImage,
   BRIDGE_ROUTE_CANDIDATE_CHECK_JOB_TYPE,
   bridgeFrpProxyName,
+  bridgeProbeLevelsSchema,
   nodeServedProtocols,
   probeCapabilityInputOf,
   probeLevelsSchema,
@@ -16,6 +17,7 @@ import {
   type BridgeEligibility,
   toUserReachability,
   type AdminOverviewBridges,
+  type AdminReachabilityBridge,
   type BridgeRouteSummary,
   type CreateBridgeRequest,
   type DeleteBridgeResult,
@@ -36,6 +38,8 @@ import {
 } from "@amnezia/contracts";
 import {
   bridgeAgentReleases,
+  bridgeReachabilityState,
+  CLEARED_BRIDGE_ROUTE_ALERT,
   auditEvents,
   decryptSecret,
   jobOutbox,
@@ -264,11 +268,14 @@ const toBridge = (
   agentImage: string | null,
   agentUpdate: BridgeAgentUpdateSummary | undefined,
   panelDns?: BridgePanelDnsStatus,
+  reachability?: AdminReachabilityBridge,
 ): Bridge => ({
   id: row.id,
   name: row.name,
   publicIpv4: row.publicIpv4,
   ...(row.panelDnsHostname ? { panelDnsHostname: row.panelDnsHostname } : {}),
+  reachabilityEnabled: row.reachabilityEnabled,
+  ...(reachability ? { alertState: bridgeAlertStateOf(reachability) } : {}),
   controlTcpPort: row.controlTcpPort,
   udpPortStart: row.udpPortStart,
   udpPortEnd: row.udpPortEnd,
@@ -301,6 +308,24 @@ const toBridge = (
   createdAt: row.createdAt.toISOString(),
   updatedAt: row.updatedAt.toISOString(),
 });
+
+const bridgeAlertStateOf = (view: AdminReachabilityBridge) => {
+  const failedRoute = view.activeRoutes.find((route) => route.incidentOpen);
+  const failingSince = [
+    view.mgmtIncidentOpen ? view.mgmtFailingSince : null,
+    view.probeIncidentOpen ? view.probeFailingSince : null,
+    ...view.activeRoutes.map((route) => route.incidentOpen ? route.failingSince : null),
+  ].filter((value): value is string => value !== null).sort()[0] ?? null;
+  return {
+    incidentOpen: view.mgmtIncidentOpen || view.probeIncidentOpen || failedRoute !== undefined,
+    mgmtIncidentOpen: view.mgmtIncidentOpen,
+    probeIncidentOpen: view.probeIncidentOpen,
+    failingSince,
+    detail: (view.mgmtIncidentOpen ? view.mgmtDetail : null) ??
+      (view.probeIncidentOpen ? view.probeDetail : null) ??
+      (failedRoute ? `FRP route offline: ${failedRoute.nodeName}` : null),
+  };
+};
 
 /**
  * Persistence for the bridge registry: bridges, route reservations, the
@@ -489,6 +514,73 @@ export class PostgresBridgeRepository {
   private approvedAgentImage = async (): Promise<string | null> =>
     (await this.approvedRelease())?.image ?? null;
 
+  listReachability = async (bridgeId?: string): Promise<AdminReachabilityBridge[]> => {
+    const [bridges, routes] = await Promise.all([
+      this.db.select({
+        id: vpnBridges.id,
+        name: vpnBridges.name,
+        publicIpv4: vpnBridges.publicIpv4,
+        panelDnsHostname: vpnBridges.panelDnsHostname,
+        reachabilityEnabled: vpnBridges.reachabilityEnabled,
+        managementStatus: vpnBridges.managementStatus,
+        lastObservedAt: vpnBridges.lastObservedAt,
+        lastPollAttemptAt: vpnBridges.lastPollAttemptAt,
+        frpsReachable: vpnBridges.frpsReachable,
+        state: bridgeReachabilityState,
+      })
+        .from(vpnBridges)
+        .leftJoin(bridgeReachabilityState, eq(bridgeReachabilityState.bridgeId, vpnBridges.id))
+        .where(bridgeId ? eq(vpnBridges.id, bridgeId) : undefined)
+        .orderBy(asc(vpnBridges.name), asc(vpnBridges.id)),
+      this.db.select({ route: vpnBridgeRoutes, nodeName: nodes.name })
+        .from(vpnBridgeRoutes)
+        .innerJoin(nodes, eq(nodes.id, vpnBridgeRoutes.nodeId))
+        .where(and(
+          eq(vpnBridgeRoutes.state, "active"),
+          bridgeId ? eq(vpnBridgeRoutes.bridgeId, bridgeId) : undefined,
+        ))
+        .orderBy(asc(vpnBridgeRoutes.publicUdpPort)),
+    ]);
+    const now = new Date();
+    const staleMs = this.options.observationStaleMs;
+    return bridges.map((bridge) => {
+      const { state } = bridge;
+      const managementStatus = effectiveManagementStatus(bridge, now, staleMs);
+      return {
+        bridgeId: bridge.id,
+        bridgeName: bridge.name,
+        publicIpv4: bridge.publicIpv4,
+        panelDnsHostname: bridge.panelDnsHostname,
+        reachabilityEnabled: bridge.reachabilityEnabled,
+        managementStatus,
+        frpsReachable: managementStatus === "ok" ? bridge.frpsReachable : null,
+        mgmtIncidentOpen: bridge.reachabilityEnabled && state?.mgmtAlertedAt != null,
+        mgmtFailingSince: iso(state?.mgmtFailingSince ?? null),
+        mgmtDetail: bridge.reachabilityEnabled ? state?.mgmtAlertDetail ?? null : null,
+        probeStatus: state?.probeStatus ?? null,
+        probeLevels: bridgeProbeLevelsSchema.safeParse(state?.probeLevels).data ?? null,
+        probeCheckedAt: iso(state?.probeCheckedAt ?? null),
+        probeFailingSince: iso(state?.probeFailingSince ?? null),
+        probeConsecutiveFailures: state?.probeConsecutiveFailures ?? 0,
+        probeIncidentOpen: bridge.reachabilityEnabled && state?.probeAlertedAt != null,
+        probeDetail: state?.probeDetail ?? null,
+        activeRoutes: routes.filter(({ route }) => route.bridgeId === bridge.id).map(({ route, nodeName }) => {
+          const registration = routeRegistration(route, bridge, now, staleMs);
+          return {
+            routeId: route.id,
+            nodeId: route.nodeId,
+            nodeName,
+            publicUdpPort: route.publicUdpPort,
+            state: route.state,
+            observedOnline: registration.status === "unknown" ? null : registration.status === "online",
+            incidentOpen: bridge.reachabilityEnabled && route.alertedAt !== null,
+            failingSince: iso(route.alertFailingSince),
+          };
+        }),
+      };
+    });
+  };
+
   private readBridge = async (bridgeId: string): Promise<Bridge> => {
     const [row] = await this.db
       .select()
@@ -497,11 +589,12 @@ export class PostgresBridgeRepository {
       .limit(1);
     if (!row) throw bridgeNotFound();
     const now = new Date();
-    const [routes, summaries, agentImage, panelDns] = await Promise.all([
+    const [routes, summaries, agentImage, panelDns, reachability] = await Promise.all([
       this.routeSummaries([row], now),
       this.agentUpdates.summaries([row]),
       this.approvedAgentImage(),
       this.checkPanelDns(row.publicIpv4, row.panelDnsHostname),
+      this.listReachability(bridgeId),
     ]);
     return toBridge(
       row,
@@ -511,6 +604,7 @@ export class PostgresBridgeRepository {
       agentImage,
       summaries.get(row.id),
       panelDns,
+      reachability[0],
     );
   };
 
@@ -520,11 +614,12 @@ export class PostgresBridgeRepository {
       .from(vpnBridges)
       .orderBy(asc(vpnBridges.name), asc(vpnBridges.createdAt));
     const now = new Date();
-    const [routes, agentImage, summaries, dnsStatuses] = await Promise.all([
+    const [routes, agentImage, summaries, dnsStatuses, reachability] = await Promise.all([
       this.routeSummaries(rows, now),
       this.approvedAgentImage(),
       this.agentUpdates.summaries(rows),
       Promise.all(rows.map((row) => this.checkPanelDns(row.publicIpv4, row.panelDnsHostname))),
+      this.listReachability().then((views) => new Map(views.map((view) => [view.bridgeId, view]))),
     ]);
     return rows.map((row, index) =>
       toBridge(
@@ -535,6 +630,7 @@ export class PostgresBridgeRepository {
         agentImage,
         summaries.get(row.id),
         dnsStatuses[index],
+        reachability.get(row.id),
       ),
     );
   };
@@ -650,12 +746,38 @@ export class PostgresBridgeRepository {
           id: vpnBridges.id,
           name: vpnBridges.name,
           panelDnsHostname: vpnBridges.panelDnsHostname,
+          reachabilityEnabled: vpnBridges.reachabilityEnabled,
           enrolledAt: vpnBridges.managementEnrolledAt,
         })
         .from(vpnBridges)
         .where(eq(vpnBridges.id, bridgeId))
         .for("update");
       if (!current) throw bridgeNotFound();
+      if (request.reachabilityEnabled !== undefined && request.reachabilityEnabled !== current.reachabilityEnabled) {
+        await tx.update(vpnBridges)
+          .set({ reachabilityEnabled: request.reachabilityEnabled, updatedAt: new Date() })
+          .where(eq(vpnBridges.id, bridgeId));
+        if (!request.reachabilityEnabled) {
+          await tx.update(bridgeReachabilityState).set({
+            mgmtConsecutiveFailures: 0,
+            mgmtFailingSince: null,
+            mgmtAlertedAt: null,
+            probeConsecutiveFailures: 0,
+            probeFailingSince: null,
+            probeAlertedAt: null,
+          }).where(eq(bridgeReachabilityState.bridgeId, bridgeId));
+          await tx.update(vpnBridgeRoutes).set(CLEARED_BRIDGE_ROUTE_ALERT)
+            .where(eq(vpnBridgeRoutes.bridgeId, bridgeId));
+        }
+        await tx.insert(auditEvents).values({
+          actorUserId: actor.id,
+          actorType: "user",
+          action: "vpn_bridge.reachability_updated",
+          targetType: "vpn_bridge",
+          targetId: bridgeId,
+          metadata: { enabled: request.reachabilityEnabled },
+        });
+      }
       if (request.name !== undefined && request.name !== current.name) {
         await tx
           .update(vpnBridges)
@@ -1305,6 +1427,7 @@ export class PostgresBridgeRepository {
         .set({
           state: "retiring",
           retiringSince: now,
+          ...CLEARED_BRIDGE_ROUTE_ALERT,
           verificationMethod: null,
           verifiedRegistrationMarker: null,
           verifiedAt: null,

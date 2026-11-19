@@ -8,6 +8,7 @@ import {
   type ProbeRunState,
 } from "@amnezia/contracts";
 import {
+  bridgeReachabilityState,
   createDatabase,
   encryptSecret,
   ENDPOINT_CHANGED_DETAIL,
@@ -239,7 +240,7 @@ describe("reachability of bridged nodes (real PostgreSQL)", () => {
   };
 
   const seedProbe = async (
-    options: { capabilities?: string[] | null; failThreshold?: number } = {},
+    options: { capabilities?: string[] | null; failThreshold?: number; probeDirectWhenBridged?: boolean } = {},
   ) => {
     await db().delete(reachabilityProbe);
     const credentials = encryptSecret("k".repeat(32), keyring, 1);
@@ -254,6 +255,7 @@ describe("reachability of bridged nodes (real PostgreSQL)", () => {
         credentialsKeyVersion: credentials.keyVersion,
         controlUrl: "https://example.com/",
         failThreshold: options.failThreshold ?? 1,
+        probeDirectWhenBridged: options.probeDirectWhenBridged ?? false,
         capabilities:
           options.capabilities === undefined ? ["bridge-measurement"] : options.capabilities,
         capabilitiesCheckedAt: new Date(),
@@ -264,7 +266,7 @@ describe("reachability of bridged nodes (real PostgreSQL)", () => {
    * A probe that answers each target of the last run it was asked for with
    * `verdict`, and a task driven by a hand-moved clock.
    */
-  const harness = (verdict: (target: SentTarget) => Verdict) => {
+  const harness = (verdict: (target: SentTarget) => Verdict, bridgeOnline = () => true) => {
     const sent: ProbeRunRequest[] = [];
     let at = new Date();
     const client: ProbeClient = {
@@ -283,6 +285,17 @@ describe("reachability of bridged nodes (real PostgreSQL)", () => {
           startedAt: at.toISOString(),
           finishedAt: at.toISOString(),
           control: level(true),
+          bridgeResults: request.bridgeTargets?.map(({ targetId, host, httpsHostname }) => ({
+            targetId,
+            host,
+            status: "done" as const,
+            detail: null,
+            levels: {
+              ping: level(bridgeOnline()),
+              tcp: level(bridgeOnline()),
+              ...(httpsHostname ? { https: level(bridgeOnline()) } : {}),
+            },
+          })),
           results: request.targets.map((target) => {
             const outcome = verdict(target);
             return {
@@ -375,13 +388,13 @@ describe("reachability of bridged nodes (real PostgreSQL)", () => {
     await probe.tick();
 
     const awg31 = probe.sent[0]?.targets.filter((target) => target.protocol === "awg3");
-    expect(awg31?.map((target) => inspectAwgVpnLink(target.config).endpoint)).toEqual([
-      { host: "192.0.2.10", port: 51234 },
-      { host: "192.0.2.20", port: 51234 },
-    ]);
-    expect(awg31?.[0]?.targetId).toBe(`${node.id}:awg3:r0`);
-    expect(awg31?.[1]?.targetId).not.toContain("192.0.2.20");
-    expect(awg31?.[1]?.expectedEgressIp).toBe("192.0.2.10");
+    expect(awg31).toHaveLength(2);
+    const primary = awg31?.find((target) => target.targetId === `${node.id}:awg3:r0`);
+    const backup = awg31?.find((target) => target.targetId.startsWith(`${node.id}:awg3:r0:direct:`));
+    expect(inspectAwgVpnLink(primary?.config ?? "").endpoint).toEqual({ host: "192.0.2.10", port: 51234 });
+    expect(inspectAwgVpnLink(backup?.config ?? "").endpoint).toEqual({ host: "192.0.2.20", port: 51234 });
+    expect(backup?.targetId).not.toContain("192.0.2.20");
+    expect(backup?.expectedEgressIp).toBe("192.0.2.10");
 
     await probe.tick();
 
@@ -465,7 +478,7 @@ describe("reachability of bridged nodes (real PostgreSQL)", () => {
   };
 
   runDatabaseTest(
-    "measures a bridged node's AWG 3.1 through the bridge, AWG 2 directly, and reports the bridge's failure for that path",
+    "uses one bridged AWG 3.1 measurement for both node and bridge verdicts",
     async () => {
       const node = await seedNode();
       const bridge = await seedBridge(`Bridge ${runTag}`);
@@ -488,17 +501,17 @@ describe("reachability of bridged nodes (real PostgreSQL)", () => {
       });
       // The node's origin exit IP is the comparison target.
       expect(bridged?.expectedEgressIp).toBe("192.0.2.10");
-      const direct = sent.get("awg2");
-      expect(direct?.targetId).toBe(`${node.id}:awg2`);
-      expect(direct?.config).toBe(awgServiceLink({ protocolVersion: "2" }));
+      expect(sent.has("awg2")).toBe(false);
 
       await probe.tick();
       const results = await resultsOf(node.id);
       expect(results.get("awg3")).toMatchObject({ status: "failed", detail: "no handshake" });
-      expect(results.get("awg2")).toMatchObject({ status: "ok" });
-      // The server badge follows the bridged path, not the working AWG 2.
+      expect(results.has("awg2")).toBe(false);
       expect(await stateOf(node.id)).toMatchObject({ status: "failed" });
-      const [alert] = await alerts();
+      const [bridgeState] = await db().select().from(bridgeReachabilityState)
+        .where(eq(bridgeReachabilityState.bridgeId, bridge.id));
+      expect(bridgeState).toMatchObject({ probeStatus: "failed", mgmtStatus: null });
+      const alert = (await alerts()).find((item) => item.deduplicationKey.includes(node.id));
       expect((alert?.payload as { text: string }).text.split("\n")[0]).toBe(
         `${node.name} (192.0.2.10) через мост ${bridge.name} (${bridge.publicIpv4}:41007) недоступен из Testland`,
       );
@@ -533,6 +546,161 @@ describe("reachability of bridged nodes (real PostgreSQL)", () => {
     expect(endpointOf(second.id)).toEqual({ host: bridgeB.publicIpv4, port: 41000 });
   });
 
+  runDatabaseTest("keeps opt-in direct AWG results diagnostic when the bridged path fails", async () => {
+    const node = await seedNode();
+    const bridge = await seedBridge(`Bridge ${runTag}`);
+    await seedRoute(node.id, bridge.id, "active");
+    await seedProbe({ probeDirectWhenBridged: true });
+    const probe = harness((target) => {
+      const direct = target.targetId.endsWith(":direct") || target.protocol === "awg2";
+      return { handshake: direct, http: direct };
+    });
+    await probe.tick();
+    const sent = probe.sent[0]?.targets.filter((target) => target.targetId.startsWith(`${node.id}:`));
+    expect(sent?.map((target) => target.targetId).sort()).toEqual([
+      `${node.id}:awg2`, `${node.id}:awg3:direct`, `${node.id}:awg3:r1`,
+    ]);
+    const direct = sent?.find((target) => target.targetId.endsWith(":direct"));
+    expect(inspectAwgVpnLink(direct?.config ?? "").endpoint)
+      .toEqual(inspectAwgVpnLink(awgServiceLink()).endpoint);
+    await probe.tick();
+    expect(await stateOf(node.id)).toMatchObject({ status: "failed", directStatus: "ok" });
+    expect((await stateOf(node.id))?.directCheckedAt).toBeInstanceOf(Date);
+    expect((await resultsOf(node.id)).get("awg3")).toMatchObject({ status: "failed" });
+  });
+
+  runDatabaseTest("measures opted-in bridged nodes' direct addresses independently", async () => {
+    const node = await seedNode({ awg3Link: awgServiceLink({ host: "192.0.2.10", port: 51234 }) });
+    await seedDirectEndpoints(node.id);
+    const bridge = await seedBridge(`Bridge ${runTag}`);
+    await seedRoute(node.id, bridge.id, "active");
+    await seedProbe({ probeDirectWhenBridged: true });
+    const probe = harness((target) => {
+      const ok = inspectAwgVpnLink(target.config).endpoint?.host === "192.0.2.20";
+      return { handshake: ok, http: ok };
+    });
+    await probe.tick();
+
+    const awg31 = probe.sent[0]?.targets.filter((target) => target.protocol === "awg3");
+    expect(awg31).toHaveLength(3);
+    expect(new Set(awg31?.map((target) => inspectAwgVpnLink(target.config).endpoint))).toEqual(new Set([
+      { host: bridge.publicIpv4, port: 41000 },
+      { host: "192.0.2.10", port: 51234 },
+      { host: "192.0.2.20", port: 51234 },
+    ]));
+    const prefix = `${node.id}:awg3:r1:direct:`;
+    expect(awg31?.filter((target) => target.targetId.startsWith(prefix))).toHaveLength(2);
+    expect(new Set(awg31?.map((target) => target.targetId)).size).toBe(3);
+
+    await probe.tick();
+
+    expect(await stateOf(node.id)).toMatchObject({ status: "failed", directStatus: "failed" });
+    expect((await directEndpointsOf(node.id)).map((endpoint) => endpoint.probeStatus)).toEqual([
+      "failed", "ok", null,
+    ]);
+  });
+
+  runDatabaseTest("fences dispatch if direct diagnostics were disabled during the tick", async () => {
+    const node = await seedNode();
+    const bridge = await seedBridge(`Bridge ${runTag}`);
+    await seedRoute(node.id, bridge.id, "active");
+    await seedProbe({ probeDirectWhenBridged: true });
+    const probe = harness(() => ({ handshake: true, http: true }));
+    vi.mocked(probe.client.latestRun).mockImplementationOnce(async () => {
+      await db().update(reachabilityProbe).set({ probeDirectWhenBridged: false });
+      return null;
+    });
+    await probe.tick();
+    expect(probe.sent).toHaveLength(0);
+    await probe.tick();
+    expect(probe.sent[0]?.targets.map((target) => target.targetId)).toEqual([`${node.id}:awg3:r1`]);
+  });
+
+  runDatabaseTest("serializes accepting a probe run against changing an endpoint", async () => {
+    const node = await seedNode();
+    const bridge = await seedBridge(`Bridge ${runTag}`);
+    const route = await seedRoute(node.id, bridge.id, "draft");
+    await seedProbe();
+    const probe = harness(() => ({ handshake: true, http: true }));
+    const requested = deferred();
+    const acknowledge = deferred();
+    vi.mocked(probe.client.startRun).mockImplementationOnce(async (request) => {
+      requested.resolve();
+      await acknowledge.promise;
+      return { runId: request.runId };
+    });
+    const sending = probe.tick();
+    await requested.promise;
+    const changing = db().transaction((tx) => switchEndpoint(tx, node.id, route));
+    try {
+      expect(await Promise.race([
+        changing.then(() => "committed"),
+        waitForLockWait().then(() => "waiting"),
+      ])).toBe("waiting");
+    } finally {
+      acknowledge.resolve();
+      await Promise.all([sending, changing]);
+    }
+    expect(await revisionOf(node.id)).toBe(1);
+  });
+
+  runDatabaseTest("checks a standalone bridge host and queues one external outage and recovery", async () => {
+    const bridge = await seedBridge(`Bridge ${runTag}`);
+    await db().update(vpnBridges).set({ panelDnsHostname: "bridge.example.org" })
+      .where(eq(vpnBridges.id, bridge.id));
+    await seedProbe({ capabilities: ["bridge-measurement", "bridge-host-check"] });
+    let online = false;
+    const probe = harness(() => ({ handshake: true, http: true }), () => online);
+    vi.mocked(probe.client.capabilities).mockResolvedValue({
+      apiVersion: 1, capabilities: ["bridge-measurement", "bridge-host-check"],
+    });
+    await probe.tick();
+    const hosts = probe.sent[0]?.bridgeTargets;
+    expect(hosts).toHaveLength(1);
+    expect(hosts?.[0]?.targetId).toMatch(new RegExp(`^${bridge.id}:host:`));
+    expect(hosts?.[0]).toMatchObject({
+      host: bridge.publicIpv4,
+      httpsHostname: "bridge.example.org",
+    });
+    expect(probe.sent[0]?.targets).toEqual([]);
+    await probe.tick();
+    await probe.tick(70);
+    await probe.tick();
+    expect(await alerts()).toHaveLength(1);
+    online = true;
+    await probe.tick(70);
+    await probe.tick();
+    const [bridgeState] = await db().select().from(bridgeReachabilityState)
+      .where(eq(bridgeReachabilityState.bridgeId, bridge.id));
+    expect(bridgeState).toMatchObject({
+      probeStatus: "ok", probeAlertedAt: null, mgmtStatus: null, probeLevels: { https: { ok: true } },
+    });
+    const notices = await alerts();
+    expect(notices.map((row) => row.deduplicationKey.split(":").at(-1)).sort()).toEqual(["down", "up"]);
+  });
+
+  runDatabaseTest("ignores invalid legacy bridge hostnames without discarding usable AWG targets", async () => {
+    const standalone = await seedBridge(`Standalone ${runTag}`);
+    const routed = await seedBridge(`Routed ${runTag}`);
+    const node = await seedNode();
+    await seedRoute(node.id, routed.id, "active");
+    await db().update(vpnBridges).set({ panelDnsHostname: "1.2" })
+      .where(inArray(vpnBridges.id, [standalone.id, routed.id]));
+    await seedProbe({ capabilities: ["bridge-measurement", "bridge-host-check"] });
+    const probe = harness(() => ({ handshake: true, http: true }));
+    await probe.tick();
+    const hosts = probe.sent[0]?.bridgeTargets;
+    expect(hosts).toHaveLength(1);
+    expect(hosts?.[0]?.targetId).toMatch(new RegExp(`^${standalone.id}:host:`));
+    expect(hosts?.[0]?.host).toBe(standalone.publicIpv4);
+    expect(hosts?.[0]?.httpsHostname).toBeUndefined();
+    expect(probe.sent[0]?.targets.map((target) => target.targetId)).toEqual([`${node.id}:awg3:r1`]);
+    await probe.tick();
+    const states = await db().select().from(bridgeReachabilityState)
+      .where(inArray(bridgeReachabilityState.bridgeId, [standalone.id, routed.id]));
+    expect(states.map(({ probeStatus }) => probeStatus)).toEqual(["ok", "ok"]);
+  });
+
   runDatabaseTest(
     "a bridged node without a known origin IP is sent an explicit null and its observed egress is stored",
     async () => {
@@ -547,9 +715,7 @@ describe("reachability of bridged nodes (real PostgreSQL)", () => {
       const bridged = sent.get("awg3");
       expect(bridged && "expectedEgressIp" in bridged).toBe(true);
       expect(bridged?.expectedEgressIp).toBeNull();
-      // AWG 2 keeps the direct path's endpoint-host fallback: omitted.
-      const direct = sent.get("awg2");
-      expect(direct && "expectedEgressIp" in direct).toBe(false);
+      expect(sent.has("awg2")).toBe(false);
 
       await probe.tick();
       expect((await resultsOf(node.id)).get("awg3")).toMatchObject({
@@ -561,7 +727,7 @@ describe("reachability of bridged nodes (real PostgreSQL)", () => {
   );
 
   runDatabaseTest(
-    "a legacy probe leaves the bridged path unknown without an alert and keeps measuring AWG 2 directly",
+    "a legacy probe leaves the bridged path unknown without sending direct checks",
     async () => {
       const node = await seedNode();
       const bridge = await seedBridge(`Bridge ${runTag}`);
@@ -570,7 +736,7 @@ describe("reachability of bridged nodes (real PostgreSQL)", () => {
       const probe = harness(() => ({ handshake: false, http: false }));
 
       await probe.tick();
-      expect([...sentFor(probe.sent[0], node.id).keys()]).toEqual(["awg2"]);
+      expect([...sentFor(probe.sent[0], node.id).keys()]).toEqual([]);
 
       await probe.tick();
       const results = await resultsOf(node.id);
@@ -578,7 +744,7 @@ describe("reachability of bridged nodes (real PostgreSQL)", () => {
         status: "error",
         detail: BRIDGE_UNSUPPORTED_REASON,
       });
-      expect(results.get("awg2")).toMatchObject({ status: "failed" });
+      expect(results.has("awg2")).toBe(false);
       expect(await stateOf(node.id)).toMatchObject({ status: "error", consecutiveFailures: 0 });
       expect(await alerts()).toEqual([]);
     },
@@ -619,12 +785,12 @@ describe("reachability of bridged nodes (real PostgreSQL)", () => {
       await probe.tick();
       const results = await resultsOf(node.id);
       expect(results.has("awg3")).toBe(false);
-      expect(results.get("awg2")).toMatchObject({ status: "ok" });
+      expect(results.has("awg2")).toBe(false);
       expect(await stateOf(node.id)).toMatchObject({ status: "error", detail: OBSOLETE_DETAIL });
       expect(await alerts()).toEqual([]);
 
       // The next run goes through bridge B under the new revision.
-      await probe.tick(61);
+      await probe.tick(70);
       const next = sentFor(probe.sent[1], node.id).get("awg3");
       expect(next?.targetId).toBe(`${node.id}:awg3:r2`);
       expect(inspectAwgVpnLink(next?.config ?? "").endpoint?.host).toBe(bridgeB.publicIpv4);
@@ -632,7 +798,7 @@ describe("reachability of bridged nodes (real PostgreSQL)", () => {
   );
 
   runDatabaseTest(
-    "a result returning after the bridge was switched off (Direct) is unknown, AWG 2 stays measured",
+    "a result returning after the bridge was switched off (Direct) is unknown",
     async () => {
       const node = await seedNode();
       const bridge = await seedBridge(`Bridge ${runTag}`);
@@ -646,9 +812,8 @@ describe("reachability of bridged nodes (real PostgreSQL)", () => {
 
       const results = await resultsOf(node.id);
       expect(results.has("awg3")).toBe(false);
-      expect(results.get("awg2")).toMatchObject({ status: "failed" });
-      // Direct again: the obsolete AWG 3.1 counts as unknown, so a failed
-      // AWG 2 alone does not make the node unreachable.
+      expect(results.get("awg2")).toMatchObject({ status: "error" });
+      // Neither AWG 3.1 nor AWG 2 ran against the current direct endpoint.
       expect(await stateOf(node.id)).toMatchObject({ status: "error", consecutiveFailures: 0 });
       expect(await alerts()).toEqual([]);
       expect(
@@ -765,7 +930,7 @@ describe("reachability of bridged nodes (real PostgreSQL)", () => {
       });
       expect(await alerts()).toEqual([]);
       expect((await resultsOf(node.id)).has("awg3")).toBe(false);
-      expect((await resultsOf(node.id)).get("awg2")).toMatchObject({ status: "ok" });
+      expect((await resultsOf(node.id)).has("awg2")).toBe(false);
     },
   );
 
@@ -841,7 +1006,7 @@ describe("reachability of bridged nodes (real PostgreSQL)", () => {
       expect(await revisionOf(node.id)).toBe(2);
       // The ingest committed revision-1 evidence; the change then reset it.
       expect((await resultsOf(node.id)).has("awg3")).toBe(false);
-      expect((await resultsOf(node.id)).get("awg2")).toMatchObject({ status: "ok" });
+      expect((await resultsOf(node.id)).has("awg2")).toBe(false);
       expect(await stateOf(node.id)).toMatchObject({
         status: "error",
         detail: ENDPOINT_CHANGED_DETAIL,
@@ -882,7 +1047,7 @@ describe("reachability of bridged nodes (real PostgreSQL)", () => {
       }));
       await probe.tick();
       await probe.tick();
-      await probe.tick(61);
+      await probe.tick(70);
       await probe.tick();
       const sentAlerts = await alerts();
       expect(sentAlerts).toHaveLength(1);

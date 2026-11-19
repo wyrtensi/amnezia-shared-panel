@@ -1094,6 +1094,31 @@ describe("reachability probe commands", () => {
     ],
   };
 
+  const bridge = {
+    bridgeId: "33333333-3333-4333-8333-333333333333",
+    bridgeName: "bridge-a",
+    publicIpv4: "192.0.2.20",
+    panelDnsHostname: "panel.example.test",
+    reachabilityEnabled: true,
+    managementStatus: "ok",
+    frpsReachable: true,
+    mgmtIncidentOpen: false,
+    mgmtFailingSince: null,
+    mgmtDetail: null,
+    probeStatus: "failed",
+    probeLevels: { ping: level(true), tcp: level(true), https: level(false) },
+    probeCheckedAt: "2026-01-01T10:00:00.000Z",
+    probeFailingSince: "2026-01-01T09:00:00.000Z",
+    probeConsecutiveFailures: 2,
+    probeIncidentOpen: true,
+    probeDetail: "HTTPS failed",
+    activeRoutes: [{
+      routeId: "44444444-4444-4444-8444-444444444444", nodeId: "11111111-1111-4111-8111-111111111111",
+      nodeName: "node-a", publicUdpPort: 41000, state: "active", observedOnline: true,
+      incidentOpen: false, failingSince: null,
+    }],
+  };
+
   it("probe prints the settings and never a key", async () => {
     stubFetch([{ body: view }]);
     const out = await run(["probe"]);
@@ -1137,6 +1162,17 @@ describe("reachability probe commands", () => {
     expect(JSON.parse(again[1]?.init?.body as string)).toMatchObject({ timeZone: "UTC" });
   });
 
+  it("probe-set sends only the named mode flags and validates their values", async () => {
+    const stored = { ...probe, probeDirectWhenBridged: false, stealthMode: true };
+    const calls = stubFetch([{ body: { ...view, probe: stored } }, { body: stored }, { body: view }]);
+    await run(["probe-set", "--probe-direct-when-bridged=on"]);
+    const body = JSON.parse(calls[1]?.init?.body as string) as Record<string, unknown>;
+    expect(body.probeDirectWhenBridged).toBe(true);
+    expect(body).not.toHaveProperty("stealthMode");
+    await expect(run(["probe-set", "--stealth=yes"])).rejects.toThrow("--stealth must be on or off");
+    expect(calls).toHaveLength(3);
+  });
+
   it("probe shows the time zone and the widget state", async () => {
     stubFetch([{ body: { ...view, probe: { ...probe, widgetLastError: "Telegram sendWidget failed" } } }]);
     const out = await run(["probe"]);
@@ -1165,6 +1201,35 @@ describe("reachability probe commands", () => {
     expect(out).toContain("UNAVAILABLE");
     expect(out).toMatch(/node-b\s+\|?\s*unknown/);
     expect(out).toContain("2026-01-01T09:00:00.000Z");
+  });
+
+  it("preserves the node JSON array and exposes a separate bridge array", async () => {
+    const fullView = { ...view, bridges: [bridge] };
+    stubFetch([{ body: fullView }, { body: fullView }]);
+    expect(JSON.parse(await run(["probe-results", "--json"]))).toEqual(view.nodes);
+    expect(JSON.parse(await run(["probe-results", "--bridges", "--json"]))).toEqual([bridge]);
+  });
+
+  it("shows external, management, route and direct path verdicts separately", async () => {
+    stubFetch([{ body: {
+      ...view,
+      nodes: [{ ...view.nodes[0], directStatus: "ok", directCheckedAt: bridge.probeCheckedAt }],
+      bridges: [bridge],
+    } }]);
+    const out = await run(["probe-results"]);
+    expect(out).toContain("node-a direct path: available");
+    expect(out).toContain("management: ok");
+    expect(out).toContain("external probe: UNAVAILABLE");
+    expect(out).toContain("node-a:41000 frpc: online");
+  });
+
+  it("reads and changes bridge reachability alerts", async () => {
+    const calls = stubFetch([{ body: { ...view, bridges: [bridge] } }, { body: {} }]);
+    expect(await run(["bridge-probe", bridge.bridgeId])).toContain("bridge-a: reachability alerts on");
+    await run(["bridge-probe", bridge.bridgeId, "--off"]);
+    expect(calls[1]?.url).toContain(`/api/admin/vpn-bridges/${bridge.bridgeId}`);
+    expect(calls[1]?.init?.method).toBe("PATCH");
+    expect(JSON.parse(calls[1]?.init?.body as string)).toEqual({ reachabilityEnabled: false });
   });
 
   it("node-probe --off patches the node", async () => {

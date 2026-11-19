@@ -16,6 +16,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Switch } from "@/components/ui/switch";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Callout } from "@/components/ui/hint";
 import {
@@ -94,6 +95,8 @@ export function BridgeCardView({
   onRename,
   onDelete,
   onUpdateAgent,
+  onToggleReachability,
+  reachabilityBusy,
 }: {
   bridge: Bridge;
   t: Translate;
@@ -101,6 +104,8 @@ export function BridgeCardView({
   onRename: () => void;
   onDelete: () => void;
   onUpdateAgent?: () => void;
+  onToggleReachability?: (enabled: boolean) => void;
+  reachabilityBusy?: boolean;
 }) {
   const free = Math.max(0, bridge.capacity - bridge.heldPorts);
   return (
@@ -151,6 +156,20 @@ export function BridgeCardView({
               : t("bridge.neverObserved")}
         </p>
 
+        {bridge.reachabilityEnabled !== undefined ? (
+          <div className="flex items-center justify-between gap-2 text-xs">
+            <div className="flex flex-wrap items-center gap-1.5">
+              <span>{t("reachability.bridgeAlerts")}</span>
+              {bridge.alertState?.incidentOpen ? <Badge variant="destructive">{t("reachability.incident")}</Badge> : null}
+            </div>
+            <Switch
+              checked={bridge.reachabilityEnabled}
+              disabled={reachabilityBusy || !onToggleReachability}
+              aria-label={t("reachability.bridgeSwitchAria", { name: bridge.name })}
+              onCheckedChange={onToggleReachability}
+            />
+          </div>
+        ) : null}
         <BridgeManagementView bridge={bridge} t={t} lang={lang} />
         <BridgeAgentUpdateFacts bridge={bridge} t={t} lang={lang} onUpdate={onUpdateAgent} />
 
@@ -444,7 +463,11 @@ function EvidenceTime({ at, lang }: { at: string | null; lang: Lang }) {
   ) : null;
 }
 
-export function BridgesSection({ infra }: { infra: BridgeInfra }) {
+export function BridgesSection({ infra, reachabilityBusy, onSetReachability }: {
+  infra: BridgeInfra;
+  reachabilityBusy: boolean;
+  onSetReachability: (bridgeId: string, enabled: boolean) => Promise<void>;
+}) {
   const { t, lang } = useT();
   const { request } = useAdminData();
   const [showAdd, setShowAdd] = React.useState(false);
@@ -485,6 +508,8 @@ export function BridgesSection({ infra }: { infra: BridgeInfra }) {
               onRename={() => setRenaming(bridge)}
               onDelete={() => setDeleting(bridge)}
               onUpdateAgent={() => setUpdating(bridge)}
+              reachabilityBusy={reachabilityBusy}
+              onToggleReachability={(enabled) => void onSetReachability(bridge.id, enabled)}
             />
           ))}
         </div>

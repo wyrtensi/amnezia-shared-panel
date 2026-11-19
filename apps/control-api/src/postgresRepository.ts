@@ -1045,6 +1045,7 @@ export class PostgresControlRepository implements ControlRepository {
         staleAlertedAt: reachabilityProbe.staleAlertedAt,
         enabledAt: reachabilityProbe.enabledAt,
         lastRunMass: reachabilityProbe.lastRunMass,
+        probeDirectWhenBridged: reachabilityProbe.probeDirectWhenBridged,
       })
       .from(reachabilityProbe)
       .where(eq(reachabilityProbe.id, 1))
@@ -1078,7 +1079,8 @@ export class PostgresControlRepository implements ControlRepository {
     const now = new Date();
     for (const { endpoint, checksEnabled, activeRoute } of rows) {
       const checkedAt = endpoint.probeCheckedAt;
-      const canUseProbe = checksEnabled && endpoint.enabled && activeRoute === null;
+      const canUseProbe = checksEnabled && endpoint.enabled &&
+        (activeRoute === null || probe?.probeDirectWhenBridged === true);
       const hasCurrentSample = probe?.enabled && checkedAt && checkedAt >= probe.enabledAt &&
         !isProbeStale({
           now,
@@ -1135,17 +1137,24 @@ export class PostgresControlRepository implements ControlRepository {
           nodeId: nodeReachabilityResults.nodeId,
           protocol: nodeReachabilityResults.protocol,
           reachabilityEnabled: nodes.reachabilityEnabled,
+          activeBridgeRouteId: vpnBridgeRoutes.id,
           status: nodeReachabilityResults.status,
           checkedAt: nodeReachabilityResults.checkedAt,
           failingSince: nodeReachabilityResults.failingSince,
         })
         .from(nodeReachabilityResults)
         .innerJoin(nodes, eq(nodes.id, nodeReachabilityResults.nodeId))
+        .leftJoin(vpnBridgeRoutes, and(
+          eq(vpnBridgeRoutes.nodeId, nodes.id),
+          eq(vpnBridgeRoutes.state, "active"),
+        ))
         .where(inArray(nodeReachabilityResults.nodeId, [...nodeIds])),
     ]);
     const now = new Date();
     const byKey = new Map(
-      rows.map((row) => [
+      rows.filter((row) =>
+        row.protocol !== "awg2" || row.activeBridgeRouteId === null || probe?.probeDirectWhenBridged,
+      ).map((row) => [
         `${row.nodeId}:${row.protocol}`,
         toUserReachability({
           probe,
@@ -3897,13 +3906,15 @@ export class PostgresControlRepository implements ControlRepository {
     runRequestedAt: row.runRequestedAt?.toISOString() ?? null,
     ...(row.requestedRunId === null ? {} : { requestedRunId: row.requestedRunId }),
     timeZone: row.timeZone,
+    probeDirectWhenBridged: row.probeDirectWhenBridged,
+    stealthMode: row.stealthMode,
     widgetUpdatedAt: row.widgetUpdatedAt?.toISOString() ?? null,
     widgetLastError: row.widgetLastError,
   });
 
   getReachability = async (_actor: Actor): Promise<AdminReachabilityView> => {
     const db = this.options.db;
-    const [probeRows, nodeRows, resultRows, keyRows] = await Promise.all([
+    const [probeRows, nodeRows, resultRows, keyRows, bridges] = await Promise.all([
       db.select().from(reachabilityProbe).where(eq(reachabilityProbe.id, 1)),
       // Every registered node, a disabled one included: the probe keeps
       // testing it so that its recovery is noticed.
@@ -3942,6 +3953,7 @@ export class PostgresControlRepository implements ControlRepository {
           desc(vpnKeys.createdAt),
           desc(vpnKeys.id),
         ),
+      this.bridges.listReachability(),
     ]);
     const now = new Date();
     const probe = probeRows[0];
@@ -3956,11 +3968,22 @@ export class PostgresControlRepository implements ControlRepository {
     );
     return {
       probe: probe ? this.toReachabilityProbeView(probe, now) : null,
+      bridges,
       nodes: nodeRows.map((node) => {
         // Every protocol the node serves to anyone, without user policy: the
         // shared rule the worker keeps a probe key by.
         const served = nodeServedProtocols(node);
         const endpoints = publicEndpoints.get(node.id);
+        const directCheckedAt = node.state?.directCheckedAt ?? null;
+        const hasCurrentDirectResult = probe?.enabled && probe.probeDirectWhenBridged &&
+          probe.staleAlertedAt === null && node.reachabilityEnabled && directCheckedAt &&
+          directCheckedAt >= probe.enabledAt && !isProbeStale({
+            now,
+            lastResultAt: directCheckedAt,
+            staleAfterSec: probe.staleAfterSec,
+            intervalSec: probe.intervalSec,
+            since: directCheckedAt,
+          });
         return {
           nodeId: node.id,
           nodeName: node.name,
@@ -3973,6 +3996,9 @@ export class PostgresControlRepository implements ControlRepository {
           consecutiveFailures: node.state?.consecutiveFailures ?? 0,
           incidentOpen: (node.state?.alertedAt ?? null) !== null,
           detail: node.state?.detail ?? null,
+          directStatus: hasCurrentDirectResult ? node.state?.directStatus ?? null : null,
+          directCheckedAt: hasCurrentDirectResult ? directCheckedAt.toISOString() : null,
+          directDetail: hasCurrentDirectResult ? node.state?.directDetail ?? null : null,
           protocols: served.map((protocol) => {
             const result = results.get(slot(node.id, protocol));
             return {
@@ -4098,6 +4124,8 @@ export class PostgresControlRepository implements ControlRepository {
         ? {}
         : { staleAfterSec: request.staleAfterSec }),
       ...(request.timeZone === undefined ? {} : { timeZone: request.timeZone }),
+      ...(request.probeDirectWhenBridged === undefined ? {} : { probeDirectWhenBridged: request.probeDirectWhenBridged }),
+      ...(request.stealthMode === undefined ? {} : { stealthMode: request.stealthMode }),
     };
     return this.options.db.transaction(async (tx) => {
       const [current] = await tx
@@ -4147,6 +4175,8 @@ export class PostgresControlRepository implements ControlRepository {
             failThreshold: REACHABILITY_DEFAULTS.failThreshold,
             staleAfterSec: REACHABILITY_DEFAULTS.staleAfterSec,
             timeZone: REACHABILITY_DEFAULTS.timeZone,
+            probeDirectWhenBridged: REACHABILITY_DEFAULTS.probeDirectWhenBridged,
+            stealthMode: REACHABILITY_DEFAULTS.stealthMode,
             ...settings,
             ...credentialColumns,
           })

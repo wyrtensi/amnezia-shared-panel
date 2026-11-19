@@ -68,6 +68,10 @@ to delete a node and every key issued on it), `node-reconcile`.
 **Keys / config:** `key-revoke`, `key-disable`, `key-enable`, `policy-set`,
 `global-routes-set`, `cf-config`, `cf-token`, `panel-update`.
 
+**Reachability:** `probe-results --bridges --json` lists bridge results, and
+`bridge-probe <bridge-id> --on|--off` controls bridge alerts. See the
+[reachability runbook](../../docs/REACHABILITY-PROBE.md).
+
 ### Registering a node
 
 ```bash

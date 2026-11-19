@@ -1,7 +1,9 @@
 import { createHash, randomUUID } from "node:crypto";
+import { isIPv4 } from "node:net";
 import { and, desc, eq, inArray, isNull, lt, notInArray, sql } from "drizzle-orm";
 
 import {
+  bridgePanelDnsHostnameSchema,
   isIpLiteral,
   isIpv4Literal,
   isProbeStale,
@@ -13,13 +15,17 @@ import {
   probeSupportsBridgeMeasurement,
   REACHABILITY_NOTIFY_JOB_TYPE,
   REACHABILITY_WIDGET_JOB_TYPE,
+  type ProbeBridgeRunTarget,
   type ProbeLevels,
   type ReachabilityWidgetPayload,
   revokeJobDedupKey,
   type ProtocolKind,
 } from "@amnezia/contracts";
 import {
+  advanceBridgeIncident,
   auditEvents,
+  bridgeReachabilityState,
+  EMPTY_BRIDGE_INCIDENT,
   decryptSecret,
   deterministicPeerLabel,
   jobOutbox,
@@ -39,18 +45,22 @@ import {
   type Database,
   type EncryptionKeyring,
 } from "@amnezia/db";
-import { inspectAwgVpnLink, renderAwgEndpointVpnLink, withAwg31TunnelMtu } from "@amnezia/vpn-config";
+import { inspectAwgVpnLink, renderAwgEndpointVpnLink, withAwg31TunnelMtu, type AwgEndpoint } from "@amnezia/vpn-config";
 
 import type { CandidateOutcome, CandidateRun } from "./bridgeCandidateCheck.js";
 import {
   EMPTY_CANDIDATE_SLOT,
   writeCandidateVerification,
 } from "./bridgeCandidateRepository.js";
+import { bridgeExternalVerdict, bridgeHostTargetId } from "./bridgeReachability.js";
 import {
+  alertClock,
   measuredViaBridge,
   reachabilityTargetId,
   type NodeState,
   type Notice,
+  type ProtocolOutcome,
+  type ReachabilityTarget,
 } from "./reachability.js";
 import type { WidgetNode } from "./reachabilityWidget.js";
 import type { ReachabilityWidgetStore, StoredWidget } from "./reachabilityWidgetSender.js";
@@ -58,6 +68,8 @@ import type {
   CandidateSettle,
   IngestDecide,
   IngestRun,
+  ProbeDispatchResult,
+  ProbeDispatchScope,
   ProbeRow,
   ReachabilityRepository,
   RunTarget,
@@ -78,44 +90,42 @@ type PublicEndpoint = typeof nodeVpnEndpoints.$inferSelect;
 const directNodeTargets = (
   target: RunTarget & { config: string },
   endpoints: readonly PublicEndpoint[],
+  { host, port }: AwgEndpoint,
   keyId: string,
-  mayReuse: boolean,
+  mayReuseLegacy: boolean,
 ): RunTarget[] => {
-  if (target.protocol !== "awg3" || target.bridgePath !== null || endpoints.length === 0) {
-    return [target];
-  }
-  const inspection = inspectAwgVpnLink(target.config);
-  if (inspection.kind !== "awg31") return [target];
-  const { host, port } = inspection.endpoint;
   let nodeTarget: RunTarget = target;
   const additional: RunTarget[] = [];
+  const { diagnostic, ...base } = target;
   for (const endpoint of endpoints) {
     if (!isIpv4Literal(endpoint.address)) continue;
     const reusesNodeTarget =
-      mayReuse && endpoint.ordinal === 1 && endpoint.revision === 0 && host === endpoint.address;
+      host === endpoint.address &&
+      (diagnostic === true || (mayReuseLegacy && endpoint.ordinal === 1 && endpoint.revision === 0));
     const directEndpoint = {
       id: endpoint.id,
       address: endpoint.address,
       checkedAt: endpoint.probeCheckedAt,
       reusesNodeTarget,
     };
-    if (reusesNodeTarget) {
-      nodeTarget = { ...target, directEndpoint };
-      continue;
-    }
-    const config = renderAwgEndpointVpnLink(target.config, { host: endpoint.address, port });
-    if (!probeRunTargetSchema.shape.config.safeParse(config).success) continue;
     // Fence old replies without putting addresses, labels or key material in
     // the probe's logged target IDs. The prefix already carries the node's
     // bridge assignment revision.
     const identity = createHash("sha256")
       .update(JSON.stringify([endpoint.id, endpoint.revision, endpoint.address, port, keyId]))
       .digest("hex");
+    const targetId = `${reachabilityTargetId(target.nodeId, "awg3", target.endpointRevision)}:direct:${identity}`;
+    if (reusesNodeTarget) {
+      nodeTarget = { ...target, directEndpoint, targetId: diagnostic ? targetId : target.targetId };
+      continue;
+    }
+    const config = renderAwgEndpointVpnLink(target.config, { host: endpoint.address, port });
+    if (!probeRunTargetSchema.shape.config.safeParse(config).success) continue;
     additional.push({
-      ...target,
+      ...base,
       config,
       directEndpoint,
-      targetId: `${target.targetId}:direct:${identity}`,
+      targetId,
       expectedEgressIp: isIpLiteral(target.expectedEgressIp ?? "") ? target.expectedEgressIp : null,
     });
   }
@@ -154,6 +164,13 @@ export class PostgresReachabilityRepository
     private readonly options: { db: Database; keyring: EncryptionKeyring },
   ) {}
 
+  private probeApiKey = (row: typeof reachabilityProbe.$inferSelect): string => decryptSecret({
+    ciphertext: row.credentialsCiphertext,
+    nonce: row.credentialsNonce,
+    authTag: row.credentialsAuthTag,
+    keyVersion: row.credentialsKeyVersion,
+  }, this.options.keyring);
+
   loadProbe = async (): Promise<ProbeRow | null> => {
     const [row] = await this.options.db
       .select()
@@ -164,15 +181,7 @@ export class PostgresReachabilityRepository
     return {
       label: row.label,
       apiBaseUrl: row.apiBaseUrl,
-      apiKey: decryptSecret(
-        {
-          ciphertext: row.credentialsCiphertext,
-          nonce: row.credentialsNonce,
-          authTag: row.credentialsAuthTag,
-          keyVersion: row.credentialsKeyVersion,
-        },
-        this.options.keyring,
-      ),
+      apiKey: this.probeApiKey(row),
       enabled: row.enabled,
       controlUrl: row.controlUrl,
       egressUrl: row.egressUrl,
@@ -188,6 +197,8 @@ export class PostgresReachabilityRepository
       staleAlertedAt: row.staleAlertedAt,
       enabledAt: row.enabledAt,
       timeZone: row.timeZone,
+      probeDirectWhenBridged: row.probeDirectWhenBridged,
+      stealthMode: row.stealthMode,
       capabilities: row.capabilities ?? null,
       capabilitiesCheckedAt: row.capabilitiesCheckedAt,
       candidateRun:
@@ -221,10 +232,10 @@ export class PostgresReachabilityRepository
     await this.updateProbe({ capabilities, capabilitiesCheckedAt: at });
   };
 
-  markRunStarted = async (runId: string, at: Date): Promise<void> => {
+  markRunStarted = async (runId: string, at: Date, db: Database | Tx = this.options.db): Promise<void> => {
     // Only over an empty slot: a second worker must not overwrite a run in
     // flight with one the probe refused.
-    await this.options.db
+    await db
       .update(reachabilityProbe)
       .set({
         currentRunId: runId,
@@ -234,6 +245,41 @@ export class PostgresReachabilityRepository
       })
       .where(and(eq(reachabilityProbe.id, 1), isNull(reachabilityProbe.currentRunId)));
   };
+
+  withDispatchLock = async (
+    expected: ProbeRow,
+    dispatch: (scope: ProbeDispatchScope) => Promise<ProbeDispatchResult>,
+  ): Promise<ProbeDispatchResult | "changed"> => this.options.db.transaction(async (tx) => {
+    const [row] = await tx.select().from(reachabilityProbe)
+      .where(eq(reachabilityProbe.id, 1)).for("no key update");
+    if (
+      !row?.enabled ||
+      row.currentRunId !== null ||
+      row.candidateRunId !== null ||
+      row.currentRunStartedAt?.getTime() !== expected.currentRunStartedAt?.getTime() ||
+      row.requestedRunId !== (expected.requestedRunId ?? null) ||
+      row.runRequestedAt?.getTime() !== expected.runRequestedAt?.getTime() ||
+      row.probeDirectWhenBridged !== expected.probeDirectWhenBridged ||
+      row.stealthMode !== expected.stealthMode ||
+      row.intervalSec !== expected.intervalSec ||
+      row.staleAfterSec !== expected.staleAfterSec ||
+      row.apiBaseUrl !== expected.apiBaseUrl ||
+      row.controlUrl !== expected.controlUrl ||
+      row.egressUrl !== expected.egressUrl ||
+      this.probeApiKey(row) !== expected.apiKey
+    ) {
+      return "changed";
+    }
+    // Preserve probe -> node lock order. The only network request made by the
+    // dispatch callback is startRun, with the probe client's request timeout.
+    // Once a run is submitted it owns that snapshot until it finishes.
+    return dispatch({
+      capabilities: probeCapabilityInputOf(row.capabilities, row.capabilitiesCheckedAt),
+      listTargets: (options) => this.loadTargets(tx, { lock: true, ...options }),
+      listBridgeTargets: (bridgesWithAwg) => this.listBridgeTargets(bridgesWithAwg, tx),
+      markRunStarted: (runId, at) => this.markRunStarted(runId, at, tx),
+    });
+  });
 
   abandonRun = async (at: Date, reason: string): Promise<void> => {
     await this.updateProbe({
@@ -339,6 +385,10 @@ export class PostgresReachabilityRepository
           capabilities: reachabilityProbe.capabilities,
           capabilitiesCheckedAt: reachabilityProbe.capabilitiesCheckedAt,
           currentRunStartedAt: reachabilityProbe.currentRunStartedAt,
+          probeDirectWhenBridged: reachabilityProbe.probeDirectWhenBridged,
+          label: reachabilityProbe.label,
+          failThreshold: reachabilityProbe.failThreshold,
+          timeZone: reachabilityProbe.timeZone,
         });
       if (!claimed) return false;
 
@@ -353,6 +403,7 @@ export class PostgresReachabilityRepository
         lock: true,
         bridgeMeasurement,
         runStartedAt: claimed.currentRunStartedAt ?? run.now,
+        probeDirectWhenBridged: claimed.probeDirectWhenBridged,
       });
       const previous = await this.loadStates(tx);
       const write = await decide({ targets, previous });
@@ -430,6 +481,7 @@ export class PostgresReachabilityRepository
 
         const state = write.states.get(nodeId);
         if (!state) continue;
+        const direct = write.direct?.get(nodeId);
         const stateValues = {
           nodeId,
           status: state.status,
@@ -439,6 +491,11 @@ export class PostgresReachabilityRepository
           alertKind: state.alertKind,
           checkedAt: run.now,
           detail: state.detail,
+          ...(direct ? {
+            directStatus: direct.status,
+            directCheckedAt: run.now,
+            directDetail: direct.detail,
+          } : {}),
         };
         await tx
           .insert(nodeReachabilityState)
@@ -453,12 +510,14 @@ export class PostgresReachabilityRepository
         });
       }
 
-      if (write.notices.length > 0) {
-        await tx.insert(jobOutbox).values(outboxRows(write.notices)).onConflictDoNothing();
+      const bridgeNotices = await this.writeBridgeProbeStates(tx, run, targets, write.outcomes, claimed);
+      const notices = [...write.notices, ...bridgeNotices];
+      if (notices.length > 0) {
+        await tx.insert(jobOutbox).values(outboxRows(notices)).onConflictDoNothing();
       }
       await tx
         .insert(jobOutbox)
-        .values(widgetRow(`run:${run.runId}`, write.notices.length > 0))
+        .values(widgetRow(`run:${run.runId}`, notices.length > 0))
         .onConflictDoNothing();
       await tx
         .delete(nodeReachabilityHistory)
@@ -482,11 +541,121 @@ export class PostgresReachabilityRepository
     return row?.id ?? null;
   };
 
-  listTargets = async (options: { bridgeMeasurement: boolean }): Promise<RunTarget[]> =>
+  listTargets = async (options: { bridgeMeasurement: boolean; probeDirectWhenBridged?: boolean }): Promise<RunTarget[]> =>
     this.options.db.transaction(
       (tx) => this.loadTargets(tx, { lock: false, ...options }),
       { isolationLevel: "repeatable read", accessMode: "read only" },
     );
+
+  listBridgeTargets = async (
+    bridgesWithAwg: readonly string[],
+    db: Database | Tx = this.options.db,
+  ): Promise<ProbeBridgeRunTarget[]> => {
+    const measured = new Set(bridgesWithAwg);
+    const bridges = await db.select({
+      id: vpnBridges.id,
+      host: vpnBridges.publicIpv4,
+      httpsHostname: vpnBridges.panelDnsHostname,
+    }).from(vpnBridges)
+      .where(and(
+        eq(vpnBridges.reachabilityEnabled, true),
+        measured.size === 0 ? undefined : sql`(
+          ${vpnBridges.panelDnsHostname} IS NOT NULL OR ${notInArray(vpnBridges.id, [...measured])}
+        )`,
+      ))
+      .orderBy(vpnBridges.id);
+    return bridges.flatMap(({ id, host, httpsHostname: stored }) => {
+      const httpsHostname = bridgePanelDnsHostnameSchema.safeParse(stored).data ?? null;
+      if (!isIPv4(host) || (!httpsHostname && measured.has(id))) return [];
+      return [{
+        targetId: bridgeHostTargetId(id, host, httpsHostname),
+        host,
+        ...(httpsHostname ? { httpsHostname } : {}),
+      }];
+    }).slice(0, 200);
+  };
+
+  private writeBridgeProbeStates = async (
+    tx: Tx,
+    run: IngestRun,
+    targets: readonly ReachabilityTarget[],
+    outcomes: readonly ProtocolOutcome[],
+    { label, failThreshold, timeZone }: { label: string; failThreshold: number; timeZone: string },
+  ): Promise<Notice[]> => {
+    const awgByNode = new Map(outcomes.filter(({ protocol, obsolete }) => protocol === "awg3" && !obsolete)
+      .map((outcome) => [outcome.nodeId, outcome]));
+    const awgByBridge = new Map<string, ProtocolOutcome[]>();
+    for (const target of targets) {
+      const bridgeId = target.bridgePath?.bridgeId;
+      if (!bridgeId || !measuredViaBridge(target)) continue;
+      const outcome = awgByNode.get(target.nodeId);
+      if (!outcome) continue;
+      const outcomes = awgByBridge.get(bridgeId) ?? [];
+      outcomes.push(outcome);
+      awgByBridge.set(bridgeId, outcomes);
+    }
+    const hostByTarget = new Map(run.bridgeResults?.map((result) => [result.targetId, result]));
+    const bridgeIds = [...new Set([
+      ...awgByBridge.keys(),
+      ...[...hostByTarget.keys()].map((targetId) => targetId.split(":host:")[0] ?? ""),
+    ])];
+    if (bridgeIds.length === 0) return [];
+
+    // The node locks held by ingest stabilize AWG route assignments. Lock
+    // the bridges before reading incident state, in the route mutation order.
+    const bridges = await tx.select({
+      id: vpnBridges.id,
+      name: vpnBridges.name,
+      publicIpv4: vpnBridges.publicIpv4,
+      panelDnsHostname: vpnBridges.panelDnsHostname,
+      reachabilityEnabled: vpnBridges.reachabilityEnabled,
+    }).from(vpnBridges)
+      .where(inArray(sql<string>`${vpnBridges.id}::text`, bridgeIds))
+      .orderBy(vpnBridges.id)
+      .for("no key update");
+    const notices: Notice[] = [];
+    for (const bridge of bridges) {
+      const awg = awgByBridge.get(bridge.id) ?? [];
+      const httpsHostname = bridgePanelDnsHostnameSchema.safeParse(bridge.panelDnsHostname).data ?? null;
+      const returned = hostByTarget.get(bridgeHostTargetId(bridge.id, bridge.publicIpv4, httpsHostname));
+      const host = returned?.host === bridge.publicIpv4 ? returned : undefined;
+      if (awg.length === 0 && !host) continue;
+      const verdict = bridgeExternalVerdict(awg, host, httpsHostname);
+      const [prior] = await tx.select().from(bridgeReachabilityState)
+        .where(eq(bridgeReachabilityState.bridgeId, bridge.id));
+      const previous = prior ? {
+        consecutiveFailures: prior.probeConsecutiveFailures,
+        failingSince: prior.probeFailingSince,
+        alertedAt: prior.probeAlertedAt,
+      } : EMPTY_BRIDGE_INCIDENT;
+      const { state, notice } = bridge.reachabilityEnabled
+        ? advanceBridgeIncident(previous, verdict.status, run.now, failThreshold)
+        : { state: EMPTY_BRIDGE_INCIDENT, notice: null };
+      const values = {
+        probeStatus: verdict.status,
+        probeLevels: host?.levels ?? null,
+        probeCheckedAt: run.now,
+        probeConsecutiveFailures: state.consecutiveFailures,
+        probeFailingSince: state.failingSince,
+        probeAlertedAt: state.alertedAt,
+        probeDetail: verdict.detail?.slice(0, 300) ?? null,
+      };
+      await tx.insert(bridgeReachabilityState).values({ bridgeId: bridge.id, ...values })
+        .onConflictDoUpdate({ target: bridgeReachabilityState.bridgeId, set: values });
+      if (notice) {
+        const openedAt = previous.alertedAt ?? run.now;
+        const name = `Мост ${bridge.name} (${bridge.publicIpv4})`;
+        notices.push({
+          dedupKey: `${REACHABILITY_NOTIFY_JOB_TYPE}:bridge-probe:${bridge.id}:${openedAt.getTime()}:${notice}`,
+          text: notice === "down"
+            ? `${name} недоступен из ${label} (${values.probeDetail ?? "внешняя проверка"})\nс ` +
+              alertClock(state.failingSince ?? run.now, timeZone)
+            : `${name} снова доступен из ${label}`,
+        });
+      }
+    }
+    return notices;
+  };
 
   /**
    * The targets as the panel knows them now. The node row, its endpoint
@@ -508,12 +677,12 @@ export class PostgresReachabilityRepository
    * rendered with the bridge endpoint, the same renderer user exports use. It
    * is not sent (unknown, never an alert) when the probe cannot measure a
    * bridged path or the artifact is not one the endpoint applies to; the
-   * direct config is never sent under the bridged identity. AWG 2 keeps the
-   * direct path and its direct config.
+   * direct config is never sent under the bridged identity. Direct checks
+   * on bridged nodes are dispatched only when enabled explicitly.
    */
   private loadTargets = async (
     db: Tx,
-    options: { lock: boolean; bridgeMeasurement: boolean; runStartedAt?: Date },
+    options: { lock: boolean; bridgeMeasurement: boolean; probeDirectWhenBridged?: boolean; runStartedAt?: Date },
   ): Promise<RunTarget[]> => {
     let lockedIds: string[] | null = null;
     if (options.lock) {
@@ -537,6 +706,7 @@ export class PostgresReachabilityRepository
         publicIp: nodes.publicIp,
         publicHost: nodes.publicHost,
         endpointRevision: nodes.vpnEndpointRevision,
+        bridgeId: vpnBridgeRoutes.bridgeId,
         bridgeName: vpnBridges.name,
         bridgeHost: vpnBridges.publicIpv4,
         bridgePort: vpnBridgeRoutes.publicUdpPort,
@@ -582,7 +752,12 @@ export class PostgresReachabilityRepository
         protocol: node.protocol,
         capabilities: node.capabilities,
         enabledProtocols: node.enabledProtocols,
-      }).flatMap((protocol): RunTarget | RunTarget[] => {
+      }).flatMap((protocol): RunTarget[] => {
+        const bridgePath = node.bridgeId !== null && node.bridgeName !== null &&
+          node.bridgeHost !== null && isIPv4(node.bridgeHost) && node.bridgePort !== null
+          ? { bridgeId: node.bridgeId, bridgeName: node.bridgeName, host: node.bridgeHost, port: node.bridgePort }
+          : null;
+        if (node.bridgeId !== null && protocol === "awg2" && !options.probeDirectWhenBridged) return [];
         const target: RunTarget = {
           targetId: reachabilityTargetId(node.id, protocol, node.endpointRevision),
           nodeId: node.id,
@@ -590,10 +765,7 @@ export class PostgresReachabilityRepository
           publicIp: node.publicIp ?? node.publicHost,
           protocol,
           endpointRevision: node.endpointRevision,
-          bridgePath:
-            node.bridgeName !== null && node.bridgeHost !== null && node.bridgePort !== null
-              ? { bridgeName: node.bridgeName, host: node.bridgeHost, port: node.bridgePort }
-              : null,
+          bridgePath,
           unavailableReason: null,
           config: null,
           // The node's origin exit IP. Unknown is sent as an explicit null
@@ -602,22 +774,25 @@ export class PostgresReachabilityRepository
           expectedEgressIp: node.publicIp,
         };
         const key = keys.find((k) => k.nodeId === node.id && k.protocol === protocol);
-        if (!key) return { ...target, unavailableReason: "no service key yet" };
+        if (node.bridgeId !== null && bridgePath === null) {
+          return [{ ...target, unavailableReason: BRIDGE_UNRENDERABLE_REASON }];
+        }
+        if (!key) return [{ ...target, unavailableReason: "no service key yet" }];
         if (key.state === "provisioning") {
-          return { ...target, unavailableReason: "service key is provisioning" };
+          return [{ ...target, unavailableReason: "service key is provisioning" }];
         }
         if (key.state === "failed") {
-          return {
+          return [{
             ...target,
             unavailableReason: `service key failed: ${key.failureReason ?? "unknown"}`.slice(0, 300),
-          };
+          }];
         }
         if (key.state !== "active" || key.configCiphertext === null) {
-          return { ...target, unavailableReason: `service key is ${key.state}` };
+          return [{ ...target, unavailableReason: `service key is ${key.state}` }];
         }
         const via = measuredViaBridge(target) ? target.bridgePath : null;
-        if (via && !options.bridgeMeasurement) {
-          return { ...target, unavailableReason: BRIDGE_UNSUPPORTED_REASON };
+        if (via && !options.bridgeMeasurement && !options.probeDirectWhenBridged) {
+          return [{ ...target, unavailableReason: BRIDGE_UNSUPPORTED_REASON }];
         }
         const savedConfig = decryptSecret(
           {
@@ -629,26 +804,36 @@ export class PostgresReachabilityRepository
           this.options.keyring,
         );
         const config = protocol === "awg3" ? withAwg31TunnelMtu(savedConfig) : savedConfig;
+        const endpoints = endpointsByNode.get(node.id) ?? [];
+        if (!via && (protocol !== "awg3" || endpoints.length === 0)) return [{ ...target, config }];
+        const inspection = inspectAwgVpnLink(config);
         if (!via) {
-          return directNodeTargets(
-            { ...target, config },
-            endpointsByNode.get(node.id) ?? [],
-            key.id,
-            // A reeissued service key can have a different port even when
-            // the legacy target ID and destination IP are the same.
-            options.runStartedAt === undefined || key.updatedAt < options.runStartedAt,
-          );
+          // A reeissued service key can have a different port even when the
+          // legacy target ID and destination IP are the same.
+          const mayReuseLegacy = options.runStartedAt === undefined || key.updatedAt < options.runStartedAt;
+          return inspection.kind === "awg31"
+            ? directNodeTargets({ ...target, config }, endpoints, inspection.endpoint, key.id, mayReuseLegacy)
+            : [{ ...target, config }];
         }
-        if (inspectAwgVpnLink(config).kind !== "awg31") {
-          return { ...target, unavailableReason: BRIDGE_UNRENDERABLE_REASON };
+        const diagnostics = options.probeDirectWhenBridged && inspection.kind === "awg31"
+          ? directNodeTargets(
+            { ...target, targetId: `${node.id}:awg3:direct`, diagnostic: true, config },
+            endpoints, inspection.endpoint, key.id, false,
+          )
+          : [];
+        if (!options.bridgeMeasurement) {
+          return [{ ...target, unavailableReason: BRIDGE_UNSUPPORTED_REASON }, ...diagnostics];
+        }
+        if (inspection.kind !== "awg31") {
+          return [{ ...target, unavailableReason: BRIDGE_UNRENDERABLE_REASON }, ...diagnostics];
         }
         try {
-          return {
+          return [{
             ...target,
             config: renderAwgEndpointVpnLink(config, { host: via.host, port: via.port }),
-          };
+          }, ...diagnostics];
         } catch {
-          return { ...target, unavailableReason: BRIDGE_UNRENDERABLE_REASON };
+          return [{ ...target, unavailableReason: BRIDGE_UNRENDERABLE_REASON }, ...diagnostics];
         }
       }),
     );

@@ -125,6 +125,7 @@ function AdminNodesView() {
   // node cards show the same results by node. Two fetches could disagree.
   const serviceChecks = useServiceChecks();
   const reachability = useReachability();
+  const [bridgeReachabilityBusy, setBridgeReachabilityBusy] = React.useState(false);
   const { t } = useT();
   const [showCreate, setShowCreate] = React.useState(false);
   const [editNode, setEditNode] = React.useState<AdminNode | null>(null);
@@ -197,6 +198,21 @@ function AdminNodesView() {
       body: JSON.stringify({ reachabilityEnabled: enabled }),
     });
     await Promise.all([reload(), reachability.reload()]);
+  };
+
+  const setBridgeReachability = async (bridgeId: string, enabled: boolean) => {
+    setBridgeReachabilityBusy(true);
+    try {
+      await request(`/api/admin/vpn-bridges/${encodeURIComponent(bridgeId)}`, {
+        method: "PATCH",
+        body: JSON.stringify({ reachabilityEnabled: enabled }),
+      });
+      await Promise.all([infra.reload(), reachability.reload()]);
+    } catch {
+      toast.error(t("reachability.actionFailed"));
+    } finally {
+      setBridgeReachabilityBusy(false);
+    }
   };
 
   const toggleEnabled = async (node: AdminNode, enabled: boolean) => {
@@ -314,11 +330,20 @@ function AdminNodesView() {
           )}
         </section>
 
-        <BridgesSection infra={infra} />
+        <BridgesSection
+          infra={infra}
+          reachabilityBusy={bridgeReachabilityBusy}
+          onSetReachability={setBridgeReachability}
+        />
       </div>
 
       <ServiceChecksCard state={serviceChecks} />
-      <ReachabilityCard state={reachability} onSetNodeEnabled={setNodeReachability} />
+      <ReachabilityCard
+        state={reachability}
+        onSetNodeEnabled={setNodeReachability}
+        bridgeToggleBusy={bridgeReachabilityBusy}
+        onSetBridgeEnabled={setBridgeReachability}
+      />
 
       <CreateNodeDialog
         open={showCreate}

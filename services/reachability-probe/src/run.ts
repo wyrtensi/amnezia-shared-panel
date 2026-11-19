@@ -10,6 +10,8 @@ import { errorCode, type HttpGet } from "./levels.js";
 import { realClock, Tunnel } from "./tunnel.js";
 import {
   notAttempted,
+  type BridgeResult,
+  type BridgeRunTarget,
   type LevelResult,
   type RunRequest,
   type RunState,
@@ -38,6 +40,8 @@ export type RunDeps = {
 const CONTROL_TIMEOUT_MS = 10_000;
 const EGRESS_TIMEOUT_MS = 10_000;
 const MAX_DETAIL = 200;
+const interTargetDelay = () => 1_500 + Math.floor(Math.random() * 3_501);
+const postEgressDelay = () => 300 + Math.floor(Math.random() * 901);
 
 const defaultLookup = async (host: string): Promise<string> =>
   (await dnsLookup(host, { order: "ipv4first" })).address;
@@ -105,6 +109,7 @@ const runTarget = async (
   target: RunTarget,
   egressUrl: string,
   deps: RunDeps,
+  stealth: boolean,
 ): Promise<TargetResult> => {
   const result: TargetResult = {
     targetId: target.targetId,
@@ -137,9 +142,13 @@ const runTarget = async (
     }
   }
 
-  const [ping, tcp] = await Promise.all([deps.ping(endpointIp), deps.tcpBanner(endpointIp)]);
-  result.levels.ping = ping;
-  result.levels.tcp = tcp;
+  const diagnostics = async () => {
+    const [ping, tcp] = await Promise.all([deps.ping(endpointIp), deps.tcpBanner(endpointIp)]);
+    result.levels.ping = ping;
+    result.levels.tcp = tcp;
+  };
+  const diagnoseBeforeHandshake = !stealth && target.expectedEgressIp !== null;
+  if (diagnoseBeforeHandshake) await diagnostics();
 
   const confPath = join(deps.tmpDir, `probe-${randomUUID()}.conf`);
   const tunnel = new Tunnel(deps.exec, "awgp0", 200, {
@@ -157,6 +166,7 @@ const runTarget = async (
       return fail(`tunnel setup failed: ${error instanceof Error ? error.message : "unknown"}`);
     }
     result.levels.handshake = await tunnel.waitHandshake(deps.handshakeTimeoutMs ?? 15_000);
+    if (result.levels.handshake.ok === false && !diagnoseBeforeHandshake) await diagnostics();
     if (result.levels.handshake.ok) {
       // The panel's known public IP; a value that is not an address falls
       // back to the endpoint, as when none was sent. Explicit null compares
@@ -171,6 +181,7 @@ const runTarget = async (
       result.levels.http = egress.level;
       result.egressIp = egress.egressIp;
       if (deps.download) result.levels.download = await deps.download(cfg.address);
+      if (stealth) await (deps.sleep ?? realClock.sleep)(postEgressDelay());
     }
     return result;
   } catch (error) {
@@ -179,6 +190,45 @@ const runTarget = async (
     await tunnel.down();
     await rm(confPath, { force: true }).catch(() => {});
   }
+};
+
+const emptyBridgeResult = (target: BridgeRunTarget): BridgeResult => ({
+  targetId: target.targetId,
+  host: target.host,
+  status: "done",
+  detail: null,
+  levels: { ping: notAttempted(), tcp: notAttempted() },
+});
+
+const runBridge = async (target: BridgeRunTarget, deps: RunDeps): Promise<BridgeResult> => {
+  const result = emptyBridgeResult(target);
+  let ip = target.host;
+  if (!isIP(ip)) {
+    try {
+      ip = await (deps.lookup ?? defaultLookup)(ip);
+    } catch (error) {
+      return { ...result, status: "error", detail: `host lookup failed: ${errorCode(error)}` };
+    }
+  }
+  if (target.httpsHostname) {
+    const started = deps.now().getTime();
+    try {
+      const { status } = await deps.httpGet(`https://${target.httpsHostname}/login`, {
+        connectHost: ip,
+        timeoutMs: CONTROL_TIMEOUT_MS,
+      });
+      result.levels.https = {
+        ok: status >= 200 && status < 400,
+        detail: `HTTP ${status}`,
+        latencyMs: elapsed(deps, started),
+      };
+    } catch (error) {
+      result.levels.https = { ok: false, detail: errorCode(error), latencyMs: null };
+    }
+  }
+  if (result.levels.https?.ok === true) return result;
+  [result.levels.ping, result.levels.tcp] = await Promise.all([deps.ping(ip), deps.tcpBanner(ip)]);
+  return result;
 };
 
 const snapshot = (state: RunState): RunState => structuredClone(state);
@@ -201,11 +251,19 @@ export const runAll = async (
     control: notAttempted(),
     results: [],
   };
+  const bridgeResults: BridgeResult[] = [];
+  if (req.bridgeTargets) state.bridgeResults = bridgeResults;
   state.control = await checkControl(req.control.url, deps);
   log(`run ${req.runId}: control ${state.control.ok ? "ok" : "failed"} (${state.control.detail})`);
   onProgress?.(snapshot(state));
 
+  const pause = async () => {
+    if (req.stealth && state.control.ok && state.results.length + bridgeResults.length > 0) {
+      await (deps.sleep ?? realClock.sleep)(interTargetDelay());
+    }
+  };
   for (const target of req.targets) {
+    await pause();
     let result: TargetResult;
     if (!state.control.ok) {
       // Nothing can be concluded about a node when the vantage point itself is offline.
@@ -219,7 +277,7 @@ export const runAll = async (
         levels: emptyLevels(),
       };
     } else {
-      result = await runTarget(target, req.egress.url, deps);
+      result = await runTarget(target, req.egress.url, deps, req.stealth === true);
       const { levels } = result;
       log(
         `run ${req.runId}: ${target.targetId}/${target.protocol} ${result.status}` +
@@ -232,6 +290,14 @@ export const runAll = async (
     if (state.control.ok) onProgress?.(snapshot(state));
   }
 
+  for (const target of req.bridgeTargets ?? []) {
+    await pause();
+    const result: BridgeResult = state.control.ok
+      ? await runBridge(target, deps)
+      : { ...emptyBridgeResult(target), status: "error", detail: "control target failed" };
+    bridgeResults.push(result);
+    if (state.control.ok) onProgress?.(snapshot(state));
+  }
   state.finishedAt = deps.now().toISOString();
   onProgress?.(snapshot(state));
   return state;

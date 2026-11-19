@@ -65,7 +65,7 @@ original Direct request replays unchanged. Handshake and HTTP decide
 availability; ping and tcp stay diagnostic.
 
 `GET /capabilities` (same `x-api-key` as the other routes) answers
-`{ "apiVersion": 1, "capabilities": ["bridge-measurement"] }`. A legacy probe
+`{ "apiVersion": 1, "capabilities": ["bridge-measurement", "bridge-host-check", "stealth-probe"] }`. Older probes may report a subset. A legacy probe
 answers 404 and also drops an explicit `null`, so the panel never sends one to
 it. The worker reads the endpoint at most every 10 minutes (on the reachability
 tick) into `reachability_probe.capabilities` / `capabilities_checked_at`: a 404
@@ -88,12 +88,17 @@ on the path its users take:
   without the bridge-measurement capability, or when the service key is not an
   AWG 3.1 artifact the endpoint applies to: the path is then unknown (`error`)
   and never alerts. The direct config is never sent in its place.
-- **AWG 2** keeps the direct path and its own result.
+- With an active bridge, direct checks are skipped by default, including AWG 2.
+  Operators can opt in with `probe-set --probe-direct-when-bridged=on`. The
+  extra direct AWG 3.1 result is diagnostic. It cannot affect the verdict of
+  the active bridge path.
+  A batch already sent may finish with its original targets, including when
+  the probe accepted the request but the panel timed out waiting for its reply.
 - The node verdict, alerts and widget row follow the **AWG 3.1 result alone**
   (a working AWG 2 does not hide a failed bridge); the alert names the bridge
   (`node (ip) через мост <bridge> (<ip>:<port>)`). In the cabinet an AWG 2 key
-  on a bridged node reads its own AWG 2 result. A Direct node keeps the
-  any-protocol rule above.
+  on a bridged node has a measurement when direct probes are enabled. A
+  Direct node keeps the any-protocol rule above.
 - A failing bridge never changes the assignment: exports keep using the active
   route until an administrator changes it.
 
@@ -108,6 +113,24 @@ locks the probed node rows `FOR SHARE` and classifies against the targets and
 verdicts read under that lock. A result measured for an earlier revision is
 unknown: it is not stored, not counted and never causes a message, while that
 run's AWG 2 result is kept.
+
+### Bridge status and alerts
+
+The panel tracks management API access and the FRP bridge-to-node route state
+separately from external reachability. A bridge with active probed routes uses
+the actual AWG results already collected through FRP. With the
+`bridge-host-check` capability, a standalone bridge can also be checked using
+its configured HTTPS login host, dialing the bridge IP and verifying the
+certificate for the configured hostname, or
+lightweight network diagnostics when HTTPS evidence is unavailable.
+
+The admin UI and `probe-results` show the separate results. Use
+`bridge-probe <bridge-id> --off` to pause alerts for that bridge and
+`probe-results --bridges --json` to list bridge results in scripts.
+
+Low-impact mode is on by default. It paces scheduled runs and omits routine
+ping and SSH checks before bridged AWG traffic. The probe uses the same
+negotiation and client parameters as the dedicated key it was issued.
 
 ### Bridge route candidate checks
 

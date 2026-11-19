@@ -1,6 +1,6 @@
 import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
-import { connect as netConnect, isIPv4, type Socket } from "node:net";
+import { connect as netConnect, isIP, isIPv4, type Socket } from "node:net";
 
 import type { Exec } from "./exec.js";
 import type { LevelResult } from "./types.js";
@@ -82,13 +82,14 @@ export const tcpBannerLevel = (
 
 export type HttpGet = (
   url: string,
-  opts: { localAddress?: string; timeoutMs: number },
+  opts: { localAddress?: string; timeoutMs: number; connectHost?: string },
 ) => Promise<{ status: number; body: string }>;
 
 /**
  * GET a URL, optionally from a given source address (the tunnel address, which
- * the source rule sends through the tunnel). No redirects, no connection reuse,
- * body capped at MAX_BODY_BYTES, one deadline for the whole exchange.
+ * the source rule sends through the tunnel). Pinning a destination address
+ * preserves the URL hostname for HTTP Host, TLS SNI and certificate validation.
+ * No redirects or connection reuse. One deadline for the whole capped exchange.
  */
 export const httpGet: HttpGet = (url, opts) =>
   new Promise((resolve, reject) => {
@@ -103,6 +104,12 @@ export const httpGet: HttpGet = (url, opts) =>
       parsed.protocol === "https:" ? httpsRequest : parsed.protocol === "http:" ? httpRequest : null;
     if (!request) {
       reject(new Error("unsupported url scheme"));
+      return;
+    }
+    const { connectHost } = opts;
+    const connectFamily = connectHost !== undefined ? isIP(connectHost) : 0;
+    if (connectHost !== undefined && !connectFamily) {
+      reject(new Error("invalid pinned address"));
       return;
     }
     let settled = false;
@@ -125,8 +132,12 @@ export const httpGet: HttpGet = (url, opts) =>
         agent: false,
         localAddress: opts.localAddress,
         // An AAAA answer cannot be reached from an IPv4 source address.
-        family: opts.localAddress && isIPv4(opts.localAddress) ? 4 : undefined,
-        headers: { "user-agent": "reachability-probe", accept: "*/*" },
+        family: connectFamily || (opts.localAddress && isIPv4(opts.localAddress) ? 4 : undefined),
+        ...(connectHost !== undefined ? {
+          lookup: (_hostname, _options, callback) => callback(null, connectHost, connectFamily),
+          ...(parsed.protocol === "https:" ? { rejectUnauthorized: true } : {}),
+        } : {}),
+        headers: { "user-agent": "Mozilla/5.0", accept: "*/*" },
       },
       (res) => {
         status = res.statusCode ?? 0;

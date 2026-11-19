@@ -2,6 +2,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { and, eq, inArray, or, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
+  adminReachabilityViewSchema,
   bridgeEligibilitySchema,
   bridgeFrpProxyName,
   infrastructureItemSchema,
@@ -10,6 +11,7 @@ import {
 } from "@amnezia/contracts";
 import {
   auditEvents,
+  bridgeReachabilityState,
   createDatabase,
   encryptSecret,
   ENDPOINT_CHANGED_DETAIL,
@@ -611,6 +613,38 @@ describe("bridge registry (real PostgreSQL)", () => {
     expect(result.vpnEndpoint).toMatchObject({ changed: true, vpnEndpointRevision: 2 });
     expect((await routeRow(a.id))?.state).toBe("retiring");
     expect((await routeRow(b.id))?.state).toBe("active");
+  });
+
+  runDatabaseTest("exposes and clears bridge incidents when monitoring is disabled", async () => {
+    const bridge = await createBridge();
+    const now = new Date();
+    await db().insert(bridgeReachabilityState).values({
+      bridgeId: bridge.id,
+      mgmtStatus: "failed",
+      mgmtConsecutiveFailures: 3,
+      mgmtFailingSince: now,
+      mgmtAlertedAt: now,
+      mgmtAlertDetail: "FRPS_UNREACHABLE",
+      probeStatus: "ok",
+      probeCheckedAt: now,
+    });
+    const read = async () => {
+      const view = adminReachabilityViewSchema.parse(await repository.getReachability(admin));
+      return view.bridges?.find((entry) => entry.bridgeId === bridge.id);
+    };
+    expect(await read()).toMatchObject({
+      reachabilityEnabled: true, mgmtIncidentOpen: true, probeStatus: "ok", probeIncidentOpen: false,
+    });
+    expect(await repository.updateBridge(admin, bridge.id, { reachabilityEnabled: false })).toMatchObject({
+      reachabilityEnabled: false, alertState: { incidentOpen: false },
+    });
+    expect(await read()).toMatchObject({
+      reachabilityEnabled: false, mgmtIncidentOpen: false, mgmtFailingSince: null, probeStatus: "ok",
+    });
+    const entries = await db().select().from(auditEvents).where(eq(auditEvents.targetId, bridge.id));
+    expect(entries).toContainEqual(expect.objectContaining({
+      action: "vpn_bridge.reachability_updated", metadata: { enabled: false },
+    }));
   });
 
   runDatabaseTest("a stale revision is refused with BRIDGE_REVISION_CONFLICT", async () => {
