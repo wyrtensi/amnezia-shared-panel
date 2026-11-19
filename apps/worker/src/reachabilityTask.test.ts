@@ -63,6 +63,17 @@ const targetB: RunTarget = {
   config: null,
 };
 
+const directEndpointTarget = (suffix: string, checkedAt: Date | null = null): RunTarget => ({
+  ...targetA,
+  targetId: `id-node-a:awg3:r0:endpoint-${suffix}:r0:192.0.2.20:51820`,
+  directEndpoint: {
+    id: `endpoint-${suffix}`,
+    address: "192.0.2.20",
+    checkedAt,
+    reusesNodeTarget: false,
+  },
+});
+
 const level = { ok: true, detail: null, latencyMs: 5 };
 const finished = (runId: string): ProbeRunState => ({
   runId,
@@ -179,6 +190,51 @@ describe("reachability task", () => {
     expect(write.notices).toEqual([]);
   });
 
+  it("stores each direct verdict without changing the legacy node verdict", async () => {
+    const repository = fakeRepository(probeRow({ currentRunId: "run-1" }));
+    const primary: RunTarget = {
+      ...targetA,
+      directEndpoint: {
+        id: "endpoint-primary",
+        address: "192.0.2.10",
+        checkedAt: null,
+        reusesNodeTarget: true,
+      },
+    };
+    const backup = directEndpointTarget("backup");
+    const run = finished("run-1");
+    const result = run.results[0]!;
+    run.results.push({
+      ...result,
+      targetId: backup.targetId,
+      endpointHost: "192.0.2.20",
+      egressIp: null,
+      levels: { ...result.levels, handshake: { ...level, ok: false } },
+    });
+    await tick(repository, fakeClient(run));
+
+    const { write } = await decided(repository, [primary, backup]);
+    expect(write.outcomes).toHaveLength(1);
+    expect(write.states.get("id-node-a")?.status).toBe("ok");
+    expect(write.endpointOutcomes).toEqual([
+      { endpointId: "endpoint-primary", status: "ok", detail: null },
+      { endpointId: "endpoint-backup", status: "failed", detail: "no handshake" },
+    ]);
+  });
+
+  it("leaves endpoint evidence untouched when only another address or revision was measured", async () => {
+    const repository = fakeRepository(probeRow({ currentRunId: "run-1" }));
+    const endpoint = directEndpointTarget("backup");
+    const run = finished("run-1");
+    const result = run.results[0]!;
+    run.results.push({ ...result, targetId: endpoint.targetId });
+    await tick(repository, fakeClient(run));
+
+    expect((await decided(repository, [targetA, endpoint])).write.endpointOutcomes).toEqual([]);
+    const current = { ...endpoint, targetId: endpoint.targetId.replace(":r0:192.", ":r2:192.") };
+    expect((await decided(repository, [targetA, current])).write.endpointOutcomes).toEqual([]);
+  });
+
   it("does not ingest a run already ingested", async () => {
     const repository = fakeRepository(
       probeRow({ currentRunId: "run-1", lastIngestedRunId: "run-1" }),
@@ -223,6 +279,20 @@ describe("reachability task", () => {
       ],
     });
     expect(repository.markRunStarted).toHaveBeenCalledWith("run-new", NOW);
+  });
+
+  it("keeps normal targets and fits the least recently checked extra endpoints in a full run", async () => {
+    const client = fakeClient();
+    const repository = fakeRepository(probeRow({ currentRunStartedAt: hoursAgo(1.1) }));
+    const normal = Array.from({ length: 499 }, (_, i) => ({ ...targetA, targetId: `node-${i}:awg3:r0` }));
+    const recent = directEndpointTarget("recent", NOW);
+    const unmeasured = directEndpointTarget("unmeasured");
+    vi.mocked(repository.listTargets).mockResolvedValue([recent, ...normal, unmeasured]);
+
+    await tick(repository, client);
+
+    const ids = vi.mocked(client.startRun).mock.calls[0]?.[0].targets.map((target) => target.targetId);
+    expect(ids).toEqual([...normal.map((target) => target.targetId), unmeasured.targetId]);
   });
 
   it("does not start before the interval", async () => {

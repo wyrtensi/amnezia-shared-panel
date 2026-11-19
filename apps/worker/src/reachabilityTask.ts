@@ -3,6 +3,7 @@ import { createHash, randomInt, randomUUID } from "node:crypto";
 import {
   probeCapabilitiesDue,
   probeCapabilityInputOf,
+  PROBE_RUN_MAX_TARGETS,
   probeSupportsBridgeMeasurement,
   probeSupportsBridgeHostCheck,
   probeSupportsStealthProbe,
@@ -23,8 +24,10 @@ import type { ProbeClient, ProbeClientOptions } from "./probeAgent.js";
 import {
   classifyTarget,
   ingestRun,
+  matchesDirectEndpoint,
   measuredViaBridge,
   staleTransition,
+  type DirectEndpointOutcome,
   type NodeState,
   type Notice,
   type ProtocolOutcome,
@@ -85,6 +88,7 @@ export type IngestContext = {
 export type IngestWrite = {
   /** Obsolete outcomes (`ProtocolOutcome.obsolete`) are not stored. */
   outcomes: ProtocolOutcome[];
+  endpointOutcomes: DirectEndpointOutcome[];
   states: Map<string, NodeState>;
   notices: Notice[];
   staleAlertedAt: Date | null;
@@ -327,13 +331,15 @@ export const createReachabilityTask = ({
         const results = new Map(finished.results.map((result) => [result.targetId, result]));
         const direct = new Map(context.targets.flatMap((target) => {
           const result = results.get(target.targetId);
-          return target.diagnostic && result?.protocol === target.protocol
+          return target.diagnostic && result?.protocol === target.protocol &&
+            (!target.directEndpoint || matchesDirectEndpoint(result, target.directEndpoint.address))
             ? [[target.nodeId, classifyTarget(target, result, finished.control.ok === true)] as const]
             : [];
         }));
         notices = out.notices.length;
         return {
           outcomes: out.outcomes,
+          endpointOutcomes: out.endpointOutcomes,
           states: out.states,
           notices: [...out.notices, ...stale.notices],
           staleAlertedAt: stale.staleAlertedAt,
@@ -394,17 +400,31 @@ export const createReachabilityTask = ({
         // A legacy probe drops an explicit null, so a bridged target is only
         // sent to a probe that reports the capability.
         const bridgeMeasurement = probeSupportsBridgeMeasurement(scope.capabilities, dispatchAt);
-        const targets = await scope.listTargets({
+        const available = await scope.listTargets({
           bridgeMeasurement,
           ...(probe.probeDirectWhenBridged ? { probeDirectWhenBridged: true } : {}),
         });
-        const sendable = targets.filter((target): target is RunTarget & { config: string } =>
+        const sendable = available.filter((target): target is RunTarget & { config: string } =>
           target.config !== null &&
           (target.bridgePath === null ||
             (measuredViaBridge(target) ? bridgeMeasurement : probe.probeDirectWhenBridged === true)),
         );
+        const nodeTargets = sendable.filter((target) =>
+          !target.diagnostic && target.directEndpoint?.reusesNodeTarget !== false,
+        );
+        const diagnostics = sendable.filter((target) => target.diagnostic);
+        const endpointTargets = sendable
+          .filter((target) => target.directEndpoint?.reusesNodeTarget === false)
+          .sort((a, b) =>
+            (a.directEndpoint?.checkedAt?.getTime() ?? Number.MIN_SAFE_INTEGER) -
+            (b.directEndpoint?.checkedAt?.getTime() ?? Number.MIN_SAFE_INTEGER),
+          );
+        const targets = [...nodeTargets, ...diagnostics, ...endpointTargets].slice(0, PROBE_RUN_MAX_TARGETS);
+        if (targets.length < sendable.length) {
+          log(`reachability: deferred ${sendable.length - targets.length} target(s) at the probe run limit`);
+        }
         const bridgeTargets = probeSupportsBridgeHostCheck(scope.capabilities, dispatchAt)
-          ? await scope.listBridgeTargets(sendable.flatMap((target) =>
+          ? await scope.listBridgeTargets(targets.flatMap((target) =>
               measuredViaBridge(target) && target.bridgePath?.bridgeId ? [target.bridgePath.bridgeId] : [],
             ))
           : [];
@@ -414,19 +434,20 @@ export const createReachabilityTask = ({
           egress: { url: probe.egressUrl },
           ...(bridgeTargets.length > 0 ? { bridgeTargets } : {}),
           ...(probe.stealthMode && probeSupportsStealthProbe(scope.capabilities, dispatchAt) ? { stealth: true } : {}),
-          targets: (probe.stealthMode ? shuffled(sendable) : sendable)
-            .map((target) => ({
+          targets: (probe.stealthMode ? shuffled(targets) : targets).map((target) => {
+            // The egress address can differ from a bridge or an additional
+            // direct destination. A capable probe can report egress alone.
+            const reportUncompared = bridgeMeasurement && (
+              measuredViaBridge(target) || target.directEndpoint !== undefined
+            );
+            const { expectedEgressIp } = target;
+            return {
               targetId: target.targetId,
               protocol: target.protocol,
               config: target.config,
-              // The bridge address belongs to the endpoint. Comparing egress
-              // requires the origin exit IP or null when it is unknown.
-              ...(measuredViaBridge(target)
-                ? { expectedEgressIp: target.expectedEgressIp }
-                : target.expectedEgressIp
-                  ? { expectedEgressIp: target.expectedEgressIp }
-                  : {}),
-            })),
+              ...(expectedEgressIp || reportUncompared ? { expectedEgressIp } : {}),
+            };
+          }),
         };
         if (await client.startRun(request) === "busy") return "busy";
         await scope.markRunStarted(runId, dispatchAt);

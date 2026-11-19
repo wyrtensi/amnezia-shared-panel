@@ -1,14 +1,17 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { isIPv4 } from "node:net";
 import { and, desc, eq, inArray, isNull, lt, notInArray, sql } from "drizzle-orm";
 
 import {
   bridgePanelDnsHostnameSchema,
+  isIpLiteral,
+  isIpv4Literal,
   isProbeStale,
   nodeServedProtocols,
   probeCapabilityInputOf,
   PROBE_STALE_GRACE_SEC,
   probeLevelsSchema,
+  probeRunTargetSchema,
   probeSupportsBridgeMeasurement,
   REACHABILITY_NOTIFY_JOB_TYPE,
   REACHABILITY_WIDGET_JOB_TYPE,
@@ -30,6 +33,7 @@ import {
   nodeReachabilityHistory,
   nodeReachabilityResults,
   nodeReachabilityState,
+  nodeVpnEndpoints,
   nodes,
   peerCurrent,
   reachabilityProbe,
@@ -41,7 +45,7 @@ import {
   type Database,
   type EncryptionKeyring,
 } from "@amnezia/db";
-import { inspectAwgVpnLink, renderAwgEndpointVpnLink, withAwg31TunnelMtu } from "@amnezia/vpn-config";
+import { inspectAwgVpnLink, renderAwgEndpointVpnLink, withAwg31TunnelMtu, type AwgEndpoint } from "@amnezia/vpn-config";
 
 import type { CandidateOutcome, CandidateRun } from "./bridgeCandidateCheck.js";
 import {
@@ -81,6 +85,52 @@ const LIVE_KEY_STATES = ["provisioning", "active", "disabled"] as const;
 const PROVISIONING_WAIT_MS = 10 * 60 * 1_000;
 
 type Tx = Parameters<Parameters<Database["transaction"]>[0]>[0];
+type PublicEndpoint = typeof nodeVpnEndpoints.$inferSelect;
+
+const directNodeTargets = (
+  target: RunTarget & { config: string },
+  endpoints: readonly PublicEndpoint[],
+  { host, port }: AwgEndpoint,
+  keyId: string,
+  mayReuseLegacy: boolean,
+): RunTarget[] => {
+  let nodeTarget: RunTarget = target;
+  const additional: RunTarget[] = [];
+  const { diagnostic, ...base } = target;
+  for (const endpoint of endpoints) {
+    if (!isIpv4Literal(endpoint.address)) continue;
+    const reusesNodeTarget =
+      host === endpoint.address &&
+      (diagnostic === true || (mayReuseLegacy && endpoint.ordinal === 1 && endpoint.revision === 0));
+    const directEndpoint = {
+      id: endpoint.id,
+      address: endpoint.address,
+      checkedAt: endpoint.probeCheckedAt,
+      reusesNodeTarget,
+    };
+    // Fence old replies without putting addresses, labels or key material in
+    // the probe's logged target IDs. The prefix already carries the node's
+    // bridge assignment revision.
+    const identity = createHash("sha256")
+      .update(JSON.stringify([endpoint.id, endpoint.revision, endpoint.address, port, keyId]))
+      .digest("hex");
+    const targetId = `${reachabilityTargetId(target.nodeId, "awg3", target.endpointRevision)}:direct:${identity}`;
+    if (reusesNodeTarget) {
+      nodeTarget = { ...target, directEndpoint, targetId: diagnostic ? targetId : target.targetId };
+      continue;
+    }
+    const config = renderAwgEndpointVpnLink(target.config, { host: endpoint.address, port });
+    if (!probeRunTargetSchema.shape.config.safeParse(config).success) continue;
+    additional.push({
+      ...base,
+      config,
+      directEndpoint,
+      targetId,
+      expectedEgressIp: isIpLiteral(target.expectedEgressIp ?? "") ? target.expectedEgressIp : null,
+    });
+  }
+  return [nodeTarget, ...additional];
+};
 
 const outboxRows = (notices: readonly Notice[]) =>
   notices.map((notice) => ({
@@ -350,12 +400,28 @@ export class PostgresReachabilityRepository
         claimed.currentRunStartedAt ?? run.now,
       );
       const targets = await this.loadTargets(tx, {
-        lock: true, bridgeMeasurement, probeDirectWhenBridged: claimed.probeDirectWhenBridged,
+        lock: true,
+        bridgeMeasurement,
+        runStartedAt: claimed.currentRunStartedAt ?? run.now,
+        probeDirectWhenBridged: claimed.probeDirectWhenBridged,
       });
       const previous = await this.loadStates(tx);
       const write = await decide({ targets, previous });
 
       await this.updateProbe({ staleAlertedAt: write.staleAlertedAt, lastRunMass: write.mass }, tx);
+
+      const endpointIds = new Set(targets.flatMap(({ directEndpoint }) => directEndpoint ? [directEndpoint.id] : []));
+      for (const endpoint of write.endpointOutcomes) {
+        if (!endpointIds.has(endpoint.endpointId)) continue;
+        await tx
+          .update(nodeVpnEndpoints)
+          .set({
+            probeStatus: endpoint.status,
+            probeCheckedAt: run.now,
+            probeDetail: endpoint.detail,
+          })
+          .where(eq(nodeVpnEndpoints.id, endpoint.endpointId));
+      }
 
       // Every node here is locked, so none can be deleted before the commit.
       const nodeIds = new Set(targets.map((target) => target.nodeId));
@@ -476,7 +542,10 @@ export class PostgresReachabilityRepository
   };
 
   listTargets = async (options: { bridgeMeasurement: boolean; probeDirectWhenBridged?: boolean }): Promise<RunTarget[]> =>
-    this.loadTargets(this.options.db, { lock: false, ...options });
+    this.options.db.transaction(
+      (tx) => this.loadTargets(tx, { lock: false, ...options }),
+      { isolationLevel: "repeatable read", accessMode: "read only" },
+    );
 
   listBridgeTargets = async (
     bridgesWithAwg: readonly string[],
@@ -592,8 +661,8 @@ export class PostgresReachabilityRepository
    * The targets as the panel knows them now. The node row, its endpoint
    * revision, its active bridge route and that bridge are read in ONE
    * statement, so a config is never paired with the revision of another
-   * assignment (unlocked, two reads could straddle an activation and label a
-   * Direct config with the bridged revision).
+   * assignment. Dispatch uses a read-only snapshot for the address list and
+   * service keys, too.
    *
    * With `lock` (see `ingest`), the node rows are first taken `FOR SHARE` in
    * id order by a statement of their own, and the join runs after it. A
@@ -612,8 +681,8 @@ export class PostgresReachabilityRepository
    * on bridged nodes are dispatched only when enabled explicitly.
    */
   private loadTargets = async (
-    db: Database | Tx,
-    options: { lock: boolean; bridgeMeasurement: boolean; probeDirectWhenBridged?: boolean },
+    db: Tx,
+    options: { lock: boolean; bridgeMeasurement: boolean; probeDirectWhenBridged?: boolean; runStartedAt?: Date },
   ): Promise<RunTarget[]> => {
     let lockedIds: string[] | null = null;
     if (options.lock) {
@@ -654,6 +723,21 @@ export class PostgresReachabilityRepository
           : inArray(nodes.id, lockedIds),
       )
       .orderBy(nodes.name);
+    if (nodeRows.length === 0) return [];
+    const endpoints = await db
+      .select()
+      .from(nodeVpnEndpoints)
+      .where(and(
+        inArray(nodeVpnEndpoints.nodeId, nodeRows.map((node) => node.id)),
+        eq(nodeVpnEndpoints.enabled, true),
+      ))
+      .orderBy(nodeVpnEndpoints.ordinal);
+    const endpointsByNode = new Map<string, PublicEndpoint[]>();
+    for (const endpoint of endpoints) {
+      const list = endpointsByNode.get(endpoint.nodeId) ?? [];
+      list.push(endpoint);
+      endpointsByNode.set(endpoint.nodeId, list);
+    }
     const ownerId = await this.serviceAccountId(db);
     const keys = ownerId
       ? await db
@@ -720,15 +804,27 @@ export class PostgresReachabilityRepository
           this.options.keyring,
         );
         const config = protocol === "awg3" ? withAwg31TunnelMtu(savedConfig) : savedConfig;
-        if (!via) return [{ ...target, config }];
-        const isAwg31 = inspectAwgVpnLink(config).kind === "awg31";
-        const diagnostics: RunTarget[] = options.probeDirectWhenBridged && isAwg31
-          ? [{ ...target, targetId: `${node.id}:awg3:direct`, diagnostic: true, config }]
+        const endpoints = endpointsByNode.get(node.id) ?? [];
+        if (!via && (protocol !== "awg3" || endpoints.length === 0)) return [{ ...target, config }];
+        const inspection = inspectAwgVpnLink(config);
+        if (!via) {
+          // A reeissued service key can have a different port even when the
+          // legacy target ID and destination IP are the same.
+          const mayReuseLegacy = options.runStartedAt === undefined || key.updatedAt < options.runStartedAt;
+          return inspection.kind === "awg31"
+            ? directNodeTargets({ ...target, config }, endpoints, inspection.endpoint, key.id, mayReuseLegacy)
+            : [{ ...target, config }];
+        }
+        const diagnostics = options.probeDirectWhenBridged && inspection.kind === "awg31"
+          ? directNodeTargets(
+            { ...target, targetId: `${node.id}:awg3:direct`, diagnostic: true, config },
+            endpoints, inspection.endpoint, key.id, false,
+          )
           : [];
         if (!options.bridgeMeasurement) {
           return [{ ...target, unavailableReason: BRIDGE_UNSUPPORTED_REASON }, ...diagnostics];
         }
-        if (!isAwg31) {
+        if (inspection.kind !== "awg31") {
           return [{ ...target, unavailableReason: BRIDGE_UNRENDERABLE_REASON }, ...diagnostics];
         }
         try {

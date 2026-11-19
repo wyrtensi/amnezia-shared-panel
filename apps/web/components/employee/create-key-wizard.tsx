@@ -34,6 +34,7 @@ import {
   type KeyNameDisplay,
 } from "@amnezia/contracts";
 import { KeyBridgeSelect } from "@/components/admin/key-bridge-select";
+import { AGENT_DEFAULT_ENDPOINT, NodeEndpointSelect } from "@/components/node-endpoint-select";
 import { apiRequest } from "@/lib/api";
 import { listBridges } from "@/lib/bridge-api";
 import { routeProfileChoice } from "@/lib/route-profile-choice";
@@ -77,6 +78,7 @@ const NAME_DISPLAY_PARTS = ["server", "label", "number"] as const;
 
 export type CreateKeyPayload = {
   nodeId: string;
+  endpointId?: string;
   deviceType: DeviceType;
   deviceLabel: string;
   protocol: ProtocolKind;
@@ -110,6 +112,7 @@ export function CreateKeyWizard({
   const [deviceLabel, setDeviceLabel] = React.useState("");
   const [labelEdited, setLabelEdited] = React.useState(false);
   const [nodeId, setNodeId] = React.useState("");
+  const [endpointId, setEndpointId] = React.useState("");
   const [protocol, setProtocol] = React.useState<ProtocolKind>("awg3");
   const [routeProfile, setRouteProfile] =
     React.useState<RouteProfile>("full_tunnel");
@@ -151,6 +154,7 @@ export function CreateKeyWizard({
       setLabelEdited(false);
       setDeviceLabel(suggestKeyName(DEFAULT_DEVICE_TYPE, existingNames, t));
       setNodeId(nodes[0]?.id ?? "");
+      setEndpointId("");
       setProtocol(preferredProtocol(nodeSelectableProtocols(nodes[0])));
       setRouteProfile("full_tunnel");
       setNameDisplay({ ...defaultKeyNameDisplay });
@@ -209,6 +213,12 @@ export function CreateKeyWizard({
   }, [open, canPickNode, nodeId, nodes, quotaByNode]);
 
   const selectedNode = nodes.find((node) => node.id === nodeId) ?? nodes[0];
+  const endpoints = selectedNode?.publicEndpoints ?? [];
+  const hasAlternativeAddress = endpoints.some((item) => item.ordinal > 1);
+  const canPickEndpoint = me.policy.allowNodeSelection && protocol === "awg3" && hasAlternativeAddress;
+  const endpoint = canPickEndpoint
+    ? endpoints.find((item) => item.id === endpointId)
+    : undefined;
   const selectedFull =
     canPickNode && selectedNode
       ? (quotaByNode.get(selectedNode.id)?.full ?? false)
@@ -231,7 +241,7 @@ export function CreateKeyWizard({
   // the same composer the control API uses. The number is an estimate — the real
   // one is assigned when the key is provisioned.
   const previewName = composeKeyDisplayName({
-    serverName: selectedNode?.name ?? "",
+    serverName: endpoint?.name ?? selectedNode?.name ?? "",
     label: deviceLabel.trim(),
     keyNumber: existingNames.length + 1,
     display: nameDisplay,
@@ -317,6 +327,7 @@ export function CreateKeyWizard({
           : {};
       await onCreate({
         nodeId: selectedNode.id,
+        ...(endpoint ? { endpointId: endpoint.id } : {}),
         deviceType,
         deviceLabel: deviceLabel.trim(),
         protocol,
@@ -424,6 +435,16 @@ export function CreateKeyWizard({
                     ? t("wizard.poolFull")
                     : t("wizard.serverFull")}
                 </FieldHint>
+              ) : null}
+            </div>
+          ) : null}
+
+          {canPickEndpoint ? (
+            <div className="space-y-1">
+              <NodeEndpointSelect endpoints={endpoints} value={endpoint?.id ?? AGENT_DEFAULT_ENDPOINT}
+                onChange={setEndpointId} />
+              {bridgeMode === "route" || (bridgeMode === "inherit" && me.policy.useBridge) ? (
+                <FieldHint>{t("wizard.endpointBridgeHint")}</FieldHint>
               ) : null}
             </div>
           ) : null}

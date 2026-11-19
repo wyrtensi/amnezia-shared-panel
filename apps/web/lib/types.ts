@@ -2,6 +2,7 @@ import type {
   InstallGuideVideos,
   KeyBridgeInfo,
   KeyNameDisplay,
+  UserNodeEndpoint,
   UserNodeReachability,
 } from "@amnezia/contracts";
 
@@ -176,6 +177,8 @@ export type NodeEndpointSignal = {
 export type NodeView = {
   id: string;
   name: string;
+  publicEndpoints?: UserNodeEndpoint[];
+  bridgeReachability?: UserNodeReachability;
   /**
    * Set by the global policy. Presentation only: it decides whether the badge
    * is drawn, never where the node appears — the API sends the list already in

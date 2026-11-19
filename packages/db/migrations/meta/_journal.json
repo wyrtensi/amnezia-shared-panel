@@ -421,6 +421,13 @@
       "when": 1795100000001,
       "tag": "0059_bridge_reachability_alerts",
       "breakpoints": true
+    },
+    {
+      "idx": 60,
+      "version": "7",
+      "when": 1795300000000,
+      "tag": "0060_node_vpn_endpoints",
+      "breakpoints": true
     }
   ]
 }

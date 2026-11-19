@@ -86,6 +86,7 @@ import {
 } from "@/components/key-internal-name-dialog";
 import { KeyBridgeBadge } from "@/components/key-bridge-badge";
 import { KeyBridgeSelect } from "@/components/admin/key-bridge-select";
+import { AGENT_DEFAULT_ENDPOINT, NodeEndpointSelect } from "@/components/node-endpoint-select";
 import { listBridges } from "@/lib/bridge-api";
 import type { KeyLimitMode, ProtocolKind } from "@/lib/types";
 import { effectiveKeyLimitMode, isNodeFull } from "@/lib/key-quota";
@@ -1390,7 +1391,7 @@ function PurgeRevokedDialog({
                   {/* The owner is named only on the panel-wide sweep: on one
                       person's dialog it would repeat the title on every row. */}
                   {shown?.scope.user ? null : `${ownerName(key.ownerId)} · `}
-                  {nodeName(key.nodeId)}
+                  {key.endpointName ?? nodeName(key.nodeId)}
                   {key.internalName ? ` · ${key.internalName}` : ""}
                 </p>
               </div>
@@ -1562,7 +1563,7 @@ function StaleKeysDialog({
                   ) : null}
                 </div>
                 <div className="truncate text-xs text-muted-foreground">
-                  {nodeName(key.nodeId)} ·{" "}
+                  {key.endpointName ?? nodeName(key.nodeId)} ·{" "}
                   {activity === "never"
                     ? t("users.staleNeverWhy", {
                         age: formatLastSeen(since, now, lang),
@@ -2005,7 +2006,7 @@ function UserDetail({
                 <AdminKeyRow
                   key={key.id}
                   keyView={key}
-                  nodeName={nodeName(key.nodeId)}
+                  nodeName={key.endpointName ?? nodeName(key.nodeId)}
                   now={now}
                   onAction={onKeyAction}
                   onExport={() =>
@@ -2899,6 +2900,7 @@ function CreateKeyDialog({
   onClose: () => void;
   onSave: (payload: {
     nodeId: string;
+    endpointId?: string;
     deviceLabel: string;
     deviceType: string;
     routeProfile: string;
@@ -2910,6 +2912,7 @@ function CreateKeyDialog({
 }) {
   const { t } = useT();
   const [nodeId, setNodeId] = React.useState("");
+  const [endpointId, setEndpointId] = React.useState("");
   const [deviceLabel, setDeviceLabel] = React.useState("");
   const [routeProfile, setRouteProfile] = React.useState("full_tunnel");
   const [nameDisplay, setNameDisplay] = React.useState<KeyNameDisplay>(() => ({
@@ -2976,6 +2979,7 @@ function CreateKeyDialog({
       (node) => !quotaRef.current.get(node.id)?.full,
     );
     setNodeId(withRoom[0]?.id ?? enabled[0]?.id ?? nodes[0]?.id ?? "");
+    setEndpointId("");
     setDeviceLabel("");
     setRouteProfile("full_tunnel");
     setNameDisplay({ ...defaultKeyNameDisplay });
@@ -2984,6 +2988,12 @@ function CreateKeyDialog({
   }, [user, nodes]);
   const node = nodes.find((item) => item.id === nodeId);
   const protocol = pickProtocol(node);
+  const endpoints = (node?.publicEndpoints ?? []).filter((item) => item.enabled);
+  const allowsSelection = user?.policyOverride?.allowNodeSelection ?? globalPolicy.allowNodeSelection;
+  const canPickEndpoint = protocol === "awg3" && endpoints.some((item) => item.ordinal > 1) && allowsSelection !== false;
+  const endpoint = canPickEndpoint
+    ? endpoints.find((item) => item.id === endpointId)
+    : undefined;
   const userUseBridge = Boolean(
     user?.policyOverride?.useBridge ?? globalPolicy.useBridge,
   );
@@ -2992,7 +3002,8 @@ function CreateKeyDialog({
   const nextKeyNumber =
     userKeys.reduce((max, key) => Math.max(max, key.keyNumber ?? 0), 0) + 1;
   const previewName = composeKeyDisplayName({
-    serverName: node?.publicName?.trim() || node?.name || "",
+    serverName: endpoint?.name ?? endpoints.find((item) => item.ordinal === 1)?.name ??
+      (node?.publicName?.trim() || node?.name || ""),
     label: deviceLabel.trim(),
     keyNumber: nextKeyNumber,
     display: nameDisplay,
@@ -3044,6 +3055,15 @@ function CreateKeyDialog({
               </SelectContent>
             </Select>
           </div>
+          {canPickEndpoint ? (
+            <div className="space-y-1">
+              <NodeEndpointSelect endpoints={endpoints} value={endpoint?.id ?? AGENT_DEFAULT_ENDPOINT}
+                onChange={setEndpointId} />
+              {bridgeMode === "route" || (bridgeMode === "inherit" && userUseBridge) ? (
+                <p className="text-xs text-muted-foreground">{t("wizard.endpointBridgeHint")}</p>
+              ) : null}
+            </div>
+          ) : null}
           <div className="space-y-1.5">
             <div className="flex items-center gap-1.5">
               <Label>{t("wizard.routing")}</Label>
@@ -3140,6 +3160,7 @@ function CreateKeyDialog({
                 if (
                   await onSave({
                     nodeId,
+                    ...(endpoint ? { endpointId: endpoint.id } : {}),
                     deviceLabel,
                     // This dialog has no device-type field, so the panel does
                     // not know the platform. It used to claim "desktop".

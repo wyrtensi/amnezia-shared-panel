@@ -22,9 +22,16 @@ export type BridgePath = {
   port: number;
 };
 
-/** One (node, protocol) pair the panel asked the probe to test. */
+type DirectEndpoint = {
+  id: string;
+  address: string;
+  checkedAt: Date | null;
+  /** The original direct AWG 3.1 artifact already uses this exact address. */
+  reusesNodeTarget: boolean;
+};
+
+/** A legacy node/protocol path or a separately measured direct IPv4 address. */
 export type ReachabilityTarget = {
-  /** `reachabilityTargetId(nodeId, protocol, endpointRevision)`. */
   targetId: string;
   nodeId: string;
   nodeName: string;
@@ -42,6 +49,7 @@ export type ReachabilityTarget = {
   diagnostic?: true;
   /** Set when the panel could not send this target (no usable service key). */
   unavailableReason: string | null;
+  directEndpoint?: DirectEndpoint;
 };
 
 /**
@@ -74,7 +82,15 @@ const normalizeTargetId = (targetId: string): { id: string; slot: string } | nul
 
 /** The target goes through the node's bridge: AWG 3.1 on a bridged node. */
 export const measuredViaBridge = (target: ReachabilityTarget): boolean =>
-  target.protocol === "awg3" && target.bridgePath !== null && !target.diagnostic;
+  target.protocol === "awg3" && target.bridgePath !== null && !target.diagnostic &&
+  target.directEndpoint?.reusesNodeTarget !== false;
+
+export const matchesDirectEndpoint = (
+  result: ProbeTargetResult | undefined,
+  address: string,
+): result is ProbeTargetResult =>
+  result?.protocol === "awg3" &&
+  (result.endpointHost === address || (result.status === "error" && result.endpointHost === null));
 
 export type NodeState = {
   status: ReachabilityStatus;
@@ -99,6 +115,12 @@ export type ProtocolOutcome = {
    * unknown in the node verdict and is never stored.
    */
   obsolete?: true;
+};
+
+export type DirectEndpointOutcome = {
+  endpointId: string;
+  status: ReachabilityStatus;
+  detail: string | null;
 };
 
 export type Notice = { dedupKey: string; text: string };
@@ -252,6 +274,7 @@ export type IngestInput = {
 
 export type IngestOutput = {
   outcomes: ProtocolOutcome[];
+  endpointOutcomes: DirectEndpointOutcome[];
   states: Map<string, NodeState>;
   notices: Notice[];
   /** The run failed everywhere in a shape that points at the probe. */
@@ -267,15 +290,17 @@ export type IngestOutput = {
  * - `error` records itself and leaves the count, `failingSince` and any open
  *   incident exactly as they were.
  *
- * When every attempted node (at least two) fails with no handshake anywhere
- * while the control passed, the probe itself is the likelier culprit: the
- * per-node messages become one combined message, and those nodes recover
- * together into one combined message as well.
+ * A mass failure combines notices when the control passed and failures
+ * across at least two attempted nodes point to a probe problem. A successful
+ * address on a direct node rules out a mass failure. Diagnostics on bridged
+ * nodes do not change bridge alerts. Nodes in a mass incident that
+ * recover together get a combined recovery notice as well.
  */
 export const ingestRun = (input: IngestInput): IngestOutput => {
   const resultById = new Map<string, ProbeTargetResult>();
   const reportedSlots = new Set<string>();
   for (const result of input.results) {
+    resultById.set(result.targetId, result);
     const identity = normalizeTargetId(result.targetId);
     if (!identity) continue;
     resultById.set(identity.id, result);
@@ -285,10 +310,22 @@ export const ingestRun = (input: IngestInput): IngestOutput => {
     string,
     { node: ReachabilityTarget; outcomes: ProtocolOutcome[]; badge: ProtocolOutcome[] }
   >();
+  const endpointOutcomes: DirectEndpointOutcome[] = [];
+  let healthyDirectEndpoint = false;
   for (const target of input.targets) {
-    if (target.diagnostic) continue;
     const identity = normalizeTargetId(target.targetId);
-    const result = identity ? resultById.get(identity.id) : undefined;
+    const result = resultById.get(identity?.id ?? target.targetId);
+    const endpoint = target.directEndpoint;
+    if (endpoint && target.protocol === "awg3" && !measuredViaBridge(target)) {
+      // No result also covers targets that had to wait for a free slot in
+      // the run. Leave their saved observation and its original time alone.
+      if (matchesDirectEndpoint(result, endpoint.address)) {
+        const { status, detail } = classifyTarget(target, result, input.controlOk);
+        endpointOutcomes.push({ endpointId: endpoint.id, status, detail });
+        if (status === "ok" && target.bridgePath === null) healthyDirectEndpoint = true;
+      }
+    }
+    if (target.diagnostic || endpoint?.reusesNodeTarget === false) continue;
     // The probe reported this node and protocol, but for another endpoint
     // revision: an assignment changed since the run was dispatched. That
     // evidence is unknown now, whatever it says.
@@ -323,7 +360,10 @@ export const ingestRun = (input: IngestInput): IngestOutput => {
   const onlyEgressFailed = attempted.every((n) =>
     n.outcomes.every((o) => o.levels?.handshake.ok === true && o.levels.http.ok !== true),
   );
-  const massFailure = allFailed && (noHandshake || onlyEgressFailed);
+  const massFailure =
+    allFailed &&
+    (noHandshake || onlyEgressFailed) &&
+    !healthyDirectEndpoint;
 
   const states = new Map<string, NodeState>();
   const opened: { node: ReachabilityTarget; levels: ProbeLevels | null; since: Date }[] = [];
@@ -403,7 +443,7 @@ export const ingestRun = (input: IngestInput): IngestOutput => {
   }
 
   const outcomes = nodes.flatMap((n) => n.stored);
-  return { outcomes, states, notices, massFailure };
+  return { outcomes, endpointOutcomes, states, notices, massFailure };
 };
 
 export type StaleInput = {

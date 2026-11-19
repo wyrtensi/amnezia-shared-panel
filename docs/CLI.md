@@ -154,6 +154,14 @@ between those is the operator's call, not a cleanup's.
 
 ### Bootstrap & admin CLI
 
+Use `nodes --endpoints` to list the public IPv4 listeners and their independent
+reachability. Add one with
+`node-update <node-id> --endpoint-ip=<ipv4> [--endpoint-name=<name>]`.
+Rename or disable it for new keys with
+`node-update <node-id> --endpoint-id=<address-id> --endpoint-name=<name>` or
+`--endpoint-enabled=false`. Select it for an AWG 3.1 key with
+`user-create-key <user> --node=<node-id> --endpoint=<address-id>`.
+
 The **first admin** is provisioned by env, not a command: the first login by any
 address in `BOOTSTRAP_ADMIN_EMAILS` becomes `admin`.
 

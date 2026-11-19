@@ -18,6 +18,7 @@ import {
   nodeReachabilityState,
   nodeServiceCheckResults,
   nodeServiceChecks,
+  nodeVpnEndpoints,
   nodes,
   peerCurrent,
   peerSamples,
@@ -347,6 +348,72 @@ describe("PostgresWorkerRepository outbox leases", () => {
     peers: [],
     publicHost: null,
     publicIp: null,
+  });
+
+  runDatabaseTest("a new agent address updates the existing primary without losing its label or ID", async () => {
+    if (!database || !repository) return;
+    const { node } = await seedTelemetryKey();
+    const first = new Date("2026-08-20T08:00:00.000Z");
+    await repository.recordNodeSnapshot({
+      ...metricsSnapshot(node.id, first, 0.1),
+      publicHost: "192.0.2.10",
+      publicIp: "192.0.2.10",
+    });
+    const [primary] = await database.db.select().from(nodeVpnEndpoints)
+      .where(eq(nodeVpnEndpoints.nodeId, node.id));
+    expect(primary).toMatchObject({ ordinal: 1, address: "192.0.2.10", name: "worker-telemetry-node-1" });
+    if (!primary) throw new Error("Missing primary endpoint");
+    const evidence = { probeStatus: "failed", probeCheckedAt: first, probeDetail: "no handshake" } as const;
+    await database.db.update(nodeVpnEndpoints).set({ name: "Custom address label", ...evidence })
+      .where(eq(nodeVpnEndpoints.id, primary.id));
+
+    const updatedHost = "vpn.example.test";
+    await repository.recordNodeSnapshot({
+      ...metricsSnapshot(node.id, new Date("2026-08-20T08:01:00.000Z"), 0.2),
+      publicHost: updatedHost,
+      publicIp: null,
+    });
+    expect(await database.db.select().from(nodeVpnEndpoints).where(eq(nodeVpnEndpoints.nodeId, node.id)))
+      .toMatchObject([{ id: primary.id, address: primary.address, revision: 0, ...evidence }]);
+
+    await repository.recordNodeSnapshot({
+      ...metricsSnapshot(node.id, new Date("2026-08-20T08:02:00.000Z"), 0.2),
+      publicHost: updatedHost,
+      publicIp: "192.0.2.20",
+    });
+    expect(await database.db.select().from(nodeVpnEndpoints).where(eq(nodeVpnEndpoints.nodeId, node.id)))
+      .toMatchObject([{
+        id: primary.id, ordinal: 1, address: "192.0.2.20", name: "Custom address label", revision: 1,
+        probeStatus: null, probeCheckedAt: null, probeDetail: null,
+      }]);
+  });
+
+  runDatabaseTest("promotes a registered address when it becomes the agent address", async () => {
+    if (!database || !repository) return;
+    const { node } = await seedTelemetryKey();
+    const first = new Date("2026-08-20T08:00:00.000Z");
+    const evidence = { probeStatus: "failed", probeCheckedAt: first, probeDetail: "no handshake" } as const;
+    const [primary, alternative, remaining] = await database.db.insert(nodeVpnEndpoints).values([
+      { nodeId: node.id, ordinal: 1, address: "192.0.2.10", name: "Old primary", revision: 3, ...evidence },
+      { nodeId: node.id, ordinal: 2, address: "192.0.2.20", name: "Alternative", enabled: false, revision: 2, ...evidence },
+      { nodeId: node.id, ordinal: 4, address: "192.0.2.30", name: "Remaining", ...evidence },
+    ]).returning();
+    if (!primary || !alternative || !remaining) throw new Error("Missing endpoint fixtures");
+
+    await repository.recordNodeSnapshot({
+      ...metricsSnapshot(node.id, first, 0.1),
+      publicHost: "192.0.2.20",
+      publicIp: "192.0.2.20",
+    });
+
+    const noEvidence = { probeStatus: null, probeCheckedAt: null, probeDetail: null };
+    expect(await database.db.select().from(nodeVpnEndpoints)
+      .where(eq(nodeVpnEndpoints.nodeId, node.id)).orderBy(nodeVpnEndpoints.ordinal))
+      .toMatchObject([
+        { ...alternative, ordinal: 1, enabled: true, revision: 3, ...noEvidence },
+        remaining,
+        { ...primary, ordinal: 5, revision: 4, ...noEvidence },
+      ]);
   });
 
   runDatabaseTest(
@@ -2343,6 +2410,7 @@ describe("PostgresReachabilityRepository", () => {
       });
       return {
         outcomes: out.outcomes,
+        endpointOutcomes: out.endpointOutcomes,
         states: out.states,
         notices: extra.notices ?? out.notices,
         staleAlertedAt: null,
@@ -2428,6 +2496,7 @@ describe("PostgresReachabilityRepository", () => {
           outcomes: [
             { nodeId: a.id, protocol: "awg2", status, levels: null, egressIp: null, detail: null },
           ],
+          endpointOutcomes: out.endpointOutcomes,
           states: out.states,
           notices: [],
           staleAlertedAt: null,
@@ -2481,6 +2550,7 @@ describe("PostgresReachabilityRepository", () => {
               },
             ],
           ]),
+          endpointOutcomes: [],
           notices: [],
           staleAlertedAt: null,
           mass: false,

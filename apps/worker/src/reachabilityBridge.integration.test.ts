@@ -16,6 +16,7 @@ import {
   nodeReachabilityHistory,
   nodeReachabilityResults,
   nodeReachabilityState,
+  nodeVpnEndpoints,
   nodes,
   reachabilityProbe,
   resetNodeEndpointEvidence,
@@ -302,7 +303,7 @@ describe("reachability of bridged nodes (real PostgreSQL)", () => {
               protocol: target.protocol,
               status: "done" as const,
               detail: null,
-              endpointHost: null,
+              endpointHost: inspectAwgVpnLink(target.config).endpoint?.host ?? null,
               egressIp: outcome.http ? (outcome.egressIp ?? "192.0.2.10") : null,
               levels: {
                 // Diagnostics only: a bridge does not answer ping or SSH.
@@ -348,6 +349,17 @@ describe("reachability of bridged nodes (real PostgreSQL)", () => {
         .from(nodeReachabilityState)
         .where(eq(nodeReachabilityState.nodeId, nodeId))
     )[0];
+  const directEndpointsOf = (nodeId: string) =>
+    db().select().from(nodeVpnEndpoints)
+      .where(eq(nodeVpnEndpoints.nodeId, nodeId))
+      .orderBy(nodeVpnEndpoints.ordinal);
+
+  const seedDirectEndpoints = (nodeId: string) =>
+    db().insert(nodeVpnEndpoints).values([
+      { nodeId, ordinal: 1, address: "192.0.2.10", name: "Primary" },
+      { nodeId, ordinal: 2, address: "192.0.2.20", name: "Backup" },
+      { nodeId, ordinal: 3, address: "192.0.2.30", name: "Disabled", enabled: false },
+    ]).returning();
   const alerts = async () =>
     db().select().from(jobOutbox).where(eq(jobOutbox.type, "notify.reachability"));
   const revisionOf = async (nodeId: string) =>
@@ -363,6 +375,94 @@ describe("reachability of bridged nodes (real PostgreSQL)", () => {
         .filter((target) => target.targetId.startsWith(`${nodeId}:`))
         .map((target) => [target.protocol, target]),
     );
+
+  runDatabaseTest("measures each enabled direct IPv4 with its own AWG 3.1 result", async () => {
+    await seedProbe();
+    const node = await seedNode({ awg3Link: awgServiceLink({ host: "192.0.2.10", port: 51234 }) });
+    await seedDirectEndpoints(node.id);
+    const probe = harness((target) => {
+      const endpoint = inspectAwgVpnLink(target.config).endpoint;
+      const ok = endpoint?.host !== "192.0.2.20";
+      return { handshake: ok, http: ok };
+    });
+    await probe.tick();
+
+    const awg31 = probe.sent[0]?.targets.filter((target) => target.protocol === "awg3");
+    expect(awg31).toHaveLength(2);
+    const primary = awg31?.find((target) => target.targetId === `${node.id}:awg3:r0`);
+    const backup = awg31?.find((target) => target.targetId.startsWith(`${node.id}:awg3:r0:direct:`));
+    expect(inspectAwgVpnLink(primary?.config ?? "").endpoint).toEqual({ host: "192.0.2.10", port: 51234 });
+    expect(inspectAwgVpnLink(backup?.config ?? "").endpoint).toEqual({ host: "192.0.2.20", port: 51234 });
+    expect(backup?.targetId).not.toContain("192.0.2.20");
+    expect(backup?.expectedEgressIp).toBe("192.0.2.10");
+
+    await probe.tick();
+
+    const observations = await directEndpointsOf(node.id);
+    expect(observations).toMatchObject([
+      { probeStatus: "ok", probeDetail: null },
+      { probeStatus: "failed", probeDetail: "no handshake" },
+      { probeStatus: null, probeCheckedAt: null, probeDetail: null },
+    ]);
+    expect(observations[0]?.probeCheckedAt).toBeInstanceOf(Date);
+    expect(observations[1]?.probeCheckedAt).toBeInstanceOf(Date);
+    expect((await resultsOf(node.id)).get("awg3")?.status).toBe("ok");
+    expect(await stateOf(node.id)).toMatchObject({ status: "ok" });
+  });
+
+  runDatabaseTest("ignores a direct reply from before an address was disabled and reenabled", async () => {
+    await seedProbe();
+    const node = await seedNode({ awg3Link: awgServiceLink({ host: "192.0.2.10" }) });
+    const [, backup] = await seedDirectEndpoints(node.id);
+    if (!backup) throw new Error("Missing backup endpoint");
+    const probe = harness(() => ({ handshake: true, http: true }));
+    await probe.tick();
+
+    for (const enabled of [false, true]) {
+      await db().transaction(async (tx) => {
+        await tx.select({ id: nodes.id }).from(nodes).where(eq(nodes.id, node.id)).for("no key update");
+        await tx.update(nodeVpnEndpoints)
+          .set({ enabled, revision: sql`${nodeVpnEndpoints.revision} + 1` })
+          .where(eq(nodeVpnEndpoints.id, backup.id));
+      });
+    }
+    await probe.tick();
+
+    expect(await directEndpointsOf(node.id)).toMatchObject([
+      { probeStatus: "ok" },
+      { probeStatus: null, probeCheckedAt: null },
+      { probeStatus: null, probeCheckedAt: null },
+    ]);
+  });
+
+  runDatabaseTest("bridge activation clears direct evidence and checks only the bridged AWG 3.1 path", async () => {
+    await seedProbe();
+    const node = await seedNode({ awg3Link: awgServiceLink({ host: "192.0.2.10" }) });
+    await seedDirectEndpoints(node.id);
+    const probe = harness(() => ({ handshake: true, http: true }));
+    await probe.tick();
+    await probe.tick();
+    expect((await directEndpointsOf(node.id)).map((endpoint) => endpoint.probeStatus)).toEqual([
+      "ok", "ok", null,
+    ]);
+
+    const bridge = await seedBridge("Endpoint bridge");
+    const route = await seedRoute(node.id, bridge.id);
+    await db().transaction((tx) => switchEndpoint(tx, node.id, route));
+    await probe.tick(120);
+
+    const awg31 = probe.sent[1]?.targets.filter((target) => target.protocol === "awg3");
+    expect(awg31?.map((target) => inspectAwgVpnLink(target.config).endpoint)).toEqual([
+      { host: bridge.publicIpv4, port: 41000 },
+    ]);
+    await probe.tick();
+    expect(await directEndpointsOf(node.id)).toMatchObject([
+      { probeStatus: null, probeCheckedAt: null, probeDetail: null },
+      { probeStatus: null, probeCheckedAt: null, probeDetail: null },
+      { probeStatus: null, probeCheckedAt: null, probeDetail: null },
+    ]);
+    expect((await resultsOf(node.id)).get("awg3")?.status).toBe("ok");
+  });
 
   /** Resolves once another session waits for a row lock (files run one at a time). */
   const waitForLockWait = async () => {
@@ -467,6 +567,37 @@ describe("reachability of bridged nodes (real PostgreSQL)", () => {
     expect(await stateOf(node.id)).toMatchObject({ status: "failed", directStatus: "ok" });
     expect((await stateOf(node.id))?.directCheckedAt).toBeInstanceOf(Date);
     expect((await resultsOf(node.id)).get("awg3")).toMatchObject({ status: "failed" });
+  });
+
+  runDatabaseTest("measures opted-in bridged nodes' direct addresses independently", async () => {
+    const node = await seedNode({ awg3Link: awgServiceLink({ host: "192.0.2.10", port: 51234 }) });
+    await seedDirectEndpoints(node.id);
+    const bridge = await seedBridge(`Bridge ${runTag}`);
+    await seedRoute(node.id, bridge.id, "active");
+    await seedProbe({ probeDirectWhenBridged: true });
+    const probe = harness((target) => {
+      const ok = inspectAwgVpnLink(target.config).endpoint?.host === "192.0.2.20";
+      return { handshake: ok, http: ok };
+    });
+    await probe.tick();
+
+    const awg31 = probe.sent[0]?.targets.filter((target) => target.protocol === "awg3");
+    expect(awg31).toHaveLength(3);
+    expect(new Set(awg31?.map((target) => inspectAwgVpnLink(target.config).endpoint))).toEqual(new Set([
+      { host: bridge.publicIpv4, port: 41000 },
+      { host: "192.0.2.10", port: 51234 },
+      { host: "192.0.2.20", port: 51234 },
+    ]));
+    const prefix = `${node.id}:awg3:r1:direct:`;
+    expect(awg31?.filter((target) => target.targetId.startsWith(prefix))).toHaveLength(2);
+    expect(new Set(awg31?.map((target) => target.targetId)).size).toBe(3);
+
+    await probe.tick();
+
+    expect(await stateOf(node.id)).toMatchObject({ status: "failed", directStatus: "failed" });
+    expect((await directEndpointsOf(node.id)).map((endpoint) => endpoint.probeStatus)).toEqual([
+      "failed", "ok", null,
+    ]);
   });
 
   runDatabaseTest("fences dispatch if direct diagnostics were disabled during the tick", async () => {
@@ -862,6 +993,7 @@ describe("reachability of bridged nodes (real PostgreSQL)", () => {
         });
         return {
           outcomes: out.outcomes,
+          endpointOutcomes: out.endpointOutcomes,
           states: out.states,
           notices: out.notices,
           staleAlertedAt: null,

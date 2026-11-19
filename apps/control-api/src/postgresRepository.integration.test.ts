@@ -3097,6 +3097,8 @@ describe("PostgresControlRepository node status surfaces", () => {
       async () => {
         if (!database) return;
         await seedProbe();
+        await database.db.update(reachabilityProbe).set({ probeDirectWhenBridged: true });
+        await database.db.insert(portalPolicy).values({ useBridge: true });
         const checkedAt = new Date();
         // The worker's verdict for a bridged node follows the AWG 3.1 path.
         await database.db.insert(nodeReachabilityState).values({
@@ -3149,6 +3151,16 @@ describe("PostgresControlRepository node status surfaces", () => {
             since: failingSince.toISOString(),
           });
           expect(viewOf("awg2")?.nodeReachability).toEqual({ state: "ok", since: null });
+          await database.db.update(reachabilityProbe).set({ probeDirectWhenBridged: false });
+          expect(viewOfIn(await subject().listKeys(actor), "awg2")?.nodeReachability)
+            .toEqual({ state: "unknown", since: null });
+          await database.db.update(reachabilityProbe).set({ probeDirectWhenBridged: true });
+
+          // Declining the bridge makes its measurement irrelevant to the
+          // owner's AWG 3.1 key while the active route is still assigned.
+          await database.db.update(portalPolicy).set({ useBridge: false });
+          expect(viewOfIn(await subject().listKeys(actor), "awg3")?.nodeReachability)
+            .toEqual({ state: "unknown", since: null });
 
           // A failing AWG 2 path carries its own failing-since.
           const awg2Since = new Date(failingSince.getTime() + 60_000);
@@ -3213,6 +3225,7 @@ describe("PostgresControlRepository node status surfaces", () => {
             since: null,
           });
         } finally {
+          await database.db.delete(portalPolicy);
           await database.db.delete(vpnKeys).where(inArray(vpnKeys.id, keys.map((key) => key.id)));
           await database.db.delete(vpnBridgeRoutes).where(eq(vpnBridgeRoutes.id, routeId));
           await database.db.delete(vpnBridges).where(eq(vpnBridges.id, bridge.id));

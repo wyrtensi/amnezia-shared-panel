@@ -117,7 +117,7 @@ import {
   BRIDGE_USAGE_LINES,
   bridgeErrorHint,
 } from "./bridges.js";
-import type { AdminReachabilityView, KeyBridgeInfo } from "@amnezia/contracts";
+import type { AdminNodeEndpoint, AdminReachabilityView, KeyBridgeInfo } from "@amnezia/contracts";
 import {
   bridgeReachabilityLines,
   buildProbeUpsert,
@@ -260,6 +260,7 @@ type AdminKey = {
   id: string;
   ownerId: string;
   nodeId: string;
+  endpointName?: string | null;
   state: string;
   protocol: string;
   deviceLabel: string;
@@ -277,6 +278,7 @@ type AdminKey = {
 type AdminNode = {
   id: string;
   name: string;
+  publicEndpoints?: AdminNodeEndpoint[];
   /** Whether this node takes part in service checks at all. */
   checksEnabled?: boolean;
   /** Checks this node skips, by id. */
@@ -555,6 +557,7 @@ async function cmdKeys(args: string[]): Promise<void> {
         owner: emailById.get(key.ownerId) ?? key.ownerId.slice(0, 8),
         state: key.state,
         proto: key.protocol,
+        address: key.endpointName ?? "—",
         bridge: key.bridge?.effective
           ? `${key.bridge.effective.bridgeName} (${key.bridge.effective.publicIpv4}:${key.bridge.effective.publicUdpPort})`
           : key.bridge?.mode === "direct"
@@ -579,6 +582,7 @@ async function cmdKeys(args: string[]): Promise<void> {
         "owner",
         "state",
         "proto",
+        ...(shown.some((key) => key.endpointName) ? ["address"] : []),
         "bridge",
         "online",
         "traffic",
@@ -883,6 +887,18 @@ async function cmdNodes(args: string[]): Promise<void> {
         ["name", "id", "api host", "kind"],
       ),
     );
+    return;
+  }
+  if (args.includes("--endpoints")) {
+    console.log(table(nodes.flatMap((node) =>
+      (node.publicEndpoints ?? []).map((address) => ({
+        node: node.name,
+        name: address.name,
+        address: address.publicAddress,
+        id: address.id,
+        status: address.enabled ? (address.reachability?.state ?? "unknown") : "disabled",
+      })),
+    ), ["node", "name", "address", "id", "status"]));
     return;
   }
   // The list users actually see: the admin's stored order first, then the
@@ -2128,6 +2144,26 @@ async function cmdNodeUpdate(args: string[]): Promise<void> {
   // under it. If one ever does while keeping the same DNS name, this is the
   // recovery: clear the stored IP and the next telemetry tick resolves again.
   if (args.includes("--clear-public-ip")) body.publicIp = null;
+  const endpointIp = flagOf(args, "endpoint-ip");
+  const endpointId = flagOf(args, "endpoint-id");
+  const endpointName = flagOf(args, "endpoint-name");
+  const endpointEnabled = flagOf(args, "endpoint-enabled");
+  if (endpointIp !== undefined && endpointId !== undefined) {
+    throw new Error("Choose --endpoint-ip to add an address or --endpoint-id to edit one");
+  }
+  if (endpointIp !== undefined) {
+    if (endpointEnabled !== undefined) throw new Error("--endpoint-enabled needs --endpoint-id");
+    body.publicEndpoint = { action: "add", address: endpointIp, name: endpointName };
+  } else if (endpointId !== undefined) {
+    body.publicEndpoint = {
+      action: "update",
+      id: endpointId,
+      name: endpointName,
+      enabled: endpointEnabled === undefined ? undefined : parseBoolFlag("endpoint-enabled", endpointEnabled),
+    };
+  } else if (endpointName !== undefined || endpointEnabled !== undefined) {
+    throw new Error("Address settings require --endpoint-id or --endpoint-ip");
+  }
   if (Object.keys(body).length === 0) {
     throw new Error("Usage: node-update <id> --<field>=<value> …");
   }
@@ -2295,6 +2331,8 @@ async function cmdUserCreateKey(args: string[]): Promise<void> {
   const nodeId = flagOf(args, "node");
   if (!nodeId) throw new Error(usage);
   const body: Record<string, unknown> = { nodeId };
+  const endpointId = flagOf(args, "endpoint");
+  if (endpointId !== undefined) body.endpointId = endpointId;
   // Which parts the AmneziaVPN client shows as the connection name. Omitted
   // flags keep the API defaults (server + label, no number).
   const nameDisplay: Record<string, boolean> = {};
@@ -2754,12 +2792,13 @@ Read:
              [--all]      never), the keys they hold, the ones too young to count, and
                           how long the oldest has been stale. Only users with at least
                           one by default; --all lists everyone
-  nodes [--hosts]          List nodes (with protocols, capacity and the public
-                          address clients connect to: "name (ip)" once the panel
+  nodes [--hosts|--endpoints]  List nodes and their default connection address:
+                          "name (ip)" once the panel
                           has resolved a DNS name, "name (unresolved)" when it
                           never could, "—" when the node-agent does not report
                           one. --json also carries publicIpResolvedAt.
                           --hosts instead shows how the PANEL reaches each agent
+                          --endpoints lists each public address, name and verdict
                           (apiBaseUrl) classified ip / docker-local / dns
   keys-purge-revoked [<id|email>] [--confirm]
                            Delete revoked keys' rows (all users, or one)
@@ -2825,7 +2864,7 @@ Users (accept a user id OR email):
                                          rules by site name use a full_tunnel key and the
                                          AmneziaVPN app's own site-based split tunnelling
                                          (Settings -> Connection).
-  user-create-key <id|email> --node=<uuid> [--device=] [--protocol=awg3] [--route=full_tunnel]
+  user-create-key <id|email> --node=<uuid> [--endpoint=<uuid>] [--device=] [--protocol=awg3] [--route=full_tunnel]
                   [--bridge=inherit|direct|route] [--bridge-route=<route-uuid>]
                   [${deviceTypeUsage()}]
                   [--name-server=true|false] [--name-label=true|false] [--name-number=true|false]
@@ -2849,6 +2888,8 @@ Nodes:
                                           enabled=true|false, enabled-protocols)
   node-update <id> --clear-public-ip      Forget the resolved public IP so the
                                           worker looks it up again next tick
+  node-update <id> --endpoint-ip=<ipv4> [--endpoint-name=<name>]
+  node-update <id> --endpoint-id=<uuid> [--endpoint-name=<name>] [--endpoint-enabled=true|false]
   node-remove <id>                        Delete a node (refused while it has keys)
   node-remove <id> --with-keys            Delete a node AND every key ever issued
              --confirm=<node name>        on it. Irreversible; the name must match

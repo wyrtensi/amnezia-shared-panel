@@ -23,9 +23,23 @@ export function ServerStatusList({ nodes }: { nodes: readonly NodeView[] }) {
   const { t } = useT();
   // "since" is shown in the browser's zone, so only once hydrated.
   const hydrated = useHydrated();
+  const addresses = nodes.flatMap<Pick<NodeView, "id" | "name" | "recommended" | "reachability" | "publicAddress">>(
+    (node) => {
+      if (!node.publicEndpoints?.length) return [node];
+      const direct = node.publicEndpoints.map((endpoint) => ({ ...endpoint, recommended: node.recommended }));
+      return [
+        ...direct,
+        ...(node.bridgeReachability ? [{
+          id: `${node.id}:bridge`,
+          name: t("emp.serverViaBridge", { name: node.name }),
+          reachability: node.bridgeReachability,
+        }] : []),
+      ];
+    },
+  );
   return (
     <ul className="space-y-1.5" aria-label={t("emp.servers")}>
-      {blockedFirst(nodes).map((node) => {
+      {blockedFirst(addresses).map((node) => {
         const reachability = node.reachability;
         const dot = reachability ? DOT[reachability.state] : null;
         return (
@@ -41,6 +55,9 @@ export function ServerStatusList({ nodes }: { nodes: readonly NodeView[] }) {
             <span className="min-w-0">
               <span className="flex min-w-0 items-center gap-1.5">
                 <span className="truncate text-sm">{node.name}</span>
+                {node.publicAddress ? (
+                  <code className="truncate text-xs text-muted-foreground">{node.publicAddress}</code>
+                ) : null}
                 {node.recommended ? (
                   <Badge
                     variant="success"

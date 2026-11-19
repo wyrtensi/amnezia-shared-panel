@@ -285,6 +285,35 @@ describe("ingestRun: every node failing at once", () => {
     expect(states[1]?.get("id-node-b")?.alertKind).toBe("mass");
   });
 
+  it.each([
+    { endpointHost: "192.0.2.20", massFailure: false, savedStatus: ["ok"], alertKinds: ["down", "down"] },
+    { endpointHost: "192.0.2.21", massFailure: true, savedStatus: [], alertKinds: ["mass-down"] },
+  ])("uses direct success for the mass verdict only when it measured the configured address ($endpointHost)", ({
+    endpointHost, massFailure, savedStatus, alertKinds,
+  }) => {
+    const secondary = {
+      ...A,
+      targetId: `${A.targetId}:direct:a1`,
+      directEndpoint: { id: "backup", address: "192.0.2.20", checkedAt: null, reusesNodeTarget: false },
+    };
+    const out = ingestRun({
+      runId: "run-1",
+      now: new Date("2026-01-01T10:00:00Z"),
+      label: LABEL,
+      failThreshold: 1,
+      controlOk: true,
+      targets: [A, B, secondary],
+      results: [down(A), down(B), { ...up(secondary), endpointHost }],
+      previous: new Map(),
+    });
+
+    expect(out.states.get(A.nodeId)?.status).toBe("failed");
+    expect(out.states.get(B.nodeId)?.status).toBe("failed");
+    expect(out.endpointOutcomes.map(({ status }) => status)).toEqual(savedStatus);
+    expect(out.massFailure).toBe(massFailure);
+    expect(out.notices.map(({ dedupKey }) => dedupKey.split(":")[1])).toEqual(alertKinds);
+  });
+
   it("needs at least two attempted nodes", () => {
     const { notices } = simulate([
       { targets: [A], results: [down(A)] },
