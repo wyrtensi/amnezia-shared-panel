@@ -15,6 +15,7 @@ This directory contains local, operator-run deployment assets for one Linux/amd6
 - Approved AWG3 multi-platform index digest: `sha256:cbafc02b8373a83f428272db6d8001b37bc02e6211cbd8c0cb4e2e3759b12b72`.
 - VPN endpoints: UDP `51889` (AWG2), UDP `51890` (AWG3).
 - VPN subnets: `10.89.0.0/22` (AWG2, server `10.89.0.1/22`); `10.90.0.0/22` (AWG3, server `10.90.0.1/22`).
+- Optional AWG 3.1 IPv6 active-reject ULA stub: off by default; when toggled on per node from the panel (`/admin/nodes` or `amnezia-panel node-ipv6-stub <id>`), assigns a dedicated ULA subnet (`fd6b:7c2e:4a91:9f::/64` by default) plus `ip -6 route replace prohibit 2000::/3` inside `amnezia-awg3` so mobile IPv6 falls back immediately to IPv4 instead of stalling on a silent blackhole. Requires `net.ipv6.conf.{all,default}.disable_ipv6=0` and `net.ipv6.conf.all.forwarding=1` on `amnezia-awg3` in `compose.yaml`; state is persisted in `state/amnezia-awg3/ipv6-reject-stub.env` (`0600`) and restored fail-safely on restart by `scripts/awg3-entrypoint.sh`. See [`docs/OPERATIONS.md`](../../docs/OPERATIONS.md#per-node-awg-31-ipv6-active-reject-stub-ula--prohibit-20003).
 - Node-agent endpoint: host loopback `127.0.0.1:4001` only. `PROTOCOLS_ENABLED` defaults to `amneziawg3`; add `amneziawg2` to it on a node that still carries legacy peers, which is also what activates the `awg2` compose profile.
 - Persistent state: `state/amnezia-awg2` and `state/amnezia-awg3` (`awg0.conf`, key material, and `clientsTable`).
 - Restart policy: `unless-stopped`; Watchtower and mutable `latest` tags are forbidden.

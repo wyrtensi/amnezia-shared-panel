@@ -47,27 +47,42 @@ What that buys an operator, concretely:
   `.conf` file or a QR code, and can rename or reissue a key without asking
   anyone. Each AWG 3.1 key has its own client-side junk parameters, and its
   owner can draw new ones with **Refresh config** without losing the key. Quotas are per server or a shared pool, per user or panel-wide.
-- **Routing per key.** All traffic through the tunnel, or only what a published
-  blocklist says is blocked — the blocked-only profile carries its whole rule
-  set inside the key, so that key travels as a file rather than as a link or a
-  QR code. The rule set is fetched, validated and versioned by
-  the panel, so a key can tell its owner when the routes it was exported with
-  have moved on. The feeds it ships with are the community blocklists this
-  project grew up around; `RULE_FEEDS` repoints them at any other list.
+- **Routing per key.** Full tunnel or compact split-tunneling (`ru_blacklist`,
+  defaulting to **E-Core** `compact_world`: ~1,250 routes covering ~85% of non-RU
+  IPv4 plus non-RU IPv6 with 0% RU/LAN/Apple/Valve AS32590 SteamCache overlap; or
+  `blocked_only` at ~780 routes). The rule set is fetched, compacted, validated,
+  and versioned by the panel so keys tell their owner when rules move on. Admin
+  `global_route_overrides` are baked into every refresh (and immediately mirrored
+  at export via real CIDR subtraction), and `RULE_EXTRA_INCLUDE_URLS` /
+  `RULE_EXTRA_EXCLUDE_URLS` layer custom CIDR lists on top of the defaults
+  without replacing `RULE_FEEDS`.
+- **Per-node IPv6 active-reject stub (ULA).** On IPv4-only AWG 3.1 nodes, each
+  node card in `/admin/nodes` (and `amnezia-panel node-ipv6-stub`) provides an
+  opt-in **IPv6 Reject (ULA)** switch (`fd6b:7c2e:4a91:9f::/64` + kernel
+  `prohibit 2000::/3`, ICMPv6 Administratively Prohibited) so dual-stack iOS/Android
+  clients and `.conf` exports fall back to IPv4 immediately via Happy Eyeballs
+  instead of stalling on silent IPv6 blackholes — toggled cleanly on or off
+  without dropping IPv4 sessions or touching desktop `vpn://` exports.
 - **Service checks.** Named checks — a status code, a marker in the body, where a
   redirect lands — run from every node on a schedule, so "is this reachable from
   that country" is a row in the panel rather than an experiment.
-- **External reachability probe.** A small container on a machine in the
-  network you care about brings up a real AWG tunnel to every node each hour;
-  admin/nodes shows the result per node and protocol, and Telegram gets one
-  message per incident. See [docs/REACHABILITY-PROBE.md](docs/REACHABILITY-PROBE.md).
+- **External reachability probe & Telegram integration.** A small container on a
+  machine in the network you care about brings up a real AWG tunnel to every node
+  each hour; `/admin/nodes` shows the verdict per node and protocol, and optional
+  Telegram bot integration (`TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID`) delivers
+  quota-request alerts, reachability outage/recovery alerts (one message per
+  incident), and a live pinned Telegram status widget (`sendWidget`). See
+  [docs/REACHABILITY-PROBE.md](docs/REACHABILITY-PROBE.md).
 - **Fleet visibility.** Host metrics, agent version, peer counts and traffic per
   node and per key, with a one-command agent update that swaps only the agent
   container and never restarts a tunnel.
 - **Optional AWG bridge.** A public bridge host can forward UDP to several AWG 3.1
-  nodes, one port per node; which nodes use it is set in the panel (Direct or a
-  bridge, switchable back at any time) and applies to the next config a user
-  downloads. Native AWG 2 stays direct. See the
+  nodes, one port per node; node assignments live in **Policies → Node routes**
+  under **Server order**. Users route through active bridges only when opted in
+  globally (`useBridge`, off by default) or per user (`user-bridge`), and admins
+  can override bridge routing per key (`inherit` / `direct` / pinned route) with
+  admin-only route badges. Bridges also track optional panel DNS forwarding
+  (`panelDns`). Native AWG 2 stays direct. See the
   [AWG bridge runbook](docs/runbooks/AWG-BRIDGES.md).
 - **Offboarding that finishes.** Disabling an account revokes its keys on the
   nodes, and the panel refuses to delete a row while a peer might still exist —
@@ -118,15 +133,14 @@ Android, or iPhone / iPad — and gets only that instruction, rather than scroll
 past advice for platforms they do not have. Each one walks through pasting a key, explains how to import a `.conf`
 file — the easier route for split-tunnel profiles on a computer and on Android —
 and lists what to try when a connection fails. It also states the one platform
-difference we know of: on iPhone and iPad a key with a routing profile connects
-but applies none of its rules — verified with both the pasted key and the `.conf`
-file — so the guide tells them to use a key without a profile. For the same
-reason the "New key" wizard greys out the routing profiles once you pick
-iPhone / iPad, with the reason shown on the card, and a key that already has that
-combination carries a warning and a muted profile badge on its card;
-`amnezia-panel user-create-key --device-type=ios` prints the same warning. This
-is a stop-gap that makes the limitation visible, not a decision that iOS will
-never support routing profiles. The download links are not hardcoded:
+caveat we know of: in the **Default VPN** app from the Russian App Store on iOS,
+a key with a routing profile imports and connects but applies none of its rules
+(whereas official AmneziaVPN on iOS applies routes normally when kept below the
+iOS NetworkExtension route ceiling, which E-Core's ~1,250 routes satisfy). The
+create-key wizard offers every profile on every platform because the panel cannot
+tell which client a device runs; `amnezia-panel user-create-key --device-type=ios`
+prints a warning and `amnezia-panel keys --needs-profile-warning` lists existing
+pairs. The download links are not hardcoded:
 `GET /api/client-releases` resolves the newest `amnezia-client` release on the
 panel host, caches it for six hours, and falls back to version-free release-page
 links when GitHub is unreachable, so a user on a network that cannot reach GitHub
@@ -200,11 +214,15 @@ like any other disabled account.
 - `apps/cli` — admin CLI over the control-api ([`apps/cli/README.md`](apps/cli/README.md)).
 - `packages/contracts` — shared public types and validation schemas.
 - `packages/db` — PostgreSQL schema, migrations, and repositories.
+- `packages/vpn-config` — AWG `vpn://` codec, endpoint rewriter, BigInt CIDR compaction engine, and IPv6 reject-stub ULA helper.
 - `services/node-agent` — reviewed fork of `kyoresuas/amnezia-api`; the HTTP agent
   that fronts an AmneziaWG container on each node.
+- `services/bridge-agent` — lightweight status and self-update agent for optional AWG 3.1 bridge hosts.
 - `infra/dev` — local Docker Compose environment.
 - `infra/prod` — production Compose stack (tiny-host, pulls the image from GHCR).
 - `infra/node` — VPN-node deployment assets.
+- `infra/bridge` — optional AWG 3.1 FRP bridge host assets.
+- `infra/probe` — external reachability probe container and setup scripts.
 
 Sensitive local material belongs in the git-ignored `secrets/` directory.
 
@@ -265,7 +283,11 @@ worker after a one-time `sudo bash infra/prod/install-updater.sh`.
 - [`docs/DEPLOY-UPDATE.md`](docs/DEPLOY-UPDATE.md) · [`docs/UPDATE-MECHANISM.md`](docs/UPDATE-MECHANISM.md)
   — updating the stack from git, and the in-panel Update button internals.
 - [`docs/runbooks/AWG-BRIDGES.md`](docs/runbooks/AWG-BRIDGES.md) — optional AWG 3.1
-  bridges: add, validate, assign, switch back, retire, rollback preflight.
+  bridges: add, validate, assign, user opt-in policy, per-key routing, switch back, retire, rollback preflight.
+- [`docs/REACHABILITY-PROBE.md`](docs/REACHABILITY-PROBE.md) — external reachability
+  probe, Telegram outage/quota notifications, and the pinned Telegram status widget.
+- [`docs/IPV6-DESIGN.md`](docs/IPV6-DESIGN.md) — shipped IPv6 active-reject ULA stub
+  and design draft for future full NAT66 / IPv6 node endpoints.
 
 ## License
 

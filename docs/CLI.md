@@ -648,9 +648,10 @@ The worker fetches the split-tunnel profile's list from the feeds in
 `RULE_FEEDS` (or, unset, from the built-in defaults) and stores every fetch as a
 row in `route_rule_versions`. Out of the box `ru_blacklist` is built from
 ipdeny's Russian IPv4/IPv6 space (subtracted) together with protected service
-ranges (iplist, itdoginfo IPv4/IPv6 subnets, Re-filter-lists, and `RULE_EXTRAS`)
-and compacted by default in `compact_world` (E-Core) mode with direct shields
-for Apple and Valve AS32590 SteamCache (see
+ranges (`itdoginfo` IPv4/IPv6 subnets, `/24`-capped Re-filter-lists `ipsum.lst`,
+`RULE_EXTRAS`, optional `RULE_EXTRA_INCLUDE_URLS` / `RULE_EXTRA_EXCLUDE_URLS`,
+and panel `global_route_overrides`) and compacted by default in `compact_world`
+(E-Core) mode with direct shields for Apple and Valve AS32590 SteamCache (see
 [`AGENT-HOST-SETUP.md`](./AGENT-HOST-SETUP.md#route-profiles-and-rule-feeds)).
 Nothing in the panel names a provider in a shared label — each version is
 attributed from its own stored `source_url`, and `rules` prints the IPv4/IPv6
@@ -664,8 +665,9 @@ amnezia-panel rules --json          # raw rows, including pinnedAt
 ```
 
 A version merged from several feeds stores its source URLs space-joined in one
-column, so `rules` prints all of them (`iplist · allow-domains · Re-filter-lists ·
-ipdeny`), each name once even when several files share it. The short
+column, so `rules` prints all of them (`allow-domains · Re-filter-lists ·
+ipdeny`, plus any custom `RULE_EXTRA_*` hosts), each name once even when
+several files share it. The short
 name is **derived** from the URL — the repository for a forge or git CDN URL,
 the host's own label otherwise — rather than looked up in a table of known
 providers, which would go stale the moment `RULE_FEEDS` is repointed. The full

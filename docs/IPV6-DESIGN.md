@@ -1,21 +1,39 @@
 # IPv6 on nodes and in the panel — possible implementation
 
-Status: **design draft, not approved for implementation.** Written on
-2026-10-10 as a possible implementation. Nothing below is built; nodes and the
-panel are IPv4-only today.
+Status: **Part A (full NAT66 IPv6 inside the tunnel) and Part B (IPv6 node
+endpoints) remain unbuilt design drafts** (written 2026-10-10, not approved for
+implementation yet).
+
+What **already shipped** as interim dual-stack hygiene (through `v0.15.2` /
+`node-agent 1.1.21`):
+
+- **Dual-stack E-Core `ru_blacklist` routes & IPv6 DNS `/128`:** the default
+  `ru_blacklist` feed merges `itdoginfo` IPv6 subnets minus `ipdeny` RU IPv6,
+  compacts them cleanly, and `packages/vpn-config` / `apps/control-api`
+  normalizes bare IPv6 DNS entries to `/128`.
+- **Per-node toggleable AWG 3.1 IPv6 active-reject ULA stub** (shipped in
+  `v0.15.2` + `node-agent 1.1.21`, see
+  [`OPERATIONS.md`](./OPERATIONS.md#per-node-awg-31-ipv6-active-reject-stub-ula--prohibit-20003)):
+  assigns each peer a deterministic ULA from `fd6b:7c2e:4a91:9f::/64` and
+  installs `ip -6 route replace prohibit 2000::/3` inside `amnezia-awg3` so
+  IPv6 traffic over the tunnel receives an immediate ICMPv6 Administratively
+  Prohibited response (triggering instant Happy Eyeballs fallback to IPv4)
+  instead of hanging 10–30 s on a silent blackhole. It is off by default,
+  toggled live per node via `/admin/nodes` or `amnezia-panel node-ipv6-stub`,
+  keeps desktop `vpn://` strictly IPv4-only, and deliberately lives on `:9f::/64`
+  so it stays cleanly separate from a future full NAT66 Part A subnet (reserved
+  as `fd6b:7c2e:4a91:90::/64`).
 
 Related:
 
 - [PR #140](https://github.com/wyrtensi/amnezia-shared-panel/pull/140), shipped
-  in v0.9.64: adds iplist's IPv6 list (minus Russian IPv6 from ipdeny) to the
-  built-in `ru_blacklist` feed. On today's IPv4-only nodes those routes are a
-  blackhole that forces clients onto IPv4 through the tunnel; with Part A
-  below they would carry traffic. Parked at first, then merged after a
-  Windows user with ISP IPv6 was found reaching YouTube over IPv6 past the
-  tunnel. Measured 2026-10-10: 4,587 routes (3,777 IPv4 + 810 IPv6). Rollback
-  in [`DEPLOY-UPDATE.md`](./DEPLOY-UPDATE.md).
-- The 2026-09-03 decision to keep node addresses IPv4-only, which Part B would
-  supersede.
+  in v0.9.64 (later superseded by the `itdoginfo` + Re:filter E-Core compaction
+  pipeline in v0.15.2): added IPv6 blocked routes (minus Russian IPv6 from
+  ipdeny) to `ru_blacklist` so dual-stack Windows/mobile clients do not leak
+  blocked services over ISP IPv6 past the tunnel. Rollback notes remain in
+  [`DEPLOY-UPDATE.md`](./DEPLOY-UPDATE.md).
+- The 2026-09-03 decision to keep node endpoints IPv4-only, which Part B below
+  would supersede.
 
 ## Goal
 
@@ -114,8 +132,8 @@ Also relevant: amnezia-client#3207 (iOS NetworkExtension pauses the tunnel with
 - Export (`getKeyConfig` / `vpnConfig.ts`): for `android`/`ios` keys on a node
   with `ipv6`, rewrite `client_ip` to `v4, v6` from `client_ipv6`; otherwise
   leave it. `.conf` already carries both.
-- `applyRouteProfileToVpnLink`: DNS entries get `/128` when they are IPv6
-  (today hardcoded `/32`).
+- `applyRouteProfileToVpnLink`: DNS entries already normalize to `/128` for
+  IPv6 via `normalizeCidrOrIp` (shipped in `packages/vpn-config`).
 - Docs: `docs/AGENT-HOST-SETUP.md` (if #140 is merged first, its "nodes have
   no IPv6, routes are a blackhole" paragraph becomes per-node), `docs/NODE-CONNECT.md`,
   `docs/DEPLOY-UPDATE.md`, `infra/node/README.md`.
