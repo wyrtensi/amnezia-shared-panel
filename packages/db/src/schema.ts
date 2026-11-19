@@ -575,9 +575,14 @@ export const nodeVpnEndpoints = pgTable(
     address: text("address").notNull(),
     name: varchar("name", { length: 120 }).notNull(),
     enabled: boolean("enabled").default(true).notNull(),
+    reachabilityEnabled: boolean("reachability_enabled").default(true).notNull(),
     revision: integer("revision").default(0).notNull(),
     probeStatus: serviceCheckStatusEnum("probe_status"),
+    probeLevels: jsonb("probe_levels").$type<Record<string, unknown>>(),
     probeCheckedAt: timestamp("probe_checked_at", { withTimezone: true }),
+    probeConsecutiveFailures: integer("probe_consecutive_failures").default(0).notNull(),
+    probeFailingSince: timestamp("probe_failing_since", { withTimezone: true }),
+    probeAlertedAt: timestamp("probe_alerted_at", { withTimezone: true }),
     probeDetail: varchar("probe_detail", { length: 300 }),
   },
   (table) => [
@@ -1105,6 +1110,10 @@ export const portalPolicy = pgTable(
     // Nodes offered to users; null = all nodes. A per-user override lives in
     // policyOverride.allowedNodeIds.
     allowedNodeIds: jsonb("allowed_node_ids").$type<string[]>(),
+    // Individual node endpoints (IPs) offered to users; null = all enabled
+    // endpoints on allowed nodes. Per-user override lives in
+    // policyOverride.allowedEndpointIds.
+    allowedEndpointIds: jsonb("allowed_endpoint_ids").$type<string[]>(),
     // Nodes badged as recommended for users. A HIGHLIGHT ONLY: it never
     // changes the order. Global-only (no per-user override); validated against
     // existing nodes on write, required to be a prefix of node_order, and
@@ -1118,6 +1127,14 @@ export const portalPolicy = pgTable(
     // from it sort after every node that is in it (by name, then by id).
     // Global-only, same validation and scrubbing as above.
     nodeOrder: jsonb("node_order").$type<string[]>().default([]).notNull(),
+    // Per-endpoint (individual IP) server order and recommended prefix.
+    // Entries are node_vpn_endpoints.id UUIDs (or fallback node.id UUIDs for
+    // nodes without endpoint rows). Global-only.
+    endpointOrder: jsonb("endpoint_order").$type<string[]>().default([]).notNull(),
+    recommendedEndpointIds: jsonb("recommended_endpoint_ids")
+      .$type<string[]>()
+      .default([])
+      .notNull(),
     allowRouteProfileSelection: boolean("allow_route_profile_selection")
       .default(true)
       .notNull(),

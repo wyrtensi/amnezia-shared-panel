@@ -25,6 +25,7 @@ export type BridgePath = {
 type DirectEndpoint = {
   id: string;
   address: string;
+  name?: string;
   checkedAt: Date | null;
   /** The original direct AWG 3.1 artifact already uses this exact address. */
   reusesNodeTarget: boolean;
@@ -120,7 +121,10 @@ export type ProtocolOutcome = {
 export type DirectEndpointOutcome = {
   endpointId: string;
   status: ReachabilityStatus;
+  levels: ProbeLevels | null;
   detail: string | null;
+  reusesNodeTarget: boolean;
+  isBridged: boolean;
 };
 
 export type Notice = { dedupKey: string; text: string };
@@ -320,8 +324,15 @@ export const ingestRun = (input: IngestInput): IngestOutput => {
       // No result also covers targets that had to wait for a free slot in
       // the run. Leave their saved observation and its original time alone.
       if (matchesDirectEndpoint(result, endpoint.address)) {
-        const { status, detail } = classifyTarget(target, result, input.controlOk);
-        endpointOutcomes.push({ endpointId: endpoint.id, status, detail });
+        const { status, levels, detail } = classifyTarget(target, result, input.controlOk);
+        endpointOutcomes.push({
+          endpointId: endpoint.id,
+          status,
+          levels,
+          detail,
+          reusesNodeTarget: endpoint.reusesNodeTarget,
+          isBridged: target.bridgePath !== null,
+        });
         if (status === "ok" && target.bridgePath === null) healthyDirectEndpoint = true;
       }
     }

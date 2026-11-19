@@ -214,8 +214,7 @@ export function CreateKeyWizard({
 
   const selectedNode = nodes.find((node) => node.id === nodeId) ?? nodes[0];
   const endpoints = selectedNode?.publicEndpoints ?? [];
-  const hasAlternativeAddress = endpoints.some((item) => item.ordinal > 1);
-  const canPickEndpoint = me.policy.allowNodeSelection && protocol === "awg3" && hasAlternativeAddress;
+  const canPickEndpoint = me.policy.allowNodeSelection && protocol === "awg3" && endpoints.length > 1;
   const endpoint = canPickEndpoint
     ? endpoints.find((item) => item.id === endpointId)
     : undefined;
@@ -241,7 +240,7 @@ export function CreateKeyWizard({
   // the same composer the control API uses. The number is an estimate — the real
   // one is assigned when the key is provisioned.
   const previewName = composeKeyDisplayName({
-    serverName: endpoint?.name ?? selectedNode?.name ?? "",
+    serverName: endpoint?.name ?? endpoints[0]?.name ?? selectedNode?.name ?? "",
     label: deviceLabel.trim(),
     keyNumber: existingNames.length + 1,
     display: nameDisplay,

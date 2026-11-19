@@ -441,8 +441,13 @@ export const parsePolicyNodeList = (spec: string): string[] => {
   return csvList(trimmed);
 };
 
-// Lists whose empty value means "no node", not "every node".
-const EMPTY_MEANS_NONE = new Set(["recommendedNodeIds", "nodeOrder"]);
+// Lists whose empty value means "no node/endpoint", not "every node".
+const EMPTY_MEANS_NONE = new Set([
+  "recommendedNodeIds",
+  "nodeOrder",
+  "recommendedEndpointIds",
+  "endpointOrder",
+]);
 
 /** True for one of the worker periods stored on portal_policy. */
 export const isWorkerPeriodField = (key: string): key is WorkerPeriodField =>

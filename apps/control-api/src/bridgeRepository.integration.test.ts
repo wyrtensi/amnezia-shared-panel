@@ -337,6 +337,79 @@ describe("bridge registry (real PostgreSQL)", () => {
     expect(readCopies(redownload, decodeVpnLink).line("Endpoint")).toBe(`${secondary}:443`);
   });
 
+  runDatabaseTest("supports disabling primary IP when backup exists, per-IP reachability toggle, and per-IP policy order/availability", async () => {
+    const nodeId = await seedNode("policy-endpoints");
+    const primary = nextIpv4();
+    const secondary = nextIpv4();
+    await db().update(nodes).set({ name: "Edge", publicIp: primary }).where(eq(nodes.id, nodeId));
+    await repository.updateNode(admin, nodeId, {
+      publicEndpoint: { action: "add", address: secondary, name: "Edge Backup" },
+    });
+    const endpoints = await db().select().from(nodeVpnEndpoints)
+      .where(eq(nodeVpnEndpoints.nodeId, nodeId)).orderBy(nodeVpnEndpoints.ordinal);
+    const [ep1, ep2] = endpoints;
+    expect(ep1).toBeDefined();
+    expect(ep2).toBeDefined();
+
+    // Toggling reachability off on ep2 persists and clears open incident state.
+    await db().update(nodeVpnEndpoints).set({
+      probeConsecutiveFailures: 3,
+      probeFailingSince: new Date(),
+      probeAlertedAt: new Date(),
+    }).where(eq(nodeVpnEndpoints.id, ep2!.id));
+    await repository.updateNode(admin, nodeId, {
+      publicEndpoint: { action: "update", id: ep2!.id, reachabilityEnabled: false },
+    });
+    const [updatedEp2] = await db().select().from(nodeVpnEndpoints).where(eq(nodeVpnEndpoints.id, ep2!.id));
+    expect(updatedEp2?.reachabilityEnabled).toBe(false);
+    expect(updatedEp2?.probeAlertedAt).toBeNull();
+    expect(updatedEp2?.probeConsecutiveFailures).toBe(0);
+
+    // Primary (ordinal 1) can be disabled while ep2 is enabled, but disabling
+    // the sole remaining enabled IP is rejected with LAST_ENABLED_ENDPOINT_REQUIRED.
+    await repository.updateNode(admin, nodeId, {
+      publicEndpoint: { action: "update", id: ep1!.id, enabled: false },
+    });
+    expect(await failureOf(repository.updateNode(admin, nodeId, {
+      publicEndpoint: { action: "update", id: ep2!.id, enabled: false },
+    }))).toMatchObject({ statusCode: 409, code: "LAST_ENABLED_ENDPOINT_REQUIRED" });
+    await repository.updateNode(admin, nodeId, {
+      publicEndpoint: { action: "update", id: ep1!.id, enabled: true },
+    });
+
+    // Global per-IP order, recommendation, and allowlist control user visibility.
+    try {
+      await repository.adminAction(admin, "portal-policy", "global", "update", {
+        endpointOrder: [ep2!.id, ep1!.id],
+        recommendedEndpointIds: [ep2!.id],
+        allowedEndpointIds: [ep2!.id],
+      });
+      const listed = (await repository.listNodes(admin)).find(
+        (item) => (item as { id: string }).id === nodeId,
+      ) as { name: string; recommended?: boolean; publicEndpoints?: Array<{ id: string; name: string; recommended?: boolean }> } | undefined;
+      expect(listed?.name).toBe("Edge Backup");
+      expect(listed?.recommended).toBe(true);
+      expect(listed?.publicEndpoints).toEqual([
+        expect.objectContaining({ id: ep2!.id, name: "Edge Backup", recommended: true }),
+      ]);
+      // Disallowed primary IP cannot be explicitly chosen when creating a key.
+      expect(await failureOf(repository.createProvisioningKey(admin, {
+        nodeId,
+        endpointId: ep1!.id,
+        protocol: "awg3",
+        deviceType: "unspecified",
+        routeProfile: "full_tunnel",
+        nameDisplay: { server: true, label: false, number: false },
+      }))).toMatchObject({ statusCode: 403, code: "NODE_NOT_ALLOWED" });
+    } finally {
+      await repository.adminAction(admin, "portal-policy", "global", "update", {
+        endpointOrder: [],
+        recommendedEndpointIds: [],
+        allowedEndpointIds: null,
+      });
+    }
+  });
+
   runDatabaseTest("registers a bridge with normalized settings and refuses a duplicate IPv4", async () => {
     const bridge = await createBridge();
     expect(bridge).toMatchObject({

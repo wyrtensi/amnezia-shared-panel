@@ -569,10 +569,15 @@ provides a per-node **IPv6 Reject (ULA)** switch backed by `PUT /api/admin/nodes
   not collide with a future dual-stack migration). Peer ULAs are derived
   deterministically from each peer's AWG 3.1 IPv4 lease (`10.90.0.N` → `::N/128`).
 - **Prerequisite:** the node must run the updated `node-agent` and an `amnezia-awg3`
-  container started with the `net.ipv6.conf.{all,default}.disable_ipv6=0` and
-  `net.ipv6.conf.all.forwarding=1` sysctls in `infra/node/compose.yaml`. Existing
-  containers without those sysctls report `unsupported` (`ipv6_forwarding_disabled`)
-  and remain untouched until the operator recreates `awg3`.
+  container whose network namespace has `net.ipv6.conf.{all,default}.disable_ipv6=0`
+  and `net.ipv6.conf.all.forwarding=1`. `infra/node/compose.yaml` declares those
+  sysctls for future recreates, and starting with `node-agent` `1.1.22` the
+  host-side `scripts/agent-update.sh` also reconciles untouched `scripts/awg3-entrypoint.sh`
+  / `scripts/agent-update.sh` and applies those IPv6 sysctls live inside the running
+  `amnezia-awg3` netns via `nsenter` with zero tunnel downtime and no AWG container
+  restart. Existing containers without those sysctls report `unsupported`
+  (`ipv6_forwarding_disabled`) until `agent-update.sh` applies them live (or the
+  operator recreates `awg3`).
 - **Smooth transitions (zero IPv4 drop):**
   - **OFF → ON:** installs `<prefix>::1/64` on `awg0` and `ip -6 route replace prohibit 2000::/3`,
     updates active peers in `awg0.conf` via `awg syncconf`, and persists `/opt/amnezia/awg/ipv6-reject-stub.env`

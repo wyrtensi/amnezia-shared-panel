@@ -1213,14 +1213,58 @@ describe("reachability probe commands", () => {
   it("shows external, management, route and direct path verdicts separately", async () => {
     stubFetch([{ body: {
       ...view,
-      nodes: [{ ...view.nodes[0], directStatus: "ok", directCheckedAt: bridge.probeCheckedAt }],
+      nodes: [{
+        ...view.nodes[0],
+        directStatus: "ok",
+        directCheckedAt: bridge.probeCheckedAt,
+        publicEndpoints: [{
+          id: "44444444-4444-4444-8444-444444444444",
+          ordinal: 1,
+          name: "Edge-2",
+          publicAddress: "192.0.2.99",
+          enabled: true,
+          reachabilityEnabled: true,
+          probeStatus: "failed",
+          probeLevels: {
+            ping: { ok: true, latencyMs: 12, detail: null },
+            tcp: { ok: false, latencyMs: null, detail: null },
+            handshake: { ok: false, latencyMs: null, detail: null },
+            http: { ok: null, latencyMs: null, detail: null },
+          },
+          probeCheckedAt: bridge.probeCheckedAt,
+          probeFailingSince: "2026-01-01T09:00:00.000Z",
+          probeConsecutiveFailures: 2,
+          incidentOpen: true,
+          probeDetail: "no handshake",
+          reachability: { state: "blocked", since: "2026-01-01T09:00:00.000Z" },
+        }],
+      }],
       bridges: [bridge],
     } }]);
     const out = await run(["probe-results"]);
+    expect(out).toContain("endpoint Edge-2 (192.0.2.99): UNAVAILABLE (incident) [ping:ok tcp:fail hs:fail http:—]");
     expect(out).toContain("node-a direct path: available");
     expect(out).toContain("management: ok");
     expect(out).toContain("external probe: UNAVAILABLE");
     expect(out).toContain("node-a:41000 frpc: online");
+  });
+
+  it("node-update --endpoint-reachability patches per-IP reachability", async () => {
+    const calls = stubFetch([{ body: {} }]);
+    await run([
+      "node-update",
+      "11111111-1111-4111-8111-111111111111",
+      "--endpoint-id=44444444-4444-4444-8444-444444444444",
+      "--endpoint-reachability=false",
+    ]);
+    expect(calls[0]?.init?.method).toBe("PATCH");
+    expect(JSON.parse(calls[0]?.init?.body as string)).toEqual({
+      publicEndpoint: {
+        action: "update",
+        id: "44444444-4444-4444-8444-444444444444",
+        reachabilityEnabled: false,
+      },
+    });
   });
 
   it("reads and changes bridge reachability alerts", async () => {

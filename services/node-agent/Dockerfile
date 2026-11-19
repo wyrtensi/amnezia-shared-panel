@@ -54,6 +54,7 @@ COPY package.json ./
 # context; .github/workflows/release-node-agent.yml and
 # infra/node/scripts/build-node-agent.sh both pass it.
 COPY --from=deploy compose.yaml /opt/node-agent/deploy/
+COPY --from=deploy scripts/awg3-entrypoint.sh scripts/agent-update.sh /opt/node-agent/deploy/scripts/
 
 EXPOSE 4001
 

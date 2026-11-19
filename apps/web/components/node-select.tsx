@@ -14,7 +14,12 @@ export function NodeSelect({
   value,
   onChange,
 }: {
-  nodes: Array<{ id: string; name: string }>;
+  nodes: Array<{
+    id: string;
+    name: string;
+    address?: string | null;
+    enabled?: boolean;
+  }>;
   value: string[] | null;
   onChange: (next: string[] | null) => void;
 }) {
@@ -55,11 +60,12 @@ export function NodeSelect({
                     active
                       ? "border-primary bg-primary/10 text-primary"
                       : "border-border text-muted-foreground hover:bg-accent",
+                    node.enabled === false && "opacity-70",
                   )}
                 >
                   <span
                     className={cn(
-                      "flex size-3.5 items-center justify-center rounded-[4px] border",
+                      "flex size-3.5 shrink-0 items-center justify-center rounded-[4px] border",
                       active
                         ? "border-primary bg-primary text-primary-foreground"
                         : "border-muted-foreground/40",
@@ -67,7 +73,17 @@ export function NodeSelect({
                   >
                     {active ? <Check className="size-2.5" /> : null}
                   </span>
-                  {node.name}
+                  <span>{node.name}</span>
+                  {node.address ? (
+                    <code className="font-mono text-[11px] font-normal opacity-75">
+                      {node.address}
+                    </code>
+                  ) : null}
+                  {node.enabled === false ? (
+                    <span className="text-[11px] font-normal opacity-75">
+                      ({t("nodes.endpointDisabled").toLowerCase()})
+                    </span>
+                  ) : null}
                 </button>
               );
             })}

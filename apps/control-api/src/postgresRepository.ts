@@ -297,6 +297,8 @@ const adminPolicyUpdateSchema = portalPolicySchema.partial().extend({
   // portalPolicySchema is what stops them being overridable per user.
   recommendedNodeIds: recommendedNodeIdsSchema.optional(),
   nodeOrder: nodeOrderSchema.optional(),
+  recommendedEndpointIds: recommendedNodeIdsSchema.optional(),
+  endpointOrder: nodeOrderSchema.optional(),
   // Every background period the worker runs on, global-only for the same
   // reason: how often the panel talks to a node is a property of the
   // deployment, not of whoever is looking at it. Each is nullable — null hands
@@ -387,6 +389,7 @@ const toPolicy = (row: PortalPolicyRow | undefined): PortalPolicy =>
             ? row.allowedProtocols
             : DEFAULT_ALLOWED_PROTOCOLS,
         allowedNodeIds: row.allowedNodeIds ?? null,
+        allowedEndpointIds: row.allowedEndpointIds ?? null,
         // Whether a key limit is per server or one shared pool. This list is
         // explicit, so a column missing from it never reaches
         // resolvePortalPolicy and the feature would silently read as its
@@ -1079,7 +1082,10 @@ export class PostgresControlRepository implements ControlRepository {
     const now = new Date();
     for (const { endpoint, checksEnabled, activeRoute } of rows) {
       const checkedAt = endpoint.probeCheckedAt;
-      const canUseProbe = checksEnabled && endpoint.enabled &&
+      const canUseProbe =
+        checksEnabled &&
+        endpoint.enabled &&
+        endpoint.reachabilityEnabled &&
         (activeRoute === null || probe?.probeDirectWhenBridged === true);
       const hasCurrentSample = probe?.enabled && checkedAt && checkedAt >= probe.enabledAt &&
         !isProbeStale({
@@ -1093,7 +1099,7 @@ export class PostgresControlRepository implements ControlRepository {
         ? {
             status: endpoint.probeStatus,
             checkedAt,
-            failingSince: null,
+            failingSince: endpoint.probeFailingSince ?? null,
           }
         : null;
       const reachability = toUserReachability({
@@ -1102,6 +1108,9 @@ export class PostgresControlRepository implements ControlRepository {
         state,
         now,
       });
+      const parsedLevels = endpoint.probeLevels
+        ? (probeLevelsSchema.safeParse(endpoint.probeLevels).data ?? null)
+        : null;
       const list = result.get(endpoint.nodeId) ?? [];
       list.push({
         id: endpoint.id,
@@ -1109,9 +1118,14 @@ export class PostgresControlRepository implements ControlRepository {
         name: endpoint.name,
         publicAddress: endpoint.address,
         enabled: endpoint.enabled,
+        reachabilityEnabled: endpoint.reachabilityEnabled,
         reachability,
         probeStatus: state?.status ?? null,
+        probeLevels: state ? parsedLevels : null,
         probeCheckedAt: state?.checkedAt.toISOString() ?? null,
+        probeFailingSince: state && endpoint.probeFailingSince ? endpoint.probeFailingSince.toISOString() : null,
+        probeConsecutiveFailures: endpoint.probeConsecutiveFailures,
+        incidentOpen: endpoint.probeAlertedAt !== null,
         probeDetail: state ? endpoint.probeDetail : null,
       });
       result.set(endpoint.nodeId, list);
@@ -1262,6 +1276,16 @@ export class PostgresControlRepository implements ControlRepository {
       }
     }
     const nodeOrder = policyRow[0]?.nodeOrder ?? [];
+    const endpointOrder = policyRow[0]?.endpointOrder ?? [];
+    const recommendedEndpointIds = new Set(policyRow[0]?.recommendedEndpointIds ?? []);
+    const endpointRank = new Map<string, number>();
+    endpointOrder.forEach((id, index) => {
+      if (!endpointRank.has(id)) endpointRank.set(id, index);
+    });
+    const allowedEndpoints =
+      policy.allowedEndpointIds !== null && policy.allowedEndpointIds !== undefined
+        ? new Set(policy.allowedEndpointIds)
+        : null;
     // A null/absent allowedNodeIds means "all nodes"; a list restricts to it.
     // The SELECT above has no ORDER BY and the worker rewrites node rows on
     // every telemetry poll, so the order is fixed here, on the name the user
@@ -1274,93 +1298,145 @@ export class PostgresControlRepository implements ControlRepository {
       policy.showNodeStatus ? this.loadUserReachability(availableIds) : null,
       this.loadNodePublicEndpoints(availableIds),
     ]);
-    return orderNodesForUsers(
-      available
-        .map(
-          ({
-            capabilities,
-            enabledProtocols,
-            publicName,
-            publicHost,
-            publicIp,
-            checksEnabled,
-            disabledCheckIds,
-            activeBridgeRouteId,
-            ...row
-          }) => {
-            const supportedProtocols = deriveSupportedProtocols(
-              row.protocol,
-              capabilities,
-            );
-            const selectableProtocols = computeSelectableProtocols(
-              supportedProtocols, enabledProtocols, policy.allowedProtocols,
-            );
-            // One address, and only behind the policy flag: the resolved IPv4 when
-            // the panel has one, else the host the node reported. The host/IP pair
-            // and the resolution timestamp are operator diagnostics and stay on the
-            // admin side, so publicHost/publicIp are destructured OUT of `...row`
-            // above — leaving them in would hand every user the raw pair
-            // regardless of the flag.
-            const publicAddress = policy.showNodeAddress
-              ? (publicIp ?? publicHost)
-              : null;
-            const endpoints = (publicEndpoints.get(row.id) ?? [])
-              .filter((endpoint) => endpoint.enabled)
-              .map(({ id, ordinal, name, publicAddress, reachability }) => ({
-                id,
-                ordinal,
-                name,
-                ...(policy.showNodeAddress ? { publicAddress } : {}),
-                ...(policy.showNodeStatus ? { reachability } : {}),
-              }));
-            return {
-              ...row,
-              // Users see the public name; the internal admin name never leaves here.
-              name: endpoints[0]?.name ?? publicName ?? row.name,
-              ...(selectableProtocols.includes("awg3") && endpoints.length > 0
-                ? { publicEndpoints: endpoints } : {}),
-              ...(reachability && policy.useBridge && activeBridgeRouteId &&
-                selectableProtocols.includes("awg3") && endpoints.length > 0
-                ? { bridgeReachability: reachability.get(row.id) ?? UNKNOWN_USER_REACHABILITY }
+    const userNodes = available.flatMap(
+      ({
+        capabilities,
+        enabledProtocols,
+        publicName,
+        publicHost,
+        publicIp,
+        checksEnabled,
+        disabledCheckIds,
+        activeBridgeRouteId,
+        ...row
+      }) => {
+        const supportedProtocols = deriveSupportedProtocols(
+          row.protocol,
+          capabilities,
+        );
+        const selectableProtocols = computeSelectableProtocols(
+          supportedProtocols, enabledProtocols, policy.allowedProtocols,
+        );
+        // One address, and only behind the policy flag: the resolved IPv4 when
+        // the panel has one, else the host the node reported. The host/IP pair
+        // and the resolution timestamp are operator diagnostics and stay on the
+        // admin side, so publicHost/publicIp are destructured OUT of `...row`
+        // above — leaving them in would hand every user the raw pair
+        // regardless of the flag.
+        const publicAddress = policy.showNodeAddress
+          ? (publicIp ?? publicHost)
+          : null;
+        const allEndpoints = publicEndpoints.get(row.id) ?? [];
+        const visibleEndpoints = allEndpoints
+          .filter(
+            (endpoint) =>
+              endpoint.enabled &&
+              (allowedEndpoints === null || allowedEndpoints.has(endpoint.id)),
+          )
+          .sort((a, b) => {
+            const ra = endpointRank.get(a.id) ?? Number.MAX_SAFE_INTEGER;
+            const rb = endpointRank.get(b.id) ?? Number.MAX_SAFE_INTEGER;
+            return ra - rb || a.ordinal - b.ordinal;
+          });
+        // If this node defines public endpoints and none are enabled & allowed
+        // for this user, hide the node unless the node itself was explicitly
+        // allowed via fallback node ID when it has no endpoints.
+        if (
+          (allEndpoints.length === 0 &&
+            allowedEndpoints !== null &&
+            !allowedEndpoints.has(row.id)) ||
+          (selectableProtocols.includes("awg3") &&
+            allEndpoints.length > 0 &&
+            visibleEndpoints.length === 0)
+        ) {
+          return [];
+        }
+        const endpoints = visibleEndpoints.map(
+          ({ id, ordinal, name, publicAddress, reachability }) => ({
+            id,
+            ordinal,
+            name,
+            ...(policy.showNodeAddress ? { publicAddress } : {}),
+            ...(recommendedEndpointIds.size > 0
+              ? { recommended: recommendedEndpointIds.has(id) }
+              : recommended.has(row.id)
+                ? { recommended: true }
                 : {}),
-              recommended: recommended.has(row.id),
-              // Spread conditionally rather than assigning `undefined`: there is no
-              // "unknown address" state on the user side, so the key must be truly
-              // absent — a user cannot fix a node's DNS, and a null would only
-              // invite the UI to render an empty line.
-              ...(publicAddress === null ? {} : { publicAddress }),
-              supportedProtocols,
-              selectableProtocols,
-              // The external probe's verdict, as three words and a time
-              // (`toUserReachability`). It is the one node state word a user
-              // gets, and it is deliberately not the panel's own health view
-              // (enabled/lastError/lastHealthAt): it answers "does the VPN
-              // work from outside", which a healthy node can fail.
-              ...(reachability
-                ? { reachability: reachability.get(row.id) ?? UNKNOWN_USER_REACHABILITY }
-                : {}),
-              // Only checks this node actually runs. A chip for one it has
-              // been taken out of would show a user a verdict that will never
-              // change again - worse than showing nothing, because it looks
-              // live. Destructured above so the two flags cannot leak into the
-              // user payload with the rest of the row.
-              ...(policy.showNodeStatus
-                ? {
-                    status: {
-                      checks: (checksByNode.get(row.id) ?? []).filter((chip) =>
-                        nodeRunsCheck(
-                          { checksEnabled, disabledCheckIds },
-                          chip.checkId,
-                        ),
-                      ).map(({ name, state }) => ({ name, state })),
-                    },
-                  }
-                : {}),
-            };
+            ...(policy.showNodeStatus ? { reachability } : {}),
+          }),
+        );
+        const nodeRecommended =
+          recommendedEndpointIds.size > 0
+            ? endpoints.some((endpoint) => endpoint.recommended) ||
+              recommendedEndpointIds.has(row.id)
+            : recommended.has(row.id);
+        return [
+          {
+            ...row,
+            // Users see the public name; the internal admin name never leaves here.
+            name: endpoints[0]?.name ?? publicName ?? row.name,
+            ...(selectableProtocols.includes("awg3") && endpoints.length > 0
+              ? { publicEndpoints: endpoints } : {}),
+            ...(reachability && policy.useBridge && activeBridgeRouteId &&
+              selectableProtocols.includes("awg3") && endpoints.length > 0
+              ? { bridgeReachability: reachability.get(row.id) ?? UNKNOWN_USER_REACHABILITY }
+              : {}),
+            recommended: nodeRecommended,
+            // Spread conditionally rather than assigning `undefined`: there is no
+            // "unknown address" state on the user side, so the key must be truly
+            // absent — a user cannot fix a node's DNS, and a null would only
+            // invite the UI to render an empty line.
+            ...(publicAddress === null ? {} : { publicAddress }),
+            supportedProtocols,
+            selectableProtocols,
+            // The external probe's verdict, as three words and a time
+            // (`toUserReachability`). It is the one node state word a user
+            // gets, and it is deliberately not the panel's own health view
+            // (enabled/lastError/lastHealthAt): it answers "does the VPN
+            // work from outside", which a healthy node can fail.
+            ...(reachability
+              ? { reachability: reachability.get(row.id) ?? UNKNOWN_USER_REACHABILITY }
+              : {}),
+            // Only checks this node actually runs. A chip for one it has
+            // been taken out of would show a user a verdict that will never
+            // change again - worse than showing nothing, because it looks
+            // live. Destructured above so the two flags cannot leak into the
+            // user payload with the rest of the row.
+            ...(policy.showNodeStatus
+              ? {
+                  status: {
+                    checks: (checksByNode.get(row.id) ?? []).filter((chip) =>
+                      nodeRunsCheck(
+                        { checksEnabled, disabledCheckIds },
+                        chip.checkId,
+                      ),
+                    ).map(({ name, state }) => ({ name, state })),
+                  },
+                }
+              : {}),
           },
-        ),
-      nodeOrder,
+        ];
+      },
     );
+    const derivedNodeOrder =
+      endpointOrder.length > 0
+        ? [
+            ...new Set([
+              ...endpointOrder
+                .map((id) => {
+                  const owner = userNodes.find(
+                    (node) =>
+                      node.id === id ||
+                      node.publicEndpoints?.some((ep) => ep.id === id),
+                  );
+                  return owner?.id;
+                })
+                .filter((id): id is string => Boolean(id)),
+              ...nodeOrder,
+            ]),
+          ]
+        : nodeOrder;
+    return orderNodesForUsers(userNodes, derivedNodeOrder);
   };
 
   createUser = async (
@@ -1576,17 +1652,40 @@ export class PostgresControlRepository implements ControlRepository {
       const match = and(eq(nodeVpnEndpoints.nodeId, nodeId), eq(nodeVpnEndpoints.id, request.id));
       const [current] = await tx.select().from(nodeVpnEndpoints).where(match);
       if (!current) throw new ApiError(404, "Address not found on this node", "NODE_ENDPOINT_NOT_FOUND");
-      if (current.ordinal === 1 && request.enabled === false) {
-        throw new ApiError(409, "The agent address remains available for legacy clients", "PRIMARY_ENDPOINT_REQUIRED");
+      if (request.enabled === false && current.enabled) {
+        const siblings = await tx
+          .select({ id: nodeVpnEndpoints.id })
+          .from(nodeVpnEndpoints)
+          .where(
+            and(
+              eq(nodeVpnEndpoints.nodeId, nodeId),
+              eq(nodeVpnEndpoints.enabled, true),
+            ),
+          );
+        if (siblings.filter((item) => item.id !== current.id).length === 0) {
+          throw new ApiError(
+            409,
+            "At least one public address must remain enabled on this node",
+            "LAST_ENABLED_ENDPOINT_REQUIRED",
+          );
+        }
       }
       const changeEnabled = request.enabled !== undefined && current.enabled !== request.enabled;
+      const changeReachability =
+        request.reachabilityEnabled !== undefined &&
+        current.reachabilityEnabled !== request.reachabilityEnabled;
+      const resetEvidence = changeEnabled || (changeReachability && request.reachabilityEnabled === false);
       [row] = await tx.update(nodeVpnEndpoints).set({
         name: request.name ?? current.name,
-        ...(changeEnabled ? {
-          enabled: request.enabled,
-          revision: current.revision + 1,
+        ...(changeEnabled ? { enabled: request.enabled, revision: current.revision + 1 } : {}),
+        ...(changeReachability ? { reachabilityEnabled: request.reachabilityEnabled } : {}),
+        ...(resetEvidence ? {
           probeStatus: null,
+          probeLevels: null,
           probeCheckedAt: null,
+          probeConsecutiveFailures: 0,
+          probeFailingSince: null,
+          probeAlertedAt: null,
           probeDetail: null,
         } : {}),
       }).where(match).returning();
@@ -1598,7 +1697,12 @@ export class PostgresControlRepository implements ControlRepository {
       action: request.action === "add" ? "node.endpoint_added" : "node.endpoint_updated",
       targetType: "node",
       targetId: nodeId,
-      metadata: { endpointId: row.id, ordinal: row.ordinal, enabled: row.enabled },
+      metadata: {
+        endpointId: row.id,
+        ordinal: row.ordinal,
+        enabled: row.enabled,
+        reachabilityEnabled: row.reachabilityEnabled,
+      },
     });
     return {
       id: row.id,
@@ -1606,6 +1710,7 @@ export class PostgresControlRepository implements ControlRepository {
       name: row.name,
       publicAddress: row.address,
       enabled: row.enabled,
+      reachabilityEnabled: row.reachabilityEnabled,
     };
   };
 
@@ -1872,10 +1977,22 @@ export class PostgresControlRepository implements ControlRepository {
       // this node from them. A stale id is harmless at read time, but it shows
       // a phantom row in the admin's order editor and makes the stored order
       // describe a fleet that no longer exists. Same transaction as the delete.
+      const nodeEndpointIds = new Set(
+        (
+          await tx
+            .select({ id: nodeVpnEndpoints.id })
+            .from(nodeVpnEndpoints)
+            .where(eq(nodeVpnEndpoints.nodeId, nodeId))
+        ).map((item) => item.id),
+      );
+      const removedIds = new Set([nodeId, ...nodeEndpointIds]);
       const [policyRow] = await tx
         .select({
           recommendedNodeIds: portalPolicy.recommendedNodeIds,
           nodeOrder: portalPolicy.nodeOrder,
+          allowedEndpointIds: portalPolicy.allowedEndpointIds,
+          endpointOrder: portalPolicy.endpointOrder,
+          recommendedEndpointIds: portalPolicy.recommendedEndpointIds,
         })
         .from(portalPolicy)
         .limit(1);
@@ -1884,19 +2001,28 @@ export class PostgresControlRepository implements ControlRepository {
       if (policyRow) {
         scrubbedFromRecommended = policyRow.recommendedNodeIds.includes(nodeId);
         scrubbedFromOrder = policyRow.nodeOrder.includes(nodeId);
-        if (scrubbedFromRecommended || scrubbedFromOrder) {
+        const scrubbedFromEndpointOrder = policyRow.endpointOrder.some((id) => removedIds.has(id));
+        const scrubbedFromEndpointRec = policyRow.recommendedEndpointIds.some((id) => removedIds.has(id));
+        const scrubbedFromAllowedEndpoints = (policyRow.allowedEndpointIds ?? []).some((id) => removedIds.has(id));
+        if (
+          scrubbedFromRecommended ||
+          scrubbedFromOrder ||
+          scrubbedFromEndpointOrder ||
+          scrubbedFromEndpointRec ||
+          scrubbedFromAllowedEndpoints
+        ) {
           await tx
             .update(portalPolicy)
             .set({
               recommendedNodeIds: policyRow.recommendedNodeIds.filter(
                 (id) => id !== nodeId,
               ),
-              // Removing an element shifts the rest up by one, which is exactly
-              // right: positions are relative, so the surviving order is kept.
-              // Filtering the same id out of both lists also preserves the
-              // "recommended must be a prefix of the order" invariant, so this
-              // path needs no reconciliation of its own.
               nodeOrder: policyRow.nodeOrder.filter((id) => id !== nodeId),
+              endpointOrder: policyRow.endpointOrder.filter((id) => !removedIds.has(id)),
+              recommendedEndpointIds: policyRow.recommendedEndpointIds.filter((id) => !removedIds.has(id)),
+              ...(policyRow.allowedEndpointIds !== null
+                ? { allowedEndpointIds: policyRow.allowedEndpointIds.filter((id) => !removedIds.has(id)) }
+                : {}),
               updatedAt: new Date(),
             })
             .where(eq(portalPolicy.id, true));
@@ -2198,15 +2324,66 @@ export class PostgresControlRepository implements ControlRepository {
         // memory, and never changes WHICH rows are locked. recommendedNodeIds
         // is deliberately not consulted: a badge does not promote a node here
         // any more than it does in listNodes.
+        const allowedEndpointSet =
+          policy.allowedEndpointIds !== null && policy.allowedEndpointIds !== undefined
+            ? new Set(policy.allowedEndpointIds)
+            : null;
+        const endpointOrder = globalPolicy?.endpointOrder ?? [];
+        const endpointRank = new Map<string, number>();
+        endpointOrder.forEach((id, index) => {
+          if (!endpointRank.has(id)) endpointRank.set(id, index);
+        });
+        const candidateEndpointRows =
+          candidateNodes.length > 0 && request.protocol === "awg3"
+            ? await tx
+                .select({
+                  id: nodeVpnEndpoints.id,
+                  nodeId: nodeVpnEndpoints.nodeId,
+                  ordinal: nodeVpnEndpoints.ordinal,
+                  enabled: nodeVpnEndpoints.enabled,
+                })
+                .from(nodeVpnEndpoints)
+                .where(
+                  inArray(
+                    nodeVpnEndpoints.nodeId,
+                    candidateNodes.map((node) => node.id),
+                  ),
+                )
+            : [];
+        const candidateEndpointsByNode = new Map<
+          string,
+          Array<{ id: string; ordinal: number; enabled: boolean }>
+        >();
+        for (const ep of candidateEndpointRows) {
+          const list = candidateEndpointsByNode.get(ep.nodeId) ?? [];
+          list.push(ep);
+          candidateEndpointsByNode.set(ep.nodeId, list);
+        }
+        const derivedOrder =
+          endpointOrder.length > 0
+            ? [
+                ...new Set([
+                  ...endpointOrder
+                    .map((id) => {
+                      const owner = candidateNodes.find(
+                        (node) =>
+                          node.id === id ||
+                          (candidateEndpointsByNode.get(node.id) ?? []).some(
+                            (ep) => ep.id === id,
+                          ),
+                      );
+                      return owner?.id;
+                    })
+                    .filter((id): id is string => Boolean(id)),
+                  ...(globalPolicy?.nodeOrder ?? []),
+                ]),
+              ]
+            : (globalPolicy?.nodeOrder ?? []);
         const orderedCandidates = orderNodesForUsers(
           candidateNodes,
-          globalPolicy?.nodeOrder ?? [],
+          derivedOrder,
         );
         let selectedNode: (typeof candidateNodes)[number] | undefined;
-        // Track why candidates were rejected, so the error is accurate. All
-        // constraints (availability, protocol, per-user quota, capacity) are
-        // evaluated INSIDE the loop so the search can fall through to another
-        // node that satisfies them — never rejected after picking the first.
         let userQuotaBlocked = false;
         let nodeCapacityBlocked = false;
         let protocolBlocked = false;
@@ -2214,6 +2391,22 @@ export class PostgresControlRepository implements ControlRepository {
         for (const candidate of orderedCandidates) {
           // Node availability (global default or per-user override).
           if (!isNodeAvailable(policy.allowedNodeIds, candidate.id)) {
+            availabilityBlocked = true;
+            continue;
+          }
+          const candidateEndpoints = candidateEndpointsByNode.get(candidate.id) ?? [];
+          if (
+            (candidateEndpoints.length === 0 &&
+              allowedEndpointSet !== null &&
+              !allowedEndpointSet.has(candidate.id)) ||
+            (request.protocol === "awg3" &&
+              candidateEndpoints.length > 0 &&
+              !candidateEndpoints.some(
+                (ep) =>
+                  ep.enabled &&
+                  (allowedEndpointSet === null || allowedEndpointSet.has(ep.id)),
+              ))
+          ) {
             availabilityBlocked = true;
             continue;
           }
@@ -2310,7 +2503,29 @@ export class PostgresControlRepository implements ControlRepository {
           if (!endpoint) {
             throw new ApiError(409, "Selected address is unavailable on this node", "NODE_ENDPOINT_UNAVAILABLE");
           }
+          if (allowedEndpointSet !== null && !allowedEndpointSet.has(endpoint.id)) {
+            throw new ApiError(403, "Selected address is not permitted", "NODE_NOT_ALLOWED");
+          }
           endpointId = endpoint.id;
+        } else if (request.protocol === "awg3") {
+          const nodeEndpoints = candidateEndpointsByNode.get(selectedNode.id) ?? [];
+          if (nodeEndpoints.length > 0) {
+            const eligible = nodeEndpoints
+              .filter(
+                (ep) =>
+                  ep.enabled &&
+                  (allowedEndpointSet === null || allowedEndpointSet.has(ep.id)),
+              )
+              .sort((a, b) => {
+                const ra = endpointRank.get(a.id) ?? Number.MAX_SAFE_INTEGER;
+                const rb = endpointRank.get(b.id) ?? Number.MAX_SAFE_INTEGER;
+                return ra - rb || a.ordinal - b.ordinal;
+              });
+            const preferred = eligible[0];
+            if (preferred && preferred.ordinal !== 1) {
+              endpointId = preferred.id;
+            }
+          }
         }
         let vpnBridgeRouteId: string | null = null;
         if (bridgeMode === "route") {
@@ -3642,6 +3857,14 @@ export class PostgresControlRepository implements ControlRepository {
               ...policyRow.nodeOrder,
             ]),
           ];
+          const referencedEndpoints = [
+            ...new Set([
+              ...policyRow.recommendedEndpointIds,
+              ...policyRow.endpointOrder,
+              ...(policyRow.allowedEndpointIds ?? []),
+            ]),
+          ];
+          let nextRow = policyRow;
           if (referenced.length > 0) {
             const known = new Set(
               (
@@ -3652,18 +3875,40 @@ export class PostgresControlRepository implements ControlRepository {
               ).map((row) => row.id),
             );
             if (known.size !== referenced.length) {
-              return [
-                stripPolicySecrets({
-                  ...policyRow,
-                  recommendedNodeIds: policyRow.recommendedNodeIds.filter(
-                    (id) => known.has(id),
-                  ),
-                  nodeOrder: policyRow.nodeOrder.filter((id) => known.has(id)),
-                }),
-              ];
+              nextRow = {
+                ...nextRow,
+                recommendedNodeIds: nextRow.recommendedNodeIds.filter((id) => known.has(id)),
+                nodeOrder: nextRow.nodeOrder.filter((id) => known.has(id)),
+              };
             }
           }
-          return [stripPolicySecrets(policyRow)];
+          if (referencedEndpoints.length > 0) {
+            const [knownNodes, knownEndpoints] = await Promise.all([
+              this.options.db
+                .select({ id: nodes.id })
+                .from(nodes)
+                .where(inArray(nodes.id, referencedEndpoints)),
+              this.options.db
+                .select({ id: nodeVpnEndpoints.id })
+                .from(nodeVpnEndpoints)
+                .where(inArray(nodeVpnEndpoints.id, referencedEndpoints)),
+            ]);
+            const knownTargets = new Set([
+              ...knownNodes.map((row) => row.id),
+              ...knownEndpoints.map((row) => row.id),
+            ]);
+            if (knownTargets.size !== referencedEndpoints.length) {
+              nextRow = {
+                ...nextRow,
+                recommendedEndpointIds: nextRow.recommendedEndpointIds.filter((id) => knownTargets.has(id)),
+                endpointOrder: nextRow.endpointOrder.filter((id) => knownTargets.has(id)),
+                ...(nextRow.allowedEndpointIds !== null
+                  ? { allowedEndpointIds: nextRow.allowedEndpointIds.filter((id) => knownTargets.has(id)) }
+                  : {}),
+              };
+            }
+          }
+          return [stripPolicySecrets(nextRow)];
         }
         // Fresh install with no row yet: report exactly the contract defaults so
         // the UI cannot show a setting the API would apply differently.
@@ -3672,8 +3917,11 @@ export class PostgresControlRepository implements ControlRepository {
             id: true,
             ...defaultPortalPolicy,
             allowedNodeIds: defaultPortalPolicy.allowedNodeIds ?? null,
+            allowedEndpointIds: defaultPortalPolicy.allowedEndpointIds ?? null,
             recommendedNodeIds: [] as string[],
             nodeOrder: [] as string[],
+            recommendedEndpointIds: [] as string[],
+            endpointOrder: [] as string[],
             defaultKeyLimit: 5,
             dailyRetentionDays: 730,
             cfAccessAccountId: null,
@@ -4676,6 +4924,26 @@ export class PostgresControlRepository implements ControlRepository {
             throw new ApiError(400, "Unknown node id", "NODE_NOT_FOUND");
           }
         }
+        const referencedEndpointIds = [...new Set(parsed.allowedEndpointIds ?? [])];
+        if (referencedEndpointIds.length > 0) {
+          const [knownNodes, knownEndpoints] = await Promise.all([
+            tx
+              .select({ id: nodes.id })
+              .from(nodes)
+              .where(inArray(nodes.id, referencedEndpointIds)),
+            tx
+              .select({ id: nodeVpnEndpoints.id })
+              .from(nodeVpnEndpoints)
+              .where(inArray(nodeVpnEndpoints.id, referencedEndpointIds)),
+          ]);
+          const knownTargetIds = new Set([
+            ...knownNodes.map((row) => row.id),
+            ...knownEndpoints.map((row) => row.id),
+          ]);
+          if (knownTargetIds.size !== referencedEndpointIds.length) {
+            throw new ApiError(400, "Unknown endpoint id", "NODE_ENDPOINT_NOT_FOUND");
+          }
+        }
         const changes: Partial<typeof users.$inferInsert> = {
           keyLimitOverride: parsed.keyLimitOverride,
           updatedAt: new Date(),
@@ -4690,6 +4958,7 @@ export class PostgresControlRepository implements ControlRepository {
         }
         if (
           parsed.allowedNodeIds !== undefined ||
+          parsed.allowedEndpointIds !== undefined ||
           parsed.keyLimitMode !== undefined
         ) {
           // Merge into the existing per-user policy override instead of
@@ -4700,6 +4969,12 @@ export class PostgresControlRepository implements ControlRepository {
             delete merged.allowedNodeIds;
             if (parsed.allowedNodeIds !== null) {
               merged.allowedNodeIds = parsed.allowedNodeIds;
+            }
+          }
+          if (parsed.allowedEndpointIds !== undefined) {
+            delete merged.allowedEndpointIds;
+            if (parsed.allowedEndpointIds !== null) {
+              merged.allowedEndpointIds = parsed.allowedEndpointIds;
             }
           }
           if (parsed.keyLimitMode !== undefined) {
@@ -4723,6 +4998,7 @@ export class PostgresControlRepository implements ControlRepository {
           });
         if (!updated) throw new ApiError(404, "User not found", "USER_NOT_FOUND");
         const allowedNodeIds = updated.policyOverride?.allowedNodeIds ?? null;
+        const allowedEndpointIds = updated.policyOverride?.allowedEndpointIds ?? null;
         // Null means "inherit the global mode", which is what an absent
         // override key means everywhere else in this codebase.
         const keyLimitMode = updated.policyOverride?.keyLimitMode ?? null;
@@ -4737,6 +5013,8 @@ export class PostgresControlRepository implements ControlRepository {
             keyLimitOverride: updated.keyLimitOverride,
             nodeKeyLimitCount: Object.keys(updated.nodeKeyLimits ?? {}).length,
             allowedNodeCount: allowedNodeIds === null ? null : allowedNodeIds.length,
+            allowedEndpointCount:
+              allowedEndpointIds === null ? null : allowedEndpointIds.length,
             keyLimitMode,
           },
         });
@@ -4745,6 +5023,7 @@ export class PostgresControlRepository implements ControlRepository {
           keyLimitOverride: updated.keyLimitOverride,
           nodeKeyLimits: updated.nodeKeyLimits ?? null,
           allowedNodeIds,
+          allowedEndpointIds,
           keyLimitMode,
         };
       });
@@ -5100,7 +5379,14 @@ export class PostgresControlRepository implements ControlRepository {
       const provided = Object.fromEntries(
         Object.entries(parsed).filter(([field]) => named.has(field)),
       ) as typeof parsed;
-      const { cfApiToken, recommendedNodeIds, nodeOrder, ...rest } = provided;
+      const {
+        cfApiToken,
+        recommendedNodeIds,
+        nodeOrder,
+        recommendedEndpointIds,
+        endpointOrder,
+        ...rest
+      } = provided;
       const changes: Partial<typeof portalPolicy.$inferInsert> = { ...rest };
       if (cfApiToken) {
         const encrypted = encryptSecret(
@@ -5122,6 +5408,21 @@ export class PostgresControlRepository implements ControlRepository {
           : dedupeNodeIds(recommendedNodeIds);
       const order =
         nodeOrder === undefined ? undefined : dedupeNodeIds(nodeOrder);
+      const recommendedEndpoints =
+        recommendedEndpointIds === undefined
+          ? undefined
+          : dedupeNodeIds(recommendedEndpointIds);
+      const epOrder =
+        endpointOrder === undefined ? undefined : dedupeNodeIds(endpointOrder);
+      const allowedEndpoints =
+        named.has("allowedEndpointIds")
+          ? provided.allowedEndpointIds === null || provided.allowedEndpointIds === undefined
+            ? null
+            : dedupeNodeIds(provided.allowedEndpointIds)
+          : undefined;
+      if (allowedEndpoints !== undefined) {
+        changes.allowedEndpointIds = allowedEndpoints;
+      }
       // The sync connects to Cloudflare with these fields; nothing else about
       // the policy is visible to it, so only naming one of them re-arms it.
       const touchesAccessConfig = CF_ACCESS_CONFIG_FIELDS.some((field) =>
@@ -5157,6 +5458,32 @@ export class PostgresControlRepository implements ControlRepository {
             .where(inArray(nodes.id, referenced));
           if (known.length !== referenced.length) {
             throw new ApiError(400, "Unknown node id", "NODE_NOT_FOUND");
+          }
+        }
+        const referencedEndpoints = [
+          ...new Set([
+            ...(recommendedEndpoints ?? []),
+            ...(epOrder ?? []),
+            ...(allowedEndpoints ?? []),
+          ]),
+        ];
+        if (referencedEndpoints.length > 0) {
+          const [knownNodes, knownEndpoints] = await Promise.all([
+            tx
+              .select({ id: nodes.id })
+              .from(nodes)
+              .where(inArray(nodes.id, referencedEndpoints)),
+            tx
+              .select({ id: nodeVpnEndpoints.id })
+              .from(nodeVpnEndpoints)
+              .where(inArray(nodeVpnEndpoints.id, referencedEndpoints)),
+          ]);
+          const knownTargets = new Set([
+            ...knownNodes.map((row) => row.id),
+            ...knownEndpoints.map((row) => row.id),
+          ]);
+          if (knownTargets.size !== referencedEndpoints.length) {
+            throw new ApiError(400, "Unknown endpoint id", "NODE_ENDPOINT_NOT_FOUND");
           }
         }
         // A sample period below the telemetry poll period is not a faster
@@ -5239,6 +5566,35 @@ export class PostgresControlRepository implements ControlRepository {
           // still describes the change honestly as a nodeOrder edit.
           if (recommended !== undefined || check.canonical.length > 0) {
             changes.recommendedNodeIds = check.canonical;
+          }
+        }
+        if (epOrder) changes.endpointOrder = epOrder;
+        if (recommendedEndpoints !== undefined || epOrder !== undefined) {
+          const [stored] = await tx
+            .select({
+              recommendedEndpointIds: portalPolicy.recommendedEndpointIds,
+              endpointOrder: portalPolicy.endpointOrder,
+            })
+            .from(portalPolicy)
+            .limit(1);
+          const effectiveRecommended =
+            recommendedEndpoints ?? stored?.recommendedEndpointIds ?? [];
+          const effectiveOrder = epOrder ?? stored?.endpointOrder ?? [];
+          const check = checkRecommendedPrefix(
+            effectiveRecommended,
+            effectiveOrder,
+          );
+          if (!check.ok) {
+            throw new ApiError(
+              400,
+              check.reason === "unpositioned"
+                ? `Endpoint ${check.nodeId} cannot be recommended: it has no place in the server order. Only servers at the top of the order can be recommended.`
+                : `Endpoint ${check.nodeId} cannot be recommended: it is at position ${check.position} of the server order, behind servers that are not recommended. Only servers at the top of the order can be recommended.`,
+              "RECOMMENDED_NOT_PREFIX",
+            );
+          }
+          if (recommendedEndpoints !== undefined || check.canonical.length > 0) {
+            changes.recommendedEndpointIds = check.canonical;
           }
         }
         const [updated] = await tx

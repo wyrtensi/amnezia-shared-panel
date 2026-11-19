@@ -121,6 +121,7 @@ import type { AdminNodeEndpoint, AdminReachabilityView, KeyBridgeInfo } from "@a
 import {
   bridgeReachabilityLines,
   buildProbeUpsert,
+  endpointReachabilityLines,
   probeSummaryLines,
   REACHABILITY_COLUMNS,
   reachabilityLabel,
@@ -897,8 +898,11 @@ async function cmdNodes(args: string[]): Promise<void> {
         address: address.publicAddress,
         id: address.id,
         status: address.enabled ? (address.reachability?.state ?? "unknown") : "disabled",
+        probe: address.reachabilityEnabled === false
+          ? "off"
+          : `${address.probeStatus ?? "—"}${address.incidentOpen ? " (incident)" : ""}`,
       })),
-    ), ["node", "name", "address", "id", "status"]));
+    ), ["node", "name", "address", "id", "status", "probe"]));
     return;
   }
   // The list users actually see: the admin's stored order first, then the
@@ -1038,6 +1042,10 @@ async function cmdUserLimit(args: string[]): Promise<void> {
   if (allowedNodesFlag !== undefined) {
     body.allowedNodeIds = parseNodeSpec(allowedNodesFlag);
   }
+  const allowedEndpointsFlag = flagOf(args, "allowed-endpoints");
+  if (allowedEndpointsFlag !== undefined) {
+    body.allowedEndpointIds = parseNodeSpec(allowedEndpointsFlag);
+  }
   // How this user's number is counted. Null is meaningful here (it clears the
   // per-user override), so the flag's presence — not its value — decides
   // whether the field is sent at all.
@@ -1059,6 +1067,12 @@ async function cmdUserLimit(args: string[]): Promise<void> {
     const shown =
       allowed === null ? "all" : allowed.length ? allowed.join(",") : "none";
     console.log(`  node availability → ${shown}`);
+  }
+  if (allowedEndpointsFlag !== undefined) {
+    const allowed = body.allowedEndpointIds as string[] | null;
+    const shown =
+      allowed === null ? "all" : allowed.length ? allowed.join(",") : "none";
+    console.log(`  endpoint availability → ${shown}`);
   }
   if (modeFlag !== undefined) {
     console.log(`  key limit mode → ${modeFlag}`);
@@ -1662,7 +1676,12 @@ async function cmdPolicySet(args: string[]): Promise<void> {
   // comma-separated id list; "none" clears one. Passing both in one call is
   // how you reorder past a recommended set that would no longer be the top of
   // the list - the API validates them together.
-  for (const field of ["nodeOrder", "recommendedNodeIds"] as const) {
+  for (const field of [
+    "nodeOrder",
+    "recommendedNodeIds",
+    "endpointOrder",
+    "recommendedEndpointIds",
+  ] as const) {
     const value = flag(field);
     if (value !== undefined) body[field] = parsePolicyNodeList(value);
   }
@@ -1715,6 +1734,16 @@ async function cmdPolicySet(args: string[]): Promise<void> {
       nodeIds === "null"
         ? null
         : nodeIds
+            .split(",")
+            .map((value) => value.trim())
+            .filter(Boolean);
+  }
+  const endpointIds = flag("allowedEndpointIds");
+  if (endpointIds !== undefined) {
+    body.allowedEndpointIds =
+      endpointIds === "null"
+        ? null
+        : endpointIds
             .split(",")
             .map((value) => value.trim())
             .filter(Boolean);
@@ -2148,11 +2177,14 @@ async function cmdNodeUpdate(args: string[]): Promise<void> {
   const endpointId = flagOf(args, "endpoint-id");
   const endpointName = flagOf(args, "endpoint-name");
   const endpointEnabled = flagOf(args, "endpoint-enabled");
+  const endpointReachability = flagOf(args, "endpoint-reachability");
   if (endpointIp !== undefined && endpointId !== undefined) {
     throw new Error("Choose --endpoint-ip to add an address or --endpoint-id to edit one");
   }
   if (endpointIp !== undefined) {
-    if (endpointEnabled !== undefined) throw new Error("--endpoint-enabled needs --endpoint-id");
+    if (endpointEnabled !== undefined || endpointReachability !== undefined) {
+      throw new Error("--endpoint-enabled and --endpoint-reachability need --endpoint-id");
+    }
     body.publicEndpoint = { action: "add", address: endpointIp, name: endpointName };
   } else if (endpointId !== undefined) {
     body.publicEndpoint = {
@@ -2160,8 +2192,16 @@ async function cmdNodeUpdate(args: string[]): Promise<void> {
       id: endpointId,
       name: endpointName,
       enabled: endpointEnabled === undefined ? undefined : parseBoolFlag("endpoint-enabled", endpointEnabled),
+      reachabilityEnabled:
+        endpointReachability === undefined
+          ? undefined
+          : parseBoolFlag("endpoint-reachability", endpointReachability),
     };
-  } else if (endpointName !== undefined || endpointEnabled !== undefined) {
+  } else if (
+    endpointName !== undefined ||
+    endpointEnabled !== undefined ||
+    endpointReachability !== undefined
+  ) {
     throw new Error("Address settings require --endpoint-id or --endpoint-ip");
   }
   if (Object.keys(body).length === 0) {
@@ -2889,7 +2929,7 @@ Nodes:
   node-update <id> --clear-public-ip      Forget the resolved public IP so the
                                           worker looks it up again next tick
   node-update <id> --endpoint-ip=<ipv4> [--endpoint-name=<name>]
-  node-update <id> --endpoint-id=<uuid> [--endpoint-name=<name>] [--endpoint-enabled=true|false]
+  node-update <id> --endpoint-id=<uuid> [--endpoint-name=<name>] [--endpoint-enabled=true|false] [--endpoint-reachability=true|false]
   node-remove <id>                        Delete a node (refused while it has keys)
   node-remove <id> --with-keys            Delete a node AND every key ever issued
              --confirm=<node name>        on it. Irreversible; the name must match
@@ -3070,8 +3110,11 @@ policy-set fields:
     limit is counted; a user can be moved off it with user-limit --mode=
   dailyRetentionDays=<int 1..36500 | null>
   allowedProtocols=awg3[,awg2]            allowedNodeIds=<uuid,…|null>
+  allowedEndpointIds=<uuid,…|null>        (per-IP availability; null = all)
   nodeOrder=<uuid,…|none>                 (the order users see; the rest follow)
   recommendedNodeIds=<uuid,…|none>        (badge only; must be the top of nodeOrder)
+  endpointOrder=<uuid,…|none>             (per-IP server order; the rest follow)
+  recommendedEndpointIds=<uuid,…|none>    (per-IP badge; must be top of endpointOrder)
   cfAccessAccountId / cfAccessAppId / cfAccessPolicyId=<id|null>
   cfApiToken=<token>   (write-only, encrypted)
   video-desktop / video-android / video-ios=<url|none>
@@ -3456,6 +3499,7 @@ async function cmdProbeResults(args: string[]): Promise<void> {
     if (!view.probe) console.log("No reachability probe is registered.");
     console.log(table(reachabilityRows(view, nodeFilter), REACHABILITY_COLUMNS));
     for (const node of nodes) {
+      for (const line of endpointReachabilityLines(node)) console.log(line);
       if (!node.directStatus) continue;
       const when = node.directCheckedAt ? ` at ${node.directCheckedAt}` : "";
       const detail = node.directDetail ? ` (${node.directDetail})` : "";

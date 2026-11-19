@@ -5,6 +5,7 @@ import { Play, TriangleAlert } from "lucide-react";
 import { toast } from "sonner";
 import {
   PROBE_LEVELS,
+  type AdminNodeEndpoint,
   type AdminReachabilityBridge,
   type ProbeLevel,
   type ProbeLevelName,
@@ -156,18 +157,100 @@ function ProtocolLine({
   );
 }
 
+function EndpointLine({
+  endpoint,
+  t,
+  lang,
+  busy,
+  nodeReachabilityEnabled,
+  onToggle,
+}: {
+  endpoint: AdminNodeEndpoint;
+  t: Translate;
+  lang: Lang;
+  busy: boolean;
+  nodeReachabilityEnabled: boolean;
+  onToggle?: (enabled: boolean) => void;
+}) {
+  const active = endpoint.enabled && endpoint.reachabilityEnabled && nodeReachabilityEnabled;
+  const dim = !active && "opacity-60";
+  return (
+    <li className="space-y-1 rounded-md bg-well px-2.5 py-1.5 text-xs shadow-[var(--inset-shadow)]">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className={cn("flex min-w-0 flex-wrap items-center gap-1.5", dim)}>
+          <span className="font-medium">{endpoint.name}</span>
+          <code className="font-mono text-muted-foreground">{endpoint.publicAddress}</code>
+          {endpoint.enabled ? (
+            <StatusBadge status={endpoint.probeStatus} t={t} />
+          ) : (
+            <Badge variant="outline">{t("reachability.endpointDisabled")}</Badge>
+          )}
+          {endpoint.incidentOpen ? (
+            <Badge variant="destructive">
+              <TriangleAlert className="h-3 w-3" /> {t("reachability.incident")}
+            </Badge>
+          ) : null}
+          {endpoint.enabled && !endpoint.reachabilityEnabled ? (
+            <Badge variant="outline">{t("reachability.excluded")}</Badge>
+          ) : null}
+        </div>
+        {onToggle ? (
+          <Switch
+            checked={endpoint.reachabilityEnabled}
+            disabled={busy || !endpoint.enabled}
+            aria-label={t("reachability.endpointSwitchAria", { name: endpoint.name })}
+            onCheckedChange={onToggle}
+          />
+        ) : null}
+      </div>
+      {endpoint.probeCheckedAt || endpoint.probeFailingSince ? (
+        <div className={cn("flex flex-wrap gap-x-3 text-muted-foreground", dim)}>
+          {endpoint.probeCheckedAt ? (
+            <span>
+              {t("reachability.checkedAt", {
+                time: formatDateTime(endpoint.probeCheckedAt, lang),
+              })}
+            </span>
+          ) : null}
+          {endpoint.probeFailingSince ? (
+            <span className="text-destructive">
+              {t("reachability.failingSince", {
+                time: formatDateTime(endpoint.probeFailingSince, lang),
+              })}
+            </span>
+          ) : null}
+        </div>
+      ) : null}
+      {endpoint.probeLevels ? (
+        <ul className={cn("flex flex-wrap gap-x-3 gap-y-0.5 font-mono text-[11px]", dim)}>
+          {PROBE_LEVELS.map((name) => {
+            const level = endpoint.probeLevels?.[name];
+            if (name === "download" && !level) return null;
+            return <LevelLine key={name} name={name} level={level} t={t} />;
+          })}
+        </ul>
+      ) : null}
+      {endpoint.probeDetail ? (
+        <p className={cn("break-words text-muted-foreground", dim)}>{endpoint.probeDetail}</p>
+      ) : null}
+    </li>
+  );
+}
+
 function NodeRow({
   node,
   t,
   lang,
   busy,
   onToggle,
+  onToggleEndpoint,
 }: {
   node: AdminReachabilityNode;
   t: Translate;
   lang: Lang;
   busy: boolean;
   onToggle: (enabled: boolean) => void;
+  onToggleEndpoint?: (endpointId: string, enabled: boolean) => void;
 }) {
   // Excluded from the probe: still listed so the switch stays reachable (and
   // at full strength), but the rest is dimmed so an old verdict does not read
@@ -230,13 +313,21 @@ function NodeRow({
         />
       </div>
       {node.publicEndpoints?.length ? (
-        <ul className="space-y-1">
+        <ul className="space-y-1.5">
           {node.publicEndpoints.map((endpoint) => (
-            <li key={endpoint.id} className="flex flex-wrap items-center justify-between gap-1 rounded-md bg-well px-2 py-1 text-xs">
-              <span>{endpoint.name} <code className="text-muted-foreground">{endpoint.publicAddress}</code></span>
-              {endpoint.enabled ? <StatusBadge status={endpoint.probeStatus} t={t} />
-                : <Badge variant="outline">{t("reachability.excluded")}</Badge>}
-            </li>
+            <EndpointLine
+              key={endpoint.id}
+              endpoint={endpoint}
+              t={t}
+              lang={lang}
+              busy={busy}
+              nodeReachabilityEnabled={node.reachabilityEnabled}
+              onToggle={
+                onToggleEndpoint
+                  ? (enabled) => onToggleEndpoint(endpoint.id, enabled)
+                  : undefined
+              }
+            />
           ))}
         </ul>
       ) : null}
@@ -351,6 +442,7 @@ export function ReachabilityBody({
   busy,
   onRun,
   onToggleNode,
+  onToggleEndpoint,
   onToggleBridge,
   onToggleMode,
   bridgeToggleBusy,
@@ -363,6 +455,7 @@ export function ReachabilityBody({
   bridgeToggleBusy?: boolean;
   onRun: () => void;
   onToggleNode: (nodeId: string, enabled: boolean) => void;
+  onToggleEndpoint?: (nodeId: string, endpointId: string, enabled: boolean) => void;
   onToggleBridge?: (bridgeId: string, enabled: boolean) => void;
   onToggleMode?: (field: ProbeMode, enabled: boolean) => void;
 }) {
@@ -452,6 +545,11 @@ export function ReachabilityBody({
                 lang={lang}
                 busy={busy !== null}
                 onToggle={(enabled) => onToggleNode(node.nodeId, enabled)}
+                onToggleEndpoint={
+                  onToggleEndpoint
+                    ? (endpointId, enabled) => onToggleEndpoint(node.nodeId, endpointId, enabled)
+                    : undefined
+                }
               />
             ))}
           </>
@@ -479,6 +577,7 @@ export function ReachabilityBody({
 export function ReachabilityCard({
   state,
   onSetNodeEnabled,
+  onSetEndpointEnabled,
   bridgeToggleBusy,
   onSetBridgeEnabled,
 }: {
@@ -488,6 +587,7 @@ export function ReachabilityCard({
    * the page so the node cards and this card cannot disagree after a toggle.
    */
   onSetNodeEnabled: (nodeId: string, enabled: boolean) => Promise<void>;
+  onSetEndpointEnabled?: (nodeId: string, endpointId: string, enabled: boolean) => Promise<void>;
   bridgeToggleBusy: boolean;
   onSetBridgeEnabled: (bridgeId: string, enabled: boolean) => Promise<void>;
 }) {
@@ -538,6 +638,15 @@ export function ReachabilityCard({
       onToggleNode={(nodeId, enabled) => {
         void act(nodeId, () => onSetNodeEnabled(nodeId, enabled));
       }}
+      onToggleEndpoint={
+        onSetEndpointEnabled
+          ? (nodeId, endpointId, enabled) => {
+              void act(`${nodeId}:${endpointId}`, () =>
+                onSetEndpointEnabled(nodeId, endpointId, enabled),
+              );
+            }
+          : undefined
+      }
     />
   );
 }
