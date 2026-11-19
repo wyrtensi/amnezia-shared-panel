@@ -171,7 +171,9 @@ raise `intervalSec`, or use operator verification.
 | unknown (`error`) | the probe could not look: control target down, no usable key yet, probe error |
 
 Telegram, through the same chat as the quota-request notification
-(`TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`), plain text:
+(`TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, which accepts a single numeric chat
+id or comma-separated numeric chat ids for text alerts while pinning the status
+widget in the first chat), plain text:
 
 - **one** "unavailable" message per node per incident, after `fail-threshold`
   consecutive failed runs (default 2); nothing more while it stays down;

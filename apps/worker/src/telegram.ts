@@ -9,18 +9,38 @@ import type { QuotaRequestNotifyPayload } from "@amnezia/contracts";
  * a thrown message in `job_outbox.last_error`, which the admin UI shows.
  */
 
-export type TelegramConfig = { token: string; chatId: string };
+export type TelegramConfig = {
+  token: string;
+  /** Primary chat id (used for the single pinned status widget). */
+  chatId: string;
+  /** All recipient chat ids when TELEGRAM_CHAT_ID lists more than one (comma-separated). */
+  chatIds?: string[];
+};
 
 export type TelegramNotifier = { send: (text: string) => Promise<void> };
 
 const SEND_TIMEOUT_MS = 10_000;
 
+export const parseTelegramChatIds = (raw: string | undefined): string[] => {
+  if (!raw) return [];
+  const seen = new Set<string>();
+  for (const part of raw.split(",")) {
+    const trimmed = part.trim();
+    if (trimmed) seen.add(trimmed);
+  }
+  return [...seen];
+};
+
 export const resolveTelegramConfig = (
   env: NodeJS.ProcessEnv,
 ): TelegramConfig | null => {
   const token = env.TELEGRAM_BOT_TOKEN?.trim();
-  const chatId = env.TELEGRAM_CHAT_ID?.trim();
-  return token && chatId ? { token, chatId } : null;
+  const chatIds = parseTelegramChatIds(env.TELEGRAM_CHAT_ID);
+  const primary = chatIds[0];
+  if (!token || !primary) return null;
+  return chatIds.length === 1
+    ? { token, chatId: primary }
+    : { token, chatId: primary, chatIds };
 };
 
 const redact = (text: string, token: string): string =>
@@ -29,9 +49,10 @@ const redact = (text: string, token: string): string =>
 export const createTelegramNotifier = ({
   token,
   chatId,
+  chatIds,
   fetch: fetchImpl = fetch,
-}: TelegramConfig & { fetch?: typeof fetch }): TelegramNotifier => ({
-  send: async (text) => {
+}: TelegramConfig & { fetch?: typeof fetch }): TelegramNotifier => {
+  const sendToChat = async (targetChatId: string, text: string): Promise<void> => {
     let response: Response;
     try {
       response = await fetchImpl(
@@ -42,7 +63,7 @@ export const createTelegramNotifier = ({
           // No parse_mode: the text carries free user input, and plain text
           // needs no escaping.
           body: JSON.stringify({
-            chat_id: chatId,
+            chat_id: targetChatId,
             text,
             disable_web_page_preview: true,
           }),
@@ -68,8 +89,31 @@ export const createTelegramNotifier = ({
         `Telegram sendMessage failed: HTTP ${response.status}${description}`,
       );
     }
-  },
-});
+  };
+
+  return {
+    send: async (text) => {
+      const targets =
+        chatIds && chatIds.length > 0 ? chatIds : parseTelegramChatIds(chatId);
+      const effectiveTargets = targets.length > 0 ? targets : [chatId];
+      let firstError: Error | null = null;
+      let delivered = 0;
+      for (const target of effectiveTargets) {
+        try {
+          await sendToChat(target, text);
+          delivered += 1;
+        } catch (error) {
+          if (firstError === null) {
+            firstError = error instanceof Error ? error : new Error(String(error));
+          }
+        }
+      }
+      if (delivered === 0 && firstError !== null) {
+        throw firstError;
+      }
+    },
+  };
+};
 
 /** A Bot API refusal. `description` is Telegram's text, token removed. */
 export class TelegramApiError extends Error {
