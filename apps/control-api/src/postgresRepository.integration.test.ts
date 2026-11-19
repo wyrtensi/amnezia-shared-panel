@@ -32,6 +32,7 @@ import {
   nodeReachabilityState,
   nodeServiceCheckResults,
   nodeServiceChecks,
+  nodeVpnEndpoints,
   nodes,
   peerCurrent,
   portalPolicy,
@@ -436,6 +437,106 @@ describe("PostgresControlRepository quota race", () => {
     if (!database) throw new Error("No database");
     await database.db.update(portalPolicy).set({ keyLimitMode: mode });
   };
+
+  const seedQuotaEndpoints = async (
+    name: string,
+    [publicIp, ...additionalIps]: [string, ...string[]],
+    maxPeers = 500,
+  ) => {
+    if (!database) throw new Error("No database");
+    const nodeId = await seedNode(name);
+    await database.db.update(nodes).set({ protocol: "awg3", publicIp, maxPeers })
+      .where(eq(nodes.id, nodeId));
+    const endpoints = [publicIp, ...additionalIps].map((address, index) => ({
+      id: randomUUID(),
+      nodeId,
+      address,
+      ordinal: index + 1,
+      name: `${name}-${index + 1}`,
+    }));
+    await database.db.insert(nodeVpnEndpoints).values(endpoints);
+    return endpoints;
+  };
+
+  const createKeyAtEndpoint = (
+    repository: PostgresControlRepository,
+    owner: Actor,
+    endpoint: { id: string; nodeId: string },
+    deviceLabel: string,
+  ) => repository.createProvisioningKey(owner, {
+    nodeId: endpoint.nodeId,
+    endpointId: endpoint.id,
+    protocol: "awg3",
+    deviceType: "other",
+    deviceLabel,
+    routeProfile: "full_tunnel",
+    nameDisplay: defaultKeyNameDisplay,
+  });
+
+  runDatabaseTest("counts explicit public IP selections together per node and globally", async () => {
+    if (!database) return;
+    const repository = new PostgresControlRepository({ db: database.db, keyring });
+    const [firstIp, secondIp] = await seedQuotaEndpoints("quota-addresses-a", ["192.0.2.10", "192.0.2.11"]);
+    const [otherIp] = await seedQuotaEndpoints("quota-addresses-b", ["198.51.100.12"]);
+    if (!firstIp || !secondIp || !otherIp) throw new Error("Failed to seed quota addresses");
+    const owner = await seedQuotaUser("quota-addresses@example.com", {
+      keyLimitOverride: 3,
+      nodeKeyLimits: { [firstIp.nodeId]: 2 },
+    });
+    const create = (endpoint: typeof firstIp, label: string) =>
+      createKeyAtEndpoint(repository, owner, endpoint, label);
+
+    await create(firstIp, "first IP");
+    await create(secondIp, "second IP");
+    await expect(create(secondIp, "over shared node quota")).rejects.toMatchObject({
+      statusCode: 409,
+      code: "QUOTA_EXCEEDED",
+    });
+    await create(otherIp, "other node");
+
+    const assigned = await database.db.select({ nodeId: vpnKeys.nodeId, endpointId: vpnKeys.endpointId })
+      .from(vpnKeys).where(eq(vpnKeys.ownerId, owner.id)).orderBy(vpnKeys.keyNumber);
+    expect(assigned).toEqual([
+      { nodeId: firstIp.nodeId, endpointId: firstIp.id },
+      { nodeId: firstIp.nodeId, endpointId: secondIp.id },
+      { nodeId: otherIp.nodeId, endpointId: otherIp.id },
+    ]);
+    const counts = [
+      { nodeId: firstIp.nodeId, used: 2, limit: 2 },
+      { nodeId: otherIp.nodeId, used: 1, limit: 3 },
+    ].sort((a, b) => a.nodeId.localeCompare(b.nodeId));
+    expect(await repository.getMe(owner)).toMatchObject({
+      keyLimitMode: "per_node", keyLimit: 3, keyCount: 3, perNode: counts,
+    });
+
+    await setGlobalKeyLimitMode("global");
+    try {
+      await expect(create(otherIp, "over global quota")).rejects.toMatchObject({
+        statusCode: 409,
+        code: "QUOTA_EXCEEDED",
+      });
+      expect(await repository.getMe(owner)).toMatchObject({
+        keyLimitMode: "global", keyLimit: 3, keyCount: 3,
+        perNode: counts.map((entry) => ({ ...entry, limit: 3 })),
+      });
+    } finally {
+      await setGlobalKeyLimitMode("per_node");
+    }
+  });
+
+  runDatabaseTest("shares node peer capacity across public IPs and owners", async () => {
+    if (!database) return;
+    const repository = new PostgresControlRepository({ db: database.db, keyring });
+    const [firstIp, secondIp] = await seedQuotaEndpoints("capacity-addresses", ["192.0.2.20", "192.0.2.21"], 1);
+    if (!firstIp || !secondIp) throw new Error("Failed to seed capacity addresses");
+    const firstOwner = await seedQuotaUser("capacity-first@example.com");
+    const secondOwner = await seedQuotaUser("capacity-second@example.com");
+
+    await createKeyAtEndpoint(repository, firstOwner, firstIp, "first IP");
+    await expect(createKeyAtEndpoint(repository, secondOwner, secondIp, "second IP"))
+      .rejects.toMatchObject({ statusCode: 409, code: "NODE_AT_CAPACITY" });
+    expect(await repository.getMe(secondOwner)).toMatchObject({ keyCount: 0 });
+  });
 
   runDatabaseTest(
     "a new quota request queues one notification with what the message needs",

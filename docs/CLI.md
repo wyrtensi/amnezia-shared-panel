@@ -162,6 +162,8 @@ Rename an address, disable it for new keys, or change its reachability and bridg
 The bridge is configured on the node. An explicit key choice takes precedence over the address setting.
 `inherit` follows the owner's policy, `direct` uses the node address, and `bridge` uses the node's active bridge when available. Without an active bridge, configs use a direct connection.
 Keys without an explicit address follow the primary address's setting. Download and re-import the config to apply the change to an existing client.
+Addresses on the same node share its per-user quota in per-node mode and its
+physical peer capacity in both modes. Global mode caps the user's keys across all nodes.
 Configure per-IP server order and availability via
 `policy-set --endpointOrder=<uuid,…|none> --recommendedEndpointIds=<uuid,…|none> --allowedEndpointIds=<uuid,…|null>`
 and per-user IP availability via `user-limit <user> <limit> --allowed-endpoints=<uuid,…|all|none>`.
