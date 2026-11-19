@@ -191,6 +191,14 @@ export type RuleVersion = {
   sourceUrl: string | null;
   cidrCount?: number;
   domainCount?: number;
+  validationReport?: {
+    ipv4Count?: number;
+    ipv6Count?: number;
+    losslessCidrCount?: number;
+    compactionMode?: string;
+    collateralNonRuShare?: number;
+    reason?: string;
+  } | null;
   status: string;
   publishedAt?: string | null;
   /** Set when an admin pinned this version; null while the worker publishes. */

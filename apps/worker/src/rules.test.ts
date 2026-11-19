@@ -2,14 +2,27 @@ import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import { RULE_EXTRAS } from "./ruleExtras.js";
 import {
+  compactRoutes,
   createRuleFetcher,
+  DEFAULT_COLLATERAL_CAP,
   DEFAULT_RULE_FEEDS,
+  MAX_COMPACT_ROUTES,
   mergeRulePayloads,
   parseRuleSource,
+  resolveRuleCompactionOptions,
   resolveRuleFeeds,
+  validateRuleObject,
   validateRulePayload,
   type RuleRepository,
+  type StoredRuleInput,
 } from "./rules.js";
+import {
+  APPLE_DIRECT_V4_CIDRS,
+  BOGON_V4_CIDRS,
+  STEAM_CACHE_V4_CIDRS,
+  STEAM_CACHE_V6_CIDRS,
+  countCidrOverlap,
+} from "./cidrSet.js";
 
 const stableChecksum = (payload: {
   cidrs: string[];
@@ -556,6 +569,13 @@ describe("resolveRuleFeeds", () => {
         profile: "ru_blacklist",
         sources: [{ url: "https://example.com/a.lst", format: "cidr-lines" }],
         extras: [],
+        compaction: {
+          mode: "lossless",
+          collateralCap: DEFAULT_COLLATERAL_CAP,
+          directApple: true,
+          directSteamCache: true,
+          maxCompactRoutes: MAX_COMPACT_ROUTES,
+        },
         pocApproved: true,
       },
     ]);
@@ -589,13 +609,70 @@ describe("resolveRuleFeeds", () => {
     ]);
   });
 
-  it("routes the blocked catalogue over IPv6 as well as IPv4", () => {
-    // Without the IPv6 half a client with an IPv6 ISP reached the listed
-    // services directly over IPv6, past the tunnel and into the block.
+  it("routes blocked providers over both IPv4 and IPv6 with /24 cap on ipsum.lst", () => {
     const [feed] = resolveRuleFeeds({}, approveAll);
-    const urls = feed?.sources.filter((source) => !source.exclude).map((s) => s.url);
-    expect(urls).toContain("https://iplist.opencck.org/?format=text&data=cidr4");
-    expect(urls).toContain("https://iplist.opencck.org/?format=text&data=cidr6");
+    const included = feed?.sources.filter((source) => !source.exclude) ?? [];
+    const ipsum = included.find((s) => s.url.endsWith("/ipsum.lst"));
+    expect(ipsum?.maxIpv4PrefixLength).toBe(24);
+    expect(included.some((s) => s.url.includes("/Subnets/IPv4/meta.lst"))).toBe(true);
+    expect(included.some((s) => s.url.includes("/Subnets/IPv6/meta.lst"))).toBe(true);
+    expect(included.some((s) => s.url.includes("/Subnets/IPv6/cloudflare.lst"))).toBe(true);
+    expect(feed?.compaction?.mode).toBe("compact_world");
+  });
+
+  it("validates RULE_COMPACTION_MODE, RULE_COLLATERAL_CAP and direct shield flags", () => {
+    expect(resolveRuleCompactionOptions({}, false)).toEqual({
+      mode: "compact_world",
+      collateralCap: DEFAULT_COLLATERAL_CAP,
+      directApple: true,
+      directSteamCache: true,
+      maxCompactRoutes: MAX_COMPACT_ROUTES,
+    });
+    expect(resolveRuleCompactionOptions({}, true).mode).toBe("lossless");
+    expect(
+      resolveRuleCompactionOptions(
+        {
+          RULE_COMPACTION_MODE: "blocked_only",
+          RULE_COLLATERAL_CAP: "0.01",
+          RULE_DIRECT_APPLE: "false",
+          RULE_DIRECT_STEAM_CACHE: "false",
+        },
+        false,
+      ),
+    ).toMatchObject({
+      mode: "blocked_only",
+      collateralCap: 0.01,
+      directApple: false,
+      directSteamCache: false,
+    });
+    expect(() =>
+      resolveRuleCompactionOptions({ RULE_COMPACTION_MODE: "unknown" }, false),
+    ).toThrow("RULE_COMPACTION_MODE");
+    expect(() =>
+      resolveRuleCompactionOptions({ RULE_COLLATERAL_CAP: "0.9" }, false),
+    ).toThrow("RULE_COLLATERAL_CAP");
+    expect(() =>
+      resolveRuleCompactionOptions({ RULE_DIRECT_APPLE: "yes" }, false),
+    ).toThrow("RULE_DIRECT_APPLE");
+    expect(() =>
+      resolveRuleFeeds(
+        {
+          RULE_FEEDS: JSON.stringify([
+            {
+              profile: "ru_blacklist",
+              sources: [
+                {
+                  url: "https://example.com/a.lst",
+                  format: "cidr-lines",
+                  maxIpv4PrefixLength: 64,
+                },
+              ],
+            },
+          ]),
+        },
+        approveAll,
+      ),
+    ).toThrow("maxIpv4PrefixLength");
   });
 
   it("accepts an exclude source in RULE_FEEDS but not a feed of exclusions alone", () => {
@@ -681,5 +758,359 @@ describe("resolveRuleFeeds", () => {
 
     expect(RULE_EXTRAS).toEqual(expected);
     expect(resolveRuleFeeds({}, approveAll)[0]?.extras).toEqual(expected);
+  });
+});
+
+describe("compactRoutes compaction modes", () => {
+  it("applies maxIpv4PrefixLength when ingesting cidr-lines while keeping IPv6 intact", async () => {
+    const repository: RuleRepository = {
+      getLastKnownGoodRule: vi.fn(() => Promise.resolve(null)),
+      storeQuarantinedRule: vi.fn(() => Promise.resolve()),
+      storeUnpublishedRule: vi.fn(() => Promise.resolve()),
+      activateRuleVersion: vi.fn(() => Promise.resolve()),
+    };
+    const fetchImpl = vi.fn<typeof fetch>(() =>
+      Promise.resolve(
+        new Response(
+          "104.16.0.0/24\n104.16.5.7/32\n104.16.6.0/25\n2a03:2880::/48\n",
+        ),
+      ),
+    );
+    await createRuleFetcher({
+      repository,
+      feed: {
+        profile: "ru_blacklist",
+        sources: [
+          {
+            url: "https://feed.example/ipsum.lst",
+            format: "cidr-lines",
+            maxIpv4PrefixLength: 24,
+          },
+        ],
+        pocApproved: true,
+      },
+      fetchImpl,
+    })();
+
+    const activated = vi.mocked(repository.activateRuleVersion).mock.calls[0]?.[0];
+    expect(activated?.payload.cidrs).toEqual(["104.16.0.0/24", "2a03:2880::/48"]);
+  });
+
+  it("compacts blocked_only safely without overlapping RU, bogons, Apple, or SteamCache", () => {
+    const validation = validateRuleObject({
+      cidrs: [
+        "104.16.0.0/24",
+        "104.16.2.0/24",
+        "17.0.0.0/24",
+        "155.133.248.0/24",
+        "192.168.1.0/24",
+        "2a03:2880::/36",
+        "2a03:2880:f000::/36",
+      ],
+      domains: [],
+    });
+    const ru = ["5.255.255.0/24", "2a02:6b8::/32"];
+    const result = compactRoutes(validation, ru, ["160.79.104.0/23"], {
+      mode: "blocked_only",
+      collateralCap: 0.005,
+      directApple: true,
+      directSteamCache: true,
+      maxCompactRoutes: 2800,
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.payload.cidrs).toContain("104.16.0.0/22");
+    expect(result.payload.cidrs).toContain("160.79.104.0/23");
+    expect(result.payload.cidrs).toContain("2a03:2880::/32");
+    expect(countCidrOverlap(result.payload.cidrs, ru)).toEqual({ 4: 0n, 6: 0n });
+    expect(countCidrOverlap(result.payload.cidrs, BOGON_V4_CIDRS)[4]).toBe(0n);
+    expect(countCidrOverlap(result.payload.cidrs, APPLE_DIRECT_V4_CIDRS)[4]).toBe(0n);
+    expect(countCidrOverlap(result.payload.cidrs, STEAM_CACHE_V4_CIDRS)[4]).toBe(0n);
+    expect(result.report).toMatchObject({
+      compactionMode: "blocked_only",
+      ruOverlap: 0,
+      bogonOverlap: 0,
+      directShields: ["apple", "steam-cache"],
+    });
+  });
+
+  it("builds compact_world complement keeping RU, bogons, Apple, and SteamCache direct", () => {
+    const validation = validateRuleObject({
+      cidrs: ["157.240.0.0/16", "2a03:2880::/32"],
+      domains: [],
+    });
+    const ru = ["5.255.255.0/24", "77.88.55.0/24", "2a02:6b8::/32"];
+    const result = compactRoutes(validation, ru, ["160.79.104.0/23"], {
+      mode: "compact_world",
+      collateralCap: 0.005,
+      directApple: true,
+      directSteamCache: true,
+      maxCompactRoutes: 2800,
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(countCidrOverlap(result.payload.cidrs, ru)).toEqual({ 4: 0n, 6: 0n });
+    expect(countCidrOverlap(result.payload.cidrs, BOGON_V4_CIDRS)[4]).toBe(0n);
+    expect(countCidrOverlap(result.payload.cidrs, APPLE_DIRECT_V4_CIDRS)[4]).toBe(0n);
+    expect(countCidrOverlap(result.payload.cidrs, STEAM_CACHE_V4_CIDRS)[4]).toBe(0n);
+    expect(countCidrOverlap(result.payload.cidrs, STEAM_CACHE_V6_CIDRS)[6]).toBe(0n);
+    // Akamai (Steam Store / Community) and Meta stay routed through the tunnel.
+    expect(countCidrOverlap(result.payload.cidrs, ["23.220.114.106/32"])[4]).toBe(1n);
+    expect(countCidrOverlap(result.payload.cidrs, ["157.240.0.0/16"])[4]).toBe(65536n);
+    expect(result.report.compactionMode).toBe("compact_world");
+  });
+
+  it("quarantines compact_world when no exclusions are supplied", () => {
+    const validation = validateRuleObject({ cidrs: ["157.240.0.0/16"], domains: [] });
+    const result = compactRoutes(validation, [], [], {
+      mode: "compact_world",
+      collateralCap: 0.005,
+      directApple: true,
+      directSteamCache: true,
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.report.reason).toBe("compact_world_requires_exclusions");
+    }
+  });
+
+  it("quarantines a compacted version when it exceeds maxCompactRoutes", () => {
+    const validation = validateRuleObject({
+      cidrs: ["104.16.0.0/24", "157.240.0.0/24", "142.250.0.0/24"],
+      domains: [],
+    });
+    const result = compactRoutes(validation, ["5.255.255.0/24"], [], {
+      mode: "blocked_only",
+      collateralCap: 0,
+      directApple: true,
+      directSteamCache: true,
+      maxCompactRoutes: 2,
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.report.reason).toBe("route_budget_exceeded");
+    }
+  });
+
+  it("appends RULE_EXTRA_INCLUDE_URLS and RULE_EXTRA_EXCLUDE_URLS onto built-in E-Core defaults", () => {
+    const [feed] = resolveRuleFeeds(
+      {
+        RULE_EXTRA_INCLUDE_URLS:
+          "https://example.test/steam-cm.lst, https://example.test/vpn-extra.lst",
+        RULE_EXTRA_EXCLUDE_URLS: "https://example.test/direct.lst",
+      },
+      () => true,
+    );
+    expect(feed?.compaction?.mode).toBe("compact_world");
+    expect((feed?.extras ?? []).length).toBeGreaterThan(0);
+    expect(feed?.sources).toEqual(
+      expect.arrayContaining([
+        {
+          url: "https://example.test/direct.lst",
+          format: "cidr-lines",
+          exactExclude: true,
+        },
+        {
+          url: "https://example.test/steam-cm.lst",
+          format: "cidr-lines",
+          forceInclude: true,
+        },
+        {
+          url: "https://example.test/vpn-extra.lst",
+          format: "cidr-lines",
+          forceInclude: true,
+        },
+      ]),
+    );
+    expect(() =>
+      resolveRuleFeeds({ RULE_EXTRA_INCLUDE_URLS: "ftp://example.test/bad.lst" }, () => true),
+    ).toThrow(/RULE_EXTRA_INCLUDE_URLS/);
+    expect(() =>
+      resolveRuleFeeds({ RULE_EXTRA_EXCLUDE_URLS: "not a url" }, () => true),
+    ).toThrow(/RULE_EXTRA_EXCLUDE_URLS/);
+  });
+
+  it("bakes global_route_overrides and extra URL feeds cleanly into daily compact_world runs", async () => {
+    const activated: StoredRuleInput[] = [];
+    let adminOverrides = {
+      addCidrs: ["5.255.255.10/32", "198.51.100.10/32"],
+      excludeCidrs: ["198.51.100.0/24", "160.79.104.5/32"],
+    };
+
+    const repository: RuleRepository = {
+      getLastKnownGoodRule: vi.fn(() =>
+        Promise.resolve(
+          activated.length > 0
+            ? { version: activated[activated.length - 1]!.version, etag: null, pinned: false }
+            : null,
+        ),
+      ),
+      getGlobalRouteOverrides: vi.fn(() => Promise.resolve(adminOverrides)),
+      storeQuarantinedRule: vi.fn(() => Promise.resolve()),
+      storeUnpublishedRule: vi.fn(() => Promise.resolve()),
+      activateRuleVersion: vi.fn((input: StoredRuleInput) => {
+        activated.push(input);
+        return Promise.resolve();
+      }),
+    };
+
+    const fetchImpl: typeof fetch = vi.fn((input) => {
+      const url = String(input);
+      if (url.endsWith("/base.lst")) {
+        return Promise.resolve(
+          new Response("157.240.0.0/16\n198.51.100.0/24\n2a03:2880::/32\n", {
+            status: 200,
+          }),
+        );
+      }
+      if (url.endsWith("/ru.lst")) {
+        return Promise.resolve(
+          new Response("5.255.255.0/24\n77.88.55.0/24\n2a02:6b8::/32\n", {
+            status: 200,
+          }),
+        );
+      }
+      if (url.endsWith("/extra-exclude.lst")) {
+        return Promise.resolve(
+          new Response("# exact direct CDN\n203.0.113.0/24\n", { status: 200 }),
+        );
+      }
+      if (url.endsWith("/extra-include.lst")) {
+        // Surgical Steam CM /32 inside Valve AS32590 155.133.224.0/19
+        return Promise.resolve(
+          new Response("# valve cm\n155.133.226.1/32\n", { status: 200 }),
+        );
+      }
+      return Promise.resolve(new Response("not found", { status: 404 }));
+    });
+
+    const fetcher = createRuleFetcher({
+      repository,
+      fetchImpl,
+      feed: {
+        profile: "ru_blacklist",
+        sources: [
+          { url: "https://example.test/base.lst", format: "cidr-lines" },
+          { url: "https://example.test/ru.lst", format: "cidr-lines", exclude: true },
+          {
+            url: "https://example.test/extra-exclude.lst",
+            format: "cidr-lines",
+            exactExclude: true,
+          },
+          {
+            url: "https://example.test/extra-include.lst",
+            format: "cidr-lines",
+            forceInclude: true,
+          },
+        ],
+        extras: [{ name: "anthropic", cidrs: ["160.79.104.0/24"] }],
+        compaction: {
+          mode: "compact_world",
+          collateralCap: 0.005,
+          directApple: true,
+          directSteamCache: true,
+          maxCompactRoutes: 2800,
+        },
+        pocApproved: true,
+      },
+    });
+
+    await fetcher();
+    expect(activated).toHaveLength(1);
+    const first = activated[0]!;
+    const cidrs = first.payload.cidrs;
+
+    // 1. Extra-exclude URL (203.0.113.0/24) is excluded exactly without expanding
+    // into surrounding non-RU space (203.0.114.0/24 stays routed).
+    expect(countCidrOverlap(cidrs, ["203.0.113.0/24"])[4]).toBe(0n);
+    expect(countCidrOverlap(cidrs, ["203.0.114.0/24"])[4]).toBe(256n);
+
+    // 2. Extra-include URL punches Steam CM 155.133.226.1/32 back into VPN while
+    // keeping neighboring Valve AS32590 SteamCache IPs (155.133.226.2/32) direct.
+    expect(countCidrOverlap(cidrs, ["155.133.226.1/32"])[4]).toBe(1n);
+    expect(countCidrOverlap(cidrs, ["155.133.226.2/32"])[4]).toBe(0n);
+
+    // 3. Admin exclude punches 160.79.104.5/32 out of built-in extra 160.79.104.0/24
+    // and excludes 198.51.100.0/24 except admin add 198.51.100.10/32 (add > exclude).
+    expect(countCidrOverlap(cidrs, ["160.79.104.5/32"])[4]).toBe(0n);
+    expect(countCidrOverlap(cidrs, ["160.79.104.6/32"])[4]).toBe(1n);
+    expect(countCidrOverlap(cidrs, ["198.51.100.10/32"])[4]).toBe(1n);
+    expect(countCidrOverlap(cidrs, ["198.51.100.11/32"])[4]).toBe(0n);
+
+    // 4. Admin add overrides RU GeoIP for 5.255.255.10/32 while keeping the rest of RU direct.
+    expect(countCidrOverlap(cidrs, ["5.255.255.10/32"])[4]).toBe(1n);
+    expect(countCidrOverlap(cidrs, ["5.255.255.11/32"])[4]).toBe(0n);
+
+    // Report records counts only (no raw CIDRs).
+    expect(first.validationReport).toMatchObject({
+      extraIncludedCidrs: 1,
+      extraExcludedCidrs: 1,
+      adminAddedCidrs: 2,
+      adminExcludedCidrs: 2,
+      directShields: [
+        "apple",
+        "steam-cache",
+        "extra-exclude-urls",
+        "admin-global-exclude",
+      ],
+    });
+
+    // Updating admin overrides changes the checksum and publishes a new version.
+    adminOverrides = { addCidrs: [], excludeCidrs: [] };
+    await fetcher();
+    expect(activated).toHaveLength(2);
+    expect(activated[1]!.version).not.toBe(first.version);
+  });
+
+  it("allows an intentionally empty RULE_EXTRA_EXCLUDE_URLS file but rejects non-empty garbage", async () => {
+    const repository: RuleRepository = {
+      getLastKnownGoodRule: vi.fn(() => Promise.resolve(null)),
+      storeQuarantinedRule: vi.fn(() => Promise.resolve()),
+      storeUnpublishedRule: vi.fn(() => Promise.resolve()),
+      activateRuleVersion: vi.fn(() => Promise.resolve()),
+    };
+
+    const runWithExtraBody = async (body: string) => {
+      const fetcher = createRuleFetcher({
+        repository,
+        fetchImpl: vi.fn((input) => {
+          const url = String(input);
+          if (url.endsWith("/base.lst")) {
+            return Promise.resolve(new Response("157.240.0.0/16\n", { status: 200 }));
+          }
+          if (url.endsWith("/ru.lst")) {
+            return Promise.resolve(new Response("5.255.255.0/24\n", { status: 200 }));
+          }
+          return Promise.resolve(new Response(body, { status: 200 }));
+        }),
+        feed: {
+          profile: "ru_blacklist",
+          sources: [
+            { url: "https://example.test/base.lst", format: "cidr-lines" },
+            { url: "https://example.test/ru.lst", format: "cidr-lines", exclude: true },
+            {
+              url: "https://example.test/extra-exclude.lst",
+              format: "cidr-lines",
+              exactExclude: true,
+            },
+          ],
+          compaction: {
+            mode: "compact_world",
+            collateralCap: 0.005,
+            directApple: true,
+            directSteamCache: true,
+          },
+          pocApproved: true,
+        },
+      });
+      await fetcher();
+    };
+
+    await expect(runWithExtraBody("# intentionally empty\n\n")).resolves.toBeUndefined();
+    await expect(runWithExtraBody("<html>error page</html>\n")).rejects.toThrow(
+      /has no valid CIDRs/,
+    );
   });
 });

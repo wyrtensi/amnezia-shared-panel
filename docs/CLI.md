@@ -590,13 +590,23 @@ A `HEAD` probe reads no body, so a body assertion against one is refused rather
 than left to fail silently in the direction that reads as "blocked".
 
 `global-routes` / `global-routes-set` edit an admin-wide layer applied to every
-split-tunnel export, on top of the profile's active feed:
+split-tunnel profile:
 
-1. the active feed payload's addresses;
-2. **minus** the admin exclusions (exact match);
-3. **plus** the admin additions;
-4. **plus** the owner's own custom routes — applied last on purpose, so a user
-   who lists an excluded entry in `user-routes` opts back into it.
+1. Writing `global-routes-set` (or saving in Administration → Rules) immediately
+   re-arms the worker's `rules.refresh` job so the worker bakes the exclusions
+   (as exact un-expanded direct shields) and additions (as highest-precedence
+   inclusions) into a freshly compacted `route_rule_versions` snapshot — bumping
+   the active version so existing keys flag `rulesOutdated`.
+2. At export time (`routeMerge.ts`), the same precedence still applies directly
+   on top of the active feed payload (instant fallback before the worker tick
+   finishes, without duplicating additions already covered by the compacted
+   snapshot):
+   - the active feed payload's addresses;
+   - **minus** the admin exclusions (CIDR-aware: punches exact holes out of any
+     enclosing supernet while keeping unrelated prefixes verbatim);
+   - **plus** the admin additions not already covered;
+   - **plus** the owner's own custom routes — applied last on purpose, so a user
+     who lists an excluded entry in `user-routes` opts back into it.
 
 ```sh
 amnezia-panel global-routes
@@ -636,12 +646,15 @@ the meantime; they route nothing either way.
 
 The worker fetches the split-tunnel profile's list from the feeds in
 `RULE_FEEDS` (or, unset, from the built-in defaults) and stores every fetch as a
-row in `route_rule_versions`. Out of the box `ru_blacklist` is merged from
-iplist and the itdoginfo provider ranges (CIDRs) *and* Re-filter-lists
-(domains), with ipdeny's Russian address space subtracted (see
-[`AGENT-HOST-SETUP.md`](./AGENT-HOST-SETUP.md#route-profiles-and-rule-feeds)). Nothing in the panel names a
-provider in a shared label — each version is attributed from its own stored
-`source_url`.
+row in `route_rule_versions`. Out of the box `ru_blacklist` is built from
+ipdeny's Russian IPv4/IPv6 space (subtracted) together with protected service
+ranges (iplist, itdoginfo IPv4/IPv6 subnets, Re-filter-lists, and `RULE_EXTRAS`)
+and compacted by default in `compact_world` (E-Core) mode with direct shields
+for Apple and Valve AS32590 SteamCache (see
+[`AGENT-HOST-SETUP.md`](./AGENT-HOST-SETUP.md#route-profiles-and-rule-feeds)).
+Nothing in the panel names a provider in a shared label — each version is
+attributed from its own stored `source_url`, and `rules` prints the IPv4/IPv6
+count breakdown alongside `compactionMode` when recorded in `validationReport`.
 
 ```sh
 # what feeds each profile, what is live, and every version's id

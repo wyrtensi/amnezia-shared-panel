@@ -23,4 +23,12 @@ describe("RULE_EXTRAS", () => {
     const wardogs = RULE_EXTRAS.find((extra) => extra.name === "wardogs");
     expect(wardogs?.cidrs).toEqual(["54.115.0.0/16", "85.236.96.0/21", "85.236.104.0/23"]);
   });
+
+  it("includes Google/YouTube dual-stack and Anthropic prefixes", () => {
+    const google = RULE_EXTRAS.find((extra) => extra.name === "google-youtube");
+    expect(google?.cidrs).toContain("142.250.0.0/15");
+    expect(google?.cidrs).toContain("2a00:1450::/32");
+    const anthropic = RULE_EXTRAS.find((extra) => extra.name === "anthropic");
+    expect(anthropic?.cidrs).toContain("160.79.104.0/23");
+  });
 });
