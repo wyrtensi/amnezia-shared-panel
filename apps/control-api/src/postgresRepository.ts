@@ -52,6 +52,7 @@ import type {
   NodeBridgeRoutes,
   NodeEndpointAssignment,
   NodePublicEndpointMutation,
+  NodePublicEndpointMutationResult,
   PrepareBridgeRouteRequest,
   PrepareBridgeRouteResult,
   ReleaseBridgeRouteResult,
@@ -677,7 +678,7 @@ export class PostgresControlRepository implements ControlRepository {
     if (email === SERVICE_ACCOUNT_EMAIL) {
       throw new ApiError(403, "User is disabled", "USER_DISABLED");
     }
-    return this.options.db.transaction(async (tx) => {
+    const resolve = () => this.options.db.transaction(async (tx) => {
       const existingIdentity = await tx
         .select({ user: users })
         .from(identities)
@@ -791,6 +792,20 @@ export class PostgresControlRepository implements ControlRepository {
       });
       return toActor(user);
     });
+
+    for (let retries = 0; ; retries += 1) {
+      try {
+        return await resolve();
+      } catch (error) {
+        // A concurrent first login can claim the email or the provider identity.
+        // Retry the full transaction so a tentative user rolls back and the
+        // next attempt reads the committed account or identity.
+        const collision =
+          isUniqueViolation(error, "users_email_unique") ||
+          isUniqueViolation(error, "identities_provider_subject_unique");
+        if (!collision || retries === 2) throw error;
+      }
+    }
   };
 
   getMe = async (actor: Actor): Promise<Record<string, unknown>> => {
@@ -1119,6 +1134,7 @@ export class PostgresControlRepository implements ControlRepository {
         publicAddress: endpoint.address,
         enabled: endpoint.enabled,
         reachabilityEnabled: endpoint.reachabilityEnabled,
+        bridgeMode: endpoint.bridgeMode,
         reachability,
         probeStatus: state?.status ?? null,
         probeLevels: state ? parsedLevels : null,
@@ -1611,7 +1627,7 @@ export class PostgresControlRepository implements ControlRepository {
     actor: Actor,
     nodeId: string,
     request: NodePublicEndpointMutation,
-  ) => {
+  ): Promise<NodePublicEndpointMutationResult["publicEndpoint"]> => {
     let row: typeof nodeVpnEndpoints.$inferSelect | undefined;
     if (request.action === "add") {
       const [node] = await tx.select({
@@ -1677,6 +1693,7 @@ export class PostgresControlRepository implements ControlRepository {
       const resetEvidence = changeEnabled || (changeReachability && request.reachabilityEnabled === false);
       [row] = await tx.update(nodeVpnEndpoints).set({
         name: request.name ?? current.name,
+        bridgeMode: request.bridgeMode ?? current.bridgeMode,
         ...(changeEnabled ? { enabled: request.enabled, revision: current.revision + 1 } : {}),
         ...(changeReachability ? { reachabilityEnabled: request.reachabilityEnabled } : {}),
         ...(resetEvidence ? {
@@ -1702,6 +1719,7 @@ export class PostgresControlRepository implements ControlRepository {
         ordinal: row.ordinal,
         enabled: row.enabled,
         reachabilityEnabled: row.reachabilityEnabled,
+        bridgeMode: row.bridgeMode,
       },
     });
     return {
@@ -1711,6 +1729,7 @@ export class PostgresControlRepository implements ControlRepository {
       publicAddress: row.address,
       enabled: row.enabled,
       reachabilityEnabled: row.reachabilityEnabled,
+      bridgeMode: row.bridgeMode,
     };
   };
 
@@ -2120,6 +2139,7 @@ export class PostgresControlRepository implements ControlRepository {
                 : null,
               activeRoute: bridgeRoutes.activeByNode.get(key.nodeId) ?? null,
               useBridge: policy.useBridge,
+              endpointBridgeMode: endpoint?.bridgeMode,
             })
           : undefined;
         const usesCurrentBridge = bridge?.effective &&
@@ -2651,6 +2671,7 @@ export class PostgresControlRepository implements ControlRepository {
         nodePublicName: nodes.publicName,
         endpointName: nodeVpnEndpoints.name,
         endpointAddress: nodeVpnEndpoints.address,
+        endpointBridgeMode: nodeVpnEndpoints.bridgeMode,
         nodeIpv6RejectStubEnabled: nodes.ipv6RejectStubEnabled,
         nodeIpv6RejectStubState: nodes.ipv6RejectStubState,
         nodeIpv6RejectStubPrefix: nodes.ipv6RejectStubPrefix,
@@ -2738,6 +2759,7 @@ export class PostgresControlRepository implements ControlRepository {
       pinnedRoute: pinnedRouteRecord,
       activeRoute: activeRouteRecord,
       useBridge: resolvedPolicy.useBridge,
+      endpointBridgeMode: row.endpointBridgeMode ?? undefined,
     });
     return {
       id: row.key.id,
@@ -3708,6 +3730,7 @@ export class PostgresControlRepository implements ControlRepository {
               nodeId: vpnKeys.nodeId,
               endpointId: vpnKeys.endpointId,
               endpointName: nodeVpnEndpoints.name,
+              endpointBridgeMode: nodeVpnEndpoints.bridgeMode,
               publicKey: vpnKeys.publicKey,
               protocol: vpnKeys.protocol,
               state: vpnKeys.state,
@@ -3757,6 +3780,7 @@ export class PostgresControlRepository implements ControlRepository {
             nameShowLabel,
             nameShowNumber,
             bridgeMode,
+            endpointBridgeMode,
             vpnBridgeRouteId,
             ownerPolicyOverride,
             ...row
@@ -3780,6 +3804,7 @@ export class PostgresControlRepository implements ControlRepository {
                   : null,
                 activeRoute: bridgeRoutes.activeByNode.get(row.nodeId) ?? null,
                 useBridge: ownerPolicy.useBridge,
+                endpointBridgeMode: endpointBridgeMode ?? undefined,
               }),
               online: online ?? false,
               traffic:

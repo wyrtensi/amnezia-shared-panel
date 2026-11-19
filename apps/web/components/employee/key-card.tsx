@@ -39,11 +39,8 @@ import { KeyRenameDialog } from "@/components/employee/key-rename-dialog";
 import { configUrl } from "@/lib/api";
 import { formatDate } from "@/lib/format";
 import { formatLastSeen } from "@/lib/activity";
-import { keyDelivery } from "@/lib/key-delivery";
-import {
-  UPDATE_NOTICE_STAMP_MS,
-  type KeyAccessGuard,
-} from "@/lib/update-notice";
+import { copyVpnLink, keyDelivery } from "@/lib/key-delivery";
+import { UPDATE_NOTICE_STAMP_MS, type KeyAccessGuard } from "@/lib/update-notice";
 import { TrafficSplit } from "@/components/inline-traffic";
 import { useT } from "@/lib/i18n/provider";
 import { deviceIconFor } from "@/components/device-icon";
@@ -94,8 +91,7 @@ export function KeyCard({
    * This card just fetched the key's config: a copy or a file download. The
    * server records every such owner download as the rules being delivered,
    * so the dashboard can drop the "rules updated" flag without a reload.
-   * Opening the config dialog is NOT a delivery -- on a file-only profile it
-   * fetches nothing until a file is taken -- so it never calls this.
+   * The split-profile dialog waits for an explicit copy or download.
    */
   onConfigDelivered: () => void;
   onShowConfig: () => void;
@@ -142,9 +138,6 @@ export function KeyCard({
   // unlike Reissue, this has nothing to do with rules.
   const canRefreshConfig =
     active && me.policy.allowConfigRedownload && keyView.protocol === "awg3";
-  // Whether this key can travel as a link at all — see lib/key-delivery.ts.
-  // On a file-only profile both QR and Copy hand over a truncated key that
-  // fails at import without saying so, which is worse than not offering them.
   const delivery = keyDelivery(keyView.routeProfile);
   const revocable =
     me.policy.allowSelfRevoke &&
@@ -399,7 +392,7 @@ export function KeyCard({
                     is the row's primary and paints itself `bg-primary`, so the
                     border here is `border-primary`: the same token, tracking the
                     theme in both light and dark rather than a pinned hex. */}
-                {me.policy.allowQrDownload && delivery.linkUsable ? (
+                {me.policy.allowQrDownload && delivery.qrUsable ? (
                   <Tooltip>
                     <TooltipTrigger asChild>
                       <Button
@@ -417,21 +410,15 @@ export function KeyCard({
                     <TooltipContent>{t("keyCard.qrAndLink")}</TooltipContent>
                   </Tooltip>
                 ) : null}
-                {delivery.linkUsable ? (
+                {delivery.clipboard !== "unavailable" ? (
                   <CopyKeyButton
                     keyId={keyView.id}
                     disabled={busy}
                     guardKeyAccess={guardKeyAccess}
                     onDelivered={onConfigDelivered}
+                    split={delivery.clipboard === "on-demand"}
                   />
                 ) : (
-                  // Stands in for BOTH buttons above, and deliberately keeps a
-                  // door into the config dialog: that dialog is the only place
-                  // the reason is written out at length, and it was reachable
-                  // only through the QR button, which this profile no longer
-                  // has. It carries no `allowQrDownload` gate because it hands
-                  // over no QR — the dialog's own flags still decide what is
-                  // inside it. `.vpn` beside it takes the primary colour.
                   <Tooltip>
                     <TooltipTrigger asChild>
                       <Button
@@ -458,14 +445,13 @@ export function KeyCard({
                   button already hands out as text, so it needs no extra policy
                   gate. It is the only download drawn as a button, because it is
                   the shape that survives import with the connection name the
-                  panel gave it. It is not coloured as a primary action either —
-                  Copy is — so the row still reads as one route to the key.
+                  panel gave it. It is the primary action for split profiles.
                 */}
                 <FormatDownload
                   href={configUrl(keyView.id, "vpn")}
                   format=".vpn"
                   label={t("common.downloadVpnFile")}
-                  primary={!delivery.linkUsable}
+                  primary={!delivery.qrUsable}
                   guardKeyAccess={guardKeyAccess}
                   onDelivered={onConfigDelivered}
                 />
@@ -615,9 +601,7 @@ function FormatDownload({
   label: string;
   quiet?: boolean;
   /**
-   * Paint this download as the row's primary action. Set on `.vpn` when Copy
-   * is absent: on a file-only profile the row has no coloured action at all
-   * otherwise, and the one route that works reads as an afterthought.
+   * Paint `.vpn` as the primary action on profiles without QR.
    */
   primary?: boolean;
   guardKeyAccess: KeyAccessGuard;
@@ -704,11 +688,13 @@ function CopyKeyButton({
   disabled,
   guardKeyAccess,
   onDelivered,
+  split,
 }: {
   keyId: string;
   disabled?: boolean;
   guardKeyAccess: KeyAccessGuard;
   onDelivered: () => void;
+  split: boolean;
 }) {
   const { t } = useT();
   const [state, setState] = React.useState<CopyState>("idle");
@@ -736,19 +722,28 @@ function CopyKeyButton({
   };
 
   const copy = async (covered = false) => {
+    if (timer.current) clearTimeout(timer.current);
     setState("busy");
     try {
-      const res = await fetch(configUrl(keyId, "vpn"));
-      if (!res.ok) throw new Error("failed");
-      const text = (await res.text()).trim();
-      await navigator.clipboard.writeText(text);
+      const href = configUrl(keyId, "vpn");
+      if (split) {
+        if (!(await copyVpnLink(href))) {
+          setState("error");
+          toast.error(t("config.copyTooLong"));
+          return;
+        }
+      } else {
+        const res = await fetch(href);
+        if (!res.ok) throw new Error("failed");
+        await navigator.clipboard.writeText((await res.text()).trim());
+      }
       onDelivered();
       setState("copied");
       toast.success(t("keyCard.copyToast"));
-      reset(covered);
     } catch {
       setState("error");
       toast.error(t("keyCard.copyErrToast"));
+    } finally {
       reset(covered);
     }
   };
@@ -779,7 +774,7 @@ function CopyKeyButton({
   return (
     <Button
       type="button"
-      variant={state === "copied" ? "secondary" : "default"}
+      variant={state === "copied" || split ? "secondary" : "default"}
       size="sm"
       disabled={disabled || state === "busy"}
       onClick={() => guardKeyAccess((deferred) => void copy(deferred))}

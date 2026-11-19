@@ -456,9 +456,11 @@ node-agent `POST /clients` (mapping `awg3 → amneziawg3`) and returns an import
 
 ### Route profiles and rule feeds
 
-Profiles (`packages/contracts` `routeProfileSchema`): `full_tunnel` (always
-available), `ru_blacklist` (only the addresses in its feed go through the
-tunnel; everything else goes direct).
+The routing profiles in `packages/contracts` are `full_tunnel` (All traffic)
+and `ru_blacklist` (Outside Runet). For Outside Runet, the addresses in the feed
+go through the tunnel and all other addresses go direct. Users can copy the
+`vpn://` key when the exported link fits AmneziaVPN's 32,767-character paste
+limit or download a `.vpn` file. The panel hides QR codes for this profile.
 
 > An earlier `ru_whitelist` profile (everything through the tunnel **except**
 > the addresses in its feed) was never confirmed to work and has since been
@@ -467,7 +469,8 @@ tunnel; everything else goes direct).
 
 Non-full-tunnel profiles apply their active rule set to `AllowedIPs` **at export
 time**; the official client can't refresh routing on an imported config, so a
-rules change flags the key `rulesOutdated` and the user re-downloads. That flag
+rules change flags the key `rulesOutdated` and the user imports the updated key.
+That flag
 follows the feed's version and only the feed's version — a change to how the
 feed is turned into routes leaves every already-exported key unflagged (see
 "Key rotation" below).

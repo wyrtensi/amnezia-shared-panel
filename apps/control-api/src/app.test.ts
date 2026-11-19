@@ -649,6 +649,23 @@ describe("control API authorization", () => {
     await app.close();
   });
 
+  it("requests the clipboard length guard only for VPN text exports", async () => {
+    const service = createService();
+    const app = await buildApp({
+      service,
+      environment: "development",
+      allowDevIdentity: true,
+    });
+    const keyId = "0b48cc4c-404b-47a6-af28-4cf15f305e30";
+    const url = `/api/keys/${keyId}/config`;
+    const headers = { "x-dev-user-email": user.email };
+    expect((await app.inject({ url: `${url}?format=vpn&clipboard=true`, headers })).statusCode).toBe(200);
+    expect(service.getKeyConfig).toHaveBeenCalledExactlyOnceWith(user, keyId, "vpn", false, true);
+    expect((await app.inject({ url: `${url}?format=qr-svg&clipboard=true`, headers })).statusCode).toBe(400);
+    expect(service.getKeyConfig).toHaveBeenCalledTimes(1);
+    await app.close();
+  });
+
   // The download's name is the connection's name now, and those are written in
   // the operator's language. A single `filename=` is a byte string, so without
   // the `filename*` half every Russian-named key would arrive as `amnezia-key`.

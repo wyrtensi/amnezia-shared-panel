@@ -310,6 +310,8 @@ export const createNodeRequestSchema = z.object({
 });
 
 const nodeEndpointNameSchema = z.string().trim().min(1).max(120);
+export const endpointBridgeModeSchema = z.enum(["inherit", "direct", "bridge"]);
+export type EndpointBridgeMode = z.infer<typeof endpointBridgeModeSchema>;
 
 export const nodeEndpointDefaultName = (name: string, ordinal: number): string => {
   const suffix = `-${ordinal}`;
@@ -329,13 +331,15 @@ export const nodePublicEndpointMutationSchema = z.discriminatedUnion("action", [
     name: nodeEndpointNameSchema.optional(),
     enabled: z.boolean().optional(),
     reachabilityEnabled: z.boolean().optional(),
+    bridgeMode: endpointBridgeModeSchema.optional(),
   }).strict().refine(
     (fields) =>
       fields.name !== undefined ||
       fields.enabled !== undefined ||
-      fields.reachabilityEnabled !== undefined,
+      fields.reachabilityEnabled !== undefined ||
+      fields.bridgeMode !== undefined,
     {
-      message: "An endpoint name, availability, or reachability setting is required",
+      message: "An endpoint name, availability, reachability, or bridge setting is required",
     },
   ),
 ]);
@@ -1334,6 +1338,9 @@ export type ConfigRefreshResult = z.infer<typeof configRefreshResultSchema>;
 export const CONFIG_REFRESH_UNAVAILABLE = "CONFIG_REFRESH_UNAVAILABLE";
 /** The token was issued for a revision or a config that is no longer current. */
 export const CONFIG_REFRESH_STALE = "CONFIG_REFRESH_STALE";
+
+/** Default limit of the AmneziaVPN connection-key input. */
+export const VPN_CLIPBOARD_MAX_CHARS = 32_767;
 
 export type ProtocolKind = z.infer<typeof protocolKindSchema>;
 export type KeyState = z.infer<typeof keyStateSchema>;
@@ -2336,6 +2343,7 @@ export type UserNodeEndpoint = z.infer<typeof userNodeEndpointSchema>;
 export const adminNodeEndpointSchema = userNodeEndpointSchema.extend({
   publicAddress: z.ipv4(),
   enabled: z.boolean(),
+  bridgeMode: endpointBridgeModeSchema.optional(),
   reachabilityEnabled: z.boolean().optional(),
   probeStatus: reachabilityStatusSchema.nullable(),
   probeLevels: probeLevelsSchema.nullable().optional(),
@@ -2346,6 +2354,19 @@ export const adminNodeEndpointSchema = userNodeEndpointSchema.extend({
   probeDetail: z.string().nullable(),
 });
 export type AdminNodeEndpoint = z.infer<typeof adminNodeEndpointSchema>;
+
+export const nodePublicEndpointMutationResultSchema = z.object({
+  id: z.uuid(),
+  publicEndpoint: adminNodeEndpointSchema.pick({
+    id: true,
+    ordinal: true,
+    name: true,
+    publicAddress: true,
+    enabled: true,
+    reachabilityEnabled: true,
+  }).extend({ bridgeMode: endpointBridgeModeSchema }),
+});
+export type NodePublicEndpointMutationResult = z.infer<typeof nodePublicEndpointMutationResultSchema>;
 
 export const UNKNOWN_USER_REACHABILITY: UserNodeReachability = Object.freeze({
   state: "unknown",

@@ -717,10 +717,8 @@ function GuideVideo({ url }: { url: string | null }) {
 }
 
 /**
- * The key as a file — the second way to add one, collapsed. Copying the key is
- * the path almost everyone takes; the file only wins for a split-tunnel profile,
- * whose key is too long to be pleasant to paste. Behind a spoiler so the three
- * steps above stay the whole of what a first-time reader sees.
+ * The file import steps are collapsed. A .vpn file also works when a
+ * split-tunnel key exceeds AmneziaVPN's paste limit.
  *
  * The file the steps teach is `.vpn`, not `.conf`. Both go into the app through
  * the same "import from file" menu, so for the reader they differ only in which

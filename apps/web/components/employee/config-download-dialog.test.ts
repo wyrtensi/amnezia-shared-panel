@@ -2,8 +2,6 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
-import { keyDelivery } from "@/lib/key-delivery";
-
 import { messages } from "@/lib/i18n/messages";
 import {
   needsCameraWarning,
@@ -108,27 +106,22 @@ describe("config.qrAwgWarning", () => {
   });
 });
 
-// Regression, found in production on v0.9.44: the dialog withdrew the QR for
-// file-only profiles but kept fetching the frame series behind it, because the
-// default audience is the in-app one and the frames effect never asked about
-// delivery. The control-api answered 422 QR_TOO_LARGE — after building frames
-// for a payload past a megabyte — once per dialog open.
-describe("file-only profiles fetch nothing they cannot show", () => {
+describe("split-profile dialog fetches a key only on demand", () => {
   const source = readFileSync(
     fileURLToPath(new URL("./config-download-dialog.tsx", import.meta.url)),
     "utf8",
   );
 
-  it("gates the vpn:// link fetch on delivery", () => {
-    expect(source).toMatch(/if \(!delivery\.linkUsable\) \{\s*\n\s*setLoading\(false\);/);
+  it("prefetches the link only when it is shown as inline text", () => {
+    expect(source).toMatch(/if \(delivery\.clipboard !== "inline"\) \{\s*\n\s*setLoading\(false\);/);
   });
 
   it("gates the qr-frames fetch on delivery too", () => {
     expect(source).toMatch(
-      /!target \|\| !delivery\.linkUsable \|\| !usesFrames\(qrFor\)/,
+      /!target \|\| !showQr \|\| !usesFrames\(qrFor\)/,
     );
     expect(source).toContain(
-      "[target, delivery.linkUsable, qrFor, frames, frameAttempt]",
+      "[target, showQr, qrFor, frames, frameAttempt]",
     );
   });
 
@@ -162,12 +155,11 @@ describe("download dialog after a config refresh", () => {
     }
   });
 
-  it("tells the user old imported files keep their endpoint, in both languages, above the file-only box too", () => {
+  it("tells the user the old connection keeps its endpoint, in both languages", () => {
     expect(dialogSource).toMatch(
       /target\?\.revision !== undefined \? \([\s\S]{0,400}config\.refreshedImportHint/,
     );
-    // The hint block sits before the link/file-only branch, so a file-only
-    // profile (ru_blacklist) shows it as well and still gets no link or QR.
+    // The hint sits above all delivery controls for the refreshed config.
     expect(dialogSource.indexOf("config.refreshedImportHint")).toBeLessThan(
       dialogSource.indexOf("config.fileOnlyTitle"),
     );
@@ -181,27 +173,16 @@ describe("download dialog after a config refresh", () => {
     expect(dialogSource).not.toMatch(/bridge/i);
   });
 
-  it("stays file-only for a blocked-only profile", () => {
-    const delivery = keyDelivery("ru_blacklist");
-    expect(delivery.linkUsable).toBe(false);
+  it("copies the refreshed revision from the same URL as the file download", () => {
+    expect(dialogSource).toContain('copyVpnLink(configUrl(target.id, "vpn", target.revision))');
+    expect(dialogSource).toContain('href={configUrl(target.id, "vpn", target.revision)} download');
   });
 
-  it("does not promise a link or a QR above a file-only dialog", () => {
-    expect(dialogSource).toContain(
-      't(delivery.linkUsable ? "config.desc" : "config.descFileOnly")',
-    );
+  it("offers both copy and file import to split-profile users in both languages", () => {
     for (const lang of ["ru", "en"] as const) {
-      const text = messages[lang]["config.descFileOnly"];
-      expect(text).toBeTruthy();
-      expect(text).not.toMatch(/QR|ссылк|link/i);
+      expect(messages[lang]["config.descSplit"]).toMatch(/скопируйте|copy/i);
+      expect(messages[lang]["config.descSplit"]).toContain(".vpn");
+      expect(messages[lang]["config.copyTooLong"]).toContain(".vpn");
     }
-  });
-
-  it("still fetches nothing up front for a file-only profile, refreshed or not", () => {
-    expect(dialogSource).toMatch(/if \(!delivery\.linkUsable\) \{/);
-    expect(keyDelivery("ru_blacklist")).toEqual({
-      linkUsable: false,
-      reasonKey: expect.any(String) as string,
-    });
   });
 });

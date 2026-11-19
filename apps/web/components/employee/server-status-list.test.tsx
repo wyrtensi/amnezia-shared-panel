@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 
 import type { NodeView } from "@/lib/types";
 
-import { ServerStatusList } from "./server-status-list";
+import { ServerAddressList, ServerStatusList } from "./server-status-list";
 
 const node = (id: string, over: Partial<NodeView> = {}): NodeView => ({
   id,
@@ -56,5 +56,19 @@ describe("ServerStatusList", () => {
   it("draws no dot when the API sends no verdict", () => {
     const bare = renderToStaticMarkup(<ServerStatusList nodes={[node("x")]} />);
     expect(bare).not.toContain("rounded-full");
+  });
+
+  it("shows only supplied address labels and statuses in the node details", () => {
+    const addresses = renderToStaticMarkup(
+      <ServerAddressList addresses={[
+        { id: "a", ordinal: 1, name: "First address", reachability: { state: "ok", since: null } },
+        { id: "b", ordinal: 2, name: "Second address", publicAddress: "192.0.2.22" },
+      ]} />,
+    );
+    expect(addresses).toContain('aria-label="Адреса подключения"');
+    expect(addresses).toContain('title="Работает"');
+    expect(addresses.indexOf("First address")).toBeLessThan(addresses.indexOf("Second address"));
+    expect(addresses.match(/<code/g)).toHaveLength(1);
+    expect(addresses).toContain("192.0.2.22");
   });
 });

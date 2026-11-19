@@ -10,6 +10,7 @@ import {
   TriangleAlert,
 } from "lucide-react";
 import { toast } from "sonner";
+import { endpointBridgeModeSchema } from "@amnezia/contracts";
 import type {
   Bridge,
   BridgeEligibility,
@@ -51,6 +52,7 @@ import {
   listInfrastructure,
   prepareRoute,
   releaseRoute,
+  setAddressBridgeMode,
   setNodeEndpoint,
   verifyRouteByOperator,
   verifyRouteByProbe,
@@ -341,6 +343,17 @@ export function NodeRoutesEditor({ initialNodeId }: { initialNodeId: string | nu
     });
   };
 
+  const endpointsByNode = new Map(nodes.map((node) => [node.id, node.publicEndpoints ?? []]));
+
+  const handleAddressMode = (nodeId: string, endpointId: string, value: string) => {
+    const bridgeMode = endpointBridgeModeSchema.parse(value);
+    void runForNode(nodeId, `address-${endpointId}`, async () => {
+      await setAddressBridgeMode(request, nodeId, endpointId, bridgeMode);
+      await reloadAdmin();
+      return t("bridge.addressModeSaved");
+    });
+  };
+
   return (
     <Card id="node-routes">
       <CardHeader>
@@ -381,6 +394,7 @@ export function NodeRoutesEditor({ initialNodeId }: { initialNodeId: string | nu
         ) : (
           <ol className="space-y-1.5 rounded-lg border border-border/60 bg-well p-1.5 shadow-[var(--inset-shadow)]">
             {orderedServers.map((server) => {
+              const endpoints = endpointsByNode.get(server.id) ?? [];
               const activeBridge = server.activeRoute
                 ? bridges.find((bridge) => bridge.id === server.activeRoute?.bridgeId) ?? null
                 : null;
@@ -529,6 +543,42 @@ export function NodeRoutesEditor({ initialNodeId }: { initialNodeId: string | nu
                       </Button>
                     </div>
                   </div>
+
+                  {endpoints.length > 0 ? (
+                    <ul aria-label={t("bridge.addressMode")} className="space-y-1 border-t border-border/60 px-3 py-2">
+                      {endpoints.map((endpoint) => {
+                        const mode = endpoint.bridgeMode ?? "inherit";
+                        return (
+                          <li key={endpoint.id} className="flex flex-wrap items-center justify-between gap-2 rounded-md bg-well/50 px-2 py-1.5">
+                            <div className="min-w-0 flex-1">
+                              <span className="break-words text-sm">{endpoint.name}</span>
+                              <code className="ml-1.5 break-all text-xs text-muted-foreground">{endpoint.publicAddress}</code>
+                              {mode === "bridge" && !server.activeRoute && !infraLoading && vpnItems.length > 0 ? (
+                                <p className="text-xs text-muted-foreground">{t("bridge.addressNoActiveRoute")}</p>
+                              ) : null}
+                            </div>
+                            <Select
+                              value={mode}
+                              disabled={busy !== null}
+                              onValueChange={(value) => handleAddressMode(server.id, endpoint.id, value)}
+                            >
+                              <SelectTrigger
+                                aria-label={`${endpoint.name} — ${t("bridge.addressMode")}`}
+                                className="h-8 w-full sm:w-44"
+                              >
+                                <SelectValue />
+                              </SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value="inherit">{t("bridge.addressInherit")}</SelectItem>
+                                <SelectItem value="direct">{t("bridge.addressDirect")}</SelectItem>
+                                <SelectItem value="bridge">{t("bridge.addressViaBridge")}</SelectItem>
+                              </SelectContent>
+                            </Select>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  ) : null}
 
                   {expanded ? (
                     <div className="space-y-3 border-t border-border/60 bg-well/40 p-3">

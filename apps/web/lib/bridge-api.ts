@@ -5,6 +5,7 @@ import {
   type BridgeAgentUpdateView,
   type BridgeEligibility,
   type CreateBridgeRequest,
+  type EndpointBridgeMode,
   type InfrastructureItem,
   type NodeBridgeRoutes,
   type PrepareBridgeRouteResult,
@@ -12,6 +13,8 @@ import {
   type ReleaseBridgeRouteResult,
   type VerifyBridgeRouteResult,
   type NodeEndpointAssignment,
+  type NodePublicEndpointMutationResult,
+  type UpdateNodeRequest,
   type DeleteBridgeResult,
 } from "@amnezia/contracts";
 import { ApiClientError } from "@/lib/api";
@@ -97,6 +100,19 @@ export const setNodeEndpoint = (
   request<{ id: string; vpnEndpoint: NodeEndpointAssignment }>(
     `/api/admin/nodes/${nodeId}`,
     json("PATCH", { vpnBridgeRouteId: routeId, expectedVpnEndpointRevision }),
+  );
+
+export const setAddressBridgeMode = (
+  request: Requester,
+  nodeId: string,
+  endpointId: string,
+  bridgeMode: EndpointBridgeMode,
+) =>
+  request<NodePublicEndpointMutationResult>(
+    `/api/admin/nodes/${nodeId}`,
+    json("PATCH", {
+      publicEndpoint: { action: "update", id: endpointId, bridgeMode },
+    } satisfies UpdateNodeRequest),
   );
 
 export const releaseRoute = (request: Requester, routeId: string) =>

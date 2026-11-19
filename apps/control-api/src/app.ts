@@ -106,6 +106,10 @@ const configQuerySchema = z.object({
       z.enum(["true", "false"]).transform((value) => value === "true"),
     ])
     .default(false),
+  clipboard: z.enum(["true", "false"]).optional(),
+}).refine((query) => query.clipboard !== "true" || query.format === "vpn", {
+  path: ["clipboard"],
+  message: "Clipboard export requires format=vpn",
 });
 
 const getDevelopmentIdentity = (request: FastifyRequest): IdentityClaim | null => {
@@ -264,6 +268,7 @@ export const buildApp = async ({
       id,
       query.format,
       query.adminConfirmed,
+      ...(query.clipboard === "true" ? [true] as const : [] as const),
     );
     reply.header("cache-control", "private, no-store");
     reply.header("pragma", "no-cache");

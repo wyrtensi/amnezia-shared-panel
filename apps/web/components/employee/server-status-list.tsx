@@ -1,5 +1,6 @@
 "use client";
 
+import type { UserNodeEndpoint } from "@amnezia/contracts";
 import { Badge } from "@/components/ui/badge";
 import { useT } from "@/lib/i18n/provider";
 import { blockedFirst, formatSince, useHydrated } from "@/lib/node-reachability";
@@ -21,9 +22,7 @@ const DOT: Record<UserNodeReachability["state"], { className: string; labelKey: 
  */
 export function ServerStatusList({ nodes }: { nodes: readonly NodeView[] }) {
   const { t } = useT();
-  // "since" is shown in the browser's zone, so only once hydrated.
-  const hydrated = useHydrated();
-  const addresses = nodes.flatMap<Pick<NodeView, "id" | "name" | "recommended" | "reachability" | "publicAddress">>(
+  const addresses = nodes.flatMap<ServerStatusEntry>(
     (node) => {
       if (!node.publicEndpoints?.length) return [node];
       const direct = node.publicEndpoints.map((endpoint) => ({
@@ -40,9 +39,23 @@ export function ServerStatusList({ nodes }: { nodes: readonly NodeView[] }) {
       ];
     },
   );
+  return <ServerStatusRows entries={blockedFirst(addresses)} label={t("emp.servers")} />;
+}
+
+export function ServerAddressList({ addresses }: { addresses: readonly UserNodeEndpoint[] }) {
+  const { t } = useT();
+  return <ServerStatusRows entries={addresses} label={t("emp.connectionAddresses")} />;
+}
+
+type ServerStatusEntry = Pick<NodeView, "id" | "name" | "recommended" | "reachability" | "publicAddress">;
+
+function ServerStatusRows({ entries, label }: { entries: readonly ServerStatusEntry[]; label: string }) {
+  const { t } = useT();
+  // "since" is shown in the browser's zone, so only once hydrated.
+  const hydrated = useHydrated();
   return (
-    <ul className="space-y-1.5" aria-label={t("emp.servers")}>
-      {blockedFirst(addresses).map((node) => {
+    <ul className="space-y-1.5" aria-label={label}>
+      {entries.map((node) => {
         const reachability = node.reachability;
         const dot = reachability ? DOT[reachability.state] : null;
         return (
@@ -56,7 +69,7 @@ export function ServerStatusList({ nodes }: { nodes: readonly NodeView[] }) {
               </span>
             ) : null}
             <span className="min-w-0">
-              <span className="flex min-w-0 items-center gap-1.5">
+              <span className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5">
                 <span className="truncate text-sm">{node.name}</span>
                 {node.publicAddress ? (
                   <code className="truncate text-xs text-muted-foreground">{node.publicAddress}</code>

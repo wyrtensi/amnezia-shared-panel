@@ -55,11 +55,36 @@ describe("resolveKeyBridgeInfo", () => {
     });
   });
 
+  it("uses the node's active bridge for an address that opts in independently of user policy", () => {
+    expect(resolveKeyBridgeInfo({
+      protocol: "awg3",
+      bridgeMode: "inherit",
+      endpointBridgeMode: "bridge",
+      pinnedRouteId: null,
+      pinnedRoute: null,
+      activeRoute: ACTIVE_ROUTE,
+      useBridge: false,
+    }).effective).toEqual({ ...ACTIVE_ROUTE, source: "endpoint" });
+  });
+
+  it("keeps a direct address Direct when user policy enables the bridge", () => {
+    expect(resolveKeyBridgeInfo({
+      protocol: "awg3",
+      bridgeMode: "inherit",
+      endpointBridgeMode: "direct",
+      pinnedRouteId: null,
+      pinnedRoute: null,
+      activeRoute: ACTIVE_ROUTE,
+      useBridge: true,
+    }).effective).toBeNull();
+  });
+
   it("forces Direct when bridgeMode is direct even if useBridge is true", () => {
     expect(
       resolveKeyBridgeInfo({
         protocol: "awg3",
         bridgeMode: "direct",
+        endpointBridgeMode: "bridge",
         pinnedRouteId: null,
         pinnedRoute: null,
         activeRoute: ACTIVE_ROUTE,
@@ -77,6 +102,7 @@ describe("resolveKeyBridgeInfo", () => {
       resolveKeyBridgeInfo({
         protocol: "awg3",
         bridgeMode: "route",
+        endpointBridgeMode: "direct",
         pinnedRouteId: PINNED_ROUTE.routeId,
         pinnedRoute: PINNED_ROUTE,
         activeRoute: ACTIVE_ROUTE,

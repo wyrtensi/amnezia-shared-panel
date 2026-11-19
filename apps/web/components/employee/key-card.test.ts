@@ -192,7 +192,8 @@ describe("rules-updated callout", () => {
 
   it("reports a delivery only from a real fetch, never from opening the dialog", () => {
     // Copy, after the clipboard write; each file, as its download starts.
-    expect(source).toMatch(/writeText\(text\);\s*onDelivered\(\);/);
+    expect(source).toMatch(/await navigator\.clipboard\.writeText\([^;]+;\s*\}\s*onDelivered\(\);/);
+    expect(source).toMatch(/if \(!\(await copyVpnLink\(href\)\)\) \{[^}]*return;/);
     expect(source).toMatch(/downloadHref\(href\);\s*onDelivered\(\);/);
     expect(source).not.toMatch(/onShowConfig[^\n]*onConfigDelivered/);
   });
@@ -209,7 +210,7 @@ describe("rules-updated callout", () => {
     expect(source).toContain("ROUTE_LABEL[keyView.routeProfile]");
   });
 
-  it("offers a fresh download in both languages without demanding it", () => {
+  it("explains how to update the routing rules in both languages", () => {
     for (const lang of ["ru", "en"] as const) {
       const body = (messages[lang] as Record<string, string>)[
         "keyCard.rulesUpdatedBody"
@@ -225,21 +226,19 @@ describe("rules-updated callout", () => {
   });
 });
 
-// A key whose link cannot survive the trip must not be offered as a link. The
-// rule itself is unit-tested in lib/key-delivery.test.ts; what is pinned here
-// is that the card actually asks, and that it replaces the two withdrawn
-// buttons rather than quietly shrinking the row.
-describe("file-only profiles", () => {
+describe("split-profile delivery", () => {
   it("asks the shared rule instead of comparing the profile itself", () => {
     expect(source).toContain("keyDelivery(keyView.routeProfile)");
     expect(source).not.toMatch(/routeProfile !== "full_tunnel"[\s\S]{0,80}Copy/);
   });
 
-  it("withdraws both the QR button and Copy", () => {
-    expect(source).toContain("me.policy.allowQrDownload && delivery.linkUsable");
+  it("gates QR separately from Copy and checks the paste limit for split-key copy", () => {
+    expect(source).toContain("me.policy.allowQrDownload && delivery.qrUsable");
     expect(source).toMatch(
-      /delivery\.linkUsable \?\s*\(\s*<CopyKeyButton/,
+      /delivery\.clipboard !== "unavailable" \?\s*\(\s*<CopyKeyButton/,
     );
+    expect(source).toContain('split={delivery.clipboard === "on-demand"}');
+    expect(source).toMatch(/if \(split\) \{\s*if \(!\(await copyVpnLink\(href\)\)\)/);
   });
 
   it("keeps a door into the dialog that explains why", () => {
@@ -253,8 +252,8 @@ describe("file-only profiles", () => {
     );
   });
 
-  it("promotes .vpn to the row's primary action in their place", () => {
-    expect(source).toContain("primary={!delivery.linkUsable}");
+  it("keeps .vpn as the primary action for a profile without QR", () => {
+    expect(source).toContain("primary={!delivery.qrUsable}");
   });
 
   it("uses only copy that exists in both languages", () => {
@@ -276,7 +275,7 @@ describe("file-only profiles", () => {
  */
 describe("the update-notice gate", () => {
   it("hands every action to the guard rather than running it directly", () => {
-    // The QR, the file-only door into the dialog, the clipboard, both files.
+    // The QR, config dialog, clipboard and both files.
     expect(source).not.toMatch(/onClick=\{onShowConfig\}/);
     expect(source).not.toMatch(/onClick=\{\(\) => void copy\(\)\}/);
     const downloads = [...source.matchAll(/<FormatDownload[\s\S]{0,400}?\/>/g)];
@@ -314,7 +313,7 @@ describe("copy feedback under the update notice", () => {
     );
     // Both endings of the copy carry it: an error message that vanishes early
     // is the same failure as a confirmation that does.
-    expect(source.match(/reset\(covered\)/g)?.length).toBe(2);
+    expect(source).toMatch(/finally \{\s*reset\(covered\)/);
   });
 });
 

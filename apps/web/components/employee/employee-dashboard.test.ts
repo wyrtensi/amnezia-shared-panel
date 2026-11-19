@@ -7,6 +7,15 @@ const source = readFileSync(
   "utf8",
 );
 
+describe("selected connection address", () => {
+  it("includes the selected endpoint in the request that provisions the user's key", () => {
+    const create = source.slice(source.indexOf("const createKey ="), source.indexOf("const rotate ="));
+    expect(create).toMatch(
+      /apiRequest[\s\S]*"\/api\/keys"[\s\S]*endpointId:\s*payload\.endpointId/,
+    );
+  });
+});
+
 // The parsing and the writing of `?help=…&os=…` are unit-tested in
 // lib/help-links.test.ts. What only exists here is the wiring, and each of
 // these three has a failure mode that looks fine in a diff.
@@ -45,8 +54,8 @@ describe("rules-updated callout after a download", () => {
     );
   });
 
-  // Opening the dialog is not a download: a file-only key fetches nothing until
-  // a file is taken, so clearing the flag on the guard hid the callout only
+  // Opening the split-profile dialog fetches nothing until
+  // copy or download, so clearing the flag on the guard hid the callout only
   // until the dialog closed and the list brought it back.
   it("does not clear the flag merely for opening a guarded action", () => {
     expect(source).not.toMatch(/guardKeyAccess\(\(deferred\)[\s\S]{0,120}markRulesDelivered/);

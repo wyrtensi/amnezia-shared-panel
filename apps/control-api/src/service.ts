@@ -200,6 +200,7 @@ export interface ControlApiService {
     keyId: string,
     format: ConfigFormat,
     adminConfirmed: boolean,
+    clipboard?: boolean,
   ) => Promise<ConfigResult>;
   revokeOwnKey: (actor: Actor, keyId: string) => Promise<void>;
   rotateOwnKey: (actor: Actor, keyId: string) => Promise<void>;

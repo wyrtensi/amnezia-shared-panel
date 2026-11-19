@@ -14,16 +14,21 @@ Scope: only genuine AWG 3.1 artifacts follow a bridge. Native AWG 2 and an AWG3
 service's 2.0 fallback stay Direct. AWG 3.1 configs need AmneziaVPN client
 5.0.1.5 or newer.
 
-**Opt-in bridge routing (`useBridge`) and per-key overrides:**
+**Bridge routing for exported configs**
 
 - **Global & per-user policy (`useBridge`):** defaults to **`false`** globally
   so activating a route on a node does not silently move direct users onto a
   bridge. Enable it globally in **Policies → Node routes**
   (`amnezia-panel policy-set --useBridge=true`) or per user on the **Users**
   page (`amnezia-panel user-bridge <id|email> <true|false|inherit>`).
+- **Per-address routing:** administrators can set each registered VPN IP to
+  **Follow policy**, **Direct**, or **Via bridge** in **Policies → Node routes**.
+  **Via bridge** uses the node's active route and falls back to Direct when no
+  route is active. A key without an explicit address follows the primary
+  address setting. The bridge itself is configured once on the node.
 - **Admin-only per-key routing:** when an administrator creates an AWG 3.1 key
   (`user-create-key --bridge=inherit|direct|route [--bridge-route=<uuid>]` or
-  the admin UI), the key can inherit the user/global policy, stay forced
+  the admin UI), the key can inherit the address and policy settings, stay forced
   **Direct**, or be pinned to a specific active or retiring bridge route on that
   node. Admin key tables and `amnezia-panel keys` show the effective bridge
   routing per key. Releasing a retiring route automatically resets any keys
@@ -132,10 +137,10 @@ Never run a pre-bridge worker with the gate on.
    In the panel, if you already verified a handshake and a page load through this
    registration, select the confirmation and activate in one step. The test
    download and remote probe are optional tools in the route editor.
-7. Users whose effective `useBridge` policy is enabled (global or per-user
-   override) — as well as keys pinned to that route — get the new endpoint on
-   their next download or **Refresh config**; direct-only users and files
-   already imported keep their existing endpoint.
+7. For keys that follow routing settings, the address mode takes precedence
+   over the user's effective `useBridge` policy. The next download or
+   **Refresh config** reflects the new route. Users must import that config to
+   apply the change on their devices.
 
 ## 4. Switch back to Direct
 
@@ -253,8 +258,8 @@ build identifiers next to each box. The agent update and rollback items are in
 - [ ] Latency, loss and throughput through the bridge versus Direct, recorded.
 - [ ] AWG 3.1 client import and handshake with AmneziaVPN 5.0.1.5 and a current
       build on Windows, macOS, Linux, Android and iOS: original and refreshed
-      files through Direct -> Bridge -> Direct; full tunnel and the file-only
-      `ru_blacklist` profile; AWG 2 export unchanged.
+      configs through Direct -> Bridge -> Direct for full tunnel and Outside
+      Runet (`ru_blacklist`). Check AWG 2 export compatibility.
 - [ ] Retiring route: a file imported before activation still connects until the
       frpc unit is removed and the port released.
 - [ ] Rollback rehearsal (section 7) on a disposable copy of the database with the

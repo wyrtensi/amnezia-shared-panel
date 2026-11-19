@@ -47,11 +47,13 @@ What that buys an operator, concretely:
   `.conf` file or a QR code, and can rename or reissue a key without asking
   anyone. Each AWG 3.1 key has its own client-side junk parameters, and its
   owner can draw new ones with **Refresh config** without losing the key. Quotas are per server or a shared pool, per user or panel-wide.
-- **Routing per key.** Full tunnel or compact split-tunneling (`ru_blacklist`,
+- **Routing per key.** Full tunnel or Outside Runet (`ru_blacklist`,
   defaulting to **E-Core** `compact_world`: ~1,250 routes covering ~85% of non-RU
   IPv4 plus non-RU IPv6 with 0% RU/LAN/Apple/Valve AS32590 SteamCache overlap; or
   `blocked_only` at ~780 routes). The rule set is fetched, compacted, validated,
-  and versioned by the panel so keys tell their owner when rules move on. Admin
+  and versioned by the panel so keys tell their owner when rules move on. Users
+  can copy a `vpn://` key up to AmneziaVPN's paste limit or download a `.vpn`
+  file. QR codes are available for full-tunnel keys. Admin
   `global_route_overrides` are baked into every refresh (and immediately mirrored
   at export via real CIDR subtraction), and `RULE_EXTRA_INCLUDE_URLS` /
   `RULE_EXTRA_EXCLUDE_URLS` layer custom CIDR lists on top of the defaults
