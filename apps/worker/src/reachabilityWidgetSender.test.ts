@@ -53,13 +53,13 @@ const fakeApi = (answers: Record<string, unknown[]> = {}) => {
 };
 
 const fakeStore = (widget: StoredWidget = { sharedId: null, version: null, messages: [] }, snapshot = true) => {
-  const shared: Array<{ sharedId: string; version: string }> = [];
+  const shared: Array<{ sharedId: string | null; version: string }> = [];
   const saved: SentWidgetMessage[] = [];
   const deleted: string[] = [];
   const results: Array<string | null> = [];
   const store: ReachabilityWidgetStore = {
     loadWidgetSnapshot: () => Promise.resolve(snapshot ? { input, widget } : null),
-    saveSharedWidget: (s, message) => {
+    saveWidgetGeneration: (s, message) => {
       shared.push(s);
       saved.push(message);
       return Promise.resolve();
@@ -310,6 +310,113 @@ describe("reachability widget", () => {
     await expect(
       createReachabilityWidget({ api, chatIds: ["chat-a", "chat-b"], store, now }).refresh(),
     ).rejects.toThrow("Too Many Requests");
+  });
+
+  describe("when Telegram refuses shared widgets", () => {
+    const notAllowed = () => refusal("sendWidget", "INPUT_MEDIA_WIDGET_NOT_ALLOWED");
+
+    it("sends each chat a widget of its own and pins it", async () => {
+      const lines: string[] = [];
+      const { api, calls } = fakeApi({ sendWidget: [notAllowed()] });
+      const { store, shared, saved, results } = fakeStore();
+      await createReachabilityWidget({
+        api, chatIds: ["chat-a", "chat-b"], store, now, log: (l) => lines.push(l),
+      }).refresh();
+      expect(methods(calls)).toEqual(["sendWidget", "sendWidget", "pinChatMessage", "sendWidget", "pinChatMessage"]);
+      expect(calls[0]?.body).toMatchObject({ is_shared: true });
+      for (const call of [calls[1], calls[3]]) {
+        expect(call?.body).not.toHaveProperty("is_shared");
+        expect(call?.body).not.toHaveProperty("public_data");
+        expect(JSON.parse(call?.body.chat_data as string)).toMatchObject({ v: 4 });
+      }
+      expect(calls[1]?.body).toMatchObject({ chat_id: "chat-a" });
+      expect(calls[3]?.body).toMatchObject({ chat_id: "chat-b" });
+      expect(shared).toEqual([{ sharedId: null, version: CURRENT }]);
+      expect(saved).toEqual([
+        { chatId: "chat-a", messageId: 500, widgetId: null, sentAt: NOW },
+        { chatId: "chat-b", messageId: 501, widgetId: null, sentAt: NOW },
+      ]);
+      expect(results).toEqual([null]);
+      expect(lines.join("\n")).toContain("refuses shared widgets");
+    });
+
+    it("remembers the refusal and then edits each chat's widget", async () => {
+      const calls: Call[] = [];
+      // Telegram refuses every shared widget and edits plain ones.
+      const api: TelegramBotApi = {
+        call: <T,>(method: string, body: Record<string, unknown>) => {
+          calls.push({ method, body });
+          if (method === "sendWidget" && body.is_shared === true) return Promise.reject(notAllowed());
+          return Promise.resolve(true as T);
+        },
+      };
+      const { store, saved } = fakeStore({
+        sharedId: null,
+        version: CURRENT,
+        messages: [copy("chat-a", 9, FRESH, null), copy("chat-b", 10, FRESH, null)],
+      });
+      const widget = createReachabilityWidget({ api, chatIds: ["chat-a", "chat-b"], store, now });
+      await widget.refresh();
+      expect(methods(calls)).toEqual(["sendWidget", "editMessageWidgetData", "editMessageWidgetData"]);
+      expect(calls[1]?.body).toMatchObject({ chat_id: "chat-a", message_id: 9 });
+      expect(calls[2]?.body).toMatchObject({ chat_id: "chat-b", message_id: 10 });
+      calls.length = 0;
+      await widget.refresh();
+      expect(methods(calls)).toEqual(["editMessageWidgetData", "editMessageWidgetData"]);
+      calls.length = 0;
+      // A new process tries sharing once more.
+      await createReachabilityWidget({ api, chatIds: ["chat-a", "chat-b"], store, now }).refresh();
+      expect(methods(calls)).toEqual(["sendWidget", "editMessageWidgetData", "editMessageWidgetData"]);
+      expect(saved).toEqual([]);
+    });
+
+    it("sends a widget again when its message is gone, and replaces copies of another generation", async () => {
+      const { api, calls } = fakeApi({
+        sendWidget: [notAllowed()],
+        editMessageWidgetData: [refusal("editMessageWidgetData", "message with widget to edit not found")],
+      });
+      const { store, saved } = fakeStore({
+        sharedId: null,
+        version: CURRENT,
+        messages: [copy("chat-a", 9, FRESH, null), copy("chat-b", 10, FRESH, SHARED)],
+      });
+      await createReachabilityWidget({ api, chatIds: ["chat-a", "chat-b"], store, now }).refresh();
+      expect(methods(calls)).toEqual([
+        "sendWidget",
+        "editMessageWidgetData",
+        "sendWidget", "pinChatMessage", "unpinChatMessage",
+        "sendWidget", "pinChatMessage", "unpinChatMessage",
+      ]);
+      expect(saved.map((m) => [m.chatId, m.widgetId])).toEqual([["chat-a", null], ["chat-b", null]]);
+    });
+
+    it("unpins the widget sent before sharing when it moves to per-chat widgets", async () => {
+      const { api, calls } = fakeApi({ sendWidget: [notAllowed()] });
+      const { store, shared } = fakeStore({
+        sharedId: null,
+        version: "old-version",
+        messages: [copy("chat-a", 9, null, null)],
+      });
+      await createReachabilityWidget({ api, chatIds: ["chat-a", "chat-b"], store, now }).refresh();
+      expect(methods(calls)).toEqual([
+        "sendWidget",
+        "sendWidget", "pinChatMessage", "unpinChatMessage",
+        "sendWidget", "pinChatMessage",
+      ]);
+      expect(calls[3]?.body).toEqual({ chat_id: "chat-a", message_id: 9 });
+      expect(shared).toEqual([{ sharedId: null, version: CURRENT }]);
+    });
+
+    it("keeps serving the other chats when one refuses its own widget", async () => {
+      const { api, calls } = fakeApi({
+        sendWidget: [notAllowed(), refusal("sendWidget", "bot was blocked by the user", 403)],
+      });
+      const { store, saved, results } = fakeStore();
+      await createReachabilityWidget({ api, chatIds: ["chat-a", "chat-b"], store, now }).refresh();
+      expect(methods(calls)).toEqual(["sendWidget", "sendWidget", "sendWidget", "pinChatMessage"]);
+      expect(saved.map((m) => m.chatId)).toEqual(["chat-b"]);
+      expect(results[0]).toContain("chat chat-a");
+    });
   });
 
   describe("after a node alert", () => {

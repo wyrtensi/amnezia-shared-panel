@@ -248,7 +248,9 @@ One shared Bot API widget (`sendWidget` with `is_shared`, then
 (`TELEGRAM_CHAT_ID`), each copy pinned silently when it is sent. After that the
 bot changes the data of every copy with one call (`editSharedWidgetData`) and
 sends new copies only in the cases under **Stored**; alerts stay separate
-messages. (Changed 2026-11-20 from one widget in the first chat only.) The
+messages. (Changed 2026-11-20 from one widget in the first chat only.) When
+Telegram refuses shared widgets, each chat gets a widget of its own, edited one
+by one; the refusal is remembered until the worker restarts. The
 bot only sends: the widget has no buttons and makes no requests.
 
 - **Trigger.** A `notify.reachability-widget` outbox row, queued in the ingest

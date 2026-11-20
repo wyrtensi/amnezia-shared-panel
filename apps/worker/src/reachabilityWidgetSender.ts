@@ -10,9 +10,9 @@ import { TelegramApiError, type TelegramBotApi } from "./telegram.js";
 
 /**
  * One copy of the status widget in one chat, as stored. `widgetId` is the
- * shared widget it shows: null for a message sent before the widget was
- * shared. `sentAt` is null for a message sent before the send time was
- * recorded. Both count as a copy to replace.
+ * shared widget it shows, or null for a widget of its own (one sent without
+ * `is_shared`, including any sent before sharing existed). `sentAt` is null
+ * for a message sent before the send time was recorded, which counts as old.
  */
 export type WidgetMessage = {
   chatId: string;
@@ -22,8 +22,9 @@ export type WidgetMessage = {
 };
 
 /**
- * The shared widget every chat shows, and where it was sent. `sharedId` and
- * `version` are null until the first shared widget is sent.
+ * The widget generation every chat shows, and where it was sent. `version`
+ * is the HTML and caption of the current copies; `sharedId` is their shared
+ * widget, or null when each chat holds a widget of its own.
  */
 export type StoredWidget = {
   sharedId: string | null;
@@ -32,18 +33,21 @@ export type StoredWidget = {
 };
 
 /** A copy that was just sent. */
-export type SentWidgetMessage = WidgetMessage & { widgetId: string; sentAt: Date };
+export type SentWidgetMessage = WidgetMessage & { sentAt: Date };
 
 export interface ReachabilityWidgetStore {
   /** The current state to draw, or null when there is no enabled probe. */
   loadWidgetSnapshot: (now: Date) => Promise<{ input: WidgetInput; widget: StoredWidget } | null>;
   /**
-   * A new shared widget was sent: it replaces the stored one, and `message`
-   * is its first copy. One transaction, so a crash cannot keep one without
-   * the other.
+   * The first copy of a new generation was sent: the generation replaces the
+   * stored one, and `message` is its first copy. One transaction, so a crash
+   * cannot keep one without the other.
    */
-  saveSharedWidget: (shared: { sharedId: string; version: string }, message: SentWidgetMessage) => Promise<void>;
-  /** A copy of the current shared widget was sent to a chat. */
+  saveWidgetGeneration: (
+    generation: { sharedId: string | null; version: string },
+    message: SentWidgetMessage,
+  ) => Promise<void>;
+  /** A copy of the current generation was sent to a chat. */
   saveWidgetMessage: (message: SentWidgetMessage) => Promise<void>;
   /** The chat no longer gets the widget. */
   deleteWidgetMessage: (chatId: string) => Promise<void>;
@@ -52,12 +56,18 @@ export interface ReachabilityWidgetStore {
 }
 
 const NOT_MODIFIED = /not[ _]modified/i;
+const MESSAGE_GONE = /message with widget to edit not found|message to edit not found/i;
 /**
  * Telegram no longer knows the shared widget. Its wording is not documented;
  * data errors (WIDGET_DATA_INVALID, ..._TOO_LARGE) must not match, or every
  * refresh would send a new widget.
  */
 const SHARED_GONE = /widget.{0,40}not[ _]found|WIDGET_ID_INVALID|WIDGET_INVALID/i;
+/**
+ * Telegram refuses shared widgets for this bot (seen in production as
+ * INPUT_MEDIA_WIDGET_NOT_ALLOWED while plain widgets still work).
+ */
+const SHARED_REFUSED = /WIDGET_NOT_ALLOWED|shared widgets? (are |is )?not (allowed|available|supported)/i;
 
 /**
  * After a node alert, a copy older than this is sent again rather than left
@@ -91,19 +101,24 @@ const isChatRefusal = (error: unknown): error is TelegramApiError =>
 const errorText = (error: unknown) => (error instanceof Error ? error.message : "unknown error");
 
 /**
- * Keep one shared status widget in every chat. The first refresh sends it
- * (`sendWidget` with `is_shared`) to one chat and the same widget
- * (`sendSharedWidget`) to the others, pinning each copy; later refreshes
- * change its data once for every copy (`editSharedWidgetData`).
+ * Keep the status widget in every chat, pinned, with the same data.
  *
- * A new HTML/caption, a chat taken off the list (so its copy stops updating)
- * or a widget Telegram no longer knows sends a new shared widget to every
- * chat. A chat without a copy of the current widget gets one; so does a chat
- * whose copy is older than a day when a node alert came with the run. A new
- * copy is pinned and the chat's old one unpinned.
+ * Shared mode (preferred): one shared widget (`sendWidget` with `is_shared`
+ * to the first chat that takes it, `sendSharedWidget` to the others), and one
+ * `editSharedWidgetData` call per refresh changes every copy. A new
+ * HTML/caption, a chat taken off the list (so its copy stops changing) or a
+ * shared widget Telegram no longer knows sends a new one.
  *
- * Telegram does not report a copy a person deleted: the shared widget lives
- * on, so that chat gets a new copy only on the next rule above.
+ * Per-chat mode: when Telegram refuses shared widgets, each chat gets a
+ * widget of its own and each refresh edits each one (`editMessageWidgetData`);
+ * a deleted message is sent again. The refusal is remembered for the life of
+ * this process, so a restart tries sharing once more.
+ *
+ * In both, a chat without a current copy gets one, and so does a chat whose
+ * copy is older than a day when a node alert came with the run. A new copy is
+ * pinned and the chat's old one unpinned; a removed chat's copy is unpinned.
+ * Telegram does not report a deleted copy of a shared widget, so that chat
+ * gets a new copy only on one of the rules above.
  */
 export const createReachabilityWidget = ({
   api,
@@ -120,6 +135,7 @@ export const createReachabilityWidget = ({
   log?: (line: string) => void;
 }) => {
   const recipients = [...new Set(chatIds)];
+  let sharingRefused = false;
 
   const bestEffort = async (what: string, run: () => Promise<unknown>) => {
     try {
@@ -166,51 +182,26 @@ export const createReachabilityWidget = ({
       }
     };
 
-    /**
-     * Send a new shared widget to the first chat that takes it. Null when
-     * Telegram sent a widget without a shared id: that message is removed and
-     * the refresh is not retried, since every retry would send another one.
-     */
-    const sendShared = async (): Promise<string | null> => {
-      for (const chatId of recipients) {
-        let sent: { message_id: number; widget?: { id?: unknown } };
-        try {
-          sent = await api.call<{ message_id: number; widget?: { id?: unknown } }>("sendWidget", {
-            chat_id: chatId,
-            html: REACHABILITY_WIDGET_HTML,
-            caption,
-            public_data: data,
-            is_shared: true,
-          });
-        } catch (error) {
-          if (!isChatRefusal(error)) throw error;
-          chatFailed(chatId, error);
-          continue;
-        }
-        const sharedId = sent.widget?.id;
-        if (typeof sharedId !== "string" || sharedId === "") {
-          failures.push("Telegram sendWidget returned no shared widget id");
-          log("reachability widget: Telegram sendWidget returned no shared widget id");
-          await bestEffort("delete the widget without a shared id", () =>
-            api.call("deleteMessage", { chat_id: chatId, message_id: sent.message_id }),
-          );
-          return null;
-        }
-        const message = { chatId, messageId: sent.message_id, widgetId: sharedId, sentAt: at };
-        // Stored before anything else can fail: a retry must edit this
-        // widget, not send a second one.
-        await store.saveSharedWidget({ sharedId, version }, message);
-        await pinned(message);
-        return sharedId;
-      }
-      throw new Error(`no chat took the widget (${failures.join("; ")})`.slice(0, 300));
-    };
-
     const outdated = (copy: WidgetMessage) =>
       reason.notice === true &&
       (copy.sentAt === null || at.getTime() - copy.sentAt.getTime() > WIDGET_RESEND_AFTER_MS);
 
-    try {
+    /** Unpin and forget the copies of chats taken off the list. */
+    const dropRemoved = async () => {
+      for (const copy of dropped) {
+        await bestEffort("unpin the widget of a removed chat", () =>
+          api.call("unpinChatMessage", { chat_id: copy.chatId, message_id: copy.messageId }),
+        );
+        await store.deleteWidgetMessage(copy.chatId);
+      }
+    };
+
+    /**
+     * Shared mode. "refused" when Telegram does not allow shared widgets;
+     * "stop" when the refresh is over without retrying (a widget came back
+     * without a shared id: every retry would send another one).
+     */
+    const refreshShared = async (): Promise<"done" | "refused" | "stop"> => {
       let sharedId =
         stored.sharedId !== null && stored.version === version && dropped.length === 0
           ? stored.sharedId
@@ -227,10 +218,46 @@ export const createReachabilityWidget = ({
           }
         }
       }
-      if (sharedId === null) sharedId = await sendShared();
       if (sharedId === null) {
-        await store.recordWidgetResult(at, failures.join("; ").slice(0, 300));
-        return;
+        for (const chatId of recipients) {
+          let sent: { message_id: number; widget?: { id?: unknown } };
+          try {
+            sent = await api.call<{ message_id: number; widget?: { id?: unknown } }>("sendWidget", {
+              chat_id: chatId,
+              html: REACHABILITY_WIDGET_HTML,
+              caption,
+              public_data: data,
+              is_shared: true,
+            });
+          } catch (error) {
+            if (isRefusal(error, SHARED_REFUSED)) {
+              log(`reachability widget: Telegram refuses shared widgets (${errorText(error)}), one widget per chat`);
+              return "refused";
+            }
+            if (!isChatRefusal(error)) throw error;
+            chatFailed(chatId, error);
+            continue;
+          }
+          const id = sent.widget?.id;
+          if (typeof id !== "string" || id === "") {
+            failures.push("Telegram sendWidget returned no shared widget id");
+            log("reachability widget: Telegram sendWidget returned no shared widget id");
+            await bestEffort("delete the widget without a shared id", () =>
+              api.call("deleteMessage", { chat_id: chatId, message_id: sent.message_id }),
+            );
+            return "stop";
+          }
+          const message = { chatId, messageId: sent.message_id, widgetId: id, sentAt: at };
+          // Stored before anything else can fail: a retry must edit this
+          // widget, not send a second one.
+          await store.saveWidgetGeneration({ sharedId: id, version }, message);
+          await pinned(message);
+          sharedId = id;
+          break;
+        }
+        if (sharedId === null) {
+          throw new Error(`no chat took the widget (${failures.join("; ")})`.slice(0, 300));
+        }
       }
 
       for (const chatId of recipients) {
@@ -253,16 +280,74 @@ export const createReachabilityWidget = ({
         await store.saveWidgetMessage(message);
         await pinned(message);
       }
+      return "done";
+    };
 
-      // The new shared widget is the only one edited from now on, so a copy
-      // left in a chat that was taken off the list no longer changes.
-      for (const copy of dropped) {
-        await bestEffort("unpin the widget of a removed chat", () =>
-          api.call("unpinChatMessage", { chat_id: copy.chatId, message_id: copy.messageId }),
-        );
-        await store.deleteWidgetMessage(copy.chatId);
+    /** Per-chat mode: a widget of its own in each chat, edited one by one. */
+    const refreshPerChat = async () => {
+      // The stored generation is this one only when it is per-chat already.
+      let generationSaved = stored.sharedId === null && stored.version === version;
+      for (const chatId of recipients) {
+        if (refused.has(chatId)) continue;
+        const copy = copies.get(chatId);
+        if (copy && generationSaved && copy.widgetId === null && !outdated(copy)) {
+          try {
+            await api.call<boolean>("editMessageWidgetData", {
+              chat_id: chatId,
+              message_id: copy.messageId,
+              chat_data: data,
+            });
+            continue;
+          } catch (error) {
+            if (isRefusal(error, NOT_MODIFIED)) continue;
+            if (!isRefusal(error, MESSAGE_GONE)) {
+              if (!isChatRefusal(error)) throw error;
+              chatFailed(chatId, error);
+              continue;
+            }
+            log(`reachability widget: chat ${chatId}: the message is gone, sending a new one`);
+          }
+        }
+        let sent: { message_id: number };
+        try {
+          sent = await api.call<{ message_id: number }>("sendWidget", {
+            chat_id: chatId,
+            html: REACHABILITY_WIDGET_HTML,
+            caption,
+            chat_data: data,
+          });
+        } catch (error) {
+          if (!isChatRefusal(error)) throw error;
+          chatFailed(chatId, error);
+          continue;
+        }
+        const message = { chatId, messageId: sent.message_id, widgetId: null, sentAt: at };
+        // Stored before anything else can fail: a retry must edit this
+        // message, not send a second one.
+        if (generationSaved) {
+          await store.saveWidgetMessage(message);
+        } else {
+          await store.saveWidgetGeneration({ sharedId: null, version }, message);
+          generationSaved = true;
+        }
+        await pinned(message);
       }
+      if (!generationSaved) {
+        throw new Error(`no chat took the widget (${failures.join("; ")})`.slice(0, 300));
+      }
+    };
 
+    try {
+      if (!sharingRefused) {
+        const outcome = await refreshShared();
+        if (outcome === "stop") {
+          await store.recordWidgetResult(at, failures.join("; ").slice(0, 300));
+          return;
+        }
+        if (outcome === "refused") sharingRefused = true;
+      }
+      if (sharingRefused) await refreshPerChat();
+      await dropRemoved();
       await store.recordWidgetResult(at, failures.length > 0 ? failures.join("; ").slice(0, 300) : null);
     } catch (error) {
       await store.recordWidgetResult(at, errorText(error).slice(0, 300));

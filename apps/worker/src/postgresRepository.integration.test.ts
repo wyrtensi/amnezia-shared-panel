@@ -2694,7 +2694,7 @@ describe("PostgresReachabilityRepository", () => {
       expect(byName.get("node-a")?.lastPersonHandshakeAt).toEqual(new Date("2026-11-10T13:30:00Z"));
       expect(byName.get("node-b")?.lastPersonHandshakeAt).toBeNull();
 
-      await repository.saveSharedWidget(
+      await repository.saveWidgetGeneration(
         { sharedId: "shared-1", version: "v1" },
         { chatId: "chat-b", messageId: 77, widgetId: "shared-1", sentAt: now },
       );
@@ -2718,7 +2718,7 @@ describe("PostgresReachabilityRepository", () => {
 
       // A new copy in a chat replaces its row; a removed chat loses it.
       const resent = new Date("2026-11-10T15:10:00Z");
-      await repository.saveSharedWidget(
+      await repository.saveWidgetGeneration(
         { sharedId: "shared-2", version: "v2" },
         { chatId: "chat-a", messageId: 90, widgetId: "shared-2", sentAt: resent },
       );

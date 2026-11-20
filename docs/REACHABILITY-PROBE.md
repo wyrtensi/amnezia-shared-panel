@@ -199,6 +199,10 @@ change up within the shared widget's refresh period (30 s by default). It sends
 new messages only in the cases listed below. Production Telegram shows widgets
 only in the **private chat** with the bot, so every id in `TELEGRAM_CHAT_ID`
 must be a person's id (who has started the bot) for the widget to work there.
+When Telegram refuses shared widgets for the bot (`INPUT_MEDIA_WIDGET_NOT_ALLOWED`,
+seen in production in November 2026), each chat gets a widget of its own
+instead and every refresh edits each one (`editMessageWidgetData`); the worker
+tries sharing again after a restart and moves to it once Telegram allows it.
 
 - Heading "VPN из {label}: N из M"; one row per node with checks on: ssh / vpn /
   internet ✓ ✕ or "-" (not run), devices online now (the

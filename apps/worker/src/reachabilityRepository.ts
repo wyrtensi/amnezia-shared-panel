@@ -1328,7 +1328,7 @@ export class PostgresReachabilityRepository
       .orderBy(asc(reachabilityWidgetMessages.chatId));
     const widget: StoredWidget = {
       sharedId: probe.widgetSharedId,
-      version: probe.widgetSharedId === null ? null : probe.widgetVersion,
+      version: probe.widgetVersion,
       messages: messageRows.map((row) => ({
         chatId: row.chatId,
         messageId: row.messageId,
@@ -1361,13 +1361,13 @@ export class PostgresReachabilityRepository
     };
   };
 
-  saveSharedWidget = async (
-    shared: { sharedId: string; version: string },
+  saveWidgetGeneration = async (
+    generation: { sharedId: string | null; version: string },
     message: SentWidgetMessage,
   ): Promise<void> => {
     await this.options.db.transaction(async (tx) => {
       await this.updateProbe(
-        { widgetSharedId: shared.sharedId, widgetVersion: shared.version, widgetUpdatedAt: message.sentAt },
+        { widgetSharedId: generation.sharedId, widgetVersion: generation.version, widgetUpdatedAt: message.sentAt },
         tx,
       );
       await this.upsertWidgetMessage(message, tx);
