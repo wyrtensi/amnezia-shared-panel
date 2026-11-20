@@ -3,10 +3,10 @@
 #
 #   install-frpc.sh --route-id <uuid> --bridge-ip <ipv4> --control-port <tcp>
 #       --public-port <udp> [--bridge-id <uuid>] [--local-udp-port <udp>]
-#       [--local-ip <ipv4>] [--dry-run]
+#       [--local-ip <ipv4>] [--control-via <ipv4>:<tcp>] [--dry-run]
 #   install-frpc.sh --remove --route-id <uuid> [--dry-run]
 #   install-frpc.sh --check-tls --bridge-ip <ipv4> --control-port <tcp>
-#       [--bridge-id <uuid>]
+#       [--bridge-id <uuid>] [--control-via <ipv4>:<tcp>]
 #
 # One frpc process per route: unit amnezia-frpc@<route-id>.service from the
 # shared template amnezia-frpc@.service, config <etc>/amnezia-node/frpc/<route-id>.toml.
@@ -22,6 +22,13 @@
 # Without --bridge-id, use the legacy single-bridge directory /etc/amnezia-node/frp.
 # The bridge's frps certificate must carry the bridge IP as a SAN: frpc verifies
 # it against ca.crt with serverName = <bridge-ip>.
+#
+# --control-via <ipv4>:<tcp> dials that address instead of the bridge control
+# port, for a node whose network cannot reach the bridge directly: an operator-
+# run relay (for example an SSH local forward through another host) must carry
+# it to <bridge-ip>:<control-port>. TLS still verifies the bridge certificate
+# for <bridge-ip>, and the token still authenticates, so the relay sees only
+# TLS. The public UDP port stays on the bridge.
 #
 # A dry run reads the real Docker mapping, unit and config state and prints the
 # planned changes (PLAN: lines); it writes, downloads and starts nothing. Without
@@ -98,6 +105,7 @@ CONTROL_PORT=""
 PUBLIC_PORT=""
 LOCAL_UDP_PORT=""
 LOCAL_IP=""
+CONTROL_VIA=""
 DRY_RUN=0
 REMOVE=0
 CHECK_TLS=0
@@ -112,6 +120,7 @@ while [ "$#" -gt 0 ]; do
     --public-port) need_value "$@"; PUBLIC_PORT="$2"; shift 2 ;;
     --local-udp-port) need_value "$@"; LOCAL_UDP_PORT="$2"; shift 2 ;;
     --local-ip) need_value "$@"; LOCAL_IP="$2"; shift 2 ;;
+    --control-via) need_value "$@"; CONTROL_VIA="$2"; shift 2 ;;
     --dry-run) DRY_RUN=1; shift ;;
     --remove) REMOVE=1; shift ;;
     --check-tls) CHECK_TLS=1; shift ;;
@@ -146,7 +155,7 @@ is_ipv4() {
 
 if [ "$CHECK_TLS" -eq 1 ]; then
   if [ "$REMOVE" -ne 0 ] || [ "$DRY_RUN" -ne 0 ] || [ -n "$ROUTE_ID$PUBLIC_PORT$LOCAL_UDP_PORT$LOCAL_IP" ]; then
-    usage_error "--check-tls takes only --bridge-ip, --control-port and optional --bridge-id"
+    usage_error "--check-tls takes only --bridge-ip, --control-port and optional --bridge-id and --control-via"
   fi
 else
   is_uuid "$ROUTE_ID" || usage_error "--route-id must be a lowercase UUID"
@@ -158,13 +167,22 @@ if [ "$REMOVE" -eq 0 ]; then
   fi
   is_ipv4 "$BRIDGE_IP" || usage_error "--bridge-ip must be an IPv4 address"
   is_port "$CONTROL_PORT" || usage_error "--control-port must be a TCP port (1-65535)"
+  # Where frpc dials: the bridge itself, or the relay given with --control-via.
+  DIAL_ADDR="$BRIDGE_IP"
+  DIAL_PORT="$CONTROL_PORT"
+  if [ -n "$CONTROL_VIA" ]; then
+    DIAL_ADDR="${CONTROL_VIA%:*}"
+    DIAL_PORT="${CONTROL_VIA##*:}"
+    { [ "$DIAL_ADDR:$DIAL_PORT" = "$CONTROL_VIA" ] && is_ipv4 "$DIAL_ADDR" && is_port "$DIAL_PORT"; } ||
+      usage_error "--control-via must be <ipv4>:<tcp port>"
+  fi
   if [ "$CHECK_TLS" -eq 0 ]; then
     is_port "$PUBLIC_PORT" || usage_error "--public-port must be a UDP port (1-65535)"
     [ -z "$LOCAL_UDP_PORT" ] || is_port "$LOCAL_UDP_PORT" || usage_error "--local-udp-port must be a UDP port (1-65535)"
     [ -z "$LOCAL_IP" ] || is_ipv4 "$LOCAL_IP" || usage_error "--local-ip must be an IPv4 address"
   fi
 else
-  [ -z "$BRIDGE_ID$BRIDGE_IP$CONTROL_PORT$PUBLIC_PORT$LOCAL_UDP_PORT$LOCAL_IP" ] ||
+  [ -z "$BRIDGE_ID$BRIDGE_IP$CONTROL_PORT$PUBLIC_PORT$LOCAL_UDP_PORT$LOCAL_IP$CONTROL_VIA" ] ||
     usage_error "--remove takes only --route-id and --dry-run"
 fi
 TOKEN_FILE="$SECRET_DIR/token"
@@ -232,7 +250,7 @@ if [ "$CHECK_TLS" -eq 1 ]; then
     die 2 E_TLS_CHECK "--check-tls requires OpenSSL 3 or newer and timeout on the node"
   fi
   # Use a separate verification store containing only the route's CA, like frpc.
-  peer="$(timeout -k 1s 5s openssl s_client -connect "$BRIDGE_IP:$CONTROL_PORT" \
+  peer="$(timeout -k 1s 5s openssl s_client -connect "$DIAL_ADDR:$DIAL_PORT" \
     -verifyCAfile "$CA_FILE" -verify_ip "$BRIDGE_IP" -verify_return_error \
     -showcerts -no_ign_eof </dev/null 2>/dev/null)" ||
     die 41 E_TLS_CHECK "fresh TLS handshake failed; check connectivity, the bridge CA, the IP SAN and certificate validity"
@@ -312,8 +330,8 @@ conf_field() { sed -n "s/^$1 = \"\{0,1\}\([^\"]*\)\"\{0,1\}\$/\1/p" "$2" | head 
 render_config() {
   cat <<CONF_EOF
 # Managed by install-frpc.sh for route $ROUTE_ID. Holds no secrets.
-serverAddr = "$BRIDGE_IP"
-serverPort = $CONTROL_PORT
+serverAddr = "$DIAL_ADDR"
+serverPort = $DIAL_PORT
 loginFailExit = true
 auth.method = "token"
 auth.tokenSource.type = "file"
@@ -333,7 +351,11 @@ CONF_EOF
 
 check_conflicts() {
   if [ -f "$CONF" ]; then
-    for pair in "serverAddr:bridge-ip:$BRIDGE_IP" "serverPort:control-port:$CONTROL_PORT" \
+    via_flag=bridge-ip
+    port_flag=control-port
+    if [ -n "$CONTROL_VIA" ]; then via_flag=control-via; port_flag=control-via; fi
+    for pair in "serverAddr:$via_flag:$DIAL_ADDR" "serverPort:$port_flag:$DIAL_PORT" \
+      "transport.tls.serverName:bridge-ip:$BRIDGE_IP" \
       "remotePort:public-port:$PUBLIC_PORT" "localIP:local-ip:$LOCAL_TARGET_IP" \
       "localPort:local-udp-port:$LOCAL_TARGET_PORT"; do
       key="${pair%%:*}"
@@ -348,7 +370,8 @@ check_conflicts() {
   for other in "$CONF_DIR"/*.toml; do
     [ -f "$other" ] || continue
     [ "$other" != "$CONF" ] || continue
-    if [ "$(conf_field serverAddr "$other")" = "$BRIDGE_IP" ] &&
+    # The bridge is the TLS server name: serverAddr may be a relay.
+    if [ "$(conf_field transport.tls.serverName "$other")" = "$BRIDGE_IP" ] &&
       [ "$(conf_field remotePort "$other")" = "$PUBLIC_PORT" ]; then
       die 21 E_PORT_HELD "--public-port $PUBLIC_PORT on bridge $BRIDGE_IP is already held by route $(basename "$other" .toml)"
     fi
@@ -410,14 +433,14 @@ if [ "$DRY_RUN" -eq 1 ]; then
   if [ "$conf_same" -eq 1 ]; then
     plan "config $CONF is current"
   else
-    plan "write $CONF (frpc verify before the atomic move): $BRIDGE_IP:$CONTROL_PORT, proxy awg-route-$ROUTE_ID udp $LOCAL_TARGET_IP:$LOCAL_TARGET_PORT -> remote $PUBLIC_PORT"
+    plan "write $CONF (frpc verify before the atomic move): $BRIDGE_IP:$CONTROL_PORT${CONTROL_VIA:+ via $CONTROL_VIA}, proxy awg-route-$ROUTE_ID udp $LOCAL_TARGET_IP:$LOCAL_TARGET_PORT -> remote $PUBLIC_PORT"
   fi
   if [ "$active" -eq 1 ] && [ "$conf_same" -eq 1 ]; then
     plan "no change: $UNIT is already active"
   else
     plan "enable and start $UNIT, then wait for frps registration"
   fi
-  plan "check control TCP $BRIDGE_IP:$CONTROL_PORT is reachable (skipped in a dry run)"
+  plan "check control TCP $DIAL_ADDR:$DIAL_PORT is reachable (skipped in a dry run)"
   info "dry run: nothing was written, downloaded or started"
   exit 0
 fi
@@ -461,10 +484,15 @@ ensure_binary() {
 
 control_reachable() {
   command -v nc >/dev/null 2>&1 || { info "nc not found: control TCP pre-check skipped"; return 0; }
-  nc -z -w 5 "$BRIDGE_IP" "$CONTROL_PORT" >/dev/null 2>&1
+  nc -z -w 5 "$DIAL_ADDR" "$DIAL_PORT" >/dev/null 2>&1
 }
-control_reachable ||
-  die 40 E_CONTROL_UNREACHABLE "cannot open TCP $BRIDGE_IP:$CONTROL_PORT from this host; allow this node's source address to the bridge control port in the host and cloud firewall"
+if [ -n "$CONTROL_VIA" ]; then
+  control_reachable ||
+    die 40 E_CONTROL_UNREACHABLE "cannot open TCP $DIAL_ADDR:$DIAL_PORT (--control-via) from this host; start the relay to $BRIDGE_IP:$CONTROL_PORT first"
+else
+  control_reachable ||
+    die 40 E_CONTROL_UNREACHABLE "cannot open TCP $BRIDGE_IP:$CONTROL_PORT from this host; allow this node's source address to the bridge control port in the host and cloud firewall"
+fi
 
 ensure_binary frpc
 
@@ -533,7 +561,7 @@ while :; do
         ;;
       *"connection refused"*|*"i/o timeout"*|*"no route to host"*)
         rollback
-        die 40 E_CONTROL_UNREACHABLE "frpc cannot reach $BRIDGE_IP:$CONTROL_PORT"
+        die 40 E_CONTROL_UNREACHABLE "frpc cannot reach $DIAL_ADDR:$DIAL_PORT"
         ;;
     esac
   fi

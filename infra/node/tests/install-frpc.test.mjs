@@ -86,7 +86,7 @@ case "$*" in
 esac
 cat "$STATE/journal"
 `, 0o755);
-  await write(join(bin, "nc"), `#!/bin/sh\n[ ! -f "$STATE/nc-fails" ]\n`, 0o755);
+  await write(join(bin, "nc"), `#!/bin/sh\necho "nc $*" >>"$STATE/calls"\n[ ! -f "$STATE/nc-fails" ]\n`, 0o755);
   await write(
     join(bin, "curl"),
     `#!/bin/sh
@@ -427,6 +427,11 @@ withHost("invalid arguments exit 2 before touching anything", async (h) => {
     [...baseArgs, "--local-udp-port"],
     [...baseArgs, "--local-ip", "x"],
     ["--remove", "--route-id", ROUTE, "--public-port", "41000"],
+    [...baseArgs, "--control-via", "127.0.0.1"],
+    [...baseArgs, "--control-via", "relay:17000"],
+    [...baseArgs, "--control-via", "127.0.0.1:0"],
+    [...baseArgs, "--control-via", "127.0.0.1:17000:1"],
+    ["--remove", "--route-id", ROUTE, "--control-via", "127.0.0.1:17000"],
   ];
   for (const args of bad) {
     const r = h.run(...args);
@@ -537,4 +542,61 @@ withHost("remove stops only that unit and deletes its config", async (h) => {
   const again = h.run("--remove", "--route-id", ROUTE);
   assert.equal(again.status, 0);
   assert.match(again.stdout, /nothing to remove/);
+});
+
+const relayArgs = [...baseArgs, "--control-via", "127.0.0.1:17000"];
+
+withHost("a relay is dialed with --control-via while TLS still names the bridge", async (h) => {
+  const r = h.run(...relayArgs);
+  assert.equal(r.status, 0, r.stderr + r.stdout);
+  const conf = await h.readConf();
+  assert.match(conf, /^serverAddr = "127\.0\.0\.1"$/m);
+  assert.match(conf, /^serverPort = 17000$/m);
+  assert.match(conf, /^transport\.tls\.serverName = "203\.0\.113\.10"$/m);
+  assert.match(conf, /^remotePort = 41000$/m);
+  const calls = await h.calls();
+  assert.match(calls, /^nc -z -w 5 127\.0\.0\.1 17000$/m);
+  assert.doesNotMatch(calls, /^nc .*203\.0\.113\.10/m);
+  // The same relay again is a no-op; another relay is a conflict on the dialed address.
+  assert.equal(h.run(...relayArgs).status, 0);
+  const moved = h.run(...baseArgs, "--control-via", "127.0.0.1:17001");
+  assert.equal(moved.status, 20, moved.stderr);
+  assert.match(moved.stderr, /serverPort=17000.*--control-via 17001/);
+  const direct = h.run(...baseArgs);
+  assert.equal(direct.status, 20, direct.stderr);
+  assert.match(direct.stderr, /serverAddr=127\.0\.0\.1.*--bridge-ip 203\.0\.113\.10/);
+});
+
+withHost("an unreachable relay names the relay, not the bridge firewall", async (h) => {
+  await h.flag("nc-fails");
+  const r = h.run(...relayArgs);
+  assert.equal(r.status, 40, r.stderr);
+  assert.match(r.stderr, /127\.0\.0\.1:17000 \(--control-via\).*203\.0\.113\.10:7000/);
+  await assert.rejects(stat(h.conf()));
+});
+
+withHost("a port held through a relay is still held on that bridge", async (h) => {
+  assert.equal(h.run(...relayArgs).status, 0);
+  const r = h.run(
+    "--route-id", OTHER_ROUTE, "--bridge-ip", "203.0.113.10", "--control-port", "7000", "--public-port", "41000",
+  );
+  assert.equal(r.status, 21, r.stderr);
+  assert.match(r.stderr, new RegExp(`--public-port 41000.*${ROUTE}`));
+});
+
+withHost("TLS check through a relay verifies the bridge address", async (h) => {
+  await write(join(h.root, "bin", "openssl"), `#!/bin/sh
+printf 'openssl %s\\n' "$*" >>"$STATE/calls"
+case "$1" in
+  s_client) if [ "$2" = -help ]; then echo '-verifyCAfile'; exit 0; fi; echo peer-cert ;;
+  x509) [ "$(cat)" = peer-cert ] || exit 1
+    case "$*" in *-enddate*) echo 'notAfter=Nov 18 00:00:00 2027 GMT' ;; esac ;;
+  *) exit 99 ;;
+esac
+`, 0o755);
+  const r = h.run(...tlsArgs, "--control-via", "127.0.0.1:17000");
+  assert.equal(r.status, 0, r.stderr);
+  const calls = await h.calls();
+  assert.match(calls, /-connect 127\.0\.0\.1:17000/);
+  assert.match(calls, /-verify_ip 203\.0\.113\.10/);
 });

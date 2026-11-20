@@ -127,6 +127,24 @@ Never run a pre-bridge worker with the gate on.
    the [certificate rotation setup](../../infra/bridge/README.md#certificate-monitoring-and-automatic-rotation).
    Existing FRP services keep their original credential paths. Keep the legacy
    files in place while those services use them.
+   **A node the bridge cannot reach** (its address is filtered on the bridge's
+   network, so even `--check-tls` and SSH between them time out) can carry the
+   frpc control connection through another host that reaches both, with
+   `--control-via <ipv4>:<tcp>`. TLS still verifies the bridge certificate for
+   the bridge IP and the token still authenticates, so the relay sees only TLS;
+   all of the route's traffic then flows through the relay host.
+   - On the node, create a key for the relay (`ssh-keygen -t ed25519 -N ''
+     -f /etc/amnezia-node/frp-relay/id_ed25519`, directory 0700) and pin the
+     relay's host key in `/etc/amnezia-node/frp-relay/known_hosts`.
+   - On the relay host, authorize that key for forwarding to the bridge only:
+     `restrict,port-forwarding,permitopen="<bridge-ip>:<control-port>" ssh-ed25519 ...`
+     The bridge firewall must allow the relay's outgoing address on the control port.
+   - On the node, run the local forward as a unit (`amnezia-frpc-relay.service`,
+     `Restart=always`): `ssh -N -o ExitOnForwardFailure=yes -o ServerAliveInterval=30
+     -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/etc/amnezia-node/frp-relay/known_hosts
+     -i /etc/amnezia-node/frp-relay/id_ed25519 -L 127.0.0.1:17000:<bridge-ip>:<control-port> root@<relay>`.
+   - Append `--control-via 127.0.0.1:17000` to the printed `checkTls`, dry run
+     and install commands.
 4. Wait for the bridge-agent's next observation: `amnezia-panel bridges --json`
    shows the route `registration: online` with a registration marker.
 5. Verify with real AWG traffic, one of:
