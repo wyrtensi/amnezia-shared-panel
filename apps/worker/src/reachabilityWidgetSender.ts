@@ -112,7 +112,9 @@ const errorText = (error: unknown) => (error instanceof Error ? error.message : 
  * Per-chat mode: when Telegram refuses shared widgets, each chat gets a
  * widget of its own and each refresh edits each one (`editMessageWidgetData`);
  * a deleted message is sent again. The refusal is remembered for the life of
- * this process, so a restart tries sharing once more.
+ * this process, so a restart tries sharing once more. When Telegram refuses
+ * new widgets altogether, a chat keeps the widget it already has (its data
+ * still changes) and a chat without one waits until sending is allowed.
  *
  * In both, a chat without a current copy gets one, and so does a chat whose
  * copy is older than a day when a node alert came with the run. A new copy is
@@ -136,6 +138,8 @@ export const createReachabilityWidget = ({
 }) => {
   const recipients = [...new Set(chatIds)];
   let sharingRefused = false;
+  // Telegram refused a plain widget too: only existing ones can change.
+  let sendingRefused = false;
 
   const bestEffort = async (what: string, run: () => Promise<unknown>) => {
     try {
@@ -283,30 +287,50 @@ export const createReachabilityWidget = ({
       return "done";
     };
 
-    /** Per-chat mode: a widget of its own in each chat, edited one by one. */
+    /** Edit a chat's own widget; false when its message is gone. */
+    const editOwn = async (chatId: string, copy: WidgetMessage): Promise<boolean> => {
+      try {
+        await api.call<boolean>("editMessageWidgetData", {
+          chat_id: chatId,
+          message_id: copy.messageId,
+          chat_data: data,
+        });
+        return true;
+      } catch (error) {
+        if (isRefusal(error, NOT_MODIFIED)) return true;
+        if (isRefusal(error, MESSAGE_GONE)) return false;
+        if (!isChatRefusal(error)) throw error;
+        chatFailed(chatId, error);
+        return true;
+      }
+    };
+
+    /**
+     * Per-chat mode: a widget of its own in each chat, edited one by one.
+     * When Telegram refuses new widgets altogether, a chat keeps the widget
+     * it already has (any template: the data format is shared) and only its
+     * data changes; a chat without one waits until Telegram allows sending.
+     */
     const refreshPerChat = async () => {
       // The stored generation is this one only when it is per-chat already.
       let generationSaved = stored.sharedId === null && stored.version === version;
+      let served = 0;
       for (const chatId of recipients) {
         if (refused.has(chatId)) continue;
         const copy = copies.get(chatId);
-        if (copy && generationSaved && copy.widgetId === null && !outdated(copy)) {
-          try {
-            await api.call<boolean>("editMessageWidgetData", {
-              chat_id: chatId,
-              message_id: copy.messageId,
-              chat_data: data,
-            });
+        const own = copy && copy.widgetId === null ? copy : null;
+        const current = own !== null && generationSaved && !outdated(own);
+        if (own !== null && (current || sendingRefused)) {
+          if (await editOwn(chatId, own)) {
+            if (!refused.has(chatId)) served += 1;
+            if (!current) failures.push(`chat ${chatId}: kept the existing widget (Telegram refuses new widgets)`);
             continue;
-          } catch (error) {
-            if (isRefusal(error, NOT_MODIFIED)) continue;
-            if (!isRefusal(error, MESSAGE_GONE)) {
-              if (!isChatRefusal(error)) throw error;
-              chatFailed(chatId, error);
-              continue;
-            }
-            log(`reachability widget: chat ${chatId}: the message is gone, sending a new one`);
           }
+          log(`reachability widget: chat ${chatId}: the message is gone, sending a new one`);
+        }
+        if (sendingRefused) {
+          failures.push(`chat ${chatId}: no widget (Telegram refuses new widgets)`);
+          continue;
         }
         let sent: { message_id: number };
         try {
@@ -317,6 +341,18 @@ export const createReachabilityWidget = ({
             chat_data: data,
           });
         } catch (error) {
+          if (isRefusal(error, SHARED_REFUSED)) {
+            // Not this chat: the bot may not send widgets at all right now.
+            sendingRefused = true;
+            log(`reachability widget: Telegram refuses new widgets (${errorText(error)}), keeping existing ones`);
+            if (own !== null && (await editOwn(chatId, own))) {
+              if (!refused.has(chatId)) served += 1;
+              failures.push(`chat ${chatId}: kept the existing widget (Telegram refuses new widgets)`);
+            } else {
+              failures.push(`chat ${chatId}: no widget (Telegram refuses new widgets)`);
+            }
+            continue;
+          }
           if (!isChatRefusal(error)) throw error;
           chatFailed(chatId, error);
           continue;
@@ -330,9 +366,10 @@ export const createReachabilityWidget = ({
           await store.saveWidgetGeneration({ sharedId: null, version }, message);
           generationSaved = true;
         }
+        served += 1;
         await pinned(message);
       }
-      if (!generationSaved) {
+      if (served === 0 && recipients.length > 0) {
         throw new Error(`no chat took the widget (${failures.join("; ")})`.slice(0, 300));
       }
     };

@@ -407,6 +407,54 @@ describe("reachability widget", () => {
       expect(shared).toEqual([{ sharedId: null, version: CURRENT }]);
     });
 
+    it("keeps editing a chat's existing widget when Telegram refuses new widgets at all", async () => {
+      const calls: Call[] = [];
+      // Telegram refuses every new widget, shared or not, and still edits.
+      const api: TelegramBotApi = {
+        call: <T,>(method: string, body: Record<string, unknown>) => {
+          calls.push({ method, body });
+          if (method === "sendWidget") return Promise.reject(notAllowed());
+          return Promise.resolve(true as T);
+        },
+      };
+      const { store, shared, saved, results } = fakeStore({
+        sharedId: null,
+        version: "old-version",
+        messages: [copy("chat-a", 9, null, null)],
+      });
+      const lines: string[] = [];
+      const widget = createReachabilityWidget({
+        api, chatIds: ["chat-a", "chat-b"], store, now, log: (l) => lines.push(l),
+      });
+      await widget.refresh();
+      // Shared try, plain try, then the old widget's data; chat-b has none to keep.
+      expect(methods(calls)).toEqual(["sendWidget", "sendWidget", "editMessageWidgetData"]);
+      expect(calls[2]?.body).toMatchObject({ chat_id: "chat-a", message_id: 9 });
+      expect(JSON.parse(calls[2]?.body.chat_data as string)).toMatchObject({ v: 4 });
+      expect(shared).toEqual([]);
+      expect(saved).toEqual([]);
+      expect(results[0]).toContain("chat chat-a: kept the existing widget");
+      expect(results[0]).toContain("chat chat-b: no widget");
+      expect(lines.join("\n")).toContain("refuses new widgets");
+
+      calls.length = 0;
+      await widget.refresh({ notice: true });
+      // Remembered: no new sends, even for an old copy after an alert.
+      expect(methods(calls)).toEqual(["editMessageWidgetData"]);
+    });
+
+    it("fails the refresh when no chat has a widget and none can be sent", async () => {
+      const api: TelegramBotApi = {
+        call: <T,>(method: string) =>
+          method === "sendWidget" ? Promise.reject(notAllowed()) : Promise.resolve(true as T),
+      };
+      const { store, results } = fakeStore();
+      await expect(
+        createReachabilityWidget({ api, chatIds: ["chat-a"], store, now }).refresh(),
+      ).rejects.toThrow("no chat took the widget");
+      expect(results[0]).toContain("no widget");
+    });
+
     it("keeps serving the other chats when one refuses its own widget", async () => {
       const { api, calls } = fakeApi({
         sendWidget: [notAllowed(), refusal("sendWidget", "bot was blocked by the user", 403)],
