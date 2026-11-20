@@ -95,6 +95,11 @@ Never run a pre-bridge worker with the gate on.
 4. Apply the firewall: control TCP port only from the trusted node addresses, the
    UDP pool open to clients, TCP 7500 and 7600 closed to the internet. Confirm
    from outside that 7500 and 7600 do not answer.
+   Allow each node's **outgoing** address, which is not always its public VPN
+   address: a host with several IPv4 addresses may leave from its primary one.
+   On each node, `ip -4 route get <bridge-ip>` shows the `src` it uses (compare
+   with `curl -4 https://api.ipify.org`). `install-frpc.sh --check-tls` fails
+   with `E_TLS_CHECK` when the control port is filtered for that address.
 5. On the **panel host** run `scripts/add-bridge-tunnel.sh --bridge-id <id> --bridge-host 203.0.113.10 --host-key-fingerprint SHA256:<printed by the installer>`
    (`--dry-run` first). It prints the enrollment command; run it. The key travels
    on stdin from the bridge host's token file.
