@@ -906,7 +906,11 @@ export class PostgresReachabilityRepository
         const config = protocol === "awg3" ? withAwg31TunnelMtu(savedConfig) : savedConfig;
         if (!via && (protocol !== "awg3" || endpoints.length === 0)) return [{ ...target, config }];
         const inspection = inspectAwgVpnLink(config);
-        const mayReuseLegacy = options.runStartedAt === undefined || key.updatedAt < options.runStartedAt;
+        // A reissued service key is a new row, so its creation time says
+        // whether the dispatched node target used this key. `updatedAt` does
+        // not: telemetry moves it on every poll that sees a handshake, which
+        // is every run, and the endpoint would then never get a result.
+        const mayReuseLegacy = options.runStartedAt === undefined || key.createdAt < options.runStartedAt;
         if (!via) {
           // A reissued service key can have a different port even when the
           // legacy target ID and destination IP are the same.

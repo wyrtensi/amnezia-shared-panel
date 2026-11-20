@@ -417,6 +417,26 @@ describe("reachability of bridged nodes (real PostgreSQL)", () => {
     expect(await stateOf(node.id)).toMatchObject({ status: "ok" });
   });
 
+  runDatabaseTest("records every address when telemetry touches the probe key during the run", async () => {
+    await seedProbe();
+    const node = await seedNode({ awg3Link: awgServiceLink({ host: "192.0.2.10", port: 51234 }) });
+    await seedDirectEndpoints(node.id);
+    const probe = harness(() => ({ handshake: true, http: true }));
+    await probe.tick();
+
+    // The probe's own handshake is seen by the telemetry poll, which moves
+    // `updated_at` on the key after the run started.
+    await db()
+      .update(vpnKeys)
+      .set({ lastUsedAt: new Date(), updatedAt: new Date(Date.now() + 24 * 60 * 60_000) })
+      .where(eq(vpnKeys.nodeId, node.id));
+    await probe.tick();
+
+    expect((await directEndpointsOf(node.id)).map((endpoint) => endpoint.probeStatus)).toEqual([
+      "ok", "ok", null,
+    ]);
+  });
+
   runDatabaseTest("ignores a direct reply from before an address was disabled and reenabled", async () => {
     await seedProbe();
     const node = await seedNode({ awg3Link: awgServiceLink({ host: "192.0.2.10" }) });
