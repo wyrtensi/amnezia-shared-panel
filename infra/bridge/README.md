@@ -287,6 +287,56 @@ certificate at startup. When changing CAs, distribute a bundle with both CAs to
 the nodes before switching the server certificate, then remove the old CA after
 verification.
 
+### Creating them for a new bridge (OpenSSL 3)
+
+Run on a trusted operator machine, not on the bridge or a node: the CA key
+stays there (or offline) and is only needed to issue or renew the bridge
+certificate. Keep the directory mode 0700 and out of any repository.
+
+```sh
+umask 077
+mkdir -p bridge-<name> && cd bridge-<name>
+BRIDGE_IP=203.0.113.10        # the bridge's registered public IPv4
+
+# Bridge CA: EC P-256, 10 years.
+openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 3650 \
+  -subj "/CN=Amnezia bridge CA <name>" \
+  -addext "basicConstraints=critical,CA:TRUE" \
+  -addext "keyUsage=critical,keyCertSign,cRLSign" \
+  -keyout ca.key -out ca.crt
+
+# frps certificate: the bridge IPv4 as an IP SAN; clientAuth as well as
+# serverAuth so the same leaf can later enroll for automatic rotation.
+openssl req -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes \
+  -subj "/CN=<name>" -keyout server.key -out server.csr
+printf 'basicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature\nextendedKeyUsage=serverAuth,clientAuth\nsubjectAltName=IP:%s\n' "$BRIDGE_IP" > server.ext
+openssl x509 -req -in server.csr -CA ca.crt -CAkey ca.key -CAcreateserial \
+  -days 1095 -extfile server.ext -out server.crt
+rm -f server.csr server.ext
+
+# Shared frp token.
+head -c 48 /dev/urandom | base64 | tr -d '\n=+/' | head -c 56 > token
+
+openssl verify -CAfile ca.crt server.crt
+```
+
+Place the files through SSH stdin, so no secret is ever an argument:
+
+```sh
+b() { ssh root@"$BRIDGE_IP" "$@"; }
+b 'install -d -m 0755 /etc/amnezia-bridge && install -d -m 0700 /etc/amnezia-bridge/frp'
+b 'umask 077; cat > /etc/amnezia-bridge/frp/token'      < token
+b 'umask 077; cat > /etc/amnezia-bridge/frp/server.key' < server.key
+b 'cat > /etc/amnezia-bridge/frp/server.crt; chmod 644 /etc/amnezia-bridge/frp/server.crt' < server.crt
+# Optional, for the agent's certificate monitoring (see below):
+b 'install -d -m 0755 /etc/amnezia-bridge/frp-trust && cat > /etc/amnezia-bridge/frp-trust/ca.crt' < ca.crt
+b "printf '%s\n' $BRIDGE_IP > /etc/amnezia-bridge/frp-trust/public-ip"
+```
+
+Each node then gets `token` (0600) and `ca.crt` (0644) in
+`/etc/amnezia-node/frp/<bridge-id>/` the same way. Verify from a node with the
+route's `checkTls` command before installing frpc.
+
 ## Certificate monitoring and automatic rotation
 
 For monitoring, create the root-owned directory `/etc/amnezia-bridge/frp-trust`
@@ -384,6 +434,23 @@ when frps restarts.
 - Control TCP port: allow only the trusted node source addresses.
 - UDP pool: open to VPN clients.
 - TCP 7500: keep closed (loopback only).
+
+Allow each node's **outgoing** address, which is not always its public VPN
+address: on each node `ip -4 route get <bridge-ip>` shows the `src` it uses.
+For example, with ufw (SSH first, so the session survives):
+
+```sh
+ufw allow 22/tcp
+ufw allow 41000:41031/udp
+for ip in 198.51.100.11 198.51.100.12; do   # every node's outgoing IPv4
+  ufw allow proto tcp from "$ip" to any port 7000
+done
+ufw default deny incoming && ufw default allow outgoing && ufw --force enable
+```
+
+Check from a host that is not a node that the control port does not answer,
+and from a node that it does. A node that cannot reach the bridge at all can
+use a relay (`install-frpc.sh --control-via`, see the bridges runbook).
 
 ## Exit codes
 

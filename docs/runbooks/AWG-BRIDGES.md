@@ -176,27 +176,71 @@ Never run a pre-bridge worker with the gate on.
 ### Panel door through a bridge (optional)
 
 Users who cannot reach the panel's own hostname can open it through a bridge
-on a sibling subdomain of `PANEL_PUBLIC_URL` (for `link.example.org`, e.g.
-`me.example.org`; both need three or more labels so they share a parent).
-Login keeps them on that subdomain, and session cookies are set on the shared
-parent. Google always calls back `PANEL_PUBLIC_URL`, so that hostname must stay
-reachable for those users, or the callback must move to one that is (and be
-added to the OAuth client's redirect URIs).
+on a sibling subdomain of `PANEL_PUBLIC_URL`. Placeholders below:
+`link.example.org` is `PANEL_PUBLIC_URL`, `door.example.org` the door,
+`203.0.113.10` the bridge, `203.0.113.20` the panel host.
 
-1. DNS: an A record for the sibling name pointing at the bridge IPv4 (DNS
-   only, not proxied).
-2. Bridge: pass TLS for that name through by SNI to the panel host's 443,
-   without terminating it, for example HAProxy in TCP mode:
-   `tcp-request content accept if { req.ssl_hello_type 1 }`,
-   `use_backend panel if { req.ssl_sni -i <name> }`, everything else rejected.
-   Open 443/tcp (and 80/tcp if it redirects to https) on the bridge firewall.
-3. Panel host: serve the sibling name with the same site as the panel's
-   hostname (a wildcard certificate already covers it); the original `Host`
-   must reach the web app.
-4. Panel: set the bridge's panel domain (`bridge-update <id> --panel-dns=<name>`).
-   The bridge card checks that the name resolves to the bridge and that
-   `https://<name>/login` answers through it, and the probe checks it on
-   every run. Set it only once the door works, or the bridge check fails.
+**How login works there.** The two names must share a parent (three or more
+labels each, here `example.org`). The panel keeps a request on the hostname it
+came in on (`Host` / `X-Forwarded-Host`), puts that origin into the OAuth
+state and sets its cookies on the parent, so after login the user lands back
+on the door. Google always calls back
+`<PANEL_PUBLIC_URL>/api/auth/google/callback`, so `link.example.org` must stay
+reachable for those users. If it is not, point `PANEL_PUBLIC_URL` at a name
+that is and add its callback to the OAuth client's redirect URIs.
+
+**Why passthrough.** The bridge only routes TLS by SNI; the panel host
+terminates it with the certificate it already has (a wildcard for the parent
+covers the door). No certificate is issued for the door, so its name never
+appears in Certificate Transparency, and the bridge never holds panel
+traffic in clear.
+
+1. **DNS.** An A record `door.example.org → 203.0.113.10`, DNS only (not
+   proxied by a CDN).
+2. **Bridge.** Install HAProxy and use
+   [`infra/bridge/haproxy-panel-door.cfg.example`](../../infra/bridge/haproxy-panel-door.cfg.example)
+   with your names, then open the ports:
+   ```sh
+   apt-get install -y haproxy
+   haproxy -c -f /etc/haproxy/haproxy.cfg.new && mv /etc/haproxy/haproxy.cfg.new /etc/haproxy/haproxy.cfg
+   systemctl enable --now haproxy && systemctl reload haproxy
+   ufw allow 443/tcp && ufw allow 80/tcp
+   ```
+   It refuses every other name, and it does not touch frps, the agent or the UDP pool.
+3. **Panel host.** Serve the door with the same site as the panel. With Caddy:
+   ```
+   *.example.org {
+       tls { dns <provider> ... }         # the wildcard you already use
+       @panel host link.example.org door.example.org
+       handle @panel {
+           reverse_proxy 127.0.0.1:5430   # keeps the original Host
+       }
+       handle {
+           abort
+       }
+   }
+   ```
+   Back up the file, run `caddy validate --config <file> --adapter caddyfile`
+   (with the DNS provider's environment loaded), then `systemctl reload caddy`.
+   The original `Host` (or `X-Forwarded-Host`) must reach the web app; with any
+   other proxy, forward it explicitly.
+4. **Check before telling the panel:**
+   ```sh
+   curl -s -o /dev/null -w '%{http_code}\n' --resolve door.example.org:443:203.0.113.10 https://door.example.org/login   # 200
+   curl -s -o /dev/null -w '%{http_code} %{redirect_url}\n' https://door.example.org/   # 307 -> https://door.example.org/login
+   curl -s -o /dev/null -w '%{http_code}\n' https://link.example.org/login   # still 200
+   ```
+   From the users' network as well, not only from the panel host. A redirect
+   to `link.example.org` instead of the door means the original `Host` was lost.
+5. **Panel.** Set the bridge's panel domain:
+   `amnezia-panel bridge-update <bridge-id> --panel-dns=door.example.org`
+   (or the bridge card in **Nodes and bridges**). The card checks that the
+   name resolves to the bridge and that `https://<name>/login` answers through
+   the bridge IP, and the probe adds an HTTPS check of the bridge host on every
+   run. Set it only once step 4 passes, or the bridge check fails and alerts.
+
+To undo: clear the domain (`--panel-dns=none`), remove the name from the panel
+host's site, stop HAProxy on the bridge and close 443/80.
 
 ## 4. Switch back to Direct
 

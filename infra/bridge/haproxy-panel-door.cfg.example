@@ -1,0 +1,46 @@
+# Panel door through a bridge: /etc/haproxy/haproxy.cfg on the bridge host.
+#
+# TLS for the door hostname is passed through by SNI to the panel host's 443,
+# which terminates it with its own certificate. Nothing is decrypted here, and
+# any other name is refused. See docs/runbooks/AWG-BRIDGES.md
+# ("Panel door through a bridge"). Replace:
+#   door.example.org  the sibling subdomain pointing at this bridge
+#   203.0.113.20      the panel host's public IPv4
+# Check with `haproxy -c -f <file>` before moving it into place.
+
+global
+    log /dev/log local0
+    maxconn 2000
+    user haproxy
+    group haproxy
+    daemon
+
+defaults
+    log global
+    timeout connect 5s
+    timeout client 60s
+    timeout server 60s
+
+frontend panel_tls
+    bind :443
+    mode tcp
+    tcp-request inspect-delay 5s
+    tcp-request content accept if { req.ssl_hello_type 1 }
+    use_backend panel_host if { req.ssl_sni -i door.example.org }
+    default_backend refuse
+
+backend panel_host
+    mode tcp
+    server panel 203.0.113.20:443 check inter 30s
+
+backend refuse
+    mode tcp
+    tcp-request content reject
+
+# Plain HTTP only redirects the door hostname to https.
+frontend panel_http
+    bind :80
+    mode http
+    timeout client 10s
+    http-request redirect scheme https code 301 if { hdr(host) -i door.example.org }
+    http-request deny
