@@ -88,6 +88,7 @@ import { KeyBridgeBadge } from "@/components/key-bridge-badge";
 import { KeyBridgeSelect } from "@/components/admin/key-bridge-select";
 import { AGENT_DEFAULT_ENDPOINT, NodeEndpointSelect } from "@/components/node-endpoint-select";
 import { listBridges } from "@/lib/bridge-api";
+import { keyBridgeState } from "@/lib/bridge-ui";
 import {
   deriveAllowedNodeIds,
   expandPolicyTargets,
@@ -245,7 +246,9 @@ type FilterKey =
   | "online"
   | "nokeys"
   | "admins"
-  | "disabled";
+  | "disabled"
+  | "bridged"
+  | "bridgepending";
 type SortKey = "activity" | "name" | "keys" | "traffic" | "stale";
 
 const FILTER_OPTIONS: Array<[FilterKey, string]> = [
@@ -260,6 +263,10 @@ const FILTER_OPTIONS: Array<[FilterKey, string]> = [
   ["nokeys", "users.filter.nokeys"],
   ["admins", "users.filter.admins"],
   ["disabled", "users.filter.disabled"],
+  // Admin-only bridge views: what devices actually do, and who still runs a
+  // config from before their bridge (see keyBridgeState).
+  ["bridged", "users.filter.bridged"],
+  ["bridgepending", "users.filter.bridgepending"],
 ];
 
 const SORT_OPTIONS: Array<[SortKey, string]> = [
@@ -284,6 +291,13 @@ function matchesFilter(entry: EnrichedUser, filter: FilterKey): boolean {
       return entry.user.role === "admin";
     case "disabled":
       return entry.user.status !== "active";
+    case "bridged":
+    case "bridgepending": {
+      const want = filter === "bridged" ? "bridge" : "pending";
+      return entry.keys.some(
+        (key) => key.state !== "revoked" && key.state !== "revoking" && keyBridgeState(key.bridge) === want,
+      );
+    }
     default:
       return true;
   }

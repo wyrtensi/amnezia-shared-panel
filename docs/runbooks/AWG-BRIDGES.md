@@ -165,6 +165,13 @@ Never run a pre-bridge worker with the gate on.
    over the user's effective `useBridge` policy. The next download or
    **Refresh config** reflects the new route. Users must import that config to
    apply the change on their devices.
+   In **Users** (admin only) a key's bridge badge tells the two apart: solid
+   when its device connects through a bridge now (the node sees it coming from
+   its own frpc, an internal address), dashed "waiting for config" when the
+   next download would use the bridge but the device still runs its older
+   direct config or has not connected. The filters "Through a bridge" and
+   "Waiting for a bridge config" list those users. Regular users never see
+   bridge information; only the downloaded config carries the bridge address.
 
 ## 4. Switch back to Direct
 

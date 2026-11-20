@@ -697,6 +697,8 @@ const ru = {
   "users.filter.nokeys": "Без ключей",
   "users.filter.admins": "Администраторы",
   "users.filter.disabled": "Отключённые",
+  "users.filter.bridged": "Через мост",
+  "users.filter.bridgepending": "Ждут конфига с мостом",
   "users.sort.name": "По имени",
   "users.sort.activity": "По активности",
   "users.sort.keys": "По числу ключей",
@@ -1954,6 +1956,11 @@ const ru = {
   "bridge.needsVerifyHint":
     "Маршрут ещё не проверен — раскройте детали ниже, чтобы выполнить установку или подтвердить соединение.",
   "keyBridge.badgeDirectPinned": "Напрямую",
+  "keyBridge.pendingSuffix": "ждёт конфига",
+  "keyBridge.tipPendingDirect":
+    "Мост {name} ({entry}) назначен, но устройство пока подключается напрямую со старым конфигом. Мост заработает после нового скачивания или «Обновить конфиг» и импорта",
+  "keyBridge.tipPendingNever": "Мост {name} ({entry}) назначен; подключений с этим ключом ещё не было",
+  "keyBridge.tipConnectedUnassigned": "Устройство подключается через мост, хотя ключу он больше не назначен (старый маршрут ещё работает)",
   "keyBridge.badgeUserEnabled": "Мост",
   "keyBridge.tipKey": "Через мост {name} ({entry}) · закреплено за ключом",
   "keyBridge.tipPolicy": "Через мост {name} ({entry}) · по настройкам маршрутизации",
@@ -2622,6 +2629,8 @@ const en = {
   "users.filter.nokeys": "No keys",
   "users.filter.admins": "Administrators",
   "users.filter.disabled": "Disabled",
+  "users.filter.bridged": "Through a bridge",
+  "users.filter.bridgepending": "Waiting for a bridge config",
   "users.sort.name": "By name",
   "users.sort.activity": "By activity",
   "users.sort.keys": "By key count",
@@ -3852,6 +3861,11 @@ const en = {
   "bridge.needsVerifyHint":
     "This route is not verified yet — use the details below to complete setup or confirm connectivity.",
   "keyBridge.badgeDirectPinned": "Direct",
+  "keyBridge.pendingSuffix": "waiting for config",
+  "keyBridge.tipPendingDirect":
+    "Bridge {name} ({entry}) is assigned, but the device still connects directly with its older config. It moves to the bridge after a new download or Refresh config and an import",
+  "keyBridge.tipPendingNever": "Bridge {name} ({entry}) is assigned; this key has not connected yet",
+  "keyBridge.tipConnectedUnassigned": "The device connects through a bridge that is no longer assigned to this key (an older route still forwards)",
   "keyBridge.badgeUserEnabled": "Bridge",
   "keyBridge.tipKey": "Via bridge {name} ({entry}) · pinned to key",
   "keyBridge.tipPolicy": "Via bridge {name} ({entry}) · follows routing settings",

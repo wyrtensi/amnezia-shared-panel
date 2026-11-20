@@ -182,6 +182,7 @@ import type {
 import { ApiError, type Actor, type IdentityClaim, type KeyView } from "./service.js";
 import { toKeyView } from "./keyView.js";
 import {
+  observedKeyPath,
   resolveKeyBridgeInfo,
   type KeyBridgeRouteRecord,
 } from "./bridgeEndpoint.js";
@@ -3771,6 +3772,9 @@ export class PostgresControlRepository implements ControlRepository {
               online: peerCurrent.online,
               receivedBytes: peerCurrent.receivedBytes,
               sentBytes: peerCurrent.sentBytes,
+              // Read only to tell a bridged device from a direct one; the
+              // address itself never leaves this function.
+              peerEndpoint: peerCurrent.endpoint,
             })
             .from(vpnKeys)
             .innerJoin(users, keyOwnerIsPerson(vpnKeys))
@@ -3797,6 +3801,7 @@ export class PostgresControlRepository implements ControlRepository {
             endpointBridgeMode,
             vpnBridgeRouteId,
             ownerPolicyOverride,
+            peerEndpoint,
             ...row
           }) => {
             const ownerPolicy = resolvePortalPolicy(basePolicy, ownerPolicyOverride);
@@ -3809,17 +3814,20 @@ export class PostgresControlRepository implements ControlRepository {
                 label: nameShowLabel,
                 number: nameShowNumber,
               },
-              bridge: resolveKeyBridgeInfo({
-                protocol: row.protocol,
-                bridgeMode,
-                pinnedRouteId: vpnBridgeRouteId,
-                pinnedRoute: vpnBridgeRouteId
-                  ? (bridgeRoutes.byRouteId.get(vpnBridgeRouteId) ?? null)
-                  : null,
-                activeRoute: bridgeRoutes.activeByNode.get(row.nodeId) ?? null,
-                useBridge: ownerPolicy.useBridge,
-                endpointBridgeMode: endpointBridgeMode ?? undefined,
-              }),
+              bridge: {
+                ...resolveKeyBridgeInfo({
+                  protocol: row.protocol,
+                  bridgeMode,
+                  pinnedRouteId: vpnBridgeRouteId,
+                  pinnedRoute: vpnBridgeRouteId
+                    ? (bridgeRoutes.byRouteId.get(vpnBridgeRouteId) ?? null)
+                    : null,
+                  activeRoute: bridgeRoutes.activeByNode.get(row.nodeId) ?? null,
+                  useBridge: ownerPolicy.useBridge,
+                  endpointBridgeMode: endpointBridgeMode ?? undefined,
+                }),
+                observed: observedKeyPath(peerEndpoint),
+              },
               online: online ?? false,
               traffic:
                 receivedBytes !== null && sentBytes !== null

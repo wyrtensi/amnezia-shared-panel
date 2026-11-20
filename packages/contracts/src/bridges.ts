@@ -221,6 +221,14 @@ export const keyBridgeInfoSchema = z.object({
       source: z.enum(["key", "endpoint", "policy"]),
     })
     .nullable(),
+  /**
+   * How the device last connected, judged from the address its node saw:
+   * `bridge` from the node's own frpc (an internal address), `direct` from
+   * the internet, null when it never connected. `effective` is what the next
+   * download renders; a device keeps its imported config until it imports a
+   * new one, so the two can differ. The address itself is never sent.
+   */
+  observed: z.enum(["bridge", "direct"]).nullable().optional(),
 });
 
 export const BRIDGE_VERIFICATION_METHODS = ["probe", "operator"] as const;

@@ -2,6 +2,7 @@ import {
   BRIDGE_ERROR_CODES,
   type BridgeAgentUpdateState,
   type BridgeRouteVerification,
+  type KeyBridgeInfo,
 } from "@amnezia/contracts";
 import { ApiClientError } from "@/lib/api";
 
@@ -29,6 +30,18 @@ export const nodeRouteEditorHref = (nodeId: string): string =>
 export const DEFAULT_LOCAL_TARGET = "127.0.0.1:51890/udp";
 
 export const bridgeEntry = (ip: string, port: number): string => `${ip}:${port}`;
+
+/**
+ * A key's bridge state for admin views: `bridge` when its device connects
+ * through a bridge now, `pending` when the next download would use a bridge
+ * but the device still connects directly or never connected (its imported
+ * config predates the bridge), null otherwise.
+ */
+export const keyBridgeState = (bridge: KeyBridgeInfo | undefined): "bridge" | "pending" | null => {
+  if (!bridge) return null;
+  if (bridge.observed === "bridge") return "bridge";
+  return bridge.effective ? "pending" : null;
+};
 
 /** How many routes (one UDP port each) a pool of `[start, end]` can hold. */
 export const poolCapacity = (start: number, end: number): number =>

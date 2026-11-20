@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  observedKeyPath,
   resolveKeyBridgeInfo,
   type KeyBridgeRouteRecord,
 } from "./bridgeEndpoint.js";
@@ -147,5 +148,29 @@ describe("resolveKeyBridgeInfo", () => {
       routeId: PINNED_ROUTE.routeId,
       effective: null,
     });
+  });
+});
+
+describe("observedKeyPath", () => {
+  it("reads an internal address as the node's own frpc, so the bridge", () => {
+    for (const endpoint of [
+      "172.21.0.1:59393", "172.17.0.1:1", "10.0.0.2:51820", "192.168.32.1:40000",
+      "127.0.0.1:51890", "100.64.0.9:1", "169.254.1.1:1", "[::1]:51890", "[fd00::1]:1", "[fe80::1]:1",
+      "[::ffff:172.21.0.1]:59393",
+    ]) {
+      expect(observedKeyPath(endpoint), endpoint).toBe("bridge");
+    }
+  });
+
+  it("reads a public address as a direct connection", () => {
+    for (const endpoint of ["203.0.113.7:53079", "172.32.0.1:1", "100.128.0.1:1", "[2001:db8::1]:51820"]) {
+      expect(observedKeyPath(endpoint), endpoint).toBe("direct");
+    }
+  });
+
+  it("is null without a usable endpoint", () => {
+    for (const endpoint of [null, undefined, "", "(none)", "999.1.1.1:1", "[nope", "host:1"]) {
+      expect(observedKeyPath(endpoint), String(endpoint)).toBeNull();
+    }
   });
 });

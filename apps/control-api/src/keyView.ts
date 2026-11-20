@@ -4,6 +4,7 @@ import type {
   RouteProfile,
   UserNodeReachability,
 } from "@amnezia/contracts";
+import { observedKeyPath } from "./bridgeEndpoint.js";
 import type { Actor, KeyView } from "./service.js";
 
 /**
@@ -38,6 +39,8 @@ export type KeyNodeRow = {
 
 export type PeerCurrentRow = {
   latestHandshakeAt: Date | null;
+  /** Where the node last saw the peer; read only to tell bridge from direct. */
+  endpoint?: string | null;
   receivedBytes: bigint | number;
   sentBytes: bigint | number;
 };
@@ -131,7 +134,7 @@ export const toKeyView = ({
   deviceLabel: key.deviceLabel,
   keyNumber: key.keyNumber,
   ...internalNameFor(actor, key),
-  ...bridgeInfoFor(actor, key, bridge),
+  ...bridgeInfoFor(actor, key, bridge ? { ...bridge, observed: observedKeyPath(current?.endpoint) } : undefined),
   nameDisplay: {
     server: key.nameShowNode,
     label: key.nameShowLabel,

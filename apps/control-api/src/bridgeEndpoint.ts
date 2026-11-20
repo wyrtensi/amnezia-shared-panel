@@ -60,6 +60,42 @@ export const resolveKeyBridgeInfo = ({
   };
 };
 
+const ipv4Octets = (host: string): number[] | null => {
+  const parts = host.split(".");
+  if (parts.length !== 4) return null;
+  const octets = parts.map((part) => (/^\d{1,3}$/.test(part) ? Number(part) : Number.NaN));
+  return octets.every((octet) => octet >= 0 && octet <= 255) ? octets : null;
+};
+
+/** Not reachable from the internet: loopback, private, link-local, CGNAT. */
+const isInternalAddress = (host: string): boolean => {
+  const v4 = ipv4Octets(host.startsWith("::ffff:") ? host.slice(7) : host);
+  if (v4) {
+    const [a, b] = v4 as [number, number, number, number];
+    return a === 10 || a === 127 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) ||
+      (a === 169 && b === 254) || (a === 100 && b >= 64 && b <= 127);
+  }
+  const v6 = host.toLowerCase();
+  return v6 === "::1" || /^f[cd][0-9a-f]{0,2}:/.test(v6) || /^fe[89ab][0-9a-f]?:/.test(v6);
+};
+
+/**
+ * How a key's device connected, from the endpoint its node reported for the
+ * peer (`host:port` or `[v6]:port`). A bridged client reaches AWG through the
+ * node's own frpc, so the node sees an internal address; a direct client
+ * comes from the internet. Null without an endpoint (never connected) or one
+ * that cannot be read.
+ */
+export const observedKeyPath = (endpoint: string | null | undefined): "bridge" | "direct" | null => {
+  if (!endpoint) return null;
+  const trimmed = endpoint.trim();
+  const bracketed = /^\[([^\]]+)\](?::\d+)?$/.exec(trimmed);
+  const host = bracketed ? bracketed[1]! : trimmed.includes(".") ? trimmed.replace(/:\d+$/, "") : null;
+  if (!host) return null;
+  if (!bracketed && !ipv4Octets(host)) return null;
+  return isInternalAddress(host) ? "bridge" : "direct";
+};
+
 /** Documentation address (RFC 5737) used for trial renders only. */
 const TRIAL_ENDPOINT: AwgEndpoint = { host: "192.0.2.1", port: 41000 };
 

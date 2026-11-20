@@ -11,6 +11,7 @@ import {
   bridgeCardAnchor,
   bridgeSectionHref,
   describeBridgeError,
+  keyBridgeState,
   nodeCardAnchor,
   nodeRouteEditorHref,
   poolCapacity,
@@ -204,5 +205,34 @@ describe("evidence tones", () => {
     expect(
       verificationTime({ kind: "candidate", status: "valid", method: "probe", verifiedAt: "v", error: null }),
     ).toBe("v");
+  });
+});
+
+describe("keyBridgeState", () => {
+  const effective = {
+    routeId: "55555555-5555-4555-8555-555555555555",
+    bridgeId: "66666666-6666-4666-8666-666666666666",
+    bridgeName: "bridge-edge",
+    publicIpv4: "198.51.100.10",
+    publicUdpPort: 41000,
+    source: "endpoint" as const,
+  };
+
+  it("is the bridge only when the device actually connects through one", () => {
+    expect(keyBridgeState({ mode: "inherit", routeId: null, effective, observed: "bridge" })).toBe("bridge");
+    // An older route still forwarding a device counts too.
+    expect(keyBridgeState({ mode: "inherit", routeId: null, effective: null, observed: "bridge" })).toBe("bridge");
+  });
+
+  it("waits for a config when a bridge is assigned but the device is still direct or never connected", () => {
+    expect(keyBridgeState({ mode: "inherit", routeId: null, effective, observed: "direct" })).toBe("pending");
+    expect(keyBridgeState({ mode: "inherit", routeId: null, effective, observed: null })).toBe("pending");
+    expect(keyBridgeState({ mode: "inherit", routeId: null, effective })).toBe("pending");
+  });
+
+  it("says nothing for a direct key or without bridge data", () => {
+    expect(keyBridgeState({ mode: "inherit", routeId: null, effective: null, observed: "direct" })).toBeNull();
+    expect(keyBridgeState({ mode: "direct", routeId: null, effective: null })).toBeNull();
+    expect(keyBridgeState(undefined)).toBeNull();
   });
 });

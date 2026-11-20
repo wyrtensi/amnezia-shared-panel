@@ -147,7 +147,23 @@ describe("internal name on the owner-facing key payload", () => {
       activeByProfile: new Map(),
       bridge,
     });
-    expect(adminPayload.bridge).toEqual(bridge);
+    expect(adminPayload.bridge).toEqual({ ...bridge, observed: null });
+
+    // The path the device took, never the address it came from.
+    const seen = (endpoint: string) =>
+      toKeyView({
+        actor: adminOwner,
+        key: row(),
+        node: NODE,
+        current: { latestHandshakeAt: new Date(), receivedBytes: 0, sentBytes: 0, endpoint },
+        policy: defaultPortalPolicy,
+        activeByProfile: new Map(),
+        bridge,
+      });
+    expect(seen("172.21.0.1:59393").bridge?.observed).toBe("bridge");
+    const direct = seen("203.0.113.7:53079");
+    expect(direct.bridge?.observed).toBe("direct");
+    expect(JSON.stringify(direct)).not.toContain("203.0.113.7");
   });
 });
 
