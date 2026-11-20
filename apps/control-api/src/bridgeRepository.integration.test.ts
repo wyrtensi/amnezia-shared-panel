@@ -287,7 +287,7 @@ describe("bridge registry (real PostgreSQL)", () => {
     const endpoints = await db().select().from(nodeVpnEndpoints)
       .where(eq(nodeVpnEndpoints.nodeId, nodeId)).orderBy(nodeVpnEndpoints.ordinal);
     expect(endpoints.map(({ ordinal, name, address }) => ({ ordinal, name, address }))).toEqual([
-      { ordinal: 1, name: "Internal-1", address: primary },
+      { ordinal: 1, name: "Internal", address: primary },
       { ordinal: 2, name: "Internal-2", address: secondary },
       { ordinal: 3, name: "Internal-3", address: third },
     ]);
@@ -300,9 +300,9 @@ describe("bridge registry (real PostgreSQL)", () => {
       (item) => (item as { id: string }).id === nodeId,
     );
     expect(listed).toMatchObject({
-      name: "Internal-1",
+      name: "Internal",
       publicEndpoints: [
-        { name: "Internal-1" }, { name: "Second link" }, { name: "Internal-3" },
+        { name: "Internal" }, { name: "Second link" }, { name: "Internal-3" },
       ],
     });
     expect(JSON.stringify(listed)).not.toContain(secondary);

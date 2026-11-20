@@ -313,8 +313,13 @@ const nodeEndpointNameSchema = z.string().trim().min(1).max(120);
 export const endpointBridgeModeSchema = z.enum(["inherit", "direct", "bridge"]);
 export type EndpointBridgeMode = z.infer<typeof endpointBridgeModeSchema>;
 
+/**
+ * The name an address gets when none is given: the node's own name for its
+ * first address, which users see as the server name, and `<name>-<n>` for
+ * the others, so they stay apart.
+ */
 export const nodeEndpointDefaultName = (name: string, ordinal: number): string => {
-  const suffix = `-${ordinal}`;
+  const suffix = ordinal === 1 ? "" : `-${ordinal}`;
   const base = name.slice(0, 120 - suffix.length);
   return `${base.toWellFormed()}${suffix}`;
 };

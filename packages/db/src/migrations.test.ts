@@ -452,3 +452,17 @@ describe("0063_shared_reachability_widget", () => {
     expect(sql).not.toMatch(/DROP COLUMN/i);
   });
 });
+
+describe("0064_endpoint_primary_name", () => {
+  const sql = readFileSync(
+    fileURLToPath(new URL("../migrations/0064_endpoint_primary_name.sql", import.meta.url)),
+    "utf8",
+  );
+
+  it("renames only a first address that still has the generated name", () => {
+    expect(sql).toContain('"e"."ordinal" = 1');
+    // The exact form 0060 generated: a set name or a public name never matches.
+    expect(sql).toContain(`"e"."name" = left("n"."name", 118) || '-1'`);
+    expect(sql).toContain('SET "name" = left("n"."name", 120)');
+  });
+});

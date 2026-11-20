@@ -362,7 +362,7 @@ describe("PostgresWorkerRepository outbox leases", () => {
     });
     const [primary] = await database.db.select().from(nodeVpnEndpoints)
       .where(eq(nodeVpnEndpoints.nodeId, node.id));
-    expect(primary).toMatchObject({ ordinal: 1, address: "192.0.2.10", name: "worker-telemetry-node-1" });
+    expect(primary).toMatchObject({ ordinal: 1, address: "192.0.2.10", name: "worker-telemetry-node" });
     if (!primary) throw new Error("Missing primary endpoint");
     const evidence = { probeStatus: "failed", probeCheckedAt: first, probeDetail: "no handshake" } as const;
     await database.db.update(nodeVpnEndpoints).set({ name: "Custom address label", ...evidence })
