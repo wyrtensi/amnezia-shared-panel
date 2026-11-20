@@ -137,7 +137,8 @@ Never run a pre-bridge worker with the gate on.
      -f /etc/amnezia-node/frp-relay/id_ed25519`, directory 0700) and pin the
      relay's host key in `/etc/amnezia-node/frp-relay/known_hosts`.
    - On the relay host, authorize that key for forwarding to the bridge only:
-     `restrict,port-forwarding,permitopen="<bridge-ip>:<control-port>" ssh-ed25519 ...`
+     `restrict,port-forwarding,permitopen="<bridge-ip>:<control-port>",command="/bin/false" ssh-ed25519 ...`
+     (`restrict` alone still runs commands; the forced command closes the shell).
      The bridge firewall must allow the relay's outgoing address on the control port.
    - On the node, run the local forward as a unit (`amnezia-frpc-relay.service`,
      `Restart=always`): `ssh -N -o ExitOnForwardFailure=yes -o ServerAliveInterval=30
