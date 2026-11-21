@@ -77,7 +77,9 @@ checked right away instead of at the next scheduled run:
 - an address added, enabled or disabled, or an enabled address's bridge mode;
 - checks turned back on for the node or an address;
 - the node's bridge route assignment;
-- the portal's bridge default (it moves every address that inherits it);
+- the portal's bridge default (it moves every address that inherits it on a
+  node with an active bridge route: those addresses and the node's bridge
+  path read `unknown` until the run);
 - the node agent reporting a new primary address.
 
 The worker starts that run at its next tick, about a minute later, or right
@@ -232,9 +234,10 @@ status widget), plain text:
 - when every attempted node (at least two) fails with no handshake anywhere,
   **one** combined message instead, listing the addresses, marked "the probe
   itself may be broken", and one combined recovery;
-- an open address incident stays open across a profile, bridge mode, route or
-  primary address change (its streak restarts); disabling the address or
-  turning its checks off closes it without a message;
+- an open address incident stays open across a profile, bridge mode, route,
+  portal bridge default or primary address change (its streak restarts);
+  disabling the address or turning its checks off closes it without a
+  message;
 - **one** message when the probe has reported nothing for `stale-after-sec`
   (default 3 h, never less than one period plus 30 min), and one when it is
   back.
@@ -258,8 +261,12 @@ seen in production in November 2026), each chat gets a widget of its own
 instead and every refresh edits each one (`editMessageWidgetData`); the worker
 tries sharing again after a restart and moves to it once Telegram allows it.
 
-- Heading "VPN из {label}: N из M"; one row per measured address (a node
-  without measured addresses keeps one node row): ssh / vpn /
+- Heading "VPN из {label}: N из M"; one row per address with checks on for
+  every node the latest run judged by its addresses, bridged nodes included
+  (an address waiting for its check after a change reads unknown). A node
+  without registered addresses, with every address's checks off, serving
+  only AWG 2 or with a legacy probe key keeps one node row.
+  Each row shows that address's own levels: ssh / vpn /
   internet ✓ ✕ or "-" (not run), devices online now (the
   probe's own keys excluded), and "люди": how long ago a person last
   completed a handshake on the node — the admin card's "last handshake", probe

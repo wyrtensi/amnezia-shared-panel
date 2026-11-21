@@ -126,10 +126,12 @@ AWG 2, legacy nodes and non-3.1 artifacts build their node target as today.
   address, as node alerts do today. Several addresses of one node opening in
   the same run share one message that names the node and lists them. The same
   for recovery (`снова доступен` / `снова доступны`).
-- Mass failure: computed over every measured unit of the run (address targets
-  and legacy node targets) with today's rule (control passed, at least two
-  attempted, all failed with no handshake anywhere or only the egress check
-  failing everywhere, and no healthy direct address). In a mass run no
+- Mass failure: computed over the node summaries of the run (an address node's
+  summary of its addresses, a legacy node's own check) with today's rule
+  (control passed, at least two attempted nodes, every one failed with no
+  handshake anywhere or only the egress check failing everywhere, and no
+  healthy direct address). Judging nodes rather than addresses keeps one node
+  with many addresses from looking like a fleet-wide outage. In a mass run no
   per-address or node message is sent; the incidents that open are marked
   `mass` and one combined message lists them. When at least two `mass`
   incidents recover in one run, one combined recovery is sent for them.
