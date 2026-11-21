@@ -19,6 +19,14 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { useT } from "@/lib/i18n/provider";
 
@@ -27,6 +35,9 @@ export type GeneratorEndpoint = {
   name: string;
   awgGenerator?: AwgGeneratorSettings | null;
 };
+
+/** The target picker's value for the node itself; an item value cannot be empty. */
+const NODE_SCOPE = "node";
 
 type Props = {
   value: AwgGeneratorSettings | null;
@@ -106,22 +117,26 @@ export function NodeGeneratorSettings({ value, endpoints, onSave }: Props) {
             <DialogTitle>{t("generator.title")}</DialogTitle>
             <DialogDescription>{t("generator.description")}</DialogDescription>
           </DialogHeader>
-          <label className="grid gap-1.5 text-sm font-medium">
-            {t("generator.target")}
-            <select
-              className="h-9 w-full rounded-md border bg-background px-3 text-sm"
-              value={scope}
+          <div className="grid gap-1.5">
+            <Label htmlFor="generator-target">{t("generator.target")}</Label>
+            <Select
+              value={scope || NODE_SCOPE}
               disabled={pending}
-              onChange={(event) => {
-                if (!pendingRef.current) setScope(event.target.value);
+              onValueChange={(next) => {
+                if (!pendingRef.current) setScope(next === NODE_SCOPE ? "" : next);
               }}
             >
-              <option value="">{t("generator.node")}</option>
-              {endpoints.map((endpoint) => (
-                <option key={endpoint.id} value={endpoint.id}>{endpoint.name}</option>
-              ))}
-            </select>
-          </label>
+              <SelectTrigger id="generator-target">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value={NODE_SCOPE}>{t("generator.node")}</SelectItem>
+                {endpoints.map((endpoint) => (
+                  <SelectItem key={endpoint.id} value={endpoint.id}>{endpoint.name}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
           <GeneratorEditor
             key={`${open}-${scope}`}
             value={scope ? selected?.awgGenerator ?? null : value}
@@ -182,25 +197,30 @@ export function GeneratorEditor({ value, inherited, pending, onSave }: {
   return (
     <form onSubmit={(event) => void save(event)}>
       <fieldset disabled={pending} className="space-y-3">
-      <label className="grid gap-1.5 text-sm font-medium">
-        {t("generator.preset")}
-        <select
-          className="h-9 w-full rounded-md border bg-background px-3 text-sm"
+      <div className="grid gap-1.5">
+        <Label htmlFor="generator-preset">{t("generator.preset")}</Label>
+        <Select
           value={draft?.preset ?? "inherit"}
-          onChange={(event) => {
-            const preset = presets.find((entry) => entry.id === event.target.value);
+          disabled={pending}
+          onValueChange={(next) => {
+            const preset = presets.find((entry) => entry.id === next);
             setDraft(preset ? structuredClone(preset.settings) : null);
             setInvalid(false);
           }}
         >
-          <option value="inherit">
-            {t(inherited ? "generator.inheritNode" : "generator.inheritDefault")}
-          </option>
-          {AWG_GENERATOR_PRESETS.map((id) => (
-            <option key={id} value={id}>{t(`generator.${id}`)}</option>
-          ))}
-        </select>
-      </label>
+          <SelectTrigger id="generator-preset">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="inherit">
+              {t(inherited ? "generator.inheritNode" : "generator.inheritDefault")}
+            </SelectItem>
+            {AWG_GENERATOR_PRESETS.map((id) => (
+              <SelectItem key={id} value={id}>{t(`generator.${id}`)}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
       {randomization.visible ? (
         <div className="flex items-start justify-between gap-3 text-sm">
           <span className="grid gap-0.5">
@@ -242,20 +262,23 @@ export function GeneratorEditor({ value, inherited, pending, onSave }: {
                 min={draft.jmaxGapMin} max={draft.jmaxGapMax} lower={1} upper={500}
                 onChange={(jmaxGapMin, jmaxGapMax) => update({ jmaxGapMin, jmaxGapMax })}
               />
-              <label className="grid gap-1.5 text-sm font-medium">
-                {t("generator.iMode")}
-                <select
-                  className="h-9 w-full rounded-md border bg-background px-3 text-sm"
+              <div className="grid gap-1.5">
+                <Label htmlFor="generator-i-mode">{t("generator.iMode")}</Label>
+                <Select
                   value={draft.iMode}
-                  onChange={(event) => update({ iMode: event.target.value as AwgGeneratorSettings["iMode"] })}
+                  disabled={pending}
+                  onValueChange={(next) => update({ iMode: next as AwgGeneratorSettings["iMode"] })}
                 >
-                  {AWG_GENERATOR_I_MODES.map((mode) => (
-                    <option key={mode} value={mode}>
-                      {t(`generator.${mode}`)}
-                    </option>
-                  ))}
-                </select>
-              </label>
+                  <SelectTrigger id="generator-i-mode">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {AWG_GENERATOR_I_MODES.map((mode) => (
+                      <SelectItem key={mode} value={mode}>{t(`generator.${mode}`)}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
               {draft.iMode !== "issued" && draft.iMode !== "none" ? (
                 <NumberField
                   label={t("generator.iCount")} value={draft.iCount} min={1} max={5}

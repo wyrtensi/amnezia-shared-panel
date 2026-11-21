@@ -72,6 +72,15 @@ describe("key randomization switch", () => {
     expect(html(preset("issued"))).not.toContain(messages.ru["generator.randomizeKeys"]);
   });
 
+  it("uses the panel's select for the preset and the signature mode", () => {
+    const html = renderToStaticMarkup(
+      <GeneratorEditor value={preset("randomized")} inherited={false} pending={false} onSave={() => Promise.resolve(true)} />,
+    );
+    for (const id of ["generator-preset", "generator-i-mode"]) {
+      expect(html).toMatch(new RegExp(`<button[^>]*role="combobox"[^>]*id="${id}"|<button[^>]*id="${id}"[^>]*role="combobox"`));
+    }
+  });
+
   it("labels every preset and signature mode in both languages", () => {
     for (const id of [...AWG_GENERATOR_PRESETS, ...AWG_GENERATOR_I_MODES]) {
       const key = `generator.${id}` as keyof typeof messages.ru;
