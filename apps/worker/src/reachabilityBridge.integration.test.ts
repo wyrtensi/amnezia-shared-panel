@@ -1527,6 +1527,52 @@ describe("reachability of bridged nodes (real PostgreSQL)", () => {
     expect(directAfter?.probeCheckedAt?.getTime()).toBeGreaterThan(bridgedBefore?.probeCheckedAt?.getTime() ?? 0);
   });
 
+  const sentMtus = (probe: { sent: { targets: { protocol: string; config: string }[] }[] }) =>
+    (probe.sent.at(-1)?.targets ?? [])
+      .filter((target) => target.protocol === "awg3")
+      .map((target) => {
+        const config = readAwgLastConfig(decodeVpnLink(target.config).containers?.[0]?.awg?.last_config)
+          ?.lastConfig.config;
+        return [inspectAwgVpnLink(target.config).endpoint?.host, /^MTU = (\d+)$/m.exec(String(config))?.[1]];
+      })
+      .sort(([a], [b]) => String(a).localeCompare(String(b)));
+
+  runDatabaseTest("measures an address with its node's MTU and its own MTU over it", async () => {
+    await seedProbe();
+    const node = await seedNode({ awg3Link: awgServiceLink({ host: "192.0.2.10" }) });
+    await db().update(nodes).set({ awgMtu: 1380 }).where(eq(nodes.id, node.id));
+    await db().insert(nodeVpnEndpoints).values([
+      { nodeId: node.id, ordinal: 1, address: "192.0.2.10", name: "Inherits" },
+      { nodeId: node.id, ordinal: 2, address: "192.0.2.20", name: "Own", awgMtu: 1300 },
+    ]);
+    const probe = harness(() => ({ handshake: true, http: true }));
+    await probe.tick();
+
+    expect(sentMtus(probe)).toEqual([["192.0.2.10", "1380"], ["192.0.2.20", "1300"]]);
+  });
+
+  runDatabaseTest("ignores user and key settings and device rules of the probe's node", async () => {
+    await seedProbe();
+    const node = await seedNode({ awg3Link: awgServiceLink({ host: "192.0.2.10" }) });
+    const everyDevice = Object.fromEntries(
+      ["android", "ios", "macos", "windows", "linux", "other"].map((type) => [type, { awgGenerator: null, awgMtu: 1340 }]),
+    );
+    await db().insert(nodeVpnEndpoints).values({
+      nodeId: node.id, ordinal: 1, address: "192.0.2.10", name: "Ruled", awgDeviceRules: everyDevice,
+    });
+    const probe = harness(() => ({ handshake: true, http: true }));
+    await probe.tick();
+    await probe.tick();
+    const [serviceKey] = await db().select().from(vpnKeys)
+      .where(and(eq(vpnKeys.nodeId, node.id), eq(vpnKeys.protocol, "awg3")));
+    if (!serviceKey) throw new Error("Probe key missing");
+    await db().update(vpnKeys).set({ awgMtu: 1350 }).where(eq(vpnKeys.id, serviceKey.id));
+    await db().update(users).set({ awgMtu: 1360 }).where(eq(users.id, serviceKey.ownerId));
+    await probe.tick(120);
+
+    expect(sentMtus(probe)).toEqual([["192.0.2.10", "1280"]]);
+  });
+
   const widgetRows = async (node: { name: string }) =>
     ((await repository.loadWidgetSnapshot(new Date()))?.input.nodes ?? [])
       .filter((entry) => entry.name.endsWith(runTag) || entry.name === node.name);

@@ -86,6 +86,7 @@ export class PostgresBridgeCandidateRepository implements BridgeCandidateReposit
         bridgePublicIpv4: vpnBridges.publicIpv4,
         nodePublicIp: nodes.publicIp,
         nodeGenerator: nodes.awgGenerator,
+        nodeMtu: nodes.awgMtu,
       })
       .from(vpnBridgeRoutes)
       .innerJoin(vpnBridges, eq(vpnBridges.id, vpnBridgeRoutes.bridgeId))

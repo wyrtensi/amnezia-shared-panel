@@ -4,6 +4,7 @@ import {
   bridgeRouteCandidateCheckPayloadSchema,
   probeCapabilityInputOf,
   probeSupportsBridgeMeasurement,
+  resolveAwgClientSettings,
   type AwgGeneratorSettings,
   type BridgeCandidateCheckError,
   type ProbeCapabilityInput,
@@ -72,6 +73,8 @@ export type CandidateContext = {
   serviceKeyId: string | null;
   serviceClientProfile: unknown;
   nodeGenerator: AwgGeneratorSettings | null;
+  /** The node's client MTU apart from its profile; null inherits. */
+  nodeMtu: number | null;
 };
 
 export type CandidateResultWrite = {
@@ -293,11 +296,15 @@ export const createBridgeCandidateCheck = ({
     }
     let config: string;
     try {
+      const settings = resolveAwgClientSettings({
+        node: { awgGenerator: context.nodeGenerator, awgMtu: context.nodeMtu },
+      });
       const projected = projectAwgClientConfig(context.serviceConfig, {
         protocol: "awg3",
         keyId: context.serviceKeyId,
         clientProfile: context.serviceClientProfile,
-        generator: context.nodeGenerator,
+        generator: settings.awgGenerator,
+        mtu: settings.mtu,
       });
       config = renderAwgEndpointVpnLink(projected, {
         host: context.bridgePublicIpv4,

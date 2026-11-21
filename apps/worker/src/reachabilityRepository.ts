@@ -15,6 +15,7 @@ import {
   probeSupportsBridgeMeasurement,
   REACHABILITY_NOTIFY_JOB_TYPE,
   REACHABILITY_WIDGET_JOB_TYPE,
+  resolveAwgClientSettings,
   type AwgGeneratorSettings,
   type ProbeBridgeRunTarget,
   type ProbeLevels,
@@ -111,15 +112,25 @@ type ClientProjection = {
   usesLegacyIdentity: boolean;
 };
 
+/**
+ * The probe measures what an address's ordinary users get: the address and
+ * node levels only. User, key and device-type settings are set by hand for
+ * particular people and devices and are never measured.
+ */
 const projectServiceConfig = (
   savedConfig: string,
   key: typeof vpnKeys.$inferSelect,
-  nodeGenerator: AwgGeneratorSettings | null,
+  node: { awgGenerator: AwgGeneratorSettings | null; awgMtu: number | null },
 ) => {
   const projections = new Map<string, ClientProjection>();
   return (endpoint?: PublicEndpoint): ClientProjection => {
-    const generator = endpoint?.awgGenerator ?? nodeGenerator;
-    const settings = JSON.stringify(generator);
+    const resolved = resolveAwgClientSettings({ address: endpoint, node });
+    const generator = resolved.awgGenerator;
+    // An MTU set at a level is part of the identity; one that follows the
+    // profile or the default is already fixed by it, so those identities
+    // stay as they were before the MTU had its own setting.
+    const mtu = resolved.mtuFrom === "address" || resolved.mtuFrom === "node" ? resolved.mtu : null;
+    const settings = JSON.stringify([generator, mtu]);
     const cached = projections.get(settings);
     if (cached) return cached;
     let config: string | null;
@@ -129,6 +140,7 @@ const projectServiceConfig = (
         protocol: key.protocol,
         clientProfile: key.awgClientProfile,
         generator,
+        mtu: resolved.mtu,
       });
     } catch (error) {
       if (!(error instanceof AwgClientConfigError)) throw error;
@@ -137,9 +149,11 @@ const projectServiceConfig = (
     const projection = {
       config,
       fingerprint: createHash("sha256")
-        .update(JSON.stringify([key.id, key.configNonce, key.awgClientProfile, generator]))
+        .update(JSON.stringify(mtu === null
+          ? [key.id, key.configNonce, key.awgClientProfile, generator]
+          : [key.id, key.configNonce, key.awgClientProfile, generator, { mtu }]))
         .digest("hex"),
-      usesLegacyIdentity: generator === null && key.awgClientProfile === null,
+      usesLegacyIdentity: generator === null && mtu === null && key.awgClientProfile === null,
     };
     projections.set(settings, projection);
     return projection;
@@ -836,6 +850,7 @@ export class PostgresReachabilityRepository
         publicIp: nodes.publicIp,
         publicHost: nodes.publicHost,
         awgGenerator: nodes.awgGenerator,
+        awgMtu: nodes.awgMtu,
         endpointRevision: nodes.vpnEndpointRevision,
         bridgeId: vpnBridgeRoutes.bridgeId,
         bridgeName: vpnBridges.name,
@@ -944,7 +959,7 @@ export class PostgresReachabilityRepository
         );
         if (protocol !== "awg3") return [{ ...target, config: savedConfig }];
         const inspection = inspectAwgVpnLink(savedConfig);
-        const project = projectServiceConfig(savedConfig, key, node.awgGenerator);
+        const project = projectServiceConfig(savedConfig, key, node);
         if (registered.length > 0 && inspection.kind === "awg31") {
           // Every address is a server of its own: measured once, on its own
           // route, with its own profile. The host stored in the service key

@@ -74,6 +74,7 @@ const context = (extra: Partial<CandidateContext> = {}): CandidateContext => ({
   serviceKeyId: "candidate-service-key",
   serviceClientProfile: null,
   nodeGenerator: null,
+  nodeMtu: null,
   ...extra,
 });
 
@@ -168,6 +169,16 @@ describe("bridge candidate check job", () => {
     if (typeof config !== "string") throw new Error("Missing embedded service config");
     expect(/^MTU = (\d+)$/m.exec(config)?.[1]).toBe("1330");
     expect(/^Jc = (\d+)$/m.exec(config)?.[1]).toBe("4");
+  });
+
+  it("uses the node MTU in the candidate config", async () => {
+    const { handle, client } = setup({ context: context({ nodeGenerator: null, nodeMtu: 1360 }) });
+    await handle(job());
+    const target = vi.mocked(client.startRun).mock.calls[0]?.[0].targets[0];
+    const artifact = decodeVpnLink(target?.config ?? "");
+    const config = readAwgLastConfig(artifact.containers?.[0]?.awg?.last_config)?.lastConfig.config;
+    if (typeof config !== "string") throw new Error("Missing embedded service config");
+    expect(/^MTU = (\d+)$/m.exec(config)?.[1]).toBe("1360");
   });
 
   it("reads the capability from the stored probe column through the shared lookup", async () => {
