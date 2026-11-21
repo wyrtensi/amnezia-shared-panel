@@ -3,6 +3,7 @@ import { isDeepStrictEqual } from "node:util";
 import { z } from "zod";
 import {
   and,
+  asc,
   count,
   desc,
   eq,
@@ -1688,6 +1689,40 @@ export class PostgresControlRepository implements ControlRepository {
     });
     if (remeasure) await this.queueReachabilityRun();
     return result;
+  };
+
+  /**
+   * The portal's bridge default moves every enabled address that inherits it
+   * onto or off its node's active bridge route. Like a bridge mode change,
+   * the address gets a new revision, its old measurement goes and its
+   * failure streak restarts; an open incident stays. Only nodes with an
+   * active route are locked, in id order like the worker's ingest, before
+   * the caller writes the policy row; a node deletion writes the policy
+   * before it locks its node, but a node with a route cannot be deleted.
+   */
+  private resetInheritingAddressEvidence = async (tx: DbTransaction, now: Date): Promise<void> => {
+    const routed = await tx
+      .select({ nodeId: vpnBridgeRoutes.nodeId })
+      .from(vpnBridgeRoutes)
+      .where(eq(vpnBridgeRoutes.state, "active"));
+    const nodeIds = [...new Set(routed.map((route) => route.nodeId))];
+    if (nodeIds.length === 0) return;
+    await tx.select({ id: nodes.id }).from(nodes)
+      .where(inArray(nodes.id, nodeIds)).orderBy(asc(nodes.id)).for("no key update");
+    const moved = await tx
+      .update(nodeVpnEndpoints)
+      .set({ revision: sql`${nodeVpnEndpoints.revision} + 1` })
+      .where(and(
+        inArray(nodeVpnEndpoints.nodeId, nodeIds),
+        eq(nodeVpnEndpoints.enabled, true),
+        eq(nodeVpnEndpoints.bridgeMode, "inherit"),
+      ))
+      .returning({ id: nodeVpnEndpoints.id, nodeId: nodeVpnEndpoints.nodeId });
+    const byNode = new Map<string, string[]>();
+    for (const { id, nodeId } of moved) byNode.set(nodeId, [...(byNode.get(nodeId) ?? []), id]);
+    for (const [nodeId, endpointIds] of byNode) {
+      await resetNodeEndpointEvidence(tx, nodeId, now, { endpointIds });
+    }
   };
 
   /** After a committed change to what the probe measures; see `requestReachabilityRun`. */
@@ -5817,6 +5852,10 @@ export class PostgresControlRepository implements ControlRepository {
           if (recommendedEndpoints !== undefined || check.canonical.length > 0) {
             changes.recommendedEndpointIds = check.canonical;
           }
+        }
+        if (previousUseBridge !== undefined && changes.useBridge !== undefined &&
+          changes.useBridge !== previousUseBridge) {
+          await this.resetInheritingAddressEvidence(tx, new Date());
         }
         const [updated] = await tx
           .insert(portalPolicy)

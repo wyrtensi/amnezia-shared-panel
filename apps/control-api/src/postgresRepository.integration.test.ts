@@ -8512,6 +8512,59 @@ describe("PostgresControlRepository probe re-check after a configuration change"
     }
   });
 
+  runDatabaseTest("restarts the streak of addresses that follow the bridge default when it flips", async () => {
+    if (!database) throw new Error("No database");
+    const bridgedNode = await seedNode();
+    const directNode = await seedNode();
+    const inherits = await addressOf(bridgedNode, "203.0.113.98");
+    const pinned = await addressOf(bridgedNode, "203.0.113.99");
+    await repository().updateNode(admin, bridgedNode, {
+      publicEndpoint: { action: "update", id: pinned, bridgeMode: "direct" },
+    });
+    const unrouted = await addressOf(directNode, "203.0.113.100");
+    const [bridge] = await database.db.insert(vpnBridges).values({
+      name: `default-flip-${randomBytes(3).toString("hex")}`,
+      publicIpv4: `47.${randomBytes(1)[0]}.${randomBytes(1)[0]}.12`,
+    }).returning();
+    if (!bridge) throw new Error("Failed to seed bridge");
+    const routeId = randomUUID();
+    await database.db.insert(vpnBridgeRoutes).values({
+      id: routeId, nodeId: bridgedNode, bridgeId: bridge.id, publicUdpPort: 41000,
+      state: "active", frpProxyName: `awg-route-${routeId}`,
+    });
+    const openedAt = new Date(Date.now() - 3_600_000);
+    const incident = {
+      probeStatus: "failed" as const, probeCheckedAt: new Date(), probeConsecutiveFailures: 3,
+      probeFailingSince: openedAt, probeAlertedAt: openedAt, probeAlertKind: "node" as const,
+    };
+    const ids = [inherits, pinned, unrouted];
+    await database.db.update(nodeVpnEndpoints).set(incident).where(inArray(nodeVpnEndpoints.id, ids));
+    const before = new Map((await database.db.select().from(nodeVpnEndpoints)
+      .where(inArray(nodeVpnEndpoints.id, ids))).map((row) => [row.id, row]));
+    const [saved] = await database.db.select({ useBridge: portalPolicy.useBridge }).from(portalPolicy);
+    const original = saved?.useBridge ?? false;
+    try {
+      await repository().adminAction(admin, "portal-policy", "global", "update", { useBridge: !original });
+      const after = new Map((await database.db.select().from(nodeVpnEndpoints)
+        .where(inArray(nodeVpnEndpoints.id, ids))).map((row) => [row.id, row]));
+      expect(after.get(inherits)).toMatchObject({
+        probeStatus: null, probeConsecutiveFailures: 0, probeFailingSince: null,
+        probeAlertedAt: openedAt, probeAlertKind: "node",
+        revision: (before.get(inherits)?.revision ?? 0) + 1,
+      });
+      // Pinned to a route, or on a node without an active route: unmoved.
+      for (const id of [pinned, unrouted]) {
+        expect(after.get(id)).toMatchObject({
+          probeStatus: "failed", probeConsecutiveFailures: 3, revision: before.get(id)?.revision,
+        });
+      }
+    } finally {
+      await repository().adminAction(admin, "portal-policy", "global", "update", { useBridge: original });
+      await database.db.delete(vpnBridgeRoutes).where(eq(vpnBridgeRoutes.id, routeId));
+      await database.db.delete(vpnBridges).where(eq(vpnBridges.id, bridge.id));
+    }
+  });
+
   runDatabaseTest("closes an address incident silently when the address or its checks are turned off", async () => {
     if (!database) throw new Error("No database");
     const nodeId = await seedNode();
