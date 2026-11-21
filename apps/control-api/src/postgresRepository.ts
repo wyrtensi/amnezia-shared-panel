@@ -1376,7 +1376,6 @@ export class PostgresControlRepository implements ControlRepository {
         }
         const globalUseBridge = policyRow[0]?.useBridge ?? false;
         const hasActiveBridge = activeBridgeRouteId !== null;
-        const nodeReachability = reachability?.get(row.id) ?? UNKNOWN_USER_REACHABILITY;
         const endpoints = visibleEndpoints.map(
           ({ id, ordinal, name, publicAddress, bridgeMode, reachability: endpointReachability }) => {
             const usesBridgeForUser =

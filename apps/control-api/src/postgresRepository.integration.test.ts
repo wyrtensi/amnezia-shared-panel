@@ -3439,7 +3439,7 @@ describe("PostgresControlRepository node status surfaces", () => {
       const routeId = randomUUID();
       const card = async () =>
         (await subject().listKeys(actor)).find((row) => row.id === key.id)?.nodeReachability;
-      const owner = (useBridge: boolean | null) => database!.db.update(users)
+      const owner = (useBridge: boolean | null) => database.db.update(users)
         .set({ policyOverride: useBridge === null ? null : { useBridge } }).where(eq(users.id, actor.id));
       try {
         // Direct: the address's verdict, not the node summary.
@@ -3497,7 +3497,7 @@ describe("PostgresControlRepository node status surfaces", () => {
         id: routeId, nodeId, bridgeId: bridge.id, publicUdpPort: 41000, state: "active",
         frpProxyName: `awg-route-${routeId}`,
       });
-      const owner = (useBridge: boolean | null) => database!.db.update(users)
+      const owner = (useBridge: boolean | null) => database.db.update(users)
         .set({ policyOverride: useBridge === null ? null : { useBridge } }).where(eq(users.id, actor.id));
       // Addresses are listed for AWG 3.1 nodes only.
       const [{ protocol: savedProtocol } = { protocol: "awg2" as const }] = await database.db
@@ -8500,7 +8500,7 @@ describe("PostgresControlRepository probe re-check after a configuration change"
       probeStatus: "failed" as const, probeCheckedAt: new Date(), probeConsecutiveFailures: 3,
       probeFailingSince: openedAt, probeAlertedAt: openedAt, probeAlertKind: "node" as const,
     };
-    const rowOf = async () => (await database!.db.select().from(nodeVpnEndpoints)
+    const rowOf = async () => (await database.db.select().from(nodeVpnEndpoints)
       .where(eq(nodeVpnEndpoints.id, second)))[0];
     for (const change of [{ awgGenerator: preset("dns_query") }, { bridgeMode: "direct" as const }]) {
       await database.db.update(nodeVpnEndpoints).set(incident).where(eq(nodeVpnEndpoints.id, second));
@@ -8521,7 +8521,7 @@ describe("PostgresControlRepository probe re-check after a configuration change"
       probeStatus: "failed" as const, probeConsecutiveFailures: 3, probeFailingSince: openedAt,
       probeAlertedAt: openedAt, probeAlertKind: "node" as const,
     };
-    const rowsOf = async () => database!.db.select().from(nodeVpnEndpoints)
+    const rowsOf = async () => database.db.select().from(nodeVpnEndpoints)
       .where(eq(nodeVpnEndpoints.nodeId, nodeId)).orderBy(nodeVpnEndpoints.ordinal);
     const closed = { probeAlertedAt: null, probeAlertKind: null, probeConsecutiveFailures: 0, probeFailingSince: null };
 

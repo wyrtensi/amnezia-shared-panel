@@ -55,7 +55,6 @@ import {
   projectAwgClientConfig,
   renderAwgEndpointVpnLink,
   selectAwgClientProfile,
-  type AwgEndpoint,
 } from "@amnezia/vpn-config";
 
 import type { CandidateOutcome, CandidateRun } from "./bridgeCandidateCheck.js";
@@ -713,7 +712,9 @@ export class PostgresReachabilityRepository
     const counted = new Set<string>();
     for (const target of targets) {
       const bridgeId = target.bridgePath?.bridgeId;
-      if (!bridgeId || !measuredViaBridge(target) || counted.has(target.nodeId)) continue;
+      // A node with no address checked has no evidence about the bridge.
+      if (!bridgeId || !measuredViaBridge(target) || counted.has(target.nodeId) ||
+        target.unavailableReason === NO_CHECKED_ADDRESS_REASON) continue;
       const outcome = awgByNode.get(target.nodeId);
       if (!outcome) continue;
       counted.add(target.nodeId);
@@ -906,24 +907,27 @@ export class PostgresReachabilityRepository
           expectedEgressIp: node.publicIp,
         };
         const key = keys.find((k) => k.nodeId === node.id && k.protocol === protocol);
-        if (node.bridgeId !== null && bridgePath === null) {
-          return [{ ...target, unavailableReason: BRIDGE_UNRENDERABLE_REASON }];
-        }
-        if (!key) return [{ ...target, unavailableReason: "no service key yet" }];
-        if (key.state === "provisioning") {
-          return [{ ...target, unavailableReason: "service key is provisioning" }];
-        }
+        const registered = endpointsByNode.get(node.id) ?? [];
+        // When the probe cannot look at the node at all, every address with
+        // checks on reads unknown for that reason instead of its last verdict.
+        const checkedAddresses = protocol === "awg3"
+          ? registered.filter((endpoint) => endpoint.enabled && endpoint.reachabilityEnabled).map(toTargetAddress)
+          : [];
+        const unavailable = (reason: string): RunTarget[] => [{
+          ...target,
+          unavailableReason: reason,
+          ...(checkedAddresses.length > 0 ? { addresses: checkedAddresses } : {}),
+        }];
+        if (node.bridgeId !== null && bridgePath === null) return unavailable(BRIDGE_UNRENDERABLE_REASON);
+        if (!key) return unavailable("no service key yet");
+        if (key.state === "provisioning") return unavailable("service key is provisioning");
         if (key.state === "failed") {
-          return [{
-            ...target,
-            unavailableReason: `service key failed: ${key.failureReason ?? "unknown"}`.slice(0, 300),
-          }];
+          return unavailable(`service key failed: ${key.failureReason ?? "unknown"}`.slice(0, 300));
         }
         if (key.state !== "active" || key.configCiphertext === null) {
-          return [{ ...target, unavailableReason: `service key is ${key.state}` }];
+          return unavailable(`service key is ${key.state}`);
         }
         const via = measuredViaBridge(target) ? target.bridgePath : null;
-        const registered = endpointsByNode.get(node.id) ?? [];
         if (via && registered.length === 0 && !options.bridgeMeasurement && !options.probeDirectWhenBridged) {
           return [{ ...target, unavailableReason: BRIDGE_UNSUPPORTED_REASON }];
         }

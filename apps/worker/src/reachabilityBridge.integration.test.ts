@@ -1444,4 +1444,45 @@ describe("reachability of bridged nodes (real PostgreSQL)", () => {
       [`Bridged ${runTag}`, "failed"],
     ]);
   });
+
+  runDatabaseTest("a bridged node with every address's checks off does not hide its bridge's outage", async () => {
+    await seedProbe();
+    await seedPortalPolicy(true);
+    const bridge = await seedBridge(`Shared ${runTag}`);
+    const measured = await seedNode({ awg3Link: awgServiceLink({ host: "192.0.2.10" }) });
+    const unchecked = await seedNode({ awg3Link: awgServiceLink({ host: "192.0.2.50" }) });
+    await seedRoute(measured.id, bridge.id, "active", 41000);
+    await seedRoute(unchecked.id, bridge.id, "active", 41001);
+    await db().insert(nodeVpnEndpoints).values([
+      { nodeId: measured.id, ordinal: 1, address: "192.0.2.10", name: "Measured" },
+      { nodeId: unchecked.id, ordinal: 1, address: "192.0.2.50", name: "Unchecked", reachabilityEnabled: false },
+    ]);
+    const probe = harness(() => ({ handshake: false, http: false }));
+    await probe.tick();
+    await probe.tick(120);
+
+    const [state] = await db().select().from(bridgeReachabilityState)
+      .where(eq(bridgeReachabilityState.bridgeId, bridge.id));
+    expect(state?.probeStatus).toBe("failed");
+  });
+
+  runDatabaseTest("a node whose probe key failed reads unknown on its addresses, not their last verdict", async () => {
+    await seedProbe();
+    const node = await seedNode({ awg3Link: awgServiceLink({ host: "192.0.2.10" }) });
+    await db().insert(nodeVpnEndpoints).values({
+      nodeId: node.id, ordinal: 1, address: "192.0.2.10", name: `Primary ${runTag}`,
+      probeStatus: "ok", probeCheckedAt: new Date(Date.now() - 3_600_000),
+    });
+    await db().update(vpnKeys).set({ state: "failed", failureReason: "node refused the key" })
+      .where(and(eq(vpnKeys.nodeId, node.id), eq(vpnKeys.protocol, "awg3")));
+    const probe = harness(() => ({ handshake: true, http: true }));
+    await probe.tick();
+    await probe.tick(120);
+
+    expect((await directEndpointsOf(node.id))[0]).toMatchObject({
+      probeStatus: "error", probeDetail: "service key failed: node refused the key",
+    });
+    const snapshot = await repository.loadWidgetSnapshot(new Date());
+    expect(snapshot?.input.nodes.find((entry) => entry.name === `Primary ${runTag}`)?.status).toBe("error");
+  });
 });
