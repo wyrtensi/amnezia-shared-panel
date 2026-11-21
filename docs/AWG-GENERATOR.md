@@ -4,6 +4,52 @@ Administrators configure export settings in the node card's generator editor.
 The node defines defaults, and each registered IPv4 address can override them.
 An address with inherited settings follows its node. A node with inherited
 settings retains the existing issued-artifact and saved client-profile behavior.
+The client MTU is a setting of its own next to the profile, and a user, a key
+and a device type on an address can carry their own profile and MTU too (see
+"Levels" below).
+
+## Levels
+
+A key's export resolves the **profile** and the **client MTU** separately, each
+from the nearest level that sets it:
+
+1. the key (set when issuing it or later, by an administrator);
+2. its owner (an administrator's per-user settings, for every AWG 3.1 key of
+   the user on any server);
+3. its address's rule for the key's device type (Android, iOS, macOS,
+   Windows, Linux, other; a key with an unspecified device type matches no
+   rule);
+4. its address (the key's address, or the node's primary one);
+5. its node.
+
+With no profile anywhere the issued artifact and saved client profile apply,
+as before. With no MTU set anywhere the MTU stored inside the resolved profile
+applies (settings saved before the MTU had its own setting), then 1280. So a
+node can stay without a profile and still export MTU 1380, and an address can
+follow its node's profile with an MTU of its own.
+
+- Only administrators see or change user, key and device-type settings; the
+  user API and cabinet never show them. The admin key list shows each AWG 3.1
+  key's effective profile and MTU, the level each comes from and a "own
+  settings" marker when a key, user or device rule sets something.
+- The MTU is applied after the profile and is not part of a randomized
+  profile's draw, so changing an MTU at any level never moves a key's Jc, Jmin,
+  Jmax or signature packets.
+- AWG 2.0 keys have no client profile: settings on an AWG 2.0 key are refused
+  and a user's settings do not touch their AWG 2.0 keys. The probe's own
+  account cannot get user or key settings.
+- The reachability probe measures what an address's ordinary users get: the
+  address and node levels only. User, key and device-type settings are not
+  measured.
+- Like every settings change, a new profile or MTU applies to the next export;
+  a device that already imported the config imports it again.
+
+The upgrade that introduced the separate MTU gave every node and address with
+a saved profile that profile's MTU as its own MTU, so each exports the MTU it
+exported before. Rolling back to an older release is safe: it does not know
+the new columns and exports with the profile's own MTU, which the upgrade left
+unchanged; user, key, device-type and profile-less MTU settings stop applying
+until the newer release is back.
 
 ## Scope and presets
 
@@ -67,7 +113,8 @@ UPDATE nodes SET awg_generator = NULL WHERE awg_generator->>'preset' ~ '^(dns_qu
 UPDATE node_vpn_endpoints SET awg_generator = NULL WHERE awg_generator->>'preset' ~ '^(dns_query_(aaaa|https|burst|stun)|stun_dns_response|noise)' OR awg_generator->>'iMode' IN ('dns_query_aaaa', 'dns_query_https', 'dns_query_stun', 'stun_dns_response');
 ```
 
-Changing MTU or the switch keeps the selected preset; editing any other field
+Changing the switch keeps the selected preset (the client MTU is a separate
+field and never changes the preset); editing any other field
 turns it into Custom with randomization off (range edits on Randomized stay
 Randomized). The reachability probe draws through the same rules with its own
 key.
@@ -87,10 +134,12 @@ keys. Imported profiles on devices need to be imported again. The shared AWG
 interface and peer credentials are preserved. AWG 2.0 compatibility artifacts
 retain their existing export behavior.
 
-Client MTU is configurable from 1280 to 1420 (per node or per registered IPv4
-address). The effective outer packet size also includes the existing S4, AWG
+Client MTU is configurable from 1280 to 1420 at every level above. The
+effective outer packet size also includes the existing S4, AWG
 authentication/header overhead and optional padding. Choose an MTU appropriate
-for the path and server geometry. FRP bridges do not define a separate tunnel
+for the path and server geometry; on a bridged path keep MTU + S4 + 32 within
+FRP's 1500-byte UDP buffer described below (for example MTU 1404 at most with
+S4 64). FRP bridges do not define a separate tunnel
 MTU: the client-to-bridge leg carries plain AWG UDP and the bridge-to-node FRP
 leg runs over TCP/TLS, bounded only by FRP's default 1500-byte UDP read buffer
 (`udpPacketSize`), which comfortably fits MTU 1280 + S4 <= 64 + 32-byte AWG
@@ -107,8 +156,27 @@ All mutations use the existing administrator-only node PATCH endpoint.
 - The same endpoint accepts
   `publicEndpoint: { action: "update", id: endpointId, awgGenerator: settings }`
   for an address override. Set its `awgGenerator` to `null` to follow the node.
-- Node and address read models expose their stored `awgGenerator`. Node PATCH
-  responses include the updated node setting.
+- Both also accept `awgMtu` (1280-1420, or `null` to inherit): the node's or
+  the address's client MTU, apart from its profile.
+- The address update accepts `awgDeviceRules`: an object keyed by device type
+  (`android`, `ios`, `macos`, `windows`, `linux`, `other`), each
+  `{ awgGenerator, awgMtu }` with at least one set; it replaces every rule of
+  the address, `null` removes them.
+- Node and address read models expose their stored `awgGenerator`, `awgMtu`
+  and (addresses) `awgDeviceRules`. Node PATCH responses include them.
+- `POST /api/admin/users/{userId}/set-config` and
+  `POST /api/admin/keys/{keyId}/set-config` take `{ awgGenerator?, awgMtu? }`
+  (at least one; `null` inherits; an omitted field is kept). Audited as
+  `admin.users.set-config` and `vpn_key.config_set` with the preset id and
+  MTU only.
+- Key creation (`POST /api/keys` for an administrator,
+  `POST /api/admin/users/{userId}/create-key`) accepts `awgGenerator` and
+  `awgMtu` like the bridge fields: administrators only (403 otherwise), AWG 3.1
+  only (409 `AWG_GENERATOR_UNSUPPORTED`).
+- `GET /api/admin/keys` returns each key's `awgGenerator`, `awgMtu` and, for
+  AWG 3.1, `config`: the resolved `awgGenerator`, `profileFrom`, `mtu`,
+  `mtuFrom`, `probeChecked` and `inherited` (the same without the key's own
+  settings).
 
 Use `awgGeneratorPresets()` from `@amnezia/contracts` to obtain complete preset
 settings for an API client. Bounds are checked before persistence. Node edits
@@ -132,17 +200,18 @@ separate per-address results, including on the same bridge. A reply for an
 older profile or path cannot update the current measurement. AWG 2.0 retains
 the existing direct and diagnostic check rules.
 
-The bridge activation check uses the node's default profile. Scheduled checks
+The bridge activation check uses the node's default profile and MTU. Scheduled checks
 also cover the address overrides and follow each address's bridge mode and
 the portal default. Per-user bridge and route overrides, device-specific IPv6
-settings, and each user's randomized draw are outside the probe's scope.
+settings, user, key and device-type client settings, and each user's
+randomized draw are outside the probe's scope.
 The probe samples the current generator with its own saved client profile;
 it does not enumerate every active user's J/I draw or every historical profile
 still imported on a device. Export hashes do not retain those historical
 configurations, so an OK measurement cannot certify all previously issued
 variants. AWG 2.0 continues to use the existing node-level direct service key.
 
-Saving a changed profile on a node or an enabled address with checks on
+Saving a changed profile or MTU on a node or an enabled address with checks on
 queues a probe run (while the probe is enabled), so the new profile is
 measured right away instead of at the next scheduled run; until that run
 finishes the address reads unknown (see "After a configuration change" in
@@ -164,8 +233,9 @@ again. Identical concurrent exports keep the existing timestamp, and database
 clock updates cannot move it backwards. Refresh tokens also bind the effective
 generator settings, so an earlier token cannot refresh a newly selected preset.
 
-Changing a generator or an address's bridge mode clears affected AWG 3.1
-reachability evidence until a matching measurement arrives. Other address
+Changing a generator, a node or address MTU or an address's bridge mode clears
+affected AWG 3.1 reachability evidence until a matching measurement arrives.
+User, key and device-type settings leave it untouched. Other address
 overrides and AWG 2.0 evidence retain their existing results.
 
 Administrator exports of another user's key retain authorization checks and

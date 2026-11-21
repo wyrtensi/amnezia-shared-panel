@@ -73,7 +73,7 @@ settings (generator profile, bridge mode, address). A change to what is
 measured on a node with checks on queues a run once it is saved, so it is
 checked right away instead of at the next scheduled run:
 
-- the node's or an enabled address's generator profile;
+- the node's or an enabled address's generator profile or client MTU;
 - an address added, enabled or disabled, or an enabled address's bridge mode;
 - checks turned back on for the node or an address;
 - the node's bridge route assignment;
@@ -86,7 +86,10 @@ The worker starts that run at its next tick, about a minute later, or right
 after a run in flight; the result shows once the run finishes. When checks
 were turned back on, the run waits for the new probe key to provision.
 Until then the affected address reads `unknown`. Renames and other edits
-queue nothing, and nothing is queued while the probe is disabled. Each queued
+queue nothing, nor do user, key or device-type settings, which the probe does
+not measure (it checks what an address's ordinary users get; see "Levels" in
+[AWG-GENERATOR.md](AWG-GENERATOR.md)). Nothing is queued while the probe is
+disabled. Each queued
 run checks every node, like a scheduled one.
 
 ### Request fields and capabilities
