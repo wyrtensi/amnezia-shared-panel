@@ -1074,6 +1074,8 @@ export const nodeReachabilityState = pgTable("node_reachability_state", {
   // Set while an incident is open: an unavailable message was queued.
   alertedAt: timestamp("alerted_at", { withTimezone: true }),
   alertKind: reachabilityAlertKindEnum("alert_kind"),
+  // The latest run judged this node by its addresses (one widget row each).
+  addressBased: boolean("address_based").default(false).notNull(),
   checkedAt: timestamp("checked_at", { withTimezone: true }).notNull(),
   detail: varchar("detail", { length: 300 }),
   directStatus: serviceCheckStatusEnum("direct_status"),

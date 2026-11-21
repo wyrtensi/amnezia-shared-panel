@@ -18,7 +18,6 @@ import {
   type AwgGeneratorSettings,
   type ProbeBridgeRunTarget,
   type ProbeLevels,
-  type ReachabilityStatus,
   type ReachabilityWidgetPayload,
   revokeJobDedupKey,
   type ProtocolKind,
@@ -611,6 +610,9 @@ export class PostgresReachabilityRepository
           failingSince: state.failingSince,
           alertedAt: state.alertedAt,
           alertKind: state.alertKind,
+          // The widget keeps a row per address on a node judged by them.
+          addressBased: targets.some((target) =>
+            target.nodeId === nodeId && !target.diagnostic && target.addresses !== undefined),
           checkedAt: run.now,
           detail: state.detail,
           ...(direct ? {
@@ -1169,6 +1171,7 @@ export class PostgresReachabilityRepository
         name: nodes.name,
         status: nodeReachabilityState.status,
         failingSince: nodeReachabilityState.failingSince,
+        addressBased: nodeReachabilityState.addressBased,
       })
       .from(nodeReachabilityState)
       .innerJoin(nodes, eq(nodes.id, nodeReachabilityState.nodeId))
@@ -1279,15 +1282,16 @@ export class PostgresReachabilityRepository
     }
 
     const widgetNodes: WidgetNode[] = stateRows.flatMap((row): WidgetNode[] => {
-      const nodeEndpoints = endpointsByNode.get(row.nodeId) ?? [];
-      const probed = nodeEndpoints.filter(
-        (ep) => ep.enabled && ep.reachabilityEnabled && ep.probeStatus !== null,
-      );
-      // Every address is its own server: one row per measured address, on
-      // bridged nodes too. A node whose addresses were never measured (no
-      // registered address, a legacy artifact) keeps its node row.
-      if (probed.length > 0) {
-        return probed.map((ep) => {
+      // Every address is its own server: one row per address with checks on
+      // when the latest run judged the node by its addresses, bridged nodes
+      // too. An address waiting for its check after a change reads unknown.
+      // A node without registered addresses or with a legacy artifact keeps
+      // its node row.
+      const checked = row.addressBased
+        ? (endpointsByNode.get(row.nodeId) ?? []).filter((ep) => ep.enabled && ep.reachabilityEnabled)
+        : [];
+      if (checked.length > 0) {
+        return checked.map((ep) => {
           const parsed = probeLevelsSchema.safeParse(ep.probeLevels);
           const epOnline =
             (onlineByEndpoint.get(`${row.nodeId}:${ep.id}`) ?? 0) +
@@ -1298,8 +1302,9 @@ export class PostgresReachabilityRepository
           );
           return {
             name: ep.name,
-            status: ep.probeStatus as ReachabilityStatus,
-            levels: parsed.success ? parsed.data : (ep.ordinal === 1 ? (best.get(row.nodeId)?.levels ?? null) : null),
+            status: ep.probeStatus ?? "error",
+            // Its own levels only: the node's best row may be the bridge path.
+            levels: parsed.success ? parsed.data : null,
             failingSince: ep.probeFailingSince,
             online: epOnline,
             lastPersonHandshakeAt: epHandshake,

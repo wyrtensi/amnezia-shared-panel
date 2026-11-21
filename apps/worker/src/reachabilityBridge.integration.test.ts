@@ -1445,6 +1445,193 @@ describe("reachability of bridged nodes (real PostgreSQL)", () => {
     ]);
   });
 
+  runDatabaseTest("keeps an address incident open across a profile change and closes it with one recovery", async () => {
+    await seedProbe();
+    const node = await seedNode({ awg3Link: awgServiceLink({ host: "192.0.2.10" }) });
+    const [only] = await db().insert(nodeVpnEndpoints).values({
+      nodeId: node.id, ordinal: 1, address: "192.0.2.10", name: "Only",
+    }).returning();
+    if (!only) throw new Error("Address fixture missing");
+    let up = false;
+    const probe = harness(() => ({ handshake: up, http: up }));
+    const texts = async () => (await alerts())
+      .map((row) => (row.payload as { text: string }).text)
+      .filter((text) => text.includes("Only (192.0.2.10)"));
+    await probe.tick();
+    await probe.tick(120);
+    await probe.tick(120);
+    expect(await texts()).toHaveLength(1);
+    const [opened] = await directEndpointsOf(node.id);
+    expect(opened?.probeAlertedAt).not.toBeNull();
+
+    // The address gets its own profile, as the panel's address edit does:
+    // new revision, old evidence gone, the streak restarts, the incident stays.
+    await db().transaction(async (tx) => {
+      await tx.select({ id: nodes.id }).from(nodes).where(eq(nodes.id, node.id)).for("no key update");
+      await tx.update(nodeVpnEndpoints)
+        .set({ awgGenerator: preset("dns_response"), revision: sql`${nodeVpnEndpoints.revision} + 1` })
+        .where(eq(nodeVpnEndpoints.id, only.id));
+      await resetNodeEndpointEvidence(tx, node.id, new Date(), { endpointIds: [only.id] });
+    });
+    await probe.tick(120);
+    await probe.tick(120);
+    await probe.tick(120);
+    expect(await texts()).toHaveLength(1);
+    expect((await directEndpointsOf(node.id))[0]).toMatchObject({
+      probeStatus: "failed", probeAlertedAt: opened?.probeAlertedAt, probeAlertKind: "node",
+    });
+
+    up = true;
+    await probe.tick(120);
+    await probe.tick(120);
+    await probe.tick(120);
+    const all = await texts();
+    expect(all).toHaveLength(2);
+    expect(all[1]).toBe("Адрес Only (192.0.2.10) снова доступен из Testland");
+    expect((await directEndpointsOf(node.id))[0]).toMatchObject({ probeStatus: "ok", probeAlertedAt: null });
+  });
+
+  runDatabaseTest("keeps the bridge path row and the bridged address when their reply is missing", async () => {
+    await seedProbe();
+    await seedPortalPolicy(false);
+    const node = await seedNode({ awg3Link: awgServiceLink({ host: "192.0.2.10" }) });
+    const bridge = await seedBridge(`Missing reply ${runTag}`);
+    await seedRoute(node.id, bridge.id, "active");
+    await db().insert(nodeVpnEndpoints).values([
+      { nodeId: node.id, ordinal: 1, address: "192.0.2.10", name: "Direct", bridgeMode: "direct" },
+      { nodeId: node.id, ordinal: 2, address: "192.0.2.20", name: "Bridged", bridgeMode: "bridge" },
+    ]);
+    const probe = harness(() => ({ handshake: true, http: true }));
+    await probe.tick();
+    await probe.tick();
+    const before = (await resultsOf(node.id)).get("awg3");
+    const [, bridgedBefore] = await directEndpointsOf(node.id);
+    expect(before?.status).toBe("ok");
+    expect(bridgedBefore?.probeStatus).toBe("ok");
+
+    // The next run's bridged reply is lost; the direct one arrives.
+    const answer = vi.mocked(probe.client.latestRun).getMockImplementation();
+    if (!answer) throw new Error("Probe fake missing");
+    vi.mocked(probe.client.latestRun).mockImplementation(async () => {
+      const state = await answer();
+      return state && { ...state, results: state.results.filter((result) => !result.targetId.includes(":bridge:")) };
+    });
+    await probe.tick(120);
+    await probe.tick();
+    expect(probe.sent).toHaveLength(2);
+
+    const after = (await resultsOf(node.id)).get("awg3");
+    expect(after).toMatchObject({ status: "ok", runId: before?.runId, checkedAt: before?.checkedAt });
+    const [directAfter, bridgedAfter] = await directEndpointsOf(node.id);
+    expect(bridgedAfter).toMatchObject({ probeStatus: "ok", probeCheckedAt: bridgedBefore?.probeCheckedAt });
+    expect(directAfter?.probeCheckedAt?.getTime()).toBeGreaterThan(bridgedBefore?.probeCheckedAt?.getTime() ?? 0);
+  });
+
+  const widgetRows = async (node: { name: string }) =>
+    ((await repository.loadWidgetSnapshot(new Date()))?.input.nodes ?? [])
+      .filter((entry) => entry.name.endsWith(runTag) || entry.name === node.name);
+
+  runDatabaseTest("keeps a row per address while its addresses wait for a check after a reset", async () => {
+    await seedProbe();
+    const node = await seedNode({ awg3Link: awgServiceLink({ host: "192.0.2.10" }) });
+    await db().insert(nodeVpnEndpoints).values([
+      { nodeId: node.id, ordinal: 1, address: "192.0.2.10", name: `Primary ${runTag}` },
+      { nodeId: node.id, ordinal: 2, address: "192.0.2.20", name: `Second ${runTag}` },
+    ]);
+    const probe = harness(() => ({ handshake: true, http: true }));
+    await probe.tick();
+    await probe.tick();
+    await probe.tick(120);
+    expect(probe.sent).toHaveLength(2);
+
+    // The node's profile changes while the run is out: every address that
+    // inherits it is reset, so the run's replies are for the old revision.
+    await db().transaction(async (tx) => {
+      await tx.select({ id: nodes.id }).from(nodes).where(eq(nodes.id, node.id)).for("no key update");
+      await tx.update(nodeVpnEndpoints)
+        .set({ revision: sql`${nodeVpnEndpoints.revision} + 1` })
+        .where(eq(nodeVpnEndpoints.nodeId, node.id));
+      await resetNodeEndpointEvidence(tx, node.id, new Date());
+    });
+    await probe.tick();
+
+    expect((await directEndpointsOf(node.id)).map((endpoint) => endpoint.probeStatus)).toEqual([null, null]);
+    expect((await widgetRows(node)).map(({ name, status, levels }) => [name, status, levels])).toEqual([
+      [`Primary ${runTag}`, "error", null],
+      [`Second ${runTag}`, "error", null],
+    ]);
+  });
+
+  runDatabaseTest("shows an address's own levels on a bridged node, never the bridge path's", async () => {
+    await seedProbe();
+    await seedPortalPolicy(false);
+    const node = await seedNode({ awg3Link: awgServiceLink({ host: "192.0.2.10" }) });
+    const bridge = await seedBridge(`Levels ${runTag}`);
+    await seedRoute(node.id, bridge.id, "active");
+    await db().insert(nodeVpnEndpoints).values([
+      { nodeId: node.id, ordinal: 1, address: "192.0.2.10", name: `Direct ${runTag}`, bridgeMode: "direct" },
+      { nodeId: node.id, ordinal: 2, address: "192.0.2.20", name: `Bridged ${runTag}`, bridgeMode: "bridge" },
+    ]);
+    const probe = harness(() => ({ handshake: true, http: true }));
+    await probe.tick();
+    await probe.tick();
+    expect((await resultsOf(node.id)).get("awg3")?.status).toBe("ok");
+
+    // The probe could not measure the direct address this time: its error
+    // carries no levels.
+    await db().update(nodeVpnEndpoints)
+      .set({ probeStatus: "error", probeLevels: null, probeDetail: "probe error" })
+      .where(and(eq(nodeVpnEndpoints.nodeId, node.id), eq(nodeVpnEndpoints.ordinal, 1)));
+
+    const rows = await widgetRows(node);
+    expect(rows.map(({ name, status }) => [name, status])).toEqual([
+      [`Direct ${runTag}`, "error"],
+      [`Bridged ${runTag}`, "ok"],
+    ]);
+    expect(rows[0]?.levels).toBeNull();
+    expect(rows[1]?.levels?.handshake.ok).toBe(true);
+  });
+
+  runDatabaseTest("follows a moved primary address in the widget", async () => {
+    await seedProbe();
+    const node = await seedNode({ awg3Link: awgServiceLink({ host: "192.0.2.10" }) });
+    await db().insert(nodeVpnEndpoints).values({
+      nodeId: node.id, ordinal: 1, address: "192.0.2.10", name: `Primary ${runTag}`,
+    });
+    const probe = harness((target) => {
+      const ok = inspectAwgVpnLink(target.config).endpoint?.host === "192.0.2.10";
+      return { handshake: ok, http: ok };
+    });
+    await probe.tick();
+    await probe.tick();
+    expect((await widgetRows(node)).map(({ name, status }) => [name, status])).toEqual([
+      [`Primary ${runTag}`, "ok"],
+    ]);
+
+    // The node agent reports a new primary address (worker telemetry).
+    await db().transaction(async (tx) => {
+      await tx.select({ id: nodes.id }).from(nodes).where(eq(nodes.id, node.id)).for("no key update");
+      await tx.update(nodeVpnEndpoints)
+        .set({
+          address: "192.0.2.30",
+          revision: sql`${nodeVpnEndpoints.revision} + 1`,
+          probeStatus: null,
+          probeLevels: null,
+          probeCheckedAt: null,
+          probeDetail: null,
+        })
+        .where(eq(nodeVpnEndpoints.nodeId, node.id));
+    });
+    await probe.tick(120);
+    await probe.tick();
+
+    const awg31 = probe.sent.at(-1)?.targets.filter((target) => target.protocol === "awg3") ?? [];
+    expect(awg31.map((target) => inspectAwgVpnLink(target.config).endpoint?.host)).toEqual(["192.0.2.30"]);
+    const [row] = await widgetRows(node);
+    expect(row).toMatchObject({ name: `Primary ${runTag}`, status: "failed" });
+    expect(row?.levels?.handshake.ok).toBe(false);
+  });
+
   runDatabaseTest("a bridged node with every address's checks off does not hide its bridge's outage", async () => {
     await seedProbe();
     await seedPortalPolicy(true);

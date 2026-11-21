@@ -85,6 +85,23 @@ describe("0067_endpoint_probe_alert_kind", () => {
   });
 });
 
+describe("0068_node_state_address_based", () => {
+  const sql = readFileSync(
+    fileURLToPath(new URL("../migrations/0068_node_state_address_based.sql", import.meta.url)),
+    "utf8",
+  );
+
+  it("adds a boolean that is false until a run judges the node by its addresses", () => {
+    expect(sql).toContain('ALTER TABLE "node_reachability_state"');
+    expect(sql).toMatch(/ADD COLUMN "address_based" boolean DEFAULT false NOT NULL/);
+  });
+
+  it("marks the nodes whose addresses already carry a verdict, so the widget keeps their rows", () => {
+    expect(sql).toMatch(/UPDATE "node_reachability_state"[\s\S]*SET "address_based" = true/);
+    expect(sql).toMatch(/"probe_status" IS NOT NULL/);
+  });
+});
+
 describe("0030_rule_version_pin", () => {
   const sql = readFileSync(
     fileURLToPath(new URL("../migrations/0030_rule_version_pin.sql", import.meta.url)),
