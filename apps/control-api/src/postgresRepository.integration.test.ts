@@ -7927,7 +7927,7 @@ describe("PostgresControlRepository AWG 3.1 config refresh", () => {
     if (typeof exported.body !== "string") throw new Error("Expected a text artifact");
     return readCopies(exported.body, decodeVpnLink).line;
   };
-  const STUN_PACKET = /^<b 0x0001>/;
+  const STUN_PACKET = /^<b 0x0001[0-9a-f]{4}2112a442>/;
   const DNS_RESPONSE_PACKET = /^<r 2><b 0x8580/;
 
   runDatabaseTest("exports the key's own MTU over the address profile", async () => {
