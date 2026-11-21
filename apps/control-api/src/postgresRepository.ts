@@ -1316,8 +1316,9 @@ export class PostgresControlRepository implements ControlRepository {
     // Behind the same flag as the service checks: both tell a user whether a
     // server works for them right now.
     const availableIds = available.map((row) => row.id);
-    const [reachability, publicEndpoints] = await Promise.all([
+    const [reachability, pathReachability, publicEndpoints] = await Promise.all([
       policy.showNodeStatus ? this.loadUserReachability(availableIds) : null,
+      policy.showNodeStatus ? this.loadKeyReachability(availableIds) : null,
       this.loadNodePublicEndpoints(availableIds),
     ]);
     const userNodes = available.flatMap(
@@ -1384,11 +1385,16 @@ export class PostgresControlRepository implements ControlRepository {
             const usesBridgeGlobally =
               hasActiveBridge &&
               (bridgeMode === "bridge" || (bridgeMode === "inherit" && globalUseBridge));
+            // The address was measured on the route the portal default gives
+            // it. A user on that route reads the address's verdict; one sent
+            // through the bridge where it was measured direct reads the
+            // node's bridge path row; one sent direct where only the bridge
+            // was measured reads unknown.
             const storedReachability = endpointReachability ?? UNKNOWN_USER_REACHABILITY;
             const effectiveReachability = usesBridgeForUser
-              ? usesBridgeGlobally && storedReachability.state !== "unknown"
+              ? usesBridgeGlobally
                 ? storedReachability
-                : nodeReachability
+                : pathReachability?.(row.id, "awg3") ?? UNKNOWN_USER_REACHABILITY
               : usesBridgeGlobally
                 ? UNKNOWN_USER_REACHABILITY
                 : storedReachability;
@@ -1779,14 +1785,20 @@ export class PostgresControlRepository implements ControlRepository {
         ...(changeEnabled ? { enabled: request.enabled } : {}),
         ...(changeEnabled || changeBridgeMode || generatorChanged ? { revision: current.revision + 1 } : {}),
         ...(changeReachability ? { reachabilityEnabled: request.reachabilityEnabled } : {}),
+        // The old measurement goes and the failure streak restarts. An open
+        // incident stays open across a profile or path change, so it ends
+        // with one recovery message; taking the address out of service
+        // (disabled, or its checks off) closes it without a message.
         ...(resetEvidence ? {
           probeStatus: null,
           probeLevels: null,
           probeCheckedAt: null,
           probeConsecutiveFailures: 0,
           probeFailingSince: null,
-          probeAlertedAt: null,
           probeDetail: null,
+          ...(changeEnabled || (changeReachability && request.reachabilityEnabled === false)
+            ? { probeAlertedAt: null, probeAlertKind: null }
+            : {}),
         } : {}),
       }).where(match).returning();
       if (generatorChanged || changeBridgeMode) {
@@ -1923,8 +1935,18 @@ export class PostgresControlRepository implements ControlRepository {
         .where(and(eq(nodeVpnEndpoints.nodeId, nodeId), eq(nodeVpnEndpoints.ordinal, 1)));
     }
     if (request.reachabilityEnabled === false) {
+      // Checks off for the whole node: its addresses' incidents close
+      // without a message.
       await tx.update(nodeVpnEndpoints)
-        .set({ probeStatus: null, probeCheckedAt: null, probeDetail: null })
+        .set({
+          probeStatus: null,
+          probeCheckedAt: null,
+          probeDetail: null,
+          probeConsecutiveFailures: 0,
+          probeFailingSince: null,
+          probeAlertedAt: null,
+          probeAlertKind: null,
+        })
         .where(eq(nodeVpnEndpoints.nodeId, nodeId));
     }
     await tx.insert(auditEvents).values({
@@ -2246,13 +2268,27 @@ export class PostgresControlRepository implements ControlRepository {
           : undefined;
         const usesCurrentBridge = bridge?.effective &&
           bridge.effective.routeId === bridgeRoutes?.activeByNode.get(key.nodeId)?.routeId;
-        const pathReachability = bridge?.effective
-          ? (usesCurrentBridge ? reachability?.(key.nodeId, key.protocol) : UNKNOWN_USER_REACHABILITY)
-          : key.protocol === "awg3" && key.endpointId && endpoint
-            ? endpoint.reachability
+        // Every address is measured on its own route: through the bridge when
+        // the node has an active route and the address takes it by the portal
+        // default, direct otherwise. A key that takes that same route reads
+        // the address's verdict; a key that goes through the bridge where the
+        // address was measured direct reads the node's bridge path row; one
+        // that goes direct where only the bridge was measured reads unknown.
+        const addressMeasuredBridged = endpoint !== undefined &&
+          (bridgeRoutes?.activeByNode.has(key.nodeId) ?? false) &&
+          (endpoint.bridgeMode === "bridge" ||
+            (endpoint.bridgeMode === "inherit" && (globalPolicy?.useBridge ?? false)));
+        const pathReachability = key.protocol === "awg3" && endpoint
+          ? bridge?.effective
+            ? (!usesCurrentBridge
+                ? UNKNOWN_USER_REACHABILITY
+                : addressMeasuredBridged ? endpoint.reachability : reachability?.(key.nodeId, key.protocol))
+            : (addressMeasuredBridged ? UNKNOWN_USER_REACHABILITY : endpoint.reachability)
+          : bridge?.effective
+            ? (usesCurrentBridge ? reachability?.(key.nodeId, key.protocol) : UNKNOWN_USER_REACHABILITY)
             : key.protocol === "awg3" && bridgeRoutes?.activeByNode.has(key.nodeId)
               ? UNKNOWN_USER_REACHABILITY
-            : reachability?.(key.nodeId, key.protocol);
+              : reachability?.(key.nodeId, key.protocol);
         return toKeyView({
           actor,
           key,

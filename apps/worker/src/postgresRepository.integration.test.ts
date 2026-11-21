@@ -428,6 +428,28 @@ describe("PostgresWorkerRepository outbox leases", () => {
     }
   });
 
+  runDatabaseTest("keeps an open address incident when the agent address moves and restarts its streak", async () => {
+    if (!database || !repository) return;
+    const { node } = await seedTelemetryKey();
+    const openedAt = new Date("2026-08-20T07:00:00.000Z");
+    const [primary] = await database.db.insert(nodeVpnEndpoints).values({
+      nodeId: node.id, ordinal: 1, address: "192.0.2.10", name: "Primary",
+      probeStatus: "failed", probeConsecutiveFailures: 3, probeFailingSince: openedAt,
+      probeAlertedAt: openedAt, probeAlertKind: "node",
+    }).returning();
+    if (!primary) throw new Error("Missing primary endpoint");
+    await repository.recordNodeSnapshot({
+      ...metricsSnapshot(node.id, new Date("2026-08-20T08:00:00.000Z"), 0.1),
+      publicHost: "192.0.2.20",
+      publicIp: "192.0.2.20",
+    });
+    expect((await database.db.select().from(nodeVpnEndpoints).where(eq(nodeVpnEndpoints.id, primary.id)))[0])
+      .toMatchObject({
+        address: "192.0.2.20", probeStatus: null, probeConsecutiveFailures: 0, probeFailingSince: null,
+        probeAlertedAt: openedAt, probeAlertKind: "node",
+      });
+  });
+
   runDatabaseTest("promotes a registered address when it becomes the agent address", async () => {
     if (!database || !repository) return;
     const { node } = await seedTelemetryKey();

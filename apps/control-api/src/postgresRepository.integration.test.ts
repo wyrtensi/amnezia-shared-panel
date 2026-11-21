@@ -3408,6 +3408,123 @@ describe("PostgresControlRepository node status surfaces", () => {
       },
     );
 
+    runDatabaseTest("an AWG 3 key card on a node with addresses reads the path its key takes there", async () => {
+      if (!database) return;
+      await seedProbe();
+      await database.db.insert(portalPolicy).values({ useBridge: false });
+      const checkedAt = new Date();
+      const since = new Date(checkedAt.getTime() - 3_600_000);
+      // The node summary and its path row read available: another address answered.
+      await database.db.insert(nodeReachabilityState).values({ nodeId, status: "ok", checkedAt });
+      await database.db.insert(nodeReachabilityResults).values({
+        nodeId, protocol: "awg3", status: "ok", levels: {}, runId: randomUUID(), checkedAt,
+      });
+      const [primary] = await database.db.insert(nodeVpnEndpoints).values({
+        nodeId, ordinal: 1, address: "203.0.113.120", name: "Primary",
+        probeStatus: "failed", probeCheckedAt: checkedAt, probeFailingSince: since,
+      }).returning();
+      const [key] = await database.db.insert(vpnKeys).values({
+        ownerId: actor.id,
+        nodeId,
+        nodeLabel: `ap_address_${randomBytes(4).toString("hex")}`,
+        protocol: "awg3",
+        routeProfile: "full_tunnel",
+        state: "active",
+      }).returning();
+      const [bridge] = await database.db.insert(vpnBridges).values({
+        name: `address-card-${randomBytes(3).toString("hex")}`,
+        publicIpv4: `47.${randomBytes(1)[0]}.${randomBytes(1)[0]}.11`,
+      }).returning();
+      if (!primary || !key || !bridge) throw new Error("Fixtures missing");
+      const routeId = randomUUID();
+      const card = async () =>
+        (await subject().listKeys(actor)).find((row) => row.id === key.id)?.nodeReachability;
+      const owner = (useBridge: boolean | null) => database!.db.update(users)
+        .set({ policyOverride: useBridge === null ? null : { useBridge } }).where(eq(users.id, actor.id));
+      try {
+        // Direct: the address's verdict, not the node summary.
+        expect(await card()).toEqual({ state: "blocked", since: since.toISOString() });
+
+        await database.db.insert(vpnBridgeRoutes).values({
+          id: routeId, nodeId, bridgeId: bridge.id, publicUdpPort: 41000, state: "active",
+          frpProxyName: `awg-route-${routeId}`,
+        });
+        // The portal default sends the address through the bridge, and the key with it.
+        await database.db.update(portalPolicy).set({ useBridge: true });
+        expect(await card()).toEqual({ state: "blocked", since: since.toISOString() });
+
+        // The owner goes through the bridge, the address was measured direct:
+        // the node's bridge path row.
+        await database.db.update(portalPolicy).set({ useBridge: false });
+        await owner(true);
+        expect(await card()).toEqual({ state: "ok", since: null });
+
+        // The owner goes direct, the address was measured through the bridge.
+        await database.db.update(portalPolicy).set({ useBridge: true });
+        await owner(false);
+        expect(await card()).toEqual({ state: "unknown", since: null });
+      } finally {
+        await owner(null);
+        await database.db.delete(portalPolicy);
+        await database.db.delete(vpnKeys).where(eq(vpnKeys.id, key.id));
+        await database.db.delete(vpnBridgeRoutes).where(eq(vpnBridgeRoutes.id, routeId));
+        await database.db.delete(vpnBridges).where(eq(vpnBridges.id, bridge.id));
+        await database.db.delete(nodeVpnEndpoints).where(eq(nodeVpnEndpoints.id, primary.id));
+        await database.db.delete(nodeReachabilityResults).where(eq(nodeReachabilityResults.nodeId, nodeId));
+      }
+    });
+
+    runDatabaseTest("a server badge reads the bridge path for a user bridged on an address measured direct", async () => {
+      if (!database) return;
+      await seedProbe();
+      await database.db.insert(portalPolicy).values({ useBridge: false });
+      const checkedAt = new Date();
+      const since = new Date(checkedAt.getTime() - 3_600_000);
+      await database.db.insert(nodeReachabilityState).values({ nodeId, status: "ok", checkedAt });
+      await database.db.insert(nodeReachabilityResults).values({
+        nodeId, protocol: "awg3", status: "failed", levels: {}, runId: randomUUID(), failingSince: since, checkedAt,
+      });
+      const [primary] = await database.db.insert(nodeVpnEndpoints).values({
+        nodeId, ordinal: 1, address: "203.0.113.121", name: "Primary", probeStatus: "ok", probeCheckedAt: checkedAt,
+      }).returning();
+      const [bridge] = await database.db.insert(vpnBridges).values({
+        name: `address-badge-${randomBytes(3).toString("hex")}`,
+        publicIpv4: `47.${randomBytes(1)[0]}.${randomBytes(1)[0]}.12`,
+      }).returning();
+      if (!primary || !bridge) throw new Error("Fixtures missing");
+      const routeId = randomUUID();
+      await database.db.insert(vpnBridgeRoutes).values({
+        id: routeId, nodeId, bridgeId: bridge.id, publicUdpPort: 41000, state: "active",
+        frpProxyName: `awg-route-${routeId}`,
+      });
+      const owner = (useBridge: boolean | null) => database!.db.update(users)
+        .set({ policyOverride: useBridge === null ? null : { useBridge } }).where(eq(users.id, actor.id));
+      // Addresses are listed for AWG 3.1 nodes only.
+      const [{ protocol: savedProtocol } = { protocol: "awg2" as const }] = await database.db
+        .select({ protocol: nodes.protocol }).from(nodes).where(eq(nodes.id, nodeId));
+      await database.db.update(nodes).set({ protocol: "awg3" }).where(eq(nodes.id, nodeId));
+      const badge = async () => {
+        const listedNodes = (await subject().listNodes(actor)) as Array<{
+          id: string; publicEndpoints?: Array<{ id: string; reachability?: unknown }>;
+        }>;
+        return listedNodes.find((node) => node.id === nodeId)?.publicEndpoints
+          ?.find((endpoint) => endpoint.id === primary.id)?.reachability;
+      };
+      try {
+        expect(await badge()).toEqual({ state: "ok", since: null });
+        await owner(true);
+        expect(await badge()).toEqual({ state: "blocked", since: since.toISOString() });
+      } finally {
+        await database.db.update(nodes).set({ protocol: savedProtocol }).where(eq(nodes.id, nodeId));
+        await owner(null);
+        await database.db.delete(portalPolicy);
+        await database.db.delete(vpnBridgeRoutes).where(eq(vpnBridgeRoutes.id, routeId));
+        await database.db.delete(vpnBridges).where(eq(vpnBridges.id, bridge.id));
+        await database.db.delete(nodeVpnEndpoints).where(eq(nodeVpnEndpoints.id, primary.id));
+        await database.db.delete(nodeReachabilityResults).where(eq(nodeReachabilityResults.nodeId, nodeId));
+      }
+    });
+
     runDatabaseTest("omits the verdict when the policy hides node status", async () => {
       if (!database) return;
       await seedProbe();
@@ -8372,6 +8489,56 @@ describe("PostgresControlRepository probe re-check after a configuration change"
     } finally {
       await repository().adminAction(admin, "portal-policy", "global", "update", { useBridge: original });
     }
+  });
+
+  runDatabaseTest("keeps an open address incident across a profile or bridge mode change and restarts its streak", async () => {
+    if (!database) throw new Error("No database");
+    const nodeId = await seedNode();
+    const second = await addressOf(nodeId, "203.0.113.96");
+    const openedAt = new Date(Date.now() - 3_600_000);
+    const incident = {
+      probeStatus: "failed" as const, probeCheckedAt: new Date(), probeConsecutiveFailures: 3,
+      probeFailingSince: openedAt, probeAlertedAt: openedAt, probeAlertKind: "node" as const,
+    };
+    const rowOf = async () => (await database!.db.select().from(nodeVpnEndpoints)
+      .where(eq(nodeVpnEndpoints.id, second)))[0];
+    for (const change of [{ awgGenerator: preset("dns_query") }, { bridgeMode: "direct" as const }]) {
+      await database.db.update(nodeVpnEndpoints).set(incident).where(eq(nodeVpnEndpoints.id, second));
+      await repository().updateNode(admin, nodeId, { publicEndpoint: { action: "update", id: second, ...change } });
+      expect(await rowOf(), JSON.stringify(change)).toMatchObject({
+        probeStatus: null, probeConsecutiveFailures: 0, probeFailingSince: null,
+        probeAlertedAt: openedAt, probeAlertKind: "node",
+      });
+    }
+  });
+
+  runDatabaseTest("closes an address incident silently when the address or its checks are turned off", async () => {
+    if (!database) throw new Error("No database");
+    const nodeId = await seedNode();
+    const second = await addressOf(nodeId, "203.0.113.97");
+    const openedAt = new Date(Date.now() - 3_600_000);
+    const incident = {
+      probeStatus: "failed" as const, probeConsecutiveFailures: 3, probeFailingSince: openedAt,
+      probeAlertedAt: openedAt, probeAlertKind: "node" as const,
+    };
+    const rowsOf = async () => database!.db.select().from(nodeVpnEndpoints)
+      .where(eq(nodeVpnEndpoints.nodeId, nodeId)).orderBy(nodeVpnEndpoints.ordinal);
+    const closed = { probeAlertedAt: null, probeAlertKind: null, probeConsecutiveFailures: 0, probeFailingSince: null };
+
+    await database.db.update(nodeVpnEndpoints).set(incident).where(eq(nodeVpnEndpoints.id, second));
+    await repository().updateNode(admin, nodeId, {
+      publicEndpoint: { action: "update", id: second, reachabilityEnabled: false },
+    });
+    expect((await rowsOf())[1]).toMatchObject(closed);
+
+    await database.db.update(nodeVpnEndpoints).set({ ...incident, reachabilityEnabled: true })
+      .where(eq(nodeVpnEndpoints.id, second));
+    await repository().updateNode(admin, nodeId, { publicEndpoint: { action: "update", id: second, enabled: false } });
+    expect((await rowsOf())[1]).toMatchObject(closed);
+
+    await database.db.update(nodeVpnEndpoints).set(incident).where(eq(nodeVpnEndpoints.nodeId, nodeId));
+    await repository().updateNode(admin, nodeId, { reachabilityEnabled: false });
+    for (const row of await rowsOf()) expect(row).toMatchObject(closed);
   });
 
   runDatabaseTest("shows a run request only until a run starts after it", async () => {

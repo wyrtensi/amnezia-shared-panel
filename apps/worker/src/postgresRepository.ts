@@ -156,11 +156,16 @@ const syncResolvedPrimaryEndpoint = async (
   if (primary?.address === address) return false;
 
   const matching = endpoints.find((endpoint) => endpoint.address === address);
+  // The old measurement goes and the failure streak restarts; an open
+  // incident stays, so it still ends with one recovery message.
   const resetEvidence = {
     revision: sql`${nodeVpnEndpoints.revision} + 1`,
     probeStatus: null,
+    probeLevels: null,
     probeCheckedAt: null,
     probeDetail: null,
+    probeConsecutiveFailures: 0,
+    probeFailingSince: null,
   };
   if (matching) {
     if (primary) {
