@@ -2,7 +2,7 @@ import { awgGeneratorPresets, type AwgGeneratorPreset } from "@amnezia/contracts
 import { describe, expect, it } from "vitest";
 
 import { awg31Link, I_SIGNATURES, readCopies } from "./awg31.fixture.js";
-import { applyAwgGeneratorSettings } from "@amnezia/vpn-config";
+import { applyAwgGeneratorSettings, projectAwgClientConfig } from "@amnezia/vpn-config";
 import { applyRouteProfileToVpnLink, decodeVpnLink, extractConfFromVpnLink } from "./vpnConfig.js";
 
 const seed = { keyId: "synthetic-key-id", profileRevision: 3 };
@@ -418,5 +418,35 @@ describe("per-key randomization switch", () => {
     expect(fullOut.line("ContentPaddingAddition")).toBe("1-39");
     expect(fullOut.line("RekeyAfterTime")).toBe(preset("randomized").timings && "95-150");
     expect(one("noise").line("ContentPaddingAddition")).toBeNull();
+  });
+});
+
+describe("client MTU apart from the profile", () => {
+  const original = awg31Link({ slots: ["I1", "I2", "I3"] });
+  const project = (generator: unknown, mtu?: number) => copies(projectAwgClientConfig(original, {
+    protocol: "awg3",
+    keyId: "synthetic-key-mtu",
+    clientProfile: null,
+    generator: generator as ReturnType<typeof preset> | null,
+    ...(mtu === undefined ? {} : { mtu }),
+  }));
+
+  it("applies the MTU given apart from the profile", () => {
+    const { conf, lastConfig } = project(preset("issued"), 1400);
+    expect(conf).toContain("MTU = 1400\n");
+    expect(lastConfig.mtu).toBe("1400");
+  });
+
+  it("keeps every drawn value when only the MTU changes", () => {
+    const low = project(preset("randomized"), 1300);
+    const high = project(preset("randomized"), 1400);
+    expect(high.conf).not.toBe(low.conf);
+    expect(high.conf.replace("MTU = 1400", "MTU = 1300")).toBe(low.conf);
+    expect(project(preset("randomized")).conf.replace("MTU = 1280", "MTU = 1300")).toBe(low.conf);
+  });
+
+  it("applies the MTU without a profile", () => {
+    expect(project(null, 1380).conf).toContain("MTU = 1380\n");
+    expect(project(null).conf).toContain("MTU = 1280\n");
   });
 });

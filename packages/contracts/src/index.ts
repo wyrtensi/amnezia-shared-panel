@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { keyBridgeModeSchema, publicIpv4Schema } from "./bridges.js";
-import { awgGeneratorSettingsSchema } from "./awgGenerator.js";
+import { awgClientMtuSchema, awgGeneratorSettingsSchema } from "./awgGenerator.js";
 
 export const protocolKindSchema = z.enum(["awg2", "awg3"]);
 export const keyStateSchema = z.enum([
@@ -99,6 +99,41 @@ export const deviceTypeSchema = z.enum([
   "other",
   "unspecified",
 ]);
+
+/**
+ * An address's AWG 3.1 client settings for one device type: a profile, an
+ * MTU, or both. A rule that sets neither is not stored.
+ */
+export const awgDeviceRuleSchema = z.strictObject({
+  awgGenerator: awgGeneratorSettingsSchema.nullable().default(null),
+  awgMtu: awgClientMtuSchema.nullable().default(null),
+}).refine((rule) => rule.awgGenerator !== null || rule.awgMtu !== null, {
+  message: "A device rule sets a profile, an MTU or both",
+});
+export type AwgDeviceRule = z.infer<typeof awgDeviceRuleSchema>;
+
+/** Per device type; `unspecified` keys match no rule, so it has none. */
+export const awgDeviceRulesSchema = z.partialRecord(
+  deviceTypeSchema.exclude(["unspecified"]),
+  awgDeviceRuleSchema,
+);
+export type AwgDeviceRules = z.infer<typeof awgDeviceRulesSchema>;
+
+/** The stored rule for a key's device type, or null (none, or unreadable). */
+export const deviceRuleFor = (rules: unknown, deviceType: string): AwgDeviceRule | null => {
+  if (rules === null || typeof rules !== "object" || deviceType === "unspecified") return null;
+  const rule = awgDeviceRuleSchema.safeParse((rules as Record<string, unknown>)[deviceType]);
+  return rule.success ? rule.data : null;
+};
+
+/** An administrator's profile and MTU for a user or a key; null inherits. */
+export const setAwgClientConfigRequestSchema = z.strictObject({
+  awgGenerator: awgGeneratorSettingsSchema.nullable().optional(),
+  awgMtu: awgClientMtuSchema.nullable().optional(),
+}).refine((fields) => fields.awgGenerator !== undefined || fields.awgMtu !== undefined, {
+  message: "A profile or an MTU is required",
+});
+export type SetAwgClientConfigRequest = z.infer<typeof setAwgClientConfigRequestSchema>;
 
 /**
  * The device types the create-key UI and the CLI offer, in the order they are

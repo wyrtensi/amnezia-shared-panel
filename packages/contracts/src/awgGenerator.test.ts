@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 
-import { AWG_GENERATOR_STANDARD_J, awgGeneratorPresets, awgGeneratorSettingsSchema } from "./awgGenerator.js";
+import {
+  AWG_GENERATOR_STANDARD_J,
+  awgClientMtuSchema,
+  awgGeneratorPresets,
+  awgGeneratorSettingsSchema,
+  resolveAwgClientSettings,
+} from "./awgGenerator.js";
 
 const timings = {
   rekeyAfterTime: { min: 100, max: 150 },
@@ -124,5 +130,37 @@ describe("AWG generator settings", () => {
     expect(only.timings).toBeNull();
     expect(full.contentPaddingAddition).toEqual({ min: 1, max: 39 });
     expect(full.timings).toEqual(presets.find((preset) => preset.id === "randomized")!.settings.timings);
+  });
+});
+
+describe("resolveAwgClientSettings", () => {
+  const stun = awgGeneratorPresets().find(({ id }) => id === "stun")!.settings;
+  const issued = awgGeneratorPresets().find(({ id }) => id === "issued")!.settings;
+
+  it("takes each value from the nearest level that sets it", () => {
+    expect(resolveAwgClientSettings({
+      key: { awgMtu: 1360 },
+      user: { awgGenerator: stun },
+      device: { awgGenerator: issued, awgMtu: 1300 },
+      address: { awgMtu: 1340 },
+      node: { awgGenerator: issued, awgMtu: 1400 },
+    })).toEqual({ awgGenerator: stun, profileFrom: "user", mtu: 1360, mtuFrom: "key" });
+    expect(resolveAwgClientSettings({ device: { awgMtu: 1300 }, node: { awgGenerator: stun } }))
+      .toEqual({ awgGenerator: stun, profileFrom: "node", mtu: 1300, mtuFrom: "device" });
+  });
+
+  it("falls back to the resolved profile's stored MTU, then 1280", () => {
+    expect(resolveAwgClientSettings({ node: { awgGenerator: { ...stun, mtu: 1400 } } }))
+      .toMatchObject({ profileFrom: "node", mtu: 1400, mtuFrom: "profile" });
+    expect(resolveAwgClientSettings({ key: null, address: { awgGenerator: null, awgMtu: null } }))
+      .toEqual({ awgGenerator: null, profileFrom: null, mtu: 1280, mtuFrom: "default" });
+  });
+
+  it("accepts only client MTUs from 1280 to 1420", () => {
+    expect(awgClientMtuSchema.safeParse(1280).success).toBe(true);
+    expect(awgClientMtuSchema.safeParse(1420).success).toBe(true);
+    expect(awgClientMtuSchema.safeParse(1279).success).toBe(false);
+    expect(awgClientMtuSchema.safeParse(1421).success).toBe(false);
+    expect(awgClientMtuSchema.safeParse(1300.5).success).toBe(false);
   });
 });

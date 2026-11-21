@@ -44,7 +44,8 @@ export const AWG_GENERATOR_I_MODES = [
   "none",
 ] as const;
 
-const DEFAULT_CLIENT_MTU = 1280;
+export const AWG_DEFAULT_CLIENT_MTU = 1280;
+const DEFAULT_CLIENT_MTU = AWG_DEFAULT_CLIENT_MTU;
 const defaultParameters = {
   jcMin: 3,
   jcMax: 10,
@@ -111,9 +112,14 @@ const timingsSchema = z.strictObject({
   path: ["rejectAfterTime", "min"],
 });
 
+/** A client tunnel MTU, set apart from the profile at any level. */
+export const awgClientMtuSchema = integer(1280, 1420);
+
 export const awgGeneratorSettingsSchema = z.strictObject({
   preset: awgGeneratorPresetSchema,
-  mtu: integer(1280, 1420).default(DEFAULT_CLIENT_MTU),
+  // Kept for settings saved before the MTU had its own setting: it applies
+  // only when no level sets the MTU (see resolveAwgClientSettings).
+  mtu: awgClientMtuSchema.default(DEFAULT_CLIENT_MTU),
   jcMin: integer(0, 16),
   jcMax: integer(0, 16),
   jminMin: integer(1, 500),
@@ -156,6 +162,42 @@ export const awgGeneratorSettingsSchema = z.strictObject({
 });
 
 export type AwgGeneratorSettings = z.infer<typeof awgGeneratorSettingsSchema>;
+
+/** Where an AWG 3.1 client setting can be set, nearest to the key first. */
+export const AWG_CONFIG_LEVELS = ["key", "user", "device", "address", "node"] as const;
+export type AwgConfigLevelName = (typeof AWG_CONFIG_LEVELS)[number];
+/** One level's settings; null or absent inherits from the next level. */
+export type AwgConfigLevel = {
+  awgGenerator?: AwgGeneratorSettings | null;
+  awgMtu?: number | null;
+};
+export type ResolvedAwgClientSettings = {
+  awgGenerator: AwgGeneratorSettings | null;
+  profileFrom: AwgConfigLevelName | null;
+  mtu: number;
+  /** `profile`: the MTU stored in the resolved profile (older settings). */
+  mtuFrom: AwgConfigLevelName | "profile" | "default";
+};
+
+/**
+ * The profile and the MTU a key's config is built with: each from the nearest
+ * level that sets it (key, its owner, the address's rule for the key's device
+ * type, the address, the node). With no MTU set anywhere, the resolved
+ * profile's stored MTU applies, and with no profile either, 1280.
+ */
+export const resolveAwgClientSettings = (
+  levels: Partial<Record<AwgConfigLevelName, AwgConfigLevel | null | undefined>>,
+): ResolvedAwgClientSettings => {
+  const profileFrom = AWG_CONFIG_LEVELS.find((level) => levels[level]?.awgGenerator != null) ?? null;
+  const mtuLevel = AWG_CONFIG_LEVELS.find((level) => levels[level]?.awgMtu != null);
+  const awgGenerator = profileFrom ? (levels[profileFrom]?.awgGenerator ?? null) : null;
+  if (mtuLevel) {
+    return { awgGenerator, profileFrom, mtu: levels[mtuLevel]?.awgMtu as number, mtuFrom: mtuLevel };
+  }
+  return awgGenerator
+    ? { awgGenerator, profileFrom, mtu: awgGenerator.mtu, mtuFrom: "profile" }
+    : { awgGenerator, profileFrom, mtu: DEFAULT_CLIENT_MTU, mtuFrom: "default" };
+};
 
 export const nodeGeneratorMetadataSchema = z.object({
   awgGenerator: awgGeneratorSettingsSchema.nullish(),

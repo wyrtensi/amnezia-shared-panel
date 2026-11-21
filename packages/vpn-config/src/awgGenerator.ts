@@ -97,8 +97,17 @@ const signaturePackets = (
 const formatRange = (range: { min: number; max: number } | null): string | null =>
   range && range.max > 0 ? `${range.min}-${range.max}` : null;
 
-/** Project a saved generator profile onto an already issued client artifact. */
-export const applyAwgGeneratorSettings = (vpnLink: string, settings: unknown, seed: Seed): string => {
+/**
+ * Project a saved generator profile onto an already issued client artifact.
+ * `mtu` is the MTU resolved apart from the profile; without it the profile's
+ * stored MTU applies. The draws never depend on it.
+ */
+export const applyAwgGeneratorSettings = (
+  vpnLink: string,
+  settings: unknown,
+  seed: Seed,
+  mtu?: number,
+): string => {
   const parsed = awgGeneratorSettingsSchema.safeParse(settings);
   if (!parsed.success) throw new AwgClientConfigError("The saved AWG generator settings are invalid");
 
@@ -107,7 +116,7 @@ export const applyAwgGeneratorSettings = (vpnLink: string, settings: unknown, se
   const { randomizeKeys, ...shape } = parsed.data;
   const updates = new Map<string, string | null>();
   if (shape.preset === "issued") {
-    return withAwg31TunnelMtu(rewriteAwg31ClientInterface(vpnLink, updates), shape.mtu);
+    return withAwg31TunnelMtu(rewriteAwg31ClientInterface(vpnLink, updates), mtu ?? shape.mtu);
   }
 
   // On: a fixed preset keeps its packets and widens J so keys differ.
@@ -142,7 +151,7 @@ export const applyAwgGeneratorSettings = (vpnLink: string, settings: unknown, se
   for (const key of Object.keys(TIMING_FIELDS) as (keyof typeof TIMING_FIELDS)[]) {
     updates.set(TIMING_FIELDS[key], formatRange(profile.timings?.[key] ?? null));
   }
-  return withAwg31TunnelMtu(rewriteAwg31ClientInterface(vpnLink, updates), profile.mtu);
+  return withAwg31TunnelMtu(rewriteAwg31ClientInterface(vpnLink, updates), mtu ?? profile.mtu);
 };
 
 /** Apply the effective AWG settings shared by exports and synthetic probe peers. */
@@ -153,12 +162,14 @@ export const projectAwgClientConfig = (
     keyId: string;
     clientProfile: unknown;
     generator: AwgGeneratorSettings | null | undefined;
+    /** The resolved client MTU (`resolveAwgClientSettings`); 1280 when absent and no profile. */
+    mtu?: number;
   },
 ): string => {
-  const { protocol, keyId, clientProfile, generator } = options;
+  const { protocol, keyId, clientProfile, generator, mtu } = options;
   if (protocol !== "awg3") return vpnLink;
   const profiled = clientProfile == null ? vpnLink : applyAwgClientProfile(vpnLink, clientProfile);
   return generator && inspectAwgVpnConfig(profiled) === "awg31"
-    ? applyAwgGeneratorSettings(profiled, generator, { keyId, profileRevision: profileRevision(clientProfile) })
-    : withAwg31TunnelMtu(profiled);
+    ? applyAwgGeneratorSettings(profiled, generator, { keyId, profileRevision: profileRevision(clientProfile) }, mtu)
+    : withAwg31TunnelMtu(profiled, mtu);
 };
