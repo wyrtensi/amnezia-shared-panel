@@ -43,7 +43,9 @@ export const usePresetLabel = () => {
 /**
  * Apply an edit to the draft. MTU and the key randomization switch keep the
  * preset; any other field makes it Custom with randomization off, except a
- * range edit on the randomized preset, which stays randomized.
+ * range edit on the randomized preset, which stays randomized, and an edit
+ * of a Custom profile, which keeps its switch (an old Custom without one
+ * turns it off, as its warning says).
  */
 export const editGeneratorDraft = (
   current: AwgGeneratorSettings,
@@ -53,12 +55,13 @@ export const editGeneratorDraft = (
     return { ...current, ...change };
   }
   if (current.preset === "randomized" && change.iMode === undefined) return { ...current, ...change };
+  if (current.preset === "custom") return { ...current, ...change, randomizeKeys: current.randomizeKeys ?? false };
   return { ...current, ...change, preset: "custom", randomizeKeys: false };
 };
 
 /**
  * How the key randomization switch shows for a draft: hidden for an inherited
- * or issued profile, off and locked for Custom. Settings saved before the
+ * or issued profile, off by default for Custom. Settings saved before the
  * switch read the way they behave: only the plain DNS response gave every key
  * the same config; ranged presets, the random-TTL response and a ranged
  * Custom differed per key. `editShares` marks an old Custom, which any edit
@@ -72,7 +75,7 @@ export const keyRandomizationState = (
   }
   const legacy = draft.randomizeKeys === undefined;
   if (draft.preset === "custom") {
-    return { visible: true, checked: legacy, disabled: true, editShares: legacy };
+    return { visible: true, checked: draft.randomizeKeys ?? legacy, disabled: false, editShares: legacy };
   }
   return {
     visible: true,
@@ -81,6 +84,9 @@ export const keyRandomizationState = (
     editShares: false,
   };
 };
+
+/** Padding switched on starts at a range the export keeps (0-0 would mean off). */
+export const CPA_ON = { min: 1, max: 39 } as const;
 
 /** Settings saved with the legacy randomized query open as the mixed mode it stands for. */
 export const initialGeneratorDraft = (value: AwgGeneratorSettings | null): AwgGeneratorSettings | null =>
@@ -201,7 +207,7 @@ export function GeneratorFields({ draft, onDraftChange, pending, inheritLabel, i
               aria-label={t("generator.cpa")}
               checked={draft.contentPaddingAddition !== null}
               onCheckedChange={(checked) => update({
-            contentPaddingAddition: checked ? { min: 0, max: 0 } : null,
+            contentPaddingAddition: checked ? { ...CPA_ON } : null,
               })}
             />
           </div>

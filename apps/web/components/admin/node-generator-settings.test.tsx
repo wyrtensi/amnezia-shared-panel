@@ -7,7 +7,7 @@ import {
   type AwgGeneratorPreset,
 } from "@amnezia/contracts";
 import { messages } from "@/lib/i18n/messages";
-import { editGeneratorDraft, GeneratorEditor, keyRandomizationState } from "./node-generator-settings";
+import { CPA_ON, editGeneratorDraft, GeneratorEditor, keyRandomizationState } from "./node-generator-settings";
 
 const preset = (id: AwgGeneratorPreset) =>
   structuredClone(awgGeneratorPresets().find((entry) => entry.id === id)!.settings);
@@ -18,9 +18,10 @@ const savedBeforeSwitch = (id: AwgGeneratorPreset) => {
 };
 
 describe("key randomization switch", () => {
-  it("is on for a preset, off and locked for custom, hidden for issued and inherit", () => {
+  it("is on for a preset, off but switchable for custom, hidden for issued and inherit", () => {
     expect(keyRandomizationState(preset("dns_query"))).toEqual({ visible: true, checked: true, disabled: false, editShares: false });
-    expect(keyRandomizationState(preset("custom"))).toEqual({ visible: true, checked: false, disabled: true, editShares: false });
+    expect(keyRandomizationState(preset("custom"))).toEqual({ visible: true, checked: false, disabled: false, editShares: false });
+    expect(keyRandomizationState({ ...preset("custom"), randomizeKeys: true }).checked).toBe(true);
     expect(keyRandomizationState(preset("issued")).visible).toBe(false);
     expect(keyRandomizationState(null).visible).toBe(false);
     expect(keyRandomizationState({ ...preset("stun"), randomizeKeys: false }).checked).toBe(false);
@@ -33,7 +34,7 @@ describe("key randomization switch", () => {
     expect(keyRandomizationState(savedBeforeSwitch("dns_response_random_ttl")).checked).toBe(true);
     expect(keyRandomizationState(savedBeforeSwitch("dns_query")).checked).toBe(true);
     expect(keyRandomizationState(savedBeforeSwitch("custom"))).toEqual({
-      visible: true, checked: true, disabled: true, editShares: true,
+      visible: true, checked: true, disabled: false, editShares: true,
     });
     expect(keyRandomizationState(preset("custom")).editShares).toBe(false);
   });
@@ -87,5 +88,19 @@ describe("key randomization switch", () => {
       expect(messages.ru[key], id).toBeTruthy();
       expect(messages.en[key], id).toBeTruthy();
     }
+  });
+});
+
+describe("custom randomization and padding", () => {
+  it("keeps a custom profile's randomization when one of its fields is edited", () => {
+    const randomizedCustom = { ...preset("custom"), randomizeKeys: true };
+    expect(editGeneratorDraft(randomizedCustom, { jcMin: 4, jcMax: 9 })).toMatchObject({ preset: "custom", randomizeKeys: true });
+    expect(editGeneratorDraft(preset("dns_query"), { jcMin: 4, jcMax: 9 })).toMatchObject({ preset: "custom", randomizeKeys: false });
+  });
+
+  it("turns padding on with a range that is exported", () => {
+    expect(CPA_ON).toEqual({ min: 1, max: 39 });
+    expect(editGeneratorDraft(preset("dns_query"), { contentPaddingAddition: CPA_ON }).contentPaddingAddition)
+      .toEqual({ min: 1, max: 39 });
   });
 });
