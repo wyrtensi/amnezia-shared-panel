@@ -8,6 +8,14 @@ import { applyRouteProfileToVpnLink, decodeVpnLink, extractConfFromVpnLink } fro
 const seed = { keyId: "synthetic-key-id", profileRevision: 3 };
 const preset = (id: AwgGeneratorPreset) => awgGeneratorPresets().find((entry) => entry.id === id)!.settings;
 const copies = (link: string) => readCopies(link, decodeVpnLink);
+// The exact preset values for every key (randomization off).
+const fixed = (id: AwgGeneratorPreset) => ({ ...preset(id), randomizeKeys: false });
+// Settings stored before the randomization switch existed.
+const savedBeforeSwitch = (id: AwgGeneratorPreset) => {
+  const settings: Record<string, unknown> = { ...preset(id) };
+  delete settings.randomizeKeys;
+  return settings;
+};
 
 describe("applyAwgGeneratorSettings", () => {
   it("keeps the issued profile while setting MTU in every existing copy", () => {
@@ -41,7 +49,7 @@ describe("applyAwgGeneratorSettings", () => {
 
   it("writes the tested DNS response shape and clears the unused I slots everywhere", () => {
     const original = awg31Link({ slots: ["I1", "I3", "I5"] });
-    const { awg, lastConfig, line } = copies(applyAwgGeneratorSettings(original, preset("dns_response"), seed));
+    const { awg, lastConfig, line } = copies(applyAwgGeneratorSettings(original, fixed("dns_response"), seed));
     const expected = {
       Jc: "4",
       Jmin: "40",
@@ -62,7 +70,7 @@ describe("applyAwgGeneratorSettings", () => {
     const original = awg31Link({
       outer: (awg) => { awg.last_config = JSON.parse(String(awg.last_config)); },
     });
-    const generated = applyAwgGeneratorSettings(original, preset("dns_response"), seed);
+    const generated = applyAwgGeneratorSettings(original, fixed("dns_response"), seed);
     const routed = applyRouteProfileToVpnLink(generated, "ru_blacklist", { cidrs: ["203.0.113.0/24"] });
     const after = copies(routed);
     expect(typeof after.awg.last_config).toBe("object");
@@ -85,7 +93,7 @@ describe("applyAwgGeneratorSettings", () => {
       payload: (payload) => { delete payload.defaultContainer; },
       conf: (conf) => conf.replace("[Interface]", "[interface]\nmtu = 1376"),
     });
-    const { awg, lastConfig, conf, line } = copies(applyAwgGeneratorSettings(original, preset("dns_response"), seed));
+    const { awg, lastConfig, conf, line } = copies(applyAwgGeneratorSettings(original, fixed("dns_response"), seed));
     expect(awg.Jc).toBe("4");
     expect(lastConfig.Jmin).toBe("40");
     expect(line("Jmax")).toBe("70");
@@ -281,7 +289,7 @@ describe("applyAwgGeneratorSettings", () => {
   it("changes a custom J draw on consecutive revisions even in a two-value range", () => {
     const original = awg31Link();
     const settings = {
-      ...preset("custom"),
+      ...savedBeforeSwitch("custom"),
       jcMin: 3,
       jcMax: 4,
       jminMin: 40,
@@ -307,5 +315,88 @@ describe("applyAwgGeneratorSettings", () => {
   it("reports an ineligible config without leaking the artifact", () => {
     expect(() => applyAwgGeneratorSettings(awg31Link({ protocolVersion: "2" }), preset("issued"), seed))
       .toThrow(/^AWG generator settings require a valid AWG 3\.1 config$/);
+  });
+});
+
+describe("per-key randomization switch", () => {
+  const original = awg31Link({ slots: ["I1", "I2", "I3"] });
+  const keyIds = Array.from({ length: 8 }, (_, index) => `synthetic-key-${index}`);
+  const render = (settings: unknown, keyId: string, profileRevision = 1) =>
+    copies(applyAwgGeneratorSettings(original, settings, { keyId, profileRevision }));
+  const jValues = (settings: unknown) =>
+    new Set(keyIds.map((keyId) => {
+      const { line } = render(settings, keyId);
+      return `${line("Jc")}/${line("Jmin")}/${line("Jmax")}`;
+    }));
+  const legacy = (id: AwgGeneratorPreset) => {
+    const settings: Record<string, unknown> = { ...preset(id) };
+    delete settings.randomizeKeys;
+    return settings;
+  };
+
+  it("gives every key the same values when randomization is off", () => {
+    const settings = { ...preset("dns_query"), randomizeKeys: false };
+    const first = applyAwgGeneratorSettings(original, settings, { keyId: keyIds[0]!, profileRevision: 1 });
+    expect(applyAwgGeneratorSettings(original, settings, { keyId: keyIds[1]!, profileRevision: 5 })).toBe(first);
+  });
+
+  it("gives keys different values when randomization is on", () => {
+    expect(jValues({ ...preset("dns_query"), randomizeKeys: true }).size).toBeGreaterThan(1);
+  });
+
+  it("widens J for a fixed preset when on and keeps its DNS response packet", () => {
+    const settings = { ...preset("dns_response_random_ttl"), randomizeKeys: true };
+    expect(jValues(settings).size).toBeGreaterThan(1);
+    for (const keyId of keyIds) {
+      const { line } = render(settings, keyId);
+      expect(line("I1")).toMatch(/^<r 2><b 0x8580/);
+      expect(Number(line("Jc"))).toBeGreaterThanOrEqual(3);
+      expect(Number(line("Jc"))).toBeLessThanOrEqual(10);
+      const gap = Number(line("Jmax")) - Number(line("Jmin"));
+      expect(gap).toBeGreaterThanOrEqual(30);
+      expect(gap).toBeLessThanOrEqual(200);
+    }
+  });
+
+  it("renders settings saved before the switch exactly as before", () => {
+    // Fixed presets gave every key 4/40/70; ranged presets drew per key.
+    expect(jValues(legacy("dns_response"))).toEqual(new Set(["4/40/70"]));
+    expect(jValues({ ...preset("dns_response"), randomizeKeys: false })).toEqual(new Set(["4/40/70"]));
+    for (const keyId of keyIds) {
+      expect(applyAwgGeneratorSettings(original, legacy("dns_query"), { keyId, profileRevision: 2 }))
+        .toBe(applyAwgGeneratorSettings(original, { ...preset("dns_query"), randomizeKeys: true }, { keyId, profileRevision: 2 }));
+    }
+    expect(jValues(legacy("dns_query")).size).toBeGreaterThan(1);
+  });
+
+  it("ignores the switch for the issued preset", () => {
+    const on = applyAwgGeneratorSettings(original, { ...preset("issued"), randomizeKeys: true }, seed);
+    expect(on).toBe(applyAwgGeneratorSettings(original, preset("issued"), seed));
+  });
+
+  it("emits the new signature packets in their slots", () => {
+    const one = (id: AwgGeneratorPreset) => render(preset(id), keyIds[0]!);
+    const query = /^<r 2><b 0x0100><b 0x00010000><b 0x00000000><b 0x[0-9a-f]{2}><rc \d+><b 0x03636f6d00>/;
+    const aaaa = one("dns_query_aaaa");
+    expect(aaaa.line("I1")).toMatch(query);
+    expect(aaaa.line("I1")).toMatch(/<b 0x001c><b 0x0001>$/);
+    expect(aaaa.line("I2")).toBeNull();
+    expect(one("dns_query_https").line("I1")).toMatch(/<b 0x0041><b 0x0001>$/);
+    const burst = one("dns_query_burst");
+    for (const slot of ["I1", "I2", "I3"]) expect(burst.line(slot)).toMatch(/<b 0x0001><b 0x0001>$/);
+    expect(burst.line("I4")).toBeNull();
+    const dnsStun = one("dns_query_stun");
+    expect(dnsStun.line("I1")).toMatch(/<b 0x0001><b 0x0001>$/);
+    expect(dnsStun.line("I2")).toBe("<b 0x0001><b 0x000c><b 0x2112a442><r 12><b 0x8022><b 0x0008><rc 8>");
+    expect(dnsStun.line("I3")).toBeNull();
+    const stunDns = one("stun_dns_response");
+    expect(stunDns.line("I1")).toBe("<b 0x0001><b 0x000c><b 0x2112a442><r 12><b 0x8022><b 0x0008><rc 8>");
+    expect(stunDns.line("I2")).toMatch(/^<r 2><b 0x8580/);
+    const noise = one("noise");
+    for (const slot of ["I1", "I2", "I3"]) expect(noise.line(slot)).toMatch(/^<r \d+>$/);
+    const fullOut = one("noise_full");
+    expect(fullOut.line("ContentPaddingAddition")).toBe("1-39");
+    expect(fullOut.line("RekeyAfterTime")).toBe(preset("randomized").timings && "95-150");
+    expect(one("noise").line("ContentPaddingAddition")).toBeNull();
   });
 });

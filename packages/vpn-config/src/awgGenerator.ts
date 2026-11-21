@@ -1,6 +1,12 @@
 import { createHash } from "node:crypto";
 
-import { awgGeneratorSettingsSchema, type AwgGeneratorSettings, type ProtocolKind } from "@amnezia/contracts";
+import {
+  AWG_GENERATOR_FIXED_PRESETS,
+  AWG_GENERATOR_STANDARD_J,
+  awgGeneratorSettingsSchema,
+  type AwgGeneratorSettings,
+  type ProtocolKind,
+} from "@amnezia/contracts";
 
 import { profileOrder, profileRevision } from "./awgClientProfile.js";
 import { applyAwgClientProfile, AwgClientConfigError, rewriteAwg31ClientInterface } from "./awgClientInterface.js";
@@ -28,8 +34,9 @@ const hashNumber = (seed: string, label: string): number =>
 
 const hexByte = (byte: number): string => byte.toString(16).padStart(2, "0");
 
-const dnsQuery = (labelLength: number): string =>
-  `<r 2><b 0x0100><b 0x00010000><b 0x00000000><b 0x${hexByte(labelLength)}><rc ${labelLength}><b 0x03636f6d00><b 0x0001><b 0x0001>`;
+// QTYPE A (1), AAAA (28) or HTTPS (65), class IN.
+const dnsQuery = (labelLength: number, qtype = "0001"): string =>
+  `<r 2><b 0x0100><b 0x00010000><b 0x00000000><b 0x${hexByte(labelLength)}><rc ${labelLength}><b 0x03636f6d00><b 0x${qtype}><b 0x0001>`;
 
 // Valid RFC 1035 / RFC 2181 DNS A-response: random TXID (<r 2>), random label
 // length (3-12) and characters (<rc N>) under .com, compression pointer 0xc00c
@@ -39,6 +46,8 @@ const dnsResponseRandom = (labelLength: number, ttlHighByte: number): string =>
   `<r 2><b 0x81800001000100000000><b 0x${hexByte(labelLength)}><rc ${labelLength}><b 0x03636f6d0000010001c00c000100010000${hexByte(ttlHighByte)}><r 1><b 0x0004><r 4>`;
 
 const noise = (length: number): string => `<r ${length}>`;
+const dnsResponseRandomTtl = (ttl: number): string =>
+  `<r 2><b 0x${DNS_RESPONSE_HEAD}${hexByte(ttl)}><r 1><b 0x${DNS_RESPONSE_TAIL}>`;
 
 const signaturePackets = (
   settings: AwgGeneratorSettings,
@@ -59,10 +68,8 @@ const signaturePackets = (
     switch (iMode) {
       case "dns_response":
         return `<r 2><b 0x${DNS_RESPONSE_HEAD}105a${DNS_RESPONSE_TAIL}>`;
-      case "dns_response_random_ttl": {
-        const ttl = draw(`ttl-${slot}`, 15, 17);
-        return `<r 2><b 0x${DNS_RESPONSE_HEAD}${hexByte(ttl)}><r 1><b 0x${DNS_RESPONSE_TAIL}>`;
-      }
+      case "dns_response_random_ttl":
+        return dnsResponseRandomTtl(draw(`ttl-${slot}`, 15, 17));
       case "dns_response_random":
         return dnsResponseRandom(
           draw(`dns-resp-label-${slot}`, 3, 12),
@@ -70,6 +77,15 @@ const signaturePackets = (
         );
       case "dns_query":
         return dnsQuery(draw(`dns-label-${slot}`, 3, 12));
+      case "dns_query_aaaa":
+        return dnsQuery(draw(`dns-label-${slot}`, 3, 12), "001c");
+      case "dns_query_https":
+        return dnsQuery(draw(`dns-label-${slot}`, 3, 12), "0041");
+      // Pairs alternate their two packets over the configured slots.
+      case "dns_query_stun":
+        return slot % 2 === 0 ? dnsQuery(draw(`dns-label-${slot}`, 3, 12)) : STUN_REQUEST;
+      case "stun_dns_response":
+        return slot % 2 === 0 ? STUN_REQUEST : dnsResponseRandomTtl(draw(`ttl-${slot}`, 15, 17));
       case "stun":
         return STUN_REQUEST;
       case "noise":
@@ -86,19 +102,28 @@ export const applyAwgGeneratorSettings = (vpnLink: string, settings: unknown, se
   const parsed = awgGeneratorSettingsSchema.safeParse(settings);
   if (!parsed.success) throw new AwgClientConfigError("The saved AWG generator settings are invalid");
 
-  const profile = parsed.data;
+  // The switch is not part of the seed: settings saved before it and the
+  // same settings with it on draw exactly the same values.
+  const { randomizeKeys, ...shape } = parsed.data;
   const updates = new Map<string, string | null>();
-  if (profile.preset === "issued") {
-    return withAwg31TunnelMtu(rewriteAwg31ClientInterface(vpnLink, updates), profile.mtu);
+  if (shape.preset === "issued") {
+    return withAwg31TunnelMtu(rewriteAwg31ClientInterface(vpnLink, updates), shape.mtu);
   }
 
-  const profileSeed = JSON.stringify([seed.keyId, profile]);
+  // On: a fixed preset keeps its packets and widens J so keys differ.
+  const profile = randomizeKeys === true && AWG_GENERATOR_FIXED_PRESETS.includes(shape.preset)
+    ? { ...shape, ...AWG_GENERATOR_STANDARD_J }
+    : shape;
+  // Off: one draw for every key of the node or address, unmoved by refreshes.
+  const shared = randomizeKeys === false;
+  const profileSeed = JSON.stringify(shared ? ["shared", shape] : [seed.keyId, shape]);
+  const revision = shared ? 0 : seed.profileRevision;
   const draw: Draw = (label, min, max) => {
     const span = max - min + 1;
     // Start at a key- and profile-specific value and advance within the range
     // on each revision, including when the range offers only two values.
     const start = hashNumber(profileSeed, label) % span;
-    return min + (start + seed.profileRevision % span) % span;
+    return min + (start + revision % span) % span;
   };
 
   const jmin = draw("jmin", profile.jminMin, profile.jminMax);

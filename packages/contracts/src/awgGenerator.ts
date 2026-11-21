@@ -83,6 +83,9 @@ const fixedPresets = {
   dns_response_random_ttl: { ...dnsParameters, iMode: "dns_response_random_ttl" },
 } as const;
 
+/** Presets whose J and signature fields cannot be edited without Custom. */
+export const AWG_GENERATOR_FIXED_PRESETS: readonly AwgGeneratorPreset[] = Object.keys(fixedPresets) as AwgGeneratorPreset[];
+
 const integer = (min: number, max: number) => z.number().int().min(min).max(max);
 
 const range = (min: number, max: number) => z

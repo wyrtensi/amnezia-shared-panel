@@ -387,7 +387,8 @@ describe("reachability of bridged nodes (real PostgreSQL)", () => {
   const preset = (id: "issued" | "dns_response") => {
     const found = awgGeneratorPresets().find((entry) => entry.id === id);
     if (!found) throw new Error("Missing generator preset");
-    return found.settings;
+    // The exact preset values for every key, as these cases assert them.
+    return { ...found.settings, randomizeKeys: false };
   };
 
   const clientFields = (link: string) => {

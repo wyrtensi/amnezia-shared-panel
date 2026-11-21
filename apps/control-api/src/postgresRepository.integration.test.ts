@@ -7759,6 +7759,8 @@ describe("PostgresControlRepository AWG 3.1 config refresh", () => {
     if (!primary || !secondary) throw new Error("Address fixture was not created");
     const preset = awgGeneratorPresets().find((item) => item.id === "dns_response");
     if (!preset) throw new Error("DNS response preset missing");
+    // One fixed set for every key, so a refresh has nothing to change.
+    preset.settings.randomizeKeys = false;
     const written = await repository().updateNode(actor, profileNode, { awgGenerator: preset.settings });
     expect(written).toMatchObject({ awgGenerator: preset.settings });
     expect((await repository().findKeyConfig(keyId))?.awgGenerator).toEqual(preset.settings);

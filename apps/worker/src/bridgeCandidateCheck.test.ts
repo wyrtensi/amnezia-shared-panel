@@ -159,7 +159,7 @@ describe("bridge candidate check job", () => {
     const preset = awgGeneratorPresets().find((item) => item.id === "dns_response");
     if (!preset) throw new Error("Missing generator settings");
     const { handle, client } = setup({
-      context: context({ nodeGenerator: { ...preset.settings, mtu: 1330 } }),
+      context: context({ nodeGenerator: { ...preset.settings, mtu: 1330, randomizeKeys: false } }),
     });
     await handle(job());
     const target = vi.mocked(client.startRun).mock.calls[0]?.[0].targets[0];
