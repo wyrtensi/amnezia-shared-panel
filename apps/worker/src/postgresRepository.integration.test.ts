@@ -2438,7 +2438,7 @@ describe("PostgresReachabilityRepository", () => {
       results: (targets: readonly ReachabilityTarget[]) => ProbeTargetResult[] = () => [],
       extra: { notices?: Notice[]; mass?: boolean } = {},
     ): IngestDecide =>
-    ({ targets, previous }) => {
+    ({ targets, previous, previousAddresses }) => {
       const out = ingestRun({
         runId,
         now,
@@ -2448,10 +2448,11 @@ describe("PostgresReachabilityRepository", () => {
         targets,
         results: results(targets),
         previous,
+        previousAddresses,
       });
       return {
         outcomes: out.outcomes,
-        endpointOutcomes: out.endpointOutcomes,
+        addressOutcomes: out.addressOutcomes,
         states: out.states,
         notices: extra.notices ?? out.notices,
         staleAlertedAt: null,
@@ -2522,7 +2523,7 @@ describe("PostgresReachabilityRepository", () => {
         .update(reachabilityProbe)
         .set({ currentRunId: runId })
         .where(eq(reachabilityProbe.id, 1));
-      const decide: IngestDecide = ({ targets, previous }) => {
+      const decide: IngestDecide = ({ targets, previous, previousAddresses }) => {
         const out = ingestRun({
           runId,
           now,
@@ -2532,12 +2533,13 @@ describe("PostgresReachabilityRepository", () => {
           targets,
           results: [],
           previous,
+          previousAddresses,
         });
         return {
           outcomes: [
             { nodeId: a.id, protocol: "awg2", status, levels: null, egressIp: null, detail: null },
           ],
-          endpointOutcomes: out.endpointOutcomes,
+          addressOutcomes: out.addressOutcomes,
           states: out.states,
           notices: [],
           staleAlertedAt: null,
@@ -2591,7 +2593,7 @@ describe("PostgresReachabilityRepository", () => {
               },
             ],
           ]),
-          endpointOutcomes: [],
+          addressOutcomes: [],
           notices: [],
           staleAlertedAt: null,
           mass: false,

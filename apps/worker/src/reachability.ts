@@ -22,13 +22,14 @@ export type BridgePath = {
   port: number;
 };
 
-type DirectEndpoint = {
+/** A registered address whose verdict an AWG 3 address target is. */
+export type TargetAddress = {
   id: string;
+  ordinal: number;
   address: string;
-  name?: string;
+  name: string;
+  /** When the address was last measured; the run limit serves the oldest first. */
   checkedAt: Date | null;
-  /** The original direct AWG 3.1 artifact already uses this exact address. */
-  reusesNodeTarget: boolean;
 };
 
 /** A legacy node/protocol path or a separately measured direct IPv4 address. */
@@ -50,11 +51,14 @@ export type ReachabilityTarget = {
   diagnostic?: true;
   /** Set when the panel could not send this target (no usable service key). */
   unavailableReason: string | null;
-  directEndpoint?: DirectEndpoint;
-  /** Public endpoint IDs whose effective policy routes through this bridged target. */
-  bridgedEndpointIds?: readonly string[];
-  /** Additional bridged profile with its own endpoint verdict, outside the node summary. */
-  supplementalBridge?: { checkedAt: Date | null };
+  /**
+   * The addresses this AWG 3 target measures: one direct address, or the
+   * bridged addresses that share one config. Absent on a node target (AWG 2,
+   * a node without registered addresses, a legacy artifact).
+   */
+  addresses?: readonly TargetAddress[];
+  /** The node has an active bridge route; set on its direct address targets too. */
+  nodeBridged?: true;
 };
 
 /**
@@ -89,8 +93,7 @@ const normalizeTargetId = (targetId: string): { id: string; slot: string } | nul
 
 /** The target goes through the node's bridge: AWG 3.1 on a bridged node. */
 export const measuredViaBridge = (target: ReachabilityTarget): boolean =>
-  target.protocol === "awg3" && target.bridgePath !== null && !target.diagnostic &&
-  target.directEndpoint?.reusesNodeTarget !== false;
+  target.protocol === "awg3" && target.bridgePath !== null && !target.diagnostic;
 
 export const matchesDirectEndpoint = (
   result: ProbeTargetResult | undefined,
@@ -124,13 +127,28 @@ export type ProtocolOutcome = {
   obsolete?: true;
 };
 
-export type DirectEndpointOutcome = {
+/** An address's incident, kept in `node_vpn_endpoints` like a node's. */
+export type AddressState = {
+  consecutiveFailures: number;
+  failingSince: Date | null;
+  alertedAt: Date | null;
+  alertKind: "node" | "mass" | null;
+};
+
+export const EMPTY_ADDRESS_STATE: AddressState = {
+  consecutiveFailures: 0,
+  failingSince: null,
+  alertedAt: null,
+  alertKind: null,
+};
+
+/** The verdict of one address in this run and its incident after it. */
+export type AddressOutcome = {
   endpointId: string;
   status: ReachabilityStatus;
   levels: ProbeLevels | null;
   detail: string | null;
-  reusesNodeTarget: boolean;
-  isBridged: boolean;
+  state: AddressState;
 };
 
 export type Notice = { dedupKey: string; text: string };
@@ -232,6 +250,9 @@ const who = (node: NodeLine) =>
     ? `${node.nodeName} (${node.publicIp ?? "?"}) через мост ${node.bridgePath.bridgeName} (${node.bridgePath.host}:${node.bridgePath.port})`
     : `${node.nodeName} (${node.publicIp ?? "?"})`;
 
+const levelsLine = (levels: ProbeLevels | null) =>
+  `handshake: ${yesNo(levels?.handshake)}, tcp/22: ${yesNo(levels?.tcp)}, ping: ${yesNo(levels?.ping)}`;
+
 export const formatDown = (
   node: NodeLine,
   label: string,
@@ -239,12 +260,42 @@ export const formatDown = (
   since: Date,
   timeZone = "UTC",
 ): string =>
-  `${who(node)} недоступен из ${label}\n` +
-  `handshake: ${yesNo(levels?.handshake)}, tcp/22: ${yesNo(levels?.tcp)}, ping: ${yesNo(levels?.ping)}\n` +
-  `с ${alertClock(since, timeZone)}`;
+  `${who(node)} недоступен из ${label}\n${levelsLine(levels)}\nс ${alertClock(since, timeZone)}`;
 
 export const formatUp = (node: NodeLine, label: string): string =>
   `${who(node)} снова доступен из ${label}`;
+
+type AddressLine = { name: string; address: string; bridgePath: BridgePath | null };
+/** The address and, when bridged, the bridge its verdict is about. */
+const addressWho = (line: AddressLine) =>
+  line.bridgePath
+    ? `${line.name} (${line.address}) через мост ${line.bridgePath.bridgeName} (${line.bridgePath.host}:${line.bridgePath.port})`
+    : `${line.name} (${line.address})`;
+
+/** One message for the addresses of one node that went down in one run. */
+export const formatAddressesDown = (
+  nodeName: string,
+  down: readonly (AddressLine & { levels: ProbeLevels | null; since: Date })[],
+  label: string,
+  timeZone = "UTC",
+): string => {
+  const [only] = down;
+  if (down.length === 1 && only) {
+    return `Адрес ${addressWho(only)} недоступен из ${label}\n${levelsLine(only.levels)}\n` +
+      `с ${alertClock(only.since, timeZone)}`;
+  }
+  return `${nodeName}: недоступны адреса из ${label}\n` + down
+    .map((line) => `${addressWho(line)}: ${levelsLine(line.levels)}, с ${alertClock(line.since, timeZone)}`)
+    .join("\n");
+};
+
+/** One message for the addresses of one node that recovered in one run. */
+export const formatAddressesUp = (nodeName: string, up: readonly AddressLine[], label: string): string => {
+  const [only] = up;
+  return up.length === 1 && only
+    ? `Адрес ${addressWho(only)} снова доступен из ${label}`
+    : `${nodeName}: снова доступны адреса из ${label}: ${up.map(addressWho).join(", ")}`;
+};
 
 export const formatMassDown = (names: readonly string[], label: string): string =>
   `Проверка из ${label}: ни одна нода не ответила (${names.length}): ${names.join(", ")}. ` +
@@ -280,11 +331,17 @@ export type IngestInput = {
   targets: readonly ReachabilityTarget[];
   results: readonly ProbeTargetResult[];
   previous: ReadonlyMap<string, NodeState>;
+  /** Incidents of the addresses as stored before this run, by address id. */
+  previousAddresses?: ReadonlyMap<string, AddressState>;
 };
 
 export type IngestOutput = {
+  /**
+   * Stored per node and protocol: AWG 2, a node target's AWG 3, and for an
+   * address node its AWG 3 path (`pathOutcome`).
+   */
   outcomes: ProtocolOutcome[];
-  endpointOutcomes: DirectEndpointOutcome[];
+  addressOutcomes: AddressOutcome[];
   states: Map<string, NodeState>;
   notices: Notice[];
   /** The run failed everywhere in a shape that points at the probe. */
@@ -306,6 +363,74 @@ export type IngestOutput = {
  * nodes do not change bridge alerts. Nodes in a mass incident that
  * recover together get a combined recovery notice as well.
  */
+export const NO_BRIDGED_ADDRESS_DETAIL = "no address uses the bridge";
+export const NO_RESULT_DETAIL = "probe returned no result";
+
+const STATUS_ORDER: Record<ReachabilityStatus, number> = { ok: 0, failed: 1, error: 2 };
+
+/**
+ * The AWG 3 row of an address node: on a node with an active bridge route
+ * the best bridged measurement, so a direct address never vouches for the
+ * bridge path (route verification and the rotation gate read this row); on a
+ * direct node the best address. Candidates arrive in address order.
+ */
+const pathOutcome = (
+  node: ReachabilityTarget,
+  targets: readonly ReachabilityTarget[],
+  measured: readonly { target: ReachabilityTarget; outcome: ProtocolOutcome }[],
+): ProtocolOutcome => {
+  const bridged = targets.some((target) => target.nodeBridged === true || measuredViaBridge(target));
+  const onPath = (target: ReachabilityTarget) => !bridged || measuredViaBridge(target);
+  const best = measured.filter(({ target }) => onPath(target)).reduce<ProtocolOutcome | null>(
+    (chosen, { outcome }) =>
+      !chosen || STATUS_ORDER[outcome.status] < STATUS_ORDER[chosen.status] ? outcome : chosen,
+    null,
+  );
+  if (best) return best;
+  // No address uses the active bridge: nothing vouches for that path.
+  if (!targets.some(onPath)) return error(node, NO_BRIDGED_ADDRESS_DETAIL);
+  // Sent but not measured in this run (another path's reply, the run limit):
+  // the stored row stays as it was.
+  return obsolete(node);
+};
+
+/**
+ * The best of several outcomes for one node: ok, then failed, then unknown,
+ * the first of equals. The opt-in direct diagnostics of a bridged node's
+ * addresses summarize this way, like the node verdict.
+ */
+export const bestOutcome = (outcomes: readonly ProtocolOutcome[]): ProtocolOutcome | undefined =>
+  outcomes.reduce<ProtocolOutcome | undefined>(
+    (chosen, outcome) => !chosen || STATUS_ORDER[outcome.status] < STATUS_ORDER[chosen.status] ? outcome : chosen,
+    undefined,
+  );
+
+/** Today's node incident rules, for one address. */
+const advanceAddress = (
+  previous: AddressState,
+  status: ReachabilityStatus,
+  now: Date,
+  threshold: number,
+  mass: boolean,
+): { state: AddressState; opened: boolean; recovered: boolean } => {
+  if (status === "error") return { state: previous, opened: false, recovered: false };
+  if (status === "ok") {
+    return { state: EMPTY_ADDRESS_STATE, opened: false, recovered: previous.alertedAt !== null };
+  }
+  const consecutiveFailures = previous.consecutiveFailures + 1;
+  const opened = consecutiveFailures >= threshold && previous.alertedAt === null;
+  return {
+    state: {
+      consecutiveFailures,
+      failingSince: previous.failingSince ?? now,
+      alertedAt: opened ? now : previous.alertedAt,
+      alertKind: opened ? (mass ? "mass" : "node") : previous.alertKind,
+    },
+    opened,
+    recovered: false,
+  };
+};
+
 export const ingestRun = (input: IngestInput): IngestOutput => {
   const resultById = new Map<string, ProbeTargetResult>();
   const reportedSlots = new Set<string>();
@@ -316,33 +441,43 @@ export const ingestRun = (input: IngestInput): IngestOutput => {
     resultById.set(identity.id, result);
     reportedSlots.add(identity.slot);
   }
-  const byNode = new Map<
-    string,
-    { node: ReachabilityTarget; outcomes: ProtocolOutcome[]; badge: ProtocolOutcome[] }
-  >();
-  const endpointOutcomes: DirectEndpointOutcome[] = [];
-  let healthyDirectEndpoint = false;
+  type Measured = { target: ReachabilityTarget; outcome: ProtocolOutcome };
+  const byNode = new Map<string, {
+    node: ReachabilityTarget;
+    outcomes: ProtocolOutcome[];
+    badge: ProtocolOutcome[];
+    addressBased: boolean;
+    addressTargets: ReachabilityTarget[];
+    measured: Measured[];
+  }>();
+  const entryOf = (target: ReachabilityTarget) => {
+    const entry = byNode.get(target.nodeId) ??
+      { node: target, outcomes: [], badge: [], addressBased: false, addressTargets: [], measured: [] };
+    byNode.set(target.nodeId, entry);
+    return entry;
+  };
+  let healthyDirectAddress = false;
   for (const target of input.targets) {
+    if (target.diagnostic) continue;
     const identity = normalizeTargetId(target.targetId);
     const result = resultById.get(identity?.id ?? target.targetId);
-    const endpoint = target.directEndpoint;
-    if (endpoint && target.protocol === "awg3" && target.bridgePath === null && !target.diagnostic) {
-      // No result also covers targets that had to wait for a free slot in
-      // the run. Leave their saved observation and its original time alone.
-      if (matchesDirectEndpoint(result, endpoint.address)) {
-        const { status, levels, detail } = classifyTarget(target, result, input.controlOk);
-        endpointOutcomes.push({
-          endpointId: endpoint.id,
-          status,
-          levels,
-          detail,
-          reusesNodeTarget: endpoint.reusesNodeTarget,
-          isBridged: target.bridgePath !== null,
-        });
-        if (status === "ok" && target.bridgePath === null) healthyDirectEndpoint = true;
-      }
+    if (target.addresses !== undefined) {
+      const entry = entryOf(target);
+      entry.addressBased = true;
+      entry.addressTargets.push(target);
+      // A sent target without a result waited for a free slot or was lost:
+      // its addresses keep their saved observation. A direct reply only
+      // counts for the address it was sent to.
+      const [first] = target.addresses;
+      const sent = target.unavailableReason === null && input.controlOk;
+      if (sent && (!result || (target.bridgePath === null && first &&
+        !matchesDirectEndpoint(result, first.address)))) continue;
+      const outcome = classifyTarget(target, result, input.controlOk);
+      entry.measured.push({ target, outcome });
+      entry.badge.push(outcome);
+      if (outcome.status === "ok" && target.bridgePath === null) healthyDirectAddress = true;
+      continue;
     }
-    if (target.diagnostic || endpoint?.reusesNodeTarget === false) continue;
     // The probe reported this node and protocol, but for another endpoint
     // revision: an assignment changed since the run was dispatched. That
     // evidence is unknown now, whatever it says.
@@ -350,61 +485,100 @@ export const ingestRun = (input: IngestInput): IngestOutput => {
       !result && identity && reportedSlots.has(identity.slot)
         ? obsolete(target)
         : classifyTarget(target, result, input.controlOk);
-    if (!outcome.obsolete && measuredViaBridge(target) && target.bridgedEndpointIds?.length &&
-        (!target.supplementalBridge || result)) {
-      for (const endpointId of target.bridgedEndpointIds) {
-        endpointOutcomes.push({
-          endpointId,
-          status: outcome.status,
-          levels: outcome.levels,
-          detail: outcome.detail,
-          reusesNodeTarget: !target.supplementalBridge,
-          isBridged: true,
-        });
-      }
-    }
-    if (target.supplementalBridge) continue;
-    const entry = byNode.get(target.nodeId) ?? { node: target, outcomes: [], badge: [] };
+    const entry = entryOf(target);
     entry.outcomes.push(outcome);
     // A bridged node is judged on its bridged AWG 3.1 path alone: an AWG 2
     // that works directly must not hide a failed bridge. A Direct node is
     // judged on every protocol it serves.
     if (target.bridgePath === null || target.protocol === "awg3") entry.badge.push(outcome);
-    byNode.set(target.nodeId, entry);
   }
   const nodes = [...byNode.values()]
-    .map(({ node, outcomes, badge }) => ({ node, outcomes: badge, stored: outcomes }))
+    .map((entry) => ({
+      ...entry,
+      stored: entry.addressBased
+        ? [...entry.outcomes, pathOutcome(entry.node, entry.addressTargets, entry.measured)]
+        : entry.outcomes,
+    }))
     .sort((a, b) => a.node.nodeName.localeCompare(b.node.nodeName));
 
   // Attempted = the probe measured at least one of its protocols.
-  const attempted = nodes.filter((n) => n.outcomes.some((o) => o.levels !== null));
+  const attempted = nodes.filter((n) => n.badge.some((o) => o.levels !== null));
   // Two shapes point at the probe rather than the fleet: no tunnel came up
   // anywhere, or every tunnel came up and the same egress check failed on all
   // of them (the egress service itself is down or refusing the probe).
   const allFailed =
     input.controlOk &&
     attempted.length >= 2 &&
-    attempted.every((n) => nodeStatus(n.outcomes) === "failed");
+    attempted.every((n) => nodeStatus(n.badge) === "failed");
   const noHandshake = attempted.every((n) =>
-    n.outcomes.every((o) => o.levels?.handshake.ok !== true),
+    n.badge.every((o) => o.levels?.handshake.ok !== true),
   );
   const onlyEgressFailed = attempted.every((n) =>
-    n.outcomes.every((o) => o.levels?.handshake.ok === true && o.levels.http.ok !== true),
+    n.badge.every((o) => o.levels?.handshake.ok === true && o.levels.http.ok !== true),
   );
   const massFailure =
     allFailed &&
     (noHandshake || onlyEgressFailed) &&
-    !healthyDirectEndpoint;
+    !healthyDirectAddress;
 
   const states = new Map<string, NodeState>();
+  const addressOutcomes: AddressOutcome[] = [];
+  type AddressEvent = AddressLine & { levels: ProbeLevels | null; since: Date; kind: AddressState["alertKind"] };
   const opened: { node: ReachabilityTarget; levels: ProbeLevels | null; since: Date }[] = [];
   const recovered: { node: ReachabilityTarget; prev: NodeState }[] = [];
+  const addressDown = new Map<string, { node: ReachabilityTarget; lines: AddressEvent[] }>();
+  const addressUp = new Map<string, { node: ReachabilityTarget; lines: AddressEvent[] }>();
+  const push = (
+    groups: Map<string, { node: ReachabilityTarget; lines: AddressEvent[] }>,
+    node: ReachabilityTarget,
+    line: AddressEvent,
+  ) => {
+    const group = groups.get(node.nodeId) ?? { node, lines: [] };
+    group.lines.push(line);
+    groups.set(node.nodeId, group);
+  };
 
-  for (const { node, outcomes } of nodes) {
+  for (const { node, badge, addressBased, measured } of nodes) {
     const prev = input.previous.get(node.nodeId) ?? initialState(input.now);
-    const status = nodeStatus(outcomes);
-    const detail = clip(outcomes.find((o) => o.status !== "ok")?.detail ?? null);
+    const status = nodeStatus(badge);
+    const detail = clip(badge.find((o) => o.status !== "ok")?.detail ?? null);
     const base = { status, checkedAt: input.now, detail: status === "ok" ? null : detail };
+
+    if (addressBased) {
+      for (const { target, outcome } of measured) {
+        for (const address of target.addresses ?? []) {
+          const previous = input.previousAddresses?.get(address.id) ?? EMPTY_ADDRESS_STATE;
+          const step = advanceAddress(previous, outcome.status, input.now, input.failThreshold, massFailure);
+          addressOutcomes.push({
+            endpointId: address.id,
+            status: outcome.status,
+            levels: outcome.levels,
+            detail: outcome.detail,
+            state: step.state,
+          });
+          const line = {
+            name: address.name,
+            address: address.address,
+            bridgePath: measuredViaBridge(target) ? target.bridgePath : null,
+            levels: outcome.levels,
+            since: step.state.failingSince ?? input.now,
+          };
+          if (step.opened) push(addressDown, node, { ...line, kind: step.state.alertKind });
+          if (step.recovered) push(addressUp, node, { ...line, kind: previous.alertKind });
+        }
+      }
+      // The node is a summary of its addresses and opens no incident of its
+      // own; one it had before addresses were judged closes once.
+      if (status === "ok" && prev.alertedAt) recovered.push({ node, prev });
+      states.set(node.nodeId, {
+        ...base,
+        consecutiveFailures: status === "ok" ? 0 : status === "failed" ? prev.consecutiveFailures + 1 : prev.consecutiveFailures,
+        failingSince: status === "ok" ? null : status === "failed" ? prev.failingSince ?? input.now : prev.failingSince,
+        alertedAt: status === "ok" ? null : prev.alertedAt,
+        alertKind: status === "ok" ? null : prev.alertKind,
+      });
+      continue;
+    }
 
     if (status === "ok") {
       if (prev.alertedAt) recovered.push({ node, prev });
@@ -420,7 +594,7 @@ export const ingestRun = (input: IngestInput): IngestOutput => {
       const failingSince = prev.failingSince ?? input.now;
       const opens = consecutiveFailures >= input.failThreshold && !prev.alertedAt;
       if (opens) {
-        const failing = outcomes.find((o) => o.status === "failed");
+        const failing = badge.find((o) => o.status === "failed");
         opened.push({ node, levels: failing?.levels ?? null, since: failingSince });
       }
       states.set(node.nodeId, {
@@ -443,10 +617,15 @@ export const ingestRun = (input: IngestInput): IngestOutput => {
 
   const notices: Notice[] = [];
   const at = input.now.toISOString();
-  if (massFailure && opened.length > 0) {
+  const label = (line: AddressLine) => `${line.name} (${line.address})`;
+  const downGroups = [...addressDown.values()];
+  if (massFailure && (opened.length > 0 || downGroups.length > 0)) {
     notices.push({
       dedupKey: key("mass-down", input.runId),
-      text: formatMassDown(opened.map((o) => o.node.nodeName), input.label),
+      text: formatMassDown([
+        ...opened.map((o) => o.node.nodeName),
+        ...downGroups.flatMap((group) => group.lines.map(label)),
+      ], input.label),
     });
   } else {
     for (const { node, levels, since } of opened) {
@@ -455,14 +634,24 @@ export const ingestRun = (input: IngestInput): IngestOutput => {
         text: formatDown(node, input.label, levels, since, input.timeZone),
       });
     }
+    for (const { node, lines } of downGroups) {
+      notices.push({
+        dedupKey: key("addresses-down", node.nodeId, at),
+        text: formatAddressesDown(node.nodeName, lines, input.label, input.timeZone),
+      });
+    }
   }
 
-  const massRecovered = recovered.filter((r) => r.prev.alertKind === "mass");
-  const combineRecovery = massRecovered.length >= 2;
+  const upGroups = [...addressUp.values()];
+  const massNames = [
+    ...recovered.filter((r) => r.prev.alertKind === "mass").map((r) => r.node.nodeName),
+    ...upGroups.flatMap((group) => group.lines.filter((line) => line.kind === "mass").map(label)),
+  ];
+  const combineRecovery = massNames.length >= 2;
   if (combineRecovery) {
     notices.push({
       dedupKey: key("mass-up", input.runId),
-      text: formatMassUp(massRecovered.map((r) => r.node.nodeName), input.label),
+      text: formatMassUp(massNames, input.label),
     });
   }
   for (const { node, prev } of recovered) {
@@ -472,9 +661,17 @@ export const ingestRun = (input: IngestInput): IngestOutput => {
       text: formatUp(node, input.label),
     });
   }
+  for (const { node, lines } of upGroups) {
+    const individual = combineRecovery ? lines.filter((line) => line.kind !== "mass") : lines;
+    if (individual.length === 0) continue;
+    notices.push({
+      dedupKey: key("addresses-up", node.nodeId, at),
+      text: formatAddressesUp(node.nodeName, individual, input.label),
+    });
+  }
 
   const outcomes = nodes.flatMap((n) => n.stored);
-  return { outcomes, endpointOutcomes, states, notices, massFailure };
+  return { outcomes, addressOutcomes, states, notices, massFailure };
 };
 
 export type StaleInput = {

@@ -12,9 +12,11 @@ import {
   OBSOLETE_DETAIL,
   reachabilityTargetId,
   staleTransition,
+  type AddressState,
   type BridgePath,
   type NodeState,
   type ReachabilityTarget,
+  type TargetAddress,
 } from "./reachability.js";
 
 const LABEL = "Testland";
@@ -61,6 +63,28 @@ const down = (t: ReachabilityTarget) =>
 const A = target("node-a");
 const B = target("node-b");
 const C = target("node-c");
+
+const BRIDGE: BridgePath = { bridgeId: "bridge-1", bridgeName: "bridge-a", host: "203.0.113.50", port: 41000 };
+const address = (id: string, ip: string, ordinal = 1): TargetAddress => ({
+  id, ordinal, address: ip, name: `name-${id}`, checkedAt: null,
+});
+let addressTargetSerial = 0;
+/** An AWG 3 address target: direct to its one address unless a bridge path is given. */
+const addressTarget = (
+  name: string,
+  addresses: TargetAddress[],
+  extra: Partial<ReachabilityTarget> = {},
+): ReachabilityTarget => {
+  addressTargetSerial += 1;
+  const via = extra.bridgePath ?? null;
+  return {
+    ...target(name),
+    targetId: `${reachabilityTargetId(`id-${name}`, "awg3", 0)}:${via ? "bridge" : "direct"}:${addressTargetSerial}`,
+    publicIp: via ? via.host : (addresses[0]?.address ?? null),
+    addresses,
+    ...extra,
+  };
+};
 
 type Run = { targets: ReachabilityTarget[]; results: ProbeTargetResult[]; controlOk?: boolean };
 
@@ -291,11 +315,7 @@ describe("ingestRun: every node failing at once", () => {
   ])("uses direct success for the mass verdict only when it measured the configured address ($endpointHost)", ({
     endpointHost, massFailure, savedStatus, alertKinds,
   }) => {
-    const secondary = {
-      ...A,
-      targetId: `${A.targetId}:direct:a1`,
-      directEndpoint: { id: "backup", address: "192.0.2.20", checkedAt: null, reusesNodeTarget: false },
-    };
+    const secondary = addressTarget("node-c", [address("backup", "192.0.2.20")]);
     const out = ingestRun({
       runId: "run-1",
       now: new Date("2026-01-01T10:00:00Z"),
@@ -309,7 +329,7 @@ describe("ingestRun: every node failing at once", () => {
 
     expect(out.states.get(A.nodeId)?.status).toBe("failed");
     expect(out.states.get(B.nodeId)?.status).toBe("failed");
-    expect(out.endpointOutcomes.map(({ status }) => status)).toEqual(savedStatus);
+    expect(out.addressOutcomes.map(({ status }) => status)).toEqual(savedStatus);
     expect(out.massFailure).toBe(massFailure);
     expect(out.notices.map(({ dedupKey }) => dedupKey.split(":")[1])).toEqual(alertKinds);
   });
@@ -601,34 +621,15 @@ describe("ingestRun: endpoint revisions and bridged nodes", () => {
     expect(oldA3.targetId).toBe("node-a:awg3:r0");
   });
 
-  it("propagates bridged verdicts to bridgedEndpointIds and keeps direct endpoints independent", () => {
-    const bridged = {
-      ...A3,
-      bridgedEndpointIds: ["ep-bridged-1", "ep-bridged-2"],
-    };
-    const direct = {
-      ...target("node-a", "awg3", { endpointRevision: 1 }),
-      targetId: "id-node-a:awg3:r1:direct:ep-direct",
-      bridgePath: null,
-      directEndpoint: {
-        id: "ep-direct",
-        address: "198.51.100.20",
-        name: "Direct-IP",
-        checkedAt: null,
-        reusesNodeTarget: false,
-      },
-    };
+  it("writes a bridged group's verdict to each of its addresses and keeps direct addresses independent", () => {
+    const bridged = addressTarget("node-a", [address("ep-bridged-1", "192.0.2.10"), address("ep-bridged-2", "192.0.2.12")], {
+      bridgePath: BRIDGE,
+    });
+    const direct = addressTarget("node-a", [address("ep-direct", "198.51.100.20")], { nodeBridged: true });
     const diagnostic = {
-      ...A3,
-      targetId: "id-node-a:awg3:r1:direct:diag",
+      ...addressTarget("node-a", [address("ep-bridged-1", "192.0.2.10")], { bridgePath: BRIDGE }),
+      targetId: "id-node-a:awg3:r0:direct:diag",
       diagnostic: true as const,
-      directEndpoint: {
-        id: "ep-bridged-1",
-        address: "192.0.2.10",
-        name: "Bridged-IP",
-        checkedAt: null,
-        reusesNodeTarget: false,
-      },
     };
     const out = ingestRun({
       runId: "r-mixed",
@@ -644,25 +645,142 @@ describe("ingestRun: endpoint revisions and bridged nodes", () => {
       ],
       previous: new Map(),
     });
-    expect(out.endpointOutcomes).toEqual([
-      expect.objectContaining({
-        endpointId: "ep-bridged-1",
-        status: "ok",
-        isBridged: true,
-        reusesNodeTarget: true,
-      }),
-      expect.objectContaining({
-        endpointId: "ep-bridged-2",
-        status: "ok",
-        isBridged: true,
-        reusesNodeTarget: true,
-      }),
-      expect.objectContaining({
-        endpointId: "ep-direct",
-        status: "failed",
-        isBridged: false,
-        reusesNodeTarget: false,
-      }),
+    expect(out.addressOutcomes.map(({ endpointId, status }) => [endpointId, status])).toEqual([
+      ["ep-bridged-1", "ok"],
+      ["ep-bridged-2", "ok"],
+      ["ep-direct", "failed"],
     ]);
+  });
+
+});
+
+describe("ingestRun per address", () => {
+  const now = new Date("2026-01-01T10:00:00Z");
+  const run = (
+    targets: ReachabilityTarget[],
+    results: ProbeTargetResult[],
+    previousAddresses = new Map<string, AddressState>(),
+    previous = new Map<string, NodeState>(),
+  ) => ingestRun({
+    runId: "run-1", now, label: LABEL, failThreshold: 1, controlOk: true,
+    targets, results, previous, previousAddresses,
+  });
+  const alerted = (kind: "node" | "mass" = "node"): AddressState => ({
+    consecutiveFailures: 1, failingSince: new Date("2026-01-01T09:00:00Z"), alertedAt: new Date("2026-01-01T09:00:00Z"), alertKind: kind,
+  });
+
+  it("opens one message for two addresses of a node failing in the same run", () => {
+    const first = addressTarget("node-a", [address("ep-1", "192.0.2.10", 1)]);
+    const second = addressTarget("node-a", [address("ep-2", "192.0.2.20", 2)]);
+    const other = addressTarget("node-b", [address("ep-3", "192.0.2.30")]);
+    const out = run([first, second, other], [down(first), down(second), up(other)]);
+    expect(out.notices).toHaveLength(1);
+    expect(out.notices[0]?.text).toContain("node-a: недоступны адреса из Testland");
+    expect(out.notices[0]?.text).toContain("name-ep-1 (192.0.2.10)");
+    expect(out.notices[0]?.text).toContain("name-ep-2 (192.0.2.20)");
+    expect(out.addressOutcomes.filter(({ state }) => state.alertedAt !== null).map(({ endpointId }) => endpointId))
+      .toEqual(["ep-1", "ep-2"]);
+  });
+
+  it("names the bridge for a bridged address", () => {
+    const bridged = addressTarget("node-a", [address("ep-1", "192.0.2.10")], { bridgePath: BRIDGE });
+    const other = addressTarget("node-b", [address("ep-2", "192.0.2.30")]);
+    const out = run([bridged, other], [down(bridged), up(other)]);
+    expect(out.notices.map(({ text }) => text.split("\n")[0])).toEqual([
+      "Адрес name-ep-1 (192.0.2.10) через мост bridge-a (203.0.113.50:41000) недоступен из Testland",
+    ]);
+  });
+
+  it("keeps the node summary available while one address answers", () => {
+    const first = addressTarget("node-a", [address("ep-1", "192.0.2.10", 1)]);
+    const second = addressTarget("node-a", [address("ep-2", "192.0.2.20", 2)]);
+    const out = run([first, second], [down(first), up(second)]);
+    expect(out.states.get("id-node-a")?.status).toBe("ok");
+    expect(out.notices.map(({ text }) => text.split("\n")[0])).toEqual([
+      "Адрес name-ep-1 (192.0.2.10) недоступен из Testland",
+    ]);
+  });
+
+  it("never opens a node incident on an address node and closes an old one once", () => {
+    const only = addressTarget("node-a", [address("ep-1", "192.0.2.10")]);
+    const other = addressTarget("node-b", [address("ep-2", "192.0.2.30")]);
+    const failed = run([only, other], [down(only), up(other)]);
+    expect(failed.states.get("id-node-a")).toMatchObject({ status: "failed", alertedAt: null });
+    expect(failed.notices.map(({ dedupKey }) => dedupKey.split(":")[1])).toEqual(["addresses-down"]);
+
+    const old: NodeState = {
+      status: "failed", consecutiveFailures: 3, failingSince: new Date("2026-01-01T08:00:00Z"),
+      alertedAt: new Date("2026-01-01T08:30:00Z"), alertKind: "node", checkedAt: new Date("2026-01-01T09:00:00Z"), detail: null,
+    };
+    const back = run([only], [up(only)], new Map(), new Map([["id-node-a", old]]));
+    expect(back.states.get("id-node-a")).toMatchObject({ status: "ok", alertedAt: null });
+    expect(back.notices.map(({ text }) => text)).toEqual(["node-a (192.0.2.10) снова доступен из Testland"]);
+  });
+
+  it("sends one combined message in a mass run and none per address", () => {
+    const first = addressTarget("node-a", [address("ep-1", "192.0.2.10")]);
+    const second = addressTarget("node-b", [address("ep-2", "192.0.2.20")]);
+    const out = run([first, second], [down(first), down(second)]);
+    expect(out.massFailure).toBe(true);
+    expect(out.notices.map(({ dedupKey }) => dedupKey.split(":")[1])).toEqual(["mass-down"]);
+    expect(out.notices[0]?.text).toContain("name-ep-1 (192.0.2.10), name-ep-2 (192.0.2.20)");
+    expect(out.addressOutcomes.map(({ state }) => state.alertKind)).toEqual(["mass", "mass"]);
+  });
+
+  it("combines the recovery of two mass incidents", () => {
+    const first = addressTarget("node-a", [address("ep-1", "192.0.2.10")]);
+    const second = addressTarget("node-b", [address("ep-2", "192.0.2.20")]);
+    const out = run(
+      [first, second],
+      [up(first), up(second)],
+      new Map([["ep-1", alerted("mass")], ["ep-2", alerted("mass")]]),
+    );
+    expect(out.notices.map(({ dedupKey }) => dedupKey.split(":")[1])).toEqual(["mass-up"]);
+    expect(out.addressOutcomes.map(({ state }) => state.alertedAt)).toEqual([null, null]);
+  });
+
+  it("error keeps an address incident as it was", () => {
+    const only = addressTarget("node-a", [address("ep-1", "192.0.2.10")]);
+    const previous = alerted();
+    const out = run([only], [{ ...down(only), status: "error", detail: "probe error" }], new Map([["ep-1", previous]]));
+    expect(out.addressOutcomes).toEqual([expect.objectContaining({ endpointId: "ep-1", status: "error", state: previous })]);
+    expect(out.notices).toEqual([]);
+  });
+
+  it("writes nothing for an address whose target returned no result", () => {
+    const measured = addressTarget("node-a", [address("ep-1", "192.0.2.10", 1)]);
+    const deferred = addressTarget("node-a", [address("ep-2", "192.0.2.20", 2)]);
+    const out = run([measured, deferred], [up(measured)]);
+    expect(out.addressOutcomes.map(({ endpointId }) => endpointId)).toEqual(["ep-1"]);
+  });
+
+  it("reports an unsendable address target as unknown for its addresses", () => {
+    const unsupported = addressTarget("node-a", [address("ep-1", "192.0.2.10")], {
+      bridgePath: BRIDGE, unavailableReason: "bridged path not measured",
+    });
+    const out = run([unsupported], []);
+    expect(out.addressOutcomes).toEqual([
+      expect.objectContaining({ endpointId: "ep-1", status: "error", detail: "bridged path not measured" }),
+    ]);
+  });
+
+  it("path row: a bridged node takes the best bridged group, never a direct address", () => {
+    const bridged = addressTarget("node-a", [address("ep-1", "192.0.2.10", 1)], { bridgePath: BRIDGE });
+    const direct = addressTarget("node-a", [address("ep-2", "192.0.2.20", 2)], { nodeBridged: true });
+    const out = run([bridged, direct], [down(bridged), up(direct)]);
+    const awg3 = out.outcomes.filter((outcome) => outcome.protocol === "awg3");
+    expect(awg3).toEqual([expect.objectContaining({ nodeId: "id-node-a", status: "failed" })]);
+
+    const onlyDirect = run([direct], [up(direct)]);
+    expect(onlyDirect.outcomes).toEqual([
+      expect.objectContaining({ nodeId: "id-node-a", status: "error", detail: "no address uses the bridge" }),
+    ]);
+  });
+
+  it("path row: a direct node takes its best address", () => {
+    const first = addressTarget("node-a", [address("ep-1", "192.0.2.10", 1)]);
+    const second = addressTarget("node-a", [address("ep-2", "192.0.2.20", 2)]);
+    const out = run([first, second], [down(first), up(second)]);
+    expect(out.outcomes).toEqual([expect.objectContaining({ nodeId: "id-node-a", protocol: "awg3", status: "ok" })]);
   });
 });

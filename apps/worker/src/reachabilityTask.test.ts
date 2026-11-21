@@ -63,15 +63,14 @@ const targetB: RunTarget = {
   config: null,
 };
 
-const directEndpointTarget = (suffix: string, checkedAt: Date | null = null): RunTarget => ({
+const directEndpointTarget = (
+  suffix: string,
+  checkedAt: Date | null = null,
+  ip = "192.0.2.20",
+): RunTarget => ({
   ...targetA,
-  targetId: `id-node-a:awg3:r0:endpoint-${suffix}:r0:192.0.2.20:51820`,
-  directEndpoint: {
-    id: `endpoint-${suffix}`,
-    address: "192.0.2.20",
-    checkedAt,
-    reusesNodeTarget: false,
-  },
+  targetId: `id-node-a:awg3:r0:direct:endpoint-${suffix}`,
+  addresses: [{ id: `endpoint-${suffix}`, ordinal: 2, address: ip, name: `endpoint-${suffix}`, checkedAt }],
 });
 
 const level = { ok: true, detail: null, latencyMs: 5 };
@@ -122,7 +121,7 @@ const decided = async (
   const call = vi.mocked(repository.ingest).mock.calls[0];
   if (!call) throw new Error("ingest was not called");
   const [run, decide] = call as [unknown, IngestDecide];
-  return { run, write: await decide({ targets, previous: new Map() }) };
+  return { run, write: await decide({ targets, previous: new Map(), previousAddresses: new Map() }) };
 };
 
 const fakeClient = (latest: ProbeRunState | null | Error = null): ProbeClient => ({
@@ -190,49 +189,30 @@ describe("reachability task", () => {
     expect(write.notices).toEqual([]);
   });
 
-  it("stores each direct verdict without changing the legacy node verdict", async () => {
+  it("stores each address verdict and keeps the node summary on the answering one", async () => {
     const repository = fakeRepository(probeRow({ currentRunId: "run-1" }));
-    const primary: RunTarget = {
-      ...targetA,
-      directEndpoint: {
-        id: "endpoint-primary",
-        address: "192.0.2.10",
-        checkedAt: null,
-        reusesNodeTarget: true,
-      },
-    };
+    const primary = directEndpointTarget("primary", null, "192.0.2.10");
     const backup = directEndpointTarget("backup");
     const run = finished("run-1");
     const result = run.results[0]!;
-    run.results.push({
-      ...result,
-      targetId: backup.targetId,
-      endpointHost: "192.0.2.20",
-      egressIp: null,
-      levels: { ...result.levels, handshake: { ...level, ok: false } },
-    });
+    run.results = [
+      { ...result, targetId: primary.targetId },
+      {
+        ...result,
+        targetId: backup.targetId,
+        endpointHost: "192.0.2.20",
+        egressIp: null,
+        levels: { ...result.levels, handshake: { ...level, ok: false } },
+      },
+    ];
     await tick(repository, fakeClient(run));
 
     const { write } = await decided(repository, [primary, backup]);
-    expect(write.outcomes).toHaveLength(1);
+    expect(write.outcomes).toEqual([expect.objectContaining({ nodeId: "id-node-a", protocol: "awg3", status: "ok" })]);
     expect(write.states.get("id-node-a")?.status).toBe("ok");
-    expect(write.endpointOutcomes).toEqual([
-      {
-        endpointId: "endpoint-primary",
-        status: "ok",
-        levels: result.levels,
-        detail: null,
-        reusesNodeTarget: true,
-        isBridged: false,
-      },
-      {
-        endpointId: "endpoint-backup",
-        status: "failed",
-        levels: { ...result.levels, handshake: { ...level, ok: false } },
-        detail: "no handshake",
-        reusesNodeTarget: false,
-        isBridged: false,
-      },
+    expect(write.addressOutcomes.map(({ endpointId, status, detail }) => [endpointId, status, detail])).toEqual([
+      ["endpoint-primary", "ok", null],
+      ["endpoint-backup", "failed", "no handshake"],
     ]);
   });
 
@@ -244,9 +224,9 @@ describe("reachability task", () => {
     run.results.push({ ...result, targetId: endpoint.targetId });
     await tick(repository, fakeClient(run));
 
-    expect((await decided(repository, [targetA, endpoint])).write.endpointOutcomes).toEqual([]);
-    const current = { ...endpoint, targetId: endpoint.targetId.replace(":r0:192.", ":r2:192.") };
-    expect((await decided(repository, [targetA, current])).write.endpointOutcomes).toEqual([]);
+    expect((await decided(repository, [targetA, endpoint])).write.addressOutcomes).toEqual([]);
+    const current = { ...endpoint, targetId: endpoint.targetId.replace(":r0:", ":r2:") };
+    expect((await decided(repository, [targetA, current])).write.addressOutcomes).toEqual([]);
   });
 
   it("does not ingest a run already ingested", async () => {

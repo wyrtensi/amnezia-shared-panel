@@ -24,10 +24,12 @@ import type { ProbeClient, ProbeClientOptions } from "./probeAgent.js";
 import {
   classifyTarget,
   ingestRun,
+  bestOutcome,
   matchesDirectEndpoint,
   measuredViaBridge,
   staleTransition,
-  type DirectEndpointOutcome,
+  type AddressOutcome,
+  type AddressState,
   type NodeState,
   type Notice,
   type ProtocolOutcome,
@@ -83,12 +85,14 @@ export type IngestContext = {
   /** The targets as they are now: endpoint revision and bridge route included. */
   targets: ReachabilityTarget[];
   previous: Map<string, NodeState>;
+  /** Address incidents of the targets' addresses, by address id. */
+  previousAddresses: Map<string, AddressState>;
 };
 
 export type IngestWrite = {
   /** Obsolete outcomes (`ProtocolOutcome.obsolete`) are not stored. */
   outcomes: ProtocolOutcome[];
-  endpointOutcomes: DirectEndpointOutcome[];
+  addressOutcomes: AddressOutcome[];
   states: Map<string, NodeState>;
   notices: Notice[];
   staleAlertedAt: Date | null;
@@ -326,20 +330,29 @@ export const createReachabilityTask = ({
           targets: context.targets,
           results: finished.results,
           previous: context.previous,
+          previousAddresses: context.previousAddresses,
         });
         const stale = staleTransition({ ...staleInput, ingestedNow: true });
         const results = new Map(finished.results.map((result) => [result.targetId, result]));
-        const direct = new Map(context.targets.flatMap((target) => {
+        // A bridged node's opt-in direct diagnostics, one per address,
+        // summarize like the node verdict: direct works if any address does.
+        const diagnostics = new Map<string, ProtocolOutcome[]>();
+        for (const target of context.targets) {
           const result = results.get(target.targetId);
-          return target.diagnostic && result?.protocol === target.protocol &&
-            (!target.directEndpoint || matchesDirectEndpoint(result, target.directEndpoint.address))
-            ? [[target.nodeId, classifyTarget(target, result, finished.control.ok === true)] as const]
-            : [];
+          if (!target.diagnostic || result?.protocol !== target.protocol) continue;
+          if (target.addresses?.[0] && !matchesDirectEndpoint(result, target.addresses[0].address)) continue;
+          const list = diagnostics.get(target.nodeId) ?? [];
+          list.push(classifyTarget(target, result, finished.control.ok === true));
+          diagnostics.set(target.nodeId, list);
+        }
+        const direct = new Map([...diagnostics].flatMap(([nodeId, outcomes]) => {
+          const best = bestOutcome(outcomes);
+          return best ? [[nodeId, best] as const] : [];
         }));
         notices = out.notices.length;
         return {
           outcomes: out.outcomes,
-          endpointOutcomes: out.endpointOutcomes,
+          addressOutcomes: out.addressOutcomes,
           states: out.states,
           notices: [...out.notices, ...stale.notices],
           staleAlertedAt: stale.staleAlertedAt,
@@ -409,17 +422,17 @@ export const createReachabilityTask = ({
           (target.bridgePath === null ||
             (measuredViaBridge(target) ? bridgeMeasurement : probe.probeDirectWhenBridged === true)),
         );
-        const nodeTargets = sendable.filter((target) =>
-          !target.diagnostic && !target.supplementalBridge && target.directEndpoint?.reusesNodeTarget !== false,
+        // Node targets first, then addresses measured longest ago, then the
+        // opt-in diagnostics; the run limit cuts from the end.
+        const lastChecked = (target: RunTarget) => Math.min(
+          ...(target.addresses ?? []).map((address) => address.checkedAt?.getTime() ?? Number.MIN_SAFE_INTEGER),
         );
+        const nodeTargets = sendable.filter((target) => !target.diagnostic && target.addresses === undefined);
+        const addressTargets = sendable
+          .filter((target) => !target.diagnostic && target.addresses !== undefined)
+          .sort((a, b) => lastChecked(a) - lastChecked(b));
         const diagnostics = sendable.filter((target) => target.diagnostic);
-        const endpointTargets = sendable
-          .filter((target) => target.directEndpoint?.reusesNodeTarget === false || target.supplementalBridge)
-          .sort((a, b) =>
-            ((a.directEndpoint?.checkedAt ?? a.supplementalBridge?.checkedAt)?.getTime() ?? Number.MIN_SAFE_INTEGER) -
-            ((b.directEndpoint?.checkedAt ?? b.supplementalBridge?.checkedAt)?.getTime() ?? Number.MIN_SAFE_INTEGER),
-          );
-        const targets = [...nodeTargets, ...diagnostics, ...endpointTargets].slice(0, PROBE_RUN_MAX_TARGETS);
+        const targets = [...nodeTargets, ...addressTargets, ...diagnostics].slice(0, PROBE_RUN_MAX_TARGETS);
         if (targets.length < sendable.length) {
           log(`reachability: deferred ${sendable.length - targets.length} target(s) at the probe run limit`);
         }
@@ -438,7 +451,7 @@ export const createReachabilityTask = ({
             // The egress address can differ from a bridge or an additional
             // direct destination. A capable probe can report egress alone.
             const reportUncompared = bridgeMeasurement && (
-              measuredViaBridge(target) || target.directEndpoint !== undefined
+              measuredViaBridge(target) || target.addresses !== undefined
             );
             const { expectedEgressIp } = target;
             return {
