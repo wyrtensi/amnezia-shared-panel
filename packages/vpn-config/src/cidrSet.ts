@@ -87,12 +87,15 @@ export const STEAM_CACHE_V6_CIDRS: readonly string[] = [
 
 /**
  * AliExpress Russia / Alibaba Cloud CDN IPv4 prefix (`aliexpress.ru`,
- * `m.aliexpress.ru`, `login.aliexpress.ru`, `trade.aliexpress.ru` resolve into
- * `47.246.133.0/24`). Not listed in Russian GeoIP (`ipdeny`), so in
+ * `m.aliexpress.ru`, `login.aliexpress.ru`, `trade.aliexpress.ru`, etc. resolve
+ * into `47.246.133.0/24`). Not listed in Russian GeoIP (`ipdeny`), so in
  * `compact_world` it would otherwise be absorbed into `47.0.0.0/8` and routed
  * through the VPN, where Alibaba CDN frequently blocks datacenter egress IPs.
+ * Keep this narrowed to `/24` rather than `47.246.0.0/16`: HoYoLAB / HoYoverse
+ * (`bbs-api-os.hoyolab.com`, `webstatic-sea.hoyolab.com`, etc.) resolves into
+ * `47.246.2.0/24` via Russian DNS and must remain routed through the VPN.
  */
-export const ALIEXPRESS_DIRECT_V4_CIDRS: readonly string[] = ["47.246.0.0/16"];
+export const ALIEXPRESS_DIRECT_V4_CIDRS: readonly string[] = ["47.246.133.0/24"];
 
 const parseIpv4 = (address: string): bigint =>
   address

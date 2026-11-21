@@ -861,6 +861,8 @@ describe("compactRoutes compaction modes", () => {
     expect(countCidrOverlap(result.payload.cidrs, STEAM_CACHE_V4_CIDRS)[4]).toBe(0n);
     expect(countCidrOverlap(result.payload.cidrs, STEAM_CACHE_V6_CIDRS)[6]).toBe(0n);
     expect(countCidrOverlap(result.payload.cidrs, ALIEXPRESS_DIRECT_V4_CIDRS)[4]).toBe(0n);
+    // Neighboring Alibaba CDN ranges used by HoYoLAB on RU GeoDNS stay in VPN.
+    expect(countCidrOverlap(result.payload.cidrs, ["47.246.2.0/24"])[4]).toBe(256n);
     // Akamai (Steam Store / Community) and Meta stay routed through the tunnel.
     expect(countCidrOverlap(result.payload.cidrs, ["23.220.114.106/32"])[4]).toBe(1n);
     expect(countCidrOverlap(result.payload.cidrs, ["157.240.0.0/16"])[4]).toBe(65536n);
