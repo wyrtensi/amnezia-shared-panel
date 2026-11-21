@@ -24,7 +24,38 @@ addresses on that interface share those server properties.
 | No I-packets | Omit all I1-I5 signature packets (`none`), send only randomized J junk packets, unset CPA and Interface timing ranges |
 | Randomized | Node geometry profile: randomized J ranges, shuffled DNS/STUN/noise burst (`mixed`, I1-I3), CPA 1-39 and Interface timing ranges |
 | Stock AmneziaVPN (CPA 10-100) | J 4-6 / 10 / 50, DNS response with random TTL, CPA 10-100 and stock timing ranges (`100-120` / `3-7` / `180-210` / `5-15` / `15-20`) |
-| Custom | Explicit client ranges and any signature mode (`issued`, `dns_response`, `dns_response_random_ttl`, `dns_response_random`, `dns_query`, `stun`, `mixed`, `noise`, `none`) selected by the administrator |
+| DNS AAAA query / + CPA and timings | One randomized DNS query with QTYPE AAAA (`dns_query_aaaa`), randomized J ranges; the full variant adds CPA 1-39 and the Randomized timing ranges |
+| DNS HTTPS query / + CPA and timings | The same with QTYPE HTTPS (65, `dns_query_https`) |
+| Three DNS queries / + CPA and timings | Three randomized DNS A queries in I1-I3 (`dns_query`, three slots) |
+| DNS query + STUN / + CPA and timings | I1 a randomized DNS A query, I2 a STUN Binding Request (`dns_query_stun`) |
+| STUN + DNS response with random TTL / + CPA and timings | I1 a STUN Binding Request, I2 the DNS response with a randomized TTL (`stun_dns_response`) |
+| Noise / + CPA and timings | Three random-length noise packets (`noise`, three slots) |
+| Custom | Explicit client ranges and any signature mode (`issued`, `dns_response`, `dns_response_random_ttl`, `dns_response_random`, `dns_query`, `dns_query_aaaa`, `dns_query_https`, `dns_query_stun`, `stun_dns_response`, `stun`, `mixed`, `noise`, `none`) selected by the administrator |
+
+### Randomize user keys
+
+Every profile except Issued has a **Randomize user keys** switch
+(`randomizeKeys`):
+
+- **On** (the default for every preset): each key draws its own Jc, Jmin, Jmax
+  and signature-packet variant, reproducible from the key id, the settings and
+  the key's configuration revision, so downloads stay stable and **Refresh
+  config** moves the key to another draw. Presets with ranges draw from them;
+  the two fixed DNS-response presets keep their packet and draw J from the
+  standard ranges (Jc 3-10, Jmin 40-100, gap 30-200).
+- **Off:** every key of the node or address gets the same values: the
+  preset's numbers, and for ranges one draw from the settings alone. Refresh
+  config then has nothing to change and is offered as unavailable.
+- **Custom** keeps it off: every key gets the administrator's values.
+- Settings saved before the switch existed keep their behaviour (ranges drawn
+  per key, fixed presets the same for every key) and read that way in the
+  editor. The switch is not part of the draw, so turning it on for such
+  settings does not move existing keys.
+
+Changing MTU or the switch keeps the selected preset; editing any other field
+turns it into Custom with randomization off (range edits on Randomized stay
+Randomized). The reachability probe draws through the same rules with its own
+key.
 
 The conservative randomized DNS-response preset uses adjacent TTL windows 3840-4095,
 4096-4351 and 4352-4607. The extended randomized DNS-response preset draws a
