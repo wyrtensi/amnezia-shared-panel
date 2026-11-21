@@ -64,19 +64,20 @@ addresses on that interface share those server properties.
 | Issued profile | Preserve issued and saved client parameters, apply the selected client MTU |
 | DNS response | One legacy-shaped 44-byte DNS response, unset CPA and Interface timing ranges; J 4/40/70 with randomization off, per-key J from the standard ranges with it on |
 | DNS response with randomized TTL | The DNS-response profile with a random transaction ID/TTL byte per handshake attempt; the TTL window (and, with randomization on, J) is drawn per key, or shared when it is off |
-| DNS response (extended randomization) | Valid RFC 1035/2181 DNS A-response with randomized `.com` label length (3-12), TXID, TTL window (256-32767 s + random low byte per handshake), random IPv4 answer and randomized J ranges (3-10 / 40-100 / +30-200), unset CPA and Interface timing ranges |
+| DNS response (extended randomization) / + CPA and timings | Valid RFC 1035/2181 DNS A-response (see "Signature packets"), randomized J ranges (3-10 / 40-100 / +30-200); the base preset leaves CPA and Interface timing ranges unset, the full one (`dns_response_randomized_full`) adds them |
 | DNS query | Single randomized DNS A-query I1 with randomized J ranges, unset CPA and Interface timing ranges |
-| STUN request | Single 32-byte STUN Binding Request I1 with randomized J ranges, unset CPA and Interface timing ranges |
+| STUN request | Single STUN Binding Request I1 (20-44 bytes, see "Signature packets") with randomized J ranges, unset CPA and Interface timing ranges |
 | No I-packets | Omit all I1-I5 signature packets (`none`), send only randomized J junk packets, unset CPA and Interface timing ranges |
-| Randomized | Node geometry profile: randomized J ranges, shuffled DNS/STUN/noise burst (`mixed`, I1-I3), CPA 1-39 and Interface timing ranges |
-| Stock AmneziaVPN (CPA 10-100) | J 4-6 / 10 / 50, DNS response with random TTL, CPA 10-100 and stock timing ranges (`100-120` / `3-7` / `180-210` / `5-15` / `15-20`) |
+| Randomized | Node geometry profile: randomized J ranges, a shuffled burst of a DNS query, a STUN request, a random DNS response and noise (`mixed`; 1-3 packets per key with randomization on, 3 with it off), CPA 1-39 and Interface timing ranges |
+| Stock AmneziaVPN (CPA 10-100) | J 4 / 10 / 50, DNS response with random TTL, CPA 10-100 and stock timing ranges (`100-120` / `3-7` / `180-210` / `5-15` / `15-20`); exact stock with randomization off, J drawn around stock (4-8 / 10-50 / +40-80) and per-key CPA and timing sub-ranges with it on |
 | DNS AAAA query / + CPA and timings | One randomized DNS query with QTYPE AAAA (`dns_query_aaaa`), randomized J ranges; the full variant adds CPA 1-39 and the Randomized timing ranges |
 | DNS HTTPS query / + CPA and timings | The same with QTYPE HTTPS (65, `dns_query_https`) |
 | Three DNS queries / + CPA and timings | Three randomized DNS A queries in I1-I3 (`dns_query`, three slots) |
 | DNS query + STUN / + CPA and timings | I1 a randomized DNS A query, I2 a STUN Binding Request (`dns_query_stun`) |
-| STUN + DNS response with random TTL / + CPA and timings | I1 a STUN Binding Request, I2 the DNS response with a randomized TTL (`stun_dns_response`) |
+| STUN + DNS response / + CPA and timings | I1 a STUN Binding Request, I2 a random DNS A-response (`stun_dns_response`) |
 | Noise / + CPA and timings | Three random-length noise packets (`noise`, three slots) |
-| Custom | Explicit client ranges and any signature mode (`issued`, `dns_response`, `dns_response_random_ttl`, `dns_response_random`, `dns_query`, `dns_query_aaaa`, `dns_query_https`, `dns_query_stun`, `stun_dns_response`, `stun`, `mixed`, `noise`, `none`) selected by the administrator |
+| A different I profile for each key / + CPA and timings | Each key draws one shape (`varied`): a DNS query, a random DNS response, a STUN request, or a mix of 1-3 packets; the base preset sends J only (no CPA or timers, for clients that need that branch), the full one (`varied_full`) adds per-key CPA and timing sub-ranges. With randomization off every key gets one shape. The reachability probe checks an address with one shape, its own service key's |
+| Custom | Explicit client ranges and any signature mode (`issued`, `dns_response`, `dns_response_random_ttl`, `dns_response_random`, `dns_query`, `dns_query_aaaa`, `dns_query_https`, `dns_query_stun`, `stun_dns_response`, `stun`, `mixed`, `noise`, `varied`, `none`) selected by the administrator |
 
 ### Randomize user keys
 
@@ -88,15 +89,22 @@ Every profile except Issued has a **Randomize user keys** switch
   the key's configuration revision, so downloads stay stable and **Refresh
   config** moves the key to another draw. Presets with ranges draw from them;
   the two fixed DNS-response presets keep their packet and draw J from the
-  standard ranges (Jc 3-10, Jmin 40-100, gap 30-200).
+  standard ranges (Jc 3-10, Jmin 40-100, gap 30-200). The mixed and per-key
+  shapes send 1 to their I count per key (narrow presets keep their count,
+  which is part of their name), and CPA and every timing range become a
+  per-key part of the configured range (lower bound from its low half, upper
+  from its high half), which keeps RejectAfterTime above RekeyAfterTime and
+  above KeepaliveTimeout + RekeyTimeout.
 - **Off:** every key of the node or address gets the same values: the
-  preset's numbers, and for ranges one draw from the settings alone. Refresh
-  config then has nothing to change and is offered as unavailable.
-- **Custom** keeps it off: every key gets the administrator's values.
+  preset's numbers, and for ranges one draw from the settings alone; CPA and
+  timing ranges are exported exactly as configured. Refresh config then has
+  nothing to change and is offered as unavailable.
+- **Custom** starts with it off (every key gets the administrator's values)
+  and may turn it on; editing a custom profile keeps its switch.
 - Settings saved before the switch existed keep their behaviour: ranged
   presets, the random-TTL DNS response and a ranged Custom draw per key, the
   plain DNS response is the same for every key. The editor shows them that way;
-  an old Custom shows the switch on (locked) with a note that any edit gives
+  an old Custom shows the switch on with a note that any edit gives
   every key the same values. The switch is not part of the draw, so turning it
   on for such settings does not move existing keys.
 
@@ -109,8 +117,28 @@ starting the older image, strip the flag and reset newer presets, for example:
 UPDATE nodes SET awg_generator = awg_generator - 'randomizeKeys' WHERE awg_generator ? 'randomizeKeys';
 UPDATE node_vpn_endpoints SET awg_generator = awg_generator - 'randomizeKeys' WHERE awg_generator ? 'randomizeKeys';
 -- Presets and signature modes the older release does not know: inherit again (or pick an older preset first).
-UPDATE nodes SET awg_generator = NULL WHERE awg_generator->>'preset' ~ '^(dns_query_(aaaa|https|burst|stun)|stun_dns_response|noise)' OR awg_generator->>'iMode' IN ('dns_query_aaaa', 'dns_query_https', 'dns_query_stun', 'stun_dns_response');
-UPDATE node_vpn_endpoints SET awg_generator = NULL WHERE awg_generator->>'preset' ~ '^(dns_query_(aaaa|https|burst|stun)|stun_dns_response|noise)' OR awg_generator->>'iMode' IN ('dns_query_aaaa', 'dns_query_https', 'dns_query_stun', 'stun_dns_response');
+UPDATE nodes SET awg_generator = NULL WHERE awg_generator->>'preset' ~ '^(dns_query_(aaaa|https|burst|stun)|stun_dns_response|noise|dns_response_randomized_full|varied)' OR awg_generator->>'iMode' IN ('dns_query_aaaa', 'dns_query_https', 'dns_query_stun', 'stun_dns_response', 'varied');
+UPDATE node_vpn_endpoints SET awg_generator = NULL WHERE awg_generator->>'preset' ~ '^(dns_query_(aaaa|https|burst|stun)|stun_dns_response|noise|dns_response_randomized_full|varied)' OR awg_generator->>'iMode' IN ('dns_query_aaaa', 'dns_query_https', 'dns_query_stun', 'stun_dns_response', 'varied');
+```
+
+Rolling back to a release that has the switch but not the newer presets
+(`dns_response_randomized_full`, `varied`, `varied_full`, I mode `varied`) or
+that refuses randomization on Custom: reset those the same way and turn the
+switch off on Custom profiles. User and key settings (`users.awg_generator`,
+`vpn_keys.awg_generator`) and device-type rules (`node_vpn_endpoints.awg_device_rules`)
+need the same treatment when the target release reads them:
+
+```sql
+UPDATE nodes SET awg_generator = NULL WHERE awg_generator->>'preset' IN ('dns_response_randomized_full', 'varied', 'varied_full') OR awg_generator->>'iMode' = 'varied';
+UPDATE node_vpn_endpoints SET awg_generator = NULL WHERE awg_generator->>'preset' IN ('dns_response_randomized_full', 'varied', 'varied_full') OR awg_generator->>'iMode' = 'varied';
+UPDATE users SET awg_generator = NULL WHERE awg_generator->>'preset' IN ('dns_response_randomized_full', 'varied', 'varied_full') OR awg_generator->>'iMode' = 'varied';
+UPDATE vpn_keys SET awg_generator = NULL WHERE awg_generator->>'preset' IN ('dns_response_randomized_full', 'varied', 'varied_full') OR awg_generator->>'iMode' = 'varied';
+UPDATE nodes SET awg_generator = awg_generator || '{"randomizeKeys": false}' WHERE awg_generator->>'preset' = 'custom' AND awg_generator->>'randomizeKeys' = 'true';
+UPDATE node_vpn_endpoints SET awg_generator = awg_generator || '{"randomizeKeys": false}' WHERE awg_generator->>'preset' = 'custom' AND awg_generator->>'randomizeKeys' = 'true';
+UPDATE users SET awg_generator = awg_generator || '{"randomizeKeys": false}' WHERE awg_generator->>'preset' = 'custom' AND awg_generator->>'randomizeKeys' = 'true';
+UPDATE vpn_keys SET awg_generator = awg_generator || '{"randomizeKeys": false}' WHERE awg_generator->>'preset' = 'custom' AND awg_generator->>'randomizeKeys' = 'true';
+-- Device rules carry profiles inside a JSON object: review them by hand, or drop them.
+UPDATE node_vpn_endpoints SET awg_device_rules = NULL WHERE awg_device_rules::text ~ '"preset": ?"(dns_response_randomized_full|varied|varied_full)"|"iMode": ?"varied"|"preset": ?"custom"[^}]*"randomizeKeys": ?true';
 ```
 
 Changing the switch keeps the selected preset (the client MTU is a separate
@@ -119,15 +147,38 @@ turns it into Custom with randomization off (range edits on Randomized stay
 Randomized). The reachability probe draws through the same rules with its own
 key.
 
-The conservative randomized DNS-response preset uses adjacent TTL windows 3840-4095,
-4096-4351 and 4352-4607. The extended randomized DNS-response preset draws a
-key-specific `.com` label length (3-12, total wire size 41-50 bytes) and positive
-RFC 2181 TTL window (256-32767 s), while AWG randomizes the TXID, label
-characters, low TTL byte and 4-byte IPv4 answer on every handshake attempt.
-Advancing a key's configuration revision moves to a different draw.
-Non-degenerate numeric ranges also advance between revisions.
-Randomization is reproducible for a key, settings and revision, so repeated
-downloads remain stable.
+### Signature packets
+
+Every packet is one a real stack could send; tests expand each template and
+parse it as DNS or STUN.
+
+- **DNS queries and the random DNS response** (RFC 1035 / 2181 / 6891): a
+  name of 1-3 random labels (0-2 subdomains, each label 1-63 bytes, the name
+  at most 255) under a top-level domain drawn per key (`com`, `net`, `org`,
+  `io`, `info`, `ru`, `de`, `app`, `dev`, `co`), and per key an EDNS0 OPT
+  record or not (root name, type 41, a common UDP size, DO bit drawn, no
+  options; ARCOUNT matches). The response points back with `0xc00c`, carries a
+  positive TTL in [256, 32767] whose low byte AWG redraws per handshake, and an
+  IPv4 answer under a public unicast first octet (`<b 0x..><r 3>`). AWG
+  redraws the transaction ID, the label letters and the answer's last three
+  bytes on every handshake; the shape is the key's.
+- **STUN** (RFC 5389): a Binding Request whose length field matches its
+  attributes, 20-44 bytes, drawn per key: no attributes, SOFTWARE of 4/8/12/16
+  letters, CHANGE-REQUEST, PRIORITY and ICE-CONTROLLING in combinations that
+  fit. No FINGERPRINT: it is a CRC over the transaction ID AWG redraws on
+  every handshake, so it could never be valid.
+- The two fixed DNS-response presets keep the legacy 44-byte response they are
+  named after; the conservative TTL variant uses adjacent TTL windows
+  3840-4095, 4096-4351 and 4352-4607.
+
+### Redraws
+
+Each value is drawn on its own from the key id, the settings and the key's
+configuration revision, so **Refresh config** redraws every value
+independently (it used to move them all by one). When the next revision
+happens to draw the same config, the refresh moves on to the following
+revision, so it always changes something. Randomization is reproducible for a
+key, settings and revision, so repeated downloads remain stable.
 
 Changing settings affects subsequent exports, including exports of existing
 keys. Imported profiles on devices need to be imported again. The shared AWG

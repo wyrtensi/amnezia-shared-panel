@@ -22,6 +22,15 @@ This directory contains local, operator-run deployment assets for one Linux/amd6
 
 Both AWG images are minimal toolkits whose default command is `/bin/sh`. `scripts/awg2-entrypoint.sh` and `scripts/awg3-entrypoint.sh` supply the missing service lifecycle, initialize state only when the entire state set is absent, and refuse partial state. They use the userspace implementation, so each container receives only `NET_ADMIN` and `/dev/net/tun`; neither receives `SYS_MODULE` or full privileged mode. The AWG3 entrypoint additionally generates a `HeaderProtectionKey` and enables `RandomTrailers`, and refuses to start if the header-protection key is missing.
 
+The AWG3 entrypoint also clamps the MSS of forwarded TCP SYNs in and out of
+`awg0` to the path MTU (`iptables -t mangle ... TCPMSS --clamp-mss-to-pmtu`),
+at every start and in the generated config's `PostUp`/`PostDown`, and removes
+the rules on cleanup. Clients may run a larger tunnel MTU than the interface
+(the panel sets the client MTU per node, address, user or key), and without
+the clamp their TCP stalls. A node gets the new entrypoint through a
+node-agent update (an untouched script is reconciled without restarting AWG);
+it applies when the `amnezia-awg3` container next starts.
+
 The AWG3 obfuscation geometry is drawn **per node** by `scripts/awg3-geometry.sh` at first initialization, and never again — rerolling it would invalidate every key already issued from that node. Only `H1`–`H4` and the header-protection key used to vary; `Jc`, `Jmin`, `Jmax`, `S1`–`S4` and the junk packet were constants shared by every node we deploy, so a classifier that learned one node had learned the fleet.
 
 For an operator-controlled trial based on the legacy 44-byte DNS-response I1,
