@@ -92,7 +92,8 @@ describe("AWG generator settings", () => {
   });
 
   it("keeps settings saved before the switch valid and without the flag", () => {
-    const { randomizeKeys: _dropped, ...saved } = awgGeneratorPresets().find(({ id }) => id === "dns_query")!.settings;
+    const saved: Record<string, unknown> = { ...awgGeneratorPresets().find(({ id }) => id === "dns_query")!.settings };
+    delete saved.randomizeKeys;
     const parsed = awgGeneratorSettingsSchema.parse(saved);
     expect(parsed.randomizeKeys).toBeUndefined();
   });
