@@ -94,6 +94,7 @@ import {
   DEFAULT_ALLOWED_PROTOCOLS,
   defaultPortalPolicy,
   deviceRuleFor,
+  setAwgClientConfigRequestSchema,
   resolveAwgClientSettings,
   emptyGlobalRoutes,
   globalRoutesSchema,
@@ -340,6 +341,12 @@ const keyEndpointJoin = and(
 );
 
 type StoredAwgLevel = { awgGenerator: AwgGeneratorSettings | null; awgMtu: number | null };
+
+/** What an audit row records of client settings: the preset id and the MTU, never values. */
+const clientSettingsAudit = (settings: {
+  awgGenerator?: AwgGeneratorSettings | null;
+  awgMtu?: number | null;
+}) => ({ preset: settings.awgGenerator?.preset ?? null, awgMtu: settings.awgMtu ?? null });
 
 /**
  * A key's AWG 3.1 client profile and MTU: the key, its owner, its address's
@@ -1163,6 +1170,8 @@ export class PostgresControlRepository implements ControlRepository {
         reachabilityEnabled: endpoint.reachabilityEnabled,
         bridgeMode: endpoint.bridgeMode,
         awgGenerator: endpoint.awgGenerator,
+        awgMtu: endpoint.awgMtu,
+        awgDeviceRules: endpoint.awgDeviceRules,
         reachability,
         probeStatus: state?.status ?? null,
         probeLevels: state ? parsedLevels : null,
@@ -1547,7 +1556,7 @@ export class PostgresControlRepository implements ControlRepository {
     actor: Actor,
     request: CreateNodeRequest,
   ): Promise<unknown> => {
-    if (request.awgGenerator != null &&
+    if ((request.awgGenerator != null || request.awgMtu != null) &&
       !deriveSupportedProtocols(request.protocol, request.capabilities).includes("awg3")) {
       throw new ApiError(409, "Generator settings require AWG 3.1", "AWG_GENERATOR_UNSUPPORTED");
     }
@@ -1574,6 +1583,7 @@ export class PostgresControlRepository implements ControlRepository {
             enabledProtocols: request.enabledProtocols ?? null,
             maxPeers: request.maxPeers,
             awgGenerator: request.awgGenerator ?? null,
+            awgMtu: request.awgMtu ?? null,
             capabilities: request.capabilities,
             credentialsCiphertext: credentials.ciphertext,
             credentialsNonce: credentials.nonce,
@@ -1637,15 +1647,16 @@ export class PostgresControlRepository implements ControlRepository {
       const [current] = await tx
         .select({
           id: nodes.id, protocol: nodes.protocol, capabilities: nodes.capabilities,
-          awgGenerator: nodes.awgGenerator, reachabilityEnabled: nodes.reachabilityEnabled,
+          awgGenerator: nodes.awgGenerator, awgMtu: nodes.awgMtu, reachabilityEnabled: nodes.reachabilityEnabled,
         })
         .from(nodes)
         .where(eq(nodes.id, nodeId))
         .for("no key update");
       if (!current) throw new ApiError(404, "Node not found", "NODE_NOT_FOUND");
       const checked = request.reachabilityEnabled ?? current.reachabilityEnabled;
-      const configuresGenerator = request.awgGenerator != null ||
-        (publicEndpoint?.action === "update" && publicEndpoint.awgGenerator != null);
+      const configuresGenerator = request.awgGenerator != null || request.awgMtu != null ||
+        (publicEndpoint?.action === "update" && (publicEndpoint.awgGenerator != null ||
+          publicEndpoint.awgMtu != null || publicEndpoint.awgDeviceRules != null));
       if (configuresGenerator && !deriveSupportedProtocols(
         request.protocol ?? current.protocol,
         request.capabilities ?? current.capabilities,
@@ -1665,14 +1676,19 @@ export class PostgresControlRepository implements ControlRepository {
       const changedEndpoint = endpointChange?.endpoint;
       const generatorChanged = request.awgGenerator !== undefined &&
         !isDeepStrictEqual(current.awgGenerator, request.awgGenerator);
+      const mtuChanged = request.awgMtu !== undefined && current.awgMtu !== (request.awgMtu ?? null);
       remeasure = checked && (
-        generatorChanged ||
+        generatorChanged || mtuChanged ||
         endpointChange?.remeasure === true ||
         (request.reachabilityEnabled === true && !current.reachabilityEnabled)
       );
-      if (generatorChanged) {
+      if (generatorChanged || mtuChanged) {
+        // The addresses that inherit what changed are measured anew.
         const inherited = await tx.select({ id: nodeVpnEndpoints.id }).from(nodeVpnEndpoints)
-          .where(and(eq(nodeVpnEndpoints.nodeId, nodeId), isNull(nodeVpnEndpoints.awgGenerator)));
+          .where(and(eq(nodeVpnEndpoints.nodeId, nodeId), or(
+            generatorChanged ? isNull(nodeVpnEndpoints.awgGenerator) : undefined,
+            mtuChanged ? isNull(nodeVpnEndpoints.awgMtu) : undefined,
+          )));
         await resetNodeEndpointEvidence(tx, nodeId, new Date(), {
           endpointIds: inherited.map((endpoint) => endpoint.id),
           detail: GENERATOR_CHANGED_DETAIL,
@@ -1831,14 +1847,19 @@ export class PostgresControlRepository implements ControlRepository {
         current.awgGenerator ?? nodeGenerators.before,
         nextGenerator ?? nodeGenerators.after,
       );
-      const resetEvidence = changeEnabled || changeBridgeMode || generatorChanged ||
+      const mtuChanged = request.awgMtu !== undefined && current.awgMtu !== (request.awgMtu ?? null);
+      const resetEvidence = changeEnabled || changeBridgeMode || generatorChanged || mtuChanged ||
         (changeReachability && request.reachabilityEnabled === false);
       [row] = await tx.update(nodeVpnEndpoints).set({
         name: request.name ?? current.name,
         bridgeMode: request.bridgeMode ?? current.bridgeMode,
         ...(request.awgGenerator !== undefined ? { awgGenerator: request.awgGenerator } : {}),
+        ...(request.awgMtu !== undefined ? { awgMtu: request.awgMtu } : {}),
+        // Device-type rules change only exports: the probe measures the
+        // address's ordinary config, so nothing is reset for them.
+        ...(request.awgDeviceRules !== undefined ? { awgDeviceRules: request.awgDeviceRules } : {}),
         ...(changeEnabled ? { enabled: request.enabled } : {}),
-        ...(changeEnabled || changeBridgeMode || generatorChanged ? { revision: current.revision + 1 } : {}),
+        ...(changeEnabled || changeBridgeMode || generatorChanged || mtuChanged ? { revision: current.revision + 1 } : {}),
         ...(changeReachability ? { reachabilityEnabled: request.reachabilityEnabled } : {}),
         // The old measurement goes and the failure streak restarts. An open
         // incident stays open across a profile or path change, so it ends
@@ -1856,16 +1877,16 @@ export class PostgresControlRepository implements ControlRepository {
             : {}),
         } : {}),
       }).where(match).returning();
-      if (generatorChanged || changeBridgeMode) {
+      if (generatorChanged || mtuChanged || changeBridgeMode) {
         await resetNodeEndpointEvidence(tx, nodeId, new Date(), {
           endpointIds: [current.id],
-          detail: generatorChanged ? GENERATOR_CHANGED_DETAIL : undefined,
+          detail: generatorChanged || mtuChanged ? GENERATOR_CHANGED_DETAIL : undefined,
         });
       }
       // A disabled address is not measured, so only enabling or disabling it
       // changes the targets; its other settings take effect once enabled.
       const enabled = request.enabled ?? current.enabled;
-      remeasure = (changeEnabled || (enabled && (changeBridgeMode || generatorChanged ||
+      remeasure = (changeEnabled || (enabled && (changeBridgeMode || generatorChanged || mtuChanged ||
         (changeReachability && request.reachabilityEnabled === true)))) &&
         (request.reachabilityEnabled ?? current.reachabilityEnabled);
     }
@@ -1883,6 +1904,10 @@ export class PostgresControlRepository implements ControlRepository {
         reachabilityEnabled: row.reachabilityEnabled,
         bridgeMode: row.bridgeMode,
         generatorChanged: request.action === "update" && request.awgGenerator !== undefined,
+        awgMtu: row.awgMtu,
+        ...(request.action === "update" && request.awgDeviceRules !== undefined
+          ? { deviceRules: Object.keys(row.awgDeviceRules ?? {}) }
+          : {}),
       },
     });
     return {
@@ -1895,6 +1920,8 @@ export class PostgresControlRepository implements ControlRepository {
         reachabilityEnabled: row.reachabilityEnabled,
         bridgeMode: row.bridgeMode,
         awgGenerator: row.awgGenerator,
+        awgMtu: row.awgMtu,
+        awgDeviceRules: row.awgDeviceRules,
       },
       remeasure,
     };
@@ -1925,6 +1952,7 @@ export class PostgresControlRepository implements ControlRepository {
     }
     if (request.maxPeers !== undefined) changes.maxPeers = request.maxPeers;
     if (request.awgGenerator !== undefined) changes.awgGenerator = request.awgGenerator;
+    if (request.awgMtu !== undefined) changes.awgMtu = request.awgMtu;
     // Which service checks this node runs. Missed when the fields were added
     // to the contract: the patch is built field by field here, so a field the
     // schema accepts and this block does not know is silently dropped - the
@@ -1978,6 +2006,7 @@ export class PostgresControlRepository implements ControlRepository {
         capabilities: nodes.capabilities,
         checksEnabled: nodes.checksEnabled,
         awgGenerator: nodes.awgGenerator,
+        awgMtu: nodes.awgMtu,
         disabledCheckIds: nodes.disabledCheckIds,
         reachabilityEnabled: nodes.reachabilityEnabled,
         updatedAt: nodes.updatedAt,
@@ -2428,6 +2457,18 @@ export class PostgresControlRepository implements ControlRepository {
         "POLICY_DENIED",
       );
     }
+    // The same administrators-only rule for the key's own client settings.
+    const configuresClient = request.awgGenerator != null || request.awgMtu != null;
+    if (!allowBridgeSelection && (request.awgGenerator !== undefined || request.awgMtu !== undefined)) {
+      throw new ApiError(
+        403,
+        "Only administrators can choose client settings for a key",
+        "POLICY_DENIED",
+      );
+    }
+    if (configuresClient && request.protocol !== "awg3") {
+      throw new ApiError(409, "Client settings require AWG 3.1", "AWG_GENERATOR_UNSUPPORTED");
+    }
     const bridgeMode: KeyBridgeMode = request.bridgeMode ?? "inherit";
     if (bridgeMode === "route" && request.protocol !== "awg3") {
       throw new ApiError(
@@ -2816,6 +2857,8 @@ export class PostgresControlRepository implements ControlRepository {
           // once the node's artifact turns out to be 3.1; a 2.0 one ignores it.
           awgClientProfile:
             request.protocol === "awg3" ? selectAwgClientProfile(1) : null,
+          awgGenerator: request.awgGenerator ?? null,
+          awgMtu: request.awgMtu ?? null,
           bridgeMode,
           vpnBridgeRouteId,
         });
@@ -3832,6 +3875,7 @@ export class PostgresControlRepository implements ControlRepository {
         ipv6RejectStubReason: nodes.ipv6RejectStubReason,
         ipv6RejectStubObservedAt: nodes.ipv6RejectStubObservedAt,
         awgGenerator: nodes.awgGenerator,
+        awgMtu: nodes.awgMtu,
         createdAt: nodes.createdAt,
         updatedAt: nodes.updatedAt,
       })
@@ -4011,6 +4055,17 @@ export class PostgresControlRepository implements ControlRepository {
               bridgeMode: vpnKeys.bridgeMode,
               vpnBridgeRouteId: vpnKeys.vpnBridgeRouteId,
               ownerPolicyOverride: users.policyOverride,
+              // Admin-only client settings of the key, and the levels its
+              // effective profile and MTU are resolved from.
+              awgGenerator: vpnKeys.awgGenerator,
+              awgMtu: vpnKeys.awgMtu,
+              ownerAwgGenerator: users.awgGenerator,
+              ownerAwgMtu: users.awgMtu,
+              endpointAwgGenerator: nodeVpnEndpoints.awgGenerator,
+              endpointAwgMtu: nodeVpnEndpoints.awgMtu,
+              endpointDeviceRules: nodeVpnEndpoints.awgDeviceRules,
+              nodeAwgGenerator: nodes.awgGenerator,
+              nodeAwgMtu: nodes.awgMtu,
               lastUsedAt: vpnKeys.lastUsedAt,
               revokedAt: vpnKeys.revokedAt,
               failureReason: vpnKeys.failureReason,
@@ -4026,6 +4081,7 @@ export class PostgresControlRepository implements ControlRepository {
             })
             .from(vpnKeys)
             .innerJoin(users, keyOwnerIsPerson(vpnKeys))
+            .leftJoin(nodes, eq(nodes.id, vpnKeys.nodeId))
             .leftJoin(nodeVpnEndpoints, keyEndpointJoin)
             .leftJoin(peerCurrent, eq(peerCurrent.keyId, vpnKeys.id))
             .orderBy(desc(vpnKeys.createdAt)),
@@ -4050,11 +4106,35 @@ export class PostgresControlRepository implements ControlRepository {
             vpnBridgeRouteId,
             ownerPolicyOverride,
             peerEndpoint,
+            ownerAwgGenerator,
+            ownerAwgMtu,
+            endpointAwgGenerator,
+            endpointAwgMtu,
+            endpointDeviceRules,
+            nodeAwgGenerator,
+            nodeAwgMtu,
             ...row
           }) => {
             const ownerPolicy = resolvePortalPolicy(basePolicy, ownerPolicyOverride);
+            const settings = resolveKeyClientSettings({
+              key: row,
+              owner: { awgGenerator: ownerAwgGenerator, awgMtu: ownerAwgMtu },
+              endpoint: row.endpointName === null ? null : {
+                awgGenerator: endpointAwgGenerator, awgMtu: endpointAwgMtu, awgDeviceRules: endpointDeviceRules,
+              },
+              node: { awgGenerator: nodeAwgGenerator, awgMtu: nodeAwgMtu },
+            });
+            const manual: readonly string[] = ["key", "user", "device"];
             return {
               ...row,
+              // What an AWG 3.1 key's exports are built with and where it
+              // comes from; the probe measures only the address and node levels.
+              config: row.protocol === "awg3"
+                ? {
+                    ...settings,
+                    probeChecked: !manual.includes(settings.profileFrom ?? "") && !manual.includes(settings.mtuFrom),
+                  }
+                : null,
               // Same shape the owner-facing key list uses, so both views can feed
               // `composeKeyDisplayName` directly.
               nameDisplay: {
@@ -5565,9 +5645,61 @@ export class PostgresControlRepository implements ControlRepository {
           keyId: (result as { id: string }).id,
           bridgeMode: parsed.bridgeMode ?? "inherit",
           vpnBridgeRouteId: parsed.vpnBridgeRouteId ?? null,
+          ...clientSettingsAudit(parsed),
         },
       });
       return result;
+    } else if (resource === "users" && action === "set-config") {
+      const request = setAwgClientConfigRequestSchema.parse(payload);
+      const [updated] = await this.options.db.update(users)
+        .set({
+          ...(request.awgGenerator !== undefined ? { awgGenerator: request.awgGenerator } : {}),
+          ...(request.awgMtu !== undefined ? { awgMtu: request.awgMtu } : {}),
+          updatedAt: new Date(),
+        })
+        .where(and(eq(users.id, targetId), notServiceAccount))
+        .returning();
+      if (!updated) throw new ApiError(404, "User not found", "USER_NOT_FOUND");
+      await this.appendAudit({
+        actorUserId: actor.id,
+        actorType: "user",
+        action: "admin.users.set-config",
+        targetType: "user",
+        targetId,
+        metadata: clientSettingsAudit(updated),
+      });
+      return updated;
+    } else if (resource === "keys" && action === "set-config") {
+      const request = setAwgClientConfigRequestSchema.parse(payload);
+      return this.options.db.transaction(async (tx) => {
+        const [key] = await tx.select({ id: vpnKeys.id, protocol: vpnKeys.protocol })
+          .from(vpnKeys)
+          .innerJoin(users, keyOwnerIsPerson(vpnKeys))
+          .where(eq(vpnKeys.id, targetId))
+          .for("update", { of: vpnKeys });
+        if (!key) throw new ApiError(404, "Key not found", "KEY_NOT_FOUND");
+        if (key.protocol !== "awg3") {
+          throw new ApiError(409, "Client settings require AWG 3.1", "AWG_GENERATOR_UNSUPPORTED");
+        }
+        const [updated] = await tx.update(vpnKeys)
+          .set({
+            ...(request.awgGenerator !== undefined ? { awgGenerator: request.awgGenerator } : {}),
+            ...(request.awgMtu !== undefined ? { awgMtu: request.awgMtu } : {}),
+            updatedAt: new Date(),
+          })
+          .where(eq(vpnKeys.id, targetId))
+          .returning({ id: vpnKeys.id, awgGenerator: vpnKeys.awgGenerator, awgMtu: vpnKeys.awgMtu });
+        if (!updated) throw new ApiError(404, "Key not found", "KEY_NOT_FOUND");
+        await tx.insert(auditEvents).values({
+          actorUserId: actor.id,
+          actorType: "user",
+          action: "vpn_key.config_set",
+          targetType: "vpn_key",
+          targetId,
+          metadata: clientSettingsAudit(updated),
+        });
+        return updated;
+      });
     } else if (
       resource === "quota-requests" &&
       ["approve", "reject"].includes(action)

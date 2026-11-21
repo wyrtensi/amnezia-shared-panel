@@ -282,6 +282,10 @@ export const createKeyRequestSchema = z
     // to `inherit`); non-admins sending either are refused by the Control API.
     bridgeMode: keyBridgeModeSchema.optional(),
     vpnBridgeRouteId: z.uuid().nullable().optional(),
+    // Admin-only AWG 3.1 client settings of the new key, like the bridge
+    // fields; omitted or null inherits.
+    awgGenerator: awgGeneratorSettingsSchema.nullish(),
+    awgMtu: awgClientMtuSchema.nullish(),
   })
   .refine(
     (value) =>
@@ -331,6 +335,8 @@ const nodeApiBaseUrlSchema = z.url().refine((value) => {
 
 export const createNodeRequestSchema = z.object({
   awgGenerator: awgGeneratorSettingsSchema.nullish(),
+  // Client MTU apart from the profile; null inherits the default.
+  awgMtu: awgClientMtuSchema.nullish(),
   name: z.string().trim().min(1).max(120),
   // Optional user-facing server name; empty/omitted falls back to `name`.
   publicName: z.string().trim().max(120).optional(),
@@ -375,13 +381,18 @@ export const nodePublicEndpointMutationSchema = z.discriminatedUnion("action", [
     reachabilityEnabled: z.boolean().optional(),
     bridgeMode: endpointBridgeModeSchema.optional(),
     awgGenerator: awgGeneratorSettingsSchema.nullish(),
+    awgMtu: awgClientMtuSchema.nullish(),
+    // Replaces every device-type rule of the address; null removes them.
+    awgDeviceRules: awgDeviceRulesSchema.nullish(),
   }).strict().refine(
     (fields) =>
       fields.name !== undefined ||
       fields.enabled !== undefined ||
       fields.reachabilityEnabled !== undefined ||
       fields.bridgeMode !== undefined ||
-      fields.awgGenerator !== undefined,
+      fields.awgGenerator !== undefined ||
+      fields.awgMtu !== undefined ||
+      fields.awgDeviceRules !== undefined,
     {
       message: "An endpoint name, availability, reachability, or bridge setting is required",
     },
@@ -2387,6 +2398,8 @@ export type UserNodeEndpoint = z.infer<typeof userNodeEndpointSchema>;
 
 export const adminNodeEndpointSchema = userNodeEndpointSchema.extend({
   awgGenerator: awgGeneratorSettingsSchema.nullish(),
+  awgMtu: awgClientMtuSchema.nullish(),
+  awgDeviceRules: awgDeviceRulesSchema.nullish(),
   publicAddress: z.ipv4(),
   enabled: z.boolean(),
   bridgeMode: endpointBridgeModeSchema.optional(),
@@ -2413,6 +2426,8 @@ export const nodePublicEndpointMutationResultSchema = z.object({
   }).extend({
     bridgeMode: endpointBridgeModeSchema,
     awgGenerator: awgGeneratorSettingsSchema.nullish(),
+    awgMtu: awgClientMtuSchema.nullish(),
+    awgDeviceRules: awgDeviceRulesSchema.nullish(),
   }),
 });
 export type NodePublicEndpointMutationResult = z.infer<typeof nodePublicEndpointMutationResultSchema>;

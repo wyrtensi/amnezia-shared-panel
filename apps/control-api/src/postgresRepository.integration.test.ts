@@ -12,6 +12,7 @@ import {
 import {
   adminReachabilityViewSchema,
   awgGeneratorPresets,
+  createKeyRequestSchema,
   type AwgGeneratorPreset,
   defaultKeyNameDisplay,
   idleAccessSyncStatus,
@@ -8014,6 +8015,134 @@ describe("PostgresControlRepository AWG 3.1 config refresh", () => {
     expect((await service().getKeyConfig(owner, keyId, "vpn", false)).body).toEqual(issued.body);
   });
 
+  const keyRequest = (node: string, extra: Record<string, unknown> = {}) => createKeyRequestSchema.parse({
+    nodeId: node, protocol: "awg3", deviceType: "ios", deviceLabel: "settings", ...extra,
+  });
+  const userRow = async (id: string) => {
+    if (!database) throw new Error("No database");
+    const [user] = await database.db.select().from(users).where(eq(users.id, id));
+    return user;
+  };
+  const auditsOf = async (action: string, targetId: string) => {
+    if (!database) throw new Error("No database");
+    return database.db.select({ metadata: auditEvents.metadata }).from(auditEvents)
+      .where(and(eq(auditEvents.action, action), eq(auditEvents.targetId, targetId)));
+  };
+  const seedServiceAccount = async () => {
+    if (!database) throw new Error("No database");
+    const [user] = await database.db.insert(users)
+      .values({ email: `probe-${randomBytes(6).toString("hex")}@service.invalid`, serviceAccount: true })
+      .returning();
+    if (!user) throw new Error("Failed to seed service account");
+    createdUserIds.push(user.id);
+    return user;
+  };
+
+  runDatabaseTest("sets and clears a user's settings", async () => {
+    if (!database) return;
+    const admin = await seedOwner("admin");
+    const owner = await seedOwner();
+    await repository().adminAction(admin, "users", owner.id, "set-config", {
+      awgGenerator: settingsOf("stun"), awgMtu: 1360,
+    });
+    expect(await userRow(owner.id)).toMatchObject({ awgGenerator: settingsOf("stun"), awgMtu: 1360 });
+    await repository().adminAction(admin, "users", owner.id, "set-config", { awgMtu: null });
+    expect(await userRow(owner.id)).toMatchObject({ awgGenerator: settingsOf("stun"), awgMtu: null });
+    expect((await auditsOf("admin.users.set-config", owner.id)).map(({ metadata }) => metadata)).toEqual([
+      { preset: "stun", awgMtu: 1360 },
+      { preset: "stun", awgMtu: null },
+    ]);
+    const probe = await seedServiceAccount();
+    await expect(repository().adminAction(admin, "users", probe.id, "set-config", { awgMtu: 1300 }))
+      .rejects.toMatchObject({ code: "SERVICE_ACCOUNT" });
+    await expect(repository().adminAction(admin, "users", owner.id, "set-config", { awgMtu: 1500 }))
+      .rejects.toThrow();
+  });
+
+  runDatabaseTest("sets a key's settings and refuses it on AWG 2.0 and probe keys", async () => {
+    if (!database) return;
+    const admin = await seedOwner("admin");
+    const owner = await seedOwner();
+    const keyId = await seedKey(owner.id);
+    await repository().adminAction(admin, "keys", keyId, "set-config", { awgGenerator: settingsOf("stun"), awgMtu: 1320 });
+    expect(await row(keyId)).toMatchObject({ awgGenerator: settingsOf("stun"), awgMtu: 1320 });
+    await repository().adminAction(admin, "keys", keyId, "set-config", { awgGenerator: null });
+    expect(await row(keyId)).toMatchObject({ awgGenerator: null, awgMtu: 1320 });
+    expect((await auditsOf("vpn_key.config_set", keyId)).map(({ metadata }) => metadata)).toEqual([
+      { preset: "stun", awgMtu: 1320 },
+      { preset: null, awgMtu: 1320 },
+    ]);
+
+    const legacy = await seedKey(owner.id);
+    await database.db.update(vpnKeys).set({ protocol: "awg2" }).where(eq(vpnKeys.id, legacy));
+    await expect(repository().adminAction(admin, "keys", legacy, "set-config", { awgMtu: 1300 }))
+      .rejects.toMatchObject({ code: "AWG_GENERATOR_UNSUPPORTED" });
+    const probeKey = await seedKey((await seedServiceAccount()).id);
+    await expect(repository().adminAction(admin, "keys", probeKey, "set-config", { awgMtu: 1300 }))
+      .rejects.toMatchObject({ code: "SERVICE_ACCOUNT" });
+  });
+
+  runDatabaseTest("issues a key with its own profile and MTU from the admin panel and the cabinet", async () => {
+    if (!database) return;
+    const admin = await seedOwner("admin");
+    const owner = await seedOwner();
+    const forUser = await repository().adminAction(admin, "users", owner.id, "create-key",
+      keyRequest(nodeId, { awgGenerator: settingsOf("stun"), awgMtu: 1340 })) as { id: string };
+    expect(await row(forUser.id)).toMatchObject({ ownerId: owner.id, awgGenerator: settingsOf("stun"), awgMtu: 1340 });
+    expect((await auditsOf("admin.users.create-key", owner.id)).at(-1)?.metadata)
+      .toMatchObject({ keyId: forUser.id, preset: "stun", awgMtu: 1340 });
+
+    const own = await service().requestKey(admin, keyRequest(nodeId, { awgMtu: 1300 }));
+    expect(await row(own.id)).toMatchObject({ ownerId: admin.id, awgGenerator: null, awgMtu: 1300 });
+    await expect(repository().adminAction(admin, "users", owner.id, "create-key",
+      keyRequest(nodeId, { protocol: "awg2", endpointId: undefined, awgMtu: 1300 })))
+      .rejects.toMatchObject({ code: "AWG_GENERATOR_UNSUPPORTED" });
+  });
+
+  runDatabaseTest("refuses the settings from a non-admin on key creation", async () => {
+    const owner = await seedOwner();
+    for (const extra of [{ awgMtu: 1300 }, { awgGenerator: settingsOf("stun") }]) {
+      await expect(service().requestKey(owner, keyRequest(nodeId, extra)))
+        .rejects.toMatchObject({ statusCode: 403, code: "POLICY_DENIED" });
+    }
+  });
+
+  runDatabaseTest("lists each key's effective settings and where they come from", async () => {
+    if (!database) return;
+    const admin = await seedOwner("admin");
+    const owner = await seedOwner();
+    const node = await seedNode();
+    await database.db.update(nodes).set({ awgGenerator: settingsOf("dns_response"), awgMtu: 1400 })
+      .where(eq(nodes.id, node));
+    await database.db.insert(nodeVpnEndpoints).values({
+      nodeId: node, ordinal: 1, address: "203.0.113.76", name: "Primary",
+      awgDeviceRules: { ios: { awgGenerator: null, awgMtu: 1340 } },
+    });
+    const plain = await seedKey(owner.id, { onNode: node });
+    const ios = await seedKey(owner.id, { onNode: node });
+    const own = await seedKey(owner.id, { onNode: node });
+    await database.db.update(vpnKeys).set({ deviceType: "ios" }).where(eq(vpnKeys.id, ios));
+    await database.db.update(vpnKeys).set({ awgGenerator: settingsOf("stun") }).where(eq(vpnKeys.id, own));
+    const listed = await repository().adminList(admin, "keys") as Array<{ id: string; config: unknown }>;
+    const configOf = (id: string) => listed.find((entry) => entry.id === id)?.config;
+    expect(configOf(plain)).toEqual({
+      awgGenerator: settingsOf("dns_response"), profileFrom: "node", mtu: 1400, mtuFrom: "node", probeChecked: true,
+    });
+    expect(configOf(ios)).toMatchObject({ profileFrom: "node", mtu: 1340, mtuFrom: "device", probeChecked: false });
+    expect(configOf(own)).toMatchObject({ profileFrom: "key", mtu: 1400, mtuFrom: "node", probeChecked: false });
+  });
+
+  runDatabaseTest("leaves owner-facing key and me responses without the settings", async () => {
+    if (!database) return;
+    const owner = await seedOwner();
+    const keyId = await seedKey(owner.id);
+    await database.db.update(vpnKeys).set({ awgGenerator: settingsOf("stun"), awgMtu: 1300 }).where(eq(vpnKeys.id, keyId));
+    await database.db.update(users).set({ awgGenerator: settingsOf("stun"), awgMtu: 1300 }).where(eq(users.id, owner.id));
+    for (const response of [await service().listKeys(owner), await service().getMe(owner)]) {
+      expect(JSON.stringify(response)).not.toMatch(/awgGenerator|awgMtu|awgDeviceRules|"stun"/);
+    }
+  });
+
   runDatabaseTest("records an explicit config refresh timestamp without changing creation time", async () => {
     const owner = await seedOwner();
     const keyId = await seedKey(owner.id);
@@ -8662,6 +8791,77 @@ describe("PostgresControlRepository probe re-check after a configuration change"
       await database.db.delete(vpnBridgeRoutes).where(eq(vpnBridgeRoutes.id, routeId));
       await database.db.delete(vpnBridges).where(eq(vpnBridges.id, bridge.id));
     }
+  });
+
+  const endpointsOf = async (nodeId: string) => {
+    if (!database) throw new Error("No database");
+    return database.db.select().from(nodeVpnEndpoints)
+      .where(eq(nodeVpnEndpoints.nodeId, nodeId)).orderBy(nodeVpnEndpoints.ordinal);
+  };
+
+  runDatabaseTest("saves a node MTU, resets inheriting addresses and queues a run", async () => {
+    if (!database) throw new Error("No database");
+    const nodeId = await seedNode();
+    const own = await addressOf(nodeId, "203.0.113.101");
+    await repository().updateNode(admin, nodeId, { publicEndpoint: { action: "update", id: own, awgMtu: 1300 } });
+    await database.db.update(nodeVpnEndpoints).set({ probeStatus: "ok", probeCheckedAt: new Date() })
+      .where(eq(nodeVpnEndpoints.nodeId, nodeId));
+    await seedProbe();
+
+    expect(await repository().updateNode(admin, nodeId, { awgMtu: 1380 })).toMatchObject({ awgMtu: 1380 });
+    expect(await requestedAt()).not.toBeNull();
+    expect((await endpointsOf(nodeId)).map((row) => [row.awgMtu, row.probeStatus])).toEqual([
+      [null, null],
+      [1300, "ok"],
+    ]);
+
+    await seedProbe();
+    await repository().updateNode(admin, nodeId, { awgMtu: 1380 });
+    expect(await requestedAt()).toBeNull();
+    await expect(repository().updateNode(admin, await seedNode({ protocol: "awg2" }), { awgMtu: 1380 }))
+      .rejects.toMatchObject({ code: "AWG_GENERATOR_UNSUPPORTED" });
+  });
+
+  runDatabaseTest("saves an address MTU like an address profile change", async () => {
+    if (!database) throw new Error("No database");
+    const nodeId = await seedNode();
+    const second = await addressOf(nodeId, "203.0.113.102");
+    const [, before] = await endpointsOf(nodeId);
+    await database.db.update(nodeVpnEndpoints).set({ probeStatus: "ok", probeCheckedAt: new Date() })
+      .where(eq(nodeVpnEndpoints.id, second));
+    await seedProbe();
+
+    const saved = await repository().updateNode(admin, nodeId, {
+      publicEndpoint: { action: "update", id: second, awgMtu: 1300 },
+    }) as { publicEndpoint: { awgMtu: number | null } };
+    expect(saved.publicEndpoint.awgMtu).toBe(1300);
+    expect((await endpointsOf(nodeId))[1]).toMatchObject({
+      awgMtu: 1300, probeStatus: null, revision: (before?.revision ?? 0) + 1,
+    });
+    expect(await requestedAt()).not.toBeNull();
+  });
+
+  runDatabaseTest("stores device rules without queueing a run", async () => {
+    if (!database) throw new Error("No database");
+    const nodeId = await seedNode();
+    const second = await addressOf(nodeId, "203.0.113.103");
+    const [, before] = await endpointsOf(nodeId);
+    await database.db.update(nodeVpnEndpoints).set({ probeStatus: "ok", probeCheckedAt: new Date() })
+      .where(eq(nodeVpnEndpoints.id, second));
+    await seedProbe();
+    const rules = { ios: { awgGenerator: preset("stun"), awgMtu: 1340 }, android: { awgGenerator: null, awgMtu: 1360 } };
+
+    const saved = await repository().updateNode(admin, nodeId, {
+      publicEndpoint: { action: "update", id: second, awgDeviceRules: rules },
+    }) as { publicEndpoint: { awgDeviceRules: unknown } };
+    expect(saved.publicEndpoint.awgDeviceRules).toEqual(rules);
+    expect((await endpointsOf(nodeId))[1]).toMatchObject({
+      awgDeviceRules: rules, probeStatus: "ok", revision: before?.revision,
+    });
+    expect(await requestedAt()).toBeNull();
+
+    await repository().updateNode(admin, nodeId, { publicEndpoint: { action: "update", id: second, awgDeviceRules: null } });
+    expect((await endpointsOf(nodeId))[1]?.awgDeviceRules).toBeNull();
   });
 
   runDatabaseTest("closes an address incident silently when the address or its checks are turned off", async () => {
