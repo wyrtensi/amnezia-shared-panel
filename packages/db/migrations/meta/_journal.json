@@ -470,6 +470,13 @@
       "when": 1795400000005,
       "tag": "0066_probe_key_client_profiles",
       "breakpoints": true
+    },
+    {
+      "idx": 67,
+      "version": "7",
+      "when": 1795400000006,
+      "tag": "0067_endpoint_probe_alert_kind",
+      "breakpoints": true
     }
   ]
 }

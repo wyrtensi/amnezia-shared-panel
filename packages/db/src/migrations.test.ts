@@ -71,6 +71,20 @@ describe("0013_install_guide_videos", () => {
   });
 });
 
+describe("0067_endpoint_probe_alert_kind", () => {
+  const sql = readFileSync(
+    fileURLToPath(new URL("../migrations/0067_endpoint_probe_alert_kind.sql", import.meta.url)),
+    "utf8",
+  );
+
+  it("adds the column nullable without a default, typed by the alert kind enum", () => {
+    expect(sql).toContain('ALTER TABLE "node_vpn_endpoints"');
+    expect(sql).toContain('ADD COLUMN "probe_alert_kind" "reachability_alert_kind"');
+    // No incident is open on an address until a run opens one.
+    expect(sql).not.toMatch(/NOT NULL|DEFAULT/i);
+  });
+});
+
 describe("0030_rule_version_pin", () => {
   const sql = readFileSync(
     fileURLToPath(new URL("../migrations/0030_rule_version_pin.sql", import.meta.url)),

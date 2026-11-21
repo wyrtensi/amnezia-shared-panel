@@ -569,6 +569,11 @@ export const serviceCheckStatusEnum = pgEnum("service_check_status", [
   "error",
 ]);
 
+export const reachabilityAlertKindEnum = pgEnum("reachability_alert_kind", [
+  "node",
+  "mass",
+]);
+
 export const nodeVpnEndpoints = pgTable(
   "node_vpn_endpoints",
   {
@@ -588,6 +593,7 @@ export const nodeVpnEndpoints = pgTable(
     probeConsecutiveFailures: integer("probe_consecutive_failures").default(0).notNull(),
     probeFailingSince: timestamp("probe_failing_since", { withTimezone: true }),
     probeAlertedAt: timestamp("probe_alerted_at", { withTimezone: true }),
+    probeAlertKind: reachabilityAlertKindEnum("probe_alert_kind"),
     probeDetail: varchar("probe_detail", { length: 300 }),
   },
   (table) => [
@@ -923,11 +929,6 @@ export const nodeServiceCheckResults = pgTable(
   },
   (table) => [primaryKey({ columns: [table.nodeId, table.checkId] })],
 );
-
-export const reachabilityAlertKindEnum = pgEnum("reachability_alert_kind", [
-  "node",
-  "mass",
-]);
 
 /**
  * The external reachability probe: one row or none. No row means the feature
