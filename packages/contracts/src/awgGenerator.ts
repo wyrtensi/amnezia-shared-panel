@@ -65,10 +65,6 @@ const defaultParameters = {
   timings: null,
 } as const;
 /**
- * The junk-packet ranges of the presets that draw J, and the ranges a fixed
- * preset widens to when every key draws its own values.
- */
-/**
  * J ranges a preset draws from instead of its own when every key draws its
  * own values: the stock AmneziaVPN profile is exact with randomization off
  * and varies around stock with it on.
@@ -79,6 +75,7 @@ export const AWG_GENERATOR_RANDOMIZED_J: Partial<Record<AwgGeneratorPreset, {
   amnezia_default: { jcMin: 4, jcMax: 8, jminMin: 10, jminMax: 50, jmaxGapMin: 40, jmaxGapMax: 80 },
 };
 
+/** The J ranges a fixed preset widens to when every key draws its own values. */
 export const AWG_GENERATOR_STANDARD_J = {
   jcMin: defaultParameters.jcMin,
   jcMax: defaultParameters.jcMax,

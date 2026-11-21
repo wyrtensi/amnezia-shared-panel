@@ -128,6 +128,8 @@ const nextClientProfile = (
   const saved = awgClientProfileV1Schema.safeParse(previous);
   const jc = saved.success ? saved.data.jc : current.jc;
   if (!generator) return selectAwgClientProfile(revision + 1, jc);
+  // One shared set for every key: no revision draws anything else.
+  if (generator.randomizeKeys === false) return null;
   // Generator draws are independent per revision, so the next one can land
   // on the same config in a narrow range: try the following revisions.
   const options = { protocol: "awg3" as const, keyId, generator };

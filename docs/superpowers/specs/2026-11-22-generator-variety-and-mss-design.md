@@ -38,9 +38,10 @@ clients with a larger tunnel MTU than the server interface stall on TCP.
 
 - A Binding Request whose length field matches its attributes, 20-44 bytes,
   drawn per key: no attributes, SOFTWARE (0x8022) of 4/8/12/16 random chars,
-  CHANGE-REQUEST (0x0003), PRIORITY (0x0024, `<r 4>`), ICE-CONTROLLING
-  (0x802a, `<r 8>`), in valid combinations. No FINGERPRINT: its CRC covers the
-  transaction ID AWG redraws on every handshake, so it could never be valid.
+  CHANGE-REQUEST (0x0003), or both when they fit. No FINGERPRINT: its CRC
+  covers the transaction ID AWG redraws on every handshake, so it could never
+  be valid. No PRIORITY or ICE-CONTROLLING (dropped after review: without
+  USERNAME / MESSAGE-INTEGRITY they are not what an ICE agent sends).
 
 ### Per-key spread
 
@@ -65,7 +66,7 @@ Custom may turn randomization on (default off).
 
 `varied` (J only, no CPA or timers: the mobile branch without CPA under
 RandomTrailers) and `varied_full` (with per-key CPA and timings). Each key
-draws one shape: a DNS query, a random DNS response, a STUN request, or a mix
+draws one shape: a DNS query (type A, AAAA or HTTPS), a random DNS response, a STUN request, or a mix
 of 1-3 packets. The reachability probe checks an address with one shape, its
 own service key's.
 

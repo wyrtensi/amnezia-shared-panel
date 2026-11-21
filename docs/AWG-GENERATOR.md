@@ -165,9 +165,12 @@ parse it as DNS or STUN.
   bytes on every handshake; the shape is the key's.
 - **STUN** (RFC 5389): a Binding Request whose length field matches its
   attributes, 20-44 bytes, drawn per key: no attributes, SOFTWARE of 4/8/12/16
-  letters, CHANGE-REQUEST, PRIORITY and ICE-CONTROLLING in combinations that
-  fit. No FINGERPRINT: it is a CRC over the transaction ID AWG redraws on
-  every handshake, so it could never be valid.
+  letters, CHANGE-REQUEST, or both when they fit. No FINGERPRINT: it is a CRC
+  over the transaction ID AWG redraws on every handshake, so it could never be
+  valid. No PRIORITY or ICE-CONTROLLING: without USERNAME and
+  MESSAGE-INTEGRITY no ICE agent sends them.
+- A `varied` key that draws the single DNS query also draws its query type:
+  A, AAAA or HTTPS.
 - The two fixed DNS-response presets keep the legacy 44-byte response they are
   named after; the conservative TTL variant uses adjacent TTL windows
   3840-4095, 4096-4351 and 4352-4607.

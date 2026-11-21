@@ -449,7 +449,7 @@ describe("signature packet validity and variety", () => {
     "dns_response_randomized", "dns_query", "stun", "randomized",
     "dns_query_aaaa", "dns_query_aaaa_full", "dns_query_https", "dns_query_https_full",
     "dns_query_burst", "dns_query_burst_full", "dns_query_stun", "dns_query_stun_full",
-    "stun_dns_response", "stun_dns_response_full",
+    "stun_dns_response", "stun_dns_response_full", "varied", "varied_full",
   ];
   const packetsOf = (id: AwgGeneratorPreset, keyId: string, profileRevision = 1) => {
     const { line } = copies(applyAwgGeneratorSettings(original, { ...preset(id), randomizeKeys: true }, { keyId, profileRevision }));
@@ -491,6 +491,13 @@ describe("signature packet validity and variety", () => {
     const octets = keys(200).map((keyId, index) =>
       parseDns(expandTemplate(packetsOf("dns_response_randomized", keyId)[0] ?? "", seededBytes(index + 1))).answer?.ipv4[0]);
     expect(new Set(octets).size).toBeGreaterThanOrEqual(5);
+  });
+
+  it("draws the query type of a varied DNS query from A, AAAA and HTTPS", () => {
+    const qtypes = keys(200).flatMap((keyId, index) => packetsOf("varied", keyId)
+      .filter((template) => packetKind(template) === "dns" && !template.includes("<b 0x8180"))
+      .map((template) => parseDns(expandTemplate(template, seededBytes(index + 1))).qtype));
+    expect(new Set(qtypes)).toEqual(new Set([0x0001, 0x001c, 0x0041]));
   });
 
   it("sends the random DNS response in stun_dns_response and can mix it into randomized", () => {

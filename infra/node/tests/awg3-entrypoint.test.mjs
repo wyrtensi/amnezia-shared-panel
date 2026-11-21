@@ -54,8 +54,11 @@ test("clamps TCP MSS on the AWG3 interface at runtime, on cleanup and in the gen
   assert.match(postDown, /iptables -t mangle -D FORWARD -o %i -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu/);
   // Added after cleanup removed any left by a previous start, so a restart
   // never stacks duplicates.
-  const runtimeAdd = script.search(rule("A", "i"));
-  assert.ok(script.indexOf("cleanup_interface\n") < runtimeAdd || script.lastIndexOf("cleanup_interface") < runtimeAdd);
+  const cleanupCall = script.search(/^cleanup_interface$/m);
+  assert.ok(cleanupCall > script.search(/^trap cleanup_interface EXIT$/m), "cleanup runs at start");
+  for (const dir of ["i", "o"]) {
+    assert.ok(script.search(rule("A", dir)) > cleanupCall, `runtime add -${dir} after cleanup`);
+  }
 });
 
 test("generates AmneziaWG 3.1 obfuscation parameters", async () => {

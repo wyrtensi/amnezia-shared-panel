@@ -944,6 +944,14 @@ describe("AWG 3.1 config refresh", () => {
     expect(await service.getConfigRefresh(employee, "key-1")).toEqual({ eligible: false });
   });
 
+  it("says a key on a shared generator set is not eligible", async () => {
+    const shared = { ...awgGeneratorPresets().find((entry) => entry.id === "dns_query")!.settings, randomizeKeys: false };
+    const repository = createRepository();
+    vi.mocked(repository.findKeyConfig).mockResolvedValue(key31({ awgGenerator: shared, awgClientProfile: saved }));
+    const service = createDefaultControlApiService({ repository, keyring });
+    expect(await service.getConfigRefresh(employee, "key-1")).toEqual({ eligible: false });
+  });
+
   it("always changes a narrow randomized profile on refresh", async () => {
     const narrow = {
       ...awgGeneratorPresets().find((entry) => entry.id === "no_i")!.settings,

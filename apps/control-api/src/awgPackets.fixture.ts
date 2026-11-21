@@ -104,9 +104,11 @@ export const parseDns = (packet: Uint8Array): ParsedDns => {
   return { response, labels, qtype, edns, answer };
 };
 
-const STUN_ATTRIBUTES = new Set([0x8022, 0x0003, 0x0024, 0x802a]);
+// SOFTWARE and CHANGE-REQUEST only: PRIORITY and ICE-CONTROLLING without
+// USERNAME and MESSAGE-INTEGRITY are not what an ICE agent sends.
+const STUN_ATTRIBUTES = new Set([0x8022, 0x0003]);
 
-/** RFC 5389 Binding Request: header, matching length, padded attributes, no FINGERPRINT. */
+/** RFC 5389 Binding Request: header, matching length, padded SOFTWARE / CHANGE-REQUEST, no FINGERPRINT. */
 export const parseStun = (packet: Uint8Array): { size: number; attributes: number[] } => {
   const view = new DataView(packet.buffer, packet.byteOffset, packet.byteLength);
   if (packet.length < 20 || packet.length > 44) throw new Error(`size ${packet.length}`);
@@ -121,8 +123,6 @@ export const parseStun = (packet: Uint8Array): { size: number; attributes: numbe
     const valueLength = view.getUint16(at + 2);
     if (!STUN_ATTRIBUTES.has(type)) throw new Error(`attribute ${type.toString(16)}`);
     if (type === 0x0003 && valueLength !== 4) throw new Error("change-request");
-    if (type === 0x0024 && valueLength !== 4) throw new Error("priority");
-    if (type === 0x802a && valueLength !== 8) throw new Error("ice-controlling");
     attributes.push(type);
     at += 4 + Math.ceil(valueLength / 4) * 4;
   }

@@ -74,6 +74,9 @@ const ednsOpt = (draw: Draw, prefix: string): string | null => {
 };
 
 // A valid RFC 1035 query, class IN, QTYPE A (1), AAAA (28) or HTTPS (65).
+// A, AAAA and HTTPS: what a resolver asks for most.
+const VARIED_QTYPES = ["0001", "001c", "0041"] as const;
+
 const dnsQuery = (draw: Draw, prefix: string, qtype = "0001"): string => {
   const opt = ednsOpt(draw, prefix);
   return `<r 2><b 0x010000010000000000${opt ? "01" : "00"}>${dnsName(draw, prefix)}<b 0x${qtype}0001>${opt ?? ""}`;
@@ -91,10 +94,11 @@ const dnsResponseRandom = (draw: Draw, prefix: string): string => {
 };
 
 /**
- * A valid RFC 5389 Binding Request of 20-44 bytes: no attributes, or a
- * SOFTWARE of 4-16 letters, CHANGE-REQUEST, PRIORITY and ICE-CONTROLLING in
- * combinations that fit. No FINGERPRINT: it is a CRC over the transaction ID
- * AWG redraws on every handshake, so it could never be right.
+ * A valid RFC 5389 Binding Request of 20-44 bytes: no attributes, a SOFTWARE
+ * of 4-16 letters, a CHANGE-REQUEST, or both when they fit. No FINGERPRINT:
+ * it is a CRC over the transaction ID AWG redraws on every handshake, so it
+ * could never be right. No PRIORITY or ICE-CONTROLLING either: without
+ * USERNAME and MESSAGE-INTEGRITY no ICE agent sends them.
  */
 const stunRequest = (draw: Draw, prefix: string): string => {
   const attributes: string[] = [];
@@ -104,17 +108,10 @@ const stunRequest = (draw: Draw, prefix: string): string => {
     attributes.push(`<b 0x8022${hex16(software)}><rc ${software}>`);
     length += 4 + software;
   }
-  const extras = [
-    { size: 8, template: `<b 0x00030004000000${["00", "02", "04", "06"][draw(`${prefix}-change`, 0, 3)] ?? "00"}>` },
-    { size: 8, template: "<b 0x00240004><r 4>" },
-    { size: 12, template: "<b 0x802a0008><r 8>" },
-  ];
-  extras.forEach((extra, index) => {
-    if (draw(`${prefix}-attribute-${index}`, 0, 1) === 1 && length + extra.size <= 24) {
-      attributes.push(extra.template);
-      length += extra.size;
-    }
-  });
+  if (draw(`${prefix}-attribute-0`, 0, 1) === 1 && length + 8 <= 24) {
+    attributes.push(`<b 0x00030004000000${["00", "02", "04", "06"][draw(`${prefix}-change`, 0, 3)] ?? "00"}>`);
+    length += 8;
+  }
   return `<b 0x0001${hex16(length)}2112a442><r 12>${attributes.join("")}`;
 };
 
@@ -135,7 +132,7 @@ const signaturePackets = (
   }
   if (iMode === "varied") {
     switch (draw("varied-shape", 0, 3)) {
-      case 0: return [dnsQuery(draw, "varied-dns")];
+      case 0: return [dnsQuery(draw, "varied-dns", VARIED_QTYPES[draw("varied-qtype", 0, VARIED_QTYPES.length - 1)])];
       case 1: return [dnsResponseRandom(draw, "varied-dns-response")];
       case 2: return [stunRequest(draw, "varied-stun")];
       default: return mixedPackets(draw, iCount, "varied-mix");
