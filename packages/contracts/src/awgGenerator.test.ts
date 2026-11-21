@@ -17,7 +17,12 @@ describe("AWG generator settings", () => {
       "issued",
       "dns_response",
       "dns_response_random_ttl",
+      "dns_response_randomized",
+      "dns_query",
+      "stun",
+      "no_i",
       "randomized",
+      "amnezia_default",
       "custom",
     ]);
     for (const { id, settings } of presets) {

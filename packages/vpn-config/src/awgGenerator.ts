@@ -31,6 +31,13 @@ const hexByte = (byte: number): string => byte.toString(16).padStart(2, "0");
 const dnsQuery = (labelLength: number): string =>
   `<r 2><b 0x0100><b 0x00010000><b 0x00000000><b 0x${hexByte(labelLength)}><rc ${labelLength}><b 0x03636f6d00><b 0x0001><b 0x0001>`;
 
+// Valid RFC 1035 / RFC 2181 DNS A-response: random TXID (<r 2>), random label
+// length (3-12) and characters (<rc N>) under .com, compression pointer 0xc00c
+// to offset 12, positive TTL in [256, 32767] with a random low byte (<r 1>)
+// per handshake attempt, and a random 4-byte IPv4 answer (<r 4>).
+const dnsResponseRandom = (labelLength: number, ttlHighByte: number): string =>
+  `<r 2><b 0x81800001000100000000><b 0x${hexByte(labelLength)}><rc ${labelLength}><b 0x03636f6d0000010001c00c000100010000${hexByte(ttlHighByte)}><r 1><b 0x0004><r 4>`;
+
 const noise = (length: number): string => `<r ${length}>`;
 
 const signaturePackets = (
@@ -39,7 +46,10 @@ const signaturePackets = (
 ): string[] | null => {
   const { iMode, iCount, preset } = settings;
   if (iMode === "issued") return null;
-  if (preset === "randomized" && iMode === "dns_query") {
+  if (iMode === "none") return [];
+  // Keep backward compatibility with earlier persisted "randomized" configs
+  // that stored `iMode: "dns_query"` to request the shuffled burst.
+  if (iMode === "mixed" || (preset === "randomized" && iMode === "dns_query")) {
     const templates = [dnsQuery(draw("dns-label", 3, 12)), STUN_REQUEST, noise(draw("noise", 48, 220))];
     const order = profileOrder(draw("signature-order", 0, 5), templates.length);
     return Array.from({ length: iCount }, (_, slot) =>
@@ -53,8 +63,15 @@ const signaturePackets = (
         const ttl = draw(`ttl-${slot}`, 15, 17);
         return `<r 2><b 0x${DNS_RESPONSE_HEAD}${hexByte(ttl)}><r 1><b 0x${DNS_RESPONSE_TAIL}>`;
       }
+      case "dns_response_random":
+        return dnsResponseRandom(
+          draw(`dns-resp-label-${slot}`, 3, 12),
+          draw(`dns-resp-ttl-${slot}`, 1, 127),
+        );
       case "dns_query":
         return dnsQuery(draw(`dns-label-${slot}`, 3, 12));
+      case "stun":
+        return STUN_REQUEST;
       case "noise":
         return noise(draw(`noise-${slot}`, 48, 220));
     }

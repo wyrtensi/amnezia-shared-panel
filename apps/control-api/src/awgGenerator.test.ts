@@ -200,6 +200,84 @@ describe("applyAwgGeneratorSettings", () => {
     expect(templates.some((value) => /^<r \d+>$/.test(value ?? ""))).toBe(true);
   });
 
+  it("keeps backward compatibility with legacy randomized settings that stored iMode=dns_query", () => {
+    const original = awg31Link();
+    const mixed = applyAwgGeneratorSettings(original, preset("randomized"), seed);
+    const legacy = applyAwgGeneratorSettings(
+      original,
+      { ...preset("randomized"), iMode: "dns_query" },
+      seed,
+    );
+    const templates = [copies(legacy).line("I1"), copies(legacy).line("I2"), copies(legacy).line("I3")];
+    expect(templates.some((value) => value?.includes("<b 0x0100>"))).toBe(true);
+    expect(templates.some((value) => value?.includes("<b 0x2112a442>"))).toBe(true);
+    expect(templates.some((value) => /^<r \d+>$/.test(value ?? ""))).toBe(true);
+    expect(copies(mixed).line("ContentPaddingAddition")).toBe("1-39");
+  });
+
+  it("emits a valid RFC 1035/2181 randomized DNS response without CPA or timers", () => {
+    const original = awg31Link({
+      conf: (conf) => `${conf.replace("[Peer]", "ContentPaddingAddition = 1-39\nRekeyTimeout = 4-8\n\n[Peer]")}`,
+    });
+    const settings = preset("dns_response_randomized");
+    const first = applyAwgGeneratorSettings(original, settings, { ...seed, profileRevision: 1 });
+    const next = applyAwgGeneratorSettings(original, settings, { ...seed, profileRevision: 2 });
+    expect(next).not.toBe(first);
+
+    const parsed = copies(first);
+    const i1 = parsed.line("I1") ?? "";
+    const match = /^<r 2><b 0x81800001000100000000><b 0x([0-9a-f]{2})><rc (\d+)><b 0x03636f6d0000010001c00c000100010000([0-9a-f]{2})><r 1><b 0x0004><r 4>$/.exec(i1);
+    expect(match).not.toBeNull();
+    const labelLen = Number.parseInt(match![1]!, 16);
+    expect(labelLen).toBe(Number(match![2]));
+    expect(labelLen).toBeGreaterThanOrEqual(3);
+    expect(labelLen).toBeLessThanOrEqual(12);
+    const ttlHigh = Number.parseInt(match![3]!, 16);
+    expect(ttlHigh).toBeGreaterThanOrEqual(1);
+    expect(ttlHigh).toBeLessThanOrEqual(127);
+    // Total DNS wire length: 12 header + 1 len + labelLen + 5 (.com\0) + 4 QTYPE/QCLASS + 16 answer = 38 + labelLen.
+    expect(38 + labelLen).toBeGreaterThanOrEqual(41);
+    expect(38 + labelLen).toBeLessThanOrEqual(50);
+
+    expect(parsed.line("I2")).toBeNull();
+    expect(parsed.line("ContentPaddingAddition")).toBeNull();
+    expect(parsed.line("RekeyTimeout")).toBeNull();
+    expect(Number(parsed.line("Jc"))).toBeGreaterThanOrEqual(3);
+    expect(Number(parsed.line("Jc"))).toBeLessThanOrEqual(10);
+  });
+
+  it("supports single DNS-query, single STUN, no-I, and stock AmneziaVPN presets", () => {
+    const original = awg31Link({ slots: ["I1", "I2", "I3"] });
+
+    const dnsQueryOut = copies(applyAwgGeneratorSettings(original, preset("dns_query"), seed));
+    expect(dnsQueryOut.line("I1")).toMatch(/^<r 2><b 0x0100>/);
+    expect(dnsQueryOut.line("I2")).toBeNull();
+    expect(dnsQueryOut.line("ContentPaddingAddition")).toBeNull();
+
+    const stunOut = copies(applyAwgGeneratorSettings(original, preset("stun"), seed));
+    expect(stunOut.line("I1")).toBe("<b 0x0001><b 0x000c><b 0x2112a442><r 12><b 0x8022><b 0x0008><rc 8>");
+    expect(stunOut.line("I2")).toBeNull();
+    expect(stunOut.line("ContentPaddingAddition")).toBeNull();
+
+    const noIOut = copies(applyAwgGeneratorSettings(original, preset("no_i"), seed));
+    for (const slot of ["I1", "I2", "I3", "I4", "I5"]) {
+      expect(noIOut.line(slot)).toBeNull();
+      expect(noIOut.awg[slot]).toBe("");
+      expect(noIOut.lastConfig[slot]).toBe("");
+    }
+
+    const stockOut = copies(applyAwgGeneratorSettings(original, preset("amnezia_default"), seed));
+    expect(Number(stockOut.line("Jc"))).toBeGreaterThanOrEqual(4);
+    expect(Number(stockOut.line("Jc"))).toBeLessThanOrEqual(6);
+    expect(stockOut.line("Jmin")).toBe("10");
+    expect(stockOut.line("Jmax")).toBe("50");
+    expect(stockOut.line("ContentPaddingAddition")).toBe("10-100");
+    expect(stockOut.line("RekeyAfterTime")).toBe("100-120");
+    expect(stockOut.line("RejectAfterTime")).toBe("180-210");
+    expect(stockOut.line("I1")).toMatch(/^<r 2><b 0x8580/);
+    expect(stockOut.line("I2")).toBeNull();
+  });
+
   it("changes a custom J draw on consecutive revisions even in a two-value range", () => {
     const original = awg31Link();
     const settings = {

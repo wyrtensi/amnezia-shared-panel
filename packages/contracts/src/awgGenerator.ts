@@ -4,7 +4,12 @@ export const AWG_GENERATOR_PRESETS = [
   "issued",
   "dns_response",
   "dns_response_random_ttl",
+  "dns_response_randomized",
+  "dns_query",
+  "stun",
+  "no_i",
   "randomized",
+  "amnezia_default",
   "custom",
 ] as const;
 
@@ -15,8 +20,12 @@ export const AWG_GENERATOR_I_MODES = [
   "issued",
   "dns_response",
   "dns_response_random_ttl",
+  "dns_response_random",
   "dns_query",
+  "stun",
+  "mixed",
   "noise",
+  "none",
 ] as const;
 
 const DEFAULT_CLIENT_MTU = 1280;
@@ -93,8 +102,8 @@ export const awgGeneratorSettingsSchema = z.strictObject({
   message: "Jmax gap maximum must be at least its minimum",
   path: ["jmaxGapMax"],
 }).superRefine((value, context) => {
-  if (value.preset === "custom" || value.preset === "randomized") return;
-  const fixed = fixedPresets[value.preset];
+  if (!(value.preset in fixedPresets)) return;
+  const fixed = fixedPresets[value.preset as keyof typeof fixedPresets];
   const fields = Object.keys(fixed) as Array<keyof typeof fixed>;
   for (const field of fields) {
     if (value[field] !== fixed[field]) {
@@ -148,12 +157,52 @@ export const awgGeneratorPresets = (): AwgGeneratorPresetDescription[] => {
       settings: { ...fixedPresets.dns_response_random_ttl, mtu: DEFAULT_CLIENT_MTU, preset: "dns_response_random_ttl" },
     },
     {
+      id: "dns_response_randomized",
+      description: "Send a valid DNS A-response with randomized domain, TTL window, IPv4 answer and J ranges, without CPA or custom timers.",
+      settings: {
+        ...base,
+        preset: "dns_response_randomized",
+        iMode: "dns_response_random",
+        iCount: 1,
+      },
+    },
+    {
+      id: "dns_query",
+      description: "Send a single randomized DNS A-query before the handshake, without CPA or custom timers.",
+      settings: {
+        ...base,
+        preset: "dns_query",
+        iMode: "dns_query",
+        iCount: 1,
+      },
+    },
+    {
+      id: "stun",
+      description: "Send a single 32-byte STUN Binding Request before the handshake, without CPA or custom timers.",
+      settings: {
+        ...base,
+        preset: "stun",
+        iMode: "stun",
+        iCount: 1,
+      },
+    },
+    {
+      id: "no_i",
+      description: "Omit I1-I5 signature packets and send only randomized J junk packets, without CPA or custom timers.",
+      settings: {
+        ...base,
+        preset: "no_i",
+        iMode: "none",
+        iCount: 1,
+      },
+    },
+    {
       id: "randomized",
-      description: "Draw junk packet settings and shuffle DNS, STUN and noise signatures.",
+      description: "Node geometry profile: randomized J ranges, shuffled DNS/STUN/noise burst, CPA 1-39 and Interface timing ranges.",
       settings: {
         ...base,
         preset: "randomized",
-        iMode: "dns_query",
+        iMode: "mixed",
         iCount: 3,
         contentPaddingAddition: { min: 1, max: 39 },
         timings: {
@@ -162,6 +211,30 @@ export const awgGeneratorPresets = (): AwgGeneratorPresetDescription[] => {
           rejectAfterTime: { min: 200, max: 260 },
           keepaliveTimeout: { min: 8, max: 18 },
           maxHandshakeAttempts: { min: 12, max: 20 },
+        },
+      },
+    },
+    {
+      id: "amnezia_default",
+      description: "Stock AmneziaVPN 5 profile: J 4-6 / 10 / 50, DNS response with random TTL, CPA 10-100 and timing ranges.",
+      settings: {
+        ...base,
+        preset: "amnezia_default",
+        jcMin: 4,
+        jcMax: 6,
+        jminMin: 10,
+        jminMax: 10,
+        jmaxGapMin: 40,
+        jmaxGapMax: 40,
+        iMode: "dns_response_random_ttl",
+        iCount: 1,
+        contentPaddingAddition: { min: 10, max: 100 },
+        timings: {
+          rekeyAfterTime: { min: 100, max: 120 },
+          rekeyTimeout: { min: 3, max: 7 },
+          rejectAfterTime: { min: 180, max: 210 },
+          keepaliveTimeout: { min: 5, max: 15 },
+          maxHandshakeAttempts: { min: 15, max: 20 },
         },
       },
     },
