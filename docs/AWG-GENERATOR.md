@@ -18,12 +18,21 @@ addresses on that interface share those server properties.
 | Issued profile | Preserve issued and saved client parameters, apply the selected client MTU |
 | DNS response | One legacy-shaped 44-byte DNS response, J 4/40/70, unset CPA and Interface timing ranges |
 | DNS response with randomized TTL | The DNS-response profile with a key-specific TTL window and a random transaction ID/TTL byte per handshake attempt |
-| Randomized | Client junk ranges, a shuffled DNS/STUN/noise burst, CPA and timing ranges |
-| Custom | Explicit client ranges and signature mode selected by the administrator |
+| DNS response (extended randomization) | Valid RFC 1035/2181 DNS A-response with randomized `.com` label length (3-12), TXID, TTL window (256-32767 s + random low byte per handshake), random IPv4 answer and randomized J ranges (3-10 / 40-100 / +30-200), unset CPA and Interface timing ranges |
+| DNS query | Single randomized DNS A-query I1 with randomized J ranges, unset CPA and Interface timing ranges |
+| STUN request | Single 32-byte STUN Binding Request I1 with randomized J ranges, unset CPA and Interface timing ranges |
+| No I-packets | Omit all I1-I5 signature packets (`none`), send only randomized J junk packets, unset CPA and Interface timing ranges |
+| Randomized | Node geometry profile: randomized J ranges, shuffled DNS/STUN/noise burst (`mixed`, I1-I3), CPA 1-39 and Interface timing ranges |
+| Stock AmneziaVPN (CPA 10-100) | J 4-6 / 10 / 50, DNS response with random TTL, CPA 10-100 and stock timing ranges (`100-120` / `3-7` / `180-210` / `5-15` / `15-20`) |
+| Custom | Explicit client ranges and any signature mode (`issued`, `dns_response`, `dns_response_random_ttl`, `dns_response_random`, `dns_query`, `stun`, `mixed`, `noise`, `none`) selected by the administrator |
 
-The randomized DNS-response preset uses adjacent TTL windows 3840-4095,
-4096-4351 and 4352-4607. Advancing a key's configuration revision moves to a
-different window. Non-degenerate numeric ranges also advance between revisions.
+The conservative randomized DNS-response preset uses adjacent TTL windows 3840-4095,
+4096-4351 and 4352-4607. The extended randomized DNS-response preset draws a
+key-specific `.com` label length (3-12, total wire size 41-50 bytes) and positive
+RFC 2181 TTL window (256-32767 s), while AWG randomizes the TXID, label
+characters, low TTL byte and 4-byte IPv4 answer on every handshake attempt.
+Advancing a key's configuration revision moves to a different draw.
+Non-degenerate numeric ranges also advance between revisions.
 Randomization is reproducible for a key, settings and revision, so repeated
 downloads remain stable.
 
@@ -32,9 +41,14 @@ keys. Imported profiles on devices need to be imported again. The shared AWG
 interface and peer credentials are preserved. AWG 2.0 compatibility artifacts
 retain their existing export behavior.
 
-Client MTU is configurable from 1280 to 1420. The effective outer packet size
-also includes the existing S4, AWG authentication/header overhead and optional
-padding. Choose an MTU appropriate for the path and server geometry.
+Client MTU is configurable from 1280 to 1420 (per node or per registered IPv4
+address). The effective outer packet size also includes the existing S4, AWG
+authentication/header overhead and optional padding. Choose an MTU appropriate
+for the path and server geometry. FRP bridges do not define a separate tunnel
+MTU: the client-to-bridge leg carries plain AWG UDP and the bridge-to-node FRP
+leg runs over TCP/TLS, bounded only by FRP's default 1500-byte UDP read buffer
+(`udpPacketSize`), which comfortably fits MTU 1280 + S4 <= 64 + 32-byte AWG
+framing (at most 1376 bytes UDP payload).
 
 ## REST API
 

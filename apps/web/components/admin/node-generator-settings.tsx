@@ -4,6 +4,7 @@ import * as React from "react";
 import { Settings2 } from "lucide-react";
 import { toast } from "sonner";
 import {
+  AWG_GENERATOR_I_MODES,
   AWG_GENERATOR_PRESETS,
   awgGeneratorPresets,
   awgGeneratorSettingsSchema,
@@ -112,7 +113,11 @@ function GeneratorEditor({ value, inherited, pending, onSave }: {
 }) {
   const { t } = useT();
   const presets = awgGeneratorPresets();
-  const [draft, setDraft] = React.useState<AwgGeneratorSettings | null>(value);
+  const [draft, setDraft] = React.useState<AwgGeneratorSettings | null>(() =>
+    value && value.preset === "randomized" && value.iMode === "dns_query"
+      ? { ...value, iMode: "mixed" }
+      : value,
+  );
   const [invalid, setInvalid] = React.useState(false);
   const update = (change: Partial<AwgGeneratorSettings>) => {
     setDraft((current) => current ? {
@@ -193,14 +198,14 @@ function GeneratorEditor({ value, inherited, pending, onSave }: {
                   value={draft.iMode}
                   onChange={(event) => update({ iMode: event.target.value as AwgGeneratorSettings["iMode"] })}
                 >
-                  {(["issued", "dns_response", "dns_response_random_ttl", "dns_query", "noise"] as const).map((mode) => (
+                  {AWG_GENERATOR_I_MODES.map((mode) => (
                     <option key={mode} value={mode}>
-                      {t(draft.preset === "randomized" && mode === "dns_query" ? "generator.mixed" : `generator.${mode}`)}
+                      {t(`generator.${mode}`)}
                     </option>
                   ))}
                 </select>
               </label>
-              {draft.iMode !== "issued" ? (
+              {draft.iMode !== "issued" && draft.iMode !== "none" ? (
                 <NumberField
                   label={t("generator.iCount")} value={draft.iCount} min={1} max={5}
                   onChange={(iCount) => update({ iCount })}
