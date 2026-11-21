@@ -91,6 +91,7 @@ type Run = { targets: ReachabilityTarget[]; results: ProbeTargetResult[]; contro
 /** Feed runs one after another, carrying state, and collect every notice. */
 const simulate = (runs: Run[], start = new Date("2026-01-01T10:00:00Z")) => {
   let previous = new Map<string, NodeState>();
+  const previousAddresses = new Map<string, AddressState>();
   const notices: { run: number; dedupKey: string; text: string }[] = [];
   const states: Map<string, NodeState>[] = [];
   runs.forEach((run, index) => {
@@ -104,9 +105,11 @@ const simulate = (runs: Run[], start = new Date("2026-01-01T10:00:00Z")) => {
       targets: run.targets,
       results: run.results,
       previous,
+      previousAddresses: new Map(previousAddresses),
     });
     for (const notice of out.notices) notices.push({ run: index, ...notice });
     previous = new Map(out.states);
+    for (const { endpointId, state } of out.addressOutcomes) previousAddresses.set(endpointId, state);
     states.push(previous);
   });
   return { notices, states };
@@ -302,7 +305,7 @@ describe("ingestRun: every node failing at once", () => {
     const { notices, states } = simulate([allDown, allDown]);
     expect(notices).toHaveLength(1);
     expect(notices[0]?.text).toBe(
-      "Проверка из Testland: ни одна нода не ответила (3): node-a, node-b, node-c. " +
+      "Проверка из Testland: не ответил ни один из 3: node-a, node-b, node-c. " +
         "Возможно, сломалась сама проверка.",
     );
     expect(notices[0]?.dedupKey).toBe("notify.reachability:mass-down:run-1");
@@ -325,6 +328,7 @@ describe("ingestRun: every node failing at once", () => {
       targets: [A, B, secondary],
       results: [down(A), down(B), { ...up(secondary), endpointHost }],
       previous: new Map(),
+      previousAddresses: new Map(),
     });
 
     expect(out.states.get(A.nodeId)?.status).toBe("failed");
@@ -372,7 +376,7 @@ describe("ingestRun: every node failing at once", () => {
     const aDown = { targets: [A, B, C], results: [down(A), up(B), up(C)] };
     const { notices } = simulate([aDown, aDown, allDown, allDown]);
     expect(notices).toHaveLength(2);
-    expect(notices[1]?.text).toContain("(2): node-b, node-c");
+    expect(notices[1]?.text).toContain("не ответил ни один из 2: node-b, node-c");
   });
 
   it("nodes recovering together send one combined recovery", () => {
@@ -490,6 +494,7 @@ describe("alert times", () => {
       targets: [A, B],
       results: [down(A), up(B)],
       previous: new Map(),
+      previousAddresses: new Map(),
     });
     expect(first.notices[0]?.text).toContain("с 2026-01-01 11:00 Europe/Belgrade");
 
@@ -536,6 +541,7 @@ describe("ingestRun: endpoint revisions and bridged nodes", () => {
       targets: [A3],
       results: [down(oldA3)],
       previous: new Map(),
+      previousAddresses: new Map(),
     });
     expect(out.outcomes).toEqual([
       expect.objectContaining({ protocol: "awg3", status: "error", detail: OBSOLETE_DETAIL, obsolete: true }),
@@ -567,6 +573,7 @@ describe("ingestRun: endpoint revisions and bridged nodes", () => {
       // AWG 2 has no revision in its id: the switch did not change its path.
       results: [down(oldA3), up(A2)],
       previous: new Map(),
+      previousAddresses: new Map(),
     });
     const stored = out.outcomes.filter((o) => !o.obsolete);
     expect(stored).toEqual([expect.objectContaining({ protocol: "awg2", status: "ok" })]);
@@ -616,6 +623,7 @@ describe("ingestRun: endpoint revisions and bridged nodes", () => {
       targets: [oldA3],
       results: [legacy],
       previous: new Map(),
+      previousAddresses: new Map(),
     });
     expect(out.outcomes).toEqual([expect.objectContaining({ status: "ok" })]);
     expect(oldA3.targetId).toBe("node-a:awg3:r0");
@@ -644,6 +652,7 @@ describe("ingestRun: endpoint revisions and bridged nodes", () => {
         { ...down(diagnostic), endpointHost: "192.0.2.10" },
       ],
       previous: new Map(),
+      previousAddresses: new Map(),
     });
     expect(out.addressOutcomes.map(({ endpointId, status }) => [endpointId, status])).toEqual([
       ["ep-bridged-1", "ok"],
@@ -745,6 +754,23 @@ describe("ingestRun per address", () => {
     const out = run([only], [{ ...down(only), status: "error", detail: "probe error" }], new Map([["ep-1", previous]]));
     expect(out.addressOutcomes).toEqual([expect.objectContaining({ endpointId: "ep-1", status: "error", state: previous })]);
     expect(out.notices).toEqual([]);
+  });
+
+  it("stores the path row as AWG 3 when the node's AWG 2 target comes first", () => {
+    const awg2 = target("node-a", "awg2");
+    const direct = addressTarget("node-a", [address("ep-1", "192.0.2.10")], { nodeBridged: true });
+    const out = run([awg2, direct], [up(awg2), up(direct)]);
+    expect(out.outcomes.map(({ protocol, status, detail }) => [protocol, status, detail])).toEqual([
+      ["awg2", "ok", null],
+      ["awg3", "error", "no address uses the bridge"],
+    ]);
+
+    const deferred = addressTarget("node-a", [address("ep-1", "192.0.2.10")]);
+    const kept = run([awg2, deferred], [up(awg2)]);
+    expect(kept.outcomes.map(({ protocol, obsolete }) => [protocol, obsolete === true])).toEqual([
+      ["awg2", false],
+      ["awg3", true],
+    ]);
   });
 
   it("writes nothing for an address whose target returned no result", () => {

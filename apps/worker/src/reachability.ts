@@ -297,8 +297,9 @@ export const formatAddressesUp = (nodeName: string, up: readonly AddressLine[], 
     : `${nodeName}: снова доступны адреса из ${label}: ${up.map(addressWho).join(", ")}`;
 };
 
+/** Names are address labels and, for nodes without addresses, node names. */
 export const formatMassDown = (names: readonly string[], label: string): string =>
-  `Проверка из ${label}: ни одна нода не ответила (${names.length}): ${names.join(", ")}. ` +
+  `Проверка из ${label}: не ответил ни один из ${names.length}: ${names.join(", ")}. ` +
   "Возможно, сломалась сама проверка.";
 
 export const formatMassUp = (names: readonly string[], label: string): string =>
@@ -331,8 +332,11 @@ export type IngestInput = {
   targets: readonly ReachabilityTarget[];
   results: readonly ProbeTargetResult[];
   previous: ReadonlyMap<string, NodeState>;
-  /** Incidents of the addresses as stored before this run, by address id. */
-  previousAddresses?: ReadonlyMap<string, AddressState>;
+  /**
+   * Incidents of the addresses as stored before this run, by address id. An
+   * address missing here starts with no incident.
+   */
+  previousAddresses: ReadonlyMap<string, AddressState>;
 };
 
 export type IngestOutput = {
@@ -348,23 +352,7 @@ export type IngestOutput = {
   massFailure: boolean;
 };
 
-/**
- * Apply one finished run to every node it covered.
- *
- * - `ok` closes an open incident with a recovery message and resets the count;
- * - `failed` counts; reaching `failThreshold` opens an incident with one
- *   unavailable message, and further failures send nothing;
- * - `error` records itself and leaves the count, `failingSince` and any open
- *   incident exactly as they were.
- *
- * A mass failure combines notices when the control passed and failures
- * across at least two attempted nodes point to a probe problem. A successful
- * address on a direct node rules out a mass failure. Diagnostics on bridged
- * nodes do not change bridge alerts. Nodes in a mass incident that
- * recover together get a combined recovery notice as well.
- */
 export const NO_BRIDGED_ADDRESS_DETAIL = "no address uses the bridge";
-export const NO_RESULT_DETAIL = "probe returned no result";
 
 const STATUS_ORDER: Record<ReachabilityStatus, number> = { ok: 0, failed: 1, error: 2 };
 
@@ -372,13 +360,16 @@ const STATUS_ORDER: Record<ReachabilityStatus, number> = { ok: 0, failed: 1, err
  * The AWG 3 row of an address node: on a node with an active bridge route
  * the best bridged measurement, so a direct address never vouches for the
  * bridge path (route verification and the rotation gate read this row); on a
- * direct node the best address. Candidates arrive in address order.
+ * direct node the best address. Candidates arrive in address order. The
+ * fallback rows are built from the node's first address target, so they are
+ * AWG 3 rows whatever order the node's protocols come in.
  */
 const pathOutcome = (
-  node: ReachabilityTarget,
   targets: readonly ReachabilityTarget[],
   measured: readonly { target: ReachabilityTarget; outcome: ProtocolOutcome }[],
-): ProtocolOutcome => {
+): ProtocolOutcome[] => {
+  const [first] = targets;
+  if (!first) return [];
   const bridged = targets.some((target) => target.nodeBridged === true || measuredViaBridge(target));
   const onPath = (target: ReachabilityTarget) => !bridged || measuredViaBridge(target);
   const best = measured.filter(({ target }) => onPath(target)).reduce<ProtocolOutcome | null>(
@@ -386,12 +377,12 @@ const pathOutcome = (
       !chosen || STATUS_ORDER[outcome.status] < STATUS_ORDER[chosen.status] ? outcome : chosen,
     null,
   );
-  if (best) return best;
+  if (best) return [best];
   // No address uses the active bridge: nothing vouches for that path.
-  if (!targets.some(onPath)) return error(node, NO_BRIDGED_ADDRESS_DETAIL);
+  if (!targets.some(onPath)) return [error(first, NO_BRIDGED_ADDRESS_DETAIL)];
   // Sent but not measured in this run (another path's reply, the run limit):
   // the stored row stays as it was.
-  return obsolete(node);
+  return [obsolete(first)];
 };
 
 /**
@@ -431,6 +422,21 @@ const advanceAddress = (
   };
 };
 
+/**
+ * Apply one finished run to every node it covered.
+ *
+ * - `ok` closes an open incident with a recovery message and resets the count;
+ * - `failed` counts; reaching `failThreshold` opens an incident with one
+ *   unavailable message, and further failures send nothing;
+ * - `error` records itself and leaves the count, `failingSince` and any open
+ *   incident exactly as they were.
+ *
+ * A mass failure combines notices when the control passed and failures
+ * across at least two attempted nodes point to a probe problem. A successful
+ * address on a direct node rules out a mass failure. Diagnostics on bridged
+ * nodes do not change bridge alerts. Nodes in a mass incident that
+ * recover together get a combined recovery notice as well.
+ */
 export const ingestRun = (input: IngestInput): IngestOutput => {
   const resultById = new Map<string, ProbeTargetResult>();
   const reportedSlots = new Set<string>();
@@ -495,9 +501,7 @@ export const ingestRun = (input: IngestInput): IngestOutput => {
   const nodes = [...byNode.values()]
     .map((entry) => ({
       ...entry,
-      stored: entry.addressBased
-        ? [...entry.outcomes, pathOutcome(entry.node, entry.addressTargets, entry.measured)]
-        : entry.outcomes,
+      stored: [...entry.outcomes, ...pathOutcome(entry.addressTargets, entry.measured)],
     }))
     .sort((a, b) => a.node.nodeName.localeCompare(b.node.nodeName));
 
@@ -547,7 +551,7 @@ export const ingestRun = (input: IngestInput): IngestOutput => {
     if (addressBased) {
       for (const { target, outcome } of measured) {
         for (const address of target.addresses ?? []) {
-          const previous = input.previousAddresses?.get(address.id) ?? EMPTY_ADDRESS_STATE;
+          const previous = input.previousAddresses.get(address.id) ?? EMPTY_ADDRESS_STATE;
           const step = advanceAddress(previous, outcome.status, input.now, input.failThreshold, massFailure);
           addressOutcomes.push({
             endpointId: address.id,
