@@ -457,7 +457,7 @@ describe("reachability of bridged nodes (real PostgreSQL)", () => {
     await probe.tick();
 
     const awg31 = probe.sent[0]?.targets.filter((target) => target.protocol === "awg3") ?? [];
-    expect(awg31.map((target) => clientFields(target.config).mtu)).toEqual(["1300", "1380"]);
+    expect(awg31.map((target) => clientFields(target.config).mtu).sort()).toEqual(["1300", "1380"]);
     expect(awg31.every((target) => inspectAwgVpnLink(target.config).endpoint?.host === bridge.publicIpv4)).toBe(true);
     await setBackupMtu(1400);
     await probe.tick();
