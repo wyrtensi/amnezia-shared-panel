@@ -22,6 +22,7 @@ import {
   nodeReachabilityState,
   nodeVpnEndpoints,
   nodes,
+  reachabilityProbe,
   users,
   vpnBridgeRoutes,
   vpnBridges,
@@ -590,6 +591,37 @@ describe("bridge registry (real PostgreSQL)", () => {
       );
     // One reservation, one audit row: the idempotent repeats wrote nothing.
     expect(prepared).toHaveLength(1);
+  });
+
+  runDatabaseTest("queues a probe run once a route change commits", async () => {
+    const bridge = await createBridge();
+    const nodeId = await seedNode("recheck");
+    const { route } = await repository.prepareBridgeRoute(admin, nodeId, { bridgeId: bridge.id });
+    await makeActivatable(bridge.id, route.id);
+    const credentials = encryptSecret("probe-api-key", keyring, 1);
+    await db().delete(reachabilityProbe);
+    await db().insert(reachabilityProbe).values({
+      label: "Vantage",
+      apiBaseUrl: "http://probe-host.invalid:4002",
+      credentialsCiphertext: credentials.ciphertext,
+      credentialsNonce: credentials.nonce,
+      credentialsAuthTag: credentials.authTag,
+      credentialsKeyVersion: credentials.keyVersion,
+      controlUrl: "https://control.invalid/",
+      currentRunStartedAt: new Date(Date.now() - 30 * 60_000),
+    });
+    try {
+      const requested = async () =>
+        (await db().select({ at: reachabilityProbe.runRequestedAt }).from(reachabilityProbe))[0]?.at ?? null;
+      await activate(nodeId, route.id, 0);
+      expect(await requested()).not.toBeNull();
+      await db().update(reachabilityProbe).set({ runRequestedAt: null });
+      // The already-active route changes nothing, so nothing is queued.
+      await activate(nodeId, route.id, 1);
+      expect(await requested()).toBeNull();
+    } finally {
+      await db().delete(reachabilityProbe);
+    }
   });
 
   runDatabaseTest("Direct -> A -> Direct increments the revision and resets AWG 3.1 evidence", async () => {

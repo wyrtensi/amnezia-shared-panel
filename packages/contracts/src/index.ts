@@ -2246,6 +2246,7 @@ export const adminReachabilityProbeSchema = z.object({
   lastErrorAt: z.iso.datetime().nullable(),
   stale: z.boolean(),
   runInFlight: z.boolean(),
+  /** When a run still waiting to start was requested; null once one has started since. */
   runRequestedAt: z.iso.datetime().nullable(),
   /** ID of the pending manual run. Optional for compatibility with older APIs. */
   requestedRunId: z.uuid().optional(),

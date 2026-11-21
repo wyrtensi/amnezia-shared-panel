@@ -140,6 +140,7 @@ import {
   findOffboardedUsersEligibleForPurge,
   globalRouteOverrides,
   resetNodeEndpointEvidence,
+  requestReachabilityRun,
   GENERATOR_CHANGED_DETAIL,
   hasLiveKeys,
   identities,
@@ -1599,19 +1600,23 @@ export class PostgresControlRepository implements ControlRepository {
     const editsNode =
       Object.keys(nodeFields).length > 0 ||
       (vpnBridgeRouteId === undefined && expectedVpnEndpointRevision === undefined && publicEndpoint === undefined);
-    return this.options.db.transaction(async (tx) => {
+    // Set inside the transaction when the edit changes what the probe
+    // measures on this node; the run is queued only once the edit commits.
+    let remeasure = false;
+    const result = await this.options.db.transaction(async (tx) => {
       // NO KEY UPDATE serializes node edits and route changes on this node
       // without blocking foreign-key inserts that reference it; see the lock
       // note in bridgeRepository.ts.
       const [current] = await tx
         .select({
           id: nodes.id, protocol: nodes.protocol, capabilities: nodes.capabilities,
-          awgGenerator: nodes.awgGenerator,
+          awgGenerator: nodes.awgGenerator, reachabilityEnabled: nodes.reachabilityEnabled,
         })
         .from(nodes)
         .where(eq(nodes.id, nodeId))
         .for("no key update");
       if (!current) throw new ApiError(404, "Node not found", "NODE_NOT_FOUND");
+      const checked = request.reachabilityEnabled ?? current.reachabilityEnabled;
       const configuresGenerator = request.awgGenerator != null ||
         (publicEndpoint?.action === "update" && publicEndpoint.awgGenerator != null);
       if (configuresGenerator && !deriveSupportedProtocols(
@@ -1624,14 +1629,21 @@ export class PostgresControlRepository implements ControlRepository {
       const updated = editsNode
         ? await this.updateNodeSettings(tx, actor, nodeId, nodeFields)
         : undefined;
-      const changedEndpoint = publicEndpoint
+      const endpointChange = publicEndpoint
         ? await this.changeNodePublicEndpoint(tx, actor, nodeId, publicEndpoint, {
             before: current.awgGenerator,
             after: request.awgGenerator === undefined ? current.awgGenerator : request.awgGenerator,
           })
         : undefined;
-      if (request.awgGenerator !== undefined &&
-        !isDeepStrictEqual(current.awgGenerator, request.awgGenerator)) {
+      const changedEndpoint = endpointChange?.endpoint;
+      const generatorChanged = request.awgGenerator !== undefined &&
+        !isDeepStrictEqual(current.awgGenerator, request.awgGenerator);
+      remeasure = checked && (
+        generatorChanged ||
+        endpointChange?.remeasure === true ||
+        (request.reachabilityEnabled === true && !current.reachabilityEnabled)
+      );
+      if (generatorChanged) {
         const inherited = await tx.select({ id: nodeVpnEndpoints.id }).from(nodeVpnEndpoints)
           .where(and(eq(nodeVpnEndpoints.nodeId, nodeId), isNull(nodeVpnEndpoints.awgGenerator)));
         await resetNodeEndpointEvidence(tx, nodeId, new Date(), {
@@ -1662,12 +1674,22 @@ export class PostgresControlRepository implements ControlRepository {
         vpnBridgeRouteId,
         expectedVpnEndpointRevision ?? -1,
       );
+      remeasure ||= checked && vpnEndpoint.changed;
       return {
         ...(updated ?? { id: nodeId }),
         vpnEndpoint,
         ...(changedEndpoint ? { publicEndpoint: changedEndpoint } : {}),
       };
     });
+    if (remeasure) await this.queueReachabilityRun();
+    return result;
+  };
+
+  /** After a committed change to what the probe measures; see `requestReachabilityRun`. */
+  private queueReachabilityRun = async (): Promise<void> => {
+    if (!(await requestReachabilityRun(this.options.db))) {
+      console.warn("[reachability] could not queue a probe run; the scheduled run measures the change");
+    }
   };
 
   private changeNodePublicEndpoint = async (
@@ -1676,8 +1698,10 @@ export class PostgresControlRepository implements ControlRepository {
     nodeId: string,
     request: NodePublicEndpointMutation,
     nodeGenerators: { before: AwgGeneratorSettings | null; after: AwgGeneratorSettings | null },
-  ): Promise<NodePublicEndpointMutationResult["publicEndpoint"]> => {
+  ): Promise<{ endpoint: NodePublicEndpointMutationResult["publicEndpoint"]; remeasure: boolean }> => {
     let row: typeof nodeVpnEndpoints.$inferSelect | undefined;
+    // A new address, or one whose measured config, path or presence changed.
+    let remeasure = request.action === "add";
     if (request.action === "add") {
       const [node] = await tx.select({
         name: nodes.name,
@@ -1771,6 +1795,12 @@ export class PostgresControlRepository implements ControlRepository {
           detail: generatorChanged ? GENERATOR_CHANGED_DETAIL : undefined,
         });
       }
+      // A disabled address is not measured, so only enabling or disabling it
+      // changes the targets; its other settings take effect once enabled.
+      const enabled = request.enabled ?? current.enabled;
+      remeasure = (changeEnabled || (enabled && (changeBridgeMode || generatorChanged ||
+        (changeReachability && request.reachabilityEnabled === true)))) &&
+        (request.reachabilityEnabled ?? current.reachabilityEnabled);
     }
     if (!row) throw new Error("Node address write returned no row");
     await tx.insert(auditEvents).values({
@@ -1789,14 +1819,17 @@ export class PostgresControlRepository implements ControlRepository {
       },
     });
     return {
-      id: row.id,
-      ordinal: row.ordinal,
-      name: row.name,
-      publicAddress: row.address,
-      enabled: row.enabled,
-      reachabilityEnabled: row.reachabilityEnabled,
-      bridgeMode: row.bridgeMode,
-      awgGenerator: row.awgGenerator,
+      endpoint: {
+        id: row.id,
+        ordinal: row.ordinal,
+        name: row.name,
+        publicAddress: row.address,
+        enabled: row.enabled,
+        reachabilityEnabled: row.reachabilityEnabled,
+        bridgeMode: row.bridgeMode,
+        awgGenerator: row.awgGenerator,
+      },
+      remeasure,
     };
   };
 
@@ -4293,7 +4326,11 @@ export class PostgresControlRepository implements ControlRepository {
       since: row.enabledAt,
     }),
     runInFlight: row.currentRunId !== null,
-    runRequestedAt: row.runRequestedAt?.toISOString() ?? null,
+    // Only while it waits: a run started since then has served it.
+    runRequestedAt: row.runRequestedAt !== null &&
+      (row.currentRunStartedAt === null || row.runRequestedAt > row.currentRunStartedAt)
+      ? row.runRequestedAt.toISOString()
+      : null,
     ...(row.requestedRunId === null ? {} : { requestedRunId: row.requestedRunId }),
     timeZone: row.timeZone,
     probeDirectWhenBridged: row.probeDirectWhenBridged,
@@ -5570,7 +5607,14 @@ export class PostgresControlRepository implements ControlRepository {
       const touchesAccessConfig = CF_ACCESS_CONFIG_FIELDS.some((field) =>
         named.has(field),
       );
-      return this.options.db.transaction(async (tx) => {
+      // The bridge default moves every address that inherits it onto or off
+      // its node's bridge, so the probe re-checks once the change commits.
+      let bridgeDefaultChanged = false;
+      const policy = await this.options.db.transaction(async (tx) => {
+        const previousUseBridge = named.has("useBridge")
+          ? ((await tx.select({ useBridge: portalPolicy.useBridge }).from(portalPolicy).limit(1))[0]
+              ?.useBridge ?? false)
+          : undefined;
         // The domain list widens who can reach the panel through Cloudflare,
         // so a bare list of changed FIELD NAMES in the audit event cannot say
         // who was let in. Read the value this update is about to replace
@@ -5769,8 +5813,12 @@ export class PostgresControlRepository implements ControlRepository {
               : {}),
           },
         });
+        bridgeDefaultChanged = previousUseBridge !== undefined &&
+          updated !== undefined && updated.useBridge !== previousUseBridge;
         return updated ? stripPolicySecrets(updated) : updated;
       });
+      if (bridgeDefaultChanged) await this.queueReachabilityRun();
+      return policy;
     } else if (resource === "global-routes" && action === "update") {
       const routes = dedupeGlobalRoutes(
         updateGlobalRoutesRequestSchema.parse(payload),

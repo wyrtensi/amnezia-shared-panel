@@ -8147,3 +8147,241 @@ describe("PostgresControlRepository AWG 3.1 config refresh", () => {
     expect((await row(keyId)).awgClientProfile).toBeNull();
   });
 });
+
+describe("PostgresControlRepository probe re-check after a configuration change", () => {
+  const database = databaseUrl ? createDatabase(databaseUrl) : null;
+  const keyring = { 1: randomBytes(32) };
+  const createdNodeIds: string[] = [];
+  const createdUserIds: string[] = [];
+  const lastRunStart = new Date(Date.now() - 30 * 60_000);
+  let admin: Actor;
+
+  const repository = (): PostgresControlRepository => {
+    if (!database) throw new Error("No database");
+    return new PostgresControlRepository({ db: database.db, keyring });
+  };
+
+  const seedNode = async (over: Partial<typeof nodes.$inferInsert> = {}): Promise<string> => {
+    if (!database) throw new Error("No database");
+    const credentials = encryptSecret("api-key", keyring, 1);
+    const label = encryptSecret(randomBytes(32).toString("base64"), keyring, 1);
+    const [node] = await database.db.insert(nodes).values({
+      name: `recheck-node-${randomBytes(4).toString("hex")}`,
+      apiBaseUrl: "http://192.0.2.30:4001",
+      protocol: "awg3",
+      publicIp: "203.0.113.90",
+      credentialsCiphertext: credentials.ciphertext,
+      credentialsNonce: credentials.nonce,
+      credentialsAuthTag: credentials.authTag,
+      credentialsKeyVersion: credentials.keyVersion,
+      labelSecretCiphertext: label.ciphertext,
+      labelSecretNonce: label.nonce,
+      labelSecretAuthTag: label.authTag,
+      labelSecretKeyVersion: label.keyVersion,
+      ...over,
+    }).returning();
+    if (!node) throw new Error("Failed to seed node");
+    createdNodeIds.push(node.id);
+    return node.id;
+  };
+
+  const seedProbe = async (over: Partial<typeof reachabilityProbe.$inferInsert> = {}) => {
+    if (!database) throw new Error("No database");
+    const credentials = encryptSecret("probe-api-key", keyring, 1);
+    await database.db.delete(reachabilityProbe);
+    await database.db.insert(reachabilityProbe).values({
+      label: "Vantage",
+      apiBaseUrl: "http://probe-host.invalid:4002",
+      credentialsCiphertext: credentials.ciphertext,
+      credentialsNonce: credentials.nonce,
+      credentialsAuthTag: credentials.authTag,
+      credentialsKeyVersion: credentials.keyVersion,
+      controlUrl: "https://control.invalid/",
+      currentRunStartedAt: lastRunStart,
+      lastResultAt: lastRunStart,
+      enabledAt: new Date(Date.now() - 86_400_000),
+      timeZone: "Europe/Belgrade",
+      ...over,
+    });
+  };
+
+  const requestedAt = async (): Promise<Date | null> => {
+    if (!database) throw new Error("No database");
+    const [probe] = await database.db.select({ at: reachabilityProbe.runRequestedAt }).from(reachabilityProbe);
+    return probe?.at ?? null;
+  };
+
+  const preset = (id: "dns_query" | "stun") => {
+    const found = awgGeneratorPresets().find((entry) => entry.id === id);
+    if (!found) throw new Error(`Preset ${id} missing`);
+    return found.settings;
+  };
+
+  const addressOf = async (nodeId: string, address: string) => {
+    const added = await repository().updateNode(admin, nodeId, {
+      publicEndpoint: { action: "add", address },
+    }) as { publicEndpoint: { id: string } };
+    return added.publicEndpoint.id;
+  };
+
+  beforeAll(async () => {
+    if (!database) return;
+    const [user] = await database.db.insert(users)
+      .values({ email: `recheck-${randomBytes(6).toString("hex")}@example.com`, role: "admin" })
+      .returning();
+    if (!user) throw new Error("Failed to seed admin");
+    createdUserIds.push(user.id);
+    admin = { id: user.id, email: user.email, displayName: null, role: "admin", status: "active" };
+  });
+
+  beforeEach(async () => {
+    if (!database) return;
+    await seedProbe();
+  });
+
+  afterAll(async () => {
+    if (!database) return;
+    await database.db.delete(reachabilityProbe);
+    if (createdNodeIds.length > 0) {
+      await database.db.delete(nodeVpnEndpoints).where(inArray(nodeVpnEndpoints.nodeId, createdNodeIds));
+      await database.db.delete(nodes).where(inArray(nodes.id, createdNodeIds));
+    }
+    if (createdUserIds.length > 0) {
+      await database.db.delete(users).where(inArray(users.id, createdUserIds));
+    }
+    await database.client.end();
+  });
+
+  runDatabaseTest("queues a run when the node's generator profile changes", async () => {
+    const nodeId = await seedNode();
+    const before = Date.now();
+    await repository().updateNode(admin, nodeId, { awgGenerator: preset("dns_query") });
+    const at = await requestedAt();
+    expect(at).not.toBeNull();
+    expect(at!.getTime()).toBeGreaterThanOrEqual(before - 1_000);
+  });
+
+  runDatabaseTest("queues nothing when the saved profile is the same or only the name changes", async () => {
+    const nodeId = await seedNode({ awgGenerator: preset("stun") });
+    await repository().updateNode(admin, nodeId, { awgGenerator: preset("stun") });
+    await repository().updateNode(admin, nodeId, { name: `renamed-${randomBytes(3).toString("hex")}` });
+    expect(await requestedAt()).toBeNull();
+  });
+
+  runDatabaseTest("queues a run when an address is added and when its profile, bridge mode or enabled flag change", async () => {
+    const nodeId = await seedNode();
+    const second = await addressOf(nodeId, "203.0.113.91");
+    expect(await requestedAt()).not.toBeNull();
+
+    const changes = [
+      { awgGenerator: preset("dns_query") },
+      { bridgeMode: "direct" as const },
+      { enabled: false },
+    ];
+    for (const change of changes) {
+      await seedProbe();
+      await repository().updateNode(admin, nodeId, {
+        publicEndpoint: { action: "update", id: second, ...change },
+      });
+      expect(await requestedAt(), JSON.stringify(change)).not.toBeNull();
+    }
+
+    await seedProbe();
+    await repository().updateNode(admin, nodeId, {
+      publicEndpoint: { action: "update", id: second, name: "Renamed" },
+    });
+    expect(await requestedAt()).toBeNull();
+  });
+
+  runDatabaseTest("queues a run when checks are turned back on, not when they are turned off", async () => {
+    const nodeId = await seedNode();
+    const second = await addressOf(nodeId, "203.0.113.92");
+    await seedProbe();
+    await repository().updateNode(admin, nodeId, {
+      publicEndpoint: { action: "update", id: second, reachabilityEnabled: false },
+    });
+    await repository().updateNode(admin, nodeId, { reachabilityEnabled: false });
+    expect(await requestedAt()).toBeNull();
+
+    await repository().updateNode(admin, nodeId, { reachabilityEnabled: true });
+    expect(await requestedAt()).not.toBeNull();
+    await seedProbe();
+    await repository().updateNode(admin, nodeId, {
+      publicEndpoint: { action: "update", id: second, reachabilityEnabled: true },
+    });
+    expect(await requestedAt()).not.toBeNull();
+  });
+
+  runDatabaseTest("queues nothing for a node without checks or while the probe is off", async () => {
+    const unchecked = await seedNode({ reachabilityEnabled: false });
+    await repository().updateNode(admin, unchecked, { awgGenerator: preset("dns_query") });
+    expect(await requestedAt()).toBeNull();
+
+    await seedProbe({ enabled: false });
+    const checked = await seedNode();
+    await repository().updateNode(admin, checked, { awgGenerator: preset("dns_query") });
+    expect(await requestedAt()).toBeNull();
+  });
+
+  runDatabaseTest("queues nothing for an address that is disabled or has checks off", async () => {
+    const nodeId = await seedNode();
+    const unchecked = await addressOf(nodeId, "203.0.113.93");
+    const disabled = await addressOf(nodeId, "203.0.113.94");
+    await repository().updateNode(admin, nodeId, {
+      publicEndpoint: { action: "update", id: unchecked, reachabilityEnabled: false },
+    });
+    await repository().updateNode(admin, nodeId, {
+      publicEndpoint: { action: "update", id: disabled, enabled: false },
+    });
+    await seedProbe();
+    for (const id of [unchecked, disabled]) {
+      await repository().updateNode(admin, nodeId, {
+        publicEndpoint: { action: "update", id, awgGenerator: preset("dns_query"), bridgeMode: "direct" },
+      });
+    }
+    expect(await requestedAt()).toBeNull();
+  });
+
+  runDatabaseTest("queues nothing when the edit is refused", async () => {
+    if (!database) throw new Error("No database");
+    const nodeId = await seedNode();
+    const second = await addressOf(nodeId, "203.0.113.95");
+    await repository().updateNode(admin, nodeId, {
+      publicEndpoint: { action: "update", id: second, enabled: false },
+    });
+    const [primary] = await database.db.select({ id: nodeVpnEndpoints.id }).from(nodeVpnEndpoints)
+      .where(and(eq(nodeVpnEndpoints.nodeId, nodeId), eq(nodeVpnEndpoints.ordinal, 1)));
+    if (!primary) throw new Error("Primary address missing");
+    await seedProbe();
+    await expect(repository().updateNode(admin, nodeId, {
+      awgGenerator: preset("dns_query"),
+      publicEndpoint: { action: "update", id: primary.id, enabled: false },
+    })).rejects.toMatchObject({ code: "LAST_ENABLED_ENDPOINT_REQUIRED" });
+    expect(await requestedAt()).toBeNull();
+  });
+
+  runDatabaseTest("queues a run when the portal's bridge default flips, not when it is saved unchanged", async () => {
+    if (!database) throw new Error("No database");
+    const [saved] = await database.db.select({ useBridge: portalPolicy.useBridge }).from(portalPolicy);
+    const original = saved?.useBridge ?? false;
+    try {
+      await repository().adminAction(admin, "portal-policy", "global", "update", { useBridge: original });
+      expect(await requestedAt()).toBeNull();
+      await repository().adminAction(admin, "portal-policy", "global", "update", { useBridge: !original });
+      expect(await requestedAt()).not.toBeNull();
+    } finally {
+      await repository().adminAction(admin, "portal-policy", "global", "update", { useBridge: original });
+    }
+  });
+
+  runDatabaseTest("shows a run request only until a run starts after it", async () => {
+    await seedProbe({ runRequestedAt: new Date(lastRunStart.getTime() - 60_000) });
+    const started = (await repository().getReachability(admin)).probe;
+    expect(started?.runRequestedAt).toBeNull();
+
+    const pendingAt = new Date(lastRunStart.getTime() + 60_000);
+    await seedProbe({ runRequestedAt: pendingAt });
+    const pending = (await repository().getReachability(admin)).probe;
+    expect(pending?.runRequestedAt).toBe(pendingAt.toISOString());
+  });
+});

@@ -1,7 +1,12 @@
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 
 import type { Database } from "./client.js";
-import { nodeReachabilityResults, nodeReachabilityState, nodeVpnEndpoints } from "./schema.js";
+import {
+  nodeReachabilityResults,
+  nodeReachabilityState,
+  nodeVpnEndpoints,
+  reachabilityProbe,
+} from "./schema.js";
 
 type DbTransaction = Parameters<Parameters<Database["transaction"]>[0]>[0];
 
@@ -72,4 +77,30 @@ export const resetNodeEndpointEvidence = async (
       directDetail: null,
     })
     .where(eq(nodeReachabilityState.nodeId, nodeId));
+};
+
+/**
+ * Queue a probe run after a committed change to what the probe measures, so
+ * the worker starts it at its next tick (or right after a run in flight)
+ * instead of at the next scheduled run.
+ *
+ * Call it only after the change has committed and with no row lock held: the
+ * worker locks the probe row before node rows, so writing the probe row under
+ * a node lock could deadlock. The wait for the probe row is bounded, since a
+ * dispatch holds it across its request to the probe. False when the request
+ * could not be written; the change stands and the scheduled run measures it.
+ */
+export const requestReachabilityRun = async (db: Database, now = new Date()): Promise<boolean> => {
+  try {
+    await db.transaction(async (tx) => {
+      await tx.execute(sql`set local lock_timeout = '5s'`);
+      await tx
+        .update(reachabilityProbe)
+        .set({ runRequestedAt: now, updatedAt: now })
+        .where(and(eq(reachabilityProbe.id, 1), eq(reachabilityProbe.enabled, true)));
+    });
+    return true;
+  } catch {
+    return false;
+  }
 };

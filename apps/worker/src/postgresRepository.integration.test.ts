@@ -389,6 +389,45 @@ describe("PostgresWorkerRepository outbox leases", () => {
       }]);
   });
 
+  runDatabaseTest("queues a probe run when the agent address moves on a node with checks on", async () => {
+    if (!database || !repository) return;
+    const { node } = await seedTelemetryKey();
+    const credentials = encryptSecret("probe-api-key", keyring, 1);
+    await database.db.delete(reachabilityProbe);
+    await database.db.insert(reachabilityProbe).values({
+      label: "Vantage",
+      apiBaseUrl: "http://probe.test",
+      credentialsCiphertext: credentials.ciphertext,
+      credentialsNonce: credentials.nonce,
+      credentialsAuthTag: credentials.authTag,
+      credentialsKeyVersion: credentials.keyVersion,
+      controlUrl: "https://example.com/",
+    });
+    const requested = async () =>
+      (await database.db.select({ at: reachabilityProbe.runRequestedAt }).from(reachabilityProbe))[0]?.at ?? null;
+    const report = (minute: number, address: string) => repository.recordNodeSnapshot({
+      ...metricsSnapshot(node.id, new Date(`2026-08-20T08:0${minute}:00.000Z`), 0.1),
+      publicHost: address,
+      publicIp: address,
+    });
+    try {
+      await report(0, "192.0.2.10");
+      expect(await requested()).not.toBeNull();
+      await database.db.update(reachabilityProbe).set({ runRequestedAt: null });
+      await report(1, "192.0.2.10");
+      expect(await requested()).toBeNull();
+      await report(2, "192.0.2.20");
+      expect(await requested()).not.toBeNull();
+
+      await database.db.update(reachabilityProbe).set({ runRequestedAt: null });
+      await database.db.update(nodes).set({ reachabilityEnabled: false }).where(eq(nodes.id, node.id));
+      await report(3, "192.0.2.30");
+      expect(await requested()).toBeNull();
+    } finally {
+      await database.db.delete(reachabilityProbe);
+    }
+  });
+
   runDatabaseTest("promotes a registered address when it becomes the agent address", async () => {
     if (!database || !repository) return;
     const { node } = await seedTelemetryKey();

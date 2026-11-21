@@ -33,6 +33,7 @@ import {
   findOffboardedUsersEligibleForPurge,
   notServiceAccount,
   purgeOneOffboardedUser,
+  requestReachabilityRun,
   auditEvents,
   globalRouteOverrides,
   jobOutbox,
@@ -137,19 +138,22 @@ export type PostgresWorkerRepositoryOptions = {
 // The transaction handle drizzle passes to `db.transaction(async (tx) => ...)`.
 type DbTransaction = Parameters<Parameters<Database["transaction"]>[0]>[0];
 
-/** The caller holds the node row lock shared by telemetry and endpoint edits. */
+/**
+ * The caller holds the node row lock shared by telemetry and endpoint edits.
+ * True when the primary address changed, so its probe target did too.
+ */
 const syncResolvedPrimaryEndpoint = async (
   tx: DbTransaction,
   node: Pick<typeof nodes.$inferSelect, "id" | "name" | "publicName">,
   address: string,
-): Promise<void> => {
+): Promise<boolean> => {
   const endpoints = await tx
     .select({ id: nodeVpnEndpoints.id, ordinal: nodeVpnEndpoints.ordinal, address: nodeVpnEndpoints.address })
     .from(nodeVpnEndpoints)
     .where(eq(nodeVpnEndpoints.nodeId, node.id))
     .orderBy(desc(nodeVpnEndpoints.ordinal));
   const primary = endpoints.find((endpoint) => endpoint.ordinal === 1);
-  if (primary?.address === address) return;
+  if (primary?.address === address) return false;
 
   const matching = endpoints.find((endpoint) => endpoint.address === address);
   const resetEvidence = {
@@ -181,6 +185,7 @@ const syncResolvedPrimaryEndpoint = async (
       name: node.publicName || nodeEndpointDefaultName(node.name, 1),
     });
   }
+  return true;
 };
 
 // Caps one `rearmStuckRevokes` sweep's blast radius -- see the `.limit()` call
@@ -1242,6 +1247,9 @@ export class PostgresWorkerRepository
         this.options.periodDefaults?.peerSampleSec ??
           DEFAULT_PEER_SAMPLE_INTERVAL_MS / 1_000,
       )) * 1_000;
+    // Set when the primary address moved on a node with checks on; the probe
+    // run is queued once this transaction commits (`requestReachabilityRun`).
+    let addressMoved = false;
     await this.options.db.transaction(async (tx) => {
       const node = (
         await tx.select().from(nodes).where(eq(nodes.id, snapshot.nodeId)).limit(1).for("no key update")
@@ -1407,7 +1415,8 @@ export class PostgresWorkerRepository
         .where(eq(nodes.id, snapshot.nodeId));
 
       if (supportedProtocols.includes("awg3") && snapshot.publicIp && isIpv4Literal(snapshot.publicIp)) {
-        await syncResolvedPrimaryEndpoint(tx, node, snapshot.publicIp);
+        const moved = await syncResolvedPrimaryEndpoint(tx, node, snapshot.publicIp);
+        addressMoved = moved && node.reachabilityEnabled;
       }
 
       // Host metrics: one current row per node, replaced every tick, plus a
@@ -1482,6 +1491,9 @@ export class PostgresWorkerRepository
         await this.storePeerObservation(tx, observation, peerSampleMs);
       }
     });
+    if (addressMoved && !(await requestReachabilityRun(this.options.db))) {
+      console.warn("reachability: could not queue a probe run; the scheduled run measures the new address");
+    }
   };
 
   private readonly storePeerObservation = async (
