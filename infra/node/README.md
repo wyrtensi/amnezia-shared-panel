@@ -27,9 +27,22 @@ The AWG3 entrypoint also clamps the MSS of forwarded TCP SYNs in and out of
 at every start and in the generated config's `PostUp`/`PostDown`, and removes
 the rules on cleanup. Clients may run a larger tunnel MTU than the interface
 (the panel sets the client MTU per node, address, user or key), and without
-the clamp their TCP stalls. A node gets the new entrypoint through a
-node-agent update (an untouched script is reconciled without restarting AWG);
-it applies when the `amnezia-awg3` container next starts.
+the clamp their TCP stalls. A node gets the new entrypoint with `node-agent`
+`1.1.23` (an untouched script is reconciled without restarting AWG); it
+applies when the `amnezia-awg3` container next starts. To add the rules on a
+running node without dropping tunnels, run on the host (idempotent: `-C`
+skips a rule that is already there):
+
+```sh
+for dir in i o; do
+  rule="FORWARD -$dir awg0 -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu"
+  docker exec amnezia-awg3 iptables -t mangle -C $rule 2>/dev/null ||
+    docker exec amnezia-awg3 iptables -t mangle -A $rule
+done
+```
+
+The next start's cleanup removes them before adding its own, so they do not
+stack.
 
 The AWG3 obfuscation geometry is drawn **per node** by `scripts/awg3-geometry.sh` at first initialization, and never again — rerolling it would invalidate every key already issued from that node. Only `H1`–`H4` and the header-protection key used to vary; `Jc`, `Jmin`, `Jmax`, `S1`–`S4` and the junk packet were constants shared by every node we deploy, so a classifier that learned one node had learned the fleet.
 
