@@ -305,7 +305,7 @@ export const awgGeneratorPresets = (): AwgGeneratorPresetDescription[] => {
     },
     {
       id: "stun",
-      description: "Send a single 32-byte STUN Binding Request before the handshake, without CPA or custom timers.",
+      description: "Send a single STUN Binding Request (20-44 bytes, drawn per key) before the handshake, without CPA or custom timers.",
       settings: {
         ...base,
         preset: "stun",
@@ -336,7 +336,7 @@ export const awgGeneratorPresets = (): AwgGeneratorPresetDescription[] => {
     },
     {
       id: "amnezia_default",
-      description: "Stock AmneziaVPN 5 profile: J 4-6 / 10 / 50, DNS response with random TTL, CPA 10-100 and timing ranges.",
+      description: "Stock AmneziaVPN 5 profile: J 4 / 10 / 50, DNS response with random TTL, CPA 10-100 and timing ranges; with randomization on J varies around stock and CPA and timings per key.",
       settings: {
         ...base,
         preset: "amnezia_default",

@@ -69,7 +69,7 @@ addresses on that interface share those server properties.
 | STUN request | Single STUN Binding Request I1 (20-44 bytes, see "Signature packets") with randomized J ranges, unset CPA and Interface timing ranges |
 | No I-packets | Omit all I1-I5 signature packets (`none`), send only randomized J junk packets, unset CPA and Interface timing ranges |
 | Randomized | Node geometry profile: randomized J ranges, a shuffled burst of a DNS query, a STUN request, a random DNS response and noise (`mixed`; 1-3 packets per key with randomization on, 3 with it off), CPA 1-39 and Interface timing ranges |
-| Stock AmneziaVPN (CPA 10-100) | J 4 / 10 / 50, DNS response with random TTL, CPA 10-100 and stock timing ranges (`100-120` / `3-7` / `180-210` / `5-15` / `15-20`); exact stock with randomization off, J drawn around stock (4-8 / 10-50 / +40-80) and per-key CPA and timing sub-ranges with it on |
+| Stock AmneziaVPN (CPA 10-100) | J 4 / 10 / 50, DNS response with random TTL, CPA 10-100 and stock timing ranges (`100-120` / `3-7` / `180-210` / `5-15` / `15-20`); exact stock with randomization off, J drawn around stock (4-8 / 10-50 / +40-80) and per-key CPA and timing sub-ranges with it on. A stock profile saved before 2026-11-22 keeps its stored Jc 4-6 (one shared value with randomization off); pick the preset again to get exact stock |
 | DNS AAAA query / + CPA and timings | One randomized DNS query with QTYPE AAAA (`dns_query_aaaa`), randomized J ranges; the full variant adds CPA 1-39 and the Randomized timing ranges |
 | DNS HTTPS query / + CPA and timings | The same with QTYPE HTTPS (65, `dns_query_https`) |
 | Three DNS queries / + CPA and timings | Three randomized DNS A queries in I1-I3 (`dns_query`, three slots) |
@@ -137,8 +137,9 @@ UPDATE nodes SET awg_generator = awg_generator || '{"randomizeKeys": false}' WHE
 UPDATE node_vpn_endpoints SET awg_generator = awg_generator || '{"randomizeKeys": false}' WHERE awg_generator->>'preset' = 'custom' AND awg_generator->>'randomizeKeys' = 'true';
 UPDATE users SET awg_generator = awg_generator || '{"randomizeKeys": false}' WHERE awg_generator->>'preset' = 'custom' AND awg_generator->>'randomizeKeys' = 'true';
 UPDATE vpn_keys SET awg_generator = awg_generator || '{"randomizeKeys": false}' WHERE awg_generator->>'preset' = 'custom' AND awg_generator->>'randomizeKeys' = 'true';
--- Device rules carry profiles inside a JSON object: review them by hand, or drop them.
-UPDATE node_vpn_endpoints SET awg_device_rules = NULL WHERE awg_device_rules::text ~ '"preset": ?"(dns_response_randomized_full|varied|varied_full)"|"iMode": ?"varied"|"preset": ?"custom"[^}]*"randomizeKeys": ?true';
+-- Device rules carry profiles inside a JSON object: drop the rules that hold one of these.
+UPDATE node_vpn_endpoints SET awg_device_rules = NULL WHERE jsonb_path_exists(awg_device_rules,
+  '$.*.awgGenerator ? (@.preset == "dns_response_randomized_full" || @.preset == "varied" || @.preset == "varied_full" || @.iMode == "varied" || (@.preset == "custom" && @.randomizeKeys == true))');
 ```
 
 Changing the switch keeps the selected preset (the client MTU is a separate
