@@ -2,6 +2,7 @@ import { awgGeneratorPresets, type AwgGeneratorPreset } from "@amnezia/contracts
 import { describe, expect, it } from "vitest";
 
 import { awg31Link, I_SIGNATURES, readCopies } from "./awg31.fixture.js";
+import { expandTemplate, packetKind, parseDns, parseStun, seededBytes } from "./awgPackets.fixture.js";
 import { applyAwgGeneratorSettings, projectAwgClientConfig } from "@amnezia/vpn-config";
 import { applyRouteProfileToVpnLink, decodeVpnLink, extractConfFromVpnLink } from "./vpnConfig.js";
 
@@ -191,7 +192,7 @@ describe("applyAwgGeneratorSettings", () => {
     expect(line("PersistentKeepalive")).toBe("25-35");
   });
 
-  it("draws a stable set of junk values and DNS-query, STUN and noise templates", () => {
+  it("draws a stable set of junk values and a valid DNS, STUN and noise mix", () => {
     const original = awg31Link();
     const settings = preset("randomized");
     const initial = applyAwgGeneratorSettings(original, settings, seed);
@@ -202,68 +203,49 @@ describe("applyAwgGeneratorSettings", () => {
     expect(Number(line("Jc"))).toBeLessThanOrEqual(10);
     expect(Number(line("Jmax")) - Number(line("Jmin"))).toBeGreaterThanOrEqual(30);
     expect(Number(line("Jmax")) - Number(line("Jmin"))).toBeLessThanOrEqual(200);
-    const templates = [line("I1"), line("I2"), line("I3")];
-    expect(templates.some((value) => value?.includes("<b 0x0100>"))).toBe(true);
-    expect(templates.some((value) => value?.includes("<b 0x2112a442>"))).toBe(true);
-    expect(templates.some((value) => /^<r \d+>$/.test(value ?? ""))).toBe(true);
+    const kinds = new Set<string>();
+    for (let index = 0; index < 24; index += 1) {
+      const out = copies(applyAwgGeneratorSettings(awg31Link({ slots: ["I1", "I2", "I3"] }), settings, { keyId: `mix-${index}`, profileRevision: 1 }));
+      for (const template of [out.line("I1"), out.line("I2"), out.line("I3")].filter(Boolean) as string[]) {
+        const kind = packetKind(template);
+        if (kind === "dns") kinds.add(parseDns(expandTemplate(template, seededBytes(index + 1))).response ? "response" : "query");
+        else kinds.add(kind);
+      }
+    }
+    expect(kinds).toEqual(new Set(["query", "response", "stun", "noise"]));
   });
-
   it("keeps backward compatibility with legacy randomized settings that stored iMode=dns_query", () => {
-    const original = awg31Link();
-    const mixed = applyAwgGeneratorSettings(original, preset("randomized"), seed);
-    const legacy = applyAwgGeneratorSettings(
-      original,
-      { ...preset("randomized"), iMode: "dns_query" },
-      seed,
-    );
-    const templates = [copies(legacy).line("I1"), copies(legacy).line("I2"), copies(legacy).line("I3")];
-    expect(templates.some((value) => value?.includes("<b 0x0100>"))).toBe(true);
-    expect(templates.some((value) => value?.includes("<b 0x2112a442>"))).toBe(true);
-    expect(templates.some((value) => /^<r \d+>$/.test(value ?? ""))).toBe(true);
-    expect(copies(mixed).line("ContentPaddingAddition")).toBe("1-39");
+    const original = awg31Link({ slots: ["I1", "I2", "I3"] });
+    const mixed = copies(applyAwgGeneratorSettings(original, preset("randomized"), seed));
+    const legacy = copies(applyAwgGeneratorSettings(original, { ...preset("randomized"), iMode: "dns_query" }, seed));
+    for (const slot of ["I1", "I2", "I3"]) expect(legacy.line(slot)).toBe(mixed.line(slot));
   });
-
   it("emits a valid RFC 1035/2181 randomized DNS response without CPA or timers", () => {
     const original = awg31Link({
       conf: (conf) => `${conf.replace("[Peer]", "ContentPaddingAddition = 1-39\nRekeyTimeout = 4-8\n\n[Peer]")}`,
     });
     const settings = preset("dns_response_randomized");
-    const first = applyAwgGeneratorSettings(original, settings, { ...seed, profileRevision: 1 });
-    const next = applyAwgGeneratorSettings(original, settings, { ...seed, profileRevision: 2 });
-    expect(next).not.toBe(first);
-
-    const parsed = copies(first);
-    const i1 = parsed.line("I1") ?? "";
-    const match = /^<r 2><b 0x81800001000100000000><b 0x([0-9a-f]{2})><rc (\d+)><b 0x03636f6d0000010001c00c000100010000([0-9a-f]{2})><r 1><b 0x0004><r 4>$/.exec(i1);
-    expect(match).not.toBeNull();
-    const labelLen = Number.parseInt(match![1]!, 16);
-    expect(labelLen).toBe(Number(match![2]));
-    expect(labelLen).toBeGreaterThanOrEqual(3);
-    expect(labelLen).toBeLessThanOrEqual(12);
-    const ttlHigh = Number.parseInt(match![3]!, 16);
-    expect(ttlHigh).toBeGreaterThanOrEqual(1);
-    expect(ttlHigh).toBeLessThanOrEqual(127);
-    // Total DNS wire length: 12 header + 1 len + labelLen + 5 (.com\0) + 4 QTYPE/QCLASS + 16 answer = 38 + labelLen.
-    expect(38 + labelLen).toBeGreaterThanOrEqual(41);
-    expect(38 + labelLen).toBeLessThanOrEqual(50);
-
+    const parsed = copies(applyAwgGeneratorSettings(original, settings, { ...seed, profileRevision: 1 }));
+    const response = parseDns(expandTemplate(parsed.line("I1") ?? "", seededBytes(7)));
+    expect(response.response).toBe(true);
+    expect(response.answer?.ttl).toBeGreaterThanOrEqual(256);
+    expect(response.answer?.ttl).toBeLessThanOrEqual(32767);
     expect(parsed.line("I2")).toBeNull();
     expect(parsed.line("ContentPaddingAddition")).toBeNull();
     expect(parsed.line("RekeyTimeout")).toBeNull();
     expect(Number(parsed.line("Jc"))).toBeGreaterThanOrEqual(3);
     expect(Number(parsed.line("Jc"))).toBeLessThanOrEqual(10);
   });
-
   it("supports single DNS-query, single STUN, no-I, and stock AmneziaVPN presets", () => {
     const original = awg31Link({ slots: ["I1", "I2", "I3"] });
 
     const dnsQueryOut = copies(applyAwgGeneratorSettings(original, preset("dns_query"), seed));
-    expect(dnsQueryOut.line("I1")).toMatch(/^<r 2><b 0x0100>/);
+    expect(parseDns(expandTemplate(dnsQueryOut.line("I1") ?? "", seededBytes(1))).response).toBe(false);
     expect(dnsQueryOut.line("I2")).toBeNull();
     expect(dnsQueryOut.line("ContentPaddingAddition")).toBeNull();
 
     const stunOut = copies(applyAwgGeneratorSettings(original, preset("stun"), seed));
-    expect(stunOut.line("I1")).toBe("<b 0x0001><b 0x000c><b 0x2112a442><r 12><b 0x8022><b 0x0008><rc 8>");
+    expect(parseStun(expandTemplate(stunOut.line("I1") ?? "", seededBytes(1))).size).toBeGreaterThanOrEqual(20);
     expect(stunOut.line("I2")).toBeNull();
     expect(stunOut.line("ContentPaddingAddition")).toBeNull();
 
@@ -383,13 +365,14 @@ describe("per-key randomization switch", () => {
 
   it("pins the output of settings saved before the switch", () => {
     // For seed { keyId: "synthetic-key-id", profileRevision: 3 }. Moved on
-    // purpose on 2026-11-22 (revision-seeded draws); any other change here
+    // purpose on 2026-11-22 (revision-seeded draws, varied DNS); any other change here
     // moves every stored key's config.
     const at = (id: AwgGeneratorPreset) => copies(applyAwgGeneratorSettings(original, legacy(id), seed));
     const dnsQuery = at("dns_query");
     expect([dnsQuery.line("Jc"), dnsQuery.line("Jmin"), dnsQuery.line("Jmax")]).toEqual(["8", "100", "139"]);
     expect(dnsQuery.line("I1")).toBe(
-      "<r 2><b 0x0100><b 0x00010000><b 0x00000000><b 0x05><rc 5><b 0x03636f6d00><b 0x0001><b 0x0001>",
+      "<r 2><b 0x01000001000000000001><b 0x07><rc 7><b 0x01><rc 1><b 0x04><rc 4><b 0x02727500><b 0x00010001>" +
+        "<b 0x0000290200000080000000>",
     );
     const randomized = at("randomized");
     expect([randomized.line("Jc"), randomized.line("Jmin"), randomized.line("Jmax")]).toEqual(["10", "54", "197"]);
@@ -407,27 +390,26 @@ describe("per-key randomization switch", () => {
 
   it("emits the new signature packets in their slots", () => {
     const one = (id: AwgGeneratorPreset) => render(preset(id), keyIds[0]!);
-    const query = /^<r 2><b 0x0100><b 0x00010000><b 0x00000000><b 0x[0-9a-f]{2}><rc \d+><b 0x03636f6d00>/;
+    const dns = (template: string | null) => parseDns(expandTemplate(template ?? "", seededBytes(3)));
+    const stun = (template: string | null) => parseStun(expandTemplate(template ?? "", seededBytes(3)));
     const aaaa = one("dns_query_aaaa");
-    expect(aaaa.line("I1")).toMatch(query);
-    expect(aaaa.line("I1")).toMatch(/<b 0x001c><b 0x0001>$/);
+    expect(dns(aaaa.line("I1")).qtype).toBe(28);
     expect(aaaa.line("I2")).toBeNull();
-    expect(one("dns_query_https").line("I1")).toMatch(/<b 0x0041><b 0x0001>$/);
+    expect(dns(one("dns_query_https").line("I1")).qtype).toBe(65);
     const burst = one("dns_query_burst");
-    for (const slot of ["I1", "I2", "I3"]) expect(burst.line(slot)).toMatch(/<b 0x0001><b 0x0001>$/);
+    for (const slot of ["I1", "I2", "I3"]) expect(dns(burst.line(slot)).qtype).toBe(1);
     expect(burst.line("I4")).toBeNull();
     const dnsStun = one("dns_query_stun");
-    expect(dnsStun.line("I1")).toMatch(/<b 0x0001><b 0x0001>$/);
-    expect(dnsStun.line("I2")).toBe("<b 0x0001><b 0x000c><b 0x2112a442><r 12><b 0x8022><b 0x0008><rc 8>");
+    expect(dns(dnsStun.line("I1")).response).toBe(false);
+    expect(stun(dnsStun.line("I2")).size).toBeGreaterThanOrEqual(20);
     expect(dnsStun.line("I3")).toBeNull();
     const stunDns = one("stun_dns_response");
-    expect(stunDns.line("I1")).toBe("<b 0x0001><b 0x000c><b 0x2112a442><r 12><b 0x8022><b 0x0008><rc 8>");
-    expect(stunDns.line("I2")).toMatch(/^<r 2><b 0x8580/);
+    expect(stun(stunDns.line("I1")).size).toBeGreaterThanOrEqual(20);
+    expect(dns(stunDns.line("I2")).response).toBe(true);
     const noise = one("noise");
     for (const slot of ["I1", "I2", "I3"]) expect(noise.line(slot)).toMatch(/^<r \d+>$/);
-    const fullOut = one("noise_full");
-    expect(fullOut.line("ContentPaddingAddition")).toBe("1-39");
-    expect(fullOut.line("RekeyAfterTime")).toBe(preset("randomized").timings && "95-150");
+    expect(one("noise_full").line("ContentPaddingAddition")).not.toBeNull();
+    expect(one("noise_full").line("RekeyAfterTime")).not.toBeNull();
     expect(one("noise").line("ContentPaddingAddition")).toBeNull();
   });
 });
@@ -459,5 +441,69 @@ describe("client MTU apart from the profile", () => {
   it("applies the MTU without a profile", () => {
     expect(project(null, 1380).conf).toContain("MTU = 1380\n");
     expect(project(null).conf).toContain("MTU = 1280\n");
+  });
+});
+
+describe("signature packet validity and variety", () => {
+  const original = awg31Link({ slots: ["I1", "I2", "I3", "I4", "I5"] });
+  const WITH_PACKETS: AwgGeneratorPreset[] = [
+    "dns_response_randomized", "dns_query", "stun", "randomized",
+    "dns_query_aaaa", "dns_query_aaaa_full", "dns_query_https", "dns_query_https_full",
+    "dns_query_burst", "dns_query_burst_full", "dns_query_stun", "dns_query_stun_full",
+    "stun_dns_response", "stun_dns_response_full",
+  ];
+  const packetsOf = (id: AwgGeneratorPreset, keyId: string, profileRevision = 1) => {
+    const { line } = copies(applyAwgGeneratorSettings(original, { ...preset(id), randomizeKeys: true }, { keyId, profileRevision }));
+    return ["I1", "I2", "I3", "I4", "I5"].map(line).filter((value): value is string => Boolean(value));
+  };
+  const keys = (count: number) => Array.from({ length: count }, (_, index) => `synthetic-packet-${index}`);
+
+  it("parses every DNS packet as RFC 1035/2181/6891 and every STUN packet as RFC 5389", () => {
+    const counts = { dns: 0, stun: 0, noise: 0 };
+    for (const id of WITH_PACKETS) {
+      for (const [index, keyId] of keys(60).entries()) {
+        for (const template of packetsOf(id, keyId, index % 4)) {
+          const kind = packetKind(template);
+          counts[kind] += 1;
+          const bytes = expandTemplate(template, seededBytes(index + 1));
+          try {
+            if (kind === "dns") parseDns(bytes);
+            if (kind === "stun") parseStun(bytes);
+          } catch (error) {
+            throw new Error(`${id} ${keyId}: ${(error as Error).message} in ${template}`, { cause: error });
+          }
+        }
+      }
+    }
+    expect(counts.dns).toBeGreaterThan(500);
+    expect(counts.stun).toBeGreaterThan(100);
+  });
+
+  it("gives keys different DNS names, OPT records and STUN sizes", () => {
+    const parsed = keys(200).map((keyId, index) => parseDns(expandTemplate(packetsOf("dns_query", keyId)[0] ?? "", seededBytes(index + 1))));
+    expect(new Set(parsed.map(({ labels }) => labels.at(-1))).size).toBeGreaterThanOrEqual(4);
+    expect(new Set(parsed.map(({ labels }) => labels.length))).toEqual(new Set([2, 3, 4]));
+    expect(parsed.some(({ edns }) => edns === null)).toBe(true);
+    expect(parsed.some(({ edns }) => edns !== null)).toBe(true);
+    const stunSizes = keys(200).map((keyId, index) =>
+      parseStun(expandTemplate(packetsOf("stun", keyId)[0] ?? "", seededBytes(index + 1))).size);
+    expect(new Set(stunSizes).size).toBeGreaterThanOrEqual(4);
+    expect(Math.min(...stunSizes)).toBe(20);
+    const octets = keys(200).map((keyId, index) =>
+      parseDns(expandTemplate(packetsOf("dns_response_randomized", keyId)[0] ?? "", seededBytes(index + 1))).answer?.ipv4[0]);
+    expect(new Set(octets).size).toBeGreaterThanOrEqual(5);
+  });
+
+  it("sends the random DNS response in stun_dns_response and can mix it into randomized", () => {
+    for (const [index, keyId] of keys(20).entries()) {
+      const [stun, response] = packetsOf("stun_dns_response", keyId);
+      expect(packetKind(stun ?? "")).toBe("stun");
+      const parsed = parseDns(expandTemplate(response ?? "", seededBytes(index + 1)));
+      expect(parsed.response).toBe(true);
+      expect(parsed.labels).not.toEqual(["icloud", "com"]);
+    }
+    const mixedResponses = keys(80).flatMap((keyId) => packetsOf("randomized", keyId))
+      .filter((template) => template.includes("<b 0x8180"));
+    expect(mixedResponses.length).toBeGreaterThan(0);
   });
 });

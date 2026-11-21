@@ -8,7 +8,7 @@ import {
   type ProtocolKind,
 } from "@amnezia/contracts";
 
-import { profileOrder, profileRevision } from "./awgClientProfile.js";
+import { profileRevision } from "./awgClientProfile.js";
 import { applyAwgClientProfile, AwgClientConfigError, rewriteAwg31ClientInterface } from "./awgClientInterface.js";
 import { inspectAwgVpnConfig, withAwg31TunnelMtu } from "./awgEndpoint.js";
 
@@ -19,7 +19,6 @@ type Draw = (label: string, min: number, max: number) => number;
 // two-byte transaction ID on each send. The variant also draws the low TTL byte.
 const DNS_RESPONSE_HEAD = "858000010001000000000669636c6f756403636f6d0000010001c00c000100010000";
 const DNS_RESPONSE_TAIL = "00044d583737";
-const STUN_REQUEST = "<b 0x0001><b 0x000c><b 0x2112a442><r 12><b 0x8022><b 0x0008><rc 8>";
 
 const TIMING_FIELDS = {
   rekeyAfterTime: "RekeyAfterTime",
@@ -34,18 +33,92 @@ const hashNumber = (seed: string, label: string): number =>
 
 const hexByte = (byte: number): string => byte.toString(16).padStart(2, "0");
 
-// QTYPE A (1), AAAA (28) or HTTPS (65), class IN.
-const dnsQuery = (labelLength: number, qtype = "0001"): string =>
-  `<r 2><b 0x0100><b 0x00010000><b 0x00000000><b 0x${hexByte(labelLength)}><rc ${labelLength}><b 0x03636f6d00><b 0x${qtype}><b 0x0001>`;
+const hex16 = (value: number): string => value.toString(16).padStart(4, "0");
+const asciiHex = (text: string): string => [...text].map((char) => hexByte(char.charCodeAt(0))).join("");
 
-// Valid RFC 1035 / RFC 2181 DNS A-response: random TXID (<r 2>), random label
-// length (3-12) and characters (<rc N>) under .com, compression pointer 0xc00c
-// to offset 12, positive TTL in [256, 32767] with a random low byte (<r 1>)
-// per handshake attempt, and a random 4-byte IPv4 answer (<r 4>).
-const dnsResponseRandom = (labelLength: number, ttlHighByte: number): string =>
-  `<r 2><b 0x81800001000100000000><b 0x${hexByte(labelLength)}><rc ${labelLength}><b 0x03636f6d0000010001c00c000100010000${hexByte(ttlHighByte)}><r 1><b 0x0004><r 4>`;
+// Top-level domains a query or response names; one per key and slot.
+const TLDS = ["com", "net", "org", "io", "info", "ru", "de", "app", "dev", "co"] as const;
+// First octets of public unicast IPv4 space (no private, loopback, shared,
+// link-local, documentation, benchmarking, multicast or reserved ranges).
+const PUBLIC_FIRST_OCTETS = [
+  5, 23, 31, 37, 45, 46, 51, 62, 77, 78, 80, 81, 82, 85, 87, 88, 89, 91, 93, 94, 95,
+  104, 109, 128, 130, 135, 141, 142, 146, 151, 152, 157, 176, 178, 185, 188, 193, 194,
+  195, 212, 213, 217,
+] as const;
+// EDNS0 UDP payload sizes resolvers commonly advertise.
+const EDNS_UDP_SIZES = [512, 1232, 1400, 4096] as const;
+
+/**
+ * A query name of 1-3 random labels (0-2 subdomains) under a drawn
+ * top-level domain. AWG redraws the letters on every handshake; the shape
+ * is the key's.
+ */
+const dnsName = (draw: Draw, prefix: string): string => {
+  const count = draw(`${prefix}-labels`, 1, 3);
+  let name = "";
+  for (let index = 0; index < count; index += 1) {
+    const length = index === count - 1 ? draw(`${prefix}-label-${index}`, 3, 12) : draw(`${prefix}-label-${index}`, 1, 10);
+    name += `<b 0x${hexByte(length)}><rc ${length}>`;
+  }
+  const tld = TLDS[draw(`${prefix}-tld`, 0, TLDS.length - 1)] ?? "com";
+  return `${name}<b 0x${hexByte(tld.length)}${asciiHex(tld)}00>`;
+};
+
+/** An RFC 6891 OPT record (root name, type 41, no options), or none: the key's choice. */
+const ednsOpt = (draw: Draw, prefix: string): string | null => {
+  if (draw(`${prefix}-edns`, 0, 1) === 0) return null;
+  const size = EDNS_UDP_SIZES[draw(`${prefix}-edns-size`, 0, EDNS_UDP_SIZES.length - 1)] ?? 1232;
+  const flags = draw(`${prefix}-edns-do`, 0, 1) === 1 ? "8000" : "0000";
+  return `<b 0x000029${hex16(size)}0000${flags}0000>`;
+};
+
+// A valid RFC 1035 query, class IN, QTYPE A (1), AAAA (28) or HTTPS (65).
+const dnsQuery = (draw: Draw, prefix: string, qtype = "0001"): string => {
+  const opt = ednsOpt(draw, prefix);
+  return `<r 2><b 0x010000010000000000${opt ? "01" : "00"}>${dnsName(draw, prefix)}<b 0x${qtype}0001>${opt ?? ""}`;
+};
+
+// A valid RFC 1035 / 2181 A response: the same name rules, a 0xc00c pointer
+// to the question, a positive TTL in [256, 32767] with a low byte AWG draws
+// per handshake, and an IPv4 answer under a public first octet.
+const dnsResponseRandom = (draw: Draw, prefix: string): string => {
+  const opt = ednsOpt(draw, prefix);
+  const ttlHigh = draw(`${prefix}-ttl`, 1, 127);
+  const octet = PUBLIC_FIRST_OCTETS[draw(`${prefix}-octet`, 0, PUBLIC_FIRST_OCTETS.length - 1)] ?? 85;
+  return `<r 2><b 0x818000010001000000${opt ? "01" : "00"}>${dnsName(draw, prefix)}<b 0x00010001>` +
+    `<b 0xc00c000100010000${hexByte(ttlHigh)}><r 1><b 0x0004${hexByte(octet)}><r 3>${opt ?? ""}`;
+};
+
+/**
+ * A valid RFC 5389 Binding Request of 20-44 bytes: no attributes, or a
+ * SOFTWARE of 4-16 letters, CHANGE-REQUEST, PRIORITY and ICE-CONTROLLING in
+ * combinations that fit. No FINGERPRINT: it is a CRC over the transaction ID
+ * AWG redraws on every handshake, so it could never be right.
+ */
+const stunRequest = (draw: Draw, prefix: string): string => {
+  const attributes: string[] = [];
+  let length = 0;
+  const software = [0, 4, 8, 12, 16][draw(`${prefix}-software`, 0, 4)] ?? 0;
+  if (software > 0) {
+    attributes.push(`<b 0x8022${hex16(software)}><rc ${software}>`);
+    length += 4 + software;
+  }
+  const extras = [
+    { size: 8, template: `<b 0x00030004000000${["00", "02", "04", "06"][draw(`${prefix}-change`, 0, 3)] ?? "00"}>` },
+    { size: 8, template: "<b 0x00240004><r 4>" },
+    { size: 12, template: "<b 0x802a0008><r 8>" },
+  ];
+  extras.forEach((extra, index) => {
+    if (draw(`${prefix}-attribute-${index}`, 0, 1) === 1 && length + extra.size <= 24) {
+      attributes.push(extra.template);
+      length += extra.size;
+    }
+  });
+  return `<b 0x0001${hex16(length)}2112a442><r 12>${attributes.join("")}`;
+};
 
 const noise = (length: number): string => `<r ${length}>`;
+// The legacy fixed DNS response, kept only by the presets named after it.
 const dnsResponseRandomTtl = (ttl: number): string =>
   `<r 2><b 0x${DNS_RESPONSE_HEAD}${hexByte(ttl)}><r 1><b 0x${DNS_RESPONSE_TAIL}>`;
 
@@ -53,16 +126,11 @@ const signaturePackets = (
   settings: AwgGeneratorSettings,
   draw: Draw,
 ): string[] | null => {
-  const { iMode, iCount, preset } = settings;
+  const { iMode, iCount } = settings;
   if (iMode === "issued") return null;
   if (iMode === "none") return [];
-  // Keep backward compatibility with earlier persisted "randomized" configs
-  // that stored `iMode: "dns_query"` to request the shuffled burst.
-  if (iMode === "mixed" || (preset === "randomized" && iMode === "dns_query")) {
-    const templates = [dnsQuery(draw("dns-label", 3, 12)), STUN_REQUEST, noise(draw("noise", 48, 220))];
-    const order = profileOrder(draw("signature-order", 0, 5), templates.length);
-    return Array.from({ length: iCount }, (_, slot) =>
-      templates[order[slot] ?? -1] ?? noise(draw(`noise-${slot}`, 48, 220)));
+  if (iMode === "mixed") {
+    return mixedPackets(draw, iCount, "mix");
   }
   return Array.from({ length: iCount }, (_, slot) => {
     switch (iMode) {
@@ -71,27 +139,42 @@ const signaturePackets = (
       case "dns_response_random_ttl":
         return dnsResponseRandomTtl(draw(`ttl-${slot}`, 15, 17));
       case "dns_response_random":
-        return dnsResponseRandom(
-          draw(`dns-resp-label-${slot}`, 3, 12),
-          draw(`dns-resp-ttl-${slot}`, 1, 127),
-        );
+        return dnsResponseRandom(draw, `dns-response-${slot}`);
       case "dns_query":
-        return dnsQuery(draw(`dns-label-${slot}`, 3, 12));
+        return dnsQuery(draw, `dns-${slot}`);
       case "dns_query_aaaa":
-        return dnsQuery(draw(`dns-label-${slot}`, 3, 12), "001c");
+        return dnsQuery(draw, `dns-${slot}`, "001c");
       case "dns_query_https":
-        return dnsQuery(draw(`dns-label-${slot}`, 3, 12), "0041");
+        return dnsQuery(draw, `dns-${slot}`, "0041");
       // Pairs alternate their two packets over the configured slots.
       case "dns_query_stun":
-        return slot % 2 === 0 ? dnsQuery(draw(`dns-label-${slot}`, 3, 12)) : STUN_REQUEST;
+        return slot % 2 === 0 ? dnsQuery(draw, `dns-${slot}`) : stunRequest(draw, `stun-${slot}`);
       case "stun_dns_response":
-        return slot % 2 === 0 ? STUN_REQUEST : dnsResponseRandomTtl(draw(`ttl-${slot}`, 15, 17));
+        return slot % 2 === 0 ? stunRequest(draw, `stun-${slot}`) : dnsResponseRandom(draw, `dns-response-${slot}`);
       case "stun":
-        return STUN_REQUEST;
+        return stunRequest(draw, `stun-${slot}`);
       case "noise":
         return noise(draw(`noise-${slot}`, 48, 220));
     }
   });
+};
+
+/**
+ * DNS query, STUN request, random DNS response and noise in a per-key order;
+ * the first `count` of them, then more noise if more slots are asked for.
+ */
+const mixedPackets = (draw: Draw, count: number, prefix: string): string[] => {
+  const templates = [
+    dnsQuery(draw, `${prefix}-dns`),
+    stunRequest(draw, `${prefix}-stun`),
+    noise(draw(`${prefix}-noise`, 48, 220)),
+    dnsResponseRandom(draw, `${prefix}-dns-response`),
+  ];
+  for (let index = templates.length - 1; index > 0; index -= 1) {
+    const other = draw(`${prefix}-order-${index}`, 0, index);
+    [templates[index], templates[other]] = [templates[other] as string, templates[index] as string];
+  }
+  return Array.from({ length: count }, (_, slot) => templates[slot] ?? noise(draw(`${prefix}-noise-${slot}`, 48, 220)));
 };
 
 const formatRange = (range: { min: number; max: number } | null): string | null =>
@@ -113,7 +196,12 @@ export const applyAwgGeneratorSettings = (
 
   // The switch is not part of the seed: settings saved before it and the
   // same settings with it on draw exactly the same values.
-  const { randomizeKeys, ...shape } = parsed.data;
+  const { randomizeKeys, ...stored } = parsed.data;
+  // Older randomized settings stored `iMode: "dns_query"` for the mixed burst;
+  // they draw exactly what "mixed" draws.
+  const shape = stored.preset === "randomized" && stored.iMode === "dns_query"
+    ? { ...stored, iMode: "mixed" as const }
+    : stored;
   const updates = new Map<string, string | null>();
   if (shape.preset === "issued") {
     return withAwg31TunnelMtu(rewriteAwg31ClientInterface(vpnLink, updates), mtu ?? shape.mtu);
