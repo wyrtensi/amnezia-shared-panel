@@ -19,17 +19,30 @@ const savedBeforeSwitch = (id: AwgGeneratorPreset) => {
 
 describe("key randomization switch", () => {
   it("is on for a preset, off and locked for custom, hidden for issued and inherit", () => {
-    expect(keyRandomizationState(preset("dns_query"))).toEqual({ visible: true, checked: true, disabled: false });
-    expect(keyRandomizationState(preset("custom"))).toEqual({ visible: true, checked: false, disabled: true });
+    expect(keyRandomizationState(preset("dns_query"))).toEqual({ visible: true, checked: true, disabled: false, editShares: false });
+    expect(keyRandomizationState(preset("custom"))).toEqual({ visible: true, checked: false, disabled: true, editShares: false });
     expect(keyRandomizationState(preset("issued")).visible).toBe(false);
     expect(keyRandomizationState(null).visible).toBe(false);
     expect(keyRandomizationState({ ...preset("stun"), randomizeKeys: false }).checked).toBe(false);
   });
 
   it("shows settings saved before the switch as they behave", () => {
-    // Fixed presets gave every key the same values; ranged ones drew per key.
+    // Only the plain DNS response gave every key the same config; the TTL
+    // variant, ranged presets and ranged Custom differed per key.
     expect(keyRandomizationState(savedBeforeSwitch("dns_response")).checked).toBe(false);
+    expect(keyRandomizationState(savedBeforeSwitch("dns_response_random_ttl")).checked).toBe(true);
     expect(keyRandomizationState(savedBeforeSwitch("dns_query")).checked).toBe(true);
+    expect(keyRandomizationState(savedBeforeSwitch("custom"))).toEqual({
+      visible: true, checked: true, disabled: true, editShares: true,
+    });
+    expect(keyRandomizationState(preset("custom")).editShares).toBe(false);
+  });
+
+  it("warns that editing an old Custom profile gives every key the same values", () => {
+    const html = renderToStaticMarkup(
+      <GeneratorEditor value={savedBeforeSwitch("custom")} inherited={false} pending={false} onSave={() => Promise.resolve(true)} />,
+    );
+    expect(html).toContain(messages.ru["generator.randomizeKeysLegacyCustom"]);
   });
 
   it("keeps the preset and the switch when only MTU changes", () => {

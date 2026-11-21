@@ -16,8 +16,8 @@ addresses on that interface share those server properties.
 | Preset | Export behavior |
 | --- | --- |
 | Issued profile | Preserve issued and saved client parameters, apply the selected client MTU |
-| DNS response | One legacy-shaped 44-byte DNS response, J 4/40/70, unset CPA and Interface timing ranges |
-| DNS response with randomized TTL | The DNS-response profile with a key-specific TTL window and a random transaction ID/TTL byte per handshake attempt |
+| DNS response | One legacy-shaped 44-byte DNS response, unset CPA and Interface timing ranges; J 4/40/70 with randomization off, per-key J from the standard ranges with it on |
+| DNS response with randomized TTL | The DNS-response profile with a random transaction ID/TTL byte per handshake attempt; the TTL window (and, with randomization on, J) is drawn per key, or shared when it is off |
 | DNS response (extended randomization) | Valid RFC 1035/2181 DNS A-response with randomized `.com` label length (3-12), TXID, TTL window (256-32767 s + random low byte per handshake), random IPv4 answer and randomized J ranges (3-10 / 40-100 / +30-200), unset CPA and Interface timing ranges |
 | DNS query | Single randomized DNS A-query I1 with randomized J ranges, unset CPA and Interface timing ranges |
 | STUN request | Single 32-byte STUN Binding Request I1 with randomized J ranges, unset CPA and Interface timing ranges |
@@ -47,10 +47,25 @@ Every profile except Issued has a **Randomize user keys** switch
   preset's numbers, and for ranges one draw from the settings alone. Refresh
   config then has nothing to change and is offered as unavailable.
 - **Custom** keeps it off: every key gets the administrator's values.
-- Settings saved before the switch existed keep their behaviour (ranges drawn
-  per key, fixed presets the same for every key) and read that way in the
-  editor. The switch is not part of the draw, so turning it on for such
-  settings does not move existing keys.
+- Settings saved before the switch existed keep their behaviour: ranged
+  presets, the random-TTL DNS response and a ranged Custom draw per key, the
+  plain DNS response is the same for every key. The editor shows them that way;
+  an old Custom shows the switch on (locked) with a note that any edit gives
+  every key the same values. The switch is not part of the draw, so turning it
+  on for such settings does not move existing keys.
+
+**Rolling the panel back** to a release before this switch: those releases
+reject `randomizeKeys` and the newer preset ids, so exports and probe checks
+for every node or address saved with them fail as invalid settings. Before
+starting the older image, strip the flag and reset newer presets, for example:
+
+```sql
+UPDATE nodes SET awg_generator = awg_generator - 'randomizeKeys' WHERE awg_generator ? 'randomizeKeys';
+UPDATE node_vpn_endpoints SET awg_generator = awg_generator - 'randomizeKeys' WHERE awg_generator ? 'randomizeKeys';
+-- Presets and signature modes the older release does not know: inherit again (or pick an older preset first).
+UPDATE nodes SET awg_generator = NULL WHERE awg_generator->>'preset' ~ '^(dns_query_(aaaa|https|burst|stun)|stun_dns_response|noise)' OR awg_generator->>'iMode' IN ('dns_query_aaaa', 'dns_query_https', 'dns_query_stun', 'stun_dns_response');
+UPDATE node_vpn_endpoints SET awg_generator = NULL WHERE awg_generator->>'preset' ~ '^(dns_query_(aaaa|https|burst|stun)|stun_dns_response|noise)' OR awg_generator->>'iMode' IN ('dns_query_aaaa', 'dns_query_https', 'dns_query_stun', 'stun_dns_response');
+```
 
 Changing MTU or the switch keeps the selected preset; editing any other field
 turns it into Custom with randomization off (range edits on Randomized stay
@@ -99,8 +114,9 @@ Use `awgGeneratorPresets()` from `@amnezia/contracts` to obtain complete preset
 settings for an API client. Bounds are checked before persistence. Node edits
 and address overrides use the existing transaction and audit paths.
 
-Configuration refresh checks the effective exported profile. A fixed preset
-that produces the same configuration is ineligible for refresh. A direct
+Configuration refresh checks the effective exported profile. A profile that
+produces the same configuration for every revision (randomization off, Custom,
+or the plain DNS response saved before the switch) is ineligible for refresh. A direct
 refresh request in that state is rejected without advancing revision or its
 update timestamp.
 

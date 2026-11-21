@@ -4,7 +4,6 @@ import * as React from "react";
 import { Settings2 } from "lucide-react";
 import { toast } from "sonner";
 import {
-  AWG_GENERATOR_FIXED_PRESETS,
   AWG_GENERATOR_I_MODES,
   AWG_GENERATOR_PRESETS,
   awgGeneratorPresets,
@@ -54,17 +53,26 @@ export const editGeneratorDraft = (
 /**
  * How the key randomization switch shows for a draft: hidden for an inherited
  * or issued profile, off and locked for Custom. Settings saved before the
- * switch read the way they behave: fixed presets off, ranged presets on.
+ * switch read the way they behave: only the plain DNS response gave every key
+ * the same config; ranged presets, the random-TTL response and a ranged
+ * Custom differed per key. `editShares` marks an old Custom, which any edit
+ * turns into one shared set for every key.
  */
 export const keyRandomizationState = (
   draft: AwgGeneratorSettings | null,
-): { visible: boolean; checked: boolean; disabled: boolean } => {
-  if (!draft || draft.preset === "issued") return { visible: false, checked: false, disabled: true };
-  if (draft.preset === "custom") return { visible: true, checked: false, disabled: true };
+): { visible: boolean; checked: boolean; disabled: boolean; editShares: boolean } => {
+  if (!draft || draft.preset === "issued") {
+    return { visible: false, checked: false, disabled: true, editShares: false };
+  }
+  const legacy = draft.randomizeKeys === undefined;
+  if (draft.preset === "custom") {
+    return { visible: true, checked: legacy, disabled: true, editShares: legacy };
+  }
   return {
     visible: true,
-    checked: draft.randomizeKeys ?? !AWG_GENERATOR_FIXED_PRESETS.includes(draft.preset),
+    checked: draft.randomizeKeys ?? draft.preset !== "dns_response",
     disabled: false,
+    editShares: false,
   };
 };
 
@@ -206,6 +214,9 @@ export function GeneratorEditor({ value, inherited, pending, onSave }: {
             onCheckedChange={(checked) => update({ randomizeKeys: checked })}
           />
         </div>
+      ) : null}
+      {randomization.editShares ? (
+        <p className="text-xs text-warning">{t("generator.randomizeKeysLegacyCustom")}</p>
       ) : null}
       {draft ? (
         <>

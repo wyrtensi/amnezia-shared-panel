@@ -369,6 +369,26 @@ describe("per-key randomization switch", () => {
     expect(jValues(legacy("dns_query")).size).toBeGreaterThan(1);
   });
 
+  it("pins the output of settings saved before the switch to the values the previous code drew", () => {
+    // Captured from the generator as it was before randomizeKeys existed, for
+    // seed { keyId: "synthetic-key-id", profileRevision: 3 }. A change here
+    // moves every stored key's config.
+    const at = (id: AwgGeneratorPreset) => copies(applyAwgGeneratorSettings(original, legacy(id), seed));
+    const dnsQuery = at("dns_query");
+    expect([dnsQuery.line("Jc"), dnsQuery.line("Jmin"), dnsQuery.line("Jmax")]).toEqual(["7", "49", "150"]);
+    expect(dnsQuery.line("I1")).toBe(
+      "<r 2><b 0x0100><b 0x00010000><b 0x00000000><b 0x09><rc 9><b 0x03636f6d00><b 0x0001><b 0x0001>",
+    );
+    const randomized = at("randomized");
+    expect([randomized.line("Jc"), randomized.line("Jmin"), randomized.line("Jmax")]).toEqual(["7", "46", "132"]);
+    expect(randomized.line("I1")).toBe("<r 169>");
+    const ttl = at("dns_response_random_ttl");
+    expect([ttl.line("Jc"), ttl.line("Jmin"), ttl.line("Jmax")]).toEqual(["4", "40", "70"]);
+    expect(ttl.line("I1")).toBe(
+      "<r 2><b 0x858000010001000000000669636c6f756403636f6d0000010001c00c0001000100000f><r 1><b 0x00044d583737>",
+    );
+  });
+
   it("ignores the switch for the issued preset", () => {
     const on = applyAwgGeneratorSettings(original, { ...preset("issued"), randomizeKeys: true }, seed);
     expect(on).toBe(applyAwgGeneratorSettings(original, preset("issued"), seed));
