@@ -99,8 +99,8 @@ Address = 10.90.0.1/22
 ListenPort = 51890
 $geometry
 HeaderProtectionKey = $header_protection_key
-PostUp = iptables -A FORWARD -i %i -j ACCEPT; iptables -A FORWARD -o %i -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT; iptables -t nat -A POSTROUTING -s 10.90.0.0/22 -o eth0 -j MASQUERADE
-PostDown = iptables -D FORWARD -i %i -j ACCEPT; iptables -D FORWARD -o %i -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT; iptables -t nat -D POSTROUTING -s 10.90.0.0/22 -o eth0 -j MASQUERADE
+PostUp = iptables -A FORWARD -i %i -j ACCEPT; iptables -A FORWARD -o %i -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT; iptables -t nat -A POSTROUTING -s 10.90.0.0/22 -o eth0 -j MASQUERADE; iptables -t mangle -A FORWARD -i %i -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu; iptables -t mangle -A FORWARD -o %i -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
+PostDown = iptables -D FORWARD -i %i -j ACCEPT; iptables -D FORWARD -o %i -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT; iptables -t nat -D POSTROUTING -s 10.90.0.0/22 -o eth0 -j MASQUERADE; iptables -t mangle -D FORWARD -i %i -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu; iptables -t mangle -D FORWARD -o %i -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
 EOF
 
   printf '[]\n' >"$temporary_clients"
@@ -155,6 +155,8 @@ cleanup_interface() {
   iptables -D FORWARD -i awg0 -j ACCEPT >/dev/null 2>&1 || true
   iptables -D FORWARD -o awg0 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT >/dev/null 2>&1 || true
   iptables -t nat -D POSTROUTING -s 10.90.0.0/22 -o eth0 -j MASQUERADE >/dev/null 2>&1 || true
+  iptables -t mangle -D FORWARD -i awg0 -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu >/dev/null 2>&1 || true
+  iptables -t mangle -D FORWARD -o awg0 -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu >/dev/null 2>&1 || true
   ip -6 route del prohibit 2000::/3 >/dev/null 2>&1 || true
   ip link delete dev awg0 >/dev/null 2>&1 || true
   rm -f \
@@ -203,6 +205,12 @@ ip link set mtu "$IFACE_MTU" up dev awg0
 iptables -A FORWARD -i awg0 -j ACCEPT
 iptables -A FORWARD -o awg0 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
 iptables -t nat -A POSTROUTING -s 10.90.0.0/22 -o eth0 -j MASQUERADE
+# Clients may run a larger tunnel MTU than awg0 (the panel sets the client
+# MTU per node, address, user or key). Clamping the MSS of forwarded TCP SYNs
+# to the path MTU keeps their TCP from stalling on the smaller interface.
+# awg-quick strip drops PostUp, so the rules are applied here too.
+iptables -t mangle -A FORWARD -i awg0 -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
+iptables -t mangle -A FORWARD -o awg0 -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
 apply_ipv6_reject_stub || echo "Warning: IPv6 reject stub restore failed; continuing with IPv4" >&2
 
 stopping=0

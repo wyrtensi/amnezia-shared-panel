@@ -35,6 +35,29 @@ test("configures and removes the AWG3 interface on its own subnet and port", asy
   assert.match(script, /ip link delete dev awg0/);
 });
 
+test("clamps TCP MSS on the AWG3 interface at runtime, on cleanup and in the generated config", async () => {
+  const script = await readFile(entrypointUrl, "utf8");
+  // Clients may run a larger tunnel MTU than awg0; without the clamp their
+  // TCP stalls once packets exceed it.
+  const rule = (op, dir) =>
+    new RegExp(`iptables -t mangle -${op} FORWARD -${dir} awg0 -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu`);
+  for (const dir of ["i", "o"]) {
+    assert.match(script, rule("A", dir), `runtime add -${dir}`);
+    const cleanup = script.slice(script.indexOf("cleanup_interface() {"), script.indexOf("ip link delete dev awg0"));
+    assert.match(cleanup, rule("D", dir), `cleanup delete -${dir}`);
+  }
+  const postUp = /^PostUp = .*$/m.exec(script)?.[0] ?? "";
+  const postDown = /^PostDown = .*$/m.exec(script)?.[0] ?? "";
+  assert.match(postUp, /iptables -t mangle -A FORWARD -i %i -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu/);
+  assert.match(postUp, /iptables -t mangle -A FORWARD -o %i -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu/);
+  assert.match(postDown, /iptables -t mangle -D FORWARD -i %i -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu/);
+  assert.match(postDown, /iptables -t mangle -D FORWARD -o %i -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu/);
+  // Added after cleanup removed any left by a previous start, so a restart
+  // never stacks duplicates.
+  const runtimeAdd = script.search(rule("A", "i"));
+  assert.ok(script.indexOf("cleanup_interface\n") < runtimeAdd || script.lastIndexOf("cleanup_interface") < runtimeAdd);
+});
+
 test("generates AmneziaWG 3.1 obfuscation parameters", async () => {
   const script = await readFile(entrypointUrl, "utf8");
 
