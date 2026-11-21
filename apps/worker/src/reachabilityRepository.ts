@@ -1279,7 +1279,10 @@ export class PostgresReachabilityRepository
       const probed = nodeEndpoints.filter(
         (ep) => ep.enabled && ep.reachabilityEnabled && ep.probeStatus !== null,
       );
-      if (!bridged.has(row.nodeId) && nodeEndpoints.length >= 2 && probed.length > 0) {
+      // Every address is its own server: one row per measured address, on
+      // bridged nodes too. A node whose addresses were never measured (no
+      // registered address, a legacy artifact) keeps its node row.
+      if (probed.length > 0) {
         return probed.map((ep) => {
           const parsed = probeLevelsSchema.safeParse(ep.probeLevels);
           const epOnline =

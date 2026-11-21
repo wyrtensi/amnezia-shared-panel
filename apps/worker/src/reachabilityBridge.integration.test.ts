@@ -1419,4 +1419,29 @@ describe("reachability of bridged nodes (real PostgreSQL)", () => {
     expect(await stateOf(node.id)).toMatchObject({ status: "ok" });
     expect((await resultsOf(node.id)).get("awg3")?.status).toBe("failed");
   });
+
+  runDatabaseTest("lists every checked address of a bridged node as its own widget row", async () => {
+    await seedProbe();
+    await seedPortalPolicy(false);
+    const node = await seedNode({ awg3Link: awgServiceLink({ host: "192.0.2.10" }) });
+    const bridge = await seedBridge(`Widget ${runTag}`);
+    await seedRoute(node.id, bridge.id, "active");
+    await db().insert(nodeVpnEndpoints).values([
+      { nodeId: node.id, ordinal: 1, address: "192.0.2.10", name: `Direct ${runTag}`, bridgeMode: "direct" },
+      { nodeId: node.id, ordinal: 2, address: "192.0.2.20", name: `Bridged ${runTag}`, bridgeMode: "bridge" },
+    ]);
+    const probe = harness((target) => {
+      const ok = inspectAwgVpnLink(target.config).endpoint?.host === "192.0.2.10";
+      return { handshake: ok, http: ok };
+    });
+    await probe.tick();
+    await probe.tick(120);
+
+    const snapshot = await repository.loadWidgetSnapshot(new Date());
+    const rows = (snapshot?.input.nodes ?? []).filter((entry) => entry.name.endsWith(runTag) || entry.name === node.name);
+    expect(rows.map(({ name, status }) => [name, status])).toEqual([
+      [`Direct ${runTag}`, "ok"],
+      [`Bridged ${runTag}`, "failed"],
+    ]);
+  });
 });
