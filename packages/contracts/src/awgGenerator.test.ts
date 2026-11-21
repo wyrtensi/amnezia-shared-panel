@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { awgGeneratorPresets, awgGeneratorSettingsSchema } from "./awgGenerator.js";
+import { AWG_GENERATOR_STANDARD_J, awgGeneratorPresets, awgGeneratorSettingsSchema } from "./awgGenerator.js";
 
 const timings = {
   rekeyAfterTime: { min: 100, max: 150 },
@@ -23,6 +23,18 @@ describe("AWG generator settings", () => {
       "no_i",
       "randomized",
       "amnezia_default",
+      "dns_query_aaaa",
+      "dns_query_aaaa_full",
+      "dns_query_https",
+      "dns_query_https_full",
+      "dns_query_burst",
+      "dns_query_burst_full",
+      "dns_query_stun",
+      "dns_query_stun_full",
+      "stun_dns_response",
+      "stun_dns_response_full",
+      "noise",
+      "noise_full",
       "custom",
     ]);
     for (const { id, settings } of presets) {
@@ -69,5 +81,47 @@ describe("AWG generator settings", () => {
   it("allows an edited numeric range with the randomized preset", () => {
     const base = awgGeneratorPresets().find(({ id }) => id === "randomized")!.settings;
     expect(awgGeneratorSettingsSchema.safeParse({ ...base, jcMin: 5, jcMax: 8 }).success).toBe(true);
+  });
+
+  it("refuses randomization on the custom preset and ignores it nowhere else", () => {
+    const custom = awgGeneratorPresets().find(({ id }) => id === "custom")!.settings;
+    expect(awgGeneratorSettingsSchema.safeParse({ ...custom, randomizeKeys: true }).success).toBe(false);
+    expect(awgGeneratorSettingsSchema.safeParse({ ...custom, randomizeKeys: false }).success).toBe(true);
+    const stun = awgGeneratorPresets().find(({ id }) => id === "stun")!.settings;
+    expect(awgGeneratorSettingsSchema.parse({ ...stun, randomizeKeys: false }).randomizeKeys).toBe(false);
+  });
+
+  it("keeps settings saved before the switch valid and without the flag", () => {
+    const { randomizeKeys: _dropped, ...saved } = awgGeneratorPresets().find(({ id }) => id === "dns_query")!.settings;
+    const parsed = awgGeneratorSettingsSchema.parse(saved);
+    expect(parsed.randomizeKeys).toBeUndefined();
+  });
+
+  it("turns randomization on for every preset but issued and custom", () => {
+    for (const { id, settings } of awgGeneratorPresets()) {
+      const expected = id === "custom" ? false : id === "issued" ? undefined : true;
+      expect(settings.randomizeKeys, id).toBe(expected);
+    }
+  });
+
+  it.each([
+    ["dns_query_aaaa", "dns_query_aaaa", 1],
+    ["dns_query_https", "dns_query_https", 1],
+    ["dns_query_burst", "dns_query", 3],
+    ["dns_query_stun", "dns_query_stun", 2],
+    ["stun_dns_response", "stun_dns_response", 2],
+    ["noise", "noise", 3],
+  ] as const)("offers %s in a J-only and a full variant", (id, iMode, iCount) => {
+    const presets = awgGeneratorPresets();
+    const only = presets.find((preset) => preset.id === id)!.settings;
+    const full = presets.find((preset) => preset.id === `${id}_full`)!.settings;
+    for (const settings of [only, full]) {
+      expect(awgGeneratorSettingsSchema.safeParse(settings).success).toBe(true);
+      expect(settings).toMatchObject({ iMode, iCount, ...AWG_GENERATOR_STANDARD_J });
+    }
+    expect(only.contentPaddingAddition).toBeNull();
+    expect(only.timings).toBeNull();
+    expect(full.contentPaddingAddition).toEqual({ min: 1, max: 39 });
+    expect(full.timings).toEqual(presets.find((preset) => preset.id === "randomized")!.settings.timings);
   });
 });

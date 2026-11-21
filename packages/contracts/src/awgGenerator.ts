@@ -10,6 +10,18 @@ export const AWG_GENERATOR_PRESETS = [
   "no_i",
   "randomized",
   "amnezia_default",
+  "dns_query_aaaa",
+  "dns_query_aaaa_full",
+  "dns_query_https",
+  "dns_query_https_full",
+  "dns_query_burst",
+  "dns_query_burst_full",
+  "dns_query_stun",
+  "dns_query_stun_full",
+  "stun_dns_response",
+  "stun_dns_response_full",
+  "noise",
+  "noise_full",
   "custom",
 ] as const;
 
@@ -22,6 +34,10 @@ export const AWG_GENERATOR_I_MODES = [
   "dns_response_random_ttl",
   "dns_response_random",
   "dns_query",
+  "dns_query_aaaa",
+  "dns_query_https",
+  "dns_query_stun",
+  "stun_dns_response",
   "stun",
   "mixed",
   "noise",
@@ -41,6 +57,19 @@ const defaultParameters = {
   contentPaddingAddition: null,
   timings: null,
 } as const;
+/**
+ * The junk-packet ranges of the presets that draw J, and the ranges a fixed
+ * preset widens to when every key draws its own values.
+ */
+export const AWG_GENERATOR_STANDARD_J = {
+  jcMin: defaultParameters.jcMin,
+  jcMax: defaultParameters.jcMax,
+  jminMin: defaultParameters.jminMin,
+  jminMax: defaultParameters.jminMax,
+  jmaxGapMin: defaultParameters.jmaxGapMin,
+  jmaxGapMax: defaultParameters.jmaxGapMax,
+} as const;
+
 const dnsParameters = {
   ...defaultParameters,
   jcMin: 4,
@@ -92,6 +121,13 @@ export const awgGeneratorSettingsSchema = z.strictObject({
   iCount: integer(1, 5).default(defaultParameters.iCount),
   contentPaddingAddition: range(0, 100).nullable().default(null),
   timings: timingsSchema.nullable().default(null),
+  // On: every key draws its own values in the preset's style. Off: every key
+  // of the node or address gets the same set. Absent (settings saved before
+  // the switch): ranges are drawn per key and fixed presets stay fixed.
+  randomizeKeys: z.boolean().optional(),
+}).refine((value) => !(value.preset === "custom" && value.randomizeKeys === true), {
+  message: "The custom preset gives every key the same values",
+  path: ["randomizeKeys"],
 }).refine((value) => value.jcMin <= value.jcMax, {
   message: "Jc maximum must be at least Jc minimum",
   path: ["jcMax"],
@@ -139,7 +175,38 @@ export const awgGeneratorPresets = (): AwgGeneratorPresetDescription[] => {
   const base = {
     ...defaultParameters,
     mtu: DEFAULT_CLIENT_MTU,
+    randomizeKeys: true,
   };
+  // CPA and Interface timing ranges of the "randomized" geometry, shared by
+  // every "full" preset.
+  const full = {
+    contentPaddingAddition: { min: 1, max: 39 },
+    timings: {
+      rekeyAfterTime: { min: 95, max: 150 },
+      rekeyTimeout: { min: 4, max: 8 },
+      rejectAfterTime: { min: 200, max: 260 },
+      keepaliveTimeout: { min: 8, max: 18 },
+      maxHandshakeAttempts: { min: 12, max: 20 },
+    },
+  };
+  // One signature shape in two levels: J ranges only, and J + CPA + timings.
+  const pair = (
+    id: AwgGeneratorPreset,
+    iMode: AwgGeneratorSettings["iMode"],
+    iCount: number,
+    shape: string,
+  ): AwgGeneratorPresetDescription[] => [
+    {
+      id,
+      description: `${shape} before the handshake with randomized J ranges, without CPA or custom timers.`,
+      settings: { ...base, preset: id, iMode, iCount },
+    },
+    {
+      id: `${id}_full` as AwgGeneratorPreset,
+      description: `${shape} before the handshake with randomized J ranges, CPA 1-39 and Interface timing ranges.`,
+      settings: { ...base, ...full, preset: `${id}_full` as AwgGeneratorPreset, iMode, iCount },
+    },
+  ];
   return [
     {
       id: "issued",
@@ -149,12 +216,12 @@ export const awgGeneratorPresets = (): AwgGeneratorPresetDescription[] => {
     {
       id: "dns_response",
       description: "Send a 44-byte DNS response with the legacy TTL before the handshake.",
-      settings: { ...fixedPresets.dns_response, mtu: DEFAULT_CLIENT_MTU, preset: "dns_response" },
+      settings: { ...fixedPresets.dns_response, mtu: DEFAULT_CLIENT_MTU, randomizeKeys: true, preset: "dns_response" },
     },
     {
       id: "dns_response_random_ttl",
       description: "Send the DNS response with a randomized TTL before the handshake.",
-      settings: { ...fixedPresets.dns_response_random_ttl, mtu: DEFAULT_CLIENT_MTU, preset: "dns_response_random_ttl" },
+      settings: { ...fixedPresets.dns_response_random_ttl, mtu: DEFAULT_CLIENT_MTU, randomizeKeys: true, preset: "dns_response_random_ttl" },
     },
     {
       id: "dns_response_randomized",
@@ -201,17 +268,10 @@ export const awgGeneratorPresets = (): AwgGeneratorPresetDescription[] => {
       description: "Node geometry profile: randomized J ranges, shuffled DNS/STUN/noise burst, CPA 1-39 and Interface timing ranges.",
       settings: {
         ...base,
+        ...full,
         preset: "randomized",
         iMode: "mixed",
         iCount: 3,
-        contentPaddingAddition: { min: 1, max: 39 },
-        timings: {
-          rekeyAfterTime: { min: 95, max: 150 },
-          rekeyTimeout: { min: 4, max: 8 },
-          rejectAfterTime: { min: 200, max: 260 },
-          keepaliveTimeout: { min: 8, max: 18 },
-          maxHandshakeAttempts: { min: 12, max: 20 },
-        },
       },
     },
     {
@@ -238,10 +298,16 @@ export const awgGeneratorPresets = (): AwgGeneratorPresetDescription[] => {
         },
       },
     },
+    ...pair("dns_query_aaaa", "dns_query_aaaa", 1, "Send a randomized DNS AAAA query"),
+    ...pair("dns_query_https", "dns_query_https", 1, "Send a randomized DNS HTTPS (type 65) query"),
+    ...pair("dns_query_burst", "dns_query", 3, "Send three randomized DNS A queries"),
+    ...pair("dns_query_stun", "dns_query_stun", 2, "Send a randomized DNS A query and a STUN Binding Request"),
+    ...pair("stun_dns_response", "stun_dns_response", 2, "Send a STUN Binding Request and a DNS response with a random TTL"),
+    ...pair("noise", "noise", 3, "Send three random-length noise packets"),
     {
       id: "custom",
       description: "Set client MTU, junk packets, signature packets, padding and timers.",
-      settings: { ...base, preset: "custom" },
+      settings: { ...base, preset: "custom", randomizeKeys: false },
     },
   ];
 };
