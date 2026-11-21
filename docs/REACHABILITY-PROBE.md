@@ -26,10 +26,16 @@ worker ── autossh tunnel (panel side) ──────► 127.0.0.1:<port>
 - Each run carries the client configs of the probe's service keys. The probe
   keeps them in memory and on a tmpfs for the duration of one node, and never
   logs them.
-- Per node and protocol it measures `ping`, `tcp` (port 22 banner),
-  `handshake` (a real AWG tunnel), and `http` through the tunnel (the egress IP
-  is shown, and noted when it is not the node's own address). A node is **available** when handshake and http
-  pass for any protocol it serves.
+- Every registered address of a node is a server of its own. For AWG 3 the
+  probe measures each enabled address with checks on, once per run, on that
+  address's route and with that address's configuration profile (see
+  "Addresses"). AWG 2, and a node without registered addresses, are measured
+  per node from the service key as issued.
+- Each measurement checks `ping`, `tcp` (port 22 banner), `handshake` (a real
+  AWG tunnel), and `http` through the tunnel (the egress IP is shown, and
+  noted when it is not the node's own address). An address is **available**
+  when handshake and http pass; a node is available when at least one of its
+  addresses (or, on a direct node, its AWG 2) is.
 - Every run first fetches a **control target** without the tunnel. If that
   fails, the vantage point itself is offline: every node reads `unknown`, and no
   alert is sent.
@@ -102,35 +108,48 @@ younger than 30 minutes that lists `bridge-measurement`; unknown, stale and
 legacy all mean unsupported, and Direct measurements are unaffected. Deploy
 the new probe image before relying on bridged measurements.
 
-### Bridged nodes
+### Addresses
 
-A node with an active bridge route (optional AWG 3.1 node bridges) is measured
-on the path its users take:
+Each enabled address with checks on is measured on the path its users take,
+with the config they get:
 
-- **AWG 3.1** goes through the bridge: the worker renders the node's AWG 3.1
-  service-key artifact with the bridge's public IPv4 and the route's UDP port
-  (the same renderer as user exports) and sends it through the usual run.
-  `expectedEgressIp` is the node's origin exit IP (`nodes.public_ip`), or an
-  explicit `null` when unknown. Nothing is sent for that path to a probe
-  without the bridge-measurement capability, or when the service key is not an
-  AWG 3.1 artifact the endpoint applies to: the path is then unknown (`error`)
-  and never alerts. The direct config is never sent in its place.
-- With an active bridge, direct checks are skipped by default, including AWG 2.
-  Operators can opt in with `probe-set --probe-direct-when-bridged=on`. The
-  extra direct AWG 3.1 result is diagnostic. It cannot affect the verdict of
-  the active bridge path.
-  A batch already sent may finish with its original targets, including when
-  the probe accepted the request but the panel timed out waiting for its reply.
-- The node verdict, alerts and widget row follow the **AWG 3.1 result alone**
-  (a working AWG 2 does not hide a failed bridge); the alert names the bridge
-  (`node (ip) через мост <bridge> (<ip>:<port>)`). In the cabinet an AWG 2 key
-  on a bridged node has a measurement when direct probes are enabled. A
-  Direct node keeps the any-protocol rule above.
+- **Route.** Through the node's bridge when the node has an active bridge
+  route and the address's bridge mode is `bridge`, or `inherit` while the
+  portal default sends addresses through the bridge; direct otherwise.
+- **Config.** The service key's AWG 3.1 artifact projected with the address's
+  effective configuration profile (its own generator settings, or the node's
+  when it inherits them), rendered for the address itself or for the bridge's
+  public IPv4 and the route's UDP port (the same renderer as user exports).
+  The address stored in the service key when it was issued is not used.
+- Bridged addresses whose built configs are identical share one measurement;
+  each distinct profile is measured on its own. Every address of the group
+  gets that verdict.
+- A bridged address is unknown (`error`, never an alert) when the probe lacks
+  the bridge-measurement capability or the artifact cannot be rendered for the
+  bridge; the direct config is never sent in its place. An address with
+  checks off is not measured; a node whose addresses all have checks off
+  reads unknown ("no address with checks on").
+- `expectedEgressIp` is the node's origin exit IP (`nodes.public_ip`), or an
+  explicit `null` on a bridged path when unknown.
+- With an active bridge, direct AWG 2 checks are skipped by default.
+  `probe-set --probe-direct-when-bridged=on` adds a direct check of every
+  bridged address and the node's AWG 2; those are diagnostic (the node's
+  `direct` status reads available when any of them works) and never change a
+  verdict. A batch already sent may finish with its original targets.
+- The node's AWG 3 row (`node_reachability_results`) is its path evidence:
+  while a bridge route is active, the best bridged measurement (unknown when
+  no address goes through the bridge), otherwise the best address. A direct
+  address therefore never vouches for a bridge in route verification or the
+  TLS rotation gate.
 - A failing bridge never changes the assignment: exports keep using the active
   route until an administrator changes it.
 
-**Endpoint revision.** The AWG 3.1 target id is `<node>:awg3:r<revision>`
-(`nodes.vpn_endpoint_revision`); AWG 2 stays `<node>:awg2`. Changing the
+**Endpoint revision.** An address target id is
+`<node>:awg3:r<revision>:direct:<digest>` or `…:bridge:<digest>`; the digest
+covers the address, its own revision and the effective profile, the prefix
+the node's bridge assignment revision (`nodes.vpn_endpoint_revision`). A node
+target (no registered address) is `<node>:awg3:r<revision>`; AWG 2 stays
+`<node>:awg2`. Changing the
 assignment (Direct or another bridge) bumps the revision and, in the same
 transaction under the node row lock, deletes the node's AWG 3.1 result and
 turns its verdict to unknown. An open incident is kept, so it ends with one
@@ -193,8 +212,8 @@ raise `intervalSec`, or use operator verification.
 
 | Status | Means |
 |---|---|
-| available (`ok`) | handshake and http passed for at least one protocol |
-| unavailable (`failed`) | the control target worked, and no protocol got a working tunnel |
+| available (`ok`) | an address: handshake and http passed; a node: at least one of its addresses (or its direct AWG 2) is available |
+| unavailable (`failed`) | the control target worked, and no tunnel worked (for a node: on any address) |
 | unknown (`error`) | the probe could not look: control target down, no usable key yet, probe error |
 
 Telegram, through the same chat as the quota-request notification
@@ -202,12 +221,20 @@ Telegram, through the same chat as the quota-request notification
 id or comma-separated numeric chat ids; every chat gets the alerts and the
 status widget), plain text:
 
-- **one** "unavailable" message per node per incident, after `fail-threshold`
-  consecutive failed runs (default 2); nothing more while it stays down;
-- **one** "available again" message when it recovers;
+- **one** "unavailable" message per address per incident, after
+  `fail-threshold` consecutive failed runs (default 2); nothing more while it
+  stays down. A bridged address names its bridge
+  (`Адрес <name> (<ip>) через мост <bridge> (<ip>:<port>)`). Addresses of one
+  node that go down in the same run share one message;
+- **one** "available again" message when it recovers, shared the same way;
+- a node without registered addresses keeps one incident of its own, with the
+  same rules;
 - when every attempted node (at least two) fails with no handshake anywhere,
-  **one** combined message instead, marked "the probe itself may be broken",
-  and one combined recovery;
+  **one** combined message instead, listing the addresses, marked "the probe
+  itself may be broken", and one combined recovery;
+- an open address incident stays open across a profile, bridge mode, route or
+  primary address change (its streak restarts); disabling the address or
+  turning its checks off closes it without a message;
 - **one** message when the probe has reported nothing for `stale-after-sec`
   (default 3 h, never less than one period plus 30 min), and one when it is
   back.
@@ -231,7 +258,8 @@ seen in production in November 2026), each chat gets a widget of its own
 instead and every refresh edits each one (`editMessageWidgetData`); the worker
 tries sharing again after a restart and moves to it once Telegram allows it.
 
-- Heading "VPN из {label}: N из M"; one row per node with checks on: ssh / vpn /
+- Heading "VPN из {label}: N из M"; one row per measured address (a node
+  without measured addresses keeps one node row): ssh / vpn /
   internet ✓ ✕ or "-" (not run), devices online now (the
   probe's own keys excluded), and "люди": how long ago a person last
   completed a handshake on the node — the admin card's "last handshake", probe
@@ -271,13 +299,17 @@ on their own keys, through `GET /api/nodes` (`reachability`) and
   checks or without a verdict, an `error` verdict, and a run that failed
   everywhere.
 
-A server badge is the node verdict (a bridged node's follows its AWG 3.1
-result). A **key card** reads the result of its own protocol on its node, on
-every node: a missing result, an `error` one or a stale one is `unknown`, and
-`blocked` carries that protocol's own failing-since
-(`node_reachability_results.failing_since`, kept by the worker across failed
-runs and cleared on recovery). An AWG 3.1 key is therefore not shown healthy
-because AWG 2 works.
+A server badge and an AWG 3.1 **key card** read the verdict of the path the
+user's key takes on its address (the key's own address, or the primary one):
+the address's verdict when the key takes the route the address was measured
+on; the node's bridge path row when the key goes through the bridge where the
+address was measured direct (a per-user bridge setting); unknown when it goes
+direct where only the bridge was measured, or is pinned to a route that is no
+longer active. An AWG 2 key card, and any key on a node without registered
+addresses, read the result of their own protocol on the node. A missing
+result, an `error` one or a stale one is `unknown`, and `blocked` carries its
+own failing-since. An AWG 3.1 key is therefore not shown healthy because AWG 2
+or another address works.
 
 Nothing else leaves: no levels, details, label, host or time zone.
 

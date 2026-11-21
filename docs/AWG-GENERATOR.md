@@ -123,8 +123,9 @@ update timestamp.
 ## Reachability checks
 
 Regular checks apply the same AWG 3.1 client settings as config exports, using
-the probe's own service key. Each enabled direct address is measured at its
-own IP. Addresses using the active bridge share a measurement only when their
+the probe's own service key: every address is measured with its own effective
+profile on its own route, and the address the service key was issued for is
+not used. Each enabled direct address is measured at its own IP. Addresses using the active bridge share a measurement only when their
 effective projected client configurations match. Distinct profiles have
 separate per-address results, including on the same bridge. A reply for an
 older profile or path cannot update the current measurement. AWG 2.0 retains
