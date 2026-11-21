@@ -8125,11 +8125,15 @@ describe("PostgresControlRepository AWG 3.1 config refresh", () => {
     await database.db.update(vpnKeys).set({ awgGenerator: settingsOf("stun") }).where(eq(vpnKeys.id, own));
     const listed = await repository().adminList(admin, "keys") as Array<{ id: string; config: unknown }>;
     const configOf = (id: string) => listed.find((entry) => entry.id === id)?.config;
-    expect(configOf(plain)).toEqual({
+    expect(configOf(plain)).toMatchObject({
       awgGenerator: settingsOf("dns_response"), profileFrom: "node", mtu: 1400, mtuFrom: "node", probeChecked: true,
     });
     expect(configOf(ios)).toMatchObject({ profileFrom: "node", mtu: 1340, mtuFrom: "device", probeChecked: false });
     expect(configOf(own)).toMatchObject({ profileFrom: "key", mtu: 1400, mtuFrom: "node", probeChecked: false });
+    // What the key would get without its own settings, for the admin's editor.
+    expect(configOf(own)).toMatchObject({
+      inherited: { awgGenerator: settingsOf("dns_response"), profileFrom: "node", mtu: 1400, mtuFrom: "node" },
+    });
   });
 
   runDatabaseTest("leaves owner-facing key and me responses without the settings", async () => {

@@ -66,9 +66,9 @@ import {
 import { formatDateTime } from "@/lib/format";
 import { InlineTraffic } from "@/components/inline-traffic";
 import { NodeCardSection } from "@/components/admin/node-card-section";
-import { NodeGeneratorSettings } from "@/components/admin/node-generator-settings";
+import { NodeGeneratorSettings } from "@/components/admin/node-config-dialog";
 import { NodePublicEndpoints } from "@/components/admin/node-public-endpoints";
-import type { AwgGeneratorSettings, NodePublicEndpointMutation } from "@amnezia/contracts";
+import type { AwgDeviceRules, AwgGeneratorSettings, NodePublicEndpointMutation } from "@amnezia/contracts";
 import { MetricMeter, NodeMetrics } from "@/components/admin/node-metrics";
 import { NodePublicAddress } from "@/components/admin/node-public-address";
 import { ServiceChecksCard } from "@/components/admin/service-checks-card";
@@ -336,12 +336,19 @@ function AdminNodesView() {
                   checksConfigured={serviceChecks.checks.length > 0}
                   onSetChecks={(patch) => void setNodeChecks(node, patch)}
                   onToggleIpv6Stub={(enabled) => void toggleIpv6Stub(node, enabled)}
-                  onSaveGenerator={async (endpointId, awgGenerator) => {
+                  onSaveGenerator={async (endpointId, awgGenerator, awgMtu) => {
                     await request(`/api/admin/nodes/${node.id}`, {
                       method: "PATCH",
                       body: JSON.stringify(endpointId
-                        ? { publicEndpoint: { action: "update", id: endpointId, awgGenerator } }
-                        : { awgGenerator }),
+                        ? { publicEndpoint: { action: "update", id: endpointId, awgGenerator, awgMtu } }
+                        : { awgGenerator, awgMtu }),
+                    });
+                    await reload();
+                  }}
+                  onSaveDeviceRules={async (endpointId, awgDeviceRules) => {
+                    await request(`/api/admin/nodes/${node.id}`, {
+                      method: "PATCH",
+                      body: JSON.stringify({ publicEndpoint: { action: "update", id: endpointId, awgDeviceRules } }),
                     });
                     await reload();
                   }}
@@ -452,6 +459,7 @@ function NodeCard({
   onToggleIpv6Stub,
   onSavePublicEndpoint,
   onSaveGenerator,
+  onSaveDeviceRules,
 }: {
   node: AdminNode;
   /** Undefined before a successful lookup, null for Direct. */
@@ -473,7 +481,8 @@ function NodeCard({
   }) => void;
   onToggleIpv6Stub: (enabled: boolean) => void;
   onSavePublicEndpoint: (change: NodePublicEndpointMutation) => Promise<void>;
-  onSaveGenerator: (endpointId: string | null, settings: AwgGeneratorSettings | null) => Promise<void>;
+  onSaveGenerator: (endpointId: string | null, settings: AwgGeneratorSettings | null, mtu: number | null) => Promise<void>;
+  onSaveDeviceRules: (endpointId: string, rules: AwgDeviceRules | null) => Promise<void>;
   onToggle: (enabled: boolean) => void;
   onReconcile: () => void;
   onEdit: () => void;
@@ -605,7 +614,13 @@ function NodeCard({
         <NodePublicEndpoints endpoints={node.publicEndpoints ?? []}
           canAdd={supported.includes("awg3")} onSave={onSavePublicEndpoint} />
         {supported.includes("awg3") ? (
-          <NodeGeneratorSettings value={node.awgGenerator ?? null} endpoints={node.publicEndpoints ?? []} onSave={onSaveGenerator} />
+          <NodeGeneratorSettings
+            value={node.awgGenerator ?? null}
+            mtu={node.awgMtu ?? null}
+            endpoints={node.publicEndpoints ?? []}
+            onSave={onSaveGenerator}
+            onSaveDeviceRules={onSaveDeviceRules}
+          />
         ) : null}
 
         <div className="space-y-1.5">

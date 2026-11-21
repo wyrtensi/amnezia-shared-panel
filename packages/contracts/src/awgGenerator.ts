@@ -201,6 +201,7 @@ export const resolveAwgClientSettings = (
 
 export const nodeGeneratorMetadataSchema = z.object({
   awgGenerator: awgGeneratorSettingsSchema.nullish(),
+  awgMtu: awgClientMtuSchema.nullish(),
 });
 export type NodeGeneratorMetadata = z.infer<typeof nodeGeneratorMetadataSchema>;
 

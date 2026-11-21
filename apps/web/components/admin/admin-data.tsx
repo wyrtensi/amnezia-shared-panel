@@ -7,7 +7,9 @@ import { useT } from "@/lib/i18n/provider";
 import { WORKER_PERIOD_FIELD_NAMES } from "@amnezia/contracts";
 import type {
   AdminKeyConfigMetadata,
+  AwgGeneratorSettings,
   NodeGeneratorMetadata,
+  ResolvedAwgClientSettings,
   AdminNodeEndpoint,
   AdminOverviewBridges,
   GlobalRoutes,
@@ -61,6 +63,9 @@ export type AdminUser = {
   /** Per-node key limits (nodeId -> limit); null when the user has none. */
   nodeKeyLimits: Record<string, number> | null;
   policyOverride: Record<string, unknown> | null;
+  /** Admin-only client profile and MTU for every key of this user; null inherits. */
+  awgGenerator?: AwgGeneratorSettings | null;
+  awgMtu?: number | null;
   deactivationReason: string | null;
   /**
    * How many times this user has answered each of the panel's two
@@ -187,6 +192,16 @@ export type AdminKey = AdminKeyConfigMetadata & {
   revokedAt?: string | null;
   online?: boolean;
   traffic?: { receivedBytes: string; sentBytes: string } | null;
+  /** The key's own client profile and MTU (admin only); null inherits. */
+  awgGenerator?: AwgGeneratorSettings | null;
+  awgMtu?: number | null;
+  /** What an AWG 3.1 key's exports use and where it comes from; null for AWG 2.0. */
+  config?: (ResolvedAwgClientSettings & {
+    /** False when the key, its owner or a device rule sets something: not measured. */
+    probeChecked: boolean;
+    /** The same without the key's own settings. */
+    inherited?: ResolvedAwgClientSettings;
+  }) | null;
 };
 
 export type RuleVersion = {

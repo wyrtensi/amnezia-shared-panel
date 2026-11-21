@@ -4116,14 +4116,15 @@ export class PostgresControlRepository implements ControlRepository {
             ...row
           }) => {
             const ownerPolicy = resolvePortalPolicy(basePolicy, ownerPolicyOverride);
-            const settings = resolveKeyClientSettings({
+            const levels = {
               key: row,
               owner: { awgGenerator: ownerAwgGenerator, awgMtu: ownerAwgMtu },
               endpoint: row.endpointName === null ? null : {
                 awgGenerator: endpointAwgGenerator, awgMtu: endpointAwgMtu, awgDeviceRules: endpointDeviceRules,
               },
               node: { awgGenerator: nodeAwgGenerator, awgMtu: nodeAwgMtu },
-            });
+            };
+            const settings = resolveKeyClientSettings(levels);
             const manual: readonly string[] = ["key", "user", "device"];
             return {
               ...row,
@@ -4133,6 +4134,11 @@ export class PostgresControlRepository implements ControlRepository {
                 ? {
                     ...settings,
                     probeChecked: !manual.includes(settings.profileFrom ?? "") && !manual.includes(settings.mtuFrom),
+                    // Without the key's own settings: what its editor offers to inherit.
+                    inherited: resolveKeyClientSettings({
+                      ...levels,
+                      key: { ...row, awgGenerator: null, awgMtu: null },
+                    }),
                   }
                 : null,
               // Same shape the owner-facing key list uses, so both views can feed

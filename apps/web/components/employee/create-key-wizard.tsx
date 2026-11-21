@@ -28,11 +28,13 @@ import {
   defaultKeyNameDisplay,
   DEVICE_TYPE_ORDER,
   MIN_AWG3_CLIENT_VERSION,
+  type AwgGeneratorSettings,
   type Bridge,
   type DeviceType,
   type KeyBridgeMode,
   type KeyNameDisplay,
 } from "@amnezia/contracts";
+import { AwgNewKeySettings, type AwgClientSettingsValue } from "@/components/admin/awg-client-settings";
 import { KeyBridgeSelect } from "@/components/admin/key-bridge-select";
 import { AGENT_DEFAULT_ENDPOINT, NodeEndpointSelect } from "@/components/node-endpoint-select";
 import { apiRequest } from "@/lib/api";
@@ -86,6 +88,9 @@ export type CreateKeyPayload = {
   nameDisplay: KeyNameDisplay;
   bridgeMode?: KeyBridgeMode;
   vpnBridgeRouteId?: string | null;
+  /** Administrators only, like the bridge fields. */
+  awgGenerator?: AwgGeneratorSettings;
+  awgMtu?: number;
 };
 
 export function CreateKeyWizard({
@@ -128,6 +133,10 @@ export function CreateKeyWizard({
   // Admin-only: load available bridges when the wizard opens so admins can
   // pick Direct or a specific bridge route. Regular users never call this.
   const isAdmin = me.role === "admin";
+  const [clientSettings, setClientSettings] = React.useState<AwgClientSettingsValue>({
+    awgGenerator: null,
+    awgMtu: null,
+  });
   React.useEffect(() => {
     if (!open || !isAdmin) return;
     let active = true;
@@ -159,6 +168,7 @@ export function CreateKeyWizard({
       setRouteProfile("full_tunnel");
       setNameDisplay({ ...defaultKeyNameDisplay });
       setBridgeMode("inherit");
+      setClientSettings({ awgGenerator: null, awgMtu: null });
       setBridgeRouteId("");
       setError("");
     } else if (!open) {
@@ -327,6 +337,10 @@ export function CreateKeyWizard({
         routeProfile,
         nameDisplay,
         ...bridgePayload,
+        ...(isAdmin && protocol === "awg3" && clientSettings.awgGenerator !== null
+          ? { awgGenerator: clientSettings.awgGenerator } : {}),
+        ...(isAdmin && protocol === "awg3" && clientSettings.awgMtu !== null
+          ? { awgMtu: clientSettings.awgMtu } : {}),
       });
       onOpenChange(false);
     } catch (cause) {
@@ -533,6 +547,18 @@ export function CreateKeyWizard({
               routeId={bridgeRouteId}
               onChange={handleBridgeChange}
               idPrefix="wizard-bridge"
+            />
+          ) : null}
+
+          {/* The panel's user API does not carry server settings, so the
+              wizard names the levels a key inherits without their values. */}
+          {isAdmin && protocol === "awg3" ? (
+            <AwgNewKeySettings
+              idPrefix="wizard-config"
+              value={clientSettings}
+              onChange={setClientSettings}
+              inherited={null}
+              pending={busy}
             />
           ) : null}
 

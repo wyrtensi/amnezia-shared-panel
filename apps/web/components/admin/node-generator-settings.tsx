@@ -1,23 +1,18 @@
 "use client";
 
 import * as React from "react";
-import { Settings2 } from "lucide-react";
 import { toast } from "sonner";
 import {
   AWG_GENERATOR_I_MODES,
   AWG_GENERATOR_PRESETS,
+  awgClientMtuSchema,
   awgGeneratorPresets,
   awgGeneratorSettingsSchema,
+  type AwgDeviceRules,
   type AwgGeneratorSettings,
 } from "@amnezia/contracts";
+import { MtuField, type InheritedMtu } from "@/components/admin/awg-mtu-field";
 import { Button } from "@/components/ui/button";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -34,15 +29,15 @@ export type GeneratorEndpoint = {
   id: string;
   name: string;
   awgGenerator?: AwgGeneratorSettings | null;
+  awgMtu?: number | null;
+  awgDeviceRules?: AwgDeviceRules | null;
 };
 
-/** The target picker's value for the node itself; an item value cannot be empty. */
-const NODE_SCOPE = "node";
-
-type Props = {
-  value: AwgGeneratorSettings | null;
-  endpoints: readonly GeneratorEndpoint[];
-  onSave: (endpointId: string | null, settings: AwgGeneratorSettings | null) => Promise<void>;
+/** The preset's name, or the issued artifact's when nothing sets one. */
+export const usePresetLabel = () => {
+  const { t } = useT();
+  return (settings: AwgGeneratorSettings | null) =>
+    settings ? t(`generator.${settings.preset}`) : t("awgSettings.noProfile");
 };
 
 /**
@@ -87,134 +82,47 @@ export const keyRandomizationState = (
   };
 };
 
-export function NodeGeneratorSettings({ value, endpoints, onSave }: Props) {
-  const { t } = useT();
-  const [open, setOpen] = React.useState(false);
-  const [scope, setScope] = React.useState("");
-  const [pending, setPending] = React.useState(false);
-  const pendingRef = React.useRef(false);
-  const selected = endpoints.find((endpoint) => endpoint.id === scope);
-  return (
-    <>
-      <Button
-        type="button"
-        variant="outline"
-        size="sm"
-        disabled={pending}
-        onClick={() => {
-          if (pendingRef.current) return;
-          setScope("");
-          setOpen(true);
-        }}
-      >
-        <Settings2 className="size-4" /> {t("generator.title")}
-      </Button>
-      <Dialog open={open} onOpenChange={(next) => {
-        if (!pendingRef.current) setOpen(next);
-      }}>
-        <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-lg">
-          <DialogHeader>
-            <DialogTitle>{t("generator.title")}</DialogTitle>
-            <DialogDescription>{t("generator.description")}</DialogDescription>
-          </DialogHeader>
-          <div className="grid gap-1.5">
-            <Label htmlFor="generator-target">{t("generator.target")}</Label>
-            <Select
-              value={scope || NODE_SCOPE}
-              disabled={pending}
-              onValueChange={(next) => {
-                if (!pendingRef.current) setScope(next === NODE_SCOPE ? "" : next);
-              }}
-            >
-              <SelectTrigger id="generator-target">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value={NODE_SCOPE}>{t("generator.node")}</SelectItem>
-                {endpoints.map((endpoint) => (
-                  <SelectItem key={endpoint.id} value={endpoint.id}>{endpoint.name}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-          <GeneratorEditor
-            key={`${open}-${scope}`}
-            value={scope ? selected?.awgGenerator ?? null : value}
-            inherited={Boolean(scope)}
-            pending={pending}
-            onSave={async (settings) => {
-              if (pendingRef.current) return false;
-              pendingRef.current = true;
-              setPending(true);
-              try {
-                await onSave(scope || null, settings);
-                setOpen(false);
-                return true;
-              } finally {
-                pendingRef.current = false;
-                setPending(false);
-              }
-            }}
-          />
-        </DialogContent>
-      </Dialog>
-    </>
-  );
-}
+/** Settings saved with the legacy randomized query open as the mixed mode it stands for. */
+export const initialGeneratorDraft = (value: AwgGeneratorSettings | null): AwgGeneratorSettings | null =>
+  value && value.preset === "randomized" && value.iMode === "dns_query" ? { ...value, iMode: "mixed" } : value;
 
-export function GeneratorEditor({ value, inherited, pending, onSave }: {
-  value: AwgGeneratorSettings | null;
-  inherited: boolean;
+/**
+ * The profile part of the editor, controlled and without a form, so the
+ * same fields serve a node, an address, a device rule, a user, a key and the
+ * key issue dialogs. The client MTU is a separate field (`MtuField`).
+ */
+export function GeneratorFields({ draft, onDraftChange, pending, inheritLabel, idPrefix = "generator" }: {
+  draft: AwgGeneratorSettings | null;
+  onDraftChange: (draft: AwgGeneratorSettings | null) => void;
   pending: boolean;
-  onSave: (settings: AwgGeneratorSettings | null) => Promise<boolean>;
+  /** The "inherit" option, naming what is inherited. */
+  inheritLabel: string;
+  idPrefix?: string;
 }) {
   const { t } = useT();
   const presets = awgGeneratorPresets();
-  const [draft, setDraft] = React.useState<AwgGeneratorSettings | null>(() =>
-    value && value.preset === "randomized" && value.iMode === "dns_query"
-      ? { ...value, iMode: "mixed" }
-      : value,
-  );
-  const [invalid, setInvalid] = React.useState(false);
   const update = (change: Partial<AwgGeneratorSettings>) => {
-    setDraft((current) => current ? editGeneratorDraft(current, change) : current);
-    setInvalid(false);
+    if (draft) onDraftChange(editGeneratorDraft(draft, change));
   };
   const randomization = keyRandomizationState(draft);
-  const save = async (event: React.FormEvent) => {
-    event.preventDefault();
-    if (draft && !awgGeneratorSettingsSchema.safeParse(draft).success) {
-      setInvalid(true);
-      return;
-    }
-    try {
-      if (await onSave(draft)) toast.success(t("generator.saved"));
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : t("nodes.updateFailed"));
-    }
-  };
   const timings = draft?.timings;
   return (
-    <form onSubmit={(event) => void save(event)}>
-      <fieldset disabled={pending} className="space-y-3">
+    <>
       <div className="grid gap-1.5">
-        <Label htmlFor="generator-preset">{t("generator.preset")}</Label>
+        <Label htmlFor={`${idPrefix}-preset`}>{t("generator.preset")}</Label>
         <Select
           value={draft?.preset ?? "inherit"}
           disabled={pending}
           onValueChange={(next) => {
             const preset = presets.find((entry) => entry.id === next);
-            setDraft(preset ? structuredClone(preset.settings) : null);
-            setInvalid(false);
+            onDraftChange(preset ? structuredClone(preset.settings) : null);
           }}
         >
-          <SelectTrigger id="generator-preset">
+          <SelectTrigger id={`${idPrefix}-preset`}>
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="inherit">
-              {t(inherited ? "generator.inheritNode" : "generator.inheritDefault")}
-            </SelectItem>
+            <SelectItem value="inherit">{inheritLabel}</SelectItem>
             {AWG_GENERATOR_PRESETS.map((id) => (
               <SelectItem key={id} value={id}>{t(`generator.${id}`)}</SelectItem>
             ))}
@@ -238,101 +146,157 @@ export function GeneratorEditor({ value, inherited, pending, onSave }: {
       {randomization.editShares ? (
         <p className="text-xs text-warning">{t("generator.randomizeKeysLegacyCustom")}</p>
       ) : null}
-      {draft ? (
+      {draft && draft.preset !== "issued" ? (
         <>
-          <NumberField
-            label={t("generator.mtu")}
-            value={draft.mtu}
-            min={1280}
-            max={1420}
-            onChange={(mtu) => update({ mtu })}
+          <Range
+            label="Jc" min={draft.jcMin} max={draft.jcMax} lower={0} upper={16}
+            onChange={(jcMin, jcMax) => update({ jcMin, jcMax })}
           />
-          {draft.preset !== "issued" ? (
-            <>
-              <Range
-                label="Jc" min={draft.jcMin} max={draft.jcMax} lower={0} upper={16}
-                onChange={(jcMin, jcMax) => update({ jcMin, jcMax })}
-              />
-              <Range
-                label="Jmin" min={draft.jminMin} max={draft.jminMax} lower={1} upper={500}
-                onChange={(jminMin, jminMax) => update({ jminMin, jminMax })}
-              />
-              <Range
-                label={t("generator.jmaxGap")}
-                min={draft.jmaxGapMin} max={draft.jmaxGapMax} lower={1} upper={500}
-                onChange={(jmaxGapMin, jmaxGapMax) => update({ jmaxGapMin, jmaxGapMax })}
-              />
-              <div className="grid gap-1.5">
-                <Label htmlFor="generator-i-mode">{t("generator.iMode")}</Label>
-                <Select
-                  value={draft.iMode}
-                  disabled={pending}
-                  onValueChange={(next) => update({ iMode: next as AwgGeneratorSettings["iMode"] })}
-                >
-                  <SelectTrigger id="generator-i-mode">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {AWG_GENERATOR_I_MODES.map((mode) => (
-                      <SelectItem key={mode} value={mode}>{t(`generator.${mode}`)}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-              {draft.iMode !== "issued" && draft.iMode !== "none" ? (
-                <NumberField
-                  label={t("generator.iCount")} value={draft.iCount} min={1} max={5}
-                  onChange={(iCount) => update({ iCount })}
-                />
-              ) : null}
-              <div className="flex items-center justify-between gap-3 text-sm">
-                <span>{t("generator.cpa")}</span>
-                <Switch
-                  aria-label={t("generator.cpa")}
-                  checked={draft.contentPaddingAddition !== null}
-                  onCheckedChange={(checked) => update({
-                    contentPaddingAddition: checked ? { min: 0, max: 0 } : null,
-                  })}
-                />
-              </div>
-              {draft.contentPaddingAddition ? (
-                <Range
-                  label="CPA" min={draft.contentPaddingAddition.min} max={draft.contentPaddingAddition.max}
-                  lower={0} upper={100}
-                  onChange={(min, max) => update({ contentPaddingAddition: { min, max } })}
-                />
-              ) : null}
-              <div className="flex items-center justify-between gap-3 text-sm">
-                <span>{t("generator.timings")}</span>
-                <Switch
-                  aria-label={t("generator.timings")}
-                  checked={draft.timings !== null}
-                  onCheckedChange={(checked) => update({
-                    timings: checked ? {
-                      rekeyAfterTime: { min: 120, max: 120 },
-                      rekeyTimeout: { min: 5, max: 5 },
-                      rejectAfterTime: { min: 180, max: 180 },
-                      keepaliveTimeout: { min: 10, max: 10 },
-                      maxHandshakeAttempts: { min: 18, max: 18 },
-                    } : null,
-                  })}
-                />
-              </div>
-              {timings ? (Object.keys(timings) as Array<keyof typeof timings>).map((key) => (
-                <Range
-                  key={key} label={key} min={timings[key].min} max={timings[key].max}
-                  lower={key === "rejectAfterTime" ? 180 : 1} upper={65535}
-                  onChange={(min, max) => update({ timings: { ...timings, [key]: { min, max } } })}
-                />
-              )) : null}
-            </>
+          <Range
+            label="Jmin" min={draft.jminMin} max={draft.jminMax} lower={1} upper={500}
+            onChange={(jminMin, jminMax) => update({ jminMin, jminMax })}
+          />
+          <Range
+            label={t("generator.jmaxGap")}
+            min={draft.jmaxGapMin} max={draft.jmaxGapMax} lower={1} upper={500}
+            onChange={(jmaxGapMin, jmaxGapMax) => update({ jmaxGapMin, jmaxGapMax })}
+          />
+          <div className="grid gap-1.5">
+            <Label htmlFor={`${idPrefix}-i-mode`}>{t("generator.iMode")}</Label>
+            <Select
+              value={draft.iMode}
+              disabled={pending}
+              onValueChange={(next) => update({ iMode: next as AwgGeneratorSettings["iMode"] })}
+            >
+              <SelectTrigger id={`${idPrefix}-i-mode`}>
+            <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+            {AWG_GENERATOR_I_MODES.map((mode) => (
+              <SelectItem key={mode} value={mode}>{t(`generator.${mode}`)}</SelectItem>
+            ))}
+              </SelectContent>
+            </Select>
+          </div>
+          {draft.iMode !== "issued" && draft.iMode !== "none" ? (
+            <NumberField
+              label={t("generator.iCount")} value={draft.iCount} min={1} max={5}
+              onChange={(iCount) => update({ iCount })}
+            />
           ) : null}
+          <div className="flex items-center justify-between gap-3 text-sm">
+            <span>{t("generator.cpa")}</span>
+            <Switch
+              aria-label={t("generator.cpa")}
+              checked={draft.contentPaddingAddition !== null}
+              onCheckedChange={(checked) => update({
+            contentPaddingAddition: checked ? { min: 0, max: 0 } : null,
+              })}
+            />
+          </div>
+          {draft.contentPaddingAddition ? (
+            <Range
+              label="CPA" min={draft.contentPaddingAddition.min} max={draft.contentPaddingAddition.max}
+              lower={0} upper={100}
+              onChange={(min, max) => update({ contentPaddingAddition: { min, max } })}
+            />
+          ) : null}
+          <div className="flex items-center justify-between gap-3 text-sm">
+            <span>{t("generator.timings")}</span>
+            <Switch
+              aria-label={t("generator.timings")}
+              checked={draft.timings !== null}
+              onCheckedChange={(checked) => update({
+            timings: checked ? {
+              rekeyAfterTime: { min: 120, max: 120 },
+              rekeyTimeout: { min: 5, max: 5 },
+              rejectAfterTime: { min: 180, max: 180 },
+              keepaliveTimeout: { min: 10, max: 10 },
+              maxHandshakeAttempts: { min: 18, max: 18 },
+            } : null,
+              })}
+            />
+          </div>
+          {timings ? (Object.keys(timings) as Array<keyof typeof timings>).map((key) => (
+            <Range
+              key={key} label={key} min={timings[key].min} max={timings[key].max}
+              lower={key === "rejectAfterTime" ? 180 : 1} upper={65535}
+              onChange={(min, max) => update({ timings: { ...timings, [key]: { min, max } } })}
+            />
+          )) : null}
         </>
       ) : null}
-      {invalid ? <p role="alert" className="text-sm text-destructive">{t("generator.invalid")}</p> : null}
-      <div className="flex justify-end">
-        <Button type="submit" disabled={pending}>{t("common.save")}</Button>
-      </div>
+    </>
+  );
+}
+
+/**
+ * A level's profile and client MTU in one form: the node, an address, a
+ * device rule, a user or a key. Either can inherit; `onSave` gets both.
+ */
+export function GeneratorEditor({
+  value,
+  mtu = null,
+  inheritLabel,
+  inheritedMtu,
+  pending,
+  onSave,
+  idPrefix = "generator",
+  requireOne = false,
+}: {
+  value: AwgGeneratorSettings | null;
+  /** This level's own MTU; null inherits. */
+  mtu?: number | null;
+  inheritLabel: string;
+  inheritedMtu: InheritedMtu;
+  pending: boolean;
+  onSave: (settings: AwgGeneratorSettings | null, mtu: number | null) => Promise<boolean>;
+  idPrefix?: string;
+  /** A device rule must set a profile, an MTU or both. */
+  requireOne?: boolean;
+}) {
+  const { t } = useT();
+  const [draft, setDraft] = React.useState(() => initialGeneratorDraft(value));
+  const [ownMtu, setOwnMtu] = React.useState<number | null>(mtu);
+  const [invalid, setInvalid] = React.useState<string | null>(null);
+  const save = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if ((draft && !awgGeneratorSettingsSchema.safeParse(draft).success) ||
+      (ownMtu !== null && !awgClientMtuSchema.safeParse(ownMtu).success)) {
+      setInvalid(t("generator.invalid"));
+      return;
+    }
+    if (requireOne && draft === null && ownMtu === null) {
+      setInvalid(t("awgRules.empty"));
+      return;
+    }
+    try {
+      if (await onSave(draft, ownMtu)) toast.success(t("generator.saved"));
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : t("nodes.updateFailed"));
+    }
+  };
+  return (
+    <form onSubmit={(event) => void save(event)}>
+      <fieldset disabled={pending} className="space-y-3">
+        <GeneratorFields
+          draft={draft}
+          onDraftChange={(next) => { setDraft(next); setInvalid(null); }}
+          pending={pending}
+          inheritLabel={inheritLabel}
+          idPrefix={idPrefix}
+        />
+        <MtuField
+          id={`${idPrefix}-mtu`}
+          value={ownMtu}
+          inherited={inheritedMtu}
+          disabled={pending}
+          onChange={(next) => { setOwnMtu(next); setInvalid(null); }}
+        />
+        {invalid ? <p role="alert" className="text-sm text-destructive">{invalid}</p> : null}
+        <div className="flex justify-end">
+          <Button type="submit" disabled={pending}>{t("common.save")}</Button>
+        </div>
       </fieldset>
     </form>
   );

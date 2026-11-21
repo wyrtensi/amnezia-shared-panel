@@ -40,7 +40,7 @@ describe("key randomization switch", () => {
 
   it("warns that editing an old Custom profile gives every key the same values", () => {
     const html = renderToStaticMarkup(
-      <GeneratorEditor value={savedBeforeSwitch("custom")} inherited={false} pending={false} onSave={() => Promise.resolve(true)} />,
+      <GeneratorEditor value={savedBeforeSwitch("custom")} inheritLabel="inherit" inheritedMtu={{ mtu: 1280, source: "default" }} pending={false} onSave={() => Promise.resolve(true)} />,
     );
     expect(html).toContain(messages.ru["generator.randomizeKeysLegacyCustom"]);
   });
@@ -67,14 +67,14 @@ describe("key randomization switch", () => {
 
   it("renders the switch for a preset and not for issued", () => {
     const html = (value: ReturnType<typeof preset>) =>
-      renderToStaticMarkup(<GeneratorEditor value={value} inherited={false} pending={false} onSave={() => Promise.resolve(true)} />);
+      renderToStaticMarkup(<GeneratorEditor value={value} inheritLabel="inherit" inheritedMtu={{ mtu: 1280, source: "default" }} pending={false} onSave={() => Promise.resolve(true)} />);
     expect(html(preset("stun_dns_response"))).toContain(messages.ru["generator.randomizeKeys"]);
     expect(html(preset("issued"))).not.toContain(messages.ru["generator.randomizeKeys"]);
   });
 
   it("uses the panel's select for the preset and the signature mode", () => {
     const html = renderToStaticMarkup(
-      <GeneratorEditor value={preset("randomized")} inherited={false} pending={false} onSave={() => Promise.resolve(true)} />,
+      <GeneratorEditor value={preset("randomized")} inheritLabel="inherit" inheritedMtu={{ mtu: 1280, source: "default" }} pending={false} onSave={() => Promise.resolve(true)} />,
     );
     for (const id of ["generator-preset", "generator-i-mode"]) {
       expect(html).toMatch(new RegExp(`<button[^>]*role="combobox"[^>]*id="${id}"|<button[^>]*id="${id}"[^>]*role="combobox"`));

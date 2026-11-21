@@ -25,6 +25,7 @@ import {
   Shield,
   ShieldOff,
   Sliders,
+  SlidersHorizontal,
   Eraser,
   Trash2,
   Undo2,
@@ -67,15 +68,27 @@ import {
   accessDomainSchema,
   composeKeyDisplayName,
   defaultKeyNameDisplay,
+  DEVICE_TYPE_ORDER,
   INSTALL_NOTICE_SHOWINGS,
   isPurgeableKeyState,
   isRevocableKeyState,
   normalizeAccessDomain,
   UPDATE_NOTICE_SHOWINGS,
+  type AwgGeneratorSettings,
   type Bridge,
   type KeyBridgeMode,
   type KeyNameDisplay,
 } from "@amnezia/contracts";
+import {
+  AwgClientSettingsDialog,
+  AwgKeySettingsSummary,
+  AwgNewKeySettings,
+  inheritedForNewKey,
+  USER_INHERITED,
+  useKeyInherited,
+  type AwgClientSettingsValue,
+} from "@/components/admin/awg-client-settings";
+import { usePresetLabel } from "@/components/admin/node-generator-settings";
 import { ProtocolSelect } from "@/components/protocol-select";
 // One editor for the operator-only note, shared with the administrator's own
 // key card in the ordinary panel: it is one field with one explanation
@@ -782,6 +795,7 @@ export default function AdminUsersPage() {
             onExportKey={(id, deviceLabel, routeProfile) =>
               setConfigTarget({ id, deviceLabel, routeProfile })
             }
+            onSetConfig={(value) => action("users", selected.id, "set-config", value)}
           />
         ) : (
           <Card>
@@ -1751,6 +1765,7 @@ function UserDetail({
   onResetNotices,
   onKeyAction,
   onExportKey,
+  onSetConfig,
 }: {
   user: AdminUser;
   keys: AdminKey[];
@@ -1778,8 +1793,23 @@ function UserDetail({
     deviceLabel: string,
     routeProfile: string,
   ) => void;
+  /** Save this user's own client profile and MTU (admin action `set-config`). */
+  onSetConfig: (value: AwgClientSettingsValue) => Promise<boolean>;
 }) {
   const { t } = useT();
+  const presetLabel = usePresetLabel();
+  const [configOpen, setConfigOpen] = React.useState(false);
+  const userConfig: AwgClientSettingsValue = {
+    awgGenerator: user.awgGenerator ?? null,
+    awgMtu: user.awgMtu ?? null,
+  };
+  const userConfigSet = userConfig.awgGenerator !== null || userConfig.awgMtu !== null;
+  const userConfigLabel = userConfigSet
+    ? `${t("awgSettings.edit")} · ${t("awgSettings.userSummary", {
+        profile: userConfig.awgGenerator ? presetLabel(userConfig.awgGenerator) : t("awgSettings.inherits"),
+        mtu: userConfig.awgMtu ?? t("awgSettings.inherits"),
+      })}`
+    : t("awgSettings.edit");
   const stats = statsFor(keys);
   const staleness = summarizeStaleKeys(keys, now);
   // How many of the panel's two interruptions this user has answered. Both
@@ -1906,6 +1936,18 @@ function UserDetail({
           <Button variant="outline" size="sm" onClick={onEditPolicy}>
             <Settings className="h-4 w-4" />
             {t("users.policies")}{overrides > 0 ? ` (${overrides})` : ""}
+          </Button>
+          {/* The user's own profile and MTU, over every key's address and
+              server; the label says what is set without opening it. */}
+          <Button
+            variant="outline"
+            size="sm"
+            className="min-w-0 max-w-full"
+            title={userConfigLabel}
+            onClick={() => setConfigOpen(true)}
+          >
+            <SlidersHorizontal className="h-4 w-4" />
+            <span className="truncate">{userConfigLabel}</span>
           </Button>
           {/* Only offered when there is something to undo. The counters come
               from the user row, so a panel whose control API predates them
@@ -2054,6 +2096,15 @@ function UserDetail({
           </div>
         )}
       </CardContent>
+      <AwgClientSettingsDialog
+        open={configOpen}
+        title={t("awgSettings.userTitle")}
+        description={t("awgSettings.userDescription")}
+        value={userConfig}
+        inherited={USER_INHERITED}
+        onClose={() => setConfigOpen(false)}
+        onSave={onSetConfig}
+      />
     </Card>
   );
 }
@@ -2130,6 +2181,12 @@ function AdminKeyRow({
     if (window.confirm(message)) void onAction(keyView.id, name);
   };
   const [editingInternal, setEditingInternal] = React.useState(false);
+  const [editingConfig, setEditingConfig] = React.useState(false);
+  const keyInherited = useKeyInherited();
+  // Live AWG 3.1 keys only: AWG 2.0 has no client profile, and a revoked
+  // key has no config to export.
+  const configurable = Boolean(keyView.config) &&
+    keyView.state !== "revoked" && keyView.state !== "revoking";
   return (
     <>
       <div className="rounded-lg border bg-well shadow-[var(--inset-shadow)] px-3 py-2 transition-colors hover:bg-accent/40">
@@ -2210,6 +2267,13 @@ function AdminKeyRow({
               icon={<NotebookPen className="h-4 w-4" />}
               onClick={() => setEditingInternal(true)}
             />
+            {configurable ? (
+              <RowAction
+                label={t("awgSettings.keyTitle")}
+                icon={<SlidersHorizontal className="h-4 w-4" />}
+                onClick={() => setEditingConfig(true)}
+              />
+            ) : null}
             {keyView.state === "active" ? (
               <RowAction
                 label={t("users.disable")}
@@ -2278,6 +2342,7 @@ function AdminKeyRow({
         </div>
 
         <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
+          {keyView.config ? <AwgKeySettingsSummary config={keyView.config} /> : null}
           <span>{t("users.keyCreatedAt")}: <time dateTime={keyView.createdAt}>{formatDateTime(keyView.createdAt, lang)}</time></span>
           <span>
             {t("users.keyConfigUpdatedAt")}: {keyView.configUpdatedAt ? (
@@ -2306,6 +2371,17 @@ function AdminKeyRow({
           onAction(keyView.id, "set-internal-name", { internalName })
         }
       />
+      {keyView.config ? (
+        <AwgClientSettingsDialog
+          open={editingConfig}
+          title={t("awgSettings.keyTitle")}
+          description={t("awgSettings.keyDialogDescription")}
+          value={{ awgGenerator: keyView.awgGenerator ?? null, awgMtu: keyView.awgMtu ?? null }}
+          inherited={keyInherited(keyView.config)}
+          onClose={() => setEditingConfig(false)}
+          onSave={(value) => onAction(keyView.id, "set-config", value)}
+        />
+      ) : null}
     </>
   );
 }
@@ -3043,10 +3119,17 @@ function CreateKeyDialog({
     nameDisplay: KeyNameDisplay;
     bridgeMode?: KeyBridgeMode;
     vpnBridgeRouteId?: string | null;
+    awgGenerator?: AwgGeneratorSettings | null;
+    awgMtu?: number | null;
   }) => Promise<boolean>;
 }) {
   const { t } = useT();
   const [nodeId, setNodeId] = React.useState("");
+  const [deviceType, setDeviceType] = React.useState<string>("unspecified");
+  const [clientSettings, setClientSettings] = React.useState<AwgClientSettingsValue>({
+    awgGenerator: null,
+    awgMtu: null,
+  });
   const [endpointId, setEndpointId] = React.useState("");
   const [deviceLabel, setDeviceLabel] = React.useState("");
   const [routeProfile, setRouteProfile] = React.useState("full_tunnel");
@@ -3120,6 +3203,8 @@ function CreateKeyDialog({
     setNameDisplay({ ...defaultKeyNameDisplay });
     setBridgeMode("inherit");
     setBridgeRouteId("");
+    setDeviceType("unspecified");
+    setClientSettings({ awgGenerator: null, awgMtu: null });
   }, [user, nodes]);
   const node = nodes.find((item) => item.id === nodeId);
   const protocol = pickProtocol(node);
@@ -3145,6 +3230,15 @@ function CreateKeyDialog({
   const userUseBridge = Boolean(
     user?.policyOverride?.useBridge ?? globalPolicy.useBridge,
   );
+  // What the new key inherits without its own settings: the same levels the
+  // API resolves (its address, or the node's primary one).
+  const keyAddress = endpoint ?? endpoints.find((item) => item.ordinal === 1) ?? null;
+  const inheritedClient = inheritedForNewKey({
+    user: user ? { awgGenerator: user.awgGenerator ?? null, awgMtu: user.awgMtu ?? null } : null,
+    deviceType,
+    endpoint: keyAddress,
+    node: node ?? null,
+  });
 
   // Estimated only: the control API assigns the real number on provisioning.
   const nextKeyNumber =
@@ -3158,7 +3252,7 @@ function CreateKeyDialog({
   });
   return (
     <Dialog open={Boolean(user)} onOpenChange={(next) => !next && onClose()}>
-      <DialogContent className="sm:max-w-sm">
+      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-md">
         <DialogHeader>
           <DialogTitle>{t("users.keyForTitle", { email: user?.email ?? "" })}</DialogTitle>
           <DialogDescription>
@@ -3240,6 +3334,28 @@ function CreateKeyDialog({
             idPrefix="admin-user-key-bridge"
           />
           <div className="space-y-1.5">
+            <Label htmlFor="user-key-device">{t("device.base")}</Label>
+            <Select value={deviceType} onValueChange={setDeviceType}>
+              <SelectTrigger id="user-key-device">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {[...DEVICE_TYPE_ORDER, "unspecified" as const].map((type) => (
+                  <SelectItem key={type} value={type}>{deviceTypeLabel(t, type)}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          {protocol === "awg3" ? (
+            <AwgNewKeySettings
+              idPrefix="admin-user-key-config"
+              value={clientSettings}
+              onChange={setClientSettings}
+              inherited={inheritedClient}
+              pending={false}
+            />
+          ) : null}
+          <div className="space-y-1.5">
             <Label htmlFor="user-key-label">{t("common.name")}</Label>
             <Input
               id="user-key-label"
@@ -3309,13 +3425,15 @@ function CreateKeyDialog({
                     nodeId,
                     ...(endpoint ? { endpointId: endpoint.id } : {}),
                     deviceLabel,
-                    // This dialog has no device-type field, so the panel does
-                    // not know the platform. It used to claim "desktop".
-                    deviceType: "unspecified",
+                    deviceType,
                     routeProfile,
                     protocol,
                     nameDisplay,
                     ...bridgePayload,
+                    ...(protocol === "awg3" && clientSettings.awgGenerator !== null
+                      ? { awgGenerator: clientSettings.awgGenerator } : {}),
+                    ...(protocol === "awg3" && clientSettings.awgMtu !== null
+                      ? { awgMtu: clientSettings.awgMtu } : {}),
                   })
                 )
                   onClose();
