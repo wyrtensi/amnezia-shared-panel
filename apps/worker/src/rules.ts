@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { isIP } from "node:net";
 import { z } from "zod";
 import {
+  ALIEXPRESS_DIRECT_V4_CIDRS,
   APPLE_DIRECT_V4_CIDRS,
   BOGON_V4_CIDRS,
   BOGON_V6_CIDRS,
@@ -753,6 +754,10 @@ export const compactRoutes = (
   if (mode !== "lossless" && compaction?.directSteamCache !== false) {
     directShieldNames.push("steam-cache");
     builtInDirectShields.push(...STEAM_CACHE_V4_CIDRS, ...STEAM_CACHE_V6_CIDRS);
+  }
+  if (mode !== "lossless") {
+    directShieldNames.push("aliexpress");
+    builtInDirectShields.push(...ALIEXPRESS_DIRECT_V4_CIDRS);
   }
   if (extraExcluded.length > 0) {
     directShieldNames.push("extra-exclude-urls");

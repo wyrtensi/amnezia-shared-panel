@@ -17,6 +17,7 @@ import {
   type StoredRuleInput,
 } from "./rules.js";
 import {
+  ALIEXPRESS_DIRECT_V4_CIDRS,
   APPLE_DIRECT_V4_CIDRS,
   BOGON_V4_CIDRS,
   STEAM_CACHE_V4_CIDRS,
@@ -827,11 +828,12 @@ describe("compactRoutes compaction modes", () => {
     expect(countCidrOverlap(result.payload.cidrs, BOGON_V4_CIDRS)[4]).toBe(0n);
     expect(countCidrOverlap(result.payload.cidrs, APPLE_DIRECT_V4_CIDRS)[4]).toBe(0n);
     expect(countCidrOverlap(result.payload.cidrs, STEAM_CACHE_V4_CIDRS)[4]).toBe(0n);
+    expect(countCidrOverlap(result.payload.cidrs, ALIEXPRESS_DIRECT_V4_CIDRS)[4]).toBe(0n);
     expect(result.report).toMatchObject({
       compactionMode: "blocked_only",
       ruOverlap: 0,
       bogonOverlap: 0,
-      directShields: ["apple", "steam-cache"],
+      directShields: ["apple", "steam-cache", "aliexpress"],
     });
   });
 
@@ -856,6 +858,7 @@ describe("compactRoutes compaction modes", () => {
     expect(countCidrOverlap(result.payload.cidrs, APPLE_DIRECT_V4_CIDRS)[4]).toBe(0n);
     expect(countCidrOverlap(result.payload.cidrs, STEAM_CACHE_V4_CIDRS)[4]).toBe(0n);
     expect(countCidrOverlap(result.payload.cidrs, STEAM_CACHE_V6_CIDRS)[6]).toBe(0n);
+    expect(countCidrOverlap(result.payload.cidrs, ALIEXPRESS_DIRECT_V4_CIDRS)[4]).toBe(0n);
     // Akamai (Steam Store / Community) and Meta stay routed through the tunnel.
     expect(countCidrOverlap(result.payload.cidrs, ["23.220.114.106/32"])[4]).toBe(1n);
     expect(countCidrOverlap(result.payload.cidrs, ["157.240.0.0/16"])[4]).toBe(65536n);
@@ -1052,6 +1055,7 @@ describe("compactRoutes compaction modes", () => {
       directShields: [
         "apple",
         "steam-cache",
+        "aliexpress",
         "extra-exclude-urls",
         "admin-global-exclude",
       ],

@@ -85,6 +85,15 @@ export const STEAM_CACHE_V6_CIDRS: readonly string[] = [
   "2a01:bc80::/32",
 ];
 
+/**
+ * AliExpress Russia / Alibaba Cloud CDN IPv4 prefix (`aliexpress.ru`,
+ * `m.aliexpress.ru`, `login.aliexpress.ru`, `trade.aliexpress.ru` resolve into
+ * `47.246.133.0/24`). Not listed in Russian GeoIP (`ipdeny`), so in
+ * `compact_world` it would otherwise be absorbed into `47.0.0.0/8` and routed
+ * through the VPN, where Alibaba CDN frequently blocks datacenter egress IPs.
+ */
+export const ALIEXPRESS_DIRECT_V4_CIDRS: readonly string[] = ["47.246.0.0/16"];
+
 const parseIpv4 = (address: string): bigint =>
   address
     .split(".")

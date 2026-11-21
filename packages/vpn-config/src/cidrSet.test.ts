@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  ALIEXPRESS_DIRECT_V4_CIDRS,
   APPLE_DIRECT_V4_CIDRS,
   BOGON_V4_CIDRS,
   BOGON_V6_CIDRS,
@@ -46,17 +47,21 @@ describe("cidrSet helpers", () => {
       BOGON_V6_CIDRS,
       APPLE_DIRECT_V4_CIDRS,
       STEAM_CACHE_V4_CIDRS,
+      ALIEXPRESS_DIRECT_V4_CIDRS,
     ]) {
       expect(list.length).toBeGreaterThan(0);
       const compacted = subtractCidrs(list, []).cidrs;
       expect(compacted.length).toBeGreaterThan(0);
     }
-    // Apple and SteamCache must stay outside RFC1918/bogon space.
+    // Apple, SteamCache, and AliExpress must stay outside RFC1918/bogon space.
     expect(countCidrOverlap(APPLE_DIRECT_V4_CIDRS, BOGON_V4_CIDRS)[4]).toBe(0n);
     expect(countCidrOverlap(STEAM_CACHE_V4_CIDRS, BOGON_V4_CIDRS)[4]).toBe(0n);
+    expect(countCidrOverlap(ALIEXPRESS_DIRECT_V4_CIDRS, BOGON_V4_CIDRS)[4]).toBe(0n);
     expect(countCidrOverlap(APPLE_DIRECT_V4_CIDRS, STEAM_CACHE_V4_CIDRS)[4]).toBe(
       0n,
     );
+    expect(countCidrOverlap(ALIEXPRESS_DIRECT_V4_CIDRS, APPLE_DIRECT_V4_CIDRS)[4]).toBe(0n);
+    expect(countCidrOverlap(ALIEXPRESS_DIRECT_V4_CIDRS, STEAM_CACHE_V4_CIDRS)[4]).toBe(0n);
   });
 });
 
