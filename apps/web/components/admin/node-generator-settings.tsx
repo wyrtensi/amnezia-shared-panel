@@ -11,7 +11,7 @@ import {
   type AwgDeviceRules,
   type AwgGeneratorSettings,
 } from "@amnezia/contracts";
-import { MtuField, type InheritedMtu } from "@/components/admin/awg-mtu-field";
+import { inheritedMtuWith, MtuField, type InheritedMtu } from "@/components/admin/awg-mtu-field";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -85,6 +85,17 @@ export const keyRandomizationState = (
 /** Settings saved with the legacy randomized query open as the mixed mode it stands for. */
 export const initialGeneratorDraft = (value: AwgGeneratorSettings | null): AwgGeneratorSettings | null =>
   value && value.preset === "randomized" && value.iMode === "dns_query" ? { ...value, iMode: "mixed" } : value;
+
+/**
+ * The profile to save: the stored one when the editor only opened it (an old
+ * randomized query opens as the mixed mode), so saving another field, such as
+ * the MTU, does not re-seed every key's draw.
+ */
+export const profileToSave = (
+  stored: AwgGeneratorSettings | null,
+  draft: AwgGeneratorSettings | null,
+): AwgGeneratorSettings | null =>
+  JSON.stringify(draft) === JSON.stringify(initialGeneratorDraft(stored)) ? stored : draft;
 
 /**
  * The profile part of the editor, controlled and without a form, so the
@@ -271,7 +282,7 @@ export function GeneratorEditor({
       return;
     }
     try {
-      if (await onSave(draft, ownMtu)) toast.success(t("generator.saved"));
+      if (await onSave(profileToSave(value, draft), ownMtu)) toast.success(t("generator.saved"));
     } catch (error) {
       toast.error(error instanceof Error ? error.message : t("nodes.updateFailed"));
     }
@@ -289,7 +300,7 @@ export function GeneratorEditor({
         <MtuField
           id={`${idPrefix}-mtu`}
           value={ownMtu}
-          inherited={inheritedMtu}
+          inherited={inheritedMtuWith(draft, inheritedMtu)}
           disabled={pending}
           onChange={(next) => { setOwnMtu(next); setInvalid(null); }}
         />

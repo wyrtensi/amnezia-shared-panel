@@ -3,10 +3,15 @@ import { describe, expect, it } from "vitest";
 import { awgGeneratorPresets, type AwgGeneratorPreset } from "@amnezia/contracts";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { messages } from "@/lib/i18n/messages";
-import { AwgKeySettingsSummary, AwgNewKeySettings, inheritedForNewKey } from "./awg-client-settings";
+import {
+  AwgKeySettingsSummary,
+  AwgNewKeySettings,
+  clientSettingsValid,
+  inheritedForNewKey,
+} from "./awg-client-settings";
 import { DeviceRulesEditor, deviceRuleRows, withDeviceRule } from "./awg-device-rules-editor";
-import { MtuField } from "./awg-mtu-field";
-import { GeneratorEditor } from "./node-generator-settings";
+import { inheritedMtuWith, MtuField } from "./awg-mtu-field";
+import { GeneratorEditor, initialGeneratorDraft, profileToSave } from "./node-generator-settings";
 
 const ru = messages.ru;
 const preset = (id: AwgGeneratorPreset) =>
@@ -117,5 +122,39 @@ describe("key settings", () => {
     expect(set).toContain('aria-expanded="true"');
     expect(set).toContain(ru["awgSettings.manual"]);
     expect(set).toContain(ru["generator.mtu"]);
+  });
+});
+
+describe("review fixes", () => {
+  it("shows the MTU of the level's own profile as what inherit falls back to", () => {
+    const html = render(
+      <GeneratorEditor
+        value={{ ...preset("stun"), mtu: 1400 }} mtu={null} inheritLabel="inherit"
+        inheritedMtu={{ mtu: 1280, source: "default", profile: null }}
+        pending={false} onSave={() => Promise.resolve(true)}
+      />,
+    );
+    expect(html).toContain("Сейчас 1400 (из профиля)");
+    expect(inheritedMtuWith(null, { mtu: 1380, source: "profile", profile: { ...preset("stun"), mtu: 1380 } }))
+      .toMatchObject({ mtu: 1380, source: "profile" });
+    expect(inheritedMtuWith({ ...preset("stun"), mtu: 1300 }, { mtu: 1380, source: "profile", profile: { ...preset("stun"), mtu: 1380 } }))
+      .toMatchObject({ mtu: 1300, source: "profile" });
+    expect(inheritedMtuWith({ ...preset("stun"), mtu: 1300 }, { mtu: 1360, source: "node" }))
+      .toMatchObject({ mtu: 1360, source: "node" });
+  });
+
+  it("sends a profile only opened by the editor back exactly as stored", () => {
+    const legacy = { ...preset("randomized"), iMode: "dns_query" as const };
+    expect(profileToSave(legacy, initialGeneratorDraft(legacy))).toBe(legacy);
+    const edited = { ...initialGeneratorDraft(legacy)!, jcMax: 9 };
+    expect(profileToSave(legacy, edited)).toBe(edited);
+    expect(profileToSave(null, null)).toBeNull();
+  });
+
+  it("refuses to issue a key with an empty or out-of-range own MTU", () => {
+    expect(clientSettingsValid({ awgGenerator: null, awgMtu: null })).toBe(true);
+    expect(clientSettingsValid({ awgGenerator: preset("stun"), awgMtu: 1340 })).toBe(true);
+    expect(clientSettingsValid({ awgGenerator: null, awgMtu: Number.NaN })).toBe(false);
+    expect(clientSettingsValid({ awgGenerator: null, awgMtu: 1500 })).toBe(false);
   });
 });

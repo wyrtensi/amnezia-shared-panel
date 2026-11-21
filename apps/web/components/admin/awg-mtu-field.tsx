@@ -1,7 +1,11 @@
 "use client";
 
 import * as React from "react";
-import { AWG_DEFAULT_CLIENT_MTU, type AwgConfigLevelName } from "@amnezia/contracts";
+import {
+  AWG_DEFAULT_CLIENT_MTU,
+  type AwgConfigLevelName,
+  type AwgGeneratorSettings,
+} from "@amnezia/contracts";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -20,7 +24,26 @@ export type AwgSettingSource = AwgConfigLevelName | "profile" | "default";
  * What a level inherits: the value and where it comes from. `mtu` is unknown
  * where it differs per key (a user's settings span every node).
  */
-export type InheritedMtu = { mtu: number | null; source: AwgSettingSource | "keys" | "levels" };
+export type InheritedMtu = {
+  mtu: number | null;
+  source: AwgSettingSource | "keys" | "levels";
+  /** The profile inherited from above, whose stored MTU is the last fallback. */
+  profile?: AwgGeneratorSettings | null;
+};
+
+/**
+ * What a level's "inherit" really gives, with its own profile draft: a level
+ * above that sets an MTU wins; otherwise the MTU stored in the profile that
+ * applies (this level's, else the inherited one), else 1280. The same rule as
+ * `resolveAwgClientSettings`.
+ */
+export const inheritedMtuWith = (draft: AwgGeneratorSettings | null, inherited: InheritedMtu): InheritedMtu => {
+  if (inherited.source !== "profile" && inherited.source !== "default") return inherited;
+  const profile = draft ?? inherited.profile ?? null;
+  return profile
+    ? { mtu: profile.mtu, source: "profile", profile: inherited.profile ?? null }
+    : { mtu: AWG_DEFAULT_CLIENT_MTU, source: "default", profile: null };
+};
 
 const OWN = "own";
 const INHERIT = "inherit";

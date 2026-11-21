@@ -83,6 +83,7 @@ import {
   AwgClientSettingsDialog,
   AwgKeySettingsSummary,
   AwgNewKeySettings,
+  clientSettingsValid,
   inheritedForNewKey,
   USER_INHERITED,
   useKeyInherited,
@@ -3407,7 +3408,8 @@ function CreateKeyDialog({
           <Button
             disabled={
               !nodeId ||
-              (protocol === "awg3" && bridgeMode === "route" && !bridgeRouteId)
+              (protocol === "awg3" && bridgeMode === "route" && !bridgeRouteId) ||
+              (protocol === "awg3" && !clientSettingsValid(clientSettings))
             }
             onClick={() => {
               void (async () => {

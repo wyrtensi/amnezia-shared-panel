@@ -114,8 +114,8 @@ export function NodeGeneratorSettings({ value, mtu = null, endpoints, onSave, on
               ? t("awgSettings.inheritFrom", { source: t("awgSettings.from.node"), profile: presetLabel(node.awgGenerator) })
               : t("generator.inheritDefault")}
             inheritedMtu={scope
-              ? { mtu: node.mtu, source: node.mtuFrom }
-              : { mtu: 1280, source: "default" }}
+              ? { mtu: node.mtu, source: node.mtuFrom, profile: node.awgGenerator }
+              : { mtu: 1280, source: "default", profile: null }}
             pending={pending}
             onSave={(settings, ownMtu) => run(async () => {
               await onSave(scope || null, settings, ownMtu);

@@ -83,7 +83,7 @@ export function DeviceRulesEditor({ rules, inherited, pending, onSave }: {
         source: t("awgSettings.from.address"),
         profile: presetLabel(inherited.awgGenerator),
       })}
-      inheritedMtu={{ mtu: inherited.mtu, source: inherited.mtuFrom }}
+      inheritedMtu={{ mtu: inherited.mtu, source: inherited.mtuFrom, profile: inherited.awgGenerator }}
       pending={pending}
       requireOne
       onSave={(awgGenerator, awgMtu) => save(type, { awgGenerator, awgMtu })}

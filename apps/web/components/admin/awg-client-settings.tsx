@@ -3,13 +3,20 @@
 import * as React from "react";
 import { ChevronDown, SlidersHorizontal } from "lucide-react";
 import {
+  awgClientMtuSchema,
+  awgGeneratorSettingsSchema,
   deviceRuleFor,
   resolveAwgClientSettings,
   type AwgDeviceRules,
   type AwgGeneratorSettings,
   type ResolvedAwgClientSettings,
 } from "@amnezia/contracts";
-import { MtuField, useAwgSourceLabel, type InheritedMtu } from "@/components/admin/awg-mtu-field";
+import {
+  inheritedMtuWith,
+  MtuField,
+  useAwgSourceLabel,
+  type InheritedMtu,
+} from "@/components/admin/awg-mtu-field";
 import {
   GeneratorEditor,
   GeneratorFields,
@@ -48,6 +55,11 @@ export type InheritedClientSettings = {
   mtu: InheritedMtu;
 };
 
+/** A new key's own settings are sendable: a valid profile, and an MTU in range when one is set. */
+export const clientSettingsValid = (value: AwgClientSettingsValue): boolean =>
+  (value.awgGenerator === null || awgGeneratorSettingsSchema.safeParse(value.awgGenerator).success) &&
+  (value.awgMtu === null || awgClientMtuSchema.safeParse(value.awgMtu).success);
+
 /** The levels a new key inherits from, resolved the way the API resolves them. */
 export const inheritedForNewKey = (levels: {
   user: AwgClientSettingsValue | null;
@@ -66,7 +78,7 @@ const useInheritedOf = () => {
   return (resolved: ResolvedAwgClientSettings): InheritedClientSettings => ({
     profileLabel: presetLabel(resolved.awgGenerator),
     source: resolved.profileFrom ?? "default",
-    mtu: { mtu: resolved.mtu, source: resolved.mtuFrom },
+    mtu: { mtu: resolved.mtu, source: resolved.mtuFrom, profile: resolved.awgGenerator },
   });
 };
 
@@ -245,7 +257,7 @@ export function AwgNewKeySettings({ value, onChange, inherited, pending, idPrefi
           <MtuField
             id={`${idPrefix}-mtu`}
             value={value.awgMtu}
-            inherited={info.mtu}
+            inherited={inheritedMtuWith(value.awgGenerator, info.mtu)}
             disabled={pending}
             onChange={(awgMtu) => onChange({ ...value, awgMtu })}
           />
