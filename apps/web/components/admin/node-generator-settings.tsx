@@ -4,6 +4,7 @@ import * as React from "react";
 import { Settings2 } from "lucide-react";
 import { toast } from "sonner";
 import {
+  AWG_GENERATOR_FIXED_PRESETS,
   AWG_GENERATOR_I_MODES,
   AWG_GENERATOR_PRESETS,
   awgGeneratorPresets,
@@ -32,6 +33,39 @@ type Props = {
   value: AwgGeneratorSettings | null;
   endpoints: readonly GeneratorEndpoint[];
   onSave: (endpointId: string | null, settings: AwgGeneratorSettings | null) => Promise<void>;
+};
+
+/**
+ * Apply an edit to the draft. MTU and the key randomization switch keep the
+ * preset; any other field makes it Custom with randomization off, except a
+ * range edit on the randomized preset, which stays randomized.
+ */
+export const editGeneratorDraft = (
+  current: AwgGeneratorSettings,
+  change: Partial<AwgGeneratorSettings>,
+): AwgGeneratorSettings => {
+  if (Object.keys(change).every((field) => field === "mtu" || field === "randomizeKeys")) {
+    return { ...current, ...change };
+  }
+  if (current.preset === "randomized" && change.iMode === undefined) return { ...current, ...change };
+  return { ...current, ...change, preset: "custom", randomizeKeys: false };
+};
+
+/**
+ * How the key randomization switch shows for a draft: hidden for an inherited
+ * or issued profile, off and locked for Custom. Settings saved before the
+ * switch read the way they behave: fixed presets off, ranged presets on.
+ */
+export const keyRandomizationState = (
+  draft: AwgGeneratorSettings | null,
+): { visible: boolean; checked: boolean; disabled: boolean } => {
+  if (!draft || draft.preset === "issued") return { visible: false, checked: false, disabled: true };
+  if (draft.preset === "custom") return { visible: true, checked: false, disabled: true };
+  return {
+    visible: true,
+    checked: draft.randomizeKeys ?? !AWG_GENERATOR_FIXED_PRESETS.includes(draft.preset),
+    disabled: false,
+  };
 };
 
 export function NodeGeneratorSettings({ value, endpoints, onSave }: Props) {
@@ -105,7 +139,7 @@ export function NodeGeneratorSettings({ value, endpoints, onSave }: Props) {
   );
 }
 
-function GeneratorEditor({ value, inherited, pending, onSave }: {
+export function GeneratorEditor({ value, inherited, pending, onSave }: {
   value: AwgGeneratorSettings | null;
   inherited: boolean;
   pending: boolean;
@@ -120,15 +154,10 @@ function GeneratorEditor({ value, inherited, pending, onSave }: {
   );
   const [invalid, setInvalid] = React.useState(false);
   const update = (change: Partial<AwgGeneratorSettings>) => {
-    setDraft((current) => current ? {
-      ...current,
-      ...change,
-      preset: current.preset === "randomized" && change.iMode === undefined
-        ? "randomized"
-        : "custom",
-    } : current);
+    setDraft((current) => current ? editGeneratorDraft(current, change) : current);
     setInvalid(false);
   };
+  const randomization = keyRandomizationState(draft);
   const save = async (event: React.FormEvent) => {
     event.preventDefault();
     if (draft && !awgGeneratorSettingsSchema.safeParse(draft).success) {
@@ -164,6 +193,20 @@ function GeneratorEditor({ value, inherited, pending, onSave }: {
           ))}
         </select>
       </label>
+      {randomization.visible ? (
+        <div className="flex items-start justify-between gap-3 text-sm">
+          <span className="grid gap-0.5">
+            <span className="font-medium">{t("generator.randomizeKeys")}</span>
+            <span className="text-xs text-muted-foreground">{t("generator.randomizeKeysHint")}</span>
+          </span>
+          <Switch
+            aria-label={t("generator.randomizeKeys")}
+            checked={randomization.checked}
+            disabled={randomization.disabled}
+            onCheckedChange={(checked) => update({ randomizeKeys: checked })}
+          />
+        </div>
+      ) : null}
       {draft ? (
         <>
           <NumberField
@@ -171,10 +214,7 @@ function GeneratorEditor({ value, inherited, pending, onSave }: {
             value={draft.mtu}
             min={1280}
             max={1420}
-            onChange={(mtu) => {
-              setDraft((current) => current ? { ...current, mtu } : current);
-              setInvalid(false);
-            }}
+            onChange={(mtu) => update({ mtu })}
           />
           {draft.preset !== "issued" ? (
             <>
