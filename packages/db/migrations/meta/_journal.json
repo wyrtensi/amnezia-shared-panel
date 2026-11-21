@@ -484,6 +484,13 @@
       "when": 1795400000007,
       "tag": "0068_node_state_address_based",
       "breakpoints": true
+    },
+    {
+      "idx": 69,
+      "version": "7",
+      "when": 1795400000008,
+      "tag": "0069_awg_client_settings",
+      "breakpoints": true
     }
   ]
 }

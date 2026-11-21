@@ -18,6 +18,7 @@ import {
   varchar,
 } from "drizzle-orm/pg-core";
 import type {
+  AwgDeviceRules,
   AwgGeneratorSettings,
   BridgeAgentUpdateState,
   BridgeManagementStatus,
@@ -110,6 +111,9 @@ export const users = pgTable(
     // node) falls back to `keyLimitOverride` and then to the global default.
     nodeKeyLimits: jsonb("node_key_limits").$type<NodeKeyLimits>(),
     policyOverride: jsonb("policy_override").$type<PortalPolicyOverride>(),
+    // Admin-only AWG 3.1 client settings for every key of this user; null inherits.
+    awgGenerator: jsonb("awg_generator").$type<AwgGeneratorSettings>(),
+    awgMtu: integer("awg_mtu"),
     // Per-user extra routes layered on a split-tunnel profile's base feed at
     // export time (null = none). Keyed by profile: { ru_blacklist }.
     customRoutes: jsonb("custom_routes").$type<CustomRoutes>(),
@@ -137,6 +141,7 @@ export const users = pgTable(
   (table) => [
     uniqueIndex("users_email_unique").on(table.email),
     check("users_email_lowercase", sql`${table.email} = lower(${table.email})`),
+    check("users_awg_mtu_range", sql`${table.awgMtu} between 1280 and 1420`),
     check(
       "users_key_limit_override_positive",
       sql`${table.keyLimitOverride} is null or ${table.keyLimitOverride} >= 0`,
@@ -170,6 +175,8 @@ export const nodes = pgTable(
   "nodes",
   {
     awgGenerator: jsonb("awg_generator").$type<AwgGeneratorSettings>(),
+    // Client MTU apart from the profile; null inherits.
+    awgMtu: integer("awg_mtu"),
     id: uuid("id").defaultRandom().primaryKey(),
     name: varchar("name", { length: 120 }).notNull(),
     // Name users see for this server (falls back to `name` when empty). The
@@ -283,6 +290,7 @@ export const nodes = pgTable(
   (table) => [
     uniqueIndex("nodes_name_unique").on(table.name),
     check("nodes_max_peers_positive", sql`${table.maxPeers} > 0`),
+    check("nodes_awg_mtu_range", sql`${table.awgMtu} between 1280 and 1420`),
   ],
 );
 
@@ -587,6 +595,9 @@ export const nodeVpnEndpoints = pgTable(
     revision: integer("revision").default(0).notNull(),
     bridgeMode: text("bridge_mode").$type<EndpointBridgeMode>().default("inherit").notNull(),
     awgGenerator: jsonb("awg_generator").$type<AwgGeneratorSettings>(),
+    awgMtu: integer("awg_mtu"),
+    // Admin-only profile and MTU per device type for this address's keys.
+    awgDeviceRules: jsonb("awg_device_rules").$type<AwgDeviceRules>(),
     probeStatus: serviceCheckStatusEnum("probe_status"),
     probeLevels: jsonb("probe_levels").$type<Record<string, unknown>>(),
     probeCheckedAt: timestamp("probe_checked_at", { withTimezone: true }),
@@ -601,6 +612,7 @@ export const nodeVpnEndpoints = pgTable(
     uniqueIndex("node_vpn_endpoints_address_unique").on(table.nodeId, table.address),
     check("node_vpn_endpoints_ordinal_positive", sql`${table.ordinal} > 0`),
     check("node_vpn_endpoints_bridge_mode_valid", sql`${table.bridgeMode} in ('inherit', 'direct', 'bridge')`),
+    check("node_vpn_endpoints_awg_mtu_range", sql`${table.awgMtu} between 1280 and 1420`),
   ],
 );
 
@@ -650,6 +662,9 @@ export const vpnKeys = pgTable(
     // applied over the encrypted node-issued config at export. Metadata only,
     // never a config body. Null: the node's own parameters are exported.
     awgClientProfile: jsonb("awg_client_profile").$type<Record<string, unknown>>(),
+    // Admin-only AWG 3.1 client settings of this key; null inherits.
+    awgGenerator: jsonb("awg_generator").$type<AwgGeneratorSettings>(),
+    awgMtu: integer("awg_mtu"),
     configUpdatedAt: timestamp("config_updated_at", { withTimezone: true }),
     configExportHashes: jsonb("config_export_hashes")
       .$type<Record<string, string>>().default({}).notNull(),
@@ -672,6 +687,7 @@ export const vpnKeys = pgTable(
     ...timestamps,
   },
   (table) => [
+    check("vpn_keys_awg_mtu_range", sql`${table.awgMtu} between 1280 and 1420`),
     uniqueIndex("vpn_keys_node_label_unique").on(table.nodeId, table.nodeLabel),
     uniqueIndex("vpn_keys_node_public_key_unique").on(
       table.nodeId,

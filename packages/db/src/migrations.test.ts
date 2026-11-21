@@ -102,6 +102,26 @@ describe("0068_node_state_address_based", () => {
   });
 });
 
+describe("0069_awg_client_settings", () => {
+  const sql = readFileSync(
+    fileURLToPath(new URL("../migrations/0069_awg_client_settings.sql", import.meta.url)),
+    "utf8",
+  );
+
+  it("adds the settings columns nullable with range checks", () => {
+    for (const table of ["nodes", "node_vpn_endpoints", "users", "vpn_keys"]) {
+      expect(sql).toMatch(new RegExp(`ALTER TABLE "${table}" ADD COLUMN "awg_mtu" integer;`));
+      expect(sql).toMatch(new RegExp(`ALTER TABLE "${table}" ADD CONSTRAINT "${table}_awg_mtu_range" CHECK \\("awg_mtu" BETWEEN 1280 AND 1420\\)`));
+    }
+    expect(sql).toContain('ALTER TABLE "users" ADD COLUMN "awg_generator" jsonb;');
+    expect(sql).toContain('ALTER TABLE "vpn_keys" ADD COLUMN "awg_generator" jsonb;');
+    expect(sql).toContain('ALTER TABLE "node_vpn_endpoints" ADD COLUMN "awg_device_rules" jsonb;');
+    const columns = sql.split("\n").filter((line) => line.includes("ADD COLUMN"));
+    expect(columns).toHaveLength(7);
+    for (const line of columns) expect(line).not.toMatch(/NOT NULL|DEFAULT/i);
+  });
+});
+
 describe("0030_rule_version_pin", () => {
   const sql = readFileSync(
     fileURLToPath(new URL("../migrations/0030_rule_version_pin.sql", import.meta.url)),
