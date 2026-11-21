@@ -1,9 +1,9 @@
 import { randomBytes } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
-import { defaultPortalPolicy, emptyGlobalRoutes } from "@amnezia/contracts";
+import { awgGeneratorPresets, defaultPortalPolicy, emptyGlobalRoutes } from "@amnezia/contracts";
 import type { GlobalRoutes } from "@amnezia/contracts";
 import { encryptSecret } from "@amnezia/db";
-import { readAwgLastConfig } from "@amnezia/vpn-config";
+import { projectAwgClientConfig, readAwgLastConfig } from "@amnezia/vpn-config";
 import type { Actor } from "./service.js";
 import { createDefaultControlApiService } from "./defaultService.js";
 import { decodeVpnLink, encodeVpnPayload } from "./vpnConfig.js";
@@ -942,6 +942,30 @@ describe("AWG 3.1 config refresh", () => {
     vi.mocked(repository.findKeyConfig).mockResolvedValue(key31(over));
     const service = createDefaultControlApiService({ repository, keyring });
     expect(await service.getConfigRefresh(employee, "key-1")).toEqual({ eligible: false });
+  });
+
+  it("always changes a narrow randomized profile on refresh", async () => {
+    const narrow = {
+      ...awgGeneratorPresets().find((entry) => entry.id === "no_i")!.settings,
+      jcMin: 4, jcMax: 5, jminMin: 40, jminMax: 41, jmaxGapMin: 30, jmaxGapMax: 31, randomizeKeys: true,
+    };
+    for (let index = 0; index < 24; index += 1) {
+      const keyId = `narrow-${index}`;
+      const repository = createRepository();
+      const key = key31({ id: keyId, awgGenerator: narrow, awgClientProfile: saved });
+      vi.mocked(repository.findKeyConfig).mockResolvedValue(key);
+      let next: unknown = null;
+      vi.mocked(repository.refreshOwnConfigProfile).mockImplementation((_actor, _keyId, _token, prepare) => {
+        next = prepare({ keyId, encrypted: key.encrypted, awgClientProfile: saved, revision: 2, awgGenerator: narrow });
+        return Promise.resolve({ revision: 3 });
+      });
+      const service = createDefaultControlApiService({ repository, keyring });
+      expect(await service.getConfigRefresh(employee, keyId)).toMatchObject({ eligible: true });
+      await service.refreshOwnConfig(employee, keyId, "token");
+      const project = (clientProfile: unknown) =>
+        projectAwgClientConfig(base31, { protocol: "awg3", keyId, clientProfile, generator: narrow });
+      expect(project(next), keyId).not.toBe(project(saved));
+    }
   });
 
   it("answers 404 for someone else's key, admins included, and 403 without redownload", async () => {

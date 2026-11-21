@@ -113,6 +113,9 @@ const projectKeyClientConfig = (base: string, options: Parameters<typeof project
   }
 };
 
+/** How many revisions a refresh tries before calling a profile unchangeable. */
+const REFRESH_REVISION_SEARCH = 16;
+
 const nextClientProfile = (
   base: string,
   previous: unknown,
@@ -123,17 +126,19 @@ const nextClientProfile = (
   const current = inspectAwg31ClientConfig(base);
   if (!current) return null;
   const saved = awgClientProfileV1Schema.safeParse(previous);
-  const candidate = selectAwgClientProfile(
-    revision + 1,
-    saved.success ? saved.data.jc : current.jc,
-  );
-  if (!generator) return candidate;
+  const jc = saved.success ? saved.data.jc : current.jc;
+  if (!generator) return selectAwgClientProfile(revision + 1, jc);
+  // Generator draws are independent per revision, so the next one can land
+  // on the same config in a narrow range: try the following revisions.
   const options = { protocol: "awg3" as const, keyId, generator };
   const existing = projectKeyClientConfig(base, { ...options, clientProfile: previous });
-  for (let order = 0; order < AWG_PROFILE_ORDERS; order += 1) {
-    const next = { ...candidate, cpsOrder: (candidate.cpsOrder + order) % AWG_PROFILE_ORDERS };
-    const updated = projectKeyClientConfig(base, { ...options, clientProfile: next });
-    if (updated !== existing) return next;
+  for (let step = 1; step <= REFRESH_REVISION_SEARCH; step += 1) {
+    const candidate = selectAwgClientProfile(revision + step, jc);
+    for (let order = 0; order < AWG_PROFILE_ORDERS; order += 1) {
+      const next = { ...candidate, cpsOrder: (candidate.cpsOrder + order) % AWG_PROFILE_ORDERS };
+      const updated = projectKeyClientConfig(base, { ...options, clientProfile: next });
+      if (updated !== existing) return next;
+    }
   }
   return null;
 };

@@ -286,7 +286,9 @@ describe("applyAwgGeneratorSettings", () => {
     expect(stockOut.line("I2")).toBeNull();
   });
 
-  it("changes a custom J draw on consecutive revisions even in a two-value range", () => {
+  it("draws both values of a two-value range across revisions, independently", () => {
+    // A refresh that lands on the same config moves to the next revision in
+    // defaultService, so a single revision may repeat the previous value.
     const original = awg31Link();
     const settings = {
       ...savedBeforeSwitch("custom"),
@@ -297,14 +299,10 @@ describe("applyAwgGeneratorSettings", () => {
       jmaxGapMin: 30,
       jmaxGapMax: 30,
     };
-    let previous: string | null = null;
-    for (let profileRevision = 0; profileRevision < 8; profileRevision += 1) {
-      const link = applyAwgGeneratorSettings(original, settings, { ...seed, profileRevision });
-      const current = copies(link).line("Jc");
-      expect(["3", "4"]).toContain(current);
-      expect(current).not.toBe(previous);
-      previous = current;
-    }
+    const drawn = Array.from({ length: 16 }, (_, profileRevision) =>
+      copies(applyAwgGeneratorSettings(original, settings, { ...seed, profileRevision })).line("Jc"));
+    expect(new Set(drawn)).toEqual(new Set(["3", "4"]));
+    expect(drawn.some((value, index) => index > 0 && value === drawn[index - 1])).toBe(true);
   });
 
   it("reports invalid saved settings without leaking configuration values", () => {
@@ -333,6 +331,20 @@ describe("per-key randomization switch", () => {
     delete settings.randomizeKeys;
     return settings;
   };
+
+  it("redraws values independently on a refresh", () => {
+    const settings = { ...preset("randomized"), randomizeKeys: true };
+    const keys = Array.from({ length: 40 }, (_, index) => `synthetic-refresh-${index}`);
+    const movedByOne = keys.filter((keyId) => {
+      const before = render(settings, keyId, 1);
+      const after = render(settings, keyId, 2);
+      const values = (copy: ReturnType<typeof render>) =>
+        [Number(copy.line("Jc")), Number(copy.line("Jmin")), Number(copy.line("Jmax")) - Number(copy.line("Jmin"))];
+      const [a, b] = [values(before), values(after)];
+      return a.every((value, index) => b[index] === value + 1);
+    });
+    expect(movedByOne.length).toBeLessThan(4);
+  });
 
   it("gives every key the same values when randomization is off", () => {
     const settings = { ...preset("dns_query"), randomizeKeys: false };
@@ -369,23 +381,22 @@ describe("per-key randomization switch", () => {
     expect(jValues(legacy("dns_query")).size).toBeGreaterThan(1);
   });
 
-  it("pins the output of settings saved before the switch to the values the previous code drew", () => {
-    // Captured from the generator as it was before randomizeKeys existed, for
-    // seed { keyId: "synthetic-key-id", profileRevision: 3 }. A change here
+  it("pins the output of settings saved before the switch", () => {
+    // For seed { keyId: "synthetic-key-id", profileRevision: 3 }. Moved on
+    // purpose on 2026-11-22 (revision-seeded draws); any other change here
     // moves every stored key's config.
     const at = (id: AwgGeneratorPreset) => copies(applyAwgGeneratorSettings(original, legacy(id), seed));
     const dnsQuery = at("dns_query");
-    expect([dnsQuery.line("Jc"), dnsQuery.line("Jmin"), dnsQuery.line("Jmax")]).toEqual(["7", "49", "150"]);
+    expect([dnsQuery.line("Jc"), dnsQuery.line("Jmin"), dnsQuery.line("Jmax")]).toEqual(["8", "100", "139"]);
     expect(dnsQuery.line("I1")).toBe(
-      "<r 2><b 0x0100><b 0x00010000><b 0x00000000><b 0x09><rc 9><b 0x03636f6d00><b 0x0001><b 0x0001>",
+      "<r 2><b 0x0100><b 0x00010000><b 0x00000000><b 0x05><rc 5><b 0x03636f6d00><b 0x0001><b 0x0001>",
     );
     const randomized = at("randomized");
-    expect([randomized.line("Jc"), randomized.line("Jmin"), randomized.line("Jmax")]).toEqual(["7", "46", "132"]);
-    expect(randomized.line("I1")).toBe("<r 169>");
+    expect([randomized.line("Jc"), randomized.line("Jmin"), randomized.line("Jmax")]).toEqual(["10", "54", "197"]);
     const ttl = at("dns_response_random_ttl");
     expect([ttl.line("Jc"), ttl.line("Jmin"), ttl.line("Jmax")]).toEqual(["4", "40", "70"]);
     expect(ttl.line("I1")).toBe(
-      "<r 2><b 0x858000010001000000000669636c6f756403636f6d0000010001c00c0001000100000f><r 1><b 0x00044d583737>",
+      "<r 2><b 0x858000010001000000000669636c6f756403636f6d0000010001c00c00010001000010><r 1><b 0x00044d583737>",
     );
   });
 

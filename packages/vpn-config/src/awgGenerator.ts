@@ -127,13 +127,12 @@ export const applyAwgGeneratorSettings = (
   const shared = randomizeKeys === false;
   const profileSeed = JSON.stringify(shared ? ["shared", shape] : [seed.keyId, shape]);
   const revision = shared ? 0 : seed.profileRevision;
-  const draw: Draw = (label, min, max) => {
-    const span = max - min + 1;
-    // Start at a key- and profile-specific value and advance within the range
-    // on each revision, including when the range offers only two values.
-    const start = hashNumber(profileSeed, label) % span;
-    return min + (start + revision % span) % span;
-  };
+  // Every value is drawn on its own from the key, the settings and the
+  // revision, so a refresh redraws each one independently instead of moving
+  // them all by one. A refresh that happens to draw the same config moves on
+  // to the next revision (defaultService.nextClientProfile).
+  const draw: Draw = (label, min, max) =>
+    min + hashNumber(JSON.stringify([profileSeed, revision]), label) % (max - min + 1);
 
   const jmin = draw("jmin", profile.jminMin, profile.jminMax);
   updates.set("Jc", String(draw("jc", profile.jcMin, profile.jcMax)));
