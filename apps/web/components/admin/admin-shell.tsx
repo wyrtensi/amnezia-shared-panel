@@ -113,6 +113,14 @@ export function AdminShell({
 
           {/* Mobile navigation */}
           <nav className="flex gap-1 overflow-x-auto border-b bg-background px-3 py-2 md:hidden">
+            <Link
+              href="/"
+              prefetch={false}
+              className="flex shrink-0 items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium text-muted-foreground"
+            >
+              <KeyRound className="h-4 w-4" />
+              {t("admin.myKeys")}
+            </Link>
             {NAV.map((item) => {
               const active =
                 item.href === "/admin"

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-import { decodeVpnLink, type AmneziaPayload } from "./codec.js";
-import { buildLink } from "./fixtures.js";
+import { decodeVpnLink } from "./codec.js";
+import { buildLink, lastConfigOf } from "./fixtures.js";
 import {
   DEFAULT_AWG3_SERVER_IPV4_CIDR,
   DEFAULT_IPV6_REJECT_STUB_PREFIX,
@@ -14,9 +14,6 @@ import {
   readBaseClientIpv4,
   withIpv6RejectStubAddress,
 } from "./ipv6RejectStub.js";
-
-const lastConfigOf = (payload: AmneziaPayload) =>
-  JSON.parse(String(payload.containers?.[0]?.awg?.last_config)) as Record<string, unknown>;
 
 describe("normalizeUla64Prefix / isValidUla64Prefix", () => {
   it("normalizes valid RFC 4193 ULA /64 prefixes to RFC 5952 form", () => {

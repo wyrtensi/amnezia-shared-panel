@@ -1,9 +1,10 @@
 import {
   decodeVpnLink,
   encodeVpnPayload,
-  type AmneziaContainer,
+  writeAwgLastConfig,
   type AmneziaPayload,
 } from "./codec.js";
+import { locateAwgConfig } from "./awgEndpoint.js";
 
 /**
  * Deterministic ULA addressing and export projection for the per-node IPv6
@@ -19,9 +20,6 @@ export const DEFAULT_AWG3_SERVER_IPV4_CIDR = "10.90.0.1/22";
 const IPV6_HOST_MASK = (1n << 64n) - 1n;
 const ULA_PREFIX_SHIFT = 120n;
 const ULA_LOCAL_BYTE = 0xfdn;
-
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === "object" && value !== null && !Array.isArray(value);
 
 const parseIpv4 = (raw: string): number | null => {
   const parts = raw.split(".");
@@ -191,67 +189,7 @@ export const deriveStubPeerIpv6 = (
   return formatIpv6(base + offset);
 };
 
-type LastConfigForm = "json-indent2" | "json-compact" | "object";
-
-type LocatedAwg31 = {
-  containerIndex: number;
-  lastConfig: Record<string, unknown>;
-  form: LastConfigForm;
-  lines: string[];
-};
-
 const sectionHeader = /^\s*\[([^\]]+)\]\s*$/;
-
-const locateAwg31 = (payload: AmneziaPayload): LocatedAwg31 | null => {
-  if (!isRecord(payload) || !Array.isArray(payload.containers)) return null;
-  const awgContainers = payload.containers.filter(
-    (container) => isRecord(container) && container.awg !== undefined,
-  );
-  if (awgContainers.length !== 1) return null;
-
-  const container = awgContainers[0] as AmneziaContainer;
-  const awg = container.awg;
-  if (!isRecord(awg) || awg.protocol_version !== "3.1") return null;
-
-  let lastConfig: unknown;
-  let form: LastConfigForm;
-  if (typeof awg.last_config === "string") {
-    try {
-      lastConfig = JSON.parse(awg.last_config);
-    } catch {
-      return null;
-    }
-    if (JSON.stringify(lastConfig, null, 2) === awg.last_config) form = "json-indent2";
-    else if (JSON.stringify(lastConfig) === awg.last_config) form = "json-compact";
-    else form = "json-indent2";
-  } else if (isRecord(awg.last_config)) {
-    lastConfig = awg.last_config;
-    form = "object";
-  } else {
-    return null;
-  }
-
-  if (!isRecord(lastConfig) || typeof lastConfig.config !== "string") return null;
-  return {
-    containerIndex: payload.containers.indexOf(container),
-    lastConfig,
-    form,
-    lines: lastConfig.config.split("\n"),
-  };
-};
-
-const writeLastConfig = (
-  awg: Record<string, unknown>,
-  form: LastConfigForm,
-  lastConfig: Record<string, unknown>,
-): void => {
-  awg.last_config =
-    form === "object"
-      ? lastConfig
-      : form === "json-compact"
-        ? JSON.stringify(lastConfig)
-        : JSON.stringify(lastConfig, null, 2);
-};
 
 const findInterfaceAddressLine = (lines: string[]): number => {
   let section = "";
@@ -287,8 +225,9 @@ export const readBaseClientIpv4 = (vpnLink: string): string | null => {
   } catch {
     return null;
   }
-  const located = locateAwg31(payload);
-  if (!located) return null;
+  const artifact = locateAwgConfig(payload);
+  if (artifact.kind !== "awg31") return null;
+  const { located } = artifact;
 
   if (typeof located.lastConfig.client_ip === "string") {
     const fromClientIp = extractFirstIpv4(located.lastConfig.client_ip);
@@ -336,8 +275,9 @@ export const withIpv6RejectStubAddress = (
   } catch {
     return vpnLink;
   }
-  const located = locateAwg31(payload);
-  if (!located) return vpnLink;
+  const artifact = locateAwgConfig(payload);
+  if (artifact.kind !== "awg31") return vpnLink;
+  const { located } = artifact;
 
   const addressIndex = findInterfaceAddressLine(located.lines);
   if (addressIndex < 0) return vpnLink;
@@ -393,6 +333,6 @@ export const withIpv6RejectStubAddress = (
 
   const awg = payload.containers?.[located.containerIndex]?.awg;
   if (!awg) return vpnLink;
-  writeLastConfig(awg, located.form, nextLastConfig);
+  writeAwgLastConfig(awg, located.form, nextLastConfig);
   return encodeVpnPayload(payload);
 };

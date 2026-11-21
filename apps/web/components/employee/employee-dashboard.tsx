@@ -754,7 +754,7 @@ export function EmployeeDashboard({
             <Button variant="secondary" onClick={() => setShowKeyHelp(true)}>
               <CircleHelp className="h-4 w-4" /> {t("keyHelp.button")}
             </Button>
-            <Button disabled={!canCreate} onClick={() => setShowCreate(true)}>
+            <Button className="font-bold" disabled={!canCreate} onClick={() => setShowCreate(true)}>
               <Plus className="h-4 w-4" /> {t("emp.newKey")}
             </Button>
           </div>

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { decodeVpnLink, encodeVpnPayload, type AmneziaPayload } from "./codec.js";
+import { decodeVpnLink, encodeVpnPayload } from "./codec.js";
 import {
   AwgEndpointRenderError,
   inspectAwgArtifact,
@@ -9,10 +9,7 @@ import {
   renderAwgEndpointVpnLink,
   withAwg31TunnelMtu,
 } from "./awgEndpoint.js";
-import { buildArtifact, buildLink, readEndpointCopies } from "./fixtures.js";
-
-const lastConfigOf = (payload: AmneziaPayload) =>
-  JSON.parse(String(payload.containers?.[0]?.awg?.last_config)) as Record<string, unknown>;
+import { buildArtifact, buildLink, lastConfigOf, readEndpointCopies } from "./fixtures.js";
 
 const withConf = (edit: (conf: string) => string) => buildArtifact({ conf: edit });
 

@@ -1,0 +1,68 @@
+import { describe, expect, it } from "vitest";
+
+import { awgGeneratorPresets, awgGeneratorSettingsSchema } from "./awgGenerator.js";
+
+const timings = {
+  rekeyAfterTime: { min: 100, max: 150 },
+  rekeyTimeout: { min: 4, max: 8 },
+  rejectAfterTime: { min: 200, max: 300 },
+  keepaliveTimeout: { min: 10, max: 18 },
+  maxHandshakeAttempts: { min: 12, max: 16 },
+};
+
+describe("AWG generator settings", () => {
+  it("provides an independently editable, valid starting point for every preset", () => {
+    const presets = awgGeneratorPresets();
+    expect(presets.map(({ id }) => id)).toEqual([
+      "issued",
+      "dns_response",
+      "dns_response_random_ttl",
+      "randomized",
+      "custom",
+    ]);
+    for (const { id, settings } of presets) {
+      expect(awgGeneratorSettingsSchema.parse(settings).preset).toBe(id);
+    }
+    presets[0]!.settings.mtu = 1400;
+    expect(awgGeneratorPresets()[0]!.settings.mtu).toBe(1280);
+  });
+
+  it.each([
+    { jcMin: 9, jcMax: 8 },
+    { jminMin: 75, jminMax: 74 },
+    { jmaxGapMin: 0 },
+    { jmaxGapMin: 50, jmaxGapMax: 40 },
+    { iCount: 6 },
+    { mtu: 1280.5 },
+    { mtu: 1421 },
+    { contentPaddingAddition: { min: 20, max: 10 } },
+    { randomTrailers: false },
+    { S4: 20 },
+    { timings: { ...timings, maxHandshakeAttempts: { min: 1, max: 65_536 } } },
+    { timings: { ...timings, rejectAfterTime: { min: 150, max: 250 } } },
+    { timings: { ...timings, keepaliveTimeout: { min: 10, max: 195 } } },
+  ])("rejects an invalid edit to the profile %#", (invalid) => {
+    const base = awgGeneratorPresets().find(({ id }) => id === "custom")!.settings;
+    expect(awgGeneratorSettingsSchema.safeParse({ ...base, ...invalid }).success).toBe(false);
+  });
+
+  it("accepts valid custom timing ranges", () => {
+    const base = awgGeneratorPresets().find(({ id }) => id === "custom")!.settings;
+    expect(awgGeneratorSettingsSchema.parse({ ...base, timings }).timings).toEqual(timings);
+  });
+
+  it.each([
+    ["issued", { jcMin: 2 }],
+    ["dns_response", { iMode: "noise" }],
+    ["dns_response_random_ttl", { iCount: 2 }],
+  ] as const)("validates the fixed fields of %s while allowing MTU changes", (id, change) => {
+    const base = awgGeneratorPresets().find((preset) => preset.id === id)!.settings;
+    expect(awgGeneratorSettingsSchema.safeParse({ ...base, mtu: 1340 }).success).toBe(true);
+    expect(awgGeneratorSettingsSchema.safeParse({ ...base, ...change }).success).toBe(false);
+  });
+
+  it("allows an edited numeric range with the randomized preset", () => {
+    const base = awgGeneratorPresets().find(({ id }) => id === "randomized")!.settings;
+    expect(awgGeneratorSettingsSchema.safeParse({ ...base, jcMin: 5, jcMax: 8 }).success).toBe(true);
+  });
+});

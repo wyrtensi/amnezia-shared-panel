@@ -31,4 +31,15 @@ describe("RULE_EXTRAS", () => {
     const anthropic = RULE_EXTRAS.find((extra) => extra.name === "anthropic");
     expect(anthropic?.cidrs).toContain("160.79.104.0/23");
   });
+
+  it("includes only the four exact Genshin SDK DNS prefixes", () => {
+    const genshin = RULE_EXTRAS.find((extra) => extra.name === "genshin-sdk-dns-2026-11-21");
+    expect(genshin?.exact).toBe(true);
+    expect(genshin?.cidrs).toEqual([
+      "171.43.164.91/32",
+      "171.43.164.92/30",
+      "171.43.164.96/31",
+      "171.43.164.98/32",
+    ]);
+  });
 });

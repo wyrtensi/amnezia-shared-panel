@@ -97,7 +97,7 @@ import {
 } from "@/lib/policy-endpoints";
 import type { KeyLimitMode, ProtocolKind } from "@/lib/types";
 import { effectiveKeyLimitMode, isNodeFull } from "@/lib/key-quota";
-import { trafficTotal } from "@/lib/format";
+import { formatDateTime, trafficTotal } from "@/lib/format";
 import { TrafficBytes } from "@/components/inline-traffic";
 import {
   INACTIVE_DAYS,
@@ -617,13 +617,13 @@ export default function AdminUsersPage() {
             {t("users.keyPurgeAllBtn", { count: revokedEverywhere.length })}
           </Button>
         ) : null}
-        <div className="relative">
+        <div className="relative w-full sm:w-auto">
           <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
           <Input
             value={query}
             onChange={(event) => setQuery(event.target.value)}
             placeholder={t("users.searchPlaceholder")}
-            className="h-9 w-52 pl-8"
+            className="h-9 w-full pl-8 sm:w-52"
           />
         </div>
         <Select value={filter} onValueChange={(v) => setFilter(v as FilterKey)}>
@@ -689,7 +689,7 @@ export default function AdminUsersPage() {
         </div>
       </div>
 
-      <div className="grid gap-4 lg:grid-cols-[19rem_1fr]">
+      <div className="grid min-w-0 gap-4 lg:grid-cols-[19rem_minmax(0,1fr)]">
         {/* Master: compact user mini-cards */}
         <div className="space-y-2">
           {loading && users.length === 0 ? (
@@ -705,7 +705,7 @@ export default function AdminUsersPage() {
               </CardContent>
             </Card>
           ) : (
-            <div className="max-h-[calc(100vh-13rem)] space-y-2 overflow-y-auto pr-1">
+            <div className="max-h-64 space-y-2 overflow-y-auto pr-1 lg:max-h-[calc(100vh-13rem)]">
               {filtered.map((entry) => (
                 <UserMiniCard
                   key={entry.user.id}
@@ -2133,7 +2133,7 @@ function AdminKeyRow({
   return (
     <>
       <div className="rounded-lg border bg-well shadow-[var(--inset-shadow)] px-3 py-2 transition-colors hover:bg-accent/40">
-        <div className="flex items-center gap-2.5">
+        <div className="flex flex-wrap items-center gap-2.5">
           <span
             className={cn(
               "size-2 shrink-0 rounded-full",
@@ -2141,7 +2141,7 @@ function AdminKeyRow({
             )}
             title={keyView.online ? t("users.online") : t("users.offline")}
           />
-          <div className="min-w-0 flex-1">
+          <div className="min-w-0 flex-1 basis-[calc(100%-2rem)] sm:basis-auto">
             <div className="flex flex-wrap items-center gap-1.5">
               <span className="truncate text-sm font-medium">
                 {keyView.deviceLabel || deviceTypeLabel(t, keyView.deviceType)}
@@ -2195,7 +2195,7 @@ function AdminKeyRow({
             <TrafficBytes bytes={trafficTotal(keyView.traffic)} />
           </span>
           <StatusBadge value={keyView.state} />
-          <div className="flex shrink-0 items-center gap-0.5">
+          <div className="flex flex-wrap items-center gap-0.5">
             {/* Named, not just a pencil: this is the one action on the row whose
                 subject an icon cannot convey — every other one acts on the key
                 itself, this one edits a note about it. An operator who did not
@@ -2275,6 +2275,15 @@ function AdminKeyRow({
               />
             ) : null}
           </div>
+        </div>
+
+        <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
+          <span>{t("users.keyCreatedAt")}: <time dateTime={keyView.createdAt}>{formatDateTime(keyView.createdAt, lang)}</time></span>
+          <span>
+            {t("users.keyConfigUpdatedAt")}: {keyView.configUpdatedAt ? (
+              <time dateTime={keyView.configUpdatedAt}>{formatDateTime(keyView.configUpdatedAt, lang)}</time>
+            ) : "—"}
+          </span>
         </div>
 
         {/* Administrators only, and never part of a config, so it can say who

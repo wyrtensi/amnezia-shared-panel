@@ -110,7 +110,8 @@ export const awg31Link = (options: Awg31FixtureOptions = {}): string => {
 /** The three copies of one field: outer params, last_config, conf line. */
 export const readCopies = (vpnLink: string, decode: (link: string) => AmneziaPayload) => {
   const awg = decode(vpnLink).containers?.[0]?.awg ?? {};
-  const lastConfig = JSON.parse(String(awg.last_config)) as Record<string, unknown>;
+  const stored: unknown = awg.last_config;
+  const lastConfig = (typeof stored === "string" ? JSON.parse(stored) : stored) as Record<string, unknown>;
   const conf = String(lastConfig.config);
   const line = (key: string) =>
     new RegExp(`^${key} = (.*?)\\r?$`, "m").exec(conf)?.[1] ?? null;

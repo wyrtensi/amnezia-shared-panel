@@ -153,7 +153,7 @@ export function KeyCard({
       {/* `@container`: the guide button drops its word by the CARD's width,
           not the window's - a grid column on a wide screen can be as narrow
           as a phone. */}
-      <Card className="@container h-full overflow-hidden transition-shadow hover:shadow-md">
+      <Card className="group @container h-full overflow-hidden transition-shadow hover:shadow-md">
         <CardContent className="flex h-full flex-col gap-3 p-4">
           <div className="flex items-start justify-between gap-2">
             {/* min-w-0 + flex-1: the title side gives way (the name truncates)
@@ -223,7 +223,7 @@ export function KeyCard({
                     competing with the name above it: an icon says which kind of
                     fact it is, and the surface separates it from the title
                     without making it louder. */}
-                <span className="mt-1 inline-flex max-w-full items-center gap-1.5 rounded-md bg-well px-1.5 py-0.5 text-[11px] font-medium text-muted-foreground shadow-[var(--inset-shadow)]">
+                <span className="mt-1 inline-flex max-w-full items-center gap-1.5 rounded-md bg-well px-1.5 py-0.5 text-[13px] font-medium text-muted-foreground shadow-[var(--inset-shadow)]">
                   <Server className="size-3 shrink-0" />
                   <span className="truncate">{keyView.nodeName}</span>
                 </span>
@@ -238,10 +238,6 @@ export function KeyCard({
           </div>
 
           <div className="flex flex-wrap items-center gap-1.5">
-            <Badge variant="outline" className="gap-1">
-              <ShieldHalf className="h-3 w-3" />
-              {t(PROTOCOL_LABEL[keyView.protocol] ?? keyView.protocol)}
-            </Badge>
             <Tooltip>
               <TooltipTrigger asChild>
                 <Badge variant="outline" className="cursor-help gap-1">
@@ -253,6 +249,10 @@ export function KeyCard({
                 {t(ROUTE_DESC[keyView.routeProfile] ?? keyView.routeProfile)}
               </TooltipContent>
             </Tooltip>
+            <Badge variant="outline" className="gap-1 invisible group-hover:visible group-focus-within:visible [@media(hover:none)]:visible">
+              <ShieldHalf className="h-3 w-3" />
+              {t(PROTOCOL_LABEL[keyView.protocol] ?? keyView.protocol)}
+            </Badge>
             {isAdmin ? <KeyBridgeBadge bridge={keyView.bridge} /> : null}
           </div>
 
@@ -302,37 +302,31 @@ export function KeyCard({
               tone="warning"
               icon={<RefreshCw className="h-4 w-4 text-warning" />}
               title={t("keyCard.rulesUpdatedTitle")}
-              action={
-                // A fresh download, not a reissue. The config is assembled at
-                // download time with the rules active then, so downloading
-                // again is all it takes; a reissue would also replace the key
-                // pair and kill the config on every other device. The dialog
-                // holds every way to take the key (QR, copy, files), and any
-                // of them marks the rules as delivered. Reissue stays on its
-                // own icon in the action row.
-                me.policy.allowConfigRedownload ? (
-                  <Button
-                    type="button"
-                    size="sm"
-                    disabled={busy}
-                    onClick={() => guardKeyAccess(onShowConfig)}
-                  >
-                    <Download className="h-4 w-4" />
-                    {t("keyCard.redownload")}
-                  </Button>
-                ) : undefined
-              }
             >
               {/* Named profile, not a generic "rules changed": `rulesOutdated`
                   is set per profile — this key's own profile has a newer rule
                   version than the one it was issued with — so the callout can
                   say which of them moved and why this card is the one showing
                   it. Same label the route chip above uses. */}
-              {t("keyCard.rulesUpdatedBody", {
-                profile: t(
-                  ROUTE_LABEL[keyView.routeProfile] ?? keyView.routeProfile,
-                ),
-              })}
+              <span className="block">
+                {t("keyCard.rulesUpdatedBody", {
+                  profile: t(
+                    ROUTE_LABEL[keyView.routeProfile] ?? keyView.routeProfile,
+                  ),
+                })}
+              </span>
+              {me.policy.allowConfigRedownload ? (
+                <Button
+                  type="button"
+                  size="sm"
+                  className="mt-2 h-auto min-h-8 max-w-full whitespace-normal py-1 text-left"
+                  disabled={busy}
+                  onClick={() => guardKeyAccess(onShowConfig)}
+                >
+                  <Download className="h-4 w-4" />
+                  {t("keyCard.redownload")}
+                </Button>
+              ) : null}
             </Callout>
           ) : null}
 
@@ -445,44 +439,31 @@ export function KeyCard({
                   button already hands out as text, so it needs no extra policy
                   gate. It is the only download drawn as a button, because it is
                   the shape that survives import with the connection name the
-                  panel gave it. It is the primary action for split profiles.
+                  panel gave it.
                 */}
                 <FormatDownload
                   href={configUrl(keyView.id, "vpn")}
                   format=".vpn"
                   label={t("common.downloadVpnFile")}
-                  primary={!delivery.qrUsable}
                   guardKeyAccess={guardKeyAccess}
                   onDelivered={onConfigDelivered}
                 />
-                {/*
-                  `.conf` last and drawn as a bare muted link rather than a
-                  button: as an outlined button beside `.vpn` it still read as a
-                  choice between two files, and offered as a choice it gets taken
-                  by coin-flip — the user only finds out which one they took when
-                  the connection arrives named "Server 1", because the client
-                  renames every imported `.conf` whatever is inside it. It stays
-                  in this row rather than moving behind the download dialog's
-                  disclosure the way the dialog's own copy did: that dialog is
-                  reachable only through the QR button, which has a policy flag of
-                  its own, and `.conf` must not start depending on that flag.
-                  `allowConfDownload` still decides, by itself, whether it exists
-                  at all, and the tooltip and `aria-label` still say the whole
-                  phrase.
-                */}
                 {me.policy.allowConfDownload ? (
-                  <FormatDownload
-                    href={configUrl(keyView.id, "conf")}
-                    format=".conf"
-                    label={t("common.downloadConf")}
-                    quiet
-                    guardKeyAccess={guardKeyAccess}
-                    onDelivered={onConfigDelivered}
-                  />
+                  <span className="invisible group-hover:visible group-focus-within:visible [@media(hover:none)]:visible">
+                    <FormatDownload
+                      href={configUrl(keyView.id, "conf")}
+                      format=".conf"
+                      label={t("common.downloadConf")}
+                      quiet
+                      guardKeyAccess={guardKeyAccess}
+                      onDelivered={onConfigDelivered}
+                    />
+                  </span>
                 ) : null}
               </>
             ) : null}
             <div className="ml-auto flex items-center gap-1.5">
+              <div className="flex items-center gap-1.5 invisible group-hover:visible group-focus-within:visible [@media(hover:none)]:visible">
               {/* Beside Reissue and drawn the same way, and a different icon:
                   this one keeps the key, Reissue replaces it. */}
               {canRefreshConfig ? (
@@ -528,6 +509,7 @@ export function KeyCard({
                   <TooltipContent>{t("keyCard.reissueTip")}</TooltipContent>
                 </Tooltip>
               ) : null}
+              </div>
               {revocable ? (
                 <Tooltip>
                   <TooltipTrigger asChild>
@@ -592,7 +574,6 @@ function FormatDownload({
   format,
   label,
   quiet = false,
-  primary = false,
   guardKeyAccess,
   onDelivered,
 }: {
@@ -600,18 +581,10 @@ function FormatDownload({
   format: string;
   label: string;
   quiet?: boolean;
-  /**
-   * Paint `.vpn` as the primary action on profiles without QR.
-   */
-  primary?: boolean;
   guardKeyAccess: KeyAccessGuard;
   onDelivered: () => void;
 }) {
-  const variant: ButtonProps["variant"] = quiet
-    ? "link"
-    : primary
-      ? "default"
-      : "secondary";
+  const variant: ButtonProps["variant"] = quiet ? "link" : "secondary";
   return (
     <Tooltip>
       <TooltipTrigger asChild>
@@ -774,7 +747,7 @@ function CopyKeyButton({
   return (
     <Button
       type="button"
-      variant={state === "copied" || split ? "secondary" : "default"}
+      variant={state === "copied" ? "secondary" : "default"}
       size="sm"
       disabled={disabled || state === "busy"}
       onClick={() => guardKeyAccess((deferred) => void copy(deferred))}

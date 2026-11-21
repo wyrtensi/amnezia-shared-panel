@@ -1,5 +1,6 @@
 import { deflateSync } from "node:zlib";
 import { describe, expect, it, vi } from "vitest";
+import { readAwgLastConfig } from "@amnezia/vpn-config";
 import { awg31Link, I_SIGNATURES, readCopies } from "./awg31.fixture.js";
 import { selectAwgClientProfile } from "./awgClientProfile.js";
 import {
@@ -103,13 +104,8 @@ describe("vpn config extraction and split tunneling", () => {
     });
 
     const decoded = decodeVpnLink(modifiedLink);
-    const lastConfig = JSON.parse(
-      decoded.containers?.[0]?.awg?.last_config ?? "{}",
-    ) as {
-      allowed_ips?: string[];
-      sites?: unknown;
-      split_tunnel_sites?: unknown;
-    };
+    const lastConfig = readAwgLastConfig(decoded.containers?.[0]?.awg?.last_config)?.lastConfig;
+    if (!lastConfig) throw new Error("Expected an embedded test config");
     expect(lastConfig.allowed_ips).toEqual([
       "104.244.42.0/24",
       "157.240.0.0/16",

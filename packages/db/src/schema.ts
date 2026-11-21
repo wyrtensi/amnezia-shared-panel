@@ -18,6 +18,7 @@ import {
   varchar,
 } from "drizzle-orm/pg-core";
 import type {
+  AwgGeneratorSettings,
   BridgeAgentUpdateState,
   BridgeManagementStatus,
   BridgeMetrics,
@@ -168,6 +169,7 @@ export const identities = pgTable(
 export const nodes = pgTable(
   "nodes",
   {
+    awgGenerator: jsonb("awg_generator").$type<AwgGeneratorSettings>(),
     id: uuid("id").defaultRandom().primaryKey(),
     name: varchar("name", { length: 120 }).notNull(),
     // Name users see for this server (falls back to `name` when empty). The
@@ -579,6 +581,7 @@ export const nodeVpnEndpoints = pgTable(
     reachabilityEnabled: boolean("reachability_enabled").default(true).notNull(),
     revision: integer("revision").default(0).notNull(),
     bridgeMode: text("bridge_mode").$type<EndpointBridgeMode>().default("inherit").notNull(),
+    awgGenerator: jsonb("awg_generator").$type<AwgGeneratorSettings>(),
     probeStatus: serviceCheckStatusEnum("probe_status"),
     probeLevels: jsonb("probe_levels").$type<Record<string, unknown>>(),
     probeCheckedAt: timestamp("probe_checked_at", { withTimezone: true }),
@@ -641,6 +644,9 @@ export const vpnKeys = pgTable(
     // applied over the encrypted node-issued config at export. Metadata only,
     // never a config body. Null: the node's own parameters are exported.
     awgClientProfile: jsonb("awg_client_profile").$type<Record<string, unknown>>(),
+    configUpdatedAt: timestamp("config_updated_at", { withTimezone: true }),
+    configExportHashes: jsonb("config_export_hashes")
+      .$type<Record<string, string>>().default({}).notNull(),
     // Admin-only per-key bridge routing override:
     // - `inherit` (default): follow the owner's effective `policy.useBridge`
     //   and the node's active bridge route;

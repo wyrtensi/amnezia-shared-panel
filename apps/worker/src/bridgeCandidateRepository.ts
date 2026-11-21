@@ -85,6 +85,7 @@ export class PostgresBridgeCandidateRepository implements BridgeCandidateReposit
         publicUdpPort: vpnBridgeRoutes.publicUdpPort,
         bridgePublicIpv4: vpnBridges.publicIpv4,
         nodePublicIp: nodes.publicIp,
+        nodeGenerator: nodes.awgGenerator,
       })
       .from(vpnBridgeRoutes)
       .innerJoin(vpnBridges, eq(vpnBridges.id, vpnBridgeRoutes.bridgeId))
@@ -95,6 +96,8 @@ export class PostgresBridgeCandidateRepository implements BridgeCandidateReposit
     // The node's AWG 3 service key: the same peer the regular run measures.
     const [key] = await db
       .select({
+        id: vpnKeys.id,
+        clientProfile: vpnKeys.awgClientProfile,
         ciphertext: vpnKeys.configCiphertext,
         nonce: vpnKeys.configNonce,
         authTag: vpnKeys.configAuthTag,
@@ -124,7 +127,12 @@ export class PostgresBridgeCandidateRepository implements BridgeCandidateReposit
             this.options.keyring,
           )
         : null;
-    return { ...row, serviceConfig };
+    return {
+      ...row,
+      serviceConfig,
+      serviceKeyId: key?.id ?? null,
+      serviceClientProfile: key?.clientProfile ?? null,
+    };
   };
 
   claimCandidateRun = async (run: CandidateRun): Promise<boolean> => {

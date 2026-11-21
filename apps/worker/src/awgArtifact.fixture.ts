@@ -15,6 +15,8 @@ export const awgServiceLink = (
     "Address = 10.8.1.7/32",
     "PrivateKey = synthetic-client-private-key",
     "Jc = 8",
+    "Jmin = 40",
+    "Jmax = 100",
     "",
     "[Peer]",
     "PublicKey = synthetic-server-public-key",
@@ -22,7 +24,8 @@ export const awgServiceLink = (
     `Endpoint = ${host}:${port}`,
     "",
   ].join("\n");
-  const lastConfig = { config: conf, hostName: host, port, client_ip: "10.8.1.7" };
+  const junk = { Jc: "8", Jmin: "40", Jmax: "100" };
+  const lastConfig = { config: conf, hostName: host, port, client_ip: "10.8.1.7", ...junk };
   return encodeVpnPayload({
     containers: [
       {
@@ -32,6 +35,7 @@ export const awgServiceLink = (
             ? {}
             : { protocol_version: options.protocolVersion ?? "3.1" }),
           last_config: JSON.stringify(lastConfig, null, 2),
+          ...junk,
           port: String(port),
           transport_proto: "udp",
         },

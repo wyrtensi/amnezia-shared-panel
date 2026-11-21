@@ -1,8 +1,11 @@
 import {
   decodeVpnLink,
   encodeVpnPayload,
+  readAwgLastConfig,
+  writeAwgLastConfig,
   type AmneziaContainer,
   type AmneziaPayload,
+  type AwgLastConfig,
 } from "./codec.js";
 
 /**
@@ -52,13 +55,8 @@ export class AwgEndpointRenderError extends Error {
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
-/** How `awg.last_config` is stored: a JSON text (what the node writes) or an object. */
-type LastConfigForm = "json-indent2" | "json-compact" | "object";
-
-type LocatedConfig = {
+type LocatedConfig = AwgLastConfig & {
   containerIndex: number;
-  lastConfig: Record<string, unknown>;
-  form: LastConfigForm;
   lines: string[];
 };
 
@@ -124,7 +122,8 @@ const findPeerEndpoint = (
   return endpoint ? { index, endpoint } : null;
 };
 
-const locateAwgConfig = (payload: AmneziaPayload): { kind: "awg31"; located: LocatedConfig } | Unsupported => {
+/** Find the unique AWG 3.1 embedded config without requiring any particular peer or client fields. */
+export const locateAwgConfig = (payload: AmneziaPayload): { kind: "awg31"; located: LocatedConfig } | Unsupported => {
   if (!isRecord(payload) || !Array.isArray(payload.containers)) return { kind: "unknown" };
   const awgContainers = payload.containers.filter(
     (container) => isRecord(container) && container.awg !== undefined,
@@ -138,32 +137,17 @@ const locateAwgConfig = (payload: AmneziaPayload): { kind: "awg31"; located: Loc
   if (awg.protocol_version === "2") return { kind: "awg20" };
   if (awg.protocol_version !== "3.1") return { kind: "unknown" };
 
-  let lastConfig: unknown;
-  let form: LastConfigForm;
-  if (typeof awg.last_config === "string") {
-    try {
-      lastConfig = JSON.parse(awg.last_config);
-    } catch {
-      return { kind: "unknown" };
-    }
-    if (JSON.stringify(lastConfig, null, 2) === awg.last_config) form = "json-indent2";
-    else if (JSON.stringify(lastConfig) === awg.last_config) form = "json-compact";
-    else form = "json-indent2";
-  } else if (isRecord(awg.last_config)) {
-    lastConfig = awg.last_config;
-    form = "object";
-  } else {
+  const config = readAwgLastConfig(awg.last_config);
+  if (!config || typeof config.lastConfig.config !== "string") {
     return { kind: "unknown" };
   }
-  if (!isRecord(lastConfig) || typeof lastConfig.config !== "string") return { kind: "unknown" };
 
   return {
     kind: "awg31",
     located: {
       containerIndex: payload.containers.indexOf(container),
-      lastConfig,
-      form,
-      lines: lastConfig.config.split("\n"),
+      ...config,
+      lines: config.lastConfig.config.split("\n"),
     },
   };
 };
@@ -183,26 +167,13 @@ const analyze = (payload: AmneziaPayload): Analysis => {
   };
 };
 
-const writeLastConfig = (
-  awg: Record<string, unknown>,
-  form: LastConfigForm,
-  lastConfig: Record<string, unknown>,
-): void => {
-  awg.last_config =
-    form === "object"
-      ? lastConfig
-      : form === "json-compact"
-        ? JSON.stringify(lastConfig)
-        : JSON.stringify(lastConfig, null, 2);
-};
-
-const AWG31_TUNNEL_MTU = "1280";
+const AWG31_TUNNEL_MTU = 1280;
 
 /**
  * Apply the AWG 3.1 MTU to both the AmneziaVPN setting and the embedded conf.
  * Legacy links and unreadable artifacts keep the previous export behaviour.
  */
-export const withAwg31TunnelMtu = (vpnLink: string): string => {
+export const withAwg31TunnelMtu = (vpnLink: string, mtu = AWG31_TUNNEL_MTU): string => {
   let payload: AmneziaPayload;
   try {
     payload = decodeVpnLink(vpnLink);
@@ -217,19 +188,26 @@ export const withAwg31TunnelMtu = (vpnLink: string): string => {
   if (start < 0) return vpnLink;
   const next = lines.findIndex((line, index) => index > start && sectionHeader.test(line));
   const end = next < 0 ? lines.length : next;
-  const mtuLine = "MTU = " + AWG31_TUNNEL_MTU + (lines[start]?.endsWith("\r") ? "\r" : "");
+  const mtuValue = String(mtu);
+  const mtuLine = `MTU = ${mtuValue}${lines[start]?.endsWith("\r") ? "\r" : ""}`;
   const entries = lines.slice(start + 1, end);
   const isMtu = (line: string) => /^\s*MTU\s*=/i.test(line);
   const configuredMtu = entries.filter(isMtu);
-  if (lastConfig.mtu === AWG31_TUNNEL_MTU && configuredMtu.length === 1 && configuredMtu[0] === mtuLine) {
-    return vpnLink;
-  }
 
   const awg = payload.containers?.[containerIndex]?.awg;
   if (!awg) return vpnLink;
-  writeLastConfig(awg, form, {
+  const hasOuterMtu = Object.hasOwn(awg, "mtu");
+  const outerMtu = typeof awg.mtu === "number" ? mtu : mtuValue;
+  if (
+    (!hasOuterMtu || awg.mtu === outerMtu) && lastConfig.mtu === mtuValue &&
+    configuredMtu.length === 1 && configuredMtu[0] === mtuLine
+  ) {
+    return vpnLink;
+  }
+  if (hasOuterMtu) awg.mtu = outerMtu;
+  writeAwgLastConfig(awg, form, {
     ...lastConfig,
-    mtu: AWG31_TUNNEL_MTU,
+    mtu: mtuValue,
     config: [
       ...lines.slice(0, start + 1),
       mtuLine,
@@ -248,6 +226,17 @@ export const inspectAwgArtifact = (decoded: AmneziaPayload): AwgArtifactInspecti
     return { kind: "awg31", endpoint: { host, port } };
   }
   return { kind: analysis.kind };
+};
+
+/** Classify the embedded config independently of whether its endpoint can be rewritten. */
+export const inspectAwgVpnConfig = (vpnLink: string): AwgArtifactKind => {
+  let decoded: AmneziaPayload;
+  try {
+    decoded = decodeVpnLink(vpnLink);
+  } catch {
+    return "unknown";
+  }
+  return locateAwgConfig(decoded).kind;
 };
 
 /** Same as `inspectAwgArtifact` for a vpn:// link; an undecodable link is `unknown`. */
@@ -323,7 +312,7 @@ export const renderAwgEndpoint = (
 
   next.hostName = endpoint.host;
   nextAwg.port = String(endpoint.port);
-  writeLastConfig(nextAwg, form, nextLast);
+  writeAwgLastConfig(nextAwg, form, nextLast);
   return next;
 };
 

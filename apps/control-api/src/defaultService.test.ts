@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { defaultPortalPolicy, emptyGlobalRoutes } from "@amnezia/contracts";
 import type { GlobalRoutes } from "@amnezia/contracts";
 import { encryptSecret } from "@amnezia/db";
+import { readAwgLastConfig } from "@amnezia/vpn-config";
 import type { Actor } from "./service.js";
 import { createDefaultControlApiService } from "./defaultService.js";
 import { decodeVpnLink, encodeVpnPayload } from "./vpnConfig.js";
@@ -130,7 +131,7 @@ const createRepository = (): ControlRepository => ({
     }),
   ),
   getGlobalRoutes: vi.fn(() => Promise.resolve(emptyGlobalRoutes)),
-  markKeyRuleVersion: vi.fn(() => Promise.resolve()),
+  recordConfigExport: vi.fn(() => Promise.resolve(true)),
   listRouteProfiles: vi.fn(() => Promise.resolve([])),
   getRuleVersion: vi.fn(() => Promise.resolve({ id: "rule-1" })),
   getRulesRefreshStatus: vi.fn(() =>
@@ -315,18 +316,12 @@ describe("default control service policy enforcement", () => {
     );
   });
 
-  it("requires confirmation and audits an admin private-config view", async () => {
+  it("audits an authorized admin private-config view without a confirmation flag", async () => {
     const repository = createRepository();
     const service = createDefaultControlApiService({ repository, keyring });
 
     await expect(
       service.getKeyConfig(admin, "key-1", "vpn", false),
-    ).rejects.toEqual(
-      expect.objectContaining({ code: "ADMIN_CONFIRMATION_REQUIRED" }),
-    );
-
-    await expect(
-      service.getKeyConfig(admin, "key-1", "vpn", true),
     ).resolves.toMatchObject({ body: "vpn://stored-payload" });
     expect(repository.appendAudit).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -413,7 +408,10 @@ describe("default control service policy enforcement", () => {
       "AllowedIPs = 10.0.0.0/8, 1.1.1.1/32, 1.0.0.1/32",
     );
     expect(String(result.body)).not.toContain("0.0.0.0/0");
-    expect(repository.markKeyRuleVersion).toHaveBeenCalledWith("key-1", "v1");
+    expect(vi.mocked(repository.recordConfigExport).mock.calls.some(
+      ([keyId, format, , context]) => keyId === "key-1" && format === "conf" &&
+        context.markRuleVersion && context.key.activeRule?.versionId === "v1",
+    )).toBe(true);
   });
 
   it("merges the owner's custom routes on top of the base feed", async () => {
@@ -930,7 +928,7 @@ describe("AWG 3.1 config refresh", () => {
       refreshToken: configRefreshToken("key-1", key.encrypted.nonce, 2),
     });
     // Checking is not delivering.
-    expect(repository.markKeyRuleVersion).not.toHaveBeenCalled();
+    expect(repository.recordConfigExport).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -1162,7 +1160,8 @@ describe("effective endpoint at config delivery (bridge or direct)", () => {
   const stripEndpoint = (vpn: string) => {
     const payload = decodeVpnLink(vpn);
     const awg = payload.containers?.[0]?.awg ?? {};
-    const inner = JSON.parse(String(awg.last_config)) as Record<string, unknown>;
+    const inner = readAwgLastConfig(awg.last_config)?.lastConfig;
+    if (!inner) throw new Error("Expected an embedded test config");
     delete inner.hostName;
     delete inner.port;
     inner.config = String(inner.config).replace(/^Endpoint = .*$/m, "");
@@ -1262,7 +1261,7 @@ describe("effective endpoint at config delivery (bridge or direct)", () => {
     expect(error).toBeInstanceOf(ApiError);
     expect(error).toMatchObject({ statusCode: 409, code: "BRIDGE_CONFIG_UNSUPPORTED" });
     expect((error as ApiError).message).not.toMatch(/synthetic|example\.test|vpn:\/\//);
-    expect(repository.markKeyRuleVersion).not.toHaveBeenCalled();
+    expect(repository.recordConfigExport).not.toHaveBeenCalled();
     expect(repository.appendAudit).not.toHaveBeenCalled();
     // Without an active route nothing needs inspecting: the same key stays served.
     assign(null);
@@ -1293,7 +1292,10 @@ describe("effective endpoint at config delivery (bridge or direct)", () => {
     expect(allowed).not.toContain("10.0.0.0/24,");
     expect(allowed.split(",").length).toBeGreaterThan(1400);
     expect(String((await get("conf")).body)).toContain("Endpoint = 45.10.20.30:41000");
-    expect(repository.markKeyRuleVersion).toHaveBeenCalledWith("key-1", "ver-1");
+    expect(vi.mocked(repository.recordConfigExport).mock.calls.some(
+      ([keyId, format, , context]) => keyId === "key-1" && format === "vpn" &&
+        context.markRuleVersion && context.key.activeRule?.versionId === "ver-1",
+    )).toBe(true);
     // The QR limit still refuses the long config, bridge or not.
     expect(await get("qr-svg").catch((e: unknown) => (e as ApiError).code)).toBe("QR_TOO_LARGE");
 
@@ -1316,10 +1318,40 @@ describe("effective endpoint at config delivery (bridge or direct)", () => {
     const result = await service.getKeyConfig(employee, "key-1", "vpn", false, true)
       .then(() => null, (error: unknown) => error);
     expect(result).toMatchObject({ statusCode: 422, code: "KEY_CLIPBOARD_TOO_LONG" });
-    expect(repository.markKeyRuleVersion).not.toHaveBeenCalled();
+    expect(repository.recordConfigExport).not.toHaveBeenCalled();
 
     expect(String((await get("vpn")).body).length).toBeGreaterThan(32_767);
-    expect(repository.markKeyRuleVersion).toHaveBeenCalledWith("key-1", "ver-1");
+    expect(vi.mocked(repository.recordConfigExport).mock.calls.some(
+      ([keyId, format, , context]) => keyId === "key-1" && format === "vpn" &&
+        context.markRuleVersion && context.key.activeRule?.versionId === "ver-1",
+    )).toBe(true);
+  });
+
+  it("records nothing when QR rendering rejects an oversized configuration", async () => {
+    const cidrs = Array.from({ length: 2_000 }, (_, i) => `10.${i >> 8}.${i & 255}.0/24`);
+    const { get, repository } = setup({
+      routeProfile: "ru_blacklist",
+      activeRule: feed(cidrs),
+    });
+    await expect(get("qr-svg")).rejects.toMatchObject({ code: "QR_TOO_LARGE" });
+    expect(repository.recordConfigExport).not.toHaveBeenCalled();
+  });
+
+  it("fingerprints the conf payload independently of its connection display name", async () => {
+    const { get, repository, key } = setup({});
+    const before = await get("conf");
+    const firstHash = vi.mocked(repository.recordConfigExport).mock.calls.at(-1)?.[2];
+    key.nodeDisplayName = "Different connection name";
+    const after = await get("conf");
+    expect(after.body).toEqual(before.body);
+    expect(vi.mocked(repository.recordConfigExport).mock.calls.at(-1)?.[2]).toBe(firstHash);
+  });
+
+  it("rejects an export when its source snapshot became stale during rendering", async () => {
+    const { get, repository } = setup({});
+    vi.mocked(repository.recordConfigExport).mockResolvedValue(false);
+    await expect(get("vpn")).rejects.toMatchObject({ code: "CONFIG_EXPORT_STALE" });
+    expect(repository.appendAudit).not.toHaveBeenCalled();
   });
 
   it("still enforces policy and ownership before touching the artifact", async () => {

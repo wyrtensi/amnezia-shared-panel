@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { keyBridgeModeSchema, publicIpv4Schema } from "./bridges.js";
+import { awgGeneratorSettingsSchema } from "./awgGenerator.js";
 
 export const protocolKindSchema = z.enum(["awg2", "awg3"]);
 export const keyStateSchema = z.enum([
@@ -294,6 +295,7 @@ const nodeApiBaseUrlSchema = z.url().refine((value) => {
 }, "Node API URL must use http or https");
 
 export const createNodeRequestSchema = z.object({
+  awgGenerator: awgGeneratorSettingsSchema.nullish(),
   name: z.string().trim().min(1).max(120),
   // Optional user-facing server name; empty/omitted falls back to `name`.
   publicName: z.string().trim().max(120).optional(),
@@ -337,12 +339,14 @@ export const nodePublicEndpointMutationSchema = z.discriminatedUnion("action", [
     enabled: z.boolean().optional(),
     reachabilityEnabled: z.boolean().optional(),
     bridgeMode: endpointBridgeModeSchema.optional(),
+    awgGenerator: awgGeneratorSettingsSchema.nullish(),
   }).strict().refine(
     (fields) =>
       fields.name !== undefined ||
       fields.enabled !== undefined ||
       fields.reachabilityEnabled !== undefined ||
-      fields.bridgeMode !== undefined,
+      fields.bridgeMode !== undefined ||
+      fields.awgGenerator !== undefined,
     {
       message: "An endpoint name, availability, reachability, or bridge setting is required",
     },
@@ -2346,6 +2350,7 @@ export const userNodeEndpointSchema = z.object({
 export type UserNodeEndpoint = z.infer<typeof userNodeEndpointSchema>;
 
 export const adminNodeEndpointSchema = userNodeEndpointSchema.extend({
+  awgGenerator: awgGeneratorSettingsSchema.nullish(),
   publicAddress: z.ipv4(),
   enabled: z.boolean(),
   bridgeMode: endpointBridgeModeSchema.optional(),
@@ -2369,7 +2374,10 @@ export const nodePublicEndpointMutationResultSchema = z.object({
     publicAddress: true,
     enabled: true,
     reachabilityEnabled: true,
-  }).extend({ bridgeMode: endpointBridgeModeSchema }),
+  }).extend({
+    bridgeMode: endpointBridgeModeSchema,
+    awgGenerator: awgGeneratorSettingsSchema.nullish(),
+  }),
 });
 export type NodePublicEndpointMutationResult = z.infer<typeof nodePublicEndpointMutationResultSchema>;
 
@@ -2489,3 +2497,4 @@ export * from "./bridgeUpdateModel.js";
 export * from "./bridgeRollback.js";
 export * from "./ruleSources.js";
 export * from "./ipv6RejectStub.js";
+export * from "./awgGenerator.js";

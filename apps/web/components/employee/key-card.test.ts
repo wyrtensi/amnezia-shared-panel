@@ -183,7 +183,7 @@ describe("rules-updated callout", () => {
   it("sends the user to the key dialog, not to a reissue", () => {
     const callout = source.slice(
       source.indexOf("keyView.rulesOutdated ? ("),
-      source.indexOf('t("keyCard.rulesUpdatedBody"'),
+      source.indexOf("</Callout>", source.indexOf("keyView.rulesOutdated ? (")),
     );
     expect(callout).toContain("guardKeyAccess(onShowConfig)");
     expect(callout).toContain('t("keyCard.redownload")');
@@ -252,8 +252,14 @@ describe("split-profile delivery", () => {
     );
   });
 
-  it("keeps .vpn as the primary action for a profile without QR", () => {
-    expect(source).toContain("primary={!delivery.qrUsable}");
+  it("uses the same button variants for both profiles", () => {
+    expect(source).toContain('variant={state === "copied" ? "secondary" : "default"}');
+    expect(source).toContain('quiet ? "link" : "secondary"');
+  });
+
+  it("reveals secondary actions on card hover and focus, and on touch devices", () => {
+    expect(source).toContain("invisible group-hover:visible group-focus-within:visible [@media(hover:none)]:visible");
+    expect(source).not.toContain("keyCard.moreActions");
   });
 
   it("uses only copy that exists in both languages", () => {

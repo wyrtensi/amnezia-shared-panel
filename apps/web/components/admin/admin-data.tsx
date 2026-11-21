@@ -6,6 +6,8 @@ import { apiRequest } from "@/lib/api";
 import { useT } from "@/lib/i18n/provider";
 import { WORKER_PERIOD_FIELD_NAMES } from "@amnezia/contracts";
 import type {
+  AdminKeyConfigMetadata,
+  NodeGeneratorMetadata,
   AdminNodeEndpoint,
   AdminOverviewBridges,
   GlobalRoutes,
@@ -84,7 +86,7 @@ export type QuotaRequest = {
   createdAt: string;
 };
 
-export type AdminNode = {
+export type AdminNode = NodeGeneratorMetadata & {
   id: string;
   name: string;
   publicEndpoints?: AdminNodeEndpoint[];
@@ -154,7 +156,7 @@ export type AdminNode = {
   updatedAt: string;
 };
 
-export type AdminKey = {
+export type AdminKey = AdminKeyConfigMetadata & {
   id: string;
   ownerId: string;
   nodeId: string;
@@ -176,7 +178,6 @@ export type AdminKey = {
   rulesOutdated?: boolean;
   lastUsedAt: string | null;
   failureReason: string | null;
-  createdAt: string;
   /**
    * When the peer was removed from its node. Returned by `/api/admin/keys`
    * (the projection spreads the row), and the only date that says anything
@@ -367,6 +368,7 @@ export function AdminDataProvider({ children }: { children: React.ReactNode }) {
   const [globalRoutes, setGlobalRoutes] =
     React.useState<GlobalRoutes>(newGlobalRoutes);
   const [loading, setLoading] = React.useState(true);
+  const reloadGeneration = React.useRef(0);
 
   // Keep the latest translator in a ref so the memoized callbacks below do not
   // need `t` in their dependency arrays (which would refetch on a language
@@ -378,6 +380,7 @@ export function AdminDataProvider({ children }: { children: React.ReactNode }) {
   }, [t]);
 
   const reload = React.useCallback(async () => {
+    const generation = ++reloadGeneration.current;
     try {
       const [
         overviewResult,
@@ -400,6 +403,7 @@ export function AdminDataProvider({ children }: { children: React.ReactNode }) {
         apiRequest<GlobalPortalPolicy[]>("/api/admin/portal-policy"),
         apiRequest<GlobalRoutes[]>("/api/admin/global-routes"),
       ]);
+      if (generation !== reloadGeneration.current) return;
       setOverview(overviewResult);
       setUsers(userResult);
       setRequests(requestResult);
@@ -410,11 +414,13 @@ export function AdminDataProvider({ children }: { children: React.ReactNode }) {
       setPolicy(policyResult?.[0] ?? DEFAULT_POLICY);
       setGlobalRoutes(globalRouteResult?.[0] ?? newGlobalRoutes());
     } catch (cause) {
-      toast.error(
-        cause instanceof Error ? cause.message : tRef.current("common.loadFailed"),
-      );
+      if (generation === reloadGeneration.current) {
+        toast.error(
+          cause instanceof Error ? cause.message : tRef.current("common.loadFailed"),
+        );
+      }
     } finally {
-      setLoading(false);
+      if (generation === reloadGeneration.current) setLoading(false);
     }
   }, []);
 

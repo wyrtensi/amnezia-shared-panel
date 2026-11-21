@@ -1,7 +1,7 @@
 import { deflateSync, inflateSync } from "node:zlib";
 
 export type AmneziaContainerAwg = {
-  last_config?: string;
+  last_config?: string | Record<string, unknown>;
   [key: string]: unknown;
 };
 
@@ -19,6 +19,42 @@ export type AmneziaPayload = {
   dns2?: string;
   hostName?: string;
   [key: string]: unknown;
+};
+
+export type AwgLastConfig = {
+  form: "json-indent2" | "json-compact" | "object";
+  lastConfig: Record<string, unknown>;
+};
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+
+/** Decode an embedded config while retaining its wire representation. */
+export const readAwgLastConfig = (stored: unknown): AwgLastConfig | null => {
+  if (isRecord(stored)) return { form: "object", lastConfig: stored };
+  if (typeof stored !== "string") return null;
+
+  let lastConfig: unknown;
+  try {
+    lastConfig = JSON.parse(stored);
+  } catch {
+    return null;
+  }
+  if (!isRecord(lastConfig)) return null;
+  const form = JSON.stringify(lastConfig, null, 2) === stored || JSON.stringify(lastConfig) !== stored
+    ? "json-indent2"
+    : "json-compact";
+  return { form, lastConfig };
+};
+
+export const writeAwgLastConfig = (
+  awg: AmneziaContainerAwg,
+  form: AwgLastConfig["form"],
+  lastConfig: Record<string, unknown>,
+): void => {
+  awg.last_config = form === "object"
+    ? lastConfig
+    : JSON.stringify(lastConfig, null, form === "json-indent2" ? 2 : 0);
 };
 
 export const encodeVpnPayload = (payload: AmneziaPayload): string => {

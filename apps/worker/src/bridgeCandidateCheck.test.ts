@@ -1,10 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  awgGeneratorPresets,
   BRIDGE_ROUTE_CANDIDATE_CHECK_JOB_TYPE,
   type ProbeRunRequest,
 } from "@amnezia/contracts";
-import { decodeVpnLink, inspectAwgVpnLink } from "@amnezia/vpn-config";
+import { decodeVpnLink, inspectAwgVpnLink, readAwgLastConfig } from "@amnezia/vpn-config";
 
 import { awgServiceLink } from "./awgArtifact.fixture.js";
 import {
@@ -70,6 +71,9 @@ const context = (extra: Partial<CandidateContext> = {}): CandidateContext => ({
   publicUdpPort: 41005,
   nodePublicIp: "192.0.2.10",
   serviceConfig: awgServiceLink(),
+  serviceKeyId: "candidate-service-key",
+  serviceClientProfile: null,
+  nodeGenerator: null,
   ...extra,
 });
 
@@ -144,11 +148,26 @@ describe("bridge candidate check job", () => {
     const inspected = inspectAwgVpnLink(target?.config ?? "");
     expect(inspected).toMatchObject({ kind: "awg31", endpoint: { host: "45.1.2.3", port: 41005 } });
     const artifact = decodeVpnLink(target?.config ?? "");
-    const lastConfig: unknown = JSON.parse(artifact.containers?.[0]?.awg?.last_config ?? "{}");
+    const lastConfig = readAwgLastConfig(artifact.containers?.[0]?.awg?.last_config)?.lastConfig;
     expect(lastConfig).toHaveProperty("mtu", "1280");
     expect(lastConfig).toHaveProperty("config", expect.stringMatching(/^MTU = 1280$/m));
     expect(candidates.recordCandidateResult).not.toHaveBeenCalled();
     expect(jobs.completeJob).toHaveBeenCalledWith("job-1");
+  });
+
+  it("uses the node's effective generator profile when verifying a candidate route", async () => {
+    const preset = awgGeneratorPresets().find((item) => item.id === "dns_response");
+    if (!preset) throw new Error("Missing generator settings");
+    const { handle, client } = setup({
+      context: context({ nodeGenerator: { ...preset.settings, mtu: 1330 } }),
+    });
+    await handle(job());
+    const target = vi.mocked(client.startRun).mock.calls[0]?.[0].targets[0];
+    const artifact = decodeVpnLink(target?.config ?? "");
+    const config = readAwgLastConfig(artifact.containers?.[0]?.awg?.last_config)?.lastConfig.config;
+    if (typeof config !== "string") throw new Error("Missing embedded service config");
+    expect(/^MTU = (\d+)$/m.exec(config)?.[1]).toBe("1330");
+    expect(/^Jc = (\d+)$/m.exec(config)?.[1]).toBe("4");
   });
 
   it("reads the capability from the stored probe column through the shared lookup", async () => {

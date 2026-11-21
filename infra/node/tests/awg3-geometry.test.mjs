@@ -14,6 +14,49 @@ const executing = {
   skip: process.platform === "linux" ? false : "needs a POSIX shell",
 };
 
+test("DNS-response mode preserves the working packet across every TTL variant", executing, () => {
+  const result = spawnSync("sh", [scriptPath, "--dns-response-i1"], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout.trim().split("\n").length, 1);
+  assert.ok(result.stdout.startsWith("I1 = "));
+  const spec = result.stdout.trim().slice("I1 = ".length);
+  const tags = [...spec.matchAll(/<(b|r) ([^>]+)>/g)];
+  assert.equal(tags.map((tag) => tag[0]).join(""), spec);
+  assert.deepEqual(tags.map((tag) => tag[1]), ["r", "b", "r", "b"]);
+  assert.equal(tags[0][2], "2");
+  assert.equal(tags[2][2], "1");
+  for (const tag of [tags[1], tags[3]]) {
+    assert.match(tag[2], /^0x(?:[0-9a-f]{2})+$/);
+  }
+  const prefix = Buffer.from(tags[1][2].slice(2), "hex");
+  const suffix = Buffer.from(tags[3][2].slice(2), "hex");
+  const original = Buffer.from(
+    "0000858000010001000000000669636c6f756403636f6d0000010001c00c000100010000105a00044d583737",
+    "hex",
+  );
+  for (let ttlByte = 0; ttlByte < 256; ttlByte += 1) {
+    const packet = Buffer.concat([Buffer.from([0x12, 0x34]), prefix, Buffer.from([ttlByte]), suffix]);
+    assert.equal(packet.length, 44);
+    assert.equal(packet.readUInt16BE(2), 0x8580);
+    assert.equal(packet.readUInt16BE(4), 1);
+    assert.equal(packet.readUInt16BE(6), 1);
+    assert.equal(packet.readUInt16BE(28), 0xc00c);
+    assert.equal(packet.readUInt32BE(34), 4096 + ttlByte);
+    assert.equal(packet.readUInt16BE(38), 4);
+    const expected = Buffer.from(original);
+    expected[0] = 0x12;
+    expected[1] = 0x34;
+    expected[37] = ttlByte;
+    assert.deepEqual(packet, expected);
+  }
+});
+
+test("DNS-response mode refuses extra arguments without emitting a profile", executing, () => {
+  const result = spawnSync("sh", [scriptPath, "--dns-response-i1", "1280"], { encoding: "utf8" });
+  assert.equal(result.status, 2);
+  assert.equal(result.stdout, "");
+});
+
 /** One generated parameter block, as a key -> value map. */
 const generate = (mtu) => {
   const result = spawnSync("sh", mtu === undefined ? [scriptPath] : [scriptPath, mtu], { encoding: "utf8" });
