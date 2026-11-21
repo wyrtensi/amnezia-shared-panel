@@ -93,6 +93,8 @@ import {
   customRoutesSchema,
   DEFAULT_ALLOWED_PROTOCOLS,
   defaultPortalPolicy,
+  deviceRuleFor,
+  resolveAwgClientSettings,
   emptyGlobalRoutes,
   globalRoutesSchema,
   idleAccessSyncStatus,
@@ -121,7 +123,7 @@ import {
   updateGlobalRoutesRequestSchema,
 } from "@amnezia/contracts";
 import type { PollBoundSampleField } from "@amnezia/contracts";
-import type { AwgGeneratorSettings } from "@amnezia/contracts";
+import type { AwgGeneratorSettings, ResolvedAwgClientSettings } from "@amnezia/contracts";
 import {
   isProbeStale,
   nodeServedProtocols,
@@ -336,6 +338,25 @@ const keyEndpointJoin = and(
     and(isNull(vpnKeys.endpointId), eq(nodeVpnEndpoints.ordinal, 1)),
   ),
 );
+
+type StoredAwgLevel = { awgGenerator: AwgGeneratorSettings | null; awgMtu: number | null };
+
+/**
+ * A key's AWG 3.1 client profile and MTU: the key, its owner, its address's
+ * rule for the key's device type, its address (`keyEndpointJoin`), its node.
+ */
+const resolveKeyClientSettings = (levels: {
+  key: StoredAwgLevel & { deviceType: string };
+  owner: StoredAwgLevel | null;
+  endpoint: (StoredAwgLevel & { awgDeviceRules: unknown }) | null;
+  node: StoredAwgLevel | null;
+}): ResolvedAwgClientSettings => resolveAwgClientSettings({
+  key: levels.key,
+  user: levels.owner,
+  device: levels.endpoint ? deviceRuleFor(levels.endpoint.awgDeviceRules, levels.key.deviceType) : null,
+  address: levels.endpoint,
+  node: levels.node,
+});
 
 /**
  * The portal-policy fields that configure the Cloudflare Access two-way sync.
@@ -2848,7 +2869,11 @@ export class PostgresControlRepository implements ControlRepository {
         endpointAddress: nodeVpnEndpoints.address,
         endpointBridgeMode: nodeVpnEndpoints.bridgeMode,
         nodeAwgGenerator: nodes.awgGenerator,
+        nodeAwgMtu: nodes.awgMtu,
+        endpointId: nodeVpnEndpoints.id,
         endpointAwgGenerator: nodeVpnEndpoints.awgGenerator,
+        endpointAwgMtu: nodeVpnEndpoints.awgMtu,
+        endpointDeviceRules: nodeVpnEndpoints.awgDeviceRules,
         nodeIpv6RejectStubEnabled: nodes.ipv6RejectStubEnabled,
         nodeIpv6RejectStubState: nodes.ipv6RejectStubState,
         nodeIpv6RejectStubPrefix: nodes.ipv6RejectStubPrefix,
@@ -2938,6 +2963,14 @@ export class PostgresControlRepository implements ControlRepository {
       useBridge: resolvedPolicy.useBridge,
       endpointBridgeMode: row.endpointBridgeMode ?? undefined,
     });
+    const settings = resolveKeyClientSettings({
+      key: row.key,
+      owner: row.user,
+      endpoint: row.endpointId
+        ? { awgGenerator: row.endpointAwgGenerator, awgMtu: row.endpointAwgMtu, awgDeviceRules: row.endpointDeviceRules }
+        : null,
+      node: { awgGenerator: row.nodeAwgGenerator, awgMtu: row.nodeAwgMtu },
+    });
     return {
       id: row.key.id,
       ownerId: row.key.ownerId,
@@ -2971,7 +3004,8 @@ export class PostgresControlRepository implements ControlRepository {
           }
         : null,
       awgClientProfile: row.key.awgClientProfile ?? null,
-      awgGenerator: row.endpointAwgGenerator ?? row.nodeAwgGenerator ?? null,
+      awgGenerator: settings.awgGenerator,
+      awgMtu: settings.mtu,
       deviceType: row.key.deviceType,
       nodeIpv6RejectStub: {
         enabled: row.nodeIpv6RejectStubEnabled,
@@ -3283,6 +3317,9 @@ export class PostgresControlRepository implements ControlRepository {
           awgClientProfile: vpnKeys.awgClientProfile,
           nodeId: vpnKeys.nodeId,
           endpointId: vpnKeys.endpointId,
+          deviceType: vpnKeys.deviceType,
+          awgGenerator: vpnKeys.awgGenerator,
+          awgMtu: vpnKeys.awgMtu,
           configCiphertext: vpnKeys.configCiphertext,
           configNonce: vpnKeys.configNonce,
           configAuthTag: vpnKeys.configAuthTag,
@@ -3295,7 +3332,7 @@ export class PostgresControlRepository implements ControlRepository {
       if (!key) throw new ApiError(404, "Key not found", "KEY_NOT_FOUND");
       const [user, globalPolicy] = await Promise.all([
         tx
-          .select({ policyOverride: users.policyOverride })
+          .select({ policyOverride: users.policyOverride, awgGenerator: users.awgGenerator, awgMtu: users.awgMtu })
           .from(users)
           .where(eq(users.id, actor.id))
           .limit(1),
@@ -3322,14 +3359,26 @@ export class PostgresControlRepository implements ControlRepository {
         );
       }
       const revision = profileRevision(key.awgClientProfile);
-      const [generator] = await tx.select({
-        node: nodes.awgGenerator,
-        endpoint: nodeVpnEndpoints.awgGenerator,
+      const [levels] = await tx.select({
+        nodeAwgGenerator: nodes.awgGenerator,
+        nodeAwgMtu: nodes.awgMtu,
+        endpointId: nodeVpnEndpoints.id,
+        endpointAwgGenerator: nodeVpnEndpoints.awgGenerator,
+        endpointAwgMtu: nodeVpnEndpoints.awgMtu,
+        endpointDeviceRules: nodeVpnEndpoints.awgDeviceRules,
       }).from(nodes).leftJoin(nodeVpnEndpoints, and(
         eq(nodeVpnEndpoints.nodeId, nodes.id),
         key.endpointId ? eq(nodeVpnEndpoints.id, key.endpointId) : eq(nodeVpnEndpoints.ordinal, 1),
       )).where(eq(nodes.id, key.nodeId)).limit(1);
-      if (configRefreshToken(keyId, key.configNonce, revision, generator?.endpoint ?? generator?.node) !== refreshToken) {
+      const settings = resolveKeyClientSettings({
+        key,
+        owner: user[0] ?? null,
+        endpoint: levels?.endpointId
+          ? { awgGenerator: levels.endpointAwgGenerator, awgMtu: levels.endpointAwgMtu, awgDeviceRules: levels.endpointDeviceRules }
+          : null,
+        node: levels ? { awgGenerator: levels.nodeAwgGenerator, awgMtu: levels.nodeAwgMtu } : null,
+      });
+      if (configRefreshToken(keyId, key.configNonce, revision, settings.awgGenerator, settings.mtu) !== refreshToken) {
         throw new ApiError(
           409,
           "The config changed since it was checked",
@@ -3346,7 +3395,8 @@ export class PostgresControlRepository implements ControlRepository {
         },
         awgClientProfile: key.awgClientProfile ?? null,
         revision,
-        awgGenerator: generator?.endpoint ?? generator?.node ?? null,
+        awgGenerator: settings.awgGenerator,
+        awgMtu: settings.mtu,
       });
       await tx
         .update(vpnKeys)

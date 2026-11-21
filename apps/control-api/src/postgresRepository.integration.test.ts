@@ -12,6 +12,7 @@ import {
 import {
   adminReachabilityViewSchema,
   awgGeneratorPresets,
+  type AwgGeneratorPreset,
   defaultKeyNameDisplay,
   idleAccessSyncStatus,
   quotaRequestNotifyPayloadSchema,
@@ -7913,6 +7914,104 @@ describe("PostgresControlRepository AWG 3.1 config refresh", () => {
     expect((await repository().findKeyConfig(keyId))?.awgGenerator).toEqual(preset.settings);
     await repository().updateNode(actor, profileNode, { awgGenerator: null });
     expect((await repository().findKeyConfig(keyId))?.awgGenerator).toBeNull();
+  });
+
+  const settingsOf = (id: AwgGeneratorPreset) => {
+    const found = awgGeneratorPresets().find((item) => item.id === id);
+    if (!found) throw new Error(`Preset ${id} missing`);
+    return { ...found.settings, randomizeKeys: false };
+  };
+  const exportedLines = async (owner: Actor, keyId: string) => {
+    const exported = await service().getKeyConfig(owner, keyId, "vpn", false);
+    if (typeof exported.body !== "string") throw new Error("Expected a text artifact");
+    return readCopies(exported.body, decodeVpnLink).line;
+  };
+  const STUN_PACKET = /^<b 0x0001>/;
+  const DNS_RESPONSE_PACKET = /^<r 2><b 0x8580/;
+
+  runDatabaseTest("exports the key's own MTU over the address profile", async () => {
+    if (!database) return;
+    const owner = await seedOwner();
+    const node = await seedNode();
+    await database.db.update(nodes).set({ awgGenerator: settingsOf("dns_response"), awgMtu: 1400 })
+      .where(eq(nodes.id, node));
+    await database.db.insert(nodeVpnEndpoints).values({ nodeId: node, ordinal: 1, address: "203.0.113.72", name: "Primary" });
+    const keyId = await seedKey(owner.id, { onNode: node });
+    expect((await exportedLines(owner, keyId))("MTU")).toBe("1400");
+
+    await database.db.update(vpnKeys).set({ awgMtu: 1360 }).where(eq(vpnKeys.id, keyId));
+    const line = await exportedLines(owner, keyId);
+    expect(line("MTU")).toBe("1360");
+    expect(line("Jc")).toBe("4");
+    expect(line("I1")).toMatch(DNS_RESPONSE_PACKET);
+  });
+
+  runDatabaseTest("exports the user's profile on every node, over an iOS rule", async () => {
+    if (!database) return;
+    const owner = await seedOwner();
+    await database.db.update(users).set({ awgGenerator: settingsOf("stun") }).where(eq(users.id, owner.id));
+    const ruled = await seedNode();
+    const bare = await seedNode();
+    await database.db.insert(nodeVpnEndpoints).values([
+      {
+        nodeId: ruled, ordinal: 1, address: "203.0.113.73", name: "Ruled",
+        awgDeviceRules: { ios: { awgGenerator: settingsOf("dns_response"), awgMtu: 1340 } },
+      },
+      { nodeId: bare, ordinal: 1, address: "203.0.113.74", name: "Bare" },
+    ]);
+    for (const node of [ruled, bare]) {
+      const keyId = await seedKey(owner.id, { onNode: node });
+      await database.db.update(vpnKeys).set({ deviceType: "ios" }).where(eq(vpnKeys.id, keyId));
+      const line = await exportedLines(owner, keyId);
+      expect(line("I1")).toMatch(STUN_PACKET);
+      // The user sets no MTU, so the iOS rule's MTU still applies on its address.
+      expect(line("MTU")).toBe(node === ruled ? "1340" : "1280");
+    }
+  });
+
+  runDatabaseTest("exports the address's iOS rule only to iOS keys", async () => {
+    if (!database) return;
+    const owner = await seedOwner();
+    const node = await seedNode();
+    await database.db.insert(nodeVpnEndpoints).values({
+      nodeId: node, ordinal: 1, address: "203.0.113.75", name: "Ruled",
+      awgDeviceRules: { ios: { awgGenerator: settingsOf("dns_response"), awgMtu: 1340 } },
+    });
+    const ios = await seedKey(owner.id, { onNode: node });
+    const android = await seedKey(owner.id, { onNode: node });
+    await database.db.update(vpnKeys).set({ deviceType: "ios" }).where(eq(vpnKeys.id, ios));
+    await database.db.update(vpnKeys).set({ deviceType: "android" }).where(eq(vpnKeys.id, android));
+
+    const onIos = await exportedLines(owner, ios);
+    expect([onIos("MTU"), onIos("Jc")]).toEqual(["1340", "4"]);
+    expect(onIos("I1")).toMatch(DNS_RESPONSE_PACKET);
+    const onAndroid = await exportedLines(owner, android);
+    expect(onAndroid("MTU")).toBe("1280");
+    expect(onAndroid("I1") ?? "").not.toMatch(DNS_RESPONSE_PACKET);
+  });
+
+  runDatabaseTest("changes the refresh token when the effective MTU changes", async () => {
+    if (!database) return;
+    const owner = await seedOwner();
+    const keyId = await seedKey(owner.id);
+    const before = await tokenOf(owner, keyId);
+    await database.db.update(users).set({ awgMtu: 1400 }).where(eq(users.id, owner.id));
+    const after = await tokenOf(owner, keyId);
+    expect(after).not.toBe(before);
+    await expect(service().refreshOwnConfig(owner, keyId, before))
+      .rejects.toMatchObject({ code: "CONFIG_REFRESH_STALE" });
+    await expect(service().refreshOwnConfig(owner, keyId, after)).resolves.toMatchObject({ revision: 1 });
+  });
+
+  runDatabaseTest("keeps exporting AWG 2.0 keys as issued with user settings present", async () => {
+    if (!database) return;
+    const owner = await seedOwner();
+    const keyId = await seedKey(owner.id);
+    await database.db.update(vpnKeys).set({ protocol: "awg2" }).where(eq(vpnKeys.id, keyId));
+    const issued = await service().getKeyConfig(owner, keyId, "vpn", false);
+    await database.db.update(users).set({ awgGenerator: settingsOf("stun"), awgMtu: 1400 })
+      .where(eq(users.id, owner.id));
+    expect((await service().getKeyConfig(owner, keyId, "vpn", false)).body).toEqual(issued.body);
   });
 
   runDatabaseTest("records an explicit config refresh timestamp without changing creation time", async () => {

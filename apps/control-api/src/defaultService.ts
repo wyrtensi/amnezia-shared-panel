@@ -189,6 +189,7 @@ const composeExport = async (
     keyId: key.id,
     clientProfile: key.awgClientProfile,
     generator: key.awgGenerator,
+    ...(key.awgMtu === undefined ? {} : { mtu: key.awgMtu }),
   });
   const profiledLink = applyIpv6RejectStub(key, clientLink, format);
   const storedLink =
@@ -457,7 +458,7 @@ export const createDefaultControlApiService = ({
     return {
       eligible: true,
       revision,
-      refreshToken: configRefreshToken(key.id, key.encrypted.nonce, revision, key.awgGenerator),
+      refreshToken: configRefreshToken(key.id, key.encrypted.nonce, revision, key.awgGenerator, key.awgMtu),
     };
   },
   refreshOwnConfig: (actor, keyId, refreshToken) =>

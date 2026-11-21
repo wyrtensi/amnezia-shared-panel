@@ -88,7 +88,9 @@ export type StoredKeyConfig = {
   bridgeEndpoint: { host: string; port: number } | null;
   /** The saved AWG 3.1 client profile, unvalidated; null when none. */
   awgClientProfile: unknown;
+  /** The resolved profile and MTU (`resolveAwgClientSettings`). */
   awgGenerator?: AwgGeneratorSettings | null;
+  awgMtu?: number;
   /** Key target platform; used to project mobile-safe IPv6 reject stub ULA. */
   deviceType?: DeviceType;
   /** Observed/desired IPv6 active-reject stub status on the key's node. */
@@ -102,6 +104,7 @@ export type StoredKeyConfig = {
 /** The locked row a config refresh draws its new profile for. */
 export type ConfigRefreshSnapshot = {
   awgGenerator?: AwgGeneratorSettings | null;
+  awgMtu?: number;
   keyId: string;
   encrypted: EncryptedSecret;
   awgClientProfile: unknown;
