@@ -462,7 +462,7 @@ describe("reachability of bridged nodes (real PostgreSQL)", () => {
     await setBackupMtu(1400);
     await probe.tick();
     expect((await directEndpointsOf(node.id)).map((endpoint) => endpoint.probeStatus)).toEqual(["ok", null, null]);
-    await probe.tick(60);
+    await probe.tick(120);
     await probe.tick();
     expect((await directEndpointsOf(node.id)).map((endpoint) => endpoint.probeStatus)).toEqual(["ok", "failed", null]);
   });
