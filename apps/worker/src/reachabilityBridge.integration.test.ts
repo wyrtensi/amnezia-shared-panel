@@ -3,6 +3,7 @@ import { and, eq, inArray, like, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
 import {
+  awgGeneratorPresets,
   bridgeFrpProxyName,
   type ProbeRunRequest,
   type ProbeRunState,
@@ -28,7 +29,7 @@ import {
   vpnKeys,
   type Database,
 } from "@amnezia/db";
-import { inspectAwgVpnLink } from "@amnezia/vpn-config";
+import { decodeVpnLink, inspectAwgVpnLink, readAwgLastConfig } from "@amnezia/vpn-config";
 
 import { awgServiceLink } from "./awgArtifact.fixture.js";
 import type { ProbeClient } from "./probeAgent.js";
@@ -383,6 +384,106 @@ describe("reachability of bridged nodes (real PostgreSQL)", () => {
         .map((target) => [target.protocol, target]),
     );
 
+  const preset = (id: "issued" | "dns_response") => {
+    const found = awgGeneratorPresets().find((entry) => entry.id === id);
+    if (!found) throw new Error("Missing generator preset");
+    return found.settings;
+  };
+
+  const clientFields = (link: string) => {
+    const lastConfig = decodeVpnLink(link).containers?.[0]?.awg?.last_config;
+    const conf = readAwgLastConfig(lastConfig)?.lastConfig.config;
+    if (typeof conf !== "string") throw new Error("Missing embedded service config");
+    return {
+      mtu: /^MTU = (\d+)$/m.exec(conf)?.[1],
+      jc: /^Jc = (\d+)$/m.exec(conf)?.[1],
+    };
+  };
+
+  runDatabaseTest("applies inherited and overridden generator profiles to the direct IP targets", async () => {
+    const node = await seedNode({ awg3Link: awgServiceLink({ host: "192.0.2.10" }) });
+    const [, backup] = await seedDirectEndpoints(node.id);
+    if (!backup) throw new Error("Missing backup endpoint");
+    await db().update(nodes).set({ awgGenerator: { ...preset("dns_response"), mtu: 1300 } })
+      .where(eq(nodes.id, node.id));
+    await db().update(nodeVpnEndpoints).set({ awgGenerator: { ...preset("issued"), mtu: 1380 } })
+      .where(eq(nodeVpnEndpoints.id, backup.id));
+    await db().update(vpnKeys).set({
+      awgClientProfile: { version: 1, revision: 3, jc: 6, jmin: 41, jmax: 100, cpsOrder: 0 },
+    }).where(and(eq(vpnKeys.nodeId, node.id), eq(vpnKeys.protocol, "awg3")));
+
+    const targets = await repository.listTargets({ bridgeMeasurement: true });
+    const awg31 = targets.filter((target) => target.protocol === "awg3" && target.config !== null);
+    expect(awg31.map((target) => {
+      const link = target.config ?? "";
+      return { endpoint: inspectAwgVpnLink(link).endpoint?.host, ...clientFields(link) };
+    })).toEqual([
+      { endpoint: "192.0.2.10", mtu: "1300", jc: "4" },
+      { endpoint: "192.0.2.20", mtu: "1380", jc: "6" },
+    ]);
+  });
+
+  runDatabaseTest("keeps other nodes measurable when one service profile is unusable", async () => {
+    const invalid = await seedNode();
+    const valid = await seedNode();
+    await db().update(vpnKeys).set({ awgClientProfile: { version: 99 } })
+      .where(and(eq(vpnKeys.nodeId, invalid.id), eq(vpnKeys.protocol, "awg3")));
+
+    const targets = await repository.listTargets({ bridgeMeasurement: true });
+    expect(targets.find((target) => target.nodeId === invalid.id && target.protocol === "awg3"))
+      .toMatchObject({ config: null, unavailableReason: "service key client settings could not be applied" });
+    expect(typeof targets.find((target) => target.nodeId === valid.id && target.protocol === "awg3")?.config)
+      .toBe("string");
+  });
+
+  runDatabaseTest("records bridged IP variants separately and discards a result for a changed profile", async () => {
+    await seedProbe();
+    await seedPortalPolicy(true);
+    const node = await seedNode({ awg3Link: awgServiceLink({ host: "192.0.2.10" }) });
+    const [, backup] = await seedDirectEndpoints(node.id);
+    if (!backup) throw new Error("Missing backup endpoint");
+    const bridge = await seedBridge(`Variants ${runTag}`);
+    await seedRoute(node.id, bridge.id, "active");
+    await db().update(nodes).set({ awgGenerator: { ...preset("dns_response"), mtu: 1300 } })
+      .where(eq(nodes.id, node.id));
+    const setBackupMtu = (mtu: number) => db().update(nodeVpnEndpoints)
+      .set({ awgGenerator: { ...preset("issued"), mtu } })
+      .where(eq(nodeVpnEndpoints.id, backup.id));
+    await setBackupMtu(1380);
+    const probe = harness((target) => {
+      const ok = clientFields(target.config).mtu === "1300";
+      return { handshake: ok, http: ok };
+    });
+    await probe.tick();
+
+    const awg31 = probe.sent[0]?.targets.filter((target) => target.protocol === "awg3") ?? [];
+    expect(awg31.map((target) => clientFields(target.config).mtu)).toEqual(["1300", "1380"]);
+    expect(awg31.every((target) => inspectAwgVpnLink(target.config).endpoint?.host === bridge.publicIpv4)).toBe(true);
+    await setBackupMtu(1400);
+    await probe.tick();
+    expect((await directEndpointsOf(node.id)).map((endpoint) => endpoint.probeStatus)).toEqual(["ok", null, null]);
+    await probe.tick(60);
+    await probe.tick();
+    expect((await directEndpointsOf(node.id)).map((endpoint) => endpoint.probeStatus)).toEqual(["ok", "failed", null]);
+  });
+
+  runDatabaseTest("does not apply a direct result to an IP switched to the active bridge", async () => {
+    await seedProbe();
+    await seedPortalPolicy(false);
+    const node = await seedNode({ awg3Link: awgServiceLink({ host: "192.0.2.10" }) });
+    await seedDirectEndpoints(node.id);
+    const bridge = await seedBridge(`Changed path ${runTag}`);
+    await seedRoute(node.id, bridge.id, "active");
+    const probe = harness(() => ({ handshake: true, http: true }));
+    await probe.tick();
+
+    await seedPortalPolicy(true);
+    await probe.tick();
+
+    expect((await directEndpointsOf(node.id)).map((endpoint) => endpoint.probeStatus)).toEqual([null, null, null]);
+    expect((await resultsOf(node.id)).has("awg3")).toBe(false);
+  });
+
   runDatabaseTest("measures each enabled direct IPv4 with its own AWG 3.1 result", async () => {
     await seedProbe();
     const node = await seedNode({ awg3Link: awgServiceLink({ host: "192.0.2.10", port: 51234 }) });
@@ -494,6 +595,8 @@ describe("reachability of bridged nodes (real PostgreSQL)", () => {
     await seedProbe();
     await seedPortalPolicy(false);
     const node = await seedNode({ awg3Link: awgServiceLink({ host: "192.0.2.10", port: 51234 }) });
+    await db().update(nodes).set({ awgGenerator: { ...preset("dns_response"), mtu: 1300 } })
+      .where(eq(nodes.id, node.id));
     await db().insert(nodeVpnEndpoints).values([
       {
         nodeId: node.id,
@@ -503,6 +606,7 @@ describe("reachability of bridged nodes (real PostgreSQL)", () => {
         enabled: true,
         reachabilityEnabled: true,
         bridgeMode: "bridge",
+        awgGenerator: { ...preset("issued"), mtu: 1370 },
       },
       {
         nodeId: node.id,
@@ -512,6 +616,7 @@ describe("reachability of bridged nodes (real PostgreSQL)", () => {
         enabled: true,
         reachabilityEnabled: true,
         bridgeMode: "direct",
+        awgGenerator: { ...preset("dns_response"), mtu: 1400 },
       },
       {
         nodeId: node.id,
@@ -533,10 +638,13 @@ describe("reachability of bridged nodes (real PostgreSQL)", () => {
 
     await probe.tick();
     const awg31 = probe.sent[0]?.targets.filter((target) => target.protocol === "awg3");
-    expect(new Set(awg31?.map((target) => inspectAwgVpnLink(target.config).endpoint))).toEqual(new Set([
-      { host: bridge.publicIpv4, port: 41000 },
-      { host: "192.0.2.20", port: 51234 },
-      { host: "192.0.2.30", port: 51234 },
+    expect(new Set(awg31?.map((target) => ({
+      ...inspectAwgVpnLink(target.config).endpoint,
+      ...clientFields(target.config),
+    })))).toEqual(new Set([
+      { host: bridge.publicIpv4, port: 41000, mtu: "1370", jc: "8" },
+      { host: "192.0.2.20", port: 51234, mtu: "1400", jc: "4" },
+      { host: "192.0.2.30", port: 51234, mtu: "1300", jc: "4" },
     ]));
 
     await probe.tick();

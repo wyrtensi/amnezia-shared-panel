@@ -1,4 +1,5 @@
 import type {
+  AwgGeneratorSettings,
   AccessSyncStatus,
   AdminReachabilityView,
   Bridge,
@@ -87,6 +88,7 @@ export type StoredKeyConfig = {
   bridgeEndpoint: { host: string; port: number } | null;
   /** The saved AWG 3.1 client profile, unvalidated; null when none. */
   awgClientProfile: unknown;
+  awgGenerator?: AwgGeneratorSettings | null;
   /** Key target platform; used to project mobile-safe IPv6 reject stub ULA. */
   deviceType?: DeviceType;
   /** Observed/desired IPv6 active-reject stub status on the key's node. */
@@ -99,6 +101,7 @@ export type StoredKeyConfig = {
 
 /** The locked row a config refresh draws its new profile for. */
 export type ConfigRefreshSnapshot = {
+  awgGenerator?: AwgGeneratorSettings | null;
   keyId: string;
   encrypted: EncryptedSecret;
   awgClientProfile: unknown;
@@ -146,7 +149,12 @@ export interface ControlRepository {
    * Returns the empty set when no admin has configured any.
    */
   getGlobalRoutes: () => Promise<GlobalRoutes>;
-  markKeyRuleVersion: (keyId: string, versionId: string) => Promise<void>;
+  recordConfigExport: (
+    keyId: string,
+    format: string,
+    hash: string,
+    context: { key: StoredKeyConfig; globalRoutes: GlobalRoutes | null; markRuleVersion: boolean },
+  ) => Promise<boolean>;
   listRouteProfiles: () => Promise<RouteProfileAvailability[]>;
   getRuleVersion: (id: string) => Promise<unknown>;
   /** State of the manual "check the route feeds now" job. */

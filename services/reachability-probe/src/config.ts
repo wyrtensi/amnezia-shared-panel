@@ -87,16 +87,16 @@ export const extractConf = (input: string): string => {
   const containers = isRecord(payload) && Array.isArray(payload.containers) ? payload.containers : [];
   for (const container of containers) {
     if (!isRecord(container) || !isRecord(container.awg)) continue;
-    const lastConfig = container.awg.last_config;
-    if (typeof lastConfig !== "string") continue;
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(lastConfig);
-    } catch {
-      throw new ConfigError("vpn:// last_config is not valid JSON");
+    let lastConfig = container.awg.last_config;
+    if (typeof lastConfig === "string") {
+      try {
+        lastConfig = JSON.parse(lastConfig);
+      } catch {
+        throw new ConfigError("vpn:// last_config is not valid JSON");
+      }
     }
-    if (isRecord(parsed) && typeof parsed.config === "string" && parsed.config.trim()) {
-      return parsed.config;
+    if (isRecord(lastConfig) && typeof lastConfig.config === "string" && lastConfig.config.trim()) {
+      return lastConfig.config;
     }
   }
   throw new ConfigError("vpn:// payload does not contain an embedded config");

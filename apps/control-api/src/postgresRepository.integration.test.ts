@@ -11,6 +11,7 @@ import {
 } from "vitest";
 import {
   adminReachabilityViewSchema,
+  awgGeneratorPresets,
   defaultKeyNameDisplay,
   idleAccessSyncStatus,
   quotaRequestNotifyPayloadSchema,
@@ -48,7 +49,7 @@ import {
 } from "@amnezia/db";
 import { PostgresControlRepository } from "./postgresRepository.js";
 import type { Actor } from "./service.js";
-import { awg31Link } from "./awg31.fixture.js";
+import { awg31Link, readCopies } from "./awg31.fixture.js";
 import {
   awgClientProfileV1Schema,
   configRefreshToken,
@@ -7743,6 +7744,245 @@ describe("PostgresControlRepository AWG 3.1 config refresh", () => {
       nameDisplay: defaultKeyNameDisplay,
     });
     expect((await row(awg2.id)).awgClientProfile).toBeNull();
+  });
+
+  runDatabaseTest("exports stable node profiles with address overrides and nullable inheritance", async () => {
+    if (!database) return;
+    const owner = await seedOwner();
+    const actor = await seedOwner("admin");
+    const profileNode = await seedNode();
+    const keyId = await seedKey(owner.id, { onNode: profileNode });
+    const [primary, secondary] = await database.db.insert(nodeVpnEndpoints).values([
+      { nodeId: profileNode, ordinal: 1, address: "203.0.113.70", name: "Primary" },
+      { nodeId: profileNode, ordinal: 2, address: "203.0.113.71", name: "Secondary" },
+    ]).returning();
+    if (!primary || !secondary) throw new Error("Address fixture was not created");
+    const preset = awgGeneratorPresets().find((item) => item.id === "dns_response");
+    if (!preset) throw new Error("DNS response preset missing");
+    const written = await repository().updateNode(actor, profileNode, { awgGenerator: preset.settings });
+    expect(written).toMatchObject({ awgGenerator: preset.settings });
+    expect((await repository().findKeyConfig(keyId))?.awgGenerator).toEqual(preset.settings);
+    const exported = await service().getKeyConfig(owner, keyId, "vpn", false);
+    const firstExportAt = (await row(keyId)).configUpdatedAt;
+    expect(firstExportAt).toBeInstanceOf(Date);
+    const repeated = await service().getKeyConfig(owner, keyId, "vpn", false);
+    expect(repeated.body).toEqual(exported.body);
+    expect((await row(keyId)).configUpdatedAt).toEqual(firstExportAt);
+    await expect(service().getConfigRefresh(owner, keyId)).resolves.toEqual({ eligible: false });
+    const fixed = await row(keyId);
+    await expect(service().refreshOwnConfig(
+      owner, keyId, configRefreshToken(keyId, fixed.configNonce ?? "", 0, preset.settings),
+    )).rejects.toMatchObject({ code: "CONFIG_REFRESH_UNAVAILABLE" });
+    expect((await row(keyId)).configUpdatedAt).toEqual(firstExportAt);
+    if (typeof exported.body !== "string") throw new Error("Expected a text artifact");
+    const inherited = readCopies(exported.body, decodeVpnLink);
+    expect(inherited.line("Jc")).toBe("4");
+    expect(inherited.line("I2")).toBeNull();
+    expect(inherited.line("MTU")).toBe("1280");
+    const override = { ...preset.settings, mtu: 1300 };
+    await repository().updateNode(actor, profileNode, {
+      publicEndpoint: { action: "update", id: secondary.id, awgGenerator: override },
+    });
+    await database.db.update(vpnKeys).set({ endpointId: secondary.id }).where(eq(vpnKeys.id, keyId));
+    expect((await repository().findKeyConfig(keyId))?.awgGenerator).toEqual(override);
+    const custom = await service().getKeyConfig(owner, keyId, "vpn", false);
+    if (typeof custom.body !== "string") throw new Error("Expected a text artifact");
+    expect(readCopies(custom.body, decodeVpnLink).line("MTU")).toBe("1300");
+    await repository().updateNode(actor, profileNode, {
+      publicEndpoint: { action: "update", id: secondary.id, awgGenerator: null },
+    });
+    expect((await repository().findKeyConfig(keyId))?.awgGenerator).toEqual(preset.settings);
+    await repository().updateNode(actor, profileNode, { awgGenerator: null });
+    expect((await repository().findKeyConfig(keyId))?.awgGenerator).toBeNull();
+  });
+
+  runDatabaseTest("records an explicit config refresh timestamp without changing creation time", async () => {
+    const owner = await seedOwner();
+    const keyId = await seedKey(owner.id);
+    const before = await row(keyId);
+    expect(before.configUpdatedAt).toBeNull();
+    await service().refreshOwnConfig(owner, keyId, await tokenOf(owner, keyId));
+    const after = await row(keyId);
+    expect(after.configUpdatedAt).toBeInstanceOf(Date);
+    expect(after.createdAt).toEqual(before.createdAt);
+  });
+
+  runDatabaseTest("rejects a late export snapshot after refresh without overwriting newer metadata", async () => {
+    const owner = await seedOwner();
+    const keyId = await seedKey(owner.id);
+    const repo = repository();
+    const old = await repo.findKeyConfig(keyId);
+    if (!old) throw new Error("Key snapshot missing");
+    await service().refreshOwnConfig(owner, keyId, await tokenOf(owner, keyId));
+    const current = await repo.findKeyConfig(keyId);
+    if (!current) throw new Error("Refreshed snapshot missing");
+    await expect(repo.recordConfigExport(keyId, "vpn", "new-export", {
+      key: current, globalRoutes: null, markRuleVersion: true,
+    })).resolves.toBe(true);
+    const recorded = await row(keyId);
+    await expect(repo.recordConfigExport(keyId, "vpn", "old-export", {
+      key: old, globalRoutes: null, markRuleVersion: true,
+    })).resolves.toBe(false);
+    const after = await row(keyId);
+    expect(after.configExportHashes).toEqual(recorded.configExportHashes);
+    expect(after.configUpdatedAt).toEqual(recorded.configUpdatedAt);
+  });
+
+  runDatabaseTest("serializes identical concurrent exports without changing their recorded timestamp", async () => {
+    const owner = await seedOwner();
+    const keyId = await seedKey(owner.id);
+    const repo = repository();
+    const key = await repo.findKeyConfig(keyId);
+    if (!key) throw new Error("Key snapshot missing");
+    const context = { key, globalRoutes: null, markRuleVersion: true };
+    await expect(Promise.all([
+      repo.recordConfigExport(keyId, "vpn", "same-export", context),
+      repo.recordConfigExport(keyId, "vpn", "same-export", context),
+    ])).resolves.toEqual([true, true]);
+    const recorded = await row(keyId);
+    await repo.recordConfigExport(keyId, "vpn", "same-export", context);
+    expect((await row(keyId)).configUpdatedAt).toEqual(recorded.configUpdatedAt);
+  });
+
+  runDatabaseTest.each(["node", "address"] as const)(
+    "rejects stale export accounting after a %s generator change",
+    async (scope) => {
+      if (!database) return;
+      const owner = await seedOwner();
+      const actor = await seedOwner("admin");
+      const profileNode = await seedNode();
+      const keyId = await seedKey(owner.id, { onNode: profileNode });
+      const [endpoint] = await database.db.insert(nodeVpnEndpoints).values({
+        nodeId: profileNode, ordinal: 1, address: "203.0.113.75", name: "Primary",
+      }).returning();
+      if (!endpoint) throw new Error("Address fixture missing");
+      const repo = repository();
+      const previous = await repo.findKeyConfig(keyId);
+      if (!previous) throw new Error("Initial export snapshot missing");
+      const preset = awgGeneratorPresets().find((item) => item.id === "dns_response_random_ttl");
+      if (!preset) throw new Error("TTL preset missing");
+      await repo.updateNode(actor, profileNode, scope === "node"
+        ? { awgGenerator: preset.settings }
+        : { publicEndpoint: { action: "update", id: endpoint.id, awgGenerator: preset.settings } });
+      const current = await repo.findKeyConfig(keyId);
+      if (!current) throw new Error("Current export snapshot missing");
+      await repo.recordConfigExport(keyId, "vpn", "current-profile", {
+        key: current, globalRoutes: null, markRuleVersion: true,
+      });
+      const recorded = await row(keyId);
+      await expect(repo.recordConfigExport(keyId, "vpn", "outdated-profile", {
+        key: previous, globalRoutes: null, markRuleVersion: true,
+      })).resolves.toBe(false);
+      expect((await row(keyId)).configExportHashes).toEqual(recorded.configExportHashes);
+      expect((await row(keyId)).configUpdatedAt).toEqual(recorded.configUpdatedAt);
+    },
+  );
+
+  runDatabaseTest("keeps export timestamps monotonic after waiting behind a row lock", async () => {
+    if (!database) return;
+    const owner = await seedOwner();
+    const keyId = await seedKey(owner.id);
+    const repo = repository();
+    const key = await repo.findKeyConfig(keyId);
+    if (!key) throw new Error("Key snapshot missing");
+    let unlock: () => void = () => { throw new Error("Lock gate missing"); };
+    let announce: () => void = () => { throw new Error("Lock announcement missing"); };
+    const gate = new Promise<void>((resolve) => { unlock = resolve; });
+    const acquired = new Promise<void>((resolve) => { announce = resolve; });
+    const future = new Date("2090-01-01T00:00:00Z");
+    const holder = database.db.transaction(async (tx) => {
+      await tx.select({ id: vpnKeys.id }).from(vpnKeys)
+        .where(eq(vpnKeys.id, keyId)).for("update");
+      announce();
+      await gate;
+      await tx.update(vpnKeys).set({ configUpdatedAt: future }).where(eq(vpnKeys.id, keyId));
+    });
+    await acquired;
+    const pending = repo.recordConfigExport(keyId, "vpn", "blocked-export", {
+      key, globalRoutes: null, markRuleVersion: true,
+    });
+    try {
+      let blocked = false;
+      for (let attempt = 0; attempt < 100 && !blocked; attempt += 1) {
+        const waiting = await database.db.execute(sql`
+          select pid from pg_stat_activity
+          where datname = current_database() and wait_event_type = 'Lock'
+            and lower(query) like '%for update%'
+        `);
+        blocked = waiting.length > 0;
+        if (!blocked) await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      expect(blocked).toBe(true);
+    } finally {
+      unlock();
+    }
+    await holder;
+    await expect(pending).resolves.toBe(true);
+    expect((await row(keyId)).configUpdatedAt).toEqual(future);
+  });
+
+  runDatabaseTest("rejects a refresh token when the effective node generator changes", async () => {
+    const owner = await seedOwner();
+    const actor = await seedOwner("admin");
+    const profileNode = await seedNode();
+    const keyId = await seedKey(owner.id, { onNode: profileNode });
+    const token = await tokenOf(owner, keyId);
+    const preset = awgGeneratorPresets().find((item) => item.id === "dns_response_random_ttl");
+    if (!preset) throw new Error("TTL preset missing");
+    await repository().updateNode(actor, profileNode, { awgGenerator: preset.settings });
+    await expect(service().refreshOwnConfig(owner, keyId, token))
+      .rejects.toMatchObject({ code: "CONFIG_REFRESH_STALE" });
+    expect((await row(keyId)).awgClientProfile).toBeNull();
+  });
+
+  runDatabaseTest("invalidates measurements only for addresses affected by a generator change", async () => {
+    if (!database) return;
+    const actor = await seedOwner("admin");
+    const profileNode = await seedNode();
+    const presets = awgGeneratorPresets();
+    const dns = presets.find((item) => item.id === "dns_response");
+    const ttl = presets.find((item) => item.id === "dns_response_random_ttl");
+    if (!dns || !ttl) throw new Error("DNS presets missing");
+    const repo = repository();
+    await repo.updateNode(actor, profileNode, { awgGenerator: dns.settings });
+    const measuredAt = new Date();
+    const [inherited, explicit] = await database.db.insert(nodeVpnEndpoints).values([
+      {
+        nodeId: profileNode, ordinal: 1, address: "203.0.113.76", name: "Inherited",
+        probeStatus: "ok", probeCheckedAt: measuredAt,
+      },
+      {
+        nodeId: profileNode, ordinal: 2, address: "203.0.113.77", name: "Explicit",
+        awgGenerator: dns.settings, probeStatus: "ok", probeCheckedAt: measuredAt,
+      },
+    ]).returning();
+    if (!inherited || !explicit) throw new Error("Endpoint fixtures missing");
+    await database.db.insert(nodeReachabilityResults).values(
+      (["awg2", "awg3"] as const).map((protocol) => ({
+        nodeId: profileNode, protocol, status: "ok" as const,
+        levels: {}, runId: randomUUID(), checkedAt: measuredAt,
+      })),
+    );
+    await database.db.insert(nodeReachabilityState).values({
+      nodeId: profileNode, status: "ok", checkedAt: measuredAt,
+    });
+    await repo.updateNode(actor, profileNode, { awgGenerator: ttl.settings });
+    const endpoints = await database.db.select().from(nodeVpnEndpoints)
+      .where(eq(nodeVpnEndpoints.nodeId, profileNode)).orderBy(nodeVpnEndpoints.ordinal);
+    expect(endpoints[0]?.probeStatus).toBeNull();
+    expect(endpoints[1]?.probeStatus).toBe("ok");
+    const results = await database.db.select().from(nodeReachabilityResults)
+      .where(eq(nodeReachabilityResults.nodeId, profileNode));
+    expect(results.map((result) => result.protocol)).toEqual(["awg2"]);
+    const [summary] = await database.db.select().from(nodeReachabilityState)
+      .where(eq(nodeReachabilityState.nodeId, profileNode));
+    expect(summary?.status).toBe("error");
+    await repo.updateNode(actor, profileNode, {
+      publicEndpoint: { action: "update", id: explicit.id, awgGenerator: null },
+    });
+    const [updated] = await database.db.select().from(nodeVpnEndpoints)
+      .where(eq(nodeVpnEndpoints.id, explicit.id));
+    expect(updated?.probeStatus).toBeNull();
   });
 
   runDatabaseTest(

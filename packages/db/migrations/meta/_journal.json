@@ -456,6 +456,13 @@
       "when": 1795400000003,
       "tag": "0064_endpoint_primary_name",
       "breakpoints": true
+    },
+    {
+      "idx": 65,
+      "version": "7",
+      "when": 1795400000004,
+      "tag": "0065_awg_generator_and_config_timestamp",
+      "breakpoints": true
     }
   ]
 }

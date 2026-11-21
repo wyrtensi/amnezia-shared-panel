@@ -53,6 +53,8 @@ export type ReachabilityTarget = {
   directEndpoint?: DirectEndpoint;
   /** Public endpoint IDs whose effective policy routes through this bridged target. */
   bridgedEndpointIds?: readonly string[];
+  /** Additional bridged profile with its own endpoint verdict, outside the node summary. */
+  supplementalBridge?: { checkedAt: Date | null };
 };
 
 /**
@@ -76,11 +78,13 @@ export const reachabilityTargetId = (
  */
 const normalizeTargetId = (targetId: string): { id: string; slot: string } | null => {
   const [nodeId, protocol, revision, ...rest] = targetId.split(":");
-  if (!nodeId || !protocol || rest.length > 0) return null;
+  if (!nodeId || !protocol) return null;
   const slot = `${nodeId}:${protocol}`;
-  if (protocol !== "awg3") return revision === undefined ? { id: slot, slot } : null;
+  if (protocol !== "awg3") return revision === undefined && rest.length === 0 ? { id: slot, slot } : null;
   if (revision === undefined) return { id: `${slot}:r0`, slot };
-  return /^r\d+$/.test(revision) ? { id: `${slot}:${revision}`, slot } : null;
+  if (!/^r\d+$/.test(revision)) return null;
+  if (rest.length === 0) return { id: `${slot}:${revision}`, slot };
+  return rest.length === 1 && /^c[0-9a-f]{64}$/.test(rest[0] ?? "") ? { id: targetId, slot } : null;
 };
 
 /** The target goes through the node's bridge: AWG 3.1 on a bridged node. */
@@ -346,18 +350,20 @@ export const ingestRun = (input: IngestInput): IngestOutput => {
       !result && identity && reportedSlots.has(identity.slot)
         ? obsolete(target)
         : classifyTarget(target, result, input.controlOk);
-    if (!outcome.obsolete && measuredViaBridge(target) && target.bridgedEndpointIds?.length) {
+    if (!outcome.obsolete && measuredViaBridge(target) && target.bridgedEndpointIds?.length &&
+        (!target.supplementalBridge || result)) {
       for (const endpointId of target.bridgedEndpointIds) {
         endpointOutcomes.push({
           endpointId,
           status: outcome.status,
           levels: outcome.levels,
           detail: outcome.detail,
-          reusesNodeTarget: true,
+          reusesNodeTarget: !target.supplementalBridge,
           isBridged: true,
         });
       }
     }
+    if (target.supplementalBridge) continue;
     const entry = byNode.get(target.nodeId) ?? { node: target, outcomes: [], badge: [] };
     entry.outcomes.push(outcome);
     // A bridged node is judged on its bridged AWG 3.1 path alone: an AWG 2

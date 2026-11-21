@@ -1,6 +1,7 @@
 import type { EncryptionKeyring } from "@amnezia/db";
 import { decryptSecret } from "@amnezia/db";
-import type { PortalPolicy } from "@amnezia/contracts";
+import { createHash } from "node:crypto";
+import type { AwgGeneratorSettings, GlobalRoutes, PortalPolicy } from "@amnezia/contracts";
 import {
   composeKeyDisplayName,
   CONFIG_REFRESH_UNAVAILABLE,
@@ -8,9 +9,11 @@ import {
 } from "@amnezia/contracts";
 import {
   awgClientProfileV1Schema,
+  AWG_PROFILE_ORDERS,
   configRefreshToken,
   profileRevision,
   selectAwgClientProfile,
+  type AwgClientProfileV1,
 } from "./awgClientProfile.js";
 import type { ControlRepository, StoredKeyConfig } from "./repository.js";
 import { mergeRoutePayload } from "./routeMerge.js";
@@ -28,11 +31,12 @@ import {
   setVpnDescription,
 } from "./vpnConfig.js";
 import {
+  AwgClientProfileError,
   DEFAULT_AWG3_SERVER_IPV4_CIDR,
   deriveStubPeerIpv6,
   inspectAwgVpnLink,
+  projectAwgClientConfig,
   readBaseClientIpv4,
-  withAwg31TunnelMtu,
   withIpv6RejectStubAddress,
   type AwgEndpoint,
 } from "@amnezia/vpn-config";
@@ -96,22 +100,42 @@ const assertDownloadAllowed = (
   }
 };
 
-/**
- * The saved client profile over the node-issued artifact. Comes first, so the
- * route and name overlays apply to it like to any other export. A 2.0 or
- * unmarked artifact comes back as it is, whatever was saved.
- */
-const withClientProfile = (base: string, profile: unknown): string => {
-  if (profile === null || profile === undefined) return base;
+const projectKeyClientConfig = (base: string, options: Parameters<typeof projectAwgClientConfig>[1]): string => {
   try {
-    return applyAwgClientProfile(base, profile);
-  } catch {
+    return projectAwgClientConfig(base, options);
+  } catch (error) {
+    if (!(error instanceof AwgClientProfileError)) throw error;
     throw new ApiError(
       500,
       "The saved client profile of this key is invalid",
       "CONFIG_PROFILE_INVALID",
     );
   }
+};
+
+const nextClientProfile = (
+  base: string,
+  previous: unknown,
+  revision: number,
+  keyId: string,
+  generator?: AwgGeneratorSettings | null,
+): AwgClientProfileV1 | null => {
+  const current = inspectAwg31ClientConfig(base);
+  if (!current) return null;
+  const saved = awgClientProfileV1Schema.safeParse(previous);
+  const candidate = selectAwgClientProfile(
+    revision + 1,
+    saved.success ? saved.data.jc : current.jc,
+  );
+  if (!generator) return candidate;
+  const options = { protocol: "awg3" as const, keyId, generator };
+  const existing = projectKeyClientConfig(base, { ...options, clientProfile: previous });
+  for (let order = 0; order < AWG_PROFILE_ORDERS; order += 1) {
+    const next = { ...candidate, cpsOrder: (candidate.cpsOrder + order) % AWG_PROFILE_ORDERS };
+    const updated = projectKeyClientConfig(base, { ...options, clientProfile: next });
+    if (updated !== existing) return next;
+  }
+  return null;
 };
 
 const applyIpv6RejectStub = (
@@ -159,10 +183,14 @@ const composeExport = async (
   savedLink: string,
   endpoint: AwgEndpoint | null,
   format: ConfigFormat = "vpn",
-): Promise<{ vpnLink: string; displayName: string }> => {
-  const clientLink = withClientProfile(savedLink, key.awgClientProfile);
-  const mtuLink = key.protocol === "awg3" ? withAwg31TunnelMtu(clientLink) : clientLink;
-  const profiledLink = applyIpv6RejectStub(key, mtuLink, format);
+): Promise<{ vpnLink: string; displayName: string; globalRoutes: GlobalRoutes | null }> => {
+  const clientLink = projectKeyClientConfig(savedLink, {
+    protocol: key.protocol,
+    keyId: key.id,
+    clientProfile: key.awgClientProfile,
+    generator: key.awgGenerator,
+  });
+  const profiledLink = applyIpv6RejectStub(key, clientLink, format);
   const storedLink =
     endpoint === null ? profiledLink : renderBridgeEndpoint(profiledLink, endpoint);
   // Apply the active routing rules for non-full-tunnel profiles at export time.
@@ -198,7 +226,124 @@ const composeExport = async (
     display: key.nameDisplay,
   });
   const vpnLink = setVpnDescription(routedLink, displayName);
-  return { vpnLink, displayName };
+  return { vpnLink, displayName, globalRoutes };
+};
+
+const renderConfigExport = async (
+  vpnLink: string,
+  displayName: string,
+  format: ConfigFormat,
+): Promise<ConfigResult> => {
+  if (format === "vpn") {
+    return {
+      format,
+      contentType: "text/plain; charset=utf-8",
+      body: vpnLink,
+      // `.vpn`, not the `.vpn.txt` this used to be. These bytes are the ONLY
+      // downloadable shape that survives an import with its name: the client
+      // reads the file's content, not its extension, but its file picker only
+      // offers `*.vpn *.ovpn *.conf *.json`, so a `.txt` suffix hid the one
+      // shape that works. See configFilename.ts for the client sources.
+      filename: configFilename(displayName, "vpn"),
+    };
+  }
+  if (format === "conf") {
+    return {
+      format,
+      contentType: "text/plain; charset=utf-8",
+      body: extractConfFromVpnLink(vpnLink),
+      // A `.conf` import is always named "Server N" by the client, whatever
+      // the file says or is called. Naming the download after the connection
+      // is the most this shape can do: it tells the user what to rename that
+      // "Server N" to. Nothing is written INTO the file — a name comment the
+      // parser ignores would only look like a fix.
+      filename: configFilename(displayName, "conf"),
+    };
+  }
+  if (format === "qr-conf") {
+    // AmneziaWG reads neither the chunk envelope nor the `vpn://` link, only
+    // a plain WireGuard config, so this QR carries the same text `conf`
+    // downloads as a file. Same capacity ceiling as the `vpn://` symbol, so
+    // a split-tunnel key's `.conf` refuses the same way.
+    const confText = extractConfFromVpnLink(vpnLink);
+    let rendered: RenderedQr;
+    try {
+      rendered = await renderKeyQr(confText, "svg");
+    } catch {
+      throw new ApiError(422, QR_TOO_LARGE_MESSAGE, "QR_TOO_LARGE");
+    }
+    // A display format, not a download: no content-disposition, no filename,
+    // same as `qr-svg`.
+    return {
+      format,
+      contentType: rendered.contentType,
+      body: rendered.body,
+      qrParams: describeQr(rendered),
+    };
+  }
+  // A split-tunnel config embeds thousands of CIDRs and overflows QR capacity
+  // at every error-correction level — the renderer would otherwise throw a raw
+  // 500. Refuse with a clear error (the UI hides QR for these profiles and
+  // offers the config file instead).
+  if (format === "qr-frames") {
+    // AmneziaVPN's in-app scanner reads only its own chunk envelope, never a
+    // `vpn://` URL, so this is a different payload rather than a different
+    // picture of the same one. Rendered as SVG so it inherits the quiet zone
+    // and crisp edges, and so the panel's zoom slider works on it.
+    let frames: string[];
+    let firstParams: ConfigResult["qrParams"];
+    try {
+      const texts = buildQrFrameTexts(vpnLink);
+      // Chunking removes the capacity limit that makes the single-frame
+      // formats refuse a split-tunnel config, so without this a blacklist key
+      // would return dozens of codes (a 20 KB config is 24 frames) instead of
+      // the 422 every other QR format gives it. Nobody scans 24 codes; the
+      // config file is the answer for those keys. Eight is well clear of a
+      // full-tunnel key (860 bytes, two frames) and still a few seconds of
+      // holding a phone at the animation, so it refuses only what is
+      // genuinely unusable.
+      if (texts.length > QR_MAX_USABLE_FRAMES) {
+        throw new Error("too many frames to scan");
+      }
+      const drawn = await Promise.all(
+        texts.map((text) => renderKeyQr(text, "svg")),
+      );
+      frames = drawn.map((frame) => String(frame.body));
+      firstParams = drawn[0] && describeQr(drawn[0]);
+    } catch {
+      throw new ApiError(422, QR_TOO_LARGE_MESSAGE, "QR_TOO_LARGE");
+    }
+    return {
+      format,
+      contentType: "application/json; charset=utf-8",
+      body: JSON.stringify({ total: frames.length, frames }),
+      // Every frame is chunked to the same size, so frame 0's parameters
+      // describe the series.
+      qrParams: firstParams,
+    };
+  }
+  let rendered: RenderedQr;
+  try {
+    rendered = await renderKeyQr(vpnLink, format === "qr-svg" ? "svg" : "png");
+  } catch {
+    throw new ApiError(422, QR_TOO_LARGE_MESSAGE, "QR_TOO_LARGE");
+  }
+  if (rendered.kind === "svg") {
+    // A display format, not a download: no content-disposition, no filename.
+    return {
+      format,
+      contentType: rendered.contentType,
+      body: rendered.body,
+      qrParams: describeQr(rendered),
+    };
+  }
+  return {
+    format,
+    contentType: rendered.contentType,
+    body: rendered.body,
+    filename: configFilename(displayName, "png"),
+    qrParams: describeQr(rendered),
+  };
 };
 
 const unavailable = () =>
@@ -228,7 +373,7 @@ export const createDefaultControlApiService = ({
     actor,
     keyId,
     format,
-    adminConfirmed,
+    _adminConfirmed,
     clipboard,
   ): Promise<ConfigResult> => {
     const key = await repository.findKeyConfig(keyId);
@@ -236,13 +381,6 @@ export const createDefaultControlApiService = ({
       throw new ApiError(404, "Key not found", "KEY_NOT_FOUND");
     }
     const isAdminView = actor.role === "admin" && key.ownerId !== actor.id;
-    if (isAdminView && !adminConfirmed) {
-      throw new ApiError(
-        409,
-        "Explicit confirmation is required",
-        "ADMIN_CONFIRMATION_REQUIRED",
-      );
-    }
     if (!isAdminView) {
       assertDownloadAllowed(key.policy, format);
     }
@@ -258,7 +396,7 @@ export const createDefaultControlApiService = ({
       savedLink,
       key.bridgeEndpoint,
     );
-    const { vpnLink, displayName } = await composeExport(
+    const { vpnLink, displayName, globalRoutes } = await composeExport(
       repository,
       key,
       savedLink,
@@ -272,15 +410,18 @@ export const createDefaultControlApiService = ({
         "KEY_CLIPBOARD_TOO_LONG",
       );
     }
-    // Only the OWNER downloading their own config marks the rules as applied.
-    // An admin peeking at someone's private config must not clear the owner's
-    // "rules outdated" indicator (they didn't reinstall anything).
-    if (
-      !isAdminView &&
-      key.activeRule &&
-      key.appliedRuleVersionId !== key.activeRule.versionId
-    ) {
-      await repository.markKeyRuleVersion(key.id, key.activeRule.versionId);
+    const result = await renderConfigExport(vpnLink, displayName, format);
+    const payload = format === "conf" || format === "qr-conf"
+      ? extractConfFromVpnLink(vpnLink)
+      : vpnLink;
+    const recorded = await repository.recordConfigExport(
+      key.id,
+      format,
+      createHash("sha256").update(payload).digest("hex"),
+      { key, globalRoutes, markRuleVersion: !isAdminView },
+    );
+    if (!recorded) {
+      throw new ApiError(409, "The configuration changed while being prepared. Download it again.", "CONFIG_EXPORT_STALE");
     }
     if (isAdminView) {
       await repository.appendAudit({
@@ -292,117 +433,7 @@ export const createDefaultControlApiService = ({
         metadata: { format },
       });
     }
-
-    if (format === "vpn") {
-      return {
-        format,
-        contentType: "text/plain; charset=utf-8",
-        body: vpnLink,
-        // `.vpn`, not the `.vpn.txt` this used to be. These bytes are the ONLY
-        // downloadable shape that survives an import with its name: the client
-        // reads the file's content, not its extension, but its file picker only
-        // offers `*.vpn *.ovpn *.conf *.json`, so a `.txt` suffix hid the one
-        // shape that works. See configFilename.ts for the client sources.
-        filename: configFilename(displayName, "vpn"),
-      };
-    }
-    if (format === "conf") {
-      return {
-        format,
-        contentType: "text/plain; charset=utf-8",
-        body: extractConfFromVpnLink(vpnLink),
-        // A `.conf` import is always named "Server N" by the client, whatever
-        // the file says or is called. Naming the download after the connection
-        // is the most this shape can do: it tells the user what to rename that
-        // "Server N" to. Nothing is written INTO the file — a name comment the
-        // parser ignores would only look like a fix.
-        filename: configFilename(displayName, "conf"),
-      };
-    }
-    if (format === "qr-conf") {
-      // AmneziaWG reads neither the chunk envelope nor the `vpn://` link, only
-      // a plain WireGuard config, so this QR carries the same text `conf`
-      // downloads as a file. Same capacity ceiling as the `vpn://` symbol, so
-      // a split-tunnel key's `.conf` refuses the same way.
-      const confText = extractConfFromVpnLink(vpnLink);
-      let rendered: RenderedQr;
-      try {
-        rendered = await renderKeyQr(confText, "svg");
-      } catch {
-        throw new ApiError(422, QR_TOO_LARGE_MESSAGE, "QR_TOO_LARGE");
-      }
-      // A display format, not a download: no content-disposition, no filename,
-      // same as `qr-svg`.
-      return {
-        format,
-        contentType: rendered.contentType,
-        body: rendered.body,
-        qrParams: describeQr(rendered),
-      };
-    }
-    // A split-tunnel config embeds thousands of CIDRs and overflows QR capacity
-    // at every error-correction level — the renderer would otherwise throw a raw
-    // 500. Refuse with a clear error (the UI hides QR for these profiles and
-    // offers the config file instead).
-    if (format === "qr-frames") {
-      // AmneziaVPN's in-app scanner reads only its own chunk envelope, never a
-      // `vpn://` URL, so this is a different payload rather than a different
-      // picture of the same one. Rendered as SVG so it inherits the quiet zone
-      // and crisp edges, and so the panel's zoom slider works on it.
-      let frames: string[];
-      let firstParams: ConfigResult["qrParams"];
-      try {
-        const texts = buildQrFrameTexts(vpnLink);
-        // Chunking removes the capacity limit that makes the single-frame
-        // formats refuse a split-tunnel config, so without this a blacklist key
-        // would return dozens of codes (a 20 KB config is 24 frames) instead of
-        // the 422 every other QR format gives it. Nobody scans 24 codes; the
-        // config file is the answer for those keys. Eight is well clear of a
-        // full-tunnel key (860 bytes, two frames) and still a few seconds of
-        // holding a phone at the animation, so it refuses only what is
-        // genuinely unusable.
-        if (texts.length > QR_MAX_USABLE_FRAMES) {
-          throw new Error("too many frames to scan");
-        }
-        const drawn = await Promise.all(
-          texts.map((text) => renderKeyQr(text, "svg")),
-        );
-        frames = drawn.map((frame) => String(frame.body));
-        firstParams = drawn[0] && describeQr(drawn[0]);
-      } catch {
-        throw new ApiError(422, QR_TOO_LARGE_MESSAGE, "QR_TOO_LARGE");
-      }
-      return {
-        format,
-        contentType: "application/json; charset=utf-8",
-        body: JSON.stringify({ total: frames.length, frames }),
-        // Every frame is chunked to the same size, so frame 0's parameters
-        // describe the series.
-        qrParams: firstParams,
-      };
-    }
-    let rendered: RenderedQr;
-    try {
-      rendered = await renderKeyQr(vpnLink, format === "qr-svg" ? "svg" : "png");
-    } catch {
-      throw new ApiError(422, QR_TOO_LARGE_MESSAGE, "QR_TOO_LARGE");
-    }
-    if (rendered.kind === "svg") {
-      // A display format, not a download: no content-disposition, no filename.
-      return {
-        format,
-        contentType: rendered.contentType,
-        body: rendered.body,
-        qrParams: describeQr(rendered),
-      };
-    }
-    return {
-      format,
-      contentType: rendered.contentType,
-      body: rendered.body,
-      filename: configFilename(displayName, "png"),
-      qrParams: describeQr(rendered),
-    };
+    return result;
   },
   revokeOwnKey: (actor, keyId) => repository.enqueueOwnRevoke(actor, keyId),
   rotateOwnKey: (actor, keyId) => repository.enqueueOwnRotate(actor, keyId),
@@ -420,23 +451,22 @@ export const createDefaultControlApiService = ({
       return { eligible: false };
     }
     const revision = profileRevision(key.awgClientProfile);
+    if (!nextClientProfile(
+      decryptSecret(key.encrypted, keyring), key.awgClientProfile, revision, key.id, key.awgGenerator,
+    )) return { eligible: false };
     return {
       eligible: true,
       revision,
-      refreshToken: configRefreshToken(key.id, key.encrypted.nonce, revision),
+      refreshToken: configRefreshToken(key.id, key.encrypted.nonce, revision, key.awgGenerator),
     };
   },
   refreshOwnConfig: (actor, keyId, refreshToken) =>
     repository.refreshOwnConfigProfile(actor, keyId, refreshToken, (snapshot) => {
       const base = decryptSecret(snapshot.encrypted, keyring);
-      const current = inspectAwg31ClientConfig(base);
-      if (!current) throw unavailable();
-      // The effective Jc: the saved one, or the node's when nothing is saved.
-      const saved = awgClientProfileV1Schema.safeParse(snapshot.awgClientProfile);
-      const candidate = selectAwgClientProfile(
-        snapshot.revision + 1,
-        saved.success ? saved.data.jc : current.jc,
+      const candidate = nextClientProfile(
+        base, snapshot.awgClientProfile, snapshot.revision, snapshot.keyId, snapshot.awgGenerator,
       );
+      if (!candidate) throw unavailable();
       // Saved only if every copy of the projected config agrees on it.
       const projected = inspectAwg31ClientConfig(
         applyAwgClientProfile(base, candidate),

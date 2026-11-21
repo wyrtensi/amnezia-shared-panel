@@ -1041,6 +1041,7 @@ export class PostgresWorkerRepository
           configNonce: encrypted.nonce,
           configAuthTag: encrypted.authTag,
           configKeyVersion: encrypted.keyVersion,
+          configUpdatedAt: sql`greatest(${vpnKeys.configUpdatedAt}, clock_timestamp())`,
           failureReason: null,
           updatedAt: new Date(),
         })

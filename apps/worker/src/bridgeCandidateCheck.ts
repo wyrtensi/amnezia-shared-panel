@@ -4,12 +4,13 @@ import {
   bridgeRouteCandidateCheckPayloadSchema,
   probeCapabilityInputOf,
   probeSupportsBridgeMeasurement,
+  type AwgGeneratorSettings,
   type BridgeCandidateCheckError,
   type ProbeCapabilityInput,
   type ProbeRunRequest,
   type ProbeRunState,
 } from "@amnezia/contracts";
-import { inspectAwgVpnLink, renderAwgEndpointVpnLink, withAwg31TunnelMtu } from "@amnezia/vpn-config";
+import { inspectAwgVpnLink, projectAwgClientConfig, renderAwgEndpointVpnLink } from "@amnezia/vpn-config";
 
 import { bridgeJobsGate } from "./config.js";
 import type { ProbeClient, ProbeClientOptions } from "./probeAgent.js";
@@ -68,6 +69,9 @@ export type CandidateContext = {
   nodePublicIp: string | null;
   /** The node's active AWG 3 service-key artifact, decrypted; null when none. */
   serviceConfig: string | null;
+  serviceKeyId: string | null;
+  serviceClientProfile: unknown;
+  nodeGenerator: AwgGeneratorSettings | null;
 };
 
 export type CandidateResultWrite = {
@@ -279,7 +283,7 @@ export const createBridgeCandidateCheck = ({
       await finish("MARKER_CHANGED");
       return;
     }
-    if (context.serviceConfig === null) {
+    if (context.serviceConfig === null || context.serviceKeyId === null) {
       await finish("SERVICE_KEY_UNAVAILABLE");
       return;
     }
@@ -289,7 +293,13 @@ export const createBridgeCandidateCheck = ({
     }
     let config: string;
     try {
-      config = renderAwgEndpointVpnLink(withAwg31TunnelMtu(context.serviceConfig), {
+      const projected = projectAwgClientConfig(context.serviceConfig, {
+        protocol: "awg3",
+        keyId: context.serviceKeyId,
+        clientProfile: context.serviceClientProfile,
+        generator: context.nodeGenerator,
+      });
+      config = renderAwgEndpointVpnLink(projected, {
         host: context.bridgePublicIpv4,
         port: context.publicUdpPort,
       });

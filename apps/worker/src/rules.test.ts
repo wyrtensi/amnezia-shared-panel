@@ -23,6 +23,8 @@ import {
   STEAM_CACHE_V4_CIDRS,
   STEAM_CACHE_V6_CIDRS,
   countCidrOverlap,
+  measureCidrSpace,
+  subtractCidrs,
 } from "./cidrSet.js";
 
 const stableChecksum = (payload: {
@@ -863,6 +865,50 @@ describe("compactRoutes compaction modes", () => {
     expect(countCidrOverlap(result.payload.cidrs, ["23.220.114.106/32"])[4]).toBe(1n);
     expect(countCidrOverlap(result.payload.cidrs, ["157.240.0.0/16"])[4]).toBe(65536n);
     expect(result.report.compactionMode).toBe("compact_world");
+  });
+
+  it("unions exact Genshin SDK prefixes without widening compact_world RU expansion and respects manual exclusions", () => {
+    const validation = validateRuleObject({ cidrs: ["157.240.0.0/16"], domains: [] });
+    // An RU prefix in 171.0.0.0/8 expands across 171.43.164.x when no protected
+    // core entry sits inside 171.0.0.0/8. Exact extras must add ONLY the four
+    // requested prefixes (+8 IPv4) without preventing that RU expansion.
+    const ru = ["171.32.0.0/16"];
+    const baseExtras = RULE_EXTRAS.filter((extra) => !extra.exact).flatMap((extra) => extra.cidrs);
+    const exactExtras = RULE_EXTRAS.filter((extra) => extra.exact).flatMap((extra) => extra.cidrs);
+    const compaction = {
+      mode: "compact_world" as const,
+      collateralCap: 0.005,
+      directApple: true,
+      directSteamCache: true,
+      maxCompactRoutes: 2800,
+    };
+
+    const before = compactRoutes(validation, ru, baseExtras, compaction);
+    const after = compactRoutes(validation, ru, baseExtras, compaction, { exactExtras });
+    expect(before.ok).toBe(true);
+    expect(after.ok).toBe(true);
+    if (!before.ok || !after.ok) return;
+
+    const added = subtractCidrs(after.payload.cidrs, before.payload.cidrs).cidrs;
+    const removed = subtractCidrs(before.payload.cidrs, after.payload.cidrs).cidrs;
+    expect(removed).toEqual([]);
+    expect(added).toEqual([
+      "171.43.164.91/32",
+      "171.43.164.92/30",
+      "171.43.164.96/31",
+      "171.43.164.98/32",
+    ]);
+    expect(measureCidrSpace(added)).toEqual({ 4: 8n, 6: 0n });
+
+    const withAdminExclude = compactRoutes(validation, ru, baseExtras, compaction, {
+      exactExtras,
+      adminExcluded: ["171.43.164.92/32"],
+    });
+    expect(withAdminExclude.ok).toBe(true);
+    if (!withAdminExclude.ok) return;
+    expect(countCidrOverlap(withAdminExclude.payload.cidrs, ["171.43.164.91/32"])[4]).toBe(1n);
+    expect(countCidrOverlap(withAdminExclude.payload.cidrs, ["171.43.164.92/32"])[4]).toBe(0n);
+    expect(countCidrOverlap(withAdminExclude.payload.cidrs, ["171.43.164.93/32"])[4]).toBe(1n);
   });
 
   it("quarantines compact_world when no exclusions are supplied", () => {

@@ -410,14 +410,14 @@ export const createReachabilityTask = ({
             (measuredViaBridge(target) ? bridgeMeasurement : probe.probeDirectWhenBridged === true)),
         );
         const nodeTargets = sendable.filter((target) =>
-          !target.diagnostic && target.directEndpoint?.reusesNodeTarget !== false,
+          !target.diagnostic && !target.supplementalBridge && target.directEndpoint?.reusesNodeTarget !== false,
         );
         const diagnostics = sendable.filter((target) => target.diagnostic);
         const endpointTargets = sendable
-          .filter((target) => target.directEndpoint?.reusesNodeTarget === false)
+          .filter((target) => target.directEndpoint?.reusesNodeTarget === false || target.supplementalBridge)
           .sort((a, b) =>
-            (a.directEndpoint?.checkedAt?.getTime() ?? Number.MIN_SAFE_INTEGER) -
-            (b.directEndpoint?.checkedAt?.getTime() ?? Number.MIN_SAFE_INTEGER),
+            ((a.directEndpoint?.checkedAt ?? a.supplementalBridge?.checkedAt)?.getTime() ?? Number.MIN_SAFE_INTEGER) -
+            ((b.directEndpoint?.checkedAt ?? b.supplementalBridge?.checkedAt)?.getTime() ?? Number.MIN_SAFE_INTEGER),
           );
         const targets = [...nodeTargets, ...diagnostics, ...endpointTargets].slice(0, PROBE_RUN_MAX_TARGETS);
         if (targets.length < sendable.length) {

@@ -1,0 +1,122 @@
+import { createHash } from "node:crypto";
+
+import { awgGeneratorSettingsSchema, type AwgGeneratorSettings, type ProtocolKind } from "@amnezia/contracts";
+
+import { profileOrder, profileRevision } from "./awgClientProfile.js";
+import { applyAwgClientProfile, AwgClientConfigError, rewriteAwg31ClientInterface } from "./awgClientInterface.js";
+import { inspectAwgVpnConfig, withAwg31TunnelMtu } from "./awgEndpoint.js";
+
+type Seed = { keyId: string; profileRevision: number };
+type Draw = (label: string, min: number, max: number) => number;
+
+// The 44-byte DNS response used by the legacy node profile. AWG draws the
+// two-byte transaction ID on each send. The variant also draws the low TTL byte.
+const DNS_RESPONSE_HEAD = "858000010001000000000669636c6f756403636f6d0000010001c00c000100010000";
+const DNS_RESPONSE_TAIL = "00044d583737";
+const STUN_REQUEST = "<b 0x0001><b 0x000c><b 0x2112a442><r 12><b 0x8022><b 0x0008><rc 8>";
+
+const TIMING_FIELDS = {
+  rekeyAfterTime: "RekeyAfterTime",
+  rekeyTimeout: "RekeyTimeout",
+  rejectAfterTime: "RejectAfterTime",
+  keepaliveTimeout: "KeepaliveTimeout",
+  maxHandshakeAttempts: "MaxHandshakeAttempts",
+} as const;
+
+const hashNumber = (seed: string, label: string): number =>
+  createHash("sha256").update(JSON.stringify([seed, label])).digest().readUInt32BE();
+
+const hexByte = (byte: number): string => byte.toString(16).padStart(2, "0");
+
+const dnsQuery = (labelLength: number): string =>
+  `<r 2><b 0x0100><b 0x00010000><b 0x00000000><b 0x${hexByte(labelLength)}><rc ${labelLength}><b 0x03636f6d00><b 0x0001><b 0x0001>`;
+
+const noise = (length: number): string => `<r ${length}>`;
+
+const signaturePackets = (
+  settings: AwgGeneratorSettings,
+  draw: Draw,
+): string[] | null => {
+  const { iMode, iCount, preset } = settings;
+  if (iMode === "issued") return null;
+  if (preset === "randomized" && iMode === "dns_query") {
+    const templates = [dnsQuery(draw("dns-label", 3, 12)), STUN_REQUEST, noise(draw("noise", 48, 220))];
+    const order = profileOrder(draw("signature-order", 0, 5), templates.length);
+    return Array.from({ length: iCount }, (_, slot) =>
+      templates[order[slot] ?? -1] ?? noise(draw(`noise-${slot}`, 48, 220)));
+  }
+  return Array.from({ length: iCount }, (_, slot) => {
+    switch (iMode) {
+      case "dns_response":
+        return `<r 2><b 0x${DNS_RESPONSE_HEAD}105a${DNS_RESPONSE_TAIL}>`;
+      case "dns_response_random_ttl": {
+        const ttl = draw(`ttl-${slot}`, 15, 17);
+        return `<r 2><b 0x${DNS_RESPONSE_HEAD}${hexByte(ttl)}><r 1><b 0x${DNS_RESPONSE_TAIL}>`;
+      }
+      case "dns_query":
+        return dnsQuery(draw(`dns-label-${slot}`, 3, 12));
+      case "noise":
+        return noise(draw(`noise-${slot}`, 48, 220));
+    }
+  });
+};
+
+const formatRange = (range: { min: number; max: number } | null): string | null =>
+  range && range.max > 0 ? `${range.min}-${range.max}` : null;
+
+/** Project a saved generator profile onto an already issued client artifact. */
+export const applyAwgGeneratorSettings = (vpnLink: string, settings: unknown, seed: Seed): string => {
+  const parsed = awgGeneratorSettingsSchema.safeParse(settings);
+  if (!parsed.success) throw new AwgClientConfigError("The saved AWG generator settings are invalid");
+
+  const profile = parsed.data;
+  const updates = new Map<string, string | null>();
+  if (profile.preset === "issued") {
+    return withAwg31TunnelMtu(rewriteAwg31ClientInterface(vpnLink, updates), profile.mtu);
+  }
+
+  const profileSeed = JSON.stringify([seed.keyId, profile]);
+  const draw: Draw = (label, min, max) => {
+    const span = max - min + 1;
+    // Start at a key- and profile-specific value and advance within the range
+    // on each revision, including when the range offers only two values.
+    const start = hashNumber(profileSeed, label) % span;
+    return min + (start + seed.profileRevision % span) % span;
+  };
+
+  const jmin = draw("jmin", profile.jminMin, profile.jminMax);
+  updates.set("Jc", String(draw("jc", profile.jcMin, profile.jcMax)));
+  updates.set("Jmin", String(jmin));
+  updates.set("Jmax", String(jmin + draw("jmax-gap", profile.jmaxGapMin, profile.jmaxGapMax)));
+
+  const slots = signaturePackets(profile, draw);
+  if (slots) {
+    for (let index = 0; index < 5; index += 1) {
+      updates.set(`I${index + 1}`, slots[index] ?? "");
+    }
+  }
+
+  updates.set("ContentPaddingAddition", formatRange(profile.contentPaddingAddition));
+  for (const key of Object.keys(TIMING_FIELDS) as (keyof typeof TIMING_FIELDS)[]) {
+    updates.set(TIMING_FIELDS[key], formatRange(profile.timings?.[key] ?? null));
+  }
+  return withAwg31TunnelMtu(rewriteAwg31ClientInterface(vpnLink, updates), profile.mtu);
+};
+
+/** Apply the effective AWG settings shared by exports and synthetic probe peers. */
+export const projectAwgClientConfig = (
+  vpnLink: string,
+  options: {
+    protocol: ProtocolKind;
+    keyId: string;
+    clientProfile: unknown;
+    generator: AwgGeneratorSettings | null | undefined;
+  },
+): string => {
+  const { protocol, keyId, clientProfile, generator } = options;
+  if (protocol !== "awg3") return vpnLink;
+  const profiled = clientProfile == null ? vpnLink : applyAwgClientProfile(vpnLink, clientProfile);
+  return generator && inspectAwgVpnConfig(profiled) === "awg31"
+    ? applyAwgGeneratorSettings(profiled, generator, { keyId, profileRevision: profileRevision(clientProfile) })
+    : withAwg31TunnelMtu(profiled);
+};

@@ -6,6 +6,13 @@ export type RuleExtra = {
   /** Short slug; the version records it as `extra://<name>`. */
   name: string;
   cidrs: string[];
+  /**
+   * Union these exact prefixes after `compact_world` RU expansion (and after
+   * `blocked_only` supernetting) instead of placing them in `protectedCore`, so
+   * narrow DNS observations never block surrounding RU exclusion compaction or
+   * widen routed address space.
+   */
+  exact?: true;
 };
 
 /**
@@ -14,10 +21,27 @@ export type RuleExtra = {
  * it is still needed. They ride along with `DEFAULT_RULE_FEEDS` only: a host
  * with its own `RULE_FEEDS` owns its whole list and gets none of these.
  *
- * Add whole provider prefixes rather than the addresses one capture happened
- * to see: matchmaking hands out a different server every session.
+ * Document the evidence and scope for each entry. Exact DNS observations are
+ * time-limited snapshots and do not establish provider ownership or cover
+ * changing endpoints.
  */
 export const RULE_EXTRAS: RuleExtra[] = [
+  {
+    // Genshin Impact CN SDK host `hk4e-sdk-s.mihoyo.com`: four missing prefixes
+    // covering eight observed IPv4 addresses returned by Google DoH on
+    // 2026-11-21 (TTL 60). Exact DNS observation only — not a claim of
+    // exclusive provider-subnet ownership or permanent coverage. Marked
+    // `exact: true` so `compact_world` unions only these four prefixes without
+    // blocking surrounding RU exclusion expansion.
+    name: "genshin-sdk-dns-2026-11-21",
+    exact: true,
+    cidrs: [
+      "171.43.164.91/32",
+      "171.43.164.92/30",
+      "171.43.164.96/31",
+      "171.43.164.98/32",
+    ],
+  },
   {
     // Wardogs. Match servers sit on AWS, UDP 4192/4194: six servers across
     // three regions in one capture, every one inside the single 54.115.0.0/16

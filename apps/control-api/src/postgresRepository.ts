@@ -1,4 +1,5 @@
 import { randomBytes, randomUUID } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import { z } from "zod";
 import {
   and,
@@ -119,6 +120,7 @@ import {
   updateGlobalRoutesRequestSchema,
 } from "@amnezia/contracts";
 import type { PollBoundSampleField } from "@amnezia/contracts";
+import type { AwgGeneratorSettings } from "@amnezia/contracts";
 import {
   isProbeStale,
   nodeServedProtocols,
@@ -137,6 +139,8 @@ import {
   encryptSecret,
   findOffboardedUsersEligibleForPurge,
   globalRouteOverrides,
+  resetNodeEndpointEvidence,
+  GENERATOR_CHANGED_DETAIL,
   hasLiveKeys,
   identities,
   jobOutbox,
@@ -1135,6 +1139,7 @@ export class PostgresControlRepository implements ControlRepository {
         enabled: endpoint.enabled,
         reachabilityEnabled: endpoint.reachabilityEnabled,
         bridgeMode: endpoint.bridgeMode,
+        awgGenerator: endpoint.awgGenerator,
         reachability,
         probeStatus: state?.status ?? null,
         probeLevels: state ? parsedLevels : null,
@@ -1514,6 +1519,10 @@ export class PostgresControlRepository implements ControlRepository {
     actor: Actor,
     request: CreateNodeRequest,
   ): Promise<unknown> => {
+    if (request.awgGenerator != null &&
+      !deriveSupportedProtocols(request.protocol, request.capabilities).includes("awg3")) {
+      throw new ApiError(409, "Generator settings require AWG 3.1", "AWG_GENERATOR_UNSUPPORTED");
+    }
     const credentials = encryptSecret(
       request.apiKey,
       this.options.keyring,
@@ -1536,6 +1545,7 @@ export class PostgresControlRepository implements ControlRepository {
             protocol: request.protocol,
             enabledProtocols: request.enabledProtocols ?? null,
             maxPeers: request.maxPeers,
+            awgGenerator: request.awgGenerator ?? null,
             capabilities: request.capabilities,
             credentialsCiphertext: credentials.ciphertext,
             credentialsNonce: credentials.nonce,
@@ -1594,18 +1604,41 @@ export class PostgresControlRepository implements ControlRepository {
       // without blocking foreign-key inserts that reference it; see the lock
       // note in bridgeRepository.ts.
       const [current] = await tx
-        .select({ id: nodes.id })
+        .select({
+          id: nodes.id, protocol: nodes.protocol, capabilities: nodes.capabilities,
+          awgGenerator: nodes.awgGenerator,
+        })
         .from(nodes)
         .where(eq(nodes.id, nodeId))
         .for("no key update");
       if (!current) throw new ApiError(404, "Node not found", "NODE_NOT_FOUND");
+      const configuresGenerator = request.awgGenerator != null ||
+        (publicEndpoint?.action === "update" && publicEndpoint.awgGenerator != null);
+      if (configuresGenerator && !deriveSupportedProtocols(
+        request.protocol ?? current.protocol,
+        request.capabilities ?? current.capabilities,
+      ).includes("awg3")) {
+        throw new ApiError(409, "Generator settings require AWG 3.1", "AWG_GENERATOR_UNSUPPORTED");
+      }
 
       const updated = editsNode
         ? await this.updateNodeSettings(tx, actor, nodeId, nodeFields)
         : undefined;
       const changedEndpoint = publicEndpoint
-        ? await this.changeNodePublicEndpoint(tx, actor, nodeId, publicEndpoint)
+        ? await this.changeNodePublicEndpoint(tx, actor, nodeId, publicEndpoint, {
+            before: current.awgGenerator,
+            after: request.awgGenerator === undefined ? current.awgGenerator : request.awgGenerator,
+          })
         : undefined;
+      if (request.awgGenerator !== undefined &&
+        !isDeepStrictEqual(current.awgGenerator, request.awgGenerator)) {
+        const inherited = await tx.select({ id: nodeVpnEndpoints.id }).from(nodeVpnEndpoints)
+          .where(and(eq(nodeVpnEndpoints.nodeId, nodeId), isNull(nodeVpnEndpoints.awgGenerator)));
+        await resetNodeEndpointEvidence(tx, nodeId, new Date(), {
+          endpointIds: inherited.map((endpoint) => endpoint.id),
+          detail: GENERATOR_CHANGED_DETAIL,
+        });
+      }
       if (vpnBridgeRouteId === undefined) {
         if (changedEndpoint) return { ...(updated ?? { id: nodeId }), publicEndpoint: changedEndpoint };
         if (updated) return updated;
@@ -1642,6 +1675,7 @@ export class PostgresControlRepository implements ControlRepository {
     actor: Actor,
     nodeId: string,
     request: NodePublicEndpointMutation,
+    nodeGenerators: { before: AwgGeneratorSettings | null; after: AwgGeneratorSettings | null },
   ): Promise<NodePublicEndpointMutationResult["publicEndpoint"]> => {
     let row: typeof nodeVpnEndpoints.$inferSelect | undefined;
     if (request.action === "add") {
@@ -1702,14 +1736,24 @@ export class PostgresControlRepository implements ControlRepository {
         }
       }
       const changeEnabled = request.enabled !== undefined && current.enabled !== request.enabled;
+      const changeBridgeMode = request.bridgeMode !== undefined && current.bridgeMode !== request.bridgeMode;
       const changeReachability =
         request.reachabilityEnabled !== undefined &&
         current.reachabilityEnabled !== request.reachabilityEnabled;
-      const resetEvidence = changeEnabled || (changeReachability && request.reachabilityEnabled === false);
+      const nextGenerator = request.awgGenerator === undefined
+        ? current.awgGenerator : request.awgGenerator;
+      const generatorChanged = !isDeepStrictEqual(
+        current.awgGenerator ?? nodeGenerators.before,
+        nextGenerator ?? nodeGenerators.after,
+      );
+      const resetEvidence = changeEnabled || changeBridgeMode || generatorChanged ||
+        (changeReachability && request.reachabilityEnabled === false);
       [row] = await tx.update(nodeVpnEndpoints).set({
         name: request.name ?? current.name,
         bridgeMode: request.bridgeMode ?? current.bridgeMode,
-        ...(changeEnabled ? { enabled: request.enabled, revision: current.revision + 1 } : {}),
+        ...(request.awgGenerator !== undefined ? { awgGenerator: request.awgGenerator } : {}),
+        ...(changeEnabled ? { enabled: request.enabled } : {}),
+        ...(changeEnabled || changeBridgeMode || generatorChanged ? { revision: current.revision + 1 } : {}),
         ...(changeReachability ? { reachabilityEnabled: request.reachabilityEnabled } : {}),
         ...(resetEvidence ? {
           probeStatus: null,
@@ -1721,6 +1765,12 @@ export class PostgresControlRepository implements ControlRepository {
           probeDetail: null,
         } : {}),
       }).where(match).returning();
+      if (generatorChanged || changeBridgeMode) {
+        await resetNodeEndpointEvidence(tx, nodeId, new Date(), {
+          endpointIds: [current.id],
+          detail: generatorChanged ? GENERATOR_CHANGED_DETAIL : undefined,
+        });
+      }
     }
     if (!row) throw new Error("Node address write returned no row");
     await tx.insert(auditEvents).values({
@@ -1735,6 +1785,7 @@ export class PostgresControlRepository implements ControlRepository {
         enabled: row.enabled,
         reachabilityEnabled: row.reachabilityEnabled,
         bridgeMode: row.bridgeMode,
+        generatorChanged: request.action === "update" && request.awgGenerator !== undefined,
       },
     });
     return {
@@ -1745,6 +1796,7 @@ export class PostgresControlRepository implements ControlRepository {
       enabled: row.enabled,
       reachabilityEnabled: row.reachabilityEnabled,
       bridgeMode: row.bridgeMode,
+      awgGenerator: row.awgGenerator,
     };
   };
 
@@ -1772,6 +1824,7 @@ export class PostgresControlRepository implements ControlRepository {
       changes.enabledProtocols = request.enabledProtocols ?? null;
     }
     if (request.maxPeers !== undefined) changes.maxPeers = request.maxPeers;
+    if (request.awgGenerator !== undefined) changes.awgGenerator = request.awgGenerator;
     // Which service checks this node runs. Missed when the fields were added
     // to the contract: the patch is built field by field here, so a field the
     // schema accepts and this block does not know is silently dropped - the
@@ -1824,6 +1877,7 @@ export class PostgresControlRepository implements ControlRepository {
         maxPeers: nodes.maxPeers,
         capabilities: nodes.capabilities,
         checksEnabled: nodes.checksEnabled,
+        awgGenerator: nodes.awgGenerator,
         disabledCheckIds: nodes.disabledCheckIds,
         reachabilityEnabled: nodes.reachabilityEnabled,
         updatedAt: nodes.updatedAt,
@@ -2674,10 +2728,13 @@ export class PostgresControlRepository implements ControlRepository {
     throw new Error("Serializable transaction retry limit exceeded");
   };
 
-  findKeyConfig = async (keyId: string): Promise<StoredKeyConfig | null> => {
+  findKeyConfig = async (
+    keyId: string,
+    reader: Pick<Database, "select"> = this.options.db,
+  ): Promise<StoredKeyConfig | null> => {
     const pinnedRoute = alias(vpnBridgeRoutes, "pinned_bridge_route");
     const pinnedBridge = alias(vpnBridges, "pinned_bridge");
-    const rows = await this.options.db
+    const rows = await reader
       .select({
         key: vpnKeys,
         user: users,
@@ -2687,6 +2744,8 @@ export class PostgresControlRepository implements ControlRepository {
         endpointName: nodeVpnEndpoints.name,
         endpointAddress: nodeVpnEndpoints.address,
         endpointBridgeMode: nodeVpnEndpoints.bridgeMode,
+        nodeAwgGenerator: nodes.awgGenerator,
+        endpointAwgGenerator: nodeVpnEndpoints.awgGenerator,
         nodeIpv6RejectStubEnabled: nodes.ipv6RejectStubEnabled,
         nodeIpv6RejectStubState: nodes.ipv6RejectStubState,
         nodeIpv6RejectStubPrefix: nodes.ipv6RejectStubPrefix,
@@ -2734,7 +2793,7 @@ export class PostgresControlRepository implements ControlRepository {
     const activeRule =
       row.key.routeProfile === "full_tunnel"
         ? null
-        : await this.findActiveRule(row.key.routeProfile);
+        : await this.findActiveRule(row.key.routeProfile, reader);
     const resolvedPolicy = resolvePortalPolicy(
       toPolicy(row.policy ?? undefined),
       row.user.policyOverride,
@@ -2809,6 +2868,7 @@ export class PostgresControlRepository implements ControlRepository {
           }
         : null,
       awgClientProfile: row.key.awgClientProfile ?? null,
+      awgGenerator: row.endpointAwgGenerator ?? row.nodeAwgGenerator ?? null,
       deviceType: row.key.deviceType,
       nodeIpv6RejectStub: {
         enabled: row.nodeIpv6RejectStubEnabled,
@@ -2820,8 +2880,9 @@ export class PostgresControlRepository implements ControlRepository {
 
   private findActiveRule = async (
     profile: RouteProfile,
+    reader: Pick<Database, "select"> = this.options.db,
   ): Promise<ActiveRule | null> => {
-    const [rule] = await this.options.db
+    const [rule] = await reader
       .select({
         id: routeRuleVersions.id,
         version: routeRuleVersions.version,
@@ -2839,8 +2900,8 @@ export class PostgresControlRepository implements ControlRepository {
     return { versionId: rule.id, version: rule.version, payload: rule.payload };
   };
 
-  getGlobalRoutes = async (): Promise<GlobalRoutes> => {
-    const [row] = await this.options.db
+  getGlobalRoutes = async (reader: Pick<Database, "select"> = this.options.db): Promise<GlobalRoutes> => {
+    const [row] = await reader
       .select({ payload: globalRouteOverrides.payload })
       .from(globalRouteOverrides)
       .where(eq(globalRouteOverrides.id, true))
@@ -2852,15 +2913,37 @@ export class PostgresControlRepository implements ControlRepository {
     return parsed.success ? parsed.data : emptyGlobalRoutes;
   };
 
-  markKeyRuleVersion = async (
+  recordConfigExport = async (
     keyId: string,
-    versionId: string,
-  ): Promise<void> => {
-    await this.options.db
-      .update(vpnKeys)
-      .set({ routeRuleVersionId: versionId, updatedAt: new Date() })
-      .where(eq(vpnKeys.id, keyId));
-  };
+    format: string,
+    hash: string,
+    context: Parameters<ControlRepository["recordConfigExport"]>[3],
+  ): Promise<boolean> => this.options.db.transaction(async (tx) => {
+    const [locked] = await tx.select({ id: vpnKeys.id }).from(vpnKeys)
+      .where(eq(vpnKeys.id, keyId)).for("update");
+    if (!locked) return false;
+    const current = await this.findKeyConfig(keyId, tx);
+    if (!current) return false;
+    const source = (key: StoredKeyConfig) => Object.fromEntries(
+      Object.entries(key).filter(([name]) => name !== "appliedRuleVersionId"),
+    );
+    if (!isDeepStrictEqual(source(current), source(context.key))) return false;
+    if (context.globalRoutes !== null && !isDeepStrictEqual(
+      await this.getGlobalRoutes(tx), context.globalRoutes,
+    )) return false;
+    const ruleVersion = context.markRuleVersion ? current.activeRule?.versionId : undefined;
+    const changesRule = ruleVersion !== undefined && current.appliedRuleVersionId !== ruleVersion;
+    await tx.update(vpnKeys).set({
+      configExportHashes: sql`coalesce(${vpnKeys.configExportHashes}, '{}'::jsonb)
+        || jsonb_build_object(${format}::text, ${hash}::text)`,
+      configUpdatedAt: sql`greatest(${vpnKeys.configUpdatedAt}, clock_timestamp())`,
+      ...(changesRule ? { routeRuleVersionId: ruleVersion, updatedAt: sql`clock_timestamp()` } : {}),
+    }).where(and(
+      eq(vpnKeys.id, keyId),
+      changesRule ? undefined : sql`${vpnKeys.configExportHashes}->>${format} IS DISTINCT FROM ${hash}`,
+    ));
+    return true;
+  });
 
   listRouteProfiles = async (): Promise<RouteProfileAvailability[]> => {
     const active = await this.options.db
@@ -3095,6 +3178,8 @@ export class PostgresControlRepository implements ControlRepository {
         .select({
           state: vpnKeys.state,
           awgClientProfile: vpnKeys.awgClientProfile,
+          nodeId: vpnKeys.nodeId,
+          endpointId: vpnKeys.endpointId,
           configCiphertext: vpnKeys.configCiphertext,
           configNonce: vpnKeys.configNonce,
           configAuthTag: vpnKeys.configAuthTag,
@@ -3134,7 +3219,14 @@ export class PostgresControlRepository implements ControlRepository {
         );
       }
       const revision = profileRevision(key.awgClientProfile);
-      if (configRefreshToken(keyId, key.configNonce, revision) !== refreshToken) {
+      const [generator] = await tx.select({
+        node: nodes.awgGenerator,
+        endpoint: nodeVpnEndpoints.awgGenerator,
+      }).from(nodes).leftJoin(nodeVpnEndpoints, and(
+        eq(nodeVpnEndpoints.nodeId, nodes.id),
+        key.endpointId ? eq(nodeVpnEndpoints.id, key.endpointId) : eq(nodeVpnEndpoints.ordinal, 1),
+      )).where(eq(nodes.id, key.nodeId)).limit(1);
+      if (configRefreshToken(keyId, key.configNonce, revision, generator?.endpoint ?? generator?.node) !== refreshToken) {
         throw new ApiError(
           409,
           "The config changed since it was checked",
@@ -3151,10 +3243,11 @@ export class PostgresControlRepository implements ControlRepository {
         },
         awgClientProfile: key.awgClientProfile ?? null,
         revision,
+        awgGenerator: generator?.endpoint ?? generator?.node ?? null,
       });
       await tx
         .update(vpnKeys)
-        .set({ awgClientProfile: profile, updatedAt: new Date() })
+        .set({ awgClientProfile: profile, configUpdatedAt: sql`greatest(${vpnKeys.configUpdatedAt}, clock_timestamp())`, updatedAt: sql`clock_timestamp()` })
         .where(eq(vpnKeys.id, keyId));
       // The revision only: the profile's values are not worth an audit trail,
       // and nothing of the config goes there.
@@ -3585,6 +3678,7 @@ export class PostgresControlRepository implements ControlRepository {
         ipv6RejectStubState: nodes.ipv6RejectStubState,
         ipv6RejectStubReason: nodes.ipv6RejectStubReason,
         ipv6RejectStubObservedAt: nodes.ipv6RejectStubObservedAt,
+        awgGenerator: nodes.awgGenerator,
         createdAt: nodes.createdAt,
         updatedAt: nodes.updatedAt,
       })
@@ -3769,6 +3863,7 @@ export class PostgresControlRepository implements ControlRepository {
               failureReason: vpnKeys.failureReason,
               createdAt: vpnKeys.createdAt,
               updatedAt: vpnKeys.updatedAt,
+              configUpdatedAt: vpnKeys.configUpdatedAt,
               online: peerCurrent.online,
               receivedBytes: peerCurrent.receivedBytes,
               sentBytes: peerCurrent.sentBytes,

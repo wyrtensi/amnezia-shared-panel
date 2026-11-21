@@ -219,6 +219,11 @@ describe("vpn:// links", () => {
     expect(extractConf(CONF)).toBe(CONF);
   });
 
+  it("extracts the config from an object-valued last_config", () => {
+    const link = buildLink({ containers: [{ awg: { last_config: { config: CONF } } }] });
+    expect(extractConf(link)).toBe(CONF);
+  });
+
   it("decodes a link with surrounding whitespace", () => {
     const link = buildLink({
       containers: [{ awg: { last_config: JSON.stringify({ config: CONF }) } }],

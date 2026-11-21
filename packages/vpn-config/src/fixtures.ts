@@ -98,10 +98,17 @@ export const buildArtifact = (options: ArtifactOptions = {}): AmneziaPayload => 
 export const buildLink = (options?: ArtifactOptions): string =>
   encodeVpnPayload(buildArtifact(options));
 
+export const lastConfigOf = (payload: AmneziaPayload): Record<string, unknown> => {
+  const stored = payload.containers?.[0]?.awg?.last_config;
+  if (typeof stored === "string") return JSON.parse(stored) as Record<string, unknown>;
+  if (!stored) throw new Error("Expected an embedded test config");
+  return stored;
+};
+
 /** The three places one endpoint lives in. */
 export const readEndpointCopies = (payload: AmneziaPayload) => {
   const awg = payload.containers?.[0]?.awg ?? {};
-  const lastConfig = JSON.parse(String(awg.last_config)) as Record<string, unknown>;
+  const lastConfig = lastConfigOf(payload);
   return {
     top: payload.hostName,
     awgPort: awg.port,

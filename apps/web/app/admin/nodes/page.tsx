@@ -66,8 +66,9 @@ import {
 import { formatDateTime } from "@/lib/format";
 import { InlineTraffic } from "@/components/inline-traffic";
 import { NodeCardSection } from "@/components/admin/node-card-section";
+import { NodeGeneratorSettings } from "@/components/admin/node-generator-settings";
 import { NodePublicEndpoints } from "@/components/admin/node-public-endpoints";
-import type { NodePublicEndpointMutation } from "@amnezia/contracts";
+import type { AwgGeneratorSettings, NodePublicEndpointMutation } from "@amnezia/contracts";
 import { MetricMeter, NodeMetrics } from "@/components/admin/node-metrics";
 import { NodePublicAddress } from "@/components/admin/node-public-address";
 import { ServiceChecksCard } from "@/components/admin/service-checks-card";
@@ -335,6 +336,15 @@ function AdminNodesView() {
                   checksConfigured={serviceChecks.checks.length > 0}
                   onSetChecks={(patch) => void setNodeChecks(node, patch)}
                   onToggleIpv6Stub={(enabled) => void toggleIpv6Stub(node, enabled)}
+                  onSaveGenerator={async (endpointId, awgGenerator) => {
+                    await request(`/api/admin/nodes/${node.id}`, {
+                      method: "PATCH",
+                      body: JSON.stringify(endpointId
+                        ? { publicEndpoint: { action: "update", id: endpointId, awgGenerator } }
+                        : { awgGenerator }),
+                    });
+                    await reload();
+                  }}
                   onSavePublicEndpoint={async (publicEndpoint) => {
                     await request(`/api/admin/nodes/${node.id}`, {
                       method: "PATCH",
@@ -441,6 +451,7 @@ function NodeCard({
   onSetChecks,
   onToggleIpv6Stub,
   onSavePublicEndpoint,
+  onSaveGenerator,
 }: {
   node: AdminNode;
   /** Undefined before a successful lookup, null for Direct. */
@@ -462,6 +473,7 @@ function NodeCard({
   }) => void;
   onToggleIpv6Stub: (enabled: boolean) => void;
   onSavePublicEndpoint: (change: NodePublicEndpointMutation) => Promise<void>;
+  onSaveGenerator: (endpointId: string | null, settings: AwgGeneratorSettings | null) => Promise<void>;
   onToggle: (enabled: boolean) => void;
   onReconcile: () => void;
   onEdit: () => void;
@@ -592,6 +604,9 @@ function NodeCard({
 
         <NodePublicEndpoints endpoints={node.publicEndpoints ?? []}
           canAdd={supported.includes("awg3")} onSave={onSavePublicEndpoint} />
+        {supported.includes("awg3") ? (
+          <NodeGeneratorSettings value={node.awgGenerator ?? null} endpoints={node.publicEndpoints ?? []} onSave={onSaveGenerator} />
+        ) : null}
 
         <div className="space-y-1.5">
           <NodeCardSection

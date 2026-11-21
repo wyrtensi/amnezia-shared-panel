@@ -97,6 +97,8 @@ export type AdminRouteOverrides = {
 };
 
 export type RouteCompactionOverrides = {
+  /** Exact built-in extras unioned after compaction without affecting RU expansion. */
+  exactExtras?: string[];
   /** Exact direct shields from `RULE_EXTRA_EXCLUDE_URLS` (never expanded). */
   extraExcluded?: string[];
   /** Explicit includes from `RULE_EXTRA_INCLUDE_URLS` (beat built-in shields). */
@@ -710,6 +712,7 @@ export const compactRoutes = (
   overrides?: RouteCompactionOverrides,
 ): ValidRulePayload | InvalidRulePayload => {
   if (!validation.ok) return validation;
+  const rawExactExtras = normalizeValidCidrs(overrides?.exactExtras ?? []);
   const extraExcluded = normalizeValidCidrs(overrides?.extraExcluded ?? []);
   const extraIncluded = normalizeValidCidrs(overrides?.extraIncluded ?? []);
   const adminExcluded = normalizeValidCidrs(overrides?.adminExcluded ?? []);
@@ -770,6 +773,14 @@ export const compactRoutes = (
     extraExcluded.length > 0 || adminExcluded.length > 0
       ? subtractCidrs(extras, [...extraExcluded, ...adminExcluded]).cidrs
       : extras;
+  const exactExtrasAfterExcludes =
+    extraExcluded.length > 0 || adminExcluded.length > 0
+      ? subtractCidrs(rawExactExtras, [...extraExcluded, ...adminExcluded]).cidrs
+      : rawExactExtras;
+  const effectiveExactExtras =
+    exactExtrasAfterExcludes.length > 0
+      ? subtractCidrs(exactExtrasAfterExcludes, []).cidrs
+      : [];
   const urlIncludesAfterAdminExclude =
     adminExcluded.length > 0
       ? subtractCidrs(extraIncluded, adminExcluded).cidrs
@@ -783,10 +794,14 @@ export const compactRoutes = (
     effectiveExtrasRaw.length > 0
       ? subtractCidrs(effectiveExtrasRaw, []).cidrs
       : [];
+  const allEffectiveExtras =
+    effectiveExactExtras.length > 0
+      ? subtractCidrs([...effectiveExtras, ...effectiveExactExtras], []).cidrs
+      : effectiveExtras;
 
   const shieldsAfterHigherIncludes = [
     ...(builtInDirectShields.length > 0
-      ? subtractCidrs(builtInDirectShields, effectiveExtras).cidrs
+      ? subtractCidrs(builtInDirectShields, allEffectiveExtras).cidrs
       : []),
     ...(extraExcluded.length > 0
       ? subtractCidrs(extraExcluded, [
@@ -811,6 +826,10 @@ export const compactRoutes = (
     effectiveExtras.length > 0
       ? subtractCidrs([...withoutShields, ...effectiveExtras], []).cidrs
       : withoutShields;
+  const losslessWithExact =
+    effectiveExactExtras.length > 0
+      ? subtractCidrs([...losslessCidrs, ...effectiveExactExtras], []).cidrs
+      : losslessCidrs;
 
   const overrideReportCounts = {
     ...(extraIncluded.length > 0
@@ -826,7 +845,7 @@ export const compactRoutes = (
   };
 
   if (mode === "lossless") {
-    const sorted = [...losslessCidrs].sort();
+    const sorted = [...losslessWithExact].sort();
     const byFamily = splitCidrsByFamily(sorted);
     return {
       ok: true,
@@ -851,12 +870,12 @@ export const compactRoutes = (
   // inclusions; keep forbidden shields clear of them while still protecting RU
   // space, LAN/bogons, and direct shields.
   const effectiveExcluded =
-    effectiveExtras.length > 0
-      ? subtractCidrs(excluded, effectiveExtras).cidrs
+    allEffectiveExtras.length > 0
+      ? subtractCidrs(excluded, allEffectiveExtras).cidrs
       : excluded;
   const effectiveBogons =
-    effectiveExtras.length > 0
-      ? subtractCidrs(bogons, effectiveExtras).cidrs
+    allEffectiveExtras.length > 0
+      ? subtractCidrs(bogons, allEffectiveExtras).cidrs
       : bogons;
   const forbidden = [
     ...effectiveExcluded,
@@ -871,7 +890,11 @@ export const compactRoutes = (
     const result = supernetCidrsSafely(losslessCidrs, forbidden, {
       maxExtraShare: { 4: compaction?.collateralCap ?? DEFAULT_COLLATERAL_CAP },
     });
-    finalCidrs = [...result.cidrs].sort();
+    const combined =
+      effectiveExactExtras.length > 0
+        ? subtractCidrs([...result.cidrs, ...effectiveExactExtras], []).cidrs
+        : result.cidrs;
+    finalCidrs = [...combined].sort();
     collateralNonRuShare = result.collateralShare[4];
   } else {
     // `compact_world` requires an exclusion feed (e.g. Russian GeoIP), otherwise
@@ -899,13 +922,18 @@ export const compactRoutes = (
       ...splitCidrsByFamily(effectiveBogons)[4],
       ...splitCidrsByFamily(effectiveDirectShields)[4],
     ];
-    const worldV4 = complementCidrs(shieldV4, 4);
+    const exactByFamily = splitCidrsByFamily(effectiveExactExtras);
+    const worldV4Base = complementCidrs(shieldV4, 4);
+    const worldV4 =
+      exactByFamily[4].length > 0
+        ? subtractCidrs([...worldV4Base, ...exactByFamily[4]], []).cidrs
+        : worldV4Base;
     const shieldV6 = [
       ...expandedByFamily[6],
       ...splitCidrsByFamily(effectiveBogons)[6],
       ...splitCidrsByFamily(effectiveDirectShields)[6],
     ];
-    const worldV6 =
+    const worldV6Base =
       expandedByFamily[6].length > 0
         ? complementCidrs(shieldV6, 6)
         : supernetCidrsSafely(
@@ -915,6 +943,10 @@ export const compactRoutes = (
               ...splitCidrsByFamily(effectiveDirectShields)[6],
             ],
           ).cidrs;
+    const worldV6 =
+      exactByFamily[6].length > 0
+        ? subtractCidrs([...worldV6Base, ...exactByFamily[6]], []).cidrs
+        : worldV6Base;
     finalCidrs = [...worldV4, ...worldV6].sort();
 
     const nonRuPubV4 = measureCidrSpace(
@@ -961,9 +993,9 @@ export const compactRoutes = (
       };
     }
   }
-  if (effectiveExtras.length > 0) {
+  if (allEffectiveExtras.length > 0) {
     const missed = measureCidrSpace(
-      subtractCidrs(effectiveExtras, finalCidrs).cidrs,
+      subtractCidrs(allEffectiveExtras, finalCidrs).cidrs,
     );
     if (missed[4] > 0n || missed[6] > 0n) {
       return {
@@ -1094,13 +1126,19 @@ export const createRuleFetcher = ({
       addCidrs: [],
       excludeCidrs: [],
     };
-  const extraCidrs = extras.flatMap((extra) => extra.cidrs);
+  const extraCidrs = extras
+    .filter((extra) => !extra.exact)
+    .flatMap((extra) => extra.cidrs);
+  const exactExtraCidrs = extras
+    .filter((extra) => extra.exact)
+    .flatMap((extra) => extra.cidrs);
   const compacted = compactRoutes(
     validateRuleObject(mergeRulePayloads(parsed)),
     excluded,
     extraCidrs,
     compaction,
     {
+      exactExtras: exactExtraCidrs,
       extraExcluded,
       extraIncluded,
       adminExcluded: adminOverrides.excludeCidrs,

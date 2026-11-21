@@ -15,6 +15,7 @@ import {
   probeSupportsBridgeMeasurement,
   REACHABILITY_NOTIFY_JOB_TYPE,
   REACHABILITY_WIDGET_JOB_TYPE,
+  type AwgGeneratorSettings,
   type ProbeBridgeRunTarget,
   type ProbeLevels,
   type ReachabilityStatus,
@@ -48,7 +49,14 @@ import {
   type Database,
   type EncryptionKeyring,
 } from "@amnezia/db";
-import { inspectAwgVpnLink, renderAwgEndpointVpnLink, withAwg31TunnelMtu, type AwgEndpoint } from "@amnezia/vpn-config";
+import {
+  AwgClientConfigError,
+  inspectAwgVpnLink,
+  projectAwgClientConfig,
+  renderAwgEndpointVpnLink,
+  selectAwgClientProfile,
+  type AwgEndpoint,
+} from "@amnezia/vpn-config";
 
 import type { CandidateOutcome, CandidateRun } from "./bridgeCandidateCheck.js";
 import {
@@ -93,12 +101,57 @@ const PROVISIONING_WAIT_MS = 10 * 60 * 1_000;
 
 type Tx = Parameters<Parameters<Database["transaction"]>[0]>[0];
 type PublicEndpoint = typeof nodeVpnEndpoints.$inferSelect;
+const CLIENT_UNRENDERABLE_REASON = "service key client settings could not be applied";
+
+type ClientProjection = {
+  config: string | null;
+  fingerprint: string;
+  usesLegacyIdentity: boolean;
+};
+
+const projectServiceConfig = (
+  savedConfig: string,
+  key: typeof vpnKeys.$inferSelect,
+  nodeGenerator: AwgGeneratorSettings | null,
+) => {
+  const projections = new Map<string, ClientProjection>();
+  return (endpoint?: PublicEndpoint): ClientProjection => {
+    const generator = endpoint?.awgGenerator ?? nodeGenerator;
+    const settings = JSON.stringify(generator);
+    const cached = projections.get(settings);
+    if (cached) return cached;
+    let config: string | null;
+    try {
+      config = projectAwgClientConfig(savedConfig, {
+        keyId: key.id,
+        protocol: key.protocol,
+        clientProfile: key.awgClientProfile,
+        generator,
+      });
+    } catch (error) {
+      if (!(error instanceof AwgClientConfigError)) throw error;
+      config = null;
+    }
+    const projection = {
+      config,
+      fingerprint: createHash("sha256")
+        .update(JSON.stringify([key.id, key.configNonce, key.awgClientProfile, generator]))
+        .digest("hex"),
+      usesLegacyIdentity: generator === null && key.awgClientProfile === null,
+    };
+    projections.set(settings, projection);
+    return projection;
+  };
+};
+
+const projectedTargetId = (targetId: string, projection: ClientProjection) =>
+  projection.usesLegacyIdentity ? targetId : `${targetId}:c${projection.fingerprint}`;
 
 const directNodeTargets = (
-  target: RunTarget & { config: string },
+  target: RunTarget,
   endpoints: readonly PublicEndpoint[],
   { host, port }: AwgEndpoint,
-  keyId: string,
+  project: ReturnType<typeof projectServiceConfig>,
   mayReuseLegacy: boolean,
   allowReuseNodeTarget = true,
 ): RunTarget[] => {
@@ -107,6 +160,7 @@ const directNodeTargets = (
   const { diagnostic, ...base } = target;
   for (const endpoint of endpoints) {
     if (!isIpv4Literal(endpoint.address)) continue;
+    const projection = project(endpoint);
     const reusesNodeTarget =
       allowReuseNodeTarget &&
       host === endpoint.address &&
@@ -119,27 +173,74 @@ const directNodeTargets = (
       reusesNodeTarget,
     };
     // Fence old replies without putting addresses, labels or key material in
-    // the probe's logged target IDs. The prefix already carries the node's
-    // bridge assignment revision.
+    // the probe's logged target IDs. The prefix carries the node's bridge
+    // assignment revision and the digest includes the effective profile.
     const identity = createHash("sha256")
-      .update(JSON.stringify([endpoint.id, endpoint.revision, endpoint.address, port, keyId]))
+      .update(JSON.stringify([endpoint.id, endpoint.revision, endpoint.address, port, projection.fingerprint]))
       .digest("hex");
     const targetId = `${reachabilityTargetId(target.nodeId, "awg3", target.endpointRevision)}:direct:${identity}`;
     if (reusesNodeTarget) {
-      nodeTarget = { ...target, directEndpoint, targetId: diagnostic ? targetId : target.targetId };
+      nodeTarget = {
+        ...target,
+        config: projection.config,
+        unavailableReason: projection.config === null ? CLIENT_UNRENDERABLE_REASON : null,
+        directEndpoint,
+        targetId: diagnostic ? targetId : projectedTargetId(
+          reachabilityTargetId(target.nodeId, "awg3", target.endpointRevision), projection,
+        ),
+      };
       continue;
     }
-    const config = renderAwgEndpointVpnLink(target.config, { host: endpoint.address, port });
+    if (projection.config === null) continue;
+    const config = renderAwgEndpointVpnLink(projection.config, { host: endpoint.address, port });
     if (!probeRunTargetSchema.shape.config.safeParse(config).success) continue;
     additional.push({
       ...base,
       config,
+      unavailableReason: null,
       directEndpoint,
       targetId,
       expectedEgressIp: isIpLiteral(target.expectedEgressIp ?? "") ? target.expectedEgressIp : null,
     });
   }
   return allowReuseNodeTarget ? [nodeTarget, ...additional] : additional;
+};
+
+const bridgedNodeTargets = (
+  target: RunTarget,
+  endpoints: readonly PublicEndpoint[],
+  via: AwgEndpoint,
+  project: ReturnType<typeof projectServiceConfig>,
+): RunTarget[] => {
+  const groups = new Map<string, { projection: ClientProjection; endpoints: PublicEndpoint[] }>();
+  for (const endpoint of endpoints) {
+    const projection = project(endpoint);
+    const profile = projection.config ?? projection.fingerprint;
+    const group = groups.get(profile);
+    if (group) group.endpoints.push(endpoint);
+    else groups.set(profile, { projection, endpoints: [endpoint] });
+  }
+  return [...groups.values()].map(({ projection, endpoints }, index) => {
+    const identity = createHash("sha256").update(JSON.stringify([
+      projection.fingerprint,
+      via,
+      endpoints.map(({ id, revision }) => [id, revision]),
+    ])).digest("hex");
+    const oldest = endpoints.reduce<Date | null>((earliest, { probeCheckedAt }) => {
+      if (!earliest || !probeCheckedAt) return null;
+      return probeCheckedAt < earliest ? probeCheckedAt : earliest;
+    }, endpoints[0]?.probeCheckedAt ?? null);
+    return {
+      ...target,
+      targetId: index === 0
+        ? `${target.targetId}:c${identity}`
+        : `${target.targetId}:bridge:${identity}`,
+      config: projection.config === null ? null : renderAwgEndpointVpnLink(projection.config, via),
+      unavailableReason: projection.config === null ? CLIENT_UNRENDERABLE_REASON : null,
+      bridgedEndpointIds: endpoints.map((endpoint) => endpoint.id),
+      ...(index === 0 ? {} : { supplementalBridge: { checkedAt: oldest } }),
+    };
+  });
 };
 
 const outboxRows = (notices: readonly Notice[]) =>
@@ -680,7 +781,7 @@ export class PostgresReachabilityRepository
     const awgByBridge = new Map<string, ProtocolOutcome[]>();
     for (const target of targets) {
       const bridgeId = target.bridgePath?.bridgeId;
-      if (!bridgeId || !measuredViaBridge(target)) continue;
+      if (!bridgeId || !measuredViaBridge(target) || target.supplementalBridge) continue;
       const outcome = awgByNode.get(target.nodeId);
       if (!outcome) continue;
       const outcomes = awgByBridge.get(bridgeId) ?? [];
@@ -798,6 +899,7 @@ export class PostgresReachabilityRepository
         enabledProtocols: nodes.enabledProtocols,
         publicIp: nodes.publicIp,
         publicHost: nodes.publicHost,
+        awgGenerator: nodes.awgGenerator,
         endpointRevision: nodes.vpnEndpointRevision,
         bridgeId: vpnBridgeRoutes.bridgeId,
         bridgeName: vpnBridges.name,
@@ -903,9 +1005,18 @@ export class PostgresReachabilityRepository
           },
           this.options.keyring,
         );
-        const config = protocol === "awg3" ? withAwg31TunnelMtu(savedConfig) : savedConfig;
-        if (!via && (protocol !== "awg3" || endpoints.length === 0)) return [{ ...target, config }];
-        const inspection = inspectAwgVpnLink(config);
+        if (protocol !== "awg3") return [{ ...target, config: savedConfig }];
+        const inspection = inspectAwgVpnLink(savedConfig);
+        const project = projectServiceConfig(savedConfig, key, node.awgGenerator);
+        const projection = project(endpoints.find((endpoint) => endpoint.ordinal === 1));
+        const { config } = projection;
+        const configuredTarget = {
+          ...target,
+          targetId: inspection.kind === "awg31" ? projectedTargetId(target.targetId, projection) : target.targetId,
+          config,
+          unavailableReason: config === null ? CLIENT_UNRENDERABLE_REASON : null,
+        };
+        if (!via && endpoints.length === 0) return [configuredTarget];
         // A reissued service key is a new row, so its creation time says
         // whether the dispatched node target used this key. `updatedAt` does
         // not: telemetry moves it on every poll that sees a handshake, which
@@ -915,13 +1026,13 @@ export class PostgresReachabilityRepository
           // A reissued service key can have a different port even when the
           // legacy target ID and destination IP are the same.
           return inspection.kind === "awg31"
-            ? directNodeTargets({ ...target, config }, endpoints, inspection.endpoint, key.id, mayReuseLegacy)
-            : [{ ...target, config }];
+            ? directNodeTargets(configuredTarget, endpoints, inspection.endpoint, project, mayReuseLegacy)
+            : [configuredTarget];
         }
         // When public endpoints are configured on a bridged node, probe each
-        // endpoint according to its effective bridge policy: bridged endpoints
-        // share the node's bridged measurement, while direct endpoints are
-        // probed directly at their own IPv4 address.
+        // endpoint according to its effective bridge policy. Bridged endpoints
+        // with the same config share a measurement; direct endpoints are probed
+        // at their own IPv4 address with that address's effective settings.
         if (endpoints.length > 0) {
           const bridgedEndpoints = endpoints.filter(
             (ep) => ep.bridgeMode === "bridge" || (ep.bridgeMode === "inherit" && globalUseBridge),
@@ -932,23 +1043,23 @@ export class PostgresReachabilityRepository
           if (bridgedEndpoints.length === 0) {
             return inspection.kind === "awg31"
               ? directNodeTargets(
-                  { ...target, bridgePath: null, config },
+                  { ...configuredTarget, bridgePath: null },
                   directEndpoints,
                   inspection.endpoint,
-                  key.id,
+                  project,
                   mayReuseLegacy,
                   true,
                 )
-              : [{ ...target, bridgePath: null, config }];
+              : [{ ...configuredTarget, bridgePath: null }];
           }
           const bridgedEndpointIds = bridgedEndpoints.map((ep) => ep.id);
           const directTargets =
             directEndpoints.length > 0 && inspection.kind === "awg31"
               ? directNodeTargets(
-                  { ...target, bridgePath: null, config },
+                  { ...configuredTarget, bridgePath: null },
                   directEndpoints,
                   inspection.endpoint,
-                  key.id,
+                  project,
                   false,
                   false,
                 )
@@ -956,10 +1067,10 @@ export class PostgresReachabilityRepository
           const diagnostics =
             options.probeDirectWhenBridged && inspection.kind === "awg31"
               ? directNodeTargets(
-                  { ...target, targetId: `${node.id}:awg3:direct`, diagnostic: true, config },
+                  { ...configuredTarget, targetId: `${node.id}:awg3:direct`, diagnostic: true },
                   bridgedEndpoints,
                   inspection.endpoint,
-                  key.id,
+                  project,
                   false,
                 )
               : [];
@@ -979,11 +1090,7 @@ export class PostgresReachabilityRepository
           }
           try {
             return [
-              {
-                ...target,
-                bridgedEndpointIds,
-                config: renderAwgEndpointVpnLink(config, { host: via.host, port: via.port }),
-              },
+              ...bridgedNodeTargets(target, bridgedEndpoints, via, project),
               ...directTargets,
               ...diagnostics,
             ];
@@ -997,8 +1104,8 @@ export class PostgresReachabilityRepository
         }
         const diagnostics = options.probeDirectWhenBridged && inspection.kind === "awg31"
           ? directNodeTargets(
-            { ...target, targetId: `${node.id}:awg3:direct`, diagnostic: true, config },
-            endpoints, inspection.endpoint, key.id, false,
+             { ...configuredTarget, targetId: `${node.id}:awg3:direct`, diagnostic: true },
+             endpoints, inspection.endpoint, project, false,
           )
           : [];
         if (!options.bridgeMeasurement) {
@@ -1007,9 +1114,10 @@ export class PostgresReachabilityRepository
         if (inspection.kind !== "awg31") {
           return [{ ...target, unavailableReason: BRIDGE_UNRENDERABLE_REASON }, ...diagnostics];
         }
+        if (config === null) return [configuredTarget, ...diagnostics];
         try {
           return [{
-            ...target,
+            ...configuredTarget,
             config: renderAwgEndpointVpnLink(config, { host: via.host, port: via.port }),
           }, ...diagnostics];
         } catch {
@@ -1116,6 +1224,7 @@ export class PostgresReachabilityRepository
             deviceLabel: "probe",
             keyNumber,
             routeProfile: "full_tunnel",
+            awgClientProfile: protocol === "awg3" ? selectAwgClientProfile(1) : null,
           });
           await tx.insert(jobOutbox).values({
             type: "vpn-key.provision",

@@ -24,6 +24,16 @@ Both AWG images are minimal toolkits whose default command is `/bin/sh`. `script
 
 The AWG3 obfuscation geometry is drawn **per node** by `scripts/awg3-geometry.sh` at first initialization, and never again — rerolling it would invalidate every key already issued from that node. Only `H1`–`H4` and the header-protection key used to vary; `Jc`, `Jmin`, `Jmax`, `S1`–`S4` and the junk packet were constants shared by every node we deploy, so a classifier that learned one node had learned the fleet.
 
+For an operator-controlled trial based on the legacy 44-byte DNS-response I1,
+`sh scripts/awg3-geometry.sh --dns-response-i1` emits a single candidate I1 line.
+The transaction ID and low TTL byte vary on each handshake attempt. The TTL
+ranges from 4096 to 4351 seconds. The DNS name, answer and packet length are
+preserved. Apply this candidate to an existing profile using the supported AWG
+setter and persist the same I1 in its server configuration. Existing client
+artifacts keep their issued I1. Validate with the original affected network
+before adopting the candidate. This mode emits only I1 and does not reroll
+server keys, geometry, padding or timers.
+
 The generator enforces what the protocol enforces (`S1..S4 >= 12` whenever a header-protection key is set; `H1`–`H4` distinct and clear of the WireGuard message types 0–4) and, more importantly, the one rule the protocol does **not** check: `Jmin < Jmax`. `amneziawg-go` computes each junk packet as `min + fastrandn(max - min)` on `uint32`, so an inverted range wraps to a multi-gigabyte allocation per junk packet per handshake. Nothing downstream would catch it.
 
 `I1` is generated per node too. Contrary to an earlier note here, it does **not** have to match between server and client: in `amneziawg-go` the I-packets appear only on the send path (`device.ipackets` is read in `send.go` and in the uapi get/set, never in `receive.go`), so a mismatch cannot break a handshake. `services/node-agent` still carries a stock `I1` in `AppContract.AmneziaWG3.PARAM_DEFAULTS` as a fallback for configs that lack one; that constant is the old fleet-wide fingerprint and should be dropped once every node carries its own.

@@ -19,7 +19,6 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Switch } from "@/components/ui/switch";
 import { configUrl } from "@/lib/api";
 import { copyVpnLink, keyDelivery } from "@/lib/key-delivery";
 import { useT } from "@/lib/i18n/provider";
@@ -39,37 +38,33 @@ export function AdminConfigDialog({
 }) {
   const { t } = useT();
   const delivery = keyDelivery(target?.routeProfile ?? "full_tunnel");
-  const vpnHref = target ? `${configUrl(target.id, "vpn")}&adminConfirmed=true` : null;
-  const [confirmed, setConfirmed] = React.useState(false);
+  const vpnHref = target ? configUrl(target.id, "vpn") : null;
   const [vpnLink, setVpnLink] = React.useState<string | null>(null);
   const [copied, setCopied] = React.useState(false);
   const [copying, setCopying] = React.useState(false);
 
   React.useEffect(() => {
-    setConfirmed(false);
+    let active = true;
     setVpnLink(null);
     setCopied(false);
-  }, [target]);
-
-  const confirm = async (next: boolean) => {
-    setConfirmed(next);
-    if (!next || !vpnHref) {
-      setVpnLink(null);
-      return;
+    if (vpnHref && delivery.clipboard === "inline") {
+      fetch(vpnHref)
+        .then((res) => {
+          if (!res.ok) throw new Error("failed");
+          return res.text();
+        })
+        .then((link) => {
+          if (active) setVpnLink(link.trim());
+        })
+        .catch(() => {
+          if (active) toast.error(t("acfg.fetchFailed"));
+        });
     }
-    if (delivery.clipboard !== "inline") return;
-    try {
-      const res = await fetch(vpnHref);
-      if (!res.ok) throw new Error("failed");
-      setVpnLink((await res.text()).trim());
-    } catch {
-      toast.error(t("acfg.fetchFailed"));
-      setConfirmed(false);
-    }
-  };
+    return () => { active = false; };
+  }, [vpnHref, delivery.clipboard, t]);
 
   const copy = async () => {
-    if (!vpnHref || !confirmed || copying) return;
+    if (!vpnHref || copying) return;
     setCopying(true);
     try {
       if (delivery.clipboard === "on-demand") {
@@ -102,14 +97,7 @@ export function AdminConfigDialog({
           </DialogDescription>
         </DialogHeader>
 
-        <label className="flex items-center justify-between gap-3 rounded-lg border p-3">
-          <span className="text-sm">
-            {t("acfg.confirmLabel")}
-          </span>
-          <Switch checked={confirmed} onCheckedChange={(v) => void confirm(v)} />
-        </label>
-
-        {confirmed && target && vpnHref && (vpnLink || delivery.clipboard !== "inline") ? (
+        {target && vpnHref ? (
           <div className="space-y-4">
             {delivery.clipboard !== "unavailable" ? (
             <div className="space-y-1.5">
@@ -127,7 +115,7 @@ export function AdminConfigDialog({
                 ) : null}
                 <Button
                   variant="secondary"
-                  disabled={copying}
+                  disabled={copying || (delivery.clipboard === "inline" && !vpnLink)}
                   aria-label={t(copied ? "config.done" : "config.copy")}
                   onClick={() => void copy()}
                 >
@@ -186,7 +174,7 @@ export function AdminConfigDialog({
                   </p>
                   <Button asChild variant="outline" className="w-full">
                     <a
-                      href={`${configUrl(target.id, "conf")}&adminConfirmed=true`}
+                      href={configUrl(target.id, "conf")}
                       download
                     >
                       <Download className="h-4 w-4" />{" "}

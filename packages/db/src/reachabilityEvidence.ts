@@ -1,4 +1,4 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 
 import type { Database } from "./client.js";
 import { nodeReachabilityResults, nodeReachabilityState, nodeVpnEndpoints } from "./schema.js";
@@ -8,6 +8,8 @@ type DbTransaction = Parameters<Parameters<Database["transaction"]>[0]>[0];
 /** What the node's verdict says between an endpoint change and its next run. */
 export const ENDPOINT_CHANGED_DETAIL =
   "endpoint assignment changed; waiting for a measurement through the new endpoint";
+export const GENERATOR_CHANGED_DETAIL =
+  "client generator changed; waiting for a measurement with the new profile";
 
 /**
  * Invalidate the reachability evidence that a node endpoint change (Direct or
@@ -33,6 +35,7 @@ export const resetNodeEndpointEvidence = async (
   executor: Database | DbTransaction,
   nodeId: string,
   now: Date,
+  options: { endpointIds?: readonly string[]; detail?: string } = {},
 ): Promise<void> => {
   await executor
     .delete(nodeReachabilityResults)
@@ -52,7 +55,10 @@ export const resetNodeEndpointEvidence = async (
       probeFailingSince: null,
       probeDetail: null,
     })
-    .where(eq(nodeVpnEndpoints.nodeId, nodeId));
+    .where(and(
+      eq(nodeVpnEndpoints.nodeId, nodeId),
+      options.endpointIds ? inArray(nodeVpnEndpoints.id, [...options.endpointIds]) : undefined,
+    ));
   await executor
     .update(nodeReachabilityState)
     .set({
@@ -60,7 +66,7 @@ export const resetNodeEndpointEvidence = async (
       consecutiveFailures: 0,
       failingSince: null,
       checkedAt: now,
-      detail: ENDPOINT_CHANGED_DETAIL,
+      detail: options.detail ?? ENDPOINT_CHANGED_DETAIL,
       directStatus: null,
       directCheckedAt: null,
       directDetail: null,
