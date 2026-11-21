@@ -22,6 +22,9 @@ export const AWG_GENERATOR_PRESETS = [
   "stun_dns_response_full",
   "noise",
   "noise_full",
+  "dns_response_randomized_full",
+  "varied",
+  "varied_full",
   "custom",
 ] as const;
 
@@ -41,6 +44,9 @@ export const AWG_GENERATOR_I_MODES = [
   "stun",
   "mixed",
   "noise",
+  // Each key draws one shape: a DNS query, a random DNS response, a STUN
+  // request or a mix of 1 to iCount packets.
+  "varied",
   "none",
 ] as const;
 
@@ -62,6 +68,17 @@ const defaultParameters = {
  * The junk-packet ranges of the presets that draw J, and the ranges a fixed
  * preset widens to when every key draws its own values.
  */
+/**
+ * J ranges a preset draws from instead of its own when every key draws its
+ * own values: the stock AmneziaVPN profile is exact with randomization off
+ * and varies around stock with it on.
+ */
+export const AWG_GENERATOR_RANDOMIZED_J: Partial<Record<AwgGeneratorPreset, {
+  jcMin: number; jcMax: number; jminMin: number; jminMax: number; jmaxGapMin: number; jmaxGapMax: number;
+}>> = {
+  amnezia_default: { jcMin: 4, jcMax: 8, jminMin: 10, jminMax: 50, jmaxGapMin: 40, jmaxGapMax: 80 },
+};
+
 export const AWG_GENERATOR_STANDARD_J = {
   jcMin: defaultParameters.jcMin,
   jcMax: defaultParameters.jcMax,
@@ -134,9 +151,6 @@ export const awgGeneratorSettingsSchema = z.strictObject({
   // of the node or address gets the same set. Absent (settings saved before
   // the switch): ranges are drawn per key and fixed presets stay fixed.
   randomizeKeys: z.boolean().optional(),
-}).refine((value) => !(value.preset === "custom" && value.randomizeKeys === true), {
-  message: "The custom preset gives every key the same values",
-  path: ["randomizeKeys"],
 }).refine((value) => value.jcMin <= value.jcMax, {
   message: "Jc maximum must be at least Jc minimum",
   path: ["jcMax"],
@@ -327,7 +341,7 @@ export const awgGeneratorPresets = (): AwgGeneratorPresetDescription[] => {
         ...base,
         preset: "amnezia_default",
         jcMin: 4,
-        jcMax: 6,
+        jcMax: 4,
         jminMin: 10,
         jminMax: 10,
         jmaxGapMin: 40,
@@ -350,6 +364,12 @@ export const awgGeneratorPresets = (): AwgGeneratorPresetDescription[] => {
     ...pair("dns_query_stun", "dns_query_stun", 2, "Send a randomized DNS A query and a STUN Binding Request"),
     ...pair("stun_dns_response", "stun_dns_response", 2, "Send a STUN Binding Request and a DNS response with a random TTL"),
     ...pair("noise", "noise", 3, "Send three random-length noise packets"),
+    {
+      id: "dns_response_randomized_full",
+      description: "Send a valid DNS A-response with randomized domain, TTL window, IPv4 answer and J ranges, CPA 1-39 and Interface timing ranges.",
+      settings: { ...base, ...full, preset: "dns_response_randomized_full", iMode: "dns_response_random", iCount: 1 },
+    },
+    ...pair("varied", "varied", 3, "Give each key its own signature shape (a DNS query, a DNS response, a STUN request or a mix of 1-3)"),
     {
       id: "custom",
       description: "Set client MTU, junk packets, signature packets, padding and timers.",

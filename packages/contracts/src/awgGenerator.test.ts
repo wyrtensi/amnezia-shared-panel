@@ -41,6 +41,9 @@ describe("AWG generator settings", () => {
       "stun_dns_response_full",
       "noise",
       "noise_full",
+      "dns_response_randomized_full",
+      "varied",
+      "varied_full",
       "custom",
     ]);
     for (const { id, settings } of presets) {
@@ -89,9 +92,10 @@ describe("AWG generator settings", () => {
     expect(awgGeneratorSettingsSchema.safeParse({ ...base, jcMin: 5, jcMax: 8 }).success).toBe(true);
   });
 
-  it("refuses randomization on the custom preset and ignores it nowhere else", () => {
+  it("lets the custom preset randomize keys, off by default", () => {
     const custom = awgGeneratorPresets().find(({ id }) => id === "custom")!.settings;
-    expect(awgGeneratorSettingsSchema.safeParse({ ...custom, randomizeKeys: true }).success).toBe(false);
+    expect(custom.randomizeKeys).toBe(false);
+    expect(awgGeneratorSettingsSchema.safeParse({ ...custom, randomizeKeys: true }).success).toBe(true);
     expect(awgGeneratorSettingsSchema.safeParse({ ...custom, randomizeKeys: false }).success).toBe(true);
     const stun = awgGeneratorPresets().find(({ id }) => id === "stun")!.settings;
     expect(awgGeneratorSettingsSchema.parse({ ...stun, randomizeKeys: false }).randomizeKeys).toBe(false);
@@ -162,5 +166,24 @@ describe("resolveAwgClientSettings", () => {
     expect(awgClientMtuSchema.safeParse(1279).success).toBe(false);
     expect(awgClientMtuSchema.safeParse(1421).success).toBe(false);
     expect(awgClientMtuSchema.safeParse(1300.5).success).toBe(false);
+  });
+});
+
+describe("stock and per-key presets", () => {
+  const find = (id: string) => awgGeneratorPresets().find((entry) => entry.id === id)!.settings;
+
+  it("keeps amnezia_default at stock J 4 / 10 / 50 with CPA 10-100", () => {
+    expect(find("amnezia_default")).toMatchObject({
+      jcMin: 4, jcMax: 4, jminMin: 10, jminMax: 10, jmaxGapMin: 40, jmaxGapMax: 40,
+      contentPaddingAddition: { min: 10, max: 100 },
+    });
+  });
+
+  it("pairs the per-key I profile preset without and with CPA and timings", () => {
+    expect(find("varied")).toMatchObject({ iMode: "varied", contentPaddingAddition: null, timings: null });
+    expect(find("varied_full")).toMatchObject({ iMode: "varied", contentPaddingAddition: { min: 1, max: 39 } });
+    expect(find("varied_full").timings).not.toBeNull();
+    expect(find("dns_response_randomized_full")).toMatchObject({ iMode: "dns_response_random", iCount: 1 });
+    expect(find("dns_response_randomized_full").timings).not.toBeNull();
   });
 });

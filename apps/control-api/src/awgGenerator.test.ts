@@ -256,9 +256,8 @@ describe("applyAwgGeneratorSettings", () => {
       expect(noIOut.lastConfig[slot]).toBe("");
     }
 
-    const stockOut = copies(applyAwgGeneratorSettings(original, preset("amnezia_default"), seed));
-    expect(Number(stockOut.line("Jc"))).toBeGreaterThanOrEqual(4);
-    expect(Number(stockOut.line("Jc"))).toBeLessThanOrEqual(6);
+    const stockOut = copies(applyAwgGeneratorSettings(original, { ...preset("amnezia_default"), randomizeKeys: false }, seed));
+    expect(stockOut.line("Jc")).toBe("4");
     expect(stockOut.line("Jmin")).toBe("10");
     expect(stockOut.line("Jmax")).toBe("50");
     expect(stockOut.line("ContentPaddingAddition")).toBe("10-100");
@@ -505,5 +504,104 @@ describe("signature packet validity and variety", () => {
     const mixedResponses = keys(80).flatMap((keyId) => packetsOf("randomized", keyId))
       .filter((template) => template.includes("<b 0x8180"));
     expect(mixedResponses.length).toBeGreaterThan(0);
+  });
+});
+
+describe("per-key spread", () => {
+  const original = awg31Link({ slots: ["I1", "I2", "I3", "I4", "I5"] });
+  const keys = (count: number) => Array.from({ length: count }, (_, index) => `synthetic-spread-${index}`);
+  const out = (settings: unknown, keyId: string) =>
+    copies(applyAwgGeneratorSettings(original, settings, { keyId, profileRevision: 1 }));
+  const slots = (copy: ReturnType<typeof out>) =>
+    ["I1", "I2", "I3", "I4", "I5"].map(copy.line).filter((value): value is string => Boolean(value));
+  const range = (value: string | null) => {
+    const [min, max] = (value ?? "").split("-").map(Number);
+    return { min: min ?? Number.NaN, max: max ?? Number.NaN };
+  };
+  const on = (id: AwgGeneratorPreset) => ({ ...preset(id), randomizeKeys: true });
+  const off = (id: AwgGeneratorPreset) => ({ ...preset(id), randomizeKeys: false });
+
+  it("draws the I count per key for mixed and varied only", () => {
+    expect(new Set(keys(60).map((keyId) => slots(out(on("randomized"), keyId)).length))).toEqual(new Set([1, 2, 3]));
+    for (const keyId of keys(20)) {
+      expect(slots(out(on("dns_query_burst_full"), keyId))).toHaveLength(3);
+      expect(slots(out(on("dns_query_stun_full"), keyId))).toHaveLength(2);
+      expect(slots(out(on("dns_query_aaaa_full"), keyId))).toHaveLength(1);
+      expect(slots(out(off("randomized"), keyId))).toHaveLength(3);
+    }
+  });
+
+  it("spreads CPA and timings per key inside the configured ranges with every invariant", () => {
+    const full = preset("randomized");
+    const cpas = new Set<string>();
+    for (const id of ["randomized", "noise_full", "dns_query_stun_full", "varied_full"] as const) {
+      for (const keyId of keys(60)) {
+        const copy = out(on(id), keyId);
+        const cpa = range(copy.line("ContentPaddingAddition"));
+        cpas.add(`${cpa.min}-${cpa.max}`);
+        expect(cpa.min).toBeGreaterThanOrEqual(1);
+        expect(cpa.max).toBeLessThanOrEqual(39);
+        expect(cpa.min).toBeLessThanOrEqual(cpa.max);
+        const t = {
+          rekeyAfter: range(copy.line("RekeyAfterTime")),
+          rekeyTimeout: range(copy.line("RekeyTimeout")),
+          rejectAfter: range(copy.line("RejectAfterTime")),
+          keepalive: range(copy.line("KeepaliveTimeout")),
+          handshakes: range(copy.line("MaxHandshakeAttempts")),
+        };
+        const configured = full.timings!;
+        const within = (value: { min: number; max: number }, bounds: { min: number; max: number }) =>
+          value.min >= bounds.min && value.max <= bounds.max && value.min <= value.max;
+        expect(within(t.rekeyAfter, configured.rekeyAfterTime)).toBe(true);
+        expect(within(t.rekeyTimeout, configured.rekeyTimeout)).toBe(true);
+        expect(within(t.rejectAfter, configured.rejectAfterTime)).toBe(true);
+        expect(within(t.keepalive, configured.keepaliveTimeout)).toBe(true);
+        expect(within(t.handshakes, configured.maxHandshakeAttempts)).toBe(true);
+        expect(t.rejectAfter.min).toBeGreaterThan(t.rekeyAfter.max);
+        expect(t.rejectAfter.min).toBeGreaterThan(t.keepalive.max + t.rekeyTimeout.max);
+      }
+    }
+    expect(cpas.size).toBeGreaterThan(10);
+    for (const keyId of keys(10)) {
+      const copy = out(off("randomized"), keyId);
+      expect(copy.line("ContentPaddingAddition")).toBe("1-39");
+      expect(copy.line("RekeyAfterTime")).toBe("95-150");
+    }
+  });
+
+  it("keeps amnezia_default exact stock with randomization off and varies J with it on", () => {
+    for (const keyId of keys(10)) {
+      const copy = out(off("amnezia_default"), keyId);
+      expect([copy.line("Jc"), copy.line("Jmin"), copy.line("Jmax")]).toEqual(["4", "10", "50"]);
+      expect(copy.line("ContentPaddingAddition")).toBe("10-100");
+      expect(copy.line("RekeyAfterTime")).toBe("100-120");
+      expect(copy.line("RejectAfterTime")).toBe("180-210");
+    }
+    const drawn = keys(40).map((keyId) => out(on("amnezia_default"), keyId));
+    expect(new Set(drawn.map((copy) => copy.line("Jmin"))).size).toBeGreaterThan(3);
+    expect(new Set(drawn.map((copy) => copy.line("Jmax"))).size).toBeGreaterThan(3);
+  });
+
+  it("gives keys of varied different I shapes, without CPA or timings, and varied_full with them", () => {
+    const shapes = new Set<string>();
+    for (const [index, keyId] of keys(60).entries()) {
+      const copy = out(on("varied"), keyId);
+      expect(copy.line("ContentPaddingAddition")).toBeNull();
+      expect(copy.line("RekeyAfterTime")).toBeNull();
+      const templates = slots(copy);
+      shapes.add(templates.map((template) => {
+        const kind = packetKind(template);
+        return kind === "dns" ? (parseDns(expandTemplate(template, seededBytes(index + 1))).response ? "response" : "query") : kind;
+      }).join("+"));
+    }
+    expect(shapes.size).toBeGreaterThanOrEqual(4);
+    expect(out(on("varied_full"), "synthetic-full").line("ContentPaddingAddition")).not.toBeNull();
+    const shared = new Set(keys(10).map((keyId) => slots(out(off("varied"), keyId)).join("|")));
+    expect(shared.size).toBe(1);
+  });
+
+  it("randomizes a custom profile when asked", () => {
+    const custom = { ...preset("custom"), jcMin: 3, jcMax: 10, randomizeKeys: true };
+    expect(new Set(keys(20).map((keyId) => out(custom, keyId).line("Jc"))).size).toBeGreaterThan(1);
   });
 });

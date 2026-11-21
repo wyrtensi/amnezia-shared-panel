@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 
 import {
   AWG_GENERATOR_FIXED_PRESETS,
+  AWG_GENERATOR_RANDOMIZED_J,
   AWG_GENERATOR_STANDARD_J,
   awgGeneratorSettingsSchema,
   type AwgGeneratorSettings,
@@ -132,6 +133,14 @@ const signaturePackets = (
   if (iMode === "mixed") {
     return mixedPackets(draw, iCount, "mix");
   }
+  if (iMode === "varied") {
+    switch (draw("varied-shape", 0, 3)) {
+      case 0: return [dnsQuery(draw, "varied-dns")];
+      case 1: return [dnsResponseRandom(draw, "varied-dns-response")];
+      case 2: return [stunRequest(draw, "varied-stun")];
+      default: return mixedPackets(draw, iCount, "varied-mix");
+    }
+  }
   return Array.from({ length: iCount }, (_, slot) => {
     switch (iMode) {
       case "dns_response":
@@ -177,6 +186,18 @@ const mixedPackets = (draw: Draw, count: number, prefix: string): string[] => {
   return Array.from({ length: count }, (_, slot) => templates[slot] ?? noise(draw(`${prefix}-noise-${slot}`, 48, 220)));
 };
 
+/**
+ * A per-key part of a configured range: the lower bound from its low half,
+ * the upper from its high half. A part of a valid range keeps every bound
+ * the schema checks between ranges (RejectAfterTime above the others).
+ */
+const spreadRange = (value: { min: number; max: number }, draw: Draw, label: string) => {
+  const low = Math.floor((value.min + value.max) / 2);
+  const high = Math.ceil((value.min + value.max) / 2);
+  const min = draw(`${label}-min`, value.min, low);
+  return { min, max: draw(`${label}-max`, Math.max(min, high), value.max) };
+};
+
 const formatRange = (range: { min: number; max: number } | null): string | null =>
   range && range.max > 0 ? `${range.min}-${range.max}` : null;
 
@@ -207,10 +228,14 @@ export const applyAwgGeneratorSettings = (
     return withAwg31TunnelMtu(rewriteAwg31ClientInterface(vpnLink, updates), mtu ?? shape.mtu);
   }
 
-  // On: a fixed preset keeps its packets and widens J so keys differ.
-  const profile = randomizeKeys === true && AWG_GENERATOR_FIXED_PRESETS.includes(shape.preset)
-    ? { ...shape, ...AWG_GENERATOR_STANDARD_J }
-    : shape;
+  // On: every key draws its own values. A fixed preset keeps its packets and
+  // widens J; the stock profile varies J around stock.
+  const perKey = randomizeKeys === true;
+  const widened = perKey
+    ? AWG_GENERATOR_RANDOMIZED_J[shape.preset] ??
+      (AWG_GENERATOR_FIXED_PRESETS.includes(shape.preset) ? AWG_GENERATOR_STANDARD_J : null)
+    : null;
+  const profile = widened ? { ...shape, ...widened } : shape;
   // Off: one draw for every key of the node or address, unmoved by refreshes.
   const shared = randomizeKeys === false;
   const profileSeed = JSON.stringify(shared ? ["shared", shape] : [seed.keyId, shape]);
@@ -227,16 +252,24 @@ export const applyAwgGeneratorSettings = (
   updates.set("Jmin", String(jmin));
   updates.set("Jmax", String(jmin + draw("jmax-gap", profile.jmaxGapMin, profile.jmaxGapMax)));
 
-  const slots = signaturePackets(profile, draw);
+  // On: the mixed and per-key shapes send 1 to iCount packets per key, and
+  // padding and timers take a per-key part of each configured range. Narrow
+  // presets keep their count, which is part of what they are.
+  const spreads = perKey && (profile.iMode === "mixed" || profile.iMode === "varied");
+  const signature = spreads ? { ...profile, iCount: draw("i-count", 1, profile.iCount) } : profile;
+  const range = (value: { min: number; max: number } | null, label: string) =>
+    perKey && value ? spreadRange(value, draw, label) : value;
+
+  const slots = signaturePackets(signature, draw);
   if (slots) {
     for (let index = 0; index < 5; index += 1) {
       updates.set(`I${index + 1}`, slots[index] ?? "");
     }
   }
 
-  updates.set("ContentPaddingAddition", formatRange(profile.contentPaddingAddition));
+  updates.set("ContentPaddingAddition", formatRange(range(profile.contentPaddingAddition, "cpa")));
   for (const key of Object.keys(TIMING_FIELDS) as (keyof typeof TIMING_FIELDS)[]) {
-    updates.set(TIMING_FIELDS[key], formatRange(profile.timings?.[key] ?? null));
+    updates.set(TIMING_FIELDS[key], formatRange(range(profile.timings?.[key] ?? null, `timing-${key}`)));
   }
   return withAwg31TunnelMtu(rewriteAwg31ClientInterface(vpnLink, updates), mtu ?? profile.mtu);
 };
