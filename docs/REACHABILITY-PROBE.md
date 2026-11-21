@@ -54,6 +54,33 @@ next to `peerCount`.
 A key a node refused (a node that is gone, for example) is not retried more
 often than once a day; that node reads `unknown` meanwhile.
 
+Each AWG 3 key carries a client profile (its own Jc, Jmin, Jmax and I-packet
+order) like every new user key, so without a generator preset the probe
+measures the way new user keys connect. Keys issued before profiles existed
+got one in the upgrade that added this (migration 0066, which also queues a
+run); the profile is client-side, so the keys were not reissued.
+
+### After a configuration change
+
+Every run builds each node's and each address's target from the current
+settings (generator profile, bridge mode, address). A change to what is
+measured on a node with checks on queues a run once it is saved, so it is
+checked right away instead of at the next scheduled run:
+
+- the node's or an enabled address's generator profile;
+- an address added, enabled or disabled, or an enabled address's bridge mode;
+- checks turned back on for the node or an address;
+- the node's bridge route assignment;
+- the portal's bridge default (it moves every address that inherits it);
+- the node agent reporting a new primary address.
+
+The worker starts that run at its next tick, about a minute later, or right
+after a run in flight; the result shows once the run finishes. When checks
+were turned back on, the run waits for the new probe key to provision.
+Until then the affected address reads `unknown`. Renames and other edits
+queue nothing, and nothing is queued while the probe is disabled. Each queued
+run checks every node, like a scheduled one.
+
 ### Request fields and capabilities
 
 Per target, `expectedEgressIp` is a string (compared with the observed egress
@@ -358,3 +385,25 @@ host, not the nodes.
 
 Deleting a node with probe keys needs `node-remove --with-keys` like any node
 with keys; the probe keys are the panel's own and are removed with it.
+
+### Update the probe image
+
+The probe keeps nothing between runs, so an update only has to land between
+two runs: `probe` on the panel shows no run in flight, and no bridge route
+check is running (a restart fails one with `PROBE_RUN_LOST`).
+
+```bash
+# on the probe host; compose never pulls (pull_policy: never), so pull first
+docker pull --platform linux/amd64 ghcr.io/<owner>/<repo>/reachability-probe@sha256:<digest>
+cp -p .env .env.bak-$(date -u +%Y%m%dT%H%M%SZ)
+# .env: PROBE_IMAGE=ghcr.io/<owner>/<repo>/reachability-probe@sha256:<digest>
+docker compose config -q && docker compose up -d
+docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' reachability-probe | grep APP_VERSION
+curl -s http://127.0.0.1:4002/healthz            # -> {"ok":true}
+```
+
+A locally built image goes over with `docker save | ssh <probe-host> docker
+load` and is pinned by the image ID instead. Then `probe-run` on the panel and
+check `probe-results`: every node has a fresh result. To roll back, put the previous `PROBE_IMAGE` from the
+`.env.bak-*` file back and run `docker compose up -d`; keep the previous image
+on the host until the new one has done a few runs.

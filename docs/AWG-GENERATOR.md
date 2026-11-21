@@ -140,6 +140,12 @@ still imported on a device. Export hashes do not retain those historical
 configurations, so an OK measurement cannot certify all previously issued
 variants. AWG 2.0 continues to use the existing node-level direct service key.
 
+Saving a changed profile on a node or an enabled address with checks on
+queues a probe run (while the probe is enabled), so the new profile is
+measured right away instead of at the next scheduled run; until that run
+finishes the address reads unknown (see "After a configuration change" in
+[REACHABILITY-PROBE.md](REACHABILITY-PROBE.md)).
+
 ## Administrative key metadata
 
 The Users key list exposes creation time and `configUpdatedAt`. The latter is
