@@ -26,8 +26,9 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
+import { VPN_CLIPBOARD_MAX_CHARS } from "@amnezia/contracts";
 import { configUrl } from "@/lib/api";
-import { copyVpnLink, keyDelivery } from "@/lib/key-delivery";
+import { keyDelivery } from "@/lib/key-delivery";
 import { cn } from "@/lib/utils";
 import { useT } from "@/lib/i18n/provider";
 import type { MessageKey } from "@/lib/i18n/messages";
@@ -209,6 +210,7 @@ export function ConfigDownloadDialog({
   const delivery = keyDelivery(target?.routeProfile ?? "full_tunnel");
   const showQr = delivery.qrUsable && me?.policy.allowQrDownload === true;
   const [vpnLink, setVpnLink] = React.useState<string | null>(null);
+  const [clipboardTooLong, setClipboardTooLong] = React.useState(false);
   const [loading, setLoading] = React.useState(false);
   const [failed, setFailed] = React.useState(false);
   const [copied, setCopied] = React.useState(false);
@@ -227,6 +229,7 @@ export function ConfigDownloadDialog({
     if (!target) return;
     let active = true;
     setVpnLink(null);
+    setClipboardTooLong(false);
     setFailed(false);
     setCopied(false);
     setQrZoom(QR_MAX_ZOOM);
@@ -236,17 +239,34 @@ export function ConfigDownloadDialog({
     setFramesError(false);
     setFrameIndex(0);
     setFrameMode(QR_DEFAULT_FRAME_MODE);
-    if (delivery.clipboard !== "inline") {
+    if (delivery.clipboard === "unavailable") {
       setLoading(false);
       return;
     }
     setLoading(true);
+    const href = configUrl(target.id, "vpn", target.revision);
+    const fetchHref =
+      delivery.clipboard === "on-demand" ? `${href}&clipboard=true` : href;
     void (async () => {
       try {
-        const res = await fetch(configUrl(target.id, "vpn", target.revision));
+        const res = await fetch(fetchHref);
+        if (delivery.clipboard === "on-demand" && res.status === 422) {
+          const body = (await res.json()) as { error?: string };
+          if (body.error === "KEY_CLIPBOARD_TOO_LONG") {
+            if (active) setClipboardTooLong(true);
+            return;
+          }
+        }
         if (!res.ok) throw new Error("failed");
-        const text = await res.text();
-        if (active) setVpnLink(text.trim());
+        const text = (await res.text()).trim();
+        if (
+          delivery.clipboard === "on-demand" &&
+          text.length > VPN_CLIPBOARD_MAX_CHARS
+        ) {
+          if (active) setClipboardTooLong(true);
+          return;
+        }
+        if (active) setVpnLink(text);
       } catch {
         if (active) setFailed(true);
       } finally {
@@ -408,18 +428,10 @@ export function ConfigDownloadDialog({
   ) : null;
 
   const copy = async () => {
-    if (!target || copying) return;
+    if (!vpnLink || copying) return;
     setCopying(true);
     try {
-      if (delivery.clipboard === "on-demand") {
-        if (!(await copyVpnLink(configUrl(target.id, "vpn", target.revision)))) {
-          toast.error(t("config.copyTooLong"));
-          return;
-        }
-      } else {
-        if (!vpnLink) return;
-        await navigator.clipboard.writeText(vpnLink);
-      }
+      await navigator.clipboard.writeText(vpnLink);
       setCopied(true);
       toast.success(t("config.keyCopied"));
       setTimeout(() => setCopied(false), 2500);
@@ -443,7 +455,7 @@ export function ConfigDownloadDialog({
             {t(
               delivery.clipboard === "inline"
                 ? "config.desc"
-                : delivery.clipboard === "on-demand"
+                : delivery.clipboard === "on-demand" && !clipboardTooLong
                   ? "config.descSplit"
                   : "config.descFileOnly",
             )}
@@ -464,17 +476,16 @@ export function ConfigDownloadDialog({
         {loading ? (
           <div className="space-y-3">
             <Skeleton className="h-9 w-full" />
-            <Skeleton className="mx-auto h-64 w-64" />
+            {showQr ? <Skeleton className="mx-auto h-64 w-64" /> : null}
           </div>
         ) : failed ? (
           <p className="text-sm text-destructive">{t("config.loadFailed")}</p>
-        ) : target && (vpnLink || delivery.clipboard !== "inline") ? (
+        ) : target && (vpnLink || clipboardTooLong || delivery.clipboard === "unavailable") ? (
           <div className="space-y-4">
-            {delivery.clipboard !== "unavailable" ? (
-            <div className="space-y-1.5">
-              {delivery.clipboard === "inline" && vpnLink ? <Label>{t("config.connectionKey")}</Label> : null}
-              <div className="flex gap-2">
-                {delivery.clipboard === "inline" && vpnLink ? (
+            {delivery.clipboard !== "unavailable" && !clipboardTooLong && vpnLink ? (
+              <div className="space-y-1.5">
+                <Label>{t("config.connectionKey")}</Label>
+                <div className="flex gap-2">
                   <Input
                     readOnly
                     value={vpnLink}
@@ -483,27 +494,26 @@ export function ConfigDownloadDialog({
                       (event.target as HTMLInputElement).select()
                     }
                   />
-                ) : null}
-                <Button
-                  type="button"
-                  variant={copied || delivery.clipboard === "on-demand" ? "secondary" : "default"}
-                  disabled={copying}
-                  onClick={() => void copy()}
-                >
-                  {copying ? (
-                    t("keyCard.copying")
-                  ) : copied ? (
-                    <>
-                      <Check className="h-4 w-4" /> {t("config.done")}
-                    </>
-                  ) : (
-                    <>
-                      <Copy className="h-4 w-4" /> {t("config.copy")}
-                    </>
-                  )}
-                </Button>
+                  <Button
+                    type="button"
+                    variant={copied ? "secondary" : "default"}
+                    disabled={copying}
+                    onClick={() => void copy()}
+                  >
+                    {copying ? (
+                      t("keyCard.copying")
+                    ) : copied ? (
+                      <>
+                        <Check className="h-4 w-4" /> {t("config.done")}
+                      </>
+                    ) : (
+                      <>
+                        <Copy className="h-4 w-4" /> {t("config.copy")}
+                      </>
+                    )}
+                  </Button>
+                </div>
               </div>
-            </div>
             ) : (
               <div className="rounded-xl border border-dashed bg-muted/40 p-4 text-center">
                 <Download className="mx-auto mb-2 h-8 w-8 text-muted-foreground" />
@@ -716,7 +726,7 @@ export function ConfigDownloadDialog({
               // a disclosure — for awg-quick and router firmwares that cannot
               // take the `.vpn` shape.
               <div className="space-y-2">
-                <Button asChild className="w-full">
+                <Button asChild variant="secondary" className="w-full">
                   <a href={configUrl(target.id, "vpn", target.revision)} download>
                     <Download className="h-4 w-4" /> {t("common.downloadVpnFile")}
                   </a>

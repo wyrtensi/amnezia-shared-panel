@@ -106,14 +106,23 @@ describe("config.qrAwgWarning", () => {
   });
 });
 
-describe("split-profile dialog fetches a key only on demand", () => {
+describe("split-profile dialog shares key-copy UI without QR", () => {
   const source = readFileSync(
     fileURLToPath(new URL("./config-download-dialog.tsx", import.meta.url)),
     "utf8",
   );
 
-  it("prefetches the link only when it is shown as inline text", () => {
-    expect(source).toMatch(/if \(delivery\.clipboard !== "inline"\) \{\s*\n\s*setLoading\(false\);/);
+  it("skips prefetch only when clipboard is unavailable and enforces clipboard limit on demand", () => {
+    expect(source).toMatch(/if \(delivery\.clipboard === "unavailable"\) \{\s*\n\s*setLoading\(false\);/);
+    expect(source).toContain('delivery.clipboard === "on-demand" ? `${href}&clipboard=true` : href');
+    expect(source).toContain('body.error === "KEY_CLIPBOARD_TOO_LONG"');
+    expect(source).toContain("text.length > VPN_CLIPBOARD_MAX_CHARS");
+  });
+
+  it("uses the same inline key input and primary copy button for split profiles, and neutral .vpn download", () => {
+    expect(source).toContain('variant={copied ? "secondary" : "default"}');
+    expect(source).not.toContain('delivery.clipboard === "on-demand" ? "secondary"');
+    expect(source).toContain('<Button asChild variant="secondary" className="w-full">');
   });
 
   it("gates the qr-frames fetch on delivery too", () => {
@@ -173,8 +182,8 @@ describe("download dialog after a config refresh", () => {
     expect(dialogSource).not.toMatch(/bridge/i);
   });
 
-  it("copies the refreshed revision from the same URL as the file download", () => {
-    expect(dialogSource).toContain('copyVpnLink(configUrl(target.id, "vpn", target.revision))');
+  it("fetches and downloads the refreshed revision from the same URL", () => {
+    expect(dialogSource).toContain('const href = configUrl(target.id, "vpn", target.revision);');
     expect(dialogSource).toContain('href={configUrl(target.id, "vpn", target.revision)} download');
   });
 
