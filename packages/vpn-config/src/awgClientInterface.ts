@@ -1,3 +1,4 @@
+import { AWG_CLIENT_PARAMETER_NAMES, awgClientParameterScope, type AwgClientParameter } from "@amnezia/contracts";
 import {
   decodeVpnLink,
   encodeVpnPayload,
@@ -161,6 +162,25 @@ export const inspectAwg31ClientConfig = (
 ): { jc: number; jmin: number; jmax: number } | null => {
   const view = readAwg31(vpnLink);
   return view ? { jc: view.j.Jc, jmin: view.j.Jmin, jmax: view.j.Jmax } : null;
+};
+
+/**
+ * The whitelisted client Interface parameters of an AWG 3.1 artifact, as the
+ * embedded config (the copy the client runs, and the one a profile and MTU are
+ * written to) carries them, in display order. A parameter the config does not
+ * carry has a null value. Keys, addresses and endpoints are never read.
+ * Null for an artifact `inspectAwg31ClientConfig` rejects.
+ */
+export const readAwg31ClientParameters = (vpnLink: string): AwgClientParameter[] | null => {
+  const view = readAwg31(vpnLink);
+  if (!view) return null;
+  const conf = readInterfaceLines(view.lines, AWG_CLIENT_PARAMETER_NAMES, true);
+  if (!conf) return null;
+  return AWG_CLIENT_PARAMETER_NAMES.map((name) => ({
+    name,
+    value: conf.fields.get(name)?.value || null,
+    scope: awgClientParameterScope(name),
+  }));
 };
 
 export class AwgClientConfigError extends Error {}
