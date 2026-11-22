@@ -1,10 +1,11 @@
 import type { EncryptionKeyring } from "@amnezia/db";
 import { decryptSecret } from "@amnezia/db";
 import { createHash } from "node:crypto";
-import type { AwgGeneratorSettings, GlobalRoutes, PortalPolicy } from "@amnezia/contracts";
+import type { AdminClientParameters, AwgGeneratorSettings, GlobalRoutes, PortalPolicy } from "@amnezia/contracts";
 import {
   composeKeyDisplayName,
   CONFIG_REFRESH_UNAVAILABLE,
+  AWG_DEFAULT_CLIENT_MTU,
   VPN_CLIPBOARD_MAX_CHARS,
 } from "@amnezia/contracts";
 import {
@@ -19,6 +20,7 @@ import type { ControlRepository, StoredKeyConfig } from "./repository.js";
 import { mergeRoutePayload } from "./routeMerge.js";
 import {
   ApiError,
+  type Actor,
   type ConfigFormat,
   type ConfigResult,
   type ControlApiService,
@@ -36,6 +38,7 @@ import {
   deriveStubPeerIpv6,
   inspectAwgVpnLink,
   projectAwgClientConfig,
+  readAwg31ClientParameters,
   readBaseClientIpv4,
   withIpv6RejectStubAddress,
   type AwgEndpoint,
@@ -111,6 +114,48 @@ const projectKeyClientConfig = (base: string, options: Parameters<typeof project
       "CONFIG_PROFILE_INVALID",
     );
   }
+};
+
+/**
+ * The projection every download and the parameters view share, so the view
+ * cannot drift from what a download carries.
+ */
+const projectExportClientLink = (
+  savedLink: string,
+  source: {
+    protocol: "awg2" | "awg3";
+    keyId: string;
+    clientProfile: unknown;
+    generator: AwgGeneratorSettings | null | undefined;
+    mtu: number | undefined;
+  },
+): string =>
+  projectKeyClientConfig(savedLink, {
+    protocol: source.protocol,
+    keyId: source.keyId,
+    clientProfile: source.clientProfile,
+    generator: source.generator,
+    ...(source.mtu === undefined ? {} : { mtu: source.mtu }),
+  });
+
+const requireAdmin = (actor: Actor): void => {
+  if (actor.role !== "admin") {
+    throw new ApiError(403, "Administrator role required", "FORBIDDEN");
+  }
+};
+
+/** Exported and issued parameters of one saved artifact, 409 when it is not AWG 3.1. */
+const readParameterViews = (
+  savedLink: string,
+  source: Parameters<typeof projectExportClientLink>[1],
+): Pick<AdminClientParameters, "exported" | "issued"> => {
+  const unsupported = () =>
+    new ApiError(409, "Client parameters require AWG 3.1", "AWG_GENERATOR_UNSUPPORTED");
+  if (source.protocol !== "awg3") throw unsupported();
+  const issued = readAwg31ClientParameters(savedLink);
+  const exported = issued && readAwg31ClientParameters(projectExportClientLink(savedLink, source));
+  if (!issued || !exported) throw unsupported();
+  return { exported, issued };
 };
 
 /** How many revisions a refresh tries before calling a profile unchangeable. */
@@ -191,12 +236,12 @@ const composeExport = async (
   endpoint: AwgEndpoint | null,
   format: ConfigFormat = "vpn",
 ): Promise<{ vpnLink: string; displayName: string; globalRoutes: GlobalRoutes | null }> => {
-  const clientLink = projectKeyClientConfig(savedLink, {
+  const clientLink = projectExportClientLink(savedLink, {
     protocol: key.protocol,
     keyId: key.id,
     clientProfile: key.awgClientProfile,
     generator: key.awgGenerator,
-    ...(key.awgMtu === undefined ? {} : { mtu: key.awgMtu }),
+    mtu: key.awgMtu,
   });
   const profiledLink = applyIpv6RejectStub(key, clientLink, format);
   const storedLink =
@@ -377,6 +422,57 @@ export const createDefaultControlApiService = ({
     repository.createProvisioningKey(actor, request, {
       allowBridgeSelection: actor.role === "admin",
     }),
+  getKeyClientParameters: async (actor, keyId) => {
+    requireAdmin(actor);
+    const key = await repository.findKeyConfig(keyId);
+    if (!key) throw new ApiError(404, "Key not found", "KEY_NOT_FOUND");
+    const views = readParameterViews(decryptSecret(key.encrypted, keyring), {
+      protocol: key.protocol,
+      keyId: key.id,
+      clientProfile: key.awgClientProfile,
+      generator: key.awgGenerator,
+      mtu: key.awgMtu,
+    });
+    return {
+      ...views,
+      settings: {
+        profileFrom: key.awgSettingsFrom?.profileFrom ?? null,
+        mtuFrom: key.awgSettingsFrom?.mtuFrom ?? "default",
+        preset: key.awgGenerator?.preset ?? null,
+        mtu: key.awgMtu ?? AWG_DEFAULT_CLIENT_MTU,
+        deviceType: key.deviceType ?? "unspecified",
+        ownerId: key.ownerId,
+      },
+    };
+  },
+  getNodeClientParameters: async (actor, nodeId, endpointId) => {
+    requireAdmin(actor);
+    // The repository answers null both for a node without a service key and
+    // for an address that is not the node's; the two cannot be told apart.
+    const sample = await repository.findServiceKeyConfig(nodeId, endpointId);
+    if (!sample) {
+      throw new ApiError(404, "This node has no service key to sample", "SAMPLE_KEY_NOT_FOUND");
+    }
+    const { settings } = sample;
+    const views = readParameterViews(decryptSecret(sample.encrypted, keyring), {
+      protocol: sample.protocol,
+      keyId: sample.keyId,
+      clientProfile: sample.awgClientProfile,
+      generator: settings.awgGenerator,
+      mtu: settings.mtu,
+    });
+    return {
+      ...views,
+      settings: {
+        profileFrom: settings.profileFrom,
+        mtuFrom: settings.mtuFrom,
+        preset: settings.awgGenerator?.preset ?? null,
+        mtu: settings.mtu,
+        deviceType: "unspecified",
+        ownerId: null,
+      },
+    };
+  },
   getKeyConfig: async (
     actor,
     keyId,

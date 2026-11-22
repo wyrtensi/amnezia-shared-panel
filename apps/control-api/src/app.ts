@@ -565,6 +565,20 @@ export const buildApp = async ({
   app.get("/api/admin/infrastructure", async (request) =>
     service.listInfrastructure(adminFor(request)),
   );
+  // Static last segments, so neither reaches `:resource/:id/:action`.
+  app.get("/api/admin/keys/:id/client-parameters", async (request, reply) => {
+    const admin = adminFor(request);
+    const { id } = idParamsSchema.parse(request.params);
+    reply.header("cache-control", "private, no-store");
+    return service.getKeyClientParameters(admin, id);
+  });
+  app.get("/api/admin/nodes/:id/client-parameters", async (request, reply) => {
+    const admin = adminFor(request);
+    const { id } = idParamsSchema.parse(request.params);
+    const { endpointId } = z.object({ endpointId: z.uuid().optional() }).parse(request.query ?? {});
+    reply.header("cache-control", "private, no-store");
+    return service.getNodeClientParameters(admin, id, endpointId ?? null);
+  });
   app.get("/api/admin/vpn-bridges", async (request) =>
     service.listBridges(adminFor(request)),
   );

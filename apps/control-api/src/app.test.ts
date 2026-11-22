@@ -83,6 +83,19 @@ const bridgeRouteFixture = {
   },
 };
 
+const emptyParameters = {
+  exported: [],
+  issued: [],
+  settings: {
+    profileFrom: null,
+    mtuFrom: "default" as const,
+    preset: null,
+    mtu: 1280,
+    deviceType: "unspecified",
+    ownerId: null,
+  },
+};
+
 const createService = (): ControlApiService => ({
   resolveIdentity: vi.fn(() => Promise.resolve(user)),
   getMe: vi.fn(() =>
@@ -95,6 +108,8 @@ const createService = (): ControlApiService => ({
     id: "key-1",
     state: "provisioning" as const,
   })),
+  getKeyClientParameters: vi.fn(() => Promise.resolve(emptyParameters)),
+  getNodeClientParameters: vi.fn(() => Promise.resolve(emptyParameters)),
   getKeyConfig: vi.fn(() => Promise.resolve({
     format: "vpn" as const,
     contentType: "text/plain",
@@ -2671,6 +2686,67 @@ describe("bridge registry routes", () => {
     });
     expect(forbidden.statusCode).toBe(403);
 
+    await app.close();
+  });
+});
+
+describe("client parameters routes", () => {
+  const admin = { ...user, role: "admin" as const };
+  const keyId = "0b48cc4c-404b-47a6-af28-4cf15f305e30";
+  const endpointId = "1c59dd5d-515c-48b7-bf39-5da26f416f41";
+  const open = async (actor: typeof user | typeof admin) => {
+    const service = createService();
+    vi.mocked(service.resolveIdentity).mockResolvedValue(actor);
+    const app = await buildApp({ service, environment: "development", allowDevIdentity: true });
+    return { service, app };
+  };
+
+  it("serves a key's parameters to an admin, uncached", async () => {
+    const { service, app } = await open(admin);
+    const response = await app.inject({
+      method: "GET",
+      url: `/api/admin/keys/${keyId}/client-parameters`,
+      headers: { "x-dev-user-email": admin.email },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.headers["cache-control"]).toBe("private, no-store");
+    expect(service.getKeyClientParameters).toHaveBeenCalledWith(admin, keyId);
+    await app.close();
+  });
+
+  it("serves a node's parameters with the optional address", async () => {
+    const { service, app } = await open(admin);
+    const headers = { "x-dev-user-email": admin.email };
+    const withAddress = await app.inject({
+      method: "GET",
+      url: `/api/admin/nodes/${keyId}/client-parameters?endpointId=${endpointId}`,
+      headers,
+    });
+    expect(withAddress.statusCode).toBe(200);
+    expect(withAddress.headers["cache-control"]).toBe("private, no-store");
+    expect(service.getNodeClientParameters).toHaveBeenCalledWith(admin, keyId, endpointId);
+    await app.inject({ method: "GET", url: `/api/admin/nodes/${keyId}/client-parameters`, headers });
+    expect(service.getNodeClientParameters).toHaveBeenLastCalledWith(admin, keyId, null);
+    const bad = await app.inject({
+      method: "GET",
+      url: `/api/admin/nodes/${keyId}/client-parameters?endpointId=nope`,
+      headers,
+    });
+    expect(bad.statusCode).toBe(400);
+    await app.close();
+  });
+
+  it("refuses a non-admin on both routes", async () => {
+    const { service, app } = await open(user);
+    const headers = { "x-dev-user-email": user.email };
+    for (const url of [
+      `/api/admin/keys/${keyId}/client-parameters`,
+      `/api/admin/nodes/${keyId}/client-parameters`,
+    ]) {
+      expect((await app.inject({ method: "GET", url, headers })).statusCode).toBe(403);
+    }
+    expect(service.getKeyClientParameters).not.toHaveBeenCalled();
+    expect(service.getNodeClientParameters).not.toHaveBeenCalled();
     await app.close();
   });
 });
