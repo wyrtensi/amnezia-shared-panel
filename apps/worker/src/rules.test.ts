@@ -893,14 +893,19 @@ describe("compactRoutes compaction modes", () => {
 
     const added = subtractCidrs(after.payload.cidrs, before.payload.cidrs).cidrs;
     const removed = subtractCidrs(before.payload.cidrs, after.payload.cidrs).cidrs;
+    const addedV4 = added.filter((cidr) => !cidr.includes(":"));
+    const addedV6 = added.filter((cidr) => cidr.includes(":"));
     expect(removed).toEqual([]);
-    expect(added).toEqual([
+    expect(addedV4).toEqual([
       "171.43.164.91/32",
       "171.43.164.92/30",
       "171.43.164.96/31",
       "171.43.164.98/32",
     ]);
-    expect(measureCidrSpace(added)).toEqual({ 4: 8n, 6: 0n });
+    expect(measureCidrSpace(addedV4)).toEqual({ 4: 8n, 6: 0n });
+    expect(addedV6).toEqual(
+      exactExtras.filter((cidr) => cidr.includes(":")).sort(),
+    );
 
     const withAdminExclude = compactRoutes(validation, ru, baseExtras, compaction, {
       exactExtras,
