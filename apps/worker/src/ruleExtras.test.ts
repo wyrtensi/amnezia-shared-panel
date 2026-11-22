@@ -42,4 +42,31 @@ describe("RULE_EXTRAS", () => {
       "171.43.164.98/32",
     ]);
   });
+
+  it("includes exact Yahoo EU, expertizeme, and missed foreign service supernets", () => {
+    const byName = new Map(RULE_EXTRAS.map((extra) => [extra.name, extra]));
+    expect(byName.get("yahoo-eu")).toMatchObject({
+      exact: true,
+      cidrs: ["87.248.96.0/19", "188.125.64.0/19", "212.82.96.0/19", "2a00:1288::/32"],
+    });
+    expect(byName.get("expertizeme")).toMatchObject({
+      exact: true,
+      cidrs: ["176.98.186.130/32"],
+    });
+    for (const slug of [
+      "proton",
+      "tuta",
+      "mega",
+      "fastly",
+      "gcp-linkedin",
+      "wikimedia",
+      "bitbucket",
+      "faceit",
+      "mangadex",
+      "riot-eu-dns-2026-11-22",
+      "major-cdn-v6",
+    ]) {
+      expect(byName.get(slug)?.exact, slug).toBe(true);
+    }
+  });
 });
