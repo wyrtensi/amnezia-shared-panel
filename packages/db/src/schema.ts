@@ -114,6 +114,8 @@ export const users = pgTable(
     // Admin-only AWG 3.1 client settings for every key of this user; null inherits.
     awgGenerator: jsonb("awg_generator").$type<AwgGeneratorSettings>(),
     awgMtu: integer("awg_mtu"),
+    // The user's own profile/MTU per device type of their keys; null = none.
+    awgDeviceRules: jsonb("awg_device_rules").$type<AwgDeviceRules>(),
     // Per-user extra routes layered on a split-tunnel profile's base feed at
     // export time (null = none). Keyed by profile: { ru_blacklist }.
     customRoutes: jsonb("custom_routes").$type<CustomRoutes>(),
