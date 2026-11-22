@@ -12,6 +12,7 @@ import {
   isNotNull,
   isNull,
   ne,
+  notInArray,
   or,
   sql,
   sum,
@@ -93,8 +94,12 @@ import {
   customRoutesSchema,
   DEFAULT_ALLOWED_PROTOCOLS,
   defaultPortalPolicy,
+  awgDeviceRuleSchema,
+  awgGeneratorPresets,
   deviceRuleFor,
+  pinClientConfigRequestSchema,
   setAwgClientConfigRequestSchema,
+  setUserClientConfigRequestSchema,
   resolveAwgClientSettings,
   emptyGlobalRoutes,
   globalRoutesSchema,
@@ -186,6 +191,7 @@ import type {
   ControlRepository,
   NodeTrafficPeriods,
   RouteProfileAvailability,
+  ServiceKeyConfig,
   StoredKeyConfig,
 } from "./repository.js";
 import { ApiError, type Actor, type IdentityClaim, type KeyView } from "./service.js";
@@ -349,21 +355,38 @@ const clientSettingsAudit = (settings: {
 }) => ({ preset: settings.awgGenerator?.preset ?? null, awgMtu: settings.awgMtu ?? null });
 
 /**
- * A key's AWG 3.1 client profile and MTU: the key, its owner, its address's
- * rule for the key's device type, its address (`keyEndpointJoin`), its node.
+ * A key's AWG 3.1 client profile and MTU: the key, its owner's rule for the
+ * key's device type, its owner, its address's rule for the key's device type,
+ * its address (`keyEndpointJoin`), its node.
  */
 const resolveKeyClientSettings = (levels: {
   key: StoredAwgLevel & { deviceType: string };
-  owner: StoredAwgLevel | null;
+  owner: (StoredAwgLevel & { awgDeviceRules: unknown }) | null;
   endpoint: (StoredAwgLevel & { awgDeviceRules: unknown }) | null;
   node: StoredAwgLevel | null;
 }): ResolvedAwgClientSettings => resolveAwgClientSettings({
   key: levels.key,
+  userDevice: levels.owner ? deviceRuleFor(levels.owner.awgDeviceRules, levels.key.deviceType) : null,
   user: levels.owner,
   device: levels.endpoint ? deviceRuleFor(levels.endpoint.awgDeviceRules, levels.key.deviceType) : null,
   address: levels.endpoint,
   node: levels.node,
 });
+
+/** The full settings of the `issued` preset: what a pin writes for "as issued by the node". */
+const issuedPresetSettings = (): AwgGeneratorSettings => {
+  const issued = awgGeneratorPresets().find((preset) => preset.id === "issued");
+  if (!issued) throw new Error("The issued preset is missing");
+  return issued.settings;
+};
+
+/** A stored profile/MTU pair as a device rule, or null when it sets neither or is unreadable. */
+const asClientRule = (value: { awgGenerator: unknown; awgMtu: unknown }) => {
+  const rule = awgDeviceRuleSchema.safeParse(value);
+  return rule.success ? rule.data : null;
+};
+
+const PIN_UNAVAILABLE = "PIN_UNAVAILABLE";
 
 /**
  * The portal-policy fields that configure the Cloudflare Access two-way sync.
@@ -3049,6 +3072,7 @@ export class PostgresControlRepository implements ControlRepository {
       awgClientProfile: row.key.awgClientProfile ?? null,
       awgGenerator: settings.awgGenerator,
       awgMtu: settings.mtu,
+      awgSettingsFrom: { profileFrom: settings.profileFrom, mtuFrom: settings.mtuFrom },
       deviceType: row.key.deviceType,
       nodeIpv6RejectStub: {
         enabled: row.nodeIpv6RejectStubEnabled,
@@ -3375,7 +3399,12 @@ export class PostgresControlRepository implements ControlRepository {
       if (!key) throw new ApiError(404, "Key not found", "KEY_NOT_FOUND");
       const [user, globalPolicy] = await Promise.all([
         tx
-          .select({ policyOverride: users.policyOverride, awgGenerator: users.awgGenerator, awgMtu: users.awgMtu })
+          .select({
+            policyOverride: users.policyOverride,
+            awgGenerator: users.awgGenerator,
+            awgMtu: users.awgMtu,
+            awgDeviceRules: users.awgDeviceRules,
+          })
           .from(users)
           .where(eq(users.id, actor.id))
           .limit(1),
@@ -3402,24 +3431,10 @@ export class PostgresControlRepository implements ControlRepository {
         );
       }
       const revision = profileRevision(key.awgClientProfile);
-      const [levels] = await tx.select({
-        nodeAwgGenerator: nodes.awgGenerator,
-        nodeAwgMtu: nodes.awgMtu,
-        endpointId: nodeVpnEndpoints.id,
-        endpointAwgGenerator: nodeVpnEndpoints.awgGenerator,
-        endpointAwgMtu: nodeVpnEndpoints.awgMtu,
-        endpointDeviceRules: nodeVpnEndpoints.awgDeviceRules,
-      }).from(nodes).leftJoin(nodeVpnEndpoints, and(
-        eq(nodeVpnEndpoints.nodeId, nodes.id),
-        key.endpointId ? eq(nodeVpnEndpoints.id, key.endpointId) : eq(nodeVpnEndpoints.ordinal, 1),
-      )).where(eq(nodes.id, key.nodeId)).limit(1);
       const settings = resolveKeyClientSettings({
         key,
         owner: user[0] ?? null,
-        endpoint: levels?.endpointId
-          ? { awgGenerator: levels.endpointAwgGenerator, awgMtu: levels.endpointAwgMtu, awgDeviceRules: levels.endpointDeviceRules }
-          : null,
-        node: levels ? { awgGenerator: levels.nodeAwgGenerator, awgMtu: levels.nodeAwgMtu } : null,
+        ...(await this.keyAddressAndNodeLevels(tx, key)),
       });
       if (configRefreshToken(keyId, key.configNonce, revision, settings.awgGenerator, settings.mtu) !== refreshToken) {
         throw new ApiError(
@@ -3457,6 +3472,101 @@ export class PostgresControlRepository implements ControlRepository {
       });
       return { revision: profile.revision };
     });
+
+  /**
+   * A key's address (its own, or the node's first: `keyEndpointJoin`) and node
+   * client-settings levels, in `resolveKeyClientSettings`'s shape.
+   */
+  private keyAddressAndNodeLevels = async (
+    reader: Pick<Database, "select">,
+    key: { nodeId: string; endpointId: string | null },
+  ) => {
+    const [levels] = await reader.select({
+      nodeAwgGenerator: nodes.awgGenerator,
+      nodeAwgMtu: nodes.awgMtu,
+      endpointId: nodeVpnEndpoints.id,
+      endpointAwgGenerator: nodeVpnEndpoints.awgGenerator,
+      endpointAwgMtu: nodeVpnEndpoints.awgMtu,
+      endpointDeviceRules: nodeVpnEndpoints.awgDeviceRules,
+    }).from(nodes).leftJoin(nodeVpnEndpoints, and(
+      eq(nodeVpnEndpoints.nodeId, nodes.id),
+      key.endpointId ? eq(nodeVpnEndpoints.id, key.endpointId) : eq(nodeVpnEndpoints.ordinal, 1),
+    )).where(eq(nodes.id, key.nodeId)).limit(1);
+    return {
+      endpoint: levels?.endpointId
+        ? { awgGenerator: levels.endpointAwgGenerator, awgMtu: levels.endpointAwgMtu, awgDeviceRules: levels.endpointDeviceRules }
+        : null,
+      node: levels ? { awgGenerator: levels.nodeAwgGenerator, awgMtu: levels.nodeAwgMtu } : null,
+    };
+  };
+
+  /**
+   * The probe's sample key for a node's parameters view: the service account's
+   * newest unrevoked AWG 3.1 key on the node (the key the probe measures), with
+   * only the address (when named) and node levels resolved, as the probe does.
+   * Null without such an active key, or when the address is not the node's.
+   */
+  findServiceKeyConfig = async (
+    nodeId: string,
+    endpointId: string | null,
+  ): Promise<ServiceKeyConfig | null> => {
+    if (!UUID_PATTERN.test(nodeId) || (endpointId !== null && !UUID_PATTERN.test(endpointId))) return null;
+    const db = this.options.db;
+    const [key] = await db
+      .select({
+        id: vpnKeys.id,
+        state: vpnKeys.state,
+        configCiphertext: vpnKeys.configCiphertext,
+        configNonce: vpnKeys.configNonce,
+        configAuthTag: vpnKeys.configAuthTag,
+        configKeyVersion: vpnKeys.configKeyVersion,
+        awgClientProfile: vpnKeys.awgClientProfile,
+      })
+      .from(vpnKeys)
+      .innerJoin(users, eq(users.id, vpnKeys.ownerId))
+      .where(and(
+        eq(users.serviceAccount, true),
+        eq(vpnKeys.nodeId, nodeId),
+        eq(vpnKeys.protocol, "awg3"),
+        notInArray(vpnKeys.state, ["revoked", "revoking"]),
+      ))
+      .orderBy(desc(vpnKeys.createdAt), desc(vpnKeys.id))
+      .limit(1);
+    if (
+      !key ||
+      key.state !== "active" ||
+      !key.configCiphertext ||
+      !key.configNonce ||
+      !key.configAuthTag ||
+      key.configKeyVersion === null
+    ) {
+      return null;
+    }
+    const [node] = await db.select({ awgGenerator: nodes.awgGenerator, awgMtu: nodes.awgMtu })
+      .from(nodes).where(eq(nodes.id, nodeId)).limit(1);
+    if (!node) return null;
+    let address: { awgGenerator: AwgGeneratorSettings | null; awgMtu: number | null } | null = null;
+    if (endpointId !== null) {
+      [address = null] = await db
+        .select({ awgGenerator: nodeVpnEndpoints.awgGenerator, awgMtu: nodeVpnEndpoints.awgMtu })
+        .from(nodeVpnEndpoints)
+        .where(and(eq(nodeVpnEndpoints.id, endpointId), eq(nodeVpnEndpoints.nodeId, nodeId)))
+        .limit(1);
+      if (!address) return null;
+    }
+    return {
+      keyId: key.id,
+      encrypted: {
+        ciphertext: key.configCiphertext,
+        nonce: key.configNonce,
+        authTag: key.configAuthTag,
+        keyVersion: key.configKeyVersion,
+      },
+      protocol: "awg3",
+      awgClientProfile: key.awgClientProfile ?? null,
+      settings: resolveAwgClientSettings({ address, node }),
+    };
+  };
 
   enqueueOwnRotate = async (actor: Actor, keyId: string): Promise<void> => {
     await this.options.db.transaction(async (tx) => {
@@ -4061,6 +4171,7 @@ export class PostgresControlRepository implements ControlRepository {
               awgMtu: vpnKeys.awgMtu,
               ownerAwgGenerator: users.awgGenerator,
               ownerAwgMtu: users.awgMtu,
+              ownerDeviceRules: users.awgDeviceRules,
               endpointAwgGenerator: nodeVpnEndpoints.awgGenerator,
               endpointAwgMtu: nodeVpnEndpoints.awgMtu,
               endpointDeviceRules: nodeVpnEndpoints.awgDeviceRules,
@@ -4108,6 +4219,7 @@ export class PostgresControlRepository implements ControlRepository {
             peerEndpoint,
             ownerAwgGenerator,
             ownerAwgMtu,
+            ownerDeviceRules,
             endpointAwgGenerator,
             endpointAwgMtu,
             endpointDeviceRules,
@@ -4118,14 +4230,14 @@ export class PostgresControlRepository implements ControlRepository {
             const ownerPolicy = resolvePortalPolicy(basePolicy, ownerPolicyOverride);
             const levels = {
               key: row,
-              owner: { awgGenerator: ownerAwgGenerator, awgMtu: ownerAwgMtu },
+              owner: { awgGenerator: ownerAwgGenerator, awgMtu: ownerAwgMtu, awgDeviceRules: ownerDeviceRules },
               endpoint: row.endpointName === null ? null : {
                 awgGenerator: endpointAwgGenerator, awgMtu: endpointAwgMtu, awgDeviceRules: endpointDeviceRules,
               },
               node: { awgGenerator: nodeAwgGenerator, awgMtu: nodeAwgMtu },
             };
             const settings = resolveKeyClientSettings(levels);
-            const manual: readonly string[] = ["key", "user", "device"];
+            const manual: readonly string[] = ["key", "userDevice", "user", "device"];
             return {
               ...row,
               // What an AWG 3.1 key's exports are built with and where it
@@ -5020,8 +5132,9 @@ export class PostgresControlRepository implements ControlRepository {
         );
       }
     }
-    // Its keys likewise: the worker creates and revokes them.
-    if (resource === "keys" && UUID_PATTERN.test(targetId)) {
+    // Its keys likewise: the worker creates and revokes them. A pin writes
+    // only to the owner and refuses a probe key with its own code.
+    if (resource === "keys" && action !== "pin-config" && UUID_PATTERN.test(targetId)) {
       const [owner] = await this.options.db
         .select({ serviceAccount: users.serviceAccount })
         .from(vpnKeys)
@@ -5656,11 +5769,13 @@ export class PostgresControlRepository implements ControlRepository {
       });
       return result;
     } else if (resource === "users" && action === "set-config") {
-      const request = setAwgClientConfigRequestSchema.parse(payload);
+      const request = setUserClientConfigRequestSchema.parse(payload);
       const [updated] = await this.options.db.update(users)
         .set({
           ...(request.awgGenerator !== undefined ? { awgGenerator: request.awgGenerator } : {}),
           ...(request.awgMtu !== undefined ? { awgMtu: request.awgMtu } : {}),
+          // An object replaces the whole map; null clears every rule.
+          ...(request.awgDeviceRules !== undefined ? { awgDeviceRules: request.awgDeviceRules } : {}),
           updatedAt: new Date(),
         })
         .where(and(eq(users.id, targetId), notServiceAccount))
@@ -5672,7 +5787,13 @@ export class PostgresControlRepository implements ControlRepository {
         action: "admin.users.set-config",
         targetType: "user",
         targetId,
-        metadata: clientSettingsAudit(updated),
+        metadata: {
+          ...clientSettingsAudit(updated),
+          // The device types that now have a rule, when the request set them.
+          ...(request.awgDeviceRules !== undefined
+            ? { deviceRules: Object.keys(updated.awgDeviceRules ?? {}).sort() }
+            : {}),
+        },
       });
       return updated;
     } else if (resource === "keys" && action === "set-config") {
@@ -5705,6 +5826,86 @@ export class PostgresControlRepository implements ControlRepository {
           metadata: clientSettingsAudit(updated),
         });
         return updated;
+      });
+    } else if (resource === "keys" && action === "pin-config") {
+      const { target } = pinClientConfigRequestSchema.parse(payload);
+      return this.options.db.transaction(async (tx) => {
+        const [key] = await tx.select({
+          id: vpnKeys.id,
+          ownerId: vpnKeys.ownerId,
+          nodeId: vpnKeys.nodeId,
+          endpointId: vpnKeys.endpointId,
+          protocol: vpnKeys.protocol,
+          deviceType: vpnKeys.deviceType,
+          awgGenerator: vpnKeys.awgGenerator,
+          awgMtu: vpnKeys.awgMtu,
+        }).from(vpnKeys).where(eq(vpnKeys.id, targetId)).for("update");
+        if (!key) throw new ApiError(404, "Key not found", "KEY_NOT_FOUND");
+        // The owner row is locked too, so the rule merge below cannot race a
+        // set-config of the same user.
+        const [owner] = await tx.select({
+          serviceAccount: users.serviceAccount,
+          awgGenerator: users.awgGenerator,
+          awgMtu: users.awgMtu,
+          awgDeviceRules: users.awgDeviceRules,
+        }).from(users).where(eq(users.id, key.ownerId)).for("update");
+        if (!owner) throw new ApiError(404, "Key not found", "KEY_NOT_FOUND");
+        if (key.protocol !== "awg3") {
+          throw new ApiError(409, "Only AWG 3.1 keys can be pinned", PIN_UNAVAILABLE);
+        }
+        if (owner.serviceAccount) {
+          throw new ApiError(409, "Service account keys are managed by the panel", PIN_UNAVAILABLE);
+        }
+        if (target === "device" && key.deviceType === "unspecified") {
+          throw new ApiError(409, "A key without a device type matches no device rule", PIN_UNAVAILABLE);
+        }
+        const settings = resolveKeyClientSettings({
+          key,
+          owner,
+          ...(await this.keyAddressAndNodeLevels(tx, key)),
+        });
+        // Both fields as concrete values, so later node or address edits do
+        // not reach the owner: "as issued" pins the issued preset and an MTU
+        // from the profile or the default pins as that number.
+        const pinned = asClientRule({
+          awgGenerator: settings.awgGenerator ?? issuedPresetSettings(),
+          awgMtu: settings.mtu,
+        });
+        if (!pinned) {
+          throw new ApiError(409, "The key's settings cannot be pinned", PIN_UNAVAILABLE);
+        }
+        const held = target === "user"
+          ? asClientRule({ awgGenerator: owner.awgGenerator, awgMtu: owner.awgMtu })
+          : deviceRuleFor(owner.awgDeviceRules, key.deviceType);
+        const scope = target === "device" ? { deviceType: key.deviceType } : {};
+        const result = {
+          keyId: key.id,
+          ownerId: key.ownerId,
+          target,
+          ...scope,
+          awgGenerator: pinned.awgGenerator,
+          awgMtu: pinned.awgMtu,
+          changed: !isDeepStrictEqual(held, pinned),
+        };
+        if (!result.changed) return result;
+        const rules = owner.awgDeviceRules !== null && typeof owner.awgDeviceRules === "object"
+          ? owner.awgDeviceRules
+          : {};
+        await tx.update(users)
+          .set(target === "user"
+            ? { awgGenerator: pinned.awgGenerator, awgMtu: pinned.awgMtu, updatedAt: new Date() }
+            // The rule for the key's type is replaced; other types stay as they are.
+            : { awgDeviceRules: { ...rules, [key.deviceType]: pinned }, updatedAt: new Date() })
+          .where(eq(users.id, key.ownerId));
+        await tx.insert(auditEvents).values({
+          actorUserId: actor.id,
+          actorType: "user",
+          action: "admin.keys.pin-config",
+          targetType: "vpn_key",
+          targetId: key.id,
+          metadata: { target, ownerId: key.ownerId, ...scope, ...clientSettingsAudit(pinned) },
+        });
+        return result;
       });
     } else if (
       resource === "quota-requests" &&

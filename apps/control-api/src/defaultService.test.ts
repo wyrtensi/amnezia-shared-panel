@@ -130,6 +130,7 @@ const createRepository = (): ControlRepository => ({
       customRoutes: null,
     }),
   ),
+  findServiceKeyConfig: vi.fn(() => Promise.resolve(null)),
   getGlobalRoutes: vi.fn(() => Promise.resolve(emptyGlobalRoutes)),
   recordConfigExport: vi.fn(() => Promise.resolve(true)),
   listRouteProfiles: vi.fn(() => Promise.resolve([])),
