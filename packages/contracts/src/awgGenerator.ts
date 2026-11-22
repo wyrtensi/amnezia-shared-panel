@@ -175,7 +175,7 @@ export const awgGeneratorSettingsSchema = z.strictObject({
 export type AwgGeneratorSettings = z.infer<typeof awgGeneratorSettingsSchema>;
 
 /** Where an AWG 3.1 client setting can be set, nearest to the key first. */
-export const AWG_CONFIG_LEVELS = ["key", "user", "device", "address", "node"] as const;
+export const AWG_CONFIG_LEVELS = ["key", "userDevice", "user", "device", "address", "node"] as const;
 export type AwgConfigLevelName = (typeof AWG_CONFIG_LEVELS)[number];
 /** One level's settings; null or absent inherits from the next level. */
 export type AwgConfigLevel = {
@@ -192,8 +192,8 @@ export type ResolvedAwgClientSettings = {
 
 /**
  * The profile and the MTU a key's config is built with: each from the nearest
- * level that sets it (key, its owner, the address's rule for the key's device
- * type, the address, the node). With no MTU set anywhere, the resolved
+ * level that sets it (key, its owner's rule for the key's device type, its
+ * owner, the address's rule for the key's device type, the address, the node). With no MTU set anywhere, the resolved
  * profile's stored MTU applies, and with no profile either, 1280.
  */
 export const resolveAwgClientSettings = (

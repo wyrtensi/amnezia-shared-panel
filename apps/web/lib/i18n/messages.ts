@@ -219,6 +219,7 @@ const ru = {
   "keyCard.refreshConfigTip":
     "Новые параметры маскировки для этого устройства. Ключ остаётся прежним, старое подключение работает, пока вы не замените его новым конфигом.",
   "awgSettings.from.key": "от ключа",
+  "awgSettings.from.userDevice": "с устройства пользователя",
   "awgSettings.from.user": "от пользователя",
   "awgSettings.from.device": "от правила для устройства",
   "awgSettings.from.address": "от адреса",
@@ -2274,6 +2275,7 @@ const en = {
   "keyCard.refreshConfigTip":
     "New obfuscation parameters for this device. The key stays the same, and the old connection keeps working until you replace it with the new config.",
   "awgSettings.from.key": "from the key",
+  "awgSettings.from.userDevice": "from the user's device rule",
   "awgSettings.from.user": "from the user",
   "awgSettings.from.device": "from the device rule",
   "awgSettings.from.address": "from the address",

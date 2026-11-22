@@ -153,6 +153,23 @@ describe("resolveAwgClientSettings", () => {
       .toEqual({ awgGenerator: stun, profileFrom: "node", mtu: 1300, mtuFrom: "device" });
   });
 
+  it("resolves the owner's device rule above the owner", () => {
+    expect(resolveAwgClientSettings({
+      userDevice: { awgGenerator: stun, awgMtu: 1340 },
+      user: { awgGenerator: issued, awgMtu: 1300 },
+      device: { awgMtu: 1320 },
+    })).toEqual({ awgGenerator: stun, profileFrom: "userDevice", mtu: 1340, mtuFrom: "userDevice" });
+    expect(resolveAwgClientSettings({ userDevice: { awgMtu: 1340 }, user: { awgGenerator: stun } }))
+      .toEqual({ awgGenerator: stun, profileFrom: "user", mtu: 1340, mtuFrom: "userDevice" });
+  });
+
+  it("a key's own setting still wins over the owner's device rule", () => {
+    expect(resolveAwgClientSettings({
+      key: { awgGenerator: issued, awgMtu: 1290 },
+      userDevice: { awgGenerator: stun, awgMtu: 1340 },
+    })).toEqual({ awgGenerator: issued, profileFrom: "key", mtu: 1290, mtuFrom: "key" });
+  });
+
   it("falls back to the resolved profile's stored MTU, then 1280", () => {
     expect(resolveAwgClientSettings({ node: { awgGenerator: { ...stun, mtu: 1400 } } }))
       .toMatchObject({ profileFrom: "node", mtu: 1400, mtuFrom: "profile" });
