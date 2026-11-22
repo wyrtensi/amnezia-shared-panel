@@ -359,7 +359,7 @@ export const awgGeneratorPresets = (): AwgGeneratorPresetDescription[] => {
     ...pair("dns_query_https", "dns_query_https", 1, "Send a randomized DNS HTTPS (type 65) query"),
     ...pair("dns_query_burst", "dns_query", 3, "Send three randomized DNS A queries"),
     ...pair("dns_query_stun", "dns_query_stun", 2, "Send a randomized DNS A query and a STUN Binding Request"),
-    ...pair("stun_dns_response", "stun_dns_response", 2, "Send a STUN Binding Request and a DNS response with a random TTL"),
+    ...pair("stun_dns_response", "stun_dns_response", 2, "Send a STUN Binding Request and a DNS A-response with a random domain, TTL and IPv4 answer"),
     ...pair("noise", "noise", 3, "Send three random-length noise packets"),
     {
       id: "dns_response_randomized_full",
