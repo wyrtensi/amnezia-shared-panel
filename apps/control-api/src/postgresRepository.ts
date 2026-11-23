@@ -76,6 +76,7 @@ import {
   resetNoticesRequestSchema,
   nodeRunsCheck,
   nodeEndpointDefaultName,
+  selectDefaultNodeEndpoint,
   isPurgeableKeyState,
   isIpv4Literal,
   REVOCABLE_KEY_STATES,
@@ -2606,10 +2607,6 @@ export class PostgresControlRepository implements ControlRepository {
             ? new Set(policy.allowedEndpointIds)
             : null;
         const endpointOrder = globalPolicy?.endpointOrder ?? [];
-        const endpointRank = new Map<string, number>();
-        endpointOrder.forEach((id, index) => {
-          if (!endpointRank.has(id)) endpointRank.set(id, index);
-        });
         const candidateEndpointRows =
           candidateNodes.length > 0 && request.protocol === "awg3"
             ? await tx
@@ -2785,23 +2782,13 @@ export class PostgresControlRepository implements ControlRepository {
           }
           endpointId = endpoint.id;
         } else if (request.protocol === "awg3") {
-          const nodeEndpoints = candidateEndpointsByNode.get(selectedNode.id) ?? [];
-          if (nodeEndpoints.length > 0) {
-            const eligible = nodeEndpoints
-              .filter(
-                (ep) =>
-                  ep.enabled &&
-                  (allowedEndpointSet === null || allowedEndpointSet.has(ep.id)),
-              )
-              .sort((a, b) => {
-                const ra = endpointRank.get(a.id) ?? Number.MAX_SAFE_INTEGER;
-                const rb = endpointRank.get(b.id) ?? Number.MAX_SAFE_INTEGER;
-                return ra - rb || a.ordinal - b.ordinal;
-              });
-            const preferred = eligible[0];
-            if (preferred && preferred.ordinal !== 1) {
-              endpointId = preferred.id;
-            }
+          const preferred = selectDefaultNodeEndpoint(
+            candidateEndpointsByNode.get(selectedNode.id) ?? [],
+            endpointOrder,
+            allowedEndpointSet,
+          );
+          if (preferred && preferred.ordinal !== 1) {
+            endpointId = preferred.id;
           }
         }
         let vpnBridgeRouteId: string | null = null;

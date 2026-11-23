@@ -427,6 +427,25 @@ export const nodeEndpointDefaultName = (name: string, ordinal: number): string =
   return `${base.toWellFormed()}${suffix}`;
 };
 
+/** The address selected for an AWG 3.1 key when the request omits endpointId. */
+export function selectDefaultNodeEndpoint<T extends { id: string; ordinal: number; enabled: boolean }>(
+  endpoints: readonly T[],
+  endpointOrder: readonly string[],
+  allowedEndpointIds: ReadonlySet<string> | null,
+): T | undefined {
+  const rank = new Map<string, number>();
+  endpointOrder.forEach((id, index) => {
+    if (!rank.has(id)) rank.set(id, index);
+  });
+  return endpoints
+    .filter((endpoint) => endpoint.enabled && (allowedEndpointIds === null || allowedEndpointIds.has(endpoint.id)))
+    .sort((a, b) => {
+      const aRank = rank.get(a.id) ?? Number.MAX_SAFE_INTEGER;
+      const bRank = rank.get(b.id) ?? Number.MAX_SAFE_INTEGER;
+      return aRank - bRank || a.ordinal - b.ordinal;
+    })[0];
+}
+
 export const nodePublicEndpointMutationSchema = z.discriminatedUnion("action", [
   z.object({
     action: z.literal("add"),

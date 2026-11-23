@@ -413,6 +413,53 @@ describe("bridge registry (real PostgreSQL)", () => {
     }
   });
 
+  runDatabaseTest("issues an admin-created key on the highest ranked eligible address by default", async () => {
+    const nodeId = await seedNode("default-listener");
+    await db().update(nodes).set({ name: "Primary", publicIp: nextIpv4() }).where(eq(nodes.id, nodeId));
+    await repository.updateNode(admin, nodeId, {
+      publicEndpoint: { action: "add", address: nextIpv4(), name: "Backup" },
+    });
+    await repository.updateNode(admin, nodeId, {
+      publicEndpoint: { action: "add", address: nextIpv4(), name: "Third" },
+    });
+    const [primary, backup, third] = await db().select().from(nodeVpnEndpoints)
+      .where(eq(nodeVpnEndpoints.nodeId, nodeId)).orderBy(nodeVpnEndpoints.ordinal);
+    if (!primary || !backup || !third) throw new Error("Expected three addresses");
+
+    const issue = async () => {
+      const { id } = await repository.adminAction(admin, "users", admin.id, "create-key", {
+        nodeId,
+        protocol: "awg3",
+        deviceType: "unspecified",
+        routeProfile: "full_tunnel",
+      }) as { id: string };
+      const [key] = await db().select({ endpointId: vpnKeys.endpointId }).from(vpnKeys).where(eq(vpnKeys.id, id));
+      return key;
+    };
+
+    try {
+      await repository.adminAction(admin, "portal-policy", "global", "update", {
+        endpointOrder: [backup.id, primary.id, third.id],
+      });
+      expect(await issue()).toEqual({ endpointId: backup.id });
+
+      await repository.adminAction(admin, "users", admin.id, "set-policy", {
+        useBridge: true,
+        allowedEndpointIds: [third.id],
+      });
+      expect(await issue()).toEqual({ endpointId: third.id });
+      await repository.adminAction(admin, "users", admin.id, "set-policy", { useBridge: true });
+
+      await repository.updateNode(admin, nodeId, {
+        publicEndpoint: { action: "update", id: backup.id, enabled: false },
+      });
+      expect(await issue()).toEqual({ endpointId: null });
+    } finally {
+      await repository.adminAction(admin, "users", admin.id, "set-policy", { useBridge: true });
+      await repository.adminAction(admin, "portal-policy", "global", "update", { endpointOrder: [] });
+    }
+  });
+
   runDatabaseTest("registers a bridge with normalized settings and refuses a duplicate IPv4", async () => {
     const bridge = await createBridge();
     expect(bridge).toMatchObject({
