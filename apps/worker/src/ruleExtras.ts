@@ -140,6 +140,34 @@ export const RULE_EXTRAS: RuleExtra[] = [
     cidrs: ["130.211.0.0/16"],
   },
   {
+    // GitHub raw files, release assets, package blobs and Pages share this
+    // dedicated `US-GITHUB-20170413` allocation (Fastly AS54113). GitHub Meta
+    // lists the /22 for web/api/git; `compact_world` RU expansion misses it.
+    // Source: https://api.github.com/meta (verified 2026-11-23).
+    name: "github-cdn",
+    exact: true,
+    cidrs: ["185.199.108.0/22"],
+  },
+  {
+    // `ms-python.gallerycdn.vsassets.io` returned this missing IPv4 twice via
+    // Yandex DNS on 2026-11-23. Akamai FI assignment on Arelion AS1299 transit:
+    // retain the observed /32, never the shared /24 or transit /16. GeoDNS
+    // rotates; this snapshot does not establish permanent endpoint coverage.
+    name: "vscode-marketplace-dns-2026-11-23",
+    exact: true,
+    cidrs: ["62.115.253.40/32"],
+  },
+  {
+    // `www.icloud.com` returned these missing Akamai FI web-CDN addresses via
+    // Yandex DNS on 2026-11-23 (Arelion AS1299 transit). Exact shared-CDN DNS
+    // snapshot only; GeoDNS rotates and other names may share these IPs.
+    // Sampled Apple update/APNs hosts did not use them; direct shields stay
+    // unchanged. No claim of a dedicated or complete iCloud allocation.
+    name: "icloud-web-dns-2026-11-23",
+    exact: true,
+    cidrs: ["62.115.253.24/32", "62.115.253.33/32"],
+  },
+  {
     // Wikimedia Foundation (`wikipedia.org`, `ru.wikipedia.org`) RIPE NL
     // allocations (`US-WMF-20130110`, `US-WMF-20121130`, AS14907).
     name: "wikimedia",
