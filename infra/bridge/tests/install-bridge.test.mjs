@@ -479,3 +479,12 @@ withHost("the agent gets exactly one read-write mount (the request spool) and no
   assert.match(compose, /BRIDGE_AGENT_IMAGE_REPOSITORY: \$\{BRIDGE_AGENT_IMAGE_REPOSITORY:-\}/);
   assert.match(compose, /BRIDGE_UPDATE_SPOOL_DIR: \/var\/lib\/amnezia-bridge\/update$/m);
 });
+
+withHost("forwards --no-network-tuning to install-frps.sh only when requested", async (h) => {
+  const r = h.run([...withImage, "--no-network-tuning", "--dry-run"]);
+  assert.equal(r.status, 0, output(r));
+  assert.match(
+    await h.calls(),
+    new RegExp(`frps --bridge-id ${BRIDGE} --control-port 7000 --udp-start 41000 --udp-end 41031 --no-network-tuning --dry-run\\n`),
+  );
+});

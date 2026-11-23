@@ -357,3 +357,30 @@ test("both installers pin the same frp release with the official digests", execu
   assert.match(pin, /FRP_SHA256_AMD64=daf719b32ca2778770bb92955e231a07414d754378b9af328aa2642862479804/);
   assert.match(pin, /FRP_SHA256_ARM64=02180b857480302fd934e9ddbd50fe2f73229f99062f88756abc6de9df5e95cf/);
 });
+
+withHost("writes BBR/fq/buffer network tuning by default and skips it with --no-network-tuning", async (h) => {
+  const sysctlPath = join(h.etc, "sysctl.d", "99-amnezia-network-tuning.conf");
+  const bbrPath = join(h.etc, "modules-load.d", "amnezia-bbr.conf");
+
+  const dry = h.run(...args, "--dry-run");
+  assert.equal(dry.status, 0, dry.stderr);
+  assert.match(dry.stdout, /PLAN: write .*99-amnezia-network-tuning\.conf/);
+  await assert.rejects(stat(sysctlPath));
+
+  const skipped = h.run(...args, "--no-network-tuning");
+  assert.equal(skipped.status, 0, skipped.stderr);
+  await assert.rejects(stat(sysctlPath));
+  await assert.rejects(stat(bbrPath));
+
+  const tuned = h.run(...args);
+  assert.equal(tuned.status, 0, tuned.stderr);
+  const sysctlBody = await readFile(sysctlPath, "utf8");
+  assert.match(sysctlBody, /^net\.core\.default_qdisc = fq$/m);
+  assert.match(sysctlBody, /^net\.ipv4\.tcp_congestion_control = bbr$/m);
+  assert.match(sysctlBody, /^net\.core\.rmem_max = 16777216$/m);
+  assert.match(sysctlBody, /^net\.core\.rmem_default = 2097152$/m);
+  assert.match(sysctlBody, /^net\.core\.netdev_max_backlog = 8192$/m);
+  assert.match(sysctlBody, /^net\.ipv4\.tcp_slow_start_after_idle = 0$/m);
+  assert.match(sysctlBody, /^net\.ipv4\.tcp_notsent_lowat = 16384$/m);
+  assert.equal((await readFile(bbrPath, "utf8")).trim(), "tcp_bbr");
+});

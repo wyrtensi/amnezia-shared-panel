@@ -3,7 +3,8 @@
 #
 #   install-bridge.sh --bridge-id <uuid> --control-port <tcp> --udp-start <first>
 #       --udp-end <last> [--agent-image <name@sha256:digest>]
-#       [--agent-repository <name>] [--agent-port 7600] [--dry-run]
+#       [--agent-repository <name>] [--agent-port 7600]
+#       [--no-network-tuning] [--dry-run]
 #
 # It runs install-frps.sh first, with the same arguments, and then installs the
 # bridge-agent as the Docker Compose service in compose.yaml next to this
@@ -101,6 +102,7 @@ UDP_END=""
 AGENT_PORT=7600
 AGENT_IMAGE="${BRIDGE_AGENT_IMAGE:-}"
 AGENT_REPOSITORY="${BRIDGE_AGENT_IMAGE_REPOSITORY:-}"
+NO_NETWORK_TUNING=0
 DRY_RUN=0
 
 need_value() { [ "$#" -ge 2 ] || usage_error "$1 needs a value"; }
@@ -113,6 +115,7 @@ while [ "$#" -gt 0 ]; do
     --agent-image) need_value "$@"; AGENT_IMAGE="$2"; shift 2 ;;
     --agent-repository) need_value "$@"; AGENT_REPOSITORY="$2"; shift 2 ;;
     --agent-port) need_value "$@"; AGENT_PORT="$2"; shift 2 ;;
+    --no-network-tuning) NO_NETWORK_TUNING=1; shift ;;
     --dry-run) DRY_RUN=1; shift ;;
     *) usage_error "unknown argument: $1" ;;
   esac
@@ -176,13 +179,11 @@ if [ -n "$AGENT_IMAGE" ]; then
 fi
 
 # ---- 1. frps (unchanged interface) ----------------------------------------
-if [ "$DRY_RUN" -eq 1 ]; then
-  sh "$FRPS_INSTALLER" --bridge-id "$BRIDGE_ID" --control-port "$CONTROL_PORT" \
-    --udp-start "$UDP_START" --udp-end "$UDP_END" --dry-run
-else
-  sh "$FRPS_INSTALLER" --bridge-id "$BRIDGE_ID" --control-port "$CONTROL_PORT" \
-    --udp-start "$UDP_START" --udp-end "$UDP_END"
-fi
+set -- --bridge-id "$BRIDGE_ID" --control-port "$CONTROL_PORT" \
+  --udp-start "$UDP_START" --udp-end "$UDP_END"
+[ "$NO_NETWORK_TUNING" -eq 1 ] && set -- "$@" --no-network-tuning
+[ "$DRY_RUN" -eq 1 ] && set -- "$@" --dry-run
+sh "$FRPS_INSTALLER" "$@"
 
 # ---- 2. bridge-agent -------------------------------------------------------
 if [ -z "$AGENT_IMAGE" ]; then

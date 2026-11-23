@@ -3,7 +3,8 @@
 #
 #   install-frpc.sh --route-id <uuid> --bridge-ip <ipv4> --control-port <tcp>
 #       --public-port <udp> [--bridge-id <uuid>] [--local-udp-port <udp>]
-#       [--local-ip <ipv4>] [--control-via <ipv4>:<tcp>] [--dry-run]
+#       [--local-ip <ipv4>] [--control-via <ipv4>:<tcp>] [--no-network-tuning]
+#       [--dry-run]
 #   install-frpc.sh --remove --route-id <uuid> [--dry-run]
 #   install-frpc.sh --check-tls --bridge-ip <ipv4> --control-port <tcp>
 #       [--bridge-id <uuid>] [--control-via <ipv4>:<tcp>]
@@ -68,6 +69,8 @@ REGISTER_WAIT="${AMNEZIA_REGISTER_WAIT:-20}"
 SECRET_DIR="$ETC/amnezia-node/frp"
 CONF_DIR="$ETC/amnezia-node/frpc"
 TEMPLATE_UNIT="$SYSTEMD_DIR/amnezia-frpc@.service"
+SYSCTL_FILE="$ETC/sysctl.d/99-amnezia-network-tuning.conf"
+BBR_MODULE_FILE="$ETC/modules-load.d/amnezia-bbr.conf"
 AWG_CONTAINER=amnezia-awg3
 AWG_CONTAINER_PORT=51890
 
@@ -81,9 +84,11 @@ FRP_SHA256_ARM64=02180b857480302fd934e9ddbd50fe2f73229f99062f88756abc6de9df5e95c
 
 TMP_CONF_RENDER=""
 TMP_TEMPLATE_RENDER=""
+TMP_SYSCTL_RENDER=""
+TMP_BBR_RENDER=""
 TMP_CONF=""
 BACKUP=""
-cleanup() { rm -f -- "$TMP_CONF_RENDER" "$TMP_TEMPLATE_RENDER" "$TMP_CONF" "$BACKUP"; }
+cleanup() { rm -f -- "$TMP_CONF_RENDER" "$TMP_TEMPLATE_RENDER" "$TMP_SYSCTL_RENDER" "$TMP_BBR_RENDER" "$TMP_CONF" "$BACKUP"; }
 trap cleanup EXIT
 trap 'cleanup; exit 130' INT TERM
 
@@ -106,6 +111,7 @@ PUBLIC_PORT=""
 LOCAL_UDP_PORT=""
 LOCAL_IP=""
 CONTROL_VIA=""
+NETWORK_TUNING=1
 DRY_RUN=0
 REMOVE=0
 CHECK_TLS=0
@@ -121,6 +127,7 @@ while [ "$#" -gt 0 ]; do
     --local-udp-port) need_value "$@"; LOCAL_UDP_PORT="$2"; shift 2 ;;
     --local-ip) need_value "$@"; LOCAL_IP="$2"; shift 2 ;;
     --control-via) need_value "$@"; CONTROL_VIA="$2"; shift 2 ;;
+    --no-network-tuning) NETWORK_TUNING=0; shift ;;
     --dry-run) DRY_RUN=1; shift ;;
     --remove) REMOVE=1; shift ;;
     --check-tls) CHECK_TLS=1; shift ;;
@@ -402,18 +409,83 @@ PrivateTmp=true
 WantedBy=multi-user.target
 UNIT_EOF
 }
+render_network_tuning() {
+  cat <<'SYSCTL_EOF'
+# Amnezia node TCP/UDP tuning for FRP bridge routes (BBR + fq + 16M/2M buffers).
+# Opt out on re-run with --no-network-tuning, or edit this file and pass
+# --no-network-tuning on future runs.
+net.core.default_qdisc = fq
+net.ipv4.tcp_congestion_control = bbr
+net.core.rmem_max = 16777216
+net.core.wmem_max = 16777216
+net.core.rmem_default = 2097152
+net.core.wmem_default = 2097152
+net.ipv4.tcp_rmem = 4096 131072 16777216
+net.ipv4.tcp_wmem = 4096 65536 16777216
+net.core.netdev_max_backlog = 4096
+net.ipv4.tcp_slow_start_after_idle = 0
+net.ipv4.tcp_notsent_lowat = 16384
+net.ipv4.tcp_mtu_probing = 1
+net.ipv4.tcp_no_metrics_save = 1
+SYSCTL_EOF
+}
+
 TMP_TEMPLATE_RENDER="$(mktemp)"
+TMP_SYSCTL_RENDER="$(mktemp)"
+TMP_BBR_RENDER="$(mktemp)"
 template_body >"$TMP_TEMPLATE_RENDER"
+render_network_tuning >"$TMP_SYSCTL_RENDER"
+printf '%s\n' 'tcp_bbr' >"$TMP_BBR_RENDER"
 
 binary_ok() { [ -x "$FRPC_BIN" ] && [ "$("$FRPC_BIN" --version 2>/dev/null)" = "$FRP_VERSION" ]; }
 conf_same=0
 [ -f "$CONF" ] && cmp -s "$TMP_CONF_RENDER" "$CONF" && conf_same=1
 template_same=0
 [ -f "$TEMPLATE_UNIT" ] && cmp -s "$TMP_TEMPLATE_RENDER" "$TEMPLATE_UNIT" && template_same=1
+tuning_same=1
+if [ "$NETWORK_TUNING" -eq 1 ]; then
+  if [ ! -f "$SYSCTL_FILE" ] || ! cmp -s "$TMP_SYSCTL_RENDER" "$SYSCTL_FILE" ||
+     [ ! -f "$BBR_MODULE_FILE" ] || ! cmp -s "$TMP_BBR_RENDER" "$BBR_MODULE_FILE"; then
+    tuning_same=0
+  fi
+fi
 active=0
 unit_active "$UNIT" && active=1
 enabled=0
 unit_enabled "$UNIT" && enabled=1
+
+apply_network_tuning() {
+  [ "$NETWORK_TUNING" -eq 1 ] || return 0
+  if [ "$tuning_same" -eq 0 ]; then
+    mkdir -p "$(dirname "$SYSCTL_FILE")" "$(dirname "$BBR_MODULE_FILE")"
+    tmp_bbr="$(mktemp "$(dirname "$BBR_MODULE_FILE")/.amnezia-bbr.XXXXXX")"
+    cp "$TMP_BBR_RENDER" "$tmp_bbr"
+    chmod 0644 "$tmp_bbr"
+    mv -f "$tmp_bbr" "$BBR_MODULE_FILE"
+    tmp_sysctl="$(mktemp "$(dirname "$SYSCTL_FILE")/.amnezia-sysctl.XXXXXX")"
+    cp "$TMP_SYSCTL_RENDER" "$tmp_sysctl"
+    chmod 0644 "$tmp_sysctl"
+    mv -f "$tmp_sysctl" "$SYSCTL_FILE"
+    info "wrote network tuning: $SYSCTL_FILE and $BBR_MODULE_FILE"
+  fi
+  # Live kernel calls run only on a real root host (never against non-root test
+  # fixtures using AMNEZIA_ETC). Failures warn rather than aborting frpc setup.
+  if [ "$ETC" = "/etc" ] && [ "$(id -u)" -eq 0 ]; then
+    if command -v modprobe >/dev/null 2>&1; then
+      modprobe tcp_bbr 2>/dev/null || info "warning: modprobe tcp_bbr failed; kernel may lack tcp_bbr"
+    fi
+    if command -v sysctl >/dev/null 2>&1; then
+      sysctl -p "$SYSCTL_FILE" >/dev/null 2>&1 || info "warning: sysctl -p $SYSCTL_FILE reported errors"
+    fi
+    if command -v ip >/dev/null 2>&1 && command -v tc >/dev/null 2>&1; then
+      default_nic="$(ip route show default 2>/dev/null | awk '{print $5; exit}')"
+      if [ -n "$default_nic" ]; then
+        tc qdisc replace dev "$default_nic" root fq 2>/dev/null ||
+          info "warning: tc qdisc replace dev $default_nic root fq failed"
+      fi
+    fi
+  fi
+}
 
 if [ "$DRY_RUN" -eq 1 ]; then
   existing="$(find "$CONF_DIR" -maxdepth 1 -name '*.toml' 2>/dev/null | sed -n 's|.*/\(.*\)\.toml$|\1|p' | tr '\n' ' ')"
@@ -435,7 +507,14 @@ if [ "$DRY_RUN" -eq 1 ]; then
   else
     plan "write $CONF (frpc verify before the atomic move): $BRIDGE_IP:$CONTROL_PORT${CONTROL_VIA:+ via $CONTROL_VIA}, proxy awg-route-$ROUTE_ID udp $LOCAL_TARGET_IP:$LOCAL_TARGET_PORT -> remote $PUBLIC_PORT"
   fi
-  if [ "$active" -eq 1 ] && [ "$conf_same" -eq 1 ]; then
+  if [ "$NETWORK_TUNING" -eq 0 ]; then
+    plan "skip host network tuning (--no-network-tuning)"
+  elif [ "$tuning_same" -eq 1 ]; then
+    plan "network tuning $SYSCTL_FILE is current"
+  else
+    plan "write $SYSCTL_FILE and $BBR_MODULE_FILE, then apply BBR, fq qdisc and 16M/2M socket buffers"
+  fi
+  if [ "$active" -eq 1 ] && [ "$conf_same" -eq 1 ] && [ "$tuning_same" -eq 1 ]; then
     plan "no change: $UNIT is already active"
   else
     plan "enable and start $UNIT, then wait for frps registration"
@@ -447,7 +526,7 @@ fi
 
 # ---- install ---------------------------------------------------------------
 # A same-input repeat changes nothing and must not depend on the network.
-if [ "$conf_same" -eq 1 ] && [ "$template_same" -eq 1 ] && [ "$active" -eq 1 ] && [ "$enabled" -eq 1 ]; then
+if [ "$conf_same" -eq 1 ] && [ "$template_same" -eq 1 ] && [ "$tuning_same" -eq 1 ] && [ "$active" -eq 1 ] && [ "$enabled" -eq 1 ]; then
   info "route $ROUTE_ID already configured and running: no change"
   exit 0
 fi
@@ -502,6 +581,8 @@ cp "$TMP_CONF_RENDER" "$TMP_CONF"
 chmod 0644 "$TMP_CONF"
 verify_out="$("$FRPC_BIN" verify -c "$TMP_CONF" 2>&1)" ||
   die 13 E_CONFIG_INVALID "frpc verify rejected the generated config (previous config and unit untouched): $verify_out"
+
+apply_network_tuning
 
 had_conf=0
 [ -f "$CONF" ] && had_conf=1

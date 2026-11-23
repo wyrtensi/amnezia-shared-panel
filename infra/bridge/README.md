@@ -25,7 +25,7 @@ to sync an existing node.
 
 ```sh
 sudo sh /opt/amnezia-bridge/install-bridge.sh --bridge-id <id> --control-port 7000 --udp-start 41000 --udp-end 41031 \
-  --agent-image <name@sha256:digest> [--dry-run]
+  --agent-image <name@sha256:digest> [--no-network-tuning] [--dry-run]
 ```
 
 The panel's setup command already carries `--agent-image <repo>@sha256:<digest>`:
@@ -80,6 +80,51 @@ On the node side, `install-frpc.sh` normally needs no overrides. If Docker
 publishes the AWG port on a specific IPv4 address, append
 `--local-ip <that address>`; `--local-udp-port <udp>` must equal the observed
 host port. Both are checked against `docker port amnezia-awg3`.
+
+## Network tuning (BBR, `fq`, and socket buffers)
+
+FRP carries AWG UDP datagrams over a long-lived TLS/TCP control/work connection
+(`transport.tls`, with a 6 MiB Yamux stream window in FRP 0.50+). On stock Linux
+defaults (`cubic`, `pfifo_fast` or `fq_codel`, 208 KiB socket buffers, and
+`tcp_slow_start_after_idle = 1`), cross-border packet reordering and short idle
+gaps between video chunks can collapse `cwnd` to a few segments and stall media
+downloads even when link bandwidth is plentiful.
+
+By default, both `install-frps.sh` (bridge host) and `install-frpc.sh` (node
+host) write `/etc/modules-load.d/amnezia-bbr.conf` and
+`/etc/sysctl.d/99-amnezia-network-tuning.conf`, load `tcp_bbr`, apply `sysctl`,
+and replace the default-route NIC qdisc with `fq` before starting or restarting
+`frps`/`frpc` (without touching `amnezia-awg3`):
+
+| Parameter | Bridge (`install-frps.sh`) | Node (`install-frpc.sh`) | Purpose |
+| --- | --- | --- | --- |
+| `net.core.default_qdisc` + live `tc` on NIC | `fq` | `fq` | Enables BBR pacing on the active NIC without a reboot |
+| `net.ipv4.tcp_congestion_control` | `bbr` | `bbr` | Avoids `cubic` throughput collapses on packet reordering |
+| `net.core.rmem_max` / `wmem_max` | `16777216` (16 MiB) | `16777216` (16 MiB) | Covers `amneziawg-go`'s 7 MiB UDP buffer request and TCP autotuning |
+| `net.core.rmem_default` / `wmem_default` | `2097152` (2 MiB) | `2097152` (2 MiB) | Gives `frps`/`frpc`/`docker-proxy` UDP sockets burst headroom |
+| `net.ipv4.tcp_rmem` / `tcp_wmem` | `4096 131072 16777216` / `4096 65536 16777216` | same | Lets the FRP TCP tunnel exceed Yamux's 6 MiB window on 50–160 ms links while keeping idle sockets small |
+| `net.core.netdev_max_backlog` | `8192` | `4096` | Reduces ingress queue drops during video bursts |
+| `net.ipv4.tcp_slow_start_after_idle` | `0` | `0` | Keeps the long-lived FRP TCP window warm across chunk pauses |
+| `net.ipv4.tcp_notsent_lowat` | `16384` | `16384` | Bounds kernel send-queue bufferbloat inside the FRP stream |
+| `net.ipv4.tcp_mtu_probing` / `tcp_no_metrics_save` | `1` / `1` | `1` / `1` | Handles PMTU drops and avoids caching stale low `ssthresh` |
+
+Live kernel steps (`modprobe`, `sysctl -p`, `tc qdisc replace`) warn and
+continue if a VPS kernel lacks `tcp_bbr` or `tc` so installs never abort on
+limited kernels.
+
+### Choosing defaults vs `--no-network-tuning`
+
+| Host profile | Recommendation |
+| --- | --- |
+| Dedicated bridge host or standard 1 GiB+ VPN node | **Keep the default.** Linux allocates socket buffers lazily only when queued packets exist, and a node only opens a handful of UDP sockets (`amneziawg-go`, `docker-proxy`, `frpc`), while the kernel's `udp_mem`/`tcp_mem` ceilings still cap total memory. |
+| Very tight 512 MiB VPS or multi-tenant host running many unrelated UDP services | Pass **`--no-network-tuning`** (or edit `/etc/sysctl.d/99-amnezia-network-tuning.conf` to `rmem_default`/`wmem_default = 1048576` and `tcp_rmem`/`tcp_wmem` max `8388608`, then pass `--no-network-tuning` on future installer re-runs so your custom values stay intact). |
+| Host with existing operator-managed `sysctl` / `tc` rules | Pass **`--no-network-tuning`** to `install-bridge.sh`, `install-frps.sh`, and/or `install-frpc.sh` so neither file is written or applied. |
+
+*Transport note:* FRP stays on forced TLS/TCP by default because cross-border
+filters frequently throttle or drop raw UDP and QUIC between bridge and node
+datacenters. BBR + `fq` + `tcp_slow_start_after_idle = 0` + expanded buffers
+mitigate most TCP-over-TCP stalls while preserving TLS transit compatibility and
+`bridge-agent` telemetry.
 
 ## The bridge-agent service
 
