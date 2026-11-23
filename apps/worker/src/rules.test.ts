@@ -918,6 +918,43 @@ describe("compactRoutes compaction modes", () => {
     expect(countCidrOverlap(withAdminExclude.payload.cidrs, ["171.43.164.93/32"])[4]).toBe(1n);
   });
 
+  it("routes GitHub and observed web CDN gaps without widening shared networks or bypassing exclusions", () => {
+    const validation = validateRuleObject({ cidrs: ["157.240.0.0/16"], domains: [] });
+    const ru = ["62.3.34.0/24", "185.0.12.0/22"];
+    const baseExtras = RULE_EXTRAS.filter((extra) => !extra.exact).flatMap((extra) => extra.cidrs);
+    const exactExtras = RULE_EXTRAS.filter((extra) => extra.exact).flatMap((extra) => extra.cidrs);
+    const options = {
+      mode: "compact_world" as const,
+      collateralCap: DEFAULT_COLLATERAL_CAP,
+      directApple: true,
+      directSteamCache: true,
+    };
+    const after = compactRoutes(validation, ru, baseExtras, options, { exactExtras });
+    expect(after.ok).toBe(true);
+    if (!after.ok) return;
+
+    expect(countCidrOverlap(after.payload.cidrs, ["185.199.108.0/22"])[4]).toBe(1024n);
+    expect(countCidrOverlap(after.payload.cidrs, ["185.198.108.1/32"])[4]).toBe(0n);
+    for (const ip of ["62.115.253.24", "62.115.253.33", "62.115.253.40"]) {
+      expect(countCidrOverlap(after.payload.cidrs, [`${ip}/32`])[4], ip).toBe(1n);
+    }
+    for (const ip of ["62.115.253.25", "62.115.253.32", "62.115.253.41"]) {
+      expect(countCidrOverlap(after.payload.cidrs, [`${ip}/32`])[4], ip).toBe(0n);
+    }
+    for (const direct of [ru, APPLE_DIRECT_V4_CIDRS, STEAM_CACHE_V4_CIDRS, ALIEXPRESS_DIRECT_V4_CIDRS]) {
+      expect(countCidrOverlap(after.payload.cidrs, direct)[4]).toBe(0n);
+    }
+
+    const withAdminExclude = compactRoutes(validation, ru, baseExtras, options, {
+      exactExtras,
+      adminExcluded: ["185.199.108.133/32", "62.115.253.24/32"],
+    });
+    expect(withAdminExclude.ok).toBe(true);
+    if (!withAdminExclude.ok) return;
+    expect(countCidrOverlap(withAdminExclude.payload.cidrs, ["185.199.108.133/32", "62.115.253.24/32"])[4]).toBe(0n);
+    expect(countCidrOverlap(withAdminExclude.payload.cidrs, ["185.199.109.133/32", "62.115.253.33/32"])[4]).toBe(2n);
+  });
+
   it("quarantines compact_world when no exclusions are supplied", () => {
     const validation = validateRuleObject({ cidrs: ["157.240.0.0/16"], domains: [] });
     const result = compactRoutes(validation, [], [], {
