@@ -36,7 +36,7 @@ import {
 } from "@amnezia/contracts";
 import { AwgNewKeySettings, type AwgClientSettingsValue } from "@/components/admin/awg-client-settings";
 import { KeyBridgeSelect } from "@/components/admin/key-bridge-select";
-import { AGENT_DEFAULT_ENDPOINT, NodeEndpointSelect } from "@/components/node-endpoint-select";
+import { NodeEndpointSelect } from "@/components/node-endpoint-select";
 import { apiRequest } from "@/lib/api";
 import { listBridges } from "@/lib/bridge-api";
 import { routeProfileChoice } from "@/lib/route-profile-choice";
@@ -249,8 +249,9 @@ export function CreateKeyWizard({
   // Preview of the connection title the AmneziaVPN client will show, built with
   // the same composer the control API uses. The number is an estimate — the real
   // one is assigned when the key is provisioned.
+  const keyAddress = endpoint ?? endpoints[0];
   const previewName = composeKeyDisplayName({
-    serverName: endpoint?.name ?? endpoints[0]?.name ?? selectedNode?.name ?? "",
+    serverName: keyAddress?.name ?? selectedNode?.name ?? "",
     label: deviceLabel.trim(),
     keyNumber: existingNames.length + 1,
     display: nameDisplay,
@@ -447,13 +448,11 @@ export function CreateKeyWizard({
           ) : null}
 
           {canPickEndpoint ? (
-            <div className="space-y-1">
-              <NodeEndpointSelect endpoints={endpoints} value={endpoint?.id ?? AGENT_DEFAULT_ENDPOINT}
-                onChange={setEndpointId} />
-              {bridgeMode === "route" || (bridgeMode === "inherit" && me.policy.useBridge) ? (
-                <FieldHint>{t("wizard.endpointBridgeHint")}</FieldHint>
-              ) : null}
-            </div>
+            <NodeEndpointSelect
+              endpoints={endpoints}
+              value={keyAddress?.id ?? ""}
+              onChange={setEndpointId}
+            />
           ) : null}
 
           <div className="space-y-2">

@@ -107,7 +107,7 @@ import {
 } from "@/components/key-internal-name-dialog";
 import { KeyBridgeBadge } from "@/components/key-bridge-badge";
 import { KeyBridgeSelect } from "@/components/admin/key-bridge-select";
-import { AGENT_DEFAULT_ENDPOINT, NodeEndpointSelect } from "@/components/node-endpoint-select";
+import { NodeEndpointSelect } from "@/components/node-endpoint-select";
 import { listBridges } from "@/lib/bridge-api";
 import { keyBridgeState } from "@/lib/bridge-ui";
 import {
@@ -3252,9 +3252,6 @@ function CreateKeyDialog({
   const endpoint = canPickEndpoint
     ? endpoints.find((item) => item.id === endpointId)
     : undefined;
-  const userUseBridge = Boolean(
-    user?.policyOverride?.useBridge ?? globalPolicy.useBridge,
-  );
   const allowedEndpointIds =
     user?.policyOverride?.allowedEndpointIds === null
       ? null
@@ -3333,13 +3330,11 @@ function CreateKeyDialog({
             </Select>
           </div>
           {canPickEndpoint ? (
-            <div className="space-y-1">
-              <NodeEndpointSelect endpoints={endpoints} value={endpoint?.id ?? AGENT_DEFAULT_ENDPOINT}
-                onChange={setEndpointId} />
-              {bridgeMode === "route" || (bridgeMode === "inherit" && userUseBridge) ? (
-                <p className="text-xs text-muted-foreground">{t("wizard.endpointBridgeHint")}</p>
-              ) : null}
-            </div>
+            <NodeEndpointSelect
+              endpoints={endpoints}
+              value={keyAddress?.id ?? ""}
+              onChange={setEndpointId}
+            />
           ) : null}
           <div className="space-y-1.5">
             <div className="flex items-center gap-1.5">
