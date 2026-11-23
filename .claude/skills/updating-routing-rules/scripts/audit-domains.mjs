@@ -301,14 +301,10 @@ async function main() {
     process.exit(1);
   }
 
-  const [ruCidrs, live] = await Promise.all([
-    flags.ru ? loadRuCidrs() : Promise.resolve([]),
-    flags.live ? loadLiveCompactWorld() : Promise.resolve(null),
-  ]);
-
   const ipTargets = new Set();
+  const directIpTargets = [];
   const cidrTargets = [];
-  const domainReports = [];
+  const domainTargets = [];
 
   for (const target of targets) {
     const asCidr = parseCidr(target);
@@ -316,16 +312,28 @@ async function main() {
       if (target.includes("/")) {
         cidrTargets.push(asCidr);
       } else {
-        ipTargets.add(target.trim());
+        const ip = target.trim();
+        ipTargets.add(ip);
+        directIpTargets.push(ip);
       }
       continue;
     }
-    const dns = await queryDomain(target);
-    const allV4 = [...new Set(Object.values(dns).flatMap((r) => r.a))].sort();
-    const allV6 = [...new Set(Object.values(dns).flatMap((r) => r.aaaa))].sort();
-    for (const ip of [...allV4, ...allV6]) ipTargets.add(ip);
-    domainReports.push({ domain: target, dns, allV4, allV6 });
+    domainTargets.push(target);
   }
+
+  const [ruCidrs, live, domainReports] = await Promise.all([
+    flags.ru ? loadRuCidrs() : Promise.resolve([]),
+    flags.live ? loadLiveCompactWorld() : Promise.resolve(null),
+    Promise.all(
+      domainTargets.map(async (domain) => {
+        const dns = await queryDomain(domain);
+        const allV4 = [...new Set(Object.values(dns).flatMap((r) => r.a))].sort();
+        const allV6 = [...new Set(Object.values(dns).flatMap((r) => r.aaaa))].sort();
+        for (const ip of [...allV4, ...allV6]) ipTargets.add(ip);
+        return { domain, dns, allV4, allV6 };
+      }),
+    ),
+  ]);
 
   const ipMeta = new Map();
   await Promise.all(
@@ -425,6 +433,21 @@ async function main() {
     if (hasVpn && hasDirect) {
       console.log(`  WARNING: SPLIT-ROUTED (${[...verdicts].join(", ")})`);
     }
+  }
+
+  for (const ip of directIpTargets) {
+    const m = ipMeta.get(ip);
+    const routeTag =
+      m.vpnHit === undefined ? "" : m.vpnHit ? ` VPN(${m.vpnHit})` : " DIRECT";
+    const ruTag = m.ruHit ? ` [RU_OVERLAP:${m.ruHit}]` : " ru_overlap=0";
+    const ripeTag = m.ripe?.prefix
+      ? ` bgp=${m.ripe.prefix} AS=${m.ripe.asns.join(",")}`
+      : "";
+    const whois = m.ripe?.prefix ? prefixWhois.get(m.ripe.prefix) : null;
+    const whoisTag = whois
+      ? ` whois=(${whois.netname ?? ""}/${whois.country ?? ""}${whois.descr ? `: ${whois.descr}` : ""})`
+      : "";
+    console.log(`\n[IP] IPv${m.family} ${ip}${routeTag}${ruTag}${ripeTag}${whoisTag}`);
   }
 
   for (const cr of cidrReports) {
