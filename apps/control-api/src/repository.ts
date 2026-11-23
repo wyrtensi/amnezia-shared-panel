@@ -1,4 +1,5 @@
 import type {
+  AwgConfigLevelName,
   AwgGeneratorSettings,
   AccessSyncStatus,
   AdminReachabilityView,
@@ -40,6 +41,7 @@ import type {
   UpdateNodeRequest,
   UpdateServiceCheckRequest,
   UpsertReachabilityProbeRequest,
+  ResolvedAwgClientSettings,
 } from "@amnezia/contracts";
 import type { EncryptedSecret } from "@amnezia/db";
 import type {
@@ -91,6 +93,11 @@ export type StoredKeyConfig = {
   /** The resolved profile and MTU (`resolveAwgClientSettings`). */
   awgGenerator?: AwgGeneratorSettings | null;
   awgMtu?: number;
+  /** Which level the resolved profile and MTU come from. */
+  awgSettingsFrom?: {
+    profileFrom: AwgConfigLevelName | null;
+    mtuFrom: AwgConfigLevelName | "profile" | "default";
+  };
   /** Key target platform; used to project mobile-safe IPv6 reject stub ULA. */
   deviceType?: DeviceType;
   /** Observed/desired IPv6 active-reject stub status on the key's node. */
@@ -99,6 +106,19 @@ export type StoredKeyConfig = {
     state: NodeIpv6RejectStubState;
     prefix: string;
   } | null;
+};
+
+/**
+ * The node's probe key as a sample for the parameters view, with only the
+ * address and node levels resolved (what the probe measures).
+ */
+export type ServiceKeyConfig = {
+  keyId: string;
+  encrypted: EncryptedSecret;
+  protocol: "awg3";
+  /** The saved AWG 3.1 client profile, unvalidated; null when none. */
+  awgClientProfile: unknown;
+  settings: ResolvedAwgClientSettings;
 };
 
 /** The locked row a config refresh draws its new profile for. */
@@ -147,6 +167,8 @@ export interface ControlRepository {
     options?: { allowBridgeSelection?: boolean },
   ) => Promise<{ id: string; state: KeyState }>;
   findKeyConfig: (keyId: string) => Promise<StoredKeyConfig | null>;
+  /** `PostgresControlRepository.findServiceKeyConfig`. */
+  findServiceKeyConfig: (nodeId: string, endpointId: string | null) => Promise<ServiceKeyConfig | null>;
   /**
    * Admin-wide route additions/exclusions applied to every split-tunnel export.
    * Returns the empty set when no admin has configured any.

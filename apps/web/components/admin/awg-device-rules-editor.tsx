@@ -8,7 +8,7 @@ import {
   type AwgDeviceRules,
   type AwgGeneratorSettings,
 } from "@amnezia/contracts";
-import { useAwgSourceLabel, type AwgSettingSource } from "@/components/admin/awg-mtu-field";
+import { useAwgSourceLabel, type InheritedMtu } from "@/components/admin/awg-mtu-field";
 import { GeneratorEditor, usePresetLabel } from "@/components/admin/node-generator-settings";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -21,18 +21,33 @@ import {
 } from "@/components/ui/select";
 import { deviceTypeLabel } from "@/lib/device-type";
 import { useT } from "@/lib/i18n/provider";
+import { cn } from "@/lib/utils";
 
 type RuledDeviceType = keyof AwgDeviceRules;
 
 /** Device types a rule can be set for, in the order the issue dialogs offer them ("unspecified" is not one). */
 export const RULE_DEVICE_TYPES: readonly RuledDeviceType[] = DEVICE_TYPE_ORDER;
 
-/** What the address gives a key without a device rule. */
-export type AddressSettings = {
-  awgGenerator: AwgGeneratorSettings | null;
-  mtu: number;
-  mtuFrom: AwgSettingSource;
+/**
+ * What a key of a ruled type gets for what its rule leaves unset: the level
+ * the rules belong to (the address, the user) and everything under it. A
+ * null `profileLabel` is a profile that differs per key.
+ */
+export type RulesInherited = {
+  profileLabel: string | null;
+  source: InheritedMtu["source"];
+  mtu: InheritedMtu;
 };
+
+/** What an address gives its keys without a device rule. */
+export const addressRulesInherited = (
+  address: { awgGenerator: AwgGeneratorSettings | null; mtu: number; mtuFrom: InheritedMtu["source"] },
+  presetLabel: (settings: AwgGeneratorSettings | null) => string,
+): RulesInherited => ({
+  profileLabel: presetLabel(address.awgGenerator),
+  source: "address",
+  mtu: { mtu: address.mtu, source: address.mtuFrom, profile: address.awgGenerator },
+});
 
 /** Rules in display order, the ones set and the ones still free. */
 export const deviceRuleRows = (rules: AwgDeviceRules | null) => ({
@@ -53,19 +68,29 @@ export const withDeviceRule = (
 };
 
 /**
- * Per-device-type profile and MTU on one address, for that address's keys of
- * the type. Each rule is a row: what it sets, edit and remove; a free type is
- * added from the select below. The probe does not measure these rules.
+ * Per-device-type profile and MTU on one address or one user, for that
+ * level's keys of the type. Each rule is a row: what it sets, edit and
+ * remove; a free type is added from the select below. The probe does not
+ * measure these rules.
  */
-export function DeviceRulesEditor({ rules, inherited, pending, onSave }: {
+export function DeviceRulesEditor({ rules, inherited, pending, onSave, level = "address", className }: {
   rules: AwgDeviceRules | null;
-  inherited: AddressSettings;
+  inherited: RulesInherited;
   pending: boolean;
   onSave: (rules: AwgDeviceRules | null) => Promise<boolean>;
+  /** Whose rules these are; words the hint and the empty state. */
+  level?: "address" | "user";
+  className?: string;
 }) {
   const { t } = useT();
   const presetLabel = usePresetLabel();
   const sourceLabel = useAwgSourceLabel();
+  const inheritedProfile = inherited.source === "address"
+    ? t("awgRules.profileFromAddress")
+    : inherited.source === "user" ? t("awgRules.profileFromUser") : t("awgRules.profileFromKeys");
+  const inheritedMtu = inherited.mtu.mtu === null
+    ? sourceLabel(inherited.mtu.source)
+    : `${inherited.mtu.mtu} (${sourceLabel(inherited.mtu.source)})`;
   const [editing, setEditing] = React.useState<RuledDeviceType | null>(null);
   const { set, free } = deviceRuleRows(rules);
   const save = async (type: RuledDeviceType, rule: AwgDeviceRule | null) => {
@@ -76,28 +101,27 @@ export function DeviceRulesEditor({ rules, inherited, pending, onSave }: {
   const editor = (type: RuledDeviceType) => (
     <GeneratorEditor
       key={`rule-${type}`}
-      idPrefix={`rule-${type}`}
+      idPrefix={`${level}-rule-${type}`}
       value={rules?.[type]?.awgGenerator ?? null}
       mtu={rules?.[type]?.awgMtu ?? null}
-      inheritLabel={t("awgSettings.inheritFrom", {
-        source: t("awgSettings.from.address"),
-        profile: presetLabel(inherited.awgGenerator),
-      })}
-      inheritedMtu={{ mtu: inherited.mtu, source: inherited.mtuFrom, profile: inherited.awgGenerator }}
+      inheritLabel={inherited.profileLabel === null
+        ? t("awgSettings.inheritKeyLevels")
+        : t("awgSettings.inheritFrom", { source: sourceLabel(inherited.source), profile: inherited.profileLabel })}
+      inheritedMtu={inherited.mtu}
       pending={pending}
       requireOne
       onSave={(awgGenerator, awgMtu) => save(type, { awgGenerator, awgMtu })}
     />
   );
   return (
-    <section className="space-y-3 border-t pt-4" aria-labelledby="device-rules-title">
+    <section className={cn("space-y-3 border-t pt-4", className)} aria-labelledby={`${level}-device-rules-title`}>
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <h3 id="device-rules-title" className="text-sm font-medium">{t("awgRules.title")}</h3>
+        <h3 id={`${level}-device-rules-title`} className="text-sm font-medium">{t("awgRules.title")}</h3>
         <Badge variant="outline">{t("awgSettings.notProbed")}</Badge>
       </div>
-      <p className="text-xs text-muted-foreground">{t("awgRules.hint")}</p>
+      <p className="text-xs text-muted-foreground">{t(level === "user" ? "awgRules.userHint" : "awgRules.hint")}</p>
       {set.length === 0 && editing === null ? (
-        <p className="text-sm text-muted-foreground">{t("awgRules.none")}</p>
+        <p className="text-sm text-muted-foreground">{t(level === "user" ? "awgRules.userNone" : "awgRules.none")}</p>
       ) : null}
       {set.map((type) => {
         const rule = rules?.[type];
@@ -123,8 +147,8 @@ export function DeviceRulesEditor({ rules, inherited, pending, onSave }: {
             </div>
             <p className="mt-0.5 text-xs text-muted-foreground">
               {t("awgRules.summary", {
-                profile: rule?.awgGenerator ? presetLabel(rule.awgGenerator) : t("awgRules.profileFromAddress"),
-                mtu: rule?.awgMtu ?? `${inherited.mtu} (${sourceLabel(inherited.mtuFrom)})`,
+                profile: rule?.awgGenerator ? presetLabel(rule.awgGenerator) : inheritedProfile,
+                mtu: rule?.awgMtu ?? inheritedMtu,
               })}
             </p>
             {editing === type ? <div className="mt-3">{editor(type)}</div> : null}

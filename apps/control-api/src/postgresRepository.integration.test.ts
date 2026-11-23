@@ -8048,10 +8048,13 @@ describe("PostgresControlRepository AWG 3.1 config refresh", () => {
     expect(await userRow(owner.id)).toMatchObject({ awgGenerator: settingsOf("stun"), awgMtu: 1360 });
     await repository().adminAction(admin, "users", owner.id, "set-config", { awgMtu: null });
     expect(await userRow(owner.id)).toMatchObject({ awgGenerator: settingsOf("stun"), awgMtu: null });
-    expect((await auditsOf("admin.users.set-config", owner.id)).map(({ metadata }) => metadata)).toEqual([
+    const settingsAudits = (await auditsOf("admin.users.set-config", owner.id)).map(({ metadata }) => metadata);
+    expect(settingsAudits).toHaveLength(2);
+    // The audit list has no ordering contract; verify every exact event once.
+    expect(settingsAudits).toEqual(expect.arrayContaining([
       { preset: "stun", awgMtu: 1360 },
       { preset: "stun", awgMtu: null },
-    ]);
+    ]));
     const probe = await seedServiceAccount();
     await expect(repository().adminAction(admin, "users", probe.id, "set-config", { awgMtu: 1300 }))
       .rejects.toMatchObject({ code: "SERVICE_ACCOUNT" });
@@ -8134,6 +8137,409 @@ describe("PostgresControlRepository AWG 3.1 config refresh", () => {
     expect(configOf(own)).toMatchObject({
       inherited: { awgGenerator: settingsOf("dns_response"), profileFrom: "node", mtu: 1400, mtuFrom: "node" },
     });
+  });
+
+  const setDeviceType = async (keyId: string, deviceType: "ios" | "android" | "unspecified") => {
+    if (!database) throw new Error("No database");
+    await database.db.update(vpnKeys).set({ deviceType }).where(eq(vpnKeys.id, keyId));
+  };
+
+  runDatabaseTest("exports a key with the owner's device rule for its type", async () => {
+    if (!database) return;
+    const owner = await seedOwner();
+    await database.db.update(users).set({
+      awgGenerator: settingsOf("dns_response"),
+      awgDeviceRules: { ios: { awgGenerator: settingsOf("stun"), awgMtu: 1340 } },
+    }).where(eq(users.id, owner.id));
+    const node = await seedNode();
+    await database.db.insert(nodeVpnEndpoints).values({
+      nodeId: node, ordinal: 1, address: "203.0.113.77", name: "Ruled",
+      awgDeviceRules: { ios: { awgGenerator: settingsOf("dns_response"), awgMtu: 1360 } },
+    });
+    const ios = await seedKey(owner.id, { onNode: node });
+    const android = await seedKey(owner.id, { onNode: node });
+    await setDeviceType(ios, "ios");
+    await setDeviceType(android, "android");
+
+    const onIos = await exportedLines(owner, ios);
+    expect(onIos("I1")).toMatch(STUN_PACKET);
+    expect(onIos("MTU")).toBe("1340");
+    expect(await repository().findKeyConfig(ios)).toMatchObject({
+      deviceType: "ios",
+      awgGenerator: settingsOf("stun"),
+      awgMtu: 1340,
+      awgSettingsFrom: { profileFrom: "userDevice", mtuFrom: "userDevice" },
+    });
+    const onAndroid = await exportedLines(owner, android);
+    expect(onAndroid("I1")).toMatch(DNS_RESPONSE_PACKET);
+    expect(onAndroid("MTU")).toBe("1280");
+
+    // The refresh path resolves the same rule, so its token matches the status.
+    const refreshing = await seedOwner();
+    await database.db.update(users).set({ awgDeviceRules: { ios: { awgGenerator: null, awgMtu: 1340 } } })
+      .where(eq(users.id, refreshing.id));
+    const keyId = await seedKey(refreshing.id);
+    await setDeviceType(keyId, "ios");
+    const token = await tokenOf(refreshing, keyId);
+    await expect(service().refreshOwnConfig(refreshing, keyId, token)).resolves.toMatchObject({ revision: 1 });
+  });
+
+  runDatabaseTest("the admin key list reports userDevice and not probe-checked", async () => {
+    if (!database) return;
+    const admin = await seedOwner("admin");
+    const owner = await seedOwner();
+    await database.db.update(users).set({ awgDeviceRules: { ios: { awgGenerator: null, awgMtu: 1340 } } })
+      .where(eq(users.id, owner.id));
+    const node = await seedNode();
+    await database.db.update(nodes).set({ awgGenerator: settingsOf("dns_response"), awgMtu: 1400 })
+      .where(eq(nodes.id, node));
+    await database.db.insert(nodeVpnEndpoints).values({ nodeId: node, ordinal: 1, address: "203.0.113.78", name: "Primary" });
+    const ios = await seedKey(owner.id, { onNode: node });
+    const android = await seedKey(owner.id, { onNode: node });
+    const own = await seedKey(owner.id, { onNode: node });
+    await setDeviceType(ios, "ios");
+    await setDeviceType(android, "android");
+    await setDeviceType(own, "ios");
+    await database.db.update(vpnKeys).set({ awgGenerator: settingsOf("stun"), awgMtu: 1300 }).where(eq(vpnKeys.id, own));
+    const listed = await repository().adminList(admin, "keys") as Array<{ id: string; config: unknown }>;
+    const configOf = (id: string) => listed.find((entry) => entry.id === id)?.config;
+    expect(configOf(ios)).toMatchObject({ profileFrom: "node", mtu: 1340, mtuFrom: "userDevice", probeChecked: false });
+    expect(configOf(android)).toMatchObject({ profileFrom: "node", mtu: 1400, mtuFrom: "node", probeChecked: true });
+    expect(configOf(own)).toMatchObject({
+      profileFrom: "key", mtu: 1300, mtuFrom: "key",
+      inherited: { profileFrom: "node", mtu: 1340, mtuFrom: "userDevice" },
+    });
+  });
+
+  runDatabaseTest("set-config stores and clears a user's device rules", async () => {
+    if (!database) return;
+    const admin = await seedOwner("admin");
+    const owner = await seedOwner();
+    const rules = {
+      ios: { awgGenerator: settingsOf("stun"), awgMtu: 1340 },
+      android: { awgGenerator: null, awgMtu: 1300 },
+    };
+    await repository().adminAction(admin, "users", owner.id, "set-config", {
+      awgGenerator: settingsOf("dns_response"), awgDeviceRules: rules,
+    });
+    expect(await userRow(owner.id)).toMatchObject({ awgGenerator: settingsOf("dns_response"), awgDeviceRules: rules });
+    const listed = await repository().adminList(admin, "users") as Array<{ id: string; awgDeviceRules: unknown }>;
+    expect(listed.find((user) => user.id === owner.id)).toMatchObject({
+      awgGenerator: settingsOf("dns_response"), awgMtu: null, awgDeviceRules: rules,
+    });
+
+    // An object replaces the whole map.
+    await repository().adminAction(admin, "users", owner.id, "set-config", {
+      awgDeviceRules: { android: { awgMtu: 1320 } },
+    });
+    expect((await userRow(owner.id))?.awgDeviceRules).toEqual({ android: { awgGenerator: null, awgMtu: 1320 } });
+    await repository().adminAction(admin, "users", owner.id, "set-config", { awgDeviceRules: null });
+    expect(await userRow(owner.id)).toMatchObject({ awgGenerator: settingsOf("dns_response"), awgDeviceRules: null });
+    await repository().adminAction(admin, "users", owner.id, "set-config", { awgMtu: 1360 });
+    const settingsAudits = (await auditsOf("admin.users.set-config", owner.id)).map(({ metadata }) => metadata);
+    expect(settingsAudits).toHaveLength(4);
+    expect(settingsAudits).toEqual(expect.arrayContaining([
+      { preset: "dns_response", awgMtu: null, deviceRules: ["android", "ios"] },
+      { preset: "dns_response", awgMtu: null, deviceRules: ["android"] },
+      { preset: "dns_response", awgMtu: null, deviceRules: [] },
+      { preset: "dns_response", awgMtu: 1360 },
+    ]));
+
+    await expect(repository().adminAction(admin, "users", owner.id, "set-config", {
+      awgDeviceRules: { unspecified: { awgMtu: 1300 } },
+    })).rejects.toMatchObject({ name: "ZodError" });
+    const keyId = await seedKey(owner.id);
+    await expect(repository().adminAction(admin, "keys", keyId, "set-config", {
+      awgDeviceRules: { ios: { awgMtu: 1300 } },
+    })).rejects.toMatchObject({ name: "ZodError" });
+  });
+
+  const pin = (admin: Actor, keyId: string, target: "user" | "device") =>
+    repository().adminAction(admin, "keys", keyId, "pin-config", { target });
+
+  runDatabaseTest("pin waits for the owner before locking the key", async () => {
+    if (!database) return;
+    const admin = await seedOwner("admin");
+    const owner = await seedOwner();
+    const keyId = await seedKey(owner.id);
+    let releaseOwner!: () => void;
+    let ownerLocked!: () => void;
+    const release = new Promise<void>((resolve) => { releaseOwner = resolve; });
+    const acquired = new Promise<void>((resolve) => { ownerLocked = resolve; });
+    const holder = database.db.transaction(async (tx) => {
+      await tx.select({ id: users.id }).from(users).where(eq(users.id, owner.id)).for("update");
+      ownerLocked();
+      await release;
+    });
+    await acquired;
+    const pending = pin(admin, keyId, "user");
+    // Observe the actual lock wait rather than relying on scheduler timing.
+    try {
+      let blocked = false;
+      for (let attempt = 0; attempt < 100 && !blocked; attempt += 1) {
+        const waiting = await database.db.execute(sql`
+          select pid from pg_stat_activity
+          where datname = current_database() and wait_event_type = 'Lock'
+            and lower(query) like '%for%update%' and lower(query) like '%users%'
+        `);
+        blocked = waiting.length > 0;
+        if (!blocked) await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      expect(blocked).toBe(true);
+      // Offboarding can now lock/revoke keys without a key -> owner cycle.
+      await database.db.transaction(async (tx) => {
+        await tx.execute(sql`select id from vpn_keys where id = ${keyId} for update nowait`);
+      });
+    } finally {
+      releaseOwner();
+      await holder;
+      await pending;
+    }
+  });
+
+  runDatabaseTest.each(["pin-config", "set-config", "disable", "enable", "revoke"])(
+    "rejects a malformed key id before %s reaches PostgreSQL", async (action) => {
+      const admin = await seedOwner("admin");
+      const payload = action === "pin-config" ? { target: "user" } : { awgMtu: 1320 };
+      await expect(repository().adminAction(admin, "keys", "not-a-uuid", action, payload))
+        .rejects.toMatchObject({ statusCode: 400, code: "BAD_REQUEST" });
+    },
+  );
+
+  runDatabaseTest.each(["pin-config", "offboard", "set-role"])(
+    "%s does not conflict with audit foreign-key locks on administrators", async (action) => {
+      if (!database) return;
+      const admin = await seedOwner("admin");
+      const owner = await seedOwner("admin");
+      const keyId = await seedKey(owner.id);
+      let releaseLocks!: () => void;
+      let locksReady!: () => void;
+      const gate = new Promise<void>((resolve) => { releaseLocks = resolve; });
+      const ready = new Promise<void>((resolve) => { locksReady = resolve; });
+      const holder = database.db.transaction(async (tx) => {
+        await tx.select({ id: users.id }).from(users).where(inArray(users.id, [admin.id, owner.id])).for("key share");
+        locksReady();
+        await gate;
+      });
+      await ready;
+      let settled = false;
+      const pending = (action === "pin-config"
+        ? pin(admin, keyId, "user")
+        : repository().adminAction(admin, "users", owner.id, action, { role: "user" }))
+        .finally(() => { settled = true; });
+      try {
+        let blocked = false;
+        for (let attempt = 0; attempt < 250 && !settled && !blocked; attempt += 1) {
+          const waiting = await database.db.execute(sql`
+            select pid from pg_stat_activity where datname = current_database()
+              and wait_event_type = 'Lock' and lower(query) like '%users%'
+          `);
+          blocked = waiting.length > 0;
+          if (!blocked && !settled) await new Promise((resolve) => setTimeout(resolve, 20));
+        }
+        expect(blocked, "Non-key edits must coexist with the audit FK's KEY SHARE locks").toBe(false);
+        expect(settled).toBe(true);
+      } finally {
+        releaseLocks();
+        await holder;
+        await pending;
+      }
+    },
+  );
+
+  runDatabaseTest("samples the service key and address settings from one database snapshot", async () => {
+    if (!database) return;
+    const node = await seedNode();
+    await database.db.update(nodes).set({ awgMtu: 1280 }).where(eq(nodes.id, node));
+    const [address] = await database.db.insert(nodeVpnEndpoints).values({
+      nodeId: node, ordinal: 1, address: "203.0.113.81", name: "Primary", awgMtu: 1300,
+    }).returning();
+    if (!address) throw new Error("Address fixture missing");
+    const keyId = await seedKey((await seedServiceAccount()).id, { onNode: node });
+    let allowUpdate!: () => void;
+    let nodeLocked!: () => void;
+    const gate = new Promise<void>((resolve) => { allowUpdate = resolve; });
+    const ready = new Promise<void>((resolve) => { nodeLocked = resolve; });
+    const writer = database.db.transaction(async (tx) => {
+      await tx.execute(sql`lock table nodes in access exclusive mode`);
+      nodeLocked();
+      await gate;
+      await tx.update(nodes).set({ awgMtu: 1400 }).where(eq(nodes.id, node));
+      await tx.update(nodeVpnEndpoints).set({ awgMtu: null }).where(eq(nodeVpnEndpoints.id, address.id));
+      await tx.update(vpnKeys).set({ state: "revoked" }).where(eq(vpnKeys.id, keyId));
+    });
+    await ready;
+    const pending = repository().findServiceKeyConfig(node, address.id);
+    try {
+      let blocked = false;
+      for (let attempt = 0; attempt < 250 && !blocked; attempt += 1) {
+        const waiting = await database.db.execute(sql`
+          select pid from pg_stat_activity where datname = current_database()
+            and wait_event_type = 'Lock' and lower(query) like '%"nodes"%'
+        `);
+        blocked = waiting.length > 0;
+        if (!blocked) await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      expect(blocked, "The sample read must reach the locked node table").toBe(true);
+    } finally {
+      allowUpdate();
+      await writer;
+    }
+    const sample = await pending;
+    expect(sample?.keyId).toBe(keyId);
+    expect(sample?.settings.mtu).toBe(1300);
+    expect(await repository().findServiceKeyConfig(node, address.id)).toBeNull();
+  });
+
+  runDatabaseTest("pins a key's effective profile and MTU to the owner", async () => {
+    if (!database) return;
+    const admin = await seedOwner("admin");
+    const owner = await seedOwner();
+    const androidRule = { android: { awgGenerator: null, awgMtu: 1300 } };
+    await database.db.update(users).set({ awgMtu: 1320, awgDeviceRules: androidRule }).where(eq(users.id, owner.id));
+    const node = await seedNode();
+    await database.db.update(nodes).set({ awgGenerator: settingsOf("dns_response"), awgMtu: 1400 })
+      .where(eq(nodes.id, node));
+    await database.db.insert(nodeVpnEndpoints).values({ nodeId: node, ordinal: 1, address: "203.0.113.79", name: "Primary" });
+    const keyId = await seedKey(owner.id, { onNode: node });
+    // The key's own MTU is copied too: the owner's keys get what this key gets.
+    await database.db.update(vpnKeys).set({ awgMtu: 1360 }).where(eq(vpnKeys.id, keyId));
+
+    await expect(pin(admin, keyId, "user")).resolves.toMatchObject({
+      keyId, ownerId: owner.id, target: "user", awgGenerator: settingsOf("dns_response"), awgMtu: 1360, changed: true,
+    });
+    expect(await userRow(owner.id)).toMatchObject({
+      awgGenerator: settingsOf("dns_response"), awgMtu: 1360, awgDeviceRules: androidRule,
+    });
+    expect(await row(keyId)).toMatchObject({ awgGenerator: null, awgMtu: 1360 });
+    expect((await auditsOf("admin.keys.pin-config", keyId)).map(({ metadata }) => metadata)).toEqual([
+      { target: "user", ownerId: owner.id, preset: "dns_response", awgMtu: 1360 },
+    ]);
+
+    // A later node edit no longer reaches the owner's other keys.
+    await database.db.update(nodes).set({ awgGenerator: settingsOf("stun"), awgMtu: 1420 }).where(eq(nodes.id, node));
+    const other = await seedKey(owner.id, { onNode: node });
+    const line = await exportedLines(owner, other);
+    expect(line("I1")).toMatch(DNS_RESPONSE_PACKET);
+    expect(line("MTU")).toBe("1360");
+  });
+
+  runDatabaseTest("pins to the owner's rule for the key's type and keeps other types", async () => {
+    if (!database) return;
+    const admin = await seedOwner("admin");
+    const owner = await seedOwner();
+    await database.db.update(users).set({ awgDeviceRules: { android: { awgGenerator: null, awgMtu: 1300 } } })
+      .where(eq(users.id, owner.id));
+    const node = await seedNode();
+    await database.db.update(nodes).set({ awgGenerator: settingsOf("stun"), awgMtu: 1400 }).where(eq(nodes.id, node));
+    const keyId = await seedKey(owner.id, { onNode: node });
+    await setDeviceType(keyId, "ios");
+
+    await expect(pin(admin, keyId, "device")).resolves.toMatchObject({
+      target: "device", deviceType: "ios", awgGenerator: settingsOf("stun"), awgMtu: 1400, changed: true,
+    });
+    expect(await userRow(owner.id)).toMatchObject({
+      awgGenerator: null,
+      awgMtu: null,
+      awgDeviceRules: {
+        android: { awgGenerator: null, awgMtu: 1300 },
+        ios: { awgGenerator: settingsOf("stun"), awgMtu: 1400 },
+      },
+    });
+    const before = (await userRow(owner.id))?.updatedAt;
+    // The rule already holds these values: nothing is written again.
+    await expect(pin(admin, keyId, "device")).resolves.toMatchObject({ changed: false });
+    expect((await userRow(owner.id))?.updatedAt).toEqual(before);
+    expect((await auditsOf("admin.keys.pin-config", keyId)).map(({ metadata }) => metadata)).toEqual([
+      { target: "device", ownerId: owner.id, deviceType: "ios", preset: "stun", awgMtu: 1400 },
+    ]);
+  });
+
+  runDatabaseTest("pins the issued preset and the default MTU as concrete values", async () => {
+    if (!database) return;
+    const admin = await seedOwner("admin");
+    const owner = await seedOwner();
+    const bare = await seedNode();
+    const keyId = await seedKey(owner.id, { onNode: bare });
+    const issued = awgGeneratorPresets().find((item) => item.id === "issued")?.settings;
+    if (!issued) throw new Error("Issued preset missing");
+    await pin(admin, keyId, "user");
+    expect(await userRow(owner.id)).toMatchObject({ awgGenerator: issued, awgMtu: 1280 });
+
+    // An MTU that only the profile carries pins as that number.
+    const second = await seedOwner();
+    const profiled = await seedNode();
+    await database.db.update(nodes).set({ awgGenerator: { ...settingsOf("stun"), mtu: 1320 } })
+      .where(eq(nodes.id, profiled));
+    const ios = await seedKey(second.id, { onNode: profiled });
+    await setDeviceType(ios, "ios");
+    await pin(admin, ios, "device");
+    expect((await userRow(second.id))?.awgDeviceRules).toEqual({
+      ios: { awgGenerator: { ...settingsOf("stun"), mtu: 1320 }, awgMtu: 1320 },
+    });
+  });
+
+  runDatabaseTest("refuses a pin for an unspecified device type and for a 2.0 key", async () => {
+    if (!database) return;
+    const admin = await seedOwner("admin");
+    const owner = await seedOwner();
+    const unspecified = await seedKey(owner.id);
+    await setDeviceType(unspecified, "unspecified");
+    await expect(pin(admin, unspecified, "device"))
+      .rejects.toMatchObject({ statusCode: 409, code: "PIN_UNAVAILABLE" });
+    const legacy = await seedKey(owner.id);
+    await database.db.update(vpnKeys).set({ protocol: "awg2" }).where(eq(vpnKeys.id, legacy));
+    for (const target of ["user", "device"] as const) {
+      await expect(pin(admin, legacy, target)).rejects.toMatchObject({ statusCode: 409, code: "PIN_UNAVAILABLE" });
+    }
+    const probeKey = await seedKey((await seedServiceAccount()).id);
+    await setDeviceType(probeKey, "ios");
+    await expect(pin(admin, probeKey, "user")).rejects.toMatchObject({ statusCode: 409, code: "PIN_UNAVAILABLE" });
+    await expect(pin(admin, randomUUID(), "user")).rejects.toMatchObject({ statusCode: 404, code: "KEY_NOT_FOUND" });
+    await expect(repository().adminAction(admin, "keys", unspecified, "pin-config", { target: "node" }))
+      .rejects.toMatchObject({ name: "ZodError" });
+    expect(await userRow(owner.id)).toMatchObject({ awgGenerator: null, awgMtu: null, awgDeviceRules: null });
+    expect(await auditsOf("admin.keys.pin-config", unspecified)).toEqual([]);
+  });
+
+  runDatabaseTest("finds the node's service key with address settings", async () => {
+    if (!database) return;
+    const node = await seedNode();
+    await database.db.update(nodes).set({ awgGenerator: settingsOf("dns_response"), awgMtu: 1400 })
+      .where(eq(nodes.id, node));
+    const [address] = await database.db.insert(nodeVpnEndpoints).values({
+      nodeId: node, ordinal: 1, address: "203.0.113.80", name: "Primary", awgMtu: 1360,
+      // Device rules are not applied: the probe measures the address and node levels.
+      awgDeviceRules: { ios: { awgGenerator: settingsOf("stun"), awgMtu: 1340 } },
+    }).returning();
+    if (!address) throw new Error("Address fixture was not created");
+    await expect(repository().findServiceKeyConfig(node, null)).resolves.toBeNull();
+
+    const probe = await seedServiceAccount();
+    await database.db.update(users).set({ awgGenerator: settingsOf("stun"), awgMtu: 1300 }).where(eq(users.id, probe.id));
+    const older = await seedKey(probe.id, { onNode: node });
+    const serviceKey = await seedKey(probe.id, { onNode: node });
+    await database.db.update(vpnKeys).set({ createdAt: new Date(Date.now() - 60_000) }).where(eq(vpnKeys.id, older));
+    await setDeviceType(serviceKey, "ios");
+    await database.db.update(vpnKeys).set({ awgMtu: 1320 }).where(eq(vpnKeys.id, serviceKey));
+    const revoked = await seedKey(probe.id, { onNode: node });
+    await database.db.update(vpnKeys).set({ state: "revoked" }).where(eq(vpnKeys.id, revoked));
+    // A person's key on the node is never the sample.
+    await seedKey((await seedOwner()).id, { onNode: node });
+
+    const forNode = await repository().findServiceKeyConfig(node, null);
+    expect(forNode).toMatchObject({
+      keyId: serviceKey,
+      protocol: "awg3",
+      settings: { awgGenerator: settingsOf("dns_response"), profileFrom: "node", mtu: 1400, mtuFrom: "node" },
+    });
+    expect(forNode?.encrypted).toMatchObject({ keyVersion: 1 });
+    await expect(repository().findServiceKeyConfig(node, address.id)).resolves.toMatchObject({
+      keyId: serviceKey,
+      settings: { awgGenerator: settingsOf("dns_response"), profileFrom: "node", mtu: 1360, mtuFrom: "address" },
+    });
+    await expect(repository().findServiceKeyConfig(node, randomUUID())).resolves.toBeNull();
+    await expect(repository().findServiceKeyConfig(await seedNode(), null)).resolves.toBeNull();
   });
 
   runDatabaseTest("leaves owner-facing key and me responses without the settings", async () => {

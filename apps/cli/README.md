@@ -1,15 +1,15 @@
 # @amnezia/cli
 
-Admin CLI for the control plane — a thin, dependency-free HTTP client over the
+Admin CLI for the control plane — a thin HTTP client over the
 control-api's admin endpoints, so the panel can be driven from a shell, cron, or
 another host in addition to the web UI.
 
 ## Build & run
 
 ```bash
-pnpm --filter @amnezia/cli build
+pnpm --filter @amnezia/cli... build
 node apps/cli/dist/main.js <command>
-# or, without building:
+# or run the TypeScript source after building @amnezia/contracts:
 pnpm --filter @amnezia/cli dev -- <command>
 ```
 
@@ -76,6 +76,9 @@ to delete a node and every key issued on it), `node-reconcile`,
 `key-purge`, `keys-purge-revoked`, `stale-keys-revoke`, `global-routes-set`,
 `rules-refresh`, `rules-show`, `rules-diff`, `rules-import`, `rules-activate`,
 `rules-follow`.
+
+**AWG 3.1 client settings:** `config-presets`, `config-show`, `config-set`,
+`config-params`, `config-pin`. See [the CLI reference](../../docs/CLI.md#awg-31-client-settings).
 
 **Bridges (AWG 3.1):** `infrastructure`, `bridges`, `bridge-add`,
 `bridge-update`, `bridge-enroll`, `bridge-eligibility`, `bridge-agent-update`,

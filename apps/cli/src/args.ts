@@ -3,12 +3,7 @@
 /**
  * Structural copy of `WORKER_PERIOD_FIELDS` from @amnezia/contracts.
  *
- * The CLI declares no runtime dependencies on purpose (see the note in
- * `deviceProfiles.ts`), so it re-states the table rather than importing the
- * workspace package at runtime. `@amnezia/contracts` IS a devDependency, and
- * `args.test.ts` compares this copy against it field for field -- a test
- * dependency changes nothing about the shipped `dist/main.js`, and it is the
- * only thing that can catch a contract bound moving without this copy.
+ * `args.test.ts` compares this copy against the shared fields and bounds.
  *
  * `fallback` is the BUILT-IN default. A worker whose environment sets
  * TELEMETRY_POLL_SEC, NODE_METRICS_SAMPLE_SEC, NODE_METRICS_RETENTION_DAYS or
@@ -72,6 +67,38 @@ export const flagOf = (args: string[], name: string): string | undefined => {
 /** Positional args (everything not starting with `--`). */
 export const positionals = (args: string[]): string[] =>
   args.filter((arg) => !arg.startsWith("--"));
+
+/** Validate options before reading files or making a request. */
+export function validateFlags(
+  args: string[],
+  valueFlags: readonly string[],
+  switches: readonly string[] = [],
+  allowOther = false,
+): void {
+  const seen = new Set<string>();
+  for (const arg of args) {
+    if (!arg.startsWith("--")) continue;
+    const separator = arg.indexOf("=");
+    const name = separator === -1 ? arg.slice(2) : arg.slice(2, separator);
+    const value = separator === -1 ? undefined : arg.slice(separator + 1);
+    if (valueFlags.includes(name)) {
+      if (!value) throw new Error(`--${name} requires a value (--${name}=<value>)`);
+    } else if (switches.includes(name)) {
+      if (value !== undefined) throw new Error(`--${name} does not take a value`);
+    } else {
+      if (allowOther) continue;
+      throw new Error(`Unknown option --${name}`);
+    }
+    if (seen.has(name)) throw new Error(`--${name} was supplied more than once`);
+    seen.add(name);
+  }
+}
+
+export function parseBoolFlag(name: string, value: string): boolean {
+  if (value === "true") return true;
+  if (value === "false") return false;
+  throw new Error(`--${name} expects true/false, got "${value}"`);
+}
 
 /** Split a comma-separated value into a trimmed, non-empty list. */
 export const csvList = (value: string): string[] =>
@@ -219,10 +246,8 @@ export const formatAccessSyncStatus = (status: AccessSyncStatusView): string => 
 };
 
 /**
- * Device types `--device-type` accepts. A deliberate copy of
- * `deviceTypeSchema.options` in @amnezia/contracts: this CLI ships with no
- * dependencies, so the list is duplicated and each side asserts the same
- * literal array in its own test.
+ * Device types `--device-type` accepts. Mirrors `deviceTypeSchema.options`
+ * in @amnezia/contracts, with the same list asserted by both suites.
  */
 export const DEVICE_TYPES = [
   "android",
@@ -268,10 +293,8 @@ export const RETIRED_DEVICE_TYPES: Record<string, string> = {
 };
 
 /**
- * How a key limit is counted. A deliberate copy of `keyLimitModeSchema.options`
- * in @amnezia/contracts, for the same reason as DEVICE_TYPES above: this CLI
- * ships with no dependencies, so the two literals are pinned by a test on each
- * side rather than shared through an import.
+ * How a key limit is counted. Mirrors `keyLimitModeSchema.options`
+ * in @amnezia/contracts, with the same list asserted by both suites.
  */
 export const KEY_LIMIT_MODES = ["per_node", "global"] as const;
 export type KeyLimitMode = (typeof KEY_LIMIT_MODES)[number];
@@ -383,10 +406,8 @@ export const matchesNodeFilter = (
  * One spelling of an email domain: trimmed, lower-cased, and with a leading
  * "@" dropped so `@company.tld` and `company.tld` are the same value.
  *
- * A structural copy of `normalizeAccessDomain` in @amnezia/contracts, for the
- * reason the whole file re-states small facts (see WORKER_PERIOD_FIELDS above):
- * the CLI ships as a dependency-free `dist/main.js`. `args.test.ts` runs both
- * against the same inputs, so the copy cannot drift.
+ * A structural copy of `normalizeAccessDomain` in @amnezia/contracts.
+ * `args.test.ts` runs both against the same inputs.
  *
  * Deliberately shallow — it normalises, it does not validate. `cf-domains`
  * leaves the question "is this actually a domain name" to `accessDomainSchema`
@@ -596,9 +617,7 @@ export const checkRecommendedPrefix = (
 };
 
 /**
- * Structural copy of `sourceName` / `ruleSources` from @amnezia/contracts, for
- * the same reason as WORKER_PERIOD_FIELDS above: the CLI declares no runtime
- * dependencies, so it cannot import the workspace package the admin page uses.
+ * Structural copy of `sourceName` / `ruleSources` from @amnezia/contracts.
  * `args.test.ts` runs a fixture list of URLs through both implementations and
  * requires the same answer — an operator reading `rules` in a shell must see a
  * provider named exactly as the panel names it.

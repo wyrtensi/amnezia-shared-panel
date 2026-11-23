@@ -122,6 +122,20 @@ describe("0069_awg_client_settings", () => {
   });
 });
 
+describe("0070_user_device_rules", () => {
+  const sql = readFileSync(
+    fileURLToPath(new URL("../migrations/0070_user_device_rules.sql", import.meta.url)),
+    "utf8",
+  );
+
+  it("adds the user's device rules nullable without a default", () => {
+    expect(sql).toContain('ALTER TABLE "users" ADD COLUMN "awg_device_rules" jsonb;');
+    const columns = sql.split("\n").filter((line) => line.includes("ADD COLUMN"));
+    expect(columns).toHaveLength(1);
+    expect(sql).not.toMatch(/NOT NULL|DEFAULT/i);
+  });
+});
+
 describe("0030_rule_version_pin", () => {
   const sql = readFileSync(
     fileURLToPath(new URL("../migrations/0030_rule_version_pin.sql", import.meta.url)),

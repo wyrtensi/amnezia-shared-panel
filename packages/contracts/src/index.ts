@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { keyBridgeModeSchema, publicIpv4Schema } from "./bridges.js";
-import { awgClientMtuSchema, awgGeneratorSettingsSchema } from "./awgGenerator.js";
+import { AWG_CONFIG_LEVELS, awgClientMtuSchema, awgGeneratorSettingsSchema } from "./awgGenerator.js";
 
 export const protocolKindSchema = z.enum(["awg2", "awg3"]);
 export const keyStateSchema = z.enum([
@@ -134,6 +134,66 @@ export const setAwgClientConfigRequestSchema = z.strictObject({
   message: "A profile or an MTU is required",
 });
 export type SetAwgClientConfigRequest = z.infer<typeof setAwgClientConfigRequestSchema>;
+
+/**
+ * An administrator's profile, MTU and per-device-type rules for a user; null
+ * inherits (for the rules: clears them all). Keys take no device rules.
+ */
+export const setUserClientConfigRequestSchema = z.strictObject({
+  awgGenerator: awgGeneratorSettingsSchema.nullable().optional(),
+  awgMtu: awgClientMtuSchema.nullable().optional(),
+  awgDeviceRules: awgDeviceRulesSchema.nullable().optional(),
+}).refine(
+  (fields) => fields.awgGenerator !== undefined || fields.awgMtu !== undefined || fields.awgDeviceRules !== undefined,
+  { message: "A profile, an MTU or device rules are required" },
+);
+export type SetUserClientConfigRequest = z.infer<typeof setUserClientConfigRequestSchema>;
+
+/** Which settings a key's config is pinned to: the owner's, or the owner's rule for its device type. */
+export const pinClientConfigRequestSchema = z.strictObject({ target: z.enum(["user", "device"]) });
+export type PinClientConfigRequest = z.infer<typeof pinClientConfigRequestSchema>;
+
+/** The client Interface parameters an administrator may see, in display order. */
+export const AWG_CLIENT_PARAMETER_NAMES = [
+  "Jc", "Jmin", "Jmax",
+  "S1", "S2", "S3", "S4",
+  "H1", "H2", "H3", "H4",
+  "I1", "I2", "I3", "I4", "I5",
+  "ContentPaddingAddition",
+  "RekeyAfterTime", "RekeyTimeout", "RejectAfterTime", "KeepaliveTimeout", "MaxHandshakeAttempts",
+  "MTU",
+] as const;
+export type AwgClientParameterName = (typeof AWG_CLIENT_PARAMETER_NAMES)[number];
+
+/** `server`: the value must match the server's; the others are the client's own. */
+export const awgClientParameterScope = (name: string): "client" | "server" =>
+  /^[SH][1-4]$/.test(name) ? "server" : "client";
+
+export const awgClientParameterSchema = z.object({
+  name: z.enum(AWG_CLIENT_PARAMETER_NAMES),
+  value: z.string().nullable(),
+  scope: z.enum(["client", "server"]),
+});
+export type AwgClientParameter = z.infer<typeof awgClientParameterSchema>;
+
+/**
+ * What a key's (or a node address's) client config carries: the parameters as
+ * exported now and as the node issued them, and where the settings come from.
+ * `ownerId` is null for the node/address view.
+ */
+export const adminClientParametersSchema = z.object({
+  exported: z.array(awgClientParameterSchema),
+  issued: z.array(awgClientParameterSchema),
+  settings: z.object({
+    profileFrom: z.enum(AWG_CONFIG_LEVELS).nullable(),
+    mtuFrom: z.enum([...AWG_CONFIG_LEVELS, "profile", "default"]),
+    preset: z.string().nullable(),
+    mtu: z.number().int(),
+    deviceType: z.string(),
+    ownerId: z.string().nullable(),
+  }),
+});
+export type AdminClientParameters = z.infer<typeof adminClientParametersSchema>;
 
 /**
  * The device types the create-key UI and the CLI offer, in the order they are

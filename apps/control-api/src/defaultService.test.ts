@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
-import { awgGeneratorPresets, defaultPortalPolicy, emptyGlobalRoutes } from "@amnezia/contracts";
+import { AWG_CLIENT_PARAMETER_NAMES, awgGeneratorPresets, defaultPortalPolicy, emptyGlobalRoutes } from "@amnezia/contracts";
 import type { GlobalRoutes } from "@amnezia/contracts";
 import { encryptSecret } from "@amnezia/db";
 import { projectAwgClientConfig, readAwgLastConfig } from "@amnezia/vpn-config";
@@ -130,6 +130,7 @@ const createRepository = (): ControlRepository => ({
       customRoutes: null,
     }),
   ),
+  findServiceKeyConfig: vi.fn(() => Promise.resolve(null)),
   getGlobalRoutes: vi.fn(() => Promise.resolve(emptyGlobalRoutes)),
   recordConfigExport: vi.fn(() => Promise.resolve(true)),
   listRouteProfiles: vi.fn(() => Promise.resolve([])),
@@ -1501,5 +1502,156 @@ describe("per-node IPv6 active-reject stub export projection", () => {
     );
     expect(awg2Conf).toContain("Address = 10.90.0.7/32");
     expect(awg2Conf).not.toContain("fd6b:7c2e:4a91:9f");
+  });
+});
+
+describe("client parameters view", () => {
+  const generator = {
+    ...awgGeneratorPresets().find((entry) => entry.id === "dns_query")!.settings,
+    randomizeKeys: true,
+  };
+  const saved = { version: 1, revision: 2, jc: 5, jmin: 50, jmax: 150, cpsOrder: 1 };
+  const key31 = (over: Record<string, unknown> = {}) => ({
+    ...splitTunnelKey(),
+    routeProfile: "full_tunnel" as const,
+    encrypted: encryptSecret(awg31Link(), keyring, 1),
+    awgGenerator: generator,
+    awgMtu: 1320,
+    awgClientProfile: saved,
+    awgSettingsFrom: { profileFrom: "user" as const, mtuFrom: "key" as const },
+    deviceType: "ios" as const,
+    ...over,
+  });
+  const statusOf = (error: unknown) =>
+    error instanceof ApiError ? `${error.statusCode} ${error.code}` : String(error);
+
+  it("equals the exported config for every whitelisted name", async () => {
+    const repository = createRepository();
+    vi.mocked(repository.findKeyConfig).mockResolvedValue(key31());
+    const service = createDefaultControlApiService({ repository, keyring });
+    const view = await service.getKeyClientParameters(admin, "key-1");
+    const exported = await service.getKeyConfig(admin, "key-1", "vpn", false);
+    const { line } = readCopies(String(exported.body), decodeVpnLink);
+    expect(view.exported).toHaveLength(AWG_CLIENT_PARAMETER_NAMES.length);
+    for (const entry of view.exported) {
+      expect(entry.value, entry.name).toBe(line(entry.name));
+    }
+    expect(view.exported.find((entry) => entry.name === "MTU")?.value).toBe("1320");
+    expect(view.exported.map((entry) => entry.name)).toEqual([...AWG_CLIENT_PARAMETER_NAMES]);
+    expect(view.issued.find((entry) => entry.name === "Jc")?.value).toBe("8");
+    expect(view.settings).toEqual({
+      profileFrom: "user",
+      mtuFrom: "key",
+      preset: generator.preset,
+      mtu: 1320,
+      deviceType: "ios" as const,
+      ownerId: employee.id,
+    });
+  });
+
+  it("records no export and writes no audit", async () => {
+    const repository = createRepository();
+    vi.mocked(repository.findKeyConfig).mockResolvedValue(key31());
+    const service = createDefaultControlApiService({ repository, keyring });
+    await service.getKeyClientParameters(admin, "key-1");
+    expect(repository.recordConfigExport).not.toHaveBeenCalled();
+    expect(repository.appendAudit).not.toHaveBeenCalled();
+  });
+
+  it("matches downloads for object artifacts with mixed-case Interface fields", async () => {
+    const repository = createRepository();
+    const link = awg31Link({
+      conf: (text) => text.replace("Jc = 8", "jC = 8").replace("S3 = 20", "s3 = 20"),
+      outer: (awg) => { awg.last_config = JSON.parse(String(awg.last_config)) as unknown; },
+    });
+    vi.mocked(repository.findKeyConfig).mockResolvedValue(key31({
+      encrypted: encryptSecret(link, keyring, 1), awgGenerator: null, awgClientProfile: null,
+    }));
+    const service = createDefaultControlApiService({ repository, keyring });
+    const view = await service.getKeyClientParameters(admin, "key-1");
+    const download = await service.getKeyConfig(admin, "key-1", "vpn", false);
+    const { conf } = readCopies(String(download.body), decodeVpnLink);
+    for (const entry of view.exported) {
+      expect(entry.value, entry.name).toBe(new RegExp(`^${entry.name} = (.*?)$`, "im").exec(conf)?.[1] ?? null);
+    }
+    expect(view.exported.find((entry) => entry.name === "Jc")?.value).toBe("8");
+    expect(view.exported.find((entry) => entry.name === "MTU")?.value).toBe("1320");
+  });
+
+  it("answers 403 to a non-admin, 404 to an unknown key and 409 to a 2.0 key", async () => {
+    const repository = createRepository();
+    const service = createDefaultControlApiService({ repository, keyring });
+    vi.mocked(repository.findKeyConfig).mockResolvedValue(key31());
+    expect(statusOf(await service.getKeyClientParameters(employee, "key-1").catch((e: unknown) => e))).toBe(
+      "403 FORBIDDEN",
+    );
+    vi.mocked(repository.findKeyConfig).mockResolvedValue(null);
+    expect(statusOf(await service.getKeyClientParameters(admin, "key-1").catch((e: unknown) => e))).toBe(
+      "404 KEY_NOT_FOUND",
+    );
+    vi.mocked(repository.findKeyConfig).mockResolvedValue(key31({ protocol: "awg2" }));
+    expect(statusOf(await service.getKeyClientParameters(admin, "key-1").catch((e: unknown) => e))).toBe(
+      "409 AWG_GENERATOR_UNSUPPORTED",
+    );
+  });
+
+  describe("for a node address", () => {
+    const sample = (over: Record<string, unknown> = {}) => ({
+      keyId: "probe-key",
+      encrypted: encryptSecret(awg31Link(), keyring, 1),
+      protocol: "awg3" as const,
+      awgClientProfile: null,
+      settings: { awgGenerator: generator, profileFrom: "address" as const, mtu: 1400, mtuFrom: "address" as const },
+      ...over,
+    });
+
+    it("applies the address settings when named", async () => {
+      const repository = createRepository();
+      vi.mocked(repository.findServiceKeyConfig).mockResolvedValue(sample());
+      const service = createDefaultControlApiService({ repository, keyring });
+      const endpointId = "0b48cc4c-404b-47a6-af28-4cf15f305e30";
+      const view = await service.getNodeClientParameters(admin, "node-1", endpointId);
+      expect(repository.findServiceKeyConfig).toHaveBeenCalledWith("node-1", endpointId);
+      const expected = projectAwgClientConfig(awg31Link(), {
+        protocol: "awg3",
+        keyId: "probe-key",
+        clientProfile: null,
+        generator,
+        mtu: 1400,
+      });
+      const { line } = readCopies(expected, (link) => decodeVpnLink(link));
+      expect(view.exported.find((entry) => entry.name === "MTU")?.value).toBe("1400");
+      for (const entry of view.exported) expect(entry.value, entry.name).toBe(line(entry.name));
+      expect(view.settings).toEqual({
+        profileFrom: "address",
+        mtuFrom: "address",
+        preset: generator.preset,
+        mtu: 1400,
+        deviceType: "unspecified",
+        ownerId: null,
+      });
+      expect(repository.recordConfigExport).not.toHaveBeenCalled();
+    });
+
+    it("answers 404 SAMPLE_KEY_NOT_FOUND without a service key and 403 to a non-admin", async () => {
+      const repository = createRepository();
+      const service = createDefaultControlApiService({ repository, keyring });
+      expect(statusOf(await service.getNodeClientParameters(admin, "node-1", null).catch((e: unknown) => e))).toBe(
+        "404 SAMPLE_KEY_NOT_FOUND",
+      );
+      expect(statusOf(await service.getNodeClientParameters(employee, "node-1", null).catch((e: unknown) => e))).toBe(
+        "403 FORBIDDEN",
+      );
+    });
+
+    it("rejects a service artifact with an ambiguous Interface as unsupported", async () => {
+      const repository = createRepository();
+      const link = awg31Link({ conf: (text) => text.replace("[Peer]", "MTU = 1280\nmtu = 1320\n[Peer]") });
+      vi.mocked(repository.findServiceKeyConfig).mockResolvedValue(sample({ encrypted: encryptSecret(link, keyring, 1) }));
+      const service = createDefaultControlApiService({ repository, keyring });
+      await expect(service.getNodeClientParameters(admin, "node-1", null))
+        .rejects.toMatchObject({ statusCode: 409, code: "AWG_GENERATOR_UNSUPPORTED" });
+      expect(repository.recordConfigExport).not.toHaveBeenCalled();
+    });
   });
 });

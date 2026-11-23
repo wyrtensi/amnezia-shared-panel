@@ -612,9 +612,11 @@ function NodeCard({
         </div>
 
         <NodePublicEndpoints endpoints={node.publicEndpoints ?? []}
-          canAdd={supported.includes("awg3")} onSave={onSavePublicEndpoint} />
+          canAdd={supported.includes("awg3")} onSave={onSavePublicEndpoint}
+          parametersNodeId={supported.includes("awg3") ? node.id : undefined} />
         {supported.includes("awg3") ? (
           <NodeGeneratorSettings
+            nodeId={node.id}
             value={node.awgGenerator ?? null}
             mtu={node.awgMtu ?? null}
             endpoints={node.publicEndpoints ?? []}

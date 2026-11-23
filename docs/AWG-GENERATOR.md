@@ -4,23 +4,23 @@ Administrators configure export settings in the node card's generator editor.
 The node defines defaults, and each registered IPv4 address can override them.
 An address with inherited settings follows its node. A node with inherited
 settings retains the existing issued-artifact and saved client-profile behavior.
-The client MTU is a setting of its own next to the profile, and a user, a key
-and a device type on an address can carry their own profile and MTU too (see
-"Levels" below).
+The client MTU is a setting of its own next to the profile. Users, keys and
+device-type rules on users and addresses can also set a profile and MTU.
 
 ## Levels
 
 A key's export resolves the **profile** and the **client MTU** separately, each
 from the nearest level that sets it:
 
-1. the key (set when issuing it or later, by an administrator);
-2. its owner (an administrator's per-user settings, for every AWG 3.1 key of
-   the user on any server);
-3. its address's rule for the key's device type (Android, iOS, macOS,
-   Windows, Linux, other; a key with an unspecified device type matches no
-   rule);
-4. its address (the key's address, or the node's primary one);
-5. its node.
+1. The key (`key`), set at issuance or edited later by an administrator.
+2. The owner's rule for the key's device type (`userDevice`), on any node.
+3. The owner's general settings (`user`), on any node.
+4. The address's rule for the key's device type (`device`).
+5. The key's address, or the node's primary one (`address`).
+6. The node (`node`).
+
+Both device rule levels support Android, iOS, macOS, Windows, Linux and Other.
+An unspecified device type skips both levels.
 
 With no profile anywhere the issued artifact and saved client profile apply,
 as before. With no MTU set anywhere the MTU stored inside the resolved profile
@@ -39,8 +39,7 @@ follow its node's profile with an MTU of its own.
   and a user's settings do not touch their AWG 2.0 keys. The probe's own
   account cannot get user or key settings.
 - The reachability probe measures what an address's ordinary users get: the
-  address and node levels only. User, key and device-type settings are not
-  measured.
+  address and node levels only. Its verdict covers the service key's draw.
 - Like every settings change, a new profile or MTU applies to the next export;
   a device that already imported the config imports it again.
 
@@ -204,7 +203,7 @@ framing (at most 1376 bytes UDP payload).
 
 The shared request/response fields are defined in
 `packages/contracts/src/awgGenerator.ts` and the existing node contracts.
-All mutations use the existing administrator-only node PATCH endpoint.
+The settings endpoints require administrator access.
 
 - `PATCH /api/admin/nodes/{nodeId}` accepts `awgGenerator` as a fully resolved
   settings object or `null` to restore inherited behavior.
@@ -219,11 +218,15 @@ All mutations use the existing administrator-only node PATCH endpoint.
   the address, `null` removes them.
 - Node and address read models expose their stored `awgGenerator`, `awgMtu`
   and (addresses) `awgDeviceRules`. Node PATCH responses include them.
-- `POST /api/admin/users/{userId}/set-config` and
-  `POST /api/admin/keys/{keyId}/set-config` take `{ awgGenerator?, awgMtu? }`
-  (at least one; `null` inherits; an omitted field is kept). Audited as
-  `admin.users.set-config` and `vpn_key.config_set` with the preset id and
-  MTU only.
+- `POST /api/admin/users/{userId}/set-config` accepts `awgGenerator`,
+  `awgMtu` and `awgDeviceRules`. Supply at least one field. Omitted fields are
+  kept, `null` clears the field, and an `awgDeviceRules` object replaces the
+  whole map using the same format as address rules. `GET /api/admin/users`
+  exposes these fields. The `admin.users.set-config` audit event includes
+  the preset, MTU and the resulting device types when the map is updated.
+- `POST /api/admin/keys/{keyId}/set-config` accepts `awgGenerator` and
+  `awgMtu` under the same inheritance rules. The `vpn_key.config_set` audit
+  event includes the preset and MTU.
 - Key creation (`POST /api/keys` for an administrator,
   `POST /api/admin/users/{userId}/create-key`) accepts `awgGenerator` and
   `awgMtu` like the bridge fields: administrators only (403 otherwise), AWG 3.1
@@ -242,6 +245,45 @@ produces the same configuration for every revision (randomization off, Custom,
 or the plain DNS response saved before the switch) is ineligible for refresh. A direct
 refresh request in that state is rejected without advancing revision or its
 update timestamp.
+
+## Inspecting and pinning parameters
+
+In **Users**, open a key's **Parameters** or find it in **Configuration
+settings → Keys**. On a node's configuration dialog, **Parameters** is
+available for the node and for each registered address. These views are
+available only to administrators.
+
+- `GET /api/admin/keys/{keyId}/client-parameters` shows the next AWG 3.1
+  export alongside the original values issued by the node. This read leaves
+  export metadata and `configUpdatedAt` unchanged. A missing key or config
+  returns `404 KEY_NOT_FOUND`. An incompatible artifact returns
+  `409 AWG_GENERATOR_UNSUPPORTED`.
+- `GET /api/admin/nodes/{nodeId}/client-parameters?endpointId={endpointId}`
+  samples the probe's AWG 3.1 service key with the named address and node
+  settings. Omit `endpointId` for the node settings alone. An unavailable
+  sample or an address outside the node returns `404 SAMPLE_KEY_NOT_FOUND`.
+
+Both reads return `exported`, `issued` and the resolved preset ID and MTU with
+their sources in `settings`. Each parameter has `name`, `value` (`null` when
+absent) and `scope`. The fields are limited to `Jc`, `Jmin`, `Jmax`, `S1`–`S4`,
+`H1`–`H4`, `I1`–`I5`, `ContentPaddingAddition`, `RekeyAfterTime`,
+`RekeyTimeout`, `RejectAfterTime`, `KeepaliveTimeout`, `MaxHandshakeAttempts`
+and `MTU`. The `S` and `H` fields have scope `server`. VPN keys, addresses,
+DNS, endpoints and allowed IPs are excluded.
+
+Select **Pin for the user** or **Pin for the user's devices** in a key's
+parameters to preview the replacement. `POST /api/admin/keys/{keyId}/pin-config`
+accepts `{ "target": "user" }` or `{ "target": "device" }`. A user pin
+replaces the owner's general profile and MTU. A device pin replaces only the
+owner's rule for the key's device type. The normal precedence still applies.
+
+A pin copies the effective profile settings and numeric MTU, including values
+set on the key. A missing profile becomes the `issued` preset. Randomized
+profiles keep drawing per key and **Refresh config** still redraws them.
+Changes are audited as `admin.keys.pin-config`. The API returns
+`409 PIN_UNAVAILABLE` for an AWG 2.0 key, a service-account key or a device pin
+from a key with an unspecified device type. Devices with an imported config
+need to import it again to use changed settings.
 
 ## Reachability checks
 

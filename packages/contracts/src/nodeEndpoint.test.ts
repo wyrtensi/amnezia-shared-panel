@@ -6,6 +6,11 @@ import {
   createKeyRequestSchema,
   deviceRuleFor,
   nodeEndpointDefaultName,
+  pinClientConfigRequestSchema,
+  adminClientParametersSchema,
+  AWG_CLIENT_PARAMETER_NAMES,
+  awgClientParameterScope,
+  setUserClientConfigRequestSchema,
   setAwgClientConfigRequestSchema,
   updateNodeRequestSchema,
 } from "./index.js";
@@ -74,5 +79,37 @@ describe("AWG client settings per device type", () => {
     expect(setAwgClientConfigRequestSchema.parse({ awgMtu: null })).toEqual({ awgMtu: null });
     expect(setAwgClientConfigRequestSchema.safeParse({ awgMtu: 1500 }).success).toBe(false);
     expect(setAwgClientConfigRequestSchema.safeParse({ awgMtu: 1300, extra: true }).success).toBe(false);
+  });
+  it("the user config request accepts device rules and rejects an empty body", () => {
+    const rules = { ios: { awgMtu: 1340 } };
+    expect(setUserClientConfigRequestSchema.parse({ awgDeviceRules: rules }))
+      .toEqual({ awgDeviceRules: { ios: { awgGenerator: null, awgMtu: 1340 } } });
+    expect(setUserClientConfigRequestSchema.parse({ awgDeviceRules: null })).toEqual({ awgDeviceRules: null });
+    expect(setUserClientConfigRequestSchema.parse({ awgMtu: 1300 })).toEqual({ awgMtu: 1300 });
+    expect(setUserClientConfigRequestSchema.safeParse({}).success).toBe(false);
+    expect(setUserClientConfigRequestSchema.safeParse({ awgDeviceRules: { unspecified: { awgMtu: 1300 } } }).success).toBe(false);
+    expect(setUserClientConfigRequestSchema.safeParse({ awgMtu: 1300, extra: 1 }).success).toBe(false);
+    expect(setAwgClientConfigRequestSchema.safeParse({ awgDeviceRules: { ios: { awgMtu: 1340 } } }).success).toBe(false);
+  });
+
+  it("the pin request accepts user and device only", () => {
+    expect(pinClientConfigRequestSchema.parse({ target: "user" })).toEqual({ target: "user" });
+    expect(pinClientConfigRequestSchema.parse({ target: "device" })).toEqual({ target: "device" });
+    expect(pinClientConfigRequestSchema.safeParse({ target: "key" }).success).toBe(false);
+    expect(pinClientConfigRequestSchema.safeParse({}).success).toBe(false);
+    expect(pinClientConfigRequestSchema.safeParse({ target: "user", extra: 1 }).success).toBe(false);
+  });
+
+  it("lists the client parameters in order, the server-side ones scoped server", () => {
+    expect(AWG_CLIENT_PARAMETER_NAMES.slice(0, 7)).toEqual(["Jc", "Jmin", "Jmax", "S1", "S2", "S3", "S4"]);
+    expect(AWG_CLIENT_PARAMETER_NAMES.at(-1)).toBe("MTU");
+    expect(AWG_CLIENT_PARAMETER_NAMES).toHaveLength(23);
+    expect(AWG_CLIENT_PARAMETER_NAMES.filter((name) => awgClientParameterScope(name) === "server"))
+      .toEqual(["S1", "S2", "S3", "S4", "H1", "H2", "H3", "H4"]);
+    expect(adminClientParametersSchema.safeParse({
+      exported: [{ name: "Jc", value: "5", scope: "client" }],
+      issued: [{ name: "S1", value: null, scope: "server" }],
+      settings: { profileFrom: "userDevice", mtuFrom: "profile", preset: null, mtu: 1280, deviceType: "ios", ownerId: null },
+    }).success).toBe(true);
   });
 });

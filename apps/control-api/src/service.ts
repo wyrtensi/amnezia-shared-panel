@@ -1,4 +1,5 @@
 import type {
+  AdminClientParameters,
   Bridge,
   BridgeRotationEvidence,
   CreateBridgeRequest,
@@ -202,6 +203,14 @@ export interface ControlApiService {
     adminConfirmed: boolean,
     clipboard?: boolean,
   ) => Promise<ConfigResult>;
+  /** Admin only: the client parameters a key's download carries; records nothing. */
+  getKeyClientParameters: (actor: Actor, keyId: string) => Promise<AdminClientParameters>;
+  /** Admin only: the same for a node address, from the node's service key. */
+  getNodeClientParameters: (
+    actor: Actor,
+    nodeId: string,
+    endpointId: string | null,
+  ) => Promise<AdminClientParameters>;
   revokeOwnKey: (actor: Actor, keyId: string) => Promise<void>;
   rotateOwnKey: (actor: Actor, keyId: string) => Promise<void>;
   /** Whether the caller's own key can take a new client profile right now. */
