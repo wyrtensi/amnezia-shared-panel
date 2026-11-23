@@ -206,4 +206,12 @@ export const RULE_EXTRAS: RuleExtra[] = [
     exact: true,
     cidrs: ["2a00:86c0::/32", "2a02:26f0::/32", "2a05:d014::/32"],
   },
+  {
+    // Microsoft Azure (`AS8075`, ARIN `NET-23-96-0-0-1`, `MSFT`) covering
+    // `w.clarity.ms` (`23.96.124.156`) and Azure services absorbed by
+    // neighboring `23.*` RU expansion in `compact_world`.
+    name: "azure-clarity",
+    exact: true,
+    cidrs: ["23.96.0.0/13"],
+  },
 ];

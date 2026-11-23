@@ -65,8 +65,10 @@ describe("RULE_EXTRAS", () => {
       "mangadex",
       "riot-eu-dns-2026-11-22",
       "major-cdn-v6",
+      "azure-clarity",
     ]) {
       expect(byName.get(slug)?.exact, slug).toBe(true);
     }
+    expect(byName.get("azure-clarity")?.cidrs).toEqual(["23.96.0.0/13"]);
   });
 });
