@@ -15,6 +15,7 @@ import {
   Info,
   KeyRound,
   ListFilter,
+  ListTree,
   Lock,
   Moon,
   NotebookPen,
@@ -83,12 +84,17 @@ import {
   AwgClientSettingsDialog,
   AwgKeySettingsSummary,
   AwgNewKeySettings,
+  AwgUserSettingsDialog,
   clientSettingsValid,
   inheritedForNewKey,
-  USER_INHERITED,
   useKeyInherited,
   type AwgClientSettingsValue,
+  type UserClientConfigChange,
 } from "@/components/admin/awg-client-settings";
+import {
+  ClientParametersDialog,
+  type ClientParametersTarget,
+} from "@/components/admin/client-parameters-dialog";
 import { usePresetLabel } from "@/components/admin/node-generator-settings";
 import { ProtocolSelect } from "@/components/protocol-select";
 // One editor for the operator-only note, shared with the administrator's own
@@ -1794,8 +1800,8 @@ function UserDetail({
     deviceLabel: string,
     routeProfile: string,
   ) => void;
-  /** Save this user's own client profile and MTU (admin action `set-config`). */
-  onSetConfig: (value: AwgClientSettingsValue) => Promise<boolean>;
+  /** Save this user's own client profile, MTU or device rules (admin action `set-config`). */
+  onSetConfig: (change: UserClientConfigChange) => Promise<boolean>;
 }) {
   const { t } = useT();
   const presetLabel = usePresetLabel();
@@ -1804,13 +1810,17 @@ function UserDetail({
     awgGenerator: user.awgGenerator ?? null,
     awgMtu: user.awgMtu ?? null,
   };
+  const userDeviceRules = user.awgDeviceRules ?? null;
+  const userRuleCount = Object.keys(userDeviceRules ?? {}).length;
   const userConfigSet = userConfig.awgGenerator !== null || userConfig.awgMtu !== null;
-  const userConfigLabel = userConfigSet
-    ? `${t("awgSettings.edit")} · ${t("awgSettings.userSummary", {
-        profile: userConfig.awgGenerator ? presetLabel(userConfig.awgGenerator) : t("awgSettings.inherits"),
-        mtu: userConfig.awgMtu ?? t("awgSettings.inherits"),
-      })}`
-    : t("awgSettings.edit");
+  const userConfigLabel = t("awgSettings.edit") +
+    (userConfigSet
+      ? ` · ${t("awgSettings.userSummary", {
+          profile: userConfig.awgGenerator ? presetLabel(userConfig.awgGenerator) : t("awgSettings.inherits"),
+          mtu: userConfig.awgMtu ?? t("awgSettings.inherits"),
+        })}`
+      : "") +
+    (userRuleCount > 0 ? ` · ${t("awgRules.count", { count: userRuleCount })}` : "");
   const stats = statsFor(keys);
   const staleness = summarizeStaleKeys(keys, now);
   // How many of the panel's two interruptions this user has answered. Both
@@ -2097,12 +2107,12 @@ function UserDetail({
           </div>
         )}
       </CardContent>
-      <AwgClientSettingsDialog
+      <AwgUserSettingsDialog
         open={configOpen}
-        title={t("awgSettings.userTitle")}
-        description={t("awgSettings.userDescription")}
-        value={userConfig}
-        inherited={USER_INHERITED}
+        user={{ ...userConfig, awgDeviceRules: userDeviceRules }}
+        keys={keys
+          .slice()
+          .sort((a, b) => b.createdAt.localeCompare(a.createdAt))}
         onClose={() => setConfigOpen(false)}
         onSave={onSetConfig}
       />
@@ -2183,6 +2193,7 @@ function AdminKeyRow({
   };
   const [editingInternal, setEditingInternal] = React.useState(false);
   const [editingConfig, setEditingConfig] = React.useState(false);
+  const [parameters, setParameters] = React.useState<ClientParametersTarget | null>(null);
   const keyInherited = useKeyInherited();
   // Live AWG 3.1 keys only: AWG 2.0 has no client profile, and a revoked
   // key has no config to export.
@@ -2273,6 +2284,17 @@ function AdminKeyRow({
                 label={t("awgSettings.keyTitle")}
                 icon={<SlidersHorizontal className="h-4 w-4" />}
                 onClick={() => setEditingConfig(true)}
+              />
+            ) : null}
+            {configurable ? (
+              <RowAction
+                label={t("clientParams.keyAction")}
+                icon={<ListTree className="h-4 w-4" />}
+                onClick={() => setParameters({
+                  kind: "key",
+                  id: keyView.id,
+                  label: keyView.deviceLabel || deviceTypeLabel(t, keyView.deviceType),
+                })}
               />
             ) : null}
             {keyView.state === "active" ? (
@@ -2383,6 +2405,7 @@ function AdminKeyRow({
           onSave={(value) => onAction(keyView.id, "set-config", value)}
         />
       ) : null}
+      <ClientParametersDialog target={parameters} onClose={() => setParameters(null)} />
     </>
   );
 }
@@ -3235,7 +3258,9 @@ function CreateKeyDialog({
   // API resolves (its address, or the node's primary one).
   const keyAddress = endpoint ?? endpoints.find((item) => item.ordinal === 1) ?? null;
   const inheritedClient = inheritedForNewKey({
-    user: user ? { awgGenerator: user.awgGenerator ?? null, awgMtu: user.awgMtu ?? null } : null,
+    user: user
+      ? { awgGenerator: user.awgGenerator ?? null, awgMtu: user.awgMtu ?? null, awgDeviceRules: user.awgDeviceRules ?? null }
+      : null,
     deviceType,
     endpoint: keyAddress,
     node: node ?? null,
