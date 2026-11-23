@@ -2,7 +2,7 @@
 # Install the single frps (frp server) on a bridge host.
 #
 #   install-frps.sh --bridge-id <uuid> --control-port <tcp> --udp-start <first>
-#       --udp-end <last> [--dry-run]
+#       --udp-end <last> [--no-network-tuning] [--dry-run]
 #
 # Writes one frps config and one unit, amnezia-frps.service. Secrets stay out of
 # arguments and out of the config: the operator places these protected files
@@ -53,6 +53,8 @@ BRIDGE_ID_FILE="$FRP_DIR/bridge-id"
 CONF="$FRP_DIR/frps.toml"
 UNIT=amnezia-frps.service
 UNIT_FILE="$SYSTEMD_DIR/$UNIT"
+SYSCTL_FILE="$ETC/sysctl.d/99-amnezia-network-tuning.conf"
+BBR_MODULE_FILE="$ETC/modules-load.d/amnezia-bbr.conf"
 DASH_PORT=7500
 
 # BEGIN frp-pin (identical in infra/bridge/install-frps.sh and infra/node/scripts/install-frpc.sh)
@@ -66,9 +68,11 @@ FRPS_BIN="$FRP_PREFIX/$FRP_VERSION/frps"
 
 TMP_CONF_RENDER=""
 TMP_UNIT_RENDER=""
+TMP_SYSCTL_RENDER=""
+TMP_BBR_RENDER=""
 TMP_CONF=""
 BACKUP=""
-cleanup() { rm -f -- "$TMP_CONF_RENDER" "$TMP_UNIT_RENDER" "$TMP_CONF" "$BACKUP"; }
+cleanup() { rm -f -- "$TMP_CONF_RENDER" "$TMP_UNIT_RENDER" "$TMP_SYSCTL_RENDER" "$TMP_BBR_RENDER" "$TMP_CONF" "$BACKUP"; }
 trap cleanup EXIT
 trap 'cleanup; exit 130' INT TERM
 
@@ -87,6 +91,7 @@ BRIDGE_ID=""
 CONTROL_PORT=""
 UDP_START=""
 UDP_END=""
+NETWORK_TUNING=1
 DRY_RUN=0
 
 need_value() { [ "$#" -ge 2 ] || usage_error "$1 needs a value"; }
@@ -96,6 +101,7 @@ while [ "$#" -gt 0 ]; do
     --control-port) need_value "$@"; CONTROL_PORT="$2"; shift 2 ;;
     --udp-start) need_value "$@"; UDP_START="$2"; shift 2 ;;
     --udp-end) need_value "$@"; UDP_END="$2"; shift 2 ;;
+    --no-network-tuning) NETWORK_TUNING=0; shift ;;
     --dry-run) DRY_RUN=1; shift ;;
     *) usage_error "unknown argument: $1" ;;
   esac
@@ -270,15 +276,80 @@ WantedBy=multi-user.target
 UNIT_EOF
 }
 
+render_network_tuning() {
+  cat <<'SYSCTL_EOF'
+# Amnezia bridge TCP/UDP tuning for FRP relay (BBR + fq + 16M/2M buffers).
+# Opt out on re-run with --no-network-tuning, or edit this file and pass
+# --no-network-tuning on future runs.
+net.core.default_qdisc = fq
+net.ipv4.tcp_congestion_control = bbr
+net.core.rmem_max = 16777216
+net.core.wmem_max = 16777216
+net.core.rmem_default = 2097152
+net.core.wmem_default = 2097152
+net.ipv4.tcp_rmem = 4096 131072 16777216
+net.ipv4.tcp_wmem = 4096 65536 16777216
+net.core.netdev_max_backlog = 8192
+net.ipv4.tcp_slow_start_after_idle = 0
+net.ipv4.tcp_notsent_lowat = 16384
+net.ipv4.tcp_mtu_probing = 1
+net.ipv4.tcp_no_metrics_save = 1
+SYSCTL_EOF
+}
+
 TMP_CONF_RENDER="$(mktemp)"
 TMP_UNIT_RENDER="$(mktemp)"
+TMP_SYSCTL_RENDER="$(mktemp)"
+TMP_BBR_RENDER="$(mktemp)"
 render_config >"$TMP_CONF_RENDER"
 unit_body >"$TMP_UNIT_RENDER"
+render_network_tuning >"$TMP_SYSCTL_RENDER"
+printf '%s\n' 'tcp_bbr' >"$TMP_BBR_RENDER"
 
 conf_same=0
 [ -f "$CONF" ] && cmp -s "$TMP_CONF_RENDER" "$CONF" && conf_same=1
 unit_same=0
 [ -f "$UNIT_FILE" ] && cmp -s "$TMP_UNIT_RENDER" "$UNIT_FILE" && unit_same=1
+tuning_same=1
+if [ "$NETWORK_TUNING" -eq 1 ]; then
+  if [ ! -f "$SYSCTL_FILE" ] || ! cmp -s "$TMP_SYSCTL_RENDER" "$SYSCTL_FILE" ||
+     [ ! -f "$BBR_MODULE_FILE" ] || ! cmp -s "$TMP_BBR_RENDER" "$BBR_MODULE_FILE"; then
+    tuning_same=0
+  fi
+fi
+
+apply_network_tuning() {
+  [ "$NETWORK_TUNING" -eq 1 ] || return 0
+  if [ "$tuning_same" -eq 0 ]; then
+    mkdir -p "$(dirname "$SYSCTL_FILE")" "$(dirname "$BBR_MODULE_FILE")"
+    tmp_bbr="$(mktemp "$(dirname "$BBR_MODULE_FILE")/.amnezia-bbr.XXXXXX")"
+    cp "$TMP_BBR_RENDER" "$tmp_bbr"
+    chmod 0644 "$tmp_bbr"
+    mv -f "$tmp_bbr" "$BBR_MODULE_FILE"
+    tmp_sysctl="$(mktemp "$(dirname "$SYSCTL_FILE")/.amnezia-sysctl.XXXXXX")"
+    cp "$TMP_SYSCTL_RENDER" "$tmp_sysctl"
+    chmod 0644 "$tmp_sysctl"
+    mv -f "$tmp_sysctl" "$SYSCTL_FILE"
+    info "wrote network tuning: $SYSCTL_FILE and $BBR_MODULE_FILE"
+  fi
+  # Live kernel calls run only on a real root host (never against non-root test
+  # fixtures using AMNEZIA_ETC). Failures warn rather than aborting frps setup.
+  if [ "$ETC" = "/etc" ] && [ "$(id -u)" -eq 0 ]; then
+    if command -v modprobe >/dev/null 2>&1; then
+      modprobe tcp_bbr 2>/dev/null || info "warning: modprobe tcp_bbr failed; kernel may lack tcp_bbr"
+    fi
+    if command -v sysctl >/dev/null 2>&1; then
+      sysctl -p "$SYSCTL_FILE" >/dev/null 2>&1 || info "warning: sysctl -p $SYSCTL_FILE reported errors"
+    fi
+    if command -v ip >/dev/null 2>&1 && command -v tc >/dev/null 2>&1; then
+      default_nic="$(ip route show default 2>/dev/null | awk '{print $5; exit}')"
+      if [ -n "$default_nic" ]; then
+        tc qdisc replace dev "$default_nic" root fq 2>/dev/null ||
+          info "warning: tc qdisc replace dev $default_nic root fq failed"
+      fi
+    fi
+  fi
+}
 
 print_firewall() {
   info "firewall rules to apply yourself (this script changes none):"
@@ -308,7 +379,14 @@ if [ "$DRY_RUN" -eq 1 ]; then
   else
     plan "write $UNIT_FILE"
   fi
-  if [ "$active" -eq 1 ] && [ "$conf_same" -eq 1 ]; then
+  if [ "$NETWORK_TUNING" -eq 0 ]; then
+    plan "skip host network tuning (--no-network-tuning)"
+  elif [ "$tuning_same" -eq 1 ]; then
+    plan "network tuning $SYSCTL_FILE is current"
+  else
+    plan "write $SYSCTL_FILE and $BBR_MODULE_FILE, then apply BBR, fq qdisc and 16M/2M socket buffers"
+  fi
+  if [ "$active" -eq 1 ] && [ "$conf_same" -eq 1 ] && [ "$tuning_same" -eq 1 ]; then
     plan "no change: $UNIT is already active"
   else
     plan "enable and start $UNIT, then confirm the control listener on tcp $CONTROL_PORT"
@@ -372,11 +450,13 @@ if ! verify_out="$( (set -a; . "$DASH_ENV_FILE"; set +a; "$FRPS_BIN" verify -c "
   die 13 E_CONFIG_INVALID "frps verify rejected the generated config (previous config and unit untouched): $verify_out"
 fi
 
-if [ "$conf_same" -eq 1 ] && [ "$unit_same" -eq 1 ] && [ "$active" -eq 1 ] && [ "$enabled" -eq 1 ]; then
+if [ "$conf_same" -eq 1 ] && [ "$unit_same" -eq 1 ] && [ "$tuning_same" -eq 1 ] && [ "$active" -eq 1 ] && [ "$enabled" -eq 1 ]; then
   info "frps already configured and running for bridge $BRIDGE_ID: no change"
   print_firewall
   exit 0
 fi
+
+apply_network_tuning
 
 had_conf=0
 [ -f "$CONF" ] && had_conf=1

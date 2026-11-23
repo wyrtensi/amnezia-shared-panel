@@ -600,3 +600,30 @@ esac
   assert.match(calls, /-connect 127\.0\.0\.1:17000/);
   assert.match(calls, /-verify_ip 203\.0\.113\.10/);
 });
+
+withHost("writes node BBR/fq/buffer network tuning by default and skips it with --no-network-tuning", async (h) => {
+  const sysctlPath = join(h.etc, "sysctl.d", "99-amnezia-network-tuning.conf");
+  const bbrPath = join(h.etc, "modules-load.d", "amnezia-bbr.conf");
+
+  const dry = h.run(...baseArgs, "--dry-run");
+  assert.equal(dry.status, 0, dry.stderr);
+  assert.match(dry.stdout, /PLAN: write .*99-amnezia-network-tuning\.conf/);
+  await assert.rejects(stat(sysctlPath));
+
+  const skipped = h.run(...baseArgs, "--no-network-tuning");
+  assert.equal(skipped.status, 0, skipped.stderr);
+  await assert.rejects(stat(sysctlPath));
+  await assert.rejects(stat(bbrPath));
+
+  const tuned = h.run(...baseArgs);
+  assert.equal(tuned.status, 0, tuned.stderr);
+  const sysctlBody = await readFile(sysctlPath, "utf8");
+  assert.match(sysctlBody, /^net\.core\.default_qdisc = fq$/m);
+  assert.match(sysctlBody, /^net\.ipv4\.tcp_congestion_control = bbr$/m);
+  assert.match(sysctlBody, /^net\.core\.rmem_max = 16777216$/m);
+  assert.match(sysctlBody, /^net\.core\.rmem_default = 2097152$/m);
+  assert.match(sysctlBody, /^net\.core\.netdev_max_backlog = 4096$/m);
+  assert.match(sysctlBody, /^net\.ipv4\.tcp_slow_start_after_idle = 0$/m);
+  assert.match(sysctlBody, /^net\.ipv4\.tcp_notsent_lowat = 16384$/m);
+  assert.equal((await readFile(bbrPath, "utf8")).trim(), "tcp_bbr");
+});
