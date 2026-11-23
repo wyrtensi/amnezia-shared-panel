@@ -317,8 +317,9 @@ const keysInEffect = (keys: readonly InEffectKey[]) =>
  * What each of the user's AWG 3.1 keys gets now: the profile and MTU with the
  * level each comes from, and the way to its full parameters.
  */
-export function UserKeysInEffect({ keys, onShowParameters }: {
+export function UserKeysInEffect({ keys, pending = false, onShowParameters }: {
   keys: readonly InEffectKey[];
+  pending?: boolean;
   onShowParameters: (key: InEffectKey) => void;
 }) {
   const { t } = useT();
@@ -363,6 +364,7 @@ export function UserKeysInEffect({ keys, onShowParameters }: {
                   </div>
                   <Button
                     type="button" size="sm" variant="ghost" className="shrink-0 px-2"
+                    disabled={pending}
                     onClick={() => onShowParameters(key)}
                   >
                     <ListTree className="size-4" />
@@ -405,13 +407,13 @@ export function AwgUserSettingsPanel({ user, keys, pending, onSave, onShowParame
   return (
     <Tabs defaultValue={initialTab}>
       <TabsList className="grid h-auto w-full grid-cols-3">
-        <TabsTrigger value="profile" className="whitespace-normal px-2 text-xs leading-tight sm:text-sm">
+        <TabsTrigger value="profile" disabled={pending} className="whitespace-normal px-2 text-xs leading-tight sm:text-sm">
           {t("awgUser.tab.profile")}
         </TabsTrigger>
-        <TabsTrigger value="devices" className="whitespace-normal px-2 text-xs leading-tight sm:text-sm">
+        <TabsTrigger value="devices" disabled={pending} className="whitespace-normal px-2 text-xs leading-tight sm:text-sm">
           {t("awgUser.tab.devices")}{count(ruleCount)}
         </TabsTrigger>
-        <TabsTrigger value="keys" className="whitespace-normal px-2 text-xs leading-tight sm:text-sm">
+        <TabsTrigger value="keys" disabled={pending} className="whitespace-normal px-2 text-xs leading-tight sm:text-sm">
           {t("awgUser.tab.keys")}{count(keyCount)}
         </TabsTrigger>
       </TabsList>
@@ -450,7 +452,7 @@ export function AwgUserSettingsPanel({ user, keys, pending, onSave, onShowParame
         />
       </TabsContent>
       <TabsContent value="keys">
-        <UserKeysInEffect keys={keys} onShowParameters={onShowParameters} />
+        <UserKeysInEffect keys={keys} pending={pending} onShowParameters={onShowParameters} />
       </TabsContent>
     </Tabs>
   );
@@ -467,17 +469,21 @@ export function AwgUserSettingsDialog({ open, user, keys, onClose, onSave }: {
   const { t } = useT();
   const [pending, setPending] = React.useState(false);
   const [parameters, setParameters] = React.useState<ClientParametersTarget | null>(null);
+  const pendingRef = React.useRef(false);
   const save = async (change: UserClientConfigChange) => {
+    if (pendingRef.current) return false;
+    pendingRef.current = true;
     setPending(true);
     try {
       return await onSave(change);
     } finally {
+      pendingRef.current = false;
       setPending(false);
     }
   };
   return (
     <>
-      <Dialog open={open} onOpenChange={(next) => { if (!next && !pending) onClose(); }}>
+      <Dialog open={open} onOpenChange={(next) => { if (!next && !pendingRef.current) onClose(); }}>
         <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-lg">
           <DialogHeader>
             <DialogTitle>{t("awgSettings.userTitle")}</DialogTitle>
@@ -491,11 +497,14 @@ export function AwgUserSettingsDialog({ open, user, keys, onClose, onSave }: {
             keys={keys}
             pending={pending}
             onSave={save}
-            onShowParameters={(key) => setParameters({
-              kind: "key",
-              id: key.id,
-              label: key.deviceLabel || deviceTypeLabel(t, key.deviceType),
-            })}
+            onShowParameters={(key) => {
+              if (pendingRef.current) return;
+              setParameters({
+                kind: "key",
+                id: key.id,
+                label: key.deviceLabel || deviceTypeLabel(t, key.deviceType),
+              });
+            }}
           />
         </DialogContent>
       </Dialog>

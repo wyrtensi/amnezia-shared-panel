@@ -49,6 +49,213 @@ async function run(argv: string[]): Promise<string> {
   return lines.join("\n");
 }
 
+describe("AWG client config commands", () => {
+  const nodeId = "11111111-1111-4111-8111-111111111111";
+  const endpointId = "22222222-2222-4222-8222-222222222222";
+  const userId = "33333333-3333-4333-8333-333333333333";
+  const keyId = "44444444-4444-4444-8444-444444444444";
+  const stun = {
+    preset: "stun",
+    mtu: 1280,
+    jcMin: 3,
+    jcMax: 10,
+    jminMin: 40,
+    jminMax: 100,
+    jmaxGapMin: 30,
+    jmaxGapMax: 200,
+    iMode: "stun",
+    iCount: 1,
+    contentPaddingAddition: null,
+    timings: null,
+    randomizeKeys: true,
+  };
+  const deviceRules = {
+    android: { awgGenerator: stun, awgMtu: 1340 },
+    ios: { awgGenerator: null, awgMtu: 1360 },
+  };
+  const parameters = {
+    exported: [
+      { name: "Jc", scope: "client", value: "4" },
+      { name: "H1", scope: "server", value: "100-200" },
+      { name: "MTU", scope: "client", value: "1300" },
+    ],
+    issued: [
+      { name: "Jc", scope: "client", value: "3" },
+      { name: "H1", scope: "server", value: "100-200" },
+      { name: "MTU", scope: "client", value: null },
+    ],
+    settings: { profileFrom: "node", mtuFrom: "key", preset: "stun", mtu: 1300, deviceType: "ios", ownerId: userId },
+  };
+
+  function jsonBody(call: { init?: RequestInit } | undefined): unknown {
+    const body = call?.init?.body;
+    if (typeof body !== "string") throw new Error("Expected a JSON request body");
+    return JSON.parse(body);
+  }
+
+  beforeEach(() => vi.stubEnv("PANEL_ADMIN_EMAIL", "cli-test@example.com"));
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
+  });
+
+  it("config-presets lists preset ids, labels and descriptions without an API request", async () => {
+    const calls = stubFetch([]);
+    const out = await run(["config-presets"]);
+    expect(out).toMatch(/stun\s+STUN\s+Send a single STUN Binding Request/);
+    expect(out).toMatch(/custom\s+Custom\s+Set client MTU/);
+    expect(calls).toHaveLength(0);
+  });
+
+  it("config-show key prints the configured and effective profile, MTU and sources", async () => {
+    const calls = stubFetch([{
+      body: [{
+        id: keyId,
+        protocol: "awg3",
+        awgGenerator: null,
+        awgMtu: 1300,
+        config: { awgGenerator: stun, mtu: 1300, profileFrom: "userDevice", mtuFrom: "key" },
+      }],
+    }]);
+    const out = await run(["config-show", "key", keyId]);
+    expect(calls[0]?.url).toMatch(/\/api\/admin\/keys$/);
+    expect(out).toMatch(/Profile: inherit/);
+    expect(out).toMatch(/Effective profile: stun \(userDevice\)/);
+    expect(out).toMatch(/Effective MTU: 1300 \(key\)/);
+  });
+
+  it("config-set node sends full preset settings in the node PATCH", async () => {
+    const calls = stubFetch([{ body: { id: nodeId } }]);
+    await run(["config-set", "node", nodeId, "--preset=stun"]);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.url).toContain(`/api/admin/nodes/${nodeId}`);
+    expect(calls[0]?.init?.method).toBe("PATCH");
+    expect(jsonBody(calls[0])).toEqual({ awgGenerator: stun });
+  });
+
+  it("config-set address updates one device MTU and keeps its profile and other rules", async () => {
+    const calls = stubFetch([
+      { body: [{ id: nodeId, publicEndpoints: [{ id: endpointId, awgDeviceRules: deviceRules }] }] },
+      { body: { id: nodeId } },
+    ]);
+    await run(["config-set", "address", endpointId, "--device=android", "--mtu=1300"]);
+    expect(calls[0]?.url).toMatch(/\/api\/admin\/nodes$/);
+    expect(calls[1]?.url).toContain(`/api/admin/nodes/${nodeId}`);
+    expect(calls[1]?.init?.method).toBe("PATCH");
+    expect(jsonBody(calls[1])).toEqual({
+      publicEndpoint: {
+        action: "update",
+        id: endpointId,
+        awgDeviceRules: {
+          android: { awgGenerator: stun, awgMtu: 1300 },
+          ios: { awgGenerator: null, awgMtu: 1360 },
+        },
+      },
+    });
+  });
+
+  it("config-set user resolves email and clears only the requested device rule", async () => {
+    const calls = stubFetch([
+      { body: [{ id: userId, email: "person@example.test", awgDeviceRules: deviceRules }] },
+      { body: { id: userId } },
+    ]);
+    await run(["config-set", "user", "Person@Example.test", "--device=android", "--clear"]);
+    expect(calls).toHaveLength(2);
+    expect(calls[1]?.url).toContain(`/api/admin/users/${userId}/set-config`);
+    expect(calls[1]?.init?.method).toBe("POST");
+    expect(jsonBody(calls[1])).toEqual({
+      awgDeviceRules: { ios: { awgGenerator: null, awgMtu: 1360 } },
+    });
+  });
+
+  it.each([
+    [["--settings-file=missing.json", "--preset=stun"], /settings-file.*preset/],
+    [["--settings-file=missing.json", "--randomize=true"], /settings-file.*randomize/],
+    [["--preset=stun", "--profile=inherit"], /preset.*profile/],
+    [["--profile=inherit", "--randomize=true"], /randomize.*inherit/],
+    [["--device=ios", "--mtu=1340"], /device.*address.*user/],
+    [["--clear"], /clear.*device/],
+    [["--mtu=0x514"], /mtu.*1280.*1420/],
+    [["--mtu=1300", "--mtu=1400"], /mtu.*more than once/],
+  ] as const)("config-set key rejects invalid options %s before making an API request", async (flags, message) => {
+    const calls = stubFetch([]);
+    await expect(run(["config-set", "key", keyId, ...flags])).rejects.toThrow(message);
+    expect(calls).toHaveLength(0);
+  });
+
+  it("config-params key prints exported values, showing issued values only where they differ", async () => {
+    const calls = stubFetch([{ body: parameters }]);
+    const out = await run(["config-params", "key", keyId]);
+    expect(calls[0]?.url).toContain(`/api/admin/keys/${keyId}/client-parameters`);
+    expect(out).toMatch(/Jc\s+client\s+4\s+3/);
+    expect(out).toMatch(/H1[^\n]*server[^\n]*100-200[^\S\n]*\n/);
+    expect(out.match(/100-200/g)).toHaveLength(1);
+  });
+
+  it("config-params node passes endpointId and prints the parameters response as JSON", async () => {
+    const nodeParameters = { ...parameters, settings: { ...parameters.settings, ownerId: null } };
+    const calls = stubFetch([{ body: nodeParameters }]);
+    const out = await run(["config-params", "node", nodeId, `--endpoint=${endpointId}`, "--json"]);
+    expect(calls[0]?.url).toContain(`/api/admin/nodes/${nodeId}/client-parameters?endpointId=${endpointId}`);
+    expect(JSON.parse(out)).toEqual(nodeParameters);
+  });
+
+  it("config-params preserves the API error code and message for nodes without a sample key", async () => {
+    stubFetch([{ status: 404, body: { error: "SAMPLE_KEY_NOT_FOUND", message: "No service key" } }]);
+    await expect(run(["config-params", "node", nodeId])).rejects.toMatchObject({
+      status: 404,
+      code: "SAMPLE_KEY_NOT_FOUND",
+      message: "SAMPLE_KEY_NOT_FOUND: No service key",
+    });
+  });
+
+  it("config-pin posts a request for the owner's matching device type", async () => {
+    const calls = stubFetch([{
+      body: { keyId, ownerId: userId, target: "device", deviceType: "ios", awgGenerator: stun, awgMtu: 1300, changed: true },
+    }]);
+    const out = await run(["config-pin", keyId, "--to=device"]);
+    expect(calls[0]?.url).toContain(`/api/admin/keys/${keyId}/pin-config`);
+    expect(calls[0]?.init?.method).toBe("POST");
+    expect(jsonBody(calls[0])).toEqual({ target: "device" });
+    expect(out).toMatch(/pinned.*ios/i);
+  });
+
+  it("user-create-key sends preset and MTU settings alongside the requested node", async () => {
+    const calls = stubFetch([{ body: { id: keyId } }]);
+    await run(["user-create-key", userId, `--node=${nodeId}`, "--preset=stun", "--mtu=1340"]);
+    expect(calls[0]?.url).toContain(`/api/admin/users/${userId}/create-key`);
+    expect(jsonBody(calls[0])).toEqual({
+      nodeId,
+      awgGenerator: stun,
+      awgMtu: 1340,
+    });
+  });
+
+  it("config-set key reads a Custom JSON file and allows a separate MTU override", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "amnezia-client-settings-"));
+    try {
+      const filename = join(directory, "client-settings.json");
+      const custom = { ...stun, preset: "custom", jcMin: 5 };
+      await writeFile(filename, JSON.stringify(custom, null, 2));
+      const calls = stubFetch([{ body: { id: keyId } }]);
+      await run(["config-set", "key", keyId, `--settings-file=${filename}`, "--mtu=inherit"]);
+      expect(calls[0]?.url).toContain(`/api/admin/keys/${keyId}/set-config`);
+      expect(calls[0]?.init?.method).toBe("POST");
+      expect(jsonBody(calls[0])).toEqual({ awgGenerator: custom, awgMtu: null });
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("user-create-key refuses client settings for AWG 2.0 before resolving an email", async () => {
+    const calls = stubFetch([]);
+    await expect(run([
+      "user-create-key", "person@example.test", `--node=${nodeId}`, "--protocol=awg2", "--mtu=1340",
+    ])).rejects.toThrow(/AWG 3\.1/);
+    expect(calls).toHaveLength(0);
+  });
+});
+
 describe("cf-sync", () => {
   beforeEach(() => {
     // dispatch() -> api() -> authHeaders() needs some credential source; the

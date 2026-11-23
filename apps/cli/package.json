@@ -15,8 +15,10 @@
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json"
   },
+  "dependencies": {
+    "@amnezia/contracts": "workspace:*"
+  },
   "devDependencies": {
-    "@amnezia/contracts": "workspace:*",
     "tsx": "4.23.15"
   }
 }

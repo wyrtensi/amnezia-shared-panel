@@ -80,6 +80,11 @@ describe("client parameters view", () => {
     expect(html).not.toContain(`aria-label="${ru["clientParams.copy"].replace("{name}", "I2")}"`);
   });
 
+  it("makes the server scope tooltip trigger reachable by keyboard", () => {
+    const html = render(<ClientParametersTable data={data()} />);
+    expect(html).toMatch(/<div\b[^>]*tabindex="0"[^>]*>\s*<svg[\s\S]*?<\/svg>сервер<\/div>/);
+  });
+
   it("shows the issued value only where it differs", () => {
     const groups = parameterGroups(data());
     const row = (name: string) => groups.flatMap((group) => group.rows).find((entry) => entry.name === name)!;

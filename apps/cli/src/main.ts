@@ -2,7 +2,7 @@
 /**
  * amnezia-panel — admin CLI for the control plane.
  *
- * A thin, dependency-free client over the control-api's admin endpoints, so the
+ * A thin client over the control-api's admin endpoints, so the
  * panel can be driven from a shell / cron / another host in addition to the web
  * UI. Auth mirrors how the API resolves identity:
  *   - dev:  PANEL_ADMIN_EMAIL          -> x-dev-user-email header
@@ -14,7 +14,7 @@
  */
 
 import { readFile, writeFile } from "node:fs/promises";
-import { realpathSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { runBridgeTlsGate } from "./bridgeTlsGate.js";
 
@@ -37,6 +37,7 @@ import {
   KEY_LIMIT_MODES,
   WORKER_PERIOD_FIELDS,
   WORKER_PERIOD_FIELD_NAMES,
+  DEVICE_TYPE_ORDER,
   annotateNodeOrder,
   checkRecommendedPrefix,
   deviceTypeUsage,
@@ -50,6 +51,7 @@ import {
   matchesDomainFilter,
   matchesNodeFilter,
   normalizeDomain,
+  parseBoolFlag,
   parseDeviceType,
   parseEnumFlag,
   parseKeyLimitMode,
@@ -62,6 +64,7 @@ import {
   quotaCurrentLimit,
   quotaTargetLabel,
   ruleSources,
+  validateFlags,
 } from "./args.js";
 import type {
   AccessSyncStatusView,
@@ -117,14 +120,32 @@ import {
   BRIDGE_USAGE_LINES,
   bridgeErrorHint,
 } from "./bridges.js";
-import type {
-  AdminNodeEndpoint,
-  AdminReachabilityView,
-  ConfigRefreshResult,
-  ConfigRefreshStatus,
-  KeyBridgeInfo,
-  RulesRefreshStatus,
+import {
+  adminClientParametersSchema,
+  pinClientConfigRequestSchema,
+  type AdminNodeEndpoint,
+  type AdminReachabilityView,
+  type AwgConfigLevel,
+  type ConfigRefreshResult,
+  type ConfigRefreshStatus,
+  type KeyBridgeInfo,
+  type PinClientConfigRequest,
+  type ResolvedAwgClientSettings,
+  type RulesRefreshStatus,
 } from "@amnezia/contracts";
+import {
+  buildConfigFields,
+  CONFIG_LEVELS,
+  configSetRequest,
+  formatConfigShow,
+  keyCreationSettings,
+  parameterTable,
+  parseConfigChange,
+  parseSettingsFile,
+  presetRows,
+  type ConfigLevel,
+  type ConfigView,
+} from "./clientConfig.js";
 import {
   bridgeReachabilityLines,
   buildProbeUpsert,
@@ -245,7 +266,7 @@ function table(rows: Array<Record<string, string>>, columns: string[]): string {
   return [header, sep, ...lines].join("\n");
 }
 
-type AdminUser = {
+type AdminUser = ConfigView & {
   id: string;
   email: string;
   displayName: string | null;
@@ -264,11 +285,12 @@ type AdminUser = {
     [key: string]: unknown;
   } | null;
 };
-type AdminKey = {
+type AdminKey = AwgConfigLevel & {
   id: string;
   ownerId: string;
   nodeId: string;
   endpointName?: string | null;
+  config?: ResolvedAwgClientSettings | null;
   state: string;
   protocol: string;
   deviceLabel: string;
@@ -283,7 +305,7 @@ type AdminKey = {
   createdAt?: string | null;
   traffic?: { receivedBytes: string; sentBytes: string } | null;
 };
-type AdminNode = {
+type AdminNode = AwgConfigLevel & {
   id: string;
   name: string;
   publicEndpoints?: AdminNodeEndpoint[];
@@ -702,8 +724,7 @@ async function cmdStaleKeys(args: string[]): Promise<void> {
  * and a key whose state moved under the operator is refused rather than forced.
  */
 /**
- * Structural copy of `PURGEABLE_KEY_STATES` from @amnezia/contracts, for the
- * same reason as the other copies here: the CLI ships dependency-free. Pinned
+ * Structural copy of `PURGEABLE_KEY_STATES` from @amnezia/contracts, pinned
  * by a cross-check in `auditFilter.test.ts`.
  */
 const CLI_PURGEABLE_KEY_STATES = ["revoked"];
@@ -2517,11 +2538,13 @@ async function cmdUserRoutes(args: string[]): Promise<void> {
 async function cmdUserCreateKey(args: string[]): Promise<void> {
   const pos = positionals(args);
   const usage =
-    `Usage: user-create-key <id|email> --node=<uuid> [--device=<label>] [--protocol=awg3|awg2] [--route=full_tunnel|ru_blacklist] [--bridge=inherit|direct|route] [--bridge-route=<route-uuid>] [${deviceTypeUsage()}] [--name-server=true|false] [--name-label=true|false] [--name-number=true|false]\n  --device-type=ios with a --route other than full_tunnel is warned about: route profiles do not filter on iPhone or iPad.\n  The panel shows no QR code for ru_blacklist (Outside Runet). Use key-config --format=vpn --save to export a file.`;
+    `Usage: user-create-key <id|email> --node=<uuid> [--endpoint=<uuid>] [--device=<label>] [--protocol=awg3|awg2] [--route=full_tunnel|ru_blacklist] [--bridge=inherit|direct|route] [--bridge-route=<route-uuid>] [${deviceTypeUsage()}] [--name-server=true|false] [--name-label=true|false] [--name-number=true|false] [--preset=<id>] [--mtu=<1280-1420>]\n  --device-type=ios with a --route other than full_tunnel is warned about: route profiles do not filter on iPhone or iPad.\n  The panel shows no QR code for ru_blacklist (Outside Runet). Use key-config --format=vpn --save to export a file.`;
+  const protocol = flagOf(args, "protocol");
+  const clientSettings = keyCreationSettings(args, protocol);
   const id = await resolveUserId(pos[0], usage);
   const nodeId = flagOf(args, "node");
   if (!nodeId) throw new Error(usage);
-  const body: Record<string, unknown> = { nodeId };
+  const body: Record<string, unknown> = { nodeId, ...clientSettings };
   const endpointId = flagOf(args, "endpoint");
   if (endpointId !== undefined) body.endpointId = endpointId;
   // Which parts the AmneziaVPN client shows as the connection name. Omitted
@@ -2536,7 +2559,6 @@ async function cmdUserCreateKey(args: string[]): Promise<void> {
     if (value !== undefined) nameDisplay[field] = parseBoolFlag(flag, value);
   }
   if (Object.keys(nameDisplay).length > 0) body.nameDisplay = nameDisplay;
-  const protocol = flagOf(args, "protocol");
   if (protocol) body.protocol = protocol;
   const device = flagOf(args, "device");
   if (device) body.deviceLabel = device;
@@ -2560,6 +2582,142 @@ async function cmdUserCreateKey(args: string[]): Promise<void> {
   // key into a file, and that command needs the id the line above just gave.
   const delivery = routeDeliveryNotice(route);
   if (delivery) console.error(delivery);
+}
+
+const CONFIG_SHOW_USAGE = "config-show node|address|user|key <id|email>";
+const CONFIG_SET_USAGE = `config-set node|address|user|key <id|email> [--preset=<id>|--profile=inherit|--settings-file=<path|->]
+             [--randomize=true|false] [--mtu=<1280-1420>|inherit] [--device=<type>] [--clear]`;
+const CONFIG_PARAMS_USAGE = "config-params key|node <id> [--endpoint=<uuid>] [--json]";
+const CONFIG_PIN_USAGE = "config-pin <key-id> --to=user|device";
+
+function configId(ref: string, label: string): string {
+  if (!UUID_RE.test(ref)) throw new Error(`${label} must be a UUID`);
+  return ref.toLowerCase();
+}
+
+function configTarget(args: string[], usage: string): [ConfigLevel, string] {
+  const [rawLevel, ref, ...extra] = positionals(args);
+  const level = CONFIG_LEVELS.find((candidate) => candidate === rawLevel);
+  if (!level || !ref || extra.length > 0) throw new Error(`Usage: ${usage}`);
+  const id = level === "user" && !UUID_RE.test(ref) ? ref : configId(ref, `${level} id`);
+  return [level, id];
+}
+
+async function findConfigNode(id: string): Promise<AdminNode> {
+  const nodes = await api<AdminNode[]>("/api/admin/nodes");
+  const node = nodes.find((candidate) => candidate.id === id);
+  if (!node) throw new Error(`Node ${id} not found`);
+  return node;
+}
+
+async function findConfigAddress(id: string): Promise<{ nodeId: string; address: AdminNodeEndpoint }> {
+  const nodes = await api<AdminNode[]>("/api/admin/nodes");
+  for (const node of nodes) {
+    const address = node.publicEndpoints?.find((candidate) => candidate.id === id);
+    if (address) return { nodeId: node.id, address };
+  }
+  throw new Error(`Address ${id} not found`);
+}
+
+async function findConfigKey(id: string): Promise<AdminKey> {
+  const keys = await api<AdminKey[]>("/api/admin/keys");
+  const key = keys.find((candidate) => candidate.id === id);
+  if (!key) throw new Error(`Key ${id} not found`);
+  return key;
+}
+
+function cmdConfigPresets(args: string[]): void {
+  validateFlags(args, []);
+  if (args.length > 0) throw new Error("Usage: config-presets");
+  console.log(table(presetRows(), ["id", "label", "description"]));
+}
+
+async function cmdConfigShow(args: string[]): Promise<void> {
+  validateFlags(args, []);
+  const [level, ref] = configTarget(args, CONFIG_SHOW_USAGE);
+  switch (level) {
+    case "node":
+      console.log(formatConfigShow(level, ref, await findConfigNode(ref)));
+      return;
+    case "address":
+      console.log(formatConfigShow(level, ref, (await findConfigAddress(ref)).address));
+      return;
+    case "user": {
+      const user = await resolveAdminUser(ref, CONFIG_SHOW_USAGE);
+      console.log(formatConfigShow(level, user.id, user));
+      return;
+    }
+    case "key": {
+      const key = await findConfigKey(ref);
+      console.log(formatConfigShow(level, ref, key, key.config));
+      return;
+    }
+  }
+}
+
+async function cmdConfigSet(args: string[]): Promise<void> {
+  const [level, ref] = configTarget(args, CONFIG_SET_USAGE);
+  const change = parseConfigChange(level, args);
+  if (change.settingsFile !== undefined) {
+    const text = change.settingsFile === "-"
+      ? readFileSync(0, "utf8")
+      : await readFile(change.settingsFile, "utf8");
+    change.fields.awgGenerator = parseSettingsFile(text);
+  }
+
+  const readProfile = change.randomize !== undefined && change.fields.awgGenerator === undefined;
+  let id = ref;
+  let nodeId: string | undefined;
+  let current: ConfigView | undefined;
+  if (level === "address") {
+    const found = await findConfigAddress(ref);
+    nodeId = found.nodeId;
+    current = found.address;
+  } else if (level === "user" && (change.device || readProfile || !UUID_RE.test(ref))) {
+    const user = await resolveAdminUser(ref, CONFIG_SET_USAGE);
+    id = user.id;
+    current = user;
+  } else if (level === "node" && readProfile) {
+    current = await findConfigNode(ref);
+  } else if (level === "key" && readProfile) {
+    current = await findConfigKey(ref);
+  }
+  const request = configSetRequest(level, id, buildConfigFields(change, current), nodeId);
+  await api(request.path, { method: request.method, body: JSON.stringify(request.body) });
+  console.log(`${level} ${id} client settings updated`);
+}
+
+async function cmdConfigParams(args: string[]): Promise<void> {
+  validateFlags(args, ["endpoint"], ["json"]);
+  const [level, id] = configTarget(args, CONFIG_PARAMS_USAGE);
+  if (level !== "key" && level !== "node") throw new Error(`Usage: ${CONFIG_PARAMS_USAGE}`);
+  const endpoint = flagOf(args, "endpoint");
+  if (level === "key" && endpoint) throw new Error("--endpoint is only valid for node parameters");
+  const query = endpoint ? `?endpointId=${configId(endpoint, "--endpoint")}` : "";
+  const result = await api<unknown>(`/api/admin/${level}s/${id}/client-parameters${query}`);
+  const parameters = adminClientParametersSchema.parse(result);
+  if (wantsJson(args)) return json(parameters);
+  const { summary, rows } = parameterTable(parameters);
+  console.log(`${summary}\n${table(rows, ["parameter", "scope", "exported", "issued"])}`);
+}
+
+async function cmdConfigPin(args: string[]): Promise<void> {
+  validateFlags(args, ["to"]);
+  const [ref, ...extra] = positionals(args);
+  const payload = pinClientConfigRequestSchema.safeParse({ target: flagOf(args, "to") });
+  if (!ref || extra.length > 0 || !payload.success) throw new Error(`Usage: ${CONFIG_PIN_USAGE}`);
+  const id = configId(ref, "key id");
+  const result = await api<AwgConfigLevel & {
+    ownerId: string;
+    target: PinClientConfigRequest["target"];
+    deviceType?: string;
+    changed: boolean;
+  }>(`/api/admin/keys/${id}/pin-config`, {
+    method: "POST",
+    body: JSON.stringify(payload.data),
+  });
+  const target = result.target === "device" ? `${result.deviceType} devices for user ${result.ownerId}` : `user ${result.ownerId}`;
+  console.log(`Key ${id} ${result.changed ? "pinned" : "already pinned"} to ${target}`);
 }
 
 /**
@@ -2707,12 +2865,6 @@ async function cmdKeyConfigRefresh(args: string[]): Promise<void> {
 }
 
 /** Parse a `--flag=true|false` value, rejecting anything else. */
-function parseBoolFlag(name: string, value: string): boolean {
-  if (value === "true") return true;
-  if (value === "false") return false;
-  throw new Error(`--${name} expects true/false, got "${value}"`);
-}
-
 type GlobalRouteList = { cidrs: string[]; domains: string[] };
 type GlobalRouteProfile = { add: GlobalRouteList; exclude: GlobalRouteList };
 type GlobalRoutes = Record<"ru_blacklist", GlobalRouteProfile>;
@@ -3232,17 +3384,37 @@ Users (accept a user id OR email):
                   [--bridge=inherit|direct|route] [--bridge-route=<route-uuid>]
                   [${deviceTypeUsage()}]
                   [--name-server=true|false] [--name-label=true|false] [--name-number=true|false]
+                  [--preset=<id>] [--mtu=<1280-1420>]
                                          Create a key for a user. --bridge overrides AWG 3.1
                                          bridge routing for this key (inherit=policy, direct,
                                          or route pinned to --bridge-route=<uuid>). --device-type
                                          names the platform (ios covers iPhone and iPad). The
                                          --name-* flags pick which parts the VPN client shows as
-                                         the connection name (default: server + label, no number)
+                                         the connection name (default: server + label, no number).
+                                         --preset and --mtu set this AWG 3.1 key's client settings
   quota-approve <request-id> [note]      Approve a quota request. In per_node mode the limit
                                         lands on the request's own target (one server, or all
                                         servers); in global mode it always raises the shared
                                         total and leaves per-server limits untouched
   quota-reject <request-id> [note]       Reject a quota request
+
+AWG 3.1 client settings:
+  config-presets                         List preset ids, labels and descriptions
+  ${CONFIG_SHOW_USAGE}
+                                         Show stored settings and a key's effective sources.
+                                         The user level accepts an id or email
+  ${CONFIG_SET_USAGE}
+                                         Set only the fields supplied. --settings-file accepts
+                                         Custom JSON from a file or stdin and excludes --randomize.
+                                         --randomize alone edits an already set profile.
+                                         --device selects an address or user rule for a device type
+                                         (${DEVICE_TYPE_ORDER.join(", ")}).
+                                         --clear removes the selected device rule
+  ${CONFIG_PARAMS_USAGE}
+                                         Show exported and node-issued parameters.
+                                         --endpoint is for node parameters only
+  ${CONFIG_PIN_USAGE}
+                                         Copy a key's effective profile and MTU to its owner
 
 Nodes:
   node-add --name= --api-url= --api-key-file=<path|->  Register a node (see flags below;
@@ -4051,6 +4223,16 @@ export async function dispatch(argv: string[]): Promise<void> {
       return cmdUserRoutes(args);
     case "user-create-key":
       return cmdUserCreateKey(args);
+    case "config-presets":
+      return cmdConfigPresets(args);
+    case "config-show":
+      return cmdConfigShow(args);
+    case "config-set":
+      return cmdConfigSet(args);
+    case "config-params":
+      return cmdConfigParams(args);
+    case "config-pin":
+      return cmdConfigPin(args);
     case "quota":
     case "quota-requests":
       return cmdQuota(args);

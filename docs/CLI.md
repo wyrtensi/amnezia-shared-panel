@@ -179,7 +179,7 @@ The **first admin** is provisioned by env, not a command: the first login by any
 address in `BOOTSTRAP_ADMIN_EMAILS` becomes `admin`.
 
 `apps/cli` (binary `amnezia-panel`) is a thin admin client over the control-api.
-Build with `pnpm --filter @amnezia/cli build`, then run `node apps/cli/dist/main.js
+Build with `pnpm --filter @amnezia/cli... build`, then run `node apps/cli/dist/main.js
 <cmd>` (or `pnpm --filter @amnezia/cli dev -- <cmd>`). It authenticates as an admin
 via `CONTROL_API_URL` plus one of, in priority order:
 
@@ -419,6 +419,44 @@ docker exec "$CID" node apps/cli/dist/main.js cf-sync --status
 Dev example: `CONTROL_API_URL=http://127.0.0.1:3001 PANEL_ADMIN_EMAIL=admin@example.com
 node apps/cli/dist/main.js overview`. Typical flow to grant more keys:
 `… quota` (copy the request id) → `… quota-approve <req-id>`.
+
+#### AWG 3.1 client settings
+
+| Command | Purpose |
+| --- | --- |
+| `config-presets` | List preset IDs, labels and descriptions |
+| `config-show <level> <id>` | Show the stored profile and MTU at the selected level. At the address and user levels it includes device rules. For a key it also shows the effective profile, MTU and their sources |
+| `config-set <level> <id> <options>` | Change the named profile or MTU fields, or edit one address or user device rule |
+| `config-params key <key-id> [--json]` | Show the key's exported parameters and the node-issued values wherever they differ |
+| `config-params node <node-id> [--endpoint=<address-id>] [--json]` | Show the probe service key's client parameters at the node or selected address. A node without a sample key returns `SAMPLE_KEY_NOT_FOUND` |
+| `config-pin <key-id> --to=user\|device` | Copy the effective profile and MTU to the key's owner or to the owner's rule for the key's device type |
+| `user-create-key <id\|email> --node=<node-id> [--preset=<id>] [--mtu=<1280-1420>]` | Set initial client overrides when creating an AWG 3.1 key |
+
+`<level>` is `node`, `address`, `user` or `key`. Use the endpoint ID from
+`nodes --endpoints` for an address. A user can be identified by ID or email.
+On a key, profile and MTU each take the nearest level that sets them, in order
+from the key to the owner's device rule, owner, address's device rule, address,
+and node.
+
+`config-set` accepts these options.
+
+- `--preset=<id>` applies a preset. `--profile=inherit` clears a profile.
+  `--settings-file=<path|->` reads a complete generator settings object with
+  `"preset": "custom"` from a JSON file or standard input. Choose one of those
+  three profile options.
+- `--randomize=true|false` adjusts the selected preset or the profile already
+  set at that level. Use the JSON `randomizeKeys` field for Custom settings read
+  from a file.
+- `--mtu=<1280-1420>` sets a client MTU override. `--mtu=inherit` clears it.
+- `--device=<type>` edits the address or user's rule for one of `android`,
+  `ios`, `macos`, `windows`, `linux`, or `other`. `--clear` removes the named
+  device rule. Other device types keep the values read before the update.
+
+A pin writes a concrete MTU and profile, including the `issued` preset when
+the key uses the node-issued profile. Existing device rules still take
+precedence over a user-level pin for their device types. A device pin requires
+a key with a specified device type. Parameter inspection is read-only.
+See [AWG generator settings](./AWG-GENERATOR.md) for the settings format.
 
 #### Clearing out stale keys
 

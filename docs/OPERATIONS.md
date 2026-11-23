@@ -290,7 +290,7 @@ directory is a bind mount, so a plain `docker compose … restart awg3` is enoug
 not for a file the container reads through a mount. Re-run the §2 check
 afterwards: you have just edited the file that holds every peer.
 
-### Per-key client parameters: not a node edit
+### AWG 3.1 client parameters
 
 `Jc`, `Jmin`, `Jmax` and the order of `I1`-`I3` are sent by the client alone, and
 the server does not check them. The panel therefore gives every AWG 3.1 key its
@@ -314,6 +314,20 @@ own set instead of the node's, with nothing written to `awg0.conf`:
 
 The `H1`-`H4`, `S1`-`S4`, header protection and trailers stay the node's: those
 the server does check, and a key with a changed `H1` gets no handshake.
+
+Administrators can open **Parameters** for a key in **Users** or for a node or
+address in the node's configuration dialog. The view shows the values used
+for export alongside any differing values originally issued by the node.
+It exposes only the allowed Interface fields. If a node has no usable probe
+service key, its view returns `404 SAMPLE_KEY_NOT_FOUND`.
+
+Profile and MTU each follow the order key → user device rule → user → address
+device rule → address → node. Each takes the first value set. The probe
+measures its own service key using only the address and node settings. Use
+**Pin for the user** or **Pin for the user's devices** to copy a key's resolved
+profile settings and MTU to its owner. Draws remain per key for randomized
+profiles. Service-account and AWG 2.0 keys cannot be pinned. A device pin also
+requires a specified device type. See [AWG generator settings](AWG-GENERATOR.md#inspecting-and-pinning-parameters).
 
 ---
 

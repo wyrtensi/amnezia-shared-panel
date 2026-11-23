@@ -1558,6 +1558,26 @@ describe("client parameters view", () => {
     expect(repository.appendAudit).not.toHaveBeenCalled();
   });
 
+  it("matches downloads for object artifacts with mixed-case Interface fields", async () => {
+    const repository = createRepository();
+    const link = awg31Link({
+      conf: (text) => text.replace("Jc = 8", "jC = 8").replace("S3 = 20", "s3 = 20"),
+      outer: (awg) => { awg.last_config = JSON.parse(String(awg.last_config)) as unknown; },
+    });
+    vi.mocked(repository.findKeyConfig).mockResolvedValue(key31({
+      encrypted: encryptSecret(link, keyring, 1), awgGenerator: null, awgClientProfile: null,
+    }));
+    const service = createDefaultControlApiService({ repository, keyring });
+    const view = await service.getKeyClientParameters(admin, "key-1");
+    const download = await service.getKeyConfig(admin, "key-1", "vpn", false);
+    const { conf } = readCopies(String(download.body), decodeVpnLink);
+    for (const entry of view.exported) {
+      expect(entry.value, entry.name).toBe(new RegExp(`^${entry.name} = (.*?)$`, "im").exec(conf)?.[1] ?? null);
+    }
+    expect(view.exported.find((entry) => entry.name === "Jc")?.value).toBe("8");
+    expect(view.exported.find((entry) => entry.name === "MTU")?.value).toBe("1320");
+  });
+
   it("answers 403 to a non-admin, 404 to an unknown key and 409 to a 2.0 key", async () => {
     const repository = createRepository();
     const service = createDefaultControlApiService({ repository, keyring });
@@ -1622,6 +1642,16 @@ describe("client parameters view", () => {
       expect(statusOf(await service.getNodeClientParameters(employee, "node-1", null).catch((e: unknown) => e))).toBe(
         "403 FORBIDDEN",
       );
+    });
+
+    it("rejects a service artifact with an ambiguous Interface as unsupported", async () => {
+      const repository = createRepository();
+      const link = awg31Link({ conf: (text) => text.replace("[Peer]", "MTU = 1280\nmtu = 1320\n[Peer]") });
+      vi.mocked(repository.findServiceKeyConfig).mockResolvedValue(sample({ encrypted: encryptSecret(link, keyring, 1) }));
+      const service = createDefaultControlApiService({ repository, keyring });
+      await expect(service.getNodeClientParameters(admin, "node-1", null))
+        .rejects.toMatchObject({ statusCode: 409, code: "AWG_GENERATOR_UNSUPPORTED" });
+      expect(repository.recordConfigExport).not.toHaveBeenCalled();
     });
   });
 });

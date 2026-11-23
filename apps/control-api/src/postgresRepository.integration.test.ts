@@ -8048,10 +8048,13 @@ describe("PostgresControlRepository AWG 3.1 config refresh", () => {
     expect(await userRow(owner.id)).toMatchObject({ awgGenerator: settingsOf("stun"), awgMtu: 1360 });
     await repository().adminAction(admin, "users", owner.id, "set-config", { awgMtu: null });
     expect(await userRow(owner.id)).toMatchObject({ awgGenerator: settingsOf("stun"), awgMtu: null });
-    expect((await auditsOf("admin.users.set-config", owner.id)).map(({ metadata }) => metadata)).toEqual([
+    const settingsAudits = (await auditsOf("admin.users.set-config", owner.id)).map(({ metadata }) => metadata);
+    expect(settingsAudits).toHaveLength(2);
+    // The audit list has no ordering contract; verify every exact event once.
+    expect(settingsAudits).toEqual(expect.arrayContaining([
       { preset: "stun", awgMtu: 1360 },
       { preset: "stun", awgMtu: null },
-    ]);
+    ]));
     const probe = await seedServiceAccount();
     await expect(repository().adminAction(admin, "users", probe.id, "set-config", { awgMtu: 1300 }))
       .rejects.toMatchObject({ code: "SERVICE_ACCOUNT" });
@@ -8233,24 +8236,160 @@ describe("PostgresControlRepository AWG 3.1 config refresh", () => {
     await repository().adminAction(admin, "users", owner.id, "set-config", { awgDeviceRules: null });
     expect(await userRow(owner.id)).toMatchObject({ awgGenerator: settingsOf("dns_response"), awgDeviceRules: null });
     await repository().adminAction(admin, "users", owner.id, "set-config", { awgMtu: 1360 });
-    expect((await auditsOf("admin.users.set-config", owner.id)).map(({ metadata }) => metadata)).toEqual([
+    const settingsAudits = (await auditsOf("admin.users.set-config", owner.id)).map(({ metadata }) => metadata);
+    expect(settingsAudits).toHaveLength(4);
+    expect(settingsAudits).toEqual(expect.arrayContaining([
       { preset: "dns_response", awgMtu: null, deviceRules: ["android", "ios"] },
       { preset: "dns_response", awgMtu: null, deviceRules: ["android"] },
       { preset: "dns_response", awgMtu: null, deviceRules: [] },
       { preset: "dns_response", awgMtu: 1360 },
-    ]);
+    ]));
 
     await expect(repository().adminAction(admin, "users", owner.id, "set-config", {
       awgDeviceRules: { unspecified: { awgMtu: 1300 } },
-    })).rejects.toThrow();
+    })).rejects.toMatchObject({ name: "ZodError" });
     const keyId = await seedKey(owner.id);
     await expect(repository().adminAction(admin, "keys", keyId, "set-config", {
       awgDeviceRules: { ios: { awgMtu: 1300 } },
-    })).rejects.toThrow();
+    })).rejects.toMatchObject({ name: "ZodError" });
   });
 
   const pin = (admin: Actor, keyId: string, target: "user" | "device") =>
     repository().adminAction(admin, "keys", keyId, "pin-config", { target });
+
+  runDatabaseTest("pin waits for the owner before locking the key", async () => {
+    if (!database) return;
+    const admin = await seedOwner("admin");
+    const owner = await seedOwner();
+    const keyId = await seedKey(owner.id);
+    let releaseOwner!: () => void;
+    let ownerLocked!: () => void;
+    const release = new Promise<void>((resolve) => { releaseOwner = resolve; });
+    const acquired = new Promise<void>((resolve) => { ownerLocked = resolve; });
+    const holder = database.db.transaction(async (tx) => {
+      await tx.select({ id: users.id }).from(users).where(eq(users.id, owner.id)).for("update");
+      ownerLocked();
+      await release;
+    });
+    await acquired;
+    const pending = pin(admin, keyId, "user");
+    // Observe the actual lock wait rather than relying on scheduler timing.
+    try {
+      let blocked = false;
+      for (let attempt = 0; attempt < 100 && !blocked; attempt += 1) {
+        const waiting = await database.db.execute(sql`
+          select pid from pg_stat_activity
+          where datname = current_database() and wait_event_type = 'Lock'
+            and lower(query) like '%for%update%' and lower(query) like '%users%'
+        `);
+        blocked = waiting.length > 0;
+        if (!blocked) await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      expect(blocked).toBe(true);
+      // Offboarding can now lock/revoke keys without a key -> owner cycle.
+      await database.db.transaction(async (tx) => {
+        await tx.execute(sql`select id from vpn_keys where id = ${keyId} for update nowait`);
+      });
+    } finally {
+      releaseOwner();
+      await holder;
+      await pending;
+    }
+  });
+
+  runDatabaseTest.each(["pin-config", "set-config", "disable", "enable", "revoke"])(
+    "rejects a malformed key id before %s reaches PostgreSQL", async (action) => {
+      const admin = await seedOwner("admin");
+      const payload = action === "pin-config" ? { target: "user" } : { awgMtu: 1320 };
+      await expect(repository().adminAction(admin, "keys", "not-a-uuid", action, payload))
+        .rejects.toMatchObject({ statusCode: 400, code: "BAD_REQUEST" });
+    },
+  );
+
+  runDatabaseTest.each(["pin-config", "offboard", "set-role"])(
+    "%s does not conflict with audit foreign-key locks on administrators", async (action) => {
+      if (!database) return;
+      const admin = await seedOwner("admin");
+      const owner = await seedOwner("admin");
+      const keyId = await seedKey(owner.id);
+      let releaseLocks!: () => void;
+      let locksReady!: () => void;
+      const gate = new Promise<void>((resolve) => { releaseLocks = resolve; });
+      const ready = new Promise<void>((resolve) => { locksReady = resolve; });
+      const holder = database.db.transaction(async (tx) => {
+        await tx.select({ id: users.id }).from(users).where(inArray(users.id, [admin.id, owner.id])).for("key share");
+        locksReady();
+        await gate;
+      });
+      await ready;
+      let settled = false;
+      const pending = (action === "pin-config"
+        ? pin(admin, keyId, "user")
+        : repository().adminAction(admin, "users", owner.id, action, { role: "user" }))
+        .finally(() => { settled = true; });
+      try {
+        let blocked = false;
+        for (let attempt = 0; attempt < 250 && !settled && !blocked; attempt += 1) {
+          const waiting = await database.db.execute(sql`
+            select pid from pg_stat_activity where datname = current_database()
+              and wait_event_type = 'Lock' and lower(query) like '%users%'
+          `);
+          blocked = waiting.length > 0;
+          if (!blocked && !settled) await new Promise((resolve) => setTimeout(resolve, 20));
+        }
+        expect(blocked, "Non-key edits must coexist with the audit FK's KEY SHARE locks").toBe(false);
+        expect(settled).toBe(true);
+      } finally {
+        releaseLocks();
+        await holder;
+        await pending;
+      }
+    },
+  );
+
+  runDatabaseTest("samples the service key and address settings from one database snapshot", async () => {
+    if (!database) return;
+    const node = await seedNode();
+    await database.db.update(nodes).set({ awgMtu: 1280 }).where(eq(nodes.id, node));
+    const [address] = await database.db.insert(nodeVpnEndpoints).values({
+      nodeId: node, ordinal: 1, address: "203.0.113.81", name: "Primary", awgMtu: 1300,
+    }).returning();
+    if (!address) throw new Error("Address fixture missing");
+    const keyId = await seedKey((await seedServiceAccount()).id, { onNode: node });
+    let allowUpdate!: () => void;
+    let nodeLocked!: () => void;
+    const gate = new Promise<void>((resolve) => { allowUpdate = resolve; });
+    const ready = new Promise<void>((resolve) => { nodeLocked = resolve; });
+    const writer = database.db.transaction(async (tx) => {
+      await tx.execute(sql`lock table nodes in access exclusive mode`);
+      nodeLocked();
+      await gate;
+      await tx.update(nodes).set({ awgMtu: 1400 }).where(eq(nodes.id, node));
+      await tx.update(nodeVpnEndpoints).set({ awgMtu: null }).where(eq(nodeVpnEndpoints.id, address.id));
+      await tx.update(vpnKeys).set({ state: "revoked" }).where(eq(vpnKeys.id, keyId));
+    });
+    await ready;
+    const pending = repository().findServiceKeyConfig(node, address.id);
+    try {
+      let blocked = false;
+      for (let attempt = 0; attempt < 250 && !blocked; attempt += 1) {
+        const waiting = await database.db.execute(sql`
+          select pid from pg_stat_activity where datname = current_database()
+            and wait_event_type = 'Lock' and lower(query) like '%"nodes"%'
+        `);
+        blocked = waiting.length > 0;
+        if (!blocked) await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      expect(blocked, "The sample read must reach the locked node table").toBe(true);
+    } finally {
+      allowUpdate();
+      await writer;
+    }
+    const sample = await pending;
+    expect(sample?.keyId).toBe(keyId);
+    expect(sample?.settings.mtu).toBe(1300);
+    expect(await repository().findServiceKeyConfig(node, address.id)).toBeNull();
+  });
 
   runDatabaseTest("pins a key's effective profile and MTU to the owner", async () => {
     if (!database) return;
@@ -8358,7 +8497,7 @@ describe("PostgresControlRepository AWG 3.1 config refresh", () => {
     await expect(pin(admin, probeKey, "user")).rejects.toMatchObject({ statusCode: 409, code: "PIN_UNAVAILABLE" });
     await expect(pin(admin, randomUUID(), "user")).rejects.toMatchObject({ statusCode: 404, code: "KEY_NOT_FOUND" });
     await expect(repository().adminAction(admin, "keys", unspecified, "pin-config", { target: "node" }))
-      .rejects.toThrow();
+      .rejects.toMatchObject({ name: "ZodError" });
     expect(await userRow(owner.id)).toMatchObject({ awgGenerator: null, awgMtu: null, awgDeviceRules: null });
     expect(await auditsOf("admin.keys.pin-config", unspecified)).toEqual([]);
   });

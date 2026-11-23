@@ -113,13 +113,17 @@ export function NodeGeneratorSettings({ nodeId, value, mtu = null, endpoints, on
             {nodeId ? (
               <Button
                 type="button" variant="outline" size="sm" className="shrink-0"
+                disabled={pending}
                 title={t("clientParams.nodeAction", { name: selected?.name ?? t("generator.node") })}
-                onClick={() => setParameters({
-                  kind: "node",
-                  id: nodeId,
-                  endpointId: selected?.id ?? null,
-                  label: selected?.name ?? t("generator.node"),
-                })}
+                onClick={() => {
+                  if (pendingRef.current) return;
+                  setParameters({
+                    kind: "node",
+                    id: nodeId,
+                    endpointId: selected?.id ?? null,
+                    label: selected?.name ?? t("generator.node"),
+                  });
+                }}
               >
                 <ListTree className="size-4" /> {t("clientParams.open")}
               </Button>

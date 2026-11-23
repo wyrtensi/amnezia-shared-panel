@@ -3511,61 +3511,62 @@ export class PostgresControlRepository implements ControlRepository {
     endpointId: string | null,
   ): Promise<ServiceKeyConfig | null> => {
     if (!UUID_PATTERN.test(nodeId) || (endpointId !== null && !UUID_PATTERN.test(endpointId))) return null;
-    const db = this.options.db;
-    const [key] = await db
-      .select({
-        id: vpnKeys.id,
-        state: vpnKeys.state,
-        configCiphertext: vpnKeys.configCiphertext,
-        configNonce: vpnKeys.configNonce,
-        configAuthTag: vpnKeys.configAuthTag,
-        configKeyVersion: vpnKeys.configKeyVersion,
-        awgClientProfile: vpnKeys.awgClientProfile,
-      })
-      .from(vpnKeys)
-      .innerJoin(users, eq(users.id, vpnKeys.ownerId))
-      .where(and(
-        eq(users.serviceAccount, true),
-        eq(vpnKeys.nodeId, nodeId),
-        eq(vpnKeys.protocol, "awg3"),
-        notInArray(vpnKeys.state, ["revoked", "revoking"]),
-      ))
-      .orderBy(desc(vpnKeys.createdAt), desc(vpnKeys.id))
-      .limit(1);
-    if (
-      !key ||
-      key.state !== "active" ||
-      !key.configCiphertext ||
-      !key.configNonce ||
-      !key.configAuthTag ||
-      key.configKeyVersion === null
-    ) {
-      return null;
-    }
-    const [node] = await db.select({ awgGenerator: nodes.awgGenerator, awgMtu: nodes.awgMtu })
-      .from(nodes).where(eq(nodes.id, nodeId)).limit(1);
-    if (!node) return null;
-    let address: { awgGenerator: AwgGeneratorSettings | null; awgMtu: number | null } | null = null;
-    if (endpointId !== null) {
-      [address = null] = await db
-        .select({ awgGenerator: nodeVpnEndpoints.awgGenerator, awgMtu: nodeVpnEndpoints.awgMtu })
-        .from(nodeVpnEndpoints)
-        .where(and(eq(nodeVpnEndpoints.id, endpointId), eq(nodeVpnEndpoints.nodeId, nodeId)))
+    return this.options.db.transaction(async (db) => {
+      const [key] = await db
+        .select({
+          id: vpnKeys.id,
+          state: vpnKeys.state,
+          configCiphertext: vpnKeys.configCiphertext,
+          configNonce: vpnKeys.configNonce,
+          configAuthTag: vpnKeys.configAuthTag,
+          configKeyVersion: vpnKeys.configKeyVersion,
+          awgClientProfile: vpnKeys.awgClientProfile,
+        })
+        .from(vpnKeys)
+        .innerJoin(users, eq(users.id, vpnKeys.ownerId))
+        .where(and(
+          eq(users.serviceAccount, true),
+          eq(vpnKeys.nodeId, nodeId),
+          eq(vpnKeys.protocol, "awg3"),
+          notInArray(vpnKeys.state, ["revoked", "revoking"]),
+        ))
+        .orderBy(desc(vpnKeys.createdAt), desc(vpnKeys.id))
         .limit(1);
-      if (!address) return null;
-    }
-    return {
-      keyId: key.id,
-      encrypted: {
-        ciphertext: key.configCiphertext,
-        nonce: key.configNonce,
-        authTag: key.configAuthTag,
-        keyVersion: key.configKeyVersion,
-      },
-      protocol: "awg3",
-      awgClientProfile: key.awgClientProfile ?? null,
-      settings: resolveAwgClientSettings({ address, node }),
-    };
+      if (
+        !key ||
+        key.state !== "active" ||
+        !key.configCiphertext ||
+        !key.configNonce ||
+        !key.configAuthTag ||
+        key.configKeyVersion === null
+      ) {
+        return null;
+      }
+      const [node] = await db.select({ awgGenerator: nodes.awgGenerator, awgMtu: nodes.awgMtu })
+        .from(nodes).where(eq(nodes.id, nodeId)).limit(1);
+      if (!node) return null;
+      let address: { awgGenerator: AwgGeneratorSettings | null; awgMtu: number | null } | null = null;
+      if (endpointId !== null) {
+        [address = null] = await db
+          .select({ awgGenerator: nodeVpnEndpoints.awgGenerator, awgMtu: nodeVpnEndpoints.awgMtu })
+          .from(nodeVpnEndpoints)
+          .where(and(eq(nodeVpnEndpoints.id, endpointId), eq(nodeVpnEndpoints.nodeId, nodeId)))
+          .limit(1);
+        if (!address) return null;
+      }
+      return {
+        keyId: key.id,
+        encrypted: {
+          ciphertext: key.configCiphertext,
+          nonce: key.configNonce,
+          authTag: key.configAuthTag,
+          keyVersion: key.configKeyVersion,
+        },
+        protocol: "awg3",
+        awgClientProfile: key.awgClientProfile ?? null,
+        settings: resolveAwgClientSettings({ address, node }),
+      };
+    }, { isolationLevel: "repeatable read", accessMode: "read only" });
   };
 
   enqueueOwnRotate = async (actor: Actor, keyId: string): Promise<void> => {
@@ -5110,6 +5111,9 @@ export class PostgresControlRepository implements ControlRepository {
     payload: unknown,
   ): Promise<unknown> => {
     if (!targetId) throw new ApiError(400, "Target id is required", "BAD_REQUEST");
+    if (resource === "keys" && !UUID_PATTERN.test(targetId)) {
+      throw new ApiError(400, "Key id must be a UUID", "BAD_REQUEST");
+    }
     let result: unknown;
 
     // The probe's service account is managed by the panel: no admin action may
@@ -5294,14 +5298,14 @@ export class PostgresControlRepository implements ControlRepository {
       });
     } else if (resource === "users" && action === "offboard") {
       return this.options.db.transaction(async (tx) => {
-        // Lock the active-admin rows FOR UPDATE, exactly like set-role, so two
+        // Lock the active-admin rows FOR NO KEY UPDATE, like set-role, so two
         // concurrent offboards serialize instead of both reading "2 admins"
-        // and both proceeding.
+        // and both proceeding. KEY SHARE audit FK checks remain compatible.
         const admins = await tx
           .select({ id: users.id })
           .from(users)
           .where(and(eq(users.role, "admin"), eq(users.status, "active")))
-          .for("update");
+          .for("no key update");
         const [target] = await tx
           .select({ role: users.role, status: users.status })
           .from(users)
@@ -5322,7 +5326,7 @@ export class PostgresControlRepository implements ControlRepository {
         // *other* active admin target keeps `admins.length` at two or more,
         // and offboarding itself is already refused above by SELF_OFFBOARD.
         // The only way `admins` ever locks down to exactly one row is two
-        // admins racing to offboard each other at once -- FOR UPDATE
+        // admins racing to offboard each other at once -- row locking
         // serialises them, and the loser's re-read (under READ COMMITTED)
         // finds the winner's target already disabled, leaving one active
         // admin, namely itself, as this call's target. That race is what
@@ -5708,14 +5712,15 @@ export class PostgresControlRepository implements ControlRepository {
       return this.options.db.transaction(async (tx) => {
         // Never allow demoting the last remaining admin (avoids lockout).
         if (role === "user") {
-          // Lock the active-admin rows FOR UPDATE so two concurrent set-role
+          // Lock the active-admin rows FOR NO KEY UPDATE so concurrent set-role
           // calls serialize: the second sees the first's committed demotion
           // instead of both reading "2 admins" and both demoting to zero.
+          // Non-key updates permit concurrent audit FK checks (KEY SHARE).
           const admins = await tx
             .select({ id: users.id })
             .from(users)
             .where(and(eq(users.role, "admin"), eq(users.status, "active")))
-            .for("update");
+            .for("no key update");
           const [target] = await tx
             .select({ role: users.role })
             .from(users)
@@ -5830,6 +5835,20 @@ export class PostgresControlRepository implements ControlRepository {
     } else if (resource === "keys" && action === "pin-config") {
       const { target } = pinClientConfigRequestSchema.parse(payload);
       return this.options.db.transaction(async (tx) => {
+        // Follow the owner -> key order used by offboarding and provisioning.
+        // Read the owner id without a key lock, then recheck it after locking.
+        const [identity] = await tx.select({ ownerId: vpnKeys.ownerId })
+          .from(vpnKeys).where(eq(vpnKeys.id, targetId));
+        if (!identity) throw new ApiError(404, "Key not found", "KEY_NOT_FOUND");
+        // Only non-key settings change. Allow audit FK checks (KEY SHARE)
+        // while still serializing edits of the same owner's rules.
+        const [owner] = await tx.select({
+          serviceAccount: users.serviceAccount,
+          awgGenerator: users.awgGenerator,
+          awgMtu: users.awgMtu,
+          awgDeviceRules: users.awgDeviceRules,
+        }).from(users).where(eq(users.id, identity.ownerId)).for("no key update");
+        if (!owner) throw new ApiError(404, "Key not found", "KEY_NOT_FOUND");
         const [key] = await tx.select({
           id: vpnKeys.id,
           ownerId: vpnKeys.ownerId,
@@ -5839,17 +5858,8 @@ export class PostgresControlRepository implements ControlRepository {
           deviceType: vpnKeys.deviceType,
           awgGenerator: vpnKeys.awgGenerator,
           awgMtu: vpnKeys.awgMtu,
-        }).from(vpnKeys).where(eq(vpnKeys.id, targetId)).for("update");
+        }).from(vpnKeys).where(and(eq(vpnKeys.id, targetId), eq(vpnKeys.ownerId, identity.ownerId))).for("update");
         if (!key) throw new ApiError(404, "Key not found", "KEY_NOT_FOUND");
-        // The owner row is locked too, so the rule merge below cannot race a
-        // set-config of the same user.
-        const [owner] = await tx.select({
-          serviceAccount: users.serviceAccount,
-          awgGenerator: users.awgGenerator,
-          awgMtu: users.awgMtu,
-          awgDeviceRules: users.awgDeviceRules,
-        }).from(users).where(eq(users.id, key.ownerId)).for("update");
-        if (!owner) throw new ApiError(404, "Key not found", "KEY_NOT_FOUND");
         if (key.protocol !== "awg3") {
           throw new ApiError(409, "Only AWG 3.1 keys can be pinned", PIN_UNAVAILABLE);
         }

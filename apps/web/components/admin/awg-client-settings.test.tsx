@@ -244,4 +244,24 @@ describe("user settings dialog", () => {
     expect(html).toContain(ru["awgUser.tab.profile"]);
     expect(html).toContain(ru["awgUser.tab.keys"]);
   });
+
+  it("disables the settings tabs and key parameters while a save is pending", () => {
+    const user = { awgGenerator: null, awgMtu: null, awgDeviceRules: null };
+    const controls = (pending: boolean) => {
+      const html = render(
+        <AwgUserSettingsPanel
+          initialTab="keys" user={user} keys={[key({})]} pending={pending}
+          onSave={() => Promise.resolve(true)} onShowParameters={noop}
+        />,
+      );
+      return (html.match(/<button\b[^>]*>[\s\S]*?<\/button>/g) ?? []).filter((button) =>
+        button.includes('role="tab"') || button.endsWith(`${ru["clientParams.open"]}</button>`));
+    };
+    const pending = controls(true);
+    expect(pending).toHaveLength(4);
+    expect(pending.every((button) => button.includes(' disabled=""'))).toBe(true);
+    const idle = controls(false);
+    expect(idle).toHaveLength(4);
+    expect(idle.every((button) => !button.includes(' disabled=""'))).toBe(true);
+  });
 });

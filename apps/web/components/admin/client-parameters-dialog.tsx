@@ -159,8 +159,12 @@ export function ClientParametersTable({ data }: { data: Pick<AdminClientParamete
               {group.server ? (
                 <Tooltip>
                   <TooltipTrigger asChild>
-                    <Badge variant="outline" className="px-1.5 py-0 text-[10px]">
-                      <ServerCog className="mr-1 size-3" />
+                    <Badge
+                      variant="outline"
+                      tabIndex={0}
+                      className="px-1.5 py-0 text-[10px] focus-visible:ring-2 focus-visible:ring-ring"
+                    >
+                      <ServerCog className="mr-1 size-3" aria-hidden="true" />
                       {t("clientParams.serverScope")}
                     </Badge>
                   </TooltipTrigger>
@@ -459,7 +463,13 @@ export function ClientParametersDialog({ target, onClose, onPinned }: {
   if (target && target !== shown) setShown(target);
   const path = target ? clientParametersPath(target) : null;
   const [loaded, setLoaded] = React.useState<{ path: string; state: ClientParametersState } | null>(null);
+  const [previousPath, setPreviousPath] = React.useState(path);
   const [revision, setRevision] = React.useState(0);
+  if (path !== previousPath) {
+    setPreviousPath(path);
+    // Keep the snapshot through the closing animation and reset it on every open.
+    if (path) setLoaded(null);
+  }
   React.useEffect(() => {
     if (!path) return;
     let active = true;
@@ -479,8 +489,8 @@ export function ClientParametersDialog({ target, onClose, onPinned }: {
     );
     return () => { active = false; };
   }, [path, revision]);
-  // A refetch keeps the current table until the new one arrives; another target starts from loading.
-  const state: ClientParametersState = loaded && loaded.path === path ? loaded.state : { status: "loading" };
+  const shownPath = shown ? clientParametersPath(shown) : null;
+  const state: ClientParametersState = loaded && loaded.path === shownPath ? loaded.state : { status: "loading" };
   const retry = () => {
     setLoaded(null);
     setRevision((value) => value + 1);

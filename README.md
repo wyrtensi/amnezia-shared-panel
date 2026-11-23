@@ -47,6 +47,10 @@ What that buys an operator, concretely:
   `.conf` file or a QR code, and can rename or reissue a key without asking
   anyone. Each AWG 3.1 key has its own client-side junk parameters, and its
   owner can draw new ones with **Refresh config** without losing the key. Quotas are per server or a shared pool, per user or panel-wide.
+- **AWG 3.1 client settings.** Administrators can inspect the exported and
+  issued parameters of a key or a node address, set per-user device rules,
+  and pin a key's effective profile and MTU to its owner or device type.
+  [AWG generator settings](docs/AWG-GENERATOR.md)
 - **Routing per key.** Full tunnel or Outside Runet (`ru_blacklist`,
   defaulting to **E-Core** `compact_world`: ~1,250 routes covering ~85% of non-RU
   IPv4 plus non-RU IPv6 with 0% RU/LAN/Apple/Valve AS32590 SteamCache overlap; or
