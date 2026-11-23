@@ -7,6 +7,7 @@ import {
   deviceRuleFor,
   nodeEndpointDefaultName,
   pinClientConfigRequestSchema,
+  selectDefaultNodeEndpoint,
   adminClientParametersSchema,
   AWG_CLIENT_PARAMETER_NAMES,
   awgClientParameterScope,
@@ -51,6 +52,27 @@ describe("nodeEndpointDefaultName", () => {
     expect(nodeEndpointDefaultName(long, 1)).toHaveLength(120);
     expect(nodeEndpointDefaultName(long, 2)).toHaveLength(120);
     expect(nodeEndpointDefaultName(long, 2).endsWith("-2")).toBe(true);
+  });
+});
+
+describe("selectDefaultNodeEndpoint", () => {
+  const primary = { id: "primary", ordinal: 1, enabled: true };
+  const backup = { id: "backup", ordinal: 2, enabled: true };
+  const third = { id: "third", ordinal: 3, enabled: true };
+
+  it("uses the first policy rank for each address and falls back to ordinal", () => {
+    const endpoints = [third, primary, backup];
+    expect(selectDefaultNodeEndpoint(endpoints, ["backup", "primary", "backup"], null)).toBe(backup);
+    expect(selectDefaultNodeEndpoint(endpoints, [], null)).toBe(primary);
+    expect(endpoints).toEqual([third, primary, backup]);
+  });
+
+  it("skips disabled and disallowed addresses even if they rank first", () => {
+    const disabled = { ...backup, enabled: false };
+    const endpoints = [primary, disabled, third];
+    const order = ["backup", "primary", "third"];
+    expect(selectDefaultNodeEndpoint(endpoints, order, new Set(["backup", "third"]))).toBe(third);
+    expect(selectDefaultNodeEndpoint(endpoints, order, new Set())).toBeUndefined();
   });
 });
 

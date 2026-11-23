@@ -74,6 +74,7 @@ import {
   isPurgeableKeyState,
   isRevocableKeyState,
   normalizeAccessDomain,
+  selectDefaultNodeEndpoint,
   UPDATE_NOTICE_SHOWINGS,
   type AwgGeneratorSettings,
   type Bridge,
@@ -3254,15 +3255,23 @@ function CreateKeyDialog({
   const userUseBridge = Boolean(
     user?.policyOverride?.useBridge ?? globalPolicy.useBridge,
   );
-  // What the new key inherits without its own settings: the same levels the
-  // API resolves (its address, or the node's primary one).
-  const keyAddress = endpoint ?? endpoints.find((item) => item.ordinal === 1) ?? null;
+  const allowedEndpointIds =
+    user?.policyOverride?.allowedEndpointIds === null
+      ? null
+      : (user && explicitEndpointIdsOf(user)) ?? globalPolicy.allowedEndpointIds;
+  const keyAddress = endpoint ?? (protocol === "awg3"
+    ? selectDefaultNodeEndpoint(
+        node?.publicEndpoints ?? [],
+        globalPolicy.endpointOrder ?? [],
+        allowedEndpointIds ? new Set(allowedEndpointIds) : null,
+      )
+    : node?.publicEndpoints?.find((item) => item.ordinal === 1));
   const inheritedClient = inheritedForNewKey({
     user: user
       ? { awgGenerator: user.awgGenerator ?? null, awgMtu: user.awgMtu ?? null, awgDeviceRules: user.awgDeviceRules ?? null }
       : null,
     deviceType,
-    endpoint: keyAddress,
+    endpoint: keyAddress ?? null,
     node: node ?? null,
   });
 
@@ -3270,7 +3279,7 @@ function CreateKeyDialog({
   const nextKeyNumber =
     userKeys.reduce((max, key) => Math.max(max, key.keyNumber ?? 0), 0) + 1;
   const previewName = composeKeyDisplayName({
-    serverName: endpoint?.name ?? endpoints[0]?.name ??
+    serverName: keyAddress?.name ??
       (node?.publicName?.trim() || node?.name || ""),
     label: deviceLabel.trim(),
     keyNumber: nextKeyNumber,
