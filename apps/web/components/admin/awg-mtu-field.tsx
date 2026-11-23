@@ -6,6 +6,7 @@ import {
   type AwgConfigLevelName,
   type AwgGeneratorSettings,
 } from "@amnezia/contracts";
+import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -16,6 +17,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { useT } from "@/lib/i18n/provider";
+import { cn } from "@/lib/utils";
 
 /** Where an inherited value comes from, as `resolveAwgClientSettings` reports it. */
 export type AwgSettingSource = AwgConfigLevelName | "profile" | "default";
@@ -113,5 +115,34 @@ export function MtuField({ id, value, inherited, disabled, onChange }: {
             : t("awgSettings.mtuInheritHint", { mtu: inherited.mtu, source: sourceLabel(inherited.source) })}
       </p>
     </div>
+  );
+}
+
+/** A source named as a small recessed chip, the way the endpoint list marks its primary address. */
+export function AwgSourceBadge({ source }: { source: InheritedMtu["source"] }) {
+  const sourceLabel = useAwgSourceLabel();
+  return (
+    <Badge variant="outline" className="shrink-0 px-1.5 py-0 text-[10px] font-normal text-muted-foreground">
+      {sourceLabel(source)}
+    </Badge>
+  );
+}
+
+/** "STUN request [from the user] · MTU 1360 [from the key]": what applies and where each comes from. */
+export function AwgSourcedSettings({ profile, profileSource, mtu, mtuSource, className }: {
+  profile: string;
+  profileSource: InheritedMtu["source"];
+  mtu: number;
+  mtuSource: InheritedMtu["source"];
+  className?: string;
+}) {
+  return (
+    <span className={cn("inline-flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1", className)}>
+      <span className="min-w-0 break-words font-medium text-foreground">{profile}</span>
+      <AwgSourceBadge source={profileSource} />
+      <span aria-hidden className="text-muted-foreground">·</span>
+      <span className="tabular whitespace-nowrap font-medium text-foreground">MTU {mtu}</span>
+      <AwgSourceBadge source={mtuSource} />
+    </span>
   );
 }

@@ -6,10 +6,14 @@ import { messages } from "@/lib/i18n/messages";
 import {
   AwgKeySettingsSummary,
   AwgNewKeySettings,
+  AwgUserSettingsPanel,
   clientSettingsValid,
+  deviceRulesChange,
   inheritedForNewKey,
+  userRulesInherited,
+  UserKeysInEffect,
 } from "./awg-client-settings";
-import { DeviceRulesEditor, deviceRuleRows, withDeviceRule } from "./awg-device-rules-editor";
+import { addressRulesInherited, DeviceRulesEditor, deviceRuleRows, withDeviceRule } from "./awg-device-rules-editor";
 import { inheritedMtuWith, MtuField } from "./awg-mtu-field";
 import { GeneratorEditor, initialGeneratorDraft, profileToSave } from "./node-generator-settings";
 
@@ -58,7 +62,7 @@ describe("device type rules", () => {
     const html = render(
       <DeviceRulesEditor
         rules={rules}
-        inherited={{ awgGenerator: null, mtu: 1280, mtuFrom: "default" }}
+        inherited={addressRulesInherited({ awgGenerator: null, mtu: 1280, mtuFrom: "default" }, () => "Без профиля")}
         pending={false}
         onSave={() => Promise.resolve(true)}
       />,
@@ -103,6 +107,19 @@ describe("key settings", () => {
       endpoint: { awgDeviceRules: { ios: { awgGenerator: preset("stun"), awgMtu: 1340 } } },
       node: { awgMtu: 1400 },
     })).toMatchObject({ profileFrom: null, mtu: 1400, mtuFrom: "node" });
+    // The owner's rule for the device type sits between the key and the owner.
+    expect(inheritedForNewKey({
+      user: { awgGenerator: null, awgMtu: 1360, awgDeviceRules: { ios: { awgGenerator: preset("stun"), awgMtu: 1320 } } },
+      deviceType: "ios",
+      endpoint: { awgDeviceRules: { ios: { awgGenerator: preset("dns_query"), awgMtu: 1340 } } },
+      node: { awgMtu: 1400 },
+    })).toMatchObject({ profileFrom: "userDevice", mtu: 1320, mtuFrom: "userDevice" });
+    expect(inheritedForNewKey({
+      user: { awgGenerator: null, awgMtu: 1360, awgDeviceRules: { ios: { awgGenerator: preset("stun"), awgMtu: 1320 } } },
+      deviceType: "android",
+      endpoint: null,
+      node: { awgMtu: 1400 },
+    })).toMatchObject({ profileFrom: null, mtu: 1360, mtuFrom: "user" });
   });
 
   it("keeps a new key's settings collapsed until they are set", () => {
@@ -156,5 +173,75 @@ describe("review fixes", () => {
     expect(clientSettingsValid({ awgGenerator: preset("stun"), awgMtu: 1340 })).toBe(true);
     expect(clientSettingsValid({ awgGenerator: null, awgMtu: Number.NaN })).toBe(false);
     expect(clientSettingsValid({ awgGenerator: null, awgMtu: 1500 })).toBe(false);
+  });
+});
+
+describe("user settings dialog", () => {
+  const key = (overrides: Record<string, unknown>) => ({
+    id: "00000000-0000-4000-8000-000000000001",
+    deviceLabel: "Phone",
+    deviceType: "ios",
+    state: "active",
+    endpointName: "Edge-1",
+    config: {
+      awgGenerator: preset("stun"), profileFrom: "userDevice" as const,
+      mtu: 1320, mtuFrom: "userDevice" as const, probeChecked: false,
+    },
+    ...overrides,
+  });
+
+  it("labels the userDevice source in ru and en", () => {
+    expect(messages.ru["awgSettings.from.userDevice"]).toBe("от правила пользователя для устройства");
+    expect(messages.en["awgSettings.from.userDevice"]).toBe("from the user's device rule");
+  });
+
+  it("the user dialog lists keys with profile, MTU and source", () => {
+    const keys = [
+      key({}),
+      key({
+        id: "00000000-0000-4000-8000-000000000002", deviceLabel: "", deviceType: "windows",
+        config: { awgGenerator: null, profileFrom: null, mtu: 1400, mtuFrom: "node", probeChecked: true },
+      }),
+      // Not in effect: revoked, and an AWG 2.0 key without a client profile.
+      key({ id: "00000000-0000-4000-8000-000000000003", deviceLabel: "Old", state: "revoked" }),
+      key({ id: "00000000-0000-4000-8000-000000000004", deviceLabel: "Legacy", config: null }),
+    ];
+    const html = render(<UserKeysInEffect keys={keys} onShowParameters={noop} />);
+    expect(html).toContain("Phone");
+    expect(html).toContain(ru["device.ios"]);
+    expect(html).toContain(ru["generator.stun"]);
+    expect(html).toContain(ru["awgSettings.from.userDevice"]);
+    expect(html).toContain("MTU 1320");
+    expect(html).toContain(ru["device.windows"]);
+    expect(html).toContain(ru["awgSettings.noProfile"]);
+    expect(html).toContain("MTU 1400");
+    expect(html).toContain(ru["awgSettings.from.node"]);
+    expect(html).not.toContain("Old");
+    expect(html).not.toContain("Legacy");
+    expect(html.split(ru["clientParams.open"]).length - 1).toBe(2);
+    expect(render(<UserKeysInEffect keys={[]} onShowParameters={noop} />)).toContain(ru["awgUser.noKeys"]);
+  });
+
+  it("the user dialog saves device rules", () => {
+    const rules = { android: { awgGenerator: null, awgMtu: 1300 } };
+    expect(deviceRulesChange(rules)).toEqual({ awgDeviceRules: rules });
+    expect(deviceRulesChange(null)).toEqual({ awgDeviceRules: null });
+
+    const user = { awgGenerator: preset("dns_query"), awgMtu: null, awgDeviceRules: rules };
+    expect(userRulesInherited(user, (settings) => settings?.preset ?? "none")).toEqual({
+      profileLabel: "dns_query", source: "user", mtu: { mtu: null, source: "keys" },
+    });
+    const html = render(
+      <AwgUserSettingsPanel
+        initialTab="devices" user={user} keys={[]} pending={false}
+        onSave={() => Promise.resolve(true)} onShowParameters={noop}
+      />,
+    );
+    expect(html).toContain(ru["awgRules.title"]);
+    expect(html).toContain(ru["awgRules.userHint"]);
+    expect(html).toContain(ru["device.android"]);
+    expect(html).toContain(`Профиль: ${ru["awgRules.profileFromUser"]} · MTU 1300`);
+    expect(html).toContain(ru["awgUser.tab.profile"]);
+    expect(html).toContain(ru["awgUser.tab.keys"]);
   });
 });

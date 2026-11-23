@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { ChevronDown, SlidersHorizontal } from "lucide-react";
+import { ChevronDown, ListTree, SlidersHorizontal } from "lucide-react";
 import {
   awgClientMtuSchema,
   awgGeneratorSettingsSchema,
@@ -12,11 +12,14 @@ import {
   type ResolvedAwgClientSettings,
 } from "@amnezia/contracts";
 import {
+  AwgSourcedSettings,
   inheritedMtuWith,
   MtuField,
   useAwgSourceLabel,
   type InheritedMtu,
 } from "@/components/admin/awg-mtu-field";
+import { DeviceRulesEditor, type RulesInherited } from "@/components/admin/awg-device-rules-editor";
+import { ClientParametersDialog, type ClientParametersTarget } from "@/components/admin/client-parameters-dialog";
 import {
   GeneratorEditor,
   GeneratorFields,
@@ -31,7 +34,9 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { deviceTypeLabel } from "@/lib/device-type";
 import { useT } from "@/lib/i18n/provider";
 import { cn } from "@/lib/utils";
 
@@ -60,13 +65,18 @@ export const clientSettingsValid = (value: AwgClientSettingsValue): boolean =>
   (value.awgGenerator === null || awgGeneratorSettingsSchema.safeParse(value.awgGenerator).success) &&
   (value.awgMtu === null || awgClientMtuSchema.safeParse(value.awgMtu).success);
 
-/** The levels a new key inherits from, resolved the way the API resolves them. */
+/**
+ * The levels a new key inherits from, resolved the way the API resolves them:
+ * the owner's rule for the device type, the owner, the address's rule, the
+ * address, the node.
+ */
 export const inheritedForNewKey = (levels: {
-  user: AwgClientSettingsValue | null;
+  user: (AwgClientSettingsValue & { awgDeviceRules?: AwgDeviceRules | null }) | null;
   deviceType: string;
   endpoint: { awgGenerator?: AwgGeneratorSettings | null; awgMtu?: number | null; awgDeviceRules?: AwgDeviceRules | null } | null;
   node: { awgGenerator?: AwgGeneratorSettings | null; awgMtu?: number | null } | null;
 }): ResolvedAwgClientSettings => resolveAwgClientSettings({
+  userDevice: levels.user ? deviceRuleFor(levels.user.awgDeviceRules, levels.deviceType) : null,
   user: levels.user,
   device: levels.endpoint ? deviceRuleFor(levels.endpoint.awgDeviceRules, levels.deviceType) : null,
   address: levels.endpoint,
@@ -264,5 +274,232 @@ export function AwgNewKeySettings({ value, onChange, inherited, pending, idPrefi
         </div>
       ) : null}
     </div>
+  );
+}
+
+/** A user's own settings: profile, MTU and per-device-type rules; null inherits. */
+export type UserClientSettings = AwgClientSettingsValue & { awgDeviceRules: AwgDeviceRules | null };
+
+/** One `users/set-config` change: only the fields it names are written. */
+export type UserClientConfigChange = Partial<UserClientSettings>;
+
+/** Saving the rules replaces the user's whole map; null clears every rule. */
+export const deviceRulesChange = (rules: AwgDeviceRules | null): UserClientConfigChange => ({ awgDeviceRules: rules });
+
+/**
+ * What a user's device rule leaves to the levels under it: the user's own
+ * profile and MTU where set, otherwise each key's address and server.
+ */
+export const userRulesInherited = (
+  user: AwgClientSettingsValue,
+  presetLabel: (settings: AwgGeneratorSettings | null) => string,
+): RulesInherited => ({
+  profileLabel: user.awgGenerator ? presetLabel(user.awgGenerator) : null,
+  source: user.awgGenerator ? "user" : "keys",
+  mtu: user.awgMtu !== null ? { mtu: user.awgMtu, source: "user" } : { mtu: null, source: "keys" },
+});
+
+/** A key as the "Now in effect" list reads it, from the admin key list. */
+export type InEffectKey = {
+  id: string;
+  deviceLabel: string;
+  deviceType: string;
+  state: string;
+  endpointName?: string | null;
+  config?: AdminKeyClientConfig | null;
+};
+
+/** The user's AWG 3.1 keys whose config can still be downloaded. */
+const keysInEffect = (keys: readonly InEffectKey[]) =>
+  keys.filter((key) => key.config && key.state !== "revoked" && key.state !== "revoking");
+
+/**
+ * What each of the user's AWG 3.1 keys gets now: the profile and MTU with the
+ * level each comes from, and the way to its full parameters.
+ */
+export function UserKeysInEffect({ keys, onShowParameters }: {
+  keys: readonly InEffectKey[];
+  onShowParameters: (key: InEffectKey) => void;
+}) {
+  const { t } = useT();
+  const presetLabel = usePresetLabel();
+  const list = keysInEffect(keys);
+  return (
+    <section className="space-y-2" aria-labelledby="user-keys-in-effect">
+      <h3 id="user-keys-in-effect" className="text-sm font-medium">{t("awgUser.inEffect")}</h3>
+      <p className="text-xs text-muted-foreground">{t("awgUser.inEffectHint")}</p>
+      {list.length === 0 ? (
+        <p className="rounded-lg border border-dashed p-4 text-center text-sm text-muted-foreground">
+          {t("awgUser.noKeys")}
+        </p>
+      ) : (
+        <ul className="space-y-1.5">
+          {list.map((key) => {
+            const config = key.config!;
+            return (
+              <li key={key.id} className="rounded-lg border bg-well px-3 py-2 shadow-[var(--inset-shadow)]">
+                <div className="flex items-start gap-2">
+                  <div className="min-w-0 flex-1 space-y-1">
+                    <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+                      <span className="truncate text-sm font-medium">
+                        {key.deviceLabel || deviceTypeLabel(t, key.deviceType)}
+                      </span>
+                      {key.deviceLabel ? (
+                        <Badge variant="secondary" className="shrink-0 px-1.5 py-0 text-[10px]">
+                          {deviceTypeLabel(t, key.deviceType)}
+                        </Badge>
+                      ) : null}
+                      {key.endpointName ? (
+                        <span className="truncate text-xs text-muted-foreground">{key.endpointName}</span>
+                      ) : null}
+                    </div>
+                    <AwgSourcedSettings
+                      className="text-xs"
+                      profile={presetLabel(config.awgGenerator)}
+                      profileSource={config.profileFrom ?? "default"}
+                      mtu={config.mtu}
+                      mtuSource={config.mtuFrom}
+                    />
+                  </div>
+                  <Button
+                    type="button" size="sm" variant="ghost" className="shrink-0 px-2"
+                    onClick={() => onShowParameters(key)}
+                  >
+                    <ListTree className="size-4" />
+                    {t("clientParams.open")}
+                  </Button>
+                </div>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </section>
+  );
+}
+
+export type UserSettingsTab = "profile" | "devices" | "keys";
+
+/**
+ * The body of a user's settings dialog, one level per tab: the profile and
+ * MTU over every key, the per-device-type rules, and what each key gets now.
+ * Saving keeps the dialog open, so the "Keys" tab shows the result.
+ */
+export function AwgUserSettingsPanel({ user, keys, pending, onSave, onShowParameters, initialTab = "profile" }: {
+  user: UserClientSettings;
+  keys: readonly InEffectKey[];
+  pending: boolean;
+  onSave: (change: UserClientConfigChange) => Promise<boolean>;
+  onShowParameters: (key: InEffectKey) => void;
+  initialTab?: UserSettingsTab;
+}) {
+  const { t } = useT();
+  const presetLabel = usePresetLabel();
+  // Remounts the profile form after "Inherit everything", which it cannot see coming.
+  const [profileRevision, setProfileRevision] = React.useState(0);
+  const isSet = user.awgGenerator !== null || user.awgMtu !== null;
+  const ruleCount = Object.keys(user.awgDeviceRules ?? {}).length;
+  const keyCount = keysInEffect(keys).length;
+  const count = (value: number) =>
+    value > 0 ? <span className="tabular text-xs font-normal text-muted-foreground">{value}</span> : null;
+  return (
+    <Tabs defaultValue={initialTab}>
+      <TabsList className="grid h-auto w-full grid-cols-3">
+        <TabsTrigger value="profile" className="whitespace-normal px-2 text-xs leading-tight sm:text-sm">
+          {t("awgUser.tab.profile")}
+        </TabsTrigger>
+        <TabsTrigger value="devices" className="whitespace-normal px-2 text-xs leading-tight sm:text-sm">
+          {t("awgUser.tab.devices")}{count(ruleCount)}
+        </TabsTrigger>
+        <TabsTrigger value="keys" className="whitespace-normal px-2 text-xs leading-tight sm:text-sm">
+          {t("awgUser.tab.keys")}{count(keyCount)}
+        </TabsTrigger>
+      </TabsList>
+      <TabsContent value="profile" className="space-y-3">
+        <GeneratorEditor
+          key={profileRevision}
+          idPrefix="user-settings"
+          value={user.awgGenerator}
+          mtu={user.awgMtu}
+          inheritLabel={t("awgSettings.inheritKeyLevels")}
+          inheritedMtu={USER_INHERITED.mtu}
+          pending={pending}
+          onSave={(awgGenerator, awgMtu) => onSave({ awgGenerator, awgMtu })}
+        />
+        {isSet ? (
+          <div className="flex justify-start border-t pt-3">
+            <Button
+              type="button" variant="ghost" size="sm" disabled={pending}
+              onClick={() => void onSave({ awgGenerator: null, awgMtu: null }).then((saved) => {
+                if (saved) setProfileRevision((value) => value + 1);
+              })}
+            >
+              {t("awgSettings.resetAll")}
+            </Button>
+          </div>
+        ) : null}
+      </TabsContent>
+      <TabsContent value="devices">
+        <DeviceRulesEditor
+          level="user"
+          className="border-t-0 pt-0"
+          rules={user.awgDeviceRules}
+          inherited={userRulesInherited(user, presetLabel)}
+          pending={pending}
+          onSave={(rules) => onSave(deviceRulesChange(rules))}
+        />
+      </TabsContent>
+      <TabsContent value="keys">
+        <UserKeysInEffect keys={keys} onShowParameters={onShowParameters} />
+      </TabsContent>
+    </Tabs>
+  );
+}
+
+/** A user's settings dialog, with each key's parameters one click away. */
+export function AwgUserSettingsDialog({ open, user, keys, onClose, onSave }: {
+  open: boolean;
+  user: UserClientSettings;
+  keys: readonly InEffectKey[];
+  onClose: () => void;
+  onSave: (change: UserClientConfigChange) => Promise<boolean>;
+}) {
+  const { t } = useT();
+  const [pending, setPending] = React.useState(false);
+  const [parameters, setParameters] = React.useState<ClientParametersTarget | null>(null);
+  const save = async (change: UserClientConfigChange) => {
+    setPending(true);
+    try {
+      return await onSave(change);
+    } finally {
+      setPending(false);
+    }
+  };
+  return (
+    <>
+      <Dialog open={open} onOpenChange={(next) => { if (!next && !pending) onClose(); }}>
+        <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>{t("awgSettings.userTitle")}</DialogTitle>
+            <DialogDescription>{t("awgSettings.userDescription")}</DialogDescription>
+          </DialogHeader>
+          <p className="rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-xs text-foreground">
+            {t("awgSettings.reimportNote")}
+          </p>
+          <AwgUserSettingsPanel
+            user={user}
+            keys={keys}
+            pending={pending}
+            onSave={save}
+            onShowParameters={(key) => setParameters({
+              kind: "key",
+              id: key.id,
+              label: key.deviceLabel || deviceTypeLabel(t, key.deviceType),
+            })}
+          />
+        </DialogContent>
+      </Dialog>
+      <ClientParametersDialog target={parameters} onClose={() => setParameters(null)} />
+    </>
   );
 }

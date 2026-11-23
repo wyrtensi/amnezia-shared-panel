@@ -1,9 +1,10 @@
 "use client";
 
 import * as React from "react";
-import { Settings2 } from "lucide-react";
+import { ListTree, Settings2 } from "lucide-react";
 import { resolveAwgClientSettings, type AwgDeviceRules, type AwgGeneratorSettings } from "@amnezia/contracts";
-import { DeviceRulesEditor } from "@/components/admin/awg-device-rules-editor";
+import { addressRulesInherited, DeviceRulesEditor } from "@/components/admin/awg-device-rules-editor";
+import { ClientParametersDialog, type ClientParametersTarget } from "@/components/admin/client-parameters-dialog";
 import {
   GeneratorEditor,
   usePresetLabel,
@@ -31,6 +32,8 @@ import { useT } from "@/lib/i18n/provider";
 const NODE_SCOPE = "node";
 
 type Props = {
+  /** The node, for its parameters view; without it the view is not offered. */
+  nodeId?: string;
   value: AwgGeneratorSettings | null;
   /** The node's own client MTU; null inherits the default. */
   mtu?: number | null;
@@ -39,12 +42,13 @@ type Props = {
   onSaveDeviceRules: (endpointId: string, rules: AwgDeviceRules | null) => Promise<void>;
 };
 
-export function NodeGeneratorSettings({ value, mtu = null, endpoints, onSave, onSaveDeviceRules }: Props) {
+export function NodeGeneratorSettings({ nodeId, value, mtu = null, endpoints, onSave, onSaveDeviceRules }: Props) {
   const { t } = useT();
   const presetLabel = usePresetLabel();
   const [open, setOpen] = React.useState(false);
   const [scope, setScope] = React.useState("");
   const [pending, setPending] = React.useState(false);
+  const [parameters, setParameters] = React.useState<ClientParametersTarget | null>(null);
   const pendingRef = React.useRef(false);
   const selected = endpoints.find((endpoint) => endpoint.id === scope);
   const node = resolveAwgClientSettings({ node: { awgGenerator: value, awgMtu: mtu } });
@@ -88,6 +92,7 @@ export function NodeGeneratorSettings({ value, mtu = null, endpoints, onSave, on
           </DialogHeader>
           <div className="grid gap-1.5">
             <Label htmlFor="generator-target">{t("generator.target")}</Label>
+            <div className="flex items-center gap-2">
             <Select
               value={scope || NODE_SCOPE}
               disabled={pending}
@@ -95,7 +100,7 @@ export function NodeGeneratorSettings({ value, mtu = null, endpoints, onSave, on
                 if (!pendingRef.current) setScope(next === NODE_SCOPE ? "" : next);
               }}
             >
-              <SelectTrigger id="generator-target">
+              <SelectTrigger id="generator-target" className="min-w-0 flex-1">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -105,6 +110,21 @@ export function NodeGeneratorSettings({ value, mtu = null, endpoints, onSave, on
                 ))}
               </SelectContent>
             </Select>
+            {nodeId ? (
+              <Button
+                type="button" variant="outline" size="sm" className="shrink-0"
+                title={t("clientParams.nodeAction", { name: selected?.name ?? t("generator.node") })}
+                onClick={() => setParameters({
+                  kind: "node",
+                  id: nodeId,
+                  endpointId: selected?.id ?? null,
+                  label: selected?.name ?? t("generator.node"),
+                })}
+              >
+                <ListTree className="size-4" /> {t("clientParams.open")}
+              </Button>
+            ) : null}
+            </div>
           </div>
           <GeneratorEditor
             key={`${open}-${scope}`}
@@ -126,13 +146,14 @@ export function NodeGeneratorSettings({ value, mtu = null, endpoints, onSave, on
             <DeviceRulesEditor
               key={`rules-${open}-${scope}`}
               rules={selected.awgDeviceRules ?? null}
-              inherited={{ awgGenerator: address.awgGenerator, mtu: address.mtu, mtuFrom: address.mtuFrom }}
+              inherited={addressRulesInherited(address, presetLabel)}
               pending={pending}
               onSave={(rules) => run(() => onSaveDeviceRules(selected.id, rules))}
             />
           ) : null}
         </DialogContent>
       </Dialog>
+      <ClientParametersDialog target={parameters} onClose={() => setParameters(null)} />
     </>
   );
 }

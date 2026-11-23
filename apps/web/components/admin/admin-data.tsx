@@ -7,6 +7,7 @@ import { useT } from "@/lib/i18n/provider";
 import { WORKER_PERIOD_FIELD_NAMES } from "@amnezia/contracts";
 import type {
   AdminKeyConfigMetadata,
+  AwgDeviceRules,
   AwgGeneratorSettings,
   NodeGeneratorMetadata,
   ResolvedAwgClientSettings,
@@ -66,6 +67,8 @@ export type AdminUser = {
   /** Admin-only client profile and MTU for every key of this user; null inherits. */
   awgGenerator?: AwgGeneratorSettings | null;
   awgMtu?: number | null;
+  /** Admin-only profile and MTU per device type of this user's keys; null has none. */
+  awgDeviceRules?: AwgDeviceRules | null;
   deactivationReason: string | null;
   /**
    * How many times this user has answered each of the panel's two

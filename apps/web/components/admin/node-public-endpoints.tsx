@@ -1,9 +1,10 @@
 "use client";
 
 import * as React from "react";
-import { Globe, Pencil, Plus, TriangleAlert } from "lucide-react";
+import { Globe, ListTree, Pencil, Plus, TriangleAlert } from "lucide-react";
 import { toast } from "sonner";
 import type { AdminNodeEndpoint, NodePublicEndpointMutation } from "@amnezia/contracts";
+import { ClientParametersDialog, type ClientParametersTarget } from "@/components/admin/client-parameters-dialog";
 import { NodeCardSection } from "@/components/admin/node-card-section";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -16,9 +17,12 @@ export function NodePublicEndpoints({
   endpoints,
   canAdd,
   onSave,
+  parametersNodeId,
 }: {
   endpoints: readonly AdminNodeEndpoint[];
   canAdd: boolean;
+  /** The AWG 3.1 node these addresses belong to; each row then opens its client parameters. */
+  parametersNodeId?: string;
   onSave: (change: NodePublicEndpointMutation) => Promise<void>;
 }) {
   const { t } = useT();
@@ -26,6 +30,7 @@ export function NodePublicEndpoints({
   const [address, setAddress] = React.useState("");
   const [name, setName] = React.useState("");
   const [busy, setBusy] = React.useState(false);
+  const [parameters, setParameters] = React.useState<ClientParametersTarget | null>(null);
 
   const save = async (change: NodePublicEndpointMutation) => {
     setBusy(true);
@@ -102,6 +107,21 @@ export function NodePublicEndpoints({
                   ) : null}
                 </div>
                 <div className="flex shrink-0 items-center gap-1.5">
+                  {parametersNodeId ? (
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon"
+                      className="size-7 text-muted-foreground hover:text-foreground"
+                      aria-label={t("clientParams.nodeAction", { name: endpoint.name })}
+                      title={t("clientParams.nodeAction", { name: endpoint.name })}
+                      onClick={() => setParameters({
+                        kind: "node", id: parametersNodeId, endpointId: endpoint.id, label: endpoint.name,
+                      })}
+                    >
+                      <ListTree className="size-3.5" />
+                    </Button>
+                  ) : null}
                   <Button
                     type="button"
                     variant="ghost"
@@ -193,6 +213,7 @@ export function NodePublicEndpoints({
           </div>
         </form>
       ) : null}
+      <ClientParametersDialog target={parameters} onClose={() => setParameters(null)} />
     </section>
   );
 }
