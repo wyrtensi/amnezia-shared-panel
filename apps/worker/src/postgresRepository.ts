@@ -642,7 +642,7 @@ export class PostgresWorkerRepository
           inArray(vpnKeys.state, [...revocableStates]),
         ),
       )
-      .returning({ id: vpnKeys.id });
+      .returning({ id: vpnKeys.id, nodeId: vpnKeys.nodeId });
 
     for (const key of keysToRevoke) {
       await tx.insert(jobOutbox).values({
@@ -652,6 +652,7 @@ export class PostgresWorkerRepository
       });
     }
 
+    const revokedNodeIds = [...new Set(keysToRevoke.map((key) => key.nodeId))];
     await tx.insert(auditEvents).values({
       actorType: "system",
       action: "user.access_revoked",
@@ -660,6 +661,7 @@ export class PostgresWorkerRepository
       metadata: {
         email: user.email,
         keysQueuedForRevoke: keysToRevoke.length,
+        ...(revokedNodeIds.length > 0 ? { nodeIds: revokedNodeIds } : {}),
       },
     });
   };

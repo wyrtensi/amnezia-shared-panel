@@ -245,6 +245,35 @@ const UUID_PATTERN =
 const DAY_MS = 24 * 60 * 60 * 1_000;
 
 /**
+ * Operational key metadata attached to audit events so the audit log can
+ * identify the server, owner, device, protocol, and route profile even after
+ * the key row is later purged. Never contains config secrets.
+ */
+const keyAuditSnapshot = (key: {
+  ownerId: string;
+  nodeId: string;
+  endpointId?: string | null;
+  protocol: string;
+  routeProfile: string;
+  deviceType: string;
+  deviceLabel?: string | null;
+  keyNumber?: number | null;
+  internalName?: string | null;
+}): Record<string, unknown> => ({
+  ownerId: key.ownerId,
+  nodeId: key.nodeId,
+  ...(key.endpointId ? { endpointId: key.endpointId } : {}),
+  protocol: key.protocol,
+  routeProfile: key.routeProfile,
+  deviceType: key.deviceType,
+  ...(key.deviceLabel ? { deviceLabel: key.deviceLabel } : {}),
+  ...(key.keyNumber !== null && key.keyNumber !== undefined
+    ? { keyNumber: key.keyNumber }
+    : {}),
+  ...(key.internalName ? { internalName: key.internalName } : {}),
+});
+
+/**
  * Wider than `quotaStates` on purpose, and shared with the panel so the button
  * and the route agree on when a delete may be asked for. See the contract.
  */
@@ -2906,10 +2935,16 @@ export class PostgresControlRepository implements ControlRepository {
           targetType: "vpn_key",
           targetId: keyId,
           metadata: {
-            nodeId: selectedNode.id,
-            ...(endpointId ? { endpointId } : {}),
-            protocol: request.protocol,
-            routeProfile: request.routeProfile,
+            ...keyAuditSnapshot({
+              ownerId: actor.id,
+              nodeId: selectedNode.id,
+              endpointId,
+              protocol: request.protocol,
+              routeProfile: request.routeProfile,
+              deviceType: request.deviceType,
+              deviceLabel: request.deviceLabel,
+              keyNumber,
+            }),
             nameDisplay: request.nameDisplay,
             bridgeMode,
             vpnBridgeRouteId,
@@ -3248,7 +3283,18 @@ export class PostgresControlRepository implements ControlRepository {
             inArray(vpnKeys.state, revocableStates),
           ),
         )
-        .returning({ id: vpnKeys.id });
+        .returning({
+          id: vpnKeys.id,
+          ownerId: vpnKeys.ownerId,
+          nodeId: vpnKeys.nodeId,
+          endpointId: vpnKeys.endpointId,
+          protocol: vpnKeys.protocol,
+          routeProfile: vpnKeys.routeProfile,
+          deviceType: vpnKeys.deviceType,
+          deviceLabel: vpnKeys.deviceLabel,
+          keyNumber: vpnKeys.keyNumber,
+          internalName: vpnKeys.internalName,
+        });
       if (!updated[0]) throw new ApiError(404, "Key not found", "KEY_NOT_FOUND");
       await tx.insert(jobOutbox).values({
         type: "vpn-key.revoke",
@@ -3266,6 +3312,7 @@ export class PostgresControlRepository implements ControlRepository {
         action: "vpn_key.revoke_requested",
         targetType: "vpn_key",
         targetId: keyId,
+        metadata: keyAuditSnapshot(updated[0]),
       });
     });
   };
@@ -3356,7 +3403,7 @@ export class PostgresControlRepository implements ControlRepository {
     // is this rotate -- came straight back the moment the reissued key went
     // active. A profile with no active version (full_tunnel never has one)
     // keeps what it had.
-    await tx
+    const [rotated] = await tx
       .update(vpnKeys)
       .set({
         state: "provisioning",
@@ -3367,9 +3414,21 @@ export class PostgresControlRepository implements ControlRepository {
           order by ${routeRuleVersions.publishedAt} desc
           limit 1
         ), ${vpnKeys.routeRuleVersionId})`,
+        rulesDeliveredAt: sql`clock_timestamp()`,
         updatedAt: new Date(),
       })
-      .where(eq(vpnKeys.id, keyId));
+      .where(eq(vpnKeys.id, keyId))
+      .returning({
+        ownerId: vpnKeys.ownerId,
+        nodeId: vpnKeys.nodeId,
+        endpointId: vpnKeys.endpointId,
+        protocol: vpnKeys.protocol,
+        routeProfile: vpnKeys.routeProfile,
+        deviceType: vpnKeys.deviceType,
+        deviceLabel: vpnKeys.deviceLabel,
+        keyNumber: vpnKeys.keyNumber,
+        internalName: vpnKeys.internalName,
+      });
     await tx.insert(jobOutbox).values({
       type: "vpn-key.rotate",
       deduplicationKey: `vpn-key.rotate:${keyId}:${randomUUID()}`,
@@ -3381,7 +3440,10 @@ export class PostgresControlRepository implements ControlRepository {
       action: auditAction,
       targetType: "vpn_key",
       targetId: keyId,
-      metadata: auditMetadata,
+      metadata: {
+        ...(rotated ? keyAuditSnapshot(rotated) : {}),
+        ...(auditMetadata ?? {}),
+      },
     });
   };
 
@@ -5176,7 +5238,19 @@ export class PostgresControlRepository implements ControlRepository {
         action === "disable" ? "disabled" : action === "enable" ? "active" : "revoking";
       return this.options.db.transaction(async (tx) => {
         const [current] = await tx
-          .select({ id: vpnKeys.id, state: vpnKeys.state })
+          .select({
+            id: vpnKeys.id,
+            state: vpnKeys.state,
+            ownerId: vpnKeys.ownerId,
+            nodeId: vpnKeys.nodeId,
+            endpointId: vpnKeys.endpointId,
+            protocol: vpnKeys.protocol,
+            routeProfile: vpnKeys.routeProfile,
+            deviceType: vpnKeys.deviceType,
+            deviceLabel: vpnKeys.deviceLabel,
+            keyNumber: vpnKeys.keyNumber,
+            internalName: vpnKeys.internalName,
+          })
           .from(vpnKeys)
           .where(eq(vpnKeys.id, targetId))
           .for("update");
@@ -5226,6 +5300,7 @@ export class PostgresControlRepository implements ControlRepository {
           action: `admin.${resource}.${action}`,
           targetType: resource,
           targetId,
+          metadata: keyAuditSnapshot(current),
         });
         return updated;
       });
@@ -5240,7 +5315,18 @@ export class PostgresControlRepository implements ControlRepository {
           .update(vpnKeys)
           .set({ internalName, updatedAt: new Date() })
           .where(eq(vpnKeys.id, targetId))
-          .returning({ id: vpnKeys.id, internalName: vpnKeys.internalName });
+          .returning({
+            id: vpnKeys.id,
+            ownerId: vpnKeys.ownerId,
+            nodeId: vpnKeys.nodeId,
+            endpointId: vpnKeys.endpointId,
+            protocol: vpnKeys.protocol,
+            routeProfile: vpnKeys.routeProfile,
+            deviceType: vpnKeys.deviceType,
+            deviceLabel: vpnKeys.deviceLabel,
+            keyNumber: vpnKeys.keyNumber,
+            internalName: vpnKeys.internalName,
+          });
         if (!updated) throw new ApiError(404, "Key not found", "KEY_NOT_FOUND");
         await tx.insert(auditEvents).values({
           actorUserId: actor.id,
@@ -5248,8 +5334,9 @@ export class PostgresControlRepository implements ControlRepository {
           action: `admin.${resource}.${action}`,
           targetType: resource,
           targetId,
+          metadata: keyAuditSnapshot(updated),
         });
-        return updated;
+        return { id: updated.id, internalName: updated.internalName };
       });
     } else if (resource === "keys" && action === "purge") {
       // Delete the row, not the peer. The peer is already gone -- that is what
@@ -5265,6 +5352,10 @@ export class PostgresControlRepository implements ControlRepository {
             state: vpnKeys.state,
             ownerId: vpnKeys.ownerId,
             nodeId: vpnKeys.nodeId,
+            endpointId: vpnKeys.endpointId,
+            protocol: vpnKeys.protocol,
+            routeProfile: vpnKeys.routeProfile,
+            deviceType: vpnKeys.deviceType,
             nodeLabel: vpnKeys.nodeLabel,
             deviceLabel: vpnKeys.deviceLabel,
             internalName: vpnKeys.internalName,
@@ -5301,8 +5392,7 @@ export class PostgresControlRepository implements ControlRepository {
           targetType: resource,
           targetId,
           metadata: {
-            ownerId: existing.ownerId,
-            nodeId: existing.nodeId,
+            ...keyAuditSnapshot(existing),
             nodeLabel: existing.nodeLabel,
             deviceLabel: existing.deviceLabel,
             internalName: existing.internalName,
@@ -5394,7 +5484,7 @@ export class PostgresControlRepository implements ControlRepository {
               inArray(vpnKeys.state, revocableStates),
             ),
           )
-          .returning({ id: vpnKeys.id });
+          .returning({ id: vpnKeys.id, nodeId: vpnKeys.nodeId });
         for (const key of keysToRevoke) {
           await tx.insert(jobOutbox).values({
             type: "vpn-key.revoke",
@@ -5404,13 +5494,17 @@ export class PostgresControlRepository implements ControlRepository {
         }
         // An offboarded user must leave the Access allowlist along with them.
         await this.armAccessSync(tx, "user-change");
+        const revokedNodeIds = [...new Set(keysToRevoke.map((key) => key.nodeId))];
         await tx.insert(auditEvents).values({
           actorUserId: actor.id,
           actorType: "user",
           action: `admin.${resource}.${action}`,
           targetType: resource,
           targetId,
-          metadata: { keysQueuedForRevoke: keysToRevoke.length },
+          metadata: {
+            keysQueuedForRevoke: keysToRevoke.length,
+            ...(revokedNodeIds.length > 0 ? { nodeIds: revokedNodeIds } : {}),
+          },
         });
         return { ...updatedUser, keysQueuedForRevoke: keysToRevoke.length };
       });
