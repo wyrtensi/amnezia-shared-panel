@@ -202,10 +202,14 @@ const ru = {
   "quota.cellFree": "Свободный слот",
 
   // Key card
-  "keyCard.rulesUpdatedTitle": "Правила маршрутизации обновились",
+  "keyCard.rulesSoftTitle": "Обновился список сайтов",
+  "keyCard.rulesSoftBody":
+    "Для режима «{profile}» обновился список сайтов. Текущее подключение работает как раньше — если какой-то сайт не открывается, скопируйте ключ или скачайте .vpn ниже и замените подключение в приложении.",
+  "keyCard.rulesUpdatedTitle": "Рекомендуем обновить ключ",
   "keyCard.redownload": "Получить обновлённый ключ",
   "keyCard.rulesUpdatedBody":
-    "Для профиля «{profile}» появились новые правила. Скопируйте обновлённый ключ или скачайте файл .vpn и замените старое подключение в приложении.",
+    "Для режима «{profile}» обновился список сайтов для VPN. Текущее подключение продолжит работать, но лучше скопировать обновлённый ключ или скачать файл .vpn и заменить подключение в приложении.",
+  "keyCard.rulesUpdatedNote": "Что изменилось: {note}",
   "keyCard.created": "Создан: ",
   "keyCard.lastSeen": "Активность",
   "keyCard.traffic": "Трафик: ",
@@ -1490,6 +1494,7 @@ const ru = {
   "audit.exact.admin.users.create-key": "создал ключ пользователю",
   "audit.exact.admin.portal-policy.update": "обновил глобальные политики",
   "audit.exact.admin.rules.activate": "активировал правила маршрутизации",
+  "audit.exact.admin.rules.notify": "объявил важное обновление правил",
   "audit.exact.admin.nodes.reconcile": "синхронизировал ноду",
   "audit.exact.admin.nodes.agent-update": "запросил обновление агента ноды",
   "audit.exact.node.agent-update.requested": "передал ноде запрос на обновление агента",
@@ -1548,6 +1553,19 @@ const ru = {
   "rules.followTitle":
     "Снять закрепление: следующая загруженная версия снова станет активной",
   "rules.activateTitle": "Сделать активной и закрепить за профилем",
+  "rules.notify": "Важное обновление",
+  "rules.notifyTitle":
+    "Один раз показать пользователям этого профиля рекомендацию обновить ключ",
+  "rules.notified": "Важное",
+  "rules.notifiedAlready": "Важное обновление уже объявлено для этой версии",
+  "rules.notifyDialogTitle": "Важное обновление для «{profile}»",
+  "rules.notifyDialogDesc":
+    "Пользователи активных ключей этого профиля (сейчас к обновлению: {count}) один раз увидят заметное предложение обновить ключ, пока не скопируют или не скачают новый конфиг.",
+  "rules.notifyVersionLine": "Активная версия: {version}",
+  "rules.notifyNoteLabel": "Что изменилось (необязательно)",
+  "rules.notifyNotePlaceholder":
+    "Например: добавили новый сервис и поправили доступ к сайту",
+  "rules.notifyConfirm": "Показать пользователям",
   "rules.profileEmpty": "Для этого профиля версии ещё не загружались.",
 
   // Admin global routes
@@ -2311,10 +2329,14 @@ const en = {
   "quota.cellFree": "Free slot",
 
   // Key card
-  "keyCard.rulesUpdatedTitle": "Routing rules have changed",
+  "keyCard.rulesSoftTitle": "Site list updated",
+  "keyCard.rulesSoftBody":
+    "The site list for “{profile}” has been updated. Your current connection keeps working — if a site stops opening, copy the key or download .vpn below and replace the connection in the app.",
+  "keyCard.rulesUpdatedTitle": "Key update recommended",
   "keyCard.redownload": "Get updated key",
   "keyCard.rulesUpdatedBody":
-    "New rules are available for the “{profile}” profile. Copy the updated key or download the .vpn file and replace the old connection in the app.",
+    "The VPN site list for “{profile}” has been updated. Your current connection keeps working, but we recommend copying the updated key or downloading the .vpn file and replacing the connection in the app.",
+  "keyCard.rulesUpdatedNote": "What changed: {note}",
   "keyCard.created": "Created: ",
   "keyCard.lastSeen": "Last seen",
   "keyCard.traffic": "Traffic: ",
@@ -3540,6 +3562,7 @@ const en = {
   "audit.exact.admin.users.create-key": "created a key for a user",
   "audit.exact.admin.portal-policy.update": "updated global policies",
   "audit.exact.admin.rules.activate": "activated routing rules",
+  "audit.exact.admin.rules.notify": "announced an important rule update",
   "audit.exact.admin.nodes.reconcile": "synchronized a node",
   "audit.exact.admin.nodes.agent-update": "requested a node agent update",
   "audit.exact.node.agent-update.requested": "delivered an agent update request to a node",
@@ -3595,6 +3618,19 @@ const en = {
   "rules.followTitle":
     "Release the pin: the next fetched version becomes active again",
   "rules.activateTitle": "Make active and pin it to this profile",
+  "rules.notify": "Important update",
+  "rules.notifyTitle":
+    "Show users on this profile a one-time prompt to update their key",
+  "rules.notified": "Important",
+  "rules.notifiedAlready": "Important update already announced for this version",
+  "rules.notifyDialogTitle": "Important update for “{profile}”",
+  "rules.notifyDialogDesc":
+    "Owners of active keys on this profile (currently needing update: {count}) will see a one-time prominent prompt until they copy or download the updated config.",
+  "rules.notifyVersionLine": "Active version: {version}",
+  "rules.notifyNoteLabel": "What changed (optional)",
+  "rules.notifyNotePlaceholder":
+    "e.g. Added a new service and fixed site access",
+  "rules.notifyConfirm": "Notify users",
   "rules.profileEmpty": "No versions fetched for this profile yet.",
 
   // Admin global routes

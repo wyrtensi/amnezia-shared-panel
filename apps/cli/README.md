@@ -75,7 +75,7 @@ to delete a node and every key issued on it), `node-reconcile`,
 `key-rotate`, `key-config-refresh`, `key-revoke`, `key-disable`, `key-enable`,
 `key-purge`, `keys-purge-revoked`, `stale-keys-revoke`, `global-routes-set`,
 `rules-refresh`, `rules-show`, `rules-diff`, `rules-import`, `rules-activate`,
-`rules-follow`.
+`rules-follow`, `rules-notify`.
 
 **AWG 3.1 client settings:** `config-presets`, `config-show`, `config-set`,
 `config-params`, `config-pin`. See [the CLI reference](../../docs/CLI.md#awg-31-client-settings).

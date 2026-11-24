@@ -31,6 +31,7 @@ import type {
   DeviceType,
   KeyBridgeInfo,
   KeyNameDisplay,
+  KeyRulesUpdate,
   KeyState,
   NoticeAcks,
   NoticeKind,
@@ -102,6 +103,7 @@ export type KeyView = {
   nameDisplay: KeyNameDisplay;
   routeProfile: RouteProfile;
   rulesOutdated?: boolean;
+  rulesUpdate?: KeyRulesUpdate;
   createdAt: string;
   lastUsedAt?: string | null;
   traffic?: { receivedBytes: string; sentBytes: string };

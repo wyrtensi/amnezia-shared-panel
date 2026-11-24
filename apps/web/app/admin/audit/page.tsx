@@ -113,6 +113,10 @@ const EXACT: Record<string, { textKey: string; tone: Tone }> = {
     textKey: "audit.exact.admin.rules.activate",
     tone: "success",
   },
+  "admin.rules.notify": {
+    textKey: "audit.exact.admin.rules.notify",
+    tone: "warning",
+  },
   "admin.nodes.reconcile": {
     textKey: "audit.exact.admin.nodes.reconcile",
     tone: "neutral",

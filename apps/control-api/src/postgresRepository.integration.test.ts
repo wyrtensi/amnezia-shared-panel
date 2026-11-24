@@ -5435,6 +5435,46 @@ describe("PostgresControlRepository rule version pinning", () => {
   });
 
   runDatabaseTest(
+    "marks an active rule version as an important update once, logs it, and refuses duplicates or inactive versions",
+    async () => {
+      if (!database) return;
+      await database.db.delete(auditEvents);
+      const superseded = await seedVersion("v1", "superseded");
+      const live = await seedVersion("v2", "active");
+
+      const inactiveErr = await failureOf(
+        subject().adminAction(admin, "rules", superseded, "notify", {}),
+      );
+      expect(inactiveErr).toMatchObject({ statusCode: 409, code: "RULE_NOT_ACTIVE" });
+
+      const notified = (await subject().adminAction(admin, "rules", live, "notify", {
+        note: "Added Clarity\nand fixed HoYoLAB",
+      })) as { id: string; notifiedAt: Date; notifyNote: string | null; affectedKeys: number };
+      expect(notified.id).toBe(live);
+      expect(notified.notifiedAt).toBeInstanceOf(Date);
+      expect(notified.notifyNote).toBe("Added Clarity and fixed HoYoLAB");
+      expect(notified.affectedKeys).toBe(0);
+
+      const duplicateErr = await failureOf(
+        subject().adminAction(admin, "rules", live, "notify", { note: "second" }),
+      );
+      expect(duplicateErr).toMatchObject({ statusCode: 409, code: "ALREADY_NOTIFIED" });
+
+      const events = await database.db
+        .select()
+        .from(auditEvents)
+        .orderBy(desc(auditEvents.createdAt));
+      expect(events[0]?.action).toBe("admin.rules.notify");
+      expect(events[0]?.metadata).toMatchObject({
+        profile: "ru_blacklist",
+        version: "v2",
+        affectedKeys: 0,
+        hasNote: true,
+      });
+    },
+  );
+
+  runDatabaseTest(
     "refuses to activate a version that does not exist",
     async () => {
       if (!database) return;

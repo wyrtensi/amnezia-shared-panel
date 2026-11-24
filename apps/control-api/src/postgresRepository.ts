@@ -114,6 +114,7 @@ import {
   normalizeAccessDomain,
   PROTOCOL_KINDS,
   recommendedNodeIdsSchema,
+  ruleNotifySchema,
   portalPolicyOverrideSchema,
   portalPolicySchema,
   POLL_BOUND_SAMPLE_FIELDS,
@@ -196,7 +197,7 @@ import type {
   StoredKeyConfig,
 } from "./repository.js";
 import { ApiError, type Actor, type IdentityClaim, type KeyView } from "./service.js";
-import { toKeyView } from "./keyView.js";
+import { toKeyView, type ImportantRuleNotice } from "./keyView.js";
 import {
   observedKeyPath,
   resolveKeyBridgeInfo,
@@ -2327,17 +2328,37 @@ export class PostgresControlRepository implements ControlRepository {
         tx.select({ policyOverride: users.policyOverride }).from(users).where(eq(users.id, actor.id)),
       ]);
       const policy = resolvePortalPolicy(toPolicy(globalPolicy), owner?.policyOverride);
+      const [activeRuleRows, notifiedRuleRows] = await Promise.all([
+        tx
+          .select({
+            profile: routeRuleVersions.profile,
+            id: routeRuleVersions.id,
+          })
+          .from(routeRuleVersions)
+          .where(eq(routeRuleVersions.status, "active")),
+        tx
+          .select({
+            profile: routeRuleVersions.profile,
+            id: routeRuleVersions.id,
+            notifiedAt: routeRuleVersions.notifiedAt,
+            notifyNote: routeRuleVersions.notifyNote,
+          })
+          .from(routeRuleVersions)
+          .where(isNotNull(routeRuleVersions.notifiedAt))
+          .orderBy(desc(routeRuleVersions.notifiedAt)),
+      ]);
       const activeByProfile = new Map(
-        (
-          await tx
-            .select({
-              profile: routeRuleVersions.profile,
-              id: routeRuleVersions.id,
-            })
-            .from(routeRuleVersions)
-            .where(eq(routeRuleVersions.status, "active"))
-        ).map((row) => [row.profile, row.id]),
+        activeRuleRows.map((row) => [row.profile, row.id]),
       );
+      const importantByProfile = new Map<string, ImportantRuleNotice>();
+      for (const row of notifiedRuleRows) {
+        if (!row.notifiedAt || importantByProfile.has(row.profile)) continue;
+        importantByProfile.set(row.profile, {
+          id: row.id,
+          notifiedAt: row.notifiedAt,
+          note: row.notifyNote,
+        });
+      }
       // The projection lives in keyView.ts as a pure function: it is what decides
       // whether the operator-only note leaves the server at all, and that
       // decision has to be assertable without a database.
@@ -2404,6 +2425,7 @@ export class PostgresControlRepository implements ControlRepository {
           current,
           policy,
           activeByProfile,
+          importantByProfile,
           nodeReachability: reachability ? pathReachability : undefined,
           bridge,
         });
@@ -3128,7 +3150,13 @@ export class PostgresControlRepository implements ControlRepository {
       configExportHashes: sql`coalesce(${vpnKeys.configExportHashes}, '{}'::jsonb)
         || jsonb_build_object(${format}::text, ${hash}::text)`,
       configUpdatedAt: sql`greatest(${vpnKeys.configUpdatedAt}, clock_timestamp())`,
-      ...(changesRule ? { routeRuleVersionId: ruleVersion, updatedAt: sql`clock_timestamp()` } : {}),
+      ...(changesRule
+        ? {
+            routeRuleVersionId: ruleVersion,
+            rulesDeliveredAt: sql`clock_timestamp()`,
+            updatedAt: sql`clock_timestamp()`,
+          }
+        : {}),
     }).where(and(
       eq(vpnKeys.id, keyId),
       changesRule ? undefined : sql`${vpnKeys.configExportHashes}->>${format} IS DISTINCT FROM ${hash}`,
@@ -4310,6 +4338,8 @@ export class PostgresControlRepository implements ControlRepository {
             createdAt: routeRuleVersions.createdAt,
             updatedAt: routeRuleVersions.updatedAt,
             pinnedAt: routeRuleVersions.pinnedAt,
+            notifiedAt: routeRuleVersions.notifiedAt,
+            notifyNote: routeRuleVersions.notifyNote,
           })
           .from(routeRuleVersions)
           .orderBy(desc(routeRuleVersions.createdAt));
@@ -6521,6 +6551,98 @@ export class PostgresControlRepository implements ControlRepository {
           },
         });
         return { profile: targetRule.profile, pinned: false };
+      });
+    } else if (resource === "rules" && action === "notify") {
+      if (!UUID_PATTERN.test(targetId)) {
+        throw new ApiError(400, "Rule version id must be a UUID", "BAD_REQUEST");
+      }
+      const parsed = ruleNotifySchema.parse(payload ?? {});
+      return this.options.db.transaction(async (tx) => {
+        const now = new Date();
+        const [targetRule] = await tx
+          .select({
+            id: routeRuleVersions.id,
+            profile: routeRuleVersions.profile,
+            version: routeRuleVersions.version,
+            status: routeRuleVersions.status,
+            notifiedAt: routeRuleVersions.notifiedAt,
+          })
+          .from(routeRuleVersions)
+          .where(eq(routeRuleVersions.id, targetId))
+          .limit(1);
+        if (!targetRule) {
+          throw new ApiError(404, "Rule version not found", "NOT_FOUND");
+        }
+        if (targetRule.status !== "active") {
+          throw new ApiError(
+            409,
+            "Only the active rule version can be marked as an important update",
+            "RULE_NOT_ACTIVE",
+          );
+        }
+        if (targetRule.notifiedAt !== null) {
+          throw new ApiError(
+            409,
+            "Important update has already been triggered for this rule version",
+            "ALREADY_NOTIFIED",
+          );
+        }
+        const [updated] = await tx
+          .update(routeRuleVersions)
+          .set({
+            notifiedAt: now,
+            notifyNote: parsed.note,
+            updatedAt: now,
+          })
+          .where(
+            and(
+              eq(routeRuleVersions.id, targetId),
+              eq(routeRuleVersions.status, "active"),
+              isNull(routeRuleVersions.notifiedAt),
+            ),
+          )
+          .returning({
+            id: routeRuleVersions.id,
+            profile: routeRuleVersions.profile,
+            version: routeRuleVersions.version,
+            notifiedAt: routeRuleVersions.notifiedAt,
+            notifyNote: routeRuleVersions.notifyNote,
+          });
+        if (!updated) {
+          throw new ApiError(
+            409,
+            "Important update has already been triggered for this rule version",
+            "ALREADY_NOTIFIED",
+          );
+        }
+        const [affectedRow] = await tx
+          .select({ total: count() })
+          .from(vpnKeys)
+          .where(
+            and(
+              eq(vpnKeys.state, "active"),
+              eq(vpnKeys.routeProfile, targetRule.profile),
+              sql`${vpnKeys.routeRuleVersionId} IS DISTINCT FROM ${targetRule.id}`,
+            ),
+          );
+        const affectedKeys = Number(affectedRow?.total ?? 0);
+        await tx.insert(auditEvents).values({
+          actorUserId: actor.id,
+          actorType: "user",
+          action: "admin.rules.notify",
+          targetType: "rules",
+          targetId,
+          metadata: {
+            profile: targetRule.profile,
+            version: targetRule.version,
+            affectedKeys,
+            hasNote: parsed.note !== null,
+          },
+        });
+        return {
+          ...updated,
+          affectedKeys,
+        };
       });
     } else if (resource === "rules" && action === "refresh") {
       // Control-api never fetches a feed itself: `RULE_FEEDS` and the

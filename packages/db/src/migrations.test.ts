@@ -136,6 +136,23 @@ describe("0070_user_device_rules", () => {
   });
 });
 
+describe("0071_rule_version_important_notice", () => {
+  const sql = readFileSync(
+    fileURLToPath(new URL("../migrations/0071_rule_version_important_notice.sql", import.meta.url)),
+    "utf8",
+  );
+
+  it("adds notice and delivery columns nullable without defaults plus partial index", () => {
+    expect(sql).toContain('ALTER TABLE "route_rule_versions" ADD COLUMN "notified_at" timestamp with time zone;');
+    expect(sql).toContain('ALTER TABLE "route_rule_versions" ADD COLUMN "notify_note" text;');
+    expect(sql).toContain('ALTER TABLE "vpn_keys" ADD COLUMN "rules_delivered_at" timestamp with time zone;');
+    expect(sql).toContain('CREATE INDEX "route_rule_versions_notified_idx"');
+    const columns = sql.split("\n").filter((line) => line.includes("ADD COLUMN"));
+    expect(columns).toHaveLength(3);
+    for (const line of columns) expect(line).not.toMatch(/NOT NULL|DEFAULT/i);
+  });
+});
+
 describe("0030_rule_version_pin", () => {
   const sql = readFileSync(
     fileURLToPath(new URL("../migrations/0030_rule_version_pin.sql", import.meta.url)),

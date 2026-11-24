@@ -1,5 +1,6 @@
 import type {
   KeyBridgeInfo,
+  KeyRulesUpdate,
   PortalPolicy,
   RouteProfile,
   UserNodeReachability,
@@ -28,7 +29,15 @@ export type KeyRow = {
   nameShowNumber: boolean;
   routeProfile: RouteProfile;
   routeRuleVersionId: string | null;
+  rulesDeliveredAt?: Date | null;
   createdAt: Date;
+};
+
+/** Latest admin-triggered important notice for one route profile. */
+export type ImportantRuleNotice = {
+  id: string;
+  notifiedAt: Date;
+  note: string | null;
 };
 
 /** The two node columns the key's server name is derived from. */
@@ -104,6 +113,7 @@ export const toKeyView = ({
   current,
   policy,
   activeByProfile,
+  importantByProfile,
   nodeReachability,
   bridge,
 }: {
@@ -113,47 +123,70 @@ export const toKeyView = ({
   current: PeerCurrentRow | null;
   policy: PortalPolicy;
   activeByProfile: Map<string, string>;
+  importantByProfile?: Map<string, ImportantRuleNotice>;
   /** The key's server verdict; undefined when the policy hides node status. */
   nodeReachability?: UserNodeReachability;
   /** Admin-only bridge routing summary; omitted for regular users. */
   bridge?: KeyBridgeInfo;
-}): KeyView => ({
-  id: key.id,
-  ownerId: key.ownerId,
-  nodeId: key.nodeId,
-  // Read from the key's own node, not from `/api/nodes`: that list holds only
-  // the servers the user may create keys on, and a key outlives that
-  // permission. Same rule as `listNodes`: the public name when there is one,
-  // so the internal admin name never leaves the server.
-  nodeName: node.publicName ?? node.name,
-  ...(nodeReachability ? { nodeReachability } : {}),
-  publicKey: policy.showPublicKey ? key.publicKey : undefined,
-  protocol: key.protocol,
-  state: key.state,
-  deviceType: key.deviceType,
-  deviceLabel: key.deviceLabel,
-  keyNumber: key.keyNumber,
-  ...internalNameFor(actor, key),
-  ...bridgeInfoFor(actor, key, bridge ? { ...bridge, observed: observedKeyPath(current?.endpoint) } : undefined),
-  nameDisplay: {
-    server: key.nameShowNode,
-    label: key.nameShowLabel,
-    number: key.nameShowNumber,
-  },
-  routeProfile: key.routeProfile,
-  rulesOutdated:
+}): KeyView => {
+  const rulesOutdated =
     key.routeProfile !== "full_tunnel" &&
     activeByProfile.has(key.routeProfile) &&
-    activeByProfile.get(key.routeProfile) !== key.routeRuleVersionId,
-  createdAt: key.createdAt.toISOString(),
-  lastUsedAt: policy.showLastUsed
-    ? (current?.latestHandshakeAt?.toISOString() ?? null)
-    : undefined,
-  traffic:
-    policy.showTraffic && current
+    activeByProfile.get(key.routeProfile) !== key.routeRuleVersionId;
+  const latestImportant = rulesOutdated
+    ? importantByProfile?.get(key.routeProfile)
+    : undefined;
+  const deliveredAt = key.rulesDeliveredAt ?? key.createdAt;
+  const isImportant =
+    latestImportant !== undefined &&
+    key.routeRuleVersionId !== latestImportant.id &&
+    deliveredAt.getTime() < latestImportant.notifiedAt.getTime();
+  const rulesUpdate: KeyRulesUpdate | undefined = !rulesOutdated
+    ? undefined
+    : isImportant
       ? {
-          receivedBytes: current.receivedBytes.toString(),
-          sentBytes: current.sentBytes.toString(),
+          level: "important",
+          notifiedAt: latestImportant.notifiedAt.toISOString(),
+          ...(latestImportant.note ? { note: latestImportant.note } : {}),
         }
+      : { level: "soft" };
+
+  return {
+    id: key.id,
+    ownerId: key.ownerId,
+    nodeId: key.nodeId,
+    // Read from the key's own node, not from `/api/nodes`: that list holds only
+    // the servers the user may create keys on, and a key outlives that
+    // permission. Same rule as `listNodes`: the public name when there is one,
+    // so the internal admin name never leaves the server.
+    nodeName: node.publicName ?? node.name,
+    ...(nodeReachability ? { nodeReachability } : {}),
+    publicKey: policy.showPublicKey ? key.publicKey : undefined,
+    protocol: key.protocol,
+    state: key.state,
+    deviceType: key.deviceType,
+    deviceLabel: key.deviceLabel,
+    keyNumber: key.keyNumber,
+    ...internalNameFor(actor, key),
+    ...bridgeInfoFor(actor, key, bridge ? { ...bridge, observed: observedKeyPath(current?.endpoint) } : undefined),
+    nameDisplay: {
+      server: key.nameShowNode,
+      label: key.nameShowLabel,
+      number: key.nameShowNumber,
+    },
+    routeProfile: key.routeProfile,
+    rulesOutdated,
+    ...(rulesUpdate ? { rulesUpdate } : {}),
+    createdAt: key.createdAt.toISOString(),
+    lastUsedAt: policy.showLastUsed
+      ? (current?.latestHandshakeAt?.toISOString() ?? null)
       : undefined,
-});
+    traffic:
+      policy.showTraffic && current
+        ? {
+            receivedBytes: current.receivedBytes.toString(),
+            sentBytes: current.sentBytes.toString(),
+          }
+        : undefined,
+  };
+};

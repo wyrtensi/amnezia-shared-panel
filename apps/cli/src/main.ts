@@ -2958,6 +2958,8 @@ type RuleVersionView = {
   } | null;
   publishedAt: string | null;
   pinnedAt: string | null;
+  notifiedAt?: string | null;
+  notifyNote?: string | null;
   createdAt: string;
 };
 
@@ -3023,7 +3025,11 @@ async function cmdRules(args: string[]): Promise<void> {
         : "  pinned:  no — the worker publishes each new version",
     );
     for (const row of rows) {
-      const marks = [row.status, row.pinnedAt ? "pinned" : null]
+      const marks = [
+        row.status,
+        row.pinnedAt ? "pinned" : null,
+        row.notifiedAt ? "important" : null,
+      ]
         .filter(Boolean)
         .join(", ");
       const reportParts = [
@@ -3103,6 +3109,39 @@ async function cmdRulesFollow(args: string[]): Promise<void> {
   console.log("version the worker fetches will be published.");
 }
 
+async function cmdRulesNotify(args: string[]): Promise<void> {
+  const target = positionals(args)[0] ?? "ru_blacklist";
+  const note = flagOf(args, "note") ?? null;
+  const versions = await fetchRuleVersions();
+  const active =
+    versions.find(
+      (version) => version.profile === target && version.status === "active",
+    ) ?? versions.find((version) => version.id === target);
+  if (!active) {
+    throw new Error(
+      `No active rule version for "${target}" (usage: rules-notify [profile|version-id] [--note=<text>])`,
+    );
+  }
+  const result = await api<{
+    id: string;
+    profile: string;
+    version: string;
+    notifiedAt: string;
+    notifyNote: string | null;
+    affectedKeys: number;
+  }>(`/api/admin/rules/${active.id}/notify`, {
+    method: "POST",
+    body: JSON.stringify({ note }),
+  });
+  if (wantsJson(args)) return json(result);
+  console.log(
+    `${result.profile}: marked ${result.version.slice(0, 20)} as an important update (${result.affectedKeys} active keys affected).`,
+  );
+  if (result.notifyNote) {
+    console.log(`  note: ${result.notifyNote}`);
+  }
+}
+
 async function cmdRulesRefresh(args: string[]): Promise<void> {
   const profile = flagOf(args, "profile") ?? "ru_blacklist";
   if (profile !== "ru_blacklist") {
@@ -3135,6 +3174,9 @@ async function cmdRulesShow(args: string[]): Promise<void> {
   console.log(`rule version ${rule.version} (${rule.id})`);
   console.log(`  profile:    ${rule.profile}`);
   console.log(`  status:     ${rule.status}${rule.pinnedAt ? ` (pinned ${rule.pinnedAt})` : ""}`);
+  if (rule.notifiedAt) {
+    console.log(`  important:  ${rule.notifiedAt}${rule.notifyNote ? ` — ${rule.notifyNote}` : ""}`);
+  }
   console.log(`  published:  ${rule.publishedAt ?? "—"}`);
   console.log(`  sourceUrl:  ${rule.sourceUrl ?? "—"}`);
   console.log(`  counts:     ${rule.cidrCount} cidrs, ${rule.domainCount} domains`);
@@ -3551,6 +3593,9 @@ Write:
   rules-follow <profile|version-id>       Release that pin. The active version is left
                                           exactly as it is; the next version the worker
                                           fetches is published again
+  rules-notify [profile|version-id] [--note=<text>] [--json]
+                                          Mark the profile's active rule version as a
+                                          one-time important update for users
   cf-token --token-file=<path|->          Store the Cloudflare API token (encrypted).
                                           cf-token <token> still works but lands in
                                           ps/history
@@ -4342,6 +4387,8 @@ export async function dispatch(argv: string[]): Promise<void> {
       return cmdRulesActivate(args);
     case "rules-follow":
       return cmdRulesFollow(args);
+    case "rules-notify":
+      return cmdRulesNotify(args);
     case "global-routes-set":
       return cmdGlobalRoutesSet(args);
     case undefined:

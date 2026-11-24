@@ -249,9 +249,16 @@ export type KeyView = {
   nameDisplay: KeyNameDisplay;
   routeProfile: string;
   rulesOutdated?: boolean;
+  rulesUpdate?: KeyRulesUpdate;
   createdAt: string;
   lastUsedAt?: string | null;
   traffic?: KeyTraffic;
+};
+
+export type KeyRulesUpdate = {
+  level: "soft" | "important";
+  notifiedAt?: string | null;
+  note?: string | null;
 };
 
 export type RouteProfile = "full_tunnel" | "ru_blacklist";
