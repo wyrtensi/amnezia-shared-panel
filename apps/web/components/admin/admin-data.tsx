@@ -226,6 +226,9 @@ export type RuleVersion = {
   publishedAt?: string | null;
   /** Set when an admin pinned this version; null while the worker publishes. */
   pinnedAt?: string | null;
+  /** Set once when an admin announced this active version as an important update. */
+  notifiedAt?: string | null;
+  notifyNote?: string | null;
   createdAt: string;
 };
 

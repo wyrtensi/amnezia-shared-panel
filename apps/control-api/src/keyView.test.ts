@@ -205,7 +205,93 @@ describe("owner-facing key projection", () => {
       activeByProfile: new Map([["ru_blacklist", "new"]]),
     });
     expect(outdated.rulesOutdated).toBe(true);
+    expect(outdated.rulesUpdate).toEqual({ level: "soft" });
     expect(view(owner).rulesOutdated).toBe(false);
+    expect(view(owner).rulesUpdate).toBeUndefined();
+  });
+
+  it("escalates outdated keys to important once per profile notice until delivered", () => {
+    const notifiedAt = new Date("2026-11-24T12:00:00.000Z");
+    const importantByProfile = new Map([
+      [
+        "ru_blacklist",
+        { id: "v10", notifiedAt, note: "Added Clarity and fixed HoYoLAB" },
+      ],
+    ]);
+
+    // Older key created before the important notice sees the important callout.
+    const needsImportant = toKeyView({
+      actor: owner,
+      key: row({
+        routeProfile: "ru_blacklist",
+        routeRuleVersionId: "v5",
+        createdAt: new Date("2026-11-10T00:00:00.000Z"),
+      }),
+      node: NODE,
+      current: null,
+      policy: defaultPortalPolicy,
+      activeByProfile: new Map([["ru_blacklist", "v11"]]),
+      importantByProfile,
+    });
+    expect(needsImportant.rulesOutdated).toBe(true);
+    expect(needsImportant.rulesUpdate).toEqual({
+      level: "important",
+      notifiedAt: "2026-11-24T12:00:00.000Z",
+      note: "Added Clarity and fixed HoYoLAB",
+    });
+
+    // Key that already received the important version falls back to soft when a later auto-version arrives.
+    const alreadyGotImportant = toKeyView({
+      actor: owner,
+      key: row({
+        routeProfile: "ru_blacklist",
+        routeRuleVersionId: "v10",
+        createdAt: new Date("2026-11-10T00:00:00.000Z"),
+        rulesDeliveredAt: new Date("2026-11-24T11:00:00.000Z"),
+      }),
+      node: NODE,
+      current: null,
+      policy: defaultPortalPolicy,
+      activeByProfile: new Map([["ru_blacklist", "v11"]]),
+      importantByProfile,
+    });
+    expect(alreadyGotImportant.rulesOutdated).toBe(true);
+    expect(alreadyGotImportant.rulesUpdate).toEqual({ level: "soft" });
+
+    // Key delivered after `notifiedAt` also sees only soft on subsequent auto-versions.
+    const deliveredAfter = toKeyView({
+      actor: owner,
+      key: row({
+        routeProfile: "ru_blacklist",
+        routeRuleVersionId: "v11",
+        createdAt: new Date("2026-11-10T00:00:00.000Z"),
+        rulesDeliveredAt: new Date("2026-11-24T13:00:00.000Z"),
+      }),
+      node: NODE,
+      current: null,
+      policy: defaultPortalPolicy,
+      activeByProfile: new Map([["ru_blacklist", "v12"]]),
+      importantByProfile,
+    });
+    expect(deliveredAfter.rulesOutdated).toBe(true);
+    expect(deliveredAfter.rulesUpdate).toEqual({ level: "soft" });
+
+    // Key already on the active version sees no notice even if active was marked important.
+    const currentKey = toKeyView({
+      actor: owner,
+      key: row({
+        routeProfile: "ru_blacklist",
+        routeRuleVersionId: "v10",
+        createdAt: new Date("2026-11-10T00:00:00.000Z"),
+      }),
+      node: NODE,
+      current: null,
+      policy: defaultPortalPolicy,
+      activeByProfile: new Map([["ru_blacklist", "v10"]]),
+      importantByProfile,
+    });
+    expect(currentKey.rulesOutdated).toBe(false);
+    expect(currentKey.rulesUpdate).toBeUndefined();
   });
 });
 

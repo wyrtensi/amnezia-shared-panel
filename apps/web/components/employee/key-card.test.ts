@@ -181,13 +181,20 @@ describe("rules-updated callout", () => {
   // download. A reissue would also replace the key pair and kill the config on
   // every other device the user has.
   it("sends the user to the key dialog, not to a reissue", () => {
-    const callout = source.slice(
-      source.indexOf("keyView.rulesOutdated ? ("),
-      source.indexOf("</Callout>", source.indexOf("keyView.rulesOutdated ? (")),
-    );
+    const start = source.indexOf('keyView.rulesUpdate?.level === "important" ? (');
+    const callout = source.slice(start, source.indexOf("</Callout>", start));
     expect(callout).toContain("guardKeyAccess(onShowConfig)");
     expect(callout).toContain('t("keyCard.redownload")');
     expect(callout).not.toContain("onRotate");
+  });
+
+  it("renders a quiet soft notice without a duplicate button when not marked important", () => {
+    const start = source.indexOf('keyView.rulesUpdate?.level !== "important" ? (');
+    expect(start).toBeGreaterThan(-1);
+    const soft = source.slice(start, source.indexOf(") : null}", start));
+    expect(soft).toContain('t("keyCard.rulesSoftTitle")');
+    expect(soft).toContain('t("keyCard.rulesSoftBody"');
+    expect(soft).not.toContain("<Button");
   });
 
   it("reports a delivery only from a real fetch, never from opening the dialog", () => {
@@ -212,16 +219,16 @@ describe("rules-updated callout", () => {
 
   it("explains how to update the routing rules in both languages", () => {
     for (const lang of ["ru", "en"] as const) {
-      const body = (messages[lang] as Record<string, string>)[
-        "keyCard.rulesUpdatedBody"
-      ];
-      expect(body, `${lang} body`).toContain("{profile}");
-      // Nothing has broken: the key keeps running on the rules it was issued
-      // with. Copy that says otherwise sends people to support over a
-      // non-event, which is what this callout used to do.
-      expect(body, `${lang} body`).not.toMatch(
-        /перестанет работать|stop working/i,
-      );
+      for (const key of ["keyCard.rulesUpdatedBody", "keyCard.rulesSoftBody"] as const) {
+        const body = (messages[lang] as Record<string, string>)[key];
+        expect(body, `${lang} ${key}`).toContain("{profile}");
+        // Nothing has broken: the key keeps running on the rules it was issued
+        // with. Copy that says otherwise sends people to support over a
+        // non-event, which is what this callout used to do.
+        expect(body, `${lang} ${key}`).not.toMatch(
+          /перестанет работать|stop working/i,
+        );
+      }
     }
   });
 });

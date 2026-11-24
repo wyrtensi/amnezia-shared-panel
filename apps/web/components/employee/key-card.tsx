@@ -297,17 +297,18 @@ export function KeyCard({
             </div>
           ) : null}
 
-          {active && keyView.rulesOutdated ? (
+          {active &&
+          keyView.rulesOutdated &&
+          keyView.rulesUpdate?.level === "important" ? (
             <Callout
               tone="warning"
               icon={<RefreshCw className="h-4 w-4 text-warning" />}
               title={t("keyCard.rulesUpdatedTitle")}
             >
               {/* Named profile, not a generic "rules changed": `rulesOutdated`
-                  is set per profile — this key's own profile has a newer rule
-                  version than the one it was issued with — so the callout can
-                  say which of them moved and why this card is the one showing
-                  it. Same label the route chip above uses. */}
+                  is set per profile — this key's own profile has an important
+                  rule notice triggered once by an admin — so the callout can
+                  say which profile moved and why this card is showing it. */}
               <span className="block">
                 {t("keyCard.rulesUpdatedBody", {
                   profile: t(
@@ -315,6 +316,13 @@ export function KeyCard({
                   ),
                 })}
               </span>
+              {keyView.rulesUpdate.note ? (
+                <span className="mt-1 block text-foreground">
+                  {t("keyCard.rulesUpdatedNote", {
+                    note: keyView.rulesUpdate.note,
+                  })}
+                </span>
+              ) : null}
               {me.policy.allowConfigRedownload ? (
                 <Button
                   type="button"
@@ -365,6 +373,29 @@ export function KeyCard({
               </div>
             ) : null}
           </dl>
+
+          {active &&
+          keyView.rulesOutdated &&
+          keyView.rulesUpdate?.level !== "important" ? (
+            <div
+              role="note"
+              className="flex items-start gap-2 rounded-lg border border-border/70 bg-well px-3 py-2 text-xs shadow-[var(--inset-shadow)]"
+            >
+              <RefreshCw className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+              <div className="min-w-0 space-y-0.5 leading-snug">
+                <p className="font-medium text-foreground">
+                  {t("keyCard.rulesSoftTitle")}
+                </p>
+                <p className="text-muted-foreground">
+                  {t("keyCard.rulesSoftBody", {
+                    profile: t(
+                      ROUTE_LABEL[keyView.routeProfile] ?? keyView.routeProfile,
+                    ),
+                  })}
+                </p>
+              </div>
+            </div>
+          ) : null}
 
           {/* Wraps: at a phone width the labelled downloads no longer fit beside
               Copy, and a row that cannot wrap pushes them out of reach instead. */}

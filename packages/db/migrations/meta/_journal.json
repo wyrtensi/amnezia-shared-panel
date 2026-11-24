@@ -498,6 +498,13 @@
       "when": 1795400000009,
       "tag": "0070_user_device_rules",
       "breakpoints": true
+    },
+    {
+      "idx": 71,
+      "version": "7",
+      "when": 1795400000010,
+      "tag": "0071_rule_version_important_notice",
+      "breakpoints": true
     }
   ]
 }

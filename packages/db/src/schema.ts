@@ -555,6 +555,12 @@ export const routeRuleVersions = pgTable(
     // the activate button a lie. Cleared by the "follow the feed" action, and
     // at most one row per profile may hold it.
     pinnedAt: timestamp("pinned_at", { withTimezone: true }),
+    // Set once when an administrator announces this active version as an
+    // important update for its profile. Users who have not delivered a config
+    // since `notifiedAt` (and do not already carry this version) see the
+    // prominent callout instead of the quiet auto-update hint.
+    notifiedAt: timestamp("notified_at", { withTimezone: true }),
+    notifyNote: text("notify_note"),
     ...timestamps,
   },
   (table) => [
@@ -570,6 +576,9 @@ export const routeRuleVersions = pgTable(
     uniqueIndex("route_rule_versions_pinned_profile_unique")
       .on(table.profile)
       .where(sql`${table.pinnedAt} is not null`),
+    index("route_rule_versions_notified_idx")
+      .on(table.profile, table.notifiedAt)
+      .where(sql`${table.notifiedAt} is not null`),
   ],
 );
 
@@ -656,6 +665,10 @@ export const vpnKeys = pgTable(
       () => routeRuleVersions.id,
       { onDelete: "set null" },
     ),
+    // Recorded when a split-profile config carrying an updated rule version is
+    // actually delivered to the owner. Distinct from `configUpdatedAt`, which
+    // also moves on admin-side AWG client profile changes.
+    rulesDeliveredAt: timestamp("rules_delivered_at", { withTimezone: true }),
     configCiphertext: text("config_ciphertext"),
     configNonce: text("config_nonce"),
     configAuthTag: text("config_auth_tag"),

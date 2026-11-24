@@ -6,6 +6,7 @@ import {
   Circle,
   KeyRound,
   Search,
+  Server,
   Settings,
   Shield,
   Trash2,
@@ -15,10 +16,23 @@ import {
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { formatDateTime } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { useAdminData, type AuditEvent } from "@/components/admin/admin-data";
+import {
+  collectKeyContextFromAudit,
+  formatAuditMetaPills,
+  resolveAuditKeyDetails,
+  type AuditPerson,
+} from "@/lib/audit-display";
 import {
   AUDIT_CATEGORIES,
   auditCategoryOf,
@@ -72,12 +86,28 @@ const EXACT: Record<string, { textKey: string; tone: Tone }> = {
     textKey: "audit.exact.vpn_key.rotate_requested",
     tone: "warning",
   },
+  "vpn_key.renamed": {
+    textKey: "audit.exact.vpn_key.renamed",
+    tone: "neutral",
+  },
+  "vpn_key.config_set": {
+    textKey: "audit.exact.vpn_key.config_set",
+    tone: "neutral",
+  },
   "vpn_key.config_profile_refreshed": {
     textKey: "audit.exact.vpn_key.config_profile_refreshed",
     tone: "neutral",
   },
   "vpn_key.private_config_viewed": {
     textKey: "audit.exact.vpn_key.private_config_viewed",
+    tone: "warning",
+  },
+  "reachability.key_created": {
+    textKey: "audit.exact.reachability.key_created",
+    tone: "neutral",
+  },
+  "reachability.key_revoked": {
+    textKey: "audit.exact.reachability.key_revoked",
     tone: "warning",
   },
   "node.created": { textKey: "audit.exact.node.created", tone: "success" },
@@ -105,6 +135,14 @@ const EXACT: Record<string, { textKey: string; tone: Tone }> = {
     textKey: "audit.exact.admin.users.create-key",
     tone: "success",
   },
+  "admin.keys.purge": {
+    textKey: "audit.exact.admin.keys.purge",
+    tone: "danger",
+  },
+  "admin.keys.set-internal-name": {
+    textKey: "audit.exact.admin.keys.set-internal-name",
+    tone: "neutral",
+  },
   "admin.portal-policy.update": {
     textKey: "audit.exact.admin.portal-policy.update",
     tone: "neutral",
@@ -112,6 +150,22 @@ const EXACT: Record<string, { textKey: string; tone: Tone }> = {
   "admin.rules.activate": {
     textKey: "audit.exact.admin.rules.activate",
     tone: "success",
+  },
+  "admin.rules.follow": {
+    textKey: "audit.exact.admin.rules.follow",
+    tone: "neutral",
+  },
+  "admin.rules.refresh": {
+    textKey: "audit.exact.admin.rules.refresh",
+    tone: "neutral",
+  },
+  "admin.rules.import": {
+    textKey: "audit.exact.admin.rules.import",
+    tone: "success",
+  },
+  "admin.rules.notify": {
+    textKey: "audit.exact.admin.rules.notify",
+    tone: "warning",
   },
   "admin.nodes.reconcile": {
     textKey: "audit.exact.admin.nodes.reconcile",
@@ -130,16 +184,7 @@ const TARGET_TYPE: Record<string, string> = {
   access_policy: "audit.target.access_policy",
 };
 
-/** A person, as far as a row can tell: a name, a role, and whether they still exist. */
-type Person = { text: string; role?: string; gone?: boolean };
-
-/**
- * The chip after a name. It carries the role when the person is still in the
- * panel, and "deleted" when the address could only be recovered from the log —
- * which is the more important of the two, because it says why the users page
- * will not explain this row.
- */
-function PersonMark({ person, t }: { person: Person; t: Translate }) {
+function PersonMark({ person, t }: { person: AuditPerson; t: Translate }) {
   if (!person.gone && !person.role) return null;
   return (
     <Badge
@@ -217,55 +262,26 @@ function ToneIcon({ tone, action }: { tone: Tone; action: string }) {
   return <Circle className={className} />;
 }
 
-/**
- * Which metadata keys hold a reference to something with a name, and to what.
- * A purge event carries `ownerId` and `nodeId`, and rendering those as raw
- * UUIDs makes the pill wider than the row and tells the reader nothing: the
- * question a purge raises is *whose* key it was.
- */
-const META_REFERENCE: Record<string, "user" | "node"> = {
-  ownerId: "user",
-  userId: "user",
-  actorUserId: "user",
-  targetUserId: "user",
-  nodeId: "node",
-};
-
-function metaPills(
-  metadata: Record<string, unknown> | null,
-  resolve: (kind: "user" | "node", id: string) => string | null,
-): string[] {
-  if (!metadata) return [];
-  return Object.entries(metadata)
-    .filter(([, value]) => value !== null && value !== undefined && value !== "")
-    .slice(0, 4)
-    .map(([key, value]) => {
-      const kind = META_REFERENCE[key];
-      if (kind && typeof value === "string") {
-        const name = resolve(kind, value);
-        // Fall through to the raw id when nothing knows the name — a pill that
-        // silently drops an unresolvable reference would hide the only handle
-        // the reader has left.
-        if (name) return `${key}: ${name}`;
-      }
-      // Metadata is parsed JSON, so anything that is not a primitive is an
-      // object or array and renders as JSON.
-      const rendered =
-        typeof value === "string" ||
-        typeof value === "number" ||
-        typeof value === "boolean"
-          ? String(value)
-          : JSON.stringify(value);
-      return `${key}: ${rendered.length > 40 ? `${rendered.slice(0, 40)}…` : rendered}`;
-    });
-}
-
 export default function AdminAuditPage() {
-  const { audit, users, nodes, loading } = useAdminData();
+  const { audit, users, nodes, keys, loading } = useAdminData();
   const { t, lang } = useT();
   const [query, setQuery] = React.useState("");
   const [scope, setScope] = React.useState<AuditScope>("all");
   const [category, setCategory] = React.useState<AuditCategory | null>(null);
+  const [nodeFilter, setNodeFilter] = React.useState<string>("all");
+
+  const nodesById = React.useMemo(
+    () => new Map(nodes.map((node) => [node.id, node])),
+    [nodes],
+  );
+  const keysById = React.useMemo(
+    () => new Map(keys.map((key) => [key.id, key])),
+    [keys],
+  );
+  const logKeyContext = React.useMemo(
+    () => collectKeyContextFromAudit(audit),
+    [audit],
+  );
 
   /**
    * Emails of people who are no longer in the users list, recovered from the
@@ -289,7 +305,7 @@ export default function AdminAuditPage() {
     return found;
   }, [audit]);
 
-  const personFor = (id: string | null): Person | null => {
+  const personFor = (id: string | null): AuditPerson | null => {
     if (!id) return null;
     const known = users.find((user) => user.id === id);
     if (known) return { text: known.email, role: known.role };
@@ -298,7 +314,7 @@ export default function AdminAuditPage() {
     return null;
   };
 
-  const actorLabel = (event: AuditEvent): Person => {
+  const actorLabel = (event: AuditEvent): AuditPerson => {
     const person = personFor(event.actorUserId ?? null);
     if (person) return person;
     if (event.actorUserId) return { text: event.actorUserId };
@@ -310,25 +326,80 @@ export default function AdminAuditPage() {
 
   /** Names for the ids that appear inside metadata pills. */
   const resolveReference = (kind: "user" | "node", id: string): string | null => {
-    if (kind === "node") return nodes.find((node) => node.id === id)?.name ?? null;
+    if (kind === "node") return nodesById.get(id)?.name ?? null;
     return personFor(id)?.text ?? null;
   };
 
-  const targetLabel = (event: AuditEvent): Person => {
-    if (!event.targetId)
-      return { text: t(TARGET_TYPE[event.targetType] ?? event.targetType) };
-    const person = personFor(event.targetId);
-    if (person) return person;
-    const type = t(TARGET_TYPE[event.targetType] ?? event.targetType);
-    return { text: `${type} ${event.targetId.slice(0, 8)}` };
-  };
+  const described = audit.map((event) => {
+    const keyDetails = resolveAuditKeyDetails({
+      event,
+      keysById,
+      logKeyContext,
+      nodesById,
+      personFor,
+      t,
+    });
+    const hasKeyDetails = Boolean(
+      keyDetails.title ||
+        keyDetails.serverLabel ||
+        keyDetails.owner ||
+        keyDetails.deviceLabel ||
+        keyDetails.protocolLabel ||
+        keyDetails.routeLabel,
+    );
+    const pills = formatAuditMetaPills({
+      event,
+      hasKeyDetails,
+      resolveReference,
+      t,
+    });
 
-  const described = audit.map((event) => ({
-    event,
-    actor: actorLabel(event),
-    target: targetLabel(event),
-    ...describe(event.action, t),
-  }));
+    const target = ((): AuditPerson => {
+      if (keyDetails.title && (event.targetType === "vpn_key" || event.targetType === "keys")) {
+        return { text: keyDetails.title };
+      }
+      if (!event.targetId) {
+        return { text: t(TARGET_TYPE[event.targetType] ?? event.targetType) };
+      }
+      if (event.targetType === "node") {
+        const node = nodesById.get(event.targetId);
+        if (node) return { text: node.name };
+      }
+      const person = personFor(event.targetId);
+      if (person) return person;
+      const type = t(TARGET_TYPE[event.targetType] ?? event.targetType);
+      return { text: `${type} ${event.targetId.slice(0, 8)}` };
+    })();
+
+    const actor = actorLabel(event);
+    const desc = describe(event.action, t);
+    const haystack = [
+      actor.text,
+      desc.text,
+      target.text,
+      event.action,
+      keyDetails.title,
+      keyDetails.internalName,
+      keyDetails.serverLabel,
+      keyDetails.owner?.text,
+      keyDetails.deviceLabel,
+      keyDetails.protocolLabel,
+      keyDetails.routeLabel,
+      ...pills,
+    ]
+      .filter(Boolean)
+      .join(" ");
+
+    return {
+      event,
+      actor,
+      target,
+      keyDetails,
+      pills,
+      haystack,
+      ...desc,
+    };
+  });
 
   // Only the categories actually present get a chip. A fixed row would offer
   // filters that empty the list on a panel that has never touched that subject,
@@ -337,16 +408,21 @@ export default function AdminAuditPage() {
     audit.some((event) => auditCategoryOf(event.targetType) === value),
   );
 
-  const rows = described.filter((row) =>
-    auditRowMatches(
-      {
-        actorType: row.event.actorType,
-        targetType: row.event.targetType,
-        haystack: `${row.actor.text} ${row.text} ${row.target.text} ${row.event.action}`,
-      },
-      { scope, category, query },
-    ),
+  const rows = described.filter(
+    (row) =>
+      (nodeFilter === "all" || row.keyDetails.nodeIds.includes(nodeFilter)) &&
+      auditRowMatches(
+        {
+          actorType: row.event.actorType,
+          targetType: row.event.targetType,
+          haystack: row.haystack,
+        },
+        { scope, category, query },
+      ),
   );
+
+  const hasActiveFilters =
+    scope !== "all" || category !== null || nodeFilter !== "all" || query !== "";
 
   return (
     <Card>
@@ -358,6 +434,24 @@ export default function AdminAuditPage() {
               {t("audit.subtitle", { count: audit.length })}
             </p>
           </div>
+          {nodes.length > 1 ? (
+            <Select value={nodeFilter} onValueChange={setNodeFilter}>
+              <SelectTrigger
+                aria-label={t("audit.serverFilter")}
+                className="h-9 w-44 text-xs"
+              >
+                <SelectValue placeholder={t("audit.allServers")} />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">{t("audit.allServers")}</SelectItem>
+                {nodes.map((node) => (
+                  <SelectItem key={node.id} value={node.id}>
+                    {node.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          ) : null}
           <div className="relative">
             <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
             <Input
@@ -410,12 +504,13 @@ export default function AdminAuditPage() {
             </div>
           ) : null}
 
-          {scope !== "all" || category !== null || query ? (
+          {hasActiveFilters ? (
             <button
               type="button"
               onClick={() => {
                 setScope("all");
                 setCategory(null);
+                setNodeFilter("all");
                 setQuery("");
               }}
               className="ml-auto text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground"
@@ -459,14 +554,64 @@ export default function AdminAuditPage() {
                     <PersonMark person={row.actor} t={t} />
                     <span className="text-muted-foreground">{row.text}</span>
                   </p>
-                  <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
-                    <span className="truncate">{row.target.text}</span>
+                  <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
+                    <span className="truncate font-medium text-foreground/90">
+                      {row.target.text}
+                    </span>
                     <PersonMark person={row.target} t={t} />
-                    {metaPills(row.event.metadata, resolveReference).map((pill) => (
+                    {row.keyDetails.internalName ? (
+                      <span className="truncate text-muted-foreground">
+                        ({row.keyDetails.internalName})
+                      </span>
+                    ) : null}
+                    {row.keyDetails.serverLabel ? (
+                      <Badge
+                        variant="secondary"
+                        className="h-5 gap-1 px-1.5 text-[11px] font-normal"
+                      >
+                        <Server className="h-3 w-3 shrink-0" />
+                        {row.keyDetails.serverLabel}
+                      </Badge>
+                    ) : null}
+                    {row.keyDetails.owner ? (
+                      <span className="inline-flex items-center gap-1">
+                        <span>
+                          {t("audit.ownerLabel", {
+                            owner: row.keyDetails.owner.text,
+                          })}
+                        </span>
+                        <PersonMark person={row.keyDetails.owner} t={t} />
+                      </span>
+                    ) : null}
+                    {row.keyDetails.deviceLabel ? (
+                      <Badge
+                        variant="outline"
+                        className="h-5 px-1.5 text-[11px] font-normal"
+                      >
+                        {row.keyDetails.deviceLabel}
+                      </Badge>
+                    ) : null}
+                    {row.keyDetails.protocolLabel ? (
+                      <Badge
+                        variant="outline"
+                        className="h-5 px-1.5 text-[11px] font-normal"
+                      >
+                        {row.keyDetails.protocolLabel}
+                      </Badge>
+                    ) : null}
+                    {row.keyDetails.routeLabel ? (
+                      <Badge
+                        variant="outline"
+                        className="h-5 px-1.5 text-[11px] font-normal"
+                      >
+                        {row.keyDetails.routeLabel}
+                      </Badge>
+                    ) : null}
+                    {row.pills.map((pill) => (
                       <Badge
                         key={pill}
                         variant="outline"
-                        className="h-4 max-w-52 truncate px-1.5 font-mono text-[10px] font-normal"
+                        className="h-5 max-w-60 truncate px-1.5 text-[11px] font-normal"
                       >
                         {pill}
                       </Badge>

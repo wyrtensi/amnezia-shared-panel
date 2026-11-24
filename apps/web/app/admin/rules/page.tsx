@@ -1,8 +1,18 @@
 "use client";
 
 import * as React from "react";
-import { Check, Eye, Pin, RotateCw } from "lucide-react";
+import { Bell, Check, Eye, Pin, RotateCw } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import {
   Table,
   TableBody,
@@ -21,6 +31,7 @@ import { RulePreviewDialog } from "@/components/admin/rule-preview-dialog";
 import { RulesRefreshButton } from "@/components/admin/rules-refresh-button";
 import {
   distinctSources,
+  RULE_NOTIFY_NOTE_MAX_LENGTH,
   ruleSources,
   type RuleSourceRef,
 } from "@amnezia/contracts";
@@ -136,9 +147,42 @@ function ProfileSection({
   group: ProfileGroup;
   onPreview: (rule: RuleVersion) => void;
 }) {
-  const { action } = useAdminData();
+  const { action, keys } = useAdminData();
   const { t, lang } = useT();
-  const { profile, versions, pinned, newerThanPinned, sources } = group;
+  const { profile, versions, active, pinned, newerThanPinned, sources } = group;
+  const [notifyOpen, setNotifyOpen] = React.useState(false);
+  const [notifyNote, setNotifyNote] = React.useState("");
+  const [notifying, setNotifying] = React.useState(false);
+
+  const outdatedActiveKeys = React.useMemo(
+    () =>
+      active
+        ? keys.filter(
+            (key) =>
+              key.state === "active" &&
+              key.routeProfile === profile &&
+              key.routeRuleVersionId !== active.id,
+          ).length
+        : 0,
+    [active, keys, profile],
+  );
+
+  const submitNotify = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!active || notifying) return;
+    setNotifying(true);
+    try {
+      const ok = await action("rules", active.id, "notify", {
+        note: notifyNote.trim() || null,
+      });
+      if (ok) {
+        setNotifyOpen(false);
+        setNotifyNote("");
+      }
+    } finally {
+      setNotifying(false);
+    }
+  };
 
   return (
     <div className="border-t">
@@ -171,17 +215,91 @@ function ProfileSection({
             </p>
           ) : null}
         </div>
-        {pinned ? (
-          <Button
-            size="sm"
-            variant="secondary"
-            title={t("rules.followTitle")}
-            onClick={() => void action("rules", pinned.id, "follow")}
-          >
-            <RotateCw className="h-4 w-4" /> {t("rules.follow")}
-          </Button>
-        ) : null}
+        <div className="flex flex-wrap items-center gap-2">
+          {active ? (
+            <Button
+              size="sm"
+              variant="secondary"
+              disabled={Boolean(active.notifiedAt)}
+              title={
+                active.notifiedAt
+                  ? t("rules.notifiedAlready")
+                  : t("rules.notifyTitle")
+              }
+              onClick={() => {
+                setNotifyNote("");
+                setNotifyOpen(true);
+              }}
+            >
+              <Bell className="h-4 w-4" /> {t("rules.notify")}
+            </Button>
+          ) : null}
+          {pinned ? (
+            <Button
+              size="sm"
+              variant="secondary"
+              title={t("rules.followTitle")}
+              onClick={() => void action("rules", pinned.id, "follow")}
+            >
+              <RotateCw className="h-4 w-4" /> {t("rules.follow")}
+            </Button>
+          ) : null}
+        </div>
       </div>
+      {active ? (
+        <Dialog
+          open={notifyOpen}
+          onOpenChange={(open) => {
+            if (!notifying) setNotifyOpen(open);
+          }}
+        >
+          <DialogContent>
+            <form onSubmit={(event) => void submitNotify(event)} className="space-y-4">
+              <DialogHeader>
+                <DialogTitle>
+                  {t("rules.notifyDialogTitle", {
+                    profile: t(PROFILE_LABEL[profile] ?? profile),
+                  })}
+                </DialogTitle>
+                <DialogDescription>
+                  {t("rules.notifyDialogDesc", { count: outdatedActiveKeys })}
+                </DialogDescription>
+              </DialogHeader>
+              <p className="text-xs text-muted-foreground">
+                {t("rules.notifyVersionLine", {
+                  version: (active.version || active.id).slice(0, 20),
+                })}
+              </p>
+              <div className="space-y-1.5">
+                <Label htmlFor={`rule-notify-note-${profile}`}>
+                  {t("rules.notifyNoteLabel")}
+                </Label>
+                <Input
+                  id={`rule-notify-note-${profile}`}
+                  value={notifyNote}
+                  maxLength={RULE_NOTIFY_NOTE_MAX_LENGTH}
+                  placeholder={t("rules.notifyNotePlaceholder")}
+                  disabled={notifying}
+                  onChange={(event) => setNotifyNote(event.target.value)}
+                />
+              </div>
+              <DialogFooter>
+                <Button
+                  type="button"
+                  variant="secondary"
+                  disabled={notifying}
+                  onClick={() => setNotifyOpen(false)}
+                >
+                  {t("common.cancel")}
+                </Button>
+                <Button type="submit" disabled={notifying}>
+                  <Bell className="h-4 w-4" /> {t("rules.notifyConfirm")}
+                </Button>
+              </DialogFooter>
+            </form>
+          </DialogContent>
+        </Dialog>
+      ) : null}
       <Table>
         <TableHeader>
           <TableRow>
@@ -242,6 +360,20 @@ function ProfileSection({
                     {rule.pinnedAt ? (
                       <Badge variant="warning" className="gap-1">
                         <Pin className="h-3 w-3" /> {t("rules.pinned")}
+                      </Badge>
+                    ) : null}
+                    {rule.notifiedAt ? (
+                      <Badge
+                        variant="outline"
+                        className="gap-1"
+                        title={[
+                          formatDateTime(rule.notifiedAt, lang),
+                          rule.notifyNote,
+                        ]
+                          .filter(Boolean)
+                          .join(" · ")}
+                      >
+                        <Bell className="h-3 w-3" /> {t("rules.notified")}
                       </Badge>
                     ) : null}
                   </div>

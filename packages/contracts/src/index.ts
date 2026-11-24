@@ -2620,6 +2620,42 @@ export type ReachabilityWidgetPayload = z.infer<
   typeof reachabilityWidgetPayloadSchema
 >;
 
+export const RULE_NOTIFY_NOTE_MAX_LENGTH = 240;
+
+/**
+ * Admin payload for `POST /api/admin/rules/:id/notify`: marks an active rule
+ * version as a one-time important update for its profile, with an optional
+ * single-line human note shown on affected key cards.
+ */
+export const ruleNotifySchema = z
+  .object({
+    note: z
+      .string()
+      .nullable()
+      .optional()
+      .transform((value) => {
+        if (value === undefined || value === null) return null;
+        const normalized = value.replace(/[\r\n\t]+/g, " ").trim();
+        return normalized.length > 0 ? normalized : null;
+      })
+      .refine(
+        (value) => value === null || value.length <= RULE_NOTIFY_NOTE_MAX_LENGTH,
+        `Note must be at most ${RULE_NOTIFY_NOTE_MAX_LENGTH} characters`,
+      ),
+  })
+  .default({ note: null });
+export type RuleNotifyInput = z.infer<typeof ruleNotifySchema>;
+
+export const keyRulesUpdateLevelSchema = z.enum(["soft", "important"]);
+export type KeyRulesUpdateLevel = z.infer<typeof keyRulesUpdateLevelSchema>;
+
+export const keyRulesUpdateSchema = z.object({
+  level: keyRulesUpdateLevelSchema,
+  notifiedAt: z.string().datetime().nullable().optional(),
+  note: z.string().nullable().optional(),
+});
+export type KeyRulesUpdate = z.infer<typeof keyRulesUpdateSchema>;
+
 export * from "./bridges.js";
 export * from "./bridgeAgent.js";
 export * from "./bridgeAgentUpdate.js";

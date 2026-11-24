@@ -40,14 +40,14 @@ describe("isVisibleToOwner", () => {
 
 describe("markRulesDelivered", () => {
   const keys = [
-    { id: "a", rulesOutdated: true },
-    { id: "b", rulesOutdated: true },
+    { id: "a", rulesOutdated: true, rulesUpdate: { level: "important" as const } },
+    { id: "b", rulesOutdated: true, rulesUpdate: { level: "soft" as const } },
   ];
 
-  it("clears the flag on the delivered key only", () => {
+  it("clears the flag and notice payload on the delivered key only", () => {
     expect(markRulesDelivered(keys, "a")).toEqual([
-      { id: "a", rulesOutdated: false },
-      { id: "b", rulesOutdated: true },
+      { id: "a", rulesOutdated: false, rulesUpdate: undefined },
+      { id: "b", rulesOutdated: true, rulesUpdate: { level: "soft" } },
     ]);
   });
 

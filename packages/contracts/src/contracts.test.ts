@@ -53,6 +53,8 @@ import {
   RETIRED_STORED_DEVICE_TYPES,
   ROUTE_DOMAINS_UNSUPPORTED,
   ROUTE_PROFILE_UNSUPPORTED_DEVICES,
+  RULE_NOTIFY_NOTE_MAX_LENGTH,
+  ruleNotifySchema,
   rulesRefreshStatusSchema,
   CHECK_ASSERTION_TYPES,
   checkAssertionSchema,
@@ -1908,5 +1910,25 @@ describe("revokeJobDedupKey", () => {
     expect(revokeJobDedupKey("key-1", "attempt-a")).toBe(
       "vpn-key.revoke:key-1:attempt-a",
     );
+  });
+});
+
+describe("ruleNotifySchema", () => {
+  it("normalizes whitespace and turns empty notes into null", () => {
+    expect(ruleNotifySchema.parse(undefined)).toEqual({ note: null });
+    expect(ruleNotifySchema.parse({})).toEqual({ note: null });
+    expect(ruleNotifySchema.parse({ note: "   \n\t  " })).toEqual({ note: null });
+    expect(ruleNotifySchema.parse({ note: "  Added\nClarity\tfix  " })).toEqual({
+      note: "Added Clarity fix",
+    });
+  });
+
+  it("rejects notes exceeding the maximum length", () => {
+    expect(() =>
+      ruleNotifySchema.parse({ note: "a".repeat(RULE_NOTIFY_NOTE_MAX_LENGTH + 1) }),
+    ).toThrow();
+    expect(
+      ruleNotifySchema.parse({ note: "a".repeat(RULE_NOTIFY_NOTE_MAX_LENGTH) }).note,
+    ).toHaveLength(RULE_NOTIFY_NOTE_MAX_LENGTH);
   });
 });

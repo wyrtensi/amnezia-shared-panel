@@ -2873,6 +2873,46 @@ describe("complete Control API CLI parity", () => {
     }
   });
 
+  it("rules-notify resolves the profile's active version and sends optional note", async () => {
+    const calls = stubFetch([
+      {
+        body: [
+          {
+            id: RULE_ID_A,
+            profile: "ru_blacklist",
+            version: "2026-11-24.1",
+            status: "active",
+            pinnedAt: null,
+            notifiedAt: null,
+            notifyNote: null,
+            publishedAt: "2026-11-24T00:07:00.000Z",
+            sourceUrl: "https://rules.example.test/list.txt",
+            cidrCount: 1319,
+            domainCount: 82138,
+            createdAt: "2026-11-24T00:07:00.000Z",
+          },
+        ],
+      },
+      {
+        body: {
+          id: RULE_ID_A,
+          profile: "ru_blacklist",
+          version: "2026-11-24.1",
+          notifiedAt: "2026-11-24T07:30:00.000Z",
+          notifyNote: "Fixed HoYoLAB",
+          affectedKeys: 12,
+        },
+      },
+    ]);
+
+    const out = await run(["rules-notify", "ru_blacklist", "--note=Fixed HoYoLAB"]);
+    expect(calls[1]!.url).toContain(`/api/admin/rules/${RULE_ID_A}/notify`);
+    expect(calls[1]!.init?.method).toBe("POST");
+    expect(sentBody(calls[1]!)).toEqual({ note: "Fixed HoYoLAB" });
+    expect(out).toContain("marked 2026-11-24.1 as an important update (12 active keys affected)");
+    expect(out).toContain("note: Fixed HoYoLAB");
+  });
+
   it("user-policy displays inherit message when empty and formatted overrides otherwise", async () => {
     const calls = stubFetch([
       {
