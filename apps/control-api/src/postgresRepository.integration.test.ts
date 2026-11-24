@@ -5447,13 +5447,26 @@ describe("PostgresControlRepository rule version pinning", () => {
       );
       expect(inactiveErr).toMatchObject({ statusCode: 409, code: "RULE_NOT_ACTIVE" });
 
+      const activeKeysBefore = await database.db
+        .select({ id: vpnKeys.id, routeRuleVersionId: vpnKeys.routeRuleVersionId })
+        .from(vpnKeys)
+        .where(
+          and(
+            eq(vpnKeys.state, "active"),
+            eq(vpnKeys.routeProfile, "ru_blacklist"),
+          ),
+        );
+      const expectedAffected = activeKeysBefore.filter(
+        (key) => key.routeRuleVersionId !== live,
+      ).length;
+
       const notified = (await subject().adminAction(admin, "rules", live, "notify", {
         note: "Added Clarity\nand fixed HoYoLAB",
       })) as { id: string; notifiedAt: Date; notifyNote: string | null; affectedKeys: number };
       expect(notified.id).toBe(live);
       expect(notified.notifiedAt).toBeInstanceOf(Date);
       expect(notified.notifyNote).toBe("Added Clarity and fixed HoYoLAB");
-      expect(notified.affectedKeys).toBe(0);
+      expect(notified.affectedKeys).toBe(expectedAffected);
 
       const duplicateErr = await failureOf(
         subject().adminAction(admin, "rules", live, "notify", { note: "second" }),
@@ -5468,7 +5481,7 @@ describe("PostgresControlRepository rule version pinning", () => {
       expect(events[0]?.metadata).toMatchObject({
         profile: "ru_blacklist",
         version: "v2",
-        affectedKeys: 0,
+        affectedKeys: expectedAffected,
         hasNote: true,
       });
     },
