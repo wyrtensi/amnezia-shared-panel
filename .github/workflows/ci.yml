@@ -132,5 +132,5 @@ jobs:
           shellcheck -s bash infra/bridge/bridge-agent-update.sh
           shellcheck -s bash infra/bridge/frps-tls-rotate.sh
           shellcheck -s bash scripts/repair-updater-units.sh infra/prod/install-updater.sh infra/node/scripts/install-agent-updater.sh
-          shellcheck -s sh -x infra/node/scripts/common.sh infra/node/scripts/backup.sh infra/node/scripts/rollback.sh infra/node/scripts/deploy.sh infra/node/scripts/preflight.sh infra/node/scripts/awg3-entrypoint.sh infra/node/scripts/install-egressd.sh infra/node/scripts/install-host-services.sh infra/node/scripts/switch-egress-mode.sh
+          shellcheck -s sh -x -P SCRIPTDIR infra/node/scripts/common.sh infra/node/scripts/backup.sh infra/node/scripts/rollback.sh infra/node/scripts/deploy.sh infra/node/scripts/preflight.sh infra/node/scripts/awg3-entrypoint.sh infra/node/scripts/install-egressd.sh infra/node/scripts/install-host-services.sh infra/node/scripts/switch-egress-mode.sh
       - run: node --test infra/node/tests/*.mjs infra/bridge/tests/*.mjs infra/prod/tests/*.mjs scripts/tests/*.mjs

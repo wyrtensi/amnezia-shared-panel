@@ -20,7 +20,7 @@ ensure_layout
 
 temporary="$(mktemp -d "$NODE_DIR/.rollback.XXXXXX")"
 # This function is invoked through the EXIT/INT/TERM trap.
-# shellcheck disable=SC2317
+# shellcheck disable=SC2317,SC2329
 cleanup() {
   rm -rf "$temporary"
   rmdir "$LOCK_DIR" 2>/dev/null || true

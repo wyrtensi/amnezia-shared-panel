@@ -5,6 +5,8 @@ SCRIPT_DIR="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
 NODE_DIR="$(CDPATH='' cd -- "$SCRIPT_DIR/.." && pwd)"
 COMPOSE_FILE="$NODE_DIR/compose.yaml"
 ENV_FILE="$NODE_DIR/.env"
+# Consumed by preflight.sh when sourcing common.sh.
+# shellcheck disable=SC2034
 SECRET_FILE="$NODE_DIR/secrets/node-agent-api-key"
 STATE_ROOT="$NODE_DIR/state"
 STATE_DIR="$NODE_DIR/state/amnezia-awg2"
