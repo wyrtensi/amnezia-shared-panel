@@ -1504,7 +1504,7 @@ export class PostgresControlRepository implements ControlRepository {
   };
 
   listNodes = async (actor: Actor): Promise<unknown[]> => {
-    const [rows, policyRow, userRow, checkRows] = await Promise.all([
+    const [rows, policyRow, userRow, checkRows, egressCheckRows] = await Promise.all([
       this.options.db
         .select({
           id: nodes.id,
@@ -1517,6 +1517,8 @@ export class PostgresControlRepository implements ControlRepository {
           capabilities: nodes.capabilities,
           publicHost: nodes.publicHost,
           publicIp: nodes.publicIp,
+          egressMode: nodes.egressMode,
+          egressDefaultIpId: nodes.egressDefaultIpId,
           checksEnabled: nodes.checksEnabled,
           disabledCheckIds: nodes.disabledCheckIds,
           activeBridgeRouteId: vpnBridgeRoutes.id,
@@ -1552,6 +1554,24 @@ export class PostgresControlRepository implements ControlRepository {
         )
         .where(eq(nodeServiceChecks.enabled, true))
         .orderBy(nodeServiceChecks.name),
+      // Per-egress-IP verdicts for routed nodes. Read in the same batch and
+      // discarded below when showNodeStatus is off.
+      this.options.db
+        .select({
+          egressIpId: nodeEgressServiceCheckResults.egressIpId,
+          checkId: nodeServiceChecks.id,
+          name: nodeServiceChecks.name,
+          status: nodeEgressServiceCheckResults.status,
+          checkedAt: nodeEgressServiceCheckResults.checkedAt,
+          intervalSec: nodeServiceChecks.intervalSec,
+        })
+        .from(nodeEgressServiceCheckResults)
+        .innerJoin(
+          nodeServiceChecks,
+          eq(nodeServiceChecks.id, nodeEgressServiceCheckResults.checkId),
+        )
+        .where(eq(nodeServiceChecks.enabled, true))
+        .orderBy(nodeServiceChecks.name),
     ]);
     const policy = resolvePortalPolicy(
       toPolicy(policyRow[0]),
@@ -1574,6 +1594,10 @@ export class PostgresControlRepository implements ControlRepository {
       string,
       Array<{ checkId: string; name: string; state: ServiceCheckUserState }>
     >();
+    const checksByEgressIp = new Map<
+      string,
+      Array<{ checkId: string; name: string; state: ServiceCheckUserState }>
+    >();
     if (policy.showNodeStatus) {
       for (const row of checkRows) {
         const list = checksByNode.get(row.nodeId) ?? [];
@@ -1590,6 +1614,20 @@ export class PostgresControlRepository implements ControlRepository {
           }),
         });
         checksByNode.set(row.nodeId, list);
+      }
+      for (const row of egressCheckRows) {
+        const list = checksByEgressIp.get(row.egressIpId) ?? [];
+        list.push({
+          checkId: row.checkId,
+          name: row.name,
+          state: toUserCheckState({
+            status: row.status,
+            checkedAt: row.checkedAt,
+            now: checksNow,
+            staleAfterSec: row.intervalSec * 3,
+          }),
+        });
+        checksByEgressIp.set(row.egressIpId, list);
       }
     }
     const nodeOrder = policyRow[0]?.nodeOrder ?? [];
@@ -1623,11 +1661,27 @@ export class PostgresControlRepository implements ControlRepository {
         publicName,
         publicHost,
         publicIp,
+        egressMode,
+        egressDefaultIpId,
         checksEnabled,
         disabledCheckIds,
         activeBridgeRouteId,
         ...row
       }) => {
+        const pickChecks = (
+          items: Array<{ checkId: string; name: string; state: ServiceCheckUserState }>,
+        ) =>
+          items
+            .filter((chip) =>
+              nodeRunsCheck(
+                { checksEnabled, disabledCheckIds },
+                chip.checkId,
+              ),
+            )
+            .map(({ name, state }) => ({ name, state }));
+        const nodeChecks = policy.showNodeStatus
+          ? pickChecks(checksByNode.get(row.id) ?? [])
+          : [];
         const supportedProtocols = deriveSupportedProtocols(
           row.protocol,
           capabilities,
@@ -1672,7 +1726,15 @@ export class PostgresControlRepository implements ControlRepository {
         const globalUseBridge = policyRow[0]?.useBridge ?? false;
         const hasActiveBridge = activeBridgeRouteId !== null;
         const endpoints = visibleEndpoints.map(
-          ({ id, ordinal, name, publicAddress, bridgeMode, reachability: endpointReachability }) => {
+          ({
+            id,
+            ordinal,
+            name,
+            publicAddress,
+            bridgeMode,
+            egressIpId,
+            reachability: endpointReachability,
+          }) => {
             const usesBridgeForUser =
               hasActiveBridge &&
               (bridgeMode === "bridge" || (bridgeMode === "inherit" && policy.useBridge));
@@ -1692,6 +1754,13 @@ export class PostgresControlRepository implements ControlRepository {
               : usesBridgeGlobally
                 ? UNKNOWN_USER_REACHABILITY
                 : storedReachability;
+            const effectiveEgressIpId =
+              egressMode === "routed" ? (egressIpId ?? egressDefaultIpId ?? null) : null;
+            const endpointChecks = policy.showNodeStatus
+              ? effectiveEgressIpId !== null && checksByEgressIp.has(effectiveEgressIpId)
+                ? pickChecks(checksByEgressIp.get(effectiveEgressIpId) ?? [])
+                : nodeChecks
+              : undefined;
             return {
               id,
               ordinal,
@@ -1703,6 +1772,7 @@ export class PostgresControlRepository implements ControlRepository {
                   ? { recommended: true }
                   : {}),
               ...(policy.showNodeStatus ? { reachability: effectiveReachability } : {}),
+              ...(endpointChecks !== undefined ? { status: { checks: endpointChecks } } : {}),
             };
           },
         );
@@ -1742,12 +1812,7 @@ export class PostgresControlRepository implements ControlRepository {
             ...(policy.showNodeStatus
               ? {
                   status: {
-                    checks: (checksByNode.get(row.id) ?? []).filter((chip) =>
-                      nodeRunsCheck(
-                        { checksEnabled, disabledCheckIds },
-                        chip.checkId,
-                      ),
-                    ).map(({ name, state }) => ({ name, state })),
+                    checks: nodeChecks,
                   },
                 }
               : {}),
@@ -4200,24 +4265,44 @@ export class PostgresControlRepository implements ControlRepository {
           nameShowNode: vpnKeys.nameShowNode,
           nameShowLabel: vpnKeys.nameShowLabel,
           nameShowNumber: vpnKeys.nameShowNumber,
-          nodeName: nodes.name,
-          nodePublicName: nodes.publicName,
-          endpointName: nodeVpnEndpoints.name,
+          nodeId: vpnKeys.nodeId,
+          endpointId: vpnKeys.endpointId,
         })
         .from(vpnKeys)
-        .innerJoin(nodes, eq(nodes.id, vpnKeys.nodeId))
-        .leftJoin(nodeVpnEndpoints, keyEndpointJoin)
         .where(and(eq(vpnKeys.id, keyId), eq(vpnKeys.ownerId, actor.id)))
         .limit(1)
         .for("update");
       if (!row) throw new ApiError(404, "Key not found", "KEY_NOT_FOUND");
+      const [serverMeta] = await tx
+        .select({
+          nodeName: nodes.name,
+          nodePublicName: nodes.publicName,
+          endpointName: nodeVpnEndpoints.name,
+        })
+        .from(nodes)
+        .leftJoin(
+          nodeVpnEndpoints,
+          row.endpointId
+            ? and(
+                eq(nodeVpnEndpoints.nodeId, nodes.id),
+                eq(nodeVpnEndpoints.id, row.endpointId),
+              )
+            : and(
+                eq(nodeVpnEndpoints.nodeId, nodes.id),
+                eq(nodeVpnEndpoints.ordinal, 1),
+              ),
+        )
+        .where(eq(nodes.id, row.nodeId))
+        .limit(1);
+      if (!serverMeta) throw new ApiError(404, "Node not found", "NODE_NOT_FOUND");
 
       const display = {
         server: row.nameShowNode,
         label: row.nameShowLabel,
         number: row.nameShowNumber,
       };
-      const serverName = row.endpointName ?? row.nodePublicName ?? row.nodeName;
+      const serverName =
+        serverMeta.endpointName ?? serverMeta.nodePublicName ?? serverMeta.nodeName;
       const before = composeKeyDisplayName({
         serverName,
         label: row.deviceLabel,

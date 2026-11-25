@@ -690,7 +690,13 @@ export function EmployeeDashboard({
                                 month={traffic?.month}
                               />
                             ) : null}
-                            <ServiceCheckChips checks={node.status?.checks} />
+                            {!showAddressList ? (
+                              <ServiceCheckChips
+                                checks={addresses[0]?.status?.checks ?? node.status?.checks}
+                              />
+                            ) : !addresses.some((item) => (item.status?.checks?.length ?? 0) > 0) ? (
+                              <ServiceCheckChips checks={node.status?.checks} />
+                            ) : null}
                           </div>
                           <div className="flex min-w-0 flex-wrap items-center gap-2.5">
                             <span className="tabular-nums text-xs text-muted-foreground">

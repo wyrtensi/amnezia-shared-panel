@@ -2490,6 +2490,7 @@ export const userNodeEndpointSchema = z.object({
   publicAddress: z.ipv4().optional(),
   recommended: z.boolean().optional(),
   reachability: userNodeReachabilitySchema.optional(),
+  status: z.object({ checks: z.array(userServiceStatusSchema) }).optional(),
 });
 export type UserNodeEndpoint = z.infer<typeof userNodeEndpointSchema>;
 

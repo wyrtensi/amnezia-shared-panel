@@ -68,6 +68,7 @@ import {
   updateCustomRoutesRequestSchema,
   updateGlobalRoutesRequestSchema,
   updateServiceCheckRequestSchema,
+  userNodeEndpointSchema,
   accessDomainListSchema,
   accessDomainSchema,
   normalizeAccessDomain,
@@ -1930,5 +1931,32 @@ describe("ruleNotifySchema", () => {
     expect(
       ruleNotifySchema.parse({ note: "a".repeat(RULE_NOTIFY_NOTE_MAX_LENGTH) }).note,
     ).toHaveLength(RULE_NOTIFY_NOTE_MAX_LENGTH);
+  });
+});
+
+describe("userNodeEndpointSchema", () => {
+  it("accepts optional per-variant service check status and rejects invalid states", () => {
+    const parsed = userNodeEndpointSchema.parse({
+      id: "2c65d1c2-e077-4d14-bba2-03e67ecba9fe",
+      ordinal: 1,
+      name: "Edge NL",
+      status: {
+        checks: [
+          { name: "Google Flow", state: "works" },
+          { name: "YouTube", state: "unavailable" },
+          { name: "Gemini", state: "unknown" },
+        ],
+      },
+    });
+    expect(parsed.status?.checks).toHaveLength(3);
+
+    expect(
+      userNodeEndpointSchema.safeParse({
+        id: "2c65d1c2-e077-4d14-bba2-03e67ecba9fe",
+        ordinal: 1,
+        name: "Edge NL",
+        status: { checks: [{ name: "Google Flow", state: "broken" }] },
+      }).success,
+    ).toBe(false);
   });
 });

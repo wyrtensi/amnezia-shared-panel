@@ -1,6 +1,7 @@
 "use client";
 
 import type { UserNodeEndpoint } from "@amnezia/contracts";
+import { ServiceCheckChips } from "@/components/service-check-chips";
 import { Badge } from "@/components/ui/badge";
 import { useT } from "@/lib/i18n/provider";
 import { blockedFirst, formatSince, useHydrated } from "@/lib/node-reachability";
@@ -34,12 +35,23 @@ export function ServerStatusList({ nodes }: { nodes: readonly NodeView[] }) {
 
 export function ServerAddressList({ addresses }: { addresses: readonly UserNodeEndpoint[] }) {
   const { t } = useT();
-  return <ServerStatusRows entries={addresses} label={t("emp.connectionAddresses")} />;
+  return <ServerStatusRows entries={addresses} label={t("emp.connectionAddresses")} showChecks />;
 }
 
-type ServerStatusEntry = Pick<NodeView, "id" | "name" | "recommended" | "reachability" | "publicAddress">;
+type ServerStatusEntry = Pick<
+  NodeView,
+  "id" | "name" | "recommended" | "reachability" | "publicAddress" | "status"
+>;
 
-function ServerStatusRows({ entries, label }: { entries: readonly ServerStatusEntry[]; label: string }) {
+function ServerStatusRows({
+  entries,
+  label,
+  showChecks = false,
+}: {
+  entries: readonly ServerStatusEntry[];
+  label: string;
+  showChecks?: boolean;
+}) {
   const { t } = useT();
   // "since" is shown in the browser's zone, so only once hydrated.
   const hydrated = useHydrated();
@@ -76,6 +88,11 @@ function ServerStatusRows({ entries, label }: { entries: readonly ServerStatusEn
               {hydrated && reachability?.state === "blocked" && reachability.since ? (
                 <span className="block text-xs text-destructive">
                   {t("emp.blockedSince", { since: formatSince(reachability.since) })}
+                </span>
+              ) : null}
+              {showChecks && node.status?.checks?.length ? (
+                <span className="mt-1 block">
+                  <ServiceCheckChips checks={node.status.checks} />
                 </span>
               ) : null}
             </span>

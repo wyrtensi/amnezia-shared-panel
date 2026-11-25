@@ -30,6 +30,8 @@ import {
   jobOutbox,
   LIVE_KEY_STATES,
   nodeAgentReleases,
+  nodeEgressIps,
+  nodeEgressServiceCheckResults,
   nodeMetricsCurrent,
   nodeReachabilityHistory,
   nodeReachabilityResults,
@@ -3657,6 +3659,149 @@ describe("PostgresControlRepository node status surfaces", () => {
             .where(inArray(nodeVpnEndpoints.id, endpoints.map((ep) => ep.id)));
           await database.db.delete(vpnBridgeRoutes).where(eq(vpnBridgeRoutes.id, routeId));
           await database.db.delete(vpnBridges).where(eq(vpnBridges.id, bridge.id));
+        }
+      },
+    );
+
+    runDatabaseTest(
+      "listNodes resolves per-variant egress service checks for users with disabledCheckIds, showNodeStatus=false, and node fallback",
+      async () => {
+        if (!database) return;
+        const checkedAt = new Date();
+        const [check] = await database.db
+          .insert(nodeServiceChecks)
+          .values({
+            name: `Flow-${randomBytes(3).toString("hex")}`,
+            probe: { kind: "http", url: "https://labs.google/", method: "GET", timeoutMs: 5000 },
+            assertions: [{ type: "statusIn", statuses: [200] }],
+            intervalSec: 3600,
+            enabled: true,
+          })
+          .returning();
+        if (!check) throw new Error("Failed to seed service check");
+        const [ipA, ipB] = await database.db
+          .insert(nodeEgressIps)
+          .values([
+            { nodeId, ipv4: "198.51.100.10", interfaceName: "eth0", label: "Primary" },
+            { nodeId, ipv4: "198.51.100.20", interfaceName: "eth0", label: "Clean" },
+          ])
+          .returning();
+        if (!ipA || !ipB) throw new Error("Failed to seed egress IPs");
+        await database.db
+          .update(nodes)
+          .set({
+            protocol: "awg3",
+            capabilities: { awg3: true, awg2: true },
+            egressMode: "routed",
+            egressDefaultIpId: ipA.id,
+            checksEnabled: true,
+            disabledCheckIds: [],
+          })
+          .where(eq(nodes.id, nodeId));
+        const endpoints = await database.db
+          .insert(nodeVpnEndpoints)
+          .values([
+            {
+              nodeId,
+              ordinal: 1,
+              name: "Exit-A",
+              address: "198.51.100.10",
+              enabled: true,
+              egressIpId: ipA.id,
+            },
+            {
+              nodeId,
+              ordinal: 2,
+              name: "Exit-B",
+              address: "198.51.100.20",
+              enabled: true,
+              egressIpId: ipB.id,
+            },
+          ])
+          .returning();
+        await database.db.insert(nodeServiceCheckResults).values({
+          nodeId,
+          checkId: check.id,
+          status: "error",
+          checkedAt,
+        });
+        await database.db.insert(nodeEgressServiceCheckResults).values([
+          { egressIpId: ipA.id, checkId: check.id, status: "ok", checkedAt },
+          { egressIpId: ipB.id, checkId: check.id, status: "failed", checkedAt },
+        ]);
+        await database.db.insert(portalPolicy).values({ showNodeStatus: true });
+
+        try {
+          const readEndpoints = async () => {
+            const rows = (await subject().listNodes(actor)) as Array<{
+              id: string;
+              egressMode?: unknown;
+              egressDefaultIpId?: unknown;
+              publicEndpoints?: Array<{
+                name: string;
+                status?: { checks: Array<{ name: string; state: string }> };
+              }>;
+            }>;
+            return rows.find((item) => item.id === nodeId);
+          };
+
+          const readChecks = (ep: { status?: { checks: Array<{ name: string; state: string }> } }) =>
+            (ep.status?.checks ?? []).filter((item) => item.name === check.name);
+
+          const initial = await readEndpoints();
+          expect("egressMode" in (initial ?? {})).toBe(false);
+          expect("egressDefaultIpId" in (initial ?? {})).toBe(false);
+          expect(initial?.publicEndpoints?.map((ep) => [ep.name, readChecks(ep)])).toEqual([
+            ["Exit-A", [{ name: check.name, state: "works" }]],
+            ["Exit-B", [{ name: check.name, state: "unavailable" }]],
+          ]);
+
+          // Disabling the check on the node hides it from both variants.
+          await database.db
+            .update(nodes)
+            .set({ disabledCheckIds: [check.id] })
+            .where(eq(nodes.id, nodeId));
+          const disabled = await readEndpoints();
+          expect(disabled?.publicEndpoints?.map((ep) => [ep.name, readChecks(ep)])).toEqual([
+            ["Exit-A", []],
+            ["Exit-B", []],
+          ]);
+
+          // Switching back to masquerade falls back to node-level results ("error" -> "unknown").
+          await database.db
+            .update(nodes)
+            .set({ egressMode: "masquerade", disabledCheckIds: [] })
+            .where(eq(nodes.id, nodeId));
+          const masquerade = await readEndpoints();
+          expect(masquerade?.publicEndpoints?.map((ep) => [ep.name, readChecks(ep)])).toEqual([
+            ["Exit-A", [{ name: check.name, state: "unknown" }]],
+            ["Exit-B", [{ name: check.name, state: "unknown" }]],
+          ]);
+
+          // Hiding node status omits status from every endpoint.
+          await database.db.delete(portalPolicy);
+          await database.db.insert(portalPolicy).values({ showNodeStatus: false });
+          const hidden = await readEndpoints();
+          for (const ep of hidden?.publicEndpoints ?? []) {
+            expect("status" in ep).toBe(false);
+          }
+        } finally {
+          await database.db
+            .update(nodes)
+            .set({
+              protocol: "awg2",
+              capabilities: {},
+              egressMode: "masquerade",
+              egressDefaultIpId: null,
+              disabledCheckIds: [],
+            })
+            .where(eq(nodes.id, nodeId));
+          await database.db.delete(portalPolicy);
+          await database.db
+            .delete(nodeVpnEndpoints)
+            .where(inArray(nodeVpnEndpoints.id, endpoints.map((ep) => ep.id)));
+          await database.db.delete(nodeEgressIps).where(inArray(nodeEgressIps.id, [ipA.id, ipB.id]));
+          await database.db.delete(nodeServiceChecks).where(eq(nodeServiceChecks.id, check.id));
         }
       },
     );
