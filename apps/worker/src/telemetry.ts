@@ -1,4 +1,4 @@
-import { WORKER_PERIOD_FIELDS } from "@amnezia/contracts";
+import { WORKER_PERIOD_FIELDS, type NodeEgressMode } from "@amnezia/contracts";
 import type {
   NodeAgent,
   NodeAgentUpdateStatus,
@@ -12,7 +12,9 @@ import {
   checksForNode,
   selectDueChecks,
   toCheckRequests,
+  toEgressResultRows,
   toResultRows,
+  type EgressServiceCheckResultRow,
   type NodeServiceCheck,
   type PreviousResult,
   type ServiceCheckResultRow,
@@ -70,6 +72,9 @@ export type TelemetryNode = {
   /** Whether this node takes part in service checks, and which it skips. */
   checksEnabled: boolean;
   disabledCheckIds: string[];
+  /** Node egress mode and active Exit IPs for per-exit service checks. */
+  egressMode?: NodeEgressMode;
+  activeExitIps?: Array<{ id: string; ipv4: string }>;
 };
 
 export type NodeSnapshot = {
@@ -118,9 +123,13 @@ export interface TelemetryRepository {
   listServiceChecks?: () => Promise<{
     checks: NodeServiceCheck[];
     previousByNode: Map<string, Map<string, PreviousResult>>;
+    previousByEgressIp?: Map<string, Map<string, PreviousResult>>;
   }>;
   recordServiceCheckResults?: (
     rows: ServiceCheckResultRow[],
+  ) => Promise<void>;
+  recordEgressServiceCheckResults?: (
+    rows: EgressServiceCheckResultRow[],
   ) => Promise<void>;
 }
 
@@ -201,6 +210,8 @@ export type TelemetryPollerOptions = {
 const runNodeServiceChecks = async ({
   nodeId,
   policy,
+  egressMode,
+  activeExitIps,
   agent,
   serviceChecks,
   observedAt,
@@ -208,31 +219,57 @@ const runNodeServiceChecks = async ({
 }: {
   nodeId: string;
   policy: { checksEnabled: boolean; disabledCheckIds: string[] };
+  egressMode?: NodeEgressMode;
+  activeExitIps?: ReadonlyArray<{ id: string; ipv4: string }>;
   agent: { runChecks: NodeAgent["runChecks"] };
   serviceChecks: {
     checks: NodeServiceCheck[];
     previousByNode: Map<string, Map<string, PreviousResult>>;
+    previousByEgressIp?: Map<string, Map<string, PreviousResult>>;
   };
   observedAt: Date;
   repository: TelemetryRepository;
 }): Promise<void> => {
+  const allowed = checksForNode(serviceChecks.checks, policy);
   const previous = serviceChecks.previousByNode.get(nodeId) ?? new Map();
-  const due = selectDueChecks(
-    checksForNode(serviceChecks.checks, policy),
-    previous,
-    observedAt,
-  );
-  if (due.length === 0) return;
-  try {
-    const results = await agent.runChecks(toCheckRequests(due));
-    // null means the agent predates the route. That is a fact about the node,
-    // not a result, and writing an `error` row for it would fast-retry every
-    // tick against an agent that will never answer until it is updated.
-    if (results === null) return;
-    const rows = toResultRows(nodeId, results, previous, observedAt);
-    if (rows.length > 0) await repository.recordServiceCheckResults?.(rows);
-  } catch {
-    // Deliberately silent: see the doc comment.
+  const due = selectDueChecks(allowed, previous, observedAt);
+  if (due.length > 0) {
+    try {
+      const results = await agent.runChecks(toCheckRequests(due));
+      // null means the agent predates the route. That is a fact about the node,
+      // not a result, and writing an `error` row for it would fast-retry every
+      // tick against an agent that will never answer until it is updated.
+      if (results !== null) {
+        const rows = toResultRows(nodeId, results, previous, observedAt);
+        if (rows.length > 0) await repository.recordServiceCheckResults?.(rows);
+      }
+    } catch {
+      // Deliberately silent: see the doc comment.
+    }
+  }
+  if (
+    egressMode === "routed" &&
+    activeExitIps &&
+    activeExitIps.length > 0 &&
+    repository.recordEgressServiceCheckResults
+  ) {
+    for (const exit of activeExitIps) {
+      const exitPrev = serviceChecks.previousByEgressIp?.get(exit.id) ?? new Map();
+      const dueForExit = selectDueChecks(allowed, exitPrev, observedAt);
+      if (dueForExit.length === 0) continue;
+      try {
+        const exitResults = await agent.runChecks(toCheckRequests(dueForExit), {
+          egressIpv4: exit.ipv4,
+        });
+        if (exitResults === null) continue;
+        const rows = toEgressResultRows(exit.id, exitResults, exitPrev, observedAt);
+        if (rows.length > 0) {
+          await repository.recordEgressServiceCheckResults(rows);
+        }
+      } catch {
+        // Deliberately silent per exit IP so sibling exits and node telemetry stay healthy.
+      }
+    }
   }
 };
 
@@ -328,6 +365,8 @@ export const createTelemetryPoller = ({
               checksEnabled: node.checksEnabled,
               disabledCheckIds: node.disabledCheckIds,
             },
+            egressMode: node.egressMode,
+            activeExitIps: node.activeExitIps,
             agent,
             serviceChecks,
             observedAt,

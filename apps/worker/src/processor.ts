@@ -6,6 +6,9 @@ import {
   BRIDGE_ROUTE_CANDIDATE_CHECK_JOB_TYPE,
   DEFAULT_IPV6_REJECT_STUB_PREFIX,
   NODE_IPV6_REJECT_STUB_JOB_TYPE,
+  NODE_SWITCH_EGRESS_MODE_JOB_TYPE,
+  NODE_SYNC_EGRESS_JOB_TYPE,
+  nodeEgressModeSchema,
   QUOTA_REQUEST_NOTIFY_JOB_TYPE,
   REACHABILITY_NOTIFY_JOB_TYPE,
   REACHABILITY_WIDGET_JOB_TYPE,
@@ -15,6 +18,8 @@ import {
   reachabilityWidgetPayloadSchema,
   type NodeIpv6RejectStubState,
 } from "@amnezia/contracts";
+import { readBaseClientIpv4 } from "@amnezia/vpn-config";
+import { buildNodeEgressDesiredState, extractPeerIpv4 } from "./nodeEgress.js";
 import { formatQuotaRequestMessage, type TelegramNotifier } from "./telegram.js";
 import type { AccessSyncOutcome } from "./accessReconcile.js";
 import type { NodeAgent } from "./nodeAgent.js";
@@ -43,6 +48,17 @@ const nodeIpv6RejectStubPayloadSchema = nodeJobPayloadSchema.extend({
   enabled: z.boolean(),
   prefix: z.string().min(1).max(64).optional(),
 });
+const nodeSwitchEgressModePayloadSchema = nodeJobPayloadSchema.extend({
+  mode: nodeEgressModeSchema,
+});
+
+const tryExtractBaseClientIpv4 = (vpnConfig: string): string | null => {
+  try {
+    return readBaseClientIpv4(vpnConfig);
+  } catch {
+    return null;
+  }
+};
 
 export type JobProcessorOptions = {
   repository: WorkerRepository;
@@ -375,12 +391,20 @@ export const createJobProcessor = ({
       const missingManagedPeerCount = context.keys.filter(
         (key) => key.state !== "revoking" && !matchedPeerByKeyId.has(key.keyId),
       ).length;
+      const tunnelIpv4Backfills = context.keys.flatMap((key) => {
+        if (key.protocol !== "awg3" || key.tunnelIpv4) return [];
+        const matched = matchedPeerByKeyId.get(key.keyId);
+        if (!matched) return [];
+        const ip = extractPeerIpv4(matched.peer.allowedIps);
+        return ip ? [{ keyId: key.keyId, tunnelIpv4: ip }] : [];
+      });
       await repository.completeNodeReconcile({
         jobId: job.id,
         nodeId,
         observedAt,
         managedKeyIds: context.keys.map((key) => key.keyId),
         peers,
+        ...(tunnelIpv4Backfills.length > 0 ? { tunnelIpv4Backfills } : {}),
         summary: {
           managedKeyCount: context.keys.length,
           observedPeerCount: nodePeers.length,
@@ -489,6 +513,79 @@ export const createJobProcessor = ({
       });
       return;
     }
+    if (job.type === NODE_SYNC_EGRESS_JOB_TYPE) {
+      const { nodeId } = nodeJobPayloadSchema.parse(job.payload);
+      if (!repository.loadNodeEgressSyncContext) {
+        await repository.completeJob(job.id);
+        return;
+      }
+      const syncContext = await repository.loadNodeEgressSyncContext(nodeId);
+      if (!syncContext) {
+        await repository.failJob(job.id, "Node egress sync target not found");
+        return;
+      }
+      const desired = buildNodeEgressDesiredState(syncContext);
+      const outcome = await createNodeAgent(syncContext.node).putServerEgress(desired);
+      const observedAt = now();
+      if (outcome === null) {
+        await repository.markNodeEgressUnavailable?.(nodeId, observedAt);
+      } else {
+        await repository.mirrorNodeEgressReport?.(nodeId, outcome.report, observedAt);
+      }
+      await repository.completeJob(job.id);
+      return;
+    }
+    if (job.type === NODE_SWITCH_EGRESS_MODE_JOB_TYPE) {
+      const { nodeId, mode } = nodeSwitchEgressModePayloadSchema.parse(job.payload);
+      if (!repository.loadNodeEgressSyncContext || !repository.completeNodeEgressModeSwitch) {
+        await repository.failJob(job.id, "Node egress mode switch repository is not wired");
+        return;
+      }
+      const syncContext = await repository.loadNodeEgressSyncContext(nodeId);
+      if (!syncContext) {
+        await repository.failJob(job.id, "Node egress mode switch target not found");
+        return;
+      }
+      const nodeAgent = createNodeAgent(syncContext.node);
+      if (mode === "routed") {
+        const prewarm = await nodeAgent.putServerEgress(buildNodeEgressDesiredState(syncContext));
+        if (prewarm === null) {
+          await repository.completeNodeEgressModeSwitch({
+            jobId: job.id,
+            nodeId,
+            mode,
+            state: "failed",
+            message: "node-agent does not serve /server/egress",
+            observedAt: now(),
+          });
+          return;
+        }
+      }
+      const switched = await nodeAgent.switchEgressMode(mode);
+      const observedAt = now();
+      if (!switched.ok) {
+        await repository.completeNodeEgressModeSwitch({
+          jobId: job.id,
+          nodeId,
+          mode,
+          state: "failed",
+          message: switched.error ?? "Host egress mode switch failed",
+          report: switched.report ?? null,
+          observedAt,
+        });
+        return;
+      }
+      await repository.completeNodeEgressModeSwitch({
+        jobId: job.id,
+        nodeId,
+        mode,
+        state: "idle",
+        message: null,
+        report: switched.report ?? null,
+        observedAt,
+      });
+      return;
+    }
     if (!job.type.startsWith("vpn-key.")) {
       await repository.completeJob(job.id);
       return;
@@ -515,12 +612,16 @@ export const createJobProcessor = ({
         const created = await agent.createClient(
           context.nodeLabel,
           context.protocol,
+          ...(context.egressHint ? [context.egressHint] : []),
         );
+        const tunnelIpv4 =
+          context.protocol === "awg3" ? tryExtractBaseClientIpv4(created.config) : null;
         await repository.completeProvision({
           jobId: job.id,
           keyId,
           publicKey: created.id,
           vpnConfig: created.config,
+          ...(tunnelIpv4 ? { tunnelIpv4 } : {}),
         });
       } catch (error) {
         const reason = error instanceof Error ? error.message : "Unknown node error";
@@ -545,12 +646,16 @@ export const createJobProcessor = ({
       const created = await agent.createClient(
         context.nodeLabel,
         context.protocol,
+        ...(context.egressHint ? [context.egressHint] : []),
       );
+      const tunnelIpv4 =
+        context.protocol === "awg3" ? tryExtractBaseClientIpv4(created.config) : null;
       await repository.completeProvision({
         jobId: job.id,
         keyId,
         publicKey: created.id,
         vpnConfig: created.config,
+        ...(tunnelIpv4 ? { tunnelIpv4 } : {}),
       });
       return;
     }
@@ -591,6 +696,7 @@ export const createJobProcessor = ({
         context.publicKey,
         context.protocol,
         enabled ? "active" : "disabled",
+        ...(enabled && context.egressHint ? [context.egressHint] : []),
       );
       await repository.completeLifecycle(
         job.id,

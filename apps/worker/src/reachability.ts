@@ -30,6 +30,7 @@ export type TargetAddress = {
   name: string;
   /** When the address was last measured; the run limit serves the oldest first. */
   checkedAt: Date | null;
+  expectedEgressIp?: string | null;
 };
 
 /** A legacy node/protocol path or a separately measured direct IPv4 address. */
@@ -148,6 +149,8 @@ export type AddressOutcome = {
   status: ReachabilityStatus;
   levels: ProbeLevels | null;
   detail: string | null;
+  observedEgressIp?: string | null;
+  egressMatch?: boolean | null;
   state: AddressState;
 };
 
@@ -208,6 +211,35 @@ export const classifyTarget = (
   };
 };
 
+export const applyExpectedEgress = (
+  outcome: ProtocolOutcome,
+  expectedEgressIp: string | null | undefined,
+): { outcome: ProtocolOutcome; observedEgressIp: string | null; egressMatch: boolean | null } => {
+  const observedEgressIp = outcome.egressIp ?? null;
+  if (!expectedEgressIp) {
+    return { outcome, observedEgressIp, egressMatch: null };
+  }
+  if (outcome.status === "ok") {
+    if (observedEgressIp === expectedEgressIp) {
+      return { outcome, observedEgressIp, egressMatch: true };
+    }
+    return {
+      outcome: {
+        ...outcome,
+        status: "failed",
+        detail: clip(`egress mismatch: expected ${expectedEgressIp}, got ${observedEgressIp ?? "none"}`),
+      },
+      observedEgressIp,
+      egressMatch: false,
+    };
+  }
+  return {
+    outcome,
+    observedEgressIp,
+    egressMatch: observedEgressIp !== null ? observedEgressIp === expectedEgressIp : null,
+  };
+};
+
 /**
  * A node is reachable when any protocol it serves is, and unreachable only
  * when every one of them was measured and failed: a protocol the probe could
@@ -265,12 +297,27 @@ export const formatDown = (
 export const formatUp = (node: NodeLine, label: string): string =>
   `${who(node)} снова доступен из ${label}`;
 
-type AddressLine = { name: string; address: string; bridgePath: BridgePath | null };
+type AddressLine = {
+  name: string;
+  address: string;
+  expectedEgressIp?: string | null;
+  detail?: string | null;
+  bridgePath: BridgePath | null;
+};
+const addressTargetLabel = (line: AddressLine) =>
+  line.expectedEgressIp && line.expectedEgressIp !== line.address
+    ? `${line.address} → ${line.expectedEgressIp}`
+    : line.address;
 /** The address and, when bridged, the bridge its verdict is about. */
 const addressWho = (line: AddressLine) =>
   line.bridgePath
-    ? `${line.name} (${line.address}) через мост ${line.bridgePath.bridgeName} (${line.bridgePath.host}:${line.bridgePath.port})`
-    : `${line.name} (${line.address})`;
+    ? `${line.name} (${addressTargetLabel(line)}) через мост ${line.bridgePath.bridgeName} (${line.bridgePath.host}:${line.bridgePath.port})`
+    : `${line.name} (${addressTargetLabel(line)})`;
+
+const addressLevelsText = (line: AddressLine & { levels: ProbeLevels | null }) =>
+  line.detail?.startsWith("egress mismatch:")
+    ? `${levelsLine(line.levels)} (${line.detail})`
+    : levelsLine(line.levels);
 
 /** One message for the addresses of one node that went down in one run. */
 export const formatAddressesDown = (
@@ -281,11 +328,11 @@ export const formatAddressesDown = (
 ): string => {
   const [only] = down;
   if (down.length === 1 && only) {
-    return `Адрес ${addressWho(only)} недоступен из ${label}\n${levelsLine(only.levels)}\n` +
+    return `Адрес ${addressWho(only)} недоступен из ${label}\n${addressLevelsText(only)}\n` +
       `с ${alertClock(only.since, timeZone)}`;
   }
   return `${nodeName}: недоступны адреса из ${label}\n` + down
-    .map((line) => `${addressWho(line)}: ${levelsLine(line.levels)}, с ${alertClock(line.since, timeZone)}`)
+    .map((line) => `${addressWho(line)}: ${addressLevelsText(line)}, с ${alertClock(line.since, timeZone)}`)
     .join("\n");
 };
 
@@ -478,7 +525,8 @@ export const ingestRun = (input: IngestInput): IngestOutput => {
       const sent = target.unavailableReason === null && input.controlOk;
       if (sent && (!result || (target.bridgePath === null && first &&
         !matchesDirectEndpoint(result, first.address)))) continue;
-      const outcome = classifyTarget(target, result, input.controlOk);
+      const rawOutcome = classifyTarget(target, result, input.controlOk);
+      const { outcome } = applyExpectedEgress(rawOutcome, first?.expectedEgressIp);
       entry.measured.push({ target, outcome });
       entry.badge.push(outcome);
       if (outcome.status === "ok" && target.bridgePath === null) healthyDirectAddress = true;
@@ -553,16 +601,28 @@ export const ingestRun = (input: IngestInput): IngestOutput => {
         for (const address of target.addresses ?? []) {
           const previous = input.previousAddresses.get(address.id) ?? EMPTY_ADDRESS_STATE;
           const step = advanceAddress(previous, outcome.status, input.now, input.failThreshold, massFailure);
+          const observedEgressIp = outcome.egressIp ?? null;
+          const egressMatch = address.expectedEgressIp
+            ? observedEgressIp !== null
+              ? observedEgressIp === address.expectedEgressIp
+              : outcome.detail?.startsWith("egress mismatch:")
+                ? false
+                : null
+            : null;
           addressOutcomes.push({
             endpointId: address.id,
             status: outcome.status,
             levels: outcome.levels,
             detail: outcome.detail,
+            observedEgressIp,
+            egressMatch,
             state: step.state,
           });
           const line = {
             name: address.name,
             address: address.address,
+            expectedEgressIp: address.expectedEgressIp ?? null,
+            detail: outcome.detail,
             bridgePath: measuredViaBridge(target) ? target.bridgePath : null,
             levels: outcome.levels,
             since: step.state.failingSince ?? input.now,
