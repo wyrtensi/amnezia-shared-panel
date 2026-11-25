@@ -10,6 +10,7 @@ export type NodeRouteLabel = {
   bridgeId: string;
   bridgeName: string;
   entry: string;
+  revision: number;
 };
 
 export type BridgeInfra = {
@@ -55,6 +56,7 @@ export function useBridgeInfra(): BridgeInfra {
         bridgeId: bridge.id,
         bridgeName: bridge.name,
         entry: bridgeEntry(bridge.publicIpv4, item.activeRoute.publicUdpPort),
+        revision: item.vpnEndpointRevision,
       });
     }
     return { bridges, routeByNode, loading, failed, reload };

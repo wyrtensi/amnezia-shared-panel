@@ -631,9 +631,9 @@ export function EmployeeDashboard({
                 </div>
               ) : null}
               <Button
-                variant="link"
+                variant="ghost"
                 size="sm"
-                className="shrink-0 px-0"
+                className="shrink-0 px-2 text-primary underline-offset-4 hover:underline"
                 onClick={() => setShowQuota(true)}
               >
                 {t("emp.requestMore")}

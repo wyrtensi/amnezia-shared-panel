@@ -2,6 +2,7 @@
 
 import { Check } from "lucide-react";
 import { Switch } from "@/components/ui/switch";
+import { formatEntryExit } from "@/lib/egress-api";
 import { cn } from "@/lib/utils";
 import { useT } from "@/lib/i18n/provider";
 
@@ -18,6 +19,7 @@ export function NodeSelect({
     id: string;
     name: string;
     address?: string | null;
+    egressIpv4?: string | null;
     enabled?: boolean;
   }>;
   value: string[] | null;
@@ -75,9 +77,9 @@ export function NodeSelect({
                     {active ? <Check className="size-2.5" /> : null}
                   </span>
                   <span>{node.name}</span>
-                  {node.address ? (
+                  {formatEntryExit(node.address, node.egressIpv4) ? (
                     <code className="break-all font-mono text-[11px] font-normal opacity-75">
-                      {node.address}
+                      {formatEntryExit(node.address, node.egressIpv4)}
                     </code>
                   ) : null}
                   {node.enabled === false ? (

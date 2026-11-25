@@ -36,7 +36,6 @@ import {
 } from "@amnezia/contracts";
 import { AwgNewKeySettings, type AwgClientSettingsValue } from "@/components/admin/awg-client-settings";
 import { KeyBridgeSelect } from "@/components/admin/key-bridge-select";
-import { NodeEndpointSelect } from "@/components/node-endpoint-select";
 import { apiRequest } from "@/lib/api";
 import { listBridges } from "@/lib/bridge-api";
 import { routeProfileChoice } from "@/lib/route-profile-choice";
@@ -50,7 +49,48 @@ import type {
   ProtocolKind,
   RouteProfile,
   RouteProfileAvailability,
+  UserNodeReachability,
 } from "@/lib/types";
+
+export type FlatServerOption = {
+  key: string;
+  nodeId: string;
+  endpointId: string | null;
+  name: string;
+  recommended: boolean;
+  reachability?: UserNodeReachability;
+};
+
+/**
+ * Flatten node endpoints into top-level selectable server items so users see
+ * each location variant as a standalone server without nested dropdowns.
+ */
+export const buildFlatServerOptions = (
+  nodes: readonly NodeView[],
+): FlatServerOption[] =>
+  nodes.flatMap<FlatServerOption>((node) => {
+    const endpoints = node.publicEndpoints ?? [];
+    if (endpoints.length > 0) {
+      return endpoints.map((endpoint) => ({
+        key: `ep:${endpoint.id}`,
+        nodeId: node.id,
+        endpointId: endpoint.id,
+        name: endpoint.name,
+        recommended: endpoint.recommended ?? Boolean(node.recommended),
+        reachability: endpoint.reachability ?? node.reachability,
+      }));
+    }
+    return [
+      {
+        key: `node:${node.id}`,
+        nodeId: node.id,
+        endpointId: null,
+        name: node.name,
+        recommended: Boolean(node.recommended),
+        reachability: node.reachability,
+      },
+    ];
+  });
 
 // The first card is preselected, so the default follows the operator's order
 // rather than being a second thing to keep in step with it.
@@ -116,8 +156,7 @@ export function CreateKeyWizard({
   );
   const [deviceLabel, setDeviceLabel] = React.useState("");
   const [labelEdited, setLabelEdited] = React.useState(false);
-  const [nodeId, setNodeId] = React.useState("");
-  const [endpointId, setEndpointId] = React.useState("");
+  const [selectedServerKey, setSelectedServerKey] = React.useState("");
   const [protocol, setProtocol] = React.useState<ProtocolKind>("awg3");
   const [routeProfile, setRouteProfile] =
     React.useState<RouteProfile>("full_tunnel");
@@ -152,6 +191,8 @@ export function CreateKeyWizard({
     };
   }, [open, isAdmin]);
 
+  const flatOptions = React.useMemo(() => buildFlatServerOptions(nodes), [nodes]);
+
   // Reset the form only when the wizard OPENS (open false→true) — not on every
   // `nodes`/`existingNames` change, or a background refresh (e.g. the
   // provisioning poll) would wipe the user's input mid-fill every few seconds.
@@ -162,8 +203,7 @@ export function CreateKeyWizard({
       setDeviceType(DEFAULT_DEVICE_TYPE);
       setLabelEdited(false);
       setDeviceLabel(suggestKeyName(DEFAULT_DEVICE_TYPE, existingNames, t));
-      setNodeId(nodes[0]?.id ?? "");
-      setEndpointId("");
+      setSelectedServerKey(flatOptions[0]?.key ?? "");
       setProtocol(preferredProtocol(nodeSelectableProtocols(nodes[0])));
       setRouteProfile("full_tunnel");
       setNameDisplay({ ...defaultKeyNameDisplay });
@@ -174,7 +214,7 @@ export function CreateKeyWizard({
     } else if (!open) {
       wasOpen.current = false;
     }
-  }, [open, nodes, existingNames, t]);
+  }, [open, nodes, flatOptions, existingNames, t]);
 
   // Per-node quota. In per-node mode the key limit is per server and may differ
   // per server, so a full server never blocks the others; in global mode one
@@ -212,22 +252,21 @@ export function CreateKeyWizard({
 
   // The server picker is only offered when the policy allows it; otherwise the
   // control API picks a node with room itself and the choice below is ignored.
-  const canPickNode = me.policy.allowNodeSelection && nodes.length > 1;
+  const canPickNode = me.policy.allowNodeSelection && flatOptions.length > 1;
+  const selectedOption =
+    flatOptions.find((option) => option.key === selectedServerKey) ?? flatOptions[0];
+  const nodeId = selectedOption?.nodeId ?? "";
 
   // Never leave the form on a server with no room left: hop to the first one
   // that still has some (a no-op while the selected server is not full).
   React.useEffect(() => {
     if (!open || !canPickNode || !quotaByNode.get(nodeId)?.full) return;
-    const free = nodes.find((node) => !quotaByNode.get(node.id)?.full);
-    if (free) setNodeId(free.id);
-  }, [open, canPickNode, nodeId, nodes, quotaByNode]);
+    const free = flatOptions.find((option) => !quotaByNode.get(option.nodeId)?.full);
+    if (free) setSelectedServerKey(free.key);
+  }, [open, canPickNode, nodeId, flatOptions, quotaByNode]);
 
   const selectedNode = nodes.find((node) => node.id === nodeId) ?? nodes[0];
-  const endpoints = selectedNode?.publicEndpoints ?? [];
-  const canPickEndpoint = me.policy.allowNodeSelection && protocol === "awg3" && endpoints.length > 1;
-  const endpoint = canPickEndpoint
-    ? endpoints.find((item) => item.id === endpointId)
-    : undefined;
+  const endpointId = protocol === "awg3" ? (selectedOption?.endpointId ?? null) : null;
   const selectedFull =
     canPickNode && selectedNode
       ? (quotaByNode.get(selectedNode.id)?.full ?? false)
@@ -249,9 +288,8 @@ export function CreateKeyWizard({
   // Preview of the connection title the AmneziaVPN client will show, built with
   // the same composer the control API uses. The number is an estimate — the real
   // one is assigned when the key is provisioned.
-  const keyAddress = endpoint ?? endpoints[0];
   const previewName = composeKeyDisplayName({
-    serverName: keyAddress?.name ?? selectedNode?.name ?? "",
+    serverName: selectedOption?.name ?? selectedNode?.name ?? "",
     label: deviceLabel.trim(),
     keyNumber: existingNames.length + 1,
     display: nameDisplay,
@@ -331,7 +369,7 @@ export function CreateKeyWizard({
           : {};
       await onCreate({
         nodeId: selectedNode.id,
-        ...(endpoint ? { endpointId: endpoint.id } : {}),
+        ...(endpointId ? { endpointId } : {}),
         deviceType,
         deviceLabel: deviceLabel.trim(),
         protocol,
@@ -384,17 +422,20 @@ export function CreateKeyWizard({
                     : t("wizard.serverQuotaHint")}
                 </Hint>
               </div>
-              <Select value={nodeId} onValueChange={setNodeId}>
+              <Select
+                value={selectedOption?.key ?? ""}
+                onValueChange={setSelectedServerKey}
+              >
                 <SelectTrigger>
                   <SelectValue placeholder={t("wizard.serverPlaceholder")} />
                 </SelectTrigger>
                 <SelectContent>
-                  {nodes.map((node) => {
-                    const quota = quotaByNode.get(node.id);
+                  {flatOptions.map((option) => {
+                    const quota = quotaByNode.get(option.nodeId);
                     return (
                       <SelectItem
-                        key={node.id}
-                        value={node.id}
+                        key={option.key}
+                        value={option.key}
                         disabled={quota?.full}
                         // An accent down the left edge, on top of the badge:
                         // the badge is the accessible signal (colour alone is
@@ -405,17 +446,22 @@ export function CreateKeyWizard({
                         // `rounded-l-none`: the item's own rounding would clip
                         // a 2px edge on a row this short into an arc.
                         className={
-                          node.recommended
+                          option.recommended
                             ? "rounded-l-none border-l-2 border-l-success"
                             : "border-l-2 border-l-transparent"
                         }
                       >
                         <span className="flex w-full items-center justify-between gap-3">
                           <span className="flex min-w-0 items-center gap-1.5">
-                            <span className="truncate">{node.name}</span>
-                            {node.recommended ? (
+                            <span className="truncate">{option.name}</span>
+                            {option.recommended ? (
                               <Badge variant="success" className="shrink-0">
                                 {t("wizard.recommended")}
+                              </Badge>
+                            ) : null}
+                            {option.reachability?.state === "blocked" ? (
+                              <Badge variant="destructive" className="shrink-0">
+                                {t("emp.serverBlocked")}
                               </Badge>
                             ) : null}
                           </span>
@@ -445,14 +491,6 @@ export function CreateKeyWizard({
                 </FieldHint>
               ) : null}
             </div>
-          ) : null}
-
-          {canPickEndpoint ? (
-            <NodeEndpointSelect
-              endpoints={endpoints}
-              value={keyAddress?.id ?? ""}
-              onChange={setEndpointId}
-            />
           ) : null}
 
           <div className="space-y-2">

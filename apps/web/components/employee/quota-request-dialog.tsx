@@ -36,6 +36,36 @@ export type QuotaTargetNode = {
 };
 
 /**
+ * Summarize a node's public variants cleanly for quota requests
+ * (e.g. `"Amsterdam v1", "Amsterdam v2"` -> `"Amsterdam (v1, v2)"`).
+ */
+export const formatQuotaNodeLabel = (node: NodeView): string => {
+  const eps = node.publicEndpoints ?? [];
+  if (eps.length <= 1) return node.name;
+  const names = eps.map((ep) => ep.name.trim()).filter(Boolean);
+  if (names.length <= 1) return node.name;
+
+  const groups = new Map<string, string[]>();
+  const order: string[] = [];
+  for (const full of names) {
+    const match = /^(.*?)\s+(v\d+)$/.exec(full);
+    const base = match ? match[1]!.trim() : full;
+    const suffix = match ? match[2]! : null;
+    if (!groups.has(base)) {
+      groups.set(base, []);
+      order.push(base);
+    }
+    if (suffix) groups.get(base)!.push(suffix);
+  }
+  return order
+    .map((base) => {
+      const suffixes = groups.get(base)!;
+      return suffixes.length > 0 ? `${base} (${suffixes.join(", ")})` : base;
+    })
+    .join(", ");
+};
+
+/**
  * Preselect the node the user actually ran out of room on: only when exactly
  * one available node is at its limit. Anything else defaults to every server.
  */
@@ -145,7 +175,7 @@ export function QuotaRequestDialog({
                   </SelectItem>
                   {nodeQuota.map((entry) => (
                     <SelectItem key={entry.node.id} value={entry.node.id}>
-                      {entry.node.name}
+                      {formatQuotaNodeLabel(entry.node)}
                     </SelectItem>
                   ))}
                 </SelectContent>
@@ -181,7 +211,7 @@ export function QuotaRequestDialog({
               {targetNode
                 ? t("quota.willBecomeNode", {
                     total,
-                    node: targetNode.node.name,
+                    node: formatQuotaNodeLabel(targetNode.node),
                   })
                 : keyLimitMode === "global"
                   ? t("quota.willBecomeTotal", { total })

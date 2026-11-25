@@ -309,6 +309,14 @@ const META_LABEL_KEY: Record<string, string> = {
   hasNote: "audit.meta.hasNote",
   bridgeMode: "audit.meta.bridgeMode",
   fields: "audit.meta.fields",
+  mode: "audit.meta.mode",
+  previousMode: "audit.meta.previousMode",
+  egressIpId: "audit.meta.egressIpId",
+  fromEndpointId: "audit.meta.fromEndpointId",
+  toEndpointId: "audit.meta.toEndpointId",
+  ipv4: "audit.meta.ipv4",
+  fromIpv4: "audit.meta.fromIpv4",
+  toIpv4: "audit.meta.toIpv4",
 };
 
 /**

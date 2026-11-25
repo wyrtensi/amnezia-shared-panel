@@ -9,12 +9,18 @@ import type {
   AdminKeyConfigMetadata,
   AwgDeviceRules,
   AwgGeneratorSettings,
+  HostNetworkReport,
   NodeGeneratorMetadata,
+  NodeEgressDaemonState,
+  NodeEgressIp,
+  NodeEgressMode,
+  NodeEgressModeState,
   ResolvedAwgClientSettings,
   AdminNodeEndpoint,
   AdminOverviewBridges,
   GlobalRoutes,
   KeyBridgeInfo,
+  KeyEgressInfo,
   WorkerPeriodField,
 } from "@amnezia/contracts";
 import type {
@@ -98,6 +104,20 @@ export type AdminNode = NodeGeneratorMetadata & {
   id: string;
   name: string;
   publicEndpoints?: AdminNodeEndpoint[];
+  egressMode?: NodeEgressMode;
+  egressModeState?: NodeEgressModeState;
+  egressModeMessage?: string | null;
+  egressModeAt?: string | null;
+  egressDaemonVersion?: string | null;
+  egressDaemonState?: NodeEgressDaemonState;
+  egressDaemonDetail?: string | null;
+  egressBlockSmtp?: boolean;
+  egressIsolatePrivate?: boolean;
+  egressDefaultIpId?: string | null;
+  hostNetworkReport?: HostNetworkReport | null;
+  egressObservedAt?: string | null;
+  egressIps?: NodeEgressIp[];
+  modeDrift?: boolean;
   publicName?: string | null;
   apiBaseUrl: string;
   enabled: boolean;
@@ -170,6 +190,7 @@ export type AdminKey = AdminKeyConfigMetadata & {
   nodeId: string;
   endpointId?: string | null;
   endpointName?: string | null;
+  tunnelIpv4?: string | null;
   protocol: string;
   state: string;
   deviceType: string;
@@ -180,6 +201,7 @@ export type AdminKey = AdminKeyConfigMetadata & {
    */
   internalName?: string | null;
   bridge?: KeyBridgeInfo;
+  egress?: KeyEgressInfo;
   keyNumber?: number | null;
   routeProfile: string;
   routeRuleVersionId: string | null;

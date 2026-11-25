@@ -67,6 +67,7 @@ import {
   verificationTone,
 } from "@/lib/bridge-ui";
 import { ApiClientError } from "@/lib/api";
+import { formatEntryExit } from "@/lib/egress-api";
 import { cn } from "@/lib/utils";
 import { useT } from "@/lib/i18n/provider";
 import type { KeyView } from "@/lib/types";
@@ -552,7 +553,9 @@ export function NodeRoutesEditor({ initialNodeId }: { initialNodeId: string | nu
                           <li key={endpoint.id} className="flex flex-wrap items-center justify-between gap-2 rounded-md bg-well/50 px-2 py-1.5">
                             <div className="min-w-0 flex-1">
                               <span className="break-words text-sm">{endpoint.name}</span>
-                              <code className="ml-1.5 break-all text-xs text-muted-foreground">{endpoint.publicAddress}</code>
+                              <code className="ml-1.5 break-all text-xs text-muted-foreground">
+                                {formatEntryExit(endpoint.publicAddress, endpoint.effectiveEgressIp) ?? endpoint.publicAddress}
+                              </code>
                               {mode === "bridge" && !server.activeRoute && !infraLoading && vpnItems.length > 0 ? (
                                 <p className="text-xs text-muted-foreground">{t("bridge.addressNoActiveRoute")}</p>
                               ) : null}

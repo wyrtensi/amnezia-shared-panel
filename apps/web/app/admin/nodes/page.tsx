@@ -10,6 +10,7 @@ import {
   Cpu,
   Download,
   Gauge,
+  GitBranch,
   Globe,
   Pencil,
   Plus,
@@ -58,6 +59,8 @@ import {
 } from "@/components/ui/tooltip";
 import { Callout, Hint } from "@/components/ui/hint";
 import { ProtocolSelect } from "@/components/protocol-select";
+import { setNodeEndpoint } from "@/lib/bridge-api";
+import { describeBridgeError } from "@/lib/bridge-ui";
 import {
   messageBeyondImage,
   shortDigest,
@@ -68,6 +71,10 @@ import { InlineTraffic } from "@/components/inline-traffic";
 import { NodeCardSection } from "@/components/admin/node-card-section";
 import { NodeGeneratorSettings } from "@/components/admin/node-config-dialog";
 import { NodePublicEndpoints } from "@/components/admin/node-public-endpoints";
+import {
+  NodeTopologyDialog,
+  summarizeNodeEgress,
+} from "@/components/admin/node-topology-dialog";
 import type { AwgDeviceRules, AwgGeneratorSettings, NodePublicEndpointMutation } from "@amnezia/contracts";
 import { MetricMeter, NodeMetrics } from "@/components/admin/node-metrics";
 import { NodePublicAddress } from "@/components/admin/node-public-address";
@@ -135,6 +142,8 @@ function AdminNodesView() {
     null,
   );
   const [capacityNode, setCapacityNode] = React.useState<AdminNode | null>(null);
+  const [topologyNodeId, setTopologyNodeId] = React.useState<string | null>(null);
+  const topologyNode = nodes.find((node) => node.id === topologyNodeId) ?? null;
 
   React.useEffect(() => {
     if (legacyBridgeLink && !window.location.hash) {
@@ -234,6 +243,19 @@ function AdminNodesView() {
     }
   };
 
+  const switchNodeDirect = async (node: AdminNode, revision: number) => {
+    if (!window.confirm(t("nodes.bridgeDirectConfirm", { name: node.publicName || node.name }))) {
+      return;
+    }
+    try {
+      await setNodeEndpoint(request, node.id, null, revision);
+      toast.success(t("bridge.switchedDirect"));
+      await Promise.all([reload(), infra.reload()]);
+    } catch (cause) {
+      toast.error(describeBridgeError(cause, t).message);
+    }
+  };
+
   const toggleEnabled = async (node: AdminNode, enabled: boolean) => {
     try {
       await request(`/api/admin/nodes/${node.id}`, {
@@ -268,12 +290,55 @@ function AdminNodesView() {
     }
   };
 
-  return (
+      const reachNodes = reachability?.view?.nodes ?? [];
+      const diagHealthy = nodes.filter((node) => node.enabled && !node.lastError).length;
+      const diagErrors = nodes.length - diagHealthy;
+      const diagIncidents = reachNodes.filter(
+        (rn) =>
+          rn.incidentOpen ||
+          (rn.publicEndpoints ?? []).some(
+            (ep) => ep.incidentOpen || ep.probeEgressMatch === false,
+          ),
+      ).length;
+      const diagPreAlert = reachNodes.reduce(
+        (sum, rn) =>
+          sum +
+          (rn.publicEndpoints ?? []).filter(
+            (ep) => !ep.incidentOpen && (ep.probeConsecutiveFailures ?? 0) > 0,
+          ).length,
+        0,
+      );
+      const diagEgress = nodes.filter((node) => summarizeNodeEgress(node).hasIssue).length;
+
+      return (
     <div className="@container space-y-4">
       <h2 className="flex items-center gap-2 text-lg font-semibold">
         {t("nav.nodes")}
         <Hint>{t("nodes.titleHint")}</Hint>
       </h2>
+
+      {nodes.length > 0 ? (
+        <div
+          data-testid="nodes-diagnostic-header"
+          className="flex flex-wrap items-center gap-1.5 rounded-lg border border-border/60 bg-card px-3 py-2 text-xs"
+        >
+          <Badge variant={diagHealthy === nodes.length ? "success" : "warning"}>
+            {t("nodes.diag.healthy", { ok: diagHealthy, total: nodes.length })}
+          </Badge>
+          <Badge variant={diagErrors > 0 ? "destructive" : "outline"}>
+            {t("nodes.diag.errors", { count: diagErrors })}
+          </Badge>
+          <Badge variant={diagIncidents > 0 ? "destructive" : "outline"}>
+            {t("nodes.diag.incidents", { count: diagIncidents })}
+          </Badge>
+          <Badge variant={diagPreAlert > 0 ? "warning" : "outline"}>
+            {t("nodes.diag.preAlert", { count: diagPreAlert })}
+          </Badge>
+          <Badge variant={diagEgress > 0 ? "destructive" : "outline"}>
+            {t("nodes.diag.egressIssues", { count: diagEgress })}
+          </Badge>
+        </div>
+      ) : null}
 
       <nav aria-label={t("nav.nodes")} className="grid grid-cols-2 gap-2">
         <SectionLink anchor={VPN_NODES_ANCHOR} icon={Server} label={t("nodes.section")}>
@@ -330,6 +395,12 @@ function AdminNodesView() {
                   onDelete={() => setDeleteTarget(node)}
                   onUpdateAgent={() => setUpdateAgentNode(node)}
                   onSetCapacity={() => setCapacityNode(node)}
+                  onOpenTopology={() => setTopologyNodeId(node.id)}
+                  onSwitchDirect={
+                    infra.loading || infra.failed || !infra.routeByNode.get(node.id)
+                      ? undefined
+                      : (revision) => void switchNodeDirect(node, revision)
+                  }
                   route={infra.loading || infra.failed ? undefined : infra.routeByNode.get(node.id) ?? null}
                   routeLoadFailed={infra.failed}
                   checkResults={serviceChecks.byNode.get(node.id) ?? []}
@@ -412,6 +483,19 @@ function AdminNodesView() {
         request={request}
         reload={reload}
       />
+      <NodeTopologyDialog
+        node={topologyNode}
+        onClose={() => setTopologyNodeId(null)}
+        request={request}
+        reload={reload}
+        onSavePublicEndpoint={async (nodeId, publicEndpoint) => {
+          await request(`/api/admin/nodes/${nodeId}`, {
+            method: "PATCH",
+            body: JSON.stringify({ publicEndpoint }),
+          });
+          await Promise.all([reload(), reachability.reload()]);
+        }}
+      />
     </div>
   );
 }
@@ -451,6 +535,8 @@ function NodeCard({
   onDelete,
   onUpdateAgent,
   onSetCapacity,
+  onOpenTopology,
+  onSwitchDirect,
   route,
   routeLoadFailed,
   checkResults,
@@ -489,6 +575,8 @@ function NodeCard({
   onDelete: () => void;
   onUpdateAgent: () => void;
   onSetCapacity: () => void;
+  onOpenTopology: () => void;
+  onSwitchDirect?: (revision: number) => void;
 }) {
   const { t, lang } = useT();
   const peers = node.peerCount ?? 0;
@@ -571,13 +659,26 @@ function NodeCard({
               {route.bridgeName}
             </a>
           ) : null}
-          <Link
-            href={nodeRouteEditorHref(node.id)}
-            prefetch={false}
-            className="ml-auto text-primary underline-offset-2 hover:underline"
-          >
-            {t("bridge.nodeRouteEdit")}
-          </Link>
+          <div className="ml-auto flex items-center gap-2">
+            {route && onSwitchDirect ? (
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="h-6 px-1.5 text-xs text-muted-foreground hover:text-destructive"
+                onClick={() => onSwitchDirect(route.revision)}
+              >
+                {t("nodes.bridgeDirectBtn")}
+              </Button>
+            ) : null}
+            <Link
+              href={nodeRouteEditorHref(node.id)}
+              prefetch={false}
+              className="text-primary underline-offset-2 hover:underline"
+            >
+              {t("bridge.nodeRouteEdit")}
+            </Link>
+          </div>
         </div>
 
         {/* What this node IS - where the panel talks to it and what it can
@@ -614,6 +715,46 @@ function NodeCard({
         <NodePublicEndpoints endpoints={node.publicEndpoints ?? []}
           canAdd={supported.includes("awg3")} onSave={onSavePublicEndpoint}
           parametersNodeId={supported.includes("awg3") ? node.id : undefined} />
+        {supported.includes("awg3") ? (
+          (() => {
+            const egressSummary = summarizeNodeEgress(node);
+            return (
+              <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-border/60 bg-well px-2.5 py-1.5 text-xs shadow-[var(--inset-shadow)]">
+                <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+                  <GitBranch className="size-3.5 shrink-0 text-primary" />
+                  <span className="truncate">
+                    {egressSummary.mode === "routed"
+                      ? t("egress.summaryRouted", {
+                          active: egressSummary.activeExitCount,
+                          total: egressSummary.totalExitCount,
+                        })
+                      : t("egress.summaryMasquerade", {
+                          ip: node.publicIp ?? node.publicHost ?? "—",
+                        })}
+                  </span>
+                  {egressSummary.modeDrift ? (
+                    <Badge variant="destructive" className="h-4 px-1 text-[10px]">
+                      {t("egress.driftBadge")}
+                    </Badge>
+                  ) : egressSummary.hasIssue ? (
+                    <Badge variant="warning" className="h-4 px-1 text-[10px]">
+                      !
+                    </Badge>
+                  ) : null}
+                </div>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="h-6 px-2 text-xs text-primary"
+                  onClick={onOpenTopology}
+                >
+                  {t("egress.manage")}
+                </Button>
+              </div>
+            );
+          })()
+        ) : null}
         {supported.includes("awg3") ? (
           <NodeGeneratorSettings
             nodeId={node.id}

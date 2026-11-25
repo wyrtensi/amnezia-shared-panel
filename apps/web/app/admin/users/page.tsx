@@ -28,6 +28,7 @@ import {
   Sliders,
   SlidersHorizontal,
   Eraser,
+  GitBranch,
   Trash2,
   Undo2,
   UserPlus,
@@ -106,6 +107,8 @@ import {
   KeyInternalNameDialog,
 } from "@/components/key-internal-name-dialog";
 import { KeyBridgeBadge } from "@/components/key-bridge-badge";
+import { KeyEgressBadge } from "@/components/key-egress-badge";
+import { formatEntryExit } from "@/lib/egress-api";
 import { KeyBridgeSelect } from "@/components/admin/key-bridge-select";
 import { NodeEndpointSelect } from "@/components/node-endpoint-select";
 import { listBridges } from "@/lib/bridge-api";
@@ -2093,18 +2096,24 @@ function UserDetail({
             {keys
               .slice()
               .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
-              .map((key) => (
-                <AdminKeyRow
-                  key={key.id}
-                  keyView={key}
-                  nodeName={key.endpointName ?? nodeName(key.nodeId)}
-                  now={now}
-                  onAction={onKeyAction}
-                  onExport={() =>
-                    onExportKey(key.id, key.deviceLabel, key.routeProfile)
-                  }
-                />
-              ))}
+              .map((key) => {
+                const nodeEndpoints = (
+                  nodes.find((n) => n.id === key.nodeId)?.publicEndpoints ?? []
+                ).filter((ep) => ep.enabled);
+                return (
+                  <AdminKeyRow
+                    key={key.id}
+                    keyView={key}
+                    nodeName={key.endpointName ?? nodeName(key.nodeId)}
+                    endpoints={nodeEndpoints}
+                    now={now}
+                    onAction={onKeyAction}
+                    onExport={() =>
+                      onExportKey(key.id, key.deviceLabel, key.routeProfile)
+                    }
+                  />
+                );
+              })}
           </div>
         )}
       </CardContent>
@@ -2162,12 +2171,14 @@ function StatTile({
 function AdminKeyRow({
   keyView,
   nodeName,
+  endpoints,
   now,
   onAction,
   onExport,
 }: {
   keyView: AdminKey;
   nodeName: string;
+  endpoints: AdminNode["publicEndpoints"];
   now: number;
   onAction: (
     id: string,
@@ -2194,12 +2205,22 @@ function AdminKeyRow({
   };
   const [editingInternal, setEditingInternal] = React.useState(false);
   const [editingConfig, setEditingConfig] = React.useState(false);
+  const [reassignOpen, setReassignOpen] = React.useState(false);
+  const [reassignEndpointId, setReassignEndpointId] = React.useState(
+    keyView.endpointId ?? "",
+  );
+  const [reassignBusy, setReassignBusy] = React.useState(false);
   const [parameters, setParameters] = React.useState<ClientParametersTarget | null>(null);
   const keyInherited = useKeyInherited();
   // Live AWG 3.1 keys only: AWG 2.0 has no client profile, and a revoked
   // key has no config to export.
   const configurable = Boolean(keyView.config) &&
     keyView.state !== "revoked" && keyView.state !== "revoking";
+  const enabledEndpoints = endpoints ?? [];
+  const reassignable =
+    keyView.protocol === "awg3" &&
+    (keyView.state === "active" || keyView.state === "disabled") &&
+    enabledEndpoints.length > 1;
   return (
     <>
       <div className="rounded-lg border bg-well shadow-[var(--inset-shadow)] px-3 py-2 transition-colors hover:bg-accent/40">
@@ -2217,7 +2238,10 @@ function AdminKeyRow({
                 {keyView.deviceLabel || deviceTypeLabel(t, keyView.deviceType)}
               </span>
               {keyView.state !== "revoked" && keyView.state !== "revoking" ? (
-                <KeyBridgeBadge bridge={keyView.bridge} />
+                <>
+                  <KeyBridgeBadge bridge={keyView.bridge} />
+                  <KeyEgressBadge egress={keyView.egress} />
+                </>
               ) : null}
               {keyView.rulesOutdated ? (
                 <Tooltip>
@@ -2296,6 +2320,18 @@ function AdminKeyRow({
                   id: keyView.id,
                   label: keyView.deviceLabel || deviceTypeLabel(t, keyView.deviceType),
                 })}
+              />
+            ) : null}
+            {reassignable ? (
+              <RowAction
+                label={t("users.reassignEndpoint")}
+                icon={<GitBranch className="h-4 w-4" />}
+                onClick={() => {
+                  setReassignEndpointId(
+                    keyView.endpointId ?? enabledEndpoints[0]?.id ?? "",
+                  );
+                  setReassignOpen(true);
+                }}
               />
             ) : null}
             {keyView.state === "active" ? (
@@ -2407,6 +2443,85 @@ function AdminKeyRow({
         />
       ) : null}
       <ClientParametersDialog target={parameters} onClose={() => setParameters(null)} />
+      {reassignable ? (
+        <Dialog open={reassignOpen} onOpenChange={(next) => !next && setReassignOpen(false)}>
+          <DialogContent className="sm:max-w-md">
+            <DialogHeader>
+              <DialogTitle>{t("users.reassignTitle")}</DialogTitle>
+              <DialogDescription>
+                {t("users.reassignDesc", {
+                  label: keyView.deviceLabel || deviceTypeLabel(t, keyView.deviceType),
+                })}
+              </DialogDescription>
+            </DialogHeader>
+            <div className="space-y-3 text-xs">
+              <Select
+                value={reassignEndpointId}
+                onValueChange={setReassignEndpointId}
+              >
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {enabledEndpoints.map((ep) => {
+                    const pair = formatEntryExit(
+                      ep.publicAddress,
+                      ep.effectiveEgressIp,
+                    );
+                    return (
+                      <SelectItem key={ep.id} value={ep.id}>
+                        {ep.name}
+                        {pair ? ` · ${pair}` : ""}
+                      </SelectItem>
+                    );
+                  })}
+                </SelectContent>
+              </Select>
+              <p className="text-muted-foreground">
+                {enabledEndpoints.find((ep) => ep.id === keyView.endpointId)
+                  ?.publicAddress ===
+                enabledEndpoints.find((ep) => ep.id === reassignEndpointId)
+                  ?.publicAddress
+                  ? t("users.reassignHintSameEntry")
+                  : t("users.reassignHintReimport")}
+              </p>
+            </div>
+            <DialogFooter>
+              <Button
+                type="button"
+                variant="outline"
+                disabled={reassignBusy}
+                onClick={() => setReassignOpen(false)}
+              >
+                {t("common.cancel")}
+              </Button>
+              <Button
+                type="button"
+                disabled={
+                  reassignBusy ||
+                  !reassignEndpointId ||
+                  reassignEndpointId === keyView.endpointId
+                }
+                onClick={() => {
+                  setReassignBusy(true);
+                  void (async () => {
+                    const ok = await onAction(keyView.id, "reassign-endpoint", {
+                      endpointId: reassignEndpointId,
+                    });
+                    setReassignBusy(false);
+                    if (ok) {
+                      toast.success(t("users.reassignDone"));
+                      setReassignOpen(false);
+                    }
+                  })();
+                }}
+              >
+                {t("users.reassignSubmit")}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      ) : null}
     </>
   );
 }

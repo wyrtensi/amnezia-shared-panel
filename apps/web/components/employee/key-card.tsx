@@ -35,6 +35,7 @@ import {
   KeyInternalNameDialog,
 } from "@/components/key-internal-name-dialog";
 import { KeyBridgeBadge } from "@/components/key-bridge-badge";
+import { KeyEgressBadge } from "@/components/key-egress-badge";
 import { KeyRenameDialog } from "@/components/employee/key-rename-dialog";
 import { configUrl } from "@/lib/api";
 import { formatDate } from "@/lib/format";
@@ -254,6 +255,7 @@ export function KeyCard({
               {t(PROTOCOL_LABEL[keyView.protocol] ?? keyView.protocol)}
             </Badge>
             {isAdmin ? <KeyBridgeBadge bridge={keyView.bridge} /> : null}
+            {isAdmin ? <KeyEgressBadge egress={keyView.egress} /> : null}
           </div>
 
           {/* The operator-only note, on the administrator's own key. Same framed

@@ -12,6 +12,7 @@ export type PolicyTarget = {
   nodeId: string;
   name: string;
   address: string | null;
+  egressIpv4?: string | null;
   nodeName: string;
   enabled: boolean;
   isEndpoint: boolean;
@@ -28,17 +29,23 @@ export const expandPolicyTargets = (
         nodeId: node.id,
         name: endpoint.name,
         address: endpoint.publicAddress,
+        egressIpv4: endpoint.effectiveEgressIp ?? null,
         nodeName: node.name,
         enabled: node.enabled && endpoint.enabled,
         isEndpoint: true,
       }));
     }
+    const defaultExitIp =
+      node.egressMode === "routed" && node.egressDefaultIpId
+        ? node.egressIps?.find((ip) => ip.id === node.egressDefaultIpId)?.ipv4 ?? null
+        : null;
     return [
       {
         id: node.id,
         nodeId: node.id,
         name: node.name,
         address: node.publicIp ?? node.publicHost ?? null,
+        egressIpv4: defaultExitIp ?? node.publicIp ?? null,
         nodeName: node.name,
         enabled: node.enabled,
         isEndpoint: false,

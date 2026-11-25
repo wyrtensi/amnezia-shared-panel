@@ -14,7 +14,6 @@ import {
   Moon,
   Server,
   ShieldCheck,
-  Tag,
   Users,
   Wifi,
   X,
@@ -28,8 +27,11 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
+import { toast } from "sonner";
+import { adoptNodeEgressMode, formatEntryExit } from "@/lib/egress-api";
 import { formatDate } from "@/lib/format";
 import {
   INACTIVE_DAYS,
@@ -53,9 +55,19 @@ import {
   NodeCheckChips,
   type NodeCheckResult,
 } from "@/components/admin/node-check-chips";
-import { NodeMetrics } from "@/components/admin/node-metrics";
+import {
+  METRIC_WARNINGS,
+  cpuCell,
+  metricBytes,
+} from "@/components/admin/node-metrics";
 import { OverviewBridgesBlock } from "@/components/admin/overview-bridges";
+import {
+  OverviewAttentionShelf,
+  OverviewStatusStrip,
+  summarizeFleetHealth,
+} from "@/components/admin/overview-status-strip";
 import { NodePublicAddress } from "@/components/admin/node-public-address";
+import { useReachability } from "@/components/admin/use-reachability";
 import { useServiceChecks } from "@/components/admin/use-service-checks";
 import { useT } from "@/lib/i18n/provider";
 
@@ -93,11 +105,13 @@ const STATE_LABEL: Record<string, string> = {
 };
 
 export default function AdminOverviewPage() {
-  const { overview, users, requests, nodes, keys, policy, loading, action } =
+  const { overview, users, requests, nodes, keys, policy, loading, action, request, reload } =
     useAdminData();
   // The same fetch the nodes page uses, so the two surfaces cannot disagree
   // about what a server last answered.
   const serviceChecks = useServiceChecks();
+  const reachability = useReachability();
+  const [adoptingNodeId, setAdoptingNodeId] = React.useState<string | null>(null);
   const { t, lang } = useT();
 
   /**
@@ -118,6 +132,32 @@ export default function AdminOverviewPage() {
   };
 
   const pending = requests.filter((request) => request.status === "pending");
+  const fleetHealth = React.useMemo(
+    () =>
+      summarizeFleetHealth({
+        overview,
+        nodes,
+        reachability: reachability.view,
+        serviceChecks: serviceChecks.checks,
+        pendingQuotaCount: pending.length,
+      }),
+    [overview, nodes, reachability.view, serviceChecks.checks, pending.length],
+  );
+  const adoptHostMode = React.useCallback(
+    async (nodeId: string) => {
+      setAdoptingNodeId(nodeId);
+      try {
+        await adoptNodeEgressMode(request, nodeId);
+        toast.success(t("egress.modeAdopted"));
+        await reload();
+      } catch (cause) {
+        toast.error(cause instanceof Error ? cause.message : t("adminData.actionFailed"));
+      } finally {
+        setAdoptingNodeId(null);
+      }
+    },
+    [request, reload, t],
+  );
   const userEmail = (id: string) =>
     users.find((user) => user.id === id)?.email ?? id;
   // The mode the API will approve under: the user's override, else the global.
@@ -262,34 +302,46 @@ export default function AdminOverviewPage() {
   ];
 
   return (
-    <div className="space-y-6">
-      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+    <div className="space-y-5">
+      {!loading ? (
+        <div className="space-y-2.5">
+          <OverviewStatusStrip summary={fleetHealth} t={t} />
+          <OverviewAttentionShelf
+            items={fleetHealth.attention}
+            adoptingId={adoptingNodeId}
+            onAdoptDrift={(nodeId) => void adoptHostMode(nodeId)}
+            t={t}
+          />
+        </div>
+      ) : null}
+
+      <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-3 xl:grid-cols-6">
         {metrics.map((metric) => (
           <Card
             key={metric.label}
             className="transition-shadow hover:shadow-md"
           >
-            <CardContent className="flex items-center justify-between gap-3 p-4">
+            <CardContent className="flex items-center justify-between gap-2.5 p-3">
               <div className="min-w-0">
-                <p className="text-xs text-muted-foreground">{metric.label}</p>
-                <p className="tabular truncate font-display text-2xl font-semibold">
+                <p className="truncate text-[11px] text-muted-foreground">{metric.label}</p>
+                <p className="tabular truncate font-display text-xl font-semibold">
                   {loading ? "—" : metric.value}
                 </p>
                 {!loading && metric.sub ? (
-                  <p className="mt-0.5 truncate text-xs text-muted-foreground">
+                  <p className="mt-0.5 truncate text-[11px] text-muted-foreground">
                     {metric.sub}
                   </p>
                 ) : null}
               </div>
               <span
                 className={cn(
-                  "flex h-11 w-11 shrink-0 items-center justify-center rounded-xl",
+                  "flex h-9 w-9 shrink-0 items-center justify-center rounded-lg",
                   metric.attention
                     ? "bg-warning/20 text-warning"
                     : METRIC_TONE[metric.tone],
                 )}
               >
-                <metric.icon className="h-5 w-5" />
+                <metric.icon className="h-4 w-4" />
               </span>
             </CardContent>
           </Card>
@@ -592,10 +644,27 @@ function OverviewNodeCard({
   node: AdminNode;
   checkResults: NodeCheckResult[];
 }) {
-  const { t } = useT();
+  const { t, lang } = useT();
   const peers = node.peerCount ?? 0;
   const fill = Math.min(100, (peers / Math.max(1, node.maxPeers)) * 100);
   const failing = checkResults.filter((result) => result.status !== "ok").length;
+  const endpoints = node.publicEndpoints ?? [];
+  const visibleEndpoints = endpoints.slice(0, 3);
+  const hiddenCount = Math.max(0, endpoints.length - visibleEndpoints.length);
+
+  const metrics = node.metrics;
+  const memLow =
+    metrics?.memAvailableBytes != null &&
+    Number(metrics.memAvailableBytes) < METRIC_WARNINGS.memAvailableBytes;
+  const diskHigh =
+    metrics?.diskUsedPercent != null &&
+    metrics.diskUsedPercent >= METRIC_WARNINGS.diskUsedPercent;
+  const pidsHigh =
+    metrics?.agentPidsCurrent != null &&
+    metrics.agentPidsMax != null &&
+    metrics.agentPidsMax > 0 &&
+    metrics.agentPidsCurrent / metrics.agentPidsMax >= METRIC_WARNINGS.pidsFraction;
+  const cpu = metrics ? cpuCell(metrics, t) : null;
 
   return (
     <Card
@@ -604,107 +673,151 @@ function OverviewNodeCard({
         !node.enabled && "opacity-80",
       )}
     >
-      <CardContent className="flex flex-col gap-3 p-4">
+      <CardContent className="flex flex-col gap-2.5 p-3.5">
         <div className="flex items-start justify-between gap-2">
-          <div className="flex min-w-0 items-center gap-2.5">
+          <div className="flex min-w-0 items-center gap-2">
             <span
               className={cn(
-                "flex size-9 shrink-0 items-center justify-center rounded-lg",
-                node.lastError
+                "flex size-8 shrink-0 items-center justify-center rounded-lg",
+                node.lastError || node.modeDrift || node.egressDaemonState === "conflict"
                   ? "bg-destructive/12 text-destructive"
                   : node.enabled
                     ? "bg-success/15 text-success"
                     : "bg-muted text-muted-foreground",
               )}
             >
-              <Server className="h-5 w-5" />
+              <Server className="h-4 w-4" />
             </span>
             <div className="min-w-0">
-              <p className="truncate font-medium leading-tight">
-                {node.publicName || node.name}
-              </p>
-              {/* The state in words, not only in the tile's colour: a coloured
-                  square is not an answer to "what is wrong with it". */}
-              <p className="truncate text-xs text-muted-foreground">
+              <div className="flex min-w-0 items-center gap-1.5">
+                <p className="truncate text-sm font-medium leading-tight">
+                  {node.publicName || node.name}
+                </p>
+                {node.modeDrift ? (
+                  <Badge variant="destructive" className="h-4 shrink-0 px-1 text-[10px]">
+                    {t("egress.driftBadge")}
+                  </Badge>
+                ) : node.egressMode === "routed" ? (
+                  <Badge variant="outline" className="h-4 shrink-0 px-1 text-[10px]">
+                    Routed
+                  </Badge>
+                ) : null}
+              </div>
+              <p className="truncate text-[11px] text-muted-foreground">
                 {node.lastError ? (
-                  <span className="text-destructive">
-                    {t("nodes.commError")}
-                  </span>
+                  <span className="text-destructive">{t("nodes.commError")}</span>
                 ) : node.enabled ? (
                   t("nodes.working")
                 ) : (
                   t("nodes.stopped")
                 )}
                 {node.publicName ? ` · ${node.name}` : null}
+                {node.agentVersion ? ` · v${node.agentVersion}` : null}
               </p>
             </div>
           </div>
           <span
-            className="shrink-0 rounded-full bg-muted px-2 py-0.5 text-xs tabular-nums text-muted-foreground"
+            className="shrink-0 rounded-full bg-muted px-2 py-0.5 text-[11px] tabular-nums text-muted-foreground"
             title={t("nodes.capacity")}
           >
             {peers}/{node.maxPeers}
           </span>
         </div>
 
-        {/* A groove rather than a grey strip, and a fill that cannot vanish: at
-            a handful of peers out of 500 the bar is a percent wide, which
-            rounded to nothing and read as "nothing in use". */}
-        <div className="h-2 overflow-hidden rounded-full bg-well shadow-[var(--inset-shadow)]">
+        <div className="h-1.5 overflow-hidden rounded-full bg-well shadow-[var(--inset-shadow)]">
           <div
             className={cn(
               "h-full rounded-full transition-all",
-              // Anything above zero keeps a visible sliver: at a handful of
-              // peers out of 500 the width rounds to nothing on screen.
               fill > 0 && "min-w-[0.5rem]",
-              fill >= 90
-                ? "bg-destructive"
-                : fill >= 70
-                  ? "bg-warning"
-                  : "bg-success",
+              fill >= 90 ? "bg-destructive" : fill >= 70 ? "bg-warning" : "bg-success",
             )}
             style={{ width: `${fill}%` }}
           />
         </div>
 
-        {/* One recess per fact, rather than two columns of a shared grid: with
-            a label on the left and a value on the right and nothing between
-            them, which value belonged to which label was a matter of following
-            a line across the card. */}
-        <dl className="space-y-1.5 text-xs text-muted-foreground">
-          <div className="flex items-baseline justify-between gap-3 rounded-md border border-border/60 bg-well px-2 py-1 shadow-[var(--inset-shadow)]">
-            <dt className="flex items-center gap-1">
-              <Globe className="size-3.5 shrink-0" />
-              <span>{t("nodes.publicAddress")}</span>
-            </dt>
-            <dd className="min-w-0 text-right text-foreground">
+        {visibleEndpoints.length > 0 ? (
+          <ul className="space-y-1 text-xs">
+            {visibleEndpoints.map((ep) => {
+              const pair = formatEntryExit(ep.publicAddress, ep.effectiveEgressIp);
+              return (
+                <li
+                  key={ep.id}
+                  className="flex items-center justify-between gap-2 rounded-md border border-border/50 bg-well px-2 py-1"
+                >
+                  <span className="flex min-w-0 items-center gap-1.5">
+                    <span
+                      className={cn(
+                        "size-1.5 shrink-0 rounded-full",
+                        ep.probeEgressMatch === false || ep.reachability?.state === "blocked"
+                          ? "bg-destructive"
+                          : ep.reachability?.state === "ok"
+                            ? "bg-success"
+                            : "bg-muted-foreground/40",
+                      )}
+                    />
+                    <span className="truncate text-muted-foreground">{ep.name}</span>
+                  </span>
+                  {pair ? (
+                    <code className="shrink-0 font-mono text-[11px] text-foreground">
+                      {pair}
+                    </code>
+                  ) : null}
+                </li>
+              );
+            })}
+            {hiddenCount > 0 ? (
+              <li className="text-right text-[11px] text-muted-foreground">
+                <Badge variant="outline" className="h-4 px-1.5 text-[10px]">
+                  {t("ov.nodeCard.moreVariants", { count: hiddenCount })}
+                </Badge>
+              </li>
+            ) : null}
+          </ul>
+        ) : (
+          <div className="flex items-baseline justify-between gap-2 rounded-md border border-border/50 bg-well px-2 py-1 text-xs">
+            <span className="flex items-center gap-1 text-muted-foreground">
+              <Globe className="size-3 shrink-0" />
+              {t("nodes.publicAddress")}
+            </span>
+            <span className="min-w-0 text-right text-foreground">
               <NodePublicAddress
                 host={node.publicHost}
                 ip={node.publicIp}
                 resolvedAt={node.publicIpResolvedAt}
               />
-            </dd>
+            </span>
           </div>
-          <div className="flex items-baseline justify-between gap-3 rounded-md border border-border/60 bg-well px-2 py-1 shadow-[var(--inset-shadow)]">
-            <dt className="flex items-center gap-1">
-              <Tag className="size-3.5 shrink-0" />
-              <span>{t("nodes.agentVersion")}</span>
-            </dt>
-            {/* A dash means the node has not reported one — it predates the
-                release that added the field — not that it is running nothing. */}
-            <dd className="truncate text-right font-mono text-xs text-foreground">
-              {node.agentVersion ?? "—"}
-            </dd>
-          </div>
-        </dl>
+        )}
 
-        <div className="space-y-1.5 border-t pt-3">
-          <NodeCardSection icon={Cpu}>{t("nodes.metrics.title")}</NodeCardSection>
-          <NodeMetrics metrics={node.metrics} endpoint={node.endpoint} />
+        <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1 rounded-md border border-border/50 bg-well px-2 py-1 text-[11px] tabular-nums">
+          <span className="flex items-center gap-1 text-muted-foreground">
+            <Cpu className="size-3" />
+            {cpu ? cpu.value : "—"}
+          </span>
+          <span className={cn(memLow ? "font-medium text-destructive" : "text-muted-foreground")}>
+            RAM {metrics ? `${metricBytes(metrics.memAvailableBytes, lang)} ${t("nodes.metrics.free")}` : "—"}
+          </span>
+          <span className={cn(diskHigh ? "font-medium text-destructive" : "text-muted-foreground")}>
+            Disk {metrics?.diskUsedPercent != null ? `${metrics.diskUsedPercent}%` : "—"}
+          </span>
+          <span
+            className={cn(
+              metrics?.awg3Up === false
+                ? "font-medium text-destructive"
+                : "text-muted-foreground",
+            )}
+          >
+            AWG3 {metrics?.awg3Up === null || !metrics ? "—" : metrics.awg3Up ? t("nodes.metrics.up") : t("nodes.metrics.down")}
+          </span>
+          {pidsHigh && metrics ? (
+            <span className="font-medium text-destructive">
+              PID {metrics.agentPidsCurrent}/{metrics.agentPidsMax}
+            </span>
+          ) : null}
         </div>
 
         {checkResults.length > 0 ? (
-          <div className="space-y-1.5 border-t pt-3">
+          <div className="space-y-1">
             <NodeCardSection
               icon={ShieldCheck}
               action={
@@ -721,8 +834,7 @@ function OverviewNodeCard({
           </div>
         ) : null}
 
-        <div className="space-y-1.5 border-t pt-3">
-          <NodeCardSection icon={ArrowUpDown}>{t("nodes.traffic")}</NodeCardSection>
+        <div className="flex items-center justify-between gap-2 border-t pt-2 text-xs">
           <InlineTraffic
             today={node.traffic?.today}
             week={node.traffic?.week}
