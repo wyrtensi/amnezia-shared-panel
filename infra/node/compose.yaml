@@ -82,7 +82,12 @@ services:
       - ./state/amnezia-awg3:/opt/amnezia/awg
       - ./scripts/awg3-entrypoint.sh:/usr/local/libexec/awg3-entrypoint.sh:ro
       - ./scripts/awg3-geometry.sh:/usr/local/libexec/awg3-geometry.sh:ro
+    networks:
+      - awg_egress
     environment:
+      # Controls whether awg3 applies container-level MASQUERADE (legacy) or lets
+      # host amnezia-egressd handle per-peer SNAT/policy routing on br-awg-egress.
+      AWG3_EGRESS_MODE: ${AWG3_EGRESS_MODE:-masquerade}
       # Read once, at first initialization, by awg3-geometry.sh.
       #
       # DisableCookies is an availability posture rather than obfuscation
@@ -215,6 +220,7 @@ services:
       # chowns it and installs the unit that watches it - until then a request
       # would drop into a directory nothing reads.
       NODE_AGENT_CAPACITY_SPOOL: /var/lib/node-agent/capacity
+      NODE_EGRESS_SOCKET: ${NODE_EGRESS_SOCKET:-/run/amnezia-egress/egressd.sock}
     secrets:
       - source: node_agent_api_key
         target: node_agent_api_key
@@ -229,6 +235,7 @@ services:
       # directory: an agent update in flight must not block a capacity change,
       # and neither may read the other's result as its own.
       - ${NODE_CAPACITY_SPOOL_DIR:-/var/lib/amnezia-node/capacity}:/var/lib/node-agent/capacity
+      - ${NODE_EGRESS_RUN_DIR:-/run/amnezia-egress}:/run/amnezia-egress
     group_add:
       - ${DOCKER_GID:?DOCKER_GID is required}
     ports:
@@ -256,6 +263,12 @@ services:
       options:
         max-size: 10m
         max-file: "3"
+
+networks:
+  awg_egress:
+    driver: bridge
+    driver_opts:
+      com.docker.network.bridge.name: br-awg-egress
 
 secrets:
   node_agent_api_key:

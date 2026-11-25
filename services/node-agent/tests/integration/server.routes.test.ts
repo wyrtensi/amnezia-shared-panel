@@ -9,6 +9,7 @@ import { AgentUpdateService } from "@/services/server/agentUpdate.service";
 
 import { Protocol } from "@/types/shared";
 import { AppFastifyInstance } from "@/types/shared";
+import { DesiredState, HostNetworkReport } from "@/types/egress";
 import { ServerBackupPayload } from "@/types/server";
 import { createAmneziaBackupFixture } from "../fixtures";
 import { TEST_API_KEY } from "../config/setupTestEnvironment";
@@ -309,5 +310,206 @@ describe("GET /server/update acknowledgement fields", () => {
     } finally {
       await rm(spool, { recursive: true, force: true });
     }
+  });
+});
+
+describe("server egress routes and backup egress integration", () => {
+  const sampleReport = (): HostNetworkReport => ({
+    daemonVersion: "1.2.0",
+    observedMode: "routed",
+    egressState: "routed_active",
+    bridgeName: "br-awg-egress",
+    bridgePresent: true,
+    awg3ContainerIpv4: "172.30.0.2",
+    tunnelSubnetConflict: false,
+    ipv4Addresses: [
+      {
+        ipv4: "198.51.100.10",
+        cidr: "198.51.100.10/24",
+        interfaceName: "eth0",
+        detectedGatewayIpv4: "198.51.100.1",
+      },
+    ],
+    exits: [
+      {
+        ipv4: "198.51.100.10",
+        hostState: "active",
+        txBytes: 100,
+        txPackets: 2,
+      },
+    ],
+    observedAt: "2026-11-25T10:00:00Z",
+  });
+
+  const sampleDesiredState = (): DesiredState => ({
+    schemaVersion: 1,
+    blockSmtp: true,
+    isolatePrivate: true,
+    exits: [
+      {
+        id: "exit-1",
+        ipv4: "198.51.100.10",
+        dnsPrimary: "1.1.1.1",
+        amneziaDnsDnat: true,
+        enforceDnsDnat: false,
+        enabled: true,
+      },
+    ],
+    peers: [
+      {
+        tunnelIpv4: "10.90.0.2",
+        exitIp: "198.51.100.10",
+        amneziaDnsDnat: true,
+        enforceDnsDnat: false,
+        enabled: true,
+      },
+    ],
+  });
+
+  const baseStatus = () => ({
+    id: "test-server-id",
+    region: "test-region",
+    weight: 100,
+    maxPeers: 10,
+    totalPeers: 0,
+    protocols: [Protocol.AMNEZIAWG3],
+    publicHost: "198.51.100.10",
+    agentVersion: "1.2.0",
+    egressReport: sampleReport(),
+  });
+
+  it("serializes egressReport on GET /server and serves PUT /server/egress, verify, and mode", async () => {
+    const applyEgressState = vi.fn(async () => ({
+      ok: true,
+      report: sampleReport(),
+    }));
+    const verifyEgressExit = vi.fn(async () => ({
+      ok: true,
+      egressIpv4: "198.51.100.10",
+      observedIp: "198.51.100.10",
+      ipMatch: true,
+      httpLatencyMs: 12,
+      dnsOk: true,
+      dnsServer: "1.1.1.1:53",
+      dnsLatencyMs: 8,
+    }));
+    const switchEgressMode = vi.fn(async () => ({
+      ok: true,
+      report: sampleReport(),
+    }));
+
+    app = await createServerTestApp({
+      getServerStatus: vi.fn(async () => baseStatus() as never),
+      applyEgressState,
+      verifyEgressExit,
+      switchEgressMode,
+    });
+
+    const statusRes = await app.inject({
+      method: "GET",
+      url: "/server",
+      headers: AUTH_HEADERS,
+    });
+    expect(statusRes.statusCode).toBe(200);
+    expect(statusRes.json().egressReport).toEqual(sampleReport());
+
+    const putRes = await app.inject({
+      method: "PUT",
+      url: "/server/egress",
+      headers: AUTH_HEADERS,
+      payload: sampleDesiredState(),
+    });
+    expect(putRes.statusCode).toBe(200);
+    expect(putRes.json()).toEqual({ ok: true, report: sampleReport() });
+    expect(applyEgressState).toHaveBeenCalledWith(sampleDesiredState());
+
+    const verifyRes = await app.inject({
+      method: "POST",
+      url: "/server/egress/verify",
+      headers: AUTH_HEADERS,
+      payload: {
+        egressIpv4: "198.51.100.10",
+        probeUrl: "https://ip.example/",
+        dnsServer: "1.1.1.1",
+      },
+    });
+    expect(verifyRes.statusCode).toBe(200);
+    expect(verifyRes.json().ok).toBe(true);
+
+    const modeRes = await app.inject({
+      method: "POST",
+      url: "/server/egress/mode",
+      headers: AUTH_HEADERS,
+      payload: { mode: "routed" },
+    });
+    expect(modeRes.statusCode).toBe(200);
+    expect(modeRes.json().ok).toBe(true);
+    expect(switchEgressMode).toHaveBeenCalledWith("routed");
+  });
+
+  it("round-trips egress state in /server/backup, honours skipEgress=1, and flags legacy imports", async () => {
+    const backup: ServerBackupPayload = {
+      generatedAt: "2026-11-25T10:00:00.000Z",
+      serverId: "test-server-id",
+      protocols: [Protocol.AMNEZIAWG3],
+      amneziaWg3: createAmneziaBackupFixture(),
+      egress: sampleDesiredState(),
+    };
+    const importBackup = vi
+      .fn()
+      .mockResolvedValueOnce({ egressWarnings: ["192.0.2.99 missing"] })
+      .mockResolvedValueOnce({})
+      .mockResolvedValueOnce({ egressReconcileRequired: true });
+
+    app = await createServerTestApp({
+      exportBackup: vi.fn(async () => backup),
+      importBackup,
+      getServerStatus: vi.fn(async () => baseStatus() as never),
+    });
+
+    const exported = await app.inject({
+      method: "GET",
+      url: "/server/backup",
+      headers: AUTH_HEADERS,
+    });
+    expect(exported.statusCode).toBe(200);
+    expect(exported.json().egress).toEqual(sampleDesiredState());
+
+    const imported = await app.inject({
+      method: "POST",
+      url: "/server/backup",
+      headers: AUTH_HEADERS,
+      payload: exported.json(),
+    });
+    expect(imported.statusCode).toBe(200);
+    expect(imported.json().egressWarnings).toEqual(["192.0.2.99 missing"]);
+    expect(importBackup).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ egress: sampleDesiredState() }),
+    );
+
+    const skipped = await app.inject({
+      method: "POST",
+      url: "/server/backup?skipEgress=1",
+      headers: AUTH_HEADERS,
+      payload: exported.json(),
+    });
+    expect(skipped.statusCode).toBe(200);
+    expect(importBackup).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ egress: sampleDesiredState() }),
+      { skipEgress: true },
+    );
+
+    const legacyPayload = { ...exported.json() };
+    delete legacyPayload.egress;
+    const legacyRes = await app.inject({
+      method: "POST",
+      url: "/server/backup",
+      headers: AUTH_HEADERS,
+      payload: legacyPayload,
+    });
+    expect(legacyRes.statusCode).toBe(200);
+    expect(legacyRes.json().egressReconcileRequired).toBe(true);
   });
 });

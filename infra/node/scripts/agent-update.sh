@@ -256,11 +256,21 @@ is_known_stock_script() {
   return 1
 }
 
-MANAGED_SCRIPTS=(scripts/awg3-entrypoint.sh scripts/agent-update.sh)
+MANAGED_SCRIPTS=(
+  scripts/awg3-entrypoint.sh
+  scripts/agent-update.sh
+  scripts/install-egressd.sh
+  scripts/install-host-services.sh
+  scripts/switch-egress-mode.sh
+  scripts/common.sh
+  scripts/backup.sh
+  scripts/rollback.sh
+  scripts/preflight.sh
+  scripts/deploy.sh
+)
 APPLY_SCRIPTS=()
 for rel in "${MANAGED_SCRIPTS[@]}"; do
   dest="${NODE_DIR}/${rel}"
-  [ -f "$dest" ] || continue
   safe_key="${rel//\//_}"
   new_file="${SCRATCH}/new-${safe_key}"
   old_file="${SCRATCH}/old-${safe_key}"
@@ -268,10 +278,26 @@ for rel in "${MANAGED_SCRIPTS[@]}"; do
   old_s=0
   extract_from_image "$IMAGE" "$rel" "$new_file" && new_s=1
   [ -z "$CURRENT_IMAGE" ] || { extract_from_image "$CURRENT_IMAGE" "$rel" "$old_file" && old_s=1; }
+
+  # New helper scripts introduced in newer agent releases may be absent on disk
+  # while compose/existing scripts have clean provenance (`apply_compose=1` or `old_s=1`).
+  if [ ! -f "$dest" ]; then
+    if [ "$new_s" -eq 1 ] && [ "$apply_compose" -eq 1 ]; then
+      APPLY_SCRIPTS+=("$rel")
+      log "adding new stock helper ${rel} shipped by the new image"
+    fi
+    continue
+  fi
+
   if [ "$new_s" -eq 1 ] && ! cmp -s "$new_file" "$dest"; then
-    # Refuse a syntactically broken updater script before touching the host copy.
-    if [ "$rel" = "scripts/agent-update.sh" ] && ! /bin/bash -n "$new_file" >>"$LOG" 2>&1; then
-      log "WARNING: shipped ${rel} failed bash syntax check; leaving local copy untouched"
+    # Refuse a syntactically broken shell script before touching the host copy.
+    if [ "$rel" = "scripts/agent-update.sh" ]; then
+      if ! /bin/bash -n "$new_file" >>"$LOG" 2>&1; then
+        log "WARNING: shipped ${rel} failed bash syntax check; leaving local copy untouched"
+        continue
+      fi
+    elif ! /bin/sh -n "$new_file" >>"$LOG" 2>&1; then
+      log "WARNING: shipped ${rel} failed sh syntax check; leaving local copy untouched"
       continue
     fi
     if { [ "$old_s" -eq 1 ] && cmp -s "$old_file" "$dest"; } || { [ "$old_s" -eq 0 ] && is_known_stock_script "$rel" "$(sha256_file "$dest")"; }; then
@@ -283,6 +309,23 @@ for rel in "${MANAGED_SCRIPTS[@]}"; do
     fi
   fi
 done
+
+EGRESSD_DEST_BIN="${AMNEZIA_EGRESSD_DEST:-/usr/local/bin/amnezia-egressd}"
+EGRESSD_BACKUP="${SCRATCH}/backup-egressd"
+NEW_EGRESSD="${SCRATCH}/new-egressd"
+HAS_NEW_EGRESSD=0
+UPDATE_EGRESSD=0
+extract_bin_cname="amnezia-agent-update-bin-$$-${RANDOM}"
+if docker create --name "$extract_bin_cname" "$IMAGE" >/dev/null 2>&1; then
+  if docker cp "${extract_bin_cname}:/opt/node-agent/bin/amnezia-egressd" "$NEW_EGRESSD" >/dev/null 2>&1; then
+    HAS_NEW_EGRESSD=1
+  fi
+  docker rm "$extract_bin_cname" >/dev/null 2>&1 || true
+fi
+if [ "$HAS_NEW_EGRESSD" -eq 1 ] && [ -x "$EGRESSD_DEST_BIN" ] && ! cmp -s "$NEW_EGRESSD" "$EGRESSD_DEST_BIN"; then
+  UPDATE_EGRESSD=1
+  log "new image ships an updated amnezia-egressd host binary"
+fi
 
 # Apply IPv6 forwarding sysctls live inside the running AWG 3.1 container's
 # network namespace whenever compose.yaml enables them. Containers created
@@ -348,6 +391,7 @@ COMPOSE_BACKUP="${SCRATCH}/compose.backup"
 cp "$ENV_FILE" "$ENV_BACKUP"
 cp "$COMPOSE_FILE" "$COMPOSE_BACKUP"
 for rel in ${APPLY_SCRIPTS[@]+"${APPLY_SCRIPTS[@]}"}; do
+  [ -f "${NODE_DIR}/${rel}" ] || continue
   safe_key="${rel//\//_}"
   cp -p "${NODE_DIR}/${rel}" "${SCRATCH}/backup-${safe_key}"
 done
@@ -397,13 +441,35 @@ rollback() {
     safe_key="${rel//\//_}"
     if [ -f "${SCRATCH}/backup-${safe_key}" ]; then
       cp -pf "${SCRATCH}/backup-${safe_key}" "${NODE_DIR}/${rel}"
+    else
+      rm -f "${NODE_DIR}/${rel}"
     fi
   done
+  if [ "$UPDATE_EGRESSD" -eq 1 ] && [ -f "$EGRESSD_BACKUP" ]; then
+    cp -pf "$EGRESSD_BACKUP" "$EGRESSD_DEST_BIN"
+    chmod 0755 "$EGRESSD_DEST_BIN"
+    if command -v systemctl >/dev/null 2>&1 && systemctl is-enabled amnezia-egressd.service >/dev/null 2>&1; then
+      systemctl restart amnezia-egressd.service >>"$LOG" 2>&1 || true
+    fi
+  fi
   agent_up || log "WARNING: the rollback could not recreate the agent"
 }
 
 if [ "$apply_compose" -eq 1 ]; then
   cp -f "$NEW_COMPOSE" "$COMPOSE_FILE"
+fi
+if [ "$UPDATE_EGRESSD" -eq 1 ]; then
+  cp -p "$EGRESSD_DEST_BIN" "$EGRESSD_BACKUP"
+  egressd_tmp="$(mktemp "${EGRESSD_DEST_BIN}.XXXXXX")" || fail_out "could not stage amnezia-egressd"
+  cat "$NEW_EGRESSD" >"$egressd_tmp" || { rm -f "$egressd_tmp"; fail_out "could not write amnezia-egressd"; }
+  chmod 0755 "$egressd_tmp"
+  mv -f "$egressd_tmp" "$EGRESSD_DEST_BIN"
+  if command -v systemctl >/dev/null 2>&1 && systemctl is-enabled amnezia-egressd.service >/dev/null 2>&1; then
+    if ! systemctl restart amnezia-egressd.service >>"$LOG" 2>&1; then
+      rollback
+      fail_out "amnezia-egressd failed to restart after update; rolled back"
+    fi
+  fi
 fi
 for rel in ${APPLY_SCRIPTS[@]+"${APPLY_SCRIPTS[@]}"}; do
   safe_key="${rel//\//_}"

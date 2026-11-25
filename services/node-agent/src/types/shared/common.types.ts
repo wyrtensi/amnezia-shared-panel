@@ -51,6 +51,8 @@ export interface IAppConfig {
   // Seconds a queued update may sit before it is reported unacknowledged.
   NODE_AGENT_UPDATE_ACK_DEADLINE_SECONDS?: number;
   NODE_AGENT_CAPACITY_SPOOL?: string;
+  // Unix domain socket path for amnezia-egressd (empty string disables).
+  NODE_EGRESS_SOCKET?: string;
 }
 
 export interface IPagination {

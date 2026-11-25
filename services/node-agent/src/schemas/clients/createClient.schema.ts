@@ -1,5 +1,6 @@
 import { SwaggerContract } from "@/contracts/swagger";
 import { Protocol, AppFastifySchema } from "@/types/shared";
+import { IPV4_PATTERN } from "@/schemas/server/egress.schema";
 import { clientIdSchema, protocolSchema } from "./common.schema";
 
 export const createClientSchema = {
@@ -26,6 +27,20 @@ export const createClientSchema = {
         nullable: true,
         description: "Дата окончания доступа",
         example: null,
+      },
+      egress: {
+        type: "object",
+        additionalProperties: false,
+        required: ["exitIp"],
+        description:
+          "Optional AWG 3.1 multi-exit routing hint synced to amnezia-egressd",
+        properties: {
+          exitIp: { type: "string", pattern: IPV4_PATTERN },
+          dnsPrimary: { type: "string", pattern: IPV4_PATTERN },
+          amneziaDnsDnat: { type: "boolean" },
+          enforceDnsDnat: { type: "boolean" },
+          routingTableId: { type: "integer", minimum: 200, maximum: 219 },
+        },
       },
     },
   },

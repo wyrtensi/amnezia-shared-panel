@@ -149,6 +149,10 @@ const appConfig: IAppConfig = {
   // result as its own.
   NODE_AGENT_CAPACITY_SPOOL:
     process.env.NODE_AGENT_CAPACITY_SPOOL?.trim() || undefined,
+  NODE_EGRESS_SOCKET:
+    process.env.NODE_EGRESS_SOCKET === undefined
+      ? "/run/amnezia-egress/egressd.sock"
+      : process.env.NODE_EGRESS_SOCKET.trim(),
 };
 
 /**

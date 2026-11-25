@@ -8,7 +8,7 @@ export const updateClientHandler: AppFastifyHandler<UpdateClientType> = async (
   req,
   reply,
 ) => {
-  const { clientId, expiresAt, protocol, status } = req.body;
+  const { clientId, expiresAt, protocol, status, egress } = req.body;
 
   const clientsService = di.container.resolve<ClientsService>(
     ClientsService.key,
@@ -19,6 +19,7 @@ export const updateClientHandler: AppFastifyHandler<UpdateClientType> = async (
     protocol,
     expiresAt,
     status,
+    ...(egress ? { egress } : {}),
   });
 
   reply.code(200).send({ message: i18next.t("swagger.messages.SAVED") });

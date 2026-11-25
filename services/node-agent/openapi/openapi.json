@@ -55,6 +55,11 @@
                 ],
                 "additionalProperties": false,
                 "properties": {
+                  "egressIpv4": {
+                    "type": "string",
+                    "pattern": "^(?:(?:25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)\\.){3}(?:25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)$",
+                    "description": "Optional host Exit IPv4 to source-bind probes that do not override probe.egressIpv4."
+                  },
                   "checks": {
                     "type": "array",
                     "minItems": 1,
@@ -84,6 +89,10 @@
                             "kind": {
                               "type": "string",
                               "example": "http"
+                            },
+                            "egressIpv4": {
+                              "type": "string",
+                              "pattern": "^(?:(?:25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)\\.){3}(?:25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)$"
                             }
                           },
                           "additionalProperties": true
@@ -510,6 +519,35 @@
                     "nullable": true,
                     "description": "Дата окончания доступа",
                     "example": null
+                  },
+                  "egress": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "exitIp"
+                    ],
+                    "description": "Optional AWG 3.1 multi-exit routing hint synced to amnezia-egressd",
+                    "properties": {
+                      "exitIp": {
+                        "type": "string",
+                        "pattern": "^(?:(?:25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)\\.){3}(?:25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)$"
+                      },
+                      "dnsPrimary": {
+                        "type": "string",
+                        "pattern": "^(?:(?:25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)\\.){3}(?:25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)$"
+                      },
+                      "amneziaDnsDnat": {
+                        "type": "boolean"
+                      },
+                      "enforceDnsDnat": {
+                        "type": "boolean"
+                      },
+                      "routingTableId": {
+                        "type": "integer",
+                        "minimum": 200,
+                        "maximum": 219
+                      }
+                    }
                   }
                 }
               }
@@ -703,6 +741,11 @@
                     "required": [
                       "status"
                     ]
+                  },
+                  {
+                    "required": [
+                      "egress"
+                    ]
                   }
                 ],
                 "properties": {
@@ -740,6 +783,35 @@
                       "disabled"
                     ],
                     "example": "active"
+                  },
+                  "egress": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "exitIp"
+                    ],
+                    "description": "Optional AWG 3.1 multi-exit routing hint synced to amnezia-egressd",
+                    "properties": {
+                      "exitIp": {
+                        "type": "string",
+                        "pattern": "^(?:(?:25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)\\.){3}(?:25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)$"
+                      },
+                      "dnsPrimary": {
+                        "type": "string",
+                        "pattern": "^(?:(?:25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)\\.){3}(?:25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)$"
+                      },
+                      "amneziaDnsDnat": {
+                        "type": "boolean"
+                      },
+                      "enforceDnsDnat": {
+                        "type": "boolean"
+                      },
+                      "routingTableId": {
+                        "type": "integer",
+                        "minimum": 200,
+                        "maximum": 219
+                      }
+                    }
                   }
                 }
               }
@@ -1256,6 +1328,131 @@
                           "example": null
                         }
                       }
+                    },
+                    "egressReport": {
+                      "type": "object",
+                      "required": [
+                        "daemonVersion",
+                        "observedMode",
+                        "egressState",
+                        "bridgeName",
+                        "bridgePresent",
+                        "tunnelSubnetConflict",
+                        "ipv4Addresses",
+                        "exits",
+                        "observedAt"
+                      ],
+                      "properties": {
+                        "daemonVersion": {
+                          "type": "string"
+                        },
+                        "observedMode": {
+                          "type": "string",
+                          "enum": [
+                            "masquerade",
+                            "routed"
+                          ]
+                        },
+                        "egressState": {
+                          "type": "string",
+                          "enum": [
+                            "masquerade_ready",
+                            "routed_active",
+                            "conflict",
+                            "degraded"
+                          ]
+                        },
+                        "detail": {
+                          "type": "string"
+                        },
+                        "bridgeName": {
+                          "type": "string"
+                        },
+                        "bridgePresent": {
+                          "type": "boolean"
+                        },
+                        "awg3ContainerIpv4": {
+                          "type": "string"
+                        },
+                        "tunnelSubnetConflict": {
+                          "type": "boolean"
+                        },
+                        "ipv4Addresses": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "required": [
+                              "ipv4",
+                              "cidr",
+                              "interfaceName"
+                            ],
+                            "properties": {
+                              "ipv4": {
+                                "type": "string"
+                              },
+                              "cidr": {
+                                "type": "string"
+                              },
+                              "interfaceName": {
+                                "type": "string"
+                              },
+                              "detectedGatewayIpv4": {
+                                "type": "string"
+                              },
+                              "detectedRuleTable": {
+                                "type": "integer"
+                              }
+                            }
+                          }
+                        },
+                        "exits": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "required": [
+                              "ipv4",
+                              "hostState",
+                              "txBytes",
+                              "txPackets"
+                            ],
+                            "properties": {
+                              "ipv4": {
+                                "type": "string"
+                              },
+                              "hostState": {
+                                "type": "string",
+                                "enum": [
+                                  "active",
+                                  "pending",
+                                  "missing_ip",
+                                  "gateway_error",
+                                  "disabled"
+                                ]
+                              },
+                              "detail": {
+                                "type": "string"
+                              },
+                              "observedSubnetCidr": {
+                                "type": "string"
+                              },
+                              "detectedGatewayIpv4": {
+                                "type": "string"
+                              },
+                              "txBytes": {
+                                "type": "number"
+                              },
+                              "txPackets": {
+                                "type": "number"
+                              }
+                            }
+                          }
+                        },
+                        "observedAt": {
+                          "type": "string"
+                        }
+                      },
+                      "nullable": true,
+                      "description": "Compact host network and egress status reported by amnezia-egressd (null when absent)."
                     }
                   }
                 }
@@ -1974,6 +2171,146 @@
                         "privateKey": "B4nG7k9m2p5s8v1y3b6n8m2p4s6v8y1z3x5c7v9b1n3=",
                         "shortId": "a1b2c3d4"
                       }
+                    },
+                    "egress": {
+                      "type": "object",
+                      "required": [
+                        "schemaVersion",
+                        "blockSmtp",
+                        "isolatePrivate",
+                        "exits",
+                        "peers"
+                      ],
+                      "additionalProperties": false,
+                      "properties": {
+                        "schemaVersion": {
+                          "type": "integer",
+                          "minimum": 1
+                        },
+                        "blockSmtp": {
+                          "type": "boolean"
+                        },
+                        "isolatePrivate": {
+                          "type": "boolean"
+                        },
+                        "exits": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "required": [
+                              "id",
+                              "ipv4",
+                              "dnsPrimary",
+                              "amneziaDnsDnat",
+                              "enforceDnsDnat",
+                              "enabled"
+                            ],
+                            "additionalProperties": false,
+                            "properties": {
+                              "id": {
+                                "type": "string",
+                                "minLength": 1
+                              },
+                              "ipv4": {
+                                "type": "string",
+                                "pattern": "^(?:(?:25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)\\.){3}(?:25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)$"
+                              },
+                              "interfaceName": {
+                                "type": "string"
+                              },
+                              "gatewayIpv4": {
+                                "type": "string"
+                              },
+                              "routingTableId": {
+                                "type": "integer",
+                                "minimum": 200,
+                                "maximum": 219
+                              },
+                              "dnsPrimary": {
+                                "type": "string",
+                                "pattern": "^(?:(?:25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)\\.){3}(?:25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)$"
+                              },
+                              "dnsSecondary": {
+                                "type": "string"
+                              },
+                              "amneziaDnsDnat": {
+                                "type": "boolean"
+                              },
+                              "enforceDnsDnat": {
+                                "type": "boolean"
+                              },
+                              "enabled": {
+                                "type": "boolean"
+                              }
+                            }
+                          }
+                        },
+                        "peers": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "required": [
+                              "tunnelIpv4",
+                              "exitIp",
+                              "amneziaDnsDnat",
+                              "enforceDnsDnat",
+                              "enabled"
+                            ],
+                            "additionalProperties": false,
+                            "properties": {
+                              "tunnelIpv4": {
+                                "type": "string",
+                                "pattern": "^(?:(?:25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)\\.){3}(?:25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)$"
+                              },
+                              "exitIp": {
+                                "type": "string",
+                                "pattern": "^(?:(?:25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)\\.){3}(?:25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)$"
+                              },
+                              "dnsPrimary": {
+                                "type": "string"
+                              },
+                              "amneziaDnsDnat": {
+                                "type": "boolean"
+                              },
+                              "enforceDnsDnat": {
+                                "type": "boolean"
+                              },
+                              "routingTableId": {
+                                "type": "integer",
+                                "minimum": 200,
+                                "maximum": 219
+                              },
+                              "enabled": {
+                                "type": "boolean"
+                              }
+                            }
+                          }
+                        },
+                        "entryMarks": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "required": [
+                              "entryIpv4",
+                              "routingTableId"
+                            ],
+                            "additionalProperties": false,
+                            "properties": {
+                              "entryIpv4": {
+                                "type": "string",
+                                "pattern": "^(?:(?:25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)\\.){3}(?:25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)$"
+                              },
+                              "routingTableId": {
+                                "type": "integer",
+                                "minimum": 200,
+                                "maximum": 219
+                              }
+                            }
+                          }
+                        }
+                      },
+                      "nullable": true,
+                      "description": "Persisted amnezia-egressd desired state (omitted when the host egress daemon is absent)."
                     }
                   }
                 }
@@ -2342,6 +2679,145 @@
                       "privateKey": "B4nG7k9m2p5s8v1y3b6n8m2p4s6v8y1z3x5c7v9b1n3=",
                       "shortId": "a1b2c3d4"
                     }
+                  },
+                  "egress": {
+                    "type": "object",
+                    "required": [
+                      "schemaVersion",
+                      "blockSmtp",
+                      "isolatePrivate",
+                      "exits",
+                      "peers"
+                    ],
+                    "additionalProperties": false,
+                    "properties": {
+                      "schemaVersion": {
+                        "type": "integer",
+                        "minimum": 1
+                      },
+                      "blockSmtp": {
+                        "type": "boolean"
+                      },
+                      "isolatePrivate": {
+                        "type": "boolean"
+                      },
+                      "exits": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "required": [
+                            "id",
+                            "ipv4",
+                            "dnsPrimary",
+                            "amneziaDnsDnat",
+                            "enforceDnsDnat",
+                            "enabled"
+                          ],
+                          "additionalProperties": false,
+                          "properties": {
+                            "id": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "ipv4": {
+                              "type": "string",
+                              "pattern": "^(?:(?:25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)\\.){3}(?:25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)$"
+                            },
+                            "interfaceName": {
+                              "type": "string"
+                            },
+                            "gatewayIpv4": {
+                              "type": "string"
+                            },
+                            "routingTableId": {
+                              "type": "integer",
+                              "minimum": 200,
+                              "maximum": 219
+                            },
+                            "dnsPrimary": {
+                              "type": "string",
+                              "pattern": "^(?:(?:25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)\\.){3}(?:25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)$"
+                            },
+                            "dnsSecondary": {
+                              "type": "string"
+                            },
+                            "amneziaDnsDnat": {
+                              "type": "boolean"
+                            },
+                            "enforceDnsDnat": {
+                              "type": "boolean"
+                            },
+                            "enabled": {
+                              "type": "boolean"
+                            }
+                          }
+                        }
+                      },
+                      "peers": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "required": [
+                            "tunnelIpv4",
+                            "exitIp",
+                            "amneziaDnsDnat",
+                            "enforceDnsDnat",
+                            "enabled"
+                          ],
+                          "additionalProperties": false,
+                          "properties": {
+                            "tunnelIpv4": {
+                              "type": "string",
+                              "pattern": "^(?:(?:25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)\\.){3}(?:25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)$"
+                            },
+                            "exitIp": {
+                              "type": "string",
+                              "pattern": "^(?:(?:25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)\\.){3}(?:25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)$"
+                            },
+                            "dnsPrimary": {
+                              "type": "string"
+                            },
+                            "amneziaDnsDnat": {
+                              "type": "boolean"
+                            },
+                            "enforceDnsDnat": {
+                              "type": "boolean"
+                            },
+                            "routingTableId": {
+                              "type": "integer",
+                              "minimum": 200,
+                              "maximum": 219
+                            },
+                            "enabled": {
+                              "type": "boolean"
+                            }
+                          }
+                        }
+                      },
+                      "entryMarks": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "required": [
+                            "entryIpv4",
+                            "routingTableId"
+                          ],
+                          "additionalProperties": false,
+                          "properties": {
+                            "entryIpv4": {
+                              "type": "string",
+                              "pattern": "^(?:(?:25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)\\.){3}(?:25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)$"
+                            },
+                            "routingTableId": {
+                              "type": "integer",
+                              "minimum": 200,
+                              "maximum": 219
+                            }
+                          }
+                        }
+                      }
+                    },
+                    "nullable": true
                   }
                 },
                 "allOf": [
@@ -2438,6 +2914,23 @@
             }
           }
         },
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "1",
+                "0",
+                "true",
+                "false"
+              ]
+            },
+            "in": "query",
+            "name": "skipEgress",
+            "required": false,
+            "description": "Set to 1 or true to restore protocol configs while skipping amnezia-egressd state import."
+          }
+        ],
         "responses": {
           "200": {
             "description": "Информация о текущем сервере",
@@ -2582,6 +3075,142 @@
                           "example": null
                         }
                       }
+                    },
+                    "egressReport": {
+                      "type": "object",
+                      "required": [
+                        "daemonVersion",
+                        "observedMode",
+                        "egressState",
+                        "bridgeName",
+                        "bridgePresent",
+                        "tunnelSubnetConflict",
+                        "ipv4Addresses",
+                        "exits",
+                        "observedAt"
+                      ],
+                      "properties": {
+                        "daemonVersion": {
+                          "type": "string"
+                        },
+                        "observedMode": {
+                          "type": "string",
+                          "enum": [
+                            "masquerade",
+                            "routed"
+                          ]
+                        },
+                        "egressState": {
+                          "type": "string",
+                          "enum": [
+                            "masquerade_ready",
+                            "routed_active",
+                            "conflict",
+                            "degraded"
+                          ]
+                        },
+                        "detail": {
+                          "type": "string"
+                        },
+                        "bridgeName": {
+                          "type": "string"
+                        },
+                        "bridgePresent": {
+                          "type": "boolean"
+                        },
+                        "awg3ContainerIpv4": {
+                          "type": "string"
+                        },
+                        "tunnelSubnetConflict": {
+                          "type": "boolean"
+                        },
+                        "ipv4Addresses": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "required": [
+                              "ipv4",
+                              "cidr",
+                              "interfaceName"
+                            ],
+                            "properties": {
+                              "ipv4": {
+                                "type": "string"
+                              },
+                              "cidr": {
+                                "type": "string"
+                              },
+                              "interfaceName": {
+                                "type": "string"
+                              },
+                              "detectedGatewayIpv4": {
+                                "type": "string"
+                              },
+                              "detectedRuleTable": {
+                                "type": "integer"
+                              }
+                            }
+                          }
+                        },
+                        "exits": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "required": [
+                              "ipv4",
+                              "hostState",
+                              "txBytes",
+                              "txPackets"
+                            ],
+                            "properties": {
+                              "ipv4": {
+                                "type": "string"
+                              },
+                              "hostState": {
+                                "type": "string",
+                                "enum": [
+                                  "active",
+                                  "pending",
+                                  "missing_ip",
+                                  "gateway_error",
+                                  "disabled"
+                                ]
+                              },
+                              "detail": {
+                                "type": "string"
+                              },
+                              "observedSubnetCidr": {
+                                "type": "string"
+                              },
+                              "detectedGatewayIpv4": {
+                                "type": "string"
+                              },
+                              "txBytes": {
+                                "type": "number"
+                              },
+                              "txPackets": {
+                                "type": "number"
+                              }
+                            }
+                          }
+                        },
+                        "observedAt": {
+                          "type": "string"
+                        }
+                      },
+                      "nullable": true,
+                      "description": "Compact host network and egress status reported by amnezia-egressd (null when absent)."
+                    },
+                    "egressReconcileRequired": {
+                      "type": "boolean",
+                      "description": "True when a legacy backup (without egress state) was imported onto a routed-mode host."
+                    },
+                    "egressWarnings": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "Non-fatal warnings emitted while restoring host egress state (e.g. missing Exit IP on replacement host)."
                     }
                   }
                 }
@@ -3440,6 +4069,856 @@
                       "type": "string",
                       "description": "Описание ошибки",
                       "example": "Конфликт"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/server/egress": {
+      "put": {
+        "summary": "Apply host egress desired state to amnezia-egressd",
+        "tags": [
+          "Server"
+        ],
+        "description": "Persists exit, peer, and entry-mark mappings in amnezia-egressd and applies kernel rules when running in routed mode. Never switches egress mode.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "schemaVersion",
+                  "blockSmtp",
+                  "isolatePrivate",
+                  "exits",
+                  "peers"
+                ],
+                "additionalProperties": false,
+                "properties": {
+                  "schemaVersion": {
+                    "type": "integer",
+                    "minimum": 1
+                  },
+                  "blockSmtp": {
+                    "type": "boolean"
+                  },
+                  "isolatePrivate": {
+                    "type": "boolean"
+                  },
+                  "exits": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "required": [
+                        "id",
+                        "ipv4",
+                        "dnsPrimary",
+                        "amneziaDnsDnat",
+                        "enforceDnsDnat",
+                        "enabled"
+                      ],
+                      "additionalProperties": false,
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "ipv4": {
+                          "type": "string",
+                          "pattern": "^(?:(?:25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)\\.){3}(?:25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)$"
+                        },
+                        "interfaceName": {
+                          "type": "string"
+                        },
+                        "gatewayIpv4": {
+                          "type": "string"
+                        },
+                        "routingTableId": {
+                          "type": "integer",
+                          "minimum": 200,
+                          "maximum": 219
+                        },
+                        "dnsPrimary": {
+                          "type": "string",
+                          "pattern": "^(?:(?:25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)\\.){3}(?:25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)$"
+                        },
+                        "dnsSecondary": {
+                          "type": "string"
+                        },
+                        "amneziaDnsDnat": {
+                          "type": "boolean"
+                        },
+                        "enforceDnsDnat": {
+                          "type": "boolean"
+                        },
+                        "enabled": {
+                          "type": "boolean"
+                        }
+                      }
+                    }
+                  },
+                  "peers": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "required": [
+                        "tunnelIpv4",
+                        "exitIp",
+                        "amneziaDnsDnat",
+                        "enforceDnsDnat",
+                        "enabled"
+                      ],
+                      "additionalProperties": false,
+                      "properties": {
+                        "tunnelIpv4": {
+                          "type": "string",
+                          "pattern": "^(?:(?:25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)\\.){3}(?:25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)$"
+                        },
+                        "exitIp": {
+                          "type": "string",
+                          "pattern": "^(?:(?:25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)\\.){3}(?:25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)$"
+                        },
+                        "dnsPrimary": {
+                          "type": "string"
+                        },
+                        "amneziaDnsDnat": {
+                          "type": "boolean"
+                        },
+                        "enforceDnsDnat": {
+                          "type": "boolean"
+                        },
+                        "routingTableId": {
+                          "type": "integer",
+                          "minimum": 200,
+                          "maximum": 219
+                        },
+                        "enabled": {
+                          "type": "boolean"
+                        }
+                      }
+                    }
+                  },
+                  "entryMarks": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "required": [
+                        "entryIpv4",
+                        "routingTableId"
+                      ],
+                      "additionalProperties": false,
+                      "properties": {
+                        "entryIpv4": {
+                          "type": "string",
+                          "pattern": "^(?:(?:25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)\\.){3}(?:25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)$"
+                        },
+                        "routingTableId": {
+                          "type": "integer",
+                          "minimum": 200,
+                          "maximum": 219
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "ok",
+                    "report"
+                  ],
+                  "properties": {
+                    "ok": {
+                      "type": "boolean"
+                    },
+                    "warnings": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "report": {
+                      "type": "object",
+                      "required": [
+                        "daemonVersion",
+                        "observedMode",
+                        "egressState",
+                        "bridgeName",
+                        "bridgePresent",
+                        "tunnelSubnetConflict",
+                        "ipv4Addresses",
+                        "exits",
+                        "observedAt"
+                      ],
+                      "properties": {
+                        "daemonVersion": {
+                          "type": "string"
+                        },
+                        "observedMode": {
+                          "type": "string",
+                          "enum": [
+                            "masquerade",
+                            "routed"
+                          ]
+                        },
+                        "egressState": {
+                          "type": "string",
+                          "enum": [
+                            "masquerade_ready",
+                            "routed_active",
+                            "conflict",
+                            "degraded"
+                          ]
+                        },
+                        "detail": {
+                          "type": "string"
+                        },
+                        "bridgeName": {
+                          "type": "string"
+                        },
+                        "bridgePresent": {
+                          "type": "boolean"
+                        },
+                        "awg3ContainerIpv4": {
+                          "type": "string"
+                        },
+                        "tunnelSubnetConflict": {
+                          "type": "boolean"
+                        },
+                        "ipv4Addresses": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "required": [
+                              "ipv4",
+                              "cidr",
+                              "interfaceName"
+                            ],
+                            "properties": {
+                              "ipv4": {
+                                "type": "string"
+                              },
+                              "cidr": {
+                                "type": "string"
+                              },
+                              "interfaceName": {
+                                "type": "string"
+                              },
+                              "detectedGatewayIpv4": {
+                                "type": "string"
+                              },
+                              "detectedRuleTable": {
+                                "type": "integer"
+                              }
+                            }
+                          }
+                        },
+                        "exits": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "required": [
+                              "ipv4",
+                              "hostState",
+                              "txBytes",
+                              "txPackets"
+                            ],
+                            "properties": {
+                              "ipv4": {
+                                "type": "string"
+                              },
+                              "hostState": {
+                                "type": "string",
+                                "enum": [
+                                  "active",
+                                  "pending",
+                                  "missing_ip",
+                                  "gateway_error",
+                                  "disabled"
+                                ]
+                              },
+                              "detail": {
+                                "type": "string"
+                              },
+                              "observedSubnetCidr": {
+                                "type": "string"
+                              },
+                              "detectedGatewayIpv4": {
+                                "type": "string"
+                              },
+                              "txBytes": {
+                                "type": "number"
+                              },
+                              "txPackets": {
+                                "type": "number"
+                              }
+                            }
+                          }
+                        },
+                        "observedAt": {
+                          "type": "string"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Ответ на запрос с ошибкой",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "message"
+                  ],
+                  "description": "Ответ на запрос с ошибкой",
+                  "properties": {
+                    "message": {
+                      "type": "string",
+                      "description": "Описание ошибки",
+                      "example": "Некорректный запрос"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Ответ на запрос с ошибкой",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "message"
+                  ],
+                  "description": "Ответ на запрос с ошибкой",
+                  "properties": {
+                    "message": {
+                      "type": "string",
+                      "description": "Описание ошибки",
+                      "example": "Требуется авторизация"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Ответ на запрос с ошибкой",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "message"
+                  ],
+                  "description": "Ответ на запрос с ошибкой",
+                  "properties": {
+                    "message": {
+                      "type": "string",
+                      "description": "Описание ошибки",
+                      "example": "Доступ запрещён"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Ответ на запрос с ошибкой",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "message"
+                  ],
+                  "description": "Ответ на запрос с ошибкой",
+                  "properties": {
+                    "message": {
+                      "type": "string",
+                      "description": "Описание ошибки",
+                      "example": "Сервис недоступен"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/server/egress/verify": {
+      "post": {
+        "summary": "Verify source-bound HTTP egress IP and DNS resolution for an Exit IP",
+        "tags": [
+          "Server"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "egressIpv4",
+                  "probeUrl"
+                ],
+                "additionalProperties": false,
+                "properties": {
+                  "egressIpv4": {
+                    "type": "string",
+                    "pattern": "^(?:(?:25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)\\.){3}(?:25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)$"
+                  },
+                  "probeUrl": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "dnsServer": {
+                    "type": "string"
+                  },
+                  "dnsDomain": {
+                    "type": "string"
+                  },
+                  "timeoutMs": {
+                    "type": "integer",
+                    "minimum": 500,
+                    "maximum": 30000
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "ok",
+                    "egressIpv4",
+                    "ipMatch",
+                    "httpLatencyMs",
+                    "dnsOk",
+                    "dnsLatencyMs"
+                  ],
+                  "properties": {
+                    "ok": {
+                      "type": "boolean"
+                    },
+                    "egressIpv4": {
+                      "type": "string"
+                    },
+                    "observedIp": {
+                      "type": "string"
+                    },
+                    "ipMatch": {
+                      "type": "boolean"
+                    },
+                    "httpLatencyMs": {
+                      "type": "number"
+                    },
+                    "httpError": {
+                      "type": "string"
+                    },
+                    "dnsOk": {
+                      "type": "boolean"
+                    },
+                    "dnsServer": {
+                      "type": "string"
+                    },
+                    "dnsLatencyMs": {
+                      "type": "number"
+                    },
+                    "dnsError": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Ответ на запрос с ошибкой",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "message"
+                  ],
+                  "description": "Ответ на запрос с ошибкой",
+                  "properties": {
+                    "message": {
+                      "type": "string",
+                      "description": "Описание ошибки",
+                      "example": "Некорректный запрос"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Ответ на запрос с ошибкой",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "message"
+                  ],
+                  "description": "Ответ на запрос с ошибкой",
+                  "properties": {
+                    "message": {
+                      "type": "string",
+                      "description": "Описание ошибки",
+                      "example": "Требуется авторизация"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Ответ на запрос с ошибкой",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "message"
+                  ],
+                  "description": "Ответ на запрос с ошибкой",
+                  "properties": {
+                    "message": {
+                      "type": "string",
+                      "description": "Описание ошибки",
+                      "example": "Доступ запрещён"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Ответ на запрос с ошибкой",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "message"
+                  ],
+                  "description": "Ответ на запрос с ошибкой",
+                  "properties": {
+                    "message": {
+                      "type": "string",
+                      "description": "Описание ошибки",
+                      "example": "Сервис недоступен"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/server/egress/mode": {
+      "post": {
+        "summary": "Atomically switch AWG3 egress mode between masquerade and routed",
+        "tags": [
+          "Server"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "mode"
+                ],
+                "additionalProperties": false,
+                "properties": {
+                  "mode": {
+                    "type": "string",
+                    "enum": [
+                      "masquerade",
+                      "routed"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "ok"
+                  ],
+                  "properties": {
+                    "ok": {
+                      "type": "boolean"
+                    },
+                    "report": {
+                      "type": "object",
+                      "required": [
+                        "daemonVersion",
+                        "observedMode",
+                        "egressState",
+                        "bridgeName",
+                        "bridgePresent",
+                        "tunnelSubnetConflict",
+                        "ipv4Addresses",
+                        "exits",
+                        "observedAt"
+                      ],
+                      "properties": {
+                        "daemonVersion": {
+                          "type": "string"
+                        },
+                        "observedMode": {
+                          "type": "string",
+                          "enum": [
+                            "masquerade",
+                            "routed"
+                          ]
+                        },
+                        "egressState": {
+                          "type": "string",
+                          "enum": [
+                            "masquerade_ready",
+                            "routed_active",
+                            "conflict",
+                            "degraded"
+                          ]
+                        },
+                        "detail": {
+                          "type": "string"
+                        },
+                        "bridgeName": {
+                          "type": "string"
+                        },
+                        "bridgePresent": {
+                          "type": "boolean"
+                        },
+                        "awg3ContainerIpv4": {
+                          "type": "string"
+                        },
+                        "tunnelSubnetConflict": {
+                          "type": "boolean"
+                        },
+                        "ipv4Addresses": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "required": [
+                              "ipv4",
+                              "cidr",
+                              "interfaceName"
+                            ],
+                            "properties": {
+                              "ipv4": {
+                                "type": "string"
+                              },
+                              "cidr": {
+                                "type": "string"
+                              },
+                              "interfaceName": {
+                                "type": "string"
+                              },
+                              "detectedGatewayIpv4": {
+                                "type": "string"
+                              },
+                              "detectedRuleTable": {
+                                "type": "integer"
+                              }
+                            }
+                          }
+                        },
+                        "exits": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "required": [
+                              "ipv4",
+                              "hostState",
+                              "txBytes",
+                              "txPackets"
+                            ],
+                            "properties": {
+                              "ipv4": {
+                                "type": "string"
+                              },
+                              "hostState": {
+                                "type": "string",
+                                "enum": [
+                                  "active",
+                                  "pending",
+                                  "missing_ip",
+                                  "gateway_error",
+                                  "disabled"
+                                ]
+                              },
+                              "detail": {
+                                "type": "string"
+                              },
+                              "observedSubnetCidr": {
+                                "type": "string"
+                              },
+                              "detectedGatewayIpv4": {
+                                "type": "string"
+                              },
+                              "txBytes": {
+                                "type": "number"
+                              },
+                              "txPackets": {
+                                "type": "number"
+                              }
+                            }
+                          }
+                        },
+                        "observedAt": {
+                          "type": "string"
+                        }
+                      }
+                    },
+                    "error": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Ответ на запрос с ошибкой",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "message"
+                  ],
+                  "description": "Ответ на запрос с ошибкой",
+                  "properties": {
+                    "message": {
+                      "type": "string",
+                      "description": "Описание ошибки",
+                      "example": "Некорректный запрос"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Ответ на запрос с ошибкой",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "message"
+                  ],
+                  "description": "Ответ на запрос с ошибкой",
+                  "properties": {
+                    "message": {
+                      "type": "string",
+                      "description": "Описание ошибки",
+                      "example": "Требуется авторизация"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Ответ на запрос с ошибкой",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "message"
+                  ],
+                  "description": "Ответ на запрос с ошибкой",
+                  "properties": {
+                    "message": {
+                      "type": "string",
+                      "description": "Описание ошибки",
+                      "example": "Доступ запрещён"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Ответ на запрос с ошибкой",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "message"
+                  ],
+                  "description": "Ответ на запрос с ошибкой",
+                  "properties": {
+                    "message": {
+                      "type": "string",
+                      "description": "Описание ошибки",
+                      "example": "Конфликт"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Ответ на запрос с ошибкой",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "message"
+                  ],
+                  "description": "Ответ на запрос с ошибкой",
+                  "properties": {
+                    "message": {
+                      "type": "string",
+                      "description": "Описание ошибки",
+                      "example": "Сервис недоступен"
                     }
                   }
                 }

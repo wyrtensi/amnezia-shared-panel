@@ -1,5 +1,6 @@
 import { SwaggerContract } from "@/contracts/swagger";
 import { Protocol, CustomFormat, AppFastifySchema } from "@/types/shared";
+import { desiredStateSchema } from "./egress.schema";
 
 const clientsTableItemSchema = {
   type: "object",
@@ -197,6 +198,12 @@ export const getServerBackupSchema = {
             privateKey: "B4nG7k9m2p5s8v1y3b6n8m2p4s6v8y1z3x5c7v9b1n3=",
             shortId: "a1b2c3d4",
           },
+        },
+        egress: {
+          ...desiredStateSchema,
+          nullable: true,
+          description:
+            "Persisted amnezia-egressd desired state (omitted when the host egress daemon is absent).",
         },
       },
     },

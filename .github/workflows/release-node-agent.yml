@@ -67,6 +67,9 @@ jobs:
           # context.
           build-contexts: |
             deploy=infra/node
+            egressd=services/egress-daemon
+          build-args: |
+            APP_VERSION=${{ steps.version.outputs.value }}
           push: true
           platforms: linux/amd64
           tags: ghcr.io/${{ github.repository }}/node-agent:${{ steps.version.outputs.value }}

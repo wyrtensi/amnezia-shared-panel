@@ -8,7 +8,12 @@ export const createClientHandler: AppFastifyHandler<CreateClientType> = async (
   req,
   reply,
 ) => {
-  const { clientName, expiresAt, protocol = Protocol.AMNEZIAWG } = req.body;
+  const {
+    clientName,
+    expiresAt,
+    protocol = Protocol.AMNEZIAWG,
+    egress,
+  } = req.body;
 
   const clientsService = di.container.resolve<ClientsService>(
     ClientsService.key,
@@ -22,6 +27,7 @@ export const createClientHandler: AppFastifyHandler<CreateClientType> = async (
     clientName,
     expiresAt: expiresAt ?? null,
     protocol,
+    ...(egress ? { egress } : {}),
   });
 
   reply.code(200).send({

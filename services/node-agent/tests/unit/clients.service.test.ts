@@ -1,10 +1,12 @@
 import { Protocol } from "@/types/shared";
 import { PeerStatus } from "@/types/clients";
 import appConfig from "@/constants/appConfig";
-import { createClientRecord } from "../factories";
+import { createClientPeer, createClientRecord } from "../factories";
 import { ClientsService } from "@/services/clients";
 import { createProtocolServiceMock } from "../mocks";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { encodeVpnConfig } from "@/helpers/encodeVpnConfig";
+import { EgressService } from "@/services/egress";
 import { TEST_SERVER_MAX_PEERS } from "../config/setupTestEnvironment";
 
 const originalAppConfig = {
@@ -237,5 +239,112 @@ describe("ClientsService", () => {
       amneziaWg.spies.createClient.mock.calls.length +
       amneziaWg2.spies.createClient.mock.calls.length;
     expect(createCalls).toBe(1);
+  });
+
+  it("syncs AWG3 peer lifecycle events to EgressService when configured", async () => {
+    const encoded = encodeVpnConfig({
+      containers: [
+        {
+          container: "amnezia-awg2",
+          awg: {
+            last_config: JSON.stringify({
+              client_ip: "10.90.0.4",
+              config: "[Interface]\nAddress = 10.90.0.4/32\n",
+            }),
+          },
+        },
+      ],
+    });
+
+    const xray = createProtocolServiceMock(Protocol.XRAY);
+    const amneziaWg = createProtocolServiceMock(Protocol.AMNEZIAWG);
+    const amneziaWg2 = createProtocolServiceMock(Protocol.AMNEZIAWG2);
+    const amneziaWg3 = createProtocolServiceMock(Protocol.AMNEZIAWG3, [
+      createClientRecord({
+        username: "carol",
+        protocol: Protocol.AMNEZIAWG3,
+        peers: [
+          createClientPeer({
+            id: "peer-3",
+            protocol: Protocol.AMNEZIAWG3,
+            allowedIps: ["10.90.0.4/32"],
+          }),
+        ],
+      }),
+    ]);
+    amneziaWg3.spies.createClient.mockResolvedValue({
+      id: "peer-3",
+      config: encoded,
+      protocol: Protocol.AMNEZIAWG3,
+    });
+
+    const upsertPeer = vi.fn(async () => null);
+    const removePeer = vi.fn(async () => null);
+    const egressStub = {
+      isConfigured: () => true,
+      upsertPeer,
+      removePeer,
+    } as unknown as EgressService;
+
+    const service = new ClientsService(
+      xray.service,
+      amneziaWg.service,
+      amneziaWg2.service,
+      amneziaWg3.service,
+      egressStub,
+    );
+
+    await service.createClient({
+      clientName: "carol",
+      protocol: Protocol.AMNEZIAWG3,
+      egress: {
+        exitIp: "203.0.113.20",
+        dnsPrimary: "9.9.9.9",
+        amneziaDnsDnat: true,
+        enforceDnsDnat: false,
+      },
+    });
+    expect(upsertPeer).toHaveBeenCalledWith({
+      tunnelIpv4: "10.90.0.4",
+      exitIp: "203.0.113.20",
+      dnsPrimary: "9.9.9.9",
+      amneziaDnsDnat: true,
+      enforceDnsDnat: false,
+      routingTableId: undefined,
+      enabled: true,
+    });
+
+    await service.updateClient({
+      clientId: "peer-3",
+      protocol: Protocol.AMNEZIAWG3,
+      status: PeerStatus.Disabled,
+    });
+    expect(removePeer).toHaveBeenCalledWith("10.90.0.4");
+
+    await service.updateClient({
+      clientId: "peer-3",
+      protocol: Protocol.AMNEZIAWG3,
+      status: PeerStatus.Active,
+      egress: {
+        exitIp: "198.51.100.10",
+        enforceDnsDnat: true,
+      },
+    });
+    expect(upsertPeer).toHaveBeenLastCalledWith({
+      tunnelIpv4: "10.90.0.4",
+      exitIp: "198.51.100.10",
+      dnsPrimary: undefined,
+      amneziaDnsDnat: false,
+      enforceDnsDnat: true,
+      routingTableId: undefined,
+      enabled: true,
+    });
+
+    await service.deleteClient({
+      clientId: "peer-3",
+      protocol: Protocol.AMNEZIAWG3,
+    });
+    expect(removePeer).toHaveBeenCalledTimes(2);
+    expect(removePeer).toHaveBeenLastCalledWith("10.90.0.4");
   });
 });

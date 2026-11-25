@@ -1,5 +1,6 @@
 import { SwaggerContract } from "@/contracts/swagger";
 import { Protocol, AppFastifySchema } from "@/types/shared";
+import { hostNetworkReportSchema } from "./egress.schema";
 
 export const getServerSchema = {
   tags: [SwaggerContract.Tags.SERVER],
@@ -119,6 +120,12 @@ export const getServerSchema = {
               example: null,
             },
           },
+        },
+        egressReport: {
+          ...hostNetworkReportSchema,
+          nullable: true,
+          description:
+            "Compact host network and egress status reported by amnezia-egressd (null when absent).",
         },
       },
     },

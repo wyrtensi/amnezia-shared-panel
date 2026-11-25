@@ -2,6 +2,7 @@ import { asClass } from "awilix";
 import { di } from "./awilixManager";
 import { appLogger } from "../winstonLogger";
 import { CronService } from "@/services/cron";
+import { EgressService } from "@/services/egress";
 import { XrayService } from "@/services/xray";
 import {
   AgentUpdateService,
@@ -32,6 +33,7 @@ export const setupDIContainer = (): void => {
 
     // Сервисы
     [CronService.key]: asClass(CronService).singleton(),
+    [EgressService.key]: asClass(EgressService).singleton(),
     [XrayService.key]: asClass(XrayService).singleton(),
     [ServerService.key]: asClass(ServerService).singleton(),
     [AgentUpdateService.key]: asClass(AgentUpdateService).singleton(),

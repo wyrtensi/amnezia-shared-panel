@@ -100,6 +100,21 @@ jobs:
         working-directory: .
         run: docker build services/bridge-agent --tag bridge-agent:ci
 
+  egress-daemon:
+    name: Egress daemon (vet, test, build)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: services/egress-daemon
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: services/egress-daemon/go.mod
+      - run: go vet ./...
+      - run: go test -race ./...
+      - run: CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -o /tmp/amnezia-egressd ./cmd/amnezia-egressd
+
   infra:
     name: Infra and rollout script tests
     runs-on: ubuntu-latest
@@ -108,7 +123,7 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: 24
-      - name: ShellCheck bridge scripts (installers, bridge-agent updater) and the frpc installer
+      - name: ShellCheck bridge, node egress, and updater scripts
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq shellcheck
@@ -117,4 +132,5 @@ jobs:
           shellcheck -s bash infra/bridge/bridge-agent-update.sh
           shellcheck -s bash infra/bridge/frps-tls-rotate.sh
           shellcheck -s bash scripts/repair-updater-units.sh infra/prod/install-updater.sh infra/node/scripts/install-agent-updater.sh
+          shellcheck -s sh -x infra/node/scripts/common.sh infra/node/scripts/backup.sh infra/node/scripts/rollback.sh infra/node/scripts/deploy.sh infra/node/scripts/preflight.sh infra/node/scripts/awg3-entrypoint.sh infra/node/scripts/install-egressd.sh infra/node/scripts/install-host-services.sh infra/node/scripts/switch-egress-mode.sh
       - run: node --test infra/node/tests/*.mjs infra/bridge/tests/*.mjs infra/prod/tests/*.mjs scripts/tests/*.mjs

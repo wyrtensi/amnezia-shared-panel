@@ -5,6 +5,7 @@ import ipaddr from "ipaddr.js";
 import { Agent, fetch as undiciFetch, type Response as ProbeResponse } from "undici";
 
 import { ProbeOutcome } from "./assertions";
+import type { EgressService } from "@/services/egress";
 
 /**
  * The probe registry.
@@ -231,9 +232,15 @@ const readCappedBody = async (response: ProbeResponse): Promise<{
   return { body: Buffer.concat(chunks).toString("utf8"), bytes };
 };
 
+export interface ProbeRunOptions {
+  egressService?: EgressService;
+  timeoutMs?: number;
+}
+
 export type ProbeRunner = (
   probe: Record<string, unknown>,
   signal: AbortSignal,
+  options?: ProbeRunOptions,
 ) => Promise<ProbeOutcome>;
 
 /**
@@ -266,9 +273,77 @@ const discardBody = async (response: ProbeResponse): Promise<void> => {
   await response.body?.cancel().catch(() => undefined);
 };
 
-const runHttpProbe: ProbeRunner = async (probe, signal) => {
+const runHttpViaEgressDaemon = async (
+  egressIpv4: string,
+  url: string,
+  method: "GET" | "HEAD",
+  options: ProbeRunOptions,
+): Promise<ProbeOutcome> => {
+  if (!ipaddr.isValid(egressIpv4) || ipaddr.parse(egressIpv4).kind() !== "ipv4") {
+    throw new ProbeRefusedError(`invalid egressIpv4: ${egressIpv4.slice(0, 48)}`);
+  }
+  if (!options.egressService) {
+    throw new Error("amnezia-egressd service is not available on this node");
+  }
+
+  let target = parseHop(url);
+  for (let hop = 0; ; hop += 1) {
+    await assertPublicAddress(target.hostname);
+
+    const response = await options.egressService.runHttpCheck({
+      egressIpv4,
+      url: target.toString(),
+      method,
+      headers: {
+        "user-agent": "amnezia-node-agent-check/1",
+        accept: "text/html,application/xhtml+xml,*/*;q=0.8",
+      },
+      followRedirects: false,
+      timeoutMs: options.timeoutMs,
+    });
+
+    if (response.error) {
+      throw new Error(response.error);
+    }
+
+    const headers: Record<string, string> = {};
+    for (const [key, value] of Object.entries(response.headers ?? {})) {
+      headers[key.toLowerCase()] = value;
+    }
+
+    const location = headers.location;
+    if (REDIRECT_STATUSES.has(response.status) && location) {
+      if (hop >= MAX_REDIRECTS) {
+        throw new ProbeRefusedError(
+          `too many redirects (over ${MAX_REDIRECTS}) from ${url.slice(0, 80)}`,
+        );
+      }
+      target = parseHop(location, target);
+      continue;
+    }
+
+    const body = method === "HEAD" ? "" : (response.body ?? "");
+    const bodyBytes = Buffer.byteLength(body, "utf8");
+    return {
+      status: response.status,
+      finalUrl: target.toString(),
+      headers,
+      body,
+      bodyBytes,
+    };
+  }
+};
+
+const runHttpProbe: ProbeRunner = async (probe, signal, options) => {
   const url = typeof probe.url === "string" ? probe.url : "";
   const method = probe.method === "HEAD" ? "HEAD" : "GET";
+  const egressIpv4 =
+    typeof probe.egressIpv4 === "string" ? probe.egressIpv4.trim() : "";
+
+  if (egressIpv4) {
+    return runHttpViaEgressDaemon(egressIpv4, url, method, options ?? {});
+  }
+
   let target = parseHop(url);
 
   for (let hop = 0; ; hop += 1) {
@@ -337,6 +412,7 @@ export const SUPPORTED_PROBE_KINDS = Object.keys(PROBE_RUNNERS).sort();
 export const runProbe = async (
   probe: Record<string, unknown>,
   timeoutMs: number,
+  options?: { egressService?: EgressService },
 ): Promise<ProbeOutcome> => {
   const kind = typeof probe.kind === "string" ? probe.kind : "";
   const run = PROBE_RUNNERS[kind];
@@ -345,5 +421,8 @@ export const runProbe = async (
     Math.max(Number.isFinite(timeoutMs) ? timeoutMs : MAX_TIMEOUT_MS, 1_000),
     MAX_TIMEOUT_MS,
   );
-  return run(probe, AbortSignal.timeout(bounded));
+  return run(probe, AbortSignal.timeout(bounded), {
+    egressService: options?.egressService,
+    timeoutMs: bounded,
+  });
 };

@@ -12,7 +12,7 @@ if archive="$(create_backup 1)"; then
   info "Backup created: $archive"
 else
   status="$?"
-  [ "$status" -ne 2 ] || fail "AWG2 state is not initialized; there is nothing to back up"
+  [ "$status" -ne 2 ] || fail "Neither AWG2 nor AWG3 state is initialized; there is nothing to back up"
   fail "backup failed"
 fi
 

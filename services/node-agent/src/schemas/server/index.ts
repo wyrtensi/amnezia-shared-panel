@@ -8,3 +8,4 @@ export * from "./requestServerUpdate.schema";
 export * from "./getServerCapacity.schema";
 export * from "./requestServerCapacity.schema";
 export * from "./setServerIpv6RejectStub.schema";
+export * from "./egress.schema";

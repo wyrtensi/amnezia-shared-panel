@@ -1,0 +1,18 @@
+[Unit]
+Description=Amnezia host egress routing and fail-closed nftables daemon
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment=GOMEMLIMIT=24MiB
+Environment=GOGC=50
+ExecStart=/usr/local/bin/amnezia-egressd --socket /run/amnezia-egress/egressd.sock --state /etc/amnezia-egress/state.json --bridge br-awg-egress --node-dir /opt/amnezia-node --socket-uid 10001
+Restart=on-failure
+RestartSec=3
+MemoryMax=32M
+RuntimeDirectory=amnezia-egress
+RuntimeDirectoryMode=0755
+
+[Install]
+WantedBy=multi-user.target

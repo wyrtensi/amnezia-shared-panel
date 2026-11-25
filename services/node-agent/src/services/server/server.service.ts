@@ -1,12 +1,21 @@
 import os from "os";
 import {
   AwgInterfaceState,
+  ImportBackupResult,
   Ipv6RejectStubStatus,
   ServerLoadPayload,
   ServerBackupPayload,
   ServerStatusPayload,
   ServerLoadDockerContainerStats,
 } from "@/types/server";
+import {
+  ApplyEgressStateResponse,
+  DesiredState,
+  EgressMode,
+  SwitchEgressModeResponse,
+  VerifyExitRequest,
+  VerifyExitResponse,
+} from "@/types/egress";
 import fs from "fs/promises";
 import {
   parseNetIo,
@@ -19,6 +28,7 @@ import { APIError } from "@/utils/APIError";
 import appConfig from "@/constants/appConfig";
 import { APP_VERSION } from "@/constants/appVersion";
 import { XrayService } from "@/services/xray";
+import { EgressService } from "@/services/egress";
 import { AppContract } from "@/contracts/app";
 import { isNotNull } from "@/utils/primitive";
 import { TimeContract } from "@/contracts/time";
@@ -56,6 +66,7 @@ export class ServerService {
     private readonly amneziaWgService: AmneziaWgService,
     private readonly amneziaWg2Service: AmneziaWg2Service,
     private readonly amneziaWg3Service: AmneziaWg3Service,
+    private readonly egressService?: EgressService,
   ) {
     this.server = new ServerConnection();
   }
@@ -83,6 +94,10 @@ export class ServerService {
       ? await this.getIpv6RejectStubStatusSafe()
       : null;
 
+    const egressReport = this.egressService
+      ? await this.egressService.getReport()
+      : undefined;
+
     return {
       id: appConfig.SERVER_ID || "",
       region: appConfig.SERVER_REGION || "",
@@ -101,6 +116,7 @@ export class ServerService {
         assertionTypes: SUPPORTED_ASSERTION_TYPES,
       },
       ipv6RejectStub,
+      ...(egressReport !== undefined ? { egressReport } : {}),
     };
   }
 
@@ -196,6 +212,13 @@ export class ServerService {
 
     if (protocols.includes(Protocol.XRAY)) {
       payload.xray = await this.xrayService.exportBackup();
+    }
+
+    if (this.egressService) {
+      const egressState = await this.egressService.getState();
+      if (egressState) {
+        payload.egress = egressState;
+      }
     }
 
     return payload;
@@ -432,7 +455,10 @@ export class ServerService {
   /**
    * Импортировать данные резервной копии сервера
    */
-  async importBackup(payload: ServerBackupPayload): Promise<void> {
+  async importBackup(
+    payload: ServerBackupPayload,
+    options?: { skipEgress?: boolean },
+  ): Promise<ImportBackupResult | void> {
     const protocols = payload.protocols ?? [];
 
     if (!protocols.length) {
@@ -470,6 +496,45 @@ export class ServerService {
 
       await this.xrayService.importBackup(payload.xray);
     }
+
+    if (!options?.skipEgress && this.egressService) {
+      if (payload.egress) {
+        const applied = await this.egressService.applyState(payload.egress);
+        return applied.warnings?.length
+          ? { egressWarnings: applied.warnings }
+          : {};
+      }
+
+      const report = await this.egressService.getReport();
+      if (report?.observedMode === "routed") {
+        return { egressReconcileRequired: true };
+      }
+    }
+
+    return {};
+  }
+
+  private requireEgressService(): EgressService {
+    if (!this.egressService) {
+      throw new APIError(ServerErrorCode.SERVICE_UNAVAILABLE);
+    }
+    return this.egressService;
+  }
+
+  async applyEgressState(
+    state: DesiredState,
+  ): Promise<ApplyEgressStateResponse> {
+    return this.requireEgressService().applyState(state);
+  }
+
+  async verifyEgressExit(req: VerifyExitRequest): Promise<VerifyExitResponse> {
+    return this.requireEgressService().verifyExit(req);
+  }
+
+  async switchEgressMode(
+    mode: EgressMode,
+  ): Promise<SwitchEgressModeResponse> {
+    return this.requireEgressService().switchMode(mode);
   }
 
   /**

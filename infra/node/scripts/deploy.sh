@@ -43,7 +43,7 @@ sh "$SCRIPT_DIR/cotenants.sh" snapshot "$COTENANTS_SNAPSHOT"
 trap 'rm -f "$COTENANTS_SNAPSHOT"' EXIT INT TERM
 
 backup_path=''
-if [ -s "$STATE_DIR/awg0.conf" ]; then
+if [ -s "$STATE_DIR/awg0.conf" ] || [ -s "$STATE_DIR_AWG3/awg0.conf" ]; then
   if backup_path="$(create_backup 0)"; then
     info "Pre-deploy backup created: $backup_path"
   else

@@ -204,7 +204,12 @@ ip -4 address add 10.90.0.1/22 dev awg0
 ip link set mtu "$IFACE_MTU" up dev awg0
 iptables -A FORWARD -i awg0 -j ACCEPT
 iptables -A FORWARD -o awg0 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
-iptables -t nat -A POSTROUTING -s 10.90.0.0/22 -o eth0 -j MASQUERADE
+EGRESS_MODE="${AWG3_EGRESS_MODE:-masquerade}"
+if [ "$EGRESS_MODE" = "routed" ]; then
+  echo "AWG3 starting in routed egress mode (host amnezia-egressd owns SNAT on br-awg-egress)" >&2
+else
+  iptables -t nat -A POSTROUTING -s 10.90.0.0/22 -o eth0 -j MASQUERADE
+fi
 # Clients may run a larger tunnel MTU than awg0 (the panel sets the client
 # MTU per node, address, user or key). Clamping the MSS of forwarded TCP SYNs
 # to the path MTU keeps their TCP from stalling on the smaller interface.

@@ -1,3 +1,16 @@
+FROM golang:1.24.13-bookworm@sha256:98d673f18a1aac43da744209873cb79323e11706f909251bcfb131828b95559d AS egressd_build
+WORKDIR /egressd
+ARG APP_VERSION=development
+
+COPY --from=egressd go.mod go.sum ./
+RUN go mod download
+
+COPY --from=egressd . .
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
+  -trimpath \
+  -ldflags="-s -w -X main.Version=${APP_VERSION}" \
+  -o /out/amnezia-egressd ./cmd/amnezia-egressd
+
 FROM node:24.22.2-bookworm-slim@sha256:01d566e8d94d8c619591d78652babfccd3c6992a3dffa9ed5ab39e11cf6c70e9 AS deps
 WORKDIR /app
 
@@ -53,8 +66,21 @@ COPY package.json ./
 # build context (infra/node) because compose.yaml lives outside this build's
 # context; .github/workflows/release-node-agent.yml and
 # infra/node/scripts/build-node-agent.sh both pass it.
+COPY --from=egressd_build /out/amnezia-egressd /opt/node-agent/bin/amnezia-egressd
 COPY --from=deploy compose.yaml /opt/node-agent/deploy/
-COPY --from=deploy scripts/awg3-entrypoint.sh scripts/agent-update.sh /opt/node-agent/deploy/scripts/
+COPY --from=deploy \
+  scripts/awg3-entrypoint.sh \
+  scripts/agent-update.sh \
+  scripts/install-egressd.sh \
+  scripts/install-host-services.sh \
+  scripts/switch-egress-mode.sh \
+  scripts/common.sh \
+  scripts/backup.sh \
+  scripts/rollback.sh \
+  scripts/preflight.sh \
+  scripts/deploy.sh \
+  /opt/node-agent/deploy/scripts/
+COPY --from=deploy systemd/amnezia-egressd.service /opt/node-agent/deploy/systemd/
 
 EXPOSE 4001
 
