@@ -193,3 +193,22 @@ table ip6 amnezia_egress_v6 {
 ### Remaining Before Merge / Production Rollout
 - Live Linux test VM / staging host verification of kernel `nftables` + policy routing cutover (`masquerade <-> routed`), hot-swap `SNAT` + `conntrack` flush, and `rollback.sh`.
 - Full `ubuntu-latest` GitHub Actions CI run on this PR.
+
+---
+
+## 7. Follow-up UX, Discovery & Topology Map Roadmap (Next Iteration)
+
+The core Level B routing engine, schema, APIs, CLI parity, and baseline Fleet Status UI overhaul are complete in this PR. The next dedicated UI/CLI polish iteration should address four usability improvements identified during operator review:
+
+1. **Clearer & Simpler Exit Assignment UX (Web UI):**
+   - Redesign the `Entry (or Bridge) -> Exit IP` binding workflow inside `NodeTopologyDialog` and node cards so operators immediately see which entry variants map to which exits, which exit is the default fallback, inline exit health/DNS badges, guided 1-click exit hot-swap, and frictionless active-key variant reassignment without visual clutter.
+2. **One-Click & CLI Onboarding of Auto-Discovered Server IPs (Web UI + `@amnezia/cli`):**
+   - Surface all host IPv4 addresses already discovered on the VPS by `amnezia-egressd` (`host_network_report`: IPv4, NIC name, subnet CIDR, auto-detected gateway), clearly distinguishing already-registered vs unassigned host IPs.
+   - **Web UI:** 1-click action from the unassigned host IP list with pre-filled NIC/gateway and role selection (`Entry`, `Exit`, or `Entry + Exit`), display label, and DNS preset — eliminating manual IP entry.
+   - **CLI (`@amnezia/cli`):** dedicated subcommands to inspect unassigned discovered host IPs on a node and attach them as Entry endpoints and/or Exit IPs (with `--dry-run`, auto-detected gateway, and batch onboarding).
+3. **Compact Yet Richer Admin Overview (`/admin`) with More Statuses:**
+   - Keep the Overview dense and compact while surfacing richer real-time operational signals per card and strip: per-variant probe reachability (including pre-alert `1/2` failure streaks), per-exit egress/daemon states (`active` / `degraded` / `missing_ip` / `gateway_error` / `mode_drift`), per-exit service check summaries, bridge route online/verification badges, online peer ratios, and agent/egressd version alignment.
+   - Refine column sizing so `Entry -> Exit` routes, status pills, and KPI subtitles stay readable without awkward ellipsis truncation at desktop viewports (`1280px`–`1440px`).
+4. **Interactive Visual Fleet Topology Map (`Panel -> Bridges -> Nodes -> Entries -> Exits`):**
+   - Add a visual fleet topology map/graph view linked from `/admin` Overview displaying the full live hierarchy: **Panel** -> **Bridges** (`frps`/`frpc` routes) -> **Nodes** (`awg3` + `egressd`) -> **Entry Variants (`v1/v2`)** -> **Exit IPs**, with live status coloring (reachability, egress health, service checks), peer counts, and click-through into each node's topology editor.
+
