@@ -3137,8 +3137,158 @@ describe("complete Control API CLI parity", () => {
       "probe-history",
       "key-rotate",
       "key-config-refresh",
+      "node-egress",
+      "node-egress-mode",
+      "node-egress-adopt",
+      "node-exit-add",
+      "node-exit-update",
+      "node-exit-remove",
+      "node-exit-swap",
+      "node-exit-verify",
+      "key-reassign-endpoint",
     ]) {
       expect(out).toContain(cmd);
     }
+  });
+});
+
+describe("CLI multi-exit routing and key endpoint reassignment", () => {
+  const nodeId = "11111111-1111-4111-8111-111111111111";
+  const ipId = "22222222-2222-4222-8222-222222222222";
+  const keyId = "33333333-3333-4333-8333-333333333333";
+  const endpointId = "44444444-4444-4444-8444-444444444444";
+
+  beforeEach(() => vi.stubEnv("PANEL_ADMIN_EMAIL", "cli-test@example.com"));
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
+  });
+
+  const nodeStub = {
+    id: nodeId,
+    name: "de-01",
+    enabled: true,
+    protocol: "awg3",
+    maxPeers: 500,
+    lastError: null,
+    egressMode: "routed",
+    egressModeState: "idle",
+    modeDrift: true,
+    egressDaemonState: "routed_active",
+    egressDaemonVersion: "1.0.0",
+    egressIps: [
+      {
+        id: ipId,
+        nodeId,
+        ipv4: "1.1.1.1",
+        label: "Exit Clean",
+        interfaceName: "eth0",
+        gatewayIpv4: null,
+        routingTableId: 200,
+        dnsPrimary: "1.1.1.1",
+        dnsSecondary: null,
+        amneziaDnsDnat: true,
+        enforceDnsDnat: false,
+        allowAsEntry: false,
+        enabled: true,
+        hostState: "active",
+        hostDetail: null,
+        observedSubnetCidr: null,
+        detectedGatewayIpv4: null,
+        txBytes: "0",
+        txPackets: "0",
+        hostObservedAt: null,
+        subnetWarning: null,
+        assignedEndpointCount: 1,
+      },
+    ],
+  };
+
+  it("node-egress displays drift status and exit IP table", async () => {
+    stubFetch([{ body: [nodeStub] }]);
+    const out = await run(["node-egress", "de-01"]);
+    expect(out).toContain("mode:       routed (idle) [DRIFT DETECTED]");
+    expect(out).toContain("1.1.1.1");
+    expect(out).toContain("Exit Clean");
+  });
+
+  it("dispatches node-egress-mode, node-egress-adopt, and key-reassign-endpoint", async () => {
+    const calls = stubFetch([
+      { body: [nodeStub] },
+      { body: { nodeId, mode: "routed", state: "switching", queued: true } },
+      { body: [nodeStub] },
+      { body: { nodeId, mode: "masquerade", state: "idle" } },
+      { body: { id: keyId, nodeId, endpointId, previousEndpointId: null } },
+    ]);
+
+    const modeOut = await run([
+      "node-egress-mode",
+      nodeId,
+      "routed",
+      "--block-smtp=false",
+    ]);
+    expect(modeOut).toContain("egress mode switch to 'routed' queued");
+    expect(sentBody(calls[1]!)).toEqual({
+      mode: "routed",
+      blockSmtp: false,
+    });
+
+    const adoptOut = await run(["node-egress-adopt", nodeId]);
+    expect(adoptOut).toContain("adopted host egress mode 'masquerade'");
+
+    const reassignOut = await run([
+      "key-reassign-endpoint",
+      keyId,
+      `--endpoint-id=${endpointId}`,
+    ]);
+    expect(reassignOut).toContain(`key ${keyId} reassigned to endpoint ${endpointId}`);
+    expect(calls[4]!.init?.method).toBe("PATCH");
+  });
+
+  it("dispatches exit CRUD, swap, verify, and enforces --confirm on remove", async () => {
+    const calls = stubFetch([
+      { body: [nodeStub] },
+      { body: nodeStub.egressIps[0] },
+      { body: [nodeStub] },
+      { body: { ...nodeStub.egressIps[0], label: "New Label" } },
+      { body: [nodeStub] },
+      { body: [nodeStub] },
+      { body: { id: ipId, deleted: true, affectedEndpoints: 1 } },
+      { body: [nodeStub] },
+      { body: { ip: { ...nodeStub.egressIps[0], ipv4: "8.8.8.8" }, replacedIpv4: "1.1.1.1", affectedEndpoints: 1 } },
+      { body: [nodeStub] },
+      {
+        body: {
+          ok: true,
+          egressIpv4: "1.1.1.1",
+          observedIp: "1.1.1.1",
+          ipMatch: true,
+          httpLatencyMs: 20,
+          dnsOk: true,
+          dnsServer: "1.1.1.1",
+          dnsLatencyMs: 8,
+        },
+      },
+    ]);
+
+    const addOut = await run(["node-exit-add", nodeId, "--ip=1.1.1.1", "--label=Exit Clean"]);
+    expect(addOut).toContain("exit ip added");
+    expect(sentBody(calls[1]!)).toMatchObject({ ipv4: "1.1.1.1", label: "Exit Clean" });
+
+    await run(["node-exit-update", nodeId, ipId, "--label=New Label", "--dns2=null"]);
+    expect(sentBody(calls[3]!)).toEqual({ label: "New Label", dnsSecondary: null });
+
+    const dryRemove = await run(["node-exit-remove", nodeId, ipId]);
+    expect(dryRemove).toContain("--confirm");
+    expect(calls).toHaveLength(5);
+
+    const removeOut = await run(["node-exit-remove", nodeId, ipId, "--confirm"]);
+    expect(removeOut).toContain("removed");
+
+    const swapOut = await run(["node-exit-swap", nodeId, ipId, "--ip=8.8.8.8"]);
+    expect(swapOut).toContain("1.1.1.1 -> 8.8.8.8");
+
+    const verifyOut = await run(["node-exit-verify", nodeId, ipId]);
+    expect(verifyOut).toContain("PASS");
   });
 });

@@ -344,3 +344,54 @@ describe("toKeyView nodeReachability", () => {
     expect("nodeReachability" in withReachability()).toBe(false);
   });
 });
+
+describe("egress info on the owner-facing key payload", () => {
+  const sampleEgress = {
+    effectiveExitIp: "1.1.1.1",
+    exitLabel: "Clean Exit",
+    dnsPrimary: "9.9.9.9",
+    dnsSecondary: null,
+    mode: "routed" as const,
+  };
+
+  it("omits egress metadata for regular users even on their own key", () => {
+    const payload = toKeyView({
+      actor: owner,
+      key: row({ endpointId: "ep-1" }),
+      node: NODE,
+      current: null,
+      policy: defaultPortalPolicy,
+      activeByProfile: new Map(),
+      egress: sampleEgress,
+    });
+    expect(payload.endpointId).toBe("ep-1");
+    expect(Object.hasOwn(payload, "egress")).toBe(false);
+    expect(JSON.stringify(payload)).not.toContain("1.1.1.1");
+  });
+
+  it("omits egress metadata for another admin", () => {
+    const payload = toKeyView({
+      actor: otherAdmin,
+      key: row(),
+      node: NODE,
+      current: null,
+      policy: defaultPortalPolicy,
+      activeByProfile: new Map(),
+      egress: sampleEgress,
+    });
+    expect(Object.hasOwn(payload, "egress")).toBe(false);
+  });
+
+  it("exposes egress metadata to an admin viewing their own key", () => {
+    const payload = toKeyView({
+      actor: adminOwner,
+      key: row(),
+      node: NODE,
+      current: null,
+      policy: defaultPortalPolicy,
+      activeByProfile: new Map(),
+      egress: sampleEgress,
+    });
+    expect(payload.egress).toEqual(sampleEgress);
+  });
+});

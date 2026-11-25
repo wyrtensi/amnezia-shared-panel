@@ -107,7 +107,12 @@ safe wrapper (backup → pull/build → migrate → up).
 | `COMPOSE_DIR=infra/prod bash scripts/backup-db.sh` | root | Back up a specific stack explicitly (rarely needed, see below) |
 
 Overridable env: `COMPOSE_DIR`, `POSTGRES_USER`/`POSTGRES_DB` (default
-`amnezia_panel`). An explicit `COMPOSE_DIR` always wins; otherwise the script
+`amnezia_panel`), `BACKUP_KEEP_COUNT` (default `14` newest dumps kept by
+`backup-db.sh`; `0` disables pruning). Both scripts automatically pass
+`compose.override.yaml` alongside `compose.yaml` when present, and
+`restore-db.sh` stops `control-api` and `worker` with an `EXIT` trap during the
+restore so concurrent writers cannot corrupt the reload. An explicit
+`COMPOSE_DIR` always wins; otherwise the script
 auto-detects the deployed stack from which of `infra/prod/.env` /
 `infra/dev/.env` exists on this host (both are git-ignored, so this is the
 same signal `docker compose` itself needs to run) and prints which one it
@@ -242,7 +247,16 @@ via `CONTROL_API_URL` plus one of, in priority order:
 | `key-rotate <id> [--json]` | Queue a wireguard keypair rotation (`POST /api/keys/:id/rotate`) for a key you own. Rotates the peer credentials and puts the key back into provisioning until nodes apply it |
 | `key-config-refresh <id> [--status] [--json]` | Check AWG 3.1 config refresh eligibility (`--status` — never prints `refreshToken` in text or JSON) or consume the status token to POST `/api/keys/:id/config-refresh` for an eligible key |
 | `node-add --name= --api-url= --api-key-file=<path\|-> [--public-name=] [--protocol=awg3] [--max-peers=N] [--enabled-protocols=awg3,awg2] [--disabled]` | Register a node. `--api-key-file=-` reads the key from stdin; the legacy `--api-key=<key>` still works but exposes the key in `ps` and shell history |
-| `node-update <id> --<field>=<value> …` | Edit a node (name, api-url, api-key-file (or api-key), public-name, protocol, max-peers, enabled, enabled-protocols). `--clear-public-ip` is a flag rather than a field: it forgets the resolved public IP and its timestamp so the worker resolves the node's host again on the next telemetry tick. The panel resolves a host **once** and keeps the answer, because a server's public address does not change under it — this is the recovery for the one case where that assumption breaks, a server moving to a new IP while keeping the same DNS name |
+| `node-update <id> --<field>=<value> …` | Edit a node (`name`, `api-url`, `api-key-file` / `api-key`, `public-name`, `protocol`, `max-peers`, `enabled`, `enabled-protocols`, `--egress-block-smtp=`, `--egress-isolate-private=`, `--egress-default-ip-id=`). Endpoint mutations accept `--endpoint-ip=` (add), `--endpoint-id=` (update), `--endpoint-remove` (with `--reassign-endpoint-id=`), `--endpoint-entry-name=`, `--endpoint-custom-name=`, and `--endpoint-egress-id=`. `--clear-public-ip` forgets the resolved public IP so the worker re-resolves it |
+| `node-egress <node>` | Inspect a node's egress mode (`masquerade` / `routed`), `modeDrift` flag, `egress-daemon` state, observed host interfaces/IPs, and configured Exit IPs |
+| `node-egress-mode <node> <masquerade\|routed>` | Queue an egress mode transition (`--block-smtp=`, `--isolate-private=`) |
+| `node-egress-adopt <node>` | Adopt the node's observed host egress mode into the panel DB (resolves `modeDrift` after a DB restore) |
+| `node-exit-add <node> --ip=<ipv4>` | Register an Exit IP (`--label=`, `--interface=`, `--gateway=`, `--table=200..219`, `--dns1=`, `--dns2=`, `--amnezia-dns-dnat=`, `--enforce-dns-dnat=`, `--allow-as-entry=`, `--disabled`) |
+| `node-exit-update <node> <ip-id> [flags]` | Edit Exit IP metadata, routing table, DNS, or enablement |
+| `node-exit-remove <node> <ip-id> --confirm` | Remove an Exit IP, clearing references from endpoints and queueing `node.sync-egress` |
+| `node-exit-swap <node> <ip-id> --ip=<new-ipv4>` | Swap an Exit IPv4 address in place while preserving endpoint assignments |
+| `node-exit-verify <node> <ip-id>` | Live-verify HTTP source-bound egress IP and UDP DNS resolution via `node-agent` (`--probe-url=`, `--dns-domain=`, `--timeout-ms=`) |
+| `key-reassign-endpoint <key-id> --endpoint-id=<uuid>` | Reassign an AWG 3.1 key to another Entry/Exit variant on the same node without regenerating keys or `tunnel_ipv4` |
 | `node-remove <id>` | Delete a node. Refused with `409 NODE_HAS_KEYS` while it still has keys (revoked ones count) — disable it, or use the form below |
 | `node-remove <id> --with-keys --confirm=<node name>` | Delete a node **and every key ever issued on it**, in one transaction. Irreversible. Without a matching `--confirm` the command only prints what it would destroy. Note that peers already configured on a still-running node keep working — the panel cannot reach a node it is deleting, so wipe the server itself too |
 | `node-reconcile <id>` | Queue a read-only inventory check: the worker compares the node's live peers against the keys the panel manages (matched by public key first, the deterministic label only as a fallback) and never deletes anything itself. The command only confirms the job was queued — the summary (managed/observed/matched/missing/orphan counts) lands in the audit log (`audit`) as a `node.reconcile` event once the worker runs it, usually within a few seconds. Keys stuck in `revoking` (a delete that never completed) are counted separately there as `revokingKeyCount` and `strandedRevokingPeerCount`; a non-zero `strandedRevokingPeerCount` means the peer is still on the node — retry the delete on that key rather than waiting on reconcile, which only ever reports it |

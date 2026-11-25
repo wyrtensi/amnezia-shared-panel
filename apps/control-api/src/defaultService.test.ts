@@ -6,7 +6,7 @@ import { encryptSecret } from "@amnezia/db";
 import { projectAwgClientConfig, readAwgLastConfig } from "@amnezia/vpn-config";
 import type { Actor } from "./service.js";
 import { createDefaultControlApiService } from "./defaultService.js";
-import { decodeVpnLink, encodeVpnPayload } from "./vpnConfig.js";
+import { decodeVpnLink, encodeVpnPayload, extractConfFromVpnLink } from "./vpnConfig.js";
 import type { ConfigRefreshSnapshot, ControlRepository, StoredKeyConfig } from "./repository.js";
 import { awg31Link, readCopies } from "./awg31.fixture.js";
 import { configRefreshToken } from "./awgClientProfile.js";
@@ -245,6 +245,21 @@ const createRepository = (): ControlRepository => ({
   getBridgeAgentUpdate: vi.fn(() => Promise.reject(new Error("not stubbed"))),
   getBridgeRollbackPreflight: vi.fn(() => Promise.reject(new Error("not stubbed"))),
   requestBridgeAgentUpdate: vi.fn(() => Promise.reject(new Error("not stubbed"))),
+  listNodeEgressIps: vi.fn(() => Promise.resolve([])),
+  createNodeEgressIp: vi.fn(() => Promise.reject(new Error("not stubbed"))),
+  updateNodeEgressIp: vi.fn(() => Promise.reject(new Error("not stubbed"))),
+  deleteNodeEgressIp: vi.fn(() => Promise.resolve({ id: "ip-1", deleted: true, affectedEndpoints: 0 })),
+  swapNodeEgressIp: vi.fn(() => Promise.reject(new Error("not stubbed"))),
+  getNodeEgressVerifyTarget: vi.fn(() => Promise.resolve(null)),
+  setNodeEgressMode: vi.fn(() =>
+    Promise.resolve({ nodeId: "node-1", mode: "routed" as const, state: "switching" as const, queued: true }),
+  ),
+  adoptNodeEgressMode: vi.fn(() =>
+    Promise.resolve({ nodeId: "node-1", mode: "masquerade" as const, state: "idle" as const }),
+  ),
+  reassignKeyEndpoint: vi.fn(() =>
+    Promise.resolve({ id: "key-1", nodeId: "node-1", endpointId: "ep-2", previousEndpointId: "ep-1" }),
+  ),
 });
 
 const splitTunnelLink = encodeVpnPayload({
@@ -1653,5 +1668,78 @@ describe("client parameters view", () => {
         .rejects.toMatchObject({ statusCode: 409, code: "AWG_GENERATOR_UNSUPPORTED" });
       expect(repository.recordConfigExport).not.toHaveBeenCalled();
     });
+  });
+});
+
+describe("per-exit DNS export and egress verification", () => {
+  it("injects per-exit DNS on export for full_tunnel and omits fallback dns2 when cleared", async () => {
+    const repository = createRepository();
+    vi.mocked(repository.findKeyConfig).mockResolvedValue({
+      id: "key-1",
+      ownerId: employee.id,
+      nodeId: "node-1",
+      deviceLabel: "laptop",
+      encrypted: encryptSecret(awg31Link(), keyring, 1),
+      policy: defaultPortalPolicy,
+      routeProfile: "full_tunnel",
+      keyNumber: 1,
+      nodeDisplayName: "Node",
+      nameDisplay: { server: true, label: false, number: false },
+      appliedRuleVersionId: null,
+      state: "active",
+      protocol: "awg3",
+      bridgeEndpoint: null,
+      awgClientProfile: null,
+      activeRule: null,
+      customRoutes: null,
+      egressDns: { dns1: "9.9.9.9", dns2: null },
+    });
+    const service = createDefaultControlApiService({ repository, keyring });
+    const exported = await service.getKeyConfig(employee, "key-1", "vpn", false);
+    const decoded = decodeVpnLink(String(exported.body));
+    expect(decoded.dns1).toBe("9.9.9.9");
+    expect(decoded.dns2).toBe("");
+    const conf = extractConfFromVpnLink(String(exported.body));
+    expect(conf).toContain("DNS = 9.9.9.9");
+    expect(conf).not.toContain("1.0.0.1");
+  });
+
+  it("verifies an egress IP via the injected verifier and records an audit event", async () => {
+    const repository = createRepository();
+    vi.mocked(repository.getNodeEgressVerifyTarget).mockResolvedValue({
+      nodeId: "node-1",
+      apiBaseUrl: "http://node-1.internal:8080",
+      credentials: encryptSecret("node-agent-secret-token-value-123456", keyring, 1),
+      egressIpId: "ip-1",
+      egressIpv4: "1.1.1.1",
+      dnsPrimary: "9.9.9.9",
+      probeUrl: "https://probe.example.com/ip",
+    });
+    const verifyNodeEgress = vi.fn(() =>
+      Promise.resolve({
+        ok: true,
+        egressIpv4: "1.1.1.1",
+        observedIp: "1.1.1.1",
+        ipMatch: true,
+        httpLatencyMs: 28,
+        dnsOk: true,
+        dnsServer: "9.9.9.9",
+        dnsLatencyMs: 11,
+      }),
+    );
+    const service = createDefaultControlApiService({ repository, keyring, verifyNodeEgress });
+    await expect(service.verifyNodeEgressIp(employee, "node-1", "ip-1", {})).rejects.toMatchObject({
+      statusCode: 403,
+      code: "FORBIDDEN",
+    });
+    const result = await service.verifyNodeEgressIp(admin, "node-1", "ip-1", {});
+    expect(result.ok).toBe(true);
+    expect(verifyNodeEgress).toHaveBeenCalledTimes(1);
+    expect(repository.appendAudit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "node.egress_verified",
+        targetId: "node-1",
+      }),
+    );
   });
 });

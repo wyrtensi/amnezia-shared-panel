@@ -548,3 +548,29 @@ describe("0064_endpoint_primary_name", () => {
     expect(sql).toContain('SET "name" = left("n"."name", 120)');
   });
 });
+
+describe("0072_node_egress_and_endpoint_variants", () => {
+  const sql = readFileSync(
+    fileURLToPath(
+      new URL("../migrations/0072_node_egress_and_endpoint_variants.sql", import.meta.url),
+    ),
+    "utf8",
+  );
+
+  it("creates node_egress_ips and node_egress_service_check_results tables", () => {
+    expect(sql).toContain('CREATE TABLE "node_egress_ips"');
+    expect(sql).toContain('BETWEEN 200 AND 219');
+    expect(sql).toContain('CREATE TABLE "node_egress_service_check_results"');
+  });
+
+  it("extends nodes, replaces endpoint uniqueness with NULLS NOT DISTINCT, and backfills legacy awg3 keys", () => {
+    expect(sql).toContain('ADD COLUMN "egress_mode" text DEFAULT \'masquerade\' NOT NULL');
+    expect(sql).toContain('DROP INDEX IF EXISTS "node_vpn_endpoints_address_unique"');
+    expect(sql).toContain('UPDATE "node_vpn_endpoints" SET "entry_name" = "name"');
+    expect(sql).toContain(
+      'CREATE UNIQUE INDEX "node_vpn_endpoints_address_egress_unique" ON "node_vpn_endpoints" ("node_id", "address", "egress_ip_id") NULLS NOT DISTINCT',
+    );
+    expect(sql).toContain('ADD COLUMN "tunnel_ipv4" text');
+    expect(sql).toContain(`AND "k"."protocol" = 'awg3'`);
+  });
+});

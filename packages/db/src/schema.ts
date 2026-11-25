@@ -16,6 +16,7 @@ import {
   uniqueIndex,
   uuid,
   varchar,
+  type AnyPgColumn,
 } from "drizzle-orm/pg-core";
 import type {
   AwgDeviceRules,
@@ -31,10 +32,15 @@ import type {
   CustomRoutes,
   EndpointBridgeMode,
   GlobalRoutes,
+  HostNetworkReport,
   InstallGuideVideos,
   KeyBridgeMode,
   NodeAgentUpdateState,
   NodeCapacityState,
+  NodeEgressDaemonState,
+  NodeEgressIpHostState,
+  NodeEgressMode,
+  NodeEgressModeState,
   NodeIpv6RejectStubState,
   NodeKeyLimits,
   PortalPolicyOverride,
@@ -287,12 +293,95 @@ export const nodes = pgTable(
     ipv6RejectStubObservedAt: timestamp("ipv6_reject_stub_observed_at", {
       withTimezone: true,
     }),
+    egressMode: text("egress_mode")
+      .$type<NodeEgressMode>()
+      .default("masquerade")
+      .notNull(),
+    egressModeState: text("egress_mode_state")
+      .$type<NodeEgressModeState>()
+      .default("idle")
+      .notNull(),
+    egressModeMessage: varchar("egress_mode_message", { length: 300 }),
+    egressModeAt: timestamp("egress_mode_at", { withTimezone: true }),
+    egressDaemonVersion: varchar("egress_daemon_version", { length: 64 }),
+    egressDaemonState: text("egress_daemon_state")
+      .$type<NodeEgressDaemonState>()
+      .default("unavailable")
+      .notNull(),
+    egressDaemonDetail: varchar("egress_daemon_detail", { length: 300 }),
+    egressBlockSmtp: boolean("egress_block_smtp").default(true).notNull(),
+    egressIsolatePrivate: boolean("egress_isolate_private").default(true).notNull(),
+    egressDefaultIpId: uuid("egress_default_ip_id").references(
+      (): AnyPgColumn => nodeEgressIps.id,
+      { onDelete: "set null" },
+    ),
+    hostNetworkReport: jsonb("host_network_report").$type<HostNetworkReport>(),
+    egressObservedAt: timestamp("egress_observed_at", { withTimezone: true }),
     ...timestamps,
   },
   (table) => [
     uniqueIndex("nodes_name_unique").on(table.name),
     check("nodes_max_peers_positive", sql`${table.maxPeers} > 0`),
     check("nodes_awg_mtu_range", sql`${table.awgMtu} between 1280 and 1420`),
+    check("nodes_egress_mode_valid", sql`${table.egressMode} in ('masquerade', 'routed')`),
+    check(
+      "nodes_egress_mode_state_valid",
+      sql`${table.egressModeState} in ('idle', 'switching', 'failed')`,
+    ),
+    check(
+      "nodes_egress_daemon_state_valid",
+      sql`${table.egressDaemonState} in ('unavailable', 'masquerade_ready', 'routed_active', 'conflict', 'degraded')`,
+    ),
+  ],
+);
+
+export const nodeEgressIps = pgTable(
+  "node_egress_ips",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    nodeId: uuid("node_id")
+      .notNull()
+      .references(() => nodes.id, { onDelete: "cascade" }),
+    ipv4: text("ipv4").notNull(),
+    label: varchar("label", { length: 80 }),
+    interfaceName: varchar("interface_name", { length: 32 }),
+    gatewayIpv4: text("gateway_ipv4"),
+    routingTableId: integer("routing_table_id"),
+    dnsPrimary: text("dns_primary").default("1.1.1.1").notNull(),
+    dnsSecondary: text("dns_secondary").default("1.0.0.1"),
+    amneziaDnsDnat: boolean("amnezia_dns_dnat").default(true).notNull(),
+    enforceDnsDnat: boolean("enforce_dns_dnat").default(false).notNull(),
+    allowAsEntry: boolean("allow_as_entry").default(false).notNull(),
+    enabled: boolean("enabled").default(true).notNull(),
+    hostState: text("host_state")
+      .$type<NodeEgressIpHostState>()
+      .default("pending")
+      .notNull(),
+    hostDetail: varchar("host_detail", { length: 300 }),
+    observedSubnetCidr: varchar("observed_subnet_cidr", { length: 32 }),
+    detectedGatewayIpv4: text("detected_gateway_ipv4"),
+    txBytes: bigint("tx_bytes", { mode: "bigint" })
+      .default(sql`0`)
+      .notNull(),
+    txPackets: bigint("tx_packets", { mode: "bigint" })
+      .default(sql`0`)
+      .notNull(),
+    hostObservedAt: timestamp("host_observed_at", { withTimezone: true }),
+    ...timestamps,
+  },
+  (table) => [
+    uniqueIndex("node_egress_ips_node_ipv4_unique").on(table.nodeId, table.ipv4),
+    uniqueIndex("node_egress_ips_node_table_unique")
+      .on(table.nodeId, table.routingTableId)
+      .where(sql`${table.routingTableId} is not null`),
+    check(
+      "node_egress_ips_routing_table_range",
+      sql`${table.routingTableId} is null or ${table.routingTableId} between 200 and 219`,
+    ),
+    check(
+      "node_egress_ips_host_state_valid",
+      sql`${table.hostState} in ('active', 'pending', 'missing_ip', 'gateway_error', 'daemon_offline', 'disabled')`,
+    ),
   ],
 );
 
@@ -601,6 +690,12 @@ export const nodeVpnEndpoints = pgTable(
     ordinal: integer("ordinal").notNull(),
     address: text("address").notNull(),
     name: varchar("name", { length: 120 }).notNull(),
+    entryName: varchar("entry_name", { length: 120 }).default("").notNull(),
+    customName: varchar("custom_name", { length: 120 }),
+    variantOrdinal: integer("variant_ordinal").default(1).notNull(),
+    egressIpId: uuid("egress_ip_id").references(() => nodeEgressIps.id, {
+      onDelete: "set null",
+    }),
     enabled: boolean("enabled").default(true).notNull(),
     reachabilityEnabled: boolean("reachability_enabled").default(true).notNull(),
     revision: integer("revision").default(0).notNull(),
@@ -617,11 +712,24 @@ export const nodeVpnEndpoints = pgTable(
     probeAlertedAt: timestamp("probe_alerted_at", { withTimezone: true }),
     probeAlertKind: reachabilityAlertKindEnum("probe_alert_kind"),
     probeDetail: varchar("probe_detail", { length: 300 }),
+    probeObservedEgressIp: text("probe_observed_egress_ip"),
+    probeEgressMatch: boolean("probe_egress_match"),
   },
   (table) => [
     uniqueIndex("node_vpn_endpoints_ordinal_unique").on(table.nodeId, table.ordinal),
-    uniqueIndex("node_vpn_endpoints_address_unique").on(table.nodeId, table.address),
+    // Migration 0072 creates this unique index with NULLS NOT DISTINCT in PostgreSQL.
+    uniqueIndex("node_vpn_endpoints_address_egress_unique").on(
+      table.nodeId,
+      table.address,
+      table.egressIpId,
+    ),
+    uniqueIndex("node_vpn_endpoints_address_variant_unique").on(
+      table.nodeId,
+      table.address,
+      table.variantOrdinal,
+    ),
     check("node_vpn_endpoints_ordinal_positive", sql`${table.ordinal} > 0`),
+    check("node_vpn_endpoints_variant_ordinal_positive", sql`${table.variantOrdinal} > 0`),
     check("node_vpn_endpoints_bridge_mode_valid", sql`${table.bridgeMode} in ('inherit', 'direct', 'bridge')`),
     check("node_vpn_endpoints_awg_mtu_range", sql`${table.awgMtu} between 1280 and 1420`),
   ],
@@ -632,6 +740,7 @@ export const vpnKeys = pgTable(
   {
     id: uuid("id").defaultRandom().primaryKey(),
     endpointId: uuid("endpoint_id").references(() => nodeVpnEndpoints.id, { onDelete: "set null" }),
+    tunnelIpv4: text("tunnel_ipv4"),
     ownerId: uuid("owner_id")
       .notNull()
       .references(() => users.id, { onDelete: "restrict" }),
@@ -959,6 +1068,26 @@ export const nodeServiceCheckResults = pgTable(
     failingSince: timestamp("failing_since", { withTimezone: true }),
   },
   (table) => [primaryKey({ columns: [table.nodeId, table.checkId] })],
+);
+
+export const nodeEgressServiceCheckResults = pgTable(
+  "node_egress_service_check_results",
+  {
+    egressIpId: uuid("egress_ip_id")
+      .notNull()
+      .references(() => nodeEgressIps.id, { onDelete: "cascade" }),
+    checkId: uuid("check_id")
+      .notNull()
+      .references(() => nodeServiceChecks.id, { onDelete: "cascade" }),
+    status: serviceCheckStatusEnum("status").notNull(),
+    httpStatus: integer("http_status"),
+    latencyMs: integer("latency_ms"),
+    detail: varchar("detail", { length: 300 }),
+    finalUrl: varchar("final_url", { length: 500 }),
+    checkedAt: timestamp("checked_at", { withTimezone: true }).notNull(),
+    failingSince: timestamp("failing_since", { withTimezone: true }),
+  },
+  (table) => [primaryKey({ columns: [table.egressIpId, table.checkId] })],
 );
 
 /**

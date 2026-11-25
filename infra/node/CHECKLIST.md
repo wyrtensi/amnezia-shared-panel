@@ -29,6 +29,7 @@
 - [ ] Confirm `docker port amnezia-node-agent 4001/tcp` returns only `127.0.0.1:4001`.
 - [ ] Confirm UDP 51889 (AWG2) and UDP 51890 (AWG3) are reachable from an external test host without exposing TCP 4001.
 - [ ] Confirm `GET /server` reports both `amneziawg2` and `amneziawg3` in `protocols`.
+- [ ] If using multi-exit routing (`routed` mode), confirm `amnezia-egressd.service` is active and `GET /server/egress/status` reports `egressState` cleanly.
 - [ ] Create two separate device keys and pass the official AmneziaVPN 5.x handshake/traffic acceptance gate before assigning production users.
 - [ ] Run the 500-peer load gate before treating 500 as validated operating capacity.
 

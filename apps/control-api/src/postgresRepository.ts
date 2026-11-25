@@ -21,9 +21,11 @@ import { alias } from "drizzle-orm/pg-core";
 import type {
   AccessSyncStatus,
   AdminNodeEndpoint,
+  AdminReassignKeyEndpointRequest,
   Bridge,
   BridgeRotationEvidence,
   CreateBridgeRequest,
+  CreateNodeEgressIpRequest,
   CreateNodeRequest,
   CreateServiceCheckRequest,
   CreateKeyRequest,
@@ -32,8 +34,12 @@ import type {
   DeleteNodeOptions,
   GlobalRoutes,
   KeyBridgeMode,
+  KeyEgressInfo,
   KeyLimitMode,
   KeyState,
+  NodeEgressIp,
+  NodeEgressMode,
+  NodeEgressModeState,
   NoticeAcks,
   NoticeKind,
   PortalPolicy,
@@ -43,6 +49,9 @@ import type {
   QuotaRequestNotifyPayload,
   RouteProfile,
   RulesRefreshStatus,
+  SwapNodeEgressIpRequest,
+  UpdateNodeEgressIpRequest,
+  UpdateNodeEgressModeRequest,
   UpdateNodeRequest,
   UpdateServiceCheckRequest,
   DeleteBridgeResult,
@@ -69,9 +78,13 @@ import {
   BRIDGE_MANAGEMENT_HOSTS_DEFAULT,
   BRIDGE_OBSERVATION_STALE_MS_DEFAULT,
   composeKeyDisplayName,
+  computeEndpointDisplayName,
   CONFIG_REFRESH_STALE,
   CONFIG_REFRESH_UNAVAILABLE,
+  detectExitSubnetProximityWarning,
   noticeAcksSchema,
+  NODE_SYNC_EGRESS_JOB_TYPE,
+  NODE_SWITCH_EGRESS_MODE_JOB_TYPE,
   NOTICE_KINDS,
   resetNoticesRequestSchema,
   nodeRunsCheck,
@@ -158,6 +171,8 @@ import {
   jobOutbox,
   keyOwnerIsPerson,
   nodeAgentReleases,
+  nodeEgressIps,
+  nodeEgressServiceCheckResults,
   nodeMetricsCurrent,
   nodeServiceCheckResults,
   nodeServiceChecks,
@@ -180,6 +195,7 @@ import {
   type Database,
   type EncryptionKeyring,
 } from "@amnezia/db";
+import type { NodeEgressVerifyTarget } from "./nodeEgressVerifier.js";
 import {
   configRefreshToken,
   profileRevision,
@@ -1160,22 +1176,198 @@ export class PostgresControlRepository implements ControlRepository {
     return probe ?? null;
   };
 
+  private enqueueNodeSyncEgress = async (
+    tx: DbTransaction,
+    nodeId: string,
+  ): Promise<void> => {
+    await tx.insert(jobOutbox).values({
+      type: NODE_SYNC_EGRESS_JOB_TYPE,
+      deduplicationKey: `${NODE_SYNC_EGRESS_JOB_TYPE}:${nodeId}:${randomUUID()}`,
+      payload: { nodeId },
+    });
+  };
+
+  private scrubRemovedIdsFromPolicies = async (
+    tx: DbTransaction,
+    removedIds: ReadonlySet<string>,
+  ): Promise<void> => {
+    if (removedIds.size === 0) return;
+    const [policyRow] = await tx
+      .select({
+        endpointOrder: portalPolicy.endpointOrder,
+        recommendedEndpointIds: portalPolicy.recommendedEndpointIds,
+        allowedEndpointIds: portalPolicy.allowedEndpointIds,
+      })
+      .from(portalPolicy)
+      .limit(1);
+    if (policyRow) {
+      const hasOrder = policyRow.endpointOrder.some((id) => removedIds.has(id));
+      const hasRec = policyRow.recommendedEndpointIds.some((id) => removedIds.has(id));
+      const hasAllowed = (policyRow.allowedEndpointIds ?? []).some((id) => removedIds.has(id));
+      if (hasOrder || hasRec || hasAllowed) {
+        await tx
+          .update(portalPolicy)
+          .set({
+            endpointOrder: policyRow.endpointOrder.filter((id) => !removedIds.has(id)),
+            recommendedEndpointIds: policyRow.recommendedEndpointIds.filter((id) => !removedIds.has(id)),
+            ...(policyRow.allowedEndpointIds !== null
+              ? { allowedEndpointIds: policyRow.allowedEndpointIds.filter((id) => !removedIds.has(id)) }
+              : {}),
+            updatedAt: new Date(),
+          })
+          .where(eq(portalPolicy.id, true));
+      }
+    }
+    const userRows = await tx
+      .select({ id: users.id, policyOverride: users.policyOverride })
+      .from(users)
+      .where(isNotNull(users.policyOverride));
+    for (const user of userRows) {
+      const allowed = user.policyOverride?.allowedEndpointIds;
+      if (!allowed || !allowed.some((id) => removedIds.has(id))) continue;
+      const nextAllowed = allowed.filter((id) => !removedIds.has(id));
+      const nextOverride: PortalPolicyOverride = {
+        ...user.policyOverride,
+        allowedEndpointIds: nextAllowed,
+      };
+      await tx
+        .update(users)
+        .set({ policyOverride: nextOverride, updatedAt: new Date() })
+        .where(eq(users.id, user.id));
+    }
+  };
+
+  private recomputeEntryGroupNames = async (
+    tx: DbTransaction,
+    nodeId: string,
+    address: string,
+  ): Promise<void> => {
+    const siblings = await tx
+      .select({
+        id: nodeVpnEndpoints.id,
+        entryName: nodeVpnEndpoints.entryName,
+        customName: nodeVpnEndpoints.customName,
+        variantOrdinal: nodeVpnEndpoints.variantOrdinal,
+        name: nodeVpnEndpoints.name,
+      })
+      .from(nodeVpnEndpoints)
+      .where(and(eq(nodeVpnEndpoints.nodeId, nodeId), eq(nodeVpnEndpoints.address, address)))
+      .orderBy(asc(nodeVpnEndpoints.variantOrdinal), asc(nodeVpnEndpoints.ordinal));
+    const siblingCount = siblings.length;
+    for (const sibling of siblings) {
+      const nextName = computeEndpointDisplayName({
+        entryName: sibling.entryName,
+        customName: sibling.customName,
+        variantOrdinal: sibling.variantOrdinal,
+        siblingCount,
+      });
+      if (nextName !== sibling.name) {
+        await tx
+          .update(nodeVpnEndpoints)
+          .set({ name: nextName })
+          .where(eq(nodeVpnEndpoints.id, sibling.id));
+      }
+    }
+  };
+
+  private toNodeEgressIpView = (
+    row: typeof nodeEgressIps.$inferSelect,
+    entryAddresses: readonly string[],
+    assignedEndpointCount: number,
+  ): NodeEgressIp => ({
+    id: row.id,
+    nodeId: row.nodeId,
+    ipv4: row.ipv4,
+    label: row.label,
+    interfaceName: row.interfaceName,
+    gatewayIpv4: row.gatewayIpv4,
+    routingTableId: row.routingTableId,
+    dnsPrimary: row.dnsPrimary,
+    dnsSecondary: row.dnsSecondary,
+    amneziaDnsDnat: row.amneziaDnsDnat,
+    enforceDnsDnat: row.enforceDnsDnat,
+    allowAsEntry: row.allowAsEntry,
+    enabled: row.enabled,
+    hostState: row.hostState,
+    hostDetail: row.hostDetail,
+    observedSubnetCidr: row.observedSubnetCidr,
+    detectedGatewayIpv4: row.detectedGatewayIpv4,
+    txBytes: String(row.txBytes),
+    txPackets: String(row.txPackets),
+    hostObservedAt: row.hostObservedAt?.toISOString() ?? null,
+    subnetWarning: detectExitSubnetProximityWarning({
+      exitIpv4: row.ipv4,
+      observedSubnetCidr: row.observedSubnetCidr,
+      entryAddresses,
+      allowAsEntry: row.allowAsEntry,
+    }),
+    assignedEndpointCount,
+  });
+
+  private loadNodeEgressIpsMap = async (
+    nodeIds: readonly string[],
+    db: Database | DbTransaction = this.options.db,
+  ): Promise<Map<string, NodeEgressIp[]>> => {
+    const map = new Map<string, NodeEgressIp[]>();
+    if (nodeIds.length === 0) return map;
+    const [ipRows, endpointRows] = await Promise.all([
+      db
+        .select()
+        .from(nodeEgressIps)
+        .where(inArray(nodeEgressIps.nodeId, [...nodeIds]))
+        .orderBy(asc(nodeEgressIps.routingTableId), asc(nodeEgressIps.createdAt)),
+      db
+        .select({
+          nodeId: nodeVpnEndpoints.nodeId,
+          address: nodeVpnEndpoints.address,
+          egressIpId: nodeVpnEndpoints.egressIpId,
+        })
+        .from(nodeVpnEndpoints)
+        .where(inArray(nodeVpnEndpoints.nodeId, [...nodeIds])),
+    ]);
+    const addressesByNode = new Map<string, Set<string>>();
+    const countByEgressId = new Map<string, number>();
+    for (const ep of endpointRows) {
+      const set = addressesByNode.get(ep.nodeId) ?? new Set<string>();
+      set.add(ep.address);
+      addressesByNode.set(ep.nodeId, set);
+      if (ep.egressIpId) {
+        countByEgressId.set(ep.egressIpId, (countByEgressId.get(ep.egressIpId) ?? 0) + 1);
+      }
+    }
+    for (const row of ipRows) {
+      const entries = [...(addressesByNode.get(row.nodeId) ?? [])];
+      const list = map.get(row.nodeId) ?? [];
+      list.push(this.toNodeEgressIpView(row, entries, countByEgressId.get(row.id) ?? 0));
+      map.set(row.nodeId, list);
+    }
+    return map;
+  };
+
   private loadNodePublicEndpoints = async (
     nodeIds: readonly string[],
     db: Database | DbTransaction = this.options.db,
   ): Promise<Map<string, AdminNodeEndpoint[]>> => {
     const result = new Map<string, AdminNodeEndpoint[]>();
     if (nodeIds.length === 0) return result;
+    const endpointEgress = alias(nodeEgressIps, "endpoint_egress_ip");
+    const defaultEgress = alias(nodeEgressIps, "node_default_egress_ip");
     const [probe, rows] = await Promise.all([
       this.loadUserReachabilityProbe(db),
       db
         .select({
           endpoint: nodeVpnEndpoints,
           checksEnabled: nodes.reachabilityEnabled,
+          nodeEgressMode: nodes.egressMode,
+          nodePublicIp: nodes.publicIp,
+          endpointEgressIpv4: endpointEgress.ipv4,
+          defaultEgressIpv4: defaultEgress.ipv4,
           activeRoute: vpnBridgeRoutes.id,
         })
         .from(nodeVpnEndpoints)
         .innerJoin(nodes, eq(nodes.id, nodeVpnEndpoints.nodeId))
+        .leftJoin(endpointEgress, eq(endpointEgress.id, nodeVpnEndpoints.egressIpId))
+        .leftJoin(defaultEgress, eq(defaultEgress.id, nodes.egressDefaultIpId))
         .leftJoin(vpnBridgeRoutes, and(
           eq(vpnBridgeRoutes.nodeId, nodeVpnEndpoints.nodeId),
           eq(vpnBridgeRoutes.state, "active"),
@@ -1184,7 +1376,14 @@ export class PostgresControlRepository implements ControlRepository {
         .orderBy(nodeVpnEndpoints.ordinal),
     ]);
     const now = new Date();
-    for (const { endpoint, checksEnabled } of rows) {
+    for (const {
+      endpoint,
+      checksEnabled,
+      nodeEgressMode,
+      nodePublicIp,
+      endpointEgressIpv4,
+      defaultEgressIpv4,
+    } of rows) {
       const checkedAt = endpoint.probeCheckedAt;
       const canUseProbe =
         checksEnabled &&
@@ -1214,11 +1413,22 @@ export class PostgresControlRepository implements ControlRepository {
       const parsedLevels = endpoint.probeLevels
         ? (probeLevelsSchema.safeParse(endpoint.probeLevels).data ?? null)
         : null;
+      const effectiveEgressIp =
+        nodeEgressMode === "routed"
+          ? (endpointEgressIpv4 ?? defaultEgressIpv4 ?? nodePublicIp ?? null)
+          : (nodePublicIp ?? endpoint.address ?? null);
       const list = result.get(endpoint.nodeId) ?? [];
       list.push({
         id: endpoint.id,
         ordinal: endpoint.ordinal,
         name: endpoint.name,
+        entryName: endpoint.entryName,
+        customName: endpoint.customName,
+        variantOrdinal: endpoint.variantOrdinal,
+        egressIpId: endpoint.egressIpId,
+        effectiveEgressIp,
+        probeObservedEgressIp: endpoint.probeObservedEgressIp,
+        probeEgressMatch: endpoint.probeEgressMatch,
         publicAddress: endpoint.address,
         enabled: endpoint.enabled,
         reachabilityEnabled: endpoint.reachabilityEnabled,
@@ -1728,6 +1938,7 @@ export class PostgresControlRepository implements ControlRepository {
           })
         : undefined;
       const changedEndpoint = endpointChange?.endpoint;
+      const removedEndpoint = endpointChange?.removed;
       const generatorChanged = request.awgGenerator !== undefined &&
         !isDeepStrictEqual(current.awgGenerator, request.awgGenerator);
       const mtuChanged = request.awgMtu !== undefined && current.awgMtu !== (request.awgMtu ?? null);
@@ -1750,6 +1961,7 @@ export class PostgresControlRepository implements ControlRepository {
       }
       if (vpnBridgeRouteId === undefined) {
         if (changedEndpoint) return { ...(updated ?? { id: nodeId }), publicEndpoint: changedEndpoint };
+        if (removedEndpoint) return { ...(updated ?? { id: nodeId }), publicEndpointRemoved: removedEndpoint };
         if (updated) return updated;
         // Only `expectedVpnEndpointRevision`: nothing to change. Report the
         // current assignment so the caller sees what it would have compared.
@@ -1829,7 +2041,11 @@ export class PostgresControlRepository implements ControlRepository {
     nodeId: string,
     request: NodePublicEndpointMutation,
     nodeGenerators: { before: AwgGeneratorSettings | null; after: AwgGeneratorSettings | null },
-  ): Promise<{ endpoint: NodePublicEndpointMutationResult["publicEndpoint"]; remeasure: boolean }> => {
+  ): Promise<{
+    endpoint?: NodePublicEndpointMutationResult["publicEndpoint"];
+    removed?: { id: string; address: string; reassignedToEndpointId: string; reassignedKeyCount: number };
+    remeasure: boolean;
+  }> => {
     let row: typeof nodeVpnEndpoints.$inferSelect | undefined;
     // A new address, or one whose measured config, path or presence changed.
     let remeasure = request.action === "add";
@@ -1845,33 +2061,153 @@ export class PostgresControlRepository implements ControlRepository {
       if (!deriveSupportedProtocols(node.protocol, node.capabilities).includes("awg3")) {
         throw new ApiError(409, "Additional addresses require AWG 3.1", "NODE_ENDPOINT_NOT_AWG3");
       }
+      if (request.egressIpId) {
+        const [egressIp] = await tx
+          .select({ id: nodeEgressIps.id })
+          .from(nodeEgressIps)
+          .where(and(eq(nodeEgressIps.id, request.egressIpId), eq(nodeEgressIps.nodeId, nodeId)))
+          .limit(1);
+        if (!egressIp) {
+          throw new ApiError(404, "Exit IP not found on node", "NODE_EGRESS_IP_NOT_FOUND");
+        }
+      }
       if (node.publicIp && isIpv4Literal(node.publicIp)) {
+        const defaultEntryName = node.publicName || nodeEndpointDefaultName(node.name, 1);
         await tx.insert(nodeVpnEndpoints).values({
           nodeId,
           ordinal: 1,
           address: node.publicIp,
-          name: node.publicName || nodeEndpointDefaultName(node.name, 1),
+          entryName: defaultEntryName,
+          variantOrdinal: 1,
+          name: defaultEntryName,
         }).onConflictDoNothing();
       }
       const existing = await tx.select({
+        id: nodeVpnEndpoints.id,
         address: nodeVpnEndpoints.address,
         ordinal: nodeVpnEndpoints.ordinal,
+        variantOrdinal: nodeVpnEndpoints.variantOrdinal,
+        entryName: nodeVpnEndpoints.entryName,
+        egressIpId: nodeVpnEndpoints.egressIpId,
       }).from(nodeVpnEndpoints).where(eq(nodeVpnEndpoints.nodeId, nodeId))
         .orderBy(desc(nodeVpnEndpoints.ordinal));
-      if (existing.some((endpoint) => endpoint.address === request.address)) {
-        throw new ApiError(409, "Address already exists on this node", "NODE_ENDPOINT_EXISTS");
+      const targetEgressId = request.egressIpId ?? null;
+      if (existing.some((endpoint) => endpoint.address === request.address && (endpoint.egressIpId ?? null) === targetEgressId)) {
+        throw new ApiError(409, "This Entry and Exit IP combination already exists on this node", "NODE_ENDPOINT_EXISTS");
       }
+      const sameAddress = existing.filter((endpoint) => endpoint.address === request.address);
       const ordinal = (existing[0]?.ordinal ?? 1) + 1;
+      const variantOrdinal =
+        sameAddress.reduce((max, ep) => Math.max(max, ep.variantOrdinal), 0) + 1;
+      const entryName =
+        request.entryName ??
+        sameAddress[0]?.entryName ??
+        request.name ??
+        nodeEndpointDefaultName(node.publicName || node.name, ordinal);
+      const customName =
+        request.customName !== undefined
+          ? (request.customName ?? null)
+          : sameAddress.length > 0 && request.name && !request.entryName
+            ? request.name
+            : null;
+      const provisionalName = computeEndpointDisplayName({
+        entryName,
+        customName,
+        variantOrdinal,
+        siblingCount: sameAddress.length + 1,
+      });
       [row] = await tx.insert(nodeVpnEndpoints).values({
         nodeId,
         ordinal,
         address: request.address,
-        name: request.name ?? nodeEndpointDefaultName(node.publicName || node.name, ordinal),
+        entryName,
+        customName,
+        variantOrdinal,
+        egressIpId: targetEgressId,
+        name: provisionalName,
       }).returning();
+      if (!row) throw new Error("Node address write returned no row");
+      await this.recomputeEntryGroupNames(tx, nodeId, request.address);
+      const [refreshed] = await tx
+        .select()
+        .from(nodeVpnEndpoints)
+        .where(eq(nodeVpnEndpoints.id, row.id))
+        .limit(1);
+      if (refreshed) row = refreshed;
+      if (targetEgressId !== null) {
+        await this.enqueueNodeSyncEgress(tx, nodeId);
+      }
+    } else if (request.action === "remove") {
+      const match = and(eq(nodeVpnEndpoints.nodeId, nodeId), eq(nodeVpnEndpoints.id, request.id));
+      const [current] = await tx.select().from(nodeVpnEndpoints).where(match);
+      if (!current) throw new ApiError(404, "Address not found on this node", "NODE_ENDPOINT_NOT_FOUND");
+      const allOnNode = await tx
+        .select()
+        .from(nodeVpnEndpoints)
+        .where(eq(nodeVpnEndpoints.nodeId, nodeId))
+        .orderBy(asc(nodeVpnEndpoints.ordinal));
+      const remaining = allOnNode.filter((item) => item.id !== current.id);
+      const remainingEnabled = remaining.filter((item) => item.enabled);
+      if (remainingEnabled.length === 0) {
+        throw new ApiError(
+          409,
+          "At least one enabled endpoint must remain on this node",
+          "LAST_ENABLED_ENDPOINT_REQUIRED",
+        );
+      }
+      let fallback = remainingEnabled.find((item) => item.id === request.reassignToEndpointId);
+      if (request.reassignToEndpointId !== undefined && !fallback) {
+        throw new ApiError(
+          409,
+          "Replacement endpoint must be enabled on this same node",
+          "NODE_ENDPOINT_UNAVAILABLE",
+        );
+      }
+      fallback ??=
+        remainingEnabled.find((item) => item.address === current.address) ?? remainingEnabled[0]!;
+      const reassigned = await tx
+        .update(vpnKeys)
+        .set({ endpointId: fallback.id, updatedAt: new Date() })
+        .where(and(eq(vpnKeys.nodeId, nodeId), eq(vpnKeys.endpointId, current.id)))
+        .returning({ id: vpnKeys.id });
+      await this.scrubRemovedIdsFromPolicies(tx, new Set([current.id]));
+      await tx.delete(nodeVpnEndpoints).where(eq(nodeVpnEndpoints.id, current.id));
+      await this.recomputeEntryGroupNames(tx, nodeId, current.address);
+      if (current.egressIpId !== null || reassigned.length > 0) {
+        await this.enqueueNodeSyncEgress(tx, nodeId);
+      }
+      await tx.insert(auditEvents).values({
+        actorUserId: actor.id,
+        actorType: "user",
+        action: "node.endpoint_removed",
+        targetType: "node",
+        targetId: nodeId,
+        metadata: {
+          endpointId: current.id,
+          ordinal: current.ordinal,
+          address: current.address,
+          egressIpId: current.egressIpId,
+          reassignedToEndpointId: fallback.id,
+          reassignedKeyCount: reassigned.length,
+        },
+      });
+      return {
+        removed: {
+          id: current.id,
+          address: current.address,
+          reassignedToEndpointId: fallback.id,
+          reassignedKeyCount: reassigned.length,
+        },
+        remeasure: true,
+      };
     } else {
       const match = and(eq(nodeVpnEndpoints.nodeId, nodeId), eq(nodeVpnEndpoints.id, request.id));
       const [current] = await tx.select().from(nodeVpnEndpoints).where(match);
       if (!current) throw new ApiError(404, "Address not found on this node", "NODE_ENDPOINT_NOT_FOUND");
+      const siblingsOnAddress = await tx
+        .select()
+        .from(nodeVpnEndpoints)
+        .where(and(eq(nodeVpnEndpoints.nodeId, nodeId), eq(nodeVpnEndpoints.address, current.address)));
       if (request.enabled === false && current.enabled) {
         const siblings = await tx
           .select({ id: nodeVpnEndpoints.id })
@@ -1890,6 +2226,43 @@ export class PostgresControlRepository implements ControlRepository {
           );
         }
       }
+      let nextEgressIpId = current.egressIpId;
+      let changeEgressIp = false;
+      if (request.egressIpId !== undefined && (request.egressIpId ?? null) !== (current.egressIpId ?? null)) {
+        if (request.egressIpId) {
+          const [egressIp] = await tx
+            .select({ id: nodeEgressIps.id })
+            .from(nodeEgressIps)
+            .where(and(eq(nodeEgressIps.id, request.egressIpId), eq(nodeEgressIps.nodeId, nodeId)))
+            .limit(1);
+          if (!egressIp) {
+            throw new ApiError(404, "Exit IP not found on node", "NODE_EGRESS_IP_NOT_FOUND");
+          }
+        }
+        const targetEgress = request.egressIpId ?? null;
+        if (siblingsOnAddress.some((ep) => ep.id !== current.id && (ep.egressIpId ?? null) === targetEgress)) {
+          throw new ApiError(409, "This Entry and Exit IP combination already exists on this node", "NODE_ENDPOINT_EXISTS");
+        }
+        nextEgressIpId = targetEgress;
+        changeEgressIp = true;
+      }
+      let nextEntryName = request.entryName ?? current.entryName;
+      let nextCustomName =
+        request.customName !== undefined ? (request.customName ?? null) : current.customName;
+      if (request.name !== undefined && request.entryName === undefined && request.customName === undefined) {
+        if (siblingsOnAddress.length <= 1) {
+          nextEntryName = request.name;
+          nextCustomName = null;
+        } else {
+          nextCustomName = request.name;
+        }
+      }
+      if ((request.renameEntryGroup || request.entryName !== undefined) && nextEntryName !== current.entryName) {
+        await tx
+          .update(nodeVpnEndpoints)
+          .set({ entryName: nextEntryName })
+          .where(and(eq(nodeVpnEndpoints.nodeId, nodeId), eq(nodeVpnEndpoints.address, current.address)));
+      }
       const changeEnabled = request.enabled !== undefined && current.enabled !== request.enabled;
       const changeBridgeMode = request.bridgeMode !== undefined && current.bridgeMode !== request.bridgeMode;
       const changeReachability =
@@ -1902,10 +2275,19 @@ export class PostgresControlRepository implements ControlRepository {
         nextGenerator ?? nodeGenerators.after,
       );
       const mtuChanged = request.awgMtu !== undefined && current.awgMtu !== (request.awgMtu ?? null);
-      const resetEvidence = changeEnabled || changeBridgeMode || generatorChanged || mtuChanged ||
+      const resetEvidence = changeEnabled || changeBridgeMode || changeEgressIp || generatorChanged || mtuChanged ||
         (changeReachability && request.reachabilityEnabled === false);
+      const nextName = computeEndpointDisplayName({
+        entryName: nextEntryName,
+        customName: nextCustomName,
+        variantOrdinal: current.variantOrdinal,
+        siblingCount: siblingsOnAddress.length,
+      });
       [row] = await tx.update(nodeVpnEndpoints).set({
-        name: request.name ?? current.name,
+        name: nextName,
+        entryName: nextEntryName,
+        customName: nextCustomName,
+        ...(changeEgressIp ? { egressIpId: nextEgressIpId } : {}),
         bridgeMode: request.bridgeMode ?? current.bridgeMode,
         ...(request.awgGenerator !== undefined ? { awgGenerator: request.awgGenerator } : {}),
         ...(request.awgMtu !== undefined ? { awgMtu: request.awgMtu } : {}),
@@ -1913,7 +2295,7 @@ export class PostgresControlRepository implements ControlRepository {
         // address's ordinary config, so nothing is reset for them.
         ...(request.awgDeviceRules !== undefined ? { awgDeviceRules: request.awgDeviceRules } : {}),
         ...(changeEnabled ? { enabled: request.enabled } : {}),
-        ...(changeEnabled || changeBridgeMode || generatorChanged || mtuChanged ? { revision: current.revision + 1 } : {}),
+        ...(changeEnabled || changeBridgeMode || changeEgressIp || generatorChanged || mtuChanged ? { revision: current.revision + 1 } : {}),
         ...(changeReachability ? { reachabilityEnabled: request.reachabilityEnabled } : {}),
         // The old measurement goes and the failure streak restarts. An open
         // incident stays open across a profile or path change, so it ends
@@ -1926,21 +2308,36 @@ export class PostgresControlRepository implements ControlRepository {
           probeConsecutiveFailures: 0,
           probeFailingSince: null,
           probeDetail: null,
+          probeObservedEgressIp: null,
+          probeEgressMatch: null,
           ...(changeEnabled || (changeReachability && request.reachabilityEnabled === false)
             ? { probeAlertedAt: null, probeAlertKind: null }
             : {}),
         } : {}),
       }).where(match).returning();
-      if (generatorChanged || mtuChanged || changeBridgeMode) {
+      if (!row) throw new Error("Node address write returned no row");
+      if (request.renameEntryGroup || request.entryName !== undefined) {
+        await this.recomputeEntryGroupNames(tx, nodeId, current.address);
+        const [refreshed] = await tx
+          .select()
+          .from(nodeVpnEndpoints)
+          .where(eq(nodeVpnEndpoints.id, row.id))
+          .limit(1);
+        if (refreshed) row = refreshed;
+      }
+      if (generatorChanged || mtuChanged || changeBridgeMode || changeEgressIp) {
         await resetNodeEndpointEvidence(tx, nodeId, new Date(), {
           endpointIds: [current.id],
           detail: generatorChanged || mtuChanged ? GENERATOR_CHANGED_DETAIL : undefined,
         });
       }
+      if (changeEgressIp) {
+        await this.enqueueNodeSyncEgress(tx, nodeId);
+      }
       // A disabled address is not measured, so only enabling or disabling it
       // changes the targets; its other settings take effect once enabled.
       const enabled = request.enabled ?? current.enabled;
-      remeasure = (changeEnabled || (enabled && (changeBridgeMode || generatorChanged || mtuChanged ||
+      remeasure = (changeEnabled || (enabled && (changeBridgeMode || changeEgressIp || generatorChanged || mtuChanged ||
         (changeReachability && request.reachabilityEnabled === true)))) &&
         (request.reachabilityEnabled ?? current.reachabilityEnabled);
     }
@@ -1954,6 +2351,8 @@ export class PostgresControlRepository implements ControlRepository {
       metadata: {
         endpointId: row.id,
         ordinal: row.ordinal,
+        variantOrdinal: row.variantOrdinal,
+        egressIpId: row.egressIpId,
         enabled: row.enabled,
         reachabilityEnabled: row.reachabilityEnabled,
         bridgeMode: row.bridgeMode,
@@ -2021,6 +2420,25 @@ export class PostgresControlRepository implements ControlRepository {
     if (request.reachabilityEnabled !== undefined) {
       changes.reachabilityEnabled = request.reachabilityEnabled;
     }
+    if (request.egressBlockSmtp !== undefined) {
+      changes.egressBlockSmtp = request.egressBlockSmtp;
+    }
+    if (request.egressIsolatePrivate !== undefined) {
+      changes.egressIsolatePrivate = request.egressIsolatePrivate;
+    }
+    if (request.egressDefaultIpId !== undefined) {
+      if (request.egressDefaultIpId !== null) {
+        const [egressIp] = await tx
+          .select({ id: nodeEgressIps.id })
+          .from(nodeEgressIps)
+          .where(and(eq(nodeEgressIps.id, request.egressDefaultIpId), eq(nodeEgressIps.nodeId, nodeId)))
+          .limit(1);
+        if (!egressIp) {
+          throw new ApiError(404, "Exit IP not found on node", "NODE_EGRESS_IP_NOT_FOUND");
+        }
+      }
+      changes.egressDefaultIpId = request.egressDefaultIpId;
+    }
     if (request.capabilities !== undefined) {
       changes.capabilities = request.capabilities;
     }
@@ -2068,9 +2486,26 @@ export class PostgresControlRepository implements ControlRepository {
     // Older clients edit the node's public name. Treat it as a rename of
     // the primary address once that address has its own record.
     if (updated && request.publicName !== undefined) {
-      await tx.update(nodeVpnEndpoints)
-        .set({ name: request.publicName || nodeEndpointDefaultName(updated.name, 1) })
-        .where(and(eq(nodeVpnEndpoints.nodeId, nodeId), eq(nodeVpnEndpoints.ordinal, 1)));
+      const [primary] = await tx
+        .select({ address: nodeVpnEndpoints.address })
+        .from(nodeVpnEndpoints)
+        .where(and(eq(nodeVpnEndpoints.nodeId, nodeId), eq(nodeVpnEndpoints.ordinal, 1)))
+        .limit(1);
+      if (primary) {
+        const nextEntry = request.publicName || nodeEndpointDefaultName(updated.name, 1);
+        await tx
+          .update(nodeVpnEndpoints)
+          .set({ entryName: nextEntry })
+          .where(and(eq(nodeVpnEndpoints.nodeId, nodeId), eq(nodeVpnEndpoints.address, primary.address)));
+        await this.recomputeEntryGroupNames(tx, nodeId, primary.address);
+      }
+    }
+    if (
+      request.egressBlockSmtp !== undefined ||
+      request.egressIsolatePrivate !== undefined ||
+      request.egressDefaultIpId !== undefined
+    ) {
+      await this.enqueueNodeSyncEgress(tx, nodeId);
     }
     if (request.reachabilityEnabled === false) {
       // Checks off for the whole node: its addresses' incidents close
@@ -2343,7 +2778,13 @@ export class PostgresControlRepository implements ControlRepository {
         .select({
           key: vpnKeys,
           current: peerCurrent,
-          node: { name: nodes.name, publicName: nodes.publicName },
+          node: {
+            name: nodes.name,
+            publicName: nodes.publicName,
+            publicIp: nodes.publicIp,
+            egressMode: nodes.egressMode,
+            egressDefaultIpId: nodes.egressDefaultIpId,
+          },
         })
         .from(vpnKeys)
         // Inner join: `vpn_keys.node_id` is NOT NULL with ON DELETE RESTRICT, so
@@ -2394,9 +2835,10 @@ export class PostgresControlRepository implements ControlRepository {
       // Read per key's own node, not from `/api/nodes`: a key outlives the
       // permission to create keys on its server.
       const keyNodeIds = [...new Set(rows.map(({ key }) => key.nodeId))];
-      const [reachability, publicEndpoints] = await Promise.all([
+      const [reachability, publicEndpoints, egressIpsByNode] = await Promise.all([
         policy.showNodeStatus ? this.loadKeyReachability(keyNodeIds, tx) : null,
         this.loadNodePublicEndpoints(keyNodeIds, tx),
+        actor.role === "admin" ? this.loadNodeEgressIpsMap(keyNodeIds, tx) : null,
       ]);
       const bridgeRoutes =
         actor.role === "admin" || policy.showNodeStatus
@@ -2447,6 +2889,25 @@ export class PostgresControlRepository implements ControlRepository {
             : key.protocol === "awg3" && bridgeRoutes?.activeByNode.has(key.nodeId)
               ? UNKNOWN_USER_REACHABILITY
               : reachability?.(key.nodeId, key.protocol);
+        const nodeEgressList = egressIpsByNode?.get(key.nodeId) ?? [];
+        const matchedEgress = endpoint?.egressIpId
+          ? nodeEgressList.find((ip) => ip.id === endpoint.egressIpId)
+          : node.egressDefaultIpId
+            ? nodeEgressList.find((ip) => ip.id === node.egressDefaultIpId)
+            : undefined;
+        const egress: KeyEgressInfo | undefined =
+          actor.role === "admin" && key.ownerId === actor.id
+            ? {
+                effectiveExitIp:
+                  node.egressMode === "routed"
+                    ? (matchedEgress?.ipv4 ?? node.publicIp ?? null)
+                    : (node.publicIp ?? endpoint?.publicAddress ?? null),
+                exitLabel: matchedEgress?.label ?? null,
+                dnsPrimary: matchedEgress?.dnsPrimary ?? "1.1.1.1",
+                dnsSecondary: matchedEgress ? matchedEgress.dnsSecondary : "1.0.0.1",
+                mode: node.egressMode,
+              }
+            : undefined;
         return toKeyView({
           actor,
           key,
@@ -2457,6 +2918,7 @@ export class PostgresControlRepository implements ControlRepository {
           importantByProfile,
           nodeReachability: reachability ? pathReachability : undefined,
           bridge,
+          egress,
         });
       });
     }, { isolationLevel: "repeatable read", accessMode: "read only" });
@@ -2968,6 +3430,8 @@ export class PostgresControlRepository implements ControlRepository {
   ): Promise<StoredKeyConfig | null> => {
     const pinnedRoute = alias(vpnBridgeRoutes, "pinned_bridge_route");
     const pinnedBridge = alias(vpnBridges, "pinned_bridge");
+    const endpointEgress = alias(nodeEgressIps, "endpoint_egress_ip");
+    const defaultEgress = alias(nodeEgressIps, "default_egress_ip");
     const rows = await reader
       .select({
         key: vpnKeys,
@@ -2975,9 +3439,14 @@ export class PostgresControlRepository implements ControlRepository {
         policy: portalPolicy,
         nodeName: nodes.name,
         nodePublicName: nodes.publicName,
+        nodeEgressMode: nodes.egressMode,
         endpointName: nodeVpnEndpoints.name,
         endpointAddress: nodeVpnEndpoints.address,
         endpointBridgeMode: nodeVpnEndpoints.bridgeMode,
+        endpointEgressDns1: endpointEgress.dnsPrimary,
+        endpointEgressDns2: endpointEgress.dnsSecondary,
+        defaultEgressDns1: defaultEgress.dnsPrimary,
+        defaultEgressDns2: defaultEgress.dnsSecondary,
         nodeAwgGenerator: nodes.awgGenerator,
         nodeAwgMtu: nodes.awgMtu,
         endpointId: nodeVpnEndpoints.id,
@@ -3002,6 +3471,8 @@ export class PostgresControlRepository implements ControlRepository {
       .innerJoin(users, eq(users.id, vpnKeys.ownerId))
       .innerJoin(nodes, eq(nodes.id, vpnKeys.nodeId))
       .leftJoin(nodeVpnEndpoints, keyEndpointJoin)
+      .leftJoin(endpointEgress, eq(endpointEgress.id, nodeVpnEndpoints.egressIpId))
+      .leftJoin(defaultEgress, eq(defaultEgress.id, nodes.egressDefaultIpId))
       .leftJoin(portalPolicy, eq(portalPolicy.id, true))
       // One statement reads the key, any pinned route and the node's active
       // route, so an export sees one consistent assignment.
@@ -3123,6 +3594,15 @@ export class PostgresControlRepository implements ControlRepository {
         state: row.nodeIpv6RejectStubState,
         prefix: row.nodeIpv6RejectStubPrefix,
       },
+      egressDns:
+        row.key.protocol === "awg3" &&
+        (row.nodeEgressMode === "routed" || row.endpointEgressDns1 !== null)
+          ? row.endpointEgressDns1 !== null
+            ? { dns1: row.endpointEgressDns1, dns2: row.endpointEgressDns2 ?? null }
+            : row.defaultEgressDns1 !== null
+              ? { dns1: row.defaultEgressDns1, dns2: row.defaultEgressDns2 ?? null }
+              : null
+          : null,
     };
   };
 
@@ -3722,9 +4202,11 @@ export class PostgresControlRepository implements ControlRepository {
           nameShowNumber: vpnKeys.nameShowNumber,
           nodeName: nodes.name,
           nodePublicName: nodes.publicName,
+          endpointName: nodeVpnEndpoints.name,
         })
         .from(vpnKeys)
         .innerJoin(nodes, eq(nodes.id, vpnKeys.nodeId))
+        .leftJoin(nodeVpnEndpoints, keyEndpointJoin)
         .where(and(eq(vpnKeys.id, keyId), eq(vpnKeys.ownerId, actor.id)))
         .limit(1)
         .for("update");
@@ -3735,7 +4217,7 @@ export class PostgresControlRepository implements ControlRepository {
         label: row.nameShowLabel,
         number: row.nameShowNumber,
       };
-      const serverName = row.nodePublicName ?? row.nodeName;
+      const serverName = row.endpointName ?? row.nodePublicName ?? row.nodeName;
       const before = composeKeyDisplayName({
         serverName,
         label: row.deviceLabel,
@@ -4062,6 +4544,18 @@ export class PostgresControlRepository implements ControlRepository {
         ipv6RejectStubState: nodes.ipv6RejectStubState,
         ipv6RejectStubReason: nodes.ipv6RejectStubReason,
         ipv6RejectStubObservedAt: nodes.ipv6RejectStubObservedAt,
+        egressMode: nodes.egressMode,
+        egressModeState: nodes.egressModeState,
+        egressModeMessage: nodes.egressModeMessage,
+        egressModeAt: nodes.egressModeAt,
+        egressDaemonVersion: nodes.egressDaemonVersion,
+        egressDaemonState: nodes.egressDaemonState,
+        egressDaemonDetail: nodes.egressDaemonDetail,
+        egressBlockSmtp: nodes.egressBlockSmtp,
+        egressIsolatePrivate: nodes.egressIsolatePrivate,
+        egressDefaultIpId: nodes.egressDefaultIpId,
+        hostNetworkReport: nodes.hostNetworkReport,
+        egressObservedAt: nodes.egressObservedAt,
         awgGenerator: nodes.awgGenerator,
         awgMtu: nodes.awgMtu,
         createdAt: nodes.createdAt,
@@ -4112,7 +4606,7 @@ export class PostgresControlRepository implements ControlRepository {
     // unauthenticated UDP, and the worker container has no CAP_NET_RAW), so
     // a real user's connection succeeding is the evidence. It can only
     // under-report, never over-report.
-    const [metricsRows, handshakeRows, publicEndpoints] = await Promise.all([
+    const [metricsRows, handshakeRows, publicEndpoints, egressIpsByNode] = await Promise.all([
       this.options.db.select().from(nodeMetricsCurrent),
       this.options.db
         .select({
@@ -4130,6 +4624,7 @@ export class PostgresControlRepository implements ControlRepository {
         .innerJoin(users, keyOwnerIsPerson(vpnKeys))
         .groupBy(vpnKeys.nodeId),
       this.loadNodePublicEndpoints(nodeRows.map((row) => row.id)),
+      this.loadNodeEgressIpsMap(nodeRows.map((row) => row.id)),
     ]);
     // Byte counters leave as decimal STRINGS, the way every other byte
     // counter in this API does. They are `bigint` in the column and drizzle
@@ -4165,10 +4660,22 @@ export class PostgresControlRepository implements ControlRepository {
         }
       : null;
     const now = Date.now();
-    return nodeRows.map((row) => ({
-      ...row,
-      publicEndpoints: publicEndpoints.get(row.id) ?? [],
-      availableAgent,
+    return nodeRows.map((row) => {
+      const observedMode =
+        row.hostNetworkReport &&
+        typeof row.hostNetworkReport === "object" &&
+        "observedMode" in row.hostNetworkReport
+          ? (row.hostNetworkReport as { observedMode?: unknown }).observedMode
+          : undefined;
+      const modeDrift =
+        (observedMode === "masquerade" || observedMode === "routed") &&
+        observedMode !== row.egressMode;
+      return {
+        ...row,
+        publicEndpoints: publicEndpoints.get(row.id) ?? [],
+        egressIps: egressIpsByNode.get(row.id) ?? [],
+        modeDrift,
+        availableAgent,
       metrics: metricsByNode.get(row.id) ?? null,
       endpoint: {
         // Stated as "last handshake N minutes ago", never as a probe result.
@@ -4200,7 +4707,8 @@ export class PostgresControlRepository implements ControlRepository {
           ? row.ipv6RejectStubObservedAt.toISOString()
           : null,
       },
-    }));
+    };
+    });
   };
 
   adminList = async (_actor: Actor, resource: string): Promise<unknown> => {
@@ -4215,6 +4723,8 @@ export class PostgresControlRepository implements ControlRepository {
           .where(notServiceAccount)
           .orderBy(users.email);
       case "keys": {
+        const endpointEgress = alias(nodeEgressIps, "admin_key_endpoint_egress");
+        const defaultEgress = alias(nodeEgressIps, "admin_key_default_egress");
         const [globalPolicyRow, rows] = await Promise.all([
           this.options.db.select().from(portalPolicy).limit(1),
           this.options.db
@@ -4224,8 +4734,10 @@ export class PostgresControlRepository implements ControlRepository {
               nodeId: vpnKeys.nodeId,
               endpointId: vpnKeys.endpointId,
               endpointName: nodeVpnEndpoints.name,
+              endpointAddress: nodeVpnEndpoints.address,
               endpointBridgeMode: nodeVpnEndpoints.bridgeMode,
               publicKey: vpnKeys.publicKey,
+              tunnelIpv4: vpnKeys.tunnelIpv4,
               protocol: vpnKeys.protocol,
               state: vpnKeys.state,
               deviceType: vpnKeys.deviceType,
@@ -4243,6 +4755,16 @@ export class PostgresControlRepository implements ControlRepository {
               bridgeMode: vpnKeys.bridgeMode,
               vpnBridgeRouteId: vpnKeys.vpnBridgeRouteId,
               ownerPolicyOverride: users.policyOverride,
+              nodePublicIp: nodes.publicIp,
+              nodeEgressMode: nodes.egressMode,
+              endpointEgressIpv4: endpointEgress.ipv4,
+              endpointEgressLabel: endpointEgress.label,
+              endpointEgressDns1: endpointEgress.dnsPrimary,
+              endpointEgressDns2: endpointEgress.dnsSecondary,
+              defaultEgressIpv4: defaultEgress.ipv4,
+              defaultEgressLabel: defaultEgress.label,
+              defaultEgressDns1: defaultEgress.dnsPrimary,
+              defaultEgressDns2: defaultEgress.dnsSecondary,
               // Admin-only client settings of the key, and the levels its
               // effective profile and MTU are resolved from.
               awgGenerator: vpnKeys.awgGenerator,
@@ -4272,6 +4794,8 @@ export class PostgresControlRepository implements ControlRepository {
             .innerJoin(users, keyOwnerIsPerson(vpnKeys))
             .leftJoin(nodes, eq(nodes.id, vpnKeys.nodeId))
             .leftJoin(nodeVpnEndpoints, keyEndpointJoin)
+            .leftJoin(endpointEgress, eq(endpointEgress.id, nodeVpnEndpoints.egressIpId))
+            .leftJoin(defaultEgress, eq(defaultEgress.id, nodes.egressDefaultIpId))
             .leftJoin(peerCurrent, eq(peerCurrent.keyId, vpnKeys.id))
             .orderBy(desc(vpnKeys.createdAt)),
         ]);
@@ -4303,9 +4827,36 @@ export class PostgresControlRepository implements ControlRepository {
             endpointDeviceRules,
             nodeAwgGenerator,
             nodeAwgMtu,
+            nodePublicIp,
+            nodeEgressMode,
+            endpointAddress,
+            endpointEgressIpv4,
+            endpointEgressLabel,
+            endpointEgressDns1,
+            endpointEgressDns2,
+            defaultEgressIpv4,
+            defaultEgressLabel,
+            defaultEgressDns1,
+            defaultEgressDns2,
             ...row
           }) => {
             const ownerPolicy = resolvePortalPolicy(basePolicy, ownerPolicyOverride);
+            const hasExplicitEgress = endpointEgressIpv4 !== null || defaultEgressIpv4 !== null;
+            const resolvedEgressDns1 = endpointEgressDns1 ?? defaultEgressDns1 ?? "1.1.1.1";
+            const resolvedEgressDns2 = hasExplicitEgress
+              ? (endpointEgressIpv4 !== null ? endpointEgressDns2 : defaultEgressDns2)
+              : "1.0.0.1";
+            const resolvedMode = nodeEgressMode ?? "masquerade";
+            const egress: KeyEgressInfo = {
+              effectiveExitIp:
+                resolvedMode === "routed"
+                  ? (endpointEgressIpv4 ?? defaultEgressIpv4 ?? nodePublicIp ?? null)
+                  : (nodePublicIp ?? endpointAddress ?? null),
+              exitLabel: endpointEgressLabel ?? defaultEgressLabel ?? null,
+              dnsPrimary: resolvedEgressDns1,
+              dnsSecondary: resolvedEgressDns2,
+              mode: resolvedMode,
+            };
             const levels = {
               key: row,
               owner: { awgGenerator: ownerAwgGenerator, awgMtu: ownerAwgMtu, awgDeviceRules: ownerDeviceRules },
@@ -4352,6 +4903,7 @@ export class PostgresControlRepository implements ControlRepository {
                 }),
                 observed: observedKeyPath(peerEndpoint),
               },
+              egress,
               online: online ?? false,
               traffic:
                 receivedBytes !== null && sentBytes !== null
@@ -4519,7 +5071,7 @@ export class PostgresControlRepository implements ControlRepository {
         // fetched per check by the UI: there are single digits of both, and a
         // card that issued one request per check would make the page's cost
         // depend on how many checks an admin had added.
-        const [definitions, results] = await Promise.all([
+        const [definitions, results, egressResults] = await Promise.all([
           this.options.db
             .select()
             .from(nodeServiceChecks)
@@ -4540,10 +5092,31 @@ export class PostgresControlRepository implements ControlRepository {
             .from(nodeServiceCheckResults)
             .innerJoin(nodes, eq(nodes.id, nodeServiceCheckResults.nodeId))
             .orderBy(nodes.name),
+          this.options.db
+            .select({
+              checkId: nodeEgressServiceCheckResults.checkId,
+              egressIpId: nodeEgressServiceCheckResults.egressIpId,
+              egressIpv4: nodeEgressIps.ipv4,
+              egressLabel: nodeEgressIps.label,
+              nodeId: nodeEgressIps.nodeId,
+              nodeName: nodes.name,
+              status: nodeEgressServiceCheckResults.status,
+              httpStatus: nodeEgressServiceCheckResults.httpStatus,
+              latencyMs: nodeEgressServiceCheckResults.latencyMs,
+              detail: nodeEgressServiceCheckResults.detail,
+              finalUrl: nodeEgressServiceCheckResults.finalUrl,
+              checkedAt: nodeEgressServiceCheckResults.checkedAt,
+              failingSince: nodeEgressServiceCheckResults.failingSince,
+            })
+            .from(nodeEgressServiceCheckResults)
+            .innerJoin(nodeEgressIps, eq(nodeEgressIps.id, nodeEgressServiceCheckResults.egressIpId))
+            .innerJoin(nodes, eq(nodes.id, nodeEgressIps.nodeId))
+            .orderBy(nodes.name, nodeEgressIps.ipv4),
         ]);
         return definitions.map((check) => ({
           ...check,
           results: results.filter((row) => row.checkId === check.id),
+          egressResults: egressResults.filter((row) => row.checkId === check.id),
         }));
       }
       case "global-routes":
@@ -6443,6 +7016,7 @@ export class PostgresControlRepository implements ControlRepository {
           deduplicationKey: `node.reconcile:${targetId}:${randomUUID()}`,
           payload: { nodeId: targetId },
         });
+        await this.enqueueNodeSyncEgress(tx, targetId);
         await tx.insert(auditEvents).values({
           actorUserId: actor.id,
           actorType: "user",
@@ -6999,4 +7573,577 @@ export class PostgresControlRepository implements ControlRepository {
   appendAudit = async (event: AuditInput): Promise<void> => {
     await this.options.db.insert(auditEvents).values(event);
   };
+
+  listNodeEgressIps = async (_actor: Actor, nodeId: string): Promise<NodeEgressIp[]> => {
+    const [node] = await this.options.db
+      .select({ id: nodes.id })
+      .from(nodes)
+      .where(eq(nodes.id, nodeId))
+      .limit(1);
+    if (!node) throw new ApiError(404, "Node not found", "NODE_NOT_FOUND");
+    const map = await this.loadNodeEgressIpsMap([nodeId]);
+    return map.get(nodeId) ?? [];
+  };
+
+  createNodeEgressIp = async (
+    actor: Actor,
+    nodeId: string,
+    request: CreateNodeEgressIpRequest,
+  ): Promise<NodeEgressIp> => {
+    try {
+      return await this.options.db.transaction(async (tx) => {
+        const [node] = await tx
+          .select({ id: nodes.id })
+          .from(nodes)
+          .where(eq(nodes.id, nodeId))
+          .for("no key update");
+        if (!node) throw new ApiError(404, "Node not found", "NODE_NOT_FOUND");
+        const existing = await tx
+          .select({ routingTableId: nodeEgressIps.routingTableId })
+          .from(nodeEgressIps)
+          .where(eq(nodeEgressIps.nodeId, nodeId));
+        let routingTableId = request.routingTableId ?? null;
+        if (routingTableId === null) {
+          const used = new Set(
+            existing.map((r) => r.routingTableId).filter((id): id is number => id !== null),
+          );
+          for (let candidate = 200; candidate <= 219; candidate += 1) {
+            if (!used.has(candidate)) {
+              routingTableId = candidate;
+              break;
+            }
+          }
+          if (routingTableId === null) {
+            throw new ApiError(
+              409,
+              "All 20 routing tables (200-219) are allocated on this node",
+              "EGRESS_TABLE_EXHAUSTED",
+            );
+          }
+        }
+        const [created] = await tx
+          .insert(nodeEgressIps)
+          .values({
+            nodeId,
+            ipv4: request.ipv4,
+            label: request.label ?? null,
+            interfaceName: request.interfaceName ?? null,
+            gatewayIpv4: request.gatewayIpv4 ?? null,
+            routingTableId,
+            dnsPrimary: request.dnsPrimary,
+            dnsSecondary: request.dnsSecondary ?? null,
+            amneziaDnsDnat: request.amneziaDnsDnat,
+            enforceDnsDnat: request.enforceDnsDnat,
+            allowAsEntry: request.allowAsEntry,
+            enabled: request.enabled,
+          })
+          .returning();
+        if (!created) throw new Error("Exit IP insert returned no row");
+        const endpoints = await tx
+          .select({ address: nodeVpnEndpoints.address })
+          .from(nodeVpnEndpoints)
+          .where(eq(nodeVpnEndpoints.nodeId, nodeId));
+        await this.enqueueNodeSyncEgress(tx, nodeId);
+        await tx.insert(auditEvents).values({
+          actorUserId: actor.id,
+          actorType: "user",
+          action: "node.egress_created",
+          targetType: "node",
+          targetId: nodeId,
+          metadata: {
+            egressIpId: created.id,
+            ipv4: created.ipv4,
+            routingTableId: created.routingTableId,
+          },
+        });
+        return this.toNodeEgressIpView(
+          created,
+          [...new Set(endpoints.map((ep) => ep.address))],
+          0,
+        );
+      });
+    } catch (error) {
+      if (isUniqueViolation(error, "node_egress_ips_node_ipv4_unique")) {
+        throw new ApiError(409, "This Exit IPv4 already exists on this node", "EGRESS_IP_EXISTS");
+      }
+      if (isUniqueViolation(error, "node_egress_ips_node_table_unique")) {
+        throw new ApiError(409, "Routing table ID is already used on this node", "EGRESS_TABLE_IN_USE");
+      }
+      throw error;
+    }
+  };
+
+  updateNodeEgressIp = async (
+    actor: Actor,
+    nodeId: string,
+    ipId: string,
+    request: UpdateNodeEgressIpRequest,
+  ): Promise<NodeEgressIp> => {
+    try {
+      return await this.options.db.transaction(async (tx) => {
+        const [current] = await tx
+          .select()
+          .from(nodeEgressIps)
+          .where(and(eq(nodeEgressIps.nodeId, nodeId), eq(nodeEgressIps.id, ipId)))
+          .for("update");
+        if (!current) throw new ApiError(404, "Exit IP not found on node", "NODE_EGRESS_IP_NOT_FOUND");
+        const changes: Partial<typeof nodeEgressIps.$inferInsert> = {
+          updatedAt: new Date(),
+        };
+        if (request.label !== undefined) changes.label = request.label ?? null;
+        if (request.interfaceName !== undefined) changes.interfaceName = request.interfaceName ?? null;
+        if (request.gatewayIpv4 !== undefined) changes.gatewayIpv4 = request.gatewayIpv4 ?? null;
+        if (request.routingTableId !== undefined) changes.routingTableId = request.routingTableId ?? null;
+        if (request.dnsPrimary !== undefined) changes.dnsPrimary = request.dnsPrimary;
+        if (request.dnsSecondary !== undefined) changes.dnsSecondary = request.dnsSecondary ?? null;
+        if (request.amneziaDnsDnat !== undefined) changes.amneziaDnsDnat = request.amneziaDnsDnat;
+        if (request.enforceDnsDnat !== undefined) changes.enforceDnsDnat = request.enforceDnsDnat;
+        if (request.allowAsEntry !== undefined) changes.allowAsEntry = request.allowAsEntry;
+        if (request.enabled !== undefined) changes.enabled = request.enabled;
+        const [updated] = await tx
+          .update(nodeEgressIps)
+          .set(changes)
+          .where(and(eq(nodeEgressIps.nodeId, nodeId), eq(nodeEgressIps.id, ipId)))
+          .returning();
+        if (!updated) throw new Error("Exit IP update returned no row");
+        const endpoints = await tx
+          .select({ address: nodeVpnEndpoints.address, egressIpId: nodeVpnEndpoints.egressIpId })
+          .from(nodeVpnEndpoints)
+          .where(eq(nodeVpnEndpoints.nodeId, nodeId));
+        await this.enqueueNodeSyncEgress(tx, nodeId);
+        await tx.insert(auditEvents).values({
+          actorUserId: actor.id,
+          actorType: "user",
+          action: "node.egress_updated",
+          targetType: "node",
+          targetId: nodeId,
+          metadata: {
+            egressIpId: ipId,
+            ipv4: updated.ipv4,
+            fields: Object.keys(request),
+          },
+        });
+        return this.toNodeEgressIpView(
+          updated,
+          [...new Set(endpoints.map((ep) => ep.address))],
+          endpoints.filter((ep) => ep.egressIpId === ipId).length,
+        );
+      });
+    } catch (error) {
+      if (isUniqueViolation(error, "node_egress_ips_node_table_unique")) {
+        throw new ApiError(409, "Routing table ID is already used on this node", "EGRESS_TABLE_IN_USE");
+      }
+      throw error;
+    }
+  };
+
+  deleteNodeEgressIp = async (
+    actor: Actor,
+    nodeId: string,
+    ipId: string,
+  ): Promise<{ id: string; deleted: boolean; affectedEndpoints: number }> =>
+    this.options.db.transaction(async (tx) => {
+      const [current] = await tx
+        .select({ id: nodeEgressIps.id, ipv4: nodeEgressIps.ipv4 })
+        .from(nodeEgressIps)
+        .where(and(eq(nodeEgressIps.nodeId, nodeId), eq(nodeEgressIps.id, ipId)))
+        .limit(1);
+      if (!current) throw new ApiError(404, "Exit IP not found on node", "NODE_EGRESS_IP_NOT_FOUND");
+      const clearedEndpoints = await tx
+        .update(nodeVpnEndpoints)
+        .set({
+          egressIpId: null,
+          probeObservedEgressIp: null,
+          probeEgressMatch: null,
+          revision: sql`${nodeVpnEndpoints.revision} + 1`,
+        })
+        .where(and(eq(nodeVpnEndpoints.nodeId, nodeId), eq(nodeVpnEndpoints.egressIpId, ipId)))
+        .returning({ id: nodeVpnEndpoints.id });
+      await tx
+        .update(nodes)
+        .set({ egressDefaultIpId: null, updatedAt: new Date() })
+        .where(and(eq(nodes.id, nodeId), eq(nodes.egressDefaultIpId, ipId)));
+      await tx
+        .delete(nodeEgressIps)
+        .where(and(eq(nodeEgressIps.nodeId, nodeId), eq(nodeEgressIps.id, ipId)));
+      await this.enqueueNodeSyncEgress(tx, nodeId);
+      await tx.insert(auditEvents).values({
+        actorUserId: actor.id,
+        actorType: "user",
+        action: "node.egress_deleted",
+        targetType: "node",
+        targetId: nodeId,
+        metadata: {
+          egressIpId: ipId,
+          ipv4: current.ipv4,
+          affectedEndpoints: clearedEndpoints.length,
+        },
+      });
+      return {
+        id: ipId,
+        deleted: true,
+        affectedEndpoints: clearedEndpoints.length,
+      };
+    });
+
+  swapNodeEgressIp = async (
+    actor: Actor,
+    nodeId: string,
+    ipId: string,
+    request: SwapNodeEgressIpRequest,
+  ): Promise<{ ip: NodeEgressIp; replacedIpv4: string; affectedEndpoints: number }> => {
+    try {
+      return await this.options.db.transaction(async (tx) => {
+        const [current] = await tx
+          .select()
+          .from(nodeEgressIps)
+          .where(and(eq(nodeEgressIps.nodeId, nodeId), eq(nodeEgressIps.id, ipId)))
+          .for("update");
+        if (!current) throw new ApiError(404, "Exit IP not found on node", "NODE_EGRESS_IP_NOT_FOUND");
+        const [updated] = await tx
+          .update(nodeEgressIps)
+          .set({
+            ipv4: request.ipv4,
+            ...(request.interfaceName !== undefined
+              ? { interfaceName: request.interfaceName ?? null }
+              : {}),
+            ...(request.gatewayIpv4 !== undefined
+              ? { gatewayIpv4: request.gatewayIpv4 ?? null }
+              : {}),
+            ...(request.label !== undefined ? { label: request.label ?? null } : {}),
+            hostState: "pending",
+            hostDetail: null,
+            observedSubnetCidr: null,
+            detectedGatewayIpv4: null,
+            txBytes: 0n,
+            txPackets: 0n,
+            hostObservedAt: null,
+            updatedAt: new Date(),
+          })
+          .where(and(eq(nodeEgressIps.nodeId, nodeId), eq(nodeEgressIps.id, ipId)))
+          .returning();
+        if (!updated) throw new Error("Exit IP swap returned no row");
+        const touchedEndpoints = await tx
+          .update(nodeVpnEndpoints)
+          .set({
+            probeObservedEgressIp: null,
+            probeEgressMatch: null,
+            probeStatus: null,
+            probeCheckedAt: null,
+            revision: sql`${nodeVpnEndpoints.revision} + 1`,
+          })
+          .where(and(eq(nodeVpnEndpoints.nodeId, nodeId), eq(nodeVpnEndpoints.egressIpId, ipId)))
+          .returning({ id: nodeVpnEndpoints.id });
+        const allEndpoints = await tx
+          .select({ address: nodeVpnEndpoints.address, egressIpId: nodeVpnEndpoints.egressIpId })
+          .from(nodeVpnEndpoints)
+          .where(eq(nodeVpnEndpoints.nodeId, nodeId));
+        await this.enqueueNodeSyncEgress(tx, nodeId);
+        await tx.insert(auditEvents).values({
+          actorUserId: actor.id,
+          actorType: "user",
+          action: "node.egress_swapped",
+          targetType: "node",
+          targetId: nodeId,
+          metadata: {
+            egressIpId: ipId,
+            fromIpv4: current.ipv4,
+            toIpv4: request.ipv4,
+            affectedEndpoints: touchedEndpoints.length,
+          },
+        });
+        return {
+          ip: this.toNodeEgressIpView(
+            updated,
+            [...new Set(allEndpoints.map((ep) => ep.address))],
+            allEndpoints.filter((ep) => ep.egressIpId === ipId).length,
+          ),
+          replacedIpv4: current.ipv4,
+          affectedEndpoints: touchedEndpoints.length,
+        };
+      });
+    } catch (error) {
+      if (isUniqueViolation(error, "node_egress_ips_node_ipv4_unique")) {
+        throw new ApiError(409, "Target Exit IPv4 already exists on this node", "EGRESS_IP_EXISTS");
+      }
+      throw error;
+    }
+  };
+
+  getNodeEgressVerifyTarget = async (
+    nodeId: string,
+    ipId: string,
+  ): Promise<NodeEgressVerifyTarget | null> => {
+    const [row] = await this.options.db
+      .select({
+        nodeId: nodes.id,
+        apiBaseUrl: nodes.apiBaseUrl,
+        ciphertext: nodes.credentialsCiphertext,
+        nonce: nodes.credentialsNonce,
+        authTag: nodes.credentialsAuthTag,
+        keyVersion: nodes.credentialsKeyVersion,
+        egressIpId: nodeEgressIps.id,
+        egressIpv4: nodeEgressIps.ipv4,
+        dnsPrimary: nodeEgressIps.dnsPrimary,
+      })
+      .from(nodeEgressIps)
+      .innerJoin(nodes, eq(nodes.id, nodeEgressIps.nodeId))
+      .where(and(eq(nodeEgressIps.nodeId, nodeId), eq(nodeEgressIps.id, ipId)))
+      .limit(1);
+    if (!row) return null;
+    const [probe] = await this.options.db
+      .select({ egressUrl: reachabilityProbe.egressUrl })
+      .from(reachabilityProbe)
+      .limit(1);
+    return {
+      nodeId: row.nodeId,
+      apiBaseUrl: row.apiBaseUrl,
+      credentials: {
+        ciphertext: row.ciphertext,
+        nonce: row.nonce,
+        authTag: row.authTag,
+        keyVersion: row.keyVersion,
+      },
+      egressIpId: row.egressIpId,
+      egressIpv4: row.egressIpv4,
+      dnsPrimary: row.dnsPrimary,
+      probeUrl: probe?.egressUrl ?? null,
+    };
+  };
+
+  setNodeEgressMode = async (
+    actor: Actor,
+    nodeId: string,
+    request: UpdateNodeEgressModeRequest,
+  ): Promise<{ nodeId: string; mode: NodeEgressMode; state: NodeEgressModeState; queued: boolean }> =>
+    this.options.db.transaction(async (tx) => {
+      const [node] = await tx
+        .select({
+          id: nodes.id,
+          protocol: nodes.protocol,
+          capabilities: nodes.capabilities,
+          egressMode: nodes.egressMode,
+          egressDaemonState: nodes.egressDaemonState,
+          hostNetworkReport: nodes.hostNetworkReport,
+        })
+        .from(nodes)
+        .where(eq(nodes.id, nodeId))
+        .for("no key update");
+      if (!node) throw new ApiError(404, "Node not found", "NODE_NOT_FOUND");
+      if (!deriveSupportedProtocols(node.protocol, node.capabilities).includes("awg3")) {
+        throw new ApiError(409, "Multi-exit routing requires AWG 3.1 on this node", "NODE_ENDPOINT_NOT_AWG3");
+      }
+      if (node.egressDaemonState === "unavailable" && node.hostNetworkReport === null) {
+        throw new ApiError(
+          409,
+          "Egress daemon telemetry has not reported from this node yet",
+          "EGRESS_DAEMON_UNAVAILABLE",
+        );
+      }
+      const tunnelConflict =
+        node.hostNetworkReport &&
+        typeof node.hostNetworkReport === "object" &&
+        "tunnelSubnetConflict" in node.hostNetworkReport &&
+        (node.hostNetworkReport as { tunnelSubnetConflict?: unknown }).tunnelSubnetConflict === true;
+      if (request.mode === "routed") {
+        if (tunnelConflict) {
+          throw new ApiError(
+            409,
+            "Host subnet conflicts with AWG 3.1 tunnel subnet; resolve conflict before switching to routed mode",
+            "EGRESS_SUBNET_CONFLICT",
+          );
+        }
+        const enabledIps = await tx
+          .select({ id: nodeEgressIps.id })
+          .from(nodeEgressIps)
+          .where(and(eq(nodeEgressIps.nodeId, nodeId), eq(nodeEgressIps.enabled, true)))
+          .limit(1);
+        if (enabledIps.length === 0) {
+          throw new ApiError(
+            409,
+            "Add and enable at least one Exit IP before switching to routed mode",
+            "EGRESS_IP_REQUIRED",
+          );
+        }
+      }
+      const now = new Date();
+      await tx
+        .update(nodes)
+        .set({
+          egressMode: request.mode,
+          egressModeState: "switching",
+          egressModeMessage: null,
+          egressModeAt: now,
+          ...(request.blockSmtp !== undefined ? { egressBlockSmtp: request.blockSmtp } : {}),
+          ...(request.isolatePrivate !== undefined ? { egressIsolatePrivate: request.isolatePrivate } : {}),
+          updatedAt: now,
+        })
+        .where(eq(nodes.id, nodeId));
+      await tx.insert(jobOutbox).values({
+        type: NODE_SWITCH_EGRESS_MODE_JOB_TYPE,
+        deduplicationKey: `${NODE_SWITCH_EGRESS_MODE_JOB_TYPE}:${nodeId}:${randomUUID()}`,
+        payload: {
+          nodeId,
+          mode: request.mode,
+          ...(request.blockSmtp !== undefined ? { blockSmtp: request.blockSmtp } : {}),
+          ...(request.isolatePrivate !== undefined ? { isolatePrivate: request.isolatePrivate } : {}),
+        },
+      });
+      await tx.insert(auditEvents).values({
+        actorUserId: actor.id,
+        actorType: "user",
+        action: "node.egress_mode_requested",
+        targetType: "node",
+        targetId: nodeId,
+        metadata: {
+          previousMode: node.egressMode,
+          mode: request.mode,
+          blockSmtp: request.blockSmtp,
+          isolatePrivate: request.isolatePrivate,
+        },
+        createdAt: now,
+      });
+      return {
+        nodeId,
+        mode: request.mode,
+        state: "switching",
+        queued: true,
+      };
+    });
+
+  adoptNodeEgressMode = async (
+    actor: Actor,
+    nodeId: string,
+  ): Promise<{ nodeId: string; mode: NodeEgressMode; state: NodeEgressModeState }> =>
+    this.options.db.transaction(async (tx) => {
+      const [node] = await tx
+        .select({
+          id: nodes.id,
+          egressMode: nodes.egressMode,
+          hostNetworkReport: nodes.hostNetworkReport,
+        })
+        .from(nodes)
+        .where(eq(nodes.id, nodeId))
+        .for("no key update");
+      if (!node) throw new ApiError(404, "Node not found", "NODE_NOT_FOUND");
+      const observedMode =
+        node.hostNetworkReport &&
+        typeof node.hostNetworkReport === "object" &&
+        "observedMode" in node.hostNetworkReport
+          ? (node.hostNetworkReport as { observedMode?: unknown }).observedMode
+          : undefined;
+      if (observedMode !== "masquerade" && observedMode !== "routed") {
+        throw new ApiError(
+          409,
+          "No host egress observation available to adopt on this node",
+          "EGRESS_DAEMON_UNAVAILABLE",
+        );
+      }
+      const now = new Date();
+      await tx
+        .update(nodes)
+        .set({
+          egressMode: observedMode,
+          egressModeState: "idle",
+          egressModeMessage: "Adopted observed host egress mode",
+          egressModeAt: now,
+          updatedAt: now,
+        })
+        .where(eq(nodes.id, nodeId));
+      await this.enqueueNodeSyncEgress(tx, nodeId);
+      await tx.insert(auditEvents).values({
+        actorUserId: actor.id,
+        actorType: "user",
+        action: "node.egress_mode_adopted",
+        targetType: "node",
+        targetId: nodeId,
+        metadata: {
+          previousMode: node.egressMode,
+          adoptedMode: observedMode,
+        },
+        createdAt: now,
+      });
+      return {
+        nodeId,
+        mode: observedMode,
+        state: "idle",
+      };
+    });
+
+  reassignKeyEndpoint = async (
+    actor: Actor,
+    keyId: string,
+    request: AdminReassignKeyEndpointRequest,
+  ): Promise<{ id: string; nodeId: string; endpointId: string; previousEndpointId: string | null }> =>
+    this.options.db.transaction(async (tx) => {
+      const [key] = await tx
+        .select({
+          id: vpnKeys.id,
+          nodeId: vpnKeys.nodeId,
+          endpointId: vpnKeys.endpointId,
+          protocol: vpnKeys.protocol,
+          state: vpnKeys.state,
+        })
+        .from(vpnKeys)
+        .where(eq(vpnKeys.id, keyId))
+        .for("update");
+      if (!key) throw new ApiError(404, "Key not found", "KEY_NOT_FOUND");
+      if (key.protocol !== "awg3") {
+        throw new ApiError(409, "Endpoint reassignment is supported only for AWG 3.1 keys", "NODE_ENDPOINT_NOT_AWG3");
+      }
+      if (key.state === "revoked" || key.state === "revoking") {
+        throw new ApiError(409, "Cannot reassign a revoked key", "KEY_NOT_ACTIVE");
+      }
+      const [targetEndpoint] = await tx
+        .select({
+          id: nodeVpnEndpoints.id,
+          nodeId: nodeVpnEndpoints.nodeId,
+          enabled: nodeVpnEndpoints.enabled,
+        })
+        .from(nodeVpnEndpoints)
+        .where(eq(nodeVpnEndpoints.id, request.endpointId))
+        .limit(1);
+      if (!targetEndpoint) {
+        throw new ApiError(404, "Endpoint not found", "NODE_ENDPOINT_NOT_FOUND");
+      }
+      if (targetEndpoint.nodeId !== key.nodeId) {
+        throw new ApiError(
+          409,
+          "Target endpoint belongs to a different node",
+          "KEY_REASSIGN_WRONG_NODE",
+        );
+      }
+      if (!targetEndpoint.enabled) {
+        throw new ApiError(
+          409,
+          "Target endpoint is disabled on this node",
+          "NODE_ENDPOINT_UNAVAILABLE",
+        );
+      }
+      if (key.endpointId !== request.endpointId) {
+        await tx
+          .update(vpnKeys)
+          .set({ endpointId: request.endpointId, updatedAt: new Date() })
+          .where(eq(vpnKeys.id, key.id));
+        await this.enqueueNodeSyncEgress(tx, key.nodeId);
+        await tx.insert(auditEvents).values({
+          actorUserId: actor.id,
+          actorType: "user",
+          action: "admin.keys.endpoint_reassigned",
+          targetType: "vpn_key",
+          targetId: key.id,
+          metadata: {
+            nodeId: key.nodeId,
+            previousEndpointId: key.endpointId,
+            endpointId: request.endpointId,
+          },
+        });
+      }
+      return {
+        id: key.id,
+        nodeId: key.nodeId,
+        endpointId: request.endpointId,
+        previousEndpointId: key.endpointId,
+      };
+    });
 }

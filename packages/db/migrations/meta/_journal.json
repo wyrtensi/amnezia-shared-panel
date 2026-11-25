@@ -505,6 +505,13 @@
       "when": 1795400000010,
       "tag": "0071_rule_version_important_notice",
       "breakpoints": true
+    },
+    {
+      "idx": 72,
+      "version": "7",
+      "when": 1795400000011,
+      "tag": "0072_node_egress_and_endpoint_variants",
+      "breakpoints": true
     }
   ]
 }

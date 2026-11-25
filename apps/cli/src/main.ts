@@ -128,10 +128,17 @@ import {
   type AwgConfigLevel,
   type ConfigRefreshResult,
   type ConfigRefreshStatus,
+  type HostNetworkReport,
   type KeyBridgeInfo,
+  type KeyEgressInfo,
+  type NodeEgressDaemonState,
+  type NodeEgressIp,
+  type NodeEgressMode,
+  type NodeEgressModeState,
   type PinClientConfigRequest,
   type ResolvedAwgClientSettings,
   type RulesRefreshStatus,
+  type VerifyNodeEgressIpResult,
 } from "@amnezia/contracts";
 import {
   buildConfigFields,
@@ -289,7 +296,9 @@ type AdminKey = AwgConfigLevel & {
   id: string;
   ownerId: string;
   nodeId: string;
+  endpointId?: string | null;
   endpointName?: string | null;
+  tunnelIpv4?: string | null;
   config?: ResolvedAwgClientSettings | null;
   state: string;
   protocol: string;
@@ -297,6 +306,7 @@ type AdminKey = AwgConfigLevel & {
   /** Operator-only note; served on /api/admin/keys and nowhere else. */
   internalName?: string | null;
   bridge?: KeyBridgeInfo;
+  egress?: KeyEgressInfo;
   deviceType?: string;
   routeProfile: string;
   online?: boolean;
@@ -309,6 +319,18 @@ type AdminNode = AwgConfigLevel & {
   id: string;
   name: string;
   publicEndpoints?: AdminNodeEndpoint[];
+  egressMode?: NodeEgressMode;
+  egressModeState?: NodeEgressModeState;
+  modeDrift?: boolean;
+  egressDaemonVersion?: string | null;
+  egressDaemonState?: NodeEgressDaemonState;
+  egressDaemonDetail?: string | null;
+  egressBlockSmtp?: boolean;
+  egressIsolatePrivate?: boolean;
+  egressDefaultIpId?: string | null;
+  hostNetworkReport?: HostNetworkReport | null;
+  egressObservedAt?: string | null;
+  egressIps?: NodeEgressIp[];
   /** Whether this node takes part in service checks at all. */
   checksEnabled?: boolean;
   /** Checks this node skips, by id. */
@@ -588,6 +610,11 @@ async function cmdKeys(args: string[]): Promise<void> {
         state: key.state,
         proto: key.protocol,
         address: key.endpointName ?? "—",
+        exit: key.egress?.effectiveExitIp
+          ? key.egress.exitLabel
+            ? `${key.egress.effectiveExitIp} (${key.egress.exitLabel})`
+            : key.egress.effectiveExitIp
+          : "—",
         bridge: key.bridge?.effective
           ? `${key.bridge.effective.bridgeName} (${key.bridge.effective.publicIpv4}:${key.bridge.effective.publicUdpPort})`
           : key.bridge?.mode === "direct"
@@ -613,6 +640,7 @@ async function cmdKeys(args: string[]): Promise<void> {
         "state",
         "proto",
         ...(shown.some((key) => key.endpointName) ? ["address"] : []),
+        ...(shown.some((key) => key.egress?.effectiveExitIp) ? ["exit"] : []),
         "bridge",
         "online",
         "traffic",
@@ -924,13 +952,15 @@ async function cmdNodes(args: string[]): Promise<void> {
         node: node.name,
         name: address.name,
         address: address.publicAddress,
+        exit: address.effectiveEgressIp ?? "—",
+        variant: address.variantOrdinal ? `v${address.variantOrdinal}` : "—",
         id: address.id,
         status: address.enabled ? (address.reachability?.state ?? "unknown") : "disabled",
         probe: address.reachabilityEnabled === false
           ? "off"
           : `${address.probeStatus ?? "—"}${address.incidentOpen ? " (incident)" : ""}`,
       })),
-    ), ["node", "name", "address", "id", "status", "probe"]));
+    ), ["node", "name", "address", "exit", "variant", "id", "status", "probe"]));
     return;
   }
   // The list users actually see: the admin's stored order first, then the
@@ -959,6 +989,11 @@ async function cmdNodes(args: string[]): Promise<void> {
         // The address clients reach this node at, including whether a DNS name
         // has actually resolved — the same distinction the node card draws.
         address: formatNodeAddress(node.publicHost ?? null, node.publicIp ?? null),
+        egress: node.egressMode
+          ? node.modeDrift
+            ? `${node.egressMode} (DRIFT)`
+            : `${node.egressMode}${node.egressIps?.length ? ` (${node.egressIps.length})` : ""}`
+          : "—",
         // What each node says its agent is. This is the column that answers
         // "which nodes are still behind" without an SSH session per host; a
         // dash is an agent too old to report it, which is itself the answer.
@@ -975,6 +1010,7 @@ async function cmdNodes(args: string[]): Promise<void> {
         "protocols",
         "peers",
         "address",
+        "egress",
         "agent",
         "ipv6-stub",
         "health",
@@ -2133,6 +2169,313 @@ async function cmdNodeIpv6Stub(args: string[]): Promise<void> {
   console.log("Follow it with: node-ipv6-stub " + node.id);
 }
 
+async function cmdNodeEgress(args: string[]): Promise<void> {
+  const id = args.find((arg) => !arg.startsWith("--"));
+  if (!id) throw new Error("Usage: node-egress <node-id|name> [--json]");
+  const node = await findAdminNode(id);
+  const ips = node.egressIps ?? (await api<NodeEgressIp[]>(`/api/admin/nodes/${node.id}/egress-ips`));
+  if (wantsJson(args)) {
+    return json({
+      nodeId: node.id,
+      name: node.name,
+      egressMode: node.egressMode ?? "masquerade",
+      egressModeState: node.egressModeState ?? "idle",
+      modeDrift: node.modeDrift ?? false,
+      egressDaemonState: node.egressDaemonState ?? "unavailable",
+      egressDaemonVersion: node.egressDaemonVersion ?? null,
+      egressDaemonDetail: node.egressDaemonDetail ?? null,
+      egressBlockSmtp: node.egressBlockSmtp ?? true,
+      egressIsolatePrivate: node.egressIsolatePrivate ?? true,
+      egressDefaultIpId: node.egressDefaultIpId ?? null,
+      hostNetworkReport: node.hostNetworkReport ?? null,
+      egressIps: ips,
+    });
+  }
+  console.log(`node ${node.name} (${node.id})`);
+  console.log(
+    `  mode:       ${node.egressMode ?? "masquerade"} (${node.egressModeState ?? "idle"})${node.modeDrift ? " [DRIFT DETECTED]" : ""}`,
+  );
+  console.log(
+    `  daemon:     ${node.egressDaemonState ?? "unavailable"}${node.egressDaemonVersion ? ` v${node.egressDaemonVersion}` : ""}${node.egressDaemonDetail ? ` — ${node.egressDaemonDetail}` : ""}`,
+  );
+  console.log(
+    `  safety:     block-smtp=${node.egressBlockSmtp === false ? "no" : "yes"} isolate-private=${node.egressIsolatePrivate === false ? "no" : "yes"}`,
+  );
+  if (node.hostNetworkReport) {
+    console.log(
+      `  observed:   mode=${node.hostNetworkReport.observedMode} bridge=${node.hostNetworkReport.bridgeName} conflict=${node.hostNetworkReport.tunnelSubnetConflict ? "YES" : "no"}`,
+    );
+    if (node.hostNetworkReport.ipv4Addresses.length > 0) {
+      console.log(
+        `  host ips:   ${node.hostNetworkReport.ipv4Addresses.map((a) => `${a.cidr}@${a.interfaceName}${a.detectedGatewayIpv4 ? ` gw ${a.detectedGatewayIpv4}` : ""}`).join(", ")}`,
+      );
+    }
+  }
+  if (ips.length === 0) {
+    console.log("  exit ips:   (none configured)");
+    return;
+  }
+  console.log("");
+  console.log(
+    table(
+      ips.map((ip) => ({
+        id: ip.id,
+        ipv4: ip.ipv4,
+        label: ip.label ?? "—",
+        iface: ip.interfaceName ?? "auto",
+        gw: ip.gatewayIpv4 ?? ip.detectedGatewayIpv4 ?? "auto",
+        table: ip.routingTableId !== null ? String(ip.routingTableId) : "—",
+        dns: ip.dnsSecondary ? `${ip.dnsPrimary},${ip.dnsSecondary}` : ip.dnsPrimary,
+        dnat: ip.enforceDnsDnat ? "enforce" : ip.amneziaDnsDnat ? "amnezia" : "off",
+        state: ip.hostState,
+        eps: String(ip.assignedEndpointCount ?? 0),
+        warn: ip.subnetWarning ? "SUBNET" : "—",
+      })),
+      ["id", "ipv4", "label", "iface", "gw", "table", "dns", "dnat", "state", "eps", "warn"],
+    ),
+  );
+}
+
+async function cmdNodeEgressMode(args: string[]): Promise<void> {
+  const pos = positionals(args);
+  const [nodeRef, modeRaw] = pos;
+  if (!nodeRef || (modeRaw !== "masquerade" && modeRaw !== "routed")) {
+    throw new Error(
+      "Usage: node-egress-mode <node-id|name> <masquerade|routed> [--block-smtp=true|false] [--isolate-private=true|false] [--json]",
+    );
+  }
+  const node = await findAdminNode(nodeRef);
+  const blockSmtpRaw = flagOf(args, "block-smtp");
+  const isolateRaw = flagOf(args, "isolate-private");
+  const result = await api<{
+    nodeId: string;
+    mode: NodeEgressMode;
+    state: NodeEgressModeState;
+    queued: boolean;
+  }>(`/api/admin/nodes/${node.id}/egress-mode`, {
+    method: "PUT",
+    body: JSON.stringify({
+      mode: modeRaw,
+      ...(blockSmtpRaw !== undefined
+        ? { blockSmtp: parseBoolFlag("block-smtp", blockSmtpRaw) }
+        : {}),
+      ...(isolateRaw !== undefined
+        ? { isolatePrivate: parseBoolFlag("isolate-private", isolateRaw) }
+        : {}),
+    }),
+  });
+  if (wantsJson(args)) return json(result);
+  console.log(
+    `node ${node.name}: egress mode switch to '${result.mode}' queued (state: ${result.state})`,
+  );
+}
+
+async function cmdNodeEgressAdopt(args: string[]): Promise<void> {
+  const nodeRef = args.find((arg) => !arg.startsWith("--"));
+  if (!nodeRef) throw new Error("Usage: node-egress-adopt <node-id|name> [--json]");
+  const node = await findAdminNode(nodeRef);
+  const result = await api<{
+    nodeId: string;
+    mode: NodeEgressMode;
+    state: NodeEgressModeState;
+  }>(`/api/admin/nodes/${node.id}/egress-mode/adopt`, {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+  if (wantsJson(args)) return json(result);
+  console.log(`node ${node.name}: adopted host egress mode '${result.mode}'`);
+}
+
+async function cmdNodeExitAdd(args: string[]): Promise<void> {
+  const nodeRef = args.find((arg) => !arg.startsWith("--"));
+  const ipv4 = flagOf(args, "ip");
+  if (!nodeRef || !ipv4) {
+    throw new Error(
+      "Usage: node-exit-add <node> --ip=<ipv4> [--label=] [--interface=] [--gateway=] [--table=200..219] [--dns1=1.1.1.1] [--dns2=] [--amnezia-dns-dnat=true|false] [--enforce-dns-dnat=true|false] [--allow-as-entry=true|false] [--disabled]",
+    );
+  }
+  const node = await findAdminNode(nodeRef);
+  const tableRaw = flagOf(args, "table");
+  const dnatRaw = flagOf(args, "amnezia-dns-dnat");
+  const enforceDnatRaw = flagOf(args, "enforce-dns-dnat");
+  const allowEntryRaw = flagOf(args, "allow-as-entry");
+  const created = await api<NodeEgressIp>(`/api/admin/nodes/${node.id}/egress-ips`, {
+    method: "POST",
+    body: JSON.stringify({
+      ipv4,
+      ...(flagOf(args, "label") !== undefined ? { label: flagOf(args, "label") } : {}),
+      ...(flagOf(args, "interface") !== undefined ? { interfaceName: flagOf(args, "interface") } : {}),
+      ...(flagOf(args, "gateway") !== undefined ? { gatewayIpv4: flagOf(args, "gateway") } : {}),
+      ...(tableRaw !== undefined ? { routingTableId: Number(tableRaw) } : {}),
+      ...(flagOf(args, "dns1") !== undefined ? { dnsPrimary: flagOf(args, "dns1") } : {}),
+      ...(flagOf(args, "dns2") !== undefined ? { dnsSecondary: flagOf(args, "dns2") } : {}),
+      ...(dnatRaw !== undefined ? { amneziaDnsDnat: parseBoolFlag("amnezia-dns-dnat", dnatRaw) } : {}),
+      ...(enforceDnatRaw !== undefined ? { enforceDnsDnat: parseBoolFlag("enforce-dns-dnat", enforceDnatRaw) } : {}),
+      ...(allowEntryRaw !== undefined ? { allowAsEntry: parseBoolFlag("allow-as-entry", allowEntryRaw) } : {}),
+      ...(args.includes("--disabled") ? { enabled: false } : {}),
+    }),
+  });
+  if (wantsJson(args)) return json(created);
+  console.log(
+    `exit ip added on ${node.name}: ${created.ipv4} (id ${created.id}, table ${created.routingTableId ?? "auto"})`,
+  );
+  if (created.subnetWarning) console.log(`warning: ${created.subnetWarning}`);
+}
+
+async function cmdNodeExitUpdate(args: string[]): Promise<void> {
+  const [nodeRef, ipId] = positionals(args);
+  if (!nodeRef || !ipId) {
+    throw new Error(
+      "Usage: node-exit-update <node> <ip-id> [--label=<text|null>] [--interface=<iface|null>] [--gateway=<ipv4|null>] [--table=<200-219|null>] [--dns1=<ipv4>] [--dns2=<ipv4|null>] [--amnezia-dns-dnat=true|false] [--enforce-dns-dnat=true|false] [--allow-as-entry=true|false] [--enabled=true|false]",
+    );
+  }
+  const node = await findAdminNode(nodeRef);
+  const nullableStr = (flagName: string) => {
+    const val = flagOf(args, flagName);
+    return val === undefined ? undefined : val === "null" ? null : val;
+  };
+  const body: Record<string, unknown> = {};
+  const label = nullableStr("label");
+  if (label !== undefined) body.label = label;
+  const iface = nullableStr("interface");
+  if (iface !== undefined) body.interfaceName = iface;
+  const gateway = nullableStr("gateway");
+  if (gateway !== undefined) body.gatewayIpv4 = gateway;
+  const tableRaw = flagOf(args, "table");
+  if (tableRaw !== undefined) body.routingTableId = tableRaw === "null" ? null : Number(tableRaw);
+  const dns1 = flagOf(args, "dns1");
+  if (dns1 !== undefined) body.dnsPrimary = dns1;
+  const dns2 = nullableStr("dns2");
+  if (dns2 !== undefined) body.dnsSecondary = dns2;
+  const dnatRaw = flagOf(args, "amnezia-dns-dnat");
+  if (dnatRaw !== undefined) body.amneziaDnsDnat = parseBoolFlag("amnezia-dns-dnat", dnatRaw);
+  const enforceRaw = flagOf(args, "enforce-dns-dnat");
+  if (enforceRaw !== undefined) body.enforceDnsDnat = parseBoolFlag("enforce-dns-dnat", enforceRaw);
+  const allowRaw = flagOf(args, "allow-as-entry");
+  if (allowRaw !== undefined) body.allowAsEntry = parseBoolFlag("allow-as-entry", allowRaw);
+  const enabledRaw = flagOf(args, "enabled");
+  if (enabledRaw !== undefined) body.enabled = parseBoolFlag("enabled", enabledRaw);
+  if (Object.keys(body).length === 0) {
+    throw new Error("node-exit-update requires at least one flag to change");
+  }
+  const updated = await api<NodeEgressIp>(
+    `/api/admin/nodes/${node.id}/egress-ips/${ipId}`,
+    { method: "PATCH", body: JSON.stringify(body) },
+  );
+  if (wantsJson(args)) return json(updated);
+  console.log(`exit ip ${updated.ipv4} (${updated.id}) updated`);
+}
+
+async function cmdNodeExitRemove(args: string[]): Promise<void> {
+  const [nodeRef, ipId] = positionals(args);
+  if (!nodeRef || !ipId) {
+    throw new Error("Usage: node-exit-remove <node> <ip-id> --confirm [--json]");
+  }
+  const node = await findAdminNode(nodeRef);
+  if (!args.includes("--confirm")) {
+    console.log(`exit ip ${ipId} on ${node.name} (${node.id})`);
+    console.log("Removing clears any endpoint exit assignments referencing it and re-syncs host egress rules.");
+    console.log("Re-run with --confirm to delete.");
+    return;
+  }
+  const result = await api<{ id: string; deleted: boolean; affectedEndpoints: number }>(
+    `/api/admin/nodes/${node.id}/egress-ips/${ipId}`,
+    { method: "DELETE" },
+  );
+  if (wantsJson(args)) return json(result);
+  console.log(
+    `exit ip ${result.id} removed from ${node.name} (${result.affectedEndpoints} endpoint(s) cleared)`,
+  );
+}
+
+async function cmdNodeExitSwap(args: string[]): Promise<void> {
+  const [nodeRef, ipId] = positionals(args);
+  const ipv4 = flagOf(args, "ip");
+  if (!nodeRef || !ipId || !ipv4) {
+    throw new Error(
+      "Usage: node-exit-swap <node> <ip-id> --ip=<new-ipv4> [--interface=<iface|null>] [--gateway=<ipv4|null>] [--label=<text|null>] [--json]",
+    );
+  }
+  const node = await findAdminNode(nodeRef);
+  const nullableStr = (flagName: string) => {
+    const val = flagOf(args, flagName);
+    return val === undefined ? undefined : val === "null" ? null : val;
+  };
+  const iface = nullableStr("interface");
+  const gateway = nullableStr("gateway");
+  const label = nullableStr("label");
+  const result = await api<{
+    ip: NodeEgressIp;
+    replacedIpv4: string;
+    affectedEndpoints: number;
+  }>(`/api/admin/nodes/${node.id}/egress-ips/${ipId}/swap`, {
+    method: "POST",
+    body: JSON.stringify({
+      ipv4,
+      ...(iface !== undefined ? { interfaceName: iface } : {}),
+      ...(gateway !== undefined ? { gatewayIpv4: gateway } : {}),
+      ...(label !== undefined ? { label } : {}),
+    }),
+  });
+  if (wantsJson(args)) return json(result);
+  console.log(
+    `exit ip swapped on ${node.name}: ${result.replacedIpv4} -> ${result.ip.ipv4} (${result.affectedEndpoints} endpoint(s) kept)`,
+  );
+}
+
+async function cmdNodeExitVerify(args: string[]): Promise<void> {
+  const [nodeRef, ipId] = positionals(args);
+  if (!nodeRef || !ipId) {
+    throw new Error(
+      "Usage: node-exit-verify <node> <ip-id> [--probe-url=<url>] [--dns-domain=<domain>] [--timeout-ms=<ms>] [--json]",
+    );
+  }
+  const node = await findAdminNode(nodeRef);
+  const probeUrl = flagOf(args, "probe-url");
+  const dnsDomain = flagOf(args, "dns-domain");
+  const timeoutRaw = flagOf(args, "timeout-ms");
+  const result = await api<VerifyNodeEgressIpResult>(
+    `/api/admin/nodes/${node.id}/egress-ips/${ipId}/verify`,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        ...(probeUrl !== undefined ? { probeUrl } : {}),
+        ...(dnsDomain !== undefined ? { dnsDomain } : {}),
+        ...(timeoutRaw !== undefined ? { timeoutMs: Number(timeoutRaw) } : {}),
+      }),
+    },
+  );
+  if (wantsJson(args)) return json(result);
+  console.log(`exit ip verify ${result.egressIpv4}: ${result.ok ? "PASS" : "FAIL"}`);
+  console.log(
+    `  http: observed=${result.observedIp ?? "—"} match=${result.ipMatch ? "yes" : "no"} latency=${result.httpLatencyMs}ms${result.httpError ? ` error=${result.httpError}` : ""}`,
+  );
+  console.log(
+    `  dns:  ok=${result.dnsOk ? "yes" : "no"} server=${result.dnsServer ?? "—"} latency=${result.dnsLatencyMs}ms${result.dnsError ? ` error=${result.dnsError}` : ""}`,
+  );
+}
+
+async function cmdKeyReassignEndpoint(args: string[]): Promise<void> {
+  const keyId = args.find((arg) => !arg.startsWith("--"));
+  const endpointId = flagOf(args, "endpoint-id");
+  if (!keyId || !endpointId) {
+    throw new Error("Usage: key-reassign-endpoint <key-id> --endpoint-id=<uuid> [--json]");
+  }
+  const result = await api<{
+    id: string;
+    nodeId: string;
+    endpointId: string;
+    previousEndpointId: string | null;
+  }>(`/api/admin/keys/${keyId}/endpoint`, {
+    method: "PATCH",
+    body: JSON.stringify({ endpointId }),
+  });
+  if (wantsJson(args)) return json(result);
+  console.log(
+    `key ${result.id} reassigned to endpoint ${result.endpointId} (was ${result.previousEndpointId ?? "default"})`,
+  );
+}
+
 async function cmdNodeAdd(args: string[]): Promise<void> {
   const name = flagOf(args, "name");
   const apiBaseUrl = flagOf(args, "api-url");
@@ -2201,25 +2544,69 @@ async function cmdNodeUpdate(args: string[]): Promise<void> {
   // under it. If one ever does while keeping the same DNS name, this is the
   // recovery: clear the stored IP and the next telemetry tick resolves again.
   if (args.includes("--clear-public-ip")) body.publicIp = null;
+  const blockSmtp = flagOf(args, "egress-block-smtp");
+  if (blockSmtp !== undefined) {
+    body.egressBlockSmtp = parseBoolFlag("egress-block-smtp", blockSmtp);
+  }
+  const isolatePrivate = flagOf(args, "egress-isolate-private");
+  if (isolatePrivate !== undefined) {
+    body.egressIsolatePrivate = parseBoolFlag("egress-isolate-private", isolatePrivate);
+  }
+  const defaultEgressId = flagOf(args, "egress-default-ip-id");
+  if (defaultEgressId !== undefined) {
+    body.egressDefaultIpId = defaultEgressId === "null" ? null : defaultEgressId;
+  }
   const endpointIp = flagOf(args, "endpoint-ip");
   const endpointId = flagOf(args, "endpoint-id");
   const endpointName = flagOf(args, "endpoint-name");
+  const endpointEntryName = flagOf(args, "endpoint-entry-name");
+  const endpointCustomName = flagOf(args, "endpoint-custom-name");
+  const endpointEgressId = flagOf(args, "endpoint-egress-id");
   const endpointEnabled = flagOf(args, "endpoint-enabled");
   const endpointReachability = flagOf(args, "endpoint-reachability");
   const endpointBridgeMode = flagOf(args, "endpoint-bridge-mode");
+  const endpointRemove = args.includes("--endpoint-remove");
+  const reassignEndpointId = flagOf(args, "reassign-endpoint-id");
   if (endpointIp !== undefined && endpointId !== undefined) {
     throw new Error("Choose --endpoint-ip to add an address or --endpoint-id to edit one");
   }
-  if (endpointIp !== undefined) {
+  if (endpointRemove) {
+    if (!endpointId) {
+      throw new Error("--endpoint-remove requires --endpoint-id=<uuid>");
+    }
+    body.publicEndpoint = {
+      action: "remove",
+      id: endpointId,
+      ...(reassignEndpointId !== undefined ? { reassignToEndpointId: reassignEndpointId } : {}),
+    };
+  } else if (endpointIp !== undefined) {
     if (endpointEnabled !== undefined || endpointReachability !== undefined || endpointBridgeMode !== undefined) {
       throw new Error("--endpoint-enabled, --endpoint-reachability and --endpoint-bridge-mode need --endpoint-id");
     }
-    body.publicEndpoint = { action: "add", address: endpointIp, name: endpointName };
+    body.publicEndpoint = {
+      action: "add",
+      address: endpointIp,
+      ...(endpointName !== undefined ? { name: endpointName } : {}),
+      ...(endpointEntryName !== undefined ? { entryName: endpointEntryName } : {}),
+      ...(endpointCustomName !== undefined
+        ? { customName: endpointCustomName === "null" ? null : endpointCustomName }
+        : {}),
+      ...(endpointEgressId !== undefined
+        ? { egressIpId: endpointEgressId === "null" ? null : endpointEgressId }
+        : {}),
+    };
   } else if (endpointId !== undefined) {
     body.publicEndpoint = {
       action: "update",
       id: endpointId,
       name: endpointName,
+      entryName: endpointEntryName,
+      ...(endpointCustomName !== undefined
+        ? { customName: endpointCustomName === "null" ? null : endpointCustomName }
+        : {}),
+      ...(endpointEgressId !== undefined
+        ? { egressIpId: endpointEgressId === "null" ? null : endpointEgressId }
+        : {}),
       enabled: endpointEnabled === undefined ? undefined : parseBoolFlag("endpoint-enabled", endpointEnabled),
       reachabilityEnabled:
         endpointReachability === undefined
@@ -2231,6 +2618,9 @@ async function cmdNodeUpdate(args: string[]): Promise<void> {
     };
   } else if (
     endpointName !== undefined ||
+    endpointEntryName !== undefined ||
+    endpointCustomName !== undefined ||
+    endpointEgressId !== undefined ||
     endpointEnabled !== undefined ||
     endpointReachability !== undefined ||
     endpointBridgeMode !== undefined
@@ -3481,6 +3871,18 @@ Nodes:
   node-ipv6-stub <id>                     Show or toggle a node's AWG 3.1 IPv6
                  [--enabled=true|false]   active-reject stub (ULA + prohibit
                  [--prefix=<ula/64>]      2000::/3). Live switch; IPv4 stays up.
+  node-egress <node> [--json]             Inspect multi-exit mode, daemon health,
+                                          host IPs, and configured Exit IPs
+  node-egress-mode <node> <masquerade|routed> [--block-smtp=] [--isolate-private=]
+                                          Switch node egress routing mode via worker
+  node-egress-adopt <node> [--json]       Adopt observed host egress mode into DB
+  node-exit-add <node> --ip=<ipv4> [flags]  Register a new Exit IP on a node
+  node-exit-update <node> <ip-id> [flags] Update Exit IP settings or DNS
+  node-exit-remove <node> <ip-id> --confirm Remove an Exit IP and clear references
+  node-exit-swap <node> <ip-id> --ip=<ipv4> Replace a burned Exit IP in place
+  node-exit-verify <node> <ip-id> [flags] Live-verify HTTP egress IP and DNS
+  key-reassign-endpoint <key-id> --endpoint-id=<uuid>
+                                          Move an AWG 3.1 key to another variant on the same node without re-keying
   node-agent-update <id> [--image=<ref>]  Replace a node's agent with the published
                     [--confirm]           image. Without --confirm it prints what would
                                           be installed and changes nothing. One node at
@@ -3740,6 +4142,21 @@ type AdminServiceCheck = {
     checkedAt: string;
     failingSince: string | null;
   }>;
+  egressResults?: Array<{
+    checkId: string;
+    egressIpId: string;
+    egressIpv4: string;
+    egressLabel: string | null;
+    nodeId: string;
+    nodeName: string;
+    status: string;
+    httpStatus: number | null;
+    latencyMs: number | null;
+    detail: string | null;
+    finalUrl: string | null;
+    checkedAt: string;
+    failingSince: string | null;
+  }>;
 };
 
 async function findServiceCheck(id: string): Promise<AdminServiceCheck> {
@@ -3782,11 +4199,15 @@ async function cmdCheckResults(args: string[]): Promise<void> {
   }
   if (wantsJson(args)) {
     return json(
-      selected.map((check) => ({ name: check.name, results: check.results ?? [] })),
+      selected.map((check) => ({
+        name: check.name,
+        results: check.results ?? [],
+        ...(check.egressResults?.length ? { egressResults: check.egressResults } : {}),
+      })),
     );
   }
-  const rows = selected.flatMap((check) =>
-    (check.results ?? []).map((result) => ({
+  const rows = selected.flatMap((check) => [
+    ...(check.results ?? []).map((result) => ({
       check: check.name,
       node: result.nodeName,
       // The three statuses stay distinct here for the same reason they do in
@@ -3797,7 +4218,15 @@ async function cmdCheckResults(args: string[]): Promise<void> {
       "failing since": result.failingSince ?? "—",
       "final url": result.finalUrl ?? "—",
     })),
-  );
+    ...(check.egressResults ?? []).map((result) => ({
+      check: check.name,
+      node: `${result.nodeName} [${result.egressLabel ? `${result.egressLabel} ` : ""}${result.egressIpv4}]`,
+      result: resultLabel(result),
+      when: result.checkedAt,
+      "failing since": result.failingSince ?? "—",
+      "final url": result.finalUrl ?? "—",
+    })),
+  ]);
   if (rows.length === 0) {
     console.log("No results yet. Run `check-run <id>` and wait for a poll.");
     return;
@@ -4299,6 +4728,24 @@ export async function dispatch(argv: string[]): Promise<void> {
       return cmdNodeCapacity(args);
     case "node-ipv6-stub":
       return cmdNodeIpv6Stub(args);
+    case "node-egress":
+      return cmdNodeEgress(args);
+    case "node-egress-mode":
+      return cmdNodeEgressMode(args);
+    case "node-egress-adopt":
+      return cmdNodeEgressAdopt(args);
+    case "node-exit-add":
+      return cmdNodeExitAdd(args);
+    case "node-exit-update":
+      return cmdNodeExitUpdate(args);
+    case "node-exit-remove":
+      return cmdNodeExitRemove(args);
+    case "node-exit-swap":
+      return cmdNodeExitSwap(args);
+    case "node-exit-verify":
+      return cmdNodeExitVerify(args);
+    case "key-reassign-endpoint":
+      return cmdKeyReassignEndpoint(args);
     case "node-agent-update":
       return cmdNodeAgentUpdate(args);
     case "node-agent-log":

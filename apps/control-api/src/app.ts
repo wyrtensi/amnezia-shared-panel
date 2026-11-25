@@ -32,6 +32,12 @@ import {
   encodeRegistrationMarkerHeader,
   requestBridgeAgentUpdateSchema,
   verifyBridgeRouteRequestSchema,
+  adminReassignKeyEndpointRequestSchema,
+  createNodeEgressIpRequestSchema,
+  swapNodeEgressIpRequestSchema,
+  updateNodeEgressIpRequestSchema,
+  updateNodeEgressModeRequestSchema,
+  verifyNodeEgressIpRequestSchema,
 } from "@amnezia/contracts";
 import { contentDispositionAttachment } from "./configFilename.js";
 import {
@@ -546,6 +552,71 @@ export const buildApp = async ({
       adminFor(request),
       id,
       updateNodeIpv6RejectStubRequestSchema.parse(request.body),
+    );
+  });
+  const egressIpParamsSchema = z.object({ id: z.uuid(), ipId: z.uuid() });
+  app.get("/api/admin/nodes/:id/egress-ips", async (request) => {
+    const { id } = idParamsSchema.parse(request.params);
+    return service.listNodeEgressIps(adminFor(request), id);
+  });
+  app.post("/api/admin/nodes/:id/egress-ips", async (request, reply) => {
+    const { id } = idParamsSchema.parse(request.params);
+    const created = await service.createNodeEgressIp(
+      adminFor(request),
+      id,
+      createNodeEgressIpRequestSchema.parse(request.body),
+    );
+    return reply.code(201).send(created);
+  });
+  app.patch("/api/admin/nodes/:id/egress-ips/:ipId", async (request) => {
+    const { id, ipId } = egressIpParamsSchema.parse(request.params);
+    return service.updateNodeEgressIp(
+      adminFor(request),
+      id,
+      ipId,
+      updateNodeEgressIpRequestSchema.parse(request.body),
+    );
+  });
+  app.delete("/api/admin/nodes/:id/egress-ips/:ipId", async (request) => {
+    const { id, ipId } = egressIpParamsSchema.parse(request.params);
+    return service.deleteNodeEgressIp(adminFor(request), id, ipId);
+  });
+  app.post("/api/admin/nodes/:id/egress-ips/:ipId/swap", async (request) => {
+    const { id, ipId } = egressIpParamsSchema.parse(request.params);
+    return service.swapNodeEgressIp(
+      adminFor(request),
+      id,
+      ipId,
+      swapNodeEgressIpRequestSchema.parse(request.body),
+    );
+  });
+  app.post("/api/admin/nodes/:id/egress-ips/:ipId/verify", async (request) => {
+    const { id, ipId } = egressIpParamsSchema.parse(request.params);
+    return service.verifyNodeEgressIp(
+      adminFor(request),
+      id,
+      ipId,
+      verifyNodeEgressIpRequestSchema.parse(request.body ?? {}),
+    );
+  });
+  app.put("/api/admin/nodes/:id/egress-mode", async (request) => {
+    const { id } = idParamsSchema.parse(request.params);
+    return service.setNodeEgressMode(
+      adminFor(request),
+      id,
+      updateNodeEgressModeRequestSchema.parse(request.body),
+    );
+  });
+  app.post("/api/admin/nodes/:id/egress-mode/adopt", async (request) => {
+    const { id } = idParamsSchema.parse(request.params);
+    return service.adoptNodeEgressMode(adminFor(request), id);
+  });
+  app.patch("/api/admin/keys/:id/endpoint", async (request) => {
+    const { id } = idParamsSchema.parse(request.params);
+    return service.reassignKeyEndpoint(
+      adminFor(request),
+      id,
+      adminReassignKeyEndpointRequestSchema.parse(request.body),
     );
   });
   app.delete("/api/admin/nodes/:id", async (request) => {

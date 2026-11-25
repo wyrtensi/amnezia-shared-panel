@@ -9,18 +9,37 @@ SCRIPT_DIR="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
 # least as strict as backup-db.sh about resolving COMPOSE_DIR: same function,
 # same refusal to guess.
 COMPOSE_DIR="$(require_compose_dir)" || exit 1
-COMPOSE="docker compose -f ${COMPOSE_DIR}/compose.yaml"
+COMPOSE_ARGS=(-f "${COMPOSE_DIR}/compose.yaml")
+if [ -f "${COMPOSE_DIR}/compose.override.yaml" ]; then
+  COMPOSE_ARGS+=(-f "${COMPOSE_DIR}/compose.override.yaml")
+fi
 USER_NAME="${POSTGRES_USER:-amnezia_panel}"
 DB_NAME="${POSTGRES_DB:-amnezia_panel}"
 FILE="${1:?Usage: scripts/restore-db.sh <dump.sql.gz>}"
 
 [ -f "$FILE" ] || { echo "No such file: $FILE" >&2; exit 1; }
 
+stopped_writers=0
+cleanup() {
+  if [ "$stopped_writers" -eq 1 ]; then
+    echo "Starting control-api and worker..."
+    docker compose "${COMPOSE_ARGS[@]}" start control-api worker >/dev/null 2>&1 || true
+  fi
+}
+trap cleanup EXIT
+
+echo "Stopping control-api and worker before restore..."
+docker compose "${COMPOSE_ARGS[@]}" stop control-api worker
+stopped_writers=1
+
 echo "Restoring ${FILE} into '${DB_NAME}'. Existing objects are dropped/recreated."
 # ON_ERROR_STOP so a failed restore exits non-zero instead of a false success;
 # the dump carries DROP ... IF EXISTS (backup-db.sh --clean --if-exists).
 set -o pipefail
 gunzip -c "$FILE" \
-  | $COMPOSE exec -T postgres \
+  | docker compose "${COMPOSE_ARGS[@]}" exec -T postgres \
       psql -v ON_ERROR_STOP=1 -U "$USER_NAME" -d "$DB_NAME"
 echo "Restore complete."
+echo "Next steps: after restore, reconcile nodes and check host egress mode if needed:"
+echo "  amnezia-panel node-reconcile <node-id>"
+echo "  amnezia-panel node-egress-adopt <node-id>"

@@ -6,9 +6,12 @@ import {
   deviceTypeEnum,
   identities,
   jobOutbox,
+  nodeEgressIps,
+  nodeEgressServiceCheckResults,
   nodeMetricsCurrent,
   nodeMetricsSamples,
   nodes,
+  nodeVpnEndpoints,
   nodeServiceCheckResults,
   nodeServiceChecks,
   peerCurrent,
@@ -100,6 +103,26 @@ describe("database schema", () => {
     expect(keyCols.bridgeMode.default).toBe("inherit");
     expect(keyCols.vpnBridgeRouteId.name).toBe("vpn_bridge_route_id");
     expect(keyCols.vpnBridgeRouteId.notNull).toBe(false);
+    expect(keyCols.tunnelIpv4.name).toBe("tunnel_ipv4");
+    expect(keyCols.tunnelIpv4.notNull).toBe(false);
+  });
+
+  it("declares node_egress_ips, endpoint variants, and per-exit check results", () => {
+    expect(getTableName(nodeEgressIps)).toBe("node_egress_ips");
+    expect(getTableName(nodeEgressServiceCheckResults)).toBe("node_egress_service_check_results");
+
+    const nodeCols = getTableColumns(nodes);
+    expect(nodeCols.egressMode.name).toBe("egress_mode");
+    expect(nodeCols.egressMode.default).toBe("masquerade");
+    expect(nodeCols.egressDaemonState.default).toBe("unavailable");
+    expect(nodeCols.egressBlockSmtp.default).toBe(true);
+    expect(nodeCols.egressIsolatePrivate.default).toBe(true);
+
+    const epCols = getTableColumns(nodeVpnEndpoints);
+    expect(epCols.entryName.name).toBe("entry_name");
+    expect(epCols.variantOrdinal.default).toBe(1);
+    expect(epCols.egressIpId.name).toBe("egress_ip_id");
+    expect(epCols.probeEgressMatch.name).toBe("probe_egress_match");
   });
 });
 

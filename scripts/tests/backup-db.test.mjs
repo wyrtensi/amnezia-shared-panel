@@ -188,3 +188,71 @@ test("deploy.sh fails before invoking docker when neither stack is configured", 
   assert.doesNotMatch(stdout, /\[1\/4\]/);
   await assert.rejects(access(path.join(dir, "backups")));
 });
+
+test("backup-db.sh passes compose.override.yaml when present and prunes older dumps beyond BACKUP_KEEP_COUNT", async () => {
+  const dir = await fixture({ prodEnv: true });
+  await writeFile(path.join(dir, "infra", "prod", "compose.override.yaml"), "services: {}\n");
+  const binDir = path.join(dir, "bin");
+  await mkdir(binDir, { recursive: true });
+  const dockerLog = path.join(dir, "docker.log");
+  await writeFile(
+    path.join(binDir, "docker"),
+    `#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${dockerLog}"
+if [ "$1" = "compose" ]; then
+  printf -- '-- mock sql dump\n'
+fi
+`,
+    { mode: 0o755 },
+  );
+  const backupsDir = path.join(dir, "backups");
+  await mkdir(backupsDir, { recursive: true });
+  await writeFile(path.join(backupsDir, "panel-db-20260101T000001Z.sql.gz"), "old-1\n");
+  await writeFile(path.join(backupsDir, "panel-db-20260101T000002Z.sql.gz"), "old-2\n");
+
+  const { code, stdout } = await runBash([backupScriptPath, backupsDir], {
+    cwd: dir,
+    env: {
+      PATH: `${binDir}:${process.env.PATH ?? ""}`,
+      BACKUP_KEEP_COUNT: "2",
+    },
+  });
+
+  assert.equal(code, 0);
+  assert.match(stdout, /Pruned 1 old backup\(s\), keeping newest 2/);
+  const logged = await readFile(dockerLog, "utf8");
+  assert.match(logged, /compose -f infra\/prod\/compose\.yaml -f infra\/prod\/compose\.override\.yaml exec -T postgres pg_dump/);
+  await assert.rejects(access(path.join(backupsDir, "panel-db-20260101T000001Z.sql.gz")));
+});
+
+test("restore-db.sh stops control-api and worker and always restarts them on failure", async () => {
+  const dir = await fixture({ prodEnv: true });
+  const binDir = path.join(dir, "bin");
+  await mkdir(binDir, { recursive: true });
+  const dockerLog = path.join(dir, "docker.log");
+  await writeFile(
+    path.join(binDir, "docker"),
+    `#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${dockerLog}"
+for arg in "$@"; do
+  if [ "$arg" = "psql" ]; then
+    exit 1
+  fi
+done
+`,
+    { mode: 0o755 },
+  );
+  const { gzipSync } = await import("node:zlib");
+  const dumpPath = path.join(dir, "sample.sql.gz");
+  await writeFile(dumpPath, gzipSync("-- sample dump\n"));
+
+  const { code } = await runBash([restoreScriptPath, dumpPath], {
+    cwd: dir,
+    env: { PATH: `${binDir}:${process.env.PATH ?? ""}` },
+  });
+
+  assert.notEqual(code, 0);
+  const lines = (await readFile(dockerLog, "utf8")).trim().split(/\r?\n/);
+  assert.match(lines[0], /stop control-api worker$/);
+  assert.match(lines[lines.length - 1], /start control-api worker$/);
+});

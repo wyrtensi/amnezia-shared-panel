@@ -124,9 +124,11 @@ report the diff for a human to reconcile).
 
 ## State and recovery
 
-`backup.sh` stops the node-agent, AWG2, and AWG3 briefly so each `awg0.conf` and `clientsTable` cannot be captured across a mutation. It creates a mode-`0600` archive plus a SHA-256 sidecar in `backups/` covering `state/amnezia-awg2` and (once initialized) `state/amnezia-awg3`, then restarts only services that were previously running. The archive contains VPN private material; copy it only to approved encrypted backup storage.
+`backup.sh` stops the node-agent, AWG2, and AWG3 briefly so each `awg0.conf` and `clientsTable` cannot be captured across a mutation. It creates a mode-`0600` archive plus a SHA-256 sidecar in `backups/` covering `state/amnezia-awg2`, (once initialized) `state/amnezia-awg3`, and `egress-daemon` state (`/var/lib/amnezia-egressd` / systemd unit when present), then restarts only services that were previously running. The archive contains VPN private material; copy it only to approved encrypted backup storage.
 
 `rollback.sh` accepts one explicit archive path. It rejects absolute/traversal archive members and links, validates the AWG2 config and `clientsTable` (and the AWG3 state when the archive contains it), takes a safety backup, restores with strict permissions, and requires all health checks. If restored state fails health verification, it puts the pre-rollback state back.
+
+Multi-exit routing (`routed` mode) additionally uses `services/egress-daemon` installed on the host via `scripts/install-egress-daemon.sh` (removed cleanly with `scripts/uninstall-egress-daemon.sh --confirm` after resetting nftables/policy rules back to `masquerade`).
 
 ## Security boundary
 

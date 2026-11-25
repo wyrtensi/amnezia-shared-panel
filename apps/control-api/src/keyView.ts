@@ -1,5 +1,6 @@
 import type {
   KeyBridgeInfo,
+  KeyEgressInfo,
   KeyRulesUpdate,
   PortalPolicy,
   RouteProfile,
@@ -17,6 +18,7 @@ export type KeyRow = {
   id: string;
   ownerId: string;
   nodeId: string;
+  endpointId?: string | null;
   publicKey: string | null;
   protocol: KeyView["protocol"];
   state: KeyView["state"];
@@ -101,6 +103,20 @@ export const bridgeInfoFor = (
     : {};
 
 /**
+ * Same server-side gate as `internalNameFor`: resolved exit IP and per-exit
+ * DNS details stay invisible to regular users and appear only on an admin's
+ * own key view (or via `/api/admin/keys`).
+ */
+export const egressInfoFor = (
+  actor: Pick<Actor, "id" | "role">,
+  key: Pick<KeyRow, "ownerId">,
+  egress: KeyEgressInfo | undefined,
+): { egress?: KeyEgressInfo } =>
+  actor.role === "admin" && key.ownerId === actor.id && egress
+    ? { egress }
+    : {};
+
+/**
  * The owner-facing view of one key, as `/api/keys` returns it.
  *
  * Extracted from `listKeys` so the projection — and above all the gate on the
@@ -116,6 +132,7 @@ export const toKeyView = ({
   importantByProfile,
   nodeReachability,
   bridge,
+  egress,
 }: {
   actor: Pick<Actor, "id" | "role">;
   key: KeyRow;
@@ -128,6 +145,8 @@ export const toKeyView = ({
   nodeReachability?: UserNodeReachability;
   /** Admin-only bridge routing summary; omitted for regular users. */
   bridge?: KeyBridgeInfo;
+  /** Admin-only egress routing summary; omitted for regular users. */
+  egress?: KeyEgressInfo;
 }): KeyView => {
   const rulesOutdated =
     key.routeProfile !== "full_tunnel" &&
@@ -155,6 +174,7 @@ export const toKeyView = ({
     id: key.id,
     ownerId: key.ownerId,
     nodeId: key.nodeId,
+    ...(key.endpointId !== undefined ? { endpointId: key.endpointId } : {}),
     // Read from the key's own node, not from `/api/nodes`: that list holds only
     // the servers the user may create keys on, and a key outlives that
     // permission. Same rule as `listNodes`: the public name when there is one,
@@ -169,6 +189,7 @@ export const toKeyView = ({
     keyNumber: key.keyNumber,
     ...internalNameFor(actor, key),
     ...bridgeInfoFor(actor, key, bridge ? { ...bridge, observed: observedKeyPath(current?.endpoint) } : undefined),
+    ...egressInfoFor(actor, key, egress),
     nameDisplay: {
       server: key.nameShowNode,
       label: key.nameShowLabel,

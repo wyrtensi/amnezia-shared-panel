@@ -451,11 +451,18 @@ export const nodePublicEndpointMutationSchema = z.discriminatedUnion("action", [
     action: z.literal("add"),
     address: publicIpv4Schema,
     name: nodeEndpointNameSchema.optional(),
+    entryName: nodeEndpointNameSchema.optional(),
+    customName: nodeEndpointNameSchema.nullish(),
+    egressIpId: z.uuid().nullish(),
   }).strict(),
   z.object({
     action: z.literal("update"),
     id: z.uuid(),
     name: nodeEndpointNameSchema.optional(),
+    entryName: nodeEndpointNameSchema.optional(),
+    customName: nodeEndpointNameSchema.nullish(),
+    renameEntryGroup: z.boolean().optional(),
+    egressIpId: z.uuid().nullish(),
     enabled: z.boolean().optional(),
     reachabilityEnabled: z.boolean().optional(),
     bridgeMode: endpointBridgeModeSchema.optional(),
@@ -466,6 +473,9 @@ export const nodePublicEndpointMutationSchema = z.discriminatedUnion("action", [
   }).strict().refine(
     (fields) =>
       fields.name !== undefined ||
+      fields.entryName !== undefined ||
+      fields.customName !== undefined ||
+      fields.egressIpId !== undefined ||
       fields.enabled !== undefined ||
       fields.reachabilityEnabled !== undefined ||
       fields.bridgeMode !== undefined ||
@@ -473,9 +483,14 @@ export const nodePublicEndpointMutationSchema = z.discriminatedUnion("action", [
       fields.awgMtu !== undefined ||
       fields.awgDeviceRules !== undefined,
     {
-      message: "An endpoint name, availability, reachability, or bridge setting is required",
+      message: "An endpoint name, exit assignment, availability, reachability, or bridge setting is required",
     },
   ),
+  z.object({
+    action: z.literal("remove"),
+    id: z.uuid(),
+    reassignToEndpointId: z.uuid().optional(),
+  }).strict(),
 ]);
 export type NodePublicEndpointMutation = z.infer<typeof nodePublicEndpointMutationSchema>;
 
@@ -485,6 +500,9 @@ export const updateNodeRequestSchema = createNodeRequestSchema
   .extend({
     publicEndpoint: nodePublicEndpointMutationSchema.optional(),
     apiKey: z.string().min(32).max(4_096).optional(),
+    egressBlockSmtp: z.boolean().optional(),
+    egressIsolatePrivate: z.boolean().optional(),
+    egressDefaultIpId: z.uuid().nullable().optional(),
     // Redeclared without their create-time defaults: `.partial()` keeps a
     // `.default()`, so a patch naming one unrelated field would otherwise
     // re-enable a disabled node, reset its capacity and capabilities, and flip
@@ -2476,6 +2494,13 @@ export const userNodeEndpointSchema = z.object({
 export type UserNodeEndpoint = z.infer<typeof userNodeEndpointSchema>;
 
 export const adminNodeEndpointSchema = userNodeEndpointSchema.extend({
+  entryName: z.string().optional(),
+  customName: z.string().nullable().optional(),
+  variantOrdinal: z.int().positive().optional(),
+  egressIpId: z.uuid().nullable().optional(),
+  effectiveEgressIp: z.string().nullable().optional(),
+  probeObservedEgressIp: z.string().nullable().optional(),
+  probeEgressMatch: z.boolean().nullable().optional(),
   awgGenerator: awgGeneratorSettingsSchema.nullish(),
   awgMtu: awgClientMtuSchema.nullish(),
   awgDeviceRules: awgDeviceRulesSchema.nullish(),
@@ -2664,3 +2689,4 @@ export * from "./bridgeRollback.js";
 export * from "./ruleSources.js";
 export * from "./ipv6RejectStub.js";
 export * from "./awgGenerator.js";
+export * from "./egress.js";

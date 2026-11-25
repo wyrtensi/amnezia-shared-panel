@@ -253,6 +253,21 @@ createNode: vi.fn(() => Promise.resolve({ id: "node-1" })),
   ),
   getBridgeAgentUpdate: vi.fn(() => Promise.reject(new Error("not stubbed"))),
   requestBridgeAgentUpdate: vi.fn(() => Promise.reject(new Error("not stubbed"))),
+  listNodeEgressIps: vi.fn(() => Promise.resolve([])),
+  createNodeEgressIp: vi.fn(() => Promise.reject(new Error("not stubbed"))),
+  updateNodeEgressIp: vi.fn(() => Promise.reject(new Error("not stubbed"))),
+  deleteNodeEgressIp: vi.fn(() => Promise.resolve({ id: "ip-1", deleted: true, affectedEndpoints: 0 })),
+  swapNodeEgressIp: vi.fn(() => Promise.reject(new Error("not stubbed"))),
+  verifyNodeEgressIp: vi.fn(() => Promise.reject(new Error("not stubbed"))),
+  setNodeEgressMode: vi.fn(() =>
+    Promise.resolve({ nodeId: bridgeNodeId, mode: "routed" as const, state: "switching" as const, queued: true }),
+  ),
+  adoptNodeEgressMode: vi.fn(() =>
+    Promise.resolve({ nodeId: bridgeNodeId, mode: "masquerade" as const, state: "idle" as const }),
+  ),
+  reassignKeyEndpoint: vi.fn(() =>
+    Promise.resolve({ id: "key-1", nodeId: bridgeNodeId, endpointId: "ep-2", previousEndpointId: "ep-1" }),
+  ),
 });
 
 describe("control API identity boundary", () => {
@@ -2747,6 +2762,107 @@ describe("client parameters routes", () => {
     }
     expect(service.getKeyClientParameters).not.toHaveBeenCalled();
     expect(service.getNodeClientParameters).not.toHaveBeenCalled();
+    await app.close();
+  });
+});
+
+describe("node egress and key endpoint reassignment routes", () => {
+  const admin = { ...user, role: "admin" as const };
+  const nodeId = bridgeNodeId;
+  const ipId = "2d6aee6e-626d-49c8-8a4a-6eb37e527e52";
+  const keyId = "3e7bff7f-737e-4ad9-9b5b-7fc48f638f63";
+  const endpointId = "4f8c0080-848f-4be0-ac6c-80d590749074";
+  const exitView = {
+    id: ipId,
+    nodeId,
+    ipv4: "1.1.1.1",
+    label: "Exit One",
+    interfaceName: "eth0",
+    gatewayIpv4: null,
+    routingTableId: 200,
+    dnsPrimary: "1.1.1.1",
+    dnsSecondary: null,
+    amneziaDnsDnat: true,
+    enforceDnsDnat: false,
+    allowAsEntry: false,
+    enabled: true,
+    hostState: "pending" as const,
+    hostDetail: null,
+    observedSubnetCidr: null,
+    detectedGatewayIpv4: null,
+    txBytes: "0",
+    txPackets: "0",
+    hostObservedAt: null,
+    subnetWarning: null,
+    assignedEndpointCount: 0,
+  };
+
+  it("handles admin egress CRUD, swap, verify, mode switch, adopt, and key reassign", async () => {
+    const service = createService();
+    vi.mocked(service.resolveIdentity).mockResolvedValue(admin);
+    vi.mocked(service.listNodeEgressIps).mockResolvedValue([exitView]);
+    vi.mocked(service.createNodeEgressIp).mockResolvedValue(exitView);
+    vi.mocked(service.updateNodeEgressIp).mockResolvedValue({ ...exitView, label: "Updated" });
+    vi.mocked(service.swapNodeEgressIp).mockResolvedValue({
+      ip: { ...exitView, ipv4: "8.8.8.8" },
+      replacedIpv4: "1.1.1.1",
+      affectedEndpoints: 1,
+    });
+    vi.mocked(service.verifyNodeEgressIp).mockResolvedValue({
+      ok: true,
+      egressIpv4: "1.1.1.1",
+      observedIp: "1.1.1.1",
+      ipMatch: true,
+      httpLatencyMs: 25,
+      dnsOk: true,
+      dnsServer: "1.1.1.1",
+      dnsLatencyMs: 9,
+    });
+    const app = await buildApp({ service, environment: "development", allowDevIdentity: true });
+    const headers = { "x-dev-user-email": admin.email };
+
+    expect((await app.inject({ method: "GET", url: `/api/admin/nodes/${nodeId}/egress-ips`, headers })).statusCode).toBe(200);
+    expect(
+      (await app.inject({ method: "POST", url: `/api/admin/nodes/${nodeId}/egress-ips`, headers, payload: { ipv4: "1.1.1.1", label: "Exit One" } })).statusCode,
+    ).toBe(201);
+    expect(
+      (await app.inject({ method: "PATCH", url: `/api/admin/nodes/${nodeId}/egress-ips/${ipId}`, headers, payload: { label: "Updated" } })).statusCode,
+    ).toBe(200);
+    expect(
+      (await app.inject({ method: "POST", url: `/api/admin/nodes/${nodeId}/egress-ips/${ipId}/swap`, headers, payload: { ipv4: "8.8.8.8" } })).statusCode,
+    ).toBe(200);
+    expect(
+      (await app.inject({ method: "POST", url: `/api/admin/nodes/${nodeId}/egress-ips/${ipId}/verify`, headers, payload: {} })).statusCode,
+    ).toBe(200);
+    expect(
+      (await app.inject({ method: "PUT", url: `/api/admin/nodes/${nodeId}/egress-mode`, headers, payload: { mode: "routed" } })).statusCode,
+    ).toBe(200);
+    expect(
+      (await app.inject({ method: "POST", url: `/api/admin/nodes/${nodeId}/egress-mode/adopt`, headers })).statusCode,
+    ).toBe(200);
+    expect(
+      (await app.inject({ method: "PATCH", url: `/api/admin/keys/${keyId}/endpoint`, headers, payload: { endpointId } })).statusCode,
+    ).toBe(200);
+    expect(
+      (await app.inject({ method: "DELETE", url: `/api/admin/nodes/${nodeId}/egress-ips/${ipId}`, headers })).statusCode,
+    ).toBe(200);
+    await app.close();
+  });
+
+  it("refuses non-admins and rejects invalid egress payloads", async () => {
+    const service = createService();
+    vi.mocked(service.resolveIdentity).mockResolvedValue(user);
+    const app = await buildApp({ service, environment: "development", allowDevIdentity: true });
+    const headers = { "x-dev-user-email": user.email };
+    expect((await app.inject({ method: "GET", url: `/api/admin/nodes/${nodeId}/egress-ips`, headers })).statusCode).toBe(403);
+    expect((await app.inject({ method: "PUT", url: `/api/admin/nodes/${nodeId}/egress-mode`, headers, payload: { mode: "routed" } })).statusCode).toBe(403);
+    expect((await app.inject({ method: "PATCH", url: `/api/admin/keys/${keyId}/endpoint`, headers, payload: { endpointId } })).statusCode).toBe(403);
+
+    vi.mocked(service.resolveIdentity).mockResolvedValue(admin);
+    const adminHeaders = { "x-dev-user-email": admin.email };
+    expect(
+      (await app.inject({ method: "POST", url: `/api/admin/nodes/${nodeId}/egress-ips`, headers: adminHeaders, payload: { ipv4: "10.0.0.5" } })).statusCode,
+    ).toBe(400);
     await app.close();
   });
 });

@@ -20,6 +20,8 @@ import type {
   UpdateBridgeRequest,
   VerifyBridgeRouteRequest,
   VerifyBridgeRouteResult,
+  AdminReassignKeyEndpointRequest,
+  CreateNodeEgressIpRequest,
   CreateNodeRequest,
   CreateServiceCheckRequest,
   CreateKeyRequest,
@@ -30,6 +32,9 @@ import type {
   GlobalRoutes,
   KeyNameDisplay,
   KeyState,
+  NodeEgressIp,
+  NodeEgressMode,
+  NodeEgressModeState,
   NodeIpv6RejectStubState,
   NoticeAcks,
   NoticeKind,
@@ -37,6 +42,9 @@ import type {
   QuotaRequest,
   RouteProfile,
   RulesRefreshStatus,
+  SwapNodeEgressIpRequest,
+  UpdateNodeEgressIpRequest,
+  UpdateNodeEgressModeRequest,
   UpdateNodeIpv6RejectStubRequest,
   UpdateNodeRequest,
   UpdateServiceCheckRequest,
@@ -44,6 +52,7 @@ import type {
   ResolvedAwgClientSettings,
 } from "@amnezia/contracts";
 import type { EncryptedSecret } from "@amnezia/db";
+import type { NodeEgressVerifyTarget } from "./nodeEgressVerifier.js";
 import type {
   Actor,
   IdentityClaim,
@@ -105,6 +114,11 @@ export type StoredKeyConfig = {
     enabled: boolean;
     state: NodeIpv6RejectStubState;
     prefix: string;
+  } | null;
+  /** Per-exit DNS override resolved from the key's endpoint or node default exit IP. */
+  egressDns?: {
+    dns1: string;
+    dns2: string | null;
   } | null;
 };
 
@@ -329,4 +343,45 @@ export interface ControlRepository {
     routeId: string,
     request: VerifyBridgeRouteRequest,
   ) => Promise<VerifyBridgeRouteResult>;
+  listNodeEgressIps: (actor: Actor, nodeId: string) => Promise<NodeEgressIp[]>;
+  createNodeEgressIp: (
+    actor: Actor,
+    nodeId: string,
+    request: CreateNodeEgressIpRequest,
+  ) => Promise<NodeEgressIp>;
+  updateNodeEgressIp: (
+    actor: Actor,
+    nodeId: string,
+    ipId: string,
+    request: UpdateNodeEgressIpRequest,
+  ) => Promise<NodeEgressIp>;
+  deleteNodeEgressIp: (
+    actor: Actor,
+    nodeId: string,
+    ipId: string,
+  ) => Promise<{ id: string; deleted: boolean; affectedEndpoints: number }>;
+  swapNodeEgressIp: (
+    actor: Actor,
+    nodeId: string,
+    ipId: string,
+    request: SwapNodeEgressIpRequest,
+  ) => Promise<{ ip: NodeEgressIp; replacedIpv4: string; affectedEndpoints: number }>;
+  getNodeEgressVerifyTarget: (
+    nodeId: string,
+    ipId: string,
+  ) => Promise<NodeEgressVerifyTarget | null>;
+  setNodeEgressMode: (
+    actor: Actor,
+    nodeId: string,
+    request: UpdateNodeEgressModeRequest,
+  ) => Promise<{ nodeId: string; mode: NodeEgressMode; state: NodeEgressModeState; queued: boolean }>;
+  adoptNodeEgressMode: (
+    actor: Actor,
+    nodeId: string,
+  ) => Promise<{ nodeId: string; mode: NodeEgressMode; state: NodeEgressModeState }>;
+  reassignKeyEndpoint: (
+    actor: Actor,
+    keyId: string,
+    request: AdminReassignKeyEndpointRequest,
+  ) => Promise<{ id: string; nodeId: string; endpointId: string; previousEndpointId: string | null }>;
 }

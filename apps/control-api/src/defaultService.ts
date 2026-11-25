@@ -33,6 +33,7 @@ import {
   setVpnDescription,
 } from "./vpnConfig.js";
 import {
+  applyDnsToVpnLink,
   AwgClientProfileError,
   DEFAULT_AWG3_SERVER_IPV4_CIDR,
   deriveStubPeerIpv6,
@@ -44,6 +45,10 @@ import {
   type AwgEndpoint,
 } from "@amnezia/vpn-config";
 import { decideBridgeDelivery, renderBridgeEndpoint } from "./bridgeEndpoint.js";
+import {
+  verifyNodeEgressIpViaAgent,
+  type NodeEgressVerifier,
+} from "./nodeEgressVerifier.js";
 import { selectDirectAddress } from "./nodeEndpoint.js";
 import { configFilename } from "./configFilename.js";
 import { buildQrFrameTexts } from "./qrFrames.js";
@@ -81,6 +86,7 @@ const QR_TOO_LARGE_MESSAGE =
 export type DefaultServiceOptions = {
   repository: ControlRepository;
   keyring: EncryptionKeyring;
+  verifyNodeEgress?: NodeEgressVerifier;
 };
 
 const assertDownloadAllowed = (
@@ -246,6 +252,9 @@ const composeExport = async (
   const profiledLink = applyIpv6RejectStub(key, clientLink, format);
   const storedLink =
     endpoint === null ? profiledLink : renderBridgeEndpoint(profiledLink, endpoint);
+  const dnsLink = key.egressDns
+    ? applyDnsToVpnLink(storedLink, key.egressDns.dns1, key.egressDns.dns2)
+    : storedLink;
   // Apply the active routing rules for non-full-tunnel profiles at export time.
   // AmneziaVPN clients cannot refresh routing on an imported config, so every
   // export carries the current rules and clears the "outdated" flag. On top of
@@ -268,8 +277,8 @@ const composeExport = async (
   const hasRoutes = mergedPayload.cidrs.length > 0;
   const routedLink =
     key.routeProfile !== "full_tunnel" && hasRoutes
-      ? applyRouteProfileToVpnLink(storedLink, key.routeProfile, mergedPayload)
-      : storedLink;
+      ? applyRouteProfileToVpnLink(dnsLink, key.routeProfile, mergedPayload)
+      : dnsLink;
   // Label the connection in the client with the parts this key was created
   // with, so a user with several keys can tell their servers apart.
   const displayName = composeKeyDisplayName({
@@ -405,6 +414,7 @@ const unavailable = () =>
 export const createDefaultControlApiService = ({
   repository,
   keyring,
+  verifyNodeEgress = verifyNodeEgressIpViaAgent,
 }: DefaultServiceOptions): ControlApiService => ({
   resolveIdentity: (claim) => repository.resolveIdentity(claim),
   getMe: async (actor) => ({
@@ -722,4 +732,42 @@ export const createDefaultControlApiService = ({
   },
   verifyBridgeRoute: (actor, routeId, request) =>
     repository.verifyBridgeRoute(actor, routeId, request),
+  listNodeEgressIps: (actor, nodeId) => repository.listNodeEgressIps(actor, nodeId),
+  createNodeEgressIp: (actor, nodeId, request) =>
+    repository.createNodeEgressIp(actor, nodeId, request),
+  updateNodeEgressIp: (actor, nodeId, ipId, request) =>
+    repository.updateNodeEgressIp(actor, nodeId, ipId, request),
+  deleteNodeEgressIp: (actor, nodeId, ipId) =>
+    repository.deleteNodeEgressIp(actor, nodeId, ipId),
+  swapNodeEgressIp: (actor, nodeId, ipId, request) =>
+    repository.swapNodeEgressIp(actor, nodeId, ipId, request),
+  verifyNodeEgressIp: async (actor, nodeId, ipId, request) => {
+    requireAdmin(actor);
+    const target = await repository.getNodeEgressVerifyTarget(nodeId, ipId);
+    if (!target) {
+      throw new ApiError(404, "Exit IP not found on node", "NODE_EGRESS_IP_NOT_FOUND");
+    }
+    const result = await verifyNodeEgress(target, keyring, request);
+    await repository.appendAudit({
+      actorUserId: actor.id,
+      actorType: "user",
+      action: "node.egress_verified",
+      targetType: "node",
+      targetId: nodeId,
+      metadata: {
+        egressIpId: ipId,
+        egressIpv4: target.egressIpv4,
+        ok: result.ok,
+        ipMatch: result.ipMatch,
+        dnsOk: result.dnsOk,
+      },
+    });
+    return result;
+  },
+  setNodeEgressMode: (actor, nodeId, request) =>
+    repository.setNodeEgressMode(actor, nodeId, request),
+  adoptNodeEgressMode: (actor, nodeId) =>
+    repository.adoptNodeEgressMode(actor, nodeId),
+  reassignKeyEndpoint: (actor, keyId, request) =>
+    repository.reassignKeyEndpoint(actor, keyId, request),
 });

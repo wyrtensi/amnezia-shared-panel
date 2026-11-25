@@ -183,11 +183,14 @@ const syncResolvedPrimaryEndpoint = async (
       .set({ address, ...resetEvidence })
       .where(eq(nodeVpnEndpoints.id, primary.id));
   } else {
+    const defaultName = node.publicName || nodeEndpointDefaultName(node.name, 1);
     await tx.insert(nodeVpnEndpoints).values({
       nodeId: node.id,
       ordinal: 1,
       address,
-      name: node.publicName || nodeEndpointDefaultName(node.name, 1),
+      entryName: defaultName,
+      variantOrdinal: 1,
+      name: defaultName,
     });
   }
   return true;

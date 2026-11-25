@@ -49,6 +49,7 @@ this tree where it is allowed to live.
 | Add or calibrate a service check | [`SERVICE-CHECKS.md`](./SERVICE-CHECKS.md) and [`runbooks/service-check-calibration.md`](./runbooks/service-check-calibration.md) |
 | Configure split-tunneling (`ru_blacklist` E-Core), `global_route_overrides`, `RULE_EXTRA_*` feeds, or Steam split-routing | [`AGENT-HOST-SETUP.md`](./AGENT-HOST-SETUP.md#route-profiles-and-rule-feeds) |
 | Toggle the per-node AWG 3.1 IPv6 active-reject ULA stub (`fd6b:7c2e:4a91:9f::/64`) | [**Per-node AWG 3.1 IPv6 active-reject stub**](#per-node-awg-31-ipv6-active-reject-stub-ula--prohibit-20003) below, [`CLI.md`](./CLI.md) (`node-ipv6-stub`), and [`IPV6-DESIGN.md`](./IPV6-DESIGN.md) |
+| Configure multi-exit routing, Exit IPs, and Entry → Exit variants | [**Multi-exit routing (`egress-daemon`)**](#multi-exit-routing-egress-daemon) below and [`CLI.md`](./CLI.md) (`node-egress*`, `node-exit-*`, `key-reassign-endpoint`) |
 | Deploy, verify, activate, or roll back optional AWG 3.1 node bridges | [`runbooks/AWG-BRIDGES.md`](./runbooks/AWG-BRIDGES.md) and [`infra/bridge/README.md`](../infra/bridge/README.md) |
 | Set up external reachability probing and Telegram alerts / status widget | [`REACHABILITY-PROBE.md`](./REACHABILITY-PROBE.md) |
 
@@ -606,6 +607,29 @@ provides a per-node **IPv6 Reject (ULA)** switch backed by `PUT /api/admin/nodes
     deletes `prohibit 2000::/3` and `<prefix>::1/64`, and writes `ENABLED=0`. Already-imported
     mobile keys continue working over IPv4 without urgent key reissue; all subsequent exports
     return clean IPv4-only configs.
+
+---
+
+## Multi-exit routing (`egress-daemon`)
+
+Nodes running `amnezia-egressd` (`services/egress-daemon`) alongside `node-agent`
+support per-Entry-IP variant routing across multiple public Exit IPs on the same
+host (`routed` mode) while defaulting to backwards-compatible `masquerade`:
+
+- **Modes & safety guards:** `masquerade` uses standard container NAT; `routed`
+  installs dedicated Linux routing tables (`200..219`), per-peer `ip rule`
+  mappings by `tunnel_ipv4`, `SNAT --to-source` rules, per-exit DNS DNAT
+  (`amneziaDnsDnat` / `enforceDnsDnat`), optional SMTP port 25/465/587 blocking
+  (`egressBlockSmtp`), and private-subnet isolation (`egressIsolatePrivate`).
+- **Endpoint variants:** each `(node_id, address, egress_ip_id)` variant keeps
+  its own probe verdict and client DNS pair; moving an AWG 3.1 key between
+  variants on the same node (`amnezia-panel key-reassign-endpoint`) keeps
+  its WireGuard keypair and `tunnel_ipv4` unchanged (zero tunnel drop).
+- **Drift recovery & DB restore:** inspect node state with
+  `amnezia-panel node-egress <id>`. When host `observedMode` differs from DB
+  `egressMode` (`modeDrift`, e.g., after restoring an older database dump),
+  either adopt host reality (`amnezia-panel node-egress-adopt <id>`) or
+  explicitly push the desired mode (`amnezia-panel node-egress-mode <id> <masquerade|routed>`).
 
 ---
 
