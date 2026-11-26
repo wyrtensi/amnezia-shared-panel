@@ -145,23 +145,32 @@ func runDaemon() {
 	_ = os.Chmod(sockDir, 0o755)
 	_ = os.Remove(f.socketPath)
 
+	oldUmask := setUmask(0o177)
 	listener, err := net.Listen("unix", f.socketPath)
+	setUmask(oldUmask)
 	if err != nil {
 		log.Fatalf("listen unix socket %s: %v", f.socketPath, err)
 	}
-	// Socket owned by node-agent UID (10001:0) mode 0600 inside root-owned 0755 dir:
-	// node-agent can connect, cannot unlink/replace files in sockDir, and root connects via CAP_DAC_OVERRIDE.
-	if f.socketUID >= 0 {
-		if err := os.Chown(f.socketPath, f.socketUID, 0); err != nil {
-			log.Printf("chown unix socket uid=%d warning: %v", f.socketUID, err)
-		}
-	} else if envUID := strings.TrimSpace(os.Getenv("EGRESSD_SOCKET_UID")); envUID != "" {
-		if uid, pErr := strconv.Atoi(envUID); pErr == nil && uid >= 0 {
-			_ = os.Chown(f.socketPath, uid, 0)
-		}
-	}
 	if err := os.Chmod(f.socketPath, 0o600); err != nil {
 		log.Fatalf("chmod unix socket: %v", err)
+	}
+	// Socket owned by node-agent UID (10001:0) mode 0600 inside root-owned 0755 dir:
+	// node-agent can connect, cannot unlink/replace files in sockDir, and root connects via CAP_DAC_OVERRIDE.
+	targetUID := f.socketUID
+	if targetUID < 0 {
+		if envUID := strings.TrimSpace(os.Getenv("EGRESSD_SOCKET_UID")); envUID != "" {
+			if uid, pErr := strconv.Atoi(envUID); pErr == nil && uid >= 0 {
+				targetUID = uid
+			}
+		}
+	}
+	if targetUID >= 0 {
+		if err := os.Chown(f.socketPath, targetUID, 0); err != nil {
+			if os.Geteuid() == 0 {
+				log.Fatalf("chown unix socket uid=%d: %v", targetUID, err)
+			}
+			log.Printf("chown unix socket uid=%d warning: %v", targetUID, err)
+		}
 	}
 
 	httpServer := &http.Server{

@@ -70,9 +70,15 @@ COPY --from=egressd_build /out/amnezia-egressd /opt/node-agent/bin/amnezia-egres
 COPY --from=deploy compose.yaml /opt/node-agent/deploy/
 COPY --from=deploy \
   scripts/awg3-entrypoint.sh \
+  scripts/awg3-geometry.sh \
   scripts/agent-update.sh \
+  scripts/capacity-apply.sh \
+  scripts/cotenants.sh \
+  scripts/install-agent-updater.sh \
+  scripts/install-capacity-applier.sh \
   scripts/install-egressd.sh \
   scripts/install-host-services.sh \
+  scripts/set-capacity.sh \
   scripts/switch-egress-mode.sh \
   scripts/common.sh \
   scripts/backup.sh \
@@ -80,7 +86,11 @@ COPY --from=deploy \
   scripts/preflight.sh \
   scripts/deploy.sh \
   /opt/node-agent/deploy/scripts/
-COPY --from=deploy systemd/amnezia-egressd.service /opt/node-agent/deploy/systemd/
+COPY --from=deploy \
+  systemd/amnezia-egressd.service \
+  systemd/amnezia-node-capacity.service \
+  systemd/amnezia-node-agent-update.service \
+  /opt/node-agent/deploy/systemd/
 
 EXPOSE 4001
 

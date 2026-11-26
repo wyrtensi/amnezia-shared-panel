@@ -222,7 +222,7 @@ for state_dir in "$STATE_DIR" "$STATE_DIR_AWG3"; do
     "$state_dir/wireguard_server_public_key.key" \
     "$state_dir/wireguard_psk.key" \
     "$state_dir/clientsTable"; do
-    if [ -e "$sensitive_file" ]; then
+    if [ -e "$sensitive_file" ] || [ -L "$sensitive_file" ]; then
       [ ! -L "$sensitive_file" ] || fail "state file must not be a symlink: $sensitive_file"
       [ "$(stat -c '%a' "$sensitive_file")" = "600" ] || fail "state file permissions must be 0600: $sensitive_file"
     fi
@@ -235,6 +235,17 @@ for state_dir in "$STATE_DIR" "$STATE_DIR_AWG3"; do
       --entrypoint node \
       "$node_image" \
       -e "JSON.parse(require('fs').readFileSync('/state/clientsTable','utf8'))"
+  fi
+done
+
+for sensitive_file in \
+  "$STATE_DIR_AWG3/egress-mode" \
+  "$STATE_DIR_AWG3/container-ipv4" \
+  "$STATE_DIR_AWG3/ipv6-reject-stub.env" \
+  "$EGRESS_STATE_FILE"; do
+  if [ -e "$sensitive_file" ] || [ -L "$sensitive_file" ]; then
+    [ ! -L "$sensitive_file" ] || fail "state file must not be a symlink: $sensitive_file"
+    [ "$(stat -c '%a' "$sensitive_file")" = "600" ] || fail "state file permissions must be 0600: $sensitive_file"
   fi
 done
 

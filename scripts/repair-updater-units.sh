@@ -52,6 +52,7 @@ JSON=0
 UPDATERS=(
   "panel|panel-updater|PANEL_UPDATER_LOCK_DIR|panel-updater.sh|sudo bash infra/prod/install-updater.sh (from the panel checkout)"
   "node-agent|amnezia-node-agent-update|NODE_UPDATER_LOCK_DIR|agent-update.sh|sudo NODE_AGENT_UPDATE_REPO=<repo> bash scripts/install-agent-updater.sh (see docs/AGENT-HOST-SETUP.md)"
+  "node-capacity|amnezia-node-capacity|NODE_CAPACITY_LOCK_DIR|capacity-apply.sh|sudo bash scripts/install-capacity-applier.sh"
   "bridge-agent|amnezia-bridge-agent-update|BRIDGE_UPDATER_LOCK_DIR|bridge-agent-update.sh|re-run infra/bridge/install-bridge.sh with the pinned agent image (see infra/bridge/README.md)"
 )
 

@@ -110,6 +110,7 @@ NODE_DIR="${NODE_DIR:-/opt/amnezia-panel-node}"
 NODE_WEIGHT="${NODE_WEIGHT:-100}"
 
 SSH_USER="${SSH_USER:-${NODE_SSH_USER:-root}}"
+UPDATE_REPO="${UPDATE_REPO:-${NODE_AGENT_UPDATE_REPO:-}}"
 NODE_REGION="${NODE_REGION:-$NODE_NAME}"
 PUBLIC_HOST="${PUBLIC_HOST:-$NODE_HOST}"
 MAX_PEERS="${MAX_PEERS:-${NODE_MAX_PEERS:-}}"
@@ -276,6 +277,7 @@ sed -i \
   .env
 chown -R root:root .
 chmod 700 scripts/*.sh
+chmod 644 systemd/* 2>/dev/null || true
 chmod 600 .env
 chmod 640 secrets/node-agent-api-key
 REMOTE
@@ -403,6 +405,7 @@ RestartSec=5
 [Install]
 WantedBy=multi-user.target
 UNITFILE
+chmod 0644 "/etc/systemd/system/${UNIT}.service"
 systemctl daemon-reload
 systemctl enable --now "${UNIT}"
 systemctl restart "${UNIT}"

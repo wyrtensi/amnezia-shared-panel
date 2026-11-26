@@ -124,6 +124,7 @@ if [ "$awg3_on_bridge" -eq 1 ]; then
   if [ -n "$live_awg3_ipv4" ]; then
     container_ipv4_tmp="$(mktemp "$STATE_DIR_AWG3/.container-ipv4.XXXXXX")"
     printf '%s\n' "$live_awg3_ipv4" > "$container_ipv4_tmp"
+    chmod 600 "$container_ipv4_tmp"
     mv -f "$container_ipv4_tmp" "$STATE_DIR_AWG3/container-ipv4"
   fi
   # 0ms live transition: container stays up on br-awg-egress while rules flip safely.

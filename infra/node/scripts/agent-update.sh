@@ -3,8 +3,9 @@
 #
 # This is a port of infra/prod/panel-updater.sh, which does the same job for the
 # panel itself. Read that script and docs/UPDATE-MECHANISM.md first: the lock
-# placement, the /proc verification and the mktemp+rename of the result file are
-# security properties, not style, and they are kept here deliberately.
+# placement, the /proc verification and the out-of-spool mktemp+rename of the
+# result file are security properties, not style, and they are kept here
+# deliberately.
 #
 # The node-agent container mounts only /var/run/docker.sock, so it cannot read
 # compose.yaml, cannot write .env, and has no compose binary - it therefore
@@ -24,6 +25,12 @@ SPOOL_DIR="${NODE_UPDATE_SPOOL_DIR:-/var/lib/amnezia-node/update}"
 # uid, so anything inside it can be swapped for a symlink before root opens it.
 # /run is root-only and is not mounted into any container.
 LOCK_DIR="${NODE_UPDATER_LOCK_DIR:-/run/amnezia-node}"
+# Stage result and log files OUTSIDE the container-writable spool in a
+# root-owned directory on the same filesystem so mv is an atomic rename(2).
+RESULT_STAGING_DIR="${NODE_UPDATER_STAGING_DIR:-$(dirname -- "$SPOOL_DIR")}"
+NODE_DEPLOY_LOCK="${NODE_DIR}/.deploy.lock"
+DEPLOY_LOCK_WAIT_SEC="${NODE_DEPLOY_LOCK_WAIT_SEC:-30}"
+DEPLOY_LOCK_HELD=0
 UPDATE_REPO="${NODE_AGENT_UPDATE_REPO:-}"
 REQUEST="${SPOOL_DIR}/request.json"
 RESULT="${SPOOL_DIR}/result.json"
@@ -37,29 +44,46 @@ AGENT_SERVICE=node-agent
 # built before this feature ships none, which is a supported case.
 IMAGE_DEPLOY_DIR="${NODE_AGENT_IMAGE_DEPLOY_DIR:-/opt/node-agent/deploy}"
 HEALTH_ATTEMPTS="${NODE_AGENT_HEALTH_ATTEMPTS:-45}"
+SYSTEMD_RUNTIME_DIR="${AMNEZIA_SYSTEMD_DIR:-/run/systemd/system}"
 
 # Overwritten once the request body is parsed. write_result() is defined this
 # early because the refusal branch below reports through it before the body has
 # been read.
 ID="unknown"
 IMAGE=""
+NEW_EXTRACT_CNAME=""
+OLD_EXTRACT_CNAME=""
 
 LOG="$(mktemp)"
 SCRATCH="$(mktemp -d)"
-cleanup() { rm -rf "$SCRATCH"; rm -f "$LOG"; }
+cleanup() {
+  if [ "$DEPLOY_LOCK_HELD" -eq 1 ]; then
+    rmdir "$NODE_DEPLOY_LOCK" 2>/dev/null || true
+    DEPLOY_LOCK_HELD=0
+  fi
+  if [ -n "$NEW_EXTRACT_CNAME" ]; then
+    docker rm "$NEW_EXTRACT_CNAME" >/dev/null 2>&1 || true
+  fi
+  if [ -n "$OLD_EXTRACT_CNAME" ]; then
+    docker rm "$OLD_EXTRACT_CNAME" >/dev/null 2>&1 || true
+  fi
+  rm -rf "$SCRATCH"
+  rm -f "$LOG"
+}
 trap cleanup EXIT
 
 log() { printf '%s\n' "$*" >>"$LOG"; }
 
 # The agent serves the result and the log back to the panel, so both have to be
-# readable by the container uid. mktemp gives 0600 root-owned files; without the
-# chmod the panel would poll a file it is not allowed to open.
+# readable by the container uid. Stage them outside the container-writable spool
+# in a root-owned directory on the same filesystem so mv is an atomic rename(2).
 publish() {
   local src="$1" dest="$2" tmp
-  tmp="$(mktemp "${SPOOL_DIR}/publish.XXXXXX")" || return 1
+  [ "$(stat -c %d "$RESULT_STAGING_DIR")" = "$(stat -c %d "$SPOOL_DIR")" ] || return 1
+  tmp="$(mktemp "${RESULT_STAGING_DIR}/publish.XXXXXX")" || return 1
   cat "$src" >"$tmp" || { rm -f "$tmp"; return 1; }
-  chmod 0644 "$tmp"
-  mv -f "$tmp" "$dest"
+  chmod 0644 "$tmp" || { rm -f "$tmp"; return 1; }
+  mv -f "$tmp" "$dest" || { rm -f "$tmp"; return 1; }
 }
 
 write_result() {
@@ -69,15 +93,17 @@ write_result() {
   msg="${msg//\\/\\\\}"
   msg="${msg//\"/\\\"}"
   msg="${msg//$'\n'/ }"
-  # Write to a FRESH random file in the spool (mktemp: O_EXCL, unpredictable
-  # name - the container can't pre-plant a symlink at it), then rename onto
-  # $RESULT. A same-filesystem rename() replaces whatever is at $RESULT (even a
-  # planted symlink) instead of writing through it as root.
-  tmp="$(mktemp "${SPOOL_DIR}/result.XXXXXX")" || return 1
+  # Write to a FRESH random file outside the container-writable spool, then
+  # rename atomically onto $RESULT so a planted symlink is replaced rather than followed.
+  if [ "$(stat -c %d "$RESULT_STAGING_DIR")" != "$(stat -c %d "$SPOOL_DIR")" ]; then
+    echo "agent-update: $RESULT_STAGING_DIR and $SPOOL_DIR are on different filesystems; result not written" >&2
+    return 1
+  fi
+  tmp="$(mktemp "${RESULT_STAGING_DIR}/result.XXXXXX")" || return 1
   printf '{"id":"%s","finishedAt":"%s","ok":%s,"image":"%s","message":"%s"}\n' \
-    "$ID" "$ts" "$ok" "$IMAGE" "$msg" >"$tmp"
-  chmod 0644 "$tmp"
-  mv -f "$tmp" "$RESULT"
+    "$ID" "$ts" "$ok" "$IMAGE" "$msg" >"$tmp" || { rm -f "$tmp"; return 1; }
+  chmod 0644 "$tmp" || { rm -f "$tmp"; return 1; }
+  mv -f "$tmp" "$RESULT" || { rm -f "$tmp"; return 1; }
   publish "$LOG" "$LOG_PUBLIC" || true
 }
 
@@ -161,7 +187,36 @@ printf '%s' "${IMAGE#*@}" | grep -Eq '^sha256:[0-9a-f]{64}$' \
 [ -f "$ENV_FILE" ] || fail_out "no .env at ${ENV_FILE}"
 [ -f "$COMPOSE_FILE" ] || fail_out "no compose.yaml at ${COMPOSE_FILE}"
 
-CURRENT_IMAGE="$(sed -n 's/^NODE_AGENT_IMAGE=//p' "$ENV_FILE" | tail -n 1)"
+# Serialize with host node operations (deploy.sh, switch-egress-mode.sh,
+# set-capacity.sh, rollback.sh) that mutate .env / compose.yaml via .deploy.lock.
+deploy_lock_waited=0
+while ! mkdir "$NODE_DEPLOY_LOCK" 2>/dev/null; do
+  if [ "$deploy_lock_waited" -ge "$DEPLOY_LOCK_WAIT_SEC" ]; then
+    fail_out "another node operation is active: ${NODE_DEPLOY_LOCK}"
+  fi
+  sleep 1
+  deploy_lock_waited=$((deploy_lock_waited + 1))
+done
+DEPLOY_LOCK_HELD=1
+
+env_value() {
+  sed -n "s/^$1=//p" "$ENV_FILE" 2>/dev/null | tail -n 1
+}
+
+if [ -z "${EGRESS_STATE_FILE:-}" ]; then
+  EGRESS_STATE_FILE="$(env_value EGRESS_STATE_FILE)"
+fi
+EGRESS_STATE_FILE="${EGRESS_STATE_FILE:-/etc/amnezia-egress/state.json}"
+if [ -z "${NODE_EGRESS_RUN_DIR:-}" ]; then
+  NODE_EGRESS_RUN_DIR="$(env_value NODE_EGRESS_RUN_DIR)"
+fi
+NODE_EGRESS_RUN_DIR="${NODE_EGRESS_RUN_DIR:-/run/amnezia-egress}"
+if [ -z "${NODE_EGRESS_SOCKET:-}" ]; then
+  NODE_EGRESS_SOCKET="$(env_value NODE_EGRESS_SOCKET)"
+fi
+NODE_EGRESS_SOCKET="${NODE_EGRESS_SOCKET:-${NODE_EGRESS_RUN_DIR}/egressd.sock}"
+
+CURRENT_IMAGE="$(env_value NODE_AGENT_IMAGE)"
 if [ "$CURRENT_IMAGE" = "$IMAGE" ]; then
   log "the node already runs this digest; nothing to do"
   write_result true "already running ${IMAGE}"
@@ -179,25 +234,49 @@ arch="$(docker image inspect --format '{{.Architecture}}' "$IMAGE" 2>/dev/null)"
 
 # --- Reconcile the deployment files ------------------------------------------
 # Both images are on this host right now - the old one is running, the new one
-# has just been pulled - so the node's compose.yaml can be compared against the
-# file each of them ships. That is what makes "the node's file is unmodified"
-# provable rather than assumed.
-extract_from_image() {
-  local image="$1" name="$2" dest="$3" cname
-  cname="amnezia-agent-update-$$-${RANDOM}"
-  docker create --name "$cname" "$image" >/dev/null 2>&1 || return 1
-  local rc=0
-  docker cp "${cname}:${IMAGE_DEPLOY_DIR}/${name}" "$dest" >/dev/null 2>&1 || rc=1
-  docker rm "$cname" >/dev/null 2>&1 || true
-  return "$rc"
+# has just been pulled - so the node's compose.yaml and scripts can be compared
+# against what each image ships using one reused temp container per image.
+init_extract_containers() {
+  local cand_new="amnezia-agent-update-new-$$-${RANDOM}"
+  if docker create --name "$cand_new" "$IMAGE" >/dev/null 2>&1; then
+    NEW_EXTRACT_CNAME="$cand_new"
+  fi
+  if [ -n "$CURRENT_IMAGE" ]; then
+    local cand_old="amnezia-agent-update-old-$$-${RANDOM}"
+    if docker create --name "$cand_old" "$CURRENT_IMAGE" >/dev/null 2>&1; then
+      OLD_EXTRACT_CNAME="$cand_old"
+    fi
+  fi
 }
+
+extract_abs_from_new() {
+  local abs_path="$1" dest="$2"
+  [ -n "$NEW_EXTRACT_CNAME" ] || return 1
+  docker cp "${NEW_EXTRACT_CNAME}:${abs_path}" "$dest" >/dev/null 2>&1
+}
+
+extract_abs_from_old() {
+  local abs_path="$1" dest="$2"
+  [ -n "$OLD_EXTRACT_CNAME" ] || return 1
+  docker cp "${OLD_EXTRACT_CNAME}:${abs_path}" "$dest" >/dev/null 2>&1
+}
+
+extract_from_new() {
+  extract_abs_from_new "${IMAGE_DEPLOY_DIR}/$1" "$2"
+}
+
+extract_from_old() {
+  extract_abs_from_old "${IMAGE_DEPLOY_DIR}/$1" "$2"
+}
+
+init_extract_containers
 
 NEW_COMPOSE="${SCRATCH}/new-compose.yaml"
 OLD_COMPOSE="${SCRATCH}/old-compose.yaml"
 new_ships=0
 old_ships=0
-extract_from_image "$IMAGE" compose.yaml "$NEW_COMPOSE" && new_ships=1
-[ -z "$CURRENT_IMAGE" ] || { extract_from_image "$CURRENT_IMAGE" compose.yaml "$OLD_COMPOSE" && old_ships=1; }
+extract_from_new compose.yaml "$NEW_COMPOSE" && new_ships=1
+[ -z "$CURRENT_IMAGE" ] || { extract_from_old compose.yaml "$OLD_COMPOSE" && old_ships=1; }
 
 apply_compose=0
 if [ "$new_ships" -eq 1 ] && ! cmp -s "$NEW_COMPOSE" "$COMPOSE_FILE"; then
@@ -256,11 +335,35 @@ is_known_stock_script() {
   return 1
 }
 
+is_bash_script() {
+  case "$1" in
+    scripts/agent-update.sh|scripts/capacity-apply.sh|scripts/install-agent-updater.sh|scripts/install-capacity-applier.sh)
+      return 0 ;;
+    *)
+      return 1 ;;
+  esac
+}
+
+validate_script_syntax() {
+  local rel="$1" candidate="$2"
+  if is_bash_script "$rel"; then
+    /bin/bash -n "$candidate" >>"$LOG" 2>&1
+  else
+    /bin/sh -n "$candidate" >>"$LOG" 2>&1
+  fi
+}
+
 MANAGED_SCRIPTS=(
   scripts/awg3-entrypoint.sh
+  scripts/awg3-geometry.sh
   scripts/agent-update.sh
+  scripts/capacity-apply.sh
+  scripts/cotenants.sh
+  scripts/install-agent-updater.sh
+  scripts/install-capacity-applier.sh
   scripts/install-egressd.sh
   scripts/install-host-services.sh
+  scripts/set-capacity.sh
   scripts/switch-egress-mode.sh
   scripts/common.sh
   scripts/backup.sh
@@ -276,28 +379,33 @@ for rel in "${MANAGED_SCRIPTS[@]}"; do
   old_file="${SCRATCH}/old-${safe_key}"
   new_s=0
   old_s=0
-  extract_from_image "$IMAGE" "$rel" "$new_file" && new_s=1
-  [ -z "$CURRENT_IMAGE" ] || { extract_from_image "$CURRENT_IMAGE" "$rel" "$old_file" && old_s=1; }
+  extract_from_new "$rel" "$new_file" && new_s=1
+  [ -z "$CURRENT_IMAGE" ] || { extract_from_old "$rel" "$old_file" && old_s=1; }
 
-  # New helper scripts introduced in newer agent releases may be absent on disk
-  # while compose/existing scripts have clean provenance (`apply_compose=1` or `old_s=1`).
-  if [ ! -f "$dest" ]; then
-    if [ "$new_s" -eq 1 ] && [ "$apply_compose" -eq 1 ]; then
-      APPLY_SCRIPTS+=("$rel")
-      log "adding new stock helper ${rel} shipped by the new image"
+  # Missing stock helper scripts (for example newly introduced egress/capacity
+  # scripts on legacy nodes) do not overwrite anything, so install them once
+  # syntax-checked regardless of whether compose.yaml changed in this release.
+  if [ ! -e "$dest" ] && [ ! -L "$dest" ]; then
+    if [ "$new_s" -eq 1 ]; then
+      if validate_script_syntax "$rel" "$new_file"; then
+        APPLY_SCRIPTS+=("$rel")
+        log "adding new stock helper ${rel} shipped by the new image"
+      else
+        log "WARNING: shipped ${rel} failed syntax check; skipping add"
+      fi
     fi
+    continue
+  fi
+
+  if [ -L "$dest" ] || [ ! -f "$dest" ]; then
+    log "WARNING: ${rel} is not a regular file; leaving it untouched"
     continue
   fi
 
   if [ "$new_s" -eq 1 ] && ! cmp -s "$new_file" "$dest"; then
     # Refuse a syntactically broken shell script before touching the host copy.
-    if [ "$rel" = "scripts/agent-update.sh" ]; then
-      if ! /bin/bash -n "$new_file" >>"$LOG" 2>&1; then
-        log "WARNING: shipped ${rel} failed bash syntax check; leaving local copy untouched"
-        continue
-      fi
-    elif ! /bin/sh -n "$new_file" >>"$LOG" 2>&1; then
-      log "WARNING: shipped ${rel} failed sh syntax check; leaving local copy untouched"
+    if ! validate_script_syntax "$rel" "$new_file"; then
+      log "WARNING: shipped ${rel} failed syntax check; leaving local copy untouched"
       continue
     fi
     if { [ "$old_s" -eq 1 ] && cmp -s "$old_file" "$dest"; } || { [ "$old_s" -eq 0 ] && is_known_stock_script "$rel" "$(sha256_file "$dest")"; }; then
@@ -324,7 +432,10 @@ HAS_NEW_EGRESSD=0
 HAS_NEW_EGRESSD_UNIT=0
 UPDATE_EGRESSD=0
 UPDATE_EGRESSD_UNIT=0
+INSTALL_NODE_EGRESSD_UNIT=0
 UPDATE_NODE_EGRESSD_UNIT=0
+BOOTSTRAP_EGRESSD=0
+
 render_egressd_unit() {
   local src="$1" dest="$2"
   local state_file="${EGRESS_STATE_FILE:-/etc/amnezia-egress/state.json}"
@@ -336,25 +447,35 @@ render_egressd_unit() {
     -e "s|/run/amnezia-egress/egressd\\.sock|${sock_file}|g" \
     "$src" >"$dest"
 }
-extract_bin_cname="amnezia-agent-update-bin-$$-${RANDOM}"
-if docker create --name "$extract_bin_cname" "$IMAGE" >/dev/null 2>&1; then
-  if docker cp "${extract_bin_cname}:/opt/node-agent/bin/amnezia-egressd" "$NEW_EGRESSD" >/dev/null 2>&1; then
-    HAS_NEW_EGRESSD=1
-  fi
-  if docker cp "${extract_bin_cname}:/opt/node-agent/deploy/systemd/amnezia-egressd.service" "$NEW_EGRESSD_UNIT" >/dev/null 2>&1; then
-    HAS_NEW_EGRESSD_UNIT=1
-  fi
-  docker rm "$extract_bin_cname" >/dev/null 2>&1 || true
+
+if extract_abs_from_new "/opt/node-agent/bin/amnezia-egressd" "$NEW_EGRESSD"; then
+  HAS_NEW_EGRESSD=1
 fi
-if [ "$HAS_NEW_EGRESSD" -eq 1 ] && [ -x "$EGRESSD_DEST_BIN" ] && ! cmp -s "$NEW_EGRESSD" "$EGRESSD_DEST_BIN"; then
-  UPDATE_EGRESSD=1
-  log "new image ships an updated amnezia-egressd host binary"
+if extract_from_new "systemd/amnezia-egressd.service" "$NEW_EGRESSD_UNIT"; then
+  HAS_NEW_EGRESSD_UNIT=1
 fi
+
+if [ "$HAS_NEW_EGRESSD" -eq 1 ]; then
+  if [ -x "$EGRESSD_DEST_BIN" ]; then
+    if ! cmp -s "$NEW_EGRESSD" "$EGRESSD_DEST_BIN"; then
+      UPDATE_EGRESSD=1
+      log "new image ships an updated amnezia-egressd host binary"
+    fi
+  elif [ "$HAS_NEW_EGRESSD_UNIT" -eq 1 ] && [ "$(id -u)" -eq 0 ] && [ -d "$SYSTEMD_RUNTIME_DIR" ] && command -v systemctl >/dev/null 2>&1; then
+    BOOTSTRAP_EGRESSD=1
+    log "amnezia-egressd not installed on host yet; will bootstrap from the new image"
+  fi
+fi
+
 if [ "$HAS_NEW_EGRESSD_UNIT" -eq 1 ]; then
   render_egressd_unit "$NEW_EGRESSD_UNIT" "$NEW_EGRESSD_UNIT_RENDERED"
-  if [ -f "$EGRESSD_NODE_UNIT" ] && ! cmp -s "$NEW_EGRESSD_UNIT" "$EGRESSD_NODE_UNIT"; then
+  if [ ! -e "$EGRESSD_NODE_UNIT" ] && [ ! -L "$EGRESSD_NODE_UNIT" ]; then
+    INSTALL_NODE_EGRESSD_UNIT=1
+    log "adding systemd/amnezia-egressd.service template shipped by the new image"
+  elif [ -f "$EGRESSD_NODE_UNIT" ] && ! cmp -s "$NEW_EGRESSD_UNIT" "$EGRESSD_NODE_UNIT"; then
     UPDATE_NODE_EGRESSD_UNIT=1
   fi
+
   if [ -f "$EGRESSD_DEST_UNIT" ] && ! cmp -s "$NEW_EGRESSD_UNIT_RENDERED" "$EGRESSD_DEST_UNIT"; then
     unit_unmodified=0
     if [ -f "$EGRESSD_NODE_UNIT" ]; then
@@ -362,17 +483,13 @@ if [ "$HAS_NEW_EGRESSD_UNIT" -eq 1 ]; then
       if cmp -s "$OLD_EGRESSD_UNIT_RENDERED" "$EGRESSD_DEST_UNIT"; then
         unit_unmodified=1
       fi
-    elif [ -n "$CURRENT_IMAGE" ]; then
-      old_unit_cname="amnezia-agent-update-oldunit-$$-${RANDOM}"
+    elif [ -n "$OLD_EXTRACT_CNAME" ]; then
       OLD_IMAGE_EGRESSD_UNIT="${SCRATCH}/old-image-egressd.service"
-      if docker create --name "$old_unit_cname" "$CURRENT_IMAGE" >/dev/null 2>&1; then
-        if docker cp "${old_unit_cname}:/opt/node-agent/deploy/systemd/amnezia-egressd.service" "$OLD_IMAGE_EGRESSD_UNIT" >/dev/null 2>&1; then
-          render_egressd_unit "$OLD_IMAGE_EGRESSD_UNIT" "$OLD_EGRESSD_UNIT_RENDERED"
-          if cmp -s "$OLD_EGRESSD_UNIT_RENDERED" "$EGRESSD_DEST_UNIT"; then
-            unit_unmodified=1
-          fi
+      if extract_from_old "systemd/amnezia-egressd.service" "$OLD_IMAGE_EGRESSD_UNIT"; then
+        render_egressd_unit "$OLD_IMAGE_EGRESSD_UNIT" "$OLD_EGRESSD_UNIT_RENDERED"
+        if cmp -s "$OLD_EGRESSD_UNIT_RENDERED" "$EGRESSD_DEST_UNIT"; then
+          unit_unmodified=1
         fi
-        docker rm "$old_unit_cname" >/dev/null 2>&1 || true
       fi
     fi
     if [ "$unit_unmodified" -eq 1 ]; then
@@ -413,6 +530,26 @@ ensure_awg3_ipv6_forwarding() {
   else
     log "WARNING: could not apply live IPv6 forwarding sysctls in ${AWG3_CONTAINER} netns; recreate ${AWG3_CONTAINER} manually to enable IPv6 reject stub"
   fi
+}
+
+egressd_healthy() {
+  local attempt=0 sock="$NODE_EGRESS_SOCKET"
+  while [ "$attempt" -lt 5 ]; do
+    if command -v systemctl >/dev/null 2>&1 &&
+       systemctl is-active --quiet amnezia-egressd.service >/dev/null 2>&1 &&
+       [ -S "$sock" ]; then
+      if command -v curl >/dev/null 2>&1; then
+        if curl -fsS --max-time 2 --unix-socket "$sock" http://localhost/v1/health 2>/dev/null | grep -q '"ok":true'; then
+          return 0
+        fi
+      else
+        return 0
+      fi
+    fi
+    attempt=$((attempt + 1))
+    sleep 2
+  done
+  return 1
 }
 
 # A compose file declares its own required keys as ${KEY:?...}. Anything named
@@ -465,8 +602,8 @@ write_env_image() {
   # down at the next deploy, so the new file is written whole and then renamed.
   # `mv -f` carries the temp file's mode onto the target, so the mode is set
   # here rather than inherited from the umask.
-  chmod 600 "$env_tmp"
-  mv -f "$env_tmp" "$ENV_FILE"
+  chmod 600 "$env_tmp" || { rm -f "$env_tmp"; return 1; }
+  mv -f "$env_tmp" "$ENV_FILE" || { rm -f "$env_tmp"; return 1; }
 }
 
 agent_up() {
@@ -506,8 +643,11 @@ rollback() {
     cp -pf "$EGRESSD_BACKUP" "$EGRESSD_DEST_BIN"
     chmod 0755 "$EGRESSD_DEST_BIN"
   fi
-  if [ "$UPDATE_NODE_EGRESSD_UNIT" -eq 1 ] && [ -f "$EGRESSD_NODE_UNIT_BACKUP" ]; then
+  if [ "$INSTALL_NODE_EGRESSD_UNIT" -eq 1 ]; then
+    rm -f "$EGRESSD_NODE_UNIT"
+  elif [ "$UPDATE_NODE_EGRESSD_UNIT" -eq 1 ] && [ -f "$EGRESSD_NODE_UNIT_BACKUP" ]; then
     cp -pf "$EGRESSD_NODE_UNIT_BACKUP" "$EGRESSD_NODE_UNIT"
+    chmod 0644 "$EGRESSD_NODE_UNIT"
   fi
   if [ "$UPDATE_EGRESSD_UNIT" -eq 1 ] && [ -f "$EGRESSD_UNIT_BACKUP" ]; then
     cp -pf "$EGRESSD_UNIT_BACKUP" "$EGRESSD_DEST_UNIT"
@@ -517,7 +657,7 @@ rollback() {
     fi
   fi
   if [ "$UPDATE_EGRESSD" -eq 1 ] || [ "$UPDATE_EGRESSD_UNIT" -eq 1 ]; then
-    if command -v systemctl >/dev/null 2>&1 && systemctl is-enabled amnezia-egressd.service >/dev/null 2>&1; then
+    if command -v systemctl >/dev/null 2>&1 && { systemctl is-enabled amnezia-egressd.service >/dev/null 2>&1 || systemctl is-active --quiet amnezia-egressd.service >/dev/null 2>&1; }; then
       systemctl restart amnezia-egressd.service >>"$LOG" 2>&1 || true
     fi
   fi
@@ -525,49 +665,84 @@ rollback() {
 }
 
 if [ "$apply_compose" -eq 1 ]; then
-  cp -f "$NEW_COMPOSE" "$COMPOSE_FILE"
+  compose_tmp="$(mktemp "${NODE_DIR}/.compose.yaml.XXXXXX")" || fail_out "could not stage compose.yaml"
+  cat "$NEW_COMPOSE" >"$compose_tmp" || { rm -f "$compose_tmp"; fail_out "could not write compose.yaml"; }
+  chmod 0644 "$compose_tmp" || { rm -f "$compose_tmp"; fail_out "could not chmod compose.yaml"; }
+  mv -f "$compose_tmp" "$COMPOSE_FILE" || { rm -f "$compose_tmp"; fail_out "could not replace compose.yaml"; }
 fi
+
+if [ "$INSTALL_NODE_EGRESSD_UNIT" -eq 1 ] || [ "$UPDATE_NODE_EGRESSD_UNIT" -eq 1 ]; then
+  [ "$UPDATE_NODE_EGRESSD_UNIT" -eq 0 ] || cp -p "$EGRESSD_NODE_UNIT" "$EGRESSD_NODE_UNIT_BACKUP"
+  mkdir -p "$(dirname -- "$EGRESSD_NODE_UNIT")"
+  node_unit_tmp="$(mktemp "${EGRESSD_NODE_UNIT}.XXXXXX")" || { rollback; fail_out "could not stage systemd/amnezia-egressd.service"; }
+  cat "$NEW_EGRESSD_UNIT" >"$node_unit_tmp" || { rm -f "$node_unit_tmp"; rollback; fail_out "could not write systemd/amnezia-egressd.service"; }
+  chmod 0644 "$node_unit_tmp" || { rm -f "$node_unit_tmp"; rollback; fail_out "could not chmod systemd/amnezia-egressd.service"; }
+  mv -f "$node_unit_tmp" "$EGRESSD_NODE_UNIT" || { rm -f "$node_unit_tmp"; rollback; fail_out "could not install systemd/amnezia-egressd.service"; }
+fi
+
+if [ "$BOOTSTRAP_EGRESSD" -eq 1 ]; then
+  install -d -m 0700 "$(dirname -- "$EGRESS_STATE_FILE")"
+  install -d -m 0755 "$NODE_EGRESS_RUN_DIR"
+  install -d -m 0755 "$(dirname -- "$EGRESSD_DEST_BIN")" "$(dirname -- "$EGRESSD_DEST_UNIT")"
+  boot_bin_tmp="$(mktemp "${EGRESSD_DEST_BIN}.XXXXXX" 2>/dev/null || true)"
+  boot_unit_tmp="$(mktemp "${EGRESSD_DEST_UNIT}.XXXXXX" 2>/dev/null || true)"
+  if [ -n "$boot_bin_tmp" ] && [ -n "$boot_unit_tmp" ] &&
+     cat "$NEW_EGRESSD" >"$boot_bin_tmp" && chmod 0755 "$boot_bin_tmp" && mv -f "$boot_bin_tmp" "$EGRESSD_DEST_BIN" &&
+     cat "$NEW_EGRESSD_UNIT_RENDERED" >"$boot_unit_tmp" && chmod 0644 "$boot_unit_tmp" && mv -f "$boot_unit_tmp" "$EGRESSD_DEST_UNIT" &&
+     systemctl daemon-reload >>"$LOG" 2>&1 &&
+     systemctl enable --now amnezia-egressd.service >>"$LOG" 2>&1 &&
+     egressd_healthy; then
+    log "bootstrapped amnezia-egressd host daemon and verified socket health"
+  else
+    rm -f "$boot_bin_tmp" "$boot_unit_tmp"
+    systemctl disable --now amnezia-egressd.service >/dev/null 2>&1 || true
+    rm -f "$EGRESSD_DEST_BIN" "$EGRESSD_DEST_UNIT"
+    systemctl daemon-reload >>"$LOG" 2>&1 || true
+    log "WARNING: could not bootstrap amnezia-egressd automatically; continuing node-agent update. Install manually on host: sh scripts/install-egressd.sh"
+  fi
+fi
+
 if [ "$UPDATE_EGRESSD" -eq 1 ]; then
   cp -p "$EGRESSD_DEST_BIN" "$EGRESSD_BACKUP"
-  egressd_tmp="$(mktemp "${EGRESSD_DEST_BIN}.XXXXXX")" || fail_out "could not stage amnezia-egressd"
-  cat "$NEW_EGRESSD" >"$egressd_tmp" || { rm -f "$egressd_tmp"; fail_out "could not write amnezia-egressd"; }
-  chmod 0755 "$egressd_tmp"
-  mv -f "$egressd_tmp" "$EGRESSD_DEST_BIN"
-fi
-if [ "$UPDATE_NODE_EGRESSD_UNIT" -eq 1 ]; then
-  cp -p "$EGRESSD_NODE_UNIT" "$EGRESSD_NODE_UNIT_BACKUP"
-  cp -f "$NEW_EGRESSD_UNIT" "$EGRESSD_NODE_UNIT"
+  egressd_tmp="$(mktemp "${EGRESSD_DEST_BIN}.XXXXXX")" || { rollback; fail_out "could not stage amnezia-egressd"; }
+  cat "$NEW_EGRESSD" >"$egressd_tmp" || { rm -f "$egressd_tmp"; rollback; fail_out "could not write amnezia-egressd"; }
+  chmod 0755 "$egressd_tmp" || { rm -f "$egressd_tmp"; rollback; fail_out "could not chmod amnezia-egressd"; }
+  mv -f "$egressd_tmp" "$EGRESSD_DEST_BIN" || { rm -f "$egressd_tmp"; rollback; fail_out "could not replace amnezia-egressd"; }
 fi
 if [ "$UPDATE_EGRESSD_UNIT" -eq 1 ]; then
   cp -p "$EGRESSD_DEST_UNIT" "$EGRESSD_UNIT_BACKUP"
-  unit_tmp="$(mktemp "${EGRESSD_DEST_UNIT}.XXXXXX")" || fail_out "could not stage amnezia-egressd unit"
-  cat "$NEW_EGRESSD_UNIT_RENDERED" >"$unit_tmp" || { rm -f "$unit_tmp"; fail_out "could not write amnezia-egressd unit"; }
-  chmod 0644 "$unit_tmp"
-  mv -f "$unit_tmp" "$EGRESSD_DEST_UNIT"
+  unit_tmp="$(mktemp "${EGRESSD_DEST_UNIT}.XXXXXX")" || { rollback; fail_out "could not stage amnezia-egressd unit"; }
+  cat "$NEW_EGRESSD_UNIT_RENDERED" >"$unit_tmp" || { rm -f "$unit_tmp"; rollback; fail_out "could not write amnezia-egressd unit"; }
+  chmod 0644 "$unit_tmp" || { rm -f "$unit_tmp"; rollback; fail_out "could not chmod amnezia-egressd unit"; }
+  mv -f "$unit_tmp" "$EGRESSD_DEST_UNIT" || { rm -f "$unit_tmp"; rollback; fail_out "could not replace amnezia-egressd unit"; }
   if command -v systemctl >/dev/null 2>&1; then
     systemctl daemon-reload >>"$LOG" 2>&1 || true
   fi
 fi
 if [ "$UPDATE_EGRESSD" -eq 1 ] || [ "$UPDATE_EGRESSD_UNIT" -eq 1 ]; then
-  if command -v systemctl >/dev/null 2>&1 && systemctl is-enabled amnezia-egressd.service >/dev/null 2>&1; then
-    if ! systemctl restart amnezia-egressd.service >>"$LOG" 2>&1; then
+  if command -v systemctl >/dev/null 2>&1 && { systemctl is-enabled amnezia-egressd.service >/dev/null 2>&1 || systemctl is-active --quiet amnezia-egressd.service >/dev/null 2>&1; }; then
+    if ! systemctl restart amnezia-egressd.service >>"$LOG" 2>&1 || ! egressd_healthy; then
       rollback
-      fail_out "amnezia-egressd failed to restart after update; rolled back"
+      fail_out "amnezia-egressd failed health gate after update; rolled back"
     fi
   fi
 fi
 for rel in ${APPLY_SCRIPTS[@]+"${APPLY_SCRIPTS[@]}"}; do
   safe_key="${rel//\//_}"
   dest="${NODE_DIR}/${rel}"
-  script_tmp="$(mktemp "${dest}.XXXXXX")" || fail_out "could not stage ${rel}"
-  cat "${SCRATCH}/new-${safe_key}" >"$script_tmp" || { rm -f "$script_tmp"; fail_out "could not write ${rel}"; }
-  chmod 0755 "$script_tmp"
-  mv -f "$script_tmp" "$dest"
+  mkdir -p "$(dirname -- "$dest")"
+  script_tmp="$(mktemp "${dest}.XXXXXX")" || { rollback; fail_out "could not stage ${rel}"; }
+  cat "${SCRATCH}/new-${safe_key}" >"$script_tmp" || { rm -f "$script_tmp"; rollback; fail_out "could not write ${rel}"; }
+  chmod 0755 "$script_tmp" || { rm -f "$script_tmp"; rollback; fail_out "could not chmod ${rel}"; }
+  mv -f "$script_tmp" "$dest" || { rm -f "$script_tmp"; rollback; fail_out "could not replace ${rel}"; }
 done
 # Enable IPv6 forwarding sysctls live before bringing up the new agent so its
 # first /server report already reflects ipv6RejectStub.supported = true.
 ensure_awg3_ipv6_forwarding
-write_env_image "$IMAGE" || fail_out "could not rewrite ${ENV_FILE}"
+if ! write_env_image "$IMAGE"; then
+  rollback
+  fail_out "could not rewrite ${ENV_FILE}"
+fi
 
 if ! agent_up; then
   rollback

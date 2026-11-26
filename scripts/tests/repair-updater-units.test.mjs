@@ -32,6 +32,14 @@ const UPDATERS = {
     lock: "/run/amnezia-node",
     spool: "/var/lib/amnezia-node/update",
   },
+  capacity: {
+    base: "amnezia-node-capacity",
+    service: "infra/node/systemd/amnezia-node-capacity.service",
+    path: "infra/node/systemd/amnezia-node-capacity.path",
+    script: "/opt/amnezia-node/scripts/capacity-apply.sh",
+    lock: "/run/amnezia-node-capacity",
+    spool: "/var/lib/amnezia-node/capacity",
+  },
   bridge: {
     base: "amnezia-bridge-agent-update",
     service: "infra/bridge/systemd/amnezia-bridge-agent-update.service",
@@ -41,7 +49,7 @@ const UPDATERS = {
     spool: "/var/lib/amnezia-bridge/update",
   },
 };
-const LABEL = { panel: "panel", node: "node-agent", bridge: "bridge-agent" };
+const LABEL = { panel: "panel", node: "node-agent", capacity: "node-capacity", bridge: "bridge-agent" };
 
 const SYSTEMCTL = `#!/bin/sh
 echo "systemctl $*" >>"$STATE/calls"
@@ -604,4 +612,16 @@ test("a disabled inactive watcher on a current unit stays untouched", executing,
   const r = runJson(f);
   assert.equal(unit(r.report, "panel").outcome, "current");
   assert.deepEqual(mutating(await calls(f)), []);
+});
+
+test("legacy amnezia-node-capacity unit is repaired to /bin/bash", executing, async () => {
+  const f = await fixture();
+  const c = await install(f, "capacity", { active: "failed" });
+  await writeFile(join(f.state, "active-amnezia-node-capacity.service"), "failed");
+  const r = runJson(f);
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(unit(r.report, "capacity").outcome, "repaired");
+  const after = await readFile(join(f.unitDir, "amnezia-node-capacity.service"), "utf8");
+  assert.match(after, new RegExp(`^ExecStart=/bin/bash ${c.script}$`, "m"));
+  assert.equal(unit(r.report, "capacity").watcher, "waiting");
 });

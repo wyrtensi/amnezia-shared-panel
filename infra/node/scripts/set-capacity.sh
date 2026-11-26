@@ -87,7 +87,7 @@ if [ "$available_mem_kb" -lt "$required_kb" ]; then
 fi
 
 write_max_peers() {
-  sed -i "s|^SERVER_MAX_PEERS=.*|SERVER_MAX_PEERS=$1|" "$ENV_FILE"
+  set_env_value SERVER_MAX_PEERS "$1"
 }
 
 # We recreate with --no-deps, so compose will not wait on the data plane for us.

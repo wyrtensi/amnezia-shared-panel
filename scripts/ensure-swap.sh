@@ -174,6 +174,7 @@ if [ "$swapfile_active" = 1 ] && ! grep -qE "^[[:space:]]*${SWAPFILE}[[:space:]]
   printf '%s none swap sw 0 0\n' "$SWAPFILE" >> "$FSTAB"
 fi
 printf 'vm.swappiness=10\n' > "$SYSCTL_CONF"
+chmod 0644 "$SYSCTL_CONF"
 sysctl -q -w vm.swappiness=10
 
 printf 'swap: %s now has 2 GiB, persisted in %s, vm.swappiness=10\n' "$SWAPFILE" "$FSTAB"

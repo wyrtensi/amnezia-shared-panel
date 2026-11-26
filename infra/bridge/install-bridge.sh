@@ -333,7 +333,7 @@ render_unit() {
     -e "s#/etc/amnezia-bridge#$BRIDGE_ETC#g" \
     -e "s#/var/lib/amnezia-bridge#$VAR/lib/amnezia-bridge#g" \
     -e "s#^Environment=BRIDGE_AGENT_UPDATE_REPO=\$#Environment=BRIDGE_AGENT_UPDATE_REPO=$APPROVED_REPO#" \
-    "$HERE/systemd/$1" >"$UNIT_DIR/$1.tmp" && mv -f "$UNIT_DIR/$1.tmp" "$UNIT_DIR/$1"
+    "$HERE/systemd/$1" >"$UNIT_DIR/$1.tmp" && chmod 0644 "$UNIT_DIR/$1.tmp" && mv -f "$UNIT_DIR/$1.tmp" "$UNIT_DIR/$1"
 }
 bash -n "$UPDATER_SCRIPT" 2>/dev/null ||
   die 65 E_UPDATER "$UPDATER_SCRIPT is not a valid bash script; the agent runs, but the panel cannot update it"

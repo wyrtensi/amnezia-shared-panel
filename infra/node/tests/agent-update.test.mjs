@@ -624,9 +624,132 @@ exit 0
 
 test("agent-update.sh syncs amnezia-egressd.service with daemon-reload before restart and rolls back cleanly", async () => {
   const upd = await readFile(scriptPath, "utf8");
-  assert.match(upd, /\/opt\/node-agent\/deploy\/systemd\/amnezia-egressd\.service/);
+  assert.match(upd, /IMAGE_DEPLOY_DIR="\$\{NODE_AGENT_IMAGE_DEPLOY_DIR:-\/opt\/node-agent\/deploy\}"/);
+  assert.match(upd, /extract_from_new "systemd\/amnezia-egressd\.service"/);
   assert.match(upd, /systemctl daemon-reload/);
   const reloadIdx = upd.indexOf("systemctl daemon-reload", upd.indexOf("if [ \"$UPDATE_EGRESSD_UNIT\" -eq 1 ]; then"));
   const restartIdx = upd.indexOf("systemctl restart amnezia-egressd.service", reloadIdx);
   assert.ok(reloadIdx > 0 && restartIdx > reloadIdx, "daemon-reload must run before restarting amnezia-egressd.service");
+});
+
+test("missing stock helper scripts are installed even when compose.yaml did not change", executing, async (t) => {
+  const f = await fixture({
+    compose: COMPOSE_V1,
+    shipped: {
+      [OLD_DIGEST]: { "compose.yaml": COMPOSE_V1 },
+      [NEW_DIGEST]: {
+        "compose.yaml": COMPOSE_V1,
+        "switch-egress-mode.sh": "#!/bin/sh\necho switch\n",
+        "cotenants.sh": "#!/bin/sh\necho cotenants\n",
+        "awg3-geometry.sh": "#!/bin/sh\necho geom\n",
+      },
+    },
+  });
+  t.after(f.cleanup);
+  await f.request({ id: "req-missing-helpers", image: NEW_IMAGE });
+
+  const run = f.run();
+  assert.equal(run.status, 0, run.stderr + run.stdout);
+  assert.equal((await f.result()).ok, true);
+  assert.equal(await readFile(join(f.nodeDir, "scripts", "switch-egress-mode.sh"), "utf8"), "#!/bin/sh\necho switch\n");
+  assert.equal(await readFile(join(f.nodeDir, "scripts", "cotenants.sh"), "utf8"), "#!/bin/sh\necho cotenants\n");
+  assert.equal(await readFile(join(f.nodeDir, "scripts", "awg3-geometry.sh"), "utf8"), "#!/bin/sh\necho geom\n");
+});
+
+test("missing systemd/amnezia-egressd.service is installed into node dir and removed on rollback", executing, async (t) => {
+  const unitV2 = "[Unit]\nDescription=Test egressd\n[Service]\nExecStart=/usr/local/bin/amnezia-egressd\n";
+  const f = await fixture({
+    compose: COMPOSE_V1,
+    health: "unhealthy",
+    shipped: {
+      [OLD_DIGEST]: { "compose.yaml": COMPOSE_V1 },
+      [NEW_DIGEST]: {
+        "compose.yaml": COMPOSE_V1,
+        "amnezia-egressd.service": unitV2,
+      },
+    },
+  });
+  t.after(f.cleanup);
+  await f.request({ id: "req-unit-rollback", image: NEW_IMAGE });
+
+  const run = f.run();
+  assert.notEqual(run.status, 0);
+  assert.equal((await f.result()).ok, false);
+  assert.equal(await exists(join(f.nodeDir, "systemd", "amnezia-egressd.service")), false, "newly added unit template is removed on rollback");
+});
+
+test("amnezia-egressd update rolls back binary, unit, and .env when egressd health gate fails", executing, async (t) => {
+  const f = await fixture({
+    compose: COMPOSE_V1,
+    shipped: {
+      [OLD_DIGEST]: {
+        "compose.yaml": COMPOSE_V1,
+        "amnezia-egressd": "old-bin\n",
+        "amnezia-egressd.service": "[Unit]\nDescription=old\n[Service]\nExecStart=/usr/local/bin/amnezia-egressd\n",
+      },
+      [NEW_DIGEST]: {
+        "compose.yaml": COMPOSE_V1,
+        "amnezia-egressd": "new-bin\n",
+        "amnezia-egressd.service": "[Unit]\nDescription=new\n[Service]\nExecStart=/usr/local/bin/amnezia-egressd\n",
+      },
+    },
+  });
+  t.after(f.cleanup);
+
+  const egressBin = join(f.root, "egressd-bin");
+  const egressUnit = join(f.root, "egressd.service");
+  const nodeUnitDir = join(f.nodeDir, "systemd");
+  await mkdir(nodeUnitDir, { recursive: true });
+  await writeFile(egressBin, "old-bin\n", { mode: 0o755 });
+  await chmod(egressBin, 0o755);
+  await writeFile(egressUnit, "[Unit]\nDescription=old\n[Service]\nExecStart=" + egressBin + "\n", { mode: 0o644 });
+  await writeFile(join(nodeUnitDir, "amnezia-egressd.service"), "[Unit]\nDescription=old\n[Service]\nExecStart=/usr/local/bin/amnezia-egressd\n", { mode: 0o644 });
+
+  // Stub systemctl that reports active/enabled, but no unix socket exists so egressd_healthy fails fast.
+  await writeFile(
+    join(f.root, "bin", "systemctl"),
+    "#!/usr/bin/env bash\nexit 0\n",
+    { mode: 0o755 },
+  );
+  // Speed up sleep during the 5x2s egressd health poll.
+  await writeFile(join(f.root, "bin", "sleep"), "#!/usr/bin/env bash\nexit 0\n", { mode: 0o755 });
+
+  await f.request({ id: "req-egress-fail", image: NEW_IMAGE });
+  const run = f.run({
+    AMNEZIA_EGRESSD_DEST: egressBin,
+    AMNEZIA_EGRESSD_UNIT_DEST: egressUnit,
+    NODE_EGRESS_SOCKET: join(f.root, "missing.sock"),
+  });
+
+  assert.notEqual(run.status, 0);
+  const res = await f.result();
+  assert.equal(res.ok, false);
+  assert.match(res.message, /egressd.*rolled back/i);
+  assert.equal(await readFile(egressBin, "utf8"), "old-bin\n");
+  assert.match(await readFile(egressUnit, "utf8"), /Description=old/);
+  assert.ok((await f.envFile()).includes(`NODE_AGENT_IMAGE=${OLD_IMAGE}`));
+});
+
+test("serializes with .deploy.lock and rejects overlapping operations cleanly", executing, async (t) => {
+  const f = await fixture();
+  t.after(f.cleanup);
+  await mkdir(join(f.nodeDir, ".deploy.lock"));
+  await f.request({ id: "req-locked", image: NEW_IMAGE });
+
+  const run = f.run({ NODE_DEPLOY_LOCK_WAIT_SEC: "1" });
+  assert.notEqual(run.status, 0);
+  const res = await f.result();
+  assert.equal(res.ok, false);
+  assert.match(res.message, /\.deploy\.lock/);
+  assert.equal(await exists(join(f.nodeDir, ".deploy.lock")), true, "pre-existing .deploy.lock is preserved");
+});
+
+test("result.json and update.log are staged outside the container-writable spool", async () => {
+  const script = await readFile(scriptUrl, "utf8");
+  assert.match(script, /RESULT_STAGING_DIR="\$\{NODE_UPDATER_STAGING_DIR:-\$\(dirname -- "\$SPOOL_DIR"\)\}"/);
+  assert.match(script, /stat -c %d "\$RESULT_STAGING_DIR"/);
+  assert.match(script, /mktemp "\$\{RESULT_STAGING_DIR\}\/result\.XXXXXX"/);
+  assert.match(script, /chmod 0644 "\$tmp"/);
+  assert.match(script, /mv -f "\$tmp" "\$RESULT"/);
+  assert.doesNotMatch(script, />"\$RESULT"/);
 });
