@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"net/netip"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -175,9 +176,14 @@ func TestFwmarkPlumbingAppliedToHTTPAndDNSDials(t *testing.T) {
 	orig := applySocketMark
 	defer func() { applySocketMark = orig }()
 
-	var seenMarks []uint32
+	var (
+		mu        sync.Mutex
+		seenMarks []uint32
+	)
 	applySocketMark = func(_ syscall.RawConn, fwmark uint32) error {
+		mu.Lock()
 		seenMarks = append(seenMarks, fwmark)
+		mu.Unlock()
 		return nil
 	}
 
