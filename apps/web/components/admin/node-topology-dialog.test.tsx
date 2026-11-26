@@ -6,6 +6,7 @@ import type { AdminNode } from "@/components/admin/admin-data";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { messages } from "@/lib/i18n/messages";
 import {
+  formatSubnetProximityWarning,
   NodeTopologyDialog,
   NodeTopologyDialogBody,
   parseOptionalRoutingTableId,
@@ -363,9 +364,9 @@ describe("summarizeNodeEgress & NodeTopologyDialog", () => {
             egressDaemonVersion: "1.1.0",
             egressDaemonState: "unavailable",
           })}
-          request={async () => undefined as never}
-          reload={async () => {}}
-          onSavePublicEndpoint={async () => {}}
+          request={() => Promise.resolve(undefined as never)}
+          reload={() => Promise.resolve()}
+          onSavePublicEndpoint={() => Promise.resolve()}
         />
       </TooltipProvider>,
     );
@@ -373,6 +374,7 @@ describe("summarizeNodeEgress & NodeTopologyDialog", () => {
     expect(html).toContain(tRu("egress.switchBlockedUnavailable"));
     expect(html).toContain(tRu("nodes.egressDaemonVersionMismatch"));
     expect(html).toContain(tRu("egress.filtersRoutedOnlyHint"));
+    expect(html).toContain(tRu("egress.modeSummaryMasquerade"));
     expect(html).toContain(tRu("egress.routingTableHint"));
     const src = readFileSync(
       fileURLToPath(new URL("./node-topology-dialog.tsx", import.meta.url)),
@@ -384,5 +386,27 @@ describe("summarizeNodeEgress & NodeTopologyDialog", () => {
     expect(src).toContain("egress.sectionVariantsHint");
     expect(src).toContain("egress.amneziaDnsDnatHint");
     expect(src).toContain("egress.allowAsEntryHint");
+    expect(src).not.toContain("nodes.statusEnabled");
+  });
+
+  it("localizes subnet proximity warnings into Russian and preserves unknown messages", () => {
+    expect(
+      formatSubnetProximityWarning(
+        "Exit IP shares subnet 203.0.113.0/24 with Entry IP 203.0.113.11",
+        tRu,
+      ),
+    ).toBe(
+      tRu("egress.subnetWarningShared", {
+        cidr: "203.0.113.0/24",
+        entry: "203.0.113.11",
+      }),
+    );
+    expect(
+      formatSubnetProximityWarning(
+        "Exit IP is in the same /24 subnet as Entry IP 198.51.100.10",
+        tRu,
+      ),
+    ).toBe(tRu("egress.subnetWarningSame24", { entry: "198.51.100.10" }));
+    expect(formatSubnetProximityWarning("Custom warning", tRu)).toBe("Custom warning");
   });
 });

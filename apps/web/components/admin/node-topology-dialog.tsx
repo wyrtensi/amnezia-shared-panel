@@ -156,6 +156,31 @@ export const parseOptionalRoutingTableId = (
   return { ok: true, value };
 };
 
+const DNS_PRESETS = [
+  { label: "Cloudflare", dns1: "1.1.1.1", dns2: "1.0.0.1" },
+  { label: "Google", dns1: "8.8.8.8", dns2: "8.8.4.4" },
+  { label: "Quad9", dns1: "9.9.9.9", dns2: "149.112.112.112" },
+] as const;
+
+/** Localize subnet proximity warnings emitted by `detectExitSubnetProximityWarning`. */
+export const formatSubnetProximityWarning = (
+  raw: string,
+  t: (key: string, vars?: Record<string, string | number>) => string,
+): string => {
+  const sharedMatch = /^Exit IP shares subnet (\S+) with Entry IP (\S+)$/.exec(raw);
+  if (sharedMatch) {
+    return t("egress.subnetWarningShared", {
+      cidr: sharedMatch[1]!,
+      entry: sharedMatch[2]!,
+    });
+  }
+  const same24Match = /^Exit IP is in the same \/24 subnet as Entry IP (\S+)$/.exec(raw);
+  if (same24Match) {
+    return t("egress.subnetWarningSame24", { entry: same24Match[1]! });
+  }
+  return raw;
+};
+
 export type NodeTopologyFocus =
   | { kind: "variant"; id: string }
   | { kind: "exit"; id: string | null };
@@ -185,7 +210,7 @@ export function NodeTopologyDialog({
 
   return (
     <Dialog open={Boolean(node)} onOpenChange={(next) => !next && onClose()}>
-      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-2xl">
+      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-3xl">
         <DialogHeader>
           <DialogTitle className="flex min-w-0 items-center gap-2 break-words pr-6">
             <GitBranch className="size-4 shrink-0 text-primary" />
@@ -398,17 +423,15 @@ export function NodeTopologyDialogBody({
                 <Badge variant={summary.mode === "routed" ? "default" : "outline"}>
                   {t(`egress.mode.${summary.mode}`)}
                 </Badge>
-                <Badge
-                  variant={
-                    summary.modeState === "failed"
-                      ? "destructive"
-                      : summary.modeState === "switching"
-                        ? "warning"
-                        : "outline"
-                  }
-                >
-                  {t(`egress.modeState.${summary.modeState}`)}
-                </Badge>
+                {summary.modeState !== "idle" ? (
+                  <Badge
+                    variant={
+                      summary.modeState === "failed" ? "destructive" : "warning"
+                    }
+                  >
+                    {t(`egress.modeState.${summary.modeState}`)}
+                  </Badge>
+                ) : null}
                 {summary.daemonState ? (
                   <Badge
                     variant={
@@ -474,6 +497,11 @@ export function NodeTopologyDialogBody({
                 </Button>
               </div>
             </div>
+            <p className="text-xs text-muted-foreground">
+              {summary.mode === "routed"
+                ? t("egress.modeSummaryRouted")
+                : t("egress.modeSummaryMasquerade")}
+            </p>
             {modeSwitchBlockedReason ? (
               <p className="break-words text-xs text-warning">{modeSwitchBlockedReason}</p>
             ) : null}
@@ -547,7 +575,7 @@ export function NodeTopologyDialogBody({
                 <Button
                   type="button"
                   size="sm"
-                  variant="secondary"
+                  variant={filtersDirty ? "default" : "secondary"}
                   disabled={busy !== null || !filtersDirty}
                   onClick={() =>
                     void runAction("filters", async () => {
@@ -795,10 +823,15 @@ export function NodeTopologyDialogBody({
                           <Button
                             type="button"
                             size="sm"
-                            variant="ghost"
+                            variant={editExit?.id === exit.id ? "secondary" : "ghost"}
                             className="h-7 px-2 text-xs"
                             disabled={busy !== null}
                             onClick={() => {
+                              if (editExit?.id === exit.id) {
+                                setEditExit(null);
+                                return;
+                              }
+                              setSwapTarget(null);
                               setEditExit(exit);
                               setEditExitLabel(exit.label ?? "");
                               setEditExitIface(exit.interfaceName ?? "");
@@ -819,10 +852,15 @@ export function NodeTopologyDialogBody({
                           <Button
                             type="button"
                             size="sm"
-                            variant="ghost"
+                            variant={swapTarget?.id === exit.id ? "secondary" : "ghost"}
                             className="h-7 px-2 text-xs"
                             disabled={busy !== null}
                             onClick={() => {
+                              if (swapTarget?.id === exit.id) {
+                                setSwapTarget(null);
+                                return;
+                              }
+                              setEditExit(null);
                               setSwapTarget(exit);
                               setSwapIpv4("");
                               setSwapIface(exit.interfaceName ?? "");
@@ -860,12 +898,18 @@ export function NodeTopologyDialogBody({
                       </div>
 
                       <div className="flex min-w-0 flex-wrap gap-x-3 gap-y-0.5 break-words text-muted-foreground">
-                        {exit.interfaceName ? <span>NIC {exit.interfaceName}</span> : null}
+                        {exit.interfaceName ? (
+                          <span>{t("egress.metaIface", { value: exit.interfaceName })}</span>
+                        ) : null}
                         {exit.gatewayIpv4 || exit.detectedGatewayIpv4 ? (
-                          <span>GW {exit.gatewayIpv4 ?? exit.detectedGatewayIpv4}</span>
+                          <span>
+                            {t("egress.metaGw", {
+                              value: exit.gatewayIpv4 ?? exit.detectedGatewayIpv4 ?? "",
+                            })}
+                          </span>
                         ) : null}
                         {exit.routingTableId != null ? (
-                          <span>T{exit.routingTableId}</span>
+                          <span>{t("egress.metaTable", { value: exit.routingTableId })}</span>
                         ) : null}
                         <span>
                           DNS {exit.dnsPrimary}
@@ -887,7 +931,9 @@ export function NodeTopologyDialogBody({
                         <p className="break-words text-destructive">{exit.hostDetail}</p>
                       ) : null}
                       {proximityWarn ? (
-                        <p className="break-words text-warning">{proximityWarn}</p>
+                        <p className="break-words text-warning">
+                          {formatSubnetProximityWarning(proximityWarn, t)}
+                        </p>
                       ) : null}
                       {verifyResult ? (
                         <p
@@ -914,173 +960,269 @@ export function NodeTopologyDialogBody({
                           )}
                         </p>
                       ) : null}
+                      {editExit?.id === exit.id ? (
+                        <form
+                          className="mt-2 space-y-2.5 border-t border-border/60 pt-2.5 text-xs"
+                          onSubmit={(event) => {
+                            event.preventDefault();
+                            const parsedTable = parseOptionalRoutingTableId(editExitTable);
+                            if (!parsedTable.ok) {
+                              toast.error(t("egress.invalidRoutingTable"));
+                              return;
+                            }
+                            void runAction(`edit-exit:${editExit.id}`, async () => {
+                              await updateNodeEgressIp(request, node.id, editExit.id, {
+                                label: editExitLabel.trim() || null,
+                                interfaceName: editExitIface.trim() || null,
+                                gatewayIpv4: editExitGw.trim() || null,
+                                routingTableId: parsedTable.value,
+                                dnsPrimary: editExitDns1.trim(),
+                                dnsSecondary: editExitDns2.trim() || null,
+                                amneziaDnsDnat: editExitAmneziaDns,
+                                enforceDnsDnat: editExitEnforceDns,
+                                allowAsEntry: editExitAllowAsEntry,
+                                enabled: editExitEnabled,
+                              });
+                              toast.success(t("adminData.actionDone"));
+                              setEditExit(null);
+                              await reload();
+                            });
+                          }}
+                        >
+                          <p className="font-medium">
+                            {t("egress.editExitTitle", { ip: editExit.ipv4 })}
+                          </p>
+                          <div className="grid gap-2 sm:grid-cols-3">
+                            <div className="space-y-1">
+                              <Label className="text-[11px]">{t("egress.fieldLabel")}</Label>
+                              <Input
+                                value={editExitLabel}
+                                onChange={(e) => setEditExitLabel(e.target.value)}
+                                placeholder={t("egress.label")}
+                                className="h-8 text-xs"
+                              />
+                            </div>
+                            <div className="space-y-1">
+                              <Label className="text-[11px]">{t("egress.dnsPrimary")}</Label>
+                              <Input
+                                value={editExitDns1}
+                                onChange={(e) => setEditExitDns1(e.target.value)}
+                                placeholder="1.1.1.1"
+                                className="h-8 text-xs"
+                                required
+                              />
+                            </div>
+                            <div className="space-y-1">
+                              <Label className="text-[11px]">{t("egress.dnsSecondary")}</Label>
+                              <Input
+                                value={editExitDns2}
+                                onChange={(e) => setEditExitDns2(e.target.value)}
+                                placeholder="1.0.0.1"
+                                className="h-8 text-xs"
+                              />
+                            </div>
+                          </div>
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            <span className="text-[11px] text-muted-foreground">
+                              {t("egress.dnsPresetsLabel")}
+                            </span>
+                            {DNS_PRESETS.map((preset) => {
+                              const active =
+                                editExitDns1.trim() === preset.dns1 &&
+                                editExitDns2.trim() === preset.dns2;
+                              return (
+                                <button
+                                  key={preset.label}
+                                  type="button"
+                                  onClick={() => {
+                                    setEditExitDns1(preset.dns1);
+                                    setEditExitDns2(preset.dns2);
+                                  }}
+                                  className={cn(
+                                    "rounded border px-1.5 py-0.5 text-[11px] transition-colors",
+                                    active
+                                      ? "border-primary bg-primary/10 text-primary"
+                                      : "border-border bg-well text-muted-foreground hover:bg-accent hover:text-foreground",
+                                  )}
+                                >
+                                  {preset.label} ({preset.dns1})
+                                </button>
+                              );
+                            })}
+                          </div>
+                          <div className="space-y-1.5">
+                            <p className="text-[11px] text-muted-foreground">
+                              {t("egress.advancedNetworkGroup")}
+                            </p>
+                            <div className="grid gap-2 sm:grid-cols-3">
+                              <div className="space-y-1">
+                                <Label className="text-[11px]">{t("egress.fieldInterface")}</Label>
+                                <Input
+                                  value={editExitIface}
+                                  onChange={(e) => setEditExitIface(e.target.value)}
+                                  placeholder="eth0"
+                                  className="h-8 text-xs"
+                                />
+                              </div>
+                              <div className="space-y-1">
+                                <Label className="text-[11px]">{t("egress.fieldGateway")}</Label>
+                                <Input
+                                  value={editExitGw}
+                                  onChange={(e) => setEditExitGw(e.target.value)}
+                                  placeholder={t("egress.gatewayIpv4")}
+                                  className="h-8 text-xs"
+                                />
+                              </div>
+                              <div className="space-y-1">
+                                <Label className="flex items-center gap-1 text-[11px]">
+                                  <span>{t("egress.fieldRoutingTable")}</span>
+                                  <Hint>{t("egress.routingTableHint")}</Hint>
+                                </Label>
+                                <Input
+                                  value={editExitTable}
+                                  onChange={(e) => setEditExitTable(e.target.value)}
+                                  placeholder="200..219"
+                                  title={t("egress.routingTableHint")}
+                                  type="number"
+                                  min={200}
+                                  max={219}
+                                  className="h-8 text-xs"
+                                />
+                              </div>
+                            </div>
+                          </div>
+                          <div className="grid gap-2.5 pt-1 sm:grid-cols-2">
+                            <label className="flex items-center gap-1.5">
+                              <Switch
+                                checked={editExitEnabled}
+                                onCheckedChange={setEditExitEnabled}
+                              />
+                              <span>{t("egress.exitEnabled")}</span>
+                              <Hint>{t("egress.exitEnabledHint")}</Hint>
+                            </label>
+                            <label className="flex items-center gap-1.5">
+                              <Switch
+                                checked={editExitAmneziaDns}
+                                onCheckedChange={setEditExitAmneziaDns}
+                              />
+                              <span>{t("egress.amneziaDnsDnat")}</span>
+                              <Hint>{t("egress.amneziaDnsDnatHint")}</Hint>
+                            </label>
+                            <label className="flex items-center gap-1.5">
+                              <Switch
+                                checked={editExitEnforceDns}
+                                onCheckedChange={setEditExitEnforceDns}
+                              />
+                              <span>{t("egress.enforceDnsDnat")}</span>
+                              <Hint>{t("egress.enforceDnsDnatHint")}</Hint>
+                            </label>
+                            <label className="flex items-center gap-1.5">
+                              <Switch
+                                checked={editExitAllowAsEntry}
+                                onCheckedChange={setEditExitAllowAsEntry}
+                              />
+                              <span>{t("egress.allowAsEntry")}</span>
+                              <Hint>{t("egress.allowAsEntryHint")}</Hint>
+                            </label>
+                          </div>
+                          <div className="flex justify-end gap-1.5">
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="ghost"
+                              onClick={() => setEditExit(null)}
+                            >
+                              {t("common.cancel")}
+                            </Button>
+                            <Button type="submit" size="sm" disabled={busy !== null}>
+                              {t("common.save")}
+                            </Button>
+                          </div>
+                        </form>
+                      ) : null}
+                      {swapTarget?.id === exit.id ? (
+                        <form
+                          className="mt-2 space-y-2.5 border-t border-primary/40 pt-2.5 text-xs"
+                          onSubmit={(event) => {
+                            event.preventDefault();
+                            void runAction(`swap:${swapTarget.id}`, async () => {
+                              await swapNodeEgressIp(request, node.id, swapTarget.id, {
+                                ipv4: swapIpv4.trim(),
+                                interfaceName: swapIface.trim() || null,
+                                gatewayIpv4: swapGw.trim() || null,
+                                label: swapLabel.trim() || null,
+                              });
+                              toast.success(t("adminData.actionDone"));
+                              setSwapTarget(null);
+                              await reload();
+                            });
+                          }}
+                        >
+                          <div className="space-y-0.5">
+                            <p className="font-medium">
+                              {t("egress.swapTitle", { ip: swapTarget.ipv4 })}
+                            </p>
+                            <p className="text-muted-foreground">{t("egress.swapHint")}</p>
+                          </div>
+                          <div className="grid gap-2 sm:grid-cols-2">
+                            <div className="space-y-1">
+                              <Label className="text-[11px]">{t("egress.fieldNewIpv4")}</Label>
+                              <Input
+                                value={swapIpv4}
+                                onChange={(e) => setSwapIpv4(e.target.value)}
+                                placeholder="198.51.100.25"
+                                className="h-8 text-xs"
+                                required
+                              />
+                            </div>
+                            <div className="space-y-1">
+                              <Label className="text-[11px]">{t("egress.fieldLabel")}</Label>
+                              <Input
+                                value={swapLabel}
+                                onChange={(e) => setSwapLabel(e.target.value)}
+                                placeholder={t("egress.label")}
+                                className="h-8 text-xs"
+                              />
+                            </div>
+                            <div className="space-y-1">
+                              <Label className="text-[11px]">{t("egress.fieldInterface")}</Label>
+                              <Input
+                                value={swapIface}
+                                onChange={(e) => setSwapIface(e.target.value)}
+                                placeholder="eth0"
+                                className="h-8 text-xs"
+                              />
+                            </div>
+                            <div className="space-y-1">
+                              <Label className="text-[11px]">{t("egress.fieldGateway")}</Label>
+                              <Input
+                                value={swapGw}
+                                onChange={(e) => setSwapGw(e.target.value)}
+                                placeholder={t("egress.gatewayIpv4")}
+                                className="h-8 text-xs"
+                              />
+                            </div>
+                          </div>
+                          <div className="flex justify-end gap-1.5">
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="ghost"
+                              onClick={() => setSwapTarget(null)}
+                            >
+                              {t("common.cancel")}
+                            </Button>
+                            <Button type="submit" size="sm" disabled={busy !== null}>
+                              {t("egress.swapApply")}
+                            </Button>
+                          </div>
+                        </form>
+                      ) : null}
                     </li>
                   );
                 })}
               </ul>
             )}
-
-            {editExit ? (
-              <form
-                className="space-y-2 rounded-lg border bg-well p-2.5 text-xs"
-                onSubmit={(event) => {
-                  event.preventDefault();
-                  const parsedTable = parseOptionalRoutingTableId(editExitTable);
-                  if (!parsedTable.ok) {
-                    toast.error(t("egress.invalidRoutingTable"));
-                    return;
-                  }
-                  void runAction(`edit-exit:${editExit.id}`, async () => {
-                    await updateNodeEgressIp(request, node.id, editExit.id, {
-                      label: editExitLabel.trim() || null,
-                      interfaceName: editExitIface.trim() || null,
-                      gatewayIpv4: editExitGw.trim() || null,
-                      routingTableId: parsedTable.value,
-                      dnsPrimary: editExitDns1.trim(),
-                      dnsSecondary: editExitDns2.trim() || null,
-                      amneziaDnsDnat: editExitAmneziaDns,
-                      enforceDnsDnat: editExitEnforceDns,
-                      allowAsEntry: editExitAllowAsEntry,
-                      enabled: editExitEnabled,
-                    });
-                    toast.success(t("adminData.actionDone"));
-                    setEditExit(null);
-                    await reload();
-                  });
-                }}
-              >
-                <div className="grid gap-2 sm:grid-cols-3">
-                  <Input
-                    value={editExitLabel}
-                    onChange={(e) => setEditExitLabel(e.target.value)}
-                    placeholder={t("egress.label")}
-                    className="h-8 text-xs"
-                  />
-                  <Input
-                    value={editExitDns1}
-                    onChange={(e) => setEditExitDns1(e.target.value)}
-                    placeholder={t("egress.dnsPrimary")}
-                    className="h-8 text-xs"
-                    required
-                  />
-                  <Input
-                    value={editExitDns2}
-                    onChange={(e) => setEditExitDns2(e.target.value)}
-                    placeholder={t("egress.dnsSecondary")}
-                    className="h-8 text-xs"
-                  />
-                  <Input
-                    value={editExitIface}
-                    onChange={(e) => setEditExitIface(e.target.value)}
-                    placeholder={t("egress.interfaceName")}
-                    className="h-8 text-xs"
-                  />
-                  <Input
-                    value={editExitGw}
-                    onChange={(e) => setEditExitGw(e.target.value)}
-                    placeholder={t("egress.gatewayIpv4")}
-                    className="h-8 text-xs"
-                  />
-                  <Input
-                    value={editExitTable}
-                    onChange={(e) => setEditExitTable(e.target.value)}
-                    placeholder="200..219"
-                    title={t("egress.routingTableHint")}
-                    type="number"
-                    min={200}
-                    max={219}
-                    className="h-8 text-xs"
-                  />
-                </div>
-                <div className="flex flex-wrap items-center gap-3">
-                  <label className="flex items-center gap-1.5">
-                    <Switch checked={editExitEnabled} onCheckedChange={setEditExitEnabled} />
-                    <span>{t("nodes.statusEnabled")}</span>
-                  </label>
-                  <label className="flex items-center gap-1.5">
-                    <Switch checked={editExitAmneziaDns} onCheckedChange={setEditExitAmneziaDns} />
-                    <span>{t("egress.amneziaDnsDnat")}</span>
-                    <Hint>{t("egress.amneziaDnsDnatHint")}</Hint>
-                  </label>
-                  <label className="flex items-center gap-1.5">
-                    <Switch checked={editExitEnforceDns} onCheckedChange={setEditExitEnforceDns} />
-                    <span>{t("egress.enforceDnsDnat")}</span>
-                    <Hint>{t("egress.enforceDnsDnatHint")}</Hint>
-                  </label>
-                  <label className="flex items-center gap-1.5">
-                    <Switch checked={editExitAllowAsEntry} onCheckedChange={setEditExitAllowAsEntry} />
-                    <span>{t("egress.allowAsEntry")}</span>
-                    <Hint>{t("egress.allowAsEntryHint")}</Hint>
-                  </label>
-                </div>
-                <div className="flex justify-end gap-1.5">
-                  <Button type="button" size="sm" variant="ghost" onClick={() => setEditExit(null)}>
-                    {t("common.cancel")}
-                  </Button>
-                  <Button type="submit" size="sm" disabled={busy !== null}>
-                    {t("common.save")}
-                  </Button>
-                </div>
-              </form>
-            ) : null}
-
-            {swapTarget ? (
-              <form
-                className="space-y-2 rounded-lg border border-primary/40 bg-well p-2.5 text-xs"
-                onSubmit={(event) => {
-                  event.preventDefault();
-                  void runAction(`swap:${swapTarget.id}`, async () => {
-                    await swapNodeEgressIp(request, node.id, swapTarget.id, {
-                      ipv4: swapIpv4.trim(),
-                      interfaceName: swapIface.trim() || null,
-                      gatewayIpv4: swapGw.trim() || null,
-                      label: swapLabel.trim() || null,
-                    });
-                    toast.success(t("adminData.actionDone"));
-                    setSwapTarget(null);
-                    await reload();
-                  });
-                }}
-              >
-                <p className="font-medium">{t("egress.swapTitle", { ip: swapTarget.ipv4 })}</p>
-                <p className="text-muted-foreground">{t("egress.swapHint")}</p>
-                <div className="grid gap-2 sm:grid-cols-4">
-                  <Input
-                    value={swapIpv4}
-                    onChange={(e) => setSwapIpv4(e.target.value)}
-                    placeholder={t("egress.ipv4")}
-                    className="h-8 text-xs"
-                    required
-                  />
-                  <Input
-                    value={swapIface}
-                    onChange={(e) => setSwapIface(e.target.value)}
-                    placeholder={t("egress.interfaceName")}
-                    className="h-8 text-xs"
-                  />
-                  <Input
-                    value={swapGw}
-                    onChange={(e) => setSwapGw(e.target.value)}
-                    placeholder={t("egress.gatewayIpv4")}
-                    className="h-8 text-xs"
-                  />
-                  <Input
-                    value={swapLabel}
-                    onChange={(e) => setSwapLabel(e.target.value)}
-                    placeholder={t("egress.label")}
-                    className="h-8 text-xs"
-                  />
-                </div>
-                <div className="flex justify-end gap-1.5">
-                  <Button type="button" size="sm" variant="ghost" onClick={() => setSwapTarget(null)}>
-                    {t("common.cancel")}
-                  </Button>
-                  <Button type="submit" size="sm" disabled={busy !== null}>
-                    {t("egress.swapApply")}
-                  </Button>
-                </div>
-              </form>
-            ) : null}
 
             <details className="rounded-lg border bg-well p-2.5 text-xs">
               <summary className="cursor-pointer font-medium">{t("egress.addExitForm")}</summary>
@@ -1119,59 +1261,116 @@ export function NodeTopologyDialogBody({
                   });
                 }}
               >
-                <div className="grid gap-2 sm:grid-cols-4">
-                  <Input
-                    value={newExitIp}
-                    onChange={(e) => setNewExitIp(e.target.value)}
-                    placeholder={t("egress.ipv4")}
-                    className="h-8 text-xs"
-                    required
-                  />
-                  <Input
-                    value={newExitLabel}
-                    onChange={(e) => setNewExitLabel(e.target.value)}
-                    placeholder={t("egress.label")}
-                    className="h-8 text-xs"
-                  />
-                  <Input
-                    value={newExitIface}
-                    onChange={(e) => setNewExitIface(e.target.value)}
-                    placeholder={t("egress.interfaceName")}
-                    className="h-8 text-xs"
-                  />
-                  <Input
-                    value={newExitGw}
-                    onChange={(e) => setNewExitGw(e.target.value)}
-                    placeholder={t("egress.gatewayIpv4")}
-                    className="h-8 text-xs"
-                  />
+                <div className="grid gap-2 sm:grid-cols-2">
+                  <div className="space-y-1">
+                    <Label className="text-[11px]">{t("egress.ipv4")}</Label>
+                    <Input
+                      value={newExitIp}
+                      onChange={(e) => setNewExitIp(e.target.value)}
+                      placeholder="198.51.100.20"
+                      className="h-8 text-xs"
+                      required
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <Label className="text-[11px]">{t("egress.fieldLabel")}</Label>
+                    <Input
+                      value={newExitLabel}
+                      onChange={(e) => setNewExitLabel(e.target.value)}
+                      placeholder={t("egress.label")}
+                      className="h-8 text-xs"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <Label className="text-[11px]">{t("egress.dnsPrimary")}</Label>
+                    <Input
+                      value={newExitDns1}
+                      onChange={(e) => setNewExitDns1(e.target.value)}
+                      placeholder="1.1.1.1"
+                      className="h-8 text-xs"
+                      required
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <Label className="text-[11px]">{t("egress.dnsSecondary")}</Label>
+                    <Input
+                      value={newExitDns2}
+                      onChange={(e) => setNewExitDns2(e.target.value)}
+                      placeholder="1.0.0.1"
+                      className="h-8 text-xs"
+                    />
+                  </div>
                 </div>
-                <div className="grid gap-2 sm:grid-cols-3">
-                  <Input
-                    value={newExitDns1}
-                    onChange={(e) => setNewExitDns1(e.target.value)}
-                    placeholder={t("egress.dnsPrimary")}
-                    className="h-8 text-xs"
-                    required
-                  />
-                  <Input
-                    value={newExitDns2}
-                    onChange={(e) => setNewExitDns2(e.target.value)}
-                    placeholder={t("egress.dnsSecondary")}
-                    className="h-8 text-xs"
-                  />
-                  <Input
-                    value={newExitTable}
-                    onChange={(e) => setNewExitTable(e.target.value)}
-                    placeholder={t("egress.routingTable")}
-                    title={t("egress.routingTableHint")}
-                    type="number"
-                    min={200}
-                    max={219}
-                    className="h-8 text-xs"
-                  />
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <span className="text-[11px] text-muted-foreground">
+                    {t("egress.dnsPresetsLabel")}
+                  </span>
+                  {DNS_PRESETS.map((preset) => {
+                    const active =
+                      newExitDns1.trim() === preset.dns1 &&
+                      newExitDns2.trim() === preset.dns2;
+                    return (
+                      <button
+                        key={preset.label}
+                        type="button"
+                        onClick={() => {
+                          setNewExitDns1(preset.dns1);
+                          setNewExitDns2(preset.dns2);
+                        }}
+                        className={cn(
+                          "rounded border px-1.5 py-0.5 text-[11px] transition-colors",
+                          active
+                            ? "border-primary bg-primary/10 text-primary"
+                            : "border-border bg-well text-muted-foreground hover:bg-accent hover:text-foreground",
+                        )}
+                      >
+                        {preset.label} ({preset.dns1})
+                      </button>
+                    );
+                  })}
                 </div>
-                <div className="flex flex-wrap items-center gap-3">
+                <div className="space-y-1.5">
+                  <p className="text-[11px] text-muted-foreground">
+                    {t("egress.advancedNetworkGroup")}
+                  </p>
+                  <div className="grid gap-2 sm:grid-cols-3">
+                    <div className="space-y-1">
+                      <Label className="text-[11px]">{t("egress.fieldInterface")}</Label>
+                      <Input
+                        value={newExitIface}
+                        onChange={(e) => setNewExitIface(e.target.value)}
+                        placeholder="eth0"
+                        className="h-8 text-xs"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <Label className="text-[11px]">{t("egress.fieldGateway")}</Label>
+                      <Input
+                        value={newExitGw}
+                        onChange={(e) => setNewExitGw(e.target.value)}
+                        placeholder={t("egress.gatewayIpv4")}
+                        className="h-8 text-xs"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <Label className="flex items-center gap-1 text-[11px]">
+                        <span>{t("egress.fieldRoutingTable")}</span>
+                        <Hint>{t("egress.routingTableHint")}</Hint>
+                      </Label>
+                      <Input
+                        value={newExitTable}
+                        onChange={(e) => setNewExitTable(e.target.value)}
+                        placeholder="200..219"
+                        title={t("egress.routingTableHint")}
+                        type="number"
+                        min={200}
+                        max={219}
+                        className="h-8 text-xs"
+                      />
+                    </div>
+                  </div>
+                </div>
+                <div className="grid gap-2.5 pt-1 sm:grid-cols-2">
                   <label className="flex items-center gap-1.5">
                     <Switch checked={newExitAmneziaDns} onCheckedChange={setNewExitAmneziaDns} />
                     <span>{t("egress.amneziaDnsDnat")}</span>
