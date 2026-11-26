@@ -2313,6 +2313,13 @@ const ru = {
   "ov.map.empty": "Нет добавленных серверов для отображения топологии",
   "ov.map.selectedPath": "Выбранный путь",
   "ov.map.clearSelection": "Сбросить выбор",
+  "ov.map.clickHint": "Наведите для подсветки пути · нажмите для настройки",
+  "ov.map.sharedExitTitle": "Общий Exit IP для {count} вариантов Entry",
+  "ov.map.daemonShort.routed_active": "активен",
+  "ov.map.daemonShort.masquerade_ready": "маскарад",
+  "ov.map.daemonShort.degraded": "сбой",
+  "ov.map.daemonShort.conflict": "конфликт",
+  "ov.map.daemonShort.unavailable": "офлайн",
 
   // Diagnostics & Reachability Egress
   "nodes.diag.healthy": "Исправных нод: {ok}/{total}",
@@ -4592,6 +4599,13 @@ const en = {
   "ov.map.empty": "No servers configured yet to render topology",
   "ov.map.selectedPath": "Selected path",
   "ov.map.clearSelection": "Clear selection",
+  "ov.map.clickHint": "Hover to highlight path · click to configure",
+  "ov.map.sharedExitTitle": "Shared Exit IP used by {count} Entry variants",
+  "ov.map.daemonShort.routed_active": "active",
+  "ov.map.daemonShort.masquerade_ready": "masq",
+  "ov.map.daemonShort.degraded": "degraded",
+  "ov.map.daemonShort.conflict": "drift",
+  "ov.map.daemonShort.unavailable": "offline",
 
   // Diagnostics & Reachability Egress
   "nodes.diag.healthy": "Healthy nodes: {ok}/{total}",

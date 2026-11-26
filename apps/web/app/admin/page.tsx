@@ -61,7 +61,13 @@ import {
   metricBytes,
 } from "@/components/admin/node-metrics";
 import { OverviewBridgesBlock } from "@/components/admin/overview-bridges";
+import { BridgeDetailDialog } from "@/components/admin/bridges-tab";
 import { FleetTopologyMap } from "@/components/admin/fleet-topology-map";
+import { NodeDetailDialog } from "@/components/admin/node-detail-dialog";
+import {
+  NodeTopologyDialog,
+  type NodeTopologyFocus,
+} from "@/components/admin/node-topology-dialog";
 import {
   OverviewAttentionShelf,
   OverviewStatusStrip,
@@ -117,7 +123,45 @@ export default function AdminOverviewPage() {
   const reachability = useReachability();
   const infra = useBridgeInfra();
   const [adoptingNodeId, setAdoptingNodeId] = React.useState<string | null>(null);
+  const [activeBridgeId, setActiveBridgeId] = React.useState<string | null>(null);
+  const [activeNodeId, setActiveNodeId] = React.useState<string | null>(null);
+  const [activeTopology, setActiveTopology] = React.useState<{
+    nodeId: string;
+    focus: NodeTopologyFocus | null;
+  } | null>(null);
+  const [bridgeReachabilityBusy, setBridgeReachabilityBusy] = React.useState(false);
   const { t, lang } = useT();
+
+  const activeBridge = React.useMemo(
+    () => (activeBridgeId ? infra.bridges.find((b) => b.id === activeBridgeId) ?? null : null),
+    [infra.bridges, activeBridgeId],
+  );
+  const activeNode = React.useMemo(
+    () => (activeNodeId ? nodes.find((n) => n.id === activeNodeId) ?? null : null),
+    [nodes, activeNodeId],
+  );
+  const topologyNode = React.useMemo(
+    () => (activeTopology ? nodes.find((n) => n.id === activeTopology.nodeId) ?? null : null),
+    [nodes, activeTopology],
+  );
+
+  const setBridgeReachability = React.useCallback(
+    async (bridgeId: string, enabled: boolean) => {
+      setBridgeReachabilityBusy(true);
+      try {
+        await request(`/api/admin/vpn-bridges/${encodeURIComponent(bridgeId)}`, {
+          method: "PATCH",
+          body: JSON.stringify({ reachabilityEnabled: enabled }),
+        });
+        await Promise.all([infra.reload(), reachability.reload()]);
+      } catch {
+        toast.error(t("reachability.actionFailed"));
+      } finally {
+        setBridgeReachabilityBusy(false);
+      }
+    },
+    [request, infra, reachability, t],
+  );
 
   const onlinePeersByNode = React.useMemo(() => {
     const map = new Map<string, number>();
@@ -400,6 +444,14 @@ export default function AdminOverviewPage() {
           reachability={reachability.view}
           activeKeysCount={overview?.activeKeys ?? keys.length}
           onlineDevicesCount={overview?.onlineDevices ?? 0}
+          onOpenBridge={(bridgeId) => setActiveBridgeId(bridgeId)}
+          onOpenNode={(nodeId) => setActiveNodeId(nodeId)}
+          onOpenVariant={(nodeId, endpointId) =>
+            setActiveTopology({ nodeId, focus: { kind: "variant", id: endpointId } })
+          }
+          onOpenExit={(nodeId, exitId) =>
+            setActiveTopology({ nodeId, focus: { kind: "exit", id: exitId } })
+          }
         />
       )}
 
@@ -455,6 +507,7 @@ export default function AdminOverviewPage() {
                 reachabilityNode={reachability.byNode.get(node.id)}
                 probeFailThreshold={reachability.view?.probe?.failThreshold ?? 2}
                 egressFailures={egressFailuresByNode.get(node.id)}
+                onOpenDetail={() => setActiveNodeId(node.id)}
               />
             ))}
           </div>
@@ -680,6 +733,46 @@ export default function AdminOverviewPage() {
       </Card>
 
       <PanelUpdateCard />
+
+      <BridgeDetailDialog
+        bridge={activeBridge}
+        onClose={() => setActiveBridgeId(null)}
+        onDone={async () => {
+          await Promise.all([infra.reload(), reload(), reachability.reload()]);
+        }}
+        request={request}
+        reachabilityBusy={bridgeReachabilityBusy}
+        onSetReachability={setBridgeReachability}
+      />
+      <NodeDetailDialog
+        node={activeNode}
+        onClose={() => setActiveNodeId(null)}
+        keys={keys}
+        infra={infra}
+        serviceChecks={serviceChecks}
+        reachability={reachability}
+        action={action}
+        request={request}
+        reload={reload}
+        onOpenTopology={(nodeId, focus) => {
+          setActiveNodeId(null);
+          setActiveTopology({ nodeId, focus: focus ?? null });
+        }}
+      />
+      <NodeTopologyDialog
+        node={topologyNode}
+        initialFocus={activeTopology?.focus ?? null}
+        onClose={() => setActiveTopology(null)}
+        request={request}
+        reload={reload}
+        onSavePublicEndpoint={async (nodeId, publicEndpoint) => {
+          await request(`/api/admin/nodes/${nodeId}`, {
+            method: "PATCH",
+            body: JSON.stringify({ publicEndpoint }),
+          });
+          await Promise.all([reload(), reachability.reload()]);
+        }}
+      />
     </div>
   );
 }
@@ -705,6 +798,7 @@ function OverviewNodeCard({
   reachabilityNode,
   probeFailThreshold,
   egressFailures,
+  onOpenDetail,
 }: {
   node: AdminNode;
   checkResults: NodeCheckResult[];
@@ -713,6 +807,7 @@ function OverviewNodeCard({
   reachabilityNode?: AdminReachabilityNode;
   probeFailThreshold: number;
   egressFailures?: Map<string, Array<{ id: string; name: string; status: "failed" | "error" }>>;
+  onOpenDetail?: () => void;
 }) {
   const { t, lang } = useT();
   const peers = node.peerCount ?? 0;
@@ -781,9 +876,19 @@ function OverviewNodeCard({
             </span>
             <div className="min-w-0">
               <div className="flex min-w-0 flex-wrap items-center gap-1">
-                <p className="truncate text-sm font-medium leading-tight">
-                  {node.publicName || node.name}
-                </p>
+                {onOpenDetail ? (
+                  <button
+                    type="button"
+                    onClick={onOpenDetail}
+                    className="cursor-pointer truncate text-left text-sm font-medium leading-tight hover:text-primary hover:underline focus-visible:underline focus-visible:outline-none"
+                  >
+                    {node.publicName || node.name}
+                  </button>
+                ) : (
+                  <p className="truncate text-sm font-medium leading-tight">
+                    {node.publicName || node.name}
+                  </p>
+                )}
                 {node.modeDrift ? (
                   <Badge variant="destructive" className="h-4 shrink-0 px-1 text-[10px]">
                     {t("egress.driftBadge")}

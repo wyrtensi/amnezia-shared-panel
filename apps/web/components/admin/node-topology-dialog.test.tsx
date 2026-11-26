@@ -270,4 +270,44 @@ describe("summarizeNodeEgress & NodeTopologyDialog", () => {
     expect(html).not.toContain(tRu("egress.quickAddEntry"));
     expect(html).not.toContain(tRu("egress.quickAddBoth"));
   });
+
+  it("marks targeted exit IP with data-focused and highlight ring when initialFocus targets an exit", () => {
+    const html = renderToStaticMarkup(
+      <TooltipProvider>
+        <NodeTopologyDialogBody
+          node={makeNode()}
+          request={() => Promise.resolve({} as never)}
+          reload={() => Promise.resolve()}
+          onSavePublicEndpoint={() => Promise.resolve()}
+          initialFocus={{ kind: "exit", id: "ip-2" }}
+        />
+      </TooltipProvider>,
+    );
+
+    expect(html).toContain('data-topology-section="exits"');
+    expect(html).toContain('data-topology-section="variants"');
+    expect(html).toContain('data-topology-focus="exit:ip-2" data-focused="true"');
+    expect(html).toContain("ring-2 ring-primary/70 border-primary/70 bg-primary/[0.06]");
+    expect(html).not.toContain('data-topology-focus="exit:ip-1" data-focused="true"');
+    expect(html).not.toContain('data-topology-focus="variant:ep-1" data-focused="true"');
+  });
+
+  it("marks targeted variant with data-focused and highlight ring when initialFocus targets a variant", () => {
+    const html = renderToStaticMarkup(
+      <TooltipProvider>
+        <NodeTopologyDialogBody
+          node={makeNode()}
+          request={() => Promise.resolve({} as never)}
+          reload={() => Promise.resolve()}
+          onSavePublicEndpoint={() => Promise.resolve()}
+          initialFocus={{ kind: "variant", id: "ep-1" }}
+        />
+      </TooltipProvider>,
+    );
+
+    expect(html).toContain('data-topology-focus="variant:ep-1" data-focused="true"');
+    expect(html).toContain("ring-2 ring-primary/70 border-primary/70 bg-primary/[0.06]");
+    expect(html).not.toContain('data-topology-focus="exit:ip-1" data-focused="true"');
+    expect(html).not.toContain('data-topology-focus="exit:ip-2" data-focused="true"');
+  });
 });

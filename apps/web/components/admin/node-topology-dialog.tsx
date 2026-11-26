@@ -138,6 +138,10 @@ const EXIT_HEALTH_DOT: Record<NodeEgressIp["hostState"], string> = {
   disabled: "bg-muted-foreground/40",
 };
 
+export type NodeTopologyFocus =
+  | { kind: "variant"; id: string }
+  | { kind: "exit"; id: string | null };
+
 export type NodeTopologyDialogProps = {
   node: AdminNode | null;
   onClose: () => void;
@@ -147,6 +151,7 @@ export type NodeTopologyDialogProps = {
     nodeId: string,
     change: NodePublicEndpointMutation,
   ) => Promise<void>;
+  initialFocus?: NodeTopologyFocus | null;
 };
 
 export function NodeTopologyDialog({
@@ -155,6 +160,7 @@ export function NodeTopologyDialog({
   request,
   reload,
   onSavePublicEndpoint,
+  initialFocus = null,
 }: NodeTopologyDialogProps) {
   const { t } = useT();
   if (!node) return null;
@@ -163,9 +169,11 @@ export function NodeTopologyDialog({
     <Dialog open={Boolean(node)} onOpenChange={(next) => !next && onClose()}>
       <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-2xl">
         <DialogHeader>
-          <DialogTitle className="flex items-center gap-2">
-            <GitBranch className="size-4 text-primary" />
-            {t("egress.dialogTitle", { name: node.publicName || node.name })}
+          <DialogTitle className="flex min-w-0 items-center gap-2 break-words pr-6">
+            <GitBranch className="size-4 shrink-0 text-primary" />
+            <span className="min-w-0 break-words">
+              {t("egress.dialogTitle", { name: node.publicName || node.name })}
+            </span>
           </DialogTitle>
           <DialogDescription>{t("egress.dialogDesc")}</DialogDescription>
         </DialogHeader>
@@ -175,6 +183,7 @@ export function NodeTopologyDialog({
           request={request}
           reload={reload}
           onSavePublicEndpoint={onSavePublicEndpoint}
+          initialFocus={initialFocus}
         />
 
         <DialogFooter>
@@ -193,6 +202,7 @@ export function NodeTopologyDialogBody({
   request,
   reload,
   onSavePublicEndpoint,
+  initialFocus = null,
 }: {
   node: AdminNode;
   request: Requester;
@@ -201,8 +211,10 @@ export function NodeTopologyDialogBody({
     nodeId: string,
     change: NodePublicEndpointMutation,
   ) => Promise<void>;
+  initialFocus?: NodeTopologyFocus | null;
 }) {
   const { t, lang } = useT();
+  const bodyRef = React.useRef<HTMLDivElement>(null);
   const [busy, setBusy] = React.useState<string | null>(null);
   const [blockSmtp, setBlockSmtp] = React.useState(true);
   const [isolatePrivate, setIsolatePrivate] = React.useState(true);
@@ -271,6 +283,21 @@ export function NodeTopologyDialogBody({
     setVarExitId(DEFAULT_EXIT_SENTINEL);
   }, [node.id]);
 
+  const focusKind = initialFocus?.kind ?? null;
+  const focusId = initialFocus?.id ?? null;
+
+  React.useEffect(() => {
+    if (!focusKind) return;
+    const root = bodyRef.current;
+    if (!root) return;
+    const selector =
+      focusKind === "exit" && focusId === null
+        ? '[data-topology-section="exits"]'
+        : `[data-topology-focus="${focusKind}:${focusId}"]`;
+    const el = root.querySelector<HTMLElement>(selector);
+    el?.scrollIntoView?.({ behavior: "smooth", block: "center" });
+  }, [node.id, focusKind, focusId]);
+
   const summary = summarizeNodeEgress(node);
   const exits = node.egressIps ?? [];
   const endpoints = node.publicEndpoints ?? [];
@@ -301,9 +328,9 @@ export function NodeTopologyDialogBody({
   };
 
   return (
-    <div className="space-y-5">
+    <div ref={bodyRef} className="min-w-0 space-y-5">
           {/* Section 1: Mode & Daemon Status */}
-          <section className="space-y-2.5 rounded-lg border bg-well p-3">
+          <section className="min-w-0 space-y-2.5 rounded-lg border bg-well p-3">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div className="flex flex-wrap items-center gap-1.5">
                 <span className="text-sm font-semibold">{t("egress.sectionMode")}</span>
@@ -403,7 +430,7 @@ export function NodeTopologyDialogBody({
             ) : null}
 
             {node.egressModeMessage && summary.modeState === "failed" ? (
-              <p className="text-xs text-destructive">{node.egressModeMessage}</p>
+              <p className="break-words text-xs text-destructive">{node.egressModeMessage}</p>
             ) : null}
 
             <div className="flex flex-wrap items-center justify-between gap-3 border-t border-border/60 pt-2 text-xs">
@@ -449,7 +476,7 @@ export function NodeTopologyDialogBody({
 
           {/* Section 2: Host IPs Onboarding */}
           {classifiedHostIps.length > 0 ? (
-            <section className="space-y-2 rounded-lg border border-dashed border-primary/40 bg-primary/5 p-3 text-xs">
+            <section className="min-w-0 space-y-2 rounded-lg border border-dashed border-primary/40 bg-primary/5 p-3 text-xs">
               <div className="space-y-0.5">
                 <h3 className="text-sm font-semibold">{t("egress.hostIpsTitle")}</h3>
                 <p className="text-muted-foreground">{t("egress.hostIpsHint")}</p>
@@ -458,11 +485,11 @@ export function NodeTopologyDialogBody({
                 {classifiedHostIps.map((addr) => (
                   <li
                     key={`${addr.interfaceName}:${addr.ipv4}`}
-                    className="flex flex-wrap items-center justify-between gap-2 rounded-md border bg-card px-2.5 py-1.5"
+                    className="flex min-w-0 flex-wrap items-center justify-between gap-2 rounded-md border bg-card px-2.5 py-1.5"
                   >
-                    <div className="flex flex-wrap items-center gap-2">
-                      <code className="font-mono font-medium">{addr.cidr || addr.ipv4}</code>
-                      <span className="font-mono text-muted-foreground">{addr.interfaceName}</span>
+                    <div className="flex min-w-0 flex-wrap items-center gap-2">
+                      <code className="break-all font-mono font-medium">{addr.cidr || addr.ipv4}</code>
+                      <span className="break-all font-mono text-muted-foreground">{addr.interfaceName}</span>
                       {addr.detectedGatewayIpv4 ? (
                         <span className="font-mono text-muted-foreground">
                           {t("egress.detectedGateway", { gw: addr.detectedGatewayIpv4 })}
@@ -572,7 +599,7 @@ export function NodeTopologyDialogBody({
           ) : null}
 
           {/* Section 3: Physical Exit IPs */}
-          <section className="space-y-2.5">
+          <section data-topology-section="exits" className="min-w-0 space-y-2.5">
             <h3 className="text-sm font-semibold">{t("egress.sectionExits")}</h3>
 
             {exits.length === 0 ? (
@@ -583,6 +610,8 @@ export function NodeTopologyDialogBody({
                   const verifyResult = verifyByExitId[exit.id];
                   const usedVariants = variantsUsingExit(node, exit.id);
                   const isDefault = node.egressDefaultIpId === exit.id;
+                  const isFocusedExit =
+                    initialFocus?.kind === "exit" && initialFocus.id === exit.id;
                   const proximityWarn =
                     exit.subnetWarning ??
                     detectExitSubnetProximityWarning({
@@ -594,16 +623,22 @@ export function NodeTopologyDialogBody({
                   return (
                     <li
                       key={exit.id}
+                      data-topology-focus={`exit:${exit.id}`}
+                      data-focused={isFocusedExit ? "true" : undefined}
                       className={cn(
-                        "space-y-1.5 rounded-lg border bg-card p-2.5 text-xs",
+                        "space-y-1.5 rounded-lg border bg-card p-2.5 text-xs transition-shadow",
                         !exit.enabled && "opacity-70",
+                        isFocusedExit &&
+                          "ring-2 ring-primary/70 border-primary/70 bg-primary/[0.06]",
                       )}
                     >
-                      <div className="flex flex-wrap items-center justify-between gap-2">
-                        <div className="flex flex-wrap items-center gap-1.5">
-                          <code className="font-mono text-sm font-medium">{exit.ipv4}</code>
+                      <div className="flex min-w-0 flex-wrap items-center justify-between gap-2">
+                        <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+                          <code className="break-all font-mono text-sm font-medium">{exit.ipv4}</code>
                           {exit.label ? (
-                            <Badge variant="secondary">{exit.label}</Badge>
+                            <Badge variant="secondary" className="max-w-full break-words">
+                              {exit.label}
+                            </Badge>
                           ) : null}
                           {isDefault ? (
                             <Badge variant="outline">{t("egress.defaultExitBadge")}</Badge>
@@ -709,7 +744,7 @@ export function NodeTopologyDialogBody({
                         </div>
                       </div>
 
-                      <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-muted-foreground">
+                      <div className="flex min-w-0 flex-wrap gap-x-3 gap-y-0.5 break-words text-muted-foreground">
                         {exit.interfaceName ? <span>NIC {exit.interfaceName}</span> : null}
                         {exit.gatewayIpv4 || exit.detectedGatewayIpv4 ? (
                           <span>GW {exit.gatewayIpv4 ?? exit.detectedGatewayIpv4}</span>
@@ -724,7 +759,7 @@ export function NodeTopologyDialogBody({
                         <span>
                           {t("egress.txStat", { bytes: metricBytes(exit.txBytes, lang) })}
                         </span>
-                        <span>
+                        <span className="break-words">
                           {usedVariants.length > 0
                             ? t("egress.usedByVariants", {
                                 names: usedVariants.map((v) => v.name).join(", "),
@@ -734,10 +769,10 @@ export function NodeTopologyDialogBody({
                       </div>
 
                       {exit.hostDetail ? (
-                        <p className="text-destructive">{exit.hostDetail}</p>
+                        <p className="break-words text-destructive">{exit.hostDetail}</p>
                       ) : null}
                       {proximityWarn ? (
-                        <p className="text-warning">{proximityWarn}</p>
+                        <p className="break-words text-warning">{proximityWarn}</p>
                       ) : null}
                       {verifyResult ? (
                         <p
@@ -986,7 +1021,7 @@ export function NodeTopologyDialogBody({
           </section>
 
           {/* Section 4: Server Variants (Entry -> Exit) */}
-          <section className="space-y-2.5 border-t pt-3">
+          <section data-topology-section="variants" className="min-w-0 space-y-2.5 border-t pt-3">
             <h3 className="text-sm font-semibold">{t("egress.sectionVariants")}</h3>
             <ul className="space-y-1.5">
               {endpoints.map((ep) => {
@@ -999,13 +1034,24 @@ export function NodeTopologyDialogBody({
                 const enabledCount = endpoints.filter((x) => x.enabled).length;
                 const isLastEnabled = ep.enabled && enabledCount <= 1;
                 const isEditing = editVarId === ep.id;
+                const isFocusedVariant =
+                  initialFocus?.kind === "variant" && initialFocus.id === ep.id;
                 return (
-                  <li key={ep.id} className="space-y-2 rounded-lg border bg-well p-2.5 text-xs">
-                    <div className="flex flex-wrap items-center justify-between gap-2">
+                  <li
+                    key={ep.id}
+                    data-topology-focus={`variant:${ep.id}`}
+                    data-focused={isFocusedVariant ? "true" : undefined}
+                    className={cn(
+                      "space-y-2 rounded-lg border bg-well p-2.5 text-xs transition-shadow",
+                      isFocusedVariant &&
+                        "ring-2 ring-primary/70 border-primary/70 bg-primary/[0.06]",
+                    )}
+                  >
+                    <div className="flex min-w-0 flex-wrap items-center justify-between gap-2">
                       <div className="flex min-w-0 flex-wrap items-center gap-2">
-                        <span className="text-sm font-medium">{ep.name}</span>
-                        <span className="inline-flex items-center gap-1 rounded border bg-card px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground">
-                          <span>{ep.publicAddress}</span>
+                        <span className="break-words text-sm font-medium">{ep.name}</span>
+                        <span className="inline-flex max-w-full flex-wrap items-center gap-1 rounded border bg-card px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground">
+                          <span className="break-all">{ep.publicAddress}</span>
                           <ArrowRight aria-hidden className="size-3 shrink-0" />
                           <span
                             aria-label={
@@ -1025,14 +1071,14 @@ export function NodeTopologyDialogBody({
                                 : "bg-muted-foreground/40",
                             )}
                           />
-                          <span>{effectiveExitIp}</span>
+                          <span className="break-all">{effectiveExitIp}</span>
                         </span>
                         {ep.bridgeMode && ep.bridgeMode !== "inherit" ? (
                           <Badge variant="outline">{ep.bridgeMode}</Badge>
                         ) : null}
                       </div>
-                      <div className="flex flex-wrap items-center gap-1.5">
-                        <div className="flex items-center gap-1">
+                      <div className="flex min-w-0 max-w-full flex-wrap items-center gap-1.5">
+                        <div className="flex min-w-0 max-w-full flex-wrap items-center gap-1">
                           <span className="text-[11px] text-muted-foreground">
                             {t("egress.inlineExitLabel")}
                           </span>
@@ -1053,7 +1099,7 @@ export function NodeTopologyDialogBody({
                               });
                             }}
                           >
-                            <SelectTrigger className="h-7 w-[190px] text-xs">
+                            <SelectTrigger className="h-7 w-[190px] max-w-full text-xs">
                               <SelectValue />
                             </SelectTrigger>
                             <SelectContent>

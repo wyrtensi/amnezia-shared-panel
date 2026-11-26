@@ -42,10 +42,11 @@ import { BridgeAgentUpdateFacts, UpdateAgentDialog } from "@/components/admin/br
 import { BridgeDownloadBadge } from "@/components/admin/bridge-route-view";
 import { useAdminData } from "@/components/admin/admin-data";
 import type { BridgeInfra } from "@/components/admin/use-bridge-infra";
-import { createBridge, deleteBridge, renameBridge } from "@/lib/bridge-api";
+import { createBridge, deleteBridge, renameBridge, type Requester } from "@/lib/bridge-api";
 import {
   BRIDGES_ANCHOR,
   bridgeCardAnchor,
+  bridgeSectionHref,
   describeBridgeError,
   nodeCardAnchor,
   nodeRouteEditorHref,
@@ -97,6 +98,7 @@ export function BridgeCardView({
   onUpdateAgent,
   onToggleReachability,
   reachabilityBusy,
+  embedded,
 }: {
   bridge: Bridge;
   t: Translate;
@@ -106,11 +108,12 @@ export function BridgeCardView({
   onUpdateAgent?: () => void;
   onToggleReachability?: (enabled: boolean) => void;
   reachabilityBusy?: boolean;
+  /** Render card body directly without outer Card wrapper (for dialogs). */
+  embedded?: boolean;
 }) {
   const free = Math.max(0, bridge.capacity - bridge.heldPorts);
-  return (
-    <Card id={bridgeCardAnchor(bridge.id)} tabIndex={-1} className="scroll-mt-4">
-      <CardContent className="space-y-3 p-4">
+  const content = (
+    <>
         <div className="flex items-start justify-between gap-2">
           <div className="flex min-w-0 items-start gap-2.5">
             <span className={cn(
@@ -273,7 +276,20 @@ export function BridgeCardView({
             </div>
           </details>
         ) : null}
-      </CardContent>
+    </>
+  );
+
+  if (embedded) {
+    return (
+      <div id={bridgeCardAnchor(bridge.id)} className="space-y-3">
+        {content}
+      </div>
+    );
+  }
+
+  return (
+    <Card id={bridgeCardAnchor(bridge.id)} tabIndex={-1} className="scroll-mt-4">
+      <CardContent className="space-y-3 p-4">{content}</CardContent>
     </Card>
   );
 }
@@ -540,6 +556,108 @@ export function BridgesSection({ infra, reachabilityBusy, onSetReachability }: {
         request={request}
       />
     </section>
+  );
+}
+
+export type BridgeDetailDialogProps = {
+  bridge: Bridge | null;
+  onClose: () => void;
+  onDone: () => Promise<void>;
+  request: Requester;
+  reachabilityBusy?: boolean;
+  onSetReachability?: (bridgeId: string, enabled: boolean) => Promise<void>;
+};
+
+/**
+ * Contextual bridge detail modal for the Overview topology map.
+ * Embeds `BridgeCardView` and wires rename, agent update, and delete dialogs.
+ */
+export function BridgeDetailDialog({
+  bridge,
+  onClose,
+  onDone,
+  request,
+  reachabilityBusy,
+  onSetReachability,
+}: BridgeDetailDialogProps) {
+  const { t, lang } = useT();
+  const [renaming, setRenaming] = React.useState(false);
+  const [deleting, setDeleting] = React.useState(false);
+  const [updating, setUpdating] = React.useState(false);
+
+  React.useEffect(() => {
+    if (!bridge) {
+      setRenaming(false);
+      setDeleting(false);
+      setUpdating(false);
+    }
+  }, [bridge]);
+
+  if (!bridge) return null;
+
+  const handleDeleteDone = async () => {
+    await onDone();
+    onClose();
+  };
+
+  return (
+    <>
+      <Dialog open={Boolean(bridge)} onOpenChange={(next) => !next && onClose()}>
+        <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-xl">
+          <DialogHeader>
+            <DialogTitle className="flex min-w-0 items-center gap-2 pr-6">
+              <Cable aria-hidden className="size-4 shrink-0 text-primary" />
+              <span className="truncate">{bridge.name}</span>
+            </DialogTitle>
+            <DialogDescription className="flex flex-wrap items-center justify-between gap-2 text-xs">
+              <span className="font-mono">{bridge.publicIpv4}</span>
+              <Link
+                href={bridgeSectionHref}
+                prefetch={false}
+                className="inline-flex shrink-0 items-center gap-1 text-primary underline-offset-2 hover:underline"
+              >
+                {t("ov.map.openBridges")}
+              </Link>
+            </DialogDescription>
+          </DialogHeader>
+
+          <BridgeCardView
+            embedded
+            bridge={bridge}
+            t={t}
+            lang={lang}
+            onRename={() => setRenaming(true)}
+            onDelete={() => setDeleting(true)}
+            onUpdateAgent={() => setUpdating(true)}
+            reachabilityBusy={reachabilityBusy}
+            onToggleReachability={
+              onSetReachability
+                ? (enabled) => void onSetReachability(bridge.id, enabled)
+                : undefined
+            }
+          />
+        </DialogContent>
+      </Dialog>
+
+      <RenameBridgeDialog
+        bridge={renaming ? bridge : null}
+        onClose={() => setRenaming(false)}
+        onDone={onDone}
+        request={request}
+      />
+      <UpdateAgentDialog
+        bridge={updating ? bridge : null}
+        onClose={() => setUpdating(false)}
+        onDone={onDone}
+        request={request}
+      />
+      <DeleteBridgeDialog
+        bridge={deleting ? bridge : null}
+        onClose={() => setDeleting(false)}
+        onDone={handleDeleteDone}
+        request={request}
+      />
+    </>
   );
 }
 

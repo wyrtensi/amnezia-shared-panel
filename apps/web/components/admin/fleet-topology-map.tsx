@@ -41,6 +41,10 @@ export type FleetTopologyMapProps = {
   activeKeysCount: number;
   onlineDevicesCount: number;
   defaultExpanded?: boolean;
+  onOpenBridge?: (bridgeId: string) => void;
+  onOpenNode?: (nodeId: string) => void;
+  onOpenVariant?: (nodeId: string, endpointId: string) => void;
+  onOpenExit?: (nodeId: string, exitId: string | null) => void;
 };
 
 export type TopologyColumnId = "panel" | "bridges" | "nodes" | "entries" | "exits";
@@ -150,6 +154,7 @@ export type ExitGraphNode = {
   enabled: boolean;
   hostState: NodeEgressIpHostState | null;
   failingChecks: TopologyCheckFailure[];
+  incomingVariantCount: number;
   isSynthetic: boolean;
   health: TopologyHealth;
 };
@@ -188,7 +193,11 @@ export type TopologyEdge = {
 
 export type BuildFleetTopologyGraphInput = Omit<
   FleetTopologyMapProps,
-  "defaultExpanded"
+  | "defaultExpanded"
+  | "onOpenBridge"
+  | "onOpenNode"
+  | "onOpenVariant"
+  | "onOpenExit"
 >;
 
 export type FleetTopologyGraph = {
@@ -209,10 +218,18 @@ export type FleetTopologyGraph = {
 };
 
 const VIEWBOX_WIDTH = 1000;
-const CARD_HEIGHT = 92;
-const ROW_GAP = 12;
+const CARD_HEIGHT = 88;
+const ROW_GAP = 14;
 const CANVAS_PAD_Y = 8;
-const EDGE_ANCHOR_INSET = 12;
+const EDGE_ANCHOR_INSET = 9;
+
+const DAEMON_PILL_TONE: Record<NodeEgressDaemonState, string> = {
+  routed_active: "bg-success/15 text-success",
+  masquerade_ready: "bg-success/15 text-success",
+  degraded: "bg-warning/15 text-warning",
+  unavailable: "bg-warning/15 text-warning",
+  conflict: "bg-destructive/15 text-destructive",
+};
 
 const HEALTH_DOT_CLASS: Record<TopologyHealth, string> = {
   success: "bg-success",
@@ -650,6 +667,7 @@ export function buildFleetTopologyGraph({
         enabled: exitIp.enabled,
         hostState: exitIp.hostState,
         failingChecks: dedupedChecks,
+        incomingVariantCount: 0,
         isSynthetic: false,
         health: resolveExitHealth(
           node.enabled,
@@ -700,6 +718,7 @@ export function buildFleetTopologyGraph({
         enabled: node.enabled,
         hostState: implicitHostState,
         failingChecks: dedupedChecks,
+        incomingVariantCount: 0,
         isSynthetic: true,
         health: resolveExitHealth(
           node.enabled,
@@ -892,6 +911,16 @@ export function buildFleetTopologyGraph({
     for (const exitItem of orderedNodeExits) {
       rawExits.push(exitItem);
     }
+  }
+
+  // Count how many Entry variants converge onto each Physical Exit IP.
+  const incomingByExitId = new Map<string, number>();
+  for (const edge of pendingEdges) {
+    if (edge.kind !== "entry-exit") continue;
+    incomingByExitId.set(edge.to, (incomingByExitId.get(edge.to) ?? 0) + 1);
+  }
+  for (const exitItem of rawExits) {
+    exitItem.incomingVariantCount = incomingByExitId.get(exitItem.id) ?? 0;
   }
 
   // Assign deterministic coordinates per column.
@@ -1103,10 +1132,15 @@ export function FleetTopologyMap({
   activeKeysCount,
   onlineDevicesCount,
   defaultExpanded = true,
+  onOpenBridge,
+  onOpenNode,
+  onOpenVariant,
+  onOpenExit,
 }: FleetTopologyMapProps) {
   const { t } = useT();
   const [expanded, setExpanded] = React.useState(defaultExpanded);
   const [selectedId, setSelectedId] = React.useState<string | null>(null);
+  const [hoveredId, setHoveredId] = React.useState<string | null>(null);
 
   const graph = React.useMemo(
     () =>
@@ -1130,15 +1164,18 @@ export function FleetTopologyMap({
     ],
   );
 
-  // Clear selection if the selected item disappears after a refresh.
+  // Clear selection/hover if the targeted item disappears after a refresh.
   const effectiveSelectedId =
     selectedId && graph.itemsById.has(selectedId) ? selectedId : null;
+  const effectiveHoveredId =
+    hoveredId && graph.itemsById.has(hoveredId) ? hoveredId : null;
+  const activeHighlightId = effectiveHoveredId ?? effectiveSelectedId;
 
   const { activeNodeIds, activeEdgeIds } = React.useMemo(
-    () => computeHighlightedPath(graph, effectiveSelectedId),
-    [graph, effectiveSelectedId],
+    () => computeHighlightedPath(graph, activeHighlightId),
+    [graph, activeHighlightId],
   );
-  const hasSelection = effectiveSelectedId !== null;
+  const hasHighlight = activeHighlightId !== null;
   const selectedItem = effectiveSelectedId
     ? graph.itemsById.get(effectiveSelectedId)
     : undefined;
@@ -1146,6 +1183,13 @@ export function FleetTopologyMap({
   const toggleSelect = (id: string) => {
     setSelectedId((prev) => (prev === id ? null : id));
   };
+
+  const hoverProps = (id: string) => ({
+    onMouseEnter: () => setHoveredId(id),
+    onMouseLeave: () => setHoveredId((prev) => (prev === id ? null : prev)),
+    onFocus: () => setHoveredId(id),
+    onBlur: () => setHoveredId((prev) => (prev === id ? null : prev)),
+  });
 
   const isEmpty = nodes.length === 0 && bridges.length === 0;
 
@@ -1157,7 +1201,12 @@ export function FleetTopologyMap({
             <GitBranch className="size-4 text-primary" />
             {t("ov.map.title")}
           </CardTitle>
-          <p className="text-xs text-muted-foreground">{t("ov.map.subtitle")}</p>
+          <p className="text-xs text-muted-foreground">
+            {t("ov.map.subtitle")}
+            <span className="ml-1.5 text-muted-foreground/80">
+              · {t("ov.map.clickHint")}
+            </span>
+          </p>
         </div>
         <Button
           type="button"
@@ -1189,16 +1238,21 @@ export function FleetTopologyMap({
             </p>
           ) : (
             <div className="overflow-x-auto pb-1">
-              <div className="min-w-[840px] space-y-2">
+              <div
+                className={cn(
+                  "space-y-2",
+                  graph.hasBridges ? "min-w-[900px]" : "min-w-[760px]",
+                )}
+              >
                 {/* Column headers */}
                 <div
                   className={cn(
-                    "grid gap-0 px-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground",
+                    "grid gap-0 text-[11px] font-medium uppercase tracking-wide text-muted-foreground",
                     graph.hasBridges ? "grid-cols-5" : "grid-cols-4",
                   )}
                 >
                   {graph.columns.map((col) => (
-                    <div key={col} className="px-3">
+                    <div key={col} className="px-2">
                       {t(COLUMN_TITLE_KEY[col])}
                     </div>
                   ))}
@@ -1218,13 +1272,13 @@ export function FleetTopologyMap({
                   >
                     {graph.edges.map((edge) => {
                       const highlighted =
-                        !hasSelection || activeEdgeIds.has(edge.id);
+                        !hasHighlight || activeEdgeIds.has(edge.id);
                       return (
                         <path
                           key={edge.id}
                           d={edge.path}
                           fill="none"
-                          strokeWidth={highlighted && hasSelection ? 2.6 : 1.8}
+                          strokeWidth={highlighted && hasHighlight ? 2.6 : 1.8}
                           strokeLinecap="round"
                           strokeDasharray={edge.dashed ? "5 4" : undefined}
                           className={cn(
@@ -1245,7 +1299,7 @@ export function FleetTopologyMap({
                   >
                     {/* Panel column */}
                     <div
-                      className="flex flex-col px-3"
+                      className="flex flex-col px-2"
                       style={{
                         paddingTop: `${graph.columnOffsets.panel}px`,
                         gap: `${graph.rowGap}px`,
@@ -1257,7 +1311,7 @@ export function FleetTopologyMap({
                         className={cn(
                           "flex flex-col justify-between rounded-lg border bg-card px-2.5 py-2 text-xs shadow-xs transition-opacity",
                           HEALTH_BORDER_CLASS[graph.panel.health],
-                          hasSelection && !activeNodeIds.has(graph.panel.id)
+                          hasHighlight && !activeNodeIds.has(graph.panel.id)
                             ? "opacity-35"
                             : "opacity-100",
                         )}
@@ -1286,7 +1340,7 @@ export function FleetTopologyMap({
                     {/* Bridges column (only when bridges exist) */}
                     {graph.hasBridges ? (
                       <div
-                        className="flex flex-col px-3"
+                        className="flex flex-col px-2"
                         style={{
                           paddingTop: `${graph.columnOffsets.bridges}px`,
                           gap: `${graph.rowGap}px`,
@@ -1295,7 +1349,7 @@ export function FleetTopologyMap({
                         {graph.bridges.map((b) => {
                           const isSelected = effectiveSelectedId === b.id;
                           const isDimmed =
-                            hasSelection && !activeNodeIds.has(b.id);
+                            hasHighlight && !activeNodeIds.has(b.id);
                           const frpsLabel =
                             b.frpsReachable === null
                               ? "frps ?"
@@ -1308,10 +1362,18 @@ export function FleetTopologyMap({
                               type="button"
                               data-node-id={b.id}
                               aria-pressed={isSelected}
-                              onClick={() => toggleSelect(b.id)}
+                              {...hoverProps(b.id)}
+                              onClick={() => {
+                                if (onOpenBridge) {
+                                  setSelectedId(b.id);
+                                  onOpenBridge(b.bridgeId);
+                                } else {
+                                  toggleSelect(b.id);
+                                }
+                              }}
                               style={{ height: `${graph.cardHeight}px` }}
                               className={cn(
-                                "flex w-full flex-col justify-between rounded-lg border bg-card px-2.5 py-2 text-left text-xs shadow-xs transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                                "flex w-full cursor-pointer flex-col justify-between rounded-lg border bg-card px-2.5 py-2 text-left text-xs shadow-xs transition-all hover:border-primary/60 hover:bg-accent/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
                                 HEALTH_BORDER_CLASS[b.health],
                                 isSelected && "ring-2 ring-primary",
                                 isDimmed && "opacity-35",
@@ -1330,7 +1392,7 @@ export function FleetTopologyMap({
                               <div className="flex items-center justify-between gap-1 text-[11px]">
                                 <span
                                   className={cn(
-                                    "truncate font-mono",
+                                    "shrink-0 font-mono",
                                     b.frpsReachable === false
                                       ? "text-destructive"
                                       : b.frpsReachable
@@ -1340,7 +1402,10 @@ export function FleetTopologyMap({
                                 >
                                   {frpsLabel} · :{b.controlTcpPort}
                                 </span>
-                                <span className="shrink-0 text-muted-foreground">
+                                <span
+                                  title={t(`bridge.status.${b.managementStatus}`)}
+                                  className="min-w-0 truncate text-muted-foreground"
+                                >
                                   {t(`bridge.status.${b.managementStatus}`)}
                                 </span>
                               </div>
@@ -1352,7 +1417,7 @@ export function FleetTopologyMap({
 
                     {/* VPN Nodes column */}
                     <div
-                      className="flex flex-col px-3"
+                      className="flex flex-col px-2"
                       style={{
                         paddingTop: `${graph.columnOffsets.nodes}px`,
                         gap: `${graph.rowGap}px`,
@@ -1361,20 +1426,34 @@ export function FleetTopologyMap({
                       {graph.nodes.map((n) => {
                         const isSelected = effectiveSelectedId === n.id;
                         const isDimmed =
-                          hasSelection && !activeNodeIds.has(n.id);
+                          hasHighlight && !activeNodeIds.has(n.id);
                         const egressdText = n.egressDaemonState
                           ? t(`egress.daemon.${n.egressDaemonState}`)
                           : "—";
+                        const daemonShortText = n.egressDaemonState
+                          ? t(`ov.map.daemonShort.${n.egressDaemonState}`)
+                          : "—";
+                        const daemonPillTone = n.egressDaemonState
+                          ? DAEMON_PILL_TONE[n.egressDaemonState]
+                          : "bg-muted text-muted-foreground";
                         return (
                           <button
                             key={n.id}
                             type="button"
                             data-node-id={n.id}
                             aria-pressed={isSelected}
-                            onClick={() => toggleSelect(n.id)}
+                            {...hoverProps(n.id)}
+                            onClick={() => {
+                              if (onOpenNode) {
+                                setSelectedId(n.id);
+                                onOpenNode(n.nodeId);
+                              } else {
+                                toggleSelect(n.id);
+                              }
+                            }}
                             style={{ height: `${graph.cardHeight}px` }}
                             className={cn(
-                              "flex w-full flex-col justify-between rounded-lg border bg-card px-2.5 py-2 text-left text-xs shadow-xs transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                              "flex w-full cursor-pointer flex-col justify-between rounded-lg border bg-card px-2.5 py-2 text-left text-xs shadow-xs transition-all hover:border-primary/60 hover:bg-accent/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
                               HEALTH_BORDER_CLASS[n.health],
                               isSelected && "ring-2 ring-primary",
                               isDimmed && "opacity-35",
@@ -1392,12 +1471,18 @@ export function FleetTopologyMap({
                                 <HealthDot health={n.health} />
                               </div>
                             </div>
-                            <div className="flex items-center justify-between gap-1 text-[11px] text-muted-foreground">
+                            <div className="flex items-center justify-between gap-1.5 text-[11px]">
                               <span className="truncate font-medium text-foreground/85">
                                 {t(`egress.mode.${n.egressMode}`)}
                               </span>
-                              <span className="truncate" title={egressdText}>
-                                egressd: {egressdText}
+                              <span
+                                title={egressdText}
+                                className={cn(
+                                  "shrink-0 rounded-full px-1.5 py-0.5 text-[10px] font-medium leading-none",
+                                  daemonPillTone,
+                                )}
+                              >
+                                {daemonShortText}
                               </span>
                             </div>
                             <div className="flex items-center justify-between gap-1 text-[11px] text-muted-foreground tabular">
@@ -1423,7 +1508,7 @@ export function FleetTopologyMap({
 
                     {/* Entry Variants column */}
                     <div
-                      className="flex flex-col px-3"
+                      className="flex flex-col px-2"
                       style={{
                         paddingTop: `${graph.columnOffsets.entries}px`,
                         gap: `${graph.rowGap}px`,
@@ -1432,7 +1517,7 @@ export function FleetTopologyMap({
                       {graph.entries.map((e) => {
                         const isSelected = effectiveSelectedId === e.id;
                         const isDimmed =
-                          hasSelection && !activeNodeIds.has(e.id);
+                          hasHighlight && !activeNodeIds.has(e.id);
                         const hasPreAlert =
                           e.probeConsecutiveFailures > 0 && !e.incidentOpen;
                         return (
@@ -1441,10 +1526,18 @@ export function FleetTopologyMap({
                             type="button"
                             data-node-id={e.id}
                             aria-pressed={isSelected}
-                            onClick={() => toggleSelect(e.id)}
+                            {...hoverProps(e.id)}
+                            onClick={() => {
+                              if (onOpenVariant) {
+                                setSelectedId(e.id);
+                                onOpenVariant(e.nodeId, e.endpointId);
+                              } else {
+                                toggleSelect(e.id);
+                              }
+                            }}
                             style={{ height: `${graph.cardHeight}px` }}
                             className={cn(
-                              "flex w-full flex-col justify-between rounded-lg border bg-card px-2.5 py-2 text-left text-xs shadow-xs transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                              "flex w-full cursor-pointer flex-col justify-between rounded-lg border bg-card px-2.5 py-2 text-left text-xs shadow-xs transition-all hover:border-primary/60 hover:bg-accent/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
                               HEALTH_BORDER_CLASS[e.health],
                               isSelected && "ring-2 ring-primary",
                               isDimmed && "opacity-35",
@@ -1505,7 +1598,7 @@ export function FleetTopologyMap({
 
                     {/* Physical Exit IPs column */}
                     <div
-                      className="flex flex-col px-3"
+                      className="flex flex-col px-2"
                       style={{
                         paddingTop: `${graph.columnOffsets.exits}px`,
                         gap: `${graph.rowGap}px`,
@@ -1514,7 +1607,7 @@ export function FleetTopologyMap({
                       {graph.exits.map((ex) => {
                         const isSelected = effectiveSelectedId === ex.id;
                         const isDimmed =
-                          hasSelection && !activeNodeIds.has(ex.id);
+                          hasHighlight && !activeNodeIds.has(ex.id);
                         const firstFailure = ex.failingChecks[0];
                         return (
                           <button
@@ -1522,10 +1615,18 @@ export function FleetTopologyMap({
                             type="button"
                             data-node-id={ex.id}
                             aria-pressed={isSelected}
-                            onClick={() => toggleSelect(ex.id)}
+                            {...hoverProps(ex.id)}
+                            onClick={() => {
+                              if (onOpenExit) {
+                                setSelectedId(ex.id);
+                                onOpenExit(ex.nodeId, ex.exitId);
+                              } else {
+                                toggleSelect(ex.id);
+                              }
+                            }}
                             style={{ height: `${graph.cardHeight}px` }}
                             className={cn(
-                              "flex w-full flex-col justify-between rounded-lg border bg-card px-2.5 py-2 text-left text-xs shadow-xs transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                              "flex w-full cursor-pointer flex-col justify-between rounded-lg border bg-card px-2.5 py-2 text-left text-xs shadow-xs transition-all hover:border-primary/60 hover:bg-accent/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
                               HEALTH_BORDER_CLASS[ex.health],
                               isSelected && "ring-2 ring-primary",
                               isDimmed && "opacity-35",
@@ -1536,7 +1637,19 @@ export function FleetTopologyMap({
                                 <Globe className="size-3.5 shrink-0 text-chart-4" />
                                 <span className="truncate">{ex.ipv4}</span>
                               </span>
-                              <HealthDot health={ex.health} />
+                              <div className="flex shrink-0 items-center gap-1">
+                                {ex.incomingVariantCount > 1 ? (
+                                  <span
+                                    title={t("ov.map.sharedExitTitle", {
+                                      count: ex.incomingVariantCount,
+                                    })}
+                                    className="rounded-full bg-primary/15 px-1.5 py-0.5 font-mono text-[10px] font-semibold leading-none text-primary tabular"
+                                  >
+                                    ×{ex.incomingVariantCount}
+                                  </span>
+                                ) : null}
+                                <HealthDot health={ex.health} />
+                              </div>
                             </div>
                             <div className="flex items-center justify-between gap-1 text-[11px] text-muted-foreground">
                               <span className="truncate">

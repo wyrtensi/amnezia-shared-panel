@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import type { Bridge, NodeBridgeRoute } from "@amnezia/contracts";
 import { messages, type Lang } from "@/lib/i18n/messages";
 import { formatDateTime } from "@/lib/format";
-import { BridgeCardView } from "./bridges-tab";
+import { BridgeCardView, BridgeDetailDialog } from "./bridges-tab";
 import { OverviewBridgesBlock } from "./overview-bridges";
 import { BridgeRouteFacts } from "./bridge-route-view";
 import { agentUpdateTone } from "@/lib/bridge-ui";
@@ -254,6 +254,47 @@ describe("BridgeCardView", () => {
     expect(html).toContain("Нет свежих данных");
     expect(html).toContain("Маршрутов нет");
     expect(html).not.toContain("install-frps.sh");
+  });
+
+  it("omits outer Card wrapper when embedded and handles BridgeDetailDialog null/open safely", () => {
+    const standalone = render(bridge);
+    expect(standalone).toContain("rounded-xl border bg-card");
+
+    const embeddedHtml = renderToStaticMarkup(
+      <BridgeCardView
+        bridge={bridge}
+        t={tFor("en")}
+        lang="en"
+        onRename={() => undefined}
+        onDelete={() => undefined}
+        embedded
+      />,
+    );
+    expect(embeddedHtml).toContain(`id="bridge-${bridge.id}"`);
+    expect(embeddedHtml).toContain("Amsterdam bridge");
+    expect(embeddedHtml).toContain("7000/tcp");
+    expect(embeddedHtml).not.toContain("rounded-xl border bg-card");
+
+    const closedDialog = renderToStaticMarkup(
+      <BridgeDetailDialog
+        bridge={null}
+        onClose={() => undefined}
+        onDone={() => Promise.resolve()}
+        request={() => Promise.resolve({} as never)}
+      />,
+    );
+    expect(closedDialog).toBe("");
+
+    expect(() =>
+      renderToStaticMarkup(
+        <BridgeDetailDialog
+          bridge={bridge}
+          onClose={() => undefined}
+          onDone={() => Promise.resolve()}
+          request={() => Promise.resolve({} as never)}
+        />,
+      ),
+    ).not.toThrow();
   });
 });
 

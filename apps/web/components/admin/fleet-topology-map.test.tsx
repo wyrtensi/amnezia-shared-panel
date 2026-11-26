@@ -372,6 +372,191 @@ describe("buildFleetTopologyGraph", () => {
     expect(graph.exits[0]?.health).toBe("destructive");
     expect(graph.entries[0]?.health).toBe("destructive");
   });
+
+  it("supports One-to-Many topology (1 Entry IP fanning to 3 Exits)", () => {
+    const makeExit = (id: string, ipv4: string, label: string) => ({
+      id,
+      nodeId: "n-1",
+      ipv4,
+      label,
+      interfaceName: "eth0",
+      gatewayIpv4: "198.51.100.1",
+      routingTableId: 200,
+      dnsPrimary: "1.1.1.1",
+      dnsSecondary: null,
+      amneziaDnsDnat: true,
+      enforceDnsDnat: false,
+      allowAsEntry: false,
+      enabled: true,
+      hostState: "active" as const,
+      hostDetail: null,
+      observedSubnetCidr: null,
+      detectedGatewayIpv4: null,
+      txBytes: "0",
+      txPackets: "0",
+      hostObservedAt: null,
+    });
+    const node = baseNode({
+      id: "n-1",
+      name: "de-01",
+      egressMode: "routed",
+      egressDaemonState: "routed_active",
+      egressDefaultIpId: "ex-1",
+      egressIps: [
+        makeExit("ex-1", "198.51.100.21", "Clean A"),
+        makeExit("ex-2", "198.51.100.22", "Clean B"),
+        makeExit("ex-3", "198.51.100.23", "Clean C"),
+      ],
+      publicEndpoints: [
+        {
+          id: "ep-1",
+          ordinal: 1,
+          name: "Shared Entry",
+          entryName: "Shared Entry",
+          variantOrdinal: 1,
+          publicAddress: "198.51.100.10",
+          enabled: true,
+          reachabilityEnabled: true,
+          probeStatus: "ok",
+          probeCheckedAt: null,
+          probeDetail: null,
+          egressIpId: "ex-1",
+          effectiveEgressIp: "198.51.100.21",
+        },
+        {
+          id: "ep-2",
+          ordinal: 2,
+          name: "Shared Entry",
+          entryName: "Shared Entry",
+          variantOrdinal: 2,
+          publicAddress: "198.51.100.10",
+          enabled: true,
+          reachabilityEnabled: true,
+          probeStatus: "ok",
+          probeCheckedAt: null,
+          probeDetail: null,
+          egressIpId: "ex-2",
+          effectiveEgressIp: "198.51.100.22",
+        },
+        {
+          id: "ep-3",
+          ordinal: 3,
+          name: "Shared Entry",
+          entryName: "Shared Entry",
+          variantOrdinal: 3,
+          publicAddress: "198.51.100.10",
+          enabled: true,
+          reachabilityEnabled: true,
+          probeStatus: "ok",
+          probeCheckedAt: null,
+          probeDetail: null,
+          egressIpId: "ex-3",
+          effectiveEgressIp: "198.51.100.23",
+        },
+      ],
+    });
+
+    const graph = buildFleetTopologyGraph({
+      nodes: [node],
+      bridges: [],
+      routeByNode: new Map(),
+      serviceChecks: [],
+      reachability: null,
+      activeKeysCount: 5,
+      onlineDevicesCount: 2,
+    });
+
+    expect(graph.entries).toHaveLength(3);
+    expect(graph.entries.map((e) => e.publicAddress)).toEqual([
+      "198.51.100.10",
+      "198.51.100.10",
+      "198.51.100.10",
+    ]);
+    expect(graph.entries.map((e) => e.variantTag)).toEqual(["v1", "v2", "v3"]);
+    expect(graph.exits).toHaveLength(3);
+    expect(graph.exits.every((ex) => ex.incomingVariantCount === 1)).toBe(true);
+    const entryExitEdges = graph.edges.filter((e) => e.kind === "entry-exit");
+    expect(entryExitEdges).toHaveLength(3);
+  });
+
+  it("supports Many-to-One topology (2 distinct Entry IPs converging on 1 shared Exit IP)", () => {
+    const node = baseNode({
+      id: "n-1",
+      name: "nl-01",
+      egressMode: "routed",
+      egressDaemonState: "degraded",
+      egressDefaultIpId: "ex-shared",
+      egressIps: [
+        {
+          id: "ex-shared",
+          nodeId: "n-1",
+          ipv4: "198.51.100.90",
+          label: "Shared Exit",
+          interfaceName: "eth0",
+          gatewayIpv4: "198.51.100.1",
+          routingTableId: 200,
+          dnsPrimary: "1.1.1.1",
+          dnsSecondary: null,
+          amneziaDnsDnat: true,
+          enforceDnsDnat: false,
+          allowAsEntry: false,
+          enabled: true,
+          hostState: "active",
+          hostDetail: null,
+          observedSubnetCidr: null,
+          detectedGatewayIpv4: null,
+          txBytes: "0",
+          txPackets: "0",
+          hostObservedAt: null,
+        },
+      ],
+      publicEndpoints: [
+        {
+          id: "ep-a",
+          ordinal: 1,
+          name: "Entry Alpha",
+          publicAddress: "198.51.100.11",
+          enabled: true,
+          reachabilityEnabled: true,
+          probeStatus: "ok",
+          probeCheckedAt: null,
+          probeDetail: null,
+          egressIpId: "ex-shared",
+          effectiveEgressIp: "198.51.100.90",
+        },
+        {
+          id: "ep-b",
+          ordinal: 2,
+          name: "Entry Beta",
+          publicAddress: "198.51.100.12",
+          enabled: true,
+          reachabilityEnabled: true,
+          probeStatus: "ok",
+          probeCheckedAt: null,
+          probeDetail: null,
+          egressIpId: "ex-shared",
+          effectiveEgressIp: "198.51.100.90",
+        },
+      ],
+    });
+
+    const graph = buildFleetTopologyGraph({
+      nodes: [node],
+      bridges: [],
+      routeByNode: new Map(),
+      serviceChecks: [],
+      reachability: null,
+      activeKeysCount: 4,
+      onlineDevicesCount: 2,
+    });
+
+    expect(graph.entries).toHaveLength(2);
+    expect(graph.exits).toHaveLength(1);
+    expect(graph.exits[0]?.incomingVariantCount).toBe(2);
+    const entryExitEdges = graph.edges.filter((e) => e.kind === "entry-exit");
+    expect(entryExitEdges).toHaveLength(2);
+    expect(entryExitEdges.every((e) => e.to === "exit:n-1:ex-shared")).toBe(true);
+  });
 });
 
 describe("FleetTopologyMap SSR markup", () => {
@@ -494,8 +679,89 @@ describe("FleetTopologyMap SSR markup", () => {
     expect(html).toContain("Edge DE");
     expect(html).toContain("198.51.100.30");
     expect(html).toContain("Hetzner Exit");
+    expect(html).toContain(messages.ru["ov.map.daemonShort.routed_active"]);
+    expect(html).toContain(messages.ru["ov.map.clickHint"]);
     expect(html).toContain(messages.ru["reachability.preAlert"].replace("{count}", "1"));
     expect(html).toContain("<path");
+  });
+
+  it("renders short daemon state pill and Many-to-One ×2 convergence badge", () => {
+    const node = baseNode({
+      id: "n-1",
+      name: "nl-01",
+      egressMode: "routed",
+      egressDaemonState: "degraded",
+      egressDefaultIpId: "ex-shared",
+      egressIps: [
+        {
+          id: "ex-shared",
+          nodeId: "n-1",
+          ipv4: "198.51.100.90",
+          label: "Shared Exit",
+          interfaceName: "eth0",
+          gatewayIpv4: "198.51.100.1",
+          routingTableId: 200,
+          dnsPrimary: "1.1.1.1",
+          dnsSecondary: null,
+          amneziaDnsDnat: true,
+          enforceDnsDnat: false,
+          allowAsEntry: false,
+          enabled: true,
+          hostState: "active",
+          hostDetail: null,
+          observedSubnetCidr: null,
+          detectedGatewayIpv4: null,
+          txBytes: "0",
+          txPackets: "0",
+          hostObservedAt: null,
+        },
+      ],
+      publicEndpoints: [
+        {
+          id: "ep-a",
+          ordinal: 1,
+          name: "Entry Alpha",
+          publicAddress: "198.51.100.11",
+          enabled: true,
+          reachabilityEnabled: true,
+          probeStatus: "ok",
+          probeCheckedAt: null,
+          probeDetail: null,
+          egressIpId: "ex-shared",
+          effectiveEgressIp: "198.51.100.90",
+        },
+        {
+          id: "ep-b",
+          ordinal: 2,
+          name: "Entry Beta",
+          publicAddress: "198.51.100.12",
+          enabled: true,
+          reachabilityEnabled: true,
+          probeStatus: "ok",
+          probeCheckedAt: null,
+          probeDetail: null,
+          egressIpId: "ex-shared",
+          effectiveEgressIp: "198.51.100.90",
+        },
+      ],
+    });
+
+    const html = renderToStaticMarkup(
+      <FleetTopologyMap
+        nodes={[node]}
+        bridges={[]}
+        routeByNode={new Map()}
+        serviceChecks={[]}
+        activeKeysCount={4}
+        onlineDevicesCount={2}
+      />,
+    );
+
+    expect(html).toContain(messages.ru["ov.map.daemonShort.degraded"]);
+    expect(html).toContain("×2");
+    expect(html).toContain(
+      messages.ru["ov.map.sharedExitTitle"].replace("{count}", "2"),
+    );
   });
 
   it("renders collapsed state when defaultExpanded is false", () => {
