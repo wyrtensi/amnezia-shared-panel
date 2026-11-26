@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { access, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -207,8 +207,12 @@ fi
   );
   const backupsDir = path.join(dir, "backups");
   await mkdir(backupsDir, { recursive: true });
-  await writeFile(path.join(backupsDir, "panel-db-20260101T000001Z.sql.gz"), "old-1\n");
-  await writeFile(path.join(backupsDir, "panel-db-20260101T000002Z.sql.gz"), "old-2\n");
+  const old1 = path.join(backupsDir, "panel-db-20260101T000001Z.sql.gz");
+  const old2 = path.join(backupsDir, "panel-db-20260101T000002Z.sql.gz");
+  await writeFile(old1, "old-1\n");
+  await writeFile(old2, "old-2\n");
+  await utimes(old1, new Date("2026-01-01T00:00:01Z"), new Date("2026-01-01T00:00:01Z"));
+  await utimes(old2, new Date("2026-01-01T00:00:02Z"), new Date("2026-01-01T00:00:02Z"));
 
   const { code, stdout } = await runBash([backupScriptPath, backupsDir], {
     cwd: dir,

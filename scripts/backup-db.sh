@@ -40,7 +40,9 @@ trap - EXIT
 echo "Backup written: ${FILE} ($(du -h "$FILE" | cut -f1))"
 
 if [ "$KEEP_COUNT" -gt 0 ] 2>/dev/null; then
-  mapfile -t existing_backups < <(ls -1t "${OUT_DIR}"/panel-db-*.sql.gz 2>/dev/null || true)
+  # Filenames embed UTC ISO timestamps (panel-db-YYYYMMDDTHHMMSSZ.sql.gz);
+  # sorting by name avoids filesystem mtime ties on fast runs or file copies.
+  mapfile -t existing_backups < <(LC_ALL=C ls -1r "${OUT_DIR}"/panel-db-*.sql.gz 2>/dev/null || true)
   if [ "${#existing_backups[@]}" -gt "$KEEP_COUNT" ]; then
     rm -f "${existing_backups[@]:$KEEP_COUNT}"
     echo "Pruned $(( ${#existing_backups[@]} - KEEP_COUNT )) old backup(s), keeping newest ${KEEP_COUNT}"
