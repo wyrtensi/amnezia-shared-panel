@@ -81,6 +81,7 @@ import {
   summarizeStaleKeys,
 } from "./staleKeys.js";
 import { classifyNodeHost, formatNodeAddress } from "./nodeAddress.js";
+import { classifyNodeHostIps, type ClassifiedHostIp } from "./hostIps.js";
 import {
   awgCell,
   cpuCell,
@@ -2476,6 +2477,232 @@ async function cmdKeyReassignEndpoint(args: string[]): Promise<void> {
   );
 }
 
+async function cmdNodeHostIps(args: string[]): Promise<void> {
+  validateFlags(args, [], ["unassigned", "json"]);
+  const pos = positionals(args);
+  const nodeRef = pos[0];
+  if (!nodeRef || pos.length > 1) {
+    throw new Error("Usage: node-host-ips <node-id|name> [--unassigned] [--json]");
+  }
+  const node = await findAdminNode(nodeRef);
+  const classified = classifyNodeHostIps(node);
+  const onlyUnassigned = args.includes("--unassigned");
+  const shown = onlyUnassigned
+    ? classified.filter((item) => item.role === "unassigned")
+    : classified;
+  if (wantsJson(args)) return json(shown);
+  if (!node.hostNetworkReport) {
+    console.log(`node ${node.name} (${node.id}): no host network report available yet`);
+    return;
+  }
+  console.log(
+    `node ${node.name} (${node.id}) — ${node.hostNetworkReport.ipv4Addresses.length} discovered IPv4(s) (observed ${node.hostNetworkReport.observedAt})`,
+  );
+  if (shown.length === 0) {
+    console.log(onlyUnassigned ? "(no unassigned host IPs)" : "(no host IPs reported)");
+    return;
+  }
+  console.log(
+    table(
+      shown.map((item) => ({
+        ipv4: item.ipv4,
+        nic: item.interfaceName,
+        cidr: item.cidr,
+        gateway: item.detectedGatewayIpv4 ?? "—",
+        table: item.detectedRuleTable !== null ? String(item.detectedRuleTable) : "—",
+        role: item.role,
+        entry: item.registeredAsEntry ? "yes" : "no",
+        exit: item.registeredAsExit ? (item.existingExitId ?? "yes") : "no",
+      })),
+      ["ipv4", "nic", "cidr", "gateway", "table", "role", "entry", "exit"],
+    ),
+  );
+}
+
+type NodeIpAttachRole = "entry" | "exit" | "both";
+
+type NodeIpAttachResultItem = {
+  ipv4: string;
+  interfaceName: string;
+  detectedGatewayIpv4: string | null;
+  exitAction: "create" | "created" | "skipped" | "none";
+  exitId: string | null;
+  entryAction: "add" | "added" | "skipped" | "none";
+  endpointId: string | null;
+  exitPayload?: Record<string, unknown>;
+  endpointPayload?: Record<string, unknown>;
+};
+
+async function cmdNodeIpAttach(args: string[]): Promise<void> {
+  const usageLine =
+    "Usage: node-ip-attach <node-id|name> (--ip=<ipv4> | --all-unassigned) --role=<entry|exit|both> [--label=] [--entry-name=] [--custom-name=] [--dns1=1.1.1.1] [--dns2=1.0.0.1] [--allow-as-entry=true|false] [--dry-run] [--json]";
+  validateFlags(
+    args,
+    ["ip", "role", "label", "entry-name", "custom-name", "dns1", "dns2", "allow-as-entry"],
+    ["all-unassigned", "dry-run", "json"],
+  );
+  const pos = positionals(args);
+  const nodeRef = pos[0];
+  const ipFlag = flagOf(args, "ip");
+  const allUnassigned = args.includes("--all-unassigned");
+  const roleRaw = flagOf(args, "role");
+  if (!nodeRef || pos.length > 1 || !roleRaw || (ipFlag !== undefined) === allUnassigned) {
+    throw new Error(usageLine);
+  }
+  const role = parseEnumFlag("role", roleRaw, ["entry", "exit", "both"]) as NodeIpAttachRole;
+  const allowAsEntryRaw = flagOf(args, "allow-as-entry");
+  const allowAsEntryOverride =
+    allowAsEntryRaw === undefined ? undefined : parseBoolFlag("allow-as-entry", allowAsEntryRaw);
+  const label = flagOf(args, "label");
+  const entryName = flagOf(args, "entry-name");
+  const customName = flagOf(args, "custom-name");
+  const dns1 = flagOf(args, "dns1");
+  const dns2 = flagOf(args, "dns2");
+  const dryRun = args.includes("--dry-run");
+
+  const node = await findAdminNode(nodeRef);
+  const classified = classifyNodeHostIps(node);
+  let targets: ClassifiedHostIp[];
+  if (ipFlag !== undefined) {
+    const match = classified.find((item) => item.ipv4 === ipFlag);
+    if (!match) {
+      throw new Error(
+        `Host IP ${ipFlag} was not discovered on node ${node.name} (check node-host-ips ${node.name})`,
+      );
+    }
+    targets = [match];
+  } else {
+    targets = classified.filter((item) => item.role === "unassigned");
+  }
+
+  if (targets.length === 0) {
+    if (wantsJson(args)) {
+      return json({ nodeId: node.id, nodeName: node.name, role, dryRun, results: [] });
+    }
+    console.log(`node ${node.name}: no unassigned host IPs to attach`);
+    return;
+  }
+
+  const wantExit = role === "exit" || role === "both";
+  const wantEntry = role === "entry" || role === "both";
+  const effectiveAllowAsEntry =
+    allowAsEntryOverride !== undefined
+      ? allowAsEntryOverride
+      : role === "both"
+        ? true
+        : undefined;
+
+  const results: NodeIpAttachResultItem[] = [];
+  for (const target of targets) {
+    const addExit = wantExit && !target.registeredAsExit;
+    const addEntry = wantEntry && !target.registeredAsEntry;
+    const exitPayload = addExit
+      ? {
+          ipv4: target.ipv4,
+          ...(label !== undefined ? { label } : {}),
+          ...(target.interfaceName ? { interfaceName: target.interfaceName } : {}),
+          ...(target.detectedGatewayIpv4 ? { gatewayIpv4: target.detectedGatewayIpv4 } : {}),
+          ...(dns1 !== undefined ? { dnsPrimary: dns1 } : {}),
+          ...(dns2 !== undefined ? { dnsSecondary: dns2 === "null" ? null : dns2 } : {}),
+          ...(effectiveAllowAsEntry !== undefined ? { allowAsEntry: effectiveAllowAsEntry } : {}),
+        }
+      : undefined;
+
+    if (dryRun) {
+      const plannedExitId =
+        target.existingExitId ?? (addExit ? "<new-exit-ip-id>" : null);
+      const endpointPayload = addEntry
+        ? {
+            publicEndpoint: {
+              action: "add",
+              address: target.ipv4,
+              ...(entryName !== undefined ? { entryName } : {}),
+              ...(customName !== undefined
+                ? { customName: customName === "null" ? null : customName }
+                : {}),
+              ...(role === "both" && plannedExitId ? { egressIpId: plannedExitId } : {}),
+            },
+          }
+        : undefined;
+      results.push({
+        ipv4: target.ipv4,
+        interfaceName: target.interfaceName,
+        detectedGatewayIpv4: target.detectedGatewayIpv4,
+        exitAction: addExit ? "create" : wantExit ? "skipped" : "none",
+        exitId: target.existingExitId,
+        entryAction: addEntry ? "add" : wantEntry ? "skipped" : "none",
+        endpointId: null,
+        ...(exitPayload ? { exitPayload } : {}),
+        ...(endpointPayload ? { endpointPayload } : {}),
+      });
+      continue;
+    }
+
+    let exitId = target.existingExitId;
+    if (exitPayload) {
+      const createdExit = await api<NodeEgressIp>(`/api/admin/nodes/${node.id}/egress-ips`, {
+        method: "POST",
+        body: JSON.stringify(exitPayload),
+      });
+      exitId = createdExit.id;
+    }
+
+    let endpointId: string | null = null;
+    const endpointPayload = addEntry
+      ? {
+          publicEndpoint: {
+            action: "add",
+            address: target.ipv4,
+            ...(entryName !== undefined ? { entryName } : {}),
+            ...(customName !== undefined
+              ? { customName: customName === "null" ? null : customName }
+              : {}),
+            ...(role === "both" && exitId ? { egressIpId: exitId } : {}),
+          },
+        }
+      : undefined;
+
+    if (endpointPayload) {
+      const patched = await api<{ publicEndpoint?: { id?: string } }>(`/api/admin/nodes/${node.id}`, {
+        method: "PATCH",
+        body: JSON.stringify(endpointPayload),
+      });
+      endpointId = patched?.publicEndpoint?.id ?? null;
+    }
+
+    results.push({
+      ipv4: target.ipv4,
+      interfaceName: target.interfaceName,
+      detectedGatewayIpv4: target.detectedGatewayIpv4,
+      exitAction: addExit ? "created" : wantExit ? "skipped" : "none",
+      exitId,
+      entryAction: addEntry ? "added" : wantEntry ? "skipped" : "none",
+      endpointId,
+    });
+  }
+
+  if (wantsJson(args)) {
+    return json({ nodeId: node.id, nodeName: node.name, role, dryRun, results });
+  }
+
+  console.log(`${dryRun ? "[dry-run] " : ""}node ${node.name} (${node.id}) — role=${role}:`);
+  for (const item of results) {
+    const parts: string[] = [];
+    if (item.exitAction !== "none") {
+      parts.push(
+        `exit=${item.exitAction}${item.exitId ? `(${item.exitId})` : ""}`,
+      );
+    }
+    if (item.entryAction !== "none") {
+      parts.push(
+        `entry=${item.entryAction}${item.endpointId ? `(${item.endpointId})` : ""}`,
+      );
+    }
+    const gwInfo = item.detectedGatewayIpv4 ? ` gw=${item.detectedGatewayIpv4}` : "";
+    console.log(`  ${item.ipv4} (${item.interfaceName}${gwInfo}): ${parts.join(", ")}`);
+  }
+}
+
 async function cmdNodeAdd(args: string[]): Promise<void> {
   const name = flagOf(args, "name");
   const apiBaseUrl = flagOf(args, "api-url");
@@ -3873,6 +4100,13 @@ Nodes:
                  [--prefix=<ula/64>]      2000::/3). Live switch; IPv4 stays up.
   node-egress <node> [--json]             Inspect multi-exit mode, daemon health,
                                           host IPs, and configured Exit IPs
+  node-host-ips <node> [--unassigned] [--json]
+                                          List discovered host IPv4s, NIC, CIDR,
+                                          detected gateway/table, and role (both/entry/exit/unassigned)
+  node-ip-attach <node> (--ip=<ipv4> | --all-unassigned) --role=<entry|exit|both> [flags]
+                                          Attach discovered host IP(s) as Entry and/or Exit IP
+                                          (--label=, --entry-name=, --custom-name=, --dns1=, --dns2=,
+                                          --allow-as-entry=true|false, --dry-run, --json)
   node-egress-mode <node> <masquerade|routed> [--block-smtp=] [--isolate-private=]
                                           Switch node egress routing mode via worker
   node-egress-adopt <node> [--json]       Adopt observed host egress mode into DB
@@ -4730,6 +4964,10 @@ export async function dispatch(argv: string[]): Promise<void> {
       return cmdNodeIpv6Stub(args);
     case "node-egress":
       return cmdNodeEgress(args);
+    case "node-host-ips":
+      return cmdNodeHostIps(args);
+    case "node-ip-attach":
+      return cmdNodeIpAttach(args);
     case "node-egress-mode":
       return cmdNodeEgressMode(args);
     case "node-egress-adopt":

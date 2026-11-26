@@ -196,19 +196,19 @@ table ip6 amnezia_egress_v6 {
 
 ---
 
-## 7. Follow-up UX, Discovery & Topology Map Roadmap (Next Iteration)
+## 7. Follow-up UX, Discovery & Topology Map Enhancements (Completed on Feature Branch)
 
-The core Level B routing engine, schema, APIs, CLI parity, and baseline Fleet Status UI overhaul are complete in this PR. The next dedicated UI/CLI polish iteration should address four usability improvements identified during operator review:
+All four operator-requested usability enhancements have been implemented and verified in this PR alongside the core Level B engine:
 
 1. **Clearer & Simpler Exit Assignment UX (Web UI):**
-   - Redesign the `Entry (or Bridge) -> Exit IP` binding workflow inside `NodeTopologyDialog` and node cards so operators immediately see which entry variants map to which exits, which exit is the default fallback, inline exit health/DNS badges, guided 1-click exit hot-swap, and frictionless active-key variant reassignment without visual clutter.
+   - Upgraded `NodeTopologyDialog` (`apps/web/components/admin/node-topology-dialog.tsx`) with per-exit variant usage lists (`usedByVariants` / `unusedExit`), 1-click default exit selection (`makeDefault`), quick-pick Entry/Host IP chips in variant creation, visual `Entry -> Exit` flow badges with health dots, and an inline `<Select>` on each server variant row to reassign its Exit IP immediately.
 2. **One-Click & CLI Onboarding of Auto-Discovered Server IPs (Web UI + `@amnezia/cli`):**
-   - Surface all host IPv4 addresses already discovered on the VPS by `amnezia-egressd` (`host_network_report`: IPv4, NIC name, subnet CIDR, auto-detected gateway), clearly distinguishing already-registered vs unassigned host IPs.
-   - **Web UI:** 1-click action from the unassigned host IP list with pre-filled NIC/gateway and role selection (`Entry`, `Exit`, or `Entry + Exit`), display label, and DNS preset — eliminating manual IP entry.
-   - **CLI (`@amnezia/cli`):** dedicated subcommands to inspect unassigned discovered host IPs on a node and attach them as Entry endpoints and/or Exit IPs (with `--dry-run`, auto-detected gateway, and batch onboarding).
+   - Added pure classification helpers (`apps/web/lib/host-ip-discovery.ts` and `apps/cli/src/hostIps.ts`) over `host_network_report.ipv4Addresses` categorizing every host IPv4 as `both`, `entry`, `exit`, or `unassigned`.
+   - **Web UI:** `NodeTopologyDialog` lists all discovered server IPv4s with CIDR, NIC, auto-detected gateway/table, role badge, and 1-click `+ Exit`, `+ Entry`, and `+ Entry + Exit` actions pre-filling NIC/gateway.
+   - **CLI (`@amnezia/cli`):** Added `node-host-ips` (`--unassigned`, `--json`) and `node-ip-attach` (`--ip` / `--all-unassigned`, `--role=entry|exit|both`, `--dry-run`, auto-filled NIC/gateway, documented in `docs/CLI.md`).
 3. **Compact Yet Richer Admin Overview (`/admin`) with More Statuses:**
-   - Keep the Overview dense and compact while surfacing richer real-time operational signals per card and strip: per-variant probe reachability (including pre-alert `1/2` failure streaks), per-exit egress/daemon states (`active` / `degraded` / `missing_ip` / `gateway_error` / `mode_drift`), per-exit service check summaries, bridge route online/verification badges, online peer ratios, and agent/egressd version alignment.
-   - Refine column sizing so `Entry -> Exit` routes, status pills, and KPI subtitles stay readable without awkward ellipsis truncation at desktop viewports (`1280px`–`1440px`).
-4. **Interactive Visual Fleet Topology Map (`Panel -> Bridges -> Nodes -> Entries -> Exits`):**
-   - Add a visual fleet topology map/graph view linked from `/admin` Overview displaying the full live hierarchy: **Panel** -> **Bridges** (`frps`/`frpc` routes) -> **Nodes** (`awg3` + `egressd`) -> **Entry Variants (`v1/v2`)** -> **Exit IPs**, with live status coloring (reachability, egress health, service checks), peer counts, and click-through into each node's topology editor.
+   - Expanded `OverviewStatusStrip` (`apps/web/components/admin/overview-status-strip.tsx`) with `exitsOk`, `peersOnline`, `preAlert`, and deduplicated node + per-exit `serviceFailures`, plus clickable `<Link>` attention rows.
+   - Updated `OverviewNodeCard` & KPI layout in `apps/web/app/admin/page.tsx` with bridge badges, online peer counts, egress health/warning indicators, two-line legible `Entry -> Exit` rows (fixing `1280px`–`1440px` truncations), and wrapping KPI subtitles.
+4. **Interactive Visual Fleet Topology Map (`FleetTopologyMap`):**
+   - Implemented `apps/web/components/admin/fleet-topology-map.tsx` and mounted it on `/admin` Overview, rendering an interactive **Panel -> Bridges -> VPN Nodes -> Entry Variants -> Physical Exit IPs** flow with health-colored SVG bezier links, click-to-highlight end-to-end path inspection, and direct links to `/admin/nodes`.
 

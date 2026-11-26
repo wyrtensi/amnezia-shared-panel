@@ -4,6 +4,7 @@ import * as React from "react";
 import {
   AlertTriangle,
   ArrowLeftRight,
+  ArrowRight,
   CheckCircle2,
   GitBranch,
   Pencil,
@@ -47,12 +48,16 @@ import {
   adoptNodeEgressMode,
   createNodeEgressIp,
   deleteNodeEgressIp,
-  formatEntryExit,
   setNodeEgressMode,
   swapNodeEgressIp,
   updateNodeEgressIp,
   verifyNodeEgressIp,
 } from "@/lib/egress-api";
+import {
+  classifyHostIpv4s,
+  variantsUsingExit,
+  type HostIpRole,
+} from "@/lib/host-ip-discovery";
 import type { Requester } from "@/lib/bridge-api";
 import { useT } from "@/lib/i18n/provider";
 import { cn } from "@/lib/utils";
@@ -114,15 +119,82 @@ const HOST_STATE_BADGE: Record<
   disabled: "outline",
 };
 
+const HOST_IP_ROLE_BADGE: Record<
+  HostIpRole,
+  "success" | "secondary" | "warning" | "outline"
+> = {
+  both: "success",
+  entry: "secondary",
+  exit: "secondary",
+  unassigned: "warning",
+};
+
+const EXIT_HEALTH_DOT: Record<NodeEgressIp["hostState"], string> = {
+  active: "bg-success",
+  pending: "bg-muted-foreground/60",
+  missing_ip: "bg-destructive",
+  gateway_error: "bg-destructive",
+  daemon_offline: "bg-warning",
+  disabled: "bg-muted-foreground/40",
+};
+
+export type NodeTopologyDialogProps = {
+  node: AdminNode | null;
+  onClose: () => void;
+  request: Requester;
+  reload: () => Promise<void>;
+  onSavePublicEndpoint: (
+    nodeId: string,
+    change: NodePublicEndpointMutation,
+  ) => Promise<void>;
+};
+
 export function NodeTopologyDialog({
   node,
   onClose,
   request,
   reload,
   onSavePublicEndpoint,
+}: NodeTopologyDialogProps) {
+  const { t } = useT();
+  if (!node) return null;
+
+  return (
+    <Dialog open={Boolean(node)} onOpenChange={(next) => !next && onClose()}>
+      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-2xl">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <GitBranch className="size-4 text-primary" />
+            {t("egress.dialogTitle", { name: node.publicName || node.name })}
+          </DialogTitle>
+          <DialogDescription>{t("egress.dialogDesc")}</DialogDescription>
+        </DialogHeader>
+
+        <NodeTopologyDialogBody
+          node={node}
+          request={request}
+          reload={reload}
+          onSavePublicEndpoint={onSavePublicEndpoint}
+        />
+
+        <DialogFooter>
+          <Button type="button" variant="outline" onClick={onClose}>
+            {t("common.close")}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+/** Inner content of `NodeTopologyDialog`, exported separately for SSR unit tests. */
+export function NodeTopologyDialogBody({
+  node,
+  request,
+  reload,
+  onSavePublicEndpoint,
 }: {
-  node: AdminNode | null;
-  onClose: () => void;
+  node: AdminNode;
   request: Requester;
   reload: () => Promise<void>;
   onSavePublicEndpoint: (
@@ -162,8 +234,12 @@ export function NodeTopologyDialog({
   const [editExitEnforceDns, setEditExitEnforceDns] = React.useState(false);
   const [editExitAllowAsEntry, setEditExitAllowAsEntry] = React.useState(false);
 
-  const [varAddress, setVarAddress] = React.useState("");
-  const [varEntryName, setVarEntryName] = React.useState("");
+  const [varAddress, setVarAddress] = React.useState(
+    node.publicEndpoints?.[0]?.publicAddress ?? node.publicIp ?? "",
+  );
+  const [varEntryName, setVarEntryName] = React.useState(
+    node.publicEndpoints?.[0]?.entryName || node.publicName || node.name,
+  );
   const [varCustomName, setVarCustomName] = React.useState("");
   const [varExitId, setVarExitId] = React.useState<string>(DEFAULT_EXIT_SENTINEL);
 
@@ -174,7 +250,6 @@ export function NodeTopologyDialog({
   const [editVarRenameGroup, setEditVarRenameGroup] = React.useState(false);
 
   React.useEffect(() => {
-    if (!node) return;
     setBlockSmtp(node.egressBlockSmtp ?? true);
     setIsolatePrivate(node.egressIsolatePrivate ?? true);
     setVerifyByExitId({});
@@ -194,17 +269,19 @@ export function NodeTopologyDialog({
     setVarEntryName(node.publicEndpoints?.[0]?.entryName || node.publicName || node.name);
     setVarCustomName("");
     setVarExitId(DEFAULT_EXIT_SENTINEL);
-  }, [node?.id]);
-
-  if (!node) return null;
+  }, [node.id]);
 
   const summary = summarizeNodeEgress(node);
   const exits = node.egressIps ?? [];
   const endpoints = node.publicEndpoints ?? [];
   const entryAddresses = endpoints.map((ep) => ep.publicAddress);
-  const configuredExitIps = new Set(exits.map((exit) => exit.ipv4));
-  const detectedUnused = (node.hostNetworkReport?.ipv4Addresses ?? []).filter(
-    (addr) => !configuredExitIps.has(addr.ipv4),
+  const classifiedHostIps = classifyHostIpv4s(node);
+  const quickPickIps = Array.from(
+    new Set([
+      ...entryAddresses,
+      ...(node.publicIp ? [node.publicIp] : []),
+      ...classifiedHostIps.map((addr) => addr.ipv4),
+    ]),
   );
   const defaultExitIpv4 =
     exits.find((e) => e.id === node.egressDefaultIpId)?.ipv4 ??
@@ -224,17 +301,7 @@ export function NodeTopologyDialog({
   };
 
   return (
-    <Dialog open={Boolean(node)} onOpenChange={(next) => !next && onClose()}>
-      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-2xl">
-        <DialogHeader>
-          <DialogTitle className="flex items-center gap-2">
-            <GitBranch className="size-4 text-primary" />
-            {t("egress.dialogTitle", { name: node.publicName || node.name })}
-          </DialogTitle>
-          <DialogDescription>{t("egress.dialogDesc")}</DialogDescription>
-        </DialogHeader>
-
-        <div className="space-y-5">
+    <div className="space-y-5">
           {/* Section 1: Mode & Daemon Status */}
           <section className="space-y-2.5 rounded-lg border bg-well p-3">
             <div className="flex flex-wrap items-center justify-between gap-2">
@@ -380,64 +447,133 @@ export function NodeTopologyDialog({
             </div>
           </section>
 
-          {/* Section 2: Physical Exit IPs */}
+          {/* Section 2: Host IPs Onboarding */}
+          {classifiedHostIps.length > 0 ? (
+            <section className="space-y-2 rounded-lg border border-dashed border-primary/40 bg-primary/5 p-3 text-xs">
+              <div className="space-y-0.5">
+                <h3 className="text-sm font-semibold">{t("egress.hostIpsTitle")}</h3>
+                <p className="text-muted-foreground">{t("egress.hostIpsHint")}</p>
+              </div>
+              <ul className="space-y-1.5">
+                {classifiedHostIps.map((addr) => (
+                  <li
+                    key={`${addr.interfaceName}:${addr.ipv4}`}
+                    className="flex flex-wrap items-center justify-between gap-2 rounded-md border bg-card px-2.5 py-1.5"
+                  >
+                    <div className="flex flex-wrap items-center gap-2">
+                      <code className="font-mono font-medium">{addr.cidr || addr.ipv4}</code>
+                      <span className="font-mono text-muted-foreground">{addr.interfaceName}</span>
+                      {addr.detectedGatewayIpv4 ? (
+                        <span className="font-mono text-muted-foreground">
+                          {t("egress.detectedGateway", { gw: addr.detectedGatewayIpv4 })}
+                        </span>
+                      ) : null}
+                      {addr.detectedRuleTable != null ? (
+                        <span className="font-mono text-muted-foreground">
+                          {t("egress.detectedTable", { table: addr.detectedRuleTable })}
+                        </span>
+                      ) : null}
+                      <Badge variant={HOST_IP_ROLE_BADGE[addr.role]}>
+                        {t(`egress.hostIpRole.${addr.role}`)}
+                      </Badge>
+                    </div>
+                    {!addr.usedAsEntry || !addr.usedAsExit ? (
+                      <div className="flex flex-wrap items-center gap-1">
+                        {!addr.usedAsExit ? (
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="secondary"
+                            className="h-6 px-2 text-[11px]"
+                            disabled={busy !== null}
+                            onClick={() =>
+                              void runAction(`quick-exit:${addr.ipv4}`, async () => {
+                                await createNodeEgressIp(request, node.id, {
+                                  ipv4: addr.ipv4,
+                                  interfaceName: addr.interfaceName,
+                                  gatewayIpv4: addr.detectedGatewayIpv4 ?? null,
+                                  dnsPrimary: "1.1.1.1",
+                                  dnsSecondary: "1.0.0.1",
+                                  amneziaDnsDnat: true,
+                                  enforceDnsDnat: false,
+                                  allowAsEntry: addr.usedAsEntry,
+                                  enabled: true,
+                                });
+                                toast.success(t("adminData.actionDone"));
+                                await reload();
+                              })
+                            }
+                          >
+                            <Plus className="size-3" /> {t("egress.quickAddExit")}
+                          </Button>
+                        ) : null}
+                        {!addr.usedAsEntry ? (
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="secondary"
+                            className="h-6 px-2 text-[11px]"
+                            disabled={busy !== null}
+                            onClick={() =>
+                              void runAction(`quick-entry:${addr.ipv4}`, async () => {
+                                await onSavePublicEndpoint(node.id, {
+                                  action: "add",
+                                  address: addr.ipv4,
+                                  entryName: node.publicName || node.name,
+                                  egressIpId: addr.existingExitId ?? null,
+                                });
+                                toast.success(t("adminData.actionDone"));
+                              })
+                            }
+                          >
+                            <Plus className="size-3" /> {t("egress.quickAddEntry")}
+                          </Button>
+                        ) : null}
+                        {!addr.usedAsEntry && !addr.usedAsExit ? (
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            className="h-6 px-2 text-[11px]"
+                            disabled={busy !== null}
+                            onClick={() =>
+                              void runAction(`quick-both:${addr.ipv4}`, async () => {
+                                const created = await createNodeEgressIp(request, node.id, {
+                                  ipv4: addr.ipv4,
+                                  interfaceName: addr.interfaceName,
+                                  gatewayIpv4: addr.detectedGatewayIpv4 ?? null,
+                                  dnsPrimary: "1.1.1.1",
+                                  dnsSecondary: "1.0.0.1",
+                                  amneziaDnsDnat: true,
+                                  enforceDnsDnat: false,
+                                  allowAsEntry: true,
+                                  enabled: true,
+                                });
+                                await onSavePublicEndpoint(node.id, {
+                                  action: "add",
+                                  address: addr.ipv4,
+                                  entryName: node.publicName || node.name,
+                                  egressIpId: created.id,
+                                });
+                                toast.success(t("adminData.actionDone"));
+                                await reload();
+                              })
+                            }
+                          >
+                            <Plus className="size-3" /> {t("egress.quickAddBoth")}
+                          </Button>
+                        ) : null}
+                      </div>
+                    ) : null}
+                  </li>
+                ))}
+              </ul>
+            </section>
+          ) : null}
+
+          {/* Section 3: Physical Exit IPs */}
           <section className="space-y-2.5">
             <h3 className="text-sm font-semibold">{t("egress.sectionExits")}</h3>
-
-            {detectedUnused.length > 0 ? (
-              <div className="space-y-1.5 rounded-lg border border-dashed border-primary/40 bg-primary/5 p-2.5 text-xs">
-                <p className="font-medium">{t("egress.detectedTitle")}</p>
-                <ul className="space-y-1">
-                  {detectedUnused.map((addr) => (
-                    <li
-                      key={addr.ipv4}
-                      className="flex flex-wrap items-center justify-between gap-2 rounded bg-card px-2 py-1"
-                    >
-                      <span className="flex flex-wrap items-center gap-2 font-mono">
-                        <span>{addr.cidr || addr.ipv4}</span>
-                        <span className="text-muted-foreground">{addr.interfaceName}</span>
-                        {addr.detectedGatewayIpv4 ? (
-                          <span className="text-muted-foreground">
-                            {t("egress.detectedGateway", { gw: addr.detectedGatewayIpv4 })}
-                          </span>
-                        ) : null}
-                        {addr.detectedRuleTable ? (
-                          <span className="text-muted-foreground">
-                            {t("egress.detectedTable", { table: addr.detectedRuleTable })}
-                          </span>
-                        ) : null}
-                      </span>
-                      <Button
-                        type="button"
-                        size="sm"
-                        variant="secondary"
-                        className="h-6 px-2 text-[11px]"
-                        disabled={busy !== null}
-                        onClick={() =>
-                          void runAction(`quick-add:${addr.ipv4}`, async () => {
-                            await createNodeEgressIp(request, node.id, {
-                              ipv4: addr.ipv4,
-                              interfaceName: addr.interfaceName,
-                              gatewayIpv4: addr.detectedGatewayIpv4 ?? null,
-                              dnsPrimary: "1.1.1.1",
-                              dnsSecondary: "1.0.0.1",
-                              amneziaDnsDnat: true,
-                              enforceDnsDnat: false,
-                              allowAsEntry: false,
-                              enabled: true,
-                            });
-                            toast.success(t("adminData.actionDone"));
-                            await reload();
-                          })
-                        }
-                      >
-                        <Plus className="size-3" /> {t("egress.quickAddExit")}
-                      </Button>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            ) : null}
 
             {exits.length === 0 ? (
               <p className="text-xs text-muted-foreground">{t("egress.noExits")}</p>
@@ -445,6 +581,8 @@ export function NodeTopologyDialog({
               <ul className="space-y-2">
                 {exits.map((exit) => {
                   const verifyResult = verifyByExitId[exit.id];
+                  const usedVariants = variantsUsingExit(node, exit.id);
+                  const isDefault = node.egressDefaultIpId === exit.id;
                   const proximityWarn =
                     exit.subnetWarning ??
                     detectExitSubnetProximityWarning({
@@ -467,7 +605,7 @@ export function NodeTopologyDialog({
                           {exit.label ? (
                             <Badge variant="secondary">{exit.label}</Badge>
                           ) : null}
-                          {node.egressDefaultIpId === exit.id ? (
+                          {isDefault ? (
                             <Badge variant="outline">{t("egress.defaultExitBadge")}</Badge>
                           ) : null}
                           <Badge variant={HOST_STATE_BADGE[exit.hostState]}>
@@ -479,6 +617,27 @@ export function NodeTopologyDialog({
                         </div>
 
                         <div className="flex flex-wrap items-center gap-1">
+                          {!isDefault ? (
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="ghost"
+                              className="h-7 px-2 text-xs"
+                              disabled={busy !== null}
+                              onClick={() =>
+                                void runAction(`make-default:${exit.id}`, async () => {
+                                  await request(`/api/admin/nodes/${encodeURIComponent(node.id)}`, {
+                                    method: "PATCH",
+                                    body: JSON.stringify({ egressDefaultIpId: exit.id }),
+                                  });
+                                  toast.success(t("adminData.actionDone"));
+                                  await reload();
+                                })
+                              }
+                            >
+                              {t("egress.makeDefault")}
+                            </Button>
+                          ) : null}
                           <Button
                             type="button"
                             size="sm"
@@ -564,6 +723,13 @@ export function NodeTopologyDialog({
                         </span>
                         <span>
                           {t("egress.txStat", { bytes: metricBytes(exit.txBytes, lang) })}
+                        </span>
+                        <span>
+                          {usedVariants.length > 0
+                            ? t("egress.usedByVariants", {
+                                names: usedVariants.map((v) => v.name).join(", "),
+                              })
+                            : t("egress.unusedExit")}
                         </span>
                       </div>
 
@@ -819,28 +985,89 @@ export function NodeTopologyDialog({
             </details>
           </section>
 
-          {/* Section 3: Server Variants (Entry -> Exit) */}
+          {/* Section 4: Server Variants (Entry -> Exit) */}
           <section className="space-y-2.5 border-t pt-3">
             <h3 className="text-sm font-semibold">{t("egress.sectionVariants")}</h3>
             <ul className="space-y-1.5">
               {endpoints.map((ep) => {
-                const pair = formatEntryExit(ep.publicAddress, ep.effectiveEgressIp);
+                const assignedExitId = ep.egressIpId ?? node.egressDefaultIpId ?? null;
+                const assignedExit = assignedExitId
+                  ? (exits.find((e) => e.id === assignedExitId) ?? null)
+                  : null;
+                const effectiveExitIp =
+                  ep.effectiveEgressIp ?? assignedExit?.ipv4 ?? defaultExitIpv4;
                 const enabledCount = endpoints.filter((x) => x.enabled).length;
                 const isLastEnabled = ep.enabled && enabledCount <= 1;
                 const isEditing = editVarId === ep.id;
                 return (
                   <li key={ep.id} className="space-y-2 rounded-lg border bg-well p-2.5 text-xs">
                     <div className="flex flex-wrap items-center justify-between gap-2">
-                      <div className="flex min-w-0 flex-wrap items-center gap-1.5">
-                        <span className="font-medium text-sm">{ep.name}</span>
-                        {pair ? (
-                          <code className="font-mono text-muted-foreground">{pair}</code>
-                        ) : null}
+                      <div className="flex min-w-0 flex-wrap items-center gap-2">
+                        <span className="text-sm font-medium">{ep.name}</span>
+                        <span className="inline-flex items-center gap-1 rounded border bg-card px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground">
+                          <span>{ep.publicAddress}</span>
+                          <ArrowRight aria-hidden className="size-3 shrink-0" />
+                          <span
+                            aria-label={
+                              assignedExit
+                                ? t(`egress.hostState.${assignedExit.hostState}`)
+                                : undefined
+                            }
+                            title={
+                              assignedExit
+                                ? t(`egress.hostState.${assignedExit.hostState}`)
+                                : undefined
+                            }
+                            className={cn(
+                              "inline-block size-2 shrink-0 rounded-full",
+                              assignedExit
+                                ? EXIT_HEALTH_DOT[assignedExit.hostState]
+                                : "bg-muted-foreground/40",
+                            )}
+                          />
+                          <span>{effectiveExitIp}</span>
+                        </span>
                         {ep.bridgeMode && ep.bridgeMode !== "inherit" ? (
                           <Badge variant="outline">{ep.bridgeMode}</Badge>
                         ) : null}
                       </div>
-                      <div className="flex items-center gap-1">
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <div className="flex items-center gap-1">
+                          <span className="text-[11px] text-muted-foreground">
+                            {t("egress.inlineExitLabel")}
+                          </span>
+                          <Select
+                            value={ep.egressIpId ?? DEFAULT_EXIT_SENTINEL}
+                            disabled={busy !== null}
+                            onValueChange={(nextValue) => {
+                              const nextExitId =
+                                nextValue === DEFAULT_EXIT_SENTINEL ? null : nextValue;
+                              if (nextExitId === (ep.egressIpId ?? null)) return;
+                              void runAction(`switch-exit:${ep.id}`, async () => {
+                                await onSavePublicEndpoint(node.id, {
+                                  action: "update",
+                                  id: ep.id,
+                                  egressIpId: nextExitId,
+                                });
+                                toast.success(t("egress.exitSwitched"));
+                              });
+                            }}
+                          >
+                            <SelectTrigger className="h-7 w-[190px] text-xs">
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value={DEFAULT_EXIT_SENTINEL}>
+                                {t("egress.exitDefaultOption", { ip: defaultExitIpv4 })}
+                              </SelectItem>
+                              {exits.map((exit) => (
+                                <SelectItem key={exit.id} value={exit.id}>
+                                  {exit.label ? `${exit.label} (${exit.ipv4})` : exit.ipv4}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        </div>
                         <Button
                           type="button"
                           size="sm"
@@ -1022,19 +1249,31 @@ export function NodeTopologyDialog({
                   </Select>
                 </div>
               </div>
+              {quickPickIps.length > 0 ? (
+                <div className="flex flex-wrap items-center gap-1 pt-0.5">
+                  <span className="text-[11px] text-muted-foreground">{t("egress.pickHostIp")}</span>
+                  {quickPickIps.map((ip) => (
+                    <button
+                      key={ip}
+                      type="button"
+                      onClick={() => setVarAddress(ip)}
+                      className={cn(
+                        "rounded border px-1.5 py-0.5 font-mono text-[11px] transition-colors",
+                        varAddress.trim() === ip
+                          ? "border-primary bg-primary/10 text-primary"
+                          : "border-border bg-well text-muted-foreground hover:bg-accent hover:text-foreground",
+                      )}
+                    >
+                      {ip}
+                    </button>
+                  ))}
+                </div>
+              ) : null}
               <Button type="submit" size="sm" disabled={busy !== null || !varAddress.trim()}>
                 <Plus className="size-3.5" /> {t("egress.addVariantBtn")}
               </Button>
             </form>
           </section>
         </div>
-
-        <DialogFooter>
-          <Button type="button" variant="outline" onClick={onClose}>
-            {t("common.close")}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
   );
 }

@@ -61,15 +61,19 @@ import {
   metricBytes,
 } from "@/components/admin/node-metrics";
 import { OverviewBridgesBlock } from "@/components/admin/overview-bridges";
+import { FleetTopologyMap } from "@/components/admin/fleet-topology-map";
 import {
   OverviewAttentionShelf,
   OverviewStatusStrip,
   summarizeFleetHealth,
 } from "@/components/admin/overview-status-strip";
 import { NodePublicAddress } from "@/components/admin/node-public-address";
+import { useBridgeInfra, type NodeRouteLabel } from "@/components/admin/use-bridge-infra";
 import { useReachability } from "@/components/admin/use-reachability";
 import { useServiceChecks } from "@/components/admin/use-service-checks";
 import { useT } from "@/lib/i18n/provider";
+import type { AdminReachabilityNode } from "@/lib/types";
+import type { NodeEgressIp } from "@amnezia/contracts";
 
 const METRIC_TONE: Record<string, string> = {
   "chart-1": "bg-chart-1/12 text-chart-1",
@@ -111,8 +115,45 @@ export default function AdminOverviewPage() {
   // about what a server last answered.
   const serviceChecks = useServiceChecks();
   const reachability = useReachability();
+  const infra = useBridgeInfra();
   const [adoptingNodeId, setAdoptingNodeId] = React.useState<string | null>(null);
   const { t, lang } = useT();
+
+  const onlinePeersByNode = React.useMemo(() => {
+    const map = new Map<string, number>();
+    for (const key of keys) {
+      if (typeof key.online !== "boolean") continue;
+      const prev = map.get(key.nodeId) ?? 0;
+      map.set(key.nodeId, prev + (key.online ? 1 : 0));
+    }
+    return map;
+  }, [keys]);
+
+  const egressFailuresByNode = React.useMemo(() => {
+    const byNode = new Map<
+      string,
+      Map<string, Array<{ id: string; name: string; status: "failed" | "error" }>>
+    >();
+    for (const check of serviceChecks.checks) {
+      if (!check.enabled) continue;
+      for (const er of check.egressResults ?? []) {
+        if (er.status === "ok") continue;
+        let byExit = byNode.get(er.nodeId);
+        if (!byExit) {
+          byExit = new Map();
+          byNode.set(er.nodeId, byExit);
+        }
+        const byId = byExit.get(er.egressIpId) ?? [];
+        byId.push({ id: check.id, name: check.name, status: er.status });
+        byExit.set(er.egressIpId, byId);
+        const ipKey = `ip:${er.egressIpv4}`;
+        const byIp = byExit.get(ipKey) ?? [];
+        byIp.push({ id: check.id, name: check.name, status: er.status });
+        byExit.set(ipKey, byIp);
+      }
+    }
+    return byNode;
+  }, [serviceChecks.checks]);
 
   /**
    * The verdicts worth showing on a summary card for one node.
@@ -328,7 +369,7 @@ export default function AdminOverviewPage() {
                   {loading ? "—" : metric.value}
                 </p>
                 {!loading && metric.sub ? (
-                  <p className="mt-0.5 truncate text-[11px] text-muted-foreground">
+                  <p className="mt-0.5 text-[11px] leading-tight text-muted-foreground">
                     {metric.sub}
                   </p>
                 ) : null}
@@ -347,6 +388,20 @@ export default function AdminOverviewPage() {
           </Card>
         ))}
       </div>
+
+      {loading && nodes.length === 0 ? (
+        <Skeleton className="h-48 rounded-xl" />
+      ) : (
+        <FleetTopologyMap
+          nodes={nodes}
+          bridges={infra.bridges}
+          routeByNode={infra.routeByNode}
+          serviceChecks={serviceChecks.checks}
+          reachability={reachability.view}
+          activeKeysCount={overview?.activeKeys ?? keys.length}
+          onlineDevicesCount={overview?.onlineDevices ?? 0}
+        />
+      )}
 
       <div className="grid gap-3 lg:grid-cols-3">
         <DistributionCard
@@ -395,6 +450,11 @@ export default function AdminOverviewPage() {
                 key={node.id}
                 node={node}
                 checkResults={visibleChecks(node)}
+                route={infra.routeByNode.get(node.id)}
+                onlinePeers={onlinePeersByNode.get(node.id)}
+                reachabilityNode={reachability.byNode.get(node.id)}
+                probeFailThreshold={reachability.view?.probe?.failThreshold ?? 2}
+                egressFailures={egressFailuresByNode.get(node.id)}
               />
             ))}
           </div>
@@ -640,9 +700,19 @@ export default function AdminOverviewPage() {
 function OverviewNodeCard({
   node,
   checkResults,
+  route,
+  onlinePeers,
+  reachabilityNode,
+  probeFailThreshold,
+  egressFailures,
 }: {
   node: AdminNode;
   checkResults: NodeCheckResult[];
+  route?: NodeRouteLabel;
+  onlinePeers?: number;
+  reachabilityNode?: AdminReachabilityNode;
+  probeFailThreshold: number;
+  egressFailures?: Map<string, Array<{ id: string; name: string; status: "failed" | "error" }>>;
 }) {
   const { t, lang } = useT();
   const peers = node.peerCount ?? 0;
@@ -651,6 +721,27 @@ function OverviewNodeCard({
   const endpoints = node.publicEndpoints ?? [];
   const visibleEndpoints = endpoints.slice(0, 3);
   const hiddenCount = Math.max(0, endpoints.length - visibleEndpoints.length);
+
+  const exitById = new Map<string, NodeEgressIp>(
+    (node.egressIps ?? []).map((ip) => [ip.id, ip]),
+  );
+  const exitByIp = new Map<string, NodeEgressIp>(
+    (node.egressIps ?? []).map((ip) => [ip.ipv4, ip]),
+  );
+  const reachabilityEndpointById = new Map(
+    (reachabilityNode?.publicEndpoints ?? []).map((ep) => [ep.id, ep]),
+  );
+  const unhealthyExitCount = (node.egressIps ?? []).filter(
+    (ip) =>
+      ip.enabled &&
+      (ip.hostState === "missing_ip" ||
+        ip.hostState === "gateway_error" ||
+        ip.hostState === "daemon_offline"),
+  ).length;
+  const nonHealthyDaemon =
+    node.egressDaemonState === "conflict" ||
+    node.egressDaemonState === "degraded" ||
+    node.egressDaemonState === "unavailable";
 
   const metrics = node.metrics;
   const memLow =
@@ -689,7 +780,7 @@ function OverviewNodeCard({
               <Server className="h-4 w-4" />
             </span>
             <div className="min-w-0">
-              <div className="flex min-w-0 items-center gap-1.5">
+              <div className="flex min-w-0 flex-wrap items-center gap-1">
                 <p className="truncate text-sm font-medium leading-tight">
                   {node.publicName || node.name}
                 </p>
@@ -700,6 +791,24 @@ function OverviewNodeCard({
                 ) : node.egressMode === "routed" ? (
                   <Badge variant="outline" className="h-4 shrink-0 px-1 text-[10px]">
                     Routed
+                  </Badge>
+                ) : null}
+                {nonHealthyDaemon && !node.modeDrift && node.egressDaemonState ? (
+                  <Badge
+                    variant={node.egressDaemonState === "conflict" ? "destructive" : "warning"}
+                    className="h-4 shrink-0 px-1 text-[10px]"
+                  >
+                    {t(`egress.daemon.${node.egressDaemonState}`)}
+                  </Badge>
+                ) : null}
+                {unhealthyExitCount > 0 ? (
+                  <Badge variant="destructive" className="h-4 shrink-0 px-1 text-[10px]">
+                    {t("ov.nodeCard.exitIssueBadge", { count: unhealthyExitCount })}
+                  </Badge>
+                ) : null}
+                {route ? (
+                  <Badge variant="default" className="h-4 shrink-0 px-1.5 text-[10px]">
+                    {t("ov.nodeCard.bridgeBadge", { name: route.bridgeName })}
                   </Badge>
                 ) : null}
               </div>
@@ -716,12 +825,26 @@ function OverviewNodeCard({
               </p>
             </div>
           </div>
-          <span
-            className="shrink-0 rounded-full bg-muted px-2 py-0.5 text-[11px] tabular-nums text-muted-foreground"
-            title={t("nodes.capacity")}
-          >
-            {peers}/{node.maxPeers}
-          </span>
+          <div className="flex shrink-0 flex-col items-end gap-1">
+            <span
+              className="rounded-full bg-muted px-2 py-0.5 text-[11px] tabular-nums text-muted-foreground"
+              title={t("nodes.capacity")}
+            >
+              {peers}/{node.maxPeers}
+            </span>
+            {onlinePeers !== undefined ? (
+              <span
+                className={cn(
+                  "rounded-full px-2 py-0.5 text-[10px] font-medium tabular-nums",
+                  onlinePeers > 0
+                    ? "bg-success/15 text-success"
+                    : "bg-muted/70 text-muted-foreground",
+                )}
+              >
+                {t("ov.nodeCard.onlinePeers", { count: onlinePeers })}
+              </span>
+            ) : null}
+          </div>
         </div>
 
         <div className="h-1.5 overflow-hidden rounded-full bg-well shadow-[var(--inset-shadow)]">
@@ -739,28 +862,90 @@ function OverviewNodeCard({
           <ul className="space-y-1 text-xs">
             {visibleEndpoints.map((ep) => {
               const pair = formatEntryExit(ep.publicAddress, ep.effectiveEgressIp);
+              const rEp = reachabilityEndpointById.get(ep.id);
+              const fails = rEp?.probeConsecutiveFailures ?? ep.probeConsecutiveFailures ?? 0;
+              const incidentOpen = rEp?.incidentOpen ?? ep.incidentOpen ?? false;
+              const egressMismatch = (rEp?.probeEgressMatch ?? ep.probeEgressMatch) === false;
+              const reachState = rEp?.reachability?.state ?? ep.reachability?.state;
+              const probeStatus = rEp?.probeStatus ?? ep.probeStatus;
+              const exitObj =
+                (ep.egressIpId ? exitById.get(ep.egressIpId) : undefined) ??
+                (ep.effectiveEgressIp ? exitByIp.get(ep.effectiveEgressIp) : undefined) ??
+                (node.egressDefaultIpId ? exitById.get(node.egressDefaultIpId) : undefined);
+              const exitDotTone =
+                !exitObj
+                  ? null
+                  : exitObj.hostState === "active"
+                    ? "bg-success"
+                    : exitObj.hostState === "pending" || exitObj.hostState === "daemon_offline"
+                      ? "bg-warning"
+                      : exitObj.hostState === "disabled"
+                        ? "bg-muted-foreground/40"
+                        : "bg-destructive";
+              const failingExitChecks =
+                (exitObj ? egressFailures?.get(exitObj.id) : undefined) ??
+                (ep.egressIpId ? egressFailures?.get(ep.egressIpId) : undefined) ??
+                (ep.effectiveEgressIp ? egressFailures?.get(`ip:${ep.effectiveEgressIp}`) : undefined) ??
+                [];
+
               return (
                 <li
                   key={ep.id}
-                  className="flex items-center justify-between gap-2 rounded-md border border-border/50 bg-well px-2 py-1"
+                  className="space-y-1 rounded-md border border-border/50 bg-well px-2.5 py-1.5"
                 >
-                  <span className="flex min-w-0 items-center gap-1.5">
-                    <span
-                      className={cn(
-                        "size-1.5 shrink-0 rounded-full",
-                        ep.probeEgressMatch === false || ep.reachability?.state === "blocked"
-                          ? "bg-destructive"
-                          : ep.reachability?.state === "ok"
-                            ? "bg-success"
-                            : "bg-muted-foreground/40",
-                      )}
-                    />
-                    <span className="truncate text-muted-foreground">{ep.name}</span>
-                  </span>
+                  <div className="flex flex-wrap items-center justify-between gap-1.5">
+                    <span className="flex min-w-0 items-center gap-1.5">
+                      <span
+                        className={cn(
+                          "size-1.5 shrink-0 rounded-full",
+                          egressMismatch || reachState === "blocked" || probeStatus === "failed" || incidentOpen
+                            ? "bg-destructive"
+                            : fails > 0 && !incidentOpen
+                              ? "bg-warning"
+                              : reachState === "ok" || probeStatus === "ok"
+                                ? "bg-success"
+                                : "bg-muted-foreground/40",
+                        )}
+                      />
+                      <span className="break-words font-medium text-foreground">
+                        {ep.name}
+                      </span>
+                    </span>
+                    <div className="flex flex-wrap items-center gap-1">
+                      {!incidentOpen && fails > 0 ? (
+                        <Badge
+                          variant="warning"
+                          className="h-4 px-1.5 text-[10px] tabular-nums"
+                        >
+                          {t("ov.nodeCard.preAlertBadge", {
+                            fails,
+                            threshold: probeFailThreshold,
+                          })}
+                        </Badge>
+                      ) : null}
+                      {failingExitChecks.slice(0, 2).map((chk) => (
+                        <Badge
+                          key={chk.id}
+                          variant={chk.status === "failed" ? "destructive" : "warning"}
+                          className="h-4 px-1.5 text-[10px]"
+                        >
+                          {t("ov.nodeCard.serviceFailBadge", { name: chk.name })}
+                        </Badge>
+                      ))}
+                    </div>
+                  </div>
                   {pair ? (
-                    <code className="shrink-0 font-mono text-[11px] text-foreground">
-                      {pair}
-                    </code>
+                    <div className="flex items-center gap-1.5 pl-3">
+                      {exitDotTone ? (
+                        <span
+                          className={cn("size-1.5 shrink-0 rounded-full", exitDotTone)}
+                          title={exitObj ? t(`egress.hostState.${exitObj.hostState}`) : undefined}
+                        />
+                      ) : null}
+                      <code className="font-mono text-[11px] text-muted-foreground">
+                        {pair}
+                      </code>
+                    </div>
                   ) : null}
                 </li>
               );

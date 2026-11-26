@@ -2,7 +2,22 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import type { AdminNode } from "@/components/admin/admin-data";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import { NodeTopologyDialog, summarizeNodeEgress } from "./node-topology-dialog";
+import { messages } from "@/lib/i18n/messages";
+import {
+  NodeTopologyDialog,
+  NodeTopologyDialogBody,
+  summarizeNodeEgress,
+} from "./node-topology-dialog";
+
+const tRu = (key: string, vars?: Record<string, string | number>): string => {
+  const dict = messages.ru as Record<string, string>;
+  const template = dict[key];
+  if (template === undefined) return key;
+  if (!vars) return template;
+  return template.replace(/\{(\w+)\}/g, (m, k: string) =>
+    k in vars ? String(vars[k]) : m,
+  );
+};
 
 const makeNode = (over: Partial<AdminNode> = {}): AdminNode => ({
   id: "n-1",
@@ -37,10 +52,24 @@ const makeNode = (over: Partial<AdminNode> = {}): AdminNode => ({
     tunnelSubnetConflict: false,
     ipv4Addresses: [
       {
-        ipv4: "198.51.100.55",
-        cidr: "198.51.100.55/24",
+        ipv4: "192.0.2.10",
+        cidr: "192.0.2.10/24",
+        interfaceName: "eth0",
+        detectedGatewayIpv4: "192.0.2.1",
+      },
+      {
+        ipv4: "198.51.100.20",
+        cidr: "198.51.100.20/24",
         interfaceName: "eth0",
         detectedGatewayIpv4: "198.51.100.1",
+        detectedRuleTable: 200,
+      },
+      {
+        ipv4: "198.51.100.55",
+        cidr: "198.51.100.55/24",
+        interfaceName: "eth1",
+        detectedGatewayIpv4: "198.51.100.1",
+        detectedRuleTable: 201,
       },
     ],
     exits: [],
@@ -67,6 +96,28 @@ const makeNode = (over: Partial<AdminNode> = {}): AdminNode => ({
       detectedGatewayIpv4: "198.51.100.1",
       txBytes: "2048",
       txPackets: "10",
+      hostObservedAt: "2026-11-25T10:00:00.000Z",
+    },
+    {
+      id: "ip-2",
+      nodeId: "n-1",
+      ipv4: "203.0.113.99",
+      label: "NL-Exit-2",
+      interfaceName: "eth1",
+      gatewayIpv4: null,
+      routingTableId: 201,
+      dnsPrimary: "1.1.1.1",
+      dnsSecondary: null,
+      amneziaDnsDnat: true,
+      enforceDnsDnat: false,
+      allowAsEntry: false,
+      enabled: true,
+      hostState: "missing_ip",
+      hostDetail: null,
+      observedSubnetCidr: "203.0.113.0/24",
+      detectedGatewayIpv4: "203.0.113.1",
+      txBytes: "0",
+      txPackets: "0",
       hostObservedAt: "2026-11-25T10:00:00.000Z",
     },
   ],
@@ -101,6 +152,19 @@ describe("summarizeNodeEgress & NodeTopologyDialog", () => {
     expect(summarizeNodeEgress(makeNode())).toMatchObject({
       mode: "routed",
       activeExitCount: 1,
+      totalExitCount: 2,
+      unhealthyExitCount: 1,
+      hasIssue: true,
+    });
+    expect(
+      summarizeNodeEgress(
+        makeNode({
+          egressIps: makeNode().egressIps?.slice(0, 1),
+        }),
+      ),
+    ).toMatchObject({
+      mode: "routed",
+      activeExitCount: 1,
       totalExitCount: 1,
       hasIssue: false,
     });
@@ -122,5 +186,88 @@ describe("summarizeNodeEgress & NodeTopologyDialog", () => {
       </TooltipProvider>,
     );
     expect(html).toBe("");
+  });
+
+  it("renders Host IPs onboarding, exit usage/default action, variant flow & inline exit select, and quick-pick chips", () => {
+    const html = renderToStaticMarkup(
+      <TooltipProvider>
+        <NodeTopologyDialogBody
+          node={makeNode()}
+          request={() => Promise.resolve({} as never)}
+          reload={() => Promise.resolve()}
+          onSavePublicEndpoint={() => Promise.resolve()}
+        />
+      </TooltipProvider>,
+    );
+
+    // Host IPs Onboarding renders all discovered IPv4s (entry, exit, unassigned)
+    expect(html).toContain(tRu("egress.hostIpsTitle"));
+    expect(html).toContain("192.0.2.10/24");
+    expect(html).toContain("198.51.100.20/24");
+    expect(html).toContain("198.51.100.55/24");
+    expect(html).toContain(tRu("egress.hostIpRole.entry"));
+    expect(html).toContain(tRu("egress.hostIpRole.exit"));
+    expect(html).toContain(tRu("egress.hostIpRole.unassigned"));
+    expect(html).toContain(tRu("egress.quickAddExit"));
+    expect(html).toContain(tRu("egress.quickAddEntry"));
+    expect(html).toContain(tRu("egress.quickAddBoth"));
+
+    // Exit IP rows show usedByVariants / unusedExit and makeDefault for non-default exits
+    expect(html).toContain(tRu("egress.usedByVariants", { names: "Amsterdam" }));
+    expect(html).toContain(tRu("egress.unusedExit"));
+    expect(html).toContain(tRu("egress.defaultExitBadge"));
+    expect(html).toContain(tRu("egress.makeDefault"));
+
+    // Variant row shows Entry -> Exit flow, exit health dot, inline exit selector, and quick-pick chips
+    expect(html).toContain("bg-success");
+    expect(html).toContain(tRu("egress.inlineExitLabel"));
+    expect(html).toContain(tRu("egress.pickHostIp"));
+  });
+
+  it("hides quick-add buttons when a host IP is already both entry and exit", () => {
+    const base = makeNode();
+    const baseEndpoint = base.publicEndpoints?.[0];
+    if (!baseEndpoint) {
+      throw new Error("Expected fixture endpoint");
+    }
+    const html = renderToStaticMarkup(
+      <TooltipProvider>
+        <NodeTopologyDialogBody
+          node={makeNode({
+            hostNetworkReport: {
+              daemonVersion: "1.0.0",
+              observedMode: "routed",
+              egressState: "routed_active",
+              bridgeName: "br-awg-egress",
+              bridgePresent: true,
+              tunnelSubnetConflict: false,
+              ipv4Addresses: [
+                {
+                  ipv4: "198.51.100.20",
+                  cidr: "198.51.100.20/24",
+                  interfaceName: "eth0",
+                },
+              ],
+              exits: [],
+              observedAt: "2026-11-25T10:00:00.000Z",
+            },
+            publicEndpoints: [
+              {
+                ...baseEndpoint,
+                publicAddress: "198.51.100.20",
+              },
+            ],
+          })}
+          request={() => Promise.resolve({} as never)}
+          reload={() => Promise.resolve()}
+          onSavePublicEndpoint={() => Promise.resolve()}
+        />
+      </TooltipProvider>,
+    );
+
+    expect(html).toContain(tRu("egress.hostIpRole.both"));
+    expect(html).not.toContain(tRu("egress.quickAddExit"));
+    expect(html).not.toContain(tRu("egress.quickAddEntry"));
+    expect(html).not.toContain(tRu("egress.quickAddBoth"));
   });
 });

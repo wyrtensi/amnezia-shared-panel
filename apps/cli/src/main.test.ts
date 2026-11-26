@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cmdBridgeEnroll } from "./bridges.js";
+import { classifyNodeHostIps } from "./hostIps.js";
 import { dispatch } from "./main.js";
 
 /**
@@ -3138,6 +3139,8 @@ describe("complete Control API CLI parity", () => {
       "key-rotate",
       "key-config-refresh",
       "node-egress",
+      "node-host-ips",
+      "node-ip-attach",
       "node-egress-mode",
       "node-egress-adopt",
       "node-exit-add",
@@ -3290,5 +3293,269 @@ describe("CLI multi-exit routing and key endpoint reassignment", () => {
 
     const verifyOut = await run(["node-exit-verify", nodeId, ipId]);
     expect(verifyOut).toContain("PASS");
+  });
+});
+
+describe("host-IP discovery and attach CLI (node-host-ips, node-ip-attach)", () => {
+  const nodeId = "11111111-1111-4111-8111-111111111111";
+  const exitIdBoth = "22222222-2222-4222-8222-222222222222";
+  const exitIdOnly = "33333333-3333-4333-8333-333333333333";
+  const createdExitId = "44444444-4444-4444-8444-444444444444";
+  const createdEndpointId = "55555555-5555-4555-8555-555555555555";
+
+  const makeNode = () => ({
+    id: nodeId,
+    name: "de-01",
+    enabled: true,
+    protocol: "awg3",
+    maxPeers: 500,
+    lastError: null,
+    publicEndpoints: [
+      { id: "ep-1", ordinal: 1, name: "de-01", publicAddress: "198.51.100.10", enabled: true, probeStatus: null, probeCheckedAt: null, probeDetail: null },
+      { id: "ep-2", ordinal: 2, name: "de-01-entry", publicAddress: "198.51.100.11", enabled: true, probeStatus: null, probeCheckedAt: null, probeDetail: null },
+    ],
+    egressIps: [
+      { id: exitIdBoth, nodeId, ipv4: "198.51.100.10" },
+      { id: exitIdOnly, nodeId, ipv4: "198.51.100.12" },
+    ],
+    hostNetworkReport: {
+      daemonVersion: "1.2.0",
+      observedMode: "routed",
+      egressState: "routed_active",
+      bridgeName: "br0",
+      bridgePresent: true,
+      tunnelSubnetConflict: false,
+      observedAt: "2026-11-26T10:00:00.000Z",
+      ipv4Addresses: [
+        { ipv4: "198.51.100.10", cidr: "198.51.100.10/24", interfaceName: "eth0", detectedGatewayIpv4: "198.51.100.1", detectedRuleTable: 200 },
+        { ipv4: "198.51.100.11", cidr: "198.51.100.11/24", interfaceName: "eth0", detectedGatewayIpv4: "198.51.100.1" },
+        { ipv4: "198.51.100.12", cidr: "198.51.100.12/24", interfaceName: "eth1", detectedGatewayIpv4: "198.51.100.1", detectedRuleTable: 201 },
+        { ipv4: "198.51.100.13", cidr: "198.51.100.13/24", interfaceName: "eth1", detectedGatewayIpv4: "198.51.100.1" },
+      ],
+      exits: [],
+    },
+  });
+
+  beforeEach(() => vi.stubEnv("PANEL_ADMIN_EMAIL", "cli-test@example.com"));
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
+  });
+
+  it("classifyNodeHostIps classifies host IPv4s into both, entry, exit, and unassigned", () => {
+    expect(classifyNodeHostIps({ hostNetworkReport: null })).toEqual([]);
+    expect(classifyNodeHostIps(makeNode())).toEqual([
+      {
+        ipv4: "198.51.100.10",
+        cidr: "198.51.100.10/24",
+        interfaceName: "eth0",
+        detectedGatewayIpv4: "198.51.100.1",
+        detectedRuleTable: 200,
+        registeredAsEntry: true,
+        registeredAsExit: true,
+        existingExitId: exitIdBoth,
+        role: "both",
+      },
+      {
+        ipv4: "198.51.100.11",
+        cidr: "198.51.100.11/24",
+        interfaceName: "eth0",
+        detectedGatewayIpv4: "198.51.100.1",
+        detectedRuleTable: null,
+        registeredAsEntry: true,
+        registeredAsExit: false,
+        existingExitId: null,
+        role: "entry",
+      },
+      {
+        ipv4: "198.51.100.12",
+        cidr: "198.51.100.12/24",
+        interfaceName: "eth1",
+        detectedGatewayIpv4: "198.51.100.1",
+        detectedRuleTable: 201,
+        registeredAsEntry: false,
+        registeredAsExit: true,
+        existingExitId: exitIdOnly,
+        role: "exit",
+      },
+      {
+        ipv4: "198.51.100.13",
+        cidr: "198.51.100.13/24",
+        interfaceName: "eth1",
+        detectedGatewayIpv4: "198.51.100.1",
+        detectedRuleTable: null,
+        registeredAsEntry: false,
+        registeredAsExit: false,
+        existingExitId: null,
+        role: "unassigned",
+      },
+    ]);
+  });
+
+  it("node-host-ips prints table, filters with --unassigned, and outputs JSON", async () => {
+    const node = makeNode();
+    stubFetch([{ body: [node] }, { body: [node] }, { body: [node] }, { body: [{ ...node, hostNetworkReport: null }] }]);
+
+    const out = await run(["node-host-ips", "de-01"]);
+    expect(out).toContain("198.51.100.10");
+    expect(out).toContain("both");
+    expect(out).toContain("unassigned");
+    expect(out).toContain("eth1");
+
+    const unassignedOut = await run(["node-host-ips", "de-01", "--unassigned"]);
+    expect(unassignedOut).toContain("198.51.100.13");
+    expect(unassignedOut).not.toContain("198.51.100.10");
+
+    const jsonOut = JSON.parse(await run(["node-host-ips", nodeId, "--unassigned", "--json"])) as Array<{ ipv4: string; role: string }>;
+    expect(jsonOut).toHaveLength(1);
+    expect(jsonOut[0]).toMatchObject({ ipv4: "198.51.100.13", role: "unassigned" });
+
+    const missingOut = await run(["node-host-ips", "de-01"]);
+    expect(missingOut).toContain("no host network report available yet");
+  });
+
+  it("node-ip-attach --role=both auto-fills NIC/gateway, defaults allowAsEntry=true, and binds created egressIpId", async () => {
+    const node = makeNode();
+    const calls = stubFetch([
+      { body: [node] },
+      { status: 201, body: { id: createdExitId, nodeId, ipv4: "198.51.100.13" } },
+      { body: { id: nodeId, publicEndpoint: { id: createdEndpointId } } },
+    ]);
+
+    const out = await run([
+      "node-ip-attach",
+      "de-01",
+      "--ip=198.51.100.13",
+      "--role=both",
+      "--label=DE Dual",
+      "--entry-name=DE Secondary",
+      "--custom-name=DE Secondary Custom",
+      "--dns1=1.1.1.1",
+      "--dns2=1.0.0.1",
+    ]);
+
+    expect(calls).toHaveLength(3);
+    expect(calls[1]!.url).toContain(`/api/admin/nodes/${nodeId}/egress-ips`);
+    expect(calls[1]!.init?.method).toBe("POST");
+    expect(sentBody(calls[1]!)).toEqual({
+      ipv4: "198.51.100.13",
+      label: "DE Dual",
+      interfaceName: "eth1",
+      gatewayIpv4: "198.51.100.1",
+      dnsPrimary: "1.1.1.1",
+      dnsSecondary: "1.0.0.1",
+      allowAsEntry: true,
+    });
+    expect(calls[2]!.url).toContain(`/api/admin/nodes/${nodeId}`);
+    expect(calls[2]!.init?.method).toBe("PATCH");
+    expect(sentBody(calls[2]!)).toEqual({
+      publicEndpoint: {
+        action: "add",
+        address: "198.51.100.13",
+        entryName: "DE Secondary",
+        customName: "DE Secondary Custom",
+        egressIpId: createdExitId,
+      },
+    });
+    expect(out).toContain(`exit=created(${createdExitId})`);
+    expect(out).toContain(`entry=added(${createdEndpointId})`);
+  });
+
+  it("node-ip-attach respects --allow-as-entry=false override and skips already-registered roles idempotently", async () => {
+    const node = makeNode();
+    const calls = stubFetch([
+      { body: [node] },
+      // For 198.51.100.12 (already registered as exit with exitIdOnly), only PATCH endpoint add is called
+      { body: { id: nodeId, publicEndpoint: { id: createdEndpointId } } },
+      { body: [node] },
+      // For 198.51.100.11 (already registered as entry), only POST egress-ips is called
+      { status: 201, body: { id: createdExitId, nodeId, ipv4: "198.51.100.11" } },
+      { body: [node] },
+      // For 198.51.100.10 (already both), zero mutation calls
+    ]);
+
+    await run(["node-ip-attach", nodeId, "--ip=198.51.100.12", "--role=both"]);
+    expect(calls).toHaveLength(2);
+    expect(calls[1]!.init?.method).toBe("PATCH");
+    expect(sentBody(calls[1]!)).toEqual({
+      publicEndpoint: {
+        action: "add",
+        address: "198.51.100.12",
+        egressIpId: exitIdOnly,
+      },
+    });
+
+    await run(["node-ip-attach", nodeId, "--ip=198.51.100.11", "--role=both", "--allow-as-entry=false"]);
+    expect(calls).toHaveLength(4);
+    expect(calls[3]!.init?.method).toBe("POST");
+    expect(sentBody(calls[3]!)).toMatchObject({
+      ipv4: "198.51.100.11",
+      interfaceName: "eth0",
+      gatewayIpv4: "198.51.100.1",
+      allowAsEntry: false,
+    });
+
+    const skippedOut = await run(["node-ip-attach", nodeId, "--ip=198.51.100.10", "--role=both"]);
+    expect(calls).toHaveLength(5);
+    expect(skippedOut).toContain("exit=skipped");
+    expect(skippedOut).toContain("entry=skipped");
+  });
+
+  it("node-ip-attach supports --all-unassigned and --dry-run without mutating", async () => {
+    const node = makeNode();
+    const calls = stubFetch([
+      { body: [node] },
+      { body: [node] },
+      { status: 201, body: { id: createdExitId, nodeId, ipv4: "198.51.100.13" } },
+    ]);
+
+    const dryOut = JSON.parse(
+      await run(["node-ip-attach", "de-01", "--all-unassigned", "--role=both", "--dry-run", "--json"]),
+    ) as { dryRun: boolean; results: Array<{ ipv4: string; exitAction: string; entryAction: string; endpointPayload?: { publicEndpoint: { egressIpId?: string } } }> };
+    expect(calls).toHaveLength(1);
+    expect(dryOut.dryRun).toBe(true);
+    expect(dryOut.results).toHaveLength(1);
+    expect(dryOut.results[0]).toMatchObject({
+      ipv4: "198.51.100.13",
+      exitAction: "create",
+      entryAction: "add",
+      endpointPayload: {
+        publicEndpoint: {
+          action: "add",
+          address: "198.51.100.13",
+          egressIpId: "<new-exit-ip-id>",
+        },
+      },
+    });
+
+    const liveOut = await run(["node-ip-attach", "de-01", "--all-unassigned", "--role=exit", "--label=Auto Exit"]);
+    expect(calls).toHaveLength(3);
+    expect(calls[2]!.init?.method).toBe("POST");
+    expect(sentBody(calls[2]!)).toEqual({
+      ipv4: "198.51.100.13",
+      label: "Auto Exit",
+      interfaceName: "eth1",
+      gatewayIpv4: "198.51.100.1",
+    });
+    expect(liveOut).toContain(`exit=created(${createdExitId})`);
+  });
+
+  it("node-ip-attach validates flags and rejects undiscovered IPs before mutating", async () => {
+    const node = makeNode();
+    const calls = stubFetch([{ body: [node] }]);
+
+    await expect(run(["node-ip-attach", "de-01", "--role=exit"])).rejects.toThrow(/Usage: node-ip-attach/);
+    await expect(
+      run(["node-ip-attach", "de-01", "--ip=198.51.100.13", "--all-unassigned", "--role=exit"]),
+    ).rejects.toThrow(/Usage: node-ip-attach/);
+    await expect(
+      run(["node-ip-attach", "de-01", "--ip=198.51.100.13", "--role=invalid"]),
+    ).rejects.toThrow(/--role must be one of/);
+    expect(calls).toHaveLength(0);
+
+    await expect(
+      run(["node-ip-attach", "de-01", "--ip=203.0.113.99", "--role=entry"]),
+    ).rejects.toThrow(/was not discovered on node de-01/);
+    expect(calls).toHaveLength(1);
   });
 });
