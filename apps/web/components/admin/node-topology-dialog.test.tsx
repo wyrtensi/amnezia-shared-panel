@@ -8,6 +8,7 @@ import { messages } from "@/lib/i18n/messages";
 import {
   NodeTopologyDialog,
   NodeTopologyDialogBody,
+  parseOptionalRoutingTableId,
   summarizeNodeEgress,
 } from "./node-topology-dialog";
 
@@ -338,5 +339,39 @@ describe("summarizeNodeEgress & NodeTopologyDialog", () => {
     expect(src).toContain("requestAnimationFrame(");
     expect(src).toContain("cancelAnimationFrame(raf)");
     expect(src).toContain("candidate.dataset.topologyFocus === targetKey");
+  });
+
+  it("validates optional routing table IDs strictly (blank -> null, 200..219 -> number, invalid -> error)", () => {
+    expect(parseOptionalRoutingTableId("")).toEqual({ ok: true, value: null });
+    expect(parseOptionalRoutingTableId("   ")).toEqual({ ok: true, value: null });
+    expect(parseOptionalRoutingTableId("200")).toEqual({ ok: true, value: 200 });
+    expect(parseOptionalRoutingTableId(" 219 ")).toEqual({ ok: true, value: 219 });
+    expect(parseOptionalRoutingTableId("199")).toEqual({ ok: false });
+    expect(parseOptionalRoutingTableId("220")).toEqual({ ok: false });
+    expect(parseOptionalRoutingTableId("20a")).toEqual({ ok: false });
+    expect(parseOptionalRoutingTableId("205.5")).toEqual({ ok: false });
+    expect(parseOptionalRoutingTableId("-1")).toEqual({ ok: false });
+  });
+
+  it("shows mode-switch guard reason and daemon version mismatch warning", () => {
+    const html = renderToStaticMarkup(
+      <TooltipProvider>
+        <NodeTopologyDialogBody
+          node={makeNode({
+            egressMode: "masquerade",
+            agentVersion: "1.2.0",
+            egressDaemonVersion: "1.1.0",
+            egressDaemonState: "unavailable",
+          })}
+          request={async () => undefined as never}
+          reload={async () => {}}
+          onSavePublicEndpoint={async () => {}}
+        />
+      </TooltipProvider>,
+    );
+
+    expect(html).toContain(tRu("egress.switchBlockedUnavailable"));
+    expect(html).toContain(tRu("nodes.egressDaemonVersionMismatch"));
+    expect(html).toContain(tRu("egress.filtersRoutedOnlyHint"));
   });
 });

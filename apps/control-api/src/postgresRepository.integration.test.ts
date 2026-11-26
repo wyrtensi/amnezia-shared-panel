@@ -9817,7 +9817,14 @@ describe("PostgresControlRepository egress management (Milestone B)", () => {
     const nodeId = await seedNode();
     const [exitIp] = await database.db
       .insert(nodeEgressIps)
-      .values({ nodeId, ipv4: "198.51.100.60", routingTableId: 200 })
+      .values({
+        nodeId,
+        ipv4: "198.51.100.60",
+        label: "Clean Exit",
+        interfaceName: "eth0",
+        gatewayIpv4: "198.51.100.1",
+        routingTableId: 200,
+      })
       .returning();
     const [check] = await database.db
       .insert(nodeServiceChecks)
@@ -9862,7 +9869,25 @@ describe("PostgresControlRepository egress management (Milestone B)", () => {
       .returning();
     if (!ep) throw new Error("Failed to seed endpoint");
 
-    await repository().swapNodeEgressIp(admin, nodeId, exitIp.id, { ipv4: "198.51.100.61" });
+    const swapped = await repository().swapNodeEgressIp(admin, nodeId, exitIp.id, { ipv4: "198.51.100.61" });
+    expect(swapped.ip).toMatchObject({
+      ipv4: "198.51.100.61",
+      label: "Clean Exit",
+      interfaceName: null,
+      gatewayIpv4: null,
+      routingTableId: 200,
+    });
+
+    const nodeUpdated = await repository().updateNode(admin, nodeId, {
+      egressBlockSmtp: false,
+      egressIsolatePrivate: false,
+      egressDefaultIpId: exitIp.id,
+    });
+    expect(nodeUpdated).toMatchObject({
+      egressBlockSmtp: false,
+      egressIsolatePrivate: false,
+      egressDefaultIpId: exitIp.id,
+    });
 
     const remainingChecks = await database.db
       .select()

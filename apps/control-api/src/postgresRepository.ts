@@ -2656,6 +2656,9 @@ export class PostgresControlRepository implements ControlRepository {
         awgMtu: nodes.awgMtu,
         disabledCheckIds: nodes.disabledCheckIds,
         reachabilityEnabled: nodes.reachabilityEnabled,
+        egressBlockSmtp: nodes.egressBlockSmtp,
+        egressIsolatePrivate: nodes.egressIsolatePrivate,
+        egressDefaultIpId: nodes.egressDefaultIpId,
         updatedAt: nodes.updatedAt,
       });
     // Older clients edit the node's public name. Treat it as a rename of
@@ -8147,12 +8150,10 @@ export class PostgresControlRepository implements ControlRepository {
           .update(nodeEgressIps)
           .set({
             ipv4: request.ipv4,
-            ...(request.interfaceName !== undefined
-              ? { interfaceName: request.interfaceName ?? null }
-              : {}),
-            ...(request.gatewayIpv4 !== undefined
-              ? { gatewayIpv4: request.gatewayIpv4 ?? null }
-              : {}),
+            // Reset NIC/gateway overrides unless the caller supplies values for the new IP,
+            // so egress-daemon auto-discovers the new subnet rather than keeping stale routes.
+            interfaceName: request.interfaceName ?? null,
+            gatewayIpv4: request.gatewayIpv4 ?? null,
             ...(request.label !== undefined ? { label: request.label ?? null } : {}),
             hostState: "pending",
             hostDetail: null,

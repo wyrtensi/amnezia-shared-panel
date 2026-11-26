@@ -619,8 +619,22 @@ host (`routed` mode) while defaulting to backwards-compatible `masquerade`:
 - **Modes & safety guards:** `masquerade` uses standard container NAT; `routed`
   installs dedicated Linux routing tables (`200..219`), per-peer `ip rule`
   mappings by `tunnel_ipv4`, `SNAT --to-source` rules, per-exit DNS DNAT
-  (`amneziaDnsDnat` / `enforceDnsDnat`), optional SMTP port 25/465/587 blocking
-  (`egressBlockSmtp`), and private-subnet isolation (`egressIsolatePrivate`).
+  (`amneziaDnsDnat` / `enforceDnsDnat`), default-on outbound SMTP port `25`
+  blocking (`egressBlockSmtp`, configurable per node in UI and CLI while keeping
+  mail-client ports `465`/`587` open), and default-on private-subnet isolation
+  (`egressIsolatePrivate`, both enforced on the host in `routed` mode).
+- **Bundled `amnezia-egressd` lifecycle & updates:** `amnezia-egressd` is
+  compiled into the `node-agent` image (`/opt/node-agent/bin/amnezia-egressd` +
+  `systemd/amnezia-egressd.service`), runs on the host as a separate root
+  systemd service (`MemoryMax=32M`), and is driven by unprivileged `node-agent`
+  (`uid=10001`, `cap_drop: ALL`) over `/run/amnezia-egress/egressd.sock`
+  (`10001:0`, `0600`). In-panel agent updates (`agent-update.sh`) upgrade or
+  bootstrap `amnezia-egressd` together with `node-agent`, verify `/v1/health`
+  over the Unix socket, preserve active kernel routes across daemon restart
+  (zero tunnel drop), and roll back both components on failure. Note: legacy
+  hosts whose `compose.yaml` predates `/run/amnezia-egress` skip automatic
+  compose replacement and require reconciling `compose.yaml` or running
+  `scripts/install-host-services.sh` so `node-agent` can reach the socket.
 - **Endpoint variants:** each `(node_id, address, egress_ip_id)` variant keeps
   its own probe verdict and client DNS pair; moving an AWG 3.1 key between
   variants on the same node (`amnezia-panel key-reassign-endpoint`) keeps

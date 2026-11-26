@@ -73,8 +73,9 @@ Diagnostics: `systemctl status panel-updater.path` and
 
 ## Updater units start through `/bin/bash` (and how to repair hosts installed earlier)
 
-All three host updaters (`panel-updater.service`, `amnezia-node-agent-update.service`,
-`amnezia-bridge-agent-update.service`) run `ExecStart=/bin/bash <absolute script>`.
+All four host updaters (`panel-updater.service`, `amnezia-node-agent-update.service`,
+`amnezia-node-capacity.service`, `amnezia-bridge-agent-update.service`) run
+`ExecStart=/bin/bash <absolute script>`.
 An older unit that executed the script directly fails with `status=203/EXEC` as
 soon as the checkout has the script at mode `0644` (git tracks it as `100644`); the
 level-triggered `.path` unit then re-fires, ends in `unit-start-limit-hit`, and the
@@ -117,7 +118,7 @@ pending (id, age, status). Outcomes:
 | `deferred-running` | An operation is running (service active or lock held). Nothing is changed. | Run the tool again when it has finished. |
 | `deferred-pending` | A request is queued (or, for bridges, an interrupted run's journal exists), found either at inventory time or just before rearming (then the unit is already repaired and only the watcher is left untouched). The watcher stays exactly as it is, because rearming a level-triggered path unit would start that request. The report names the request id, age and status. | Decide explicitly. To resume: confirm the request is still wanted (age, status; a bridge `picked_up` or a journal means a run was interrupted), start the service once by hand (`systemctl start <unit>.service`) or let the watcher fire it, wait for the result, then run the tool again. To cancel: remove the request file from the spool (for a bridge also check the journal and results first) and run the tool again. The tool never deletes requests, results or journals. |
 | `not-installed` | The opt-in updater was never set up on this host. Its disabled status is preserved. | Normal enablement step shown in the note (`install-updater.sh` / `install-agent-updater.sh` / `install-bridge.sh`). |
-| `blocked` | An `ExecStart` override (drop-in under `/etc`, `/run`, `/usr/lib` `systemd/system/<unit>.service.d`, or systemd not reporting an effective command), more than one `ExecStart` line, a `-`/`@`/`+`/`!` prefix or a continued line, a script other than the expected `panel-updater.sh` / `agent-update.sh` / `bridge-agent-update.sh`, whitespace in the script path, a missing or unreadable script, a Bash syntax error, or a partial install. Nothing is changed. | Fix the cause named in the note, run again. |
+| `blocked` | An `ExecStart` override (drop-in under `/etc`, `/run`, `/usr/lib` `systemd/system/<unit>.service.d`, or systemd not reporting an effective command), more than one `ExecStart` line, a `-`/`@`/`+`/`!` prefix or a continued line, a script other than the expected `panel-updater.sh` / `agent-update.sh` / `capacity-apply.sh` / `bridge-agent-update.sh`, whitespace in the script path, a missing or unreadable script, a Bash syntax error, or a partial install. Nothing is changed. | Fix the cause named in the note, run again. |
 | `failed` | `systemd-analyze verify` rejected the corrected unit (nothing changed), the reload or the effective command check failed, or the watcher did not come back to `waiting`. | Read the note and `journalctl -u <unit>`. |
 
 Exit status: `0` nothing left to do, `2` at least one unit deferred, `3` at least
@@ -134,7 +135,7 @@ pending: a retained request starts immediately when the watcher is rearmed.
 
 | Host | Updater | Outcome (verified / intentionally disabled / deferred / unreachable) | Request id, age, status (if deferred) | Date, operator |
 | --- | --- | --- | --- | --- |
-| | panel / node-agent / bridge-agent | | | |
+| | panel / node-agent / node-capacity / bridge-agent | | | |
 
 `verified` = a repair run reported `repaired` or `current` and a second `--dry-run`
 reports `current`; `intentionally disabled` = `not-installed`, or an installed
@@ -192,12 +193,19 @@ wiring step and every failure mode are in
 [`AGENT-HOST-SETUP.md`](./AGENT-HOST-SETUP.md), "Updating a node's agent from
 the panel".
 
-Two things the node card does **not** tell you:
+What current releases report and do:
 
-- **It does not show the running agent version.** `GET /server` reports no
-  version, so the version on the card is the release the panel has available,
-  not the one installed. What a node actually runs is only readable on that
-  host, as the digest in its `NODE_AGENT_IMAGE`.
+- **`GET /server` reports versions and daemon health.** Current `node-agent`
+  builds report `agentVersion` alongside `egress.daemonVersion` and
+  `egress.daemonState` (older agents omit them and display `—`). Both versions
+  also appear on the node card and in the Update Agent confirmation dialog.
+- **Bundled `amnezia-egressd` updates with `node-agent`.** `agent-update.sh`
+  extracts the updated `amnezia-egressd` binary, systemd unit, and stock helper
+  scripts from `/opt/node-agent/deploy/` inside the pulled image, restarts or
+  bootstraps `amnezia-egressd.service` (keeping active `routed` tables/nftables
+  intact), verifies `GET /v1/health` over `/run/amnezia-egress/egressd.sock`,
+  stages spool logs/results outside the spool directory (`0644`), and rolls back
+  both `node-agent` and `amnezia-egressd` on failure.
 - **Nothing on a node auto-updates.** Watchtower and mutable `latest` tags are
   forbidden on nodes and fail `preflight.sh`, exactly as they are on the panel
   host. A watchtower seen on a node belongs to another install sharing that

@@ -471,6 +471,36 @@ export function NodeCard({
             {node.agentVersion ?? "—"}
           </dd>
         </div>
+        {supported.includes("awg3") ? (
+          <div className="flex items-baseline justify-between gap-3 rounded-md border border-border/60 bg-well px-2 py-1 shadow-[var(--inset-shadow)]">
+            <dt className="flex items-center gap-1">
+              <GitBranch className="size-3.5 shrink-0" />
+              <span>{t("nodes.egressDaemon")}</span>
+              <Hint>{t("nodes.egressDaemonHint")}</Hint>
+            </dt>
+            <dd className="flex min-w-0 items-center justify-end gap-1.5 text-right font-mono text-xs text-foreground">
+              {node.egressDaemonVersion ? (
+                <span>v{node.egressDaemonVersion}</span>
+              ) : (
+                <span className="font-sans text-muted-foreground">
+                  {node.egressDaemonState
+                    ? t(`egress.daemon.${node.egressDaemonState}`)
+                    : "—"}
+                </span>
+              )}
+              {node.agentVersion &&
+              node.egressDaemonVersion &&
+              node.agentVersion !== node.egressDaemonVersion ? (
+                <span
+                  title={t("nodes.egressDaemonVersionMismatch")}
+                  className="inline-flex items-center text-warning"
+                >
+                  <TriangleAlert className="size-3.5 shrink-0" />
+                </span>
+              ) : null}
+            </dd>
+          </div>
+        ) : null}
       </dl>
 
       <div className="space-y-1.5 border-t pt-3">
@@ -1203,6 +1233,18 @@ export function UpdateAgentDialog({
             </dt>
             <dd className="min-w-0 truncate font-mono">
               {node?.agentUpdateImage ?? t("nodes.agentUpdateUnknown")}
+            </dd>
+            <dt className="text-muted-foreground">
+              {t("nodes.agentUpdateDaemon")}
+            </dt>
+            <dd className="min-w-0 truncate font-mono">
+              {node?.egressDaemonVersion
+                ? `v${node.egressDaemonVersion}${
+                    node.egressDaemonState
+                      ? ` (${t(`egress.daemon.${node.egressDaemonState}`)})`
+                      : ""
+                  }`
+                : t("nodes.agentUpdateDaemonMissing")}
             </dd>
             <dt className="text-muted-foreground">
               {t("nodes.agentUpdateInstall")}

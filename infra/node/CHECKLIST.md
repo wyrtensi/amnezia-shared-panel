@@ -7,7 +7,7 @@
 - [ ] Set `SERVER_MAX_PEERS` to the capacity this host can carry, not the template's 500. It scales the preflight RAM gate, and the node-agent enforces it independently of the panel.
 - [ ] Confirm inbound UDP 51889 (AWG2) and UDP 51890 (AWG3) are approved in the provider and host firewalls.
 - [ ] Confirm TCP 4001 is not open in any public firewall.
-- [ ] Set `.env` mode to `0600` and every directory under `secrets/`, `state/`, and `backups/` to `0700`.
+- [ ] Set `.env` mode to `0600`, state files (`state/amnezia-awg3/egress-mode`, `container-ipv4`, `ipv6-reject-stub.env`, and `/etc/amnezia-egress/state.json` when present) to `0600`, systemd units to `0644`, and every directory under `secrets/`, `state/`, and `backups/` to `0700` (`preflight.sh` verifies these).
 - [ ] Generate a distinct single-line node-agent API key of at least 32 bytes in `secrets/node-agent-api-key`; set owner `root:root` and mode `0640` so the non-root service in group `0` can read the file-backed Compose secret.
 - [ ] Build or load the reviewed node-agent and set `NODE_AGENT_IMAGE` to an immutable `sha256:...` image ID or `repository@sha256:digest`.
 - [ ] Record the node's public IPv4 address as `SERVER_PUBLIC_HOST` (not a DNS name — see [`docs/NODE-CONNECT.md` §1.1](../../docs/NODE-CONNECT.md#use-the-ip-address-not-a-dns-name)), a unique UUID, region, and Docker socket GID in `.env`.
@@ -29,7 +29,7 @@
 - [ ] Confirm `docker port amnezia-node-agent 4001/tcp` returns only `127.0.0.1:4001`.
 - [ ] Confirm UDP 51889 (AWG2) and UDP 51890 (AWG3) are reachable from an external test host without exposing TCP 4001.
 - [ ] Confirm `GET /server` reports both `amneziawg2` and `amneziawg3` in `protocols`.
-- [ ] If using multi-exit routing (`routed` mode), confirm `amnezia-egressd.service` is active and `GET /server/egress/status` reports `egressState` cleanly.
+- [ ] If using multi-exit routing (`routed` mode), confirm `amnezia-egressd.service` is active, `/run/amnezia-egress/egressd.sock` has mode `0600` (`10001:0`), and `GET /server` reports `egress.daemonState` / `egress.daemonVersion` cleanly.
 - [ ] Create two separate device keys and pass the official AmneziaVPN 5.x handshake/traffic acceptance gate before assigning production users.
 - [ ] Run the 500-peer load gate before treating 500 as validated operating capacity.
 

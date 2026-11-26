@@ -753,11 +753,11 @@ runner turns the throw into a retry with no console output. An agent older than
 poller, so it only ever appears for a node that got as far as `requested` —
 i.e. after a successful POST — not for one whose POST failed.
 
-**The panel does not record which agent version a node runs.** `GET /server`
-reports no version, so the version on the node card and in the button's tooltip
-is the release the panel has *available*, not the one installed, and there is no
-column anywhere that answers "which nodes are still behind". Read it per host,
-from the reference the node is pinned to:
+**Current `node-agent` releases report `agentVersion`, `egressDaemonVersion`, and
+`egressDaemonState` via `GET /server`** (surfaced on the node card, in the Update
+Agent dialog, and in `amnezia-panel nodes` / `node-egress`). Older builds before
+1.1.14 report `—` for the version; on the host you can also inspect the pinned
+digest directly:
 
 ```sh
 grep '^NODE_AGENT_IMAGE=' <node dir>/.env
@@ -776,15 +776,20 @@ What then happens when an admin confirms the button (or runs
 2. the agent writes a request into the spool and answers `202` — it does not
    perform the update, and it is about to be replaced;
 3. `amnezia-node-agent-update.path` fires `scripts/agent-update.sh`, which pulls
-   the digest, rewrites `NODE_AGENT_IMAGE` in `.env` (temp file, then rename) and
-   runs `docker compose up -d --no-deps node-agent`. **`--no-deps` is the whole
-   point**: `node-agent` declares `depends_on` on both AWG containers, so without
-   it compose would recreate them and every live tunnel would drop;
-4. if the new agent fails its health gate the node restores the previous digest
-   and brings the old agent back — a node whose agent will not start has lost its
-   only management path;
-5. the telemetry poll carries the outcome and the updater's log back to the node
-   card, where `node-agent-log <id>` shows the same thing.
+   the digest, extracts bundled helper scripts, the `amnezia-egressd` binary, and
+   `systemd/amnezia-egressd.service` from `/opt/node-agent/deploy/`, updates or
+   bootstraps `amnezia-egressd.service`, rewrites `NODE_AGENT_IMAGE` in `.env`
+   (temp file, then rename) and runs `docker compose up -d --no-deps node-agent`.
+   **`--no-deps` is the whole point**: `node-agent` declares `depends_on` on both
+   AWG containers, so without it compose would recreate them and every live tunnel
+   would drop;
+4. if either the new `node-agent` or `amnezia-egressd` (`GET /v1/health` over
+   `/run/amnezia-egress/egressd.sock`) fails its health gate, the updater restores
+   the previous digest and previous `amnezia-egressd` binary/unit — a node whose
+   agent will not start has lost its only management path;
+5. the updater stages `result.json` outside the writable spool before moving it
+   in (`0644`), and the telemetry poll carries the outcome and updater log back
+   to the node card, where `node-agent-log <id>` shows the same thing.
 
 Published images carry the `compose.yaml` they expect at
 `/opt/node-agent/deploy/`. That is how the updater tells a node's untouched

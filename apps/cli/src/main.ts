@@ -4103,7 +4103,10 @@ Nodes:
                                           --api-key=<key> still works but lands in ps/history)
   node-update <id> --<field>=<value> …    Edit a node (name, api-url, api-key-file|api-key,
                                           public-name, protocol, max-peers,
-                                          enabled=true|false, enabled-protocols)
+                                          enabled=true|false, enabled-protocols,
+                                          egress-block-smtp=true|false [port 25, default on],
+                                          egress-isolate-private=true|false [default on],
+                                          egress-default-ip-id=<uuid|null>)
   node-update <id> --clear-public-ip      Forget the resolved public IP so the
                                           worker looks it up again next tick
   node-update <id> --endpoint-ip=<ipv4> [--endpoint-name=<name>]
@@ -4136,7 +4139,8 @@ Nodes:
   node-exit-add <node> --ip=<ipv4> [flags]  Register a new Exit IP on a node
   node-exit-update <node> <ip-id> [flags] Update Exit IP settings or DNS
   node-exit-remove <node> <ip-id> --confirm Remove an Exit IP and clear references
-  node-exit-swap <node> <ip-id> --ip=<ipv4> Replace a burned Exit IP in place
+  node-exit-swap <node> <ip-id> --ip=<ipv4> [--interface=] [--gateway=] [--label=]
+                                          Replace a burned Exit IP in place (omitting interface/gateway resets overrides for auto-discovery)
   node-exit-verify <node> <ip-id> [flags] Live-verify HTTP egress IP and DNS
   key-reassign-endpoint <key-id> --endpoint-id=<uuid>
                                           Move an AWG 3.1 key to another variant on the same node without re-keying

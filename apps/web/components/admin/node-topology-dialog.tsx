@@ -138,6 +138,24 @@ const EXIT_HEALTH_DOT: Record<NodeEgressIp["hostState"], string> = {
   disabled: "bg-muted-foreground/40",
 };
 
+export type OptionalRoutingTableResult =
+  | { ok: true; value: number | null }
+  | { ok: false };
+
+/** Parse an optional custom routing table ID in the 200..219 range. */
+export const parseOptionalRoutingTableId = (
+  raw: string,
+): OptionalRoutingTableResult => {
+  const trimmed = raw.trim();
+  if (trimmed === "") return { ok: true, value: null };
+  if (!/^\d+$/.test(trimmed)) return { ok: false };
+  const value = Number(trimmed);
+  if (!Number.isInteger(value) || value < 200 || value > 219) {
+    return { ok: false };
+  }
+  return { ok: true, value };
+};
+
 export type NodeTopologyFocus =
   | { kind: "variant"; id: string }
   | { kind: "exit"; id: string | null };
@@ -223,6 +241,7 @@ export function NodeTopologyDialogBody({
   const [newExitLabel, setNewExitLabel] = React.useState("");
   const [newExitIface, setNewExitIface] = React.useState("");
   const [newExitGw, setNewExitGw] = React.useState("");
+  const [newExitTable, setNewExitTable] = React.useState("");
   const [newExitDns1, setNewExitDns1] = React.useState("1.1.1.1");
   const [newExitDns2, setNewExitDns2] = React.useState("1.0.0.1");
   const [newExitAmneziaDns, setNewExitAmneziaDns] = React.useState(true);
@@ -276,6 +295,7 @@ export function NodeTopologyDialogBody({
     setNewExitLabel("");
     setNewExitIface("");
     setNewExitGw("");
+    setNewExitTable("");
     setNewExitDns1("1.1.1.1");
     setNewExitDns2("1.0.0.1");
     setNewExitAmneziaDns(true);
@@ -339,6 +359,22 @@ export function NodeTopologyDialogBody({
     node.publicIp ??
     "—";
   const observedHostMode = node.hostNetworkReport?.observedMode ?? "masquerade";
+  const daemonVersionMismatch = Boolean(
+    node.agentVersion &&
+      node.egressDaemonVersion &&
+      node.agentVersion !== node.egressDaemonVersion,
+  );
+  const modeSwitchBlockedReason =
+    summary.daemonState === "unavailable"
+      ? t("egress.switchBlockedUnavailable")
+      : summary.mode !== "routed" && node.hostNetworkReport?.tunnelSubnetConflict
+        ? t("egress.switchBlockedSubnetConflict")
+        : summary.mode !== "routed" && exits.filter((e) => e.enabled).length === 0
+          ? t("egress.switchBlockedNoExits")
+          : null;
+  const filtersDirty =
+    blockSmtp !== (node.egressBlockSmtp ?? true) ||
+    isolatePrivate !== (node.egressIsolatePrivate ?? true);
 
   const runAction = async (tag: string, fn: () => Promise<void>) => {
     setBusy(tag);
@@ -389,8 +425,21 @@ export function NodeTopologyDialogBody({
                   </Badge>
                 ) : null}
                 {node.egressDaemonVersion ? (
-                  <span className="font-mono text-[11px] text-muted-foreground">
+                  <span
+                    className={cn(
+                      "inline-flex items-center gap-1 font-mono text-[11px]",
+                      daemonVersionMismatch ? "text-warning" : "text-muted-foreground",
+                    )}
+                    title={
+                      daemonVersionMismatch
+                        ? t("nodes.egressDaemonVersionMismatch")
+                        : undefined
+                    }
+                  >
                     v{node.egressDaemonVersion}
+                    {daemonVersionMismatch ? (
+                      <AlertTriangle className="size-3 shrink-0" />
+                    ) : null}
                   </span>
                 ) : null}
               </div>
@@ -400,7 +449,11 @@ export function NodeTopologyDialogBody({
                   type="button"
                   size="sm"
                   variant={summary.mode === "routed" ? "outline" : "default"}
-                  disabled={busy !== null || summary.modeState === "switching"}
+                  disabled={
+                    busy !== null ||
+                    summary.modeState === "switching" ||
+                    Boolean(modeSwitchBlockedReason)
+                  }
                   onClick={() =>
                     void runAction("mode", async () => {
                       const nextMode = summary.mode === "routed" ? "masquerade" : "routed";
@@ -420,6 +473,9 @@ export function NodeTopologyDialogBody({
                 </Button>
               </div>
             </div>
+            {modeSwitchBlockedReason ? (
+              <p className="break-words text-xs text-warning">{modeSwitchBlockedReason}</p>
+            ) : null}
 
             {node.modeDrift ? (
               <Callout
@@ -465,46 +521,54 @@ export function NodeTopologyDialogBody({
               </p>
             ) : null}
 
-            <div className="flex flex-wrap items-center justify-between gap-3 border-t border-border/60 pt-2 text-xs">
-              <div className="flex flex-wrap items-center gap-4">
-                <label className="flex items-center gap-2">
-                  <Switch
-                    checked={blockSmtp}
-                    disabled={busy !== null}
-                    onCheckedChange={setBlockSmtp}
-                  />
-                  <span>{t("egress.blockSmtp")}</span>
-                </label>
-                <label className="flex items-center gap-2">
-                  <Switch
-                    checked={isolatePrivate}
-                    disabled={busy !== null}
-                    onCheckedChange={setIsolatePrivate}
-                  />
-                  <span>{t("egress.isolatePrivate")}</span>
-                </label>
+            <div className="space-y-1.5 border-t border-border/60 pt-2 text-xs">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div className="flex flex-wrap items-center gap-4">
+                  <label className="flex items-center gap-2">
+                    <Switch
+                      checked={blockSmtp}
+                      disabled={busy !== null}
+                      onCheckedChange={setBlockSmtp}
+                    />
+                    <span>{t("egress.blockSmtp")}</span>
+                    <Hint>{t("egress.blockSmtpHint")}</Hint>
+                  </label>
+                  <label className="flex items-center gap-2">
+                    <Switch
+                      checked={isolatePrivate}
+                      disabled={busy !== null}
+                      onCheckedChange={setIsolatePrivate}
+                    />
+                    <span>{t("egress.isolatePrivate")}</span>
+                  </label>
+                </div>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="secondary"
+                  disabled={busy !== null || !filtersDirty}
+                  onClick={() =>
+                    void runAction("filters", async () => {
+                      await request(`/api/admin/nodes/${encodeURIComponent(node.id)}`, {
+                        method: "PATCH",
+                        body: JSON.stringify({
+                          egressBlockSmtp: blockSmtp,
+                          egressIsolatePrivate: isolatePrivate,
+                        }),
+                      });
+                      toast.success(t("adminData.actionDone"));
+                      await reload();
+                    })
+                  }
+                >
+                  {t("egress.savePolicy")}
+                </Button>
               </div>
-              <Button
-                type="button"
-                size="sm"
-                variant="secondary"
-                disabled={busy !== null}
-                onClick={() =>
-                  void runAction("filters", async () => {
-                    await request(`/api/admin/nodes/${encodeURIComponent(node.id)}`, {
-                      method: "PATCH",
-                      body: JSON.stringify({
-                        egressBlockSmtp: blockSmtp,
-                        egressIsolatePrivate: isolatePrivate,
-                      }),
-                    });
-                    toast.success(t("adminData.actionDone"));
-                    await reload();
-                  })
-                }
-              >
-                {t("egress.savePolicy")}
-              </Button>
+              {summary.mode !== "routed" ? (
+                <p className="text-[11px] text-muted-foreground">
+                  {t("egress.filtersRoutedOnlyHint")}
+                </p>
+              ) : null}
             </div>
           </section>
 
@@ -856,19 +920,17 @@ export function NodeTopologyDialogBody({
                 className="space-y-2 rounded-lg border bg-well p-2.5 text-xs"
                 onSubmit={(event) => {
                   event.preventDefault();
+                  const parsedTable = parseOptionalRoutingTableId(editExitTable);
+                  if (!parsedTable.ok) {
+                    toast.error(t("egress.invalidRoutingTable"));
+                    return;
+                  }
                   void runAction(`edit-exit:${editExit.id}`, async () => {
-                    const trimmedTable = editExitTable.trim();
-                    const routingTableId =
-                      trimmedTable === ""
-                        ? null
-                        : Number.isInteger(Number(trimmedTable))
-                          ? Number(trimmedTable)
-                          : Number.NaN;
                     await updateNodeEgressIp(request, node.id, editExit.id, {
                       label: editExitLabel.trim() || null,
                       interfaceName: editExitIface.trim() || null,
                       gatewayIpv4: editExitGw.trim() || null,
-                      routingTableId,
+                      routingTableId: parsedTable.value,
                       dnsPrimary: editExitDns1.trim(),
                       dnsSecondary: editExitDns2.trim() || null,
                       amneziaDnsDnat: editExitAmneziaDns,
@@ -1018,12 +1080,20 @@ export function NodeTopologyDialogBody({
                 className="mt-2.5 space-y-2"
                 onSubmit={(event) => {
                   event.preventDefault();
+                  const parsedTable = parseOptionalRoutingTableId(newExitTable);
+                  if (!parsedTable.ok) {
+                    toast.error(t("egress.invalidRoutingTable"));
+                    return;
+                  }
                   void runAction("add-exit", async () => {
                     await createNodeEgressIp(request, node.id, {
                       ipv4: newExitIp.trim(),
                       label: newExitLabel.trim() || null,
                       interfaceName: newExitIface.trim() || null,
                       gatewayIpv4: newExitGw.trim() || null,
+                      ...(parsedTable.value !== null
+                        ? { routingTableId: parsedTable.value }
+                        : {}),
                       dnsPrimary: newExitDns1.trim() || "1.1.1.1",
                       dnsSecondary: newExitDns2.trim() || null,
                       amneziaDnsDnat: newExitAmneziaDns,
@@ -1036,6 +1106,7 @@ export function NodeTopologyDialogBody({
                     setNewExitLabel("");
                     setNewExitIface("");
                     setNewExitGw("");
+                    setNewExitTable("");
                     await reload();
                   });
                 }}
@@ -1067,7 +1138,7 @@ export function NodeTopologyDialogBody({
                     className="h-8 text-xs"
                   />
                 </div>
-                <div className="grid gap-2 sm:grid-cols-2">
+                <div className="grid gap-2 sm:grid-cols-3">
                   <Input
                     value={newExitDns1}
                     onChange={(e) => setNewExitDns1(e.target.value)}
@@ -1079,6 +1150,15 @@ export function NodeTopologyDialogBody({
                     value={newExitDns2}
                     onChange={(e) => setNewExitDns2(e.target.value)}
                     placeholder={t("egress.dnsSecondary")}
+                    className="h-8 text-xs"
+                  />
+                  <Input
+                    value={newExitTable}
+                    onChange={(e) => setNewExitTable(e.target.value)}
+                    placeholder={t("egress.routingTable")}
+                    type="number"
+                    min={200}
+                    max={219}
                     className="h-8 text-xs"
                   />
                 </div>
