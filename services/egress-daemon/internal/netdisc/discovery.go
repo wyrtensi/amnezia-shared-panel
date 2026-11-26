@@ -84,9 +84,17 @@ func Discover(client SnapshotClient, bridgeName, nodeDir string) (HostNetworkSna
 	if nodeDir != "" {
 		envPath := filepath.Join(nodeDir, ".env")
 		snap.EnvEgressMode = ReadEnvEgressMode(envPath)
-		if rawIP := ReadEnvValue(envPath, "AWG3_EGRESS_IPV4"); rawIP != "" {
-			if ip, parseErr := types.ParseIPv4(rawIP); parseErr == nil {
+		containerIPPath := filepath.Join(nodeDir, "state", "amnezia-awg3", "container-ipv4")
+		if rawIP, readErr := os.ReadFile(containerIPPath); readErr == nil {
+			if ip, parseErr := types.ParseIPv4(strings.TrimSpace(string(rawIP))); parseErr == nil {
 				snap.Awg3ContainerIPv4 = ip.String()
+			}
+		}
+		if snap.Awg3ContainerIPv4 == "" {
+			if rawIP := ReadEnvValue(envPath, "AWG3_EGRESS_IPV4"); rawIP != "" {
+				if ip, parseErr := types.ParseIPv4(rawIP); parseErr == nil {
+					snap.Awg3ContainerIPv4 = ip.String()
+				}
 			}
 		}
 	}
@@ -168,7 +176,7 @@ func Discover(client SnapshotClient, bridgeName, nodeDir string) (HostNetworkSna
 			continue
 		}
 		ip := a.Prefix.Addr()
-		if !ip.Is4() || ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsMulticast() || !ip.IsGlobalUnicast() {
+		if !isAttachableHostIPv4(ip) {
 			continue
 		}
 
@@ -202,10 +210,10 @@ func Discover(client SnapshotClient, bridgeName, nodeDir string) (HostNetworkSna
 		}
 
 		if !item.ResolvedGw.IsValid() {
-			// Fall back to interface default gateway in main table if present, else global main gateway.
+			// Fall back to interface default gateway in main table, or main gateway only for the main interface.
 			if gw := bestDefaultForLink(routes, 254, a.LinkIndex); gw.IsValid() {
 				item.ResolvedGw = gw
-			} else if snap.MainGateway.IsValid() {
+			} else if snap.MainGateway.IsValid() && a.LinkIndex == snap.MainGatewayLinkIndex {
 				item.ResolvedGw = snap.MainGateway
 			}
 		}
@@ -221,6 +229,27 @@ func Discover(client SnapshotClient, bridgeName, nodeDir string) (HostNetworkSna
 	})
 
 	return snap, nil
+}
+
+var nonPublicHostPrefixes = []netip.Prefix{
+	netip.MustParsePrefix("0.0.0.0/8"),
+	netip.MustParsePrefix("100.64.0.0/10"),
+	netip.MustParsePrefix("198.18.0.0/15"),
+	netip.MustParsePrefix("224.0.0.0/4"),
+	netip.MustParsePrefix("240.0.0.0/4"),
+}
+
+func isAttachableHostIPv4(ip netip.Addr) bool {
+	if !ip.Is4() || ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() ||
+		ip.IsLinkLocalMulticast() || ip.IsMulticast() || ip.IsUnspecified() || !ip.IsGlobalUnicast() {
+		return false
+	}
+	for _, prefix := range nonPublicHostPrefixes {
+		if prefix.Contains(ip) {
+			return false
+		}
+	}
+	return true
 }
 
 func bestDefaultForLink(routes []RouteInfo, table, linkIndex int) netip.Addr {

@@ -319,6 +319,7 @@ export class PostgresWorkerRepository
     node: Pick<typeof nodes.$inferSelect, "id" | "name" | "egressMode" | "egressDaemonState">,
     report: HostNetworkReport,
     observedAt: Date,
+    options: { selfHealOnDegraded?: boolean } = {},
   ): Promise<void> => {
     const evaluated = evaluateEgressMirror(node.egressMode, report);
     await tx
@@ -365,6 +366,18 @@ export class PostgresWorkerRepository
       }
     }
 
+    if (
+      options.selfHealOnDegraded &&
+      node.egressMode === "routed" &&
+      evaluated.daemonState === "degraded" &&
+      (report.exits.length === 0 ||
+        (report.detail &&
+          (report.detail.includes("not loaded") ||
+            report.detail.includes("no configured exits"))))
+    ) {
+      await this.enqueueNodeSyncEgressInTx(tx, node.id);
+    }
+
     if (evaluated.modeDrift && node.egressDaemonState !== "conflict") {
       await tx
         .insert(jobOutbox)
@@ -390,7 +403,7 @@ export class PostgresWorkerRepository
     )[0];
     if (!row) return null;
     let egressHint: NodeClientEgressHint | null = null;
-    if (row.key.protocol === "awg3") {
+    if (row.key.protocol === "awg3" && row.node.egressMode === "routed") {
       const [endpoint] = await this.options.db
         .select({
           address: nodeVpnEndpoints.address,
@@ -420,7 +433,10 @@ export class PostgresWorkerRepository
           ...(exit.routingTableId !== null ? { routingTableId: exit.routingTableId } : {}),
         };
       } else if (row.node.egressMode === "routed") {
-        const implicitIp = endpoint?.address ?? row.node.publicIp;
+        const implicitIp =
+          endpoint?.address && isIpv4Literal(endpoint.address)
+            ? endpoint.address
+            : row.node.publicIp;
         if (implicitIp && isIpv4Literal(implicitIp)) {
           egressHint = {
             exitIp: implicitIp,
@@ -560,7 +576,12 @@ export class PostgresWorkerRepository
           await tx
             .update(vpnKeys)
             .set({ tunnelIpv4: backfill.tunnelIpv4, updatedAt: result.observedAt })
-            .where(and(eq(vpnKeys.id, backfill.keyId), isNull(vpnKeys.tunnelIpv4)));
+            .where(
+              and(
+                eq(vpnKeys.id, backfill.keyId),
+                or(isNull(vpnKeys.tunnelIpv4), eq(vpnKeys.tunnelIpv4, "0.0.0.0")),
+              ),
+            );
         }
         await this.enqueueNodeSyncEgressInTx(tx, result.nodeId);
       }
@@ -1196,7 +1217,7 @@ export class PostgresWorkerRepository
         .set({
           publicKey,
           state: "active",
-          ...(tunnelIpv4 ? { tunnelIpv4 } : {}),
+          ...(tunnelIpv4 !== undefined ? { tunnelIpv4 } : {}),
           configCiphertext: encrypted.ciphertext,
           configNonce: encrypted.nonce,
           configAuthTag: encrypted.authTag,
@@ -1633,21 +1654,24 @@ export class PostgresWorkerRepository
         addressMoved = moved && node.reachabilityEnabled;
       }
 
-      if (snapshot.server.egressReport) {
-        await this.mirrorNodeEgressReportInTx(
-          tx,
-          node,
-          snapshot.server.egressReport,
-          snapshot.observedAt,
-        );
-      } else if (snapshot.server.egressReport === null) {
-        await tx
-          .update(nodes)
-          .set({
-            egressDaemonState: "unavailable",
-            egressObservedAt: snapshot.observedAt,
-          })
-          .where(eq(nodes.id, snapshot.nodeId));
+      if (node.egressModeState !== "switching") {
+        if (snapshot.server.egressReport) {
+          await this.mirrorNodeEgressReportInTx(
+            tx,
+            node,
+            snapshot.server.egressReport,
+            snapshot.observedAt,
+            { selfHealOnDegraded: true },
+          );
+        } else if (snapshot.server.egressReport === null) {
+          await tx
+            .update(nodes)
+            .set({
+              egressDaemonState: "unavailable",
+              egressObservedAt: snapshot.observedAt,
+            })
+            .where(eq(nodes.id, snapshot.nodeId));
+        }
       }
 
       // Host metrics: one current row per node, replaced every tick, plus a
@@ -1956,6 +1980,8 @@ export class PostgresWorkerRepository
           protocol: vpnKeys.protocol,
           endpointId: vpnKeys.endpointId,
           tunnelIpv4: vpnKeys.tunnelIpv4,
+          publicKey: vpnKeys.publicKey,
+          nodeLabel: vpnKeys.nodeLabel,
         })
         .from(vpnKeys)
         .where(
@@ -2000,6 +2026,26 @@ export class PostgresWorkerRepository
       endpoints,
       keys,
     };
+  };
+
+  backfillKeyTunnelIpv4s = async (
+    backfills: Array<{ keyId: string; tunnelIpv4: string }>,
+    observedAt: Date,
+  ): Promise<void> => {
+    if (backfills.length === 0) return;
+    await this.options.db.transaction(async (tx) => {
+      for (const backfill of backfills) {
+        await tx
+          .update(vpnKeys)
+          .set({ tunnelIpv4: backfill.tunnelIpv4, updatedAt: observedAt })
+          .where(
+            and(
+              eq(vpnKeys.id, backfill.keyId),
+              or(isNull(vpnKeys.tunnelIpv4), eq(vpnKeys.tunnelIpv4, "0.0.0.0")),
+            ),
+          );
+      }
+    });
   };
 
   mirrorNodeEgressReport = async (
@@ -2070,6 +2116,40 @@ export class PostgresWorkerRepository
             result.report,
             result.observedAt,
           );
+        }
+        if (result.state === "idle" && finalMode !== node.egressMode) {
+          await tx
+            .update(nodeVpnEndpoints)
+            .set({
+              probeObservedEgressIp: null,
+              probeEgressMatch: null,
+              probeStatus: null,
+              probeLevels: null,
+              probeCheckedAt: null,
+              probeConsecutiveFailures: 0,
+              probeFailingSince: null,
+              probeDetail: null,
+              probeAlertedAt: null,
+              probeAlertKind: null,
+              revision: sql`${nodeVpnEndpoints.revision} + 1`,
+            })
+            .where(eq(nodeVpnEndpoints.nodeId, result.nodeId));
+          if (finalMode === "masquerade") {
+            const egressIpRows = await tx
+              .select({ id: nodeEgressIps.id })
+              .from(nodeEgressIps)
+              .where(eq(nodeEgressIps.nodeId, result.nodeId));
+            if (egressIpRows.length > 0) {
+              await tx
+                .delete(nodeEgressServiceCheckResults)
+                .where(
+                  inArray(
+                    nodeEgressServiceCheckResults.egressIpId,
+                    egressIpRows.map((row) => row.id),
+                  ),
+                );
+            }
+          }
         }
         await tx.insert(auditEvents).values({
           actorType: "system",

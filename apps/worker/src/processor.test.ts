@@ -1937,4 +1937,303 @@ describe("node egress jobs and tunnel IPv4 lifecycle", () => {
       }),
     );
   });
+
+  it("backfills missing tunnelIpv4 from listClients during node.sync-egress and routed mode switches", async () => {
+    const backfillKeyTunnelIpv4s = vi.fn(() => Promise.resolve());
+    const completeNodeEgressModeSwitch = vi.fn(() => Promise.resolve());
+    const repository: WorkerRepository = {
+      ...createRepository(),
+      loadNodeEgressSyncContext: vi.fn(() =>
+        Promise.resolve({
+          node: {
+            id: "node-1",
+            baseUrl: "http://node",
+            apiKey: "node-secret",
+            publicIp: "198.51.100.10",
+            egressMode: "masquerade" as const,
+            egressBlockSmtp: true,
+            egressIsolatePrivate: true,
+            egressDefaultIpId: "exit-1",
+          },
+          exits: [
+            {
+              id: "exit-1",
+              ipv4: "198.51.100.20",
+              interfaceName: "eth0",
+              gatewayIpv4: null,
+              routingTableId: 200,
+              dnsPrimary: "1.1.1.1",
+              dnsSecondary: null,
+              amneziaDnsDnat: true,
+              enforceDnsDnat: false,
+              enabled: true,
+            },
+          ],
+          endpoints: [],
+          keys: [
+            {
+              keyId: "key-pk",
+              state: "active" as const,
+              protocol: "awg3" as const,
+              endpointId: null,
+              tunnelIpv4: null,
+              publicKey: "pk-1",
+              nodeLabel: "shared-label",
+            },
+            {
+              keyId: "key-label",
+              state: "disabled" as const,
+              protocol: "awg3" as const,
+              endpointId: null,
+              tunnelIpv4: null,
+              publicKey: null,
+              nodeLabel: "legacy-label",
+            },
+          ],
+        }),
+      ),
+      backfillKeyTunnelIpv4s,
+      completeNodeEgressModeSwitch,
+    };
+    const agent = createAgent();
+    vi.mocked(agent.listClients).mockResolvedValue([
+      {
+        username: "shared-label",
+        peers: [
+          {
+            id: "pk-1",
+            name: null,
+            allowedIps: ["10.90.0.31/32"],
+            lastHandshake: 0,
+            traffic: { received: 0, sent: 0 },
+            endpoint: null,
+            online: false,
+            expiresAt: null,
+            status: "active",
+            protocol: "amneziawg3",
+          },
+        ],
+      },
+      {
+        username: "legacy-label",
+        peers: [
+          {
+            id: "pk-legacy",
+            name: null,
+            allowedIps: ["10.90.0.32/32"],
+            lastHandshake: 0,
+            traffic: { received: 0, sent: 0 },
+            endpoint: null,
+            online: false,
+            expiresAt: null,
+            status: "active",
+            protocol: "amneziawg3",
+          },
+        ],
+      },
+    ]);
+    vi.mocked(agent.switchEgressMode).mockResolvedValue({
+      ok: true,
+      report: {
+        daemonVersion: "1.0.0",
+        observedMode: "routed",
+        egressState: "routed_active",
+        bridgeName: "br-awg-egress",
+        bridgePresent: true,
+        awg3ContainerIpv4: "172.30.90.2",
+        tunnelSubnetConflict: false,
+        ipv4Addresses: [],
+        exits: [],
+        observedAt: "2026-11-26T00:00:00.000Z",
+      },
+    });
+    const process = createJobProcessor({ repository, createNodeAgent: () => agent });
+
+    await process({
+      id: "job-switch-backfill",
+      type: "node.switch-egress-mode",
+      attempts: 1,
+      payload: { nodeId: "node-1", mode: "routed" },
+    });
+
+    expect(backfillKeyTunnelIpv4s).toHaveBeenCalledWith(
+      [
+        { keyId: "key-pk", tunnelIpv4: "10.90.0.31" },
+        { keyId: "key-label", tunnelIpv4: "10.90.0.32" },
+      ],
+      expect.any(Date),
+    );
+    expect(
+      vi.mocked(agent.putServerEgress).mock.calls[0]?.[0]?.peers.map((peer) => ({
+        tunnelIpv4: peer.tunnelIpv4,
+        enabled: peer.enabled,
+      })),
+    ).toEqual([
+      { tunnelIpv4: "10.90.0.31", enabled: true },
+      { tunnelIpv4: "10.90.0.32", enabled: false },
+    ]);
+
+    vi.mocked(agent.listClients).mockClear();
+    backfillKeyTunnelIpv4s.mockClear();
+
+    await process({
+      id: "job-sync-backfill",
+      type: "node.sync-egress",
+      attempts: 1,
+      payload: { nodeId: "node-1" },
+    });
+
+    expect(agent.listClients).toHaveBeenCalledOnce();
+    expect(backfillKeyTunnelIpv4s).toHaveBeenCalledOnce();
+    expect(
+      vi.mocked(agent.putServerEgress).mock.calls[1]?.[0]?.peers.map((peer) => ({
+        tunnelIpv4: peer.tunnelIpv4,
+        enabled: peer.enabled,
+      })),
+    ).toEqual([
+      { tunnelIpv4: "10.90.0.31", enabled: true },
+      { tunnelIpv4: "10.90.0.32", enabled: false },
+    ]);
+  });
+
+  it("never backfills 0.0.0.0/32 from disabled peers into tunnelIpv4", async () => {
+    const backfillKeyTunnelIpv4s = vi.fn(() => Promise.resolve());
+    const repository: WorkerRepository = {
+      ...createRepository(),
+      loadNodeEgressSyncContext: vi.fn(() =>
+        Promise.resolve({
+          node: {
+            id: "node-1",
+            baseUrl: "http://node",
+            apiKey: "node-secret",
+            publicIp: "198.51.100.10",
+            egressMode: "routed" as const,
+            egressBlockSmtp: true,
+            egressIsolatePrivate: true,
+            egressDefaultIpId: "exit-1",
+          },
+          exits: [
+            {
+              id: "exit-1",
+              ipv4: "198.51.100.20",
+              interfaceName: "eth0",
+              gatewayIpv4: null,
+              routingTableId: 200,
+              dnsPrimary: "1.1.1.1",
+              dnsSecondary: null,
+              amneziaDnsDnat: true,
+              enforceDnsDnat: false,
+              enabled: true,
+            },
+          ],
+          endpoints: [],
+          keys: [
+            {
+              keyId: "key-disabled-legacy",
+              state: "disabled" as const,
+              protocol: "awg3" as const,
+              endpointId: null,
+              tunnelIpv4: null,
+              publicKey: "pk-disabled",
+              nodeLabel: "disabled-legacy",
+            },
+          ],
+        }),
+      ),
+      backfillKeyTunnelIpv4s,
+    };
+    const agent = createAgent();
+    vi.mocked(agent.listClients).mockResolvedValue([
+      {
+        username: "disabled-legacy",
+        peers: [
+          {
+            id: "pk-disabled",
+            name: null,
+            allowedIps: ["0.0.0.0/32"],
+            lastHandshake: 0,
+            traffic: { received: 0, sent: 0 },
+            endpoint: null,
+            online: false,
+            expiresAt: null,
+            status: "disabled",
+            protocol: "amneziawg3",
+          },
+        ],
+      },
+    ]);
+    const process = createJobProcessor({ repository, createNodeAgent: () => agent });
+
+    await process({
+      id: "job-sync-disabled-zero",
+      type: "node.sync-egress",
+      attempts: 1,
+      payload: { nodeId: "node-1" },
+    });
+
+    expect(backfillKeyTunnelIpv4s).not.toHaveBeenCalled();
+    expect(vi.mocked(agent.putServerEgress).mock.calls[0]?.[0]?.peers).toEqual([]);
+  });
+
+  it("tolerates 404 when retrying vpn-key.rotate and reconciles orphan peer on completeProvision failure", async () => {
+    const deleteClient = vi
+      .fn<NodeAgent["deleteClient"]>()
+      .mockRejectedValueOnce(new Error("Node-agent request failed with status 404"))
+      .mockResolvedValueOnce(undefined);
+    const repository: WorkerRepository = {
+      ...createRepository(),
+      loadKeyContext: vi.fn(() =>
+        Promise.resolve({
+          ...keyContext,
+          protocol: "awg3" as const,
+          publicKey: "stale-old-pk",
+        }),
+      ),
+      completeProvision: vi.fn(() => Promise.reject(new Error("db write failed"))),
+    };
+    const agent: NodeAgent = {
+      ...createAgent(),
+      deleteClient,
+      createClient: vi.fn(() =>
+        Promise.resolve({
+          id: "new-pk",
+          config: "[Interface]\nAddress = 10.90.0.44/32\n",
+          protocol: "awg3" as const,
+        }),
+      ),
+      listClients: vi.fn(() =>
+        Promise.resolve([
+          {
+            username: keyContext.nodeLabel,
+            peers: [
+              {
+                id: "new-pk",
+                name: null,
+                allowedIps: ["10.90.0.44/32"],
+                lastHandshake: 0,
+                traffic: { received: 0, sent: 0 },
+                endpoint: null,
+                online: false,
+                expiresAt: null,
+                status: "active",
+                protocol: "amneziawg3",
+              },
+            ],
+          },
+        ]),
+      ),
+    };
+    const process = createJobProcessor({ repository, createNodeAgent: () => agent });
+
+    await expect(
+      process({
+        id: "job-rot-retry",
+        type: "vpn-key.rotate",
+        attempts: 2,
+        payload: { keyId: "key-1" },
+      }),
+    ).rejects.toThrow("reconciled orphan peer");
+    expect(deleteClient).toHaveBeenNthCalledWith(1, "stale-old-pk", "awg3");
+    expect(deleteClient).toHaveBeenNthCalledWith(2, "new-pk", "awg3");
+  });
 });

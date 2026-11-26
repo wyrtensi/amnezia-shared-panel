@@ -17,6 +17,11 @@ case "$target_mode" in
   *) fail "usage: $0 masquerade|routed" ;;
 esac
 
+if [ "$target_mode" = "routed" ]; then
+  command -v amnezia-egressd >/dev/null 2>&1 || fail "amnezia-egressd host binary is required for routed mode"
+  command -v nft >/dev/null 2>&1 || fail "nft is required for routed mode"
+fi
+
 available_kb="$(df -Pk "$NODE_DIR" | awk 'NR==2 { print $4 }')"
 min_kb="${PREFLIGHT_DISK_MIN_KB:-262144}"
 [ "$available_kb" -ge "$min_kb" ] || \
@@ -115,6 +120,12 @@ if ! write_egress_mode_file "$target_mode"; then
 fi
 
 if [ "$awg3_on_bridge" -eq 1 ]; then
+  live_awg3_ipv4="$(docker inspect --format '{{range $k, $v := .NetworkSettings.Networks}}{{println $k $v.IPAddress}}{{end}}' amnezia-awg3 2>/dev/null | awk '/(^|_)awg_egress / { print $2; exit }')"
+  if [ -n "$live_awg3_ipv4" ]; then
+    container_ipv4_tmp="$(mktemp "$STATE_DIR_AWG3/.container-ipv4.XXXXXX")"
+    printf '%s\n' "$live_awg3_ipv4" > "$container_ipv4_tmp"
+    mv -f "$container_ipv4_tmp" "$STATE_DIR_AWG3/container-ipv4"
+  fi
   # 0ms live transition: container stays up on br-awg-egress while rules flip safely.
   if [ "$target_mode" = "routed" ]; then
     if ! amnezia-egressd reconcile --socket "$EGRESS_SOCKET" --node-dir "$NODE_DIR" --state "$EGRESS_STATE_FILE"; then
@@ -162,6 +173,13 @@ fi
 
 if command -v conntrack >/dev/null 2>&1; then
   conntrack -D -s 10.90.0.0/22 >/dev/null 2>&1 || true
+fi
+if container_is_running amnezia-awg3; then
+  awg3_pid="$(docker inspect --format '{{.State.Pid}}' amnezia-awg3 2>/dev/null || true)"
+  if [ -n "$awg3_pid" ] && [ "$awg3_pid" != "0" ] && command -v nsenter >/dev/null 2>&1 && command -v conntrack >/dev/null 2>&1; then
+    nsenter -t "$awg3_pid" -n conntrack -D -s 10.90.0.0/22 >/dev/null 2>&1 || true
+  fi
+  docker exec amnezia-awg3 /bin/sh -c 'command -v conntrack >/dev/null 2>&1 && conntrack -D -s 10.90.0.0/22 >/dev/null 2>&1 || true' >/dev/null 2>&1 || true
 fi
 
 prune_node_backups

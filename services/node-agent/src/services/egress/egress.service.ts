@@ -55,6 +55,7 @@ export class EgressService {
 
   private readonly socketPath: string;
   private loggedUnavailable = false;
+  private lastObservedMode: EgressMode | null = null;
 
   /**
    * Single-property object literal without commas matches Awilix CLASSIC
@@ -78,6 +79,7 @@ export class EgressService {
       );
       if (status >= 200 && status < 300) {
         this.loggedUnavailable = false;
+        this.lastObservedMode = data.observedMode ?? this.lastObservedMode;
         return data;
       }
       return null;
@@ -121,6 +123,7 @@ export class EgressService {
       >("PUT", "/v1/state", state);
       this.throwIfDaemonError(status, data);
       this.loggedUnavailable = false;
+      this.lastObservedMode = data.report?.observedMode ?? this.lastObservedMode;
       return data;
     } catch (error) {
       throw this.mapControlError(error);
@@ -137,13 +140,20 @@ export class EgressService {
       >("POST", "/v1/peers/upsert", { peer });
       if (status >= 200 && status < 300) {
         this.loggedUnavailable = false;
+        this.lastObservedMode = data.report?.observedMode ?? this.lastObservedMode;
         return data;
+      }
+      if (this.lastObservedMode === "routed") {
+        this.throwIfDaemonError(status, data);
       }
       appLogger.warn(
         `amnezia-egressd upsertPeer returned HTTP ${status}: ${data?.error ?? "unknown error"}`,
       );
       return null;
     } catch (error) {
+      if (this.lastObservedMode === "routed") {
+        throw this.mapControlError(error);
+      }
       if (error instanceof EgressDaemonUnavailableError) {
         this.logUnavailableOnce(error.message);
         return null;
@@ -163,13 +173,20 @@ export class EgressService {
       >("POST", "/v1/peers/remove", { tunnelIpv4 });
       if (status >= 200 && status < 300) {
         this.loggedUnavailable = false;
+        this.lastObservedMode = data.report?.observedMode ?? this.lastObservedMode;
         return data;
+      }
+      if (this.lastObservedMode === "routed") {
+        this.throwIfDaemonError(status, data);
       }
       appLogger.warn(
         `amnezia-egressd removePeer returned HTTP ${status}: ${data?.error ?? "unknown error"}`,
       );
       return null;
     } catch (error) {
+      if (this.lastObservedMode === "routed") {
+        throw this.mapControlError(error);
+      }
       if (error instanceof EgressDaemonUnavailableError) {
         this.logUnavailableOnce(error.message);
         return null;
@@ -183,7 +200,7 @@ export class EgressService {
     this.requireConfigured();
     const timeoutMs = Math.max(
       DEFAULT_TIMEOUT_MS,
-      (req.timeoutMs ?? DEFAULT_TIMEOUT_MS) + 2_000,
+      (req.timeoutMs ?? DEFAULT_TIMEOUT_MS) + 5_000,
     );
     try {
       const { status, data } = await this.requestJson<

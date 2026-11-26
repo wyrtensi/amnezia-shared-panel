@@ -202,6 +202,12 @@ awg setconf awg0 "$RUNTIME_CONFIG_FILE"
 rm -f "$RUNTIME_CONFIG_FILE"
 ip -4 address add 10.90.0.1/22 dev awg0
 ip link set mtu "$IFACE_MTU" up dev awg0
+live_eth0_ipv4="$(ip -4 -o addr show dev eth0 2>/dev/null | awk '{split($4,a,"/"); print a[1]; exit}' || true)"
+if [ -n "$live_eth0_ipv4" ]; then
+  if ip_tmp="$(mktemp "$STATE_DIR/.container-ipv4.XXXXXX" 2>/dev/null)"; then
+    printf '%s\n' "$live_eth0_ipv4" >"$ip_tmp" && chmod 600 "$ip_tmp" && mv -f "$ip_tmp" "$STATE_DIR/container-ipv4" || rm -f "$ip_tmp"
+  fi
+fi
 iptables -A FORWARD -i awg0 -j ACCEPT
 iptables -A FORWARD -o awg0 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
 EGRESS_MODE="${AWG3_EGRESS_MODE:-masquerade}"

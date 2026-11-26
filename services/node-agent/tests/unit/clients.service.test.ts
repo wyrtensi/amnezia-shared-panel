@@ -480,4 +480,65 @@ describe("ClientsService", () => {
       "egress:remove",
     ]);
   });
+
+  it("re-enables a disabled 0.0.0.0/32 peer and deletes a disabled peer using saved tunnel IPv4", async () => {
+    let peerAllowedIps = ["0.0.0.0/32"];
+    const amneziaWg3 = createProtocolServiceMock(Protocol.AMNEZIAWG3);
+    amneziaWg3.spies.getClients.mockImplementation(async () => [
+      createClientRecord({
+        username: "frank",
+        protocol: Protocol.AMNEZIAWG3,
+        peers: [
+          createClientPeer({
+            id: "peer-frank",
+            protocol: Protocol.AMNEZIAWG3,
+            allowedIps: peerAllowedIps,
+            status:
+              peerAllowedIps[0] === "0.0.0.0/32"
+                ? PeerStatus.Disabled
+                : PeerStatus.Active,
+          }),
+        ],
+      }),
+    ]);
+    amneziaWg3.spies.updateClient.mockImplementation(async (_id, opts) => {
+      peerAllowedIps =
+        opts.status === PeerStatus.Disabled ? ["0.0.0.0/32"] : ["10.90.0.15/32"];
+      return true;
+    });
+    amneziaWg3.service.getClientTunnelIpv4 = vi.fn(async () => "10.90.0.15");
+
+    const upsertPeer = vi.fn(async () => null);
+    const removePeer = vi.fn(async () => null);
+    const egressStub = {
+      isConfigured: () => true,
+      upsertPeer,
+      removePeer,
+    } as unknown as EgressService;
+
+    const service = new ClientsService(
+      createProtocolServiceMock(Protocol.XRAY).service,
+      createProtocolServiceMock(Protocol.AMNEZIAWG).service,
+      createProtocolServiceMock(Protocol.AMNEZIAWG2).service,
+      amneziaWg3.service,
+      egressStub,
+    );
+
+    await service.updateClient({
+      clientId: "peer-frank",
+      protocol: Protocol.AMNEZIAWG3,
+      status: PeerStatus.Active,
+      egress: { exitIp: "198.51.100.10", dnsPrimary: "1.1.1.1" },
+    });
+    expect(upsertPeer).toHaveBeenCalledWith(
+      expect.objectContaining({ tunnelIpv4: "10.90.0.15", enabled: true }),
+    );
+
+    peerAllowedIps = ["0.0.0.0/32"];
+    await service.deleteClient({
+      clientId: "peer-frank",
+      protocol: Protocol.AMNEZIAWG3,
+    });
+    expect(removePeer).toHaveBeenCalledWith("10.90.0.15");
+  });
 });

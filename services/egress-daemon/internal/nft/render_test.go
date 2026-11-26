@@ -261,3 +261,51 @@ func TestParseCountersJSON(t *testing.T) {
 		t.Fatalf("unexpected parsed counter: %+v", c)
 	}
 }
+
+func TestBuildPlanUsesIPv4DNATAndSNATKeywords(t *testing.T) {
+	snap := netdisc.HostNetworkSnapshot{
+		BridgeName:        "br-awg-egress",
+		BridgePresent:     true,
+		Awg3ContainerIPv4: "172.30.90.2",
+		MainGateway:       netip.MustParseAddr("198.51.100.1"),
+		MainGatewayIface:  "ens3",
+		IPv4s: []netdisc.DiscoveredIPv4{
+			{
+				DetectedIPv4: types.DetectedIPv4{
+					IPv4:          "203.0.113.5",
+					CIDR:          "203.0.113.5/24",
+					InterfaceName: "ens3",
+				},
+				LinkIndex:  2,
+				Prefix:     netip.MustParsePrefix("203.0.113.5/24"),
+				ResolvedGw: netip.MustParseAddr("203.0.113.1"),
+			},
+		},
+	}
+	state := types.DesiredState{
+		SchemaVersion:  1,
+		BlockSMTP:      true,
+		IsolatePrivate: true,
+		Exits: []types.DesiredExit{
+			{ID: "e1", IPv4: "203.0.113.5", DNSPrimary: "1.1.1.1", AmneziaDNSDNAT: true, Enabled: true},
+		},
+		Peers: []types.DesiredPeer{
+			{TunnelIPv4: "10.90.0.2", ExitIP: "203.0.113.5", AmneziaDNSDNAT: true, Enabled: true},
+		},
+	}
+	plan := BuildPlan(state, snap, "br-awg-egress")
+	if strings.Contains(plan.Ruleset, "dnat ip to") || strings.Contains(plan.Ruleset, "snat ip to") {
+		t.Fatalf("unexpected invalid nftables syntax 'dnat/snat ip to' in ruleset:\n%s", plan.Ruleset)
+	}
+	if !strings.Contains(plan.Ruleset, "dnat to ip saddr map @peer_dns_v4") ||
+		!strings.Contains(plan.Ruleset, "dnat to ip saddr map @peer_force_dns_v4") ||
+		!strings.Contains(plan.Ruleset, "snat to ip saddr map @peer_exit_v4") {
+		t.Fatalf("expected valid 'dnat to' and 'snat to' rules in ruleset:\n%s", plan.Ruleset)
+	}
+	if !strings.Contains(plan.Ruleset, "type filter hook input priority -10; policy accept;\n    iifname \"br-awg-egress\" ip saddr 10.90.0.0/22 counter drop") {
+		t.Fatalf("expected IPv4 input chain blocking host-local access in ruleset:\n%s", plan.Ruleset)
+	}
+	if !strings.Contains(plan.Ruleset, "type filter hook input priority -10; policy accept;\n    iifname \"br-awg-egress\" counter reject with icmpv6 type admin-prohibited") {
+		t.Fatalf("expected IPv6 input chain rejecting host-local access in ruleset:\n%s", plan.Ruleset)
+	}
+}

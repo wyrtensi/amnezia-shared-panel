@@ -62,6 +62,8 @@ test("rollback.sh uses 256 MiB disk floor and parses meta.env without source/eva
       rollback.indexOf('sync_host_egress_after_restore "$effective_mode"'),
     "sync_host_egress_after_restore must run after compose up creates br-awg-egress",
   );
+  assert.match(rollback, /Legacy pre-egress backup/);
+  assert.match(rollback, /Pre-load host nftables before awg3 comes up fail-closed/);
   assert.doesNotMatch(
     rollback.slice(
       rollback.indexOf("sync_host_egress_after_restore() {"),

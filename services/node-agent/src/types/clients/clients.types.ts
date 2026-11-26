@@ -74,6 +74,7 @@ export interface ClientMutationOptions {
 
 export interface IProtocolService {
   getClients(): Promise<ClientRecord[]>;
+  getClientTunnelIpv4?(clientId: string): Promise<string | null>;
   createClient(
     clientName: string,
     options?: { expiresAt?: number | null },

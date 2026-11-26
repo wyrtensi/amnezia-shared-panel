@@ -40,7 +40,11 @@ verify_linux_amd64_image "$node_image"
 # enforcing it. The check after the deploy is what turns it into a fact.
 COTENANTS_SNAPSHOT="${TMPDIR:-/tmp}/amnezia-cotenants.$$"
 sh "$SCRIPT_DIR/cotenants.sh" snapshot "$COTENANTS_SNAPSHOT"
-trap 'rm -f "$COTENANTS_SNAPSHOT"' EXIT INT TERM
+cleanup_deploy() {
+  rm -f "${COTENANTS_SNAPSHOT:-}"
+  release_lock
+}
+trap cleanup_deploy EXIT INT TERM
 
 backup_path=''
 if [ -s "$STATE_DIR/awg0.conf" ] || [ -s "$STATE_DIR_AWG3/awg0.conf" ]; then
@@ -67,6 +71,26 @@ if has_service awg3 && ! wait_healthy amnezia-awg3; then
   info "AWG3 failed its health gate. Persistent state was not removed."
   [ -z "$backup_path" ] || info "Rollback source: $backup_path"
   exit 1
+fi
+
+effective_egress_mode=""
+if [ -r "$STATE_DIR_AWG3/egress-mode" ] && [ ! -L "$STATE_DIR_AWG3/egress-mode" ]; then
+  effective_egress_mode="$(tr -d '[:space:]' <"$STATE_DIR_AWG3/egress-mode" 2>/dev/null || true)"
+fi
+case "$effective_egress_mode" in
+  masquerade|routed) ;;
+  *) effective_egress_mode="$(env_value AWG3_EGRESS_MODE 2>/dev/null || true)" ;;
+esac
+if [ "$effective_egress_mode" = "routed" ] && has_service awg3; then
+  egress_socket="${NODE_EGRESS_SOCKET:-$(env_value NODE_EGRESS_SOCKET 2>/dev/null || true)}"
+  egress_socket="${egress_socket:-/run/amnezia-egress/egressd.sock}"
+  egress_state="${EGRESS_STATE_FILE:-$(env_value EGRESS_STATE_FILE 2>/dev/null || true)}"
+  egress_state="${egress_state:-/etc/amnezia-egress/state.json}"
+  if ! amnezia-egressd reconcile --socket "$egress_socket" --node-dir "$NODE_DIR" --state "$egress_state"; then
+    info "Host egress reconcile failed after deploy. Persistent state was not removed."
+    [ -z "$backup_path" ] || info "Rollback source: $backup_path"
+    exit 1
+  fi
 fi
 
 if ! wait_healthy amnezia-node-agent; then

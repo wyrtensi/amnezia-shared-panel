@@ -277,4 +277,32 @@ describe("EgressService", () => {
       "POST /v1/switch-mode",
     ]);
   });
+
+  it("throws instead of swallowing peer mutation errors once daemon observed routed mode", async () => {
+    let failPeers = false;
+    const srv = await startMockSocketServer((req, res) => {
+      res.setHeader("Content-Type", "application/json");
+      if (req.method === "GET" && req.url === "/v1/report") {
+        res.end(JSON.stringify(sampleReport()));
+        return;
+      }
+      if (failPeers && req.url?.startsWith("/v1/peers/")) {
+        res.statusCode = 500;
+        res.end(JSON.stringify({ error: "nft apply failed" }));
+        return;
+      }
+      res.statusCode = 200;
+      res.end(JSON.stringify({ ok: true, report: sampleReport() }));
+    });
+    cleanups.push(srv.close);
+
+    const service = new EgressService({ socketPath: srv.socketPath });
+    await service.getReport();
+    failPeers = true;
+
+    await expect(
+      service.upsertPeer(sampleState().peers[0]),
+    ).rejects.toThrow();
+    await expect(service.removePeer("10.90.0.2")).rejects.toThrow();
+  });
 });

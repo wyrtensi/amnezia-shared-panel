@@ -30,7 +30,24 @@ type ScriptSwitchRunner struct {
 
 func (r ScriptSwitchRunner) SwitchMode(ctx context.Context, mode types.EgressMode) error {
 	script := filepath.Join(r.NodeDir, "scripts", "switch-egress-mode.sh")
-	cmd := exec.CommandContext(ctx, "/bin/sh", script, string(mode))
+	var cmd *exec.Cmd
+	if systemdRun, err := exec.LookPath("systemd-run"); err == nil {
+		// Isolate switch-egress-mode.sh + docker CLI inside a transient 256M scope so
+		// amnezia-egressd.service's MemoryMax=32M cgroup does not OOM-kill it mid-switch.
+		cmd = exec.CommandContext(
+			ctx,
+			systemdRun,
+			"--quiet",
+			"--scope",
+			"--collect",
+			"--property=MemoryMax=256M",
+			"/bin/sh",
+			script,
+			string(mode),
+		)
+	} else {
+		cmd = exec.CommandContext(ctx, "/bin/sh", script, string(mode))
+	}
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("switch-egress-mode.sh %s failed: %w (%s)", mode, err, types.ClipDetail(string(out), 280))
@@ -222,6 +239,10 @@ func (m *Manager) SwitchMode(ctx context.Context, mode types.EgressMode) (types.
 	defer m.switchMu.Unlock()
 
 	if err := m.switcher.SwitchMode(ctx, mode); err != nil {
+		report, repErr := m.Report()
+		if repErr == nil {
+			return types.SwitchModeResponse{OK: false, Error: err.Error(), Report: &report}, nil
+		}
 		return types.SwitchModeResponse{OK: false, Error: err.Error()}, nil
 	}
 	report, err := m.Report()
@@ -258,16 +279,27 @@ func (m *Manager) VerifyExit(ctx context.Context, req types.VerifyExitRequest) t
 
 // RunHttpCheck performs a source-bound HTTP request for node-agent service checks.
 func (m *Manager) RunHttpCheck(ctx context.Context, req types.HttpCheckRequest) types.HttpCheckResponse {
-	if req.Fwmark == 0 {
-		req.Fwmark = m.resolveExitFwmark(req.EgressIPv4)
+	if req.Fwmark == 0 || req.DNSServer == "" {
+		fwmark, dnsPrimary := m.resolveExitProbeRouting(req.EgressIPv4)
+		if req.Fwmark == 0 {
+			req.Fwmark = fwmark
+		}
+		if req.DNSServer == "" {
+			req.DNSServer = dnsPrimary
+		}
 	}
 	return m.httpCheck(ctx, req)
 }
 
 func (m *Manager) resolveExitFwmark(egressIPv4 string) uint32 {
+	fwmark, _ := m.resolveExitProbeRouting(egressIPv4)
+	return fwmark
+}
+
+func (m *Manager) resolveExitProbeRouting(egressIPv4 string) (uint32, string) {
 	addr, err := types.ParseIPv4(egressIPv4)
 	if err != nil {
-		return 0
+		return 0, ""
 	}
 	target := addr.String()
 
@@ -275,19 +307,34 @@ func (m *Manager) resolveExitFwmark(egressIPv4 string) uint32 {
 	state, loadErr := m.store.Load()
 	m.stateMu.Unlock()
 	if loadErr != nil {
-		return 0
+		return 0, ""
+	}
+	var dnsPrimary string
+	var explicitTableID int
+	for _, ex := range state.Exits {
+		if ex.IPv4 == target {
+			dnsPrimary = ex.DNSPrimary
+			explicitTableID = ex.RoutingTableID
+			break
+		}
 	}
 	snap, discErr := netdisc.Discover(m.netClient, m.bridgeName, m.nodeDir)
 	if discErr != nil {
-		return 0
+		if explicitTableID >= types.MinRoutingTableID && explicitTableID <= types.MaxRoutingTableID {
+			return types.FwmarkForTable(explicitTableID), dnsPrimary
+		}
+		return 0, dnsPrimary
 	}
 	plan := nft.BuildPlan(state, snap, m.bridgeName)
 	for _, ev := range plan.EvaluatedExits {
 		if ev.Desired.IPv4 == target && ev.NeedsPolicyTable && ev.Fwmark != 0 {
-			return ev.Fwmark
+			return ev.Fwmark, dnsPrimary
 		}
 	}
-	return 0
+	if explicitTableID >= types.MinRoutingTableID && explicitTableID <= types.MaxRoutingTableID {
+		return types.FwmarkForTable(explicitTableID), dnsPrimary
+	}
+	return 0, dnsPrimary
 }
 
 func (m *Manager) applyLocked(state types.DesiredState, persist bool, flushPeers []string) (types.ApplyStateResponse, error) {
@@ -331,8 +378,13 @@ func (m *Manager) applyLocked(state types.DesiredState, persist bool, flushPeers
 		if err := m.nftApplier.Apply(plan.Ruleset); err != nil {
 			return types.ApplyStateResponse{}, err
 		}
-		if len(flushPeers) > 0 {
-			_ = m.routeMgr.FlushPeers(flushPeers)
+		effectiveFlush := flushPeers
+		if len(effectiveFlush) == 0 && !snap.NftTablePresent && len(plan.ActiveExits) > 0 {
+			// Nftables transitioned absent -> present (e.g., host boot): clear any pre-boot un-SNAT'd conntrack.
+			effectiveFlush = []string{types.TunnelCIDR}
+		}
+		if len(effectiveFlush) > 0 {
+			_ = m.routeMgr.FlushPeers(effectiveFlush)
 		}
 	}
 
@@ -393,6 +445,9 @@ func (m *Manager) buildReportLocked(state types.DesiredState) (types.HostNetwork
 		case !snap.NftTablePresent:
 			egressState = types.StateDegraded
 			detail = "nftables table ip amnezia_egress not loaded"
+		case len(state.Exits) == 0:
+			egressState = types.StateDegraded
+			detail = "routed mode active with no configured exits in daemon state"
 		case plan.Degraded:
 			egressState = types.StateDegraded
 			detail = strings.Join(plan.Warnings, "; ")

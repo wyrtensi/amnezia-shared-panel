@@ -535,6 +535,15 @@ export const resolveKeyEgressInfo = (input: {
     };
   }
   const mode = input.nodeEgressMode ?? "masquerade";
+  if (mode !== "routed") {
+    return {
+      effectiveExitIp: input.nodePublicIp ?? null,
+      exitLabel: null,
+      dnsPrimary: "1.1.1.1",
+      dnsSecondary: "1.0.0.1",
+      mode: "masquerade",
+    };
+  }
   const matched = input.endpointEgress ?? input.defaultEgress;
   return {
     effectiveExitIp: resolveEndpointEffectiveEgressIp({
@@ -1640,7 +1649,18 @@ export class PostgresControlRepository implements ControlRepository {
           nodeServiceChecks,
           eq(nodeServiceChecks.id, nodeEgressServiceCheckResults.checkId),
         )
-        .where(eq(nodeServiceChecks.enabled, true))
+        .innerJoin(
+          nodeEgressIps,
+          eq(nodeEgressIps.id, nodeEgressServiceCheckResults.egressIpId),
+        )
+        .innerJoin(nodes, eq(nodes.id, nodeEgressIps.nodeId))
+        .where(
+          and(
+            eq(nodeServiceChecks.enabled, true),
+            eq(nodeEgressIps.enabled, true),
+            eq(nodes.egressMode, "routed"),
+          ),
+        )
         .orderBy(nodeServiceChecks.name),
     ]);
     const policy = resolvePortalPolicy(
@@ -1827,7 +1847,7 @@ export class PostgresControlRepository implements ControlRepository {
             const effectiveEgressIpId =
               egressMode === "routed" ? (egressIpId ?? egressDefaultIpId ?? null) : null;
             const endpointChecks = policy.showNodeStatus
-              ? effectiveEgressIpId !== null && checksByEgressIp.has(effectiveEgressIpId)
+              ? effectiveEgressIpId !== null
                 ? pickChecks(checksByEgressIp.get(effectiveEgressIpId) ?? [])
                 : nodeChecks
               : undefined;
@@ -2198,12 +2218,15 @@ export class PostgresControlRepository implements ControlRepository {
       }
       if (request.egressIpId) {
         const [egressIp] = await tx
-          .select({ id: nodeEgressIps.id })
+          .select({ id: nodeEgressIps.id, enabled: nodeEgressIps.enabled })
           .from(nodeEgressIps)
           .where(and(eq(nodeEgressIps.id, request.egressIpId), eq(nodeEgressIps.nodeId, nodeId)))
           .limit(1);
         if (!egressIp) {
           throw new ApiError(404, "Exit IP not found on node", "NODE_EGRESS_IP_NOT_FOUND");
+        }
+        if (!egressIp.enabled) {
+          throw new ApiError(409, "Exit IP is disabled", "EGRESS_IP_DISABLED");
         }
       }
       if (node.publicIp && isIpv4Literal(node.publicIp)) {
@@ -2269,9 +2292,7 @@ export class PostgresControlRepository implements ControlRepository {
         .where(eq(nodeVpnEndpoints.id, row.id))
         .limit(1);
       if (refreshed) row = refreshed;
-      if (targetEgressId !== null) {
-        await this.enqueueNodeSyncEgress(tx, nodeId);
-      }
+      await this.enqueueNodeSyncEgress(tx, nodeId);
     } else if (request.action === "remove") {
       const match = and(eq(nodeVpnEndpoints.nodeId, nodeId), eq(nodeVpnEndpoints.id, request.id));
       const [current] = await tx.select().from(nodeVpnEndpoints).where(match);
@@ -2307,10 +2328,14 @@ export class PostgresControlRepository implements ControlRepository {
         .returning({ id: vpnKeys.id });
       await this.scrubRemovedIdsFromPolicies(tx, new Set([current.id]));
       await tx.delete(nodeVpnEndpoints).where(eq(nodeVpnEndpoints.id, current.id));
-      await this.recomputeEntryGroupNames(tx, nodeId, current.address);
-      if (current.egressIpId !== null || reassigned.length > 0) {
-        await this.enqueueNodeSyncEgress(tx, nodeId);
+      if (current.ordinal === 1 && fallback.ordinal !== 1) {
+        await tx
+          .update(nodeVpnEndpoints)
+          .set({ ordinal: 1 })
+          .where(eq(nodeVpnEndpoints.id, fallback.id));
       }
+      await this.recomputeEntryGroupNames(tx, nodeId, current.address);
+      await this.enqueueNodeSyncEgress(tx, nodeId);
       await tx.insert(auditEvents).values({
         actorUserId: actor.id,
         actorType: "user",
@@ -2366,12 +2391,15 @@ export class PostgresControlRepository implements ControlRepository {
       if (request.egressIpId !== undefined && (request.egressIpId ?? null) !== (current.egressIpId ?? null)) {
         if (request.egressIpId) {
           const [egressIp] = await tx
-            .select({ id: nodeEgressIps.id })
+            .select({ id: nodeEgressIps.id, enabled: nodeEgressIps.enabled })
             .from(nodeEgressIps)
             .where(and(eq(nodeEgressIps.id, request.egressIpId), eq(nodeEgressIps.nodeId, nodeId)))
             .limit(1);
           if (!egressIp) {
             throw new ApiError(404, "Exit IP not found on node", "NODE_EGRESS_IP_NOT_FOUND");
+          }
+          if (!egressIp.enabled) {
+            throw new ApiError(409, "Exit IP is disabled", "EGRESS_IP_DISABLED");
           }
         }
         const targetEgress = request.egressIpId ?? null;
@@ -2392,7 +2420,7 @@ export class PostgresControlRepository implements ControlRepository {
           nextCustomName = request.name;
         }
       }
-      if ((request.renameEntryGroup || request.entryName !== undefined) && nextEntryName !== current.entryName) {
+      if (request.renameEntryGroup && nextEntryName !== current.entryName) {
         await tx
           .update(nodeVpnEndpoints)
           .set({ entryName: nextEntryName })
@@ -2466,7 +2494,7 @@ export class PostgresControlRepository implements ControlRepository {
           detail: generatorChanged || mtuChanged ? GENERATOR_CHANGED_DETAIL : undefined,
         });
       }
-      if (changeEgressIp) {
+      if (changeEgressIp || changeEnabled) {
         await this.enqueueNodeSyncEgress(tx, nodeId);
       }
       // A disabled address is not measured, so only enabling or disabling it
@@ -2522,6 +2550,15 @@ export class PostgresControlRepository implements ControlRepository {
     nodeId: string,
     request: Omit<UpdateNodeRequest, "vpnBridgeRouteId" | "expectedVpnEndpointRevision">,
   ) => {
+    let previousDefaultIpId: string | null = null;
+    if (request.egressDefaultIpId !== undefined) {
+      const [existingNode] = await tx
+        .select({ egressDefaultIpId: nodes.egressDefaultIpId })
+        .from(nodes)
+        .where(eq(nodes.id, nodeId))
+        .limit(1);
+      previousDefaultIpId = existingNode?.egressDefaultIpId ?? null;
+    }
     const changes: Partial<typeof nodes.$inferInsert> = {
       updatedAt: new Date(),
     };
@@ -2564,12 +2601,15 @@ export class PostgresControlRepository implements ControlRepository {
     if (request.egressDefaultIpId !== undefined) {
       if (request.egressDefaultIpId !== null) {
         const [egressIp] = await tx
-          .select({ id: nodeEgressIps.id })
+          .select({ id: nodeEgressIps.id, enabled: nodeEgressIps.enabled })
           .from(nodeEgressIps)
           .where(and(eq(nodeEgressIps.id, request.egressDefaultIpId), eq(nodeEgressIps.nodeId, nodeId)))
           .limit(1);
         if (!egressIp) {
           throw new ApiError(404, "Exit IP not found on node", "NODE_EGRESS_IP_NOT_FOUND");
+        }
+        if (!egressIp.enabled) {
+          throw new ApiError(409, "Exit IP is disabled", "EGRESS_IP_DISABLED");
         }
       }
       changes.egressDefaultIpId = request.egressDefaultIpId;
@@ -2641,6 +2681,27 @@ export class PostgresControlRepository implements ControlRepository {
       request.egressDefaultIpId !== undefined
     ) {
       await this.enqueueNodeSyncEgress(tx, nodeId);
+    }
+    if (
+      request.egressDefaultIpId !== undefined &&
+      request.egressDefaultIpId !== previousDefaultIpId
+    ) {
+      await tx
+        .update(nodeVpnEndpoints)
+        .set({
+          probeObservedEgressIp: null,
+          probeEgressMatch: null,
+          probeStatus: null,
+          probeLevels: null,
+          probeCheckedAt: null,
+          probeConsecutiveFailures: 0,
+          probeFailingSince: null,
+          probeDetail: null,
+          probeAlertedAt: null,
+          probeAlertKind: null,
+          revision: sql`${nodeVpnEndpoints.revision} + 1`,
+        })
+        .where(and(eq(nodeVpnEndpoints.nodeId, nodeId), isNull(nodeVpnEndpoints.egressIpId)));
     }
     if (request.reachabilityEnabled === false) {
       // Checks off for the whole node: its addresses' incidents close
@@ -2880,6 +2941,8 @@ export class PostgresControlRepository implements ControlRepository {
         }
       }
 
+      // Delete endpoints first so node_egress_ips ON DELETE SET NULL cannot collide on sibling uniqueness.
+      await tx.delete(nodeVpnEndpoints).where(eq(nodeVpnEndpoints.nodeId, nodeId));
       await tx.delete(nodes).where(eq(nodes.id, nodeId));
       await tx.insert(auditEvents).values({
         actorUserId: actor.id,
@@ -3729,8 +3792,7 @@ export class PostgresControlRepository implements ControlRepository {
         prefix: row.nodeIpv6RejectStubPrefix,
       },
       egressDns:
-        row.key.protocol === "awg3" &&
-        (row.nodeEgressMode === "routed" || row.endpointEgressDns1 !== null)
+        row.key.protocol === "awg3" && row.nodeEgressMode === "routed"
           ? row.endpointEgressDns1 !== null
             ? { dns1: row.endpointEgressDns1, dns2: row.endpointEgressDns2 ?? null }
             : row.defaultEgressDns1 !== null
@@ -4021,6 +4083,7 @@ export class PostgresControlRepository implements ControlRepository {
       .update(vpnKeys)
       .set({
         state: "provisioning",
+        tunnelIpv4: null,
         routeRuleVersionId: sql`coalesce((
           select ${routeRuleVersions.id} from ${routeRuleVersions}
           where ${routeRuleVersions.profile} = ${vpnKeys.routeProfile}
@@ -5275,6 +5338,7 @@ export class PostgresControlRepository implements ControlRepository {
             .from(nodeEgressServiceCheckResults)
             .innerJoin(nodeEgressIps, eq(nodeEgressIps.id, nodeEgressServiceCheckResults.egressIpId))
             .innerJoin(nodes, eq(nodes.id, nodeEgressIps.nodeId))
+            .where(and(eq(nodeEgressIps.enabled, true), eq(nodes.egressMode, "routed")))
             .orderBy(nodes.name, nodeEgressIps.ipv4),
         ]);
         return definitions.map((check) => ({
@@ -5423,13 +5487,22 @@ export class PostgresControlRepository implements ControlRepository {
       : await this.options.db
           .delete(nodeServiceCheckResults)
           .returning({ nodeId: nodeServiceCheckResults.nodeId });
+    const deletedEgress = checkId
+      ? await this.options.db
+          .delete(nodeEgressServiceCheckResults)
+          .where(eq(nodeEgressServiceCheckResults.checkId, checkId))
+          .returning({ egressIpId: nodeEgressServiceCheckResults.egressIpId })
+      : await this.options.db
+          .delete(nodeEgressServiceCheckResults)
+          .returning({ egressIpId: nodeEgressServiceCheckResults.egressIpId });
+    const cleared = deleted.length + deletedEgress.length;
     await this.writeAudit(
       actor,
       "service_check.reset",
       checkId ?? "all",
-      { cleared: deleted.length },
+      { cleared },
     );
-    return { cleared: deleted.length };
+    return { cleared };
   };
 
   // --- External reachability probe -------------------------------------------
@@ -7845,12 +7918,73 @@ export class PostgresControlRepository implements ControlRepository {
   ): Promise<NodeEgressIp> => {
     try {
       return await this.options.db.transaction(async (tx) => {
+        const [node] = await tx
+          .select({
+            id: nodes.id,
+            egressMode: nodes.egressMode,
+            egressModeState: nodes.egressModeState,
+            egressDefaultIpId: nodes.egressDefaultIpId,
+          })
+          .from(nodes)
+          .where(eq(nodes.id, nodeId))
+          .for("no key update");
+        if (!node) throw new ApiError(404, "Node not found", "NODE_NOT_FOUND");
         const [current] = await tx
           .select()
           .from(nodeEgressIps)
           .where(and(eq(nodeEgressIps.nodeId, nodeId), eq(nodeEgressIps.id, ipId)))
           .for("update");
         if (!current) throw new ApiError(404, "Exit IP not found on node", "NODE_EGRESS_IP_NOT_FOUND");
+        if (request.enabled === false && current.enabled) {
+          if (node.egressModeState === "switching") {
+            throw new ApiError(409, "Egress mode switch is already in progress", "EGRESS_MODE_SWITCHING");
+          }
+          const [inUse] = await tx
+            .select({ id: nodeVpnEndpoints.id })
+            .from(nodeVpnEndpoints)
+            .where(
+              and(
+                eq(nodeVpnEndpoints.nodeId, nodeId),
+                eq(nodeVpnEndpoints.egressIpId, ipId),
+                eq(nodeVpnEndpoints.enabled, true),
+              ),
+            )
+            .limit(1);
+          if (inUse) {
+            throw new ApiError(
+              409,
+              "Exit IP is assigned to one or more enabled server variants; reassign or disable them first",
+              "EGRESS_IP_IN_USE",
+            );
+          }
+          if (node.egressMode === "routed" && node.egressDefaultIpId === ipId) {
+            throw new ApiError(
+              409,
+              "Exit IP is selected as this routed node's default exit; choose another default exit first",
+              "EGRESS_IP_IN_USE",
+            );
+          }
+          if (node.egressMode === "routed") {
+            const otherEnabled = await tx
+              .select({ id: nodeEgressIps.id })
+              .from(nodeEgressIps)
+              .where(
+                and(
+                  eq(nodeEgressIps.nodeId, nodeId),
+                  ne(nodeEgressIps.id, ipId),
+                  eq(nodeEgressIps.enabled, true),
+                ),
+              )
+              .limit(1);
+            if (otherEnabled.length === 0) {
+              throw new ApiError(
+                409,
+                "At least one enabled Exit IP must remain on a routed node",
+                "LAST_ENABLED_EXIT_REQUIRED",
+              );
+            }
+          }
+        }
         const changes: Partial<typeof nodeEgressIps.$inferInsert> = {
           updatedAt: new Date(),
         };
@@ -7870,6 +8004,11 @@ export class PostgresControlRepository implements ControlRepository {
           .where(and(eq(nodeEgressIps.nodeId, nodeId), eq(nodeEgressIps.id, ipId)))
           .returning();
         if (!updated) throw new Error("Exit IP update returned no row");
+        if (request.enabled === false && current.enabled) {
+          await tx
+            .delete(nodeEgressServiceCheckResults)
+            .where(eq(nodeEgressServiceCheckResults.egressIpId, ipId));
+        }
         const endpoints = await tx
           .select({ address: nodeVpnEndpoints.address, egressIpId: nodeVpnEndpoints.egressIpId })
           .from(nodeVpnEndpoints)
@@ -7908,11 +8047,18 @@ export class PostgresControlRepository implements ControlRepository {
   ): Promise<{ id: string; deleted: boolean; affectedEndpoints: number }> =>
     this.options.db.transaction(async (tx) => {
       const [node] = await tx
-        .select({ id: nodes.id })
+        .select({
+          id: nodes.id,
+          egressMode: nodes.egressMode,
+          egressModeState: nodes.egressModeState,
+        })
         .from(nodes)
         .where(eq(nodes.id, nodeId))
         .for("no key update");
       if (!node) throw new ApiError(404, "Node not found", "NODE_NOT_FOUND");
+      if (node.egressModeState === "switching") {
+        throw new ApiError(409, "Egress mode switch is already in progress", "EGRESS_MODE_SWITCHING");
+      }
       const [current] = await tx
         .select({ id: nodeEgressIps.id, ipv4: nodeEgressIps.ipv4 })
         .from(nodeEgressIps)
@@ -7930,6 +8076,26 @@ export class PostgresControlRepository implements ControlRepository {
           "Exit IP is assigned to one or more server variants; reassign or remove them first",
           "EGRESS_IP_IN_USE",
         );
+      }
+      if (node.egressMode === "routed") {
+        const otherEnabled = await tx
+          .select({ id: nodeEgressIps.id })
+          .from(nodeEgressIps)
+          .where(
+            and(
+              eq(nodeEgressIps.nodeId, nodeId),
+              ne(nodeEgressIps.id, ipId),
+              eq(nodeEgressIps.enabled, true),
+            ),
+          )
+          .limit(1);
+        if (otherEnabled.length === 0) {
+          throw new ApiError(
+            409,
+            "At least one enabled Exit IP must remain on a routed node",
+            "LAST_ENABLED_EXIT_REQUIRED",
+          );
+        }
       }
       await tx
         .update(nodes)
@@ -7966,6 +8132,11 @@ export class PostgresControlRepository implements ControlRepository {
   ): Promise<{ ip: NodeEgressIp; replacedIpv4: string; affectedEndpoints: number }> => {
     try {
       return await this.options.db.transaction(async (tx) => {
+        const [node] = await tx
+          .select({ egressDefaultIpId: nodes.egressDefaultIpId })
+          .from(nodes)
+          .where(eq(nodes.id, nodeId))
+          .limit(1);
         const [current] = await tx
           .select()
           .from(nodeEgressIps)
@@ -8013,7 +8184,17 @@ export class PostgresControlRepository implements ControlRepository {
             probeAlertKind: null,
             revision: sql`${nodeVpnEndpoints.revision} + 1`,
           })
-          .where(and(eq(nodeVpnEndpoints.nodeId, nodeId), eq(nodeVpnEndpoints.egressIpId, ipId)))
+          .where(
+            node?.egressDefaultIpId === ipId
+              ? and(
+                  eq(nodeVpnEndpoints.nodeId, nodeId),
+                  or(
+                    eq(nodeVpnEndpoints.egressIpId, ipId),
+                    isNull(nodeVpnEndpoints.egressIpId),
+                  ),
+                )
+              : and(eq(nodeVpnEndpoints.nodeId, nodeId), eq(nodeVpnEndpoints.egressIpId, ipId)),
+          )
           .returning({ id: nodeVpnEndpoints.id });
         const allEndpoints = await tx
           .select({ address: nodeVpnEndpoints.address, egressIpId: nodeVpnEndpoints.egressIpId })
@@ -8118,10 +8299,10 @@ export class PostgresControlRepository implements ControlRepository {
       if (!deriveSupportedProtocols(node.protocol, node.capabilities).includes("awg3")) {
         throw new ApiError(409, "Multi-exit routing requires AWG 3.1 on this node", "NODE_ENDPOINT_NOT_AWG3");
       }
-      if (node.egressDaemonState === "unavailable" && node.hostNetworkReport === null) {
+      if (node.egressDaemonState === "unavailable") {
         throw new ApiError(
           409,
-          "Egress daemon telemetry has not reported from this node yet",
+          "Egress daemon is currently unavailable on this node",
           "EGRESS_DAEMON_UNAVAILABLE",
         );
       }

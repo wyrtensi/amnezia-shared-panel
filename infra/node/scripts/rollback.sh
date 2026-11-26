@@ -191,6 +191,10 @@ fi
 if [ -n "$restored_mode" ]; then
   set_env_value AWG3_EGRESS_MODE "$restored_mode"
   write_egress_mode_file "$restored_mode"
+elif [ ! -e "$restored_egress_state" ] && [ "$has_awg3" -eq 1 ]; then
+  # Legacy pre-egress backup: reset to masquerade and drop stale host egress state.
+  set_env_value AWG3_EGRESS_MODE "masquerade"
+  rm -f "$EGRESS_MODE_FILE" "$EGRESS_STATE_FILE"
 elif [ -f "$EGRESS_MODE_FILE" ] && [ ! -L "$EGRESS_MODE_FILE" ]; then
   file_mode="$(tr -d '[:space:]' <"$EGRESS_MODE_FILE" 2>/dev/null || true)"
   case "$file_mode" in
@@ -238,7 +242,13 @@ case "$effective_mode" in
 esac
 
 rollback_healthy=0
-if compose up --detach --no-build && \
+pre_reconcile_ok=1
+if [ "$effective_mode" = "routed" ] && command -v amnezia-egressd >/dev/null 2>&1; then
+  # Pre-load host nftables before awg3 comes up fail-closed in routed mode.
+  amnezia-egressd reconcile --socket "$EGRESS_SOCKET" --node-dir "$NODE_DIR" --state "$EGRESS_STATE_FILE" || pre_reconcile_ok=0
+fi
+if [ "$pre_reconcile_ok" -eq 1 ] && \
+   compose up --detach --no-build && \
    { ! awg2_enabled || [ "$has_awg2" -eq 0 ] || wait_healthy amnezia-awg2; } && \
    { [ "$has_awg3" -eq 0 ] || wait_healthy amnezia-awg3; } && \
    sync_host_egress_after_restore "$effective_mode" && \

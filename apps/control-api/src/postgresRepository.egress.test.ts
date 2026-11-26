@@ -94,4 +94,28 @@ describe("resolveKeyEgressInfo", () => {
       mode: "routed",
     });
   });
+
+  it("returns neutral DNS and masquerade metadata on masquerade nodes even with staged exit", () => {
+    expect(
+      resolveKeyEgressInfo({
+        protocol: "awg3",
+        nodePublicIp: "198.51.100.10",
+        nodeEgressMode: "masquerade",
+        endpointAddress: "198.51.100.20",
+        endpointEgress: {
+          ipv4: "203.0.113.5",
+          label: "Staged Clean",
+          dnsPrimary: "9.9.9.9",
+          dnsSecondary: "149.112.112.112",
+        },
+        defaultEgress: null,
+      }),
+    ).toEqual({
+      effectiveExitIp: "198.51.100.10",
+      exitLabel: null,
+      dnsPrimary: "1.1.1.1",
+      dnsSecondary: "1.0.0.1",
+      mode: "masquerade",
+    });
+  });
 });

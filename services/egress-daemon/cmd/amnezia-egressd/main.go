@@ -82,8 +82,36 @@ func newManager(f daemonFlags) *server.Manager {
 	})
 }
 
+func postUnixSocket(socketPath, path string) bool {
+	if socketPath == "" {
+		return false
+	}
+	if _, err := os.Stat(socketPath); err != nil {
+		return false
+	}
+	client := &http.Client{
+		Timeout: 10 * time.Second,
+		Transport: &http.Transport{
+			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+				return (&net.Dialer{}).DialContext(ctx, "unix", socketPath)
+			},
+		},
+	}
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, "http://unix"+path, nil)
+	resp, err := client.Do(req)
+	if err != nil {
+		return false
+	}
+	_ = resp.Body.Close()
+	return resp.StatusCode == http.StatusOK
+}
+
 func runTeardown() {
 	f := parseFlags()
+	// Prefer talking to the running daemon over its Unix socket so teardown serializes under stateMu.
+	if postUnixSocket(f.socketPath, "/v1/teardown") {
+		return
+	}
 	mgr := newManager(f)
 	if err := mgr.Teardown(); err != nil {
 		log.Fatalf("teardown error: %v", err)
@@ -93,24 +121,8 @@ func runTeardown() {
 func runReconcile() {
 	f := parseFlags()
 	// Prefer talking to the running daemon over its Unix socket so state changes serialize properly.
-	if f.socketPath != "" {
-		if _, err := os.Stat(f.socketPath); err == nil {
-			client := &http.Client{
-				Timeout: 10 * time.Second,
-				Transport: &http.Transport{
-					DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-						return (&net.Dialer{}).DialContext(ctx, "unix", f.socketPath)
-					},
-				},
-			}
-			req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, "http://unix/v1/reconcile", nil)
-			if resp, err := client.Do(req); err == nil {
-				_ = resp.Body.Close()
-				if resp.StatusCode == http.StatusOK {
-					return
-				}
-			}
-		}
+	if postUnixSocket(f.socketPath, "/v1/reconcile") {
+		return
 	}
 	mgr := newManager(f)
 	if _, err := mgr.Reconcile(); err != nil {

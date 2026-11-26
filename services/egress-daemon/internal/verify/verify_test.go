@@ -10,6 +10,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 
 	"amnezia-egressd/internal/types"
 )
@@ -205,5 +206,31 @@ func TestFwmarkPlumbingAppliedToHTTPAndDNSDials(t *testing.T) {
 		if m != 0x0000ae01 {
 			t.Fatalf("expected fwmark 0x0000ae01, got 0x%x", m)
 		}
+	}
+}
+
+func TestVerifyExitRunsHTTPAndDNSConcurrently(t *testing.T) {
+	dnsAddr, stopDNS := startMockUDPAndTCPDNS(t)
+	defer stopDNS()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		time.Sleep(150 * time.Millisecond)
+		_, _ = w.Write([]byte("127.0.0.1\n"))
+	}))
+	defer srv.Close()
+
+	start := time.Now()
+	res := verifyExit(context.Background(), types.VerifyExitRequest{
+		EgressIPv4: "127.0.0.1",
+		ProbeURL:   srv.URL,
+		DNSServer:  dnsAddr,
+		TimeoutMs:  350,
+	}, false)
+	elapsed := time.Since(start)
+	if !res.OK {
+		t.Fatalf("expected concurrent verify OK, got %+v", res)
+	}
+	if elapsed > 340*time.Millisecond {
+		t.Fatalf("expected concurrent HTTP+DNS under timeout (350ms), took %v", elapsed)
 	}
 }

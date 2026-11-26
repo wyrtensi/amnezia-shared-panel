@@ -1,6 +1,7 @@
 [Unit]
 Description=Amnezia host egress routing and fail-closed nftables daemon
-After=network-online.target docker.service
+After=network-online.target
+Before=docker.service
 Wants=network-online.target
 
 [Service]

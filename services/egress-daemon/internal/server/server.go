@@ -59,6 +59,14 @@ func Handler(m *Manager) http.Handler {
 		writeJSON(w, http.StatusOK, res)
 	})
 
+	mux.HandleFunc("POST /v1/teardown", func(w http.ResponseWriter, _ *http.Request) {
+		if err := m.Teardown(); err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+	})
+
 	mux.HandleFunc("POST /v1/peers/upsert", func(w http.ResponseWriter, r *http.Request) {
 		var body types.UpsertPeerRequest
 		if err := decodeJSON(w, r, &body); err != nil {

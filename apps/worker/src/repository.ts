@@ -207,6 +207,10 @@ export interface WorkerRepository {
   loadNodeEgressSyncContext?: (
     nodeId: string,
   ) => Promise<NodeEgressSyncContext | null>;
+  backfillKeyTunnelIpv4s?: (
+    backfills: Array<{ keyId: string; tunnelIpv4: string }>,
+    observedAt: Date,
+  ) => Promise<void>;
   mirrorNodeEgressReport?: (
     nodeId: string,
     report: HostNetworkReport,

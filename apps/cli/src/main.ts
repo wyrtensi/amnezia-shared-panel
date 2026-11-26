@@ -2287,6 +2287,18 @@ async function cmdNodeEgressAdopt(args: string[]): Promise<void> {
   console.log(`node ${node.name}: adopted host egress mode '${result.mode}'`);
 }
 
+function parseStrictIntFlag(flagName: string, raw: string): number {
+  const trimmed = raw.trim();
+  if (!/^-?\d+$/.test(trimmed)) {
+    throw new Error(`Invalid --${flagName}=${raw}: expected an integer`);
+  }
+  const value = Number(trimmed);
+  if (!Number.isSafeInteger(value)) {
+    throw new Error(`Invalid --${flagName}=${raw}: integer out of range`);
+  }
+  return value;
+}
+
 async function cmdNodeExitAdd(args: string[]): Promise<void> {
   const nodeRef = args.find((arg) => !arg.startsWith("--"));
   const ipv4 = flagOf(args, "ip");
@@ -2297,6 +2309,7 @@ async function cmdNodeExitAdd(args: string[]): Promise<void> {
   }
   const node = await findAdminNode(nodeRef);
   const tableRaw = flagOf(args, "table");
+  const dns2Raw = flagOf(args, "dns2");
   const dnatRaw = flagOf(args, "amnezia-dns-dnat");
   const enforceDnatRaw = flagOf(args, "enforce-dns-dnat");
   const allowEntryRaw = flagOf(args, "allow-as-entry");
@@ -2307,9 +2320,9 @@ async function cmdNodeExitAdd(args: string[]): Promise<void> {
       ...(flagOf(args, "label") !== undefined ? { label: flagOf(args, "label") } : {}),
       ...(flagOf(args, "interface") !== undefined ? { interfaceName: flagOf(args, "interface") } : {}),
       ...(flagOf(args, "gateway") !== undefined ? { gatewayIpv4: flagOf(args, "gateway") } : {}),
-      ...(tableRaw !== undefined ? { routingTableId: Number(tableRaw) } : {}),
+      ...(tableRaw !== undefined ? { routingTableId: parseStrictIntFlag("table", tableRaw) } : {}),
       ...(flagOf(args, "dns1") !== undefined ? { dnsPrimary: flagOf(args, "dns1") } : {}),
-      ...(flagOf(args, "dns2") !== undefined ? { dnsSecondary: flagOf(args, "dns2") } : {}),
+      ...(dns2Raw !== undefined ? { dnsSecondary: dns2Raw === "null" ? null : dns2Raw } : {}),
       ...(dnatRaw !== undefined ? { amneziaDnsDnat: parseBoolFlag("amnezia-dns-dnat", dnatRaw) } : {}),
       ...(enforceDnatRaw !== undefined ? { enforceDnsDnat: parseBoolFlag("enforce-dns-dnat", enforceDnatRaw) } : {}),
       ...(allowEntryRaw !== undefined ? { allowAsEntry: parseBoolFlag("allow-as-entry", allowEntryRaw) } : {}),
@@ -2343,7 +2356,10 @@ async function cmdNodeExitUpdate(args: string[]): Promise<void> {
   const gateway = nullableStr("gateway");
   if (gateway !== undefined) body.gatewayIpv4 = gateway;
   const tableRaw = flagOf(args, "table");
-  if (tableRaw !== undefined) body.routingTableId = tableRaw === "null" ? null : Number(tableRaw);
+  if (tableRaw !== undefined) {
+    body.routingTableId =
+      tableRaw === "null" ? null : parseStrictIntFlag("table", tableRaw);
+  }
   const dns1 = flagOf(args, "dns1");
   if (dns1 !== undefined) body.dnsPrimary = dns1;
   const dns2 = nullableStr("dns2");
@@ -2375,7 +2391,9 @@ async function cmdNodeExitRemove(args: string[]): Promise<void> {
   const node = await findAdminNode(nodeRef);
   if (!args.includes("--confirm")) {
     console.log(`exit ip ${ipId} on ${node.name} (${node.id})`);
-    console.log("Removing clears any endpoint exit assignments referencing it and re-syncs host egress rules.");
+    console.log(
+      "Removing requires no server variants to reference this Exit IP (and on routed nodes, another enabled Exit IP must remain) before re-syncing host egress rules.",
+    );
     console.log("Re-run with --confirm to delete.");
     return;
   }
@@ -2442,7 +2460,9 @@ async function cmdNodeExitVerify(args: string[]): Promise<void> {
       body: JSON.stringify({
         ...(probeUrl !== undefined ? { probeUrl } : {}),
         ...(dnsDomain !== undefined ? { dnsDomain } : {}),
-        ...(timeoutRaw !== undefined ? { timeoutMs: Number(timeoutRaw) } : {}),
+        ...(timeoutRaw !== undefined
+          ? { timeoutMs: parseStrictIntFlag("timeout-ms", timeoutRaw) }
+          : {}),
       }),
     },
   );

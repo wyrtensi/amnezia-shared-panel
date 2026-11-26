@@ -337,17 +337,22 @@ func BuildPlan(state types.DesiredState, snap netdisc.HostNetworkSnapshot, bridg
 	b.WriteString("    type nat hook prerouting priority -110; policy accept;\n")
 	fmt.Fprintf(
 		&b,
-		"    iifname %q ip saddr %s ip daddr %s meta l4proto { udp, tcp } th dport 53 dnat ip to ip saddr map @peer_dns_v4\n",
+		"    iifname %q ip saddr %s ip daddr %s meta l4proto { udp, tcp } th dport 53 dnat to ip saddr map @peer_dns_v4\n",
 		bridgeName,
 		types.TunnelCIDR,
 		types.AmneziaDNSIP,
 	)
 	fmt.Fprintf(
 		&b,
-		"    iifname %q ip saddr %s meta l4proto { udp, tcp } th dport 53 dnat ip to ip saddr map @peer_force_dns_v4\n",
+		"    iifname %q ip saddr %s meta l4proto { udp, tcp } th dport 53 dnat to ip saddr map @peer_force_dns_v4\n",
 		bridgeName,
 		types.TunnelCIDR,
 	)
+	b.WriteString("  }\n\n")
+
+	b.WriteString("  chain input {\n")
+	b.WriteString("    type filter hook input priority -10; policy accept;\n")
+	fmt.Fprintf(&b, "    iifname %q ip saddr %s counter drop\n", bridgeName, types.TunnelCIDR)
 	b.WriteString("  }\n\n")
 
 	b.WriteString("  chain forward {\n")
@@ -371,7 +376,7 @@ func BuildPlan(state types.DesiredState, snap netdisc.HostNetworkSnapshot, bridg
 	b.WriteString("    type nat hook postrouting priority 90; policy accept;\n")
 	fmt.Fprintf(
 		&b,
-		"    iifname %q ip saddr %s oifname != %q snat ip to ip saddr map @peer_exit_v4\n",
+		"    iifname %q ip saddr %s oifname != %q snat to ip saddr map @peer_exit_v4\n",
 		bridgeName,
 		types.TunnelCIDR,
 		bridgeName,
@@ -387,6 +392,11 @@ func BuildPlan(state types.DesiredState, snap netdisc.HostNetworkSnapshot, bridg
 	b.WriteString("}\n\n")
 
 	b.WriteString("table ip6 amnezia_egress_v6 {\n")
+	b.WriteString("  chain input {\n")
+	b.WriteString("    type filter hook input priority -10; policy accept;\n")
+	fmt.Fprintf(&b, "    iifname %q counter reject with icmpv6 type admin-prohibited\n", bridgeName)
+	b.WriteString("  }\n\n")
+
 	b.WriteString("  chain forward {\n")
 	b.WriteString("    type filter hook forward priority -10; policy accept;\n")
 	fmt.Fprintf(&b, "    iifname %q counter reject with icmpv6 type admin-prohibited\n", bridgeName)

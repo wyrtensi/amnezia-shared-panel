@@ -114,6 +114,10 @@ export class ClientsService {
     return mutex;
   }
 
+  runWithProtocolLock<T>(protocol: Protocol, fn: () => Promise<T>): Promise<T> {
+    return this.lockFor(protocol).runExclusive(fn);
+  }
+
   /**
    * Получить список включенных протоколов
    */
@@ -165,6 +169,10 @@ export class ClientsService {
         if (!peer) continue;
         const ipv4 = extractPeerIpv4(peer.allowedIps);
         if (ipv4) return ipv4;
+      }
+      const fallback = await this.amneziaWg3Service.getClientTunnelIpv4?.(clientId);
+      if (fallback && fallback !== "0.0.0.0") {
+        return fallback;
       }
     } catch (error) {
       appLogger.warn(`Failed to resolve AWG3 peer IPv4 for ${clientId}: ${error}`);
@@ -306,13 +314,19 @@ export class ClientsService {
     await this.ensureProtocolEnabled(protocol);
 
     const service = this.getServiceByProtocol(protocol);
+    const isDisabling =
+      status === PeerStatus.Disabled ||
+      (status !== PeerStatus.Active &&
+        expiresAt !== undefined &&
+        expiresAt !== null &&
+        expiresAt <= Math.floor(Date.now() / 1000));
     const shouldSyncEgress =
       protocol === Protocol.AMNEZIAWG3 &&
       Boolean(this.egressService?.isConfigured()) &&
-      (status === PeerStatus.Disabled || egress !== undefined);
+      (status !== undefined || expiresAt !== undefined || egress !== undefined);
 
     await this.lockFor(protocol).runExclusive(async () => {
-      const tunnelIpv4 = shouldSyncEgress
+      const beforeIpv4 = shouldSyncEgress
         ? await this.findAwg3PeerIpv4(clientId)
         : null;
 
@@ -325,19 +339,23 @@ export class ClientsService {
         throw new APIError(ClientErrorCode.NOT_FOUND);
       }
 
-      if (tunnelIpv4 && this.egressService) {
-        if (status === PeerStatus.Disabled) {
-          await this.egressService.removePeer(tunnelIpv4);
-        } else if (egress) {
-          await this.egressService.upsertPeer({
-            tunnelIpv4,
-            exitIp: egress.exitIp,
-            dnsPrimary: egress.dnsPrimary,
-            amneziaDnsDnat: egress.amneziaDnsDnat ?? false,
-            enforceDnsDnat: egress.enforceDnsDnat ?? false,
-            routingTableId: egress.routingTableId,
-            enabled: true,
-          });
+      if (shouldSyncEgress && this.egressService) {
+        const tunnelIpv4 =
+          beforeIpv4 ?? (await this.findAwg3PeerIpv4(clientId));
+        if (tunnelIpv4) {
+          if (isDisabling) {
+            await this.egressService.removePeer(tunnelIpv4);
+          } else if (egress) {
+            await this.egressService.upsertPeer({
+              tunnelIpv4,
+              exitIp: egress.exitIp,
+              dnsPrimary: egress.dnsPrimary,
+              amneziaDnsDnat: egress.amneziaDnsDnat ?? false,
+              enforceDnsDnat: egress.enforceDnsDnat ?? false,
+              routingTableId: egress.routingTableId,
+              enabled: true,
+            });
+          }
         }
       }
     });

@@ -206,4 +206,25 @@ describe("variantsUsingExit", () => {
     expect(variantsUsingExit(node, "exit-1")).toEqual([]);
     expect(variantsUsingExit(node, "exit-2").map((v) => v.id)).toEqual(["ep-2"]);
   });
+
+  it("filters private RFC1918 and CGNAT addresses from host IP discovery", () => {
+    const base = makeNode();
+    const withPrivate = makeNode({
+      hostNetworkReport: {
+        ...base.hostNetworkReport!,
+        ipv4Addresses: [
+          ...base.hostNetworkReport!.ipv4Addresses,
+          { ipv4: "10.0.0.8", cidr: "10.0.0.8/24", interfaceName: "eth1" },
+          { ipv4: "172.16.10.2", cidr: "172.16.10.2/24", interfaceName: "eth1" },
+          { ipv4: "192.168.1.20", cidr: "192.168.1.20/24", interfaceName: "eth1" },
+          { ipv4: "100.64.5.9", cidr: "100.64.5.9/24", interfaceName: "eth1" },
+        ],
+      },
+    });
+    const ips = classifyHostIpv4s(withPrivate).map((item) => item.ipv4);
+    expect(ips).not.toContain("10.0.0.8");
+    expect(ips).not.toContain("172.16.10.2");
+    expect(ips).not.toContain("192.168.1.20");
+    expect(ips).not.toContain("100.64.5.9");
+  });
 });

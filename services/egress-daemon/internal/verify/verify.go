@@ -12,6 +12,7 @@ import (
 	"net/netip"
 	"net/url"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -68,13 +69,22 @@ func verifyExit(ctx context.Context, req types.VerifyExitRequest, publicOnly boo
 		}
 	}
 
-	if strings.TrimSpace(req.ProbeURL) == "" {
-		resp.HTTPError = "probeUrl is required"
-	} else {
-		httpRes := runHttpCheck(ctx, types.HttpCheckRequest{
+	verifyCtx, verifyCancel := context.WithTimeout(ctx, timeout)
+	defer verifyCancel()
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		if strings.TrimSpace(req.ProbeURL) == "" {
+			resp.HTTPError = "probeUrl is required"
+			return
+		}
+		httpRes := runHttpCheck(verifyCtx, types.HttpCheckRequest{
 			EgressIPv4: req.EgressIPv4,
 			URL:        req.ProbeURL,
 			Method:     http.MethodGet,
+			DNSServer:  req.DNSServer,
 			TimeoutMs:  int(timeout.Milliseconds()),
 			Fwmark:     req.Fwmark,
 		}, publicOnly)
@@ -95,16 +105,17 @@ func verifyExit(ctx context.Context, req types.VerifyExitRequest, publicOnly boo
 				}
 			}
 		}
-	}
+	}()
 
 	dnsTarget := strings.TrimSpace(req.DNSServer)
 	if dnsTarget == "" {
 		dnsTarget = defaultDNSServer
 	}
-	dnsHostPort, err := normalizeHostPort(dnsTarget, "53")
-	if err != nil {
+	dnsHostPort, dnsErr := normalizeHostPort(dnsTarget, "53")
+	if dnsErr != nil {
 		resp.DNSServer = dnsTarget
-		resp.DNSError = err.Error()
+		resp.DNSError = dnsErr.Error()
+		wg.Wait()
 		return resp
 	}
 	resp.DNSServer = dnsHostPort
@@ -113,6 +124,7 @@ func verifyExit(ctx context.Context, req types.VerifyExitRequest, publicOnly boo
 		dnsHost, _, _ := net.SplitHostPort(dnsHostPort)
 		if dnsAddr, pErr := netip.ParseAddr(dnsHost); pErr != nil || !IsPublicUnicast(dnsAddr) {
 			resp.DNSError = fmt.Sprintf("refused non-public dns server %s", dnsHost)
+			wg.Wait()
 			return resp
 		}
 	}
@@ -123,14 +135,14 @@ func verifyExit(ctx context.Context, req types.VerifyExitRequest, publicOnly boo
 	}
 
 	dnsStart := time.Now()
-	dnsErr := queryDNSFromSource(ctx, localIP, dnsHostPort, domain, timeout, req.Fwmark)
-	resp.DNSLatencyMs = time.Since(dnsStart).Milliseconds()
-	if dnsErr != nil {
-		resp.DNSError = types.ClipDetail(dnsErr.Error(), 240)
+	if qErr := queryDNSFromSource(verifyCtx, localIP, dnsHostPort, domain, timeout, req.Fwmark); qErr != nil {
+		resp.DNSError = types.ClipDetail(qErr.Error(), 240)
 	} else {
 		resp.DNSOK = true
 	}
+	resp.DNSLatencyMs = time.Since(dnsStart).Milliseconds()
 
+	wg.Wait()
 	resp.OK = resp.IPMatch && resp.DNSOK
 	return resp
 }
@@ -176,6 +188,35 @@ func runHttpCheck(ctx context.Context, req types.HttpCheckRequest, publicOnly bo
 	dialer := &net.Dialer{
 		LocalAddr: &net.TCPAddr{IP: net.IP(localAddr.AsSlice())},
 		Timeout:   timeout,
+	}
+	if publicOnly {
+		dnsTarget := strings.TrimSpace(req.DNSServer)
+		if dnsTarget == "" {
+			dnsTarget = defaultDNSServer
+		}
+		if dnsHostPort, dnsErr := normalizeHostPort(dnsTarget, "53"); dnsErr == nil {
+			dnsHost, _, _ := net.SplitHostPort(dnsHostPort)
+			if dnsAddr, pErr := netip.ParseAddr(dnsHost); pErr == nil && IsPublicUnicast(dnsAddr) {
+				localIP := net.IP(localAddr.AsSlice())
+				dialer.Resolver = &net.Resolver{
+					PreferGo: true,
+					Dial: func(rctx context.Context, network, _ string) (net.Conn, error) {
+						proto := "udp4"
+						var laddr net.Addr = &net.UDPAddr{IP: localIP}
+						if strings.HasPrefix(network, "tcp") {
+							proto = "tcp4"
+							laddr = &net.TCPAddr{IP: localIP}
+						}
+						d := &net.Dialer{
+							LocalAddr: laddr,
+							Timeout:   timeout,
+							Control:   dialControlWithMark(req.Fwmark),
+						}
+						return d.DialContext(rctx, proto, dnsHostPort)
+					},
+				}
+			}
+		}
 	}
 	if publicOnly || req.Fwmark != 0 {
 		dialer.Control = func(_network, address string, c syscall.RawConn) error {

@@ -66,3 +66,28 @@ test("amnezia-egressd.service pins Go memory bounds, preserves runtime dir, and 
   assert.match(unit, /RuntimeDirectoryMode=0755/);
   assert.match(unit, /RuntimeDirectoryPreserve=yes/);
 });
+
+test("second-order lifecycle guards keep container-ipv4, deploy reconcile, conntrack flush, and backup egress-mode in sync", async () => {
+  const [deploy, sw, entry, common] = await Promise.all([
+    readNodeFile("scripts/deploy.sh"),
+    readNodeFile("scripts/switch-egress-mode.sh"),
+    readNodeFile("scripts/awg3-entrypoint.sh"),
+    readNodeFile("scripts/common.sh"),
+  ]);
+
+  assert.match(deploy, /\$STATE_DIR_AWG3\/egress-mode/);
+  assert.match(deploy, /amnezia-egressd reconcile/);
+  assert.match(deploy, /cleanup_deploy\(\)/);
+  assert.match(deploy, /release_lock/);
+
+  assert.match(sw, /command -v amnezia-egressd/);
+  assert.match(sw, /command -v nft/);
+  assert.match(sw, /\$STATE_DIR_AWG3\/container-ipv4/);
+  assert.match(sw, /nsenter -t "\$awg3_pid" -n conntrack/);
+
+  assert.match(entry, /\$STATE_DIR\/container-ipv4/);
+  assert.match(common, /\$STATE_DIR_AWG3\/egress-mode/);
+
+  const unit = await readNodeFile("systemd/amnezia-egressd.service");
+  assert.match(unit, /Before=docker\.service/);
+});

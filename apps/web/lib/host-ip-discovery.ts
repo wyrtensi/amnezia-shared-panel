@@ -15,14 +15,31 @@ type ClassifyHostInput = Pick<
   "hostNetworkReport" | "publicEndpoints" | "egressIps"
 >;
 
+const isPublicHostIpv4 = (ip: string): boolean => {
+  const parts = ip.split(".");
+  if (parts.length !== 4) return false;
+  const o = parts.map((p) => (/^\d{1,3}$/.test(p) ? Number(p) : -1));
+  if (o.some((n) => n < 0 || n > 255)) return false;
+  const [a, b] = o as [number, number, number, number];
+  if (a === 0 || a === 10 || a === 127 || a >= 224) return false;
+  if (a === 100 && b >= 64 && b <= 127) return false;
+  if (a === 169 && b === 254) return false;
+  if (a === 172 && b >= 16 && b <= 31) return false;
+  if (a === 192 && b === 168) return false;
+  if (a === 198 && (b === 18 || b === 19)) return false;
+  return true;
+};
+
 /**
- * Classify every IPv4 address reported on a node's host interfaces against
+ * Classify every public IPv4 address reported on a node's host interfaces against
  * the node's configured Entry endpoints and physical Exit IPs.
  */
 export function classifyHostIpv4s(
   node: ClassifyHostInput,
 ): ClassifiedHostIpv4[] {
-  const discovered = node.hostNetworkReport?.ipv4Addresses ?? [];
+  const discovered = (node.hostNetworkReport?.ipv4Addresses ?? []).filter(
+    (addr) => isPublicHostIpv4(addr.ipv4),
+  );
   if (discovered.length === 0) return [];
 
   const entrySet = new Set(

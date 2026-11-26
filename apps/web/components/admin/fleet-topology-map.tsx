@@ -814,8 +814,13 @@ export function buildFleetTopologyGraph({
           targetExit = nodeExitById.get(node.egressDefaultIpId);
         }
         if (!targetExit) {
+          const entryAddrIsIpv4 =
+            /^(?:\d{1,3}\.){3}\d{1,3}$/.test(ep.publicAddress);
           const fallbackIp =
             ep.effectiveEgressIp ??
+            (node.egressMode === "routed" && entryAddrIsIpv4
+              ? ep.publicAddress
+              : null) ??
             node.publicIp ??
             node.publicHost ??
             ep.publicAddress;

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
@@ -250,8 +251,8 @@ func TestSwitchModeDoesNotDeadlockOnReconcileCallbackAndUpsertsFlushConntrack(t 
 	if upsertRec.Code != http.StatusOK {
 		t.Fatalf("upsert failed: %d %s", upsertRec.Code, upsertRec.Body.String())
 	}
-	if len(routeMgr.flushed) != 1 || routeMgr.flushed[0] != "10.90.0.2" {
-		t.Fatalf("expected conntrack flush on 10.90.0.2, got %+v", routeMgr.flushed)
+	if len(routeMgr.flushed) != 2 || routeMgr.flushed[0] != "10.90.0.0/22" || routeMgr.flushed[1] != "10.90.0.2" {
+		t.Fatalf("expected conntrack flush on [10.90.0.0/22, 10.90.0.2], got %+v", routeMgr.flushed)
 	}
 }
 
@@ -344,5 +345,85 @@ func TestVerifyExitAndHttpCheckResolveExitFwmark(t *testing.T) {
 	wantMark := types.FwmarkForTable(201)
 	if gotVerifyMark != wantMark || gotHTTPMark != wantMark {
 		t.Fatalf("expected resolved fwmark 0x%x for both verify (0x%x) and httpCheck (0x%x)", wantMark, gotVerifyMark, gotHTTPMark)
+	}
+}
+
+type stubFailSwitcher struct {
+	err error
+}
+
+func (s *stubFailSwitcher) SwitchMode(_ context.Context, _ types.EgressMode) error {
+	return s.err
+}
+
+func TestSwitchModeFailureReturnsCurrentReport(t *testing.T) {
+	dir := t.TempDir()
+	_ = os.WriteFile(filepath.Join(dir, ".env"), []byte("AWG3_EGRESS_MODE=masquerade\n"), 0o600)
+
+	netStub := &stubNetClient{}
+	applier := &stubApplier{netStub: netStub}
+	routeMgr := &stubRouteMgr{}
+
+	mgr := NewManager(ManagerConfig{
+		Version:    "1.2.0-test",
+		BridgeName: "br-awg-egress",
+		NodeDir:    dir,
+		Store:      store.New(filepath.Join(dir, "state.json")),
+		NetClient:  netStub,
+		NftApplier: applier,
+		RouteMgr:   routeMgr,
+		Switcher:   &stubFailSwitcher{err: errors.New("script aborted")},
+	})
+
+	resp, err := mgr.SwitchMode(context.Background(), types.ModeRouted)
+	if err != nil {
+		t.Fatalf("unexpected SwitchMode error: %v", err)
+	}
+	if resp.OK {
+		t.Fatalf("expected OK=false when switcher fails")
+	}
+	if resp.Error == "" {
+		t.Fatalf("expected error message in SwitchModeResponse")
+	}
+	if resp.Report == nil {
+		t.Fatalf("expected post-failure Report to be attached")
+	}
+	if resp.Report.ObservedMode != types.ModeMasquerade || resp.Report.EgressState != types.StateMasqueradeReady {
+		t.Fatalf("expected masquerade fallback report, got mode=%s state=%s", resp.Report.ObservedMode, resp.Report.EgressState)
+	}
+}
+
+func TestTeardownEndpointAndEmptyRoutedExitsDegraded(t *testing.T) {
+	dir := t.TempDir()
+	_ = os.WriteFile(filepath.Join(dir, ".env"), []byte("AWG3_EGRESS_MODE=routed\n"), 0o600)
+
+	netStub := &stubNetClient{nftPresent: true}
+	applier := &stubApplier{netStub: netStub}
+	routeMgr := &stubRouteMgr{}
+
+	mgr := NewManager(ManagerConfig{
+		Version:    "1.2.0-test",
+		BridgeName: "br-awg-egress",
+		NodeDir:    dir,
+		Store:      store.New(filepath.Join(dir, "state.json")),
+		NetClient:  netStub,
+		NftApplier: applier,
+		RouteMgr:   routeMgr,
+	})
+
+	rep, err := mgr.Report()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.EgressState != types.StateDegraded {
+		t.Fatalf("expected degraded state when routed has 0 configured exits, got %s", rep.EgressState)
+	}
+
+	h := Handler(mgr)
+	req := httptest.NewRequest(http.MethodPost, "/v1/teardown", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || applier.teardown != 1 {
+		t.Fatalf("expected 200 and teardown=1, got code=%d teardown=%d body=%s", rec.Code, applier.teardown, rec.Body.String())
 	}
 }

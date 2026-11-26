@@ -311,20 +311,77 @@ for rel in "${MANAGED_SCRIPTS[@]}"; do
 done
 
 EGRESSD_DEST_BIN="${AMNEZIA_EGRESSD_DEST:-/usr/local/bin/amnezia-egressd}"
+EGRESSD_DEST_UNIT="${AMNEZIA_EGRESSD_UNIT_DEST:-/etc/systemd/system/amnezia-egressd.service}"
+EGRESSD_NODE_UNIT="${NODE_DIR}/systemd/amnezia-egressd.service"
 EGRESSD_BACKUP="${SCRATCH}/backup-egressd"
+EGRESSD_UNIT_BACKUP="${SCRATCH}/backup-egressd.service"
+EGRESSD_NODE_UNIT_BACKUP="${SCRATCH}/backup-node-egressd.service"
 NEW_EGRESSD="${SCRATCH}/new-egressd"
+NEW_EGRESSD_UNIT="${SCRATCH}/new-egressd.service"
+NEW_EGRESSD_UNIT_RENDERED="${SCRATCH}/new-egressd-rendered.service"
+OLD_EGRESSD_UNIT_RENDERED="${SCRATCH}/old-egressd-rendered.service"
 HAS_NEW_EGRESSD=0
+HAS_NEW_EGRESSD_UNIT=0
 UPDATE_EGRESSD=0
+UPDATE_EGRESSD_UNIT=0
+UPDATE_NODE_EGRESSD_UNIT=0
+render_egressd_unit() {
+  local src="$1" dest="$2"
+  local state_file="${EGRESS_STATE_FILE:-/etc/amnezia-egress/state.json}"
+  local sock_file="${NODE_EGRESS_SOCKET:-/run/amnezia-egress/egressd.sock}"
+  sed \
+    -e "s|/usr/local/bin/amnezia-egressd|${EGRESSD_DEST_BIN}|g" \
+    -e "s|/opt/amnezia-node|${NODE_DIR}|g" \
+    -e "s|/etc/amnezia-egress/state\\.json|${state_file}|g" \
+    -e "s|/run/amnezia-egress/egressd\\.sock|${sock_file}|g" \
+    "$src" >"$dest"
+}
 extract_bin_cname="amnezia-agent-update-bin-$$-${RANDOM}"
 if docker create --name "$extract_bin_cname" "$IMAGE" >/dev/null 2>&1; then
   if docker cp "${extract_bin_cname}:/opt/node-agent/bin/amnezia-egressd" "$NEW_EGRESSD" >/dev/null 2>&1; then
     HAS_NEW_EGRESSD=1
+  fi
+  if docker cp "${extract_bin_cname}:/opt/node-agent/deploy/systemd/amnezia-egressd.service" "$NEW_EGRESSD_UNIT" >/dev/null 2>&1; then
+    HAS_NEW_EGRESSD_UNIT=1
   fi
   docker rm "$extract_bin_cname" >/dev/null 2>&1 || true
 fi
 if [ "$HAS_NEW_EGRESSD" -eq 1 ] && [ -x "$EGRESSD_DEST_BIN" ] && ! cmp -s "$NEW_EGRESSD" "$EGRESSD_DEST_BIN"; then
   UPDATE_EGRESSD=1
   log "new image ships an updated amnezia-egressd host binary"
+fi
+if [ "$HAS_NEW_EGRESSD_UNIT" -eq 1 ]; then
+  render_egressd_unit "$NEW_EGRESSD_UNIT" "$NEW_EGRESSD_UNIT_RENDERED"
+  if [ -f "$EGRESSD_NODE_UNIT" ] && ! cmp -s "$NEW_EGRESSD_UNIT" "$EGRESSD_NODE_UNIT"; then
+    UPDATE_NODE_EGRESSD_UNIT=1
+  fi
+  if [ -f "$EGRESSD_DEST_UNIT" ] && ! cmp -s "$NEW_EGRESSD_UNIT_RENDERED" "$EGRESSD_DEST_UNIT"; then
+    unit_unmodified=0
+    if [ -f "$EGRESSD_NODE_UNIT" ]; then
+      render_egressd_unit "$EGRESSD_NODE_UNIT" "$OLD_EGRESSD_UNIT_RENDERED"
+      if cmp -s "$OLD_EGRESSD_UNIT_RENDERED" "$EGRESSD_DEST_UNIT"; then
+        unit_unmodified=1
+      fi
+    elif [ -n "$CURRENT_IMAGE" ]; then
+      old_unit_cname="amnezia-agent-update-oldunit-$$-${RANDOM}"
+      OLD_IMAGE_EGRESSD_UNIT="${SCRATCH}/old-image-egressd.service"
+      if docker create --name "$old_unit_cname" "$CURRENT_IMAGE" >/dev/null 2>&1; then
+        if docker cp "${old_unit_cname}:/opt/node-agent/deploy/systemd/amnezia-egressd.service" "$OLD_IMAGE_EGRESSD_UNIT" >/dev/null 2>&1; then
+          render_egressd_unit "$OLD_IMAGE_EGRESSD_UNIT" "$OLD_EGRESSD_UNIT_RENDERED"
+          if cmp -s "$OLD_EGRESSD_UNIT_RENDERED" "$EGRESSD_DEST_UNIT"; then
+            unit_unmodified=1
+          fi
+        fi
+        docker rm "$old_unit_cname" >/dev/null 2>&1 || true
+      fi
+    fi
+    if [ "$unit_unmodified" -eq 1 ]; then
+      UPDATE_EGRESSD_UNIT=1
+      log "new image ships an updated amnezia-egressd systemd unit"
+    else
+      log "WARNING: local modifications detected in $EGRESSD_DEST_UNIT; skipping systemd unit overwrite"
+    fi
+  fi
 fi
 
 # Apply IPv6 forwarding sysctls live inside the running AWG 3.1 container's
@@ -448,6 +505,18 @@ rollback() {
   if [ "$UPDATE_EGRESSD" -eq 1 ] && [ -f "$EGRESSD_BACKUP" ]; then
     cp -pf "$EGRESSD_BACKUP" "$EGRESSD_DEST_BIN"
     chmod 0755 "$EGRESSD_DEST_BIN"
+  fi
+  if [ "$UPDATE_NODE_EGRESSD_UNIT" -eq 1 ] && [ -f "$EGRESSD_NODE_UNIT_BACKUP" ]; then
+    cp -pf "$EGRESSD_NODE_UNIT_BACKUP" "$EGRESSD_NODE_UNIT"
+  fi
+  if [ "$UPDATE_EGRESSD_UNIT" -eq 1 ] && [ -f "$EGRESSD_UNIT_BACKUP" ]; then
+    cp -pf "$EGRESSD_UNIT_BACKUP" "$EGRESSD_DEST_UNIT"
+    chmod 0644 "$EGRESSD_DEST_UNIT"
+    if command -v systemctl >/dev/null 2>&1; then
+      systemctl daemon-reload >>"$LOG" 2>&1 || true
+    fi
+  fi
+  if [ "$UPDATE_EGRESSD" -eq 1 ] || [ "$UPDATE_EGRESSD_UNIT" -eq 1 ]; then
     if command -v systemctl >/dev/null 2>&1 && systemctl is-enabled amnezia-egressd.service >/dev/null 2>&1; then
       systemctl restart amnezia-egressd.service >>"$LOG" 2>&1 || true
     fi
@@ -464,6 +533,22 @@ if [ "$UPDATE_EGRESSD" -eq 1 ]; then
   cat "$NEW_EGRESSD" >"$egressd_tmp" || { rm -f "$egressd_tmp"; fail_out "could not write amnezia-egressd"; }
   chmod 0755 "$egressd_tmp"
   mv -f "$egressd_tmp" "$EGRESSD_DEST_BIN"
+fi
+if [ "$UPDATE_NODE_EGRESSD_UNIT" -eq 1 ]; then
+  cp -p "$EGRESSD_NODE_UNIT" "$EGRESSD_NODE_UNIT_BACKUP"
+  cp -f "$NEW_EGRESSD_UNIT" "$EGRESSD_NODE_UNIT"
+fi
+if [ "$UPDATE_EGRESSD_UNIT" -eq 1 ]; then
+  cp -p "$EGRESSD_DEST_UNIT" "$EGRESSD_UNIT_BACKUP"
+  unit_tmp="$(mktemp "${EGRESSD_DEST_UNIT}.XXXXXX")" || fail_out "could not stage amnezia-egressd unit"
+  cat "$NEW_EGRESSD_UNIT_RENDERED" >"$unit_tmp" || { rm -f "$unit_tmp"; fail_out "could not write amnezia-egressd unit"; }
+  chmod 0644 "$unit_tmp"
+  mv -f "$unit_tmp" "$EGRESSD_DEST_UNIT"
+  if command -v systemctl >/dev/null 2>&1; then
+    systemctl daemon-reload >>"$LOG" 2>&1 || true
+  fi
+fi
+if [ "$UPDATE_EGRESSD" -eq 1 ] || [ "$UPDATE_EGRESSD_UNIT" -eq 1 ]; then
   if command -v systemctl >/dev/null 2>&1 && systemctl is-enabled amnezia-egressd.service >/dev/null 2>&1; then
     if ! systemctl restart amnezia-egressd.service >>"$LOG" 2>&1; then
       rollback

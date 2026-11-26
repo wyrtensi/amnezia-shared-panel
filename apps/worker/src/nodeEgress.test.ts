@@ -8,8 +8,11 @@ import {
 } from "./nodeEgress.js";
 
 describe("nodeEgress pure helpers", () => {
-  it("extractPeerIpv4 returns only strict IPv4 /32 entries", () => {
+  it("extractPeerIpv4 returns only strict AWG 3.1 tunnel IPv4 /32 entries inside 10.90.0.0/22", () => {
     expect(extractPeerIpv4(["fd6b::2/128", "10.90.0.4/32"])).toBe("10.90.0.4");
+    expect(extractPeerIpv4(["0.0.0.0/32"])).toBeNull();
+    expect(extractPeerIpv4(["10.90.0.1/32"])).toBeNull();
+    expect(extractPeerIpv4(["10.89.0.2/32"])).toBeNull();
     expect(extractPeerIpv4(["0.0.0.0/0", "::/0"])).toBeNull();
     expect(extractPeerIpv4(["10.90.0.0/24"])).toBeNull();
     expect(extractPeerIpv4([])).toBeNull();
@@ -61,6 +64,7 @@ describe("nodeEgress pure helpers", () => {
         { keyId: "k3", state: "disabled", protocol: "awg3", endpointId: null, tunnelIpv4: "10.90.0.4" },
         { keyId: "k4", state: "active", protocol: "awg3", endpointId: "ep-off", tunnelIpv4: "10.90.0.5" },
         { keyId: "k-awg2", state: "active", protocol: "awg2", endpointId: null, tunnelIpv4: "10.8.1.2" },
+        { keyId: "k-poison", state: "disabled", protocol: "awg3", endpointId: "ep-1", tunnelIpv4: "0.0.0.0" },
         { keyId: "k-revoked", state: "revoked", protocol: "awg3", endpointId: "ep-1", tunnelIpv4: "10.90.0.6" },
       ],
     });

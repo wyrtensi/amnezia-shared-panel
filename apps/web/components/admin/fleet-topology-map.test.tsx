@@ -867,4 +867,60 @@ describe("FleetTopologyMap SSR markup", () => {
     expect(html).toContain(messages.ru["ov.map.empty"]);
     expect(html).not.toContain('data-testid="fleet-topology-svg"');
   });
+
+  it("uses implicit IPv4 self-exit before nodePublicIp and falls back when endpoint address is a hostname", () => {
+    const routedIpNode = baseNode({
+      id: "n-self-ip",
+      name: "de-self-ip",
+      publicIp: "192.0.2.10",
+      publicEndpoints: [
+        {
+          id: "ep-ip",
+          ordinal: 1,
+          name: "Alt IPv4 Entry",
+          publicAddress: "198.51.100.44",
+          enabled: true,
+          reachabilityEnabled: true,
+          probeStatus: "ok",
+          probeCheckedAt: null,
+          probeDetail: null,
+          egressIpId: null,
+          effectiveEgressIp: null,
+        },
+      ],
+    });
+    const routedHostNode = baseNode({
+      id: "n-self-dns",
+      name: "de-self-dns",
+      publicIp: "192.0.2.55",
+      publicEndpoints: [
+        {
+          id: "ep-dns",
+          ordinal: 1,
+          name: "Hostname Entry",
+          publicAddress: "vpn.example.com",
+          enabled: true,
+          reachabilityEnabled: true,
+          probeStatus: "ok",
+          probeCheckedAt: null,
+          probeDetail: null,
+          egressIpId: null,
+          effectiveEgressIp: null,
+        },
+      ],
+    });
+
+    const graph = buildFleetTopologyGraph({
+      nodes: [routedIpNode, routedHostNode],
+      bridges: [],
+      routeByNode: new Map(),
+      serviceChecks: [],
+      activeKeysCount: 2,
+      onlineDevicesCount: 1,
+    });
+
+    expect(graph.exits.map((exit) => exit.ipv4)).toContain("198.51.100.44");
+    expect(graph.exits.map((exit) => exit.ipv4)).toContain("192.0.2.55");
+    expect(graph.exits.map((exit) => exit.ipv4)).not.toContain("vpn.example.com");
+  });
 });

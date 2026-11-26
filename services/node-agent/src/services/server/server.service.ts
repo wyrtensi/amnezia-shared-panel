@@ -524,7 +524,13 @@ export class ServerService {
   async applyEgressState(
     state: DesiredState,
   ): Promise<ApplyEgressStateResponse> {
-    return this.requireEgressService().applyState(state);
+    const egress = this.requireEgressService();
+    if (this.clientsService?.runWithProtocolLock) {
+      return this.clientsService.runWithProtocolLock(Protocol.AMNEZIAWG3, () =>
+        egress.applyState(state),
+      );
+    }
+    return egress.applyState(state);
   }
 
   async verifyEgressExit(req: VerifyExitRequest): Promise<VerifyExitResponse> {

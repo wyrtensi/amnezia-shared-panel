@@ -240,11 +240,15 @@ export function NodeTopologyDialogBody({
 
   const [editExit, setEditExit] = React.useState<NodeEgressIp | null>(null);
   const [editExitLabel, setEditExitLabel] = React.useState("");
+  const [editExitIface, setEditExitIface] = React.useState("");
+  const [editExitGw, setEditExitGw] = React.useState("");
+  const [editExitTable, setEditExitTable] = React.useState("");
   const [editExitDns1, setEditExitDns1] = React.useState("1.1.1.1");
   const [editExitDns2, setEditExitDns2] = React.useState("");
   const [editExitAmneziaDns, setEditExitAmneziaDns] = React.useState(true);
   const [editExitEnforceDns, setEditExitEnforceDns] = React.useState(false);
   const [editExitAllowAsEntry, setEditExitAllowAsEntry] = React.useState(false);
+  const [editExitEnabled, setEditExitEnabled] = React.useState(true);
 
   const [varAddress, setVarAddress] = React.useState(
     node.publicEndpoints?.[0]?.publicAddress ?? node.publicIp ?? "",
@@ -305,7 +309,20 @@ export function NodeTopologyDialogBody({
     return () => cancelAnimationFrame(raf);
   }, [node.id, focusKind, focusId]);
 
+  React.useEffect(() => {
+    setBlockSmtp(node.egressBlockSmtp ?? true);
+    setIsolatePrivate(node.egressIsolatePrivate ?? true);
+  }, [node.egressBlockSmtp, node.egressIsolatePrivate]);
+
   const summary = summarizeNodeEgress(node);
+
+  React.useEffect(() => {
+    if (summary.modeState !== "switching") return;
+    const timer = window.setInterval(() => {
+      void reload();
+    }, 3000);
+    return () => window.clearInterval(timer);
+  }, [summary.modeState, reload]);
   const exits = node.egressIps ?? [];
   const endpoints = node.publicEndpoints ?? [];
   const entryAddresses = endpoints.map((ep) => ep.publicAddress);
@@ -438,6 +455,14 @@ export function NodeTopologyDialogBody({
 
             {node.egressModeMessage && summary.modeState === "failed" ? (
               <p className="break-words text-xs text-destructive">{node.egressModeMessage}</p>
+            ) : null}
+            {node.egressDaemonDetail &&
+            (summary.daemonState === "degraded" ||
+              summary.daemonState === "conflict" ||
+              summary.daemonState === "unavailable") ? (
+              <p className="break-words text-xs text-muted-foreground">
+                {node.egressDaemonDetail}
+              </p>
             ) : null}
 
             <div className="flex flex-wrap items-center justify-between gap-3 border-t border-border/60 pt-2 text-xs">
@@ -662,7 +687,7 @@ export function NodeTopologyDialogBody({
                         </div>
 
                         <div className="flex flex-wrap items-center gap-1">
-                          {!isDefault ? (
+                          {!isDefault && exit.enabled ? (
                             <Button
                               type="button"
                               size="sm"
@@ -707,11 +732,17 @@ export function NodeTopologyDialogBody({
                             onClick={() => {
                               setEditExit(exit);
                               setEditExitLabel(exit.label ?? "");
+                              setEditExitIface(exit.interfaceName ?? "");
+                              setEditExitGw(exit.gatewayIpv4 ?? "");
+                              setEditExitTable(
+                                exit.routingTableId != null ? String(exit.routingTableId) : "",
+                              );
                               setEditExitDns1(exit.dnsPrimary);
                               setEditExitDns2(exit.dnsSecondary ?? "");
                               setEditExitAmneziaDns(exit.amneziaDnsDnat);
                               setEditExitEnforceDns(exit.enforceDnsDnat);
                               setEditExitAllowAsEntry(exit.allowAsEntry);
+                              setEditExitEnabled(exit.enabled);
                             }}
                           >
                             <Pencil className="size-3.5" /> {t("egress.editBtn")}
@@ -737,7 +768,12 @@ export function NodeTopologyDialogBody({
                             size="sm"
                             variant="ghost"
                             className="h-7 px-2 text-xs text-destructive hover:text-destructive"
-                            disabled={busy !== null}
+                            disabled={busy !== null || usedVariants.length > 0}
+                            title={
+                              usedVariants.length > 0
+                                ? t("egress.usedInRouteCannotDelete")
+                                : undefined
+                            }
                             onClick={() => {
                               if (!window.confirm(t("egress.deleteConfirm", { ip: exit.ipv4 }))) {
                                 return;
@@ -821,13 +857,24 @@ export function NodeTopologyDialogBody({
                 onSubmit={(event) => {
                   event.preventDefault();
                   void runAction(`edit-exit:${editExit.id}`, async () => {
+                    const trimmedTable = editExitTable.trim();
+                    const routingTableId =
+                      trimmedTable === ""
+                        ? null
+                        : Number.isInteger(Number(trimmedTable))
+                          ? Number(trimmedTable)
+                          : Number.NaN;
                     await updateNodeEgressIp(request, node.id, editExit.id, {
                       label: editExitLabel.trim() || null,
+                      interfaceName: editExitIface.trim() || null,
+                      gatewayIpv4: editExitGw.trim() || null,
+                      routingTableId,
                       dnsPrimary: editExitDns1.trim(),
                       dnsSecondary: editExitDns2.trim() || null,
                       amneziaDnsDnat: editExitAmneziaDns,
                       enforceDnsDnat: editExitEnforceDns,
                       allowAsEntry: editExitAllowAsEntry,
+                      enabled: editExitEnabled,
                     });
                     toast.success(t("adminData.actionDone"));
                     setEditExit(null);
@@ -855,8 +902,33 @@ export function NodeTopologyDialogBody({
                     placeholder={t("egress.dnsSecondary")}
                     className="h-8 text-xs"
                   />
+                  <Input
+                    value={editExitIface}
+                    onChange={(e) => setEditExitIface(e.target.value)}
+                    placeholder={t("egress.interfaceName")}
+                    className="h-8 text-xs"
+                  />
+                  <Input
+                    value={editExitGw}
+                    onChange={(e) => setEditExitGw(e.target.value)}
+                    placeholder={t("egress.gatewayIpv4")}
+                    className="h-8 text-xs"
+                  />
+                  <Input
+                    value={editExitTable}
+                    onChange={(e) => setEditExitTable(e.target.value)}
+                    placeholder="200..219"
+                    type="number"
+                    min={200}
+                    max={219}
+                    className="h-8 text-xs"
+                  />
                 </div>
                 <div className="flex flex-wrap items-center gap-3">
+                  <label className="flex items-center gap-1.5">
+                    <Switch checked={editExitEnabled} onCheckedChange={setEditExitEnabled} />
+                    <span>{t("nodes.statusEnabled")}</span>
+                  </label>
                   <label className="flex items-center gap-1.5">
                     <Switch checked={editExitAmneziaDns} onCheckedChange={setEditExitAmneziaDns} />
                     <span>{t("egress.amneziaDnsDnat")}</span>
@@ -962,6 +1034,8 @@ export function NodeTopologyDialogBody({
                     toast.success(t("adminData.actionDone"));
                     setNewExitIp("");
                     setNewExitLabel("");
+                    setNewExitIface("");
+                    setNewExitGw("");
                     await reload();
                   });
                 }}
@@ -1117,8 +1191,13 @@ export function NodeTopologyDialogBody({
                                 {t("egress.exitDefaultOption", { ip: defaultExitIpv4 })}
                               </SelectItem>
                               {exits.map((exit) => (
-                                <SelectItem key={exit.id} value={exit.id}>
+                                <SelectItem
+                                  key={exit.id}
+                                  value={exit.id}
+                                  disabled={!exit.enabled && exit.id !== (ep.egressIpId ?? "")}
+                                >
                                   {exit.label ? `${exit.label} (${exit.ipv4})` : exit.ipv4}
+                                  {!exit.enabled ? ` · ${t("egress.hostState.disabled")}` : ""}
                                 </SelectItem>
                               ))}
                             </SelectContent>
@@ -1204,8 +1283,13 @@ export function NodeTopologyDialogBody({
                                 {t("egress.exitDefaultOption", { ip: defaultExitIpv4 })}
                               </SelectItem>
                               {exits.map((exit) => (
-                                <SelectItem key={exit.id} value={exit.id}>
+                                <SelectItem
+                                  key={exit.id}
+                                  value={exit.id}
+                                  disabled={!exit.enabled && exit.id !== editVarExitId}
+                                >
                                   {exit.label ? `${exit.label} (${exit.ipv4})` : exit.ipv4}
+                                  {!exit.enabled ? ` · ${t("egress.hostState.disabled")}` : ""}
                                 </SelectItem>
                               ))}
                             </SelectContent>
@@ -1297,8 +1381,9 @@ export function NodeTopologyDialogBody({
                         {t("egress.exitDefaultOption", { ip: defaultExitIpv4 })}
                       </SelectItem>
                       {exits.map((exit) => (
-                        <SelectItem key={exit.id} value={exit.id}>
+                        <SelectItem key={exit.id} value={exit.id} disabled={!exit.enabled}>
                           {exit.label ? `${exit.label} (${exit.ipv4})` : exit.ipv4}
+                          {!exit.enabled ? ` · ${t("egress.hostState.disabled")}` : ""}
                         </SelectItem>
                       ))}
                     </SelectContent>

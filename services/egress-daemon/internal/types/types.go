@@ -205,6 +205,7 @@ type HttpCheckRequest struct {
 	URL             string            `json:"url"`
 	Method          string            `json:"method,omitempty"`
 	Headers         map[string]string `json:"headers,omitempty"`
+	DNSServer       string            `json:"dnsServer,omitempty"`
 	FollowRedirects *bool             `json:"followRedirects,omitempty"`
 	TimeoutMs       int               `json:"timeoutMs,omitempty"`
 	Fwmark          uint32            `json:"fwmark,omitempty"`

@@ -47,6 +47,8 @@ export type EgressSyncKeyInput = {
   protocol: "awg2" | "awg3";
   endpointId: string | null;
   tunnelIpv4: string | null;
+  publicKey?: string | null;
+  nodeLabel?: string;
 };
 
 export type BuildNodeEgressStateInput = {
@@ -56,15 +58,25 @@ export type BuildNodeEgressStateInput = {
   keys: readonly EgressSyncKeyInput[];
 };
 
+const isValidAwg3TunnelIpv4 = (candidate: string): boolean => {
+  if (!isIPv4(candidate)) return false;
+  const parts = candidate.split(".");
+  if (parts.length !== 4) return false;
+  const octets = parts.map((p) => Number(p));
+  if (octets.some((n) => !Number.isInteger(n) || n < 0 || n > 255)) return false;
+  // AWG 3.1 tunnel subnet is 10.90.0.0/22 with .1 reserved for server interface.
+  return octets[0] === 10 && octets[1] === 90 && octets[2]! <= 3 && candidate !== "10.90.0.1";
+};
+
 /**
  * Extract the peer's client tunnel IPv4 from its `allowedIps` entries
- * (preferring an explicit `/32` host CIDR, ignoring IPv6 and catch-all CIDRs).
+ * (preferring an explicit `/32` host CIDR inside 10.90.0.0/22, rejecting 0.0.0.0).
  */
 export const extractPeerIpv4 = (allowedIps: readonly string[]): string | null => {
   for (const cidr of allowedIps) {
     if (!cidr.endsWith("/32")) continue;
     const candidate = cidr.slice(0, -3).trim();
-    if (isIPv4(candidate)) return candidate;
+    if (isValidAwg3TunnelIpv4(candidate)) return candidate;
   }
   return null;
 };
@@ -132,7 +144,7 @@ export const buildNodeEgressDesiredState = ({
   for (const key of keys) {
     if (key.protocol !== "awg3") continue;
     if (key.state !== "active" && key.state !== "disabled") continue;
-    if (!key.tunnelIpv4 || !isIPv4(key.tunnelIpv4)) continue;
+    if (!key.tunnelIpv4 || !isValidAwg3TunnelIpv4(key.tunnelIpv4)) continue;
 
     const endpoint = key.endpointId
       ? endpointsById.get(key.endpointId)

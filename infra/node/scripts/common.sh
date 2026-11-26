@@ -213,7 +213,14 @@ create_backup() {
   egress_stage="$NODE_DIR/egress"
   rm -rf "$egress_stage"
   mkdir -m 700 "$egress_stage"
-  egress_mode="$(env_value AWG3_EGRESS_MODE)"
+  egress_mode=""
+  if [ -r "$STATE_DIR_AWG3/egress-mode" ] && [ ! -L "$STATE_DIR_AWG3/egress-mode" ]; then
+    egress_mode="$(tr -d '[:space:]' <"$STATE_DIR_AWG3/egress-mode" 2>/dev/null || true)"
+  fi
+  case "$egress_mode" in
+    masquerade|routed) ;;
+    *) egress_mode="$(env_value AWG3_EGRESS_MODE)" ;;
+  esac
   case "$egress_mode" in
     masquerade|routed) ;;
     *) egress_mode="masquerade" ;;

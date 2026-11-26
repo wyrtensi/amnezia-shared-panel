@@ -621,3 +621,12 @@ exit 0
     false,
   );
 });
+
+test("agent-update.sh syncs amnezia-egressd.service with daemon-reload before restart and rolls back cleanly", async () => {
+  const upd = await readFile(scriptPath, "utf8");
+  assert.match(upd, /\/opt\/node-agent\/deploy\/systemd\/amnezia-egressd\.service/);
+  assert.match(upd, /systemctl daemon-reload/);
+  const reloadIdx = upd.indexOf("systemctl daemon-reload", upd.indexOf("if [ \"$UPDATE_EGRESSD_UNIT\" -eq 1 ]; then"));
+  const restartIdx = upd.indexOf("systemctl restart amnezia-egressd.service", reloadIdx);
+  assert.ok(reloadIdx > 0 && restartIdx > reloadIdx, "daemon-reload must run before restarting amnezia-egressd.service");
+});

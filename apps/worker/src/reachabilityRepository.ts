@@ -992,9 +992,17 @@ export class PostgresReachabilityRepository
           const primaryEndpoint = registered.find((ep) => ep.ordinal === 1);
           const buckets = new Map<
             string,
-            { bucketId: string | null; bKey: string; expectedEgressIp: string | null; endpoints: PublicEndpoint[] }
+            {
+              bucketId: string | null;
+              bKey: string;
+              expectedEgressIp: string | null;
+              disabledExit: boolean;
+              endpoints: PublicEndpoint[];
+            }
           >();
           for (const endpoint of checked) {
+            const explicitExit = endpoint.egressIpId ? egressById.get(endpoint.egressIpId) : undefined;
+            const disabledExit = node.egressMode === "routed" && explicitExit !== undefined && !explicitExit.enabled;
             const bucketId = node.egressMode === "routed" ? (endpoint.egressIpId ?? defaultBucketId) : null;
             const expectedEgressIp = resolveEndpointExpectedEgress(node, endpoint, defaultExitIpv4);
             const bKey =
@@ -1002,31 +1010,42 @@ export class PostgresReachabilityRepository
                 ? "__default__"
                 : (bucketId ?? `implicit:${expectedEgressIp ?? endpoint.id}`);
             const bucket = buckets.get(bKey);
-            if (bucket) bucket.endpoints.push(endpoint);
-            else buckets.set(bKey, { bucketId, bKey, expectedEgressIp, endpoints: [endpoint] });
+            if (bucket) {
+              bucket.endpoints.push(endpoint);
+              if (disabledExit) bucket.disabledExit = true;
+            } else {
+              buckets.set(bKey, {
+                bucketId,
+                bKey,
+                expectedEgressIp,
+                disabledExit,
+                endpoints: [endpoint],
+              });
+            }
           }
 
-          return [...buckets.values()].flatMap(({ bucketId, bKey, expectedEgressIp, endpoints: bucketEndpoints }) => {
+          return [...buckets.values()].flatMap(({ bucketId, bKey, expectedEgressIp, disabledExit, endpoints: bucketEndpoints }) => {
             const bucketTarget: RunTarget = { ...target, expectedEgressIp };
             const bucketAddresses = bucketEndpoints.map((ep) => toTargetAddress(ep, expectedEgressIp));
+            if (disabledExit) {
+              return unavailable(bucketTarget, "assigned exit IP is disabled", bucketAddresses);
+            }
             const matchesBucketKey = (k: (typeof nodeAwg3Keys)[number]): boolean => {
-              const keyEp = k.endpointId ? endpointById.get(k.endpointId) : undefined;
+              const keyEp = k.endpointId ? endpointById.get(k.endpointId) : primaryEndpoint;
+              if (keyEp && !keyEp.enabled) return false;
               const keyExitId = keyEp?.egressIpId ?? defaultBucketId;
               if (bucketId !== null) {
-                if (k.endpointId === null) return bucketId === defaultBucketId;
                 return keyExitId === bucketId;
               }
               if (keyExitId !== null) return false;
-              const targetEp = keyEp ?? primaryEndpoint;
               const keyImplicitIp =
-                targetEp && isIPv4(targetEp.address) ? targetEp.address : node.publicIp;
-              return `implicit:${keyImplicitIp ?? targetEp?.id ?? "default"}` === bKey;
+                keyEp && isIPv4(keyEp.address) ? keyEp.address : node.publicIp;
+              return `implicit:${keyImplicitIp ?? keyEp?.id ?? "default"}` === bKey;
             };
             const bucketKey =
               node.egressMode !== "routed"
                 ? (nodeAwg3Keys.find((k) => k.endpointId === null) ?? nodeAwg3Keys[0])
-                : (nodeAwg3Keys.find((k) => k.endpointId === null && matchesBucketKey(k)) ??
-                    nodeAwg3Keys.find(matchesBucketKey));
+                : nodeAwg3Keys.find(matchesBucketKey);
 
             if (!bucketKey) return unavailable(bucketTarget, "no service key yet", bucketAddresses);
             if (bucketKey.state === "provisioning") {
@@ -1268,8 +1287,9 @@ export class PostgresReachabilityRepository
               seenBuckets.add(bKey);
               desiredBuckets.push({
                 bucketKey: bKey,
-                representativeEndpointId:
-                  exitId !== null && exitId === defaultBucketId ? null : ep.id,
+                // Always pin routed probe keys to an enabled checked endpoint so
+                // ordinal=1 exit mismatch or disabled siblings never misroute probes.
+                representativeEndpointId: ep.id,
               });
             }
             if (desiredBuckets.length === 0) {
@@ -1288,14 +1308,13 @@ export class PostgresReachabilityRepository
               if (key.endpointId === null) return "__single__";
               return firstLiveSingle?.id === key.id ? "__single__" : `extra:${key.id}`;
             }
-            const keyEp = key.endpointId ? endpointById.get(key.endpointId) : undefined;
-            const epExit = keyEp?.egressIpId ?? null;
+            const keyEp = key.endpointId ? endpointById.get(key.endpointId) : primaryEndpoint;
+            if (!keyEp || !keyEp.enabled) return "__disabled_ep__";
+            const epExit = keyEp.egressIpId ?? null;
             const resolved = epExit && validExitIds.has(epExit) ? epExit : defaultBucketId;
             if (resolved) return resolved;
-            const targetEp = keyEp ?? primaryEndpoint;
-            const expectedIp =
-              targetEp && isIPv4(targetEp.address) ? targetEp.address : node.publicIp;
-            return `implicit:${expectedIp ?? targetEp?.id ?? "default"}`;
+            const expectedIp = isIPv4(keyEp.address) ? keyEp.address : node.publicIp;
+            return `implicit:${expectedIp ?? keyEp.id}`;
           };
 
           for (const { bucketKey, representativeEndpointId } of desiredBuckets) {

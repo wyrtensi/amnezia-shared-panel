@@ -158,4 +158,48 @@ func TestReadEnvEgressModePrefersPersistedStateAndAwg3EnvOverride(t *testing.T) 
 	if snap.Awg3ContainerIPv4 != "172.30.90.5" {
 		t.Fatalf("expected AWG3_EGRESS_IPV4 override 172.30.90.5, got %q", snap.Awg3ContainerIPv4)
 	}
+	if err := os.WriteFile(filepath.Join(stateDir, "container-ipv4"), []byte("172.30.90.4\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	snap2, err := Discover(client, "br-awg-egress", dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snap2.Awg3ContainerIPv4 != "172.30.90.4" {
+		t.Fatalf("expected live state/amnezia-awg3/container-ipv4 to override .env, got %q", snap2.Awg3ContainerIPv4)
+	}
+}
+
+func TestDiscoverFiltersNonPublicHostIPsAndKeepsSecondaryNICSeparate(t *testing.T) {
+	gwMain := netip.MustParseAddr("198.51.100.1")
+	client := &fakeClient{
+		links: []LinkInfo{
+			{Index: 2, Name: "ens3", Up: true},
+			{Index: 3, Name: "ens4", Up: true},
+		},
+		addrs: []AddrInfo{
+			{LinkIndex: 2, Prefix: netip.MustParsePrefix("198.51.100.10/24")},
+			{LinkIndex: 3, Prefix: netip.MustParsePrefix("203.0.113.50/24")},
+			{LinkIndex: 3, Prefix: netip.MustParsePrefix("10.0.0.5/24")},
+			{LinkIndex: 3, Prefix: netip.MustParsePrefix("172.16.5.5/24")},
+			{LinkIndex: 3, Prefix: netip.MustParsePrefix("192.168.1.5/24")},
+			{LinkIndex: 3, Prefix: netip.MustParsePrefix("100.64.0.5/24")},
+		},
+		routes: []RouteInfo{
+			{Table: 254, LinkIndex: 2, Gw: gwMain},
+		},
+	}
+
+	snap, err := Discover(client, "br-awg-egress", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snap.IPv4s) != 2 {
+		t.Fatalf("expected only 2 public IPs after filtering RFC1918/CGNAT, got %+v", snap.IPv4s)
+	}
+	for _, item := range snap.IPv4s {
+		if item.IPv4 == "203.0.113.50" && item.ResolvedGw.IsValid() {
+			t.Fatalf("secondary NIC ens4 must NOT inherit ens3 main gateway, got %s", item.ResolvedGw)
+		}
+	}
 }

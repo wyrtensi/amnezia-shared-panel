@@ -231,6 +231,35 @@ export abstract class AmneziaWgServiceBase {
   }
 
   /**
+   * Resolve a peer's persistent tunnel IPv4 even while disabled (`0.0.0.0/32` in wg0.conf).
+   */
+  async getClientTunnelIpv4(clientId: string): Promise<string | null> {
+    const [config, clientsTable] = await Promise.all([
+      this.connection.readWgConfig().catch(() => ""),
+      this.connection.readClientsTable().catch(() => []),
+    ]);
+    const currentAllowedIps = config
+      ? this.getPeerAllowedIps(config, clientId)
+      : null;
+    if (currentAllowedIps) {
+      for (const token of currentAllowedIps.split(",")) {
+        const bare = token.trim().split("/")[0]?.trim() ?? "";
+        if (/^\d{1,3}(?:\.\d{1,3}){3}$/.test(bare) && bare !== "0.0.0.0") {
+          return bare;
+        }
+      }
+    }
+    const entry = clientsTable.find(
+      (item) => (item?.clientId || item?.publicKey) === clientId,
+    );
+    const saved = entry?.userData?.allowedIp?.split(",")[0]?.trim().split("/")[0]?.trim();
+    if (saved && /^\d{1,3}(?:\.\d{1,3}){3}$/.test(saved) && saved !== "0.0.0.0") {
+      return saved;
+    }
+    return null;
+  }
+
+  /**
    * List clients from the persisted configuration and the live dump.
    */
   async getClients(): Promise<ClientRecord[]> {
