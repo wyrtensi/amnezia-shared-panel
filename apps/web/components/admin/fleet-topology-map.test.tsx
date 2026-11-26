@@ -557,6 +557,73 @@ describe("buildFleetTopologyGraph", () => {
     expect(entryExitEdges).toHaveLength(2);
     expect(entryExitEdges.every((e) => e.to === "exit:n-1:ex-shared")).toBe(true);
   });
+
+  it("falls back to node self-exit instead of orderedNodeExits[0] when routed node and endpoint have no default/assigned exit", () => {
+    const node = baseNode({
+      id: "n-1",
+      name: "de-01",
+      publicIp: "192.0.2.10",
+      egressMode: "routed",
+      egressDaemonState: "routed_active",
+      egressDefaultIpId: null,
+      egressIps: [
+        {
+          id: "ex-other",
+          nodeId: "n-1",
+          ipv4: "198.51.100.77",
+          label: "Secondary Exit",
+          interfaceName: "eth0",
+          gatewayIpv4: "198.51.100.1",
+          routingTableId: 200,
+          dnsPrimary: "1.1.1.1",
+          dnsSecondary: null,
+          amneziaDnsDnat: true,
+          enforceDnsDnat: false,
+          allowAsEntry: false,
+          enabled: true,
+          hostState: "active",
+          hostDetail: null,
+          observedSubnetCidr: null,
+          detectedGatewayIpv4: null,
+          txBytes: "0",
+          txPackets: "0",
+          hostObservedAt: null,
+        },
+      ],
+      publicEndpoints: [
+        {
+          id: "ep-self",
+          ordinal: 1,
+          name: "Self Entry",
+          publicAddress: "192.0.2.10",
+          enabled: true,
+          reachabilityEnabled: true,
+          probeStatus: "ok",
+          probeCheckedAt: null,
+          probeDetail: null,
+          egressIpId: null,
+          effectiveEgressIp: null,
+        },
+      ],
+    });
+
+    const graph = buildFleetTopologyGraph({
+      nodes: [node],
+      bridges: [],
+      routeByNode: new Map(),
+      serviceChecks: [],
+      reachability: null,
+      activeKeysCount: 1,
+      onlineDevicesCount: 1,
+    });
+
+    const edge = graph.edges.find(
+      (e) => e.kind === "entry-exit" && e.from === "entry:n-1:ep-self",
+    );
+    expect(edge?.to).toBe("exit:n-1:ip:192.0.2.10");
+    expect(edge?.to).not.toBe("exit:n-1:ex-other");
+    expect(graph.exits.some((ex) => ex.id === "exit:n-1:ip:192.0.2.10" && ex.isSynthetic)).toBe(true);
+  });
 });
 
 describe("FleetTopologyMap SSR markup", () => {

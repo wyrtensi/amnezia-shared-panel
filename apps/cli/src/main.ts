@@ -2555,6 +2555,9 @@ async function cmdNodeIpAttach(args: string[]): Promise<void> {
     allowAsEntryRaw === undefined ? undefined : parseBoolFlag("allow-as-entry", allowAsEntryRaw);
   const label = flagOf(args, "label");
   const entryName = flagOf(args, "entry-name");
+  if (allUnassigned && entryName !== undefined) {
+    throw new Error(`--entry-name cannot be combined with --all-unassigned\n${usageLine}`);
+  }
   const customName = flagOf(args, "custom-name");
   const dns1 = flagOf(args, "dns1");
   const dns2 = flagOf(args, "dns2");

@@ -39,7 +39,7 @@ export const desiredPeerSchema = {
 
 export const desiredEntryMarkSchema = {
   type: "object",
-  required: ["entryIpv4", "routingTableId"],
+  required: ["entryIpv4"],
   additionalProperties: false,
   properties: {
     entryIpv4: { type: "string", pattern: IPV4_PATTERN },

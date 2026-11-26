@@ -845,4 +845,75 @@ describe("multi-exit telemetry and per-exit service checks", () => {
       }),
     ]);
   });
+
+  it("runs per-exit checks with bounded concurrency and stops queued exits when budget expires", async () => {
+    const check = {
+      id: "check-1",
+      name: "Flow",
+      probe: { kind: "http", url: "https://labs.google/fx/tools/flow/" },
+      assertions: [{ type: "statusIn", statuses: [200] }],
+      intervalSec: 43_200,
+      enabled: true,
+      nextDueAt: null,
+    };
+    let activeExits = 0;
+    let maxConcurrentExits = 0;
+    const resolvers: Array<() => void> = [];
+    const agent = {
+      ...stubAgent(),
+      runChecks: vi.fn(async (_checks, options?: { egressIpv4?: string }) => {
+        if (!options?.egressIpv4) {
+          return [{ id: "check-1", status: "ok" as const, httpStatus: 200, latencyMs: 10, detail: null }];
+        }
+        activeExits += 1;
+        maxConcurrentExits = Math.max(maxConcurrentExits, activeExits);
+        await new Promise<void>((resolve) => {
+          resolvers.push(resolve);
+          if (options.egressIpv4 !== "198.51.100.14") {
+            setTimeout(() => {
+              activeExits -= 1;
+              resolve();
+            }, 15);
+          }
+        });
+        return [{ id: "check-1", status: "ok" as const, httpStatus: 200, latencyMs: 15, detail: null }];
+      }),
+    };
+    const exits = Array.from({ length: 5 }, (_, i) => ({
+      id: `exit-${i}`,
+      ipv4: `198.51.100.${10 + i}`,
+    }));
+    const repository = {
+      ...stubRepository([
+        {
+          ...telemetryNode,
+          egressMode: "routed" as const,
+          activeExitIps: exits,
+        },
+      ]),
+      listServiceChecks: vi.fn(() =>
+        Promise.resolve({
+          checks: [check as never],
+          previousByNode: new Map(),
+          previousByEgressIp: new Map(),
+        }),
+      ),
+      recordServiceCheckResults: vi.fn(() => Promise.resolve()),
+      recordEgressServiceCheckResults: vi.fn(() => Promise.resolve()),
+    };
+
+    await createTelemetryPoller({
+      repository,
+      createNodeAgent: () => agent,
+      now: () => observedAt,
+      exitCheckConcurrency: 3,
+      exitChecksBudgetMs: 80,
+    })();
+
+    // Resolve any stalled exit promise cleanly after budget expiry.
+    for (const r of resolvers) r();
+    expect(maxConcurrentExits).toBeLessThanOrEqual(3);
+    expect(maxConcurrentExits).toBeGreaterThanOrEqual(2);
+    expect(repository.recordNodeFailure).not.toHaveBeenCalled();
+  });
 });

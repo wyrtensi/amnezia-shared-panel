@@ -732,15 +732,26 @@ export const createDefaultControlApiService = ({
   },
   verifyBridgeRoute: (actor, routeId, request) =>
     repository.verifyBridgeRoute(actor, routeId, request),
-  listNodeEgressIps: (actor, nodeId) => repository.listNodeEgressIps(actor, nodeId),
-  createNodeEgressIp: (actor, nodeId, request) =>
-    repository.createNodeEgressIp(actor, nodeId, request),
-  updateNodeEgressIp: (actor, nodeId, ipId, request) =>
-    repository.updateNodeEgressIp(actor, nodeId, ipId, request),
-  deleteNodeEgressIp: (actor, nodeId, ipId) =>
-    repository.deleteNodeEgressIp(actor, nodeId, ipId),
-  swapNodeEgressIp: (actor, nodeId, ipId, request) =>
-    repository.swapNodeEgressIp(actor, nodeId, ipId, request),
+  listNodeEgressIps: async (actor, nodeId) => {
+    requireAdmin(actor);
+    return repository.listNodeEgressIps(actor, nodeId);
+  },
+  createNodeEgressIp: async (actor, nodeId, request) => {
+    requireAdmin(actor);
+    return repository.createNodeEgressIp(actor, nodeId, request);
+  },
+  updateNodeEgressIp: async (actor, nodeId, ipId, request) => {
+    requireAdmin(actor);
+    return repository.updateNodeEgressIp(actor, nodeId, ipId, request);
+  },
+  deleteNodeEgressIp: async (actor, nodeId, ipId) => {
+    requireAdmin(actor);
+    return repository.deleteNodeEgressIp(actor, nodeId, ipId);
+  },
+  swapNodeEgressIp: async (actor, nodeId, ipId, request) => {
+    requireAdmin(actor);
+    return repository.swapNodeEgressIp(actor, nodeId, ipId, request);
+  },
   verifyNodeEgressIp: async (actor, nodeId, ipId, request) => {
     requireAdmin(actor);
     const target = await repository.getNodeEgressVerifyTarget(nodeId, ipId);
@@ -764,10 +775,16 @@ export const createDefaultControlApiService = ({
     });
     return result;
   },
-  setNodeEgressMode: (actor, nodeId, request) =>
-    repository.setNodeEgressMode(actor, nodeId, request),
-  adoptNodeEgressMode: (actor, nodeId) =>
-    repository.adoptNodeEgressMode(actor, nodeId),
-  reassignKeyEndpoint: (actor, keyId, request) =>
-    repository.reassignKeyEndpoint(actor, keyId, request),
+  setNodeEgressMode: async (actor, nodeId, request) => {
+    requireAdmin(actor);
+    return repository.setNodeEgressMode(actor, nodeId, request);
+  },
+  adoptNodeEgressMode: async (actor, nodeId) => {
+    requireAdmin(actor);
+    return repository.adoptNodeEgressMode(actor, nodeId);
+  },
+  reassignKeyEndpoint: async (actor, keyId, request) => {
+    requireAdmin(actor);
+    return repository.reassignKeyEndpoint(actor, keyId, request);
+  },
 });

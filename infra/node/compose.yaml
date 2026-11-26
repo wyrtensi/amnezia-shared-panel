@@ -83,7 +83,8 @@ services:
       - ./scripts/awg3-entrypoint.sh:/usr/local/libexec/awg3-entrypoint.sh:ro
       - ./scripts/awg3-geometry.sh:/usr/local/libexec/awg3-geometry.sh:ro
     networks:
-      - awg_egress
+      awg_egress:
+        ipv4_address: ${AWG3_EGRESS_IPV4:-172.30.90.2}
     environment:
       # Controls whether awg3 applies container-level MASQUERADE (legacy) or lets
       # host amnezia-egressd handle per-peer SNAT/policy routing on br-awg-egress.
@@ -269,6 +270,10 @@ networks:
     driver: bridge
     driver_opts:
       com.docker.network.bridge.name: br-awg-egress
+    ipam:
+      config:
+        - subnet: ${AWG_EGRESS_SUBNET:-172.30.90.0/29}
+          gateway: ${AWG_EGRESS_GATEWAY:-172.30.90.1}
 
 secrets:
   node_agent_api_key:

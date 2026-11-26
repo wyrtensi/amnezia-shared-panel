@@ -10,11 +10,22 @@ import (
 	"amnezia-egressd/internal/types"
 )
 
+// EntryRouteSpec describes a custom policy routing table required by an Entry IP.
+type EntryRouteSpec struct {
+	EntryIPv4       string
+	TableID         int
+	Fwmark          uint32
+	ResolvedGateway netip.Addr
+	LinkIndex       int
+	InterfaceName   string
+}
+
 // PlanResult holds the evaluated exit/peer mappings and rendered nftables ruleset.
 type PlanResult struct {
 	Ruleset        string
 	EvaluatedExits []EvaluatedExit
 	ActiveExits    []EvaluatedExit
+	EntryRoutes    []EntryRouteSpec
 	Warnings       []string
 	Degraded       bool
 }
@@ -49,6 +60,11 @@ func BuildPlan(state types.DesiredState, snap netdisc.HostNetworkSnapshot, bridg
 	for _, ex := range state.Exits {
 		if ex.RoutingTableID >= types.MinRoutingTableID && ex.RoutingTableID <= types.MaxRoutingTableID {
 			usedTables[ex.RoutingTableID] = true
+		}
+	}
+	for _, em := range state.EntryMarks {
+		if em.RoutingTableID >= types.MinRoutingTableID && em.RoutingTableID <= types.MaxRoutingTableID {
+			usedTables[em.RoutingTableID] = true
 		}
 	}
 	allocTable := func() (int, error) {
@@ -184,39 +200,83 @@ func BuildPlan(state types.DesiredState, snap netdisc.HostNetworkSnapshot, bridg
 		if dnsPrimary == "" {
 			dnsPrimary = "1.1.1.1"
 		}
-		amneziaDNS := p.AmneziaDNSDNAT || ev.Desired.AmneziaDNSDNAT
-		enforceDNS := p.EnforceDNSDNAT || ev.Desired.EnforceDNSDNAT
+		var amneziaDNS, enforceDNS bool
+		if p.DNSPrimary != "" {
+			amneziaDNS = p.AmneziaDNSDNAT
+			enforceDNS = p.EnforceDNSDNAT
+		} else {
+			amneziaDNS = p.AmneziaDNSDNAT || ev.Desired.AmneziaDNSDNAT
+			enforceDNS = p.EnforceDNSDNAT || ev.Desired.EnforceDNSDNAT
+		}
 		if enforceDNS {
 			peerForceDNSPairs = append(peerForceDNSPairs, kvPair{k: p.TunnelIPv4, v: dnsPrimary})
 		} else if amneziaDNS {
 			peerDNSPairs = append(peerDNSPairs, kvPair{k: p.TunnelIPv4, v: dnsPrimary})
 		}
 
-		var mark uint32
-		if p.RoutingTableID != 0 {
-			mark = types.FwmarkForTable(p.RoutingTableID)
-		} else {
-			mark = ev.Fwmark
-		}
-		if mark != 0 {
-			peerFwmarkPairs = append(peerFwmarkPairs, kvPair{k: p.TunnelIPv4, v: fmt.Sprintf("0x%08x", mark)})
+		if ev.NeedsPolicyTable && ev.Fwmark != 0 {
+			peerFwmarkPairs = append(peerFwmarkPairs, kvPair{k: p.TunnelIPv4, v: fmt.Sprintf("0x%08x", ev.Fwmark)})
 		}
 	}
 
-	// Build secondary Entry IP ct mark rules for strict-uRPF return symmetry.
+	// Build secondary Entry IP ct mark rules and policy routing specs for strict-uRPF return symmetry.
 	type entryMarkRule struct {
 		ip   string
 		mark uint32
 	}
 	var entryRules []entryMarkRule
+	var entryRoutes []EntryRouteSpec
 	seenEntryRule := make(map[string]bool)
 	for _, em := range state.EntryMarks {
-		mark := types.FwmarkForTable(em.RoutingTableID)
-		if mark == 0 || seenEntryRule[em.EntryIPv4] {
+		if seenEntryRule[em.EntryIPv4] {
+			continue
+		}
+		disc, present := discoveredByIP[em.EntryIPv4]
+		if !present {
+			warnings = append(warnings, fmt.Sprintf("entry IPv4 %s is not assigned on any host WAN interface", em.EntryIPv4))
+			continue
+		}
+		if !disc.ResolvedGw.IsValid() {
+			warnings = append(warnings, fmt.Sprintf("no IPv4 gateway detected for entry %s (%s)", em.EntryIPv4, disc.InterfaceName))
+			continue
+		}
+		if ev, isExit := activeExitByIP[em.EntryIPv4]; isExit {
+			if ev.NeedsPolicyTable && ev.Fwmark != 0 {
+				seenEntryRule[em.EntryIPv4] = true
+				entryRules = append(entryRules, entryMarkRule{ip: em.EntryIPv4, mark: ev.Fwmark})
+			}
+			continue
+		}
+		needsTable := disc.UsesCustomRule ||
+			(snap.MainGateway.IsValid() && disc.ResolvedGw != snap.MainGateway) ||
+			(snap.MainGatewayIface != "" && disc.InterfaceName != snap.MainGatewayIface)
+		if !needsTable {
+			continue
+		}
+		tID := em.RoutingTableID
+		if tID == 0 {
+			var err error
+			tID, err = allocTable()
+			if err != nil {
+				warnings = append(warnings, err.Error())
+				degraded = true
+				continue
+			}
+		}
+		mark := types.FwmarkForTable(tID)
+		if mark == 0 {
 			continue
 		}
 		seenEntryRule[em.EntryIPv4] = true
 		entryRules = append(entryRules, entryMarkRule{ip: em.EntryIPv4, mark: mark})
+		entryRoutes = append(entryRoutes, EntryRouteSpec{
+			EntryIPv4:       em.EntryIPv4,
+			TableID:         tID,
+			Fwmark:          mark,
+			ResolvedGateway: disc.ResolvedGw,
+			LinkIndex:       disc.LinkIndex,
+			InterfaceName:   disc.InterfaceName,
+		})
 	}
 	// Also protect any active Exit IP using a custom routing table in case it is dual-use as Entry IP.
 	for _, ev := range activeExits {
@@ -227,6 +287,9 @@ func BuildPlan(state types.DesiredState, snap netdisc.HostNetworkSnapshot, bridg
 	}
 	sort.Slice(entryRules, func(i, j int) bool {
 		return entryRules[i].ip < entryRules[j].ip
+	})
+	sort.Slice(entryRoutes, func(i, j int) bool {
+		return entryRoutes[i].TableID < entryRoutes[j].TableID
 	})
 
 	sort.Slice(activeExits, func(i, j int) bool {
@@ -274,14 +337,14 @@ func BuildPlan(state types.DesiredState, snap netdisc.HostNetworkSnapshot, bridg
 	b.WriteString("    type nat hook prerouting priority -110; policy accept;\n")
 	fmt.Fprintf(
 		&b,
-		"    iifname %q ip saddr %s ip daddr %s meta l4proto { udp, tcp } th dport 53 dnat ip to ip saddr map @peer_dns_v4 : 53\n",
+		"    iifname %q ip saddr %s ip daddr %s meta l4proto { udp, tcp } th dport 53 dnat ip to ip saddr map @peer_dns_v4\n",
 		bridgeName,
 		types.TunnelCIDR,
 		types.AmneziaDNSIP,
 	)
 	fmt.Fprintf(
 		&b,
-		"    iifname %q ip saddr %s meta l4proto { udp, tcp } th dport 53 dnat ip to ip saddr map @peer_force_dns_v4 : 53\n",
+		"    iifname %q ip saddr %s meta l4proto { udp, tcp } th dport 53 dnat ip to ip saddr map @peer_force_dns_v4\n",
 		bridgeName,
 		types.TunnelCIDR,
 	)
@@ -334,6 +397,7 @@ func BuildPlan(state types.DesiredState, snap netdisc.HostNetworkSnapshot, bridg
 		Ruleset:        b.String(),
 		EvaluatedExits: evaluated,
 		ActiveExits:    activeExits,
+		EntryRoutes:    entryRoutes,
 		Warnings:       warnings,
 		Degraded:       degraded,
 	}

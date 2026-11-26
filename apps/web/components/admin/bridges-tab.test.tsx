@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import type { Bridge, NodeBridgeRoute } from "@amnezia/contracts";
@@ -270,10 +272,35 @@ describe("BridgeCardView", () => {
         embedded
       />,
     );
-    expect(embeddedHtml).toContain(`id="bridge-${bridge.id}"`);
+    expect(embeddedHtml).not.toContain(`id="bridge-${bridge.id}"`);
+    expect(embeddedHtml).not.toContain('tabindex="-1"');
     expect(embeddedHtml).toContain("Amsterdam bridge");
     expect(embeddedHtml).toContain("7000/tcp");
     expect(embeddedHtml).not.toContain("rounded-xl border bg-card");
+
+    const modalHtml = renderToStaticMarkup(
+      <BridgeCardView
+        bridge={bridge}
+        t={tFor("en")}
+        lang="en"
+        onRename={() => undefined}
+        onDelete={() => undefined}
+        onOpenNode={() => undefined}
+        embedded
+      />,
+    );
+    expect(modalHtml).not.toContain(`href="#node-${NODE}"`);
+    expect(modalHtml).toContain("<button");
+    expect(modalHtml).toContain("Node A");
+
+    const src = readFileSync(
+      fileURLToPath(new URL("./bridges-tab.tsx", import.meta.url)),
+      "utf8",
+    );
+    expect(src).toContain("const hasSubDialog = renaming || deleting || updating;");
+    expect(src).toContain("if (!next && !hasSubDialog) onClose();");
+    expect(src).toContain("onInteractOutside={(e) => {");
+    expect(src).toContain("onEscapeKeyDown={(e) => {");
 
     const closedDialog = renderToStaticMarkup(
       <BridgeDetailDialog

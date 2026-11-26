@@ -27,6 +27,20 @@ const (
 	userAgent            = "amnezia-node-agent-check/1"
 )
 
+var applySocketMark = setSocketMark
+
+var nonPublicIPv4Prefixes = []netip.Prefix{
+	netip.MustParsePrefix("0.0.0.0/8"),
+	netip.MustParsePrefix("100.64.0.0/10"),
+	netip.MustParsePrefix("192.0.0.0/24"),
+	netip.MustParsePrefix("192.0.2.0/24"),
+	netip.MustParsePrefix("198.18.0.0/15"),
+	netip.MustParsePrefix("198.51.100.0/24"),
+	netip.MustParsePrefix("203.0.113.0/24"),
+	netip.MustParsePrefix("224.0.0.0/4"),
+	netip.MustParsePrefix("240.0.0.0/4"),
+}
+
 // VerifyExit runs a source-bound HTTP egress-IP echo check and a source-bound
 // UDP/TCP DNS query against dnsPrimary from the specified EgressIPv4.
 func VerifyExit(ctx context.Context, req types.VerifyExitRequest) types.VerifyExitResponse {
@@ -62,6 +76,7 @@ func verifyExit(ctx context.Context, req types.VerifyExitRequest, publicOnly boo
 			URL:        req.ProbeURL,
 			Method:     http.MethodGet,
 			TimeoutMs:  int(timeout.Milliseconds()),
+			Fwmark:     req.Fwmark,
 		}, publicOnly)
 		resp.HTTPLatencyMs = httpRes.LatencyMs
 		if httpRes.Error != "" {
@@ -108,7 +123,7 @@ func verifyExit(ctx context.Context, req types.VerifyExitRequest, publicOnly boo
 	}
 
 	dnsStart := time.Now()
-	dnsErr := queryDNSFromSource(ctx, localIP, dnsHostPort, domain, timeout)
+	dnsErr := queryDNSFromSource(ctx, localIP, dnsHostPort, domain, timeout, req.Fwmark)
 	resp.DNSLatencyMs = time.Since(dnsStart).Milliseconds()
 	if dnsErr != nil {
 		resp.DNSError = types.ClipDetail(dnsErr.Error(), 240)
@@ -162,18 +177,25 @@ func runHttpCheck(ctx context.Context, req types.HttpCheckRequest, publicOnly bo
 		LocalAddr: &net.TCPAddr{IP: net.IP(localAddr.AsSlice())},
 		Timeout:   timeout,
 	}
-	if publicOnly {
-		dialer.Control = func(_network, address string, _c syscall.RawConn) error {
-			host, _, splitErr := net.SplitHostPort(address)
-			if splitErr != nil {
-				return splitErr
+	if publicOnly || req.Fwmark != 0 {
+		dialer.Control = func(_network, address string, c syscall.RawConn) error {
+			if publicOnly {
+				host, _, splitErr := net.SplitHostPort(address)
+				if splitErr != nil {
+					return splitErr
+				}
+				addr, parseErr := netip.ParseAddr(host)
+				if parseErr != nil {
+					return fmt.Errorf("refused non-IP dial target %q", host)
+				}
+				if !IsPublicUnicast(addr) {
+					return fmt.Errorf("refused non-public address %s", addr.String())
+				}
 			}
-			addr, parseErr := netip.ParseAddr(host)
-			if parseErr != nil {
-				return fmt.Errorf("refused non-IP dial target %q", host)
-			}
-			if !IsPublicUnicast(addr) {
-				return fmt.Errorf("refused non-public address %s", addr.String())
+			if req.Fwmark != 0 {
+				if err := applySocketMark(c, req.Fwmark); err != nil {
+					return fmt.Errorf("set SO_MARK 0x%x: %w", req.Fwmark, err)
+				}
 			}
 			return nil
 		}
@@ -254,9 +276,10 @@ func IsPublicUnicast(addr netip.Addr) bool {
 		return false
 	}
 	if addr.Is4() {
-		cgnat := netip.MustParsePrefix("100.64.0.0/10")
-		if cgnat.Contains(addr) {
-			return false
+		for _, prefix := range nonPublicIPv4Prefixes {
+			if prefix.Contains(addr) {
+				return false
+			}
 		}
 	}
 	return addr.IsGlobalUnicast()
@@ -280,28 +303,41 @@ func normalizeHostPort(raw, defaultPort string) (string, error) {
 	return net.JoinHostPort(addr.String(), defaultPort), nil
 }
 
-func queryDNSFromSource(ctx context.Context, localIP net.IP, serverHostPort, domain string, timeout time.Duration) error {
+func queryDNSFromSource(ctx context.Context, localIP net.IP, serverHostPort, domain string, timeout time.Duration, fwmark uint32) error {
 	id, pkt, err := buildDNSAQuery(domain)
 	if err != nil {
 		return err
 	}
 
-	udpErr := queryDNSUDP(ctx, localIP, serverHostPort, id, pkt, timeout)
+	udpErr := queryDNSUDP(ctx, localIP, serverHostPort, id, pkt, timeout, fwmark)
 	if udpErr == nil {
 		return nil
 	}
 
-	tcpErr := queryDNSTCP(ctx, localIP, serverHostPort, id, pkt, timeout)
+	tcpErr := queryDNSTCP(ctx, localIP, serverHostPort, id, pkt, timeout, fwmark)
 	if tcpErr == nil {
 		return nil
 	}
 	return fmt.Errorf("udp: %v; tcp: %v", udpErr, tcpErr)
 }
 
-func queryDNSUDP(ctx context.Context, localIP net.IP, serverHostPort string, id uint16, pkt []byte, timeout time.Duration) error {
+func dialControlWithMark(fwmark uint32) func(string, string, syscall.RawConn) error {
+	if fwmark == 0 {
+		return nil
+	}
+	return func(_network, _address string, c syscall.RawConn) error {
+		if err := applySocketMark(c, fwmark); err != nil {
+			return fmt.Errorf("set SO_MARK 0x%x: %w", fwmark, err)
+		}
+		return nil
+	}
+}
+
+func queryDNSUDP(ctx context.Context, localIP net.IP, serverHostPort string, id uint16, pkt []byte, timeout time.Duration, fwmark uint32) error {
 	dialer := &net.Dialer{
 		LocalAddr: &net.UDPAddr{IP: localIP},
 		Timeout:   timeout,
+		Control:   dialControlWithMark(fwmark),
 	}
 	conn, err := dialer.DialContext(ctx, "udp4", serverHostPort)
 	if err != nil {
@@ -321,10 +357,11 @@ func queryDNSUDP(ctx context.Context, localIP net.IP, serverHostPort string, id 
 	return validateDNSResponse(id, buf[:n])
 }
 
-func queryDNSTCP(ctx context.Context, localIP net.IP, serverHostPort string, id uint16, pkt []byte, timeout time.Duration) error {
+func queryDNSTCP(ctx context.Context, localIP net.IP, serverHostPort string, id uint16, pkt []byte, timeout time.Duration, fwmark uint32) error {
 	dialer := &net.Dialer{
 		LocalAddr: &net.TCPAddr{IP: localIP},
 		Timeout:   timeout,
+		Control:   dialControlWithMark(fwmark),
 	}
 	conn, err := dialer.DialContext(ctx, "tcp4", serverHostPort)
 	if err != nil {

@@ -2291,8 +2291,7 @@
                           "items": {
                             "type": "object",
                             "required": [
-                              "entryIpv4",
-                              "routingTableId"
+                              "entryIpv4"
                             ],
                             "additionalProperties": false,
                             "properties": {
@@ -2799,8 +2798,7 @@
                         "items": {
                           "type": "object",
                           "required": [
-                            "entryIpv4",
-                            "routingTableId"
+                            "entryIpv4"
                           ],
                           "additionalProperties": false,
                           "properties": {
@@ -4208,8 +4206,7 @@
                     "items": {
                       "type": "object",
                       "required": [
-                        "entryIpv4",
-                        "routingTableId"
+                        "entryIpv4"
                       ],
                       "additionalProperties": false,
                       "properties": {

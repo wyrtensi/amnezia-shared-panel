@@ -2,11 +2,7 @@
 
 package routing
 
-import (
-	"fmt"
-
-	"amnezia-egressd/internal/nft"
-)
+import "fmt"
 
 type LinuxManager struct{}
 
@@ -14,7 +10,7 @@ func NewLinuxManager() *LinuxManager {
 	return &LinuxManager{}
 }
 
-func (m *LinuxManager) Sync(_ []nft.EvaluatedExit, _ string) error {
+func (m *LinuxManager) Sync(_ SyncInput) error {
 	return fmt.Errorf("policy routing requires Linux")
 }
 

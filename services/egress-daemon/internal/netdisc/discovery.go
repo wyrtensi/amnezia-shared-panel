@@ -56,6 +56,7 @@ type HostNetworkSnapshot struct {
 	BridgeName           string
 	BridgePresent        bool
 	BridgeLinkIndex      int
+	Awg3ContainerIPv4    string
 	MainGateway          netip.Addr
 	MainGatewayIface     string
 	MainGatewayLinkIndex int
@@ -78,7 +79,16 @@ type DiscoveredIPv4 struct {
 func Discover(client SnapshotClient, bridgeName, nodeDir string) (HostNetworkSnapshot, error) {
 	snap := HostNetworkSnapshot{
 		BridgeName:    bridgeName,
-		EnvEgressMode: ReadEnvEgressMode(filepath.Join(nodeDir, ".env")),
+		EnvEgressMode: types.ModeMasquerade,
+	}
+	if nodeDir != "" {
+		envPath := filepath.Join(nodeDir, ".env")
+		snap.EnvEgressMode = ReadEnvEgressMode(envPath)
+		if rawIP := ReadEnvValue(envPath, "AWG3_EGRESS_IPV4"); rawIP != "" {
+			if ip, parseErr := types.ParseIPv4(rawIP); parseErr == nil {
+				snap.Awg3ContainerIPv4 = ip.String()
+			}
+		}
 	}
 
 	nftPresent, err := client.HasNftTable("amnezia_egress")
@@ -110,6 +120,9 @@ func Discover(client SnapshotClient, bridgeName, nodeDir string) (HostNetworkSna
 			snap.BridgePresent = true
 			snap.BridgeLinkIndex = l.Index
 		}
+	}
+	if snap.Awg3ContainerIPv4 == "" && snap.BridgePresent {
+		snap.Awg3ContainerIPv4 = deriveBridgeSiblingIPv4(addrs, snap.BridgeLinkIndex)
 	}
 
 	// Default gateways per routing table (lowest metric wins on multi-NIC / metric-100 hosts).
@@ -245,30 +258,69 @@ func IsExcludedInterface(name, bridgeName string) bool {
 	return false
 }
 
-// ReadEnvEgressMode parses AWG3_EGRESS_MODE from node .env safely without executing shell syntax.
+func deriveBridgeSiblingIPv4(addrs []AddrInfo, bridgeLinkIndex int) string {
+	for _, a := range addrs {
+		if a.LinkIndex != bridgeLinkIndex || !a.Prefix.Addr().Is4() {
+			continue
+		}
+		if a.Prefix.Bits() <= 30 {
+			candidate := a.Prefix.Masked().Addr().Next().Next()
+			if candidate.Is4() && a.Prefix.Contains(candidate) && candidate != a.Prefix.Addr() {
+				return candidate.String()
+			}
+		}
+		break
+	}
+	return "172.30.90.2"
+}
+
+// ReadEnvValue reads one key from a .env file safely without executing shell syntax.
+func ReadEnvValue(envPath, key string) string {
+	if envPath == "" || key == "" {
+		return ""
+	}
+	raw, err := os.ReadFile(envPath)
+	if err != nil {
+		return ""
+	}
+	prefix := key + "="
+	val := ""
+	for _, line := range strings.Split(string(raw), "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, prefix) {
+			v := strings.TrimSpace(strings.TrimPrefix(line, prefix))
+			val = strings.Trim(v, `"'`)
+		}
+	}
+	return val
+}
+
+// ReadEnvEgressMode resolves AWG3 egress mode, preferring state/amnezia-awg3/egress-mode
+// and falling back to AWG3_EGRESS_MODE in node .env without executing shell syntax.
 func ReadEnvEgressMode(envPath string) types.EgressMode {
 	if envPath == "" {
 		return types.ModeMasquerade
 	}
-	raw, err := os.ReadFile(envPath)
-	if err != nil {
-		return types.ModeMasquerade
+	nodeDir := filepath.Dir(envPath)
+	if info, err := os.Stat(envPath); err == nil && info.IsDir() {
+		nodeDir = envPath
+		envPath = filepath.Join(nodeDir, ".env")
 	}
-	mode := types.ModeMasquerade
-	for _, line := range strings.Split(string(raw), "\n") {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "AWG3_EGRESS_MODE=") {
-			val := strings.TrimSpace(strings.TrimPrefix(line, "AWG3_EGRESS_MODE="))
-			val = strings.Trim(val, `"'`)
-			switch val {
-			case string(types.ModeRouted):
-				mode = types.ModeRouted
-			case string(types.ModeMasquerade):
-				mode = types.ModeMasquerade
-			}
+	stateModePath := filepath.Join(nodeDir, "state", "amnezia-awg3", "egress-mode")
+	if raw, err := os.ReadFile(stateModePath); err == nil {
+		switch strings.TrimSpace(string(raw)) {
+		case string(types.ModeRouted):
+			return types.ModeRouted
+		case string(types.ModeMasquerade):
+			return types.ModeMasquerade
 		}
 	}
-	return mode
+	switch ReadEnvValue(envPath, "AWG3_EGRESS_MODE") {
+	case string(types.ModeRouted):
+		return types.ModeRouted
+	default:
+		return types.ModeMasquerade
+	}
 }
 
 // ShareSubnetOrSlash24 reports whether two IPv4 interface prefixes overlap or sit in the same /24.

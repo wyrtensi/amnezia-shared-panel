@@ -40,4 +40,20 @@ func TestDesiredRoutesFromExitsDeduplicatesAndFilters(t *testing.T) {
 	if len(got) != 1 || got[0].TableID != 201 || got[0].Fwmark != 0x0000ae01 {
 		t.Fatalf("unexpected specs: %+v", got)
 	}
+
+	merged, err := DesiredRoutesFromInput(SyncInput{
+		ActiveExits: exits,
+		ExtraRoutes: []RouteSpec{
+			{TableID: 201, Gateway: netip.MustParseAddr("203.0.113.1"), LinkIndex: 2, IfaceName: "ens3"},
+			{TableID: 203, Gateway: netip.MustParseAddr("198.51.100.1"), LinkIndex: 3, IfaceName: "ens4"},
+		},
+		BridgeName:        "br-awg-egress",
+		Awg3ContainerIPv4: "172.30.90.2",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(merged) != 2 || merged[1].TableID != 203 || merged[1].Fwmark != types.FwmarkForTable(203) {
+		t.Fatalf("unexpected merged specs: %+v", merged)
+	}
 }

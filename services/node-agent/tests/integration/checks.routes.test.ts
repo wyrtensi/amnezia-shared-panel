@@ -235,6 +235,7 @@ describe("checks routes", () => {
         url: "https://1.1.1.1/",
         followRedirects: false,
       }),
+      expect.any(AbortSignal),
     );
 
     const ssrfRes = await app.inject({

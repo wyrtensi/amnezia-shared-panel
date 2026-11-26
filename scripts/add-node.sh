@@ -39,7 +39,9 @@
 #                              derived from the node's available memory)
 #   --protocol <awg2|awg3>     fallback protocol on the node record
 #   --enabled-protocols <list> comma-separated, offered to the key wizard
-#   --exit-ip <ipv4>           additional public Exit IPv4 on this node (repeatable)
+#   --exit-ip <ipv4>           additional public Exit IPv4 to print in post-rollout
+#                              CLI onboarding hints (repeatable; does not
+#                              register Exit IPs automatically)
 #   --update-repo <repo>       install agent updater for this GHCR repository
 #   --ssh-user <user>          SSH user on the node (default: NODE_SSH_USER)
 #   --config <path>            config file (default: scripts/add-node.env)

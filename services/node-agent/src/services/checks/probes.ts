@@ -277,6 +277,7 @@ const runHttpViaEgressDaemon = async (
   egressIpv4: string,
   url: string,
   method: "GET" | "HEAD",
+  signal: AbortSignal,
   options: ProbeRunOptions,
 ): Promise<ProbeOutcome> => {
   if (!ipaddr.isValid(egressIpv4) || ipaddr.parse(egressIpv4).kind() !== "ipv4") {
@@ -286,21 +287,51 @@ const runHttpViaEgressDaemon = async (
     throw new Error("amnezia-egressd service is not available on this node");
   }
 
+  const totalTimeoutMs = Math.min(
+    Math.max(
+      Number.isFinite(options.timeoutMs)
+        ? (options.timeoutMs as number)
+        : MAX_TIMEOUT_MS,
+      1,
+    ),
+    MAX_TIMEOUT_MS,
+  );
+  const deadlineMs = Date.now() + totalTimeoutMs;
+
   let target = parseHop(url);
   for (let hop = 0; ; hop += 1) {
-    await assertPublicAddress(target.hostname);
+    signal.throwIfAborted();
+    if (deadlineMs - Date.now() <= 0) {
+      throw new DOMException(
+        "The operation was aborted due to timeout",
+        "TimeoutError",
+      );
+    }
 
-    const response = await options.egressService.runHttpCheck({
-      egressIpv4,
-      url: target.toString(),
-      method,
-      headers: {
-        "user-agent": "amnezia-node-agent-check/1",
-        accept: "text/html,application/xhtml+xml,*/*;q=0.8",
+    await assertPublicAddress(target.hostname);
+    signal.throwIfAborted();
+    const remainingMs = deadlineMs - Date.now();
+    if (remainingMs <= 0) {
+      throw new DOMException(
+        "The operation was aborted due to timeout",
+        "TimeoutError",
+      );
+    }
+
+    const response = await options.egressService.runHttpCheck(
+      {
+        egressIpv4,
+        url: target.toString(),
+        method,
+        headers: {
+          "user-agent": "amnezia-node-agent-check/1",
+          accept: "text/html,application/xhtml+xml,*/*;q=0.8",
+        },
+        followRedirects: false,
+        timeoutMs: Math.max(1, Math.ceil(remainingMs)),
       },
-      followRedirects: false,
-      timeoutMs: options.timeoutMs,
-    });
+      signal,
+    );
 
     if (response.error) {
       throw new Error(response.error);
@@ -341,7 +372,7 @@ const runHttpProbe: ProbeRunner = async (probe, signal, options) => {
     typeof probe.egressIpv4 === "string" ? probe.egressIpv4.trim() : "";
 
   if (egressIpv4) {
-    return runHttpViaEgressDaemon(egressIpv4, url, method, options ?? {});
+    return runHttpViaEgressDaemon(egressIpv4, url, method, signal, options ?? {});
   }
 
   let target = parseHop(url);

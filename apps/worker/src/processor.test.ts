@@ -1777,7 +1777,7 @@ describe("node egress jobs and tunnel IPv4 lifecycle", () => {
       id: "job-mode-ok",
       type: "node.switch-egress-mode",
       attempts: 1,
-      payload: { nodeId: "node-1", mode: "routed" },
+      payload: { nodeId: "node-1", mode: "routed", previousMode: "masquerade" },
     });
 
     expect(agent.putServerEgress).toHaveBeenCalledOnce();
@@ -1787,6 +1787,7 @@ describe("node egress jobs and tunnel IPv4 lifecycle", () => {
         jobId: "job-mode-ok",
         nodeId: "node-1",
         mode: "routed",
+        previousMode: "masquerade",
         state: "idle",
         message: null,
       }),
@@ -1800,13 +1801,14 @@ describe("node egress jobs and tunnel IPv4 lifecycle", () => {
       id: "job-mode-fail",
       type: "node.switch-egress-mode",
       attempts: 1,
-      payload: { nodeId: "node-1", mode: "routed" },
+      payload: { nodeId: "node-1", mode: "routed", previousMode: "masquerade" },
     });
 
     expect(completeNodeEgressModeSwitch).toHaveBeenLastCalledWith(
       expect.objectContaining({
         jobId: "job-mode-fail",
         mode: "routed",
+        previousMode: "masquerade",
         state: "failed",
         message: "tunnel subnet conflict",
       }),

@@ -931,7 +931,8 @@ export class PostgresReachabilityRepository
     ): string | null => {
       if (node.egressMode !== "routed") return node.publicIp;
       const exitId = endpoint.egressIpId ?? node.egressDefaultIpId ?? null;
-      return exitId ? (egressById.get(exitId)?.ipv4 ?? defaultExitIpv4) : defaultExitIpv4;
+      if (exitId) return egressById.get(exitId)?.ipv4 ?? defaultExitIpv4;
+      return isIPv4(endpoint.address) ? endpoint.address : node.publicIp;
     };
 
     return nodeRows.flatMap((node) =>
@@ -988,36 +989,44 @@ export class PostgresReachabilityRepository
         const via = measuredViaBridge(target) ? target.bridgePath : null;
         if (protocol === "awg3" && registered.length > 0 && checked.length > 0) {
           const nodeAwg3Keys = keys.filter((k) => k.nodeId === node.id && k.protocol === "awg3");
+          const primaryEndpoint = registered.find((ep) => ep.ordinal === 1);
           const buckets = new Map<
             string,
-            { bucketId: string | null; expectedEgressIp: string | null; endpoints: PublicEndpoint[] }
+            { bucketId: string | null; bKey: string; expectedEgressIp: string | null; endpoints: PublicEndpoint[] }
           >();
           for (const endpoint of checked) {
             const bucketId = node.egressMode === "routed" ? (endpoint.egressIpId ?? defaultBucketId) : null;
-            const bKey = bucketId ?? "__default__";
             const expectedEgressIp = resolveEndpointExpectedEgress(node, endpoint, defaultExitIpv4);
+            const bKey =
+              node.egressMode !== "routed"
+                ? "__default__"
+                : (bucketId ?? `implicit:${expectedEgressIp ?? endpoint.id}`);
             const bucket = buckets.get(bKey);
             if (bucket) bucket.endpoints.push(endpoint);
-            else buckets.set(bKey, { bucketId, expectedEgressIp, endpoints: [endpoint] });
+            else buckets.set(bKey, { bucketId, bKey, expectedEgressIp, endpoints: [endpoint] });
           }
 
-          return [...buckets.values()].flatMap(({ bucketId, expectedEgressIp, endpoints: bucketEndpoints }) => {
+          return [...buckets.values()].flatMap(({ bucketId, bKey, expectedEgressIp, endpoints: bucketEndpoints }) => {
             const bucketTarget: RunTarget = { ...target, expectedEgressIp };
             const bucketAddresses = bucketEndpoints.map((ep) => toTargetAddress(ep, expectedEgressIp));
+            const matchesBucketKey = (k: (typeof nodeAwg3Keys)[number]): boolean => {
+              const keyEp = k.endpointId ? endpointById.get(k.endpointId) : undefined;
+              const keyExitId = keyEp?.egressIpId ?? defaultBucketId;
+              if (bucketId !== null) {
+                if (k.endpointId === null) return bucketId === defaultBucketId;
+                return keyExitId === bucketId;
+              }
+              if (keyExitId !== null) return false;
+              const targetEp = keyEp ?? primaryEndpoint;
+              const keyImplicitIp =
+                targetEp && isIPv4(targetEp.address) ? targetEp.address : node.publicIp;
+              return `implicit:${keyImplicitIp ?? targetEp?.id ?? "default"}` === bKey;
+            };
             const bucketKey =
               node.egressMode !== "routed"
                 ? (nodeAwg3Keys.find((k) => k.endpointId === null) ?? nodeAwg3Keys[0])
-                : bucketId === defaultBucketId
-                  ? (nodeAwg3Keys.find((k) => k.endpointId === null) ??
-                      nodeAwg3Keys.find(
-                        (k) =>
-                          k.endpointId !== null &&
-                          (endpointById.get(k.endpointId)?.egressIpId ?? defaultBucketId) === defaultBucketId,
-                      ))
-                  : nodeAwg3Keys.find(
-                      (k) =>
-                        k.endpointId !== null && endpointById.get(k.endpointId)?.egressIpId === bucketId,
-                    );
+                : (nodeAwg3Keys.find((k) => k.endpointId === null && matchesBucketKey(k)) ??
+                    nodeAwg3Keys.find(matchesBucketKey));
 
             if (!bucketKey) return unavailable(bucketTarget, "no service key yet", bucketAddresses);
             if (bucketKey.state === "provisioning") {
@@ -1230,30 +1239,37 @@ export class PostgresReachabilityRepository
           },
           this.options.keyring,
         );
+        const nodeEndpoints = endpointsByNode.get(node.id) ?? [];
+        const primaryEndpoint = nodeEndpoints.find((ep) => ep.ordinal === 1);
         const defaultBucketId =
           node.egressDefaultIpId && validExitIds.has(node.egressDefaultIpId)
             ? node.egressDefaultIpId
             : null;
-        const defaultBucketKey = defaultBucketId ?? "__default__";
+        const primaryImplicitIp =
+          primaryEndpoint && isIPv4(primaryEndpoint.address) ? primaryEndpoint.address : node.publicIp;
+        const defaultBucketKey =
+          defaultBucketId ?? `implicit:${primaryImplicitIp ?? primaryEndpoint?.id ?? "default"}`;
 
         for (const protocol of protocols) {
           const isRoutedAwg3 = protocol === "awg3" && node.egressMode === "routed";
           const desiredBuckets: Array<{ bucketKey: string; representativeEndpointId: string | null }> = [];
           if (isRoutedAwg3) {
             const seenBuckets = new Set<string>();
-            const checked = (endpointsByNode.get(node.id) ?? []).filter(
+            const checked = nodeEndpoints.filter(
               (ep) => ep.enabled && ep.reachabilityEnabled,
             );
             for (const ep of checked) {
               const exitId = ep.egressIpId && validExitIds.has(ep.egressIpId)
                 ? ep.egressIpId
                 : defaultBucketId;
-              const bKey = exitId ?? "__default__";
+              const expectedIp = isIPv4(ep.address) ? ep.address : node.publicIp;
+              const bKey = exitId ?? `implicit:${expectedIp ?? ep.id}`;
               if (seenBuckets.has(bKey)) continue;
               seenBuckets.add(bKey);
               desiredBuckets.push({
                 bucketKey: bKey,
-                representativeEndpointId: exitId === defaultBucketId ? null : ep.id,
+                representativeEndpointId:
+                  exitId !== null && exitId === defaultBucketId ? null : ep.id,
               });
             }
             if (desiredBuckets.length === 0) {
@@ -1272,9 +1288,14 @@ export class PostgresReachabilityRepository
               if (key.endpointId === null) return "__single__";
               return firstLiveSingle?.id === key.id ? "__single__" : `extra:${key.id}`;
             }
-            const epExit = key.endpointId ? (endpointById.get(key.endpointId)?.egressIpId ?? null) : null;
+            const keyEp = key.endpointId ? endpointById.get(key.endpointId) : undefined;
+            const epExit = keyEp?.egressIpId ?? null;
             const resolved = epExit && validExitIds.has(epExit) ? epExit : defaultBucketId;
-            return resolved ?? "__default__";
+            if (resolved) return resolved;
+            const targetEp = keyEp ?? primaryEndpoint;
+            const expectedIp =
+              targetEp && isIPv4(targetEp.address) ? targetEp.address : node.publicIp;
+            return `implicit:${expectedIp ?? targetEp?.id ?? "default"}`;
           };
 
           for (const { bucketKey, representativeEndpointId } of desiredBuckets) {
@@ -1528,6 +1549,7 @@ export class PostgresReachabilityRepository
             status: ep.probeStatus ?? "error",
             // Its own levels only: the node's best row may be the bridge path.
             levels: parsed.success ? parsed.data : null,
+            egressMatch: ep.probeEgressMatch,
             failingSince: ep.probeFailingSince,
             online: epOnline,
             lastPersonHandshakeAt: epHandshake,

@@ -18,7 +18,9 @@ func watchHostNetworkChanges(ctx context.Context, onChange func()) {
 	if err := netlink.AddrSubscribe(addrCh, doneCh); err != nil {
 		return
 	}
-	_ = netlink.LinkSubscribe(linkCh, doneCh)
+	if err := netlink.LinkSubscribe(linkCh, doneCh); err != nil {
+		linkCh = nil
+	}
 
 	var timer *time.Timer
 	var timerCh <-chan time.Time
@@ -38,6 +40,12 @@ func watchHostNetworkChanges(ctx context.Context, onChange func()) {
 	}
 
 	for {
+		if addrCh == nil && linkCh == nil {
+			if timer != nil {
+				timer.Stop()
+			}
+			return
+		}
 		select {
 		case <-ctx.Done():
 			if timer != nil {
@@ -46,10 +54,15 @@ func watchHostNetworkChanges(ctx context.Context, onChange func()) {
 			return
 		case _, ok := <-addrCh:
 			if !ok {
-				return
+				addrCh = nil
+				continue
 			}
 			resetTimer()
-		case <-linkCh:
+		case _, ok := <-linkCh:
+			if !ok {
+				linkCh = nil
+				continue
+			}
 			resetTimer()
 		case <-timerCh:
 			timerCh = nil

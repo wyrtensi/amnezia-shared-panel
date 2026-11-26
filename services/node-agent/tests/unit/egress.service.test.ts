@@ -259,8 +259,10 @@ describe("EgressService", () => {
 
     switchStatus = 409;
     switchOk = false;
-    await expect(service.switchMode("masquerade")).rejects.toMatchObject({
-      statusCode: 409,
+    await expect(service.switchMode("masquerade")).resolves.toEqual({
+      ok: false,
+      error: "health gate failed",
+      report: sampleReport(),
     });
 
     expect(seen.map((item) => `${item.method} ${item.url}`)).toEqual([

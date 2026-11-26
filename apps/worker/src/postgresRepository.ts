@@ -22,6 +22,7 @@ import {
   isIpv4Literal,
   nodeEndpointDefaultName,
   NODE_IPV6_REJECT_STUB_JOB_TYPE,
+  NODE_SWITCH_EGRESS_MODE_JOB_TYPE,
   NODE_SYNC_EGRESS_JOB_TYPE,
   REACHABILITY_NOTIFY_JOB_TYPE,
   RULES_REFRESH_DEDUPLICATION_KEY,
@@ -369,7 +370,7 @@ export class PostgresWorkerRepository
         .insert(jobOutbox)
         .values({
           type: REACHABILITY_NOTIFY_JOB_TYPE,
-          deduplicationKey: `${REACHABILITY_NOTIFY_JOB_TYPE}:egress-mode-drift:${node.id}:${report.observedMode}:${node.egressMode}`,
+          deduplicationKey: `${REACHABILITY_NOTIFY_JOB_TYPE}:egress-mode-drift:${node.id}:${report.observedMode}:${node.egressMode}:${observedAt.getTime()}`,
           payload: {
             text: formatEgressModeDriftAlert(node.name, report.observedMode, node.egressMode),
           },
@@ -1307,7 +1308,7 @@ export class PostgresWorkerRepository
     await this.options.db.transaction(async (tx) => {
       const job = (
         await tx
-          .select({ payload: jobOutbox.payload })
+          .select({ type: jobOutbox.type, payload: jobOutbox.payload })
           .from(jobOutbox)
           .where(eq(jobOutbox.id, jobId))
           .limit(1)
@@ -1344,6 +1345,21 @@ export class PostgresWorkerRepository
           .update(vpnKeys)
           .set({ failureReason: cleanReason(reason), updatedAt: new Date() })
           .where(and(eq(vpnKeys.id, keyId), eq(vpnKeys.state, "revoking")));
+      }
+      if (job?.type === NODE_SWITCH_EGRESS_MODE_JOB_TYPE) {
+        const nodeId = job.payload.nodeId;
+        if (typeof nodeId === "string") {
+          const now = new Date();
+          await tx
+            .update(nodes)
+            .set({
+              egressModeState: "failed",
+              egressModeMessage: cleanReason(reason).slice(0, 300),
+              egressModeAt: now,
+              updatedAt: now,
+            })
+            .where(and(eq(nodes.id, nodeId), eq(nodes.egressModeState, "switching")));
+        }
       }
     });
   };
@@ -2033,16 +2049,14 @@ export class PostgresWorkerRepository
         .where(eq(nodes.id, result.nodeId))
         .limit(1);
       if (node) {
-        const revertedMode =
-          result.state === "failed" && result.report
-            ? result.report.observedMode
-            : result.state === "failed"
-              ? node.egressMode
-              : result.mode;
+        const finalMode =
+          result.state === "idle"
+            ? result.mode
+            : (result.report?.observedMode ?? result.previousMode ?? node.egressMode);
         await tx
           .update(nodes)
           .set({
-            egressMode: revertedMode,
+            egressMode: finalMode,
             egressModeState: result.state,
             egressModeMessage: result.message?.slice(0, 300) ?? null,
             egressModeAt: result.observedAt,
@@ -2052,7 +2066,7 @@ export class PostgresWorkerRepository
         if (result.report) {
           await this.mirrorNodeEgressReportInTx(
             tx,
-            { ...node, egressMode: revertedMode },
+            { ...node, egressMode: finalMode },
             result.report,
             result.observedAt,
           );
@@ -2064,7 +2078,7 @@ export class PostgresWorkerRepository
           targetId: result.nodeId,
           metadata: {
             requestedMode: result.mode,
-            finalMode: revertedMode,
+            finalMode,
             state: result.state,
             message: result.message,
           },

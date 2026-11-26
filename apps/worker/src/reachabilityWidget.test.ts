@@ -92,6 +92,23 @@ describe("buildWidgetData", () => {
     expect(data.c).toBe(Math.floor(Date.parse("2026-11-10T14:51:00Z") / 1000));
   });
 
+  it("marks http level as failed ('1110') when egressMatch is false instead of rendering '1111'", () => {
+    const data = buildWidgetData(
+      input({
+        nodes: [
+          node("DE · Stealth Exit", {
+            status: "failed",
+            levels: levels(true, true, 42),
+            egressMatch: false,
+            failingSince: since,
+            online: 2,
+          }),
+        ],
+      }),
+    );
+    expect(data.n[0]).toEqual(["DE · Stealth Exit", "1110", "2", "", "10.11 15:46"]);
+  });
+
   it("carries the stale and mass flags and the stale limit", () => {
     expect(buildWidgetData(input({ stale: true, mass: true, staleLimitSec: 9_000 }))).toMatchObject({
       s: 1,

@@ -108,10 +108,10 @@ import {
 } from "@/components/key-internal-name-dialog";
 import { KeyBridgeBadge } from "@/components/key-bridge-badge";
 import { KeyEgressBadge } from "@/components/key-egress-badge";
-import { formatEntryExit } from "@/lib/egress-api";
+import { formatEntryExit, reassignKeyEndpoint } from "@/lib/egress-api";
 import { KeyBridgeSelect } from "@/components/admin/key-bridge-select";
 import { NodeEndpointSelect } from "@/components/node-endpoint-select";
-import { listBridges } from "@/lib/bridge-api";
+import { listBridges, type Requester } from "@/lib/bridge-api";
 import { keyBridgeState } from "@/lib/bridge-ui";
 import {
   deriveAllowedNodeIds,
@@ -803,6 +803,8 @@ export default function AdminUsersPage() {
             onKeyAction={(id, name, payload) =>
               action("keys", id, name, payload)
             }
+            request={request}
+            reload={reload}
             onExportKey={(id, deviceLabel, routeProfile) =>
               setConfigTarget({ id, deviceLabel, routeProfile })
             }
@@ -1775,6 +1777,8 @@ function UserDetail({
   onPurgeRevoked,
   onResetNotices,
   onKeyAction,
+  request,
+  reload,
   onExportKey,
   onSetConfig,
 }: {
@@ -1799,6 +1803,8 @@ function UserDetail({
     action: string,
     payload?: unknown,
   ) => Promise<boolean>;
+  request: Requester;
+  reload: () => Promise<void>;
   onExportKey: (
     id: string,
     deviceLabel: string,
@@ -2108,6 +2114,8 @@ function UserDetail({
                     endpoints={nodeEndpoints}
                     now={now}
                     onAction={onKeyAction}
+                    request={request}
+                    reload={reload}
                     onExport={() =>
                       onExportKey(key.id, key.deviceLabel, key.routeProfile)
                     }
@@ -2174,6 +2182,8 @@ function AdminKeyRow({
   endpoints,
   now,
   onAction,
+  request,
+  reload,
   onExport,
 }: {
   keyView: AdminKey;
@@ -2185,6 +2195,8 @@ function AdminKeyRow({
     action: string,
     payload?: unknown,
   ) => Promise<boolean>;
+  request: Requester;
+  reload: () => Promise<void>;
   onExport: () => void;
 }) {
   const { t, lang } = useT();
@@ -2505,13 +2517,23 @@ function AdminKeyRow({
                 onClick={() => {
                   setReassignBusy(true);
                   void (async () => {
-                    const ok = await onAction(keyView.id, "reassign-endpoint", {
-                      endpointId: reassignEndpointId,
-                    });
-                    setReassignBusy(false);
-                    if (ok) {
+                    try {
+                      await reassignKeyEndpoint(
+                        request,
+                        keyView.id,
+                        reassignEndpointId,
+                      );
                       toast.success(t("users.reassignDone"));
                       setReassignOpen(false);
+                      await reload();
+                    } catch (cause) {
+                      toast.error(
+                        cause instanceof Error
+                          ? cause.message
+                          : t("adminData.actionFailed"),
+                      );
+                    } finally {
+                      setReassignBusy(false);
                     }
                   })();
                 }}

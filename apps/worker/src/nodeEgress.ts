@@ -97,6 +97,36 @@ export const buildNodeEgressDesiredState = ({
     enforceDnsDnat: exit.enforceDnsDnat,
     enabled: exit.enabled,
   }));
+  const desiredExitsByIp = new Map<string, NodeEgressDesiredExit>(
+    desiredExits.map((exit) => [exit.ipv4, exit]),
+  );
+  const synthesizedImplicitExits: NodeEgressDesiredExit[] = [];
+  const ensureImplicitExit = (ipv4: string): NodeEgressDesiredExit => {
+    const existing = desiredExitsByIp.get(ipv4);
+    if (existing) return existing;
+    const implicit: NodeEgressDesiredExit = {
+      id: `implicit:${ipv4}`,
+      ipv4,
+      dnsPrimary: "1.1.1.1",
+      amneziaDnsDnat: true,
+      enforceDnsDnat: false,
+      enabled: true,
+    };
+    desiredExitsByIp.set(ipv4, implicit);
+    synthesizedImplicitExits.push(implicit);
+    return implicit;
+  };
+
+  for (const endpoint of endpoints) {
+    if (!endpoint.enabled || !isIPv4(endpoint.address)) continue;
+    const exit =
+      (endpoint.egressIpId ? exitsById.get(endpoint.egressIpId) : undefined) ??
+      defaultExit ??
+      null;
+    if (!exit) {
+      ensureImplicitExit(endpoint.address);
+    }
+  }
 
   const peersByTunnel = new Map<string, NodeEgressDesiredPeer>();
   for (const key of keys) {
@@ -128,30 +158,45 @@ export const buildNodeEgressDesiredState = ({
         (endpoint?.address && isIPv4(endpoint.address) ? endpoint.address : null) ??
         (node.publicIp && isIPv4(node.publicIp) ? node.publicIp : null);
       if (!implicitExitIp) continue;
+      const implicitExit = ensureImplicitExit(implicitExitIp);
       peersByTunnel.set(key.tunnelIpv4, {
         tunnelIpv4: key.tunnelIpv4,
-        exitIp: implicitExitIp,
-        dnsPrimary: "1.1.1.1",
-        amneziaDnsDnat: true,
-        enforceDnsDnat: false,
-        enabled: key.state === "active" && endpointEnabled,
+        exitIp: implicitExit.ipv4,
+        dnsPrimary: implicitExit.dnsPrimary,
+        amneziaDnsDnat: implicitExit.amneziaDnsDnat,
+        enforceDnsDnat: implicitExit.enforceDnsDnat,
+        ...(implicitExit.routingTableId !== undefined
+          ? { routingTableId: implicitExit.routingTableId }
+          : {}),
+        enabled: key.state === "active" && endpointEnabled && implicitExit.enabled,
       });
     }
   }
 
+  const exitsByIp = new Map(exits.map((exit) => [exit.ipv4, exit]));
   const entryMarkByIp = new Map<string, NodeEgressDesiredEntryMark>();
   for (const endpoint of endpoints) {
-    if (!endpoint.enabled || !isIPv4(endpoint.address) || !endpoint.egressIpId) continue;
-    const exit = exitsById.get(endpoint.egressIpId);
-    if (!exit || !exit.enabled || exit.routingTableId === null) continue;
-    if (endpoint.address === exit.ipv4 && !entryMarkByIp.has(endpoint.address)) {
-      entryMarkByIp.set(endpoint.address, {
-        entryIpv4: endpoint.address,
-        routingTableId: exit.routingTableId,
-      });
-    }
+    if (!endpoint.enabled || !isIPv4(endpoint.address)) continue;
+    if (entryMarkByIp.has(endpoint.address)) continue;
+    const assignedExit = endpoint.egressIpId ? exitsById.get(endpoint.egressIpId) : undefined;
+    const matchingExit =
+      assignedExit && assignedExit.ipv4 === endpoint.address
+        ? assignedExit
+        : exitsByIp.get(endpoint.address);
+    const routingTableId =
+      matchingExit && matchingExit.enabled && matchingExit.routingTableId !== null
+        ? matchingExit.routingTableId
+        : undefined;
+    entryMarkByIp.set(endpoint.address, {
+      entryIpv4: endpoint.address,
+      ...(routingTableId !== undefined ? { routingTableId } : {}),
+    });
   }
 
+  const allDesiredExits = [
+    ...desiredExits,
+    ...synthesizedImplicitExits.sort((a, b) => a.ipv4.localeCompare(b.ipv4)),
+  ];
   const entryMarks = [...entryMarkByIp.values()].sort((a, b) =>
     a.entryIpv4.localeCompare(b.entryIpv4),
   );
@@ -160,7 +205,7 @@ export const buildNodeEgressDesiredState = ({
     schemaVersion: 1,
     blockSmtp: node.egressBlockSmtp,
     isolatePrivate: node.egressIsolatePrivate,
-    exits: desiredExits,
+    exits: allDesiredExits,
     peers: [...peersByTunnel.values()].sort((a, b) => a.tunnelIpv4.localeCompare(b.tunnelIpv4)),
     ...(entryMarks.length > 0 ? { entryMarks } : {}),
   };

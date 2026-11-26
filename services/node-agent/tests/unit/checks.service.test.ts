@@ -10,6 +10,7 @@ import {
   ProbeRefusedError,
   SUPPORTED_PROBE_KINDS,
 } from "@/services/checks/probes";
+import type { EgressService } from "@/services/egress";
 
 // The probe uses undici's own `fetch`, not the global one: a dispatcher only
 // works with the client it came from, and the guarded resolver lives on that
@@ -258,6 +259,44 @@ describe("redirects", () => {
     expect(result.status).toBe("error");
     expect(result.detail).toMatch(/too many redirects/);
     expect(requested.length).toBeLessThanOrEqual(11);
+  });
+
+  it("enforces shared end-to-end deadline and AbortSignal across egress-daemon redirect hops", async () => {
+    const calls: Array<{ timeoutMs?: number; aborted?: boolean }> = [];
+    const egressStub = {
+      runHttpCheck: vi.fn(async (req: { timeoutMs?: number; url: string }, signal?: AbortSignal) => {
+        calls.push({ timeoutMs: req.timeoutMs, aborted: signal?.aborted });
+        await new Promise((resolve) => setTimeout(resolve, 60));
+        if (req.url === "https://93.184.216.34/") {
+          return {
+            status: 302,
+            headers: { location: "https://93.184.216.34/hop2" },
+            latencyMs: 60,
+          };
+        }
+        return { status: 200, body: "ok", headers: {}, latencyMs: 60 };
+      }),
+    } as unknown as EgressService;
+
+    const result = await runCheck(
+      {
+        id: "egress-deadline",
+        probe: {
+          kind: "http",
+          url: "https://93.184.216.34/",
+          method: "GET",
+          egressIpv4: "198.51.100.10",
+        },
+        assertions: [{ type: "statusIn", statuses: [200] }],
+        timeoutMs: 1_000,
+      },
+      { egressService: egressStub },
+    );
+
+    expect(result.status).toBe("ok");
+    expect(calls).toHaveLength(2);
+    expect(calls[0]?.timeoutMs).toBeLessThanOrEqual(1_000);
+    expect(calls[1]?.timeoutMs).toBeLessThan(calls[0]?.timeoutMs ?? 1_001);
   });
 });
 

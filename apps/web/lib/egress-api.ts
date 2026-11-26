@@ -2,6 +2,7 @@ import type {
   CreateNodeEgressIpRequest,
   NodeEgressIp,
   NodeEgressMode,
+  NodeEgressModeState,
   SwapNodeEgressIpRequest,
   UpdateNodeEgressIpRequest,
   UpdateNodeEgressModeRequest,
@@ -61,8 +62,8 @@ export const deleteNodeEgressIp = (
   request: Requester,
   nodeId: string,
   ipId: string,
-): Promise<{ deleted: boolean }> =>
-  request<{ deleted: boolean }>(
+): Promise<{ id: string; deleted: boolean; affectedEndpoints: number }> =>
+  request<{ id: string; deleted: boolean; affectedEndpoints: number }>(
     `/api/admin/nodes/${encodeURIComponent(nodeId)}/egress-ips/${encodeURIComponent(ipId)}`,
     {
       method: "DELETE",
@@ -74,8 +75,8 @@ export const swapNodeEgressIp = (
   nodeId: string,
   ipId: string,
   body: SwapNodeEgressIpRequest,
-): Promise<NodeEgressIp> =>
-  request<NodeEgressIp>(
+): Promise<{ ip: NodeEgressIp; replacedIpv4: string; affectedEndpoints: number }> =>
+  request<{ ip: NodeEgressIp; replacedIpv4: string; affectedEndpoints: number }>(
     `/api/admin/nodes/${encodeURIComponent(nodeId)}/egress-ips/${encodeURIComponent(ipId)}/swap`,
     {
       method: "POST",
@@ -101,8 +102,18 @@ export const setNodeEgressMode = (
   request: Requester,
   nodeId: string,
   body: UpdateNodeEgressModeRequest,
-): Promise<{ queued: boolean; mode: NodeEgressMode }> =>
-  request<{ queued: boolean; mode: NodeEgressMode }>(
+): Promise<{
+  nodeId: string;
+  mode: NodeEgressMode;
+  state: NodeEgressModeState;
+  queued: boolean;
+}> =>
+  request<{
+    nodeId: string;
+    mode: NodeEgressMode;
+    state: NodeEgressModeState;
+    queued: boolean;
+  }>(
     `/api/admin/nodes/${encodeURIComponent(nodeId)}/egress-mode`,
     {
       method: "PUT",
@@ -113,8 +124,16 @@ export const setNodeEgressMode = (
 export const adoptNodeEgressMode = (
   request: Requester,
   nodeId: string,
-): Promise<{ adopted: boolean; mode: NodeEgressMode }> =>
-  request<{ adopted: boolean; mode: NodeEgressMode }>(
+): Promise<{
+  nodeId: string;
+  mode: NodeEgressMode;
+  state: NodeEgressModeState;
+}> =>
+  request<{
+    nodeId: string;
+    mode: NodeEgressMode;
+    state: NodeEgressModeState;
+  }>(
     `/api/admin/nodes/${encodeURIComponent(nodeId)}/egress-mode/adopt`,
     {
       method: "POST",
@@ -126,11 +145,21 @@ export const reassignKeyEndpoint = (
   request: Requester,
   keyId: string,
   endpointId: string,
-): Promise<{ keyId: string; endpointId: string; synced: boolean }> =>
-  request<{ keyId: string; endpointId: string; synced: boolean }>(
-    `/api/admin/keys/${encodeURIComponent(keyId)}/reassign-endpoint`,
+): Promise<{
+  id: string;
+  nodeId: string;
+  endpointId: string;
+  previousEndpointId: string | null;
+}> =>
+  request<{
+    id: string;
+    nodeId: string;
+    endpointId: string;
+    previousEndpointId: string | null;
+  }>(
+    `/api/admin/keys/${encodeURIComponent(keyId)}/endpoint`,
     {
-      method: "POST",
+      method: "PATCH",
       body: JSON.stringify({ endpointId }),
     },
   );

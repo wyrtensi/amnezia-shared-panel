@@ -205,6 +205,12 @@ ip link set mtu "$IFACE_MTU" up dev awg0
 iptables -A FORWARD -i awg0 -j ACCEPT
 iptables -A FORWARD -o awg0 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
 EGRESS_MODE="${AWG3_EGRESS_MODE:-masquerade}"
+if [ -r "$STATE_DIR/egress-mode" ]; then
+  persisted_mode="$(tr -d '[:space:]' <"$STATE_DIR/egress-mode" 2>/dev/null || true)"
+  case "$persisted_mode" in
+    routed|masquerade) EGRESS_MODE="$persisted_mode" ;;
+  esac
+fi
 if [ "$EGRESS_MODE" = "routed" ]; then
   echo "AWG3 starting in routed egress mode (host amnezia-egressd owns SNAT on br-awg-egress)" >&2
 else

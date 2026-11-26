@@ -140,11 +140,32 @@ else
   compose stop --timeout 30 node-agent awg2 awg3 >/dev/null 2>&1 || true
 fi
 
+EGRESS_SOCKET="${NODE_EGRESS_SOCKET:-/run/amnezia-egress/egressd.sock}"
+EGRESS_MODE_FILE="$STATE_DIR_AWG3/egress-mode"
+
+write_egress_mode_file() {
+  mode_val="$1"
+  mkdir -p "$STATE_DIR_AWG3"
+  chmod 700 "$STATE_DIR_AWG3"
+  mode_tmp="$(mktemp "$STATE_DIR_AWG3/.egress-mode.XXXXXX")" || return 1
+  printf '%s\n' "$mode_val" >"$mode_tmp" || { rm -f "$mode_tmp"; return 1; }
+  chmod 600 "$mode_tmp"
+  mv -f "$mode_tmp" "$EGRESS_MODE_FILE"
+}
+
 previous_env="$temporary/previous.env"
 cp -p "$ENV_FILE" "$previous_env"
 previous_egress_state="$temporary/previous-egress-state.json"
+had_previous_egress_state=0
 if [ -f "$EGRESS_STATE_FILE" ] && [ ! -L "$EGRESS_STATE_FILE" ]; then
+  had_previous_egress_state=1
   cp -p "$EGRESS_STATE_FILE" "$previous_egress_state"
+fi
+previous_egress_mode="$temporary/previous-egress-mode"
+had_previous_egress_mode=0
+if [ -f "$EGRESS_MODE_FILE" ] && [ ! -L "$EGRESS_MODE_FILE" ]; then
+  had_previous_egress_mode=1
+  cp -p "$EGRESS_MODE_FILE" "$previous_egress_mode"
 fi
 
 if [ "$has_awg2" -eq 1 ]; then
@@ -169,6 +190,12 @@ fi
 
 if [ -n "$restored_mode" ]; then
   set_env_value AWG3_EGRESS_MODE "$restored_mode"
+  write_egress_mode_file "$restored_mode"
+elif [ -f "$EGRESS_MODE_FILE" ] && [ ! -L "$EGRESS_MODE_FILE" ]; then
+  file_mode="$(tr -d '[:space:]' <"$EGRESS_MODE_FILE" 2>/dev/null || true)"
+  case "$file_mode" in
+    masquerade|routed) set_env_value AWG3_EGRESS_MODE "$file_mode" ;;
+  esac
 fi
 if [ -f "$restored_egress_state" ]; then
   egress_dir="$(dirname -- "$EGRESS_STATE_FILE")"
@@ -181,32 +208,40 @@ fi
 sync_host_egress_after_restore() {
   mode="${1:-masquerade}"
   if ! command -v amnezia-egressd >/dev/null 2>&1; then
+    [ "$mode" != "routed" ] || return 1
     return 0
   fi
   if [ "$mode" = "routed" ]; then
-    amnezia-egressd reconcile --node-dir "$NODE_DIR" --state "$EGRESS_STATE_FILE" >/dev/null 2>&1 || true
+    amnezia-egressd reconcile --socket "$EGRESS_SOCKET" --node-dir "$NODE_DIR" --state "$EGRESS_STATE_FILE" || return 1
     if command -v systemctl >/dev/null 2>&1 && systemctl is-enabled amnezia-egressd.service >/dev/null 2>&1; then
-      systemctl restart amnezia-egressd.service >/dev/null 2>&1 || true
+      systemctl restart amnezia-egressd.service || return 1
     fi
   else
-    amnezia-egressd teardown --node-dir "$NODE_DIR" --state "$EGRESS_STATE_FILE" >/dev/null 2>&1 || true
+    amnezia-egressd teardown --socket "$EGRESS_SOCKET" --node-dir "$NODE_DIR" --state "$EGRESS_STATE_FILE" || return 1
   fi
   if command -v conntrack >/dev/null 2>&1; then
     conntrack -D -s 10.90.0.0/22 >/dev/null 2>&1 || true
   fi
 }
 
-effective_mode="$(env_value AWG3_EGRESS_MODE)"
+effective_mode=""
+if [ -r "$EGRESS_MODE_FILE" ] && [ ! -L "$EGRESS_MODE_FILE" ]; then
+  effective_mode="$(tr -d '[:space:]' <"$EGRESS_MODE_FILE" 2>/dev/null || true)"
+fi
+case "$effective_mode" in
+  masquerade|routed) ;;
+  *) effective_mode="$(env_value AWG3_EGRESS_MODE)" ;;
+esac
 case "$effective_mode" in
   masquerade|routed) ;;
   *) effective_mode="masquerade" ;;
 esac
-sync_host_egress_after_restore "$effective_mode"
 
 rollback_healthy=0
 if compose up --detach --no-build && \
    { ! awg2_enabled || [ "$has_awg2" -eq 0 ] || wait_healthy amnezia-awg2; } && \
    { [ "$has_awg3" -eq 0 ] || wait_healthy amnezia-awg3; } && \
+   sync_host_egress_after_restore "$effective_mode" && \
    wait_healthy amnezia-node-agent; then
   agent_binding="$(docker port amnezia-node-agent 4001/tcp)"
   [ "$agent_binding" = "127.0.0.1:4001" ] && rollback_healthy=1
@@ -230,14 +265,44 @@ if [ "$has_awg3" -eq 1 ]; then
 fi
 cp -pf "$previous_env" "$ENV_FILE"
 chmod 600 "$ENV_FILE"
-if [ -f "$previous_egress_state" ]; then
+if [ "$had_previous_egress_state" -eq 1 ]; then
+  egress_dir="$(dirname -- "$EGRESS_STATE_FILE")"
+  mkdir -p "$egress_dir"
+  chmod 700 "$egress_dir"
   cp -pf "$previous_egress_state" "$EGRESS_STATE_FILE"
   chmod 600 "$EGRESS_STATE_FILE"
+else
+  rm -f "$EGRESS_STATE_FILE"
 fi
-prev_mode="$(env_value AWG3_EGRESS_MODE)"
-sync_host_egress_after_restore "${prev_mode:-masquerade}"
+if [ "$had_previous_egress_mode" -eq 1 ]; then
+  prev_mode_val="$(tr -d '[:space:]' <"$previous_egress_mode" 2>/dev/null || true)"
+  case "$prev_mode_val" in
+    masquerade|routed) write_egress_mode_file "$prev_mode_val" || true ;;
+    *)
+      mkdir -p "$STATE_DIR_AWG3"
+      chmod 700 "$STATE_DIR_AWG3"
+      cp -pf "$previous_egress_mode" "$EGRESS_MODE_FILE"
+      chmod 600 "$EGRESS_MODE_FILE"
+      ;;
+  esac
+else
+  rm -f "$EGRESS_MODE_FILE"
+fi
+prev_mode=""
+if [ -r "$EGRESS_MODE_FILE" ] && [ ! -L "$EGRESS_MODE_FILE" ]; then
+  prev_mode="$(tr -d '[:space:]' <"$EGRESS_MODE_FILE" 2>/dev/null || true)"
+fi
+case "$prev_mode" in
+  masquerade|routed) ;;
+  *) prev_mode="$(env_value AWG3_EGRESS_MODE)" ;;
+esac
+case "$prev_mode" in
+  masquerade|routed) ;;
+  *) prev_mode="masquerade" ;;
+esac
 
 if [ -d "$STATE_DIR" ] || [ -d "$STATE_DIR_AWG3" ]; then
   compose up --detach --no-build >/dev/null 2>&1 || true
 fi
+sync_host_egress_after_restore "$prev_mode" >/dev/null 2>&1 || true
 fail "rollback health gate failed; the pre-rollback state was restored"

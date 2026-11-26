@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import type { AdminKey, AdminNode } from "@/components/admin/admin-data";
@@ -150,10 +152,57 @@ describe("NodeCard embedded & NodeDetailDialog", () => {
         <NodeCard {...commonProps} embedded />
       </TooltipProvider>,
     );
-    expect(embeddedHtml).toContain('id="node-n-detail-1"');
+    expect(embeddedHtml).not.toContain('id="node-n-detail-1"');
+    expect(embeddedHtml).toMatch(/^<div class="flex flex-col gap-3">/);
     expect(embeddedHtml).toContain("Frankfurt-1");
     expect(embeddedHtml).toContain("https://de1.example.test:4001");
     expect(embeddedHtml).not.toContain("rounded-xl border bg-card");
+  });
+
+  it("renders bridge route as anchor by default and as button when onOpenBridge is provided", () => {
+    const commonProps = {
+      node: makeNode(),
+      route: {
+        bridgeId: "b-1",
+        bridgeName: "Bridge MSK",
+        entry: "203.0.113.5:30001",
+        revision: 1,
+      },
+      routeLoadFailed: false,
+      keyStats: NO_KEYS,
+      checkResults: [],
+      checksConfigured: false,
+      onSetChecks: () => undefined,
+      onToggleIpv6Stub: () => undefined,
+      onSavePublicEndpoint: () => Promise.resolve(),
+      onSaveGenerator: () => Promise.resolve(),
+      onSaveDeviceRules: () => Promise.resolve(),
+      onToggle: () => undefined,
+      onReconcile: () => undefined,
+      onEdit: () => undefined,
+      onDelete: () => undefined,
+      onUpdateAgent: () => undefined,
+      onSetCapacity: () => undefined,
+      onOpenTopology: () => undefined,
+    };
+
+    const pageHtml = renderToStaticMarkup(
+      <TooltipProvider>
+        <NodeCard {...commonProps} />
+      </TooltipProvider>,
+    );
+    expect(pageHtml).toContain('href="#bridge-b-1"');
+    expect(pageHtml).toContain('href="/admin/policy?node=n-detail-1#node-routes"');
+
+    const modalHtml = renderToStaticMarkup(
+      <TooltipProvider>
+        <NodeCard {...commonProps} embedded onOpenBridge={() => undefined} />
+      </TooltipProvider>,
+    );
+    expect(modalHtml).not.toContain('href="#bridge-b-1"');
+    expect(modalHtml).toContain("<button");
+    expect(modalHtml).toContain("Bridge MSK");
+    expect(modalHtml).toContain('href="/admin/policy?node=n-detail-1#node-routes"');
   });
 
   it("renders closed NodeDetailDialog as empty when node is null and does not throw when open", () => {
@@ -215,10 +264,29 @@ describe("NodeCard embedded & NodeDetailDialog", () => {
       </TooltipProvider>,
     );
 
-    expect(html).toContain('id="node-n-detail-1"');
+    expect(html).not.toContain('id="node-n-detail-1"');
     expect(html).not.toContain("rounded-xl border bg-card");
     expect(html).toContain("Frankfurt-1");
     expect(html).toContain("12 / 100");
     expect(html).toContain("YouTube");
+  });
+
+  it("guards parent Dialog against sub-dialog DismissableLayer/Escape closes and omits duplicate apiBaseUrl in DialogDescription", () => {
+    const src = readFileSync(
+      fileURLToPath(new URL("./node-detail-dialog.tsx", import.meta.url)),
+      "utf8",
+    );
+    expect(src).toContain(
+      "const hasSubDialog = editOpen || deleteOpen || updateAgentOpen || capacityOpen;",
+    );
+    expect(src).toContain("if (!next && !hasSubDialog) onClose();");
+    expect(src).toContain("onInteractOutside={(e) => {");
+    expect(src).toContain("onEscapeKeyDown={(e) => {");
+    const descBlock = src.slice(
+      src.indexOf("<DialogDescription"),
+      src.indexOf("</DialogDescription>"),
+    );
+    expect(descBlock).not.toContain("node.apiBaseUrl");
+    expect(descBlock).toContain('t("ov.map.openNode")');
   });
 });

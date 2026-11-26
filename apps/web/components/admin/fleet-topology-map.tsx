@@ -813,17 +813,13 @@ export function buildFleetTopologyGraph({
         if (!targetExit && node.egressDefaultIpId) {
           targetExit = nodeExitById.get(node.egressDefaultIpId);
         }
-        if (!targetExit && node.egressMode === "routed" && orderedNodeExits.length > 0) {
-          targetExit =
-            orderedNodeExits.find((e) => e.enabled) ?? orderedNodeExits[0];
-        }
         if (!targetExit) {
           const fallbackIp =
             ep.effectiveEgressIp ??
             node.publicIp ??
             node.publicHost ??
             ep.publicAddress;
-          targetExit = ensureImplicitExit(fallbackIp);
+          targetExit = nodeExitByIp.get(fallbackIp) ?? ensureImplicitExit(fallbackIp);
         }
 
         const entryExitHealth: TopologyHealth =

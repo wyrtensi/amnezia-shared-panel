@@ -3549,6 +3549,9 @@ describe("host-IP discovery and attach CLI (node-host-ips, node-ip-attach)", () 
       run(["node-ip-attach", "de-01", "--ip=198.51.100.13", "--all-unassigned", "--role=exit"]),
     ).rejects.toThrow(/Usage: node-ip-attach/);
     await expect(
+      run(["node-ip-attach", "de-01", "--all-unassigned", "--role=both", "--entry-name=Shared"]),
+    ).rejects.toThrow(/--entry-name cannot be combined with --all-unassigned/);
+    await expect(
       run(["node-ip-attach", "de-01", "--ip=198.51.100.13", "--role=invalid"]),
     ).rejects.toThrow(/--role must be one of/);
     expect(calls).toHaveLength(0);

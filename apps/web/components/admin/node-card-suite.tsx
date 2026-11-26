@@ -161,6 +161,7 @@ export type NodeCardProps = {
   onUpdateAgent: () => void;
   onSetCapacity: () => void;
   onOpenTopology: () => void;
+  onOpenBridge?: (bridgeId: string) => void;
   onSwitchDirect?: (revision: number) => void;
   /** Render inner body directly without an outer Card wrapper (for dialogs). */
   embedded?: boolean;
@@ -176,6 +177,7 @@ export function NodeCard({
   onUpdateAgent,
   onSetCapacity,
   onOpenTopology,
+  onOpenBridge,
   onSwitchDirect,
   route,
   routeLoadFailed,
@@ -263,12 +265,22 @@ export function NodeCard({
             : (route?.entry ?? t("bridge.direct"))}
         </Badge>
         {route ? (
-          <a
-            href={`#${bridgeCardAnchor(route.bridgeId)}`}
-            className="min-w-0 truncate text-primary underline-offset-2 hover:underline"
-          >
-            {route.bridgeName}
-          </a>
+          onOpenBridge ? (
+            <button
+              type="button"
+              onClick={() => onOpenBridge(route.bridgeId)}
+              className="min-w-0 cursor-pointer truncate text-left text-primary underline-offset-2 hover:underline"
+            >
+              {route.bridgeName}
+            </button>
+          ) : (
+            <a
+              href={`#${bridgeCardAnchor(route.bridgeId)}`}
+              className="min-w-0 truncate text-primary underline-offset-2 hover:underline"
+            >
+              {route.bridgeName}
+            </a>
+          )
         ) : null}
         <div className="ml-auto flex items-center gap-2">
           {route && onSwitchDirect ? (
@@ -654,10 +666,7 @@ export function NodeCard({
 
   if (embedded) {
     return (
-      <div
-        id={nodeCardAnchor(node.id)}
-        className={cn("flex flex-col gap-3", !node.enabled && "opacity-80")}
-      >
+      <div className={cn("flex flex-col gap-3", !node.enabled && "opacity-80")}>
         {body}
       </div>
     );

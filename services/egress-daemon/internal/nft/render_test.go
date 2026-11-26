@@ -129,6 +129,117 @@ func TestBuildPlanMultiExitFailClosedAndSecondaryEntryMark(t *testing.T) {
 	if strings.Contains(plan.Ruleset, "10.90.0.4") || strings.Contains(plan.Ruleset, "10.90.0.5") {
 		t.Fatalf("missing-exit or disabled peer leaked into ruleset:\n%s", plan.Ruleset)
 	}
+	if strings.Contains(plan.Ruleset, ": 53") {
+		t.Fatalf("redundant ': 53' suffix must not appear in DNS DNAT map expressions:\n%s", plan.Ruleset)
+	}
+}
+
+func TestBuildPlanEntryMarksReservationAndPeerOptOut(t *testing.T) {
+	snap := netdisc.HostNetworkSnapshot{
+		BridgeName:       "br-awg-egress",
+		BridgePresent:    true,
+		MainGateway:      netip.MustParseAddr("198.51.100.1"),
+		MainGatewayIface: "ens3",
+		IPv4s: []netdisc.DiscoveredIPv4{
+			{
+				DetectedIPv4: types.DetectedIPv4{
+					IPv4:          "198.51.100.10",
+					CIDR:          "198.51.100.10/24",
+					InterfaceName: "ens3",
+				},
+				LinkIndex:  2,
+				Prefix:     netip.MustParsePrefix("198.51.100.10/24"),
+				ResolvedGw: netip.MustParseAddr("198.51.100.1"),
+			},
+			{
+				DetectedIPv4: types.DetectedIPv4{
+					IPv4:                "203.0.113.20",
+					CIDR:                "203.0.113.20/24",
+					InterfaceName:       "ens4",
+					DetectedGatewayIPv4: "203.0.113.1",
+					DetectedRuleTable:   100,
+				},
+				LinkIndex:      3,
+				Prefix:         netip.MustParsePrefix("203.0.113.20/24"),
+				ResolvedGw:     netip.MustParseAddr("203.0.113.1"),
+				UsesCustomRule: true,
+			},
+			{
+				DetectedIPv4: types.DetectedIPv4{
+					IPv4:                "198.51.100.20",
+					CIDR:                "198.51.100.20/24",
+					InterfaceName:       "ens5",
+					DetectedGatewayIPv4: "198.51.100.254",
+					DetectedRuleTable:   101,
+				},
+				LinkIndex:      4,
+				Prefix:         netip.MustParsePrefix("198.51.100.20/24"),
+				ResolvedGw:     netip.MustParseAddr("198.51.100.254"),
+				UsesCustomRule: true,
+			},
+		},
+	}
+
+	state := types.DesiredState{
+		SchemaVersion:  1,
+		BlockSMTP:      true,
+		IsolatePrivate: true,
+		Exits: []types.DesiredExit{
+			{
+				ID:             "e-main",
+				IPv4:           "198.51.100.10",
+				DNSPrimary:     "1.1.1.1",
+				AmneziaDNSDNAT: true,
+				EnforceDNSDNAT: true,
+				Enabled:        true,
+			},
+			{
+				ID:         "e-secondary-auto-table",
+				IPv4:       "203.0.113.20",
+				DNSPrimary: "9.9.9.9",
+				Enabled:    true,
+			},
+		},
+		EntryMarks: []types.DesiredEntryMark{
+			// Reserve 200 for entry-only asymmetric IP so e-secondary-auto-table skips 200 and gets 201.
+			{EntryIPv4: "198.51.100.20", RoutingTableID: 200},
+		},
+		Peers: []types.DesiredPeer{
+			// Main-table exit with stale p.RoutingTableID must NOT emit @peer_fwmark;
+			// explicit DNSPrimary with false flags allows per-peer opt-out.
+			{
+				TunnelIPv4:     "10.90.0.2",
+				ExitIP:         "198.51.100.10",
+				DNSPrimary:     "1.1.1.1",
+				AmneziaDNSDNAT: false,
+				EnforceDNSDNAT: false,
+				RoutingTableID: 205,
+				Enabled:        true,
+			},
+		},
+	}
+
+	plan := BuildPlan(state, snap, "br-awg-egress")
+	if len(plan.EntryRoutes) != 1 || plan.EntryRoutes[0].TableID != 200 || plan.EntryRoutes[0].EntryIPv4 != "198.51.100.20" {
+		t.Fatalf("expected EntryRoutes=[{198.51.100.20 table 200}], got %+v", plan.EntryRoutes)
+	}
+	if len(plan.ActiveExits) != 2 {
+		t.Fatalf("expected 2 active exits, got %d", len(plan.ActiveExits))
+	}
+	for _, ev := range plan.ActiveExits {
+		if ev.Desired.IPv4 == "203.0.113.20" && ev.RoutingTableID != 201 {
+			t.Fatalf("expected e-secondary-auto-table to skip reserved 200 and allocate 201, got %d", ev.RoutingTableID)
+		}
+	}
+	if strings.Contains(plan.Ruleset, "10.90.0.2 : 0x") {
+		t.Fatalf("peer on main-table exit must not receive fwmark even if RoutingTableID is non-zero:\n%s", plan.Ruleset)
+	}
+	if strings.Contains(plan.Ruleset, "10.90.0.2 : 1.1.1.1") {
+		t.Fatalf("peer with explicit DNSPrimary and false DNAT flags must opt out:\n%s", plan.Ruleset)
+	}
+	if !strings.Contains(plan.Ruleset, `ip daddr 198.51.100.20 udp dport 51890 ct mark set 0x0000ae00`) {
+		t.Fatalf("expected entry mark ct rule for 198.51.100.20:\n%s", plan.Ruleset)
+	}
 }
 
 func TestParseCountersJSON(t *testing.T) {

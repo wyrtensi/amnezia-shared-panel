@@ -6,10 +6,13 @@ const normalize = (text) => text.replace(/\r\n/g, "\n");
 const readNodeFile = async (rel) =>
   normalize(await readFile(new URL(`../${rel}`, import.meta.url), "utf8"));
 
-test("compose.yaml defines br-awg-egress for awg3 with backward-compatible env defaults", async () => {
+test("compose.yaml defines br-awg-egress for awg3 with static IPv4 IPAM and backward-compatible env defaults", async () => {
   const compose = await readNodeFile("compose.yaml");
   assert.match(compose, /driver:\s*bridge/);
   assert.match(compose, /com\.docker\.network\.bridge\.name:\s*br-awg-egress/);
+  assert.match(compose, /ipv4_address:\s*\$\{AWG3_EGRESS_IPV4:-172\.30\.90\.2\}/);
+  assert.match(compose, /subnet:\s*\$\{AWG_EGRESS_SUBNET:-172\.30\.90\.0\/29\}/);
+  assert.match(compose, /gateway:\s*\$\{AWG_EGRESS_GATEWAY:-172\.30\.90\.1\}/);
   assert.match(compose, /AWG3_EGRESS_MODE:\s*\$\{AWG3_EGRESS_MODE:-masquerade\}/);
   assert.match(compose, /NODE_EGRESS_SOCKET:\s*\$\{NODE_EGRESS_SOCKET:-\/run\/amnezia-egress\/egressd\.sock\}/);
   assert.doesNotMatch(compose, /(?:watchtower|\blatest\b)/i);
@@ -25,17 +28,21 @@ test("services/node-agent Dockerfile contains no latest tag and embeds static eg
   assert.match(dockerfile, /scripts\/switch-egress-mode\.sh/);
 });
 
-test("awg3-entrypoint.sh skips container MASQUERADE only in routed mode", async () => {
+test("awg3-entrypoint.sh reads persisted egress-mode and skips container MASQUERADE only in routed mode", async () => {
   const entry = await readNodeFile("scripts/awg3-entrypoint.sh");
   assert.match(entry, /EGRESS_MODE="\$\{AWG3_EGRESS_MODE:-masquerade\}"/);
+  assert.match(entry, /\$STATE_DIR\/egress-mode/);
   assert.match(entry, /if \[ "\$EGRESS_MODE" = "routed" \]; then/);
   assert.match(entry, /iptables -t nat -A POSTROUTING -s 10\.90\.0\.0\/22 -o eth0 -j MASQUERADE/);
 });
 
-test("switch-egress-mode.sh enforces 256 MiB disk gate, pre-switch snapshot, live toggle, and cotenants verify", async () => {
+test("switch-egress-mode.sh enforces 256 MiB disk gate, pre-switch snapshot, persisted egress-mode, live toggle, and cotenants verify", async () => {
   const sw = await readNodeFile("scripts/switch-egress-mode.sh");
   assert.match(sw, /PREFLIGHT_DISK_MIN_KB:-262144/);
   assert.match(sw, /egress-state-\$ts\.json/);
+  assert.match(sw, /EGRESS_MODE_FILE="\$STATE_DIR_AWG3\/egress-mode"/);
+  assert.match(sw, /--socket "\$EGRESS_SOCKET"/);
+  assert.match(sw, /rm -f "\$cotenants_snap"\nrelease_lock/);
   assert.match(sw, /awg3_on_bridge=1/);
   assert.match(sw, /cotenants\.sh" snapshot/);
   assert.match(sw, /cotenants\.sh" verify/);
@@ -50,11 +57,12 @@ test("agent-update.sh snapshots and rolls back amnezia-egressd binary on health-
   assert.match(upd, /scripts\/switch-egress-mode\.sh/);
 });
 
-test("amnezia-egressd.service pins Go memory bounds and non-root UID socket access inside root dir", async () => {
+test("amnezia-egressd.service pins Go memory bounds, preserves runtime dir, and sets non-root UID socket access", async () => {
   const unit = await readNodeFile("systemd/amnezia-egressd.service");
   assert.match(unit, /Environment=GOMEMLIMIT=24MiB/);
   assert.match(unit, /Environment=GOGC=50/);
   assert.match(unit, /MemoryMax=32M/);
   assert.match(unit, /--socket-uid 10001/);
   assert.match(unit, /RuntimeDirectoryMode=0755/);
+  assert.match(unit, /RuntimeDirectoryPreserve=yes/);
 });

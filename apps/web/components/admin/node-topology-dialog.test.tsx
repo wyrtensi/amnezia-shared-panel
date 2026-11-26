@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import type { AdminNode } from "@/components/admin/admin-data";
@@ -309,5 +311,32 @@ describe("summarizeNodeEgress & NodeTopologyDialog", () => {
     expect(html).toContain("ring-2 ring-primary/70 border-primary/70 bg-primary/[0.06]");
     expect(html).not.toContain('data-topology-focus="exit:ip-1" data-focused="true"');
     expect(html).not.toContain('data-topology-focus="exit:ip-2" data-focused="true"');
+  });
+
+  it("saves firewall policy via PATCH node without mode switching, omits entryName on quick-add, reloads in finally, and scans focus safely in rAF", () => {
+    const src = readFileSync(
+      fileURLToPath(new URL("./node-topology-dialog.tsx", import.meta.url)),
+      "utf8",
+    );
+    // H7: Save Policy calls PATCH /api/admin/nodes/:id instead of setNodeEgressMode
+    expect(src).toMatch(
+      /runAction\("filters"[\s\S]{0,400}method:\s*"PATCH"[\s\S]{0,200}egressBlockSmtp:\s*blockSmtp[\s\S]{0,100}egressIsolatePrivate:\s*isolatePrivate/,
+    );
+    // M7: quick-entry and quick-both omit entryName and quick-both uses try/finally reload
+    const quickEntryBlock = src.slice(
+      src.indexOf("quick-entry:"),
+      src.indexOf("quick-both:"),
+    );
+    expect(quickEntryBlock).not.toContain("entryName");
+    const quickBothBlock = src.slice(
+      src.indexOf("quick-both:"),
+      src.indexOf("Section 3: Physical Exit IPs"),
+    );
+    expect(quickBothBlock).not.toContain("entryName");
+    expect(quickBothBlock).toMatch(/try\s*\{[\s\S]*finally\s*\{\s*await reload\(\);/);
+    // UI-3: safe rAF focus lookup + cleanup
+    expect(src).toContain("requestAnimationFrame(");
+    expect(src).toContain("cancelAnimationFrame(raf)");
+    expect(src).toContain("candidate.dataset.topologyFocus === targetKey");
   });
 });

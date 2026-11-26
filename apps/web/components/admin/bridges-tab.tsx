@@ -98,6 +98,7 @@ export function BridgeCardView({
   onUpdateAgent,
   onToggleReachability,
   reachabilityBusy,
+  onOpenNode,
   embedded,
 }: {
   bridge: Bridge;
@@ -108,6 +109,7 @@ export function BridgeCardView({
   onUpdateAgent?: () => void;
   onToggleReachability?: (enabled: boolean) => void;
   reachabilityBusy?: boolean;
+  onOpenNode?: (nodeId: string) => void;
   /** Render card body directly without outer Card wrapper (for dialogs). */
   embedded?: boolean;
 }) {
@@ -216,12 +218,22 @@ export function BridgeCardView({
                   key={route.id}
                   className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-md bg-muted/50 px-2 py-1 text-xs"
                 >
-                  <a
-                    href={`#${nodeCardAnchor(route.nodeId)}`}
-                    className="min-w-0 break-words font-medium text-primary underline-offset-2 hover:underline"
-                  >
-                    {route.nodeName}
-                  </a>
+                  {onOpenNode ? (
+                    <button
+                      type="button"
+                      onClick={() => onOpenNode(route.nodeId)}
+                      className="min-w-0 cursor-pointer break-words text-left font-medium text-primary underline-offset-2 hover:underline"
+                    >
+                      {route.nodeName}
+                    </button>
+                  ) : (
+                    <a
+                      href={`#${nodeCardAnchor(route.nodeId)}`}
+                      className="min-w-0 break-words font-medium text-primary underline-offset-2 hover:underline"
+                    >
+                      {route.nodeName}
+                    </a>
+                  )}
                   <span className="font-mono">:{route.publicUdpPort}</span>
                   <Badge variant={ROUTE_STATE_VARIANT[route.state]}>
                     {t(`bridge.state.${route.state}`)}
@@ -280,11 +292,7 @@ export function BridgeCardView({
   );
 
   if (embedded) {
-    return (
-      <div id={bridgeCardAnchor(bridge.id)} className="space-y-3">
-        {content}
-      </div>
-    );
+    return <div className="space-y-3">{content}</div>;
   }
 
   return (
@@ -566,6 +574,7 @@ export type BridgeDetailDialogProps = {
   request: Requester;
   reachabilityBusy?: boolean;
   onSetReachability?: (bridgeId: string, enabled: boolean) => Promise<void>;
+  onOpenNode?: (nodeId: string) => void;
 };
 
 /**
@@ -579,6 +588,7 @@ export function BridgeDetailDialog({
   request,
   reachabilityBusy,
   onSetReachability,
+  onOpenNode,
 }: BridgeDetailDialogProps) {
   const { t, lang } = useT();
   const [renaming, setRenaming] = React.useState(false);
@@ -595,6 +605,8 @@ export function BridgeDetailDialog({
 
   if (!bridge) return null;
 
+  const hasSubDialog = renaming || deleting || updating;
+
   const handleDeleteDone = async () => {
     await onDone();
     onClose();
@@ -602,8 +614,21 @@ export function BridgeDetailDialog({
 
   return (
     <>
-      <Dialog open={Boolean(bridge)} onOpenChange={(next) => !next && onClose()}>
-        <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-xl">
+      <Dialog
+        open={Boolean(bridge)}
+        onOpenChange={(next) => {
+          if (!next && !hasSubDialog) onClose();
+        }}
+      >
+        <DialogContent
+          className="max-h-[90vh] overflow-y-auto sm:max-w-xl"
+          onInteractOutside={(e) => {
+            if (hasSubDialog) e.preventDefault();
+          }}
+          onEscapeKeyDown={(e) => {
+            if (hasSubDialog) e.preventDefault();
+          }}
+        >
           <DialogHeader>
             <DialogTitle className="flex min-w-0 items-center gap-2 pr-6">
               <Cable aria-hidden className="size-4 shrink-0 text-primary" />
@@ -629,6 +654,7 @@ export function BridgeDetailDialog({
             onRename={() => setRenaming(true)}
             onDelete={() => setDeleting(true)}
             onUpdateAgent={() => setUpdating(true)}
+            onOpenNode={onOpenNode}
             reachabilityBusy={reachabilityBusy}
             onToggleReachability={
               onSetReachability

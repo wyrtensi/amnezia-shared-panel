@@ -35,6 +35,10 @@ export const DEFAULT_PEER_SAMPLE_INTERVAL_MS =
 
 /** How many nodes the poll talks to at once. */
 const DEFAULT_POLL_CONCURRENCY = 4;
+/** Bounded parallel per-exit service checks per routed node. */
+const DEFAULT_EXIT_CHECK_CONCURRENCY = 3;
+/** Overall wall-clock budget for a node's per-exit service checks. */
+const DEFAULT_NODE_EXIT_CHECKS_BUDGET_MS = 25_000;
 
 export type PeerObservation = {
   keyId: string;
@@ -197,6 +201,10 @@ export type TelemetryPollerOptions = {
   now?: () => Date;
   /** Nodes contacted at once; bounded so a large fleet cannot exhaust the worker. */
   concurrency?: number;
+  /** Per-exit service checks run concurrently on a routed node. */
+  exitCheckConcurrency?: number;
+  /** Per-node overall time budget for per-exit service checks. */
+  exitChecksBudgetMs?: number;
 };
 
 /**
@@ -216,6 +224,8 @@ const runNodeServiceChecks = async ({
   serviceChecks,
   observedAt,
   repository,
+  exitCheckConcurrency,
+  exitChecksBudgetMs,
 }: {
   nodeId: string;
   policy: { checksEnabled: boolean; disabledCheckIds: string[] };
@@ -229,6 +239,8 @@ const runNodeServiceChecks = async ({
   };
   observedAt: Date;
   repository: TelemetryRepository;
+  exitCheckConcurrency: number;
+  exitChecksBudgetMs: number;
 }): Promise<void> => {
   const allowed = checksForNode(serviceChecks.checks, policy);
   const previous = serviceChecks.previousByNode.get(nodeId) ?? new Map();
@@ -253,22 +265,47 @@ const runNodeServiceChecks = async ({
     activeExitIps.length > 0 &&
     repository.recordEgressServiceCheckResults
   ) {
-    for (const exit of activeExitIps) {
-      const exitPrev = serviceChecks.previousByEgressIp?.get(exit.id) ?? new Map();
-      const dueForExit = selectDueChecks(allowed, exitPrev, observedAt);
-      if (dueForExit.length === 0) continue;
-      try {
-        const exitResults = await agent.runChecks(toCheckRequests(dueForExit), {
-          egressIpv4: exit.ipv4,
-        });
-        if (exitResults === null) continue;
-        const rows = toEgressResultRows(exit.id, exitResults, exitPrev, observedAt);
-        if (rows.length > 0) {
-          await repository.recordEgressServiceCheckResults(rows);
+    const dueExits = activeExitIps
+      .map((exit) => {
+        const exitPrev = serviceChecks.previousByEgressIp?.get(exit.id) ?? new Map();
+        const dueForExit = selectDueChecks(allowed, exitPrev, observedAt);
+        return dueForExit.length > 0 ? { exit, exitPrev, dueForExit } : null;
+      })
+      .filter((item): item is NonNullable<typeof item> => item !== null);
+    if (dueExits.length === 0) return;
+
+    const recordEgressResults = repository.recordEgressServiceCheckResults;
+    let budgetExhausted = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const checksPromise = mapWithConcurrency(
+      dueExits,
+      exitCheckConcurrency,
+      async ({ exit, exitPrev, dueForExit }) => {
+        if (budgetExhausted) return;
+        try {
+          const exitResults = await agent.runChecks(toCheckRequests(dueForExit), {
+            egressIpv4: exit.ipv4,
+          });
+          if (exitResults === null || budgetExhausted) return;
+          const rows = toEgressResultRows(exit.id, exitResults, exitPrev, observedAt);
+          if (rows.length > 0) {
+            await recordEgressResults(rows);
+          }
+        } catch {
+          // Deliberately silent per exit IP so sibling exits and node telemetry stay healthy.
         }
-      } catch {
-        // Deliberately silent per exit IP so sibling exits and node telemetry stay healthy.
-      }
+      },
+    );
+    const budgetPromise = new Promise<void>((resolve) => {
+      timer = setTimeout(() => {
+        budgetExhausted = true;
+        resolve();
+      }, Math.max(1, exitChecksBudgetMs));
+    });
+    try {
+      await Promise.race([checksPromise, budgetPromise]);
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
     }
   }
 };
@@ -279,6 +316,8 @@ export const createTelemetryPoller = ({
   resolvePublicIp = createPublicIpResolver(),
   now = () => new Date(),
   concurrency = DEFAULT_POLL_CONCURRENCY,
+  exitCheckConcurrency = DEFAULT_EXIT_CHECK_CONCURRENCY,
+  exitChecksBudgetMs = DEFAULT_NODE_EXIT_CHECKS_BUDGET_MS,
 }: TelemetryPollerOptions) => async (): Promise<void> => {
   const telemetryNodes = await repository.listTelemetryNodes();
   // Read before the fan-out, so every node in this tick is scheduled against
@@ -371,6 +410,8 @@ export const createTelemetryPoller = ({
             serviceChecks,
             observedAt,
             repository,
+            exitCheckConcurrency,
+            exitChecksBudgetMs,
           });
         }
       } catch (error) {

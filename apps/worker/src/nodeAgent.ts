@@ -292,7 +292,7 @@ export type NodeEgressDesiredPeer = {
 
 export type NodeEgressDesiredEntryMark = {
   entryIpv4: string;
-  routingTableId: number;
+  routingTableId?: number;
 };
 
 export type NodeEgressDesiredState = {

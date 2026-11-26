@@ -13,6 +13,7 @@ import {
   smallint,
   text,
   timestamp,
+  unique,
   uniqueIndex,
   uuid,
   varchar,
@@ -717,12 +718,11 @@ export const nodeVpnEndpoints = pgTable(
   },
   (table) => [
     uniqueIndex("node_vpn_endpoints_ordinal_unique").on(table.nodeId, table.ordinal),
-    // Migration 0072 creates this unique index with NULLS NOT DISTINCT in PostgreSQL.
-    uniqueIndex("node_vpn_endpoints_address_egress_unique").on(
-      table.nodeId,
-      table.address,
-      table.egressIpId,
-    ),
+    // Migration 0072 creates this unique index with NULLS NOT DISTINCT in PostgreSQL;
+    // Drizzle ORM 0.45 expresses NULLS NOT DISTINCT via unique() rather than uniqueIndex().
+    unique("node_vpn_endpoints_address_egress_unique")
+      .on(table.nodeId, table.address, table.egressIpId)
+      .nullsNotDistinct(),
     uniqueIndex("node_vpn_endpoints_address_variant_unique").on(
       table.nodeId,
       table.address,

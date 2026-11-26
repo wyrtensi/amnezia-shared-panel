@@ -50,6 +50,7 @@ const nodeIpv6RejectStubPayloadSchema = nodeJobPayloadSchema.extend({
 });
 const nodeSwitchEgressModePayloadSchema = nodeJobPayloadSchema.extend({
   mode: nodeEgressModeSchema,
+  previousMode: nodeEgressModeSchema.optional(),
 });
 
 const tryExtractBaseClientIpv4 = (vpnConfig: string): string | null => {
@@ -536,7 +537,7 @@ export const createJobProcessor = ({
       return;
     }
     if (job.type === NODE_SWITCH_EGRESS_MODE_JOB_TYPE) {
-      const { nodeId, mode } = nodeSwitchEgressModePayloadSchema.parse(job.payload);
+      const { nodeId, mode, previousMode } = nodeSwitchEgressModePayloadSchema.parse(job.payload);
       if (!repository.loadNodeEgressSyncContext || !repository.completeNodeEgressModeSwitch) {
         await repository.failJob(job.id, "Node egress mode switch repository is not wired");
         return;
@@ -554,6 +555,7 @@ export const createJobProcessor = ({
             jobId: job.id,
             nodeId,
             mode,
+            ...(previousMode ? { previousMode } : {}),
             state: "failed",
             message: "node-agent does not serve /server/egress",
             observedAt: now(),
@@ -568,6 +570,7 @@ export const createJobProcessor = ({
           jobId: job.id,
           nodeId,
           mode,
+          ...(previousMode ? { previousMode } : {}),
           state: "failed",
           message: switched.error ?? "Host egress mode switch failed",
           report: switched.report ?? null,
@@ -579,6 +582,7 @@ export const createJobProcessor = ({
         jobId: job.id,
         nodeId,
         mode,
+        ...(previousMode ? { previousMode } : {}),
         state: "idle",
         message: null,
         report: switched.report ?? null,

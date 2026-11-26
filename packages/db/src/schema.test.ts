@@ -1,4 +1,5 @@
 import { getTableColumns, getTableName } from "drizzle-orm";
+import { getTableConfig } from "drizzle-orm/pg-core";
 import { deviceTypeSchema } from "@amnezia/contracts";
 import { describe, expect, it } from "vitest";
 import {
@@ -123,6 +124,12 @@ describe("database schema", () => {
     expect(epCols.variantOrdinal.default).toBe(1);
     expect(epCols.egressIpId.name).toBe("egress_ip_id");
     expect(epCols.probeEgressMatch.name).toBe("probe_egress_match");
+
+    const epConfig = getTableConfig(nodeVpnEndpoints);
+    const addrEgressUnique = epConfig.uniqueConstraints.find(
+      (constraint) => constraint.name === "node_vpn_endpoints_address_egress_unique",
+    );
+    expect(addrEgressUnique?.nullsNotDistinct).toBe(true);
   });
 });
 

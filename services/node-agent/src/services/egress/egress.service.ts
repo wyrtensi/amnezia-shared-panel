@@ -199,6 +199,7 @@ export class EgressService {
 
   async runHttpCheck(
     req: EgressHttpCheckRequest,
+    signal?: AbortSignal,
   ): Promise<EgressHttpCheckResponse> {
     this.requireConfigured();
     const timeoutMs = Math.max(
@@ -208,11 +209,14 @@ export class EgressService {
     try {
       const { status, data } = await this.requestJson<
         EgressHttpCheckResponse & DaemonErrorPayload
-      >("POST", "/v1/checks/http", req, timeoutMs);
+      >("POST", "/v1/checks/http", req, timeoutMs, signal);
       this.throwIfDaemonError(status, data);
       this.loggedUnavailable = false;
       return data;
     } catch (error) {
+      if (signal?.aborted) {
+        throw error;
+      }
       throw this.mapControlError(error);
     }
   }
@@ -224,7 +228,12 @@ export class EgressService {
         SwitchEgressModeResponse & DaemonErrorPayload
       >("POST", "/v1/switch-mode", { mode }, SWITCH_MODE_TIMEOUT_MS);
       if (status === 409 || (status >= 200 && status < 300 && !data.ok)) {
-        throw new APIError(ClientErrorCode.CONFLICT);
+        this.loggedUnavailable = false;
+        return {
+          ok: false,
+          error: data?.error ?? "Host egress mode switch failed",
+          ...(data?.report ? { report: data.report } : {}),
+        };
       }
       this.throwIfDaemonError(status, data);
       this.loggedUnavailable = false;
@@ -278,8 +287,18 @@ export class EgressService {
     path: string,
     body?: unknown,
     timeoutMs: number = DEFAULT_TIMEOUT_MS,
+    signal?: AbortSignal,
   ): Promise<{ status: number; data: T }> {
     return new Promise((resolve, reject) => {
+      if (signal?.aborted) {
+        reject(
+          signal.reason instanceof Error
+            ? signal.reason
+            : new DOMException("The operation was aborted", "AbortError"),
+        );
+        return;
+      }
+
       const payload = body === undefined ? undefined : JSON.stringify(body);
       const headers: Record<string, string | number> = {
         Accept: "application/json",
@@ -311,6 +330,7 @@ export class EgressService {
           });
 
           res.on("end", () => {
+            cleanup();
             const text = Buffer.concat(chunks).toString("utf8").trim();
             if (!text) {
               resolve({ status: res.statusCode ?? 500, data: {} as T });
@@ -330,6 +350,20 @@ export class EgressService {
         },
       );
 
+      const onAbort = () => {
+        const reason =
+          signal?.reason instanceof Error
+            ? signal.reason
+            : new DOMException("The operation was aborted", "AbortError");
+        req.destroy(reason);
+      };
+
+      const cleanup = () => {
+        signal?.removeEventListener("abort", onAbort);
+      };
+
+      signal?.addEventListener("abort", onAbort, { once: true });
+
       req.on("timeout", () => {
         req.destroy(
           new EgressDaemonUnavailableError(
@@ -339,6 +373,7 @@ export class EgressService {
       });
 
       req.on("error", (err: NodeJS.ErrnoException) => {
+        cleanup();
         if (err instanceof EgressDaemonUnavailableError) {
           reject(err);
           return;

@@ -46,6 +46,7 @@ export type WidgetNode = {
   entryName?: string;
   status: ReachabilityStatus;
   levels: ProbeLevels | null;
+  egressMatch?: boolean | null;
   failingSince: Date | null;
   online: number;
   /** The newest handshake of a person's key on the node, revoked keys included. */
@@ -84,10 +85,11 @@ export type WidgetData = {
 const mark = (level: ProbeLevel | undefined): string =>
   level?.ok === true ? "1" : level?.ok === false ? "0" : "-";
 
-const levelFlags = (levels: ProbeLevels | null): string =>
-  levels
-    ? mark(levels.ping) + mark(levels.tcp) + mark(levels.handshake) + mark(levels.http)
-    : "----";
+const levelFlags = (levels: ProbeLevels | null, egressMatch?: boolean | null): string => {
+  if (!levels) return "----";
+  const httpFlag = egressMatch === false ? "0" : mark(levels.http);
+  return mark(levels.ping) + mark(levels.tcp) + mark(levels.handshake) + httpFlag;
+};
 
 const rank = (node: WidgetNode) => (node.status === "failed" ? 0 : node.status === "error" ? 1 : 2);
 
@@ -166,7 +168,7 @@ export const buildWidgetData = (input: WidgetInput): WidgetData => {
     activeNodes.map((node) => {
       const row: Row = [
         cutBytes(node.name, nameBytes),
-        levelFlags(node.levels),
+        levelFlags(node.levels, node.egressMatch),
         String(node.online),
         String(peopleMinutes(node.lastPersonHandshakeAt, input.checkedAt) ?? ""),
       ];

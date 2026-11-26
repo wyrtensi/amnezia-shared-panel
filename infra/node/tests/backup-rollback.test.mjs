@@ -53,7 +53,22 @@ test("rollback.sh uses 256 MiB disk floor and parses meta.env without source/eva
   assert.doesNotMatch(rollback, /(?:^|\s)(?:\.|source|eval)\s+.*meta\.env/m);
   assert.match(rollback, /sync_host_egress_after_restore/);
   assert.match(rollback, /amnezia-egressd (reconcile|teardown)/);
+  assert.match(rollback, /--socket "\$EGRESS_SOCKET"/);
+  assert.match(rollback, /had_previous_egress_state/);
+  assert.match(rollback, /EGRESS_MODE_FILE="\$STATE_DIR_AWG3\/egress-mode"/);
   assert.match(rollback, /conntrack -D -s 10\.90\.0\.0\/22/);
+  assert.ok(
+    rollback.indexOf("compose up --detach --no-build &&") <
+      rollback.indexOf('sync_host_egress_after_restore "$effective_mode"'),
+    "sync_host_egress_after_restore must run after compose up creates br-awg-egress",
+  );
+  assert.doesNotMatch(
+    rollback.slice(
+      rollback.indexOf("sync_host_egress_after_restore() {"),
+      rollback.indexOf("effective_mode="),
+    ),
+    /amnezia-egressd reconcile.*\|\| true/,
+  );
 });
 
 test("create_backup packages AWG3 + egress state.json + meta.env, validates cleanly, and prunes beyond BACKUP_KEEP_COUNT", executing, async (t) => {

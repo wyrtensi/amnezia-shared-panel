@@ -25,7 +25,31 @@ min_kb="${PREFLIGHT_DISK_MIN_KB:-262144}"
 acquire_lock
 ensure_layout
 
-previous_mode="$(env_value AWG3_EGRESS_MODE)"
+EGRESS_SOCKET="${NODE_EGRESS_SOCKET:-/run/amnezia-egress/egressd.sock}"
+EGRESS_MODE_FILE="$STATE_DIR_AWG3/egress-mode"
+
+write_egress_mode_file() {
+  mode_val="$1"
+  mkdir -p "$STATE_DIR_AWG3"
+  chmod 700 "$STATE_DIR_AWG3"
+  mode_tmp="$(mktemp "$STATE_DIR_AWG3/.egress-mode.XXXXXX")" || return 1
+  printf '%s\n' "$mode_val" >"$mode_tmp" || { rm -f "$mode_tmp"; return 1; }
+  chmod 600 "$mode_tmp"
+  mv -f "$mode_tmp" "$EGRESS_MODE_FILE"
+}
+
+had_previous_mode_file=0
+previous_mode=""
+if [ -f "$EGRESS_MODE_FILE" ] && [ ! -L "$EGRESS_MODE_FILE" ]; then
+  had_previous_mode_file=1
+  if [ -r "$EGRESS_MODE_FILE" ]; then
+    previous_mode="$(tr -d '[:space:]' <"$EGRESS_MODE_FILE" 2>/dev/null || true)"
+  fi
+fi
+case "$previous_mode" in
+  masquerade|routed) ;;
+  *) previous_mode="$(env_value AWG3_EGRESS_MODE)" ;;
+esac
 case "$previous_mode" in
   masquerade|routed) ;;
   *) previous_mode="masquerade" ;;
@@ -64,10 +88,15 @@ fi
 revert_on_error() {
   reason="$1"
   set_env_value AWG3_EGRESS_MODE "$previous_mode" || true
-  if [ "$previous_mode" = "routed" ]; then
-    amnezia-egressd reconcile --node-dir "$NODE_DIR" --state "$EGRESS_STATE_FILE" >/dev/null 2>&1 || true
+  if [ "$had_previous_mode_file" -eq 1 ]; then
+    write_egress_mode_file "$previous_mode" || true
   else
-    amnezia-egressd teardown --node-dir "$NODE_DIR" --state "$EGRESS_STATE_FILE" >/dev/null 2>&1 || true
+    rm -f "$EGRESS_MODE_FILE" || true
+  fi
+  if [ "$previous_mode" = "routed" ]; then
+    amnezia-egressd reconcile --socket "$EGRESS_SOCKET" --node-dir "$NODE_DIR" --state "$EGRESS_STATE_FILE" >/dev/null 2>&1 || true
+  else
+    amnezia-egressd teardown --socket "$EGRESS_SOCKET" --node-dir "$NODE_DIR" --state "$EGRESS_STATE_FILE" >/dev/null 2>&1 || true
   fi
   if [ "$awg3_on_bridge" -eq 0 ]; then
     compose up --detach --no-deps --no-build awg3 >/dev/null 2>&1 || true
@@ -80,11 +109,15 @@ revert_on_error() {
 if ! set_env_value AWG3_EGRESS_MODE "$target_mode"; then
   fail "failed to write AWG3_EGRESS_MODE=$target_mode to $ENV_FILE"
 fi
+if ! write_egress_mode_file "$target_mode"; then
+  set_env_value AWG3_EGRESS_MODE "$previous_mode" || true
+  fail "failed to write $EGRESS_MODE_FILE"
+fi
 
 if [ "$awg3_on_bridge" -eq 1 ]; then
   # 0ms live transition: container stays up on br-awg-egress while rules flip safely.
   if [ "$target_mode" = "routed" ]; then
-    if ! amnezia-egressd reconcile --node-dir "$NODE_DIR" --state "$EGRESS_STATE_FILE"; then
+    if ! amnezia-egressd reconcile --socket "$EGRESS_SOCKET" --node-dir "$NODE_DIR" --state "$EGRESS_STATE_FILE"; then
       revert_on_error "amnezia-egressd reconcile failed before removing container MASQUERADE"
     fi
     if ! docker exec amnezia-awg3 /bin/sh -ec 'while iptables -t nat -D POSTROUTING -s 10.90.0.0/22 -o eth0 -j MASQUERADE 2>/dev/null; do :; done'; then
@@ -95,14 +128,14 @@ if [ "$awg3_on_bridge" -eq 1 ]; then
       revert_on_error "failed to restore live container MASQUERADE rule in amnezia-awg3"
     fi
     if command -v amnezia-egressd >/dev/null 2>&1; then
-      amnezia-egressd teardown --node-dir "$NODE_DIR" --state "$EGRESS_STATE_FILE" || \
+      amnezia-egressd teardown --socket "$EGRESS_SOCKET" --node-dir "$NODE_DIR" --state "$EGRESS_STATE_FILE" || \
         revert_on_error "amnezia-egressd teardown failed"
     fi
   fi
 else
   # Legacy node migration: recreate only awg3 so it attaches to br-awg-egress.
   if [ "$target_mode" = "routed" ]; then
-    if ! amnezia-egressd reconcile --node-dir "$NODE_DIR" --state "$EGRESS_STATE_FILE"; then
+    if ! amnezia-egressd reconcile --socket "$EGRESS_SOCKET" --node-dir "$NODE_DIR" --state "$EGRESS_STATE_FILE"; then
       revert_on_error "amnezia-egressd pre-reconcile failed before migrating awg3 onto br-awg-egress"
     fi
   fi
@@ -113,10 +146,10 @@ else
     revert_on_error "amnezia-awg3 failed its health gate after switching to $target_mode"
   fi
   if [ "$target_mode" = "routed" ]; then
-    amnezia-egressd reconcile --node-dir "$NODE_DIR" --state "$EGRESS_STATE_FILE" || \
+    amnezia-egressd reconcile --socket "$EGRESS_SOCKET" --node-dir "$NODE_DIR" --state "$EGRESS_STATE_FILE" || \
       revert_on_error "amnezia-egressd reconcile failed after migrating awg3"
   elif command -v amnezia-egressd >/dev/null 2>&1; then
-    amnezia-egressd teardown --node-dir "$NODE_DIR" --state "$EGRESS_STATE_FILE" || \
+    amnezia-egressd teardown --socket "$EGRESS_SOCKET" --node-dir "$NODE_DIR" --state "$EGRESS_STATE_FILE" || \
       revert_on_error "amnezia-egressd teardown failed"
   fi
 fi
@@ -132,5 +165,6 @@ if command -v conntrack >/dev/null 2>&1; then
 fi
 
 prune_node_backups
+rm -f "$cotenants_snap"
 release_lock
 info "Egress mode switched to $target_mode (snapshot: $snapshot_file)."

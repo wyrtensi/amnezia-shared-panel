@@ -9512,3 +9512,380 @@ describe("PostgresControlRepository probe re-check after a configuration change"
     expect(pending?.runRequestedAt).toBe(pendingAt.toISOString());
   });
 });
+
+describe("PostgresControlRepository egress management (Milestone B)", () => {
+  const database = databaseUrl ? createDatabase(databaseUrl) : null;
+  const keyring = { 1: randomBytes(32) };
+  const createdNodeIds: string[] = [];
+  const createdUserIds: string[] = [];
+  const createdCheckIds: string[] = [];
+  let admin: Actor;
+
+  const repository = (): PostgresControlRepository => {
+    if (!database) throw new Error("No database");
+    return new PostgresControlRepository({ db: database.db, keyring });
+  };
+
+  const seedNode = async (over: Partial<typeof nodes.$inferInsert> = {}): Promise<string> => {
+    if (!database) throw new Error("No database");
+    const credentials = encryptSecret("api-key", keyring, 1);
+    const label = encryptSecret(randomBytes(32).toString("base64"), keyring, 1);
+    const [node] = await database.db
+      .insert(nodes)
+      .values({
+        name: `egress-mb-${randomBytes(4).toString("hex")}`,
+        apiBaseUrl: "http://192.0.2.40:4001",
+        protocol: "awg3",
+        capabilities: { awg3: true, awg2: true },
+        publicIp: "203.0.113.10",
+        credentialsCiphertext: credentials.ciphertext,
+        credentialsNonce: credentials.nonce,
+        credentialsAuthTag: credentials.authTag,
+        credentialsKeyVersion: credentials.keyVersion,
+        labelSecretCiphertext: label.ciphertext,
+        labelSecretNonce: label.nonce,
+        labelSecretAuthTag: label.authTag,
+        labelSecretKeyVersion: label.keyVersion,
+        ...over,
+      })
+      .returning();
+    if (!node) throw new Error("Failed to seed node");
+    createdNodeIds.push(node.id);
+    return node.id;
+  };
+
+  const seedUser = async (
+    over: Partial<typeof users.$inferInsert> = {},
+  ): Promise<typeof users.$inferSelect> => {
+    if (!database) throw new Error("No database");
+    const [user] = await database.db
+      .insert(users)
+      .values({
+        email: `egress-mb-${randomBytes(6).toString("hex")}@example.com`,
+        role: "user",
+        ...over,
+      })
+      .returning();
+    if (!user) throw new Error("Failed to seed user");
+    createdUserIds.push(user.id);
+    return user;
+  };
+
+  const seedKey = async (
+    ownerId: string,
+    nodeId: string,
+    over: Partial<typeof vpnKeys.$inferInsert> = {},
+  ): Promise<typeof vpnKeys.$inferSelect> => {
+    if (!database) throw new Error("No database");
+    const credentials = encryptSecret("cfg", keyring, 1);
+    const [key] = await database.db
+      .insert(vpnKeys)
+      .values({
+        ownerId,
+        nodeId,
+        nodeLabel: `lbl_${randomBytes(4).toString("hex")}`,
+        protocol: "awg3",
+        state: "active",
+        routeProfile: "full_tunnel",
+        configCiphertext: credentials.ciphertext,
+        configNonce: credentials.nonce,
+        configAuthTag: credentials.authTag,
+        configKeyVersion: credentials.keyVersion,
+        ...over,
+      })
+      .returning();
+    if (!key) throw new Error("Failed to seed key");
+    return key;
+  };
+
+  beforeAll(async () => {
+    if (!database) return;
+    const user = await seedUser({ role: "admin" });
+    admin = { id: user.id, email: user.email, displayName: null, role: "admin", status: "active" };
+  });
+
+  afterAll(async () => {
+    if (!database) return;
+    if (createdNodeIds.length > 0) {
+      await database.db.delete(jobOutbox).where(
+        sql`${jobOutbox.payload}->>'nodeId' IN (${sql.join(createdNodeIds.map((id) => sql`${id}`), sql`, `)})`,
+      );
+      await database.db.delete(vpnKeys).where(inArray(vpnKeys.nodeId, createdNodeIds));
+      await database.db.delete(nodeVpnEndpoints).where(inArray(nodeVpnEndpoints.nodeId, createdNodeIds));
+      await database.db.delete(nodeEgressIps).where(inArray(nodeEgressIps.nodeId, createdNodeIds));
+      await database.db.delete(nodes).where(inArray(nodes.id, createdNodeIds));
+    }
+    if (createdCheckIds.length > 0) {
+      await database.db.delete(nodeServiceChecks).where(inArray(nodeServiceChecks.id, createdCheckIds));
+    }
+    if (createdUserIds.length > 0) {
+      await database.db.delete(users).where(inArray(users.id, createdUserIds));
+    }
+    await database.client.end();
+  });
+
+  runDatabaseTest(
+    "resolves routed implicit self-exit IPv4 and attributes AWG 2.0 keys to masquerade",
+    async () => {
+      if (!database) return;
+      const nodeId = await seedNode({
+        publicIp: "203.0.113.10",
+        egressMode: "routed",
+        egressDefaultIpId: null,
+      });
+      const [epIpv4] = await database.db
+        .insert(nodeVpnEndpoints)
+        .values({
+          nodeId,
+          ordinal: 1,
+          name: "SelfExit",
+          address: "203.0.113.20",
+          enabled: true,
+          egressIpId: null,
+        })
+        .returning();
+      const [epHost] = await database.db
+        .insert(nodeVpnEndpoints)
+        .values({
+          nodeId,
+          ordinal: 2,
+          name: "HostEntry",
+          address: "vpn.example.test",
+          enabled: true,
+          egressIpId: null,
+        })
+        .returning();
+      if (!epIpv4 || !epHost) throw new Error("Failed to seed endpoints");
+
+      const awg3Self = await seedKey(admin.id, nodeId, { protocol: "awg3", endpointId: epIpv4.id });
+      const awg3Host = await seedKey(admin.id, nodeId, { protocol: "awg3", endpointId: epHost.id });
+      const awg2Key = await seedKey(admin.id, nodeId, { protocol: "awg2", endpointId: epIpv4.id });
+
+      const adminNodes = (await repository().adminList(admin, "nodes")) as Array<{
+        id: string;
+        publicEndpoints: Array<{ id: string; effectiveEgressIp: string | null }>;
+      }>;
+      const adminNode = adminNodes.find((n) => n.id === nodeId);
+      expect(adminNode?.publicEndpoints.find((e) => e.id === epIpv4.id)?.effectiveEgressIp).toBe(
+        "203.0.113.20",
+      );
+      expect(adminNode?.publicEndpoints.find((e) => e.id === epHost.id)?.effectiveEgressIp).toBe(
+        "203.0.113.10",
+      );
+
+      const ownerKeys = await repository().listKeys(admin);
+      expect(ownerKeys.find((k) => k.id === awg3Self.id)?.egress).toMatchObject({
+        effectiveExitIp: "203.0.113.20",
+        mode: "routed",
+      });
+      expect(ownerKeys.find((k) => k.id === awg3Host.id)?.egress).toMatchObject({
+        effectiveExitIp: "203.0.113.10",
+        mode: "routed",
+      });
+      expect(ownerKeys.find((k) => k.id === awg2Key.id)?.egress).toMatchObject({
+        effectiveExitIp: "203.0.113.10",
+        mode: "masquerade",
+      });
+
+      const adminKeys = (await repository().adminList(admin, "keys")) as Array<{
+        id: string;
+        egress?: { effectiveExitIp: string | null; mode: string };
+      }>;
+      expect(adminKeys.find((k) => k.id === awg3Self.id)?.egress).toMatchObject({
+        effectiveExitIp: "203.0.113.20",
+        mode: "routed",
+      });
+      expect(adminKeys.find((k) => k.id === awg2Key.id)?.egress).toMatchObject({
+        effectiveExitIp: "203.0.113.10",
+        mode: "masquerade",
+      });
+    },
+  );
+
+  runDatabaseTest("refuses reassignKeyEndpoint on service account keys", async () => {
+    if (!database) return;
+    const nodeId = await seedNode();
+    const [ep1, ep2] = await database.db
+      .insert(nodeVpnEndpoints)
+      .values([
+        { nodeId, ordinal: 1, name: "E1", address: "203.0.113.31", enabled: true },
+        { nodeId, ordinal: 2, name: "E2", address: "203.0.113.32", enabled: true },
+      ])
+      .returning();
+    if (!ep1 || !ep2) throw new Error("Failed to seed endpoints");
+    const svcUser = await seedUser({ serviceAccount: true });
+    const svcKey = await seedKey(svcUser.id, nodeId, { protocol: "awg3", endpointId: ep1.id });
+    const person = await seedUser({ serviceAccount: false });
+    const personKey = await seedKey(person.id, nodeId, { protocol: "awg3", endpointId: ep1.id });
+
+    await expect(
+      repository().reassignKeyEndpoint(admin, svcKey.id, { endpointId: ep2.id }),
+    ).rejects.toMatchObject({ statusCode: 409, code: "SERVICE_ACCOUNT" });
+
+    await expect(
+      repository().reassignKeyEndpoint(admin, personKey.id, { endpointId: ep2.id }),
+    ).resolves.toMatchObject({
+      id: personKey.id,
+      endpointId: ep2.id,
+      previousEndpointId: ep1.id,
+    });
+  });
+
+  runDatabaseTest("rejects deleting a bound exit IP and deletes an unused default exit IP", async () => {
+    if (!database) return;
+    const nodeId = await seedNode();
+    const [exitIp] = await database.db
+      .insert(nodeEgressIps)
+      .values({ nodeId, ipv4: "198.51.100.40", routingTableId: 200 })
+      .returning();
+    if (!exitIp) throw new Error("Failed to seed exit IP");
+    await database.db
+      .update(nodes)
+      .set({ egressDefaultIpId: exitIp.id })
+      .where(eq(nodes.id, nodeId));
+    const [ep] = await database.db
+      .insert(nodeVpnEndpoints)
+      .values({
+        nodeId,
+        ordinal: 1,
+        name: "Bound",
+        address: "203.0.113.40",
+        enabled: true,
+        egressIpId: exitIp.id,
+      })
+      .returning();
+    if (!ep) throw new Error("Failed to seed endpoint");
+
+    await expect(
+      repository().deleteNodeEgressIp(admin, nodeId, exitIp.id),
+    ).rejects.toMatchObject({ statusCode: 409, code: "EGRESS_IP_IN_USE" });
+
+    await database.db
+      .update(nodeVpnEndpoints)
+      .set({ egressIpId: null })
+      .where(eq(nodeVpnEndpoints.id, ep.id));
+
+    await expect(repository().deleteNodeEgressIp(admin, nodeId, exitIp.id)).resolves.toEqual({
+      id: exitIp.id,
+      deleted: true,
+      affectedEndpoints: 0,
+    });
+    const [nodeRow] = await database.db
+      .select({ egressDefaultIpId: nodes.egressDefaultIpId })
+      .from(nodes)
+      .where(eq(nodes.id, nodeId));
+    expect(nodeRow?.egressDefaultIpId).toBeNull();
+  });
+
+  runDatabaseTest("keeps nodes.egressMode unchanged while switching and blocks concurrent switches", async () => {
+    if (!database) return;
+    const nodeId = await seedNode({
+      egressMode: "masquerade",
+      egressModeState: "idle",
+      egressDaemonState: "masquerade_ready",
+    });
+    await database.db
+      .insert(nodeEgressIps)
+      .values({ nodeId, ipv4: "198.51.100.50", routingTableId: 200, enabled: true });
+
+    const queued = await repository().setNodeEgressMode(admin, nodeId, { mode: "routed" });
+    expect(queued).toEqual({ nodeId, mode: "routed", state: "switching", queued: true });
+
+    const [nodeRow] = await database.db
+      .select({ egressMode: nodes.egressMode, egressModeState: nodes.egressModeState })
+      .from(nodes)
+      .where(eq(nodes.id, nodeId));
+    expect(nodeRow).toEqual({ egressMode: "masquerade", egressModeState: "switching" });
+
+    const jobs = await database.db
+      .select({ payload: jobOutbox.payload })
+      .from(jobOutbox)
+      .where(sql`${jobOutbox.payload}->>'nodeId' = ${nodeId}`);
+    expect(jobs[0]?.payload).toMatchObject({
+      nodeId,
+      mode: "routed",
+      previousMode: "masquerade",
+    });
+
+    await expect(
+      repository().setNodeEgressMode(admin, nodeId, { mode: "masquerade" }),
+    ).rejects.toMatchObject({ statusCode: 409, code: "EGRESS_MODE_SWITCHING" });
+  });
+
+  runDatabaseTest("swapNodeEgressIp clears stale check results and resets endpoint probe state", async () => {
+    if (!database) return;
+    const nodeId = await seedNode();
+    const [exitIp] = await database.db
+      .insert(nodeEgressIps)
+      .values({ nodeId, ipv4: "198.51.100.60", routingTableId: 200 })
+      .returning();
+    const [check] = await database.db
+      .insert(nodeServiceChecks)
+      .values({
+        name: `swap-check-${randomBytes(4).toString("hex")}`,
+        probe: { kind: "http", url: "https://example.com/", method: "GET", timeoutMs: 5000 },
+        assertions: [{ type: "statusIn", statuses: [200] }],
+        intervalSec: 3600,
+        enabled: true,
+      })
+      .returning();
+    if (!exitIp || !check) throw new Error("Failed to seed exit IP or check");
+    createdCheckIds.push(check.id);
+
+    await database.db.insert(nodeEgressServiceCheckResults).values({
+      egressIpId: exitIp.id,
+      checkId: check.id,
+      status: "ok",
+      checkedAt: new Date(),
+    });
+    const openedAt = new Date(Date.now() - 60_000);
+    const [ep] = await database.db
+      .insert(nodeVpnEndpoints)
+      .values({
+        nodeId,
+        ordinal: 1,
+        name: "Swapped",
+        address: "203.0.113.60",
+        enabled: true,
+        egressIpId: exitIp.id,
+        probeStatus: "failed",
+        probeLevels: { ping: true },
+        probeCheckedAt: openedAt,
+        probeConsecutiveFailures: 4,
+        probeFailingSince: openedAt,
+        probeDetail: "old mismatch",
+        probeAlertedAt: openedAt,
+        probeAlertKind: "node",
+        probeObservedEgressIp: "198.51.100.60",
+        probeEgressMatch: false,
+      })
+      .returning();
+    if (!ep) throw new Error("Failed to seed endpoint");
+
+    await repository().swapNodeEgressIp(admin, nodeId, exitIp.id, { ipv4: "198.51.100.61" });
+
+    const remainingChecks = await database.db
+      .select()
+      .from(nodeEgressServiceCheckResults)
+      .where(eq(nodeEgressServiceCheckResults.egressIpId, exitIp.id));
+    expect(remainingChecks).toHaveLength(0);
+
+    const [updatedEp] = await database.db
+      .select()
+      .from(nodeVpnEndpoints)
+      .where(eq(nodeVpnEndpoints.id, ep.id));
+    expect(updatedEp).toMatchObject({
+      probeStatus: null,
+      probeLevels: null,
+      probeCheckedAt: null,
+      probeConsecutiveFailures: 0,
+      probeFailingSince: null,
+      probeDetail: null,
+      probeAlertedAt: null,
+      probeAlertKind: null,
+      probeObservedEgressIp: null,
+      probeEgressMatch: null,
+      revision: ep.revision + 1,
+    });
+  });
+});

@@ -223,11 +223,22 @@ export const applyExpectedEgress = (
     if (observedEgressIp === expectedEgressIp) {
       return { outcome, observedEgressIp, egressMatch: true };
     }
+    const detail = clip(`egress mismatch: expected ${expectedEgressIp}, got ${observedEgressIp ?? "none"}`);
     return {
       outcome: {
         ...outcome,
         status: "failed",
-        detail: clip(`egress mismatch: expected ${expectedEgressIp}, got ${observedEgressIp ?? "none"}`),
+        levels: outcome.levels
+          ? {
+              ...outcome.levels,
+              http: {
+                ...outcome.levels.http,
+                ok: false,
+                detail,
+              },
+            }
+          : outcome.levels,
+        detail,
       },
       observedEgressIp,
       egressMatch: false,
@@ -566,7 +577,12 @@ export const ingestRun = (input: IngestInput): IngestOutput => {
     n.badge.every((o) => o.levels?.handshake.ok !== true),
   );
   const onlyEgressFailed = attempted.every((n) =>
-    n.badge.every((o) => o.levels?.handshake.ok === true && o.levels.http.ok !== true),
+    n.badge.every(
+      (o) =>
+        o.levels?.handshake.ok === true &&
+        o.levels.http.ok !== true &&
+        !o.detail?.startsWith("egress mismatch:"),
+    ),
   );
   const massFailure =
     allFailed &&

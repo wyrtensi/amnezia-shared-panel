@@ -96,7 +96,7 @@ type DesiredPeer struct {
 // so replies from br-awg-egress leave via that Entry IP's routing table.
 type DesiredEntryMark struct {
 	EntryIPv4      string `json:"entryIpv4"`
-	RoutingTableID int    `json:"routingTableId"`
+	RoutingTableID int    `json:"routingTableId,omitempty"`
 }
 
 // DesiredState is the persisted target configuration under /etc/amnezia-egress/state.json.
@@ -182,6 +182,7 @@ type VerifyExitRequest struct {
 	DNSServer  string `json:"dnsServer,omitempty"`
 	DNSDomain  string `json:"dnsDomain,omitempty"`
 	TimeoutMs  int    `json:"timeoutMs,omitempty"`
+	Fwmark     uint32 `json:"fwmark,omitempty"`
 }
 
 // VerifyExitResponse reports both source-bound HTTP egress IP confirmation and DNS resolution.
@@ -206,6 +207,7 @@ type HttpCheckRequest struct {
 	Headers         map[string]string `json:"headers,omitempty"`
 	FollowRedirects *bool             `json:"followRedirects,omitempty"`
 	TimeoutMs       int               `json:"timeoutMs,omitempty"`
+	Fwmark          uint32            `json:"fwmark,omitempty"`
 }
 
 // HttpCheckResponse mirrors the bounded response data needed by node-agent assertions.
@@ -340,7 +342,7 @@ func NormalizeAndValidateDesiredState(in *DesiredState) error {
 			return fmt.Errorf("duplicate entryMark %s", em.EntryIPv4)
 		}
 		seenEntries[em.EntryIPv4] = struct{}{}
-		if em.RoutingTableID < MinRoutingTableID || em.RoutingTableID > MaxRoutingTableID {
+		if em.RoutingTableID != 0 && (em.RoutingTableID < MinRoutingTableID || em.RoutingTableID > MaxRoutingTableID) {
 			return fmt.Errorf("entryMarks[%d].routingTableId %d out of range [%d..%d]", i, em.RoutingTableID, MinRoutingTableID, MaxRoutingTableID)
 		}
 	}

@@ -88,15 +88,17 @@ func (a *stubApplier) ReadExitCounters() (map[string]nft.CounterStats, error) {
 }
 
 type stubRouteMgr struct {
-	mu      sync.Mutex
-	syncs   int
-	flushed []string
+	mu         sync.Mutex
+	syncs      int
+	lastInput  routing.SyncInput
+	flushed    []string
 }
 
-func (r *stubRouteMgr) Sync(_ []nft.EvaluatedExit, _ string) error {
+func (r *stubRouteMgr) Sync(input routing.SyncInput) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.syncs++
+	r.lastInput = input
 	return nil
 }
 
@@ -278,5 +280,69 @@ func TestReportStaysUnderCompactBudget(t *testing.T) {
 	_ = dir
 	if len(raw) > types.MaxReportBytes {
 		t.Fatalf("expected compacted report <= %d bytes, got %d", types.MaxReportBytes, len(raw))
+	}
+}
+
+func TestVerifyExitAndHttpCheckResolveExitFwmark(t *testing.T) {
+	dir := t.TempDir()
+	_ = os.WriteFile(filepath.Join(dir, ".env"), []byte("AWG3_EGRESS_MODE=routed\nAWG3_EGRESS_IPV4=172.30.90.2\n"), 0o600)
+
+	netStub := &stubNetClient{nftPresent: true}
+	applier := &stubApplier{netStub: netStub}
+	routeMgr := &stubRouteMgr{}
+
+	mgr := NewManager(ManagerConfig{
+		Version:    "1.2.0-test",
+		BridgeName: "br-awg-egress",
+		NodeDir:    dir,
+		Store:      store.New(filepath.Join(dir, "state.json")),
+		NetClient:  netStub,
+		NftApplier: applier,
+		RouteMgr:   routeMgr,
+	})
+
+	_, err := mgr.ApplyState(types.DesiredState{
+		SchemaVersion: 1,
+		Exits: []types.DesiredExit{
+			{
+				ID:             "e2",
+				IPv4:           "203.0.113.20",
+				GatewayIPv4:    "203.0.113.1",
+				RoutingTableID: 201,
+				DNSPrimary:     "1.1.1.1",
+				Enabled:        true,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if routeMgr.lastInput.Awg3ContainerIPv4 != "172.30.90.2" {
+		t.Fatalf("expected SyncInput.Awg3ContainerIPv4=172.30.90.2, got %q", routeMgr.lastInput.Awg3ContainerIPv4)
+	}
+
+	var gotVerifyMark uint32
+	mgr.verifyExit = func(_ context.Context, req types.VerifyExitRequest) types.VerifyExitResponse {
+		gotVerifyMark = req.Fwmark
+		return types.VerifyExitResponse{OK: true, EgressIPv4: req.EgressIPv4}
+	}
+	var gotHTTPMark uint32
+	mgr.httpCheck = func(_ context.Context, req types.HttpCheckRequest) types.HttpCheckResponse {
+		gotHTTPMark = req.Fwmark
+		return types.HttpCheckResponse{Status: 200}
+	}
+
+	mgr.VerifyExit(context.Background(), types.VerifyExitRequest{
+		EgressIPv4: "203.0.113.20",
+		ProbeURL:   "https://example.com",
+	})
+	mgr.RunHttpCheck(context.Background(), types.HttpCheckRequest{
+		EgressIPv4: "203.0.113.20",
+		URL:        "https://example.com",
+	})
+
+	wantMark := types.FwmarkForTable(201)
+	if gotVerifyMark != wantMark || gotHTTPMark != wantMark {
+		t.Fatalf("expected resolved fwmark 0x%x for both verify (0x%x) and httpCheck (0x%x)", wantMark, gotVerifyMark, gotHTTPMark)
 	}
 }

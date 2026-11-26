@@ -1,8 +1,10 @@
+import { isIPv4 } from "node:net";
 import { and, desc, eq, inArray, isNull, lte, or } from "drizzle-orm";
 
 import {
   decryptSecret,
   nodeEgressIps,
+  nodeVpnEndpoints,
   nodes,
   reachabilityProbe,
   users,
@@ -97,22 +99,6 @@ export class PostgresBridgeCandidateRepository implements BridgeCandidateReposit
       .where(eq(vpnBridgeRoutes.id, routeId))
       .limit(1);
     if (!row) return null;
-    let nodePublicIp = row.nodePublicIp;
-    if (row.nodeEgressMode === "routed" && row.nodeEgressDefaultIpId) {
-      const [defaultExit] = await db
-        .select({ ipv4: nodeEgressIps.ipv4 })
-        .from(nodeEgressIps)
-        .where(
-          and(
-            eq(nodeEgressIps.id, row.nodeEgressDefaultIpId),
-            eq(nodeEgressIps.nodeId, row.nodeId),
-          ),
-        )
-        .limit(1);
-      if (defaultExit?.ipv4) {
-        nodePublicIp = defaultExit.ipv4;
-      }
-    }
     // The node's AWG 3 default-exit service key (prefer endpointId IS NULL).
     const activeServiceKeys = await db
       .select({
@@ -138,6 +124,43 @@ export class PostgresBridgeCandidateRepository implements BridgeCandidateReposit
     const key =
       activeServiceKeys.find((candidate) => candidate.endpointId === null) ??
       activeServiceKeys[0];
+
+    let nodePublicIp = row.nodePublicIp;
+    if (row.nodeEgressMode === "routed") {
+      const [endpoint] = key?.endpointId
+        ? await db
+            .select({
+              address: nodeVpnEndpoints.address,
+              egressIpId: nodeVpnEndpoints.egressIpId,
+            })
+            .from(nodeVpnEndpoints)
+            .where(
+              and(
+                eq(nodeVpnEndpoints.id, key.endpointId),
+                eq(nodeVpnEndpoints.nodeId, row.nodeId),
+              ),
+            )
+            .limit(1)
+        : [];
+      const targetExitId = endpoint?.egressIpId ?? row.nodeEgressDefaultIpId ?? null;
+      if (targetExitId) {
+        const [resolvedExit] = await db
+          .select({ ipv4: nodeEgressIps.ipv4 })
+          .from(nodeEgressIps)
+          .where(
+            and(
+              eq(nodeEgressIps.id, targetExitId),
+              eq(nodeEgressIps.nodeId, row.nodeId),
+            ),
+          )
+          .limit(1);
+        if (resolvedExit?.ipv4) {
+          nodePublicIp = resolvedExit.ipv4;
+        }
+      } else if (endpoint?.address && isIPv4(endpoint.address)) {
+        nodePublicIp = endpoint.address;
+      }
+    }
     const serviceConfig =
       key?.ciphertext && key.nonce && key.authTag && key.keyVersion !== null
         ? decryptSecret(

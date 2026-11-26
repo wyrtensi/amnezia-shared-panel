@@ -90,6 +90,7 @@ export type NodeEgressModeSwitchResult = {
   jobId: string;
   nodeId: string;
   mode: NodeEgressMode;
+  previousMode?: NodeEgressMode;
   state: NodeEgressModeState;
   message: string | null;
   report?: HostNetworkReport | null;

@@ -110,7 +110,7 @@ describe("nodeEgress pure helpers", () => {
     expect(state.entryMarks).toEqual([{ entryIpv4: "198.51.100.10", routingTableId: 201 }]);
   });
 
-  it("uses implicit self-exit IP when no explicit exits exist", () => {
+  it("synthesizes implicit self-exit DesiredExit entries when no explicit exits exist", () => {
     const state = buildNodeEgressDesiredState({
       node: {
         id: "node-2",
@@ -120,11 +120,33 @@ describe("nodeEgress pure helpers", () => {
         egressDefaultIpId: null,
       },
       exits: [],
-      endpoints: [],
+      endpoints: [
+        { id: "ep-a", ordinal: 1, address: "198.51.100.99", egressIpId: null, enabled: true },
+        { id: "ep-b", ordinal: 2, address: "198.51.100.88", egressIpId: null, enabled: true },
+      ],
       keys: [
         { keyId: "k1", state: "active", protocol: "awg3", endpointId: null, tunnelIpv4: "10.90.0.2" },
+        { keyId: "k2", state: "active", protocol: "awg3", endpointId: "ep-b", tunnelIpv4: "10.90.0.3" },
       ],
     });
+    expect(state.exits).toEqual([
+      {
+        id: "implicit:198.51.100.88",
+        ipv4: "198.51.100.88",
+        dnsPrimary: "1.1.1.1",
+        amneziaDnsDnat: true,
+        enforceDnsDnat: false,
+        enabled: true,
+      },
+      {
+        id: "implicit:198.51.100.99",
+        ipv4: "198.51.100.99",
+        dnsPrimary: "1.1.1.1",
+        amneziaDnsDnat: true,
+        enforceDnsDnat: false,
+        enabled: true,
+      },
+    ]);
     expect(state.peers).toEqual([
       {
         tunnelIpv4: "10.90.0.2",
@@ -134,6 +156,69 @@ describe("nodeEgress pure helpers", () => {
         enforceDnsDnat: false,
         enabled: true,
       },
+      {
+        tunnelIpv4: "10.90.0.3",
+        exitIp: "198.51.100.88",
+        dnsPrimary: "1.1.1.1",
+        amneziaDnsDnat: true,
+        enforceDnsDnat: false,
+        enabled: true,
+      },
+    ]);
+    expect(state.entryMarks).toEqual([
+      { entryIpv4: "198.51.100.88" },
+      { entryIpv4: "198.51.100.99" },
+    ]);
+  });
+
+  it("emits entryMarks for asymmetric secondary Entry IPs without routingTableId and keeps exit tableId when shared", () => {
+    const state = buildNodeEgressDesiredState({
+      node: {
+        id: "node-3",
+        publicIp: "198.51.100.10",
+        egressBlockSmtp: true,
+        egressIsolatePrivate: true,
+        egressDefaultIpId: "exit-1",
+      },
+      exits: [
+        {
+          id: "exit-1",
+          ipv4: "198.51.100.20",
+          interfaceName: "eth0",
+          gatewayIpv4: null,
+          routingTableId: 200,
+          dnsPrimary: "1.1.1.1",
+          dnsSecondary: null,
+          amneziaDnsDnat: true,
+          enforceDnsDnat: false,
+          enabled: true,
+        },
+        {
+          id: "exit-2",
+          ipv4: "198.51.100.30",
+          interfaceName: "eth1",
+          gatewayIpv4: "198.51.100.1",
+          routingTableId: 201,
+          dnsPrimary: "1.1.1.1",
+          dnsSecondary: null,
+          amneziaDnsDnat: true,
+          enforceDnsDnat: false,
+          enabled: true,
+        },
+      ],
+      endpoints: [
+        { id: "ep-main", ordinal: 1, address: "198.51.100.10", egressIpId: "exit-1", enabled: true },
+        { id: "ep-asym", ordinal: 2, address: "198.51.100.40", egressIpId: "exit-1", enabled: true },
+        { id: "ep-shared", ordinal: 3, address: "198.51.100.30", egressIpId: "exit-2", enabled: true },
+        { id: "ep-off", ordinal: 4, address: "198.51.100.50", egressIpId: "exit-1", enabled: false },
+      ],
+      keys: [],
+    });
+
+    expect(state.entryMarks).toEqual([
+      { entryIpv4: "198.51.100.10" },
+      { entryIpv4: "198.51.100.30", routingTableId: 201 },
+      { entryIpv4: "198.51.100.40" },
     ]);
   });
 

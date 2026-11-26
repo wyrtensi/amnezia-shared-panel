@@ -445,6 +445,24 @@ describe("server egress routes and backup egress integration", () => {
     expect(modeRes.statusCode).toBe(200);
     expect(modeRes.json().ok).toBe(true);
     expect(switchEgressMode).toHaveBeenCalledWith("routed");
+
+    switchEgressMode.mockResolvedValueOnce({
+      ok: false,
+      error: "cotenant check failed",
+      report: sampleReport(),
+    } as never);
+    const modeFailRes = await app.inject({
+      method: "POST",
+      url: "/server/egress/mode",
+      headers: AUTH_HEADERS,
+      payload: { mode: "masquerade" },
+    });
+    expect(modeFailRes.statusCode).toBe(200);
+    expect(modeFailRes.json()).toEqual({
+      ok: false,
+      error: "cotenant check failed",
+      report: sampleReport(),
+    });
   });
 
   it("round-trips egress state in /server/backup, honours skipEgress=1, and flags legacy imports", async () => {

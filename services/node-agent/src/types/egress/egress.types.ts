@@ -38,7 +38,7 @@ export type DesiredPeer = {
 
 export type DesiredEntryMark = {
   entryIpv4: string;
-  routingTableId: number;
+  routingTableId?: number;
 };
 
 export type DesiredState = {

@@ -250,12 +250,44 @@ func (m *Manager) Teardown() error {
 
 // VerifyExit performs source-bound HTTP + DNS verification for an Exit IP.
 func (m *Manager) VerifyExit(ctx context.Context, req types.VerifyExitRequest) types.VerifyExitResponse {
+	if req.Fwmark == 0 {
+		req.Fwmark = m.resolveExitFwmark(req.EgressIPv4)
+	}
 	return m.verifyExit(ctx, req)
 }
 
 // RunHttpCheck performs a source-bound HTTP request for node-agent service checks.
 func (m *Manager) RunHttpCheck(ctx context.Context, req types.HttpCheckRequest) types.HttpCheckResponse {
+	if req.Fwmark == 0 {
+		req.Fwmark = m.resolveExitFwmark(req.EgressIPv4)
+	}
 	return m.httpCheck(ctx, req)
+}
+
+func (m *Manager) resolveExitFwmark(egressIPv4 string) uint32 {
+	addr, err := types.ParseIPv4(egressIPv4)
+	if err != nil {
+		return 0
+	}
+	target := addr.String()
+
+	m.stateMu.Lock()
+	state, loadErr := m.store.Load()
+	m.stateMu.Unlock()
+	if loadErr != nil {
+		return 0
+	}
+	snap, discErr := netdisc.Discover(m.netClient, m.bridgeName, m.nodeDir)
+	if discErr != nil {
+		return 0
+	}
+	plan := nft.BuildPlan(state, snap, m.bridgeName)
+	for _, ev := range plan.EvaluatedExits {
+		if ev.Desired.IPv4 == target && ev.NeedsPolicyTable && ev.Fwmark != 0 {
+			return ev.Fwmark
+		}
+	}
+	return 0
 }
 
 func (m *Manager) applyLocked(state types.DesiredState, persist bool, flushPeers []string) (types.ApplyStateResponse, error) {
@@ -278,7 +310,22 @@ func (m *Manager) applyLocked(state types.DesiredState, persist bool, flushPeers
 	}
 
 	if snap.EnvEgressMode == types.ModeRouted {
-		if err := m.routeMgr.Sync(plan.ActiveExits, m.bridgeName); err != nil {
+		extraRoutes := make([]routing.RouteSpec, 0, len(plan.EntryRoutes))
+		for _, er := range plan.EntryRoutes {
+			extraRoutes = append(extraRoutes, routing.RouteSpec{
+				TableID:   er.TableID,
+				Fwmark:    er.Fwmark,
+				Gateway:   er.ResolvedGateway,
+				LinkIndex: er.LinkIndex,
+				IfaceName: er.InterfaceName,
+			})
+		}
+		if err := m.routeMgr.Sync(routing.SyncInput{
+			ActiveExits:       plan.ActiveExits,
+			ExtraRoutes:       extraRoutes,
+			BridgeName:        m.bridgeName,
+			Awg3ContainerIPv4: snap.Awg3ContainerIPv4,
+		}); err != nil {
 			return types.ApplyStateResponse{}, err
 		}
 		if err := m.nftApplier.Apply(plan.Ruleset); err != nil {
@@ -375,6 +422,7 @@ func (m *Manager) buildReportLocked(state types.DesiredState) (types.HostNetwork
 		Detail:               types.ClipDetail(detail, 260),
 		BridgeName:           m.bridgeName,
 		BridgePresent:        snap.BridgePresent,
+		Awg3ContainerIPv4:    snap.Awg3ContainerIPv4,
 		TunnelSubnetConflict: snap.TunnelSubnetConflict,
 		IPv4Addresses:        ipAddresses,
 		Exits:                exits,

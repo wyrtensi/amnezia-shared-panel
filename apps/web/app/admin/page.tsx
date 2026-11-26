@@ -743,6 +743,10 @@ export default function AdminOverviewPage() {
         request={request}
         reachabilityBusy={bridgeReachabilityBusy}
         onSetReachability={setBridgeReachability}
+        onOpenNode={(nodeId) => {
+          setActiveBridgeId(null);
+          setActiveNodeId(nodeId);
+        }}
       />
       <NodeDetailDialog
         node={activeNode}
@@ -757,6 +761,10 @@ export default function AdminOverviewPage() {
         onOpenTopology={(nodeId, focus) => {
           setActiveNodeId(null);
           setActiveTopology({ nodeId, focus: focus ?? null });
+        }}
+        onOpenBridge={(bridgeId) => {
+          setActiveNodeId(null);
+          setActiveBridgeId(bridgeId);
         }}
       />
       <NodeTopologyDialog

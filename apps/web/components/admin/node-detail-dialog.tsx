@@ -49,6 +49,7 @@ export type NodeDetailDialogProps = {
   request: Requester;
   reload: () => Promise<void>;
   onOpenTopology?: (nodeId: string, focus?: NodeTopologyFocus | null) => void;
+  onOpenBridge?: (bridgeId: string) => void;
 };
 
 /**
@@ -66,6 +67,7 @@ export function NodeDetailDialog({
   request,
   reload,
   onOpenTopology,
+  onOpenBridge,
 }: NodeDetailDialogProps) {
   const { t } = useT();
   const [editOpen, setEditOpen] = React.useState(false);
@@ -89,6 +91,13 @@ export function NodeDetailDialog({
 
   if (!node) return null;
 
+  const hasSubDialog = editOpen || deleteOpen || updateAgentOpen || capacityOpen;
+  const statusLabel = node.lastError
+    ? t("nodes.commError")
+    : node.enabled
+      ? t("nodes.working")
+      : t("nodes.stopped");
+
   const handleDeleteReload = async () => {
     await reload();
     onClose();
@@ -96,15 +105,31 @@ export function NodeDetailDialog({
 
   return (
     <>
-      <Dialog open={Boolean(node)} onOpenChange={(next) => !next && onClose()}>
-        <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-2xl">
+      <Dialog
+        open={Boolean(node)}
+        onOpenChange={(next) => {
+          if (!next && !hasSubDialog) onClose();
+        }}
+      >
+        <DialogContent
+          className="max-h-[90vh] overflow-y-auto sm:max-w-2xl"
+          onInteractOutside={(e) => {
+            if (hasSubDialog) e.preventDefault();
+          }}
+          onEscapeKeyDown={(e) => {
+            if (hasSubDialog) e.preventDefault();
+          }}
+        >
           <DialogHeader>
             <DialogTitle className="flex min-w-0 items-center gap-2 pr-6">
               <Server aria-hidden className="size-4 shrink-0 text-primary" />
               <span className="truncate">{node.publicName || node.name}</span>
             </DialogTitle>
             <DialogDescription className="flex flex-wrap items-center justify-between gap-2 text-xs">
-              <span className="truncate font-mono">{node.apiBaseUrl}</span>
+              <span className={node.lastError ? "truncate text-destructive" : "truncate"}>
+                {statusLabel}
+                {node.agentVersion ? ` · v${node.agentVersion}` : null}
+              </span>
               <Link
                 href={`${NODES_PATH}#${nodeCardAnchor(node.id)}`}
                 prefetch={false}
@@ -129,6 +154,7 @@ export function NodeDetailDialog({
             onUpdateAgent={() => setUpdateAgentOpen(true)}
             onSetCapacity={() => setCapacityOpen(true)}
             onOpenTopology={() => onOpenTopology?.(node.id, null)}
+            onOpenBridge={onOpenBridge}
           />
         </DialogContent>
       </Dialog>
@@ -177,6 +203,7 @@ export function NodeDetailDialogBody({
   onUpdateAgent,
   onSetCapacity,
   onOpenTopology,
+  onOpenBridge,
 }: {
   node: AdminNode;
   keyStats: ReturnType<typeof computeNodeKeyStats> extends Map<string, infer V>
@@ -193,6 +220,7 @@ export function NodeDetailDialogBody({
   onUpdateAgent: () => void;
   onSetCapacity: () => void;
   onOpenTopology: () => void;
+  onOpenBridge?: (bridgeId: string) => void;
 }) {
   const { t } = useT();
 
@@ -276,6 +304,7 @@ export function NodeDetailDialogBody({
       onUpdateAgent={onUpdateAgent}
       onSetCapacity={onSetCapacity}
       onOpenTopology={onOpenTopology}
+      onOpenBridge={onOpenBridge}
       onSwitchDirect={
         infra.loading || infra.failed || !infra.routeByNode.get(node.id)
           ? undefined

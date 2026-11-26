@@ -866,6 +866,13 @@ describe("ingestRun per address", () => {
         }),
       ]),
     );
+    const mismatchOutcome = single.addressOutcomes.find((o) => o.endpointId === "ep-mismatch");
+    expect(mismatchOutcome?.levels?.handshake).toEqual(pass);
+    expect(mismatchOutcome?.levels?.http).toMatchObject({
+      ok: false,
+      detail: "egress mismatch: expected 198.51.100.30, got 198.51.100.99",
+    });
+    expect(single.massFailure).toBe(false);
     expect(single.notices[0]?.text).toContain("name-ep-mismatch (192.0.2.11 → 198.51.100.30)");
     expect(single.notices[0]?.text).toContain("egress mismatch: expected 198.51.100.30, got 198.51.100.99");
 

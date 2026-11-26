@@ -290,12 +290,19 @@ export function NodeTopologyDialogBody({
     if (!focusKind) return;
     const root = bodyRef.current;
     if (!root) return;
-    const selector =
+    const targetKey =
       focusKind === "exit" && focusId === null
-        ? '[data-topology-section="exits"]'
-        : `[data-topology-focus="${focusKind}:${focusId}"]`;
-    const el = root.querySelector<HTMLElement>(selector);
-    el?.scrollIntoView?.({ behavior: "smooth", block: "center" });
+        ? null
+        : `${focusKind}:${focusId}`;
+    const raf = requestAnimationFrame(() => {
+      const el = targetKey
+        ? Array.from(
+            root.querySelectorAll<HTMLElement>("[data-topology-focus]"),
+          ).find((candidate) => candidate.dataset.topologyFocus === targetKey)
+        : root.querySelector<HTMLElement>('[data-topology-section="exits"]');
+      el?.scrollIntoView?.({ behavior: "smooth", block: "center" });
+    });
+    return () => cancelAnimationFrame(raf);
   }, [node.id, focusKind, focusId]);
 
   const summary = summarizeNodeEgress(node);
@@ -459,12 +466,14 @@ export function NodeTopologyDialogBody({
                 disabled={busy !== null}
                 onClick={() =>
                   void runAction("filters", async () => {
-                    await setNodeEgressMode(request, node.id, {
-                      mode: summary.mode,
-                      blockSmtp,
-                      isolatePrivate,
+                    await request(`/api/admin/nodes/${encodeURIComponent(node.id)}`, {
+                      method: "PATCH",
+                      body: JSON.stringify({
+                        egressBlockSmtp: blockSmtp,
+                        egressIsolatePrivate: isolatePrivate,
+                      }),
                     });
-                    toast.success(t("egress.modeQueued"));
+                    toast.success(t("adminData.actionDone"));
                     await reload();
                   })
                 }
@@ -546,7 +555,6 @@ export function NodeTopologyDialogBody({
                                 await onSavePublicEndpoint(node.id, {
                                   action: "add",
                                   address: addr.ipv4,
-                                  entryName: node.publicName || node.name,
                                   egressIpId: addr.existingExitId ?? null,
                                 });
                                 toast.success(t("adminData.actionDone"));
@@ -576,14 +584,16 @@ export function NodeTopologyDialogBody({
                                   allowAsEntry: true,
                                   enabled: true,
                                 });
-                                await onSavePublicEndpoint(node.id, {
-                                  action: "add",
-                                  address: addr.ipv4,
-                                  entryName: node.publicName || node.name,
-                                  egressIpId: created.id,
-                                });
-                                toast.success(t("adminData.actionDone"));
-                                await reload();
+                                try {
+                                  await onSavePublicEndpoint(node.id, {
+                                    action: "add",
+                                    address: addr.ipv4,
+                                    egressIpId: created.id,
+                                  });
+                                  toast.success(t("adminData.actionDone"));
+                                } finally {
+                                  await reload();
+                                }
                               })
                             }
                           >

@@ -347,4 +347,137 @@ describe("ClientsService", () => {
     expect(removePeer).toHaveBeenCalledTimes(2);
     expect(removePeer).toHaveBeenLastCalledWith("10.90.0.4");
   });
+
+  it("removes expired AWG3 peers from EgressService inside the protocol lock", async () => {
+    const expiredAt = Math.floor(Date.now() / 1000) - 60;
+    const activePeer = createClientPeer({
+      id: "peer-active",
+      protocol: Protocol.AMNEZIAWG3,
+      allowedIps: ["10.90.0.2/32"],
+      expiresAt: Math.floor(Date.now() / 1000) + 3600,
+      status: PeerStatus.Active,
+    });
+    const expiredPeer = createClientPeer({
+      id: "peer-expired",
+      protocol: Protocol.AMNEZIAWG3,
+      allowedIps: ["10.90.0.5/32"],
+      expiresAt: expiredAt,
+      status: PeerStatus.Active,
+    });
+
+    let currentPeers = [activePeer, expiredPeer];
+    const amneziaWg3 = createProtocolServiceMock(Protocol.AMNEZIAWG3);
+    amneziaWg3.spies.getClients.mockImplementation(async () => [
+      createClientRecord({
+        username: "dave",
+        protocol: Protocol.AMNEZIAWG3,
+        peers: currentPeers,
+      }),
+    ]);
+    amneziaWg3.spies.disableExpiredClients.mockImplementation(async () => {
+      currentPeers = [
+        activePeer,
+        {
+          ...expiredPeer,
+          allowedIps: ["0.0.0.0/32"],
+          status: PeerStatus.Disabled,
+        },
+      ];
+      return 1;
+    });
+
+    const removePeer = vi.fn(async () => null);
+    const egressStub = {
+      isConfigured: () => true,
+      upsertPeer: vi.fn(async () => null),
+      removePeer,
+    } as unknown as EgressService;
+
+    const service = new ClientsService(
+      createProtocolServiceMock(Protocol.XRAY).service,
+      createProtocolServiceMock(Protocol.AMNEZIAWG).service,
+      createProtocolServiceMock(Protocol.AMNEZIAWG2).service,
+      amneziaWg3.service,
+      egressStub,
+    );
+
+    const disabledCount = await service.disableExpiredClients();
+    expect(disabledCount).toBe(1);
+    expect(removePeer).toHaveBeenCalledTimes(1);
+    expect(removePeer).toHaveBeenCalledWith("10.90.0.5");
+  });
+
+  it("serializes AWG3 egress peer updates with protocol mutations to prevent reordering", async () => {
+    const events: string[] = [];
+    const amneziaWg3 = createProtocolServiceMock(Protocol.AMNEZIAWG3, [
+      createClientRecord({
+        username: "eve",
+        protocol: Protocol.AMNEZIAWG3,
+        peers: [
+          createClientPeer({
+            id: "peer-eve",
+            protocol: Protocol.AMNEZIAWG3,
+            allowedIps: ["10.90.0.6/32"],
+          }),
+        ],
+      }),
+    ]);
+    amneziaWg3.spies.createClient.mockImplementation(async () => {
+      events.push("create:start");
+      await new Promise((r) => setTimeout(r, 15));
+      events.push("create:end");
+      return {
+        id: "peer-new",
+        config: "[Interface]\nAddress = 10.90.0.6/32\n",
+        protocol: Protocol.AMNEZIAWG3,
+      };
+    });
+    amneziaWg3.spies.deleteClient.mockImplementation(async () => {
+      events.push("delete:start");
+      await new Promise((r) => setTimeout(r, 10));
+      events.push("delete:end");
+      return true;
+    });
+
+    const egressStub = {
+      isConfigured: () => true,
+      upsertPeer: vi.fn(async () => {
+        events.push("egress:upsert");
+        return null;
+      }),
+      removePeer: vi.fn(async () => {
+        events.push("egress:remove");
+        return null;
+      }),
+    } as unknown as EgressService;
+
+    const service = new ClientsService(
+      createProtocolServiceMock(Protocol.XRAY).service,
+      createProtocolServiceMock(Protocol.AMNEZIAWG).service,
+      createProtocolServiceMock(Protocol.AMNEZIAWG2).service,
+      amneziaWg3.service,
+      egressStub,
+    );
+
+    const createPromise = service.createClient({
+      clientName: "eve",
+      protocol: Protocol.AMNEZIAWG3,
+      egress: { exitIp: "198.51.100.10" },
+    });
+    await new Promise((r) => setTimeout(r, 5));
+    const deletePromise = service.deleteClient({
+      clientId: "peer-eve",
+      protocol: Protocol.AMNEZIAWG3,
+    });
+    await Promise.all([createPromise, deletePromise]);
+
+    expect(events).toEqual([
+      "create:start",
+      "create:end",
+      "egress:upsert",
+      "delete:start",
+      "delete:end",
+      "egress:remove",
+    ]);
+  });
 });

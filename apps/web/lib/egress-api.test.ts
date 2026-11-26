@@ -61,7 +61,8 @@ describe("egress API wrappers", () => {
       ["/api/admin/nodes/node-1/egress-ips/ip-1/verify", "POST"],
       ["/api/admin/nodes/node-1/egress-mode", "PUT"],
       ["/api/admin/nodes/node-1/egress-mode/adopt", "POST"],
-      ["/api/admin/keys/key-1/reassign-endpoint", "POST"],
+      ["/api/admin/keys/key-1/endpoint", "PATCH"],
     ]);
+    expect(calls[8]?.init?.body).toBe(JSON.stringify({ endpointId: "ep-2" }));
   });
 });

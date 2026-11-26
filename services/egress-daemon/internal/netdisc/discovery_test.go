@@ -77,6 +77,9 @@ func TestDiscoverMultiGatewayAndExcludedInterfaces(t *testing.T) {
 	if !snap.BridgePresent || snap.BridgeLinkIndex != 4 {
 		t.Fatalf("expected br-awg-egress index 4, got %+v", snap)
 	}
+	if snap.Awg3ContainerIPv4 != "172.18.0.2" {
+		t.Fatalf("expected derived Awg3ContainerIPv4=172.18.0.2, got %q", snap.Awg3ContainerIPv4)
+	}
 	if snap.TunnelSubnetConflict {
 		t.Fatal("expected no tunnel subnet conflict")
 	}
@@ -118,5 +121,41 @@ func TestDiscoverDetectsForeignTunnelSubnetConflict(t *testing.T) {
 	}
 	if !snap.TunnelSubnetConflict {
 		t.Fatal("expected 10.90.0.0/24 on tun9 to trigger TunnelSubnetConflict")
+	}
+}
+
+func TestReadEnvEgressModePrefersPersistedStateAndAwg3EnvOverride(t *testing.T) {
+	dir := t.TempDir()
+	envPath := filepath.Join(dir, ".env")
+	if err := os.WriteFile(envPath, []byte("AWG3_EGRESS_MODE=masquerade\nAWG3_EGRESS_IPV4=172.30.90.5\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := ReadEnvEgressMode(envPath); got != types.ModeMasquerade {
+		t.Fatalf("expected masquerade from .env, got %s", got)
+	}
+	stateDir := filepath.Join(dir, "state", "amnezia-awg3")
+	if err := os.MkdirAll(stateDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(stateDir, "egress-mode"), []byte("routed\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := ReadEnvEgressMode(envPath); got != types.ModeRouted {
+		t.Fatalf("expected persisted egress-mode=routed to override .env, got %s", got)
+	}
+
+	client := &fakeClient{
+		links: []LinkInfo{{Index: 4, Name: "br-awg-egress", Up: true}},
+		addrs: []AddrInfo{{LinkIndex: 4, Prefix: netip.MustParsePrefix("172.30.90.1/29")}},
+	}
+	snap, err := Discover(client, "br-awg-egress", dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snap.EnvEgressMode != types.ModeRouted {
+		t.Fatalf("expected routed mode, got %s", snap.EnvEgressMode)
+	}
+	if snap.Awg3ContainerIPv4 != "172.30.90.5" {
+		t.Fatalf("expected AWG3_EGRESS_IPV4 override 172.30.90.5, got %q", snap.Awg3ContainerIPv4)
 	}
 }

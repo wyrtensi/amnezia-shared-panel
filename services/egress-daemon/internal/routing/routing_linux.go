@@ -3,6 +3,7 @@
 package routing
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -10,7 +11,6 @@ import (
 	"path/filepath"
 	"strings"
 
-	"amnezia-egressd/internal/nft"
 	"amnezia-egressd/internal/types"
 	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
@@ -24,17 +24,21 @@ func NewLinuxManager() *LinuxManager {
 	return &LinuxManager{}
 }
 
-func (m *LinuxManager) Sync(exits []nft.EvaluatedExit, bridgeName string) error {
-	specs, err := DesiredRoutesFromExits(exits)
+func (m *LinuxManager) Sync(input SyncInput) error {
+	specs, err := DesiredRoutesFromInput(input)
 	if err != nil {
 		return err
 	}
 
-	if err := m.ensureDockerUserRules(bridgeName); err != nil {
+	if err := m.ensureDockerUserRules(input.BridgeName); err != nil {
 		return err
 	}
 
-	if err := setLooseRPFilter(bridgeName); err != nil {
+	if err := setLooseRPFilter(input.BridgeName); err != nil {
+		return err
+	}
+
+	if err := syncTunnelReturnRoute(input.BridgeName, input.Awg3ContainerIPv4); err != nil {
 		return err
 	}
 
@@ -84,6 +88,7 @@ func (m *LinuxManager) Teardown(bridgeName string) error {
 	for t := types.MinRoutingTableID; t <= types.MaxRoutingTableID; t++ {
 		_ = cleanupTableRoutes(t)
 	}
+	_ = cleanupTunnelReturnRoute()
 	_ = removeDockerUserRules(bridgeName)
 	return nil
 }
@@ -132,6 +137,61 @@ func ensureDefaultRoute(spec RouteSpec) error {
 	}
 	if err := netlink.RouteReplace(route); err != nil {
 		return fmt.Errorf("replace default route in table %d via %s onlink: %w", spec.TableID, spec.Gateway, err)
+	}
+	return nil
+}
+
+func isTunnelCIDR(dst *net.IPNet) bool {
+	if dst == nil {
+		return false
+	}
+	ones, bits := dst.Mask.Size()
+	return bits == 32 && ones == 22 && dst.IP.Equal(net.IPv4(10, 90, 0, 0))
+}
+
+func syncTunnelReturnRoute(bridgeName, awg3ContainerIPv4 string) error {
+	if bridgeName == "" || awg3ContainerIPv4 == "" {
+		return cleanupTunnelReturnRoute()
+	}
+	gw, err := types.ParseIPv4(awg3ContainerIPv4)
+	if err != nil {
+		return fmt.Errorf("invalid awg3 container IPv4 %q: %w", awg3ContainerIPv4, err)
+	}
+	link, err := netlink.LinkByName(bridgeName)
+	if err != nil {
+		var notFound netlink.LinkNotFoundError
+		if errors.As(err, &notFound) {
+			// Bridge may not exist yet during pre-reconcile before compose up.
+			return nil
+		}
+		return fmt.Errorf("lookup bridge %s: %w", bridgeName, err)
+	}
+	route := &netlink.Route{
+		LinkIndex: link.Attrs().Index,
+		Dst: &net.IPNet{
+			IP:   net.IPv4(10, 90, 0, 0),
+			Mask: net.CIDRMask(22, 32),
+		},
+		Gw:       net.IP(gw.AsSlice()),
+		Table:    254,
+		Protocol: types.RouteProtoEgressd,
+		Flags:    int(netlink.FLAG_ONLINK),
+	}
+	if err := netlink.RouteReplace(route); err != nil {
+		return fmt.Errorf("replace tunnel return route via %s dev %s: %w", gw, bridgeName, err)
+	}
+	return nil
+}
+
+func cleanupTunnelReturnRoute() error {
+	routes, err := netlink.RouteListFiltered(netlink.FAMILY_V4, &netlink.Route{Table: 254}, netlink.RT_FILTER_TABLE)
+	if err != nil {
+		return err
+	}
+	for i := range routes {
+		if int(routes[i].Protocol) == types.RouteProtoEgressd && isTunnelCIDR(routes[i].Dst) {
+			_ = netlink.RouteDel(&routes[i])
+		}
 	}
 	return nil
 }

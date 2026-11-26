@@ -1742,4 +1742,37 @@ describe("per-exit DNS export and egress verification", () => {
       }),
     );
   });
+
+  it("refuses non-admins on all egress management and endpoint reassignment methods", async () => {
+    const repository = createRepository();
+    const service = createDefaultControlApiService({ repository, keyring });
+    const calls: Array<[string, Promise<unknown>]> = [
+      ["listNodeEgressIps", service.listNodeEgressIps(employee, "node-1")],
+      ["createNodeEgressIp", service.createNodeEgressIp(employee, "node-1", {
+        ipv4: "198.51.100.10",
+        dnsPrimary: "1.1.1.1",
+        amneziaDnsDnat: true,
+        enforceDnsDnat: false,
+        allowAsEntry: false,
+        enabled: true,
+      })],
+      ["updateNodeEgressIp", service.updateNodeEgressIp(employee, "node-1", "ip-1", { label: "X" })],
+      ["deleteNodeEgressIp", service.deleteNodeEgressIp(employee, "node-1", "ip-1")],
+      ["swapNodeEgressIp", service.swapNodeEgressIp(employee, "node-1", "ip-1", { ipv4: "198.51.100.20" })],
+      ["setNodeEgressMode", service.setNodeEgressMode(employee, "node-1", { mode: "routed" })],
+      ["adoptNodeEgressMode", service.adoptNodeEgressMode(employee, "node-1")],
+      ["reassignKeyEndpoint", service.reassignKeyEndpoint(employee, "key-1", { endpointId: "ep-1" })],
+    ];
+    for (const [name, promise] of calls) {
+      await expect(promise, name).rejects.toMatchObject({ statusCode: 403, code: "FORBIDDEN" });
+    }
+    expect(repository.listNodeEgressIps).not.toHaveBeenCalled();
+    expect(repository.createNodeEgressIp).not.toHaveBeenCalled();
+    expect(repository.updateNodeEgressIp).not.toHaveBeenCalled();
+    expect(repository.deleteNodeEgressIp).not.toHaveBeenCalled();
+    expect(repository.swapNodeEgressIp).not.toHaveBeenCalled();
+    expect(repository.setNodeEgressMode).not.toHaveBeenCalled();
+    expect(repository.adoptNodeEgressMode).not.toHaveBeenCalled();
+    expect(repository.reassignKeyEndpoint).not.toHaveBeenCalled();
+  });
 });
