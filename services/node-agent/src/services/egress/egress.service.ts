@@ -325,6 +325,23 @@ export class EgressService {
         headers["Content-Length"] = Buffer.byteLength(payload, "utf8");
       }
 
+      let settled = false;
+      const cleanup = () => {
+        signal?.removeEventListener("abort", onAbort);
+      };
+      const settleResolve = (value: { status: number; data: T }) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        resolve(value);
+      };
+      const settleReject = (err: unknown) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        reject(err);
+      };
+
       const req = http.request(
         {
           socketPath: this.socketPath,
@@ -346,18 +363,31 @@ export class EgressService {
             chunks.push(chunk);
           });
 
+          res.on("error", (resErr) => {
+            settleReject(resErr);
+          });
+
+          res.on("close", () => {
+            if (!settled && !res.complete) {
+              settleReject(
+                new EgressDaemonUnavailableError(
+                  "egressd closed connection mid-response",
+                ),
+              );
+            }
+          });
+
           res.on("end", () => {
-            cleanup();
             const text = Buffer.concat(chunks).toString("utf8").trim();
             if (!text) {
-              resolve({ status: res.statusCode ?? 500, data: {} as T });
+              settleResolve({ status: res.statusCode ?? 500, data: {} as T });
               return;
             }
             try {
               const parsed = JSON.parse(text) as T;
-              resolve({ status: res.statusCode ?? 500, data: parsed });
+              settleResolve({ status: res.statusCode ?? 500, data: parsed });
             } catch (parseError) {
-              reject(
+              settleReject(
                 new Error(
                   `invalid JSON from amnezia-egressd (${path}): ${(parseError as Error).message}`,
                 ),
@@ -375,10 +405,6 @@ export class EgressService {
         req.destroy(reason);
       };
 
-      const cleanup = () => {
-        signal?.removeEventListener("abort", onAbort);
-      };
-
       signal?.addEventListener("abort", onAbort, { once: true });
 
       req.on("timeout", () => {
@@ -390,16 +416,15 @@ export class EgressService {
       });
 
       req.on("error", (err: NodeJS.ErrnoException) => {
-        cleanup();
         if (err instanceof EgressDaemonUnavailableError) {
-          reject(err);
+          settleReject(err);
           return;
         }
         if (err.code && UNAVAILABLE_ERRNO.has(err.code)) {
-          reject(new EgressDaemonUnavailableError(err.message));
+          settleReject(new EgressDaemonUnavailableError(err.message));
           return;
         }
-        reject(err);
+        settleReject(err);
       });
 
       if (payload !== undefined) {

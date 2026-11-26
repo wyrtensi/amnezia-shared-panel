@@ -399,37 +399,45 @@ const runHttpProbe: ProbeRunner = async (probe, signal, options) => {
       },
     });
 
-    const location = response.headers.get("location");
-    if (REDIRECT_STATUSES.has(response.status) && location) {
-      await discardBody(response);
-      if (hop >= MAX_REDIRECTS) {
-        throw new ProbeRefusedError(
-          `too many redirects (over ${MAX_REDIRECTS}) from ${url.slice(0, 80)}`,
-        );
+    try {
+      const location = response.headers.get("location");
+      if (REDIRECT_STATUSES.has(response.status) && location) {
+        await discardBody(response);
+        if (hop >= MAX_REDIRECTS) {
+          throw new ProbeRefusedError(
+            `too many redirects (over ${MAX_REDIRECTS}) from ${url.slice(0, 80)}`,
+          );
+        }
+        target = parseHop(location, target);
+        continue;
       }
-      target = parseHop(location, target);
-      continue;
+
+      const headers: Record<string, string> = {};
+      response.headers.forEach((value, key) => {
+        headers[key.toLowerCase()] = value;
+      });
+
+      let body = "";
+      let bytes = 0;
+      if (method === "HEAD") {
+        await discardBody(response);
+      } else {
+        ({ body, bytes } = await readCappedBody(response));
+      }
+
+      return {
+        status: response.status,
+        // The last address actually requested, which is what `finalUrlContains`
+        // asks about. `response.url` is no longer that once the chain is ours.
+        finalUrl: target.toString(),
+        headers,
+        body,
+        bodyBytes: bytes,
+      };
+    } catch (error) {
+      await discardBody(response);
+      throw error;
     }
-
-    const headers: Record<string, string> = {};
-    response.headers.forEach((value, key) => {
-      headers[key.toLowerCase()] = value;
-    });
-
-    const { body, bytes } =
-      method === "HEAD"
-        ? { body: "", bytes: 0 }
-        : await readCappedBody(response);
-
-    return {
-      status: response.status,
-      // The last address actually requested, which is what `finalUrlContains`
-      // asks about. `response.url` is no longer that once the chain is ours.
-      finalUrl: target.toString(),
-      headers,
-      body,
-      bodyBytes: bytes,
-    };
   }
 };
 

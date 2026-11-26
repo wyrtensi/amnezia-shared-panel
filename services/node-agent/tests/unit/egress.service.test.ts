@@ -3,7 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { EgressService } from "@/services/egress";
 import { DesiredState, HostNetworkReport } from "@/types/egress";
@@ -304,5 +304,28 @@ describe("EgressService", () => {
       service.upsertPeer(sampleState().peers[0]),
     ).rejects.toThrow();
     await expect(service.removePeer("10.90.0.2")).rejects.toThrow();
+  });
+
+  it("rejects and detaches AbortSignal listener if daemon closes mid-response", async () => {
+    const srv = await startMockSocketServer((req, res) => {
+      if (req.url === "/v1/checks/http") {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.write('{"partial":');
+        res.socket?.destroy();
+      }
+    });
+    cleanups.push(srv.close);
+
+    const controller = new AbortController();
+    const removeSpy = vi.spyOn(controller.signal, "removeEventListener");
+    const service = new EgressService({ socketPath: srv.socketPath });
+
+    await expect(
+      service.runHttpCheck(
+        { egressIpv4: "198.51.100.10", url: "https://example.com/" },
+        controller.signal,
+      ),
+    ).rejects.toMatchObject({ statusCode: 503 });
+    expect(removeSpy).toHaveBeenCalledTimes(1);
   });
 });

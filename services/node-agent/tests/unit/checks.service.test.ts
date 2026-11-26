@@ -185,6 +185,26 @@ describe("runCheck", () => {
     );
     expect(beyond.status).toBe("failed");
   });
+
+  it("cancels response body on HEAD requests to avoid leaking pooled sockets", async () => {
+    const cancel = vi.fn().mockResolvedValue(undefined);
+    fetchMock.mockResolvedValue({
+      status: 204,
+      url: "https://example.com/",
+      headers: new Headers(),
+      body: { cancel },
+    } as unknown as StubbedResponse);
+
+    const result = await runCheck(
+      httpCheck({
+        probe: { kind: "http", url: "https://example.com/", method: "HEAD" },
+        assertions: [{ type: "statusIn", statuses: [204] }],
+      }),
+    );
+
+    expect(result.status).toBe("ok");
+    expect(cancel).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe("runChecks", () => {
