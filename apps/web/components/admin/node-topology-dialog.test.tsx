@@ -373,5 +373,16 @@ describe("summarizeNodeEgress & NodeTopologyDialog", () => {
     expect(html).toContain(tRu("egress.switchBlockedUnavailable"));
     expect(html).toContain(tRu("nodes.egressDaemonVersionMismatch"));
     expect(html).toContain(tRu("egress.filtersRoutedOnlyHint"));
+    expect(html).toContain(tRu("egress.routingTableHint"));
+    const src = readFileSync(
+      fileURLToPath(new URL("./node-topology-dialog.tsx", import.meta.url)),
+      "utf8",
+    );
+    expect(src).toContain("egress.modeExplainHint");
+    expect(src).toContain("egress.isolatePrivateHint");
+    expect(src).toContain("egress.sectionExitsHint");
+    expect(src).toContain("egress.sectionVariantsHint");
+    expect(src).toContain("egress.amneziaDnsDnatHint");
+    expect(src).toContain("egress.allowAsEntryHint");
   });
 });

@@ -394,6 +394,7 @@ export function NodeTopologyDialogBody({
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div className="flex flex-wrap items-center gap-1.5">
                 <span className="text-sm font-semibold">{t("egress.sectionMode")}</span>
+                <Hint>{t("egress.modeExplainHint")}</Hint>
                 <Badge variant={summary.mode === "routed" ? "default" : "outline"}>
                   {t(`egress.mode.${summary.mode}`)}
                 </Badge>
@@ -540,6 +541,7 @@ export function NodeTopologyDialogBody({
                       onCheckedChange={setIsolatePrivate}
                     />
                     <span>{t("egress.isolatePrivate")}</span>
+                    <Hint>{t("egress.isolatePrivateHint")}</Hint>
                   </label>
                 </div>
                 <Button
@@ -699,7 +701,10 @@ export function NodeTopologyDialogBody({
 
           {/* Section 3: Physical Exit IPs */}
           <section data-topology-section="exits" className="min-w-0 space-y-2.5">
-            <h3 className="text-sm font-semibold">{t("egress.sectionExits")}</h3>
+            <h3 className="flex items-center gap-1.5 text-sm font-semibold">
+              <span>{t("egress.sectionExits")}</span>
+              <Hint>{t("egress.sectionExitsHint")}</Hint>
+            </h3>
 
             {exits.length === 0 ? (
               <p className="text-xs text-muted-foreground">{t("egress.noExits")}</p>
@@ -980,6 +985,7 @@ export function NodeTopologyDialogBody({
                     value={editExitTable}
                     onChange={(e) => setEditExitTable(e.target.value)}
                     placeholder="200..219"
+                    title={t("egress.routingTableHint")}
                     type="number"
                     min={200}
                     max={219}
@@ -994,6 +1000,7 @@ export function NodeTopologyDialogBody({
                   <label className="flex items-center gap-1.5">
                     <Switch checked={editExitAmneziaDns} onCheckedChange={setEditExitAmneziaDns} />
                     <span>{t("egress.amneziaDnsDnat")}</span>
+                    <Hint>{t("egress.amneziaDnsDnatHint")}</Hint>
                   </label>
                   <label className="flex items-center gap-1.5">
                     <Switch checked={editExitEnforceDns} onCheckedChange={setEditExitEnforceDns} />
@@ -1003,6 +1010,7 @@ export function NodeTopologyDialogBody({
                   <label className="flex items-center gap-1.5">
                     <Switch checked={editExitAllowAsEntry} onCheckedChange={setEditExitAllowAsEntry} />
                     <span>{t("egress.allowAsEntry")}</span>
+                    <Hint>{t("egress.allowAsEntryHint")}</Hint>
                   </label>
                 </div>
                 <div className="flex justify-end gap-1.5">
@@ -1156,6 +1164,7 @@ export function NodeTopologyDialogBody({
                     value={newExitTable}
                     onChange={(e) => setNewExitTable(e.target.value)}
                     placeholder={t("egress.routingTable")}
+                    title={t("egress.routingTableHint")}
                     type="number"
                     min={200}
                     max={219}
@@ -1166,6 +1175,7 @@ export function NodeTopologyDialogBody({
                   <label className="flex items-center gap-1.5">
                     <Switch checked={newExitAmneziaDns} onCheckedChange={setNewExitAmneziaDns} />
                     <span>{t("egress.amneziaDnsDnat")}</span>
+                    <Hint>{t("egress.amneziaDnsDnatHint")}</Hint>
                   </label>
                   <label className="flex items-center gap-1.5">
                     <Switch checked={newExitEnforceDns} onCheckedChange={setNewExitEnforceDns} />
@@ -1175,6 +1185,7 @@ export function NodeTopologyDialogBody({
                   <label className="flex items-center gap-1.5">
                     <Switch checked={newExitAllowAsEntry} onCheckedChange={setNewExitAllowAsEntry} />
                     <span>{t("egress.allowAsEntry")}</span>
+                    <Hint>{t("egress.allowAsEntryHint")}</Hint>
                   </label>
                 </div>
                 <Button type="submit" size="sm" disabled={busy !== null || !newExitIp.trim()}>
@@ -1186,7 +1197,10 @@ export function NodeTopologyDialogBody({
 
           {/* Section 4: Server Variants (Entry -> Exit) */}
           <section data-topology-section="variants" className="min-w-0 space-y-2.5 border-t pt-3">
-            <h3 className="text-sm font-semibold">{t("egress.sectionVariants")}</h3>
+            <h3 className="flex items-center gap-1.5 text-sm font-semibold">
+              <span>{t("egress.sectionVariants")}</span>
+              <Hint>{t("egress.sectionVariantsHint")}</Hint>
+            </h3>
             <ul className="space-y-1.5">
               {endpoints.map((ep) => {
                 const assignedExitId = ep.egressIpId ?? node.egressDefaultIpId ?? null;

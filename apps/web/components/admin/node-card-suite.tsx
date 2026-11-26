@@ -358,6 +358,7 @@ export function NodeCard({
                           ip: node.publicIp ?? node.publicHost ?? "—",
                         })}
                   </span>
+                  <Hint>{t("egress.modeExplainHint")}</Hint>
                   {egressSummary.modeDrift ? (
                     <Badge variant="destructive" className="h-4 px-1 text-[10px]">
                       {t("egress.driftBadge")}
