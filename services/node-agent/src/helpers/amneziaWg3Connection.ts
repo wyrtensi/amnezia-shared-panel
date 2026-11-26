@@ -7,7 +7,7 @@ import {
   isDockerDaemonUnavailableError,
   isDockerContainerUnavailableError,
 } from "@/utils/dockerErrors";
-import { exec } from "child_process";
+import { exec, execFile } from "child_process";
 import { APIError } from "@/utils/APIError";
 import { AppContract } from "@/contracts/app";
 import { CommandResult } from "@/types/shared";
@@ -28,26 +28,19 @@ export class AmneziaWg3Connection implements IAmneziaConnection {
   static key = "amneziaWg3";
 
   /**
-   * Build a command scoped to the AmneziaWG 3.1 container.
-   */
-  private buildCommand(cmd: string): string {
-    if (!AppContract.AmneziaWG3.DOCKER_CONTAINER) return cmd;
-
-    return `docker exec ${
-      AppContract.AmneziaWG3.DOCKER_CONTAINER
-    } sh -lc '${cmd.replace(/'/g, "'\\''")}'`;
-  }
-
-  /**
-   * Execute a command inside the container.
+   * Execute a command inside the container (or on the host when unconfigured).
    */
   run(cmd: string, options?: RunOptions): Promise<CommandResult> {
-    const finalCmd = this.buildCommand(cmd);
     const timeout = options?.timeout ?? 5 * TimeContract.SECOND;
     const maxBuffer = options?.maxBufferBytes ?? 10 * 1024 * 1024;
+    const container = AppContract.AmneziaWG3.DOCKER_CONTAINER;
 
     return new Promise((resolve, reject) => {
-      exec(finalCmd, { timeout, maxBuffer }, (error, stdout, stderr) => {
+      const handleResult = (
+        error: Error | null,
+        stdout: string,
+        stderr: string,
+      ) => {
         if (error) {
           if (isDockerDaemonUnavailableError(error)) {
             return reject(
@@ -73,7 +66,19 @@ export class AmneziaWg3Connection implements IAmneziaConnection {
         }
 
         resolve({ stdout, stderr });
-      });
+      };
+
+      // Avoid spawning an intermediate /bin/sh for docker exec so timeout kills docker directly.
+      if (container) {
+        execFile(
+          "docker",
+          ["exec", container, "sh", "-lc", cmd],
+          { timeout, maxBuffer },
+          handleResult,
+        );
+      } else {
+        exec(cmd, { timeout, maxBuffer }, handleResult);
+      }
     });
   }
 

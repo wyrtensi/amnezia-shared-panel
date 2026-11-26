@@ -1,20 +1,24 @@
 import { promisify } from "util";
-import { exec } from "child_process";
+import { execFile } from "child_process";
 import { TimeContract } from "@/contracts/time";
 
-// Promisify exec
-const execAsync = promisify(exec);
+// Promisify execFile so timeouts kill the docker client directly rather than an intermediate shell.
+const execFileAsync = promisify(execFile);
 
 /**
- * Получить список запущенных Docker-контейнеров
- * Если Docker недоступен, то возвращаемпустой список
+ * Return the set of currently running Docker container names.
+ * Returns an empty set if Docker is unavailable.
  */
 export async function listRunningDockerContainers(): Promise<Set<string>> {
   try {
-    const { stdout } = await execAsync("docker ps --format '{{.Names}}'", {
-      timeout: 5 * TimeContract.SECOND,
-      maxBuffer: 1024 * 1024,
-    });
+    const { stdout } = await execFileAsync(
+      "docker",
+      ["ps", "--format", "{{.Names}}"],
+      {
+        timeout: 5 * TimeContract.SECOND,
+        maxBuffer: 1024 * 1024,
+      },
+    );
 
     const names = stdout
       .split("\n")

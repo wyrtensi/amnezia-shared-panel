@@ -2,7 +2,7 @@ import {
   isDockerDaemonUnavailableError,
   isDockerContainerUnavailableError,
 } from "@/utils/dockerErrors";
-import { exec } from "child_process";
+import { exec, execFile } from "child_process";
 import { APIError } from "@/utils/APIError";
 import { RunOptions } from "@/types/amnezia";
 import { AppContract } from "@/contracts/app";
@@ -17,32 +17,25 @@ import { runWithInput as runCommandWithInput } from "@/utils/execWithInput";
 import { redactCommand } from "@/utils/redactCommand";
 
 /**
- * Создать соединение с Xray
+ * Connection to the Xray container.
  */
 export class XrayConnection {
   static key = "xray";
 
   /**
-   * Построить команду
-   */
-  private buildCommand(cmd: string): string {
-    if (!AppContract.Xray.DOCKER_CONTAINER) return cmd;
-
-    return `docker exec ${
-      AppContract.Xray.DOCKER_CONTAINER
-    } sh -lc '${cmd.replace(/'/g, "'\\''")}'`;
-  }
-
-  /**
-   * Выполнить команду внутри контейнера
+   * Execute a command inside the container (or on the host when unconfigured).
    */
   run(cmd: string, options?: RunOptions): Promise<CommandResult> {
-    const finalCmd = this.buildCommand(cmd);
     const timeout = options?.timeout ?? 5 * TimeContract.SECOND;
     const maxBuffer = options?.maxBufferBytes ?? 10 * 1024 * 1024;
+    const container = AppContract.Xray.DOCKER_CONTAINER;
 
     return new Promise((resolve, reject) => {
-      exec(finalCmd, { timeout, maxBuffer }, (error, stdout, stderr) => {
+      const handleResult = (
+        error: Error | null,
+        stdout: string,
+        stderr: string,
+      ) => {
         if (error) {
           if (isDockerDaemonUnavailableError(error)) {
             return reject(
@@ -68,7 +61,19 @@ export class XrayConnection {
         }
 
         resolve({ stdout, stderr });
-      });
+      };
+
+      // Avoid spawning an intermediate /bin/sh for docker exec so timeout kills docker directly.
+      if (container) {
+        execFile(
+          "docker",
+          ["exec", container, "sh", "-lc", cmd],
+          { timeout, maxBuffer },
+          handleResult,
+        );
+      } else {
+        exec(cmd, { timeout, maxBuffer }, handleResult);
+      }
     });
   }
 
@@ -145,11 +150,48 @@ export class XrayConnection {
   }
 
   /**
-   * Перезапустить контейнер Xray
+   * Restart the Xray container directly without an intermediate shell.
    */
-  async restartContainer(): Promise<void> {
-    if (!AppContract.Xray.DOCKER_CONTAINER) return;
+  restartContainer(): Promise<void> {
+    const container = AppContract.Xray.DOCKER_CONTAINER;
+    if (!container) return Promise.resolve();
 
-    await this.runOnHost(`docker restart ${AppContract.Xray.DOCKER_CONTAINER}`);
+    return new Promise((resolve, reject) => {
+      execFile(
+        "docker",
+        ["restart", container],
+        {
+          timeout: 5 * TimeContract.SECOND,
+          maxBuffer: 10 * 1024 * 1024,
+        },
+        (error) => {
+          if (error) {
+            if (isDockerDaemonUnavailableError(error)) {
+              return reject(
+                new APIError(ServerErrorCode.SERVICE_UNAVAILABLE, {
+                  msg: "swagger.errors.DOCKER_NOT_AVAILABLE",
+                }),
+              );
+            }
+
+            if (isDockerContainerUnavailableError(error)) {
+              return reject(
+                new APIError(ServerErrorCode.SERVICE_UNAVAILABLE, {
+                  msg: "swagger.errors.CONTAINER_NOT_AVAILABLE",
+                }),
+              );
+            }
+
+            return reject(
+              new Error(
+                `Ошибка выполнения команды ${redactCommand(`docker restart ${container}`)}: ${redactCommand(String(error))}`,
+              ),
+            );
+          }
+
+          resolve();
+        },
+      );
+    });
   }
 }

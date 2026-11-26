@@ -1,11 +1,13 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
   chmod,
   lstat,
   mkdir,
   mkdtemp,
   readFile,
+  readlink,
   rm,
   symlink,
   writeFile,
@@ -752,4 +754,190 @@ test("result.json and update.log are staged outside the container-writable spool
   assert.match(script, /chmod 0644 "\$tmp"/);
   assert.match(script, /mv -f "\$tmp" "\$RESULT"/);
   assert.doesNotMatch(script, />"\$RESULT"/);
+});
+
+test("containerd shim override validates SHA-256 and never sources shim-override.env", async () => {
+  const script = await readFile(scriptUrl, "utf8");
+  assert.match(script, /dpkg-divert --package "\$SHIM_DIVERT_PACKAGE"/);
+  assert.match(script, /sha256_file "\$NEW_SHIM_BIN"/);
+  assert.match(script, /reconcile_containerd_shim/);
+  assert.doesNotMatch(script, /(source|\.)\s+"?\$NEW_SHIM_ENV"?/);
+  assert.ok(
+    script.indexOf("reconcile_containerd_shim", script.indexOf("ensure_awg3_ipv6_forwarding")) <
+      script.indexOf("agent_up", script.indexOf("reconcile_containerd_shim")),
+    "reconcile_containerd_shim must run before agent_up so health failures roll back the shim",
+  );
+});
+
+const setupShimHost = async (f, { containerdVersion = "2.2.1", stockText = "#!/usr/bin/env bash\necho 'containerd-shim-runc-v2: Version: 2.2.1'\n" } = {}) => {
+  const shimSysBin = join(f.root, "usr-bin-shim");
+  const shimDivertTarget = `${shimSysBin}.upstream`;
+  const shimOverrideDir = join(f.root, "override-dir");
+  const divertState = join(f.root, "divert.state");
+
+  await writeFile(shimSysBin, stockText, { mode: 0o755 });
+  await chmod(shimSysBin, 0o755);
+
+  await writeFile(
+    join(f.root, "bin", "containerd"),
+    `#!/usr/bin/env bash\necho "containerd github.com/containerd/containerd/v2 ${containerdVersion}"\n`,
+    { mode: 0o755 },
+  );
+
+  await writeFile(
+    join(f.root, "bin", "dpkg-divert"),
+    `#!/usr/bin/env bash
+set -eu
+state="${divertState}"
+pkg="" action="" divert_to="" target=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --package) pkg="$2"; shift 2 ;;
+    --add) action="add"; shift ;;
+    --remove) action="remove"; shift ;;
+    --divert) divert_to="$2"; shift 2 ;;
+    --listpackage) action="listpackage"; target="$2"; shift 2 ;;
+    --rename) shift ;;
+    *) target="$1"; shift ;;
+  esac
+done
+case "$action" in
+  listpackage)
+    if [ -f "$state" ]; then
+      IFS='|' read -r cur_pkg cur_target cur_divert <"$state"
+      [ "$cur_target" = "$target" ] && printf '%s\\n' "$cur_pkg"
+    fi
+    ;;
+  add)
+    mv "$target" "$divert_to"
+    printf '%s|%s|%s\\n' "$pkg" "$target" "$divert_to" >"$state"
+    ;;
+  remove)
+    [ -f "$state" ] || exit 1
+    IFS='|' read -r cur_pkg cur_target cur_divert <"$state"
+    [ "$cur_pkg" = "$pkg" ] && [ "$cur_target" = "$target" ] || exit 1
+    mv "$cur_divert" "$target"
+    rm -f "$state"
+    ;;
+esac
+`,
+    { mode: 0o755 },
+  );
+
+  return {
+    shimSysBin,
+    shimDivertTarget,
+    shimOverrideDir,
+    divertState,
+    env: {
+      AMNEZIA_SHIM_ALLOW_NONROOT: "1",
+      AMNEZIA_SHIM_SYSTEM_BIN: shimSysBin,
+      AMNEZIA_SHIM_DIVERT_TARGET: shimDivertTarget,
+      AMNEZIA_SHIM_OVERRIDE_DIR: shimOverrideDir,
+      AMNEZIA_CONTAINERD_BIN: join(f.root, "bin", "containerd"),
+    },
+  };
+};
+
+test("SHIM_MODE=override installs verified shim via dpkg-divert and SHIM_MODE=upstream restores stock", executing, async (t) => {
+  const overrideBin = "#!/usr/bin/env bash\necho 'containerd-shim-runc-v2: Version: v2.2.10+ttrpc241'\n";
+  const overrideSha = createHash("sha256").update(overrideBin).digest("hex");
+  const stockText = "#!/usr/bin/env bash\necho 'containerd-shim-runc-v2: Version: 2.2.1'\n";
+  const THIRD_DIGEST = `sha256:${"3".repeat(64)}`;
+  const THIRD_IMAGE = `${REPO}@${THIRD_DIGEST}`;
+
+  const f = await fixture({
+    compose: COMPOSE_V1,
+    shipped: {
+      [OLD_DIGEST]: { "compose.yaml": COMPOSE_V1 },
+      [NEW_DIGEST]: {
+        "compose.yaml": COMPOSE_V1,
+        "shim-override.env": `SHIM_MODE=override\nSHIM_REF=ttrpc-pr241-test\nSHIM_SHA256_2_2=${overrideSha}\n`,
+        "containerd-shim-runc-v2-2.2": overrideBin,
+      },
+      [THIRD_DIGEST]: {
+        "compose.yaml": COMPOSE_V1,
+        "shim-override.env": "SHIM_MODE=upstream\n",
+      },
+    },
+  });
+  t.after(f.cleanup);
+
+  const host = await setupShimHost(f, { containerdVersion: "2.2.1", stockText });
+
+  await f.request({ id: "req-shim-on", image: NEW_IMAGE });
+  const installRun = f.run(host.env);
+  assert.equal(installRun.status, 0, installRun.stderr + installRun.stdout);
+  assert.equal((await f.result()).ok, true);
+  assert.equal(await readlink(host.shimSysBin), join(host.shimOverrideDir, "containerd-shim-runc-v2"));
+  assert.equal(await readFile(host.shimDivertTarget, "utf8"), stockText);
+  assert.match(await readFile(join(host.shimOverrideDir, "shim-override.meta"), "utf8"), /SHIM_REF=ttrpc-pr241-test/);
+
+  await f.request({ id: "req-shim-off", image: THIRD_IMAGE });
+  const revertRun = f.run(host.env);
+  assert.equal(revertRun.status, 0, revertRun.stderr + revertRun.stdout);
+  assert.equal((await f.result()).ok, true);
+  assert.equal((await lstat(host.shimSysBin)).isSymbolicLink(), false);
+  assert.equal(await readFile(host.shimSysBin, "utf8"), stockText);
+  assert.equal(await exists(join(host.shimOverrideDir, "containerd-shim-runc-v2")), false);
+  assert.equal(await exists(host.divertState), false);
+});
+
+test("SHIM_MODE=override rolls back diversion when new node-agent fails health gate", executing, async (t) => {
+  const overrideBin = "#!/usr/bin/env bash\necho 'containerd-shim-runc-v2: Version: v2.2.10+ttrpc241'\n";
+  const overrideSha = createHash("sha256").update(overrideBin).digest("hex");
+  const stockText = "#!/usr/bin/env bash\necho 'containerd-shim-runc-v2: Version: 2.2.1'\n";
+
+  const f = await fixture({
+    compose: COMPOSE_V1,
+    health: "unhealthy",
+    shipped: {
+      [OLD_DIGEST]: { "compose.yaml": COMPOSE_V1 },
+      [NEW_DIGEST]: {
+        "compose.yaml": COMPOSE_V1,
+        "shim-override.env": `SHIM_MODE=override\nSHIM_REF=ttrpc-pr241-test\nSHIM_SHA256_2_2=${overrideSha}\n`,
+        "containerd-shim-runc-v2-2.2": overrideBin,
+      },
+    },
+  });
+  t.after(f.cleanup);
+
+  const host = await setupShimHost(f, { containerdVersion: "2.2.1", stockText });
+
+  await f.request({ id: "req-shim-fail", image: NEW_IMAGE });
+  const run = f.run(host.env);
+  assert.notEqual(run.status, 0);
+  assert.equal((await f.result()).ok, false);
+  assert.equal((await lstat(host.shimSysBin)).isSymbolicLink(), false);
+  assert.equal(await readFile(host.shimSysBin, "utf8"), stockText);
+  assert.equal(await exists(host.divertState), false);
+});
+
+test("SHIM_MODE=override skips fail-safely on containerd version mismatch or checksum mismatch", executing, async (t) => {
+  const overrideBin = "#!/usr/bin/env bash\necho 'containerd-shim-runc-v2: Version: v2.2.10+ttrpc241'\n";
+  const wrongSha = "0".repeat(64);
+  const stockText = "#!/usr/bin/env bash\necho 'containerd-shim-runc-v2: Version: 2.9.0'\n";
+
+  const f = await fixture({
+    compose: COMPOSE_V1,
+    shipped: {
+      [OLD_DIGEST]: { "compose.yaml": COMPOSE_V1 },
+      [NEW_DIGEST]: {
+        "compose.yaml": COMPOSE_V1,
+        "shim-override.env": `SHIM_MODE=override\nSHIM_REF=ttrpc-pr241-test\nSHIM_SHA256_2_2=${wrongSha}\n`,
+        "containerd-shim-runc-v2-2.2": overrideBin,
+      },
+    },
+  });
+  t.after(f.cleanup);
+
+  const host = await setupShimHost(f, { containerdVersion: "2.2.1", stockText });
+
+  await f.request({ id: "req-shim-bad-sha", image: NEW_IMAGE });
+  const run = f.run(host.env);
+  assert.equal(run.status, 0, run.stderr + run.stdout);
+  assert.equal((await f.result()).ok, true);
+  assert.equal((await lstat(host.shimSysBin)).isSymbolicLink(), false);
+  assert.equal(await readFile(host.shimSysBin, "utf8"), stockText);
+  assert.equal(await exists(host.divertState), false);
 });

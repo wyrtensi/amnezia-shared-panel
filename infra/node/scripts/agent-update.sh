@@ -626,6 +626,198 @@ agent_healthy() {
   return 1
 }
 
+kv_value() {
+  local key="$1" file="$2"
+  sed -n "s/^${key}=//p" "$file" 2>/dev/null | tail -n 1 | tr -d '\r'
+}
+
+SHIM_SYSTEM_BIN="${AMNEZIA_SHIM_SYSTEM_BIN:-/usr/bin/containerd-shim-runc-v2}"
+SHIM_DIVERT_TARGET="${AMNEZIA_SHIM_DIVERT_TARGET:-${SHIM_SYSTEM_BIN}.upstream}"
+SHIM_OVERRIDE_DIR="${AMNEZIA_SHIM_OVERRIDE_DIR:-/usr/local/lib/amnezia}"
+SHIM_OVERRIDE_BIN="${SHIM_OVERRIDE_DIR}/containerd-shim-runc-v2"
+SHIM_META_FILE="${SHIM_OVERRIDE_DIR}/shim-override.meta"
+SHIM_DIVERT_PACKAGE="amnezia-node-shim"
+CONTAINERD_BIN="${AMNEZIA_CONTAINERD_BIN:-containerd}"
+SHIM_ALLOW_NONROOT="${AMNEZIA_SHIM_ALLOW_NONROOT:-0}"
+NEW_SHIM_ENV="${SCRATCH}/new-shim-override.env"
+NEW_SHIM_BIN="${SCRATCH}/new-shim-bin"
+SHIM_BIN_BACKUP="${SCRATCH}/backup-shim-bin"
+SHIM_META_BACKUP="${SCRATCH}/backup-shim-meta"
+SHIM_ROLLBACK_ACTION=""
+
+detect_containerd_minor() {
+  "$CONTAINERD_BIN" --version 2>/dev/null \
+    | grep -oE '(^|[[:space:]])v?[0-9]+\.[0-9]+\.[0-9]+' \
+    | head -n1 \
+    | tr -d '[:space:]v' \
+    | cut -d. -f1,2
+}
+
+shim_divert_owner() {
+  dpkg-divert --listpackage "$SHIM_SYSTEM_BIN" 2>/dev/null || true
+}
+
+write_shim_meta() {
+  local mode="$1" minor="$2" ref="$3" sha="$4" tmp
+  tmp="$(mktemp "${SHIM_META_FILE}.XXXXXX")" || return 1
+  {
+    printf 'SHIM_MODE=%s\n' "$mode"
+    printf 'CONTAINERD_MINOR=%s\n' "$minor"
+    printf 'SHIM_REF=%s\n' "$ref"
+    printf 'SHIM_SHA256=%s\n' "$sha"
+    printf 'INSTALLED_AT=%s\n' "$(date -u -Iseconds)"
+  } >"$tmp" || { rm -f "$tmp"; return 1; }
+  chmod 0644 "$tmp" || { rm -f "$tmp"; return 1; }
+  mv -f "$tmp" "$SHIM_META_FILE" || { rm -f "$tmp"; return 1; }
+}
+
+reconcile_containerd_shim() {
+  local shim_mode owner target_link minor minor_key expected_sha shim_ref actual_sha shim_tmp
+  shim_mode="upstream"
+  if extract_abs_from_new "/opt/node-agent/bin/shim-override.env" "$NEW_SHIM_ENV"; then
+    shim_mode="$(kv_value SHIM_MODE "$NEW_SHIM_ENV")"
+    [ -n "$shim_mode" ] || shim_mode="upstream"
+  fi
+
+  case "$shim_mode" in
+    upstream|override) ;;
+    *)
+      log "WARNING: unsupported SHIM_MODE=${shim_mode} in shim-override.env; skipping shim reconciliation"
+      return 0
+      ;;
+  esac
+
+  if [ "$(id -u)" -ne 0 ] && [ "$SHIM_ALLOW_NONROOT" != "1" ]; then
+    [ "$shim_mode" = "upstream" ] || log "WARNING: non-root run; skipping containerd-shim override"
+    return 0
+  fi
+
+  if ! command -v dpkg-divert >/dev/null 2>&1; then
+    [ "$shim_mode" = "upstream" ] || log "WARNING: dpkg-divert not available on host; skipping containerd-shim override"
+    return 0
+  fi
+
+  if [ ! -e "$SHIM_SYSTEM_BIN" ] && [ ! -L "$SHIM_SYSTEM_BIN" ]; then
+    [ "$shim_mode" = "upstream" ] || log "WARNING: ${SHIM_SYSTEM_BIN} not found on host; skipping containerd-shim override"
+    return 0
+  fi
+
+  owner="$(shim_divert_owner)"
+  target_link=""
+  [ ! -L "$SHIM_SYSTEM_BIN" ] || target_link="$(readlink "$SHIM_SYSTEM_BIN" 2>/dev/null || true)"
+
+  if [ "$shim_mode" = "upstream" ]; then
+    if [ "$owner" != "$SHIM_DIVERT_PACKAGE" ] && [ "$target_link" != "$SHIM_OVERRIDE_BIN" ]; then
+      return 0
+    fi
+    [ ! -f "$SHIM_OVERRIDE_BIN" ] || cp -p "$SHIM_OVERRIDE_BIN" "$SHIM_BIN_BACKUP"
+    [ ! -f "$SHIM_META_FILE" ] || cp -p "$SHIM_META_FILE" "$SHIM_META_BACKUP"
+    [ ! -L "$SHIM_SYSTEM_BIN" ] || rm -f "$SHIM_SYSTEM_BIN"
+    if [ "$owner" = "$SHIM_DIVERT_PACKAGE" ]; then
+      if ! dpkg-divert --package "$SHIM_DIVERT_PACKAGE" --remove --rename "$SHIM_SYSTEM_BIN" >>"$LOG" 2>&1; then
+        log "WARNING: failed to remove dpkg-divert on ${SHIM_SYSTEM_BIN}; restoring previous override"
+        if [ -f "$SHIM_BIN_BACKUP" ]; then
+          ln -sfn "$SHIM_OVERRIDE_BIN" "$SHIM_SYSTEM_BIN" 2>/dev/null || true
+        fi
+        return 0
+      fi
+    fi
+    rm -f "$SHIM_OVERRIDE_BIN" "$SHIM_META_FILE"
+    rmdir "$SHIM_OVERRIDE_DIR" 2>/dev/null || true
+    if ! "$SHIM_SYSTEM_BIN" -v >>"$LOG" 2>&1; then
+      log "WARNING: restored stock ${SHIM_SYSTEM_BIN} failed -v smoke check"
+    fi
+    SHIM_ROLLBACK_ACTION="restore_removed_override"
+    log "removed temporary containerd-shim-runc-v2 override; restored stock upstream binary"
+    return 0
+  fi
+
+  # SHIM_MODE=override
+  minor="$(detect_containerd_minor)"
+  if [ -z "$minor" ]; then
+    log "WARNING: could not detect host containerd version; skipping temporary shim override"
+    return 0
+  fi
+
+  minor_key="${minor//./_}"
+  expected_sha="$(kv_value "SHIM_SHA256_${minor_key}" "$NEW_SHIM_ENV")"
+  shim_ref="$(kv_value SHIM_REF "$NEW_SHIM_ENV")"
+  if ! printf '%s' "$expected_sha" | grep -Eq '^[0-9a-f]{64}$'; then
+    log "WARNING: no shim override checksum configured for containerd ${minor}; leaving stock shim intact"
+    return 0
+  fi
+
+  if ! extract_abs_from_new "/opt/node-agent/bin/shims/containerd-shim-runc-v2-${minor}" "$NEW_SHIM_BIN"; then
+    log "WARNING: image does not ship containerd-shim-runc-v2-${minor}; leaving stock shim intact"
+    return 0
+  fi
+
+  actual_sha="$(sha256_file "$NEW_SHIM_BIN")"
+  if [ "$actual_sha" != "$expected_sha" ]; then
+    log "WARNING: SHA-256 mismatch for containerd-shim-runc-v2-${minor} (expected ${expected_sha}, got ${actual_sha:-none}); leaving stock shim intact"
+    return 0
+  fi
+
+  chmod 0755 "$NEW_SHIM_BIN"
+  if ! "$NEW_SHIM_BIN" -v 2>&1 | grep -q 'containerd-shim-runc-v2'; then
+    log "WARNING: containerd-shim-runc-v2-${minor} failed -v smoke test; leaving stock shim intact"
+    return 0
+  fi
+
+  if [ -n "$owner" ] && [ "$owner" != "$SHIM_DIVERT_PACKAGE" ]; then
+    log "WARNING: ${SHIM_SYSTEM_BIN} already diverted by ${owner}; skipping temporary shim override"
+    return 0
+  fi
+
+  if [ "$owner" = "$SHIM_DIVERT_PACKAGE" ] &&
+     [ "$target_link" = "$SHIM_OVERRIDE_BIN" ] &&
+     [ -f "$SHIM_OVERRIDE_BIN" ] &&
+     cmp -s "$NEW_SHIM_BIN" "$SHIM_OVERRIDE_BIN"; then
+    log "temporary containerd-shim-runc-v2 override already current (containerd ${minor}, ${shim_ref:-custom})"
+    return 0
+  fi
+
+  install -d -m 0755 "$SHIM_OVERRIDE_DIR" || {
+    log "WARNING: could not create ${SHIM_OVERRIDE_DIR}; skipping temporary shim override"
+    return 0
+  }
+
+  if [ "$owner" = "$SHIM_DIVERT_PACKAGE" ] && [ -f "$SHIM_OVERRIDE_BIN" ]; then
+    cp -p "$SHIM_OVERRIDE_BIN" "$SHIM_BIN_BACKUP"
+    [ ! -f "$SHIM_META_FILE" ] || cp -p "$SHIM_META_FILE" "$SHIM_META_BACKUP"
+  fi
+
+  shim_tmp="$(mktemp "${SHIM_OVERRIDE_BIN}.XXXXXX")" || {
+    log "WARNING: could not stage ${SHIM_OVERRIDE_BIN}; skipping temporary shim override"
+    return 0
+  }
+  cat "$NEW_SHIM_BIN" >"$shim_tmp" && chmod 0755 "$shim_tmp" && mv -f "$shim_tmp" "$SHIM_OVERRIDE_BIN" || {
+    rm -f "$shim_tmp"
+    log "WARNING: could not install ${SHIM_OVERRIDE_BIN}; skipping temporary shim override"
+    return 0
+  }
+
+  if [ "$owner" != "$SHIM_DIVERT_PACKAGE" ]; then
+    if ! dpkg-divert --package "$SHIM_DIVERT_PACKAGE" --add --rename --divert "$SHIM_DIVERT_TARGET" "$SHIM_SYSTEM_BIN" >>"$LOG" 2>&1; then
+      rm -f "$SHIM_OVERRIDE_BIN"
+      log "WARNING: dpkg-divert failed for ${SHIM_SYSTEM_BIN}; leaving stock shim intact"
+      return 0
+    fi
+    ln -sfn "$SHIM_OVERRIDE_BIN" "$SHIM_SYSTEM_BIN"
+    SHIM_ROLLBACK_ACTION="remove_new_override"
+  else
+    ln -sfn "$SHIM_OVERRIDE_BIN" "$SHIM_SYSTEM_BIN"
+    if [ -f "$SHIM_BIN_BACKUP" ]; then
+      SHIM_ROLLBACK_ACTION="restore_old_override"
+    else
+      SHIM_ROLLBACK_ACTION="remove_new_override"
+    fi
+  fi
+
+  write_shim_meta "override" "$minor" "$shim_ref" "$expected_sha" || true
+  log "installed temporary containerd-shim-runc-v2 override (containerd ${minor}, ${shim_ref:-custom}); recreated containers use it immediately (running AWG containers keep their existing shim until restarted)"
+}
+
 rollback() {
   log "rolling back to ${CURRENT_IMAGE}"
   cp -f "$ENV_BACKUP" "$ENV_FILE"
@@ -661,6 +853,42 @@ rollback() {
       systemctl restart amnezia-egressd.service >>"$LOG" 2>&1 || true
     fi
   fi
+  case "$SHIM_ROLLBACK_ACTION" in
+    remove_new_override)
+      [ ! -L "$SHIM_SYSTEM_BIN" ] || rm -f "$SHIM_SYSTEM_BIN"
+      if [ "$(shim_divert_owner)" = "$SHIM_DIVERT_PACKAGE" ]; then
+        dpkg-divert --package "$SHIM_DIVERT_PACKAGE" --remove --rename "$SHIM_SYSTEM_BIN" >>"$LOG" 2>&1 || true
+      fi
+      rm -f "$SHIM_OVERRIDE_BIN" "$SHIM_META_FILE"
+      rmdir "$SHIM_OVERRIDE_DIR" 2>/dev/null || true
+      ;;
+    restore_old_override)
+      if [ -f "$SHIM_BIN_BACKUP" ]; then
+        cp -pf "$SHIM_BIN_BACKUP" "$SHIM_OVERRIDE_BIN"
+        chmod 0755 "$SHIM_OVERRIDE_BIN"
+        ln -sfn "$SHIM_OVERRIDE_BIN" "$SHIM_SYSTEM_BIN"
+      fi
+      if [ -f "$SHIM_META_BACKUP" ]; then
+        cp -pf "$SHIM_META_BACKUP" "$SHIM_META_FILE"
+        chmod 0644 "$SHIM_META_FILE"
+      fi
+      ;;
+    restore_removed_override)
+      if [ -f "$SHIM_BIN_BACKUP" ]; then
+        install -d -m 0755 "$SHIM_OVERRIDE_DIR" || true
+        cp -pf "$SHIM_BIN_BACKUP" "$SHIM_OVERRIDE_BIN"
+        chmod 0755 "$SHIM_OVERRIDE_BIN"
+        if [ "$(shim_divert_owner)" != "$SHIM_DIVERT_PACKAGE" ]; then
+          dpkg-divert --package "$SHIM_DIVERT_PACKAGE" --add --rename --divert "$SHIM_DIVERT_TARGET" "$SHIM_SYSTEM_BIN" >>"$LOG" 2>&1 || true
+        fi
+        ln -sfn "$SHIM_OVERRIDE_BIN" "$SHIM_SYSTEM_BIN"
+      fi
+      if [ -f "$SHIM_META_BACKUP" ]; then
+        cp -pf "$SHIM_META_BACKUP" "$SHIM_META_FILE"
+        chmod 0644 "$SHIM_META_FILE"
+      fi
+      ;;
+  esac
   agent_up || log "WARNING: the rollback could not recreate the agent"
 }
 
@@ -739,6 +967,7 @@ done
 # Enable IPv6 forwarding sysctls live before bringing up the new agent so its
 # first /server report already reflects ipv6RejectStub.supported = true.
 ensure_awg3_ipv6_forwarding
+reconcile_containerd_shim
 if ! write_env_image "$IMAGE"; then
   rollback
   fail_out "could not rewrite ${ENV_FILE}"

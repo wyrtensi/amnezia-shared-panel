@@ -67,6 +67,7 @@ COPY package.json ./
 # context; .github/workflows/release-node-agent.yml and
 # infra/node/scripts/build-node-agent.sh both pass it.
 COPY --from=egressd_build /out/amnezia-egressd /opt/node-agent/bin/amnezia-egressd
+COPY --from=deploy shim-override/shim-override.env /opt/node-agent/bin/shim-override.env
 COPY --from=deploy compose.yaml /opt/node-agent/deploy/
 COPY --from=deploy \
   scripts/awg3-entrypoint.sh \

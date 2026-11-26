@@ -50,6 +50,7 @@ this tree where it is allowed to live.
 | Configure split-tunneling (`ru_blacklist` E-Core), `global_route_overrides`, `RULE_EXTRA_*` feeds, or Steam split-routing | [`AGENT-HOST-SETUP.md`](./AGENT-HOST-SETUP.md#route-profiles-and-rule-feeds) |
 | Toggle the per-node AWG 3.1 IPv6 active-reject ULA stub (`fd6b:7c2e:4a91:9f::/64`) | [**Per-node AWG 3.1 IPv6 active-reject stub**](#per-node-awg-31-ipv6-active-reject-stub-ula--prohibit-20003) below, [`CLI.md`](./CLI.md) (`node-ipv6-stub`), and [`IPV6-DESIGN.md`](./IPV6-DESIGN.md) |
 | Configure multi-exit routing, Exit IPs, and Entry → Exit variants | [**Multi-exit routing (`egress-daemon`)**](#multi-exit-routing-egress-daemon) below and [`CLI.md`](./CLI.md) (`node-egress*`, `node-exit-*`, `key-reassign-endpoint`) |
+| Deploy, audit, or remove the temporary `containerd-shim-runc-v2` override (`ttrpc#241`) | [`TEMPORARY-SHIM-OVERRIDE.md`](./TEMPORARY-SHIM-OVERRIDE.md) |
 | Deploy, verify, activate, or roll back optional AWG 3.1 node bridges | [`runbooks/AWG-BRIDGES.md`](./runbooks/AWG-BRIDGES.md) and [`infra/bridge/README.md`](../infra/bridge/README.md) |
 | Set up external reachability probing and Telegram alerts / status widget | [`REACHABILITY-PROBE.md`](./REACHABILITY-PROBE.md) |
 
