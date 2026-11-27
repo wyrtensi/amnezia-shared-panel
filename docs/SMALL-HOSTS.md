@@ -169,10 +169,11 @@ Both stacks now defend against this and you should keep it that way:
 - **`pids_limit`** (`PANEL_PIDS_LIMIT`, `POSTGRES_PIDS_LIMIT`, default 256;
   the node stack uses 128). This does not fix a leak — it contains one, so the
   container restarts instead of quietly consuming the host's task budget.
-- **Temporary `containerd-shim-runc-v2` `ttrpc#241` override (isolated branch).**
-  While upstream `containerd/ttrpc#241` stays unmerged, nodes can opt into an
-  isolated override image and automatically revert via `SHIM_MODE=upstream` on
-  `main`; see [`TEMPORARY-SHIM-OVERRIDE.md`](./TEMPORARY-SHIM-OVERRIDE.md).
+- **Temporary `containerd-shim-runc-v2` `ttrpc#241` override (`wyrtensi/ttrpc` fork).**
+  Controlled by `SHIM_OVERRIDE_MODE` in `infra/node/shim-override/shim-override.env`
+  while upstream `containerd/ttrpc#241` stays unmerged, and automatically reverted to
+  stock upstream `containerd` when set to `upstream`; see
+  [`TEMPORARY-SHIM-OVERRIDE.md`](./TEMPORARY-SHIM-OVERRIDE.md).
 
 Diagnosing it:
 

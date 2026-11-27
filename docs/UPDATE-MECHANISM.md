@@ -206,12 +206,13 @@ What current releases report and do:
   intact), verifies `GET /v1/health` over `/run/amnezia-egress/egressd.sock`,
   stages spool logs/results outside the spool directory (`0644`), and rolls back
   both `node-agent` and `amnezia-egressd` on failure.
-- **Optional temporary `containerd-shim-runc-v2` reconciliation.** Images built
-  from `main` ship `SHIM_MODE=upstream` inside `/opt/node-agent/bin/shim-override.env`,
-  which automatically removes any temporary `amnezia-node-shim` `dpkg-divert`
-  override and restores stock `/usr/bin/containerd-shim-runc-v2`; an isolated
-  override branch can deliver SHA-256-verified shims with automatic rollback on
-  agent health failure. See [`TEMPORARY-SHIM-OVERRIDE.md`](./TEMPORARY-SHIM-OVERRIDE.md).
+- **Optional temporary `containerd-shim-runc-v2` override (`wyrtensi/ttrpc`).**
+  Controlled via a single switch in `infra/node/shim-override/shim-override.env`:
+  while `SHIM_OVERRIDE_MODE=override`, `node-agent` images ship SHA-256-verified
+  `ttrpc#241` shim binaries from the `wyrtensi/ttrpc` fork with automatic
+  `dpkg-divert` rollback on health failure; flipping `SHIM_OVERRIDE_MODE=upstream`
+  causes the next `node-agent` update to remove `amnezia-node-shim` and restore
+  stock `/usr/bin/containerd-shim-runc-v2`. See [`TEMPORARY-SHIM-OVERRIDE.md`](./TEMPORARY-SHIM-OVERRIDE.md).
 - **Nothing on a node auto-updates.** Watchtower and mutable `latest` tags are
   forbidden on nodes and fail `preflight.sh`, exactly as they are on the panel
   host. A watchtower seen on a node belongs to another install sharing that

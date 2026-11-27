@@ -1,3 +1,12 @@
+FROM golang:1.26.11-bookworm@sha256:ea47ee45f1284d60f9cc09cb2c3bb4f508c256b640bd8bb30342ff13d1adcb52 AS shim_build
+ARG SHIM_OVERRIDE_MODE=""
+WORKDIR /shim-build
+COPY --from=deploy shim-override/shim-override.env /tmp/shim-override.env
+COPY --from=deploy shim-override/build-shims.sh /tmp/build-shims.sh
+RUN tr -d '\r' </tmp/build-shims.sh >/tmp/build-shims-lf.sh \
+  && tr -d '\r' </tmp/shim-override.env >/tmp/shim-override-lf.env \
+  && SHIM_OVERRIDE_MODE_ARG="${SHIM_OVERRIDE_MODE}" bash /tmp/build-shims-lf.sh /tmp/shim-override-lf.env
+
 FROM golang:1.24.13-bookworm@sha256:98d673f18a1aac43da744209873cb79323e11706f909251bcfb131828b95559d AS egressd_build
 WORKDIR /egressd
 ARG APP_VERSION=development
@@ -67,7 +76,8 @@ COPY package.json ./
 # context; .github/workflows/release-node-agent.yml and
 # infra/node/scripts/build-node-agent.sh both pass it.
 COPY --from=egressd_build /out/amnezia-egressd /opt/node-agent/bin/amnezia-egressd
-COPY --from=deploy shim-override/shim-override.env /opt/node-agent/bin/shim-override.env
+COPY --from=shim_build /out/shim-override.env /opt/node-agent/bin/shim-override.env
+COPY --from=shim_build /out/shims/ /opt/node-agent/bin/shims/
 COPY --from=deploy compose.yaml /opt/node-agent/deploy/
 COPY --from=deploy \
   scripts/awg3-entrypoint.sh \

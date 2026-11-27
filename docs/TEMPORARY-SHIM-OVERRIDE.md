@@ -1,4 +1,4 @@
-# Temporary `containerd-shim-runc-v2` Override (`ttrpc#241`)
+# Temporary `containerd-shim-runc-v2` Override (`wyrtensi/ttrpc` Fork)
 
 ## Why this exists (and what it does NOT fix)
 
@@ -14,28 +14,38 @@ Scope boundaries — keep these honest:
   `containerd-shim-runc-v2` while upstream packages still lag.
 - It does **not** claim to explain or eliminate the separate pipe-FD accumulation symptom
   observed previously on a wedged host, which has not been reproduced in the lab.
-- In addition, `services/node-agent` replaces shell-wrapped `exec("docker ...")` calls with
-  direct `execFile("docker", ...)` calls so timeouts terminate the `docker` CLI directly rather
-  than leaving orphaned `docker exec` child processes under PID 1.
+- Alongside this shim override, `services/node-agent` replaces shell-wrapped `exec("docker ...")`
+  calls with direct `execFile("docker", ...)` calls so timeouts terminate the `docker` CLI
+  directly rather than leaving orphaned `docker exec` child processes under PID 1.
 
 ---
 
-## Branch isolation policy (`main` stays 100% upstream)
+## Controlled fork & single-switch design
 
-`main` **must never** build or ship a custom `containerd` or `ttrpc` dependency.
+To keep builds reproducible without depending on an unmerged external PR ref, the 12-line
+`ttrpc#241` fix is pinned in our own fork instead of pointing directly at a contributor PR:
 
-1. **`main` (`infra/node/shim-override/shim-override.env`):**
-   - Ships `SHIM_MODE=upstream` only, with no custom Go build and no bundled shim binaries.
-   - Whenever any node updates to a `node-agent` image built from `main`,
-     `infra/node/scripts/agent-update.sh` automatically removes our temporary `dpkg-divert`
-     (`amnezia-node-shim`) if present and restores the host's stock `/usr/bin/containerd-shim-runc-v2`.
+- **Fork repository:** `https://github.com/wyrtensi/ttrpc`
+- **Branch:** `fix/pr241-id-lock` (`v1.2.10` + upstream `containerd/ttrpc#241`)
+- **Pinned tag / commit:** `v1.2.10-amnezia.1` (`3645259866b6106bf4a9f7112a7055047a816ae8`)
 
-2. **Temporary override branch (`ops/shim-ttrpc-pr241`):**
-   - Branched cleanly off the panel release branch and **never merged into `main`**.
-   - Contains only the custom shim build stage (`infra/node/shim-override/build-shims.sh` +
-     `services/node-agent/Dockerfile`) compiling `containerd-shim-runc-v2` from pinned upstream
-     `containerd` release tags (`1.7`, `2.2`, `2.3`, `2.4`) with `github.com/containerd/ttrpc`
-     replaced at pinned PR `#241` commit `3645259866b6106bf4a9f7112a7055047a816ae8`.
+All toggle state lives in one tracked file: [`infra/node/shim-override/shim-override.env`](../infra/node/shim-override/shim-override.env).
+
+1. **While `SHIM_OVERRIDE_MODE=override`:**
+   - `services/node-agent/Dockerfile` runs `infra/node/shim-override/build-shims.sh`, which clones
+     `wyrtensi/ttrpc` at `3645259866b6106bf4a9f7112a7055047a816ae8`, builds static
+     `containerd-shim-runc-v2` binaries for each supported host `containerd` minor line
+     (`1.7`, `2.2`, `2.3`, `2.4`), verifies `go version -m` contains the `/src/ttrpc`
+     replacement, and writes their SHA-256 digests into `/opt/node-agent/bin/shim-override.env`.
+2. **When switched to `SHIM_OVERRIDE_MODE=upstream`:**
+   - `build-shims.sh` skips cloning and Go compilation and emits only `SHIM_MODE=upstream`.
+   - On the next `node-agent` update, `infra/node/scripts/agent-update.sh` automatically removes
+     the temporary `amnezia-node-shim` `dpkg-divert` diversion and restores stock
+     `/usr/bin/containerd-shim-runc-v2`.
+3. **Manual one-off override in CI:**
+   - `.github/workflows/release-node-agent.yml` (`workflow_dispatch`) accepts `shim_override_mode`
+     (`default` / `override` / `upstream`) to build a test or upstream-revert image without even
+     editing `shim-override.env`.
 
 ---
 
@@ -60,7 +70,7 @@ When updating `node-agent` sequentially via the panel UI or CLI
    - Recreates **only** `amnezia-node-agent` (`--no-deps`), so the new agent immediately exercises
      the overridden shim. If `amnezia-node-agent` fails its health gate, `rollback()` removes the
      diversion, restores the stock shim binary, and rolls back `node-agent`.
-3. If `SHIM_MODE=upstream` (every image built from `main`):
+3. If `SHIM_MODE=upstream`:
    - Automatically removes any `amnezia-node-shim` diversion and deletes
      `/usr/local/lib/amnezia/containerd-shim-runc-v2`, returning the host to its apt-managed
      `/usr/bin/containerd-shim-runc-v2` (and restores the prior override on `rollback()` if the new
@@ -75,26 +85,18 @@ explicit maintenance recreate/restart of those containers (when scheduled with z
 
 ---
 
-## Building and rolling out from `ops/shim-ttrpc-pr241`
+## Verifying on a host after update
 
-1. Trigger **Release node-agent image** (`workflow_dispatch`) on branch `ops/shim-ttrpc-pr241` to
-   publish an immutable `@sha256:...` image in GHCR (do not tag a release off this branch).
-2. Roll out one node at a time:
-   ```sh
-   amnezia-panel node-agent-update <node-id> --image=ghcr.io/<owner>/<repo>/node-agent@sha256:<digest>
-   amnezia-panel node-agent-update <node-id> --image=ghcr.io/<owner>/<repo>/node-agent@sha256:<digest> --confirm
-   ```
-3. Verify on the host:
-   ```sh
-   dpkg-divert --list '*containerd-shim*'
-   readlink -f /usr/bin/containerd-shim-runc-v2
-   /usr/bin/containerd-shim-runc-v2 -v
-   cat /usr/local/lib/amnezia/shim-override.meta
-   ```
+```sh
+dpkg-divert --list '*containerd-shim*'
+readlink -f /usr/bin/containerd-shim-runc-v2
+/usr/bin/containerd-shim-runc-v2 -v
+cat /usr/local/lib/amnezia/shim-override.meta
+```
 
 ---
 
-## Exit criteria & returning cleanly to upstream
+## Exit criteria & switching back to upstream
 
 Return to stock upstream `containerd` as soon as **all** of the following hold:
 1. `containerd/ttrpc#241` (or equivalent fix) is merged upstream and released in a `ttrpc` tag.
@@ -103,9 +105,12 @@ Return to stock upstream `containerd` as soon as **all** of the following hold:
 
 Return procedure:
 1. Upgrade host `containerd` / `containerd.io` packages during a planned node maintenance window.
-2. Delete the temporary `ops/shim-ttrpc-pr241` branch (never merge it into `main`).
-3. Release `node-agent` normally from `main` (which ships `SHIM_MODE=upstream`). Updating each node
-   automatically cleans up `amnezia-node-shim` and leaves zero custom binary residue on the host.
+2. Edit [`infra/node/shim-override/shim-override.env`](../infra/node/shim-override/shim-override.env)
+   to `SHIM_OVERRIDE_MODE=upstream` (or revert the `shim-override` commit and remove the `shim_build`
+   stage if permanently retiring the override).
+3. Release `node-agent` normally from `main`: updating each node automatically cleans up
+   `amnezia-node-shim` and leaves zero custom binary residue on the host.
+4. Once no fleet host runs the override, archive `https://github.com/wyrtensi/ttrpc`.
 
 ### Manual emergency rollback on a single host
 
