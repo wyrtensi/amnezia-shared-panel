@@ -100,7 +100,7 @@ describe("bridge setup commands", () => {
     expect(commands.install).toContain("--handshake-mode tls_client_hello");
     expect(commands.install).toContain("--pool-mode");
     expect(commands.install).toContain("--no-ebpf");
-    expect(commands.bridgeInstall).toContain("/opt/amnezia-bridge/install-wytunnel-bridge.sh");
+    expect(commands.bridgeInstall).toContain("/opt/amnezia-bridge/scripts/install-wytunnel-bridge.sh");
     expect(commands.bridgeInstall).toContain("--node-ip 203.0.113.10");
     expect(commands.bridgeInstall).toContain("--pool-size 10");
     expect(commands.bridgeInstall).toContain("--pool-rotate-interval 2700");
@@ -109,7 +109,7 @@ describe("bridge setup commands", () => {
       `sudo systemctl disable --now amnezia-frpc@${ROUTE_ID}.service`,
     );
     expect(commands.disableFrps).toBe(
-      "sudo bash /opt/amnezia-bridge/toggle-frps.sh --disable",
+      "sudo bash /opt/amnezia-bridge/scripts/toggle-frps.sh --disable",
     );
   });
 });

@@ -3,8 +3,8 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 import assert from "node:assert/strict";
 
-const bridgeScript = fileURLToPath(new URL("../install-wytunnel-bridge.sh", import.meta.url));
-const toggleFrpsScript = fileURLToPath(new URL("../toggle-frps.sh", import.meta.url));
+const bridgeScript = fileURLToPath(new URL("../scripts/install-wytunnel-bridge.sh", import.meta.url));
+const toggleFrpsScript = fileURLToPath(new URL("../scripts/toggle-frps.sh", import.meta.url));
 const ROUTE_ID = "11111111-2222-4333-8444-555555555555";
 
 test("install-wytunnel-bridge.sh dry-run derives slot, pool, rotation, and disable-frps", () => {

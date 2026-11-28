@@ -870,7 +870,7 @@ export async function cmdBridgeUpdate(api: BridgeApi, args: string[]): Promise<v
     console.log(`  panel DNS: ${bridge.panelDns.hostname ?? "—"} (${bridge.panelDns.state})`);
   }
   if (body.frpsEnabled === false) {
-    console.log("  To free RAM/CPU on the bridge host, run: sudo bash /opt/amnezia-bridge/toggle-frps.sh --disable");
+    console.log("  To free RAM/CPU on the bridge host, run: sudo bash /opt/amnezia-bridge/scripts/toggle-frps.sh --disable");
   }
 }
 

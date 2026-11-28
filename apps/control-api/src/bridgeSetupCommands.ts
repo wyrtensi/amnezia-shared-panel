@@ -30,8 +30,8 @@ export const shellQuote = (value: string | number): string => {
 // bridge has no deployer, so infra/bridge/ is copied to /opt/amnezia-bridge/ by
 // hand (see infra/bridge/README.md).
 const BRIDGE_SCRIPT = "/opt/amnezia-bridge/install-bridge.sh";
-const BRIDGE_WYTUNNEL_SCRIPT = "/opt/amnezia-bridge/install-wytunnel-bridge.sh";
-const BRIDGE_TOGGLE_FRPS_SCRIPT = "/opt/amnezia-bridge/toggle-frps.sh";
+const BRIDGE_WYTUNNEL_SCRIPT = "/opt/amnezia-bridge/scripts/install-wytunnel-bridge.sh";
+const BRIDGE_TOGGLE_FRPS_SCRIPT = "/opt/amnezia-bridge/scripts/toggle-frps.sh";
 const FRPC_SCRIPT = "/opt/amnezia-panel-node/scripts/install-frpc.sh";
 const NODE_WYTUNNEL_SCRIPT = "/opt/amnezia-panel-node/scripts/install-wytunnel-node.sh";
 

@@ -1066,7 +1066,7 @@ function RenameBridgeDialog({
                 <p className="text-muted-foreground">{t("bridge.frps.disabledHint")}</p>
                 <CommandBlock
                   label={t("bridge.wytunnel.disableFrpsCmd")}
-                  command="sudo bash /opt/amnezia-bridge/toggle-frps.sh --disable"
+                  command="sudo bash /opt/amnezia-bridge/scripts/toggle-frps.sh --disable"
                   hideLabel
                 />
               </div>

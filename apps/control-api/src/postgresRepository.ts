@@ -3938,7 +3938,9 @@ export class PostgresControlRepository implements ControlRepository {
     await tx.update(vpnKeys).set({
       configExportHashes: sql`coalesce(${vpnKeys.configExportHashes}, '{}'::jsonb)
         || jsonb_build_object(${format}::text, ${hash}::text)`,
-      configUpdatedAt: sql`greatest(${vpnKeys.configUpdatedAt}, clock_timestamp())`,
+      configUpdatedAt: changesRule
+        ? sql`greatest(${vpnKeys.configUpdatedAt}, clock_timestamp())`
+        : sql`CASE WHEN ${vpnKeys.configExportHashes}->>${format} IS DISTINCT FROM ${hash} THEN greatest(${vpnKeys.configUpdatedAt}, clock_timestamp()) ELSE ${vpnKeys.configUpdatedAt} END`,
       ...(markDelivered ? { configDeliveredAt: sql`clock_timestamp()` } : {}),
       ...(changesRule
         ? {
